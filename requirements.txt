@@ -1,0 +1,6 @@
+openai>=1.0.0
+openai-whisper
+sounddevice
+soundfile
+pyperclip
+python-dotenv
