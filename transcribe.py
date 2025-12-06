@@ -12,6 +12,8 @@ Usage:
 """
 
 import argparse
+import os
+import signal
 import sys
 import tempfile
 from pathlib import Path
@@ -23,6 +25,11 @@ DEFAULT_API_MODEL = "gpt-4o-transcribe"
 DEFAULT_LOCAL_MODEL = "turbo"
 
 TEMP_RECORDING_FILENAME = "whisper_recording.wav"
+
+# Daemon-Modus: Dateien für IPC mit Raycast
+PID_FILE = Path("/tmp/whisper_go.pid")
+TRANSCRIPT_FILE = Path("/tmp/whisper_go.transcript")
+ERROR_FILE = Path("/tmp/whisper_go.error")
 
 
 def log(message: str) -> None:
@@ -86,6 +93,59 @@ def record_audio() -> Path:
 
     if not recorded_chunks:
         raise ValueError("Keine Audiodaten aufgenommen. Bitte länger aufnehmen.")
+
+    audio_data = np.concatenate(recorded_chunks)
+    output_path = Path(tempfile.gettempdir()) / TEMP_RECORDING_FILENAME
+    sf.write(output_path, audio_data, WHISPER_SAMPLE_RATE)
+
+    return output_path
+
+
+def record_audio_daemon() -> Path:
+    """
+    Daemon-Modus: Nimmt Audio auf bis SIGUSR1 empfangen wird.
+    Schreibt PID-File für externe Steuerung (Raycast).
+    Kein globaler State – verwendet Closure für Signal-Flag.
+    """
+    import numpy as np
+    import sounddevice as sd
+    import soundfile as sf
+
+    recorded_chunks: list = []
+    stop_flag = {"stop": False}  # Mutable Container statt global
+
+    def on_audio_chunk(indata, frames, time, status):
+        recorded_chunks.append(indata.copy())
+
+    def handle_stop_signal(signum: int, frame) -> None:
+        stop_flag["stop"] = True
+
+    # PID-File schreiben für Raycast
+    PID_FILE.write_text(str(os.getpid()))
+
+    # Signal-Handler registrieren
+    signal.signal(signal.SIGUSR1, handle_stop_signal)
+
+    log("🎤 Daemon: Aufnahme gestartet (warte auf SIGUSR1)...")
+
+    try:
+        with sd.InputStream(
+            samplerate=WHISPER_SAMPLE_RATE,
+            channels=1,
+            dtype="float32",
+            callback=on_audio_chunk,
+        ):
+            while not stop_flag["stop"]:
+                sd.sleep(100)  # 100ms warten, dann Signal prüfen
+    finally:
+        # PID-File aufräumen
+        if PID_FILE.exists():
+            PID_FILE.unlink()
+
+    log("✅ Daemon: Aufnahme beendet.")
+
+    if not recorded_chunks:
+        raise ValueError("Keine Audiodaten aufgenommen.")
 
     audio_data = np.concatenate(recorded_chunks)
     output_path = Path(tempfile.gettempdir()) / TEMP_RECORDING_FILENAME
@@ -185,6 +245,11 @@ Beispiele:
         "-r", "--record", action="store_true", help="Vom Mikrofon aufnehmen"
     )
     parser.add_argument(
+        "--record-daemon",
+        action="store_true",
+        help="Daemon-Modus: Aufnahme bis SIGUSR1 (für Raycast)",
+    )
+    parser.add_argument(
         "-c", "--copy", action="store_true", help="Ergebnis in Zwischenablage"
     )
     parser.add_argument(
@@ -205,18 +270,72 @@ Beispiele:
     args = parser.parse_args()
 
     # Validierung: genau eine Audio-Quelle erforderlich
-    if not args.record and args.audio is None:
-        parser.error("Entweder Audiodatei angeben oder --record verwenden")
-    if args.record and args.audio is not None:
-        parser.error("--record und Audiodatei schließen sich aus")
+    has_audio_source = args.record or args.record_daemon or args.audio is not None
+    if not has_audio_source:
+        parser.error("Entweder Audiodatei, --record oder --record-daemon verwenden")
+
+    # Gegenseitiger Ausschluss
+    if args.audio and (args.record or args.record_daemon):
+        parser.error("Audiodatei und Aufnahme-Modi schließen sich aus")
+    if args.record and args.record_daemon:
+        parser.error("--record und --record-daemon schließen sich aus")
 
     return args
+
+
+def run_daemon_mode(args: argparse.Namespace) -> int:
+    """
+    Daemon-Modus für Raycast: Aufnahme → Transkription → Datei.
+    Schreibt Fehler in ERROR_FILE für besseres Feedback.
+    """
+    temp_file: Path | None = None
+
+    # Alte Error-Datei aufräumen
+    if ERROR_FILE.exists():
+        ERROR_FILE.unlink()
+
+    try:
+        audio_path = record_audio_daemon()
+        temp_file = audio_path
+
+        transcript = transcribe(
+            audio_path,
+            mode=args.mode,
+            model=args.model,
+            language=args.language,
+            response_format=args.response_format,
+        )
+
+        TRANSCRIPT_FILE.write_text(transcript)
+        print(transcript)
+
+        if args.copy:
+            copy_to_clipboard(transcript)
+
+        return 0
+
+    except ImportError:
+        msg = "Für Aufnahme: pip install sounddevice soundfile"
+        error(msg)
+        ERROR_FILE.write_text(msg)
+        return 1
+    except Exception as e:
+        error(str(e))
+        ERROR_FILE.write_text(str(e))
+        return 1
+    finally:
+        if temp_file and temp_file.exists():
+            temp_file.unlink()
 
 
 def main() -> int:
     """CLI-Einstiegspunkt."""
     load_environment()
     args = parse_args()
+
+    # Daemon-Modus hat eigene Logik (für Raycast)
+    if args.record_daemon:
+        return run_daemon_mode(args)
 
     # Audio-Quelle bestimmen
     temp_file: Path | None = None

@@ -19,6 +19,9 @@ venv/
 .DS_Store
 Thumbs.db
 
+# Claude Code
+.claude/
+
 # Whisper models (large files)
 *.pt
 

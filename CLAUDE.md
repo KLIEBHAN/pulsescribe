@@ -10,25 +10,31 @@ Siehe [docs/VISION.md](docs/VISION.md) für Roadmap und langfristige Ziele.
 
 ```
 whisper_go/
-├── transcribe.py      # CLI für Transkription
-├── requirements.txt   # Dependencies
-├── README.md          # Benutzer-Dokumentation
-├── CLAUDE.md          # Diese Datei
-└── docs/
-    └── VISION.md      # Produkt-Vision & Roadmap
+├── transcribe.py          # CLI für Transkription
+├── requirements.txt       # Dependencies
+├── README.md              # Benutzer-Dokumentation
+├── CLAUDE.md              # Diese Datei
+├── docs/
+│   └── VISION.md          # Produkt-Vision & Roadmap
+└── whisper-go-raycast/    # Raycast Extension (Phase 2)
+    ├── src/
+    │   └── toggle-recording.tsx
+    └── package.json
 ```
 
 ## Kern-Datei: `transcribe.py`
 
 **Funktionen:**
 
-| Funktion                | Zweck                                  |
-| ----------------------- | -------------------------------------- |
-| `record_audio()`        | Mikrofon-Aufnahme mit sounddevice      |
-| `transcribe()`          | Zentrale API – wählt Modus automatisch |
-| `transcribe_with_api()` | OpenAI API Transkription               |
-| `transcribe_locally()`  | Lokales Whisper-Modell                 |
-| `parse_args()`          | CLI-Argument-Handling                  |
+| Funktion                | Zweck                                       |
+| ----------------------- | ------------------------------------------- |
+| `record_audio()`        | Mikrofon-Aufnahme (interaktiv, mit ENTER)   |
+| `record_audio_daemon()` | Mikrofon-Aufnahme (Signal-basiert, Raycast) |
+| `transcribe()`          | Zentrale API – wählt Modus automatisch      |
+| `transcribe_with_api()` | OpenAI API Transkription                    |
+| `transcribe_locally()`  | Lokales Whisper-Modell                      |
+| `run_daemon_mode()`     | Raycast-Modus: Aufnahme → Transkript-Datei  |
+| `parse_args()`          | CLI-Argument-Handling                       |
 
 **Design-Entscheidungen:**
 

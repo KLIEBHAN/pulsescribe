@@ -43,7 +43,27 @@ sudo apt install ffmpeg
 brew install portaudio
 ```
 
-## Nutzung
+## Raycast Integration (Hotkey)
+
+Für systemweite Spracheingabe per Hotkey – wie [Wispr Flow](https://wisprflow.ai):
+
+```bash
+cd whisper-go-raycast
+npm install && npm run dev
+```
+
+**Setup in Raycast:**
+
+1. "Toggle Recording" suchen
+2. ⌘+K → "Assign Hotkey" (z.B. ⌥+Space)
+3. In Extension Settings: Python- und Script-Pfad setzen
+
+**Nutzung:**
+
+- Hotkey drücken → Aufnahme startet
+- Hotkey erneut → Transkript wird eingefügt
+
+## CLI-Nutzung
 
 ### Audiodatei transkribieren
 

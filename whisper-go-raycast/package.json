@@ -1,0 +1,71 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "whisper-go",
+  "title": "Whisper Go",
+  "description": "Systemweite Spracheingabe mit Toggle-Recording",
+  "icon": "icon.png",
+  "author": "whisper-go",
+  "license": "MIT",
+  "commands": [
+    {
+      "name": "toggle-recording",
+      "title": "Toggle Recording",
+      "subtitle": "Whisper Go",
+      "description": "Aufnahme starten/stoppen und Text einfügen",
+      "mode": "no-view"
+    }
+  ],
+  "preferences": [
+    {
+      "name": "pythonPath",
+      "title": "Python Pfad",
+      "description": "Pfad zur Python-Installation (z.B. /usr/bin/python3)",
+      "type": "textfield",
+      "required": true,
+      "default": "/usr/bin/python3"
+    },
+    {
+      "name": "scriptPath",
+      "title": "Script Pfad",
+      "description": "Pfad zu transcribe.py",
+      "type": "textfield",
+      "required": true,
+      "default": ""
+    },
+    {
+      "name": "language",
+      "title": "Sprache",
+      "description": "Sprachcode für Transkription",
+      "type": "dropdown",
+      "required": false,
+      "default": "de",
+      "data": [
+        {
+          "title": "Deutsch",
+          "value": "de"
+        },
+        {
+          "title": "English",
+          "value": "en"
+        },
+        {
+          "title": "Auto-detect",
+          "value": ""
+        }
+      ]
+    }
+  ],
+  "dependencies": {
+    "@raycast/api": "^1.81.0"
+  },
+  "devDependencies": {
+    "@raycast/eslint-config": "^1.0.11",
+    "@types/node": "^20.14.0",
+    "typescript": "^5.4.5"
+  },
+  "scripts": {
+    "build": "ray build --skip-types -e dist -o dist",
+    "dev": "ray develop",
+    "lint": "ray lint"
+  }
+}
