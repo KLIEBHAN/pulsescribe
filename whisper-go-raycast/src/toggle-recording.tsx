@@ -44,12 +44,28 @@ function findPythonPath(): string | null {
  * Findet transcribe.py relativ zum Extension-Ordner.
  */
 function findScriptPath(): string | null {
-  // Extension liegt in whisper-go-raycast/, Script in parent
-  const extensionDir = environment.assetsPath.replace("/assets", "");
-  const candidate = join(dirname(extensionDir), "transcribe.py");
+  // Mehrere Strategien, da assetsPath je nach Dev/Prod unterschiedlich ist
+  const candidates: string[] = [];
 
-  if (existsSync(candidate)) {
-    return candidate;
+  // 1. Via assetsPath (Prod: /path/to/extension/assets)
+  const assetsDir = environment.assetsPath;
+  if (assetsDir) {
+    const extensionDir = assetsDir.replace(/\/assets\/?$/, "");
+    candidates.push(join(dirname(extensionDir), "transcribe.py"));
+  }
+
+  // 2. Typisches Dev-Setup: Extension in whisper-go-raycast/, Script in parent
+  // environment.extensionPath könnte direkt verfügbar sein
+  const extensionPath = (environment as { extensionPath?: string })
+    .extensionPath;
+  if (extensionPath) {
+    candidates.push(join(dirname(extensionPath), "transcribe.py"));
+  }
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      return candidate;
+    }
   }
   return null;
 }

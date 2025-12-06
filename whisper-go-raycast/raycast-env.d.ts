@@ -8,9 +8,9 @@
 /* eslint-disable @typescript-eslint/ban-types */
 
 type ExtensionPreferences = {
-  /** Python Pfad - Pfad zur Python-Installation (z.B. /usr/bin/python3) */
+  /** Python Pfad - Pfad zur Python-Installation (leer = Auto-Detect) */
   "pythonPath": string,
-  /** Script Pfad - Pfad zu transcribe.py */
+  /** Script Pfad - Pfad zu transcribe.py (leer = Auto-Detect) */
   "scriptPath": string,
   /** Sprache - Sprachcode für Transkription */
   "language": "de" | "en" | ""
