@@ -191,7 +191,8 @@ Beispiele:
         "--mode", choices=["api", "local"], default="api", help="Transkriptions-Modus"
     )
     parser.add_argument(
-        "--model", help="Modellname (API: gpt-4o-transcribe; Lokal: tiny-turbo)"
+        "--model",
+        help="Modellname (API: gpt-4o-transcribe; Lokal: tiny, base, small, medium, large, turbo)",
     )
     parser.add_argument("--language", help="Sprachcode z.B. 'de', 'en'")
     parser.add_argument(
