@@ -14,18 +14,12 @@
           },
           "to": [
             {
-              "key_code": "right_option"
-            },
-            {
-              "key_code": "right_option"
+              "key_code": "F19"
             }
           ],
           "to_after_key_up": [
             {
-              "key_code": "right_option"
-            },
-            {
-              "key_code": "right_option"
+              "key_code": "F19"
             }
           ],
           "parameters": {
