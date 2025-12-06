@@ -2,24 +2,24 @@
   "title": "Whisper Go Push-to-Talk",
   "rules": [
     {
-      "description": "Fn+Space: Push-to-Talk für Spracheingabe",
+      "description": "Hyper+A: Push-to-Talk für Spracheingabe",
       "manipulators": [
         {
           "type": "basic",
           "from": {
-            "key_code": "spacebar",
+            "key_code": "a",
             "modifiers": {
-              "mandatory": ["fn"]
+              "mandatory": ["command", "control", "option", "shift"]
             }
           },
           "to": [
             {
-              "key_code": "F19"
+              "key_code": "f19"
             }
           ],
           "to_after_key_up": [
             {
-              "key_code": "F19"
+              "key_code": "f19"
             }
           ],
           "parameters": {

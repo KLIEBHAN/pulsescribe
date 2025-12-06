@@ -76,10 +76,11 @@ Für echtes Push-to-Talk (Taste halten = Aufnahme, loslassen = einfügen):
 
 **Nutzung (Push-to-Talk):**
 
-- **Fn+Space** halten → Aufnahme läuft
-- **Fn+Space** loslassen → Transkript wird eingefügt
+- **Hyper+A** (⌘⌃⌥⇧+A) halten → Aufnahme läuft
+- **Hyper+A** loslassen → Transkript wird eingefügt
 
-> **Hinweis:** Die Karabiner-Rule sendet F19. In Raycast muss F19 als Hotkey für "Toggle Recording" gesetzt sein. (Tipp: Caps Lock → F19 mappen für einfachen Zugriff)
+> **Tipp:** Caps Lock als Hyper-Key (⌘⌃⌥⇧) mappen, dann ist es nur Caps+A.
+> Die Karabiner-Rule sendet F19. In Raycast muss F19 als Hotkey für "Toggle Recording" gesetzt sein.
 
 ## CLI-Nutzung
 
