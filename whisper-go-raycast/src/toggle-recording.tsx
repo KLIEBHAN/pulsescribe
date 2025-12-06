@@ -1,3 +1,17 @@
+/**
+ * Whisper Go – Toggle Recording Command
+ *
+ * Systemweite Spracheingabe mit Toggle-Verhalten:
+ * 1. Hotkey → Aufnahme startet (Python-Daemon im Hintergrund)
+ * 2. Hotkey → Aufnahme stoppt, transkribiert, fügt Text ein
+ *
+ * Kommunikation mit Python erfolgt über:
+ * - PID_FILE: Zeigt an, ob Aufnahme läuft
+ * - TRANSCRIPT_FILE: Enthält das Transkript nach Erfolg
+ * - ERROR_FILE: Enthält Fehlermeldung bei Problemen
+ * - SIGUSR1: Signal zum Stoppen der Aufnahme
+ */
+
 import {
   showHUD,
   Clipboard,
@@ -8,11 +22,29 @@ import {
 import { spawn, spawnSync } from "child_process";
 import { existsSync, readFileSync, unlinkSync } from "fs";
 import { homedir } from "os";
-import { join, dirname } from "path";
+import { join } from "path";
 
-const PID_FILE = "/tmp/whisper_go.pid";
-const TRANSCRIPT_FILE = "/tmp/whisper_go.transcript";
-const ERROR_FILE = "/tmp/whisper_go.error";
+// =============================================================================
+// Konstanten
+// =============================================================================
+
+/** IPC-Dateien für Kommunikation mit Python-Daemon */
+const IPC_FILES = {
+  pid: "/tmp/whisper_go.pid",
+  transcript: "/tmp/whisper_go.transcript",
+  error: "/tmp/whisper_go.error",
+} as const;
+
+/** Timeouts in Millisekunden */
+const TIMEOUTS = {
+  processStart: 2000, // Max. Wartezeit bis Daemon startet
+  transcription: 60000, // Max. Wartezeit auf Transkription
+  pollingInterval: 100, // Intervall für Datei-Polling
+} as const;
+
+// =============================================================================
+// Types
+// =============================================================================
 
 interface Preferences {
   pythonPath: string;
@@ -21,43 +53,79 @@ interface Preferences {
   openaiApiKey: string;
 }
 
-/**
- * Findet Python-Pfad automatisch (pyenv, homebrew, system).
- */
-function findPythonPath(): string | null {
-  const candidates = [
-    join(homedir(), ".pyenv/shims/python3"),
-    join(homedir(), ".pyenv/shims/python"),
-    "/opt/homebrew/bin/python3",
-    "/usr/local/bin/python3",
-    "/usr/bin/python3",
-  ];
+/** Discriminated Union für Transkriptionsergebnis */
+type TranscriptionResult =
+  | { success: true; text: string }
+  | { success: false; error: string }
+  | null;
 
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) {
-      return candidate;
-    }
+// =============================================================================
+// Auto-Detection Funktionen
+// =============================================================================
+
+/** Bekannte Python-Installationspfade in Prioritätsreihenfolge */
+const PYTHON_PATHS = [
+  () => join(homedir(), ".pyenv/shims/python3"), // pyenv (bevorzugt)
+  () => join(homedir(), ".pyenv/shims/python"),
+  () => "/opt/homebrew/bin/python3", // Homebrew (Apple Silicon)
+  () => "/usr/local/bin/python3", // Homebrew (Intel)
+  () => "/usr/bin/python3", // System-Python
+];
+
+function findPythonPath(): string | null {
+  for (const getPath of PYTHON_PATHS) {
+    const path = getPath();
+    if (existsSync(path)) return path;
   }
   return null;
 }
 
 /**
  * Findet transcribe.py via Symlink im assets-Ordner.
- * Der Symlink wird automatisch bei `npm install` erstellt (postinstall-Script).
+ * Der Symlink wird bei `npm install` automatisch erstellt.
  */
 function findScriptPath(): string | null {
-  if (environment.assetsPath) {
-    const scriptPath = join(environment.assetsPath, "transcribe.py");
-    if (existsSync(scriptPath)) {
-      return scriptPath;
-    }
-  }
-  return null;
+  if (!environment.assetsPath) return null;
+
+  const scriptPath = join(environment.assetsPath, "transcribe.py");
+  return existsSync(scriptPath) ? scriptPath : null;
 }
 
-/**
- * Resolved Preferences mit Auto-Detection für leere Werte.
- */
+// =============================================================================
+// Hilfsfunktionen
+// =============================================================================
+
+/** Liest Datei, löscht sie, und gibt Inhalt zurück */
+function readAndDelete(filePath: string): string | null {
+  if (!existsSync(filePath)) return null;
+
+  const content = readFileSync(filePath, "utf-8").trim();
+  unlinkSync(filePath);
+  return content;
+}
+
+/** Löscht Datei falls vorhanden (keine Exception wenn nicht) */
+function deleteIfExists(filePath: string): void {
+  if (existsSync(filePath)) unlinkSync(filePath);
+}
+
+/** Prüft ob Prozess mit gegebener PID läuft */
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0); // Signal 0 = nur prüfen, nicht killen
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Pausiert Ausführung für gegebene Millisekunden */
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// =============================================================================
+// Validierung
+// =============================================================================
+
 function resolvePreferences(prefs: Preferences): Preferences {
   return {
     pythonPath: prefs.pythonPath || findPythonPath() || "",
@@ -67,199 +135,198 @@ function resolvePreferences(prefs: Preferences): Preferences {
   };
 }
 
-/**
- * Liest und löscht die Error-Datei falls vorhanden.
- */
-function readAndClearError(): string | null {
-  if (existsSync(ERROR_FILE)) {
-    const content = readFileSync(ERROR_FILE, "utf-8").trim();
-    unlinkSync(ERROR_FILE);
-    return content;
-  }
-  return null;
-}
-
-/**
- * Validiert die Konfiguration vor dem Start.
- */
 function validateConfig(prefs: Preferences): string | null {
+  // Script prüfen
   if (!prefs.scriptPath) {
     return "Script-Pfad nicht konfiguriert";
   }
   if (!existsSync(prefs.scriptPath)) {
     return `Script nicht gefunden: ${prefs.scriptPath}`;
   }
+
+  // Python prüfen
   if (!prefs.pythonPath) {
     return "Python-Pfad nicht konfiguriert";
   }
-
-  // Prüfe ob Python existiert und funktioniert
-  const result = spawnSync(prefs.pythonPath, ["--version"], { timeout: 5000 });
-  if (result.error || result.status !== 0) {
+  const pythonCheck = spawnSync(prefs.pythonPath, ["--version"], {
+    timeout: 5000,
+  });
+  if (pythonCheck.error || pythonCheck.status !== 0) {
     return `Python nicht gefunden: ${prefs.pythonPath}`;
   }
 
-  return null;
+  return null; // Alles OK
 }
 
-/**
- * Prüft ob ein Prozess mit der gegebenen PID existiert.
- */
-function isProcessRunning(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
+// =============================================================================
+// Polling für Transkriptionsergebnis
+// =============================================================================
 
-/**
- * Wartet auf die Transcript-Datei (Polling).
- * Prüft auch ERROR_FILE für schnelleres Fehler-Feedback.
- */
-async function waitForTranscript(
-  maxWaitMs = 60000,
-): Promise<{ transcript: string } | { error: string } | null> {
-  const startTime = Date.now();
+async function waitForTranscription(): Promise<TranscriptionResult> {
+  const deadline = Date.now() + TIMEOUTS.transcription;
 
-  while (Date.now() - startTime < maxWaitMs) {
-    // Fehlerfall prüfen (schnelles Feedback)
-    if (existsSync(ERROR_FILE)) {
-      const error = readFileSync(ERROR_FILE, "utf-8").trim();
-      unlinkSync(ERROR_FILE);
-      return { error };
+  while (Date.now() < deadline) {
+    // Fehler hat Priorität (schnelles Feedback)
+    const errorContent = readAndDelete(IPC_FILES.error);
+    if (errorContent) {
+      return { success: false, error: errorContent };
     }
-    // Erfolgsfall
-    if (existsSync(TRANSCRIPT_FILE)) {
-      const transcript = readFileSync(TRANSCRIPT_FILE, "utf-8").trim();
-      unlinkSync(TRANSCRIPT_FILE);
-      return { transcript };
+
+    // Erfolg prüfen
+    const transcriptContent = readAndDelete(IPC_FILES.transcript);
+    if (transcriptContent) {
+      return { success: true, text: transcriptContent };
     }
-    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    await sleep(TIMEOUTS.pollingInterval);
   }
 
-  return null;
+  return null; // Timeout
 }
 
-/**
- * Startet die Aufnahme im Hintergrund.
- */
+// =============================================================================
+// Aufnahme starten
+// =============================================================================
+
 async function startRecording(prefs: Preferences): Promise<void> {
   await closeMainWindow();
 
-  // Alte Dateien aufräumen
-  if (existsSync(ERROR_FILE)) unlinkSync(ERROR_FILE);
-  if (existsSync(TRANSCRIPT_FILE)) unlinkSync(TRANSCRIPT_FILE);
+  // Alte IPC-Dateien aufräumen (verhindert falsche Ergebnisse)
+  deleteIfExists(IPC_FILES.error);
+  deleteIfExists(IPC_FILES.transcript);
 
+  // Python-Daemon starten
+  const args = buildDaemonArgs(prefs);
+  const env = buildEnvironment(prefs);
+
+  const daemon = spawn(prefs.pythonPath, args, {
+    detached: true, // Unabhängig von Raycast
+    stdio: "ignore", // Keine Verbindung zu stdin/stdout
+    env,
+  });
+  daemon.unref(); // Raycast muss nicht auf Beendigung warten
+
+  // Warten bis Daemon bereit ist (PID-File erscheint)
+  const started = await waitForDaemonStart();
+
+  if (started) {
+    await showHUD("🎤 Aufnahme läuft...");
+  } else {
+    const errorMsg = readAndDelete(IPC_FILES.error);
+    await showHUD(`❌ ${errorMsg || "Aufnahme konnte nicht gestartet werden"}`);
+  }
+}
+
+function buildDaemonArgs(prefs: Preferences): string[] {
   const args = [prefs.scriptPath, "--record-daemon"];
   if (prefs.language) {
     args.push("--language", prefs.language);
   }
+  return args;
+}
 
-  // Umgebungsvariablen: API-Key aus Preference überschreibt .env
+function buildEnvironment(prefs: Preferences): NodeJS.ProcessEnv {
   const env = { ...process.env };
+  // API-Key aus Preference hat Vorrang vor .env
   if (prefs.openaiApiKey) {
     env.OPENAI_API_KEY = prefs.openaiApiKey;
   }
-
-  const child = spawn(prefs.pythonPath, args, {
-    detached: true,
-    stdio: "ignore",
-    env,
-  });
-
-  child.unref();
-
-  // Warten bis PID-File geschrieben wurde (mit Timeout)
-  const maxWait = 2000;
-  const startTime = Date.now();
-
-  while (Date.now() - startTime < maxWait) {
-    if (existsSync(PID_FILE)) {
-      await showHUD("🎤 Aufnahme läuft...");
-      return;
-    }
-    // Prüfe ob Error-File geschrieben wurde
-    const errorMsg = readAndClearError();
-    if (errorMsg) {
-      await showHUD(`❌ ${errorMsg}`);
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-
-  await showHUD("❌ Aufnahme konnte nicht gestartet werden");
+  return env;
 }
 
-/**
- * Stoppt die Aufnahme, wartet auf Transkript und fügt ein.
- */
+async function waitForDaemonStart(): Promise<boolean> {
+  const deadline = Date.now() + TIMEOUTS.processStart;
+
+  while (Date.now() < deadline) {
+    if (existsSync(IPC_FILES.pid)) return true;
+    if (existsSync(IPC_FILES.error)) return false;
+    await sleep(TIMEOUTS.pollingInterval);
+  }
+
+  return false;
+}
+
+// =============================================================================
+// Aufnahme stoppen
+// =============================================================================
+
 async function stopRecording(): Promise<void> {
   await closeMainWindow();
 
-  // Race Condition: PID-File könnte zwischen Check und Read verschwinden
-  let pidStr: string;
-  try {
-    pidStr = readFileSync(PID_FILE, "utf-8").trim();
-  } catch {
+  // PID lesen (mit Fehlerbehandlung für Race Conditions)
+  const pid = readRecordingPid();
+  if (!pid) {
     await showHUD("⚠️ Keine aktive Aufnahme gefunden");
     return;
+  }
+
+  // Aufnahme stoppen via Signal
+  await showHUD("⏳ Transkribiere...");
+  process.kill(pid, "SIGUSR1");
+
+  // Auf Ergebnis warten und anzeigen
+  const result = await waitForTranscription();
+  await handleTranscriptionResult(result);
+}
+
+function readRecordingPid(): number | null {
+  let pidStr: string;
+  try {
+    pidStr = readFileSync(IPC_FILES.pid, "utf-8").trim();
+  } catch {
+    return null; // Datei existiert nicht oder Lesefehler
   }
 
   const pid = parseInt(pidStr, 10);
 
-  // PID validieren
+  // Validierung: Muss positive Ganzzahl sein
   if (!Number.isInteger(pid) || pid <= 0) {
-    unlinkSync(PID_FILE);
-    await showHUD("⚠️ Ungültige Aufnahme-Information");
-    return;
+    deleteIfExists(IPC_FILES.pid);
+    return null;
   }
 
-  if (!isProcessRunning(pid)) {
-    // Stale PID file – aufräumen
-    unlinkSync(PID_FILE);
-    await showHUD("⚠️ Keine aktive Aufnahme gefunden");
-    return;
+  // Prüfen ob Prozess noch läuft
+  if (!isProcessAlive(pid)) {
+    deleteIfExists(IPC_FILES.pid); // Stale PID-File aufräumen
+    return null;
   }
 
-  await showHUD("⏳ Transkribiere...");
+  return pid;
+}
 
-  // SIGUSR1 senden um Aufnahme zu stoppen
-  process.kill(pid, "SIGUSR1");
-
-  // Auf Transcript oder Error warten
-  const result = await waitForTranscript();
-
-  if (result && "transcript" in result) {
-    await Clipboard.paste(result.transcript);
+async function handleTranscriptionResult(
+  result: TranscriptionResult,
+): Promise<void> {
+  if (result?.success) {
+    await Clipboard.paste(result.text);
     await showHUD("✅ Eingefügt!");
-  } else if (result && "error" in result) {
+  } else if (result && !result.success) {
     await showHUD(`❌ ${result.error}`);
   } else {
     await showHUD("❌ Transkription fehlgeschlagen (Timeout)");
   }
 }
 
-/**
- * Toggle: Startet oder stoppt die Aufnahme je nach Status.
- */
+// =============================================================================
+// Hauptfunktion (Entry Point)
+// =============================================================================
+
 export default async function Command(): Promise<void> {
   const rawPrefs = getPreferenceValues<Preferences>();
   const prefs = resolvePreferences(rawPrefs);
 
-  // Konfiguration validieren
   const configError = validateConfig(prefs);
   if (configError) {
     await showHUD(`⚠️ ${configError}`);
     return;
   }
 
-  const isRecording = existsSync(PID_FILE);
+  // Toggle-Logik: PID-File existiert = Aufnahme läuft
+  const isRecording = existsSync(IPC_FILES.pid);
 
-  if (!isRecording) {
-    await startRecording(prefs);
-  } else {
+  if (isRecording) {
     await stopRecording();
+  } else {
+    await startRecording(prefs);
   }
 }
