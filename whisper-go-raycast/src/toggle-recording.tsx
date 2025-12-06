@@ -66,15 +66,25 @@ function isProcessRunning(pid: number): boolean {
 
 /**
  * Wartet auf die Transcript-Datei (Polling).
+ * Prüft auch ERROR_FILE für schnelleres Fehler-Feedback.
  */
-async function waitForTranscript(maxWaitMs = 60000): Promise<string | null> {
+async function waitForTranscript(
+  maxWaitMs = 60000,
+): Promise<{ transcript: string } | { error: string } | null> {
   const startTime = Date.now();
 
   while (Date.now() - startTime < maxWaitMs) {
+    // Fehlerfall prüfen (schnelles Feedback)
+    if (existsSync(ERROR_FILE)) {
+      const error = readFileSync(ERROR_FILE, "utf-8").trim();
+      unlinkSync(ERROR_FILE);
+      return { error };
+    }
+    // Erfolgsfall
     if (existsSync(TRANSCRIPT_FILE)) {
-      const content = readFileSync(TRANSCRIPT_FILE, "utf-8");
+      const transcript = readFileSync(TRANSCRIPT_FILE, "utf-8").trim();
       unlinkSync(TRANSCRIPT_FILE);
-      return content.trim();
+      return { transcript };
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
@@ -132,8 +142,23 @@ async function startRecording(prefs: Preferences): Promise<void> {
 async function stopRecording(): Promise<void> {
   await closeMainWindow();
 
-  const pidStr = readFileSync(PID_FILE, "utf-8").trim();
+  // Race Condition: PID-File könnte zwischen Check und Read verschwinden
+  let pidStr: string;
+  try {
+    pidStr = readFileSync(PID_FILE, "utf-8").trim();
+  } catch {
+    await showHUD("⚠️ Keine aktive Aufnahme gefunden");
+    return;
+  }
+
   const pid = parseInt(pidStr, 10);
+
+  // PID validieren
+  if (!Number.isInteger(pid) || pid <= 0) {
+    unlinkSync(PID_FILE);
+    await showHUD("⚠️ Ungültige Aufnahme-Information");
+    return;
+  }
 
   if (!isProcessRunning(pid)) {
     // Stale PID file – aufräumen
@@ -148,19 +173,15 @@ async function stopRecording(): Promise<void> {
   process.kill(pid, "SIGUSR1");
 
   // Auf Transcript oder Error warten
-  const transcript = await waitForTranscript();
+  const result = await waitForTranscript();
 
-  if (transcript) {
-    await Clipboard.paste(transcript);
+  if (result && "transcript" in result) {
+    await Clipboard.paste(result.transcript);
     await showHUD("✅ Eingefügt!");
+  } else if (result && "error" in result) {
+    await showHUD(`❌ ${result.error}`);
   } else {
-    // Prüfe ob Fehler aufgetreten ist
-    const errorMsg = readAndClearError();
-    if (errorMsg) {
-      await showHUD(`❌ ${errorMsg}`);
-    } else {
-      await showHUD("❌ Transkription fehlgeschlagen");
-    }
+    await showHUD("❌ Transkription fehlgeschlagen (Timeout)");
   }
 }
 
