@@ -1,0 +1,32 @@
+{
+  "title": "Whisper Go Push-to-Talk",
+  "rules": [
+    {
+      "description": "Cmd+Shift+K: Push-to-Talk für Spracheingabe",
+      "manipulators": [
+        {
+          "type": "basic",
+          "from": {
+            "key_code": "k",
+            "modifiers": {
+              "mandatory": ["command", "shift"]
+            }
+          },
+          "to_if_held_down": [
+            {
+              "shell_command": "/bin/bash \"$HOME/Documents/workspace/whisper_go/scripts/ptt_start.sh\""
+            }
+          ],
+          "to_after_key_up": [
+            {
+              "shell_command": "/bin/bash \"$HOME/Documents/workspace/whisper_go/scripts/ptt_stop.sh\""
+            }
+          ],
+          "parameters": {
+            "basic.to_if_held_down_threshold_milliseconds": 100
+          }
+        }
+      ]
+    }
+  ]
+}
