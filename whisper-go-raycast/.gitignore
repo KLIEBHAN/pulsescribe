@@ -6,3 +6,6 @@ dist/
 
 # Raycast dev files
 .raycast/
+
+# Symlink (wird bei npm install automatisch erstellt)
+assets/transcribe.py
