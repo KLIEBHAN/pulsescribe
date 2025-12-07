@@ -17,6 +17,11 @@ import os
 import signal
 import sys
 import tempfile
+import threading
+import time
+import uuid
+from contextlib import contextmanager
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 # Whisper erwartet Audio mit 16kHz – andere Sampleraten führen zu schlechteren Ergebnissen
@@ -50,16 +55,44 @@ LOG_FILE = LOG_DIR / "whisper_go.log"
 # Logger konfigurieren
 logger = logging.getLogger("whisper_go")
 
+# Session-ID für Log-Korrelation (wird pro Durchlauf gesetzt)
+_session_id: str = ""
+
+
+def _generate_session_id() -> str:
+    """Erzeugt kurze, lesbare Session-ID (8 Zeichen)."""
+    return uuid.uuid4().hex[:8]
+
+
+@contextmanager
+def timed_operation(name: str):
+    """Kontextmanager für Zeitmessung mit automatischem Logging."""
+    start = time.perf_counter()
+    logger.debug(f"[{_session_id}] {name} gestartet")
+    try:
+        yield
+    finally:
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        if elapsed_ms >= 1000:
+            logger.info(f"[{_session_id}] {name}: {elapsed_ms / 1000:.2f}s")
+        else:
+            logger.info(f"[{_session_id}] {name}: {elapsed_ms:.0f}ms")
+
 
 def setup_logging(debug: bool = False) -> None:
-    """Konfiguriert Logging: Datei + optional stderr."""
+    """Konfiguriert Logging: Datei mit Rotation + optional stderr."""
+    global _session_id
+    _session_id = _generate_session_id()
+
     logger.setLevel(logging.DEBUG if debug else logging.INFO)
 
     # Log-Verzeichnis erstellen falls nicht vorhanden
     LOG_DIR.mkdir(exist_ok=True)
 
-    # Datei-Handler (immer aktiv)
-    file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
+    # Datei-Handler mit Rotation (max 1MB, 3 Backups)
+    file_handler = RotatingFileHandler(
+        LOG_FILE, maxBytes=1_000_000, backupCount=3, encoding="utf-8"
+    )
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(
         logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%H:%M:%S")
@@ -175,6 +208,67 @@ def _cleanup_stale_pid_file() -> None:
         )
 
 
+# Globaler State für SDK-Preload
+_sdk_preload_thread: threading.Thread | None = None
+_sdk_preload_start: float = 0
+
+
+def _preload_transcription_sdk(mode: str) -> None:
+    """
+    Lädt Transkriptions-SDK im Hintergrund vor.
+    Wird während der Aufnahme gestartet, damit das SDK bereit ist wenn die Aufnahme endet.
+    """
+    global _sdk_preload_start
+    _sdk_preload_start = time.perf_counter()
+
+    try:
+        if mode == "deepgram":
+            logger.debug(f"[{_session_id}] SDK-Preload: Deepgram wird geladen...")
+            from deepgram import DeepgramClient  # noqa: F401
+
+            elapsed = (time.perf_counter() - _sdk_preload_start) * 1000
+            logger.info(
+                f"[{_session_id}] SDK-Preload: Deepgram geladen ({elapsed:.0f}ms)"
+            )
+        elif mode == "api":
+            logger.debug(f"[{_session_id}] SDK-Preload: OpenAI wird geladen...")
+            from openai import OpenAI  # noqa: F401
+
+            elapsed = (time.perf_counter() - _sdk_preload_start) * 1000
+            logger.info(
+                f"[{_session_id}] SDK-Preload: OpenAI geladen ({elapsed:.0f}ms)"
+            )
+        else:
+            logger.debug(
+                f"[{_session_id}] SDK-Preload: Lokaler Modus, kein Preload nötig"
+            )
+    except Exception as e:
+        logger.warning(f"[{_session_id}] SDK-Preload fehlgeschlagen: {e}")
+
+
+def start_sdk_preload(mode: str) -> None:
+    """Startet SDK-Preload in Background-Thread."""
+    global _sdk_preload_thread
+    _sdk_preload_thread = threading.Thread(
+        target=_preload_transcription_sdk,
+        args=(mode,),
+        daemon=True,
+        name="sdk-preload",
+    )
+    _sdk_preload_thread.start()
+    logger.debug(f"[{_session_id}] SDK-Preload gestartet für mode={mode}")
+
+
+def wait_for_sdk_preload() -> None:
+    """Wartet auf SDK-Preload falls noch nicht fertig."""
+    global _sdk_preload_thread
+    if _sdk_preload_thread and _sdk_preload_thread.is_alive():
+        logger.debug(f"[{_session_id}] Warte auf SDK-Preload...")
+        _sdk_preload_thread.join(timeout=5.0)
+        if _sdk_preload_thread.is_alive():
+            logger.warning(f"[{_session_id}] SDK-Preload Timeout nach 5s")
+
+
 def record_audio_daemon() -> Path:
     """
     Daemon-Modus: Nimmt Audio auf bis SIGUSR1 empfangen wird.
@@ -190,26 +284,27 @@ def record_audio_daemon() -> Path:
 
     recorded_chunks: list = []
     stop_flag = {"stop": False}  # Mutable Container statt global
+    recording_start = time.perf_counter()
 
-    def on_audio_chunk(indata, frames, time, status):
+    def on_audio_chunk(indata, frames, time_info, status):
         recorded_chunks.append(indata.copy())
 
     def handle_stop_signal(signum: int, frame) -> None:
-        logger.debug("SIGUSR1 empfangen")
+        logger.debug(f"[{_session_id}] SIGUSR1 empfangen")
         stop_flag["stop"] = True
 
     pid = os.getpid()
-    logger.info(f"Daemon gestartet (PID: {pid})")
+    logger.info(f"[{_session_id}] Daemon gestartet (PID: {pid})")
 
     # PID-File schreiben für Raycast
     PID_FILE.write_text(str(pid))
-    logger.debug(f"PID-File geschrieben: {PID_FILE}")
+    logger.debug(f"[{_session_id}] PID-File geschrieben: {PID_FILE}")
 
     # Signal-Handler registrieren
     signal.signal(signal.SIGUSR1, handle_stop_signal)
 
     log("🎤 Daemon: Aufnahme gestartet (warte auf SIGUSR1)...")
-    logger.info("Aufnahme gestartet")
+    logger.info(f"[{_session_id}] Aufnahme gestartet")
 
     try:
         with sd.InputStream(
@@ -224,20 +319,20 @@ def record_audio_daemon() -> Path:
         # PID-File aufräumen
         if PID_FILE.exists():
             PID_FILE.unlink()
-            logger.debug("PID-File gelöscht")
+            logger.debug(f"[{_session_id}] PID-File gelöscht")
 
-    duration = len(recorded_chunks) * 0.1  # ~100ms pro Chunk
-    logger.info(f"Aufnahme beendet ({duration:.1f}s, {len(recorded_chunks)} Chunks)")
+    recording_duration = time.perf_counter() - recording_start
+    logger.info(f"[{_session_id}] Aufnahme: {recording_duration:.1f}s")
     log("✅ Daemon: Aufnahme beendet.")
 
     if not recorded_chunks:
-        logger.error("Keine Audiodaten aufgenommen")
+        logger.error(f"[{_session_id}] Keine Audiodaten aufgenommen")
         raise ValueError("Keine Audiodaten aufgenommen.")
 
     audio_data = np.concatenate(recorded_chunks)
     output_path = Path(tempfile.gettempdir()) / TEMP_RECORDING_FILENAME
     sf.write(output_path, audio_data, WHISPER_SAMPLE_RATE)
-    logger.debug(f"Audio gespeichert: {output_path}")
+    logger.debug(f"[{_session_id}] Audio gespeichert: {output_path}")
 
     return output_path
 
@@ -251,20 +346,23 @@ def transcribe_with_api(
     """Transkribiert Audio über die OpenAI API."""
     from openai import OpenAI
 
-    logger.info(f"API-Transkription: model={model}, language={language or 'auto'}")
-    logger.debug(f"Audio-Datei: {audio_path} ({audio_path.stat().st_size} bytes)")
+    logger.info(
+        f"[{_session_id}] API-Transkription: model={model}, language={language or 'auto'}"
+    )
+    logger.debug(f"[{_session_id}] Audio: {audio_path.stat().st_size} bytes")
 
     client = OpenAI()
 
-    with audio_path.open("rb") as audio_file:
-        params = {
-            "model": model,
-            "file": audio_file,
-            "response_format": response_format,
-        }
-        if language:
-            params["language"] = language
-        response = client.audio.transcriptions.create(**params)
+    with timed_operation("API-Transkription"):
+        with audio_path.open("rb") as audio_file:
+            params = {
+                "model": model,
+                "file": audio_file,
+                "response_format": response_format,
+            }
+            if language:
+                params["language"] = language
+            response = client.audio.transcriptions.create(**params)
 
     # API gibt bei format="text" String zurück, sonst Objekt
     if response_format == "text":
@@ -272,8 +370,9 @@ def transcribe_with_api(
     else:
         result = response.text if hasattr(response, "text") else str(response)
 
-    logger.info(f"Transkription abgeschlossen ({len(result)} Zeichen)")
-    logger.debug(f"Ergebnis: {result[:100]}{'...' if len(result) > 100 else ''}")
+    logger.debug(
+        f"[{_session_id}] Ergebnis: {result[:100]}{'...' if len(result) > 100 else ''}"
+    )
 
     return result
 
@@ -286,8 +385,10 @@ def transcribe_with_deepgram(
     """Transkribiert Audio über Deepgram API (smart_format aktiviert)."""
     from deepgram import DeepgramClient
 
-    logger.info(f"Deepgram-Transkription: model={model}, language={language or 'auto'}")
-    logger.debug(f"Audio-Datei: {audio_path} ({audio_path.stat().st_size} bytes)")
+    logger.info(
+        f"[{_session_id}] Deepgram-Transkription: model={model}, language={language or 'auto'}"
+    )
+    logger.debug(f"[{_session_id}] Audio: {audio_path.stat().st_size} bytes")
 
     api_key = os.getenv("DEEPGRAM_API_KEY")
     if not api_key:
@@ -298,19 +399,20 @@ def transcribe_with_deepgram(
     with audio_path.open("rb") as f:
         audio_data = f.read()
 
-    # SDK v5 API: listen.v1.media.transcribe_file
-    response = client.listen.v1.media.transcribe_file(
-        request=audio_data,
-        model=model,
-        language=language,
-        smart_format=True,
-        punctuate=True,
-    )
+    with timed_operation("Deepgram-Transkription"):
+        response = client.listen.v1.media.transcribe_file(
+            request=audio_data,
+            model=model,
+            language=language,
+            smart_format=True,
+            punctuate=True,
+        )
 
     result = response.results.channels[0].alternatives[0].transcript
 
-    logger.info(f"Transkription abgeschlossen ({len(result)} Zeichen)")
-    logger.debug(f"Ergebnis: {result[:100]}{'...' if len(result) > 100 else ''}")
+    logger.debug(
+        f"[{_session_id}] Ergebnis: {result[:100]}{'...' if len(result) > 100 else ''}"
+    )
 
     return result
 
@@ -343,15 +445,15 @@ def refine_transcript(
 
     # Leeres Transkript → nichts zu tun
     if not transcript or not transcript.strip():
-        logger.debug("Leeres Transkript, überspringe Nachbearbeitung")
+        logger.debug(f"[{_session_id}] Leeres Transkript, überspringe Nachbearbeitung")
         return transcript
 
     # ENV zur Laufzeit lesen (nach load_environment)
     effective_model = model or os.getenv(
         "WHISPER_GO_REFINE_MODEL", DEFAULT_REFINE_MODEL
     )
-    logger.info(f"LLM-Nachbearbeitung mit {effective_model}")
-    logger.debug(f"Input: {len(transcript)} Zeichen")
+    logger.info(f"[{_session_id}] LLM-Nachbearbeitung: model={effective_model}")
+    logger.debug(f"[{_session_id}] Input: {len(transcript)} Zeichen")
 
     client = OpenAI()
 
@@ -365,11 +467,13 @@ def refine_transcript(
     if effective_model.startswith("gpt-5"):
         api_params["reasoning"] = {"effort": "minimal"}
 
-    response = client.responses.create(**api_params)
+    with timed_operation("LLM-Nachbearbeitung"):
+        response = client.responses.create(**api_params)
 
     result = response.output_text.strip()
-    logger.info(f"Nachbearbeitung abgeschlossen ({len(result)} Zeichen)")
-    logger.debug(f"Output: {result[:100]}{'...' if len(result) > 100 else ''}")
+    logger.debug(
+        f"[{_session_id}] Output: {result[:100]}{'...' if len(result) > 100 else ''}"
+    )
 
     return result
 
@@ -513,14 +617,21 @@ def run_daemon_mode(args: argparse.Namespace) -> int:
     Schreibt Fehler in ERROR_FILE für besseres Feedback.
     """
     temp_file: Path | None = None
+    pipeline_start = time.perf_counter()
 
     # Alte Error-Datei aufräumen
     if ERROR_FILE.exists():
         ERROR_FILE.unlink()
 
     try:
+        # SDK im Hintergrund vorladen während Aufnahme läuft
+        start_sdk_preload(args.mode)
+
         audio_path = record_audio_daemon()
         temp_file = audio_path
+
+        # Sicherstellen dass SDK geladen ist bevor Transkription startet
+        wait_for_sdk_preload()
 
         transcript = transcribe(
             audio_path,
@@ -534,30 +645,35 @@ def run_daemon_mode(args: argparse.Namespace) -> int:
         transcript = maybe_refine_transcript(transcript, args)
 
         TRANSCRIPT_FILE.write_text(transcript)
-        logger.debug(f"Transkript geschrieben: {TRANSCRIPT_FILE}")
+        logger.debug(f"[{_session_id}] Transkript geschrieben: {TRANSCRIPT_FILE}")
         print(transcript)
 
         if args.copy:
             copy_to_clipboard(transcript)
 
-        logger.info("Daemon erfolgreich beendet")
+        # Pipeline-Summary
+        total_ms = (time.perf_counter() - pipeline_start) * 1000
+        logger.info(
+            f"[{_session_id}] ✓ Pipeline abgeschlossen: {total_ms / 1000:.2f}s, "
+            f"{len(transcript)} Zeichen"
+        )
         return 0
 
     except ImportError:
         msg = "Für Aufnahme: pip install sounddevice soundfile"
-        logger.error(msg)
+        logger.error(f"[{_session_id}] {msg}")
         error(msg)
         ERROR_FILE.write_text(msg)
         return 1
     except Exception as e:
-        logger.exception(f"Fehler im Daemon-Modus: {e}")
+        logger.exception(f"[{_session_id}] Fehler im Daemon-Modus: {e}")
         error(str(e))
         ERROR_FILE.write_text(str(e))
         return 1
     finally:
         if temp_file and temp_file.exists():
             temp_file.unlink()
-            logger.debug(f"Temp-Datei gelöscht: {temp_file}")
+            logger.debug(f"[{_session_id}] Temp-Datei gelöscht: {temp_file}")
 
 
 def main() -> int:
@@ -577,8 +693,11 @@ def main() -> int:
 
     if args.record:
         try:
+            # SDK im Hintergrund vorladen während Aufnahme läuft
+            start_sdk_preload(args.mode)
             audio_path = record_audio()
             temp_file = audio_path
+            wait_for_sdk_preload()
         except ImportError:
             error("Für Aufnahme: pip install sounddevice soundfile")
             return 1
