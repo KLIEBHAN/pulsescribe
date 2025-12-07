@@ -140,10 +140,11 @@ Für echtes Push-to-Talk (Taste halten = Aufnahme, loslassen = einfügen):
 Visuelles Feedback in der macOS-Menüleiste während der Aufnahme:
 
 ```bash
-# Einmalig rumps installieren
-pip install rumps
+# Installieren + Autostart einrichten (empfohlen)
+./scripts/install_menubar.sh
 
-# Menübar-App starten
+# Oder manuell starten
+pip install rumps
 python menubar.py
 ```
 
@@ -154,6 +155,13 @@ python menubar.py
 | ⏳   | Transkription läuft |
 | ✅   | Erfolgreich         |
 | ❌   | Fehler              |
+
+**Autostart-Verwaltung:**
+
+```bash
+./scripts/install_menubar.sh status    # Status prüfen
+./scripts/install_menubar.sh uninstall # Deinstallieren
+```
 
 > Die Menübar-App zeigt nur den Status an. Start/Stop erfolgt weiterhin über Raycast.
 
