@@ -1,0 +1,135 @@
+#!/bin/bash
+#
+# install_menubar.sh – Installiert whisper_go Menübar-App als Launch Agent
+#
+# Nutzung:
+#   ./scripts/install_menubar.sh          # Installieren + Starten
+#   ./scripts/install_menubar.sh uninstall # Deinstallieren
+#
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+PLIST_NAME="ai.whispergo.menubar"
+PLIST_PATH="$HOME/Library/LaunchAgents/${PLIST_NAME}.plist"
+
+# Python-Pfad ermitteln (pyenv bevorzugt)
+find_python() {
+    if command -v python3 &>/dev/null; then
+        python3 -c "import sys; print(sys.executable)"
+    else
+        echo "/usr/bin/python3"
+    fi
+}
+
+install() {
+    echo "📦 Installiere whisper_go Menübar..."
+
+    PYTHON_PATH=$(find_python)
+    MENUBAR_SCRIPT="$PROJECT_DIR/menubar.py"
+
+    # Prüfe ob menubar.py existiert
+    if [[ ! -f "$MENUBAR_SCRIPT" ]]; then
+        echo "❌ Fehler: $MENUBAR_SCRIPT nicht gefunden"
+        exit 1
+    fi
+
+    # Prüfe ob rumps installiert ist
+    if ! "$PYTHON_PATH" -c "import rumps" 2>/dev/null; then
+        echo "⚠️  rumps nicht installiert. Installiere..."
+        "$PYTHON_PATH" -m pip install rumps
+    fi
+
+    # Erstelle LaunchAgents Verzeichnis falls nicht vorhanden
+    mkdir -p "$HOME/Library/LaunchAgents"
+
+    # Stoppe falls bereits läuft
+    launchctl unload "$PLIST_PATH" 2>/dev/null || true
+
+    # Erstelle plist
+    cat > "$PLIST_PATH" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>${PLIST_NAME}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${PYTHON_PATH}</string>
+        <string>${MENUBAR_SCRIPT}</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/tmp/whisper_go_menubar.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/whisper_go_menubar.log</string>
+</dict>
+</plist>
+EOF
+
+    # Lade und starte
+    launchctl load "$PLIST_PATH"
+
+    echo "✅ Menübar-App installiert und gestartet!"
+    echo "   Log: /tmp/whisper_go_menubar.log"
+    echo ""
+    echo "   Deinstallieren: $0 uninstall"
+}
+
+uninstall() {
+    echo "🗑️  Deinstalliere whisper_go Menübar..."
+
+    if [[ -f "$PLIST_PATH" ]]; then
+        launchctl unload "$PLIST_PATH" 2>/dev/null || true
+        rm "$PLIST_PATH"
+        echo "✅ Menübar-App deinstalliert"
+    else
+        echo "ℹ️  Nicht installiert"
+    fi
+}
+
+status() {
+    if launchctl list | grep -q "$PLIST_NAME"; then
+        echo "✅ Menübar-App läuft"
+        launchctl list "$PLIST_NAME"
+    else
+        echo "❌ Menübar-App läuft nicht"
+    fi
+}
+
+restart() {
+    echo "🔄 Starte whisper_go Menübar neu..."
+
+    if [[ -f "$PLIST_PATH" ]]; then
+        launchctl unload "$PLIST_PATH" 2>/dev/null || true
+        launchctl load "$PLIST_PATH"
+        echo "✅ Menübar-App neu gestartet"
+    else
+        echo "⚠️  Nicht installiert. Führe Installation durch..."
+        install
+    fi
+}
+
+case "${1:-install}" in
+    install)
+        install
+        ;;
+    uninstall|remove)
+        uninstall
+        ;;
+    status)
+        status
+        ;;
+    restart)
+        restart
+        ;;
+    *)
+        echo "Nutzung: $0 [install|uninstall|restart|status]"
+        exit 1
+        ;;
+esac

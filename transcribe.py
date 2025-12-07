@@ -110,10 +110,11 @@ _custom_app_contexts_cache: dict | None = None
 
 TEMP_RECORDING_FILENAME = "whisper_recording.wav"
 
-# Daemon-Modus: Dateien für IPC mit Raycast
+# Daemon-Modus: Dateien für IPC mit Raycast und Menübar
 PID_FILE = Path("/tmp/whisper_go.pid")
 TRANSCRIPT_FILE = Path("/tmp/whisper_go.transcript")
 ERROR_FILE = Path("/tmp/whisper_go.error")
+STATE_FILE = Path("/tmp/whisper_go.state")  # Für Menübar-Feedback
 
 # Log-Verzeichnis im Script-Ordner
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -808,10 +809,23 @@ Beispiele:
     return args
 
 
+def _schedule_state_cleanup(delay: float = 2.0) -> None:
+    """Löscht STATE_FILE nach Verzögerung in Background-Thread (non-blocking)."""
+    import threading
+
+    def cleanup():
+        time.sleep(delay)
+        STATE_FILE.unlink(missing_ok=True)
+
+    thread = threading.Thread(target=cleanup, daemon=True)
+    thread.start()
+
+
 def run_daemon_mode(args: argparse.Namespace) -> int:
     """
     Daemon-Modus für Raycast: Aufnahme → Transkription → Datei.
     Schreibt Fehler in ERROR_FILE für besseres Feedback.
+    Aktualisiert STATE_FILE für Menübar-Feedback.
     """
     temp_file: Path | None = None
     pipeline_start = time.perf_counter()
@@ -821,8 +835,14 @@ def run_daemon_mode(args: argparse.Namespace) -> int:
         ERROR_FILE.unlink()
 
     try:
+        # State: Recording
+        STATE_FILE.write_text("recording")
+
         audio_path = record_audio_daemon()
         temp_file = audio_path
+
+        # State: Transcribing
+        STATE_FILE.write_text("transcribing")
 
         transcript = transcribe(
             audio_path,
@@ -841,6 +861,9 @@ def run_daemon_mode(args: argparse.Namespace) -> int:
         if args.copy:
             copy_to_clipboard(transcript)
 
+        # State: Done
+        STATE_FILE.write_text("done")
+
         # Pipeline-Summary
         total_ms = (time.perf_counter() - pipeline_start) * 1000
         logger.info(
@@ -854,15 +877,19 @@ def run_daemon_mode(args: argparse.Namespace) -> int:
         logger.error(f"[{_session_id}] {msg}")
         error(msg)
         ERROR_FILE.write_text(msg)
+        STATE_FILE.write_text("error")
         return 1
     except Exception as e:
         logger.exception(f"[{_session_id}] Fehler im Daemon-Modus: {e}")
         error(str(e))
         ERROR_FILE.write_text(str(e))
+        STATE_FILE.write_text("error")
         return 1
     finally:
         if temp_file and temp_file.exists():
             temp_file.unlink()
+        # State-Datei nach kurzer Verzögerung aufräumen (non-blocking)
+        _schedule_state_cleanup()
 
 
 def main() -> int:
