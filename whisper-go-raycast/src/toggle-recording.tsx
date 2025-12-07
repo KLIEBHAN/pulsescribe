@@ -19,7 +19,7 @@ import {
   closeMainWindow,
   environment,
 } from "@raycast/api";
-import { spawn, spawnSync } from "child_process";
+import { spawn } from "child_process";
 import { existsSync, readFileSync, unlinkSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
@@ -108,12 +108,8 @@ function validateConfig(prefs: Preferences): string | null {
   if (!existsSync(prefs.scriptPath))
     return `Script nicht gefunden: ${prefs.scriptPath}`;
   if (!prefs.pythonPath) return "Python-Pfad nicht konfiguriert";
-
-  const check = spawnSync(prefs.pythonPath, ["--version"], { timeout: 5000 });
-  if (check.error || check.status !== 0) {
+  if (!existsSync(prefs.pythonPath))
     return `Python nicht gefunden: ${prefs.pythonPath}`;
-  }
-
   return null;
 }
 
@@ -208,12 +204,6 @@ async function stopRecording(): Promise<void> {
 export default async function Command(): Promise<void> {
   const prefs = resolvePreferences(getPreferenceValues<Preferences>());
 
-  const error = validateConfig(prefs);
-  if (error) {
-    await showHUD(`⚠️ ${error}`);
-    return;
-  }
-
   // Prüfe ob Aufnahme läuft: PID-Datei muss existieren UND Prozess muss leben
   let isRecording = false;
   if (existsSync(IPC.pid)) {
@@ -224,8 +214,15 @@ export default async function Command(): Promise<void> {
   }
 
   if (isRecording) {
+    // Beim Stoppen: Keine Validierung nötig, Daemon läuft bereits
     await stopRecording();
   } else {
+    // Beim Starten: Konfiguration validieren
+    const error = validateConfig(prefs);
+    if (error) {
+      await showHUD(`⚠️ ${error}`);
+      return;
+    }
     await startRecording(prefs);
   }
 }
