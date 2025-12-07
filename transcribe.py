@@ -224,16 +224,16 @@ def _cleanup_stale_pid_file() -> None:
         # Signal 0 ist ein "Ping" – prüft Existenz ohne Seiteneffekte
         os.kill(old_pid, 0)
         # Prozess läuft noch - könnte legitim sein oder Zombie
-        logger.warning(f"PID-File existiert, Prozess {old_pid} läuft noch")
+        logger.warning(
+            f"[{_session_id}] PID-File existiert, Prozess {old_pid} läuft noch"
+        )
     except (ValueError, ProcessLookupError):
         # PID ungültig oder Prozess existiert nicht mehr → aufräumen
-        logger.info(f"Stale PID-File gefunden, wird gelöscht: {PID_FILE}")
+        logger.info(f"[{_session_id}] Stale PID-File gelöscht: {PID_FILE}")
         PID_FILE.unlink()
     except PermissionError:
         # Prozess existiert, gehört aber anderem User
-        logger.warning(
-            f"PID-File {PID_FILE} existiert, keine Berechtigung für Prozess-Check"
-        )
+        logger.warning(f"[{_session_id}] PID-File existiert, keine Berechtigung")
 
 
 def record_audio_daemon() -> Path:
@@ -684,7 +684,7 @@ def run_daemon_mode(args: argparse.Namespace) -> int:
         # Pipeline-Summary
         total_ms = (time.perf_counter() - pipeline_start) * 1000
         logger.info(
-            f"[{_session_id}] ✓ Pipeline abgeschlossen: {total_ms / 1000:.2f}s, "
+            f"[{_session_id}] ✓ Pipeline: {_format_duration(total_ms)}, "
             f"{len(transcript)} Zeichen"
         )
         return 0
@@ -708,29 +708,13 @@ def run_daemon_mode(args: argparse.Namespace) -> int:
 
 def main() -> int:
     """CLI-Einstiegspunkt."""
-    # Startup-Phasen messen
-    t0 = time.perf_counter()
     load_environment()
-    t_env = time.perf_counter()
-
     args = parse_args()
-    t_args = time.perf_counter()
-
     setup_logging(debug=args.debug)
-    t_logging = time.perf_counter()
 
-    # Startup-Timing loggen
-    import_ms = (_IMPORTS_DONE - _PROCESS_START) * 1000
-    env_ms = (t_env - t0) * 1000
-    args_ms = (t_args - t_env) * 1000
-    logging_ms = (t_logging - t_args) * 1000
-    total_startup_ms = (t_logging - _PROCESS_START) * 1000
-
-    logger.info(
-        f"[{_session_id}] Startup: {total_startup_ms:.0f}ms "
-        f"(imports={import_ms:.0f}ms, env={env_ms:.0f}ms, "
-        f"args={args_ms:.0f}ms, logging={logging_ms:.0f}ms)"
-    )
+    # Startup-Timing loggen (seit Prozessstart)
+    startup_ms = (time.perf_counter() - _PROCESS_START) * 1000
+    logger.info(f"[{_session_id}] Startup: {_format_duration(startup_ms)}")
 
     logger.debug(f"[{_session_id}] Args: {args}")
 
@@ -795,6 +779,12 @@ def main() -> int:
         else:
             log("⚠️  Zwischenablage nicht verfügbar")
 
+    # Pipeline-Summary
+    total_ms = (time.perf_counter() - _PROCESS_START) * 1000
+    logger.info(
+        f"[{_session_id}] ✓ Pipeline: {_format_duration(total_ms)}, "
+        f"{len(transcript)} Zeichen"
+    )
     return 0
 
 
