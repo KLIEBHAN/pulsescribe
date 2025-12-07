@@ -25,6 +25,15 @@ WHISPER_SAMPLE_RATE = 16000
 DEFAULT_API_MODEL = "gpt-4o-transcribe"
 DEFAULT_LOCAL_MODEL = "turbo"
 DEFAULT_DEEPGRAM_MODEL = "nova-3"
+DEFAULT_REFINE_MODEL = "gpt-5-nano"  # Wird von WHISPER_GO_REFINE_MODEL überschrieben
+
+DEFAULT_REFINE_PROMPT = """Korrigiere dieses Transkript:
+- Entferne Füllwörter (ähm, also, quasi, sozusagen)
+- Korrigiere Grammatik und Rechtschreibung
+- Formatiere in saubere Absätze
+- Behalte den originalen Inhalt und Stil bei
+
+Gib NUR den korrigierten Text zurück, keine Erklärungen."""
 
 TEMP_RECORDING_FILENAME = "whisper_recording.wav"
 
@@ -299,6 +308,61 @@ def transcribe_locally(
     return result["text"]
 
 
+def refine_transcript(
+    transcript: str,
+    model: str | None = None,
+    prompt: str | None = None,
+) -> str:
+    """Nachbearbeitung mit LLM (Flow-Style)."""
+    from openai import OpenAI
+
+    # Leeres Transkript → nichts zu tun
+    if not transcript or not transcript.strip():
+        logger.debug("Leeres Transkript, überspringe Nachbearbeitung")
+        return transcript
+
+    # ENV zur Laufzeit lesen (nach load_environment)
+    effective_model = model or os.getenv(
+        "WHISPER_GO_REFINE_MODEL", DEFAULT_REFINE_MODEL
+    )
+    logger.info(f"LLM-Nachbearbeitung mit {effective_model}")
+    logger.debug(f"Input: {len(transcript)} Zeichen")
+
+    client = OpenAI()
+
+    # API-Parameter je nach Modell anpassen
+    api_params = {
+        "model": effective_model,
+        "input": f"{prompt or DEFAULT_REFINE_PROMPT}\n\nTranskript:\n{transcript}",
+    }
+
+    # Reasoning nur für GPT-5 Modelle (minimal), andere nutzen low/medium/high
+    if effective_model.startswith("gpt-5"):
+        api_params["reasoning"] = {"effort": "minimal"}
+
+    response = client.responses.create(**api_params)
+
+    result = response.output_text.strip()
+    logger.info(f"Nachbearbeitung abgeschlossen ({len(result)} Zeichen)")
+    logger.debug(f"Output: {result[:100]}{'...' if len(result) > 100 else ''}")
+
+    return result
+
+
+def maybe_refine_transcript(transcript: str, args: argparse.Namespace) -> str:
+    """Wendet LLM-Nachbearbeitung an, falls aktiviert. Gibt Rohtext bei Fehler zurück."""
+    from openai import APIError, APIConnectionError, RateLimitError
+
+    if not args.refine or args.no_refine:
+        return transcript
+
+    try:
+        return refine_transcript(transcript, model=args.refine_model)
+    except (APIError, APIConnectionError, RateLimitError) as e:
+        logger.warning(f"LLM-Nachbearbeitung fehlgeschlagen: {e}")
+        return transcript
+
+
 def transcribe(
     audio_path: Path,
     mode: str,
@@ -385,6 +449,22 @@ Beispiele:
         action="store_true",
         help="Debug-Logging aktivieren (auch auf stderr)",
     )
+    parser.add_argument(
+        "--refine",
+        action="store_true",
+        default=os.getenv("WHISPER_GO_REFINE", "").lower() == "true",
+        help="LLM-Nachbearbeitung aktivieren (auch via WHISPER_GO_REFINE env)",
+    )
+    parser.add_argument(
+        "--no-refine",
+        action="store_true",
+        help="LLM-Nachbearbeitung deaktivieren (überschreibt env)",
+    )
+    parser.add_argument(
+        "--refine-model",
+        default=None,
+        help=f"Modell für LLM-Nachbearbeitung (default: {DEFAULT_REFINE_MODEL}, auch via WHISPER_GO_REFINE_MODEL env)",
+    )
 
     args = parser.parse_args()
 
@@ -424,6 +504,9 @@ def run_daemon_mode(args: argparse.Namespace) -> int:
             language=args.language,
             response_format=args.response_format,
         )
+
+        # LLM-Nachbearbeitung (optional)
+        transcript = maybe_refine_transcript(transcript, args)
 
         TRANSCRIPT_FILE.write_text(transcript)
         logger.debug(f"Transkript geschrieben: {TRANSCRIPT_FILE}")
@@ -508,6 +591,9 @@ def main() -> int:
     finally:
         if temp_file and temp_file.exists():
             temp_file.unlink()
+
+    # LLM-Nachbearbeitung (optional)
+    transcript = maybe_refine_transcript(transcript, args)
 
     # Ausgabe
     print(transcript)

@@ -42,6 +42,15 @@ export DEEPGRAM_API_KEY="dein_api_key"
 export WHISPER_GO_MODE="deepgram"  # api, local, oder deepgram
 ```
 
+**LLM-Nachbearbeitung (Flow-Style):**
+
+```bash
+# In .env aktivieren
+export WHISPER_GO_REFINE="true"
+```
+
+> Entfernt Füllwörter (ähm, also), korrigiert Grammatik und formatiert in saubere Absätze. Benötigt GPT-5 mini (OPENAI_API_KEY).
+
 **Für lokalen Modus:**
 
 ```bash
@@ -136,6 +145,9 @@ python transcribe.py --record --copy   # direkt in Zwischenablage
 | `--model NAME`                | Modellname (API: `gpt-4o-transcribe`; Deepgram: `nova-3`, `nova-2`; Lokal: `tiny`, `base`, `small`, `medium`, `large`, `turbo`) |
 | `--language CODE`             | Sprachcode z.B. `de`, `en`                                                                                                      |
 | `--format FORMAT`             | Output-Format: `text`, `json`, `srt`, `vtt` (nur API)                                                                           |
+| `--refine`                    | LLM-Nachbearbeitung aktivieren (auch via `WHISPER_GO_REFINE` env)                                                               |
+| `--no-refine`                 | LLM-Nachbearbeitung deaktivieren (überschreibt env)                                                                             |
+| `--refine-model MODEL`        | Modell für Nachbearbeitung (default: `gpt-5-nano`, auch via `WHISPER_GO_REFINE_MODEL` env)                                      |
 
 ### Beispiele
 
