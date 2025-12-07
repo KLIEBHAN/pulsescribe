@@ -341,6 +341,20 @@ def refine_transcript(
     return result
 
 
+def maybe_refine_transcript(transcript: str, args: argparse.Namespace) -> str:
+    """Wendet LLM-Nachbearbeitung an, falls aktiviert. Gibt Rohtext bei Fehler zurück."""
+    from openai import APIError, APIConnectionError, RateLimitError
+
+    if not args.refine or args.no_refine:
+        return transcript
+
+    try:
+        return refine_transcript(transcript, model=args.refine_model)
+    except (APIError, APIConnectionError, RateLimitError) as e:
+        logger.warning(f"LLM-Nachbearbeitung fehlgeschlagen: {e}")
+        return transcript
+
+
 def transcribe(
     audio_path: Path,
     mode: str,
@@ -484,11 +498,7 @@ def run_daemon_mode(args: argparse.Namespace) -> int:
         )
 
         # LLM-Nachbearbeitung (optional)
-        if args.refine and not args.no_refine:
-            try:
-                transcript = refine_transcript(transcript, model=args.refine_model)
-            except Exception as e:
-                logger.warning(f"LLM-Nachbearbeitung fehlgeschlagen: {e}")
+        transcript = maybe_refine_transcript(transcript, args)
 
         TRANSCRIPT_FILE.write_text(transcript)
         logger.debug(f"Transkript geschrieben: {TRANSCRIPT_FILE}")
@@ -575,11 +585,7 @@ def main() -> int:
             temp_file.unlink()
 
     # LLM-Nachbearbeitung (optional)
-    if args.refine and not args.no_refine:
-        try:
-            transcript = refine_transcript(transcript, model=args.refine_model)
-        except Exception as e:
-            logger.warning(f"LLM-Nachbearbeitung fehlgeschlagen: {e}")
+    transcript = maybe_refine_transcript(transcript, args)
 
     # Ausgabe
     print(transcript)
