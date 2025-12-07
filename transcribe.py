@@ -365,8 +365,8 @@ Beispiele:
     parser.add_argument(
         "--mode",
         choices=["api", "local", "deepgram"],
-        default="api",
-        help="Transkriptions-Modus",
+        default=os.getenv("WHISPER_GO_MODE", "api"),
+        help="Transkriptions-Modus (auch via WHISPER_GO_MODE env)",
     )
     parser.add_argument(
         "--model",

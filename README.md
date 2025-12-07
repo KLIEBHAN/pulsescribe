@@ -35,6 +35,13 @@ export DEEPGRAM_API_KEY="dein_api_key"
 
 > **Tipp:** Deepgram bietet 200$ Startguthaben für neue Accounts. [console.deepgram.com](https://console.deepgram.com)
 
+**Standard-Modus festlegen (optional):**
+
+```bash
+# In .env oder Shell-Config
+export WHISPER_GO_MODE="deepgram"  # api, local, oder deepgram
+```
+
 **Für lokalen Modus:**
 
 ```bash
