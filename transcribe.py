@@ -17,6 +17,7 @@ import time as _time_module  # noqa: E402 - muss vor anderen Imports sein
 _PROCESS_START = _time_module.perf_counter()
 
 import argparse  # noqa: E402
+import json  # noqa: E402
 import logging  # noqa: E402
 import os  # noqa: E402
 import signal  # noqa: E402
@@ -49,6 +50,60 @@ DEFAULT_REFINE_PROMPT = """Korrigiere dieses Transkript:
 - Behalte den originalen Inhalt und Stil bei
 
 Gib NUR den korrigierten Text zurück, keine Erklärungen."""
+
+# Kontext-spezifische Prompts für LLM-Nachbearbeitung
+CONTEXT_PROMPTS = {
+    "email": """Korrigiere dieses Transkript für eine E-Mail:
+- Formeller, professioneller Ton
+- Vollständige, grammatikalisch korrekte Sätze
+- Grußformeln und Anrede beibehalten
+- Klar strukturierte Absätze
+
+Gib NUR den korrigierten Text zurück.""",
+    "chat": """Korrigiere dieses Transkript für eine Chat-Nachricht:
+- Lockerer, natürlicher Ton
+- Kurz und prägnant
+- Emojis können beibehalten werden
+- Keine übermäßige Formalisierung
+
+Gib NUR den korrigierten Text zurück.""",
+    "code": """Korrigiere dieses Transkript für technischen Kontext:
+- Technische Fachbegriffe exakt beibehalten
+- Code-Snippets, Variablennamen und Befehle nicht ändern
+- Camel/Snake-Case erkennen und beibehalten
+- Englische Begriffe nicht eindeutschen
+
+Gib NUR den korrigierten Text zurück.""",
+    "default": DEFAULT_REFINE_PROMPT,
+}
+
+# App-zu-Kontext Mapping für automatische Erkennung
+DEFAULT_APP_CONTEXTS = {
+    # Email-Clients
+    "Mail": "email",
+    "Outlook": "email",
+    "Spark": "email",
+    "Thunderbird": "email",
+    # Chat/Messenger
+    "Slack": "chat",
+    "Discord": "chat",
+    "Telegram": "chat",
+    "WhatsApp": "chat",
+    "Messages": "chat",
+    "Signal": "chat",
+    # Code-Editoren
+    "Code": "code",
+    "VS Code": "code",
+    "Visual Studio Code": "code",
+    "Cursor": "code",
+    "Zed": "code",
+    "PyCharm": "code",
+    "IntelliJ IDEA": "code",
+    "Xcode": "code",
+    "Terminal": "code",
+    "iTerm2": "code",
+    "Ghostty": "code",
+}
 
 TEMP_RECORDING_FILENAME = "whisper_recording.wav"
 
@@ -408,6 +463,63 @@ def _extract_message_content(content) -> str:
     return content.strip()
 
 
+def _get_frontmost_app() -> str | None:
+    """Ermittelt aktive App via NSWorkspace (macOS only, ~0.2ms)."""
+    if sys.platform != "darwin":
+        return None
+
+    try:
+        from AppKit import NSWorkspace
+
+        app = NSWorkspace.sharedWorkspace().frontmostApplication()
+        return app.localizedName() if app else None
+    except ImportError:
+        # PyObjC nicht verfügbar (sollte auf macOS nicht passieren)
+        return None
+    except Exception:
+        return None
+
+
+def _app_to_context(app_name: str) -> str:
+    """Mappt App-Name auf Kontext-Typ."""
+    # Custom mappings aus ENV laden (JSON-Format)
+    custom = os.getenv("WHISPER_GO_APP_CONTEXTS")
+    if custom:
+        try:
+            custom_map = json.loads(custom)
+            if app_name in custom_map:
+                return custom_map[app_name]
+        except json.JSONDecodeError:
+            pass
+
+    return DEFAULT_APP_CONTEXTS.get(app_name, "default")
+
+
+def detect_context(override: str | None = None) -> tuple[str, str | None]:
+    """
+    Ermittelt Kontext: CLI > ENV > App-Detection > default.
+
+    Returns:
+        Tuple (context, app_name) - app_name ist None wenn nicht via App-Detection
+    """
+    # 1. CLI-Override (höchste Priorität)
+    if override:
+        return override, None
+
+    # 2. ENV-Override
+    env_context = os.getenv("WHISPER_GO_CONTEXT")
+    if env_context:
+        return env_context.lower(), None
+
+    # 3. Auto-Detection via NSWorkspace (nur macOS)
+    if sys.platform == "darwin":
+        app_name = _get_frontmost_app()
+        if app_name:
+            return _app_to_context(app_name), app_name
+
+    return "default", None
+
+
 def _get_refine_client(provider: str):
     """Erstellt OpenAI-Client für Nachbearbeitung (OpenAI oder OpenRouter)."""
     from openai import OpenAI
@@ -427,12 +539,30 @@ def refine_transcript(
     model: str | None = None,
     prompt: str | None = None,
     provider: str | None = None,
+    context: str | None = None,
 ) -> str:
-    """Nachbearbeitung mit LLM (Flow-Style). Unterstützt OpenAI und OpenRouter."""
+    """Nachbearbeitung mit LLM (Flow-Style). Kontext-aware Prompts."""
     # Leeres Transkript → nichts zu tun
     if not transcript or not transcript.strip():
         logger.debug(f"[{_session_id}] Leeres Transkript, überspringe Nachbearbeitung")
         return transcript
+
+    # Kontext-spezifischen Prompt wählen (falls nicht explizit übergeben)
+    if prompt is None:
+        effective_context, app_name = detect_context(context)
+        # Validierung: Ungültiger Kontext → Warnung und Fallback
+        if effective_context not in CONTEXT_PROMPTS:
+            logger.warning(
+                f"[{_session_id}] Ungültiger Kontext '{effective_context}', verwende 'default'"
+            )
+            effective_context = "default"
+        prompt = CONTEXT_PROMPTS[effective_context]
+        if app_name:
+            logger.info(
+                f"[{_session_id}] Kontext: {effective_context} (via {app_name})"
+            )
+        else:
+            logger.info(f"[{_session_id}] Kontext: {effective_context}")
 
     # Provider und Modell zur Laufzeit bestimmen (CLI > ENV > Default)
     effective_provider = (
@@ -448,7 +578,7 @@ def refine_transcript(
     logger.debug(f"[{_session_id}] Input: {len(transcript)} Zeichen")
 
     client = _get_refine_client(effective_provider)
-    full_prompt = f"{prompt or DEFAULT_REFINE_PROMPT}\n\nTranskript:\n{transcript}"
+    full_prompt = f"{prompt}\n\nTranskript:\n{transcript}"
 
     with timed_operation("LLM-Nachbearbeitung"):
         if effective_provider == "openrouter":
@@ -503,6 +633,7 @@ def maybe_refine_transcript(transcript: str, args: argparse.Namespace) -> str:
             transcript,
             model=args.refine_model,
             provider=args.refine_provider,
+            context=getattr(args, "context", None),
         )
     except ValueError as e:
         # Fehlende API-Keys (z.B. OPENROUTER_API_KEY)
@@ -624,6 +755,12 @@ Beispiele:
         choices=["openai", "openrouter"],
         default=None,
         help="LLM-Provider für Nachbearbeitung (auch via WHISPER_GO_REFINE_PROVIDER env)",
+    )
+    parser.add_argument(
+        "--context",
+        choices=["email", "chat", "code", "default"],
+        default=None,
+        help="Kontext für LLM-Nachbearbeitung (auto-detect wenn nicht gesetzt)",
     )
 
     args = parser.parse_args()

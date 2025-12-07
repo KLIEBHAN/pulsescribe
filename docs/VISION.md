@@ -60,7 +60,7 @@ Kein Electron. Kein Cloud-Lock-in. Kein Abo.
 - [x] LLM-Nachbearbeitung (Füllwörter entfernen, Formatierung)
 - [x] Multi-Provider Support (OpenAI, OpenRouter)
 - [x] Deepgram Nova-3 Integration (schneller als Whisper API)
-- [ ] Kontext-Awareness (Email formal, Chat casual)
+- [x] Kontext-Awareness (Email formal, Chat casual, Code technisch)
 - [ ] Custom Vocabulary (Namen, Fachbegriffe)
 
 ### Phase 4: Native App

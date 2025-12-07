@@ -58,6 +58,28 @@ export OPENROUTER_PROVIDER_ORDER="Together,DeepInfra"
 
 > Entfernt Füllwörter (ähm, also), korrigiert Grammatik und formatiert in saubere Absätze. Unterstützt OpenAI (default) und [OpenRouter](https://openrouter.ai) für Zugang zu hunderten Modellen. Bei OpenRouter kann das Backend-Routing über `OPENROUTER_PROVIDER_ORDER` gesteuert werden.
 
+**Kontext-Awareness (automatisch):**
+
+Die LLM-Nachbearbeitung erkennt automatisch die aktive App und passt den Schreibstil an:
+
+| Kontext   | Apps                      | Stil                            |
+| --------- | ------------------------- | ------------------------------- |
+| `email`   | Mail, Outlook, Spark      | Formell, vollständige Sätze     |
+| `chat`    | Slack, Discord, Messages  | Locker, kurz und knapp          |
+| `code`    | VS Code, Cursor, Terminal | Technisch, Begriffe beibehalten |
+| `default` | Alle anderen              | Standard-Korrektur              |
+
+```bash
+# Automatische Erkennung (Standard)
+python transcribe.py --record --refine
+
+# Manueller Override
+python transcribe.py --record --refine --context email
+
+# Eigene App-Mappings (JSON)
+export WHISPER_GO_APP_CONTEXTS='{"MyApp": "chat"}'
+```
+
 **Für lokalen Modus:**
 
 ```bash
@@ -156,6 +178,7 @@ python transcribe.py --record --copy   # direkt in Zwischenablage
 | `--no-refine`                 | LLM-Nachbearbeitung deaktivieren (überschreibt env)                                                                             |
 | `--refine-model MODEL`        | Modell für Nachbearbeitung (default: `gpt-5-nano`, auch via `WHISPER_GO_REFINE_MODEL` env)                                      |
 | `--refine-provider`           | LLM-Provider: `openai` (default) oder `openrouter` (auch via `WHISPER_GO_REFINE_PROVIDER` env)                                  |
+| `--context`                   | Kontext für Nachbearbeitung: `email`, `chat`, `code`, `default` (auto-detect wenn nicht gesetzt)                                |
 
 ### Beispiele
 
