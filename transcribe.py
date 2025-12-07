@@ -157,6 +157,20 @@ def copy_to_clipboard(text: str) -> bool:
         return False
 
 
+def play_ready_sound() -> None:
+    """Spielt einen kurzen Ton ab wenn die Aufnahme bereit ist (macOS)."""
+    import subprocess
+
+    try:
+        subprocess.Popen(
+            ["afplay", "/System/Library/Sounds/Tink.aiff"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        pass  # Sound ist optional, Fehler ignorieren
+
+
 def record_audio() -> Path:
     """
     Nimmt Audio vom Mikrofon auf (Enter startet, Enter stoppt).
@@ -174,6 +188,7 @@ def record_audio() -> Path:
     log("🎤 Drücke ENTER um die Aufnahme zu starten...")
     input()
 
+    play_ready_sound()
     log("🔴 Aufnahme läuft... Drücke ENTER zum Beenden.")
     with sd.InputStream(
         samplerate=WHISPER_SAMPLE_RATE,
@@ -251,6 +266,7 @@ def record_audio_daemon() -> Path:
     # Signal-Handler registrieren
     signal.signal(signal.SIGUSR1, handle_stop_signal)
 
+    play_ready_sound()
     log("🎤 Daemon: Aufnahme gestartet (warte auf SIGUSR1)...")
     logger.info(f"[{_session_id}] Aufnahme gestartet")
 
