@@ -36,6 +36,7 @@ whisper_go/
 | `transcribe()`               | Zentrale API – wählt Modus automatisch         |
 | `transcribe_with_api()`      | OpenAI API Transkription                       |
 | `transcribe_with_deepgram()` | Deepgram Nova-3 Transkription                  |
+| `transcribe_with_groq()`     | Groq Whisper Transkription (LPU)               |
 | `transcribe_locally()`       | Lokales Whisper-Modell                         |
 | `detect_context()`           | Kontext-Erkennung (CLI/ENV/App-Auto-Detection) |
 | `_get_frontmost_app()`       | Aktive App via NSWorkspace (macOS, ~0.2ms)     |
@@ -70,6 +71,7 @@ python transcribe.py --record --copy --language de
 | `openai`         | API-Modus + LLM-Refine (OpenRouter) |
 | `openai-whisper` | Lokaler Modus                       |
 | `deepgram-sdk`   | Deepgram Nova-3 Transkription       |
+| `groq`           | Groq Whisper + LLM-Refine           |
 | `sounddevice`    | Mikrofon-Aufnahme                   |
 | `soundfile`      | WAV-Export                          |
 | `pyperclip`      | Zwischenablage                      |
@@ -82,17 +84,18 @@ python transcribe.py --record --copy --language de
 
 ## Konfiguration (ENV-Variablen)
 
-| Variable                     | Beschreibung                              |
-| ---------------------------- | ----------------------------------------- |
-| `WHISPER_GO_MODE`            | Default-Modus: `api`, `local`, `deepgram` |
-| `WHISPER_GO_REFINE`          | LLM-Nachbearbeitung: `true`/`false`       |
-| `WHISPER_GO_REFINE_MODEL`    | Modell für Refine (default: `gpt-5-nano`) |
-| `WHISPER_GO_REFINE_PROVIDER` | Provider: `openai` oder `openrouter`      |
-| `WHISPER_GO_CONTEXT`         | Kontext-Override: `email`/`chat`/`code`   |
-| `WHISPER_GO_APP_CONTEXTS`    | Custom App-Mappings (JSON)                |
-| `OPENAI_API_KEY`             | Für API-Modus und OpenAI-Refine           |
-| `DEEPGRAM_API_KEY`           | Für Deepgram-Modus                        |
-| `OPENROUTER_API_KEY`         | Für OpenRouter-Refine                     |
+| Variable                     | Beschreibung                                      |
+| ---------------------------- | ------------------------------------------------- |
+| `WHISPER_GO_MODE`            | Default-Modus: `api`, `local`, `deepgram`, `groq` |
+| `WHISPER_GO_REFINE`          | LLM-Nachbearbeitung: `true`/`false`               |
+| `WHISPER_GO_REFINE_MODEL`    | Modell für Refine (default: `gpt-5-nano`)         |
+| `WHISPER_GO_REFINE_PROVIDER` | Provider: `openai`, `openrouter` oder `groq`      |
+| `WHISPER_GO_CONTEXT`         | Kontext-Override: `email`/`chat`/`code`           |
+| `WHISPER_GO_APP_CONTEXTS`    | Custom App-Mappings (JSON)                        |
+| `OPENAI_API_KEY`             | Für API-Modus und OpenAI-Refine                   |
+| `DEEPGRAM_API_KEY`           | Für Deepgram-Modus                                |
+| `GROQ_API_KEY`               | Für Groq-Modus und Groq-Refine                    |
+| `OPENROUTER_API_KEY`         | Für OpenRouter-Refine                             |
 
 ## Kontext-Awareness
 

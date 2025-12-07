@@ -1,6 +1,7 @@
 openai>=1.0.0
 openai-whisper
 deepgram-sdk>=3.0.0
+groq>=0.4.0
 sounddevice
 soundfile
 pyperclip

@@ -35,11 +35,19 @@ export DEEPGRAM_API_KEY="dein_api_key"
 
 > **Tipp:** Deepgram bietet 200$ Startguthaben für neue Accounts. [console.deepgram.com](https://console.deepgram.com)
 
+**Für Groq-Modus:**
+
+```bash
+export GROQ_API_KEY="gsk_..."
+```
+
+> **Tipp:** Groq bietet extrem schnelle Whisper-Inferenz (~300x Echtzeit) mit kostenlosen API-Credits. [console.groq.com](https://console.groq.com)
+
 **Standard-Modus festlegen (optional):**
 
 ```bash
 # In .env oder Shell-Config
-export WHISPER_GO_MODE="deepgram"  # api, local, oder deepgram
+export WHISPER_GO_MODE="deepgram"  # api, local, deepgram, oder groq
 ```
 
 **LLM-Nachbearbeitung (Flow-Style):**
@@ -52,11 +60,15 @@ export WHISPER_GO_REFINE="true"
 export WHISPER_GO_REFINE_PROVIDER="openrouter"
 export OPENROUTER_API_KEY="sk-or-..."
 
+# Optional: Groq für schnelle LLM-Inferenz
+export WHISPER_GO_REFINE_PROVIDER="groq"
+export GROQ_API_KEY="gsk_..."
+
 # Optional: Backend-Provider für OpenRouter festlegen
 export OPENROUTER_PROVIDER_ORDER="Together,DeepInfra"
 ```
 
-> Entfernt Füllwörter (ähm, also), korrigiert Grammatik und formatiert in saubere Absätze. Unterstützt OpenAI (default) und [OpenRouter](https://openrouter.ai) für Zugang zu hunderten Modellen. Bei OpenRouter kann das Backend-Routing über `OPENROUTER_PROVIDER_ORDER` gesteuert werden.
+> Entfernt Füllwörter (ähm, also), korrigiert Grammatik und formatiert in saubere Absätze. Unterstützt OpenAI (default), [OpenRouter](https://openrouter.ai) und [Groq](https://groq.com) für extrem schnelle Inferenz.
 
 **Kontext-Awareness (automatisch):**
 
@@ -208,19 +220,19 @@ python transcribe.py --record --copy   # direkt in Zwischenablage
 
 ### Optionen
 
-| Option                        | Beschreibung                                                                                                                    |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `--mode api\|local\|deepgram` | API (default), lokales Whisper oder Deepgram                                                                                    |
-| `--record`, `-r`              | Mikrofon-Aufnahme statt Datei                                                                                                   |
-| `--copy`, `-c`                | Ergebnis in Zwischenablage kopieren                                                                                             |
-| `--model NAME`                | Modellname (API: `gpt-4o-transcribe`; Deepgram: `nova-3`, `nova-2`; Lokal: `tiny`, `base`, `small`, `medium`, `large`, `turbo`) |
-| `--language CODE`             | Sprachcode z.B. `de`, `en`                                                                                                      |
-| `--format FORMAT`             | Output-Format: `text`, `json`, `srt`, `vtt` (nur API)                                                                           |
-| `--refine`                    | LLM-Nachbearbeitung aktivieren (auch via `WHISPER_GO_REFINE` env)                                                               |
-| `--no-refine`                 | LLM-Nachbearbeitung deaktivieren (überschreibt env)                                                                             |
-| `--refine-model MODEL`        | Modell für Nachbearbeitung (default: `gpt-5-nano`, auch via `WHISPER_GO_REFINE_MODEL` env)                                      |
-| `--refine-provider`           | LLM-Provider: `openai` (default) oder `openrouter` (auch via `WHISPER_GO_REFINE_PROVIDER` env)                                  |
-| `--context`                   | Kontext für Nachbearbeitung: `email`, `chat`, `code`, `default` (auto-detect wenn nicht gesetzt)                                |
+| Option                              | Beschreibung                                                                                                 |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `--mode api\|local\|deepgram\|groq` | API (default), lokales Whisper, Deepgram oder Groq                                                           |
+| `--record`, `-r`                    | Mikrofon-Aufnahme statt Datei                                                                                |
+| `--copy`, `-c`                      | Ergebnis in Zwischenablage kopieren                                                                          |
+| `--model NAME`                      | Modellname (API: `gpt-4o-transcribe`; Deepgram: `nova-3`; Groq: `whisper-large-v3`; Lokal: `tiny`...`turbo`) |
+| `--language CODE`                   | Sprachcode z.B. `de`, `en`                                                                                   |
+| `--format FORMAT`                   | Output-Format: `text`, `json`, `srt`, `vtt` (nur API)                                                        |
+| `--refine`                          | LLM-Nachbearbeitung aktivieren (auch via `WHISPER_GO_REFINE` env)                                            |
+| `--no-refine`                       | LLM-Nachbearbeitung deaktivieren (überschreibt env)                                                          |
+| `--refine-model MODEL`              | Modell für Nachbearbeitung (default: `gpt-5-nano`, auch via `WHISPER_GO_REFINE_MODEL` env)                   |
+| `--refine-provider`                 | LLM-Provider: `openai`, `openrouter` oder `groq` (auch via `WHISPER_GO_REFINE_PROVIDER` env)                 |
+| `--context`                         | Kontext für Nachbearbeitung: `email`, `chat`, `code`, `default` (auto-detect wenn nicht gesetzt)             |
 
 ### Beispiele
 
@@ -255,6 +267,13 @@ python transcribe.py --record --language de --copy
 - `nova-2` – Bewährtes Modell, etwas günstiger
 
 **Features:** `smart_format` ist aktiviert – automatische Formatierung von Datum, Währung und Absätzen.
+
+### Groq-Modelle
+
+- `whisper-large-v3` (Standard) – OpenAI Whisper Large v3, extrem schnelle Inferenz (~300x Echtzeit)
+- `distil-whisper-large-v3-en` – Optimiert für Englisch, noch schneller
+
+**Features:** Groq nutzt spezielle LPU-Chips (Language Processing Units) für besonders schnelle Inferenz.
 
 ### Lokale Modelle
 

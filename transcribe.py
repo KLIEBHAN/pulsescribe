@@ -48,7 +48,9 @@ WHISPER_SAMPLE_RATE = 16000
 DEFAULT_API_MODEL = "gpt-4o-transcribe"
 DEFAULT_LOCAL_MODEL = "turbo"
 DEFAULT_DEEPGRAM_MODEL = "nova-3"
+DEFAULT_GROQ_MODEL = "whisper-large-v3"
 DEFAULT_REFINE_MODEL = "gpt-5-nano"
+DEFAULT_GROQ_REFINE_MODEL = "llama-3.3-70b-versatile"
 
 # =============================================================================
 # API-Endpunkte
@@ -436,6 +438,48 @@ def transcribe_with_deepgram(
     return result
 
 
+def transcribe_with_groq(
+    audio_path: Path,
+    model: str,
+    language: str | None = None,
+) -> str:
+    """Transkribiert Audio über Groq API (Whisper auf LPU).
+
+    Groq nutzt spezielle LPU-Chips für extrem schnelle Whisper-Inferenz
+    (~300x Echtzeit) bei gleicher Qualität wie OpenAI.
+    """
+    from groq import Groq
+
+    audio_kb = audio_path.stat().st_size // 1024
+    logger.info(
+        f"[{_session_id}] Groq: {model}, {audio_kb}KB, lang={language or 'auto'}"
+    )
+
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        raise ValueError("GROQ_API_KEY nicht gesetzt")
+
+    client = Groq(api_key=api_key)
+
+    with timed_operation("Groq-Transkription"):
+        with audio_path.open("rb") as audio_file:
+            params = {
+                "file": (audio_path.name, audio_file.read()),
+                "model": model,
+                "response_format": "text",
+                "temperature": 0.0,  # Konsistente Ergebnisse ohne Kreativität
+            }
+            if language:
+                params["language"] = language
+            response = client.audio.transcriptions.create(**params)
+
+    # Groq gibt bei response_format="text" direkt String zurück
+    result = response.text if hasattr(response, "text") else str(response)
+    logger.debug(f"[{_session_id}] Ergebnis: {_log_preview(result)}")
+
+    return result
+
+
 def transcribe_locally(
     audio_path: Path,
     model: str,
@@ -559,7 +603,15 @@ def detect_context(override: str | None = None) -> tuple[str, str | None, str]:
 
 
 def _get_refine_client(provider: str):
-    """Erstellt OpenAI-Client für Nachbearbeitung (OpenAI oder OpenRouter)."""
+    """Erstellt Client für Nachbearbeitung (OpenAI, OpenRouter oder Groq)."""
+    if provider == "groq":
+        from groq import Groq
+
+        api_key = os.getenv("GROQ_API_KEY")
+        if not api_key:
+            raise ValueError("GROQ_API_KEY nicht gesetzt")
+        return Groq(api_key=api_key)
+
     from openai import OpenAI
 
     if provider == "openrouter":
@@ -604,9 +656,16 @@ def refine_transcript(
     effective_provider = (
         provider or os.getenv("WHISPER_GO_REFINE_PROVIDER", "openai")
     ).lower()
-    effective_model = model or os.getenv(
-        "WHISPER_GO_REFINE_MODEL", DEFAULT_REFINE_MODEL
-    )
+
+    # Provider-spezifisches Default-Modell (Groq nutzt Llama, andere GPT-5)
+    if model:
+        effective_model = model
+    elif os.getenv("WHISPER_GO_REFINE_MODEL"):
+        effective_model = os.getenv("WHISPER_GO_REFINE_MODEL")
+    elif effective_provider == "groq":
+        effective_model = DEFAULT_GROQ_REFINE_MODEL
+    else:
+        effective_model = DEFAULT_REFINE_MODEL
 
     logger.info(
         f"[{_session_id}] LLM-Nachbearbeitung: provider={effective_provider}, model={effective_model}"
@@ -617,7 +676,14 @@ def refine_transcript(
     full_prompt = f"{prompt}\n\nTranskript:\n{transcript}"
 
     with timed_operation("LLM-Nachbearbeitung"):
-        if effective_provider == "openrouter":
+        if effective_provider == "groq":
+            # Groq nutzt chat.completions API (wie OpenRouter)
+            response = client.chat.completions.create(
+                model=effective_model,
+                messages=[{"role": "user", "content": full_prompt}],
+            )
+            result = _extract_message_content(response.choices[0].message.content)
+        elif effective_provider == "openrouter":
             # OpenRouter API-Aufruf vorbereiten
             create_kwargs = {
                 "model": effective_model,
@@ -685,6 +751,7 @@ def maybe_refine_transcript(transcript: str, args: argparse.Namespace) -> str:
 DEFAULT_MODELS = {
     "api": DEFAULT_API_MODEL,
     "deepgram": DEFAULT_DEEPGRAM_MODEL,
+    "groq": DEFAULT_GROQ_MODEL,
     "local": DEFAULT_LOCAL_MODEL,
 }
 
@@ -697,7 +764,7 @@ def transcribe(
     response_format: str = "text",
 ) -> str:
     """
-    Zentrale Transkriptions-Funktion – wählt API, Deepgram oder lokal.
+    Zentrale Transkriptions-Funktion – wählt API, Deepgram, Groq oder lokal.
 
     Dies ist der einzige Einstiegspunkt für Transkription,
     unabhängig vom gewählten Modus.
@@ -713,12 +780,15 @@ def transcribe(
             audio_path, effective_model, language, response_format
         )
 
-    # Deepgram und lokal unterstützen kein response_format
+    # Deepgram, Groq und lokal unterstützen kein response_format
     if response_format != "text":
         log(f"Hinweis: --format wird im {mode}-Modus ignoriert")
 
     if mode == "deepgram":
         return transcribe_with_deepgram(audio_path, effective_model, language)
+
+    if mode == "groq":
+        return transcribe_with_groq(audio_path, effective_model, language)
 
     return transcribe_locally(audio_path, effective_model, language)
 
@@ -726,13 +796,14 @@ def transcribe(
 def parse_args() -> argparse.Namespace:
     """Parst und validiert CLI-Argumente."""
     parser = argparse.ArgumentParser(
-        description="Audio transkribieren mit Whisper oder Deepgram",
+        description="Audio transkribieren mit Whisper, Deepgram oder Groq",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Beispiele:
   %(prog)s audio.mp3
   %(prog)s audio.mp3 --mode local --model large
   %(prog)s audio.mp3 --mode deepgram --language de
+  %(prog)s audio.mp3 --mode groq --language de
   %(prog)s --record --copy --language de
         """,
     )
@@ -751,13 +822,13 @@ Beispiele:
     )
     parser.add_argument(
         "--mode",
-        choices=["api", "local", "deepgram"],
+        choices=["api", "local", "deepgram", "groq"],
         default=os.getenv("WHISPER_GO_MODE", "api"),
         help="Transkriptions-Modus (auch via WHISPER_GO_MODE env)",
     )
     parser.add_argument(
         "--model",
-        help="Modellname (API: gpt-4o-transcribe; Deepgram: nova-3, nova-2; Lokal: tiny, base, small, medium, large, turbo)",
+        help="Modellname (API: gpt-4o-transcribe; Deepgram: nova-3; Groq: whisper-large-v3; Lokal: tiny...turbo)",
     )
     parser.add_argument("--language", help="Sprachcode z.B. 'de', 'en'")
     parser.add_argument(
@@ -789,7 +860,7 @@ Beispiele:
     )
     parser.add_argument(
         "--refine-provider",
-        choices=["openai", "openrouter"],
+        choices=["openai", "openrouter", "groq"],
         default=None,
         help="LLM-Provider für Nachbearbeitung (auch via WHISPER_GO_REFINE_PROVIDER env)",
     )
