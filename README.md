@@ -147,7 +147,7 @@ python transcribe.py --record --copy   # direkt in Zwischenablage
 | `--format FORMAT`             | Output-Format: `text`, `json`, `srt`, `vtt` (nur API)                                                                           |
 | `--refine`                    | LLM-Nachbearbeitung aktivieren (auch via `WHISPER_GO_REFINE` env)                                                               |
 | `--no-refine`                 | LLM-Nachbearbeitung deaktivieren (überschreibt env)                                                                             |
-| `--refine-model MODEL`        | Modell für Nachbearbeitung (default: `gpt-5-mini`, auch via `WHISPER_GO_REFINE_MODEL` env)                                      |
+| `--refine-model MODEL`        | Modell für Nachbearbeitung (default: `gpt-5-nano`, auch via `WHISPER_GO_REFINE_MODEL` env)                                      |
 
 ### Beispiele
 

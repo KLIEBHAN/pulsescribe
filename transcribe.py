@@ -25,7 +25,7 @@ WHISPER_SAMPLE_RATE = 16000
 DEFAULT_API_MODEL = "gpt-4o-transcribe"
 DEFAULT_LOCAL_MODEL = "turbo"
 DEFAULT_DEEPGRAM_MODEL = "nova-3"
-DEFAULT_REFINE_MODEL = "gpt-5-mini"  # Wird von WHISPER_GO_REFINE_MODEL überschrieben
+DEFAULT_REFINE_MODEL = "gpt-5-nano"  # Wird von WHISPER_GO_REFINE_MODEL überschrieben
 
 DEFAULT_REFINE_PROMPT = """Korrigiere dieses Transkript:
 - Entferne Füllwörter (ähm, also, quasi, sozusagen)
