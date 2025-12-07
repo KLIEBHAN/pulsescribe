@@ -11,6 +11,8 @@ Siehe [docs/VISION.md](docs/VISION.md) für Roadmap und langfristige Ziele.
 ```
 whisper_go/
 ├── transcribe.py          # CLI für Transkription
+├── prompts.py             # LLM-Prompts und Kontext-Mappings
+├── menubar.py             # Menübar-Status (rumps)
 ├── requirements.txt       # Dependencies
 ├── README.md              # Benutzer-Dokumentation
 ├── CLAUDE.md              # Diese Datei
