@@ -167,8 +167,9 @@ def play_ready_sound() -> None:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-    except Exception:
-        pass  # Sound ist optional, Fehler ignorieren
+    except OSError as e:
+        # Sound ist optional – Fehler nur loggen, nicht abbrechen
+        logger.debug(f"[{_session_id}] Ready-Sound fehlgeschlagen: {e}")
 
 
 def record_audio() -> Path:
