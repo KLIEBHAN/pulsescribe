@@ -32,15 +32,26 @@ from pathlib import Path  # noqa: E402
 _IMPORTS_DONE = _time_module.perf_counter()
 time = _time_module  # Alias für restlichen Code
 
+# =============================================================================
+# Audio-Konfiguration
+# =============================================================================
+
 # Whisper erwartet Audio mit 16kHz – andere Sampleraten führen zu schlechteren Ergebnissen
 WHISPER_SAMPLE_RATE = 16000
+
+# =============================================================================
+# Standard-Modelle pro Provider
+# =============================================================================
 
 DEFAULT_API_MODEL = "gpt-4o-transcribe"
 DEFAULT_LOCAL_MODEL = "turbo"
 DEFAULT_DEEPGRAM_MODEL = "nova-3"
-DEFAULT_REFINE_MODEL = "gpt-5-nano"  # Wird von WHISPER_GO_REFINE_MODEL überschrieben
+DEFAULT_REFINE_MODEL = "gpt-5-nano"
 
-# OpenRouter API (Alternative zu OpenAI für Nachbearbeitung)
+# =============================================================================
+# LLM-Nachbearbeitung (Refine)
+# =============================================================================
+
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 DEFAULT_REFINE_PROMPT = """Korrigiere dieses Transkript:
@@ -105,30 +116,30 @@ DEFAULT_APP_CONTEXTS = {
     "Ghostty": "code",
 }
 
-# Cache für custom app contexts (parsed from WHISPER_GO_APP_CONTEXTS)
-_custom_app_contexts_cache: dict | None = None
+# =============================================================================
+# Dateipfade für IPC und Konfiguration
+# =============================================================================
 
+# Temporäre Dateien für Raycast-Integration
 TEMP_RECORDING_FILENAME = "whisper_recording.wav"
-
-# Daemon-Modus: Dateien für IPC mit Raycast und Menübar
 PID_FILE = Path("/tmp/whisper_go.pid")
 TRANSCRIPT_FILE = Path("/tmp/whisper_go.transcript")
 ERROR_FILE = Path("/tmp/whisper_go.error")
-STATE_FILE = Path("/tmp/whisper_go.state")  # Für Menübar-Feedback
+STATE_FILE = Path("/tmp/whisper_go.state")
 
-# Log-Verzeichnis im Script-Ordner
+# Konfiguration und Logs
 SCRIPT_DIR = Path(__file__).resolve().parent
 LOG_DIR = SCRIPT_DIR / "logs"
 LOG_FILE = LOG_DIR / "whisper_go.log"
-
-# Custom Vocabulary für bessere Erkennung von Namen und Fachbegriffen
 VOCABULARY_FILE = Path.home() / ".whisper_go" / "vocabulary.json"
 
-# Logger konfigurieren
-logger = logging.getLogger("whisper_go")
+# =============================================================================
+# Laufzeit-State (modulglobal)
+# =============================================================================
 
-# Session-ID für Log-Korrelation (wird pro Durchlauf gesetzt)
-_session_id: str = ""
+logger = logging.getLogger("whisper_go")
+_session_id: str = ""  # Wird pro Durchlauf in setup_logging() gesetzt
+_custom_app_contexts_cache: dict | None = None  # Cache für WHISPER_GO_APP_CONTEXTS
 
 
 def _generate_session_id() -> str:
@@ -190,7 +201,10 @@ def setup_logging(debug: bool = False) -> None:
 
 
 def log(message: str) -> None:
-    """Status-Meldung auf stderr (hält stdout sauber für Pipes)."""
+    """Status-Meldung auf stderr.
+
+    Warum stderr? Hält stdout sauber für Pipes (z.B. `transcribe.py | pbcopy`).
+    """
     print(message, file=sys.stderr)
 
 
@@ -311,16 +325,18 @@ def record_audio_daemon() -> Path:
     _cleanup_stale_pid_file()
 
     recorded_chunks: list = []
-    # Dict statt bool, weil Python-Closures immutable Variablen nicht ändern können
-    stop_flag = {"stop": False}
     recording_start = time.perf_counter()
+    should_stop = False
 
     def on_audio_chunk(indata, _frames, _time_info, _status):
+        """Callback: Sammelt Audio-Chunks während der Aufnahme."""
         recorded_chunks.append(indata.copy())
 
     def handle_stop_signal(_signum: int, _frame) -> None:
+        """Signal-Handler: Setzt Stop-Flag bei SIGUSR1."""
+        nonlocal should_stop
         logger.debug(f"[{_session_id}] SIGUSR1 empfangen")
-        stop_flag["stop"] = True
+        should_stop = True
 
     pid = os.getpid()
     logger.info(f"[{_session_id}] Daemon gestartet (PID: {pid})")
@@ -342,7 +358,7 @@ def record_audio_daemon() -> Path:
             dtype="float32",
             callback=on_audio_chunk,
         ):
-            while not stop_flag["stop"]:
+            while not should_stop:
                 sd.sleep(100)  # 100ms warten, dann Signal prüfen
     finally:
         # PID-File aufräumen
@@ -522,7 +538,10 @@ def _extract_message_content(content) -> str:
 
 
 def _get_frontmost_app() -> str | None:
-    """Ermittelt aktive App via NSWorkspace (macOS only, ~0.2ms)."""
+    """Ermittelt aktive App via NSWorkspace (macOS only).
+
+    Warum NSWorkspace statt AppleScript? Performance: ~0.2ms vs ~207ms.
+    """
     if sys.platform != "darwin":
         return None
 
@@ -695,7 +714,8 @@ def refine_transcript(
         else:
             # OpenAI responses API
             api_params = {"model": effective_model, "input": full_prompt}
-            # GPT-5 nutzt "reasoning" API mit effort-Level
+            # GPT-5 nutzt "reasoning" API – "minimal" für schnelle Korrekturen
+            # statt tiefgehender Analyse (spart Tokens und Latenz)
             if effective_model.startswith("gpt-5"):
                 api_params["reasoning"] = {"effort": "minimal"}
             response = client.responses.create(**api_params)
@@ -864,13 +884,18 @@ Beispiele:
 
 
 def _schedule_state_cleanup(delay: float = 2.0) -> None:
-    """Löscht STATE_FILE nach Verzögerung in Background-Thread (non-blocking)."""
+    """Löscht STATE_FILE nach Verzögerung in Background-Thread.
+
+    Warum Verzögerung? Die Menübar-App pollt alle 200ms – ohne Delay
+    würde sie den "done"/"error"-Status verpassen.
+    """
     import threading
 
     def cleanup():
         time.sleep(delay)
         STATE_FILE.unlink(missing_ok=True)
 
+    # Daemon-Thread: Beendet sich automatisch wenn Hauptprozess endet
     thread = threading.Thread(target=cleanup, daemon=True)
     thread.start()
 
