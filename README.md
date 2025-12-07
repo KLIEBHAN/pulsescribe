@@ -90,7 +90,7 @@ Eigene Begriffe für bessere Erkennung in `~/.whisper_go/vocabulary.json`:
 }
 ```
 
-Unterstützt von Deepgram (native `keywords`) und lokalem Whisper (`initial_prompt`). Die OpenAI API unterstützt kein Custom Vocabulary – dort hilft nur die LLM-Nachbearbeitung.
+Unterstützt von Deepgram (Nova-3: `keyterm`, Nova-2: `keywords`) und lokalem Whisper (`initial_prompt`). Die OpenAI API unterstützt kein Custom Vocabulary – dort hilft nur die LLM-Nachbearbeitung.
 
 **Für lokalen Modus:**
 

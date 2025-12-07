@@ -368,26 +368,23 @@ def load_vocabulary() -> dict:
 
     Format:
         {
-            "keywords": ["Anthropic", "Claude", "Kubernetes"],
-            "sounds_like": {"OAuth": ["o auth", "o-auth"]}
+            "keywords": ["Anthropic", "Claude", "Kubernetes"]
         }
 
     Returns:
-        Dict mit "keywords" (Liste) und "sounds_like" (Dict). Bei Fehler leeres Dict.
+        Dict mit "keywords" (Liste). Bei Fehler leeres Dict.
     """
     if not VOCABULARY_FILE.exists():
-        return {"keywords": [], "sounds_like": {}}
+        return {"keywords": []}
     try:
         data = json.loads(VOCABULARY_FILE.read_text())
         # Validierung: keywords muss Liste sein
         if not isinstance(data.get("keywords"), list):
             data["keywords"] = []
-        if not isinstance(data.get("sounds_like"), dict):
-            data["sounds_like"] = {}
         return data
     except (json.JSONDecodeError, IOError) as e:
         logger.warning(f"[{_session_id}] Vocabulary-Datei fehlerhaft: {e}")
-        return {"keywords": [], "sounds_like": {}}
+        return {"keywords": []}
 
 
 def transcribe_with_api(
@@ -442,7 +439,7 @@ def transcribe_with_deepgram(
 
     logger.info(
         f"[{_session_id}] Deepgram: {model}, {audio_kb}KB, lang={language or 'auto'}, "
-        f"keywords={len(keywords)}"
+        f"vocab={len(keywords)}"
     )
 
     api_key = os.getenv("DEEPGRAM_API_KEY")
@@ -454,6 +451,15 @@ def transcribe_with_deepgram(
     with audio_path.open("rb") as f:
         audio_data = f.read()
 
+    # Nova-3 nutzt 'keyterm', ältere Modelle nutzen 'keywords'
+    is_nova3 = model.startswith("nova-3")
+    vocab_params = {}
+    if keywords:
+        if is_nova3:
+            vocab_params["keyterm"] = keywords
+        else:
+            vocab_params["keywords"] = keywords
+
     with timed_operation("Deepgram-Transkription"):
         response = client.listen.v1.media.transcribe_file(
             request=audio_data,
@@ -461,7 +467,7 @@ def transcribe_with_deepgram(
             language=language,
             smart_format=True,
             punctuate=True,
-            keywords=keywords if keywords else None,
+            **vocab_params,
         )
 
     result = response.results.channels[0].alternatives[0].transcript
