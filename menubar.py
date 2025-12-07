@@ -16,6 +16,7 @@ Voraussetzung:
     pip install rumps
 """
 
+import os
 from pathlib import Path
 
 import rumps
@@ -82,8 +83,6 @@ class WhisperGoStatus(rumps.App):
         try:
             pid = int(PID_FILE.read_text().strip())
             # Signal 0 prüft nur ob Prozess existiert, sendet nichts
-            import os
-
             os.kill(pid, 0)
             return True
         except (ValueError, OSError, IOError):

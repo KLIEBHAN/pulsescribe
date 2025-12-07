@@ -102,6 +102,19 @@ status() {
     fi
 }
 
+restart() {
+    echo "🔄 Starte whisper_go Menübar neu..."
+
+    if [[ -f "$PLIST_PATH" ]]; then
+        launchctl unload "$PLIST_PATH" 2>/dev/null || true
+        launchctl load "$PLIST_PATH"
+        echo "✅ Menübar-App neu gestartet"
+    else
+        echo "⚠️  Nicht installiert. Führe Installation durch..."
+        install
+    fi
+}
+
 case "${1:-install}" in
     install)
         install
@@ -112,8 +125,11 @@ case "${1:-install}" in
     status)
         status
         ;;
+    restart)
+        restart
+        ;;
     *)
-        echo "Nutzung: $0 [install|uninstall|status]"
+        echo "Nutzung: $0 [install|uninstall|restart|status]"
         exit 1
         ;;
 esac
