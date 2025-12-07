@@ -25,6 +25,7 @@ WHISPER_SAMPLE_RATE = 16000
 DEFAULT_API_MODEL = "gpt-4o-transcribe"
 DEFAULT_LOCAL_MODEL = "turbo"
 DEFAULT_DEEPGRAM_MODEL = "nova-3"
+DEFAULT_REFINE_MODEL = os.getenv("WHISPER_GO_REFINE_MODEL", "gpt-5-mini")
 
 DEFAULT_REFINE_PROMPT = """Korrigiere dieses Transkript:
 - Entferne Füllwörter (ähm, also, quasi, sozusagen)
@@ -307,8 +308,12 @@ def transcribe_locally(
     return result["text"]
 
 
-def refine_transcript(transcript: str, prompt: str | None = None) -> str:
-    """Nachbearbeitung mit GPT-5 mini (Flow-Style)."""
+def refine_transcript(
+    transcript: str,
+    model: str | None = None,
+    prompt: str | None = None,
+) -> str:
+    """Nachbearbeitung mit LLM (Flow-Style)."""
     from openai import OpenAI
 
     # Leeres Transkript → nichts zu tun
@@ -316,14 +321,15 @@ def refine_transcript(transcript: str, prompt: str | None = None) -> str:
         logger.debug("Leeres Transkript, überspringe Nachbearbeitung")
         return transcript
 
-    logger.info("LLM-Nachbearbeitung mit GPT-5 mini")
+    effective_model = model or DEFAULT_REFINE_MODEL
+    logger.info(f"LLM-Nachbearbeitung mit {effective_model}")
     logger.debug(f"Input: {len(transcript)} Zeichen")
 
     client = OpenAI()
 
     # GPT-5 API: client.responses.create statt chat.completions
     response = client.responses.create(
-        model="gpt-5-mini",
+        model=effective_model,
         input=f"{prompt or DEFAULT_REFINE_PROMPT}\n\nTranskript:\n{transcript}",
         reasoning={"effort": "minimal"},
     )
@@ -432,6 +438,11 @@ Beispiele:
         action="store_true",
         help="LLM-Nachbearbeitung deaktivieren (überschreibt env)",
     )
+    parser.add_argument(
+        "--refine-model",
+        default=None,
+        help=f"Modell für LLM-Nachbearbeitung (default: {DEFAULT_REFINE_MODEL}, auch via WHISPER_GO_REFINE_MODEL env)",
+    )
 
     args = parser.parse_args()
 
@@ -475,7 +486,7 @@ def run_daemon_mode(args: argparse.Namespace) -> int:
         # LLM-Nachbearbeitung (optional)
         if args.refine and not args.no_refine:
             try:
-                transcript = refine_transcript(transcript)
+                transcript = refine_transcript(transcript, model=args.refine_model)
             except Exception as e:
                 logger.warning(f"LLM-Nachbearbeitung fehlgeschlagen: {e}")
 
@@ -566,7 +577,7 @@ def main() -> int:
     # LLM-Nachbearbeitung (optional)
     if args.refine and not args.no_refine:
         try:
-            transcript = refine_transcript(transcript)
+            transcript = refine_transcript(transcript, model=args.refine_model)
         except Exception as e:
             logger.warning(f"LLM-Nachbearbeitung fehlgeschlagen: {e}")
 
