@@ -28,6 +28,8 @@ from contextlib import contextmanager  # noqa: E402
 from logging.handlers import RotatingFileHandler  # noqa: E402
 from pathlib import Path  # noqa: E402
 
+from prompts import DEFAULT_APP_CONTEXTS, get_prompt_for_context  # noqa: E402
+
 # Import-Zeit messen (alle Standardlib-Imports abgeschlossen)
 _IMPORTS_DONE = _time_module.perf_counter()
 time = _time_module  # Alias für restlichen Code
@@ -49,72 +51,10 @@ DEFAULT_DEEPGRAM_MODEL = "nova-3"
 DEFAULT_REFINE_MODEL = "gpt-5-nano"
 
 # =============================================================================
-# LLM-Nachbearbeitung (Refine)
+# API-Endpunkte
 # =============================================================================
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-
-DEFAULT_REFINE_PROMPT = """Korrigiere dieses Transkript:
-- Entferne Füllwörter (ähm, also, quasi, sozusagen)
-- Korrigiere Grammatik und Rechtschreibung
-- Formatiere in saubere Absätze
-- Behalte den originalen Inhalt und Stil bei
-
-Gib NUR den korrigierten Text zurück, keine Erklärungen."""
-
-# Kontext-spezifische Prompts für LLM-Nachbearbeitung
-CONTEXT_PROMPTS = {
-    "email": """Korrigiere dieses Transkript für eine E-Mail:
-- Formeller, professioneller Ton
-- Vollständige, grammatikalisch korrekte Sätze
-- Grußformeln und Anrede beibehalten
-- Klar strukturierte Absätze
-
-Gib NUR den korrigierten Text zurück.""",
-    "chat": """Korrigiere dieses Transkript für eine Chat-Nachricht:
-- Lockerer, natürlicher Ton
-- Kurz und prägnant
-- Emojis können beibehalten werden
-- Keine übermäßige Formalisierung
-
-Gib NUR den korrigierten Text zurück.""",
-    "code": """Korrigiere dieses Transkript für technischen Kontext:
-- Technische Fachbegriffe exakt beibehalten
-- Code-Snippets, Variablennamen und Befehle nicht ändern
-- Camel/Snake-Case erkennen und beibehalten
-- Englische Begriffe nicht eindeutschen
-
-Gib NUR den korrigierten Text zurück.""",
-    "default": DEFAULT_REFINE_PROMPT,
-}
-
-# App-zu-Kontext Mapping für automatische Erkennung
-DEFAULT_APP_CONTEXTS = {
-    # Email-Clients
-    "Mail": "email",
-    "Outlook": "email",
-    "Spark": "email",
-    "Thunderbird": "email",
-    # Chat/Messenger
-    "Slack": "chat",
-    "Discord": "chat",
-    "Telegram": "chat",
-    "WhatsApp": "chat",
-    "Messages": "chat",
-    "Signal": "chat",
-    # Code-Editoren
-    "Code": "code",
-    "VS Code": "code",
-    "Visual Studio Code": "code",
-    "Cursor": "code",
-    "Zed": "code",
-    "PyCharm": "code",
-    "IntelliJ IDEA": "code",
-    "Xcode": "code",
-    "Terminal": "code",
-    "iTerm2": "code",
-    "Ghostty": "code",
-}
 
 # =============================================================================
 # Dateipfade für IPC und Konfiguration
@@ -649,14 +589,7 @@ def refine_transcript(
     # Auch leere Strings werden wie None behandelt (Fallback auf Kontext-Prompt)
     if not prompt:
         effective_context, app_name, source = detect_context(context)
-        # Validierung: Ungültiger Kontext → Warnung und Fallback
-        if effective_context not in CONTEXT_PROMPTS:
-            logger.warning(
-                f"[{_session_id}] Ungültiger Kontext '{effective_context}', verwende 'default'"
-            )
-            effective_context = "default"
-            source = "Fallback"
-        prompt = CONTEXT_PROMPTS[effective_context]
+        prompt = get_prompt_for_context(effective_context)
         # Detailliertes Logging mit Quelle
         if app_name:
             logger.info(
