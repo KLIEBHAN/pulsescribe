@@ -47,9 +47,13 @@ export WHISPER_GO_MODE="deepgram"  # api, local, oder deepgram
 ```bash
 # In .env aktivieren
 export WHISPER_GO_REFINE="true"
+
+# Optional: OpenRouter statt OpenAI nutzen
+export WHISPER_GO_REFINE_PROVIDER="openrouter"
+export OPENROUTER_API_KEY="sk-or-..."
 ```
 
-> Entfernt Füllwörter (ähm, also), korrigiert Grammatik und formatiert in saubere Absätze. Benötigt GPT-5 mini (OPENAI_API_KEY).
+> Entfernt Füllwörter (ähm, also), korrigiert Grammatik und formatiert in saubere Absätze. Unterstützt OpenAI (default) und [OpenRouter](https://openrouter.ai) für Zugang zu hunderten Modellen.
 
 **Für lokalen Modus:**
 
@@ -148,6 +152,7 @@ python transcribe.py --record --copy   # direkt in Zwischenablage
 | `--refine`                    | LLM-Nachbearbeitung aktivieren (auch via `WHISPER_GO_REFINE` env)                                                               |
 | `--no-refine`                 | LLM-Nachbearbeitung deaktivieren (überschreibt env)                                                                             |
 | `--refine-model MODEL`        | Modell für Nachbearbeitung (default: `gpt-5-nano`, auch via `WHISPER_GO_REFINE_MODEL` env)                                      |
+| `--refine-provider`           | LLM-Provider: `openai` (default) oder `openrouter` (auch via `WHISPER_GO_REFINE_PROVIDER` env)                                  |
 
 ### Beispiele
 

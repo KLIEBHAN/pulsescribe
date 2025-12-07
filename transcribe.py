@@ -41,6 +41,9 @@ DEFAULT_LOCAL_MODEL = "turbo"
 DEFAULT_DEEPGRAM_MODEL = "nova-3"
 DEFAULT_REFINE_MODEL = "gpt-5-nano"  # Wird von WHISPER_GO_REFINE_MODEL überschrieben
 
+# OpenRouter API (Alternative zu OpenAI für Nachbearbeitung)
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
 DEFAULT_REFINE_PROMPT = """Korrigiere dieses Transkript:
 - Entferne Füllwörter (ähm, also, quasi, sozusagen)
 - Korrigiere Grammatik und Rechtschreibung
@@ -399,43 +402,66 @@ def transcribe_locally(
     return result["text"]
 
 
+def _get_refine_client(provider: str):
+    """Erstellt OpenAI-Client für Nachbearbeitung (OpenAI oder OpenRouter)."""
+    from openai import OpenAI
+
+    if provider == "openrouter":
+        api_key = os.getenv("OPENROUTER_API_KEY")
+        if not api_key:
+            raise ValueError("OPENROUTER_API_KEY nicht gesetzt")
+        return OpenAI(base_url=OPENROUTER_BASE_URL, api_key=api_key)
+
+    # Default: OpenAI (nutzt OPENAI_API_KEY automatisch)
+    return OpenAI()
+
+
 def refine_transcript(
     transcript: str,
     model: str | None = None,
     prompt: str | None = None,
+    provider: str | None = None,
 ) -> str:
-    """Nachbearbeitung mit LLM (Flow-Style)."""
-    from openai import OpenAI
-
+    """Nachbearbeitung mit LLM (Flow-Style). Unterstützt OpenAI und OpenRouter."""
     # Leeres Transkript → nichts zu tun
     if not transcript or not transcript.strip():
         logger.debug(f"[{_session_id}] Leeres Transkript, überspringe Nachbearbeitung")
         return transcript
 
-    # ENV zur Laufzeit lesen (nach load_environment)
+    # Provider und Modell zur Laufzeit bestimmen (CLI > ENV > Default)
+    effective_provider = (
+        provider or os.getenv("WHISPER_GO_REFINE_PROVIDER", "openai")
+    ).lower()
     effective_model = model or os.getenv(
         "WHISPER_GO_REFINE_MODEL", DEFAULT_REFINE_MODEL
     )
-    logger.info(f"[{_session_id}] LLM-Nachbearbeitung: model={effective_model}")
+
+    logger.info(
+        f"[{_session_id}] LLM-Nachbearbeitung: provider={effective_provider}, model={effective_model}"
+    )
     logger.debug(f"[{_session_id}] Input: {len(transcript)} Zeichen")
 
-    client = OpenAI()
-
-    api_params = {
-        "model": effective_model,
-        "input": f"{prompt or DEFAULT_REFINE_PROMPT}\n\nTranskript:\n{transcript}",
-    }
-
-    # GPT-5 nutzt "reasoning" API mit effort-Level, ältere Modelle ignorieren das
-    if effective_model.startswith("gpt-5"):
-        api_params["reasoning"] = {"effort": "minimal"}
+    client = _get_refine_client(effective_provider)
+    full_prompt = f"{prompt or DEFAULT_REFINE_PROMPT}\n\nTranskript:\n{transcript}"
 
     with timed_operation("LLM-Nachbearbeitung"):
-        response = client.responses.create(**api_params)
+        if effective_provider == "openrouter":
+            # OpenRouter nutzt Chat Completions API
+            response = client.chat.completions.create(
+                model=effective_model,
+                messages=[{"role": "user", "content": full_prompt}],
+            )
+            result = response.choices[0].message.content.strip()
+        else:
+            # OpenAI responses API
+            api_params = {"model": effective_model, "input": full_prompt}
+            # GPT-5 nutzt "reasoning" API mit effort-Level
+            if effective_model.startswith("gpt-5"):
+                api_params["reasoning"] = {"effort": "minimal"}
+            response = client.responses.create(**api_params)
+            result = response.output_text.strip()
 
-    result = response.output_text.strip()
     logger.debug(f"[{_session_id}] Output: {_log_preview(result)}")
-
     return result
 
 
@@ -447,7 +473,11 @@ def maybe_refine_transcript(transcript: str, args: argparse.Namespace) -> str:
         return transcript
 
     try:
-        return refine_transcript(transcript, model=args.refine_model)
+        return refine_transcript(
+            transcript,
+            model=args.refine_model,
+            provider=args.refine_provider,
+        )
     except (APIError, APIConnectionError, RateLimitError) as e:
         logger.warning(f"LLM-Nachbearbeitung fehlgeschlagen: {e}")
         return transcript
@@ -554,6 +584,12 @@ Beispiele:
         "--refine-model",
         default=None,
         help=f"Modell für LLM-Nachbearbeitung (default: {DEFAULT_REFINE_MODEL}, auch via WHISPER_GO_REFINE_MODEL env)",
+    )
+    parser.add_argument(
+        "--refine-provider",
+        choices=["openai", "openrouter"],
+        default=None,
+        help="LLM-Provider für Nachbearbeitung (auch via WHISPER_GO_REFINE_PROVIDER env)",
     )
 
     args = parser.parse_args()
