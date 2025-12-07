@@ -153,6 +153,28 @@ def record_audio() -> Path:
     return output_path
 
 
+def _cleanup_stale_pid_file() -> None:
+    """Entfernt PID-File falls der Prozess nicht mehr läuft (Crash-Recovery)."""
+    if not PID_FILE.exists():
+        return
+
+    try:
+        old_pid = int(PID_FILE.read_text().strip())
+        # Prüfen ob Prozess noch läuft (Signal 0 = nur prüfen, nicht senden)
+        os.kill(old_pid, 0)
+        # Prozess läuft noch - könnte legitim sein oder Zombie
+        logger.warning(f"PID-File existiert, Prozess {old_pid} läuft noch")
+    except (ValueError, ProcessLookupError):
+        # PID ungültig oder Prozess existiert nicht mehr → aufräumen
+        logger.info(f"Stale PID-File gefunden, wird gelöscht: {PID_FILE}")
+        PID_FILE.unlink()
+    except PermissionError:
+        # Prozess existiert, gehört aber anderem User
+        logger.warning(
+            f"PID-File {PID_FILE} existiert, keine Berechtigung für Prozess-Check"
+        )
+
+
 def record_audio_daemon() -> Path:
     """
     Daemon-Modus: Nimmt Audio auf bis SIGUSR1 empfangen wird.
@@ -162,6 +184,9 @@ def record_audio_daemon() -> Path:
     import numpy as np
     import sounddevice as sd
     import soundfile as sf
+
+    # Stale PID-File von vorherigem Crash aufräumen
+    _cleanup_stale_pid_file()
 
     recorded_chunks: list = []
     stop_flag = {"stop": False}  # Mutable Container statt global
