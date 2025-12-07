@@ -65,10 +65,29 @@ class WhisperGoStatus(rumps.App):
                 pass
 
         # Fallback: PID_FILE (für Abwärtskompatibilität)
+        # Prüfe ob Prozess tatsächlich noch läuft
         if PID_FILE.exists():
-            return "recording"
+            if self._is_process_alive():
+                return "recording"
+            # PID-Datei existiert aber Prozess ist tot → aufräumen
+            try:
+                PID_FILE.unlink()
+            except (OSError, IOError):
+                pass
 
         return "idle"
+
+    def _is_process_alive(self) -> bool:
+        """Prüft ob der Daemon-Prozess noch läuft."""
+        try:
+            pid = int(PID_FILE.read_text().strip())
+            # Signal 0 prüft nur ob Prozess existiert, sendet nichts
+            import os
+
+            os.kill(pid, 0)
+            return True
+        except (ValueError, OSError, IOError):
+            return False
 
 
 def main():

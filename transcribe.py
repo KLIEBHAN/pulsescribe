@@ -809,6 +809,18 @@ Beispiele:
     return args
 
 
+def _schedule_state_cleanup(delay: float = 2.0) -> None:
+    """Löscht STATE_FILE nach Verzögerung in Background-Thread (non-blocking)."""
+    import threading
+
+    def cleanup():
+        time.sleep(delay)
+        STATE_FILE.unlink(missing_ok=True)
+
+    thread = threading.Thread(target=cleanup, daemon=True)
+    thread.start()
+
+
 def run_daemon_mode(args: argparse.Namespace) -> int:
     """
     Daemon-Modus für Raycast: Aufnahme → Transkription → Datei.
@@ -876,9 +888,8 @@ def run_daemon_mode(args: argparse.Namespace) -> int:
     finally:
         if temp_file and temp_file.exists():
             temp_file.unlink()
-        # State-Datei nach kurzer Verzögerung aufräumen
-        time.sleep(2)
-        STATE_FILE.unlink(missing_ok=True)
+        # State-Datei nach kurzer Verzögerung aufräumen (non-blocking)
+        _schedule_state_cleanup()
 
 
 def main() -> int:
