@@ -80,6 +80,18 @@ python transcribe.py --record --refine --context email
 export WHISPER_GO_APP_CONTEXTS='{"MyApp": "chat"}'
 ```
 
+**Custom Vocabulary (Namen & Fachbegriffe):**
+
+Eigene Begriffe für bessere Erkennung in `~/.whisper_go/vocabulary.json`:
+
+```json
+{
+  "keywords": ["Anthropic", "Claude", "Kubernetes", "OAuth"]
+}
+```
+
+Unterstützt von Deepgram (native `keywords`) und lokalem Whisper (`initial_prompt`). Die OpenAI API unterstützt kein Custom Vocabulary – dort hilft nur die LLM-Nachbearbeitung.
+
 **Für lokalen Modus:**
 
 ```bash

@@ -121,6 +121,9 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 LOG_DIR = SCRIPT_DIR / "logs"
 LOG_FILE = LOG_DIR / "whisper_go.log"
 
+# Custom Vocabulary für bessere Erkennung von Namen und Fachbegriffen
+VOCABULARY_FILE = Path.home() / ".whisper_go" / "vocabulary.json"
+
 # Logger konfigurieren
 logger = logging.getLogger("whisper_go")
 
@@ -360,6 +363,33 @@ def record_audio_daemon() -> Path:
     return output_path
 
 
+def load_vocabulary() -> dict:
+    """Lädt Custom Vocabulary aus JSON-Datei (~/.whisper_go/vocabulary.json).
+
+    Format:
+        {
+            "keywords": ["Anthropic", "Claude", "Kubernetes"],
+            "sounds_like": {"OAuth": ["o auth", "o-auth"]}
+        }
+
+    Returns:
+        Dict mit "keywords" (Liste) und "sounds_like" (Dict). Bei Fehler leeres Dict.
+    """
+    if not VOCABULARY_FILE.exists():
+        return {"keywords": [], "sounds_like": {}}
+    try:
+        data = json.loads(VOCABULARY_FILE.read_text())
+        # Validierung: keywords muss Liste sein
+        if not isinstance(data.get("keywords"), list):
+            data["keywords"] = []
+        if not isinstance(data.get("sounds_like"), dict):
+            data["sounds_like"] = {}
+        return data
+    except (json.JSONDecodeError, IOError) as e:
+        logger.warning(f"[{_session_id}] Vocabulary-Datei fehlerhaft: {e}")
+        return {"keywords": [], "sounds_like": {}}
+
+
 def transcribe_with_api(
     audio_path: Path,
     model: str,
@@ -407,8 +437,12 @@ def transcribe_with_deepgram(
     from deepgram import DeepgramClient
 
     audio_kb = audio_path.stat().st_size // 1024
+    vocab = load_vocabulary()
+    keywords = vocab.get("keywords", [])
+
     logger.info(
-        f"[{_session_id}] Deepgram: {model}, {audio_kb}KB, lang={language or 'auto'}"
+        f"[{_session_id}] Deepgram: {model}, {audio_kb}KB, lang={language or 'auto'}, "
+        f"keywords={len(keywords)}"
     )
 
     api_key = os.getenv("DEEPGRAM_API_KEY")
@@ -427,6 +461,7 @@ def transcribe_with_deepgram(
             language=language,
             smart_format=True,
             punctuate=True,
+            keywords=keywords if keywords else None,
         )
 
     result = response.results.channels[0].alternatives[0].transcript
@@ -448,7 +483,16 @@ def transcribe_locally(
     whisper_model = whisper.load_model(model)
 
     log(f"Transkribiere {audio_path.name}...")
-    options = {"language": language} if language else {}
+    options: dict = {"language": language} if language else {}
+
+    # Custom Vocabulary als initial_prompt für bessere Erkennung
+    vocab = load_vocabulary()
+    keywords = vocab.get("keywords", [])
+    if keywords:
+        # Whisper nutzt initial_prompt als Kontext für Transkription
+        options["initial_prompt"] = f"Fachbegriffe: {', '.join(keywords)}"
+        logger.debug(f"[{_session_id}] Lokales Whisper mit {len(keywords)} Keywords")
+
     result = whisper_model.transcribe(str(audio_path), **options)
 
     return result["text"]

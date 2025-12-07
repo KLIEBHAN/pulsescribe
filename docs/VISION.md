@@ -61,7 +61,7 @@ Kein Electron. Kein Cloud-Lock-in. Kein Abo.
 - [x] Multi-Provider Support (OpenAI, OpenRouter)
 - [x] Deepgram Nova-3 Integration (schneller als Whisper API)
 - [x] Kontext-Awareness (Email formal, Chat casual, Code technisch)
-- [ ] Custom Vocabulary (Namen, Fachbegriffe)
+- [x] Custom Vocabulary (Namen, Fachbegriffe)
 
 ### Phase 4: Native App
 
@@ -118,7 +118,7 @@ Bewusst ausgeschlossen, um Fokus zu halten:
 | STT    | Deepgram / OpenAI / Whisper | Flexibel, best-of-breed      |
 | LLM    | OpenAI / OpenRouter         | Multi-Provider für Refine    |
 | Hotkey | Raycast Extension           | Native macOS Integration     |
-| GUI    | rumps (geplant)             | Native macOS Menübar         |
+| GUI    | rumps                       | Native macOS Menübar         |
 
 ---
 
