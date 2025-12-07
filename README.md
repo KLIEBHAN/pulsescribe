@@ -135,6 +135,28 @@ Für echtes Push-to-Talk (Taste halten = Aufnahme, loslassen = einfügen):
 > **Tipp:** Caps Lock als Hyper-Key (⌘⌃⌥⇧) mappen, dann ist es nur Caps+A.
 > Die Karabiner-Rule sendet F19. In Raycast muss F19 als Hotkey für "Toggle Recording" gesetzt sein.
 
+### Menübar-Feedback (optional)
+
+Visuelles Feedback in der macOS-Menüleiste während der Aufnahme:
+
+```bash
+# Einmalig rumps installieren
+pip install rumps
+
+# Menübar-App starten
+python menubar.py
+```
+
+| Icon | Status              |
+| ---- | ------------------- |
+| 🎤   | Bereit (Idle)       |
+| 🔴   | Aufnahme läuft      |
+| ⏳   | Transkription läuft |
+| ✅   | Erfolgreich         |
+| ❌   | Fehler              |
+
+> Die Menübar-App zeigt nur den Status an. Start/Stop erfolgt weiterhin über Raycast.
+
 ## CLI-Nutzung
 
 ### Audiodatei transkribieren

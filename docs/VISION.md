@@ -53,7 +53,7 @@ Kein Electron. Kein Cloud-Lock-in. Kein Abo.
 - [x] Raycast Extension für Hotkey-Aktivierung
 - [x] Auto-Paste nach Transkription
 - [x] Akustisches Feedback bei Aufnahmestart (`play_ready_sound`)
-- [ ] Menübar-Feedback (optional)
+- [x] Menübar-Feedback (`menubar.py` mit rumps)
 
 ### Phase 3: Smart Features ← aktuell
 

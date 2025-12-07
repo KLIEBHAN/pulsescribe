@@ -5,3 +5,4 @@ sounddevice
 soundfile
 pyperclip
 python-dotenv
+rumps>=0.4.0
