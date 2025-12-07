@@ -105,6 +105,9 @@ DEFAULT_APP_CONTEXTS = {
     "Ghostty": "code",
 }
 
+# Cache für custom app contexts (parsed from WHISPER_GO_APP_CONTEXTS)
+_custom_app_contexts_cache: dict | None = None
+
 TEMP_RECORDING_FILENAME = "whisper_recording.wav"
 
 # Daemon-Modus: Dateien für IPC mit Raycast
@@ -474,50 +477,71 @@ def _get_frontmost_app() -> str | None:
         app = NSWorkspace.sharedWorkspace().frontmostApplication()
         return app.localizedName() if app else None
     except ImportError:
-        # PyObjC nicht verfügbar (sollte auf macOS nicht passieren)
+        logger.debug(f"[{_session_id}] PyObjC/AppKit nicht verfügbar")
         return None
-    except Exception:
+    except Exception as e:
+        logger.debug(f"[{_session_id}] App-Detection fehlgeschlagen: {e}")
         return None
+
+
+def _get_custom_app_contexts() -> dict:
+    """Lädt und cached custom app contexts aus WHISPER_GO_APP_CONTEXTS."""
+    global _custom_app_contexts_cache
+
+    if _custom_app_contexts_cache is not None:
+        return _custom_app_contexts_cache
+
+    custom = os.getenv("WHISPER_GO_APP_CONTEXTS")
+    if custom:
+        try:
+            _custom_app_contexts_cache = json.loads(custom)
+            logger.debug(
+                f"[{_session_id}] Custom app contexts geladen: "
+                f"{list(_custom_app_contexts_cache.keys())}"
+            )
+        except json.JSONDecodeError as e:
+            logger.warning(
+                f"[{_session_id}] WHISPER_GO_APP_CONTEXTS ungültiges JSON: {e}"
+            )
+            _custom_app_contexts_cache = {}
+    else:
+        _custom_app_contexts_cache = {}
+
+    return _custom_app_contexts_cache
 
 
 def _app_to_context(app_name: str) -> str:
     """Mappt App-Name auf Kontext-Typ."""
-    # Custom mappings aus ENV laden (JSON-Format)
-    custom = os.getenv("WHISPER_GO_APP_CONTEXTS")
-    if custom:
-        try:
-            custom_map = json.loads(custom)
-            if app_name in custom_map:
-                return custom_map[app_name]
-        except json.JSONDecodeError:
-            pass
+    custom_map = _get_custom_app_contexts()
+    if app_name in custom_map:
+        return custom_map[app_name]
 
     return DEFAULT_APP_CONTEXTS.get(app_name, "default")
 
 
-def detect_context(override: str | None = None) -> tuple[str, str | None]:
+def detect_context(override: str | None = None) -> tuple[str, str | None, str]:
     """
     Ermittelt Kontext: CLI > ENV > App-Detection > default.
 
     Returns:
-        Tuple (context, app_name) - app_name ist None wenn nicht via App-Detection
+        Tuple (context, app_name, source) - source zeigt woher der Kontext kommt
     """
     # 1. CLI-Override (höchste Priorität)
     if override:
-        return override, None
+        return override, None, "CLI"
 
     # 2. ENV-Override
     env_context = os.getenv("WHISPER_GO_CONTEXT")
     if env_context:
-        return env_context.lower(), None
+        return env_context.lower(), None, "ENV"
 
     # 3. Auto-Detection via NSWorkspace (nur macOS)
     if sys.platform == "darwin":
         app_name = _get_frontmost_app()
         if app_name:
-            return _app_to_context(app_name), app_name
+            return _app_to_context(app_name), app_name, "App"
 
-    return "default", None
+    return "default", None, "Default"
 
 
 def _get_refine_client(provider: str):
@@ -548,21 +572,26 @@ def refine_transcript(
         return transcript
 
     # Kontext-spezifischen Prompt wählen (falls nicht explizit übergeben)
-    if prompt is None:
-        effective_context, app_name = detect_context(context)
+    # Auch leere Strings werden wie None behandelt (Fallback auf Kontext-Prompt)
+    if not prompt:
+        effective_context, app_name, source = detect_context(context)
         # Validierung: Ungültiger Kontext → Warnung und Fallback
         if effective_context not in CONTEXT_PROMPTS:
             logger.warning(
                 f"[{_session_id}] Ungültiger Kontext '{effective_context}', verwende 'default'"
             )
             effective_context = "default"
+            source = "Fallback"
         prompt = CONTEXT_PROMPTS[effective_context]
+        # Detailliertes Logging mit Quelle
         if app_name:
             logger.info(
-                f"[{_session_id}] Kontext: {effective_context} (via {app_name})"
+                f"[{_session_id}] Kontext: {effective_context} (Quelle: {source}, App: {app_name})"
             )
         else:
-            logger.info(f"[{_session_id}] Kontext: {effective_context}")
+            logger.info(
+                f"[{_session_id}] Kontext: {effective_context} (Quelle: {source})"
+            )
 
     # Provider und Modell zur Laufzeit bestimmen (CLI > ENV > Default)
     effective_provider = (
