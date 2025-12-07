@@ -446,29 +446,31 @@ def refine_transcript(
 
     with timed_operation("LLM-Nachbearbeitung"):
         if effective_provider == "openrouter":
-            # OpenRouter Provider-Routing konfigurieren (optional)
-            extra_body = None
+            # OpenRouter API-Aufruf vorbereiten
+            create_kwargs = {
+                "model": effective_model,
+                "messages": [{"role": "user", "content": full_prompt}],
+            }
+
+            # Provider-Routing konfigurieren (optional)
             provider_order = os.getenv("OPENROUTER_PROVIDER_ORDER")
             if provider_order:
-                extra_body = {
+                providers = [p.strip() for p in provider_order.split(",")]
+                allow_fallbacks = (
+                    os.getenv("OPENROUTER_ALLOW_FALLBACKS", "true").lower() == "true"
+                )
+                create_kwargs["extra_body"] = {
                     "provider": {
-                        "order": [p.strip() for p in provider_order.split(",")],
-                        "allow_fallbacks": os.getenv(
-                            "OPENROUTER_ALLOW_FALLBACKS", "true"
-                        ).lower()
-                        == "true",
+                        "order": providers,
+                        "allow_fallbacks": allow_fallbacks,
                     }
                 }
-                logger.debug(
-                    f"[{_session_id}] OpenRouter Provider-Order: {provider_order}"
+                logger.info(
+                    f"[{_session_id}] OpenRouter Provider: {', '.join(providers)} "
+                    f"(fallbacks: {allow_fallbacks})"
                 )
 
-            # OpenRouter nutzt Chat Completions API
-            response = client.chat.completions.create(
-                model=effective_model,
-                messages=[{"role": "user", "content": full_prompt}],
-                extra_body=extra_body,
-            )
+            response = client.chat.completions.create(**create_kwargs)
             # content kann String, Liste von Parts oder None sein
             content = response.choices[0].message.content
             if content is None:
