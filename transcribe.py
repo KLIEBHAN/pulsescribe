@@ -560,6 +560,7 @@ async def _transcribe_with_deepgram_stream_async(
             # Audio-Sender Task
             async def send_audio():
                 """Sendet Audio-Chunks aus der Queue an Deepgram."""
+                nonlocal stream_error
                 try:
                     while not stop_event.is_set():
                         try:
@@ -571,8 +572,12 @@ async def _transcribe_with_deepgram_stream_async(
                             await connection.send_media(chunk)
                         except asyncio.TimeoutError:
                             continue
+                except asyncio.CancelledError:
+                    pass  # Normales Shutdown
                 except Exception as e:
                     logger.error(f"[{_session_id}] Audio-Send Fehler: {e}")
+                    stream_error = e
+                    stop_event.set()  # Signal für Abbruch
 
             # Listener Task (offizielle SDK API)
             async def listen_for_messages():
@@ -604,9 +609,8 @@ async def _transcribe_with_deepgram_stream_async(
 
                 logger.info(f"[{_session_id}] Stop-Signal empfangen")
 
-                # Tasks beenden
-                await audio_queue.put(None)  # Sentinel für send_audio
-                send_task.cancel()
+                # Tasks beenden: Sentinel für send_audio, cancel für listen
+                await audio_queue.put(None)
                 listen_task.cancel()
 
                 # Auf Task-Beendigung warten
