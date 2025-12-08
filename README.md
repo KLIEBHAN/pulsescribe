@@ -297,3 +297,18 @@ Groq nutzt LPU-Chips (Language Processing Units) für besonders schnelle Inferen
 | Mikrofon geht nicht (macOS) | `brew install portaudio && pip install --force-reinstall sounddevice` |
 | ffmpeg fehlt                | `brew install ffmpeg` (macOS) oder `sudo apt install ffmpeg` (Ubuntu) |
 | Transkription langsam       | Wechsel zu `--mode groq` oder `--mode deepgram` statt `local`         |
+
+## Development
+
+```bash
+# Test-Dependencies installieren
+pip install -r requirements-dev.txt
+
+# Tests ausführen
+pytest -v
+
+# Mit Coverage-Report
+pytest --cov=. --cov-report=term-missing
+```
+
+Tests laufen automatisch via GitHub Actions bei Push und Pull Requests.
