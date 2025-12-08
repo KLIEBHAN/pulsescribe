@@ -57,7 +57,6 @@ class WhisperGoStatus(rumps.App):
         super().__init__(ICONS["idle"], quit_button="Beenden")
         self.timer = rumps.Timer(self.poll_state, POLL_INTERVAL)
         self.timer.start()
-        self._last_state = "idle"
 
     def poll_state(self, _sender):
         """Liest aktuellen State und optional Interim-Text."""
@@ -76,7 +75,6 @@ class WhisperGoStatus(rumps.App):
         # Nur aktualisieren wenn sich Titel geändert hat
         if new_title != self.title:
             self.title = new_title
-            self._last_state = state
 
     def _read_state(self) -> str:
         """Ermittelt aktuellen State aus IPC-Dateien."""
@@ -112,12 +110,13 @@ class WhisperGoStatus(rumps.App):
 
     def _read_interim(self) -> str | None:
         """Liest aktuellen Interim-Text für Live-Preview."""
-        if INTERIM_FILE.exists():
-            try:
-                return INTERIM_FILE.read_text().strip() or None
-            except (OSError, IOError):
-                pass
-        return None
+        try:
+            text = INTERIM_FILE.read_text().strip()
+            return text or None
+        except FileNotFoundError:
+            return None
+        except OSError:
+            return None
 
 
 def main():

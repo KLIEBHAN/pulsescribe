@@ -752,9 +752,15 @@ async def _deepgram_stream_core(
             # Throttling: Max alle INTERIM_THROTTLE_MS schreiben
             now = time.perf_counter()
             if (now - last_interim_write) * 1000 >= INTERIM_THROTTLE_MS:
-                INTERIM_FILE.write_text(transcript)
-                last_interim_write = now
-                logger.debug(f"[{_session_id}] Interim: {_log_preview(transcript, 30)}")
+                try:
+                    INTERIM_FILE.write_text(transcript)
+                    last_interim_write = now
+                    logger.debug(
+                        f"[{_session_id}] Interim: {_log_preview(transcript, 30)}"
+                    )
+                except OSError as e:
+                    # I/O-Fehler nicht den Stream abbrechen lassen
+                    logger.warning(f"[{_session_id}] Interim-Write fehlgeschlagen: {e}")
 
     def on_error(error):
         nonlocal stream_error
