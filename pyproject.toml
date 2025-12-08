@@ -1,0 +1,40 @@
+[project]
+name = "whisper-go"
+version = "1.0.0"
+description = "Spracheingabe für macOS – Transkription mit OpenAI Whisper, Deepgram, Groq oder lokal"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--strict-markers",
+    "--tb=short",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.coverage.run]
+source = ["."]
+omit = [
+    "tests/*",
+    "menubar.py",           # GUI-Code (rumps) - schwer testbar
+    "whisper-go-raycast/*", # Raycast Extension (TypeScript)
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+]
+# Audio/Streaming-Code ist bewusst nicht getestet (Hardware-abhängig)
+# Erwartete Coverage für transcribe.py: ~30-40% (Kernfunktionen)
+# Erwartete Coverage für prompts.py: 100%
