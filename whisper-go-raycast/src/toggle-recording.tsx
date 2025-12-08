@@ -13,7 +13,6 @@
  */
 
 import {
-  showHUD,
   showToast,
   Toast,
   Clipboard,
@@ -127,10 +126,7 @@ function validateConfig(prefs: Preferences): string | null {
 async function startRecording(prefs: Preferences): Promise<void> {
   logTiming("startRecording() called");
 
-  // HUD SOFORT zeigen (optimistisch) - das dauert ~1s, also parallel starten!
-  const hudPromise = showHUD("🎤 Aufnahme läuft...");
-  logTiming("showHUD() started (async)");
-
+  // Fenster schließen - Overlay zeigt Status via overlay.py
   await closeMainWindow();
   logTiming("closeMainWindow() done");
 
@@ -155,10 +151,6 @@ async function startRecording(prefs: Preferences): Promise<void> {
   });
   daemon.unref();
   logTiming("daemon spawned");
-
-  // Auf HUD warten (läuft parallel zum Daemon-Start)
-  await hudPromise;
-  logTiming("showHUD() done");
 
   // Kurz prüfen ob Daemon erfolgreich gestartet (max 500ms)
   const deadline = Date.now() + 500;
@@ -215,55 +207,48 @@ async function stopRecording(): Promise<void> {
     return;
   }
 
-  // Animierter Toast während Transkription
-  const toast = await showToast({
-    style: Toast.Style.Animated,
-    title: "Transkribiere",
-    message: "Verarbeite Audio...",
-  });
-
+  // Signal zum Stoppen senden - Overlay zeigt Status
   process.kill(pid, "SIGUSR1");
 
+  // Auf Ergebnis warten (ohne Toast - Overlay zeigt "Transcribing...")
   const deadline = Date.now() + TIMEOUT.transcription;
   while (Date.now() < deadline) {
     const error = readAndDelete(IPC.error);
     if (error) {
-      toast.style = Toast.Style.Failure;
-      toast.title = "Transkription fehlgeschlagen";
-      toast.message = error;
-      await sleep(3000);
-      await toast.hide();
+      // Nur bei Fehlern Toast zeigen
+      await showToast({
+        style: Toast.Style.Failure,
+        title: "Transkription fehlgeschlagen",
+        message: error,
+      });
       return;
     }
 
     const text = readAndDelete(IPC.transcript);
     if (text !== null) {
-      // Leeres Transkript = nichts gesprochen
       if (!text) {
-        toast.style = Toast.Style.Success;
-        toast.title = "⚠️ Keine Sprache erkannt";
-        toast.message = "Aufnahme beendet";
-        await sleep(1500);
-        await toast.hide();
+        // Leeres Transkript = nichts gesprochen
+        await showToast({
+          style: Toast.Style.Failure,
+          title: "Keine Sprache erkannt",
+          message: "Aufnahme war zu kurz oder leise",
+        });
         return;
       }
+      // Text einfügen - kein Toast nötig, Ergebnis ist sichtbar
       await Clipboard.paste(text);
-      toast.style = Toast.Style.Success;
-      toast.title = "Text eingefügt";
-      toast.message = text.length > 50 ? `${text.slice(0, 50)}...` : text;
-      await sleep(2000);
-      await toast.hide();
       return;
     }
 
     await sleep(TIMEOUT.poll);
   }
 
-  toast.style = Toast.Style.Failure;
-  toast.title = "Timeout";
-  toast.message = "Transkription dauerte zu lange";
-  await sleep(3000);
-  await toast.hide();
+  // Timeout
+  await showToast({
+    style: Toast.Style.Failure,
+    title: "Timeout",
+    message: "Transkription dauerte zu lange",
+  });
 }
 
 // --- Entry Point ---

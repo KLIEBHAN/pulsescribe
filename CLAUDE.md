@@ -13,6 +13,7 @@ whisper_go/
 ├── transcribe.py          # CLI für Transkription
 ├── prompts.py             # LLM-Prompts und Kontext-Mappings
 ├── menubar.py             # Menübar-Status (rumps)
+├── overlay.py             # Untertitel-Overlay (PyObjC)
 ├── requirements.txt       # Dependencies
 ├── README.md              # Benutzer-Dokumentation
 ├── CLAUDE.md              # Diese Datei
@@ -99,6 +100,7 @@ python transcribe.py --record --copy --language de
 | `WHISPER_GO_REFINE_PROVIDER` | Provider: `openai`, `openrouter` oder `groq`          |
 | `WHISPER_GO_CONTEXT`         | Kontext-Override: `email`/`chat`/`code`               |
 | `WHISPER_GO_APP_CONTEXTS`    | Custom App-Mappings (JSON)                            |
+| `WHISPER_GO_OVERLAY`         | Untertitel-Overlay aktivieren: `true`/`false`         |
 | `OPENAI_API_KEY`             | Für API-Modus und OpenAI-Refine                       |
 | `DEEPGRAM_API_KEY`           | Für Deepgram-Modus (REST + Streaming)                 |
 | `GROQ_API_KEY`               | Für Groq-Modus und Groq-Refine                        |
