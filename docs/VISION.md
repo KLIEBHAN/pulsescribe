@@ -103,11 +103,12 @@ Kein Electron. Kein Cloud-Lock-in. Kein Abo.
 
 Bewusst ausgeschlossen, um Fokus zu halten:
 
-- ❌ Echtzeit-Streaming während des Sprechens
 - ❌ Sprachsteuerung ("öffne Safari")
 - ❌ Meeting-Transkription (> 5 Min)
 - ❌ Team/Enterprise Features
 - ❌ Eigenes Modell-Training
+
+> **Update:** Echtzeit-Streaming ist jetzt via Deepgram WebSocket verfügbar (~300ms Latenz).
 
 ---
 
@@ -126,12 +127,12 @@ Bewusst ausgeschlossen, um Fokus zu halten:
 
 ## Erfolgs-Metriken
 
-| Metrik      | Ziel                 |
-| ----------- | -------------------- |
-| Latenz      | < 2s (Hotkey → Text) |
-| Genauigkeit | > 95% (DE/EN)        |
-| RAM (Idle)  | < 100 MB             |
-| Onboarding  | < 1 Minute           |
+| Metrik      | Ziel                 | Status                         |
+| ----------- | -------------------- | ------------------------------ |
+| Latenz      | < 2s (Hotkey → Text) | ✅ ~300ms (Deepgram Streaming) |
+| Genauigkeit | > 95% (DE/EN)        | ✅ Erreicht mit Nova-3         |
+| RAM (Idle)  | < 100 MB             | ✅ Kein Daemon im Idle         |
+| Onboarding  | < 1 Minute           | ✅ Schnellstart in README      |
 
 ---
 

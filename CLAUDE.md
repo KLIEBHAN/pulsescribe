@@ -32,7 +32,9 @@ whisper_go/
 | ----------------------------------- | ---------------------------------------------- |
 | `record_audio()`                    | Mikrofon-Aufnahme (interaktiv, mit ENTER)      |
 | `record_audio_daemon()`             | Mikrofon-Aufnahme (Signal-basiert, Raycast)    |
-| `play_ready_sound()`                | Akustisches Feedback bei Aufnahmestart (macOS) |
+| `play_ready_sound()`                | Ready-Ton via CoreAudio (~0.2ms Latenz)        |
+| `play_stop_sound()`                 | Stop-Ton via CoreAudio                         |
+| `play_error_sound()`                | Fehler-Ton via CoreAudio                       |
 | `transcribe()`                      | Zentrale API – wählt Modus automatisch         |
 | `transcribe_with_api()`             | OpenAI API Transkription                       |
 | `transcribe_with_deepgram()`        | Deepgram Nova-3 Transkription (REST)           |
@@ -46,6 +48,7 @@ whisper_go/
 | `_get_refine_client()`              | Client-Factory für Refine-Provider             |
 | `run_daemon_mode()`                 | Raycast-Modus: Aufnahme → Transkript-Datei     |
 | `run_daemon_mode_streaming()`       | Raycast-Modus mit Deepgram Streaming           |
+| `_cleanup_stale_pid_file()`         | Zombie-Prozess Cleanup mit PID-Validierung     |
 | `parse_args()`                      | CLI-Argument-Handling                          |
 
 **Design-Entscheidungen:**
