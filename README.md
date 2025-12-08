@@ -205,9 +205,26 @@ In Karabiner: Preferences → Complex Modifications → Add rule → "Whisper Go
 
 > **Tipp:** Caps Lock als Hyper-Key (⌘⌃⌥⇧) mappen, dann ist es nur Caps+A.
 
-### Menübar-Feedback (optional)
+### Visuelles Feedback (optional)
 
-Visuelles Feedback in der macOS-Menüleiste:
+Zwei Optionen für Status-Anzeige während der Aufnahme:
+
+#### Overlay (empfohlen)
+
+Elegantes Overlay am unteren Bildschirmrand mit animierter Schallwellen-Visualisierung:
+
+```bash
+./scripts/install_overlay.sh
+```
+
+- Zeigt Live-Transkription während dem Sprechen
+- Animierte Schallwellen zeigen aktive Aufnahme
+- Click-Through – stört nicht beim Arbeiten
+- Blur-Effekt wie bei Raycast
+
+#### Menübar
+
+Kompaktes Icon in der macOS-Menüleiste:
 
 ```bash
 ./scripts/install_menubar.sh
@@ -220,6 +237,8 @@ Visuelles Feedback in der macOS-Menüleiste:
 | ⏳   | Transkription läuft |
 | ✅   | Erfolgreich         |
 | ❌   | Fehler              |
+
+> **Tipp:** Beide können gleichzeitig laufen. Das Overlay zeigt mehr Details, die Menübar ist dezenter.
 
 ## Provider-Vergleich
 
