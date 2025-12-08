@@ -221,11 +221,94 @@ def parse_hotkey(hotkey_str: str) -> tuple[int, int]:
 # =============================================================================
 
 
+def _paste_via_pynput() -> bool:
+    """Paste via pynput (Cross-Platform, braucht Accessibility)."""
+    try:
+        from pynput.keyboard import Controller, Key
+
+        keyboard = Controller()
+
+        # Cmd+V senden
+        keyboard.press(Key.cmd)
+        keyboard.press("v")
+        keyboard.release("v")
+        keyboard.release(Key.cmd)
+
+        logger.info("Auto-Paste: Cmd+V gesendet via pynput")
+        return True
+
+    except ImportError:
+        logger.debug("pynput nicht installiert")
+        return False
+    except Exception as e:
+        logger.debug(f"pynput fehlgeschlagen: {e}")
+        return False
+
+
+def _paste_via_quartz() -> bool:
+    """Paste via CGEventPost (Quartz) - funktioniert nur mit TCC-Berechtigung."""
+    try:
+        from Quartz import (
+            CGEventCreateKeyboardEvent,
+            CGEventPost,
+            CGEventSetFlags,
+            kCGEventFlagMaskCommand,
+            kCGHIDEventTap,
+        )
+
+        # Virtual Key Code für 'V' ist 9
+        kVK_ANSI_V = 9
+
+        # Key Down Event mit Command-Modifier
+        event_down = CGEventCreateKeyboardEvent(None, kVK_ANSI_V, True)
+        CGEventSetFlags(event_down, kCGEventFlagMaskCommand)
+
+        # Key Up Event mit Command-Modifier
+        event_up = CGEventCreateKeyboardEvent(None, kVK_ANSI_V, False)
+        CGEventSetFlags(event_up, kCGEventFlagMaskCommand)
+
+        # Events posten
+        CGEventPost(kCGHIDEventTap, event_down)
+        CGEventPost(kCGHIDEventTap, event_up)
+
+        logger.info("Auto-Paste: Cmd+V gesendet via CGEventPost")
+        return True
+
+    except ImportError as e:
+        logger.debug(f"Quartz nicht verfügbar: {e}")
+        return False
+    except Exception as e:
+        logger.debug(f"CGEventPost fehlgeschlagen: {e}")
+        return False
+
+
+def _paste_via_osascript() -> bool:
+    """Fallback: Paste via osascript (braucht Accessibility!)."""
+    logger.debug("Versuche osascript (braucht Accessibility-Berechtigung)")
+    result = subprocess.run(
+        [
+            "osascript",
+            "-e",
+            'tell application "System Events" to keystroke "v" using command down',
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        logger.debug(f"osascript fehlgeschlagen: {result.stderr}")
+        return False
+    logger.info("Auto-Paste: Cmd+V gesendet via osascript")
+    return True
+
+
 def paste_transcript(text: str) -> bool:
     """
     Kopiert Text in Clipboard und fügt via Cmd+V ein.
 
-    Verwendet pbcopy (zuverlässiger in LaunchAgents) und CGEventPost für Cmd+V.
+    Strategie (in Prioritätsreihenfolge):
+    1. pynput - Cross-Platform, braucht Accessibility-Berechtigung
+    2. CGEventPost (Quartz) - Funktioniert wenn Python TCC-Rechte hat
+    3. osascript - Fallback (braucht Accessibility)
 
     Args:
         text: Text zum Einfügen
@@ -235,7 +318,7 @@ def paste_transcript(text: str) -> bool:
     """
     logger.info(f"Auto-Paste: '{text[:50]}{'...' if len(text) > 50 else ''}'")
 
-    # 1. In Clipboard kopieren via pbcopy (zuverlässiger als pyperclip in LaunchAgents)
+    # 1. In Clipboard kopieren via pbcopy
     try:
         process = subprocess.run(
             ["pbcopy"],
@@ -267,69 +350,33 @@ def paste_transcript(text: str) -> bool:
                 f"Clipboard-Mismatch: erwartet {len(text)} Zeichen, "
                 f"bekommen {len(clipboard_content)} Zeichen"
             )
-            logger.debug(f"Clipboard-Inhalt: '{clipboard_content[:50]}'")
         else:
-            logger.info(f"✓ Clipboard verifiziert: {len(text)} Zeichen")
+            logger.info(f"Clipboard verifiziert: {len(text)} Zeichen")
     except Exception as e:
         logger.warning(f"Clipboard-Verify fehlgeschlagen: {e}")
 
     # 3. Kurze Pause für Clipboard-Sync
     time.sleep(0.1)
 
-    # 4. Cmd+V via CGEventPost (keine Accessibility nötig!)
-    try:
-        from Quartz import (
-            CGEventCreateKeyboardEvent,
-            CGEventPost,
-            CGEventSetFlags,
-            kCGEventFlagMaskCommand,
-            kCGHIDEventTap,
-        )
+    # 4. Cmd+V senden (verschiedene Methoden in Prioritätsreihenfolge)
 
-        # Virtual Key Code für 'V' ist 9
-        kVK_ANSI_V = 9
-
-        # Key Down Event mit Command-Modifier
-        event_down = CGEventCreateKeyboardEvent(None, kVK_ANSI_V, True)
-        CGEventSetFlags(event_down, kCGEventFlagMaskCommand)
-
-        # Key Up Event mit Command-Modifier
-        event_up = CGEventCreateKeyboardEvent(None, kVK_ANSI_V, False)
-        CGEventSetFlags(event_up, kCGEventFlagMaskCommand)
-
-        # Events posten
-        CGEventPost(kCGHIDEventTap, event_down)
-        CGEventPost(kCGHIDEventTap, event_up)
-
-        logger.info("Auto-Paste: Cmd+V gesendet via CGEventPost")
+    # 4a. pynput (Cross-Platform, bevorzugt)
+    if _paste_via_pynput():
         return True
 
-    except ImportError as e:
-        logger.error(f"Quartz nicht verfügbar: {e}")
-        # Fallback auf osascript (braucht Accessibility)
-        return _paste_via_osascript()
-    except Exception as e:
-        logger.error(f"CGEventPost fehlgeschlagen: {e}")
-        return _paste_via_osascript()
+    # 4b. CGEventPost (Quartz)
+    if _paste_via_quartz():
+        return True
 
+    # 4c. osascript (letzter Fallback)
+    if _paste_via_osascript():
+        return True
 
-def _paste_via_osascript() -> bool:
-    """Fallback: Paste via osascript (braucht Accessibility!)."""
-    logger.warning("Fallback auf osascript (braucht Accessibility-Berechtigung)")
-    result = subprocess.run(
-        [
-            "osascript",
-            "-e",
-            'tell application "System Events" to keystroke "v" using command down',
-        ],
-        capture_output=True,
-        text=True,
+    logger.error(
+        "Auto-Paste fehlgeschlagen. Bitte Terminal.app in Bedienungshilfen hinzufügen: "
+        "Systemeinstellungen → Datenschutz → Bedienungshilfen"
     )
-    if result.returncode != 0:
-        logger.error(f"osascript fehlgeschlagen: {result.stderr}")
-        return False
-    logger.info("Auto-Paste: osascript erfolgreich")
-    return True
+    return False
 
 
 # =============================================================================
