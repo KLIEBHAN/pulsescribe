@@ -905,17 +905,8 @@ def _transcribe_with_deepgram_stream_with_buffer(
     model: str,
     language: str | None,
     early_buffer: list[bytes],
-    np,  # Ignoriert - für Rückwärtskompatibilität
-    sd,  # Ignoriert
-    AsyncDeepgramClient,  # Ignoriert
-    EventType,  # Ignoriert
-    ListenV1ControlMessage,  # Ignoriert
 ) -> str:
-    """
-    Streaming mit vorgepuffertem Audio (Daemon-Mode, Wrapper um Core).
-
-    Module-Parameter werden ignoriert - Core importiert selbst.
-    """
+    """Streaming mit vorgepuffertem Audio (Daemon-Mode, Wrapper um Core)."""
     import asyncio
 
     return asyncio.run(
@@ -1506,16 +1497,7 @@ def run_daemon_mode_streaming(args: argparse.Namespace) -> int:
     logger.info(f"[{_session_id}] Streaming-Daemon gestartet (PID: {os.getpid()})")
 
     try:
-        # 3. Jetzt Deepgram laden (während Mikrofon schon aufnimmt!)
-        deepgram_load_start = time.perf_counter()
-        from deepgram import AsyncDeepgramClient
-        from deepgram.core.events import EventType
-        from deepgram.extensions.types.sockets import ListenV1ControlMessage
-
-        deepgram_load_ms = (time.perf_counter() - deepgram_load_start) * 1000
-        logger.info(f"[{_session_id}] Deepgram geladen: {deepgram_load_ms:.0f}ms")
-
-        # 4. Early-Mikrofon stoppen und Buffer übergeben
+        # 3. Early-Mikrofon stoppen und Buffer übergeben
         early_stop_event.set()
         early_mic_stream.stop()
         early_mic_stream.close()
@@ -1533,11 +1515,6 @@ def run_daemon_mode_streaming(args: argparse.Namespace) -> int:
             model=args.model or DEFAULT_DEEPGRAM_MODEL,
             language=args.language,
             early_buffer=early_chunks,
-            np=np,
-            sd=sd,
-            AsyncDeepgramClient=AsyncDeepgramClient,
-            EventType=EventType,
-            ListenV1ControlMessage=ListenV1ControlMessage,
         )
 
         play_stop_sound()
