@@ -277,6 +277,7 @@ class WhisperOverlay(NSObject):
             self.current_state_file_value = None
             self.state_timestamp = 0.0
             self.breathing_active = False
+            self.current_bar_color = None  # Cache für setBarColor_
 
             self._setup_window()
             self._setup_timer()
@@ -528,7 +529,6 @@ class WhisperOverlay(NSObject):
 
     def pollState_(self, timer):
         state = self._read_state()
-        interim_text = self._read_interim()
         current_time = time.time()
 
         # State Change Detection für Feedback-Timer
@@ -580,14 +580,16 @@ class WhisperOverlay(NSObject):
         is_status_msg = False
         new_text = None
         animation_mode = None
+        target_bar_color = COLOR_IDLE
 
         if state == "recording":
             animation_mode = "recording"
-            self.wave_view.setBarColor_(COLOR_RECORDING)
+            target_bar_color = COLOR_RECORDING
 
+            # Lazy read: Interim nur bei Recording laden
+            interim_text = self._read_interim()
             if interim_text:
                 self.last_interim = interim_text
-                # Kein truncate_text mehr, natives Verhalten
                 new_text = f"{interim_text} ..."
                 is_status_msg = False
             elif self.last_interim:
@@ -599,17 +601,21 @@ class WhisperOverlay(NSObject):
 
         elif state == "transcribing":
             animation_mode = "transcribing"
-            self.wave_view.setBarColor_(COLOR_TRANSCRIBING)
+            target_bar_color = COLOR_TRANSCRIBING
             new_text = "Transcribing ..."
             self.last_interim = None
             is_status_msg = True
 
         else:  # idle
-            self.wave_view.setBarColor_(COLOR_IDLE)
             new_text = None
             self.last_interim = None
             is_status_msg = True
             animation_mode = None
+
+        # Bar Color nur bei Änderung setzen
+        if target_bar_color != self.current_bar_color:
+            self.current_bar_color = target_bar_color
+            self.wave_view.setBarColor_(target_bar_color)
 
         # Animation Update
         if animation_mode == "recording":
