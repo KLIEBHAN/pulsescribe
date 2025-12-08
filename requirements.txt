@@ -7,3 +7,4 @@ soundfile
 pyperclip
 python-dotenv
 rumps>=0.4.0
+quickmachotkey>=2023.11.17

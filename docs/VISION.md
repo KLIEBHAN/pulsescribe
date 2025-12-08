@@ -82,6 +82,11 @@ Kein Electron. Kein Cloud-Lock-in. Kein Abo.
 
 ### Phase 5: Multi-Platform ← aktuell
 
+- [ ] **Native Hotkeys (pynput)** – Raycast-Unabhängigkeit
+  - Eigene Hotkey-Registrierung via [pynput](https://pynput.readthedocs.io/)
+  - Konfigurierbare Tastenkombinationen (z.B. Double-Tap Option)
+  - Cross-Platform: Gleiche Lösung für macOS, Windows, Linux
+  - Raycast wird optional (für Nutzer die es bevorzugen)
 - [ ] **Windows Support** – Priorisiert, siehe [WINDOWS_ANALYSIS.md](./WINDOWS_ANALYSIS.md)
   - Aufwand: 120–150h (vollständige Feature-Parität)
   - Kritische Komponenten: Daemon/IPC, Overlay UI, Hotkeys
@@ -127,16 +132,16 @@ Bewusst ausgeschlossen, um Fokus zu halten:
 
 ## Tech-Stack
 
-| Layer   | Technologie                 | Warum                        |
-| ------- | --------------------------- | ---------------------------- |
-| Core    | Python 3.10+                | Whisper-Integration, einfach |
-| Audio   | sounddevice                 | Cross-platform, low-level    |
-| STT     | Deepgram / OpenAI / Whisper | Flexibel, best-of-breed      |
-| LLM     | OpenAI / OpenRouter / Groq  | Multi-Provider für Refine    |
-| Hotkey  | Raycast Extension           | Native macOS Integration     |
-| Menübar | rumps                       | Native macOS Menübar         |
-| Overlay | PyObjC                      | Native macOS UI, 60fps       |
-| Test    | pytest + GitHub Actions     | CI/CD mit Coverage           |
+| Layer   | Technologie                 | Warum                          |
+| ------- | --------------------------- | ------------------------------ |
+| Core    | Python 3.10+                | Whisper-Integration, einfach   |
+| Audio   | sounddevice                 | Cross-platform, low-level      |
+| STT     | Deepgram / OpenAI / Whisper | Flexibel, best-of-breed        |
+| LLM     | OpenAI / OpenRouter / Groq  | Multi-Provider für Refine      |
+| Hotkey  | pynput / Raycast (optional) | Cross-Platform, konfigurierbar |
+| Menübar | rumps                       | Native macOS Menübar           |
+| Overlay | PyObjC                      | Native macOS UI, 60fps         |
+| Test    | pytest + GitHub Actions     | CI/CD mit Coverage             |
 
 ---
 
