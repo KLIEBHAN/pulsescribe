@@ -84,9 +84,9 @@ class WhisperGoStatus(rumps.App):
             if state:
                 return state
         except FileNotFoundError:
-            pass
+            pass  # Erwartet: Keine Aufnahme aktiv
         except OSError:
-            pass
+            pass  # Disk-Fehler → Fallback auf PID_FILE/idle
 
         # Fallback: PID_FILE (für Abwärtskompatibilität)
         if self._is_process_alive():
@@ -96,9 +96,9 @@ class WhisperGoStatus(rumps.App):
         try:
             PID_FILE.unlink()
         except FileNotFoundError:
-            pass
+            pass  # Erwartet: Datei war schon weg
         except OSError:
-            pass
+            pass  # Cleanup nicht kritisch, ignorieren
 
         return "idle"
 
@@ -118,9 +118,9 @@ class WhisperGoStatus(rumps.App):
             text = INTERIM_FILE.read_text().strip()
             return text or None
         except FileNotFoundError:
-            return None
+            return None  # Erwartet: Noch kein Interim-Result
         except OSError:
-            return None
+            return None  # Disk-Fehler → kein Preview, nicht kritisch
 
 
 def main():
