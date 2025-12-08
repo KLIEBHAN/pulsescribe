@@ -14,6 +14,8 @@
 
 import {
   showHUD,
+  showToast,
+  Toast,
   Clipboard,
   getPreferenceValues,
   closeMainWindow,
@@ -142,6 +144,7 @@ async function startRecording(prefs: Preferences): Promise<void> {
   const deadline = Date.now() + TIMEOUT.daemonStart;
   while (Date.now() < deadline) {
     if (existsSync(IPC.pid)) {
+      // HUD statt Toast: bleibt nach Command-Ende sichtbar
       await showHUD("🎤 Aufnahme läuft...");
       return;
     }
@@ -150,7 +153,11 @@ async function startRecording(prefs: Preferences): Promise<void> {
   }
 
   const error = readAndDelete(IPC.error);
-  await showHUD(`❌ ${error || "Aufnahme konnte nicht gestartet werden"}`);
+  await showToast({
+    style: Toast.Style.Failure,
+    title: "Aufnahme fehlgeschlagen",
+    message: error || "Daemon konnte nicht gestartet werden",
+  });
 }
 
 // --- Aufnahme stoppen ---
@@ -163,40 +170,65 @@ async function stopRecording(): Promise<void> {
   try {
     pidStr = readFileSync(IPC.pid, "utf-8").trim();
   } catch {
-    await showHUD("⚠️ Keine aktive Aufnahme gefunden");
+    await showToast({
+      style: Toast.Style.Failure,
+      title: "Keine aktive Aufnahme",
+      message: "Starte zuerst eine Aufnahme",
+    });
     return;
   }
 
   const pid = parseInt(pidStr, 10);
   if (!Number.isInteger(pid) || pid <= 0 || !isProcessAlive(pid)) {
     deleteIfExists(IPC.pid);
-    await showHUD("⚠️ Keine aktive Aufnahme gefunden");
+    await showToast({
+      style: Toast.Style.Failure,
+      title: "Keine aktive Aufnahme",
+      message: "Aufnahme wurde bereits beendet",
+    });
     return;
   }
 
-  // Stoppen und auf Ergebnis warten
-  await showHUD("⏳ Transkribiere...");
+  // Animierter Toast während Transkription
+  const toast = await showToast({
+    style: Toast.Style.Animated,
+    title: "Transkribiere",
+    message: "Verarbeite Audio...",
+  });
+
   process.kill(pid, "SIGUSR1");
 
   const deadline = Date.now() + TIMEOUT.transcription;
   while (Date.now() < deadline) {
     const error = readAndDelete(IPC.error);
     if (error) {
-      await showHUD(`❌ ${error}`);
+      toast.style = Toast.Style.Failure;
+      toast.title = "Transkription fehlgeschlagen";
+      toast.message = error;
+      await sleep(3000);
+      await toast.hide();
       return;
     }
 
     const text = readAndDelete(IPC.transcript);
     if (text) {
       await Clipboard.paste(text);
-      await showHUD("✅ Eingefügt!");
+      toast.style = Toast.Style.Success;
+      toast.title = "Text eingefügt";
+      toast.message = text.length > 50 ? `${text.slice(0, 50)}...` : text;
+      await sleep(2000);
+      await toast.hide();
       return;
     }
 
     await sleep(TIMEOUT.poll);
   }
 
-  await showHUD("❌ Transkription fehlgeschlagen (Timeout)");
+  toast.style = Toast.Style.Failure;
+  toast.title = "Timeout";
+  toast.message = "Transkription dauerte zu lange";
+  await sleep(3000);
+  await toast.hide();
 }
 
 // --- Entry Point ---
@@ -220,7 +252,11 @@ export default async function Command(): Promise<void> {
     // Beim Starten: Konfiguration validieren
     const error = validateConfig(prefs);
     if (error) {
-      await showHUD(`⚠️ ${error}`);
+      await showToast({
+        style: Toast.Style.Failure,
+        title: "Konfigurationsfehler",
+        message: error,
+      });
       return;
     }
     await startRecording(prefs);

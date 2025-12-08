@@ -192,6 +192,20 @@ def play_ready_sound() -> None:
         logger.debug(f"[{_session_id}] Ready-Sound fehlgeschlagen: {e}")
 
 
+def play_stop_sound() -> None:
+    """Spielt einen kurzen Ton ab wenn die Aufnahme beendet wird (macOS)."""
+    import subprocess
+
+    try:
+        subprocess.Popen(
+            ["afplay", "/System/Library/Sounds/Pop.aiff"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError as e:
+        logger.debug(f"[{_session_id}] Stop-Sound fehlgeschlagen: {e}")
+
+
 def record_audio() -> Path:
     """
     Nimmt Audio vom Mikrofon auf (Enter startet, Enter stoppt).
@@ -220,6 +234,7 @@ def record_audio() -> Path:
         input()
 
     log("✅ Aufnahme beendet.")
+    play_stop_sound()
 
     if not recorded_chunks:
         raise ValueError("Keine Audiodaten aufgenommen. Bitte länger aufnehmen.")
@@ -310,6 +325,7 @@ def record_audio_daemon() -> Path:
     recording_duration = time.perf_counter() - recording_start
     logger.info(f"[{_session_id}] Aufnahme: {recording_duration:.1f}s")
     log("✅ Daemon: Aufnahme beendet.")
+    play_stop_sound()
 
     if not recorded_chunks:
         logger.error(f"[{_session_id}] Keine Audiodaten aufgenommen")
