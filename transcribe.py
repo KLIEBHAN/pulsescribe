@@ -185,25 +185,13 @@ def copy_to_clipboard(text: str) -> bool:
 
 class _CoreAudioPlayer:
     """
-    Singleton für CoreAudio-Sound-Playback.
+    CoreAudio-Sound-Playback mit Fallback auf afplay.
 
-    Lädt Sounds lazy beim ersten Aufruf und cached die Sound-IDs.
-    Fallback auf subprocess.Popen wenn CoreAudio nicht verfügbar.
+    Cached Sound-IDs für schnelles Abspielen (~0.2ms).
+    Singleton-Instanz via _get_sound_player().
     """
 
-    _instance: "_CoreAudioPlayer | None" = None
-    _initialized: bool = False
-
-    def __new__(cls) -> "_CoreAudioPlayer":
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
-
     def __init__(self) -> None:
-        if _CoreAudioPlayer._initialized:
-            return
-        _CoreAudioPlayer._initialized = True
-
         self._sound_ids: dict[str, int] = {}
         self._audio_toolbox = None
         self._core_foundation = None
