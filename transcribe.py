@@ -478,6 +478,9 @@ async def _transcribe_with_deepgram_stream_async(
     if not api_key:
         raise ValueError("DEEPGRAM_API_KEY nicht gesetzt")
 
+    # Timing für Startup-Analyse
+    stream_start = time.perf_counter()
+
     logger.info(
         f"[{_session_id}] Deepgram-Stream (async): {model}, lang={language or 'auto'}"
     )
@@ -605,7 +608,15 @@ async def _transcribe_with_deepgram_stream_async(
                 dtype=np.float32,
                 callback=audio_callback,
             ):
-                logger.info(f"[{_session_id}] Mikrofon aktiv, warte auf Stop-Signal...")
+                # Timing: Wie lange dauerte der Startup?
+                startup_ms = (time.perf_counter() - stream_start) * 1000
+                logger.info(
+                    f"[{_session_id}] Mikrofon aktiv nach {startup_ms:.0f}ms, "
+                    "warte auf Stop-Signal..."
+                )
+
+                # Ready-Sound HIER spielen - erst jetzt ist das Mikrofon wirklich bereit!
+                play_ready_sound()
 
                 # Tasks starten
                 send_task = asyncio.create_task(send_audio())
@@ -1183,8 +1194,9 @@ def run_daemon_mode_streaming(args: argparse.Namespace) -> int:
         STATE_FILE.write_text("recording")
         PID_FILE.write_text(str(os.getpid()))
 
-        play_ready_sound()
-        log("🎤 Streaming-Aufnahme gestartet (warte auf SIGUSR1)...")
+        # Ready-Sound wird in transcribe_with_deepgram_stream() gespielt,
+        # nachdem das Mikrofon wirklich aktiv ist
+        log("🎤 Streaming-Aufnahme wird vorbereitet...")
         logger.info(f"[{_session_id}] Streaming-Daemon gestartet (PID: {os.getpid()})")
 
         transcript = transcribe_with_deepgram_stream(
