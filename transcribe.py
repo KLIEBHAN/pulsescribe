@@ -1634,6 +1634,7 @@ def run_daemon_mode_streaming(args: argparse.Namespace) -> int:
         return 1
     finally:
         PID_FILE.unlink(missing_ok=True)
+        INTERIM_FILE.unlink(missing_ok=True)
         _schedule_state_cleanup()
 
 
