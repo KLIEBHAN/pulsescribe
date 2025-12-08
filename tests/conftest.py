@@ -5,16 +5,76 @@ Diese Fixtures isolieren Tests von externen Abhängigkeiten:
 - Dateisystem (IPC-Dateien, Vocabulary)
 - Umgebungsvariablen (API-Keys)
 - Module-Level Caches
+
+Shared Mock-Fixtures für häufig genutzte Objekte:
+- deepgram_response: Standard Deepgram API Response
+- mock_args: Factory für CLI-Argument Mocks
 """
 
 import sys
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
 # Projekt-Root zum Python-Path hinzufügen
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+
+
+# =============================================================================
+# Shared Mock-Fixtures
+# =============================================================================
+
+
+@pytest.fixture
+def deepgram_response():
+    """
+    Standard Deepgram API Response Mock.
+
+    Struktur: result.channel.alternatives[0].transcript
+    Wenn sich die Deepgram-API ändert, nur hier anpassen.
+    """
+
+    def _create(transcript: str = "Test transcript"):
+        result = Mock()
+        result.channel = Mock()
+        result.channel.alternatives = [Mock(transcript=transcript)]
+        return result
+
+    return _create
+
+
+@pytest.fixture
+def mock_args():
+    """
+    Factory für CLI-Argument Mocks.
+
+    Usage:
+        args = mock_args(mode="deepgram", refine=True)
+    """
+
+    def _create(**kwargs):
+        defaults = {
+            "mode": "api",
+            "no_streaming": False,
+            "refine": False,
+            "no_refine": False,
+            "refine_model": None,
+            "refine_provider": None,
+            "context": None,
+            "copy": False,
+            "language": None,
+        }
+        defaults.update(kwargs)
+        return Mock(**defaults)
+
+    return _create
+
+
+# =============================================================================
+# Environment & Isolation Fixtures
+# =============================================================================
 
 
 @pytest.fixture

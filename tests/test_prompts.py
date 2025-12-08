@@ -1,5 +1,7 @@
 """Tests für prompts.py - LLM-Prompts und Kontext-Mappings."""
 
+import pytest
+
 from prompts import (
     CONTEXT_PROMPTS,
     DEFAULT_APP_CONTEXTS,
@@ -11,24 +13,19 @@ from prompts import (
 class TestGetPromptForContext:
     """Tests für get_prompt_for_context() - Prompt-Lookup mit Fallback."""
 
-    def test_known_contexts(self):
+    @pytest.mark.parametrize("context", ["email", "chat", "code"])
+    def test_known_contexts(self, context):
         """Bekannte Kontexte liefern ihre spezifischen Prompts."""
-        assert get_prompt_for_context("email") == CONTEXT_PROMPTS["email"]
-        assert get_prompt_for_context("chat") == CONTEXT_PROMPTS["chat"]
-        assert get_prompt_for_context("code") == CONTEXT_PROMPTS["code"]
+        assert get_prompt_for_context(context) == CONTEXT_PROMPTS[context]
 
     def test_default_context(self):
         """'default' Kontext liefert DEFAULT_REFINE_PROMPT."""
         assert get_prompt_for_context("default") == DEFAULT_REFINE_PROMPT
 
-    def test_unknown_context_fallback(self):
+    @pytest.mark.parametrize("context", ["unknown", "xyz", ""])
+    def test_unknown_context_fallback(self, context):
         """Unbekannte Kontexte fallen auf 'default' zurück."""
-        assert get_prompt_for_context("unknown") == CONTEXT_PROMPTS["default"]
-        assert get_prompt_for_context("xyz") == DEFAULT_REFINE_PROMPT
-
-    def test_empty_string_fallback(self):
-        """Leerer String fällt auf 'default' zurück."""
-        assert get_prompt_for_context("") == DEFAULT_REFINE_PROMPT
+        assert get_prompt_for_context(context) == DEFAULT_REFINE_PROMPT
 
 
 class TestPromptConstants:
@@ -48,31 +45,32 @@ class TestPromptConstants:
 class TestDefaultAppContexts:
     """Tests für DEFAULT_APP_CONTEXTS - App-zu-Kontext Mapping."""
 
-    def test_email_apps_mapped(self):
-        """E-Mail-Apps sind auf 'email' gemappt."""
-        email_apps = ["Mail", "Outlook", "Spark", "Thunderbird"]
-        for app in email_apps:
-            assert (
-                DEFAULT_APP_CONTEXTS.get(app) == "email"
-            ), f"{app} should map to 'email'"
+    @pytest.mark.parametrize(
+        "app,expected_context",
+        [
+            # Email-Apps
+            ("Mail", "email"),
+            ("Outlook", "email"),
+            ("Spark", "email"),
+            ("Thunderbird", "email"),
+            # Chat-Apps
+            ("Slack", "chat"),
+            ("Discord", "chat"),
+            ("Messages", "chat"),
+            ("WhatsApp", "chat"),
+            # Code-Editoren
+            ("Code", "code"),
+            ("VS Code", "code"),
+            ("Cursor", "code"),
+            ("Terminal", "code"),
+            ("iTerm2", "code"),
+        ],
+    )
+    def test_app_context_mapping(self, app, expected_context):
+        """Apps sind auf ihre Kontexte gemappt."""
+        assert DEFAULT_APP_CONTEXTS.get(app) == expected_context
 
-    def test_chat_apps_mapped(self):
-        """Chat-Apps sind auf 'chat' gemappt."""
-        chat_apps = ["Slack", "Discord", "Messages", "WhatsApp"]
-        for app in chat_apps:
-            assert (
-                DEFAULT_APP_CONTEXTS.get(app) == "chat"
-            ), f"{app} should map to 'chat'"
-
-    def test_code_apps_mapped(self):
-        """Code-Editoren sind auf 'code' gemappt."""
-        code_apps = ["Code", "VS Code", "Cursor", "Terminal", "iTerm2"]
-        for app in code_apps:
-            assert (
-                DEFAULT_APP_CONTEXTS.get(app) == "code"
-            ), f"{app} should map to 'code'"
-
-    def test_unknown_app_returns_none(self):
+    @pytest.mark.parametrize("app", ["Safari", "Unknown App", "Firefox"])
+    def test_unknown_app_returns_none(self, app):
         """Unbekannte Apps sind nicht im Mapping."""
-        assert DEFAULT_APP_CONTEXTS.get("Safari") is None
-        assert DEFAULT_APP_CONTEXTS.get("Unknown App") is None
+        assert DEFAULT_APP_CONTEXTS.get(app) is None
