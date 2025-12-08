@@ -71,6 +71,8 @@ PID_FILE = Path("/tmp/whisper_go.pid")
 TRANSCRIPT_FILE = Path("/tmp/whisper_go.transcript")
 ERROR_FILE = Path("/tmp/whisper_go.error")
 STATE_FILE = Path("/tmp/whisper_go.state")
+INTERIM_FILE = Path("/tmp/whisper_go.interim")
+INTERIM_THROTTLE_MS = 150  # Max. Update-Rate für Interim-File (Menübar pollt 200ms)
 
 # Konfiguration und Logs
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -725,17 +727,34 @@ async def _deepgram_stream_core(
     stream_error: Exception | None = None
 
     # --- Deepgram Event-Handler ---
+    last_interim_write = 0.0  # Throttle-State für Interim-Writes
+
     def on_message(result):
         """Sammelt Transkripte aus Deepgram-Responses."""
+        nonlocal last_interim_write
+
         # Finalize-Response markiert Ende des Streams
         if getattr(result, "from_finalize", False):
             logger.info(f"[{_session_id}] Finalize-Antwort empfangen")
             finalize_received.set()
 
         transcript = _extract_transcript(result)
-        if transcript:
+        if not transcript:
+            return
+
+        # Nur LiveResultResponse hat is_final (Default: False = interim)
+        is_final = getattr(result, "is_final", False)
+
+        if is_final:
             final_transcripts.append(transcript)
-            logger.info(f"[{_session_id}] Transcript: {_log_preview(transcript)}")
+            logger.info(f"[{_session_id}] Final: {_log_preview(transcript)}")
+        else:
+            # Throttling: Max alle INTERIM_THROTTLE_MS schreiben
+            now = time.perf_counter()
+            if (now - last_interim_write) * 1000 >= INTERIM_THROTTLE_MS:
+                INTERIM_FILE.write_text(transcript)
+                last_interim_write = now
+                logger.debug(f"[{_session_id}] Interim: {_log_preview(transcript, 30)}")
 
     def on_error(error):
         nonlocal stream_error
@@ -820,7 +839,7 @@ async def _deepgram_stream_core(
             language=language,
             smart_format="true",
             punctuate="true",
-            interim_results="false",
+            interim_results="true",
             encoding="linear16",
             sample_rate=str(WHISPER_SAMPLE_RATE),
             channels=str(WHISPER_CHANNELS),
@@ -884,6 +903,9 @@ async def _deepgram_stream_core(
             # --- Warten auf Stop (SIGUSR1 von Raycast oder CTRL+C) ---
             await stop_event.wait()
             logger.info(f"[{_session_id}] Stop-Signal empfangen")
+
+            # Interim-Datei sofort löschen (Menübar zeigt nur während Recording)
+            INTERIM_FILE.unlink(missing_ok=True)
 
             # --- Graceful Shutdown ---
             # 1. Sender beenden: Sentinel in Queue, warten bis gesendet
@@ -1474,8 +1496,9 @@ def run_daemon_mode_streaming(args: argparse.Namespace) -> int:
     # WICHTIG: Alte Zombie-Prozesse killen bevor neuer Daemon startet
     _cleanup_stale_pid_file()
 
-    # Alte Error-Datei aufräumen
+    # Alte IPC-Dateien aufräumen
     ERROR_FILE.unlink(missing_ok=True)
+    INTERIM_FILE.unlink(missing_ok=True)
 
     # ═══════════════════════════════════════════════════════════════════════════
     # ULTRA-FAST STARTUP: Mikrofon SOFORT starten, Deepgram parallel laden

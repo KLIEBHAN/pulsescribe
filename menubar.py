@@ -24,6 +24,7 @@ import rumps
 # IPC-Dateien (synchron mit transcribe.py)
 STATE_FILE = Path("/tmp/whisper_go.state")
 PID_FILE = Path("/tmp/whisper_go.pid")
+INTERIM_FILE = Path("/tmp/whisper_go.interim")
 
 # Status-Icons
 ICONS = {
@@ -37,6 +38,17 @@ ICONS = {
 # Polling-Intervall in Sekunden
 POLL_INTERVAL = 0.2
 
+# Maximale Länge für Interim-Preview
+MAX_PREVIEW_LENGTH = 25
+
+
+def truncate_text(text: str, max_length: int = MAX_PREVIEW_LENGTH) -> str:
+    """Kürzt Text für Menübar-Anzeige."""
+    text = text.strip()
+    if len(text) <= max_length:
+        return text
+    return text[:max_length].rstrip() + "…"
+
 
 class WhisperGoStatus(rumps.App):
     """Menübar-App für whisper_go Status-Anzeige."""
@@ -48,12 +60,22 @@ class WhisperGoStatus(rumps.App):
         self._last_state = "idle"
 
     def poll_state(self, _sender):
-        """Liest aktuellen State aus IPC-Datei."""
+        """Liest aktuellen State und optional Interim-Text."""
         state = self._read_state()
 
-        # Nur aktualisieren wenn sich State geändert hat
-        if state != self._last_state:
-            self.title = ICONS.get(state, ICONS["idle"])
+        # Interim-Text nur während Recording anzeigen
+        if state == "recording":
+            interim_text = self._read_interim()
+            if interim_text:
+                new_title = f"{ICONS['recording']} {truncate_text(interim_text)}"
+            else:
+                new_title = ICONS["recording"]
+        else:
+            new_title = ICONS.get(state, ICONS["idle"])
+
+        # Nur aktualisieren wenn sich Titel geändert hat
+        if new_title != self.title:
+            self.title = new_title
             self._last_state = state
 
     def _read_state(self) -> str:
@@ -87,6 +109,15 @@ class WhisperGoStatus(rumps.App):
             return True
         except (ValueError, OSError, IOError):
             return False
+
+    def _read_interim(self) -> str | None:
+        """Liest aktuellen Interim-Text für Live-Preview."""
+        if INTERIM_FILE.exists():
+            try:
+                return INTERIM_FILE.read_text().strip() or None
+            except (OSError, IOError):
+                pass
+        return None
 
 
 def main():
