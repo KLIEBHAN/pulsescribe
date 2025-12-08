@@ -656,6 +656,28 @@ def transcribe_with_deepgram(
     return result
 
 
+# Konstante für Audio-Konvertierung (float32 → int16)
+INT16_MAX = 32767
+
+
+def _extract_transcript(result) -> str | None:
+    """
+    Extrahiert Transkript aus Deepgram-Response.
+
+    Deepgram's SDK liefert verschachtelte Objekte:
+    result.channel.alternatives[0].transcript
+
+    Returns None wenn kein Transkript vorhanden.
+    """
+    channel = getattr(result, "channel", None)
+    if not channel:
+        return None
+    alternatives = getattr(channel, "alternatives", [])
+    if not alternatives:
+        return None
+    return getattr(alternatives[0], "transcript", "") or None
+
+
 async def _deepgram_stream_core(
     model: str,
     language: str | None,
@@ -696,27 +718,24 @@ async def _deepgram_stream_core(
         f"lang={language or 'auto'}{buffer_info}"
     )
 
+    # --- Shared State für Callbacks ---
     final_transcripts: list[str] = []
-    stop_event = asyncio.Event()
-    finalize_received = asyncio.Event()
+    stop_event = asyncio.Event()  # Signalisiert Ende der Aufnahme
+    finalize_received = asyncio.Event()  # Deepgram hat finale Transkripte gesendet
     stream_error: Exception | None = None
 
+    # --- Deepgram Event-Handler ---
     def on_message(result):
-        """Callback für eingehende Transkriptions-Messages."""
+        """Sammelt Transkripte aus Deepgram-Responses."""
+        # Finalize-Response markiert Ende des Streams
         if getattr(result, "from_finalize", False):
             logger.info(f"[{_session_id}] Finalize-Antwort empfangen")
             finalize_received.set()
 
-        channel = getattr(result, "channel", None)
-        if channel:
-            alternatives = getattr(channel, "alternatives", [])
-            if alternatives:
-                transcript = getattr(alternatives[0], "transcript", "")
-                if transcript:
-                    final_transcripts.append(transcript)
-                    logger.info(
-                        f"[{_session_id}] Transcript: {_log_preview(transcript)}"
-                    )
+        transcript = _extract_transcript(result)
+        if transcript:
+            final_transcripts.append(transcript)
+            logger.info(f"[{_session_id}] Transcript: {_log_preview(transcript)}")
 
     def on_error(error):
         nonlocal stream_error
@@ -727,7 +746,7 @@ async def _deepgram_stream_core(
         logger.debug(f"[{_session_id}] Connection closed")
         stop_event.set()
 
-    # Signal-Handler für SIGUSR1 (nur im Main Thread möglich)
+    # SIGUSR1 stoppt Aufnahme sauber (Raycast sendet dieses Signal)
     loop = asyncio.get_running_loop()
     if threading.current_thread() is threading.main_thread():
         loop.add_signal_handler(signal.SIGUSR1, stop_event.set)
@@ -735,38 +754,44 @@ async def _deepgram_stream_core(
     client = AsyncDeepgramClient(api_key=api_key)
     audio_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
 
-    # --- Modus-spezifische Initialisierung ---
+    # --- Modus-spezifische Audio-Initialisierung ---
+    #
+    # Zwei Modi mit unterschiedlichem Timing:
+    # - Daemon: Mikrofon lief bereits, Audio ist gepuffert → direkt in Queue
+    # - CLI: Mikrofon startet jetzt, WebSocket noch nicht bereit → puffern
+    #
     if early_buffer:
-        # Daemon-Mode: Early-Buffer direkt in Queue laden
+        # Daemon-Mode: Vorab aufgenommenes Audio direkt verfügbar machen
         for chunk in early_buffer:
             audio_queue.put_nowait(chunk)
-        logger.info(
-            f"[{_session_id}] {len(early_buffer)} early chunks in Queue geladen"
-        )
+        logger.info(f"[{_session_id}] {len(early_buffer)} early chunks in Queue")
 
-        # Einfacher Audio-Callback ohne Buffering
         def audio_callback(indata, _frames, _time_info, status):
+            """Sendet Audio direkt an Queue (WebSocket bereits verbunden)."""
             if status:
                 logger.warning(f"[{_session_id}] Audio-Status: {status}")
             if not stop_event.is_set():
-                audio_bytes = (indata * 32767).astype(np.int16).tobytes()
+                # float32 [-1,1] → int16 für Deepgram
+                audio_bytes = (indata * INT16_MAX).astype(np.int16).tobytes()
                 loop.call_soon_threadsafe(audio_queue.put_nowait, audio_bytes)
 
-        buffering_active = False
-        audio_buffer = None
         buffer_lock = None
+        audio_buffer = None
     else:
-        # CLI-Mode: Buffering während WebSocket-Connect
-        audio_buffer = []
+        # CLI-Mode: Puffern bis WebSocket bereit ist
+        # Verhindert Audio-Verlust während ~500ms WebSocket-Handshake
+        audio_buffer: list[bytes] = []
         buffer_lock = threading.Lock()
         buffering_active = True
 
         def audio_callback(indata, _frames, _time_info, status):
+            """Puffert Audio bis WebSocket verbunden, dann direkt senden."""
             if status:
                 logger.warning(f"[{_session_id}] Audio-Status: {status}")
             if stop_event.is_set():
                 return
-            audio_bytes = (indata * 32767).astype(np.int16).tobytes()
+            # float32 [-1,1] → int16 für Deepgram
+            audio_bytes = (indata * INT16_MAX).astype(np.int16).tobytes()
             with buffer_lock:
                 if buffering_active:
                     audio_buffer.append(audio_bytes)
@@ -821,15 +846,18 @@ async def _deepgram_stream_core(
             else:
                 logger.info(f"[{_session_id}] WebSocket verbunden nach {ws_time:.0f}ms")
 
+            # --- Async Tasks für bidirektionale Kommunikation ---
             async def send_audio():
+                """Sendet Audio-Chunks an Deepgram bis Stop-Signal."""
                 nonlocal stream_error
                 try:
                     while not stop_event.is_set():
                         try:
+                            # 100ms Timeout: Regelmäßig stop_event prüfen
                             chunk = await asyncio.wait_for(
                                 audio_queue.get(), timeout=0.1
                             )
-                            if chunk is None:
+                            if chunk is None:  # Sentinel = sauberes Ende
                                 break
                             await connection.send_media(chunk)
                         except asyncio.TimeoutError:
@@ -842,6 +870,7 @@ async def _deepgram_stream_core(
                     stop_event.set()
 
             async def listen_for_messages():
+                """Empfängt Transkripte von Deepgram."""
                 try:
                     await connection.start_listening()
                 except asyncio.CancelledError:
@@ -852,28 +881,35 @@ async def _deepgram_stream_core(
             send_task = asyncio.create_task(send_audio())
             listen_task = asyncio.create_task(listen_for_messages())
 
+            # --- Warten auf Stop (SIGUSR1 von Raycast oder CTRL+C) ---
             await stop_event.wait()
             logger.info(f"[{_session_id}] Stop-Signal empfangen")
 
+            # --- Graceful Shutdown ---
+            # 1. Sender beenden: Sentinel in Queue, warten bis gesendet
             await audio_queue.put(None)
             await send_task
 
+            # 2. Deepgram bitten, verbleibende Audio zu transkribieren
             logger.info(f"[{_session_id}] Sende Finalize...")
             try:
                 await connection.send_control(ListenV1ControlMessage(type="Finalize"))
             except Exception as e:
                 logger.warning(f"[{_session_id}] Finalize fehlgeschlagen: {e}")
 
+            # 3. Auf finale Transkripte warten (max 2s, dann weitermachen)
             try:
                 await asyncio.wait_for(finalize_received.wait(), timeout=2.0)
                 logger.info(f"[{_session_id}] Finale Transkripte empfangen")
             except asyncio.TimeoutError:
                 logger.warning(f"[{_session_id}] Timeout beim Warten auf Finalize")
 
+            # 4. Listener Task beenden
             listen_task.cancel()
             await asyncio.gather(listen_task, return_exceptions=True)
 
     finally:
+        # Cleanup: Mikrofon und Signal-Handler freigeben
         try:
             mic_stream.stop()
             mic_stream.close()
