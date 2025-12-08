@@ -73,6 +73,7 @@ ERROR_FILE = Path("/tmp/whisper_go.error")
 STATE_FILE = Path("/tmp/whisper_go.state")
 INTERIM_FILE = Path("/tmp/whisper_go.interim")
 INTERIM_THROTTLE_MS = 150  # Max. Update-Rate für Interim-File (Menübar pollt 200ms)
+FINALIZE_TIMEOUT = 2.0  # Sekunden warten auf finale Transkripte nach Finalize
 
 # Konfiguration und Logs
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -953,12 +954,14 @@ async def _deepgram_stream_core(
             except Exception as e:
                 logger.warning(f"[{_session_id}] Finalize fehlgeschlagen: {e}")
 
-            # 3. Warten bis Server fertig (from_finalize=True), max 2s
+            # 3. Warten bis Server fertig (from_finalize=True)
             try:
-                await asyncio.wait_for(finalize_done.wait(), timeout=2.0)
+                await asyncio.wait_for(finalize_done.wait(), timeout=FINALIZE_TIMEOUT)
                 logger.info(f"[{_session_id}] Finalize abgeschlossen")
             except asyncio.TimeoutError:
-                logger.warning(f"[{_session_id}] Finalize-Timeout (2s)")
+                logger.warning(
+                    f"[{_session_id}] Finalize-Timeout ({FINALIZE_TIMEOUT}s)"
+                )
 
             # 4. CloseStream: Verbindung sofort schließen (ohne auf Server-Timeout zu warten)
             logger.info(f"[{_session_id}] Sende CloseStream...")
