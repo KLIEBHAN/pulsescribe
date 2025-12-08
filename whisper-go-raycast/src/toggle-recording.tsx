@@ -21,7 +21,7 @@ import {
   environment,
 } from "@raycast/api";
 import { spawn } from "child_process";
-import { existsSync, readFileSync, unlinkSync } from "fs";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 
@@ -31,6 +31,7 @@ const IPC = {
   pid: "/tmp/whisper_go.pid",
   transcript: "/tmp/whisper_go.transcript",
   error: "/tmp/whisper_go.error",
+  lock: "/tmp/whisper_go.lock",
 } as const;
 
 const TIMEOUT = {
@@ -126,56 +127,96 @@ function validateConfig(prefs: Preferences): string | null {
 async function startRecording(prefs: Preferences): Promise<void> {
   logTiming("startRecording() called");
 
-  // Fenster schließen - Overlay zeigt Status via overlay.py
-  await closeMainWindow();
-  logTiming("closeMainWindow() done");
+  // Race-Condition-Schutz: Atomarer Lock mit O_EXCL (wx flag)
+  // writeFileSync mit 'wx' ist atomar: "create only if not exists"
+  try {
+    writeFileSync(IPC.lock, String(Date.now()), { flag: "wx" });
+    logTiming("lock acquired");
+  } catch (e: unknown) {
+    const err = e as NodeJS.ErrnoException;
+    if (err.code !== "EEXIST") throw err; // Unerwarteter Fehler
 
-  // Alte IPC-Dateien aufräumen
-  deleteIfExists(IPC.error);
-  deleteIfExists(IPC.transcript);
+    // Lock existiert - prüfe ob stale (>5s = Raycast gecrasht)
+    try {
+      const lockTime = parseInt(readFileSync(IPC.lock, "utf-8").trim(), 10);
+      const lockAge = Date.now() - lockTime;
+      if (lockAge < 5000) {
+        logTiming(`lock exists (${lockAge}ms old) - ignoring duplicate start`);
+        return;
+      }
+      logTiming(`stale lock (${lockAge}ms old) - breaking`);
+    } catch {
+      logTiming("corrupt lock - breaking");
+    }
 
-  // Daemon-Argumente
-  const args = [prefs.scriptPath, "--record-daemon"];
-  if (prefs.language) args.push("--language", prefs.language);
-
-  // Environment mit optionalem API-Key
-  const env = { ...process.env };
-  if (prefs.openaiApiKey) env.OPENAI_API_KEY = prefs.openaiApiKey;
-
-  logTiming("spawning daemon...");
-  // Daemon starten (detached = unabhängig von Raycast)
-  const daemon = spawn(prefs.pythonPath, args, {
-    detached: true,
-    stdio: "ignore",
-    env,
-  });
-  daemon.unref();
-  logTiming("daemon spawned");
-
-  // Kurz prüfen ob Daemon erfolgreich gestartet (max 500ms)
-  const deadline = Date.now() + 500;
-  let pollCount = 0;
-  while (Date.now() < deadline) {
-    if (existsSync(IPC.pid)) {
-      logTiming(`PID file found after ${pollCount} polls`);
+    // Stale/korrupter Lock: Löschen und nochmal atomar versuchen
+    deleteIfExists(IPC.lock);
+    try {
+      writeFileSync(IPC.lock, String(Date.now()), { flag: "wx" });
+      logTiming("lock acquired after breaking stale");
+    } catch {
+      // Anderer Prozess war schneller beim Lock-Übernehmen
+      logTiming("lock race lost - ignoring");
       return;
     }
-    if (existsSync(IPC.error)) break;
-    await sleep(TIMEOUT.poll);
-    pollCount++;
   }
 
-  // Fehler nur wenn Error-File existiert
-  const error = readAndDelete(IPC.error);
-  if (error) {
-    logTiming("daemon start error");
-    await showToast({
-      style: Toast.Style.Failure,
-      title: "Aufnahme fehlgeschlagen",
-      message: error,
+  try {
+    // Fenster schließen - Overlay zeigt Status via overlay.py
+    await closeMainWindow();
+    logTiming("closeMainWindow() done");
+
+    // Alte IPC-Dateien aufräumen
+    deleteIfExists(IPC.error);
+    deleteIfExists(IPC.transcript);
+
+    // Daemon-Argumente
+    const args = [prefs.scriptPath, "--record-daemon"];
+    if (prefs.language) args.push("--language", prefs.language);
+
+    // Environment mit optionalem API-Key
+    const env = { ...process.env };
+    if (prefs.openaiApiKey) env.OPENAI_API_KEY = prefs.openaiApiKey;
+
+    logTiming("spawning daemon...");
+    // Daemon starten (detached = unabhängig von Raycast)
+    const daemon = spawn(prefs.pythonPath, args, {
+      detached: true,
+      stdio: "ignore",
+      env,
     });
+    daemon.unref();
+    logTiming("daemon spawned");
+
+    // Kurz prüfen ob Daemon erfolgreich gestartet (max 500ms)
+    const deadline = Date.now() + 500;
+    let pollCount = 0;
+    while (Date.now() < deadline) {
+      if (existsSync(IPC.pid)) {
+        logTiming(`PID file found after ${pollCount} polls`);
+        return;
+      }
+      if (existsSync(IPC.error)) break;
+      await sleep(TIMEOUT.poll);
+      pollCount++;
+    }
+
+    // Fehler nur wenn Error-File existiert
+    const error = readAndDelete(IPC.error);
+    if (error) {
+      logTiming("daemon start error");
+      await showToast({
+        style: Toast.Style.Failure,
+        title: "Aufnahme fehlgeschlagen",
+        message: error,
+      });
+    }
+    // Kein Fehler-Toast wenn nur Timeout - Daemon läuft wahrscheinlich
+  } finally {
+    // Lock immer freigeben
+    deleteIfExists(IPC.lock);
+    logTiming("lock released");
   }
-  // Kein Fehler-Toast wenn nur Timeout - Daemon läuft wahrscheinlich
 }
 
 // --- Aufnahme stoppen ---
