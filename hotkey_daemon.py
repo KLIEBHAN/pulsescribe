@@ -19,6 +19,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -34,10 +35,13 @@ LOG_FILE = LOG_DIR / "hotkey_daemon.log"
 PID_FILE = Path("/tmp/whisper_go.pid")
 TRANSCRIPT_FILE = Path("/tmp/whisper_go.transcript")
 ERROR_FILE = Path("/tmp/whisper_go.error")
+LOCK_FILE = Path("/tmp/whisper_go.lock")  # Atomarer Lock wie Raycast
 
 # Timeouts
 TRANSCRIPT_TIMEOUT = 60.0  # Max. Wartezeit auf Transkript
 POLL_INTERVAL = 0.1  # Polling-Intervall in Sekunden
+STALE_LOCK_TIMEOUT = 5.0  # Lock älter als 5s = stale (Crash-Recovery)
+DEBOUNCE_INTERVAL = 0.3  # Ignoriere Hotkey-Events innerhalb 300ms
 
 # =============================================================================
 # Logging
@@ -221,7 +225,7 @@ def paste_transcript(text: str) -> bool:
     """
     Kopiert Text in Clipboard und fügt via Cmd+V ein.
 
-    Verwendet CGEventPost (Quartz) für Cmd+V – keine Accessibility nötig!
+    Verwendet pbcopy (zuverlässiger in LaunchAgents) und CGEventPost für Cmd+V.
 
     Args:
         text: Text zum Einfügen
@@ -229,26 +233,43 @@ def paste_transcript(text: str) -> bool:
     Returns:
         True wenn erfolgreich, False bei Fehler
     """
-    import pyperclip
-
     logger.info(f"Auto-Paste: '{text[:50]}{'...' if len(text) > 50 else ''}'")
 
-    # 1. In Clipboard kopieren
+    # 1. In Clipboard kopieren via pbcopy (zuverlässiger als pyperclip in LaunchAgents)
     try:
-        pyperclip.copy(text)
-        logger.debug(f"Clipboard: {len(text)} Zeichen kopiert")
+        process = subprocess.run(
+            ["pbcopy"],
+            input=text.encode("utf-8"),
+            capture_output=True,
+            timeout=5,
+        )
+        if process.returncode != 0:
+            logger.error(f"pbcopy fehlgeschlagen: {process.stderr.decode()}")
+            return False
+        logger.debug(f"pbcopy: {len(text)} Zeichen kopiert")
+    except subprocess.TimeoutExpired:
+        logger.error("pbcopy Timeout")
+        return False
     except Exception as e:
         logger.error(f"Clipboard-Fehler: {e}")
         return False
 
-    # 2. Clipboard verifizieren
+    # 2. Clipboard verifizieren via pbpaste
     try:
-        clipboard_content = pyperclip.paste()
+        result = subprocess.run(
+            ["pbpaste"],
+            capture_output=True,
+            timeout=5,
+        )
+        clipboard_content = result.stdout.decode("utf-8")
         if clipboard_content != text:
             logger.warning(
                 f"Clipboard-Mismatch: erwartet {len(text)} Zeichen, "
                 f"bekommen {len(clipboard_content)} Zeichen"
             )
+            logger.debug(f"Clipboard-Inhalt: '{clipboard_content[:50]}'")
+        else:
+            logger.info(f"✓ Clipboard verifiziert: {len(text)} Zeichen")
     except Exception as e:
         logger.warning(f"Clipboard-Verify fehlgeschlagen: {e}")
 
@@ -341,9 +362,72 @@ def is_recording() -> bool:
         return False
 
 
+def acquire_start_lock() -> bool:
+    """
+    Atomarer Lock für Start-Operationen (wie Raycast).
+
+    Verwendet O_EXCL für atomare Erstellung - verhindert Race-Conditions
+    wenn mehrere Hotkey-Events gleichzeitig feuern.
+
+    Returns:
+        True wenn Lock erworben, False wenn bereits gelockt
+    """
+    try:
+        # Atomare Erstellung: O_CREAT | O_EXCL = "create only if not exists"
+        fd = os.open(str(LOCK_FILE), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, str(time.time()).encode())
+        os.close(fd)
+        logger.debug("Lock erworben")
+        return True
+    except FileExistsError:
+        # Lock existiert - prüfe ob stale
+        try:
+            lock_time = float(LOCK_FILE.read_text().strip())
+            lock_age = time.time() - lock_time
+
+            if lock_age < STALE_LOCK_TIMEOUT:
+                logger.warning(f"Lock existiert ({lock_age:.1f}s alt) - ignoriere")
+                return False
+
+            # Stale Lock - brechen und neu versuchen
+            logger.warning(f"Stale Lock ({lock_age:.1f}s alt) - breche")
+            LOCK_FILE.unlink(missing_ok=True)
+
+            # Nochmal atomar versuchen
+            fd = os.open(str(LOCK_FILE), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, str(time.time()).encode())
+            os.close(fd)
+            logger.debug("Lock erworben nach Stale-Break")
+            return True
+
+        except (ValueError, FileNotFoundError):
+            # Korrupter Lock oder gerade gelöscht - nochmal versuchen
+            logger.warning("Korrupter/gelöschter Lock - versuche erneut")
+            LOCK_FILE.unlink(missing_ok=True)
+            try:
+                fd = os.open(str(LOCK_FILE), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.write(fd, str(time.time()).encode())
+                os.close(fd)
+                return True
+            except FileExistsError:
+                logger.warning("Lock-Race verloren")
+                return False
+    except Exception as e:
+        logger.error(f"Lock-Fehler: {e}")
+        return False
+
+
+def release_start_lock() -> None:
+    """Gibt den Start-Lock frei."""
+    LOCK_FILE.unlink(missing_ok=True)
+    logger.debug("Lock freigegeben")
+
+
 def start_recording() -> bool:
     """
     Startet Aufnahme via transcribe.py --record-daemon.
+
+    Wartet auf PID-Datei um Race-Conditions zu vermeiden (Double-Fork braucht Zeit).
 
     Returns:
         True wenn erfolgreich gestartet
@@ -355,6 +439,7 @@ def start_recording() -> bool:
     # Alte IPC-Dateien aufräumen
     ERROR_FILE.unlink(missing_ok=True)
     TRANSCRIPT_FILE.unlink(missing_ok=True)
+    PID_FILE.unlink(missing_ok=True)  # Wichtig: Alte PID entfernen für sauberen Start
 
     # transcribe.py --record-daemon starten
     script_path = SCRIPT_DIR / "transcribe.py"
@@ -375,8 +460,37 @@ def start_recording() -> bool:
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
-        logger.info("Aufnahme-Prozess gestartet")
-        return True
+        logger.debug("Popen erfolgreich, warte auf PID-Datei...")
+
+        # Warte auf PID-Datei (Double-Fork braucht Zeit!)
+        # Timeout: max 3 Sekunden, polling alle 50ms
+        start_time = time.time()
+        timeout = 3.0
+        poll_interval = 0.05
+
+        while (time.time() - start_time) < timeout:
+            if PID_FILE.exists():
+                try:
+                    pid = int(PID_FILE.read_text().strip())
+                    # Prüfe ob Prozess wirklich läuft
+                    os.kill(pid, 0)
+                    elapsed = (time.time() - start_time) * 1000
+                    logger.info(f"✓ Aufnahme gestartet (PID {pid}, {elapsed:.0f}ms)")
+                    return True
+                except (ValueError, ProcessLookupError):
+                    # PID-Datei noch nicht vollständig oder Prozess schon weg
+                    pass
+            time.sleep(poll_interval)
+
+        # Timeout - Error-Datei prüfen
+        if ERROR_FILE.exists():
+            error_msg = ERROR_FILE.read_text().strip()
+            logger.error(f"Aufnahme-Start fehlgeschlagen: {error_msg}")
+        else:
+            logger.error(f"Timeout: PID-Datei nicht innerhalb von {timeout}s erstellt")
+
+        return False
+
     except Exception as e:
         logger.error(f"Aufnahme-Start fehlgeschlagen: {e}")
         return False
@@ -473,6 +587,12 @@ class HotkeyDaemon:
         self.hotkey = hotkey
         self.mode = mode
 
+        # Lock verhindert Race-Conditions bei schnellen Hotkey-Drücken
+        self._toggle_lock = threading.Lock()
+
+        # Debouncing: Ignoriere Hotkey-Events die zu schnell kommen
+        self._last_hotkey_time = 0.0
+
         # Stale IPC-Dateien beim Start aufräumen
         self._cleanup_stale_state()
         self._recording = False
@@ -506,16 +626,43 @@ class HotkeyDaemon:
             PID_FILE.unlink(missing_ok=True)
             TRANSCRIPT_FILE.unlink(missing_ok=True)
             ERROR_FILE.unlink(missing_ok=True)
+            LOCK_FILE.unlink(missing_ok=True)
             logger.debug("IPC-Dateien aufgeräumt")
 
     def _on_hotkey(self) -> None:
         """Callback bei Hotkey-Aktivierung."""
-        logger.debug(f"Hotkey gedrückt! Recording-State: {self._recording}")
-        self._toggle_recording()
+        # 1. Debouncing: Ignoriere Events die zu schnell kommen (Key-Repeat)
+        now = time.time()
+        time_since_last = now - self._last_hotkey_time
+        if time_since_last < DEBOUNCE_INTERVAL:
+            logger.debug(f"Debounce: Event ignoriert ({time_since_last*1000:.0f}ms)")
+            return
+        self._last_hotkey_time = now
+
+        # 2. Thread-Lock: Verhindert parallele Callback-Ausführung
+        if not self._toggle_lock.acquire(blocking=False):
+            logger.warning("Hotkey ignoriert - Toggle bereits aktiv")
+            return
+
+        try:
+            logger.debug(f"Hotkey gedrückt! Recording-State: {self._recording}")
+            self._toggle_recording()
+        finally:
+            self._toggle_lock.release()
 
     def _toggle_recording(self) -> None:
         """Toggle-Mode: Start/Stop bei jedem Tastendruck."""
+        # State-Resync: Prüfe ob lokaler State mit Prozess-Zustand übereinstimmt
+        actual_recording = is_recording()
+        if self._recording != actual_recording:
+            logger.warning(
+                f"State-Mismatch: self._recording={self._recording}, "
+                f"actual={actual_recording}. Synchronisiere..."
+            )
+            self._recording = actual_recording
+
         if self._recording:
+            # === STOP ===
             logger.info("Toggle: Stop - Beende Aufnahme...")
             transcript = stop_recording()
             self._recording = False
@@ -530,12 +677,21 @@ class HotkeyDaemon:
             else:
                 logger.warning("Kein Transkript erhalten")
         else:
-            logger.info("Toggle: Start - Starte Aufnahme...")
-            if start_recording():
-                self._recording = True
-                logger.info("✓ Aufnahme gestartet")
-            else:
-                logger.error("✗ Aufnahme konnte nicht gestartet werden")
+            # === START ===
+            # Atomarer File-Lock verhindert parallele Starts (wie Raycast)
+            if not acquire_start_lock():
+                logger.warning("Start ignoriert - Lock nicht erworben")
+                return
+
+            try:
+                logger.info("Toggle: Start - Starte Aufnahme...")
+                if start_recording():
+                    self._recording = True
+                    logger.info("✓ Aufnahme gestartet")
+                else:
+                    logger.error("✗ Aufnahme konnte nicht gestartet werden")
+            finally:
+                release_start_lock()
 
     def run(self) -> None:
         """Startet Daemon (blockiert)."""
