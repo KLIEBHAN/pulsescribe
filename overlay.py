@@ -279,6 +279,12 @@ class WhisperOverlay(NSObject):
             self.breathing_active = False
             self.current_bar_color = None  # Cache für setBarColor_
 
+            # mtime-Caching für File-I/O Optimierung
+            self._state_mtime = 0.0
+            self._state_cache = "idle"
+            self._interim_mtime = 0.0
+            self._interim_cache = None
+
             self._setup_window()
             self._setup_timer()
         return self
@@ -643,21 +649,34 @@ class WhisperOverlay(NSObject):
 
     def _read_state(self) -> str:
         try:
-            state = STATE_FILE.read_text().strip()
-            return state if state else "idle"
+            mtime = STATE_FILE.stat().st_mtime
+            if mtime == self._state_mtime:
+                return self._state_cache
+            self._state_mtime = mtime
+            self._state_cache = STATE_FILE.read_text().strip() or "idle"
+            return self._state_cache
         except FileNotFoundError:
+            self._state_mtime = 0.0
+            self._state_cache = "idle"
             return "idle"
         except OSError:
-            return "idle"
+            return "idle"  # Sicherer Default bei I/O-Fehlern
 
     def _read_interim(self) -> str | None:
         try:
+            mtime = INTERIM_FILE.stat().st_mtime
+            if mtime == self._interim_mtime:
+                return self._interim_cache
+            self._interim_mtime = mtime
             text = INTERIM_FILE.read_text().strip()
-            return text or None
+            self._interim_cache = text or None
+            return self._interim_cache
         except FileNotFoundError:
+            self._interim_mtime = 0.0
+            self._interim_cache = None
             return None
         except OSError:
-            return None
+            return None  # Sicherer Default bei I/O-Fehlern
 
 
 def main():
