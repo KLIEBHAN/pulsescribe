@@ -20,7 +20,10 @@ from AppKit import (
     NSBezierPath,
     NSColor,
     NSFont,
+    NSFontAttributeName,
     NSFontWeightMedium,
+    NSFontWeightRegular,  # Standard-Gewichtung
+    NSFontWeightSemibold,  # Fetter für bessere Lesbarkeit
     NSMakeRect,
     NSScreen,
     NSTextField,
@@ -30,7 +33,7 @@ from AppKit import (
     NSWindow,
     NSWindowStyleMaskBorderless,
 )
-from Foundation import NSObject, NSTimer
+from Foundation import NSObject, NSString, NSTimer
 from objc import super  # noqa: A004 - PyObjC braucht das
 from Quartz import (
     CABasicAnimation,
@@ -38,7 +41,7 @@ from Quartz import (
     kCAMediaTimingFunctionEaseInEaseOut,
 )
 
-# NSVisualEffectMaterial Konstanten (PyObjC exportiert diese nicht direkt)
+# NSVisualEffectMaterial Konstanten
 NS_VISUAL_EFFECT_MATERIAL_HUD_WINDOW = 13
 NS_VISUAL_EFFECT_BLENDING_MODE_BEHIND_WINDOW = 0
 NS_VISUAL_EFFECT_STATE_ACTIVE = 1
@@ -47,29 +50,27 @@ NS_VISUAL_EFFECT_STATE_ACTIVE = 1
 STATE_FILE = Path("/tmp/whisper_go.state")
 INTERIM_FILE = Path("/tmp/whisper_go.interim")
 
-# Konfiguration
-POLL_INTERVAL = 0.2  # Sekunden
-OVERLAY_MIN_WIDTH = 280
-OVERLAY_MAX_WIDTH_RATIO = 0.7  # Max 70% der Bildschirmbreite
-OVERLAY_HEIGHT = 82  # Höher für vertikales Layout
-OVERLAY_MARGIN_BOTTOM = 100
-OVERLAY_CORNER_RADIUS = 14
-OVERLAY_PADDING_H = 20
-OVERLAY_PADDING_V = 18  # Mehr Padding oben/unten
-OVERLAY_ALPHA = 0.9
-FONT_SIZE = 13
+# Konfiguration - MODERN VERTICAL LAYOUT
+POLL_INTERVAL = 0.2
+OVERLAY_MIN_WIDTH = 260       # Etwas breiter als Startbasis
+OVERLAY_MAX_WIDTH_RATIO = 0.75
+OVERLAY_HEIGHT = 92           # Etwas höher für mehr Luft
+OVERLAY_MARGIN_BOTTOM = 110   # Etwas höher positioniert
+OVERLAY_CORNER_RADIUS = 18    # Sanfterer Radius
+OVERLAY_PADDING_H = 24        # Mehr seitlicher Abstand
+OVERLAY_ALPHA = 0.95
+FONT_SIZE = 15                # Größere Schrift
 MAX_TEXT_LENGTH = 120
-TEXT_FIELD_HEIGHT = 20  # Höhe des Textfelds
+TEXT_FIELD_HEIGHT = 24        # Höheres Textfeld
 
-# Schallwellen-Konfiguration (größer)
+# Schallwellen-Konfiguration
 WAVE_BAR_COUNT = 5
 WAVE_BAR_WIDTH = 4
-WAVE_BAR_GAP = 4
-WAVE_BAR_MIN_HEIGHT = 6
-WAVE_BAR_MAX_HEIGHT = 28
+WAVE_BAR_GAP = 5             # Etwas mehr Abstand zwischen Balken
+WAVE_BAR_MIN_HEIGHT = 8      # Etwas größere "Ruhe"-Höhe
+WAVE_BAR_MAX_HEIGHT = 32     # Höhere Amplitude
 WAVE_AREA_WIDTH = WAVE_BAR_COUNT * WAVE_BAR_WIDTH + (WAVE_BAR_COUNT - 1) * WAVE_BAR_GAP
 
-# Window-Level für Always-on-Top
 OVERLAY_WINDOW_LEVEL = 25
 
 
@@ -127,6 +128,12 @@ class SoundWaveView(NSView):
 
             self.bars.append(bar)
 
+    def setBarColor_(self, ns_color):
+        """Setzt die Farbe der Balken."""
+        cg_color = ns_color.CGColor()
+        for bar in self.bars:
+            bar.setBackgroundColor_(cg_color)
+
     def startAnimating(self):
         """Startet die Schallwellen-Animation."""
         if self.animations_running:
@@ -136,9 +143,9 @@ class SoundWaveView(NSView):
         frame = self.frame()
         center_y = frame.size.height / 2
 
-        # Verschiedene Animationszeiten für jeden Balken
-        durations = [0.3, 0.4, 0.35, 0.45]
-        delays = [0.0, 0.1, 0.05, 0.15]
+        # Organischere Animation
+        durations = [0.42, 0.38, 0.45, 0.39, 0.41]
+        delays = [0.0, 0.15, 0.3, 0.1, 0.25]
 
         for i, bar in enumerate(self.bars):
             duration = durations[i % len(durations)]
@@ -163,7 +170,7 @@ class SoundWaveView(NSView):
                 )
             )
 
-            # Y-Position Animation (um zentriert zu bleiben)
+            # Y-Position Animation
             y_anim = CABasicAnimation.animationWithKeyPath_("position.y")
             y_anim.setFromValue_(center_y)
             y_anim.setToValue_(center_y)
@@ -192,7 +199,7 @@ class SoundWaveView(NSView):
     def drawRect_(self, rect):
         """Zeichnet die Balken manuell (Fallback ohne Animation)."""
         if self.animations_running:
-            return  # Animation läuft via CALayer
+            return
 
         frame = self.frame()
         center_y = frame.size.height / 2
@@ -223,27 +230,25 @@ class WhisperOverlay(NSObject):
             self.visual_effect_view = None
             self.wave_view = None
             self.last_text = None
-            self.last_interim = None  # Letzter Interim-Text (für Pausen)
+            self.last_interim = None
             self.is_visible = False
             self._setup_window()
             self._setup_timer()
         return self
 
     def _setup_window(self):
-        """Erstellt das Overlay-Fenster mit Vibrancy-Effekt."""
+        """Erstellt das Overlay-Fenster."""
         screen = NSScreen.mainScreen()
         if not screen:
             return
 
         screen_frame = screen.frame()
 
-        # Initiale Größe
         width = OVERLAY_MIN_WIDTH
         height = OVERLAY_HEIGHT
         x = (screen_frame.size.width - width) / 2
         y = OVERLAY_MARGIN_BOTTOM
 
-        # Fenster erstellen
         self.window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(x, y, width, height),
             NSWindowStyleMaskBorderless,
@@ -251,7 +256,6 @@ class WhisperOverlay(NSObject):
             False,
         )
 
-        # Overlay-Eigenschaften
         self.window.setLevel_(OVERLAY_WINDOW_LEVEL)
         self.window.setIgnoresMouseEvents_(True)
         self.window.setOpaque_(False)
@@ -259,7 +263,6 @@ class WhisperOverlay(NSObject):
         self.window.setAlphaValue_(OVERLAY_ALPHA)
         self.window.setHasShadow_(True)
 
-        # NSVisualEffectView für Blur-Effekt
         self.visual_effect_view = NSVisualEffectView.alloc().initWithFrame_(
             NSMakeRect(0, 0, width, height)
         )
@@ -274,21 +277,26 @@ class WhisperOverlay(NSObject):
 
         self.window.setContentView_(self.visual_effect_view)
 
-        # Layout: Schallwelle oben zentriert, Text darunter
-        wave_area_y = OVERLAY_PADDING_V + TEXT_FIELD_HEIGHT + 6  # Über dem Text
-
-        # Schallwellen-View (oben zentriert)
+        # VERTIKALES LAYOUT (REFINED)
+        
+        # 1. Schallwelle (Oben)
+        # Position: Vertikal etwas nach oben verschoben für gute Balance
+        wave_y = height - (WAVE_BAR_MAX_HEIGHT + 18)  
         wave_x = (width - WAVE_AREA_WIDTH) / 2
+        
         self.wave_view = SoundWaveView.alloc().initWithFrame_(
-            NSMakeRect(wave_x, wave_area_y, WAVE_AREA_WIDTH, WAVE_BAR_MAX_HEIGHT)
+            NSMakeRect(wave_x, wave_y, WAVE_AREA_WIDTH, WAVE_BAR_MAX_HEIGHT)
         )
         self.visual_effect_view.addSubview_(self.wave_view)
 
-        # Textfeld (unten zentriert)
+        # 2. Text (Unten)
+        # Position: Unter der Wave, aber nicht am Boden klebend
+        text_y = 16  # Abstand von unten
+        
         self.text_field = NSTextField.alloc().initWithFrame_(
             NSMakeRect(
                 OVERLAY_PADDING_H,
-                OVERLAY_PADDING_V,
+                text_y,
                 width - 2 * OVERLAY_PADDING_H,
                 TEXT_FIELD_HEIGHT,
             )
@@ -299,17 +307,19 @@ class WhisperOverlay(NSObject):
         self.text_field.setEditable_(False)
         self.text_field.setSelectable_(False)
         self.text_field.setAlignment_(NSTextAlignmentCenter)
+        
+        # Helles Weiß für starken Kontrast
         self.text_field.setTextColor_(
-            NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.85)
+            NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.95)
         )
+        # Semibold Font
         self.text_field.setFont_(
-            NSFont.systemFontOfSize_weight_(FONT_SIZE, NSFontWeightMedium)
+            NSFont.systemFontOfSize_weight_(FONT_SIZE, NSFontWeightSemibold)
         )
 
         self.visual_effect_view.addSubview_(self.text_field)
 
     def _setup_timer(self):
-        """Startet den Polling-Timer."""
         NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             POLL_INTERVAL,
             self,
@@ -318,93 +328,122 @@ class WhisperOverlay(NSObject):
             True,
         )
 
+    def _update_text_style(self, is_status: bool):
+        """Passt Schriftart und Farbe basierend auf Text-Typ an."""
+        if is_status:
+            # Status: Sehr dezent (Regular, transparent)
+            self.text_field.setFont_(
+                NSFont.systemFontOfSize_weight_(FONT_SIZE, NSFontWeightRegular)
+            )
+            self.text_field.setTextColor_(
+                NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6)
+            )
+        else:
+            # Inhalt: Gut lesbar, aber nicht zu fett (Medium)
+            self.text_field.setFont_(
+                NSFont.systemFontOfSize_weight_(FONT_SIZE, NSFontWeightMedium)
+            )
+            self.text_field.setTextColor_(
+                NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.9)
+            )
+
     def _resize_window_for_text(self, text: str):
-        """Passt Fenstergröße dynamisch an Textlänge an."""
+        """Passt Fenstergröße dynamisch an."""
         screen = NSScreen.mainScreen()
         if not screen:
             return
 
         screen_frame = screen.frame()
 
-        # Breite berechnen: Text + Padding (vertikales Layout)
-        text_width = len(text) * 7.5  # ~7.5px pro Zeichen bei Font 13
+        # Aktuellen Font des Textfelds für Messung nutzen
+        font = self.text_field.font()
+        attributes = {NSFontAttributeName: font}
+        ns_text = NSString.stringWithString_(text)
+        
+        text_size = ns_text.sizeWithAttributes_(attributes)
+        text_width = text_size.width
+        
         content_width = text_width + 2 * OVERLAY_PADDING_H
+        min_for_wave = WAVE_AREA_WIDTH + 2 * OVERLAY_PADDING_H + 60
 
-        # Mindestens so breit wie Schallwellen + Padding
-        min_for_wave = WAVE_AREA_WIDTH + 2 * OVERLAY_PADDING_H + 40
-
-        # Begrenzen auf min/max
-        max_width = screen_frame.size.width * OVERLAY_MAX_WIDTH_RATIO
-        width = max(OVERLAY_MIN_WIDTH, min_for_wave, min(content_width, max_width))
+        width = max(OVERLAY_MIN_WIDTH, min_for_wave, min(content_width, screen_frame.size.width * OVERLAY_MAX_WIDTH_RATIO))
         height = OVERLAY_HEIGHT
 
-        # Zentriert positionieren
         x = (screen_frame.size.width - width) / 2
         y = OVERLAY_MARGIN_BOTTOM
 
-        # Fenster und Views anpassen
+        # Fenster Update
         self.window.setFrame_display_(NSMakeRect(x, y, width, height), True)
         self.visual_effect_view.setFrame_(NSMakeRect(0, 0, width, height))
 
-        # Schallwellen zentrieren
+        # Wave zentrieren
         wave_x = (width - WAVE_AREA_WIDTH) / 2
-        wave_area_y = OVERLAY_PADDING_V + TEXT_FIELD_HEIGHT + 6
+        wave_y = height - (WAVE_BAR_MAX_HEIGHT + 18)
         self.wave_view.setFrame_(
-            NSMakeRect(wave_x, wave_area_y, WAVE_AREA_WIDTH, WAVE_BAR_MAX_HEIGHT)
+            NSMakeRect(wave_x, wave_y, WAVE_AREA_WIDTH, WAVE_BAR_MAX_HEIGHT)
         )
 
-        # Textfeld anpassen
+        # Text zentrieren/breiter machen
         self.text_field.setFrame_(
             NSMakeRect(
                 OVERLAY_PADDING_H,
-                OVERLAY_PADDING_V,
+                16, # Fester Abstand von unten
                 width - 2 * OVERLAY_PADDING_H,
                 TEXT_FIELD_HEIGHT,
             )
         )
 
     def _show(self):
-        """Zeigt das Overlay und startet Animation."""
         if not self.is_visible:
             self.is_visible = True
             self.wave_view.startAnimating()
             self.window.orderFront_(None)
 
     def _hide(self):
-        """Versteckt das Overlay und stoppt Animation."""
         if self.is_visible:
             self.is_visible = False
             self.wave_view.stopAnimating()
             self.window.orderOut_(None)
 
     def pollState_(self, timer):
-        """Liest State und Interim-Text, aktualisiert Overlay."""
         state = self._read_state()
         interim_text = self._read_interim()
+        
+        is_status_msg = False
+        new_text = None
 
-        # Neuen Text bestimmen
         if state == "recording":
+            self.wave_view.setBarColor_(NSColor.systemRedColor())
             if interim_text:
-                # Neuer Interim-Text → speichern und anzeigen
                 self.last_interim = interim_text
                 new_text = f"{truncate_text(interim_text)} ..."
+                is_status_msg = False
             elif self.last_interim:
-                # Sprechpause → letzten Text behalten
-                new_text = f"{truncate_text(self.last_interim)} ..."
+                # Sprechpause: Statt altem Text nun "Loading ..."
+                new_text = "Loading ..."
+                is_status_msg = True
             else:
-                # Noch kein Text → Listening anzeigen
                 new_text = "Listening ..."
+                is_status_msg = True
         elif state == "transcribing":
+            self.wave_view.setBarColor_(NSColor.systemOrangeColor())
             new_text = "Transcribing ..."
-            self.last_interim = None  # Reset für nächste Aufnahme
+            self.last_interim = None
+            is_status_msg = True
         else:
+            self.wave_view.setBarColor_(
+                NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.9)
+            )
             new_text = None
-            self.last_interim = None  # Reset
+            self.last_interim = None
+            is_status_msg = True
 
-        # Nur aktualisieren wenn sich Text geändert hat
         if new_text != self.last_text:
             self.last_text = new_text
-            if new_text is not None:  # Auch leerer String zeigt Overlay
+            if new_text is not None:
+                # Erst Style setzen (beeinflusst Messung)
+                self._update_text_style(is_status_msg)
+                # Dann Größe berechnen und Text setzen
                 self._resize_window_for_text(new_text if new_text else "Recording")
                 self.text_field.setStringValue_(new_text)
                 self._show()
@@ -412,7 +451,6 @@ class WhisperOverlay(NSObject):
                 self._hide()
 
     def _read_state(self) -> str:
-        """Liest aktuellen State aus IPC-Datei."""
         try:
             state = STATE_FILE.read_text().strip()
             return state if state else "idle"
@@ -422,7 +460,6 @@ class WhisperOverlay(NSObject):
             return "idle"
 
     def _read_interim(self) -> str | None:
-        """Liest aktuellen Interim-Text."""
         try:
             text = INTERIM_FILE.read_text().strip()
             return text or None
@@ -433,12 +470,9 @@ class WhisperOverlay(NSObject):
 
 
 def main():
-    """Startet die Overlay-App."""
     app = NSApplication.sharedApplication()
-    app.setActivationPolicy_(1)  # NSApplicationActivationPolicyAccessory
-
-    overlay = WhisperOverlay.alloc().init()  # noqa: F841
-
+    app.setActivationPolicy_(1)
+    overlay = WhisperOverlay.alloc().init() # noqa: F841
     app.run()
 
 
