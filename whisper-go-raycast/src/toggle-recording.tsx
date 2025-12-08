@@ -211,7 +211,16 @@ async function stopRecording(): Promise<void> {
     }
 
     const text = readAndDelete(IPC.transcript);
-    if (text) {
+    if (text !== null) {
+      // Leeres Transkript = nichts gesprochen
+      if (!text) {
+        toast.style = Toast.Style.Success;
+        toast.title = "⚠️ Keine Sprache erkannt";
+        toast.message = "Aufnahme beendet";
+        await sleep(1500);
+        await toast.hide();
+        return;
+      }
       await Clipboard.paste(text);
       toast.style = Toast.Style.Success;
       toast.title = "Text eingefügt";

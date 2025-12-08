@@ -55,19 +55,21 @@ Kein Electron. Kein Cloud-Lock-in. Kein Abo.
 - [x] Akustisches Feedback bei Aufnahmestart (`play_ready_sound`)
 - [x] Menübar-Feedback (`menubar.py` mit rumps)
 
-### Phase 3: Smart Features ← aktuell
+### Phase 3: Smart Features ✅
 
 - [x] LLM-Nachbearbeitung (Füllwörter entfernen, Formatierung)
 - [x] Multi-Provider Support (OpenAI, OpenRouter)
 - [x] Deepgram Nova-3 Integration (schneller als Whisper API)
+- [x] Deepgram WebSocket-Streaming (Echtzeit-Transkription)
 - [x] Kontext-Awareness (Email formal, Chat casual, Code technisch)
 - [x] Custom Vocabulary (Namen, Fachbegriffe)
 
-### Phase 4: Native App
+### Phase 4: Native App ← aktuell
 
 - [ ] macOS Menübar-App (rumps oder Swift)
 - [ ] Konfigurierbare Hotkeys
 - [ ] Sprach-Commands ("neuer Absatz", "Punkt")
+- [ ] Live-Preview (Interim-Results während der Aufnahme anzeigen)
 
 ### Phase 5: Multi-Platform
 
