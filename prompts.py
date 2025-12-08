@@ -68,8 +68,8 @@ def get_prompt_for_context(context: str, voice_commands: bool = True) -> str:
     """
     prompt = CONTEXT_PROMPTS.get(context, CONTEXT_PROMPTS["default"])
     if voice_commands:
-        # Füge Voice-Commands vor "Gib NUR" ein
-        prompt = prompt.replace("Gib NUR", VOICE_COMMANDS_INSTRUCTION + "\nGib NUR")
+        # Prepend Voice-Commands (robuster als replace)
+        prompt = VOICE_COMMANDS_INSTRUCTION + "\n" + prompt
     return prompt
 
 

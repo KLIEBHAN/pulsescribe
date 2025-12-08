@@ -50,26 +50,34 @@ class TestVoiceCommands:
     @pytest.mark.parametrize(
         "command",
         [
+            # Deutsch
             "neuer Absatz",
-            "new paragraph",
-            "Punkt",
-            "period",
-            "Komma",
-            "comma",
-            "Fragezeichen",
             "neue Zeile",
+            "Punkt",
+            "Komma",
+            "Fragezeichen",
+            "Ausrufezeichen",
+            "Doppelpunkt",
+            "Semikolon",
+            # Englisch
+            "new paragraph",
+            "new line",
+            "period",
+            "comma",
+            "question mark",
+            "exclamation mark",
+            "colon",
+            "semicolon",
         ],
     )
     def test_voice_commands_instruction_contains_command(self, command):
         """VOICE_COMMANDS_INSTRUCTION enthält alle erwarteten Befehle."""
         assert command in VOICE_COMMANDS_INSTRUCTION
 
-    def test_voice_commands_before_final_instruction(self):
-        """Voice-Commands werden vor 'Gib NUR' eingefügt."""
+    def test_voice_commands_prepended(self):
+        """Voice-Commands werden am Anfang des Prompts eingefügt."""
         result = get_prompt_for_context("default")
-        voice_pos = result.find(VOICE_COMMANDS_INSTRUCTION)
-        gib_nur_pos = result.find("Gib NUR")
-        assert voice_pos < gib_nur_pos
+        assert result.startswith(VOICE_COMMANDS_INSTRUCTION)
 
 
 class TestPromptConstants:
