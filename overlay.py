@@ -52,23 +52,23 @@ INTERIM_FILE = Path("/tmp/whisper_go.interim")
 
 # Konfiguration - MODERN VERTICAL LAYOUT
 POLL_INTERVAL = 0.2
-OVERLAY_MIN_WIDTH = 260       # Etwas breiter als Startbasis
+OVERLAY_MIN_WIDTH = 260  # Etwas breiter als Startbasis
 OVERLAY_MAX_WIDTH_RATIO = 0.75
-OVERLAY_HEIGHT = 92           # Etwas höher für mehr Luft
-OVERLAY_MARGIN_BOTTOM = 110   # Etwas höher positioniert
-OVERLAY_CORNER_RADIUS = 20    # Sanfterer Radius (angepasst für Glass-Look)
-OVERLAY_PADDING_H = 24        # Mehr seitlicher Abstand
+OVERLAY_HEIGHT = 92  # Etwas höher für mehr Luft
+OVERLAY_MARGIN_BOTTOM = 110  # Etwas höher positioniert
+OVERLAY_CORNER_RADIUS = 20  # Sanfterer Radius (angepasst für Glass-Look)
+OVERLAY_PADDING_H = 24  # Mehr seitlicher Abstand
 OVERLAY_ALPHA = 0.95
-FONT_SIZE = 15                # Größere Schrift
+FONT_SIZE = 15  # Größere Schrift
 MAX_TEXT_LENGTH = 120
-TEXT_FIELD_HEIGHT = 24        # Höheres Textfeld
+TEXT_FIELD_HEIGHT = 24  # Höheres Textfeld
 
 # Schallwellen-Konfiguration
 WAVE_BAR_COUNT = 5
 WAVE_BAR_WIDTH = 4
-WAVE_BAR_GAP = 5             # Etwas mehr Abstand zwischen Balken
-WAVE_BAR_MIN_HEIGHT = 8      # Etwas größere "Ruhe"-Höhe
-WAVE_BAR_MAX_HEIGHT = 32     # Höhere Amplitude
+WAVE_BAR_GAP = 5  # Etwas mehr Abstand zwischen Balken
+WAVE_BAR_MIN_HEIGHT = 8  # Etwas größere "Ruhe"-Höhe
+WAVE_BAR_MAX_HEIGHT = 32  # Höhere Amplitude
 WAVE_AREA_WIDTH = WAVE_BAR_COUNT * WAVE_BAR_WIDTH + (WAVE_BAR_COUNT - 1) * WAVE_BAR_GAP
 
 OVERLAY_WINDOW_LEVEL = 25
@@ -274,7 +274,7 @@ class WhisperOverlay(NSObject):
         self.visual_effect_view.setWantsLayer_(True)
         self.visual_effect_view.layer().setCornerRadius_(OVERLAY_CORNER_RADIUS)
         self.visual_effect_view.layer().setMasksToBounds_(True)
-        
+
         # Premium "Glass" Border
         self.visual_effect_view.layer().setBorderWidth_(1.0)
         self.visual_effect_view.layer().setBorderColor_(
@@ -283,12 +283,12 @@ class WhisperOverlay(NSObject):
 
         self.window.setContentView_(self.visual_effect_view)
         # VERTIKALES LAYOUT (REFINED)
-        
+
         # 1. Schallwelle (Oben)
         # Position: Vertikal etwas nach oben verschoben für gute Balance
-        wave_y = height - (WAVE_BAR_MAX_HEIGHT + 18)  
+        wave_y = height - (WAVE_BAR_MAX_HEIGHT + 18)
         wave_x = (width - WAVE_AREA_WIDTH) / 2
-        
+
         self.wave_view = SoundWaveView.alloc().initWithFrame_(
             NSMakeRect(wave_x, wave_y, WAVE_AREA_WIDTH, WAVE_BAR_MAX_HEIGHT)
         )
@@ -297,7 +297,7 @@ class WhisperOverlay(NSObject):
         # 2. Text (Unten)
         # Position: Unter der Wave, aber nicht am Boden klebend
         text_y = 16  # Abstand von unten
-        
+
         self.text_field = NSTextField.alloc().initWithFrame_(
             NSMakeRect(
                 OVERLAY_PADDING_H,
@@ -312,7 +312,7 @@ class WhisperOverlay(NSObject):
         self.text_field.setEditable_(False)
         self.text_field.setSelectable_(False)
         self.text_field.setAlignment_(NSTextAlignmentCenter)
-        
+
         # Helles Weiß für starken Kontrast
         self.text_field.setTextColor_(
             NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.95)
@@ -364,14 +364,18 @@ class WhisperOverlay(NSObject):
         font = self.text_field.font()
         attributes = {NSFontAttributeName: font}
         ns_text = NSString.stringWithString_(text)
-        
+
         text_size = ns_text.sizeWithAttributes_(attributes)
         text_width = text_size.width
-        
+
         content_width = text_width + 2 * OVERLAY_PADDING_H
         min_for_wave = WAVE_AREA_WIDTH + 2 * OVERLAY_PADDING_H + 60
 
-        width = max(OVERLAY_MIN_WIDTH, min_for_wave, min(content_width, screen_frame.size.width * OVERLAY_MAX_WIDTH_RATIO))
+        width = max(
+            OVERLAY_MIN_WIDTH,
+            min_for_wave,
+            min(content_width, screen_frame.size.width * OVERLAY_MAX_WIDTH_RATIO),
+        )
         height = OVERLAY_HEIGHT
 
         x = (screen_frame.size.width - width) / 2
@@ -392,7 +396,7 @@ class WhisperOverlay(NSObject):
         self.text_field.setFrame_(
             NSMakeRect(
                 OVERLAY_PADDING_H,
-                16, # Fester Abstand von unten
+                16,  # Fester Abstand von unten
                 width - 2 * OVERLAY_PADDING_H,
                 TEXT_FIELD_HEIGHT,
             )
@@ -413,7 +417,7 @@ class WhisperOverlay(NSObject):
     def pollState_(self, timer):
         state = self._read_state()
         interim_text = self._read_interim()
-        
+
         is_status_msg = False
         new_text = None
 
@@ -477,7 +481,7 @@ class WhisperOverlay(NSObject):
 def main():
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(1)
-    overlay = WhisperOverlay.alloc().init() # noqa: F841
+    overlay = WhisperOverlay.alloc().init()  # noqa: F841
     app.run()
 
 
