@@ -2,7 +2,7 @@
 
 Spracheingabe für macOS – inspiriert von [Wispr Flow](https://wisprflow.ai). Transkribiert Audio mit OpenAI Whisper über API, Deepgram, Groq oder lokal.
 
-**Features:** Mehrere Provider (OpenAI, Deepgram, Groq, lokal) · LLM-Nachbearbeitung · Kontext-Awareness · Custom Vocabulary · Raycast-Hotkeys · Menübar-Feedback
+**Features:** Echtzeit-Streaming (Deepgram) · Mehrere Provider (OpenAI, Deepgram, Groq, lokal) · LLM-Nachbearbeitung · Kontext-Awareness · Custom Vocabulary · Raycast-Hotkeys · Menübar-Feedback
 
 ## Schnellstart
 
@@ -216,6 +216,17 @@ Visuelles Feedback in der macOS-Menüleiste:
 | ✅   | Erfolgreich         |
 | ❌   | Fehler              |
 
+## Provider-Vergleich
+
+| Modus      | Provider | Methode   | Latenz    | Besonderheit                        |
+| ---------- | -------- | --------- | --------- | ----------------------------------- |
+| `deepgram` | Deepgram | WebSocket | ~300ms ⚡ | Echtzeit-Streaming (empfohlen)      |
+| `groq`     | Groq     | REST      | ~1s       | Whisper auf LPU, sehr schnell       |
+| `api`      | OpenAI   | REST      | ~2-3s     | GPT-4o Transcribe, höchste Qualität |
+| `local`    | Whisper  | Lokal     | ~5-10s    | Offline, keine API-Kosten           |
+
+> **Empfehlung:** `--mode deepgram` für den täglichen Gebrauch. Die Streaming-Architektur sorgt für minimale Wartezeit zwischen Aufnahme-Stopp und Text-Einfügen.
+
 ## Modell-Referenz
 
 ### API-Modelle (OpenAI)
@@ -234,6 +245,24 @@ Visuelles Feedback in der macOS-Menüleiste:
 | `nova-2` | Bewährtes Modell, günstiger        |
 
 `smart_format` ist aktiviert – automatische Formatierung von Datum, Währung und Absätzen.
+
+#### Echtzeit-Streaming (Standard)
+
+Deepgram nutzt standardmäßig **WebSocket-Streaming** für minimale Latenz:
+
+- Audio wird **während der Aufnahme** transkribiert, nicht erst danach
+- Ergebnis erscheint **sofort** nach dem Stoppen (statt 2-3s Wartezeit)
+- Ideal für die Raycast-Integration
+
+```bash
+# Streaming (Standard)
+python transcribe.py --record --mode deepgram
+
+# REST-Fallback (falls Streaming Probleme macht)
+python transcribe.py --record --mode deepgram --no-streaming
+# oder via ENV:
+WHISPER_GO_STREAMING=false
+```
 
 ### Groq-Modelle
 

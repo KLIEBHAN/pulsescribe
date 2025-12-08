@@ -551,7 +551,21 @@ def transcribe_with_deepgram_stream(
                     logger.error(f"[{_session_id}] Send-Error detected, raising...")
                     raise send_error
                 try:
-                    # Direkt auf WebSocket mit Timeout zugreifen
+                    # HINWEIS: Wir greifen hier auf das private `_websocket` Attribut zu.
+                    # Das ist ein bewusster Trade-off:
+                    #
+                    # Das Deepgram SDK v5.3 bietet nur `start_listening()` als öffentliche
+                    # API für den Message-Empfang. Diese Methode ist jedoch blockierend und
+                    # läuft in einer Endlosschleife bis die Verbindung geschlossen wird.
+                    # Das verhindert, dass wir auf SIGUSR1 reagieren können (Raycast-Stop).
+                    #
+                    # Durch direkten Zugriff auf den WebSocket mit Timeout können wir:
+                    # 1. Regelmäßig `should_stop` prüfen (Signal-Handling)
+                    # 2. Die Schleife kontrolliert verlassen
+                    # 3. Die Verbindung sauber schließen
+                    #
+                    # Risiko: Bei SDK-Updates könnte `_websocket` umbenannt werden.
+                    # Mitigation: SDK-Version in requirements.txt pinnen, Tests bei Updates.
                     raw_msg = connection._websocket.recv(timeout=RECV_TIMEOUT)
                     logger.debug(f"[{_session_id}] Message empfangen: {type(raw_msg)}")
                     # JSON parsen und Transcript extrahieren
