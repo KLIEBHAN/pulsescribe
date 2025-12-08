@@ -62,6 +62,13 @@ interface Preferences {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// Timing-Helper für Performance-Analyse
+const startTime = Date.now();
+function logTiming(label: string): void {
+  const elapsed = Date.now() - startTime;
+  console.log(`[whisper_go] +${elapsed}ms: ${label}`);
+}
+
 function readAndDelete(path: string): string | null {
   if (!existsSync(path)) return null;
   const content = readFileSync(path, "utf-8").trim();
@@ -118,7 +125,14 @@ function validateConfig(prefs: Preferences): string | null {
 // --- Aufnahme starten ---
 
 async function startRecording(prefs: Preferences): Promise<void> {
+  logTiming("startRecording() called");
+
+  // HUD SOFORT zeigen (optimistisch) - das dauert ~1s, also parallel starten!
+  const hudPromise = showHUD("🎤 Aufnahme läuft...");
+  logTiming("showHUD() started (async)");
+
   await closeMainWindow();
+  logTiming("closeMainWindow() done");
 
   // Alte IPC-Dateien aufräumen
   deleteIfExists(IPC.error);
@@ -132,6 +146,7 @@ async function startRecording(prefs: Preferences): Promise<void> {
   const env = { ...process.env };
   if (prefs.openaiApiKey) env.OPENAI_API_KEY = prefs.openaiApiKey;
 
+  logTiming("spawning daemon...");
   // Daemon starten (detached = unabhängig von Raycast)
   const daemon = spawn(prefs.pythonPath, args, {
     detached: true,
@@ -139,25 +154,36 @@ async function startRecording(prefs: Preferences): Promise<void> {
     env,
   });
   daemon.unref();
+  logTiming("daemon spawned");
 
-  // Warten bis Daemon bereit (PID-File erscheint)
-  const deadline = Date.now() + TIMEOUT.daemonStart;
+  // Auf HUD warten (läuft parallel zum Daemon-Start)
+  await hudPromise;
+  logTiming("showHUD() done");
+
+  // Kurz prüfen ob Daemon erfolgreich gestartet (max 500ms)
+  const deadline = Date.now() + 500;
+  let pollCount = 0;
   while (Date.now() < deadline) {
     if (existsSync(IPC.pid)) {
-      // HUD statt Toast: bleibt nach Command-Ende sichtbar
-      await showHUD("🎤 Aufnahme läuft...");
+      logTiming(`PID file found after ${pollCount} polls`);
       return;
     }
     if (existsSync(IPC.error)) break;
     await sleep(TIMEOUT.poll);
+    pollCount++;
   }
 
+  // Fehler nur wenn Error-File existiert
   const error = readAndDelete(IPC.error);
-  await showToast({
-    style: Toast.Style.Failure,
-    title: "Aufnahme fehlgeschlagen",
-    message: error || "Daemon konnte nicht gestartet werden",
-  });
+  if (error) {
+    logTiming("daemon start error");
+    await showToast({
+      style: Toast.Style.Failure,
+      title: "Aufnahme fehlgeschlagen",
+      message: error,
+    });
+  }
+  // Kein Fehler-Toast wenn nur Timeout - Daemon läuft wahrscheinlich
 }
 
 // --- Aufnahme stoppen ---
@@ -243,7 +269,11 @@ async function stopRecording(): Promise<void> {
 // --- Entry Point ---
 
 export default async function Command(): Promise<void> {
+  const commandStart = Date.now();
+  console.log(`[whisper_go] === Command() START ===`);
+
   const prefs = resolvePreferences(getPreferenceValues<Preferences>());
+  logTiming("preferences resolved");
 
   // Prüfe ob Aufnahme läuft: PID-Datei muss existieren UND Prozess muss leben
   let isRecording = false;
@@ -253,6 +283,7 @@ export default async function Command(): Promise<void> {
     isRecording = Number.isInteger(pid) && pid > 0 && isProcessAlive(pid);
     if (!isRecording) deleteIfExists(IPC.pid);
   }
+  logTiming(`isRecording: ${isRecording}`);
 
   if (isRecording) {
     // Beim Stoppen: Keine Validierung nötig, Daemon läuft bereits
@@ -270,4 +301,8 @@ export default async function Command(): Promise<void> {
     }
     await startRecording(prefs);
   }
+
+  console.log(
+    `[whisper_go] === Command() END (${Date.now() - commandStart}ms total) ===`,
+  );
 }

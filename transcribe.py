@@ -178,33 +178,173 @@ def copy_to_clipboard(text: str) -> bool:
         return False
 
 
-def play_ready_sound() -> None:
-    """Spielt einen kurzen Ton ab wenn die Aufnahme bereit ist (macOS)."""
-    import subprocess
+# =============================================================================
+# Sound-Playback via CoreAudio (ultra-low latency: ~0.2ms statt ~500ms mit afplay)
+# =============================================================================
 
-    try:
-        subprocess.Popen(
-            ["afplay", "/System/Library/Sounds/Tink.aiff"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except OSError as e:
-        # Sound ist optional – Fehler nur loggen, nicht abbrechen
-        logger.debug(f"[{_session_id}] Ready-Sound fehlgeschlagen: {e}")
+
+class _CoreAudioPlayer:
+    """
+    Singleton für CoreAudio-Sound-Playback.
+
+    Lädt Sounds lazy beim ersten Aufruf und cached die Sound-IDs.
+    Fallback auf subprocess.Popen wenn CoreAudio nicht verfügbar.
+    """
+
+    _instance: "_CoreAudioPlayer | None" = None
+    _initialized: bool = False
+
+    def __new__(cls) -> "_CoreAudioPlayer":
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __init__(self) -> None:
+        if _CoreAudioPlayer._initialized:
+            return
+        _CoreAudioPlayer._initialized = True
+
+        self._sound_ids: dict[str, int] = {}
+        self._audio_toolbox = None
+        self._core_foundation = None
+        self._use_fallback = False
+
+        try:
+            import ctypes
+
+            self._ctypes = ctypes
+            self._audio_toolbox = ctypes.CDLL(
+                "/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox"
+            )
+            self._core_foundation = ctypes.CDLL(
+                "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
+            )
+
+            # CFStringCreateWithCString
+            self._core_foundation.CFStringCreateWithCString.restype = ctypes.c_void_p
+            self._core_foundation.CFStringCreateWithCString.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_char_p,
+                ctypes.c_uint32,
+            ]
+
+            # CFURLCreateWithFileSystemPath
+            self._core_foundation.CFURLCreateWithFileSystemPath.restype = (
+                ctypes.c_void_p
+            )
+            self._core_foundation.CFURLCreateWithFileSystemPath.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_void_p,
+                ctypes.c_int,
+                ctypes.c_bool,
+            ]
+
+            # AudioServicesCreateSystemSoundID
+            self._audio_toolbox.AudioServicesCreateSystemSoundID.restype = (
+                ctypes.c_int32
+            )
+            self._audio_toolbox.AudioServicesCreateSystemSoundID.argtypes = [
+                ctypes.c_void_p,
+                ctypes.POINTER(ctypes.c_uint32),
+            ]
+        except (OSError, AttributeError) as e:
+            logger.debug(f"CoreAudio nicht verfügbar, nutze Fallback: {e}")
+            self._use_fallback = True
+
+    def _load_sound(self, path: str) -> int | None:
+        """Lädt Sound-Datei und gibt Sound-ID zurück."""
+        if self._use_fallback or self._core_foundation is None:
+            return None
+
+        try:
+            # CFString aus Pfad erstellen (kCFStringEncodingUTF8 = 0x08000100)
+            cf_string = self._core_foundation.CFStringCreateWithCString(
+                None, path.encode(), 0x08000100
+            )
+            if not cf_string:
+                return None
+
+            # CFURL erstellen (kCFURLPOSIXPathStyle = 0)
+            cf_url = self._core_foundation.CFURLCreateWithFileSystemPath(
+                None, cf_string, 0, False
+            )
+            if not cf_url:
+                return None
+
+            # Sound-ID erstellen
+            sound_id = self._ctypes.c_uint32(0)
+            result = self._audio_toolbox.AudioServicesCreateSystemSoundID(
+                cf_url, self._ctypes.byref(sound_id)
+            )
+
+            if result == 0:
+                return sound_id.value
+            return None
+        except Exception:
+            return None
+
+    def play(self, sound_name: str, sound_path: str) -> None:
+        """Spielt Sound ab (lädt bei Bedarf)."""
+        # Fallback auf subprocess
+        if self._use_fallback:
+            self._play_fallback(sound_path)
+            return
+
+        # Sound-ID aus Cache oder neu laden
+        if sound_name not in self._sound_ids:
+            sound_id = self._load_sound(sound_path)
+            if sound_id is None:
+                self._play_fallback(sound_path)
+                return
+            self._sound_ids[sound_name] = sound_id
+
+        # Sound abspielen (non-blocking, ~0.2ms)
+        try:
+            self._audio_toolbox.AudioServicesPlaySystemSound(
+                self._sound_ids[sound_name]
+            )
+        except Exception:
+            self._play_fallback(sound_path)
+
+    def _play_fallback(self, sound_path: str) -> None:
+        """Fallback auf afplay wenn CoreAudio nicht funktioniert."""
+        import subprocess
+
+        try:
+            subprocess.Popen(
+                ["afplay", sound_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError:
+            pass
+
+
+# Singleton-Instanz (lazy init beim ersten Aufruf)
+_sound_player: _CoreAudioPlayer | None = None
+
+
+def _get_sound_player() -> _CoreAudioPlayer:
+    """Gibt Sound-Player Singleton zurück (lazy init)."""
+    global _sound_player
+    if _sound_player is None:
+        _sound_player = _CoreAudioPlayer()
+    return _sound_player
+
+
+def play_ready_sound() -> None:
+    """Spielt Ready-Ton ab (macOS, ~0.2ms Latenz)."""
+    _get_sound_player().play("ready", "/System/Library/Sounds/Tink.aiff")
 
 
 def play_stop_sound() -> None:
-    """Spielt einen kurzen Ton ab wenn die Aufnahme beendet wird (macOS)."""
-    import subprocess
+    """Spielt Stop-Ton ab (macOS, ~0.2ms Latenz)."""
+    _get_sound_player().play("stop", "/System/Library/Sounds/Pop.aiff")
 
-    try:
-        subprocess.Popen(
-            ["afplay", "/System/Library/Sounds/Pop.aiff"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except OSError as e:
-        logger.debug(f"[{_session_id}] Stop-Sound fehlgeschlagen: {e}")
+
+def play_error_sound() -> None:
+    """Spielt Fehler-Ton ab (macOS, ~0.2ms Latenz)."""
+    _get_sound_player().play("error", "/System/Library/Sounds/Basso.aiff")
 
 
 def record_audio() -> Path:
@@ -247,25 +387,84 @@ def record_audio() -> Path:
     return output_path
 
 
+def _is_whisper_go_process(pid: int) -> bool:
+    """Prüft ob die PID zu einem whisper_go Prozess gehört (Sicherheit!)."""
+    import subprocess
+
+    try:
+        # macOS/Linux: Kommandozeile des Prozesses abfragen
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True,
+            text=True,
+            timeout=1,
+        )
+        command = result.stdout.strip()
+        # Nur killen wenn es wirklich unser Script ist
+        return "transcribe.py" in command and "--record-daemon" in command
+    except Exception:
+        return False
+
+
 def _cleanup_stale_pid_file() -> None:
-    """Entfernt PID-File falls der Prozess nicht mehr läuft (Crash-Recovery)."""
+    """
+    Entfernt PID-File und killt alten Prozess falls nötig (Crash-Recovery).
+
+    Sicherheit:
+    - Prüft ob PID wirklich zu einem whisper_go Prozess gehört
+    - Verhindert versehentliches Killen fremder Prozesse bei PID-Recycling
+    """
     if not PID_FILE.exists():
         return
 
     try:
         old_pid = int(PID_FILE.read_text().strip())
+
+        # Eigene PID? Dann nicht killen!
+        if old_pid == os.getpid():
+            return
+
         # Signal 0 ist ein "Ping" – prüft Existenz ohne Seiteneffekte
         os.kill(old_pid, 0)
-        # Prozess läuft noch - könnte legitim sein oder Zombie
+
+        # SICHERHEIT: Nur killen wenn es wirklich ein whisper_go Prozess ist!
+        if not _is_whisper_go_process(old_pid):
+            logger.warning(
+                f"[{_session_id}] PID {old_pid} ist kein whisper_go Prozess, "
+                f"lösche nur PID-File (PID-Recycling?)"
+            )
+            PID_FILE.unlink(missing_ok=True)
+            return
+
+        # Prozess läuft noch und ist whisper_go → KILL
         logger.warning(
-            f"[{_session_id}] PID-File existiert, Prozess {old_pid} läuft noch"
+            f"[{_session_id}] Alter Daemon-Prozess {old_pid} läuft noch, beende ihn..."
         )
+
+        # Erst freundlich (SIGTERM), dann hart (SIGKILL)
+        try:
+            os.kill(old_pid, signal.SIGTERM)
+            time.sleep(0.1)
+            try:
+                os.kill(old_pid, 0)
+                os.kill(old_pid, signal.SIGKILL)
+                logger.info(
+                    f"[{_session_id}] Alter Prozess {old_pid} gekillt (SIGKILL)"
+                )
+            except ProcessLookupError:
+                logger.info(
+                    f"[{_session_id}] Alter Prozess {old_pid} beendet (SIGTERM)"
+                )
+        except ProcessLookupError:
+            pass
+
+        PID_FILE.unlink(missing_ok=True)
+
     except (ValueError, ProcessLookupError):
         # PID ungültig oder Prozess existiert nicht mehr → aufräumen
         logger.info(f"[{_session_id}] Stale PID-File gelöscht: {PID_FILE}")
-        PID_FILE.unlink()
+        PID_FILE.unlink(missing_ok=True)
     except PermissionError:
-        # Prozess existiert, gehört aber anderem User
         logger.warning(f"[{_session_id}] PID-File existiert, keine Berechtigung")
 
 
@@ -536,6 +735,52 @@ async def _transcribe_with_deepgram_stream_async(
     # AsyncDeepgramClient verwenden
     client = AsyncDeepgramClient(api_key=api_key)
 
+    # ═══════════════════════════════════════════════════════════════════════════
+    # PARALLELER STARTUP: Mikrofon SOFORT starten, Audio puffern während
+    # WebSocket connected. Ready-Sound nach Mikrofon-Init (~170ms statt ~670ms)
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    # Audio-Buffer für Chunks während WebSocket-Connect
+    audio_buffer: list[bytes] = []
+    buffer_lock = threading.Lock()
+    buffering_active = True  # True = Buffer, False = direkt in Queue
+
+    # Audio-Queue (wird nach WebSocket-Connect befüllt)
+    audio_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+
+    # Audio-Callback mit Buffering-Logik (läuft im sounddevice-Thread)
+    def audio_callback(indata, _frames, _time_info, status):
+        if status:
+            logger.warning(f"[{_session_id}] Audio-Status: {status}")
+        if stop_event.is_set():
+            return
+
+        audio_bytes = (indata * 32767).astype(np.int16).tobytes()
+
+        with buffer_lock:
+            if buffering_active:
+                # WebSocket noch nicht bereit → Buffer
+                audio_buffer.append(audio_bytes)
+            else:
+                # WebSocket bereit → direkt in Queue
+                loop.call_soon_threadsafe(audio_queue.put_nowait, audio_bytes)
+
+    # Mikrofon SOFORT starten (vor WebSocket-Connect!)
+    logger.info(f"[{_session_id}] Starte Mikrofon (Buffering-Modus)...")
+    mic_stream = sd.InputStream(
+        samplerate=SAMPLE_RATE,
+        channels=CHANNELS,
+        blocksize=BLOCKSIZE,
+        dtype=np.float32,
+        callback=audio_callback,
+    )
+    mic_stream.start()
+
+    # Ready-Sound SOFORT - Benutzer kann sprechen, Audio wird gepuffert!
+    mic_init_ms = (time.perf_counter() - stream_start) * 1000
+    logger.info(f"[{_session_id}] Mikrofon bereit nach {mic_init_ms:.0f}ms")
+    play_ready_sound()
+
     try:
         # Async Context Manager für WebSocket (SDK v5.3 API)
         async with client.listen.v1.connect(
@@ -553,19 +798,19 @@ async def _transcribe_with_deepgram_stream_async(
             connection.on(EventType.ERROR, on_error)
             connection.on(EventType.CLOSE, on_close)
 
-            logger.info(f"[{_session_id}] WebSocket verbunden, starte Mikrofon")
+            # WebSocket verbunden! Buffer leeren und Live-Modus aktivieren
+            ws_time = (time.perf_counter() - stream_start) * 1000
+            with buffer_lock:
+                buffering_active = False
+                buffered_count = len(audio_buffer)
+                for chunk in audio_buffer:
+                    audio_queue.put_nowait(chunk)
+                audio_buffer.clear()
 
-            # Audio-Queue für Thread-sichere Kommunikation
-            audio_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
-
-            # Audio-Callback (läuft im sounddevice-Thread)
-            def audio_callback(indata, _frames, _time_info, status):
-                if status:
-                    logger.warning(f"[{_session_id}] Audio-Status: {status}")
-                if not stop_event.is_set():
-                    audio_bytes = (indata * 32767).astype(np.int16).tobytes()
-                    # Thread-sicher in Queue einfügen
-                    loop.call_soon_threadsafe(audio_queue.put_nowait, audio_bytes)
+            logger.info(
+                f"[{_session_id}] WebSocket verbunden nach {ws_time:.0f}ms, "
+                f"{buffered_count} gepufferte Chunks gesendet"
+            )
 
             # Audio-Sender Task
             async def send_audio():
@@ -599,61 +844,46 @@ async def _transcribe_with_deepgram_stream_async(
                 except Exception as e:
                     logger.debug(f"[{_session_id}] Listener beendet: {e}")
 
-            # Mikrofon-Stream starten
-            logger.info(f"[{_session_id}] Starte Mikrofon-Stream...")
-            with sd.InputStream(
-                samplerate=SAMPLE_RATE,
-                channels=CHANNELS,
-                blocksize=BLOCKSIZE,
-                dtype=np.float32,
-                callback=audio_callback,
-            ):
-                # Timing: Wie lange dauerte der Startup?
-                startup_ms = (time.perf_counter() - stream_start) * 1000
-                logger.info(
-                    f"[{_session_id}] Mikrofon aktiv nach {startup_ms:.0f}ms, "
-                    "warte auf Stop-Signal..."
-                )
+            # Tasks starten (Mikrofon läuft bereits!)
+            send_task = asyncio.create_task(send_audio())
+            listen_task = asyncio.create_task(listen_for_messages())
 
-                # Ready-Sound HIER spielen - erst jetzt ist das Mikrofon wirklich bereit!
-                play_ready_sound()
+            # Warte auf Stop-Signal (SIGUSR1 oder Connection Close)
+            await stop_event.wait()
 
-                # Tasks starten
-                send_task = asyncio.create_task(send_audio())
-                listen_task = asyncio.create_task(listen_for_messages())
+            logger.info(f"[{_session_id}] Stop-Signal empfangen")
 
-                # Warte auf Stop-Signal (SIGUSR1 oder Connection Close)
-                await stop_event.wait()
+            # 1. Restliche Audio-Chunks senden (Queue leeren)
+            await audio_queue.put(None)  # Sentinel für send_audio
+            await send_task  # Warten bis alle Chunks gesendet
 
-                logger.info(f"[{_session_id}] Stop-Signal empfangen")
+            # 2. Finalize an Deepgram senden - fordert finale Transkripte an
+            logger.info(f"[{_session_id}] Sende Finalize...")
+            try:
+                await connection.send_control(ListenV1ControlMessage(type="Finalize"))
+            except Exception as e:
+                logger.warning(f"[{_session_id}] Finalize fehlgeschlagen: {e}")
 
-                # 1. Restliche Audio-Chunks senden (Queue leeren)
-                await audio_queue.put(None)  # Sentinel für send_audio
-                await send_task  # Warten bis alle Chunks gesendet
+            # 3. Auf finale Transkripte warten (max 2s)
+            try:
+                await asyncio.wait_for(finalize_received.wait(), timeout=2.0)
+                logger.info(f"[{_session_id}] Finale Transkripte empfangen")
+            except asyncio.TimeoutError:
+                logger.warning(f"[{_session_id}] Timeout beim Warten auf Finalize")
 
-                # 2. Finalize an Deepgram senden - fordert finale Transkripte an
-                logger.info(f"[{_session_id}] Sende Finalize...")
-                try:
-                    await connection.send_control(
-                        ListenV1ControlMessage(type="Finalize")
-                    )
-                except Exception as e:
-                    logger.warning(f"[{_session_id}] Finalize fehlgeschlagen: {e}")
-
-                # 3. Auf finale Transkripte warten (max 2s)
-                try:
-                    await asyncio.wait_for(finalize_received.wait(), timeout=2.0)
-                    logger.info(f"[{_session_id}] Finale Transkripte empfangen")
-                except asyncio.TimeoutError:
-                    logger.warning(f"[{_session_id}] Timeout beim Warten auf Finalize")
-
-                # 4. Listener beenden
-                listen_task.cancel()
-                await asyncio.gather(listen_task, return_exceptions=True)
-
-            logger.info(f"[{_session_id}] Mikrofon-Stream beendet")
+            # 4. Listener beenden
+            listen_task.cancel()
+            await asyncio.gather(listen_task, return_exceptions=True)
 
     finally:
+        # Mikrofon stoppen (manuelles Cleanup statt Context-Manager)
+        try:
+            mic_stream.stop()
+            mic_stream.close()
+            logger.debug(f"[{_session_id}] Mikrofon-Stream beendet")
+        except Exception as e:
+            logger.warning(f"[{_session_id}] Mikrofon-Cleanup fehlgeschlagen: {e}")
+
         # Signal-Handler entfernen
         if threading.current_thread() is threading.main_thread():
             try:
@@ -668,6 +898,197 @@ async def _transcribe_with_deepgram_stream_async(
     logger.info(f"[{_session_id}] Streaming abgeschlossen: {len(result)} Zeichen")
 
     return result
+
+
+def _transcribe_with_deepgram_stream_with_buffer(
+    model: str,
+    language: str | None,
+    early_buffer: list[bytes],
+    np,  # numpy module
+    sd,  # sounddevice module
+    AsyncDeepgramClient,
+    EventType,
+    ListenV1ControlMessage,
+) -> str:
+    """
+    Streaming mit vorgepuffertem Audio (für ultra-fast startup).
+
+    Diese Funktion wird von run_daemon_mode_streaming aufgerufen, nachdem
+    das Mikrofon bereits gestartet wurde und Audio gepuffert wurde.
+    """
+    import asyncio
+
+    async def _stream_with_buffer() -> str:
+        api_key = os.getenv("DEEPGRAM_API_KEY")
+        if not api_key:
+            raise ValueError("DEEPGRAM_API_KEY nicht gesetzt")
+
+        stream_start = time.perf_counter()
+        logger.info(
+            f"[{_session_id}] Deepgram-Stream (mit Buffer): {model}, "
+            f"lang={language or 'auto'}, {len(early_buffer)} early chunks"
+        )
+
+        SAMPLE_RATE = 16000
+        CHANNELS = 1
+        BLOCKSIZE = 1024
+
+        final_transcripts: list[str] = []
+        stop_event = asyncio.Event()
+        finalize_received = asyncio.Event()
+        stream_error: Exception | None = None
+
+        def on_message(result):
+            if getattr(result, "from_finalize", False):
+                logger.info(f"[{_session_id}] Finalize-Antwort empfangen")
+                finalize_received.set()
+            channel = getattr(result, "channel", None)
+            if channel:
+                alternatives = getattr(channel, "alternatives", [])
+                if alternatives:
+                    transcript = getattr(alternatives[0], "transcript", "")
+                    if transcript:
+                        final_transcripts.append(transcript)
+                        logger.info(
+                            f"[{_session_id}] Transcript: {_log_preview(transcript)}"
+                        )
+
+        def on_error(error):
+            nonlocal stream_error
+            logger.error(f"[{_session_id}] Deepgram Error: {error}")
+            stream_error = (
+                error if isinstance(error, Exception) else Exception(str(error))
+            )
+
+        def on_close(_data):
+            logger.debug(f"[{_session_id}] Connection closed")
+            stop_event.set()
+
+        loop = asyncio.get_running_loop()
+        if threading.current_thread() is threading.main_thread():
+            loop.add_signal_handler(signal.SIGUSR1, stop_event.set)
+
+        client = AsyncDeepgramClient(api_key=api_key)
+        audio_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+
+        # Early-Buffer sofort in Queue laden
+        for chunk in early_buffer:
+            audio_queue.put_nowait(chunk)
+        logger.info(
+            f"[{_session_id}] {len(early_buffer)} early chunks in Queue geladen"
+        )
+
+        # Audio-Callback für neues Mikrofon
+        def audio_callback(indata, _frames, _time_info, status):
+            if status:
+                logger.warning(f"[{_session_id}] Audio-Status: {status}")
+            if not stop_event.is_set():
+                audio_bytes = (indata * 32767).astype(np.int16).tobytes()
+                loop.call_soon_threadsafe(audio_queue.put_nowait, audio_bytes)
+
+        # Neues Mikrofon starten (das alte wurde in run_daemon_mode_streaming gestoppt)
+        mic_stream = sd.InputStream(
+            samplerate=SAMPLE_RATE,
+            channels=CHANNELS,
+            blocksize=BLOCKSIZE,
+            dtype=np.float32,
+            callback=audio_callback,
+        )
+        mic_stream.start()
+        logger.info(f"[{_session_id}] Neues Mikrofon gestartet")
+
+        try:
+            async with client.listen.v1.connect(
+                model=model,
+                language=language,
+                smart_format="true",
+                punctuate="true",
+                interim_results="false",
+                encoding="linear16",
+                sample_rate=str(SAMPLE_RATE),
+                channels=str(CHANNELS),
+            ) as connection:
+                connection.on(EventType.MESSAGE, on_message)
+                connection.on(EventType.ERROR, on_error)
+                connection.on(EventType.CLOSE, on_close)
+
+                ws_time = (time.perf_counter() - stream_start) * 1000
+                logger.info(f"[{_session_id}] WebSocket verbunden nach {ws_time:.0f}ms")
+
+                async def send_audio():
+                    nonlocal stream_error
+                    try:
+                        while not stop_event.is_set():
+                            try:
+                                chunk = await asyncio.wait_for(
+                                    audio_queue.get(), timeout=0.1
+                                )
+                                if chunk is None:
+                                    break
+                                await connection.send_media(chunk)
+                            except asyncio.TimeoutError:
+                                continue
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception as e:
+                        logger.error(f"[{_session_id}] Audio-Send Fehler: {e}")
+                        stream_error = e
+                        stop_event.set()
+
+                async def listen_for_messages():
+                    try:
+                        await connection.start_listening()
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception as e:
+                        logger.debug(f"[{_session_id}] Listener beendet: {e}")
+
+                send_task = asyncio.create_task(send_audio())
+                listen_task = asyncio.create_task(listen_for_messages())
+
+                await stop_event.wait()
+                logger.info(f"[{_session_id}] Stop-Signal empfangen")
+
+                await audio_queue.put(None)
+                await send_task
+
+                logger.info(f"[{_session_id}] Sende Finalize...")
+                try:
+                    await connection.send_control(
+                        ListenV1ControlMessage(type="Finalize")
+                    )
+                except Exception as e:
+                    logger.warning(f"[{_session_id}] Finalize fehlgeschlagen: {e}")
+
+                try:
+                    await asyncio.wait_for(finalize_received.wait(), timeout=2.0)
+                    logger.info(f"[{_session_id}] Finale Transkripte empfangen")
+                except asyncio.TimeoutError:
+                    logger.warning(f"[{_session_id}] Timeout beim Warten auf Finalize")
+
+                listen_task.cancel()
+                await asyncio.gather(listen_task, return_exceptions=True)
+
+        finally:
+            try:
+                mic_stream.stop()
+                mic_stream.close()
+            except Exception:
+                pass
+            if threading.current_thread() is threading.main_thread():
+                try:
+                    loop.remove_signal_handler(signal.SIGUSR1)
+                except Exception:
+                    pass
+
+        if stream_error:
+            raise stream_error
+
+        result = " ".join(final_transcripts)
+        logger.info(f"[{_session_id}] Streaming abgeschlossen: {len(result)} Zeichen")
+        return result
+
+    return asyncio.run(_stream_with_buffer())
 
 
 def transcribe_with_deepgram_stream(
@@ -1183,25 +1604,111 @@ def run_daemon_mode_streaming(args: argparse.Namespace) -> int:
 
     Audio wird parallel zur Transkription gesendet - minimale Latenz.
     Transkription läuft während der Aufnahme, nicht erst danach.
+
+    Optimierung: Mikrofon startet SOFORT nach numpy/sounddevice Import,
+    Deepgram lädt parallel im Hintergrund.
     """
     pipeline_start = time.perf_counter()
+
+    # WICHTIG: Alte Zombie-Prozesse killen bevor neuer Daemon startet
+    _cleanup_stale_pid_file()
 
     # Alte Error-Datei aufräumen
     ERROR_FILE.unlink(missing_ok=True)
 
+    # ═══════════════════════════════════════════════════════════════════════════
+    # ULTRA-FAST STARTUP: Mikrofon SOFORT starten, Deepgram parallel laden
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    # 1. Nur numpy + sounddevice laden (schnell: ~170ms)
+    import numpy as np
+    import sounddevice as sd
+
+    # Zeit seit PROZESSSTART (nicht pipeline_start)
+    since_process_start = (time.perf_counter() - _PROCESS_START) * 1000
+    logger.info(
+        f"[{_session_id}] numpy+sounddevice geladen: "
+        f"{(time.perf_counter() - pipeline_start)*1000:.0f}ms "
+        f"(seit Prozessstart: {since_process_start:.0f}ms)"
+    )
+
+    # Audio-Konfiguration
+    SAMPLE_RATE = 16000
+    CHANNELS = 1
+    BLOCKSIZE = 1024
+
+    # Audio-Buffer für frühe Aufnahme
+    early_audio_buffer: list[bytes] = []
+    early_buffer_lock = threading.Lock()
+    early_stop_event = threading.Event()
+
+    def early_audio_callback(indata, _frames, _time_info, status):
+        """Nimmt Audio auf während Deepgram noch lädt."""
+        if status:
+            logger.warning(f"[{_session_id}] Early-Audio-Status: {status}")
+        if not early_stop_event.is_set():
+            audio_bytes = (indata * 32767).astype(np.int16).tobytes()
+            with early_buffer_lock:
+                early_audio_buffer.append(audio_bytes)
+
+    # 2. Mikrofon SOFORT starten
+    logger.info(f"[{_session_id}] Starte Mikrofon (ultra-early)...")
+    early_mic_stream = sd.InputStream(
+        samplerate=SAMPLE_RATE,
+        channels=CHANNELS,
+        blocksize=BLOCKSIZE,
+        dtype=np.float32,
+        callback=early_audio_callback,
+    )
+    early_mic_stream.start()
+
+    # Ready-Sound SOFORT - User kann sprechen!
+    mic_ready_ms = (time.perf_counter() - pipeline_start) * 1000
+    since_process = (time.perf_counter() - _PROCESS_START) * 1000
+    logger.info(
+        f"[{_session_id}] Mikrofon bereit nach {mic_ready_ms:.0f}ms "
+        f"(seit Prozessstart: {since_process:.0f}ms) → READY SOUND!"
+    )
+    play_ready_sound()
+
+    # State + PID für Raycast
+    STATE_FILE.write_text("recording")
+    PID_FILE.write_text(str(os.getpid()))
+    logger.info(f"[{_session_id}] Streaming-Daemon gestartet (PID: {os.getpid()})")
+
     try:
-        # State: Recording (Transkription läuft parallel!)
-        STATE_FILE.write_text("recording")
-        PID_FILE.write_text(str(os.getpid()))
+        # 3. Jetzt Deepgram laden (während Mikrofon schon aufnimmt!)
+        deepgram_load_start = time.perf_counter()
+        from deepgram import AsyncDeepgramClient
+        from deepgram.core.events import EventType
+        from deepgram.extensions.types.sockets import ListenV1ControlMessage
 
-        # Ready-Sound wird in transcribe_with_deepgram_stream() gespielt,
-        # nachdem das Mikrofon wirklich aktiv ist
-        log("🎤 Streaming-Aufnahme wird vorbereitet...")
-        logger.info(f"[{_session_id}] Streaming-Daemon gestartet (PID: {os.getpid()})")
+        deepgram_load_ms = (time.perf_counter() - deepgram_load_start) * 1000
+        logger.info(f"[{_session_id}] Deepgram geladen: {deepgram_load_ms:.0f}ms")
 
-        transcript = transcribe_with_deepgram_stream(
+        # 4. Early-Mikrofon stoppen und Buffer übergeben
+        early_stop_event.set()
+        early_mic_stream.stop()
+        early_mic_stream.close()
+
+        with early_buffer_lock:
+            early_chunks = list(early_audio_buffer)
+            early_audio_buffer.clear()
+
+        logger.info(
+            f"[{_session_id}] Early-Buffer: {len(early_chunks)} Chunks gepuffert"
+        )
+
+        # 5. Streaming mit vorgepuffertem Audio starten
+        transcript = _transcribe_with_deepgram_stream_with_buffer(
             model=args.model or DEFAULT_DEEPGRAM_MODEL,
             language=args.language,
+            early_buffer=early_chunks,
+            np=np,
+            sd=sd,
+            AsyncDeepgramClient=AsyncDeepgramClient,
+            EventType=EventType,
+            ListenV1ControlMessage=ListenV1ControlMessage,
         )
 
         play_stop_sound()
@@ -1231,17 +1738,28 @@ def run_daemon_mode_streaming(args: argparse.Namespace) -> int:
         return 0
 
     except ImportError as e:
+        early_stop_event.set()
+        early_mic_stream.stop()
+        early_mic_stream.close()
         msg = f"Deepgram-Streaming nicht verfügbar: {e}"
         logger.error(f"[{_session_id}] {msg}")
         error(msg)
         ERROR_FILE.write_text(msg)
         STATE_FILE.write_text("error")
+        play_error_sound()
         return 1
     except Exception as e:
+        early_stop_event.set()
+        try:
+            early_mic_stream.stop()
+            early_mic_stream.close()
+        except Exception:
+            pass
         logger.exception(f"[{_session_id}] Streaming-Fehler: {e}")
         error(str(e))
         ERROR_FILE.write_text(str(e))
         STATE_FILE.write_text("error")
+        play_error_sound()
         return 1
     finally:
         PID_FILE.unlink(missing_ok=True)
