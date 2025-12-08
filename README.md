@@ -1,79 +1,135 @@
 # whisper_go
 
-Einfaches CLI-Tool zum Transkribieren von Audio mit OpenAI Whisper – sowohl über die API als auch lokal.
+Spracheingabe für macOS – inspiriert von [Wispr Flow](https://wisprflow.ai). Transkribiert Audio mit OpenAI Whisper über API, Deepgram, Groq oder lokal.
 
-## Features
+**Features:** Mehrere Provider (OpenAI, Deepgram, Groq, lokal) · LLM-Nachbearbeitung · Kontext-Awareness · Custom Vocabulary · Raycast-Hotkeys · Menübar-Feedback
 
-- **API-Modus**: Nutzt OpenAI's Cloud-API (schnell, keine GPU nötig)
-- **Lokaler Modus**: Nutzt das Open-Source Whisper-Modell offline
-- **Mikrofon-Aufnahme**: Enter drücken → sprechen → Enter → fertig
-- **Zwischenablage**: Transkript wird automatisch kopiert (bei `--record`)
+## Schnellstart
 
-## Installation
+In unter 2 Minuten einsatzbereit:
 
 ```bash
-# Repository klonen / in Verzeichnis wechseln
-cd whisper_go
+# 1. Repository klonen
+git clone https://github.com/KLIEBHAN/whisper_go.git && cd whisper_go
 
-# Dependencies installieren
+# 2. Dependencies installieren
 pip install -r requirements.txt
+
+# 3. API-Key setzen (Deepgram: 200$ Startguthaben)
+export DEEPGRAM_API_KEY="dein_key"
+
+# 4. Erste Aufnahme
+python transcribe.py --record --copy --mode deepgram
 ```
 
-### Zusätzliche Abhängigkeiten
+> **Tipp:** Kopiere `.env.example` nach `.env` für dauerhafte Konfiguration. Für systemweite Hotkeys siehe [Raycast Integration](#raycast-integration).
 
-**Für API-Modus (OpenAI):**
+## CLI-Nutzung
+
+Zwei Hauptfunktionen: Audiodateien transkribieren oder direkt vom Mikrofon aufnehmen.
+
+### Audiodatei transkribieren
 
 ```bash
-export OPENAI_API_KEY="dein_api_key"
+python transcribe.py audio.mp3                        # Standard (API-Modus)
+python transcribe.py audio.mp3 --mode deepgram        # Deepgram Nova-3
+python transcribe.py audio.mp3 --mode groq            # Groq (schnellste Option)
+python transcribe.py audio.mp3 --mode local           # Offline mit lokalem Whisper
 ```
 
-**Für Deepgram-Modus:**
+### Mikrofon-Aufnahme
 
 ```bash
-export DEEPGRAM_API_KEY="dein_api_key"
+python transcribe.py --record                         # Aufnehmen und ausgeben
+python transcribe.py --record --copy                  # Direkt in Zwischenablage
+python transcribe.py --record --refine                # Mit LLM-Nachbearbeitung
 ```
 
-> **Tipp:** Deepgram bietet 200$ Startguthaben für neue Accounts. [console.deepgram.com](https://console.deepgram.com)
+**Workflow:** Enter → Sprechen → Enter → Transkript erscheint
 
-**Für Groq-Modus:**
+### Alle Optionen
+
+| Option                              | Beschreibung                                                                  |
+| ----------------------------------- | ----------------------------------------------------------------------------- |
+| `--mode api\|local\|deepgram\|groq` | Transkriptions-Provider (default: `api`)                                      |
+| `--model NAME`                      | Modell (CLI > `WHISPER_GO_MODEL` env > Provider-Default)                      |
+| `--record`, `-r`                    | Mikrofon-Aufnahme statt Datei                                                 |
+| `--copy`, `-c`                      | Ergebnis in Zwischenablage                                                    |
+| `--language CODE`                   | Sprachcode z.B. `de`, `en`                                                    |
+| `--format FORMAT`                   | Output: `text`, `json`, `srt`, `vtt` (nur API-Modus)                          |
+| `--refine`                          | LLM-Nachbearbeitung aktivieren                                                |
+| `--no-refine`                       | LLM-Nachbearbeitung deaktivieren (überschreibt env)                           |
+| `--refine-model`                    | Modell für Nachbearbeitung (default: `gpt-5-nano`)                            |
+| `--refine-provider`                 | LLM-Provider: `openai`, `openrouter`, `groq`                                  |
+| `--context`                         | Kontext für Nachbearbeitung: `email`, `chat`, `code`, `default` (auto-detect) |
+
+## Konfiguration
+
+Alle Einstellungen können per Umgebungsvariable oder `.env`-Datei gesetzt werden. CLI-Argumente haben immer Vorrang.
+
+### API-Keys
+
+Je nach gewähltem Modus wird ein API-Key benötigt:
 
 ```bash
+# OpenAI (für --mode api und --refine mit openai)
+export OPENAI_API_KEY="sk-..."
+
+# Deepgram (für --mode deepgram) – 200$ Startguthaben
+export DEEPGRAM_API_KEY="..."
+
+# Groq (für --mode groq und --refine mit groq) – kostenlose Credits
 export GROQ_API_KEY="gsk_..."
-```
 
-> **Tipp:** Groq bietet extrem schnelle Whisper-Inferenz (~300x Echtzeit) mit kostenlosen API-Credits. [console.groq.com](https://console.groq.com)
-
-**Standard-Modus und Modell festlegen (optional):**
-
-```bash
-# In .env oder Shell-Config
-export WHISPER_GO_MODE="deepgram"  # api, local, deepgram, oder groq
-export WHISPER_GO_MODEL="nova-3"   # optional: überschreibt Provider-Default
-```
-
-**LLM-Nachbearbeitung (Flow-Style):**
-
-```bash
-# In .env aktivieren
-export WHISPER_GO_REFINE="true"
-
-# Optional: OpenRouter statt OpenAI nutzen
-export WHISPER_GO_REFINE_PROVIDER="openrouter"
+# OpenRouter (Alternative für --refine) – Hunderte Modelle
 export OPENROUTER_API_KEY="sk-or-..."
-
-# Optional: Groq für schnelle LLM-Inferenz
-export WHISPER_GO_REFINE_PROVIDER="groq"
-export GROQ_API_KEY="gsk_..."
-
-# Optional: Backend-Provider für OpenRouter festlegen
-export OPENROUTER_PROVIDER_ORDER="Together,DeepInfra"
 ```
 
-> Entfernt Füllwörter (ähm, also), korrigiert Grammatik und formatiert in saubere Absätze. Unterstützt OpenAI (default), [OpenRouter](https://openrouter.ai) und [Groq](https://groq.com) für extrem schnelle Inferenz.
+### Standard-Einstellungen
 
-**Kontext-Awareness (automatisch):**
+```bash
+# Transkriptions-Modus (api, local, deepgram, groq)
+export WHISPER_GO_MODE="deepgram"
 
-Die LLM-Nachbearbeitung erkennt automatisch die aktive App und passt den Schreibstil an:
+# Transkriptions-Modell (überschreibt Provider-Default)
+export WHISPER_GO_MODEL="nova-3"
+
+# LLM-Nachbearbeitung
+export WHISPER_GO_REFINE="true"
+export WHISPER_GO_REFINE_MODEL="gpt-5-nano"
+export WHISPER_GO_REFINE_PROVIDER="openai"  # oder openrouter, groq
+```
+
+### System-Abhängigkeiten
+
+Für bestimmte Modi werden zusätzliche Tools benötigt:
+
+```bash
+# Lokaler Modus (ffmpeg für Audio-Konvertierung)
+brew install ffmpeg          # macOS
+sudo apt install ffmpeg      # Ubuntu/Debian
+
+# Mikrofon-Aufnahme (macOS)
+brew install portaudio
+```
+
+## Erweiterte Features
+
+Über die Basis-Transkription hinaus bietet whisper_go intelligente Nachbearbeitung und Anpassung.
+
+### LLM-Nachbearbeitung
+
+Entfernt Füllwörter (ähm, also, quasi), korrigiert Grammatik und formatiert in saubere Absätze:
+
+```bash
+python transcribe.py --record --refine
+```
+
+Unterstützte Provider: OpenAI (default), [OpenRouter](https://openrouter.ai), [Groq](https://groq.com)
+
+### Kontext-Awareness
+
+Die Nachbearbeitung erkennt automatisch die aktive App und passt den Schreibstil an:
 
 | Kontext   | Apps                      | Stil                            |
 | --------- | ------------------------- | ------------------------------- |
@@ -89,11 +145,11 @@ python transcribe.py --record --refine
 # Manueller Override
 python transcribe.py --record --refine --context email
 
-# Eigene App-Mappings (JSON)
+# Eigene App-Mappings
 export WHISPER_GO_APP_CONTEXTS='{"MyApp": "chat"}'
 ```
 
-**Custom Vocabulary (Namen & Fachbegriffe):**
+### Custom Vocabulary
 
 Eigene Begriffe für bessere Erkennung in `~/.whisper_go/vocabulary.json`:
 
@@ -103,217 +159,106 @@ Eigene Begriffe für bessere Erkennung in `~/.whisper_go/vocabulary.json`:
 }
 ```
 
-Unterstützt von Deepgram (Nova-3: `keyterm`, Nova-2: `keywords`) und lokalem Whisper (`initial_prompt`). Die OpenAI API unterstützt kein Custom Vocabulary – dort hilft nur die LLM-Nachbearbeitung.
+Unterstützt von Deepgram und lokalem Whisper. Die OpenAI API unterstützt kein Custom Vocabulary – dort hilft die LLM-Nachbearbeitung.
 
-**Für lokalen Modus:**
+## Raycast Integration
 
-```bash
-# macOS
-brew install ffmpeg
+Für systemweite Spracheingabe per Hotkey – der Hauptanwendungsfall von whisper_go.
 
-# Ubuntu/Debian
-sudo apt install ffmpeg
-```
-
-**Für Mikrofon-Aufnahme (macOS):**
-
-```bash
-brew install portaudio
-```
-
-## Raycast Integration (Hotkey)
-
-Für systemweite Spracheingabe per Hotkey – wie [Wispr Flow](https://wisprflow.ai):
+### Setup
 
 ```bash
 cd whisper-go-raycast
 npm install && npm run dev
 ```
 
-**Setup in Raycast:**
+In Raycast:
 
 1. "Toggle Recording" suchen
 2. ⌘+K → "Assign Hotkey" → **Double-Tap Right Option (⌥⌥)** empfohlen
-3. Python-/Script-Pfad werden automatisch erkannt
 
-**Nutzung (Toggle-Modus):**
+### Nutzung
 
-- ⌥⌥ (doppelt tippen) → Aufnahme startet
-- ⌥⌥ (doppelt tippen) → Transkript wird eingefügt
+- ⌥⌥ → Aufnahme startet
+- ⌥⌥ → Transkript wird eingefügt
 
-### Push-to-Talk mit Karabiner-Elements
+### Push-to-Talk (optional)
 
-Für echtes Push-to-Talk (Taste halten = Aufnahme, loslassen = einfügen):
+Für echtes Push-to-Talk (Taste halten = Aufnahme, loslassen = einfügen) mit [Karabiner-Elements](https://karabiner-elements.pqrs.org/):
 
-1. [Karabiner-Elements](https://karabiner-elements.pqrs.org/) installieren
-2. Rule importieren:
-   ```bash
-   cp scripts/karabiner-ptt.json ~/.config/karabiner/assets/complex_modifications/
-   ```
-3. In Karabiner: Preferences → Complex Modifications → Add rule → "Whisper Go Push-to-Talk"
+```bash
+cp scripts/karabiner-ptt.json ~/.config/karabiner/assets/complex_modifications/
+```
 
-**Nutzung (Push-to-Talk):**
+In Karabiner: Preferences → Complex Modifications → Add rule → "Whisper Go Push-to-Talk"
 
-- **Hyper+A** (⌘⌃⌥⇧+A) halten → Aufnahme läuft
-- **Hyper+A** loslassen → Transkript wird eingefügt
+**Nutzung:** Hyper+A halten → Aufnahme → Hyper+A loslassen → Einfügen
 
 > **Tipp:** Caps Lock als Hyper-Key (⌘⌃⌥⇧) mappen, dann ist es nur Caps+A.
-> Die Karabiner-Rule sendet F19. In Raycast muss F19 als Hotkey für "Toggle Recording" gesetzt sein.
 
 ### Menübar-Feedback (optional)
 
-Visuelles Feedback in der macOS-Menüleiste während der Aufnahme:
+Visuelles Feedback in der macOS-Menüleiste:
 
 ```bash
-# Installieren + Autostart einrichten (empfohlen)
 ./scripts/install_menubar.sh
-
-# Oder manuell starten
-pip install rumps
-python menubar.py
 ```
 
 | Icon | Status              |
 | ---- | ------------------- |
-| 🎤   | Bereit (Idle)       |
+| 🎤   | Bereit              |
 | 🔴   | Aufnahme läuft      |
 | ⏳   | Transkription läuft |
 | ✅   | Erfolgreich         |
 | ❌   | Fehler              |
 
-**Autostart-Verwaltung:**
-
-```bash
-./scripts/install_menubar.sh status    # Status prüfen
-./scripts/install_menubar.sh uninstall # Deinstallieren
-```
-
-> Die Menübar-App zeigt nur den Status an. Start/Stop erfolgt weiterhin über Raycast.
-
-## CLI-Nutzung
-
-### Audiodatei transkribieren
-
-```bash
-# Mit OpenAI API (default)
-python transcribe.py audio.mp3
-
-# Lokal
-python transcribe.py audio.mp3 --mode local
-
-# Lokal mit größerem Modell
-python transcribe.py audio.mp3 --mode local --model large
-```
-
-### Mikrofon-Aufnahme
-
-```bash
-python transcribe.py --record
-python transcribe.py --record --copy   # direkt in Zwischenablage
-```
-
-**Workflow:**
-
-1. Enter drücken → Aufnahme startet
-2. Sprechen
-3. Enter drücken → Aufnahme stoppt
-4. Transkript erscheint (mit `--copy` auch in Zwischenablage)
-
-### Optionen
-
-| Option                              | Beschreibung                                                                                     |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `--mode api\|local\|deepgram\|groq` | API (default), lokales Whisper, Deepgram oder Groq                                               |
-| `--record`, `-r`                    | Mikrofon-Aufnahme statt Datei                                                                    |
-| `--copy`, `-c`                      | Ergebnis in Zwischenablage kopieren                                                              |
-| `--model NAME`                      | Modellname (auch via `WHISPER_GO_MODEL` env). Defaults je Provider                               |
-| `--language CODE`                   | Sprachcode z.B. `de`, `en`                                                                       |
-| `--format FORMAT`                   | Output-Format: `text`, `json`, `srt`, `vtt` (nur API)                                            |
-| `--refine`                          | LLM-Nachbearbeitung aktivieren (auch via `WHISPER_GO_REFINE` env)                                |
-| `--no-refine`                       | LLM-Nachbearbeitung deaktivieren (überschreibt env)                                              |
-| `--refine-model MODEL`              | Modell für Nachbearbeitung (default: `gpt-5-nano`, auch via `WHISPER_GO_REFINE_MODEL` env)       |
-| `--refine-provider`                 | LLM-Provider: `openai`, `openrouter` oder `groq` (auch via `WHISPER_GO_REFINE_PROVIDER` env)     |
-| `--context`                         | Kontext für Nachbearbeitung: `email`, `chat`, `code`, `default` (auto-detect wenn nicht gesetzt) |
-
-### Beispiele
-
-```bash
-# Einfachster Aufruf (API-Modus)
-python transcribe.py audio.mp3
-
-# Deutsche Sprache, SRT-Untertitel
-python transcribe.py interview.mp3 --language de --format srt
-
-# Schnelle lokale Transkription
-python transcribe.py meeting.wav --mode local --model tiny
-
-# Deepgram mit automatischer Formatierung
-python transcribe.py audio.mp3 --mode deepgram --language de
-
-# Aufnahme auf Deutsch, direkt in Zwischenablage
-python transcribe.py --record --language de --copy
-```
-
-## Modell-Auswahl
+## Modell-Referenz
 
 ### API-Modelle (OpenAI)
 
-- `gpt-4o-transcribe` (Standard) – Beste Qualität
-- `gpt-4o-mini-transcribe` – Schneller, günstiger
-- `whisper-1` – Original Whisper
+| Modell                   | Beschreibung         |
+| ------------------------ | -------------------- |
+| `gpt-4o-transcribe`      | Beste Qualität ⭐    |
+| `gpt-4o-mini-transcribe` | Schneller, günstiger |
+| `whisper-1`              | Original Whisper     |
 
 ### Deepgram-Modelle
 
-- `nova-3` (Standard) – Neuestes Modell, beste Qualität
-- `nova-2` – Bewährtes Modell, etwas günstiger
+| Modell   | Beschreibung                       |
+| -------- | ---------------------------------- |
+| `nova-3` | Neuestes Modell, beste Qualität ⭐ |
+| `nova-2` | Bewährtes Modell, günstiger        |
 
-**Features:** `smart_format` ist aktiviert – automatische Formatierung von Datum, Währung und Absätzen.
+`smart_format` ist aktiviert – automatische Formatierung von Datum, Währung und Absätzen.
 
 ### Groq-Modelle
 
-- `whisper-large-v3` (Standard) – OpenAI Whisper Large v3, extrem schnelle Inferenz (~300x Echtzeit)
-- `distil-whisper-large-v3-en` – Optimiert für Englisch, noch schneller
+| Modell                       | Beschreibung                        |
+| ---------------------------- | ----------------------------------- |
+| `whisper-large-v3`           | Whisper Large v3, ~300x Echtzeit ⭐ |
+| `distil-whisper-large-v3-en` | Nur Englisch, noch schneller        |
 
-**Features:** Groq nutzt spezielle LPU-Chips (Language Processing Units) für besonders schnelle Inferenz.
+Groq nutzt LPU-Chips (Language Processing Units) für besonders schnelle Inferenz.
 
 ### Lokale Modelle
 
-| Modell | Parameter | VRAM   | Geschwindigkeit |
-| ------ | --------- | ------ | --------------- |
-| tiny   | 39M       | ~1 GB  | Sehr schnell    |
-| base   | 74M       | ~1 GB  | Schnell         |
-| small  | 244M      | ~2 GB  | Mittel          |
-| medium | 769M      | ~5 GB  | Langsam         |
-| large  | 1550M     | ~10 GB | Sehr langsam    |
-| turbo  | 809M      | ~6 GB  | Schnell & gut   |
+| Modell | Parameter | VRAM   | Geschwindigkeit  |
+| ------ | --------- | ------ | ---------------- |
+| tiny   | 39M       | ~1 GB  | Sehr schnell     |
+| base   | 74M       | ~1 GB  | Schnell          |
+| small  | 244M      | ~2 GB  | Mittel           |
+| medium | 769M      | ~5 GB  | Langsam          |
+| large  | 1550M     | ~10 GB | Sehr langsam     |
+| turbo  | 809M      | ~6 GB  | Schnell & gut ⭐ |
+
+⭐ = Standard-Modell des Providers
 
 ## Troubleshooting
 
-**"Modul nicht installiert"**
-
-```bash
-pip install -r requirements.txt
-```
-
-**"OPENAI_API_KEY nicht gesetzt"**
-
-```bash
-export OPENAI_API_KEY="sk-..."
-```
-
-**Mikrofon funktioniert nicht (macOS)**
-
-```bash
-brew install portaudio
-pip install --force-reinstall sounddevice
-```
-
-**ffmpeg fehlt**
-
-```bash
-# macOS
-brew install ffmpeg
-
-# Ubuntu
-sudo apt install ffmpeg
-```
+| Problem                     | Lösung                                                                |
+| --------------------------- | --------------------------------------------------------------------- |
+| Modul nicht installiert     | `pip install -r requirements.txt`                                     |
+| API-Key fehlt               | `export DEEPGRAM_API_KEY="..."` (oder OPENAI/GROQ)                    |
+| Mikrofon geht nicht (macOS) | `brew install portaudio && pip install --force-reinstall sounddevice` |
+| ffmpeg fehlt                | `brew install ffmpeg` (macOS) oder `sudo apt install ffmpeg` (Ubuntu) |
+| Transkription langsam       | Wechsel zu `--mode groq` oder `--mode deepgram` statt `local`         |
