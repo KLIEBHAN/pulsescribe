@@ -660,7 +660,7 @@ class WhisperOverlay(NSObject):
             self._state_cache = "idle"
             return "idle"
         except OSError:
-            return self._state_cache
+            return "idle"  # Sicherer Default bei I/O-Fehlern
 
     def _read_interim(self) -> str | None:
         try:
@@ -676,7 +676,7 @@ class WhisperOverlay(NSObject):
             self._interim_cache = None
             return None
         except OSError:
-            return self._interim_cache
+            return None  # Sicherer Default bei I/O-Fehlern
 
 
 def main():
