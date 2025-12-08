@@ -194,40 +194,66 @@ Eigene Begriffe für bessere Erkennung in `~/.whisper_go/vocabulary.json`:
 
 Unterstützt von Deepgram und lokalem Whisper. Die OpenAI API unterstützt kein Custom Vocabulary – dort hilft die LLM-Nachbearbeitung.
 
-## Raycast Integration
+## Hotkey Integration
 
 Für systemweite Spracheingabe per Hotkey – der Hauptanwendungsfall von whisper_go.
 
 ### Setup
 
 ```bash
-cd whisper-go-raycast
-npm install && npm run dev
+# Hotkey-Daemon als LaunchAgent installieren (startet bei Login)
+./scripts/install_hotkey_daemon.sh
 ```
 
-In Raycast:
+> **Keine Accessibility-Berechtigung erforderlich!** QuickMacHotKey nutzt die native Carbon-API (`RegisterEventHotKey`).
 
-1. "Toggle Recording" suchen
-2. ⌘+K → "Assign Hotkey" → **Double-Tap Right Option (⌥⌥)** empfohlen
+### Konfiguration
+
+In `.env` oder als Umgebungsvariable:
+
+```bash
+# Hotkey (default: F19)
+WHISPER_GO_HOTKEY=f19
+
+# Modus: toggle (PTT nicht unterstützt mit QuickMacHotKey)
+WHISPER_GO_HOTKEY_MODE=toggle
+```
+
+**Unterstützte Hotkeys:**
+
+| Format            | Beispiel              |
+| ----------------- | --------------------- |
+| Funktionstasten   | `f19`, `f1`, `f12`    |
+| Einzeltaste       | `space`, `tab`, `esc` |
+| Tastenkombination | `cmd+shift+r`         |
 
 ### Nutzung
 
-- ⌥⌥ → Aufnahme startet (Audio wird bereits live transkribiert!)
-- ⌥⌥ → Transkript wird sofort eingefügt (kein Warten auf API)
+**Toggle-Mode:**
 
-### Push-to-Talk (optional)
+- F19 drücken → Aufnahme startet
+- F19 nochmal drücken → Transkript wird eingefügt
 
-Für echtes Push-to-Talk (Taste halten = Aufnahme, loslassen = einfügen) mit [Karabiner-Elements](https://karabiner-elements.pqrs.org/):
+### Manueller Start
+
+Der Daemon kann auch manuell gestartet werden (ohne LaunchAgent):
 
 ```bash
-cp scripts/karabiner-ptt.json ~/.config/karabiner/assets/complex_modifications/
+# Mit Defaults aus .env
+python hotkey_daemon.py
+
+# Mit CLI-Optionen
+python hotkey_daemon.py --hotkey cmd+shift+r
+
+# Debug-Modus (mehr Logging)
+python hotkey_daemon.py --debug
 ```
 
-In Karabiner: Preferences → Complex Modifications → Add rule → "Whisper Go Push-to-Talk"
+### Deinstallation
 
-**Nutzung:** Hyper+A halten → Aufnahme → Hyper+A loslassen → Einfügen
-
-> **Tipp:** Caps Lock als Hyper-Key (⌘⌃⌥⇧) mappen, dann ist es nur Caps+A.
+```bash
+./scripts/uninstall_hotkey_daemon.sh
+```
 
 ### Visuelles Feedback (optional)
 
@@ -244,7 +270,6 @@ Elegantes Overlay am unteren Bildschirmrand mit animierter Schallwellen-Visualis
 - Zeigt Live-Transkription während dem Sprechen
 - Animierte Schallwellen zeigen aktive Aufnahme
 - Click-Through – stört nicht beim Arbeiten
-- Blur-Effekt wie bei Raycast
 
 #### Menübar
 
@@ -300,7 +325,7 @@ Deepgram nutzt standardmäßig **WebSocket-Streaming** für minimale Latenz:
 
 - Audio wird **während der Aufnahme** transkribiert, nicht erst danach
 - Ergebnis erscheint **sofort** nach dem Stoppen (statt 2-3s Wartezeit)
-- Ideal für die Raycast-Integration
+- Ideal für die Hotkey-Integration
 
 ```bash
 # Streaming (Standard)

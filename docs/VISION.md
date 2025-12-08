@@ -82,6 +82,14 @@ Kein Electron. Kein Cloud-Lock-in. Kein Abo.
 
 ### Phase 5: Multi-Platform ← aktuell
 
+- [x] **Native Hotkeys (macOS)** – Raycast-Unabhängigkeit ✅
+  - Hotkey-Registrierung via [QuickMacHotKey](https://github.com/glyph/QuickMacHotKey) (Carbon API)
+  - Konfigurierbare Tastenkombinationen (z. B. F19, Cmd+Shift+R)
+  - Keine Accessibility-Berechtigung erforderlich
+  - Raycast wird optional (für Nutzer, die es bevorzugen)
+- [ ] **Native Hotkeys (Windows/Linux)** – Cross-Platform
+  - Geplant: [pynput](https://pynput.readthedocs.io/) für Windows und Linux
+  - Gleiche UX wie macOS-Implementierung
 - [ ] **Windows Support** – Priorisiert, siehe [WINDOWS_ANALYSIS.md](./WINDOWS_ANALYSIS.md)
   - Aufwand: 120–150h (vollständige Feature-Parität)
   - Kritische Komponenten: Daemon/IPC, Overlay UI, Hotkeys
@@ -127,16 +135,16 @@ Bewusst ausgeschlossen, um Fokus zu halten:
 
 ## Tech-Stack
 
-| Layer   | Technologie                 | Warum                        |
-| ------- | --------------------------- | ---------------------------- |
-| Core    | Python 3.10+                | Whisper-Integration, einfach |
-| Audio   | sounddevice                 | Cross-platform, low-level    |
-| STT     | Deepgram / OpenAI / Whisper | Flexibel, best-of-breed      |
-| LLM     | OpenAI / OpenRouter / Groq  | Multi-Provider für Refine    |
-| Hotkey  | Raycast Extension           | Native macOS Integration     |
-| Menübar | rumps                       | Native macOS Menübar         |
-| Overlay | PyObjC                      | Native macOS UI, 60fps       |
-| Test    | pytest + GitHub Actions     | CI/CD mit Coverage           |
+| Layer   | Technologie                                 | Warum                        |
+| ------- | ------------------------------------------- | ---------------------------- |
+| Core    | Python 3.10+                                | Whisper-Integration, einfach |
+| Audio   | sounddevice                                 | Cross-platform, low-level    |
+| STT     | Deepgram / OpenAI / Whisper                 | Flexibel, best-of-breed      |
+| LLM     | OpenAI / OpenRouter / Groq                  | Multi-Provider für Refine    |
+| Hotkey  | QuickMacHotKey (macOS) / pynput (Win/Linux) | Native, konfigurierbar       |
+| Menübar | rumps                                       | Native macOS Menübar         |
+| Overlay | PyObjC                                      | Native macOS UI, 60fps       |
+| Test    | pytest + GitHub Actions                     | CI/CD mit Coverage           |
 
 ---
 
