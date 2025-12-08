@@ -438,6 +438,20 @@ def transcribe_with_deepgram(
     return result
 
 
+def _get_groq_client():
+    """Erstellt Groq-Client mit API-Key aus Umgebungsvariable.
+
+    Zentralisiert das Setup, damit Fehlerbehandlung und Optionen
+    nur an einer Stelle gepflegt werden müssen.
+    """
+    from groq import Groq
+
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        raise ValueError("GROQ_API_KEY nicht gesetzt")
+    return Groq(api_key=api_key)
+
+
 def transcribe_with_groq(
     audio_path: Path,
     model: str,
@@ -448,23 +462,18 @@ def transcribe_with_groq(
     Groq nutzt spezielle LPU-Chips für extrem schnelle Whisper-Inferenz
     (~300x Echtzeit) bei gleicher Qualität wie OpenAI.
     """
-    from groq import Groq
-
     audio_kb = audio_path.stat().st_size // 1024
     logger.info(
         f"[{_session_id}] Groq: {model}, {audio_kb}KB, lang={language or 'auto'}"
     )
 
-    api_key = os.getenv("GROQ_API_KEY")
-    if not api_key:
-        raise ValueError("GROQ_API_KEY nicht gesetzt")
-
-    client = Groq(api_key=api_key)
+    client = _get_groq_client()
 
     with timed_operation("Groq-Transkription"):
         with audio_path.open("rb") as audio_file:
             params = {
-                "file": (audio_path.name, audio_file.read()),
+                # File-Handle statt .read() – spart Speicher bei großen Dateien
+                "file": (audio_path.name, audio_file),
                 "model": model,
                 "response_format": "text",
                 "temperature": 0.0,  # Konsistente Ergebnisse ohne Kreativität
@@ -473,8 +482,15 @@ def transcribe_with_groq(
                 params["language"] = language
             response = client.audio.transcriptions.create(**params)
 
-    # Groq gibt bei response_format="text" direkt String zurück
-    result = response.text if hasattr(response, "text") else str(response)
+    # Groq gibt bei response_format="text" String zurück
+    # Explizite Typprüfung statt hasattr für robustere Integration
+    if isinstance(response, str):
+        result = response
+    elif hasattr(response, "text"):
+        result = response.text
+    else:
+        raise TypeError(f"Unerwarteter Groq-Response-Typ: {type(response)}")
+
     logger.debug(f"[{_session_id}] Ergebnis: {_log_preview(result)}")
 
     return result
@@ -605,12 +621,7 @@ def detect_context(override: str | None = None) -> tuple[str, str | None, str]:
 def _get_refine_client(provider: str):
     """Erstellt Client für Nachbearbeitung (OpenAI, OpenRouter oder Groq)."""
     if provider == "groq":
-        from groq import Groq
-
-        api_key = os.getenv("GROQ_API_KEY")
-        if not api_key:
-            raise ValueError("GROQ_API_KEY nicht gesetzt")
-        return Groq(api_key=api_key)
+        return _get_groq_client()
 
     from openai import OpenAI
 
