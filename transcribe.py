@@ -472,6 +472,7 @@ async def _transcribe_with_deepgram_stream_async(
     import sounddevice as sd
     from deepgram import AsyncDeepgramClient
     from deepgram.core.events import EventType
+    from deepgram.extensions.types.sockets import ListenV1ControlMessage
 
     api_key = os.getenv("DEEPGRAM_API_KEY")
     if not api_key:
@@ -488,11 +489,17 @@ async def _transcribe_with_deepgram_stream_async(
 
     final_transcripts: list[str] = []
     stop_event = asyncio.Event()
+    finalize_received = asyncio.Event()  # Signalisiert Empfang der Finalize-Antwort
     stream_error: Exception | None = None
 
     # Event-Handler für Deepgram Messages (SDK v5.3 Signatur: nur data)
     def on_message(result):
         """Callback für eingehende Transkriptions-Messages."""
+        # Prüfen ob dies die Finalize-Antwort ist
+        if getattr(result, "from_finalize", False):
+            logger.info(f"[{_session_id}] Finalize-Antwort von Deepgram empfangen")
+            finalize_received.set()
+
         channel = getattr(result, "channel", None)
         if channel:
             alternatives = getattr(channel, "alternatives", [])
@@ -609,12 +616,29 @@ async def _transcribe_with_deepgram_stream_async(
 
                 logger.info(f"[{_session_id}] Stop-Signal empfangen")
 
-                # Tasks beenden: Sentinel für send_audio, cancel für listen
-                await audio_queue.put(None)
-                listen_task.cancel()
+                # 1. Restliche Audio-Chunks senden (Queue leeren)
+                await audio_queue.put(None)  # Sentinel für send_audio
+                await send_task  # Warten bis alle Chunks gesendet
 
-                # Auf Task-Beendigung warten
-                await asyncio.gather(send_task, listen_task, return_exceptions=True)
+                # 2. Finalize an Deepgram senden - fordert finale Transkripte an
+                logger.info(f"[{_session_id}] Sende Finalize...")
+                try:
+                    await connection.send_control(
+                        ListenV1ControlMessage(type="Finalize")
+                    )
+                except Exception as e:
+                    logger.warning(f"[{_session_id}] Finalize fehlgeschlagen: {e}")
+
+                # 3. Auf finale Transkripte warten (max 2s)
+                try:
+                    await asyncio.wait_for(finalize_received.wait(), timeout=2.0)
+                    logger.info(f"[{_session_id}] Finale Transkripte empfangen")
+                except asyncio.TimeoutError:
+                    logger.warning(f"[{_session_id}] Timeout beim Warten auf Finalize")
+
+                # 4. Listener beenden
+                listen_task.cancel()
+                await asyncio.gather(listen_task, return_exceptions=True)
 
             logger.info(f"[{_session_id}] Mikrofon-Stream beendet")
 
