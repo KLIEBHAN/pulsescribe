@@ -23,6 +23,7 @@ import os  # noqa: E402
 import signal  # noqa: E402
 import sys  # noqa: E402
 import tempfile  # noqa: E402
+import threading  # noqa: E402
 import uuid  # noqa: E402
 from contextlib import contextmanager  # noqa: E402
 from logging.handlers import RotatingFileHandler  # noqa: E402
@@ -465,12 +466,13 @@ def transcribe_with_deepgram_stream(
     Audio wird parallel zur Transkription gesendet - minimale Latenz.
     Wartet auf SIGUSR1 zum Beenden (für Raycast-Integration).
     """
-    import threading
+    import json
 
     import numpy as np
     import sounddevice as sd
+    import websockets.exceptions
     from deepgram import DeepgramClient
-    from deepgram.core.events import EventType
+    from deepgram.extensions.types.sockets import ListenV1ControlMessage
 
     api_key = os.getenv("DEEPGRAM_API_KEY")
     if not api_key:
@@ -482,12 +484,13 @@ def transcribe_with_deepgram_stream(
     SAMPLE_RATE = 16000
     CHANNELS = 1
     BLOCKSIZE = 1024
+    RECV_TIMEOUT = 0.2  # Timeout für Message-Empfang (Sekunden)
 
     client = DeepgramClient(api_key=api_key)
 
     final_transcripts: list[str] = []
     should_stop = False
-    connection_error: Exception | None = None
+    send_error: Exception | None = None
 
     # SDK v5.3 API: Parameter direkt in connect() als Strings
     with client.listen.v1.connect(
@@ -500,69 +503,36 @@ def transcribe_with_deepgram_stream(
         sample_rate=str(SAMPLE_RATE),
         channels=str(CHANNELS),
     ) as connection:
-        # Event-Handler definieren
-        def on_message(message):
-            nonlocal final_transcripts
-            # message ist ein dict-like Objekt
-            if hasattr(message, "channel"):
-                transcript = message.channel.alternatives[0].transcript
-                if transcript:
-                    final_transcripts.append(transcript)
-                    logger.debug(
-                        f"[{_session_id}] Transcript: {_log_preview(transcript)}"
-                    )
-
-        def on_error(error):
-            nonlocal connection_error
-            logger.error(f"[{_session_id}] Deepgram Error: {error}")
-            connection_error = Exception(f"Deepgram Error: {error}")
-
-        def on_close(_):
-            nonlocal should_stop
-            should_stop = True
-            logger.debug(f"[{_session_id}] Deepgram Connection closed")
-
-        # Handler registrieren (SDK v5.3 EventType)
-        connection.on(EventType.MESSAGE, on_message)
-        connection.on(EventType.ERROR, on_error)
-        connection.on(EventType.CLOSE, on_close)
-
-        # WICHTIG: start_listening() ist blocking - muss in separatem Thread laufen!
-        def run_listener():
-            try:
-                connection.start_listening()
-            except Exception as e:
-                nonlocal connection_error
-                connection_error = e
-
-        listener_thread = threading.Thread(target=run_listener, daemon=True)
-        listener_thread.start()
-
-        # Signal-Handler für SIGUSR1
+        # Signal-Handler für SIGUSR1 (nur im Main Thread möglich)
         def handle_stop_signal(_signum, _frame):
             nonlocal should_stop
             logger.debug(f"[{_session_id}] SIGUSR1 empfangen (Streaming)")
             should_stop = True
 
-        signal.signal(signal.SIGUSR1, handle_stop_signal)
+        if threading.current_thread() is threading.main_thread():
+            signal.signal(signal.SIGUSR1, handle_stop_signal)
+        else:
+            logger.warning(
+                f"[{_session_id}] Nicht im Main Thread - SIGUSR1 Handler nicht registriert"
+            )
 
         logger.info(f"[{_session_id}] WebSocket verbunden, starte Mikrofon")
 
-        # Audio-Callback: Sendet Chunks an Deepgram
+        # Audio-Callback: Sendet Chunks an Deepgram (läuft in sounddevice-Thread)
         def audio_callback(indata, _frames, _time_info, status):
-            nonlocal connection_error
+            nonlocal send_error
             if status:
                 logger.warning(f"[{_session_id}] Audio-Status: {status}")
-            if not should_stop and not connection_error:
+            if not should_stop and not send_error:
                 try:
-                    # Linear16 PCM: int16 als bytes senden
                     audio_bytes = (indata * 32767).astype(np.int16).tobytes()
                     connection.send_media(audio_bytes)
                 except Exception as e:
                     logger.error(f"[{_session_id}] Audio-Send Fehler: {e}")
-                    connection_error = e
+                    send_error = e
 
         # Mikrofon-Stream starten
+        logger.info(f"[{_session_id}] Starte Mikrofon-Stream...")
         with sd.InputStream(
             samplerate=SAMPLE_RATE,
             channels=CHANNELS,
@@ -570,12 +540,67 @@ def transcribe_with_deepgram_stream(
             dtype=np.float32,
             callback=audio_callback,
         ):
-            # Warte auf Stop-Signal
+            logger.info(
+                f"[{_session_id}] Mikrofon-Stream gestartet, warte auf Messages..."
+            )
+            # Haupt-Loop: Messages empfangen mit Timeout
+            loop_count = 0
             while not should_stop:
-                if connection_error:
-                    raise connection_error
-                time.sleep(0.1)
+                loop_count += 1
+                if send_error:
+                    logger.error(f"[{_session_id}] Send-Error detected, raising...")
+                    raise send_error
+                try:
+                    # Direkt auf WebSocket mit Timeout zugreifen
+                    raw_msg = connection._websocket.recv(timeout=RECV_TIMEOUT)
+                    logger.debug(f"[{_session_id}] Message empfangen: {type(raw_msg)}")
+                    # JSON parsen und Transcript extrahieren
+                    if isinstance(raw_msg, str):
+                        data = json.loads(raw_msg)
+                        msg_type = data.get("type", "unknown")
+                        logger.debug(f"[{_session_id}] Message-Type: {msg_type}")
+                        # Guard: channel und alternatives prüfen
+                        channel = data.get("channel")
+                        if channel:
+                            alternatives = channel.get("alternatives", [])
+                            if alternatives:
+                                transcript = alternatives[0].get("transcript", "")
+                                if transcript:
+                                    final_transcripts.append(transcript)
+                                    logger.info(
+                                        f"[{_session_id}] Transcript: {_log_preview(transcript)}"
+                                    )
+                except TimeoutError:
+                    # Timeout ist normal - einfach weiter prüfen
+                    if loop_count % 25 == 0:  # Alle 5 Sekunden loggen
+                        logger.debug(
+                            f"[{_session_id}] Warte... (loop={loop_count}, should_stop={should_stop})"
+                        )
+                    continue
+                except websockets.exceptions.ConnectionClosed as e:
+                    logger.info(f"[{_session_id}] WebSocket geschlossen: {e}")
+                    break
+                except Exception as e:
+                    logger.error(
+                        f"[{_session_id}] Unerwarteter Fehler in recv-loop: {e}"
+                    )
+                    break
 
+            logger.info(
+                f"[{_session_id}] Loop beendet (should_stop={should_stop}, loops={loop_count})"
+            )
+
+        logger.info(f"[{_session_id}] Mikrofon-Stream beendet")
+
+        # Verbindung sauber schließen
+        logger.info(f"[{_session_id}] Sende CloseStream...")
+        try:
+            connection.send_control(ListenV1ControlMessage(type="CloseStream"))
+            logger.info(f"[{_session_id}] CloseStream gesendet")
+        except Exception as e:
+            logger.debug(f"[{_session_id}] CloseStream fehlgeschlagen: {e}")
+
+    logger.info(f"[{_session_id}] Context Manager verlassen")
     result = " ".join(final_transcripts)
     logger.info(f"[{_session_id}] Streaming abgeschlossen: {len(result)} Zeichen")
 

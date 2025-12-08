@@ -57,7 +57,7 @@ python transcribe.py --record --refine                # Mit LLM-Nachbearbeitung
 | `--copy`, `-c`                      | Ergebnis in Zwischenablage                                                    |
 | `--language CODE`                   | Sprachcode z.B. `de`, `en`                                                    |
 | `--format FORMAT`                   | Output: `text`, `json`, `srt`, `vtt` (nur API-Modus)                          |
-| `--no-streaming`                    | WebSocket-Streaming deaktivieren (nur deepgram)                               |
+| `--no-streaming`                    | WebSocket-Streaming deaktivieren (nur Deepgram)                               |
 | `--refine`                          | LLM-Nachbearbeitung aktivieren                                                |
 | `--no-refine`                       | LLM-Nachbearbeitung deaktivieren (überschreibt env)                           |
 | `--refine-model`                    | Modell für Nachbearbeitung (default: `gpt-5-nano`)                            |

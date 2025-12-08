@@ -69,7 +69,7 @@ Kein Electron. Kein Cloud-Lock-in. Kein Abo.
 - [ ] macOS Menübar-App (rumps oder Swift)
 - [ ] Konfigurierbare Hotkeys
 - [ ] Sprach-Commands ("neuer Absatz", "Punkt")
-- [ ] Live-Preview (Interim-Results während Aufnahme anzeigen)
+- [ ] Live-Preview (Interim-Results während der Aufnahme anzeigen)
 
 ### Phase 5: Multi-Platform
 
