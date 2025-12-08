@@ -87,23 +87,69 @@ await connection.send_control(ListenV1ControlMessage(type="CloseStream"))
 | Stop → Transkript fertig | 5-10s  | ~2s     | ~70% schneller |
 | Gesamt-Pipeline          | 15-22s | 7-8s    | ~60% schneller |
 
-## Verbleibende Latenz (~2s)
+## Update: Saubere Lösung (Dezember 2024)
 
-Der `async with __aexit__` blockiert noch ~2s. Das ist internes websockets-Library-Verhalten.
+Die ursprüngliche Lösung (Finalize + CloseStream) reduzierte die Latenz von 10s auf ~2-5s.
+Aber der `__aexit__` des SDK Context Managers blockierte immer noch.
 
-### Mögliche weitere Optimierung (nicht implementiert)
+### Das eigentliche Problem
+
+Das Deepgram SDK leitet den `close_timeout` Parameter **nicht** an `websockets.connect()` weiter:
 
 ```python
-# Fire-and-forget: WebSocket im Hintergrund schließen
-asyncio.create_task(connection._websocket.close())
+# SDK-Code (deepgram/listen/v1/client.py)
+async with websockets_client_connect(ws_url, extra_headers=headers) as protocol:
+    yield AsyncV1SocketClient(websocket=protocol)
+# ↑ Kein close_timeout → Default 10s!
 ```
 
-**Abgelehnt weil:**
+### Erste Lösung: Monkey-Patch (verworfen)
 
-- Verwendet private API (`_websocket`)
-- Kein sauberer Close-Handshake
-- Risiko bei SDK-Updates
-- 2s Ersparnis rechtfertigt nicht den Hack
+```python
+# Funktioniert, aber nutzt private API
+if hasattr(connection, "_websocket"):
+    connection._websocket.close_timeout = 0.5
+```
+
+**Probleme:**
+
+- `_websocket` ist private API (kann sich ändern)
+- Keine Warnung, wenn Patch nicht mehr greift
+- Code-Smell
+
+### Finale Lösung: Eigener Context Manager
+
+Wir umgehen den SDK Context Manager und verbinden direkt mit `websockets.connect()`:
+
+```python
+@asynccontextmanager
+async def _create_deepgram_connection(api_key, *, model, ...):
+    # Query-Parameter aufbauen (wie SDK)
+    params = httpx.QueryParams()
+    params = params.add("model", model)
+    # ...
+
+    async with websockets_connect(
+        ws_url,
+        extra_headers={"Authorization": f"Token {api_key}"},
+        close_timeout=0.5,  # ← Der Schlüssel!
+    ) as protocol:
+        yield AsyncV1SocketClient(websocket=protocol)
+```
+
+**Vorteile:**
+
+- Keine private API (`_websocket`)
+- Explizit dokumentiert und nachvollziehbar
+- SDK-Update-resistent (nutzt nur öffentliche `AsyncV1SocketClient` Klasse)
+- `close_timeout` direkt konfigurierbar
+
+### Ergebnis nach Update
+
+| Metrik                   | Original | Mit Finalize | Mit eigenem CM |
+| ------------------------ | -------- | ------------ | -------------- |
+| Stop → Transkript fertig | 5-10s    | ~2-5s        | **<1s**        |
+| Gesamt-Pipeline          | 15-22s   | 7-11s        | **~6s**        |
 
 ## Lessons Learned
 

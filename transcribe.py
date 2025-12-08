@@ -25,9 +25,14 @@ import sys  # noqa: E402
 import tempfile  # noqa: E402
 import threading  # noqa: E402
 import uuid  # noqa: E402
-from contextlib import contextmanager  # noqa: E402
+from collections.abc import AsyncIterator  # noqa: E402
+from contextlib import asynccontextmanager, contextmanager  # noqa: E402
+from typing import TYPE_CHECKING  # noqa: E402
 from logging.handlers import RotatingFileHandler  # noqa: E402
 from pathlib import Path  # noqa: E402
+
+if TYPE_CHECKING:
+    from deepgram.listen.v1.socket_client import AsyncV1SocketClient
 
 from prompts import DEFAULT_APP_CONTEXTS, get_prompt_for_context  # noqa: E402
 
@@ -74,6 +79,8 @@ STATE_FILE = Path("/tmp/whisper_go.state")
 INTERIM_FILE = Path("/tmp/whisper_go.interim")
 INTERIM_THROTTLE_MS = 150  # Max. Update-Rate für Interim-File (Menübar pollt 200ms)
 FINALIZE_TIMEOUT = 2.0  # Sekunden warten auf finale Transkripte nach Finalize
+DEEPGRAM_WS_URL = "wss://api.deepgram.com/v1/listen"
+DEEPGRAM_CLOSE_TIMEOUT = 0.5  # Schneller Shutdown statt 10s Default
 
 # Konfiguration und Logs
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -746,6 +753,63 @@ def _extract_transcript(result) -> str | None:
     return getattr(alternatives[0], "transcript", "") or None
 
 
+# =============================================================================
+# Deepgram WebSocket Connection (ohne SDK Context Manager)
+# =============================================================================
+
+
+@asynccontextmanager
+async def _create_deepgram_connection(
+    api_key: str,
+    *,
+    model: str,
+    language: str | None = None,
+    smart_format: bool = True,
+    punctuate: bool = True,
+    interim_results: bool = True,
+    encoding: str = "linear16",
+    sample_rate: int = 16000,
+    channels: int = 1,
+) -> AsyncIterator["AsyncV1SocketClient"]:
+    """
+    Deepgram WebSocket mit kontrollierbarem close_timeout.
+
+    Das SDK leitet close_timeout nicht an websockets.connect() weiter,
+    was zu 5-10s Shutdown-Delays führt. Dieser Context Manager umgeht
+    das Problem durch direkte Nutzung der websockets Library.
+
+    Siehe docs/adr/001-deepgram-streaming-shutdown.md
+    """
+    # Lazy imports (nur bei Deepgram-Streaming benötigt)
+    import httpx
+    from websockets.legacy.client import connect as websockets_connect
+    from deepgram.listen.v1.socket_client import AsyncV1SocketClient
+
+    # Query-Parameter aufbauen
+    params = httpx.QueryParams()
+    params = params.add("model", model)
+    if language:
+        params = params.add("language", language)
+    # Booleans explizit senden (True="true", False="false")
+    # damit Caller diese Features gezielt deaktivieren können
+    params = params.add("smart_format", "true" if smart_format else "false")
+    params = params.add("punctuate", "true" if punctuate else "false")
+    params = params.add("interim_results", "true" if interim_results else "false")
+    params = params.add("encoding", encoding)
+    params = params.add("sample_rate", str(sample_rate))
+    params = params.add("channels", str(channels))
+
+    ws_url = f"{DEEPGRAM_WS_URL}?{params}"
+    headers = {"Authorization": f"Token {api_key}"}
+
+    async with websockets_connect(
+        ws_url,
+        extra_headers=headers,
+        close_timeout=DEEPGRAM_CLOSE_TIMEOUT,
+    ) as protocol:
+        yield AsyncV1SocketClient(websocket=protocol)
+
+
 async def _deepgram_stream_core(
     model: str,
     language: str | None,
@@ -770,7 +834,6 @@ async def _deepgram_stream_core(
 
     import numpy as np
     import sounddevice as sd
-    from deepgram import AsyncDeepgramClient
     from deepgram.core.events import EventType
     from deepgram.extensions.types.sockets import ListenV1ControlMessage
 
@@ -841,7 +904,6 @@ async def _deepgram_stream_core(
     if threading.current_thread() is threading.main_thread():
         loop.add_signal_handler(signal.SIGUSR1, stop_event.set)
 
-    client = AsyncDeepgramClient(api_key=api_key)
     audio_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
 
     # --- Modus-spezifische Audio-Initialisierung ---
@@ -905,15 +967,12 @@ async def _deepgram_stream_core(
         play_ready_sound()
 
     try:
-        async with client.listen.v1.connect(
+        async with _create_deepgram_connection(
+            api_key,
             model=model,
             language=language,
-            smart_format="true",
-            punctuate="true",
-            interim_results="true",
-            encoding="linear16",
-            sample_rate=str(WHISPER_SAMPLE_RATE),
-            channels=str(WHISPER_CHANNELS),
+            sample_rate=WHISPER_SAMPLE_RATE,
+            channels=WHISPER_CHANNELS,
         ) as connection:
             connection.on(EventType.MESSAGE, on_message)
             connection.on(EventType.ERROR, on_error)
