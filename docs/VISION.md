@@ -74,7 +74,7 @@ Kein Electron. Kein Cloud-Lock-in. Kein Abo.
 
 ### Phase 4.5: Quality & Testing ✅
 
-- [x] Unit-Tests mit pytest (145 Tests, ~0.5s)
+- [x] Unit-Tests mit pytest (198 Tests, ~1.2s)
 - [x] CI/CD Pipeline (GitHub Actions auf macOS)
 - [x] Code Coverage mit Codecov
 - [x] Parametrisierte Tests für Wartbarkeit
@@ -157,7 +157,7 @@ Bewusst ausgeschlossen, um Fokus zu halten:
 | Genauigkeit   | > 95% (DE/EN)        | ✅ Erreicht mit Nova-3         |
 | RAM (Idle)    | < 100 MB             | ✅ Kein Daemon im Idle         |
 | Onboarding    | < 1 Minute           | ✅ Schnellstart in README      |
-| Test-Coverage | > 60% (Core)         | ✅ 145 Tests, CI/CD aktiv      |
+| Test-Coverage | > 60% (Core)         | ✅ 198 Tests, CI/CD aktiv      |
 
 ---
 
@@ -188,8 +188,7 @@ whisper_go/
 ├── providers/                     # Transkriptions-Provider
 │   └── ...
 ├── audio/                         # Audio-Handling
-│   ├── recording.py               # Mikrofon-Aufnahme (sounddevice)
-│   └── playback.py                # Sound-Feedback (via platform/)
+│   └── recording.py               # Mikrofon-Aufnahme (sounddevice)
 ├── refine/                        # LLM-Nachbearbeitung
 │   ├── llm.py                     # Refine-Logik
 │   ├── prompts.py                 # Prompt-Templates (Consolidated)
@@ -221,11 +220,6 @@ whisper_go/
 - Prompt Consolidation: `refine/prompts.py` zentralisiert
 
 > **Hinweis:** Das Projekt ist jetzt vollständig modularisiert.
-
->
-> **Hinweis Recording:** Aktuell existiert eine Code-Duplizierung für Audio-Recording
-> zwischen `whisper_daemon.py` (`_recording_worker`) und `transcribe.py`. Diese wird
-> in PR 2 durch die zentrale `audio/recording.py` Komponente aufgelöst.
 
 ### Rückwärtskompatibilität
 
