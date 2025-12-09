@@ -175,6 +175,15 @@ WAVE_BAR_MIN_HEIGHT = 4
 WAVE_BAR_MAX_HEIGHT = 42
 WAVE_AREA_WIDTH = WAVE_BAR_COUNT * WAVE_BAR_WIDTH + (WAVE_BAR_COUNT - 1) * WAVE_BAR_GAP
 
+# Animations-Parameter
+ANIM_RECORDING_MIN_SCALE = 0.3    # Min Skalierung am Rand (vs Mitte)
+ANIM_RECORDING_RANDOM_BASE = 0.4  # Zufalls-Basis für Höhe
+ANIM_RECORDING_RANDOM_VAR = 0.6   # Zufalls-Variation für Höhe
+ANIM_OPACITY_MIN_BASE = 0.6       # Minimale Opazität (Mitte)
+ANIM_OPACITY_DROP_EDGE = 0.3      # Opazitäts-Abfall zum Rand
+ANIM_OPACITY_MAX_BASE = 0.9       # Maximale Opazität (Basis)
+ANIM_OPACITY_MAX_VAR = 0.1        # Maximale Opazität (Variation)
+
 # Feedback Timing
 FEEDBACK_DISPLAY_DURATION = 0.8
 
@@ -243,39 +252,19 @@ class SoundWaveView:
         for bar in self.bars:
             bar.setBackgroundColor_(cg_color)
 
-    def _create_height_animation(
-        self, to_height, duration, delay=0, repeat=float("inf")
+    def _create_basic_animation(
+        self, key_path, from_val, to_val, duration, repeat=float("inf")
     ):
-        """Erstellt Höhen-Animation für Balken."""
+        """Generische Helper-Methode für Core Animation."""
         from Quartz import (  # type: ignore[import-not-found]
             CABasicAnimation,
             CAMediaTimingFunction,
             kCAMediaTimingFunctionEaseInEaseOut,
         )
 
-        anim = CABasicAnimation.animationWithKeyPath_("bounds.size.height")
-        anim.setFromValue_(WAVE_BAR_MIN_HEIGHT)
-        anim.setToValue_(to_height)
-        anim.setDuration_(duration)
-        anim.setAutoreverses_(True)
-        anim.setRepeatCount_(repeat)
-        anim.setTimingFunction_(
-            CAMediaTimingFunction.functionWithName_(kCAMediaTimingFunctionEaseInEaseOut)
-        )
-        return anim
-
-    def _create_opacity_animation(
-        self, from_val, to_val, duration, delay=0, repeat=float("inf")
-    ):
-        """Erstellt Opazitäts-Animation."""
-        from Quartz import (  # type: ignore[import-not-found]
-            CABasicAnimation,
-            CAMediaTimingFunction,
-            kCAMediaTimingFunctionEaseInEaseOut,
-        )
-
-        anim = CABasicAnimation.animationWithKeyPath_("opacity")
-        anim.setFromValue_(from_val)
+        anim = CABasicAnimation.animationWithKeyPath_(key_path)
+        if from_val is not None:
+            anim.setFromValue_(from_val)
         anim.setToValue_(to_val)
         anim.setDuration_(duration)
         anim.setAutoreverses_(True)
@@ -299,27 +288,32 @@ class SoundWaveView:
             # Distanz zur Mitte (0.0 bis 1.0)
             dist = abs(i - center_idx) / (center_idx + 1)
             
-            # Basis-Berechnungen (wie zuvor)
-            base_scale = 1.0 - (dist * 0.7)
-            random_scale = 0.4 + (random.random() * 0.6)
+            # Basis-Berechnungen (mit Konstanten)
+            base_scale = 1.0 - (dist * (1.0 - ANIM_RECORDING_MIN_SCALE))
+            random_scale = ANIM_RECORDING_RANDOM_BASE + (random.random() * ANIM_RECORDING_RANDOM_VAR)
+            
             target_height = WAVE_BAR_MAX_HEIGHT * base_scale * random_scale
             target_height = max(WAVE_BAR_MIN_HEIGHT * 2, target_height)
             
             duration = 0.5 + (random.random() * 0.5)
             
             # 1. Höhen-Animation
-            anim_h = self._create_height_animation(target_height, duration)
+            anim_h = self._create_basic_animation(
+                "bounds.size.height", WAVE_BAR_MIN_HEIGHT, target_height, duration
+            )
             time_offset = random.random()
             anim_h.setTimeOffset_(time_offset)
             bar.addAnimation_forKey_(anim_h, f"heightAnim{i}")
 
             # 2. Opazitäts-Animation ("Breathing")
-            # Ränder sind transparenter (min 0.3), Mitte deckender (min 0.6)
-            min_opacity = 0.6 - (dist * 0.3)
-            # Wenn der Balken hoch geht, wird er fast voll deckend (0.9 - 1.0)
-            max_opacity = 0.9 + (random.random() * 0.1)
+            # Ränder sind transparenter, Mitte deckender
+            min_opacity = ANIM_OPACITY_MIN_BASE - (dist * ANIM_OPACITY_DROP_EDGE)
+            # Wenn der Balken hoch geht, wird er fast voll deckend
+            max_opacity = ANIM_OPACITY_MAX_BASE + (random.random() * ANIM_OPACITY_MAX_VAR)
             
-            anim_o = self._create_opacity_animation(min_opacity, max_opacity, duration)
+            anim_o = self._create_basic_animation(
+                "opacity", min_opacity, max_opacity, duration
+            )
             anim_o.setTimeOffset_(time_offset) # Synchron zur Höhe
             bar.addAnimation_forKey_(anim_o, f"opacityAnim{i}")
 
@@ -334,7 +328,9 @@ class SoundWaveView:
 
         for i, bar in enumerate(self.bars):
             # Welle von links nach rechts
-            anim = self._create_height_animation(WAVE_BAR_MAX_HEIGHT * 0.6, 0.6)
+            anim = self._create_basic_animation(
+                "bounds.size.height", WAVE_BAR_MIN_HEIGHT, WAVE_BAR_MAX_HEIGHT * 0.6, 0.6
+            )
             
             # Zeitlicher Versatz erzeugt die Wellenbewegung
             offset = i * 0.08
@@ -349,8 +345,12 @@ class SoundWaveView:
         self.set_bar_color(self._color_success)
 
         for i, bar in enumerate(self.bars):
-            anim = self._create_height_animation(
-                WAVE_BAR_MAX_HEIGHT * 0.8, 0.3, repeat=1
+            anim = self._create_basic_animation(
+                "bounds.size.height", 
+                WAVE_BAR_MIN_HEIGHT, 
+                WAVE_BAR_MAX_HEIGHT * 0.8, 
+                0.3, 
+                repeat=1
             )
             bar.addAnimation_forKey_(anim, f"successAnim{i}")
 
@@ -361,7 +361,13 @@ class SoundWaveView:
         self.set_bar_color(self._color_error)
 
         for i, bar in enumerate(self.bars):
-            anim = self._create_height_animation(WAVE_BAR_MAX_HEIGHT, 0.15, repeat=2)
+            anim = self._create_basic_animation(
+                "bounds.size.height",
+                WAVE_BAR_MIN_HEIGHT,
+                WAVE_BAR_MAX_HEIGHT,
+                0.15,
+                repeat=2
+            )
             bar.addAnimation_forKey_(anim, f"errorAnim{i}")
 
     def stop_animating(self) -> None:
