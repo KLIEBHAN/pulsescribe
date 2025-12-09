@@ -198,14 +198,36 @@ Unterstützt von Deepgram und lokalem Whisper. Die OpenAI API unterstützt kein 
 
 Für systemweite Spracheingabe per Hotkey – der Hauptanwendungsfall von whisper_go.
 
-### Setup
+### Unified Daemon (empfohlen)
+
+Der `whisper_daemon.py` kombiniert alle Komponenten in einem Prozess:
+- Hotkey-Listener (QuickMacHotKey)
+- Microphone Recording + Deepgram Streaming
+- Menübar-Status (🎤 🔴 ⏳ ✅ ❌)
+- Overlay mit Animationen
+- Auto-Paste
 
 ```bash
-# Hotkey-Daemon als LaunchAgent installieren (startet bei Login)
-./scripts/install_hotkey_daemon.sh
+# Manueller Start
+python whisper_daemon.py
+
+# Mit CLI-Optionen
+python whisper_daemon.py --hotkey cmd+shift+r --debug
+
+# Als Login Item (Doppelklick oder zu Anmeldeobjekten hinzufügen)
+open start_daemon.command
 ```
 
 > **Keine Accessibility-Berechtigung erforderlich!** QuickMacHotKey nutzt die native Carbon-API (`RegisterEventHotKey`).
+
+### Alternative: Hotkey-Daemon + Raycast
+
+Für Raycast-Integration oder wenn du Overlay/Menübar separat steuern möchtest:
+
+```bash
+# Hotkey-Daemon als LaunchAgent installieren
+./scripts/install_hotkey_daemon.sh
+```
 
 ### Konfiguration
 
@@ -234,60 +256,16 @@ WHISPER_GO_HOTKEY_MODE=toggle
 - F19 drücken → Aufnahme startet
 - F19 nochmal drücken → Transkript wird eingefügt
 
-### Manueller Start
+### Visuelles Feedback
 
-Der Daemon kann auch manuell gestartet werden (ohne LaunchAgent):
+Der Unified Daemon zeigt automatisch:
 
-```bash
-# Mit Defaults aus .env
-python hotkey_daemon.py
+| Komponente | Beschreibung |
+|------------|--------------|
+| **Menübar** | Status-Icon (🎤 🔴 ⏳ ✅ ❌) + Live-Preview |
+| **Overlay** | Animierte Schallwellen am unteren Bildschirmrand |
 
-# Mit CLI-Optionen
-python hotkey_daemon.py --hotkey cmd+shift+r
-
-# Debug-Modus (mehr Logging)
-python hotkey_daemon.py --debug
-```
-
-### Deinstallation
-
-```bash
-./scripts/uninstall_hotkey_daemon.sh
-```
-
-### Visuelles Feedback (optional)
-
-Zwei Optionen für Status-Anzeige während der Aufnahme:
-
-#### Overlay (empfohlen)
-
-Elegantes Overlay am unteren Bildschirmrand mit animierter Schallwellen-Visualisierung:
-
-```bash
-./scripts/install_overlay.sh
-```
-
-- Zeigt Live-Transkription während dem Sprechen
-- Animierte Schallwellen zeigen aktive Aufnahme
-- Click-Through – stört nicht beim Arbeiten
-
-#### Menübar
-
-Kompaktes Icon in der macOS-Menüleiste:
-
-```bash
-./scripts/install_menubar.sh
-```
-
-| Icon | Status              |
-| ---- | ------------------- |
-| 🎤   | Bereit              |
-| 🔴   | Aufnahme läuft      |
-| ⏳   | Transkription läuft |
-| ✅   | Erfolgreich         |
-| ❌   | Fehler              |
-
-> **Tipp:** Beide können gleichzeitig laufen. Das Overlay zeigt mehr Details, die Menübar ist dezenter.
+Beides ist integriert und startet automatisch mit dem Daemon.
 
 ## Provider-Vergleich
 

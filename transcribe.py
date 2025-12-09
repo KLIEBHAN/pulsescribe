@@ -816,7 +816,6 @@ async def _deepgram_stream_core(
     early_buffer: list[bytes] | None = None,
     play_ready: bool = True,
     external_stop_event: threading.Event | None = None,
-    audio_callback_out: list | None = None,
 ) -> str:
     """
     Gemeinsamer Streaming-Core für Deepgram (SDK v5.3).
@@ -827,7 +826,6 @@ async def _deepgram_stream_core(
         early_buffer: Vorab gepuffertes Audio (für Daemon-Mode)
         play_ready: Ready-Sound nach Mikrofon-Init spielen (für CLI)
         external_stop_event: threading.Event zum externen Stoppen (statt SIGUSR1)
-        audio_callback_out: Liste um Audio-Callback-Referenz zurückzugeben (für externes Mic)
 
     Drei Modi:
     - CLI (early_buffer=None): Buffering während WebSocket-Connect
