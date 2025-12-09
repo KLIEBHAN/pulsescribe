@@ -530,9 +530,13 @@ class OverlayController:
 class WhisperDaemon:
     """
     Unified Daemon für whisper_go.
-
-    Nutzt _deepgram_stream_core() mit external_stop_event für
-    optimiertes Live-Streaming (gleiche Pipeline wie run_daemon_mode_streaming).
+    
+    Architektur:
+        Main-Thread: Hotkey-Listener (QuickMacHotKey) + UI-Updates
+        Worker-Thread: Deepgram-Streaming (async)
+    
+    State-Flow:
+        idle → [Hotkey] → recording → [Hotkey] → transcribing → done/error → idle
     """
 
     def __init__(
@@ -593,14 +597,14 @@ class WhisperDaemon:
 
     def _on_hotkey(self) -> None:
         """Callback bei Hotkey-Aktivierung."""
-        # Debouncing
+        # Keyboard-Auto-Repeat und schnelle Doppelklicks ignorieren
         now = time.time()
         if now - self._last_hotkey_time < DEBOUNCE_INTERVAL:
             logger.debug("Debounce: Event ignoriert")
             return
         self._last_hotkey_time = now
 
-        # Thread-Lock
+        # Parallele Ausführung verhindern (non-blocking Lock)
         if not self._toggle_lock.acquire(blocking=False):
             logger.warning("Hotkey ignoriert - Toggle bereits aktiv")
             return
@@ -686,9 +690,12 @@ class WhisperDaemon:
 
     def _streaming_worker(self) -> None:
         """
-        Worker-Thread: Führt _deepgram_stream_core() aus.
-
-        Nutzt die optimierte Pipeline aus transcribe.py mit Live-Streaming.
+        Hintergrund-Thread für Deepgram-Streaming.
+        
+        Läuft in eigenem Thread, weil Deepgram async ist,
+        aber der Main-Thread für QuickMacHotKey und UI frei bleiben muss.
+        
+        Lifecycle: Start → Mikrofon → Stream → Stop-Event → Finalize → Result
         """
         import asyncio
 
@@ -697,21 +704,18 @@ class WhisperDaemon:
         try:
             model = self.model or transcribe.DEFAULT_DEEPGRAM_MODEL
 
-            # Setup Logging für transcribe.py
             transcribe.setup_logging(debug=logger.level == logging.DEBUG)
 
-            # Async Event-Loop für diesen Thread
+            # Eigener Event-Loop, da wir nicht im Main-Thread sind
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
 
             try:
-                # _deepgram_stream_core mit external_stop_event
-                # Dies startet Mikrofon, streamt live, wartet auf Stop-Event
                 transcript = loop.run_until_complete(
                     transcribe._deepgram_stream_core(
                         model=model,
                         language=self.language,
-                        play_ready=True,  # Ready-Sound
+                        play_ready=True,
                         external_stop_event=self._stop_event,
                     )
                 )
@@ -735,20 +739,20 @@ class WhisperDaemon:
             self._result_queue.put(e)
 
     def _stop_recording(self) -> None:
-        """Stoppt Aufnahme durch Setzen des Stop-Events."""
+        """Stoppt Aufnahme und wartet auf Worker-Beendigung."""
         if not self._recording:
             return
 
         logger.info("Stop-Event setzen...")
 
-        # Interim-Polling stoppen
         self._stop_interim_polling()
 
-        # Stop-Event setzen → _deepgram_stream_core beendet sich
+        # Signal an Worker: Beende Deepgram-Stream sauber
         if self._stop_event:
             self._stop_event.set()
 
-        # Warte auf Worker-Thread-Beendigung (verhindert parallele Sessions)
+        # Worker-Thread muss beendet sein, bevor neuer starten kann
+        # Verhindert parallele Mikrofon-Zugriffe
         if self._worker_thread is not None and self._worker_thread.is_alive():
             self._worker_thread.join(timeout=2.0)
             if self._worker_thread.is_alive():
@@ -757,7 +761,7 @@ class WhisperDaemon:
         self._recording = False
         self._update_state("transcribing")
 
-        # Result-Polling starten
+        # Polling statt Blocking: Main-Thread bleibt reaktiv für UI
         self._start_result_polling()
 
     def _start_result_polling(self) -> None:
