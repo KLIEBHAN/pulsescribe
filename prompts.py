@@ -13,6 +13,7 @@ DEFAULT_REFINE_PROMPT = """Korrigiere dieses Transkript:
 - Korrigiere Grammatik und Rechtschreibung
 - Formatiere in saubere Absätze
 - Behalte den originalen Inhalt und Stil bei
+- Bleibe so nah wie möglich am Originaltext
 
 Gib NUR den korrigierten Text zurück, keine Erklärungen."""
 
@@ -36,6 +37,7 @@ CONTEXT_PROMPTS = {
 - Vollständige, grammatikalisch korrekte Sätze
 - Grußformeln und Anrede beibehalten
 - Klar strukturierte Absätze
+- Bleibe so nah wie möglich am Originaltext
 
 Gib NUR den korrigierten Text zurück.""",
     "chat": """Korrigiere dieses Transkript für eine Chat-Nachricht:
@@ -43,6 +45,7 @@ Gib NUR den korrigierten Text zurück.""",
 - Kurz und prägnant
 - Emojis können beibehalten werden
 - Keine übermäßige Formalisierung
+- Bleibe so nah wie möglich am Originaltext
 
 Gib NUR den korrigierten Text zurück.""",
     "code": """Korrigiere dieses Transkript für technischen Kontext:
@@ -50,6 +53,7 @@ Gib NUR den korrigierten Text zurück.""",
 - Code-Snippets, Variablennamen und Befehle nicht ändern
 - Camel/Snake-Case erkennen und beibehalten
 - Englische Begriffe nicht eindeutschen
+- Bleibe so nah wie möglich am Originaltext
 
 Gib NUR den korrigierten Text zurück.""",
     "default": DEFAULT_REFINE_PROMPT,
