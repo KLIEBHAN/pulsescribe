@@ -617,8 +617,22 @@ class WhisperDaemon:
 
     def _start_recording(self) -> None:
         """Startet Streaming-Aufnahme im Worker-Thread."""
+        # Sicherstellen, dass kein alter Worker noch läuft
+        if self._worker_thread is not None and self._worker_thread.is_alive():
+            logger.warning("Alter Worker-Thread läuft noch, warte auf Beendigung...")
+            if self._stop_event is not None:
+                self._stop_event.set()
+            self._worker_thread.join(timeout=2.0)
+            if self._worker_thread.is_alive():
+                logger.error("Worker-Thread konnte nicht beendet werden!")
+            self._worker_thread = None
+            self._stop_event = None
+
         self._recording = True
         self._update_state("recording")
+
+        # Interim-Datei löschen, um veralteten Text zu vermeiden
+        INTERIM_FILE.unlink(missing_ok=True)
 
         # Neues Stop-Event für diese Aufnahme
         self._stop_event = threading.Event()
@@ -730,6 +744,12 @@ class WhisperDaemon:
         # Stop-Event setzen → _deepgram_stream_core beendet sich
         if self._stop_event:
             self._stop_event.set()
+
+        # Warte auf Worker-Thread-Beendigung (verhindert parallele Sessions)
+        if self._worker_thread is not None and self._worker_thread.is_alive():
+            self._worker_thread.join(timeout=2.0)
+            if self._worker_thread.is_alive():
+                logger.warning("Worker-Thread noch aktiv nach Timeout")
 
         self._recording = False
         self._update_state("transcribing")
