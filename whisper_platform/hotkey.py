@@ -198,7 +198,7 @@ class WindowsHotkeyListener:
 
             def on_press(key):
                 self._current_keys.add(key)
-                if self._current_keys == self._hotkey_keys:
+                if self._hotkey_keys.issubset(self._current_keys):
                     self.callback()
 
             def on_release(key):

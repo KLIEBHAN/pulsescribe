@@ -89,11 +89,11 @@ class OpenAIProvider:
         model = model or self.default_model
         audio_kb = audio_path.stat().st_size // 1024
 
-        logger.info(f"API: {model}, {audio_kb}KB, lang={language or 'auto'}")
+        logger.info(f"OpenAI: {model}, {audio_kb}KB, lang={language or 'auto'}")
 
         client = _get_client()
 
-        with _timed_operation("API-Transkription"):
+        with _timed_operation("OpenAI-Transkription"):
             with audio_path.open("rb") as audio_file:
                 params = {
                     "model": model,

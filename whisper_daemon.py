@@ -23,6 +23,7 @@ import logging
 import os
 import queue
 import sys
+import tempfile
 import threading
 import time
 from logging.handlers import RotatingFileHandler
@@ -551,7 +552,9 @@ class WhisperDaemon:
         refine: bool = False,
         refine_model: str | None = None,
         refine_provider: str | None = None,
+
         context: str | None = None,
+        mode: str | None = None,
     ):
         self.hotkey = hotkey
         self.language = language
@@ -560,6 +563,7 @@ class WhisperDaemon:
         self.refine_model = refine_model
         self.refine_provider = refine_provider
         self.context = context
+        self.mode = mode
 
         # State
         self._recording = False
@@ -636,6 +640,7 @@ class WhisperDaemon:
             self._worker_thread.join(timeout=2.0)
             if self._worker_thread.is_alive():
                 logger.error("Worker-Thread konnte nicht beendet werden!")
+
             self._worker_thread = None
             self._stop_event = None
 
@@ -648,18 +653,32 @@ class WhisperDaemon:
         # Neues Stop-Event für diese Aufnahme
         self._stop_event = threading.Event()
 
+        # Modus-Entscheidung: Streaming vs. Recording
+        use_streaming = (
+            self.mode == "deepgram"
+            and os.getenv("WHISPER_GO_STREAMING", "true").lower() != "false"
+        )
+
+        if use_streaming:
+            target = self._streaming_worker
+            name = "StreamingWorker"
+            logger.info("Starte Deepgram Streaming...")
+        else:
+            target = self._recording_worker
+            name = "RecordingWorker"
+            logger.info(f"Starte Standard-Aufnahme (Mode: {self.mode})...")
+
         # Worker-Thread starten
         self._worker_thread = threading.Thread(
-            target=self._streaming_worker,
+            target=target,
             daemon=True,
-            name="StreamingWorker",
+            name=name,
         )
         self._worker_thread.start()
 
-        # Interim-Polling starten (für Live-Preview)
-        self._start_interim_polling()
-
-        logger.info("Streaming gestartet (Worker-Thread)")
+        # Interim-Polling starten (nur bei Streaming sinnvoll, aber schadet nicht)
+        if use_streaming:
+            self._start_interim_polling()
 
     def _start_interim_polling(self) -> None:
         """Startet NSTimer für Interim-Text-Polling."""
@@ -740,6 +759,80 @@ class WhisperDaemon:
 
         except Exception as e:
             logger.exception(f"Streaming-Worker Fehler: {e}")
+            self._result_queue.put(e)
+
+    def _recording_worker(self) -> None:
+        """
+        Standard-Aufnahme für OpenAI, Groq, Local.
+        
+        Nimmt Audio auf bis Stop-Event, speichert als WAV,
+        und ruft dann transcribe() auf.
+        """
+        import numpy as np
+        import sounddevice as sd
+        import soundfile as sf
+        
+        transcribe = _get_transcribe()
+        
+        recorded_chunks = []
+        
+        try:
+            # Ready-Sound
+            transcribe.play_sound("ready")
+            
+            # Aufnahme-Loop
+            def callback(indata, frames, time, status):
+                recorded_chunks.append(indata.copy())
+                
+            with sd.InputStream(samplerate=16000, channels=1, dtype="float32", callback=callback):
+                while not self._stop_event.is_set():
+                    sd.sleep(50)
+            
+            # Stop-Sound
+            transcribe.play_sound("stop")
+            
+            # Speichern
+            if not recorded_chunks:
+                logger.warning("Keine Audiodaten aufgenommen")
+                return
+
+            audio_data = np.concatenate(recorded_chunks)
+            
+            # Temp-File erstellen
+            fd, temp_path = tempfile.mkstemp(suffix=".wav")
+            os.close(fd)
+            
+            try:
+                sf.write(temp_path, audio_data, 16000)
+                
+                # Update State: Transcribing
+                # (via Queue nicht direkt möglich, aber _stop_recording setzt es im Main-Thread)
+                
+                # Transkribieren
+                transcript = transcribe.transcribe(
+                    Path(temp_path),
+                    mode=self.mode,
+                    model=self.model,
+                    language=self.language
+                )
+                
+                # LLM-Refine
+                if self.refine and transcript:
+                    transcript = transcribe.refine_transcript(
+                        transcript,
+                        model=self.refine_model,
+                        provider=self.refine_provider,
+                        context=self.context,
+                    )
+                
+                self._result_queue.put(transcript)
+                
+            finally:
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
+                    
+        except Exception as e:
+            logger.exception(f"Recording-Worker Fehler: {e}")
             self._result_queue.put(e)
 
     def _stop_recording(self) -> None:
@@ -909,6 +1002,12 @@ Beispiele:
         help="Sprachcode z.B. 'de', 'en'",
     )
     parser.add_argument(
+        "--mode",
+        choices=["openai", "deepgram", "groq", "local"],
+        default=None,
+        help="Transkriptions-Modus (default: WHISPER_GO_MODE)",
+    )
+    parser.add_argument(
         "--model",
         default=None,
         help="Deepgram-Modell (default: nova-3)",
@@ -952,6 +1051,7 @@ Beispiele:
     hotkey = args.hotkey or os.getenv("WHISPER_GO_HOTKEY", "f19")
     language = args.language or os.getenv("WHISPER_GO_LANGUAGE")
     model = args.model or os.getenv("WHISPER_GO_MODEL")
+    mode = args.mode or os.getenv("WHISPER_GO_MODE", "deepgram")
 
     # Daemon starten
     try:
@@ -963,6 +1063,7 @@ Beispiele:
             refine_model=args.refine_model,
             refine_provider=args.refine_provider,
             context=args.context,
+            mode=mode,
         )
         daemon.run()
     except ValueError as e:
