@@ -64,30 +64,56 @@ class TestDaemonMode(unittest.TestCase):
         self.assertEqual(kwargs["target"], daemon._recording_worker)
         self.assertEqual(kwargs["name"], "RecordingWorker")
 
-    @patch("whisper_daemon.tempfile.mkstemp")
-    @patch("whisper_daemon.os.close")
-    @patch("whisper_daemon.os.unlink")
-    @patch("whisper_daemon.os.path.exists", return_value=True)
-    def test_recording_worker_flow(self, mock_exists, mock_unlink, mock_close, mock_mkstemp):
-        """Test the flow of recording worker: record -> save -> transcribe."""
-        daemon = WhisperDaemon(mode="openai", language="en")
-        daemon._stop_event = threading.Event()
+    @patch("whisper_daemon.threading.Thread")
+    def test_start_recording_deepgram_streaming_default_when_unset(self, mock_thread_cls):
+        """Deepgram mode defaults to streaming when WHISPER_GO_STREAMING is unset."""
+        daemon = WhisperDaemon(mode="deepgram")
+
+        # Ensure the env var is not present for this test
+        # Use simple os.environ manipulation with patch.dict to restore later
+        with patch.dict(os.environ):
+            if "WHISPER_GO_STREAMING" in os.environ:
+                del os.environ["WHISPER_GO_STREAMING"]
+            
+            with patch("whisper_daemon.INTERIM_FILE"):
+                daemon._start_recording()
+
+        mock_thread_cls.assert_called_once()
+        args, kwargs = mock_thread_cls.call_args
+        self.assertEqual(kwargs["target"], daemon._streaming_worker)
+        self.assertEqual(kwargs["name"], "StreamingWorker")
+
+    @patch("whisper_daemon.WhisperDaemon")
+    def test_main_uses_env_mode_for_deepgram(self, mock_daemon_cls):
+        """whisper_daemon.main() uses WHISPER_GO_MODE when set (e.g., deepgram)."""
+        import whisper_daemon
         
-        # Mock sounddevice and soundfile
-        with patch("whisper_daemon.sys.modules") as mock_modules:
-            mock_sd = MagicMock()
-            mock_sf = MagicMock()
-            mock_np = MagicMock()
+        with patch.dict(os.environ, {"WHISPER_GO_MODE": "deepgram"}), \
+             patch.object(sys, "argv", ["whisper-daemon"]), \
+             patch("whisper_daemon.WhisperDaemon.run"):
             
-            # Setup mock imports inside the function
-            # Since the function does imports inside, we need to mock sys.modules or patch globally before
-            # BUT since we are testing a method that does imports, patch.dict(sys.modules) is tricky if modules not loaded
-            # Easiest is to mock the imports if they are at top level or use patch
+            whisper_daemon.main()
+
+        mock_daemon_cls.assert_called_once()
+        _, kwargs = mock_daemon_cls.call_args
+        self.assertEqual(kwargs.get("mode"), "deepgram")
+
+    @patch("whisper_daemon.WhisperDaemon")
+    def test_main_uses_cli_mode_over_env(self, mock_daemon_cls):
+        """CLI --mode should override WHISPER_GO_MODE env variable."""
+        import whisper_daemon
+        
+        with patch.dict(os.environ, {"WHISPER_GO_MODE": "openai"}), \
+             patch.object(sys, "argv", ["whisper-daemon", "--mode", "deepgram"]), \
+             patch("whisper_daemon.WhisperDaemon.run"):
             
-            # Actually, `assert` logic inside _recording_worker relies on local imports.
-            # We can mock them by pre-injecting into sys.modules if they aren't there, 
-            # or catching the import.
-            pass
+            whisper_daemon.main()
+
+        mock_daemon_cls.assert_called_once()
+        _, kwargs = mock_daemon_cls.call_args
+        self.assertEqual(kwargs.get("mode"), "deepgram")
+
+
 
     def test_recording_worker_execution(self):
         daemon = WhisperDaemon(mode="openai", language="de")

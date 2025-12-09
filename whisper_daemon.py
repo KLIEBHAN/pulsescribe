@@ -640,8 +640,7 @@ class WhisperDaemon:
             self._worker_thread.join(timeout=2.0)
             if self._worker_thread.is_alive():
                 logger.error("Worker-Thread konnte nicht beendet werden!")
-            if self._worker_thread.is_alive():
-                logger.error("Worker-Thread konnte nicht beendet werden!")
+
             self._worker_thread = None
             self._stop_event = None
 
