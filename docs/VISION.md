@@ -183,59 +183,25 @@ Refactoring der Codebase für bessere Wartbarkeit und Cross-Platform-Support (Wi
 whisper_go/
 ├── transcribe.py                  # CLI Entry Point (Wrapper)
 ├── whisper_daemon.py              # Unified Daemon
-├── hotkey_daemon.py               # Standalone Hotkey-Daemon
-├── prompts.py                     # LLM-Prompts
-│
-├── whisper_platform/                      # 🔑 Plattform-Abstraktion Layer
-│   ├── __init__.py                # Platform-Detection + Factory
-│   ├── base.py                    # Protocol-Definitionen
-│   ├── sound.py                   # Sound-Playback (CoreAudio/winsound)
-│   ├── clipboard.py               # Clipboard (pbcopy/win32)
-│   ├── app_detection.py           # App-Detection (NSWorkspace/win32gui)
-│   ├── hotkey.py                  # Hotkeys (QuickMacHotKey/pynput)
-│   └── daemon.py                  # Daemon/IPC (fork+SIGUSR1/Named Pipes)
-│
+├── whisper_platform/              # 🔑 Plattform-Abstraktion Layer (In-Progress)
+│   └── ...
 ├── providers/                     # Transkriptions-Provider
-│   ├── __init__.py                # Factory + Protocol
-│   ├── base.py                    # TranscriptionProvider Protocol
-│   ├── openai.py                  # OpenAI Whisper API
-│   ├── deepgram.py                # Deepgram REST
-│   ├── deepgram_stream.py         # Deepgram WebSocket Streaming
-│   ├── groq.py                    # Groq Whisper
-│   └── local.py                   # Lokales Whisper-Modell
-│
+│   └── ...
 ├── audio/                         # Audio-Handling
 │   ├── recording.py               # Mikrofon-Aufnahme (sounddevice)
 │   └── playback.py                # Sound-Feedback (via platform/)
-│
 ├── refine/                        # LLM-Nachbearbeitung
 │   ├── llm.py                     # Refine-Logik
-│   ├── prompts.py                 # Prompt-Templates
+│   ├── prompts.py                 # Prompt-Templates (Consolidated)
 │   └── context.py                 # Kontext-Detection
-│
+├── ui/                            # User Interface
+│   ├── menubar.py                 # Menübar Status
+│   └── overlay.py                 # Overlay & Visuals
 └── utils/                         # Utilities
     ├── logging.py                 # Logging-Setup
     ├── timing.py                  # Zeitmessung
-    └── paths.py                   # Platform-aware Pfade
-```
-
-### Plattform-Abstraktion
-
-Protocol-basierte Interfaces für plattformspezifische Funktionalität:
-
-```python
-class SoundPlayer(Protocol):
-    def play(self, name: str) -> None: ...
-
-class ClipboardHandler(Protocol):
-    def copy(self, text: str) -> bool: ...
-
-class AppDetector(Protocol):
-    def get_frontmost_app(self) -> str | None: ...
-
-class DaemonController(Protocol):
-    def start(self, command: list[str]) -> int: ...
-    def stop(self, pid: int) -> bool: ...
+    ├── daemon.py                  # Daemon Management
+    └── hotkey.py                  # Hotkey Logic
 ```
 
 ### Implementierungsplan
@@ -243,14 +209,16 @@ class DaemonController(Protocol):
 | PR       | Inhalt                                              | Aufwand | Status           |
 | -------- | --------------------------------------------------- | ------- | ---------------- |
 | **PR 1** | `whisper_platform/` Layer + `providers/` Extraktion | 12-16h  | ✅ Abgeschlossen |
-| **PR 2** | `audio/`, `refine/`, `utils/` + Streaming           | 10-14h  | ✅ Abgeschlossen |
+| **PR 2** | `audio/`, `refine/`, `utils/`, `ui/` + Streaming    | 14-18h  | ✅ Abgeschlossen |
 | **BF 1** | Strict Cleanup ("Turbo-Refactor")                   | 2h      | ✅ Abgeschlossen |
 | **PR 3** | CLI Modernisierung + Cleanup                        | 6-8h    | 📋 Geplant       |
 
 #### PR 1 Status: ✅
 #### PR 2 Status: ✅
-- Komplett implementiert: `audio/`, `refine/`, `utils/`, `providers/`
-- Strict Cleanup: `hotkey_daemon.py` removed, `transcribe.py` cleaned
+- Komplett implementiert: `audio/`, `refine/`, `utils/`, `providers/`, `ui/`
+- Strict Cleanup: `hotkey_daemon.py` & `prompts.py` removed
+- Clean Architecture: `whisper_daemon.py` verwendet `ui/` Komponenten
+- Prompt Consolidation: `refine/prompts.py` zentralisiert
 
 > **Hinweis:** Das Projekt ist jetzt vollständig modularisiert.
 

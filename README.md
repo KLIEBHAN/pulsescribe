@@ -244,8 +244,8 @@ Der `whisper_daemon.py` kombiniert alle Komponenten in einem Prozess:
 
 - Hotkey-Listener (QuickMacHotKey)
 - Microphone Recording + Deepgram Streaming
-- Menübar-Status (🎤 🔴 ⏳ ✅ ❌)
-- Overlay mit Animationen
+- Menübar-Status (🎤 🔴 ⏳ ✅ ❌) - via `ui/menubar.py`
+- Overlay mit Animationen - via `ui/overlay.py`
 - Auto-Paste
 
 ```bash

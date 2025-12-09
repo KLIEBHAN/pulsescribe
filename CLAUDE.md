@@ -12,7 +12,6 @@ Siehe [docs/VISION.md](docs/VISION.md) für Roadmap und langfristige Ziele.
 whisper_go/
 ├── transcribe.py          # CLI Orchestrierung (Wrapper)
 ├── whisper_daemon.py      # Unified Daemon (Hotkey + Recording + UI)
-├── prompts.py             # LLM-Prompts (Legacy, delegates to refine/)
 ├── start_daemon.command   # macOS Login Item für Auto-Start
 ├── requirements.txt       # Dependencies
 ├── README.md              # Benutzer-Dokumentation
@@ -21,6 +20,10 @@ whisper_go/
 ├── audio/                 # Audio-Aufnahme und -Handling
 ├── providers/             # Transkriptions-Provider (Deepgram, OpenAI, etc.)
 ├── refine/                # LLM-Nachbearbeitung und Kontext
+│   └── prompts.py         # Prompt-Templates (Consolidated)
+├── ui/                    # User Interface Components
+│   ├── menubar.py         # MenuBar Controller
+│   └── overlay.py         # Overlay Controller & SoundWave
 ├── utils/                 # Utilities (Daemon, Logging, Hotkey)
 └── tests/                 # Unit & Integration Tests
 ```
@@ -41,40 +44,27 @@ whisper_go/
 - **Lean:** Orchestrator statt Monolith (~1000 LOC weniger)
 - **Kompatibel:** Alle bestehenden CLI-Flags funktionieren weiter
 - **Entry-Point:** Bleibt die zentrale Anlaufstelle für Skripte
-
-**Design-Entscheidungen:**
-
-- Lazy Imports: `openai`, `whisper`, `sounddevice` werden erst bei Bedarf importiert
-- Stderr für Status, Stdout nur für Output → saubere Pipe-Nutzung
-- Eine Datei statt mehrere → KISS-Prinzip
-- Flache Struktur mit Early Returns
-- Double-Fork Daemon: Verhindert Zombies bei Raycast spawn+unref
+- **Lazy Imports:** `openai`, `whisper`, `sounddevice` werden erst bei Bedarf importiert
+- **Double-Fork:** Daemonisierung für saubere Prozess-Trennung
 
 ## Unified Daemon: `whisper_daemon.py`
 
 Konsolidiert alle Komponenten in einem Prozess (empfohlen für tägliche Nutzung):
 
-**Klassen:**
+**Komponenten:**
 
-| Klasse | Zweck |
-| ------ | ----- |
-| `MenuBarController` | Menübar-Status via NSStatusBar (🎤 🔴 ⏳ ✅ ❌) |
-| `OverlayController` | Animiertes Overlay am unteren Bildschirmrand |
-| `SoundWaveView` | Animierte Schallwellen-Visualisierung (Recording/Loading) |
-| `WhisperDaemon` | Hauptklasse: Hotkey + Recording + Streaming + UI |
+| Klasse | Modul | Zweck |
+| ------ | ----- | ----- |
+| `MenuBarController` | `ui.menubar` | Menübar-Status via NSStatusBar (🎤 🔴 ⏳ ✅ ❌) |
+| `OverlayController` | `ui.overlay` | Animiertes Overlay am unteren Bildschirmrand |
+| `SoundWaveView` | `ui.overlay` | Animierte Schallwellen-Visualisierung |
+| `WhisperDaemon` | `whisper_daemon` | Hauptklasse: Orchestriert Hotkey, Audio & UI |
 
 **Architektur:**
 
-- **Main-Thread:** Hotkey-Listener (QuickMacHotKey) + UI-Updates
-- **Worker-Thread:** Deepgram-Streaming (async)
-
-**State-Flow:** `idle` → `recording` → `transcribing` → `done`/`error` → `idle`
-
-**Architecture:**
-
-- **Main-Thread:** Hotkey-Listener (`utils.hotkey`) + UI
-- **Worker-Thread:** Deepgram-Streaming (async) via `providers.deepgram_stream`
-- **Modules:** Nutzt `audio.recording.AudioRecorder` für sauberes Handling
+- **Main-Thread:** Hotkey-Listener (`utils.hotkey`) + UI Event Loop
+- **Worker-Thread:** Deepgram-Streaming via `providers.deepgram_stream`
+- **Orchestration:** Daemon steuert UI-Feedback basierend auf Recording-State
 
 ## CLI-Interface
 
@@ -162,7 +152,7 @@ Voice-Commands werden vom LLM in der Refine-Pipeline interpretiert (nur mit `--r
 | "Komma" / "comma"                | `,`      |
 | "Fragezeichen" / "question mark" | `?`      |
 
-**Implementierung:** `prompts.py` → `VOICE_COMMANDS_INSTRUCTION` wird automatisch in alle Prompts eingefügt via `get_prompt_for_context(context, voice_commands=True)`
+**Implementierung:** `refine/prompts.py` → `VOICE_COMMANDS_INSTRUCTION` wird automatisch in alle Prompts eingefügt via `get_prompt_for_context(context, voice_commands=True)`
 
 ## Entwicklungs-Konventionen
 
