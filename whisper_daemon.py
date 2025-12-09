@@ -22,7 +22,6 @@ Usage:
 import logging
 import os
 import queue
-import random
 import sys
 import threading
 import time
@@ -158,31 +157,22 @@ class MenuBarController:
 # Overlay-Konfiguration
 OVERLAY_MIN_WIDTH = 260
 OVERLAY_MAX_WIDTH_RATIO = 0.75
-OVERLAY_HEIGHT = 120
+OVERLAY_HEIGHT = 100
 OVERLAY_MARGIN_BOTTOM = 110
 OVERLAY_CORNER_RADIUS = 22
 OVERLAY_PADDING_H = 24
 OVERLAY_ALPHA = 0.95
-OVERLAY_FONT_SIZE = 19
-OVERLAY_TEXT_FIELD_HEIGHT = 30
+OVERLAY_FONT_SIZE = 15
+OVERLAY_TEXT_FIELD_HEIGHT = 24
 OVERLAY_WINDOW_LEVEL = 25
 
 # Schallwellen-Konfiguration
-WAVE_BAR_COUNT = 19
-WAVE_BAR_WIDTH = 3
-WAVE_BAR_GAP = 3
-WAVE_BAR_MIN_HEIGHT = 4
-WAVE_BAR_MAX_HEIGHT = 42
+WAVE_BAR_COUNT = 5
+WAVE_BAR_WIDTH = 4
+WAVE_BAR_GAP = 5
+WAVE_BAR_MIN_HEIGHT = 8
+WAVE_BAR_MAX_HEIGHT = 32
 WAVE_AREA_WIDTH = WAVE_BAR_COUNT * WAVE_BAR_WIDTH + (WAVE_BAR_COUNT - 1) * WAVE_BAR_GAP
-
-# Animations-Parameter
-ANIM_RECORDING_MIN_SCALE = 0.3    # Min Skalierung am Rand (vs Mitte)
-ANIM_RECORDING_RANDOM_BASE = 0.4  # Zufalls-Basis für Höhe
-ANIM_RECORDING_RANDOM_VAR = 0.6   # Zufalls-Variation für Höhe
-ANIM_OPACITY_MIN_BASE = 0.6       # Minimale Opazität (Mitte)
-ANIM_OPACITY_DROP_EDGE = 0.3      # Opazitäts-Abfall zum Rand
-ANIM_OPACITY_MAX_BASE = 0.9       # Maximale Opazität (Basis)
-ANIM_OPACITY_MAX_VAR = 0.1        # Maximale Opazität (Variation)
 
 # Feedback Timing
 FEEDBACK_DISPLAY_DURATION = 0.8
@@ -221,7 +211,7 @@ class SoundWaveView:
 
         # Farben
         self._color_idle = NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.9)
-        self._color_recording = _get_overlay_color(255, 59, 48) # SF System Red
+        self._color_recording = _get_overlay_color(255, 82, 82)
         self._color_transcribing = _get_overlay_color(255, 177, 66)
         self._color_success = _get_overlay_color(51, 217, 178)
         self._color_error = _get_overlay_color(255, 71, 87)
@@ -252,20 +242,19 @@ class SoundWaveView:
         for bar in self.bars:
             bar.setBackgroundColor_(cg_color)
 
-    def _create_basic_animation(
-        self, key_path, from_val, to_val, duration, repeat=float("inf")
+    def _create_height_animation(
+        self, to_height, duration, delay=0, repeat=float("inf")
     ):
-        """Generische Helper-Methode für Core Animation."""
+        """Erstellt Höhen-Animation für Balken."""
         from Quartz import (  # type: ignore[import-not-found]
             CABasicAnimation,
             CAMediaTimingFunction,
             kCAMediaTimingFunctionEaseInEaseOut,
         )
 
-        anim = CABasicAnimation.animationWithKeyPath_(key_path)
-        if from_val is not None:
-            anim.setFromValue_(from_val)
-        anim.setToValue_(to_val)
+        anim = CABasicAnimation.animationWithKeyPath_("bounds.size.height")
+        anim.setFromValue_(WAVE_BAR_MIN_HEIGHT)
+        anim.setToValue_(to_height)
         anim.setDuration_(duration)
         anim.setAutoreverses_(True)
         anim.setRepeatCount_(repeat)
@@ -275,7 +264,7 @@ class SoundWaveView:
         return anim
 
     def start_recording_animation(self) -> None:
-        """Startet organische Schallwellen-Animation mit Glow-Effekt."""
+        """Startet organische Schallwellen-Animation."""
         if self.current_animation == "recording":
             return
         self.stop_animating()
@@ -283,42 +272,13 @@ class SoundWaveView:
         self.animations_running = True
         self.set_bar_color(self._color_recording)
 
-        center_idx = len(self.bars) // 2
+        durations = [0.42, 0.38, 0.45, 0.39, 0.41]
         for i, bar in enumerate(self.bars):
-            # Distanz zur Mitte (0.0 bis 1.0)
-            dist = abs(i - center_idx) / (center_idx + 1)
-            
-            # Basis-Berechnungen (mit Konstanten)
-            base_scale = 1.0 - (dist * (1.0 - ANIM_RECORDING_MIN_SCALE))
-            random_scale = ANIM_RECORDING_RANDOM_BASE + (random.random() * ANIM_RECORDING_RANDOM_VAR)
-            
-            target_height = WAVE_BAR_MAX_HEIGHT * base_scale * random_scale
-            target_height = max(WAVE_BAR_MIN_HEIGHT * 2, target_height)
-            
-            duration = 0.5 + (random.random() * 0.5)
-            
-            # 1. Höhen-Animation
-            anim_h = self._create_basic_animation(
-                "bounds.size.height", WAVE_BAR_MIN_HEIGHT, target_height, duration
-            )
-            time_offset = random.random()
-            anim_h.setTimeOffset_(time_offset)
-            bar.addAnimation_forKey_(anim_h, f"heightAnim{i}")
-
-            # 2. Opazitäts-Animation ("Breathing")
-            # Ränder sind transparenter, Mitte deckender
-            min_opacity = ANIM_OPACITY_MIN_BASE - (dist * ANIM_OPACITY_DROP_EDGE)
-            # Wenn der Balken hoch geht, wird er fast voll deckend
-            max_opacity = ANIM_OPACITY_MAX_BASE + (random.random() * ANIM_OPACITY_MAX_VAR)
-            
-            anim_o = self._create_basic_animation(
-                "opacity", min_opacity, max_opacity, duration
-            )
-            anim_o.setTimeOffset_(time_offset) # Synchron zur Höhe
-            bar.addAnimation_forKey_(anim_o, f"opacityAnim{i}")
+            anim = self._create_height_animation(WAVE_BAR_MAX_HEIGHT, durations[i])
+            bar.addAnimation_forKey_(anim, f"heightAnim{i}")
 
     def start_transcribing_animation(self) -> None:
-        """Startet Loading-Wellen-Animation (Flow-Effekt)."""
+        """Startet Loading-Wellen-Animation."""
         if self.current_animation == "transcribing":
             return
         self.stop_animating()
@@ -327,15 +287,7 @@ class SoundWaveView:
         self.set_bar_color(self._color_transcribing)
 
         for i, bar in enumerate(self.bars):
-            # Welle von links nach rechts
-            anim = self._create_basic_animation(
-                "bounds.size.height", WAVE_BAR_MIN_HEIGHT, WAVE_BAR_MAX_HEIGHT * 0.6, 0.6
-            )
-            
-            # Zeitlicher Versatz erzeugt die Wellenbewegung
-            offset = i * 0.08
-            anim.setTimeOffset_(offset)
-            
+            anim = self._create_height_animation(WAVE_BAR_MAX_HEIGHT * 0.7, 1.0)
             bar.addAnimation_forKey_(anim, f"transcribeAnim{i}")
 
     def start_success_animation(self) -> None:
@@ -345,12 +297,8 @@ class SoundWaveView:
         self.set_bar_color(self._color_success)
 
         for i, bar in enumerate(self.bars):
-            anim = self._create_basic_animation(
-                "bounds.size.height", 
-                WAVE_BAR_MIN_HEIGHT, 
-                WAVE_BAR_MAX_HEIGHT * 0.8, 
-                0.3, 
-                repeat=1
+            anim = self._create_height_animation(
+                WAVE_BAR_MAX_HEIGHT * 0.8, 0.3, repeat=1
             )
             bar.addAnimation_forKey_(anim, f"successAnim{i}")
 
@@ -361,13 +309,7 @@ class SoundWaveView:
         self.set_bar_color(self._color_error)
 
         for i, bar in enumerate(self.bars):
-            anim = self._create_basic_animation(
-                "bounds.size.height",
-                WAVE_BAR_MIN_HEIGHT,
-                WAVE_BAR_MAX_HEIGHT,
-                0.15,
-                repeat=2
-            )
+            anim = self._create_height_animation(WAVE_BAR_MAX_HEIGHT, 0.15, repeat=2)
             bar.addAnimation_forKey_(anim, f"errorAnim{i}")
 
     def stop_animating(self) -> None:
@@ -448,8 +390,7 @@ class OverlayController:
         self.window.setContentView_(self._visual_effect_view)
 
         # Schallwellen-View
-        # Welle noch etwas tiefer (Margin Top 20 -> 25)
-        wave_y = height - (WAVE_BAR_MAX_HEIGHT + 25)
+        wave_y = height - (WAVE_BAR_MAX_HEIGHT + 20)
         wave_x = (width - WAVE_AREA_WIDTH) / 2
         self._wave_view = SoundWaveView(
             NSMakeRect(wave_x, wave_y, WAVE_AREA_WIDTH, WAVE_BAR_MAX_HEIGHT)
@@ -457,11 +398,10 @@ class OverlayController:
         self._visual_effect_view.addSubview_(self._wave_view.view)
 
         # Text-Feld
-        # Text noch etwas höher (y 18 -> 20)
         self._text_field = NSTextField.alloc().initWithFrame_(
             NSMakeRect(
                 OVERLAY_PADDING_H,
-                20,
+                16,
                 width - 2 * OVERLAY_PADDING_H,
                 OVERLAY_TEXT_FIELD_HEIGHT,
             )
@@ -477,7 +417,7 @@ class OverlayController:
             NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.95)
         )
         self._text_field.setFont_(
-            self._get_font(OVERLAY_FONT_SIZE, NSFontWeightSemibold)
+            NSFont.systemFontOfSize_weight_(OVERLAY_FONT_SIZE, NSFontWeightSemibold)
         )
         self._visual_effect_view.addSubview_(self._text_field)
 
@@ -486,24 +426,6 @@ class OverlayController:
         self._current_state = "idle"
         self._state_timestamp = 0.0
         self._feedback_timer = None
-
-    def _get_font(self, size: float, weight):
-        """Erstellt Font mit 'Rounded' Design falls verfügbar."""
-        from AppKit import NSFont, NSFontDescriptor  # type: ignore[import-not-found]
-        
-        # Basis-Font
-        font = NSFont.systemFontOfSize_weight_(size, weight)
-        
-        try:
-            # Versuche "Rounded" Design (moderne macOS Optik)
-            # NSFontDescriptorSystemDesignRounded ist ein String "rounded"
-            desc = font.fontDescriptor().fontDescriptorWithDesign_("rounded")
-            if desc:
-                return NSFont.fontWithDescriptor_size_(desc, size)
-        except Exception:
-            pass
-            
-        return font
 
     def update_state(self, state: str, interim_text: str | None = None) -> None:
         """Aktualisiert Overlay basierend auf State."""
@@ -519,27 +441,31 @@ class OverlayController:
             if interim_text:
                 text = f"{interim_text} ..."
                 self._text_field.setFont_(
-                    self._get_font(OVERLAY_FONT_SIZE, NSFontWeightMedium)
+                    NSFont.systemFontOfSize_weight_(
+                        OVERLAY_FONT_SIZE, NSFontWeightMedium
+                    )
                 )
                 self._text_field.setTextColor_(
-                    NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.95)
+                    NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.9)
                 )
             else:
-                text = "Listening..."
+                text = "Listening ..."
                 self._text_field.setFont_(
-                    self._get_font(OVERLAY_FONT_SIZE, NSFontWeightMedium)
+                    NSFont.systemFontOfSize_weight_(
+                        OVERLAY_FONT_SIZE, NSFontWeightMedium
+                    )
                 )
                 self._text_field.setTextColor_(
-                    NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.7)
+                    NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6)
                 )
             self._text_field.setStringValue_(text)
             self._fade_in()
 
         elif state == "transcribing":
             self._wave_view.start_transcribing_animation()
-            self._text_field.setStringValue_("Thinking...")
+            self._text_field.setStringValue_("Transcribing ...")
             self._text_field.setTextColor_(
-                NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.7)
+                NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6)
             )
             self._fade_in()
 
@@ -548,7 +474,7 @@ class OverlayController:
             self._text_field.setStringValue_("Done")
             self._text_field.setTextColor_(_get_overlay_color(51, 217, 178))
             self._text_field.setFont_(
-                self._get_font(OVERLAY_FONT_SIZE, NSFontWeightSemibold)
+                NSFont.systemFontOfSize_weight_(OVERLAY_FONT_SIZE, NSFontWeightSemibold)
             )
             self._fade_in()
             self._start_fade_out_timer()
@@ -558,7 +484,7 @@ class OverlayController:
             self._text_field.setStringValue_("Error")
             self._text_field.setTextColor_(_get_overlay_color(255, 71, 87))
             self._text_field.setFont_(
-                self._get_font(OVERLAY_FONT_SIZE, NSFontWeightSemibold)
+                NSFont.systemFontOfSize_weight_(OVERLAY_FONT_SIZE, NSFontWeightSemibold)
             )
             self._fade_in()
             self._start_fade_out_timer()
