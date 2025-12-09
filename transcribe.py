@@ -70,19 +70,22 @@ OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 # Dateipfade für IPC und Konfiguration
 # =============================================================================
 
-# Temporäre Dateien für Raycast-Integration
+# IPC-Dateien für Kommunikation zwischen Prozessen (Raycast, Hotkey-Daemon, Menübar)
+# Alle Dateien liegen in /tmp für schnellen Zugriff und automatische Bereinigung
 TEMP_RECORDING_FILENAME = "whisper_recording.wav"
-PID_FILE = Path("/tmp/whisper_go.pid")
-TRANSCRIPT_FILE = Path("/tmp/whisper_go.transcript")
-ERROR_FILE = Path("/tmp/whisper_go.error")
-STATE_FILE = Path("/tmp/whisper_go.state")
-INTERIM_FILE = Path("/tmp/whisper_go.interim")
-INTERIM_THROTTLE_MS = 150  # Max. Update-Rate für Interim-File (Menübar pollt 200ms)
-FINALIZE_TIMEOUT = 2.0  # Sekunden warten auf finale Transkripte nach Finalize
-DEEPGRAM_WS_URL = "wss://api.deepgram.com/v1/listen"
-DEEPGRAM_CLOSE_TIMEOUT = 0.5  # Schneller Shutdown statt 10s Default
+PID_FILE = Path("/tmp/whisper_go.pid")           # Aktive Aufnahme-PID → für SIGUSR1 Stop
+TRANSCRIPT_FILE = Path("/tmp/whisper_go.transcript")  # Fertiges Transkript
+ERROR_FILE = Path("/tmp/whisper_go.error")       # Fehlermeldungen für UI-Feedback
+STATE_FILE = Path("/tmp/whisper_go.state")       # Aktueller Status (recording/transcribing/done/error)
+INTERIM_FILE = Path("/tmp/whisper_go.interim")   # Live-Transkript während Aufnahme
 
-# Konfiguration und Logs
+# Streaming-Timeouts
+INTERIM_THROTTLE_MS = 150    # Max. Update-Rate für Interim-File (Menübar pollt 200ms)
+FINALIZE_TIMEOUT = 2.0       # Warten auf finale Transkripte nach Deepgram-Finalize
+DEEPGRAM_WS_URL = "wss://api.deepgram.com/v1/listen"
+DEEPGRAM_CLOSE_TIMEOUT = 0.5 # Schneller WebSocket-Shutdown (SDK Default: 10s)
+
+# Lokale Pfade
 SCRIPT_DIR = Path(__file__).resolve().parent
 LOG_DIR = SCRIPT_DIR / "logs"
 LOG_FILE = LOG_DIR / "whisper_go.log"

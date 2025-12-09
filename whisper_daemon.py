@@ -39,8 +39,10 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 LOG_DIR = SCRIPT_DIR / "logs"
 LOG_FILE = LOG_DIR / "whisper_daemon.log"
 
-# Timeouts
-DEBOUNCE_INTERVAL = 0.3  # Ignoriere Hotkey-Events innerhalb 300ms
+# Hotkey-Debouncing
+# 300ms verhindert Doppel-Auslösung durch Keyboard-Auto-Repeat
+# und zu schnelles Doppelklicken (typische Auto-Repeat-Rate: 30-50ms)
+DEBOUNCE_INTERVAL = 0.3
 
 # =============================================================================
 # Logging
@@ -154,28 +156,30 @@ class MenuBarController:
 # Overlay-Controller (Phase 3)
 # =============================================================================
 
-# Overlay-Konfiguration
-OVERLAY_MIN_WIDTH = 260
-OVERLAY_MAX_WIDTH_RATIO = 0.75
-OVERLAY_HEIGHT = 100
-OVERLAY_MARGIN_BOTTOM = 110
-OVERLAY_CORNER_RADIUS = 22
-OVERLAY_PADDING_H = 24
-OVERLAY_ALPHA = 0.95
-OVERLAY_FONT_SIZE = 15
-OVERLAY_TEXT_FIELD_HEIGHT = 24
-OVERLAY_WINDOW_LEVEL = 25
+# Overlay-Fenster Konfiguration
+# Diese Werte sind für eine zentrale, unauffällige Anzeige am unteren Bildschirmrand optimiert
+OVERLAY_MIN_WIDTH = 260        # Mindestbreite für kurze Texte
+OVERLAY_MAX_WIDTH_RATIO = 0.75 # Max. 75% der Bildschirmbreite für lange Interim-Texte
+OVERLAY_HEIGHT = 100           # Feste Höhe für konsistentes Erscheinungsbild
+OVERLAY_MARGIN_BOTTOM = 110    # Abstand vom unteren Rand (über Dock)
+OVERLAY_CORNER_RADIUS = 22     # Abgerundete Ecken (Apple HIG)
+OVERLAY_PADDING_H = 24         # Horizontaler Innenabstand für Text
+OVERLAY_ALPHA = 0.95           # Leicht transparent für Kontext
+OVERLAY_FONT_SIZE = 15         # SF Pro Standard-Größe
+OVERLAY_TEXT_FIELD_HEIGHT = 24 # Einzeilige Textanzeige
+OVERLAY_WINDOW_LEVEL = 25      # Über allen Fenstern, kCGFloatingWindowLevel
 
-# Schallwellen-Konfiguration
-WAVE_BAR_COUNT = 5
-WAVE_BAR_WIDTH = 4
-WAVE_BAR_GAP = 5
-WAVE_BAR_MIN_HEIGHT = 8
-WAVE_BAR_MAX_HEIGHT = 32
+# Schallwellen-Visualisierung
+# 5 Balken mit organischer Animation für visuelles Feedback während der Aufnahme
+WAVE_BAR_COUNT = 5             # Anzahl der animierten Balken
+WAVE_BAR_WIDTH = 4             # Breite jedes Balkens in Pixel
+WAVE_BAR_GAP = 5               # Abstand zwischen Balken
+WAVE_BAR_MIN_HEIGHT = 8        # Ruhezustand-Höhe
+WAVE_BAR_MAX_HEIGHT = 32       # Maximale Höhe bei voller Animation
 WAVE_AREA_WIDTH = WAVE_BAR_COUNT * WAVE_BAR_WIDTH + (WAVE_BAR_COUNT - 1) * WAVE_BAR_GAP
 
-# Feedback Timing
-FEEDBACK_DISPLAY_DURATION = 0.8
+# Feedback-Anzeigedauer
+FEEDBACK_DISPLAY_DURATION = 0.8  # Sekunden für Done/Error-Anzeige
 
 
 def _get_overlay_color(r: int, g: int, b: int, a: float = 1.0):

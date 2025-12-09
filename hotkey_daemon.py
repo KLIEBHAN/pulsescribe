@@ -32,16 +32,18 @@ LOG_DIR = SCRIPT_DIR / "logs"
 LOG_FILE = LOG_DIR / "hotkey_daemon.log"
 
 # IPC-Dateien (gleich wie transcribe.py)
+# Alle whisper_go Prozesse teilen diese Dateien für Kommunikation
 PID_FILE = Path("/tmp/whisper_go.pid")
 TRANSCRIPT_FILE = Path("/tmp/whisper_go.transcript")
 ERROR_FILE = Path("/tmp/whisper_go.error")
-LOCK_FILE = Path("/tmp/whisper_go.lock")  # Atomarer Lock wie Raycast
+LOCK_FILE = Path("/tmp/whisper_go.lock")  # Atomarer Lock verhindert parallele Starts
 
-# Timeouts
-TRANSCRIPT_TIMEOUT = 60.0  # Max. Wartezeit auf Transkript
-POLL_INTERVAL = 0.1  # Polling-Intervall in Sekunden
-STALE_LOCK_TIMEOUT = 5.0  # Lock älter als 5s = stale (Crash-Recovery)
-DEBOUNCE_INTERVAL = 0.3  # Ignoriere Hotkey-Events innerhalb 300ms
+# Timeouts und Intervalle
+# Diese Werte sind empirisch ermittelt für gute UX bei verschiedenen Aufnahmelängen
+TRANSCRIPT_TIMEOUT = 60.0  # Großzügig für lange Aufnahmen mit LLM-Refine
+POLL_INTERVAL = 0.1        # 100ms = guter Kompromiss zwischen Latenz und CPU-Last
+STALE_LOCK_TIMEOUT = 5.0   # Lock älter als 5s = Crash → automatische Recovery
+DEBOUNCE_INTERVAL = 0.3    # 300ms verhindert Keyboard-Auto-Repeat Doppelauslösung
 
 # =============================================================================
 # Logging
