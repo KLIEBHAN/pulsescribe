@@ -34,7 +34,7 @@ from utils import setup_logging, log, error, get_session_id
 
 # DEBOUNCE_INTERVAL defined locally as it is specific to hotkey daemon
 DEBOUNCE_INTERVAL = 0.3
-logger = logging.getLogger("whisper_daemon")
+logger = logging.getLogger("whisper_go")
 
 
 
@@ -276,6 +276,8 @@ class WhisperDaemon:
                         provider=self.refine_provider,
                         context=self.context,
                     )
+                elif not self.refine:
+                    logger.debug("Refine deaktiviert (self.refine=False)")
 
                 self._result_queue.put(transcript)
 
