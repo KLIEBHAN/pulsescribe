@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 DEFAULT_MODELS = {
     "openai": "gpt-4o-transcribe",
     "deepgram": "nova-3",
+    "deepgram_stream": "nova-3",
     "groq": "whisper-large-v3",
     "local": "turbo",
 }
@@ -35,7 +36,7 @@ def get_provider(mode: str) -> "TranscriptionProvider":
     """Factory für Transkriptions-Provider.
 
     Args:
-        mode: Provider-Name ('openai', 'deepgram', 'groq', 'local')
+        mode: Provider-Name ('openai', 'deepgram', 'deepgram_stream', 'groq', 'local')
 
     Returns:
         TranscriptionProvider-Implementierung
@@ -49,6 +50,9 @@ def get_provider(mode: str) -> "TranscriptionProvider":
     elif mode == "deepgram":
         from .deepgram import DeepgramProvider
         return DeepgramProvider()
+    elif mode == "deepgram_stream":
+        from .deepgram_stream import DeepgramStreamProvider
+        return DeepgramStreamProvider()
     elif mode == "groq":
         from .groq import GroqProvider
         return GroqProvider()
