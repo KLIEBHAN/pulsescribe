@@ -135,7 +135,10 @@ def timed_operation(name: str):
 def setup_logging(debug: bool = False) -> None:
     """Konfiguriert Logging: Datei mit Rotation + optional stderr."""
     global _session_id
-    _session_id = _generate_session_id()
+    
+    # Session-ID nur einmal generieren
+    if not _session_id:
+        _session_id = _generate_session_id()
 
     # Verhindere doppelte Handler bei mehrfachem Aufruf
     if logger.handlers:
