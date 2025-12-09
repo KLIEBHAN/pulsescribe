@@ -168,56 +168,105 @@ Bewusst ausgeschlossen, um Fokus zu halten:
 
 ---
 
-## Future Refactoring
+## Modularisierung & Cross-Platform
 
-Geplante Code-Struktur-Verbesserungen für bessere Wartbarkeit:
+> **Status:** Genehmigt – Umsetzung in 3 PRs geplant
 
-### Modul-Aufteilung (transcribe.py → Modularisierung)
+### Ziel
 
-Das CLI-Tool `transcribe.py` (~2000 Zeilen) könnte in fokussierte Module aufgeteilt werden:
+Refactoring des Codebases für bessere Wartbarkeit und Cross-Platform-Support (Windows/Linux).
+
+### Projektstruktur
 
 ```
 whisper_go/
-├── src/
-│   └── whisper_go/
-│       ├── __init__.py
-│       ├── cli.py              # CLI-Interface, Argument-Parsing
-│       ├── providers/
-│       │   ├── __init__.py
-│       │   ├── openai.py       # OpenAI Whisper API
-│       │   ├── deepgram.py     # Deepgram REST + WebSocket
-│       │   ├── groq.py         # Groq Whisper
-│       │   └── local.py        # Lokales Whisper-Modell
-│       ├── audio/
-│       │   ├── recording.py    # Mikrofon-Aufnahme
-│       │   └── playback.py     # Sound-Feedback
-│       ├── refine/
-│       │   ├── llm.py          # LLM-Nachbearbeitung
-│       │   └── context.py      # Kontext-Detection
-│       └── utils/
-│           ├── logging.py      # Logging-Setup
-│           └── ipc.py          # IPC-Dateien
-├── tests/
-├── docs/
-└── pyproject.toml
+├── transcribe.py                  # CLI Entry Point (Wrapper)
+├── whisper_daemon.py              # Unified Daemon
+├── hotkey_daemon.py               # Standalone Hotkey-Daemon
+├── prompts.py                     # LLM-Prompts
+│
+├── whisper_platform/                      # 🔑 Platform-Abstraktion Layer
+│   ├── __init__.py                # Platform-Detection + Factory
+│   ├── base.py                    # Protocol-Definitionen
+│   ├── sound.py                   # Sound-Playback (CoreAudio/winsound)
+│   ├── clipboard.py               # Clipboard (pbcopy/win32)
+│   ├── app_detection.py           # App-Detection (NSWorkspace/win32gui)
+│   ├── hotkey.py                  # Hotkeys (QuickMacHotKey/pynput)
+│   └── daemon.py                  # Daemon/IPC (fork+SIGUSR1/Named Pipes)
+│
+├── providers/                     # Transkriptions-Provider
+│   ├── __init__.py                # Factory + Protocol
+│   ├── base.py                    # TranscriptionProvider Protocol
+│   ├── openai.py                  # OpenAI Whisper API
+│   ├── deepgram.py                # Deepgram REST
+│   ├── deepgram_stream.py         # Deepgram WebSocket Streaming
+│   ├── groq.py                    # Groq Whisper
+│   └── local.py                   # Lokales Whisper-Modell
+│
+├── audio/                         # Audio-Handling
+│   ├── recording.py               # Mikrofon-Aufnahme (sounddevice)
+│   └── playback.py                # Sound-Feedback (via platform/)
+│
+├── refine/                        # LLM-Nachbearbeitung
+│   ├── llm.py                     # Refine-Logik
+│   ├── prompts.py                 # Prompt-Templates
+│   └── context.py                 # Kontext-Detection
+│
+└── utils/                         # Utilities
+    ├── logging.py                 # Logging-Setup
+    ├── timing.py                  # Zeitmessung
+    └── paths.py                   # Platform-aware Pfade
 ```
 
-### Provider-Abstraktion
+### Platform-Abstraktion
 
-Einheitliches Interface für alle Transkriptions-Provider:
+Protocol-basierte Interfaces für plattformspezifische Funktionalität:
 
 ```python
-class TranscriptionProvider(Protocol):
-    def transcribe(self, audio: Path, language: str | None) -> str: ...
-    def supports_streaming(self) -> bool: ...
+class SoundPlayer(Protocol):
+    def play(self, name: str) -> None: ...
+
+class ClipboardHandler(Protocol):
+    def copy(self, text: str) -> bool: ...
+
+class AppDetector(Protocol):
+    def get_frontmost_app(self) -> str | None: ...
+
+class DaemonController(Protocol):
+    def start(self, command: list[str]) -> int: ...
+    def stop(self, pid: int) -> bool: ...
 ```
 
-### Priorität
+### Implementierungsplan
 
-Diese Umstrukturierung ist **niedrige Priorität**, da:
-- Der aktuelle Code funktional und getestet ist
-- Die Änderung hauptsächlich Entwickler-DX verbessert
-- Rückwärtskompatibilität für CLI erhalten bleiben muss
+| PR | Inhalt | Aufwand | Status |
+|----|--------|---------|--------|
+| **PR 1** | `whisper_platform/` Layer + `providers/` Extraktion | 12-16h | ✅ Abgeschlossen |
+| **PR 2** | `audio/`, `refine/`, `utils/` + Streaming | 10-14h | 📋 Geplant |
+| **PR 3** | CLI Modernisierung + Cleanup | 6-8h | 📋 Geplant |
+
+#### PR 1 Details (Abgeschlossen)
+- `whisper_platform/`: Factory, Protocols, Sound, Clipboard, App-Detection, Daemon, Hotkey
+- `providers/`: OpenAI, Deepgram (REST), Groq, Local
+- `transcribe()` nutzt jetzt `providers.get_provider()`
+- ~290 Zeilen aus `transcribe.py` entfernt
+
+#### PR 2 Details (Geplant)
+- **`audio/recording.py`**: Mikrofon-Aufnahme mit sounddevice
+- **`providers/deepgram_stream.py`**: WebSocket-Streaming (nur Protokoll)
+- **`refine/`**: LLM-Nachbearbeitung extrahieren
+- **`utils/`**: Logging, Timing, Paths
+
+> **Hinweis Streaming:** Das Deepgram-Streaming (`_deepgram_stream_core`) wird in PR 2
+> zusammen mit Audio-Recording extrahiert. Die ~400 Zeilen Streaming-Code vermischen
+> aktuell Provider-Logik, Audio-Aufnahme und Orchestrierung. Für saubere Trennung
+> muss beides gleichzeitig refactored werden.
+
+### Rückwärtskompatibilität
+
+- ✅ CLI-Interface bleibt **100% kompatibel**
+- ✅ Alle bestehenden Befehle funktionieren weiterhin
+- ✅ `transcribe.py` bleibt als Entry Point erhalten
 
 ---
 

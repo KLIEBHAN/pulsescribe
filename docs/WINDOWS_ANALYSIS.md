@@ -812,19 +812,32 @@ pynput           # Hotkeys
 
 ### Architektur-Empfehlung
 
-Eine Portierung sollte mit einem `platform/`-Ordner beginnen:
+> **Update:** Modularisierung wurde genehmigt – siehe [VISION.md](./VISION.md#modularisierung--cross-platform)
+
+Die Portierung basiert auf der neuen modularen Architektur:
 
 ```
 whisper_go/
-├── transcribe.py          # Bleibt unverändert (Core-Logik)
-├── platform/
-│   ├── __init__.py        # Platform-Detection + Factory
-│   ├── sound.py           # Interface + macOS/Windows Impl.
-│   ├── daemon.py          # Interface + macOS/Windows Impl.
-│   ├── app_detection.py   # Interface + macOS/Windows Impl.
-│   ├── tray.py            # rumps (macOS) / pystray (Windows)
-│   └── overlay.py         # PyObjC (macOS) / PyQt6 (Windows)
+├── transcribe.py              # CLI Entry Point (Wrapper)
+├── whisper_platform/          # 🔑 Platform-Abstraktion Layer
+│   ├── __init__.py            # Platform-Detection + Factory
+│   ├── base.py                # Protocol-Definitionen
+│   ├── sound.py               # CoreAudio (macOS) / winsound (Windows)
+│   ├── clipboard.py           # pbcopy (macOS) / win32 (Windows)
+│   ├── app_detection.py       # NSWorkspace (macOS) / win32gui (Windows)
+│   ├── hotkey.py              # QuickMacHotKey (macOS) / pynput (Windows)
+│   └── daemon.py              # fork+SIGUSR1 (macOS) / Named Pipes (Windows)
+├── providers/                 # Transkriptions-Provider (plattformunabhängig)
+├── audio/                     # Audio-Handling
+├── refine/                    # LLM-Nachbearbeitung
+└── utils/                     # Utilities
 ```
+
+> **Hinweis:** Das Paket heißt `whisper_platform` statt `platform`, um Kollisionen mit dem Python-Standardmodul `platform` zu vermeiden.
+
+**Voraussetzung für Windows-Portierung:**
+Die Modularisierung (Phase 5 in Roadmap) muss zuerst abgeschlossen werden.
+Dies schafft die Grundlage für plattformspezifische Implementierungen.
 
 ### Kritische Entscheidungen vor Implementierung
 

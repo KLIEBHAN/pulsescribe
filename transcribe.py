@@ -99,9 +99,8 @@ logger = logging.getLogger("whisper_go")
 _session_id: str = ""  # Wird pro Durchlauf in setup_logging() gesetzt
 _custom_app_contexts_cache: dict | None = None  # Cache für WHISPER_GO_APP_CONTEXTS
 
-# API-Client Singletons (Lazy Init) – spart ~100-300ms pro Aufruf
-_openai_client = None
-_deepgram_client = None
+# API-Client Singletons (Lazy Init) – für LLM-Refine
+# Transkriptions-Clients sind jetzt in providers/
 _groq_client = None
 
 
@@ -196,182 +195,57 @@ def load_environment() -> None:
 
 
 def copy_to_clipboard(text: str) -> bool:
-    """Kopiert Text in die Zwischenablage. Gibt True bei Erfolg zurück."""
+    """Kopiert Text in die Zwischenablage. Gibt True bei Erfolg zurück.
+
+    Delegiert an whisper_platform.clipboard für plattformspezifische Implementierung.
+    Deprecated: Nutze stattdessen whisper_platform.get_clipboard().copy()
+    """
     try:
-        import pyperclip
-
-        pyperclip.copy(text)
-        return True
+        from whisper_platform import get_clipboard
+        return get_clipboard().copy(text)
     except Exception:
-        return False
+        # Fallback auf pyperclip für Rückwärtskompatibilität
+        try:
+            import pyperclip
+            pyperclip.copy(text)
+            return True
+        except Exception:
+            return False
 
 
 # =============================================================================
-# Sound-Playback via CoreAudio (ultra-low latency: ~0.2ms statt ~500ms mit afplay)
+# Sound-Playback (delegiert an whisper_platform.sound)
 # =============================================================================
 
+# Lazy-Import des Sound-Players für schnellen Startup
+_sound_player = None
 
-class _CoreAudioPlayer:
+
+def _get_sound_player():
+    """Gibt Sound-Player Singleton zurück (lazy init).
+
+    Delegiert an whisper_platform.sound für plattformspezifische Implementierung.
     """
-    CoreAudio-Sound-Playback mit Fallback auf afplay.
-
-    Cached Sound-IDs für schnelles Abspielen (~0.2ms).
-    Singleton-Instanz via _get_sound_player().
-    """
-
-    def __init__(self) -> None:
-        self._sound_ids: dict[str, int] = {}
-        self._audio_toolbox = None
-        self._core_foundation = None
-        self._use_fallback = False
-
-        try:
-            import ctypes
-
-            self._ctypes = ctypes
-            self._audio_toolbox = ctypes.CDLL(
-                "/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox"
-            )
-            self._core_foundation = ctypes.CDLL(
-                "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
-            )
-
-            # CFStringCreateWithCString
-            self._core_foundation.CFStringCreateWithCString.restype = ctypes.c_void_p
-            self._core_foundation.CFStringCreateWithCString.argtypes = [
-                ctypes.c_void_p,
-                ctypes.c_char_p,
-                ctypes.c_uint32,
-            ]
-
-            # CFURLCreateWithFileSystemPath
-            self._core_foundation.CFURLCreateWithFileSystemPath.restype = (
-                ctypes.c_void_p
-            )
-            self._core_foundation.CFURLCreateWithFileSystemPath.argtypes = [
-                ctypes.c_void_p,
-                ctypes.c_void_p,
-                ctypes.c_int,
-                ctypes.c_bool,
-            ]
-
-            # AudioServicesCreateSystemSoundID
-            self._audio_toolbox.AudioServicesCreateSystemSoundID.restype = (
-                ctypes.c_int32
-            )
-            self._audio_toolbox.AudioServicesCreateSystemSoundID.argtypes = [
-                ctypes.c_void_p,
-                ctypes.POINTER(ctypes.c_uint32),
-            ]
-
-            # CFRelease für Memory Management
-            self._core_foundation.CFRelease.restype = None
-            self._core_foundation.CFRelease.argtypes = [ctypes.c_void_p]
-        except (OSError, AttributeError) as e:
-            logger.debug(f"CoreAudio nicht verfügbar, nutze Fallback: {e}")
-            self._use_fallback = True
-
-    def _load_sound(self, path: str) -> int | None:
-        """Lädt Sound-Datei und gibt Sound-ID zurück."""
-        if self._use_fallback or self._core_foundation is None:
-            return None
-
-        cf_string = None
-        cf_url = None
-        try:
-            # CFString aus Pfad erstellen (kCFStringEncodingUTF8 = 0x08000100)
-            cf_string = self._core_foundation.CFStringCreateWithCString(
-                None, path.encode(), 0x08000100
-            )
-            if not cf_string:
-                return None
-
-            # CFURL erstellen (kCFURLPOSIXPathStyle = 0)
-            cf_url = self._core_foundation.CFURLCreateWithFileSystemPath(
-                None, cf_string, 0, False
-            )
-            if not cf_url:
-                return None
-
-            # Sound-ID erstellen
-            sound_id = self._ctypes.c_uint32(0)
-            result = self._audio_toolbox.AudioServicesCreateSystemSoundID(
-                cf_url, self._ctypes.byref(sound_id)
-            )
-
-            if result == 0:
-                return sound_id.value
-            return None
-        except Exception:
-            return None
-        finally:
-            # WICHTIG: CF-Objekte freigeben um Memory Leaks zu vermeiden
-            if cf_url:
-                self._core_foundation.CFRelease(cf_url)
-            if cf_string:
-                self._core_foundation.CFRelease(cf_string)
-
-    def play(self, sound_name: str, sound_path: str) -> None:
-        """Spielt Sound ab (lädt bei Bedarf)."""
-        # Fallback auf subprocess
-        if self._use_fallback:
-            self._play_fallback(sound_path)
-            return
-
-        # Sound-ID aus Cache oder neu laden
-        if sound_name not in self._sound_ids:
-            sound_id = self._load_sound(sound_path)
-            if sound_id is None:
-                self._play_fallback(sound_path)
-                return
-            self._sound_ids[sound_name] = sound_id
-
-        # Sound abspielen (non-blocking, ~0.2ms)
-        try:
-            self._audio_toolbox.AudioServicesPlaySystemSound(
-                self._sound_ids[sound_name]
-            )
-        except Exception:
-            self._play_fallback(sound_path)
-
-    def _play_fallback(self, sound_path: str) -> None:
-        """Fallback auf afplay wenn CoreAudio nicht funktioniert."""
-        import subprocess
-
-        try:
-            subprocess.Popen(
-                ["afplay", sound_path],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        except OSError:
-            pass
-
-
-# Singleton-Instanz (lazy init beim ersten Aufruf)
-_sound_player: _CoreAudioPlayer | None = None
-
-
-def _get_sound_player() -> _CoreAudioPlayer:
-    """Gibt Sound-Player Singleton zurück (lazy init)."""
     global _sound_player
     if _sound_player is None:
-        _sound_player = _CoreAudioPlayer()
+        try:
+            from whisper_platform import get_sound_player
+            _sound_player = get_sound_player()
+        except ImportError:
+            # Fallback: Dummy-Player wenn Modul nicht verfügbar
+            class DummySoundPlayer:
+                def play(self, name: str) -> None:
+                    pass
+            _sound_player = DummySoundPlayer()
     return _sound_player
 
 
-# Sound-Registry: Name → System-Sound-Pfad
-SYSTEM_SOUNDS = {
-    "ready": "/System/Library/Sounds/Tink.aiff",
-    "stop": "/System/Library/Sounds/Pop.aiff",
-    "error": "/System/Library/Sounds/Basso.aiff",
-}
-
-
 def play_sound(name: str) -> None:
-    """Spielt System-Sound ab (macOS, ~0.2ms Latenz)."""
-    if path := SYSTEM_SOUNDS.get(name):
-        _get_sound_player().play(name, path)
+    """Spielt benannten Sound ab (ready, stop, error).
+
+    Delegiert an whisper_platform.sound für plattformspezifische Implementierung.
+    """
+    _get_sound_player().play(name)
 
 
 # =============================================================================
@@ -636,124 +510,16 @@ def load_vocabulary() -> dict:
 
 
 # =============================================================================
-# API-Client Getter (Singleton-Pattern für Performance)
+# Transkription (delegiert an providers/)
 # =============================================================================
-
-
-def _get_openai_client():
-    """Gibt OpenAI-Client Singleton zurück (Lazy Init).
-
-    Spart ~50-100ms pro Aufruf durch Connection-Reuse.
-    """
-    global _openai_client
-    if _openai_client is None:
-        from openai import OpenAI
-
-        _openai_client = OpenAI()
-        logger.debug(f"[{_session_id}] OpenAI-Client initialisiert")
-    return _openai_client
-
-
-def _get_deepgram_client():
-    """Gibt Deepgram-Client Singleton zurück (Lazy Init).
-
-    Spart ~30-50ms pro Aufruf durch Connection-Reuse.
-    """
-    global _deepgram_client
-    if _deepgram_client is None:
-        from deepgram import DeepgramClient
-
-        api_key = os.getenv("DEEPGRAM_API_KEY")
-        if not api_key:
-            raise ValueError("DEEPGRAM_API_KEY nicht gesetzt")
-        _deepgram_client = DeepgramClient(api_key=api_key)
-        logger.debug(f"[{_session_id}] Deepgram-Client initialisiert")
-    return _deepgram_client
-
-
-def transcribe_with_api(
-    audio_path: Path,
-    model: str,
-    language: str | None = None,
-    response_format: str = "text",
-) -> str:
-    """Transkribiert Audio über die OpenAI API."""
-    audio_kb = audio_path.stat().st_size // 1024
-    logger.info(
-        f"[{_session_id}] API: {model}, {audio_kb}KB, lang={language or 'auto'}"
-    )
-
-    client = _get_openai_client()
-
-    with timed_operation("API-Transkription"):
-        with audio_path.open("rb") as audio_file:
-            params = {
-                "model": model,
-                "file": audio_file,
-                "response_format": response_format,
-            }
-            if language:
-                params["language"] = language
-            response = client.audio.transcriptions.create(**params)
-
-    # API gibt bei format="text" String zurück, sonst Objekt
-    if response_format == "text":
-        result = response
-    else:
-        result = response.text if hasattr(response, "text") else str(response)
-
-    logger.debug(f"[{_session_id}] Ergebnis: {_log_preview(result)}")
-
-    return result
-
-
-def transcribe_with_deepgram(
-    audio_path: Path,
-    model: str,
-    language: str | None = None,
-) -> str:
-    """Transkribiert Audio über Deepgram API (smart_format aktiviert)."""
-    audio_kb = audio_path.stat().st_size // 1024
-
-    # Deepgram Limits: 100 keywords (Nova-2), 500 tokens (Nova-3 keyterm)
-    MAX_DEEPGRAM_KEYWORDS = 100
-    vocab = load_vocabulary()
-    keywords = vocab.get("keywords", [])[:MAX_DEEPGRAM_KEYWORDS]
-
-    logger.info(
-        f"[{_session_id}] Deepgram: {model}, {audio_kb}KB, lang={language or 'auto'}, "
-        f"vocab={len(keywords)}"
-    )
-
-    client = _get_deepgram_client()
-
-    with audio_path.open("rb") as f:
-        audio_data = f.read()
-
-    # Nova-3 nutzt 'keyterm', ältere Modelle nutzen 'keywords'
-    is_nova3 = model.startswith("nova-3")
-    vocab_params = {}
-    if keywords:
-        if is_nova3:
-            vocab_params["keyterm"] = keywords
-        else:
-            vocab_params["keywords"] = keywords
-
-    with timed_operation("Deepgram-Transkription"):
-        response = client.listen.v1.media.transcribe_file(
-            request=audio_data,
-            model=model,
-            language=language,
-            smart_format=True,
-            punctuate=True,
-            **vocab_params,
-        )
-
-    result = response.results.channels[0].alternatives[0].transcript
-
-    logger.debug(f"[{_session_id}] Ergebnis: {_log_preview(result)}")
-
-    return result
+# Die Transkriptions-Logik wurde in providers/ ausgelagert:
+#   - providers/openai.py → OpenAI Whisper API
+#   - providers/deepgram.py → Deepgram Nova-3
+#   - providers/groq.py → Groq Whisper (LPU)
+#   - providers/local.py → Lokales Whisper
+#
+# Siehe transcribe() Funktion für den zentralen Einstiegspunkt.
+# =============================================================================
 
 
 # Konstante für Audio-Konvertierung (float32 → int16)
@@ -1209,76 +975,7 @@ def _get_groq_client():
     return _groq_client
 
 
-def transcribe_with_groq(
-    audio_path: Path,
-    model: str,
-    language: str | None = None,
-) -> str:
-    """Transkribiert Audio über Groq API (Whisper auf LPU).
-
-    Groq nutzt spezielle LPU-Chips für extrem schnelle Whisper-Inferenz
-    (~300x Echtzeit) bei gleicher Qualität wie OpenAI.
-    """
-    audio_kb = audio_path.stat().st_size // 1024
-    logger.info(
-        f"[{_session_id}] Groq: {model}, {audio_kb}KB, lang={language or 'auto'}"
-    )
-
-    client = _get_groq_client()
-
-    with timed_operation("Groq-Transkription"):
-        with audio_path.open("rb") as audio_file:
-            params = {
-                # File-Handle statt .read() – spart Speicher bei großen Dateien
-                "file": (audio_path.name, audio_file),
-                "model": model,
-                "response_format": "text",
-                "temperature": 0.0,  # Konsistente Ergebnisse ohne Kreativität
-            }
-            if language:
-                params["language"] = language
-            response = client.audio.transcriptions.create(**params)
-
-    # Groq gibt bei response_format="text" String zurück
-    # Explizite Typprüfung statt hasattr für robustere Integration
-    if isinstance(response, str):
-        result = response
-    elif hasattr(response, "text"):
-        result = response.text
-    else:
-        raise TypeError(f"Unerwarteter Groq-Response-Typ: {type(response)}")
-
-    logger.debug(f"[{_session_id}] Ergebnis: {_log_preview(result)}")
-
-    return result
-
-
-def transcribe_locally(
-    audio_path: Path,
-    model: str,
-    language: str | None = None,
-) -> str:
-    """Transkribiert Audio lokal mit openai-whisper."""
-    import whisper
-
-    log(f"Lade Modell '{model}'...")
-    whisper_model = whisper.load_model(model)
-
-    log(f"Transkribiere {audio_path.name}...")
-    options: dict = {"language": language} if language else {}
-
-    # Custom Vocabulary als initial_prompt für bessere Erkennung
-    # Limit: Whisper initial_prompt sollte nicht zu lang werden
-    MAX_WHISPER_KEYWORDS = 50
-    vocab = load_vocabulary()
-    keywords = vocab.get("keywords", [])[:MAX_WHISPER_KEYWORDS]
-    if keywords:
-        options["initial_prompt"] = f"Fachbegriffe: {', '.join(keywords)}"
-        logger.debug(f"[{_session_id}] Lokales Whisper mit {len(keywords)} Keywords")
-
-    result = whisper_model.transcribe(str(audio_path), **options)
-
-    return result["text"]
+# transcribe_with_groq und transcribe_locally wurden nach providers/ verschoben
 
 
 def _extract_message_content(content) -> str:
@@ -1300,21 +997,24 @@ def _extract_message_content(content) -> str:
 
 
 def _get_frontmost_app() -> str | None:
-    """Ermittelt aktive App via NSWorkspace (macOS only).
+    """Ermittelt aktive App.
 
-    Warum NSWorkspace statt AppleScript? Performance: ~0.2ms vs ~207ms.
+    Delegiert an whisper_platform.app_detection für plattformspezifische Implementierung.
     """
-    if sys.platform != "darwin":
-        return None
-
     try:
-        from AppKit import NSWorkspace
-
-        app = NSWorkspace.sharedWorkspace().frontmostApplication()
-        return app.localizedName() if app else None
+        from whisper_platform import get_app_detector
+        return get_app_detector().get_frontmost_app()
     except ImportError:
-        logger.debug(f"[{_session_id}] PyObjC/AppKit nicht verfügbar")
-        return None
+        # Fallback auf direkte NSWorkspace-Nutzung (macOS)
+        if sys.platform != "darwin":
+            return None
+        try:
+            from AppKit import NSWorkspace
+            app = NSWorkspace.sharedWorkspace().frontmostApplication()
+            return app.localizedName() if app else None
+        except ImportError:
+            logger.debug(f"[{_session_id}] PyObjC/AppKit nicht verfügbar")
+            return None
     except Exception as e:
         logger.debug(f"[{_session_id}] App-Detection fehlgeschlagen: {e}")
         return None
@@ -1546,29 +1246,38 @@ def transcribe(
 
     Dies ist der einzige Einstiegspunkt für Transkription,
     unabhängig vom gewählten Modus.
+
+    Nutzt providers.get_provider() für die eigentliche Transkription.
     """
-    default_model = DEFAULT_MODELS.get(mode)
-    if default_model is None:
+    from providers import get_provider
+
+    # Provider validieren
+    if mode not in DEFAULT_MODELS:
         supported = ", ".join(sorted(DEFAULT_MODELS.keys()))
         raise ValueError(f"Ungültiger Modus '{mode}'. Unterstützt: {supported}")
-    effective_model = model or default_model
 
-    if mode == "openai":
-        return transcribe_with_api(
-            audio_path, effective_model, language, response_format
-        )
+    # Provider holen und transkribieren
+    provider = get_provider(mode)
 
     # Deepgram, Groq und lokal unterstützen kein response_format
-    if response_format != "text":
+    if response_format != "text" and mode != "openai":
         log(f"Hinweis: --format wird im {mode}-Modus ignoriert")
 
-    if mode == "deepgram":
-        return transcribe_with_deepgram(audio_path, effective_model, language)
+    # OpenAI unterstützt response_format
+    if mode == "openai":
+        return provider.transcribe(
+            audio_path,
+            model=model,
+            language=language,
+            response_format=response_format,
+        )
 
-    if mode == "groq":
-        return transcribe_with_groq(audio_path, effective_model, language)
-
-    return transcribe_locally(audio_path, effective_model, language)
+    # Andere Provider
+    return provider.transcribe(
+        audio_path,
+        model=model,
+        language=language,
+    )
 
 
 def parse_args() -> argparse.Namespace:

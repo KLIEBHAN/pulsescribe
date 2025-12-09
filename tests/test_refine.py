@@ -18,33 +18,38 @@ from transcribe import (
 
 
 class TestCopyToClipboard:
-    """Tests für copy_to_clipboard() – pyperclip Wrapper."""
+    """Tests für copy_to_clipboard() – whisper_platform Wrapper."""
 
     def test_success(self):
         """Erfolgreicher Copy gibt True zurück."""
-        # pyperclip wird innerhalb der Funktion importiert
-        mock_pyperclip = Mock()
-        with patch.dict("sys.modules", {"pyperclip": mock_pyperclip}):
+        mock_clipboard = Mock()
+        mock_clipboard.copy.return_value = True
+        with patch("whisper_platform.get_clipboard", return_value=mock_clipboard):
             result = copy_to_clipboard("test text")
 
         assert result is True
-        mock_pyperclip.copy.assert_called_once_with("test text")
+        mock_clipboard.copy.assert_called_once_with("test text")
 
     def test_empty_string(self):
         """Leerer String wird kopiert."""
-        mock_pyperclip = Mock()
-        with patch.dict("sys.modules", {"pyperclip": mock_pyperclip}):
+        mock_clipboard = Mock()
+        mock_clipboard.copy.return_value = True
+        with patch("whisper_platform.get_clipboard", return_value=mock_clipboard):
             result = copy_to_clipboard("")
 
         assert result is True
-        mock_pyperclip.copy.assert_called_once_with("")
+        mock_clipboard.copy.assert_called_once_with("")
 
     def test_exception_returns_false(self):
-        """Beliebiger Fehler gibt False zurück."""
+        """Beliebiger Fehler gibt False zurück (fällt auf pyperclip zurück)."""
+        # Wenn whisper_platform fehlschlägt, wird pyperclip als Fallback genutzt
+        # Wir mocken beide um False sicherzustellen
         mock_pyperclip = Mock()
         mock_pyperclip.copy.side_effect = RuntimeError("Clipboard error")
-        with patch.dict("sys.modules", {"pyperclip": mock_pyperclip}):
-            result = copy_to_clipboard("test")
+
+        with patch("whisper_platform.get_clipboard", side_effect=ImportError):
+            with patch.dict("sys.modules", {"pyperclip": mock_pyperclip}):
+                result = copy_to_clipboard("test")
 
         assert result is False
 
