@@ -880,6 +880,8 @@ class WhisperDaemon:
         """Startet Daemon (blockiert)."""
         from quickmachotkey import quickHotKey
         from AppKit import NSApplication  # type: ignore[import-not-found]
+        from Foundation import NSTimer  # type: ignore[import-not-found]
+        import signal
 
         hotkey = _get_hotkey()
 
@@ -907,6 +909,19 @@ class WhisperDaemon:
 
         # NSApplication Event-Loop (blockiert)
         app = NSApplication.sharedApplication()
+
+        # FIX: Ctrl+C Support
+        # 1. Dummy-Timer, damit der Python-Interpreter regelmäßig läuft und Signale prüft
+        NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+            0.1, True, lambda _: None
+        )
+
+        # 2. Signal-Handler, der die App sauber beendet
+        def signal_handler(sig, frame):
+            app.terminate_(None)
+
+        signal.signal(signal.SIGINT, signal_handler)
+
         app.run()
 
 
