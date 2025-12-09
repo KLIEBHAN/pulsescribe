@@ -51,6 +51,10 @@ logger = logging.getLogger("whisper_daemon")
 
 def setup_logging(debug: bool = False) -> None:
     """Konfiguriert Logging mit Datei-Output."""
+    # Verhindere doppelte Handler bei mehrfachem Aufruf
+    if logger.handlers:
+        return
+    
     LOG_DIR.mkdir(exist_ok=True)
 
     logger.setLevel(logging.DEBUG if debug else logging.INFO)
