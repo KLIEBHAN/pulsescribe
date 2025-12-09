@@ -11,12 +11,12 @@ Spracheingabe für macOS – inspiriert von [Wispr Flow](https://wisprflow.ai). 
 
 ### Provider im Überblick
 
-| Provider | Latenz | Methode | Besonderheit |
-|----------|--------|---------|---------------|
+| Provider     | Latenz    | Methode   | Besonderheit                  |
+| ------------ | --------- | --------- | ----------------------------- |
 | **Deepgram** | ~300ms ⚡ | WebSocket | Echtzeit-Streaming, empfohlen |
-| **Groq** | ~1s | REST | Whisper auf LPU, sehr schnell |
-| **OpenAI** | ~2-3s | REST | GPT-4o, höchste Qualität |
-| **Lokal** | ~5-10s | Whisper | Offline, keine API-Kosten |
+| **Groq**     | ~1s       | REST      | Whisper auf LPU, sehr schnell |
+| **OpenAI**   | ~2-3s     | REST      | GPT-4o, höchste Qualität      |
+| **Lokal**    | ~5-10s    | Whisper   | Offline, keine API-Kosten     |
 
 ## Schnellstart
 
@@ -44,6 +44,8 @@ Erstelle eine `.env`-Datei im Projektverzeichnis für dauerhafte Einstellungen:
 # API-Keys
 DEEPGRAM_API_KEY=...
 GROQ_API_KEY=...
+OPENAI_API_KEY=...
+OPENROUTER_API_KEY=...
 
 # Transkription
 WHISPER_GO_MODE=deepgram
@@ -57,12 +59,12 @@ WHISPER_GO_REFINE_MODEL=openai/gpt-oss-120b
 
 **Warum diese Einstellungen?**
 
-| Einstellung | Begründung |
-|-------------|------------|
-| `MODE=deepgram` | Schnellste Option (~300ms) durch WebSocket-Streaming |
-| `REFINE_PROVIDER=groq` | Kostenlose/günstige LLM-Inferenz auf LPU-Hardware |
-| `REFINE_MODEL=openai/gpt-oss-120b` | Open-Source GPT-Alternative mit exzellenter Qualität |
-| `LANGUAGE=de` | Explizite Sprache verbessert Transkriptionsgenauigkeit |
+| Einstellung                        | Begründung                                             |
+| ---------------------------------- | ------------------------------------------------------ |
+| `MODE=deepgram`                    | Schnellste Option (~300ms) durch WebSocket-Streaming   |
+| `REFINE_PROVIDER=groq`             | Kostenlose/günstige LLM-Inferenz auf LPU-Hardware      |
+| `REFINE_MODEL=openai/gpt-oss-120b` | Open-Source GPT-Alternative mit exzellenter Qualität   |
+| `LANGUAGE=de`                      | Explizite Sprache verbessert Transkriptionsgenauigkeit |
 
 > **Tipp:** Für systemweite Hotkeys siehe [Hotkey Integration](#hotkey-integration).
 
@@ -74,7 +76,7 @@ Zwei Hauptfunktionen: Audiodateien transkribieren oder direkt vom Mikrofon aufne
 
 ```bash
 python transcribe.py audio.mp3                        # Standard (API-Modus)
-python transcribe.py audio.mp3 --mode api             # OpenAI GPT-4o Transcribe
+python transcribe.py audio.mp3 --mode openai          # OpenAI GPT-4o Transcribe
 python transcribe.py audio.mp3 --mode deepgram        # Deepgram Nova-3
 python transcribe.py audio.mp3 --mode groq            # Groq (schnellste Option)
 python transcribe.py audio.mp3 --mode local           # Offline mit lokalem Whisper
@@ -92,20 +94,20 @@ python transcribe.py --record --refine                # Mit LLM-Nachbearbeitung
 
 ### Alle Optionen
 
-| Option                              | Beschreibung                                                                  |
-| ----------------------------------- | ----------------------------------------------------------------------------- |
-| `--mode api\|local\|deepgram\|groq` | Transkriptions-Provider (default: `api`)                                      |
-| `--model NAME`                      | Modell (CLI > `WHISPER_GO_MODEL` env > Provider-Default)                      |
-| `--record`, `-r`                    | Mikrofon-Aufnahme statt Datei                                                 |
-| `--copy`, `-c`                      | Ergebnis in Zwischenablage                                                    |
-| `--language CODE`                   | Sprachcode z.B. `de`, `en`                                                    |
-| `--format FORMAT`                   | Output: `text`, `json`, `srt`, `vtt` (nur API-Modus)                          |
-| `--no-streaming`                    | WebSocket-Streaming deaktivieren (nur Deepgram)                               |
-| `--refine`                          | LLM-Nachbearbeitung aktivieren                                                |
-| `--no-refine`                       | LLM-Nachbearbeitung deaktivieren (überschreibt env)                           |
-| `--refine-model`                    | Modell für Nachbearbeitung (default: `gpt-5-nano`)                            |
-| `--refine-provider`                 | LLM-Provider: `openai`, `openrouter`, `groq`                                  |
-| `--context`                         | Kontext für Nachbearbeitung: `email`, `chat`, `code`, `default` (auto-detect) |
+| Option                                 | Beschreibung                                                                  |
+| -------------------------------------- | ----------------------------------------------------------------------------- |
+| `--mode openai\|local\|deepgram\|groq` | Transkriptions-Provider (default: `openai`)                                   |
+| `--model NAME`                         | Modell (CLI > `WHISPER_GO_MODEL` env > Provider-Default)                      |
+| `--record`, `-r`                       | Mikrofon-Aufnahme statt Datei                                                 |
+| `--copy`, `-c`                         | Ergebnis in Zwischenablage                                                    |
+| `--language CODE`                      | Sprachcode z.B. `de`, `en`                                                    |
+| `--format FORMAT`                      | Output: `text`, `json`, `srt`, `vtt` (nur API-Modus)                          |
+| `--no-streaming`                       | WebSocket-Streaming deaktivieren (nur Deepgram)                               |
+| `--refine`                             | LLM-Nachbearbeitung aktivieren                                                |
+| `--no-refine`                          | LLM-Nachbearbeitung deaktivieren (überschreibt env)                           |
+| `--refine-model`                       | Modell für Nachbearbeitung (default: `gpt-5-nano`)                            |
+| `--refine-provider`                    | LLM-Provider: `openai`, `openrouter`, `groq`                                  |
+| `--context`                            | Kontext für Nachbearbeitung: `email`, `chat`, `code`, `default` (auto-detect) |
 
 ## Konfiguration
 
@@ -116,7 +118,7 @@ Alle Einstellungen können per Umgebungsvariable oder `.env`-Datei gesetzt werde
 Je nach gewähltem Modus wird ein API-Key benötigt:
 
 ```bash
-# OpenAI (für --mode api und --refine mit openai)
+# OpenAI (für --mode openai und --refine mit openai)
 export OPENAI_API_KEY="sk-..."
 
 # Deepgram (für --mode deepgram) – 200$ Startguthaben
@@ -132,7 +134,7 @@ export OPENROUTER_API_KEY="sk-or-..."
 ### Standard-Einstellungen
 
 ```bash
-# Transkriptions-Modus (api, local, deepgram, groq)
+# Transkriptions-Modus (openai, local, deepgram, groq)
 export WHISPER_GO_MODE="deepgram"
 
 # Transkriptions-Modell (überschreibt Provider-Default)
@@ -239,6 +241,7 @@ Für systemweite Spracheingabe per Hotkey – der Hauptanwendungsfall von whispe
 ### Unified Daemon (empfohlen)
 
 Der `whisper_daemon.py` kombiniert alle Komponenten in einem Prozess:
+
 - Hotkey-Listener (QuickMacHotKey)
 - Microphone Recording + Deepgram Streaming
 - Menübar-Status (🎤 🔴 ⏳ ✅ ❌)
@@ -301,9 +304,9 @@ WHISPER_GO_HOTKEY_MODE=toggle
 
 Der Unified Daemon zeigt automatisch:
 
-| Komponente | Beschreibung |
-|------------|--------------|
-| **Menübar** | Status-Icon (🎤 🔴 ⏳ ✅ ❌) + Live-Preview |
+| Komponente  | Beschreibung                                     |
+| ----------- | ------------------------------------------------ |
+| **Menübar** | Status-Icon (🎤 🔴 ⏳ ✅ ❌) + Live-Preview      |
 | **Overlay** | Animierte Schallwellen am unteren Bildschirmrand |
 
 Beides ist integriert und startet automatisch mit dem Daemon.
@@ -314,7 +317,7 @@ Beides ist integriert und startet automatisch mit dem Daemon.
 | ---------- | -------- | --------- | --------- | ----------------------------------- |
 | `deepgram` | Deepgram | WebSocket | ~300ms ⚡ | Echtzeit-Streaming (empfohlen)      |
 | `groq`     | Groq     | REST      | ~1s       | Whisper auf LPU, sehr schnell       |
-| `api`      | OpenAI   | REST      | ~2-3s     | GPT-4o Transcribe, höchste Qualität |
+| `openai`   | OpenAI   | REST      | ~2-3s     | GPT-4o Transcribe, höchste Qualität |
 | `local`    | Whisper  | Lokal     | ~5-10s    | Offline, keine API-Kosten           |
 
 > **Empfehlung:** `--mode deepgram` für den täglichen Gebrauch. Die Streaming-Architektur sorgt für minimale Wartezeit zwischen Aufnahme-Stopp und Text-Einfügen.

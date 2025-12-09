@@ -1499,7 +1499,7 @@ def maybe_refine_transcript(transcript: str, args: argparse.Namespace) -> str:
 
 # Standard-Modelle pro Modus
 DEFAULT_MODELS = {
-    "api": DEFAULT_API_MODEL,
+    "openai": DEFAULT_API_MODEL,
     "deepgram": DEFAULT_DEEPGRAM_MODEL,
     "groq": DEFAULT_GROQ_MODEL,
     "local": DEFAULT_LOCAL_MODEL,
@@ -1525,7 +1525,7 @@ def transcribe(
         raise ValueError(f"Ungültiger Modus '{mode}'. Unterstützt: {supported}")
     effective_model = model or default_model
 
-    if mode == "api":
+    if mode == "openai":
         return transcribe_with_api(
             audio_path, effective_model, language, response_format
         )
@@ -1572,8 +1572,8 @@ Beispiele:
     )
     parser.add_argument(
         "--mode",
-        choices=["api", "local", "deepgram", "groq"],
-        default=os.getenv("WHISPER_GO_MODE", "api"),
+        choices=["openai", "local", "deepgram", "groq"],
+        default=os.getenv("WHISPER_GO_MODE", "openai"),
         help="Transkriptions-Modus (auch via WHISPER_GO_MODE env)",
     )
     parser.add_argument(

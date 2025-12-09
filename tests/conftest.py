@@ -56,7 +56,7 @@ def mock_args():
 
     def _create(**kwargs):
         defaults = {
-            "mode": "api",
+            "mode": "openai",
             "no_streaming": False,
             "refine": False,
             "no_refine": False,

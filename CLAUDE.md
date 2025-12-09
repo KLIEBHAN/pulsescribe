@@ -124,7 +124,7 @@ python transcribe.py --record --copy --language de
 
 | Variable                     | Beschreibung                                          |
 | ---------------------------- | ----------------------------------------------------- |
-| `WHISPER_GO_MODE`            | Default-Modus: `api`, `local`, `deepgram`, `groq`     |
+| `WHISPER_GO_MODE`            | Default-Modus: `openai`, `local`, `deepgram`, `groq`  |
 | `WHISPER_GO_MODEL`           | Transkriptions-Modell (überschreibt Provider-Default) |
 | `WHISPER_GO_STREAMING`       | WebSocket-Streaming für Deepgram: `true`/`false`      |
 | `WHISPER_GO_REFINE`          | LLM-Nachbearbeitung: `true`/`false`                   |
@@ -142,7 +142,7 @@ python transcribe.py --record --copy --language de
 
 | Modus                     | Provider | Methode   | Latenz | Beschreibung                             |
 | ------------------------- | -------- | --------- | ------ | ---------------------------------------- |
-| `api`                     | OpenAI   | REST      | ~2-3s  | GPT-4o Transcribe, höchste Qualität      |
+| `openai`                  | OpenAI   | REST      | ~2-3s  | GPT-4o Transcribe, höchste Qualität      |
 | `deepgram`                | Deepgram | WebSocket | ~300ms | **Streaming** (Default), minimale Latenz |
 | `deepgram --no-streaming` | Deepgram | REST      | ~2-3s  | Fallback ohne Streaming                  |
 | `groq`                    | Groq     | REST      | ~1s    | Whisper auf LPU, sehr schnell            |

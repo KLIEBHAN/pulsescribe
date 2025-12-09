@@ -13,7 +13,7 @@ class TestShouldUseStreaming:
         args = mock_args(mode="deepgram")
         assert _should_use_streaming(args) is True
 
-    @pytest.mark.parametrize("mode", ["api", "local", "groq"])
+    @pytest.mark.parametrize("mode", ["openai", "local", "groq"])
     def test_non_deepgram_no_streaming(self, mock_args, mode, clean_env):
         """Andere Modi nutzen kein Streaming."""
         args = mock_args(mode=mode)

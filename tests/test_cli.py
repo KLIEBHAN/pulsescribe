@@ -56,7 +56,7 @@ class TestParseArgs:
 
     def test_mode_choices(self, clean_env):
         """--mode akzeptiert nur gültige Werte."""
-        for mode in ["api", "local", "deepgram", "groq"]:
+        for mode in ["openai", "local", "deepgram", "groq"]:
             with patch.object(
                 sys, "argv", ["transcribe.py", "--record", "--mode", mode]
             ):
