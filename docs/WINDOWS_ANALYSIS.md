@@ -819,7 +819,7 @@ Die Portierung basiert auf der neuen modularen Architektur:
 ```
 whisper_go/
 ├── transcribe.py              # CLI Entry Point (Wrapper)
-├── whisper_platform/          # 🔑 Platform-Abstraktion Layer
+├── whisper_platform/          # 🔑 Plattform-Abstraktion Layer
 │   ├── __init__.py            # Platform-Detection + Factory
 │   ├── base.py                # Protocol-Definitionen
 │   ├── sound.py               # CoreAudio (macOS) / winsound (Windows)
@@ -836,7 +836,7 @@ whisper_go/
 > **Hinweis:** Das Paket heißt `whisper_platform` statt `platform`, um Kollisionen mit dem Python-Standardmodul `platform` zu vermeiden.
 
 **Voraussetzung für Windows-Portierung:**
-Die Modularisierung (Phase 5 in Roadmap) muss zuerst abgeschlossen werden.
+Die Modularisierung (Phase 5 in der Roadmap) muss zuerst abgeschlossen werden.
 Dies schafft die Grundlage für plattformspezifische Implementierungen.
 
 ### Kritische Entscheidungen vor Implementierung

@@ -87,7 +87,7 @@ Kein Electron. Kein Cloud-Lock-in. Kein Abo.
   - Konfigurierbare Tastenkombinationen (z. B. F19, Cmd+Shift+R)
   - Keine Accessibility-Berechtigung erforderlich
   - Raycast wird optional (für Nutzer, die es bevorzugen)
-- [ ] Platform-Abstraktion und Projektstruktur, siehe unten
+- [ ] Plattform-Abstraktion und Projektstruktur, siehe unten
 - [ ] **Native Hotkeys (Windows/Linux)** – Cross-Platform
   - Geplant: [pynput](https://pynput.readthedocs.io/) für Windows und Linux
   - Gleiche UX wie macOS-Implementierung
@@ -175,7 +175,7 @@ Bewusst ausgeschlossen, um Fokus zu halten:
 
 ### Ziel
 
-Refactoring des Codebases für bessere Wartbarkeit und Cross-Platform-Support (Windows/Linux).
+Refactoring der Codebase für bessere Wartbarkeit und Cross-Platform-Support (Windows/Linux).
 
 ### Projektstruktur
 
@@ -186,7 +186,7 @@ whisper_go/
 ├── hotkey_daemon.py               # Standalone Hotkey-Daemon
 ├── prompts.py                     # LLM-Prompts
 │
-├── whisper_platform/                      # 🔑 Platform-Abstraktion Layer
+├── whisper_platform/                      # 🔑 Plattform-Abstraktion Layer
 │   ├── __init__.py                # Platform-Detection + Factory
 │   ├── base.py                    # Protocol-Definitionen
 │   ├── sound.py                   # Sound-Playback (CoreAudio/winsound)
@@ -219,7 +219,7 @@ whisper_go/
     └── paths.py                   # Platform-aware Pfade
 ```
 
-### Platform-Abstraktion
+### Plattform-Abstraktion
 
 Protocol-basierte Interfaces für plattformspezifische Funktionalität:
 
