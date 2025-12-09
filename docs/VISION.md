@@ -243,27 +243,17 @@ class DaemonController(Protocol):
 | PR       | Inhalt                                              | Aufwand | Status           |
 | -------- | --------------------------------------------------- | ------- | ---------------- |
 | **PR 1** | `whisper_platform/` Layer + `providers/` Extraktion | 12-16h  | ✅ Abgeschlossen |
-| **PR 2** | `audio/`, `refine/`, `utils/` + Streaming           | 10-14h  | 📋 Geplant       |
+| **PR 2** | `audio/`, `refine/`, `utils/` + Streaming           | 10-14h  | ✅ Abgeschlossen |
+| **BF 1** | Strict Cleanup ("Turbo-Refactor")                   | 2h      | ✅ Abgeschlossen |
 | **PR 3** | CLI Modernisierung + Cleanup                        | 6-8h    | 📋 Geplant       |
 
-#### PR 1 Details (Abgeschlossen)
+#### PR 1 Status: ✅
+#### PR 2 Status: ✅
+- Komplett implementiert: `audio/`, `refine/`, `utils/`, `providers/`
+- Strict Cleanup: `hotkey_daemon.py` removed, `transcribe.py` cleaned
 
-- `whisper_platform/`: Factory, Protocols, Sound, Clipboard, App-Detection, Daemon, Hotkey
-- `providers/`: OpenAI, Deepgram (REST), Groq, Local
-- `transcribe()` nutzt jetzt `providers.get_provider()`
-- ~290 Zeilen aus `transcribe.py` entfernt
+> **Hinweis:** Das Projekt ist jetzt vollständig modularisiert.
 
-#### PR 2 Details (Geplant)
-
-- **`audio/recording.py`**: Mikrofon-Aufnahme mit sounddevice
-- **`providers/deepgram_stream.py`**: WebSocket-Streaming (nur Protokoll)
-- **`refine/`**: LLM-Nachbearbeitung extrahieren
-- **`utils/`**: Logging, Timing, Paths
-
-> **Hinweis Streaming:** Das Deepgram-Streaming (`_deepgram_stream_core`) wird in PR 2
-> zusammen mit Audio-Recording extrahiert. Die ~400 Zeilen Streaming-Code vermischen
-> aktuell Provider-Logik, Audio-Aufnahme und Orchestrierung. Für saubere Trennung
-> muss beides gleichzeitig refactored werden.
 >
 > **Hinweis Recording:** Aktuell existiert eine Code-Duplizierung für Audio-Recording
 > zwischen `whisper_daemon.py` (`_recording_worker`) und `transcribe.py`. Diese wird

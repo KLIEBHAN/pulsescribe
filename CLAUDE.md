@@ -10,19 +10,19 @@ Siehe [docs/VISION.md](docs/VISION.md) für Roadmap und langfristige Ziele.
 
 ```
 whisper_go/
-├── transcribe.py          # CLI für Transkription (Core-Logic)
+├── transcribe.py          # CLI Orchestrierung (Wrapper)
 ├── whisper_daemon.py      # Unified Daemon (Hotkey + Recording + UI)
-├── hotkey_daemon.py       # Standalone Hotkey-Daemon (Alternative)
-├── prompts.py             # LLM-Prompts und Kontext-Mappings
+├── prompts.py             # LLM-Prompts (Legacy, delegates to refine/)
 ├── start_daemon.command   # macOS Login Item für Auto-Start
 ├── requirements.txt       # Dependencies
 ├── README.md              # Benutzer-Dokumentation
 ├── CLAUDE.md              # Diese Datei
-├── docs/
-│   ├── VISION.md          # Produkt-Vision & Roadmap
-│   ├── Deepgram.md        # Deepgram Integration
-│   └── WINDOWS_ANALYSIS.md
-└── tests/                 # Unit & Integration Tests (145+ Tests)
+├── docs/                  # Dokumentation (Vision, Deepgram, etc.)
+├── audio/                 # Audio-Aufnahme und -Handling
+├── providers/             # Transkriptions-Provider (Deepgram, OpenAI, etc.)
+├── refine/                # LLM-Nachbearbeitung und Kontext
+├── utils/                 # Utilities (Daemon, Logging, Hotkey)
+└── tests/                 # Unit & Integration Tests
 ```
 
 ## Kern-Datei: `transcribe.py`
@@ -31,25 +31,16 @@ whisper_go/
 
 | Funktion                            | Zweck                                          |
 | ----------------------------------- | ---------------------------------------------- |
-| `record_audio()`                    | Mikrofon-Aufnahme (interaktiv, mit ENTER)      |
-| `record_audio_daemon()`             | Mikrofon-Aufnahme (Signal-basiert, Raycast)    |
-| `play_sound(name)`                  | System-Sound abspielen (ready/stop/error)      |
-| `transcribe()`                      | Zentrale API – wählt Modus automatisch         |
-| `transcribe_with_api()`             | OpenAI API Transkription                       |
-| `transcribe_with_deepgram()`        | Deepgram Nova-3 Transkription (REST)           |
-| `transcribe_with_deepgram_stream()` | Deepgram Streaming (WebSocket, SDK v5.3)       |
-| `transcribe_with_groq()`            | Groq Whisper Transkription (LPU)               |
-| `transcribe_locally()`              | Lokales Whisper-Modell                         |
-| `detect_context()`                  | Kontext-Erkennung (CLI/ENV/App-Auto-Detection) |
-| `_get_frontmost_app()`              | Aktive App via NSWorkspace (macOS, ~0.2ms)     |
-| `_app_to_context()`                 | App-Name → Kontext-Typ Mapping                 |
-| `refine_transcript()`               | LLM-Nachbearbeitung (kontext-aware Prompts)    |
-| `_get_refine_client()`              | Client-Factory für Refine-Provider             |
+| `transcribe()`                      | Zentrale API – orchestriert Provider           |
 | `run_daemon_mode()`                 | Raycast-Modus: Aufnahme → Transkript-Datei     |
-| `run_daemon_mode_streaming()`       | Raycast-Modus mit Deepgram Streaming           |
-| `_daemonize()`                      | Double-Fork für echte Daemons (Zombie-Prev.)   |
-| `_cleanup_stale_pid_file()`         | Zombie-Prozess Cleanup mit PID-Validierung     |
 | `parse_args()`                      | CLI-Argument-Handling                          |
+
+**Design-Entscheidungen:**
+
+- **Modular:** Nutzt `providers.*`, `audio.*`, `refine.*`, `utils.*`
+- **Lean:** Orchestrator statt Monolith (~1000 LOC weniger)
+- **Kompatibel:** Alle bestehenden CLI-Flags funktionieren weiter
+- **Entry-Point:** Bleibt die zentrale Anlaufstelle für Skripte
 
 **Design-Entscheidungen:**
 
@@ -79,15 +70,11 @@ Konsolidiert alle Komponenten in einem Prozess (empfohlen für tägliche Nutzung
 
 **State-Flow:** `idle` → `recording` → `transcribing` → `done`/`error` → `idle`
 
-## Hotkey-Daemon: `hotkey_daemon.py`
+**Architecture:**
 
-Standalone-Alternative für Raycast-Integration:
-
-| Funktion | Zweck |
-| -------- | ----- |
-| `parse_hotkey()` | Parst Hotkey-String (z.B. "cmd+shift+r") |
-| `paste_transcript()` | Auto-Paste via pynput/Quartz/osascript |
-| `HotkeyDaemon` | Globaler Hotkey-Listener (QuickMacHotKey) |
+- **Main-Thread:** Hotkey-Listener (`utils.hotkey`) + UI
+- **Worker-Thread:** Deepgram-Streaming (async) via `providers.deepgram_stream`
+- **Modules:** Nutzt `audio.recording.AudioRecorder` für sauberes Handling
 
 ## CLI-Interface
 

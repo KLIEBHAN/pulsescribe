@@ -261,18 +261,6 @@ open start_daemon.command
 
 > **Keine Accessibility-Berechtigung erforderlich!** QuickMacHotKey nutzt die native Carbon-API (`RegisterEventHotKey`).
 
-### Alternative: Hotkey-Daemon
-
-Für Raycast-Integration oder wenn du feinere Kontrolle brauchst:
-
-```bash
-# Standalone Hotkey-Daemon starten
-python hotkey_daemon.py
-
-# Mit anderen Optionen
-python hotkey_daemon.py --hotkey cmd+shift+r
-```
-
 ### Konfiguration
 
 In `.env` oder als Umgebungsvariable:
