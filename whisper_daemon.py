@@ -506,7 +506,7 @@ class WhisperDaemon:
 
     def _setup_app_menu(self, app) -> None:
         """Erstellt Application Menu für CMD+Q Support."""
-        from AppKit import NSMenu, NSMenuItem  # type: ignore[import-not-found]
+        from AppKit import NSMenu, NSMenuItem, NSEventModifierFlagCommand  # type: ignore[import-not-found]
         
         # Hauptmenüleiste
         menubar = NSMenu.alloc().init()
@@ -532,6 +532,7 @@ class WhisperDaemon:
         quit_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
             "Quit Whisper Go", "terminate:", "q"
         )
+        quit_item.setKeyEquivalentModifierMask_(NSEventModifierFlagCommand)
         app_menu.addItem_(quit_item)
         
         app_menu_item.setSubmenu_(app_menu)
