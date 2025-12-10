@@ -511,12 +511,14 @@ class WhisperDaemon:
         # Hauptmenüleiste
         menubar = NSMenu.alloc().init()
         
-        # App-Menü (erstes Menü, zeigt App-Name)
-        app_menu_item = NSMenuItem.alloc().init()
+        # App-Menü (erstes Menü, zeigt App-Name in der Menüleiste)
+        app_menu_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Whisper Go", None, ""
+        )
         menubar.addItem_(app_menu_item)
         
-        # App-Menü Inhalt
-        app_menu = NSMenu.alloc().init()
+        # App-Menü Inhalt (Submenu)
+        app_menu = NSMenu.alloc().initWithTitle_("Whisper Go")
         
         # "About Whisper Go" Item
         about_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
