@@ -26,7 +26,6 @@ import sys
 import tempfile
 import threading
 import time
-from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 # --- Emergency Logging (Before everything else) ---
@@ -44,13 +43,12 @@ def emergency_log(msg: str):
 emergency_log("=== Booting Whisper Daemon ===")
 
 try:
-    from config import INTERIM_FILE, LOG_FILE, SCRIPT_DIR, VAD_THRESHOLD
-    from utils import setup_logging, log, error, get_session_id
+    from config import INTERIM_FILE, VAD_THRESHOLD
+    from utils import setup_logging
     from config import DEFAULT_DEEPGRAM_MODEL
     from providers.deepgram_stream import deepgram_stream_core
     from providers import get_provider
     from refine.llm import refine_transcript
-    from refine.context import detect_context
     from whisper_platform import get_sound_player
     from utils.state import AppState, DaemonMessage, MessageType
     from utils import parse_hotkey, paste_transcript
@@ -506,12 +504,51 @@ class WhisperDaemon:
         else:
             logger.error("Auto-Paste fehlgeschlagen")
 
+    def _setup_app_menu(self, app) -> None:
+        """Erstellt Application Menu für CMD+Q Support."""
+        from AppKit import NSMenu, NSMenuItem  # type: ignore[import-not-found]
+        
+        # Hauptmenüleiste
+        menubar = NSMenu.alloc().init()
+        
+        # App-Menü (erstes Menü, zeigt App-Name)
+        app_menu_item = NSMenuItem.alloc().init()
+        menubar.addItem_(app_menu_item)
+        
+        # App-Menü Inhalt
+        app_menu = NSMenu.alloc().init()
+        
+        # "About Whisper Go" Item
+        about_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "About Whisper Go", "orderFrontStandardAboutPanel:", ""
+        )
+        app_menu.addItem_(about_item)
+        
+        app_menu.addItem_(NSMenuItem.separatorItem())
+        
+        # "Quit Whisper Go" Item mit CMD+Q
+        quit_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Quit Whisper Go", "terminate:", "q"
+        )
+        app_menu.addItem_(quit_item)
+        
+        app_menu_item.setSubmenu_(app_menu)
+        
+        # Menüleiste aktivieren
+        app.setMainMenu_(menubar)
+
     def run(self) -> None:
         """Startet Daemon (blockiert)."""
         from quickmachotkey import quickHotKey
         from AppKit import NSApplication  # type: ignore[import-not-found]
         from Foundation import NSTimer  # type: ignore[import-not-found]
         import signal
+
+        # NSApplication initialisieren
+        app = NSApplication.sharedApplication()
+        
+        # Application Menu erstellen (für CMD+Q Support)
+        self._setup_app_menu(app)
 
         # UI-Controller initialisieren
         logger.info("Initialisiere UI-Controller...")
@@ -533,15 +570,12 @@ class WhisperDaemon:
         )
         print("🎤 whisper_daemon läuft", file=sys.stderr)
         print(f"   Hotkey: {self.hotkey}", file=sys.stderr)
-        print("   Beenden mit Ctrl+C", file=sys.stderr)
+        print("   Beenden mit CMD+Q oder Ctrl+C", file=sys.stderr)
 
         # Hotkey registrieren
         @quickHotKey(virtualKey=virtual_key, modifierMask=modifier_mask)  # type: ignore[arg-type]
         def hotkey_handler() -> None:
             self._on_hotkey()
-
-        # NSApplication Event-Loop (blockiert)
-        app = NSApplication.sharedApplication()
 
         # FIX: Ctrl+C Support
         # 1. Dummy-Timer, damit der Python-Interpreter regelmäßig läuft und Signale prüft

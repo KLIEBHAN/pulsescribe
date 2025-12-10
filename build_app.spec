@@ -142,7 +142,7 @@ app = BUNDLE(
         'NSAppleEventsUsageDescription': 'Whisper Go benötigt Zugriff, um Text in andere Apps einzufügen.',
         
         # App-Verhalten
-        'LSUIElement': True,  # Menubar-App ohne Dock-Icon
+        'LSUIElement': False,  # App im Dock anzeigen (für CMD+Q Support)
         'LSBackgroundOnly': False,
         
         # App-Info
