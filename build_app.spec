@@ -12,7 +12,6 @@ datas = [
     ('refine', 'refine'),
     ('whisper_platform', 'whisper_platform'),
     ('audio', 'audio'),
-    # Wir inkludieren KEINE .env Datei, da diese benutzerspezifisch ist
 ]
 
 a = Analysis(
@@ -35,7 +34,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=['matplotlib', 'tkinter', 'pandas', 'PyQt5', 'PySide2', 'wx', 'curses'],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
@@ -53,24 +52,33 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=False, 
+    console=False,
     disable_windowed_traceback=False,
-    argv_emulation=True,
-    target_arch='arm64', # Optimiert für Apple Silicon, ändere zu 'universal2' für Intel Support
+    argv_emulation=False,
+    target_arch='arm64',
 )
 
-app = BUNDLE(
+# COLLECT Schritt für Onedir-Modus (wichtig für .app Bundles mit vielen Libs)
+coll = COLLECT(
     exe,
     a.binaries,
     a.zipfiles,
     a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name='whisper_go',
+)
+
+app = BUNDLE(
+    coll,
     name='WhisperGo.app',
-    icon=None, 
+    icon=None,
     bundle_identifier='com.kliebhan.whisper-go',
     info_plist={
         'NSMicrophoneUsageDescription': 'Whisper Go benötigt Zugriff auf das Mikrofon für die Spracherkennung.',
         'NSAppleEventsUsageDescription': 'Whisper Go benötigt Zugriff, um Text in andere Apps einzufügen.',
-        'LSUIElement': True, # Menubar App (kein Dock Icon)
+        'LSUIElement': True,
         'CFBundleName': 'Whisper Go',
         'CFBundleDisplayName': 'Whisper Go',
         'CFBundleShortVersionString': '1.0.0',
