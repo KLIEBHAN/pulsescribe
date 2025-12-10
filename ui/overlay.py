@@ -17,14 +17,15 @@ WAVE_BAR_COUNT = 5             # Anzahl der animierten Balken
 WAVE_BAR_WIDTH = 4             # Breite jedes Balkens in Pixel
 WAVE_BAR_GAP = 5               # Abstand zwischen Balken
 WAVE_BAR_MIN_HEIGHT = 8        # Ruhezustand-Höhe
-WAVE_BAR_MAX_HEIGHT = 32       # Maximale Höhe bei voller Animation
+WAVE_BAR_MAX_HEIGHT = 48       # Maximale Höhe bei voller Animation
 WAVE_AREA_WIDTH = WAVE_BAR_COUNT * WAVE_BAR_WIDTH + (WAVE_BAR_COUNT - 1) * WAVE_BAR_GAP
 
 # Feedback-Anzeigedauer
 FEEDBACK_DISPLAY_DURATION = 0.8  # Sekunden für Done/Error-Anzeige
 
-
+from config import VISUAL_NOISE_GATE, VISUAL_GAIN
 from utils.state import AppState
+import math
 
 def _get_overlay_color(r: int, g: int, b: int, a: float = 1.0):
     """Erstellt NSColor aus RGB-Werten."""
@@ -127,8 +128,66 @@ class SoundWaveView:
             anim = self._create_height_animation(WAVE_BAR_MAX_HEIGHT * 0.4, 1.2)
             bar.addAnimation_forKey_(anim, f"listenAnim{i}")
 
+    def update_levels(self, level: float) -> None:
+        """
+        Aktualisiert Balkenhöhe basierend auf Audio-Level (0.0 - 1.0).
+        Ersetzt die 'start_recording_animation' Loop mit echten Daten.
+        """
+        # Falls noch Animationen laufen (z.B. Fallback-Welle), stoppen wir sie,
+        # damit wir die Höhe manuell setzen können.
+        if self.animations_running:
+            self.stop_animating()
+
+        if self.current_animation != "recording":
+             self.current_animation = "recording"
+             self.set_bar_color(self._color_recording)
+        
+        # Noise Gate für Visualisierung: Sehr leise Pegel ignorieren
+        if level < VISUAL_NOISE_GATE:
+             level = 0.0
+
+        # Verstärkung für visuelle Sichtbarkeit mit nicht-linearer Kurve
+        # sqrt(level) sorgt dafür, dass leise Töne stärker angehoben werden als laute
+        amplified = min(math.sqrt(level) * VISUAL_GAIN, 1.0)
+        
+        # Balken-Mapping (Symmetrisch: 0-1-2-1-0)
+        # Wir fügen etwas Randomness hinzu, damit es lebendig wirkt
+        import random
+        from AppKit import NSMakeRect # type: ignore[import-not-found]
+        
+        # Basis-Höhenfaktoren für die 5 Balken (Mitte höher)
+        factors = [0.4, 0.7, 1.0, 0.7, 0.4]
+        
+        for i, bar in enumerate(self.bars):
+            # Berechne Zielhöhe
+            base_height = WAVE_BAR_MIN_HEIGHT
+            max_add = WAVE_BAR_MAX_HEIGHT - WAVE_BAR_MIN_HEIGHT
+            
+            # Höhe = Min + (Level * Factor * MaxAdd) + Jitter
+            height = base_height + (amplified * factors[i] * max_add)
+            
+            # Kleiner Jitter für Lebendigkeit
+            jitter = random.uniform(-2, 2)
+            height = max(WAVE_BAR_MIN_HEIGHT, min(WAVE_BAR_MAX_HEIGHT, height + jitter))
+            
+            # Disable implicit animations for direct update
+            # CATransaction.begin() ... commit() wäre sauberer, aber overhead.
+            # Wir setzen bounds direkt.
+            
+            # Da wir CALayer nutzen, ist bounds update normalerweise animiert (implicit).
+            # Wir wollen aber schnelle Updates.
+            # Man könnte Actions disablen, aber für 5 Balken bei ~20-50Hz ist es oft ok.
+            
+            # Zentrieren in Y
+            # Frame origin ist unten links im Parent (wenn nicht anders transformiert)
+            # Aber wir haben frame gesetzt. Bounds ändern ändert Size um AnchorPoint (Center).
+            
+            # Einfacher: Setze Bounds (Größe)
+            bar.setBounds_(NSMakeRect(0, 0, WAVE_BAR_WIDTH, height))
+
+
     def start_recording_animation(self) -> None:
-        """Startet organische Schallwellen-Animation."""
+        """Startet organische Schallwellen-Animation (Fallback wenn keine Levels)."""
         if self.current_animation == "recording":
             return
         self.stop_animating()
@@ -268,7 +327,7 @@ class OverlayController:
         self.window.setContentView_(self._visual_effect_view)
 
         # Schallwellen-View
-        wave_y = height - (WAVE_BAR_MAX_HEIGHT + 20)
+        wave_y = height - (WAVE_BAR_MAX_HEIGHT + 12)
         wave_x = (width - WAVE_AREA_WIDTH) / 2
         self._wave_view = SoundWaveView(
             NSMakeRect(wave_x, wave_y, WAVE_AREA_WIDTH, WAVE_BAR_MAX_HEIGHT)
@@ -314,7 +373,20 @@ class OverlayController:
 
         self._current_state = state
 
-        if state == AppState.RECORDING:
+        if state == AppState.LISTENING:
+            self._wave_view.start_listening_animation()
+            self._text_field.setStringValue_("Listening ...")
+            self._text_field.setFont_(
+                NSFont.systemFontOfSize_weight_(
+                    OVERLAY_FONT_SIZE, NSFontWeightMedium
+                )
+            )
+            self._text_field.setTextColor_(
+                NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6)
+            )
+            self._fade_in()
+
+        elif state == AppState.RECORDING:
             if text:
                 self._wave_view.start_recording_animation()
                 display_text = f"{text} ..."
@@ -327,15 +399,16 @@ class OverlayController:
                     NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.9)
                 )
             else:
-                self._wave_view.start_listening_animation()
-                display_text = "Listening ..."
+                # Fallback falls Recording ohne Text (sollte eigentlich Visualisierung haben)
+                self._wave_view.start_recording_animation()
+                display_text = "Recording ..."
                 self._text_field.setFont_(
                     NSFont.systemFontOfSize_weight_(
                         OVERLAY_FONT_SIZE, NSFontWeightMedium
                     )
                 )
                 self._text_field.setTextColor_(
-                    NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6)
+                    NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.9)
                 )
             self._text_field.setStringValue_(display_text)
             self._fade_in()
@@ -414,3 +487,8 @@ class OverlayController:
         self._feedback_timer = NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
             FEEDBACK_DISPLAY_DURATION, False, fade_out_callback
         )
+
+    def update_audio_level(self, level: float) -> None:
+        """Aktualisiert Audio-Visualisierung (Echtzeit)."""
+        if self._current_state == AppState.RECORDING:
+            self._wave_view.update_levels(level)

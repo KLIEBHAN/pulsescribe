@@ -29,7 +29,7 @@ import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from config import INTERIM_FILE, LOG_FILE, SCRIPT_DIR  # LOG_FILE from config is whisper_go.log, utilizing unified logging
+from config import INTERIM_FILE, LOG_FILE, SCRIPT_DIR, VAD_THRESHOLD  # LOG_FILE from config is whisper_go.log, utilizing unified logging
 from utils import setup_logging, log, error, get_session_id
 
 # DEBOUNCE_INTERVAL defined locally as it is specific to hotkey daemon
@@ -173,7 +173,7 @@ class WhisperDaemon:
             self._stop_event = None
 
         self._recording = True
-        self._update_state(AppState.RECORDING)
+        self._update_state(AppState.LISTENING)
 
         # Interim-Datei löschen, um veralteten Text zu vermeiden
         INTERIM_FILE.unlink(missing_ok=True)
@@ -208,6 +208,9 @@ class WhisperDaemon:
         if use_streaming:
             self._start_interim_polling()
 
+        # Result-Polling sofort starten für Audio-Levels und VAD
+        self._start_result_polling()
+
     def _start_interim_polling(self) -> None:
         """Startet NSTimer für Interim-Text-Polling."""
         from Foundation import NSTimer  # type: ignore[import-not-found]
@@ -239,6 +242,15 @@ class WhisperDaemon:
             self._interim_timer.invalidate()
             self._interim_timer = None
 
+    def _on_audio_level(self, level: float) -> None:
+        """Callback für Audio-Level aus dem Worker-Thread."""
+        try:
+            self._result_queue.put_nowait(
+                DaemonMessage(type=MessageType.AUDIO_LEVEL, payload=level)
+            )
+        except queue.Full:
+            pass
+
     def _streaming_worker(self) -> None:
         """
         Hintergrund-Thread für Deepgram-Streaming.
@@ -266,6 +278,7 @@ class WhisperDaemon:
                         language=self.language,
                         play_ready=True,
                         external_stop_event=self._stop_event,
+                        audio_level_callback=self._on_audio_level,
                     )
                 )
 
@@ -315,6 +328,14 @@ class WhisperDaemon:
             # Aufnahme-Loop
             def callback(indata, frames, time, status):
                 recorded_chunks.append(indata.copy())
+                # RMS Berechnung und Queueing
+                rms = float(np.sqrt(np.mean(indata**2)))
+                try:
+                    self._result_queue.put_nowait(
+                        DaemonMessage(type=MessageType.AUDIO_LEVEL, payload=rms)
+                    )
+                except queue.Full:
+                    pass
                 
             with sd.InputStream(samplerate=16000, channels=1, dtype="float32", callback=callback):
                 while not self._stop_event.is_set():
@@ -395,51 +416,65 @@ class WhisperDaemon:
         self._recording = False
         self._update_state(AppState.TRANSCRIBING)
 
-        # Polling statt Blocking: Main-Thread bleibt reaktiv für UI
-        self._start_result_polling()
+        # Polling läuft bereits seit Start
 
     def _start_result_polling(self) -> None:
         """Startet NSTimer für Result-Polling."""
         from Foundation import NSTimer  # type: ignore[import-not-found]
 
+        # NSTimer für regelmäßiges Polling (50ms)
         def check_result() -> None:
+            # Queue drainen um Backlog zu vermeiden (z.B. hunderte Audio-Level Messages)
+            # Wir verarbeiten ALLE Messages, aber UI-Updates passieren so schnell wie möglich
             try:
-                result = self._result_queue.get_nowait()
-                
-                # Exception Handling
-                if isinstance(result, Exception):
-                    self._stop_result_polling()
-                    logger.error(f"Fehler: {result}")
-                    get_sound_player().play("error")
-                    self._update_state(AppState.ERROR)
-                    return
-
-                # DaemonMessage Handling
-                if isinstance(result, DaemonMessage):
-                    if result.type == MessageType.STATUS_UPDATE:
-                        self._update_state(result.payload)
-                        return # Continue polling
+                processed_count = 0
+                while True:
+                    result = self._result_queue.get_nowait()
+                    processed_count += 1
                     
-                    elif result.type == MessageType.TRANSCRIPT_RESULT:
+                    # Exception Handling
+                    if isinstance(result, Exception):
                         self._stop_result_polling()
-                        transcript = result.payload
-                        if transcript:
-                            self._paste_result(transcript)
-                            self._update_state(AppState.DONE, transcript)
-                        else:
-                            logger.warning("Leeres Transkript")
-                            self._update_state(AppState.IDLE)
+                        logger.error(f"Fehler: {result}")
+                        get_sound_player().play("error")
+                        self._update_state(AppState.ERROR)
                         return
 
-                # Fallback / Unerwarteter Typ
-                self._stop_result_polling()
-                logger.error(f"Unerwarteter Result-Typ: {type(result)}")
-                self._update_state(AppState.ERROR)
+                    # DaemonMessage Handling
+                    if isinstance(result, DaemonMessage):
+                        if result.type == MessageType.STATUS_UPDATE:
+                            self._update_state(result.payload)
+                            # Continue draining
+                        
+                        elif result.type == MessageType.AUDIO_LEVEL:
+                            level = result.payload
+                            # VAD Logic: Switch LISTENING -> RECORDING
+                            if self._current_state == AppState.LISTENING and level > VAD_THRESHOLD:
+                                 self._update_state(AppState.RECORDING)
+                            
+                            # Forward to Overlay (nur wenn noch Recording/Listening)
+                            if self._overlay and self._current_state in [AppState.LISTENING, AppState.RECORDING]:
+                                self._overlay.update_audio_level(level)
+                            # Continue draining
+
+                        elif result.type == MessageType.TRANSCRIPT_RESULT:
+                            self._stop_result_polling()
+                            transcript = result.payload
+                            if transcript:
+                                self._paste_result(transcript)
+                                self._update_state(AppState.DONE, transcript)
+                            else:
+                                logger.warning("Leeres Transkript")
+                                self._update_state(AppState.IDLE)
+                            return
+                    
+                    # Safety Break nach zu vielen Messages pro Tick, um UI nicht zu blockieren
+                    if processed_count > 50:
+                        break
 
             except queue.Empty:
-                pass  # Noch kein Result
+                pass
 
-        # NSTimer für regelmäßiges Polling (50ms)
         self._result_timer = NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
             0.05, True, lambda _: check_result()
         )

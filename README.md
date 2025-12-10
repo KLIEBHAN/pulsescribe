@@ -198,6 +198,16 @@ python transcribe.py --record --refine --context email
 export WHISPER_GO_APP_CONTEXTS='{"MyApp": "chat"}'
 ```
 
+### Real-Time Audio Feedback
+
+Das Overlay reagiert in Echtzeit auf die Stimme mit einer dynamischen Schallwellen-Visualisierung:
+
+- **Listening (🌸 Rosa):** System wartet auf Spracheingabe.
+- **Recording (🔴 Rot):** Sprache erkannt, Aufnahme läuft. Die Balken visualisieren die Lautstärke.
+- **Transcribing (🟠 Orange):** Aufnahme beendet, Text wird verarbeitet.
+
+Dank integrierter Voice Activity Detection (VAD) schaltet der Status sofort um, sobald gesprochen wird.
+
 ### Sprach-Commands
 
 Steuere Formatierung durch gesprochene Befehle (automatisch aktiv mit `--refine`):

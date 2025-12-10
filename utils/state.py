@@ -14,6 +14,7 @@ class AppState(Enum):
 class MessageType(Enum):
     STATUS_UPDATE = auto()
     TRANSCRIPT_RESULT = auto()
+    AUDIO_LEVEL = auto()
     ERROR = auto()
 
 @dataclass

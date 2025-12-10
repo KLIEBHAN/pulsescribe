@@ -39,6 +39,14 @@ DEFAULT_REFINE_MODEL = "gpt-5-nano"
 DEFAULT_GROQ_REFINE_MODEL = "llama-3.3-70b-versatile"
 
 # =============================================================================
+# Audio-Analyse
+# =============================================================================
+
+VAD_THRESHOLD = 0.015      # Trigger recording (RMS)
+VISUAL_NOISE_GATE = 0.01   # UI silence floor (RMS)
+VISUAL_GAIN = 5.0          # Sqrt scaling factor
+
+# =============================================================================
 # IPC-Dateipfade
 # =============================================================================
 
@@ -73,6 +81,10 @@ __all__ = [
     "WHISPER_CHANNELS",
     "WHISPER_BLOCKSIZE",
     "INT16_MAX",
+    # Audio Analysis
+    "VAD_THRESHOLD",
+    "VISUAL_NOISE_GATE",
+    "VISUAL_GAIN",
     # Streaming
     "INTERIM_THROTTLE_MS",
     "FINALIZE_TIMEOUT",

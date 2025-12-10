@@ -24,7 +24,7 @@ import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, AsyncIterator
+from typing import TYPE_CHECKING, AsyncIterator, Callable
 
 if TYPE_CHECKING:
     from deepgram.listen.v1.socket_client import AsyncV1SocketClient
@@ -171,6 +171,7 @@ async def deepgram_stream_core(
     early_buffer: list[bytes] | None = None,
     play_ready: bool = True,
     external_stop_event: threading.Event | None = None,
+    audio_level_callback: Callable[[float], None] | None = None,
 ) -> str:
     """Gemeinsamer Streaming-Core für Deepgram (SDK v5.3).
 
@@ -307,6 +308,12 @@ async def deepgram_stream_core(
             """Puffert Audio bis WebSocket verbunden, dann direkt senden."""
             if status:
                 logger.warning(f"[{session_id}] Audio-Status: {status}")
+            
+            # RMS Berechnung für Visualisierung
+            if audio_level_callback:
+                rms = float(np.sqrt(np.mean(indata**2)))
+                audio_level_callback(rms)
+
             if stop_event.is_set():
                 return
             # float32 [-1,1] → int16 für Deepgram

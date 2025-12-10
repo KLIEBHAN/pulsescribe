@@ -168,6 +168,7 @@ class TestRefineModelSelection:
         # from transcribe import refine_transcript (removed)
 
         monkeypatch.setenv("WHISPER_GO_REFINE_MODEL", "env-model")
+        monkeypatch.setenv("WHISPER_GO_REFINE_PROVIDER", "openai")
 
         with patch("refine.llm._get_refine_client") as mock_client:
             mock_client.return_value.responses.create.return_value = Mock(
@@ -185,6 +186,7 @@ class TestRefineModelSelection:
         # from transcribe import refine_transcript (removed)
 
         monkeypatch.setenv("WHISPER_GO_REFINE_MODEL", "env-model")
+        monkeypatch.setenv("WHISPER_GO_REFINE_PROVIDER", "openai")
 
         with patch("refine.llm._get_refine_client") as mock_client:
             mock_client.return_value.responses.create.return_value = Mock(

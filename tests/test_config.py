@@ -42,8 +42,34 @@ class TestShouldUseStreaming:
         args = mock_args(mode="deepgram")
         assert _should_use_streaming(args) is expected
 
-    def test_cli_beats_env(self, mock_args, monkeypatch, clean_env):
-        """--no-streaming schlägt ENV."""
         monkeypatch.setenv("WHISPER_GO_STREAMING", "true")
         args = mock_args(mode="deepgram", no_streaming=True)
         assert _should_use_streaming(args) is False
+
+
+class TestAudioConfig:
+    """Tests für Audio- und Visualisierungs-Konstanten."""
+    
+    def test_audio_constants_exist(self):
+        """Stellt sicher, dass alle notwendigen Konstanten exportiert werden."""
+        from config import (
+            VAD_THRESHOLD,
+            VISUAL_NOISE_GATE,
+            VISUAL_GAIN,
+            WHISPER_SAMPLE_RATE
+        )
+        assert isinstance(VAD_THRESHOLD, float)
+        assert isinstance(VISUAL_NOISE_GATE, float)
+        assert isinstance(VISUAL_GAIN, float)
+        assert isinstance(WHISPER_SAMPLE_RATE, int)
+
+    def test_audio_constants_values(self):
+        """Prüft, ob die Werte im sinnvollen Bereich liegen."""
+        from config import VAD_THRESHOLD, VISUAL_NOISE_GATE, VISUAL_GAIN
+        
+        # VAD sollte klein sein (RMS)
+        assert 0.0 < VAD_THRESHOLD < 0.1
+        # Noise Gate sollte kleiner/gleich VAD sein (meistens)
+        assert 0.0 <= VISUAL_NOISE_GATE < 0.1
+        # Gain sollte positiv sein
+        assert VISUAL_GAIN > 1.0
