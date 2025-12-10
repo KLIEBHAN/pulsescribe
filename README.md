@@ -283,6 +283,9 @@ WHISPER_GO_HOTKEY=f19
 
 # Mode: toggle (PTT not supported with QuickMacHotKey)
 WHISPER_GO_HOTKEY_MODE=toggle
+
+# Dock Icon (default: true) – set to false for menubar-only mode
+WHISPER_GO_DOCK_ICON=true
 ```
 
 **Supported Hotkeys:**
@@ -392,8 +395,22 @@ Groq uses LPU chips (Language Processing Units) for particularly fast inference.
 | Module not installed        | `pip install -r requirements.txt`                                     |
 | API Key missing             | `export DEEPGRAM_API_KEY="..."` (or OPENAI/GROQ)                      |
 | Microphone issues (macOS)   | `brew install portaudio && pip install --force-reinstall sounddevice` |
+| Microphone permission       | Grant access in System Settings → Privacy & Security → Microphone     |
 | ffmpeg missing              | `brew install ffmpeg` (macOS) or `sudo apt install ffmpeg` (Ubuntu)   |
 | Transcription slow          | Switch to `--mode groq` or `--mode deepgram` instead of `local`       |
+| Daemon crashes silently     | Check `~/.whisper_go/startup.log` for emergency logs                  |
+
+### Log Files
+
+Logs are stored in `~/.whisper_go/logs/`:
+
+```bash
+# Main log file
+~/.whisper_go/logs/whisper_go.log
+
+# Emergency startup log (if daemon fails to start)
+~/.whisper_go/startup.log
+```
 
 ## Development
 
