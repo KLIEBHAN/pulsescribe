@@ -146,7 +146,7 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name='WhisperGo.app',
-    icon=None,  # TODO: App-Icon hinzufügen (icon='assets/icon.icns')
+    icon='assets/icon.icns',  # Custom app icon
     bundle_identifier='com.kliebhan.whisper-go',
     info_plist={
         # Berechtigungen
