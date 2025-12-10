@@ -25,6 +25,7 @@ FEEDBACK_DISPLAY_DURATION = 0.8  # Sekunden für Done/Error-Anzeige
 
 from config import VISUAL_NOISE_GATE, VISUAL_GAIN
 from utils.state import AppState
+import math
 
 def _get_overlay_color(r: int, g: int, b: int, a: float = 1.0):
     """Erstellt NSColor aus RGB-Werten."""
@@ -147,7 +148,6 @@ class SoundWaveView:
 
         # Verstärkung für visuelle Sichtbarkeit mit nicht-linearer Kurve
         # sqrt(level) sorgt dafür, dass leise Töne stärker angehoben werden als laute
-        import math
         amplified = min(math.sqrt(level) * VISUAL_GAIN, 1.0)
         
         # Balken-Mapping (Symmetrisch: 0-1-2-1-0)
