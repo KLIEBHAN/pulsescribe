@@ -372,7 +372,6 @@ class OverlayController:
         from AppKit import (  # type: ignore[import-not-found]
             NSColor,
             NSFont,
-            NSFontWeightBold,
             NSFontWeightMedium,
             NSFontWeightSemibold,
             NSFontWeightLight,

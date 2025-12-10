@@ -1,6 +1,5 @@
 """Tests für Provider-Module."""
 
-from unittest.mock import Mock, patch
 
 import pytest
 

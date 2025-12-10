@@ -1,8 +1,7 @@
 """Tests für utils/hotkey.py – Hotkey-Parsing und Auto-Paste."""
 
 import pytest
-from unittest.mock import MagicMock, patch
-import sys
+from unittest.mock import patch
 import subprocess
 
 import utils.hotkey

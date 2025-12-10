@@ -11,9 +11,6 @@ from refine.llm import (
     DEFAULT_GROQ_REFINE_MODEL,
 )
 from transcribe import (
-    maybe_refine_transcript,
-    detect_context,
-    _get_session_id,
     copy_to_clipboard,
 )
 

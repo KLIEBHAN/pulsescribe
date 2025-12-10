@@ -6,10 +6,23 @@ Windows: pyperclip oder win32clipboard
 """
 
 import logging
+import os
 import subprocess
 import sys
 
 logger = logging.getLogger("whisper_go.platform.clipboard")
+
+
+def _get_utf8_env() -> dict:
+    """Erstellt Environment mit UTF-8 Locale für pbcopy/pbpaste.
+
+    Wichtig für PyInstaller Bundles, die keine Shell-Locale erben.
+    Ohne dies werden Umlaute (ü → √º) falsch kodiert.
+    """
+    env = os.environ.copy()
+    env["LANG"] = "en_US.UTF-8"
+    env["LC_ALL"] = "en_US.UTF-8"
+    return env
 
 
 class MacOSClipboard:
@@ -23,6 +36,7 @@ class MacOSClipboard:
                 input=text.encode("utf-8"),
                 timeout=2,
                 capture_output=True,
+                env=_get_utf8_env(),
             )
             if process.returncode != 0:
                 logger.error(f"pbcopy fehlgeschlagen: {process.stderr.decode()}")
@@ -43,6 +57,7 @@ class MacOSClipboard:
                 ["pbpaste"],
                 capture_output=True,
                 timeout=2,
+                env=_get_utf8_env(),
             )
             if process.returncode != 0:
                 return None
@@ -61,6 +76,7 @@ class WindowsClipboard:
         self._pyperclip = None
         try:
             import pyperclip
+
             self._pyperclip = pyperclip
         except ImportError:
             logger.warning("pyperclip nicht installiert, Clipboard nicht verfügbar")

@@ -1,8 +1,7 @@
 import unittest
-from unittest.mock import MagicMock, patch, ANY
+from unittest.mock import MagicMock, patch
 import threading
 import sys
-import queue
 from pathlib import Path
 
 # Add project root to path

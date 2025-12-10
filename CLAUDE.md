@@ -185,6 +185,7 @@ pyinstaller build_app.spec --clean
 - `utils/permissions.py`: Mikrofon-Berechtigung mit Alert-Dialog
 - `config.py`: Logs in `~/.whisper_go/logs/` (nicht im Bundle)
 - Emergency Logging in `~/.whisper_go/startup.log` für Crash-Debugging
+- **Accessibility-Problem bei unsignierten Bundles:** Siehe README.md → Troubleshooting
 
 ## Entwicklungs-Konventionen
 

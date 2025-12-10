@@ -4,7 +4,6 @@ import os
 import unittest
 from unittest.mock import patch
 
-import transcribe
 import utils.daemon
 from utils.daemon import cleanup_stale_pid_file
 

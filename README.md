@@ -390,15 +390,32 @@ Groq uses LPU chips (Language Processing Units) for particularly fast inference.
 
 ## Troubleshooting
 
-| Problem                   | Solution                                                              |
-| ------------------------- | --------------------------------------------------------------------- |
-| Module not installed      | `pip install -r requirements.txt`                                     |
-| API Key missing           | `export DEEPGRAM_API_KEY="..."` (or OPENAI/GROQ)                      |
-| Microphone issues (macOS) | `brew install portaudio && pip install --force-reinstall sounddevice` |
-| Microphone permission     | Grant access in System Settings → Privacy & Security → Microphone     |
-| ffmpeg missing            | `brew install ffmpeg` (macOS) or `sudo apt install ffmpeg` (Ubuntu)   |
-| Transcription slow        | Switch to `--mode groq` or `--mode deepgram` instead of `local`       |
-| Daemon crashes silently   | Check `~/.whisper_go/startup.log` for emergency logs                  |
+| Problem                             | Solution                                                                 |
+| ----------------------------------- | ------------------------------------------------------------------------ |
+| Module not installed                | `pip install -r requirements.txt`                                        |
+| API Key missing                     | `export DEEPGRAM_API_KEY="..."` (or OPENAI/GROQ)                         |
+| Microphone issues (macOS)           | `brew install portaudio && pip install --force-reinstall sounddevice`    |
+| Microphone permission               | Grant access in System Settings → Privacy & Security → Microphone        |
+| ffmpeg missing                      | `brew install ffmpeg` (macOS) or `sudo apt install ffmpeg` (Ubuntu)      |
+| Transcription slow                  | Switch to `--mode groq` or `--mode deepgram` instead of `local`          |
+| Daemon crashes silently             | Check `~/.whisper_go/startup.log` for emergency logs                     |
+| Auto-Paste not working (App Bundle) | See [Auto-Paste Troubleshooting](#auto-paste-troubleshooting-app-bundle) |
+
+### Auto-Paste Troubleshooting (App Bundle)
+
+If Auto-Paste doesn't work in `WhisperGo.app` (text is copied but not pasted):
+
+**Symptom:** Log shows `AXIsProcessTrusted = False` even though the app is enabled in Accessibility.
+
+**Cause:** Unsigned PyInstaller bundles change their hash with every rebuild. macOS doesn't recognize the "new" app as authorized.
+
+**Solution:**
+
+1. System Settings → Privacy & Security → Accessibility
+2. **Remove** `WhisperGo` (minus button)
+3. **Re-add** `WhisperGo` (plus button or drag & drop the app)
+
+> **Tip:** After every `pyinstaller build_app.spec`, you need to repeat this step as long as the app is not code-signed.
 
 ### Log Files
 

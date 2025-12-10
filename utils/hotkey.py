@@ -4,10 +4,9 @@ Hotkey-Parsing und Auto-Paste Utilities.
 Extrahiert aus hotkey_daemon.py.
 """
 
-import logging
+import os
 import subprocess
 import time
-import sys
 
 from utils.logging import get_logger
 
@@ -175,10 +174,10 @@ def _paste_via_pynput() -> bool:
         return True
 
     except ImportError:
-        logger.debug("pynput nicht installiert")
+        logger.warning("pynput nicht installiert")
         return False
     except Exception as e:
-        logger.debug(f"pynput fehlgeschlagen: {e}")
+        logger.warning(f"pynput fehlgeschlagen: {e}")
         return False
 
 
@@ -212,16 +211,16 @@ def _paste_via_quartz() -> bool:
         return True
 
     except ImportError as e:
-        logger.debug(f"Quartz nicht verfügbar: {e}")
+        logger.warning(f"Quartz nicht verfügbar: {e}")
         return False
     except Exception as e:
-        logger.debug(f"CGEventPost fehlgeschlagen: {e}")
+        logger.warning(f"CGEventPost fehlgeschlagen: {e}")
         return False
 
 
 def _paste_via_osascript() -> bool:
     """Fallback: Paste via osascript (braucht Accessibility!)."""
-    logger.debug("Versuche osascript (braucht Accessibility-Berechtigung)")
+    logger.info("Versuche osascript (braucht Accessibility-Berechtigung)")
     result = subprocess.run(
         [
             "osascript",
@@ -232,10 +231,18 @@ def _paste_via_osascript() -> bool:
         text=True,
     )
     if result.returncode != 0:
-        logger.debug(f"osascript fehlgeschlagen: {result.stderr}")
+        logger.warning(f"osascript fehlgeschlagen: {result.stderr}")
         return False
     logger.info("Auto-Paste: Cmd+V gesendet via osascript")
     return True
+
+
+def _get_utf8_env() -> dict:
+    """Erstellt Environment mit UTF-8 Locale für pbcopy/pbpaste."""
+    env = os.environ.copy()
+    env["LANG"] = "en_US.UTF-8"
+    env["LC_ALL"] = "en_US.UTF-8"
+    return env
 
 
 def paste_transcript(text: str) -> bool:
@@ -255,15 +262,17 @@ def paste_transcript(text: str) -> bool:
     """
     logger.info(f"Auto-Paste: '{text[:50]}{'...' if len(text) > 50 else ''}'")
 
+    # UTF-8 Environment für pbcopy/pbpaste (wichtig für Umlaute)
+    utf8_env = _get_utf8_env()
+
     # 1. In Clipboard kopieren via pbcopy
     try:
-        # Nutzung von subprocess direkt für pbcopy statt clipboard.py um Abhängigkeiten minimal zu halten
-        # oder wir nutzen utils.clipboard später. Hier erstmal inline wie in hotkey_daemon.
         process = subprocess.run(
             ["pbcopy"],
             input=text.encode("utf-8"),
             capture_output=True,
             timeout=5,
+            env=utf8_env,
         )
         if process.returncode != 0:
             logger.error(f"pbcopy fehlgeschlagen: {process.stderr.decode()}")
@@ -282,6 +291,7 @@ def paste_transcript(text: str) -> bool:
             ["pbpaste"],
             capture_output=True,
             timeout=5,
+            env=utf8_env,
         )
         clipboard_content = result.stdout.decode("utf-8")
         if clipboard_content != text:
@@ -312,7 +322,10 @@ def paste_transcript(text: str) -> bool:
         return True
 
     logger.error(
-        "Auto-Paste fehlgeschlagen. Bitte Terminal.app in Bedienungshilfen hinzufügen: "
-        "Systemeinstellungen → Datenschutz → Bedienungshilfen"
+        "Auto-Paste fehlgeschlagen (alle 3 Methoden). "
+        "Mögliche Ursachen:\n"
+        "  1. WhisperGo.app fehlt in: Systemeinstellungen → Datenschutz → Bedienungshilfen\n"
+        "  2. Nach App-Neubuild: App entfernen und neu hinzufügen (Signatur geändert)\n"
+        "  3. Text wurde in Zwischenablage kopiert - manuell mit CMD+V einfügen"
     )
     return False

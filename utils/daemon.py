@@ -9,7 +9,6 @@ import signal
 import subprocess
 import sys
 import time
-from pathlib import Path
 
 from config import PID_FILE
 from utils.logging import get_session_id

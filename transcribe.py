@@ -29,18 +29,15 @@ import argparse  # noqa: E402
 import json  # noqa: E402
 import logging  # noqa: E402
 import os  # noqa: E402
-import signal  # noqa: E402
 import sys  # noqa: E402
 import threading  # noqa: E402
-from collections.abc import AsyncIterator  # noqa: E402
 import asyncio  # noqa: E402
 from typing import TYPE_CHECKING  # noqa: E402
 from providers.deepgram_stream import deepgram_stream_core  # noqa: E402
-from logging.handlers import RotatingFileHandler  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 if TYPE_CHECKING:
-    from deepgram.listen.v1.socket_client import AsyncV1SocketClient
+    pass
 
 # Import-Zeit messen (alle Standardlib-Imports abgeschlossen)
 _IMPORTS_DONE = _time_module.perf_counter()
@@ -85,7 +82,7 @@ _groq_client = None
 
 
 from utils.logging import setup_logging, log, error, get_session_id as _get_session_id
-from utils.timing import timed_operation, format_duration as _format_duration, log_preview as _log_preview
+from utils.timing import format_duration as _format_duration
 
 
 def load_environment() -> None:
@@ -136,7 +133,7 @@ from audio.recording import record_audio, record_audio_daemon
 # =============================================================================
 
 
-from utils import daemonize as _daemonize, cleanup_stale_pid_file as _cleanup_stale_pid_file, is_whisper_go_process as _is_whisper_go_process
+from utils import daemonize as _daemonize, cleanup_stale_pid_file as _cleanup_stale_pid_file
 
 
 # =============================================================================
@@ -191,7 +188,6 @@ def load_vocabulary() -> dict:
 # Kontext-Erkennung (delegiert an refine.context)
 # =============================================================================
 
-from refine.context import detect_context
 
 
 # =============================================================================

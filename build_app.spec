@@ -4,6 +4,18 @@ PyInstaller spec für WhisperGo.app
 
 Build: pyinstaller build_app.spec
 Output: dist/WhisperGo.app
+
+WICHTIG: Accessibility-Berechtigungen und Code-Signing
+=======================================================
+macOS identifiziert Apps anhand ihrer Signatur. Bei unsignierten Builds:
+- Nach JEDEM Neubuild muss die App in Bedienungshilfen NEU hinzugefügt werden
+- macOS merkt sich den Hash der Binary, der sich bei jedem Build ändert
+
+Für stabilen Betrieb die App signieren:
+    codesign --force --deep --sign - dist/WhisperGo.app
+
+Oder mit Developer ID für Distribution:
+    codesign --force --deep --sign "Developer ID Application: Name" dist/WhisperGo.app
 """
 
 block_cipher = None

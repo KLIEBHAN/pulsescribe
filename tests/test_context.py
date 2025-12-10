@@ -7,7 +7,6 @@ from refine.context import (
     detect_context,
     _get_custom_app_contexts,
     _app_to_context,
-    DEFAULT_APP_CONTEXTS,
 )
 
 

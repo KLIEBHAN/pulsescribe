@@ -1,7 +1,7 @@
 """Tests für whisper_platform Module."""
 
 import sys
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 import pytest
 

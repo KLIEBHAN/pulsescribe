@@ -8,7 +8,6 @@ Windows: winsound mit System-Sounds
 import logging
 import subprocess
 import sys
-from pathlib import Path
 
 logger = logging.getLogger("whisper_go.platform.sound")
 
