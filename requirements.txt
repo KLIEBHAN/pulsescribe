@@ -11,3 +11,4 @@ quickmachotkey>=2023.11.17
 numpy
 pynput
 pyobjc-framework-Cocoa
+pyobjc-framework-AVFoundation
