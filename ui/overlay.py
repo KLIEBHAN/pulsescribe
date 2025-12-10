@@ -13,9 +13,9 @@ OVERLAY_TEXT_FIELD_HEIGHT = 24 # Einzeilige Textanzeige
 OVERLAY_WINDOW_LEVEL = 25      # Über allen Fenstern, kCGFloatingWindowLevel
 
 # Schallwellen-Visualisierung
-WAVE_BAR_COUNT = 5             # Anzahl der animierten Balken
-WAVE_BAR_WIDTH = 4             # Breite jedes Balkens in Pixel
-WAVE_BAR_GAP = 5               # Abstand zwischen Balken
+WAVE_BAR_COUNT = 10            # Anzahl der animierten Balken
+WAVE_BAR_WIDTH = 3             # Schlankere Balkenbreite in Pixel
+WAVE_BAR_GAP = 3               # Engerer Abstand zwischen Balken
 WAVE_BAR_MIN_HEIGHT = 8        # Ruhezustand-Höhe
 WAVE_BAR_MAX_HEIGHT = 48       # Maximale Höhe bei voller Animation
 WAVE_AREA_WIDTH = WAVE_BAR_COUNT * WAVE_BAR_WIDTH + (WAVE_BAR_COUNT - 1) * WAVE_BAR_GAP
@@ -26,6 +26,33 @@ FEEDBACK_DISPLAY_DURATION = 0.8  # Sekunden für Done/Error-Anzeige
 from config import VISUAL_NOISE_GATE, VISUAL_GAIN
 from utils.state import AppState
 import math
+
+
+def _build_height_factors() -> list[float]:
+    """Erzeugt symmetrische Höhenfaktoren für alle Balken."""
+    if WAVE_BAR_COUNT <= 1:
+        return [1.0]
+
+    center = (WAVE_BAR_COUNT - 1) / 2
+    factors: list[float] = []
+    for i in range(WAVE_BAR_COUNT):
+        # Cosine-Falloff sorgt für weich ansteigende Mitte
+        emphasis = math.cos((abs(i - center) / center) * (math.pi / 2)) ** 2
+        factors.append(0.35 + 0.65 * emphasis)
+    return factors
+
+
+def _build_recording_durations() -> list[float]:
+    """Gibt leicht variierende Dauerwerte für die Aufnahme-Animation zurück."""
+    if WAVE_BAR_COUNT <= 1:
+        return [0.4]
+
+    durations: list[float] = []
+    for i in range(WAVE_BAR_COUNT):
+        phase = i / (WAVE_BAR_COUNT - 1)
+        durations.append(0.36 + 0.08 * math.sin(phase * math.pi))
+    return durations
+
 
 def _get_overlay_color(r: int, g: int, b: int, a: float = 1.0):
     """Erstellt NSColor aus RGB-Werten."""
@@ -66,6 +93,9 @@ class SoundWaveView:
         self._color_refining = _get_overlay_color(156, 39, 176)
         self._color_success = _get_overlay_color(51, 217, 178)
         self._color_error = _get_overlay_color(255, 71, 87)
+
+        self._height_factors = _build_height_factors()
+        self._recording_durations = _build_recording_durations()
 
         # Balken erstellen
         center_y = frame.size.height / 2
@@ -139,35 +169,39 @@ class SoundWaveView:
             self.stop_animating()
 
         if self.current_animation != "recording":
-             self.current_animation = "recording"
-             self.set_bar_color(self._color_recording)
+            self.current_animation = "recording"
+            self.set_bar_color(self._color_recording)
         
         # Noise Gate für Visualisierung: Sehr leise Pegel ignorieren
         if level < VISUAL_NOISE_GATE:
-             level = 0.0
+            level = 0.0
 
         # Verstärkung für visuelle Sichtbarkeit mit nicht-linearer Kurve
         # sqrt(level) sorgt dafür, dass leise Töne stärker angehoben werden als laute
         amplified = min(math.sqrt(level) * VISUAL_GAIN, 1.0)
         
-        # Balken-Mapping (Symmetrisch: 0-1-2-1-0)
+        # Balken-Mapping (symmetrisch von außen nach innen)
         # Wir fügen etwas Randomness hinzu, damit es lebendig wirkt
         import random
         from AppKit import NSMakeRect # type: ignore[import-not-found]
-        
-        # Basis-Höhenfaktoren für die 5 Balken (Mitte höher)
-        factors = [0.4, 0.7, 1.0, 0.7, 0.4]
         
         for i, bar in enumerate(self.bars):
             # Berechne Zielhöhe
             base_height = WAVE_BAR_MIN_HEIGHT
             max_add = WAVE_BAR_MAX_HEIGHT - WAVE_BAR_MIN_HEIGHT
-            
+
+            # Dynamik-Boost: leichte Varianz pro Balken pro Frame
+            activity = 0.18 + 0.55 * amplified
+            factor_variation = max(0.4, 1.0 + random.uniform(-activity, activity))
+
             # Höhe = Min + (Level * Factor * MaxAdd) + Jitter
-            height = base_height + (amplified * factors[i] * max_add)
-            
-            # Kleiner Jitter für Lebendigkeit
-            jitter = random.uniform(-2, 2)
+            height = base_height + (
+                amplified * self._height_factors[i] * factor_variation * max_add
+            )
+
+            # Größerer Jitter, skaliert mit Lautstärke
+            jitter_range = 1.5 + 5.0 * amplified
+            jitter = random.uniform(-jitter_range, jitter_range)
             height = max(WAVE_BAR_MIN_HEIGHT, min(WAVE_BAR_MAX_HEIGHT, height + jitter))
             
             # Disable implicit animations for direct update
@@ -176,7 +210,7 @@ class SoundWaveView:
             
             # Da wir CALayer nutzen, ist bounds update normalerweise animiert (implicit).
             # Wir wollen aber schnelle Updates.
-            # Man könnte Actions disablen, aber für 5 Balken bei ~20-50Hz ist es oft ok.
+            # Man könnte Actions disablen, aber für die wenigen Balken bei ~20-50Hz ist es oft ok.
             
             # Zentrieren in Y
             # Frame origin ist unten links im Parent (wenn nicht anders transformiert)
@@ -195,9 +229,10 @@ class SoundWaveView:
         self.animations_running = True
         self.set_bar_color(self._color_recording)
 
-        durations = [0.42, 0.38, 0.45, 0.39, 0.41]
         for i, bar in enumerate(self.bars):
-            anim = self._create_height_animation(WAVE_BAR_MAX_HEIGHT, durations[i])
+            anim = self._create_height_animation(
+                WAVE_BAR_MAX_HEIGHT, self._recording_durations[i]
+            )
             bar.addAnimation_forKey_(anim, f"heightAnim{i}")
 
     def start_transcribing_animation(self) -> None:
