@@ -308,7 +308,7 @@ class OverlayController:
         if not self.window:
             return
 
-        from AppKit import NSColor, NSFont, NSFontWeightMedium, NSFontWeightSemibold  # type: ignore[import-not-found]
+        from AppKit import NSColor, NSFont, NSFontWeightBold, NSFontWeightMedium, NSFontWeightSemibold  # type: ignore[import-not-found]
 
         self._current_state = state
 
@@ -356,10 +356,17 @@ class OverlayController:
 
         elif state == "done":
             self._wave_view.start_success_animation()
-            self._text_field.setStringValue_("Done")
+            
+            # Show actual text if available
+            if interim_text:
+                text = interim_text.replace("\n", " ").strip()
+            else:
+                text = "Done"
+                
+            self._text_field.setStringValue_(text)
             self._text_field.setTextColor_(_get_overlay_color(51, 217, 178))
             self._text_field.setFont_(
-                NSFont.systemFontOfSize_weight_(OVERLAY_FONT_SIZE, NSFontWeightSemibold)
+                NSFont.systemFontOfSize_weight_(OVERLAY_FONT_SIZE, NSFontWeightBold)
             )
             self._fade_in()
             self._start_fade_out_timer()

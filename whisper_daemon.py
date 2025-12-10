@@ -410,7 +410,7 @@ class WhisperDaemon:
                     self._update_state("error")
                 elif result:
                     self._paste_result(result)
-                    self._update_state("done")
+                    self._update_state("done", result)
                 else:
                     logger.warning("Leeres Transkript")
                     self._update_state("idle")
