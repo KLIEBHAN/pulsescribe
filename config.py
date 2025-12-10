@@ -69,7 +69,7 @@ OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 # Lokale Pfade
 # =============================================================================
 
-from utils.paths import get_resource_path
+from utils.paths import get_resource_path  # noqa: E402 (after constants to avoid circular import)
 
 # Basis-Verzeichnis für Ressourcen (Code, Assets)
 SCRIPT_DIR = Path(get_resource_path("."))

@@ -7,7 +7,6 @@ import logging
 import sys
 import uuid
 from logging.handlers import RotatingFileHandler
-from pathlib import Path
 
 # Logger-Singleton
 logger = logging.getLogger("whisper_go")
