@@ -369,7 +369,16 @@ class OverlayController:
         if not self.window:
             return
 
-        from AppKit import NSColor, NSFont, NSFontWeightBold, NSFontWeightMedium, NSFontWeightSemibold  # type: ignore[import-not-found]
+        from AppKit import (  # type: ignore[import-not-found]
+            NSColor,
+            NSFont,
+            NSFontWeightBold,
+            NSFontWeightMedium,
+            NSFontWeightSemibold,
+            NSFontWeightLight,
+            NSFontManager,
+            NSFontItalicTrait,
+        )
 
         self._current_state = state
 
@@ -390,13 +399,18 @@ class OverlayController:
             if text:
                 self._wave_view.start_recording_animation()
                 display_text = f"{text} ..."
-                self._text_field.setFont_(
-                    NSFont.systemFontOfSize_weight_(
-                        OVERLAY_FONT_SIZE, NSFontWeightMedium
-                    )
+
+                # Ghost-Look: Light + Italic + Reduced Opacity
+                font = NSFont.systemFontOfSize_weight_(
+                    OVERLAY_FONT_SIZE, NSFontWeightLight
                 )
+                italic_font = NSFontManager.sharedFontManager().convertFont_toHaveTrait_(
+                    font, NSFontItalicTrait
+                )
+                self._text_field.setFont_(italic_font)
+
                 self._text_field.setTextColor_(
-                    NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.9)
+                    NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.5)
                 )
             else:
                 # Fallback falls Recording ohne Text (sollte eigentlich Visualisierung haben)
@@ -439,9 +453,11 @@ class OverlayController:
                 display_text = "Done"
                 
             self._text_field.setStringValue_(display_text)
-            self._text_field.setTextColor_(_get_overlay_color(51, 217, 178))
+            self._text_field.setTextColor_(
+                NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.95)
+            )
             self._text_field.setFont_(
-                NSFont.systemFontOfSize_weight_(OVERLAY_FONT_SIZE, NSFontWeightBold)
+                NSFont.systemFontOfSize_weight_(OVERLAY_FONT_SIZE, NSFontWeightSemibold)
             )
             self._fade_in()
             self._start_fade_out_timer()
