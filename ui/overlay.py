@@ -15,10 +15,12 @@ OVERLAY_WINDOW_LEVEL = 25      # Über allen Fenstern, kCGFloatingWindowLevel
 # Schallwellen-Visualisierung
 WAVE_BAR_COUNT = 10            # Anzahl der animierten Balken
 WAVE_BAR_WIDTH = 3             # Schlankere Balkenbreite in Pixel
-WAVE_BAR_GAP = 3               # Engerer Abstand zwischen Balken
+WAVE_BAR_GAP = 4               # Etwas mehr Abstand zwischen Balken
 WAVE_BAR_MIN_HEIGHT = 8        # Ruhezustand-Höhe
 WAVE_BAR_MAX_HEIGHT = 48       # Maximale Höhe bei voller Animation
 WAVE_AREA_WIDTH = WAVE_BAR_COUNT * WAVE_BAR_WIDTH + (WAVE_BAR_COUNT - 1) * WAVE_BAR_GAP
+
+WAVE_SMOOTHING_ALPHA = 0.65    # Glättung für direkte Level-Updates (0..1)
 
 # Feedback-Anzeigedauer
 FEEDBACK_DISPLAY_DURATION = 0.8  # Sekunden für Done/Error-Anzeige
@@ -96,6 +98,7 @@ class SoundWaveView:
 
         self._height_factors = _build_height_factors()
         self._recording_durations = _build_recording_durations()
+        self._last_heights = [WAVE_BAR_MIN_HEIGHT for _ in range(WAVE_BAR_COUNT)]
 
         # Balken erstellen
         center_y = frame.size.height / 2
@@ -190,20 +193,24 @@ class SoundWaveView:
             base_height = WAVE_BAR_MIN_HEIGHT
             max_add = WAVE_BAR_MAX_HEIGHT - WAVE_BAR_MIN_HEIGHT
 
-            # Dynamik-Boost: leichte Varianz pro Balken pro Frame
-            activity = 0.18 + 0.55 * amplified
-            factor_variation = max(0.4, 1.0 + random.uniform(-activity, activity))
+            # Dynamik-Boost: noch etwas stärkere Varianz pro Balken pro Frame
+            activity = 0.20 + 0.60 * amplified
+            factor_variation = max(0.6, 1.0 + random.uniform(-activity, activity))
 
             # Höhe = Min + (Level * Factor * MaxAdd) + Jitter
             height = base_height + (
                 amplified * self._height_factors[i] * factor_variation * max_add
             )
 
-            # Größerer Jitter, skaliert mit Lautstärke
-            jitter_range = 1.5 + 5.0 * amplified
+            # Jitter, skaliert mit Lautstärke
+            jitter_range = 2.0 + 6.0 * amplified
             jitter = random.uniform(-jitter_range, jitter_range)
             height = max(WAVE_BAR_MIN_HEIGHT, min(WAVE_BAR_MAX_HEIGHT, height + jitter))
-            
+
+            # Weiche Glättung für weniger Flackern
+            prev_height = self._last_heights[i]
+            smoothed_height = prev_height + WAVE_SMOOTHING_ALPHA * (height - prev_height)
+
             # Disable implicit animations for direct update
             # CATransaction.begin() ... commit() wäre sauberer, aber overhead.
             # Wir setzen bounds direkt.
@@ -217,7 +224,8 @@ class SoundWaveView:
             # Aber wir haben frame gesetzt. Bounds ändern ändert Size um AnchorPoint (Center).
             
             # Einfacher: Setze Bounds (Größe)
-            bar.setBounds_(NSMakeRect(0, 0, WAVE_BAR_WIDTH, height))
+            bar.setBounds_(NSMakeRect(0, 0, WAVE_BAR_WIDTH, smoothed_height))
+            self._last_heights[i] = smoothed_height
 
 
     def start_recording_animation(self) -> None:
@@ -295,6 +303,7 @@ class SoundWaveView:
         for bar in self.bars:
             bar.removeAllAnimations()
             bar.setBounds_(NSMakeRect(0, 0, WAVE_BAR_WIDTH, WAVE_BAR_MIN_HEIGHT))
+        self._last_heights = [WAVE_BAR_MIN_HEIGHT for _ in range(WAVE_BAR_COUNT)]
 
 
 class OverlayController:
