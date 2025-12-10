@@ -283,6 +283,9 @@ WHISPER_GO_HOTKEY=f19
 
 # Modus: toggle (PTT nicht unterstützt mit QuickMacHotKey)
 WHISPER_GO_HOTKEY_MODE=toggle
+
+# Dock-Icon (default: true) – auf false setzen für Menubar-only Modus
+WHISPER_GO_DOCK_ICON=true
 ```
 
 **Unterstützte Hotkeys:**
@@ -304,14 +307,14 @@ WHISPER_GO_HOTKEY_MODE=toggle
 
 Das Overlay zeigt den aktuellen Status durch Farben und Animationen an:
 
-| Status           | Farbe  | Animation | Bedeutung |
-| ---------------- | ------ | --------- | --------- |
-| **Listening**    | 🌸 Rosa  | Atmen     | Hotkey gedrückt, wartet auf Sprache |
-| **Recording**    | 🔴 Rot   | Wellen    | Sprache erkannt, Aufnahme läuft |
-| **Transcribing** | 🟠 Orange| Laden     | Finalisierung der Transkription |
-| **Refining**     | 💜 Violett| Pulsieren | LLM-Nachbearbeitung läuft |
-| **Done**         | ✅ Grün  | Hüpfen    | Fertig, Text eingefügt |
-| **Error**        | ❌ Rot   | Blinken   | Fehler aufgetreten |
+| Status           | Farbe      | Animation | Bedeutung                           |
+| ---------------- | ---------- | --------- | ----------------------------------- |
+| **Listening**    | 🌸 Rosa    | Atmen     | Hotkey gedrückt, wartet auf Sprache |
+| **Recording**    | 🔴 Rot     | Wellen    | Sprache erkannt, Aufnahme läuft     |
+| **Transcribing** | 🟠 Orange  | Laden     | Finalisierung der Transkription     |
+| **Refining**     | 💜 Violett | Pulsieren | LLM-Nachbearbeitung läuft           |
+| **Done**         | ✅ Grün    | Hüpfen    | Fertig, Text eingefügt              |
+| **Error**        | ❌ Rot     | Blinken   | Fehler aufgetreten                  |
 
 Beides ist integriert und startet automatisch mit dem Daemon.
 
@@ -392,8 +395,22 @@ Groq nutzt LPU-Chips (Language Processing Units) für besonders schnelle Inferen
 | Modul nicht installiert     | `pip install -r requirements.txt`                                     |
 | API-Key fehlt               | `export DEEPGRAM_API_KEY="..."` (oder OPENAI/GROQ)                    |
 | Mikrofon geht nicht (macOS) | `brew install portaudio && pip install --force-reinstall sounddevice` |
+| Mikrofon-Berechtigung       | Zugriff erlauben unter Systemeinstellungen → Datenschutz → Mikrofon   |
 | ffmpeg fehlt                | `brew install ffmpeg` (macOS) oder `sudo apt install ffmpeg` (Ubuntu) |
 | Transkription langsam       | Wechsel zu `--mode groq` oder `--mode deepgram` statt `local`         |
+| Daemon startet nicht        | Prüfe `~/.whisper_go/startup.log` für Emergency-Logs                  |
+
+### Log-Dateien
+
+Logs werden in `~/.whisper_go/logs/` gespeichert:
+
+```bash
+# Haupt-Log
+~/.whisper_go/logs/whisper_go.log
+
+# Emergency Startup-Log (falls Daemon nicht startet)
+~/.whisper_go/startup.log
+```
 
 ## Development
 

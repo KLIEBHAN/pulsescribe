@@ -263,7 +263,11 @@ async def deepgram_stream_core(
         # Unified-Daemon-Mode: Externes threading.Event überwachen
         def _watch_external_stop():
             external_stop_event.wait()
-            loop.call_soon_threadsafe(stop_event.set)
+            try:
+                loop.call_soon_threadsafe(stop_event.set)
+            except RuntimeError:
+                # Event loop already closed (App shutdown via CMD+Q)
+                pass
 
         stop_watcher = threading.Thread(target=_watch_external_stop, daemon=True)
         stop_watcher.start()

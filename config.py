@@ -69,10 +69,21 @@ OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 # Lokale Pfade
 # =============================================================================
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-LOG_DIR = SCRIPT_DIR / "logs"
+from utils.paths import get_resource_path  # noqa: E402 (after constants to avoid circular import)
+
+# Basis-Verzeichnis für Ressourcen (Code, Assets)
+SCRIPT_DIR = Path(get_resource_path("."))
+
+# User-Verzeichnis für Konfiguration und Logs
+USER_CONFIG_DIR = Path.home() / ".whisper_go"
+USER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+
+# Logs im User-Verzeichnis speichern
+LOG_DIR = USER_CONFIG_DIR / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
 LOG_FILE = LOG_DIR / "whisper_go.log"
-VOCABULARY_FILE = Path.home() / ".whisper_go" / "vocabulary.json"
+
+VOCABULARY_FILE = USER_CONFIG_DIR / "vocabulary.json"
 
 
 __all__ = [

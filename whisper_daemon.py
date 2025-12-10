@@ -26,34 +26,44 @@ import sys
 import tempfile
 import threading
 import time
-from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from config import INTERIM_FILE, LOG_FILE, SCRIPT_DIR, VAD_THRESHOLD  # LOG_FILE from config is whisper_go.log, utilizing unified logging
-from utils import setup_logging, log, error, get_session_id
+# --- Emergency Logging (Before everything else) ---
+def emergency_log(msg: str):
+    """Schreibt direkt in eine Datei im User-Home, falls Logging versagt."""
+    try:
+        debug_file = Path.home() / ".whisper_go" / "startup.log"
+        debug_file.parent.mkdir(exist_ok=True)
+        with open(debug_file, "a", encoding="utf-8") as f:
+            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            f.write(f"[{timestamp}] {msg}\n")
+    except Exception:
+        pass
+
+emergency_log("=== Booting Whisper Daemon ===")
+
+try:
+    from config import INTERIM_FILE, VAD_THRESHOLD
+    from utils import setup_logging
+    from config import DEFAULT_DEEPGRAM_MODEL
+    from providers.deepgram_stream import deepgram_stream_core
+    from providers import get_provider
+    from refine.llm import refine_transcript
+    from whisper_platform import get_sound_player
+    from utils.state import AppState, DaemonMessage, MessageType
+    from utils import parse_hotkey, paste_transcript
+    from utils.permissions import check_microphone_permission, check_accessibility_permission
+    from ui import MenuBarController, OverlayController
+except Exception as e:
+    emergency_log(f"CRITICAL IMPORT ERROR: {e}")
+    sys.exit(1)
+
+emergency_log("Imports successful")
 
 # DEBOUNCE_INTERVAL defined locally as it is specific to hotkey daemon
 DEBOUNCE_INTERVAL = 0.3
 logger = logging.getLogger("whisper_go")
 
-
-
-
-# =============================================================================
-# Imports (Direct)
-# =============================================================================
-
-from config import DEFAULT_DEEPGRAM_MODEL
-from providers.deepgram_stream import deepgram_stream_core
-from providers import get_provider
-from refine.llm import refine_transcript
-from refine.context import detect_context
-from whisper_platform import get_sound_player
-from utils.state import AppState, DaemonMessage, MessageType
-
-from utils import parse_hotkey, paste_transcript
-
-from ui import MenuBarController, OverlayController
 
 # =============================================================================
 # WhisperDaemon: Hauptklasse
@@ -436,6 +446,7 @@ class WhisperDaemon:
                     if isinstance(result, Exception):
                         self._stop_result_polling()
                         logger.error(f"Fehler: {result}")
+                        emergency_log(f"Worker Exception: {result}") # Backup log
                         get_sound_player().play("error")
                         self._update_state(AppState.ERROR)
                         return
@@ -493,12 +504,60 @@ class WhisperDaemon:
         else:
             logger.error("Auto-Paste fehlgeschlagen")
 
+    def _setup_app_menu(self, app) -> None:
+        """Erstellt Application Menu für CMD+Q Support."""
+        from AppKit import NSMenu, NSMenuItem, NSEventModifierFlagCommand  # type: ignore[import-not-found]
+        
+        # Hauptmenüleiste
+        menubar = NSMenu.alloc().init()
+        
+        # App-Menü (erstes Menü, zeigt App-Name in der Menüleiste)
+        app_menu_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Whisper Go", None, ""
+        )
+        menubar.addItem_(app_menu_item)
+        
+        # App-Menü Inhalt (Submenu)
+        app_menu = NSMenu.alloc().initWithTitle_("Whisper Go")
+        
+        # "About Whisper Go" Item
+        about_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "About Whisper Go", "orderFrontStandardAboutPanel:", ""
+        )
+        app_menu.addItem_(about_item)
+        
+        app_menu.addItem_(NSMenuItem.separatorItem())
+        
+        # "Quit Whisper Go" Item mit CMD+Q
+        quit_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Quit Whisper Go", "terminate:", "q"
+        )
+        quit_item.setKeyEquivalentModifierMask_(NSEventModifierFlagCommand)
+        app_menu.addItem_(quit_item)
+        
+        app_menu_item.setSubmenu_(app_menu)
+        
+        # Menüleiste aktivieren
+        app.setMainMenu_(menubar)
+
     def run(self) -> None:
         """Startet Daemon (blockiert)."""
         from quickmachotkey import quickHotKey
         from AppKit import NSApplication  # type: ignore[import-not-found]
         from Foundation import NSTimer  # type: ignore[import-not-found]
         import signal
+
+        # NSApplication initialisieren
+        app = NSApplication.sharedApplication()
+        
+        # Dock-Icon: Konfigurierbar via ENV (default: an)
+        # 0 = Regular (Dock-Icon), 1 = Accessory (kein Dock-Icon)
+        show_dock = os.getenv("WHISPER_GO_DOCK_ICON", "true").lower() != "false"
+        app.setActivationPolicy_(0 if show_dock else 1)
+        
+        # Application Menu erstellen (für CMD+Q Support wenn Dock-Icon aktiv)
+        if show_dock:
+            self._setup_app_menu(app)
 
         # UI-Controller initialisieren
         logger.info("Initialisiere UI-Controller...")
@@ -509,21 +568,29 @@ class WhisperDaemon:
         # Hotkey parsen
         virtual_key, modifier_mask = parse_hotkey(self.hotkey)
 
+        # Berechtigungen prüfen (Mikrofon - blockierend)
+        if not check_microphone_permission():
+            logger.error("Daemon Start abgebrochen: Fehlende Mikrofon-Berechtigung")
+            return
+        
+        # Accessibility prüfen (nur Warnung, nicht blockierend)
+        check_accessibility_permission()
+
         logger.info(
             f"Daemon gestartet: hotkey={self.hotkey}, "
             f"virtualKey={virtual_key}, modifierMask={modifier_mask}"
         )
         print("🎤 whisper_daemon läuft", file=sys.stderr)
         print(f"   Hotkey: {self.hotkey}", file=sys.stderr)
-        print("   Beenden mit Ctrl+C", file=sys.stderr)
+        if show_dock:
+            print("   Beenden: CMD+Q (wenn fokussiert) oder Ctrl+C", file=sys.stderr)
+        else:
+            print("   Beenden: Menubar-Icon → Quit oder Ctrl+C", file=sys.stderr)
 
         # Hotkey registrieren
         @quickHotKey(virtualKey=virtual_key, modifierMask=modifier_mask)  # type: ignore[arg-type]
         def hotkey_handler() -> None:
             self._on_hotkey()
-
-        # NSApplication Event-Loop (blockiert)
-        app = NSApplication.sharedApplication()
 
         # FIX: Ctrl+C Support
         # 1. Dummy-Timer, damit der Python-Interpreter regelmäßig läuft und Signale prüft
@@ -546,12 +613,21 @@ class WhisperDaemon:
 
 
 def load_environment() -> None:
-    """Lädt .env-Datei falls vorhanden."""
+    """Lädt .env-Datei aus dem User-Config-Verzeichnis."""
     try:
         from dotenv import load_dotenv
+        from config import USER_CONFIG_DIR
 
-        env_file = SCRIPT_DIR / ".env"
-        load_dotenv(env_file if env_file.exists() else None)
+        # Priorität 1: .env im User-Verzeichnis ~/.whisper_go/.env
+        user_env = USER_CONFIG_DIR / ".env"
+        if user_env.exists():
+            load_dotenv(user_env)
+        
+        # Priorität 2: .env im aktuellen Verzeichnis (für Dev)
+        local_env = Path(".env")
+        if local_env.exists():
+            load_dotenv(local_env)
+
     except ImportError:
         pass
 
@@ -564,6 +640,19 @@ def load_environment() -> None:
 def main() -> int:
     """CLI-Einstiegspunkt."""
     import argparse
+    
+    # Globaler Exception Handler für Crashes
+    def handle_exception(exc_type, exc_value, exc_traceback):
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc_value, exc_traceback)
+            return
+        msg = f"Uncaught exception: {exc_type.__name__}: {exc_value}"
+        logger.critical(msg, exc_info=(exc_type, exc_value, exc_traceback))
+        emergency_log(msg) # Backup
+        
+    sys.excepthook = handle_exception
+    
+    emergency_log("=== Whisper Go Daemon gestartet ===")
 
     # Environment laden bevor Argumente definiert werden (für Defaults)
     load_environment()

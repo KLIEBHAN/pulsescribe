@@ -7,12 +7,6 @@ import logging
 import sys
 import uuid
 from logging.handlers import RotatingFileHandler
-from pathlib import Path
-
-# Log-Konfiguration
-SCRIPT_DIR = Path(__file__).parent.parent
-LOG_DIR = SCRIPT_DIR / "logs"
-LOG_FILE = LOG_DIR / "whisper_go.log"
 
 # Logger-Singleton
 logger = logging.getLogger("whisper_go")
@@ -45,6 +39,9 @@ def setup_logging(debug: bool = False) -> None:
     Args:
         debug: Wenn True, wird auch auf stderr geloggt
     """
+    # Lazy import: bricht circular import (config → utils → logging → config)
+    from config import LOG_FILE
+
     global _session_id
 
     # Session-ID nur einmal generieren
@@ -58,8 +55,11 @@ def setup_logging(debug: bool = False) -> None:
 
     logger.setLevel(logging.DEBUG if debug else logging.INFO)
 
-    # Log-Verzeichnis erstellen falls nicht vorhanden
-    LOG_DIR.mkdir(exist_ok=True)
+    # Log-Verzeichnis sicherstellen
+    try:
+        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass # Ignorieren falls keine Berechtigung, Handler wird dann meckern
 
     # Datei-Handler mit Rotation (max 1MB, 3 Backups)
     file_handler = RotatingFileHandler(

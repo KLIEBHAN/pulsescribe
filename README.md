@@ -13,12 +13,12 @@ Voice input for macOS – inspired by [Wispr Flow](https://wisprflow.ai). Transc
 
 ### Provider Overview
 
-| Provider     | Latency   | Method    | Special Feature               |
-| ------------ | --------- | --------- | ----------------------------- |
+| Provider     | Latency   | Method    | Special Feature                  |
+| ------------ | --------- | --------- | -------------------------------- |
 | **Deepgram** | ~300ms ⚡ | WebSocket | Real-time streaming, recommended |
-| **Groq**     | ~1s       | REST      | Whisper on LPU, very fast     |
-| **OpenAI**   | ~2-3s     | REST      | GPT-4o, highest quality       |
-| **Local**    | ~5-10s    | Whisper   | Offline, no API costs         |
+| **Groq**     | ~1s       | REST      | Whisper on LPU, very fast        |
+| **OpenAI**   | ~2-3s     | REST      | GPT-4o, highest quality          |
+| **Local**    | ~5-10s    | Whisper   | Offline, no API costs            |
 
 ## Quick Start
 
@@ -61,12 +61,12 @@ WHISPER_GO_REFINE_MODEL=openai/gpt-oss-120b
 
 **Why these settings?**
 
-| Setting                            | Reason                                                 |
-| ---------------------------------- | ------------------------------------------------------ |
-| `MODE=deepgram`                    | Fastest option (~300ms) via WebSocket streaming        |
-| `REFINE_PROVIDER=groq`             | Free/cheap LLM inference on LPU hardware               |
-| `REFINE_MODEL=openai/gpt-oss-120b` | Open-source GPT alternative with excellent quality     |
-| `LANGUAGE=en`                      | Explicit language improves transcription accuracy      |
+| Setting                            | Reason                                             |
+| ---------------------------------- | -------------------------------------------------- |
+| `MODE=deepgram`                    | Fastest option (~300ms) via WebSocket streaming    |
+| `REFINE_PROVIDER=groq`             | Free/cheap LLM inference on LPU hardware           |
+| `REFINE_MODEL=openai/gpt-oss-120b` | Open-source GPT alternative with excellent quality |
+| `LANGUAGE=en`                      | Explicit language improves transcription accuracy  |
 
 > **Tip:** For system-wide hotkeys see [Hotkey Integration](#hotkey-integration).
 
@@ -182,12 +182,12 @@ Supported Providers: OpenAI (default), [OpenRouter](https://openrouter.ai), [Gro
 
 Post-processing automatically detects the active app and adjusts the writing style:
 
-| Context   | Apps                      | Style                           |
-| --------- | ------------------------- | ------------------------------- |
-| `email`   | Mail, Outlook, Spark      | Formal, complete sentences      |
-| `chat`    | Slack, Discord, Messages  | Casual, short and concise       |
-| `code`    | VS Code, Cursor, Terminal | Technical, preserve terms       |
-| `default` | All others                | Standard correction             |
+| Context   | Apps                      | Style                      |
+| --------- | ------------------------- | -------------------------- |
+| `email`   | Mail, Outlook, Spark      | Formal, complete sentences |
+| `chat`    | Slack, Discord, Messages  | Casual, short and concise  |
+| `code`    | VS Code, Cursor, Terminal | Technical, preserve terms  |
+| `default` | All others                | Standard correction        |
 
 ```bash
 # Automatic detection (Default)
@@ -214,16 +214,16 @@ Thanks to integrated Voice Activity Detection (VAD), the status switches immedia
 
 Control formatting via spoken commands (automatically active with `--refine`):
 
-| German           | English            | Result   |
-| ---------------- | ------------------ | -------- |
-| "neuer Absatz"   | "new paragraph"    | Paragraph|
-| "neue Zeile"     | "new line"         | Line break|
-| "Punkt"          | "period"           | `.`      |
-| "Komma"          | "comma"            | `,`      |
-| "Fragezeichen"   | "question mark"    | `?`      |
-| "Ausrufezeichen" | "exclamation mark" | `!`      |
-| "Doppelpunkt"    | "colon"            | `:`      |
-| "Semikolon"      | "semicolon"        | `;`      |
+| German           | English            | Result     |
+| ---------------- | ------------------ | ---------- |
+| "neuer Absatz"   | "new paragraph"    | Paragraph  |
+| "neue Zeile"     | "new line"         | Line break |
+| "Punkt"          | "period"           | `.`        |
+| "Komma"          | "comma"            | `,`        |
+| "Fragezeichen"   | "question mark"    | `?`        |
+| "Ausrufezeichen" | "exclamation mark" | `!`        |
+| "Doppelpunkt"    | "colon"            | `:`        |
+| "Semikolon"      | "semicolon"        | `;`        |
 
 ```bash
 # Example
@@ -283,15 +283,18 @@ WHISPER_GO_HOTKEY=f19
 
 # Mode: toggle (PTT not supported with QuickMacHotKey)
 WHISPER_GO_HOTKEY_MODE=toggle
+
+# Dock Icon (default: true) – set to false for menubar-only mode
+WHISPER_GO_DOCK_ICON=true
 ```
 
 **Supported Hotkeys:**
 
-| Format            | Example               |
-| ----------------- | --------------------- |
-| Function Keys     | `f19`, `f1`, `f12`    |
-| Single Key        | `space`, `tab`, `esc` |
-| Key Combination   | `cmd+shift+r`         |
+| Format          | Example               |
+| --------------- | --------------------- |
+| Function Keys   | `f19`, `f1`, `f12`    |
+| Single Key      | `space`, `tab`, `esc` |
+| Key Combination | `cmd+shift+r`         |
 
 ### Usage
 
@@ -304,25 +307,25 @@ WHISPER_GO_HOTKEY_MODE=toggle
 
 The overlay shows the current status through colors and animations:
 
-| Status           | Color  | Animation | Meaning |
-| ---------------- | ------ | --------- | --------- |
-| **Listening**    | 🌸 Pink  | Breathing | Hotkey pressed, waiting for speech |
-| **Recording**    | 🔴 Red   | Waves     | Speech detected, recording active |
-| **Transcribing** | 🟠 Orange| Loading   | Finalizing transcription |
-| **Refining**     | 💜 Violet| Pulsing   | LLM post-processing active |
-| **Done**         | ✅ Green | Bounce    | Done, text pasted |
-| **Error**        | ❌ Red   | Blink     | Error occurred |
+| Status           | Color     | Animation | Meaning                            |
+| ---------------- | --------- | --------- | ---------------------------------- |
+| **Listening**    | 🌸 Pink   | Breathing | Hotkey pressed, waiting for speech |
+| **Recording**    | 🔴 Red    | Waves     | Speech detected, recording active  |
+| **Transcribing** | 🟠 Orange | Loading   | Finalizing transcription           |
+| **Refining**     | 💜 Violet | Pulsing   | LLM post-processing active         |
+| **Done**         | ✅ Green  | Bounce    | Done, text pasted                  |
+| **Error**        | ❌ Red    | Blink     | Error occurred                     |
 
 Both are integrated and start automatically with the daemon.
 
 ## Provider Comparison
 
-| Mode       | Provider | Method    | Latency   | Special Feature                     |
-| ---------- | -------- | --------- | --------- | ----------------------------------- |
-| `deepgram` | Deepgram | WebSocket | ~300ms ⚡ | Real-time streaming (recommended)   |
-| `groq`     | Groq     | REST      | ~1s       | Whisper on LPU, very fast           |
-| `openai`   | OpenAI   | REST      | ~2-3s     | GPT-4o Transcribe, highest quality  |
-| `local`    | Whisper  | Local     | ~5-10s    | Offline, no API costs               |
+| Mode       | Provider | Method    | Latency   | Special Feature                    |
+| ---------- | -------- | --------- | --------- | ---------------------------------- |
+| `deepgram` | Deepgram | WebSocket | ~300ms ⚡ | Real-time streaming (recommended)  |
+| `groq`     | Groq     | REST      | ~1s       | Whisper on LPU, very fast          |
+| `openai`   | OpenAI   | REST      | ~2-3s     | GPT-4o Transcribe, highest quality |
+| `local`    | Whisper  | Local     | ~5-10s    | Offline, no API costs              |
 
 > **Recommendation:** `--mode deepgram` for daily use. The streaming architecture ensures minimal waiting time between recording stop and text insertion.
 
@@ -330,18 +333,18 @@ Both are integrated and start automatically with the daemon.
 
 ### API Models (OpenAI)
 
-| Model                    | Description          |
-| ------------------------ | -------------------- |
-| `gpt-4o-transcribe`      | Best quality ⭐      |
-| `gpt-4o-mini-transcribe` | Faster, cheaper      |
-| `whisper-1`              | Original Whisper     |
+| Model                    | Description      |
+| ------------------------ | ---------------- |
+| `gpt-4o-transcribe`      | Best quality ⭐  |
+| `gpt-4o-mini-transcribe` | Faster, cheaper  |
+| `whisper-1`              | Original Whisper |
 
 ### Deepgram Models
 
-| Model    | Description                        |
-| -------- | ---------------------------------- |
-| `nova-3` | Newest model, best quality ⭐      |
-| `nova-2` | Proven model, cheaper              |
+| Model    | Description                   |
+| -------- | ----------------------------- |
+| `nova-3` | Newest model, best quality ⭐ |
+| `nova-2` | Proven model, cheaper         |
 
 `smart_format` is activated – automatic formatting of dates, currency, and paragraphs.
 
@@ -365,35 +368,49 @@ WHISPER_GO_STREAMING=false
 
 ### Groq Models
 
-| Model                        | Description                         |
-| ---------------------------- | ----------------------------------- |
+| Model                        | Description                          |
+| ---------------------------- | ------------------------------------ |
 | `whisper-large-v3`           | Whisper Large v3, ~300x real-time ⭐ |
-| `distil-whisper-large-v3-en` | English only, even faster           |
+| `distil-whisper-large-v3-en` | English only, even faster            |
 
 Groq uses LPU chips (Language Processing Units) for particularly fast inference.
 
 ### Local Models
 
-| Model  | Parameters | VRAM   | Speed            |
-| ------ | ---------- | ------ | ---------------- |
-| tiny   | 39M        | ~1 GB  | Very fast        |
-| base   | 74M        | ~1 GB  | Fast             |
-| small  | 244M       | ~2 GB  | Medium           |
-| medium | 769M       | ~5 GB  | Slow             |
-| large  | 1550M      | ~10 GB | Very slow        |
-| turbo  | 809M       | ~6 GB  | Fast & good ⭐   |
+| Model  | Parameters | VRAM   | Speed          |
+| ------ | ---------- | ------ | -------------- |
+| tiny   | 39M        | ~1 GB  | Very fast      |
+| base   | 74M        | ~1 GB  | Fast           |
+| small  | 244M       | ~2 GB  | Medium         |
+| medium | 769M       | ~5 GB  | Slow           |
+| large  | 1550M      | ~10 GB | Very slow      |
+| turbo  | 809M       | ~6 GB  | Fast & good ⭐ |
 
 ⭐ = Default model of the provider
 
 ## Troubleshooting
 
-| Problem                     | Solution                                                              |
-| --------------------------- | --------------------------------------------------------------------- |
-| Module not installed        | `pip install -r requirements.txt`                                     |
-| API Key missing             | `export DEEPGRAM_API_KEY="..."` (or OPENAI/GROQ)                      |
-| Microphone issues (macOS)   | `brew install portaudio && pip install --force-reinstall sounddevice` |
-| ffmpeg missing              | `brew install ffmpeg` (macOS) or `sudo apt install ffmpeg` (Ubuntu)   |
-| Transcription slow          | Switch to `--mode groq` or `--mode deepgram` instead of `local`       |
+| Problem                   | Solution                                                              |
+| ------------------------- | --------------------------------------------------------------------- |
+| Module not installed      | `pip install -r requirements.txt`                                     |
+| API Key missing           | `export DEEPGRAM_API_KEY="..."` (or OPENAI/GROQ)                      |
+| Microphone issues (macOS) | `brew install portaudio && pip install --force-reinstall sounddevice` |
+| Microphone permission     | Grant access in System Settings → Privacy & Security → Microphone     |
+| ffmpeg missing            | `brew install ffmpeg` (macOS) or `sudo apt install ffmpeg` (Ubuntu)   |
+| Transcription slow        | Switch to `--mode groq` or `--mode deepgram` instead of `local`       |
+| Daemon crashes silently   | Check `~/.whisper_go/startup.log` for emergency logs                  |
+
+### Log Files
+
+Logs are stored in `~/.whisper_go/logs/`:
+
+```bash
+# Main log file
+~/.whisper_go/logs/whisper_go.log
+
+# Emergency startup log (if daemon fails to start)
+~/.whisper_go/startup.log
+```
 
 ## Development
 

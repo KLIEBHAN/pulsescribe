@@ -13,6 +13,8 @@ whisper_go/
 ├── transcribe.py          # CLI Orchestrierung (Wrapper)
 ├── whisper_daemon.py      # Unified Daemon (Hotkey + Recording + UI)
 ├── start_daemon.command   # macOS Login Item für Auto-Start
+├── build_app.spec         # PyInstaller Spec für macOS App Bundle
+├── config.py              # Zentrale Konfiguration (Pfade, Konstanten)
 ├── requirements.txt       # Dependencies
 ├── README.md              # Benutzer-Dokumentation
 ├── CLAUDE.md              # Diese Datei
@@ -22,9 +24,11 @@ whisper_go/
 ├── refine/                # LLM-Nachbearbeitung und Kontext
 │   └── prompts.py         # Prompt-Templates (Consolidated)
 ├── ui/                    # User Interface Components
-│   ├── menubar.py         # MenuBar Controller
+│   ├── menubar.py         # MenuBar Controller (mit Quit-Menü)
 │   └── overlay.py         # Overlay Controller & SoundWave
 ├── utils/                 # Utilities (Daemon, Logging, Hotkey)
+│   ├── paths.py           # Pfad-Helper für PyInstaller Bundle
+│   └── permissions.py     # macOS Berechtigungs-Checks (Mikrofon)
 └── tests/                 # Unit & Integration Tests
 ```
 
@@ -32,11 +36,11 @@ whisper_go/
 
 **Funktionen:**
 
-| Funktion                            | Zweck                                          |
-| ----------------------------------- | ---------------------------------------------- |
-| `transcribe()`                      | Zentrale API – orchestriert Provider           |
-| `run_daemon_mode()`                 | Raycast-Modus: Aufnahme → Transkript-Datei     |
-| `parse_args()`                      | CLI-Argument-Handling                          |
+| Funktion            | Zweck                                      |
+| ------------------- | ------------------------------------------ |
+| `transcribe()`      | Zentrale API – orchestriert Provider       |
+| `run_daemon_mode()` | Raycast-Modus: Aufnahme → Transkript-Datei |
+| `parse_args()`      | CLI-Argument-Handling                      |
 
 **Design-Entscheidungen:**
 
@@ -53,12 +57,12 @@ Konsolidiert alle Komponenten in einem Prozess (empfohlen für tägliche Nutzung
 
 **Komponenten:**
 
-| Klasse | Modul | Zweck |
-| ------ | ----- | ----- |
-| `MenuBarController` | `ui.menubar` | Menübar-Status via NSStatusBar (🎤 🔴 ⏳ ✅ ❌) |
-| `OverlayController` | `ui.overlay` | Animiertes Overlay am unteren Bildschirmrand |
-| `SoundWaveView` | `ui.overlay` | Animierte Schallwellen-Visualisierung |
-| `WhisperDaemon` | `whisper_daemon` | Hauptklasse: Orchestriert Hotkey, Audio & UI |
+| Klasse              | Modul            | Zweck                                           |
+| ------------------- | ---------------- | ----------------------------------------------- |
+| `MenuBarController` | `ui.menubar`     | Menübar-Status via NSStatusBar (🎤 🔴 ⏳ ✅ ❌) |
+| `OverlayController` | `ui.overlay`     | Animiertes Overlay am unteren Bildschirmrand    |
+| `SoundWaveView`     | `ui.overlay`     | Animierte Schallwellen-Visualisierung           |
+| `WhisperDaemon`     | `whisper_daemon` | Hauptklasse: Orchestriert Hotkey, Audio & UI    |
 
 **Architektur:**
 
@@ -110,10 +114,21 @@ python transcribe.py --record --copy --language de
 | `WHISPER_GO_CONTEXT`         | Kontext-Override: `email`/`chat`/`code`               |
 | `WHISPER_GO_APP_CONTEXTS`    | Custom App-Mappings (JSON)                            |
 | `WHISPER_GO_OVERLAY`         | Untertitel-Overlay aktivieren: `true`/`false`         |
+| `WHISPER_GO_DOCK_ICON`       | Dock-Icon anzeigen: `true`/`false` (default: `true`)  |
 | `OPENAI_API_KEY`             | Für API-Modus und OpenAI-Refine                       |
 | `DEEPGRAM_API_KEY`           | Für Deepgram-Modus (REST + Streaming)                 |
 | `GROQ_API_KEY`               | Für Groq-Modus und Groq-Refine                        |
 | `OPENROUTER_API_KEY`         | Für OpenRouter-Refine                                 |
+
+## Dateipfade
+
+| Pfad                                | Beschreibung                             |
+| ----------------------------------- | ---------------------------------------- |
+| `~/.whisper_go/`                    | User-Konfigurationsverzeichnis           |
+| `~/.whisper_go/.env`                | User-spezifische ENV-Datei (Priorität 1) |
+| `~/.whisper_go/logs/whisper_go.log` | Haupt-Logdatei (rotierend, max 1MB)      |
+| `~/.whisper_go/startup.log`         | Emergency-Log für Startup-Fehler         |
+| `~/.whisper_go/vocabulary.json`     | Custom Vocabulary für Transkription      |
 
 ## Transkriptions-Modi
 
@@ -153,6 +168,23 @@ Voice-Commands werden vom LLM in der Refine-Pipeline interpretiert (nur mit `--r
 | "Fragezeichen" / "question mark" | `?`      |
 
 **Implementierung:** `refine/prompts.py` → `VOICE_COMMANDS_INSTRUCTION` wird automatisch in alle Prompts eingefügt via `get_prompt_for_context(context, voice_commands=True)`
+
+## App Bundle (PyInstaller)
+
+Build einer nativen macOS App:
+
+```bash
+pip install pyinstaller
+pyinstaller build_app.spec --clean
+# Output: dist/WhisperGo.app
+```
+
+**Besonderheiten:**
+
+- `utils/paths.py`: `get_resource_path()` für Bundle-kompatible Pfade
+- `utils/permissions.py`: Mikrofon-Berechtigung mit Alert-Dialog
+- `config.py`: Logs in `~/.whisper_go/logs/` (nicht im Bundle)
+- Emergency Logging in `~/.whisper_go/startup.log` für Crash-Debugging
 
 ## Entwicklungs-Konventionen
 
