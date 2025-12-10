@@ -27,6 +27,7 @@ a = Analysis(
         'rumps',
         'AppKit',
         'Quartz',
+        'AVFoundation',
         'CoreFoundation',
         'objc',
         'Foundation',
