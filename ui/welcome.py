@@ -16,11 +16,11 @@ from utils.preferences import (
 
 # Window-Konfiguration
 WELCOME_WIDTH = 480
-WELCOME_HEIGHT = 620
+WELCOME_HEIGHT = 640
 WELCOME_PADDING = 20
 CARD_PADDING = 16
 CARD_CORNER_RADIUS = 12
-CARD_SPACING = 12
+CARD_SPACING = 14
 
 
 def _get_color(r: int, g: int, b: int, a: float = 1.0):
@@ -207,7 +207,7 @@ class WelcomeController:
             NSTextField,
         )
 
-        card_height = 145
+        card_height = 160
         card_width = WELCOME_WIDTH - 2 * WELCOME_PADDING
         card_y = y - card_height
 
@@ -217,7 +217,7 @@ class WelcomeController:
         # Section-Titel
         title = NSTextField.alloc().initWithFrame_(
             NSMakeRect(
-                WELCOME_PADDING + CARD_PADDING, card_y + card_height - 28, 200, 18
+                WELCOME_PADDING + CARD_PADDING, card_y + card_height - 30, 200, 18
             )
         )
         title.setStringValue_("🔑 API Keys")
@@ -229,12 +229,12 @@ class WelcomeController:
         title.setTextColor_(NSColor.whiteColor())
         self._content_view.addSubview_(title)
 
-        # Deepgram-Zeile
-        row_y = card_y + card_height - 58
+        # Deepgram-Zeile (mehr Abstand zum Titel)
+        row_y = card_y + card_height - 70
         self._build_api_row_compact(row_y, "Deepgram", "DEEPGRAM_API_KEY", True)
 
-        # Groq-Zeile
-        row_y -= 48
+        # Groq-Zeile (mehr Abstand zwischen den Zeilen)
+        row_y -= 54
         self._build_api_row_compact(row_y, "Groq (optional)", "GROQ_API_KEY", False)
 
         return card_y - CARD_SPACING
