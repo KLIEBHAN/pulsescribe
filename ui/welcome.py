@@ -691,8 +691,10 @@ class WelcomeController:
     def _restart_application(self) -> None:
         """Speichert Settings und startet die Applikation neu."""
         import logging
-        import os
+        import subprocess
         import sys
+
+        from AppKit import NSApp  # type: ignore[import-not-found]
 
         log = logging.getLogger(__name__)
 
@@ -704,13 +706,17 @@ class WelcomeController:
         from Foundation import NSTimer  # type: ignore[import-not-found]
 
         def do_restart():
-            # Schließe das Welcome-Fenster
-            if self._window:
-                self._window.close()
-
-            # Neustart via os.execv (ersetzt den aktuellen Prozess)
+            # Neuen Prozess starten (detached)
             python = sys.executable
-            os.execv(python, [python] + sys.argv)
+            subprocess.Popen(
+                [python] + sys.argv,
+                start_new_session=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+            # Aktuellen Prozess beenden
+            NSApp.terminate_(None)
 
         # Kleine Verzögerung damit "Saved!" noch angezeigt wird
         NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
