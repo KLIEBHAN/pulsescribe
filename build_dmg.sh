@@ -62,41 +62,27 @@ fi
 
 # === DMG erstellen ===
 echo ""
-echo -e "${YELLOW}📦 Erstelle DMG...${NC}"
+echo -e "${YELLOW}📦 Erstelle DMG mit Applications-Symlink...${NC}"
 
-# Prüfe ob create-dmg installiert ist (schönere DMGs)
-if command -v create-dmg &> /dev/null; then
-    echo "   Nutze create-dmg für professionelles Layout..."
+# Temporäres Verzeichnis für DMG-Inhalt
+DMG_TEMP="dist/dmg_content"
+rm -rf "$DMG_TEMP"
+mkdir -p "$DMG_TEMP"
 
-    # Temporäres Verzeichnis für DMG-Inhalt
-    DMG_TEMP="dist/dmg_temp"
-    rm -rf "$DMG_TEMP"
-    mkdir -p "$DMG_TEMP"
-    cp -R "$APP_PATH" "$DMG_TEMP/"
+# App kopieren
+cp -R "$APP_PATH" "$DMG_TEMP/"
 
-    create-dmg \
-        --volname "$VOLUME_NAME" \
-        --volicon "assets/icon.icns" \
-        --window-pos 200 120 \
-        --window-size 600 400 \
-        --icon-size 100 \
-        --icon "${APP_NAME}.app" 150 185 \
-        --app-drop-link 450 185 \
-        --hide-extension "${APP_NAME}.app" \
-        "$DMG_PATH" \
-        "$DMG_TEMP"
+# Symlink zu Applications erstellen (für Drag & Drop Installation)
+ln -s /Applications "$DMG_TEMP/Applications"
 
-    rm -rf "$DMG_TEMP"
-else
-    echo "   Nutze hdiutil (Standard)..."
-    echo "   Tipp: 'brew install create-dmg' für schönere DMGs"
+# DMG erstellen (komprimiert)
+hdiutil create -volname "$VOLUME_NAME" \
+    -srcfolder "$DMG_TEMP" \
+    -ov -format UDZO \
+    "$DMG_PATH"
 
-    # Einfache DMG mit hdiutil
-    hdiutil create -volname "$VOLUME_NAME" \
-        -srcfolder "$APP_PATH" \
-        -ov -format UDZO \
-        "$DMG_PATH"
-fi
+# Aufräumen
+rm -rf "$DMG_TEMP"
 
 # === Ergebnis ===
 echo ""
