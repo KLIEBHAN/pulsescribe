@@ -98,3 +98,42 @@ def get_api_key(key_name: str) -> str | None:
             return line.split("=", 1)[1].strip()
 
     return None
+
+
+def get_env_setting(key_name: str) -> str | None:
+    """Liest eine Einstellung aus der .env Datei.
+
+    Args:
+        key_name: Name der Einstellung (z.B. "WHISPER_GO_MODE")
+
+    Returns:
+        Der Wert oder None wenn nicht gefunden
+    """
+    return get_api_key(key_name)  # Gleiche Logik wie bei API-Keys
+
+
+def save_env_setting(key_name: str, value: str) -> None:
+    """Speichert/aktualisiert eine Einstellung in der .env Datei.
+
+    Args:
+        key_name: Name der Einstellung (z.B. "WHISPER_GO_MODE")
+        value: Der Wert
+    """
+    save_api_key(key_name, value)  # Gleiche Logik wie bei API-Keys
+
+
+def remove_env_setting(key_name: str) -> None:
+    """Entfernt eine Einstellung aus der .env Datei.
+
+    Args:
+        key_name: Name der Einstellung (z.B. "WHISPER_GO_REFINE")
+    """
+    env_path = USER_CONFIG_DIR / ".env"
+
+    if not env_path.exists():
+        return
+
+    lines = env_path.read_text().splitlines()
+    new_lines = [line for line in lines if not line.startswith(f"{key_name}=")]
+
+    env_path.write_text("\n".join(new_lines) + "\n" if new_lines else "")

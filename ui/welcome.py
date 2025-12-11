@@ -8,19 +8,27 @@ import os
 
 from utils.preferences import (
     get_api_key,
+    get_env_setting,
     get_show_welcome_on_startup,
+    remove_env_setting,
     save_api_key,
+    save_env_setting,
     set_onboarding_seen,
     set_show_welcome_on_startup,
 )
 
 # Window-Konfiguration
-WELCOME_WIDTH = 480
-WELCOME_HEIGHT = 640
+WELCOME_WIDTH = 500
+WELCOME_HEIGHT = 720
 WELCOME_PADDING = 20
 CARD_PADDING = 16
 CARD_CORNER_RADIUS = 12
-CARD_SPACING = 14
+CARD_SPACING = 12
+
+# Verfügbare Optionen für Dropdowns
+MODE_OPTIONS = ["deepgram", "openai", "groq", "local"]
+REFINE_PROVIDER_OPTIONS = ["groq", "openai", "openrouter"]
+LANGUAGE_OPTIONS = ["auto", "de", "en", "es", "fr", "it", "pt", "nl", "pl", "ru", "zh"]
 
 
 def _get_color(r: int, g: int, b: int, a: float = 1.0):
@@ -57,6 +65,13 @@ class WelcomeController:
         self._groq_status = None
         self._startup_checkbox = None
         self._on_start_callback = None
+        # Settings-Controls für Save-All
+        self._hotkey_field = None
+        self._mode_popup = None
+        self._lang_popup = None
+        self._refine_checkbox = None
+        self._provider_popup = None
+        self._model_field = None
         self._build_window()
 
     def _build_window(self) -> None:
@@ -103,7 +118,7 @@ class WelcomeController:
         y_pos = self._build_header(y_pos)
         y_pos = self._build_hotkey_card(y_pos)
         y_pos = self._build_api_card(y_pos)
-        y_pos = self._build_info_cards(y_pos)
+        y_pos = self._build_settings_card(y_pos)
         self._build_footer()
 
     def _build_header(self, y: int) -> int:
@@ -149,51 +164,65 @@ class WelcomeController:
         return y - 72
 
     def _build_hotkey_card(self, y: int) -> int:
-        """Erstellt Hotkey-Karte."""
+        """Erstellt Hotkey-Karte mit Eingabefeld."""
         from AppKit import (  # type: ignore[import-not-found]
             NSColor,
             NSFont,
-            NSFontWeightBold,
             NSFontWeightMedium,
+            NSFontWeightSemibold,
             NSMakeRect,
             NSTextAlignmentCenter,
             NSTextField,
         )
 
-        card_height = 70
+        card_height = 85
         card_width = WELCOME_WIDTH - 2 * WELCOME_PADDING
         card_y = y - card_height - CARD_SPACING
 
         card = _create_card(WELCOME_PADDING, card_y, card_width, card_height)
         self._content_view.addSubview_(card)
 
-        # Hotkey groß und zentriert
-        hotkey_label = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(WELCOME_PADDING, card_y + 32, card_width, 28)
+        # Section-Titel
+        title = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(
+                WELCOME_PADDING + CARD_PADDING, card_y + card_height - 28, 200, 18
+            )
         )
-        hotkey_label.setStringValue_(self.hotkey.upper())
-        hotkey_label.setBezeled_(False)
-        hotkey_label.setDrawsBackground_(False)
-        hotkey_label.setEditable_(False)
-        hotkey_label.setSelectable_(False)
-        hotkey_label.setAlignment_(NSTextAlignmentCenter)
-        hotkey_label.setFont_(NSFont.systemFontOfSize_weight_(22, NSFontWeightBold))
-        hotkey_label.setTextColor_(_get_color(100, 200, 255))  # Hellblau
-        self._content_view.addSubview_(hotkey_label)
+        title.setStringValue_("⌨️ Hotkey")
+        title.setBezeled_(False)
+        title.setDrawsBackground_(False)
+        title.setEditable_(False)
+        title.setSelectable_(False)
+        title.setFont_(NSFont.systemFontOfSize_weight_(13, NSFontWeightSemibold))
+        title.setTextColor_(NSColor.whiteColor())
+        self._content_view.addSubview_(title)
 
         # Beschreibung
         desc = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(WELCOME_PADDING, card_y + 12, card_width, 16)
+            NSMakeRect(
+                WELCOME_PADDING + CARD_PADDING, card_y + card_height - 46, 300, 14
+            )
         )
         desc.setStringValue_("Press to start/stop recording")
         desc.setBezeled_(False)
         desc.setDrawsBackground_(False)
         desc.setEditable_(False)
         desc.setSelectable_(False)
-        desc.setAlignment_(NSTextAlignmentCenter)
         desc.setFont_(NSFont.systemFontOfSize_weight_(11, NSFontWeightMedium))
         desc.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.5))
         self._content_view.addSubview_(desc)
+
+        # Hotkey-Eingabefeld (volle Breite ohne Save-Button)
+        field_width = card_width - 2 * CARD_PADDING
+        field = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(WELCOME_PADDING + CARD_PADDING, card_y + 12, field_width, 24)
+        )
+        current_hotkey = get_env_setting("WHISPER_GO_HOTKEY") or self.hotkey
+        field.setStringValue_(current_hotkey.upper())
+        field.setFont_(NSFont.systemFontOfSize_(13))
+        field.setAlignment_(NSTextAlignmentCenter)
+        self._content_view.addSubview_(field)
+        self._hotkey_field = field
 
         return card_y - CARD_SPACING
 
@@ -242,18 +271,14 @@ class WelcomeController:
     def _build_api_row_compact(
         self, y: int, label_text: str, key_name: str, is_deepgram: bool
     ) -> None:
-        """Erstellt kompakte API-Key-Zeile."""
+        """Erstellt kompakte API-Key-Zeile (ohne Save-Button, mit Copy/Paste)."""
         from AppKit import (  # type: ignore[import-not-found]
-            NSBezelStyleRounded,
-            NSButton,
             NSColor,
             NSFont,
             NSFontWeightMedium,
             NSMakeRect,
-            NSSecureTextField,
             NSTextField,
         )
-        import objc  # type: ignore[import-not-found]
 
         base_x = WELCOME_PADDING + CARD_PADDING
 
@@ -268,9 +293,9 @@ class WelcomeController:
         label.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.7))
         self._content_view.addSubview_(label)
 
-        # Textfeld
-        field_width = WELCOME_WIDTH - 2 * WELCOME_PADDING - 2 * CARD_PADDING - 70
-        field = NSSecureTextField.alloc().initWithFrame_(
+        # Textfeld (normales NSTextField für Copy/Paste Support)
+        field_width = WELCOME_WIDTH - 2 * WELCOME_PADDING - 2 * CARD_PADDING - 24
+        field = NSTextField.alloc().initWithFrame_(
             NSMakeRect(base_x, y, field_width, 22)
         )
         field.setPlaceholderString_("Enter API key...")
@@ -282,7 +307,7 @@ class WelcomeController:
 
         self._content_view.addSubview_(field)
 
-        # Status
+        # Status-Indicator
         has_key = bool(existing_key) or self.config.get(
             "deepgram_key" if is_deepgram else "groq_key", False
         )
@@ -300,146 +325,173 @@ class WelcomeController:
         )
         self._content_view.addSubview_(status)
 
-        # Save-Button
-        save_btn = NSButton.alloc().initWithFrame_(
-            NSMakeRect(WELCOME_WIDTH - WELCOME_PADDING - CARD_PADDING - 44, y, 44, 22)
-        )
-        save_btn.setTitle_("Save")
-        save_btn.setBezelStyle_(NSBezelStyleRounded)
-        save_btn.setFont_(NSFont.systemFontOfSize_(10))
-
-        handler = _SaveButtonHandler.alloc().initWithKeyName_field_status_(
-            key_name, field, status
-        )
-        save_btn.setTarget_(handler)
-        save_btn.setAction_(objc.selector(handler.saveKey_, signature=b"v@:@"))
-
         if is_deepgram:
-            self._deepgram_handler = handler
             self._deepgram_field = field
             self._deepgram_status = status
         else:
-            self._groq_handler = handler
             self._groq_field = field
             self._groq_status = status
 
-        self._content_view.addSubview_(save_btn)
+    def _build_settings_card(self, y: int) -> int:
+        """Erstellt Settings-Karte mit konfigurierbaren Optionen."""
+        from AppKit import (  # type: ignore[import-not-found]
+            NSButton,
+            NSButtonTypeSwitch,
+            NSColor,
+            NSFont,
+            NSFontWeightSemibold,
+            NSMakeRect,
+            NSPopUpButton,
+            NSTextField,
+        )
 
-    def _build_info_cards(self, y: int) -> int:
-        """Erstellt Settings und Features nebeneinander."""
+        card_height = 220
+        card_width = WELCOME_WIDTH - 2 * WELCOME_PADDING
+        card_y = y - card_height
+
+        card = _create_card(WELCOME_PADDING, card_y, card_width, card_height)
+        self._content_view.addSubview_(card)
+
+        base_x = WELCOME_PADDING + CARD_PADDING
+        label_width = 110
+        control_x = base_x + label_width + 8
+        control_width = card_width - 2 * CARD_PADDING - label_width - 8
+
+        # Section-Titel
+        title = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(base_x, card_y + card_height - 28, 200, 18)
+        )
+        title.setStringValue_("⚙️ Settings")
+        title.setBezeled_(False)
+        title.setDrawsBackground_(False)
+        title.setEditable_(False)
+        title.setSelectable_(False)
+        title.setFont_(NSFont.systemFontOfSize_weight_(13, NSFontWeightSemibold))
+        title.setTextColor_(NSColor.whiteColor())
+        self._content_view.addSubview_(title)
+
+        row_height = 28
+        current_y = card_y + card_height - 58
+
+        # --- Mode Dropdown ---
+        self._add_setting_label(base_x, current_y, "Mode:")
+        mode_popup = NSPopUpButton.alloc().initWithFrame_(
+            NSMakeRect(control_x, current_y, control_width, 22)
+        )
+        mode_popup.setFont_(NSFont.systemFontOfSize_(11))
+        for mode in MODE_OPTIONS:
+            mode_popup.addItemWithTitle_(mode)
+        current_mode = (
+            get_env_setting("WHISPER_GO_MODE") or self.config.get("mode") or "deepgram"
+        )
+        if current_mode in MODE_OPTIONS:
+            mode_popup.selectItemWithTitle_(current_mode)
+        self._mode_popup = mode_popup
+        self._content_view.addSubview_(mode_popup)
+        current_y -= row_height
+
+        # --- Language Dropdown ---
+        self._add_setting_label(base_x, current_y, "Language:")
+        lang_popup = NSPopUpButton.alloc().initWithFrame_(
+            NSMakeRect(control_x, current_y, control_width, 22)
+        )
+        lang_popup.setFont_(NSFont.systemFontOfSize_(11))
+        for lang in LANGUAGE_OPTIONS:
+            lang_popup.addItemWithTitle_(lang)
+        current_lang = (
+            get_env_setting("WHISPER_GO_LANGUAGE")
+            or self.config.get("language")
+            or "auto"
+        )
+        if current_lang in LANGUAGE_OPTIONS:
+            lang_popup.selectItemWithTitle_(current_lang)
+        self._lang_popup = lang_popup
+        self._content_view.addSubview_(lang_popup)
+        current_y -= row_height
+
+        # --- Refine Checkbox ---
+        self._add_setting_label(base_x, current_y, "Refine:")
+        refine_checkbox = NSButton.alloc().initWithFrame_(
+            NSMakeRect(control_x, current_y, control_width, 22)
+        )
+        refine_checkbox.setButtonType_(NSButtonTypeSwitch)
+        refine_checkbox.setTitle_("Enable LLM post-processing")
+        refine_checkbox.setFont_(NSFont.systemFontOfSize_(11))
+        refine_enabled = get_env_setting("WHISPER_GO_REFINE")
+        if refine_enabled is None:
+            refine_enabled = self.config.get("refine", False)
+        else:
+            refine_enabled = refine_enabled.lower() == "true"
+        refine_checkbox.setState_(1 if refine_enabled else 0)
+        self._refine_checkbox = refine_checkbox
+        self._content_view.addSubview_(refine_checkbox)
+        current_y -= row_height
+
+        # --- Refine Provider Dropdown ---
+        self._add_setting_label(base_x, current_y, "Refine Provider:")
+        provider_popup = NSPopUpButton.alloc().initWithFrame_(
+            NSMakeRect(control_x, current_y, control_width, 22)
+        )
+        provider_popup.setFont_(NSFont.systemFontOfSize_(11))
+        for provider in REFINE_PROVIDER_OPTIONS:
+            provider_popup.addItemWithTitle_(provider)
+        current_provider = (
+            get_env_setting("WHISPER_GO_REFINE_PROVIDER")
+            or self.config.get("refine_provider")
+            or "groq"
+        )
+        if current_provider in REFINE_PROVIDER_OPTIONS:
+            provider_popup.selectItemWithTitle_(current_provider)
+        self._provider_popup = provider_popup
+        self._content_view.addSubview_(provider_popup)
+        current_y -= row_height
+
+        # --- Refine Model Textfeld (volle Breite ohne Save-Button) ---
+        self._add_setting_label(base_x, current_y, "Refine Model:")
+        model_field = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(control_x, current_y, control_width, 22)
+        )
+        model_field.setFont_(NSFont.systemFontOfSize_(11))
+        model_field.setPlaceholderString_("e.g. llama-3.3-70b-versatile")
+        current_model = (
+            get_env_setting("WHISPER_GO_REFINE_MODEL")
+            or self.config.get("refine_model")
+            or "openai/gpt-oss-120b"  # Default Model
+        )
+        model_field.setStringValue_(current_model)
+        self._model_field = model_field
+        self._content_view.addSubview_(model_field)
+
+        return card_y - CARD_SPACING
+
+    def _add_setting_label(self, x: int, y: int, text: str) -> None:
+        """Erstellt ein Label für eine Einstellung."""
         from AppKit import (  # type: ignore[import-not-found]
             NSColor,
             NSFont,
             NSFontWeightMedium,
-            NSFontWeightSemibold,
             NSMakeRect,
             NSTextField,
         )
 
-        card_height = 130
-        card_width = (WELCOME_WIDTH - 2 * WELCOME_PADDING - CARD_SPACING) // 2
-        card_y = y - card_height
-
-        # Settings-Karte (links)
-        settings_card = _create_card(WELCOME_PADDING, card_y, card_width, card_height)
-        self._content_view.addSubview_(settings_card)
-
-        settings_title = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(
-                WELCOME_PADDING + 12, card_y + card_height - 26, card_width - 24, 16
-            )
-        )
-        settings_title.setStringValue_("⚙️ Settings")
-        settings_title.setBezeled_(False)
-        settings_title.setDrawsBackground_(False)
-        settings_title.setEditable_(False)
-        settings_title.setSelectable_(False)
-        settings_title.setFont_(
-            NSFont.systemFontOfSize_weight_(12, NSFontWeightSemibold)
-        )
-        settings_title.setTextColor_(NSColor.whiteColor())
-        self._content_view.addSubview_(settings_title)
-
-        # Settings-Inhalt
-        refine_status = "✓" if self.config.get("refine") else "✗"
-        refine_color = (
-            _get_color(51, 217, 178)
-            if self.config.get("refine")
-            else _get_color(255, 82, 82, 0.7)
-        )
-        settings_items = [
-            (f"Refine: {refine_status}", refine_color),
-            (f"Language: {self.config.get('language') or 'auto'}", None),
-            (f"Provider: {(self.config.get('mode') or 'deepgram').title()}", None),
-        ]
-
-        item_y = card_y + card_height - 48
-        for text, color in settings_items:
-            item = NSTextField.alloc().initWithFrame_(
-                NSMakeRect(WELCOME_PADDING + 12, item_y, card_width - 24, 14)
-            )
-            item.setStringValue_(text)
-            item.setBezeled_(False)
-            item.setDrawsBackground_(False)
-            item.setEditable_(False)
-            item.setSelectable_(False)
-            item.setFont_(NSFont.systemFontOfSize_weight_(11, NSFontWeightMedium))
-            item.setTextColor_(
-                color or NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.7)
-            )
-            self._content_view.addSubview_(item)
-            item_y -= 18
-
-        # Features-Karte (rechts)
-        features_x = WELCOME_PADDING + card_width + CARD_SPACING
-        features_card = _create_card(features_x, card_y, card_width, card_height)
-        self._content_view.addSubview_(features_card)
-
-        features_title = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(features_x + 12, card_y + card_height - 26, card_width - 24, 16)
-        )
-        features_title.setStringValue_("✨ Features")
-        features_title.setBezeled_(False)
-        features_title.setDrawsBackground_(False)
-        features_title.setEditable_(False)
-        features_title.setSelectable_(False)
-        features_title.setFont_(
-            NSFont.systemFontOfSize_weight_(12, NSFontWeightSemibold)
-        )
-        features_title.setTextColor_(NSColor.whiteColor())
-        self._content_view.addSubview_(features_title)
-
-        # Features-Inhalt
-        features = [
-            "~300ms latency",
-            "LLM grammar fix",
-            "Context-aware",
-            "Voice commands",
-        ]
-        item_y = card_y + card_height - 48
-        for feature in features:
-            item = NSTextField.alloc().initWithFrame_(
-                NSMakeRect(features_x + 12, item_y, card_width - 24, 14)
-            )
-            item.setStringValue_(f"• {feature}")
-            item.setBezeled_(False)
-            item.setDrawsBackground_(False)
-            item.setEditable_(False)
-            item.setSelectable_(False)
-            item.setFont_(NSFont.systemFontOfSize_weight_(11, NSFontWeightMedium))
-            item.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.7))
-            self._content_view.addSubview_(item)
-            item_y -= 18
-
-        return card_y - CARD_SPACING
+        label = NSTextField.alloc().initWithFrame_(NSMakeRect(x, y + 2, 110, 16))
+        label.setStringValue_(text)
+        label.setBezeled_(False)
+        label.setDrawsBackground_(False)
+        label.setEditable_(False)
+        label.setSelectable_(False)
+        label.setFont_(NSFont.systemFontOfSize_weight_(11, NSFontWeightMedium))
+        label.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.7))
+        self._content_view.addSubview_(label)
 
     def _build_footer(self) -> None:
-        """Erstellt Footer mit Checkbox und Start-Button."""
+        """Erstellt Footer mit Checkbox, Save-Button und Start-Button."""
         from AppKit import (  # type: ignore[import-not-found]
             NSBezelStyleRounded,
             NSButton,
             NSButtonTypeSwitch,
             NSFont,
+            NSFontWeightMedium,
             NSFontWeightSemibold,
             NSMakeRect,
         )
@@ -447,9 +499,9 @@ class WelcomeController:
 
         footer_y = WELCOME_PADDING
 
-        # Checkbox
+        # Checkbox (links unten)
         checkbox = NSButton.alloc().initWithFrame_(
-            NSMakeRect(WELCOME_PADDING, footer_y + 6, 140, 18)
+            NSMakeRect(WELCOME_PADDING, footer_y + 6, 130, 18)
         )
         checkbox.setButtonType_(NSButtonTypeSwitch)
         checkbox.setTitle_("Show at startup")
@@ -465,7 +517,22 @@ class WelcomeController:
         self._content_view.addSubview_(checkbox)
         self._startup_checkbox = checkbox
 
-        # Start-Button (prominent, mit Akzentfarbe)
+        # Save & Apply Button (Mitte)
+        save_btn = NSButton.alloc().initWithFrame_(
+            NSMakeRect(WELCOME_PADDING + 140, footer_y + 2, 100, 28)
+        )
+        save_btn.setTitle_("Save & Apply")
+        save_btn.setBezelStyle_(NSBezelStyleRounded)
+        save_btn.setFont_(NSFont.systemFontOfSize_weight_(11, NSFontWeightMedium))
+
+        save_handler = _SaveAllHandler.alloc().initWithController_(self)
+        save_btn.setTarget_(save_handler)
+        save_btn.setAction_(objc.selector(save_handler.saveAll_, signature=b"v@:@"))
+        self._save_all_handler = save_handler
+        self._save_btn = save_btn
+        self._content_view.addSubview_(save_btn)
+
+        # Start-Button (prominent, rechts)
         start_btn = NSButton.alloc().initWithFrame_(
             NSMakeRect(WELCOME_WIDTH - WELCOME_PADDING - 140, footer_y, 140, 32)
         )
@@ -506,39 +573,92 @@ class WelcomeController:
             self._on_start_callback()
         self.close()
 
+    def _save_all_settings(self) -> None:
+        """Speichert alle Einstellungen in die .env Datei."""
+        import logging
+
+        log = logging.getLogger(__name__)
+
+        # Hotkey
+        if self._hotkey_field:
+            hotkey = self._hotkey_field.stringValue().strip()
+            if hotkey:
+                save_env_setting("WHISPER_GO_HOTKEY", hotkey.lower())
+
+        # API Keys
+        if self._deepgram_field:
+            key = self._deepgram_field.stringValue().strip()
+            if key:
+                save_api_key("DEEPGRAM_API_KEY", key)
+                self._deepgram_status.setStringValue_("✓")
+                self._deepgram_status.setTextColor_(_get_color(51, 217, 178))
+            else:
+                self._deepgram_status.setStringValue_("✗")
+                self._deepgram_status.setTextColor_(_get_color(255, 82, 82, 0.7))
+
+        if self._groq_field:
+            key = self._groq_field.stringValue().strip()
+            if key:
+                save_api_key("GROQ_API_KEY", key)
+                self._groq_status.setStringValue_("✓")
+                self._groq_status.setTextColor_(_get_color(51, 217, 178))
+            else:
+                self._groq_status.setStringValue_("✗")
+                self._groq_status.setTextColor_(_get_color(255, 82, 82, 0.7))
+
+        # Mode
+        if self._mode_popup:
+            mode = self._mode_popup.titleOfSelectedItem()
+            if mode:
+                save_env_setting("WHISPER_GO_MODE", mode)
+
+        # Language
+        if self._lang_popup:
+            lang = self._lang_popup.titleOfSelectedItem()
+            if lang == "auto":
+                remove_env_setting("WHISPER_GO_LANGUAGE")
+            elif lang:
+                save_env_setting("WHISPER_GO_LANGUAGE", lang)
+
+        # Refine
+        if self._refine_checkbox:
+            enabled = self._refine_checkbox.state() == 1
+            save_env_setting("WHISPER_GO_REFINE", "true" if enabled else "false")
+
+        # Refine Provider
+        if self._provider_popup:
+            provider = self._provider_popup.titleOfSelectedItem()
+            if provider:
+                save_env_setting("WHISPER_GO_REFINE_PROVIDER", provider)
+
+        # Refine Model
+        if self._model_field:
+            model = self._model_field.stringValue().strip()
+            if model:
+                save_env_setting("WHISPER_GO_REFINE_MODEL", model)
+            else:
+                remove_env_setting("WHISPER_GO_REFINE_MODEL")
+
+        log.info("All settings saved to .env file")
+
+        # Visuelles Feedback: Button-Text kurz ändern
+        if hasattr(self, "_save_btn") and self._save_btn:
+            self._save_btn.setTitle_("✓ Saved!")
+            # Nach 1.5 Sekunden zurücksetzen
+            from Foundation import NSTimer  # type: ignore[import-not-found]
+
+            def reset_title():
+                if hasattr(self, "_save_btn") and self._save_btn:
+                    self._save_btn.setTitle_("Save & Apply")
+
+            NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+                1.5, False, lambda _: reset_title()
+            )
+
 
 # =============================================================================
 # Objective-C Handler Klassen
 # =============================================================================
-
-
-def _create_save_handler_class():
-    """Erstellt NSObject-Subklasse für Save-Button."""
-    from Foundation import NSObject  # type: ignore[import-not-found]
-    import objc  # type: ignore[import-not-found]
-
-    class SaveButtonHandler(NSObject):
-        def initWithKeyName_field_status_(self, key_name, field, status):
-            self = objc.super(SaveButtonHandler, self).init()
-            if self is None:
-                return None
-            self._key_name = key_name
-            self._field = field
-            self._status = status
-            return self
-
-        @objc.signature(b"v@:@")
-        def saveKey_(self, _sender) -> None:
-            value = self._field.stringValue()
-            if value:
-                save_api_key(self._key_name, value)
-                self._status.setStringValue_("✓")
-                self._status.setTextColor_(_get_color(51, 217, 178))
-            else:
-                self._status.setStringValue_("✗")
-                self._status.setTextColor_(_get_color(255, 82, 82, 0.7))
-
-    return SaveButtonHandler
 
 
 def _create_checkbox_handler_class():
@@ -574,6 +694,28 @@ def _create_start_handler_class():
     return StartButtonHandler
 
 
-_SaveButtonHandler = _create_save_handler_class()
 _CheckboxHandler = _create_checkbox_handler_class()
 _StartButtonHandler = _create_start_handler_class()
+
+
+def _create_save_all_handler_class():
+    """Erstellt NSObject-Subklasse für Save & Apply Button."""
+    from Foundation import NSObject  # type: ignore[import-not-found]
+    import objc  # type: ignore[import-not-found]
+
+    class SaveAllHandler(NSObject):
+        def initWithController_(self, controller):
+            self = objc.super(SaveAllHandler, self).init()
+            if self is None:
+                return None
+            self._controller = controller
+            return self
+
+        @objc.signature(b"v@:@")
+        def saveAll_(self, _sender) -> None:
+            self._controller._save_all_settings()
+
+    return SaveAllHandler
+
+
+_SaveAllHandler = _create_save_all_handler_class()
