@@ -65,6 +65,7 @@ class WelcomeController:
         self._groq_status = None
         self._startup_checkbox = None
         self._on_start_callback = None
+        self._on_settings_changed_callback = None
         # Settings-Controls für Save-All
         self._hotkey_field = None
         self._mode_popup = None
@@ -200,10 +201,10 @@ class WelcomeController:
         # Beschreibung
         desc = NSTextField.alloc().initWithFrame_(
             NSMakeRect(
-                WELCOME_PADDING + CARD_PADDING, card_y + card_height - 46, 300, 14
+                WELCOME_PADDING + CARD_PADDING, card_y + card_height - 46, 350, 14
             )
         )
-        desc.setStringValue_("Press to start/stop recording")
+        desc.setStringValue_("Press to start/stop recording (restart required)")
         desc.setBezeled_(False)
         desc.setDrawsBackground_(False)
         desc.setEditable_(False)
@@ -551,6 +552,10 @@ class WelcomeController:
         """Setzt Callback für Start-Button."""
         self._on_start_callback = callback
 
+    def set_on_settings_changed(self, callback) -> None:
+        """Setzt Callback der aufgerufen wird wenn Settings gespeichert werden."""
+        self._on_settings_changed_callback = callback
+
     def show(self) -> None:
         """Zeigt Window (nicht-modal)."""
         if self._window:
@@ -640,6 +645,10 @@ class WelcomeController:
                 remove_env_setting("WHISPER_GO_REFINE_MODEL")
 
         log.info("All settings saved to .env file")
+
+        # Callback aufrufen damit Daemon Settings neu lädt
+        if self._on_settings_changed_callback:
+            self._on_settings_changed_callback()
 
         # Visuelles Feedback: Button-Text kurz ändern
         if hasattr(self, "_save_btn") and self._save_btn:

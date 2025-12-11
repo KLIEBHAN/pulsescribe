@@ -588,6 +588,8 @@ class WhisperDaemon:
                     "mode": self.mode,
                 },
             )
+            # Callback für Settings-Änderungen setzen
+            self._welcome.set_on_settings_changed(self._reload_settings)
             self._welcome.show()
         else:
             self._welcome = None
@@ -613,7 +615,42 @@ class WhisperDaemon:
                     "mode": self.mode,
                 },
             )
+            # Callback für Settings-Änderungen setzen
+            self._welcome.set_on_settings_changed(self._reload_settings)
         self._welcome.show()
+
+    def _reload_settings(self) -> None:
+        """Lädt Settings aus .env neu und wendet sie an (außer Hotkey)."""
+        from utils.preferences import get_env_setting
+
+        # .env neu laden
+        load_environment()
+
+        # Settings aktualisieren (außer Hotkey - erfordert Neustart)
+        new_mode = get_env_setting("WHISPER_GO_MODE")
+        if new_mode:
+            self.mode = new_mode
+
+        new_language = get_env_setting("WHISPER_GO_LANGUAGE")
+        self.language = new_language  # None ist valid für "auto"
+
+        new_refine = get_env_setting("WHISPER_GO_REFINE")
+        if new_refine is not None:
+            self.refine = new_refine.lower() == "true"
+
+        new_refine_provider = get_env_setting("WHISPER_GO_REFINE_PROVIDER")
+        if new_refine_provider:
+            self.refine_provider = new_refine_provider
+
+        new_refine_model = get_env_setting("WHISPER_GO_REFINE_MODEL")
+        if new_refine_model:
+            self.refine_model = new_refine_model
+
+        logger.info(
+            f"Settings reloaded: mode={self.mode}, language={self.language}, "
+            f"refine={self.refine}, refine_provider={self.refine_provider}, "
+            f"refine_model={self.refine_model}"
+        )
 
     def run(self) -> None:
         """Startet Daemon (blockiert)."""
