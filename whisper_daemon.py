@@ -146,6 +146,63 @@ class WhisperDaemon:
         self._provider_cache: dict[str, object] = {}
         self._hold_listener = None
         self._hold_active = False
+        self._fn_monitor = None
+        self._fn_active = False
+
+    # =============================================================================
+    # Fn/Globe Hotkey (macOS)
+    # =============================================================================
+
+    def _start_fn_hotkey_monitor(self, hotkey_mode: str) -> bool:
+        """Erfasst Fn/Globe als Hotkey über FlagsChanged Global Monitor."""
+        try:
+            from AppKit import (  # type: ignore[import-not-found]
+                NSEvent,
+                NSEventMaskFlagsChanged,
+                NSEventModifierFlagFunction,
+            )
+        except Exception as e:  # pragma: no cover
+            logger.error(f"Fn Hotkey Monitor benötigt AppKit: {e}")
+            return False
+
+        try:
+            from PyObjCTools import AppHelper  # type: ignore[import-not-found]
+        except Exception:  # pragma: no cover
+            AppHelper = None
+
+        def call_on_main(fn):
+            if AppHelper is not None:
+                AppHelper.callAfter(fn)
+            else:
+                fn()
+
+        def handler(event):
+            try:
+                flags = int(event.modifierFlags())
+                fn_down = bool(flags & NSEventModifierFlagFunction)
+                if fn_down and not self._fn_active:
+                    self._fn_active = True
+                    logger.debug("Hotkey fn down")
+                    if hotkey_mode == "hold":
+                        call_on_main(self._start_recording)
+                    else:
+                        call_on_main(self._on_hotkey)
+                elif not fn_down and self._fn_active:
+                    self._fn_active = False
+                    logger.debug("Hotkey fn up")
+                    if hotkey_mode == "hold":
+                        call_on_main(self._stop_recording)
+            except Exception as e:
+                logger.debug(f"Fn handler error: {e}")
+
+        monitor = NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
+            NSEventMaskFlagsChanged, handler
+        )
+        if monitor is None:  # pragma: no cover
+            logger.error("Fn Hotkey Monitor konnte nicht installiert werden")
+            return False
+        self._fn_monitor = monitor
+        return True
 
     def _get_provider(self, mode: str):
         """Gibt gecachten Provider zurück oder erstellt ihn."""
@@ -912,7 +969,11 @@ class WhisperDaemon:
 
         # Accessibility prüfen (nur Warnung, nicht blockierend)
         accessibility_ok = check_accessibility_permission()
-        if hotkey_mode == "hold" and not accessibility_ok:
+
+        hotkey_str = (self.hotkey or "").strip().lower()
+        hotkey_is_fn = hotkey_str == "fn"
+
+        if hotkey_mode == "hold" and not accessibility_ok and not hotkey_is_fn:
             logger.warning(
                 "Hold Hotkey Mode benötigt Bedienungshilfen-Zugriff. "
                 "Fallback auf Toggle-Mode bis Berechtigung erteilt ist."
@@ -931,7 +992,18 @@ class WhisperDaemon:
         # Lokales Modell vorab laden (falls aktiv)
         self._preload_local_model_async()
 
-        if hotkey_mode == "toggle":
+        if hotkey_is_fn:
+            logger.info(
+                f"Daemon gestartet: hotkey=fn (Globe), hotkey_mode={hotkey_mode} (FlagsChanged Monitor)"
+            )
+            if not accessibility_ok:
+                logger.warning(
+                    "Fn/Globe Hotkey benötigt Bedienungshilfen-Zugriff. "
+                    "Bitte in Systemeinstellungen aktivieren."
+                )
+            if not self._start_fn_hotkey_monitor(hotkey_mode):
+                logger.error("Fn Hotkey Monitor konnte nicht gestartet werden.")
+        elif hotkey_mode == "toggle":
             from quickmachotkey import quickHotKey
 
             virtual_key, modifier_mask = parse_hotkey(self.hotkey)
