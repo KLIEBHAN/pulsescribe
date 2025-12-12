@@ -178,11 +178,14 @@ class LocalProvider:
             return model_name
         mapping = {
             "tiny": "mlx-community/whisper-tiny",
-            "base": "mlx-community/whisper-base",
-            "small": "mlx-community/whisper-small",
+            # Manche MLX-Konvertierungen tragen das Suffix "-mlx" im Repo-Namen.
+            "base": "mlx-community/whisper-base-mlx",
+            "small": "mlx-community/whisper-small-mlx",
             "medium": "mlx-community/whisper-medium",
-            "large": "mlx-community/whisper-large-v3",
+            "large": "mlx-community/whisper-large-v3-mlx",
             "turbo": "mlx-community/whisper-large-v3-turbo",
+            "large-v3": "mlx-community/whisper-large-v3-mlx",
+            "large-v2": "mlx-community/whisper-large-v2-mlx",
         }
         if model_name in mapping:
             return mapping[model_name]
