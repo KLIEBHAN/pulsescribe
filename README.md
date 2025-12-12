@@ -150,9 +150,10 @@ export WHISPER_GO_DEVICE="auto"
 # Default: CPU/MPS → false (stable), CUDA → true
 export WHISPER_GO_FP16="false"
 
-# Backend for local Whisper (whisper, faster, auto)
+# Backend for local Whisper (whisper, faster, mlx, auto)
 # whisper = openai-whisper (PyTorch, uses MPS/GPU)
 # faster  = faster-whisper (CTranslate2, very fast on CPU)
+# mlx     = mlx-whisper (MLX/Metal, Apple Silicon, optional)
 # auto    = faster if installed, else whisper
 export WHISPER_GO_LOCAL_BACKEND="whisper"
 
@@ -442,10 +443,11 @@ Groq uses LPU chips (Language Processing Units) for particularly fast inference.
 
 ### Local Models
 
-Local mode now supports two backends:
+Local mode now supports three backends:
 
 - **`whisper` (default):** openai‑whisper on PyTorch. Uses Apple‑GPU via MPS automatically on M‑series Macs (`WHISPER_GO_DEVICE=auto`). Best compatibility/quality.
 - **`faster`:** faster‑whisper (CTranslate2). Very fast on CPU (often 2–4× faster) and lower memory. Default `compute_type` is `int8` on CPU and `float16` on CUDA. Enable via `WHISPER_GO_LOCAL_BACKEND=faster`.
+- **`mlx`:** mlx‑whisper (MLX/Metal). Apple Silicon GPU‑accelerated local backend. Install with `pip install mlx-whisper` and enable via `WHISPER_GO_LOCAL_BACKEND=mlx`.
 
 Notes:
 

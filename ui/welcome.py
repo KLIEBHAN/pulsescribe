@@ -33,8 +33,17 @@ CARD_SPACING = 12
 MODE_OPTIONS = ["deepgram", "openai", "groq", "local"]
 REFINE_PROVIDER_OPTIONS = ["groq", "openai", "openrouter"]
 LANGUAGE_OPTIONS = ["auto", "de", "en", "es", "fr", "it", "pt", "nl", "pl", "ru", "zh"]
-LOCAL_BACKEND_OPTIONS = ["whisper", "faster", "auto"]
+LOCAL_BACKEND_OPTIONS = ["whisper", "faster", "mlx", "auto"]
 LOCAL_MODEL_OPTIONS = ["default", "turbo", "large", "medium", "small", "base", "tiny"]
+DEVICE_OPTIONS = ["auto", "mps", "cpu", "cuda"]
+BOOL_OVERRIDE_OPTIONS = ["default", "true", "false"]
+WARMUP_OPTIONS = ["auto", "true", "false"]
+LOCAL_PRESET_OPTIONS = [
+    "(none)",
+    "macOS: MPS Balanced (turbo)",
+    "macOS: MPS Fast (turbo)",
+    "CPU: faster int8 (turbo)",
+]
 
 
 def _get_color(r: int, g: int, b: int, a: float = 1.0):
@@ -84,6 +93,20 @@ class WelcomeController:
         self._local_model_popup = None
         self._local_backend_label = None
         self._local_model_label = None
+        self._local_preset_popup = None
+        self._local_preset_changed_handler = None
+        self._device_popup = None
+        self._warmup_popup = None
+        self._local_fast_popup = None
+        self._fp16_popup = None
+        self._beam_size_field = None
+        self._best_of_field = None
+        self._temperature_field = None
+        self._compute_type_field = None
+        self._cpu_threads_field = None
+        self._num_workers_field = None
+        self._without_timestamps_popup = None
+        self._vad_filter_popup = None
         self._tab_view = None
         self._vocab_text_view = None
         self._vocab_warning_label = None
@@ -223,6 +246,7 @@ class WelcomeController:
 
         self._add_tab(tab_view, "General", self._build_general_tab, content_height)
         self._add_tab(tab_view, "Providers", self._build_providers_tab, content_height)
+        self._add_tab(tab_view, "Advanced", self._build_advanced_tab, content_height)
         self._add_tab(tab_view, "Refine", self._build_refine_tab, content_height)
         self._add_tab(tab_view, "Vocabulary", self._build_vocabulary_tab, content_height)
         self._add_tab(tab_view, "Logs", self._build_logs_tab, content_height)
@@ -249,6 +273,10 @@ class WelcomeController:
         y_pos = tab_height - WELCOME_PADDING
         y_pos = self._build_settings_card(y_pos, parent_view)
         self._build_api_card(y_pos, parent_view)
+
+    def _build_advanced_tab(self, parent_view, tab_height: int) -> None:
+        y_pos = tab_height - WELCOME_PADDING
+        self._build_advanced_local_card(y_pos, parent_view)
 
     def _build_refine_tab(self, parent_view, tab_height: int) -> None:
         y_pos = tab_height - WELCOME_PADDING
@@ -705,6 +733,254 @@ class WelcomeController:
         parent_view.addSubview_(lang_popup)
 
         self._update_local_settings_visibility()
+
+        return card_y - CARD_SPACING
+
+    def _build_advanced_local_card(self, y: int, parent_view=None) -> int:
+        """Erweiterte Local-Performance Settings (macOS-tuned)."""
+        from AppKit import (  # type: ignore[import-not-found]
+            NSColor,
+            NSFont,
+            NSFontWeightMedium,
+            NSFontWeightSemibold,
+            NSMakeRect,
+            NSPopUpButton,
+            NSTextField,
+        )
+        import objc  # type: ignore[import-not-found]
+
+        parent_view = parent_view or self._content_view
+
+        card_height = 470
+        card_width = WELCOME_WIDTH - 2 * WELCOME_PADDING
+        card_y = y - card_height
+
+        card = _create_card(WELCOME_PADDING, card_y, card_width, card_height)
+        parent_view.addSubview_(card)
+
+        base_x = WELCOME_PADDING + CARD_PADDING
+        label_width = 110
+        control_x = base_x + label_width + 8
+        control_width = card_width - 2 * CARD_PADDING - label_width - 8
+
+        title = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(base_x, card_y + card_height - 28, 320, 18)
+        )
+        title.setStringValue_("⚙️ Advanced (Local)")
+        title.setBezeled_(False)
+        title.setDrawsBackground_(False)
+        title.setEditable_(False)
+        title.setSelectable_(False)
+        title.setFont_(NSFont.systemFontOfSize_weight_(13, NSFontWeightSemibold))
+        title.setTextColor_(NSColor.whiteColor())
+        parent_view.addSubview_(title)
+
+        desc = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(base_x, card_y + card_height - 46, control_width, 14)
+        )
+        desc.setStringValue_(
+            "Tweaks for local transcription (Whisper / Faster / MLX)."
+        )
+        desc.setBezeled_(False)
+        desc.setDrawsBackground_(False)
+        desc.setEditable_(False)
+        desc.setSelectable_(False)
+        desc.setFont_(NSFont.systemFontOfSize_weight_(11, NSFontWeightMedium))
+        desc.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6))
+        parent_view.addSubview_(desc)
+
+        row_height = 28
+        current_y = card_y + card_height - 78
+
+        def _bool_override_from_env(key: str) -> str:
+            raw = get_env_setting(key)
+            if raw is None:
+                return "default"
+            raw = raw.strip().lower()
+            if raw in ("1", "true", "yes", "on"):
+                return "true"
+            if raw in ("0", "false", "no", "off"):
+                return "false"
+            return "default"
+
+        # Preset (applies values, not persisted)
+        self._add_setting_label(base_x, current_y, "Preset:", parent_view)
+        preset_popup = NSPopUpButton.alloc().initWithFrame_(
+            NSMakeRect(control_x, current_y, control_width, 22)
+        )
+        preset_popup.setFont_(NSFont.systemFontOfSize_(11))
+        for preset in LOCAL_PRESET_OPTIONS:
+            preset_popup.addItemWithTitle_(preset)
+        preset_popup.selectItemWithTitle_("(none)")
+        preset_handler = _PresetChangedHandler.alloc().initWithController_(self)
+        preset_popup.setTarget_(preset_handler)
+        preset_popup.setAction_(
+            objc.selector(preset_handler.presetChanged_, signature=b"v@:@")
+        )
+        self._local_preset_changed_handler = preset_handler
+        self._local_preset_popup = preset_popup
+        parent_view.addSubview_(preset_popup)
+        current_y -= row_height
+
+        # Device (openai-whisper)
+        self._add_setting_label(base_x, current_y, "Device:", parent_view)
+        device_popup = NSPopUpButton.alloc().initWithFrame_(
+            NSMakeRect(control_x, current_y, control_width, 22)
+        )
+        device_popup.setFont_(NSFont.systemFontOfSize_(11))
+        for d in DEVICE_OPTIONS:
+            device_popup.addItemWithTitle_(d)
+        current_device = (get_env_setting("WHISPER_GO_DEVICE") or "auto").strip().lower()
+        if current_device not in DEVICE_OPTIONS:
+            current_device = "auto"
+        device_popup.selectItemWithTitle_(current_device)
+        self._device_popup = device_popup
+        parent_view.addSubview_(device_popup)
+        current_y -= row_height
+
+        # Warmup
+        self._add_setting_label(base_x, current_y, "Warmup:", parent_view)
+        warmup_popup = NSPopUpButton.alloc().initWithFrame_(
+            NSMakeRect(control_x, current_y, control_width, 22)
+        )
+        warmup_popup.setFont_(NSFont.systemFontOfSize_(11))
+        for v in WARMUP_OPTIONS:
+            warmup_popup.addItemWithTitle_(v)
+        warmup_env = get_env_setting("WHISPER_GO_LOCAL_WARMUP")
+        warmup_value = (warmup_env or "auto").strip().lower()
+        if warmup_value not in WARMUP_OPTIONS:
+            warmup_value = "auto"
+        warmup_popup.selectItemWithTitle_(warmup_value)
+        self._warmup_popup = warmup_popup
+        parent_view.addSubview_(warmup_popup)
+        current_y -= row_height
+
+        # Fast mode
+        self._add_setting_label(base_x, current_y, "Fast:", parent_view)
+        fast_popup = NSPopUpButton.alloc().initWithFrame_(
+            NSMakeRect(control_x, current_y, control_width, 22)
+        )
+        fast_popup.setFont_(NSFont.systemFontOfSize_(11))
+        for v in BOOL_OVERRIDE_OPTIONS:
+            fast_popup.addItemWithTitle_(v)
+        fast_popup.selectItemWithTitle_(_bool_override_from_env("WHISPER_GO_LOCAL_FAST"))
+        self._local_fast_popup = fast_popup
+        parent_view.addSubview_(fast_popup)
+        current_y -= row_height
+
+        # FP16 (openai-whisper; also used by MLX)
+        self._add_setting_label(base_x, current_y, "FP16:", parent_view)
+        fp16_popup = NSPopUpButton.alloc().initWithFrame_(
+            NSMakeRect(control_x, current_y, control_width, 22)
+        )
+        fp16_popup.setFont_(NSFont.systemFontOfSize_(11))
+        for v in BOOL_OVERRIDE_OPTIONS:
+            fp16_popup.addItemWithTitle_(v)
+        fp16_popup.selectItemWithTitle_(_bool_override_from_env("WHISPER_GO_FP16"))
+        self._fp16_popup = fp16_popup
+        parent_view.addSubview_(fp16_popup)
+        current_y -= row_height
+
+        # Beam size
+        self._add_setting_label(base_x, current_y, "Beam size:", parent_view)
+        beam_field = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(control_x, current_y, control_width, 22)
+        )
+        beam_field.setFont_(NSFont.systemFontOfSize_(11))
+        beam_field.setPlaceholderString_("default")
+        beam_field.setStringValue_(get_env_setting("WHISPER_GO_LOCAL_BEAM_SIZE") or "")
+        self._beam_size_field = beam_field
+        parent_view.addSubview_(beam_field)
+        current_y -= row_height
+
+        # Best of
+        self._add_setting_label(base_x, current_y, "Best of:", parent_view)
+        best_field = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(control_x, current_y, control_width, 22)
+        )
+        best_field.setFont_(NSFont.systemFontOfSize_(11))
+        best_field.setPlaceholderString_("default")
+        best_field.setStringValue_(get_env_setting("WHISPER_GO_LOCAL_BEST_OF") or "")
+        self._best_of_field = best_field
+        parent_view.addSubview_(best_field)
+        current_y -= row_height
+
+        # Temperature
+        self._add_setting_label(base_x, current_y, "Temperature:", parent_view)
+        temp_field = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(control_x, current_y, control_width, 22)
+        )
+        temp_field.setFont_(NSFont.systemFontOfSize_(11))
+        temp_field.setPlaceholderString_("e.g. 0.0 or 0.0,0.2,0.4")
+        temp_field.setStringValue_(get_env_setting("WHISPER_GO_LOCAL_TEMPERATURE") or "")
+        self._temperature_field = temp_field
+        parent_view.addSubview_(temp_field)
+        current_y -= row_height
+
+        # faster-whisper compute type
+        self._add_setting_label(base_x, current_y, "Compute type:", parent_view)
+        compute_field = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(control_x, current_y, control_width, 22)
+        )
+        compute_field.setFont_(NSFont.systemFontOfSize_(11))
+        compute_field.setPlaceholderString_("default (e.g. int8, int8_float16)")
+        compute_field.setStringValue_(get_env_setting("WHISPER_GO_LOCAL_COMPUTE_TYPE") or "")
+        self._compute_type_field = compute_field
+        parent_view.addSubview_(compute_field)
+        current_y -= row_height
+
+        # CPU threads
+        self._add_setting_label(base_x, current_y, "CPU threads:", parent_view)
+        threads_field = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(control_x, current_y, control_width, 22)
+        )
+        threads_field.setFont_(NSFont.systemFontOfSize_(11))
+        threads_field.setPlaceholderString_("0 = auto")
+        threads_field.setStringValue_(get_env_setting("WHISPER_GO_LOCAL_CPU_THREADS") or "")
+        self._cpu_threads_field = threads_field
+        parent_view.addSubview_(threads_field)
+        current_y -= row_height
+
+        # Workers
+        self._add_setting_label(base_x, current_y, "Workers:", parent_view)
+        workers_field = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(control_x, current_y, control_width, 22)
+        )
+        workers_field.setFont_(NSFont.systemFontOfSize_(11))
+        workers_field.setPlaceholderString_("1")
+        workers_field.setStringValue_(get_env_setting("WHISPER_GO_LOCAL_NUM_WORKERS") or "")
+        self._num_workers_field = workers_field
+        parent_view.addSubview_(workers_field)
+        current_y -= row_height
+
+        # without_timestamps (faster-whisper)
+        self._add_setting_label(base_x, current_y, "No timestamps:", parent_view)
+        wt_popup = NSPopUpButton.alloc().initWithFrame_(
+            NSMakeRect(control_x, current_y, control_width, 22)
+        )
+        wt_popup.setFont_(NSFont.systemFontOfSize_(11))
+        for v in BOOL_OVERRIDE_OPTIONS:
+            wt_popup.addItemWithTitle_(v)
+        wt_popup.selectItemWithTitle_(
+            _bool_override_from_env("WHISPER_GO_LOCAL_WITHOUT_TIMESTAMPS")
+        )
+        self._without_timestamps_popup = wt_popup
+        parent_view.addSubview_(wt_popup)
+        current_y -= row_height
+
+        # VAD filter (faster-whisper)
+        self._add_setting_label(base_x, current_y, "VAD filter:", parent_view)
+        vad_popup = NSPopUpButton.alloc().initWithFrame_(
+            NSMakeRect(control_x, current_y, control_width, 22)
+        )
+        vad_popup.setFont_(NSFont.systemFontOfSize_(11))
+        for v in BOOL_OVERRIDE_OPTIONS:
+            vad_popup.addItemWithTitle_(v)
+        vad_popup.selectItemWithTitle_(
+            _bool_override_from_env("WHISPER_GO_LOCAL_VAD_FILTER")
+        )
+        self._vad_filter_popup = vad_popup
+        parent_view.addSubview_(vad_popup)
 
         return card_y - CARD_SPACING
 
@@ -1171,6 +1447,95 @@ class WelcomeController:
             if view is not None:
                 view.setHidden_(not is_local)
 
+    def _apply_selected_local_preset(self) -> None:
+        """Wendet das aktuell gewählte Local-Preset auf die UI an."""
+        if not self._local_preset_popup:
+            return
+        preset = self._local_preset_popup.titleOfSelectedItem()
+        if not preset or preset == "(none)":
+            return
+        self._apply_local_preset(preset)
+
+    def _apply_local_preset(self, preset: str) -> None:
+        """Setzt empfohlene Settings (UI-only; Speichern via 'Save & Apply')."""
+
+        def set_popup(popup, title: str) -> None:
+            if popup is None or not title:
+                return
+            try:
+                popup.selectItemWithTitle_(title)
+            except Exception:
+                # Falls Custom Value fehlt, als Item hinzufügen
+                try:
+                    popup.addItemWithTitle_(title)
+                    popup.selectItemWithTitle_(title)
+                except Exception:
+                    pass
+
+        def set_field(field, value: str) -> None:
+            if field is None:
+                return
+            try:
+                field.setStringValue_(value)
+            except Exception:
+                pass
+
+        # Immer Local Mode aktivieren (sonst sind Backend/Model hidden)
+        set_popup(self._mode_popup, "local")
+        self._update_local_settings_visibility()
+
+        if preset == "macOS: MPS Balanced (turbo)":
+            set_popup(self._local_backend_popup, "whisper")
+            set_popup(self._local_model_popup, "turbo")
+            set_popup(self._device_popup, "auto")
+            set_popup(self._warmup_popup, "auto")
+            set_popup(self._local_fast_popup, "default")
+            set_popup(self._fp16_popup, "default")
+            set_field(self._beam_size_field, "")
+            set_field(self._best_of_field, "")
+            set_field(self._temperature_field, "")
+            set_field(self._compute_type_field, "")
+            set_field(self._cpu_threads_field, "")
+            set_field(self._num_workers_field, "")
+            set_popup(self._without_timestamps_popup, "default")
+            set_popup(self._vad_filter_popup, "default")
+            return
+
+        if preset == "macOS: MPS Fast (turbo)":
+            set_popup(self._local_backend_popup, "whisper")
+            set_popup(self._local_model_popup, "turbo")
+            set_popup(self._device_popup, "auto")
+            set_popup(self._warmup_popup, "auto")
+            set_popup(self._local_fast_popup, "true")
+            set_popup(self._fp16_popup, "default")
+            # Optional explizite Overrides (Fast-mode setzt ohnehin Defaults)
+            set_field(self._beam_size_field, "")
+            set_field(self._best_of_field, "")
+            set_field(self._temperature_field, "")
+            set_field(self._compute_type_field, "")
+            set_field(self._cpu_threads_field, "")
+            set_field(self._num_workers_field, "")
+            set_popup(self._without_timestamps_popup, "default")
+            set_popup(self._vad_filter_popup, "default")
+            return
+
+        if preset == "CPU: faster int8 (turbo)":
+            set_popup(self._local_backend_popup, "faster")
+            set_popup(self._local_model_popup, "turbo")
+            set_popup(self._device_popup, "cpu")
+            set_popup(self._warmup_popup, "false")
+            set_popup(self._local_fast_popup, "true")
+            set_popup(self._fp16_popup, "default")
+            set_field(self._beam_size_field, "")
+            set_field(self._best_of_field, "")
+            set_field(self._temperature_field, "")
+            set_field(self._compute_type_field, "int8")
+            set_field(self._cpu_threads_field, "0")
+            set_field(self._num_workers_field, "1")
+            set_popup(self._without_timestamps_popup, "true")
+            set_popup(self._vad_filter_popup, "true")
+            return
+
     def _build_footer(self) -> None:
         """Erstellt Footer mit Checkbox, Save-Button und Start-Button."""
         from AppKit import (  # type: ignore[import-not-found]
@@ -1335,6 +1700,74 @@ class WelcomeController:
                 remove_env_setting("WHISPER_GO_LANGUAGE")
             elif lang:
                 save_env_setting("WHISPER_GO_LANGUAGE", lang)
+
+        # Local Device (openai-whisper)
+        if self._device_popup:
+            device = (self._device_popup.titleOfSelectedItem() or "").strip().lower()
+            if not device or device == "auto":
+                remove_env_setting("WHISPER_GO_DEVICE")
+            else:
+                save_env_setting("WHISPER_GO_DEVICE", device)
+
+        # Local Warmup (auto/true/false)
+        if self._warmup_popup:
+            warmup = (self._warmup_popup.titleOfSelectedItem() or "").strip().lower()
+            if not warmup or warmup == "auto":
+                remove_env_setting("WHISPER_GO_LOCAL_WARMUP")
+            else:
+                save_env_setting("WHISPER_GO_LOCAL_WARMUP", warmup)
+
+        def _save_bool_override(key: str, popup) -> None:
+            if popup is None:
+                return
+            sel = (popup.titleOfSelectedItem() or "").strip().lower()
+            if not sel or sel == "default":
+                remove_env_setting(key)
+            else:
+                save_env_setting(key, sel)
+
+        # Local Fast (default/true/false)
+        _save_bool_override("WHISPER_GO_LOCAL_FAST", self._local_fast_popup)
+
+        # FP16 (default/true/false)
+        _save_bool_override("WHISPER_GO_FP16", self._fp16_popup)
+
+        def _save_optional_int(key: str, field) -> None:
+            if field is None:
+                return
+            raw = field.stringValue().strip()
+            if not raw:
+                remove_env_setting(key)
+                return
+            try:
+                int(raw)
+            except ValueError:
+                log.warning(f"Invalid {key}={raw!r}, not saved")
+                return
+            save_env_setting(key, raw)
+
+        def _save_optional_str(key: str, field) -> None:
+            if field is None:
+                return
+            raw = field.stringValue().strip()
+            if not raw:
+                remove_env_setting(key)
+                return
+            save_env_setting(key, raw)
+
+        # Decode overrides
+        _save_optional_int("WHISPER_GO_LOCAL_BEAM_SIZE", self._beam_size_field)
+        _save_optional_int("WHISPER_GO_LOCAL_BEST_OF", self._best_of_field)
+        _save_optional_str("WHISPER_GO_LOCAL_TEMPERATURE", self._temperature_field)
+
+        # faster-whisper overrides
+        _save_optional_str("WHISPER_GO_LOCAL_COMPUTE_TYPE", self._compute_type_field)
+        _save_optional_int("WHISPER_GO_LOCAL_CPU_THREADS", self._cpu_threads_field)
+        _save_optional_int("WHISPER_GO_LOCAL_NUM_WORKERS", self._num_workers_field)
+        _save_bool_override(
+            "WHISPER_GO_LOCAL_WITHOUT_TIMESTAMPS", self._without_timestamps_popup
+        )
+        _save_bool_override("WHISPER_GO_LOCAL_VAD_FILTER", self._vad_filter_popup)
 
         # Refine
         if self._refine_checkbox:
@@ -1700,3 +2133,26 @@ def _create_mode_changed_handler_class():
 
 
 _ModeChangedHandler = _create_mode_changed_handler_class()
+
+
+def _create_preset_changed_handler_class():
+    """Erstellt NSObject-Subklasse für Preset-Dropdown-Änderungen."""
+    from Foundation import NSObject  # type: ignore[import-not-found]
+    import objc  # type: ignore[import-not-found]
+
+    class PresetChangedHandler(NSObject):
+        def initWithController_(self, controller):
+            self = objc.super(PresetChangedHandler, self).init()
+            if self is None:
+                return None
+            self._controller = controller
+            return self
+
+        @objc.signature(b"v@:@")
+        def presetChanged_(self, _sender) -> None:
+            self._controller._apply_selected_local_preset()
+
+    return PresetChangedHandler
+
+
+_PresetChangedHandler = _create_preset_changed_handler_class()

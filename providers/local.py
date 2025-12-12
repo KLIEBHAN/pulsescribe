@@ -2,7 +2,8 @@
 
 Standardmäßig nutzt er openai-whisper (PyTorch). Optional kann über
 `WHISPER_GO_LOCAL_BACKEND=faster` der deutlich schnellere faster-whisper
-(CTranslate2) genutzt werden.
+(CTranslate2) genutzt werden. Auf Apple Silicon kann optional auch
+`WHISPER_GO_LOCAL_BACKEND=mlx` genutzt werden (mlx-whisper / Metal).
 """
 
 import logging
@@ -125,6 +126,8 @@ class LocalProvider:
             ).strip().lower()
             if backend_env in {"faster", "faster-whisper"}:
                 self._backend = "faster"
+            elif backend_env in {"mlx", "mlx-whisper"}:
+                self._backend = "mlx"
             elif backend_env == "auto":
                 try:
                     import faster_whisper  # noqa: F401
@@ -168,6 +171,26 @@ class LocalProvider:
             "large": "large-v3",
         }
         return mapping.get(model_name, model_name)
+
+    def _map_mlx_model_name(self, model_name: str) -> str:
+        """Mappt Modellnamen auf mlx-whisper HF-Repos (optional)."""
+        if "/" in model_name:
+            return model_name
+        mapping = {
+            "tiny": "mlx-community/whisper-tiny",
+            "base": "mlx-community/whisper-base",
+            "small": "mlx-community/whisper-small",
+            "medium": "mlx-community/whisper-medium",
+            "large": "mlx-community/whisper-large-v3",
+            "turbo": "mlx-community/whisper-large-v3-turbo",
+        }
+        if model_name in mapping:
+            return mapping[model_name]
+        if model_name.startswith("whisper-"):
+            return f"mlx-community/{model_name}"
+        if model_name.startswith("large-v3"):
+            return f"mlx-community/whisper-{model_name}"
+        return model_name
 
     def _get_whisper_model(self, model_name: str):
         """Lädt openai-whisper Modell auf dem richtigen Device (mit Caching)."""
@@ -302,6 +325,10 @@ class LocalProvider:
             vad_env = _env_bool("WHISPER_GO_LOCAL_VAD_FILTER")
             if vad_env:
                 options["vad_filter"] = True
+        elif self._backend == "mlx":
+            # mlx-whisper nutzt fp16 per Default; Override via WHISPER_GO_FP16 möglich.
+            if self._fp16_override is not None:
+                options["fp16"] = self._fp16_override
 
         # Fast-Mode: schnellere Decoding Defaults (kann via ENV überschrieben werden)
         if self._fast_mode:
@@ -348,6 +375,38 @@ class LocalProvider:
         self._ensure_runtime_config()
         if self._backend == "faster":
             self._get_faster_model(model_name)
+        elif self._backend == "mlx":
+            try:
+                import mlx_whisper  # type: ignore[import-not-found]
+            except ImportError as e:
+                raise ImportError(
+                    "mlx-whisper ist nicht installiert. Installiere es mit "
+                    "`pip install mlx-whisper` oder setze WHISPER_GO_LOCAL_BACKEND=whisper."
+                ) from e
+
+            import numpy as np
+
+            repo = self._map_mlx_model_name(model_name)
+            warmup_s = 0.2
+            warmup_audio = np.zeros(int(16000 * warmup_s), dtype=np.float32)
+            warmup_language = os.getenv("WHISPER_GO_LANGUAGE") or "en"
+            if warmup_language.strip().lower() == "auto":
+                warmup_language = "en"
+            warmup_opts: dict = {
+                "language": warmup_language,
+                "temperature": 0.0,
+                "beam_size": 1,
+                "best_of": 1,
+                "condition_on_previous_text": False,
+            }
+            if self._fp16_override is not None:
+                warmup_opts["fp16"] = self._fp16_override
+            mlx_whisper.transcribe(
+                warmup_audio,
+                path_or_hf_repo=repo,
+                verbose=None,
+                **warmup_opts,
+            )
         else:
             self._get_whisper_model(model_name)
 
@@ -364,6 +423,8 @@ class LocalProvider:
         with self._transcribe_lock:
             if self._backend == "faster":
                 return self._transcribe_faster(audio, model_name, options)
+            if self._backend == "mlx":
+                return self._transcribe_mlx(audio, model_name, options)
             whisper_model = self._get_whisper_model(model_name)
             result = whisper_model.transcribe(audio, **options)
             return result["text"]
@@ -377,6 +438,22 @@ class LocalProvider:
             faster_opts["temperature"] = float(temp[0])
         segments, _info = model.transcribe(audio, **faster_opts)
         return "".join(seg.text for seg in segments)
+
+    def _transcribe_mlx(self, audio, model_name: str, options: dict) -> str:
+        """Transkription via mlx-whisper (Apple Silicon / Metal)."""
+        try:
+            import mlx_whisper  # type: ignore[import-not-found]
+        except ImportError as e:
+            raise ImportError(
+                "mlx-whisper ist nicht installiert. Installiere es mit "
+                "`pip install mlx-whisper` oder setze WHISPER_GO_LOCAL_BACKEND=whisper."
+            ) from e
+
+        repo = self._map_mlx_model_name(model_name)
+        result = mlx_whisper.transcribe(audio, path_or_hf_repo=repo, **options)
+        if isinstance(result, dict):
+            return str(result.get("text", ""))
+        return str(result)
 
     def transcribe(
         self,
@@ -400,6 +477,8 @@ class LocalProvider:
         with self._transcribe_lock:
             if self._backend == "faster":
                 return self._transcribe_faster(str(audio_path), model_name, options)
+            if self._backend == "mlx":
+                return self._transcribe_mlx(str(audio_path), model_name, options)
             whisper_model = self._get_whisper_model(model_name)
             result = whisper_model.transcribe(str(audio_path), **options)
             return result["text"]

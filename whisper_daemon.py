@@ -1187,6 +1187,18 @@ class WhisperDaemon:
             "WHISPER_GO_LOCAL_BACKEND",
             "WHISPER_GO_LOCAL_MODEL",
             "WHISPER_GO_LANGUAGE",
+            "WHISPER_GO_DEVICE",
+            "WHISPER_GO_FP16",
+            "WHISPER_GO_LOCAL_FAST",
+            "WHISPER_GO_LOCAL_BEAM_SIZE",
+            "WHISPER_GO_LOCAL_BEST_OF",
+            "WHISPER_GO_LOCAL_TEMPERATURE",
+            "WHISPER_GO_LOCAL_COMPUTE_TYPE",
+            "WHISPER_GO_LOCAL_CPU_THREADS",
+            "WHISPER_GO_LOCAL_NUM_WORKERS",
+            "WHISPER_GO_LOCAL_WITHOUT_TIMESTAMPS",
+            "WHISPER_GO_LOCAL_VAD_FILTER",
+            "WHISPER_GO_LOCAL_WARMUP",
         ):
             value = get_env_setting(key)
             if value is None:
