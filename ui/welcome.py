@@ -1223,7 +1223,7 @@ class WelcomeController:
         start_btn = NSButton.alloc().initWithFrame_(
             NSMakeRect(WELCOME_WIDTH - WELCOME_PADDING - 140, footer_y, 140, 32)
         )
-        start_btn.setTitle_("Cancel")
+        start_btn.setTitle_("Close")
         start_btn.setBezelStyle_(NSBezelStyleRounded)
         start_btn.setFont_(NSFont.systemFontOfSize_weight_(13, NSFontWeightSemibold))
 
