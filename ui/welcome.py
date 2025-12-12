@@ -212,12 +212,17 @@ class WelcomeController:
         tab_view.setFont_(NSFont.systemFontOfSize_(12))
         self._content_view.addSubview_(tab_view)
         self._tab_view = tab_view
+        # Content-Rect berücksichtigt die Tab-Bar Höhe/Insets
+        try:
+            content_height = tab_view.contentRect().size.height
+        except Exception:
+            content_height = tab_height
 
-        self._add_tab(tab_view, "General", self._build_general_tab, tab_height)
-        self._add_tab(tab_view, "Providers", self._build_providers_tab, tab_height)
-        self._add_tab(tab_view, "Refine", self._build_refine_tab, tab_height)
-        self._add_tab(tab_view, "Vocabulary", self._build_vocabulary_tab, tab_height)
-        self._add_tab(tab_view, "About", self._build_about_tab, tab_height)
+        self._add_tab(tab_view, "General", self._build_general_tab, content_height)
+        self._add_tab(tab_view, "Providers", self._build_providers_tab, content_height)
+        self._add_tab(tab_view, "Refine", self._build_refine_tab, content_height)
+        self._add_tab(tab_view, "Vocabulary", self._build_vocabulary_tab, content_height)
+        self._add_tab(tab_view, "About", self._build_about_tab, content_height)
 
     def _add_tab(self, tab_view, label: str, builder, tab_height: int) -> None:
         from AppKit import NSTabViewItem, NSView  # type: ignore[import-not-found]
@@ -1196,11 +1201,13 @@ class WelcomeController:
         # Vocabulary / Keywords
         if self._vocab_text_view:
             keywords = self._get_current_keywords()
-            try:
-                save_vocabulary(keywords)
-                log.info(f"Saved {len(keywords)} vocabulary keywords")
-            except Exception as e:
-                log.warning(f"Could not save vocabulary: {e}")
+            existing_keywords = load_vocabulary().get("keywords", [])
+            if keywords != existing_keywords:
+                try:
+                    save_vocabulary(keywords)
+                    log.info(f"Saved {len(keywords)} vocabulary keywords")
+                except Exception as e:
+                    log.warning(f"Could not save vocabulary: {e}")
             self._update_vocabulary_warning()
 
         log.info("All settings saved to .env file")
