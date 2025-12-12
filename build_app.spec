@@ -88,13 +88,16 @@ hiddenimports = list(dict.fromkeys(hiddenimports))
 try:
     mlxw_datas, mlxw_binaries, mlxw_hidden = collect_all("mlx_whisper")
     mlx_datas, mlx_binaries, mlx_hidden = collect_all("mlx")
+    # mlx-whisper depends on SciPy (e.g. for word-timestamp helpers)
+    scipy_datas, scipy_binaries, scipy_hidden = collect_all("scipy")
 except Exception:
     mlxw_datas, mlxw_binaries, mlxw_hidden = [], [], []
     mlx_datas, mlx_binaries, mlx_hidden = [], [], []
+    scipy_datas, scipy_binaries, scipy_hidden = [], [], []
 
-datas += mlxw_datas + mlx_datas
-binaries += mlxw_binaries + mlx_binaries
-hiddenimports += mlxw_hidden + mlx_hidden
+datas += mlxw_datas + mlx_datas + scipy_datas
+binaries += mlxw_binaries + mlx_binaries + scipy_binaries
+hiddenimports += mlxw_hidden + mlx_hidden + scipy_hidden
 hiddenimports = list(dict.fromkeys(hiddenimports))
 
 # Nicht benötigte Module ausschließen (reduziert App-Größe)
@@ -110,7 +113,6 @@ excludes = [
     # Data Science (nicht benötigt)
     'matplotlib',
     'pandas',
-    'scipy',
     'sklearn',
     
     # Testing

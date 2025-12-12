@@ -390,10 +390,17 @@ class LocalProvider:
             with self._transcribe_lock:
                 try:
                     import mlx_whisper  # type: ignore[import-not-found]
+                except ModuleNotFoundError as e:
+                    raise ImportError(
+                        "mlx-whisper konnte nicht geladen werden (fehlende Abhängigkeit: "
+                        f"{e.name}). Installiere es mit `pip install mlx-whisper` oder setze "
+                        "WHISPER_GO_LOCAL_BACKEND=whisper."
+                    ) from e
                 except ImportError as e:
                     raise ImportError(
-                        "mlx-whisper ist nicht installiert. Installiere es mit "
-                        "`pip install mlx-whisper` oder setze WHISPER_GO_LOCAL_BACKEND=whisper."
+                        "mlx-whisper konnte nicht geladen werden. Installiere es mit "
+                        f"`pip install mlx-whisper` oder setze WHISPER_GO_LOCAL_BACKEND=whisper. "
+                        f"Ursache: {e}"
                     ) from e
 
                 import numpy as np
@@ -453,10 +460,17 @@ class LocalProvider:
         """Transkription via mlx-whisper (Apple Silicon / Metal)."""
         try:
             import mlx_whisper  # type: ignore[import-not-found]
+        except ModuleNotFoundError as e:
+            raise ImportError(
+                "mlx-whisper konnte nicht geladen werden (fehlende Abhängigkeit: "
+                f"{e.name}). Installiere es mit `pip install mlx-whisper` oder setze "
+                "WHISPER_GO_LOCAL_BACKEND=whisper."
+            ) from e
         except ImportError as e:
             raise ImportError(
-                "mlx-whisper ist nicht installiert. Installiere es mit "
-                "`pip install mlx-whisper` oder setze WHISPER_GO_LOCAL_BACKEND=whisper."
+                "mlx-whisper konnte nicht geladen werden. Installiere es mit "
+                f"`pip install mlx-whisper` oder setze WHISPER_GO_LOCAL_BACKEND=whisper. "
+                f"Ursache: {e}"
             ) from e
 
         repo = self._map_mlx_model_name(model_name)
