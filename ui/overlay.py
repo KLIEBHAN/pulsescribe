@@ -23,12 +23,47 @@ WAVE_AREA_WIDTH = WAVE_BAR_COUNT * WAVE_BAR_WIDTH + (WAVE_BAR_COUNT - 1) * WAVE_
 # Glättung für direkte Level-Updates:
 # Schneller Anstieg (spricht direkter auf leise Sprache an),
 # langsameres Abklingen (wirkt ruhiger).
-WAVE_SMOOTHING_ALPHA_RISE = 0.9
-WAVE_SMOOTHING_ALPHA_FALL = 0.45
+WAVE_SMOOTHING_ALPHA_RISE = 0.65
+WAVE_SMOOTHING_ALPHA_FALL = 0.12
 
 # Nichtlineare Kurve für Audio->Visual Mapping.
-# Etwas unter sqrt(0.5), um leise Stimmen stärker sichtbar zu machen.
-WAVE_VISUAL_EXPONENT = 0.4
+# Mit AGC wirkt eine leicht komprimierende Kurve ruhiger.
+WAVE_VISUAL_EXPONENT = 1.3
+
+# Zusätzliche Glättung auf dem (normalisierten) Level selbst.
+# Das reduziert "Zittern" durch RMS-Fluktuationen zwischen Frames.
+WAVE_LEVEL_SMOOTHING_RISE = 0.30
+WAVE_LEVEL_SMOOTHING_FALL = 0.10
+
+# Adaptive Gain Control (AGC):
+# Hält die Visualisierung bei leisen/lauteren Mics dynamisch.
+# Wir tracken einen rollenden Peak und normalisieren mit etwas Headroom.
+WAVE_AGC_DECAY = 0.97        # Peak-Falloff pro Level-Update (~1s Zeitkonstante bei ~15Hz)
+WAVE_AGC_MIN_PEAK = 0.01     # Untergrenze gegen Überverstärkung von Stille
+WAVE_AGC_HEADROOM = 2.0      # Mehr Headroom = weniger Sensitivität/Clipping
+
+# Rendering/Animation:
+# Wir rendern die Welle unabhängig von Audio-Level-Updates, damit sie auch bei ~15Hz
+# RMS-Callbacks smooth "wandert" (ähnlicher zu iOS/Whisper Flow).
+WAVE_ANIMATION_FPS = 60.0
+
+# Sanfte, deterministische "Wander"-Modulation (traveling wave) statt Random-Jitter.
+WAVE_WANDER_AMOUNT = 0.22         # Relative Modulation (0..~0.35 sinnvoll)
+WAVE_WANDER_HZ_PRIMARY = 0.55     # Hz (langsam, organisch)
+WAVE_WANDER_HZ_SECONDARY = 0.95   # Hz (leicht schneller, bricht Monotonie)
+WAVE_WANDER_PHASE_STEP_PRIMARY = 0.85    # rad/bar (spatial frequency)
+WAVE_WANDER_PHASE_STEP_SECONDARY = 1.65  # rad/bar (spatial frequency)
+WAVE_WANDER_BLEND = 0.65         # 0..1 mix primary/secondary
+
+# Zusätzlich: "Energie"-Envelope, die als Paket nach links/rechts wandert.
+# Ohne das sind die höchsten Balken oft immer in der Mitte (statisch wirkend).
+WAVE_ENVELOPE_STRENGTH = 0.85   # 0..1 (1 = nur Envelope, 0 = nur Basisfaktoren)
+WAVE_ENVELOPE_BASE = 0.38       # Mindest-Faktor (verhindert zu flache Ränder)
+WAVE_ENVELOPE_SIGMA = 1.15      # Breite des Pakets in Balken (kleiner = stärkerer Fokus)
+WAVE_ENVELOPE_RANGE_FRACTION = 1.25  # Max. Verschiebung relativ zur halben Balkenanzahl
+WAVE_ENVELOPE_HZ_PRIMARY = 0.15      # Drift (öfter links/rechts)
+WAVE_ENVELOPE_HZ_SECONDARY = 0.24    # Zweite Frequenz für weniger Periodizität
+WAVE_ENVELOPE_BLEND = 0.62           # 0..1 mix primary/secondary
 
 # Feedback-Anzeigedauer
 FEEDBACK_DISPLAY_DURATION = 0.8  # Sekunden für Done/Error-Anzeige
@@ -36,6 +71,9 @@ FEEDBACK_DISPLAY_DURATION = 0.8  # Sekunden für Done/Error-Anzeige
 from config import VISUAL_NOISE_GATE, VISUAL_GAIN
 from utils.state import AppState
 import math
+import random
+import time
+import weakref
 
 
 def _build_height_factors() -> list[float]:
@@ -107,7 +145,23 @@ class SoundWaveView:
         self._height_factors = _build_height_factors()
         self._recording_durations = _build_recording_durations()
         self._last_heights = [WAVE_BAR_MIN_HEIGHT for _ in range(WAVE_BAR_COUNT)]
+        self._agc_peak = WAVE_AGC_MIN_PEAK
+        self._target_level = 0.0
+        self._smoothed_level = 0.0
+        self._level_timer = None
+        self._envelope_phase_primary = random.uniform(0.0, 2 * math.pi)
+        self._envelope_phase_secondary = random.uniform(0.0, 2 * math.pi)
 
+        # Traveling-wave Offsets: korrelierte Phasen pro Bar → "wandern" statt "zappeln"
+        center = (WAVE_BAR_COUNT - 1) / 2
+        self._wander_offset_primary = [
+            (i - center) * WAVE_WANDER_PHASE_STEP_PRIMARY + random.uniform(-0.10, 0.10)
+            for i in range(WAVE_BAR_COUNT)
+        ]
+        self._wander_offset_secondary = [
+            (i - center) * WAVE_WANDER_PHASE_STEP_SECONDARY + random.uniform(-0.10, 0.10)
+            for i in range(WAVE_BAR_COUNT)
+        ]
         # Balken erstellen
         center_y = frame.size.height / 2
         for i in range(WAVE_BAR_COUNT):
@@ -182,67 +236,29 @@ class SoundWaveView:
         if self.current_animation != "recording":
             self.current_animation = "recording"
             self.set_bar_color(self._color_recording)
-        
-        # Noise Gate + Normalisierung: sehr leise Pegel ignorieren,
-        # darüber jedoch auf 0..1 skaliert, damit leise Sprache sichtbar bleibt.
-        if level <= VISUAL_NOISE_GATE:
-            level = 0.0
+
+        # Noise Gate: sehr leise Pegel ignorieren, darüber linearisieren.
+        raw_level = max(level, 0.0)
+        if raw_level <= VISUAL_NOISE_GATE:
+            gated_level = 0.0
         else:
-            level = (level - VISUAL_NOISE_GATE) / (1.0 - VISUAL_NOISE_GATE)
-            level = max(0.0, min(1.0, level))
+            gated_level = raw_level - VISUAL_NOISE_GATE
 
-        # Verstärkung für visuelle Sichtbarkeit mit nicht-linearer Kurve.
-        # Exponent < 0.5 hebt leise Töne stärker an als sqrt.
-        amplified = min((level ** WAVE_VISUAL_EXPONENT) * VISUAL_GAIN, 1.0)
-        
-        # Balken-Mapping (symmetrisch von außen nach innen)
-        # Wir fügen etwas Randomness hinzu, damit es lebendig wirkt
-        import random
-        from AppKit import NSMakeRect # type: ignore[import-not-found]
-        
-        for i, bar in enumerate(self.bars):
-            # Berechne Zielhöhe
-            base_height = WAVE_BAR_MIN_HEIGHT
-            max_add = WAVE_BAR_MAX_HEIGHT - WAVE_BAR_MIN_HEIGHT
+        # AGC-Peak-Tracking: schneller Attack, langsamer Release.
+        if gated_level > self._agc_peak:
+            self._agc_peak = gated_level
+        else:
+            self._agc_peak = max(self._agc_peak * WAVE_AGC_DECAY, WAVE_AGC_MIN_PEAK)
 
-            # Dynamik-Boost: noch etwas stärkere Varianz pro Balken pro Frame
-            activity = 0.20 + 0.60 * amplified
-            factor_variation = max(0.6, 1.0 + random.uniform(-activity, activity))
+        reference_peak = max(self._agc_peak * WAVE_AGC_HEADROOM, WAVE_AGC_MIN_PEAK)
+        normalized = gated_level / reference_peak if reference_peak > 0 else 0.0
+        normalized = max(0.0, min(1.0, normalized))
 
-            # Höhe = Min + (Level * Factor * MaxAdd) + Jitter
-            height = base_height + (
-                amplified * self._height_factors[i] * factor_variation * max_add
-            )
+        # Visuelle Kurve + optionaler Gain.
+        self._target_level = min((normalized ** WAVE_VISUAL_EXPONENT) * VISUAL_GAIN, 1.0)
 
-            # Jitter, skaliert mit Lautstärke
-            jitter_range = 2.0 + 6.0 * amplified
-            jitter = random.uniform(-jitter_range, jitter_range)
-            height = max(WAVE_BAR_MIN_HEIGHT, min(WAVE_BAR_MAX_HEIGHT, height + jitter))
-
-            # Asymmetrische Glättung: schneller hoch, langsamer runter
-            prev_height = self._last_heights[i]
-            alpha = (
-                WAVE_SMOOTHING_ALPHA_RISE
-                if height > prev_height
-                else WAVE_SMOOTHING_ALPHA_FALL
-            )
-            smoothed_height = prev_height + alpha * (height - prev_height)
-
-            # Disable implicit animations for direct update
-            # CATransaction.begin() ... commit() wäre sauberer, aber overhead.
-            # Wir setzen bounds direkt.
-            
-            # Da wir CALayer nutzen, ist bounds update normalerweise animiert (implicit).
-            # Wir wollen aber schnelle Updates.
-            # Man könnte Actions disablen, aber für die wenigen Balken bei ~20-50Hz ist es oft ok.
-            
-            # Zentrieren in Y
-            # Frame origin ist unten links im Parent (wenn nicht anders transformiert)
-            # Aber wir haben frame gesetzt. Bounds ändern ändert Size um AnchorPoint (Center).
-            
-            # Einfacher: Setze Bounds (Größe)
-            bar.setBounds_(NSMakeRect(0, 0, WAVE_BAR_WIDTH, smoothed_height))
-            self._last_heights[i] = smoothed_height
+        # Timer-basiertes Rendering starten (smooth wandering unabhängig von Audio callback rate)
+        self._start_level_timer()
 
 
     def start_recording_animation(self) -> None:
@@ -311,8 +327,8 @@ class SoundWaveView:
 
     def stop_animating(self) -> None:
         """Stoppt alle Animationen."""
-        if not self.animations_running:
-            return
+        # Auch wenn keine CABasicAnimations laufen, kann der Level-Timer aktiv sein.
+        self._stop_level_timer()
         self.animations_running = False
         self.current_animation = None
         from AppKit import NSMakeRect  # type: ignore[import-not-found]
@@ -321,6 +337,118 @@ class SoundWaveView:
             bar.removeAllAnimations()
             bar.setBounds_(NSMakeRect(0, 0, WAVE_BAR_WIDTH, WAVE_BAR_MIN_HEIGHT))
         self._last_heights = [WAVE_BAR_MIN_HEIGHT for _ in range(WAVE_BAR_COUNT)]
+        self._agc_peak = WAVE_AGC_MIN_PEAK
+        self._smoothed_level = 0.0
+        self._target_level = 0.0
+
+    def _start_level_timer(self) -> None:
+        if self._level_timer is not None:
+            return
+
+        from Foundation import NSTimer  # type: ignore[import-not-found]
+
+        self_ref = weakref.ref(self)
+
+        def tick(_timer) -> None:
+            self_obj = self_ref()
+            if self_obj is None:
+                try:
+                    _timer.invalidate()
+                except Exception:
+                    pass
+                return
+            self_obj._render_level_frame()
+
+        interval = 1.0 / max(WAVE_ANIMATION_FPS, 1.0)
+        self._level_timer = NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+            interval, True, tick
+        )
+
+    def _stop_level_timer(self) -> None:
+        if self._level_timer is None:
+            return
+        try:
+            self._level_timer.invalidate()
+        except Exception:
+            pass
+        self._level_timer = None
+
+    def _render_level_frame(self) -> None:
+        """Rendert einen Frame der Level-Visualisierung (läuft im Main-Thread via NSTimer)."""
+        from AppKit import NSMakeRect  # type: ignore[import-not-found]
+        from Quartz import CATransaction  # type: ignore[import-not-found]
+
+        # Ziel-Level sanft verfolgen (reduziert Zittern durch RMS-Fluktuationen).
+        prev_level = self._smoothed_level
+        target = self._target_level
+        alpha_level = (
+            WAVE_LEVEL_SMOOTHING_RISE if target > prev_level else WAVE_LEVEL_SMOOTHING_FALL
+        )
+        level = prev_level + alpha_level * (target - prev_level)
+        self._smoothed_level = level
+
+        now = time.perf_counter()
+        phase_primary = 2 * math.pi * WAVE_WANDER_HZ_PRIMARY * now
+        phase_secondary = 2 * math.pi * WAVE_WANDER_HZ_SECONDARY * now + 1.7
+
+        # Envelope-Center driftet nach links/rechts (wie ein Paket).
+        bar_center = (WAVE_BAR_COUNT - 1) / 2
+        max_shift = max(0.0, bar_center * WAVE_ENVELOPE_RANGE_FRACTION)
+        # Bewegung skaliert mit Level: bei Stille wenig, beim Sprechen deutlich.
+        shift_strength = max_shift * (0.15 + 0.85 * level)
+        env_primary = math.sin(
+            2 * math.pi * WAVE_ENVELOPE_HZ_PRIMARY * now + self._envelope_phase_primary
+        )
+        env_secondary = math.sin(
+            2 * math.pi * WAVE_ENVELOPE_HZ_SECONDARY * now + self._envelope_phase_secondary
+        )
+        env_mix = (
+            WAVE_ENVELOPE_BLEND * env_primary
+            + (1.0 - WAVE_ENVELOPE_BLEND) * env_secondary
+        )
+        envelope_center = bar_center + shift_strength * env_mix
+        envelope_center = max(0.0, min(WAVE_BAR_COUNT - 1, envelope_center))
+
+        CATransaction.begin()
+        CATransaction.setDisableActions_(True)
+
+        base_height = WAVE_BAR_MIN_HEIGHT
+        max_add = WAVE_BAR_MAX_HEIGHT - WAVE_BAR_MIN_HEIGHT
+
+        # Kleine Baseline-Bewegung, damit es nicht "steht" bei leiser Sprache,
+        # aber skaliert mit Level, damit es ruhig bleibt.
+        wander_strength = WAVE_WANDER_AMOUNT * (0.20 + 0.80 * level)
+
+        for i, bar in enumerate(self.bars):
+            travel_primary = math.sin(phase_primary + self._wander_offset_primary[i])
+            travel_secondary = math.sin(phase_secondary + self._wander_offset_secondary[i])
+            travel = (
+                WAVE_WANDER_BLEND * travel_primary
+                + (1.0 - WAVE_WANDER_BLEND) * travel_secondary
+            )
+            wiggle = 1.0 + wander_strength * travel
+
+            # Dynamische Envelope verschiebt den "Energie"-Schwerpunkt über die Balken.
+            dist = (i - envelope_center) / max(WAVE_ENVELOPE_SIGMA, 0.1)
+            envelope = math.exp(-0.5 * dist * dist)
+            envelope_factor = WAVE_ENVELOPE_BASE + (1.0 - WAVE_ENVELOPE_BASE) * envelope
+
+            base_factor = self._height_factors[i]
+            height_factor = (1.0 - WAVE_ENVELOPE_STRENGTH) * base_factor + (
+                WAVE_ENVELOPE_STRENGTH * envelope_factor
+            )
+
+            height = base_height + (level * height_factor * wiggle * max_add)
+            height = max(WAVE_BAR_MIN_HEIGHT, min(WAVE_BAR_MAX_HEIGHT, height))
+
+            prev_height = self._last_heights[i]
+            alpha = WAVE_SMOOTHING_ALPHA_RISE if height > prev_height else WAVE_SMOOTHING_ALPHA_FALL
+            smoothed_height = prev_height + alpha * (height - prev_height)
+
+            bar.setBounds_(NSMakeRect(0, 0, WAVE_BAR_WIDTH, smoothed_height))
+            self._last_heights[i] = smoothed_height
+
+        CATransaction.commit()
 
 
 class OverlayController:
