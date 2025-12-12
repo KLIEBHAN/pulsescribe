@@ -387,35 +387,36 @@ class LocalProvider:
         if self._backend == "faster":
             self._get_faster_model(model_name)
         elif self._backend == "mlx":
-            try:
-                import mlx_whisper  # type: ignore[import-not-found]
-            except ImportError as e:
-                raise ImportError(
-                    "mlx-whisper ist nicht installiert. Installiere es mit "
-                    "`pip install mlx-whisper` oder setze WHISPER_GO_LOCAL_BACKEND=whisper."
-                ) from e
+            with self._transcribe_lock:
+                try:
+                    import mlx_whisper  # type: ignore[import-not-found]
+                except ImportError as e:
+                    raise ImportError(
+                        "mlx-whisper ist nicht installiert. Installiere es mit "
+                        "`pip install mlx-whisper` oder setze WHISPER_GO_LOCAL_BACKEND=whisper."
+                    ) from e
 
-            import numpy as np
+                import numpy as np
 
-            repo = self._map_mlx_model_name(model_name)
-            warmup_s = 0.2
-            warmup_audio = np.zeros(int(16000 * warmup_s), dtype=np.float32)
-            warmup_language = os.getenv("WHISPER_GO_LANGUAGE") or "en"
-            if warmup_language.strip().lower() == "auto":
-                warmup_language = "en"
-            warmup_opts: dict = {
-                "language": warmup_language,
-                "temperature": 0.0,
-                "condition_on_previous_text": False,
-            }
-            if self._fp16_override is not None:
-                warmup_opts["fp16"] = self._fp16_override
-            mlx_whisper.transcribe(
-                warmup_audio,
-                path_or_hf_repo=repo,
-                verbose=None,
-                **warmup_opts,
-            )
+                repo = self._map_mlx_model_name(model_name)
+                warmup_s = 0.2
+                warmup_audio = np.zeros(int(16000 * warmup_s), dtype=np.float32)
+                warmup_language = os.getenv("WHISPER_GO_LANGUAGE") or "en"
+                if warmup_language.strip().lower() == "auto":
+                    warmup_language = "en"
+                warmup_opts: dict = {
+                    "language": warmup_language,
+                    "temperature": 0.0,
+                    "condition_on_previous_text": False,
+                }
+                if self._fp16_override is not None:
+                    warmup_opts["fp16"] = self._fp16_override
+                mlx_whisper.transcribe(
+                    warmup_audio,
+                    path_or_hf_repo=repo,
+                    verbose=None,
+                    **warmup_opts,
+                )
         else:
             self._get_whisper_model(model_name)
 
