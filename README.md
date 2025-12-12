@@ -7,7 +7,7 @@
 
 Voice input for macOS – inspired by [Wispr Flow](https://wisprflow.ai). Transcribes audio using OpenAI Whisper via API, Deepgram, Groq, or locally.
 
-**Features:** Real-time Streaming (Deepgram) · Multiple Providers (OpenAI, Deepgram, Groq, Local) · LLM Post-processing · Context Awareness · Custom Vocabulary · Raycast Hotkeys · Live Preview Overlay · Menu Bar Feedback
+**Features:** Real-time Streaming (Deepgram) · Multiple Providers (OpenAI, Deepgram, Groq, Local incl. MLX/Metal on Apple Silicon) · LLM Post-processing · Context Awareness · Custom Vocabulary · Raycast Hotkeys · Live Preview Overlay · Menu Bar Feedback
 
 > **Performance:** Ultra-fast startup with ~170ms to "Ready-Sound" thanks to parallel microphone and WebSocket initialization. Audio is transcribed during recording – results appear immediately after stopping.
 
@@ -18,7 +18,7 @@ Voice input for macOS – inspired by [Wispr Flow](https://wisprflow.ai). Transc
 | **Deepgram** | ~300ms ⚡ | WebSocket | Real-time streaming, recommended |
 | **Groq**     | ~1s       | REST      | Whisper on LPU, very fast        |
 | **OpenAI**   | ~2-3s     | REST      | GPT-4o, highest quality          |
-| **Local**    | ~5-10s    | Whisper   | Offline, no API costs (optional faster backend) |
+| **Local**    | varies    | Whisper   | Offline, no API costs (MLX/Metal on Apple Silicon) |
 
 ## Quick Start
 
@@ -40,7 +40,15 @@ python transcribe.py --record --copy --mode deepgram
 
 ### Recommended `.env` Configuration
 
-Create a `.env` file in the project directory for persistent settings:
+WhisperGo loads settings from `~/.whisper_go/.env` (recommended; used by the Settings UI and the daemon).  
+For development, a local `.env` in the project directory is also supported.
+
+```bash
+# Recommended (works for the daemon / app bundle)
+cp .env.example ~/.whisper_go/.env
+```
+
+Example `~/.whisper_go/.env`:
 
 ```bash
 # API Keys
@@ -184,7 +192,7 @@ export WHISPER_GO_LOCAL_BACKEND="whisper"
 # export WHISPER_GO_LOCAL_TEMPERATURE=0.0
 
 # Optional: Local Warmup (reduces "cold start" on first local call)
-# Default: auto (warmup only for openai-whisper on MPS). Values: true/false
+# Default: auto (warmup only for openai-whisper on MPS). Values: true/false (unset = auto)
 # export WHISPER_GO_LOCAL_WARMUP="true"
 
 # WebSocket Streaming for Deepgram (default: true)
@@ -201,7 +209,8 @@ export WHISPER_GO_REFINE_PROVIDER="openai"  # or openrouter, groq
 Certain modes require additional tools:
 
 ```bash
-# Local Mode (ffmpeg for audio conversion)
+# Local Mode (file transcription)
+# Required for `WHISPER_GO_LOCAL_BACKEND=whisper` and `mlx` when transcribing audio files.
 brew install ffmpeg          # macOS
 sudo apt install ffmpeg      # Ubuntu/Debian
 
@@ -319,6 +328,11 @@ open start_daemon.command
 > **Toggle hotkeys don't need Accessibility permission.** QuickMacHotKey uses the native Carbon API (`RegisterEventHotKey`).  
 > **Hold mode uses pynput and requires Accessibility** on macOS.
 
+### Settings UI (Menu Bar)
+
+Use the menu bar icon → **Settings...** to configure provider keys, mode, local backend/model, and advanced local performance knobs (device, warmup, fast decoding, faster-whisper compute/threading, etc.).  
+Settings are stored in `~/.whisper_go/.env` and applied live (hotkey changes require a restart).
+
 ### Configuration
 
 In `.env` or as environment variable:
@@ -391,7 +405,7 @@ Both are integrated and start automatically with the daemon.
 | `deepgram` | Deepgram | WebSocket | ~300ms ⚡ | Real-time streaming (recommended)  |
 | `groq`     | Groq     | REST      | ~1s       | Whisper on LPU, very fast          |
 | `openai`   | OpenAI   | REST      | ~2-3s     | GPT-4o Transcribe, highest quality |
-| `local`    | Whisper  | Local     | ~5-10s    | Offline, no API costs (optional faster backend) |
+| `local`    | Whisper  | Local     | varies    | Offline, no API costs (Whisper / Faster / MLX) |
 
 > **Recommendation:** `--mode deepgram` for daily use. The streaming architecture ensures minimal waiting time between recording stop and text insertion.
 
@@ -446,14 +460,46 @@ Groq uses LPU chips (Language Processing Units) for particularly fast inference.
 Local mode now supports three backends:
 
 - **`whisper` (default):** openai‑whisper on PyTorch. Uses Apple‑GPU via MPS automatically on M‑series Macs (`WHISPER_GO_DEVICE=auto`). Best compatibility/quality.
-- **`faster`:** faster‑whisper (CTranslate2). Very fast on CPU (often 2–4× faster) and lower memory. Default `compute_type` is `int8` on CPU and `float16` on CUDA. Enable via `WHISPER_GO_LOCAL_BACKEND=faster`.
+- **`faster`:** faster‑whisper (CTranslate2). Very fast on CPU and lower memory. On macOS it runs on CPU (no MPS/Metal). Default `compute_type` is `int8` on CPU and `float16` on CUDA. Enable via `WHISPER_GO_LOCAL_BACKEND=faster`.
 - **`mlx`:** mlx‑whisper (MLX/Metal). Apple Silicon GPU‑accelerated local backend. Install with `pip install mlx-whisper` and enable via `WHISPER_GO_LOCAL_BACKEND=mlx`.
 
 Notes:
 
 - Model name `turbo` maps to faster‑whisper `large-v3-turbo`.
-- For maximum speed (with slight robustness trade‑off), set `WHISPER_GO_LOCAL_FAST=true` or lower `WHISPER_GO_LOCAL_BEAM_SIZE`/`BEST_OF`.
+- For maximum speed (with slight robustness trade‑off), set `WHISPER_GO_LOCAL_FAST=true` or lower `WHISPER_GO_LOCAL_BEAM_SIZE`/`WHISPER_GO_LOCAL_BEST_OF`.
 - For long recordings on `faster`, you can tune throughput via `WHISPER_GO_LOCAL_CPU_THREADS` and `WHISPER_GO_LOCAL_NUM_WORKERS`.
+- For `mlx`, `WHISPER_GO_LOCAL_BEAM_SIZE` is ignored (beam search is not implemented in mlx‑whisper).
+
+#### Quick setup (offline dictation)
+
+Apple Silicon (recommended local backend):
+
+```bash
+pip install mlx-whisper
+export WHISPER_GO_MODE=local
+export WHISPER_GO_LOCAL_BACKEND=mlx
+export WHISPER_GO_LOCAL_MODEL=large   # or: turbo
+export WHISPER_GO_LANGUAGE=de         # optional
+python whisper_daemon.py --debug
+```
+
+#### Apple Silicon: MLX model names
+
+With `WHISPER_GO_LOCAL_BACKEND=mlx`, `WHISPER_GO_LOCAL_MODEL` supports both short names and full Hugging Face repo IDs:
+
+- `large` → `mlx-community/whisper-large-v3-mlx`
+- `turbo` → `mlx-community/whisper-large-v3-turbo`
+- `medium` → `mlx-community/whisper-medium`
+- `small` → `mlx-community/whisper-small-mlx`
+- `base` → `mlx-community/whisper-base-mlx`
+- `tiny` → `mlx-community/whisper-tiny`
+
+If you previously tried `whisper-large-v3` and hit a 404, use `large`/`large-v3` or the full repo ID `mlx-community/whisper-large-v3-mlx`.
+
+#### Warmup / cold start
+
+When running the daemon in `local` mode, the local model is preloaded in the background to reduce first-use latency.  
+Optionally enable an additional warmup inference via `WHISPER_GO_LOCAL_WARMUP=true` (most useful for `whisper` on MPS). If you start recording while warmup runs, nothing is “wasted” — your first local transcription may just still include some cold-start overhead.
 
 | Model  | Parameters | VRAM   | Speed          |
 | ------ | ---------- | ------ | -------------- |
@@ -474,8 +520,10 @@ Notes:
 | API Key missing                     | `export DEEPGRAM_API_KEY="..."` (or OPENAI/GROQ)                         |
 | Microphone issues (macOS)           | `brew install portaudio && pip install --force-reinstall sounddevice`    |
 | Microphone permission               | Grant access in System Settings → Privacy & Security → Microphone        |
-| ffmpeg missing                      | `brew install ffmpeg` (macOS) or `sudo apt install ffmpeg` (Ubuntu)      |
-| Transcription slow                  | Switch to `--mode groq`/`deepgram`, or use `WHISPER_GO_LOCAL_BACKEND=faster`, `WHISPER_GO_LOCAL_FAST=true`, or a smaller local model |
+| ffmpeg missing                      | `brew install ffmpeg` (macOS) or `sudo apt install ffmpeg` (Ubuntu) — needed for local file transcription (`whisper`/`mlx`) |
+| MLX model download 404              | Use `WHISPER_GO_LOCAL_MODEL=large` or a full repo ID (e.g. `mlx-community/whisper-large-v3-mlx`) |
+| Beam search not implemented (mlx)   | Remove `WHISPER_GO_LOCAL_BEAM_SIZE` (ignored on `mlx`) or switch backend  |
+| Transcription slow                  | Switch to `--mode groq`/`deepgram`, or use `WHISPER_GO_LOCAL_BACKEND=mlx` (Apple Silicon) / `faster` (CPU) and `WHISPER_GO_LOCAL_FAST=true`, or a smaller local model |
 | Daemon crashes silently             | Check `~/.whisper_go/startup.log` for emergency logs                     |
 | Auto-Paste not working (App Bundle) | See [Auto-Paste Troubleshooting](#auto-paste-troubleshooting-app-bundle) |
 
