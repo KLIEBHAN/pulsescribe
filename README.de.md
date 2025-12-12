@@ -318,7 +318,7 @@ open start_daemon.command
 In `.env` oder als Umgebungsvariable:
 
 ```bash
-# Hotkeys (default: F19)
+# Hotkeys (default: Fn/Globe als Hold)
 #
 # Optional: Toggle + Hold parallel nutzen.
 # Wenn gesetzt, überschreibt dies WHISPER_GO_HOTKEY / WHISPER_GO_HOTKEY_MODE.
@@ -329,8 +329,8 @@ In `.env` oder als Umgebungsvariable:
 # WHISPER_GO_TOGGLE_HOTKEY=f19
 #
 # Legacy (Single Hotkey):
-WHISPER_GO_HOTKEY=f19
-WHISPER_GO_HOTKEY_MODE=toggle
+WHISPER_GO_HOTKEY=fn
+WHISPER_GO_HOTKEY_MODE=hold
 
 # Dock-Icon (default: true) – auf false setzen für Menubar-only Modus
 WHISPER_GO_DOCK_ICON=true
@@ -353,15 +353,15 @@ WHISPER_GO_DOCK_ICON=true
 
 ### Nutzung
 
-**Toggle-Mode:**
+**Hold‑Mode (Default / Push‑to‑Talk):**
+
+- Fn/Globe gedrückt halten → Aufnahme läuft solange gehalten
+- Fn/Globe loslassen → Transkript wird eingefügt
+
+**Toggle‑Mode (Optional, z.B. mit F19):**
 
 - F19 drücken → Aufnahme startet
 - F19 nochmal drücken → Transkript wird eingefügt
-
-**Hold‑Mode (Push‑to‑Talk):**
-
-- F19 gedrückt halten → Aufnahme läuft solange gehalten
-- F19 loslassen → Transkript wird eingefügt
 
 ### Visuelles Feedback
 

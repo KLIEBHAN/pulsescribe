@@ -16,7 +16,7 @@ Architektur:
 
 Usage:
     python whisper_daemon.py              # Mit Defaults aus .env
-    python whisper_daemon.py --hotkey f19 # Hotkey überschreiben
+    python whisper_daemon.py --hotkey fn  # Hotkey überschreiben
 """
 
 import logging
@@ -98,7 +98,7 @@ class WhisperDaemon:
 
     def __init__(
         self,
-        hotkey: str = "f19",
+        hotkey: str = "fn",
         language: str | None = None,
         model: str | None = None,
         refine: bool = False,
@@ -1296,7 +1296,7 @@ def main() -> int:
         epilog="""
 Beispiele:
   %(prog)s                          # Mit Defaults aus .env
-  %(prog)s --hotkey f19             # F19 als Hotkey
+  %(prog)s --hotkey fn              # Fn/Globe als Hotkey
   %(prog)s --hotkey cmd+shift+r     # Tastenkombination
   %(prog)s --refine                 # Mit LLM-Nachbearbeitung
         """,
@@ -1305,7 +1305,7 @@ Beispiele:
     parser.add_argument(
         "--hotkey",
         default=None,
-        help="Hotkey (default: WHISPER_GO_HOTKEY oder 'f19')",
+        help="Hotkey (default: WHISPER_GO_HOTKEY oder 'fn')",
     )
     parser.add_argument(
         "--toggle-hotkey",
@@ -1373,10 +1373,20 @@ Beispiele:
     setup_logging(debug=args.debug)
 
     # Konfiguration: CLI > ENV > Default
-    hotkey = args.hotkey or os.getenv("WHISPER_GO_HOTKEY", "f19")
+    env_hotkey = os.getenv("WHISPER_GO_HOTKEY")
+    hotkey = args.hotkey or env_hotkey or "fn"
     hotkey_mode = args.hotkey_mode or os.getenv("WHISPER_GO_HOTKEY_MODE", "toggle")
     toggle_hotkey = args.toggle_hotkey or os.getenv("WHISPER_GO_TOGGLE_HOTKEY")
     hold_hotkey = args.hold_hotkey or os.getenv("WHISPER_GO_HOLD_HOTKEY")
+
+    # New default for fresh installs: Fn/Globe as hold hotkey
+    if (
+        toggle_hotkey is None
+        and hold_hotkey is None
+        and args.hotkey is None
+        and env_hotkey is None
+    ):
+        hold_hotkey = "fn"
     language = args.language or os.getenv("WHISPER_GO_LANGUAGE")
     model = args.model or os.getenv("WHISPER_GO_MODEL")
     mode = args.mode or os.getenv("WHISPER_GO_MODE", "deepgram")

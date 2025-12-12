@@ -244,12 +244,17 @@ class WelcomeController:
         buttons_total = button_width * 2 + button_spacing
         field_width = card_width - 2 * CARD_PADDING - buttons_total
 
-        legacy_hotkey = get_env_setting("WHISPER_GO_HOTKEY") or self.hotkey
+        legacy_hotkey_env = get_env_setting("WHISPER_GO_HOTKEY")
+        legacy_hotkey = legacy_hotkey_env or self.hotkey
         legacy_mode = (get_env_setting("WHISPER_GO_HOTKEY_MODE") or "toggle").lower()
         toggle_default = get_env_setting("WHISPER_GO_TOGGLE_HOTKEY")
         hold_default = get_env_setting("WHISPER_GO_HOLD_HOTKEY")
         if toggle_default is None and hold_default is None:
-            if legacy_mode == "hold":
+            if legacy_hotkey_env is None:
+                # Fresh install default: Fn/Globe as hold hotkey
+                hold_default = "fn"
+                toggle_default = ""
+            elif legacy_mode == "hold":
                 hold_default = legacy_hotkey
                 toggle_default = ""
             else:
