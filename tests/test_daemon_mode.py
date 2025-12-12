@@ -9,7 +9,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
 from whisper_daemon import WhisperDaemon
-from utils.state import DaemonMessage, MessageType
+from utils.state import AppState, DaemonMessage, MessageType
 
 class TestDaemonMode(unittest.TestCase):
     def setUp(self):
@@ -210,6 +210,17 @@ class TestDaemonMode(unittest.TestCase):
             self.assertIsInstance(msg, DaemonMessage)
             self.assertEqual(msg.type, MessageType.TRANSCRIPT_RESULT)
             self.assertEqual(msg.payload, "")
+
+    def test_stop_recording_does_not_overwrite_idle_state(self):
+        """_stop_recording darf IDLE/DONE nicht wieder auf TRANSCRIBING setzen."""
+        daemon = WhisperDaemon(mode="openai")
+        daemon._recording = True
+        daemon._current_state = AppState.IDLE
+        daemon._stop_event = threading.Event()
+
+        daemon._stop_recording()
+
+        self.assertEqual(daemon._current_state, AppState.IDLE)
 
 if __name__ == "__main__":
     unittest.main()
