@@ -1138,6 +1138,21 @@ class WhisperDaemon:
         # .env neu laden (override=True um Änderungen zu übernehmen)
         load_environment(override_existing=True)
 
+        # WICHTIG: python-dotenv setzt Variablen, entfernt sie aber nicht wenn ein Key
+        # aus der Datei gelöscht wurde. Das ist relevant, weil die Settings-UI einige
+        # Defaults über "Key entfernen" abbildet (z.B. local backend = whisper).
+        # Daher synchronisieren wir ausgewählte Keys explizit mit der .env Datei.
+        for key in (
+            "WHISPER_GO_LOCAL_BACKEND",
+            "WHISPER_GO_LOCAL_MODEL",
+            "WHISPER_GO_LANGUAGE",
+        ):
+            value = get_env_setting(key)
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
         # Hotkey / Hotkey-Mode Änderungen erfordern Neustart
         new_hotkey = get_env_setting("WHISPER_GO_HOTKEY")
         if new_hotkey and new_hotkey.lower() != (self.hotkey or "").lower():

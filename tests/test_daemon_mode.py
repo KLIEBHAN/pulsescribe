@@ -120,6 +120,18 @@ class TestDaemonMode(unittest.TestCase):
         with patch.dict(os.environ, {"WHISPER_GO_LOCAL_MODEL": "large"}):
             self.assertEqual(daemon._model_name_for_logging(mock_provider), "large")
 
+    def test_reload_settings_unsets_removed_local_backend_env(self):
+        """Wenn Settings ein Key entfernen, muss ENV ebenfalls bereinigt werden (sonst bleibt z.B. faster aktiv)."""
+        daemon = WhisperDaemon(mode="openai")
+        daemon._provider_cache["local"] = MagicMock()
+
+        with patch.dict(os.environ, {"WHISPER_GO_LOCAL_BACKEND": "faster"}), \
+             patch("whisper_daemon.load_environment"), \
+             patch("utils.preferences.get_env_setting", return_value=None):
+            daemon._reload_settings()
+            self.assertNotIn("WHISPER_GO_LOCAL_BACKEND", os.environ)
+            self.assertNotIn("local", daemon._provider_cache)
+
 
 
     def test_recording_worker_execution(self):
