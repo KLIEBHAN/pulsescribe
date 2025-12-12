@@ -20,7 +20,15 @@ WAVE_BAR_MIN_HEIGHT = 8        # Ruhezustand-Höhe
 WAVE_BAR_MAX_HEIGHT = 48       # Maximale Höhe bei voller Animation
 WAVE_AREA_WIDTH = WAVE_BAR_COUNT * WAVE_BAR_WIDTH + (WAVE_BAR_COUNT - 1) * WAVE_BAR_GAP
 
-WAVE_SMOOTHING_ALPHA = 0.65    # Glättung für direkte Level-Updates (0..1)
+# Glättung für direkte Level-Updates:
+# Schneller Anstieg (spricht direkter auf leise Sprache an),
+# langsameres Abklingen (wirkt ruhiger).
+WAVE_SMOOTHING_ALPHA_RISE = 0.9
+WAVE_SMOOTHING_ALPHA_FALL = 0.45
+
+# Nichtlineare Kurve für Audio->Visual Mapping.
+# Etwas unter sqrt(0.5), um leise Stimmen stärker sichtbar zu machen.
+WAVE_VISUAL_EXPONENT = 0.45
 
 # Feedback-Anzeigedauer
 FEEDBACK_DISPLAY_DURATION = 0.8  # Sekunden für Done/Error-Anzeige
@@ -183,9 +191,9 @@ class SoundWaveView:
             level = (level - VISUAL_NOISE_GATE) / (1.0 - VISUAL_NOISE_GATE)
             level = max(0.0, min(1.0, level))
 
-        # Verstärkung für visuelle Sichtbarkeit mit nicht-linearer Kurve
-        # sqrt(level) hebt leise Töne stärker an als laute.
-        amplified = min(math.sqrt(level) * VISUAL_GAIN, 1.0)
+        # Verstärkung für visuelle Sichtbarkeit mit nicht-linearer Kurve.
+        # Exponent < 0.5 hebt leise Töne stärker an als sqrt.
+        amplified = min((level ** WAVE_VISUAL_EXPONENT) * VISUAL_GAIN, 1.0)
         
         # Balken-Mapping (symmetrisch von außen nach innen)
         # Wir fügen etwas Randomness hinzu, damit es lebendig wirkt
@@ -211,9 +219,14 @@ class SoundWaveView:
             jitter = random.uniform(-jitter_range, jitter_range)
             height = max(WAVE_BAR_MIN_HEIGHT, min(WAVE_BAR_MAX_HEIGHT, height + jitter))
 
-            # Weiche Glättung für weniger Flackern
+            # Asymmetrische Glättung: schneller hoch, langsamer runter
             prev_height = self._last_heights[i]
-            smoothed_height = prev_height + WAVE_SMOOTHING_ALPHA * (height - prev_height)
+            alpha = (
+                WAVE_SMOOTHING_ALPHA_RISE
+                if height > prev_height
+                else WAVE_SMOOTHING_ALPHA_FALL
+            )
+            smoothed_height = prev_height + alpha * (height - prev_height)
 
             # Disable implicit animations for direct update
             # CATransaction.begin() ... commit() wäre sauberer, aber overhead.
