@@ -28,7 +28,7 @@ WAVE_SMOOTHING_ALPHA_FALL = 0.45
 
 # Nichtlineare Kurve für Audio->Visual Mapping.
 # Etwas unter sqrt(0.5), um leise Stimmen stärker sichtbar zu machen.
-WAVE_VISUAL_EXPONENT = 0.45
+WAVE_VISUAL_EXPONENT = 0.4
 
 # Feedback-Anzeigedauer
 FEEDBACK_DISPLAY_DURATION = 0.8  # Sekunden für Done/Error-Anzeige

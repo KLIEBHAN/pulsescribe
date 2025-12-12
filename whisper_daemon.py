@@ -935,8 +935,9 @@ class WhisperDaemon:
             except queue.Empty:
                 pass
 
+        # Etwas schnelleres Polling für direkteres UI-Feedback (Wellen/Level)
         self._result_timer = NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
-            0.05, True, lambda _: check_result()
+            0.03, True, lambda _: check_result()
         )
 
     def _stop_result_polling(self) -> None:
