@@ -333,13 +333,21 @@ class LocalProvider:
         # Fast-Mode: schnellere Decoding Defaults (kann via ENV überschrieben werden)
         if self._fast_mode:
             options.setdefault("temperature", 0.0)
-            options.setdefault("beam_size", 1)
-            options.setdefault("best_of", 1)
+            # mlx-whisper hat (Stand heute) keinen Beam-Search Decoder.
+            # Deshalb darf beam_size nicht gesetzt werden, sonst crasht es mit
+            # "Beam search decoder is not yet implemented".
+            if self._backend != "mlx":
+                options.setdefault("beam_size", 1)
+                options.setdefault("best_of", 1)
             options.setdefault("condition_on_previous_text", False)
 
         # Explizite Decode-Overrides
         beam_size = _env_int("WHISPER_GO_LOCAL_BEAM_SIZE")
-        if beam_size is not None:
+        if beam_size is not None and self._backend == "mlx":
+            logger.warning(
+                "WHISPER_GO_LOCAL_BEAM_SIZE wird ignoriert (mlx backend unterstützt kein Beam Search)."
+            )
+        elif beam_size is not None:
             options["beam_size"] = beam_size
 
         best_of = _env_int("WHISPER_GO_LOCAL_BEST_OF")
@@ -395,8 +403,6 @@ class LocalProvider:
             warmup_opts: dict = {
                 "language": warmup_language,
                 "temperature": 0.0,
-                "beam_size": 1,
-                "best_of": 1,
                 "condition_on_previous_text": False,
             }
             if self._fp16_override is not None:
@@ -450,7 +456,13 @@ class LocalProvider:
             ) from e
 
         repo = self._map_mlx_model_name(model_name)
-        result = mlx_whisper.transcribe(audio, path_or_hf_repo=repo, **options)
+        mlx_opts = dict(options)
+        beam_size = mlx_opts.pop("beam_size", None)
+        if beam_size is not None:
+            logger.warning(
+                "beam_size wird ignoriert (mlx backend unterstützt kein Beam Search)."
+            )
+        result = mlx_whisper.transcribe(audio, path_or_hf_repo=repo, **mlx_opts)
         if isinstance(result, dict):
             return str(result.get("text", ""))
         return str(result)
