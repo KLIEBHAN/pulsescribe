@@ -916,11 +916,16 @@ class WelcomeController:
 
             keycode = int(event.keyCode())
 
-            # Ignore pure modifier flag changes (except Fn)
-            if event.type() == NSEventTypeFlagsChanged and keycode != 63:
+            # Ignore pure modifier flag changes (except Fn/CapsLock)
+            if event.type() == NSEventTypeFlagsChanged and keycode not in (63, 57):
                 return None
 
-            key = reverse_map.get(keycode)
+            if keycode == 63:
+                key = "fn"
+            elif keycode == 57:
+                key = "capslock"
+            else:
+                key = reverse_map.get(keycode)
             if not key:
                 chars = event.charactersIgnoringModifiers()
                 if chars:

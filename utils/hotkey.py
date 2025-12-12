@@ -100,6 +100,9 @@ KEY_CODE_MAP = {
     "end": 119,
     "pageup": 116,
     "pagedown": 121,
+    # CapsLock
+    "capslock": 57,  # kVK_CapsLock
+    "caps_lock": 57,
 }
 
 # Modifier-Mapping: String → Carbon Modifier Mask

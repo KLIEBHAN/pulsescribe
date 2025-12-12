@@ -335,7 +335,7 @@ WHISPER_GO_DOCK_ICON=true
 | Format            | Beispiel              |
 | ----------------- | --------------------- |
 | Funktionstasten   | `f19`, `f1`, `f12`    |
-| Einzeltaste       | `fn`, `space`, `tab`, `esc` |
+| Einzeltaste       | `fn`, `capslock`, `space`, `tab`, `esc` |
 | Tastenkombination | `cmd+shift+r`         |
 
 ### Nutzung

@@ -148,21 +148,37 @@ class WhisperDaemon:
         self._hold_active = False
         self._fn_monitor = None
         self._fn_active = False
+        self._caps_active = False
+        self._modifier_tap = None
+        self._modifier_source = None
+        self._modifier_callback = None
 
     # =============================================================================
     # Fn/Globe Hotkey (macOS)
     # =============================================================================
 
     def _start_fn_hotkey_monitor(self, hotkey_mode: str) -> bool:
-        """Erfasst Fn/Globe als Hotkey über FlagsChanged Global Monitor."""
+        """Erfasst Fn/Globe als Hotkey über Quartz Event Tap (FlagsChanged)."""
         try:
-            from AppKit import (  # type: ignore[import-not-found]
-                NSEvent,
-                NSEventMaskFlagsChanged,
-                NSEventModifierFlagFunction,
+            from Quartz import (  # type: ignore[import-not-found]
+                CGEventTapCreate,
+                CGEventTapEnable,
+                CGEventMaskBit,
+                CFMachPortCreateRunLoopSource,
+                CFRunLoopGetCurrent,
+                CFRunLoopAddSource,
+                kCFRunLoopCommonModes,
+                kCGHIDEventTap,
+                kCGHeadInsertEventTap,
+                kCGEventTapOptionListenOnly,
+                kCGEventFlagsChanged,
+                CGEventGetFlags,
+                CGEventGetIntegerValueField,
+                kCGKeyboardEventKeycode,
+                kCGEventFlagMaskSecondaryFn,
             )
         except Exception as e:  # pragma: no cover
-            logger.error(f"Fn Hotkey Monitor benötigt AppKit: {e}")
+            logger.error(f"Fn Hotkey Tap benötigt Quartz: {e}")
             return False
 
         try:
@@ -176,10 +192,15 @@ class WhisperDaemon:
             else:
                 fn()
 
-        def handler(event):
+        def callback(_proxy, event_type, event, _refcon):
             try:
-                flags = int(event.modifierFlags())
-                fn_down = bool(flags & NSEventModifierFlagFunction)
+                if event_type != kCGEventFlagsChanged:
+                    return event
+                keycode = int(CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode))
+                if keycode != 63:  # kVK_Function
+                    return event
+                flags = int(CGEventGetFlags(event))
+                fn_down = bool(flags & kCGEventFlagMaskSecondaryFn)
                 if fn_down and not self._fn_active:
                     self._fn_active = True
                     logger.debug("Hotkey fn down")
@@ -193,15 +214,109 @@ class WhisperDaemon:
                     if hotkey_mode == "hold":
                         call_on_main(self._stop_recording)
             except Exception as e:
-                logger.debug(f"Fn handler error: {e}")
+                logger.debug(f"Fn tap error: {e}")
+            return event
 
-        monitor = NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
-            NSEventMaskFlagsChanged, handler
+        tap = CGEventTapCreate(
+            kCGHIDEventTap,
+            kCGHeadInsertEventTap,
+            kCGEventTapOptionListenOnly,
+            CGEventMaskBit(kCGEventFlagsChanged),
+            callback,
+            None,
         )
-        if monitor is None:  # pragma: no cover
-            logger.error("Fn Hotkey Monitor konnte nicht installiert werden")
+        if tap is None:  # pragma: no cover
+            logger.error("Fn Hotkey Tap konnte nicht erstellt werden (Input Monitoring?)")
             return False
-        self._fn_monitor = monitor
+
+        source = CFMachPortCreateRunLoopSource(None, tap, 0)
+        CFRunLoopAddSource(CFRunLoopGetCurrent(), source, kCFRunLoopCommonModes)
+        CGEventTapEnable(tap, True)
+
+        self._modifier_tap = tap
+        self._modifier_source = source
+        self._modifier_callback = callback
+        return True
+
+    def _start_capslock_hotkey_monitor(self, hotkey_mode: str) -> bool:
+        """Erfasst CapsLock als Hotkey über Quartz Event Tap (FlagsChanged)."""
+        try:
+            from Quartz import (  # type: ignore[import-not-found]
+                CGEventTapCreate,
+                CGEventTapEnable,
+                CGEventMaskBit,
+                CFMachPortCreateRunLoopSource,
+                CFRunLoopGetCurrent,
+                CFRunLoopAddSource,
+                kCFRunLoopCommonModes,
+                kCGHIDEventTap,
+                kCGHeadInsertEventTap,
+                kCGEventTapOptionListenOnly,
+                kCGEventFlagsChanged,
+                CGEventGetFlags,
+                CGEventGetIntegerValueField,
+                kCGKeyboardEventKeycode,
+                kCGEventFlagMaskAlphaShift,
+            )
+        except Exception as e:  # pragma: no cover
+            logger.error(f"CapsLock Hotkey Tap benötigt Quartz: {e}")
+            return False
+
+        try:
+            from PyObjCTools import AppHelper  # type: ignore[import-not-found]
+        except Exception:  # pragma: no cover
+            AppHelper = None
+
+        def call_on_main(fn):
+            if AppHelper is not None:
+                AppHelper.callAfter(fn)
+            else:
+                fn()
+
+        def callback(_proxy, event_type, event, _refcon):
+            try:
+                if event_type != kCGEventFlagsChanged:
+                    return event
+                keycode = int(CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode))
+                if keycode != 57:  # kVK_CapsLock
+                    return event
+                flags = int(CGEventGetFlags(event))
+                caps_down = bool(flags & kCGEventFlagMaskAlphaShift)
+                if hotkey_mode == "hold":
+                    if caps_down and not self._caps_active:
+                        self._caps_active = True
+                        logger.debug("Hotkey capslock down")
+                        call_on_main(self._start_recording)
+                    elif not caps_down and self._caps_active:
+                        self._caps_active = False
+                        logger.debug("Hotkey capslock up")
+                        call_on_main(self._stop_recording)
+                else:
+                    logger.debug("Hotkey capslock pressed")
+                    call_on_main(self._on_hotkey)
+            except Exception as e:
+                logger.debug(f"CapsLock tap error: {e}")
+            return event
+
+        tap = CGEventTapCreate(
+            kCGHIDEventTap,
+            kCGHeadInsertEventTap,
+            kCGEventTapOptionListenOnly,
+            CGEventMaskBit(kCGEventFlagsChanged),
+            callback,
+            None,
+        )
+        if tap is None:  # pragma: no cover
+            logger.error("CapsLock Hotkey Tap konnte nicht erstellt werden (Input Monitoring?)")
+            return False
+
+        source = CFMachPortCreateRunLoopSource(None, tap, 0)
+        CFRunLoopAddSource(CFRunLoopGetCurrent(), source, kCFRunLoopCommonModes)
+        CGEventTapEnable(tap, True)
+
+        self._modifier_tap = tap
+        self._modifier_source = source
+        self._modifier_callback = callback
         return True
 
     def _get_provider(self, mode: str):
@@ -342,6 +457,8 @@ class WhisperDaemon:
             elif part == "fn":
                 # Fn/Globe key: pynput has no Key.fn, use virtual keycode
                 keys.add(keyboard.KeyCode.from_vk(63))
+            elif part in ("capslock", "caps_lock", "caps"):
+                keys.add(keyboard.Key.caps_lock)
             else:
                 # Normale Taste
                 keys.add(keyboard.KeyCode.from_char(part))
@@ -972,8 +1089,9 @@ class WhisperDaemon:
 
         hotkey_str = (self.hotkey or "").strip().lower()
         hotkey_is_fn = hotkey_str == "fn"
+        hotkey_is_capslock = hotkey_str in ("capslock", "caps_lock")
 
-        if hotkey_mode == "hold" and not accessibility_ok and not hotkey_is_fn:
+        if hotkey_mode == "hold" and not accessibility_ok and not (hotkey_is_fn or hotkey_is_capslock):
             logger.warning(
                 "Hold Hotkey Mode benötigt Bedienungshilfen-Zugriff. "
                 "Fallback auf Toggle-Mode bis Berechtigung erteilt ist."
@@ -994,7 +1112,7 @@ class WhisperDaemon:
 
         if hotkey_is_fn:
             logger.info(
-                f"Daemon gestartet: hotkey=fn (Globe), hotkey_mode={hotkey_mode} (FlagsChanged Monitor)"
+                f"Daemon gestartet: hotkey=fn (Globe), hotkey_mode={hotkey_mode} (Quartz FlagsChanged Tap)"
             )
             if not accessibility_ok:
                 logger.warning(
@@ -1003,6 +1121,17 @@ class WhisperDaemon:
                 )
             if not self._start_fn_hotkey_monitor(hotkey_mode):
                 logger.error("Fn Hotkey Monitor konnte nicht gestartet werden.")
+        elif hotkey_is_capslock:
+            logger.info(
+                f"Daemon gestartet: hotkey=capslock, hotkey_mode={hotkey_mode} (Quartz FlagsChanged Tap)"
+            )
+            if not accessibility_ok:
+                logger.warning(
+                    "CapsLock Hotkey benötigt Bedienungshilfen-Zugriff. "
+                    "Bitte in Systemeinstellungen aktivieren."
+                )
+            if not self._start_capslock_hotkey_monitor(hotkey_mode):
+                logger.error("CapsLock Hotkey Monitor konnte nicht gestartet werden.")
         elif hotkey_mode == "toggle":
             from quickmachotkey import quickHotKey
 
