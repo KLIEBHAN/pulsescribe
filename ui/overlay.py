@@ -1,6 +1,16 @@
 """Overlay-Controller und Visualisierung für whisper_go."""
 
+import math
+import random
+import time
+import weakref
+
+from config import VISUAL_GAIN, VISUAL_NOISE_GATE
+from utils.state import AppState
+
+# =============================================================================
 # Overlay-Fenster Konfiguration
+# =============================================================================
 OVERLAY_MIN_WIDTH = 260        # Mindestbreite für kurze Texte
 OVERLAY_MAX_WIDTH_RATIO = 0.75 # Max. 75% der Bildschirmbreite für lange Interim-Texte
 OVERLAY_HEIGHT = 100           # Feste Höhe für konsistentes Erscheinungsbild
@@ -12,7 +22,9 @@ OVERLAY_FONT_SIZE = 15         # SF Pro Standard-Größe
 OVERLAY_TEXT_FIELD_HEIGHT = 24 # Einzeilige Textanzeige
 OVERLAY_WINDOW_LEVEL = 25      # Über allen Fenstern, kCGFloatingWindowLevel
 
+# =============================================================================
 # Schallwellen-Visualisierung
+# =============================================================================
 WAVE_BAR_COUNT = 10            # Anzahl der animierten Balken
 WAVE_BAR_WIDTH = 3             # Schlankere Balkenbreite in Pixel
 WAVE_BAR_GAP = 4               # Etwas mehr Abstand zwischen Balken
@@ -68,12 +80,28 @@ WAVE_ENVELOPE_BLEND = 0.62           # 0..1 mix primary/secondary
 # Feedback-Anzeigedauer
 FEEDBACK_DISPLAY_DURATION = 0.8  # Sekunden für Done/Error-Anzeige
 
-from config import VISUAL_NOISE_GATE, VISUAL_GAIN
-from utils.state import AppState
-import math
-import random
-import time
-import weakref
+# =============================================================================
+# Helpers
+# =============================================================================
+
+
+def _clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(high, value))
+
+
+def _clamp01(value: float) -> float:
+    return _clamp(value, 0.0, 1.0)
+
+
+def _lerp(a: float, b: float, t: float) -> float:
+    return a + (b - a) * t
+
+
+def _gaussian(distance: float, sigma: float) -> float:
+    if sigma <= 0:
+        return 0.0
+    x = distance / sigma
+    return math.exp(-0.5 * x * x)
 
 
 def _build_height_factors() -> list[float]:
@@ -145,6 +173,12 @@ class SoundWaveView:
         self._height_factors = _build_height_factors()
         self._recording_durations = _build_recording_durations()
         self._last_heights = [WAVE_BAR_MIN_HEIGHT for _ in range(WAVE_BAR_COUNT)]
+
+        self._bar_center = (WAVE_BAR_COUNT - 1) / 2
+        self._envelope_max_shift_base = max(
+            0.0, self._bar_center * WAVE_ENVELOPE_RANGE_FRACTION
+        )
+
         self._agc_peak = WAVE_AGC_MIN_PEAK
         self._target_level = 0.0
         self._smoothed_level = 0.0
@@ -153,13 +187,14 @@ class SoundWaveView:
         self._envelope_phase_secondary = random.uniform(0.0, 2 * math.pi)
 
         # Traveling-wave Offsets: korrelierte Phasen pro Bar → "wandern" statt "zappeln"
-        center = (WAVE_BAR_COUNT - 1) / 2
         self._wander_offset_primary = [
-            (i - center) * WAVE_WANDER_PHASE_STEP_PRIMARY + random.uniform(-0.10, 0.10)
+            (i - self._bar_center) * WAVE_WANDER_PHASE_STEP_PRIMARY
+            + random.uniform(-0.10, 0.10)
             for i in range(WAVE_BAR_COUNT)
         ]
         self._wander_offset_secondary = [
-            (i - center) * WAVE_WANDER_PHASE_STEP_SECONDARY + random.uniform(-0.10, 0.10)
+            (i - self._bar_center) * WAVE_WANDER_PHASE_STEP_SECONDARY
+            + random.uniform(-0.10, 0.10)
             for i in range(WAVE_BAR_COUNT)
         ]
         # Balken erstellen
@@ -225,41 +260,45 @@ class SoundWaveView:
 
     def update_levels(self, level: float) -> None:
         """
-        Aktualisiert Balkenhöhe basierend auf Audio-Level (0.0 - 1.0).
-        Ersetzt die 'start_recording_animation' Loop mit echten Daten.
+        Aktualisiert die Ziel-Amplitude basierend auf Audio-RMS (0.0 - 1.0).
+
+        Rendering passiert timer-basiert (smooth, unabhängig von Callback-Rate),
+        update_levels() setzt nur den Zielwert und startet den Timer.
         """
         # Falls noch Animationen laufen (z.B. Fallback-Welle), stoppen wir sie,
         # damit wir die Höhe manuell setzen können.
         if self.animations_running:
             self.stop_animating()
 
-        if self.current_animation != "recording":
-            self.current_animation = "recording"
-            self.set_bar_color(self._color_recording)
+        self._ensure_recording_mode()
 
-        # Noise Gate: sehr leise Pegel ignorieren, darüber linearisieren.
-        raw_level = max(level, 0.0)
-        if raw_level <= VISUAL_NOISE_GATE:
-            gated_level = 0.0
-        else:
-            gated_level = raw_level - VISUAL_NOISE_GATE
-
-        # AGC-Peak-Tracking: schneller Attack, langsamer Release.
-        if gated_level > self._agc_peak:
-            self._agc_peak = gated_level
-        else:
-            self._agc_peak = max(self._agc_peak * WAVE_AGC_DECAY, WAVE_AGC_MIN_PEAK)
-
-        reference_peak = max(self._agc_peak * WAVE_AGC_HEADROOM, WAVE_AGC_MIN_PEAK)
-        normalized = gated_level / reference_peak if reference_peak > 0 else 0.0
-        normalized = max(0.0, min(1.0, normalized))
-
-        # Visuelle Kurve + optionaler Gain.
-        self._target_level = min((normalized ** WAVE_VISUAL_EXPONENT) * VISUAL_GAIN, 1.0)
+        self._target_level = self._compute_target_level(level)
 
         # Timer-basiertes Rendering starten (smooth wandering unabhängig von Audio callback rate)
         self._start_level_timer()
 
+    def _ensure_recording_mode(self) -> None:
+        if self.current_animation != "recording":
+            self.current_animation = "recording"
+            self.set_bar_color(self._color_recording)
+
+    def _compute_target_level(self, rms: float) -> float:
+        # Noise Gate: sehr leise Pegel ignorieren, darüber linearisieren.
+        gated = max(rms - VISUAL_NOISE_GATE, 0.0)
+
+        # AGC-Peak-Tracking: schneller Attack, langsamer Release.
+        if gated > self._agc_peak:
+            self._agc_peak = gated
+        else:
+            self._agc_peak = max(self._agc_peak * WAVE_AGC_DECAY, WAVE_AGC_MIN_PEAK)
+
+        reference_peak = max(self._agc_peak * WAVE_AGC_HEADROOM, WAVE_AGC_MIN_PEAK)
+        normalized = gated / reference_peak if reference_peak > 0 else 0.0
+        normalized = _clamp01(normalized)
+
+        # Visuelle Kurve + optionaler Gain.
+        shaped = normalized**WAVE_VISUAL_EXPONENT
+        return _clamp01(shaped * VISUAL_GAIN)
 
     def start_recording_animation(self) -> None:
         """Startet organische Schallwellen-Animation (Fallback wenn keine Levels)."""
@@ -380,11 +419,13 @@ class SoundWaveView:
 
         # Ziel-Level sanft verfolgen (reduziert Zittern durch RMS-Fluktuationen).
         prev_level = self._smoothed_level
-        target = self._target_level
+        target_level = self._target_level
         alpha_level = (
-            WAVE_LEVEL_SMOOTHING_RISE if target > prev_level else WAVE_LEVEL_SMOOTHING_FALL
+            WAVE_LEVEL_SMOOTHING_RISE
+            if target_level > prev_level
+            else WAVE_LEVEL_SMOOTHING_FALL
         )
-        level = prev_level + alpha_level * (target - prev_level)
+        level = _lerp(prev_level, target_level, alpha_level)
         self._smoothed_level = level
 
         now = time.perf_counter()
@@ -392,22 +433,17 @@ class SoundWaveView:
         phase_secondary = 2 * math.pi * WAVE_WANDER_HZ_SECONDARY * now + 1.7
 
         # Envelope-Center driftet nach links/rechts (wie ein Paket).
-        bar_center = (WAVE_BAR_COUNT - 1) / 2
-        max_shift = max(0.0, bar_center * WAVE_ENVELOPE_RANGE_FRACTION)
         # Bewegung skaliert mit Level: bei Stille wenig, beim Sprechen deutlich.
-        shift_strength = max_shift * (0.15 + 0.85 * level)
+        shift_strength = self._envelope_max_shift_base * _lerp(0.15, 1.0, level)
         env_primary = math.sin(
             2 * math.pi * WAVE_ENVELOPE_HZ_PRIMARY * now + self._envelope_phase_primary
         )
         env_secondary = math.sin(
             2 * math.pi * WAVE_ENVELOPE_HZ_SECONDARY * now + self._envelope_phase_secondary
         )
-        env_mix = (
-            WAVE_ENVELOPE_BLEND * env_primary
-            + (1.0 - WAVE_ENVELOPE_BLEND) * env_secondary
-        )
-        envelope_center = bar_center + shift_strength * env_mix
-        envelope_center = max(0.0, min(WAVE_BAR_COUNT - 1, envelope_center))
+        env_mix = _lerp(env_secondary, env_primary, WAVE_ENVELOPE_BLEND)
+        envelope_center = self._bar_center + shift_strength * env_mix
+        envelope_center = _clamp(envelope_center, 0.0, WAVE_BAR_COUNT - 1)
 
         CATransaction.begin()
         CATransaction.setDisableActions_(True)
@@ -417,33 +453,31 @@ class SoundWaveView:
 
         # Kleine Baseline-Bewegung, damit es nicht "steht" bei leiser Sprache,
         # aber skaliert mit Level, damit es ruhig bleibt.
-        wander_strength = WAVE_WANDER_AMOUNT * (0.20 + 0.80 * level)
+        wander_strength = WAVE_WANDER_AMOUNT * _lerp(0.20, 1.0, level)
 
         for i, bar in enumerate(self.bars):
             travel_primary = math.sin(phase_primary + self._wander_offset_primary[i])
             travel_secondary = math.sin(phase_secondary + self._wander_offset_secondary[i])
-            travel = (
-                WAVE_WANDER_BLEND * travel_primary
-                + (1.0 - WAVE_WANDER_BLEND) * travel_secondary
-            )
+            travel = _lerp(travel_secondary, travel_primary, WAVE_WANDER_BLEND)
             wiggle = 1.0 + wander_strength * travel
 
             # Dynamische Envelope verschiebt den "Energie"-Schwerpunkt über die Balken.
-            dist = (i - envelope_center) / max(WAVE_ENVELOPE_SIGMA, 0.1)
-            envelope = math.exp(-0.5 * dist * dist)
-            envelope_factor = WAVE_ENVELOPE_BASE + (1.0 - WAVE_ENVELOPE_BASE) * envelope
+            envelope = _gaussian(i - envelope_center, WAVE_ENVELOPE_SIGMA)
+            envelope_factor = _lerp(WAVE_ENVELOPE_BASE, 1.0, envelope)
 
             base_factor = self._height_factors[i]
-            height_factor = (1.0 - WAVE_ENVELOPE_STRENGTH) * base_factor + (
-                WAVE_ENVELOPE_STRENGTH * envelope_factor
-            )
+            height_factor = _lerp(base_factor, envelope_factor, WAVE_ENVELOPE_STRENGTH)
 
             height = base_height + (level * height_factor * wiggle * max_add)
-            height = max(WAVE_BAR_MIN_HEIGHT, min(WAVE_BAR_MAX_HEIGHT, height))
+            height = _clamp(height, WAVE_BAR_MIN_HEIGHT, WAVE_BAR_MAX_HEIGHT)
 
             prev_height = self._last_heights[i]
-            alpha = WAVE_SMOOTHING_ALPHA_RISE if height > prev_height else WAVE_SMOOTHING_ALPHA_FALL
-            smoothed_height = prev_height + alpha * (height - prev_height)
+            alpha = (
+                WAVE_SMOOTHING_ALPHA_RISE
+                if height > prev_height
+                else WAVE_SMOOTHING_ALPHA_FALL
+            )
+            smoothed_height = _lerp(prev_height, height, alpha)
 
             bar.setBounds_(NSMakeRect(0, 0, WAVE_BAR_WIDTH, smoothed_height))
             self._last_heights[i] = smoothed_height
