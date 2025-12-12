@@ -134,7 +134,12 @@ class LocalProvider:
             self._fp16_override = _env_bool("WHISPER_GO_FP16")
 
         if self._fast_mode is None:
-            self._fast_mode = _env_bool("WHISPER_GO_LOCAL_FAST") or False
+            fast_env = _env_bool("WHISPER_GO_LOCAL_FAST")
+            if fast_env is None:
+                # Default to fast decoding on faster-whisper unless user opts out.
+                self._fast_mode = self._backend == "faster"
+            else:
+                self._fast_mode = fast_env
 
         if self._compute_type is None:
             compute_env = os.getenv("WHISPER_GO_LOCAL_COMPUTE_TYPE")

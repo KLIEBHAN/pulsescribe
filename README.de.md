@@ -175,7 +175,8 @@ export WHISPER_GO_LOCAL_BACKEND="whisper"
 # export WHISPER_GO_LOCAL_VAD_FILTER="false"
 
 # Optional: schnelleres lokales Decoding (mehr Speed, leicht weniger Robustheit)
-export WHISPER_GO_LOCAL_FAST="false"  # setzt beam_size=1, best_of=1, temperature=0.0
+# Standard: true bei faster-whisper, false bei openai-whisper
+# export WHISPER_GO_LOCAL_FAST="true"  # setzt beam_size=1, best_of=1, temperature=0.0
 # Feintuning:
 # export WHISPER_GO_LOCAL_BEAM_SIZE=1
 # export WHISPER_GO_LOCAL_BEST_OF=1
