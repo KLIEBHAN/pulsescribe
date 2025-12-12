@@ -17,6 +17,16 @@ from utils.vocabulary import load_vocabulary
 logger = logging.getLogger("whisper_go.providers.local")
 
 
+def _mlx_whisper_import_hint() -> str:
+    """Hinweistext für fehlgeschlagene mlx-whisper Imports."""
+    if getattr(sys, "frozen", False):
+        return (
+            "Du nutzt vermutlich die macOS-App. Bitte lade die neueste DMG neu herunter "
+            "oder setze WHISPER_GO_LOCAL_BACKEND=whisper."
+        )
+    return "Installiere es mit `pip install mlx-whisper` oder setze WHISPER_GO_LOCAL_BACKEND=whisper."
+
+
 def _log_stderr(message: str) -> None:
     """Status-Meldung auf stderr."""
     print(message, file=sys.stderr)
@@ -393,14 +403,11 @@ class LocalProvider:
                 except ModuleNotFoundError as e:
                     raise ImportError(
                         "mlx-whisper konnte nicht geladen werden (fehlende Abhängigkeit: "
-                        f"{e.name}). Installiere es mit `pip install mlx-whisper` oder setze "
-                        "WHISPER_GO_LOCAL_BACKEND=whisper."
+                        f"{e.name}). {_mlx_whisper_import_hint()}"
                     ) from e
                 except ImportError as e:
                     raise ImportError(
-                        "mlx-whisper konnte nicht geladen werden. Installiere es mit "
-                        f"`pip install mlx-whisper` oder setze WHISPER_GO_LOCAL_BACKEND=whisper. "
-                        f"Ursache: {e}"
+                        f"mlx-whisper konnte nicht geladen werden. {_mlx_whisper_import_hint()} Ursache: {e}"
                     ) from e
 
                 import numpy as np
@@ -463,14 +470,11 @@ class LocalProvider:
         except ModuleNotFoundError as e:
             raise ImportError(
                 "mlx-whisper konnte nicht geladen werden (fehlende Abhängigkeit: "
-                f"{e.name}). Installiere es mit `pip install mlx-whisper` oder setze "
-                "WHISPER_GO_LOCAL_BACKEND=whisper."
+                f"{e.name}). {_mlx_whisper_import_hint()}"
             ) from e
         except ImportError as e:
             raise ImportError(
-                "mlx-whisper konnte nicht geladen werden. Installiere es mit "
-                f"`pip install mlx-whisper` oder setze WHISPER_GO_LOCAL_BACKEND=whisper. "
-                f"Ursache: {e}"
+                f"mlx-whisper konnte nicht geladen werden. {_mlx_whisper_import_hint()} Ursache: {e}"
             ) from e
 
         repo = self._map_mlx_model_name(model_name)

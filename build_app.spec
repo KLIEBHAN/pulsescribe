@@ -117,7 +117,8 @@ excludes = [
     
     # Testing
     'pytest',
-    'unittest',
+    # NOTE: Do not exclude Python's stdlib 'unittest' – some runtime deps (e.g. SciPy/numpy.testing)
+    # import it and the bundled app would crash with "No module named 'unittest'".
     
     # Dev Tools
     'IPython',
