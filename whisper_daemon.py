@@ -721,6 +721,8 @@ class WhisperDaemon:
         import soundfile as sf
 
         recorded_chunks = []
+        max_rms = 0.0
+        had_speech = False
         player = get_sound_player()
 
         try:
@@ -729,9 +731,14 @@ class WhisperDaemon:
 
             # Aufnahme-Loop
             def callback(indata, frames, time, status):
+                nonlocal max_rms, had_speech
                 recorded_chunks.append(indata.copy())
                 # RMS Berechnung und Queueing
                 rms = float(np.sqrt(np.mean(indata**2)))
+                if rms > max_rms:
+                    max_rms = rms
+                if rms > VAD_THRESHOLD:
+                    had_speech = True
                 try:
                     self._result_queue.put_nowait(
                         DaemonMessage(type=MessageType.AUDIO_LEVEL, payload=rms)
@@ -754,6 +761,18 @@ class WhisperDaemon:
             # Speichern
             if not recorded_chunks:
                 logger.warning("Keine Audiodaten aufgenommen")
+                # Leeres Ergebnis signalisieren, damit Result-Polling sauber endet.
+                self._result_queue.put(
+                    DaemonMessage(type=MessageType.TRANSCRIPT_RESULT, payload="")
+                )
+                return
+            if not had_speech:
+                logger.info(
+                    f"Keine Sprache erkannt (max_rms={max_rms:.4f}) – Transkription übersprungen"
+                )
+                self._result_queue.put(
+                    DaemonMessage(type=MessageType.TRANSCRIPT_RESULT, payload="")
+                )
                 return
 
             audio_data = np.concatenate(recorded_chunks)
@@ -862,7 +881,11 @@ class WhisperDaemon:
 
         self._recording = False
         self._recording_started_by_hold = False
-        self._update_state(AppState.TRANSCRIBING)
+        # Nur wenn wir noch im Aufnahme-Flow sind, auf TRANSCRIBING wechseln.
+        # Bei sehr kurzen Hold-Taps kann der Worker bereits ein leeres Ergebnis geliefert
+        # und den State auf IDLE gesetzt haben.
+        if self._current_state in (AppState.LISTENING, AppState.RECORDING):
+            self._update_state(AppState.TRANSCRIBING)
 
         # Polling läuft bereits seit Start
 
