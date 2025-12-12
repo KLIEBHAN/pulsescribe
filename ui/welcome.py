@@ -42,6 +42,8 @@ LOCAL_PRESET_OPTIONS = [
     "(none)",
     "macOS: MPS Balanced (turbo)",
     "macOS: MPS Fast (turbo)",
+    "macOS: MLX Balanced (large)",
+    "macOS: MLX Fast (turbo)",
     "CPU: faster int8 (turbo)",
 ]
 
@@ -1534,6 +1536,40 @@ class WelcomeController:
             set_field(self._num_workers_field, "1")
             set_popup(self._without_timestamps_popup, "true")
             set_popup(self._vad_filter_popup, "true")
+            return
+
+        if preset == "macOS: MLX Balanced (large)":
+            set_popup(self._local_backend_popup, "mlx")
+            set_popup(self._local_model_popup, "large")
+            set_popup(self._device_popup, "auto")
+            set_popup(self._warmup_popup, "auto")
+            set_popup(self._local_fast_popup, "default")
+            set_popup(self._fp16_popup, "default")
+            set_field(self._beam_size_field, "")
+            set_field(self._best_of_field, "")
+            set_field(self._temperature_field, "")
+            set_field(self._compute_type_field, "")
+            set_field(self._cpu_threads_field, "")
+            set_field(self._num_workers_field, "")
+            set_popup(self._without_timestamps_popup, "default")
+            set_popup(self._vad_filter_popup, "default")
+            return
+
+        if preset == "macOS: MLX Fast (turbo)":
+            set_popup(self._local_backend_popup, "mlx")
+            set_popup(self._local_model_popup, "turbo")
+            set_popup(self._device_popup, "auto")
+            set_popup(self._warmup_popup, "auto")
+            set_popup(self._local_fast_popup, "true")
+            set_popup(self._fp16_popup, "default")
+            set_field(self._beam_size_field, "")
+            set_field(self._best_of_field, "")
+            set_field(self._temperature_field, "")
+            set_field(self._compute_type_field, "")
+            set_field(self._cpu_threads_field, "")
+            set_field(self._num_workers_field, "")
+            set_popup(self._without_timestamps_popup, "default")
+            set_popup(self._vad_filter_popup, "default")
             return
 
     def _build_footer(self) -> None:
