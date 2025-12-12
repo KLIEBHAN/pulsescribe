@@ -19,6 +19,24 @@ logger = logging.getLogger("whisper_go")
 _cache: dict[Path, tuple[float, dict]] = {}
 
 
+def _normalize_keywords(raw_keywords: list) -> list[str]:
+    """Normalisiert Keyword-Liste (nur Strings, trim, dedup in Reihenfolge)."""
+    cleaned: list[str] = []
+    for item in raw_keywords:
+        if isinstance(item, str):
+            kw = item.strip()
+            if kw:
+                cleaned.append(kw)
+
+    seen: set[str] = set()
+    result: list[str] = []
+    for kw in cleaned:
+        if kw not in seen:
+            seen.add(kw)
+            result.append(kw)
+    return result
+
+
 def load_vocabulary(path: Path | None = None) -> dict:
     """Loads custom vocabulary from JSON.
 
@@ -48,6 +66,8 @@ def load_vocabulary(path: Path | None = None) -> dict:
         data = json.loads(vocab_file.read_text())
         if not isinstance(data.get("keywords"), list):
             data["keywords"] = []
+        else:
+            data["keywords"] = _normalize_keywords(data.get("keywords", []))
     except (json.JSONDecodeError, OSError) as e:
         logger.warning(f"Vocabulary-Datei fehlerhaft: {e}")
         data = {"keywords": []}
@@ -75,7 +95,7 @@ def save_vocabulary(keywords: list[str], path: Path | None = None) -> None:
         except (json.JSONDecodeError, OSError):
             data = {}
 
-    data["keywords"] = list(keywords)
+    data["keywords"] = _normalize_keywords(list(keywords))
 
     try:
         vocab_file.write_text(json.dumps(data, indent=2, ensure_ascii=False))
@@ -91,4 +111,53 @@ def save_vocabulary(keywords: list[str], path: Path | None = None) -> None:
         _cache.pop(vocab_file, None)
 
 
-__all__ = ["load_vocabulary", "save_vocabulary"]
+def validate_vocabulary(path: Path | None = None) -> list[str]:
+    """Validiert die Vocabulary-Datei und gibt Warnungen zurück."""
+    vocab_file = path or _DEFAULT_VOCAB_FILE
+    if not vocab_file.exists():
+        return []
+
+    try:
+        raw_text = vocab_file.read_text()
+    except OSError as e:
+        return [f"Vocabulary-Datei nicht lesbar: {e}"]
+
+    try:
+        data = json.loads(raw_text)
+    except json.JSONDecodeError:
+        return ["Vocabulary-Datei ist kein gültiges JSON."]
+
+    if not isinstance(data, dict):
+        return ["Vocabulary-Datei muss ein JSON-Objekt sein."]
+
+    raw_keywords = data.get("keywords")
+    if raw_keywords is None:
+        return []
+    if not isinstance(raw_keywords, list):
+        return ["'keywords' muss eine Liste sein."]
+
+    issues: list[str] = []
+    non_strings = [k for k in raw_keywords if not isinstance(k, str)]
+    if non_strings:
+        issues.append(
+            f"{len(non_strings)} Keywords sind keine Strings und werden ignoriert."
+        )
+
+    normalized = _normalize_keywords(raw_keywords)
+    duplicate_count = len(
+        [k for k in raw_keywords if isinstance(k, str) and k.strip()]
+    ) - len(normalized)
+    if duplicate_count > 0:
+        issues.append(f"{duplicate_count} doppelte Keywords gefunden.")
+
+    if len(normalized) > 100:
+        issues.append(
+            f"{len(normalized)} Keywords: Deepgram nutzt max. 100, Local max. 50."
+        )
+    elif len(normalized) > 50:
+        issues.append(f"{len(normalized)} Keywords: Local nutzt max. 50.")
+
+    return issues
+
+
+__all__ = ["load_vocabulary", "save_vocabulary", "validate_vocabulary"]

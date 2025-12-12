@@ -1015,7 +1015,7 @@ class WhisperDaemon:
         else:
             self._welcome = None
 
-        # Callback für Menubar "Setup..." setzen
+        # Callback für Menubar "Settings..." setzen
         if self._menubar:
             self._menubar.set_welcome_callback(self._show_welcome_window)
 
@@ -1148,6 +1148,23 @@ class WhisperDaemon:
         self._overlay = OverlayController()
         logger.info("UI-Controller bereit")
 
+        # Vocabulary beim Start validieren und ggf. warnen
+        try:
+            from utils.vocabulary import validate_vocabulary
+
+            vocab_issues = validate_vocabulary()
+            if vocab_issues:
+                from utils.alerts import show_error_alert
+
+                show_error_alert(
+                    "Probleme in der Vocabulary",
+                    "Es wurden Probleme in ~/.whisper_go/vocabulary.json gefunden:\n\n"
+                    + "\n".join(f"- {issue}" for issue in vocab_issues)
+                    + "\n\nÖffne Settings, um das zu korrigieren.",
+                )
+        except Exception:
+            pass
+
         # Welcome Window (beim ersten Start oder wenn aktiviert)
         self._show_welcome_if_needed()
 
@@ -1159,7 +1176,7 @@ class WhisperDaemon:
                 show_error_alert(
                     "Kein Hotkey konfiguriert",
                     "Es ist kein Hotkey gesetzt. WhisperGo startet ohne Hotkey.\n"
-                    "Öffne Setup, um einen Hotkey zu wählen.",
+                    "Öffne Settings, um einen Hotkey zu wählen.",
                 )
             except Exception:
                 pass
@@ -1322,7 +1339,7 @@ class WhisperDaemon:
                     "Ungültige Hotkey‑Konfiguration",
                     "Ein oder mehrere Hotkeys konnten nicht aktiviert werden:\n\n"
                     + "\n".join(f"- {m}" for m in invalid_hotkeys)
-                    + "\n\nÖffne Setup, um das zu korrigieren.",
+                    + "\n\nÖffne Settings, um das zu korrigieren.",
                 )
             except Exception:
                 pass

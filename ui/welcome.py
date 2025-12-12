@@ -6,6 +6,7 @@ Erscheint beim ersten Start und kann über Menubar aufgerufen werden.
 
 import os
 
+from config import LOG_FILE
 from utils.preferences import (
     get_api_key,
     get_env_setting,
@@ -86,6 +87,8 @@ class WelcomeController:
         self._tab_view = None
         self._vocab_text_view = None
         self._vocab_warning_label = None
+        self._logs_text_view = None
+        self._logs_refresh_handler = None
         self._mode_changed_handler = None
         self._save_btn = None
         self._restart_handler = None
@@ -222,6 +225,7 @@ class WelcomeController:
         self._add_tab(tab_view, "Providers", self._build_providers_tab, content_height)
         self._add_tab(tab_view, "Refine", self._build_refine_tab, content_height)
         self._add_tab(tab_view, "Vocabulary", self._build_vocabulary_tab, content_height)
+        self._add_tab(tab_view, "Logs", self._build_logs_tab, content_height)
         self._add_tab(tab_view, "About", self._build_about_tab, content_height)
 
     def _add_tab(self, tab_view, label: str, builder, tab_height: int) -> None:
@@ -253,6 +257,10 @@ class WelcomeController:
     def _build_vocabulary_tab(self, parent_view, tab_height: int) -> None:
         y_pos = tab_height - WELCOME_PADDING
         self._build_vocabulary_card(y_pos, parent_view, tab_height)
+
+    def _build_logs_tab(self, parent_view, tab_height: int) -> None:
+        y_pos = tab_height - WELCOME_PADDING
+        self._build_logs_card(y_pos, parent_view, tab_height)
 
     def _build_about_tab(self, parent_view, tab_height: int) -> None:
         y_pos = tab_height - WELCOME_PADDING
@@ -902,6 +910,123 @@ class WelcomeController:
 
         return card_y - CARD_SPACING
 
+    def _build_logs_card(
+        self, y: int, parent_view=None, tab_height: int | None = None
+    ) -> int:
+        """Erstellt Logs Tab mit aktuellem Log-Auszug."""
+        from AppKit import (  # type: ignore[import-not-found]
+            NSBezelBorder,
+            NSBezelStyleRounded,
+            NSButton,
+            NSColor,
+            NSFont,
+            NSFontWeightMedium,
+            NSFontWeightSemibold,
+            NSMakeRect,
+            NSScrollView,
+            NSTextField,
+            NSTextView,
+        )
+        import objc  # type: ignore[import-not-found]
+
+        parent_view = parent_view or self._content_view
+
+        card_width = WELCOME_WIDTH - 2 * WELCOME_PADDING
+        max_height = (tab_height - 2 * WELCOME_PADDING) if tab_height else 420
+        card_height = min(420, max_height)
+        card_y = y - card_height
+
+        card = _create_card(WELCOME_PADDING, card_y, card_width, card_height)
+        parent_view.addSubview_(card)
+
+        base_x = WELCOME_PADDING + CARD_PADDING
+        content_width = card_width - 2 * CARD_PADDING
+
+        title = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(base_x, card_y + card_height - 28, 120, 18)
+        )
+        title.setStringValue_("🪵 Logs")
+        title.setBezeled_(False)
+        title.setDrawsBackground_(False)
+        title.setEditable_(False)
+        title.setSelectable_(False)
+        title.setFont_(NSFont.systemFontOfSize_weight_(13, NSFontWeightSemibold))
+        title.setTextColor_(NSColor.whiteColor())
+        parent_view.addSubview_(title)
+
+        refresh_btn = NSButton.alloc().initWithFrame_(
+            NSMakeRect(
+                base_x + content_width - 70, card_y + card_height - 32, 70, 22
+            )
+        )
+        refresh_btn.setTitle_("Refresh")
+        refresh_btn.setBezelStyle_(NSBezelStyleRounded)
+        refresh_btn.setFont_(NSFont.systemFontOfSize_(11))
+        refresh_handler = _RefreshLogsHandler.alloc().initWithController_(self)
+        refresh_btn.setTarget_(refresh_handler)
+        refresh_btn.setAction_(
+            objc.selector(refresh_handler.refreshLogs_, signature=b"v@:@")
+        )
+        self._logs_refresh_handler = refresh_handler
+        parent_view.addSubview_(refresh_btn)
+
+        scroll_y = card_y + 16
+        scroll_height = card_height - 56
+        scroll = NSScrollView.alloc().initWithFrame_(
+            NSMakeRect(base_x, scroll_y, content_width, scroll_height)
+        )
+        scroll.setBorderType_(NSBezelBorder)
+        scroll.setHasVerticalScroller_(True)
+        scroll.setHasHorizontalScroller_(False)
+        try:
+            scroll.setDrawsBackground_(False)
+        except Exception:
+            pass
+
+        text_view = NSTextView.alloc().initWithFrame_(
+            NSMakeRect(0, 0, content_width, scroll_height)
+        )
+        text_view.setFont_(NSFont.userFixedPitchFontOfSize_(11))
+        text_view.setTextColor_(NSColor.whiteColor())
+        try:
+            text_view.setDrawsBackground_(False)
+        except Exception:
+            pass
+        text_view.setEditable_(False)
+        text_view.setSelectable_(True)
+        text_view.setVerticallyResizable_(True)
+        text_view.setHorizontallyResizable_(False)
+        tc = text_view.textContainer()
+        if tc is not None:
+            tc.setWidthTracksTextView_(True)
+
+        text_view.setString_(self._get_logs_text())
+        scroll.setDocumentView_(text_view)
+        parent_view.addSubview_(scroll)
+
+        self._logs_text_view = text_view
+
+        return card_y - CARD_SPACING
+
+    def _get_logs_text(self, max_chars: int = 12000) -> str:
+        """Liest einen Ausschnitt der aktuellen Log-Datei."""
+        try:
+            if not LOG_FILE.exists():
+                return "No logs yet."
+            text = LOG_FILE.read_text(encoding="utf-8", errors="ignore")
+            if len(text) > max_chars:
+                return text[-max_chars:]
+            return text
+        except Exception as e:
+            return f"Could not read logs: {e}"
+
+    def _refresh_logs(self) -> None:
+        if self._logs_text_view:
+            try:
+                self._logs_text_view.setString_(self._get_logs_text())
+            except Exception:
+                pass
+
     def _build_about_card(self, y: int, parent_view=None) -> int:
         """Erstellt About Tab."""
         from AppKit import (  # type: ignore[import-not-found]
@@ -1098,7 +1223,7 @@ class WelcomeController:
         start_btn = NSButton.alloc().initWithFrame_(
             NSMakeRect(WELCOME_WIDTH - WELCOME_PADDING - 140, footer_y, 140, 32)
         )
-        start_btn.setTitle_("Start WhisperGo")
+        start_btn.setTitle_("Cancel")
         start_btn.setBezelStyle_(NSBezelStyleRounded)
         start_btn.setFont_(NSFont.systemFontOfSize_weight_(13, NSFontWeightSemibold))
 
@@ -1482,6 +1607,29 @@ def _create_save_all_handler_class():
 
 
 _SaveAllHandler = _create_save_all_handler_class()
+
+
+def _create_refresh_logs_handler_class():
+    """Erstellt NSObject-Subklasse für Logs-Refresh Button."""
+    from Foundation import NSObject  # type: ignore[import-not-found]
+    import objc  # type: ignore[import-not-found]
+
+    class RefreshLogsHandler(NSObject):
+        def initWithController_(self, controller):
+            self = objc.super(RefreshLogsHandler, self).init()
+            if self is None:
+                return None
+            self._controller = controller
+            return self
+
+        @objc.signature(b"v@:@")
+        def refreshLogs_(self, _sender) -> None:
+            self._controller._refresh_logs()
+
+    return RefreshLogsHandler
+
+
+_RefreshLogsHandler = _create_refresh_logs_handler_class()
 
 
 def _create_restart_handler_class():
