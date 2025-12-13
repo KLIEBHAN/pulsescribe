@@ -10,6 +10,8 @@ from pathlib import Path
 from utils.timing import timed_operation
 from utils.vocabulary import load_vocabulary
 
+from config import DEFAULT_DEEPGRAM_MODEL
+
 logger = logging.getLogger("whisper_go.providers.deepgram")
 
 # Singleton Client
@@ -45,7 +47,7 @@ class DeepgramProvider:
     """
 
     name = "deepgram"
-    default_model = "nova-3"
+    default_model = DEFAULT_DEEPGRAM_MODEL
 
     def __init__(self) -> None:
         self._validated = False

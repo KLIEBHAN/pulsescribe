@@ -22,13 +22,21 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .base import TranscriptionProvider
 
+# Defaults zentral in config.py halten (vermeidet Drift)
+from config import (
+    DEFAULT_API_MODEL,
+    DEFAULT_DEEPGRAM_MODEL,
+    DEFAULT_GROQ_MODEL,
+    DEFAULT_LOCAL_MODEL,
+)
+
 # Default-Modelle pro Provider
 DEFAULT_MODELS = {
-    "openai": "gpt-4o-transcribe",
-    "deepgram": "nova-3",
-    "deepgram_stream": "nova-3",
-    "groq": "whisper-large-v3",
-    "local": "turbo",
+    "openai": DEFAULT_API_MODEL,
+    "deepgram": DEFAULT_DEEPGRAM_MODEL,
+    "deepgram_stream": DEFAULT_DEEPGRAM_MODEL,
+    "groq": DEFAULT_GROQ_MODEL,
+    "local": DEFAULT_LOCAL_MODEL,
 }
 
 

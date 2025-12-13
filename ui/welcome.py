@@ -7,6 +7,7 @@ Erscheint beim ersten Start und kann über Menubar aufgerufen werden.
 import os
 
 from config import LOG_FILE
+from utils.env import parse_bool
 from utils.preferences import (
     get_api_key,
     get_env_setting,
@@ -38,14 +39,58 @@ LOCAL_MODEL_OPTIONS = ["default", "turbo", "large", "medium", "small", "base", "
 DEVICE_OPTIONS = ["auto", "mps", "cpu", "cuda"]
 BOOL_OVERRIDE_OPTIONS = ["default", "true", "false"]
 WARMUP_OPTIONS = ["auto", "true", "false"]
-LOCAL_PRESET_OPTIONS = [
-    "(none)",
-    "macOS: MPS Balanced (turbo)",
-    "macOS: MPS Fast (turbo)",
-    "macOS: MLX Balanced (large)",
-    "macOS: MLX Fast (turbo)",
-    "CPU: faster int8 (turbo)",
-]
+
+# Local presets (UI-only; values are applied to the widgets and persisted via "Save & Apply").
+_LOCAL_PRESET_BASE: dict[str, str] = {
+    "device": "auto",
+    "warmup": "auto",
+    "local_fast": "default",
+    "fp16": "default",
+    "beam_size": "",
+    "best_of": "",
+    "temperature": "",
+    "compute_type": "",
+    "cpu_threads": "",
+    "num_workers": "",
+    "without_timestamps": "default",
+    "vad_filter": "default",
+}
+
+LOCAL_PRESETS: dict[str, dict[str, str]] = {
+    "macOS: MPS Balanced (turbo)": {
+        "local_backend": "whisper",
+        "local_model": "turbo",
+    },
+    "macOS: MPS Fast (turbo)": {
+        "local_backend": "whisper",
+        "local_model": "turbo",
+        "local_fast": "true",
+    },
+    "macOS: MLX Balanced (large)": {
+        "local_backend": "mlx",
+        "local_model": "large",
+        "local_fast": "true",
+    },
+    "macOS: MLX Fast (turbo)": {
+        "local_backend": "mlx",
+        "local_model": "turbo",
+        "local_fast": "true",
+    },
+    "CPU: faster int8 (turbo)": {
+        "local_backend": "faster",
+        "local_model": "turbo",
+        "device": "cpu",
+        "warmup": "false",
+        "local_fast": "true",
+        "compute_type": "int8",
+        "cpu_threads": "0",
+        "num_workers": "1",
+        "without_timestamps": "true",
+        "vad_filter": "true",
+    },
+}
+
+LOCAL_PRESET_OPTIONS = ["(none)", *LOCAL_PRESETS.keys()]
 
 
 def _get_color(r: int, g: int, b: int, a: float = 1.0):
@@ -1040,7 +1085,7 @@ class WelcomeController:
         if refine_enabled is None:
             refine_enabled = self.config.get("refine", False)
         else:
-            refine_enabled = refine_enabled.lower() == "true"
+            refine_enabled = bool(parse_bool(refine_enabled))
         refine_checkbox.setState_(1 if refine_enabled else 0)
         self._refine_checkbox = refine_checkbox
         parent_view.addSubview_(refine_checkbox)
@@ -1486,91 +1531,31 @@ class WelcomeController:
         set_popup(self._mode_popup, "local")
         self._update_local_settings_visibility()
 
-        if preset == "macOS: MPS Balanced (turbo)":
-            set_popup(self._local_backend_popup, "whisper")
-            set_popup(self._local_model_popup, "turbo")
-            set_popup(self._device_popup, "auto")
-            set_popup(self._warmup_popup, "auto")
-            set_popup(self._local_fast_popup, "default")
-            set_popup(self._fp16_popup, "default")
-            set_field(self._beam_size_field, "")
-            set_field(self._best_of_field, "")
-            set_field(self._temperature_field, "")
-            set_field(self._compute_type_field, "")
-            set_field(self._cpu_threads_field, "")
-            set_field(self._num_workers_field, "")
-            set_popup(self._without_timestamps_popup, "default")
-            set_popup(self._vad_filter_popup, "default")
+        preset_values = LOCAL_PRESETS.get(preset)
+        if not preset_values:
             return
 
-        if preset == "macOS: MPS Fast (turbo)":
-            set_popup(self._local_backend_popup, "whisper")
-            set_popup(self._local_model_popup, "turbo")
-            set_popup(self._device_popup, "auto")
-            set_popup(self._warmup_popup, "auto")
-            set_popup(self._local_fast_popup, "true")
-            set_popup(self._fp16_popup, "default")
-            # Optional explizite Overrides (Fast-mode setzt ohnehin Defaults)
-            set_field(self._beam_size_field, "")
-            set_field(self._best_of_field, "")
-            set_field(self._temperature_field, "")
-            set_field(self._compute_type_field, "")
-            set_field(self._cpu_threads_field, "")
-            set_field(self._num_workers_field, "")
-            set_popup(self._without_timestamps_popup, "default")
-            set_popup(self._vad_filter_popup, "default")
-            return
+        values = dict(_LOCAL_PRESET_BASE)
+        values.update(preset_values)
 
-        if preset == "CPU: faster int8 (turbo)":
-            set_popup(self._local_backend_popup, "faster")
-            set_popup(self._local_model_popup, "turbo")
-            set_popup(self._device_popup, "cpu")
-            set_popup(self._warmup_popup, "false")
-            set_popup(self._local_fast_popup, "true")
-            set_popup(self._fp16_popup, "default")
-            set_field(self._beam_size_field, "")
-            set_field(self._best_of_field, "")
-            set_field(self._temperature_field, "")
-            set_field(self._compute_type_field, "int8")
-            set_field(self._cpu_threads_field, "0")
-            set_field(self._num_workers_field, "1")
-            set_popup(self._without_timestamps_popup, "true")
-            set_popup(self._vad_filter_popup, "true")
-            return
-
-        if preset == "macOS: MLX Balanced (large)":
-            set_popup(self._local_backend_popup, "mlx")
-            set_popup(self._local_model_popup, "large")
-            set_popup(self._device_popup, "auto")
-            set_popup(self._warmup_popup, "auto")
-            set_popup(self._local_fast_popup, "true")
-            set_popup(self._fp16_popup, "default")
-            set_field(self._beam_size_field, "")
-            set_field(self._best_of_field, "")
-            set_field(self._temperature_field, "")
-            set_field(self._compute_type_field, "")
-            set_field(self._cpu_threads_field, "")
-            set_field(self._num_workers_field, "")
-            set_popup(self._without_timestamps_popup, "default")
-            set_popup(self._vad_filter_popup, "default")
-            return
-
-        if preset == "macOS: MLX Fast (turbo)":
-            set_popup(self._local_backend_popup, "mlx")
-            set_popup(self._local_model_popup, "turbo")
-            set_popup(self._device_popup, "auto")
-            set_popup(self._warmup_popup, "auto")
-            set_popup(self._local_fast_popup, "true")
-            set_popup(self._fp16_popup, "default")
-            set_field(self._beam_size_field, "")
-            set_field(self._best_of_field, "")
-            set_field(self._temperature_field, "")
-            set_field(self._compute_type_field, "")
-            set_field(self._cpu_threads_field, "")
-            set_field(self._num_workers_field, "")
-            set_popup(self._without_timestamps_popup, "default")
-            set_popup(self._vad_filter_popup, "default")
-            return
+        set_popup(self._local_backend_popup, values.get("local_backend", ""))
+        set_popup(self._local_model_popup, values.get("local_model", ""))
+        set_popup(self._device_popup, values.get("device", "auto"))
+        set_popup(self._warmup_popup, values.get("warmup", "auto"))
+        set_popup(self._local_fast_popup, values.get("local_fast", "default"))
+        set_popup(self._fp16_popup, values.get("fp16", "default"))
+        set_field(self._beam_size_field, values.get("beam_size", ""))
+        set_field(self._best_of_field, values.get("best_of", ""))
+        set_field(self._temperature_field, values.get("temperature", ""))
+        set_field(self._compute_type_field, values.get("compute_type", ""))
+        set_field(self._cpu_threads_field, values.get("cpu_threads", ""))
+        set_field(self._num_workers_field, values.get("num_workers", ""))
+        set_popup(
+            self._without_timestamps_popup,
+            values.get("without_timestamps", "default"),
+        )
+        set_popup(self._vad_filter_popup, values.get("vad_filter", "default"))
+        return
 
     def _build_footer(self) -> None:
         """Erstellt Footer mit Checkbox, Save-Button und Start-Button."""
@@ -1586,6 +1571,12 @@ class WelcomeController:
         import objc  # type: ignore[import-not-found]
 
         footer_y = WELCOME_PADDING
+
+        # Button layout (right-aligned)
+        btn_w = 140
+        btn_h = 32
+        btn_spacing = 10
+        btn_font_size = 13
 
         # Checkbox (links unten)
         checkbox = NSButton.alloc().initWithFrame_(
@@ -1605,13 +1596,18 @@ class WelcomeController:
         self._content_view.addSubview_(checkbox)
         self._startup_checkbox = checkbox
 
-        # Save & Apply Button (Mitte)
+        # Save & Apply Button (rechts, links vom Close-Button)
+        right_edge = WELCOME_WIDTH - WELCOME_PADDING
+        close_x = right_edge - btn_w
+        save_x = close_x - btn_spacing - btn_w
         save_btn = NSButton.alloc().initWithFrame_(
-            NSMakeRect(WELCOME_PADDING + 140, footer_y + 2, 100, 28)
+            NSMakeRect(save_x, footer_y, btn_w, btn_h)
         )
         save_btn.setTitle_("Save & Apply")
         save_btn.setBezelStyle_(NSBezelStyleRounded)
-        save_btn.setFont_(NSFont.systemFontOfSize_weight_(11, NSFontWeightMedium))
+        save_btn.setFont_(
+            NSFont.systemFontOfSize_weight_(btn_font_size, NSFontWeightMedium)
+        )
 
         save_handler = _SaveAllHandler.alloc().initWithController_(self)
         save_btn.setTarget_(save_handler)
@@ -1622,11 +1618,13 @@ class WelcomeController:
 
         # Start-Button (prominent, rechts)
         start_btn = NSButton.alloc().initWithFrame_(
-            NSMakeRect(WELCOME_WIDTH - WELCOME_PADDING - 140, footer_y, 140, 32)
+            NSMakeRect(close_x, footer_y, btn_w, btn_h)
         )
         start_btn.setTitle_("Close")
         start_btn.setBezelStyle_(NSBezelStyleRounded)
-        start_btn.setFont_(NSFont.systemFontOfSize_weight_(13, NSFontWeightSemibold))
+        start_btn.setFont_(
+            NSFont.systemFontOfSize_weight_(btn_font_size, NSFontWeightSemibold)
+        )
 
         start_handler = _StartButtonHandler.alloc().initWithController_(self)
         start_btn.setTarget_(start_handler)

@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 from utils.timing import timed_operation
 
+from config import DEFAULT_API_MODEL
+
 logger = logging.getLogger("whisper_go.providers.openai")
 
 # Singleton Client
@@ -34,7 +36,7 @@ class OpenAIProvider:
     """
 
     name = "openai"
-    default_model = "gpt-4o-transcribe"
+    default_model = DEFAULT_API_MODEL
 
     def __init__(self) -> None:
         # API-Key Validierung beim ersten Aufruf

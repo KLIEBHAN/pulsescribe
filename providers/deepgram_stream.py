@@ -98,8 +98,8 @@ async def _create_deepgram_connection(
     punctuate: bool = True,
     interim_results: bool = True,
     encoding: str = "linear16",
-    sample_rate: int = 16000,
-    channels: int = 1,
+    sample_rate: int = WHISPER_SAMPLE_RATE,
+    channels: int = WHISPER_CHANNELS,
 ) -> AsyncIterator["AsyncV1SocketClient"]:
     """Deepgram WebSocket mit kontrollierbarem close_timeout.
 

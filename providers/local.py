@@ -12,6 +12,9 @@ import sys
 import threading
 from pathlib import Path
 
+from config import DEFAULT_LOCAL_MODEL, WHISPER_SAMPLE_RATE
+from utils.env import get_env_bool, get_env_int
+from utils.logging import log
 from utils.vocabulary import load_vocabulary
 
 logger = logging.getLogger("whisper_go.providers.local")
@@ -42,42 +45,6 @@ def _import_mlx_whisper():
             f"mlx-whisper konnte nicht geladen werden. {_mlx_whisper_import_hint()} Ursache: {e}"
         ) from e
     return mlx_whisper
-
-
-def _log_stderr(message: str) -> None:
-    """Status-Meldung auf stderr."""
-    print(message, file=sys.stderr)
-
-
-_TRUE_VALUES = {"1", "true", "yes", "on"}
-_FALSE_VALUES = {"0", "false", "no", "off"}
-
-
-def _env_bool(name: str) -> bool | None:
-    """Parst boolsche ENV-Flags."""
-    val = os.getenv(name)
-    if val is None:
-        return None
-    val = val.strip().lower()
-    if val in _TRUE_VALUES:
-        return True
-    if val in _FALSE_VALUES:
-        return False
-    logger.warning(f"Ungültiger {name}={val!r}, ignoriere")
-    return None
-
-
-def _env_int(name: str) -> int | None:
-    """Parst int ENV-Values."""
-    val = os.getenv(name)
-    if val is None:
-        return None
-    try:
-        return int(val.strip())
-    except ValueError:
-        logger.warning(f"Ungültiger {name}={val!r}, ignoriere")
-        return None
-
 
 def _select_device() -> str:
     """Wählt ein sinnvolles Torch-Device für lokales Whisper.
@@ -120,7 +87,7 @@ class LocalProvider:
     """
 
     name = "local"
-    default_model = "turbo"
+    default_model = DEFAULT_LOCAL_MODEL
 
     def __init__(self) -> None:
         self._model_cache: dict = {}
@@ -169,17 +136,17 @@ class LocalProvider:
                     f"Unbekannter WHISPER_GO_LOCAL_BACKEND='{backend_env}', nutze whisper"
                 )
                 self._backend = "whisper"
-            _log_stderr(f"Lokales Whisper Backend: {self._backend}")
+            log(f"Lokales Whisper Backend: {self._backend}")
 
         if self._device is None:
             self._device = _select_device()
-            _log_stderr(f"Lokales Whisper Device: {self._device}")
+            log(f"Lokales Whisper Device: {self._device}")
 
         if self._fp16_override is None:
-            self._fp16_override = _env_bool("WHISPER_GO_FP16")
+            self._fp16_override = get_env_bool("WHISPER_GO_FP16")
 
         if self._fast_mode is None:
-            fast_env = _env_bool("WHISPER_GO_LOCAL_FAST")
+            fast_env = get_env_bool("WHISPER_GO_LOCAL_FAST")
             if fast_env is None:
                 # Default to fast decoding on faster-whisper unless user opts out.
                 self._fast_mode = self._backend == "faster"
@@ -237,7 +204,7 @@ class LocalProvider:
             if cache_key in self._model_cache:
                 return self._model_cache[cache_key]
 
-            _log_stderr(f"Lade Modell '{model_name}' ({self._device})...")
+            log(f"Lade Modell '{model_name}' ({self._device})...")
             try:
                 if self._device == "mps":
                     # MPS kann sparse alignment_heads nicht bewegen → CPU load,
@@ -291,8 +258,8 @@ class LocalProvider:
         device = "cuda" if self._device == "cuda" else "cpu"
         compute_type = self._compute_type or ("float16" if device == "cuda" else "int8")
 
-        cpu_threads = _env_int("WHISPER_GO_LOCAL_CPU_THREADS") or 0
-        num_workers = _env_int("WHISPER_GO_LOCAL_NUM_WORKERS") or 1
+        cpu_threads = get_env_int("WHISPER_GO_LOCAL_CPU_THREADS") or 0
+        num_workers = get_env_int("WHISPER_GO_LOCAL_NUM_WORKERS") or 1
 
         cache_key = f"faster:{faster_name}:{device}:{compute_type}:{cpu_threads}:{num_workers}"
         if cache_key in self._model_cache:
@@ -301,7 +268,7 @@ class LocalProvider:
         with self._load_lock:
             if cache_key in self._model_cache:
                 return self._model_cache[cache_key]
-            _log_stderr(
+            log(
                 f"Lade faster-whisper Modell '{faster_name}' ({device}, {compute_type}, "
                 f"threads={cpu_threads}, workers={num_workers})..."
             )
@@ -349,10 +316,10 @@ class LocalProvider:
                 )
         elif self._backend == "faster":
             # faster-whisper: standardmäßig keine Timestamps berechnen (spart Zeit)
-            wt_env = _env_bool("WHISPER_GO_LOCAL_WITHOUT_TIMESTAMPS")
+            wt_env = get_env_bool("WHISPER_GO_LOCAL_WITHOUT_TIMESTAMPS")
             options["without_timestamps"] = True if wt_env is None else wt_env
 
-            vad_env = _env_bool("WHISPER_GO_LOCAL_VAD_FILTER")
+            vad_env = get_env_bool("WHISPER_GO_LOCAL_VAD_FILTER")
             if vad_env:
                 options["vad_filter"] = True
         elif self._backend == "mlx":
@@ -372,7 +339,7 @@ class LocalProvider:
             options.setdefault("condition_on_previous_text", False)
 
         # Explizite Decode-Overrides
-        beam_size = _env_int("WHISPER_GO_LOCAL_BEAM_SIZE")
+        beam_size = get_env_int("WHISPER_GO_LOCAL_BEAM_SIZE")
         if beam_size is not None and self._backend == "mlx":
             logger.warning(
                 "WHISPER_GO_LOCAL_BEAM_SIZE wird ignoriert (mlx backend unterstützt kein Beam Search)."
@@ -380,7 +347,7 @@ class LocalProvider:
         elif beam_size is not None:
             options["beam_size"] = beam_size
 
-        best_of = _env_int("WHISPER_GO_LOCAL_BEST_OF")
+        best_of = get_env_int("WHISPER_GO_LOCAL_BEST_OF")
         if best_of is not None:
             options["best_of"] = best_of
 
@@ -421,7 +388,9 @@ class LocalProvider:
 
                 repo = self._map_mlx_model_name(model_name)
                 warmup_s = 0.2
-                warmup_audio = np.zeros(int(16000 * warmup_s), dtype=np.float32)
+                warmup_audio = np.zeros(
+                    int(WHISPER_SAMPLE_RATE * warmup_s), dtype=np.float32
+                )
                 warmup_language = os.getenv("WHISPER_GO_LANGUAGE") or "en"
                 if warmup_language.strip().lower() == "auto":
                     warmup_language = "en"
@@ -450,7 +419,7 @@ class LocalProvider:
         """Transkribiert ein Audio-Array lokal (ohne Dateischreibzugriff)."""
         model_name = self._resolve_model_name(model)
         options = self._build_options(language)
-        _log_stderr("Transkribiere audio-buffer...")
+        log("Transkribiere audio-buffer...")
         with self._transcribe_lock:
             if self._backend == "faster":
                 return self._transcribe_faster(audio, model_name, options)
@@ -503,7 +472,7 @@ class LocalProvider:
             Transkribierter Text
         """
         model_name = self._resolve_model_name(model)
-        _log_stderr(f"Transkribiere {audio_path.name}...")
+        log(f"Transkribiere {audio_path.name}...")
         options = self._build_options(language)
         with self._transcribe_lock:
             if self._backend == "faster":

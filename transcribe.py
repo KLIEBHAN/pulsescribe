@@ -82,20 +82,10 @@ _groq_client = None
 
 
 from utils.logging import setup_logging, log, error, get_session_id as _get_session_id
+from utils.env import get_env_bool_default
+from utils.environment import load_environment
 from utils.timing import format_duration as _format_duration, log_preview as _shared_log_preview
 from utils.vocabulary import load_vocabulary as _load_vocabulary_shared
-
-
-def load_environment() -> None:
-    """Lädt .env-Datei falls python-dotenv installiert ist."""
-    try:
-        from dotenv import load_dotenv
-
-        env_file = SCRIPT_DIR / ".env"
-        load_dotenv(env_file if env_file.exists() else None)
-    except ImportError:
-        pass
-
 
 def copy_to_clipboard(text: str) -> bool:
     """Kopiert Text in die Zwischenablage. Gibt True bei Erfolg zurück.
@@ -321,7 +311,7 @@ Beispiele:
     parser.add_argument(
         "--refine",
         action="store_true",
-        default=os.getenv("WHISPER_GO_REFINE", "").lower() == "true",
+        default=get_env_bool_default("WHISPER_GO_REFINE", False),
         help="LLM-Nachbearbeitung aktivieren (auch via WHISPER_GO_REFINE env)",
     )
     parser.add_argument(
@@ -391,7 +381,7 @@ def _should_use_streaming(args: argparse.Namespace) -> bool:
         return False
     if getattr(args, "no_streaming", False):
         return False
-    return os.getenv("WHISPER_GO_STREAMING", "true").lower() != "false"
+    return get_env_bool_default("WHISPER_GO_STREAMING", True)
 
 
 def run_daemon_mode_streaming(args: argparse.Namespace) -> int:

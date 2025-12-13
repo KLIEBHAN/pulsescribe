@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 from utils.timing import timed_operation
 
+from config import DEFAULT_GROQ_MODEL
+
 logger = logging.getLogger("whisper_go.providers.groq")
 
 # Singleton Client
@@ -40,7 +42,7 @@ class GroqProvider:
     """
 
     name = "groq"
-    default_model = "whisper-large-v3"
+    default_model = DEFAULT_GROQ_MODEL
 
     def __init__(self) -> None:
         self._validated = False

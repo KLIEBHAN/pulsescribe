@@ -12,6 +12,7 @@ from .prompts import get_prompt_for_context
 from .context import detect_context
 from utils.timing import log_preview
 from utils.logging import get_session_id
+from utils.env import get_env_bool_default
 
 # Zentrale Konfiguration importieren
 from config import (
@@ -166,8 +167,8 @@ def refine_transcript(
             provider_order = os.getenv("OPENROUTER_PROVIDER_ORDER")
             if provider_order:
                 providers = [p.strip() for p in provider_order.split(",")]
-                allow_fallbacks = (
-                    os.getenv("OPENROUTER_ALLOW_FALLBACKS", "true").lower() == "true"
+                allow_fallbacks = get_env_bool_default(
+                    "OPENROUTER_ALLOW_FALLBACKS", True
                 )
                 create_kwargs["extra_body"] = {
                     "provider": {

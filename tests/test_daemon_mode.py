@@ -128,7 +128,7 @@ class TestDaemonMode(unittest.TestCase):
 
         with patch.dict(os.environ, {"WHISPER_GO_LOCAL_BACKEND": "faster"}), \
              patch("whisper_daemon.load_environment"), \
-             patch("utils.preferences.get_env_setting", return_value=None):
+             patch("utils.preferences.read_env_file", return_value={}):
             daemon._reload_settings()
             self.assertNotIn("WHISPER_GO_LOCAL_BACKEND", os.environ)
             # Provider bleibt gecached, aber muss Runtime-Config neu evaluieren.

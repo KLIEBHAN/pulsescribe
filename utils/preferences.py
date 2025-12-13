@@ -7,9 +7,59 @@ API-Keys werden in ~/.whisper_go/.env gespeichert.
 import json
 from pathlib import Path
 
-# User-Verzeichnis direkt definieren, um Circular Import mit config.py zu vermeiden
-USER_CONFIG_DIR = Path.home() / ".whisper_go"
+from config import USER_CONFIG_DIR
+
 PREFS_FILE = USER_CONFIG_DIR / "preferences.json"
+ENV_FILE = USER_CONFIG_DIR / ".env"
+
+# Cache: (mtime, values)
+_env_cache: tuple[float, dict[str, str]] | None = None
+
+
+def read_env_file(path: Path | None = None) -> dict[str, str]:
+    """Liest eine .env Datei und gibt ein Key→Value Dict zurück.
+
+    - Ignoriert leere Zeilen und Kommentare (# …)
+    - Behält die erste Definition eines Keys (entspricht get_api_key/get_env_setting Verhalten)
+    - Cached anhand mtime, damit UI-Reads nicht ständig die Datei neu parsen
+    """
+    global _env_cache
+
+    env_path = path or ENV_FILE
+    try:
+        mtime = env_path.stat().st_mtime
+    except FileNotFoundError:
+        _env_cache = (0.0, {})
+        return {}
+    except OSError:
+        _env_cache = (0.0, {})
+        return {}
+
+    if path is None and _env_cache is not None and _env_cache[0] == mtime:
+        return dict(_env_cache[1])
+
+    values: dict[str, str] = {}
+    try:
+        for raw_line in env_path.read_text().splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            if not key or key in values:
+                continue
+            values[key] = value.strip()
+    except OSError:
+        values = {}
+
+    if path is None:
+        _env_cache = (mtime, values)
+    return dict(values)
+
+
+def _invalidate_env_cache() -> None:
+    global _env_cache
+    _env_cache = None
 
 
 def load_preferences() -> dict:
@@ -59,7 +109,7 @@ def save_api_key(key_name: str, value: str) -> None:
         key_name: Name des Keys (z.B. "DEEPGRAM_API_KEY")
         value: Der API-Key Wert
     """
-    env_path = USER_CONFIG_DIR / ".env"
+    env_path = ENV_FILE
 
     lines = []
     if env_path.exists():
@@ -77,6 +127,7 @@ def save_api_key(key_name: str, value: str) -> None:
         lines.append(f"{key_name}={value}")
 
     env_path.write_text("\n".join(lines) + "\n")
+    _invalidate_env_cache()
 
 
 def get_api_key(key_name: str) -> str | None:
@@ -88,16 +139,7 @@ def get_api_key(key_name: str) -> str | None:
     Returns:
         Der API-Key Wert oder None wenn nicht gefunden
     """
-    env_path = USER_CONFIG_DIR / ".env"
-
-    if not env_path.exists():
-        return None
-
-    for line in env_path.read_text().splitlines():
-        if line.startswith(f"{key_name}="):
-            return line.split("=", 1)[1].strip()
-
-    return None
+    return read_env_file().get(key_name)
 
 
 def get_env_setting(key_name: str) -> str | None:
@@ -109,7 +151,7 @@ def get_env_setting(key_name: str) -> str | None:
     Returns:
         Der Wert oder None wenn nicht gefunden
     """
-    return get_api_key(key_name)  # Gleiche Logik wie bei API-Keys
+    return read_env_file().get(key_name)
 
 
 def save_env_setting(key_name: str, value: str) -> None:
@@ -128,7 +170,7 @@ def remove_env_setting(key_name: str) -> None:
     Args:
         key_name: Name der Einstellung (z.B. "WHISPER_GO_REFINE")
     """
-    env_path = USER_CONFIG_DIR / ".env"
+    env_path = ENV_FILE
 
     if not env_path.exists():
         return
@@ -137,3 +179,4 @@ def remove_env_setting(key_name: str) -> None:
     new_lines = [line for line in lines if not line.startswith(f"{key_name}=")]
 
     env_path.write_text("\n".join(new_lines) + "\n" if new_lines else "")
+    _invalidate_env_cache()

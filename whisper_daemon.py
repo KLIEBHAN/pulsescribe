@@ -48,6 +48,8 @@ try:
     from config import INTERIM_FILE, VAD_THRESHOLD, WHISPER_SAMPLE_RATE
     from utils import setup_logging, show_error_alert
     from config import DEFAULT_DEEPGRAM_MODEL
+    from utils.env import get_env_bool, get_env_bool_default, parse_bool
+    from utils.environment import load_environment
     from providers.deepgram_stream import deepgram_stream_core
     from providers import get_provider
     from refine.llm import refine_transcript
@@ -406,23 +408,11 @@ class WhisperDaemon:
         if not hasattr(provider, "preload"):
             return
 
-        def _parse_optional_bool(name: str) -> bool | None:
-            val = os.getenv(name)
-            if val is None:
-                return None
-            val = val.strip().lower()
-            if val in {"1", "true", "yes", "on"}:
-                return True
-            if val in {"0", "false", "no", "off"}:
-                return False
-            logger.warning(f"Ungültiger {name}={val!r}, ignoriere")
-            return None
-
         def _preload():
             try:
                 provider.preload(self.model)
                 logger.debug("Lokales Modell vorab geladen")
-                warmup_flag = _parse_optional_bool("WHISPER_GO_LOCAL_WARMUP")
+                warmup_flag = get_env_bool("WHISPER_GO_LOCAL_WARMUP")
                 backend = getattr(provider, "backend", None) or getattr(
                     provider, "_backend", None
                 )
@@ -666,7 +656,7 @@ class WhisperDaemon:
         # Modus-Entscheidung: Streaming vs. Recording
         use_streaming = (
             self.mode == "deepgram"
-            and os.getenv("WHISPER_GO_STREAMING", "true").lower() != "false"
+            and get_env_bool_default("WHISPER_GO_STREAMING", True)
         )
 
         if use_streaming:
@@ -1199,10 +1189,12 @@ class WhisperDaemon:
 
     def _reload_settings(self) -> None:
         """Lädt Settings aus .env neu und wendet sie an (außer Hotkey)."""
-        from utils.preferences import get_env_setting
+        from config import DEFAULT_REFINE_MODEL
+        from utils.preferences import read_env_file
 
         # .env neu laden (override=True um Änderungen zu übernehmen)
         load_environment(override_existing=True)
+        env_values = read_env_file()
 
         # WICHTIG: python-dotenv setzt Variablen, entfernt sie aber nicht wenn ein Key
         # aus der Datei gelöscht wurde. Das ist relevant, weil die Settings-UI einige
@@ -1224,21 +1216,23 @@ class WhisperDaemon:
             "WHISPER_GO_LOCAL_WITHOUT_TIMESTAMPS",
             "WHISPER_GO_LOCAL_VAD_FILTER",
             "WHISPER_GO_LOCAL_WARMUP",
+            # Optional keys that can be removed in UI to reset to default.
+            "WHISPER_GO_REFINE_MODEL",
         ):
-            value = get_env_setting(key)
+            value = env_values.get(key)
             if value is None:
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
 
         # Hotkey / Hotkey-Mode Änderungen erfordern Neustart
-        new_hotkey = get_env_setting("WHISPER_GO_HOTKEY")
+        new_hotkey = env_values.get("WHISPER_GO_HOTKEY")
         if new_hotkey and new_hotkey.lower() != (self.hotkey or "").lower():
             logger.warning(
                 f"Hotkey geändert ({self.hotkey} → {new_hotkey}). Neustart erforderlich."
             )
 
-        new_hotkey_mode = get_env_setting("WHISPER_GO_HOTKEY_MODE")
+        new_hotkey_mode = env_values.get("WHISPER_GO_HOTKEY_MODE")
         if (
             new_hotkey_mode
             and new_hotkey_mode.lower() != (self.hotkey_mode or "").lower()
@@ -1247,7 +1241,7 @@ class WhisperDaemon:
                 f"Hotkey-Modus geändert ({self.hotkey_mode} → {new_hotkey_mode}). Neustart erforderlich."
             )
 
-        new_toggle_hotkey = get_env_setting("WHISPER_GO_TOGGLE_HOTKEY")
+        new_toggle_hotkey = env_values.get("WHISPER_GO_TOGGLE_HOTKEY")
         if (
             new_toggle_hotkey
             and new_toggle_hotkey.lower() != (self.toggle_hotkey or "").lower()
@@ -1256,7 +1250,7 @@ class WhisperDaemon:
                 f"Toggle-Hotkey geändert ({self.toggle_hotkey} → {new_toggle_hotkey}). Neustart erforderlich."
             )
 
-        new_hold_hotkey = get_env_setting("WHISPER_GO_HOLD_HOTKEY")
+        new_hold_hotkey = env_values.get("WHISPER_GO_HOLD_HOTKEY")
         if (
             new_hold_hotkey
             and new_hold_hotkey.lower() != (self.hold_hotkey or "").lower()
@@ -1266,24 +1260,23 @@ class WhisperDaemon:
             )
 
         # Settings aktualisieren (außer Hotkey - erfordert Neustart)
-        new_mode = get_env_setting("WHISPER_GO_MODE")
+        new_mode = env_values.get("WHISPER_GO_MODE")
         if new_mode:
             self.mode = new_mode
 
-        new_language = get_env_setting("WHISPER_GO_LANGUAGE")
+        new_language = env_values.get("WHISPER_GO_LANGUAGE")
         self.language = new_language  # None ist valid für "auto"
 
-        new_refine = get_env_setting("WHISPER_GO_REFINE")
-        if new_refine is not None:
-            self.refine = new_refine.lower() == "true"
+        refine_flag = parse_bool(env_values.get("WHISPER_GO_REFINE"))
+        if refine_flag is not None:
+            self.refine = refine_flag
 
-        new_refine_provider = get_env_setting("WHISPER_GO_REFINE_PROVIDER")
+        new_refine_provider = env_values.get("WHISPER_GO_REFINE_PROVIDER")
         if new_refine_provider:
             self.refine_provider = new_refine_provider
 
-        new_refine_model = get_env_setting("WHISPER_GO_REFINE_MODEL")
-        if new_refine_model:
-            self.refine_model = new_refine_model
+        new_refine_model = env_values.get("WHISPER_GO_REFINE_MODEL")
+        self.refine_model = new_refine_model or DEFAULT_REFINE_MODEL
 
         # Lokalen Provider nicht wegwerfen (Modell-Load ist teuer).
         # Stattdessen Runtime-Konfig invalidieren, damit ENV-Änderungen greifen.
@@ -1344,7 +1337,7 @@ class WhisperDaemon:
 
         # Dock-Icon: Konfigurierbar via ENV (default: an)
         # 0 = Regular (Dock-Icon), 1 = Accessory (kein Dock-Icon)
-        show_dock = os.getenv("WHISPER_GO_DOCK_ICON", "true").lower() != "false"
+        show_dock = get_env_bool_default("WHISPER_GO_DOCK_ICON", True)
         app.setActivationPolicy_(0 if show_dock else 1)
 
         # Application Menu erstellen (für CMD+Q Support wenn Dock-Icon aktiv)
@@ -1576,35 +1569,6 @@ class WhisperDaemon:
 
 
 # =============================================================================
-# Environment Loading
-# =============================================================================
-
-
-def load_environment(override_existing: bool = False) -> None:
-    """Lädt .env-Datei aus dem User-Config-Verzeichnis.
-
-    `override_existing=False` respektiert bereits gesetzte Umgebungsvariablen
-    (ENV > .env). Beim Reload wird mit override=True geladen.
-    """
-    try:
-        from dotenv import load_dotenv
-        from config import USER_CONFIG_DIR
-
-        # Priorität 1: .env im User-Verzeichnis ~/.whisper_go/.env
-        user_env = USER_CONFIG_DIR / ".env"
-        if user_env.exists():
-            load_dotenv(user_env, override=override_existing)
-
-        # Priorität 2: .env im aktuellen Verzeichnis (für Dev)
-        local_env = Path(".env")
-        if local_env.exists():
-            load_dotenv(local_env, override=override_existing)
-
-    except ImportError:
-        pass
-
-
-# =============================================================================
 # Main
 # =============================================================================
 
@@ -1681,7 +1645,7 @@ Beispiele:
     parser.add_argument(
         "--refine",
         action="store_true",
-        default=os.getenv("WHISPER_GO_REFINE", "").lower() == "true",
+        default=get_env_bool_default("WHISPER_GO_REFINE", False),
         help="LLM-Nachbearbeitung aktivieren",
     )
     parser.add_argument(
