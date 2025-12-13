@@ -1700,7 +1700,8 @@ class WelcomeController:
                 )
 
             lines = []
-            for entry in entries:
+            # Chronological order (oldest first, newest last) - like logs
+            for entry in reversed(entries):
                 ts = entry.get("timestamp", "")[:19].replace("T", " ")
                 text = entry.get("text", "").strip()
                 mode = entry.get("mode", "")
@@ -1724,15 +1725,16 @@ class WelcomeController:
         if self._transcripts_text_view:
             try:
                 self._transcripts_text_view.setString_(self._get_transcripts_text())
-                self._scroll_transcripts_to_top()
+                self._scroll_transcripts_to_bottom()
             except Exception:
                 pass
 
-    def _scroll_transcripts_to_top(self) -> None:
-        """Scrollt die Transcripts-Ansicht nach oben (neueste zuerst)."""
+    def _scroll_transcripts_to_bottom(self) -> None:
+        """Scrollt die Transcripts-Ansicht ans Ende (neueste unten)."""
         if self._transcripts_text_view:
             try:
-                self._transcripts_text_view.scrollRangeToVisible_((0, 0))
+                length = len(self._transcripts_text_view.string())
+                self._transcripts_text_view.scrollRangeToVisible_((length, 0))
             except Exception:
                 pass
 
