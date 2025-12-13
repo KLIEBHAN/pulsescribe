@@ -1,6 +1,6 @@
 # Building & Notarizing WhisperGo on macOS
 
-WhisperGo ships as a `.app` bundle and a drag‑and‑drop `.dmg`. For a good user experience (“download → open → works”), the DMG should be **Developer‑ID signed + notarized**.
+WhisperGo ships as a `.app` bundle and a drag‑and‑drop `.dmg`. For a good user experience ("download → open → works"), the DMG should be **Developer‑ID signed + notarized**.
 
 ## Prerequisites
 
@@ -9,23 +9,52 @@ WhisperGo ships as a `.app` bundle and a drag‑and‑drop `.dmg`. For a good us
 - Python + `pyinstaller`
 - (For notarization) an Apple Developer Program membership with a **Developer ID Application** certificate installed in your keychain
 
-## Build the `.app`
+## Quick Start
 
 ```bash
-pyinstaller build_app.spec --clean
+# Build the app (ad-hoc signed)
+./build_app.sh
+
+# Build + create DMG
+./build_app.sh --dmg
+
+# Clean build + DMG + launch
+./build_app.sh --clean --dmg --open
+```
+
+## Build Scripts
+
+### `build_app.sh` — Main Build Script
+
+| Option    | Description                        |
+| --------- | ---------------------------------- |
+| `--clean` | Delete build cache before building |
+| `--dmg`   | Also create DMG after building     |
+| `--open`  | Launch the app after building      |
+
+Examples:
+
+```bash
+./build_app.sh                    # Standard build
+./build_app.sh --clean --dmg      # Fresh build + DMG
+./build_app.sh --open             # Build + launch
 ```
 
 Output: `dist/WhisperGo.app`
 
-## Build the `.dmg` (dev / ad‑hoc signed)
+### `build_dmg.sh` — DMG Packaging
+
+Creates a drag‑and‑drop DMG with optional notarization.
 
 ```bash
-./build_dmg.sh
+./build_dmg.sh              # Ad-hoc signed DMG (dev)
+./build_dmg.sh 1.0.0        # Versioned DMG
+./build_dmg.sh 1.0.0 --notarize  # Notarized release
 ```
 
-This produces an ad‑hoc signed DMG (no notarization). It’s fine for local testing but Gatekeeper may block it on other machines.
+Output: `dist/WhisperGo-<version>.dmg`
 
-## Build the `.dmg` (release / notarized)
+## Release Build (Notarized)
 
 ### 1) Store notary credentials (once)
 
@@ -42,12 +71,15 @@ xcrun notarytool store-credentials "whispergo-notary" \
 export CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
 export NOTARY_PROFILE="whispergo-notary"
 
+./build_app.sh --clean
 ./build_dmg.sh 1.0.0 --notarize
 ```
 
-Output: `dist/WhisperGo-1.0.0.dmg`
+Output: `dist/WhisperGo-1.0.0.dmg` (notarized, Gatekeeper‑friendly)
 
 ## Notes
 
-- `build_dmg.sh` notarizes both the `.app` (stapled before packaging) and the `.dmg` (Gatekeeper‑friendly).
-- Entitlements are read from `macos/entitlements.plist` (override via `ENTITLEMENTS_PATH` if needed).
+- `build_app.sh` signs the app ad-hoc by default (fine for local testing)
+- `build_dmg.sh --notarize` signs with Developer ID and notarizes both `.app` and `.dmg`
+- Entitlements are read from `macos/entitlements.plist` (override via `ENTITLEMENTS_PATH`)
+- Ad-hoc signed builds may trigger Gatekeeper warnings on other machines
