@@ -1123,6 +1123,11 @@ class OnboardingWizardController:
     def _open_privacy_settings(self, anchor: str) -> None:
         url = f"x-apple.systempreferences:com.apple.preference.security?{anchor}"
         try:
+            # Temporarily lower window level so System Settings appears in front
+            if self._window:
+                from AppKit import NSNormalWindowLevel  # type: ignore[import-not-found]
+
+                self._window.setLevel_(NSNormalWindowLevel)
             subprocess.Popen(["open", url])
         except Exception:
             pass
