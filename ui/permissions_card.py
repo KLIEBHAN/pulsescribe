@@ -107,7 +107,7 @@ class PermissionsCard:
         title_field.setTextColor_(NSColor.whiteColor())
         parent_view.addSubview_(title_field)
 
-        desc_h = 32
+        desc_h = 48  # 3 lines of text at font size 11
         desc_y = (card_top - 28) - 6 - desc_h
         desc_field = NSTextField.alloc().initWithFrame_(
             NSMakeRect(base_x, desc_y, card_w - 2 * inner_padding, desc_h)
