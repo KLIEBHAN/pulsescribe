@@ -6,7 +6,6 @@ import os
 import subprocess
 from typing import Callable
 
-from utils.hotkey import KEY_CODE_MAP
 from utils.onboarding import (
     OnboardingChoice,
     OnboardingStep,
@@ -1093,12 +1092,7 @@ class OnboardingWizardController:
             self._start_hotkey_recording(kind)
 
     def _start_hotkey_recording(self, kind: str) -> None:
-        from AppKit import (  # type: ignore[import-not-found]
-            NSEvent,
-            NSEventMaskKeyDown,
-            NSEventMaskFlagsChanged,
-            NSEventTypeFlagsChanged,
-        )
+        from utils.hotkey_recording import add_local_hotkey_monitor
 
         if kind == "toggle":
             field = self._toggle_hotkey_field
@@ -1130,75 +1124,22 @@ class OnboardingWizardController:
         except Exception:
             pass
 
-        reverse_map = {v: k for k, v in KEY_CODE_MAP.items()}
-
-        def event_to_hotkey_string(event):
-            from AppKit import (  # type: ignore[import-not-found]
-                NSEventModifierFlagCommand,
-                NSEventModifierFlagShift,
-                NSEventModifierFlagOption,
-                NSEventModifierFlagControl,
-            )
-
-            keycode = int(event.keyCode())
-
-            # Ignore pure modifier flag changes (except Fn/CapsLock).
-            if event.type() == NSEventTypeFlagsChanged and keycode not in (63, 57):
-                return None
-
-            if keycode == 63:
-                key = "fn"
-            elif keycode == 57:
-                key = "capslock"
-            else:
-                key = reverse_map.get(keycode)
-            if not key:
-                chars = event.charactersIgnoringModifiers()
-                if chars:
-                    key = chars.lower()
-            if not key:
-                return None
-
-            flags = int(event.modifierFlags())
-            mods: list[str] = []
-            if flags & NSEventModifierFlagControl:
-                mods.append("ctrl")
-            if flags & NSEventModifierFlagOption:
-                mods.append("option")
-            if flags & NSEventModifierFlagShift:
-                mods.append("shift")
-            if flags & NSEventModifierFlagCommand:
-                mods.append("cmd")
-
-            return "+".join(mods + [key]) if mods else key
-
-        def handler(event):
+        def on_hotkey(hotkey_str: str) -> None:
             if not self._hotkey_recording:
-                return event
+                return
+            self._apply_recorded_hotkey(kind, hotkey_str)
+            if self._record_target_field is not None:
+                try:
+                    self._record_target_field.setStringValue_(hotkey_str.upper())
+                except Exception:
+                    pass
+            self._stop_hotkey_recording(cancelled=False)
 
-            # Escape cancels the recording.
-            try:
-                if int(event.keyCode()) == 53:  # ESC
-                    self._stop_hotkey_recording(cancelled=True)
-                    return None
-            except Exception:
-                pass
+        def on_cancel() -> None:
+            self._stop_hotkey_recording(cancelled=True)
 
-            hotkey_str = event_to_hotkey_string(event)
-            if hotkey_str:
-                self._apply_recorded_hotkey(kind, hotkey_str)
-                if self._record_target_field is not None:
-                    try:
-                        self._record_target_field.setStringValue_(hotkey_str.upper())
-                    except Exception:
-                        pass
-                self._stop_hotkey_recording(cancelled=False)
-                return None
-            return event
-
-        mask = NSEventMaskKeyDown | NSEventMaskFlagsChanged
-        self._hotkey_monitor = NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
-            mask, handler
+        self._hotkey_monitor = add_local_hotkey_monitor(
+            on_hotkey=on_hotkey, on_cancel=on_cancel
         )
 
     def _stop_hotkey_recording(self, *, cancelled: bool = False) -> None:

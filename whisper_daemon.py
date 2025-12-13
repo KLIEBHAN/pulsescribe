@@ -171,6 +171,8 @@ class WhisperDaemon:
         self._test_hotkey_mode_enabled = False
         self._test_hotkey_mode_callback = None
         self._test_hotkey_mode_state_callback = None
+        # Hotkey reconfigure may be deferred while recording/transcribing.
+        self._pending_hotkey_reconfigure = False
 
     # =============================================================================
     # Modifier Hotkeys (Fn/Globe, CapsLock)
@@ -522,41 +524,14 @@ class WhisperDaemon:
     def _start_test_dictation_from_hotkey(self) -> None:
         """Starts a test dictation run using the configured hotkey."""
         cb = self._test_hotkey_mode_callback
-        if not callable(cb):
-            return
-        if self._recording:
-            try:
-                cb("", "Already recording.")
-            except Exception:
-                pass
-            return
-        if self._worker_thread is not None and self._worker_thread.is_alive():
-            try:
-                cb("", "WhisperGo is busy — please wait a moment and try again.")
-            except Exception:
-                pass
-            return
-
         state_cb = self._test_hotkey_mode_state_callback
-        if callable(state_cb):
-            try:
-                state_cb("recording")
-            except Exception:
-                pass
-
-        self._test_run_active = True
-        self._test_run_callback = cb
-        self._start_recording(run_mode_override="local")
+        if callable(cb):
+            self._start_test_dictation_run(cb, state_callback=state_cb)
 
     def _stop_test_dictation_from_hotkey(self) -> None:
         """Stops an active test dictation run started via hotkey."""
         state_cb = self._test_hotkey_mode_state_callback
-        if callable(state_cb):
-            try:
-                state_cb("stopping")
-            except Exception:
-                pass
-        self._stop_recording()
+        self._stop_test_dictation_run(state_callback=state_cb)
 
     def _stop_recording_from_hotkey(self) -> None:
         """Stops recording and updates onboarding test UI if needed."""
@@ -570,6 +545,14 @@ class WhisperDaemon:
 
         The transcript is delivered via `callback(transcript, error)`.
         """
+        self._start_test_dictation_run(callback)
+
+    def stop_test_dictation(self) -> None:
+        """Stops an active test dictation run."""
+        self._stop_test_dictation_run()
+
+    def _start_test_dictation_run(self, callback, *, state_callback=None) -> None:
+        """Internal helper to start a safe test dictation run."""
         if self._recording:
             try:
                 callback("", "Already recording.")
@@ -582,14 +565,24 @@ class WhisperDaemon:
             except Exception:
                 pass
             return
+
+        if callable(state_callback):
+            try:
+                state_callback("recording")
+            except Exception:
+                pass
+
         self._test_run_active = True
         self._test_run_callback = callback
         self._start_recording(run_mode_override="local")
 
-    def stop_test_dictation(self) -> None:
-        """Stops an active test dictation run."""
-        if not self._recording:
-            return
+    def _stop_test_dictation_run(self, *, state_callback=None) -> None:
+        """Internal helper to stop an active test dictation run."""
+        if callable(state_callback):
+            try:
+                state_callback("stopping")
+            except Exception:
+                pass
         self._stop_recording()
 
     def _finish_test_run(self, transcript: str, error: str | None) -> None:
@@ -607,6 +600,7 @@ class WhisperDaemon:
             self._finish_test_run("", str(err))
             get_sound_player().play("error")
             self._update_state(AppState.ERROR)
+            self._apply_pending_hotkey_reconfigure_if_safe()
             return
 
         logger.error(f"Fehler: {err}")
@@ -618,6 +612,7 @@ class WhisperDaemon:
 
         get_sound_player().play("error")
         self._update_state(AppState.ERROR)
+        self._apply_pending_hotkey_reconfigure_if_safe()
 
     def _handle_transcript_result(self, transcript: str) -> None:
         if self._test_run_active:
@@ -626,6 +621,7 @@ class WhisperDaemon:
                 self._update_state(AppState.DONE, transcript)
             else:
                 self._update_state(AppState.IDLE)
+            self._apply_pending_hotkey_reconfigure_if_safe()
             return
 
         if transcript:
@@ -634,6 +630,7 @@ class WhisperDaemon:
         else:
             logger.warning("Leeres Transkript")
             self._update_state(AppState.IDLE)
+        self._apply_pending_hotkey_reconfigure_if_safe()
 
     # =============================================================================
     # Hold-to-record Hotkey (Push-to-talk)
@@ -1193,6 +1190,7 @@ class WhisperDaemon:
             return
         self._worker_thread = None
         self._stop_event = None
+        self._apply_pending_hotkey_reconfigure_if_safe()
 
     def _start_result_polling(self) -> None:
         """Startet NSTimer für Result-Polling."""
@@ -1486,13 +1484,39 @@ class WhisperDaemon:
             self._resolve_hotkey_bindings()
         )
         if new_hotkey_signature != old_hotkey_signature:
-            logger.info(
-                f"Hotkeys geändert ({old_hotkey_signature} → {new_hotkey_signature}) – re-register…"
-            )
-            self._reconfigure_hotkeys(show_alerts=True)
+            if self._is_hotkey_reconfigure_busy():
+                logger.info(
+                    f"Hotkeys geändert ({old_hotkey_signature} → {new_hotkey_signature}) – apply after current run…"
+                )
+                self._pending_hotkey_reconfigure = True
+            else:
+                logger.info(
+                    f"Hotkeys geändert ({old_hotkey_signature} → {new_hotkey_signature}) – re-register…"
+                )
+                self._reconfigure_hotkeys(show_alerts=True)
 
         # Falls lokal aktiviert, Modell im Hintergrund vorladen
         self._preload_local_model_async()
+
+    def _is_hotkey_reconfigure_busy(self) -> bool:
+        """True if it's unsafe to unregister/re-register hotkeys right now."""
+        if self._recording:
+            return True
+        worker = self._worker_thread
+        if worker is not None and worker.is_alive():
+            return True
+        return False
+
+    def _apply_pending_hotkey_reconfigure_if_safe(self) -> None:
+        if not self._pending_hotkey_reconfigure:
+            return
+        if self._is_hotkey_reconfigure_busy():
+            return
+        self._pending_hotkey_reconfigure = False
+        try:
+            self._reconfigure_hotkeys(show_alerts=True)
+        except Exception as e:  # pragma: no cover
+            logger.warning(f"Deferred hotkey reconfigure fehlgeschlagen: {e}")
 
     def _resolve_hotkey_bindings(self) -> list[tuple[str, str]]:
         """Ermittelt Hotkey-Bindings (mode, hotkey) inkl. Backwards-Compat."""
@@ -1794,46 +1818,8 @@ class WhisperDaemon:
         # Welcome Window (beim ersten Start oder wenn aktiviert)
         self._show_welcome_if_needed()
 
-        # Hotkeys ermitteln (toggle/hold parallel möglich)
-        bindings = self._resolve_hotkey_bindings()
-        if not bindings:
-            logger.warning("Kein Hotkey konfiguriert – Daemon startet ohne Hotkey")
-            try:
-                show_error_alert(
-                    "Kein Hotkey konfiguriert",
-                    "Es ist kein Hotkey gesetzt. WhisperGo startet ohne Hotkey.\n"
-                    "Öffne Settings, um einen Hotkey zu wählen.",
-                )
-            except Exception:
-                pass
-            bindings = []
-
-        normalized: list[tuple[str, str]] = []
-        for mode, hk in bindings:
-            m = (mode or "toggle").lower()
-            if m not in ("toggle", "hold"):
-                logger.warning(f"Unbekannter Hotkey-Modus '{m}', fallback auf toggle")
-                m = "toggle"
-            normalized.append((m, hk))
-        # Doppelte Hotkeys entfernen (z.B. gleicher Key für Toggle und Hold)
-        deduped: list[tuple[str, str]] = []
-        seen_keys: dict[str, str] = {}
-        duplicate_msgs: list[str] = []
-        for m, hk in normalized:
-            key_norm = hk.strip().lower()
-            if not key_norm:
-                continue
-            if key_norm in seen_keys:
-                msg = (
-                    f"Hotkey '{hk}' ist doppelt konfiguriert "
-                    f"({seen_keys[key_norm]} + {m}). Nur der erste wird verwendet."
-                )
-                logger.warning(msg)
-                duplicate_msgs.append(msg)
-                continue
-            seen_keys[key_norm] = m
-            deduped.append((m, hk))
-        bindings = deduped
+        # Hotkeys ermitteln (für Start-Info im Terminal)
+        bindings_for_info = self._resolve_hotkey_bindings()
 
         # Berechtigungen prüfen (Mikrofon - blockierend)
         if not check_microphone_permission():
@@ -1841,18 +1827,7 @@ class WhisperDaemon:
             return
 
         # Accessibility prüfen (nur Warnung, nicht blockierend)
-        accessibility_ok = check_accessibility_permission()
-
-        # Input‑Monitoring prüfen wenn nötig (Quartz/pynput globale Listener)
-        requires_input_monitoring = any(
-            mode == "hold" or hk.strip().lower() in ("fn", "capslock", "caps_lock")
-            for mode, hk in bindings
-        )
-        input_monitoring_ok = (
-            check_input_monitoring_permission(show_alert=False)
-            if requires_input_monitoring
-            else True
-        )
+        check_accessibility_permission()
 
         # Logging + Start-Info
         print("🎤 whisper_daemon läuft", file=sys.stderr)
@@ -1861,9 +1836,9 @@ class WhisperDaemon:
                 print(f"   Toggle Hotkey: {self.toggle_hotkey}", file=sys.stderr)
             if self.hold_hotkey:
                 print(f"   Hold Hotkey: {self.hold_hotkey}", file=sys.stderr)
-        elif bindings:
-            print(f"   Hotkey: {bindings[0][1]}", file=sys.stderr)
-            print(f"   Hotkey Mode: {bindings[0][0]}", file=sys.stderr)
+        elif bindings_for_info:
+            print(f"   Hotkey: {bindings_for_info[0][1]}", file=sys.stderr)
+            print(f"   Hotkey Mode: {bindings_for_info[0][0]}", file=sys.stderr)
         else:
             print("   Hotkey: (none)", file=sys.stderr)
         if show_dock:
@@ -1874,110 +1849,8 @@ class WhisperDaemon:
         # Lokales Modell vorab laden (falls aktiv)
         self._preload_local_model_async()
 
-        # Hotkeys registrieren
-        from quickmachotkey import quickHotKey
-
-        invalid_hotkeys: list[str] = []
-        invalid_hotkeys.extend(duplicate_msgs)
-
-        for mode, hk in bindings:
-            hk_str = hk.strip().lower()
-            hk_is_fn = hk_str == "fn"
-            hk_is_capslock = hk_str in ("capslock", "caps_lock")
-
-            if not input_monitoring_ok and (
-                mode == "hold" or hk_is_fn or hk_is_capslock
-            ):
-                msg = f"Hotkey '{hk}' benötigt Eingabemonitoring‑Zugriff – deaktiviert."
-                logger.warning(msg)
-                invalid_hotkeys.append(msg)
-                continue
-
-            if (hk_is_fn or hk_is_capslock) and not accessibility_ok:
-                msg = (
-                    f"{hk_str} Hotkey benötigt Bedienungshilfen-Zugriff – deaktiviert."
-                )
-                logger.warning(msg)
-                invalid_hotkeys.append(msg)
-                continue
-
-            if (
-                mode == "hold"
-                and not accessibility_ok
-                and not (hk_is_fn or hk_is_capslock)
-            ):
-                msg = f"Hold Hotkey '{hk}' benötigt Bedienungshilfen-Zugriff – deaktiviert."
-                logger.warning(msg)
-                invalid_hotkeys.append(msg)
-                continue
-
-            if hk_is_fn:
-                logger.info(
-                    f"Daemon gestartet: hotkey=fn (Globe), hotkey_mode={mode} (Quartz FlagsChanged Tap)"
-                )
-                if not self._start_fn_hotkey_monitor(mode):
-                    logger.error("Fn Hotkey Monitor konnte nicht gestartet werden.")
-                continue
-
-            if hk_is_capslock:
-                logger.info(
-                    f"Daemon gestartet: hotkey=capslock, hotkey_mode={mode} (Quartz FlagsChanged Tap)"
-                )
-                if not self._start_capslock_hotkey_monitor(mode):
-                    logger.error(
-                        "CapsLock Hotkey Monitor konnte nicht gestartet werden."
-                    )
-                continue
-
-            if mode == "toggle":
-                try:
-                    virtual_key, modifier_mask = parse_hotkey(hk)
-                except ValueError as e:
-                    msg = f"Hotkey '{hk}' ungültig: {e}"
-                    logger.error(msg)
-                    invalid_hotkeys.append(msg)
-                    continue
-
-                logger.info(
-                    f"Daemon gestartet: hotkey={hk}, virtualKey={virtual_key}, "
-                    f"modifierMask={modifier_mask}, hotkey_mode=toggle"
-                )
-
-                def _handler() -> None:
-                    self._on_hotkey()
-
-                decorated = quickHotKey(
-                    virtualKey=virtual_key, modifierMask=modifier_mask
-                )(_handler)  # type: ignore[arg-type]
-                self._toggle_hotkey_handlers.append(decorated)
-            else:
-                logger.info(f"Daemon gestartet: hotkey={hk}, hotkey_mode=hold (pynput)")
-                if not self._start_hold_hotkey_listener(hk):
-                    msg = (
-                        f"Hold Hotkey Listener für '{hk}' konnte nicht gestartet werden "
-                        "und wurde deaktiviert."
-                    )
-                    logger.error(msg)
-                    invalid_hotkeys.append(msg)
-                    try:
-                        virtual_key, modifier_mask = parse_hotkey(hk)
-                        decorated = quickHotKey(
-                            virtualKey=virtual_key, modifierMask=modifier_mask
-                        )(lambda: self._on_hotkey())  # type: ignore[arg-type]
-                        self._toggle_hotkey_handlers.append(decorated)
-                    except Exception:
-                        pass
-
-        if invalid_hotkeys:
-            try:
-                show_error_alert(
-                    "Ungültige Hotkey‑Konfiguration",
-                    "Ein oder mehrere Hotkeys konnten nicht aktiviert werden:\n\n"
-                    + "\n".join(f"- {m}" for m in invalid_hotkeys)
-                    + "\n\nÖffne Settings, um das zu korrigieren.",
-                )
-            except Exception:
-                pass
+        # Hotkeys registrieren (zentral, auch für Runtime-Reconfigure)
+        self._reconfigure_hotkeys(show_alerts=True)
 
         # FIX: Ctrl+C Support
         # 1. Dummy-Timer, damit der Python-Interpreter regelmäßig läuft und Signale prüft
