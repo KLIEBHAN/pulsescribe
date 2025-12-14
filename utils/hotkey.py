@@ -313,6 +313,25 @@ def _restore_clipboard_snapshot(snapshot) -> None:
         return
 
 
+def _copy_to_clipboard_native(text: str) -> bool:
+    """Kopiert Text direkt via NSPasteboard (in-process, kein Subprocess).
+
+    Dies ist wichtig für das Einfügen in eigene App-Fenster, da pbcopy (Subprocess)
+    den Clipboard-Update möglicherweise nicht sofort für NSTextView sichtbar macht.
+    """
+    try:
+        from AppKit import NSPasteboard, NSStringPboardType  # type: ignore[import-not-found]
+
+        pb = NSPasteboard.generalPasteboard()
+        pb.clearContents()
+        pb.setString_forType_(text, NSStringPboardType)
+        logger.debug(f"NSPasteboard: {len(text)} Zeichen kopiert")
+        return True
+    except Exception as e:
+        logger.warning(f"NSPasteboard-Kopieren fehlgeschlagen: {e}")
+        return False
+
+
 def paste_transcript(text: str) -> bool:
     """
     Kopiert Text in Clipboard und fügt via Cmd+V ein.
@@ -330,68 +349,50 @@ def paste_transcript(text: str) -> bool:
     """
     logger.info(f"Auto-Paste: '{text[:50]}{'...' if len(text) > 50 else ''}'")
 
-    # UTF-8 Environment für pbcopy/pbpaste (wichtig für Umlaute)
-    utf8_env = _get_utf8_env()
     clipboard_snapshot = _capture_clipboard_snapshot()
 
-    # 1. In Clipboard kopieren via pbcopy
-    try:
-        process = subprocess.run(
-            ["pbcopy"],
-            input=text.encode("utf-8"),
-            capture_output=True,
-            timeout=5,
-            env=utf8_env,
-        )
-        if process.returncode != 0:
-            logger.error(f"pbcopy fehlgeschlagen: {process.stderr.decode()}")
-            return False
-        logger.debug(f"pbcopy: {len(text)} Zeichen kopiert")
-    except subprocess.TimeoutExpired:
-        logger.error("pbcopy Timeout")
-        return False
-    except Exception as e:
-        logger.error(f"Clipboard-Fehler: {e}")
-        return False
-
-    # 2. Clipboard verifizieren via pbpaste
-    try:
-        result = subprocess.run(
-            ["pbpaste"],
-            capture_output=True,
-            timeout=5,
-            env=utf8_env,
-        )
-        clipboard_content = result.stdout.decode("utf-8")
-        if clipboard_content != text:
-            logger.warning(
-                f"Clipboard-Mismatch: erwartet {len(text)} Zeichen, "
-                f"bekommen {len(clipboard_content)} Zeichen"
+    # 1. In Clipboard kopieren via NSPasteboard (in-process, kein Subprocess)
+    # Dies ist wichtig für das Einfügen in eigene App-Fenster (z.B. Settings)
+    if not _copy_to_clipboard_native(text):
+        # Fallback zu pbcopy wenn NSPasteboard fehlschlägt
+        utf8_env = _get_utf8_env()
+        try:
+            process = subprocess.run(
+                ["pbcopy"],
+                input=text.encode("utf-8"),
+                capture_output=True,
+                timeout=5,
+                env=utf8_env,
             )
-        else:
-            logger.info(f"Clipboard verifiziert: {len(text)} Zeichen")
-    except Exception as e:
-        logger.warning(f"Clipboard-Verify fehlgeschlagen: {e}")
+            if process.returncode != 0:
+                logger.error(f"pbcopy fehlgeschlagen: {process.stderr.decode()}")
+                return False
+            logger.debug(f"pbcopy Fallback: {len(text)} Zeichen kopiert")
+            # Kurze Pause für Clipboard-Sync bei Subprocess-Fallback
+            time.sleep(0.1)
+        except subprocess.TimeoutExpired:
+            logger.error("pbcopy Timeout")
+            return False
+        except Exception as e:
+            logger.error(f"Clipboard-Fehler: {e}")
+            return False
 
-    # 3. Kurze Pause für Clipboard-Sync
-    time.sleep(0.1)
-
-    # 4. Cmd+V senden (verschiedene Methoden in Prioritätsreihenfolge)
+    # 2. Cmd+V senden (verschiedene Methoden in Prioritätsreihenfolge)
     pasted_ok = False
 
-    # 4a. pynput (Cross-Platform, bevorzugt)
+    # 2a. pynput (Cross-Platform, bevorzugt)
     if _paste_via_pynput():
         pasted_ok = True
 
-    # 4b. CGEventPost (Quartz)
+    # 2b. CGEventPost (Quartz)
     elif _paste_via_quartz():
         pasted_ok = True
 
-    # 4c. osascript (letzter Fallback)
+    # 2c. osascript (letzter Fallback)
     elif _paste_via_osascript():
         pasted_ok = True
 
-    # 5. Clipboard wiederherstellen (nur wenn Paste erfolgreich war).
+    # 3. Clipboard wiederherstellen (nur wenn Paste erfolgreich war).
     # Bei Fehlern bleibt der Text im Clipboard, damit User manuell CMD+V nutzen kann.
     if pasted_ok:
         time.sleep(0.2)

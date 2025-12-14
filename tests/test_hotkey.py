@@ -219,7 +219,9 @@ class TestMacOSHotkeyListenerSelection:
             raise AssertionError("pynput parser must not be used on macOS")
 
         monkeypatch.setattr(daemon, "_start_quartz_hotkey_listener", fake_quartz)
-        monkeypatch.setattr(WhisperDaemon, "_parse_pynput_hotkey", staticmethod(fake_parse))
+        monkeypatch.setattr(
+            WhisperDaemon, "_parse_pynput_hotkey", staticmethod(fake_parse)
+        )
 
         assert daemon._start_toggle_hotkey_listener("cmd+l") is True
         assert calls["quartz"] == 1
@@ -242,7 +244,9 @@ class TestMacOSHotkeyListenerSelection:
             raise AssertionError("pynput parser must not be used on macOS")
 
         monkeypatch.setattr(daemon, "_start_quartz_hotkey_listener", fake_quartz)
-        monkeypatch.setattr(WhisperDaemon, "_parse_pynput_hotkey", staticmethod(fake_parse))
+        monkeypatch.setattr(
+            WhisperDaemon, "_parse_pynput_hotkey", staticmethod(fake_parse)
+        )
 
         assert daemon._start_hold_hotkey_listener("cmd+l") is True
         assert calls["quartz"] == 1
@@ -258,33 +262,31 @@ class TestPasteTranscript:
     """Tests für paste_transcript() – Clipboard und Auto-Paste."""
 
     def test_paste_transcript_success(self, monkeypatch):
-        """Erfolgreicher Paste-Vorgang gibt True zurück."""
-        # Mock subprocess.run für pbcopy und pbpaste
-        call_log = []
+        """Erfolgreicher Paste-Vorgang via NSPasteboard gibt True zurück."""
+        native_calls = []
 
-        def mock_run(cmd, *args, **kwargs):
-            call_log.append(cmd)
-            result = subprocess.CompletedProcess(cmd, 0)
-            if cmd[0] == "pbpaste":
-                result.stdout = b"test text"
-            else:
-                result.stdout = b""
-            result.stderr = b""
-            return result
+        def mock_copy_native(text):
+            native_calls.append(text)
+            return True
 
-        monkeypatch.setattr(subprocess, "run", mock_run)
-
-        # Mock Quartz CGEventPost
-        with patch("utils.hotkey._capture_clipboard_snapshot", return_value=None), \
-             patch("utils.hotkey._restore_clipboard_snapshot"), \
-             patch("utils.hotkey._paste_via_pynput", return_value=False), \
-             patch("utils.hotkey._paste_via_quartz", return_value=True):  # Quartz success
-            
+        with (
+            patch("utils.hotkey._capture_clipboard_snapshot", return_value=None),
+            patch("utils.hotkey._restore_clipboard_snapshot"),
+            patch(
+                "utils.hotkey._copy_to_clipboard_native", side_effect=mock_copy_native
+            ),
+            patch("utils.hotkey._paste_via_pynput", return_value=False),
+            patch("utils.hotkey._paste_via_quartz", return_value=True),
+        ):
             result = utils.hotkey.paste_transcript("test text")
             assert result is True
 
+        # NSPasteboard wurde mit richtigem Text aufgerufen
+        assert native_calls == ["test text"]
+
     def test_paste_transcript_pbcopy_failure(self, monkeypatch):
-        """pbcopy-Fehler gibt False zurück."""
+        """pbcopy-Fehler (bei NSPasteboard-Fallback) gibt False zurück."""
+
         def mock_run(cmd, *args, **kwargs):
             result = subprocess.CompletedProcess(cmd, 1)
             result.stdout = b""
@@ -293,44 +295,52 @@ class TestPasteTranscript:
 
         monkeypatch.setattr(subprocess, "run", mock_run)
 
-        with patch("utils.hotkey._capture_clipboard_snapshot", return_value=None), \
-             patch("utils.hotkey._restore_clipboard_snapshot"):
+        # NSPasteboard fehlschlagen lassen, damit Fallback zu pbcopy geht
+        with (
+            patch("utils.hotkey._capture_clipboard_snapshot", return_value=None),
+            patch("utils.hotkey._restore_clipboard_snapshot"),
+            patch("utils.hotkey._copy_to_clipboard_native", return_value=False),
+        ):
             result = utils.hotkey.paste_transcript("test text")
         assert result is False
 
     def test_paste_transcript_timeout(self, monkeypatch):
-        """Timeout bei pbcopy gibt False zurück."""
+        """Timeout bei pbcopy (Fallback) gibt False zurück."""
+
         def mock_run(cmd, *args, **kwargs):
             raise subprocess.TimeoutExpired(cmd, 5)
 
         monkeypatch.setattr(subprocess, "run", mock_run)
 
-        with patch("utils.hotkey._capture_clipboard_snapshot", return_value=None), \
-             patch("utils.hotkey._restore_clipboard_snapshot"):
+        # NSPasteboard fehlschlagen lassen, damit Fallback zu pbcopy geht
+        with (
+            patch("utils.hotkey._capture_clipboard_snapshot", return_value=None),
+            patch("utils.hotkey._restore_clipboard_snapshot"),
+            patch("utils.hotkey._copy_to_clipboard_native", return_value=False),
+        ):
             result = utils.hotkey.paste_transcript("test text")
         assert result is False
 
     def test_paste_transcript_empty_text(self, monkeypatch):
         """Leerer Text wird korrekt behandelt."""
-        call_log = []
+        native_calls = []
 
-        def mock_run(cmd, *args, **kwargs):
-            call_log.append((cmd, kwargs.get("input")))
-            result = subprocess.CompletedProcess(cmd, 0)
-            result.stdout = b""
-            result.stderr = b""
-            return result
+        def mock_copy_native(text):
+            native_calls.append(text)
+            return True
 
-        monkeypatch.setattr(subprocess, "run", mock_run)
+        with (
+            patch("utils.hotkey._capture_clipboard_snapshot", return_value=None),
+            patch("utils.hotkey._restore_clipboard_snapshot"),
+            patch(
+                "utils.hotkey._copy_to_clipboard_native", side_effect=mock_copy_native
+            ),
+            patch("utils.hotkey._paste_via_pynput", return_value=True),
+        ):
+            utils.hotkey.paste_transcript("")
 
-        # Mock Quartz etc success
-        with patch("utils.hotkey._capture_clipboard_snapshot", return_value=None), \
-             patch("utils.hotkey._restore_clipboard_snapshot"), \
-             patch("utils.hotkey._paste_via_pynput", return_value=True):
-             utils.hotkey.paste_transcript("")
-        
         # Leerer Text sollte trotzdem verarbeitet werden
-        assert any(cmd[0] == "pbcopy" for cmd, _ in call_log)
+        assert native_calls == [""]
 
 
 # =============================================================================
@@ -343,6 +353,7 @@ class TestPasteViaOsascript:
 
     def test_osascript_success(self, monkeypatch):
         """Erfolgreicher osascript-Aufruf gibt True zurück."""
+
         def mock_run(cmd, *args, **kwargs):
             result = subprocess.CompletedProcess(cmd, 0)
             result.stdout = ""
@@ -356,6 +367,7 @@ class TestPasteViaOsascript:
 
     def test_osascript_failure(self, monkeypatch):
         """Fehlgeschlagener osascript-Aufruf gibt False zurück."""
+
         def mock_run(cmd, *args, **kwargs):
             result = subprocess.CompletedProcess(cmd, 1)
             result.stdout = ""
