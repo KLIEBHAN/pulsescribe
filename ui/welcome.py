@@ -2674,23 +2674,29 @@ class WelcomeController:
             existing_prompt = existing["prompts"].get(ctx, {}).get("prompt", "")
             cached_prompt = self._prompts_cache.get(ctx)
 
-            # Priorität: Session-Cache > Existierend > Default
-            if cached_prompt is not None and cached_prompt != default_prompt:
-                merged_prompts[ctx] = {"prompt": cached_prompt}
+            if cached_prompt is not None:
+                # User hat diesen Kontext in dieser Session bearbeitet
+                if cached_prompt != default_prompt:
+                    merged_prompts[ctx] = {"prompt": cached_prompt}
+                # else: User hat auf Default zurückgesetzt → nicht speichern
             elif existing_prompt != default_prompt:
-                # Existierenden Custom-Prompt beibehalten
+                # User hat diesen Kontext nicht angefasst → existierenden behalten
                 merged_prompts[ctx] = {"prompt": existing_prompt}
 
-        # Voice Commands: Session > Existierend > Default
+        # Voice Commands: gleiche Logik
         merged_vc: dict = {}
         vc_key = "── Voice Commands"
         cached_vc = self._prompts_cache.get(vc_key)
         default_vc = defaults["voice_commands"]["instruction"]
         existing_vc = existing["voice_commands"]["instruction"]
 
-        if cached_vc is not None and cached_vc != default_vc:
-            merged_vc = {"instruction": cached_vc}
+        if cached_vc is not None:
+            # User hat Voice Commands in dieser Session bearbeitet
+            if cached_vc != default_vc:
+                merged_vc = {"instruction": cached_vc}
+            # else: User hat auf Default zurückgesetzt → nicht speichern
         elif existing_vc != default_vc:
+            # User hat nicht angefasst → existierenden behalten
             merged_vc = {"instruction": existing_vc}
 
         # App Mappings: Session > Existierend > Default
@@ -2707,8 +2713,9 @@ class WelcomeController:
         elif existing_apps != default_apps:
             merged_app_contexts = existing_apps
 
-        # Nur speichern wenn es Custom-Werte gibt
+        # Speichern oder Datei löschen
         if merged_prompts or merged_vc or merged_app_contexts:
+            # Es gibt Custom-Werte → speichern
             data_to_save: dict = {}
             if merged_prompts:
                 data_to_save["prompts"] = merged_prompts
@@ -2737,6 +2744,14 @@ class WelcomeController:
                     and self._prompts_status_label
                 ):
                     self._prompts_status_label.setStringValue_(f"Error: {e}")
+        else:
+            # Alles auf Default → Datei löschen falls vorhanden
+            from utils.custom_prompts import reset_to_defaults
+
+            reset_to_defaults()
+            log.info("All prompts reset to defaults, removed prompts.toml")
+            if hasattr(self, "_prompts_status_label") and self._prompts_status_label:
+                self._prompts_status_label.setStringValue_("✓ Reset to defaults")
 
     def _restart_application(self) -> None:
         """Speichert Settings und startet die Applikation neu."""
