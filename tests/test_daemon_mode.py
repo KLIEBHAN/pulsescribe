@@ -1,24 +1,14 @@
-import unittest
-from unittest.mock import MagicMock, patch
-import threading
 import os
 import sys
-from pathlib import Path
-
-# Add project root to path
-sys.path.append(str(Path(__file__).parent.parent))
+import threading
+import unittest
+from unittest.mock import MagicMock, patch
 
 from whisper_daemon import WhisperDaemon
 from utils.state import AppState, DaemonMessage, MessageType
 
 
 class TestDaemonMode(unittest.TestCase):
-    def setUp(self):
-        pass
-
-    def tearDown(self):
-        pass
-
     @patch("whisper_daemon.threading.Thread")
     def test_start_recording_openai_mode(self, mock_thread_cls):
         """Test that OpenAI mode starts recording worker, not streaming."""
@@ -440,7 +430,3 @@ class TestTestDictation(unittest.TestCase):
 
         self.assertTrue(daemon._test_run_active)
         self.assertEqual(daemon._test_run_callback, callback)
-
-
-if __name__ == "__main__":
-    unittest.main()

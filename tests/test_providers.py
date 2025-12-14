@@ -7,33 +7,18 @@ import pytest
 class TestProviderFactory:
     """Tests für Provider-Factory."""
 
-    def test_get_provider_openai(self):
-        """OpenAI Provider wird korrekt erstellt."""
-        from providers import get_provider
-        provider = get_provider("openai")
-        assert provider.name == "openai"
-        assert provider.default_model == "gpt-4o-transcribe"
+    @pytest.mark.parametrize(
+        "mode",
+        ["openai", "deepgram", "groq", "local"],
+        ids=["openai", "deepgram", "groq", "local"],
+    )
+    def test_get_provider_has_default_model(self, mode: str):
+        """Provider wird erstellt und liefert ein Default-Model aus DEFAULT_MODELS."""
+        from providers import DEFAULT_MODELS, get_provider
 
-    def test_get_provider_deepgram(self):
-        """Deepgram Provider wird korrekt erstellt."""
-        from providers import get_provider
-        provider = get_provider("deepgram")
-        assert provider.name == "deepgram"
-        assert provider.default_model == "nova-3"
-
-    def test_get_provider_groq(self):
-        """Groq Provider wird korrekt erstellt."""
-        from providers import get_provider
-        provider = get_provider("groq")
-        assert provider.name == "groq"
-        assert provider.default_model == "whisper-large-v3"
-
-    def test_get_provider_local(self):
-        """Local Provider wird korrekt erstellt."""
-        from providers import get_provider
-        provider = get_provider("local")
-        assert provider.name == "local"
-        assert provider.default_model == "turbo"
+        provider = get_provider(mode)
+        assert provider.name == mode
+        assert provider.default_model == DEFAULT_MODELS[mode]
 
     def test_get_provider_unknown_raises(self):
         """Unbekannter Provider wirft ValueError."""

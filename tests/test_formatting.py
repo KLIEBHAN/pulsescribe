@@ -2,7 +2,7 @@
 
 import pytest
 
-from transcribe import _format_duration, _log_preview
+from utils.timing import format_duration, log_preview
 
 
 class TestFormatDuration:
@@ -33,7 +33,7 @@ class TestFormatDuration:
     )
     def test_format_duration(self, ms, expected):
         """Verschiedene Dauern werden korrekt formatiert."""
-        assert _format_duration(ms) == expected
+        assert format_duration(ms) == expected
 
 
 class TestLogPreview:
@@ -60,4 +60,4 @@ class TestLogPreview:
     )
     def test_log_preview(self, text, max_length, expected):
         """Verschiedene Texte werden korrekt gekürzt."""
-        assert _log_preview(text, max_length) == expected
+        assert log_preview(text, max_length) == expected
