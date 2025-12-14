@@ -30,6 +30,7 @@ jobs:
       - name: Summarize coverage (GitHub)
         run: |
           python - <<'PY'
+          import fnmatch
           import os
           import pathlib
           import xml.etree.ElementTree as ET
@@ -50,11 +51,33 @@ jobs:
           lines_covered = root.attrib.get("lines-covered", "?")
           branches_valid = root.attrib.get("branches-valid", "?")
           branches_covered = root.attrib.get("branches-covered", "?")
+
+          core_excludes = [
+              "ui/**",
+              "whisper_daemon.py",
+              "whisper_platform/**",
+          ]
+
+          def is_core_file(filename: str) -> bool:
+              return not any(fnmatch.fnmatch(filename, pat) for pat in core_excludes)
+
+          core_lines_valid = 0
+          core_lines_covered = 0
+          for cls in root.findall(".//class"):
+              filename = cls.attrib.get("filename", "")
+              if not filename or not is_core_file(filename):
+                  continue
+              lines = cls.findall("./lines/line")
+              core_lines_valid += len(lines)
+              core_lines_covered += sum(1 for ln in lines if int(ln.attrib.get("hits", "0")) > 0)
+          core_pct = (core_lines_covered / core_lines_valid * 100.0) if core_lines_valid else 0.0
           
           summary = (
               "## Test Coverage\n\n"
-              f"- Lines: **{line_pct:.1f}%** ({lines_covered}/{lines_valid})\n"
+              f"- Lines (total): **{line_pct:.1f}%** ({lines_covered}/{lines_valid})\n"
+              f"- Lines (core): **{core_pct:.1f}%** ({core_lines_covered}/{core_lines_valid})\n"
               f"- Branches: **{branch_pct:.1f}%** ({branches_covered}/{branches_valid})\n"
+              f"\nCore excludes: `{', '.join(core_excludes)}`\n"
           )
           
           summary_path = pathlib.Path(os.environ["GITHUB_STEP_SUMMARY"])
