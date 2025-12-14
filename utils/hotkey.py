@@ -349,8 +349,6 @@ def paste_transcript(text: str) -> bool:
     """
     logger.info(f"Auto-Paste: '{text[:50]}{'...' if len(text) > 50 else ''}'")
 
-    clipboard_snapshot = _capture_clipboard_snapshot()
-
     # 1. In Clipboard kopieren via NSPasteboard (in-process, kein Subprocess)
     # Dies ist wichtig für das Einfügen in eigene App-Fenster (z.B. Settings)
     if not _copy_to_clipboard_native(text):
@@ -392,15 +390,11 @@ def paste_transcript(text: str) -> bool:
     elif _paste_via_osascript():
         pasted_ok = True
 
-    # 3. Clipboard wiederherstellen (nur wenn Paste erfolgreich war).
-    # Bei Fehlern bleibt der Text im Clipboard, damit User manuell CMD+V nutzen kann.
-    if pasted_ok:
-        # Längere Verzögerung für In-App TextViews (z.B. Settings-Fenster).
-        # Bei kürzerer Verzögerung kann der alte Clipboard-Inhalt wiederhergestellt
-        # werden, BEVOR das CMD+V Event vom NSTextView verarbeitet wurde.
-        time.sleep(1.0)
-        _restore_clipboard_snapshot(clipboard_snapshot)
-        return True
+    # 3. Ergebnis zurückgeben
+    # Clipboard-Restore deaktiviert: Verursacht Race-Condition bei In-App TextViews,
+    # wo der alte Inhalt eingefügt wird statt der Transkription.
+    # Der transkribierte Text bleibt im Clipboard - das ist akzeptables Verhalten.
+    return pasted_ok
 
     logger.error(
         "Auto-Paste fehlgeschlagen (alle 3 Methoden). "
