@@ -1347,7 +1347,9 @@ class WelcomeController:
         import objc  # type: ignore[import-not-found]
 
         from utils.custom_prompts import (
+            get_custom_app_contexts,
             get_custom_prompt_for_context,
+            get_custom_voice_commands,
             get_defaults,
         )
 
@@ -1407,10 +1409,18 @@ class WelcomeController:
         parent_view.addSubview_(context_label)
 
         context_popup = NSPopUpButton.alloc().initWithFrame_(
-            NSMakeRect(base_x + 65, row_y, 120, 22)
+            NSMakeRect(base_x + 65, row_y, 140, 22)
         )
         context_popup.setFont_(NSFont.systemFontOfSize_(11))
-        for ctx in ["default", "email", "chat", "code"]:
+        # 4 Kontexte + Voice Commands + App Mappings
+        for ctx in [
+            "default",
+            "email",
+            "chat",
+            "code",
+            "── Voice Commands",
+            "── App Mappings",
+        ]:
             context_popup.addItemWithTitle_(ctx)
         parent_view.addSubview_(context_popup)
         self._prompts_context_popup = context_popup
@@ -1461,18 +1471,20 @@ class WelcomeController:
         parent_view.addSubview_(scroll)
         self._prompts_text_view = text_view
 
-        # Voice-Commands Label
-        vc_label = NSTextField.alloc().initWithFrame_(
+        # Hinweis-Label
+        hint_label = NSTextField.alloc().initWithFrame_(
             NSMakeRect(base_x, card_y + 54, content_width, 14)
         )
-        vc_label.setStringValue_("Voice Commands (prepended to all prompts):")
-        vc_label.setBezeled_(False)
-        vc_label.setDrawsBackground_(False)
-        vc_label.setEditable_(False)
-        vc_label.setSelectable_(False)
-        vc_label.setFont_(NSFont.systemFontOfSize_weight_(10, NSFontWeightMedium))
-        vc_label.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6))
-        parent_view.addSubview_(vc_label)
+        hint_label.setStringValue_(
+            "💡 Use dropdown to edit Voice Commands or App Mappings"
+        )
+        hint_label.setBezeled_(False)
+        hint_label.setDrawsBackground_(False)
+        hint_label.setEditable_(False)
+        hint_label.setSelectable_(False)
+        hint_label.setFont_(NSFont.systemFontOfSize_weight_(10, NSFontWeightMedium))
+        hint_label.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.5))
+        parent_view.addSubview_(hint_label)
 
         # Status-Label
         status_label = NSTextField.alloc().initWithFrame_(
@@ -1492,6 +1504,32 @@ class WelcomeController:
         self._prompts_cache: dict[str, str] = {}
         self._prompts_current_context = "default"
 
+        # Helper: App Mappings als Text formatieren
+        def _format_app_mappings(mappings: dict[str, str]) -> str:
+            """Formatiert App-Mappings als editierbaren Text."""
+            lines = ["# App → Context Mappings (one per line: AppName = context)"]
+            for app, ctx in sorted(mappings.items()):
+                lines.append(f"{app} = {ctx}")
+            return "\n".join(lines)
+
+        def _parse_app_mappings(text: str) -> dict[str, str]:
+            """Parsed App-Mappings aus Text."""
+            result = {}
+            for line in text.strip().split("\n"):
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    app, ctx = line.split("=", 1)
+                    app = app.strip().strip('"')
+                    ctx = ctx.strip().strip('"')
+                    if app and ctx:
+                        result[app] = ctx
+            return result
+
+        # Parser als Attribut speichern für _save_custom_prompts
+        self._parse_app_mappings = _parse_app_mappings
+
         # Action Handlers
         def on_context_change(_sender) -> None:
             # Aktuellen Prompt speichern
@@ -1505,6 +1543,14 @@ class WelcomeController:
             # Aus Cache oder frisch laden
             if new_ctx in self._prompts_cache:
                 self._prompts_text_view.setString_(self._prompts_cache[new_ctx])
+            elif new_ctx == "── Voice Commands":
+                # Voice Commands laden
+                vc = get_custom_voice_commands()
+                self._prompts_text_view.setString_(vc)
+            elif new_ctx == "── App Mappings":
+                # App Mappings als Text laden
+                mappings = get_custom_app_contexts()
+                self._prompts_text_view.setString_(_format_app_mappings(mappings))
             else:
                 prompt = get_custom_prompt_for_context(new_ctx)
                 self._prompts_text_view.setString_(prompt)
@@ -1512,10 +1558,25 @@ class WelcomeController:
         def on_reset(_sender) -> None:
             ctx = str(self._prompts_context_popup.titleOfSelectedItem())
             defaults = get_defaults()
-            default_prompt = defaults["prompts"].get(ctx, {}).get("prompt", "")
-            self._prompts_text_view.setString_(default_prompt)
-            self._prompts_cache[ctx] = default_prompt
-            self._prompts_status_label.setStringValue_(f"Reset '{ctx}' to default")
+
+            if ctx == "── Voice Commands":
+                # Voice Commands auf Default zurücksetzen
+                default_vc = defaults["voice_commands"]["instruction"]
+                self._prompts_text_view.setString_(default_vc)
+                self._prompts_cache[ctx] = default_vc
+                self._prompts_status_label.setStringValue_("Reset Voice Commands")
+            elif ctx == "── App Mappings":
+                # App Mappings auf Default zurücksetzen
+                default_mappings = defaults["app_contexts"]
+                text = _format_app_mappings(default_mappings)
+                self._prompts_text_view.setString_(text)
+                self._prompts_cache[ctx] = text
+                self._prompts_status_label.setStringValue_("Reset App Mappings")
+            else:
+                default_prompt = defaults["prompts"].get(ctx, {}).get("prompt", "")
+                self._prompts_text_view.setString_(default_prompt)
+                self._prompts_cache[ctx] = default_prompt
+                self._prompts_status_label.setStringValue_(f"Reset '{ctx}' to default")
 
         # Handler-Klasse für ObjC
         class _PromptsActionHandler(objc.lookUpClass("NSObject")):
@@ -2606,7 +2667,7 @@ class WelcomeController:
             )
 
     def _save_custom_prompts(self) -> None:
-        """Speichert Custom Prompts in prompts.toml."""
+        """Speichert Custom Prompts und Voice Commands in prompts.toml."""
         import logging
 
         from utils.custom_prompts import (
@@ -2638,11 +2699,42 @@ class WelcomeController:
             if cached_prompt is not None and cached_prompt != default_prompt:
                 changed_prompts[ctx] = {"prompt": cached_prompt}
 
+        # Voice Commands prüfen
+        changed_vc: dict = {}
+        vc_key = "── Voice Commands"
+        cached_vc = self._prompts_cache.get(vc_key)
+        default_vc = defaults["voice_commands"]["instruction"]
+        if cached_vc is not None and cached_vc != default_vc:
+            changed_vc = {"instruction": cached_vc}
+
+        # App Mappings prüfen
+        changed_app_contexts: dict = {}
+        app_key = "── App Mappings"
+        cached_apps = self._prompts_cache.get(app_key)
+        if cached_apps is not None and hasattr(self, "_parse_app_mappings"):
+            parsed_apps = self._parse_app_mappings(cached_apps)
+            default_apps = defaults["app_contexts"]
+            if parsed_apps != default_apps:
+                changed_app_contexts = parsed_apps
+
         # Nur speichern wenn es Änderungen gibt
-        if changed_prompts:
+        if changed_prompts or changed_vc or changed_app_contexts:
+            data_to_save: dict = {}
+            if changed_prompts:
+                data_to_save["prompts"] = changed_prompts
+            if changed_vc:
+                data_to_save["voice_commands"] = changed_vc
+            if changed_app_contexts:
+                data_to_save["app_contexts"] = changed_app_contexts
+
             try:
-                save_custom_prompts({"prompts": changed_prompts})
-                log.info(f"Saved custom prompts for: {list(changed_prompts.keys())}")
+                save_custom_prompts(data_to_save)
+                saved_items = list(changed_prompts.keys())
+                if changed_vc:
+                    saved_items.append("Voice Commands")
+                if changed_app_contexts:
+                    saved_items.append("App Mappings")
+                log.info(f"Saved custom prompts for: {saved_items}")
                 if (
                     hasattr(self, "_prompts_status_label")
                     and self._prompts_status_label

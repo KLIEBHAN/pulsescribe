@@ -10,6 +10,16 @@ from refine.prompts import (
 )
 
 
+@pytest.fixture(autouse=True)
+def clean_custom_prompts_state(tmp_path, monkeypatch):
+    """Stellt sicher, dass Tests Defaults verwenden, nicht User-Dateien."""
+    import utils.custom_prompts as cp
+
+    # Auf nicht-existierenden Pfad zeigen → Defaults werden verwendet
+    monkeypatch.setattr(cp, "PROMPTS_FILE", tmp_path / "prompts.toml")
+    cp._clear_cache()
+
+
 class TestGetPromptForContext:
     """Tests für get_prompt_for_context() - Prompt-Lookup mit Fallback."""
 
@@ -53,9 +63,7 @@ class TestVoiceCommands:
         assert "new paragraph" in VOICE_COMMANDS_INSTRUCTION  # Englisch
         assert len(VOICE_COMMANDS_INSTRUCTION) > 100  # Sinnvoller Inhalt
 
-
     def test_voice_commands_prepended(self):
         """Voice-Commands werden am Anfang des Prompts eingefügt."""
         result = get_prompt_for_context("default")
         assert result.startswith(VOICE_COMMANDS_INSTRUCTION)
-

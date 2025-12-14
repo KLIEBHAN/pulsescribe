@@ -159,6 +159,19 @@ def get_custom_app_contexts() -> dict[str, str]:
     return data.get("app_contexts", dict(DEFAULT_APP_CONTEXTS))
 
 
+def _escape_toml_multiline(text: str) -> str:
+    """Escaped Text für TOML multi-line basic strings.
+
+    In TOML multi-line basic strings (\"\"\"...\"\"\":
+    - Backslashes müssen escaped werden: \\ → \\\\
+    - Triple-Quotes müssen escaped werden: \"\"\" → \\\"\"\"
+    """
+    # Erst Backslashes escapen, dann Triple-Quotes
+    text = text.replace("\\", "\\\\")
+    text = text.replace('"""', '\\"""')
+    return text
+
+
 def save_custom_prompts(data: dict, path: Path | None = None) -> None:
     """Speichert Custom Prompts als TOML.
 
@@ -174,8 +187,8 @@ def save_custom_prompts(data: dict, path: Path | None = None) -> None:
     # Voice Commands
     if "voice_commands" in data and "instruction" in data["voice_commands"]:
         lines.append("[voice_commands]")
-        instruction = data["voice_commands"]["instruction"]
-        lines.append(f'instruction = """\n{instruction}\n"""')
+        instruction = _escape_toml_multiline(data["voice_commands"]["instruction"])
+        lines.append(f'instruction = """\n{instruction}"""')
         lines.append("")
 
     # Prompts
@@ -183,8 +196,8 @@ def save_custom_prompts(data: dict, path: Path | None = None) -> None:
         for context, cfg in data["prompts"].items():
             if "prompt" in cfg:
                 lines.append(f"[prompts.{context}]")
-                prompt = cfg["prompt"]
-                lines.append(f'prompt = """\n{prompt}\n"""')
+                prompt = _escape_toml_multiline(cfg["prompt"])
+                lines.append(f'prompt = """\n{prompt}"""')
                 lines.append("")
 
     # App Contexts

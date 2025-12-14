@@ -1,22 +1,8 @@
-"""Tests für Custom Prompts - TOML-basierte Prompt-Konfiguration.
-
-TDD: Diese Tests werden zuerst geschrieben, bevor die Implementierung erfolgt.
-"""
+"""Tests für Custom Prompts - TOML-basierte Prompt-Konfiguration."""
 
 import tomllib
 
 import pytest
-
-# Imports werden später hinzugefügt, wenn das Modul existiert
-# from utils.custom_prompts import (
-#     load_custom_prompts,
-#     get_custom_prompt_for_context,
-#     get_custom_voice_commands,
-#     get_custom_app_contexts,
-#     save_custom_prompts,
-#     reset_to_defaults,
-#     get_defaults,
-# )
 
 from refine.prompts import (
     CONTEXT_PROMPTS,
@@ -27,9 +13,20 @@ from refine.prompts import (
 
 @pytest.fixture
 def prompts_file(tmp_path, monkeypatch):
-    """Fixture: Temporäre prompts.toml für isolierte Tests."""
+    """Fixture: Temporäre prompts.toml für isolierte Tests.
+
+    - Patcht automatisch PROMPTS_FILE auf tmp_path
+    - Leert Cache vor jedem Test
+    - Kein manuelles try/finally mehr nötig
+    """
     prompts_path = tmp_path / "prompts.toml"
-    # Patch des Moduls erfolgt nach Import
+
+    # Import und Patch
+    import utils.custom_prompts as cp
+
+    monkeypatch.setattr(cp, "PROMPTS_FILE", prompts_path)
+    cp._clear_cache()
+
     return prompts_path
 
 
@@ -115,9 +112,7 @@ prompt = """Mein Custom Email Prompt."""
 
     def test_cache_invalidation_on_mtime_change(self, prompts_file):
         """Reload bei Datei-Änderung (mtime-basierter Cache)."""
-        from utils.custom_prompts import load_custom_prompts, _clear_cache
-
-        _clear_cache()
+        from utils.custom_prompts import load_custom_prompts
 
         # Erste Version
         prompts_file.write_text(
@@ -148,9 +143,8 @@ class TestGetCustomPromptForContext:
 
     def test_returns_custom_prompt(self, prompts_file):
         """Custom Prompt hat Priorität über Default."""
-        from utils.custom_prompts import get_custom_prompt_for_context, _clear_cache
+        from utils.custom_prompts import get_custom_prompt_for_context
 
-        _clear_cache()
         prompts_file.write_text(
             '''
 [prompts.email]
@@ -158,23 +152,13 @@ prompt = """Mein Email Prompt."""
 '''
         )
 
-        # Monkeypatch für den Default-Pfad nötig
-        import utils.custom_prompts as cp
-
-        original = cp.PROMPTS_FILE
-        cp.PROMPTS_FILE = prompts_file
-
-        try:
-            result = get_custom_prompt_for_context("email")
-            assert "Mein Email Prompt" in result
-        finally:
-            cp.PROMPTS_FILE = original
+        result = get_custom_prompt_for_context("email")
+        assert "Mein Email Prompt" in result
 
     def test_falls_back_to_default_for_missing_context(self, prompts_file):
         """Fehlender Custom-Kontext fällt auf Hardcoded Default zurück."""
-        from utils.custom_prompts import get_custom_prompt_for_context, _clear_cache
+        from utils.custom_prompts import get_custom_prompt_for_context
 
-        _clear_cache()
         prompts_file.write_text(
             '''
 [prompts.email]
@@ -182,34 +166,17 @@ prompt = """Nur Email custom."""
 '''
         )
 
-        import utils.custom_prompts as cp
-
-        original = cp.PROMPTS_FILE
-        cp.PROMPTS_FILE = prompts_file
-
-        try:
-            # chat ist nicht custom → Default
-            result = get_custom_prompt_for_context("chat")
-            assert result == CONTEXT_PROMPTS["chat"]
-        finally:
-            cp.PROMPTS_FILE = original
+        # chat ist nicht custom → Default
+        result = get_custom_prompt_for_context("chat")
+        assert result == CONTEXT_PROMPTS["chat"]
 
     def test_unknown_context_returns_default(self, prompts_file):
         """Unbekannter Kontext gibt 'default' Prompt zurück."""
-        from utils.custom_prompts import get_custom_prompt_for_context, _clear_cache
+        from utils.custom_prompts import get_custom_prompt_for_context
 
-        _clear_cache()
-
-        import utils.custom_prompts as cp
-
-        original = cp.PROMPTS_FILE
-        cp.PROMPTS_FILE = prompts_file
-
-        try:
-            result = get_custom_prompt_for_context("unknown_context")
-            assert result == CONTEXT_PROMPTS["default"]
-        finally:
-            cp.PROMPTS_FILE = original
+        # Keine Datei → Defaults, unbekannter Kontext → default
+        result = get_custom_prompt_for_context("unknown_context")
+        assert result == CONTEXT_PROMPTS["default"]
 
 
 class TestGetCustomVoiceCommands:
@@ -217,9 +184,8 @@ class TestGetCustomVoiceCommands:
 
     def test_returns_custom_voice_commands(self, prompts_file):
         """Custom Voice-Commands werden geladen."""
-        from utils.custom_prompts import get_custom_voice_commands, _clear_cache
+        from utils.custom_prompts import get_custom_voice_commands
 
-        _clear_cache()
         prompts_file.write_text(
             '''
 [voice_commands]
@@ -227,34 +193,16 @@ instruction = """Meine Custom Voice Commands."""
 '''
         )
 
-        import utils.custom_prompts as cp
-
-        original = cp.PROMPTS_FILE
-        cp.PROMPTS_FILE = prompts_file
-
-        try:
-            result = get_custom_voice_commands()
-            assert "Meine Custom Voice Commands" in result
-        finally:
-            cp.PROMPTS_FILE = original
+        result = get_custom_voice_commands()
+        assert "Meine Custom Voice Commands" in result
 
     def test_falls_back_to_default_voice_commands(self, prompts_file):
         """Ohne Custom Voice-Commands → Hardcoded Default."""
-        from utils.custom_prompts import get_custom_voice_commands, _clear_cache
+        from utils.custom_prompts import get_custom_voice_commands
 
-        _clear_cache()
         # Datei existiert nicht → Default
-
-        import utils.custom_prompts as cp
-
-        original = cp.PROMPTS_FILE
-        cp.PROMPTS_FILE = prompts_file
-
-        try:
-            result = get_custom_voice_commands()
-            assert result == VOICE_COMMANDS_INSTRUCTION
-        finally:
-            cp.PROMPTS_FILE = original
+        result = get_custom_voice_commands()
+        assert result == VOICE_COMMANDS_INSTRUCTION
 
 
 class TestGetCustomAppContexts:
@@ -262,9 +210,8 @@ class TestGetCustomAppContexts:
 
     def test_returns_merged_app_contexts(self, prompts_file):
         """Custom App-Mappings werden mit Defaults gemergt."""
-        from utils.custom_prompts import get_custom_app_contexts, _clear_cache
+        from utils.custom_prompts import get_custom_app_contexts
 
-        _clear_cache()
         prompts_file.write_text(
             """
 [app_contexts]
@@ -273,38 +220,21 @@ Mail = "chat"
 """
         )
 
-        import utils.custom_prompts as cp
-
-        original = cp.PROMPTS_FILE
-        cp.PROMPTS_FILE = prompts_file
-
-        try:
-            result = get_custom_app_contexts()
-            # Custom App hinzugefügt
-            assert result["CustomApp"] == "email"
-            # Mail überschrieben (war "email" im Default)
-            assert result["Mail"] == "chat"
-            # Andere Defaults erhalten
-            assert result["Slack"] == "chat"
-        finally:
-            cp.PROMPTS_FILE = original
+        result = get_custom_app_contexts()
+        # Custom App hinzugefügt
+        assert result["CustomApp"] == "email"
+        # Mail überschrieben (war "email" im Default)
+        assert result["Mail"] == "chat"
+        # Andere Defaults erhalten
+        assert result["Slack"] == "chat"
 
     def test_falls_back_to_defaults_when_no_file(self, prompts_file):
         """Ohne Datei → Hardcoded Defaults."""
-        from utils.custom_prompts import get_custom_app_contexts, _clear_cache
+        from utils.custom_prompts import get_custom_app_contexts
 
-        _clear_cache()
-
-        import utils.custom_prompts as cp
-
-        original = cp.PROMPTS_FILE
-        cp.PROMPTS_FILE = prompts_file
-
-        try:
-            result = get_custom_app_contexts()
-            assert result == DEFAULT_APP_CONTEXTS
-        finally:
-            cp.PROMPTS_FILE = original
+        # Datei existiert nicht → Default
+        result = get_custom_app_contexts()
+        assert result == DEFAULT_APP_CONTEXTS
 
 
 class TestSaveCustomPrompts:
@@ -312,12 +242,7 @@ class TestSaveCustomPrompts:
 
     def test_save_creates_valid_toml(self, prompts_file):
         """Speichern erstellt gültiges TOML."""
-        from utils.custom_prompts import (
-            save_custom_prompts,
-            _clear_cache,
-        )
-
-        _clear_cache()
+        from utils.custom_prompts import save_custom_prompts
 
         data = {
             "voice_commands": {"instruction": "Meine Voice Commands."},
@@ -341,13 +266,7 @@ class TestSaveCustomPrompts:
 
     def test_save_then_load_roundtrip(self, prompts_file):
         """Gespeicherte Daten können wieder geladen werden."""
-        from utils.custom_prompts import (
-            save_custom_prompts,
-            load_custom_prompts,
-            _clear_cache,
-        )
-
-        _clear_cache()
+        from utils.custom_prompts import save_custom_prompts, load_custom_prompts
 
         original_data = {
             "voice_commands": {"instruction": "Test Voice Commands."},
@@ -358,12 +277,45 @@ class TestSaveCustomPrompts:
         }
 
         save_custom_prompts(original_data, path=prompts_file)
-        _clear_cache()
         loaded = load_custom_prompts(path=prompts_file)
 
         assert "Test Voice Commands" in loaded["voice_commands"]["instruction"]
         assert "Chat Prompt mit Umlauten" in loaded["prompts"]["chat"]["prompt"]
         assert loaded["app_contexts"]["Test App"] == "email"
+
+    def test_save_escapes_triple_quotes(self, prompts_file):
+        """Triple-Quotes im Prompt werden korrekt escaped."""
+        from utils.custom_prompts import save_custom_prompts, load_custom_prompts
+
+        # Prompt mit Triple-Quotes (würde TOML brechen ohne Escaping)
+        tricky_prompt = 'Hier sind Triple-Quotes: """ und noch mehr Text.'
+
+        save_custom_prompts(
+            {"prompts": {"default": {"prompt": tricky_prompt}}},
+            path=prompts_file,
+        )
+
+        # Datei muss valides TOML sein
+        loaded = load_custom_prompts(path=prompts_file)
+
+        # Prompt muss exakt erhalten bleiben
+        assert loaded["prompts"]["default"]["prompt"] == tricky_prompt
+
+    def test_save_escapes_backslashes(self, prompts_file):
+        """Backslashes im Prompt werden korrekt escaped."""
+        from utils.custom_prompts import save_custom_prompts, load_custom_prompts
+
+        # Prompt mit Backslashes (Windows-Pfade, Escape-Sequenzen)
+        tricky_prompt = "Pfad: C:\\Users\\Test und \\n bleibt \\n"
+
+        save_custom_prompts(
+            {"prompts": {"email": {"prompt": tricky_prompt}}},
+            path=prompts_file,
+        )
+
+        loaded = load_custom_prompts(path=prompts_file)
+
+        assert loaded["prompts"]["email"]["prompt"] == tricky_prompt
 
 
 class TestResetToDefaults:
@@ -389,10 +341,7 @@ class TestResetToDefaults:
             reset_to_defaults,
             save_custom_prompts,
             load_custom_prompts,
-            _clear_cache,
         )
-
-        _clear_cache()
 
         # Custom Prompt speichern
         save_custom_prompts(
