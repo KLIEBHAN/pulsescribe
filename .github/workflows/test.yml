@@ -16,7 +16,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install dependencies
         run: |
@@ -25,11 +25,54 @@ jobs:
           pip install -r requirements-dev.txt
 
       - name: Run tests with coverage
-        run: pytest --cov --cov-report=xml --cov-report=term
+        run: pytest --cov=. --cov-report=xml --cov-report=term-missing
+
+      - name: Summarize coverage (GitHub)
+        run: |
+          python - <<'PY'
+          import os
+          import pathlib
+          import xml.etree.ElementTree as ET
+          
+          coverage_path = pathlib.Path("coverage.xml")
+          root = ET.parse(coverage_path).getroot()
+          
+          def pct(attr: str) -> float:
+              try:
+                  return float(root.attrib.get(attr, 0.0)) * 100.0
+              except (TypeError, ValueError):
+                  return 0.0
+          
+          line_pct = pct("line-rate")
+          branch_pct = pct("branch-rate")
+          
+          lines_valid = root.attrib.get("lines-valid", "?")
+          lines_covered = root.attrib.get("lines-covered", "?")
+          branches_valid = root.attrib.get("branches-valid", "?")
+          branches_covered = root.attrib.get("branches-covered", "?")
+          
+          summary = (
+              "## Test Coverage\n\n"
+              f"- Lines: **{line_pct:.1f}%** ({lines_covered}/{lines_valid})\n"
+              f"- Branches: **{branch_pct:.1f}%** ({branches_covered}/{branches_valid})\n"
+          )
+          
+          summary_path = pathlib.Path(os.environ["GITHUB_STEP_SUMMARY"])
+          summary_path.write_text(summary, encoding="utf-8")
+          print(summary)
+          PY
+
+      - name: Upload coverage artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: |
+            coverage.xml
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
         with:
           files: ./coverage.xml
+          token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
           verbose: true
