@@ -9,7 +9,6 @@ import logging
 import os
 import sys
 
-from .prompts import DEFAULT_APP_CONTEXTS
 from utils.logging import get_session_id
 
 logger = logging.getLogger("whisper_go")
@@ -25,6 +24,7 @@ def _get_frontmost_app() -> str | None:
     """
     try:
         from whisper_platform import get_app_detector
+
         return get_app_detector().get_frontmost_app()
     except ImportError:
         # Fallback auf direkte NSWorkspace-Nutzung (macOS)
@@ -32,6 +32,7 @@ def _get_frontmost_app() -> str | None:
             return None
         try:
             from AppKit import NSWorkspace
+
             app = NSWorkspace.sharedWorkspace().frontmostApplication()
             return app.localizedName() if app else None
         except ImportError:
@@ -71,17 +72,24 @@ def _get_custom_app_contexts() -> dict:
 def get_context_for_app(app_name: str) -> str:
     """Mappt App-Name auf Kontext-Typ.
 
+    Priorität: ENV (WHISPER_GO_APP_CONTEXTS) > TOML (~/.whisper_go/prompts.toml) > Defaults
+
     Args:
         app_name: Name der Anwendung
 
     Returns:
         Kontext-Typ: 'email', 'chat', 'code' oder 'default'
     """
-    custom_map = _get_custom_app_contexts()
-    if app_name in custom_map:
-        return custom_map[app_name]
+    # 1. ENV-Override hat höchste Priorität
+    env_map = _get_custom_app_contexts()
+    if app_name in env_map:
+        return env_map[app_name]
 
-    return DEFAULT_APP_CONTEXTS.get(app_name, "default")
+    # 2. Custom TOML (merged mit Defaults)
+    from utils.custom_prompts import get_custom_app_contexts
+
+    toml_map = get_custom_app_contexts()
+    return toml_map.get(app_name, "default")
 
 
 # Alias für Rückwärtskompatibilität

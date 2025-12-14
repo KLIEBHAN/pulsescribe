@@ -129,6 +129,7 @@ python transcribe.py --record --copy --language de
 | `~/.whisper_go/logs/whisper_go.log` | Haupt-Logdatei (rotierend, max 1MB)      |
 | `~/.whisper_go/startup.log`         | Emergency-Log für Startup-Fehler         |
 | `~/.whisper_go/vocabulary.json`     | Custom Vocabulary für Transkription      |
+| `~/.whisper_go/prompts.toml`        | Custom Prompts für LLM-Nachbearbeitung   |
 
 ## Transkriptions-Modi
 
@@ -155,6 +156,37 @@ Die LLM-Nachbearbeitung passt den Prompt automatisch an den Nutzungskontext an:
 
 **Performance:** NSWorkspace-API (~0.2ms) statt AppleScript (~207ms)
 
+## Custom Prompts
+
+Prompts können über `~/.whisper_go/prompts.toml` angepasst werden:
+
+```toml
+# Custom Prompts für whisper_go
+
+[voice_commands]
+instruction = """
+Eigene Anweisungen für Voice-Commands...
+"""
+
+[prompts.email]
+prompt = """
+Mein angepasster Email-Prompt...
+"""
+
+[prompts.chat]
+prompt = """
+Mein angepasster Chat-Prompt...
+"""
+
+[app_contexts]
+"Meine App" = "email"
+CustomIDE = "code"
+```
+
+**Priorität:** CLI > ENV > Custom-TOML > Hardcoded Defaults
+
+**UI:** Settings → Prompts Tab zum Bearbeiten im GUI
+
 ## Sprach-Commands
 
 Voice-Commands werden vom LLM in der Refine-Pipeline interpretiert (nur mit `--refine`):
@@ -167,7 +199,7 @@ Voice-Commands werden vom LLM in der Refine-Pipeline interpretiert (nur mit `--r
 | "Komma" / "comma"                | `,`      |
 | "Fragezeichen" / "question mark" | `?`      |
 
-**Implementierung:** `refine/prompts.py` → `VOICE_COMMANDS_INSTRUCTION` wird automatisch in alle Prompts eingefügt via `get_prompt_for_context(context, voice_commands=True)`
+**Implementierung:** `refine/prompts.py` + `utils/custom_prompts.py` → Voice-Commands werden automatisch in alle Prompts eingefügt via `get_prompt_for_context(context, voice_commands=True)`. Custom Prompts aus `~/.whisper_go/prompts.toml` haben Priorität.
 
 ## App Bundle (PyInstaller)
 

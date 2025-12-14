@@ -63,6 +63,9 @@ Gib NUR den korrigierten Text zurück.""",
 def get_prompt_for_context(context: str, voice_commands: bool = True) -> str:
     """Gibt den Prompt für einen Kontext zurück, mit Fallback auf 'default'.
 
+    Lädt Custom Prompts aus ~/.whisper_go/prompts.toml falls vorhanden,
+    sonst Fallback auf Hardcoded Defaults.
+
     Args:
         context: Kontext-Typ (email, chat, code, default)
         voice_commands: Voice-Commands Instruktionen einfügen (default: True)
@@ -70,10 +73,15 @@ def get_prompt_for_context(context: str, voice_commands: bool = True) -> str:
     Returns:
         Der passende Prompt-Text. Bei unbekanntem Kontext → default.
     """
-    prompt = CONTEXT_PROMPTS.get(context, CONTEXT_PROMPTS["default"])
+    from utils.custom_prompts import (
+        get_custom_prompt_for_context,
+        get_custom_voice_commands,
+    )
+
+    prompt = get_custom_prompt_for_context(context)
     if voice_commands:
-        # Prepend Voice-Commands (robuster als replace)
-        prompt = VOICE_COMMANDS_INSTRUCTION + "\n" + prompt
+        vc = get_custom_voice_commands()
+        prompt = vc + "\n" + prompt
     return prompt
 
 

@@ -22,10 +22,10 @@ INT16_MAX = 32767
 # Streaming-Konfiguration
 # =============================================================================
 
-INTERIM_THROTTLE_MS = 150    # Max. Update-Rate für Interim-File (Menübar pollt 200ms)
-FINALIZE_TIMEOUT = 2.0       # Warten auf finale Transkripte nach Deepgram-Finalize
+INTERIM_THROTTLE_MS = 150  # Max. Update-Rate für Interim-File (Menübar pollt 200ms)
+FINALIZE_TIMEOUT = 2.0  # Warten auf finale Transkripte nach Deepgram-Finalize
 DEEPGRAM_WS_URL = "wss://api.deepgram.com/v1/listen"
-DEEPGRAM_CLOSE_TIMEOUT = 0.5 # Schneller WebSocket-Shutdown (SDK Default: 10s)
+DEEPGRAM_CLOSE_TIMEOUT = 0.5  # Schneller WebSocket-Shutdown (SDK Default: 10s)
 
 # =============================================================================
 # Default-Modelle
@@ -42,10 +42,10 @@ DEFAULT_GROQ_REFINE_MODEL = "llama-3.3-70b-versatile"
 # Audio-Analyse
 # =============================================================================
 
-VAD_THRESHOLD = 0.015      # Trigger recording (RMS)
+VAD_THRESHOLD = 0.015  # Trigger recording (RMS)
 # Visualisierung ist etwas empfindlicher als VAD, damit auch leise Sprache sichtbar ist.
 VISUAL_NOISE_GATE = 0.002  # UI silence floor (RMS)
-VISUAL_GAIN = 2.0          # Visual scaling factor (post-AGC, boosts quiet speech)
+VISUAL_GAIN = 2.0  # Visual scaling factor (post-AGC, boosts quiet speech)
 
 # =============================================================================
 # IPC-Dateipfade
@@ -54,11 +54,13 @@ VISUAL_GAIN = 2.0          # Visual scaling factor (post-AGC, boosts quiet speec
 # IPC-Dateien für Kommunikation zwischen Prozessen (Raycast, Hotkey-Daemon, Menübar)
 # Alle Dateien liegen in /tmp für schnellen Zugriff und automatische Bereinigung
 TEMP_RECORDING_FILENAME = "whisper_recording.wav"
-PID_FILE = Path("/tmp/whisper_go.pid")           # Aktive Aufnahme-PID → für SIGUSR1 Stop
+PID_FILE = Path("/tmp/whisper_go.pid")  # Aktive Aufnahme-PID → für SIGUSR1 Stop
 TRANSCRIPT_FILE = Path("/tmp/whisper_go.transcript")  # Fertiges Transkript
-ERROR_FILE = Path("/tmp/whisper_go.error")       # Fehlermeldungen für UI-Feedback
-STATE_FILE = Path("/tmp/whisper_go.state")       # Aktueller Status (recording/transcribing/done/error)
-INTERIM_FILE = Path("/tmp/whisper_go.interim")   # Live-Transkript während Aufnahme
+ERROR_FILE = Path("/tmp/whisper_go.error")  # Fehlermeldungen für UI-Feedback
+STATE_FILE = Path(
+    "/tmp/whisper_go.state"
+)  # Aktueller Status (recording/transcribing/done/error)
+INTERIM_FILE = Path("/tmp/whisper_go.interim")  # Live-Transkript während Aufnahme
 
 # =============================================================================
 # API-Endpunkte
@@ -80,10 +82,11 @@ LOG_DIR.mkdir(parents=True, exist_ok=True)
 LOG_FILE = LOG_DIR / "whisper_go.log"
 
 VOCABULARY_FILE = USER_CONFIG_DIR / "vocabulary.json"
+PROMPTS_FILE = USER_CONFIG_DIR / "prompts.toml"
 
 # Resource path helper import must happen after core constants to avoid circular imports
 # (utils imports config for IPC paths and config dir).
-from utils.paths import get_resource_path  # noqa: E402 (after constants to avoid circular import)
+from utils.paths import get_resource_path  # noqa: E402
 
 # Basis-Verzeichnis für Ressourcen (Code, Assets)
 SCRIPT_DIR = Path(get_resource_path("."))
@@ -125,4 +128,5 @@ __all__ = [
     "LOG_DIR",
     "LOG_FILE",
     "VOCABULARY_FILE",
+    "PROMPTS_FILE",
 ]
