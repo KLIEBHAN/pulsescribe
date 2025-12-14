@@ -1528,6 +1528,7 @@ class WelcomeController:
             pass
         text_view.setVerticallyResizable_(True)
         text_view.setHorizontallyResizable_(False)
+        text_view.setAllowsUndo_(True)  # CMD+Z / CMD+Shift+Z
         tc = text_view.textContainer()
         if tc is not None:
             tc.setWidthTracksTextView_(True)
@@ -1729,6 +1730,7 @@ class WelcomeController:
             pass
         text_view.setVerticallyResizable_(True)
         text_view.setHorizontallyResizable_(False)
+        text_view.setAllowsUndo_(True)  # CMD+Z / CMD+Shift+Z
         tc = text_view.textContainer()
         if tc is not None:
             tc.setWidthTracksTextView_(True)
