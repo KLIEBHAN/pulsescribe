@@ -1426,9 +1426,9 @@ class WelcomeController:
         parent_view.addSubview_(context_popup)
         self._prompts_context_popup = context_popup
 
-        # Reset-Button
+        # Reset-Button (rechts vom Dropdown mit Abstand)
         reset_btn = NSButton.alloc().initWithFrame_(
-            NSMakeRect(base_x + 200, row_y, 100, 22)
+            NSMakeRect(base_x + 215, row_y, 100, 22)
         )
         reset_btn.setTitle_("Reset to Default")
         reset_btn.setBezelStyle_(NSBezelStyleRounded)
