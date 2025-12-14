@@ -134,6 +134,76 @@ class WelcomeController:
 
         self._build_window()
 
+    def _setup_edit_menu(self) -> None:
+        """Erstellt Edit-Menü für CMD+V/C/X/A in TextViews.
+
+        NSTextView braucht ein Edit-Menü in der Menüleiste, damit die
+        Standard-Shortcuts (Copy, Paste, etc.) funktionieren.
+        """
+        from AppKit import (  # type: ignore[import-not-found]
+            NSApp,
+            NSMenu,
+            NSMenuItem,
+        )
+
+        # Prüfen ob Edit-Menü bereits existiert
+        main_menu = NSApp.mainMenu()
+        if main_menu is None:
+            main_menu = NSMenu.alloc().init()
+            NSApp.setMainMenu_(main_menu)
+
+        # Prüfen ob Edit-Menü schon vorhanden
+        for i in range(main_menu.numberOfItems()):
+            item = main_menu.itemAtIndex_(i)
+            if item.title() == "Edit":
+                return  # Bereits vorhanden
+
+        # Edit-Menü erstellen
+        edit_menu = NSMenu.alloc().initWithTitle_("Edit")
+
+        # Undo/Redo
+        undo_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Undo", "undo:", "z"
+        )
+        edit_menu.addItem_(undo_item)
+
+        redo_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Redo", "redo:", "Z"
+        )
+        edit_menu.addItem_(redo_item)
+
+        edit_menu.addItem_(NSMenuItem.separatorItem())
+
+        # Cut/Copy/Paste
+        cut_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Cut", "cut:", "x"
+        )
+        edit_menu.addItem_(cut_item)
+
+        copy_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Copy", "copy:", "c"
+        )
+        edit_menu.addItem_(copy_item)
+
+        paste_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Paste", "paste:", "v"
+        )
+        edit_menu.addItem_(paste_item)
+
+        edit_menu.addItem_(NSMenuItem.separatorItem())
+
+        # Select All
+        select_all_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Select All", "selectAll:", "a"
+        )
+        edit_menu.addItem_(select_all_item)
+
+        # Edit-Menü zur Menüleiste hinzufügen
+        edit_menu_item = NSMenuItem.alloc().init()
+        edit_menu_item.setTitle_("Edit")
+        edit_menu_item.setSubmenu_(edit_menu)
+        main_menu.addItem_(edit_menu_item)
+
     def _build_window(self) -> None:
         """Erstellt das Welcome Window mit allen Sections."""
         from AppKit import (  # type: ignore[import-not-found]
@@ -162,6 +232,9 @@ class WelcomeController:
         )
         self._window.setTitle_("WhisperGo Settings")
         self._window.setReleasedWhenClosed_(False)
+
+        # Edit-Menü für CMD+V/C/X/A in TextViews
+        self._setup_edit_menu()
 
         # Visual Effect View (HUD-Material)
         content_frame = NSMakeRect(0, 0, WELCOME_WIDTH, WELCOME_HEIGHT)
