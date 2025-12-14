@@ -342,6 +342,59 @@ class TestPasteTranscript:
         # Leerer Text sollte trotzdem verarbeitet werden
         assert native_calls == [""]
 
+    def test_paste_transcript_clipboard_restore_disabled_by_default(self, monkeypatch):
+        """Clipboard-Restore ist standardmäßig deaktiviert."""
+        snapshot_calls = []
+        restore_calls = []
+
+        def mock_capture():
+            snapshot_calls.append(True)
+            return {"test": "data"}
+
+        def mock_restore(snapshot):
+            restore_calls.append(snapshot)
+
+        monkeypatch.delenv("WHISPER_GO_CLIPBOARD_RESTORE", raising=False)
+
+        with (
+            patch("utils.hotkey._capture_clipboard_snapshot", side_effect=mock_capture),
+            patch("utils.hotkey._restore_clipboard_snapshot", side_effect=mock_restore),
+            patch("utils.hotkey._copy_to_clipboard_native", return_value=True),
+            patch("utils.hotkey._paste_via_pynput", return_value=True),
+        ):
+            utils.hotkey.paste_transcript("test")
+
+        # Snapshot sollte NICHT aufgerufen werden (da ENV nicht gesetzt)
+        assert snapshot_calls == []
+        assert restore_calls == []
+
+    def test_paste_transcript_clipboard_restore_enabled(self, monkeypatch):
+        """Clipboard-Restore kann via ENV aktiviert werden."""
+        snapshot_calls = []
+        restore_calls = []
+
+        def mock_capture():
+            snapshot_calls.append(True)
+            return {"test": "data"}
+
+        def mock_restore(snapshot):
+            restore_calls.append(snapshot)
+
+        monkeypatch.setenv("WHISPER_GO_CLIPBOARD_RESTORE", "true")
+
+        with (
+            patch("utils.hotkey._capture_clipboard_snapshot", side_effect=mock_capture),
+            patch("utils.hotkey._restore_clipboard_snapshot", side_effect=mock_restore),
+            patch("utils.hotkey._copy_to_clipboard_native", return_value=True),
+            patch("utils.hotkey._paste_via_pynput", return_value=True),
+            patch("time.sleep"),  # Skip sleep für schnelleren Test
+        ):
+            utils.hotkey.paste_transcript("test")
+
+        # Snapshot und Restore sollten aufgerufen werden
+        assert snapshot_calls == [True]
+        assert restore_calls == [{"test": "data"}]
+
 
 # =============================================================================
 # Tests: _paste_via_osascript (Fallback)

@@ -81,6 +81,7 @@ class WelcomeController:
         self._mode_popup = None
         self._lang_popup = None
         self._refine_checkbox = None
+        self._clipboard_restore_checkbox = None
         self._provider_popup = None
         self._model_field = None
         self._local_backend_popup = None
@@ -1360,6 +1361,23 @@ class WelcomeController:
         refine_checkbox.setState_(1 if refine_enabled else 0)
         self._refine_checkbox = refine_checkbox
         parent_view.addSubview_(refine_checkbox)
+        current_y -= row_height
+
+        # Clipboard Restore Checkbox
+        self._add_setting_label(base_x, current_y, "Clipboard:", parent_view)
+        clipboard_checkbox = NSButton.alloc().initWithFrame_(
+            NSMakeRect(control_x, current_y, control_width, 22)
+        )
+        clipboard_checkbox.setButtonType_(NSButtonTypeSwitch)
+        clipboard_checkbox.setTitle_("Restore after paste")
+        clipboard_checkbox.setFont_(NSFont.systemFontOfSize_(11))
+        clipboard_restore = get_env_setting("WHISPER_GO_CLIPBOARD_RESTORE")
+        clipboard_restore = (
+            bool(parse_bool(clipboard_restore)) if clipboard_restore else False
+        )
+        clipboard_checkbox.setState_(1 if clipboard_restore else 0)
+        self._clipboard_restore_checkbox = clipboard_checkbox
+        parent_view.addSubview_(clipboard_checkbox)
         current_y -= row_height
 
         # Refine Provider
@@ -2660,6 +2678,14 @@ class WelcomeController:
         if self._refine_checkbox:
             enabled = self._refine_checkbox.state() == 1
             save_env_setting("WHISPER_GO_REFINE", "true" if enabled else "false")
+
+        # Clipboard Restore
+        if self._clipboard_restore_checkbox:
+            enabled = self._clipboard_restore_checkbox.state() == 1
+            if enabled:
+                save_env_setting("WHISPER_GO_CLIPBOARD_RESTORE", "true")
+            else:
+                remove_env_setting("WHISPER_GO_CLIPBOARD_RESTORE")
 
         # Refine Provider
         if self._provider_popup:

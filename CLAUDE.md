@@ -103,22 +103,23 @@ python transcribe.py --record --copy --language de
 
 ## Konfiguration (ENV-Variablen)
 
-| Variable                     | Beschreibung                                          |
-| ---------------------------- | ----------------------------------------------------- |
-| `WHISPER_GO_MODE`            | Default-Modus: `openai`, `local`, `deepgram`, `groq`  |
-| `WHISPER_GO_MODEL`           | Transkriptions-Modell (überschreibt Provider-Default) |
-| `WHISPER_GO_STREAMING`       | WebSocket-Streaming für Deepgram: `true`/`false`      |
-| `WHISPER_GO_REFINE`          | LLM-Nachbearbeitung: `true`/`false`                   |
-| `WHISPER_GO_REFINE_MODEL`    | Modell für Refine (default: `gpt-5-nano`)             |
-| `WHISPER_GO_REFINE_PROVIDER` | Provider: `openai`, `openrouter` oder `groq`          |
-| `WHISPER_GO_CONTEXT`         | Kontext-Override: `email`/`chat`/`code`               |
-| `WHISPER_GO_APP_CONTEXTS`    | Custom App-Mappings (JSON)                            |
-| `WHISPER_GO_OVERLAY`         | Untertitel-Overlay aktivieren: `true`/`false`         |
-| `WHISPER_GO_DOCK_ICON`       | Dock-Icon anzeigen: `true`/`false` (default: `true`)  |
-| `OPENAI_API_KEY`             | Für API-Modus und OpenAI-Refine                       |
-| `DEEPGRAM_API_KEY`           | Für Deepgram-Modus (REST + Streaming)                 |
-| `GROQ_API_KEY`               | Für Groq-Modus und Groq-Refine                        |
-| `OPENROUTER_API_KEY`         | Für OpenRouter-Refine                                 |
+| Variable                       | Beschreibung                                                             |
+| ------------------------------ | ------------------------------------------------------------------------ |
+| `WHISPER_GO_MODE`              | Default-Modus: `openai`, `local`, `deepgram`, `groq`                     |
+| `WHISPER_GO_MODEL`             | Transkriptions-Modell (überschreibt Provider-Default)                    |
+| `WHISPER_GO_STREAMING`         | WebSocket-Streaming für Deepgram: `true`/`false`                         |
+| `WHISPER_GO_REFINE`            | LLM-Nachbearbeitung: `true`/`false`                                      |
+| `WHISPER_GO_REFINE_MODEL`      | Modell für Refine (default: `gpt-5-nano`)                                |
+| `WHISPER_GO_REFINE_PROVIDER`   | Provider: `openai`, `openrouter` oder `groq`                             |
+| `WHISPER_GO_CONTEXT`           | Kontext-Override: `email`/`chat`/`code`                                  |
+| `WHISPER_GO_APP_CONTEXTS`      | Custom App-Mappings (JSON)                                               |
+| `WHISPER_GO_OVERLAY`           | Untertitel-Overlay aktivieren: `true`/`false`                            |
+| `WHISPER_GO_DOCK_ICON`         | Dock-Icon anzeigen: `true`/`false` (default: `true`)                     |
+| `WHISPER_GO_CLIPBOARD_RESTORE` | Clipboard nach Paste wiederherstellen: `true`/`false` (default: `false`) |
+| `OPENAI_API_KEY`               | Für API-Modus und OpenAI-Refine                                          |
+| `DEEPGRAM_API_KEY`             | Für Deepgram-Modus (REST + Streaming)                                    |
+| `GROQ_API_KEY`                 | Für Groq-Modus und Groq-Refine                                           |
+| `OPENROUTER_API_KEY`           | Für OpenRouter-Refine                                                    |
 
 ## Dateipfade
 

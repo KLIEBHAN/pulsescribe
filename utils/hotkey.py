@@ -349,6 +349,11 @@ def paste_transcript(text: str) -> bool:
     """
     logger.info(f"Auto-Paste: '{text[:50]}{'...' if len(text) > 50 else ''}'")
 
+    # Clipboard-Restore ist optional (ENV: WHISPER_GO_CLIPBOARD_RESTORE=true)
+    # Standardmäßig deaktiviert, da es Race-Conditions bei In-App TextViews verursacht.
+    restore_clipboard = os.getenv("WHISPER_GO_CLIPBOARD_RESTORE", "").lower() == "true"
+    clipboard_snapshot = _capture_clipboard_snapshot() if restore_clipboard else None
+
     # 1. In Clipboard kopieren via NSPasteboard (in-process, kein Subprocess)
     # Dies ist wichtig für das Einfügen in eigene App-Fenster (z.B. Settings)
     if not _copy_to_clipboard_native(text):
@@ -390,17 +395,23 @@ def paste_transcript(text: str) -> bool:
     elif _paste_via_osascript():
         pasted_ok = True
 
-    # 3. Ergebnis zurückgeben
-    # Clipboard-Restore deaktiviert: Verursacht Race-Condition bei In-App TextViews,
-    # wo der alte Inhalt eingefügt wird statt der Transkription.
-    # Der transkribierte Text bleibt im Clipboard - das ist akzeptables Verhalten.
-    return pasted_ok
+    # 3. Ergebnis verarbeiten
+    if not pasted_ok:
+        logger.error(
+            "Auto-Paste fehlgeschlagen (alle 3 Methoden). "
+            "Mögliche Ursachen:\n"
+            "  1. WhisperGo.app fehlt in: Systemeinstellungen → Datenschutz → Bedienungshilfen\n"
+            "  2. Nach App-Neubuild: App entfernen und neu hinzufügen (Signatur geändert)\n"
+            "  3. Text wurde in Zwischenablage kopiert - manuell mit CMD+V einfügen"
+        )
+        return False
 
-    logger.error(
-        "Auto-Paste fehlgeschlagen (alle 3 Methoden). "
-        "Mögliche Ursachen:\n"
-        "  1. WhisperGo.app fehlt in: Systemeinstellungen → Datenschutz → Bedienungshilfen\n"
-        "  2. Nach App-Neubuild: App entfernen und neu hinzufügen (Signatur geändert)\n"
-        "  3. Text wurde in Zwischenablage kopiert - manuell mit CMD+V einfügen"
-    )
-    return False
+    # 4. Optional: Clipboard-Restore (wenn aktiviert via WHISPER_GO_CLIPBOARD_RESTORE=true)
+    if clipboard_snapshot is not None:
+        # Längere Verzögerung für Event-Verarbeitung.
+        # WARNUNG: Bei In-App TextViews kann dies trotzdem zu Race-Conditions führen.
+        time.sleep(1.0)
+        _restore_clipboard_snapshot(clipboard_snapshot)
+        logger.debug("Clipboard wiederhergestellt")
+
+    return True
