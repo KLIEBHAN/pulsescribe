@@ -54,7 +54,6 @@ try:
     from utils.environment import load_environment
     from providers.deepgram_stream import deepgram_stream_core
     from providers import get_provider
-    from refine.llm import refine_transcript
     from whisper_platform import get_sound_player
     from utils.state import AppState, DaemonMessage, MessageType
     from utils import parse_hotkey, paste_transcript
@@ -1232,6 +1231,8 @@ class PulseScribeDaemon:
                             type=MessageType.STATUS_UPDATE, payload=AppState.REFINING
                         )
                     )
+                    from refine.llm import refine_transcript
+
                     transcript = refine_transcript(
                         transcript,
                         model=self.refine_model,
@@ -1432,6 +1433,8 @@ class PulseScribeDaemon:
                             type=MessageType.STATUS_UPDATE, payload=AppState.REFINING
                         )
                     )
+                    from refine.llm import refine_transcript
+
                     t1 = time.perf_counter()
                     transcript = refine_transcript(
                         transcript,
