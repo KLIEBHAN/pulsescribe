@@ -485,11 +485,29 @@ class PulseScribeDaemon:
         self._current_state = state
         logger.debug(f"State: {state}" + (f" text='{text[:20]}...'" if text else ""))
 
-        # UI-Controller aktualisieren
         if self._menubar:
             self._menubar.update_state(state, text)
         if self._overlay:
             self._overlay.update_state(state, text)
+
+    def _flush_ui(self) -> None:
+        """Erzwingt sofortiges UI-Rendering.
+
+        Warum nötig: AppKit-Updates (NSStatusBar, NSWindow) werden erst beim nächsten
+        Event-Loop-Durchlauf sichtbar. Bei Auto-Paste muss die UI aber VOR dem
+        Text-Einfügen aktualisiert werden, damit der User ✅ sieht statt ⏳.
+
+        Performance: ~0.2ms, nicht wahrnehmbar.
+        """
+        from Foundation import (  # type: ignore[import-not-found]
+            NSRunLoop,
+            NSDate,
+            NSDefaultRunLoopMode,
+        )
+
+        NSRunLoop.currentRunLoop().runMode_beforeDate_(
+            NSDefaultRunLoopMode, NSDate.date()
+        )
 
     def _on_hotkey(self) -> None:
         """Callback bei Hotkey-Aktivierung."""
@@ -638,37 +656,28 @@ class PulseScribeDaemon:
         self._apply_pending_hotkey_reconfigure_if_safe()
 
     def _handle_transcript_result(self, transcript: str) -> None:
+        """Verarbeitet das fertige Transkript: UI-Update, History, Auto-Paste."""
+        # Test-Modus: Callback ausführen, kein Auto-Paste
         if self._test_run_active:
             self._finish_test_run(transcript, None)
-            if transcript:
-                self._update_state(AppState.DONE, transcript)
-            else:
-                self._update_state(AppState.IDLE)
+            self._update_state(
+                AppState.DONE if transcript else AppState.IDLE, transcript
+            )
             self._apply_pending_hotkey_reconfigure_if_safe()
             return
 
-        if transcript:
-            # State auf DONE setzen und UI-Rendering erzwingen
-            self._update_state(AppState.DONE, transcript)
-
-            # Run-Loop einmal durchlaufen lassen für AppKit-Updates (~0.2ms).
-            # NSStatusBar ist AppKit, nicht Core Animation, daher reicht CATransaction.flush() nicht.
-            from Foundation import (  # type: ignore[import-not-found]
-                NSRunLoop,
-                NSDate,
-                NSDefaultRunLoopMode,
-            )
-
-            NSRunLoop.currentRunLoop().runMode_beforeDate_(
-                NSDefaultRunLoopMode, NSDate.date()
-            )
-
-            # Jetzt pasten (UI zeigt bereits ✅)
-            self._save_to_history(transcript)
-            self._paste_result(transcript)
-        else:
+        # Leeres Transkript: Nichts zu tun
+        if not transcript:
             logger.warning("Leeres Transkript")
             self._update_state(AppState.IDLE)
+            self._apply_pending_hotkey_reconfigure_if_safe()
+            return
+
+        # Erfolgreiche Transkription: UI → Flush → History → Paste
+        self._update_state(AppState.DONE, transcript)
+        self._flush_ui()  # UI muss ✅ zeigen BEVOR Text eingefügt wird
+        self._save_to_history(transcript)
+        self._paste_result(transcript)
         self._apply_pending_hotkey_reconfigure_if_safe()
 
     def _save_to_history(self, transcript: str) -> None:
