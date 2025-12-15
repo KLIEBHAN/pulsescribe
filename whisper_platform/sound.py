@@ -15,7 +15,7 @@ logger = logging.getLogger("pulsescribe.platform.sound")
 MACOS_SYSTEM_SOUNDS = {
     "ready": "/System/Library/Sounds/Tink.aiff",
     "stop": "/System/Library/Sounds/Pop.aiff",
-    "done": "/System/Library/Sounds/Glass.aiff",  # Erfolgs-Feedback
+    "done": "/System/Library/Sounds/Ping.aiff",  # Erfolgs-Feedback (dezent, positiv)
     "error": "/System/Library/Sounds/Basso.aiff",
 }
 

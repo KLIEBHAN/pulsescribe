@@ -647,8 +647,8 @@ class PulseScribeDaemon:
     def _handle_worker_error(self, err: Exception) -> None:
         if self._test_run_active:
             self._finish_test_run("", str(err))
-            get_sound_player().play("error")
             self._update_state(AppState.ERROR)
+            get_sound_player().play("error")
             self._apply_pending_hotkey_reconfigure_if_safe()
             return
 
@@ -659,8 +659,8 @@ class PulseScribeDaemon:
         if isinstance(err, ValueError):
             show_error_alert("API-Key fehlt", str(err))
 
-        get_sound_player().play("error")
         self._update_state(AppState.ERROR)
+        get_sound_player().play("error")
         self._apply_pending_hotkey_reconfigure_if_safe()
 
     def _handle_transcript_result(self, transcript: str) -> None:
