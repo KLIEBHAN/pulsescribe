@@ -81,7 +81,8 @@ except Exception as e:
 emergency_log("Imports successful")
 
 # DEBOUNCE_INTERVAL defined locally as it is specific to hotkey daemon
-DEBOUNCE_INTERVAL = 0.3
+# 150ms ist schnell genug für responsive UX, aber filtert Auto-Repeat und Doppelklicks
+DEBOUNCE_INTERVAL = 0.15
 logger = logging.getLogger("pulsescribe")
 
 # =============================================================================

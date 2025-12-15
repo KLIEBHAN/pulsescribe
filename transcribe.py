@@ -33,7 +33,8 @@ import sys  # noqa: E402
 import threading  # noqa: E402
 import asyncio  # noqa: E402
 from typing import TYPE_CHECKING  # noqa: E402
-from providers.deepgram_stream import deepgram_stream_core  # noqa: E402
+
+# deepgram_stream_core wird lazy importiert in run_daemon_mode_streaming()
 from pathlib import Path  # noqa: E402
 
 if TYPE_CHECKING:
@@ -505,7 +506,9 @@ def run_daemon_mode_streaming(args: argparse.Namespace) -> int:
         if deepgram_error:
             raise deepgram_error
 
-        # 5. Streaming mit vorgepuffertem Audio starten
+        # 5. Streaming mit vorgepuffertem Audio starten (lazy import für schnelleren CLI-Start)
+        from providers.deepgram_stream import deepgram_stream_core
+
         transcript = asyncio.run(
             deepgram_stream_core(
                 model=args.model or DEFAULT_DEEPGRAM_MODEL,
