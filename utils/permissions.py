@@ -1,19 +1,12 @@
 """
 Berechtigungs-Checks für macOS (Mikrofon, Accessibility).
+
+Hinweis: Diese Funktionen sind macOS-spezifisch. Auf anderen Plattformen
+geben sie sichere Defaults zurück (True für Berechtigungen, "authorized" für States).
 """
 
 import logging
-import ctypes
-import ctypes.util
-
-from AVFoundation import (
-    AVCaptureDevice,
-    AVMediaTypeAudio,
-    AVAuthorizationStatusAuthorized,
-    AVAuthorizationStatusDenied,
-    AVAuthorizationStatusRestricted,
-    AVAuthorizationStatusNotDetermined,
-)
+import sys
 
 logger = logging.getLogger("pulsescribe")
 
@@ -27,21 +20,47 @@ _PERMISSION_MESSAGE_TOKENS = (
     "microphone",
 )
 
-# Accessibility API laden
-_app_services = ctypes.cdll.LoadLibrary(ctypes.util.find_library("ApplicationServices"))
-_app_services.AXIsProcessTrusted.restype = ctypes.c_bool
+# Accessibility API (macOS only, lazy loaded)
+_app_services = None
+
+
+def _get_app_services():
+    """Lazy-load ApplicationServices framework (macOS only)."""
+    global _app_services
+    if _app_services is not None:
+        return _app_services
+    if sys.platform != "darwin":
+        return None
+    try:
+        import ctypes
+        import ctypes.util
+
+        _app_services = ctypes.cdll.LoadLibrary(
+            ctypes.util.find_library("ApplicationServices")
+        )
+        _app_services.AXIsProcessTrusted.restype = ctypes.c_bool
+    except Exception:
+        pass
+    return _app_services
 
 
 def has_accessibility_permission() -> bool:
     """Returns True if the app has Accessibility permission (no logging/alerts)."""
+    if sys.platform != "darwin":
+        return True  # Auf non-macOS immer True zurückgeben
     try:
-        return bool(_app_services.AXIsProcessTrusted())
+        app_services = _get_app_services()
+        if app_services is None:
+            return True
+        return bool(app_services.AXIsProcessTrusted())
     except Exception:
         return False
 
 
 def has_input_monitoring_permission() -> bool:
     """Returns True if the app has Input Monitoring permission (no logging/alerts)."""
+    if sys.platform != "darwin":
+        return True  # Auf non-macOS immer True zurückgeben
     try:
         from Quartz import CGPreflightListenEventAccess  # type: ignore[import-not-found]
     except Exception:
@@ -59,7 +78,19 @@ def get_microphone_permission_state() -> str:
     Returns:
         One of: "authorized", "not_determined", "denied", "restricted", "unknown"
     """
+    if sys.platform != "darwin":
+        return "authorized"  # Auf non-macOS immer authorized zurückgeben
+
     try:
+        from AVFoundation import (  # type: ignore[import-not-found]
+            AVAuthorizationStatusAuthorized,
+            AVAuthorizationStatusDenied,
+            AVAuthorizationStatusNotDetermined,
+            AVAuthorizationStatusRestricted,
+            AVCaptureDevice,
+            AVMediaTypeAudio,
+        )
+
         status = AVCaptureDevice.authorizationStatusForMediaType_(AVMediaTypeAudio)
     except Exception:
         return "unknown"
@@ -84,6 +115,9 @@ def check_microphone_permission(show_alert: bool = True, request: bool = False) 
         True wenn Zugriff erlaubt oder (noch) nicht entschieden.
         False wenn explizit verweigert/eingeschränkt.
     """
+    if sys.platform != "darwin":
+        return True  # Auf non-macOS immer True zurückgeben
+
     state = get_microphone_permission_state()
 
     if state == "authorized":
@@ -93,6 +127,11 @@ def check_microphone_permission(show_alert: bool = True, request: bool = False) 
         # OS wird beim ersten Zugriff fragen
         if request:
             try:
+                from AVFoundation import (  # type: ignore[import-not-found]
+                    AVCaptureDevice,
+                    AVMediaTypeAudio,
+                )
+
                 AVCaptureDevice.requestAccessForMediaType_completionHandler_(
                     AVMediaTypeAudio, lambda _granted: None
                 )
@@ -117,6 +156,9 @@ def check_accessibility_permission(
     Returns:
         True wenn Zugriff erlaubt, False wenn nicht.
     """
+    if sys.platform != "darwin":
+        return True  # Auf non-macOS immer True zurückgeben
+
     if has_accessibility_permission():
         return True
 
@@ -152,6 +194,9 @@ def check_input_monitoring_permission(
     Returns:
         True wenn Zugriff erlaubt, False wenn nicht.
     """
+    if sys.platform != "darwin":
+        return True  # Auf non-macOS immer True zurückgeben
+
     try:
         from Quartz import CGRequestListenEventAccess  # type: ignore[import-not-found]
     except Exception:
@@ -188,6 +233,9 @@ def open_privacy_settings(anchor: str, *, window=None) -> None:
         anchor: Privacy section (e.g., "Privacy_Microphone", "Privacy_Accessibility")
         window: Optional NSWindow to temporarily lower its level so Settings appears in front
     """
+    if sys.platform != "darwin":
+        return  # No-op auf non-macOS
+
     import subprocess
 
     url = f"x-apple.systempreferences:com.apple.preference.security?{anchor}"

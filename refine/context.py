@@ -27,17 +27,8 @@ def _get_frontmost_app() -> str | None:
 
         return get_app_detector().get_frontmost_app()
     except ImportError:
-        # Fallback auf direkte NSWorkspace-Nutzung (macOS)
-        if sys.platform != "darwin":
-            return None
-        try:
-            from AppKit import NSWorkspace
-
-            app = NSWorkspace.sharedWorkspace().frontmostApplication()
-            return app.localizedName() if app else None
-        except ImportError:
-            logger.debug(f"[{get_session_id()}] PyObjC/AppKit nicht verfügbar")
-            return None
+        logger.debug(f"[{get_session_id()}] whisper_platform nicht verfügbar")
+        return None
     except Exception as e:
         logger.debug(f"[{get_session_id()}] App-Detection fehlgeschlagen: {e}")
         return None
