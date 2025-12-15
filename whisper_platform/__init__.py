@@ -53,19 +53,14 @@ def get_platform() -> str:
 def get_sound_player() -> "SoundPlayer":
     """Factory für plattformspezifischen Sound-Player.
 
+    Nutzt Singleton-Pattern für Performance (Sound-IDs werden gecacht).
+
     Returns:
         SoundPlayer-Implementierung für die aktuelle Plattform
     """
-    platform = get_platform()
-    if platform == "macos":
-        from .sound import MacOSSoundPlayer
+    from .sound import get_sound_player as _get_cached_player
 
-        return MacOSSoundPlayer()
-    elif platform == "windows":
-        from .sound import WindowsSoundPlayer
-
-        return WindowsSoundPlayer()
-    raise NotImplementedError(f"Sound nicht implementiert für {platform}")
+    return _get_cached_player()
 
 
 def get_clipboard() -> "ClipboardHandler":

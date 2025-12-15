@@ -498,24 +498,24 @@ class PulseScribeDaemon:
         garantieren, wann WindowServer das Icon tatsächlich zeichnet.
 
         Lösung:
-        1. NSRunLoop.runMode_beforeDate_() - flusht AppKit Event-Queue (~0.2ms)
-        2. time.sleep(0.015) - gibt WindowServer Zeit zum Rendern (~15ms)
+        1. NSRunLoop.runUntilDate_() - lässt Event-Loop 10ms laufen (BLOCKIEREND)
+           → Garantiert, dass AppKit setTitle_() an WindowServer sendet
+        2. time.sleep(0.010) - gibt WindowServer zusätzlich Zeit zum Rendern
         3. Sound-Feedback erfolgt VOR dem Delay für sofortige auditive Bestätigung
 
-        Gesamt-Latenz: ~15-16ms, nicht wahrnehmbar für User.
+        Gesamt-Latenz: ~20ms, nicht wahrnehmbar für User.
         """
         from Foundation import (  # type: ignore[import-not-found]
             NSDate,
-            NSDefaultRunLoopMode,
             NSRunLoop,
         )
 
-        # 1. AppKit Event-Queue flushen
-        NSRunLoop.currentRunLoop().runMode_beforeDate_(
-            NSDefaultRunLoopMode, NSDate.date()
+        # 1. Event-Loop 10ms laufen lassen - garantiert AppKit → WindowServer Flush
+        NSRunLoop.currentRunLoop().runUntilDate_(
+            NSDate.dateWithTimeIntervalSinceNow_(0.010)
         )
         # 2. WindowServer Zeit zum Rendern geben
-        time.sleep(0.015)
+        time.sleep(0.010)
 
     def _on_hotkey(self) -> None:
         """Callback bei Hotkey-Aktivierung."""

@@ -15,7 +15,7 @@ logger = logging.getLogger("pulsescribe.platform.sound")
 MACOS_SYSTEM_SOUNDS = {
     "ready": "/System/Library/Sounds/Tink.aiff",
     "stop": "/System/Library/Sounds/Pop.aiff",
-    "done": "/System/Library/Sounds/Ping.aiff",  # Erfolgs-Feedback (dezent, positiv)
+    "done": "/System/Library/Sounds/Morse.aiff",  # Erfolgs-Feedback (sehr dezent, kurz)
     "error": "/System/Library/Sounds/Basso.aiff",
 }
 
@@ -199,14 +199,25 @@ class WindowsSoundPlayer:
             logger.debug(f"Sound-Playback fehlgeschlagen: {e}")
 
 
-# Convenience-Funktion für direkten Import
-def get_sound_player():
-    """Gibt den passenden Sound-Player für die aktuelle Plattform zurück."""
-    if sys.platform == "darwin":
-        return MacOSSoundPlayer()
-    elif sys.platform == "win32":
-        return WindowsSoundPlayer()
-    raise NotImplementedError(f"Sound nicht implementiert für {sys.platform}")
+# Singleton-Cache für Sound-Player (vermeidet wiederholte ctypes/CDLL Initialisierung)
+_sound_player_cache: "MacOSSoundPlayer | WindowsSoundPlayer | None" = None
+
+
+def get_sound_player() -> "MacOSSoundPlayer | WindowsSoundPlayer":
+    """Gibt gecachten Sound-Player für die aktuelle Plattform zurück.
+
+    Nutzt Singleton-Pattern: Player wird nur einmal erstellt, Sound-IDs bleiben gecacht.
+    Performance: Erste Initialisierung ~1ms, danach ~0ms.
+    """
+    global _sound_player_cache
+    if _sound_player_cache is None:
+        if sys.platform == "darwin":
+            _sound_player_cache = MacOSSoundPlayer()
+        elif sys.platform == "win32":
+            _sound_player_cache = WindowsSoundPlayer()
+        else:
+            raise NotImplementedError(f"Sound nicht implementiert für {sys.platform}")
+    return _sound_player_cache
 
 
 __all__ = ["MacOSSoundPlayer", "WindowsSoundPlayer", "get_sound_player"]
