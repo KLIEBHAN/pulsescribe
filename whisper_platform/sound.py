@@ -15,6 +15,7 @@ logger = logging.getLogger("pulsescribe.platform.sound")
 MACOS_SYSTEM_SOUNDS = {
     "ready": "/System/Library/Sounds/Tink.aiff",
     "stop": "/System/Library/Sounds/Pop.aiff",
+    "done": "/System/Library/Sounds/Glass.aiff",  # Erfolgs-Feedback
     "error": "/System/Library/Sounds/Basso.aiff",
 }
 
@@ -22,6 +23,7 @@ MACOS_SYSTEM_SOUNDS = {
 WINDOWS_SYSTEM_SOUNDS = {
     "ready": "SystemAsterisk",
     "stop": "SystemExclamation",
+    "done": "SystemAsterisk",  # Erfolgs-Feedback
     "error": "SystemHand",
 }
 
@@ -173,6 +175,7 @@ class WindowsSoundPlayer:
         self._winsound = None
         try:
             import winsound
+
             self._winsound = winsound
         except ImportError:
             logger.warning("winsound nicht verfügbar")
@@ -190,8 +193,7 @@ class WindowsSoundPlayer:
         try:
             # SND_ALIAS | SND_ASYNC für non-blocking Playback
             self._winsound.PlaySound(
-                sound_alias,
-                self._winsound.SND_ALIAS | self._winsound.SND_ASYNC
+                sound_alias, self._winsound.SND_ALIAS | self._winsound.SND_ASYNC
             )
         except Exception as e:
             logger.debug(f"Sound-Playback fehlgeschlagen: {e}")

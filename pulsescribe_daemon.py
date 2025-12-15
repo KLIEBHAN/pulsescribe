@@ -490,24 +490,32 @@ class PulseScribeDaemon:
         if self._overlay:
             self._overlay.update_state(state, text)
 
-    def _flush_ui(self) -> None:
-        """Erzwingt sofortiges UI-Rendering.
+    def _flush_ui_and_wait(self) -> None:
+        """Erzwingt UI-Rendering und wartet auf WindowServer.
 
-        Warum nötig: AppKit-Updates (NSStatusBar, NSWindow) werden erst beim nächsten
-        Event-Loop-Durchlauf sichtbar. Bei Auto-Paste muss die UI aber VOR dem
-        Text-Einfügen aktualisiert werden, damit der User ✅ sieht statt ⏳.
+        Warum nötig: NSStatusBar wird von WindowServer gerendert (separater Prozess).
+        setTitle_() sendet nur eine Nachricht via Mach-Port, aber wir können nicht
+        garantieren, wann WindowServer das Icon tatsächlich zeichnet.
 
-        Performance: ~0.2ms, nicht wahrnehmbar.
+        Lösung:
+        1. NSRunLoop.runMode_beforeDate_() - flusht AppKit Event-Queue (~0.2ms)
+        2. time.sleep(0.015) - gibt WindowServer Zeit zum Rendern (~15ms)
+        3. Sound-Feedback erfolgt VOR dem Delay für sofortige auditive Bestätigung
+
+        Gesamt-Latenz: ~15-16ms, nicht wahrnehmbar für User.
         """
         from Foundation import (  # type: ignore[import-not-found]
-            NSRunLoop,
             NSDate,
             NSDefaultRunLoopMode,
+            NSRunLoop,
         )
 
+        # 1. AppKit Event-Queue flushen
         NSRunLoop.currentRunLoop().runMode_beforeDate_(
             NSDefaultRunLoopMode, NSDate.date()
         )
+        # 2. WindowServer Zeit zum Rendern geben
+        time.sleep(0.015)
 
     def _on_hotkey(self) -> None:
         """Callback bei Hotkey-Aktivierung."""
@@ -673,9 +681,10 @@ class PulseScribeDaemon:
             self._apply_pending_hotkey_reconfigure_if_safe()
             return
 
-        # Erfolgreiche Transkription: UI → Flush → History → Paste
+        # Erfolgreiche Transkription: State → Sound → UI-Flush → History → Paste
         self._update_state(AppState.DONE, transcript)
-        self._flush_ui()  # UI muss ✅ zeigen BEVOR Text eingefügt wird
+        get_sound_player().play("done")  # Sofortiges auditives Feedback
+        self._flush_ui_and_wait()  # ✅ muss sichtbar sein BEVOR Text eingefügt wird
         self._save_to_history(transcript)
         self._paste_result(transcript)
         self._apply_pending_hotkey_reconfigure_if_safe()
