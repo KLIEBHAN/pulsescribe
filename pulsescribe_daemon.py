@@ -1295,14 +1295,44 @@ class PulseScribeDaemon:
                 except queue.Full:
                     pass
 
-            with sd.InputStream(
+            # Explizites Stream-Management statt Context-Manager
+            # Vermeidet PortAudio-Deadlock beim Schließen des Streams
+            stream = sd.InputStream(
                 samplerate=WHISPER_SAMPLE_RATE,
                 channels=1,
                 dtype="float32",
                 callback=callback,
-            ):
-                while not self._stop_event.is_set():
+            )
+            stream.start()
+            logger.debug("Audio-Stream gestartet")
+
+            try:
+                stop_event = self._stop_event  # Local ref for type narrowing
+                while stop_event is not None and not stop_event.is_set():
                     sd.sleep(50)
+            finally:
+                # Stream mit Timeout schließen – PortAudio kann beim close() deadlocken
+                def _close_stream():
+                    try:
+                        stream.stop()
+                    except Exception:
+                        pass
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
+
+                close_thread = threading.Thread(target=_close_stream, daemon=True)
+                close_thread.start()
+                close_thread.join(timeout=2.0)
+
+                if close_thread.is_alive():
+                    logger.warning(
+                        "Audio-Stream Timeout beim Schließen (2s) – "
+                        "PortAudio-Deadlock vermutet, fahre fort ohne sauberes Schließen"
+                    )
+                else:
+                    logger.debug("Audio-Stream sauber geschlossen")
 
             # Stop-Sound
             player.play("stop")
@@ -1373,7 +1403,7 @@ class PulseScribeDaemon:
                 # (via Queue nicht direkt möglich, aber _stop_recording setzt es im Main-Thread)
 
                 # Transkribieren via Provider
-                mode_for_run = self._run_mode or self.mode
+                mode_for_run = self._run_mode or self.mode or "deepgram"
                 provider = self._get_provider(mode_for_run)
                 t0 = time.perf_counter()
                 try:
@@ -1734,7 +1764,7 @@ class PulseScribeDaemon:
         # Neues Window erstellen falls noch nicht vorhanden
         if self._welcome is None:
             self._welcome = WelcomeController(
-                hotkey=self.hotkey,
+                hotkey=self.hotkey or "(nicht konfiguriert)",
                 config={
                     "deepgram_key": bool(os.getenv("DEEPGRAM_API_KEY")),
                     "groq_key": bool(os.getenv("GROQ_API_KEY")),
