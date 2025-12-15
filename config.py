@@ -23,7 +23,9 @@ INT16_MAX = 32767
 # =============================================================================
 
 INTERIM_THROTTLE_MS = 150  # Max. Update-Rate für Interim-File (Menübar pollt 200ms)
-FINALIZE_TIMEOUT = 2.0  # Warten auf finale Transkripte nach Deepgram-Finalize
+FINALIZE_TIMEOUT = (
+    1.0  # Warten auf finale Transkripte (Deepgram antwortet meist in 300-500ms)
+)
 DEEPGRAM_WS_URL = "wss://api.deepgram.com/v1/listen"
 DEEPGRAM_CLOSE_TIMEOUT = 0.5  # Schneller WebSocket-Shutdown (SDK Default: 10s)
 
@@ -112,7 +114,6 @@ __all__ = [
     "DEFAULT_DEEPGRAM_MODEL",
     "DEFAULT_GROQ_MODEL",
     "DEFAULT_REFINE_MODEL",
-    "DEFAULT_GROQ_REFINE_MODEL",
     # IPC
     "TEMP_RECORDING_FILENAME",
     "PID_FILE",

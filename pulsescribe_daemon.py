@@ -19,6 +19,7 @@ Usage:
     python pulsescribe_daemon.py --hotkey fn  # Hotkey überschreiben
 """
 
+import atexit
 import logging
 import os
 import queue
@@ -26,6 +27,7 @@ import sys
 import tempfile
 import threading
 import time
+import weakref
 from pathlib import Path
 
 
@@ -497,25 +499,22 @@ class PulseScribeDaemon:
         setTitle_() sendet nur eine Nachricht via Mach-Port, aber wir können nicht
         garantieren, wann WindowServer das Icon tatsächlich zeichnet.
 
-        Lösung:
-        1. NSRunLoop.runUntilDate_() - lässt Event-Loop 10ms laufen (BLOCKIEREND)
-           → Garantiert, dass AppKit setTitle_() an WindowServer sendet
-        2. time.sleep(0.010) - gibt WindowServer zusätzlich Zeit zum Rendern
-        3. Sound-Feedback erfolgt VOR dem Delay für sofortige auditive Bestätigung
+        Lösung: NSRunLoop.runUntilDate_() lässt Event-Loop 15ms laufen.
+        Das flusht alle pending AppKit-Events zum WindowServer und gibt ihm
+        Zeit zum Rendern. Sound-Feedback erfolgt VOR dem Flush für sofortige
+        auditive Bestätigung.
 
-        Gesamt-Latenz: ~20ms, nicht wahrnehmbar für User.
+        Gesamt-Latenz: ~15ms, nicht wahrnehmbar für User.
         """
         from Foundation import (  # type: ignore[import-not-found]
             NSDate,
             NSRunLoop,
         )
 
-        # 1. Event-Loop 10ms laufen lassen - garantiert AppKit → WindowServer Flush
+        # Event-Loop 15ms laufen lassen - flusht AppKit → WindowServer
         NSRunLoop.currentRunLoop().runUntilDate_(
-            NSDate.dateWithTimeIntervalSinceNow_(0.010)
+            NSDate.dateWithTimeIntervalSinceNow_(0.015)
         )
-        # 2. WindowServer Zeit zum Rendern geben
-        time.sleep(0.010)
 
     def _on_hotkey(self) -> None:
         """Callback bei Hotkey-Aktivierung."""
@@ -1147,28 +1146,36 @@ class PulseScribeDaemon:
         self._start_result_polling()
 
     def _start_interim_polling(self) -> None:
-        """Startet NSTimer für Interim-Text-Polling."""
+        """Startet NSTimer für Interim-Text-Polling.
+
+        Verwendet weakref um Circular References zu vermeiden:
+        NSTimer → Block → self → NSTimer würde Memory-Leak verursachen.
+        """
         from Foundation import NSTimer  # type: ignore[import-not-found]
 
         self._last_interim_mtime = 0.0
+        weak_self = weakref.ref(self)
 
-        def poll_interim() -> None:
-            if self._current_state != AppState.RECORDING:
+        def poll_interim(_timer) -> None:
+            daemon = weak_self()
+            if daemon is None:
+                return
+            if daemon._current_state != AppState.RECORDING:
                 return
             try:
                 mtime = INTERIM_FILE.stat().st_mtime
-                if mtime > self._last_interim_mtime:
-                    self._last_interim_mtime = mtime
+                if mtime > daemon._last_interim_mtime:
+                    daemon._last_interim_mtime = mtime
                     interim_text = INTERIM_FILE.read_text().strip()
                     if interim_text:
-                        self._update_state(AppState.RECORDING, interim_text)
+                        daemon._update_state(AppState.RECORDING, interim_text)
             except FileNotFoundError:
                 pass
             except OSError:
                 pass
 
         self._interim_timer = NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
-            0.2, True, lambda _: poll_interim()
+            0.2, True, poll_interim
         )
 
     def _stop_interim_polling(self) -> None:
@@ -1507,52 +1514,61 @@ class PulseScribeDaemon:
         self._apply_pending_hotkey_reconfigure_if_safe()
 
     def _start_result_polling(self) -> None:
-        """Startet NSTimer für Result-Polling."""
+        """Startet NSTimer für Result-Polling.
+
+        Verwendet weakref um Circular References zu vermeiden:
+        NSTimer → Block → self → NSTimer würde Memory-Leak verursachen.
+        """
         from Foundation import NSTimer  # type: ignore[import-not-found]
 
-        # NSTimer für regelmäßiges Polling (50ms)
-        def check_result() -> None:
+        weak_self = weakref.ref(self)
+
+        def check_result(_timer) -> None:
+            daemon = weak_self()
+            if daemon is None:
+                return
+
             # Queue drainen um Backlog zu vermeiden (z.B. hunderte Audio-Level Messages)
             # Wir verarbeiten ALLE Messages, aber UI-Updates passieren so schnell wie möglich
             try:
                 processed_count = 0
                 while True:
-                    result = self._result_queue.get_nowait()
+                    result = daemon._result_queue.get_nowait()
                     processed_count += 1
 
                     # Exception Handling
                     if isinstance(result, Exception):
-                        self._stop_result_polling()
-                        self._handle_worker_error(result)
+                        daemon._stop_result_polling()
+                        daemon._handle_worker_error(result)
                         return
 
                     # DaemonMessage Handling
                     if isinstance(result, DaemonMessage):
                         if result.type == MessageType.STATUS_UPDATE:
-                            self._update_state(result.payload)
+                            daemon._update_state(result.payload)
                             # Continue draining
 
                         elif result.type == MessageType.AUDIO_LEVEL:
                             level = result.payload
                             # VAD Logic: Switch LISTENING -> RECORDING
                             if (
-                                self._current_state == AppState.LISTENING
+                                daemon._current_state == AppState.LISTENING
                                 and level > VAD_THRESHOLD
                             ):
-                                self._update_state(AppState.RECORDING)
+                                daemon._update_state(AppState.RECORDING)
 
                             # Forward to Overlay (nur wenn noch Recording/Listening)
-                            if self._overlay and self._current_state in [
+                            if daemon._overlay and daemon._current_state in [
                                 AppState.LISTENING,
                                 AppState.RECORDING,
                             ]:
-                                self._overlay.update_audio_level(level)
+                                daemon._overlay.update_audio_level(level)
                             # Continue draining
 
                         elif result.type == MessageType.TRANSCRIPT_RESULT:
-                            self._stop_result_polling()
+                            daemon._stop_result_polling()
                             transcript = str(result.payload or "")
-                            self._handle_transcript_result(transcript)
+                            daemon._handle_transcript_result(transcript)
                             return
 
                     # Safety Break nach zu vielen Messages pro Tick, um UI nicht zu blockieren
@@ -1564,7 +1580,7 @@ class PulseScribeDaemon:
 
         # Etwas schnelleres Polling für direkteres UI-Feedback (Wellen/Level)
         self._result_timer = NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
-            0.03, True, lambda _: check_result()
+            0.03, True, check_result
         )
 
     def _stop_result_polling(self) -> None:
@@ -1572,6 +1588,26 @@ class PulseScribeDaemon:
         if self._result_timer:
             self._result_timer.invalidate()
             self._result_timer = None
+
+    def cleanup(self) -> None:
+        """Cleanup bei Shutdown – gibt Ressourcen frei.
+
+        Sollte vor app.terminate_() aufgerufen werden.
+        Verhindert Memory-Leaks bei Local Whisper (~500MB RAM).
+        """
+        # Timer stoppen
+        self._stop_interim_polling()
+        self._stop_result_polling()
+
+        # Provider-Cache leeren (Local Whisper kann ~500MB RAM halten)
+        for name, provider in list(self._provider_cache.items()):
+            if hasattr(provider, "cleanup"):
+                try:
+                    provider.cleanup()
+                except Exception:
+                    pass
+        self._provider_cache.clear()
+        logger.debug("Provider-Cache geleert")
 
     def _paste_result(self, transcript: str) -> None:
         """Fügt Transkript via Auto-Paste ein."""
@@ -2200,9 +2236,13 @@ class PulseScribeDaemon:
 
         # 2. Signal-Handler, der die App sauber beendet
         def signal_handler(sig, frame):
+            self.cleanup()
             app.terminate_(None)
 
         signal.signal(signal.SIGINT, signal_handler)
+
+        # 3. atexit Handler für CMD+Q (ruft terminate: direkt auf, ohne Python-Handler)
+        atexit.register(self.cleanup)
 
         app.run()
 
