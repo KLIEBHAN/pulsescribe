@@ -51,10 +51,12 @@ logger = logging.getLogger("pulsescribe")
 # Default-Modell (Alias für Rückwärtskompatibilität)
 DEFAULT_MODEL = DEFAULT_DEEPGRAM_MODEL
 
+
 def _play_sound(name: str) -> None:
     """Spielt benannten Sound ab."""
     try:
         from whisper_platform import get_sound_player
+
         player = get_sound_player()
         player.play(name)
     except Exception:
@@ -230,6 +232,7 @@ async def deepgram_stream_core(
         nonlocal stream_error
         logger.error(f"[{session_id}] Deepgram Error: {error}")
         stream_error = error if isinstance(error, Exception) else Exception(str(error))
+        stop_event.set()  # Beendet await stop_event.wait() bei Fehlern
 
     def on_close(_data):
         logger.debug(f"[{session_id}] Connection closed")
@@ -244,9 +247,12 @@ async def deepgram_stream_core(
             external_stop_event.wait()
             try:
                 loop.call_soon_threadsafe(stop_event.set)
-            except RuntimeError:
-                # Event loop already closed (App shutdown via CMD+Q)
-                pass
+            except RuntimeError as e:
+                # Event loop bereits geschlossen (z.B. CMD+Q während Aufnahme)
+                # Kein kritischer Fehler, aber loggen für Debugging
+                logger.debug(
+                    f"[{session_id}] Event-Loop geschlossen, Stop-Event nicht gesetzt: {e}"
+                )
 
         stop_watcher = threading.Thread(target=_watch_external_stop, daemon=True)
         stop_watcher.start()
@@ -279,11 +285,11 @@ async def deepgram_stream_core(
                 loop.call_soon_threadsafe(audio_queue.put_nowait, audio_bytes)
 
         buffer_lock = None
-        audio_buffer = None
+        audio_buffer: list[bytes] | None = None
     else:
         # CLI-Mode: Puffern bis WebSocket bereit ist
         # Verhindert Audio-Verlust während ~500ms WebSocket-Handshake
-        audio_buffer: list[bytes] = []
+        audio_buffer = []
         buffer_lock = threading.Lock()
         buffering_active = True
 
@@ -291,7 +297,7 @@ async def deepgram_stream_core(
             """Puffert Audio bis WebSocket verbunden, dann direkt senden."""
             if status:
                 logger.warning(f"[{session_id}] Audio-Status: {status}")
-            
+
             # RMS Berechnung für Visualisierung
             if audio_level_callback:
                 rms = float(np.sqrt(np.mean(indata**2)))
@@ -423,9 +429,7 @@ async def deepgram_stream_core(
                 await asyncio.wait_for(finalize_done.wait(), timeout=FINALIZE_TIMEOUT)
                 logger.info(f"[{session_id}] Finalize abgeschlossen")
             except asyncio.TimeoutError:
-                logger.warning(
-                    f"[{session_id}] Finalize-Timeout ({FINALIZE_TIMEOUT}s)"
-                )
+                logger.warning(f"[{session_id}] Finalize-Timeout ({FINALIZE_TIMEOUT}s)")
 
             # 4. CloseStream: Erzwingt sofortiges Verbindungs-Ende
             #    Ohne CloseStream wartet der async-with Exit ~10s auf Server-Close
@@ -505,6 +509,7 @@ class DeepgramStreamProvider:
         Für Datei-Transkription nutze den regulären DeepgramProvider.
         """
         from .deepgram import DeepgramProvider
+
         return DeepgramProvider().transcribe(audio_path, model, language)
 
     def transcribe_stream(

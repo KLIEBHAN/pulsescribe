@@ -29,6 +29,14 @@ FINALIZE_TIMEOUT = (
 DEEPGRAM_WS_URL = "wss://api.deepgram.com/v1/listen"
 DEEPGRAM_CLOSE_TIMEOUT = 0.5  # Schneller WebSocket-Shutdown (SDK Default: 10s)
 
+# Watchdog: Automatisches Timeout wenn TRANSCRIBING zu lange dauert
+# Verhindert "hängendes Overlay" bei Worker-Problemen (z.B. WebSocket-Hänger)
+TRANSCRIBING_TIMEOUT = 45.0  # Sekunden (Deepgram + Refine sollten < 30s dauern)
+
+# LLM-Refine Timeout: Maximale Wartezeit für API-Calls
+# Verhindert "hängende" Requests bei Netzwerkproblemen
+LLM_REFINE_TIMEOUT = 30.0  # Sekunden (typische Refine-Calls: 2-5s)
+
 # =============================================================================
 # Default-Modelle
 # =============================================================================
@@ -108,6 +116,8 @@ __all__ = [
     "FINALIZE_TIMEOUT",
     "DEEPGRAM_WS_URL",
     "DEEPGRAM_CLOSE_TIMEOUT",
+    "TRANSCRIBING_TIMEOUT",
+    "LLM_REFINE_TIMEOUT",
     # Models
     "DEFAULT_API_MODEL",
     "DEFAULT_LOCAL_MODEL",

@@ -48,6 +48,7 @@ emergency_log("=== Booting PulseScribe Daemon ===")
 
 try:
     from config import INTERIM_FILE, VAD_THRESHOLD, WHISPER_SAMPLE_RATE
+    from config import TRANSCRIBING_TIMEOUT
     from utils import setup_logging, show_error_alert
     from config import DEFAULT_DEEPGRAM_MODEL, DEFAULT_LOCAL_MODEL
     from utils.env import get_env_bool, get_env_bool_default, parse_bool
@@ -146,6 +147,8 @@ class PulseScribeDaemon:
         self._result_timer = None
         self._interim_timer = None
         self._last_interim_mtime = 0.0
+        # Watchdog-Timer: Verhindert hängendes Overlay bei Worker-Problemen
+        self._transcribing_watchdog = None
 
         # UI-Controller (werden in run() initialisiert)
         self._menubar: MenuBarController | None = None
@@ -484,8 +487,20 @@ class PulseScribeDaemon:
 
     def _update_state(self, state: AppState, text: str | None = None) -> None:
         """Aktualisiert State und benachrichtigt UI-Controller."""
+        prev_state = self._current_state
         self._current_state = state
-        logger.debug(f"State: {state}" + (f" text='{text[:20]}...'" if text else ""))
+        logger.debug(
+            f"State: {prev_state.value} → {state.value}"
+            + (f" text='{text[:20]}...'" if text else "")
+        )
+
+        # Watchdog-Timer Management
+        if state == AppState.TRANSCRIBING:
+            # Starte Watchdog wenn TRANSCRIBING beginnt
+            self._start_transcribing_watchdog()
+        elif state in (AppState.DONE, AppState.ERROR, AppState.IDLE):
+            # Stoppe Watchdog bei Abschluss
+            self._stop_transcribing_watchdog()
 
         if self._menubar:
             self._menubar.update_state(state, text)
@@ -1204,19 +1219,23 @@ class PulseScribeDaemon:
         aber der Main-Thread für QuickMacHotKey und UI frei bleiben muss.
 
         Lifecycle: Start → Mikrofon → Stream → Stop-Event → Finalize → Result
+
+        Garantiert: Sendet IMMER entweder TRANSCRIPT_RESULT oder Exception.
         """
         import asyncio
 
+        logger.debug("StreamingWorker gestartet")
+        transcript = ""
+
         try:
             model = self.model or DEFAULT_DEEPGRAM_MODEL
-
-            # setup_logging(debug=logger.level == logging.DEBUG) # Bereits global konfiguriert
 
             # Eigener Event-Loop, da wir nicht im Main-Thread sind
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
 
             try:
+                logger.debug(f"Starte deepgram_stream_core (model={model})")
                 transcript = loop.run_until_complete(
                     deepgram_stream_core(
                         model=model,
@@ -1226,25 +1245,37 @@ class PulseScribeDaemon:
                         audio_level_callback=self._on_audio_level,
                     )
                 )
+                logger.debug(
+                    f"deepgram_stream_core abgeschlossen: {len(transcript)} Zeichen"
+                )
 
-                # LLM-Nachbearbeitung (optional)
+                # LLM-Nachbearbeitung (optional) - mit eigenem try/except für graceful degradation
                 if self.refine and transcript:
                     self._result_queue.put(
                         DaemonMessage(
                             type=MessageType.STATUS_UPDATE, payload=AppState.REFINING
                         )
                     )
-                    from refine.llm import refine_transcript
+                    try:
+                        from refine.llm import refine_transcript
 
-                    transcript = refine_transcript(
-                        transcript,
-                        model=self.refine_model,
-                        provider=self.refine_provider,
-                        context=self.context,
-                    )
+                        logger.debug("Starte refine_transcript")
+                        transcript = refine_transcript(
+                            transcript,
+                            model=self.refine_model,
+                            provider=self.refine_provider,
+                            context=self.context,
+                        )
+                        logger.debug("refine_transcript abgeschlossen")
+                    except Exception as refine_error:
+                        # Refine-Fehler sind nicht kritisch - Original-Transkript verwenden
+                        logger.warning(
+                            f"Refine fehlgeschlagen, verwende Original: {refine_error}"
+                        )
                 elif not self.refine:
                     logger.debug("Refine deaktiviert (self.refine=False)")
 
+                logger.debug("Sende TRANSCRIPT_RESULT")
                 self._result_queue.put(
                     DaemonMessage(
                         type=MessageType.TRANSCRIPT_RESULT, payload=transcript
@@ -1253,9 +1284,11 @@ class PulseScribeDaemon:
 
             finally:
                 loop.close()
+                logger.debug("Event-Loop geschlossen")
 
         except Exception as e:
             logger.exception(f"Streaming-Worker Fehler: {e}")
+            emergency_log(f"StreamingWorker Exception: {type(e).__name__}: {e}")
             self._result_queue.put(e)
 
     def _recording_worker(self) -> None:
@@ -1264,11 +1297,14 @@ class PulseScribeDaemon:
 
         Nimmt Audio auf bis Stop-Event, speichert als WAV,
         und ruft dann Provider direkt auf.
+
+        Garantiert: Sendet IMMER entweder TRANSCRIPT_RESULT oder Exception.
         """
         import numpy as np
         import sounddevice as sd
         import soundfile as sf
 
+        logger.debug("RecordingWorker gestartet")
         recorded_chunks = []
         max_rms = 0.0
         had_speech = False
@@ -1463,27 +1499,34 @@ class PulseScribeDaemon:
                         f"time={t_transcribe:.2f}s (audio duration unknown)"
                     )
 
-                # LLM-Refine
+                # LLM-Refine - mit eigenem try/except für graceful degradation
                 if self.refine and transcript:
                     self._result_queue.put(
                         DaemonMessage(
                             type=MessageType.STATUS_UPDATE, payload=AppState.REFINING
                         )
                     )
-                    from refine.llm import refine_transcript
+                    try:
+                        from refine.llm import refine_transcript
 
-                    t1 = time.perf_counter()
-                    transcript = refine_transcript(
-                        transcript,
-                        model=self.refine_model,
-                        provider=self.refine_provider,
-                        context=self.context,
-                    )
-                    t_refine = time.perf_counter() - t1
-                    logger.info(
-                        f"Refine performance: provider={self.refine_provider}, time={t_refine:.2f}s"
-                    )
+                        t1 = time.perf_counter()
+                        transcript = refine_transcript(
+                            transcript,
+                            model=self.refine_model,
+                            provider=self.refine_provider,
+                            context=self.context,
+                        )
+                        t_refine = time.perf_counter() - t1
+                        logger.info(
+                            f"Refine performance: provider={self.refine_provider}, time={t_refine:.2f}s"
+                        )
+                    except Exception as refine_error:
+                        # Refine-Fehler sind nicht kritisch - Original-Transkript verwenden
+                        logger.warning(
+                            f"Refine fehlgeschlagen, verwende Original: {refine_error}"
+                        )
 
+                logger.debug("Sende TRANSCRIPT_RESULT")
                 self._result_queue.put(
                     DaemonMessage(
                         type=MessageType.TRANSCRIPT_RESULT, payload=transcript
@@ -1496,6 +1539,7 @@ class PulseScribeDaemon:
 
         except Exception as e:
             logger.exception(f"Recording-Worker Fehler: {e}")
+            emergency_log(f"RecordingWorker Exception: {type(e).__name__}: {e}")
             self._result_queue.put(e)
 
     def _stop_recording(self) -> None:
@@ -1630,6 +1674,98 @@ class PulseScribeDaemon:
             self._result_timer.invalidate()
             self._result_timer = None
 
+    def _start_transcribing_watchdog(self) -> None:
+        """Startet Watchdog-Timer für TRANSCRIBING-State.
+
+        Verhindert "hängendes Overlay" wenn der Worker nicht antwortet:
+        - WebSocket-Verbindungsprobleme
+        - Deepgram-Server-Timeout
+        - Unbehandelte Exceptions im Worker-Thread
+
+        Nach TRANSCRIBING_TIMEOUT Sekunden wird automatisch auf ERROR → IDLE gesetzt.
+
+        WICHTIG: Der Watchdog ist ein Fallback, nicht die Lösung des eigentlichen Problems.
+        Er verhindert nur, dass das UI dauerhaft hängen bleibt.
+        """
+        from Foundation import NSTimer  # type: ignore[import-not-found]
+
+        # Alten Timer stoppen falls vorhanden
+        self._stop_transcribing_watchdog()
+
+        weak_self = weakref.ref(self)
+
+        def watchdog_fired(_timer) -> None:
+            daemon = weak_self()
+            if daemon is None:
+                return
+
+            # Nur eingreifen wenn noch im TRANSCRIBING/REFINING State
+            if daemon._current_state not in (AppState.TRANSCRIBING, AppState.REFINING):
+                logger.debug("Watchdog: State bereits geändert, ignoriere")
+                return
+
+            logger.error(
+                f"⚠️ Watchdog: TRANSCRIBING-Timeout nach {TRANSCRIBING_TIMEOUT}s! "
+                f"Worker antwortet nicht. Setze State auf ERROR."
+            )
+            emergency_log(
+                f"Watchdog triggered: State={daemon._current_state.value}, "
+                f"worker_alive={daemon._worker_thread.is_alive() if daemon._worker_thread else 'None'}"
+            )
+
+            # SOFORT Polling stoppen, damit keine Race-Condition mit spätem Ergebnis
+            daemon._stop_result_polling()
+
+            # Queue leeren, um inkonsistenten State zu vermeiden
+            daemon._drain_result_queue()
+
+            # Worker stoppen falls noch aktiv
+            if daemon._stop_event:
+                daemon._stop_event.set()
+
+            # UI auf Error setzen
+            daemon._update_state(AppState.ERROR)
+            get_sound_player().play("error")
+
+            # Nach kurzem Feedback zurück auf IDLE
+            from Foundation import NSTimer as NST
+
+            def reset_to_idle(_t):
+                d = weak_self()
+                if d and d._current_state == AppState.ERROR:
+                    d._update_state(AppState.IDLE)
+
+            NST.scheduledTimerWithTimeInterval_repeats_block_(0.8, False, reset_to_idle)
+
+        logger.debug(f"Watchdog gestartet: {TRANSCRIBING_TIMEOUT}s Timeout")
+        self._transcribing_watchdog = (
+            NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+                TRANSCRIBING_TIMEOUT, False, watchdog_fired
+            )
+        )
+
+    def _drain_result_queue(self) -> None:
+        """Leert die Result-Queue ohne Verarbeitung.
+
+        Wird vom Watchdog verwendet, um Race-Conditions zu vermeiden.
+        """
+        drained = 0
+        while True:
+            try:
+                _ = self._result_queue.get_nowait()
+                drained += 1
+            except queue.Empty:
+                break
+        if drained > 0:
+            logger.debug(f"Watchdog: {drained} Messages aus Queue verworfen")
+
+    def _stop_transcribing_watchdog(self) -> None:
+        """Stoppt den Watchdog-Timer."""
+        if self._transcribing_watchdog:
+            self._transcribing_watchdog.invalidate()
+            self._transcribing_watchdog = None
+            logger.debug("Watchdog gestoppt")
+
     def cleanup(self) -> None:
         """Cleanup bei Shutdown – gibt Ressourcen frei.
 
@@ -1639,6 +1775,7 @@ class PulseScribeDaemon:
         # Timer stoppen
         self._stop_interim_polling()
         self._stop_result_polling()
+        self._stop_transcribing_watchdog()
 
         # Provider-Cache leeren (Local Whisper kann ~500MB RAM halten)
         for name, provider in list(self._provider_cache.items()):

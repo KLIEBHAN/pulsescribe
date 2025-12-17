@@ -435,3 +435,100 @@ class TestTestDictation(unittest.TestCase):
 
         self.assertTrue(daemon._test_run_active)
         self.assertEqual(daemon._test_run_callback, callback)
+
+
+class TestWatchdogTimer(unittest.TestCase):
+    """Tests für den Transcribing-Watchdog-Timer."""
+
+    def test_watchdog_starts_on_transcribing_state(self):
+        """Watchdog-Timer wird bei TRANSCRIBING-State gestartet."""
+        daemon = PulseScribeDaemon(mode="local")
+
+        with patch.object(daemon, "_start_transcribing_watchdog") as mock_start:
+            daemon._update_state(AppState.TRANSCRIBING)
+            mock_start.assert_called_once()
+
+    def test_watchdog_stops_on_done_state(self):
+        """Watchdog-Timer wird bei DONE-State gestoppt."""
+        daemon = PulseScribeDaemon(mode="local")
+        daemon._current_state = AppState.TRANSCRIBING
+
+        with patch.object(daemon, "_stop_transcribing_watchdog") as mock_stop:
+            daemon._update_state(AppState.DONE)
+            mock_stop.assert_called_once()
+
+    def test_watchdog_stops_on_error_state(self):
+        """Watchdog-Timer wird bei ERROR-State gestoppt."""
+        daemon = PulseScribeDaemon(mode="local")
+        daemon._current_state = AppState.TRANSCRIBING
+
+        with patch.object(daemon, "_stop_transcribing_watchdog") as mock_stop:
+            daemon._update_state(AppState.ERROR)
+            mock_stop.assert_called_once()
+
+    def test_watchdog_stops_on_idle_state(self):
+        """Watchdog-Timer wird bei IDLE-State gestoppt."""
+        daemon = PulseScribeDaemon(mode="local")
+        daemon._current_state = AppState.TRANSCRIBING
+
+        with patch.object(daemon, "_stop_transcribing_watchdog") as mock_stop:
+            daemon._update_state(AppState.IDLE)
+            mock_stop.assert_called_once()
+
+    def test_watchdog_not_started_for_recording_state(self):
+        """Watchdog-Timer wird bei RECORDING-State NICHT gestartet."""
+        daemon = PulseScribeDaemon(mode="local")
+
+        with patch.object(daemon, "_start_transcribing_watchdog") as mock_start:
+            daemon._update_state(AppState.RECORDING)
+            mock_start.assert_not_called()
+
+    def test_stop_watchdog_when_none(self):
+        """_stop_transcribing_watchdog() ist safe wenn kein Timer existiert."""
+        daemon = PulseScribeDaemon(mode="local")
+        daemon._transcribing_watchdog = None
+
+        # Should not raise
+        daemon._stop_transcribing_watchdog()
+        self.assertIsNone(daemon._transcribing_watchdog)
+
+    def test_update_state_logs_transition(self):
+        """State-Änderungen werden geloggt mit vorherigem und neuem State."""
+        daemon = PulseScribeDaemon(mode="local")
+        daemon._current_state = AppState.LISTENING
+
+        with patch("pulsescribe_daemon.logger") as mock_logger:
+            daemon._update_state(AppState.RECORDING)
+            # Check that debug was called with transition info
+            mock_logger.debug.assert_called()
+            call_args = mock_logger.debug.call_args[0][0]
+            self.assertIn("listening", call_args.lower())
+            self.assertIn("recording", call_args.lower())
+
+    def test_drain_result_queue_empties_queue(self):
+        """_drain_result_queue() leert die Queue vollständig."""
+        daemon = PulseScribeDaemon(mode="local")
+
+        # Fill queue with some messages
+        daemon._result_queue.put(
+            DaemonMessage(type=MessageType.AUDIO_LEVEL, payload=0.5)
+        )
+        daemon._result_queue.put(
+            DaemonMessage(type=MessageType.TRANSCRIPT_RESULT, payload="test")
+        )
+        daemon._result_queue.put(Exception("test error"))
+
+        self.assertEqual(daemon._result_queue.qsize(), 3)
+
+        daemon._drain_result_queue()
+
+        self.assertTrue(daemon._result_queue.empty())
+
+    def test_drain_result_queue_handles_empty_queue(self):
+        """_drain_result_queue() ist safe bei leerer Queue."""
+        daemon = PulseScribeDaemon(mode="local")
+        self.assertTrue(daemon._result_queue.empty())
+
+        # Should not raise
+        daemon._drain_result_queue()
+        self.assertTrue(daemon._result_queue.empty())

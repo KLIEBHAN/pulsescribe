@@ -18,6 +18,7 @@ from utils.env import get_env_bool_default
 from config import (
     DEFAULT_REFINE_MODEL,
     OPENROUTER_BASE_URL,
+    LLM_REFINE_TIMEOUT,
 )
 
 logger = logging.getLogger("pulsescribe")
@@ -129,13 +130,10 @@ def refine_transcript(
         provider or os.getenv("PULSESCRIBE_REFINE_PROVIDER", "openai")
     ).lower()
 
-    # Provider-spezifisches Default-Modell
-    if model:
-        effective_model = model
-    elif os.getenv("PULSESCRIBE_REFINE_MODEL"):
-        effective_model = os.getenv("PULSESCRIBE_REFINE_MODEL")
-    else:
-        effective_model = DEFAULT_REFINE_MODEL
+    # Provider-spezifisches Default-Modell (CLI > ENV > Default)
+    effective_model = (
+        model or os.getenv("PULSESCRIBE_REFINE_MODEL") or DEFAULT_REFINE_MODEL
+    )
 
     logger.info(
         f"[{session_id}] LLM-Nachbearbeitung: provider={effective_provider}, model={effective_model}"
@@ -151,13 +149,15 @@ def refine_transcript(
             response = client.chat.completions.create(
                 model=effective_model,
                 messages=[{"role": "user", "content": full_prompt}],
+                timeout=LLM_REFINE_TIMEOUT,
             )
             result = _extract_message_content(response.choices[0].message.content)
         elif effective_provider == "openrouter":
             # OpenRouter API-Aufruf vorbereiten
-            create_kwargs = {
+            create_kwargs: dict = {
                 "model": effective_model,
                 "messages": [{"role": "user", "content": full_prompt}],
+                "timeout": LLM_REFINE_TIMEOUT,
             }
 
             # Provider-Routing konfigurieren (optional)
@@ -182,7 +182,11 @@ def refine_transcript(
             result = _extract_message_content(response.choices[0].message.content)
         else:
             # OpenAI responses API
-            api_params = {"model": effective_model, "input": full_prompt}
+            api_params: dict = {
+                "model": effective_model,
+                "input": full_prompt,
+                "timeout": LLM_REFINE_TIMEOUT,
+            }
             # GPT-5 nutzt "reasoning" API – "minimal" für schnelle Korrekturen
             # statt tiefgehender Analyse (spart Tokens und Latenz)
             if effective_model.startswith("gpt-5"):
@@ -204,7 +208,7 @@ def maybe_refine_transcript(transcript: str, args: argparse.Namespace) -> str:
     Returns:
         Das nachbearbeitete Transkript oder Original bei Fehler/Deaktivierung
     """
-    from openai import APIError, APIConnectionError, RateLimitError
+    from openai import APIError, APIConnectionError, APITimeoutError, RateLimitError
 
     if not args.refine or args.no_refine:
         return transcript
@@ -219,6 +223,9 @@ def maybe_refine_transcript(transcript: str, args: argparse.Namespace) -> str:
     except ValueError as e:
         # Fehlende API-Keys (z.B. OPENROUTER_API_KEY)
         logger.warning(f"LLM-Nachbearbeitung übersprungen: {e}")
+        return transcript
+    except APITimeoutError as e:
+        logger.warning(f"LLM-Nachbearbeitung Timeout: {e}")
         return transcript
     except (APIError, APIConnectionError, RateLimitError) as e:
         logger.warning(f"LLM-Nachbearbeitung fehlgeschlagen: {e}")
