@@ -224,7 +224,8 @@ class LocalProvider:
                         cpu_model = cpu_model.to("mps")
                     finally:
                         if heads is not None:
-                            cpu_model._buffers["alignment_heads"] = heads
+                            # Restore original tensor (pyright can't infer this is always Tensor)
+                            cpu_model._buffers["alignment_heads"] = heads  # type: ignore[arg-type]
                     self._model_cache[cache_key] = cpu_model
                 else:
                     self._model_cache[cache_key] = whisper.load_model(
