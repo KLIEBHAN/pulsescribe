@@ -179,6 +179,8 @@ class PulseScribeDaemon:
         self._test_hotkey_mode_state_callback = None
         # Hotkey reconfigure may be deferred while recording/transcribing.
         self._pending_hotkey_reconfigure = False
+        # Preload-Status für lokales Modell (für Performance-Debugging)
+        self._local_preload_complete = threading.Event()
 
     # =============================================================================
     # Modifier Hotkeys (Fn/Globe, CapsLock)
@@ -447,10 +449,15 @@ class PulseScribeDaemon:
         if not hasattr(provider, "preload"):
             return
 
+        # Event zurücksetzen falls ein vorheriger Preload lief (z.B. nach Settings-Reload)
+        self._local_preload_complete.clear()
+
         def _preload():
+            t0 = time.perf_counter()
             try:
                 provider.preload(self.model)  # type: ignore[attr-defined]
-                logger.debug("Lokales Modell vorab geladen")
+                t_preload = time.perf_counter() - t0
+                logger.info(f"Lokales Modell vorab geladen ({t_preload:.2f}s)")
                 warmup_flag = get_env_bool("PULSESCRIBE_LOCAL_WARMUP")
                 backend = getattr(provider, "backend", None) or getattr(
                     provider, "_backend", None
@@ -480,8 +487,10 @@ class PulseScribeDaemon:
                         logger.debug("Lokales Modell warmup abgeschlossen")
                     except Exception as e:
                         logger.debug(f"Lokales Modell warmup fehlgeschlagen: {e}")
+                self._local_preload_complete.set()
             except Exception as e:
                 logger.warning(f"Preload lokales Modell fehlgeschlagen: {e}")
+                self._local_preload_complete.set()  # Setze trotzdem um Deadlock zu vermeiden
 
         threading.Thread(target=_preload, daemon=True, name="LocalPreload").start()
 
@@ -1445,6 +1454,19 @@ class PulseScribeDaemon:
                     or os.getenv("PULSESCRIBE_MODE", "deepgram")
                 )
                 provider = self._get_provider(mode_for_run)
+
+                # Preload-Status für local mode loggen (Performance-Debugging)
+                if mode_for_run == "local":
+                    preload_ready = self._local_preload_complete.is_set()
+                    logger.debug(
+                        f"Local transcribe start: preload_ready={preload_ready}"
+                    )
+                    if not preload_ready:
+                        logger.warning(
+                            "Transkription startet BEVOR Preload fertig ist - "
+                            "dies kann zu erhöhter Latenz führen!"
+                        )
+
                 t0 = time.perf_counter()
                 try:
                     if mode_for_run == "local" and hasattr(

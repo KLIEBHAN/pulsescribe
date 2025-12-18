@@ -10,6 +10,7 @@ import logging
 import os
 import sys
 import threading
+import time
 from pathlib import Path
 
 from config import DEFAULT_LOCAL_MODEL, WHISPER_SAMPLE_RATE
@@ -386,11 +387,15 @@ class LocalProvider:
             self._get_faster_model(model_name)
         elif self._backend == "mlx":
             with self._transcribe_lock:
+                t0 = time.perf_counter()
                 mlx_whisper = _import_mlx_whisper()
+                t_import = time.perf_counter() - t0
 
                 import numpy as np
 
                 repo = self._map_mlx_model_name(model_name)
+                logger.debug(f"MLX preload: repo={repo}, import={t_import*1000:.0f}ms")
+
                 warmup_s = 0.2
                 warmup_audio = np.zeros(
                     int(WHISPER_SAMPLE_RATE * warmup_s), dtype=np.float32
@@ -405,11 +410,17 @@ class LocalProvider:
                 }
                 if self._fp16_override is not None:
                     warmup_opts["fp16"] = self._fp16_override
+
+                t1 = time.perf_counter()
                 mlx_whisper.transcribe(
                     warmup_audio,
                     path_or_hf_repo=repo,
                     verbose=None,
                     **warmup_opts,
+                )
+                t_warmup = time.perf_counter() - t1
+                logger.debug(
+                    f"MLX preload complete: warmup={t_warmup:.2f}s (model loaded & compiled)"
                 )
         else:
             self._get_whisper_model(model_name)
@@ -445,7 +456,9 @@ class LocalProvider:
 
     def _transcribe_mlx(self, audio, model_name: str, options: dict) -> str:
         """Transkription via mlx-whisper (Apple Silicon / Metal)."""
+        t0 = time.perf_counter()
         mlx_whisper = _import_mlx_whisper()
+        t_import = time.perf_counter() - t0
 
         repo = self._map_mlx_model_name(model_name)
         mlx_opts = dict(options)
@@ -454,7 +467,28 @@ class LocalProvider:
             logger.warning(
                 "beam_size wird ignoriert (mlx backend unterstützt kein Beam Search)."
             )
+
+        # Berechne Audio-Länge für RTF-Logging
+        audio_duration = 0.0
+        if hasattr(audio, "__len__"):
+            audio_duration = len(audio) / WHISPER_SAMPLE_RATE
+
+        logger.debug(
+            f"MLX transcribe: repo={repo}, audio={audio_duration:.2f}s, "
+            f"opts={{{', '.join(f'{k}={v}' for k, v in mlx_opts.items())}}}"
+        )
+
+        t1 = time.perf_counter()
         result = mlx_whisper.transcribe(audio, path_or_hf_repo=repo, **mlx_opts)
+        t_transcribe = time.perf_counter() - t1
+
+        # Performance-Breakdown
+        rtf = t_transcribe / audio_duration if audio_duration > 0 else 0
+        logger.debug(
+            f"MLX timing: import={t_import*1000:.0f}ms, "
+            f"transcribe={t_transcribe:.2f}s (RTF={rtf:.2f}x)"
+        )
+
         if isinstance(result, dict):
             return str(result.get("text", ""))
         return str(result)
