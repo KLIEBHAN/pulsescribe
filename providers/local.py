@@ -624,7 +624,23 @@ class LocalProvider:
         return str(result)
 
     def _transcribe_lightning(self, audio, model_name: str, options: dict) -> str:
-        """Transkription via lightning-whisper-mlx (Apple Silicon, ~4x faster)."""
+        """Transkription via lightning-whisper-mlx (Apple Silicon, ~4x faster).
+
+        Bei Fehlern wird automatisch auf MLX zurückgefallen.
+        """
+        try:
+            return self._transcribe_lightning_core(audio, model_name, options)
+        except Exception as e:
+            # Deutliche Kennzeichnung im Log
+            logger.warning(
+                f"⚠️ FALLBACK: Lightning-Transkription fehlgeschlagen, "
+                f"wechsle zu MLX. Fehler: {e}"
+            )
+            log(f"⚠️ Lightning → MLX Fallback (Grund: {type(e).__name__})")
+            return self._transcribe_mlx(audio, model_name, options)
+
+    def _transcribe_lightning_core(self, audio, model_name: str, options: dict) -> str:
+        """Kern-Transkription via lightning-whisper-mlx (ohne Fallback)."""
         t0 = time.perf_counter()
         model = self._get_lightning_model(model_name)
         t_load = time.perf_counter() - t0

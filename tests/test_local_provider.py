@@ -493,3 +493,130 @@ class TestLightningEnvOptions:
 
             call_kwargs = mock_lightning_class.call_args.kwargs
             assert call_kwargs.get("batch_size") == 12
+
+
+class TestLightningFallback:
+    """Tests für Lightning → MLX Fallback."""
+
+    def test_fallback_to_mlx_on_lightning_error(self, monkeypatch, caplog):
+        """Bei Lightning-Fehler wird auf MLX zurückgefallen."""
+        monkeypatch.setenv("PULSESCRIBE_LOCAL_BACKEND", "lightning")
+
+        import logging
+
+        caplog.set_level(logging.WARNING)
+
+        with (
+            patch(
+                "providers.local.LocalProvider._transcribe_lightning_core",
+                side_effect=RuntimeError("Lightning crashed"),
+            ),
+            patch(
+                "providers.local.LocalProvider._transcribe_mlx",
+                return_value="MLX Fallback Result",
+            ) as mock_mlx,
+        ):
+            from providers.local import LocalProvider
+
+            provider = LocalProvider()
+            provider._ensure_runtime_config()
+
+            audio = np.zeros(16000, dtype=np.float32)
+            result = provider._transcribe_lightning(
+                audio, "large-v3", {"language": "de"}
+            )
+
+            # Fallback sollte MLX-Ergebnis zurückgeben
+            assert result == "MLX Fallback Result"
+            mock_mlx.assert_called_once()
+
+            # Warning sollte im Log erscheinen
+            assert "FALLBACK" in caplog.text
+            assert "Lightning" in caplog.text
+
+    def test_fallback_logs_error_type(self, monkeypatch, caplog):
+        """Fallback loggt den Fehlertyp."""
+        monkeypatch.setenv("PULSESCRIBE_LOCAL_BACKEND", "lightning")
+
+        import logging
+
+        caplog.set_level(logging.WARNING)
+
+        with (
+            patch(
+                "providers.local.LocalProvider._transcribe_lightning_core",
+                side_effect=ValueError("Invalid model"),
+            ),
+            patch(
+                "providers.local.LocalProvider._transcribe_mlx",
+                return_value="Fallback",
+            ),
+        ):
+            from providers.local import LocalProvider
+
+            provider = LocalProvider()
+            provider._ensure_runtime_config()
+
+            audio = np.zeros(16000, dtype=np.float32)
+            provider._transcribe_lightning(audio, "large-v3", {"language": "de"})
+
+            # Fehlertyp sollte im Log erscheinen
+            assert "ValueError" in caplog.text or "Invalid model" in caplog.text
+
+    def test_fallback_passes_same_options_to_mlx(self, monkeypatch):
+        """Fallback übergibt dieselben Optionen an MLX."""
+        monkeypatch.setenv("PULSESCRIBE_LOCAL_BACKEND", "lightning")
+
+        with (
+            patch(
+                "providers.local.LocalProvider._transcribe_lightning_core",
+                side_effect=RuntimeError("Crash"),
+            ),
+            patch(
+                "providers.local.LocalProvider._transcribe_mlx",
+                return_value="Fallback",
+            ) as mock_mlx,
+        ):
+            from providers.local import LocalProvider
+
+            provider = LocalProvider()
+            provider._ensure_runtime_config()
+
+            audio = np.zeros(16000, dtype=np.float32)
+            options = {"language": "de", "temperature": 0.0}
+
+            provider._transcribe_lightning(audio, "turbo", options)
+
+            # MLX sollte mit denselben Parametern aufgerufen werden
+            call_args = mock_mlx.call_args
+            assert call_args[0][1] == "turbo"  # model_name
+            assert call_args[0][2] == options  # options
+
+    def test_no_fallback_when_lightning_succeeds(self, monkeypatch):
+        """Kein Fallback wenn Lightning erfolgreich ist."""
+        monkeypatch.setenv("PULSESCRIBE_LOCAL_BACKEND", "lightning")
+
+        with (
+            patch(
+                "providers.local.LocalProvider._transcribe_lightning_core",
+                return_value="Lightning Success",
+            ),
+            patch(
+                "providers.local.LocalProvider._transcribe_mlx",
+                return_value="MLX Result",
+            ) as mock_mlx,
+        ):
+            from providers.local import LocalProvider
+
+            provider = LocalProvider()
+            provider._ensure_runtime_config()
+
+            audio = np.zeros(16000, dtype=np.float32)
+            result = provider._transcribe_lightning(
+                audio, "large-v3", {"language": "de"}
+            )
+
+            # Lightning-Ergebnis sollte zurückgegeben werden
+            assert result == "Lightning Success"
+            # MLX sollte NICHT aufgerufen werden
+            mock_mlx.assert_not_called()
