@@ -37,8 +37,20 @@ CARD_SPACING = 12
 MODE_OPTIONS = ["deepgram", "openai", "groq", "local"]
 REFINE_PROVIDER_OPTIONS = ["groq", "openai", "openrouter"]
 LANGUAGE_OPTIONS = ["auto", "de", "en", "es", "fr", "it", "pt", "nl", "pl", "ru", "zh"]
-LOCAL_BACKEND_OPTIONS = ["whisper", "faster", "mlx", "auto"]
-LOCAL_MODEL_OPTIONS = ["default", "turbo", "large", "medium", "small", "base", "tiny"]
+LOCAL_BACKEND_OPTIONS = ["whisper", "faster", "mlx", "lightning", "auto"]
+LOCAL_MODEL_OPTIONS = [
+    "default",
+    "turbo",  # Multilingual, best speed/quality
+    "large",  # Multilingual, highest quality
+    "medium",
+    "small",
+    "base",
+    "tiny",
+    # English-only (distilled, faster but ONLY English!)
+    "large-en",
+    "medium-en",
+    "small-en",
+]
 DEVICE_OPTIONS = ["auto", "mps", "cpu", "cuda"]
 BOOL_OVERRIDE_OPTIONS = ["default", "true", "false"]
 WARMUP_OPTIONS = ["auto", "true", "false"]
@@ -443,6 +455,14 @@ class WelcomeController:
                 )
             return
 
+        if action == "apply_lightning_preset":
+            self._apply_local_preset("macOS: Lightning Fast (large-v3)")
+            if self._setup_preset_status_label is not None:
+                self._setup_preset_status_label.setStringValue_(
+                    "Preset applied — click 'Save & Apply' to persist."
+                )
+            return
+
         if action == "goto_hotkeys_tab":
             # Tab index 1 = Hotkeys (Setup=0, Hotkeys=1, Providers=2, ...)
             if self._tab_view is not None:
@@ -555,7 +575,9 @@ class WelcomeController:
                 base_x, card_y + card_height - 46, card_width - 2 * CARD_PADDING, 14
             )
         )
-        desc.setStringValue_("One click presets for fast local dictation (MLX/Metal).")
+        desc.setStringValue_(
+            "One click presets for fast local dictation (MLX/Lightning)."
+        )
         desc.setBezeled_(False)
         desc.setDrawsBackground_(False)
         desc.setEditable_(False)
@@ -564,11 +586,11 @@ class WelcomeController:
         desc.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6))
         parent_view.addSubview_(desc)
 
-        btn_w = 150
+        btn_w = 110
         btn_h = 28
         btn_y = card_y + 56
         btn1 = NSButton.alloc().initWithFrame_(NSMakeRect(base_x, btn_y, btn_w, btn_h))
-        btn1.setTitle_("Use MLX Large")
+        btn1.setTitle_("MLX Large")
         btn1.setBezelStyle_(NSBezelStyleRounded)
         btn1.setFont_(NSFont.systemFontOfSize_(12))
         h1 = _SetupActionHandler.alloc().initWithController_action_(
@@ -580,9 +602,9 @@ class WelcomeController:
         parent_view.addSubview_(btn1)
 
         btn2 = NSButton.alloc().initWithFrame_(
-            NSMakeRect(base_x + btn_w + 10, btn_y, btn_w, btn_h)
+            NSMakeRect(base_x + btn_w + 8, btn_y, btn_w, btn_h)
         )
-        btn2.setTitle_("Use MLX Turbo")
+        btn2.setTitle_("MLX Turbo")
         btn2.setBezelStyle_(NSBezelStyleRounded)
         btn2.setFont_(NSFont.systemFontOfSize_(12))
         h2 = _SetupActionHandler.alloc().initWithController_action_(
@@ -592,6 +614,20 @@ class WelcomeController:
         btn2.setAction_(objc.selector(h2.performAction_, signature=b"v@:@"))
         self._setup_action_handlers.append(h2)
         parent_view.addSubview_(btn2)
+
+        btn3 = NSButton.alloc().initWithFrame_(
+            NSMakeRect(base_x + 2 * (btn_w + 8), btn_y, btn_w, btn_h)
+        )
+        btn3.setTitle_("⚡ Lightning")
+        btn3.setBezelStyle_(NSBezelStyleRounded)
+        btn3.setFont_(NSFont.systemFontOfSize_(12))
+        h3 = _SetupActionHandler.alloc().initWithController_action_(
+            self, "apply_lightning_preset"
+        )
+        btn3.setTarget_(h3)
+        btn3.setAction_(objc.selector(h3.performAction_, signature=b"v@:@"))
+        self._setup_action_handlers.append(h3)
+        parent_view.addSubview_(btn3)
 
         status = NSTextField.alloc().initWithFrame_(
             NSMakeRect(base_x, card_y + 26, card_width - 2 * CARD_PADDING, 18)

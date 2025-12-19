@@ -2,6 +2,9 @@ openai>=1.0.0
 openai-whisper
 # Optional: faster local backend (CTranslate2)
 faster-whisper
+# Optional: fastest local backend on Apple Silicon (~4x faster)
+# Note: Install with `pip install --no-deps lightning-whisper-mlx` to avoid tiktoken version conflict
+lightning-whisper-mlx
 deepgram-sdk>=3.0.0
 groq>=0.4.0
 sounddevice

@@ -3,7 +3,8 @@
 Standardmäßig nutzt er openai-whisper (PyTorch). Optional kann über
 `PULSESCRIBE_LOCAL_BACKEND=faster` der deutlich schnellere faster-whisper
 (CTranslate2) genutzt werden. Auf Apple Silicon kann optional auch
-`PULSESCRIBE_LOCAL_BACKEND=mlx` genutzt werden (mlx-whisper / Metal).
+`PULSESCRIBE_LOCAL_BACKEND=mlx` (mlx-whisper / Metal) oder
+`PULSESCRIBE_LOCAL_BACKEND=lightning` (lightning-whisper-mlx, ~4x schneller) genutzt werden.
 """
 
 import logging
@@ -12,6 +13,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 from config import DEFAULT_LOCAL_MODEL, WHISPER_SAMPLE_RATE
 from utils.env import get_env_bool, get_env_int
@@ -46,6 +48,24 @@ def _import_mlx_whisper():
             f"mlx-whisper konnte nicht geladen werden. {_mlx_whisper_import_hint()} Ursache: {e}"
         ) from e
     return mlx_whisper
+
+
+def _import_lightning_whisper():
+    """Importiert lightning-whisper-mlx mit hilfreicher Fehlermeldung."""
+    try:
+        from lightning_whisper_mlx import LightningWhisperMLX  # type: ignore[import-not-found]
+    except ModuleNotFoundError as e:
+        missing = e.name or "unknown"
+        raise ImportError(
+            f"lightning-whisper-mlx nicht gefunden ({missing}). "
+            "Installiere mit `pip install lightning-whisper-mlx` "
+            "oder setze PULSESCRIBE_LOCAL_BACKEND=mlx."
+        ) from e
+    except ImportError as e:
+        raise ImportError(
+            f"lightning-whisper-mlx konnte nicht geladen werden. Ursache: {e}"
+        ) from e
+    return LightningWhisperMLX
 
 
 def _select_device() -> str:
@@ -124,6 +144,8 @@ class LocalProvider:
                 self._backend = "faster"
             elif backend_env in {"mlx", "mlx-whisper"}:
                 self._backend = "mlx"
+            elif backend_env in {"lightning", "lightning-whisper-mlx"}:
+                self._backend = "lightning"
             elif backend_env == "auto":
                 try:
                     import faster_whisper  # noqa: F401
@@ -169,12 +191,20 @@ class LocalProvider:
         return mapping.get(model_name, model_name)
 
     def _map_mlx_model_name(self, model_name: str) -> str:
-        """Mappt Modellnamen auf mlx-whisper HF-Repos (optional)."""
+        """Mappt Modellnamen auf mlx-whisper HF-Repos (optional).
+
+        Unterstützte Aliase:
+            - Standard (multilingual): tiny, base, small, medium, large, turbo
+            - Englisch-only (distilliert, schneller): large-en, medium-en, small-en
+
+        Hinweis: Die distil-whisper Modelle unterstützen NUR Englisch!
+        Für Deutsch/multilingual: turbo ist der beste Speed/Quality Trade-off.
+        """
         if "/" in model_name:
             return model_name
         mapping = {
+            # Standard-Modelle (multilingual)
             "tiny": "mlx-community/whisper-tiny",
-            # Manche MLX-Konvertierungen tragen das Suffix "-mlx" im Repo-Namen.
             "base": "mlx-community/whisper-base-mlx",
             "small": "mlx-community/whisper-small-mlx",
             "medium": "mlx-community/whisper-medium",
@@ -182,6 +212,10 @@ class LocalProvider:
             "turbo": "mlx-community/whisper-large-v3-turbo",
             "large-v3": "mlx-community/whisper-large-v3-mlx",
             "large-v2": "mlx-community/whisper-large-v2-mlx",
+            # Englisch-only (distilliert, 30-40% schneller, NUR ENGLISCH!)
+            "large-en": "mlx-community/distil-whisper-large-v3",
+            "medium-en": "mlx-community/distil-whisper-medium.en",
+            "small-en": "mlx-community/distil-whisper-small.en",
         }
         if model_name in mapping:
             return mapping[model_name]
@@ -189,6 +223,30 @@ class LocalProvider:
             return f"mlx-community/{model_name}"
         if model_name.startswith("large-v3"):
             return f"mlx-community/whisper-{model_name}"
+        return model_name
+
+    def _map_lightning_model_name(self, model_name: str) -> str:
+        """Mappt Modellnamen auf lightning-whisper-mlx Namen.
+
+        Unterstützte Modelle: tiny, base, small, medium, large, large-v2, large-v3
+        NICHT unterstützt: distil-*.en (English-only), turbo (existiert nicht)
+        """
+        # Lightning akzeptiert direkte Namen ohne HF-Repo
+        mapping = {
+            "turbo": "large-v3",  # Turbo existiert nicht in Lightning → Fallback
+            "large": "large-v3",
+        }
+        if model_name in mapping:
+            logger.info(f"Lightning: Modell '{model_name}' → '{mapping[model_name]}'")
+            return mapping[model_name]
+
+        # distil/English-only Modelle werden nicht unterstützt
+        if "distil" in model_name or model_name.endswith("-en"):
+            logger.warning(
+                f"Lightning unterstützt '{model_name}' nicht (English-only) → large-v3"
+            )
+            return "large-v3"
+
         return model_name
 
     def _get_whisper_model(self, model_name: str):
@@ -284,6 +342,41 @@ class LocalProvider:
                 compute_type=compute_type,
                 cpu_threads=cpu_threads,
                 num_workers=num_workers,
+            )
+            return self._model_cache[cache_key]
+
+    def _get_lightning_model(self, model_name: str) -> Any:
+        """Lädt lightning-whisper-mlx Modell (mit Caching).
+
+        Lightning Whisper MLX lädt das Modell bei Instanziierung, daher
+        cachen wir die Instanz analog zu faster-whisper.
+        """
+        self._ensure_runtime_config()
+        LightningWhisperMLX = _import_lightning_whisper()
+
+        lightning_name = self._map_lightning_model_name(model_name)
+
+        # Batch-Size und Quantisierung aus ENV
+        batch_size = get_env_int("PULSESCRIBE_LIGHTNING_BATCH_SIZE") or 12
+        quant_env = os.getenv("PULSESCRIBE_LIGHTNING_QUANT", "").strip().lower()
+        quant = None if quant_env in ("", "none", "false") else quant_env
+
+        cache_key = f"lightning:{lightning_name}:{batch_size}:{quant}"
+        if cache_key in self._model_cache:
+            return self._model_cache[cache_key]
+
+        with self._load_lock:
+            if cache_key in self._model_cache:
+                return self._model_cache[cache_key]
+
+            log(
+                f"Lade lightning-whisper-mlx '{lightning_name}' "
+                f"(batch_size={batch_size}, quant={quant})..."
+            )
+            self._model_cache[cache_key] = LightningWhisperMLX(
+                model=lightning_name,
+                batch_size=batch_size,
+                quant=quant,
             )
             return self._model_cache[cache_key]
 
@@ -423,6 +516,30 @@ class LocalProvider:
                 logger.debug(
                     f"MLX preload complete: warmup={t_warmup:.2f}s (model loaded & compiled)"
                 )
+        elif self._backend == "lightning":
+            with self._transcribe_lock:
+                import numpy as np
+
+                t0 = time.perf_counter()
+                model = self._get_lightning_model(model_name)
+                t_load = time.perf_counter() - t0
+
+                # Warmup mit kurzem Dummy-Audio
+                warmup_s = 0.2
+                warmup_audio = np.zeros(
+                    int(WHISPER_SAMPLE_RATE * warmup_s), dtype=np.float32
+                )
+                warmup_language = os.getenv("PULSESCRIBE_LANGUAGE") or "en"
+                if warmup_language.strip().lower() == "auto":
+                    warmup_language = "en"
+
+                t1 = time.perf_counter()
+                model.transcribe(warmup_audio, language=warmup_language)  # type: ignore[union-attr]
+                t_warmup = time.perf_counter() - t1
+
+                logger.debug(
+                    f"Lightning preload complete: load={t_load:.2f}s, warmup={t_warmup:.2f}s"
+                )
         else:
             self._get_whisper_model(model_name)
 
@@ -441,6 +558,8 @@ class LocalProvider:
                 return self._transcribe_faster(audio, model_name, options)
             if self._backend == "mlx":
                 return self._transcribe_mlx(audio, model_name, options)
+            if self._backend == "lightning":
+                return self._transcribe_lightning(audio, model_name, options)
             whisper_model = self._get_whisper_model(model_name)
             result = whisper_model.transcribe(audio, **options)
             return result["text"]
@@ -463,6 +582,16 @@ class LocalProvider:
 
         repo = self._map_mlx_model_name(model_name)
         mlx_opts = dict(options)
+
+        # Warnung bei Verwendung von English-only Modellen mit nicht-englischer Sprache
+        language = mlx_opts.get("language", "").lower()
+        is_distil_model = "distil" in repo
+        if is_distil_model and language and language not in ("en", "english"):
+            logger.warning(
+                f"⚠️ Modell '{model_name}' (distil) unterstützt NUR Englisch! "
+                f"Für '{language}' wird 'turbo' oder 'large' empfohlen."
+            )
+
         beam_size = mlx_opts.pop("beam_size", None)
         if beam_size is not None:
             logger.warning(
@@ -494,13 +623,47 @@ class LocalProvider:
             return str(result.get("text", ""))
         return str(result)
 
+    def _transcribe_lightning(self, audio, model_name: str, options: dict) -> str:
+        """Transkription via lightning-whisper-mlx (Apple Silicon, ~4x faster)."""
+        t0 = time.perf_counter()
+        model = self._get_lightning_model(model_name)
+        t_load = time.perf_counter() - t0
+
+        # Lightning nutzt nur 'language' aus options
+        language = options.get("language")
+
+        # Berechne Audio-Länge für RTF-Logging
+        audio_duration = 0.0
+        if hasattr(audio, "__len__"):
+            audio_duration = len(audio) / WHISPER_SAMPLE_RATE
+
+        logger.debug(
+            f"Lightning transcribe: model={model_name}, audio={audio_duration:.2f}s, "
+            f"language={language}"
+        )
+
+        t1 = time.perf_counter()
+        result = model.transcribe(audio, language=language)
+        t_transcribe = time.perf_counter() - t1
+
+        # Performance-Breakdown
+        rtf = t_transcribe / audio_duration if audio_duration > 0 else 0
+        logger.debug(
+            f"Lightning timing: load={t_load*1000:.0f}ms, "
+            f"transcribe={t_transcribe:.2f}s (RTF={rtf:.2f}x)"
+        )
+
+        if isinstance(result, dict):
+            return str(result.get("text", ""))
+        return str(result)
+
     def transcribe(
         self,
         audio_path: Path,
         model: str | None = None,
         language: str | None = None,
     ) -> str:
-        """Transkribiert Audio lokal (whisper/faster/mlx).
+        """Transkribiert Audio lokal (whisper/faster/mlx/lightning).
 
         Args:
             audio_path: Pfad zur Audio-Datei
@@ -518,6 +681,8 @@ class LocalProvider:
                 return self._transcribe_faster(str(audio_path), model_name, options)
             if self._backend == "mlx":
                 return self._transcribe_mlx(str(audio_path), model_name, options)
+            if self._backend == "lightning":
+                return self._transcribe_lightning(str(audio_path), model_name, options)
             whisper_model = self._get_whisper_model(model_name)
             result = whisper_model.transcribe(str(audio_path), **options)
             return result["text"]

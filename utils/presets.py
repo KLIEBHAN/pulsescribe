@@ -46,6 +46,11 @@ LOCAL_PRESETS: dict[str, dict[str, str]] = {
         "local_model": "turbo",
         "local_fast": "true",
     },
+    "macOS: Lightning Fast (large-v3)": {
+        "local_backend": "lightning",
+        "local_model": "large-v3",
+        "local_fast": "true",
+    },
     "CPU: faster int8 (turbo)": {
         "local_backend": "faster",
         "local_model": "turbo",

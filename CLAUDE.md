@@ -36,10 +36,10 @@ pulsescribe/
 
 **Funktionen:**
 
-| Funktion            | Zweck                                      |
-| ------------------- | ------------------------------------------ |
-| `transcribe()`      | Zentrale API – orchestriert Provider       |
-| `parse_args()`      | CLI-Argument-Handling                      |
+| Funktion       | Zweck                                |
+| -------------- | ------------------------------------ |
+| `transcribe()` | Zentrale API – orchestriert Provider |
+| `parse_args()` | CLI-Argument-Handling                |
 
 **Design-Entscheidungen:**
 
@@ -101,23 +101,27 @@ python transcribe.py --record --copy --language de
 
 ## Konfiguration (ENV-Variablen)
 
-| Variable                        | Beschreibung                                                             |
-| ------------------------------- | ------------------------------------------------------------------------ |
-| `PULSESCRIBE_MODE`              | Default-Modus: `openai`, `local`, `deepgram`, `groq`                     |
-| `PULSESCRIBE_MODEL`             | Transkriptions-Modell (überschreibt Provider-Default)                    |
-| `PULSESCRIBE_STREAMING`         | WebSocket-Streaming für Deepgram: `true`/`false`                         |
-| `PULSESCRIBE_REFINE`            | LLM-Nachbearbeitung: `true`/`false`                                      |
-| `PULSESCRIBE_REFINE_MODEL`      | Modell für Refine (default: `openai/gpt-oss-120b`)                       |
-| `PULSESCRIBE_REFINE_PROVIDER`   | Provider: `groq`, `openai` oder `openrouter`                             |
-| `PULSESCRIBE_CONTEXT`           | Kontext-Override: `email`/`chat`/`code`                                  |
-| `PULSESCRIBE_APP_CONTEXTS`      | Custom App-Mappings (JSON)                                               |
-| `PULSESCRIBE_OVERLAY`           | Untertitel-Overlay aktivieren: `true`/`false`                            |
-| `PULSESCRIBE_DOCK_ICON`         | Dock-Icon anzeigen: `true`/`false` (default: `true`)                     |
-| `PULSESCRIBE_CLIPBOARD_RESTORE` | Clipboard nach Paste wiederherstellen: `true`/`false` (default: `false`) |
-| `OPENAI_API_KEY`                | Für API-Modus und OpenAI-Refine                                          |
-| `DEEPGRAM_API_KEY`              | Für Deepgram-Modus (REST + Streaming)                                    |
-| `GROQ_API_KEY`                  | Für Groq-Modus und Groq-Refine                                           |
-| `OPENROUTER_API_KEY`            | Für OpenRouter-Refine                                                    |
+| Variable                           | Beschreibung                                                             |
+| ---------------------------------- | ------------------------------------------------------------------------ |
+| `PULSESCRIBE_MODE`                 | Default-Modus: `openai`, `local`, `deepgram`, `groq`                     |
+| `PULSESCRIBE_MODEL`                | Transkriptions-Modell (überschreibt Provider-Default)                    |
+| `PULSESCRIBE_STREAMING`            | WebSocket-Streaming für Deepgram: `true`/`false`                         |
+| `PULSESCRIBE_REFINE`               | LLM-Nachbearbeitung: `true`/`false`                                      |
+| `PULSESCRIBE_REFINE_MODEL`         | Modell für Refine (default: `openai/gpt-oss-120b`)                       |
+| `PULSESCRIBE_REFINE_PROVIDER`      | Provider: `groq`, `openai` oder `openrouter`                             |
+| `PULSESCRIBE_CONTEXT`              | Kontext-Override: `email`/`chat`/`code`                                  |
+| `PULSESCRIBE_APP_CONTEXTS`         | Custom App-Mappings (JSON)                                               |
+| `PULSESCRIBE_OVERLAY`              | Untertitel-Overlay aktivieren: `true`/`false`                            |
+| `PULSESCRIBE_DOCK_ICON`            | Dock-Icon anzeigen: `true`/`false` (default: `true`)                     |
+| `PULSESCRIBE_CLIPBOARD_RESTORE`    | Clipboard nach Paste wiederherstellen: `true`/`false` (default: `false`) |
+| `OPENAI_API_KEY`                   | Für API-Modus und OpenAI-Refine                                          |
+| `DEEPGRAM_API_KEY`                 | Für Deepgram-Modus (REST + Streaming)                                    |
+| `GROQ_API_KEY`                     | Für Groq-Modus und Groq-Refine                                           |
+| `OPENROUTER_API_KEY`               | Für OpenRouter-Refine                                                    |
+| `PULSESCRIBE_LOCAL_BACKEND`        | Lokales Backend: `whisper`, `faster`, `mlx`, `lightning`, `auto`         |
+| `PULSESCRIBE_LOCAL_MODEL`          | Lokales Modell: `turbo`, `large`, `large-v3`, etc.                       |
+| `PULSESCRIBE_LIGHTNING_BATCH_SIZE` | Batch-Size für Lightning (default: 12, höher=schneller)                  |
+| `PULSESCRIBE_LIGHTNING_QUANT`      | Quantisierung für Lightning: `4bit`, `8bit`, oder leer (None)            |
 
 ## Dateipfade
 
@@ -132,13 +136,13 @@ python transcribe.py --record --copy --language de
 
 ## Transkriptions-Modi
 
-| Modus                     | Provider | Methode   | Latenz | Beschreibung                             |
-| ------------------------- | -------- | --------- | ------ | ---------------------------------------- |
-| `openai`                  | OpenAI   | REST      | ~2-3s  | GPT-4o Transcribe, höchste Qualität      |
-| `deepgram`                | Deepgram | WebSocket | ~300ms | **Streaming** (Default), minimale Latenz |
+| Modus                      | Provider | Methode   | Latenz | Beschreibung                               |
+| -------------------------- | -------- | --------- | ------ | ------------------------------------------ |
+| `openai`                   | OpenAI   | REST      | ~2-3s  | GPT-4o Transcribe, höchste Qualität        |
+| `deepgram`                 | Deepgram | WebSocket | ~300ms | **Streaming** (Default), minimale Latenz   |
 | `deepgram (streaming off)` | Deepgram | REST      | ~2-3s  | Fallback via `PULSESCRIBE_STREAMING=false` |
-| `groq`                    | Groq     | REST      | ~1s    | Whisper auf LPU, sehr schnell            |
-| `local`                   | Whisper  | Lokal     | ~5-10s | Offline, keine API-Kosten                |
+| `groq`                     | Groq     | REST      | ~1s    | Whisper auf LPU, sehr schnell              |
+| `local`                    | Whisper  | Lokal     | ~5-10s | Offline, keine API-Kosten                  |
 
 ## Kontext-Awareness
 
