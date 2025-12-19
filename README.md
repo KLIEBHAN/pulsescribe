@@ -7,7 +7,7 @@
 
 Voice input for macOS – inspired by [Wispr Flow](https://wisprflow.ai). Transcribes audio using OpenAI Whisper via API, Deepgram, Groq, or locally.
 
-**Features:** Real-time Streaming (Deepgram) · Multiple Providers (OpenAI, Deepgram, Groq, Local incl. MLX/Metal on Apple Silicon) · LLM Post-processing · Context Awareness · Custom Vocabulary · Live Preview Overlay · Menu Bar Feedback
+**Features:** Real-time Streaming (Deepgram) · Multiple Providers (OpenAI, Deepgram, Groq, Local) · **⚡ Lightning Mode** (4x faster local transcription on Apple Silicon) · LLM Post-processing · Context Awareness · Custom Vocabulary · Live Preview Overlay · Menu Bar Feedback
 
 > **Performance:** Ultra-fast startup with ~170ms to "Ready-Sound" thanks to parallel microphone and WebSocket initialization. Audio is transcribed during recording – results appear immediately after stopping.
 
