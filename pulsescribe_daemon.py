@@ -2443,7 +2443,14 @@ class PulseScribeDaemon:
         # UI-Controller initialisieren
         logger.info("Initialisiere UI-Controller...")
         self._menubar = MenuBarController()
-        self._overlay = OverlayController()
+
+        # Overlay nur wenn aktiviert (Default: True)
+        show_overlay = get_env_bool_default("PULSESCRIBE_OVERLAY", True)
+        if show_overlay:
+            self._overlay = OverlayController()
+        else:
+            self._overlay = None
+            logger.info("Overlay deaktiviert via PULSESCRIBE_OVERLAY=false")
         logger.info("UI-Controller bereit")
 
         # Vocabulary beim Start validieren und ggf. warnen

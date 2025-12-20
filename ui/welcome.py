@@ -77,6 +77,16 @@ def _create_card(x: int, y: int, width: int, height: int):
     return card
 
 
+def _is_env_enabled_default_true(key: str) -> bool:
+    """Check if an env flag is enabled, defaulting to True if not set."""
+    from utils.preferences import get_env_setting
+
+    value = get_env_setting(key)
+    if value is None:
+        return True
+    return value.lower() not in ("false", "0", "no", "off")
+
+
 class WelcomeController:
     """Welcome/Setup Window für PulseScribe."""
 
@@ -114,6 +124,21 @@ class WelcomeController:
         self._num_workers_field = None
         self._without_timestamps_popup = None
         self._vad_filter_popup = None
+        # Lightning-specific settings
+        self._lightning_header = None
+        self._lightning_batch_label = None
+        self._lightning_batch_slider = None
+        self._lightning_batch_value_label = None
+        self._lightning_batch_handler = None
+        self._lightning_quant_label = None
+        self._lightning_quant_popup = None
+        self._backend_changed_handler = None
+        # Streaming toggle (Deepgram)
+        self._streaming_label = None
+        self._streaming_checkbox = None
+        # Display toggles
+        self._overlay_checkbox = None
+        self._dock_icon_checkbox = None
         self._tab_view = None
         self._vocab_text_view = None
         self._vocab_warning_label = None
@@ -956,6 +981,8 @@ class WelcomeController:
     def _build_settings_card(self, y: int, parent_view=None) -> int:
         """Erstellt Provider-Einstellungen (Mode/Local/Language)."""
         from AppKit import (  # type: ignore[import-not-found]
+            NSButton,
+            NSButtonTypeSwitch,
             NSColor,
             NSFont,
             NSFontWeightSemibold,
@@ -967,7 +994,7 @@ class WelcomeController:
 
         parent_view = parent_view or self._content_view
 
-        card_height = 170
+        card_height = 200  # Increased for Streaming toggle
         card_width = WELCOME_WIDTH - 2 * WELCOME_PADDING
         card_y = y - card_height
 
@@ -1010,7 +1037,7 @@ class WelcomeController:
             mode_popup.selectItemWithTitle_(current_mode)
         # Update visibility when mode changes
         mode_changed_handler = _SimpleHandler.alloc().initWithController_method_(
-            self, "_update_local_settings_visibility"
+            self, "_update_all_visibility"
         )
         mode_popup.setTarget_(mode_changed_handler)
         mode_popup.setAction_(
@@ -1037,6 +1064,16 @@ class WelcomeController:
         local_backend_popup.selectItemWithTitle_(current_backend)
         self._local_backend_popup = local_backend_popup
         parent_view.addSubview_(local_backend_popup)
+
+        # Update Lightning visibility when backend changes
+        backend_handler = _SimpleHandler.alloc().initWithController_method_(
+            self, "_update_local_settings_visibility"
+        )
+        local_backend_popup.setTarget_(backend_handler)
+        local_backend_popup.setAction_(
+            objc.selector(backend_handler.performAction_, signature=b"v@:@")
+        )
+        self._backend_changed_handler = backend_handler
         current_y -= row_height
 
         # --- Local Model Dropdown ---
@@ -1074,8 +1111,24 @@ class WelcomeController:
             lang_popup.selectItemWithTitle_(current_lang)
         self._lang_popup = lang_popup
         parent_view.addSubview_(lang_popup)
+        current_y -= row_height
 
-        self._update_local_settings_visibility()
+        # --- Streaming Toggle (Deepgram only) ---
+        self._streaming_label = self._add_setting_label(
+            base_x, current_y, "Streaming:", parent_view
+        )
+        streaming_checkbox = NSButton.alloc().initWithFrame_(
+            NSMakeRect(control_x, current_y, control_width, 22)
+        )
+        streaming_checkbox.setButtonType_(NSButtonTypeSwitch)
+        streaming_checkbox.setTitle_("WebSocket (low latency)")
+        streaming_checkbox.setFont_(NSFont.systemFontOfSize_(11))
+        streaming_enabled = _is_env_enabled_default_true("PULSESCRIBE_STREAMING")
+        streaming_checkbox.setState_(1 if streaming_enabled else 0)
+        self._streaming_checkbox = streaming_checkbox
+        parent_view.addSubview_(streaming_checkbox)
+
+        self._update_all_visibility()
 
         return card_y - CARD_SPACING
 
@@ -1088,13 +1141,14 @@ class WelcomeController:
             NSFontWeightSemibold,
             NSMakeRect,
             NSPopUpButton,
+            NSSlider,
             NSTextField,
         )
         import objc  # type: ignore[import-not-found]
 
         parent_view = parent_view or self._content_view
 
-        card_height = 470
+        card_height = 550  # Increased for Lightning settings
         card_width = WELCOME_WIDTH - 2 * WELCOME_PADDING
         card_y = y - card_height
 
@@ -1336,6 +1390,95 @@ class WelcomeController:
         )
         self._vad_filter_popup = vad_popup
         parent_view.addSubview_(vad_popup)
+        current_y -= row_height
+
+        # --- Lightning Whisper MLX Settings ---
+        lightning_header = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(base_x, current_y, control_width + label_width, 14)
+        )
+        lightning_header.setStringValue_("⚡ Lightning Whisper MLX")
+        lightning_header.setBezeled_(False)
+        lightning_header.setDrawsBackground_(False)
+        lightning_header.setEditable_(False)
+        lightning_header.setSelectable_(False)
+        lightning_header.setFont_(
+            NSFont.systemFontOfSize_weight_(11, NSFontWeightMedium)
+        )
+        lightning_header.setTextColor_(
+            NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6)
+        )
+        self._lightning_header = lightning_header
+        parent_view.addSubview_(lightning_header)
+        current_y -= row_height
+
+        # Batch Size Slider (4-24, default 12)
+        self._lightning_batch_label = self._add_setting_label(
+            base_x, current_y, "Batch size:", parent_view
+        )
+        batch_slider = NSSlider.alloc().initWithFrame_(
+            NSMakeRect(control_x, current_y, control_width - 40, 22)
+        )
+        batch_slider.setMinValue_(4)
+        batch_slider.setMaxValue_(24)
+        current_batch = get_env_setting("PULSESCRIBE_LIGHTNING_BATCH_SIZE")
+        try:
+            batch_val = int(current_batch) if current_batch else 12
+        except ValueError:
+            batch_val = 12  # Fallback to default if invalid
+        batch_slider.setIntValue_(batch_val)
+        batch_slider.setNumberOfTickMarks_(6)  # 4, 8, 12, 16, 20, 24
+        batch_slider.setAllowsTickMarkValuesOnly_(True)
+        self._lightning_batch_slider = batch_slider
+        parent_view.addSubview_(batch_slider)
+
+        # Value label next to slider
+        batch_value_label = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(control_x + control_width - 35, current_y, 35, 22)
+        )
+        batch_value_label.setStringValue_(str(int(batch_slider.intValue())))
+        batch_value_label.setBezeled_(False)
+        batch_value_label.setDrawsBackground_(False)
+        batch_value_label.setEditable_(False)
+        batch_value_label.setSelectable_(False)
+        batch_value_label.setFont_(NSFont.systemFontOfSize_(11))
+        batch_value_label.setTextColor_(NSColor.whiteColor())
+        self._lightning_batch_value_label = batch_value_label
+        parent_view.addSubview_(batch_value_label)
+
+        # Slider change handler
+        batch_handler = _SliderHandler.alloc().initWithLabel_(batch_value_label)
+        batch_slider.setTarget_(batch_handler)
+        batch_slider.setAction_(
+            objc.selector(batch_handler.sliderChanged_, signature=b"v@:@")
+        )
+        self._lightning_batch_handler = batch_handler
+        current_y -= row_height
+
+        # Quantization Dropdown
+        self._lightning_quant_label = self._add_setting_label(
+            base_x, current_y, "Quantization:", parent_view
+        )
+        quant_popup = NSPopUpButton.alloc().initWithFrame_(
+            NSMakeRect(control_x, current_y, control_width, 22)
+        )
+        quant_popup.setFont_(NSFont.systemFontOfSize_(11))
+        quant_popup.addItemWithTitle_("none (best quality)")
+        quant_popup.addItemWithTitle_("8bit")
+        quant_popup.addItemWithTitle_("4bit (smallest memory)")
+        current_quant = (
+            (get_env_setting("PULSESCRIBE_LIGHTNING_QUANT") or "").strip().lower()
+        )
+        if current_quant == "4bit":
+            quant_popup.selectItemAtIndex_(2)
+        elif current_quant == "8bit":
+            quant_popup.selectItemAtIndex_(1)
+        else:
+            quant_popup.selectItemAtIndex_(0)
+        self._lightning_quant_popup = quant_popup
+        parent_view.addSubview_(quant_popup)
+
+        # Set initial visibility based on current mode/backend
+        self._update_all_visibility()
 
         return card_y - CARD_SPACING
 
@@ -1354,7 +1497,7 @@ class WelcomeController:
 
         parent_view = parent_view or self._content_view
 
-        card_height = 170
+        card_height = 230  # Increased for Overlay/Dock toggles
         card_width = WELCOME_WIDTH - 2 * WELCOME_PADDING
         card_y = y - card_height
 
@@ -1450,6 +1593,35 @@ class WelcomeController:
         model_field.setStringValue_(current_model)
         self._model_field = model_field
         parent_view.addSubview_(model_field)
+        current_y -= row_height
+
+        # --- Display Settings ---
+        # Overlay Toggle
+        self._add_setting_label(base_x, current_y, "Overlay:", parent_view)
+        overlay_checkbox = NSButton.alloc().initWithFrame_(
+            NSMakeRect(control_x, current_y, control_width, 22)
+        )
+        overlay_checkbox.setButtonType_(NSButtonTypeSwitch)
+        overlay_checkbox.setTitle_("Show subtitle overlay")
+        overlay_checkbox.setFont_(NSFont.systemFontOfSize_(11))
+        overlay_enabled = _is_env_enabled_default_true("PULSESCRIBE_OVERLAY")
+        overlay_checkbox.setState_(1 if overlay_enabled else 0)
+        self._overlay_checkbox = overlay_checkbox
+        parent_view.addSubview_(overlay_checkbox)
+        current_y -= row_height
+
+        # Dock Icon Toggle
+        self._add_setting_label(base_x, current_y, "Dock Icon:", parent_view)
+        dock_checkbox = NSButton.alloc().initWithFrame_(
+            NSMakeRect(control_x, current_y, control_width, 22)
+        )
+        dock_checkbox.setButtonType_(NSButtonTypeSwitch)
+        dock_checkbox.setTitle_("Show in Dock (restart required)")
+        dock_checkbox.setFont_(NSFont.systemFontOfSize_(11))
+        dock_enabled = _is_env_enabled_default_true("PULSESCRIBE_DOCK_ICON")
+        dock_checkbox.setState_(1 if dock_enabled else 0)
+        self._dock_icon_checkbox = dock_checkbox
+        parent_view.addSubview_(dock_checkbox)
 
         return card_y - CARD_SPACING
 
@@ -2387,6 +2559,37 @@ class WelcomeController:
             if view is not None:
                 view.setHidden_(not is_local)
 
+        # Lightning-Settings: nur sichtbar wenn mode=local UND backend=lightning
+        is_lightning = False
+        if is_local and self._local_backend_popup:
+            is_lightning = (
+                self._local_backend_popup.titleOfSelectedItem() == "lightning"
+            )
+        for view in (
+            self._lightning_header,
+            self._lightning_batch_label,
+            self._lightning_batch_slider,
+            self._lightning_batch_value_label,
+            self._lightning_quant_label,
+            self._lightning_quant_popup,
+        ):
+            if view is not None:
+                view.setHidden_(not is_lightning)
+
+    def _update_streaming_visibility(self) -> None:
+        """Blendet Streaming-Toggle nur bei Deepgram ein."""
+        if not self._mode_popup:
+            return
+        is_deepgram = self._mode_popup.titleOfSelectedItem() == "deepgram"
+        for view in (self._streaming_label, self._streaming_checkbox):
+            if view is not None:
+                view.setHidden_(not is_deepgram)
+
+    def _update_all_visibility(self) -> None:
+        """Update all mode-dependent visibility settings."""
+        self._update_local_settings_visibility()
+        self._update_streaming_visibility()
+
     def _apply_selected_local_preset(self) -> None:
         """Wendet das aktuell gewählte Local-Preset auf die UI an."""
         if not self._local_preset_popup:
@@ -2710,6 +2913,34 @@ class WelcomeController:
         )
         _save_bool_override("PULSESCRIBE_LOCAL_VAD_FILTER", self._vad_filter_popup)
 
+        # Lightning Batch Size
+        if self._lightning_batch_slider:
+            batch_val = int(self._lightning_batch_slider.intValue())
+            if batch_val == 12:  # Default
+                remove_env_setting("PULSESCRIBE_LIGHTNING_BATCH_SIZE")
+            else:
+                save_env_setting("PULSESCRIBE_LIGHTNING_BATCH_SIZE", str(batch_val))
+
+        # Lightning Quantization
+        if self._lightning_quant_popup:
+            quant_idx = self._lightning_quant_popup.indexOfSelectedItem()
+            if quant_idx == 0:  # none (default)
+                remove_env_setting("PULSESCRIBE_LIGHTNING_QUANT")
+            elif quant_idx == 1:
+                save_env_setting("PULSESCRIBE_LIGHTNING_QUANT", "8bit")
+            else:
+                save_env_setting("PULSESCRIBE_LIGHTNING_QUANT", "4bit")
+
+        # Streaming (only relevant for Deepgram mode)
+        if self._streaming_checkbox and self._mode_popup:
+            is_deepgram = self._mode_popup.titleOfSelectedItem() == "deepgram"
+            if is_deepgram:
+                enabled = self._streaming_checkbox.state() == 1
+                if enabled:  # Default is true
+                    remove_env_setting("PULSESCRIBE_STREAMING")
+                else:
+                    save_env_setting("PULSESCRIBE_STREAMING", "false")
+
         # Refine
         if self._refine_checkbox:
             enabled = self._refine_checkbox.state() == 1
@@ -2722,6 +2953,22 @@ class WelcomeController:
                 save_env_setting("PULSESCRIBE_CLIPBOARD_RESTORE", "true")
             else:
                 remove_env_setting("PULSESCRIBE_CLIPBOARD_RESTORE")
+
+        # Overlay
+        if self._overlay_checkbox:
+            enabled = self._overlay_checkbox.state() == 1
+            if enabled:  # Default is true
+                remove_env_setting("PULSESCRIBE_OVERLAY")
+            else:
+                save_env_setting("PULSESCRIBE_OVERLAY", "false")
+
+        # Dock Icon
+        if self._dock_icon_checkbox:
+            enabled = self._dock_icon_checkbox.state() == 1
+            if enabled:  # Default is true
+                remove_env_setting("PULSESCRIBE_DOCK_ICON")
+            else:
+                save_env_setting("PULSESCRIBE_DOCK_ICON", "false")
 
         # Refine Provider
         if self._provider_popup:
@@ -3034,6 +3281,36 @@ def _create_simple_handler_class():
 _SimpleHandler = _create_simple_handler_class()
 
 _CheckboxHandler = _create_checkbox_handler_class()
+
+
+def _create_slider_handler_class():
+    """Erstellt NSObject-Subklasse für Slider Value-Updates.
+
+    Usage:
+        handler = _SliderHandler.alloc().initWithLabel_(value_label)
+        slider.setTarget_(handler)
+        slider.setAction_(objc.selector(handler.sliderChanged_, signature=b"v@:@"))
+    """
+    from Foundation import NSObject  # type: ignore[import-not-found]
+    import objc  # type: ignore[import-not-found]
+
+    class SliderHandler(NSObject):
+        def initWithLabel_(self, label):
+            self = objc.super(SliderHandler, self).init()
+            if self is None:
+                return None
+            self._label = label
+            return self
+
+        @objc.signature(b"v@:@")
+        def sliderChanged_(self, sender) -> None:
+            if self._label:
+                self._label.setStringValue_(str(int(sender.intValue())))
+
+    return SliderHandler
+
+
+_SliderHandler = _create_slider_handler_class()
 
 
 def _create_logs_auto_refresh_handler_class():
