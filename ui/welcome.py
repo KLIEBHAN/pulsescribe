@@ -139,6 +139,7 @@ class WelcomeController:
         # Display toggles
         self._overlay_checkbox = None
         self._dock_icon_checkbox = None
+        self._rtf_checkbox = None
         self._tab_view = None
         self._vocab_text_view = None
         self._vocab_warning_label = None
@@ -1622,6 +1623,27 @@ class WelcomeController:
         dock_checkbox.setState_(1 if dock_enabled else 0)
         self._dock_icon_checkbox = dock_checkbox
         parent_view.addSubview_(dock_checkbox)
+        current_y -= row_height
+
+        # RTF Display Toggle (Performance-Anzeige nach Transkription)
+        self._add_setting_label(base_x, current_y, "Performance:", parent_view)
+        rtf_checkbox = NSButton.alloc().initWithFrame_(
+            NSMakeRect(control_x, current_y, control_width, 22)
+        )
+        rtf_checkbox.setButtonType_(NSButtonTypeSwitch)
+        rtf_checkbox.setTitle_("Show RTF after transcription")
+        rtf_checkbox.setFont_(NSFont.systemFontOfSize_(11))
+        # RTF default: deaktiviert (nur wenn explizit "true" gesetzt)
+        rtf_setting = get_env_setting("PULSESCRIBE_SHOW_RTF")
+        rtf_enabled = rtf_setting is not None and rtf_setting.lower() in (
+            "true",
+            "1",
+            "yes",
+            "on",
+        )
+        rtf_checkbox.setState_(1 if rtf_enabled else 0)
+        self._rtf_checkbox = rtf_checkbox
+        parent_view.addSubview_(rtf_checkbox)
 
         return card_y - CARD_SPACING
 
@@ -2969,6 +2991,14 @@ class WelcomeController:
                 remove_env_setting("PULSESCRIBE_DOCK_ICON")
             else:
                 save_env_setting("PULSESCRIBE_DOCK_ICON", "false")
+
+        # RTF Display (Performance-Anzeige) - default: false
+        if self._rtf_checkbox:
+            enabled = self._rtf_checkbox.state() == 1
+            if enabled:
+                save_env_setting("PULSESCRIBE_SHOW_RTF", "true")
+            else:  # Default is false
+                remove_env_setting("PULSESCRIBE_SHOW_RTF")
 
         # Refine Provider
         if self._provider_popup:

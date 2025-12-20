@@ -143,6 +143,9 @@ class PulseScribeDaemon:
         self._toggle_lock = threading.Lock()
         self._last_hotkey_time = 0.0
         self._current_state = AppState.IDLE
+        self._last_rtf: float | None = (
+            None  # Real-Time Factor der letzten Transkription
+        )
 
         # Stop-Event für _deepgram_stream_core
         self._stop_event: threading.Event | None = None
@@ -712,6 +715,7 @@ class PulseScribeDaemon:
             self._safe_call(cb, transcript, error)
 
     def _handle_worker_error(self, err: Exception) -> None:
+        self._last_rtf = None  # RTF bei Fehler zurücksetzen
         if self._test_run_active:
             self._finish_test_run("", str(err))
             self._update_state(AppState.ERROR)
@@ -736,6 +740,7 @@ class PulseScribeDaemon:
         """Verarbeitet das fertige Transkript: UI-Update, History, Auto-Paste."""
         # Test-Modus: Callback ausführen, kein Auto-Paste
         if self._test_run_active:
+            self._last_rtf = None  # RTF im Test-Modus nicht relevant
             self._finish_test_run(transcript, None)
             self._update_state(
                 AppState.DONE if transcript else AppState.IDLE, transcript
@@ -745,13 +750,16 @@ class PulseScribeDaemon:
 
         # Leeres Transkript: Nichts zu tun
         if not transcript:
+            self._last_rtf = None  # RTF zurücksetzen
             logger.warning("Leeres Transkript")
             self._update_state(AppState.IDLE)
             self._apply_pending_hotkey_reconfigure_if_safe()
             return
 
         # Erfolgreiche Transkription: State → Sound → UI-Flush → History → Paste
-        self._update_state(AppState.DONE, transcript)
+        # RTF-Anzeige im Overlay (wenn aktiviert)
+        overlay_text = self._format_done_text(transcript)
+        self._update_state(AppState.DONE, overlay_text)
         get_sound_player().play("done")  # Sofortiges auditives Feedback
         self._flush_ui_and_wait()  # ✅ muss sichtbar sein BEVOR Text eingefügt wird
         self._save_to_history(transcript)
@@ -772,6 +780,28 @@ class PulseScribeDaemon:
             )
         except Exception as e:
             logger.debug(f"History save failed: {e}")
+
+    def _format_done_text(self, transcript: str) -> str:
+        """Formatiert den Overlay-Text für DONE-State mit optionalem RTF."""
+        from utils.preferences import get_env_setting
+
+        # Prüfe ob RTF-Anzeige aktiviert ist (default: false)
+        rtf_setting = get_env_setting("PULSESCRIBE_SHOW_RTF")
+        show_rtf = rtf_setting is not None and rtf_setting.lower() in (
+            "true",
+            "1",
+            "yes",
+            "on",
+        )
+
+        if show_rtf and self._last_rtf is not None:
+            # Kurze RTF-Anzeige: "✓ (0.3x)" statt Text
+            rtf_text = f"✓ ({self._last_rtf:.1f}x)"
+            self._last_rtf = None  # Reset nach Verwendung
+            return rtf_text
+
+        self._last_rtf = None  # Reset auch wenn nicht angezeigt
+        return transcript
 
     # =============================================================================
     # Hold-to-record Hotkey (Push-to-talk)
@@ -1563,6 +1593,7 @@ class PulseScribeDaemon:
                 t_transcribe = time.perf_counter() - t0
                 if audio_duration > 0:
                     rtf = t_transcribe / audio_duration
+                    self._last_rtf = rtf  # Speichern für Overlay-Anzeige
                     model_name = self._model_name_for_logging(
                         provider, mode_override=mode_for_run
                     )
@@ -1576,6 +1607,7 @@ class PulseScribeDaemon:
                         f"audio={audio_duration:.2f}s, time={t_transcribe:.2f}s, rtf={rtf:.2f}x"
                     )
                 else:
+                    self._last_rtf = None  # Kein RTF berechnet
                     logger.info(
                         f"Transcription performance: mode={mode_for_run}, "
                         f"time={t_transcribe:.2f}s (audio duration unknown)"

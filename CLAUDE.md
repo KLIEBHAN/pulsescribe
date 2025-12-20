@@ -113,6 +113,7 @@ python transcribe.py --record --copy --language de
 | `PULSESCRIBE_APP_CONTEXTS`         | Custom App-Mappings (JSON)                                               |
 | `PULSESCRIBE_OVERLAY`              | Untertitel-Overlay aktivieren: `true`/`false`                            |
 | `PULSESCRIBE_DOCK_ICON`            | Dock-Icon anzeigen: `true`/`false` (default: `true`)                     |
+| `PULSESCRIBE_SHOW_RTF`             | RTF nach Transkription anzeigen: `true`/`false` (default: `false`)       |
 | `PULSESCRIBE_CLIPBOARD_RESTORE`    | Clipboard nach Paste wiederherstellen: `true`/`false` (default: `false`) |
 | `OPENAI_API_KEY`                   | Für API-Modus und OpenAI-Refine                                          |
 | `DEEPGRAM_API_KEY`                 | Für Deepgram-Modus (REST + Streaming)                                    |
