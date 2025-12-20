@@ -11,6 +11,10 @@ Voice input for macOS – inspired by [Wispr Flow](https://wisprflow.ai). Transc
 
 > **Performance:** Ultra-fast startup with ~170ms to "Ready-Sound" thanks to parallel microphone and WebSocket initialization. Audio is transcribed during recording – results appear immediately after stopping.
 
+<p align="center">
+  <img src="docs/assets/demo.gif" alt="PulseScribe Demo" width="700">
+</p>
+
 ### Provider Overview
 
 | Provider     | Latency   | Method    | Special Feature                                        |

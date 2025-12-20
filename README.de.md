@@ -11,6 +11,10 @@ Spracheingabe für macOS – inspiriert von [Wispr Flow](https://wisprflow.ai). 
 
 > **Performance:** Ultra-Fast-Startup mit ~170ms bis Ready-Sound dank parallelem Mikrofon- und WebSocket-Init. Audio wird während der Aufnahme transkribiert – Ergebnis erscheint sofort nach dem Stoppen.
 
+<p align="center">
+  <img src="docs/assets/demo.gif" alt="PulseScribe Demo" width="700">
+</p>
+
 ### Provider im Überblick
 
 | Provider     | Latenz    | Methode   | Besonderheit                                            |
