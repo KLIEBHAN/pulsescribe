@@ -54,6 +54,7 @@ APP_VERSION = _read_app_version()
 binaries = []
 datas = [
     ('config.py', '.'),  # Top-Level Konfiguration
+    ('cli', 'cli'),  # CLI Enums (TranscriptionMode, Context, etc.)
     ('ui', 'ui'),
     ('utils', 'utils'),
     ('providers', 'providers'),
@@ -95,6 +96,10 @@ hiddenimports = [
     'httpx',
     'websockets',
     
+    # === CLI ===
+    'typer',
+    'click',  # Typer dependency
+
     # === Utils ===
     'pyperclip',
     'dotenv',
