@@ -70,12 +70,6 @@ app = typer.Typer(
 # =============================================================================
 
 logger = logging.getLogger("pulsescribe")
-_custom_app_contexts_cache: dict | None = None  # Cache für PULSESCRIBE_APP_CONTEXTS
-
-# API-Client Singletons (Lazy Init) – für LLM-Refine
-# Transkriptions-Clients sind jetzt in providers/
-_groq_client = None
-
 
 from utils.logging import (  # noqa: E402
     setup_logging,

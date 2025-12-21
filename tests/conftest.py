@@ -106,10 +106,8 @@ def reset_caches(monkeypatch):
 
     Wichtig für: _custom_app_contexts_cache (wird bei erstem Aufruf befüllt)
     """
-    import transcribe
     import refine.context
 
-    monkeypatch.setattr(transcribe, "_custom_app_contexts_cache", None)
     monkeypatch.setattr(refine.context, "_custom_app_contexts_cache", None)
 
 
