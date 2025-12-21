@@ -357,7 +357,20 @@ PULSESCRIBE_HOTKEY_MODE=hold
 
 # Dock Icon (default: true) – set to false for menubar-only mode
 PULSESCRIBE_DOCK_ICON=true
+
+# RTF Display (default: false) – show Real-Time Factor after transcription
+# PULSESCRIBE_SHOW_RTF=true
 ```
+
+**RTF (Real-Time Factor):** Optional performance indicator in the overlay.
+
+| RTF      | Meaning                  | Example (10s audio) |
+| -------- | ------------------------ | ------------------- |
+| **0.3x** | 3× faster than real-time | 3s processing       |
+| **1.0x** | Real-time                | 10s processing      |
+| **2.0x** | 2× slower than real-time | 20s processing      |
+
+Enable via Settings → Refine Tab → "Show RTF after transcription" or `PULSESCRIBE_SHOW_RTF=true`.
 
 **Supported Hotkeys:**
 
