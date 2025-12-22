@@ -21,6 +21,7 @@ NC='\033[0m'
 CLEAN="false"
 BUILD_DMG="false"
 OPEN_APP="false"
+SLIM_BUILD="false"
 
 usage() {
     cat <<'EOF'
@@ -31,14 +32,20 @@ Usage:
 
 Options:
   --clean       Cache löschen vor dem Build
+  --slim        Slim-Build (~300 MB, nur Cloud-Provider, keine lokalen Backends)
   --dmg         Nach dem Build auch DMG erstellen
   --open        App nach dem Build starten
   -h, --help    Hilfe anzeigen
 
+Build-Varianten:
+  Standard (Full):  ~1 GB - alle Provider inkl. lokale Whisper-Backends
+  Slim:             ~300 MB - nur Deepgram, OpenAI, Groq (kein lokales Whisper)
+
 Beispiele:
-  ./build_app.sh                    # Standard-Build
-  ./build_app.sh --clean --dmg      # Frischer Build + DMG
-  ./build_app.sh --open             # Build + starten
+  ./build_app.sh                    # Full-Build (Standard)
+  ./build_app.sh --slim             # Slim-Build (nur Cloud)
+  ./build_app.sh --slim --dmg       # Slim-Build + DMG
+  ./build_app.sh --clean --dmg      # Frischer Full-Build + DMG
 EOF
 }
 
@@ -58,6 +65,10 @@ while [ "${1:-}" != "" ]; do
             CLEAN="true"
             shift
             ;;
+        --slim)
+            SLIM_BUILD="true"
+            shift
+            ;;
         --dmg)
             BUILD_DMG="true"
             shift
@@ -73,10 +84,23 @@ while [ "${1:-}" != "" ]; do
     esac
 done
 
+# Export für PyInstaller spec
+export PULSESCRIBE_SLIM_BUILD="$SLIM_BUILD"
+
 echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
-echo -e "${GREEN}  PulseScribe App Builder${NC}"
+if [ "$SLIM_BUILD" = "true" ]; then
+    echo -e "${GREEN}  PulseScribe App Builder (SLIM)${NC}"
+else
+    echo -e "${GREEN}  PulseScribe App Builder (FULL)${NC}"
+fi
 echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
 echo ""
+
+if [ "$SLIM_BUILD" = "true" ]; then
+    echo -e "${YELLOW}📦 Slim-Build: Nur Cloud-Provider (Deepgram, OpenAI, Groq)${NC}"
+    echo -e "${YELLOW}   Lokale Whisper-Backends werden übersprungen${NC}"
+    echo ""
+fi
 
 # Prüfe PyInstaller
 if ! command -v pyinstaller >/dev/null 2>&1; then
@@ -121,11 +145,20 @@ APP_SIZE=$(du -sh dist/PulseScribe.app | cut -f1)
 
 echo ""
 echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
-echo -e "${GREEN}  ✅ Build erfolgreich!${NC}"
+if [ "$SLIM_BUILD" = "true" ]; then
+    echo -e "${GREEN}  ✅ Slim-Build erfolgreich!${NC}"
+else
+    echo -e "${GREEN}  ✅ Full-Build erfolgreich!${NC}"
+fi
 echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
 echo ""
 echo "   📁 App:   dist/PulseScribe.app"
 echo "   📊 Größe: ${APP_SIZE}"
+if [ "$SLIM_BUILD" = "true" ]; then
+    echo "   📦 Typ:   Slim (nur Cloud-Provider)"
+else
+    echo "   📦 Typ:   Full (mit lokalen Backends)"
+fi
 echo ""
 
 # DMG erstellen wenn gewünscht

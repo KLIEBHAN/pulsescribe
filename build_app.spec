@@ -26,6 +26,10 @@ import os
 import pathlib
 import re
 
+# Build-Variante: SLIM = nur Cloud-Provider, FULL = mit lokalen Whisper-Backends
+# Steuerung via ENV: PULSESCRIBE_SLIM_BUILD=true oder --slim Flag in build_app.sh
+SLIM_BUILD = os.getenv("PULSESCRIBE_SLIM_BUILD", "false").lower() == "true"
+
 
 def _dedupe(items):
     return list(dict.fromkeys(items))
@@ -107,41 +111,46 @@ hiddenimports = [
     'unittest',
 ]
 
-# === Local backends (faster-whisper / CTranslate2) ===
-fw_datas, fw_binaries, fw_hidden = collect_all("faster_whisper")
-ct_datas, ct_binaries, ct_hidden = collect_all("ctranslate2")
-tok_datas, tok_binaries, tok_hidden = collect_all("tokenizers")
+# === Local backends (nur bei Full-Build) ===
+# Slim-Build: ~300 MB (nur Cloud-Provider: Deepgram, OpenAI, Groq)
+# Full-Build: ~1 GB (mit lokalen Whisper-Backends: faster-whisper, mlx, lightning)
+if not SLIM_BUILD:
+    # faster-whisper / CTranslate2
+    fw_datas, fw_binaries, fw_hidden = collect_all("faster_whisper")
+    ct_datas, ct_binaries, ct_hidden = collect_all("ctranslate2")
+    tok_datas, tok_binaries, tok_hidden = collect_all("tokenizers")
 
-datas += fw_datas + ct_datas + tok_datas
-binaries += fw_binaries + ct_binaries + tok_binaries
-hiddenimports += fw_hidden + ct_hidden + tok_hidden
+    datas += fw_datas + ct_datas + tok_datas
+    binaries += fw_binaries + ct_binaries + tok_binaries
+    hiddenimports += fw_hidden + ct_hidden + tok_hidden
 
-# === Local backend (mlx-whisper / MLX) ===
-# Optional: only available/needed on Apple Silicon builds.
-try:
-    mlxw_datas, mlxw_binaries, mlxw_hidden = collect_all("mlx_whisper")
-    mlx_datas, mlx_binaries, mlx_hidden = collect_all("mlx")
-    # mlx-whisper depends on SciPy (e.g. for word-timestamp helpers)
-    scipy_datas, scipy_binaries, scipy_hidden = collect_all("scipy")
-except Exception:
-    mlxw_datas, mlxw_binaries, mlxw_hidden = [], [], []
-    mlx_datas, mlx_binaries, mlx_hidden = [], [], []
-    scipy_datas, scipy_binaries, scipy_hidden = [], [], []
+    # mlx-whisper / MLX (Apple Silicon only)
+    try:
+        mlxw_datas, mlxw_binaries, mlxw_hidden = collect_all("mlx_whisper")
+        mlx_datas, mlx_binaries, mlx_hidden = collect_all("mlx")
+        # mlx-whisper depends on SciPy (e.g. for word-timestamp helpers)
+        scipy_datas, scipy_binaries, scipy_hidden = collect_all("scipy")
+    except Exception:
+        mlxw_datas, mlxw_binaries, mlxw_hidden = [], [], []
+        mlx_datas, mlx_binaries, mlx_hidden = [], [], []
+        scipy_datas, scipy_binaries, scipy_hidden = [], [], []
 
-datas += mlxw_datas + mlx_datas + scipy_datas
-binaries += mlxw_binaries + mlx_binaries + scipy_binaries
-hiddenimports += mlxw_hidden + mlx_hidden + scipy_hidden
+    datas += mlxw_datas + mlx_datas + scipy_datas
+    binaries += mlxw_binaries + mlx_binaries + scipy_binaries
+    hiddenimports += mlxw_hidden + mlx_hidden + scipy_hidden
 
-# === Local backend (lightning-whisper-mlx) ===
-# Optional: ~4x faster than mlx-whisper via batched decoding (Apple Silicon only).
-try:
-    lw_datas, lw_binaries, lw_hidden = collect_all("lightning_whisper_mlx")
-except Exception:
-    lw_datas, lw_binaries, lw_hidden = [], [], []
+    # lightning-whisper-mlx (~4x faster via batched decoding, Apple Silicon only)
+    try:
+        lw_datas, lw_binaries, lw_hidden = collect_all("lightning_whisper_mlx")
+    except Exception:
+        lw_datas, lw_binaries, lw_hidden = [], [], []
 
-datas += lw_datas
-binaries += lw_binaries
-hiddenimports += lw_hidden
+    datas += lw_datas
+    binaries += lw_binaries
+    hiddenimports += lw_hidden
+else:
+    print("📦 SLIM BUILD: Lokale Whisper-Backends werden übersprungen")
+
 hiddenimports = _dedupe(hiddenimports)
 
 # Nicht benötigte Module ausschließen (reduziert App-Größe)
