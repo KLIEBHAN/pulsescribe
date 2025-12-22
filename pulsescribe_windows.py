@@ -634,31 +634,33 @@ class PulseScribeWindows:
         start = _time.perf_counter()
 
         try:
-            # Phase 1: Core-Libraries (~500-800ms gesamt)
+            # Phase 1: Core-Libraries (für Streaming und REST)
             import numpy  # noqa: F401 - ~300ms
             import sounddevice  # noqa: F401 - ~100ms
 
-            # Deepgram SDK und Dependencies (~400-600ms gesamt)
-            from providers.deepgram_stream import deepgram_stream_core  # noqa: F401
-            import httpx  # noqa: F401
-            import websockets  # noqa: F401
+            # Phase 2: Streaming-Dependencies (nur wenn Streaming aktiv)
+            if self.streaming:
+                from providers.deepgram_stream import deepgram_stream_core  # noqa: F401
+                import httpx  # noqa: F401
+                import websockets  # noqa: F401
 
             imports_ms = (_time.perf_counter() - start) * 1000
 
-            # Phase 2: Audio-Device erkennen (~250-500ms auf Windows)
+            # Phase 3: Audio-Device erkennen (~250-500ms auf Windows)
             # get_input_device() testet Geräte und cached das Ergebnis
             device_start = _time.perf_counter()
             device_idx, sample_rate = get_input_device()
             device_ms = (_time.perf_counter() - device_start) * 1000
 
             total_ms = (_time.perf_counter() - start) * 1000
+            mode = "Streaming" if self.streaming else "REST"
             logger.info(
-                f"Pre-Warm abgeschlossen ({total_ms:.0f}ms): "
+                f"Pre-Warm abgeschlossen ({total_ms:.0f}ms, {mode}): "
                 f"Imports={imports_ms:.0f}ms, Device={device_ms:.0f}ms "
                 f"(idx={device_idx}, {sample_rate}Hz)"
             )
         except Exception as e:
-            logger.debug(f"Pre-Warm fehlgeschlagen: {e}")
+            logger.debug(f"Pre-Warm fehlgeschlagen: {e}", exc_info=True)
 
     def run(self):
         """Startet den Daemon."""
