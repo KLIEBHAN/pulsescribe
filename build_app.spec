@@ -153,7 +153,7 @@ else:
 
 hiddenimports = _dedupe(hiddenimports)
 
-# Nicht benötigte Module ausschließen (reduziert App-Größe)
+# Nicht benötigte Module ausschließen (reduziert App-Größe und Build-Zeit)
 excludes = [
     # GUI Frameworks (wir nutzen PyObjC direkt)
     'tkinter',
@@ -162,21 +162,57 @@ excludes = [
     'PySide2',
     'PySide6',
     'wx',
-    
+
     # Data Science (nicht benötigt)
     'matplotlib',
     'pandas',
     'sklearn',
-    
-    # Testing
+
+    # Testing Frameworks
     'pytest',
     # NOTE: Do not exclude Python's stdlib 'unittest' – some runtime deps (e.g. SciPy/numpy.testing)
     # import it and the bundled app would crash with "No module named 'unittest'".
-    
+
+    # Test-Module (beschleunigt Build signifikant, ~500 Module weniger zu analysieren)
+    'scipy._lib.tests',
+    'scipy.cluster.tests',
+    'scipy.constants.tests',
+    'scipy.datasets.tests',
+    'scipy.fft.tests',
+    'scipy.fftpack.tests',
+    'scipy.integrate.tests',
+    'scipy.interpolate.tests',
+    'scipy.io.tests',
+    'scipy.io.arff.tests',
+    'scipy.io.matlab.tests',
+    'scipy.linalg.tests',
+    'scipy.misc.tests',
+    'scipy.ndimage.tests',
+    'scipy.odr.tests',
+    'scipy.optimize.tests',
+    'scipy.signal.tests',
+    'scipy.sparse.tests',
+    'scipy.sparse.csgraph.tests',
+    'scipy.sparse.linalg.tests',
+    'scipy.spatial.tests',
+    'scipy.special.tests',
+    'scipy.stats.tests',
+    # NOTE: numpy.testing ist KEIN Test-Verzeichnis, sondern ein Utility-Modul!
+    # scipy importiert es zur Runtime → NICHT excluden!
+    'numpy.tests',
+    'numpy._core.tests',
+    'numpy.f2py.tests',
+    'numpy.lib.tests',
+    'numpy.linalg.tests',
+    'numpy.ma.tests',
+    'numpy.polynomial.tests',
+    'numpy.random.tests',
+    'numpy.typing.tests',
+
     # Dev Tools
     'IPython',
     'jupyter',
-    
+
     # Sonstige
     'curses',
 ]
