@@ -44,10 +44,25 @@ logger = get_logger()
 from utils.state import AppState
 from utils.hotkey import paste_transcript
 from whisper_platform import get_clipboard, get_sound_player
+from config import INTERIM_FILE, get_input_device
 
 # Lazy imports für optionale Features
 pystray = None
 PIL_Image = None
+WindowsOverlayController = None
+
+
+def _load_overlay():
+    """Lädt Overlay-Controller (lazy)."""
+    global WindowsOverlayController
+    try:
+        from ui.overlay_windows import WindowsOverlayController as _Overlay
+
+        WindowsOverlayController = _Overlay
+        return True
+    except ImportError as e:
+        logger.debug(f"Overlay nicht verfügbar: {e}")
+        return False
 
 # =============================================================================
 # Hotkey-Helpers (Modul-Level für Wiederverwendung und Testbarkeit)
@@ -99,6 +114,7 @@ class PulseScribeWindows:
         refine_provider: str | None = None,
         context: str | None = None,
         streaming: bool = True,
+        overlay: bool = True,
     ):
         self.hotkey_str = hotkey
         self.auto_paste = auto_paste
@@ -107,6 +123,7 @@ class PulseScribeWindows:
         self.refine_provider = refine_provider
         self.context = context
         self.streaming = streaming
+        self.overlay_enabled = overlay
 
         # State
         self._state = AppState.IDLE
@@ -118,21 +135,23 @@ class PulseScribeWindows:
         self._hotkey_listener = None
         self._recording_thread = None
         self._stop_event = threading.Event()
+        self._overlay = None
 
         # Audio buffer für REST-Modus
         self._audio_buffer = []
+        self._audio_sample_rate = 16000  # Default, wird in _recording_loop aktualisiert
         self._audio_lock = threading.Lock()
 
         mode = "Streaming" if streaming else "REST"
-        logger.info(f"PulseScribeWindows initialisiert (Hotkey: {hotkey}, Mode: {mode}, Refine: {refine})")
+        logger.info(f"PulseScribeWindows initialisiert (Hotkey: {hotkey}, Mode: {mode}, Refine: {refine}, Overlay: {overlay})")
 
     @property
     def state(self) -> AppState:
         with self._state_lock:
             return self._state
 
-    def _set_state(self, state: AppState):
-        """Setzt State und aktualisiert Tray-Icon."""
+    def _set_state(self, state: AppState, text: str | None = None):
+        """Setzt State und aktualisiert Tray-Icon + Overlay."""
         with self._state_lock:
             old_state = self._state
             self._state = state
@@ -140,6 +159,10 @@ class PulseScribeWindows:
         if old_state != state:
             logger.info(f"State: {old_state.value} → {state.value}")
             self._update_tray_icon()
+
+            # Overlay aktualisieren
+            if self._overlay:
+                self._overlay.update_state(state.name, text)
 
     def _update_tray_icon(self):
         """Aktualisiert Tray-Icon basierend auf State."""
@@ -228,18 +251,26 @@ class PulseScribeWindows:
             import sounddevice as sd
             import numpy as np
 
-            sample_rate = 16000
             channels = 1
             chunk_duration = 0.1  # 100ms chunks
 
+            # Device und native Sample Rate ermitteln
+            input_device, actual_sample_rate = get_input_device()
+
             with self._audio_lock:
                 self._audio_buffer = []
+                self._audio_sample_rate = actual_sample_rate  # Für _transcribe_rest
 
             def audio_callback(indata, frames, time_info, status):
                 if status:
                     logger.warning(f"Audio-Status: {status}")
                 with self._audio_lock:
                     self._audio_buffer.append(indata.copy())
+
+                # Audio-Level für Overlay
+                if self._overlay:
+                    rms = float(np.sqrt(np.mean(indata ** 2)))
+                    self._overlay.update_audio_level(min(1.0, rms * 10))
 
                 # State auf RECORDING setzen wenn Audio erkannt
                 if self.state == AppState.LISTENING:
@@ -248,11 +279,12 @@ class PulseScribeWindows:
                         self._set_state(AppState.RECORDING)
 
             with sd.InputStream(
-                samplerate=sample_rate,
+                device=input_device,
+                samplerate=actual_sample_rate,
                 channels=channels,
                 dtype="float32",
                 callback=audio_callback,
-                blocksize=int(sample_rate * chunk_duration),
+                blocksize=int(actual_sample_rate * chunk_duration),
             ):
                 while not self._stop_event.is_set():
                     time.sleep(0.05)
@@ -292,12 +324,19 @@ class PulseScribeWindows:
                 self._set_state(AppState.RECORDING)
 
                 logger.debug("Starte deepgram_stream_core")
+
+                # Audio-Level Callback für Overlay
+                def on_audio_level(level: float):
+                    if self._overlay:
+                        self._overlay.update_audio_level(level)
+
                 transcript = loop.run_until_complete(
                     deepgram_stream_core(
                         model="nova-3",
                         language=os.getenv("PULSESCRIBE_LANGUAGE", "de"),
                         play_ready=False,  # Wir spielen Sound selbst
                         external_stop_event=self._stop_event,
+                        audio_level_callback=on_audio_level if self._overlay else None,
                     )
                 )
                 logger.debug(f"Streaming abgeschlossen: {len(transcript)} Zeichen")
@@ -362,17 +401,18 @@ class PulseScribeWindows:
                     return
 
                 audio_data = np.concatenate(self._audio_buffer)
+                sample_rate = self._audio_sample_rate
                 self._audio_buffer = []
 
-            duration = len(audio_data) / 16000
-            logger.info(f"Transkribiere {duration:.1f}s Audio...")
+            duration = len(audio_data) / sample_rate
+            logger.info(f"Transkribiere {duration:.1f}s Audio ({sample_rate}Hz)...")
 
             # Audio in temporäre Datei schreiben
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
                 temp_path = Path(f.name)
 
             try:
-                sf.write(temp_path, audio_data, 16000)
+                sf.write(temp_path, audio_data, sample_rate)
 
                 # Deepgram REST API nutzen
                 from providers.deepgram import DeepgramProvider
@@ -553,17 +593,39 @@ class PulseScribeWindows:
         """Beendet den Daemon."""
         logger.info("Beende PulseScribe...")
 
+        if self._overlay:
+            self._overlay.stop()
+
         if self._hotkey_listener:
             self._hotkey_listener.stop()
 
         if self._tray:
             self._tray.stop()
 
+    def _setup_overlay(self):
+        """Richtet Overlay ein (läuft in separatem Thread)."""
+        if not self.overlay_enabled:
+            return
+
+        if not _load_overlay():
+            logger.warning("Overlay deaktiviert (Modul nicht verfügbar)")
+            return
+
+        try:
+            # Overlay mit INTERIM_FILE für Interim-Text Polling
+            self._overlay = WindowsOverlayController(interim_file=INTERIM_FILE)
+            threading.Thread(target=self._overlay.run, daemon=True).start()
+            logger.info("Overlay gestartet")
+        except Exception as e:
+            logger.warning(f"Overlay konnte nicht gestartet werden: {e}")
+            self._overlay = None
+
     def run(self):
         """Startet den Daemon."""
         print(f"PulseScribe Windows gestartet (Hotkey: {self.hotkey_str})")
         print("Drücke Ctrl+C oder nutze Tray-Menü zum Beenden")
 
+        self._setup_overlay()
         self._setup_hotkey()
         self._setup_tray()
 
@@ -623,6 +685,11 @@ def main():
         action="store_true",
         help="REST API statt WebSocket Streaming",
     )
+    parser.add_argument(
+        "--no-overlay",
+        action="store_true",
+        help="Overlay deaktivieren",
+    )
 
     args = parser.parse_args()
 
@@ -638,6 +705,9 @@ def main():
     # Streaming: Default True, kann via --no-streaming oder ENV deaktiviert werden
     effective_streaming = not args.no_streaming and os.getenv("PULSESCRIBE_STREAMING", "true").lower() != "false"
 
+    # Overlay: Default True, kann via --no-overlay oder ENV deaktiviert werden
+    effective_overlay = not args.no_overlay and os.getenv("PULSESCRIBE_OVERLAY", "true").lower() != "false"
+
     daemon = PulseScribeWindows(
         hotkey=args.hotkey,
         auto_paste=not args.no_paste,
@@ -646,6 +716,7 @@ def main():
         refine_provider=effective_refine_provider,
         context=effective_context,
         streaming=effective_streaming,
+        overlay=effective_overlay,
     )
 
     try:

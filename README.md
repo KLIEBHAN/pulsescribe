@@ -650,6 +650,7 @@ python pulsescribe_windows.py --refine --refine-provider groq
 - LLM post-processing (Groq, OpenAI, OpenRouter)
 - App context detection (Outlook → email, VS Code → code, Discord → chat)
 - Windows system sounds (DeviceConnect, DeviceDisconnect, Notification.SMS)
+- Animated overlay with waveform visualization and interim text
 
 **CLI Options:**
 
@@ -658,6 +659,7 @@ python pulsescribe_windows.py --refine --refine-provider groq
 | `--hotkey` | Global hotkey (default: `ctrl+alt+r`) |
 | `--no-paste` | Disable auto-paste, copy to clipboard only |
 | `--no-streaming` | Use REST API instead of WebSocket streaming |
+| `--no-overlay` | Disable animated overlay |
 | `--refine` | Enable LLM post-processing |
 | `--refine-provider` | LLM provider: `groq`, `openai`, `openrouter` |
 | `--refine-model` | LLM model override |
@@ -672,6 +674,9 @@ PULSESCRIBE_LANGUAGE=de
 
 # Optional: Disable streaming (default: true)
 # PULSESCRIBE_STREAMING=false
+
+# Optional: Disable overlay (default: true)
+# PULSESCRIBE_OVERLAY=false
 
 # Optional: LLM Refine
 PULSESCRIBE_REFINE=true

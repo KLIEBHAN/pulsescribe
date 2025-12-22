@@ -44,6 +44,7 @@ from config import (
     DEEPGRAM_CLOSE_TIMEOUT,
     INTERIM_FILE,
     DEFAULT_DEEPGRAM_MODEL,
+    get_input_device,
 )
 
 logger = logging.getLogger("pulsescribe")
@@ -315,18 +316,28 @@ async def deepgram_stream_core(
                 else:
                     loop.call_soon_threadsafe(audio_queue.put_nowait, audio_bytes)
 
-    # Mikrofon starten
+    # Mikrofon starten (mit Auto-Device-Detection für Windows)
+    # Gibt (device_index, native_sample_rate) zurück
+    input_device, actual_sample_rate = get_input_device()
+
+    # Blocksize proportional zur Sample Rate anpassen
+    actual_blocksize = int(WHISPER_BLOCKSIZE * actual_sample_rate / WHISPER_SAMPLE_RATE)
+
     mic_stream = sd.InputStream(
-        samplerate=WHISPER_SAMPLE_RATE,
+        device=input_device,
+        samplerate=actual_sample_rate,
         channels=WHISPER_CHANNELS,
-        blocksize=WHISPER_BLOCKSIZE,
+        blocksize=actual_blocksize,
         dtype=np.int16,
         callback=audio_callback,
     )
     mic_stream.start()
 
     mic_init_ms = (time.perf_counter() - stream_start) * 1000
-    logger.info(f"[{session_id}] Mikrofon bereit nach {mic_init_ms:.0f}ms")
+    logger.info(
+        f"[{session_id}] Mikrofon bereit nach {mic_init_ms:.0f}ms "
+        f"(Device: {input_device}, {actual_sample_rate}Hz)"
+    )
 
     if play_ready:
         _play_sound("ready")
@@ -336,7 +347,7 @@ async def deepgram_stream_core(
             api_key,
             model=model,
             language=language,
-            sample_rate=WHISPER_SAMPLE_RATE,
+            sample_rate=actual_sample_rate,  # Tatsächliche Sample Rate
             channels=WHISPER_CHANNELS,
         ) as connection:
             connection.on(EventType.MESSAGE, on_message)

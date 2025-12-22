@@ -27,7 +27,7 @@
 | **LLM-Refine**        | Nachbearbeitung via Groq/OpenAI     | ✅ Done    |
 | **App-Detection**     | Kontext-Awareness (Email/Chat/Code) | ✅ Done    |
 | **WebSocket Stream**  | Echtzeit-Transkription (~300ms)     | ✅ Done    |
-| Overlay               | Visuelles Feedback während Aufnahme | ⏳ Offen  |
+| **Overlay**           | Visuelles Feedback während Aufnahme | ✅ Done    |
 | Settings-GUI      | Konfigurationsfenster               | ⏳ Offen  |
 | Installer         | MSI/NSIS mit Autostart              | ⏳ Offen  |
 
