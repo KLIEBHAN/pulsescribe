@@ -105,8 +105,8 @@ def detect_context(override: str | None = None) -> tuple[str, str | None, str]:
     if env_context:
         return env_context.lower(), None, "ENV"
 
-    # 3. Auto-Detection via NSWorkspace (nur macOS)
-    if sys.platform == "darwin":
+    # 3. Auto-Detection via Platform API (macOS + Windows)
+    if sys.platform in ("darwin", "win32"):
         app_name = _get_frontmost_app()
         if app_name:
             return get_context_for_app(app_name), app_name, "App"

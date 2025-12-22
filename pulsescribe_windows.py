@@ -85,13 +85,26 @@ class PulseScribeWindows:
         AppState.LISTENING: (255, 165, 0),  # Orange
         AppState.RECORDING: (255, 0, 0),  # Rot
         AppState.TRANSCRIBING: (255, 255, 0),  # Gelb
+        AppState.REFINING: (0, 255, 255),  # Cyan
         AppState.DONE: (0, 255, 0),  # Grün
         AppState.ERROR: (255, 0, 0),  # Rot
     }
 
-    def __init__(self, hotkey: str = "ctrl+alt+r", auto_paste: bool = True):
+    def __init__(
+        self,
+        hotkey: str = "ctrl+alt+r",
+        auto_paste: bool = True,
+        refine: bool = False,
+        refine_model: str | None = None,
+        refine_provider: str | None = None,
+        context: str | None = None,
+    ):
         self.hotkey_str = hotkey
         self.auto_paste = auto_paste
+        self.refine = refine
+        self.refine_model = refine_model
+        self.refine_provider = refine_provider
+        self.context = context
 
         # State
         self._state = AppState.IDLE
@@ -108,7 +121,7 @@ class PulseScribeWindows:
         self._audio_buffer = []
         self._audio_lock = threading.Lock()
 
-        logger.info(f"PulseScribeWindows initialisiert (Hotkey: {hotkey})")
+        logger.info(f"PulseScribeWindows initialisiert (Hotkey: {hotkey}, Refine: {refine})")
 
     @property
     def state(self) -> AppState:
@@ -140,6 +153,7 @@ class PulseScribeWindows:
             AppState.LISTENING: "Warte auf Sprache...",
             AppState.RECORDING: "Aufnahme...",
             AppState.TRANSCRIBING: "Transkribiere...",
+            AppState.REFINING: "Verfeinere...",
             AppState.DONE: "Fertig",
             AppState.ERROR: "Fehler",
         }
@@ -279,6 +293,21 @@ class PulseScribeWindows:
                 )
 
                 if transcript:
+                    # LLM-Nachbearbeitung (optional)
+                    if self.refine:
+                        self._set_state(AppState.REFINING)
+                        try:
+                            from refine.llm import refine_transcript
+
+                            transcript = refine_transcript(
+                                transcript,
+                                model=self.refine_model,
+                                provider=self.refine_provider,
+                                context=self.context,
+                            )
+                        except Exception as e:
+                            logger.warning(f"Refine fehlgeschlagen, verwende Original: {e}")
+
                     self._handle_result(transcript)
                 else:
                     logger.warning("Leeres Transkript")
@@ -466,15 +495,47 @@ def main():
         action="store_true",
         help="Aktiviert Debug-Logging",
     )
+    parser.add_argument(
+        "--refine",
+        action="store_true",
+        help="LLM-Nachbearbeitung aktivieren",
+    )
+    parser.add_argument(
+        "--refine-model",
+        default=None,
+        help="Modell für LLM-Nachbearbeitung",
+    )
+    parser.add_argument(
+        "--refine-provider",
+        choices=["groq", "openai", "openrouter"],
+        default=None,
+        help="LLM-Provider (groq, openai, openrouter)",
+    )
+    parser.add_argument(
+        "--context",
+        choices=["email", "chat", "code", "default"],
+        default=None,
+        help="Kontext für Nachbearbeitung",
+    )
 
     args = parser.parse_args()
 
     if args.debug:
         logging.getLogger().setLevel(logging.DEBUG)
 
+    # Refine: CLI > ENV > Default (False)
+    effective_refine = args.refine or os.getenv("PULSESCRIBE_REFINE", "").lower() == "true"
+    effective_refine_model = args.refine_model or os.getenv("PULSESCRIBE_REFINE_MODEL")
+    effective_refine_provider = args.refine_provider or os.getenv("PULSESCRIBE_REFINE_PROVIDER")
+    effective_context = args.context or os.getenv("PULSESCRIBE_CONTEXT")
+
     daemon = PulseScribeWindows(
         hotkey=args.hotkey,
         auto_paste=not args.no_paste,
+        refine=effective_refine,
+        refine_model=effective_refine_model,
+        refine_provider=effective_refine_provider,
+        context=effective_context,
     )
 
     try:
