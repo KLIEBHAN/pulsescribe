@@ -4,6 +4,7 @@ Gemeinsame Konstanten für Audio, Streaming und IPC.
 Vermeidet Duplikation zwischen Modulen.
 """
 
+import tempfile
 from pathlib import Path
 
 # =============================================================================
@@ -61,9 +62,9 @@ VISUAL_GAIN = 2.0  # Visual scaling factor (post-AGC, boosts quiet speech)
 # =============================================================================
 
 # Temporäre Dateien/IPC
-# Alle Dateien liegen in /tmp für schnellen Zugriff und automatische Bereinigung
+# Plattformunabhängig: Windows nutzt %TEMP%, Unix nutzt /tmp
 TEMP_RECORDING_FILENAME = "pulsescribe_recording.wav"
-INTERIM_FILE = Path("/tmp/pulsescribe.interim")  # Live-Transkript während Aufnahme
+INTERIM_FILE = Path(tempfile.gettempdir()) / "pulsescribe.interim"  # Live-Transkript während Aufnahme
 
 # =============================================================================
 # API-Endpunkte

@@ -98,6 +98,7 @@ class PulseScribeWindows:
         refine_model: str | None = None,
         refine_provider: str | None = None,
         context: str | None = None,
+        streaming: bool = True,
     ):
         self.hotkey_str = hotkey
         self.auto_paste = auto_paste
@@ -105,6 +106,7 @@ class PulseScribeWindows:
         self.refine_model = refine_model
         self.refine_provider = refine_provider
         self.context = context
+        self.streaming = streaming
 
         # State
         self._state = AppState.IDLE
@@ -117,11 +119,12 @@ class PulseScribeWindows:
         self._recording_thread = None
         self._stop_event = threading.Event()
 
-        # Audio buffer für Streaming
+        # Audio buffer für REST-Modus
         self._audio_buffer = []
         self._audio_lock = threading.Lock()
 
-        logger.info(f"PulseScribeWindows initialisiert (Hotkey: {hotkey}, Refine: {refine})")
+        mode = "Streaming" if streaming else "REST"
+        logger.info(f"PulseScribeWindows initialisiert (Hotkey: {hotkey}, Mode: {mode}, Refine: {refine})")
 
     @property
     def state(self) -> AppState:
@@ -180,18 +183,24 @@ class PulseScribeWindows:
             self._stop_recording()
 
     def _start_recording(self):
-        """Startet Aufnahme."""
-        logger.info("Starte Aufnahme...")
+        """Startet Aufnahme (Streaming oder REST)."""
+        logger.info(f"Starte Aufnahme ({'Streaming' if self.streaming else 'REST'})...")
         self._set_state(AppState.LISTENING)
         self._play_sound("ready")
 
         # Stop-Event zurücksetzen
         self._stop_event.clear()
 
-        # Recording-Thread starten
-        self._recording_thread = threading.Thread(
-            target=self._recording_loop, daemon=True
-        )
+        if self.streaming:
+            # Streaming: deepgram_stream_core übernimmt Recording + Transcription
+            self._recording_thread = threading.Thread(
+                target=self._streaming_worker, daemon=True
+            )
+        else:
+            # REST: Lokales Recording, dann Upload
+            self._recording_thread = threading.Thread(
+                target=self._recording_loop, daemon=True
+            )
         self._recording_thread.start()
 
     def _stop_recording(self):
@@ -202,14 +211,16 @@ class PulseScribeWindows:
         # Signal zum Stoppen
         self._stop_event.set()
 
-        # Auf Thread warten (mit Timeout)
-        if self._recording_thread and self._recording_thread.is_alive():
-            self._recording_thread.join(timeout=2.0)
-
-        self._set_state(AppState.TRANSCRIBING)
-
-        # Transkription in separatem Thread
-        threading.Thread(target=self._transcribe, daemon=True).start()
+        if self.streaming:
+            # Streaming: Worker beendet sich selbst via stop_event
+            # Ergebnis kommt automatisch (kein separater Transcribe-Thread nötig)
+            pass
+        else:
+            # REST: Auf Recording-Thread warten, dann transcribieren
+            if self._recording_thread and self._recording_thread.is_alive():
+                self._recording_thread.join(timeout=2.0)
+            self._set_state(AppState.TRANSCRIBING)
+            threading.Thread(target=self._transcribe_rest, daemon=True).start()
 
     def _recording_loop(self):
         """Audio-Aufnahme Loop (läuft in separatem Thread)."""
@@ -255,8 +266,77 @@ class PulseScribeWindows:
             self._set_state(AppState.ERROR)
             self._play_sound("error")
 
-    def _transcribe(self):
-        """Transkribiert aufgenommenes Audio."""
+    def _streaming_worker(self):
+        """Streaming-Worker: Recording + Transcription via WebSocket."""
+        import asyncio
+
+        logger.debug("Streaming-Worker gestartet")
+        transcript = ""
+
+        try:
+            from providers.deepgram_stream import deepgram_stream_core
+
+            # Eigener Event-Loop (nicht im Main-Thread)
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+            try:
+                # State auf RECORDING setzen (Audio läuft)
+                self._set_state(AppState.RECORDING)
+
+                logger.debug("Starte deepgram_stream_core")
+                transcript = loop.run_until_complete(
+                    deepgram_stream_core(
+                        model="nova-3",
+                        language=os.getenv("PULSESCRIBE_LANGUAGE", "de"),
+                        play_ready=False,  # Wir spielen Sound selbst
+                        external_stop_event=self._stop_event,
+                    )
+                )
+                logger.debug(f"Streaming abgeschlossen: {len(transcript)} Zeichen")
+
+                if transcript:
+                    self._set_state(AppState.TRANSCRIBING)
+
+                    # LLM-Nachbearbeitung (optional)
+                    if self.refine:
+                        self._set_state(AppState.REFINING)
+                        original = transcript
+                        try:
+                            from refine.llm import refine_transcript
+
+                            transcript = refine_transcript(
+                                transcript,
+                                model=self.refine_model,
+                                provider=self.refine_provider,
+                                context=self.context,
+                            )
+                            if not transcript or not transcript.strip():
+                                logger.warning("Refine gab leeren String zurück, verwende Original")
+                                transcript = original
+                        except Exception as e:
+                            logger.warning(f"Refine fehlgeschlagen, verwende Original: {e}")
+                            transcript = original
+
+                    self._handle_result(transcript)
+                else:
+                    logger.warning("Leeres Transkript")
+                    self._set_state(AppState.IDLE)
+
+            finally:
+                loop.close()
+
+        except ImportError as e:
+            logger.error(f"Import-Fehler: {e}")
+            self._set_state(AppState.ERROR)
+            self._play_sound("error")
+        except Exception as e:
+            logger.error(f"Streaming-Fehler: {e}")
+            self._set_state(AppState.ERROR)
+            self._play_sound("error")
+
+    def _transcribe_rest(self):
+        """Transkribiert aufgenommenes Audio via REST API."""
         try:
             import numpy as np
             import soundfile as sf
@@ -523,6 +603,11 @@ def main():
         default=None,
         help="Kontext für Nachbearbeitung",
     )
+    parser.add_argument(
+        "--no-streaming",
+        action="store_true",
+        help="REST API statt WebSocket Streaming",
+    )
 
     args = parser.parse_args()
 
@@ -535,6 +620,9 @@ def main():
     effective_refine_provider = args.refine_provider or os.getenv("PULSESCRIBE_REFINE_PROVIDER")
     effective_context = args.context or os.getenv("PULSESCRIBE_CONTEXT")
 
+    # Streaming: Default True, kann via --no-streaming oder ENV deaktiviert werden
+    effective_streaming = not args.no_streaming and os.getenv("PULSESCRIBE_STREAMING", "true").lower() != "false"
+
     daemon = PulseScribeWindows(
         hotkey=args.hotkey,
         auto_paste=not args.no_paste,
@@ -542,6 +630,7 @@ def main():
         refine_model=effective_refine_model,
         refine_provider=effective_refine_provider,
         context=effective_context,
+        streaming=effective_streaming,
     )
 
     try:
