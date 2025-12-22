@@ -145,6 +145,12 @@ class PulseScribeWindows:
         mode = "Streaming" if streaming else "REST"
         logger.info(f"PulseScribeWindows initialisiert (Hotkey: {hotkey}, Mode: {mode}, Refine: {refine}, Overlay: {overlay})")
 
+        # Event Loop Policy einmal setzen (nicht bei jedem Recording)
+        # Windows: SelectorEventLoop für bessere Kompatibilität mit asyncio-Libs
+        if streaming:
+            import asyncio
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
     @property
     def state(self) -> AppState:
         with self._state_lock:
@@ -312,10 +318,8 @@ class PulseScribeWindows:
         try:
             from providers.deepgram_stream import deepgram_stream_core
 
-            # Windows: SelectorEventLoop verwenden (ProactorEventLoop hat Probleme mit einigen Libs)
-            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-
             # Eigener Event-Loop (nicht im Main-Thread)
+            # Policy wurde bereits im __init__ gesetzt
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
 
@@ -620,10 +624,49 @@ class PulseScribeWindows:
             logger.warning(f"Overlay konnte nicht gestartet werden: {e}")
             self._overlay = None
 
+    def _prewarm_imports(self):
+        """Lädt teure Imports und erkennt Audio-Device im Hintergrund.
+
+        Reduziert Latenz beim ersten Hotkey-Drücken um ~1.5-2s.
+        Analog zu macOS _preload_local_model_async().
+        """
+        import time as _time
+        start = _time.perf_counter()
+
+        try:
+            # Phase 1: Core-Libraries (~500-800ms gesamt)
+            import numpy  # noqa: F401 - ~300ms
+            import sounddevice  # noqa: F401 - ~100ms
+
+            # Deepgram SDK und Dependencies (~400-600ms gesamt)
+            from providers.deepgram_stream import deepgram_stream_core  # noqa: F401
+            import httpx  # noqa: F401
+            import websockets  # noqa: F401
+
+            imports_ms = (_time.perf_counter() - start) * 1000
+
+            # Phase 2: Audio-Device erkennen (~250-500ms auf Windows)
+            # get_input_device() testet Geräte und cached das Ergebnis
+            device_start = _time.perf_counter()
+            device_idx, sample_rate = get_input_device()
+            device_ms = (_time.perf_counter() - device_start) * 1000
+
+            total_ms = (_time.perf_counter() - start) * 1000
+            logger.info(
+                f"Pre-Warm abgeschlossen ({total_ms:.0f}ms): "
+                f"Imports={imports_ms:.0f}ms, Device={device_ms:.0f}ms "
+                f"(idx={device_idx}, {sample_rate}Hz)"
+            )
+        except Exception as e:
+            logger.debug(f"Pre-Warm fehlgeschlagen: {e}")
+
     def run(self):
         """Startet den Daemon."""
         print(f"PulseScribe Windows gestartet (Hotkey: {self.hotkey_str})")
         print("Drücke Ctrl+C oder nutze Tray-Menü zum Beenden")
+
+        # Pre-Warm: Teure Imports im Hintergrund laden
+        threading.Thread(target=self._prewarm_imports, daemon=True, name="PreWarm").start()
 
         self._setup_overlay()
         self._setup_hotkey()
