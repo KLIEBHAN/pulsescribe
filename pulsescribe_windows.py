@@ -261,10 +261,14 @@ class PulseScribeWindows:
             logger.error("sounddevice nicht installiert")
             self._set_state(AppState.ERROR)
             self._play_sound("error")
+            time.sleep(1.0)
+            self._set_state(AppState.IDLE)
         except Exception as e:
             logger.error(f"Recording-Fehler: {e}")
             self._set_state(AppState.ERROR)
             self._play_sound("error")
+            time.sleep(1.0)
+            self._set_state(AppState.IDLE)
 
     def _streaming_worker(self):
         """Streaming-Worker: Recording + Transcription via WebSocket."""
@@ -275,6 +279,9 @@ class PulseScribeWindows:
 
         try:
             from providers.deepgram_stream import deepgram_stream_core
+
+            # Windows: SelectorEventLoop verwenden (ProactorEventLoop hat Probleme mit einigen Libs)
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
             # Eigener Event-Loop (nicht im Main-Thread)
             loop = asyncio.new_event_loop()
@@ -330,10 +337,14 @@ class PulseScribeWindows:
             logger.error(f"Import-Fehler: {e}")
             self._set_state(AppState.ERROR)
             self._play_sound("error")
+            time.sleep(1.0)
+            self._set_state(AppState.IDLE)
         except Exception as e:
             logger.error(f"Streaming-Fehler: {e}")
             self._set_state(AppState.ERROR)
             self._play_sound("error")
+            time.sleep(1.0)
+            self._set_state(AppState.IDLE)
 
     def _transcribe_rest(self):
         """Transkribiert aufgenommenes Audio via REST API."""
@@ -408,10 +419,14 @@ class PulseScribeWindows:
             logger.error(f"Import-Fehler: {e}")
             self._set_state(AppState.ERROR)
             self._play_sound("error")
+            time.sleep(1.0)
+            self._set_state(AppState.IDLE)
         except Exception as e:
             logger.error(f"Transkriptions-Fehler: {e}")
             self._set_state(AppState.ERROR)
             self._play_sound("error")
+            time.sleep(1.0)
+            self._set_state(AppState.IDLE)
 
     def _handle_result(self, transcript: str):
         """Verarbeitet Transkriptions-Ergebnis."""
