@@ -5,7 +5,7 @@
 
 [🇩🇪 Deutsche Version](README.de.md)
 
-Voice input for macOS – inspired by [Wispr Flow](https://wisprflow.ai). Transcribes audio using OpenAI Whisper via API, Deepgram, Groq, or locally.
+Voice input for macOS and Windows – inspired by [Wispr Flow](https://wisprflow.ai). Transcribes audio using OpenAI Whisper via API, Deepgram, Groq, or locally.
 
 **Features:** Real-time Streaming (Deepgram) · Multiple Providers (OpenAI, Deepgram, Groq, Local) · **⚡ Lightning Mode** (4x faster local transcription on Apple Silicon) · LLM Post-processing · Context Awareness · Custom Vocabulary · Live Preview Overlay · Menu Bar Feedback
 
@@ -555,6 +555,7 @@ Optionally enable an additional warmup inference via `PULSESCRIBE_LOCAL_WARMUP=t
 | Problem                             | Solution                                                                                                                                                                |
 | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Module not installed                | `pip install -r requirements.txt`                                                                                                                                       |
+| Windows: pystray/pillow missing     | `pip install pystray pillow`                                                                                                                                            |
 | API Key missing                     | `export DEEPGRAM_API_KEY="..."` (or OPENAI/GROQ)                                                                                                                        |
 | Microphone issues (macOS)           | `brew install portaudio && pip install --force-reinstall sounddevice`                                                                                                   |
 | Microphone permission               | Grant access in System Settings → Privacy & Security → Microphone                                                                                                       |
@@ -620,6 +621,47 @@ pytest --cov=. --cov-report=term-missing
 ```
 
 Tests run automatically via GitHub Actions on Push and Pull Requests.
+
+### Windows Support (Experimental)
+
+PulseScribe includes experimental Windows support with a dedicated daemon:
+
+```bash
+# Install dependencies
+pip install -r requirements.txt
+pip install pystray pillow
+
+# Run the Windows daemon
+python pulsescribe_windows.py
+
+# With options
+python pulsescribe_windows.py --hotkey "ctrl+alt+r" --debug
+```
+
+**Features:**
+- System Tray icon with color-coded status (gray/orange/red/yellow/green)
+- Global hotkey via pynput (default: `Ctrl+Alt+R`)
+- Audio recording via sounddevice
+- Deepgram REST API transcription
+- Auto-Paste via `Ctrl+V` simulation
+
+**Configuration:** Same `.env` file as macOS (`~/.pulsescribe/.env` or project root):
+
+```bash
+DEEPGRAM_API_KEY=your_key
+PULSESCRIBE_LANGUAGE=en
+```
+
+**Building Windows EXE:**
+
+```bash
+pip install pyinstaller
+pyinstaller build_windows.spec --clean
+
+# Output: dist/PulseScribe/PulseScribe.exe (~80 MB)
+```
+
+> **Note:** Windows support is experimental. Features like WebSocket streaming, LLM post-processing, and context detection are not yet implemented.
 
 ### Building the macOS App Bundle
 
