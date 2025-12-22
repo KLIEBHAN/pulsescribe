@@ -629,11 +629,23 @@ To create a standalone `PulseScribe.app`:
 # Install PyInstaller (if not already installed)
 pip install pyinstaller
 
-# Build the app
-pyinstaller build_app.spec
+# Full build (all providers including local Whisper backends)
+./build_app.sh
+
+# Slim build (cloud-only: Deepgram, OpenAI, Groq - no local backends)
+./build_app.sh --slim
 
 # Output: dist/PulseScribe.app
 ```
+
+**Build Variants:**
+
+| Variant             | Size    | Providers                           | Use Case                           |
+| ------------------- | ------- | ----------------------------------- | ---------------------------------- |
+| **Full** (default)  | ~1 GB   | All (Deepgram, OpenAI, Groq, Local) | Offline transcription needed       |
+| **Slim** (`--slim`) | ~300 MB | Cloud only (Deepgram, OpenAI, Groq) | Cloud-only usage, smaller download |
+
+> **Note:** The Slim build does not include local Whisper backends (faster-whisper, mlx-whisper, lightning). If you need offline transcription, use the Full build.
 
 **Optional: Code-Sign for stable Accessibility permissions**
 

@@ -68,7 +68,17 @@ def get_provider(mode: str) -> "TranscriptionProvider":
 
         return GroqProvider()
     elif mode == "local":
-        from .local import LocalProvider
+        # Prüfe ob lokale Backends verfügbar sind (Slim-Build hat keine)
+        try:
+            from .local import LocalProvider
+        except ImportError as e:
+            raise ValueError(
+                "Lokaler Modus nicht verfügbar. "
+                "Dies ist wahrscheinlich ein Slim-Build ohne lokale Whisper-Backends. "
+                "Verwende einen Cloud-Provider (deepgram, openai, groq) oder installiere "
+                "den Full-Build mit lokalen Backends.\n"
+                f"Original-Fehler: {e}"
+            ) from None
 
         return LocalProvider()
     else:
