@@ -450,3 +450,143 @@ class TestPasteViaOsascript:
 
         result = utils.hotkey._paste_via_osascript()
         assert result is False
+
+
+# =============================================================================
+# Tests: Windows paste_transcript (Ctrl+V via pynput)
+# =============================================================================
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only: tests Windows paste logic")
+class TestPasteTranscriptWindows:
+    """Tests für paste_transcript() auf Windows – pyperclip + pynput."""
+
+    def test_paste_transcript_success(self, monkeypatch):
+        """Erfolgreicher Paste-Vorgang auf Windows gibt True zurück."""
+        copy_calls = []
+        paste_calls = []
+
+        def mock_copy(text):
+            copy_calls.append(text)
+
+        def mock_paste_windows():
+            paste_calls.append(True)
+            return True
+
+        # Mock pyperclip
+        import pyperclip
+        monkeypatch.setattr(pyperclip, "copy", mock_copy)
+
+        # Mock _paste_via_pynput_windows
+        monkeypatch.setattr(utils.hotkey, "_paste_via_pynput_windows", mock_paste_windows)
+
+        result = utils.hotkey.paste_transcript("test text")
+
+        assert result is True
+        assert copy_calls == ["test text"]
+        assert paste_calls == [True]
+
+    def test_paste_transcript_pyperclip_failure(self, monkeypatch):
+        """pyperclip-Fehler gibt False zurück."""
+
+        def mock_copy(text):
+            raise Exception("Clipboard error")
+
+        import pyperclip
+        monkeypatch.setattr(pyperclip, "copy", mock_copy)
+
+        result = utils.hotkey.paste_transcript("test text")
+
+        assert result is False
+
+    def test_paste_transcript_pynput_failure(self, monkeypatch):
+        """pynput-Fehler gibt False zurück (Text bleibt im Clipboard)."""
+        copy_calls = []
+
+        def mock_copy(text):
+            copy_calls.append(text)
+
+        def mock_paste_windows():
+            return False  # Simuliere pynput-Fehler
+
+        import pyperclip
+        monkeypatch.setattr(pyperclip, "copy", mock_copy)
+        monkeypatch.setattr(utils.hotkey, "_paste_via_pynput_windows", mock_paste_windows)
+
+        result = utils.hotkey.paste_transcript("test text")
+
+        assert result is False
+        # Text wurde trotzdem ins Clipboard kopiert
+        assert copy_calls == ["test text"]
+
+    def test_paste_transcript_empty_text(self, monkeypatch):
+        """Leerer Text wird korrekt behandelt."""
+        copy_calls = []
+
+        def mock_copy(text):
+            copy_calls.append(text)
+
+        def mock_paste_windows():
+            return True
+
+        import pyperclip
+        monkeypatch.setattr(pyperclip, "copy", mock_copy)
+        monkeypatch.setattr(utils.hotkey, "_paste_via_pynput_windows", mock_paste_windows)
+
+        result = utils.hotkey.paste_transcript("")
+
+        assert result is True
+        assert copy_calls == [""]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only: tests pynput Ctrl+V")
+class TestPasteViaPynputWindows:
+    """Tests für _paste_via_pynput_windows() – Ctrl+V Simulation."""
+
+    def test_pynput_success(self, monkeypatch):
+        """Erfolgreiche Ctrl+V Simulation gibt True zurück."""
+        key_events = []
+
+        class MockKey:
+            ctrl = "ctrl"
+
+        class MockController:
+            def press(self, key):
+                key_events.append(("press", key))
+
+            def release(self, key):
+                key_events.append(("release", key))
+
+        # Mock pynput.keyboard
+        import pynput.keyboard
+        monkeypatch.setattr(pynput.keyboard, "Controller", MockController)
+        monkeypatch.setattr(pynput.keyboard, "Key", MockKey)
+
+        result = utils.hotkey._paste_via_pynput_windows()
+
+        assert result is True
+        assert ("press", "ctrl") in key_events
+        assert ("press", "v") in key_events
+        assert ("release", "v") in key_events
+        assert ("release", "ctrl") in key_events
+
+    def test_pynput_exception(self, monkeypatch):
+        """Exception bei pynput gibt False zurück."""
+
+        class MockController:
+            def press(self, key):
+                raise RuntimeError("Keyboard simulation failed")
+
+            def release(self, key):
+                pass
+
+        class MockKey:
+            ctrl = "ctrl"
+
+        import pynput.keyboard
+        monkeypatch.setattr(pynput.keyboard, "Controller", MockController)
+        monkeypatch.setattr(pynput.keyboard, "Key", MockKey)
+
+        result = utils.hotkey._paste_via_pynput_windows()
+
+        assert result is False
