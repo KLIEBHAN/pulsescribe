@@ -36,6 +36,11 @@ from utils.logging import setup_logging, get_logger
 setup_logging(debug=os.getenv("PULSESCRIBE_DEBUG", "").lower() == "true")
 logger = get_logger()
 
+# .env laden (aus ~/.pulsescribe/.env und/oder Projekt-Root)
+from utils.env import load_environment
+
+load_environment()
+
 # Imports nach Logging-Setup
 from utils.state import AppState
 from utils.hotkey import paste_transcript
@@ -315,6 +320,40 @@ class PulseScribeWindows:
         try:
             from pynput import keyboard
 
+            # Mapping: Links/Rechts-Varianten -> generische Taste
+            # Windows gibt ctrl_l/ctrl_r zurück, nicht ctrl
+            def normalize_key(key):
+                """Normalisiert Modifier-Tasten (ctrl_l -> ctrl, etc.)."""
+                if not hasattr(key, "name"):
+                    return key
+                name = key.name
+                if name in ("ctrl_l", "ctrl_r"):
+                    return keyboard.Key.ctrl
+                if name in ("alt_l", "alt_r", "alt_gr"):
+                    return keyboard.Key.alt
+                if name in ("shift_l", "shift_r"):
+                    return keyboard.Key.shift
+                if name in ("cmd_l", "cmd_r"):
+                    return keyboard.Key.cmd
+                return key
+
+            # Virtual Key Codes für Buchstaben (Windows)
+            # Mit Ctrl+Alt gedrückt wird 'r' als <82> erkannt, nicht als 'r'
+            VK_TO_CHAR = {
+                65: "a", 66: "b", 67: "c", 68: "d", 69: "e", 70: "f", 71: "g",
+                72: "h", 73: "i", 74: "j", 75: "k", 76: "l", 77: "m", 78: "n",
+                79: "o", 80: "p", 81: "q", 82: "r", 83: "s", 84: "t", 85: "u",
+                86: "v", 87: "w", 88: "x", 89: "y", 90: "z",
+            }
+
+            def normalize_vk(key):
+                """Konvertiert Virtual Key Code zu Buchstabe."""
+                if hasattr(key, "vk") and key.vk in VK_TO_CHAR:
+                    return keyboard.KeyCode.from_char(VK_TO_CHAR[key.vk])
+                if hasattr(key, "char") and key.char:
+                    return keyboard.KeyCode.from_char(key.char.lower())
+                return key
+
             # Parse Hotkey-String
             parts = [p.strip().lower() for p in self.hotkey_str.split("+")]
             hotkey_keys = set()
@@ -336,12 +375,21 @@ class PulseScribeWindows:
             current_keys = set()
 
             def on_press(key):
-                current_keys.add(key)
+                normalized = normalize_key(key)
+                current_keys.add(normalized)
+                # Buchstaben via VK-Code oder char normalisieren
+                char_key = normalize_vk(key)
+                if char_key != key:
+                    current_keys.add(char_key)
                 if hotkey_keys.issubset(current_keys):
                     self._on_hotkey_press()
 
             def on_release(key):
-                current_keys.discard(key)
+                normalized = normalize_key(key)
+                current_keys.discard(normalized)
+                char_key = normalize_vk(key)
+                if char_key != key:
+                    current_keys.discard(char_key)
 
             self._hotkey_listener = keyboard.Listener(
                 on_press=on_press, on_release=on_release
