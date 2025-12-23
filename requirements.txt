@@ -1,23 +1,30 @@
 # Note: PySide6 is optional for Windows (GPU-accelerated overlay)
 # Install with: pip install pulsescribe[windows] or pip install PySide6
 # Falls back to Tkinter if not installed
+
+# Core dependencies (cross-platform)
 openai>=1.0.0
 openai-whisper
-# Optional: faster local backend (CTranslate2)
-faster-whisper
-# Optional: fastest local backend on Apple Silicon (~4x faster)
-# Note: Install with `pip install --no-deps lightning-whisper-mlx` to avoid tiktoken version conflict
-lightning-whisper-mlx
 deepgram-sdk>=3.0.0
 groq>=0.4.0
 sounddevice
 soundfile
 pyperclip
 python-dotenv
-rumps>=0.4.0
-quickmachotkey>=2023.11.17
 numpy
 pynput
-pyobjc-framework-Cocoa
-pyobjc-framework-AVFoundation
 typer>=0.9.0
+pystray
+
+# Optional: faster local backend (CTranslate2, cross-platform)
+faster-whisper
+
+# macOS only: MenuBar, Hotkeys, System Integration
+rumps>=0.4.0; sys_platform == 'darwin'
+quickmachotkey>=2023.11.17; sys_platform == 'darwin'
+pyobjc-framework-Cocoa; sys_platform == 'darwin'
+pyobjc-framework-AVFoundation; sys_platform == 'darwin'
+
+# macOS only: fastest local backend on Apple Silicon (~4x faster)
+# Note: Install with `pip install --no-deps lightning-whisper-mlx` to avoid tiktoken version conflict
+lightning-whisper-mlx; sys_platform == 'darwin'

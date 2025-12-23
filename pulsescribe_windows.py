@@ -21,6 +21,7 @@ if sys.platform != "win32":
 import argparse
 import logging
 import os
+import signal
 import threading
 import time
 from pathlib import Path
@@ -53,12 +54,26 @@ WindowsOverlayController = None
 
 
 def _load_overlay():
-    """Lädt Overlay-Controller (lazy)."""
+    """Lädt Overlay-Controller (lazy). PySide6 bevorzugt, Tkinter als Fallback."""
     global WindowsOverlayController
+    # Versuch 1: PySide6 (GPU-beschleunigt, 60 FPS)
+    try:
+        from ui.overlay_pyside6 import PySide6OverlayController as _Overlay
+
+        WindowsOverlayController = _Overlay
+        logger.info("Overlay: PySide6 (GPU-beschleunigt)")
+        return True
+    except ImportError as e:
+        logger.debug(f"PySide6 nicht verfügbar (ImportError): {e}")
+    except Exception as e:
+        logger.warning(f"PySide6 Fehler: {type(e).__name__}: {e}")
+
+    # Versuch 2: Tkinter (Fallback)
     try:
         from ui.overlay_windows import WindowsOverlayController as _Overlay
 
         WindowsOverlayController = _Overlay
+        logger.info("Overlay: Tkinter (Fallback)")
         return True
     except ImportError as e:
         logger.debug(f"Overlay nicht verfügbar: {e}")
@@ -75,6 +90,11 @@ _VK_TO_CHAR = {vk: chr(vk + 32) for vk in range(65, 91)}  # 65='A' -> 'a', etc.
 
 # Debounce-Zeit in Sekunden (verhindert Doppel-Trigger)
 _HOTKEY_DEBOUNCE_SEC = 0.3
+
+# VAD Threshold: Audio-Level ab dem Sprache erkannt wird
+# REST-Modus verwendet Peak (max), Streaming verwendet RMS (niedriger)
+_VAD_THRESHOLD_PEAK = 0.01  # Für REST-Modus (float32 peak)
+_VAD_THRESHOLD_RMS = 0.003  # Für Streaming-Modus (RMS/INT16_MAX)
 
 
 def _load_tray_dependencies():
@@ -135,7 +155,9 @@ class PulseScribeWindows:
         self._tray = None
         self._hotkey_listener = None
         self._recording_thread = None
-        self._stop_event = threading.Event()
+        self._stop_event = threading.Event()  # App beenden
+        self._recording_stop_event = threading.Event()  # Recording stoppen
+        self._prewarm_complete = threading.Event()  # Pre-Warm abgeschlossen
         self._overlay = None
         self._event_loop = None  # Wird in _prewarm_imports() erstellt
 
@@ -248,25 +270,35 @@ class PulseScribeWindows:
         """Callback wenn Hotkey gedrückt wird."""
         if self.state == AppState.IDLE:
             self._start_recording()
-        elif self.state in (AppState.LISTENING, AppState.RECORDING):
+        elif self.state in (AppState.LOADING, AppState.LISTENING, AppState.RECORDING):
             self._stop_recording()
 
     def _start_recording(self):
         """Startet Aufnahme (Streaming oder REST)."""
         logger.info(f"Starte Aufnahme ({'Streaming' if self.streaming else 'REST'})...")
-        self._set_state(AppState.LISTENING)
-        self._play_sound("ready")
 
-        # Stop-Event zurücksetzen
-        self._stop_event.clear()
+        # Recording-Stop-Event zurücksetzen
+        self._recording_stop_event.clear()
 
         if self.streaming:
-            # Streaming: deepgram_stream_core übernimmt Recording + Transcription
+            # Streaming: LOADING sofort setzen für UI-Feedback
+            self._set_state(AppState.LOADING)
+
+            # Kurz auf Pre-Warm warten (non-blocking check, dann kurzer wait)
+            # Verhindert langsamen ersten Start wenn User sofort drückt
+            if not self._prewarm_complete.is_set():
+                logger.debug("Warte auf Pre-Warm...")
+                if not self._prewarm_complete.wait(timeout=1.0):
+                    logger.warning("Pre-Warm Timeout - starte trotzdem")
+
             self._recording_thread = threading.Thread(
                 target=self._streaming_worker, daemon=True
             )
         else:
-            # REST: Lokales Recording, dann Upload
+            # REST: Sound hier spielen, dann Recording starten
+            self._set_state(AppState.LISTENING)
+            self._play_sound("ready")
+            time.sleep(0.1)  # Sound abspielen lassen vor Audio-Stream
             self._recording_thread = threading.Thread(
                 target=self._recording_loop, daemon=True
             )
@@ -277,8 +309,8 @@ class PulseScribeWindows:
         logger.info("Stoppe Aufnahme...")
         self._play_sound("stop")
 
-        # Signal zum Stoppen
-        self._stop_event.set()
+        # Signal zum Stoppen (nur Recording, nicht App)
+        self._recording_stop_event.set()
 
         if self.streaming:
             # Streaming: Worker beendet sich selbst via stop_event
@@ -320,8 +352,8 @@ class PulseScribeWindows:
 
                 # State auf RECORDING setzen wenn Audio erkannt
                 if self.state == AppState.LISTENING:
-                    # Einfache VAD: Prüfe ob Audio über Threshold
-                    if np.abs(indata).max() > 0.01:
+                    # Einfache VAD: Prüfe ob Audio über Threshold (Peak für REST)
+                    if np.abs(indata).max() > _VAD_THRESHOLD_PEAK:
                         self._set_state(AppState.RECORDING)
 
             with sd.InputStream(
@@ -332,7 +364,7 @@ class PulseScribeWindows:
                 callback=audio_callback,
                 blocksize=int(actual_sample_rate * chunk_duration),
             ):
-                while not self._stop_event.is_set():
+                while not self._recording_stop_event.is_set():
                     time.sleep(0.05)
 
         except ImportError:
@@ -368,23 +400,32 @@ class PulseScribeWindows:
             asyncio.set_event_loop(loop)
 
             try:
-                # State auf RECORDING setzen (Audio läuft)
-                self._set_state(AppState.RECORDING)
-
                 logger.debug("Starte deepgram_stream_core")
 
-                # Audio-Level Callback für Overlay
+                # Audio-Level Callback für Overlay + State-Transitions
+                # Wird alle ~64ms aufgerufen (1024 samples @ 16kHz)
                 def on_audio_level(level: float):
                     if self._overlay:
                         self._overlay.update_audio_level(level)
+
+                    # State-Machine: LOADING → LISTENING → RECORDING
+                    current_state = self.state
+                    if current_state == AppState.LOADING:
+                        # Erster Audio-Callback = Mikrofon ist bereit
+                        logger.debug("Mikrofon bereit → LISTENING")
+                        self._set_state(AppState.LISTENING)
+                    elif current_state == AppState.LISTENING and level > _VAD_THRESHOLD_RMS:
+                        # VAD: Sprache erkannt
+                        logger.debug(f"VAD triggered: level={level:.4f} > threshold={_VAD_THRESHOLD_RMS}")
+                        self._set_state(AppState.RECORDING)
 
                 transcript = loop.run_until_complete(
                     deepgram_stream_core(
                         model="nova-3",
                         language=os.getenv("PULSESCRIBE_LANGUAGE", "de"),
-                        play_ready=False,  # Wir spielen Sound selbst
-                        external_stop_event=self._stop_event,
-                        audio_level_callback=on_audio_level if self._overlay else None,
+                        play_ready=True,  # Sound nach Mic-Init (wie macOS)
+                        external_stop_event=self._recording_stop_event,
+                        audio_level_callback=on_audio_level,  # Immer übergeben für State-Transitions
                     )
                 )
                 logger.debug(f"Streaming abgeschlossen: {len(transcript)} Zeichen")
@@ -621,6 +662,16 @@ class PulseScribeWindows:
                 hotkey_keys.add(keyboard.Key.shift)
             elif part in ("cmd", "command", "win"):
                 hotkey_keys.add(keyboard.Key.cmd)
+            elif part.startswith("f") and part[1:].isdigit():
+                # F-Tasten: f1-f24
+                fn = int(part[1:])
+                if 1 <= fn <= 24:
+                    try:
+                        hotkey_keys.add(getattr(keyboard.Key, part))
+                    except AttributeError:
+                        logger.warning(f"F-Taste nicht unterstützt: {part}")
+                else:
+                    logger.warning(f"Ungültige F-Taste: {part}")
             elif len(part) == 1:
                 hotkey_keys.add(keyboard.KeyCode.from_char(part))
             else:
@@ -649,6 +700,9 @@ class PulseScribeWindows:
     def _quit(self):
         """Beendet den Daemon."""
         logger.info("Beende PulseScribe...")
+
+        # Stop-Signal fuer Hauptschleife
+        self._stop_event.set()
 
         if self._overlay:
             self._overlay.stop()
@@ -696,6 +750,10 @@ class PulseScribeWindows:
                 import httpx  # noqa: F401
                 import websockets  # noqa: F401
 
+                # Deepgram SDK-Klassen (werden in deepgram_stream_core benötigt)
+                from deepgram.core.events import EventType  # noqa: F401
+                from deepgram.extensions.types.sockets import ListenV1ControlMessage  # noqa: F401
+
                 # Event-Loop vorab erstellen (spart ~50-100ms beim ersten Recording)
                 import asyncio
 
@@ -719,7 +777,31 @@ class PulseScribeWindows:
             # get_input_device() cached das Ergebnis in config._cached_input_device
             device_start = time.perf_counter()
             device_idx, sample_rate = get_input_device()
+
+            # Phase 4: PortAudio "warm-up" - erster Stream-Start ist langsam
+            # Öffne kurz einen Dummy-Stream um COM/WASAPI zu initialisieren
+            try:
+                dummy = sounddevice.InputStream(
+                    device=device_idx,
+                    samplerate=sample_rate,
+                    channels=1,
+                    blocksize=1024,
+                )
+                dummy.start()
+                dummy.stop()
+                dummy.close()
+            except Exception:
+                pass  # Ignorieren wenn es fehlschlägt
+
             device_ms = (time.perf_counter() - device_start) * 1000
+
+            # Phase 5: DNS-Prefetch für Deepgram WebSocket (spart ~50-200ms)
+            if self.streaming:
+                try:
+                    import socket
+                    socket.getaddrinfo("api.deepgram.com", 443)
+                except Exception:
+                    pass  # Ignorieren wenn es fehlschlägt
 
             total_ms = (time.perf_counter() - start) * 1000
             mode = "Streaming" if self.streaming else "REST"
@@ -730,6 +812,8 @@ class PulseScribeWindows:
             )
         except Exception as e:
             logger.debug(f"Pre-Warm fehlgeschlagen: {e}", exc_info=True)
+        finally:
+            self._prewarm_complete.set()
 
     def run(self):
         """Startet den Daemon."""
@@ -748,16 +832,26 @@ class PulseScribeWindows:
         self._setup_overlay()
         self._setup_tray()
 
-        if self._tray:
-            # Tray-Icon blockiert den Hauptthread
-            self._tray.run()
-        else:
-            # Ohne Tray: Einfacher Event-Loop
-            try:
-                while True:
-                    time.sleep(1)
-            except KeyboardInterrupt:
+        # Ctrl+C Handler: Signal wird an _quit weitergeleitet (nur einmal)
+        def signal_handler(sig, frame):
+            if not self._stop_event.is_set():
+                print("\nCtrl+C erkannt, beende...")
                 self._quit()
+
+        signal.signal(signal.SIGINT, signal_handler)
+
+        if self._tray:
+            # Tray-Icon in Hintergrund-Thread, damit Hauptthread Ctrl+C empfängt
+            self._tray.run_detached()
+
+        # Hauptthread wartet auf Stop-Signal oder Ctrl+C
+        try:
+            while not self._stop_event.is_set():
+                time.sleep(0.5)
+        except KeyboardInterrupt:
+            self._quit()
+
+        print("Beendet.")
 
 
 def main():

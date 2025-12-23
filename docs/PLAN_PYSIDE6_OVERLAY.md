@@ -1,5 +1,8 @@
 # Migrationsplan: Windows Overlay von Tkinter zu PySide6
 
+> **Status:** ✅ Implementiert (2025-12-22)
+> **Ergebnis:** GPU-beschleunigtes PySide6-Overlay mit Tkinter-Fallback
+
 ## Übersicht
 
 Migration des Windows-Overlays (`ui/overlay_windows.py`) von Tkinter zu PySide6 für:
@@ -421,13 +424,13 @@ def test_animation_timing():
 
 ### Manuelle Tests
 
-- [ ] Overlay erscheint bei Hotkey-Press
-- [ ] Waveform reagiert auf Audio-Level
-- [ ] Interim-Text wird angezeigt
-- [ ] Smooth Animation ohne Ruckeln
-- [ ] Korrekte Farben pro State
-- [ ] Blur funktioniert (Windows 10+)
-- [ ] Graceful Shutdown
+- [x] Overlay erscheint bei Hotkey-Press
+- [x] Waveform reagiert auf Audio-Level
+- [x] Interim-Text wird angezeigt
+- [x] Smooth Animation ohne Ruckeln
+- [x] Korrekte Farben pro State
+- [x] Blur funktioniert (Windows 10+)
+- [x] Graceful Shutdown
 
 ---
 
@@ -444,8 +447,8 @@ def test_animation_timing():
 
 ## 11. Erfolgskriterien
 
-- [ ] Animation fühlt sich so smooth an wie macOS
-- [ ] Keine sichtbaren Frame-Drops
-- [ ] Blur-Hintergrund (wenn verfügbar)
-- [ ] API-kompatibel (kein Code-Change in `pulsescribe_windows.py` nötig)
-- [ ] Fallback auf Tkinter funktioniert
+- [x] Animation fühlt sich so smooth an wie macOS
+- [x] Keine sichtbaren Frame-Drops
+- [x] Blur-Hintergrund (wenn verfügbar)
+- [x] API-kompatibel (kein Code-Change in `pulsescribe_windows.py` nötig)
+- [x] Fallback auf Tkinter funktioniert

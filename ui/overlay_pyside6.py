@@ -19,11 +19,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import (
+    QMetaObject,
     QPoint,
     QPropertyAnimation,
     QRectF,
     QTimer,
     Qt,
+    Q_ARG,
     Signal,
     Slot,
 )
@@ -411,6 +413,15 @@ class PySide6OverlayWidget(QWidget):
             self._fade_out_timer.stop()
             self._fade_out_timer = None
 
+    @Slot()
+    def cleanup(self):
+        """Stoppt alle Timer sauber (muss im Qt-Thread aufgerufen werden)."""
+        self._cancel_fade_out_timer()
+        if hasattr(self, "_animation_timer") and self._animation_timer:
+            self._animation_timer.stop()
+        if hasattr(self, "_fade_animation") and self._fade_animation:
+            self._fade_animation.stop()
+
     def showEvent(self, event):
         """Aktiviert Blur beim ersten Anzeigen."""
         super().showEvent(event)
@@ -432,8 +443,12 @@ class PySide6OverlayWidget(QWidget):
         self.state_changed.emit(state, text or "")
 
     def update_audio_level(self, level: float):
-        """Thread-safe Level-Update."""
-        self.level_changed.emit(level)
+        """Thread-safe Level-Update (direkt, ohne Signal-Queue).
+
+        Level-Updates sind unkritisch - verlorene Updates sind ok.
+        Direktes Setzen vermeidet Signal-Queue-Verzögerung.
+        """
+        self._audio_level = level  # Atomare Zuweisung (Python GIL)
 
     def update_interim_text(self, text: str):
         """Thread-safe Interim-Text-Update."""
@@ -771,16 +786,26 @@ class PySide6OverlayController:
             self._interim_timer.timeout.connect(self._poll_interim_file)
             self._interim_timer.start(200)  # 200ms wie macOS
 
+        # Cleanup vor App-Exit (stoppt alle Timer im Qt-Thread)
+        self._app.aboutToQuit.connect(self._cleanup_timers)
+
         logger.info("PySide6 Overlay gestartet (High-DPI: aktiv)")
         self._app.exec()
 
-    def stop(self):
-        """Beendet das Overlay."""
-        self._running = False
+    def _cleanup_timers(self):
+        """Stoppt alle Timer vor App-Exit (wird im Qt-Thread aufgerufen)."""
         if self._interim_timer:
             self._interim_timer.stop()
+            self._interim_timer = None
+        if self._widget:
+            self._widget.cleanup()
+
+    def stop(self):
+        """Beendet das Overlay (thread-safe)."""
+        self._running = False
         if self._app:
-            self._app.quit()
+            # Thread-safe: quit() im Qt-Event-Loop ausführen
+            QMetaObject.invokeMethod(self._app, "quit", Qt.QueuedConnection)
 
     def update_state(self, state: str, text: str | None = None):
         """Thread-safe State-Update."""

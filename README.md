@@ -627,36 +627,46 @@ Tests run automatically via GitHub Actions on Push and Pull Requests.
 PulseScribe includes Windows support with a dedicated daemon:
 
 ```bash
-# Install dependencies
+# Install dependencies (venv recommended)
+python -m venv venv
+venv\Scripts\activate
 pip install -r requirements.txt
-pip install pystray pillow pynput pywin32 psutil
+
+# Optional: GPU-accelerated overlay (recommended)
+pip install PySide6
 
 # Run the Windows daemon
 python pulsescribe_windows.py
 
+# Or use the batch file (also works for Autostart)
+start_daemon.bat
+
 # With options
 python pulsescribe_windows.py --hotkey "ctrl+alt+r" --debug
-
-# With LLM post-processing
-python pulsescribe_windows.py --refine --refine-provider groq
+python pulsescribe_windows.py --hotkey "f12" --refine
 ```
 
 **Features:**
 - System Tray icon with color-coded status (gray/orange/red/yellow/cyan/green)
-- Global hotkey via pynput (default: `Ctrl+Alt+R`)
-- Audio recording via sounddevice
+- Global hotkey via pynput (default: `Ctrl+Alt+R`, supports F1-F24)
+- Audio recording via sounddevice with pre-warming for fast startup
 - Deepgram WebSocket streaming (~300ms latency) or REST API fallback
 - Auto-Paste via `Ctrl+V` simulation
 - LLM post-processing (Groq, OpenAI, OpenRouter)
 - App context detection (Outlook → email, VS Code → code, Discord → chat)
 - Windows system sounds (DeviceConnect, DeviceDisconnect, Notification.SMS)
-- Animated overlay with waveform visualization and interim text
+- GPU-accelerated overlay with PySide6 (falls back to Tkinter if not installed)
+- Real-time waveform visualization with interim text preview
+
+**Autostart:**
+1. Press `Win+R`, type `shell:startup`
+2. Create a shortcut to `start_daemon.bat` in the opened folder
 
 **CLI Options:**
 
 | Flag | Description |
 |------|-------------|
-| `--hotkey` | Global hotkey (default: `ctrl+alt+r`) |
+| `--hotkey` | Global hotkey (default: `ctrl+alt+r`, supports `f1`-`f24`) |
 | `--no-paste` | Disable auto-paste, copy to clipboard only |
 | `--no-streaming` | Use REST API instead of WebSocket streaming |
 | `--no-overlay` | Disable animated overlay |
@@ -671,6 +681,9 @@ python pulsescribe_windows.py --refine --refine-provider groq
 ```bash
 DEEPGRAM_API_KEY=your_key
 PULSESCRIBE_LANGUAGE=de
+
+# Optional: Custom hotkey (supports F-keys)
+# PULSESCRIBE_HOTKEY=f12
 
 # Optional: Disable streaming (default: true)
 # PULSESCRIBE_STREAMING=false
@@ -693,7 +706,7 @@ pyinstaller build_windows.spec --clean
 # Output: dist/PulseScribe/PulseScribe.exe
 ```
 
-> **Tip:** Streaming is enabled by default for lowest latency. Use `--no-streaming` for REST API fallback.
+> **Note:** The GPU-accelerated PySide6 overlay provides smoother animations. Install with `pip install PySide6`. Falls back to Tkinter automatically if not available.
 
 ### Building the macOS App Bundle
 

@@ -401,6 +401,89 @@ Das Overlay zeigt den aktuellen Status durch Farben und Animationen an:
 
 Beides ist integriert und startet automatisch mit dem Daemon.
 
+### Windows-Unterstützung
+
+PulseScribe enthält Windows-Unterstützung mit einem dedizierten Daemon:
+
+```bash
+# Dependencies installieren (venv empfohlen)
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
+
+# Optional: GPU-beschleunigtes Overlay (empfohlen)
+pip install PySide6
+
+# Windows-Daemon starten
+python pulsescribe_windows.py
+
+# Oder die Batch-Datei nutzen (auch für Autostart geeignet)
+start_daemon.bat
+
+# Mit Optionen
+python pulsescribe_windows.py --hotkey "ctrl+alt+r" --debug
+python pulsescribe_windows.py --hotkey "f12" --refine
+```
+
+**Features:**
+- System-Tray-Icon mit farbkodiertem Status (grau/orange/rot/gelb/cyan/grün)
+- Globaler Hotkey via pynput (default: `Ctrl+Alt+R`, unterstützt F1-F24)
+- Audio-Aufnahme via sounddevice mit Pre-Warming für schnellen Start
+- Deepgram WebSocket-Streaming (~300ms Latenz) oder REST-API-Fallback
+- Auto-Paste via `Ctrl+V`-Simulation
+- LLM-Nachbearbeitung (Groq, OpenAI, OpenRouter)
+- App-Kontext-Erkennung (Outlook → email, VS Code → code, Discord → chat)
+- Windows-System-Sounds (DeviceConnect, DeviceDisconnect, Notification.SMS)
+- GPU-beschleunigtes Overlay mit PySide6 (fällt auf Tkinter zurück wenn nicht installiert)
+- Echtzeit-Wellenform-Visualisierung mit Interim-Text-Vorschau
+
+**Autostart:**
+1. `Win+R` drücken, `shell:startup` eingeben
+2. Verknüpfung zu `start_daemon.bat` im geöffneten Ordner erstellen
+
+**CLI-Optionen:**
+
+| Flag | Beschreibung |
+|------|--------------|
+| `--hotkey` | Globaler Hotkey (default: `ctrl+alt+r`, unterstützt `f1`-`f24`) |
+| `--no-paste` | Auto-Paste deaktivieren, nur in Zwischenablage kopieren |
+| `--no-streaming` | REST-API statt WebSocket-Streaming verwenden |
+| `--no-overlay` | Animiertes Overlay deaktivieren |
+| `--refine` | LLM-Nachbearbeitung aktivieren |
+| `--refine-provider` | LLM-Provider: `groq`, `openai`, `openrouter` |
+| `--refine-model` | LLM-Modell überschreiben |
+| `--context` | Kontext erzwingen: `email`, `chat`, `code`, `default` |
+| `--debug` | Debug-Logging aktivieren |
+
+**Konfiguration:** Gleiche `.env`-Datei wie macOS (`~/.pulsescribe/.env` oder Projektverzeichnis):
+
+```bash
+DEEPGRAM_API_KEY=dein_key
+PULSESCRIBE_LANGUAGE=de
+
+# Optional: Custom Hotkey (unterstützt F-Tasten)
+# PULSESCRIBE_HOTKEY=f12
+
+# Optional: Streaming deaktivieren (default: true)
+# PULSESCRIBE_STREAMING=false
+
+# Optional: Overlay deaktivieren (default: true)
+# PULSESCRIBE_OVERLAY=false
+
+# Optional: LLM-Refine
+PULSESCRIBE_REFINE=true
+PULSESCRIBE_REFINE_PROVIDER=groq
+GROQ_API_KEY=dein_groq_key
+```
+
+**Windows-EXE erstellen:**
+
+```bash
+pip install pyinstaller
+pyinstaller build_windows.spec --clean
+# Output: dist/PulseScribe.exe
+```
+
 ## Provider-Vergleich
 
 | Modus      | Provider | Methode   | Latenz    | Besonderheit                                       |

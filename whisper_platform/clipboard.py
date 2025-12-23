@@ -67,37 +67,87 @@ class MacOSClipboard:
 
 
 class WindowsClipboard:
-    """Windows Clipboard via pyperclip (cross-platform Fallback).
+    """Windows Clipboard via ctypes (native, kein Tkinter).
 
-    Alternativ: win32clipboard für native Unterstützung.
+    Verwendet Windows API direkt, um Tcl-Thread-Fehler zu vermeiden.
     """
 
-    def __init__(self) -> None:
-        self._pyperclip = None
-        try:
-            import pyperclip
-
-            self._pyperclip = pyperclip
-        except ImportError:
-            logger.warning("pyperclip nicht installiert, Clipboard nicht verfügbar")
-
     def copy(self, text: str) -> bool:
-        """Kopiert Text in die Zwischenablage."""
-        if self._pyperclip is None:
-            return False
+        """Kopiert Text in die Zwischenablage via Windows API."""
+        import ctypes
+
+        CF_UNICODETEXT = 13
+        GMEM_MOVEABLE = 0x0002
+
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+
         try:
-            self._pyperclip.copy(text)
-            return True
+            # Clipboard öffnen
+            if not user32.OpenClipboard(None):
+                logger.error("Konnte Clipboard nicht öffnen")
+                return False
+
+            try:
+                user32.EmptyClipboard()
+
+                # Text in globalem Speicher ablegen
+                text_bytes = text.encode("utf-16-le") + b"\x00\x00"
+                h_mem = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(text_bytes))
+                if not h_mem:
+                    return False
+
+                p_mem = kernel32.GlobalLock(h_mem)
+                if not p_mem:
+                    kernel32.GlobalFree(h_mem)
+                    return False
+
+                ctypes.memmove(p_mem, text_bytes, len(text_bytes))
+                kernel32.GlobalUnlock(h_mem)
+
+                # In Clipboard setzen
+                if not user32.SetClipboardData(CF_UNICODETEXT, h_mem):
+                    kernel32.GlobalFree(h_mem)
+                    return False
+
+                return True
+            finally:
+                user32.CloseClipboard()
+
         except Exception as e:
             logger.error(f"Clipboard-Fehler: {e}")
             return False
 
     def paste(self) -> str | None:
-        """Liest Text aus der Zwischenablage."""
-        if self._pyperclip is None:
-            return None
+        """Liest Text aus der Zwischenablage via Windows API."""
+        import ctypes
+
+        CF_UNICODETEXT = 13
+
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+
         try:
-            return self._pyperclip.paste()
+            if not user32.OpenClipboard(None):
+                return None
+
+            try:
+                h_data = user32.GetClipboardData(CF_UNICODETEXT)
+                if not h_data:
+                    return None
+
+                p_data = kernel32.GlobalLock(h_data)
+                if not p_data:
+                    return None
+
+                try:
+                    text = ctypes.wstring_at(p_data)
+                    return text
+                finally:
+                    kernel32.GlobalUnlock(h_data)
+            finally:
+                user32.CloseClipboard()
+
         except Exception:
             return None
 
