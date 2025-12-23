@@ -3,16 +3,21 @@ PulseScribe Windows Daemon.
 
 Minimaler Windows Entry-Point für Spracheingabe mit:
 - Tray-Icon (pystray)
-- Globaler Hotkey (pynput) mit Toggle- oder Hold-Mode
+- Globale Hotkeys (pynput) mit Toggle- und/oder Hold-Mode
 - Sound-Feedback (Windows System-Sounds)
 - Multi-Provider Transkription (Deepgram, Groq, OpenAI, Local)
 - WASAPI Warm-Stream für instant-start
 
 Usage:
     python pulsescribe_windows.py
-    python pulsescribe_windows.py --hotkey "ctrl+alt+r"
-    python pulsescribe_windows.py --hotkey-mode hold  # Halten statt Toggle
-    python pulsescribe_windows.py --mode groq  # Groq statt Deepgram
+    python pulsescribe_windows.py --toggle-hotkey "ctrl+alt+r"
+    python pulsescribe_windows.py --hold-hotkey "ctrl+alt+space"
+    python pulsescribe_windows.py --toggle-hotkey "f19" --hold-hotkey "ctrl+alt+r"
+    python pulsescribe_windows.py --mode groq
+
+Environment Variables (konsistent mit macOS):
+    PULSESCRIBE_TOGGLE_HOTKEY - Toggle-Hotkey (drücken→sprechen→drücken)
+    PULSESCRIBE_HOLD_HOTKEY   - Hold-Hotkey (halten→sprechen→loslassen)
 """
 
 import sys
@@ -136,8 +141,8 @@ class PulseScribeWindows:
 
     def __init__(
         self,
-        hotkey: str = "ctrl+alt+r",
-        hotkey_mode: str = "toggle",
+        toggle_hotkey: str | None = None,
+        hold_hotkey: str | None = None,
         mode: str = "deepgram",
         auto_paste: bool = True,
         refine: bool = False,
@@ -147,8 +152,8 @@ class PulseScribeWindows:
         streaming: bool = True,
         overlay: bool = True,
     ):
-        self.hotkey_str = hotkey
-        self.hotkey_mode = hotkey_mode  # "toggle" oder "hold"
+        self.toggle_hotkey = toggle_hotkey
+        self.hold_hotkey = hold_hotkey
         self.mode = mode
         self.auto_paste = auto_paste
         self.refine = refine
@@ -169,7 +174,7 @@ class PulseScribeWindows:
 
         # Components
         self._tray = None
-        self._hotkey_listener = None
+        self._hotkey_listeners: list = []  # Mehrere Listener (toggle + hold)
         self._recording_thread = None
         self._stop_event = threading.Event()  # App beenden
         self._recording_stop_event = threading.Event()  # Recording stoppen
@@ -198,8 +203,14 @@ class PulseScribeWindows:
         self._is_prewarm_loading = False  # Unterscheidet Pre-Warm von Recording LOADING
 
         stream_mode = "Streaming" if streaming else "REST"
+        hotkey_info = []
+        if toggle_hotkey:
+            hotkey_info.append(f"Toggle: {toggle_hotkey}")
+        if hold_hotkey:
+            hotkey_info.append(f"Hold: {hold_hotkey}")
+        hotkey_str = ", ".join(hotkey_info) if hotkey_info else "Keiner"
         logger.info(
-            f"PulseScribeWindows initialisiert (Hotkey: {hotkey} [{hotkey_mode}], "
+            f"PulseScribeWindows initialisiert (Hotkeys: {hotkey_str}, "
             f"Provider: {mode} [{stream_mode}], Refine: {refine}, Overlay: {overlay})"
         )
 
@@ -913,25 +924,41 @@ class PulseScribeWindows:
         threading.Timer(1.0, lambda: self._set_state(AppState.IDLE)).start()
 
     def _setup_hotkey(self):
-        """Richtet globalen Hotkey ein (Toggle oder Hold-Mode)."""
+        """Richtet globale Hotkeys ein (Toggle und/oder Hold-Mode)."""
         try:
             from pynput import keyboard
 
-            # Parse Hotkey-String zu Set von erwarteten Keys
-            hotkey_keys = self._parse_hotkey_string(self.hotkey_str, keyboard)
-            if not hotkey_keys:
-                logger.error(f"Ungültiger Hotkey: {self.hotkey_str}")
+            # Bindings sammeln: (hotkey_str, mode)
+            bindings: list[tuple[str, str]] = []
+            if self.toggle_hotkey:
+                bindings.append((self.toggle_hotkey, "toggle"))
+            if self.hold_hotkey:
+                bindings.append((self.hold_hotkey, "hold"))
+
+            if not bindings:
+                logger.warning("Keine Hotkeys konfiguriert")
                 return
 
-            # Source-ID für Hold-Mode (eindeutige Identifikation dieser Hotkey-Quelle)
-            source_id = f"pynput:hold:{self.hotkey_str}"
+            # Alle Hotkeys parsen
+            parsed_hotkeys: list[tuple[set, str, str]] = []  # (keys, mode, source_id)
+            for hotkey_str, mode in bindings:
+                hotkey_keys = self._parse_hotkey_string(hotkey_str, keyboard)
+                if not hotkey_keys:
+                    logger.error(f"Ungültiger Hotkey: {hotkey_str}")
+                    continue
+                source_id = f"pynput:{mode}:{hotkey_str}"
+                parsed_hotkeys.append((hotkey_keys, mode, source_id))
+
+            if not parsed_hotkeys:
+                logger.error("Keine gültigen Hotkeys konfiguriert")
+                return
 
             # Aktuell gedrückte Tasten mit Zeitstempel (für Stale-Detection)
             # Format: {normalized_key: timestamp}
             current_keys: dict = {}
 
-            # Hold-Mode State: Hotkey ist gerade aktiv (alle Keys gedrückt)
-            hotkey_active = False
+            # Hold-Mode State pro Hotkey: {source_id: bool}
+            active_holds: dict[str, bool] = {}
 
             def normalize_key(key):
                 """Normalisiert Key zu vergleichbarer Form."""
@@ -964,7 +991,6 @@ class PulseScribeWindows:
                     logger.debug(f"Stale Key entfernt: {k}")
 
             def on_press(key):
-                nonlocal hotkey_active
                 now = time.monotonic()
                 normalized = normalize_key(key)
 
@@ -974,55 +1000,61 @@ class PulseScribeWindows:
                 # Key mit Zeitstempel speichern
                 current_keys[normalized] = now
 
-                # Hotkey erkannt? Prüfe ob alle erwarteten Keys gedrückt sind
+                # Aktive Keys
                 active_keys = set(current_keys.keys())
-                if hotkey_keys.issubset(active_keys):
-                    # Zusätzliche Prüfung: Der gerade gedrückte Key muss Teil des Hotkeys sein
-                    # (verhindert Trigger durch irrelevante Keys wenn Modifier "kleben")
-                    if normalized in hotkey_keys:
-                        # Debouncing: Verhindere Doppel-Trigger
-                        if now - self._last_hotkey_time >= _HOTKEY_DEBOUNCE_SEC:
-                            self._last_hotkey_time = now
-                            logger.debug(f"Hotkey ausgelöst: {hotkey_keys} (mode: {self.hotkey_mode})")
 
-                            if self.hotkey_mode == "hold":
-                                # Hold-Mode: Recording starten, bleibt aktiv bis Release
-                                # Pre-Warm Check (System noch nicht bereit)
-                                if self.state == AppState.LOADING and self._is_prewarm_loading:
-                                    logger.debug("Hold-Hotkey ignoriert: Pre-Warm noch nicht abgeschlossen")
-                                elif not hotkey_active:
-                                    # Wie macOS: source_id ZUERST hinzufügen, DANN Funktion aufrufen
-                                    hotkey_active = True
-                                    self._active_hold_sources.add(source_id)
-                                    self._start_recording_from_hold(source_id)
-                            else:
-                                # Toggle-Mode: Keys leeren und Toggle-Action
-                                current_keys.clear()
-                                self._on_hotkey_press()
+                # Jeden Hotkey prüfen
+                for hotkey_keys, mode, source_id in parsed_hotkeys:
+                    if hotkey_keys.issubset(active_keys):
+                        # Zusätzliche Prüfung: Der gerade gedrückte Key muss Teil des Hotkeys sein
+                        if normalized in hotkey_keys:
+                            # Debouncing: Verhindere Doppel-Trigger
+                            if now - self._last_hotkey_time >= _HOTKEY_DEBOUNCE_SEC:
+                                self._last_hotkey_time = now
+                                logger.debug(f"Hotkey ausgelöst: {hotkey_keys} (mode: {mode})")
+
+                                if mode == "hold":
+                                    # Hold-Mode: Recording starten, bleibt aktiv bis Release
+                                    if self.state == AppState.LOADING and self._is_prewarm_loading:
+                                        logger.debug("Hold-Hotkey ignoriert: Pre-Warm noch nicht abgeschlossen")
+                                    elif not active_holds.get(source_id):
+                                        # Wie macOS: source_id ZUERST hinzufügen, DANN Funktion aufrufen
+                                        active_holds[source_id] = True
+                                        self._active_hold_sources.add(source_id)
+                                        self._start_recording_from_hold(source_id)
+                                else:
+                                    # Toggle-Mode: Keys leeren und Toggle-Action
+                                    current_keys.clear()
+                                    self._on_hotkey_press()
 
             def on_release(key):
-                nonlocal hotkey_active
                 normalized = normalize_key(key)
                 current_keys.pop(normalized, None)
 
-                # Hold-Mode: Prüfe ob Hotkey noch vollständig gedrückt
-                if self.hotkey_mode == "hold" and hotkey_active:
-                    active_keys = set(current_keys.keys())
-                    if not hotkey_keys.issubset(active_keys):
-                        # Mindestens eine Hotkey-Taste wurde losgelassen
-                        hotkey_active = False
-                        self._active_hold_sources.discard(source_id)
-                        logger.debug(f"Hotkey losgelassen: {normalized}")
-                        # Wie macOS: Nur stoppen wenn ALLE Hold-Sources weg
-                        if not self._active_hold_sources and self._recording_started_by_hold:
-                            self._stop_recording_from_hotkey()
+                # Aktive Keys nach Release
+                active_keys = set(current_keys.keys())
 
-            self._hotkey_listener = keyboard.Listener(
+                # Jeden Hold-Hotkey prüfen
+                for hotkey_keys, mode, source_id in parsed_hotkeys:
+                    if mode == "hold" and active_holds.get(source_id):
+                        if not hotkey_keys.issubset(active_keys):
+                            # Mindestens eine Hotkey-Taste wurde losgelassen
+                            active_holds[source_id] = False
+                            self._active_hold_sources.discard(source_id)
+                            logger.debug(f"Hotkey losgelassen: {normalized}")
+                            # Wie macOS: Nur stoppen wenn ALLE Hold-Sources weg
+                            if not self._active_hold_sources and self._recording_started_by_hold:
+                                self._stop_recording_from_hotkey()
+
+            listener = keyboard.Listener(
                 on_press=on_press, on_release=on_release
             )
-            self._hotkey_listener.start()
-            mode_desc = "Hold" if self.hotkey_mode == "hold" else "Toggle"
-            logger.info(f"Hotkey registriert: {self.hotkey_str} ({mode_desc}-Mode)")
+            listener.start()
+            self._hotkey_listeners.append(listener)
+
+            # Logging
+            for hotkey_str, mode in bindings:
+                logger.info(f"Hotkey registriert: {hotkey_str} ({mode.capitalize()}-Mode)")
 
         except ImportError:
             logger.error("pynput nicht installiert")
@@ -1069,10 +1101,18 @@ class PulseScribeWindows:
 
         icon = self._create_icon(self.COLORS[AppState.IDLE])
 
+        # Hotkey-Info für Menü
+        hotkey_items = []
+        if self.toggle_hotkey:
+            hotkey_items.append(f"Toggle: {self.toggle_hotkey}")
+        if self.hold_hotkey:
+            hotkey_items.append(f"Hold: {self.hold_hotkey}")
+        hotkey_text = ", ".join(hotkey_items) if hotkey_items else "Keiner"
+
         menu = pystray.Menu(
             pystray.MenuItem("PulseScribe", None, enabled=False),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem(f"Hotkey: {self.hotkey_str}", None, enabled=False),
+            pystray.MenuItem(f"Hotkeys: {hotkey_text}", None, enabled=False),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Beenden", self._quit),
         )
@@ -1092,8 +1132,12 @@ class PulseScribeWindows:
         if self._overlay:
             self._overlay.stop()
 
-        if self._hotkey_listener:
-            self._hotkey_listener.stop()
+        for listener in self._hotkey_listeners:
+            try:
+                listener.stop()
+            except Exception:
+                pass
+        self._hotkey_listeners.clear()
 
         if self._tray:
             self._tray.stop()
@@ -1192,7 +1236,13 @@ class PulseScribeWindows:
 
     def run(self):
         """Startet den Daemon."""
-        print(f"PulseScribe Windows gestartet (Hotkey: {self.hotkey_str})")
+        hotkey_info = []
+        if self.toggle_hotkey:
+            hotkey_info.append(f"Toggle: {self.toggle_hotkey}")
+        if self.hold_hotkey:
+            hotkey_info.append(f"Hold: {self.hold_hotkey}")
+        hotkey_text = ", ".join(hotkey_info) if hotkey_info else "Keiner"
+        print(f"PulseScribe Windows gestartet (Hotkeys: {hotkey_text})")
         print("Drücke Ctrl+C oder nutze Tray-Menü zum Beenden")
 
         # Hotkey ZUERST registrieren - User kann sofort starten
@@ -1246,15 +1296,14 @@ class PulseScribeWindows:
 def main():
     parser = argparse.ArgumentParser(description="PulseScribe Windows Daemon")
     parser.add_argument(
-        "--hotkey",
-        default=os.getenv("PULSESCRIBE_HOTKEY", "ctrl+alt+r"),
-        help="Globaler Hotkey (default: ctrl+alt+r)",
+        "--toggle-hotkey",
+        default=None,
+        help="Toggle-Hotkey (druecken-sprechen-druecken)",
     )
     parser.add_argument(
-        "--hotkey-mode",
-        choices=["toggle", "hold"],
-        default=os.getenv("PULSESCRIBE_HOTKEY_MODE", "toggle"),
-        help="Hotkey-Modus: toggle (drücken→sprechen→drücken) oder hold (halten→sprechen→loslassen)",
+        "--hold-hotkey",
+        default=None,
+        help="Hold-Hotkey (halten-sprechen-loslassen)",
     )
     parser.add_argument(
         "--mode",
@@ -1340,9 +1389,22 @@ def main():
         and os.getenv("PULSESCRIBE_OVERLAY", "true").lower() != "false"
     )
 
+    # Hotkeys: CLI > ENV > Default
+    # Konsistent mit macOS: PULSESCRIBE_TOGGLE_HOTKEY und PULSESCRIBE_HOLD_HOTKEY
+    effective_toggle_hotkey = (
+        args.toggle_hotkey or os.getenv("PULSESCRIBE_TOGGLE_HOTKEY")
+    )
+    effective_hold_hotkey = (
+        args.hold_hotkey or os.getenv("PULSESCRIBE_HOLD_HOTKEY")
+    )
+
+    # Fallback: Wenn nichts konfiguriert, default Toggle-Hotkey
+    if not effective_toggle_hotkey and not effective_hold_hotkey:
+        effective_toggle_hotkey = "ctrl+alt+r"
+
     daemon = PulseScribeWindows(
-        hotkey=args.hotkey,
-        hotkey_mode=args.hotkey_mode,
+        toggle_hotkey=effective_toggle_hotkey,
+        hold_hotkey=effective_hold_hotkey,
         mode=effective_mode,
         auto_paste=not args.no_paste,
         refine=effective_refine,
