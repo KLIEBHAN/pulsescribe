@@ -176,8 +176,11 @@ class PulseScribeWindows:
         # ═══════════════════════════════════════════════════════════════════
         self._warm_stream = None  # sd.InputStream (läuft dauerhaft)
         self._warm_stream_armed = threading.Event()  # Wenn gesetzt: Samples sammeln
-        self._warm_stream_queue: queue.Queue[bytes] = queue.Queue()
+        # Queue mit maxsize: ~10s Audio bei 64ms Chunks = 156 Chunks
+        # Verhindert Memory Leak wenn Forwarder nicht läuft
+        self._warm_stream_queue: queue.Queue[bytes] = queue.Queue(maxsize=200)
         self._warm_stream_sample_rate = 16000  # Wird beim Start aktualisiert
+        self._is_prewarm_loading = False  # Unterscheidet Pre-Warm von Recording LOADING
 
         mode = "Streaming" if streaming else "REST"
         logger.info(
@@ -354,6 +357,9 @@ class PulseScribeWindows:
         """Callback wenn Hotkey gedrückt wird."""
         if self.state == AppState.IDLE:
             self._start_recording()
+        elif self.state == AppState.LOADING and self._is_prewarm_loading:
+            # Pre-Warm LOADING: Ignorieren, System noch nicht bereit
+            logger.debug("Hotkey ignoriert: Pre-Warm noch nicht abgeschlossen")
         elif self.state in (AppState.LOADING, AppState.LISTENING, AppState.RECORDING):
             self._stop_recording()
 
@@ -662,12 +668,14 @@ class PulseScribeWindows:
 
         except ImportError as e:
             logger.error(f"Import-Fehler: {e}")
+            self._warm_stream_armed.clear()  # Safety: Disarm bei frühem Fehler
             self._set_state(AppState.ERROR)
             self._play_sound("error")
             time.sleep(1.0)
             self._set_state(AppState.IDLE)
         except Exception as e:
             logger.error(f"Streaming-Fehler (Warm): {e}")
+            self._warm_stream_armed.clear()  # Safety: Disarm bei frühem Fehler
             self._set_state(AppState.ERROR)
             self._play_sound("error")
             time.sleep(1.0)
@@ -1031,12 +1039,14 @@ class PulseScribeWindows:
 
         # LOADING-State während Pre-Warm anzeigen
         if self.streaming:
+            self._is_prewarm_loading = True
             self._set_state(AppState.LOADING)
 
         # Pre-Warm: Teure Imports + Warm-Stream starten
         def _prewarm_and_ready():
             self._prewarm_imports()
             # Nach Pre-Warm: Zurück zu IDLE (Ready)
+            self._is_prewarm_loading = False
             if self.state == AppState.LOADING:
                 self._set_state(AppState.IDLE)
                 self._play_sound("ready")  # Signal: System bereit
