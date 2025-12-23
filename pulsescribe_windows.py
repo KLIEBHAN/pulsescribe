@@ -9,15 +9,18 @@ Minimaler Windows Entry-Point für Spracheingabe mit:
 - WASAPI Warm-Stream für instant-start
 
 Usage:
-    python pulsescribe_windows.py
-    python pulsescribe_windows.py --toggle-hotkey "ctrl+alt+r"
-    python pulsescribe_windows.py --hold-hotkey "ctrl+alt+space"
-    python pulsescribe_windows.py --toggle-hotkey "f19" --hold-hotkey "ctrl+alt+r"
+    python pulsescribe_windows.py                              # Defaults: Toggle=Ctrl+Alt+R, Hold=Ctrl+Win
+    python pulsescribe_windows.py --toggle-hotkey "ctrl+alt+r" # Nur Toggle-Mode
+    python pulsescribe_windows.py --hold-hotkey "ctrl+win"     # Nur Hold-Mode
     python pulsescribe_windows.py --mode groq
 
+Defaults:
+    Toggle-Hotkey: Ctrl+Alt+R (drücken→sprechen→drücken)
+    Hold-Hotkey:   Ctrl+Win   (halten→sprechen→loslassen)
+
 Environment Variables (konsistent mit macOS):
-    PULSESCRIBE_TOGGLE_HOTKEY - Toggle-Hotkey (drücken→sprechen→drücken)
-    PULSESCRIBE_HOLD_HOTKEY   - Hold-Hotkey (halten→sprechen→loslassen)
+    PULSESCRIBE_TOGGLE_HOTKEY - Toggle-Hotkey überschreiben
+    PULSESCRIBE_HOLD_HOTKEY   - Hold-Hotkey überschreiben
 """
 
 import sys
@@ -1400,9 +1403,10 @@ def main():
         args.hold_hotkey or os.getenv("PULSESCRIBE_HOLD_HOTKEY")
     )
 
-    # Fallback: Wenn nichts konfiguriert, default Toggle-Hotkey
+    # Fallback: Wenn nichts konfiguriert, beide Defaults setzen
     if not effective_toggle_hotkey and not effective_hold_hotkey:
         effective_toggle_hotkey = "ctrl+alt+r"
+        effective_hold_hotkey = "ctrl+win"
 
     daemon = PulseScribeWindows(
         toggle_hotkey=effective_toggle_hotkey,

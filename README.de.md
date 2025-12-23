@@ -423,10 +423,10 @@ python pulsescribe_windows.py
 # Oder die Batch-Datei nutzen (auch für Autostart geeignet)
 start_daemon.bat
 
-# Mit Optionen
-python pulsescribe_windows.py --toggle-hotkey "ctrl+alt+r" --debug
-python pulsescribe_windows.py --hold-hotkey "ctrl+alt+space" --refine
-python pulsescribe_windows.py --toggle-hotkey "f12" --hold-hotkey "ctrl+alt+r"
+# Mit Optionen (Defaults: Toggle=Ctrl+Alt+R, Hold=Ctrl+Win)
+python pulsescribe_windows.py --debug                      # Defaults nutzen
+python pulsescribe_windows.py --toggle-hotkey "f19" --debug # Nur Toggle anpassen
+python pulsescribe_windows.py --hold-hotkey "ctrl+alt+space" --refine # Nur Hold anpassen
 ```
 
 **Features:**
@@ -449,8 +449,8 @@ python pulsescribe_windows.py --toggle-hotkey "f12" --hold-hotkey "ctrl+alt+r"
 
 | Flag | Beschreibung |
 |------|--------------|
-| `--toggle-hotkey` | Toggle-Hotkey (drücken-sprechen-drücken), z.B. `ctrl+alt+r` |
-| `--hold-hotkey` | Hold-Hotkey (halten-sprechen-loslassen), z.B. `ctrl+alt+space` |
+| `--toggle-hotkey` | Toggle-Hotkey (drücken-sprechen-drücken), Default: `ctrl+alt+r` |
+| `--hold-hotkey` | Hold-Hotkey (halten-sprechen-loslassen), Default: `ctrl+win` |
 | `--no-paste` | Auto-Paste deaktivieren, nur in Zwischenablage kopieren |
 | `--no-streaming` | REST-API statt WebSocket-Streaming verwenden |
 | `--no-overlay` | Animiertes Overlay deaktivieren |
@@ -467,11 +467,11 @@ DEEPGRAM_API_KEY=dein_key
 PULSESCRIBE_LANGUAGE=de
 
 # Hotkeys (konsistent mit macOS)
-# Toggle: drücken zum Starten, nochmal drücken zum Stoppen
-# PULSESCRIBE_TOGGLE_HOTKEY=ctrl+alt+r
-# Hold: halten zum Aufnehmen, loslassen zum Stoppen
+# Defaults: Toggle=Ctrl+Alt+R, Hold=Ctrl+Win
+# Mit Umgebungsvariablen überschreiben:
+# PULSESCRIBE_TOGGLE_HOTKEY=f19
 # PULSESCRIBE_HOLD_HOTKEY=ctrl+alt+space
-# Beide können gleichzeitig aktiv sein
+# Beide Hotkeys sind standardmäßig gleichzeitig aktiv
 
 # Optional: Streaming deaktivieren (default: true)
 # PULSESCRIBE_STREAMING=false

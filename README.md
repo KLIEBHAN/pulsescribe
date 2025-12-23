@@ -641,10 +641,10 @@ python pulsescribe_windows.py
 # Or use the batch file (also works for Autostart)
 start_daemon.bat
 
-# With options
-python pulsescribe_windows.py --toggle-hotkey "ctrl+alt+r" --debug
-python pulsescribe_windows.py --hold-hotkey "ctrl+alt+space" --refine
-python pulsescribe_windows.py --toggle-hotkey "f12" --hold-hotkey "ctrl+alt+r"
+# With options (defaults: Toggle=Ctrl+Alt+R, Hold=Ctrl+Win)
+python pulsescribe_windows.py --debug                      # Use defaults
+python pulsescribe_windows.py --toggle-hotkey "f19" --debug # Custom toggle only
+python pulsescribe_windows.py --hold-hotkey "ctrl+alt+space" --refine # Custom hold only
 ```
 
 **Features:**
@@ -667,8 +667,8 @@ python pulsescribe_windows.py --toggle-hotkey "f12" --hold-hotkey "ctrl+alt+r"
 
 | Flag | Description |
 |------|-------------|
-| `--toggle-hotkey` | Toggle hotkey (press-speak-press), e.g. `ctrl+alt+r` |
-| `--hold-hotkey` | Hold hotkey (hold-speak-release), e.g. `ctrl+alt+space` |
+| `--toggle-hotkey` | Toggle hotkey (press-speak-press), default: `ctrl+alt+r` |
+| `--hold-hotkey` | Hold hotkey (hold-speak-release), default: `ctrl+win` |
 | `--no-paste` | Disable auto-paste, copy to clipboard only |
 | `--no-streaming` | Use REST API instead of WebSocket streaming |
 | `--no-overlay` | Disable animated overlay |
@@ -685,11 +685,11 @@ DEEPGRAM_API_KEY=your_key
 PULSESCRIBE_LANGUAGE=de
 
 # Hotkeys (consistent with macOS)
-# Toggle: press to start, press again to stop
-# PULSESCRIBE_TOGGLE_HOTKEY=ctrl+alt+r
-# Hold: hold to record, release to stop
+# Defaults: Toggle=Ctrl+Alt+R, Hold=Ctrl+Win
+# Override with env variables:
+# PULSESCRIBE_TOGGLE_HOTKEY=f19
 # PULSESCRIBE_HOLD_HOTKEY=ctrl+alt+space
-# Both can be active simultaneously
+# Both hotkeys are active simultaneously by default
 
 # Optional: Disable streaming (default: true)
 # PULSESCRIBE_STREAMING=false
