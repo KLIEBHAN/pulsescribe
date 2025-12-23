@@ -214,12 +214,13 @@ class AnimationLogic:
         return 0.4 * wave * _HEIGHT_FACTORS[i]
 
     def _calc_processing_normalized(self, i: int, t: float) -> float:
-        """Transcribing/Refining: Wandering pulse. Returns 0-1."""
-        # Speed tuned for balanced dynamic feel (4.0)
-        pulse_pos = (t * 4.0) % (BAR_COUNT + 4) - 2
-        distance = abs(i - pulse_pos)
-        intensity = max(0, 1 - distance / 1.5)
-        return 0.8 * intensity
+        """Transcribing/Refining: Synchronized pulsing (original macOS style). Returns 0-1."""
+        # All bars pulse together with ~1s period
+        phase = t * math.pi  # ~1s full cycle (up and down)
+        pulse = (math.sin(phase) + 1) / 2  # 0..1
+
+        # Apply height factors (center bars higher)
+        return 0.7 * pulse * _HEIGHT_FACTORS[i]
 
     def _calc_loading_normalized(self, i: int, t: float) -> float:
         """Loading: Slow synchronous pulse. Returns 0-1."""
