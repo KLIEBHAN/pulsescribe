@@ -35,18 +35,23 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# Colors for output
+# Colors for output (using unique names to avoid shadowing built-in cmdlets)
 function Write-Step { param($msg) Write-Host "`n==> $msg" -ForegroundColor Cyan }
-function Write-Success { param($msg) Write-Host $msg -ForegroundColor Green }
-function Write-Warning { param($msg) Write-Host $msg -ForegroundColor Yellow }
-function Write-Error { param($msg) Write-Host $msg -ForegroundColor Red }
+function Write-BuildSuccess { param($msg) Write-Host $msg -ForegroundColor Green }
+function Write-BuildWarning { param($msg) Write-Host $msg -ForegroundColor Yellow }
+function Write-BuildError { param($msg) Write-Host $msg -ForegroundColor Red }
 
 # Get version from pyproject.toml
 function Get-AppVersion {
+    if (-not (Test-Path "pyproject.toml")) {
+        Write-BuildWarning "  pyproject.toml not found - using default version 1.0.0"
+        return "1.0.0"
+    }
     $pyproject = Get-Content "pyproject.toml" -Raw
     if ($pyproject -match 'version\s*=\s*"([^"]+)"') {
         return $matches[1]
     }
+    Write-BuildWarning "  Version not found in pyproject.toml - using default 1.0.0"
     return "1.0.0"
 }
 
@@ -59,18 +64,28 @@ Write-Step "Checking prerequisites..."
 
 # Python
 if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
-    Write-Error "Python not found. Please install Python 3.10+."
+    Write-BuildError "Python not found. Please install Python 3.10+."
     exit 1
 }
-Write-Success "  Python: $(python --version)"
+Write-BuildSuccess "  Python: $(python --version)"
 
 # PyInstaller
 $pyinstallerCheck = python -c "import PyInstaller; print(PyInstaller.__version__)" 2>$null
 if (-not $pyinstallerCheck) {
-    Write-Warning "  PyInstaller not found. Installing..."
+    Write-BuildWarning "  PyInstaller not found. Installing..."
     pip install pyinstaller
+    if ($LASTEXITCODE -ne 0) {
+        Write-BuildError "  Failed to install PyInstaller!"
+        exit 1
+    }
+    # Verify installation
+    $pyinstallerCheck = python -c "import PyInstaller; print(PyInstaller.__version__)" 2>$null
+    if (-not $pyinstallerCheck) {
+        Write-BuildError "  PyInstaller installation failed!"
+        exit 1
+    }
 }
-Write-Success "  PyInstaller: OK"
+Write-BuildSuccess "  PyInstaller: $pyinstallerCheck"
 
 # Inno Setup (only if -Installer)
 if ($Installer) {
@@ -90,11 +105,11 @@ if ($Installer) {
         }
     }
     if (-not $iscc) {
-        Write-Error "Inno Setup not found. Please install from https://jrsoftware.org/isinfo.php"
+        Write-BuildError "Inno Setup not found. Please install from https://jrsoftware.org/isinfo.php"
         Write-Host "  Or run without -Installer flag to build EXE only."
         exit 1
     }
-    Write-Success "  Inno Setup: OK"
+    Write-BuildSuccess "  Inno Setup: OK"
 }
 
 # Clean build artifacts
@@ -102,7 +117,7 @@ if ($Clean) {
     Write-Step "Cleaning build artifacts..."
     if (Test-Path "build") { Remove-Item -Recurse -Force "build" }
     if (Test-Path "dist") { Remove-Item -Recurse -Force "dist" }
-    Write-Success "  Cleaned build/ and dist/"
+    Write-BuildSuccess "  Cleaned build/ and dist/"
 }
 
 # Build EXE
@@ -116,18 +131,18 @@ if (-not $SkipExe) {
     python -m PyInstaller build_windows.spec --clean --noconfirm
 
     if ($LASTEXITCODE -ne 0) {
-        Write-Error "PyInstaller build failed!"
+        Write-BuildError "PyInstaller build failed!"
         exit 1
     }
 
     # Verify output
     if (-not (Test-Path "dist\PulseScribe\PulseScribe.exe")) {
-        Write-Error "Build output not found: dist\PulseScribe\PulseScribe.exe"
+        Write-BuildError "Build output not found: dist\PulseScribe\PulseScribe.exe"
         exit 1
     }
 
     $exeSize = (Get-Item "dist\PulseScribe\PulseScribe.exe").Length / 1MB
-    Write-Success "  Built: dist\PulseScribe\PulseScribe.exe ($([math]::Round($exeSize, 1)) MB)"
+    Write-BuildSuccess "  Built: dist\PulseScribe\PulseScribe.exe ($([math]::Round($exeSize, 1)) MB)"
 }
 
 # Create installer
@@ -136,15 +151,15 @@ if ($Installer) {
 
     # Verify EXE exists
     if (-not (Test-Path "dist\PulseScribe\PulseScribe.exe")) {
-        Write-Error "EXE not found. Run without -SkipExe first."
+        Write-BuildError "EXE not found. Run without -SkipExe first."
         exit 1
     }
 
     # Check for icon
     if (Test-Path "assets\icon.ico") {
-        Write-Success "  Icon: assets\icon.ico"
+        Write-BuildSuccess "  Icon: assets\icon.ico"
     } else {
-        Write-Warning "  assets\icon.ico not found - using default icon"
+        Write-BuildWarning "  assets\icon.ico not found - using default icon"
     }
 
     # Run Inno Setup
@@ -155,14 +170,14 @@ if ($Installer) {
     }
 
     if ($LASTEXITCODE -ne 0) {
-        Write-Error "Inno Setup build failed!"
+        Write-BuildError "Inno Setup build failed!"
         exit 1
     }
 
     $installerPath = "dist\PulseScribe-Setup-$Version.exe"
     if (Test-Path $installerPath) {
         $installerSize = (Get-Item $installerPath).Length / 1MB
-        Write-Success "  Built: $installerPath ($([math]::Round($installerSize, 1)) MB)"
+        Write-BuildSuccess "  Built: $installerPath ($([math]::Round($installerSize, 1)) MB)"
     }
 }
 

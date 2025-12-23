@@ -18,8 +18,8 @@
 #define MyAppDescription "Voice input for Windows - Transcription with Deepgram, OpenAI, Groq or locally"
 
 [Setup]
-; App identity
-AppId={{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}
+; App identity (GUID must be unique and properly formatted with double braces)
+AppId={{9A961D4A-17CB-4B01-A331-17C773E14149}}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
