@@ -87,14 +87,14 @@ LEVEL_SMOOTHING_RISE = 0.30
 LEVEL_SMOOTHING_FALL = 0.10
 
 # Audio-Visual Mapping
-VISUAL_GAIN = 2.0
-VISUAL_NOISE_GATE = 0.002
-VISUAL_EXPONENT = 1.3
+VISUAL_GAIN = 3.0  # Erhöht für größere Ausschläge (war 2.0)
+VISUAL_NOISE_GATE = 0.001  # Niedriger für sensitivere Reaktion
+VISUAL_EXPONENT = 1.2  # Etwas linearer für bessere Reaktion bei leisen Pegeln
 
 # Adaptive Gain Control (AGC)
 AGC_DECAY = 0.9923
-AGC_MIN_PEAK = 0.01
-AGC_HEADROOM = 2.0
+AGC_MIN_PEAK = 0.005  # Niedriger als macOS für sensitivere Reaktion
+AGC_HEADROOM = 1.5  # Weniger Headroom = größere Ausschläge
 
 # Traveling Wave
 WAVE_WANDER_AMOUNT = 0.25
@@ -752,12 +752,18 @@ class PySide6OverlayController:
     """
 
     def __init__(self, interim_file: Path | None = None):
+        import threading
+
         self._app: QApplication | None = None
         self._widget: PySide6OverlayWidget | None = None
         self._interim_file = interim_file
         self._running = False
         self._last_interim_text = ""
         self._interim_timer: QTimer | None = None
+        # Ready-Event: Wird gesetzt sobald Widget bereit ist
+        self._ready_event = threading.Event()
+        # Pending State: Falls update_state vor ready aufgerufen wird
+        self._pending_state: tuple[str, str] | None = None
 
     def run(self):
         """Start Qt Event Loop.
@@ -779,6 +785,16 @@ class PySide6OverlayController:
 
         self._widget = PySide6OverlayWidget()
         self._running = True
+
+        # Pending State anwenden (falls update_state vor ready aufgerufen wurde)
+        if self._pending_state:
+            state, text = self._pending_state
+            self._pending_state = None
+            self._widget.update_state(state, text)
+            logger.debug(f"Pending State angewendet: {state}")
+
+        # Ready-Event setzen (andere Threads können jetzt update_state aufrufen)
+        self._ready_event.set()
 
         # Interim-File Polling (wenn aktiviert)
         if self._interim_file:
@@ -811,6 +827,9 @@ class PySide6OverlayController:
         """Thread-safe State-Update."""
         if self._widget:
             self._widget.update_state(state, text)
+        else:
+            # Widget noch nicht bereit - State für später speichern
+            self._pending_state = (state, text or "")
 
     def update_audio_level(self, level: float):
         """Thread-safe Level-Update."""
