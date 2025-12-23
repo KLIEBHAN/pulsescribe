@@ -137,6 +137,11 @@ class PulseScribeWindows:
         self._recording_thread = None
         self._stop_event = threading.Event()
         self._overlay = None
+        self._event_loop = None  # Wird in _prewarm_imports() erstellt
+
+        # Watchdog für hängende Transcription (wie macOS)
+        self._transcribing_timeout = 30.0  # Sekunden
+        self._transcribing_watchdog: threading.Timer | None = None
 
         # Audio buffer für REST-Modus
         self._audio_buffer = []
@@ -170,9 +175,40 @@ class PulseScribeWindows:
             logger.info(f"State: {old_state.value} → {state.value}")
             self._update_tray_icon()
 
+            # Watchdog-Management (wie macOS)
+            if state == AppState.TRANSCRIBING:
+                self._start_transcribing_watchdog()
+            elif state in (AppState.DONE, AppState.ERROR, AppState.IDLE):
+                self._stop_transcribing_watchdog()
+
             # Overlay aktualisieren
             if self._overlay:
                 self._overlay.update_state(state.name, text)
+
+    def _start_transcribing_watchdog(self):
+        """Startet Watchdog-Timer für hängende Transcription."""
+        self._stop_transcribing_watchdog()
+
+        def timeout_handler():
+            if self.state == AppState.TRANSCRIBING:
+                logger.error(
+                    f"Transcription-Timeout nach {self._transcribing_timeout}s"
+                )
+                self._set_state(AppState.ERROR)
+                self._play_sound("error")
+                threading.Timer(2.0, lambda: self._set_state(AppState.IDLE)).start()
+
+        self._transcribing_watchdog = threading.Timer(
+            self._transcribing_timeout, timeout_handler
+        )
+        self._transcribing_watchdog.daemon = True
+        self._transcribing_watchdog.start()
+
+    def _stop_transcribing_watchdog(self):
+        """Stoppt Watchdog-Timer."""
+        if self._transcribing_watchdog is not None:
+            self._transcribing_watchdog.cancel()
+            self._transcribing_watchdog = None
 
     def _update_tray_icon(self):
         """Aktualisiert Tray-Icon basierend auf State."""
@@ -322,9 +358,13 @@ class PulseScribeWindows:
         try:
             from providers.deepgram_stream import deepgram_stream_core
 
-            # Eigener Event-Loop (nicht im Main-Thread)
+            # Event-Loop: Gecachten aus Pre-Warm verwenden oder neu erstellen
             # Policy wurde bereits im __init__ gesetzt
-            loop = asyncio.new_event_loop()
+            if self._event_loop is not None:
+                loop = self._event_loop
+                self._event_loop = None  # Nur einmal verwenden, danach neu erstellen
+            else:
+                loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
 
             try:
@@ -502,9 +542,8 @@ class PulseScribeWindows:
             get_clipboard().copy(transcript)
             logger.info("Text in Zwischenablage kopiert")
 
-        # Nach kurzer Pause zurück zu IDLE
-        time.sleep(1.0)
-        self._set_state(AppState.IDLE)
+        # Nach kurzer Pause zurück zu IDLE (Timer statt sleep, blockiert Thread nicht)
+        threading.Timer(1.0, lambda: self._set_state(AppState.IDLE)).start()
 
     def _setup_hotkey(self):
         """Richtet globalen Hotkey ein."""
@@ -657,6 +696,23 @@ class PulseScribeWindows:
                 import httpx  # noqa: F401
                 import websockets  # noqa: F401
 
+                # Event-Loop vorab erstellen (spart ~50-100ms beim ersten Recording)
+                import asyncio
+
+                self._event_loop = asyncio.new_event_loop()
+
+            # Phase 2b: UI-Imports (optional, beschleunigt _setup_overlay/tray)
+            try:
+                import pystray  # noqa: F401
+                from PIL import Image  # noqa: F401
+
+                if self.overlay_enabled:
+                    from ui.overlay_windows import (
+                        WindowsOverlayController as _WOC,  # noqa: F401
+                    )
+            except ImportError:
+                pass  # Optional, nicht kritisch
+
             imports_ms = (time.perf_counter() - start) * 1000
 
             # Phase 3: Audio-Device erkennen (~250-500ms auf Windows)
@@ -680,13 +736,16 @@ class PulseScribeWindows:
         print(f"PulseScribe Windows gestartet (Hotkey: {self.hotkey_str})")
         print("Drücke Ctrl+C oder nutze Tray-Menü zum Beenden")
 
-        # Pre-Warm: Teure Imports im Hintergrund laden
+        # Hotkey ZUERST registrieren - User kann sofort starten
+        # (Device-Erkennung läuft parallel im Pre-Warm)
+        self._setup_hotkey()
+
+        # Pre-Warm: Teure Imports + Device-Erkennung im Hintergrund
         threading.Thread(
             target=self._prewarm_imports, daemon=True, name="PreWarm"
         ).start()
 
         self._setup_overlay()
-        self._setup_hotkey()
         self._setup_tray()
 
         if self._tray:

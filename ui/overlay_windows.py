@@ -86,12 +86,12 @@ ENVELOPE_BLEND = 0.55
 BG_COLOR = "#1A1A1A"  # Etwas dunkler als vorher
 
 STATE_COLORS = {
-    "LISTENING": "#FFB6C1",     # Pink
-    "RECORDING": "#FF5252",     # Rot
+    "LISTENING": "#FFB6C1",  # Pink
+    "RECORDING": "#FF5252",  # Rot
     "TRANSCRIBING": "#FFB142",  # Orange
-    "REFINING": "#9C27B0",      # Lila
-    "DONE": "#4CAF50",          # Grün (satter)
-    "ERROR": "#FF4757",         # Rot
+    "REFINING": "#9C27B0",  # Lila
+    "DONE": "#4CAF50",  # Grün (satter)
+    "ERROR": "#FF4757",  # Rot
 }
 
 STATE_TEXTS = {
@@ -250,8 +250,16 @@ class WindowsOverlayController:
         self._root.withdraw()
         logger.debug("Overlay window initialized")
 
-    def _draw_rounded_rect(self, x1: float, y1: float, x2: float, y2: float,
-                           radius: float, fill: str, outline: str = "") -> None:
+    def _draw_rounded_rect(
+        self,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
+        radius: float,
+        fill: str,
+        outline: str = "",
+    ) -> None:
         """Zeichnet ein Rechteck mit abgerundeten Ecken."""
         if not self._canvas:
             return
@@ -260,28 +268,67 @@ class WindowsOverlayController:
 
         # Vier Ecken als Arcs
         # Oben-links
-        self._canvas.create_arc(x1, y1, x1 + 2*r, y1 + 2*r,
-                                start=90, extent=90, fill=fill, outline=outline, tags="bg")
+        self._canvas.create_arc(
+            x1,
+            y1,
+            x1 + 2 * r,
+            y1 + 2 * r,
+            start=90,
+            extent=90,
+            fill=fill,
+            outline=outline,
+            tags="bg",
+        )
         # Oben-rechts
-        self._canvas.create_arc(x2 - 2*r, y1, x2, y1 + 2*r,
-                                start=0, extent=90, fill=fill, outline=outline, tags="bg")
+        self._canvas.create_arc(
+            x2 - 2 * r,
+            y1,
+            x2,
+            y1 + 2 * r,
+            start=0,
+            extent=90,
+            fill=fill,
+            outline=outline,
+            tags="bg",
+        )
         # Unten-rechts
-        self._canvas.create_arc(x2 - 2*r, y2 - 2*r, x2, y2,
-                                start=270, extent=90, fill=fill, outline=outline, tags="bg")
+        self._canvas.create_arc(
+            x2 - 2 * r,
+            y2 - 2 * r,
+            x2,
+            y2,
+            start=270,
+            extent=90,
+            fill=fill,
+            outline=outline,
+            tags="bg",
+        )
         # Unten-links
-        self._canvas.create_arc(x1, y2 - 2*r, x1 + 2*r, y2,
-                                start=180, extent=90, fill=fill, outline=outline, tags="bg")
+        self._canvas.create_arc(
+            x1,
+            y2 - 2 * r,
+            x1 + 2 * r,
+            y2,
+            start=180,
+            extent=90,
+            fill=fill,
+            outline=outline,
+            tags="bg",
+        )
 
         # Verbindende Rechtecke
         # Oben
-        self._canvas.create_rectangle(x1 + r, y1, x2 - r, y1 + r,
-                                      fill=fill, outline="", tags="bg")
+        self._canvas.create_rectangle(
+            x1 + r, y1, x2 - r, y1 + r, fill=fill, outline="", tags="bg"
+        )
         # Mitte
-        self._canvas.create_rectangle(x1, y1 + r, x2, y2 - r,
-                                      fill=fill, outline="", tags="bg")
+        self._canvas.create_rectangle(
+            x1, y1 + r, x2, y2 - r, fill=fill, outline="", tags="bg"
+        )
         # Unten
-        self._canvas.create_rectangle(x1 + r, y2 - r, x2 - r, y2,
-                                      fill=fill, outline="", tags="bg")
+        self._canvas.create_rectangle(
+            x1 + r, y2 - r, x2 - r, y2, fill=fill, outline="", tags="bg"
+        )
 
     def _draw_rounded_background(self) -> None:
         """Zeichnet abgerundeten Hintergrund."""
@@ -289,8 +336,9 @@ class WindowsOverlayController:
             return
 
         self._canvas.delete("bg")
-        self._draw_rounded_rect(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT,
-                                WINDOW_CORNER_RADIUS, BG_COLOR)
+        self._draw_rounded_rect(
+            0, 0, WINDOW_WIDTH, WINDOW_HEIGHT, WINDOW_CORNER_RADIUS, BG_COLOR
+        )
 
     # =========================================================================
     # Queue Processing
@@ -326,7 +374,7 @@ class WindowsOverlayController:
                 pass
 
         if self._running:
-            self._root.after(300, self._poll_interim_file)
+            self._root.after(200, self._poll_interim_file)  # 200ms wie macOS
 
     # =========================================================================
     # State Handling
@@ -446,7 +494,9 @@ class WindowsOverlayController:
             x = start_x + i * (BAR_WIDTH + BAR_GAP)
             self._draw_pill_bar(x, center_y, BAR_WIDTH, height, color)
 
-    def _draw_pill_bar(self, x: float, center_y: float, width: float, height: float, color: str) -> None:
+    def _draw_pill_bar(
+        self, x: float, center_y: float, width: float, height: float, color: str
+    ) -> None:
         """Zeichnet eine Pill-förmige Bar (abgerundete Enden)."""
         if not self._canvas:
             return
@@ -458,26 +508,44 @@ class WindowsOverlayController:
         # Wenn sehr klein, einfaches Oval
         if height <= width:
             self._canvas.create_oval(
-                x, y1, x + width, y2,
-                fill=color, outline="", tags="bars"
+                x, y1, x + width, y2, fill=color, outline="", tags="bars"
             )
         else:
             # Pill: Rechteck mit abgerundeten Enden
             # Oberes Halbrund
             self._canvas.create_arc(
-                x, y1, x + width, y1 + width,
-                start=0, extent=180, fill=color, outline="", tags="bars"
+                x,
+                y1,
+                x + width,
+                y1 + width,
+                start=0,
+                extent=180,
+                fill=color,
+                outline="",
+                tags="bars",
             )
             # Mittleres Rechteck
             if y2 - width / 2 > y1 + width / 2:
                 self._canvas.create_rectangle(
-                    x, y1 + width / 2, x + width, y2 - width / 2,
-                    fill=color, outline="", tags="bars"
+                    x,
+                    y1 + width / 2,
+                    x + width,
+                    y2 - width / 2,
+                    fill=color,
+                    outline="",
+                    tags="bars",
                 )
             # Unteres Halbrund
             self._canvas.create_arc(
-                x, y2 - width, x + width, y2,
-                start=180, extent=180, fill=color, outline="", tags="bars"
+                x,
+                y2 - width,
+                x + width,
+                y2,
+                start=180,
+                extent=180,
+                fill=color,
+                outline="",
+                tags="bars",
             )
 
     def _calculate_bar_height(self, bar_index: int, t: float) -> float:
@@ -504,8 +572,14 @@ class WindowsOverlayController:
         level = self._normalized_level
 
         # Traveling Wave Modulation
-        phase1 = 2 * math.pi * WAVE_WANDER_HZ_PRIMARY * t + i * WAVE_WANDER_PHASE_STEP_PRIMARY
-        phase2 = 2 * math.pi * WAVE_WANDER_HZ_SECONDARY * t + i * WAVE_WANDER_PHASE_STEP_SECONDARY
+        phase1 = (
+            2 * math.pi * WAVE_WANDER_HZ_PRIMARY * t
+            + i * WAVE_WANDER_PHASE_STEP_PRIMARY
+        )
+        phase2 = (
+            2 * math.pi * WAVE_WANDER_HZ_SECONDARY * t
+            + i * WAVE_WANDER_PHASE_STEP_SECONDARY
+        )
         wave1 = (math.sin(phase1) + 1) / 2
         wave2 = (math.sin(phase2) + 1) / 2
         wave_mod = WAVE_WANDER_BLEND * wave1 + (1 - WAVE_WANDER_BLEND) * wave2
@@ -516,10 +590,14 @@ class WindowsOverlayController:
         env_phase2 = 2 * math.pi * ENVELOPE_HZ_SECONDARY * t
         env_offset1 = math.sin(env_phase1) * center * 0.8
         env_offset2 = math.sin(env_phase2) * center * 0.6
-        env_center = center + ENVELOPE_BLEND * env_offset1 + (1 - ENVELOPE_BLEND) * env_offset2
+        env_center = (
+            center + ENVELOPE_BLEND * env_offset1 + (1 - ENVELOPE_BLEND) * env_offset2
+        )
 
         distance = abs(i - env_center)
-        env_factor = ENVELOPE_BASE + (1 - ENVELOPE_BASE) * _gaussian(distance, ENVELOPE_SIGMA)
+        env_factor = ENVELOPE_BASE + (1 - ENVELOPE_BASE) * _gaussian(
+            distance, ENVELOPE_SIGMA
+        )
         env_factor = ENVELOPE_STRENGTH * env_factor + (1 - ENVELOPE_STRENGTH) * 1.0
 
         # Basis-Höhenfaktor (Mitte höher)
@@ -548,7 +626,10 @@ class WindowsOverlayController:
         if t < 0.3:
             # Schneller Anstieg
             progress = t / 0.3
-            return BAR_MIN_HEIGHT + (BAR_MAX_HEIGHT - BAR_MIN_HEIGHT) * progress * _HEIGHT_FACTORS[i]
+            return (
+                BAR_MIN_HEIGHT
+                + (BAR_MAX_HEIGHT - BAR_MIN_HEIGHT) * progress * _HEIGHT_FACTORS[i]
+            )
         elif t < 0.5:
             # Bounce
             progress = (t - 0.3) / 0.2
