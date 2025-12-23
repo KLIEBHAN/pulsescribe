@@ -130,7 +130,7 @@ The Inno Setup installer (`installer_windows.iss`) provides:
 | **Desktop shortcut** | Optional, user can choose during install |
 | **Autostart option** | Optional, adds to Windows startup |
 | **Clean uninstall** | Via Windows "Apps & Features", optionally removes settings |
-| **Per-user install** | No admin rights required (installs to `%LocalAppData%`) |
+| **Per-user install** | No admin rights required (installs to `%LocalAppData%\Programs`) |
 
 ### Customizing the Installer
 

@@ -93,7 +93,8 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChang
 
 [UninstallDelete]
 ; Clean up log files on uninstall
-Type: filesandordirs; Name: "{userappdata}\.pulsescribe\logs"
+; Note: PulseScribe stores config in %USERPROFILE%\.pulsescribe (not AppData)
+Type: filesandordirs; Name: "{%USERPROFILE}\.pulsescribe\logs"
 
 [Code]
 // Custom code for version checking and cleanup
@@ -112,15 +113,20 @@ begin
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  ConfigDir: String;
 begin
   if CurUninstallStep = usPostUninstall then
   begin
+    // PulseScribe stores config in %USERPROFILE%\.pulsescribe
+    ConfigDir := ExpandConstant('{%USERPROFILE}') + '\.pulsescribe';
+
     // Ask user if they want to remove settings
     if MsgBox('Do you want to remove PulseScribe settings and logs?' + #13#10 +
-              '(Located in: ' + ExpandConstant('{userappdata}') + '\.pulsescribe)',
+              '(Located in: ' + ConfigDir + ')',
               mbConfirmation, MB_YESNO) = IDYES then
     begin
-      DelTree(ExpandConstant('{userappdata}\.pulsescribe'), True, True, True);
+      DelTree(ConfigDir, True, True, True);
     end;
   end;
 end;
