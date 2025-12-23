@@ -1119,6 +1119,8 @@ class PulseScribeWindows:
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(f"Hotkeys: {hotkey_text}", None, enabled=False),
             pystray.Menu.SEPARATOR,
+            pystray.MenuItem("Settings...", self._show_settings),
+            pystray.Menu.SEPARATOR,
             pystray.MenuItem("Beenden", self._quit),
         )
 
@@ -1146,6 +1148,96 @@ class PulseScribeWindows:
 
         if self._tray:
             self._tray.stop()
+
+    def _show_settings(self):
+        """Öffnet das Settings-Fenster."""
+        # Settings-Fenster in einem separaten Thread starten
+        # (pystray callbacks laufen nicht im Qt-Thread)
+        def _open_settings():
+            try:
+                from PySide6.QtWidgets import QApplication
+                from ui.settings_windows import SettingsWindow
+
+                # Prüfen ob QApplication existiert (falls Overlay läuft)
+                app = QApplication.instance()
+                if app is None:
+                    app = QApplication([])
+                    owns_app = True
+                else:
+                    owns_app = False
+
+                # Settings-Fenster erstellen
+                window = SettingsWindow(config={
+                    "mode": self.mode,
+                    "toggle_hotkey": self.toggle_hotkey,
+                    "hold_hotkey": self.hold_hotkey,
+                })
+                window.set_on_settings_changed(self._reload_settings)
+                window.show()
+
+                # Event-Loop starten (nur wenn wir die App besitzen)
+                if owns_app:
+                    app.exec()
+
+            except ImportError as e:
+                logger.error(f"Settings-Fenster nicht verfügbar: {e}")
+            except Exception as e:
+                logger.error(f"Settings-Fenster Fehler: {e}")
+
+        threading.Thread(target=_open_settings, daemon=True).start()
+
+    def _reload_settings(self):
+        """Lädt Settings aus .env neu und wendet sie an."""
+        logger.info("Settings neu laden...")
+
+        # .env neu einlesen
+        from utils.preferences import read_env_file
+        env_values = read_env_file()
+
+        # Mode aktualisieren
+        new_mode = env_values.get("PULSESCRIBE_MODE", "deepgram")
+        if new_mode != self.mode:
+            self.mode = new_mode
+            logger.info(f"Mode geändert: {new_mode}")
+
+        # Refine aktualisieren
+        self.refine = env_values.get("PULSESCRIBE_REFINE", "").lower() == "true"
+        self.refine_model = env_values.get("PULSESCRIBE_REFINE_MODEL")
+        self.refine_provider = env_values.get("PULSESCRIBE_REFINE_PROVIDER")
+
+        # Streaming aktualisieren
+        streaming_val = env_values.get("PULSESCRIBE_STREAMING", "true")
+        self.streaming = streaming_val.lower() != "false"
+
+        # Overlay aktualisieren
+        overlay_val = env_values.get("PULSESCRIBE_OVERLAY", "true")
+        self.overlay_enabled = overlay_val.lower() != "false"
+
+        # Hotkeys aktualisieren (erfordert Listener-Neustart)
+        new_toggle = env_values.get("PULSESCRIBE_TOGGLE_HOTKEY")
+        new_hold = env_values.get("PULSESCRIBE_HOLD_HOTKEY")
+
+        if new_toggle != self.toggle_hotkey or new_hold != self.hold_hotkey:
+            self.toggle_hotkey = new_toggle
+            self.hold_hotkey = new_hold
+            logger.info(f"Hotkeys geändert: toggle={new_toggle}, hold={new_hold}")
+            # Listener neu starten
+            self._restart_hotkey_listeners()
+
+        logger.info("Settings erfolgreich neu geladen")
+
+    def _restart_hotkey_listeners(self):
+        """Startet Hotkey-Listener mit neuen Einstellungen neu."""
+        # Alte Listener stoppen
+        for listener in self._hotkey_listeners:
+            try:
+                listener.stop()
+            except Exception:
+                pass
+        self._hotkey_listeners.clear()
+
+        # Neue Listener starten
+        self._setup_hotkey()
 
     def _setup_overlay(self):
         """Richtet Overlay ein (läuft in separatem Thread)."""
