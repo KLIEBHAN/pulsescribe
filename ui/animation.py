@@ -215,12 +215,12 @@ class AnimationLogic:
 
     def _calc_processing_normalized(self, i: int, t: float) -> float:
         """Transcribing/Refining: Synchronized pulsing (original macOS style). Returns 0-1."""
-        # All bars pulse together with ~1s period
+        # All bars pulse together to same height with ~1s period
         phase = t * math.pi  # ~1s full cycle (up and down)
         pulse = (math.sin(phase) + 1) / 2  # 0..1
 
-        # Apply height factors (center bars higher)
-        return 0.7 * pulse * _HEIGHT_FACTORS[i]
+        # All bars same height (no height factors)
+        return 0.7 * pulse
 
     def _calc_loading_normalized(self, i: int, t: float) -> float:
         """Loading: Slow synchronous pulse. Returns 0-1."""
