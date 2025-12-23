@@ -2,30 +2,42 @@
 
 ## Projekt-Übersicht
 
-**PulseScribe** – Minimalistische Spracheingabe für macOS, inspiriert von [Wispr Flow](https://wisprflow.ai).
+**PulseScribe** – Minimalistische Spracheingabe für macOS und Windows, inspiriert von [Wispr Flow](https://wisprflow.ai).
 
 Siehe [docs/VISION.md](docs/VISION.md) für Roadmap und langfristige Ziele.
+Siehe [docs/WINDOWS_MVP.md](docs/WINDOWS_MVP.md) für Windows-Port Status.
 
 ## Architektur
 
 ```
 pulsescribe/
 ├── transcribe.py          # CLI Orchestrierung (Wrapper)
-├── pulsescribe_daemon.py  # Unified Daemon (Hotkey + Recording + UI)
+├── pulsescribe_daemon.py  # macOS Daemon (NSApplication Loop)
+├── pulsescribe_windows.py # Windows Daemon (pystray + pynput)
 ├── start_daemon.command   # macOS Login Item für Auto-Start
+├── start_daemon.bat       # Windows Batch für Auto-Start
 ├── build_app.spec         # PyInstaller Spec für macOS App Bundle
+├── build_windows.spec     # PyInstaller Spec für Windows EXE
 ├── config.py              # Zentrale Konfiguration (Pfade, Konstanten)
-├── requirements.txt       # Dependencies
+├── requirements.txt       # Dependencies (beide Plattformen)
 ├── README.md              # Benutzer-Dokumentation
 ├── CLAUDE.md              # Diese Datei
-├── docs/                  # Dokumentation (Vision, Deepgram, etc.)
+├── docs/                  # Dokumentation (Vision, Deepgram, Windows MVP, etc.)
 ├── audio/                 # Audio-Aufnahme und -Handling
 ├── providers/             # Transkriptions-Provider (Deepgram, OpenAI, etc.)
 ├── refine/                # LLM-Nachbearbeitung und Kontext
 │   └── prompts.py         # Prompt-Templates (Consolidated)
 ├── ui/                    # User Interface Components
-│   ├── menubar.py         # MenuBar Controller (mit Quit-Menü)
-│   └── overlay.py         # Overlay Controller & SoundWave
+│   ├── menubar.py         # macOS MenuBar Controller (NSStatusBar)
+│   ├── overlay.py         # macOS Overlay Controller & SoundWave
+│   └── overlay_pyside6.py # Windows Overlay (PySide6, GPU-beschleunigt)
+├── whisper_platform/      # Plattform-Abstraktion (Factory Pattern)
+│   ├── __init__.py        # Exports: get_clipboard, get_hotkey_listener, etc.
+│   ├── clipboard.py       # MacOSClipboard / WindowsClipboard
+│   ├── sound.py           # MacOSSound / WindowsSound
+│   ├── hotkey.py          # Hotkey-Listener (QuickMacHotKey / pynput)
+│   ├── app_detection.py   # Aktive App erkennen (NSWorkspace / win32gui)
+│   └── paste.py           # Auto-Paste (AppleScript / pynput Ctrl+V)
 ├── utils/                 # Utilities (Logging, Hotkey, etc.)
 │   ├── paths.py           # Pfad-Helper für PyInstaller Bundle
 │   └── permissions.py     # macOS Berechtigungs-Checks (Mikrofon)
@@ -49,11 +61,11 @@ pulsescribe/
 - **Entry-Point:** Bleibt die zentrale Anlaufstelle für Skripte
 - **Lazy Imports:** `openai`, `whisper`, `sounddevice` werden erst bei Bedarf importiert
 
-## Unified Daemon: `pulsescribe_daemon.py`
+## Daemons
+
+### macOS: `pulsescribe_daemon.py`
 
 Konsolidiert alle Komponenten in einem Prozess (empfohlen für tägliche Nutzung):
-
-**Komponenten:**
 
 | Klasse              | Modul                | Zweck                                           |
 | ------------------- | -------------------- | ----------------------------------------------- |
@@ -62,11 +74,24 @@ Konsolidiert alle Komponenten in einem Prozess (empfohlen für tägliche Nutzung
 | `SoundWaveView`     | `ui.overlay`         | Animierte Schallwellen-Visualisierung           |
 | `PulseScribeDaemon` | `pulsescribe_daemon` | Hauptklasse: Orchestriert Hotkey, Audio & UI    |
 
-**Architektur:**
+**Architektur:** Main-Thread (Hotkey + UI Event Loop) + Worker-Thread (Deepgram-Streaming)
 
-- **Main-Thread:** Hotkey-Listener (`utils.hotkey`) + UI Event Loop
-- **Worker-Thread:** Deepgram-Streaming via `providers.deepgram_stream`
-- **Orchestration:** Daemon steuert UI-Feedback basierend auf Recording-State
+### Windows: `pulsescribe_windows.py`
+
+Separater Entry-Point mit Windows-nativen Komponenten:
+
+| Klasse                      | Modul               | Zweck                                              |
+| --------------------------- | ------------------- | -------------------------------------------------- |
+| `PySide6OverlayController`  | `ui.overlay_pyside6`| GPU-beschleunigtes Overlay (Fallback: Tkinter)     |
+| `pystray.Icon`              | extern              | System-Tray-Icon mit Farbstatus                    |
+| `pynput.keyboard.Listener`  | extern              | Globale Hotkeys (F1-F24, Ctrl+Alt+X, etc.)         |
+| `PulseScribeWindows`        | `pulsescribe_windows`| Hauptklasse: State-Machine + Orchestrierung       |
+
+**Features:**
+- Pre-Warming (SDK-Imports, DNS-Prefetch, PortAudio) für schnellen Start
+- LOADING-State für akkurates UI-Feedback während Mikrofon-Init
+- Native Clipboard via ctypes (kein Tkinter/pyperclip)
+- Windows System-Sounds (DeviceConnect, Notification.SMS, etc.)
 
 ## CLI-Interface
 
@@ -81,6 +106,8 @@ python transcribe.py --record --copy --language de
 
 ## Dependencies
 
+### Shared (beide Plattformen)
+
 | Paket            | Zweck                                     |
 | ---------------- | ----------------------------------------- |
 | `openai`         | API-Modus + LLM-Refine (OpenRouter)       |
@@ -89,15 +116,32 @@ python transcribe.py --record --copy --language de
 | `groq`           | Groq Whisper + LLM-Refine                 |
 | `sounddevice`    | Mikrofon-Aufnahme                         |
 | `soundfile`      | WAV-Export                                |
-| `pyperclip`      | Zwischenablage                            |
 | `python-dotenv`  | .env Konfiguration                        |
-| `rumps`          | Menübar-App                               |
+| `numpy`          | Audio-Verarbeitung                        |
+
+### macOS-only
+
+| Paket            | Zweck                                     |
+| ---------------- | ----------------------------------------- |
+| `rumps`          | Menübar-App (NSStatusBar)                 |
 | `quickmachotkey` | Globale Hotkeys (Carbon API, kein TCC)    |
+| `pyobjc-*`       | Cocoa-Bindings (NSWorkspace, etc.)        |
+
+### Windows-only
+
+| Paket            | Zweck                                     |
+| ---------------- | ----------------------------------------- |
+| `pystray`        | System-Tray-Icon                          |
+| `pynput`         | Globale Hotkeys + Ctrl+V Simulation       |
+| `PySide6`        | GPU-beschleunigtes Overlay (optional)     |
+| `pywin32`        | Windows API (win32gui, win32process)      |
+| `psutil`         | Prozess-Info für App-Detection            |
+| `Pillow`         | Icons für pystray                         |
 
 **Externe:**
 
-- `ffmpeg` (für lokalen Modus)
-- `portaudio` (für Mikrofon auf macOS)
+- `ffmpeg` (für lokalen Modus, beide Plattformen)
+- `portaudio` (macOS: `brew install portaudio`)
 
 ## Konfiguration (ENV-Variablen)
 
@@ -158,7 +202,9 @@ Die LLM-Nachbearbeitung passt den Prompt automatisch an den Nutzungskontext an:
 
 **Priorität:** CLI (`--context`) > ENV (`PULSESCRIBE_CONTEXT`) > App-Auto-Detection > Default
 
-**Performance:** NSWorkspace-API (~0.2ms) statt AppleScript (~207ms)
+**Performance:**
+- macOS: NSWorkspace-API (~0.2ms) statt AppleScript (~207ms)
+- Windows: win32gui + psutil (~1ms)
 
 ## Custom Prompts
 
@@ -205,9 +251,9 @@ Voice-Commands werden vom LLM in der Refine-Pipeline interpretiert (nur mit `--r
 
 **Implementierung:** `refine/prompts.py` + `utils/custom_prompts.py` → Voice-Commands werden automatisch in alle Prompts eingefügt via `get_prompt_for_context(context, voice_commands=True)`. Custom Prompts aus `~/.pulsescribe/prompts.toml` haben Priorität.
 
-## App Bundle (PyInstaller)
+## Builds (PyInstaller)
 
-Build einer nativen macOS App:
+### macOS App Bundle
 
 ```bash
 pip install pyinstaller
@@ -216,12 +262,26 @@ pyinstaller build_app.spec --clean
 ```
 
 **Besonderheiten:**
-
 - `utils/paths.py`: `get_resource_path()` für Bundle-kompatible Pfade
 - `utils/permissions.py`: Mikrofon-Berechtigung mit Alert-Dialog
-- `config.py`: Logs in `~/.pulsescribe/logs/` (nicht im Bundle)
-- Emergency Logging in `~/.pulsescribe/startup.log` für Crash-Debugging
 - **Accessibility-Problem bei unsignierten Bundles:** Siehe README.md → Troubleshooting
+
+### Windows EXE
+
+```bash
+pip install pyinstaller
+pyinstaller build_windows.spec --clean
+# Output: dist/PulseScribe.exe
+```
+
+**Besonderheiten:**
+- Konsolen-Fenster versteckt (`--noconsole` in Spec)
+- PySide6-Overlay optional (Fallback auf Tkinter)
+
+### Gemeinsam
+
+- Logs in `~/.pulsescribe/logs/` (nicht im Bundle)
+- Emergency Logging in `~/.pulsescribe/startup.log` für Crash-Debugging
 
 ## Entwicklungs-Konventionen
 
