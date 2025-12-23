@@ -28,8 +28,10 @@ pulsescribe/
 ├── refine/                # LLM-Nachbearbeitung und Kontext
 │   └── prompts.py         # Prompt-Templates (Consolidated)
 ├── ui/                    # User Interface Components
+│   ├── animation.py       # Shared Animation Logic (AGC, Traveling Wave, Envelope)
 │   ├── menubar.py         # macOS MenuBar Controller (NSStatusBar)
 │   ├── overlay.py         # macOS Overlay Controller & SoundWave
+│   ├── overlay_windows.py # Windows Overlay (Tkinter)
 │   └── overlay_pyside6.py # Windows Overlay (PySide6, GPU-beschleunigt)
 ├── whisper_platform/      # Plattform-Abstraktion (Factory Pattern)
 │   ├── __init__.py        # Exports: get_clipboard, get_hotkey_listener, etc.
@@ -92,6 +94,25 @@ Separater Entry-Point mit Windows-nativen Komponenten:
 - LOADING-State für akkurates UI-Feedback während Mikrofon-Init
 - Native Clipboard via ctypes (kein Tkinter/pyperclip)
 - Windows System-Sounds (DeviceConnect, Notification.SMS, etc.)
+
+### Animation-Architektur: `ui/animation.py`
+
+Zentrale Animationslogik für konsistentes Verhalten auf allen Plattformen:
+
+```
+ui/animation.py (Single Source of Truth)
+├── AnimationLogic (Klasse)
+│   ├── update_level() + update_agc()     ← Audio-Level + AGC
+│   └── calculate_bar_normalized(i, t, state) → 0.0-1.0
+│
+├── overlay_windows.py  ← nutzt AnimationLogic für alle States
+├── overlay_pyside6.py  ← nutzt AnimationLogic für alle States
+└── overlay.py (macOS)  ← nutzt AnimationLogic für LISTENING, TRANSCRIBING,
+                          REFINING, DONE; eigene Logik für RECORDING
+                          (komplexere Envelope/Wander-Animation)
+```
+
+**Normalized API:** `calculate_bar_normalized()` gibt Werte 0-1 zurück, damit jede Plattform eigene MIN/MAX-Höhen anwenden kann.
 
 ## CLI-Interface
 
