@@ -21,6 +21,7 @@ if sys.platform != "win32":
 import argparse
 import logging
 import os
+import queue
 import signal
 import threading
 import time
@@ -170,6 +171,14 @@ class PulseScribeWindows:
         self._audio_sample_rate = 16000  # Default, wird in _recording_loop aktualisiert
         self._audio_lock = threading.Lock()
 
+        # ═══════════════════════════════════════════════════════════════════
+        # WARM-STREAM: Mikrofon läuft immer, instant-start beim Hotkey
+        # ═══════════════════════════════════════════════════════════════════
+        self._warm_stream = None  # sd.InputStream (läuft dauerhaft)
+        self._warm_stream_armed = threading.Event()  # Wenn gesetzt: Samples sammeln
+        self._warm_stream_queue: queue.Queue[bytes] = queue.Queue()
+        self._warm_stream_sample_rate = 16000  # Wird beim Start aktualisiert
+
         mode = "Streaming" if streaming else "REST"
         logger.info(
             f"PulseScribeWindows initialisiert (Hotkey: {hotkey}, Mode: {mode}, Refine: {refine}, Overlay: {overlay})"
@@ -266,6 +275,81 @@ class PulseScribeWindows:
         except Exception as e:
             logger.debug(f"Sound-Fehler: {e}")
 
+    # ═══════════════════════════════════════════════════════════════════════════
+    # WARM-STREAM: Mikrofon läuft immer, instant-start beim Hotkey
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    def _start_warm_stream(self):
+        """Startet den dauerhaft laufenden Audio-Stream.
+
+        Der Stream läuft im Hintergrund und sammelt Audio nur wenn armed.
+        Ermöglicht instant-start Recording ohne WASAPI-Cold-Start-Delay.
+        """
+        import numpy as np
+        import sounddevice as sd
+
+        from config import INT16_MAX
+
+        input_device, sample_rate = get_input_device()
+        self._warm_stream_sample_rate = sample_rate
+
+        # Blocksize: ~64ms Chunks (wie in deepgram_stream)
+        blocksize = int(sample_rate * 0.064)
+
+        def audio_callback(indata, frames, time_info, status):
+            """Audio-Callback: Samples sammeln wenn armed, sonst verwerfen."""
+            if status:
+                logger.debug(f"Warm-Stream Status: {status}")
+
+            # Audio-Level für Overlay berechnen (immer, auch wenn nicht armed)
+            if self._overlay:
+                rms = float(np.sqrt(np.mean(indata.astype(np.float32) ** 2)) / INT16_MAX)
+                self._overlay.update_audio_level(rms)
+
+                # State-Transitions nur wenn armed
+                if self._warm_stream_armed.is_set():
+                    current_state = self.state
+                    if current_state == AppState.LISTENING and rms > _VAD_THRESHOLD_RMS:
+                        logger.debug(f"VAD triggered: level={rms:.4f}")
+                        self._set_state(AppState.RECORDING)
+
+            # Audio sammeln nur wenn armed
+            if self._warm_stream_armed.is_set():
+                audio_bytes = indata.tobytes()
+                try:
+                    self._warm_stream_queue.put_nowait(audio_bytes)
+                except queue.Full:
+                    pass  # Queue voll, Chunk verwerfen
+
+        try:
+            self._warm_stream = sd.InputStream(
+                device=input_device,
+                samplerate=sample_rate,
+                channels=1,
+                blocksize=blocksize,
+                dtype=np.int16,
+                callback=audio_callback,
+            )
+            self._warm_stream.start()
+            logger.info(
+                f"Warm-Stream gestartet: Device={input_device}, "
+                f"{sample_rate}Hz, blocksize={blocksize}"
+            )
+        except Exception as e:
+            logger.error(f"Warm-Stream konnte nicht gestartet werden: {e}")
+            self._warm_stream = None
+
+    def _stop_warm_stream(self):
+        """Stoppt den dauerhaft laufenden Audio-Stream."""
+        if self._warm_stream is not None:
+            try:
+                self._warm_stream.stop()
+                self._warm_stream.close()
+                logger.info("Warm-Stream gestoppt")
+            except Exception as e:
+                logger.debug(f"Warm-Stream Stop-Fehler: {e}")
+            self._warm_stream = None
+
     def _on_hotkey_press(self):
         """Callback wenn Hotkey gedrückt wird."""
         if self.state == AppState.IDLE:
@@ -281,19 +365,41 @@ class PulseScribeWindows:
         self._recording_stop_event.clear()
 
         if self.streaming:
-            # Streaming: LOADING sofort setzen für UI-Feedback
-            self._set_state(AppState.LOADING)
+            # Prüfe ob Warm-Stream verfügbar (instant-start)
+            if self._warm_stream is not None:
+                # ═══════════════════════════════════════════════════════════════
+                # WARM-STREAM MODE: Mikrofon läuft bereits, instant-start!
+                # ═══════════════════════════════════════════════════════════════
+                logger.info("Warm-Stream Mode: instant-start")
 
-            # Kurz auf Pre-Warm warten (non-blocking check, dann kurzer wait)
-            # Verhindert langsamen ersten Start wenn User sofort drückt
-            if not self._prewarm_complete.is_set():
-                logger.debug("Warte auf Pre-Warm...")
-                if not self._prewarm_complete.wait(timeout=1.0):
-                    logger.warning("Pre-Warm Timeout - starte trotzdem")
+                # Queue leeren (alte Samples verwerfen)
+                while not self._warm_stream_queue.empty():
+                    try:
+                        self._warm_stream_queue.get_nowait()
+                    except queue.Empty:
+                        break
 
-            self._recording_thread = threading.Thread(
-                target=self._streaming_worker, daemon=True
-            )
+                # Sofort LISTENING setzen und Sound spielen
+                self._set_state(AppState.LISTENING)
+                self._play_sound("ready")
+
+                # Worker mit Warm-Stream starten
+                self._recording_thread = threading.Thread(
+                    target=self._streaming_worker_warm, daemon=True
+                )
+            else:
+                # Fallback: Kein Warm-Stream, nutze alten Cold-Start-Pfad
+                logger.warning("Kein Warm-Stream - Fallback auf Cold-Start")
+                self._set_state(AppState.LOADING)
+
+                if not self._prewarm_complete.is_set():
+                    logger.debug("Warte auf Pre-Warm...")
+                    if not self._prewarm_complete.wait(timeout=1.0):
+                        logger.warning("Pre-Warm Timeout - starte trotzdem")
+
+                self._recording_thread = threading.Thread(
+                    target=self._streaming_worker, daemon=True
+                )
         else:
             # REST: Sound hier spielen, dann Recording starten
             self._set_state(AppState.LISTENING)
@@ -473,6 +579,95 @@ class PulseScribeWindows:
             self._set_state(AppState.IDLE)
         except Exception as e:
             logger.error(f"Streaming-Fehler: {e}")
+            self._set_state(AppState.ERROR)
+            self._play_sound("error")
+            time.sleep(1.0)
+            self._set_state(AppState.IDLE)
+
+    def _streaming_worker_warm(self):
+        """Streaming-Worker mit Warm-Stream (instant-start).
+
+        Nutzt den bereits laufenden Warm-Stream statt einen neuen zu öffnen.
+        Reduziert Start-Latenz von ~2-3s auf ~ms.
+        """
+        import asyncio
+
+        logger.debug("Streaming-Worker (Warm) gestartet")
+        transcript = ""
+
+        try:
+            from providers.deepgram_stream import deepgram_stream_core, WarmStreamSource
+
+            # WarmStreamSource erstellen mit Referenzen auf unseren Warm-Stream
+            warm_source = WarmStreamSource(
+                audio_queue=self._warm_stream_queue,
+                sample_rate=self._warm_stream_sample_rate,
+                arm_event=self._warm_stream_armed,
+                stream=self._warm_stream,
+            )
+
+            # Event-Loop erstellen
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+            try:
+                logger.debug("Starte deepgram_stream_core mit Warm-Stream")
+
+                transcript = loop.run_until_complete(
+                    deepgram_stream_core(
+                        model="nova-3",
+                        language=os.getenv("PULSESCRIBE_LANGUAGE", "de"),
+                        play_ready=False,  # Sound haben wir schon gespielt!
+                        external_stop_event=self._recording_stop_event,
+                        warm_stream_source=warm_source,
+                    )
+                )
+                logger.debug(f"Streaming abgeschlossen: {len(transcript)} Zeichen")
+
+                if transcript:
+                    self._set_state(AppState.TRANSCRIBING)
+
+                    # LLM-Nachbearbeitung (optional)
+                    if self.refine:
+                        self._set_state(AppState.REFINING)
+                        original = transcript
+                        try:
+                            from refine.llm import refine_transcript
+
+                            transcript = refine_transcript(
+                                transcript,
+                                model=self.refine_model,
+                                provider=self.refine_provider,
+                                context=self.context,
+                            )
+                            if not transcript or not transcript.strip():
+                                logger.warning(
+                                    "Refine gab leeren String zurück, verwende Original"
+                                )
+                                transcript = original
+                        except Exception as e:
+                            logger.warning(
+                                f"Refine fehlgeschlagen, verwende Original: {e}"
+                            )
+                            transcript = original
+
+                    self._handle_result(transcript)
+                else:
+                    logger.warning("Leeres Transkript")
+                    self._set_state(AppState.IDLE)
+
+            finally:
+                loop.close()
+                # Disarm wird automatisch in deepgram_stream_core finally gemacht
+
+        except ImportError as e:
+            logger.error(f"Import-Fehler: {e}")
+            self._set_state(AppState.ERROR)
+            self._play_sound("error")
+            time.sleep(1.0)
+            self._set_state(AppState.IDLE)
+        except Exception as e:
+            logger.error(f"Streaming-Fehler (Warm): {e}")
             self._set_state(AppState.ERROR)
             self._play_sound("error")
             time.sleep(1.0)
@@ -704,6 +899,9 @@ class PulseScribeWindows:
         # Stop-Signal fuer Hauptschleife
         self._stop_event.set()
 
+        # Warm-Stream stoppen
+        self._stop_warm_stream()
+
         if self._overlay:
             self._overlay.stop()
 
@@ -778,20 +976,24 @@ class PulseScribeWindows:
             device_start = time.perf_counter()
             device_idx, sample_rate = get_input_device()
 
-            # Phase 4: PortAudio "warm-up" - erster Stream-Start ist langsam
-            # Öffne kurz einen Dummy-Stream um COM/WASAPI zu initialisieren
-            try:
-                dummy = sounddevice.InputStream(
-                    device=device_idx,
-                    samplerate=sample_rate,
-                    channels=1,
-                    blocksize=1024,
-                )
-                dummy.start()
-                dummy.stop()
-                dummy.close()
-            except Exception:
-                pass  # Ignorieren wenn es fehlschlägt
+            # Phase 4: Warm-Stream starten (statt Dummy-Stream)
+            # Der Warm-Stream bleibt offen und ermöglicht instant-start Recording
+            if self.streaming:
+                self._start_warm_stream()
+            else:
+                # REST-Mode: Nur kurzer Dummy-Stream für WASAPI-Init
+                try:
+                    dummy = sounddevice.InputStream(
+                        device=device_idx,
+                        samplerate=sample_rate,
+                        channels=1,
+                        blocksize=1024,
+                    )
+                    dummy.start()
+                    dummy.stop()
+                    dummy.close()
+                except Exception:
+                    pass
 
             device_ms = (time.perf_counter() - device_start) * 1000
 
@@ -804,7 +1006,7 @@ class PulseScribeWindows:
                     pass  # Ignorieren wenn es fehlschlägt
 
             total_ms = (time.perf_counter() - start) * 1000
-            mode = "Streaming" if self.streaming else "REST"
+            mode = "Streaming + Warm-Stream" if self.streaming else "REST"
             logger.info(
                 f"Pre-Warm abgeschlossen ({total_ms:.0f}ms, {mode}): "
                 f"Imports={imports_ms:.0f}ms, Device={device_ms:.0f}ms "

@@ -19,10 +19,12 @@ Usage:
 import asyncio
 import logging
 import os
+import queue
 import signal
 import threading
 import time
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, AsyncIterator, Callable
 
@@ -31,6 +33,27 @@ from utils.logging import get_session_id
 
 if TYPE_CHECKING:
     from deepgram.listen.v1.socket_client import AsyncV1SocketClient
+    import sounddevice as sd
+
+
+@dataclass
+class WarmStreamSource:
+    """Quelle für Audio von einem bereits laufenden Stream (Warm-Start).
+
+    Ermöglicht instant-start Recording ohne WASAPI-Cold-Start-Delay.
+    Der Audio-Stream läuft bereits, wir "armen" ihn nur zum Aufnehmen.
+
+    Attributes:
+        audio_queue: Queue mit Audio-Chunks (bytes, int16 PCM)
+        sample_rate: Sample Rate des Streams (z.B. 16000, 48000)
+        arm_event: Event das gesetzt wird wenn Recording startet
+        stream: Der laufende InputStream (für Cleanup/Reference)
+    """
+
+    audio_queue: "queue.Queue[bytes]"
+    sample_rate: int
+    arm_event: threading.Event
+    stream: "sd.InputStream"
 
 # Zentrale Konfiguration importieren
 from config import (
@@ -154,6 +177,7 @@ async def deepgram_stream_core(
     play_ready: bool = True,
     external_stop_event: threading.Event | None = None,
     audio_level_callback: Callable[[float], None] | None = None,
+    warm_stream_source: "WarmStreamSource | None" = None,
 ) -> str:
     """Gemeinsamer Streaming-Core für Deepgram (SDK v5.3).
 
@@ -163,11 +187,14 @@ async def deepgram_stream_core(
         early_buffer: Vorab gepuffertes Audio (für Daemon-Mode)
         play_ready: Ready-Sound nach Mikrofon-Init spielen (für CLI)
         external_stop_event: threading.Event zum externen Stoppen (statt SIGUSR1)
+        audio_level_callback: Callback für Audio-Level Updates
+        warm_stream_source: Externes WarmStreamSource für instant-start (Windows)
 
-    Drei Modi:
+    Vier Modi:
     - CLI (early_buffer=None): Buffering während WebSocket-Connect
     - Daemon (early_buffer=[...]): Buffer direkt in Queue, kein Buffering
     - Unified (external_stop_event): Externes Stop-Event statt SIGUSR1
+    - Warm-Stream (warm_stream_source): Mikrofon bereits offen, instant-start
     """
     import numpy as np
     import sounddevice as sd
@@ -266,11 +293,57 @@ async def deepgram_stream_core(
 
     # --- Modus-spezifische Audio-Initialisierung ---
     #
-    # Zwei Modi mit unterschiedlichem Timing:
+    # Drei Modi mit unterschiedlichem Timing:
+    # - Warm-Stream: Mikrofon läuft bereits (instant-start, ~ms)
     # - Daemon: Mikrofon lief bereits, Audio ist gepuffert → direkt in Queue
     # - CLI: Mikrofon startet jetzt, WebSocket noch nicht bereit → puffern
     #
-    if early_buffer:
+    mic_stream = None  # Nur gesetzt wenn wir selbst den Stream erstellen
+    actual_sample_rate = WHISPER_SAMPLE_RATE  # Default, wird ggf. überschrieben
+
+    if warm_stream_source is not None:
+        # ═══════════════════════════════════════════════════════════════════
+        # WARM-STREAM MODE: Mikrofon läuft bereits, instant-start
+        # ═══════════════════════════════════════════════════════════════════
+        actual_sample_rate = warm_stream_source.sample_rate
+        logger.info(
+            f"[{session_id}] Warm-Stream Mode: {actual_sample_rate}Hz, instant-start"
+        )
+
+        # Arm the stream - ab jetzt werden Samples gesammelt
+        warm_stream_source.arm_event.set()
+
+        # Background-Thread liest aus sync Queue und schreibt in async Queue
+        def _warm_stream_forwarder():
+            """Leitet Audio von sync Queue an async Queue weiter."""
+            while not stop_event.is_set():
+                try:
+                    # Kurzes Timeout damit wir stop_event prüfen können
+                    chunk = warm_stream_source.audio_queue.get(timeout=0.1)
+                    loop.call_soon_threadsafe(audio_queue.put_nowait, chunk)
+                except queue.Empty:
+                    continue
+                except Exception as e:
+                    if not stop_event.is_set():
+                        logger.warning(f"[{session_id}] Warm-Stream Forwarder Error: {e}")
+                    break
+
+        forwarder_thread = threading.Thread(
+            target=_warm_stream_forwarder, daemon=True, name="WarmStreamForwarder"
+        )
+        forwarder_thread.start()
+
+        # Sofort Ready-Sound - Mikrofon ist bereits offen!
+        if play_ready:
+            _play_sound("ready")
+
+        mic_init_ms = (time.perf_counter() - stream_start) * 1000
+        logger.info(f"[{session_id}] Warm-Stream armed nach {mic_init_ms:.0f}ms")
+
+        buffer_lock = None
+        audio_buffer = None
+
+    elif early_buffer:
         # Daemon-Mode: Vorab aufgenommenes Audio direkt verfügbar machen
         for chunk in early_buffer:
             audio_queue.put_nowait(chunk)
@@ -287,6 +360,29 @@ async def deepgram_stream_core(
 
         buffer_lock = None
         audio_buffer: list[bytes] | None = None
+
+        # Mikrofon starten
+        input_device, actual_sample_rate = get_input_device()
+        actual_blocksize = int(WHISPER_BLOCKSIZE * actual_sample_rate / WHISPER_SAMPLE_RATE)
+        mic_stream = sd.InputStream(
+            device=input_device,
+            samplerate=actual_sample_rate,
+            channels=WHISPER_CHANNELS,
+            blocksize=actual_blocksize,
+            dtype=np.int16,
+            callback=audio_callback,
+        )
+        mic_stream.start()
+
+        mic_init_ms = (time.perf_counter() - stream_start) * 1000
+        logger.info(
+            f"[{session_id}] Mikrofon bereit nach {mic_init_ms:.0f}ms "
+            f"(Device: {input_device}, {actual_sample_rate}Hz)"
+        )
+
+        if play_ready:
+            _play_sound("ready")
+
     else:
         # CLI-Mode: Puffern bis WebSocket bereit ist
         # Verhindert Audio-Verlust während ~500ms WebSocket-Handshake
@@ -316,31 +412,27 @@ async def deepgram_stream_core(
                 else:
                     loop.call_soon_threadsafe(audio_queue.put_nowait, audio_bytes)
 
-    # Mikrofon starten (mit Auto-Device-Detection für Windows)
-    # Gibt (device_index, native_sample_rate) zurück
-    input_device, actual_sample_rate = get_input_device()
+        # Mikrofon starten (mit Auto-Device-Detection für Windows)
+        input_device, actual_sample_rate = get_input_device()
+        actual_blocksize = int(WHISPER_BLOCKSIZE * actual_sample_rate / WHISPER_SAMPLE_RATE)
+        mic_stream = sd.InputStream(
+            device=input_device,
+            samplerate=actual_sample_rate,
+            channels=WHISPER_CHANNELS,
+            blocksize=actual_blocksize,
+            dtype=np.int16,
+            callback=audio_callback,
+        )
+        mic_stream.start()
 
-    # Blocksize proportional zur Sample Rate anpassen
-    actual_blocksize = int(WHISPER_BLOCKSIZE * actual_sample_rate / WHISPER_SAMPLE_RATE)
+        mic_init_ms = (time.perf_counter() - stream_start) * 1000
+        logger.info(
+            f"[{session_id}] Mikrofon bereit nach {mic_init_ms:.0f}ms "
+            f"(Device: {input_device}, {actual_sample_rate}Hz)"
+        )
 
-    mic_stream = sd.InputStream(
-        device=input_device,
-        samplerate=actual_sample_rate,
-        channels=WHISPER_CHANNELS,
-        blocksize=actual_blocksize,
-        dtype=np.int16,
-        callback=audio_callback,
-    )
-    mic_stream.start()
-
-    mic_init_ms = (time.perf_counter() - stream_start) * 1000
-    logger.info(
-        f"[{session_id}] Mikrofon bereit nach {mic_init_ms:.0f}ms "
-        f"(Device: {input_device}, {actual_sample_rate}Hz)"
-    )
-
-    if play_ready:
-        _play_sound("ready")
+        if play_ready:
+            _play_sound("ready")
 
     try:
         async with _create_deepgram_connection(
@@ -466,11 +558,17 @@ async def deepgram_stream_core(
 
     finally:
         # Cleanup: Mikrofon und Signal-Handler freigeben
-        try:
-            mic_stream.stop()
-            mic_stream.close()
-        except Exception:
-            pass
+        if mic_stream is not None:
+            # Nur wenn wir selbst den Stream erstellt haben
+            try:
+                mic_stream.stop()
+                mic_stream.close()
+            except Exception:
+                pass
+        elif warm_stream_source is not None:
+            # Warm-Stream: Disarm (stoppe Sammeln, Stream läuft weiter)
+            warm_stream_source.arm_event.clear()
+
         # Signal-Handler nur entfernen wenn nicht external_stop_event verwendet
         if (
             external_stop_event is None
@@ -576,6 +674,7 @@ _deepgram_stream_core = deepgram_stream_core
 
 __all__ = [
     "DeepgramStreamProvider",
+    "WarmStreamSource",
     "deepgram_stream_core",
     "transcribe_with_deepgram_stream",
     "transcribe_with_deepgram_stream_with_buffer",
