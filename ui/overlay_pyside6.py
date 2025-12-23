@@ -16,6 +16,7 @@ import math
 import sys
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import (
     QPoint,
@@ -34,13 +35,18 @@ from PySide6.QtGui import (
     QPainter,
     QPainterPath,
     QPen,
-    QScreen,
 )
 from PySide6.QtWidgets import (
     QApplication,
     QLabel,
     QWidget,
 )
+
+if TYPE_CHECKING:
+    from PySide6.QtGui import QScreen
+
+# Mathematische Konstante für Frequenzberechnungen
+TAU = math.tau  # 2π
 
 logger = logging.getLogger("pulsescribe.overlay")
 
@@ -169,7 +175,7 @@ _HEIGHT_FACTORS = _build_height_factors()
 # =============================================================================
 
 
-def _get_active_screen() -> QScreen | None:
+def _get_active_screen() -> "QScreen | None":
     """Ermittelt den Monitor des aktiven Fensters (Windows)."""
     app = QApplication.instance()
     if not app:
@@ -589,16 +595,16 @@ class PySide6OverlayWidget(QWidget):
         level = self._normalized_level
 
         # Traveling Wave
-        phase1 = 2 * math.pi * WAVE_WANDER_HZ_PRIMARY * t + i * WAVE_WANDER_PHASE_STEP_PRIMARY
-        phase2 = 2 * math.pi * WAVE_WANDER_HZ_SECONDARY * t + i * WAVE_WANDER_PHASE_STEP_SECONDARY
+        phase1 = TAU * WAVE_WANDER_HZ_PRIMARY * t + i * WAVE_WANDER_PHASE_STEP_PRIMARY
+        phase2 = TAU * WAVE_WANDER_HZ_SECONDARY * t + i * WAVE_WANDER_PHASE_STEP_SECONDARY
         wave1 = (math.sin(phase1) + 1) / 2
         wave2 = (math.sin(phase2) + 1) / 2
         wave_mod = WAVE_WANDER_BLEND * wave1 + (1 - WAVE_WANDER_BLEND) * wave2
         wave_factor = 1.0 - WAVE_WANDER_AMOUNT + WAVE_WANDER_AMOUNT * wave_mod
 
         # Gaussian Envelope
-        env_phase1 = 2 * math.pi * ENVELOPE_HZ_PRIMARY * t
-        env_phase2 = 2 * math.pi * ENVELOPE_HZ_SECONDARY * t
+        env_phase1 = TAU * ENVELOPE_HZ_PRIMARY * t
+        env_phase2 = TAU * ENVELOPE_HZ_SECONDARY * t
         env_offset1 = math.sin(env_phase1) * center * 0.8
         env_offset2 = math.sin(env_phase2) * center * 0.6
         env_center = center + ENVELOPE_BLEND * env_offset1 + (1 - ENVELOPE_BLEND) * env_offset2
