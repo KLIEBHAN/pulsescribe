@@ -135,24 +135,37 @@ class AnimationLogic:
         self._normalized_level = min(1.0, shaped)
 
     def calculate_bar_height(self, i: int, t: float, state: str) -> float:
-        """Calculates the target height for a specific bar index `i` at time `t`."""
+        """Calculates the target height for a specific bar index `i` at time `t`.
+
+        Uses local constants BAR_MIN_HEIGHT and BAR_MAX_HEIGHT.
+        For custom min/max, use calculate_bar_normalized() instead.
+        """
+        normalized = self.calculate_bar_normalized(i, t, state)
+        return BAR_MIN_HEIGHT + (BAR_MAX_HEIGHT - BAR_MIN_HEIGHT) * normalized
+
+    def calculate_bar_normalized(self, i: int, t: float, state: str) -> float:
+        """Returns normalized height value (0.0-1.0) for a bar.
+
+        This allows each platform to apply its own MIN/MAX heights:
+            height = min_height + (max_height - min_height) * normalized
+        """
         if state == "RECORDING":
-            return self._calc_recording_height(i, t)
+            return self._calc_recording_normalized(i, t)
         elif state == "LISTENING":
-            return self._calc_listening_height(i, t)
+            return self._calc_listening_normalized(i, t)
         elif state in ("TRANSCRIBING", "REFINING"):
-            return self._calc_processing_height(i, t)
+            return self._calc_processing_normalized(i, t)
         elif state == "LOADING":
-            return self._calc_loading_height(i, t)
+            return self._calc_loading_normalized(i, t)
         elif state == "DONE":
-            return self._calc_done_height(i, t)
+            return self._calc_done_normalized(i, t)
         elif state == "ERROR":
-            return self._calc_error_height(t)
+            return self._calc_error_normalized(t)
 
-        return BAR_MIN_HEIGHT
+        return 0.0
 
-    def _calc_recording_height(self, i: int, t: float) -> float:
-        """Recording: Audio-responsive with Traveling Wave and Envelope."""
+    def _calc_recording_normalized(self, i: int, t: float) -> float:
+        """Recording: Audio-responsive with Traveling Wave and Envelope. Returns 0-1."""
         center = (BAR_COUNT - 1) / 2
         level = self._normalized_level
 
@@ -182,70 +195,76 @@ class AnimationLogic:
         env_factor = ENVELOPE_STRENGTH * env_factor + (1 - ENVELOPE_STRENGTH) * 1.0
 
         base_factor = _HEIGHT_FACTORS[i]
-        combined = level * base_factor * wave_factor * env_factor
+        return level * base_factor * wave_factor * env_factor
 
-        return BAR_MIN_HEIGHT + (BAR_MAX_HEIGHT - BAR_MIN_HEIGHT) * combined
-
-    def _calc_listening_height(self, i: int, t: float) -> float:
-        """Listening: Active, organic waiting animation with dual sine waves.
-
-        Two overlapping waves create a more natural, less mechanical feel.
-        Primary wave provides rhythm, secondary adds organic complexity.
-        """
+    def _calc_listening_normalized(self, i: int, t: float) -> float:
+        """Listening: Dual sine waves for organic waiting animation. Returns 0-1."""
         # Primary wave (faster, provides the main rhythm)
         phase1 = t * 3.0 + i * 0.5
         # Secondary wave (slower, opposite direction, adds complexity)
         phase2 = t * 1.8 - i * 0.3
 
-        # Combine sine waves
-        val1 = math.sin(phase1)
-        val2 = math.sin(phase2)
-
-        # Mix: 70% primary, 30% secondary
-        mixed = val1 * 0.7 + val2 * 0.3
+        # Combine sine waves: 70% primary, 30% secondary
+        mixed = math.sin(phase1) * 0.7 + math.sin(phase2) * 0.3
 
         # Normalize to 0..1
-        normalized = (mixed + 1) / 2
+        wave = (mixed + 1) / 2
 
-        # Apply height factors (center higher)
-        amplitude = 16 * _HEIGHT_FACTORS[i]
+        # Apply height factors (center higher), scale to ~40% of range
+        return 0.4 * wave * _HEIGHT_FACTORS[i]
 
-        return BAR_MIN_HEIGHT + amplitude * normalized
-
-    def _calc_processing_height(self, i: int, t: float) -> float:
-        """Transcribing/Refining: Wandering pulse."""
+    def _calc_processing_normalized(self, i: int, t: float) -> float:
+        """Transcribing/Refining: Wandering pulse. Returns 0-1."""
         pulse_pos = (t * 1.5) % (BAR_COUNT + 2) - 1
         distance = abs(i - pulse_pos)
         intensity = max(0, 1 - distance / 2)
-        return BAR_MIN_HEIGHT + (BAR_MAX_HEIGHT * 0.6) * intensity
+        return 0.6 * intensity
 
-    def _calc_loading_height(self, i: int, t: float) -> float:
-        """Loading: Slow synchronous pulse."""
+    def _calc_loading_normalized(self, i: int, t: float) -> float:
+        """Loading: Slow synchronous pulse. Returns 0-1."""
         phase = t * 0.8
         pulse = (math.sin(phase * math.pi) + 1) / 2
-        return BAR_MIN_HEIGHT + (BAR_MAX_HEIGHT * 0.5) * pulse * _HEIGHT_FACTORS[i]
+        return 0.5 * pulse * _HEIGHT_FACTORS[i]
 
-    def _calc_done_height(self, i: int, t: float) -> float:
-        """Done: Multi-phase bounce animation.
+    def _calc_done_normalized(self, i: int, t: float) -> float:
+        """Done: Multi-phase bounce animation. Returns 0-1.
 
-        Phase 1 (0-0.3s): Rise to max height
+        Phase 1 (0-0.3s): Rise to max
         Phase 2 (0.3-0.5s): Bouncy oscillation
-        Phase 3 (0.5s+): Settle at 70% height
+        Phase 3 (0.5s+): Settle at 70%
         """
         if t < 0.3:
             progress = t / 0.3
-            return (
-                BAR_MIN_HEIGHT
-                + (BAR_MAX_HEIGHT - BAR_MIN_HEIGHT) * progress * _HEIGHT_FACTORS[i]
-            )
+            return progress * _HEIGHT_FACTORS[i]
         elif t < 0.5:
             progress = (t - 0.3) / 0.2
             bounce = 1 - abs(math.sin(progress * math.pi * 2)) * 0.3
-            return BAR_MAX_HEIGHT * bounce * _HEIGHT_FACTORS[i]
+            return bounce * _HEIGHT_FACTORS[i]
         else:
-            return BAR_MAX_HEIGHT * 0.7 * _HEIGHT_FACTORS[i]
+            return 0.7 * _HEIGHT_FACTORS[i]
 
-    def _calc_error_height(self, t: float) -> float:
-        """Error: Flash animation."""
+    def _calc_error_normalized(self, t: float) -> float:
+        """Error: Flash animation. Returns 0-1."""
         flash = (math.sin(t * 8) + 1) / 2
-        return BAR_MIN_HEIGHT + (BAR_MAX_HEIGHT - BAR_MIN_HEIGHT) * flash * 0.5
+        return 0.5 * flash
+
+    @staticmethod
+    def get_height_factors() -> list[float]:
+        """Returns the pre-computed height factors for bar positioning."""
+        return _HEIGHT_FACTORS.copy()
+
+
+# =============================================================================
+# Exports
+# =============================================================================
+
+__all__ = [
+    "AnimationLogic",
+    "BAR_COUNT",
+    "BAR_WIDTH",
+    "BAR_GAP",
+    "BAR_MIN_HEIGHT",
+    "BAR_MAX_HEIGHT",
+    "FPS",
+    "FRAME_MS",
+]

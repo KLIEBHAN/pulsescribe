@@ -6,6 +6,7 @@ import time
 import weakref
 
 from config import VISUAL_GAIN, VISUAL_NOISE_GATE
+from ui.animation import AnimationLogic
 from utils.state import AppState
 
 # =============================================================================
@@ -174,6 +175,7 @@ class SoundWaveView:
         self._height_factors = _build_height_factors()
         self._recording_durations = _build_recording_durations()
         self._last_heights = [WAVE_BAR_MIN_HEIGHT for _ in range(WAVE_BAR_COUNT)]
+        self._anim = AnimationLogic()  # Shared animation logic
 
         self._bar_center = (WAVE_BAR_COUNT - 1) / 2
         self._envelope_max_shift_base = max(
@@ -529,7 +531,7 @@ class SoundWaveView:
         self._done_start_time = None
 
     def _render_done_frame(self) -> None:
-        """Rendert einen Frame der Done-Animation (Multi-Phase Bounce)."""
+        """Rendert einen Frame der Done-Animation (via AnimationLogic)."""
         from AppKit import NSMakeRect  # type: ignore[import-not-found]
         from Quartz import CATransaction  # type: ignore[import-not-found]
 
@@ -542,23 +544,11 @@ class SoundWaveView:
         CATransaction.setDisableActions_(True)
 
         center_y = self._view.frame().size.height / 2
+        height_range = WAVE_BAR_MAX_HEIGHT - WAVE_BAR_MIN_HEIGHT
 
         for i, bar in enumerate(self.bars):
-            # Multi-Phase Bounce (aus Windows animation.py)
-            if t < 0.3:
-                progress = t / 0.3
-                height = (
-                    WAVE_BAR_MIN_HEIGHT
-                    + (WAVE_BAR_MAX_HEIGHT - WAVE_BAR_MIN_HEIGHT)
-                    * progress
-                    * self._height_factors[i]
-                )
-            elif t < 0.5:
-                progress = (t - 0.3) / 0.2
-                bounce = 1 - abs(math.sin(progress * math.pi * 2)) * 0.3
-                height = WAVE_BAR_MAX_HEIGHT * bounce * self._height_factors[i]
-            else:
-                height = WAVE_BAR_MAX_HEIGHT * 0.7 * self._height_factors[i]
+            normalized = self._anim.calculate_bar_normalized(i, t, "DONE")
+            height = WAVE_BAR_MIN_HEIGHT + height_range * normalized
 
             bar.setBounds_(NSMakeRect(0, 0, WAVE_BAR_WIDTH, height))
             x = i * (WAVE_BAR_WIDTH + WAVE_BAR_GAP)
@@ -567,7 +557,7 @@ class SoundWaveView:
         CATransaction.commit()
 
     def _render_listening_frame(self) -> None:
-        """Rendert einen Frame der Listening-Animation (duale Sinuswellen)."""
+        """Rendert einen Frame der Listening-Animation (via AnimationLogic)."""
         from AppKit import NSMakeRect  # type: ignore[import-not-found]
         from Quartz import CATransaction  # type: ignore[import-not-found]
 
@@ -580,20 +570,11 @@ class SoundWaveView:
         CATransaction.setDisableActions_(True)
 
         center_y = self._view.frame().size.height / 2
+        height_range = WAVE_BAR_MAX_HEIGHT - WAVE_BAR_MIN_HEIGHT
 
         for i, bar in enumerate(self.bars):
-            # Duale Sinuswellen-Formel (aus Windows animation.py)
-            phase1 = t * 3.0 + i * 0.5
-            phase2 = t * 1.8 - i * 0.3
-
-            val1 = math.sin(phase1)
-            val2 = math.sin(phase2)
-
-            mixed = val1 * 0.7 + val2 * 0.3
-            normalized = (mixed + 1) / 2
-
-            amplitude = 16 * self._height_factors[i]
-            height = WAVE_BAR_MIN_HEIGHT + amplitude * normalized
+            normalized = self._anim.calculate_bar_normalized(i, t, "LISTENING")
+            height = WAVE_BAR_MIN_HEIGHT + height_range * normalized
 
             bar.setBounds_(NSMakeRect(0, 0, WAVE_BAR_WIDTH, height))
             x = i * (WAVE_BAR_WIDTH + WAVE_BAR_GAP)
@@ -602,7 +583,7 @@ class SoundWaveView:
         CATransaction.commit()
 
     def _render_processing_frame(self) -> None:
-        """Rendert einen Frame der Wanderpuls-Animation."""
+        """Rendert einen Frame der Wanderpuls-Animation (via AnimationLogic)."""
         from AppKit import NSMakeRect  # type: ignore[import-not-found]
         from Quartz import CATransaction  # type: ignore[import-not-found]
 
@@ -611,18 +592,15 @@ class SoundWaveView:
 
         t = time.perf_counter() - self._processing_start_time
 
-        # Wanderpuls-Formel (aus Windows animation.py)
-        pulse_pos = (t * 1.5) % (WAVE_BAR_COUNT + 2) - 1
-
         CATransaction.begin()
         CATransaction.setDisableActions_(True)
 
         center_y = self._view.frame().size.height / 2
+        height_range = WAVE_BAR_MAX_HEIGHT - WAVE_BAR_MIN_HEIGHT
 
         for i, bar in enumerate(self.bars):
-            distance = abs(i - pulse_pos)
-            intensity = max(0, 1 - distance / 2)
-            height = WAVE_BAR_MIN_HEIGHT + (WAVE_BAR_MAX_HEIGHT * 0.6) * intensity
+            normalized = self._anim.calculate_bar_normalized(i, t, "TRANSCRIBING")
+            height = WAVE_BAR_MIN_HEIGHT + height_range * normalized
 
             bar.setBounds_(NSMakeRect(0, 0, WAVE_BAR_WIDTH, height))
             x = i * (WAVE_BAR_WIDTH + WAVE_BAR_GAP)
