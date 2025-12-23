@@ -184,6 +184,12 @@ class SoundWaveView:
         self._target_level = 0.0
         self._smoothed_level = 0.0
         self._level_timer = None
+        self._processing_timer = None
+        self._processing_start_time = None
+        self._listening_timer = None
+        self._listening_start_time = None
+        self._done_timer = None
+        self._done_start_time = None
         self._envelope_phase_primary = random.uniform(0.0, 2 * math.pi)
         self._envelope_phase_secondary = random.uniform(0.0, 2 * math.pi)
 
@@ -246,29 +252,14 @@ class SoundWaveView:
         return anim
 
     def start_listening_animation(self) -> None:
-        """Startet sanfte Listening-Animation (Warten auf Sprache)."""
+        """Startet organische Listening-Animation (duale Sinuswellen wie Windows)."""
         if self.current_animation == "listening":
             return
         self.stop_animating()
         self.current_animation = "listening"
         self.animations_running = True
         self.set_bar_color(self._color_listening)
-
-        from Quartz import CACurrentMediaTime  # type: ignore[import-not-found]
-
-        now = CACurrentMediaTime()
-
-        # Dynamisches Atmen mit Welle
-        for i, bar in enumerate(self.bars):
-            # Höhe basierend auf Position (Mitte höher)
-            factor = self._height_factors[i]
-            target_height = WAVE_BAR_MIN_HEIGHT + (WAVE_BAR_MAX_HEIGHT * 0.35) * factor
-
-            # Etwas schneller (0.9s) und mit Start-Offset für Welleneffekt
-            anim = self._create_height_animation(target_height, 0.9)
-            anim.setBeginTime_(now + i * 0.08)
-
-            bar.addAnimation_forKey_(anim, f"listenAnim{i}")
+        self._start_listening_timer()
 
     def update_levels(self, level: float) -> None:
         """
@@ -328,31 +319,24 @@ class SoundWaveView:
             bar.addAnimation_forKey_(anim, f"heightAnim{i}")
 
     def start_transcribing_animation(self) -> None:
-        """Startet Loading-Wellen-Animation."""
+        """Startet Wanderpuls-Animation (wie Windows)."""
         if self.current_animation == "transcribing":
             return
         self.stop_animating()
         self.current_animation = "transcribing"
         self.animations_running = True
         self.set_bar_color(self._color_transcribing)
-
-        for i, bar in enumerate(self.bars):
-            anim = self._create_height_animation(WAVE_BAR_MAX_HEIGHT * 0.7, 1.0)
-            bar.addAnimation_forKey_(anim, f"transcribeAnim{i}")
+        self._start_processing_timer()
 
     def start_refining_animation(self) -> None:
-        """Startet Refining-Animation (Pulsieren)."""
+        """Startet Wanderpuls-Animation (wie Windows)."""
         if self.current_animation == "refining":
             return
         self.stop_animating()
         self.current_animation = "refining"
         self.animations_running = True
         self.set_bar_color(self._color_refining)
-
-        # Synchrones Pulsieren
-        for i, bar in enumerate(self.bars):
-            anim = self._create_height_animation(WAVE_BAR_MAX_HEIGHT * 0.6, 0.8)
-            bar.addAnimation_forKey_(anim, f"refineAnim{i}")
+        self._start_processing_timer()
 
     def start_loading_animation(self) -> None:
         """Startet Loading-Animation (langsames Pulsieren in Blau)."""
@@ -369,16 +353,11 @@ class SoundWaveView:
             bar.addAnimation_forKey_(anim, f"loadingAnim{i}")
 
     def start_success_animation(self) -> None:
-        """Einmaliges Hüpfen in Grün."""
+        """Multi-Phase Bounce Animation (wie Windows)."""
         self.stop_animating()
         self.current_animation = "success"
         self.set_bar_color(self._color_success)
-
-        for i, bar in enumerate(self.bars):
-            anim = self._create_height_animation(
-                WAVE_BAR_MAX_HEIGHT * 0.8, 0.3, repeat=1
-            )
-            bar.addAnimation_forKey_(anim, f"successAnim{i}")
+        self._start_done_timer()
 
     def start_error_animation(self) -> None:
         """Kurzes rotes Aufblinken."""
@@ -392,8 +371,11 @@ class SoundWaveView:
 
     def stop_animating(self) -> None:
         """Stoppt alle Animationen."""
-        # Auch wenn keine CABasicAnimations laufen, kann der Level-Timer aktiv sein.
+        # Alle Timer stoppen
         self._stop_level_timer()
+        self._stop_processing_timer()
+        self._stop_listening_timer()
+        self._stop_done_timer()
         self.animations_running = False
         self.current_animation = None
         from AppKit import NSMakeRect  # type: ignore[import-not-found]
@@ -437,6 +419,216 @@ class SoundWaveView:
         except Exception:
             pass
         self._level_timer = None
+
+    def _start_processing_timer(self) -> None:
+        """Startet Timer für Wanderpuls-Animation (Transcribing/Refining)."""
+        if self._processing_timer is not None:
+            return
+
+        from Foundation import NSTimer  # type: ignore[import-not-found]
+
+        self._processing_start_time = time.perf_counter()
+        self_ref = weakref.ref(self)
+
+        def tick(_timer) -> None:
+            self_obj = self_ref()
+            if self_obj is None:
+                try:
+                    _timer.invalidate()
+                except Exception:
+                    pass
+                return
+            self_obj._render_processing_frame()
+
+        interval = 1.0 / max(WAVE_ANIMATION_FPS, 1.0)
+        self._processing_timer = NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+            interval, True, tick
+        )
+
+    def _stop_processing_timer(self) -> None:
+        """Stoppt den Processing-Timer."""
+        if self._processing_timer is None:
+            return
+        try:
+            self._processing_timer.invalidate()
+        except Exception:
+            pass
+        self._processing_timer = None
+        self._processing_start_time = None
+
+    def _start_listening_timer(self) -> None:
+        """Startet Timer für Listening-Animation (duale Sinuswellen)."""
+        if self._listening_timer is not None:
+            return
+
+        from Foundation import NSTimer  # type: ignore[import-not-found]
+
+        self._listening_start_time = time.perf_counter()
+        self_ref = weakref.ref(self)
+
+        def tick(_timer) -> None:
+            self_obj = self_ref()
+            if self_obj is None:
+                try:
+                    _timer.invalidate()
+                except Exception:
+                    pass
+                return
+            self_obj._render_listening_frame()
+
+        interval = 1.0 / max(WAVE_ANIMATION_FPS, 1.0)
+        self._listening_timer = NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+            interval, True, tick
+        )
+
+    def _stop_listening_timer(self) -> None:
+        """Stoppt den Listening-Timer."""
+        if self._listening_timer is None:
+            return
+        try:
+            self._listening_timer.invalidate()
+        except Exception:
+            pass
+        self._listening_timer = None
+        self._listening_start_time = None
+
+    def _start_done_timer(self) -> None:
+        """Startet Timer für Done-Animation (Multi-Phase Bounce)."""
+        if self._done_timer is not None:
+            return
+
+        from Foundation import NSTimer  # type: ignore[import-not-found]
+
+        self._done_start_time = time.perf_counter()
+        self_ref = weakref.ref(self)
+
+        def tick(_timer) -> None:
+            self_obj = self_ref()
+            if self_obj is None:
+                try:
+                    _timer.invalidate()
+                except Exception:
+                    pass
+                return
+            self_obj._render_done_frame()
+
+        interval = 1.0 / max(WAVE_ANIMATION_FPS, 1.0)
+        self._done_timer = NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+            interval, True, tick
+        )
+
+    def _stop_done_timer(self) -> None:
+        """Stoppt den Done-Timer."""
+        if self._done_timer is None:
+            return
+        try:
+            self._done_timer.invalidate()
+        except Exception:
+            pass
+        self._done_timer = None
+        self._done_start_time = None
+
+    def _render_done_frame(self) -> None:
+        """Rendert einen Frame der Done-Animation (Multi-Phase Bounce)."""
+        from AppKit import NSMakeRect  # type: ignore[import-not-found]
+        from Quartz import CATransaction  # type: ignore[import-not-found]
+
+        if self._done_start_time is None:
+            return
+
+        t = time.perf_counter() - self._done_start_time
+
+        CATransaction.begin()
+        CATransaction.setDisableActions_(True)
+
+        center_y = self._view.frame().size.height / 2
+
+        for i, bar in enumerate(self.bars):
+            # Multi-Phase Bounce (aus Windows animation.py)
+            if t < 0.3:
+                progress = t / 0.3
+                height = (
+                    WAVE_BAR_MIN_HEIGHT
+                    + (WAVE_BAR_MAX_HEIGHT - WAVE_BAR_MIN_HEIGHT)
+                    * progress
+                    * self._height_factors[i]
+                )
+            elif t < 0.5:
+                progress = (t - 0.3) / 0.2
+                bounce = 1 - abs(math.sin(progress * math.pi * 2)) * 0.3
+                height = WAVE_BAR_MAX_HEIGHT * bounce * self._height_factors[i]
+            else:
+                height = WAVE_BAR_MAX_HEIGHT * 0.7 * self._height_factors[i]
+
+            bar.setBounds_(NSMakeRect(0, 0, WAVE_BAR_WIDTH, height))
+            x = i * (WAVE_BAR_WIDTH + WAVE_BAR_GAP)
+            bar.setPosition_((x + WAVE_BAR_WIDTH / 2, center_y))
+
+        CATransaction.commit()
+
+    def _render_listening_frame(self) -> None:
+        """Rendert einen Frame der Listening-Animation (duale Sinuswellen)."""
+        from AppKit import NSMakeRect  # type: ignore[import-not-found]
+        from Quartz import CATransaction  # type: ignore[import-not-found]
+
+        if self._listening_start_time is None:
+            return
+
+        t = time.perf_counter() - self._listening_start_time
+
+        CATransaction.begin()
+        CATransaction.setDisableActions_(True)
+
+        center_y = self._view.frame().size.height / 2
+
+        for i, bar in enumerate(self.bars):
+            # Duale Sinuswellen-Formel (aus Windows animation.py)
+            phase1 = t * 3.0 + i * 0.5
+            phase2 = t * 1.8 - i * 0.3
+
+            val1 = math.sin(phase1)
+            val2 = math.sin(phase2)
+
+            mixed = val1 * 0.7 + val2 * 0.3
+            normalized = (mixed + 1) / 2
+
+            amplitude = 16 * self._height_factors[i]
+            height = WAVE_BAR_MIN_HEIGHT + amplitude * normalized
+
+            bar.setBounds_(NSMakeRect(0, 0, WAVE_BAR_WIDTH, height))
+            x = i * (WAVE_BAR_WIDTH + WAVE_BAR_GAP)
+            bar.setPosition_((x + WAVE_BAR_WIDTH / 2, center_y))
+
+        CATransaction.commit()
+
+    def _render_processing_frame(self) -> None:
+        """Rendert einen Frame der Wanderpuls-Animation."""
+        from AppKit import NSMakeRect  # type: ignore[import-not-found]
+        from Quartz import CATransaction  # type: ignore[import-not-found]
+
+        if self._processing_start_time is None:
+            return
+
+        t = time.perf_counter() - self._processing_start_time
+
+        # Wanderpuls-Formel (aus Windows animation.py)
+        pulse_pos = (t * 1.5) % (WAVE_BAR_COUNT + 2) - 1
+
+        CATransaction.begin()
+        CATransaction.setDisableActions_(True)
+
+        center_y = self._view.frame().size.height / 2
+
+        for i, bar in enumerate(self.bars):
+            distance = abs(i - pulse_pos)
+            intensity = max(0, 1 - distance / 2)
+            height = WAVE_BAR_MIN_HEIGHT + (WAVE_BAR_MAX_HEIGHT * 0.6) * intensity
+
+            bar.setBounds_(NSMakeRect(0, 0, WAVE_BAR_WIDTH, height))
+            x = i * (WAVE_BAR_WIDTH + WAVE_BAR_GAP)
+            bar.setPosition_((x + WAVE_BAR_WIDTH / 2, center_y))
+
+        CATransaction.commit()
 
     def _render_level_frame(self) -> None:
         """Rendert einen Frame der Level-Visualisierung (läuft im Main-Thread via NSTimer)."""

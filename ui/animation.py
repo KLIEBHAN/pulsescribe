@@ -187,7 +187,11 @@ class AnimationLogic:
         return BAR_MIN_HEIGHT + (BAR_MAX_HEIGHT - BAR_MIN_HEIGHT) * combined
 
     def _calc_listening_height(self, i: int, t: float) -> float:
-        """Listening: Active, organic waiting animation."""
+        """Listening: Active, organic waiting animation with dual sine waves.
+
+        Two overlapping waves create a more natural, less mechanical feel.
+        Primary wave provides rhythm, secondary adds organic complexity.
+        """
         # Primary wave (faster, provides the main rhythm)
         phase1 = t * 3.0 + i * 0.5
         # Secondary wave (slower, opposite direction, adds complexity)
@@ -222,7 +226,12 @@ class AnimationLogic:
         return BAR_MIN_HEIGHT + (BAR_MAX_HEIGHT * 0.5) * pulse * _HEIGHT_FACTORS[i]
 
     def _calc_done_height(self, i: int, t: float) -> float:
-        """Done: Bounce animation."""
+        """Done: Multi-phase bounce animation.
+
+        Phase 1 (0-0.3s): Rise to max height
+        Phase 2 (0.3-0.5s): Bouncy oscillation
+        Phase 3 (0.5s+): Settle at 70% height
+        """
         if t < 0.3:
             progress = t / 0.3
             return (
