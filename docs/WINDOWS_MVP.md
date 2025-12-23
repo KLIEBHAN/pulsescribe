@@ -28,8 +28,8 @@
 | **App-Detection**     | Kontext-Awareness (Email/Chat/Code) | ✅ Done    |
 | **WebSocket Stream**  | Echtzeit-Transkription (~300ms)     | ✅ Done    |
 | **Overlay**           | Visuelles Feedback während Aufnahme | ✅ Done    |
+| **Installer**         | Inno Setup mit Autostart            | ✅ Done    |
 | Settings-GUI      | Konfigurationsfenster               | ⏳ Offen  |
-| Installer         | MSI/NSIS mit Autostart              | ⏳ Offen  |
 
 ### Out of Scope (v1)
 

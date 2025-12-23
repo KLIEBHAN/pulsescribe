@@ -18,9 +18,13 @@ pulsescribe/
 ├── start_daemon.bat       # Windows Batch für Auto-Start
 ├── build_app.spec         # PyInstaller Spec für macOS App Bundle
 ├── build_windows.spec     # PyInstaller Spec für Windows EXE
+├── build_windows.ps1      # PowerShell Build-Script (EXE + Installer)
+├── installer_windows.iss  # Inno Setup Script für Windows Installer
 ├── config.py              # Zentrale Konfiguration (Pfade, Konstanten)
 ├── requirements.txt       # Dependencies (beide Plattformen)
 ├── README.md              # Benutzer-Dokumentation
+├── CHANGELOG.md           # Versionshistorie
+├── CONTRIBUTING.md        # Contributor-Guidelines
 ├── CLAUDE.md              # Diese Datei
 ├── docs/                  # Dokumentation (Vision, Deepgram, Windows MVP, etc.)
 ├── audio/                 # Audio-Aufnahme und -Handling
@@ -289,17 +293,32 @@ pyinstaller build_app.spec --clean
 - `utils/permissions.py`: Mikrofon-Berechtigung mit Alert-Dialog
 - **Accessibility-Problem bei unsignierten Bundles:** Siehe README.md → Troubleshooting
 
-### Windows EXE
+### Windows EXE + Installer
 
-```bash
-pip install pyinstaller
-pyinstaller build_windows.spec --clean
-# Output: dist/PulseScribe.exe
+```powershell
+# Nur EXE (portable)
+.\build_windows.ps1
+
+# EXE + Installer
+.\build_windows.ps1 -Clean -Installer
+
+# Output:
+#   dist/PulseScribe/PulseScribe.exe      (portable)
+#   dist/PulseScribe-Setup-1.1.1.exe      (installer)
 ```
 
 **Besonderheiten:**
 - Konsolen-Fenster versteckt (`--noconsole` in Spec)
 - PySide6-Overlay optional (Fallback auf Tkinter)
+- Installer via Inno Setup (`installer_windows.iss`)
+  - Start-Menü + optionale Desktop-Verknüpfung
+  - Autostart-Option (Registry)
+  - Saubere Deinstallation über Windows "Apps & Features"
+  - Per-User Install (keine Admin-Rechte nötig)
+
+**Voraussetzungen:**
+- [Inno Setup 6](https://jrsoftware.org/isinfo.php) für Installer-Build
+- Siehe `docs/BUILDING_WINDOWS.md` für Details
 
 ### Gemeinsam
 

@@ -703,14 +703,28 @@ PULSESCRIBE_REFINE_PROVIDER=groq
 GROQ_API_KEY=your_groq_key
 ```
 
-**Building Windows EXE:**
+**Building Windows EXE + Installer:**
 
-```bash
+```powershell
+# Using build script (recommended)
+.\build_windows.ps1                    # EXE only
+.\build_windows.ps1 -Clean -Installer  # EXE + Installer
+
+# Manual build
 pip install pyinstaller
 pyinstaller build_windows.spec --clean
 
-# Output: dist/PulseScribe/PulseScribe.exe
+# Output:
+#   dist/PulseScribe/PulseScribe.exe      (portable)
+#   dist/PulseScribe-Setup-1.1.1.exe      (installer, if built)
 ```
+
+The installer (built with [Inno Setup](https://jrsoftware.org/isinfo.php)) provides:
+- Start Menu entries + optional Desktop shortcut
+- Autostart option (adds to Windows startup)
+- Clean uninstall via "Apps & Features"
+
+See `docs/BUILDING_WINDOWS.md` for detailed build instructions.
 
 > **Note:** The GPU-accelerated PySide6 overlay provides smoother animations. Install with `pip install PySide6`. Falls back to Tkinter automatically if not available.
 
