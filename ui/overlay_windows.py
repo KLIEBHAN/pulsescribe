@@ -11,11 +11,20 @@ Inspiriert vom macOS-Overlay mit:
 """
 
 import logging
-import math
 import queue
 import time
 import tkinter as tk
 from pathlib import Path
+
+from ui.animation import (
+    AnimationLogic,
+    BAR_COUNT,
+    BAR_WIDTH,
+    BAR_GAP,
+    BAR_MIN_HEIGHT,
+    BAR_MAX_HEIGHT,
+    FPS,
+)
 
 logger = logging.getLogger("pulsescribe.overlay")
 
@@ -32,52 +41,13 @@ WINDOW_MARGIN_BOTTOM = 60  # Abstand vom unteren Bildschirmrand
 # Bar-Konstanten (ähnlich macOS)
 # =============================================================================
 
-BAR_COUNT = 10
-BAR_WIDTH = 4  # Schmaler wie macOS (war 6)
-BAR_GAP = 5
-BAR_MIN_HEIGHT = 6
-BAR_MAX_HEIGHT = 42
 BAR_CORNER_RADIUS = 2  # Abgerundete Enden
 
 # =============================================================================
 # Animation-Konstanten
 # =============================================================================
 
-FPS = 60
 FRAME_MS = 1000 // FPS  # ~16ms
-
-# Smoothing: Schneller Anstieg, langsames Abklingen (wie macOS)
-SMOOTHING_ALPHA_RISE = 0.55
-SMOOTHING_ALPHA_FALL = 0.12
-
-# Audio-Visual Mapping
-VISUAL_GAIN = 2.0  # Finale Verstärkung nach AGC
-VISUAL_NOISE_GATE = 0.002  # Unter diesem Level = Stille
-VISUAL_EXPONENT = 1.3  # Kompression für natürlicheren Look
-
-# Adaptive Gain Control (AGC) - wie macOS
-# Hält die Visualisierung bei leisen/lauteren Mics dynamisch
-# macOS: 0.97 bei ~15Hz Audio-Updates. Windows: 60Hz Animation.
-# Gleiche Zeitkonstante: 0.97^15 ≈ 0.63/s → bei 60Hz: 0.63^(1/60) ≈ 0.9923
-AGC_DECAY = 0.9923  # Peak-Falloff pro Frame (~1s Zeitkonstante bei 60Hz)
-AGC_MIN_PEAK = 0.01  # Untergrenze gegen Überverstärkung (wie macOS)
-AGC_HEADROOM = 2.0  # Mehr Headroom = weniger Sensitivität/Clipping
-
-# Traveling Wave (sanfte Modulation)
-WAVE_WANDER_AMOUNT = 0.25
-WAVE_WANDER_HZ_PRIMARY = 0.5
-WAVE_WANDER_HZ_SECONDARY = 0.85
-WAVE_WANDER_PHASE_STEP_PRIMARY = 0.8
-WAVE_WANDER_PHASE_STEP_SECONDARY = 1.5
-WAVE_WANDER_BLEND = 0.6
-
-# Gaussian Envelope (wanderndes Energie-Paket)
-ENVELOPE_STRENGTH = 0.75
-ENVELOPE_BASE = 0.4  # Mindest-Faktor
-ENVELOPE_SIGMA = 1.3  # Breite des Pakets
-ENVELOPE_HZ_PRIMARY = 0.18
-ENVELOPE_HZ_SECONDARY = 0.28
-ENVELOPE_BLEND = 0.55
 
 # =============================================================================
 # Farben
@@ -104,36 +74,6 @@ STATE_TEXTS = {
 }
 
 # =============================================================================
-# Helper-Funktionen
-# =============================================================================
-
-
-def _gaussian(distance: float, sigma: float) -> float:
-    """Gaussian-Funktion für Envelope."""
-    if sigma <= 0:
-        return 0.0
-    x = distance / sigma
-    return math.exp(-0.5 * x * x)
-
-
-def _build_height_factors() -> list[float]:
-    """Symmetrische Höhenfaktoren (Mitte höher als Ränder)."""
-    if BAR_COUNT <= 1:
-        return [1.0]
-
-    center = (BAR_COUNT - 1) / 2
-    factors = []
-    for i in range(BAR_COUNT):
-        emphasis = math.cos((abs(i - center) / center) * (math.pi / 2)) ** 2
-        factors.append(0.35 + 0.65 * emphasis)
-    return factors
-
-
-# Pre-computed
-_HEIGHT_FACTORS = _build_height_factors()
-
-
-# =============================================================================
 # Overlay Controller
 # =============================================================================
 
@@ -156,9 +96,7 @@ class WindowsOverlayController:
 
         self._state = "IDLE"
         self._audio_level = 0.0
-        self._smoothed_level = 0.0
-        self._agc_peak = AGC_MIN_PEAK  # Adaptive Gain Control
-        self._normalized_level = 0.0  # AGC-normalisierter Level (einmal pro Frame)
+        self._anim = AnimationLogic()
         self._bar_heights = [BAR_MIN_HEIGHT] * BAR_COUNT
 
         # Animation timing
@@ -390,9 +328,7 @@ class WindowsOverlayController:
         if state == "IDLE":
             self._root.withdraw()
             self._last_interim_text = ""
-            self._smoothed_level = 0.0
-            self._agc_peak = AGC_MIN_PEAK  # AGC reset
-            self._normalized_level = 0.0
+            self._anim = AnimationLogic()
         else:
             self._root.deiconify()
             display_text = text or STATE_TEXTS.get(state, "")
@@ -433,17 +369,12 @@ class WindowsOverlayController:
         # Zeit seit Animation-Start
         t = time.perf_counter() - self._animation_start
 
-        # Audio-Level smoothen (unterschiedliche Rise/Fall)
-        target_level = self._audio_level
-        if target_level > self._smoothed_level:
-            alpha = SMOOTHING_ALPHA_RISE
-        else:
-            alpha = SMOOTHING_ALPHA_FALL
-        self._smoothed_level += alpha * (target_level - self._smoothed_level)
+        # Audio-Level an Animation-Logik übergeben
+        self._anim.update_level(self._audio_level)
 
         # AGC: Einmal pro Frame berechnen (nicht pro Bar)
         if self._state == "RECORDING":
-            self._update_agc()
+            self._anim.update_agc()
 
         self._render_bars(t)
         self._root.after(FRAME_MS, self._animate)
@@ -480,7 +411,7 @@ class WindowsOverlayController:
         center_y = 35  # Etwas höher für Text darunter
 
         for i in range(BAR_COUNT):
-            target = self._calculate_bar_height(i, t)
+            target = self._anim.calculate_bar_height(i, t, self._state)
 
             # Smoothing pro Bar
             if target > self._bar_heights[i]:
@@ -547,101 +478,6 @@ class WindowsOverlayController:
                 outline="",
                 tags="bars",
             )
-
-    def _calculate_bar_height(self, bar_index: int, t: float) -> float:
-        """Berechnet Zielhöhe für einen Bar basierend auf State und Zeit."""
-        i = bar_index
-        center = (BAR_COUNT - 1) / 2
-
-        if self._state == "RECORDING":
-            return self._calc_recording_height(i, t, center)
-        elif self._state == "LISTENING":
-            return self._calc_listening_height(i, t)
-        elif self._state in ("TRANSCRIBING", "REFINING"):
-            return self._calc_processing_height(i, t)
-        elif self._state == "DONE":
-            return self._calc_done_height(i, t)
-        elif self._state == "ERROR":
-            return self._calc_error_height(t)
-
-        return BAR_MIN_HEIGHT
-
-    def _calc_recording_height(self, i: int, t: float, center: float) -> float:
-        """Recording: Audio-responsive mit Traveling Wave und Envelope."""
-        # AGC-normalisierter Level (wird einmal pro Frame in _update_agc berechnet)
-        level = self._normalized_level
-
-        # Traveling Wave Modulation
-        phase1 = (
-            2 * math.pi * WAVE_WANDER_HZ_PRIMARY * t
-            + i * WAVE_WANDER_PHASE_STEP_PRIMARY
-        )
-        phase2 = (
-            2 * math.pi * WAVE_WANDER_HZ_SECONDARY * t
-            + i * WAVE_WANDER_PHASE_STEP_SECONDARY
-        )
-        wave1 = (math.sin(phase1) + 1) / 2
-        wave2 = (math.sin(phase2) + 1) / 2
-        wave_mod = WAVE_WANDER_BLEND * wave1 + (1 - WAVE_WANDER_BLEND) * wave2
-        wave_factor = 1.0 - WAVE_WANDER_AMOUNT + WAVE_WANDER_AMOUNT * wave_mod
-
-        # Gaussian Envelope (wanderndes Energie-Paket)
-        env_phase1 = 2 * math.pi * ENVELOPE_HZ_PRIMARY * t
-        env_phase2 = 2 * math.pi * ENVELOPE_HZ_SECONDARY * t
-        env_offset1 = math.sin(env_phase1) * center * 0.8
-        env_offset2 = math.sin(env_phase2) * center * 0.6
-        env_center = (
-            center + ENVELOPE_BLEND * env_offset1 + (1 - ENVELOPE_BLEND) * env_offset2
-        )
-
-        distance = abs(i - env_center)
-        env_factor = ENVELOPE_BASE + (1 - ENVELOPE_BASE) * _gaussian(
-            distance, ENVELOPE_SIGMA
-        )
-        env_factor = ENVELOPE_STRENGTH * env_factor + (1 - ENVELOPE_STRENGTH) * 1.0
-
-        # Basis-Höhenfaktor (Mitte höher)
-        base_factor = _HEIGHT_FACTORS[i]
-
-        # Kombinieren
-        combined = level * base_factor * wave_factor * env_factor
-        return BAR_MIN_HEIGHT + (BAR_MAX_HEIGHT - BAR_MIN_HEIGHT) * combined
-
-    def _calc_listening_height(self, i: int, t: float) -> float:
-        """Listening: Langsames Atmen."""
-        phase = t * 0.4 + i * 0.25
-        breath = (math.sin(phase) + 1) / 2
-        return BAR_MIN_HEIGHT + 12 * breath * _HEIGHT_FACTORS[i]
-
-    def _calc_processing_height(self, i: int, t: float) -> float:
-        """Transcribing/Refining: Sequentieller Pulse."""
-        # Pulse wandert von links nach rechts
-        pulse_pos = (t * 1.5) % (BAR_COUNT + 2) - 1
-        distance = abs(i - pulse_pos)
-        intensity = max(0, 1 - distance / 2)
-        return BAR_MIN_HEIGHT + (BAR_MAX_HEIGHT * 0.6) * intensity
-
-    def _calc_done_height(self, i: int, t: float) -> float:
-        """Done: Bounce-Animation."""
-        if t < 0.3:
-            # Schneller Anstieg
-            progress = t / 0.3
-            return (
-                BAR_MIN_HEIGHT
-                + (BAR_MAX_HEIGHT - BAR_MIN_HEIGHT) * progress * _HEIGHT_FACTORS[i]
-            )
-        elif t < 0.5:
-            # Bounce
-            progress = (t - 0.3) / 0.2
-            bounce = 1 - abs(math.sin(progress * math.pi * 2)) * 0.3
-            return BAR_MAX_HEIGHT * bounce * _HEIGHT_FACTORS[i]
-        else:
-            return BAR_MAX_HEIGHT * 0.7 * _HEIGHT_FACTORS[i]
-
-    def _calc_error_height(self, t: float) -> float:
-        """Error: Flash-Animation."""
-        flash = (math.sin(t * 8) + 1) / 2
-        return BAR_MIN_HEIGHT + (BAR_MAX_HEIGHT - BAR_MIN_HEIGHT) * flash * 0.5
 
 
 __all__ = ["WindowsOverlayController"]
