@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import (
-    Property,
+    QPropertyAnimation,
     QRectF,
     QTimer,
     Qt,
@@ -27,7 +27,6 @@ from PySide6.QtGui import (
     QBrush,
     QColor,
     QFont,
-    QFontDatabase,
     QPainter,
     QPainterPath,
     QPen,
@@ -113,6 +112,7 @@ STATE_COLORS = {
     "RECORDING": QColor(255, 82, 82),  # Rot
     "TRANSCRIBING": QColor(255, 177, 66),  # Orange
     "REFINING": QColor(156, 39, 176),  # Lila
+    "LOADING": QColor(66, 165, 245),  # Material Blue 400
     "DONE": QColor(76, 175, 80),  # Grün
     "ERROR": QColor(255, 71, 87),  # Rot
 }
@@ -122,9 +122,13 @@ STATE_TEXTS = {
     "RECORDING": "Recording...",
     "TRANSCRIBING": "Transcribing...",
     "REFINING": "Refining...",
+    "LOADING": "Loading model...",
     "DONE": "Done!",
     "ERROR": "Error",
 }
+
+# Auto-Hide Timer für DONE/ERROR
+FEEDBACK_DISPLAY_MS = 800  # Millisekunden
 
 # =============================================================================
 # Helper-Funktionen
@@ -234,11 +238,13 @@ class PySide6OverlayWidget(QWidget):
         self._bar_heights = [float(BAR_MIN_HEIGHT)] * BAR_COUNT
         self._animation_start = time.perf_counter()
         self._blur_enabled = False
+        self._fade_out_timer: QTimer | None = None
 
         # Setup
         self._setup_window()
         self._setup_label()
         self._setup_animation()
+        self._setup_fade_animation()
 
         # Connect signals to slots (thread-safe)
         self.state_changed.connect(self._on_state_changed)
@@ -292,6 +298,53 @@ class PySide6OverlayWidget(QWidget):
         self._animation_timer.timeout.connect(self._animate_frame)
         self._animation_timer.setTimerType(Qt.TimerType.PreciseTimer)
 
+    def _setup_fade_animation(self):
+        """Konfiguriert Fade-In/Out Animation."""
+        self._fade_animation = QPropertyAnimation(self, b"windowOpacity")
+        self._fade_animation.setDuration(150)  # 150ms
+
+    def _fade_in(self):
+        """Blendet Overlay ein."""
+        self._cancel_fade_out_timer()
+        self._fade_animation.stop()
+        self._fade_animation.setStartValue(self.windowOpacity())
+        self._fade_animation.setEndValue(1.0)
+        self.show()
+        self._fade_animation.start()
+
+    def _fade_out(self):
+        """Blendet Overlay aus."""
+        self._fade_animation.stop()
+        self._fade_animation.setStartValue(self.windowOpacity())
+        self._fade_animation.setEndValue(0.0)
+        self._fade_animation.finished.connect(self._on_fade_out_finished)
+        self._fade_animation.start()
+
+    def _on_fade_out_finished(self):
+        """Versteckt das Fenster nach Fade-Out."""
+        try:
+            self._fade_animation.finished.disconnect(self._on_fade_out_finished)
+        except RuntimeError:
+            pass
+        if self.windowOpacity() < 0.1:
+            self.hide()
+            self._stop_animation()
+            self._reset_levels()
+
+    def _start_fade_out_timer(self):
+        """Startet Timer für automatisches Ausblenden nach DONE/ERROR."""
+        self._cancel_fade_out_timer()
+        self._fade_out_timer = QTimer(self)
+        self._fade_out_timer.setSingleShot(True)
+        self._fade_out_timer.timeout.connect(self._fade_out)
+        self._fade_out_timer.start(FEEDBACK_DISPLAY_MS)
+
+    def _cancel_fade_out_timer(self):
+        """Bricht den Fade-Out Timer ab."""
+        if self._fade_out_timer:
+            self._fade_out_timer.stop()
+            self._fade_out_timer = None
+
     def showEvent(self, event):
         """Aktiviert Blur beim ersten Anzeigen."""
         super().showEvent(event)
@@ -326,15 +379,17 @@ class PySide6OverlayWidget(QWidget):
         self._animation_start = time.perf_counter()
 
         if state == "IDLE":
-            self.hide()
-            self._stop_animation()
-            self._reset_levels()
+            self._fade_out()
         else:
             # Label aktualisieren
             display_text = text or STATE_TEXTS.get(state, "")
             self._update_label(state, display_text)
-            self.show()
+            self._fade_in()
             self._start_animation()
+
+            # Auto-Hide für DONE/ERROR
+            if state in ("DONE", "ERROR"):
+                self._start_fade_out_timer()
 
     @Slot(float)
     def _on_level_changed(self, level: float):
@@ -450,6 +505,8 @@ class PySide6OverlayWidget(QWidget):
             return self._calc_listening_height(i, t)
         elif self._state in ("TRANSCRIBING", "REFINING"):
             return self._calc_processing_height(i, t)
+        elif self._state == "LOADING":
+            return self._calc_loading_height(i, t)
         elif self._state == "DONE":
             return self._calc_done_height(i, t)
         elif self._state == "ERROR":
@@ -497,6 +554,12 @@ class PySide6OverlayWidget(QWidget):
         distance = abs(i - pulse_pos)
         intensity = max(0, 1 - distance / 2)
         return BAR_MIN_HEIGHT + (BAR_MAX_HEIGHT * 0.6) * intensity
+
+    def _calc_loading_height(self, i: int, t: float) -> float:
+        """Loading: Langsames synchrones Pulsieren."""
+        phase = t * 0.8  # Langsamer als Processing
+        pulse = (math.sin(phase * math.pi) + 1) / 2
+        return BAR_MIN_HEIGHT + (BAR_MAX_HEIGHT * 0.5) * pulse * _HEIGHT_FACTORS[i]
 
     def _calc_done_height(self, i: int, t: float) -> float:
         """Done: Bounce-Animation."""
