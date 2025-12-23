@@ -254,9 +254,20 @@ class SoundWaveView:
         self.animations_running = True
         self.set_bar_color(self._color_listening)
 
-        # Langsames Atmen
+        from Quartz import CACurrentMediaTime  # type: ignore[import-not-found]
+
+        now = CACurrentMediaTime()
+
+        # Dynamisches Atmen mit Welle
         for i, bar in enumerate(self.bars):
-            anim = self._create_height_animation(WAVE_BAR_MAX_HEIGHT * 0.4, 1.2)
+            # Höhe basierend auf Position (Mitte höher)
+            factor = self._height_factors[i]
+            target_height = WAVE_BAR_MIN_HEIGHT + (WAVE_BAR_MAX_HEIGHT * 0.35) * factor
+
+            # Etwas schneller (0.9s) und mit Start-Offset für Welleneffekt
+            anim = self._create_height_animation(target_height, 0.9)
+            anim.setBeginTime_(now + i * 0.08)
+
             bar.addAnimation_forKey_(anim, f"listenAnim{i}")
 
     def update_levels(self, level: float) -> None:

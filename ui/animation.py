@@ -187,10 +187,26 @@ class AnimationLogic:
         return BAR_MIN_HEIGHT + (BAR_MAX_HEIGHT - BAR_MIN_HEIGHT) * combined
 
     def _calc_listening_height(self, i: int, t: float) -> float:
-        """Listening: Slow breathing."""
-        phase = t * 0.4 + i * 0.25
-        breath = (math.sin(phase) + 1) / 2
-        return BAR_MIN_HEIGHT + 12 * breath * _HEIGHT_FACTORS[i]
+        """Listening: Active, organic waiting animation."""
+        # Primary wave (faster, provides the main rhythm)
+        phase1 = t * 3.0 + i * 0.5
+        # Secondary wave (slower, opposite direction, adds complexity)
+        phase2 = t * 1.8 - i * 0.3
+
+        # Combine sine waves
+        val1 = math.sin(phase1)
+        val2 = math.sin(phase2)
+
+        # Mix: 70% primary, 30% secondary
+        mixed = val1 * 0.7 + val2 * 0.3
+
+        # Normalize to 0..1
+        normalized = (mixed + 1) / 2
+
+        # Apply height factors (center higher)
+        amplitude = 16 * _HEIGHT_FACTORS[i]
+
+        return BAR_MIN_HEIGHT + amplitude * normalized
 
     def _calc_processing_height(self, i: int, t: float) -> float:
         """Transcribing/Refining: Wandering pulse."""
