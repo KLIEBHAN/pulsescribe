@@ -14,8 +14,14 @@ import math
 
 TAU = math.tau  # 2π
 
+# Animation Timing
+FPS = 60
+FRAME_MS = 1000 // FPS  # ~16ms
+
 # Bar Configuration
 BAR_COUNT = 10
+BAR_WIDTH = 4
+BAR_GAP = 5
 BAR_MIN_HEIGHT = 6
 BAR_MAX_HEIGHT = 42
 
