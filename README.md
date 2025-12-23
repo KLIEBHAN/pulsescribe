@@ -642,13 +642,14 @@ python pulsescribe_windows.py
 start_daemon.bat
 
 # With options
-python pulsescribe_windows.py --hotkey "ctrl+alt+r" --debug
-python pulsescribe_windows.py --hotkey "f12" --refine
+python pulsescribe_windows.py --toggle-hotkey "ctrl+alt+r" --debug
+python pulsescribe_windows.py --hold-hotkey "ctrl+alt+space" --refine
+python pulsescribe_windows.py --toggle-hotkey "f12" --hold-hotkey "ctrl+alt+r"
 ```
 
 **Features:**
 - System Tray icon with color-coded status (gray/orange/red/yellow/cyan/green)
-- Global hotkey via pynput (default: `Ctrl+Alt+R`, supports F1-F24)
+- Global hotkeys via pynput (toggle and/or hold mode, supports F1-F24)
 - Audio recording via sounddevice with pre-warming for fast startup
 - Deepgram WebSocket streaming (~300ms latency) or REST API fallback
 - Auto-Paste via `Ctrl+V` simulation
@@ -666,7 +667,8 @@ python pulsescribe_windows.py --hotkey "f12" --refine
 
 | Flag | Description |
 |------|-------------|
-| `--hotkey` | Global hotkey (default: `ctrl+alt+r`, supports `f1`-`f24`) |
+| `--toggle-hotkey` | Toggle hotkey (press-speak-press), e.g. `ctrl+alt+r` |
+| `--hold-hotkey` | Hold hotkey (hold-speak-release), e.g. `ctrl+alt+space` |
 | `--no-paste` | Disable auto-paste, copy to clipboard only |
 | `--no-streaming` | Use REST API instead of WebSocket streaming |
 | `--no-overlay` | Disable animated overlay |
@@ -682,8 +684,12 @@ python pulsescribe_windows.py --hotkey "f12" --refine
 DEEPGRAM_API_KEY=your_key
 PULSESCRIBE_LANGUAGE=de
 
-# Optional: Custom hotkey (supports F-keys)
-# PULSESCRIBE_HOTKEY=f12
+# Hotkeys (consistent with macOS)
+# Toggle: press to start, press again to stop
+# PULSESCRIBE_TOGGLE_HOTKEY=ctrl+alt+r
+# Hold: hold to record, release to stop
+# PULSESCRIBE_HOLD_HOTKEY=ctrl+alt+space
+# Both can be active simultaneously
 
 # Optional: Disable streaming (default: true)
 # PULSESCRIBE_STREAMING=false

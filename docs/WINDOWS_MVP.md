@@ -10,9 +10,9 @@
 
 ### Must Have (MVP) ✅
 
-| Feature            | Beschreibung                                                | Status |
-| ------------------ | ----------------------------------------------------------- | ------ |
-| **Hotkey**         | Globaler Hotkey startet/stoppt Aufnahme (z.B. `Ctrl+Alt+R`) | ✅ Done |
+| Feature            | Beschreibung                                                        | Status |
+| ------------------ | ------------------------------------------------------------------- | ------ |
+| **Hotkey**         | Toggle + Hold Hotkeys (konsistent mit macOS), z.B. `Ctrl+Alt+R`     | ✅ Done |
 | **Recording**      | Mikrofon-Aufnahme via `sounddevice`                         | ✅ Done |
 | **Transcription**  | Deepgram (Stream), Groq (REST), OpenAI, Local               | ✅ Done |
 | **Clipboard**      | Ergebnis in Zwischenablage kopieren                         | ✅ Done |

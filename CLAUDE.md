@@ -167,6 +167,8 @@ python transcribe.py --record --copy --language de
 | `PULSESCRIBE_LOCAL_MODEL`          | Lokales Modell: `turbo`, `large`, `large-v3`, etc.                       |
 | `PULSESCRIBE_LIGHTNING_BATCH_SIZE` | Batch-Size für Lightning (default: 12, höher=schneller)                  |
 | `PULSESCRIBE_LIGHTNING_QUANT`      | Quantisierung für Lightning: `4bit`, `8bit`, oder leer (None)            |
+| `PULSESCRIBE_TOGGLE_HOTKEY`        | Toggle-Hotkey (beide Plattformen): z.B. `fn`, `f19`, `ctrl+alt+r`        |
+| `PULSESCRIBE_HOLD_HOTKEY`          | Hold-Hotkey (beide Plattformen): z.B. `fn`, `ctrl+alt+space`             |
 
 ## Dateipfade
 
