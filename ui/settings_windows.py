@@ -9,7 +9,7 @@ import sys
 from typing import Callable
 
 from PySide6.QtCore import Qt, Signal, Slot
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QDoubleValidator, QFont, QIntValidator
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -371,9 +371,13 @@ class SettingsWindow(QDialog):
         self._refine_provider_combo: QComboBox | None = None
         self._refine_model_field: QLineEdit | None = None
         self._overlay_checkbox: QCheckBox | None = None
-        self._tray_icon_checkbox: QCheckBox | None = None
+        self._clipboard_restore_checkbox: QCheckBox | None = None
         self._api_fields: dict[str, QLineEdit] = {}
         self._api_status: dict[str, QLabel] = {}
+
+        # Prompt Cache für Save & Apply
+        self._prompts_cache: dict[str, str] = {}
+        self._current_prompt_context: str = "default"
 
         self._setup_window()
         self._build_ui()
@@ -733,15 +737,17 @@ class SettingsWindow(QDialog):
         self._device_combo.addItems(DEVICE_OPTIONS)
         card_layout.addLayout(create_label_row("Device:", self._device_combo))
 
-        # Beam Size
+        # Beam Size (Integer 1-10)
         self._beam_size_field = QLineEdit()
         self._beam_size_field.setPlaceholderText("5")
-        card_layout.addLayout(create_label_row("Beam Size:", self._beam_size_field))
+        self._beam_size_field.setValidator(QIntValidator(1, 20))
+        card_layout.addLayout(create_label_row("Beam Size:", self._beam_size_field, "1-20"))
 
-        # Temperature
+        # Temperature (Float 0.0-1.0)
         self._temperature_field = QLineEdit()
         self._temperature_field.setPlaceholderText("0.0")
-        card_layout.addLayout(create_label_row("Temperature:", self._temperature_field))
+        self._temperature_field.setValidator(QDoubleValidator(0.0, 1.0, 2))
+        card_layout.addLayout(create_label_row("Temperature:", self._temperature_field, "0.0-1.0"))
 
         layout.addWidget(card)
 
@@ -822,9 +828,6 @@ class SettingsWindow(QDialog):
 
         self._overlay_checkbox = QCheckBox("Show Overlay during recording")
         card_layout.addWidget(self._overlay_checkbox)
-
-        self._tray_icon_checkbox = QCheckBox("Show Tray Icon")
-        card_layout.addWidget(self._tray_icon_checkbox)
 
         self._clipboard_restore_checkbox = QCheckBox("Restore clipboard after paste")
         card_layout.addWidget(self._clipboard_restore_checkbox)
@@ -915,6 +918,18 @@ class SettingsWindow(QDialog):
         self._vocab_editor.setPlaceholderText("One word/phrase per line...")
         self._vocab_editor.setMinimumHeight(250)
         card_layout.addWidget(self._vocab_editor)
+
+        # Status Label
+        self._vocab_status = QLabel("")
+        self._vocab_status.setFont(QFont("Segoe UI", 9))
+        card_layout.addWidget(self._vocab_status)
+
+        # Hint
+        vocab_hint = QLabel("💡 Deepgram supports max 100 keywords, Local Whisper max 50.")
+        vocab_hint.setFont(QFont("Segoe UI", 9))
+        vocab_hint.setStyleSheet(f"color: {COLORS['text_hint']};")
+        vocab_hint.setWordWrap(True)
+        card_layout.addWidget(vocab_hint)
 
         # Buttons
         btn_layout = QHBoxLayout()
@@ -1245,6 +1260,11 @@ class SettingsWindow(QDialog):
 
     def _on_prompt_context_changed(self, context: str):
         """Lädt Prompt für gewählten Kontext."""
+        # Aktuellen Prompt im Cache speichern
+        if self._prompt_editor and self._current_prompt_context:
+            self._prompts_cache[self._current_prompt_context] = self._prompt_editor.toPlainText()
+
+        self._current_prompt_context = context
         self._load_prompt_for_context(context)
 
     def _load_prompt_for_context(self, context: str):
@@ -1335,6 +1355,50 @@ class SettingsWindow(QDialog):
             color_value = COLORS.get(color, COLORS["text"])
             self._prompt_status.setStyleSheet(f"color: {color_value};")
 
+    def _save_all_prompts(self):
+        """Speichert alle geänderten Prompts aus dem Cache."""
+        try:
+            # Aktuellen Editor-Inhalt zum Cache hinzufügen
+            if self._prompt_editor and self._current_prompt_context:
+                self._prompts_cache[self._current_prompt_context] = self._prompt_editor.toPlainText()
+
+            # Nichts zu speichern?
+            if not self._prompts_cache:
+                return
+
+            from utils.custom_prompts import (
+                load_custom_prompts,
+                save_custom_prompts,
+                parse_app_mappings,
+                get_defaults,
+            )
+
+            # Aktuelle Daten laden
+            data = load_custom_prompts()
+            defaults = get_defaults()
+
+            # Alle gecachten Prompts speichern
+            for context, text in self._prompts_cache.items():
+                # Nur speichern wenn geändert (nicht Default)
+                if context == "voice_commands":
+                    default_text = defaults["voice_commands"]["instruction"]
+                    if text != default_text:
+                        data["voice_commands"] = {"instruction": text}
+                elif context == "app_mappings":
+                    data["app_contexts"] = parse_app_mappings(text)
+                else:
+                    default_text = defaults["prompts"].get(context, {}).get("prompt", "")
+                    if text != default_text:
+                        if "prompts" not in data:
+                            data["prompts"] = {}
+                        data["prompts"][context] = {"prompt": text}
+
+            save_custom_prompts(data)
+            logger.info(f"Prompts gespeichert: {list(self._prompts_cache.keys())}")
+
+        except Exception as e:
+            logger.error(f"Prompts speichern fehlgeschlagen: {e}")
+
     def _toggle_logs_auto_refresh(self, state: int):
         """Schaltet Auto-Refresh für Logs ein/aus."""
         if hasattr(self, "_logs_refresh_timer"):
@@ -1362,23 +1426,49 @@ class SettingsWindow(QDialog):
     def _load_vocabulary(self):
         """Lädt Vocabulary aus Datei."""
         try:
-            from utils.vocabulary import load_vocabulary
+            from utils.vocabulary import load_vocabulary, validate_vocabulary
             vocab = load_vocabulary()
-            if vocab and self._vocab_editor:
-                self._vocab_editor.setPlainText("\n".join(vocab))
+            if self._vocab_editor:
+                keywords = vocab.get("keywords", [])
+                self._vocab_editor.setPlainText("\n".join(keywords))
+
+                # Validierung und Warnungen
+                warnings = validate_vocabulary()
+                if warnings and hasattr(self, "_vocab_status"):
+                    self._vocab_status.setText("⚠ " + "; ".join(warnings))
+                    self._vocab_status.setStyleSheet(f"color: {COLORS['warning']};")
+                elif hasattr(self, "_vocab_status"):
+                    count = len(keywords)
+                    self._vocab_status.setText(f"{count} keywords loaded")
+                    self._vocab_status.setStyleSheet(f"color: {COLORS['text_secondary']};")
         except Exception as e:
             logger.error(f"Vocabulary laden fehlgeschlagen: {e}")
+            if hasattr(self, "_vocab_status"):
+                self._vocab_status.setText(f"Error: {e}")
+                self._vocab_status.setStyleSheet(f"color: {COLORS['error']};")
 
     def _save_vocabulary(self):
         """Speichert Vocabulary in Datei."""
         try:
-            from utils.vocabulary import save_vocabulary
+            from utils.vocabulary import save_vocabulary, validate_vocabulary
             if self._vocab_editor:
                 text = self._vocab_editor.toPlainText()
-                vocab = [line.strip() for line in text.split("\n") if line.strip()]
-                save_vocabulary(vocab)
+                keywords = [line.strip() for line in text.split("\n") if line.strip()]
+                save_vocabulary(keywords)
+
+                # Validierung nach Speichern
+                warnings = validate_vocabulary()
+                if warnings and hasattr(self, "_vocab_status"):
+                    self._vocab_status.setText(f"✓ Saved ({len(keywords)} keywords) - ⚠ " + "; ".join(warnings))
+                    self._vocab_status.setStyleSheet(f"color: {COLORS['warning']};")
+                elif hasattr(self, "_vocab_status"):
+                    self._vocab_status.setText(f"✓ Saved ({len(keywords)} keywords)")
+                    self._vocab_status.setStyleSheet(f"color: {COLORS['success']};")
         except Exception as e:
             logger.error(f"Vocabulary speichern fehlgeschlagen: {e}")
+            if hasattr(self, "_vocab_status"):
+                self._vocab_status.setText(f"Error: {e}")
+                self._vocab_status.setStyleSheet(f"color: {COLORS['error']};")
 
     def _refresh_logs(self):
         """Aktualisiert Log-Anzeige."""
@@ -1664,6 +1754,9 @@ class SettingsWindow(QDialog):
                         status.setText("✓")
                         status.setStyleSheet(f"color: {COLORS['success']};")
 
+            # Prompts speichern (aus Cache + aktuellem Editor)
+            self._save_all_prompts()
+
             logger.info("Settings gespeichert")
             self.settings_changed.emit()
 
@@ -1687,6 +1780,12 @@ class SettingsWindow(QDialog):
         # Auto-Refresh Timer stoppen
         if hasattr(self, "_logs_refresh_timer"):
             self._logs_refresh_timer.stop()
+
+        # Keyboard Grab freigeben falls noch aktiv
+        if hasattr(self, "_recording_hotkey_for") and self._recording_hotkey_for:
+            self.releaseKeyboard()
+            self._recording_hotkey_for = None
+
         self.closed.emit()
         super().closeEvent(event)
 
