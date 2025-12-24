@@ -247,6 +247,11 @@ class PulseScribeWindows:
         # Provider-Cache (wichtig für LocalProvider - cached Modelle intern)
         self._provider_cache: dict[str, object] = {}
 
+        # Settings-Reload (FileWatcher + Polling-Fallback)
+        self._env_observer = None
+        self._reload_polling_timer: threading.Timer | None = None
+        self._reload_signal_file: Path | None = None
+
         stream_mode = "Streaming" if streaming else "REST"
         hotkey_info = []
         if toggle_hotkey:
@@ -1410,9 +1415,21 @@ class PulseScribeWindows:
         streaming_val = env_values.get("PULSESCRIBE_STREAMING", "true")
         self.streaming = streaming_val.lower() != "false"
 
-        # Overlay aktualisieren
+        # Overlay aktualisieren (mit Start/Stop wenn nötig)
         overlay_val = env_values.get("PULSESCRIBE_OVERLAY", "true")
-        self.overlay_enabled = overlay_val.lower() != "false"
+        new_overlay_enabled = overlay_val.lower() != "false"
+
+        if new_overlay_enabled != self.overlay_enabled:
+            self.overlay_enabled = new_overlay_enabled
+            if new_overlay_enabled and self._overlay is None:
+                # Overlay aktivieren
+                logger.info("Overlay aktiviert")
+                self._setup_overlay()
+            elif not new_overlay_enabled and self._overlay is not None:
+                # Overlay deaktivieren
+                logger.info("Overlay deaktiviert")
+                self._overlay.stop()
+                self._overlay = None
 
         # Hotkeys aktualisieren (erfordert Listener-Neustart)
         new_toggle = env_values.get("PULSESCRIBE_TOGGLE_HOTKEY")
@@ -1445,45 +1462,72 @@ class PulseScribeWindows:
                 self._set_state(AppState.IDLE)
 
     def _start_env_watcher(self):
-        """Startet FileWatcher für .env Änderungen (Auto-Reload)."""
+        """Startet FileWatcher für .env Änderungen (Auto-Reload).
+
+        Verwendet watchdog wenn verfügbar, ansonsten Polling-Fallback.
+        Reagiert auf .env Änderungen und .reload Signal-Datei.
+        """
+        from utils.preferences import ENV_FILE
+
+        self._reload_signal_file = ENV_FILE.parent / ".reload"
+        watchdog_started = False
+
         try:
             from watchdog.observers import Observer
             from watchdog.events import FileSystemEventHandler
-            from utils.preferences import ENV_FILE
 
             class EnvFileHandler(FileSystemEventHandler):
-                def __init__(handler_self, callback):
+                def __init__(handler_self, callback, signal_file):
                     handler_self.callback = callback
+                    handler_self.signal_file = signal_file
                     handler_self._last_modified = 0.0
 
                 def on_modified(handler_self, event):
-                    # Nur .env Datei beachten
-                    if not event.src_path.endswith(".env"):
+                    # .env oder .reload Datei beachten
+                    if not (event.src_path.endswith(".env") or
+                            event.src_path.endswith(".reload")):
                         return
                     # Debounce: Ignoriere Events < 1s nach letztem
                     now = time.time()
                     if now - handler_self._last_modified > 1.0:
                         handler_self._last_modified = now
-                        logger.debug(f".env geändert: {event.src_path}")
+                        logger.debug(f"Settings-Änderung erkannt: {event.src_path}")
                         handler_self.callback()
+                        # Signal-Datei löschen nach Verarbeitung
+                        if handler_self.signal_file.exists():
+                            try:
+                                handler_self.signal_file.unlink()
+                            except Exception:
+                                pass
 
-            handler = EnvFileHandler(self._reload_settings)
+                def on_created(handler_self, event):
+                    # Auch neue .reload Dateien beachten
+                    if event.src_path.endswith(".reload"):
+                        handler_self.on_modified(event)
+
+            handler = EnvFileHandler(self._reload_settings, self._reload_signal_file)
             self._env_observer = Observer()
             self._env_observer.schedule(
                 handler, str(ENV_FILE.parent), recursive=False
             )
             self._env_observer.start()
             logger.info(f"FileWatcher gestartet für {ENV_FILE.parent}")
+            watchdog_started = True
 
         except ImportError:
-            logger.debug("watchdog nicht installiert - Auto-Reload deaktiviert")
+            logger.debug("watchdog nicht installiert - verwende Polling-Fallback")
             self._env_observer = None
         except Exception as e:
             logger.warning(f"FileWatcher konnte nicht gestartet werden: {e}")
             self._env_observer = None
 
+        # Polling-Fallback wenn watchdog nicht funktioniert
+        if not watchdog_started:
+            self._start_reload_polling()
+
     def _stop_env_watcher(self):
-        """Stoppt den FileWatcher."""
+        """Stoppt den FileWatcher und Polling."""
+        # FileWatcher stoppen
         if hasattr(self, "_env_observer") and self._env_observer is not None:
             try:
                 self._env_observer.stop()
@@ -1492,6 +1536,40 @@ class PulseScribeWindows:
             except Exception as e:
                 logger.debug(f"FileWatcher Stop-Fehler: {e}")
             self._env_observer = None
+
+        # Polling stoppen
+        if hasattr(self, "_reload_polling_timer") and self._reload_polling_timer is not None:
+            self._reload_polling_timer.cancel()
+            self._reload_polling_timer = None
+
+    def _start_reload_polling(self):
+        """Startet Polling für .reload Signal-Datei (Fallback wenn watchdog nicht verfügbar)."""
+        if self._reload_signal_file is None:
+            return
+
+        def poll_for_reload():
+            if self._stop_event.is_set():
+                return
+
+            try:
+                if self._reload_signal_file and self._reload_signal_file.exists():
+                    logger.debug("Reload-Signal erkannt (Polling)")
+                    self._reload_signal_file.unlink()
+                    self._reload_settings()
+            except Exception as e:
+                logger.debug(f"Polling-Fehler: {e}")
+
+            # Nächsten Poll planen (alle 2 Sekunden)
+            if not self._stop_event.is_set():
+                self._reload_polling_timer = threading.Timer(2.0, poll_for_reload)
+                self._reload_polling_timer.daemon = True
+                self._reload_polling_timer.start()
+
+        # Ersten Poll starten
+        self._reload_polling_timer = threading.Timer(2.0, poll_for_reload)
+        self._reload_polling_timer.daemon = True
+        self._reload_polling_timer.start()
+        logger.info("Polling-Fallback gestartet für Settings-Reload")
 
     def _restart_hotkey_listeners(self):
         """Startet Hotkey-Listener mit neuen Einstellungen neu."""

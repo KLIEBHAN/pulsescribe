@@ -6,6 +6,7 @@ Portiert von ui/welcome.py (macOS AppKit).
 
 import logging
 import sys
+import time
 from typing import Callable
 
 from PySide6.QtCore import Qt, Signal
@@ -2074,10 +2075,14 @@ class SettingsWindow(QDialog):
             logger.info("Settings gespeichert")
             self.settings_changed.emit()
 
+            # Signal-Datei für Daemon-Reload erstellen
+            # (Settings-Fenster läuft als separater Prozess, daher IPC via Datei)
+            self._write_reload_signal()
+
             # Visual Save Feedback
             self._show_save_feedback()
 
-            # Callback aufrufen (für Daemon-Reload)
+            # Callback aufrufen (für Daemon-Reload, falls im gleichen Prozess)
             if self._on_settings_changed_callback:
                 self._on_settings_changed_callback()
 
@@ -2177,6 +2182,23 @@ class SettingsWindow(QDialog):
         if hasattr(self, "_preset_status") and self._preset_status:
             self._preset_status.setText(f"✓ '{preset}' preset applied — click 'Save & Apply' to persist.")
             self._preset_status.setStyleSheet(f"color: {COLORS['success']};")
+
+    def _write_reload_signal(self):
+        """Schreibt Signal-Datei für Daemon-Reload.
+
+        Der Daemon prüft periodisch auf diese Datei und lädt Settings neu.
+        Robuster als nur auf watchdog FileWatcher zu vertrauen.
+        """
+        try:
+            from utils.preferences import ENV_FILE
+
+            signal_file = ENV_FILE.parent / ".reload"
+            signal_file.write_text(str(time.time()))
+            logger.debug(f"Reload-Signal geschrieben: {signal_file}")
+        except Exception as e:
+            # Warning statt debug, damit Benutzer sieht wenn Reload nicht funktioniert
+            logger.warning(f"Reload-Signal konnte nicht geschrieben werden: {e} - "
+                          "Daemon wird Änderungen erst nach Neustart übernehmen")
 
     def _show_save_feedback(self):
         """Zeigt visuelles Feedback nach erfolgreichem Speichern."""
