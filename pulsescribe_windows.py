@@ -1119,6 +1119,8 @@ class PulseScribeWindows:
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(f"Hotkeys: {hotkey_text}", None, enabled=False),
             pystray.Menu.SEPARATOR,
+            pystray.MenuItem("Settings...", self._show_settings),
+            pystray.Menu.SEPARATOR,
             pystray.MenuItem("Beenden", self._quit),
         )
 
@@ -1146,6 +1148,94 @@ class PulseScribeWindows:
 
         if self._tray:
             self._tray.stop()
+
+    def _show_settings(self):
+        """Öffnet das Settings-Fenster in einem separaten Prozess.
+
+        Qt-Widgets müssen im Main-Thread laufen. Da pystray-Callbacks in einem
+        Thread-Pool ausgeführt werden, starten wir das Settings-Fenster als
+        separaten Prozess, um Threading-Probleme zu vermeiden.
+        """
+        import subprocess
+
+        # Settings-Fenster als separaten Prozess starten
+        try:
+            # Python-Executable und Pfad zum Settings-Modul
+            python_exe = sys.executable
+            settings_script = PROJECT_ROOT / "ui" / "settings_windows.py"
+
+            if settings_script.exists():
+                # Starte Settings-Fenster als eigenständigen Prozess
+                subprocess.Popen(
+                    [python_exe, str(settings_script)],
+                    cwd=str(PROJECT_ROOT),
+                    creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0,
+                )
+                logger.info("Settings-Fenster gestartet (separater Prozess)")
+            else:
+                logger.error(f"Settings-Script nicht gefunden: {settings_script}")
+
+        except Exception as e:
+            logger.error(f"Settings-Fenster konnte nicht geöffnet werden: {e}")
+
+    def _reload_settings(self):
+        """Lädt Settings aus .env neu und wendet sie an.
+
+        Note: Diese Methode kann manuell aufgerufen werden oder über einen
+        FileWatcher getriggert werden. Da das Settings-Fenster jetzt in einem
+        separaten Prozess läuft, wird der Callback nicht mehr automatisch ausgelöst.
+        Stattdessen werden Settings bei der nächsten Transkription neu geladen.
+        """
+        logger.info("Settings neu laden...")
+
+        # .env neu einlesen
+        from utils.preferences import read_env_file
+        env_values = read_env_file()
+
+        # Mode aktualisieren
+        new_mode = env_values.get("PULSESCRIBE_MODE", "deepgram")
+        if new_mode != self.mode:
+            self.mode = new_mode
+            logger.info(f"Mode geändert: {new_mode}")
+
+        # Refine aktualisieren
+        self.refine = env_values.get("PULSESCRIBE_REFINE", "").lower() == "true"
+        self.refine_model = env_values.get("PULSESCRIBE_REFINE_MODEL")
+        self.refine_provider = env_values.get("PULSESCRIBE_REFINE_PROVIDER")
+
+        # Streaming aktualisieren
+        streaming_val = env_values.get("PULSESCRIBE_STREAMING", "true")
+        self.streaming = streaming_val.lower() != "false"
+
+        # Overlay aktualisieren
+        overlay_val = env_values.get("PULSESCRIBE_OVERLAY", "true")
+        self.overlay_enabled = overlay_val.lower() != "false"
+
+        # Hotkeys aktualisieren (erfordert Listener-Neustart)
+        new_toggle = env_values.get("PULSESCRIBE_TOGGLE_HOTKEY")
+        new_hold = env_values.get("PULSESCRIBE_HOLD_HOTKEY")
+
+        if new_toggle != self.toggle_hotkey or new_hold != self.hold_hotkey:
+            self.toggle_hotkey = new_toggle
+            self.hold_hotkey = new_hold
+            logger.info(f"Hotkeys geändert: toggle={new_toggle}, hold={new_hold}")
+            # Listener neu starten
+            self._restart_hotkey_listeners()
+
+        logger.info("Settings erfolgreich neu geladen")
+
+    def _restart_hotkey_listeners(self):
+        """Startet Hotkey-Listener mit neuen Einstellungen neu."""
+        # Alte Listener stoppen
+        for listener in self._hotkey_listeners:
+            try:
+                listener.stop()
+            except Exception:
+                pass
+        self._hotkey_listeners.clear()
+
+        # Neue Listener starten
+        self._setup_hotkey()
 
     def _setup_overlay(self):
         """Richtet Overlay ein (läuft in separatem Thread)."""
