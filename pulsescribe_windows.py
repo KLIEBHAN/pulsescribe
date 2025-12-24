@@ -112,6 +112,45 @@ _KEY_STALE_TIMEOUT_SEC = 2.0
 _VAD_THRESHOLD_PEAK = 0.01  # Für REST-Modus (float32 peak)
 _VAD_THRESHOLD_RMS = 0.003  # Für Streaming-Modus (RMS/INT16_MAX)
 
+# Tail-Padding: Stille am Ende des Audio (verhindert abgeschnittene Wörter bei Whisper)
+_TAIL_PADDING_SEC = 0.2
+
+# Provider die gecached werden sollen (stateful, z.B. Model-Caching)
+_STATEFUL_PROVIDERS = {"local"}
+
+
+def _resample_audio(audio, from_rate: int, to_rate: int):
+    """Resampled Audio-Array von from_rate auf to_rate.
+
+    Verwendet scipy.signal.resample wenn verfügbar, sonst lineare Interpolation.
+    Für Downsampling (z.B. 48kHz → 16kHz) ist die Qualität ausreichend für Sprache.
+    """
+    import numpy as np
+
+    # Edge-Case: Leeres Audio (z.B. VAD trimmt alles)
+    if len(audio) == 0:
+        return np.array([], dtype=np.float32)
+
+    if from_rate == to_rate:
+        return audio
+
+    # Ziel-Länge berechnen
+    new_length = int(len(audio) * to_rate / from_rate)
+
+    # Versuch 1: scipy (beste Qualität, Anti-Aliasing)
+    try:
+        from scipy.signal import resample
+        return resample(audio, new_length).astype(np.float32)
+    except ImportError:
+        pass
+
+    # Fallback: numpy lineare Interpolation (ausreichend für Sprache)
+    return np.interp(
+        np.linspace(0, len(audio) - 1, new_length),
+        np.arange(len(audio)),
+        audio,
+    ).astype(np.float32)
+
 
 def _load_tray_dependencies():
     """Lädt pystray und Pillow (lazy)."""
@@ -204,6 +243,9 @@ class PulseScribeWindows:
         self._warm_stream_queue: queue.Queue[bytes] = queue.Queue(maxsize=200)
         self._warm_stream_sample_rate = 16000  # Wird beim Start aktualisiert
         self._is_prewarm_loading = False  # Unterscheidet Pre-Warm von Recording LOADING
+
+        # Provider-Cache (wichtig für LocalProvider - cached Modelle intern)
+        self._provider_cache: dict[str, object] = {}
 
         stream_mode = "Streaming" if streaming else "REST"
         hotkey_info = []
@@ -307,6 +349,36 @@ class PulseScribeWindows:
             get_sound_player().play(sound_type)
         except Exception as e:
             logger.debug(f"Sound-Fehler: {e}")
+
+    def _get_provider(self, mode: str):
+        """Gibt Provider zurück (cached für stateful Provider).
+
+        Stateful Provider (siehe _STATEFUL_PROVIDERS) cachen z.B. Modelle intern.
+        Ohne Provider-Cache würde jeder get_provider()-Aufruf eine neue Instanz
+        erstellen und das interne Caching umgehen.
+        """
+        if mode in _STATEFUL_PROVIDERS:
+            if mode not in self._provider_cache:
+                self._provider_cache[mode] = get_provider(mode)
+            return self._provider_cache[mode]
+        # Stateless Provider: kein Caching nötig (API-Calls)
+        return get_provider(mode)
+
+    def _get_transcription_config(self) -> tuple[str | None, str]:
+        """Gibt (model, language) für Transkription zurück.
+
+        Zentralisiert die Konfigurationslogik für alle Provider-Modi.
+        Local-Mode verwendet PULSESCRIBE_LOCAL_MODEL (default: base),
+        andere Modi verwenden PULSESCRIBE_MODEL (default: Provider-spezifisch).
+        """
+        language = os.getenv("PULSESCRIBE_LANGUAGE", "de")
+        if self.mode == "local":
+            # Default "base" für Windows (schneller als turbo)
+            model = os.getenv("PULSESCRIBE_LOCAL_MODEL", "base")
+        else:
+            # None = Provider-Default (z.B. nova-3 für Deepgram)
+            model = os.getenv("PULSESCRIBE_MODEL")
+        return model, language
 
     # ═══════════════════════════════════════════════════════════════════════════
     # WARM-STREAM: Mikrofon läuft immer, instant-start beim Hotkey
@@ -825,9 +897,6 @@ class PulseScribeWindows:
         """Transkribiert aufgenommenes Audio via REST API."""
         try:
             import numpy as np
-            import soundfile as sf
-            import tempfile
-            from pathlib import Path
 
             # Audio-Buffer zusammenfügen
             with self._audio_lock:
@@ -843,56 +912,78 @@ class PulseScribeWindows:
             duration = len(audio_data) / sample_rate
             logger.info(f"Transkribiere {duration:.1f}s Audio ({sample_rate}Hz)...")
 
-            # Audio in temporäre Datei schreiben
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-                temp_path = Path(f.name)
+            # Konfiguration holen (zentralisiert für alle Modi)
+            model, language = self._get_transcription_config()
+            provider = self._get_provider(self.mode)
 
-            try:
-                sf.write(temp_path, audio_data, sample_rate)
+            # Local-Mode: In-Memory Transkription (kein WAV schreiben)
+            if self.mode == "local" and hasattr(provider, "transcribe_audio"):
+                from config import WHISPER_SAMPLE_RATE
 
-                # Transkription via Provider (Deepgram, Groq, OpenAI, Local)
-                provider = get_provider(self.mode)
-                transcript = provider.transcribe(
-                    audio_path=temp_path,
-                    model=os.getenv("PULSESCRIBE_MODEL"),  # None = Provider-Default
-                    language=os.getenv("PULSESCRIBE_LANGUAGE", "de"),
+                # Tail-Padding (verhindert abgeschnittene letzte Wörter bei Whisper)
+                tail_samples = int(sample_rate * _TAIL_PADDING_SEC)
+                audio_data = np.concatenate(
+                    [audio_data, np.zeros(tail_samples, dtype=np.float32)]
                 )
 
-                if transcript:
-                    # LLM-Nachbearbeitung (optional)
-                    if self.refine:
-                        self._set_state(AppState.REFINING)
-                        original = transcript
-                        try:
-                            from refine.llm import refine_transcript
+                # Resampling auf 16kHz (Whisper erwartet WHISPER_SAMPLE_RATE)
+                if sample_rate != WHISPER_SAMPLE_RATE:
+                    audio_data = _resample_audio(audio_data, sample_rate, WHISPER_SAMPLE_RATE)
+                    logger.debug(
+                        f"Audio resampled: {sample_rate}Hz → {WHISPER_SAMPLE_RATE}Hz"
+                    )
 
-                            transcript = refine_transcript(
-                                transcript,
-                                model=self.refine_model,
-                                provider=self.refine_provider,
-                                context=self.context,
-                            )
-                            # Fallback auf Original wenn LLM leeren String zurückgibt
-                            if not transcript or not transcript.strip():
-                                logger.warning(
-                                    "Refine gab leeren String zurück, verwende Original"
-                                )
-                                transcript = original
-                        except Exception as e:
+                transcript = provider.transcribe_audio(
+                    audio_data, model=model, language=language
+                )
+            else:
+                # Andere Provider: WAV-Datei schreiben
+                import soundfile as sf
+                import tempfile
+                from pathlib import Path
+
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+                    temp_path = Path(f.name)
+
+                try:
+                    sf.write(temp_path, audio_data, sample_rate)
+                    transcript = provider.transcribe(
+                        audio_path=temp_path, model=model, language=language
+                    )
+                finally:
+                    if temp_path.exists():
+                        temp_path.unlink()
+
+            if transcript:
+                # LLM-Nachbearbeitung (optional)
+                if self.refine:
+                    self._set_state(AppState.REFINING)
+                    original = transcript
+                    try:
+                        from refine.llm import refine_transcript
+
+                        transcript = refine_transcript(
+                            transcript,
+                            model=self.refine_model,
+                            provider=self.refine_provider,
+                            context=self.context,
+                        )
+                        # Fallback auf Original wenn LLM leeren String zurückgibt
+                        if not transcript or not transcript.strip():
                             logger.warning(
-                                f"Refine fehlgeschlagen, verwende Original: {e}"
+                                "Refine gab leeren String zurück, verwende Original"
                             )
                             transcript = original
+                    except Exception as e:
+                        logger.warning(
+                            f"Refine fehlgeschlagen, verwende Original: {e}"
+                        )
+                        transcript = original
 
-                    self._handle_result(transcript)
-                else:
-                    logger.warning("Leeres Transkript")
-                    self._set_state(AppState.IDLE)
-
-            finally:
-                # Temporäre Datei löschen
-                if temp_path.exists():
-                    temp_path.unlink()
+                self._handle_result(transcript)
+            else:
+                logger.warning("Leeres Transkript")
+                self._set_state(AppState.IDLE)
 
         except ImportError as e:
             logger.error(f"Import-Fehler: {e}")
@@ -1317,11 +1408,29 @@ class PulseScribeWindows:
                 except Exception:
                     pass  # Ignorieren wenn es fehlschlägt
 
+            # Phase 6: Local-Model Preload (nur im local mode)
+            # Lädt faster-whisper Modell vorab → erste Transkription ohne Delay
+            preload_ms = 0.0
+            if self.mode == "local":
+                try:
+                    preload_start = time.perf_counter()
+                    provider = self._get_provider("local")
+                    model, _language = self._get_transcription_config()
+                    if self._overlay:
+                        self._overlay.update_state("LOADING", f"Loading {model}...")
+                    if hasattr(provider, "preload"):
+                        provider.preload(model=model)
+                    preload_ms = (time.perf_counter() - preload_start) * 1000
+                    logger.info(f"Local-Modell '{model}' vorab geladen ({preload_ms:.0f}ms)")
+                except Exception as e:
+                    logger.warning(f"Local-Modell Preload fehlgeschlagen: {e}")
+
             total_ms = (time.perf_counter() - start) * 1000
             mode_desc = f"{self.mode} ({'Streaming' if self.streaming else 'REST'})"
+            preload_info = f", Preload={preload_ms:.0f}ms" if self.mode == "local" else ""
             logger.info(
                 f"Pre-Warm abgeschlossen ({total_ms:.0f}ms, {mode_desc}, Warm-Stream): "
-                f"Imports={imports_ms:.0f}ms, Device={device_ms:.0f}ms "
+                f"Imports={imports_ms:.0f}ms, Device={device_ms:.0f}ms{preload_info} "
                 f"(idx={device_idx}, {sample_rate}Hz)"
             )
         except Exception as e:
