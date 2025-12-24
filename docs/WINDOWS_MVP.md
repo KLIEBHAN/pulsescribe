@@ -29,7 +29,7 @@
 | **WebSocket Stream**  | Echtzeit-Transkription (~300ms)     | ✅ Done    |
 | **Overlay**           | Visuelles Feedback während Aufnahme | ✅ Done    |
 | **Installer**         | Inno Setup mit Autostart            | ✅ Done    |
-| Settings-GUI      | Konfigurationsfenster               | ⏳ Offen  |
+| Settings-GUI      | Konfigurationsfenster (PySide6)     | ✅ Done   |
 
 ### Out of Scope (v1)
 
