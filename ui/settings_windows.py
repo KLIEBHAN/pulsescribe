@@ -356,6 +356,7 @@ class SettingsWindow(QDialog):
     # Signals
     settings_changed = Signal()
     closed = Signal()
+    _hotkey_field_update = Signal(str)  # Thread-safe hotkey field updates
 
     def __init__(self, parent: QWidget | None = None, config: dict | None = None):
         super().__init__(parent)
@@ -381,6 +382,10 @@ class SettingsWindow(QDialog):
         self._recording_hotkey_for: str | None = None
         self._pynput_listener = None  # pynput Keyboard Listener
         self._pressed_keys: set = set()  # Aktuell gedrückte Tasten
+        self._using_qt_grab: bool = False  # Fallback wenn pynput nicht verfügbar
+
+        # Signal für Thread-safe UI-Updates verbinden
+        self._hotkey_field_update.connect(self._set_hotkey_field_text)
 
         # Prompt Cache für Save & Apply
         self._prompts_cache: dict[str, str] = {}
@@ -1281,6 +1286,7 @@ class SettingsWindow(QDialog):
 
     def _start_pynput_listener(self):
         """Startet pynput Listener für Low-Level Key-Capture."""
+        self._using_qt_grab = False
         try:
             from pynput import keyboard  # type: ignore[import-not-found]
 
@@ -1299,13 +1305,17 @@ class SettingsWindow(QDialog):
             self._pynput_listener.start()
         except ImportError:
             logger.warning("pynput nicht verfügbar, Fallback auf Qt grabKeyboard")
+            self._using_qt_grab = True
             self.grabKeyboard()
 
     def _stop_pynput_listener(self):
-        """Stoppt pynput Listener."""
+        """Stoppt pynput Listener oder gibt Qt Keyboard-Grab frei."""
         if self._pynput_listener:
             self._pynput_listener.stop()
             self._pynput_listener = None
+        if self._using_qt_grab:
+            self.releaseKeyboard()
+            self._using_qt_grab = False
         self._pressed_keys.clear()
 
     def _pynput_key_to_string(self, key) -> str:
@@ -1374,9 +1384,8 @@ class SettingsWindow(QDialog):
 
         hotkey_str = "+".join(sorted_modifiers + sorted(keys))
 
-        # UI-Update (Thread-safe via QTimer)
-        from PySide6.QtCore import QTimer
-        QTimer.singleShot(0, lambda: self._set_hotkey_field_text(hotkey_str))
+        # UI-Update (Thread-safe via Signal, da pynput in eigenem Thread läuft)
+        self._hotkey_field_update.emit(hotkey_str)
 
     def _set_hotkey_field_text(self, hotkey_str: str):
         """Setzt den Text im aktiven Hotkey-Feld (Thread-safe)."""
@@ -1412,7 +1421,7 @@ class SettingsWindow(QDialog):
             self._set_hotkey_status("Recording cancelled", "text_hint")
 
     def keyPressEvent(self, event):
-        """Fängt Tastendruck für Hotkey-Recording ab (nur Enter/Escape)."""
+        """Fängt Tastendruck für Hotkey-Recording ab."""
         if self._recording_hotkey_for:
             # Escape = Abbrechen
             if event.key() == Qt.Key.Key_Escape:
@@ -1433,7 +1442,30 @@ class SettingsWindow(QDialog):
                 event.accept()
                 return
 
-            # Alle anderen Tasten werden von pynput behandelt
+            # Qt-Fallback: Hotkey aus Qt-Events bauen (wenn pynput nicht verfügbar)
+            if self._using_qt_grab:
+                parts = []
+                modifiers = event.modifiers()
+                if modifiers & Qt.KeyboardModifier.ControlModifier:
+                    parts.append("ctrl")
+                if modifiers & Qt.KeyboardModifier.AltModifier:
+                    parts.append("alt")
+                if modifiers & Qt.KeyboardModifier.ShiftModifier:
+                    parts.append("shift")
+                if modifiers & Qt.KeyboardModifier.MetaModifier:
+                    parts.append("win")
+
+                key = event.key()
+                key_name = self._qt_key_to_string(key)
+                if key_name and key_name not in ("ctrl", "alt", "shift", "win", "meta"):
+                    parts.append(key_name)
+
+                hotkey_str = "+".join(parts) if parts else ""
+                if self._recording_hotkey_for == "toggle" and self._toggle_hotkey_field:
+                    self._toggle_hotkey_field.setText(hotkey_str)
+                elif self._recording_hotkey_for == "hold" and self._hold_hotkey_field:
+                    self._hold_hotkey_field.setText(hotkey_str)
+
             event.accept()
             return
 
