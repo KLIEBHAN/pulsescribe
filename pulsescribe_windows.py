@@ -1280,9 +1280,14 @@ class PulseScribeWindows:
 
             # Starte Settings-Fenster als eigenständigen Prozess
             # stderr/stdout erfassen um Fehler zu loggen
-            # PYTHONPATH setzen damit utils.* imports funktionieren
+            # PYTHONPATH erweitern (nicht überschreiben) damit utils.* imports funktionieren
             env = os.environ.copy()
-            env["PYTHONPATH"] = str(PROJECT_ROOT)
+            project_root = str(PROJECT_ROOT)
+            existing_pythonpath = env.get("PYTHONPATH")
+            if existing_pythonpath:
+                env["PYTHONPATH"] = project_root + os.pathsep + existing_pythonpath
+            else:
+                env["PYTHONPATH"] = project_root
             process = subprocess.Popen(
                 [python_exe, str(settings_script)],
                 cwd=str(PROJECT_ROOT),
