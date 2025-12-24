@@ -112,6 +112,12 @@ _KEY_STALE_TIMEOUT_SEC = 2.0
 _VAD_THRESHOLD_PEAK = 0.01  # Für REST-Modus (float32 peak)
 _VAD_THRESHOLD_RMS = 0.003  # Für Streaming-Modus (RMS/INT16_MAX)
 
+# Tail-Padding: Stille am Ende des Audio (verhindert abgeschnittene Wörter bei Whisper)
+_TAIL_PADDING_SEC = 0.2
+
+# Provider die gecached werden sollen (stateful, z.B. Model-Caching)
+_STATEFUL_PROVIDERS = {"local"}
+
 
 def _resample_audio(audio, from_rate: int, to_rate: int):
     """Resampled Audio-Array von from_rate auf to_rate.
@@ -120,6 +126,10 @@ def _resample_audio(audio, from_rate: int, to_rate: int):
     Für Downsampling (z.B. 48kHz → 16kHz) ist die Qualität ausreichend für Sprache.
     """
     import numpy as np
+
+    # Edge-Case: Leeres Audio (z.B. VAD trimmt alles)
+    if len(audio) == 0:
+        return np.array([], dtype=np.float32)
 
     if from_rate == to_rate:
         return audio
@@ -341,17 +351,34 @@ class PulseScribeWindows:
             logger.debug(f"Sound-Fehler: {e}")
 
     def _get_provider(self, mode: str):
-        """Gibt Provider zurück (cached für LocalProvider).
+        """Gibt Provider zurück (cached für stateful Provider).
 
-        LocalProvider cached Modelle intern. Ohne Provider-Cache würde jeder
-        get_provider()-Aufruf eine neue Instanz erstellen und das Model-Caching umgehen.
+        Stateful Provider (siehe _STATEFUL_PROVIDERS) cachen z.B. Modelle intern.
+        Ohne Provider-Cache würde jeder get_provider()-Aufruf eine neue Instanz
+        erstellen und das interne Caching umgehen.
         """
-        if mode == "local":
-            if "local" not in self._provider_cache:
-                self._provider_cache["local"] = get_provider("local")
-            return self._provider_cache["local"]
-        # Andere Provider: kein Caching nötig (stateless API-Calls)
+        if mode in _STATEFUL_PROVIDERS:
+            if mode not in self._provider_cache:
+                self._provider_cache[mode] = get_provider(mode)
+            return self._provider_cache[mode]
+        # Stateless Provider: kein Caching nötig (API-Calls)
         return get_provider(mode)
+
+    def _get_transcription_config(self) -> tuple[str | None, str]:
+        """Gibt (model, language) für Transkription zurück.
+
+        Zentralisiert die Konfigurationslogik für alle Provider-Modi.
+        Local-Mode verwendet PULSESCRIBE_LOCAL_MODEL (default: base),
+        andere Modi verwenden PULSESCRIBE_MODEL (default: Provider-spezifisch).
+        """
+        language = os.getenv("PULSESCRIBE_LANGUAGE", "de")
+        if self.mode == "local":
+            # Default "base" für Windows (schneller als turbo)
+            model = os.getenv("PULSESCRIBE_LOCAL_MODEL", "base")
+        else:
+            # None = Provider-Default (z.B. nova-3 für Deepgram)
+            model = os.getenv("PULSESCRIBE_MODEL")
+        return model, language
 
     # ═══════════════════════════════════════════════════════════════════════════
     # WARM-STREAM: Mikrofon läuft immer, instant-start beim Hotkey
@@ -885,7 +912,8 @@ class PulseScribeWindows:
             duration = len(audio_data) / sample_rate
             logger.info(f"Transkribiere {duration:.1f}s Audio ({sample_rate}Hz)...")
 
-            # Provider holen (cached für LocalProvider)
+            # Konfiguration holen (zentralisiert für alle Modi)
+            model, language = self._get_transcription_config()
             provider = self._get_provider(self.mode)
 
             # Local-Mode: In-Memory Transkription (kein WAV schreiben)
@@ -893,8 +921,7 @@ class PulseScribeWindows:
                 from config import WHISPER_SAMPLE_RATE
 
                 # Tail-Padding (verhindert abgeschnittene letzte Wörter bei Whisper)
-                tail_s = 0.2
-                tail_samples = int(sample_rate * tail_s)  # sample_rate, nicht WHISPER_SAMPLE_RATE!
+                tail_samples = int(sample_rate * _TAIL_PADDING_SEC)
                 audio_data = np.concatenate(
                     [audio_data, np.zeros(tail_samples, dtype=np.float32)]
                 )
@@ -906,12 +933,8 @@ class PulseScribeWindows:
                         f"Audio resampled: {sample_rate}Hz → {WHISPER_SAMPLE_RATE}Hz"
                     )
 
-                # Default "base" für Windows (schneller als turbo, ~3-5s statt ~8-15s)
-                local_model = os.getenv("PULSESCRIBE_LOCAL_MODEL", "base")
                 transcript = provider.transcribe_audio(
-                    audio_data,
-                    model=local_model,
-                    language=os.getenv("PULSESCRIBE_LANGUAGE", "de"),
+                    audio_data, model=model, language=language
                 )
             else:
                 # Andere Provider: WAV-Datei schreiben
@@ -925,9 +948,7 @@ class PulseScribeWindows:
                 try:
                     sf.write(temp_path, audio_data, sample_rate)
                     transcript = provider.transcribe(
-                        audio_path=temp_path,
-                        model=os.getenv("PULSESCRIBE_MODEL"),
-                        language=os.getenv("PULSESCRIBE_LANGUAGE", "de"),
+                        audio_path=temp_path, model=model, language=language
                     )
                 finally:
                     if temp_path.exists():
@@ -1394,13 +1415,13 @@ class PulseScribeWindows:
                 try:
                     preload_start = time.perf_counter()
                     provider = self._get_provider("local")
-                    model_name = os.getenv("PULSESCRIBE_LOCAL_MODEL", "base")
+                    model, _language = self._get_transcription_config()
                     if self._overlay:
-                        self._overlay.update_state("LOADING", f"Loading {model_name}...")
+                        self._overlay.update_state("LOADING", f"Loading {model}...")
                     if hasattr(provider, "preload"):
-                        provider.preload(model=model_name)
+                        provider.preload(model=model)
                     preload_ms = (time.perf_counter() - preload_start) * 1000
-                    logger.info(f"Local-Modell '{model_name}' vorab geladen ({preload_ms:.0f}ms)")
+                    logger.info(f"Local-Modell '{model}' vorab geladen ({preload_ms:.0f}ms)")
                 except Exception as e:
                     logger.warning(f"Local-Modell Preload fehlgeschlagen: {e}")
 
