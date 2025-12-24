@@ -1411,6 +1411,9 @@ class PulseScribeWindows:
         self.refine_model = env_values.get("PULSESCRIBE_REFINE_MODEL")
         self.refine_provider = env_values.get("PULSESCRIBE_REFINE_PROVIDER")
 
+        # Context aktualisieren
+        self.context = env_values.get("PULSESCRIBE_CONTEXT")
+
         # Streaming aktualisieren (nur Deepgram unterstützt Streaming)
         streaming_val = env_values.get("PULSESCRIBE_STREAMING", "true")
         streaming_enabled = streaming_val.lower() != "false"
@@ -1435,6 +1438,11 @@ class PulseScribeWindows:
         # Hotkeys aktualisieren (erfordert Listener-Neustart)
         new_toggle = env_values.get("PULSESCRIBE_TOGGLE_HOTKEY")
         new_hold = env_values.get("PULSESCRIBE_HOLD_HOTKEY")
+
+        # Fallback: Wenn nichts konfiguriert, beide Defaults setzen (wie beim Startup)
+        if not new_toggle and not new_hold:
+            new_toggle = "ctrl+alt+r"
+            new_hold = "ctrl+win"
 
         if new_toggle != self.toggle_hotkey or new_hold != self.hold_hotkey:
             self.toggle_hotkey = new_toggle
