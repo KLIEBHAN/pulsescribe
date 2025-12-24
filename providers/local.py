@@ -99,13 +99,37 @@ def _lightning_workdir() -> Generator[Path, None, None]:
         os.chdir(old_cwd)
 
 
+def _validate_cuda_runtime() -> bool:
+    """Prüft ob CUDA/cuDNN wirklich funktioniert (nicht nur sichtbar).
+
+    torch.cuda.is_available() prüft nur ob CUDA-Treiber vorhanden sind.
+    cuDNN-Fehler (z.B. fehlende cudnn_ops64_9.dll) treten erst bei
+    tatsächlicher GPU-Nutzung auf. Diese Funktion testet mit einer
+    Dummy-Operation, ob die Runtime wirklich funktioniert.
+    """
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return False
+        # Dummy-Operation auf GPU - testet CUDA + cuDNN Runtime
+        test_tensor = torch.zeros(1, device="cuda")
+        _ = test_tensor + 1
+        del test_tensor
+        torch.cuda.empty_cache()
+        return True
+    except Exception as e:
+        logger.warning(f"CUDA-Validierung fehlgeschlagen: {e}")
+        return False
+
+
 def _select_device() -> str:
     """Wählt ein sinnvolles Torch-Device für lokales Whisper.
 
     Priorität:
       1) PULSESCRIBE_DEVICE Env-Override (z.B. "cpu", "mps", "cuda")
       2) Apple Silicon GPU via MPS
-      3) CUDA (falls verfügbar)
+      3) CUDA (falls verfügbar UND funktional)
       4) CPU
     """
     env_device = (os.getenv("PULSESCRIBE_DEVICE") or "").strip().lower()
@@ -118,7 +142,11 @@ def _select_device() -> str:
             if torch.backends.mps.is_available() and torch.backends.mps.is_built():
                 return "mps"
         if torch.cuda.is_available():
-            return "cuda"
+            if _validate_cuda_runtime():
+                return "cuda"
+            logger.warning(
+                "CUDA sichtbar aber nicht funktional (cuDNN fehlt?), nutze CPU"
+            )
     except Exception as e:
         logger.debug(f"Device-Detection fehlgeschlagen, fallback CPU: {e}")
     return "cpu"
@@ -372,13 +400,36 @@ class LocalProvider:
                 f"Lade faster-whisper Modell '{faster_name}' ({device}, {compute_type}, "
                 f"threads={cpu_threads}, workers={num_workers})..."
             )
-            self._model_cache[cache_key] = WhisperModel(
-                faster_name,
-                device=device,
-                compute_type=compute_type,
-                cpu_threads=cpu_threads,
-                num_workers=num_workers,
-            )
+            try:
+                self._model_cache[cache_key] = WhisperModel(
+                    faster_name,
+                    device=device,
+                    compute_type=compute_type,
+                    cpu_threads=cpu_threads,
+                    num_workers=num_workers,
+                )
+            except Exception as e:
+                error_msg = str(e).lower()
+                # Fallback auf CPU wenn CUDA/cuDNN fehlschlägt
+                if device == "cuda" and ("cudnn" in error_msg or "cuda" in error_msg):
+                    logger.warning(
+                        f"CUDA/cuDNN nicht verfügbar ({e}), "
+                        "fallback auf CPU. Für GPU-Unterstützung cuDNN installieren."
+                    )
+                    cpu_compute = "int8"
+                    cpu_cache_key = (
+                        f"faster:{faster_name}:cpu:{cpu_compute}:{cpu_threads}:{num_workers}"
+                    )
+                    log(f"Lade faster-whisper Modell '{faster_name}' (cpu, {cpu_compute})...")
+                    self._model_cache[cpu_cache_key] = WhisperModel(
+                        faster_name,
+                        device="cpu",
+                        compute_type=cpu_compute,
+                        cpu_threads=cpu_threads,
+                        num_workers=num_workers,
+                    )
+                    return self._model_cache[cpu_cache_key]
+                raise
             return self._model_cache[cache_key]
 
     def _get_lightning_model(self, model_name: str) -> Any:
@@ -614,8 +665,29 @@ class LocalProvider:
         temp = faster_opts.get("temperature")
         if isinstance(temp, tuple):
             faster_opts["temperature"] = float(temp[0])
-        segments, _info = model.transcribe(audio, **faster_opts)
-        return "".join(seg.text for seg in segments)
+
+        try:
+            segments, _info = model.transcribe(audio, **faster_opts)
+            return "".join(seg.text for seg in segments)
+        except Exception as e:
+            error_msg = str(e).lower()
+            # CUDA/cuDNN-Fehler bei Transkription → Fallback auf CPU
+            if self._device == "cuda" and ("cudnn" in error_msg or "cuda" in error_msg):
+                logger.warning(
+                    f"CUDA/cuDNN-Fehler bei Transkription: {e}. "
+                    "Wechsle zu CPU-Modus..."
+                )
+                # Device auf CPU umstellen und Modell-Cache leeren
+                self._device = "cpu"
+                # Alle CUDA-Modelle aus Cache entfernen
+                cuda_keys = [k for k in self._model_cache if ":cuda:" in k]
+                for k in cuda_keys:
+                    del self._model_cache[k]
+                # Neu laden mit CPU und erneut versuchen
+                model = self._get_faster_model(model_name)
+                segments, _info = model.transcribe(audio, **faster_opts)
+                return "".join(seg.text for seg in segments)
+            raise
 
     def _transcribe_mlx(self, audio, model_name: str, options: dict) -> str:
         """Transkription via mlx-whisper (Apple Silicon / Metal)."""

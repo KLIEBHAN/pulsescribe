@@ -85,6 +85,11 @@ hiddenimports = [
     'win32process',
     'psutil',
 
+    # === FileWatcher ===
+    'watchdog',
+    'watchdog.observers',
+    'watchdog.events',
+
     # === Utils ===
     'pyperclip',
     'dotenv',

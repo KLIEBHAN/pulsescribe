@@ -29,7 +29,8 @@ pyobjc-framework-AVFoundation; sys_platform == 'darwin'
 # Note: Install with `pip install --no-deps lightning-whisper-mlx` to avoid tiktoken version conflict
 lightning-whisper-mlx; sys_platform == 'darwin'
 
-# Windows only: App detection, Icons
+# Windows only: App detection, Icons, FileWatcher
 pywin32; sys_platform == 'win32'
 psutil; sys_platform == 'win32'
 Pillow; sys_platform == 'win32'
+watchdog; sys_platform == 'win32'

@@ -152,7 +152,7 @@ def refine_transcript(
 
     # Provider und Modell zur Laufzeit bestimmen (CLI > ENV > Default)
     effective_provider = (
-        provider or os.getenv("PULSESCRIBE_REFINE_PROVIDER", "openai")
+        provider or os.getenv("PULSESCRIBE_REFINE_PROVIDER", "groq")
     ).lower()
 
     # Provider-spezifisches Default-Modell (CLI > ENV > Default)

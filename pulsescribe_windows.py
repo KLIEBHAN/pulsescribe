@@ -1211,6 +1211,7 @@ class PulseScribeWindows:
             pystray.MenuItem(f"Hotkeys: {hotkey_text}", None, enabled=False),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Settings...", self._show_settings),
+            pystray.MenuItem("Reload Settings", self._reload_settings),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Beenden", self._quit),
         )
@@ -1223,6 +1224,9 @@ class PulseScribeWindows:
 
         # Stop-Signal fuer Hauptschleife
         self._stop_event.set()
+
+        # FileWatcher stoppen
+        self._stop_env_watcher()
 
         # Warm-Stream stoppen
         self._stop_warm_stream()
@@ -1246,48 +1250,130 @@ class PulseScribeWindows:
         Qt-Widgets müssen im Main-Thread laufen. Da pystray-Callbacks in einem
         Thread-Pool ausgeführt werden, starten wir das Settings-Fenster als
         separaten Prozess, um Threading-Probleme zu vermeiden.
+
+        Fallback: Wenn PySide6 nicht verfügbar ist, wird die .env Datei
+        im Standard-Editor geöffnet.
         """
         import subprocess
 
         # Settings-Fenster als separaten Prozess starten
         try:
-            # Python-Executable und Pfad zum Settings-Modul
-            python_exe = sys.executable
+            # Bevorzuge venv-Python (dort ist PySide6 installiert)
+            # Prüfe beide üblichen Konventionen: venv/ und .venv/
+            venv_python = PROJECT_ROOT / "venv" / "Scripts" / "python.exe"
+            dotvenv_python = PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
+            if venv_python.exists():
+                python_exe = str(venv_python)
+            elif dotvenv_python.exists():
+                python_exe = str(dotvenv_python)
+            else:
+                # Kein venv - prüfe ob PySide6 im aktuellen Python verfügbar ist
+                import importlib.util
+                if importlib.util.find_spec("PySide6") is None:
+                    logger.warning("PySide6 nicht installiert - öffne .env im Editor")
+                    self._open_env_in_editor()
+                    return
+                python_exe = sys.executable
+
             settings_script = PROJECT_ROOT / "ui" / "settings_windows.py"
 
-            if settings_script.exists():
-                # Starte Settings-Fenster als eigenständigen Prozess
-                subprocess.Popen(
-                    [python_exe, str(settings_script)],
-                    cwd=str(PROJECT_ROOT),
-                    creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0,
-                )
-                logger.info("Settings-Fenster gestartet (separater Prozess)")
-            else:
+            if not settings_script.exists():
                 logger.error(f"Settings-Script nicht gefunden: {settings_script}")
+                self._open_env_in_editor()
+                return
+
+            # Starte Settings-Fenster als eigenständigen Prozess
+            # stderr/stdout erfassen um Fehler zu loggen
+            # PYTHONPATH erweitern (nicht überschreiben) damit utils.* imports funktionieren
+            env = os.environ.copy()
+            project_root = str(PROJECT_ROOT)
+            existing_pythonpath = env.get("PYTHONPATH")
+            if existing_pythonpath:
+                env["PYTHONPATH"] = project_root + os.pathsep + existing_pythonpath
+            else:
+                env["PYTHONPATH"] = project_root
+            process = subprocess.Popen(
+                [python_exe, str(settings_script)],
+                cwd=str(PROJECT_ROOT),
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0,
+            )
+
+            # Kurz warten und prüfen ob Prozess sofort stirbt (Import-Fehler etc.)
+            import time
+            time.sleep(0.5)
+            if process.poll() is not None:
+                # Prozess ist bereits beendet - Fehler aufgetreten
+                _, stderr = process.communicate(timeout=1)
+                error_msg = stderr.decode("utf-8", errors="replace").strip()
+                logger.error(f"Settings-Fenster fehlgeschlagen: {error_msg[:200]}")
+                self._open_env_in_editor()
+                return
+
+            logger.info("Settings-Fenster gestartet (separater Prozess)")
 
         except Exception as e:
             logger.error(f"Settings-Fenster konnte nicht geöffnet werden: {e}")
+            self._open_env_in_editor()
+
+    def _open_env_in_editor(self):
+        """Öffnet die .env Datei im Standard-Editor als Fallback."""
+        try:
+            from utils.preferences import ENV_FILE
+            env_path = ENV_FILE
+
+            if env_path.exists():
+                os.startfile(str(env_path))
+                logger.info(f".env geöffnet im Editor: {env_path}")
+            else:
+                # .env existiert nicht - erstellen mit Beispiel-Inhalt
+                env_path.parent.mkdir(parents=True, exist_ok=True)
+                env_path.write_text(
+                    "# PulseScribe Konfiguration\n"
+                    "# Siehe CLAUDE.md für alle Optionen\n\n"
+                    "PULSESCRIBE_MODE=deepgram\n"
+                    "# DEEPGRAM_API_KEY=\n"
+                    "# OPENAI_API_KEY=\n"
+                )
+                os.startfile(str(env_path))
+                logger.info(f".env erstellt und geöffnet: {env_path}")
+
+        except Exception as e:
+            logger.error(f".env konnte nicht geöffnet werden: {e}")
 
     def _reload_settings(self):
         """Lädt Settings aus .env neu und wendet sie an.
 
-        Note: Diese Methode kann manuell aufgerufen werden oder über einen
-        FileWatcher getriggert werden. Da das Settings-Fenster jetzt in einem
-        separaten Prozess läuft, wird der Callback nicht mehr automatisch ausgelöst.
-        Stattdessen werden Settings bei der nächsten Transkription neu geladen.
+        Wird automatisch aufgerufen wenn die .env Datei geändert wird (via FileWatcher)
+        oder manuell über das Tray-Menü.
         """
         logger.info("Settings neu laden...")
 
-        # .env neu einlesen
+        # .env neu einlesen (python-dotenv Cache umgehen)
         from utils.preferences import read_env_file
         env_values = read_env_file()
 
         # Mode aktualisieren
         new_mode = env_values.get("PULSESCRIBE_MODE", "deepgram")
         if new_mode != self.mode:
+            old_mode = self.mode
             self.mode = new_mode
-            logger.info(f"Mode geändert: {new_mode}")
+
+            # GESAMTEN Provider-Cache leeren (nicht nur alten Mode)
+            # Wichtig weil auch LocalProvider.invalidate_runtime_config() nötig ist
+            for provider in self._provider_cache.values():
+                if hasattr(provider, "invalidate_runtime_config"):
+                    provider.invalidate_runtime_config()
+            self._provider_cache.clear()
+            logger.info(f"Mode geändert: {old_mode} → {new_mode}")
+
+            # Bei Wechsel zu local: Model preloaden
+            if new_mode == "local":
+                threading.Thread(
+                    target=self._preload_local_model, daemon=True
+                ).start()
 
         # Refine aktualisieren
         self.refine = env_values.get("PULSESCRIBE_REFINE", "").lower() == "true"
@@ -1314,6 +1400,72 @@ class PulseScribeWindows:
             self._restart_hotkey_listeners()
 
         logger.info("Settings erfolgreich neu geladen")
+
+    def _preload_local_model(self):
+        """Lädt Local-Model vor nach Settings-Änderung."""
+        try:
+            provider = self._get_provider("local")
+            model, _ = self._get_transcription_config()
+            if self._overlay:
+                self._overlay.update_state("LOADING", f"Loading {model}...")
+            if hasattr(provider, "preload"):
+                logger.info(f"Preloading local model '{model}'...")
+                provider.preload(model=model)
+            if self._overlay and self.state == AppState.LOADING:
+                self._set_state(AppState.IDLE)
+        except Exception as e:
+            logger.warning(f"Local-Model Preload fehlgeschlagen: {e}")
+            if self.state == AppState.LOADING:
+                self._set_state(AppState.IDLE)
+
+    def _start_env_watcher(self):
+        """Startet FileWatcher für .env Änderungen (Auto-Reload)."""
+        try:
+            from watchdog.observers import Observer
+            from watchdog.events import FileSystemEventHandler
+            from utils.preferences import ENV_FILE
+
+            class EnvFileHandler(FileSystemEventHandler):
+                def __init__(handler_self, callback):
+                    handler_self.callback = callback
+                    handler_self._last_modified = 0.0
+
+                def on_modified(handler_self, event):
+                    # Nur .env Datei beachten
+                    if not event.src_path.endswith(".env"):
+                        return
+                    # Debounce: Ignoriere Events < 1s nach letztem
+                    now = time.time()
+                    if now - handler_self._last_modified > 1.0:
+                        handler_self._last_modified = now
+                        logger.debug(f".env geändert: {event.src_path}")
+                        handler_self.callback()
+
+            handler = EnvFileHandler(self._reload_settings)
+            self._env_observer = Observer()
+            self._env_observer.schedule(
+                handler, str(ENV_FILE.parent), recursive=False
+            )
+            self._env_observer.start()
+            logger.info(f"FileWatcher gestartet für {ENV_FILE.parent}")
+
+        except ImportError:
+            logger.debug("watchdog nicht installiert - Auto-Reload deaktiviert")
+            self._env_observer = None
+        except Exception as e:
+            logger.warning(f"FileWatcher konnte nicht gestartet werden: {e}")
+            self._env_observer = None
+
+    def _stop_env_watcher(self):
+        """Stoppt den FileWatcher."""
+        if hasattr(self, "_env_observer") and self._env_observer is not None:
+            try:
+                self._env_observer.stop()
+                self._env_observer.join(timeout=1.0)
+                logger.debug("FileWatcher gestoppt")
+            except Exception as e:
+                logger.debug(f"FileWatcher Stop-Fehler: {e}")
+            self._env_observer = None
 
     def _restart_hotkey_listeners(self):
         """Startet Hotkey-Listener mit neuen Einstellungen neu."""
@@ -1474,6 +1626,9 @@ class PulseScribeWindows:
         ).start()
 
         self._setup_tray()
+
+        # FileWatcher für Auto-Reload bei .env Änderungen
+        self._start_env_watcher()
 
         # Ctrl+C Handler: Signal wird an _quit weitergeleitet (nur einmal)
         def signal_handler(sig, frame):
