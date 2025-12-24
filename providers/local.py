@@ -637,8 +637,29 @@ class LocalProvider:
         temp = faster_opts.get("temperature")
         if isinstance(temp, tuple):
             faster_opts["temperature"] = float(temp[0])
-        segments, _info = model.transcribe(audio, **faster_opts)
-        return "".join(seg.text for seg in segments)
+
+        try:
+            segments, _info = model.transcribe(audio, **faster_opts)
+            return "".join(seg.text for seg in segments)
+        except Exception as e:
+            error_msg = str(e).lower()
+            # CUDA/cuDNN-Fehler bei Transkription → Fallback auf CPU
+            if self._device == "cuda" and ("cudnn" in error_msg or "cuda" in error_msg):
+                logger.warning(
+                    f"CUDA/cuDNN-Fehler bei Transkription: {e}. "
+                    "Wechsle zu CPU-Modus..."
+                )
+                # Device auf CPU umstellen und Modell-Cache leeren
+                self._device = "cpu"
+                # Alle CUDA-Modelle aus Cache entfernen
+                cuda_keys = [k for k in self._model_cache if ":cuda:" in k]
+                for k in cuda_keys:
+                    del self._model_cache[k]
+                # Neu laden mit CPU und erneut versuchen
+                model = self._get_faster_model(model_name)
+                segments, _info = model.transcribe(audio, **faster_opts)
+                return "".join(seg.text for seg in segments)
+            raise
 
     def _transcribe_mlx(self, audio, model_name: str, options: dict) -> str:
         """Transkription via mlx-whisper (Apple Silicon / Metal)."""
