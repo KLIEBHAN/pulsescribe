@@ -1246,28 +1246,93 @@ class PulseScribeWindows:
         Qt-Widgets müssen im Main-Thread laufen. Da pystray-Callbacks in einem
         Thread-Pool ausgeführt werden, starten wir das Settings-Fenster als
         separaten Prozess, um Threading-Probleme zu vermeiden.
+
+        Fallback: Wenn PySide6 nicht verfügbar ist, wird die .env Datei
+        im Standard-Editor geöffnet.
         """
         import subprocess
 
         # Settings-Fenster als separaten Prozess starten
         try:
-            # Python-Executable und Pfad zum Settings-Modul
-            python_exe = sys.executable
+            # Bevorzuge venv-Python (dort ist PySide6 installiert)
+            # Prüfe beide üblichen Konventionen: venv/ und .venv/
+            venv_python = PROJECT_ROOT / "venv" / "Scripts" / "python.exe"
+            dotvenv_python = PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
+            if venv_python.exists():
+                python_exe = str(venv_python)
+            elif dotvenv_python.exists():
+                python_exe = str(dotvenv_python)
+            else:
+                # Kein venv - prüfe ob PySide6 im aktuellen Python verfügbar ist
+                import importlib.util
+                if importlib.util.find_spec("PySide6") is None:
+                    logger.warning("PySide6 nicht installiert - öffne .env im Editor")
+                    self._open_env_in_editor()
+                    return
+                python_exe = sys.executable
+
             settings_script = PROJECT_ROOT / "ui" / "settings_windows.py"
 
-            if settings_script.exists():
-                # Starte Settings-Fenster als eigenständigen Prozess
-                subprocess.Popen(
-                    [python_exe, str(settings_script)],
-                    cwd=str(PROJECT_ROOT),
-                    creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0,
-                )
-                logger.info("Settings-Fenster gestartet (separater Prozess)")
-            else:
+            if not settings_script.exists():
                 logger.error(f"Settings-Script nicht gefunden: {settings_script}")
+                self._open_env_in_editor()
+                return
+
+            # Starte Settings-Fenster als eigenständigen Prozess
+            # stderr/stdout erfassen um Fehler zu loggen
+            # PYTHONPATH setzen damit utils.* imports funktionieren
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(PROJECT_ROOT)
+            process = subprocess.Popen(
+                [python_exe, str(settings_script)],
+                cwd=str(PROJECT_ROOT),
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0,
+            )
+
+            # Kurz warten und prüfen ob Prozess sofort stirbt (Import-Fehler etc.)
+            import time
+            time.sleep(0.5)
+            if process.poll() is not None:
+                # Prozess ist bereits beendet - Fehler aufgetreten
+                _, stderr = process.communicate(timeout=1)
+                error_msg = stderr.decode("utf-8", errors="replace").strip()
+                logger.error(f"Settings-Fenster fehlgeschlagen: {error_msg[:200]}")
+                self._open_env_in_editor()
+                return
+
+            logger.info("Settings-Fenster gestartet (separater Prozess)")
 
         except Exception as e:
             logger.error(f"Settings-Fenster konnte nicht geöffnet werden: {e}")
+            self._open_env_in_editor()
+
+    def _open_env_in_editor(self):
+        """Öffnet die .env Datei im Standard-Editor als Fallback."""
+        try:
+            from utils.preferences import ENV_FILE
+            env_path = ENV_FILE
+
+            if env_path.exists():
+                os.startfile(str(env_path))
+                logger.info(f".env geöffnet im Editor: {env_path}")
+            else:
+                # .env existiert nicht - erstellen mit Beispiel-Inhalt
+                env_path.parent.mkdir(parents=True, exist_ok=True)
+                env_path.write_text(
+                    "# PulseScribe Konfiguration\n"
+                    "# Siehe CLAUDE.md für alle Optionen\n\n"
+                    "PULSESCRIBE_MODE=deepgram\n"
+                    "# DEEPGRAM_API_KEY=\n"
+                    "# OPENAI_API_KEY=\n"
+                )
+                os.startfile(str(env_path))
+                logger.info(f".env erstellt und geöffnet: {env_path}")
+
+        except Exception as e:
+            logger.error(f".env konnte nicht geöffnet werden: {e}")
 
     def _reload_settings(self):
         """Lädt Settings aus .env neu und wendet sie an.
