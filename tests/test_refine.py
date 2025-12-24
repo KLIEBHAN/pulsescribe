@@ -156,18 +156,18 @@ class TestRefineProviderSelection:
 
         mock_client.assert_called_with("groq")
 
-    def test_default_provider_is_openai(self, monkeypatch, clean_env):
-        """Default-Provider ist openai."""
+    def test_default_provider_is_groq(self, monkeypatch, clean_env):
+        """Default-Provider ist groq."""
         # from transcribe import refine_transcript (removed)
 
         with patch("refine.llm._get_refine_client") as mock_client:
-            mock_client.return_value.responses.create.return_value = Mock(
-                output_text="refined"
+            mock_client.return_value.chat.completions.create.return_value = Mock(
+                choices=[Mock(message=Mock(content="refined"))]
             )
 
-            refine_transcript("test", model="gpt-5-nano")
+            refine_transcript("test", model="openai/gpt-oss-120b")
 
-        mock_client.assert_called_with("openai")
+        mock_client.assert_called_with("groq")
 
 
 class TestRefineModelSelection:
@@ -222,18 +222,18 @@ class TestRefineModelSelection:
         call_kwargs = mock_client.return_value.chat.completions.create.call_args
         assert call_kwargs[1]["model"] == DEFAULT_REFINE_MODEL
 
-    def test_openai_default_model(self, monkeypatch, clean_env):
-        """OpenAI-Provider nutzt gpt-5-nano als Default."""
+    def test_default_model_with_default_provider(self, monkeypatch, clean_env):
+        """Default-Provider (groq) nutzt DEFAULT_REFINE_MODEL."""
         # from transcribe import refine_transcript (removed)
 
         with patch("refine.llm._get_refine_client") as mock_client:
-            mock_client.return_value.responses.create.return_value = Mock(
-                output_text="refined"
+            mock_client.return_value.chat.completions.create.return_value = Mock(
+                choices=[Mock(message=Mock(content="refined"))]
             )
 
             refine_transcript("test")
 
-        call_kwargs = mock_client.return_value.responses.create.call_args
+        call_kwargs = mock_client.return_value.chat.completions.create.call_args
         assert call_kwargs[1]["model"] == DEFAULT_REFINE_MODEL
 
 
