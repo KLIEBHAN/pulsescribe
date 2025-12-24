@@ -100,19 +100,22 @@ def _lightning_workdir() -> Generator[Path, None, None]:
 
 
 def _validate_cuda_runtime() -> bool:
-    """Prüft ob CUDA/cuDNN wirklich funktioniert (nicht nur sichtbar).
+    """Prüft ob CUDA-Runtime grundlegend funktioniert.
 
     torch.cuda.is_available() prüft nur ob CUDA-Treiber vorhanden sind.
-    cuDNN-Fehler (z.B. fehlende cudnn_ops64_9.dll) treten erst bei
-    tatsächlicher GPU-Nutzung auf. Diese Funktion testet mit einer
-    Dummy-Operation, ob die Runtime wirklich funktioniert.
+    Diese Funktion testet mit einer Dummy-Operation, ob Tensor-Allokation
+    auf GPU funktioniert.
+
+    Hinweis: cuDNN-Fehler (z.B. fehlende cudnn_ops64_9.dll) können erst bei
+    komplexeren Operationen (Convolutions) auftreten. Dafür gibt es Fallbacks
+    in _get_faster_model() und _transcribe_faster().
     """
     try:
         import torch
 
         if not torch.cuda.is_available():
             return False
-        # Dummy-Operation auf GPU - testet CUDA + cuDNN Runtime
+        # Einfache GPU-Operation - testet CUDA Runtime (nicht cuDNN)
         test_tensor = torch.zeros(1, device="cuda")
         _ = test_tensor + 1
         del test_tensor

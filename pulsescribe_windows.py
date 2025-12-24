@@ -1351,7 +1351,11 @@ class PulseScribeWindows:
         """
         logger.info("Settings neu laden...")
 
-        # .env neu einlesen (python-dotenv Cache umgehen)
+        # WICHTIG: os.environ aktualisieren, damit alle Module die neuen Werte sehen
+        # (z.B. refine/llm.py verwendet os.getenv() direkt)
+        load_environment(override_existing=True)
+
+        # .env auch als Dict lesen für explizite Instanzvariablen
         from utils.preferences import read_env_file
         env_values = read_env_file()
 
