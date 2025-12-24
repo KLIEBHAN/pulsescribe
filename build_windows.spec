@@ -103,6 +103,12 @@ hiddenimports = [
     # === Audio ===
     'audio',
     'audio.recording',
+
+    # === Local Whisper (faster-whisper) ===
+    'faster_whisper',
+    'ctranslate2',
+    'tokenizers',
+    'huggingface_hub',
 ]
 
 hiddenimports = _dedupe(hiddenimports)
