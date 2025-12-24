@@ -1415,9 +1415,21 @@ class PulseScribeWindows:
         streaming_val = env_values.get("PULSESCRIBE_STREAMING", "true")
         self.streaming = streaming_val.lower() != "false"
 
-        # Overlay aktualisieren
+        # Overlay aktualisieren (mit Start/Stop wenn nötig)
         overlay_val = env_values.get("PULSESCRIBE_OVERLAY", "true")
-        self.overlay_enabled = overlay_val.lower() != "false"
+        new_overlay_enabled = overlay_val.lower() != "false"
+
+        if new_overlay_enabled != self.overlay_enabled:
+            self.overlay_enabled = new_overlay_enabled
+            if new_overlay_enabled and self._overlay is None:
+                # Overlay aktivieren
+                logger.info("Overlay aktiviert")
+                self._setup_overlay()
+            elif not new_overlay_enabled and self._overlay is not None:
+                # Overlay deaktivieren
+                logger.info("Overlay deaktiviert")
+                self._overlay.stop()
+                self._overlay = None
 
         # Hotkeys aktualisieren (erfordert Listener-Neustart)
         new_toggle = env_values.get("PULSESCRIBE_TOGGLE_HOTKEY")
@@ -1532,7 +1544,7 @@ class PulseScribeWindows:
 
     def _start_reload_polling(self):
         """Startet Polling für .reload Signal-Datei (Fallback wenn watchdog nicht verfügbar)."""
-        if not hasattr(self, "_reload_signal_file"):
+        if self._reload_signal_file is None:
             return
 
         def poll_for_reload():
@@ -1540,7 +1552,7 @@ class PulseScribeWindows:
                 return
 
             try:
-                if self._reload_signal_file.exists():
+                if self._reload_signal_file and self._reload_signal_file.exists():
                     logger.debug("Reload-Signal erkannt (Polling)")
                     self._reload_signal_file.unlink()
                     self._reload_settings()
