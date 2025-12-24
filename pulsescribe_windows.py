@@ -1251,15 +1251,39 @@ class PulseScribeWindows:
         Thread-Pool ausgeführt werden, starten wir das Settings-Fenster als
         separaten Prozess, um Threading-Probleme zu vermeiden.
 
+        Bei gebündelter App (PyInstaller): Ruft sich selbst mit --settings auf.
+        Bei Entwicklung: Startet Python mit ui/settings_windows.py.
+
         Fallback: Wenn PySide6 nicht verfügbar ist, wird die .env Datei
         im Standard-Editor geöffnet.
         """
         import subprocess
 
-        # Settings-Fenster als separaten Prozess starten
         try:
+            # PyInstaller Bundle: sich selbst mit --settings aufrufen
+            if getattr(sys, 'frozen', False):
+                process = subprocess.Popen(
+                    [sys.executable, "--settings"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0,
+                )
+
+                # Kurz warten und prüfen ob Prozess sofort stirbt
+                import time
+                time.sleep(0.5)
+                if process.poll() is not None:
+                    _, stderr = process.communicate(timeout=1)
+                    error_msg = stderr.decode("utf-8", errors="replace").strip()
+                    logger.error(f"Settings-Fenster fehlgeschlagen: {error_msg[:200]}")
+                    self._open_env_in_editor()
+                    return
+
+                logger.info("Settings-Fenster gestartet (--settings)")
+                return
+
+            # Entwicklung: Python-Interpreter mit settings_windows.py starten
             # Bevorzuge venv-Python (dort ist PySide6 installiert)
-            # Prüfe beide üblichen Konventionen: venv/ und .venv/
             venv_python = PROJECT_ROOT / "venv" / "Scripts" / "python.exe"
             dotvenv_python = PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
             if venv_python.exists():
@@ -1282,9 +1306,7 @@ class PulseScribeWindows:
                 self._open_env_in_editor()
                 return
 
-            # Starte Settings-Fenster als eigenständigen Prozess
-            # stderr/stdout erfassen um Fehler zu loggen
-            # PYTHONPATH erweitern (nicht überschreiben) damit utils.* imports funktionieren
+            # PYTHONPATH erweitern damit utils.* imports funktionieren
             env = os.environ.copy()
             project_root = str(PROJECT_ROOT)
             existing_pythonpath = env.get("PYTHONPATH")
@@ -1292,6 +1314,7 @@ class PulseScribeWindows:
                 env["PYTHONPATH"] = project_root + os.pathsep + existing_pythonpath
             else:
                 env["PYTHONPATH"] = project_root
+
             process = subprocess.Popen(
                 [python_exe, str(settings_script)],
                 cwd=str(PROJECT_ROOT),
@@ -1305,7 +1328,6 @@ class PulseScribeWindows:
             import time
             time.sleep(0.5)
             if process.poll() is not None:
-                # Prozess ist bereits beendet - Fehler aufgetreten
                 _, stderr = process.communicate(timeout=1)
                 error_msg = stderr.decode("utf-8", errors="replace").strip()
                 logger.error(f"Settings-Fenster fehlgeschlagen: {error_msg[:200]}")
@@ -1716,8 +1738,27 @@ def main():
         action="store_true",
         help="Overlay deaktivieren",
     )
+    parser.add_argument(
+        "--settings",
+        action="store_true",
+        help="Settings-Fenster öffnen (statt Daemon starten)",
+    )
 
     args = parser.parse_args()
+
+    # --settings: Settings-Fenster öffnen und beenden (kein Daemon)
+    if args.settings:
+        try:
+            from PySide6.QtWidgets import QApplication
+            from ui.settings_windows import SettingsWindow
+
+            app = QApplication(sys.argv)
+            window = SettingsWindow()
+            window.show()
+            sys.exit(app.exec())
+        except ImportError as e:
+            print(f"Settings-Fenster nicht verfügbar: {e}", file=sys.stderr)
+            sys.exit(1)
 
     if args.debug:
         logging.getLogger().setLevel(logging.DEBUG)
