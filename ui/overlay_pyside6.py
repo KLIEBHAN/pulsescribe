@@ -210,8 +210,9 @@ def _enable_mica_effect(hwnd: int) -> bool:
     Erfordert Windows 11 22H2 (Build 22621+) für DWMWA_SYSTEMBACKDROP_TYPE.
     Auf älteren Systemen wird False zurückgegeben und der Solid-Background verwendet.
 
-    Wichtig: Für frameless Windows muss DwmExtendFrameIntoClientArea aufgerufen
-    werden, damit der Mica-Backdrop korrekt gerendert wird.
+    Hinweis: DwmExtendFrameIntoClientArea wird NICHT aufgerufen, da es laut
+    Avalonia Issue #7403 den Mica-Effekt auf Qt-ähnlichen Frameworks bricht.
+    Qt's FramelessWindowHint + WA_TranslucentBackground reicht aus.
     """
     if sys.platform != "win32":
         return False
@@ -237,22 +238,7 @@ def _enable_mica_effect(hwnd: int) -> bool:
         ]
         dwmapi.DwmSetWindowAttribute.restype = wintypes.LONG  # HRESULT
 
-        # HRESULT DwmExtendFrameIntoClientArea(HWND, const MARGINS*)
-        dwmapi.DwmExtendFrameIntoClientArea.argtypes = [
-            wintypes.HWND,
-            ctypes.POINTER(MARGINS),
-        ]
-        dwmapi.DwmExtendFrameIntoClientArea.restype = wintypes.LONG  # HRESULT
-
-        # 1. Frame in Client Area erweitern (nötig für Mica bei frameless Windows)
-        # MARGINS mit -1 = "sheet of glass" Effekt über gesamtes Fenster
-        margins = MARGINS(-1, -1, -1, -1)
-        result = dwmapi.DwmExtendFrameIntoClientArea(hwnd, ctypes.byref(margins))
-        if result != 0:
-            logger.debug(f"DwmExtendFrameIntoClientArea fehlgeschlagen: {result}")
-            # Nicht abbrechen - versuche trotzdem Mica zu setzen
-
-        # 2. Dark Mode aktivieren (für dunkles Mica)
+        # 1. Dark Mode aktivieren (für dunkles Mica)
         dark_mode = ctypes.c_int(1)
         dwmapi.DwmSetWindowAttribute(
             hwnd,
@@ -261,7 +247,7 @@ def _enable_mica_effect(hwnd: int) -> bool:
             ctypes.sizeof(dark_mode),
         )
 
-        # 3. Runde Ecken via DWM (native, nicht QPainter)
+        # 2. Runde Ecken via DWM (native, nicht QPainter)
         corners = ctypes.c_int(DWMWCP_ROUND)
         dwmapi.DwmSetWindowAttribute(
             hwnd,
@@ -270,7 +256,7 @@ def _enable_mica_effect(hwnd: int) -> bool:
             ctypes.sizeof(corners),
         )
 
-        # 4. Mica Backdrop aktivieren
+        # 3. Mica Backdrop aktivieren
         backdrop = ctypes.c_int(DWMSBT_MAINWINDOW)
         result = dwmapi.DwmSetWindowAttribute(
             hwnd,
