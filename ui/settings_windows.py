@@ -520,7 +520,7 @@ class SettingsWindow(QDialog):
         return header
 
     def _build_footer(self) -> QWidget:
-        """Erstellt den Footer mit Save-Button."""
+        """Erstellt den Footer mit Save- und Close-Button."""
         footer = QWidget()
         footer.setFixedHeight(60)
         layout = QHBoxLayout(footer)
@@ -532,6 +532,11 @@ class SettingsWindow(QDialog):
         self._save_btn.setObjectName("primary")
         self._save_btn.clicked.connect(self._save_settings)
         layout.addWidget(self._save_btn)
+
+        # Close-Button (rechts vom Save-Button, wie macOS)
+        self._close_btn = QPushButton("Close")
+        self._close_btn.clicked.connect(self.reject)  # QDialog-konform
+        layout.addWidget(self._close_btn)
 
         return footer
 
