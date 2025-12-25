@@ -57,8 +57,19 @@ def _register_nvidia_dll_directories() -> None:
         pass  # May not exist in some environments
 
     for sp in site_packages:
-        for subdir in ("cudnn", "cublas"):
-            dll_path = Path(sp) / "nvidia" / subdir / "bin"
+        nvidia_dir = Path(sp) / "nvidia"
+        if not nvidia_dir.is_dir():
+            continue
+        # Register all nvidia/*/bin directories (cudnn, cublas, cuda_runtime, etc.)
+        try:
+            subdirs = list(nvidia_dir.iterdir())
+        except OSError as e:
+            logger.debug(f"Cannot iterate {nvidia_dir}: {e}")
+            continue
+        for subdir in subdirs:
+            if not subdir.is_dir():
+                continue
+            dll_path = subdir / "bin"
             if dll_path.is_dir():
                 try:
                     os.add_dll_directory(str(dll_path))
