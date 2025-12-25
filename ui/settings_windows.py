@@ -500,7 +500,7 @@ class SettingsWindow(QDialog):
     def _build_header(self) -> QWidget:
         """Erstellt den Header."""
         header = QWidget()
-        header.setFixedHeight(80)
+        # Dynamic height to accommodate scaling and long text
         layout = QVBoxLayout(header)
         layout.setContentsMargins(20, 20, 20, 10)
 
