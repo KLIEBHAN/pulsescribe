@@ -63,6 +63,7 @@ from providers import get_provider
 # Lazy imports für optionale Features
 pystray = None
 PIL_Image = None
+PIL_ImageDraw = None
 WindowsOverlayController = None
 
 
@@ -158,13 +159,15 @@ def _resample_audio(audio, from_rate: int, to_rate: int):
 
 def _load_tray_dependencies():
     """Lädt pystray und Pillow (lazy)."""
-    global pystray, PIL_Image
+    global pystray, PIL_Image, PIL_ImageDraw
     try:
         import pystray as _pystray
         from PIL import Image as _Image
+        from PIL import ImageDraw as _ImageDraw
 
         pystray = _pystray
         PIL_Image = _Image
+        PIL_ImageDraw = _ImageDraw
         return True
     except ImportError as e:
         logger.warning(f"Tray-Icon nicht verfügbar: {e}")
@@ -177,6 +180,7 @@ class PulseScribeWindows:
     # Tray-Icon Farben (RGB)
     COLORS = {
         AppState.IDLE: (128, 128, 128),  # Grau
+        AppState.LOADING: (0, 120, 255),  # Blau (Model wird geladen)
         AppState.LISTENING: (255, 165, 0),  # Orange
         AppState.RECORDING: (255, 0, 0),  # Rot
         AppState.TRANSCRIBING: (255, 255, 0),  # Gelb
@@ -184,6 +188,9 @@ class PulseScribeWindows:
         AppState.DONE: (0, 255, 0),  # Grün
         AppState.ERROR: (255, 0, 0),  # Rot
     }
+
+    # Icon-Cache: Vermeidet Neuzeichnen bei State-Wechsel
+    _icon_cache: dict[tuple, "PIL_Image.Image"] = {}
 
     def __init__(
         self,
@@ -337,6 +344,7 @@ class PulseScribeWindows:
         # Tooltip aktualisieren
         state_text = {
             AppState.IDLE: "Bereit",
+            AppState.LOADING: "Lade Modell...",
             AppState.LISTENING: "Warte auf Sprache...",
             AppState.RECORDING: "Aufnahme...",
             AppState.TRANSCRIBING: "Transkribiere...",
@@ -347,13 +355,20 @@ class PulseScribeWindows:
         self._tray.title = f"PulseScribe - {state_text.get(self.state, 'Unbekannt')}"
 
     def _create_icon(self, color: tuple) -> "PIL_Image.Image":
-        """Erstellt ein Mikrofon-Icon wie bei macOS."""
-        from PIL import ImageDraw
+        """Erstellt ein Mikrofon-Icon wie bei macOS (mit Caching)."""
+        # Cache-Lookup: Gleiches Icon für gleiche Farbe wiederverwenden
+        if color in PulseScribeWindows._icon_cache:
+            return PulseScribeWindows._icon_cache[color]
 
-        size = 64
+        icon = self._draw_microphone_icon(color)
+        PulseScribeWindows._icon_cache[color] = icon
+        return icon
+
+    def _draw_microphone_icon(self, color: tuple, size: int = 64) -> "PIL_Image.Image":
+        """Zeichnet das Mikrofon-Icon (interne Methode)."""
         # Transparenter Hintergrund für sauberes Tray-Icon
         image = PIL_Image.new("RGBA", (size, size), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(image)
+        draw = PIL_ImageDraw.Draw(image)
 
         # Mikrofon-Proportionen (zentriert)
         center_x = size // 2
