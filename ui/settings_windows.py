@@ -1877,8 +1877,19 @@ class SettingsWindow(QDialog):
             from config import LOG_FILE
             if LOG_FILE.exists() and self._logs_viewer:
                 lines = LOG_FILE.read_text(encoding="utf-8", errors="replace").split("\n")
+                
+                # Check if we are at the bottom before updating
+                scrollbar = self._logs_viewer.verticalScrollBar()
+                # Consider "at bottom" if within 10 pixels of maximum or if maximum is 0 (initial load)
+                was_at_bottom = scrollbar.maximum() == 0 or scrollbar.value() >= scrollbar.maximum() - 10
+
                 # Letzte 100 Zeilen
                 self._logs_viewer.setPlainText("\n".join(lines[-100:]))
+                
+                # Restore bottom position if we were there
+                if was_at_bottom:
+                    scrollbar = self._logs_viewer.verticalScrollBar()
+                    scrollbar.setValue(scrollbar.maximum())
         except Exception as e:
             logger.error(f"Logs laden fehlgeschlagen: {e}")
 
