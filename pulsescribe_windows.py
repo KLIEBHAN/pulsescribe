@@ -55,6 +55,7 @@ logger = get_logger()
 
 # Imports nach Logging-Setup
 from utils.state import AppState
+from utils.hold_state import HoldHotkeyState
 from utils.hotkey import paste_transcript
 from whisper_platform import get_clipboard, get_sound_player
 from config import INTERIM_FILE, get_input_device
@@ -222,8 +223,7 @@ class PulseScribeWindows:
         self._last_hotkey_time = 0.0  # Für Debouncing
 
         # Hold-Mode State (wie macOS)
-        self._active_hold_sources: set[str] = set()  # Aktive Hold-Quellen
-        self._recording_started_by_hold = False  # Recording wurde durch Hold gestartet
+        self._hold_state = HoldHotkeyState()
 
         # Components
         self._tray = None
@@ -569,14 +569,9 @@ class PulseScribeWindows:
             self._stop_recording()
 
     def _start_recording_from_hold(self, source_id: str):
-        """Startet Recording nur wenn der Hold-Hotkey noch aktiv ist.
-
-        Wie macOS: source_id muss bereits in _active_hold_sources sein
-        (wurde in on_press hinzugefügt). Check verhindert Race-Condition
-        falls Key vor Ausführung losgelassen wurde.
-        """
+        """Startet Recording nur wenn der Hold-Hotkey noch aktiv ist."""
         # Race-Condition Check: Key wurde losgelassen bevor wir hier ankamen
-        if source_id not in self._active_hold_sources:
+        if not self._hold_state.is_active(source_id):
             logger.debug(f"Hold abgebrochen (Race): {source_id} nicht mehr aktiv")
             return
 
@@ -588,9 +583,9 @@ class PulseScribeWindows:
         logger.debug(f"Hold-Recording starten: {source_id}")
         self._start_recording()
 
-        # Flag NUR setzen wenn Recording tatsächlich gestartet (wie macOS)
+        # Flag NUR setzen wenn Recording tatsächlich gestartet
         if self.state in (AppState.LISTENING, AppState.RECORDING, AppState.LOADING):
-            self._recording_started_by_hold = True
+            self._hold_state.mark_started()
 
     def _stop_recording_from_hotkey(self):
         """Stoppt Recording (aufgerufen bei Hold-Release).
@@ -599,7 +594,7 @@ class PulseScribeWindows:
         """
         if self.state in (AppState.LISTENING, AppState.RECORDING):
             logger.debug("Hold-Release → Recording stoppen")
-            self._stop_recording()  # setzt _recording_started_by_hold = False
+            self._stop_recording()  # ruft hold_state.reset() auf
 
     def _start_recording(self):
         """Startet Aufnahme (Streaming oder REST)."""
@@ -681,8 +676,8 @@ class PulseScribeWindows:
         logger.info("Stoppe Aufnahme...")
         self._play_sound("stop")
 
-        # Hold-Flag zurücksetzen (wie macOS) - egal wie Recording gestoppt wurde
-        self._recording_started_by_hold = False
+        # Hold-Flag zurücksetzen - egal wie Recording gestoppt wurde
+        self._hold_state.reset()
 
         # Signal zum Stoppen (nur Recording, nicht App)
         self._recording_stop_event.set()
@@ -861,26 +856,15 @@ class PulseScribeWindows:
                     # LLM-Nachbearbeitung (optional)
                     if self.refine:
                         self._set_state(AppState.REFINING)
-                        original = transcript
-                        try:
-                            from refine.llm import refine_transcript
+                        from refine.llm import maybe_refine_transcript
 
-                            transcript = refine_transcript(
-                                transcript,
-                                model=self.refine_model,
-                                provider=self.refine_provider,
-                                context=self.context,
-                            )
-                            if not transcript or not transcript.strip():
-                                logger.warning(
-                                    "Refine gab leeren String zurück, verwende Original"
-                                )
-                                transcript = original
-                        except Exception as e:
-                            logger.warning(
-                                f"Refine fehlgeschlagen, verwende Original: {e}"
-                            )
-                            transcript = original
+                        transcript = maybe_refine_transcript(
+                            transcript,
+                            refine=True,
+                            refine_model=self.refine_model,
+                            refine_provider=self.refine_provider,
+                            context=self.context,
+                        )
 
                     self._handle_result(transcript)
                 else:
@@ -949,26 +933,15 @@ class PulseScribeWindows:
                     # LLM-Nachbearbeitung (optional)
                     if self.refine:
                         self._set_state(AppState.REFINING)
-                        original = transcript
-                        try:
-                            from refine.llm import refine_transcript
+                        from refine.llm import maybe_refine_transcript
 
-                            transcript = refine_transcript(
-                                transcript,
-                                model=self.refine_model,
-                                provider=self.refine_provider,
-                                context=self.context,
-                            )
-                            if not transcript or not transcript.strip():
-                                logger.warning(
-                                    "Refine gab leeren String zurück, verwende Original"
-                                )
-                                transcript = original
-                        except Exception as e:
-                            logger.warning(
-                                f"Refine fehlgeschlagen, verwende Original: {e}"
-                            )
-                            transcript = original
+                        transcript = maybe_refine_transcript(
+                            transcript,
+                            refine=True,
+                            refine_model=self.refine_model,
+                            refine_provider=self.refine_provider,
+                            context=self.context,
+                        )
 
                     self._handle_result(transcript)
                 else:
@@ -1059,27 +1032,15 @@ class PulseScribeWindows:
                 # LLM-Nachbearbeitung (optional)
                 if self.refine:
                     self._set_state(AppState.REFINING)
-                    original = transcript
-                    try:
-                        from refine.llm import refine_transcript
+                    from refine.llm import maybe_refine_transcript
 
-                        transcript = refine_transcript(
-                            transcript,
-                            model=self.refine_model,
-                            provider=self.refine_provider,
-                            context=self.context,
-                        )
-                        # Fallback auf Original wenn LLM leeren String zurückgibt
-                        if not transcript or not transcript.strip():
-                            logger.warning(
-                                "Refine gab leeren String zurück, verwende Original"
-                            )
-                            transcript = original
-                    except Exception as e:
-                        logger.warning(
-                            f"Refine fehlgeschlagen, verwende Original: {e}"
-                        )
-                        transcript = original
+                    transcript = maybe_refine_transcript(
+                        transcript,
+                        refine=True,
+                        refine_model=self.refine_model,
+                        refine_provider=self.refine_provider,
+                        context=self.context,
+                    )
 
                 self._handle_result(transcript)
             else:
@@ -1215,10 +1176,9 @@ class PulseScribeWindows:
                                     if self.state == AppState.LOADING and self._is_prewarm_loading:
                                         logger.debug("Hold-Hotkey ignoriert: Pre-Warm noch nicht abgeschlossen")
                                     elif not active_holds.get(source_id):
-                                        # Wie macOS: source_id ZUERST hinzufügen, DANN Funktion aufrufen
                                         active_holds[source_id] = True
-                                        self._active_hold_sources.add(source_id)
-                                        self._start_recording_from_hold(source_id)
+                                        if self._hold_state.should_start(source_id):
+                                            self._start_recording_from_hold(source_id)
                                 else:
                                     # Toggle-Mode: Keys leeren und Toggle-Action
                                     current_keys.clear()
@@ -1237,10 +1197,8 @@ class PulseScribeWindows:
                         if not hotkey_keys.issubset(active_keys):
                             # Mindestens eine Hotkey-Taste wurde losgelassen
                             active_holds[source_id] = False
-                            self._active_hold_sources.discard(source_id)
                             logger.debug(f"Hotkey losgelassen: {normalized}")
-                            # Wie macOS: Nur stoppen wenn ALLE Hold-Sources weg
-                            if not self._active_hold_sources and self._recording_started_by_hold:
+                            if self._hold_state.should_stop(source_id):
                                 self._stop_recording_from_hotkey()
 
             listener = keyboard.Listener(

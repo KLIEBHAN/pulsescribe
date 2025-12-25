@@ -251,12 +251,17 @@ def maybe_refine_transcript(
         return transcript
 
     try:
-        return refine_transcript(
+        result = refine_transcript(
             transcript,
             model=refine_model,
             provider=refine_provider,
             context=context,
         )
+        # Fallback auf Original wenn LLM leeren String zurückgibt
+        if not result or not result.strip():
+            logger.warning("LLM-Nachbearbeitung gab leeren String zurück, verwende Original")
+            return transcript
+        return result
     except ValueError as e:
         # Fehlende API-Keys (z.B. OPENROUTER_API_KEY)
         logger.warning(f"LLM-Nachbearbeitung übersprungen: {e}")
@@ -266,4 +271,8 @@ def maybe_refine_transcript(
         return transcript
     except (APIError, APIConnectionError, RateLimitError) as e:
         logger.warning(f"LLM-Nachbearbeitung fehlgeschlagen: {e}")
+        return transcript
+    except Exception as e:
+        # Generischer Fallback für unerwartete Fehler (z.B. Netzwerk, JSON-Parsing)
+        logger.warning(f"LLM-Nachbearbeitung fehlgeschlagen (unerwartet): {e}")
         return transcript

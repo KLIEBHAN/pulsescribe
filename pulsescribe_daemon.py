@@ -66,6 +66,7 @@ try:
     from providers import get_provider
     from whisper_platform import get_sound_player
     from utils.state import AppState, DaemonMessage, MessageType
+    from utils.hold_state import HoldHotkeyState
     from utils import parse_hotkey, paste_transcript
     from utils.permissions import (
         check_microphone_permission,
@@ -186,9 +187,8 @@ class PulseScribeDaemon:
         self._fn_active = False
         self._caps_active = False
         self._modifier_taps: list[tuple[object, object, object]] = []
-        # Track active hold hotkeys to avoid race conditions
-        self._active_hold_sources: set[str] = set()
-        self._recording_started_by_hold = False
+        # Hold-Hotkey State (tracks active sources and started-by-hold flag)
+        self._hold_state = HoldHotkeyState()
         # Temporary mode: route hotkeys to a safe, local "test dictation" run
         # (used by onboarding wizard).
         self._test_hotkey_mode_enabled = False
@@ -231,7 +231,7 @@ class PulseScribeDaemon:
 
     def _start_recording_from_hold(self, source_id: str) -> None:
         """Startet Recording nur, wenn der Hold-Hotkey noch aktiv ist."""
-        if source_id not in self._active_hold_sources:
+        if not self._hold_state.is_active(source_id):
             return
         if self._recording:
             return
@@ -240,7 +240,7 @@ class PulseScribeDaemon:
         else:
             self._start_recording()
         if self._recording:
-            self._recording_started_by_hold = True
+            self._hold_state.mark_started()
 
     def _start_modifier_hotkey_tap(
         self,
@@ -295,17 +295,13 @@ class PulseScribeDaemon:
                     source_id = f"modifier:{name}"
                     if is_down and not is_active:
                         logger.debug(f"Hotkey {name} down")
-                        self._active_hold_sources.add(source_id)
-                        self._call_on_main(
-                            lambda: self._start_recording_from_hold(source_id)
-                        )
+                        if self._hold_state.should_start(source_id):
+                            self._call_on_main(
+                                lambda: self._start_recording_from_hold(source_id)
+                            )
                     elif not is_down and is_active:
                         logger.debug(f"Hotkey {name} up")
-                        self._active_hold_sources.discard(source_id)
-                        if (
-                            not self._active_hold_sources
-                            and self._recording_started_by_hold
-                        ):
+                        if self._hold_state.should_stop(source_id):
                             self._call_on_main(self._stop_recording_from_hotkey)
                 else:
                     if toggle_on_down_only:
@@ -921,11 +917,7 @@ class PulseScribeDaemon:
                     if mode == "hold" and active and not mods_ok:
                         # Modifier released while active: stop hold.
                         active = False
-                        self._active_hold_sources.discard(source_id)
-                        if (
-                            not self._active_hold_sources
-                            and self._recording_started_by_hold
-                        ):
+                        if self._hold_state.should_stop(source_id):
                             self._call_on_main(self._stop_recording_from_hotkey)
                     elif mode == "toggle" and not mods_ok:
                         pressed = False
@@ -940,17 +932,13 @@ class PulseScribeDaemon:
                 if mode == "hold":
                     if event_type == kCGEventKeyDown and mods_ok and not active:
                         active = True
-                        self._active_hold_sources.add(source_id)
-                        self._call_on_main(
-                            lambda: self._start_recording_from_hold(source_id)
-                        )
+                        if self._hold_state.should_start(source_id):
+                            self._call_on_main(
+                                lambda: self._start_recording_from_hold(source_id)
+                            )
                     elif event_type == kCGEventKeyUp and active:
                         active = False
-                        self._active_hold_sources.discard(source_id)
-                        if (
-                            not self._active_hold_sources
-                            and self._recording_started_by_hold
-                        ):
+                        if self._hold_state.should_stop(source_id):
                             self._call_on_main(self._stop_recording_from_hotkey)
                 else:
                     if event_type == kCGEventKeyDown and mods_ok and not pressed:
@@ -1057,13 +1045,12 @@ class PulseScribeDaemon:
 
         def on_activate() -> None:
             logger.debug("Hotkey hold down")
-            self._active_hold_sources.add(source_id)
-            self._call_on_main(lambda: self._start_recording_from_hold(source_id))
+            if self._hold_state.should_start(source_id):
+                self._call_on_main(lambda: self._start_recording_from_hold(source_id))
 
         def on_deactivate() -> None:
             logger.debug("Hotkey hold up")
-            self._active_hold_sources.discard(source_id)
-            if not self._active_hold_sources and self._recording_started_by_hold:
+            if self._hold_state.should_stop(source_id):
                 self._call_on_main(self._stop_recording_from_hotkey)
 
         return self._start_pynput_hotkey_listener(
@@ -1347,31 +1334,22 @@ class PulseScribeDaemon:
                     f"deepgram_stream_core abgeschlossen: {len(transcript)} Zeichen"
                 )
 
-                # LLM-Nachbearbeitung (optional) - mit eigenem try/except für graceful degradation
+                # LLM-Nachbearbeitung (optional)
                 if self.refine and transcript:
                     self._result_queue.put(
                         DaemonMessage(
                             type=MessageType.STATUS_UPDATE, payload=AppState.REFINING
                         )
                     )
-                    try:
-                        from refine.llm import refine_transcript
+                    from refine.llm import maybe_refine_transcript
 
-                        logger.debug("Starte refine_transcript")
-                        transcript = refine_transcript(
-                            transcript,
-                            model=self.refine_model,
-                            provider=self.refine_provider,
-                            context=self.context,
-                        )
-                        logger.debug("refine_transcript abgeschlossen")
-                    except Exception as refine_error:
-                        # Refine-Fehler sind nicht kritisch - Original-Transkript verwenden
-                        logger.warning(
-                            f"Refine fehlgeschlagen, verwende Original: {refine_error}"
-                        )
-                elif not self.refine:
-                    logger.debug("Refine deaktiviert (self.refine=False)")
+                    transcript = maybe_refine_transcript(
+                        transcript,
+                        refine=True,
+                        refine_model=self.refine_model,
+                        refine_provider=self.refine_provider,
+                        context=self.context,
+                    )
 
                 logger.debug("Sende TRANSCRIPT_RESULT")
                 self._result_queue.put(
@@ -1626,32 +1604,22 @@ class PulseScribeDaemon:
                         f"time={t_transcribe:.2f}s (audio duration unknown)"
                     )
 
-                # LLM-Refine - mit eigenem try/except für graceful degradation
+                # LLM-Nachbearbeitung (optional)
                 if self.refine and transcript:
                     self._result_queue.put(
                         DaemonMessage(
                             type=MessageType.STATUS_UPDATE, payload=AppState.REFINING
                         )
                     )
-                    try:
-                        from refine.llm import refine_transcript
+                    from refine.llm import maybe_refine_transcript
 
-                        t1 = time.perf_counter()
-                        transcript = refine_transcript(
-                            transcript,
-                            model=self.refine_model,
-                            provider=self.refine_provider,
-                            context=self.context,
-                        )
-                        t_refine = time.perf_counter() - t1
-                        logger.info(
-                            f"Refine performance: provider={self.refine_provider}, time={t_refine:.2f}s"
-                        )
-                    except Exception as refine_error:
-                        # Refine-Fehler sind nicht kritisch - Original-Transkript verwenden
-                        logger.warning(
-                            f"Refine fehlgeschlagen, verwende Original: {refine_error}"
-                        )
+                    transcript = maybe_refine_transcript(
+                        transcript,
+                        refine=True,
+                        refine_model=self.refine_model,
+                        refine_provider=self.refine_provider,
+                        context=self.context,
+                    )
 
                 logger.debug("Sende TRANSCRIPT_RESULT")
                 self._result_queue.put(
@@ -1687,7 +1655,7 @@ class PulseScribeDaemon:
         self._start_worker_joiner()
 
         self._recording = False
-        self._recording_started_by_hold = False
+        self._hold_state.reset()
         # Nur wenn wir noch im Aufnahme-Flow sind, auf TRANSCRIBING wechseln.
         # Bei sehr kurzen Hold-Taps kann der Worker bereits ein leeres Ergebnis geliefert
         # und den State auf IDLE gesetzt haben.
@@ -2299,8 +2267,7 @@ class PulseScribeDaemon:
         self._modifier_taps.clear()
         self._fn_active = False
         self._caps_active = False
-        self._active_hold_sources.clear()
-        self._recording_started_by_hold = False
+        self._hold_state.clear()
 
     def _register_hotkeys_from_current_settings(self, *, show_alerts: bool) -> None:
         """Registriert Hotkeys anhand der aktuellen Settings (toggle/hold + legacy)."""
