@@ -347,9 +347,79 @@ class PulseScribeWindows:
         self._tray.title = f"PulseScribe - {state_text.get(self.state, 'Unbekannt')}"
 
     def _create_icon(self, color: tuple) -> "PIL_Image.Image":
-        """Erstellt ein einfaches farbiges Icon."""
+        """Erstellt ein Mikrofon-Icon wie bei macOS."""
+        from PIL import ImageDraw
+
         size = 64
-        image = PIL_Image.new("RGB", (size, size), color)
+        # Transparenter Hintergrund für sauberes Tray-Icon
+        image = PIL_Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+
+        # Mikrofon-Proportionen (zentriert)
+        center_x = size // 2
+        mic_width = 20
+        mic_height = 28
+        mic_top = 8
+        mic_bottom = mic_top + mic_height
+
+        # 1. Mikrofon-Körper (abgerundete Kapsel)
+        mic_left = center_x - mic_width // 2
+        mic_right = center_x + mic_width // 2
+        # Oberer Halbkreis
+        draw.ellipse(
+            [mic_left, mic_top, mic_right, mic_top + mic_width],
+            fill=color,
+        )
+        # Rechteckiger Körper
+        draw.rectangle(
+            [mic_left, mic_top + mic_width // 2, mic_right, mic_bottom - mic_width // 2],
+            fill=color,
+        )
+        # Unterer Halbkreis
+        draw.ellipse(
+            [mic_left, mic_bottom - mic_width, mic_right, mic_bottom],
+            fill=color,
+        )
+
+        # 2. Halterung (U-Form unter dem Mikrofon)
+        holder_top = mic_bottom + 2
+        holder_width = mic_width + 8
+        holder_left = center_x - holder_width // 2
+        holder_right = center_x + holder_width // 2
+        line_width = 3
+
+        # Linke Seite der Halterung
+        draw.rectangle(
+            [holder_left, holder_top - 6, holder_left + line_width, holder_top + 8],
+            fill=color,
+        )
+        # Rechte Seite der Halterung
+        draw.rectangle(
+            [holder_right - line_width, holder_top - 6, holder_right, holder_top + 8],
+            fill=color,
+        )
+        # Unterer Bogen (vereinfacht als Linie)
+        draw.rectangle(
+            [holder_left, holder_top + 5, holder_right, holder_top + 8],
+            fill=color,
+        )
+
+        # 3. Ständer (vertikale Linie + Fuß)
+        stand_top = holder_top + 8
+        stand_bottom = size - 6
+        stand_width = 3
+        # Vertikale Linie
+        draw.rectangle(
+            [center_x - stand_width // 2, stand_top, center_x + stand_width // 2 + 1, stand_bottom - 3],
+            fill=color,
+        )
+        # Fuß (horizontale Linie)
+        foot_width = 16
+        draw.rectangle(
+            [center_x - foot_width // 2, stand_bottom - 3, center_x + foot_width // 2, stand_bottom],
+            fill=color,
+        )
+
         return image
 
     def _play_sound(self, sound_type: str):
