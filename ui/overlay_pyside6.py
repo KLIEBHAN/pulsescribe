@@ -231,24 +231,31 @@ def _enable_mica_effect(hwnd: int) -> bool:
         dwmapi.DwmSetWindowAttribute.restype = wintypes.LONG  # HRESULT
 
         # 1. Dark Mode aktivieren (für dunkles Mica)
+        # Nicht kritisch - bei Fehler wird Light-Theme verwendet
         dark_mode = ctypes.c_int(1)
-        dwmapi.DwmSetWindowAttribute(
+        result = dwmapi.DwmSetWindowAttribute(
             hwnd,
             DWMWA_USE_IMMERSIVE_DARK_MODE,
             ctypes.byref(dark_mode),
             ctypes.sizeof(dark_mode),
         )
+        if result != 0:
+            logger.debug(f"Dark Mode fehlgeschlagen (HRESULT {result}), fahre fort...")
 
         # 2. Runde Ecken via DWM (native, nicht QPainter)
+        # Nicht kritisch - bei Fehler werden Default-Ecken verwendet
         corners = ctypes.c_int(DWMWCP_ROUND)
-        dwmapi.DwmSetWindowAttribute(
+        result = dwmapi.DwmSetWindowAttribute(
             hwnd,
             DWMWA_WINDOW_CORNER_PREFERENCE,
             ctypes.byref(corners),
             ctypes.sizeof(corners),
         )
+        if result != 0:
+            logger.debug(f"Rounded Corners fehlgeschlagen (HRESULT {result}), fahre fort...")
 
-        # 3. Mica Backdrop aktivieren
+        # 3. Mica Backdrop aktivieren - KRITISCH
+        # Bei Fehler hier → Fallback auf Solid-Background
         backdrop = ctypes.c_int(DWMSBT_MAINWINDOW)
         result = dwmapi.DwmSetWindowAttribute(
             hwnd,
@@ -261,7 +268,7 @@ def _enable_mica_effect(hwnd: int) -> bool:
             logger.debug(f"Windows 11 Mica-Effekt aktiviert (Build {build})")
             return True
         else:
-            logger.debug(f"DwmSetWindowAttribute SYSTEMBACKDROP fehlgeschlagen: {result}")
+            logger.debug(f"Mica Backdrop fehlgeschlagen (HRESULT {result}) → Fallback")
             return False
 
     except Exception as e:
