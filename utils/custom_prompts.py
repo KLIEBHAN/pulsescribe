@@ -106,7 +106,7 @@ def load_custom_prompts(path: Path | None = None) -> dict:
 
     # TOML parsen
     try:
-        user_config = tomllib.loads(prompts_file.read_text())
+        user_config = tomllib.loads(prompts_file.read_text(encoding="utf-8"))
     except (tomllib.TOMLDecodeError, OSError) as e:
         logger.warning(f"Prompts-Datei fehlerhaft: {e}")
         # Defaults cachen um wiederholtes Parsen zu vermeiden
@@ -266,7 +266,7 @@ def save_custom_prompts(data: dict, path: Path | None = None) -> None:
         lines.extend(_serialize_app_contexts(data["app_contexts"]))
 
     try:
-        prompts_file.write_text("\n".join(lines))
+        prompts_file.write_text("\n".join(lines), encoding="utf-8")
     except OSError as e:
         logger.warning(f"Prompts-Datei nicht schreibbar: {e}")
         raise

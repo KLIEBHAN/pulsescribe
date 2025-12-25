@@ -579,3 +579,27 @@ class TestSerializationEdgeCases:
 
         loaded = load_custom_prompts(path=prompts_file)
         assert loaded["prompts"]["default"]["prompt"] == tricky_prompt
+
+    def test_serialize_unicode_characters(self, prompts_file):
+        """Unicode-Zeichen wie Pfeile (→) werden korrekt gespeichert.
+
+        Regression test für Windows cp1252 Encoding Bug:
+        'charmap' codec can't encode character '\\u2192'
+        """
+        from utils.custom_prompts import save_custom_prompts, load_custom_prompts
+
+        # Prompt mit Unicode-Zeichen die cp1252 nicht unterstützt
+        unicode_prompt = """Voice Commands:
+- "neuer Absatz" → Neuer Absatz
+- "neue Zeile" → Zeilenumbruch
+- Emoji Test: 🎤 📝 ✅"""
+
+        save_custom_prompts(
+            {"voice_commands": {"instruction": unicode_prompt}},
+            path=prompts_file,
+        )
+
+        loaded = load_custom_prompts(path=prompts_file)
+        assert loaded["voice_commands"]["instruction"] == unicode_prompt
+        assert "→" in loaded["voice_commands"]["instruction"]
+        assert "🎤" in loaded["voice_commands"]["instruction"]
