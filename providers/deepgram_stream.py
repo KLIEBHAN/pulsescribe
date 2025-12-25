@@ -16,17 +16,18 @@ Usage:
     )
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import os
 import queue
-import signal
+import sys
 import threading
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable
 
 from config import (
@@ -82,10 +83,15 @@ class WarmStreamSource:
         stream: Der laufende InputStream (für Cleanup/Reference)
     """
 
-    audio_queue: "queue.Queue[bytes]"
+    audio_queue: queue.Queue[bytes]
     sample_rate: int
     arm_event: threading.Event
-    stream: "sd.InputStream"
+    stream: sd.InputStream
+
+    def __post_init__(self) -> None:
+        """Validiert Sample Rate."""
+        if not (8000 <= self.sample_rate <= 48000):
+            raise ValueError(f"sample_rate muss zwischen 8000-48000 liegen: {self.sample_rate}")
 
 
 @dataclass
@@ -101,6 +107,8 @@ class StreamState:
     stream_error: Exception | None = None
     stop_event: asyncio.Event = field(default_factory=asyncio.Event)
     finalize_done: asyncio.Event = field(default_factory=asyncio.Event)
+    # Flag für einmalige Buffer-Warnung
+    buffer_overflow_logged: bool = False
 
 
 @dataclass
@@ -108,8 +116,8 @@ class AudioSourceResult:
     """Ergebnis der Audio-Source-Initialisierung."""
 
     sample_rate: int
-    mic_stream: "sd.InputStream | None"  # None bei Warm-Stream
-    buffer_state: "BufferState | None"  # Nur für CLI-Mode
+    mic_stream: sd.InputStream | None  # None bei Warm-Stream
+    buffer_state: BufferState | None  # Nur für CLI-Mode
     forwarder_thread: threading.Thread | None = None  # Nur für Warm-Stream
 
 
@@ -146,7 +154,7 @@ def _play_sound(name: str) -> None:
 # =============================================================================
 
 
-def _extract_transcript(result: "LiveResultResponse | Any") -> str | None:
+def _extract_transcript(result: LiveResultResponse | Any) -> str | None:
     """Extrahiert Transkript aus Deepgram-Response.
 
     Deepgram's SDK liefert verschachtelte Objekte:
@@ -184,7 +192,7 @@ async def _create_deepgram_connection(
     encoding: str = "linear16",
     sample_rate: int = WHISPER_SAMPLE_RATE,
     channels: int = WHISPER_CHANNELS,
-) -> AsyncIterator["AsyncV1SocketClient"]:
+) -> AsyncIterator[AsyncV1SocketClient]:
     """Deepgram WebSocket mit kontrollierbarem close_timeout.
 
     Das SDK leitet close_timeout nicht an websockets.connect() weiter,
@@ -222,6 +230,53 @@ async def _create_deepgram_connection(
 
 
 # =============================================================================
+# Mikrofon Setup (DRY)
+# =============================================================================
+
+
+def _create_mic_stream(
+    callback: Callable[[np.ndarray, int, Any, Any], None],
+    session_id: str,
+    stream_start: float,
+) -> tuple[sd.InputStream, int]:
+    """Erstellt und startet Mikrofon-InputStream.
+
+    Konsolidiert duplizierten Mikrofon-Setup-Code.
+
+    Args:
+        callback: Audio-Callback für den Stream
+        session_id: Session-ID für Logging
+        stream_start: Startzeitpunkt für Timing-Messung
+
+    Returns:
+        Tuple (mic_stream, sample_rate)
+    """
+    import numpy as np
+    import sounddevice as sd
+
+    input_device, sample_rate = get_input_device()
+    blocksize = int(WHISPER_BLOCKSIZE * sample_rate / WHISPER_SAMPLE_RATE)
+
+    mic_stream = sd.InputStream(
+        device=input_device,
+        samplerate=sample_rate,
+        channels=WHISPER_CHANNELS,
+        blocksize=blocksize,
+        dtype=np.int16,
+        callback=callback,
+    )
+    mic_stream.start()
+
+    mic_init_ms = (time.perf_counter() - stream_start) * 1000
+    logger.info(
+        f"[{session_id}] Mikrofon bereit nach {mic_init_ms:.0f}ms "
+        f"(Device: {input_device}, {sample_rate}Hz)"
+    )
+
+    return mic_stream, sample_rate
+
+
+# =============================================================================
 # Audio Callback Factory
 # =============================================================================
 
@@ -230,11 +285,11 @@ def _create_audio_callback(
     *,
     state: StreamState,
     loop: asyncio.AbstractEventLoop,
-    audio_queue: "asyncio.Queue[bytes | None]",
+    audio_queue: asyncio.Queue[bytes | None],
     session_id: str,
     buffer_state: BufferState | None = None,
     audio_level_callback: Callable[[float], None] | None = None,
-) -> Callable[["np.ndarray", int, Any, Any], None]:
+) -> Callable[[np.ndarray, int, Any, Any], None]:
     """Factory für Audio-Callbacks.
 
     Erzeugt einen parametrisierten Callback für sounddevice.InputStream.
@@ -256,7 +311,7 @@ def _create_audio_callback(
     import numpy as np
 
     def audio_callback(
-        indata: "np.ndarray",
+        indata: np.ndarray,
         _frames: int,
         _time_info: Any,
         status: Any,
@@ -265,13 +320,14 @@ def _create_audio_callback(
         if status:
             logger.warning(f"[{session_id}] Audio-Status: {status}")
 
+        # Stop-Check zuerst (Performance)
+        if state.stop_event.is_set():
+            return
+
         # RMS-Berechnung für Visualisierung (nur wenn Callback gesetzt)
         if audio_level_callback is not None:
             rms = float(np.sqrt(np.mean(indata.astype(np.float32) ** 2)) / INT16_MAX)
             audio_level_callback(rms)
-
-        if state.stop_event.is_set():
-            return
 
         audio_bytes = indata.tobytes()
 
@@ -281,13 +337,13 @@ def _create_audio_callback(
                 if buffer_state.active:
                     if len(buffer_state.buffer) < CLI_BUFFER_LIMIT:
                         buffer_state.buffer.append(audio_bytes)
-                    else:
-                        # Buffer-Limit erreicht - Audio wird verworfen
-                        # Dies passiert nur bei extrem langen WebSocket-Handshakes
+                    elif not state.buffer_overflow_logged:
+                        # Buffer-Limit erreicht - nur EINMAL warnen
                         logger.warning(
                             f"[{session_id}] Audio-Buffer voll ({CLI_BUFFER_LIMIT} Chunks), "
-                            "verwerfe Audio"
+                            "verwerfe weiteres Audio bis WebSocket verbunden"
                         )
+                        state.buffer_overflow_logged = True
                 else:
                     loop.call_soon_threadsafe(audio_queue.put_nowait, audio_bytes)
         else:
@@ -302,11 +358,11 @@ def _create_audio_callback(
 # =============================================================================
 
 
-def _init_warm_stream_source(
+def _init_warm_stream(
     warm_source: WarmStreamSource,
     state: StreamState,
     loop: asyncio.AbstractEventLoop,
-    audio_queue: "asyncio.Queue[bytes | None]",
+    audio_queue: asyncio.Queue[bytes | None],
     session_id: str,
     play_ready: bool,
     stream_start: float,
@@ -355,11 +411,11 @@ def _init_warm_stream_source(
     )
 
 
-def _init_daemon_audio_source(
+def _init_daemon_stream(
     early_buffer: list[bytes],
     state: StreamState,
     loop: asyncio.AbstractEventLoop,
-    audio_queue: "asyncio.Queue[bytes | None]",
+    audio_queue: asyncio.Queue[bytes | None],
     session_id: str,
     play_ready: bool,
     stream_start: float,
@@ -369,9 +425,6 @@ def _init_daemon_audio_source(
     Vorab aufgenommenes Audio wird direkt in die Queue geschoben.
     Mikrofon wird neu gestartet für weiteres Audio.
     """
-    import numpy as np
-    import sounddevice as sd
-
     # Early Buffer in Queue schieben
     for chunk in early_buffer:
         audio_queue.put_nowait(chunk)
@@ -386,25 +439,7 @@ def _init_daemon_audio_source(
         buffer_state=None,  # Direct Mode
     )
 
-    # Mikrofon starten
-    input_device, sample_rate = get_input_device()
-    blocksize = int(WHISPER_BLOCKSIZE * sample_rate / WHISPER_SAMPLE_RATE)
-
-    mic_stream = sd.InputStream(
-        device=input_device,
-        samplerate=sample_rate,
-        channels=WHISPER_CHANNELS,
-        blocksize=blocksize,
-        dtype=np.int16,
-        callback=callback,
-    )
-    mic_stream.start()
-
-    mic_init_ms = (time.perf_counter() - stream_start) * 1000
-    logger.info(
-        f"[{session_id}] Mikrofon bereit nach {mic_init_ms:.0f}ms "
-        f"(Device: {input_device}, {sample_rate}Hz)"
-    )
+    mic_stream, sample_rate = _create_mic_stream(callback, session_id, stream_start)
 
     if play_ready:
         _play_sound("ready")
@@ -416,10 +451,10 @@ def _init_daemon_audio_source(
     )
 
 
-def _init_cli_audio_source(
+def _init_cli_stream(
     state: StreamState,
     loop: asyncio.AbstractEventLoop,
-    audio_queue: "asyncio.Queue[bytes | None]",
+    audio_queue: asyncio.Queue[bytes | None],
     session_id: str,
     play_ready: bool,
     stream_start: float,
@@ -430,9 +465,6 @@ def _init_cli_audio_source(
     Puffert Audio bis WebSocket verbunden ist, um Audio-Verlust
     während des ~500ms Handshakes zu vermeiden.
     """
-    import numpy as np
-    import sounddevice as sd
-
     buffer_state = BufferState()
 
     callback = _create_audio_callback(
@@ -444,25 +476,7 @@ def _init_cli_audio_source(
         audio_level_callback=audio_level_callback,
     )
 
-    # Mikrofon starten
-    input_device, sample_rate = get_input_device()
-    blocksize = int(WHISPER_BLOCKSIZE * sample_rate / WHISPER_SAMPLE_RATE)
-
-    mic_stream = sd.InputStream(
-        device=input_device,
-        samplerate=sample_rate,
-        channels=WHISPER_CHANNELS,
-        blocksize=blocksize,
-        dtype=np.int16,
-        callback=callback,
-    )
-    mic_stream.start()
-
-    mic_init_ms = (time.perf_counter() - stream_start) * 1000
-    logger.info(
-        f"[{session_id}] Mikrofon bereit nach {mic_init_ms:.0f}ms "
-        f"(Device: {input_device}, {sample_rate}Hz)"
-    )
+    mic_stream, sample_rate = _create_mic_stream(callback, session_id, stream_start)
 
     if play_ready:
         _play_sound("ready")
@@ -482,18 +496,10 @@ def _init_cli_audio_source(
 def _create_message_handler(
     state: StreamState,
     session_id: str,
-) -> Callable[["LiveResultResponse | Any"], None]:
-    """Erstellt Handler für Deepgram-Nachrichten.
+) -> Callable[[LiveResultResponse | Any], None]:
+    """Erstellt Handler für Deepgram-Nachrichten."""
 
-    Args:
-        state: Zentraler StreamState
-        session_id: Session-ID für Logging
-
-    Returns:
-        Handler-Funktion für EventType.MESSAGE
-    """
-
-    def on_message(result: "LiveResultResponse | Any") -> None:
+    def on_message(result: LiveResultResponse | Any) -> None:
         """Sammelt Transkripte aus Deepgram-Responses."""
         # from_finalize=True signalisiert: Server hat Rest-Audio verarbeitet
         if getattr(result, "from_finalize", False):
@@ -503,7 +509,6 @@ def _create_message_handler(
         if not transcript:
             return
 
-        # Nur LiveResultResponse hat is_final (Default: False = interim)
         is_final = getattr(result, "is_final", False)
 
         if is_final:
@@ -527,15 +532,7 @@ def _create_error_handler(
     state: StreamState,
     session_id: str,
 ) -> Callable[[Any], None]:
-    """Erstellt Handler für Deepgram-Fehler.
-
-    Args:
-        state: Zentraler StreamState
-        session_id: Session-ID für Logging
-
-    Returns:
-        Handler-Funktion für EventType.ERROR
-    """
+    """Erstellt Handler für Deepgram-Fehler."""
 
     def on_error(error: Exception | str | Any) -> None:
         """Behandelt Fehler vom Deepgram-Server."""
@@ -553,15 +550,7 @@ def _create_close_handler(
     state: StreamState,
     session_id: str,
 ) -> Callable[[Any], None]:
-    """Erstellt Handler für Verbindungs-Ende.
-
-    Args:
-        state: Zentraler StreamState
-        session_id: Session-ID für Logging
-
-    Returns:
-        Handler-Funktion für EventType.CLOSE
-    """
+    """Erstellt Handler für Verbindungs-Ende."""
 
     def on_close(_data: Any) -> None:
         """Behandelt Verbindungs-Ende."""
@@ -584,7 +573,7 @@ def _setup_stop_mechanism(
 ) -> None:
     """Richtet den Stop-Mechanismus ein.
 
-    Entweder externes threading.Event oder SIGUSR1 Signal-Handler.
+    Entweder externes threading.Event oder SIGUSR1 Signal-Handler (nur Unix).
     """
     if external_stop_event is not None:
         # Unified-Daemon-Mode: Externes threading.Event überwachen
@@ -593,7 +582,6 @@ def _setup_stop_mechanism(
             try:
                 loop.call_soon_threadsafe(state.stop_event.set)
             except RuntimeError as e:
-                # Event loop bereits geschlossen (z.B. CMD+Q während Aufnahme)
                 logger.debug(
                     f"[{session_id}] Event-Loop geschlossen, Stop-Event nicht gesetzt: {e}"
                 )
@@ -604,14 +592,46 @@ def _setup_stop_mechanism(
         stop_watcher.start()
         logger.debug(f"[{session_id}] External stop event watcher gestartet")
 
-    elif threading.current_thread() is threading.main_thread():
-        # CLI/Signal-Mode: SIGUSR1 Signal-Handler
+    elif sys.platform != "win32" and threading.current_thread() is threading.main_thread():
+        # Unix only: SIGUSR1 Signal-Handler
+        import signal
+
         loop.add_signal_handler(signal.SIGUSR1, state.stop_event.set)
+
+
+def _cleanup_stop_mechanism(
+    loop: asyncio.AbstractEventLoop,
+    external_stop_event: threading.Event | None,
+) -> None:
+    """Entfernt Signal-Handler (nur Unix)."""
+    if external_stop_event is None and sys.platform != "win32":
+        if threading.current_thread() is threading.main_thread():
+            import signal
+
+            try:
+                loop.remove_signal_handler(signal.SIGUSR1)
+            except Exception:
+                pass
 
 
 # =============================================================================
 # Streaming Core
 # =============================================================================
+
+
+def _validate_model(model: str) -> None:
+    """Validiert Model-Parameter."""
+    if not model or not model.strip():
+        raise ValueError("model darf nicht leer sein")
+
+
+def _validate_api_key(api_key: str | None) -> str:
+    """Validiert API-Key und gibt ihn zurück."""
+    if not api_key:
+        raise ValueError("DEEPGRAM_API_KEY nicht gesetzt")
+    if not api_key.strip():
+        raise ValueError("DEEPGRAM_API_KEY ist leer")
+    return api_key
 
 
 async def deepgram_stream_core(
@@ -642,23 +662,25 @@ async def deepgram_stream_core(
 
     Returns:
         Transkribierter Text als String
+
+    Raises:
+        ValueError: Bei ungültigen Parametern oder fehlendem API-Key
     """
     from deepgram.core.events import EventType
     from deepgram.extensions.types.sockets import ListenV1ControlMessage
 
+    # Validierung
+    _validate_model(model)
+    api_key = _validate_api_key(os.getenv("DEEPGRAM_API_KEY"))
+
     session_id = get_session_id()
-
-    api_key = os.getenv("DEEPGRAM_API_KEY")
-    if not api_key:
-        raise ValueError("DEEPGRAM_API_KEY nicht gesetzt")
-
     stream_start = time.perf_counter()
 
-    # Modus bestimmen und loggen
+    # Modus bestimmen
     if warm_stream_source is not None:
         mode = AudioSourceMode.WARM_STREAM
         mode_str = "Warm-Stream"
-    elif early_buffer:
+    elif early_buffer:  # Nicht-leere Liste
         mode = AudioSourceMode.DAEMON
         mode_str = f"Daemon, {len(early_buffer)} early chunks"
     else:
@@ -681,7 +703,7 @@ async def deepgram_stream_core(
     # Audio-Source initialisieren (modus-spezifisch)
     if mode == AudioSourceMode.WARM_STREAM:
         assert warm_stream_source is not None
-        audio_result = _init_warm_stream_source(
+        audio_result = _init_warm_stream(
             warm_source=warm_stream_source,
             state=state,
             loop=loop,
@@ -692,7 +714,7 @@ async def deepgram_stream_core(
         )
     elif mode == AudioSourceMode.DAEMON:
         assert early_buffer is not None
-        audio_result = _init_daemon_audio_source(
+        audio_result = _init_daemon_stream(
             early_buffer=early_buffer,
             state=state,
             loop=loop,
@@ -702,7 +724,7 @@ async def deepgram_stream_core(
             stream_start=stream_start,
         )
     else:  # CLI Mode
-        audio_result = _init_cli_audio_source(
+        audio_result = _init_cli_stream(
             state=state,
             loop=loop,
             audio_queue=audio_queue,
@@ -753,9 +775,12 @@ async def deepgram_stream_core(
                             chunk = await asyncio.wait_for(
                                 audio_queue.get(), timeout=0.1
                             )
-                            if chunk is None:  # Sentinel = sauberes Ende
+                            if chunk is None:
                                 break
-                            await connection.send_media(chunk)
+                            # Timeout für send_media um Hänger zu vermeiden
+                            await asyncio.wait_for(
+                                connection.send_media(chunk), timeout=5.0
+                            )
                         except asyncio.TimeoutError:
                             continue
                 except asyncio.CancelledError:
@@ -777,7 +802,7 @@ async def deepgram_stream_core(
             send_task = asyncio.create_task(send_audio())
             listen_task = asyncio.create_task(listen_for_messages())
 
-            # Warten auf Stop (SIGUSR1, externes Event, oder Fehler)
+            # Warten auf Stop
             await state.stop_event.wait()
             logger.info(f"[{session_id}] Stop-Signal empfangen")
 
@@ -785,18 +810,14 @@ async def deepgram_stream_core(
             INTERIM_FILE.unlink(missing_ok=True)
 
             # ═══════════════════════════════════════════════════════════════════
-            # GRACEFUL SHUTDOWN - Optimiert für minimale Latenz
-            #
-            # Wir senden explizit Finalize + CloseStream BEVOR der Context Manager
-            # endet. Das reduziert die Shutdown-Zeit von ~10s auf ~2s.
-            # Siehe docs/adr/001-deepgram-streaming-shutdown.md
+            # GRACEFUL SHUTDOWN
             # ═══════════════════════════════════════════════════════════════════
 
             # 1. Audio-Sender beenden
             await audio_queue.put(None)
             await send_task
 
-            # 2. Finalize: Deepgram verarbeitet gepuffertes Audio
+            # 2. Finalize
             logger.info(f"[{session_id}] Sende Finalize...")
             t_finalize_start = time.perf_counter()
             try:
@@ -818,7 +839,7 @@ async def deepgram_stream_core(
                     f"(max: {FINALIZE_TIMEOUT}s)"
                 )
 
-            # 4. CloseStream: Erzwingt sofortiges Verbindungs-Ende
+            # 4. CloseStream
             logger.info(f"[{session_id}] Sende CloseStream...")
             try:
                 await connection.send_control(
@@ -828,33 +849,30 @@ async def deepgram_stream_core(
             except Exception as e:
                 logger.warning(f"[{session_id}] CloseStream fehlgeschlagen: {e}")
 
-            # 5. Listener Task beenden
+            # 5. Listener beenden
             logger.info(f"[{session_id}] Beende Listener...")
             listen_task.cancel()
             await asyncio.gather(listen_task, return_exceptions=True)
             logger.info(f"[{session_id}] Listener beendet, verlasse async-with...")
 
     finally:
-        # Cleanup: Mikrofon und Signal-Handler freigeben
+        # Cleanup: Mikrofon freigeben
         if audio_result.mic_stream is not None:
             try:
                 audio_result.mic_stream.stop()
                 audio_result.mic_stream.close()
             except Exception:
                 pass
-        elif warm_stream_source is not None:
-            # Warm-Stream: Disarm (stoppe Sammeln, Stream läuft weiter)
-            warm_stream_source.arm_event.clear()
 
-        # Signal-Handler nur entfernen wenn nicht external_stop_event verwendet
-        if (
-            external_stop_event is None
-            and threading.current_thread() is threading.main_thread()
-        ):
-            try:
-                loop.remove_signal_handler(signal.SIGUSR1)
-            except Exception:
-                pass
+        # Warm-Stream: Disarm und Forwarder-Thread beenden
+        if warm_stream_source is not None:
+            warm_stream_source.arm_event.clear()
+            if audio_result.forwarder_thread is not None:
+                # Thread sollte durch stop_event beendet werden
+                audio_result.forwarder_thread.join(timeout=0.5)
+
+        # Signal-Handler entfernen
+        _cleanup_stop_mechanism(loop, external_stop_event)
 
     if state.stream_error:
         raise state.stream_error
@@ -888,7 +906,7 @@ class DeepgramStreamProvider:
 
     def transcribe(
         self,
-        audio_path: Path,
+        audio_path: str,
         model: str | None = None,
         language: str | None = None,
     ) -> str:
@@ -896,9 +914,11 @@ class DeepgramStreamProvider:
 
         Für Datei-Transkription nutze den regulären DeepgramProvider.
         """
+        from pathlib import Path
+
         from .deepgram import DeepgramProvider
 
-        return DeepgramProvider().transcribe(audio_path, model, language)
+        return DeepgramProvider().transcribe(Path(audio_path), model, language)
 
     def transcribe_stream(
         self,
@@ -940,7 +960,7 @@ def transcribe_with_deepgram_stream(
     """Sync Wrapper für async Deepgram Streaming.
 
     Verwendet asyncio.run() um die async Implementierung auszuführen.
-    Für CLI/Signal-Integrationen: SIGUSR1 stoppt die Aufnahme sauber.
+    Für CLI/Signal-Integrationen: SIGUSR1 stoppt die Aufnahme sauber (nur Unix).
     """
     return asyncio.run(_transcribe_with_deepgram_stream_async(model, language))
 
@@ -956,7 +976,10 @@ __all__ = [
     "deepgram_stream_core",
     "transcribe_with_deepgram_stream",
     "transcribe_with_deepgram_stream_with_buffer",
-    # Für Tests
+    # Für Tests & Rückwärtskompatibilität
+    "_transcribe_with_deepgram_stream_async",
+    "_deepgram_stream_core",
+    # Dataclasses (für Tests)
     "StreamState",
     "AudioSourceMode",
     "AudioSourceResult",
