@@ -65,6 +65,7 @@ from config import (
     FINALIZE_TIMEOUT,
     DEEPGRAM_WS_URL,
     DEEPGRAM_CLOSE_TIMEOUT,
+    CLI_BUFFER_LIMIT,
     INTERIM_FILE,
     DEFAULT_DEEPGRAM_MODEL,
     get_input_device,
@@ -408,7 +409,9 @@ async def deepgram_stream_core(
             audio_bytes = indata.tobytes()
             with buffer_lock:
                 if buffering_active:
-                    audio_buffer.append(audio_bytes)
+                    if len(audio_buffer) < CLI_BUFFER_LIMIT:
+                        audio_buffer.append(audio_bytes)
+                    # Über Limit: Audio verwerfen (verhindert Memory-Wachstum bei langer Aufnahme)
                 else:
                     loop.call_soon_threadsafe(audio_queue.put_nowait, audio_bytes)
 

@@ -58,7 +58,7 @@ from utils.state import AppState
 from utils.hold_state import HoldHotkeyState
 from utils.hotkey import paste_transcript
 from whisper_platform import get_clipboard, get_sound_player
-from config import INTERIM_FILE, get_input_device
+from config import INTERIM_FILE, get_input_device, WARM_STREAM_QUEUE_SIZE
 from providers import get_provider
 
 # Lazy imports für optionale Features
@@ -249,9 +249,9 @@ class PulseScribeWindows:
         # ═══════════════════════════════════════════════════════════════════
         self._warm_stream = None  # sd.InputStream (läuft dauerhaft)
         self._warm_stream_armed = threading.Event()  # Wenn gesetzt: Samples sammeln
-        # Queue mit maxsize: ~10s Audio bei 64ms Chunks = 156 Chunks
+        # Queue mit maxsize: via PULSESCRIBE_WARM_STREAM_QUEUE_SIZE (default: 300)
         # Verhindert Memory Leak wenn Forwarder nicht läuft
-        self._warm_stream_queue: queue.Queue[bytes] = queue.Queue(maxsize=200)
+        self._warm_stream_queue: queue.Queue[bytes] = queue.Queue(maxsize=WARM_STREAM_QUEUE_SIZE)
         self._warm_stream_sample_rate = 16000  # Wird beim Start aktualisiert
         self._is_prewarm_loading = False  # Unterscheidet Pre-Warm von Recording LOADING
 
