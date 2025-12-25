@@ -5,6 +5,22 @@
 
 [🇩🇪 Deutsche Version](README.de.md)
 
+## Table of Contents
+
+- [Quick Start](#quick-start)
+- [CLI Usage](#cli-usage)
+- [Configuration](#configuration)
+- [Advanced Features](#advanced-features)
+- [Hotkey Integration](#hotkey-integration)
+- [Provider Comparison](#provider-comparison)
+- [Model Reference](#model-reference)
+- [Troubleshooting](#troubleshooting)
+- [Development](#development)
+  - [Windows Support](#windows-support)
+  - [Building the macOS App Bundle](#building-the-macos-app-bundle)
+
+---
+
 Voice input for macOS and Windows – inspired by [Wispr Flow](https://wisprflow.ai). Transcribes audio using OpenAI Whisper via API, Deepgram, Groq, or locally.
 
 **Features:** Real-time Streaming (Deepgram) · Multiple Providers (OpenAI, Deepgram, Groq, Local) · **⚡ Lightning Mode** (4x faster local transcription on Apple Silicon) · LLM Post-processing · Context Awareness · Custom Vocabulary · Live Preview Overlay · Menu Bar Feedback
@@ -25,6 +41,16 @@ Voice input for macOS and Windows – inspired by [Wispr Flow](https://wisprflow
 | **Groq**     | ~1s       | REST      | Whisper on LPU, very fast                              |
 | **OpenAI**   | ~2-3s     | REST      | GPT-4o, highest quality                                |
 | **Local**    | varies    | Whisper   | Offline, no API costs (MLX/Lightning on Apple Silicon) |
+
+### Terminology
+
+| Term | Meaning |
+|------|---------|
+| **LPU** | Language Processing Unit – Groq's custom chip for ultra-fast inference |
+| **VAD** | Voice Activity Detection – automatic speech start/stop detection |
+| **RTF** | Real-Time Factor – processing time / audio duration (lower = faster) |
+| **Refine** | LLM post-processing to clean up transcriptions |
+| **Streaming** | WebSocket-based real-time transcription during recording |
 
 ## Quick Start
 

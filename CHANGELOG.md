@@ -26,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Hold flag reset in `_stop_recording()` on Windows
 
-## [1.1.1] - 2025-12-XX
+## [1.1.1] - 2025-12-24
 
 ### Fixed
 - **Critical:** Crash on macOS 26 (Tahoe) due to UI updates from background threads
@@ -39,7 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Blue loading animation in overlay (distinct from orange transcribing animation)
 - Thread-safe `_update_state()` with automatic main-thread dispatching
 
-## [1.1.0] - 2025-12-XX
+## [1.1.0] - 2025-12-20
 
 ### Added
 - **Lightning Mode:** `lightning-whisper-mlx` backend for ~4x faster local transcription on Apple Silicon
@@ -57,7 +57,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed legacy Raycast daemon/IPC code
 - Added `mlx_models/` to `.gitignore`
 
-## [1.0.0] - 2025-12-XX
+## [1.0.0] - 2025-12-15
 
 ### Added
 - **System-wide dictation workflow**
