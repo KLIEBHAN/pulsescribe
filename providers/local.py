@@ -573,6 +573,25 @@ class LocalProvider:
             return env_model.strip()
         return self.default_model
 
+    def get_runtime_info(self) -> dict[str, str | None]:
+        """Gibt aktuelle Runtime-Konfiguration zurück (nach preload/transcribe).
+
+        Returns:
+            Dict mit backend, device, compute_type (compute_type nur bei faster-whisper).
+        """
+        self._ensure_runtime_config()
+        info: dict[str, str | None] = {
+            "backend": self._backend,
+            "device": self._device,
+        }
+        # compute_type nur bei faster-whisper relevant
+        if self._backend == "faster":
+            device = "cuda" if self._device == "cuda" else "cpu"
+            info["compute_type"] = self._compute_type or (
+                "float16" if device == "cuda" else "int8"
+            )
+        return info
+
     def preload(self, model: str | None = None) -> None:
         """Lädt ein Modell vorab in den Cache."""
         model_name = self._resolve_model_name(model)

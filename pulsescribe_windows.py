@@ -1690,7 +1690,18 @@ class PulseScribeWindows:
                     if hasattr(provider, "preload"):
                         provider.preload(model=model)
                     preload_ms = (time.perf_counter() - preload_start) * 1000
-                    logger.info(f"Local-Modell '{model}' vorab geladen ({preload_ms:.0f}ms)")
+                    # Runtime-Info für Logging (Device, Compute-Type)
+                    runtime_info = ""
+                    if hasattr(provider, "get_runtime_info"):
+                        info = provider.get_runtime_info()
+                        device = (info.get("device") or "unknown").upper()
+                        compute = info.get("compute_type")
+                        runtime_info = f", Device: {device}"
+                        if compute:
+                            runtime_info += f", Compute: {compute}"
+                    logger.info(
+                        f"Local-Modell '{model}' vorab geladen ({preload_ms:.0f}ms{runtime_info})"
+                    )
                 except Exception as e:
                     logger.warning(f"Local-Modell Preload fehlgeschlagen: {e}")
 

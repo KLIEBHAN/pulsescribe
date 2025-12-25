@@ -477,7 +477,16 @@ class PulseScribeDaemon:
             try:
                 provider.preload(self.model)  # type: ignore[attr-defined]
                 t_preload = time.perf_counter() - t0
-                logger.info(f"Lokales Modell vorab geladen ({t_preload:.2f}s)")
+                # Runtime-Info für Logging (Device, Compute-Type)
+                runtime_info = ""
+                if hasattr(provider, "get_runtime_info"):
+                    info = provider.get_runtime_info()
+                    device_str = (info.get("device") or "unknown").upper()
+                    compute = info.get("compute_type")
+                    runtime_info = f", Device: {device_str}"
+                    if compute:
+                        runtime_info += f", Compute: {compute}"
+                logger.info(f"Lokales Modell vorab geladen ({t_preload:.2f}s{runtime_info})")
                 warmup_flag = get_env_bool("PULSESCRIBE_LOCAL_WARMUP")
                 backend = getattr(provider, "backend", None) or getattr(
                     provider, "_backend", None
