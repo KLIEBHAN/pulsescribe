@@ -27,6 +27,9 @@ logger = logging.getLogger("pulsescribe.providers.local")
 # Command for missing cuDNN libraries
 CUDNN_INSTALL_COMMAND = "pip install nvidia-cudnn-cu12"
 
+# Default compute type for CPU (float16 is not supported efficiently on CPU)
+CPU_COMPUTE_TYPE = "int8"
+
 
 def _is_apple_silicon() -> bool:
     """Prüft ob wir auf Apple Silicon (arm64 macOS) laufen."""
@@ -388,7 +391,7 @@ class LocalProvider:
 
         faster_name = self._map_faster_model_name(model_name)
         device = "cuda" if self._device == "cuda" else "cpu"
-        compute_type = self._compute_type or ("float16" if device == "cuda" else "int8")
+        compute_type = self._compute_type or ("float16" if device == "cuda" else CPU_COMPUTE_TYPE)
 
         cpu_threads = get_env_int("PULSESCRIBE_LOCAL_CPU_THREADS") or 0
         num_workers = get_env_int("PULSESCRIBE_LOCAL_NUM_WORKERS") or 1
@@ -421,10 +424,13 @@ class LocalProvider:
                 if device == "cuda" and ("cudnn" in error_msg or "cuda" in error_msg):
                     logger.warning(
                         f"CUDA/cuDNN nicht verfügbar ({e}), "
-                        "Fallback auf CPU mit int8. "
+                        f"Fallback auf CPU mit {CPU_COMPUTE_TYPE}. "
                         f"Für GPU-Unterstützung: {CUDNN_INSTALL_COMMAND}"
                     )
-                    cpu_compute = "int8"
+                    # Device und Compute-Type global umstellen (verhindert wiederholte Fallback-Versuche)
+                    self._device = "cpu"
+                    self._compute_type = CPU_COMPUTE_TYPE
+                    cpu_compute = CPU_COMPUTE_TYPE
                     cpu_cache_key = (
                         f"faster:{faster_name}:cpu:{cpu_compute}:{cpu_threads}:{num_workers}"
                     )
@@ -591,7 +597,7 @@ class LocalProvider:
         if self._backend == "faster":
             device = "cuda" if self._device == "cuda" else "cpu"
             info["compute_type"] = self._compute_type or (
-                "float16" if device == "cuda" else "int8"
+                "float16" if device == "cuda" else CPU_COMPUTE_TYPE
             )
         return info
 
@@ -707,8 +713,9 @@ class LocalProvider:
                     f"CUDA/cuDNN-Fehler bei Transkription: {e}. "
                     "Wechsle zu CPU-Modus..."
                 )
-                # Device auf CPU umstellen und Modell-Cache leeren
+                # Device und Compute-Type auf CPU-kompatible Werte umstellen
                 self._device = "cpu"
+                self._compute_type = CPU_COMPUTE_TYPE
                 # Alle CUDA-Modelle aus Cache entfernen
                 cuda_keys = [k for k in self._model_cache if ":cuda:" in k]
                 for k in cuda_keys:
