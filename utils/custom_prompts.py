@@ -107,7 +107,7 @@ def load_custom_prompts(path: Path | None = None) -> dict:
     # TOML parsen
     try:
         user_config = tomllib.loads(prompts_file.read_text(encoding="utf-8"))
-    except (tomllib.TOMLDecodeError, OSError) as e:
+    except (tomllib.TOMLDecodeError, OSError, UnicodeDecodeError) as e:
         logger.warning(f"Prompts-Datei fehlerhaft: {e}")
         # Defaults cachen um wiederholtes Parsen zu vermeiden
         defaults = get_defaults()
