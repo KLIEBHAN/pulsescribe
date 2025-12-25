@@ -1,6 +1,6 @@
 # PulseScribe Vision
 
-> Eine minimalistische, Open-Source Alternative zu [Wispr Flow](https://wisprflow.ai) – systemweite Spracheingabe für macOS.
+> Eine minimalistische, Open-Source Alternative zu [Wispr Flow](https://wisprflow.ai) – systemweite Spracheingabe für macOS und Windows.
 
 ---
 
@@ -33,7 +33,7 @@ Kein Electron. Kein Cloud-Lock-in. Kein Abo.
 | Prinzip            | Bedeutung                    |
 | ------------------ | ---------------------------- |
 | **Minimalistisch** | Eine Sache gut machen        |
-| **Offline-first**  | Lokale Modelle als Default   |
+| **Offline-fähig**  | Lokale Modelle als Option    |
 | **Atomar**         | Kleine, fokussierte Releases |
 | **Open Source**    | Transparent, erweiterbar     |
 
@@ -41,22 +41,24 @@ Kein Electron. Kein Cloud-Lock-in. Kein Abo.
 
 ## Roadmap
 
-### Aktueller Fokus: Phase 5 (Multi-Platform)
+### Aktueller Fokus: Phase 6 (Polish & Linux)
 
 - [x] **Native Hotkeys (macOS)** ✅
   - Hotkey-Registrierung via [QuickMacHotKey](https://github.com/glyph/QuickMacHotKey) (Carbon API)
-- [ ] **Windows Support** – Priorisiert (siehe [WINDOWS_ANALYSIS.md](./WINDOWS_ANALYSIS.md))
-- [ ] **Linux Support**
+- [x] **Windows Support** ✅ – MVP Complete (siehe [WINDOWS_MVP.md](./WINDOWS_MVP.md))
+  - System-Tray, Hotkeys, Settings-GUI, Mica-Effekt
+- [ ] **Linux Support** – Geplant
 - [x] **CLI Modernisierung** (Migration auf `typer`) ✅
 
-### Abgeschlossene Meilensteine (Phases 1-4) ✅
+### Abgeschlossene Meilensteine (Phases 1-5) ✅
 
 - **Foundation:** CLI-Tool, Audio-Aufnahme, Zwischenablage
 - **System-Integration:** Menübar-Feedback, Auto-Paste
 - **Smart Features:** LLM-Refine, Deepgram Streaming (~300ms Latenz), Kontext-Awareness
-- **Native App:** Menübar-App, Overlay UI, Schallwellen-Visualisierung
+- **Native App (macOS):** Menübar-App, Overlay UI, Schallwellen-Visualisierung
 - **App Bundle:** PyInstaller-basierte macOS App (`PulseScribe.app`)
-- **Quality:** 198 Tests, CI/CD, Modularisierung
+- **Windows MVP:** System-Tray, PySide6 Settings-GUI, Mica-Effekt, Installer
+- **Quality:** Tests, CI/CD, Modularisierung
 
 ---
 
@@ -74,7 +76,7 @@ Kein Electron. Kein Cloud-Lock-in. Kein Abo.
 ├──────────────┼────────────────────────────────────────────┤
 │ Feedback     │ Overlay (PyObjC) / Menübar (rumps)         │
 ├──────────────┼────────────────────────────────────────────┤
-│ Nachbearbeit.│ GPT-5 / OpenRouter (Refine & Actions)      │
+│ Nachbearbeit.│ GPT-4o / Groq / OpenRouter (Refine)        │
 ├──────────────┼────────────────────────────────────────────┤
 │ Output       │ Clipboard → Auto-Paste                     │
 └──────────────┴────────────────────────────────────────────┘
@@ -86,17 +88,21 @@ Das Projekt ist vollständig modularisiert:
 
 ```
 pulsescribe/
-├── transcribe.py                  # CLI Entry Point
-├── pulsescribe_daemon.py          # Unified Daemon (Orchestrator)
-├── build_app.spec                 # PyInstaller Spec für PulseScribe.app
-├── config.py                      # Zentrale Konfiguration
-├── providers/                     # Transkriptions-Provider (Deepgram, OpenAI, etc.)
-├── audio/                         # Audio-Handling (Recording)
-├── refine/                        # LLM-Nachbearbeitung & Prompts
-├── ui/                            # Native UI (Menübar & Overlay)
-├── utils/                         # Utilities (Logging, Hotkey, Daemon, Permissions)
-└── whisper_platform/              # OS-Abstraktionsschicht
+├── transcribe.py           # CLI Entry Point
+├── pulsescribe_daemon.py   # macOS Daemon (NSApplication)
+├── pulsescribe_windows.py  # Windows Daemon (pystray + PySide6)
+├── config.py               # Zentrale Konfiguration
+├── providers/              # Transkriptions-Provider (Deepgram, OpenAI, Groq, Local)
+├── audio/                  # Audio-Handling (Recording)
+├── refine/                 # LLM-Nachbearbeitung & Prompts
+├── ui/                     # Native UI (Menübar, Overlay, Settings)
+├── utils/                  # Utilities (Logging, Hotkey, Preferences, etc.)
+├── whisper_platform/       # OS-Abstraktionsschicht (Clipboard, Sound, Hotkey)
+├── cli/                    # CLI-Typdefinitionen
+└── tests/                  # Unit & Integration Tests
 ```
+
+Für die vollständige Struktur siehe [CLAUDE.md](../CLAUDE.md).
 
 ### User-Daten
 
@@ -104,10 +110,11 @@ Alle User-spezifischen Daten in `~/.pulsescribe/`:
 
 ```
 ~/.pulsescribe/
-├── .env                           # User-Konfiguration (API Keys, etc.)
-├── logs/pulsescribe.log            # Rotierendes Log (max 1MB, 3 Backups)
-├── startup.log                    # Emergency-Log für Crash-Debugging
-└── vocabulary.json                # Custom Vocabulary
+├── .env                    # User-Konfiguration (API Keys, etc.)
+├── logs/pulsescribe.log    # Rotierendes Log (max 1MB, 3 Backups)
+├── startup.log             # Emergency-Log für Crash-Debugging
+├── vocabulary.json         # Custom Vocabulary
+└── prompts.toml            # Custom Prompts
 ```
 
 ---

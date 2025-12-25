@@ -11,43 +11,96 @@ Siehe [docs/WINDOWS_MVP.md](docs/WINDOWS_MVP.md) für Windows-Port Status.
 
 ```
 pulsescribe/
-├── transcribe.py          # CLI Orchestrierung (Wrapper)
-├── pulsescribe_daemon.py  # macOS Daemon (NSApplication Loop)
-├── pulsescribe_windows.py # Windows Daemon (pystray + pynput)
-├── start_daemon.command   # macOS Login Item für Auto-Start
-├── start_daemon.bat       # Windows Batch für Auto-Start
-├── build_app.spec         # PyInstaller Spec für macOS App Bundle
-├── build_windows.spec     # PyInstaller Spec für Windows EXE
-├── build_windows.ps1      # PowerShell Build-Script (EXE + Installer)
-├── installer_windows.iss  # Inno Setup Script für Windows Installer
-├── config.py              # Zentrale Konfiguration (Pfade, Konstanten)
-├── requirements.txt       # Dependencies (beide Plattformen)
-├── README.md              # Benutzer-Dokumentation
-├── CHANGELOG.md           # Versionshistorie
-├── CONTRIBUTING.md        # Contributor-Guidelines
-├── CLAUDE.md              # Diese Datei
-├── docs/                  # Dokumentation (Vision, Deepgram, Windows MVP, etc.)
-├── audio/                 # Audio-Aufnahme und -Handling
-├── providers/             # Transkriptions-Provider (Deepgram, OpenAI, etc.)
-├── refine/                # LLM-Nachbearbeitung und Kontext
-│   └── prompts.py         # Prompt-Templates (Consolidated)
-├── ui/                    # User Interface Components
-│   ├── animation.py       # Shared Animation Logic (AGC, Traveling Wave, Envelope)
-│   ├── menubar.py         # macOS MenuBar Controller (NSStatusBar)
-│   ├── overlay.py         # macOS Overlay Controller & SoundWave
-│   ├── overlay_windows.py # Windows Overlay (Tkinter)
-│   └── overlay_pyside6.py # Windows Overlay (PySide6, GPU-beschleunigt)
-├── whisper_platform/      # Plattform-Abstraktion (Factory Pattern)
-│   ├── __init__.py        # Exports: get_clipboard, get_hotkey_listener, etc.
-│   ├── clipboard.py       # MacOSClipboard / WindowsClipboard
-│   ├── sound.py           # MacOSSound / WindowsSound
-│   ├── hotkey.py          # Hotkey-Listener (QuickMacHotKey / pynput)
-│   ├── app_detection.py   # Aktive App erkennen (NSWorkspace / win32gui)
-│   └── paste.py           # Auto-Paste (AppleScript / pynput Ctrl+V)
-├── utils/                 # Utilities (Logging, Hotkey, etc.)
-│   ├── paths.py           # Pfad-Helper für PyInstaller Bundle
-│   └── permissions.py     # macOS Berechtigungs-Checks (Mikrofon)
-└── tests/                 # Unit & Integration Tests
+├── transcribe.py            # CLI Orchestrierung (Wrapper)
+├── pulsescribe_daemon.py    # macOS Daemon (NSApplication Loop)
+├── pulsescribe_windows.py   # Windows Daemon (pystray + pynput)
+├── config.py                # Zentrale Konfiguration (Pfade, Konstanten)
+│
+├── start_daemon.command     # macOS Login Item für Auto-Start
+├── start_daemon.bat         # Windows Batch für Auto-Start
+│
+├── build_app.spec           # PyInstaller Spec für macOS App Bundle
+├── build_app.sh             # macOS Build-Script (App Bundle)
+├── build_dmg.sh             # macOS DMG-Erstellung
+├── build_windows.spec       # PyInstaller Spec für Windows EXE
+├── build_windows_light.spec # Leichter Windows Build (ohne PySide6)
+├── build_windows.ps1        # PowerShell Build-Script (EXE + Installer)
+├── build_windows.py         # Python Build-Helper für Windows
+├── installer_windows.iss    # Inno Setup Script für Windows Installer
+│
+├── pyproject.toml           # Python Projekt-Konfiguration
+├── requirements.txt         # Dependencies (beide Plattformen)
+├── requirements-dev.txt     # Dev-Dependencies (pytest, etc.)
+│
+├── README.md                # Benutzer-Dokumentation (EN)
+├── README.de.md             # Benutzer-Dokumentation (DE)
+├── CHANGELOG.md             # Versionshistorie
+├── CONTRIBUTING.md          # Contributor-Guidelines
+├── CLAUDE.md                # Diese Datei
+│
+├── assets/                  # Icons und Ressourcen
+│   ├── icon.icns            # macOS App Icon
+│   ├── icon.ico             # Windows App Icon
+│   └── icon.iconset/        # Icon-Varianten
+├── macos/                   # macOS-spezifische Dateien
+│   └── entitlements.plist   # Code-Signing Entitlements
+├── docs/                    # Dokumentation (Vision, Windows MVP, etc.)
+│
+├── cli/                     # CLI-Modul
+│   └── types.py             # CLI-Typdefinitionen
+├── audio/                   # Audio-Aufnahme und -Handling
+│   └── recording.py         # AudioRecorder-Klasse
+├── providers/               # Transkriptions-Provider
+│   ├── base.py              # Provider-Basisklasse
+│   ├── deepgram.py          # Deepgram REST Provider
+│   ├── deepgram_stream.py   # Deepgram WebSocket Streaming
+│   ├── openai.py            # OpenAI Provider
+│   ├── groq.py              # Groq Provider
+│   └── local.py             # Lokaler Whisper Provider
+├── refine/                  # LLM-Nachbearbeitung
+│   ├── prompts.py           # Prompt-Templates
+│   ├── context.py           # Kontext-Detection
+│   └── llm.py               # LLM-API-Calls
+├── ui/                      # User Interface Components
+│   ├── animation.py         # Shared Animation Logic
+│   ├── menubar.py           # macOS MenuBar Controller
+│   ├── overlay.py           # macOS Overlay
+│   ├── overlay_windows.py   # Windows Overlay (Tkinter)
+│   ├── overlay_pyside6.py   # Windows Overlay (PySide6)
+│   ├── welcome.py           # macOS Welcome/Settings Window
+│   ├── settings_windows.py  # Windows Settings Window (PySide6)
+│   ├── onboarding_wizard.py # Onboarding-Wizard
+│   ├── hotkey_card.py       # Hotkey-Konfigurations-UI
+│   └── permissions_card.py  # Berechtigungs-UI (macOS)
+├── whisper_platform/        # Plattform-Abstraktion (Factory Pattern)
+│   ├── __init__.py          # Factory-Exports
+│   ├── base.py              # Abstrakte Basisklassen
+│   ├── clipboard.py         # Clipboard + Paste (macOS/Windows)
+│   ├── sound.py             # Sound-Feedback (macOS/Windows)
+│   ├── hotkey.py            # Hotkey-Listener
+│   ├── app_detection.py     # Aktive App erkennen
+│   └── daemon.py            # Daemon-Helper (Windows)
+├── utils/                   # Utilities
+│   ├── paths.py             # Pfad-Helper für PyInstaller
+│   ├── permissions.py       # macOS Berechtigungs-Checks
+│   ├── logging.py           # Logging-Konfiguration
+│   ├── env.py               # ENV-Variablen laden
+│   ├── environment.py       # Plattform-Environment-Checks
+│   ├── preferences.py       # User-Preferences verwalten
+│   ├── hotkey.py            # Hotkey-Parsing und -Validierung
+│   ├── hotkey_validation.py # Hotkey-Format-Validierung
+│   ├── hotkey_recording.py  # Hotkey-Aufnahme-UI
+│   ├── carbon_hotkey.py     # macOS Carbon Hotkey-Handling
+│   ├── custom_prompts.py    # Custom Prompts aus TOML
+│   ├── vocabulary.py        # Custom Vocabulary
+│   ├── history.py           # Transkriptions-Historie
+│   ├── diagnostics.py       # System-Diagnose
+│   ├── onboarding.py        # Onboarding-Status
+│   ├── presets.py           # Provider-Presets
+│   ├── alerts.py            # macOS Alert-Dialoge
+│   ├── timing.py            # Performance-Timing
+│   └── state.py             # Globaler State
+└── tests/                   # Unit & Integration Tests
 ```
 
 ## Kern-Datei: `transcribe.py`
@@ -131,7 +184,7 @@ python transcribe.py --record --copy --language de
 
 ## Dependencies
 
-### Shared (beide Plattformen)
+### Core (Cross-Platform)
 
 | Paket            | Zweck                                     |
 | ---------------- | ----------------------------------------- |
@@ -143,25 +196,30 @@ python transcribe.py --record --copy --language de
 | `soundfile`      | WAV-Export                                |
 | `python-dotenv`  | .env Konfiguration                        |
 | `numpy`          | Audio-Verarbeitung                        |
+| `typer`          | CLI-Framework                             |
+| `pynput`         | Globale Hotkeys + Keyboard-Simulation     |
+| `pystray`        | System-Tray-Icon                          |
+| `pyperclip`      | Clipboard (Fallback)                      |
+| `faster-whisper` | Schnelleres lokales Backend (CTranslate2) |
 
 ### macOS-only
 
-| Paket            | Zweck                                     |
-| ---------------- | ----------------------------------------- |
-| `rumps`          | Menübar-App (NSStatusBar)                 |
-| `quickmachotkey` | Globale Hotkeys (Carbon API, kein TCC)    |
-| `pyobjc-*`       | Cocoa-Bindings (NSWorkspace, etc.)        |
+| Paket                | Zweck                                  |
+| -------------------- | -------------------------------------- |
+| `rumps`              | Menübar-App (NSStatusBar)              |
+| `quickmachotkey`     | Globale Hotkeys (Carbon API, kein TCC) |
+| `pyobjc-*`           | Cocoa-Bindings (NSWorkspace, etc.)     |
+| `lightning-whisper-mlx` | Schnellstes Backend auf Apple Silicon |
 
 ### Windows-only
 
-| Paket            | Zweck                                     |
-| ---------------- | ----------------------------------------- |
-| `pystray`        | System-Tray-Icon                          |
-| `pynput`         | Globale Hotkeys + Ctrl+V Simulation       |
-| `PySide6`        | GPU-beschleunigtes Overlay (optional)     |
-| `pywin32`        | Windows API (win32gui, win32process)      |
-| `psutil`         | Prozess-Info für App-Detection            |
-| `Pillow`         | Icons für pystray                         |
+| Paket     | Zweck                                 |
+| --------- | ------------------------------------- |
+| `PySide6` | GPU-beschleunigtes Overlay (optional) |
+| `pywin32` | Windows API (win32gui, win32process)  |
+| `psutil`  | Prozess-Info für App-Detection        |
+| `Pillow`  | Icons für pystray                     |
+| `watchdog`| Datei-Änderungen beobachten           |
 
 **Externe:**
 
@@ -170,30 +228,79 @@ python transcribe.py --record --copy --language de
 
 ## Konfiguration (ENV-Variablen)
 
-| Variable                           | Beschreibung                                                             |
-| ---------------------------------- | ------------------------------------------------------------------------ |
-| `PULSESCRIBE_MODE`                 | Default-Modus: `openai`, `local`, `deepgram`, `groq`                     |
-| `PULSESCRIBE_MODEL`                | Transkriptions-Modell (überschreibt Provider-Default)                    |
-| `PULSESCRIBE_STREAMING`            | WebSocket-Streaming für Deepgram: `true`/`false`                         |
-| `PULSESCRIBE_REFINE`               | LLM-Nachbearbeitung: `true`/`false`                                      |
-| `PULSESCRIBE_REFINE_MODEL`         | Modell für Refine (default: `openai/gpt-oss-120b`)                       |
-| `PULSESCRIBE_REFINE_PROVIDER`      | Provider: `groq`, `openai` oder `openrouter`                             |
-| `PULSESCRIBE_CONTEXT`              | Kontext-Override: `email`/`chat`/`code`                                  |
-| `PULSESCRIBE_APP_CONTEXTS`         | Custom App-Mappings (JSON)                                               |
-| `PULSESCRIBE_OVERLAY`              | Untertitel-Overlay aktivieren: `true`/`false`                            |
-| `PULSESCRIBE_DOCK_ICON`            | Dock-Icon anzeigen: `true`/`false` (default: `true`)                     |
-| `PULSESCRIBE_SHOW_RTF`             | RTF nach Transkription anzeigen: `true`/`false` (default: `false`)       |
-| `PULSESCRIBE_CLIPBOARD_RESTORE`    | Clipboard nach Paste wiederherstellen: `true`/`false` (default: `false`) |
-| `OPENAI_API_KEY`                   | Für API-Modus und OpenAI-Refine                                          |
-| `DEEPGRAM_API_KEY`                 | Für Deepgram-Modus (REST + Streaming)                                    |
-| `GROQ_API_KEY`                     | Für Groq-Modus und Groq-Refine                                           |
-| `OPENROUTER_API_KEY`               | Für OpenRouter-Refine                                                    |
-| `PULSESCRIBE_LOCAL_BACKEND`        | Lokales Backend: `whisper`, `faster`, `mlx`, `lightning`, `auto`         |
-| `PULSESCRIBE_LOCAL_MODEL`          | Lokales Modell: `turbo`, `large`, `large-v3`, etc.                       |
-| `PULSESCRIBE_LIGHTNING_BATCH_SIZE` | Batch-Size für Lightning (default: 12, höher=schneller)                  |
-| `PULSESCRIBE_LIGHTNING_QUANT`      | Quantisierung für Lightning: `4bit`, `8bit`, oder leer (None)            |
-| `PULSESCRIBE_TOGGLE_HOTKEY`        | Toggle-Hotkey (beide Plattformen): z.B. `fn`, `f19`, `ctrl+alt+r`        |
-| `PULSESCRIBE_HOLD_HOTKEY`          | Hold-Hotkey (beide Plattformen): z.B. `fn`, `ctrl+alt+space`             |
+### Allgemein
+
+| Variable                        | Beschreibung                                                             |
+| ------------------------------- | ------------------------------------------------------------------------ |
+| `PULSESCRIBE_MODE`              | Default-Modus: `openai`, `local`, `deepgram`, `groq`                     |
+| `PULSESCRIBE_MODEL`             | Transkriptions-Modell (überschreibt Provider-Default)                    |
+| `PULSESCRIBE_LANGUAGE`          | Sprache für Transkription: `de`, `en`, etc. (default: auto-detect)       |
+| `PULSESCRIBE_STREAMING`         | WebSocket-Streaming für Deepgram: `true`/`false`                         |
+
+### LLM-Nachbearbeitung
+
+| Variable                        | Beschreibung                                                             |
+| ------------------------------- | ------------------------------------------------------------------------ |
+| `PULSESCRIBE_REFINE`            | LLM-Nachbearbeitung: `true`/`false`                                      |
+| `PULSESCRIBE_REFINE_MODEL`      | Modell für Refine (default: `openai/gpt-oss-120b`)                       |
+| `PULSESCRIBE_REFINE_PROVIDER`   | Provider: `groq`, `openai` oder `openrouter`                             |
+| `PULSESCRIBE_CONTEXT`           | Kontext-Override: `email`/`chat`/`code`                                  |
+| `PULSESCRIBE_APP_CONTEXTS`      | Custom App-Mappings (JSON)                                               |
+
+### UI & Verhalten
+
+| Variable                        | Beschreibung                                                             |
+| ------------------------------- | ------------------------------------------------------------------------ |
+| `PULSESCRIBE_OVERLAY`           | Untertitel-Overlay aktivieren: `true`/`false`                            |
+| `PULSESCRIBE_DOCK_ICON`         | Dock-Icon anzeigen: `true`/`false` (default: `true`)                     |
+| `PULSESCRIBE_SHOW_RTF`          | RTF nach Transkription anzeigen: `true`/`false` (default: `false`)       |
+| `PULSESCRIBE_CLIPBOARD_RESTORE` | Clipboard nach Paste wiederherstellen: `true`/`false` (default: `false`) |
+
+### Hotkeys
+
+| Variable                   | Beschreibung                                                   |
+| -------------------------- | -------------------------------------------------------------- |
+| `PULSESCRIBE_TOGGLE_HOTKEY`| Toggle-Hotkey: z.B. `fn`, `f19`, `ctrl+alt+r`, `capslock`      |
+| `PULSESCRIBE_HOLD_HOTKEY`  | Hold-Hotkey: z.B. `fn`, `ctrl+alt+space`                       |
+| `PULSESCRIBE_HOTKEY`       | Legacy: Single-Hotkey (überschrieben durch TOGGLE/HOLD)        |
+| `PULSESCRIBE_HOTKEY_MODE`  | Legacy: `toggle` oder `hold`                                   |
+
+### Lokaler Modus
+
+| Variable                           | Beschreibung                                              |
+| ---------------------------------- | --------------------------------------------------------- |
+| `PULSESCRIBE_LOCAL_BACKEND`        | Backend: `whisper`, `faster`, `mlx`, `lightning`, `auto`  |
+| `PULSESCRIBE_LOCAL_MODEL`          | Modell: `turbo`, `large`, `large-v3`, etc.                |
+| `PULSESCRIBE_DEVICE`               | Device für openai-whisper: `auto`, `mps`, `cpu`, `cuda`   |
+| `PULSESCRIBE_FP16`                 | FP16 für openai-whisper erzwingen: `true`/`false`         |
+| `PULSESCRIBE_LOCAL_FAST`           | Schnelleres Decoding: `true`/`false`                      |
+| `PULSESCRIBE_LOCAL_BEAM_SIZE`      | Beam-Size (default: 1)                                    |
+| `PULSESCRIBE_LOCAL_BEST_OF`        | Best-of (default: 1)                                      |
+| `PULSESCRIBE_LOCAL_TEMPERATURE`    | Temperature (default: 0.0)                                |
+| `PULSESCRIBE_LOCAL_COMPUTE_TYPE`   | faster-whisper Compute-Type: `int8`, `float16`            |
+| `PULSESCRIBE_LOCAL_CPU_THREADS`    | faster-whisper CPU-Threads (0=auto)                       |
+| `PULSESCRIBE_LOCAL_NUM_WORKERS`    | faster-whisper Workers (default: 1)                       |
+| `PULSESCRIBE_LOCAL_WITHOUT_TIMESTAMPS` | Timestamps deaktivieren: `true`/`false`               |
+| `PULSESCRIBE_LOCAL_VAD_FILTER`     | VAD-Filter: `true`/`false`                                |
+| `PULSESCRIBE_LOCAL_WARMUP`         | Warmup bei Start: `true`/`false`/`auto`                   |
+| `PULSESCRIBE_LIGHTNING_BATCH_SIZE` | Batch-Size für Lightning (default: 12)                    |
+| `PULSESCRIBE_LIGHTNING_QUANT`      | Quantisierung: `4bit`, `8bit`, oder leer                  |
+
+### API-Keys
+
+| Variable               | Beschreibung                            |
+| ---------------------- | --------------------------------------- |
+| `OPENAI_API_KEY`       | Für API-Modus und OpenAI-Refine         |
+| `DEEPGRAM_API_KEY`     | Für Deepgram-Modus (REST + Streaming)   |
+| `GROQ_API_KEY`         | Für Groq-Modus und Groq-Refine          |
+| `OPENROUTER_API_KEY`   | Für OpenRouter-Refine                   |
+
+### OpenRouter-Optionen
+
+| Variable                    | Beschreibung                                       |
+| --------------------------- | -------------------------------------------------- |
+| `OPENROUTER_PROVIDER_ORDER` | Provider-Reihenfolge: `Together,DeepInfra`, etc.   |
+| `OPENROUTER_ALLOW_FALLBACKS`| Fallbacks erlauben: `true`/`false`                 |
 
 ## Dateipfade
 

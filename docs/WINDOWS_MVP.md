@@ -33,9 +33,11 @@
 
 ### Out of Scope (v1)
 
-- ~~Glass/Acrylic Overlay-Effekte~~ → ✅ Mica-Effekt implementiert (Windows 11 22H2+)
 - Vollständige UI-Parität mit macOS
 - Code-Signing (für MVP ohne Reputation)
+
+**Bonus (nachträglich implementiert):**
+- ✅ Mica-Effekt für Overlay (Windows 11 22H2+)
 
 ---
 
@@ -100,38 +102,15 @@ pulsescribe/
     └── ...
 ```
 
-### Struktur (Vorschlag)
+### Implementierung
 
-```python
-# pulsescribe_windows.py
+Der Windows-Daemon wurde in `pulsescribe_windows.py` implementiert mit:
+- `PulseScribeWindows` als Hauptklasse (State-Machine + Orchestrierung)
+- Pre-Warming für schnellen Start (SDK-Imports, DNS-Prefetch, PortAudio)
+- Native Clipboard via ctypes
+- PySide6-basiertes Settings-GUI mit Mica-Effekt (Windows 11 22H2+)
 
-import sys
-if sys.platform != "win32":
-    raise RuntimeError("This script is Windows-only")
-
-from whisper_platform import (
-    get_hotkey_listener,
-    get_clipboard,
-    get_sound_player,
-)
-from providers.deepgram_stream import transcribe_with_deepgram_stream
-from audio.recording import AudioRecorder
-
-class PulseScribeWindows:
-    """Windows-Daemon mit Tray-Icon und Hotkey."""
-
-    def __init__(self):
-        self.hotkey = get_hotkey_listener()
-        self.clipboard = get_clipboard()
-        self.sound = get_sound_player()
-        self.tray = None  # pystray
-
-    def run(self):
-        # Tray-Icon starten
-        # Hotkey-Listener starten
-        # Event-Loop
-        pass
-```
+Siehe [CLAUDE.md](../CLAUDE.md#windows-pulsescribe_windowspy) für Details.
 
 ---
 
@@ -147,7 +126,7 @@ class PulseScribeWindows:
 
 - [x] `sounddevice` Recording auf Windows getestet
 - [x] Deepgram REST API auf Windows getestet
-- [x] `pyperclip` Clipboard auf Windows getestet
+- [x] Native Clipboard (ctypes) auf Windows getestet
 - [x] `paste_transcript()` mit pynput Ctrl+V getestet
 
 ### Phase 3: Windows Entry-Point ✅
@@ -183,24 +162,11 @@ class PulseScribeWindows:
 
 ## Dependencies (Windows)
 
-```txt
-# Core (identisch mit macOS)
-openai>=1.0.0
-deepgram-sdk>=3.0.0
-groq>=0.4.0
-sounddevice
-soundfile
-python-dotenv
-numpy
+Siehe [CLAUDE.md](../CLAUDE.md#dependencies) für die vollständige, aktuelle Liste.
 
-# Windows-spezifisch
-pystray           # Tray-Icon
-Pillow            # Icons für pystray
-pynput            # Globale Hotkeys + Ctrl+V Simulation
-pyperclip         # Clipboard
-pywin32           # Windows API (win32gui, win32process)
-psutil            # Prozess-Info für App-Detection
-```
+**Windows-spezifisch:** `PySide6`, `pywin32`, `psutil`, `Pillow`, `watchdog`
+
+**Hinweis:** Clipboard wird nativ via ctypes implementiert (kein pyperclip im Windows-Daemon).
 
 ---
 

@@ -11,6 +11,8 @@ Voice input for macOS and Windows – inspired by [Wispr Flow](https://wisprflow
 
 > **Performance:** Ultra-fast startup with ~170ms to "Ready-Sound" thanks to parallel microphone and WebSocket initialization. Audio is transcribed during recording – results appear immediately after stopping.
 
+> **📌 Windows users:** Jump to [Windows Support](#windows-support) for setup instructions.
+
 <p align="center">
   <img src="docs/assets/demo.gif" alt="PulseScribe Demo" width="700">
 </p>

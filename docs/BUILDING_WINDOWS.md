@@ -94,7 +94,8 @@ The spec file bundles:
 - `pystray`, `Pillow` (system tray icon)
 - `pynput` (global hotkeys + Ctrl+V simulation)
 - `pywin32`, `psutil` (app detection)
-- `pyperclip` (clipboard)
+
+> **Note:** The Windows daemon uses native ctypes for clipboard operations (no pyperclip).
 
 ### UI/Overlay
 - `PySide6` (GPU-accelerated overlay, optional)

@@ -1,5 +1,9 @@
 # Windows-Support Aufwandsanalyse für PulseScribe
 
+> ⚠️ **ARCHIVIERT (2025-12-25):** Diese Analyse wurde vor der Windows-Implementierung erstellt.
+> Der Windows-MVP wurde am 2025-12-22 fertiggestellt.
+> Siehe [WINDOWS_MVP.md](../WINDOWS_MVP.md) für den aktuellen Status.
+
 > **Ziel:** Bewertung des Aufwands, PulseScribe auf Windows zu portieren
 
 ---
