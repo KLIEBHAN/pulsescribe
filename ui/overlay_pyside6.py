@@ -129,6 +129,17 @@ DWMWCP_ROUND = 2
 DWMWCP_ROUNDSMALL = 3
 
 
+# MARGINS-Struktur für DwmExtendFrameIntoClientArea
+class MARGINS(ctypes.Structure):
+    """Windows MARGINS Struktur für DWM-Funktionen."""
+    _fields_ = [
+        ("cxLeftWidth", ctypes.c_int),
+        ("cxRightWidth", ctypes.c_int),
+        ("cyTopHeight", ctypes.c_int),
+        ("cyBottomHeight", ctypes.c_int),
+    ]
+
+
 # =============================================================================
 # Multi-Monitor Helper
 # =============================================================================
@@ -198,6 +209,9 @@ def _enable_mica_effect(hwnd: int) -> bool:
 
     Erfordert Windows 11 22H2 (Build 22621+) für DWMWA_SYSTEMBACKDROP_TYPE.
     Auf älteren Systemen wird False zurückgegeben und der Solid-Background verwendet.
+
+    Wichtig: Für frameless Windows muss DwmExtendFrameIntoClientArea aufgerufen
+    werden, damit der Mica-Backdrop korrekt gerendert wird.
     """
     if sys.platform != "win32":
         return False
@@ -209,40 +223,67 @@ def _enable_mica_effect(hwnd: int) -> bool:
         return False
 
     try:
+        from ctypes import wintypes
+
         dwmapi = ctypes.windll.dwmapi
 
-        # 1. Dark Mode aktivieren (für dunkles Mica)
+        # Funktions-Signaturen definieren für korrektes 64-bit Handling
+        # HRESULT DwmSetWindowAttribute(HWND, DWORD, LPCVOID, DWORD)
+        dwmapi.DwmSetWindowAttribute.argtypes = [
+            wintypes.HWND,
+            wintypes.DWORD,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+        ]
+        dwmapi.DwmSetWindowAttribute.restype = wintypes.LONG  # HRESULT
+
+        # HRESULT DwmExtendFrameIntoClientArea(HWND, const MARGINS*)
+        dwmapi.DwmExtendFrameIntoClientArea.argtypes = [
+            wintypes.HWND,
+            ctypes.POINTER(MARGINS),
+        ]
+        dwmapi.DwmExtendFrameIntoClientArea.restype = wintypes.LONG  # HRESULT
+
+        # 1. Frame in Client Area erweitern (nötig für Mica bei frameless Windows)
+        # MARGINS mit -1 = "sheet of glass" Effekt über gesamtes Fenster
+        margins = MARGINS(-1, -1, -1, -1)
+        result = dwmapi.DwmExtendFrameIntoClientArea(hwnd, ctypes.byref(margins))
+        if result != 0:
+            logger.debug(f"DwmExtendFrameIntoClientArea fehlgeschlagen: {result}")
+            # Nicht abbrechen - versuche trotzdem Mica zu setzen
+
+        # 2. Dark Mode aktivieren (für dunkles Mica)
         dark_mode = ctypes.c_int(1)
         dwmapi.DwmSetWindowAttribute(
             hwnd,
             DWMWA_USE_IMMERSIVE_DARK_MODE,
             ctypes.byref(dark_mode),
-            ctypes.sizeof(dark_mode)
+            ctypes.sizeof(dark_mode),
         )
 
-        # 2. Runde Ecken via DWM (native, nicht QPainter)
+        # 3. Runde Ecken via DWM (native, nicht QPainter)
         corners = ctypes.c_int(DWMWCP_ROUND)
         dwmapi.DwmSetWindowAttribute(
             hwnd,
             DWMWA_WINDOW_CORNER_PREFERENCE,
             ctypes.byref(corners),
-            ctypes.sizeof(corners)
+            ctypes.sizeof(corners),
         )
 
-        # 3. Mica Backdrop aktivieren
+        # 4. Mica Backdrop aktivieren
         backdrop = ctypes.c_int(DWMSBT_MAINWINDOW)
         result = dwmapi.DwmSetWindowAttribute(
             hwnd,
             DWMWA_SYSTEMBACKDROP_TYPE,
             ctypes.byref(backdrop),
-            ctypes.sizeof(backdrop)
+            ctypes.sizeof(backdrop),
         )
 
         if result == 0:  # S_OK
             logger.info(f"Windows 11 Mica-Effekt aktiviert (Build {build})")
             return True
         else:
-            logger.debug(f"DwmSetWindowAttribute fehlgeschlagen: {result}")
+            logger.debug(f"DwmSetWindowAttribute SYSTEMBACKDROP fehlgeschlagen: {result}")
             return False
 
     except Exception as e:
