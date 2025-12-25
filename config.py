@@ -4,6 +4,7 @@ Gemeinsame Konstanten für Audio, Streaming und IPC.
 Vermeidet Duplikation zwischen Modulen.
 """
 
+import os
 import tempfile
 from pathlib import Path
 
