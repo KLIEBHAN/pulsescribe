@@ -63,6 +63,7 @@ from providers import get_provider
 # Lazy imports für optionale Features
 pystray = None
 PIL_Image = None
+PIL_ImageDraw = None
 WindowsOverlayController = None
 
 
@@ -158,13 +159,15 @@ def _resample_audio(audio, from_rate: int, to_rate: int):
 
 def _load_tray_dependencies():
     """Lädt pystray und Pillow (lazy)."""
-    global pystray, PIL_Image
+    global pystray, PIL_Image, PIL_ImageDraw
     try:
         import pystray as _pystray
         from PIL import Image as _Image
+        from PIL import ImageDraw as _ImageDraw
 
         pystray = _pystray
         PIL_Image = _Image
+        PIL_ImageDraw = _ImageDraw
         return True
     except ImportError as e:
         logger.warning(f"Tray-Icon nicht verfügbar: {e}")
@@ -177,6 +180,7 @@ class PulseScribeWindows:
     # Tray-Icon Farben (RGB)
     COLORS = {
         AppState.IDLE: (128, 128, 128),  # Grau
+        AppState.LOADING: (0, 120, 255),  # Blau (Model wird geladen)
         AppState.LISTENING: (255, 165, 0),  # Orange
         AppState.RECORDING: (255, 0, 0),  # Rot
         AppState.TRANSCRIBING: (255, 255, 0),  # Gelb
@@ -184,6 +188,9 @@ class PulseScribeWindows:
         AppState.DONE: (0, 255, 0),  # Grün
         AppState.ERROR: (255, 0, 0),  # Rot
     }
+
+    # Icon-Cache: Vermeidet Neuzeichnen bei State-Wechsel (key = RGB color tuple)
+    _icon_cache: dict[tuple[int, int, int], "PIL_Image.Image"] = {}
 
     def __init__(
         self,
@@ -327,7 +334,7 @@ class PulseScribeWindows:
 
     def _update_tray_icon(self):
         """Aktualisiert Tray-Icon basierend auf State."""
-        if self._tray is None or PIL_Image is None:
+        if self._tray is None or PIL_Image is None or PIL_ImageDraw is None:
             return
 
         color = self.COLORS.get(self.state, (128, 128, 128))
@@ -337,6 +344,7 @@ class PulseScribeWindows:
         # Tooltip aktualisieren
         state_text = {
             AppState.IDLE: "Bereit",
+            AppState.LOADING: "Lade Modell...",
             AppState.LISTENING: "Warte auf Sprache...",
             AppState.RECORDING: "Aufnahme...",
             AppState.TRANSCRIBING: "Transkribiere...",
@@ -346,10 +354,94 @@ class PulseScribeWindows:
         }
         self._tray.title = f"PulseScribe - {state_text.get(self.state, 'Unbekannt')}"
 
-    def _create_icon(self, color: tuple) -> "PIL_Image.Image":
-        """Erstellt ein einfaches farbiges Icon."""
-        size = 64
-        image = PIL_Image.new("RGB", (size, size), color)
+    def _create_icon(self, color: tuple[int, int, int]) -> "PIL_Image.Image":
+        """Erstellt ein Mikrofon-Icon wie bei macOS (mit Caching)."""
+        # Cache-Lookup: Gleiches Icon für gleiche Farbe wiederverwenden
+        if color in PulseScribeWindows._icon_cache:
+            return PulseScribeWindows._icon_cache[color]
+
+        # Fallback auf einfaches farbiges Icon wenn ImageDraw nicht verfügbar
+        if PIL_ImageDraw is None:
+            icon = PIL_Image.new("RGB", (64, 64), color)
+            PulseScribeWindows._icon_cache[color] = icon
+            return icon
+
+        icon = self._draw_microphone_icon(color)
+        PulseScribeWindows._icon_cache[color] = icon
+        return icon
+
+    def _draw_microphone_icon(self, color: tuple[int, int, int]) -> "PIL_Image.Image":
+        """Zeichnet das Mikrofon-Icon (interne Methode)."""
+        size = 64  # Feste Größe für Windows Tray-Icons
+        # Transparenter Hintergrund für sauberes Tray-Icon
+        image = PIL_Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        draw = PIL_ImageDraw.Draw(image)
+
+        # Mikrofon-Proportionen (zentriert)
+        center_x = size // 2
+        mic_width = 20
+        mic_height = 28
+        mic_top = 8
+        mic_bottom = mic_top + mic_height
+
+        # 1. Mikrofon-Körper (abgerundete Kapsel)
+        mic_left = center_x - mic_width // 2
+        mic_right = center_x + mic_width // 2
+        # Oberer Halbkreis
+        draw.ellipse(
+            [mic_left, mic_top, mic_right, mic_top + mic_width],
+            fill=color,
+        )
+        # Rechteckiger Körper
+        draw.rectangle(
+            [mic_left, mic_top + mic_width // 2, mic_right, mic_bottom - mic_width // 2],
+            fill=color,
+        )
+        # Unterer Halbkreis
+        draw.ellipse(
+            [mic_left, mic_bottom - mic_width, mic_right, mic_bottom],
+            fill=color,
+        )
+
+        # 2. Halterung (U-Form unter dem Mikrofon)
+        holder_top = mic_bottom + 2
+        holder_width = mic_width + 8
+        holder_left = center_x - holder_width // 2
+        holder_right = center_x + holder_width // 2
+        line_width = 3
+
+        # Linke Seite der Halterung
+        draw.rectangle(
+            [holder_left, holder_top - 6, holder_left + line_width, holder_top + 8],
+            fill=color,
+        )
+        # Rechte Seite der Halterung
+        draw.rectangle(
+            [holder_right - line_width, holder_top - 6, holder_right, holder_top + 8],
+            fill=color,
+        )
+        # Unterer Bogen (vereinfacht als Linie)
+        draw.rectangle(
+            [holder_left, holder_top + 5, holder_right, holder_top + 8],
+            fill=color,
+        )
+
+        # 3. Ständer (vertikale Linie + Fuß)
+        stand_top = holder_top + 8
+        stand_bottom = size - 6
+        stand_width = 3
+        # Vertikale Linie
+        draw.rectangle(
+            [center_x - stand_width // 2, stand_top, center_x + stand_width // 2, stand_bottom - 3],
+            fill=color,
+        )
+        # Fuß (horizontale Linie)
+        foot_width = 16
+        draw.rectangle(
+            [center_x - foot_width // 2, stand_bottom - 3, center_x + foot_width // 2, stand_bottom],
+            fill=color,
+        )
+
         return image
 
     def _play_sound(self, sound_type: str):
