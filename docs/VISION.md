@@ -92,13 +92,13 @@ pulsescribe/
 ├── pulsescribe_daemon.py   # macOS Daemon (NSApplication)
 ├── pulsescribe_windows.py  # Windows Daemon (pystray + PySide6)
 ├── config.py               # Zentrale Konfiguration
-├── providers/              # Transkriptions-Provider (Deepgram, OpenAI, Groq, Local)
 ├── audio/                  # Audio-Handling (Recording)
+├── cli/                    # CLI-Typdefinitionen (Enums für Mode, Context, Provider)
+├── providers/              # Transkriptions-Provider (Deepgram, OpenAI, Groq, Local)
 ├── refine/                 # LLM-Nachbearbeitung & Prompts
-├── ui/                     # Native UI (Menübar, Overlay, Settings)
+├── ui/                     # Native UI (Menübar, Overlay, Settings, Onboarding)
 ├── utils/                  # Utilities (Logging, Hotkey, Preferences, etc.)
 ├── whisper_platform/       # OS-Abstraktionsschicht (Clipboard, Sound, Hotkey)
-├── cli/                    # CLI-Typdefinitionen
 └── tests/                  # Unit & Integration Tests
 ```
 

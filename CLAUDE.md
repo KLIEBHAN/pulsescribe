@@ -19,11 +19,12 @@ pulsescribe/
 ├── config.py                # Zentrale Konfiguration
 │
 ├── audio/                   # Audio-Aufnahme (AudioRecorder)
+├── cli/                     # CLI-Typen (Enums für Mode, Context, Provider)
 ├── providers/               # Transkription (Deepgram, OpenAI, Groq, Local)
 ├── refine/                  # LLM-Nachbearbeitung (Prompts, Context, LLM-Calls)
-├── ui/                      # UI-Komponenten (Overlay, Menubar, Settings)
-├── whisper_platform/        # Plattform-Abstraktion (Clipboard, Sound, Hotkey)
+├── ui/                      # UI-Komponenten (Overlay, Menubar, Settings, Onboarding)
 ├── utils/                   # Utilities (Logging, Permissions, Preferences)
+├── whisper_platform/        # Plattform-Abstraktion (Clipboard, Sound, Hotkey)
 │
 ├── assets/                  # Icons (icon.icns, icon.ico)
 ├── macos/                   # macOS-spezifisch (entitlements.plist)
@@ -32,30 +33,32 @@ pulsescribe/
 ```
 
 > **Tipp:** Für die vollständige Dateiliste:
+>
 > ```bash
 > tree -L 2 --dirsfirst -I '__pycache__|*.pyc|venv|dist|build|*.egg-info'
 > ```
 
 ### Modul-Verantwortlichkeiten
 
-| Modul | Verantwortlichkeit |
-|-------|-------------------|
-| `audio/` | Mikrofon-Aufnahme via sounddevice, WAV-Export |
-| `providers/` | Transkriptions-APIs (Deepgram REST+WS, OpenAI, Groq, lokales Whisper) |
-| `refine/` | LLM-Nachbearbeitung, Kontext-Detection, Prompt-Templates |
-| `ui/` | Overlay-Animation, Menubar (macOS), Settings-GUI (Windows), Onboarding |
-| `whisper_platform/` | OS-Abstraktion: Clipboard, Sound, Hotkeys, App-Detection |
-| `utils/` | Shared Utilities: Logging, Paths, Preferences, Hotkey-Parsing |
+| Modul               | Verantwortlichkeit                                                     |
+| ------------------- | ---------------------------------------------------------------------- |
+| `audio/`            | Mikrofon-Aufnahme via sounddevice, WAV-Export                          |
+| `cli/`              | Shared Enums (TranscriptionMode, Context, RefineProvider, HotkeyMode)  |
+| `providers/`        | Transkriptions-APIs (Deepgram REST+WS, OpenAI, Groq, lokales Whisper)  |
+| `refine/`           | LLM-Nachbearbeitung, Kontext-Detection, Prompt-Templates               |
+| `ui/`               | Overlay-Animation, Menubar (macOS), Settings-GUI (Windows), Onboarding |
+| `utils/`            | Shared Utilities: Logging, Paths, Preferences, Hotkey-Parsing          |
+| `whisper_platform/` | OS-Abstraktion: Clipboard, Sound, Hotkeys, App-Detection               |
 
 ### Build-Dateien
 
-| Datei | Zweck |
-|-------|-------|
-| `build_app.sh` / `build_app.spec` | macOS App Bundle |
-| `build_dmg.sh` | macOS DMG-Erstellung |
-| `build_windows.ps1` / `build_windows.spec` | Windows EXE + Installer |
-| `installer_windows.iss` | Inno Setup Script |
-| `pyproject.toml` | Python-Projekt-Konfiguration |
+| Datei                                      | Zweck                        |
+| ------------------------------------------ | ---------------------------- |
+| `build_app.sh` / `build_app.spec`          | macOS App Bundle             |
+| `build_dmg.sh`                             | macOS DMG-Erstellung         |
+| `build_windows.ps1` / `build_windows.spec` | Windows EXE + Installer      |
+| `installer_windows.iss`                    | Inno Setup Script            |
+| `pyproject.toml`                           | Python-Projekt-Konfiguration |
 
 ## Kern-Datei: `transcribe.py`
 
@@ -93,14 +96,15 @@ Konsolidiert alle Komponenten in einem Prozess (empfohlen für tägliche Nutzung
 
 Separater Entry-Point mit Windows-nativen Komponenten:
 
-| Klasse                      | Modul               | Zweck                                              |
-| --------------------------- | ------------------- | -------------------------------------------------- |
-| `PySide6OverlayController`  | `ui.overlay_pyside6`| GPU-beschleunigtes Overlay (Fallback: Tkinter)     |
-| `pystray.Icon`              | extern              | System-Tray-Icon mit Farbstatus                    |
-| `pynput.keyboard.Listener`  | extern              | Globale Hotkeys (F1-F24, Ctrl+Alt+X, etc.)         |
-| `PulseScribeWindows`        | `pulsescribe_windows`| Hauptklasse: State-Machine + Orchestrierung       |
+| Klasse                     | Modul                 | Zweck                                          |
+| -------------------------- | --------------------- | ---------------------------------------------- |
+| `PySide6OverlayController` | `ui.overlay_pyside6`  | GPU-beschleunigtes Overlay (Fallback: Tkinter) |
+| `pystray.Icon`             | extern                | System-Tray-Icon mit Farbstatus                |
+| `pynput.keyboard.Listener` | extern                | Globale Hotkeys (F1-F24, Ctrl+Alt+X, etc.)     |
+| `PulseScribeWindows`       | `pulsescribe_windows` | Hauptklasse: State-Machine + Orchestrierung    |
 
 **Features:**
+
 - Pre-Warming (SDK-Imports, DNS-Prefetch, PortAudio) für schnellen Start
 - LOADING-State für akkurates UI-Feedback während Mikrofon-Init
 - Native Clipboard via ctypes (kein Tkinter/pyperclip)
@@ -158,22 +162,22 @@ python transcribe.py --record --copy --language de
 
 ### macOS-only
 
-| Paket                | Zweck                                  |
-| -------------------- | -------------------------------------- |
-| `rumps`              | Menübar-App (NSStatusBar)              |
-| `quickmachotkey`     | Globale Hotkeys (Carbon API, kein TCC) |
-| `pyobjc-*`           | Cocoa-Bindings (NSWorkspace, etc.)     |
-| `lightning-whisper-mlx` | Schnellstes Backend auf Apple Silicon |
+| Paket                   | Zweck                                  |
+| ----------------------- | -------------------------------------- |
+| `rumps`                 | Menübar-App (NSStatusBar)              |
+| `quickmachotkey`        | Globale Hotkeys (Carbon API, kein TCC) |
+| `pyobjc-*`              | Cocoa-Bindings (NSWorkspace, etc.)     |
+| `lightning-whisper-mlx` | Schnellstes Backend auf Apple Silicon  |
 
 ### Windows-only
 
-| Paket     | Zweck                                 |
-| --------- | ------------------------------------- |
-| `PySide6` | GPU-beschleunigtes Overlay (optional) |
-| `pywin32` | Windows API (win32gui, win32process)  |
-| `psutil`  | Prozess-Info für App-Detection        |
-| `Pillow`  | Icons für pystray                     |
-| `watchdog`| Datei-Änderungen beobachten           |
+| Paket      | Zweck                                 |
+| ---------- | ------------------------------------- |
+| `PySide6`  | GPU-beschleunigtes Overlay (optional) |
+| `pywin32`  | Windows API (win32gui, win32process)  |
+| `psutil`   | Prozess-Info für App-Detection        |
+| `Pillow`   | Icons für pystray                     |
+| `watchdog` | Datei-Änderungen beobachten           |
 
 **Externe:**
 
@@ -184,22 +188,22 @@ python transcribe.py --record --copy --language de
 
 ### Allgemein
 
-| Variable                        | Beschreibung                                                             |
-| ------------------------------- | ------------------------------------------------------------------------ |
-| `PULSESCRIBE_MODE`              | Default-Modus: `openai`, `local`, `deepgram`, `groq`                     |
-| `PULSESCRIBE_MODEL`             | Transkriptions-Modell (überschreibt Provider-Default)                    |
-| `PULSESCRIBE_LANGUAGE`          | Sprache für Transkription: `de`, `en`, etc. (default: auto-detect)       |
-| `PULSESCRIBE_STREAMING`         | WebSocket-Streaming für Deepgram: `true`/`false`                         |
+| Variable                | Beschreibung                                                       |
+| ----------------------- | ------------------------------------------------------------------ |
+| `PULSESCRIBE_MODE`      | Default-Modus: `openai`, `local`, `deepgram`, `groq`               |
+| `PULSESCRIBE_MODEL`     | Transkriptions-Modell (überschreibt Provider-Default)              |
+| `PULSESCRIBE_LANGUAGE`  | Sprache für Transkription: `de`, `en`, etc. (default: auto-detect) |
+| `PULSESCRIBE_STREAMING` | WebSocket-Streaming für Deepgram: `true`/`false`                   |
 
 ### LLM-Nachbearbeitung
 
-| Variable                        | Beschreibung                                                             |
-| ------------------------------- | ------------------------------------------------------------------------ |
-| `PULSESCRIBE_REFINE`            | LLM-Nachbearbeitung: `true`/`false`                                      |
-| `PULSESCRIBE_REFINE_MODEL`      | Modell für Refine (default: `openai/gpt-oss-120b`)                       |
-| `PULSESCRIBE_REFINE_PROVIDER`   | Provider: `groq`, `openai` oder `openrouter`                             |
-| `PULSESCRIBE_CONTEXT`           | Kontext-Override: `email`/`chat`/`code`                                  |
-| `PULSESCRIBE_APP_CONTEXTS`      | Custom App-Mappings (JSON)                                               |
+| Variable                      | Beschreibung                                       |
+| ----------------------------- | -------------------------------------------------- |
+| `PULSESCRIBE_REFINE`          | LLM-Nachbearbeitung: `true`/`false`                |
+| `PULSESCRIBE_REFINE_MODEL`    | Modell für Refine (default: `openai/gpt-oss-120b`) |
+| `PULSESCRIBE_REFINE_PROVIDER` | Provider: `groq`, `openai` oder `openrouter`       |
+| `PULSESCRIBE_CONTEXT`         | Kontext-Override: `email`/`chat`/`code`            |
+| `PULSESCRIBE_APP_CONTEXTS`    | Custom App-Mappings (JSON)                         |
 
 ### UI & Verhalten
 
@@ -212,49 +216,49 @@ python transcribe.py --record --copy --language de
 
 ### Hotkeys
 
-| Variable                   | Beschreibung                                                   |
-| -------------------------- | -------------------------------------------------------------- |
-| `PULSESCRIBE_TOGGLE_HOTKEY`| Toggle-Hotkey: z.B. `fn`, `f19`, `ctrl+alt+r`, `capslock`      |
-| `PULSESCRIBE_HOLD_HOTKEY`  | Hold-Hotkey: z.B. `fn`, `ctrl+alt+space`                       |
-| `PULSESCRIBE_HOTKEY`       | Legacy: Single-Hotkey (überschrieben durch TOGGLE/HOLD)        |
-| `PULSESCRIBE_HOTKEY_MODE`  | Legacy: `toggle` oder `hold`                                   |
+| Variable                    | Beschreibung                                              |
+| --------------------------- | --------------------------------------------------------- |
+| `PULSESCRIBE_TOGGLE_HOTKEY` | Toggle-Hotkey: z.B. `fn`, `f19`, `ctrl+alt+r`, `capslock` |
+| `PULSESCRIBE_HOLD_HOTKEY`   | Hold-Hotkey: z.B. `fn`, `ctrl+alt+space`                  |
+| `PULSESCRIBE_HOTKEY`        | Legacy: Single-Hotkey (überschrieben durch TOGGLE/HOLD)   |
+| `PULSESCRIBE_HOTKEY_MODE`   | Legacy: `toggle` oder `hold`                              |
 
 ### Lokaler Modus
 
-| Variable                           | Beschreibung                                              |
-| ---------------------------------- | --------------------------------------------------------- |
-| `PULSESCRIBE_LOCAL_BACKEND`        | Backend: `whisper`, `faster`, `mlx`, `lightning`, `auto`  |
-| `PULSESCRIBE_LOCAL_MODEL`          | Modell: `turbo`, `large`, `large-v3`, etc.                |
-| `PULSESCRIBE_DEVICE`               | Device für openai-whisper: `auto`, `mps`, `cpu`, `cuda`   |
-| `PULSESCRIBE_FP16`                 | FP16 für openai-whisper erzwingen: `true`/`false`         |
-| `PULSESCRIBE_LOCAL_FAST`           | Schnelleres Decoding: `true`/`false`                      |
-| `PULSESCRIBE_LOCAL_BEAM_SIZE`      | Beam-Size (default: 1)                                    |
-| `PULSESCRIBE_LOCAL_BEST_OF`        | Best-of (default: 1)                                      |
-| `PULSESCRIBE_LOCAL_TEMPERATURE`    | Temperature (default: 0.0)                                |
-| `PULSESCRIBE_LOCAL_COMPUTE_TYPE`   | faster-whisper Compute-Type: `int8`, `float16`            |
-| `PULSESCRIBE_LOCAL_CPU_THREADS`    | faster-whisper CPU-Threads (0=auto)                       |
-| `PULSESCRIBE_LOCAL_NUM_WORKERS`    | faster-whisper Workers (default: 1)                       |
-| `PULSESCRIBE_LOCAL_WITHOUT_TIMESTAMPS` | Timestamps deaktivieren: `true`/`false`               |
-| `PULSESCRIBE_LOCAL_VAD_FILTER`     | VAD-Filter: `true`/`false`                                |
-| `PULSESCRIBE_LOCAL_WARMUP`         | Warmup bei Start: `true`/`false`/`auto`                   |
-| `PULSESCRIBE_LIGHTNING_BATCH_SIZE` | Batch-Size für Lightning (default: 12)                    |
-| `PULSESCRIBE_LIGHTNING_QUANT`      | Quantisierung: `4bit`, `8bit`, oder leer                  |
+| Variable                               | Beschreibung                                             |
+| -------------------------------------- | -------------------------------------------------------- |
+| `PULSESCRIBE_LOCAL_BACKEND`            | Backend: `whisper`, `faster`, `mlx`, `lightning`, `auto` |
+| `PULSESCRIBE_LOCAL_MODEL`              | Modell: `turbo`, `large`, `large-v3`, etc.               |
+| `PULSESCRIBE_DEVICE`                   | Device für openai-whisper: `auto`, `mps`, `cpu`, `cuda`  |
+| `PULSESCRIBE_FP16`                     | FP16 für openai-whisper erzwingen: `true`/`false`        |
+| `PULSESCRIBE_LOCAL_FAST`               | Schnelleres Decoding: `true`/`false`                     |
+| `PULSESCRIBE_LOCAL_BEAM_SIZE`          | Beam-Size (default: 1)                                   |
+| `PULSESCRIBE_LOCAL_BEST_OF`            | Best-of (default: 1)                                     |
+| `PULSESCRIBE_LOCAL_TEMPERATURE`        | Temperature (default: 0.0)                               |
+| `PULSESCRIBE_LOCAL_COMPUTE_TYPE`       | faster-whisper Compute-Type: `int8`, `float16`           |
+| `PULSESCRIBE_LOCAL_CPU_THREADS`        | faster-whisper CPU-Threads (0=auto)                      |
+| `PULSESCRIBE_LOCAL_NUM_WORKERS`        | faster-whisper Workers (default: 1)                      |
+| `PULSESCRIBE_LOCAL_WITHOUT_TIMESTAMPS` | Timestamps deaktivieren: `true`/`false`                  |
+| `PULSESCRIBE_LOCAL_VAD_FILTER`         | VAD-Filter: `true`/`false`                               |
+| `PULSESCRIBE_LOCAL_WARMUP`             | Warmup bei Start: `true`/`false`/`auto`                  |
+| `PULSESCRIBE_LIGHTNING_BATCH_SIZE`     | Batch-Size für Lightning (default: 12)                   |
+| `PULSESCRIBE_LIGHTNING_QUANT`          | Quantisierung: `4bit`, `8bit`, oder leer                 |
 
 ### API-Keys
 
-| Variable               | Beschreibung                            |
-| ---------------------- | --------------------------------------- |
-| `OPENAI_API_KEY`       | Für API-Modus und OpenAI-Refine         |
-| `DEEPGRAM_API_KEY`     | Für Deepgram-Modus (REST + Streaming)   |
-| `GROQ_API_KEY`         | Für Groq-Modus und Groq-Refine          |
-| `OPENROUTER_API_KEY`   | Für OpenRouter-Refine                   |
+| Variable             | Beschreibung                          |
+| -------------------- | ------------------------------------- |
+| `OPENAI_API_KEY`     | Für API-Modus und OpenAI-Refine       |
+| `DEEPGRAM_API_KEY`   | Für Deepgram-Modus (REST + Streaming) |
+| `GROQ_API_KEY`       | Für Groq-Modus und Groq-Refine        |
+| `OPENROUTER_API_KEY` | Für OpenRouter-Refine                 |
 
 ### OpenRouter-Optionen
 
-| Variable                    | Beschreibung                                       |
-| --------------------------- | -------------------------------------------------- |
-| `OPENROUTER_PROVIDER_ORDER` | Provider-Reihenfolge: `Together,DeepInfra`, etc.   |
-| `OPENROUTER_ALLOW_FALLBACKS`| Fallbacks erlauben: `true`/`false`                 |
+| Variable                     | Beschreibung                                     |
+| ---------------------------- | ------------------------------------------------ |
+| `OPENROUTER_PROVIDER_ORDER`  | Provider-Reihenfolge: `Together,DeepInfra`, etc. |
+| `OPENROUTER_ALLOW_FALLBACKS` | Fallbacks erlauben: `true`/`false`               |
 
 ## Dateipfade
 
@@ -291,6 +295,7 @@ Die LLM-Nachbearbeitung passt den Prompt automatisch an den Nutzungskontext an:
 **Priorität:** CLI (`--context`) > ENV (`PULSESCRIBE_CONTEXT`) > App-Auto-Detection > Default
 
 **Performance:**
+
 - macOS: NSWorkspace-API (~0.2ms) statt AppleScript (~207ms)
 - Windows: win32gui + psutil (~1ms)
 
@@ -329,13 +334,16 @@ CustomIDE = "code"
 
 Voice-Commands werden vom LLM in der Refine-Pipeline interpretiert (nur mit `--refine`):
 
-| Befehl (DE/EN)                   | Ergebnis |
-| -------------------------------- | -------- |
-| "neuer Absatz" / "new paragraph" | `\n\n`   |
-| "neue Zeile" / "new line"        | `\n`     |
-| "Punkt" / "period"               | `.`      |
-| "Komma" / "comma"                | `,`      |
-| "Fragezeichen" / "question mark" | `?`      |
+| Befehl (DE/EN)                        | Ergebnis |
+| ------------------------------------- | -------- |
+| "neuer Absatz" / "new paragraph"      | `\n\n`   |
+| "neue Zeile" / "new line"             | `\n`     |
+| "Punkt" / "period"                    | `.`      |
+| "Komma" / "comma"                     | `,`      |
+| "Fragezeichen" / "question mark"      | `?`      |
+| "Ausrufezeichen" / "exclamation mark" | `!`      |
+| "Doppelpunkt" / "colon"               | `:`      |
+| "Semikolon" / "semicolon"             | `;`      |
 
 **Implementierung:** `refine/prompts.py` + `utils/custom_prompts.py` → Voice-Commands werden automatisch in alle Prompts eingefügt via `get_prompt_for_context(context, voice_commands=True)`. Custom Prompts aus `~/.pulsescribe/prompts.toml` haben Priorität.
 
@@ -350,6 +358,7 @@ pyinstaller build_app.spec --clean
 ```
 
 **Besonderheiten:**
+
 - `utils/paths.py`: `get_resource_path()` für Bundle-kompatible Pfade
 - `utils/permissions.py`: Mikrofon-Berechtigung mit Alert-Dialog
 - **Accessibility-Problem bei unsignierten Bundles:** Siehe README.md → Troubleshooting
@@ -369,6 +378,7 @@ pyinstaller build_app.spec --clean
 ```
 
 **Besonderheiten:**
+
 - Konsolen-Fenster versteckt (`--noconsole` in Spec)
 - PySide6-Overlay optional (Fallback auf Tkinter)
 - Installer via Inno Setup (`installer_windows.iss`)
@@ -378,6 +388,7 @@ pyinstaller build_app.spec --clean
   - Per-User Install (keine Admin-Rechte nötig)
 
 **Voraussetzungen:**
+
 - [Inno Setup 6](https://jrsoftware.org/isinfo.php) für Installer-Build
 - Siehe `docs/BUILDING_WINDOWS.md` für Details
 
