@@ -288,15 +288,6 @@ def _create_mic_stream(
 # =============================================================================
 
 
-def _send_to_queue(
-    loop: asyncio.AbstractEventLoop,
-    audio_queue: asyncio.Queue[bytes | None],
-    audio_bytes: bytes,
-) -> None:
-    """Sendet Audio-Bytes thread-safe an die async Queue."""
-    loop.call_soon_threadsafe(audio_queue.put_nowait, audio_bytes)
-
-
 def _handle_buffered_audio(
     buffer_state: BufferState,
     audio_bytes: bytes,
@@ -308,21 +299,25 @@ def _handle_buffered_audio(
     """Handhabt Audio im Buffer-Mode (CLI).
 
     Puffert Audio während WebSocket-Handshake, sendet danach direkt.
+    Lock-Granularität: Nur Buffer-Zugriff ist geschützt, nicht die Queue-Operation.
     """
+    # Schneller Check ob Buffering noch aktiv (minimale Lock-Zeit)
     with buffer_state.lock:
-        # Buffering aktiv: Audio sammeln bis WebSocket verbunden
-        if buffer_state.active:
+        is_buffering = buffer_state.active
+        if is_buffering:
             if len(buffer_state.buffer) < CLI_BUFFER_LIMIT:
                 buffer_state.buffer.append(audio_bytes)
+                return
             elif not state.buffer_overflow_logged:
                 logger.warning(
                     f"[{session_id}] Audio-Buffer voll ({CLI_BUFFER_LIMIT} Chunks), "
                     "verwerfe weiteres Audio bis WebSocket verbunden"
                 )
                 state.buffer_overflow_logged = True
-        else:
-            # Buffering deaktiviert: Direkt an Queue senden
-            _send_to_queue(loop, audio_queue, audio_bytes)
+                return
+
+    # Buffering deaktiviert: Direkt an Queue senden (außerhalb des Locks)
+    loop.call_soon_threadsafe(audio_queue.put_nowait, audio_bytes)
 
 
 def _create_audio_callback(
@@ -376,7 +371,7 @@ def _create_audio_callback(
 
         # Direct Mode: Sofort an Queue senden
         if buffer_state is None:
-            _send_to_queue(loop, audio_queue, audio_bytes)
+            loop.call_soon_threadsafe(audio_queue.put_nowait, audio_bytes)
             return
 
         # Buffer Mode: Puffern bis WebSocket verbunden
