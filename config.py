@@ -223,6 +223,11 @@ WARM_STREAM_QUEUE_SIZE = _get_bounded_int_env(
 # Verhindert "hängendes Overlay" bei Worker-Problemen (z.B. WebSocket-Hänger)
 TRANSCRIBING_TIMEOUT = 45.0  # Sekunden (Deepgram + Refine sollten < 30s dauern)
 
+# Deepgram Streaming Timeouts
+AUDIO_QUEUE_POLL_INTERVAL = 0.1  # Sekunden zwischen Queue-Polls
+SEND_MEDIA_TIMEOUT = 5.0  # Max. Wartezeit für WebSocket send_media()
+FORWARDER_THREAD_JOIN_TIMEOUT = 0.5  # Timeout beim Beenden des Forwarder-Threads
+
 # LLM-Refine Timeout: Maximale Wartezeit für API-Calls
 # Verhindert "hängende" Requests bei Netzwerkproblemen
 LLM_REFINE_TIMEOUT = 30.0  # Sekunden (typische Refine-Calls: 2-5s)
@@ -302,6 +307,9 @@ __all__ = [
     "DEEPGRAM_CLOSE_TIMEOUT",
     "TRANSCRIBING_TIMEOUT",
     "LLM_REFINE_TIMEOUT",
+    "AUDIO_QUEUE_POLL_INTERVAL",
+    "SEND_MEDIA_TIMEOUT",
+    "FORWARDER_THREAD_JOIN_TIMEOUT",
     # Models
     "DEFAULT_API_MODEL",
     "DEFAULT_LOCAL_MODEL",
