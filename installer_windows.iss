@@ -11,7 +11,11 @@
 ;   - PyInstaller build output in dist/PulseScribe/
 
 #define MyAppName "PulseScribe"
-#define MyAppVersion "1.1.1"
+; Version can be passed via command line: iscc /DAppVersion=1.2.0 installer_windows.iss
+#ifndef AppVersion
+  #define AppVersion "1.1.1"
+#endif
+#define MyAppVersion AppVersion
 #define MyAppPublisher "KLIEBHAN"
 #define MyAppURL "https://pulsescribe.me"
 #define MyAppExeName "PulseScribe.exe"
@@ -53,8 +57,8 @@ WizardSizePercent=100
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 
-; Version info
-VersionInfoVersion={#MyAppVersion}
+; Version info (must be 4-part: X.Y.Z.0)
+VersionInfoVersion={#MyAppVersion}.0
 VersionInfoDescription={#MyAppDescription}
 VersionInfoProductName={#MyAppName}
 VersionInfoProductVersion={#MyAppVersion}

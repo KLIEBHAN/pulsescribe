@@ -162,11 +162,12 @@ if ($Installer) {
         Write-BuildWarning "  assets\icon.ico not found - using default icon"
     }
 
-    # Run Inno Setup
+    # Run Inno Setup with version parameter
+    $isccArgs = @("/DAppVersion=$Version", "installer_windows.iss")
     if ($iscc -is [string]) {
-        & $iscc installer_windows.iss
+        & $iscc @isccArgs
     } else {
-        iscc installer_windows.iss
+        iscc @isccArgs
     }
 
     if ($LASTEXITCODE -ne 0) {

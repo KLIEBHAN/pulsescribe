@@ -135,11 +135,16 @@ The Inno Setup installer (`installer_windows.iss`) provides:
 
 ### Customizing the Installer
 
-Edit `installer_windows.iss` to customize:
+The installer version is automatically synchronized with `pyproject.toml` when using `build_windows.ps1 -Installer`. For manual builds, you can pass the version:
+
+```powershell
+iscc /DAppVersion=1.2.0 installer_windows.iss
+```
+
+Edit `installer_windows.iss` to customize other metadata:
 
 ```ini
 ; Change app metadata
-#define MyAppVersion "1.1.1"
 #define MyAppPublisher "Your Name"
 #define MyAppURL "https://your-website.com"
 
