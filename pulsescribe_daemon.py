@@ -1343,18 +1343,12 @@ class PulseScribeDaemon:
                     )
                     from refine.llm import maybe_refine_transcript
 
-                    t_refine_start = time.perf_counter()
                     transcript = maybe_refine_transcript(
                         transcript,
                         refine=True,
                         refine_model=self.refine_model,
                         refine_provider=self.refine_provider,
                         context=self.context,
-                    )
-                    t_refine = time.perf_counter() - t_refine_start
-                    logger.info(
-                        f"Refine: provider={self.refine_provider}, "
-                        f"model={self.refine_model}, time={t_refine:.2f}s"
                     )
 
                 logger.debug("Sende TRANSCRIPT_RESULT")
@@ -1619,18 +1613,12 @@ class PulseScribeDaemon:
                     )
                     from refine.llm import maybe_refine_transcript
 
-                    t_refine_start = time.perf_counter()
                     transcript = maybe_refine_transcript(
                         transcript,
                         refine=True,
                         refine_model=self.refine_model,
                         refine_provider=self.refine_provider,
                         context=self.context,
-                    )
-                    t_refine = time.perf_counter() - t_refine_start
-                    logger.info(
-                        f"Refine: provider={self.refine_provider}, "
-                        f"model={self.refine_model}, time={t_refine:.2f}s"
                     )
 
                 logger.debug("Sende TRANSCRIPT_RESULT")
