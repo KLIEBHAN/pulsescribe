@@ -1423,6 +1423,11 @@ class PulseScribeWindows:
         Fallback: Wenn PySide6 nicht verfügbar ist, wird die .env Datei
         im Standard-Editor geöffnet.
         """
+        # Bereits offen? Nicht nochmal starten
+        if self._settings_process and self._settings_process.poll() is None:
+            logger.debug("Settings-Fenster bereits offen")
+            return
+
         import subprocess
 
         try:
@@ -1931,6 +1936,11 @@ class PulseScribeWindows:
         Analog zu _show_settings(): Qt-GUIs müssen in einem eigenen Prozess
         laufen, nicht in einem Thread, da Qt den Main-Thread benötigt.
         """
+        # Bereits offen? Nicht nochmal starten
+        if self._onboarding_process and self._onboarding_process.poll() is None:
+            logger.debug("Onboarding-Wizard bereits offen")
+            return
+
         import subprocess
 
         try:
