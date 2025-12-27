@@ -1542,7 +1542,8 @@ class PulseScribeWindows:
 
         # Mode aktualisieren
         new_mode = env_values.get("PULSESCRIBE_MODE", "deepgram")
-        if new_mode != self.mode:
+        mode_changed = new_mode != self.mode
+        if mode_changed:
             old_mode = self.mode
             self.mode = new_mode
 
@@ -1554,9 +1555,16 @@ class PulseScribeWindows:
             self._provider_cache.clear()
             logger.info(f"Mode geändert: {old_mode} → {new_mode}")
 
-            # Bei Wechsel zu local: Model preloaden
-            if new_mode == "local":
-                threading.Thread(target=self._preload_local_model, daemon=True).start()
+        # Bei local Mode: Runtime-Config invalidieren (auch ohne Mode-Wechsel)
+        # Wichtig damit Fallback auf CPU bei Modellwechsel zurückgesetzt wird
+        if new_mode == "local" and not mode_changed:
+            local_provider = self._provider_cache.get("local")
+            if local_provider and hasattr(local_provider, "invalidate_runtime_config"):
+                local_provider.invalidate_runtime_config()
+
+        # Bei local Mode: Model preloaden (bei Mode-Wechsel oder Settings-Reload)
+        if new_mode == "local":
+            threading.Thread(target=self._preload_local_model, daemon=True).start()
 
         # Refine aktualisieren
         self.refine = env_values.get("PULSESCRIBE_REFINE", "").lower() == "true"

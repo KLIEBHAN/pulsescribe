@@ -13,6 +13,7 @@ import platform
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Generator
@@ -20,6 +21,7 @@ from typing import Any, Generator
 from config import DEFAULT_LOCAL_MODEL, USER_CONFIG_DIR, WHISPER_SAMPLE_RATE
 from utils.env import get_env_bool, get_env_int
 from utils.logging import log
+from utils.timing import timed_operation
 from utils.vocabulary import load_vocabulary
 
 logger = logging.getLogger("pulsescribe.providers.local")
@@ -29,6 +31,10 @@ CUDNN_INSTALL_COMMAND = "pip install nvidia-cudnn-cu12"
 
 # Default compute type for CPU (float16 is not supported efficiently on CPU)
 CPU_COMPUTE_TYPE = "int8"
+
+# Timeout for CUDA model loading (seconds) - prevents hanging on cuDNN issues
+# 120s allows for first-time model downloads (~1.5GB for medium)
+CUDA_MODEL_LOAD_TIMEOUT = 120
 
 
 def _register_nvidia_dll_directories() -> None:
@@ -461,18 +467,42 @@ class LocalProvider:
                 f"(Device: {device.upper()}, Compute: {compute_type}, "
                 f"threads={cpu_threads}, workers={num_workers})..."
             )
-            try:
-                self._model_cache[cache_key] = WhisperModel(
+
+            def _load_model(dev: str, comp: str):
+                return WhisperModel(
                     faster_name,
-                    device=device,
-                    compute_type=compute_type,
+                    device=dev,
+                    compute_type=comp,
                     cpu_threads=cpu_threads,
                     num_workers=num_workers,
                 )
+
+            try:
+                if device == "cuda":
+                    # CUDA-Loading mit Timeout (kann bei cuDNN-Problemen hängen)
+                    with ThreadPoolExecutor(max_workers=1) as executor:
+                        future = executor.submit(_load_model, device, compute_type)
+                        try:
+                            self._model_cache[cache_key] = future.result(
+                                timeout=CUDA_MODEL_LOAD_TIMEOUT
+                            )
+                        except FuturesTimeoutError:
+                            logger.warning(
+                                f"CUDA Model-Loading Timeout ({CUDA_MODEL_LOAD_TIMEOUT}s) - "
+                                f"cuDNN hängt vermutlich. Fallback auf CPU."
+                            )
+                            raise RuntimeError("CUDA model loading timeout")
+                else:
+                    self._model_cache[cache_key] = _load_model(device, compute_type)
+                logger.info(f"Modell '{faster_name}' geladen ({device.upper()})")
             except Exception as e:
                 error_msg = str(e).lower()
-                # Fallback auf CPU wenn CUDA/cuDNN fehlschlägt
-                if device == "cuda" and ("cudnn" in error_msg or "cuda" in error_msg):
+                # Fallback auf CPU wenn CUDA/cuDNN fehlschlägt oder Timeout
+                if device == "cuda" and (
+                    "cudnn" in error_msg
+                    or "cuda" in error_msg
+                    or "timeout" in error_msg
+                ):
                     logger.warning(
                         f"CUDA/cuDNN nicht verfügbar ({e}), "
                         f"Fallback auf CPU mit {CPU_COMPUTE_TYPE}. "
@@ -489,13 +519,8 @@ class LocalProvider:
                         f"Lade faster-whisper Modell '{faster_name}' "
                         f"(Device: CPU [Fallback], Compute: {cpu_compute})..."
                     )
-                    self._model_cache[cpu_cache_key] = WhisperModel(
-                        faster_name,
-                        device="cpu",
-                        compute_type=cpu_compute,
-                        cpu_threads=cpu_threads,
-                        num_workers=num_workers,
-                    )
+                    self._model_cache[cpu_cache_key] = _load_model("cpu", cpu_compute)
+                    logger.info(f"Modell '{faster_name}' geladen (CPU Fallback)")
                     return self._model_cache[cpu_cache_key]
                 raise
             return self._model_cache[cache_key]
@@ -724,6 +749,20 @@ class LocalProvider:
         else:
             self._get_whisper_model(model_name)
 
+    def _log_transcription_start(self, model_name: str, language: str | None) -> None:
+        """Loggt Transkriptions-Start mit Provider/Backend/Modell/Device/Compute-Type."""
+        self._ensure_runtime_config()
+        parts = [f"Local ({self._backend}): {model_name}"]
+        # Device nur bei whisper/faster relevant (mlx/lightning nutzen immer Metal)
+        if self._backend in ("whisper", "faster"):
+            parts.append(f"device={self._device}")
+        if self._backend == "faster":
+            device = "cuda" if self._device == "cuda" else "cpu"
+            compute = self._compute_type or ("float16" if device == "cuda" else CPU_COMPUTE_TYPE)
+            parts.append(f"compute={compute}")
+        parts.append(f"lang={language or 'auto'}")
+        logger.info(", ".join(parts))
+
     def transcribe_audio(
         self,
         audio,
@@ -732,18 +771,19 @@ class LocalProvider:
     ) -> str:
         """Transkribiert ein Audio-Array lokal (ohne Dateischreibzugriff)."""
         model_name = self._resolve_model_name(model)
+        self._log_transcription_start(model_name, language)
         options = self._build_options(language)
-        log("Transkribiere audio-buffer...")
-        with self._transcribe_lock:
-            if self._backend == "faster":
-                return self._transcribe_faster(audio, model_name, options)
-            if self._backend == "mlx":
-                return self._transcribe_mlx(audio, model_name, options)
-            if self._backend == "lightning":
-                return self._transcribe_lightning(audio, model_name, options)
-            whisper_model = self._get_whisper_model(model_name)
-            result = whisper_model.transcribe(audio, **options)
-            return result["text"]
+        with timed_operation("Local-Transkription", logger=logger, include_session=False):
+            with self._transcribe_lock:
+                if self._backend == "faster":
+                    return self._transcribe_faster(audio, model_name, options)
+                if self._backend == "mlx":
+                    return self._transcribe_mlx(audio, model_name, options)
+                if self._backend == "lightning":
+                    return self._transcribe_lightning(audio, model_name, options)
+                whisper_model = self._get_whisper_model(model_name)
+                result = whisper_model.transcribe(audio, **options)
+                return result["text"]
 
     def _transcribe_faster(self, audio, model_name: str, options: dict) -> str:
         model = self._get_faster_model(model_name)
@@ -899,18 +939,19 @@ class LocalProvider:
             Transkribierter Text
         """
         model_name = self._resolve_model_name(model)
-        log(f"Transkribiere {audio_path.name}...")
+        self._log_transcription_start(model_name, language)
         options = self._build_options(language)
-        with self._transcribe_lock:
-            if self._backend == "faster":
-                return self._transcribe_faster(str(audio_path), model_name, options)
-            if self._backend == "mlx":
-                return self._transcribe_mlx(str(audio_path), model_name, options)
-            if self._backend == "lightning":
-                return self._transcribe_lightning(str(audio_path), model_name, options)
-            whisper_model = self._get_whisper_model(model_name)
-            result = whisper_model.transcribe(str(audio_path), **options)
-            return result["text"]
+        with timed_operation("Local-Transkription", logger=logger, include_session=False):
+            with self._transcribe_lock:
+                if self._backend == "faster":
+                    return self._transcribe_faster(str(audio_path), model_name, options)
+                if self._backend == "mlx":
+                    return self._transcribe_mlx(str(audio_path), model_name, options)
+                if self._backend == "lightning":
+                    return self._transcribe_lightning(str(audio_path), model_name, options)
+                whisper_model = self._get_whisper_model(model_name)
+                result = whisper_model.transcribe(str(audio_path), **options)
+                return result["text"]
 
     def supports_streaming(self) -> bool:
         """Lokales Whisper unterstützt kein Streaming."""
