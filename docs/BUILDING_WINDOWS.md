@@ -74,6 +74,57 @@ dist/
 
 ### Build Variants
 
+| Variant | Command | Size | Description |
+|---------|---------|------|-------------|
+| **API-only** (default) | `.\build_windows.ps1 -Installer` | ~30 MB | Cloud APIs only (Deepgram, OpenAI, Groq) |
+| **Local** | `.\build_windows.ps1 -Installer -Local` | ~4 GB | Includes faster-whisper for offline use |
+
+> **Note:** The `-Local` variant includes `faster-whisper`, `torch`, and `ctranslate2` for local transcription.
+
+### Local Variant: Important Notes
+
+**Model Download on First Use:**
+
+The Local variant does **not** bundle the Whisper models. On first transcription, the model is downloaded automatically:
+
+| Model | Download Size | Cache Location |
+|-------|---------------|----------------|
+| `turbo` (default) | ~1.5 GB | `~/.cache/huggingface/hub/` |
+| `large-v3` | ~3 GB | `~/.cache/huggingface/hub/` |
+| `medium` | ~1.5 GB | `~/.cache/huggingface/hub/` |
+
+After the initial download, transcription works fully offline.
+
+**GPU Support:**
+
+The bundled installer runs on **CPU only** by default (using `int8` compute type for good performance).
+
+For NVIDIA GPU acceleration, you need to manually install cuDNN:
+
+```powershell
+# Install cuDNN for CUDA 12
+pip install nvidia-cudnn-cu12
+
+# Verify installation
+python -c "import ctranslate2; print(ctranslate2.get_cuda_device_count())"
+```
+
+> **Note:** The bundled EXE cannot find cuDNN DLLs from pip packages. For GPU support, install cuDNN system-wide from [NVIDIA cuDNN](https://developer.nvidia.com/cudnn) or run from source instead of the bundled EXE.
+
+**CPU Performance:**
+
+CPU transcription with faster-whisper is well-optimized:
+
+| Model | Approx. Speed (8-core CPU) |
+|-------|---------------------------|
+| `turbo` | ~0.5-1x real-time |
+| `medium` | ~0.3-0.5x real-time |
+| `small` | ~0.8-1.5x real-time |
+
+(1x real-time = 10 seconds of audio transcribed in 10 seconds)
+
+### Overlay Variants
+
 | Variant | Command | Overlay |
 |---------|---------|---------|
 | **Full** (recommended) | `pip install PySide6 && pyinstaller build_windows.spec` | GPU-accelerated (PySide6) |

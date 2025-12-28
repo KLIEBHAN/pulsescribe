@@ -240,16 +240,61 @@ sudo apt install ffmpeg
 
 ---
 
+## Windows GPU-Unterstützung
+
+Der Windows-Installer (`-Local` Variante) läuft standardmäßig auf **CPU**. Für NVIDIA GPU-Beschleunigung:
+
+### Option 1: Aus Quellcode starten (Empfohlen)
+
+```powershell
+# Klonen und installieren
+git clone https://github.com/KLIEBHAN/pulsescribe.git
+cd pulsescribe
+pip install -r requirements.txt
+pip install faster-whisper nvidia-cudnn-cu12
+
+# Starten
+python pulsescribe_windows.py
+```
+
+### Option 2: Systemweite cuDNN-Installation
+
+1. cuDNN von [NVIDIA cuDNN](https://developer.nvidia.com/cudnn) herunterladen (NVIDIA-Account erforderlich)
+2. DLLs nach `C:\Windows\System32\` kopieren oder zum PATH hinzufügen
+3. PulseScribe-Installer starten
+
+### GPU-Unterstützung prüfen
+
+```powershell
+python -c "import torch; print(f'CUDA verfügbar: {torch.cuda.is_available()}')"
+python -c "import ctranslate2; print(f'CUDA-Geräte: {ctranslate2.get_cuda_device_count()}')"
+```
+
+### Warum nur CPU im Installer?
+
+Die gebündelte EXE kann cuDNN-DLLs aus pip-Paketen nicht finden (sie liegen in `site-packages/nvidia/*/bin/`). Diese DLLs einzubinden würde ~2GB zum Installer hinzufügen und hat NVIDIA-Lizenzimplikationen.
+
+**CPU-Performance ist gut:**
+
+| Modell | Geschwindigkeit (8-Kern CPU) | Geschwindigkeit (RTX 3080) |
+|--------|------------------------------|---------------------------|
+| `turbo` | ~0.5-1x Echtzeit | ~0.1x Echtzeit |
+| `medium` | ~0.3-0.5x Echtzeit | ~0.05x Echtzeit |
+
+---
+
 ## Fehlerbehebung
 
 | Problem | Lösung |
 |---------|--------|
-| `ModuleNotFoundError: No module named 'mlx'` | Nur Apple Silicon. Auf Intel `faster` verwenden. |
+| `ModuleNotFoundError: No module named 'mlx'` | Nur Apple Silicon. Auf Intel/Windows `faster` verwenden. |
 | Modell-Download 404 | Kurznamen (`large`) oder vollständige Repo-ID verwenden |
 | `beam_size not implemented (mlx)` | `PULSESCRIBE_LOCAL_BEAM_SIZE` entfernen |
 | Langsame erste Transkription | `PULSESCRIBE_LOCAL_WARMUP=true` aktivieren |
 | Speichermangel | Kleineres Modell oder `PULSESCRIBE_LIGHTNING_QUANT=4bit` |
 | `Read-only file system` (DMG) | Modelle werden in `~/.pulsescribe/lightning_models/` gespeichert |
+| CUDA nicht erkannt (Windows) | cuDNN systemweit installieren oder aus Quellcode starten |
+| Erste Transkription sehr langsam | Modell wird heruntergeladen (~1.5 GB), auf Abschluss warten |
 
 ---
 
