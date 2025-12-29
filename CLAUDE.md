@@ -91,7 +91,7 @@ Konsolidiert alle Komponenten in einem Prozess (empfohlen für tägliche Nutzung
 | `PulseScribeDaemon` | `pulsescribe_daemon` | Hauptklasse: Orchestriert Hotkey, Audio & UI    |
 
 **Architektur:** Main-Thread (Hotkey + UI Event Loop) + Worker-Thread (Deepgram-Streaming)
-**Streaming:** Deepgram-Stop dräniert die Audio-Queue bis zum None-Sentinel, um abgeschnittene letzte Wörter zu vermeiden (`providers/deepgram_stream.py`).
+**Streaming:** Deepgram-Stop leert die Audio-Queue bis zum None-Sentinel, um abgeschnittene letzte Wörter zu vermeiden (`providers/deepgram_stream.py`).
 
 ### Windows: `pulsescribe_windows.py`
 
