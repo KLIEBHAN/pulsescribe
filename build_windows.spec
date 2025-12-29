@@ -50,7 +50,7 @@ print(f"Build variant: {'Local (CUDA)' if BUILD_LOCAL else 'API-only'}")
 
 # Collect only required PySide6 modules (not the full ~500MB package)
 # We only need QtCore, QtGui, QtWidgets for the overlay
-from PyInstaller.utils.hooks import get_package_paths
+from PyInstaller.utils.hooks import collect_data_files, get_package_paths
 
 pyside6_binaries = []
 pyside6_datas = []
@@ -106,6 +106,19 @@ datas = pyside6_datas + [
     ('ui', 'ui'),      # Overlay modules (PySide6, Tkinter, animation)
     ('audio', 'audio'), # Recording module
 ]
+if BUILD_LOCAL:
+    faster_whisper_datas = collect_data_files(
+        "faster_whisper", includes=["assets/silero_vad_v6.onnx"]
+    )
+    if not faster_whisper_datas:
+        raise RuntimeError(
+            "Missing faster_whisper assets (silero_vad_v6.onnx). "
+            "Install faster-whisper before Local builds."
+        )
+    print(
+        f"faster_whisper assets collected: {len(faster_whisper_datas)} files"
+    )
+    datas += faster_whisper_datas
 
 # Hidden imports that PyInstaller doesn't detect automatically
 hiddenimports = [

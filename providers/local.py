@@ -798,6 +798,20 @@ class LocalProvider:
             return "".join(seg.text for seg in segments)
         except Exception as e:
             error_msg = str(e).lower()
+            if faster_opts.get("vad_filter") and "silero_vad_v6.onnx" in error_msg:
+                logger.warning(
+                    "VAD-Modell fehlt (silero_vad_v6.onnx). "
+                    "Deaktiviere VAD-Filter und versuche erneut."
+                )
+                retry_opts = dict(faster_opts)
+                retry_opts["vad_filter"] = False
+                try:
+                    segments, _info = model.transcribe(audio, **retry_opts)
+                    return "".join(seg.text for seg in segments)
+                except Exception as retry_error:
+                    faster_opts = retry_opts
+                    e = retry_error
+                    error_msg = str(e).lower()
             # CUDA/cuDNN-Fehler bei Transkription → Fallback auf CPU
             if self._device == "cuda" and ("cudnn" in error_msg or "cuda" in error_msg):
                 logger.warning(
