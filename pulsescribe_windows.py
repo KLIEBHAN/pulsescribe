@@ -240,6 +240,8 @@ class PulseScribeWindows:
         self._overlay = None
         self._settings_process = None  # Subprocess für Settings-Fenster
         self._onboarding_process = None  # Subprocess für Onboarding-Wizard
+        self._ipc_server = None  # IPC-Server für Wizard-Kommunikation
+        self._ipc_test_cmd_id: str | None = None  # Aktiver IPC-Test-Command
         self._event_loop = None  # Wird in _prewarm_imports() erstellt
 
         # Watchdog für hängende Transcription (wie macOS)
@@ -1115,6 +1117,21 @@ class PulseScribeWindows:
         logger.info(f"Transkript: {transcript[:50]}...")
         self._set_state(AppState.DONE)
         self._play_sound("done")
+
+        # IPC-Test Mode: Route result to wizard instead of clipboard
+        if self._ipc_test_cmd_id and self._ipc_server:
+            from utils.ipc import STATUS_DONE
+
+            self._ipc_server.send_response(
+                self._ipc_test_cmd_id, STATUS_DONE, transcript=transcript
+            )
+            logger.info(f"IPC-Test Ergebnis gesendet (id={self._ipc_test_cmd_id})")
+            self._ipc_test_cmd_id = None  # Reset for next test
+
+            # Nach kurzer Pause zurück zu IDLE
+            threading.Timer(1.0, lambda: self._set_state(AppState.IDLE)).start()
+            return
+
         self._save_to_history(transcript)
 
         if self.auto_paste:
@@ -1383,6 +1400,9 @@ class PulseScribeWindows:
             except Exception:
                 pass
             self._onboarding_process = None
+
+        # IPC-Server stoppen
+        self._stop_ipc_server()
 
         # Overlay stoppen
         if self._overlay:
@@ -1952,6 +1972,9 @@ class PulseScribeWindows:
 
                 self._onboarding_process = process
                 logger.info("Onboarding-Wizard gestartet (--onboarding)")
+
+                # Start IPC server for wizard communication
+                self._start_ipc_server()
                 return
 
             # Entwicklung: Python-Interpreter mit onboarding_wizard_windows.py starten
@@ -2014,9 +2037,100 @@ class PulseScribeWindows:
             self._onboarding_process = process
             logger.info("Onboarding-Wizard gestartet")
 
+            # Start IPC server for wizard communication
+            self._start_ipc_server()
+
         except Exception as e:
             logger.error(f"Onboarding-Wizard konnte nicht geöffnet werden: {e}")
             self._show_settings()
+
+    # =========================================================================
+    # IPC for Wizard Communication
+    # =========================================================================
+
+    def _start_ipc_server(self) -> None:
+        """Start the IPC server for wizard communication."""
+        if self._ipc_server is not None:
+            return
+
+        try:
+            from utils.ipc import IPCServer
+
+            self._ipc_server = IPCServer(self._handle_ipc_command)
+            self._ipc_server.start()
+            logger.info("IPC-Server für Wizard gestartet")
+        except Exception as e:
+            logger.error(f"IPC-Server Start fehlgeschlagen: {e}")
+
+    def _stop_ipc_server(self) -> None:
+        """Stop the IPC server."""
+        if self._ipc_server is None:
+            return
+
+        try:
+            self._ipc_server.stop()
+            logger.info("IPC-Server gestoppt")
+        except Exception as e:
+            logger.warning(f"IPC-Server Stop Fehler: {e}")
+        finally:
+            self._ipc_server = None
+            self._ipc_test_cmd_id = None
+
+    def _handle_ipc_command(self, cmd_id: str, command: str) -> None:
+        """Handle IPC commands from the wizard."""
+        from utils.ipc import CMD_START_TEST, CMD_STOP_TEST, STATUS_ERROR
+
+        logger.debug(f"IPC-Command empfangen: {command} (id={cmd_id})")
+
+        if command == CMD_START_TEST:
+            self._start_ipc_test(cmd_id)
+        elif command == CMD_STOP_TEST:
+            self._stop_ipc_test(cmd_id)
+        else:
+            logger.warning(f"Unbekannter IPC-Command: {command}")
+            if self._ipc_server:
+                self._ipc_server.send_response(
+                    cmd_id, STATUS_ERROR, error=f"Unknown command: {command}"
+                )
+
+    def _start_ipc_test(self, cmd_id: str) -> None:
+        """Start test dictation via IPC."""
+        from utils.ipc import STATUS_ERROR, STATUS_RECORDING
+
+        # Already recording?
+        if self.state in (
+            AppState.LISTENING,
+            AppState.RECORDING,
+            AppState.TRANSCRIBING,
+        ):
+            if self._ipc_server:
+                self._ipc_server.send_response(
+                    cmd_id, STATUS_ERROR, error="Bereits in Aufnahme"
+                )
+            return
+
+        # Store command ID for result routing
+        self._ipc_test_cmd_id = cmd_id
+
+        # Send "recording" status
+        if self._ipc_server:
+            self._ipc_server.send_response(cmd_id, STATUS_RECORDING)
+
+        # Start recording (uses existing mechanism)
+        self._start_recording()
+        logger.info(f"IPC-Test gestartet (id={cmd_id})")
+
+    def _stop_ipc_test(self, cmd_id: str) -> None:
+        """Stop test dictation via IPC."""
+        from utils.ipc import STATUS_STOPPED
+
+        if self.state in (AppState.LISTENING, AppState.RECORDING):
+            self._stop_recording()
+            logger.info(f"IPC-Test gestoppt (id={cmd_id})")
+        else:
+            # Not recording, just acknowledge
+            if self._ipc_server:
+                self._ipc_server.send_response(cmd_id, STATUS_STOPPED)
 
     def run(self):
         """Startet den Daemon."""

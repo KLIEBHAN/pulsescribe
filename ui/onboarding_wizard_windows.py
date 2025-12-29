@@ -168,6 +168,14 @@ class OnboardingWizardWindows(QDialog):
         # Mic check timer
         self._mic_timer: QTimer | None = None
 
+        # IPC test dictation state
+        self._ipc_client = None
+        self._ipc_test_cmd_id: str | None = None
+        self._ipc_poll_timer: QTimer | None = None
+        self._test_start_btn: QPushButton | None = None
+        self._test_stop_btn: QPushButton | None = None
+        self._test_notice: QLabel | None = None
+
         self._setup_ui()
 
     # -------------------------------------------------------------------------
@@ -525,15 +533,29 @@ class OnboardingWizardWindows(QDialog):
 
         layout.addWidget(card)
 
-        # Standalone mode notice
-        notice = QLabel(
-            "Hinweis: Im Standalone-Modus ist die Test-Funktion nicht verfügbar. "
-            "Starte PulseScribe nach dem Setup, um die Diktierfunktion zu testen."
+        # Test buttons (IPC-based when daemon is running)
+        btn_row = QHBoxLayout()
+
+        self._test_start_btn = QPushButton("Test starten")
+        self._test_start_btn.clicked.connect(self._start_ipc_test)
+        btn_row.addWidget(self._test_start_btn)
+
+        self._test_stop_btn = QPushButton("Stoppen")
+        self._test_stop_btn.clicked.connect(self._stop_ipc_test)
+        self._test_stop_btn.setVisible(False)
+        btn_row.addWidget(self._test_stop_btn)
+
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+        # Info text (shown when daemon not running)
+        self._test_notice = QLabel(
+            "Tipp: Starte PulseScribe im Hintergrund, um den Test hier durchzuführen."
         )
-        notice.setFont(QFont(DEFAULT_FONT_FAMILY, 9))
-        notice.setStyleSheet(f"color: {COLORS['warning']};")
-        notice.setWordWrap(True)
-        layout.addWidget(notice)
+        self._test_notice.setFont(QFont(DEFAULT_FONT_FAMILY, 9))
+        self._test_notice.setStyleSheet(f"color: {COLORS['text_secondary']};")
+        self._test_notice.setWordWrap(True)
+        layout.addWidget(self._test_notice)
 
         # Skip link
         skip_btn = QPushButton("Überspringen →")
@@ -697,6 +719,131 @@ class OnboardingWizardWindows(QDialog):
     def _skip_test(self) -> None:
         """Skip the test dictation step."""
         self._show_step(OnboardingStep.CHEAT_SHEET)
+
+    # -------------------------------------------------------------------------
+    # IPC Test Dictation
+    # -------------------------------------------------------------------------
+
+    def _start_ipc_test(self) -> None:
+        """Start test dictation via IPC to daemon."""
+        from utils.ipc import CMD_START_TEST, IPCClient
+
+        # Initialize IPC client
+        if self._ipc_client is None:
+            self._ipc_client = IPCClient()
+
+        # Send start command
+        self._ipc_test_cmd_id = self._ipc_client.send_command(CMD_START_TEST)
+
+        # Update UI
+        if self._test_status_label:
+            self._test_status_label.setText("Verbinde mit PulseScribe...")
+            self._test_status_label.setStyleSheet(f"color: {COLORS['text_secondary']};")
+        if self._test_start_btn:
+            self._test_start_btn.setVisible(False)
+        if self._test_stop_btn:
+            self._test_stop_btn.setVisible(True)
+        if self._test_notice:
+            self._test_notice.setVisible(False)
+
+        # Start polling for response
+        if self._ipc_poll_timer is None:
+            self._ipc_poll_timer = QTimer(self)
+            self._ipc_poll_timer.timeout.connect(self._poll_ipc_response)
+        self._ipc_poll_timer.start(200)  # Poll every 200ms
+
+        logger.debug(f"IPC test started (cmd_id={self._ipc_test_cmd_id})")
+
+    def _stop_ipc_test(self) -> None:
+        """Stop test dictation via IPC."""
+        from utils.ipc import CMD_STOP_TEST
+
+        if self._ipc_client and self._ipc_test_cmd_id:
+            self._ipc_client.send_command(CMD_STOP_TEST)
+
+        if self._test_status_label:
+            self._test_status_label.setText("Wird gestoppt...")
+
+    def _poll_ipc_response(self) -> None:
+        """Poll for IPC response from daemon."""
+        from utils.ipc import (
+            STATUS_DONE,
+            STATUS_ERROR,
+            STATUS_RECORDING,
+            STATUS_STOPPED,
+        )
+
+        if not self._ipc_client or not self._ipc_test_cmd_id:
+            return
+
+        response = self._ipc_client.poll_response(self._ipc_test_cmd_id)
+        if not response:
+            return
+
+        status = response.get("status")
+        logger.debug(f"IPC response: {status}")
+
+        if status == STATUS_RECORDING:
+            if self._test_status_label:
+                self._test_status_label.setText("Aufnahme läuft... Sprich jetzt!")
+                self._test_status_label.setStyleSheet(f"color: {COLORS['accent']};")
+
+        elif status == STATUS_DONE:
+            self._stop_ipc_polling()
+            transcript = response.get("transcript", "")
+            self._on_ipc_test_complete(transcript, None)
+
+        elif status == STATUS_ERROR:
+            self._stop_ipc_polling()
+            error = response.get("error", "Unbekannter Fehler")
+            self._on_ipc_test_complete("", error)
+
+        elif status == STATUS_STOPPED:
+            self._stop_ipc_polling()
+            self._reset_test_ui()
+
+    def _stop_ipc_polling(self) -> None:
+        """Stop the IPC polling timer."""
+        if self._ipc_poll_timer:
+            self._ipc_poll_timer.stop()
+        if self._ipc_client:
+            self._ipc_client.clear_response()
+        self._ipc_test_cmd_id = None
+
+    def _on_ipc_test_complete(self, transcript: str, error: str | None) -> None:
+        """Handle IPC test completion."""
+        self._reset_test_ui()
+
+        if error:
+            if self._test_status_label:
+                self._test_status_label.setText(f"Fehler: {error}")
+                self._test_status_label.setStyleSheet(f"color: {COLORS['error']};")
+            if self._test_notice:
+                self._test_notice.setVisible(True)
+                self._test_notice.setText(
+                    "Tipp: Stelle sicher, dass PulseScribe im Hintergrund läuft."
+                )
+        elif transcript.strip():
+            if self._test_transcript:
+                self._test_transcript.setPlainText(transcript)
+            if self._test_status_label:
+                self._test_status_label.setText("Erfolgreich!")
+                self._test_status_label.setStyleSheet(f"color: {COLORS['success']};")
+            self._test_successful = True
+            self._update_navigation()
+        else:
+            if self._test_status_label:
+                self._test_status_label.setText(
+                    "Keine Sprache erkannt. Nochmal versuchen?"
+                )
+                self._test_status_label.setStyleSheet(f"color: {COLORS['warning']};")
+
+    def _reset_test_ui(self) -> None:
+        """Reset test UI to initial state."""
+        if self._test_start_btn:
+            self._test_start_btn.setVisible(True)
+        if self._test_stop_btn:
+            self._test_stop_btn.setVisible(False)
 
     def _complete(self) -> None:
         """Complete the wizard."""
