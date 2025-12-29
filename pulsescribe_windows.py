@@ -1634,16 +1634,16 @@ class PulseScribeWindows:
             if hasattr(provider, "preload"):
                 logger.info(f"Preloading local model '{model}'...")
                 provider.preload(model=model)
-            if self._overlay and overlay_updated:
-                self._overlay.update_state(self.state.name)
             if self.state == AppState.LOADING:
                 self._set_state(AppState.IDLE)
+            if self._overlay and overlay_updated:
+                self._overlay.update_state(self.state.name)
         except Exception as e:
             logger.warning(f"Local-Model Preload fehlgeschlagen: {e}")
-            if self._overlay and overlay_updated:
-                self._overlay.update_state(self.state.name)
             if self.state == AppState.LOADING:
                 self._set_state(AppState.IDLE)
+            if self._overlay and overlay_updated:
+                self._overlay.update_state(self.state.name)
 
     def _start_env_watcher(self):
         """Startet FileWatcher für .env Änderungen (Auto-Reload).

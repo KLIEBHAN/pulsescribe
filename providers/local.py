@@ -427,7 +427,7 @@ class LocalProvider:
                     except FuturesTimeoutError:
                         logger.warning(
                             f"CUDA Whisper Model-Loading Timeout ({CUDA_MODEL_LOAD_TIMEOUT}s) - "
-                            "Fallback auf CPU."
+                            "Fehler wird an Aufrufer weitergegeben (CPU-Fallback folgt)."
                         )
                         raise RuntimeError("CUDA whisper model loading timeout")
                     finally:
