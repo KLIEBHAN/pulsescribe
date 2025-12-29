@@ -69,6 +69,11 @@ WIZARD_HEIGHT = 580
 PADDING = 24
 FOOTER_HEIGHT = 60
 
+# IPC Test Dictation: Timeout after 10 seconds of no daemon response
+# (50 polls × 200ms interval = 10 seconds)
+IPC_POLL_INTERVAL_MS = 200
+IPC_MAX_POLLS_BEFORE_TIMEOUT = 50
+
 
 # =============================================================================
 # Helper Functions
@@ -782,35 +787,35 @@ class OnboardingWizardWindows(QDialog):
     # -------------------------------------------------------------------------
     # IPC Test Dictation
     # -------------------------------------------------------------------------
+    #
+    # The wizard runs as a separate subprocess from the daemon.
+    # To test dictation, we communicate via JSON files:
+    #   1. Wizard sends CMD_START_TEST → daemon starts recording
+    #   2. Daemon sends STATUS_RECORDING → wizard shows "speak now"
+    #   3. User clicks stop → wizard sends CMD_STOP_TEST
+    #   4. Daemon sends STATUS_DONE + transcript → wizard displays result
 
     def _start_ipc_test(self) -> None:
-        """Start test dictation via IPC to daemon."""
+        """Request the daemon to start recording via IPC."""
         from utils.ipc import CMD_START_TEST, IPCClient
 
-        # Initialize IPC client
         if self._ipc_client is None:
             self._ipc_client = IPCClient()
 
-        # Send start command
         self._ipc_test_cmd_id = self._ipc_client.send_command(CMD_START_TEST)
         self._ipc_poll_count = 0
 
-        # Update UI
-        if self._test_status_label:
-            self._test_status_label.setText("Verbinde mit PulseScribe...")
-            self._test_status_label.setStyleSheet(f"color: {COLORS['text_secondary']};")
-        if self._test_start_btn:
-            self._test_start_btn.setVisible(False)
-        if self._test_stop_btn:
-            self._test_stop_btn.setVisible(True)
-        if self._test_notice:
-            self._test_notice.setVisible(False)
+        # Show "connecting" state while waiting for daemon acknowledgment
+        self._set_test_status("Verbinde mit PulseScribe...", "text_secondary")
+        self._test_start_btn and self._test_start_btn.setVisible(False)
+        self._test_stop_btn and self._test_stop_btn.setVisible(True)
+        self._test_notice and self._test_notice.setVisible(False)
 
-        # Start polling for response
+        # Poll for daemon response every 200ms
         if self._ipc_poll_timer is None:
             self._ipc_poll_timer = QTimer(self)
             self._ipc_poll_timer.timeout.connect(self._poll_ipc_response)
-        self._ipc_poll_timer.start(200)  # Poll every 200ms
+        self._ipc_poll_timer.start(IPC_POLL_INTERVAL_MS)
 
         logger.debug(f"IPC test started (cmd_id={self._ipc_test_cmd_id})")
 
@@ -838,9 +843,8 @@ class OnboardingWizardWindows(QDialog):
 
         response = self._ipc_client.poll_response(self._ipc_test_cmd_id)
         if not response:
-            # Timeout after 50 polls (10 seconds at 200ms interval)
             self._ipc_poll_count += 1
-            if self._ipc_poll_count >= 50:
+            if self._ipc_poll_count >= IPC_MAX_POLLS_BEFORE_TIMEOUT:
                 self._stop_ipc_polling()
                 self._on_ipc_test_complete("", "Keine Verbindung zu PulseScribe")
             return
@@ -868,7 +872,7 @@ class OnboardingWizardWindows(QDialog):
             self._reset_test_ui()
 
     def _stop_ipc_polling(self) -> None:
-        """Stop the IPC polling timer."""
+        """Stop polling and clean up IPC state."""
         if self._ipc_poll_timer:
             self._ipc_poll_timer.stop()
         if self._ipc_client:
@@ -876,43 +880,48 @@ class OnboardingWizardWindows(QDialog):
         self._ipc_test_cmd_id = None
 
     def _on_ipc_test_complete(self, transcript: str, error: str | None) -> None:
-        """Handle IPC test completion."""
+        """Display test result based on outcome."""
         self._reset_test_ui()
 
         if error:
-            if self._test_transcript:
-                self._test_transcript.clear()
-            if self._test_status_label:
-                self._test_status_label.setText(f"Fehler: {error}")
-                self._test_status_label.setStyleSheet(f"color: {COLORS['error']};")
-            if self._test_notice:
-                self._test_notice.setVisible(True)
-                self._test_notice.setText(
-                    "Tipp: Stelle sicher, dass PulseScribe im Hintergrund läuft."
-                )
+            self._show_test_error(error)
         elif transcript.strip():
-            if self._test_transcript:
-                self._test_transcript.setPlainText(transcript)
-            if self._test_status_label:
-                self._test_status_label.setText("Erfolgreich!")
-                self._test_status_label.setStyleSheet(f"color: {COLORS['success']};")
-            self._test_successful = True
-            self._update_navigation()
+            self._show_test_success(transcript)
         else:
-            if self._test_transcript:
-                self._test_transcript.clear()
-            if self._test_status_label:
-                self._test_status_label.setText(
-                    "Keine Sprache erkannt. Nochmal versuchen?"
-                )
-                self._test_status_label.setStyleSheet(f"color: {COLORS['warning']};")
+            self._show_test_no_speech()
+
+    def _show_test_error(self, error: str) -> None:
+        """Display error state with troubleshooting hint."""
+        self._test_transcript and self._test_transcript.clear()
+        self._set_test_status(f"Fehler: {error}", "error")
+        if self._test_notice:
+            self._test_notice.setVisible(True)
+            self._test_notice.setText(
+                "Tipp: Stelle sicher, dass PulseScribe im Hintergrund läuft."
+            )
+
+    def _show_test_success(self, transcript: str) -> None:
+        """Display successful transcription."""
+        self._test_transcript and self._test_transcript.setPlainText(transcript)
+        self._set_test_status("Erfolgreich!", "success")
+        self._test_successful = True
+        self._update_navigation()
+
+    def _show_test_no_speech(self) -> None:
+        """Display "no speech detected" state."""
+        self._test_transcript and self._test_transcript.clear()
+        self._set_test_status("Keine Sprache erkannt. Nochmal versuchen?", "warning")
+
+    def _set_test_status(self, text: str, color_key: str) -> None:
+        """Update the test status label with colored text."""
+        if self._test_status_label:
+            self._test_status_label.setText(text)
+            self._test_status_label.setStyleSheet(f"color: {COLORS[color_key]};")
 
     def _reset_test_ui(self) -> None:
-        """Reset test UI to initial state."""
-        if self._test_start_btn:
-            self._test_start_btn.setVisible(True)
-        if self._test_stop_btn:
-            self._test_stop_btn.setVisible(False)
+        """Show start button, hide stop button."""
+        self._test_start_btn and self._test_start_btn.setVisible(True)
+        self._test_stop_btn and self._test_stop_btn.setVisible(False)
 
     def _complete(self) -> None:
         """Complete the wizard."""

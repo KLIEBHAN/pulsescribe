@@ -1,12 +1,17 @@
 """File-based IPC for Windows subprocess communication.
 
-Enables communication between the Windows daemon and the onboarding wizard subprocess
-for test dictation functionality. Uses JSON files as a simple, dependency-free IPC mechanism.
+Why file-based IPC?
+- The onboarding wizard runs as a separate subprocess (for PyInstaller compatibility)
+- Named pipes and sockets add Windows-specific complexity
+- JSON files provide a simple, debuggable, dependency-free mechanism
 
 Protocol:
-- Wizard writes commands to ipc_command.json
-- Daemon polls for commands, processes them, writes responses to ipc_response.json
-- Wizard polls for responses matching its command ID
+    Wizard                          Daemon
+       │                               │
+       │──── write command.json ──────►│
+       │                               │ (polls every 200ms)
+       │◄─── write response.json ─────│
+       │ (polls every 200ms)           │
 """
 
 from __future__ import annotations
@@ -23,35 +28,60 @@ from config import USER_CONFIG_DIR
 
 logger = logging.getLogger("pulsescribe.ipc")
 
-# IPC file locations
+# -----------------------------------------------------------------------------
+# Configuration
+# -----------------------------------------------------------------------------
+
+# IPC file locations (in ~/.pulsescribe/)
 IPC_COMMAND_FILE = USER_CONFIG_DIR / "ipc_command.json"
 IPC_RESPONSE_FILE = USER_CONFIG_DIR / "ipc_response.json"
 
-# Commands
+# Polling interval for both client and server
+POLL_INTERVAL_SECONDS = 0.2
+
+# -----------------------------------------------------------------------------
+# Protocol Constants
+# -----------------------------------------------------------------------------
+
+# Commands (Wizard → Daemon)
 CMD_START_TEST = "start_test"
 CMD_STOP_TEST = "stop_test"
 
-# Response statuses
-STATUS_RECORDING = "recording"
-STATUS_DONE = "done"
-STATUS_ERROR = "error"
-STATUS_STOPPED = "stopped"
+# Response statuses (Daemon → Wizard)
+STATUS_RECORDING = "recording"  # Microphone activated, ready for speech
+STATUS_DONE = "done"  # Transcription complete, transcript included
+STATUS_ERROR = "error"  # Something went wrong, error message included
+STATUS_STOPPED = "stopped"  # User cancelled the recording
+
+
+# -----------------------------------------------------------------------------
+# File I/O Helpers
+# -----------------------------------------------------------------------------
 
 
 def _atomic_write(path: Path, data: dict) -> None:
-    """Write JSON atomically to avoid partial reads."""
+    """Write JSON atomically using tmp-file-then-rename pattern.
+
+    Why atomic writes?
+    Both processes poll files continuously. A non-atomic write could
+    result in the reader seeing a partial/corrupt JSON file.
+    """
     tmp_path = path.with_suffix(".tmp")
     try:
         tmp_path.write_text(json.dumps(data), encoding="utf-8")
-        tmp_path.replace(path)
+        tmp_path.replace(path)  # Atomic on most filesystems
     except Exception as e:
         logger.warning(f"IPC atomic write failed: {e}")
-        # Fallback to direct write
         path.write_text(json.dumps(data), encoding="utf-8")
 
 
 def _safe_read(path: Path) -> dict | None:
-    """Read JSON safely, return None on any error."""
+    """Read JSON file, returning None if missing, empty, or corrupt.
+
+    Silently handles all error cases since missing/corrupt files are
+    normal during the polling lifecycle (file may not exist yet, or
+    may be mid-write).
+    """
     try:
         if path.exists():
             content = path.read_text(encoding="utf-8").strip()
@@ -62,44 +92,49 @@ def _safe_read(path: Path) -> dict | None:
     return None
 
 
-class IPCClient:
-    """IPC client for the wizard subprocess.
+# -----------------------------------------------------------------------------
+# IPCClient - Used by the Wizard subprocess
+# -----------------------------------------------------------------------------
 
-    Sends commands to the daemon and polls for responses.
+
+class IPCClient:
+    """Sends commands to daemon and polls for responses.
+
+    Usage:
+        client = IPCClient()
+        cmd_id = client.send_command(CMD_START_TEST)
+        # ... poll in a timer loop ...
+        response = client.poll_response(cmd_id)
+        if response:
+            handle_response(response)
     """
 
     def __init__(self) -> None:
         self._last_cmd_id: str | None = None
 
     def send_command(self, command: str) -> str:
-        """Send a command to the daemon.
+        """Write a command to the IPC file for the daemon to pick up.
 
-        Args:
-            command: Command to send (CMD_START_TEST or CMD_STOP_TEST)
-
-        Returns:
-            Command ID for tracking the response
+        Returns a short UUID to correlate with the eventual response.
         """
-        cmd_id = str(uuid.uuid4())[:8]  # Short ID for readability
-        data = {
-            "id": cmd_id,
-            "command": command,
-            "timestamp": time.time(),
-        }
-        _atomic_write(IPC_COMMAND_FILE, data)
+        cmd_id = str(uuid.uuid4())[:8]  # Short ID for log readability
+        _atomic_write(
+            IPC_COMMAND_FILE,
+            {
+                "id": cmd_id,
+                "command": command,
+                "timestamp": time.time(),
+            },
+        )
         self._last_cmd_id = cmd_id
         logger.debug(f"IPC command sent: {command} (id={cmd_id})")
         return cmd_id
 
     def poll_response(self, cmd_id: str, timeout: float = 0.1) -> dict | None:
-        """Poll for a response matching the command ID.
+        """Check if daemon has written a response for our command.
 
-        Args:
-            cmd_id: Command ID to match
-            timeout: Not used (kept for API compatibility)
-
-        Returns:
-            Response dict if found, None otherwise
+        Returns the response dict if available, None otherwise.
+        Caller should poll this repeatedly (e.g., via QTimer).
         """
         response = _safe_read(IPC_RESPONSE_FILE)
         if response and response.get("id") == cmd_id:
@@ -107,34 +142,51 @@ class IPCClient:
         return None
 
     def clear_response(self) -> None:
-        """Clear the response file after processing."""
+        """Delete response file after processing (cleanup)."""
         try:
             if IPC_RESPONSE_FILE.exists():
                 IPC_RESPONSE_FILE.unlink()
         except Exception:
-            pass
+            pass  # Best-effort cleanup
+
+
+# -----------------------------------------------------------------------------
+# IPCServer - Used by the Daemon process
+# -----------------------------------------------------------------------------
 
 
 class IPCServer:
-    """IPC server for the daemon.
+    """Polls for wizard commands and dispatches to handler callback.
 
-    Polls for commands and invokes callbacks. Runs in a background thread.
+    Runs a background thread that checks for new commands every 200ms.
+    When a command arrives, it invokes the callback and manages the
+    response lifecycle.
+
+    Usage:
+        def handle_command(cmd_id: str, command: str) -> None:
+            if command == CMD_START_TEST:
+                start_recording()
+                server.send_response(cmd_id, STATUS_RECORDING)
+
+        server = IPCServer(on_command=handle_command)
+        server.start()
+        # ... later ...
+        server.stop()
     """
 
     def __init__(self, on_command: Callable[[str, str], None]) -> None:
-        """Initialize the IPC server.
+        """Create server with command handler callback.
 
-        Args:
-            on_command: Callback(cmd_id, command) invoked when a command is received
+        The callback receives (cmd_id, command) and should call
+        send_response() to communicate results back to the wizard.
         """
         self._on_command = on_command
         self._running = False
         self._thread: threading.Thread | None = None
-        self._last_processed_id: str | None = None
-        self._poll_interval = 0.2  # 200ms
+        self._last_processed_id: str | None = None  # Prevents duplicate processing
 
     def start(self) -> None:
-        """Start the IPC server in a background thread."""
+        """Start background polling thread."""
         if self._running:
             return
         self._running = True
@@ -143,12 +195,11 @@ class IPCServer:
         logger.info("IPC server started")
 
     def stop(self) -> None:
-        """Stop the IPC server."""
+        """Stop polling and clean up IPC files."""
         self._running = False
         if self._thread:
             self._thread.join(timeout=1.0)
             self._thread = None
-        # Clean up IPC files
         self._cleanup_files()
         logger.info("IPC server stopped")
 
@@ -159,62 +210,72 @@ class IPCServer:
         transcript: str = "",
         error: str | None = None,
     ) -> None:
-        """Send a response to the wizard.
+        """Write response for wizard to pick up.
 
-        Args:
-            cmd_id: Command ID this response is for
-            status: Response status (STATUS_* constants)
-            transcript: Transcribed text (for STATUS_DONE)
-            error: Error message (for STATUS_ERROR)
+        Call this from your command handler to communicate status
+        changes (recording started, done, error) back to the wizard.
         """
-        data = {
-            "id": cmd_id,
-            "status": status,
-            "transcript": transcript,
-            "error": error,
-            "timestamp": time.time(),
-        }
-        _atomic_write(IPC_RESPONSE_FILE, data)
+        _atomic_write(
+            IPC_RESPONSE_FILE,
+            {
+                "id": cmd_id,
+                "status": status,
+                "transcript": transcript,
+                "error": error,
+                "timestamp": time.time(),
+            },
+        )
         logger.debug(f"IPC response sent: {status} (id={cmd_id})")
 
     def _poll_loop(self) -> None:
-        """Background thread polling for commands."""
+        """Background thread: check for commands, dispatch to handler."""
         while self._running:
-            try:
-                command = _safe_read(IPC_COMMAND_FILE)
-                if command:
-                    cmd_id = command.get("id")
-                    cmd_type = command.get("command")
+            self._process_pending_command()
+            time.sleep(POLL_INTERVAL_SECONDS)
 
-                    # Only process new commands
-                    if cmd_id and cmd_type and cmd_id != self._last_processed_id:
-                        self._last_processed_id = cmd_id
-                        logger.debug(f"IPC command received: {cmd_type} (id={cmd_id})")
+    def _process_pending_command(self) -> None:
+        """Check for and process a single pending command."""
+        try:
+            command = _safe_read(IPC_COMMAND_FILE)
+            if not command:
+                return
 
-                        # Clear command file to prevent re-processing
-                        try:
-                            IPC_COMMAND_FILE.unlink()
-                        except Exception:
-                            pass
+            cmd_id = command.get("id")
+            cmd_type = command.get("command")
 
-                        # Invoke callback
-                        if callable(self._on_command):
-                            try:
-                                self._on_command(cmd_id, cmd_type)
-                            except Exception as e:
-                                logger.error(f"IPC command handler error: {e}")
-                                self.send_response(cmd_id, STATUS_ERROR, error=str(e))
+            # Skip if already processed (deduplication)
+            if not cmd_id or not cmd_type or cmd_id == self._last_processed_id:
+                return
 
-            except Exception as e:
-                logger.debug(f"IPC poll error: {e}")
+            self._last_processed_id = cmd_id
+            logger.debug(f"IPC command received: {cmd_type} (id={cmd_id})")
 
-            time.sleep(self._poll_interval)
+            # Remove command file to prevent re-processing on next poll
+            self._delete_file(IPC_COMMAND_FILE)
+
+            # Dispatch to handler
+            self._invoke_handler(cmd_id, cmd_type)
+
+        except Exception as e:
+            logger.debug(f"IPC poll error: {e}")
+
+    def _invoke_handler(self, cmd_id: str, cmd_type: str) -> None:
+        """Call the command handler, sending error response on failure."""
+        try:
+            self._on_command(cmd_id, cmd_type)
+        except Exception as e:
+            logger.error(f"IPC command handler error: {e}")
+            self.send_response(cmd_id, STATUS_ERROR, error=str(e))
+
+    def _delete_file(self, path: Path) -> None:
+        """Delete file if it exists (best-effort)."""
+        try:
+            if path.exists():
+                path.unlink()
+        except Exception:
+            pass
 
     def _cleanup_files(self) -> None:
         """Remove IPC files on shutdown."""
-        for path in (IPC_COMMAND_FILE, IPC_RESPONSE_FILE):
-            try:
-                if path.exists():
-                    path.unlink()
-            except Exception:
-                pass
+        self._delete_file(IPC_COMMAND_FILE)
+        self._delete_file(IPC_RESPONSE_FILE)
