@@ -415,6 +415,23 @@ class LocalProvider:
                             # Restore original tensor (pyright can't infer this is always Tensor)
                             cpu_model._buffers["alignment_heads"] = heads  # type: ignore[arg-type]
                     self._model_cache[cache_key] = cpu_model
+                elif self._device == "cuda":
+                    executor = ThreadPoolExecutor(max_workers=1)
+                    future = executor.submit(
+                        whisper.load_model, model_name, device=self._device
+                    )
+                    try:
+                        self._model_cache[cache_key] = future.result(
+                            timeout=CUDA_MODEL_LOAD_TIMEOUT
+                        )
+                    except FuturesTimeoutError:
+                        logger.warning(
+                            f"CUDA Whisper Model-Loading Timeout ({CUDA_MODEL_LOAD_TIMEOUT}s) - "
+                            "Fehler wird an Aufrufer weitergegeben (CPU-Fallback folgt)."
+                        )
+                        raise RuntimeError("CUDA whisper model loading timeout")
+                    finally:
+                        executor.shutdown(wait=False, cancel_futures=True)
                 else:
                     self._model_cache[cache_key] = whisper.load_model(
                         model_name, device=self._device
@@ -480,18 +497,20 @@ class LocalProvider:
             try:
                 if device == "cuda":
                     # CUDA-Loading mit Timeout (kann bei cuDNN-Problemen hängen)
-                    with ThreadPoolExecutor(max_workers=1) as executor:
-                        future = executor.submit(_load_model, device, compute_type)
-                        try:
-                            self._model_cache[cache_key] = future.result(
-                                timeout=CUDA_MODEL_LOAD_TIMEOUT
-                            )
-                        except FuturesTimeoutError:
-                            logger.warning(
-                                f"CUDA Model-Loading Timeout ({CUDA_MODEL_LOAD_TIMEOUT}s) - "
-                                f"cuDNN hängt vermutlich. Fallback auf CPU."
-                            )
-                            raise RuntimeError("CUDA model loading timeout")
+                    executor = ThreadPoolExecutor(max_workers=1)
+                    future = executor.submit(_load_model, device, compute_type)
+                    try:
+                        self._model_cache[cache_key] = future.result(
+                            timeout=CUDA_MODEL_LOAD_TIMEOUT
+                        )
+                    except FuturesTimeoutError:
+                        logger.warning(
+                            f"CUDA Model-Loading Timeout ({CUDA_MODEL_LOAD_TIMEOUT}s) - "
+                            "cuDNN hängt vermutlich. Fallback auf CPU."
+                        )
+                        raise RuntimeError("CUDA model loading timeout")
+                    finally:
+                        executor.shutdown(wait=False, cancel_futures=True)
                 else:
                     self._model_cache[cache_key] = _load_model(device, compute_type)
                 logger.info(f"Modell '{faster_name}' geladen ({device.upper()})")
