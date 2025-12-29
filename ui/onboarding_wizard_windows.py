@@ -172,6 +172,7 @@ class OnboardingWizardWindows(QDialog):
         self._ipc_client = None
         self._ipc_test_cmd_id: str | None = None
         self._ipc_poll_timer: QTimer | None = None
+        self._ipc_poll_count: int = 0
         self._test_start_btn: QPushButton | None = None
         self._test_stop_btn: QPushButton | None = None
         self._test_notice: QLabel | None = None
@@ -643,6 +644,13 @@ class OnboardingWizardWindows(QDialog):
             if self._mic_timer:
                 self._mic_timer.stop()
 
+        # Stop IPC polling when leaving TEST_DICTATION step
+        if (
+            self._step == OnboardingStep.TEST_DICTATION
+            and step != OnboardingStep.TEST_DICTATION
+        ):
+            self._stop_ipc_polling()
+
         self._step = step
 
         # Update stack index
@@ -734,6 +742,7 @@ class OnboardingWizardWindows(QDialog):
 
         # Send start command
         self._ipc_test_cmd_id = self._ipc_client.send_command(CMD_START_TEST)
+        self._ipc_poll_count = 0
 
         # Update UI
         if self._test_status_label:
@@ -778,6 +787,11 @@ class OnboardingWizardWindows(QDialog):
 
         response = self._ipc_client.poll_response(self._ipc_test_cmd_id)
         if not response:
+            # Timeout after 50 polls (10 seconds at 200ms interval)
+            self._ipc_poll_count += 1
+            if self._ipc_poll_count >= 50:
+                self._stop_ipc_polling()
+                self._on_ipc_test_complete("", "Keine Verbindung zu PulseScribe")
             return
 
         status = response.get("status")
@@ -815,6 +829,8 @@ class OnboardingWizardWindows(QDialog):
         self._reset_test_ui()
 
         if error:
+            if self._test_transcript:
+                self._test_transcript.clear()
             if self._test_status_label:
                 self._test_status_label.setText(f"Fehler: {error}")
                 self._test_status_label.setStyleSheet(f"color: {COLORS['error']};")
@@ -832,6 +848,8 @@ class OnboardingWizardWindows(QDialog):
             self._test_successful = True
             self._update_navigation()
         else:
+            if self._test_transcript:
+                self._test_transcript.clear()
             if self._test_status_label:
                 self._test_status_label.setText(
                     "Keine Sprache erkannt. Nochmal versuchen?"
@@ -1104,6 +1122,7 @@ class OnboardingWizardWindows(QDialog):
     def closeEvent(self, event) -> None:
         """Handle window close."""
         self._stop_hotkey_recording()
+        self._stop_ipc_polling()
         if self._mic_timer:
             self._mic_timer.stop()
         super().closeEvent(event)
@@ -1111,6 +1130,7 @@ class OnboardingWizardWindows(QDialog):
     def reject(self) -> None:
         """Handle ESC key or Cancel - ensures proper cleanup."""
         self._stop_hotkey_recording()
+        self._stop_ipc_polling()
         if self._mic_timer:
             self._mic_timer.stop()
         super().reject()

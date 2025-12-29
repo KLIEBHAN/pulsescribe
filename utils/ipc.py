@@ -33,7 +33,6 @@ CMD_STOP_TEST = "stop_test"
 
 # Response statuses
 STATUS_RECORDING = "recording"
-STATUS_PROCESSING = "processing"
 STATUS_DONE = "done"
 STATUS_ERROR = "error"
 STATUS_STOPPED = "stopped"
