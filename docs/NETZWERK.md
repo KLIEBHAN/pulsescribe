@@ -183,6 +183,3 @@ Netzwerkprobleme werden in `~/.pulsescribe/logs/pulsescribe.log` protokolliert:
 grep -i "connection\|timeout\|error" ~/.pulsescribe/logs/pulsescribe.log | tail -20
 ```
 
----
-
-_Zuletzt aktualisiert: Dezember 2025_

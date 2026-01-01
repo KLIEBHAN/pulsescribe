@@ -331,6 +331,3 @@ PULSESCRIBE_LOCAL_COMPUTE_TYPE=int8
 PULSESCRIBE_LOCAL_CPU_THREADS=8
 ```
 
----
-
-_Zuletzt aktualisiert: Dezember 2025_

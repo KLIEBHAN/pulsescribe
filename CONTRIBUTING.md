@@ -169,7 +169,7 @@ When making code changes, ensure related documentation stays in sync:
 | New ENV variable | `docs/CONFIGURATION.md`, `docs/KONFIGURATION.md` |
 | New provider | `README.md` (provider table), `docs/CONFIGURATION.md` |
 | New CLI flag | `docs/CLI_REFERENCE.md` |
-| Version bump | `pyproject.toml`, `CHANGELOG.md` |
+| Version bump | `pyproject.toml`, `CHANGELOG.md`, `docs/BUILDING_*.md` |
 | New feature | `README.md`, `README.de.md` |
 | Architecture change | `CLAUDE.md` |
 | Security-related | `docs/SECURITY.md`, `docs/SICHERHEIT.md` |

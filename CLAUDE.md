@@ -107,7 +107,6 @@ ui/animation.py (Single Source of Truth)
 | `numpy`          | Audio-Verarbeitung                        |
 | `typer`          | CLI-Framework                             |
 | `pynput`         | Globale Hotkeys + Keyboard-Simulation     |
-| `pystray`        | System-Tray-Icon                          |
 | `faster-whisper` | Schnelleres lokales Backend (CTranslate2) |
 
 ### macOS-only
@@ -123,6 +122,7 @@ ui/animation.py (Single Source of Truth)
 
 | Paket     | Zweck                                 |
 | --------- | ------------------------------------- |
+| `pystray` | System-Tray-Icon                      |
 | `PySide6` | GPU-beschleunigtes Overlay (optional) |
 | `pywin32` | Windows API (win32gui, win32process)  |
 | `psutil`  | Prozess-Info für App-Detection        |

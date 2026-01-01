@@ -1,7 +1,5 @@
 # CLI Reference
 
-[🇩🇪 Deutsche Version](CLI_REFERENZ.md)
-
 Complete reference for the `transcribe.py` command-line interface.
 
 ## Basic Usage
