@@ -1,18 +1,24 @@
-# Archived Documentation
+# 📦 Archived Documentation
 
-This folder contains historical documents that were created during planning and development phases.
-These documents are kept for reference but may not reflect the current implementation.
+This folder contains **historical** documents from planning and development phases.
+These documents are kept for reference but **do not reflect the current implementation**.
 
 ## Contents
 
-- `WINDOWS_MVP_2025-12.md` - Windows MVP definition and implementation status (completed 2025-12-22)
-- `WINDOWS_ANALYSIS.md` - Pre-implementation analysis for Windows support
-- `plans/` - Implementation plans for completed features
+| Document | Period | Status |
+|----------|--------|--------|
+| `WINDOWS_MVP_2025-12.md` | Dec 2025 | ✅ Completed |
+| `WINDOWS_ANALYSIS.md` | Nov 2025 | Superseded by implementation |
+| `plans/` | Various | Implementation plans (completed) |
 
-## Note
+## Current Documentation
 
-For current documentation, see:
-- [README.md](../../README.md) - User documentation
-- [CLAUDE.md](../../CLAUDE.md) - Architecture and developer reference
-- [SECURITY.md](../SECURITY.md) - Security and privacy documentation
-- [NETWORK.md](../NETWORK.md) - Network requirements
+For up-to-date documentation, see:
+
+| Document | Description |
+|----------|-------------|
+| [README.md](../../README.md) | User documentation |
+| [CONFIGURATION.md](../CONFIGURATION.md) | All settings and ENV variables |
+| [CLAUDE.md](../../CLAUDE.md) | Architecture reference |
+| [SECURITY.md](../SECURITY.md) | Security and privacy |
+| [NETWORK.md](../NETWORK.md) | Network requirements |

@@ -153,6 +153,3 @@ Für Sicherheitslücken bitte **kein** öffentliches GitHub-Issue öffnen.
 
 Stattdessen die Maintainer direkt per E-Mail kontaktieren oder GitHubs private Vulnerability-Reporting-Funktion nutzen.
 
----
-
-_Zuletzt aktualisiert: Dezember 2025_

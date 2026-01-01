@@ -231,15 +231,14 @@ def refine_transcript(
             response = client.chat.completions.create(**create_kwargs)
             result = _extract_message_content(response.choices[0].message.content)
         elif effective_provider == "gemini":
-            # Gemini 3: "minimal" thinking für schnelle Korrekturen ohne tiefe Analyse
-            # (analog zu GPT-5 reasoning=minimal, spart Latenz und Tokens)
+            # Gemini 3: "low" thinking für schnelle Korrekturen ohne tiefe Analyse
             from google.genai import types
 
             response = client.models.generate_content(
                 model=effective_model,
                 contents=full_prompt,
                 config=types.GenerateContentConfig(
-                    thinking_config=types.ThinkingConfig(thinking_level="minimal")
+                    thinking_config=types.ThinkingConfig(thinking_level="low")
                 ),
             )
             result = response.text.strip()

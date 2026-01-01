@@ -1,7 +1,7 @@
 [project]
 name = "pulsescribe"
 version = "1.2.0"
-description = "Spracheingabe für macOS – Transkription mit OpenAI Whisper, Deepgram, Groq oder lokal"
+description = "Spracheingabe für macOS und Windows – Transkription mit OpenAI Whisper, Deepgram, Groq oder lokal"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

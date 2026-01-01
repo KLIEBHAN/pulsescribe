@@ -123,8 +123,11 @@ class TestGetRefineClient:
         """Gemini ohne API-Key wirft ValueError (fail-fast statt kryptischer SDK-Fehler)."""
         monkeypatch.delenv("GEMINI_API_KEY", raising=False)
 
-        with pytest.raises(ValueError, match="GEMINI_API_KEY nicht gesetzt"):
-            _get_refine_client("gemini")
+        # Mock google.genai module to allow import
+        mock_genai = Mock()
+        with patch.dict("sys.modules", {"google": Mock(genai=mock_genai), "google.genai": mock_genai}):
+            with pytest.raises(ValueError, match="GEMINI_API_KEY nicht gesetzt"):
+                _get_refine_client("gemini")
 
     def test_gemini_routing(self, monkeypatch):
         """_get_refine_client("gemini") ruft _get_gemini_client() auf."""
@@ -243,12 +246,20 @@ class TestRefineModelSelection:
 
     def test_gemini_default_model(self, monkeypatch, clean_env):
         """Gemini nutzt eigenes Default-Modell (nicht das generische DEFAULT_REFINE_MODEL)."""
-        mock_types = Mock()
         mock_response = Mock()
         mock_response.text = "refined"
 
+        # Mock google.genai module hierarchy
+        mock_types = Mock()
+        mock_genai = Mock()
+        mock_genai.types = mock_types
+
         with patch("refine.llm._get_refine_client") as mock_client:
-            with patch.dict("sys.modules", {"google.genai.types": mock_types}):
+            with patch.dict("sys.modules", {
+                "google": Mock(genai=mock_genai),
+                "google.genai": mock_genai,
+                "google.genai.types": mock_types
+            }):
                 mock_client.return_value.models.generate_content.return_value = mock_response
 
                 refine_transcript("test", provider="gemini")

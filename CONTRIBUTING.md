@@ -160,6 +160,22 @@ Include:
 3. Address review feedback
 4. Squash or rebase before merge (maintain clean history)
 
+## Documentation Updates
+
+When making code changes, ensure related documentation stays in sync:
+
+| Change Type | Update These Files |
+|-------------|-------------------|
+| New ENV variable | `docs/CONFIGURATION.md`, `docs/KONFIGURATION.md` |
+| New provider | `README.md` (provider table), `docs/CONFIGURATION.md` |
+| New CLI flag | `docs/CLI_REFERENCE.md` |
+| Version bump | `pyproject.toml`, `CHANGELOG.md`, `docs/BUILDING_*.md` |
+| New feature | `README.md`, `README.de.md` |
+| Architecture change | `CLAUDE.md` |
+| Security-related | `docs/SECURITY.md`, `docs/SICHERHEIT.md` |
+
+**German translations:** When updating `README.md`, also update `README.de.md`. Same for docs with German versions (`CONFIGURATION.md` ↔ `KONFIGURATION.md`).
+
 ## Adding New Features
 
 ### New Transcription Provider

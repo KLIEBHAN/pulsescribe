@@ -153,6 +153,3 @@ For security vulnerabilities, please **do not** open a public GitHub issue.
 
 Instead, contact the maintainers directly via email or use GitHub's private vulnerability reporting feature.
 
----
-
-_Last updated: December 2025_
