@@ -62,7 +62,7 @@ Entfernt Füllwörter, korrigiert Grammatik, formatiert Absätze:
 |----------|-------|---------|--------------|
 | `PULSESCRIBE_REFINE` | `true`, `false` | `false` | LLM-Nachbearbeitung aktivieren |
 | `PULSESCRIBE_REFINE_PROVIDER` | `groq`, `openai`, `openrouter`, `gemini` | `openai` | LLM-Provider |
-| `PULSESCRIBE_REFINE_MODEL` | Provider-spezifisch | Auto | Modell für Refine |
+| `PULSESCRIBE_REFINE_MODEL` | Provider-spezifisch | `openai/gpt-oss-120b` | Modell für Refine |
 
 ### Kontext-Awareness
 

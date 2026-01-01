@@ -54,7 +54,7 @@ dist/
 │   ├── PulseScribe.exe      # Main executable (portable)
 │   ├── *.dll                # Python + dependency DLLs
 │   └── ...                  # Supporting files
-└── PulseScribe-Setup-1.1.1.exe  # Installer (if built)
+└── PulseScribe-Setup-1.2.0.exe  # Installer (if built)
 ```
 
 ### Distribution Options

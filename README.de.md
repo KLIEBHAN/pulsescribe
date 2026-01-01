@@ -172,6 +172,9 @@ export GROQ_API_KEY="gsk_..."
 
 # OpenRouter (Alternative für --refine) – Hunderte Modelle
 export OPENROUTER_API_KEY="sk-or-..."
+
+# Gemini (für --refine mit gemini)
+export GEMINI_API_KEY="..."
 ```
 
 ### Standard-Einstellungen

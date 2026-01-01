@@ -62,7 +62,7 @@ Removes filler words, fixes grammar, formats paragraphs:
 |----------|--------|---------|-------------|
 | `PULSESCRIBE_REFINE` | `true`, `false` | `false` | Enable LLM post-processing |
 | `PULSESCRIBE_REFINE_PROVIDER` | `groq`, `openai`, `openrouter`, `gemini` | `openai` | LLM provider |
-| `PULSESCRIBE_REFINE_MODEL` | Provider-specific | Auto | Model for refine |
+| `PULSESCRIBE_REFINE_MODEL` | Provider-specific | `openai/gpt-oss-120b` | Model for refine |
 
 ### Refine Models by Provider
 

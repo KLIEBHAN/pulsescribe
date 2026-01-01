@@ -171,6 +171,9 @@ export GROQ_API_KEY="gsk_..."
 
 # OpenRouter (Alternative for --refine) – Hundreds of models
 export OPENROUTER_API_KEY="sk-or-..."
+
+# Gemini (for --refine with gemini)
+export GEMINI_API_KEY="..."
 ```
 
 ### Default Settings
@@ -746,7 +749,7 @@ pyinstaller build_windows.spec --clean
 
 # Output:
 #   dist/PulseScribe/PulseScribe.exe      (portable)
-#   dist/PulseScribe-Setup-1.1.1.exe      (installer, if built)
+#   dist/PulseScribe-Setup-1.2.0.exe      (installer, if built)
 ```
 
 The installer (built with [Inno Setup](https://jrsoftware.org/isinfo.php)) provides:
