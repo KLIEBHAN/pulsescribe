@@ -560,8 +560,10 @@ class PulseScribeDaemon:
         Thread-safe: Kann von jedem Thread aufgerufen werden.
         UI-Updates werden automatisch auf den Main-Thread dispatcht.
         """
-        prev_state = self._current_state
-        self._current_state = state
+        # Atomares Read-Modify-Write mit explizitem Lock
+        with self._state_lock:
+            prev_state = self.__current_state
+            self.__current_state = state
         logger.debug(
             f"State: {prev_state.value} → {state.value}"
             + (f" text='{text[:20]}...'" if text else "")
