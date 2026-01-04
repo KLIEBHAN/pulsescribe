@@ -235,14 +235,19 @@ def refine_transcript(
                 raise ValueError("OpenRouter-Antwort enthält keine choices")
             result = _extract_message_content(response.choices[0].message.content)
         elif effective_provider == "gemini":
-            # Gemini 3: "low" thinking für schnelle Korrekturen ohne tiefe Analyse
             from google.genai import types
 
+            # "minimal" nur für Flash (schnellste Latenz), Pro braucht "low"
+            is_flash_model = "flash" in effective_model.lower()
+            thinking_level = "minimal" if is_flash_model else "low"
+            logger.debug(f"[{session_id}] Gemini thinking_level={thinking_level}")
+
+            # SDK-Timeout: 60s Default, kein zuverlässiger Override möglich
             response = client.models.generate_content(
                 model=effective_model,
                 contents=full_prompt,
                 config=types.GenerateContentConfig(
-                    thinking_config=types.ThinkingConfig(thinking_level="low")
+                    thinking_config=types.ThinkingConfig(thinking_level=thinking_level)
                 ),
             )
             result = (response.text or "").strip()
@@ -300,7 +305,9 @@ def maybe_refine_transcript(
         )
         # Fallback auf Original wenn LLM leeren String zurückgibt
         if not result or not result.strip():
-            logger.warning("LLM-Nachbearbeitung gab leeren String zurück, verwende Original")
+            logger.warning(
+                "LLM-Nachbearbeitung gab leeren String zurück, verwende Original"
+            )
             return transcript
         return result
     except ValueError as e:
