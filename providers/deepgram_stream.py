@@ -692,8 +692,8 @@ def _cleanup_stop_mechanism(
 
             try:
                 loop.remove_signal_handler(signal.SIGUSR1)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Signal-Handler Cleanup fehlgeschlagen: {e}")
 
 
 # =============================================================================
@@ -1006,8 +1006,8 @@ async def deepgram_stream_core(
             try:
                 audio_result.mic_stream.stop()
                 audio_result.mic_stream.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Mikrofon-Cleanup fehlgeschlagen: {e}")
 
         # Warm-Stream: Disarm (Forwarder ist Daemon-Thread, beendet sich automatisch)
         if warm_stream_source is not None:

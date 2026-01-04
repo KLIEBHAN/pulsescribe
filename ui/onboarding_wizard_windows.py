@@ -1051,7 +1051,9 @@ class OnboardingWizardWindows(QDialog):
     def _open_mic_settings(self) -> None:
         """Open Windows microphone settings."""
         try:
-            subprocess.Popen(["start", "ms-settings:privacy-microphone"], shell=True)
+            # os.startfile ist die sichere Windows-API (kein shell=True nötig)
+            import os
+            os.startfile("ms-settings:privacy-microphone")
         except Exception as e:
             logger.warning(f"Konnte Einstellungen nicht öffnen: {e}")
 

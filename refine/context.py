@@ -44,11 +44,30 @@ def _get_custom_app_contexts() -> dict:
     custom = os.getenv("PULSESCRIBE_APP_CONTEXTS")
     if custom:
         try:
-            _custom_app_contexts_cache = json.loads(custom)
-            logger.debug(
-                f"[{get_session_id()}] Custom app contexts geladen: "
-                f"{list(_custom_app_contexts_cache.keys())}"
-            )
+            parsed = json.loads(custom)
+            # Schema-Validierung: Muss dict mit string keys/values sein
+            if not isinstance(parsed, dict):
+                logger.warning(
+                    f"[{get_session_id()}] PULSESCRIBE_APP_CONTEXTS muss ein JSON-Objekt sein, "
+                    f"ist aber {type(parsed).__name__}"
+                )
+                _custom_app_contexts_cache = {}
+            elif not all(isinstance(k, str) and isinstance(v, str) for k, v in parsed.items()):
+                logger.warning(
+                    f"[{get_session_id()}] PULSESCRIBE_APP_CONTEXTS enthält ungültige Typen "
+                    "(erwartet: string → string)"
+                )
+                # Nur gültige Einträge übernehmen
+                _custom_app_contexts_cache = {
+                    k: v for k, v in parsed.items()
+                    if isinstance(k, str) and isinstance(v, str)
+                }
+            else:
+                _custom_app_contexts_cache = parsed
+                logger.debug(
+                    f"[{get_session_id()}] Custom app contexts geladen: "
+                    f"{list(_custom_app_contexts_cache.keys())}"
+                )
         except json.JSONDecodeError as e:
             logger.warning(
                 f"[{get_session_id()}] PULSESCRIBE_APP_CONTEXTS ungültiges JSON: {e}"

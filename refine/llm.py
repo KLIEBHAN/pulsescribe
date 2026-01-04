@@ -201,6 +201,8 @@ def refine_transcript(
                 messages=[{"role": "user", "content": full_prompt}],
                 timeout=LLM_REFINE_TIMEOUT,
             )
+            if not response.choices:
+                raise ValueError("Groq-Antwort enthält keine choices")
             result = _extract_message_content(response.choices[0].message.content)
         elif effective_provider == "openrouter":
             # OpenRouter API-Aufruf vorbereiten
@@ -229,6 +231,8 @@ def refine_transcript(
                 )
 
             response = client.chat.completions.create(**create_kwargs)
+            if not response.choices:
+                raise ValueError("OpenRouter-Antwort enthält keine choices")
             result = _extract_message_content(response.choices[0].message.content)
         elif effective_provider == "gemini":
             # Gemini 3: "low" thinking für schnelle Korrekturen ohne tiefe Analyse
@@ -241,7 +245,7 @@ def refine_transcript(
                     thinking_config=types.ThinkingConfig(thinking_level="low")
                 ),
             )
-            result = response.text.strip()
+            result = (response.text or "").strip()
         else:
             # OpenAI responses API
             api_params: dict = {
@@ -254,7 +258,7 @@ def refine_transcript(
             if effective_model.startswith("gpt-5"):
                 api_params["reasoning"] = {"effort": "minimal"}
             response = client.responses.create(**api_params)
-            result = response.output_text.strip()
+            result = (response.output_text or "").strip()
 
     logger.debug(f"[{session_id}] Output: {log_preview(result)}")
     return result

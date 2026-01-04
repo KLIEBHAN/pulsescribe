@@ -99,6 +99,11 @@ def save_vocabulary(keywords: list[str], path: Path | None = None) -> None:
 
     try:
         vocab_file.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+        # Sichere Permissions: Nur Owner lesen/schreiben
+        try:
+            vocab_file.chmod(0o600)
+        except OSError:
+            pass  # Windows unterstützt chmod nicht vollständig
     except OSError as e:
         logger.warning(f"Vocabulary-Datei nicht schreibbar: {e}")
         raise

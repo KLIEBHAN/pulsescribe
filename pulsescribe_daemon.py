@@ -143,11 +143,14 @@ class PulseScribeDaemon:
         self.toggle_hotkey = toggle_hotkey or os.getenv("PULSESCRIBE_TOGGLE_HOTKEY")
         self.hold_hotkey = hold_hotkey or os.getenv("PULSESCRIBE_HOLD_HOTKEY")
 
-        # State
-        self._recording = False
+        # State (mit RLock für Thread-Safety)
+        # RLock erlaubt verschachtelte Aufrufe aus demselben Thread,
+        # verhindert Deadlocks wenn Properties innerhalb von Lock-Kontexten aufgerufen werden
+        self.__recording = False
+        self.__current_state = AppState.IDLE
+        self._state_lock = threading.RLock()  # Schützt _recording und _current_state
         self._toggle_lock = threading.Lock()
         self._last_hotkey_time = 0.0
-        self._current_state = AppState.IDLE
         self._last_rtf: float | None = (
             None  # Real-Time Factor der letzten Transkription
         )
@@ -198,6 +201,34 @@ class PulseScribeDaemon:
         self._pending_hotkey_reconfigure = False
         # Preload-Status für lokales Modell (für Performance-Debugging)
         self._local_preload_complete = threading.Event()
+
+    # =============================================================================
+    # Thread-safe State Properties
+    # =============================================================================
+
+    @property
+    def _recording(self) -> bool:
+        """Thread-safe Zugriff auf Recording-Status."""
+        with self._state_lock:
+            return self.__recording
+
+    @_recording.setter
+    def _recording(self, value: bool) -> None:
+        """Thread-safe Setzen des Recording-Status."""
+        with self._state_lock:
+            self.__recording = value
+
+    @property
+    def _current_state(self) -> "AppState":
+        """Thread-safe Zugriff auf aktuellen State."""
+        with self._state_lock:
+            return self.__current_state
+
+    @_current_state.setter
+    def _current_state(self, value: "AppState") -> None:
+        """Thread-safe Setzen des States."""
+        with self._state_lock:
+            self.__current_state = value
 
     # =============================================================================
     # Modifier Hotkeys (Fn/Globe, CapsLock)
@@ -531,8 +562,10 @@ class PulseScribeDaemon:
         Thread-safe: Kann von jedem Thread aufgerufen werden.
         UI-Updates werden automatisch auf den Main-Thread dispatcht.
         """
-        prev_state = self._current_state
-        self._current_state = state
+        # Atomares Read-Modify-Write mit explizitem Lock
+        with self._state_lock:
+            prev_state = self.__current_state
+            self.__current_state = state
         logger.debug(
             f"State: {prev_state.value} → {state.value}"
             + (f" text='{text[:20]}...'" if text else "")

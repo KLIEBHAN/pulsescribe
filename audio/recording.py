@@ -34,8 +34,8 @@ def _play_sound(name: str) -> None:
         from whisper_platform import get_sound_player
         player = get_sound_player()
         player.play(name)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Sound '{name}' konnte nicht abgespielt werden: {e}")
 
 
 class AudioRecorder:
@@ -61,13 +61,15 @@ class AudioRecorder:
         self.blocksize = blocksize
 
         self._recorded_chunks: list = []
+        self._chunks_lock = threading.Lock()  # Thread-safety für Audio-Chunks
         self._stream = None
         self._recording_start: float = 0
         self._stop_event = threading.Event()
 
     def _audio_callback(self, indata, _frames, _time_info, _status):
         """Callback: Sammelt Audio-Chunks während der Aufnahme."""
-        self._recorded_chunks.append(indata.copy())
+        with self._chunks_lock:
+            self._recorded_chunks.append(indata.copy())
 
     def start(self, play_ready_sound: bool = True) -> None:
         """Startet die Aufnahme.
@@ -77,7 +79,8 @@ class AudioRecorder:
         """
         import sounddevice as sd
 
-        self._recorded_chunks = []
+        with self._chunks_lock:
+            self._recorded_chunks = []
         self._stop_event.clear()
         self._recording_start = time.perf_counter()
 
@@ -122,11 +125,12 @@ class AudioRecorder:
 
         _play_sound("stop")
 
-        if not self._recorded_chunks:
-            logger.error(f"[{get_session_id()}] Keine Audiodaten aufgenommen")
-            raise ValueError("Keine Audiodaten aufgenommen.")
+        with self._chunks_lock:
+            if not self._recorded_chunks:
+                logger.error(f"[{get_session_id()}] Keine Audiodaten aufgenommen")
+                raise ValueError("Keine Audiodaten aufgenommen.")
 
-        audio_data = np.concatenate(self._recorded_chunks)
+            audio_data = np.concatenate(self._recorded_chunks)
 
         if output_path is None:
             output_path = Path(tempfile.gettempdir()) / TEMP_RECORDING_FILENAME
@@ -157,8 +161,9 @@ class AudioRecorder:
 
     @property
     def chunks(self) -> list:
-        """Gibt die bisher aufgenommenen Chunks zurück."""
-        return self._recorded_chunks
+        """Gibt eine Kopie der bisher aufgenommenen Chunks zurück (thread-safe)."""
+        with self._chunks_lock:
+            return list(self._recorded_chunks)
 
 
 def record_audio() -> Path:

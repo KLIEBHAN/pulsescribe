@@ -4,9 +4,12 @@ Gemeinsame Konstanten für Audio, Streaming und IPC.
 Vermeidet Duplikation zwischen Modulen.
 """
 
+import logging
 import os
 import tempfile
 from pathlib import Path
+
+logger = logging.getLogger("pulsescribe")
 
 # =============================================================================
 # Audio-Konfiguration
@@ -190,8 +193,22 @@ FINALIZE_TIMEOUT = (
     1.0  # Warten auf finale Transkripte (Deepgram antwortet meist in 300-500ms)
 )
 DEEPGRAM_WS_URL = "wss://api.deepgram.com/v1/listen"
-DEEPGRAM_CLOSE_TIMEOUT = float(
-    os.getenv("PULSESCRIBE_DEEPGRAM_CLOSE_TIMEOUT", "0.5")
+
+
+def _get_float_env(name: str, default: float) -> float:
+    """Liest Float-ENV mit Fallback auf Default bei ungültigen Werten."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        logger.warning(f"Ungültiger Wert für {name}='{raw}', verwende Default {default}")
+        return default
+
+
+DEEPGRAM_CLOSE_TIMEOUT = _get_float_env(
+    "PULSESCRIBE_DEEPGRAM_CLOSE_TIMEOUT", 0.5
 )  # Schneller WebSocket-Shutdown (SDK Default: 10s)
 
 # Buffer-Konfiguration für Streaming

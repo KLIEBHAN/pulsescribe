@@ -5,9 +5,12 @@ API-Keys werden in ~/.pulsescribe/.env gespeichert.
 """
 
 import json
+import logging
 from pathlib import Path
 
 from config import USER_CONFIG_DIR
+
+logger = logging.getLogger("pulsescribe")
 from utils.onboarding import (
     OnboardingChoice,
     OnboardingStep,
@@ -186,12 +189,19 @@ def save_api_key(key_name: str, value: str) -> None:
     Args:
         key_name: Name des Keys (z.B. "DEEPGRAM_API_KEY")
         value: Der API-Key Wert
+
+    Raises:
+        OSError: Bei Schreibfehlern (Disk voll, keine Berechtigung)
     """
     env_path = ENV_FILE
 
     lines = []
-    if env_path.exists():
-        lines = env_path.read_text().splitlines()
+    try:
+        if env_path.exists():
+            lines = env_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        logger.exception("Konnte .env nicht lesen")
+        raise
 
     # Key aktualisieren oder hinzufügen
     found = False
@@ -204,8 +214,19 @@ def save_api_key(key_name: str, value: str) -> None:
     if not found:
         lines.append(f"{key_name}={value}")
 
-    env_path.write_text("\n".join(lines) + "\n")
-    _invalidate_env_cache()
+    try:
+        env_path.parent.mkdir(parents=True, exist_ok=True)
+        env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        # Sichere Permissions: Nur Owner lesen/schreiben (enthält API-Keys)
+        try:
+            env_path.chmod(0o600)
+        except OSError:
+            pass  # Windows unterstützt chmod nicht vollständig
+        # Cache erst nach erfolgreichem Schreiben invalidieren
+        _invalidate_env_cache()
+    except OSError:
+        logger.exception("Konnte .env nicht schreiben")
+        raise
 
 
 def get_api_key(key_name: str) -> str | None:
@@ -253,11 +274,14 @@ def remove_env_setting(key_name: str) -> None:
     if not env_path.exists():
         return
 
-    lines = env_path.read_text().splitlines()
-    new_lines = [line for line in lines if not line.startswith(f"{key_name}=")]
-
-    env_path.write_text("\n".join(new_lines) + "\n" if new_lines else "")
-    _invalidate_env_cache()
+    try:
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+        new_lines = [line for line in lines if not line.startswith(f"{key_name}=")]
+        env_path.write_text("\n".join(new_lines) + "\n" if new_lines else "", encoding="utf-8")
+        # Cache erst nach erfolgreichem Schreiben invalidieren
+        _invalidate_env_cache()
+    except OSError:
+        logger.warning("Konnte .env nicht aktualisieren", exc_info=True)
 
 
 def apply_hotkey_setting(kind: str, hotkey_str: str) -> None:

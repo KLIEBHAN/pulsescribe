@@ -126,9 +126,12 @@ class WindowsHotkeyListener:
                     f_key = getattr(keyboard.Key, part, None)
                     if f_key:
                         self._hotkey_keys.add(f_key)
-                else:
+                elif part:  # Leere Parts überspringen (z.B. bei "f1++a")
                     # Normale Taste
-                    self._hotkey_keys.add(keyboard.KeyCode.from_char(part))
+                    try:
+                        self._hotkey_keys.add(keyboard.KeyCode.from_char(part))
+                    except (ValueError, TypeError) as e:
+                        logger.warning(f"Ungültige Hotkey-Taste '{part}': {e}")
         except ImportError:
             logger.error("pynput nicht installiert")
 

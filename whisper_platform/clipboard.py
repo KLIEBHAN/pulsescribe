@@ -95,18 +95,23 @@ class WindowsClipboard:
                 text_bytes = text.encode("utf-16-le") + b"\x00\x00"
                 h_mem = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(text_bytes))
                 if not h_mem:
+                    logger.error("GlobalAlloc fehlgeschlagen")
                     return False
 
                 p_mem = kernel32.GlobalLock(h_mem)
                 if not p_mem:
+                    logger.error("GlobalLock fehlgeschlagen")
                     kernel32.GlobalFree(h_mem)
                     return False
 
-                ctypes.memmove(p_mem, text_bytes, len(text_bytes))
-                kernel32.GlobalUnlock(h_mem)
+                try:
+                    ctypes.memmove(p_mem, text_bytes, len(text_bytes))
+                finally:
+                    kernel32.GlobalUnlock(h_mem)
 
-                # In Clipboard setzen
+                # In Clipboard setzen (übernimmt Ownership von h_mem bei Erfolg)
                 if not user32.SetClipboardData(CF_UNICODETEXT, h_mem):
+                    logger.error("SetClipboardData fehlgeschlagen")
                     kernel32.GlobalFree(h_mem)
                     return False
 

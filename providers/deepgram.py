@@ -118,7 +118,12 @@ class DeepgramProvider:
                 **vocab_params,
             )
 
-        result = response.results.channels[0].alternatives[0].transcript
+        # Sichere Extraktion: Prüfe auf leere channels/alternatives
+        channels = getattr(response.results, "channels", [])
+        if not channels or not getattr(channels[0], "alternatives", []):
+            logger.warning("Deepgram-Antwort enthält keine Transkription")
+            return ""
+        result = channels[0].alternatives[0].transcript or ""
 
         logger.debug(f"Ergebnis: {result[:100]}..." if len(result) > 100 else f"Ergebnis: {result}")
 
