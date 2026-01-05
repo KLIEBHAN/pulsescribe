@@ -36,6 +36,8 @@ from config import (
     DEEPGRAM_CLOSE_TIMEOUT,
     DEEPGRAM_WS_URL,
     DEFAULT_DEEPGRAM_MODEL,
+    DRAIN_POLL_INTERVAL,
+    DRAIN_WINDOW_DURATION,
     FINALIZE_TIMEOUT,
     FORWARDER_THREAD_JOIN_TIMEOUT,
     INT16_MAX,
@@ -443,18 +445,24 @@ def _init_warm_stream(
                     logger.warning(f"[{session_id}] Warm-Stream Forwarder Error: {e}")
                 break
 
-        # Queue drainieren nach Stop - verhindert abgeschnittene letzte Wörter
+        # Audio-Callback stoppen und Queue drainieren
+        # arm_event.clear() signalisiert dem Callback, keine neuen Chunks zu schreiben.
+        # Wir drainieren dann für DRAIN_WINDOW_DURATION, um auch Chunks zu erfassen,
+        # die der Callback noch zwischen is_set()-Prüfung und put_nowait() geschrieben
+        # hat (TOCTOU).
+        warm_source.arm_event.clear()
+
         drained = 0
-        while True:
+        drain_deadline = time.monotonic() + DRAIN_WINDOW_DURATION
+        while time.monotonic() < drain_deadline:
             try:
-                chunk = warm_source.audio_queue.get_nowait()
-            except queue.Empty:
-                break
-            try:
+                chunk = warm_source.audio_queue.get(timeout=DRAIN_POLL_INTERVAL)
                 loop.call_soon_threadsafe(audio_queue.put_nowait, chunk)
                 drained += 1
+            except queue.Empty:
+                continue
             except RuntimeError:
-                # Event-Loop bereits geschlossen - restliche Chunks verwerfen
+                # Event-Loop bereits geschlossen
                 logger.debug(f"[{session_id}] Event-Loop geschlossen, Drain abgebrochen")
                 break
         if drained > 0:
@@ -1009,8 +1017,16 @@ async def deepgram_stream_core(
             except Exception as e:
                 logger.debug(f"Mikrofon-Cleanup fehlgeschlagen: {e}")
 
-        # Warm-Stream: Disarm (Forwarder ist Daemon-Thread, beendet sich automatisch)
+        # Warm-Stream: Safety-Net Disarm
+        # Normalerweise hat der Forwarder-Thread bereits arm_event.clear() aufgerufen.
+        # Dieser Aufruf ist ein Safety-Net für den Fall, dass der Daemon-Thread
+        # vorzeitig beendet wurde (z.B. bei Prozess-Shutdown).
         if warm_stream_source is not None:
+            if warm_stream_source.arm_event.is_set():
+                logger.warning(
+                    "Warm-Stream arm_event noch gesetzt im finally-Block - "
+                    "Forwarder-Thread wurde vermutlich vorzeitig beendet"
+                )
             warm_stream_source.arm_event.clear()
 
         # Signal-Handler entfernen

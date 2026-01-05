@@ -244,6 +244,8 @@ TRANSCRIBING_TIMEOUT = 45.0  # Sekunden (Deepgram + Refine sollten < 30s dauern)
 AUDIO_QUEUE_POLL_INTERVAL = 0.1  # Sekunden zwischen Queue-Polls
 SEND_MEDIA_TIMEOUT = 5.0  # Max. Wartezeit für WebSocket send_media()
 FORWARDER_THREAD_JOIN_TIMEOUT = 0.5  # Timeout beim Beenden des Forwarder-Threads
+DRAIN_WINDOW_DURATION = 0.05  # Drain-Fenster nach arm_event.clear() (50ms = 2-3 Callback-Zyklen)
+DRAIN_POLL_INTERVAL = 0.01  # Queue-Poll-Interval während Drain (10ms)
 
 # LLM-Refine Timeout: Maximale Wartezeit für API-Calls
 # Verhindert "hängende" Requests bei Netzwerkproblemen
@@ -328,6 +330,8 @@ __all__ = [
     "AUDIO_QUEUE_POLL_INTERVAL",
     "SEND_MEDIA_TIMEOUT",
     "FORWARDER_THREAD_JOIN_TIMEOUT",
+    "DRAIN_WINDOW_DURATION",
+    "DRAIN_POLL_INTERVAL",
     # Models
     "DEFAULT_API_MODEL",
     "DEFAULT_LOCAL_MODEL",
