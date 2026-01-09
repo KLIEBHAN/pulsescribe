@@ -363,8 +363,9 @@ def _create_audio_callback(
         if status:
             logger.warning(f"[{session_id}] Audio-Status: {status}")
 
-        if state.stop_event.is_set():
-            return
+        # KEIN stop_event Check hier!
+        # Das Mikrofon wird vor Graceful Shutdown gestoppt.
+        # Bis dahin sollen alle Chunks verarbeitet werden (verhindert abgeschnittene Wörter).
 
         # Audio-Level für Visualisierung berechnen (optional)
         if audio_level_callback is not None:
@@ -1018,10 +1019,12 @@ async def deepgram_stream_core(
             # Interim-Datei sofort löschen
             INTERIM_FILE.unlink(missing_ok=True)
 
-            # Warm-Stream: Forwarder-Thread beenden BEVOR Graceful Shutdown
-            # Damit alle Rest-Chunks in die Queue geschrieben werden, bevor
-            # das None-Sentinel gesendet wird (verhindert abgeschnittene Wörter)
+            # === AUDIO-SOURCE BEENDEN (vor Graceful Shutdown) ===
+            # Wichtig: Audio-Quellen müssen BEVOR das None-Sentinel gesendet wird
+            # beendet werden, damit alle Rest-Chunks in der Queue landen.
+
             if audio_result.forwarder_thread is not None:
+                # Warm-Stream: Forwarder-Thread beenden (hat eigenen Pre-Drain)
                 audio_result.forwarder_thread.join(timeout=FORWARDER_THREAD_JOIN_TIMEOUT)
                 if audio_result.forwarder_thread.is_alive():
                     logger.warning(
@@ -1030,6 +1033,17 @@ async def deepgram_stream_core(
                     )
                 else:
                     logger.debug(f"[{session_id}] Forwarder-Thread beendet")
+
+            elif audio_result.mic_stream is not None:
+                # CLI/Daemon-Mode: Mikrofon stoppen mit Pre-Drain
+                # Pre-Drain: Kurz warten damit sounddevice seine Buffer leeren kann
+                # (sounddevice hat ~23ms Audio im Buffer bei blocksize=1024 @ 44100Hz)
+                await asyncio.sleep(PRE_DRAIN_DURATION)
+                try:
+                    audio_result.mic_stream.stop()
+                    logger.debug(f"[{session_id}] Mikrofon gestoppt (vor Graceful Shutdown)")
+                except Exception as e:
+                    logger.debug(f"[{session_id}] Mikrofon-Stop fehlgeschlagen: {e}")
 
             # Graceful Shutdown durchführen
             await _graceful_shutdown(
@@ -1042,10 +1056,13 @@ async def deepgram_stream_core(
             )
 
     finally:
-        # Cleanup: Mikrofon freigeben
+        # Cleanup: Mikrofon-Ressourcen freigeben
+        # (mic_stream.stop() wurde bereits vor Graceful Shutdown aufgerufen)
         if audio_result.mic_stream is not None:
             try:
-                audio_result.mic_stream.stop()
+                # Safety: Falls stop() nicht aufgerufen wurde (z.B. bei Exception)
+                if audio_result.mic_stream.active:
+                    audio_result.mic_stream.stop()
                 audio_result.mic_stream.close()
             except Exception as e:
                 logger.debug(f"Mikrofon-Cleanup fehlgeschlagen: {e}")
