@@ -193,7 +193,7 @@ def get_input_device() -> tuple[int | None, int]:
 
 INTERIM_THROTTLE_MS = 150  # Max. Update-Rate für Interim-File (Menübar pollt 200ms)
 FINALIZE_TIMEOUT = (
-    2.0  # Warten auf finale Transkripte (erhöht für Windows/Netzwerk-Latenz)
+    5.0  # Warten auf finale Transkripte (erhöht für Windows/Netzwerk-Latenz)
 )
 DEEPGRAM_WS_URL = "wss://api.deepgram.com/v1/listen"
 
@@ -250,7 +250,7 @@ FORWARDER_THREAD_JOIN_TIMEOUT = 0.5  # Timeout beim Beenden des Forwarder-Thread
 
 # Drain-Konfiguration: Leeren der Audio-Queue nach Aufnahme-Stop
 # Pre-Drain: Callback läuft noch, gibt sounddevice Zeit Buffer zu leeren
-PRE_DRAIN_DURATION = 0.05  # Pre-Drain Phase bevor Callback gestoppt wird (50ms)
+PRE_DRAIN_DURATION = 0.1  # Pre-Drain Phase bevor Callback gestoppt wird (100ms)
 DRAIN_POLL_INTERVAL = 0.01  # Timeout pro Queue.get() während Drain (10ms)
 DRAIN_MAX_DURATION = 0.2  # Maximale Drain-Dauer als Safety-Limit (200ms)
 DRAIN_EMPTY_THRESHOLD = 2  # Anzahl leerer Polls bevor Drain beendet wird
@@ -339,6 +339,7 @@ __all__ = [
     "AUDIO_QUEUE_POLL_INTERVAL",
     "SEND_MEDIA_TIMEOUT",
     "FORWARDER_THREAD_JOIN_TIMEOUT",
+    "PRE_DRAIN_DURATION",
     "DRAIN_POLL_INTERVAL",
     "DRAIN_MAX_DURATION",
     "DRAIN_EMPTY_THRESHOLD",

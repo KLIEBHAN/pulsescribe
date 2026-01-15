@@ -450,10 +450,24 @@ def _init_warm_stream(
                     logger.warning(f"[{session_id}] Warm-Stream Forwarder Error: {e}")
                 break
 
+        # === IMMEDIATE-DRAIN ===
+        # Race Condition Fix: Zwischen queue.get(timeout) und stop_event Check
+        # könnten neue Chunks eingefügt worden sein.
+        immediate_drained = 0
+        while True:
+            try:
+                chunk = warm_source.audio_queue.get_nowait()
+                loop.call_soon_threadsafe(audio_queue.put_nowait, chunk)
+                immediate_drained += 1
+            except (queue.Empty, RuntimeError):
+                break
+
+        if immediate_drained > 0:
+            logger.debug(f"[{session_id}] Immediate-Drain: {immediate_drained} Chunks")
+
         # === PRE-DRAIN PHASE ===
-        # Callback läuft noch! Gibt sounddevice Zeit, seine internen Buffer zu leeren.
-        # Problem: sounddevice buffert ~23ms Audio (blocksize=1024 @ 44100Hz).
-        # Wenn wir arm_event.clear() sofort aufrufen, gehen diese Chunks verloren.
+        # Callback läuft noch - gibt sounddevice Zeit, Buffer zu leeren (~23ms).
+        # Ohne diese Phase gehen die letzten Chunks vor arm_event.clear() verloren.
         pre_drained = 0
         pre_drain_deadline = time.monotonic() + PRE_DRAIN_DURATION
         while time.monotonic() < pre_drain_deadline:

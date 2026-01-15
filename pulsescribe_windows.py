@@ -820,6 +820,24 @@ class PulseScribeWindows:
                 except queue.Empty:
                     continue
 
+            # === IMMEDIATE-DRAIN ===
+            # Race Condition Fix: Zwischen queue.get(timeout) und stop_event Check
+            # könnten neue Chunks eingefügt worden sein.
+            immediate_drained = 0
+            while True:
+                try:
+                    chunk = self._warm_stream_queue.get_nowait()
+                    audio_int16 = np.frombuffer(chunk, dtype=np.int16)
+                    audio_float32 = audio_int16.astype(np.float32) / INT16_MAX
+                    with self._audio_lock:
+                        self._audio_buffer.append(audio_float32)
+                    immediate_drained += 1
+                except queue.Empty:
+                    break
+
+            if immediate_drained > 0:
+                logger.debug(f"REST-Mode Immediate-Drain: {immediate_drained} Chunks")
+
             logger.debug("Recording-Loop (Warm) beendet")
 
         except Exception as e:
