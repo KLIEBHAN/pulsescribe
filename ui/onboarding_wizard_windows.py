@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import subprocess
 import sys
+import threading
 from typing import Callable
 
 from PySide6.QtCore import Qt, Signal, QTimer
@@ -127,6 +128,7 @@ class OnboardingWizardWindows(QDialog):
     # Signals
     settings_changed = Signal()
     completed = Signal()
+    _hotkey_field_update = Signal(str)  # Thread-safe hotkey field updates
 
     def __init__(self, parent: QWidget | None = None, *, persist_progress: bool = True):
         super().__init__(parent)
@@ -168,6 +170,9 @@ class OnboardingWizardWindows(QDialog):
         self._recording_field: str | None = None  # "toggle" or "hold"
         self._hotkey_listener = None
         self._pressed_keys: set = set()
+        self._pressed_keys_lock = threading.Lock()  # Thread-safe access
+        self._hotkey_recorded = False  # True if user pressed any key during recording
+        self._hotkey_field_update.connect(self._set_hotkey_field_text)
 
         # Navigation buttons
         self._back_btn: QPushButton | None = None
@@ -1065,86 +1070,150 @@ class OnboardingWizardWindows(QDialog):
         """Start recording a hotkey."""
         self._stop_hotkey_recording()
         self._recording_field = field
+        self._hotkey_recorded = False
 
         input_field = self._toggle_input if field == "toggle" else self._hold_input
         if input_field:
-            input_field.setText("Drücke Tastenkombination...")
+            input_field.setText("Drücke Hotkey, dann Enter...")
             input_field.setStyleSheet(f"border-color: {COLORS['accent']};")
 
-        self._pressed_keys = set()
+        with self._pressed_keys_lock:
+            self._pressed_keys.clear()
 
         available, key_map = get_pynput_key_map()
         if not available:
-            logger.warning("pynput nicht verfügbar")
+            logger.warning("pynput nicht verfügbar, Recording abgebrochen")
+            # Restore previous value and exit recording mode
+            if input_field:
+                prev_value = get_env_setting(
+                    "PULSESCRIBE_TOGGLE_HOTKEY"
+                    if field == "toggle"
+                    else "PULSESCRIBE_HOLD_HOTKEY"
+                ) or ""
+                input_field.setText(prev_value)
+                input_field.setStyleSheet("")
+            self._recording_field = None
             return
 
         from pynput import keyboard
 
         def on_press(key):
-            key_name = key_map.get(key)
-            if key_name:
-                self._pressed_keys.add(key_name)
-            elif hasattr(key, "char") and key.char:
-                self._pressed_keys.add(key.char.lower())
-            elif hasattr(key, "vk") and key.vk:
-                # Function keys
-                if 112 <= key.vk <= 135:  # F1-F24
-                    self._pressed_keys.add(f"f{key.vk - 111}")
+            key_name = self._pynput_key_to_string(key, key_map)
+            if key_name and key_name not in ("enter", "return", "esc", "escape"):
+                with self._pressed_keys_lock:
+                    self._pressed_keys.add(key_name)
+                self._hotkey_recorded = True
+                self._update_hotkey_field_from_pressed_keys()
 
         def on_release(key):
-            if self._pressed_keys:
-                # Build hotkey string
-                modifiers = []
-                main_key = None
-                for k in sorted(self._pressed_keys):
-                    if k in ("ctrl", "alt", "shift", "win"):
-                        modifiers.append(k)
-                    else:
-                        main_key = k
-
-                if main_key:
-                    hotkey = "+".join(modifiers + [main_key])
-                elif len(modifiers) >= 2:
-                    hotkey = "+".join(modifiers)
-                else:
-                    return  # Not a valid hotkey
-
-                # Apply hotkey and stop listener
-                QTimer.singleShot(0, lambda: self._apply_recorded_hotkey(hotkey))
-                if self._hotkey_listener:
-                    self._hotkey_listener.stop()
+            key_name = self._pynput_key_to_string(key, key_map)
+            if key_name:
+                with self._pressed_keys_lock:
+                    self._pressed_keys.discard(key_name)
 
         self._hotkey_listener = keyboard.Listener(
             on_press=on_press, on_release=on_release
         )
         self._hotkey_listener.start()
+        self.setFocus()
 
-    def _stop_hotkey_recording(self) -> None:
+    def _pynput_key_to_string(self, key, key_map: dict) -> str:
+        """Convert pynput key to string."""
+        # Known keys from map
+        if key in key_map:
+            return key_map[key]
+
+        # F-keys (f1-f24)
+        if hasattr(key, "name") and key.name:
+            name = key.name
+            if name.startswith("f") and len(name) > 1 and name[1:].isdigit():
+                return name.lower()
+
+        # Normal characters
+        if hasattr(key, "char") and key.char:
+            return key.char.lower()
+
+        # Other named keys
+        if hasattr(key, "name") and key.name:
+            return key.name.lower()
+
+        return ""
+
+    def _update_hotkey_field_from_pressed_keys(self) -> None:
+        """Update the hotkey field based on pressed keys."""
+        if not self._recording_field:
+            return
+
+        with self._pressed_keys_lock:
+            if not self._pressed_keys:
+                return
+            pressed_copy = set(self._pressed_keys)
+
+        # Sort: modifiers first, then other keys
+        modifiers = []
+        keys = []
+        for k in pressed_copy:
+            if k in ("ctrl", "alt", "shift", "win"):
+                modifiers.append(k)
+            else:
+                keys.append(k)
+
+        # Stable order for modifiers
+        modifier_order = ["ctrl", "alt", "shift", "win"]
+        sorted_modifiers = [m for m in modifier_order if m in modifiers]
+
+        hotkey_str = "+".join(sorted_modifiers + sorted(keys))
+
+        # Thread-safe UI update via signal
+        self._hotkey_field_update.emit(hotkey_str)
+
+    def _set_hotkey_field_text(self, hotkey_str: str) -> None:
+        """Set text in the active hotkey field (thread-safe slot)."""
+        if self._recording_field == "toggle" and self._toggle_input:
+            self._toggle_input.setText(hotkey_str)
+        elif self._recording_field == "hold" and self._hold_input:
+            self._hold_input.setText(hotkey_str)
+
+    def _stop_hotkey_recording(self, save: bool = False) -> None:
         """Stop hotkey recording."""
         if self._hotkey_listener:
             self._hotkey_listener.stop()
             self._hotkey_listener = None
 
+        field = self._recording_field
+        input_field = (
+            self._toggle_input if field == "toggle" else self._hold_input
+        ) if field else None
+
+        # Save or restore field value
+        if save and field and self._hotkey_recorded and input_field:
+            hotkey = input_field.text().strip()
+            if hotkey:
+                self._save_hotkey(field, hotkey)
+        elif field and input_field:
+            # Restore previous value (cancel or no input)
+            env_key = (
+                "PULSESCRIBE_TOGGLE_HOTKEY"
+                if field == "toggle"
+                else "PULSESCRIBE_HOLD_HOTKEY"
+            )
+            input_field.setText(get_env_setting(env_key) or "")
+
         self._recording_field = None
-        self._pressed_keys = set()
+        self._hotkey_recorded = False
+        with self._pressed_keys_lock:
+            self._pressed_keys.clear()
 
         # Reset input styles
-        for input_field in (self._toggle_input, self._hold_input):
-            if input_field:
-                input_field.setStyleSheet("")
+        for inp in (self._toggle_input, self._hold_input):
+            if inp:
+                inp.setStyleSheet("")
 
-    def _apply_recorded_hotkey(self, hotkey: str) -> None:
-        """Apply a recorded hotkey."""
-        field = self._recording_field
-        self._stop_hotkey_recording()
-
+    def _save_hotkey(self, field: str, hotkey: str) -> None:
+        """Save a hotkey to settings. Called by _stop_hotkey_recording."""
         if field == "toggle":
-            if self._toggle_input:
-                self._toggle_input.setText(hotkey)
             save_env_setting("PULSESCRIBE_TOGGLE_HOTKEY", hotkey)
         elif field == "hold":
-            if self._hold_input:
-                self._hold_input.setText(hotkey)
             save_env_setting("PULSESCRIBE_HOLD_HOTKEY", hotkey)
 
         self.settings_changed.emit()
@@ -1215,6 +1284,30 @@ class OnboardingWizardWindows(QDialog):
         lang = get_env_setting("PULSESCRIBE_LANGUAGE") or "auto"
         if "language" in self._summary_labels:
             self._summary_labels["language"].setText(lang)
+
+    # -------------------------------------------------------------------------
+    # Keyboard Events
+    # -------------------------------------------------------------------------
+
+    def keyPressEvent(self, event) -> None:
+        """Handle key press for hotkey recording confirmation."""
+        if self._recording_field:
+            # Escape = Cancel (restores previous value in _stop_hotkey_recording)
+            if event.key() == Qt.Key.Key_Escape:
+                self._stop_hotkey_recording(save=False)
+                event.accept()
+                return
+
+            # Enter = Confirm
+            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                self._stop_hotkey_recording(save=True)
+                event.accept()
+                return
+
+            event.accept()
+            return
+
+        super().keyPressEvent(event)
 
     # -------------------------------------------------------------------------
     # Cleanup
