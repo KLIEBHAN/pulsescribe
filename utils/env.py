@@ -98,6 +98,13 @@ def load_environment(*, override_existing: bool = False) -> None:
         if override_existing or key not in os.environ:
             os.environ[key] = value
 
+    # Bei Reload: PULSESCRIBE_* Variablen entfernen, die nicht mehr in .env sind
+    # (wichtig wenn Settings von "true" auf Default/entfernt geändert werden)
+    if override_existing:
+        for key in [k for k in os.environ if k.startswith("PULSESCRIBE_")]:
+            if key not in merged:
+                del os.environ[key]
+
 
 __all__ = [
     "get_env_bool",

@@ -473,6 +473,9 @@ class TestPasteTranscriptWindows:
             paste_calls.append(True)
             return True
 
+        # Ensure clipboard restore is disabled
+        monkeypatch.delenv("PULSESCRIBE_CLIPBOARD_RESTORE", raising=False)
+
         # Mock pyperclip
         import pyperclip
         monkeypatch.setattr(pyperclip, "copy", mock_copy)
@@ -492,6 +495,9 @@ class TestPasteTranscriptWindows:
         def mock_copy(text):
             raise Exception("Clipboard error")
 
+        # Ensure clipboard restore is disabled
+        monkeypatch.delenv("PULSESCRIBE_CLIPBOARD_RESTORE", raising=False)
+
         import pyperclip
         monkeypatch.setattr(pyperclip, "copy", mock_copy)
 
@@ -508,6 +514,9 @@ class TestPasteTranscriptWindows:
 
         def mock_paste_windows():
             return False  # Simuliere pynput-Fehler
+
+        # Ensure clipboard restore is disabled
+        monkeypatch.delenv("PULSESCRIBE_CLIPBOARD_RESTORE", raising=False)
 
         import pyperclip
         monkeypatch.setattr(pyperclip, "copy", mock_copy)
@@ -528,6 +537,9 @@ class TestPasteTranscriptWindows:
 
         def mock_paste_windows():
             return True
+
+        # Ensure clipboard restore is disabled
+        monkeypatch.delenv("PULSESCRIBE_CLIPBOARD_RESTORE", raising=False)
 
         import pyperclip
         monkeypatch.setattr(pyperclip, "copy", mock_copy)
