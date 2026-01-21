@@ -20,6 +20,7 @@ from typing import Any, Generator
 
 from config import (
     DEFAULT_LOCAL_MODEL,
+    KEEPALIVE_WARMUP_DURATION,
     PRELOAD_WARMUP_DURATION,
     USER_CONFIG_DIR,
     WHISPER_SAMPLE_RATE,
@@ -770,6 +771,49 @@ class LocalProvider:
                 )
         else:
             self._get_whisper_model(model_name)
+
+    def keepalive(self, model: str | None = None) -> None:
+        """Hält Metal-Shader warm durch minimales Dummy-Transcribe.
+
+        Verhindert GPU-Cache-Eviction bei Inaktivität. Sollte periodisch
+        aufgerufen werden (z.B. alle 60s) wenn das Modell nicht aktiv genutzt wird.
+
+        Nur relevant für MLX/Lightning Backends (Metal GPU). Für whisper/faster
+        ist kein Keep-Alive nötig (CPU/CUDA haben kein Shader-Caching-Problem).
+        """
+        self._ensure_runtime_config()
+
+        # Nur für Metal-Backends relevant
+        if self._backend not in ("mlx", "lightning"):
+            return
+
+        model_name = self._resolve_model_name(model)
+
+        import numpy as np
+
+        keepalive_samples = int(WHISPER_SAMPLE_RATE * KEEPALIVE_WARMUP_DURATION)
+        keepalive_audio = np.zeros(keepalive_samples, dtype=np.float32)
+
+        t0 = time.perf_counter()
+        with self._transcribe_lock:
+            if self._backend == "mlx":
+                mlx_whisper = _import_mlx_whisper()
+                repo = self._map_mlx_model_name(model_name)
+                mlx_whisper.transcribe(
+                    keepalive_audio,
+                    path_or_hf_repo=repo,
+                    verbose=None,
+                    language=_get_warmup_language(),
+                    temperature=0.0,
+                    condition_on_previous_text=False,
+                )
+            else:  # lightning
+                lightning_model = self._get_lightning_model(model_name)
+                with _lightning_workdir():
+                    lightning_model.transcribe(keepalive_audio, language=_get_warmup_language())  # type: ignore[union-attr]
+
+        t_keepalive = time.perf_counter() - t0
+        logger.debug(f"Keep-alive complete ({self._backend}): {t_keepalive*1000:.0f}ms")
 
     def _log_transcription_start(self, model_name: str, language: str | None) -> None:
         """Loggt Transkriptions-Start mit Provider/Backend/Modell/Device/Compute-Type."""

@@ -174,12 +174,13 @@ See [LOCAL_BACKENDS.md](LOCAL_BACKENDS.md) for detailed local mode configuration
 
 ### Quick Reference
 
-| Variable                    | Values                                          | Default | Description       |
-| --------------------------- | ----------------------------------------------- | ------- | ----------------- |
-| `PULSESCRIBE_LOCAL_BACKEND` | `whisper`, `faster`, `mlx`, `lightning`, `auto` | `auto`  | Local backend     |
-| `PULSESCRIBE_LOCAL_MODEL`   | `tiny`...`large`, `turbo`                       | `turbo` | Model size        |
-| `PULSESCRIBE_DEVICE`        | `auto`, `mps`, `cpu`, `cuda`                    | `auto`  | Compute device    |
-| `PULSESCRIBE_LOCAL_WARMUP`  | `true`, `false`, `auto`                         | `auto`  | Warmup on startup |
+| Variable                               | Values                                          | Default | Description                       |
+| -------------------------------------- | ----------------------------------------------- | ------- | --------------------------------- |
+| `PULSESCRIBE_LOCAL_BACKEND`            | `whisper`, `faster`, `mlx`, `lightning`, `auto` | `auto`  | Local backend                     |
+| `PULSESCRIBE_LOCAL_MODEL`              | `tiny`...`large`, `turbo`                       | `turbo` | Model size                        |
+| `PULSESCRIBE_DEVICE`                   | `auto`, `mps`, `cpu`, `cuda`                    | `auto`  | Compute device                    |
+| `PULSESCRIBE_LOCAL_WARMUP`             | `true`, `false`, `auto`                         | `auto`  | Warmup on startup                 |
+| `PULSESCRIBE_LOCAL_KEEPALIVE_INTERVAL` | `0`-`300` (seconds)                             | `60`    | Keep-Alive interval (0=disabled)  |
 
 ---
 

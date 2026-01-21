@@ -23,6 +23,9 @@ WHISPER_BLOCKSIZE = 1024
 # Warmup-Dauer für lokale Modelle (MLX/Lightning Metal-Compilation, Whisper/Faster GPU-Init)
 PRELOAD_WARMUP_DURATION = 0.5
 
+# Keep-Alive Warmup ist kürzer als initiales Preload (nur Shader warm halten)
+KEEPALIVE_WARMUP_DURATION = 0.1
+
 # Konstante für Audio-Konvertierung (float32 → int16)
 INT16_MAX = 32767
 
@@ -214,6 +217,11 @@ DEEPGRAM_CLOSE_TIMEOUT = _get_float_env(
     "PULSESCRIBE_DEEPGRAM_CLOSE_TIMEOUT", 0.5
 )  # Schneller WebSocket-Shutdown (SDK Default: 10s)
 
+# Keep-Alive Interval für lokale Modelle (Sekunden)
+# Verhindert Metal Shader Cache Eviction bei Inaktivität
+# 0 = deaktiviert, empfohlen: 45-90s
+LOCAL_KEEPALIVE_INTERVAL = _get_float_env("PULSESCRIBE_LOCAL_KEEPALIVE_INTERVAL", 60.0)
+
 # Buffer-Konfiguration für Streaming
 def _get_bounded_int_env(
     var_name: str,
@@ -325,6 +333,8 @@ __all__ = [
     "WHISPER_BLOCKSIZE",
     "INT16_MAX",
     "PRELOAD_WARMUP_DURATION",
+    "LOCAL_KEEPALIVE_INTERVAL",
+    "KEEPALIVE_WARMUP_DURATION",
     # Audio Analysis
     "VAD_THRESHOLD",
     "VISUAL_NOISE_GATE",

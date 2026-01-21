@@ -53,7 +53,7 @@ emergency_log("=== Booting PulseScribe Daemon ===")
 
 try:
     from config import INTERIM_FILE, VAD_THRESHOLD, WHISPER_SAMPLE_RATE
-    from config import TRANSCRIBING_TIMEOUT, PRELOAD_WARMUP_DURATION
+    from config import TRANSCRIBING_TIMEOUT, PRELOAD_WARMUP_DURATION, LOCAL_KEEPALIVE_INTERVAL
     from utils import setup_logging, show_error_alert
     from config import DEFAULT_DEEPGRAM_MODEL, DEFAULT_LOCAL_MODEL
     from utils.env import (
@@ -201,6 +201,9 @@ class PulseScribeDaemon:
         self._pending_hotkey_reconfigure = False
         # Preload-Status für lokales Modell (für Performance-Debugging)
         self._local_preload_complete = threading.Event()
+        # Keep-Alive Timer für Metal-Shader (verhindert Cache-Eviction bei Inaktivität)
+        self._keepalive_stop_event = threading.Event()
+        self._keepalive_thread: threading.Thread | None = None
 
     # =============================================================================
     # Thread-safe State Properties
@@ -544,6 +547,8 @@ class PulseScribeDaemon:
                 self._update_state(AppState.IDLE)
                 # Auditive Rückmeldung: User kann jetzt mit minimaler Latenz aufnehmen
                 get_sound_player().play("warmup")
+                # Keep-Alive Timer starten (hält Metal-Shader warm)
+                self._start_keepalive_timer()
             except Exception as e:
                 logger.warning(f"Preload lokales Modell fehlgeschlagen: {e}")
                 self._local_preload_complete.set()  # Setze trotzdem um Deadlock zu vermeiden
@@ -551,6 +556,60 @@ class PulseScribeDaemon:
                 self._update_state(AppState.IDLE)
 
         threading.Thread(target=_preload, daemon=True, name="LocalPreload").start()
+
+    def _start_keepalive_timer(self) -> None:
+        """Startet Keep-Alive Timer für Metal-Shader (nur für lokale Metal-Backends).
+
+        Der Timer ruft periodisch provider.keepalive() auf, um Metal-Shader
+        im GPU-Cache zu halten und Cache-Eviction bei Inaktivität zu verhindern.
+        """
+        if self.mode != "local":
+            return
+
+        if LOCAL_KEEPALIVE_INTERVAL <= 0:
+            logger.debug("Keep-Alive Timer deaktiviert (Interval <= 0)")
+            return
+
+        provider = self._get_provider("local")
+        if not hasattr(provider, "keepalive"):
+            return
+
+        # Backend prüfen - nur MLX/Lightning brauchen Keep-Alive
+        if hasattr(provider, "_ensure_runtime_config"):
+            provider._ensure_runtime_config()  # type: ignore[attr-defined]
+        backend = getattr(provider, "_backend", None)
+        if backend not in ("mlx", "lightning"):
+            logger.debug(f"Keep-Alive nicht nötig für Backend '{backend}'")
+            return
+
+        self._keepalive_stop_event.clear()
+
+        def _keepalive_loop():
+            logger.info(
+                f"Keep-Alive Timer gestartet (Interval: {LOCAL_KEEPALIVE_INTERVAL}s, Backend: {backend})"
+            )
+            while not self._keepalive_stop_event.wait(LOCAL_KEEPALIVE_INTERVAL):
+                # Nur Keep-Alive wenn IDLE (nicht während Recording/Transcribing)
+                if self._current_state != AppState.IDLE:
+                    logger.debug("Keep-Alive übersprungen (nicht IDLE)")
+                    continue
+                try:
+                    provider.keepalive(self.model)  # type: ignore[attr-defined]
+                except Exception as e:
+                    logger.debug(f"Keep-Alive fehlgeschlagen: {e}")
+            logger.debug("Keep-Alive Timer gestoppt")
+
+        self._keepalive_thread = threading.Thread(
+            target=_keepalive_loop, daemon=True, name="LocalKeepalive"
+        )
+        self._keepalive_thread.start()
+
+    def _stop_keepalive_timer(self) -> None:
+        """Stoppt den Keep-Alive Timer."""
+        self._keepalive_stop_event.set()
+        if self._keepalive_thread is not None:
+            self._keepalive_thread.join(timeout=1.0)
+            self._keepalive_thread = None
 
     def _update_state(self, state: AppState, text: str | None = None) -> None:
         """Aktualisiert State und benachrichtigt UI-Controller.
@@ -1905,6 +1964,7 @@ class PulseScribeDaemon:
         self._stop_interim_polling()
         self._stop_result_polling()
         self._stop_transcribing_watchdog()
+        self._stop_keepalive_timer()
 
         # Provider-Cache leeren (Local Whisper kann ~500MB RAM halten)
         for name, provider in list(self._provider_cache.items()):
