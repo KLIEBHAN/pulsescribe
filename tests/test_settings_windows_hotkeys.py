@@ -1,0 +1,64 @@
+import pytest
+
+pytest.importorskip("PySide6")
+
+from ui.settings_windows import SettingsWindow
+
+
+class _FakeField:
+    def __init__(self, value: str):
+        self._value = value
+
+    def text(self) -> str:
+        return self._value
+
+    def setText(self, value: str) -> None:
+        self._value = value
+
+
+class _FakeLabel:
+    def __init__(self):
+        self.text = ""
+        self.style = ""
+
+    def setText(self, text: str) -> None:
+        self.text = text
+
+    def setStyleSheet(self, style: str) -> None:
+        self.style = style
+
+
+def _make_window(toggle: str, hold: str) -> SettingsWindow:
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._toggle_hotkey_field = _FakeField(toggle)
+    window._hold_hotkey_field = _FakeField(hold)
+    window._hotkey_status = _FakeLabel()
+    return window
+
+
+def test_validate_hotkeys_for_save_normalizes_fields():
+    window = _make_window("ALT+CTRL+Return", "ctrl+shift+space")
+
+    result = window._validate_hotkeys_for_save()
+
+    assert result == ("ctrl+alt+enter", "ctrl+shift+space")
+    assert window._toggle_hotkey_field.text() == "ctrl+alt+enter"
+    assert window._hold_hotkey_field.text() == "ctrl+shift+space"
+
+
+def test_validate_hotkeys_for_save_rejects_duplicates():
+    window = _make_window("ctrl+alt+r", "alt+ctrl+r")
+
+    result = window._validate_hotkeys_for_save()
+
+    assert result is None
+    assert "same hotkey" in window._hotkey_status.text.lower()
+
+
+def test_validate_hotkeys_for_save_rejects_invalid_tokens():
+    window = _make_window("ctrl+invalid", "")
+
+    result = window._validate_hotkeys_for_save()
+
+    assert result is None
+    assert "invalid" in window._hotkey_status.text.lower()

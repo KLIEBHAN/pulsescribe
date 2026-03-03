@@ -1,0 +1,66 @@
+from types import SimpleNamespace
+
+from utils.hotkey_windows import (
+    normalize_windows_hotkey,
+    parse_windows_hotkey_for_pynput,
+)
+
+
+class _FakeKeyCode:
+    @staticmethod
+    def from_char(ch: str) -> str:
+        return f"char:{ch}"
+
+
+def _fake_keyboard() -> SimpleNamespace:
+    key = SimpleNamespace(
+        ctrl="key:ctrl",
+        alt="key:alt",
+        shift="key:shift",
+        cmd="key:cmd",
+        space="key:space",
+        tab="key:tab",
+        enter="key:enter",
+        esc="key:esc",
+        backspace="key:backspace",
+        delete="key:delete",
+        home="key:home",
+        end="key:end",
+        page_up="key:page_up",
+        page_down="key:page_down",
+        up="key:up",
+        down="key:down",
+        left="key:left",
+        right="key:right",
+        caps_lock="key:caps_lock",
+    )
+    for index in range(1, 25):
+        setattr(key, f"f{index}", f"key:f{index}")
+    return SimpleNamespace(Key=key, KeyCode=_FakeKeyCode)
+
+
+def test_normalize_windows_hotkey_canonicalizes_aliases_and_order() -> None:
+    normalized, error = normalize_windows_hotkey(" ALT + CTRL + Return ")
+    assert error is None
+    assert normalized == "ctrl+alt+enter"
+
+
+def test_parse_windows_hotkey_supports_space_token() -> None:
+    keyboard = _fake_keyboard()
+    parsed = parse_windows_hotkey_for_pynput("ctrl+alt+space", keyboard)
+
+    assert parsed == {"key:ctrl", "key:alt", "key:space"}
+
+
+def test_parse_windows_hotkey_rejects_unknown_tokens() -> None:
+    keyboard = _fake_keyboard()
+    parsed = parse_windows_hotkey_for_pynput("ctrl+alt+space+invalid", keyboard)
+
+    assert parsed == set()
+
+
+def test_parse_windows_hotkey_supports_navigation_keys() -> None:
+    keyboard = _fake_keyboard()
+    parsed = parse_windows_hotkey_for_pynput("shift+pagedown", keyboard)
+
+    assert parsed == {"key:shift", "key:page_down"}

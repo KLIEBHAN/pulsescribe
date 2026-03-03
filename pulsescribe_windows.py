@@ -57,6 +57,7 @@ logger = get_logger()
 from utils.state import AppState
 from utils.hold_state import HoldHotkeyState
 from utils.hotkey import paste_transcript
+from utils.hotkey_windows import parse_windows_hotkey_for_pynput
 from whisper_platform import get_clipboard, get_sound_player
 from config import INTERIM_FILE, get_input_device, WARM_STREAM_QUEUE_SIZE
 from providers import get_provider
@@ -1335,34 +1336,7 @@ class PulseScribeWindows:
     @staticmethod
     def _parse_hotkey_string(hotkey_str: str, keyboard) -> set:
         """Parst Hotkey-String zu Set von pynput Keys."""
-        parts = [p.strip().lower() for p in hotkey_str.split("+")]
-        hotkey_keys = set()
-
-        for part in parts:
-            if part in ("ctrl", "control"):
-                hotkey_keys.add(keyboard.Key.ctrl)
-            elif part in ("alt", "option"):
-                hotkey_keys.add(keyboard.Key.alt)
-            elif part in ("shift",):
-                hotkey_keys.add(keyboard.Key.shift)
-            elif part in ("cmd", "command", "win"):
-                hotkey_keys.add(keyboard.Key.cmd)
-            elif part.startswith("f") and part[1:].isdigit():
-                # F-Tasten: f1-f24
-                fn = int(part[1:])
-                if 1 <= fn <= 24:
-                    try:
-                        hotkey_keys.add(getattr(keyboard.Key, part))
-                    except AttributeError:
-                        logger.warning(f"F-Taste nicht unterstützt: {part}")
-                else:
-                    logger.warning(f"Ungültige F-Taste: {part}")
-            elif len(part) == 1:
-                hotkey_keys.add(keyboard.KeyCode.from_char(part))
-            else:
-                logger.warning(f"Unbekannte Taste ignoriert: {part}")
-
-        return hotkey_keys
+        return parse_windows_hotkey_for_pynput(hotkey_str, keyboard)
 
     def _setup_tray(self):
         """Richtet Tray-Icon ein."""

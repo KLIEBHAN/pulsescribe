@@ -52,6 +52,7 @@ from utils.preferences import (
 )
 from utils.local_backend import normalize_local_backend, should_remove_local_backend_env
 from utils.local_backend import get_cpu_threads_limit
+from utils.hotkey_windows import normalize_windows_hotkey
 from utils.log_tail import (
     clamp_scroll_value,
     get_file_signature,
@@ -1405,6 +1406,42 @@ class SettingsWindow(QDialog):
             color_value = COLORS.get(color, COLORS["text"])
             self._hotkey_status.setStyleSheet(f"color: {color_value};")
 
+    def _validate_hotkeys_for_save(self) -> tuple[str, str] | None:
+        """Validiert Hotkeys vor dem Speichern und gibt normalisierte Werte zurück."""
+        toggle_raw = (
+            self._toggle_hotkey_field.text()
+            if hasattr(self, "_toggle_hotkey_field") and self._toggle_hotkey_field
+            else ""
+        )
+        hold_raw = (
+            self._hold_hotkey_field.text()
+            if hasattr(self, "_hold_hotkey_field") and self._hold_hotkey_field
+            else ""
+        )
+
+        toggle, toggle_error = normalize_windows_hotkey(toggle_raw)
+        if toggle_error:
+            self._set_hotkey_status(f"Toggle hotkey invalid: {toggle_error}", "error")
+            return None
+
+        hold, hold_error = normalize_windows_hotkey(hold_raw)
+        if hold_error:
+            self._set_hotkey_status(f"Hold hotkey invalid: {hold_error}", "error")
+            return None
+
+        if toggle and hold and toggle == hold:
+            self._set_hotkey_status(
+                "Toggle and Hold must not use the same hotkey.", "error"
+            )
+            return None
+
+        if hasattr(self, "_toggle_hotkey_field") and self._toggle_hotkey_field:
+            self._toggle_hotkey_field.setText(toggle)
+        if hasattr(self, "_hold_hotkey_field") and self._hold_hotkey_field:
+            self._hold_hotkey_field.setText(hold)
+
+        return toggle, hold
+
     # =========================================================================
     # Prompt Handlers
     # =========================================================================
@@ -1979,6 +2016,11 @@ class SettingsWindow(QDialog):
     def _save_settings(self):
         """Speichert alle Settings."""
         try:
+            validated_hotkeys = self._validate_hotkeys_for_save()
+            if validated_hotkeys is None:
+                return
+            toggle_hotkey, hold_hotkey = validated_hotkeys
+
             # Mode
             if self._mode_combo:
                 mode = self._mode_combo.currentText()
@@ -2165,16 +2207,14 @@ class SettingsWindow(QDialog):
 
             # Hotkeys
             if hasattr(self, "_toggle_hotkey_field") and self._toggle_hotkey_field:
-                toggle = self._toggle_hotkey_field.text().strip()
-                if toggle:
-                    save_env_setting("PULSESCRIBE_TOGGLE_HOTKEY", toggle)
+                if toggle_hotkey:
+                    save_env_setting("PULSESCRIBE_TOGGLE_HOTKEY", toggle_hotkey)
                 else:
                     remove_env_setting("PULSESCRIBE_TOGGLE_HOTKEY")
 
             if hasattr(self, "_hold_hotkey_field") and self._hold_hotkey_field:
-                hold = self._hold_hotkey_field.text().strip()
-                if hold:
-                    save_env_setting("PULSESCRIBE_HOLD_HOTKEY", hold)
+                if hold_hotkey:
+                    save_env_setting("PULSESCRIBE_HOLD_HOTKEY", hold_hotkey)
                 else:
                     remove_env_setting("PULSESCRIBE_HOLD_HOTKEY")
 
