@@ -1,9 +1,11 @@
 import pytest
 import threading
+import types
 
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QDialog
 
 from ui.settings_windows import SettingsWindow
 
@@ -41,6 +43,14 @@ class _FakeButton:
 
     def setStyleSheet(self, style: str) -> None:
         self.style = style
+
+
+class _FakeTimer:
+    def __init__(self):
+        self.stop_calls = 0
+
+    def stop(self) -> None:
+        self.stop_calls += 1
 
 
 class _FakeKeyEvent:
@@ -305,3 +315,26 @@ def test_keypress_qt_fallback_ignores_auto_repeat_events():
 
     assert window._toggle_hotkey_field.text() == "ctrl+alt+r"
     assert event.accepted is True
+
+
+def test_reject_runs_close_cleanup_and_emits_closed_once(monkeypatch):
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._is_closed = False
+    window._recording_hotkey_for = "toggle"
+    window._logs_refresh_timer = _FakeTimer()
+
+    stop_calls: list[bool] = []
+    closed_calls: list[bool] = []
+    window._stop_pynput_listener = lambda: stop_calls.append(True)
+    window.closed = types.SimpleNamespace(emit=lambda: closed_calls.append(True))
+
+    monkeypatch.setattr(QDialog, "reject", lambda self: None)
+
+    SettingsWindow.reject(window)
+    SettingsWindow.reject(window)
+
+    assert window._is_closed is True
+    assert window._recording_hotkey_for is None
+    assert window._logs_refresh_timer.stop_calls == 1
+    assert stop_calls == [True]
+    assert closed_calls == [True]

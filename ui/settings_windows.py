@@ -2603,22 +2603,31 @@ class SettingsWindow(QDialog):
         if event.type() == QEvent.Type.WindowStateChange:
             self._update_logs_auto_refresh_state()
 
-    def closeEvent(self, event):
-        """Handler für Fenster schließen."""
-        # Als erstes: Signal-Emission verhindern
+    def _cleanup_before_close(self) -> bool:
+        """Führt einmaliges Cleanup für alle Schließpfade aus."""
+        if getattr(self, "_is_closed", False):
+            return False
+
         self._is_closed = True
 
-        # Auto-Refresh Timer stoppen
         if hasattr(self, "_logs_refresh_timer"):
             self._logs_refresh_timer.stop()
 
-        # pynput Listener und Keyboard Grab immer stoppen (auch defensive
-        # Absicherung falls Capture-Backend aktiv blieb).
         self._stop_pynput_listener()
         self._recording_hotkey_for = None
+        return True
 
-        self.closed.emit()
+    def closeEvent(self, event):
+        """Handler für Fenster schließen."""
+        if self._cleanup_before_close():
+            self.closed.emit()
         super().closeEvent(event)
+
+    def reject(self):
+        """ESC/Close-Button behandeln wie ein echtes Window-Close."""
+        if self._cleanup_before_close():
+            self.closed.emit()
+        super().reject()
 
 
 # =============================================================================
