@@ -163,6 +163,7 @@ class OnboardingWizardWindows(QDialog):
         self._mic_status_label: QLabel | None = None
         self._test_transcript: QPlainTextEdit | None = None
         self._test_status_label: QLabel | None = None
+        self._test_hotkey_label: QLabel | None = None
         self._test_successful = False
         self._summary_labels: dict[str, QLabel] = {}
 
@@ -546,20 +547,11 @@ class OnboardingWizardWindows(QDialog):
         )
 
         # Hotkey reminder
-        toggle = get_env_setting("PULSESCRIBE_TOGGLE_HOTKEY")
-        hold = get_env_setting("PULSESCRIBE_HOLD_HOTKEY")
-        hotkey_text = []
-        if toggle:
-            hotkey_text.append(f"Toggle: {toggle}")
-        if hold:
-            hotkey_text.append(f"Hold: {hold}")
-
-        hotkey_label = QLabel(
-            " | ".join(hotkey_text) if hotkey_text else "Kein Hotkey konfiguriert"
-        )
-        hotkey_label.setFont(QFont(DEFAULT_FONT_FAMILY, 11, QFont.Weight.Bold))
-        hotkey_label.setStyleSheet(f"color: {COLORS['accent']};")
-        layout.addWidget(hotkey_label)
+        self._test_hotkey_label = QLabel()
+        self._test_hotkey_label.setFont(QFont(DEFAULT_FONT_FAMILY, 11, QFont.Weight.Bold))
+        self._test_hotkey_label.setStyleSheet(f"color: {COLORS['accent']};")
+        self._refresh_test_hotkey_label()
+        layout.addWidget(self._test_hotkey_label)
 
         # Transcript area
         card, card_layout = _create_card()
@@ -717,6 +709,8 @@ class OnboardingWizardWindows(QDialog):
         # Step-specific actions
         if step == OnboardingStep.PERMISSIONS:
             self._start_mic_check()
+        elif step == OnboardingStep.TEST_DICTATION:
+            self._refresh_test_hotkey_label()
         elif step == OnboardingStep.CHEAT_SHEET:
             self._update_summary()
 
@@ -1217,6 +1211,7 @@ class OnboardingWizardWindows(QDialog):
             save_env_setting("PULSESCRIBE_HOLD_HOTKEY", hotkey)
 
         self.settings_changed.emit()
+        self._refresh_test_hotkey_label()
         self._update_navigation()
 
     def _clear_hotkey(self, field: str) -> None:
@@ -1231,6 +1226,7 @@ class OnboardingWizardWindows(QDialog):
             remove_env_setting("PULSESCRIBE_HOLD_HOTKEY")
 
         self.settings_changed.emit()
+        self._refresh_test_hotkey_label()
         self._update_navigation()
 
     def _apply_hotkey_preset(self, toggle: str | None, hold: str | None) -> None:
@@ -1254,7 +1250,25 @@ class OnboardingWizardWindows(QDialog):
             remove_env_setting("PULSESCRIBE_HOLD_HOTKEY")
 
         self.settings_changed.emit()
+        self._refresh_test_hotkey_label()
         self._update_navigation()
+
+    def _refresh_test_hotkey_label(self) -> None:
+        """Aktualisiert den Hotkey-Hinweis im Test-Schritt."""
+        if not self._test_hotkey_label:
+            return
+
+        toggle = get_env_setting("PULSESCRIBE_TOGGLE_HOTKEY")
+        hold = get_env_setting("PULSESCRIBE_HOLD_HOTKEY")
+        parts = []
+        if toggle:
+            parts.append(f"Toggle: {toggle}")
+        if hold:
+            parts.append(f"Hold: {hold}")
+
+        self._test_hotkey_label.setText(
+            " | ".join(parts) if parts else "Kein Hotkey konfiguriert"
+        )
 
     # -------------------------------------------------------------------------
     # Step: Cheat Sheet

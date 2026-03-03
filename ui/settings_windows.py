@@ -1422,6 +1422,14 @@ class SettingsWindow(QDialog):
 
     def _load_prompt_for_context(self, context: str):
         """Lädt den Prompt-Text für einen Kontext."""
+        # Unsaved Änderungen pro Kontext bevorzugen (verhindert Datenverlust
+        # beim Tab-Wechsel und spart wiederholtes Disk-Laden).
+        if context in self._prompts_cache:
+            if self._prompt_editor:
+                self._prompt_editor.setPlainText(self._prompts_cache[context])
+                self._set_prompt_status("", "text")
+            return
+
         try:
             from utils.custom_prompts import (
                 load_custom_prompts,
@@ -1441,6 +1449,7 @@ class SettingsWindow(QDialog):
 
             if self._prompt_editor:
                 self._prompt_editor.setPlainText(text)
+                self._prompts_cache[context] = text
                 self._set_prompt_status("", "text")
 
         except Exception as e:
@@ -1463,6 +1472,7 @@ class SettingsWindow(QDialog):
                 else "default"
             )
             text = self._prompt_editor.toPlainText() if self._prompt_editor else ""
+            self._prompts_cache[context] = text
 
             # Aktuelle Daten laden
             data = load_custom_prompts()
@@ -1504,6 +1514,7 @@ class SettingsWindow(QDialog):
 
             if self._prompt_editor:
                 self._prompt_editor.setPlainText(text)
+                self._prompts_cache[context] = text
                 self._set_prompt_status("Reset to default (not saved)", "warning")
 
         except Exception as e:
