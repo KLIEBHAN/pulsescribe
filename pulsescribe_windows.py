@@ -58,6 +58,7 @@ from utils.state import AppState
 from utils.hold_state import HoldHotkeyState
 from utils.hotkey import paste_transcript
 from utils.hotkey_windows import parse_windows_hotkey_for_pynput
+from utils.subprocess_io import start_stream_drain_thread
 from whisper_platform import get_clipboard, get_sound_player
 from config import INTERIM_FILE, get_input_device, WARM_STREAM_QUEUE_SIZE
 from providers import get_provider
@@ -1470,6 +1471,7 @@ class PulseScribeWindows:
                     self._open_env_in_editor()
                     return
 
+                self._start_subprocess_stderr_drain(process, "settings")
                 self._settings_process = process
                 logger.info("Settings-Fenster gestartet (--settings)")
                 return
@@ -1532,12 +1534,25 @@ class PulseScribeWindows:
                 self._open_env_in_editor()
                 return
 
+            self._start_subprocess_stderr_drain(process, "settings")
             self._settings_process = process
             logger.info("Settings-Fenster gestartet (separater Prozess)")
 
         except Exception as e:
             logger.error(f"Settings-Fenster konnte nicht geöffnet werden: {e}")
             self._open_env_in_editor()
+
+    def _start_subprocess_stderr_drain(self, process, process_name: str) -> None:
+        """Entleert stderr-Pipes im Hintergrund, um Subprocess-Hänger zu vermeiden."""
+        thread = start_stream_drain_thread(
+            getattr(process, "stderr", None),
+            thread_name=f"pulsescribe-{process_name}-stderr-drain",
+            on_error=lambda exc: logger.debug(
+                f"{process_name} stderr-drain beendet: {exc}"
+            ),
+        )
+        if thread is not None:
+            logger.debug(f"stderr-drain aktiv: {process_name}")
 
     def _open_env_in_editor(self):
         """Öffnet die .env Datei im Standard-Editor als Fallback."""
@@ -1985,6 +2000,7 @@ class PulseScribeWindows:
                     self._show_settings()
                     return
 
+                self._start_subprocess_stderr_drain(process, "onboarding")
                 self._onboarding_process = process
                 logger.info("Onboarding-Wizard gestartet (--onboarding)")
 
@@ -2049,6 +2065,7 @@ class PulseScribeWindows:
                 self._show_settings()
                 return
 
+            self._start_subprocess_stderr_drain(process, "onboarding")
             self._onboarding_process = process
             logger.info("Onboarding-Wizard gestartet")
 
