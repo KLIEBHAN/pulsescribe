@@ -375,6 +375,10 @@ class PySide6OverlayWidget(QWidget):
         self._fade_animation.setDuration(150)  # 150ms
         # Einmalig verbinden (nicht in _fade_out, um multiple connections zu vermeiden)
         self._fade_animation.finished.connect(self._on_fade_out_finished)
+        # Reuse a single timer to avoid accumulating QObject children over long sessions.
+        self._fade_out_timer = QTimer(self)
+        self._fade_out_timer.setSingleShot(True)
+        self._fade_out_timer.timeout.connect(self._fade_out)
 
     def _fade_in(self):
         """Blendet Overlay ein."""
@@ -403,16 +407,13 @@ class PySide6OverlayWidget(QWidget):
     def _start_fade_out_timer(self):
         """Startet Timer für automatisches Ausblenden nach DONE/ERROR."""
         self._cancel_fade_out_timer()
-        self._fade_out_timer = QTimer(self)
-        self._fade_out_timer.setSingleShot(True)
-        self._fade_out_timer.timeout.connect(self._fade_out)
-        self._fade_out_timer.start(FEEDBACK_DISPLAY_MS)
+        if self._fade_out_timer:
+            self._fade_out_timer.start(FEEDBACK_DISPLAY_MS)
 
     def _cancel_fade_out_timer(self):
         """Bricht den Fade-Out Timer ab."""
         if self._fade_out_timer:
             self._fade_out_timer.stop()
-            self._fade_out_timer = None
 
     @Slot()
     def cleanup(self):
@@ -657,6 +658,7 @@ class PySide6OverlayController:
         self._interim_file = interim_file
         self._running = False
         self._last_interim_text = ""
+        self._last_interim_mtime_ns: int | None = None
         self._interim_timer: QTimer | None = None
         # Ready-Event: Wird gesetzt sobald Widget bereit ist
         self._ready_event = threading.Event()
@@ -745,13 +747,20 @@ class PySide6OverlayController:
             return
 
         if self._widget.current_state != "RECORDING":
+            self._last_interim_mtime_ns = None
             return
 
         if not self._interim_file.exists():
+            self._last_interim_mtime_ns = None
             return
 
         try:
+            current_mtime_ns = self._interim_file.stat().st_mtime_ns
+            if current_mtime_ns == self._last_interim_mtime_ns:
+                return
+
             text = self._interim_file.read_text(encoding="utf-8").strip()
+            self._last_interim_mtime_ns = current_mtime_ns
             if text and text != self._last_interim_text:
                 self._last_interim_text = text
                 self._widget.update_interim_text(text)

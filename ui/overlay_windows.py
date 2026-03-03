@@ -48,6 +48,7 @@ BAR_CORNER_RADIUS = 2  # Abgerundete Enden
 # =============================================================================
 
 FRAME_MS = 1000 // FPS  # ~16ms
+QUEUE_POLL_MS = 16  # 60Hz Polling reicht für reaktive UI, spart CPU ggü. 10ms
 
 # =============================================================================
 # Farben
@@ -106,6 +107,7 @@ class WindowsOverlayController:
         self._running = False
         self._interim_file = interim_file
         self._last_interim_text = ""
+        self._last_interim_mtime_ns: int | None = None
 
     # =========================================================================
     # Public API (thread-safe)
@@ -296,7 +298,7 @@ class WindowsOverlayController:
             pass
 
         if self._running and self._root:
-            self._root.after(10, self._poll_queue)
+            self._root.after(QUEUE_POLL_MS, self._poll_queue)
 
     def _poll_interim_file(self) -> None:
         if not self._running or not self._root or not self._interim_file:
@@ -304,7 +306,14 @@ class WindowsOverlayController:
 
         if self._state == "RECORDING" and self._interim_file.exists():
             try:
+                current_mtime_ns = self._interim_file.stat().st_mtime_ns
+                if current_mtime_ns == self._last_interim_mtime_ns:
+                    if self._running:
+                        self._root.after(200, self._poll_interim_file)
+                    return
+
                 text = self._interim_file.read_text(encoding="utf-8").strip()
+                self._last_interim_mtime_ns = current_mtime_ns
                 if text and text != self._last_interim_text:
                     self._last_interim_text = text
                     self._handle_interim_text(text)
@@ -328,6 +337,7 @@ class WindowsOverlayController:
         if state == "IDLE":
             self._root.withdraw()
             self._last_interim_text = ""
+            self._last_interim_mtime_ns = None
             self._anim = AnimationLogic()
         else:
             self._root.deiconify()
