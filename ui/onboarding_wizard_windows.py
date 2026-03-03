@@ -531,7 +531,7 @@ class OnboardingWizardWindows(QDialog):
         preset_f19.clicked.connect(lambda: self._apply_hotkey_preset("f19", None))
         presets_row.addWidget(preset_f19)
 
-        preset_ctrl_alt = QPushButton("Ctrl+Alt+R / Space")
+        preset_ctrl_alt = QPushButton("Ctrl+Alt+R / Ctrl+Alt+Space")
         preset_ctrl_alt.clicked.connect(
             lambda: self._apply_hotkey_preset("ctrl+alt+r", "ctrl+alt+space")
         )

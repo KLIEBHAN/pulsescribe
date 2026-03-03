@@ -227,6 +227,7 @@ class PulseScribeWindows:
         # State
         self._state = AppState.IDLE
         self._state_lock = threading.Lock()
+        self._state_generation = 0  # Inkrementiert bei jedem State-Update
         self._last_hotkey_time = 0.0  # Für Debouncing
 
         # Hold-Mode State (wie macOS)
@@ -307,8 +308,10 @@ class PulseScribeWindows:
         with self._state_lock:
             old_state = self._state
             self._state = state
+            self._state_generation += 1
 
-        if old_state != state:
+        state_changed = old_state != state
+        if state_changed:
             logger.info(f"State: {old_state.value} → {state.value}")
             self._update_tray_icon()
 
@@ -318,9 +321,24 @@ class PulseScribeWindows:
             elif state in (AppState.DONE, AppState.ERROR, AppState.IDLE):
                 self._stop_transcribing_watchdog()
 
-            # Overlay aktualisieren
-            if self._overlay:
-                self._overlay.update_state(state.name, text)
+        # Overlay bei State-Wechsel oder Text-Update aktualisieren.
+        if self._overlay and (state_changed or text is not None):
+            self._overlay.update_state(state.name, text)
+
+    def _schedule_idle_if_state_unchanged(self, delay_seconds: float) -> None:
+        """Setzt State nach Delay nur auf IDLE, wenn es keinen Zwischenwechsel gab."""
+        with self._state_lock:
+            expected_generation = self._state_generation
+
+        def _set_idle_if_unchanged() -> None:
+            with self._state_lock:
+                if self._state_generation != expected_generation:
+                    return
+            self._set_state(AppState.IDLE)
+
+        timer = threading.Timer(delay_seconds, _set_idle_if_unchanged)
+        timer.daemon = True
+        timer.start()
 
     def _start_transcribing_watchdog(self):
         """Startet Watchdog-Timer für hängende Transcription."""
@@ -333,7 +351,7 @@ class PulseScribeWindows:
                 )
                 self._set_state(AppState.ERROR)
                 self._play_sound("error")
-                threading.Timer(2.0, lambda: self._set_state(AppState.IDLE)).start()
+                self._schedule_idle_if_state_unchanged(2.0)
 
         self._transcribing_watchdog = threading.Timer(
             self._transcribing_timeout, timeout_handler
@@ -1171,7 +1189,7 @@ class PulseScribeWindows:
             self._ipc_test_cmd_id = None  # Reset for next test
 
             # Nach kurzer Pause zurück zu IDLE
-            threading.Timer(1.0, lambda: self._set_state(AppState.IDLE)).start()
+            self._schedule_idle_if_state_unchanged(1.0)
             return
 
         self._save_to_history(transcript)
@@ -1189,7 +1207,7 @@ class PulseScribeWindows:
             logger.info("Text in Zwischenablage kopiert")
 
         # Nach kurzer Pause zurück zu IDLE (Timer statt sleep, blockiert Thread nicht)
-        threading.Timer(1.0, lambda: self._set_state(AppState.IDLE)).start()
+        self._schedule_idle_if_state_unchanged(1.0)
 
     def _setup_hotkey(self):
         """Richtet globale Hotkeys ein (Toggle und/oder Hold-Mode)."""

@@ -487,7 +487,7 @@ class SettingsWindow(QDialog):
 
         for preset_name, toggle_val, hold_val in [
             ("F19 Toggle", "f19", ""),
-            ("Ctrl+Alt+R / Space", "ctrl+alt+r", "ctrl+alt+space"),
+            ("Ctrl+Alt+R / Ctrl+Alt+Space", "ctrl+alt+r", "ctrl+alt+space"),
             ("F13 Toggle", "f13", ""),
         ]:
             btn = QPushButton(preset_name)
