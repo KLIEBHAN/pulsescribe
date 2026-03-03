@@ -12,6 +12,7 @@ Inspiriert vom macOS-Overlay mit:
 
 import logging
 import queue
+import sys
 import time
 import tkinter as tk
 from pathlib import Path
@@ -22,7 +23,6 @@ from ui.animation import (
     BAR_WIDTH,
     BAR_GAP,
     BAR_MIN_HEIGHT,
-    BAR_MAX_HEIGHT,
     FPS,
 )
 
@@ -38,17 +38,12 @@ WINDOW_CORNER_RADIUS = 16
 WINDOW_MARGIN_BOTTOM = 60  # Abstand vom unteren Bildschirmrand
 
 # =============================================================================
-# Bar-Konstanten (ähnlich macOS)
-# =============================================================================
-
-BAR_CORNER_RADIUS = 2  # Abgerundete Enden
-
-# =============================================================================
 # Animation-Konstanten
 # =============================================================================
 
 FRAME_MS = 1000 // FPS  # ~16ms
-QUEUE_POLL_MS = 16  # 60Hz Polling reicht für reaktive UI, spart CPU ggü. 10ms
+QUEUE_POLL_ACTIVE_MS = 16  # 60Hz während Overlay sichtbar/aktiv
+QUEUE_POLL_IDLE_MS = 50  # Weniger CPU-Last im Idle
 
 # =============================================================================
 # Farben
@@ -162,12 +157,8 @@ class WindowsOverlayController:
         self._root.attributes("-alpha", 0.95)
         self._root.configure(bg=BG_COLOR)
 
-        # Position: bottom-center
-        screen_w = self._root.winfo_screenwidth()
-        screen_h = self._root.winfo_screenheight()
-        x = (screen_w - WINDOW_WIDTH) // 2
-        y = screen_h - WINDOW_HEIGHT - WINDOW_MARGIN_BOTTOM
-        self._root.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}+{x}+{y}")
+        # Position: bottom-center (primär)
+        self._position_window(use_active_monitor=False)
 
         # Main Canvas (für abgerundeten Hintergrund + Bars)
         self._canvas = tk.Canvas(
@@ -291,9 +282,11 @@ class WindowsOverlayController:
     # =========================================================================
 
     def _poll_queue(self) -> None:
+        processed_message = False
         try:
             while True:
                 msg_type, value, text = self._queue.get_nowait()
+                processed_message = True
                 if msg_type == "state":
                     self._handle_state_change(value, text)
                 elif msg_type == "level":
@@ -304,7 +297,12 @@ class WindowsOverlayController:
             pass
 
         if self._running and self._root:
-            self._root.after(QUEUE_POLL_MS, self._poll_queue)
+            poll_ms = (
+                QUEUE_POLL_ACTIVE_MS
+                if self._state != "IDLE" or processed_message
+                else QUEUE_POLL_IDLE_MS
+            )
+            self._root.after(poll_ms, self._poll_queue)
 
     def _poll_interim_file(self) -> None:
         if not self._running or not self._root or not self._interim_file:
@@ -346,6 +344,9 @@ class WindowsOverlayController:
             self._last_interim_mtime_ns = None
             self._anim = AnimationLogic()
         else:
+            if prev_state == "IDLE":
+                # Bei Start auf Monitor des aktiven Fensters zentrieren.
+                self._position_window(use_active_monitor=True)
             self._root.deiconify()
             display_text = text or STATE_TEXTS.get(state, "")
             label_color = (
@@ -374,6 +375,83 @@ class WindowsOverlayController:
             font=("Segoe UI", 10, "italic"),
             fg="#909090",
         )
+
+    def _position_window(self, use_active_monitor: bool) -> None:
+        if not self._root:
+            return
+
+        work_area = (
+            self._get_active_monitor_work_area()
+            if use_active_monitor
+            else None
+        )
+        if work_area is None:
+            work_area = self._get_primary_work_area()
+
+        left, top, width, height = work_area
+        x = left + (width - WINDOW_WIDTH) // 2
+        y = top + height - WINDOW_HEIGHT - WINDOW_MARGIN_BOTTOM
+        self._root.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}+{x}+{y}")
+
+    def _get_primary_work_area(self) -> tuple[int, int, int, int]:
+        if not self._root:
+            return 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT
+        return (
+            0,
+            0,
+            int(self._root.winfo_screenwidth()),
+            int(self._root.winfo_screenheight()),
+        )
+
+    def _get_active_monitor_work_area(self) -> tuple[int, int, int, int] | None:
+        if sys.platform != "win32":
+            return None
+
+        try:
+            from ctypes import wintypes
+            import ctypes
+
+            user32 = ctypes.windll.user32
+
+            class RECT(ctypes.Structure):
+                _fields_ = [
+                    ("left", wintypes.LONG),
+                    ("top", wintypes.LONG),
+                    ("right", wintypes.LONG),
+                    ("bottom", wintypes.LONG),
+                ]
+
+            class MONITORINFO(ctypes.Structure):
+                _fields_ = [
+                    ("cbSize", wintypes.DWORD),
+                    ("rcMonitor", RECT),
+                    ("rcWork", RECT),
+                    ("dwFlags", wintypes.DWORD),
+                ]
+
+            MONITOR_DEFAULTTONEAREST = 2
+            hwnd = user32.GetForegroundWindow()
+            if not hwnd:
+                return None
+
+            monitor = user32.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
+            if not monitor:
+                return None
+
+            monitor_info = MONITORINFO()
+            monitor_info.cbSize = ctypes.sizeof(MONITORINFO)
+            if not user32.GetMonitorInfoW(monitor, ctypes.byref(monitor_info)):
+                return None
+
+            work = monitor_info.rcWork
+            return (
+                int(work.left),
+                int(work.top),
+                int(work.right - work.left),
+                int(work.bottom - work.top),
+            )
+        except Exception:
+            return None
 
     # =========================================================================
     # Animation
@@ -436,8 +514,6 @@ class WindowsOverlayController:
 
         y1 = center_y - height / 2
         y2 = center_y + height / 2
-        r = min(width / 2, height / 2, BAR_CORNER_RADIUS)
-
         # Wenn sehr klein, einfaches Oval
         if height <= width:
             self._canvas.create_oval(
