@@ -58,6 +58,16 @@ class _FakeButton:
         self.enabled = enabled
 
 
+class _FakePlainText:
+    def __init__(self, value: str = ""):
+        self.value = value
+        self.clear_calls = 0
+
+    def clear(self) -> None:
+        self.value = ""
+        self.clear_calls += 1
+
+
 class _FakeKeyEvent:
     def __init__(
         self,
@@ -397,6 +407,41 @@ def test_start_ipc_test_disables_stop_button_until_recording_ack():
     assert commands == ["start_test"]
     assert wizard._test_stop_btn.visible is True
     assert wizard._test_stop_btn.enabled is False
+
+
+def test_start_ipc_test_clears_previous_transcript():
+    commands: list[str] = []
+
+    class _FakeIPCClient:
+        def send_command(self, command: str) -> str:
+            commands.append(command)
+            return "cmd-1"
+
+    transcript = _FakePlainText("stale text")
+
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+    wizard._ipc_test_cmd_id = None
+    wizard._ipc_client = _FakeIPCClient()
+    wizard._ipc_poll_timer = types.SimpleNamespace(
+        start=lambda _ms: None,
+        stop=lambda: None,
+    )
+    wizard._ipc_seen_recording = False
+    wizard._ipc_stop_requested = False
+    wizard._ipc_recording_polls_after_stop = 0
+    wizard._ipc_last_status = None
+    wizard._test_status_label = _FakeLabel()
+    wizard._test_start_btn = _FakeButton()
+    wizard._test_stop_btn = _FakeButton()
+    wizard._test_notice = _FakeLabel()
+    wizard._test_transcript = transcript
+    wizard._set_test_status = lambda *_args, **_kwargs: None
+
+    wizard._start_ipc_test()
+
+    assert commands == ["start_test"]
+    assert transcript.value == ""
+    assert transcript.clear_calls == 1
 
 
 def test_cancel_ipc_test_if_running_sends_stop_command():

@@ -836,6 +836,11 @@ class OnboardingWizardWindows(QDialog):
         if self._ipc_client is None:
             self._ipc_client = IPCClient()
 
+        # Vorherigen Testinhalt löschen, damit keine stale Ergebnisse sichtbar bleiben.
+        transcript_field = getattr(self, "_test_transcript", None)
+        if transcript_field:
+            transcript_field.clear()
+
         self._ipc_test_cmd_id = self._ipc_client.send_command(CMD_START_TEST)
         self._ipc_poll_count = 0
         self._ipc_seen_recording = False

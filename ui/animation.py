@@ -103,6 +103,20 @@ class AnimationLogic:
 
     def update_level(self, target_level: float):
         """Updates and smoothes the audio level."""
+        # Defensiv gegen fehlerhafte Audio-Callbacks (NaN/Inf/None/out-of-range),
+        # damit die Overlay-Animation nicht in einen invaliden Zustand kippt.
+        if not isinstance(target_level, (int, float)):
+            target_level = 0.0
+        elif not math.isfinite(target_level):
+            target_level = 0.0
+        else:
+            target_level = max(0.0, min(1.0, float(target_level)))
+
+        if not math.isfinite(self._smoothed_level):
+            self._smoothed_level = 0.0
+        if not math.isfinite(self._level_smoothed):
+            self._level_smoothed = 0.0
+
         # First layer smoothing
         alpha = (
             SMOOTHING_ALPHA_RISE
@@ -121,6 +135,11 @@ class AnimationLogic:
 
     def update_agc(self):
         """Updates Adaptive Gain Control logic."""
+        if not math.isfinite(self._level_smoothed):
+            self._level_smoothed = 0.0
+        if not math.isfinite(self._agc_peak):
+            self._agc_peak = AGC_MIN_PEAK
+
         gated = max(self._level_smoothed - VISUAL_NOISE_GATE, 0.0)
 
         if gated > self._agc_peak:

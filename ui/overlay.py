@@ -288,6 +288,9 @@ class SoundWaveView:
             self.set_bar_color(self._color_recording)
 
     def _compute_target_level(self, rms: float) -> float:
+        if not isinstance(rms, (int, float)) or not math.isfinite(rms):
+            rms = 0.0
+
         # Noise Gate: sehr leise Pegel ignorieren, darüber linearisieren.
         gated = max(rms - VISUAL_NOISE_GATE, 0.0)
 
