@@ -399,6 +399,40 @@ def test_start_ipc_test_disables_stop_button_until_recording_ack():
     assert wizard._test_stop_btn.enabled is False
 
 
+def test_cancel_ipc_test_if_running_sends_stop_command():
+    commands: list[str] = []
+
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+    wizard._ipc_client = types.SimpleNamespace(
+        send_command=lambda cmd: commands.append(cmd)
+    )
+    wizard._ipc_test_cmd_id = "cmd-1"
+
+    wizard._cancel_ipc_test_if_running()
+
+    assert commands == ["stop_test"]
+
+
+def test_show_step_leaving_test_requests_ipc_cancel():
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+    wizard._step = OnboardingStep.TEST_DICTATION
+    wizard._mic_timer = None
+    wizard._persist_progress = False
+    wizard._progress_label = None
+    wizard._stack = types.SimpleNamespace(setCurrentIndex=lambda _idx: None)
+    wizard._update_navigation = lambda: None
+
+    cancel_calls: list[bool] = []
+    stop_calls: list[bool] = []
+    wizard._cancel_ipc_test_if_running = lambda: cancel_calls.append(True)
+    wizard._stop_ipc_polling = lambda: stop_calls.append(True)
+
+    wizard._show_step(OnboardingStep.HOTKEY)
+
+    assert cancel_calls == [True]
+    assert stop_calls == [True]
+
+
 def test_stop_ipc_test_requires_recording_ack_before_sending_command():
     commands: list[str] = []
     statuses: list[tuple[str, str]] = []
@@ -531,3 +565,43 @@ def test_poll_ipc_response_repeated_recording_status_avoids_repainting():
     assert wizard._ipc_poll_count == 0
     assert wizard._ipc_seen_recording is True
     assert wizard._test_stop_btn.enabled is True
+
+
+def test_poll_ipc_response_stopped_resets_ui_and_sets_status():
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+    wizard._ipc_test_cmd_id = "cmd-1"
+    wizard._ipc_client = types.SimpleNamespace(
+        poll_response=lambda _cmd_id: {"status": "stopped"},
+        clear_response=lambda: None,
+    )
+    wizard._ipc_poll_timer = types.SimpleNamespace(stop=lambda: None)
+    wizard._ipc_poll_count = 0
+    wizard._ipc_seen_recording = True
+    wizard._ipc_stop_requested = True
+    wizard._ipc_recording_polls_after_stop = 0
+    wizard._ipc_last_status = "recording"
+
+    reset_calls: list[bool] = []
+    status_updates: list[tuple[str, str]] = []
+    wizard._reset_test_ui = lambda: reset_calls.append(True)
+    wizard._set_test_status = lambda text, color: status_updates.append((text, color))
+
+    wizard._poll_ipc_response()
+
+    assert reset_calls == [True]
+    assert status_updates == [("Aufnahme gestoppt.", "text_secondary")]
+    assert wizard._ipc_test_cmd_id is None
+
+
+def test_reset_test_ui_hides_notice():
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+    wizard._test_start_btn = _FakeButton()
+    wizard._test_stop_btn = _FakeButton()
+    wizard._test_notice = _FakeLabel()
+    wizard._test_notice.visible = True
+
+    wizard._reset_test_ui()
+
+    assert wizard._test_start_btn.visible is True
+    assert wizard._test_stop_btn.visible is False
+    assert wizard._test_notice.visible is False

@@ -1040,11 +1040,8 @@ class SettingsWindow(QDialog):
         scroll.setWidget(content)
 
         # Auto-Refresh Timer
-        self._logs_refresh_timer = QTimer()
+        self._logs_refresh_timer = QTimer(self)
         self._logs_refresh_timer.timeout.connect(self._refresh_logs)
-
-        # Initial load
-        self._refresh_logs()
 
         return scroll
 

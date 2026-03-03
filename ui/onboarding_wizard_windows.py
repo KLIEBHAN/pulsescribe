@@ -702,6 +702,7 @@ class OnboardingWizardWindows(QDialog):
             self._step == OnboardingStep.TEST_DICTATION
             and step != OnboardingStep.TEST_DICTATION
         ):
+            self._cancel_ipc_test_if_running()
             self._stop_ipc_polling()
 
         self._step = step
@@ -858,6 +859,18 @@ class OnboardingWizardWindows(QDialog):
 
         logger.debug(f"IPC test started (cmd_id={self._ipc_test_cmd_id})")
 
+    def _cancel_ipc_test_if_running(self) -> None:
+        """Best-effort stop request when leaving test dictation unexpectedly."""
+        if not self._ipc_client or not self._ipc_test_cmd_id:
+            return
+
+        try:
+            from utils.ipc import CMD_STOP_TEST
+
+            self._ipc_client.send_command(CMD_STOP_TEST)
+        except Exception as e:
+            logger.debug(f"IPC stop request on cleanup failed: {e}")
+
     def _stop_ipc_test(self) -> None:
         """Stop test dictation via IPC."""
         from utils.ipc import CMD_STOP_TEST
@@ -948,6 +961,7 @@ class OnboardingWizardWindows(QDialog):
         elif status == STATUS_STOPPED:
             self._stop_ipc_polling()
             self._reset_test_ui()
+            self._set_test_status("Aufnahme gestoppt.", "text_secondary")
 
     def _stop_ipc_polling(self) -> None:
         """Stop polling and clean up IPC state."""
@@ -1007,6 +1021,8 @@ class OnboardingWizardWindows(QDialog):
         if self._test_stop_btn:
             self._test_stop_btn.setVisible(False)
             self._test_stop_btn.setEnabled(True)
+        if self._test_notice:
+            self._test_notice.setVisible(False)
 
     def _complete(self) -> None:
         """Complete the wizard."""
@@ -1126,15 +1142,14 @@ class OnboardingWizardWindows(QDialog):
     # -------------------------------------------------------------------------
 
     def _start_mic_check(self) -> None:
-        """Start periodic microphone permission check."""
+        """Update mic status once for the current step.
+
+        On Windows we do not have a reliable read-only API for microphone
+        permissions, so periodic polling only causes unnecessary UI wakeups.
+        """
         self._check_mic_permission()
-
-        if self._mic_timer is None:
-            self._mic_timer = QTimer(self)
-            self._mic_timer.timeout.connect(self._check_mic_permission)
-
-        timer = self._mic_timer
-        timer.start(2000)  # Check every 2 seconds
+        if self._mic_timer:
+            self._mic_timer.stop()
 
     def _check_mic_permission(self) -> None:
         """Check microphone permission status."""
@@ -1595,6 +1610,7 @@ class OnboardingWizardWindows(QDialog):
         """Handle window close."""
         self._is_closed = True
         self._stop_hotkey_recording()
+        self._cancel_ipc_test_if_running()
         self._stop_ipc_polling()
         if self._mic_timer:
             self._mic_timer.stop()
@@ -1604,6 +1620,7 @@ class OnboardingWizardWindows(QDialog):
         """Handle ESC key or Cancel - ensures proper cleanup."""
         self._is_closed = True
         self._stop_hotkey_recording()
+        self._cancel_ipc_test_if_running()
         self._stop_ipc_polling()
         if self._mic_timer:
             self._mic_timer.stop()
