@@ -1397,6 +1397,11 @@ class OnboardingWizardWindows(QDialog):
 
     def _clear_hotkey(self, field: str) -> None:
         """Clear a hotkey."""
+        # Falls gerade eine Aufnahme läuft, zuerst sauber abbrechen
+        # (Listener/Keyboard-Grab), bevor der Wert geleert wird.
+        if self._recording_field:
+            self._stop_hotkey_recording(save=False)
+
         if field == "toggle":
             if self._toggle_input:
                 self._toggle_input.setText("")
@@ -1406,6 +1411,7 @@ class OnboardingWizardWindows(QDialog):
                 self._hold_input.setText("")
             remove_env_setting("PULSESCRIBE_HOLD_HOTKEY")
 
+        self._set_hotkey_status("Hotkey entfernt", "text_secondary")
         self.settings_changed.emit()
         self._refresh_test_hotkey_label()
         self._update_navigation()

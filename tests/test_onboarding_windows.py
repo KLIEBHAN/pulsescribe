@@ -373,6 +373,62 @@ def test_stop_hotkey_recording_releases_qt_grab(monkeypatch):
     assert wizard._using_qt_grab is False
 
 
+def test_clear_hotkey_stops_active_recording_before_clearing(monkeypatch):
+    import ui.onboarding_wizard_windows as wizard_mod
+
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+    wizard._recording_field = "toggle"
+    wizard._toggle_input = _FakeField("ctrl+alt+r")
+    wizard._hold_input = _FakeField("ctrl+win")
+    wizard._hotkey_status_label = _FakeLabel()
+
+    stop_calls: list[bool] = []
+    emitted: list[bool] = []
+    refreshed: list[bool] = []
+    updated: list[bool] = []
+    removed_keys: list[str] = []
+
+    wizard._stop_hotkey_recording = lambda save=False: stop_calls.append(save)
+    wizard.settings_changed = types.SimpleNamespace(emit=lambda: emitted.append(True))
+    wizard._refresh_test_hotkey_label = lambda: refreshed.append(True)
+    wizard._update_navigation = lambda: updated.append(True)
+
+    monkeypatch.setattr(
+        wizard_mod,
+        "remove_env_setting",
+        lambda key: removed_keys.append(key),
+    )
+
+    wizard._clear_hotkey("toggle")
+
+    assert stop_calls == [False]
+    assert wizard._toggle_input.text() == ""
+    assert wizard._hold_input.text() == "ctrl+win"
+    assert removed_keys == ["PULSESCRIBE_TOGGLE_HOTKEY"]
+    assert emitted == [True]
+    assert refreshed == [True]
+    assert updated == [True]
+
+
+def test_clear_hotkey_updates_status_feedback(monkeypatch):
+    import ui.onboarding_wizard_windows as wizard_mod
+
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+    wizard._recording_field = None
+    wizard._toggle_input = _FakeField("ctrl+alt+r")
+    wizard._hold_input = _FakeField("")
+    wizard._hotkey_status_label = _FakeLabel()
+    wizard.settings_changed = types.SimpleNamespace(emit=lambda: None)
+    wizard._refresh_test_hotkey_label = lambda: None
+    wizard._update_navigation = lambda: None
+
+    monkeypatch.setattr(wizard_mod, "remove_env_setting", lambda _key: None)
+
+    wizard._clear_hotkey("toggle")
+
+    assert "Hotkey entfernt" in wizard._hotkey_status_label.text
+
+
 def test_start_ipc_test_ignores_duplicate_start():
     wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
     wizard._ipc_test_cmd_id = "running"
