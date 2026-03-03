@@ -49,6 +49,7 @@ from utils.preferences import (
     set_onboarding_step,
     set_show_welcome_on_startup,
 )
+from utils.local_backend import normalize_local_backend, should_remove_local_backend_env
 from utils.onboarding import OnboardingStep
 
 logger = logging.getLogger("pulsescribe.settings")
@@ -66,7 +67,7 @@ SETTINGS_HEIGHT = 700
 
 MODE_OPTIONS = ["deepgram", "openai", "groq", "local"]
 REFINE_PROVIDER_OPTIONS = ["groq", "openai", "openrouter", "gemini"]
-LOCAL_BACKEND_OPTIONS = ["whisper", "faster", "mlx", "lightning", "auto"]
+LOCAL_BACKEND_OPTIONS = ["auto", "whisper", "faster", "mlx", "lightning"]
 LOCAL_MODEL_OPTIONS = [
     "default",
     "turbo",
@@ -640,10 +641,10 @@ class SettingsWindow(QDialog):
 
         # CPU Threads
         self._cpu_threads_field = QLineEdit()
-        self._cpu_threads_field.setPlaceholderText("auto")
-        self._cpu_threads_field.setValidator(QIntValidator(1, 32))
+        self._cpu_threads_field.setPlaceholderText("0 = auto")
+        self._cpu_threads_field.setValidator(QIntValidator(0, 32))
         card_layout.addLayout(
-            create_label_row("CPU Threads:", self._cpu_threads_field, "1-32")
+            create_label_row("CPU Threads:", self._cpu_threads_field, "0-32 (0=auto)")
         )
 
         # Num Workers
@@ -1732,7 +1733,7 @@ class SettingsWindow(QDialog):
                 self._lang_combo.setCurrentIndex(idx)
 
         # Local Backend
-        backend = get_env_setting("PULSESCRIBE_LOCAL_BACKEND") or "whisper"
+        backend = normalize_local_backend(get_env_setting("PULSESCRIBE_LOCAL_BACKEND"))
         if self._local_backend_combo:
             idx = self._local_backend_combo.findText(backend)
             if idx >= 0:
@@ -1905,8 +1906,8 @@ class SettingsWindow(QDialog):
 
             # Local Backend
             if self._local_backend_combo:
-                backend = self._local_backend_combo.currentText()
-                if backend == "whisper":
+                backend = normalize_local_backend(self._local_backend_combo.currentText())
+                if should_remove_local_backend_env(backend):
                     remove_env_setting("PULSESCRIBE_LOCAL_BACKEND")
                 else:
                     save_env_setting("PULSESCRIBE_LOCAL_BACKEND", backend)

@@ -10,6 +10,7 @@ from config import LOG_FILE
 from ui.hotkey_card import HotkeyCard
 from utils.env import parse_bool
 from utils.hotkey_recording import HotkeyRecorder
+from utils.local_backend import normalize_local_backend, should_remove_local_backend_env
 from utils.presets import LOCAL_PRESET_BASE, LOCAL_PRESETS, LOCAL_PRESET_OPTIONS
 from utils.preferences import (
     apply_hotkey_setting,
@@ -37,7 +38,7 @@ CARD_SPACING = 12
 MODE_OPTIONS = ["deepgram", "openai", "groq", "local"]
 REFINE_PROVIDER_OPTIONS = ["groq", "openai", "openrouter", "gemini"]
 LANGUAGE_OPTIONS = ["auto", "de", "en", "es", "fr", "it", "pt", "nl", "pl", "ru", "zh"]
-LOCAL_BACKEND_OPTIONS = ["whisper", "faster", "mlx", "lightning", "auto"]
+LOCAL_BACKEND_OPTIONS = ["auto", "whisper", "faster", "mlx", "lightning"]
 LOCAL_MODEL_OPTIONS = [
     "default",
     "turbo",  # Multilingual, best speed/quality
@@ -1065,9 +1066,11 @@ class WelcomeController:
         local_backend_popup.setFont_(NSFont.systemFontOfSize_(11))
         for backend in LOCAL_BACKEND_OPTIONS:
             local_backend_popup.addItemWithTitle_(backend)
-        current_backend = get_env_setting("PULSESCRIBE_LOCAL_BACKEND") or "whisper"
+        current_backend = normalize_local_backend(
+            get_env_setting("PULSESCRIBE_LOCAL_BACKEND")
+        )
         if current_backend not in LOCAL_BACKEND_OPTIONS:
-            current_backend = "whisper"
+            current_backend = "auto"
         local_backend_popup.selectItemWithTitle_(current_backend)
         self._local_backend_popup = local_backend_popup
         parent_view.addSubview_(local_backend_popup)
@@ -2852,8 +2855,10 @@ class WelcomeController:
 
         # Local Backend
         if self._local_backend_popup:
-            backend = self._local_backend_popup.titleOfSelectedItem()
-            if backend == "whisper":
+            backend = normalize_local_backend(
+                self._local_backend_popup.titleOfSelectedItem()
+            )
+            if should_remove_local_backend_env(backend):
                 remove_env_setting("PULSESCRIBE_LOCAL_BACKEND")
             elif backend:
                 save_env_setting("PULSESCRIBE_LOCAL_BACKEND", backend)
