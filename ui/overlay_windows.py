@@ -117,7 +117,13 @@ class WindowsOverlayController:
         self._queue.put(("state", state, text))
 
     def update_audio_level(self, level: float) -> None:
-        self._queue.put(("level", level, None))
+        """Aktualisiert Audio-Level ohne Queue-Druck.
+
+        Audio-Level wird sehr häufig aktualisiert (pro Audio-Callback). Das
+        direkte Setzen vermeidet Queue-Wachstum im Tkinter-Fallback und hält
+        die Animation bei längerer Laufzeit stabil.
+        """
+        self._audio_level = level
 
     def update_interim_text(self, text: str) -> None:
         self._queue.put(("interim", text, None))
@@ -342,10 +348,15 @@ class WindowsOverlayController:
         else:
             self._root.deiconify()
             display_text = text or STATE_TEXTS.get(state, "")
+            label_color = (
+                STATE_COLORS.get(state, "white")
+                if state in ("DONE", "ERROR")
+                else "white"
+            )
             self._label.config(
                 text=display_text,
                 font=("Segoe UI", 11),
-                fg="white",
+                fg=label_color,
             )
 
         if state != prev_state:
