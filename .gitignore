@@ -24,6 +24,7 @@ Thumbs.db
 
 # Claude Code
 .claude/
+.tmp/
 
 # Whisper models (large files)
 *.pt
