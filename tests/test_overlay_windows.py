@@ -163,3 +163,29 @@ def test_poll_queue_uses_active_interval_when_overlay_visible():
     controller._poll_queue()
 
     assert controller._root.after_calls[-1] == QUEUE_POLL_ACTIVE_MS
+
+
+def test_animate_stops_loop_while_idle():
+    controller = WindowsOverlayController.__new__(WindowsOverlayController)
+    controller._running = True
+    controller._root = _FakeRoot()
+    controller._state = "IDLE"
+    controller._animation_running = True
+
+    controller._animate()
+
+    assert controller._animation_running is False
+    assert controller._root.after_calls == []
+
+
+def test_handle_state_change_restarts_animation_loop_when_overlay_becomes_active():
+    controller = WindowsOverlayController()
+    controller._root = _FakeRoot()
+    controller._label = _FakeLabel()
+
+    starts: list[bool] = []
+    controller._start_animation_loop = lambda: starts.append(True)
+
+    controller._handle_state_change("RECORDING", None)
+
+    assert starts == [True]

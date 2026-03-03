@@ -97,6 +97,7 @@ class WindowsOverlayController:
 
         # Animation timing
         self._animation_start = time.perf_counter()
+        self._animation_running = False
 
         self._queue: queue.Queue = queue.Queue()
         self._running = False
@@ -130,7 +131,7 @@ class WindowsOverlayController:
         self._running = True
         self._animation_start = time.perf_counter()
         self._poll_queue()
-        self._animate()
+        self._start_animation_loop()
         if self._interim_file:
             self._poll_interim_file()
         self._root.mainloop()
@@ -347,6 +348,7 @@ class WindowsOverlayController:
             if prev_state == "IDLE":
                 # Bei Start auf Monitor des aktiven Fensters zentrieren.
                 self._position_window(use_active_monitor=True)
+            self._start_animation_loop()
             self._root.deiconify()
             display_text = text or STATE_TEXTS.get(state, "")
             label_color = (
@@ -457,12 +459,19 @@ class WindowsOverlayController:
     # Animation
     # =========================================================================
 
+    def _start_animation_loop(self) -> None:
+        if self._animation_running:
+            return
+        self._animation_running = True
+        self._animate()
+
     def _animate(self) -> None:
         if not self._running or not self._root:
+            self._animation_running = False
             return
 
         if self._state == "IDLE":
-            self._root.after(100, self._animate)
+            self._animation_running = False
             return
 
         # Zeit seit Animation-Start
