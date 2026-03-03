@@ -73,5 +73,7 @@ def test_poll_interim_file_uses_mtime_cache(tmp_path):
 
     controller._widget.current_state = "IDLE"
     controller._last_interim_mtime_ns = 123
+    controller._last_interim_text = "stale"
     PySide6OverlayController._poll_interim_file(controller)
     assert controller._last_interim_mtime_ns is None
+    assert controller._last_interim_text == ""

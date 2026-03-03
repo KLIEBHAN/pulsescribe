@@ -1,4 +1,5 @@
 import pytest
+import threading
 
 pytest.importorskip("PySide6")
 
@@ -17,6 +18,18 @@ class _FakeField:
 
 
 class _FakeLabel:
+    def __init__(self):
+        self.text = ""
+        self.style = ""
+
+    def setText(self, text: str) -> None:
+        self.text = text
+
+    def setStyleSheet(self, style: str) -> None:
+        self.style = style
+
+
+class _FakeButton:
     def __init__(self):
         self.text = ""
         self.style = ""
@@ -71,3 +84,29 @@ def test_validate_hotkeys_for_save_rejects_modifier_only_hotkeys():
 
     assert result is None
     assert "non-modifier" in window._hotkey_status.text.lower()
+
+
+def test_start_hotkey_recording_stops_previous_capture():
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._recording_hotkey_for = "toggle"
+    window._pressed_keys = {"ctrl", "r"}
+    window._pressed_keys_lock = threading.Lock()
+    window._toggle_record_btn = _FakeButton()
+    window._hold_record_btn = _FakeButton()
+
+    stop_calls: list[bool] = []
+    start_calls: list[bool] = []
+
+    window._stop_pynput_listener = lambda: stop_calls.append(True)
+    window._start_pynput_listener = lambda: start_calls.append(True)
+    window._set_hotkey_status = lambda *_args, **_kwargs: None
+    window.setFocus = lambda: None
+
+    SettingsWindow._start_hotkey_recording(window, "hold")
+
+    assert stop_calls == [True]
+    assert start_calls == [True]
+    assert window._recording_hotkey_for == "hold"
+    assert window._pressed_keys == set()
+    assert window._toggle_record_btn.text == "Record"
+    assert window._hold_record_btn.text == "Press key..."

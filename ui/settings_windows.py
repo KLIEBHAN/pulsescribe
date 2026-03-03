@@ -1149,8 +1149,21 @@ class SettingsWindow(QDialog):
 
     def _start_hotkey_recording(self, kind: str):
         """Startet Hotkey-Recording für toggle oder hold."""
+        # Defensive cleanup: ensure previous low-level capture is fully stopped
+        # before starting a new recording session.
+        self._stop_pynput_listener()
         self._recording_hotkey_for = kind
-        self._pressed_keys.clear()
+        with self._pressed_keys_lock:
+            self._pressed_keys.clear()
+
+        # Beide Buttons zunächst zurücksetzen (wichtig beim Wechsel zwischen
+        # Toggle/Hold ohne vorherige Bestätigung).
+        if hasattr(self, "_toggle_record_btn"):
+            self._toggle_record_btn.setText("Record")
+            self._toggle_record_btn.setStyleSheet("")
+        if hasattr(self, "_hold_record_btn"):
+            self._hold_record_btn.setText("Record")
+            self._hold_record_btn.setStyleSheet("")
 
         # Button-Text ändern
         if kind == "toggle" and hasattr(self, "_toggle_record_btn"):
@@ -2436,10 +2449,10 @@ class SettingsWindow(QDialog):
         if hasattr(self, "_logs_refresh_timer"):
             self._logs_refresh_timer.stop()
 
-        # pynput Listener und Keyboard Grab stoppen falls Recording aktiv
-        if hasattr(self, "_recording_hotkey_for") and self._recording_hotkey_for:
-            self._stop_pynput_listener()
-            self._recording_hotkey_for = None
+        # pynput Listener und Keyboard Grab immer stoppen (auch defensive
+        # Absicherung falls Capture-Backend aktiv blieb).
+        self._stop_pynput_listener()
+        self._recording_hotkey_for = None
 
         self.closed.emit()
         super().closeEvent(event)

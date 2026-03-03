@@ -748,10 +748,12 @@ class PySide6OverlayController:
 
         if self._widget.current_state != "RECORDING":
             self._last_interim_mtime_ns = None
+            self._last_interim_text = ""
             return
 
         if not self._interim_file.exists():
             self._last_interim_mtime_ns = None
+            self._last_interim_text = ""
             return
 
         try:
