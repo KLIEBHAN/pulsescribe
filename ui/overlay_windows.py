@@ -46,6 +46,7 @@ FRAME_MS_ACTIVE = 1000 // 30  # 30 FPS für nicht-kritische Animationen
 FRAME_MS_FEEDBACK = 1000 // 20  # 20 FPS für kurze DONE/ERROR-Phase
 QUEUE_POLL_ACTIVE_MS = 16  # 60Hz während Overlay sichtbar/aktiv
 QUEUE_POLL_IDLE_MS = 50  # Weniger CPU-Last im Idle
+INTERIM_QUEUE_BACKPRESSURE_LIMIT = 120
 
 # =============================================================================
 # Farben
@@ -124,6 +125,14 @@ class WindowsOverlayController:
         self._audio_level = level
 
     def update_interim_text(self, text: str) -> None:
+        # Bei hoher Last ältere Interim-Updates verwerfen, damit State-Updates
+        # (DONE/ERROR) nicht durch veraltete Text-Events ausgebremst werden.
+        try:
+            if self._queue.qsize() >= INTERIM_QUEUE_BACKPRESSURE_LIMIT:
+                return
+        except NotImplementedError:
+            # qsize() ist auf manchen Plattformen optional; dann normal enqueuen.
+            pass
         self._queue.put(("interim", text, None))
 
     def run(self) -> None:
@@ -286,6 +295,7 @@ class WindowsOverlayController:
 
     def _poll_queue(self) -> None:
         processed_message = False
+        latest_interim_text: str | None = None
         try:
             while True:
                 msg_type, value, text = self._queue.get_nowait()
@@ -295,9 +305,12 @@ class WindowsOverlayController:
                 elif msg_type == "level":
                     self._audio_level = value
                 elif msg_type == "interim":
-                    self._handle_interim_text(value)
+                    latest_interim_text = value
         except queue.Empty:
             pass
+
+        if latest_interim_text is not None:
+            self._handle_interim_text(latest_interim_text)
 
         if self._running and self._root:
             poll_ms = (

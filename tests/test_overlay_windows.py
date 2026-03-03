@@ -7,6 +7,7 @@ from ui.overlay_windows import (
     FRAME_MS,
     FRAME_MS_ACTIVE,
     FRAME_MS_FEEDBACK,
+    INTERIM_QUEUE_BACKPRESSURE_LIMIT,
     QUEUE_POLL_ACTIVE_MS,
     QUEUE_POLL_IDLE_MS,
     STATE_COLORS,
@@ -91,6 +92,18 @@ def test_update_audio_level_does_not_enqueue_messages():
     assert controller._queue.empty()
 
 
+def test_update_interim_text_applies_backpressure_under_heavy_queue_load():
+    controller = WindowsOverlayController()
+
+    for idx in range(INTERIM_QUEUE_BACKPRESSURE_LIMIT):
+        controller._queue.put(("interim", f"existing-{idx}", None))
+
+    size_before = controller._queue.qsize()
+    controller.update_interim_text("newest")
+
+    assert controller._queue.qsize() == size_before
+
+
 def test_handle_state_change_uses_feedback_color_for_done_and_error():
     controller = WindowsOverlayController()
     controller._root = _FakeRoot()
@@ -168,6 +181,27 @@ def test_poll_queue_uses_active_interval_when_overlay_visible():
     controller._poll_queue()
 
     assert controller._root.after_calls[-1] == QUEUE_POLL_ACTIVE_MS
+
+
+def test_poll_queue_coalesces_interim_messages_to_latest_text():
+    controller = WindowsOverlayController.__new__(WindowsOverlayController)
+    controller._running = True
+    controller._root = _FakeRoot()
+    controller._queue = queue.Queue()
+    controller._state = "RECORDING"
+    controller._audio_level = 0.0
+
+    seen_texts: list[str] = []
+    controller._handle_interim_text = seen_texts.append
+    controller._handle_state_change = lambda *_args: None
+
+    controller._queue.put(("interim", "one", None))
+    controller._queue.put(("interim", "two", None))
+    controller._queue.put(("interim", "three", None))
+
+    controller._poll_queue()
+
+    assert seen_texts == ["three"]
 
 
 def test_animate_stops_loop_while_idle():
