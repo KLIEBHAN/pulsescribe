@@ -274,7 +274,8 @@ class PulseScribeWindows:
 
         # Settings-Reload (FileWatcher + Polling-Fallback)
         self._env_observer = None
-        self._reload_polling_timer: threading.Timer | None = None
+        self._reload_polling_thread: threading.Thread | None = None
+        self._reload_polling_stop = threading.Event()
         self._reload_signal_file: Path | None = None
 
         stream_mode = "Streaming" if streaming else "REST"
@@ -501,7 +502,7 @@ class PulseScribeWindows:
         Local-Mode verwendet PULSESCRIBE_LOCAL_MODEL (default: base),
         andere Modi verwenden PULSESCRIBE_MODEL (default: Provider-spezifisch).
         """
-        language = os.getenv("PULSESCRIBE_LANGUAGE", "de")
+        language = os.getenv("PULSESCRIBE_LANGUAGE", "auto")
         if self.mode == "local":
             # Default "base" für Windows (schneller als turbo)
             model = os.getenv("PULSESCRIBE_LOCAL_MODEL", "base")
@@ -926,7 +927,7 @@ class PulseScribeWindows:
                 transcript = loop.run_until_complete(
                     deepgram_stream_core(
                         model="nova-3",
-                        language=os.getenv("PULSESCRIBE_LANGUAGE", "de"),
+                        language=os.getenv("PULSESCRIBE_LANGUAGE", "auto"),
                         play_ready=True,  # Sound nach Mic-Init (wie macOS)
                         external_stop_event=self._recording_stop_event,
                         audio_level_callback=on_audio_level,  # Immer übergeben für State-Transitions
@@ -999,7 +1000,7 @@ class PulseScribeWindows:
                 transcript = loop.run_until_complete(
                     deepgram_stream_core(
                         model="nova-3",
-                        language=os.getenv("PULSESCRIBE_LANGUAGE", "de"),
+                        language=os.getenv("PULSESCRIBE_LANGUAGE", "auto"),
                         play_ready=False,  # Sound haben wir schon gespielt!
                         external_stop_event=self._recording_stop_event,
                         warm_stream_source=warm_source,
@@ -1147,7 +1148,7 @@ class PulseScribeWindows:
             save_transcript(
                 transcript,
                 mode=self.mode,
-                language=os.getenv("PULSESCRIBE_LANGUAGE", "de"),
+                language=os.getenv("PULSESCRIBE_LANGUAGE", "auto"),
                 refined=self.refine,
             )
         except Exception as e:
@@ -1764,41 +1765,48 @@ class PulseScribeWindows:
                 logger.debug(f"FileWatcher Stop-Fehler: {e}")
             self._env_observer = None
 
-        # Polling stoppen
+        # Polling-Fallback stoppen
+        self._reload_polling_stop.set()
         if (
-            hasattr(self, "_reload_polling_timer")
-            and self._reload_polling_timer is not None
+            hasattr(self, "_reload_polling_thread")
+            and self._reload_polling_thread is not None
         ):
-            self._reload_polling_timer.cancel()
-            self._reload_polling_timer = None
+            if self._reload_polling_thread.is_alive():
+                self._reload_polling_thread.join(timeout=_SHUTDOWN_TIMEOUT_SEC)
+            self._reload_polling_thread = None
 
     def _start_reload_polling(self):
         """Startet Polling für .reload Signal-Datei (Fallback wenn watchdog nicht verfügbar)."""
         if self._reload_signal_file is None:
             return
 
-        def poll_for_reload():
-            if self._stop_event.is_set():
-                return
+        if (
+            self._reload_polling_thread is not None
+            and self._reload_polling_thread.is_alive()
+        ):
+            return
 
-            try:
-                if self._reload_signal_file and self._reload_signal_file.exists():
-                    logger.debug("Reload-Signal erkannt (Polling)")
-                    self._reload_signal_file.unlink()
-                    self._reload_settings()
-            except Exception as e:
-                logger.debug(f"Polling-Fehler: {e}")
+        self._reload_polling_stop.clear()
 
-            # Nächsten Poll planen (alle 2 Sekunden)
-            if not self._stop_event.is_set():
-                self._reload_polling_timer = threading.Timer(2.0, poll_for_reload)
-                self._reload_polling_timer.daemon = True
-                self._reload_polling_timer.start()
+        def poll_for_reload_loop():
+            while not self._stop_event.is_set():
+                if self._reload_polling_stop.wait(timeout=2.0):
+                    break
 
-        # Ersten Poll starten
-        self._reload_polling_timer = threading.Timer(2.0, poll_for_reload)
-        self._reload_polling_timer.daemon = True
-        self._reload_polling_timer.start()
+                try:
+                    if self._reload_signal_file and self._reload_signal_file.exists():
+                        logger.debug("Reload-Signal erkannt (Polling)")
+                        self._reload_signal_file.unlink()
+                        self._reload_settings()
+                except Exception as e:
+                    logger.debug(f"Polling-Fehler: {e}")
+
+        self._reload_polling_thread = threading.Thread(
+            target=poll_for_reload_loop,
+            daemon=True,
+            name="PulseScribeReloadPolling",
+        )
+        self._reload_polling_thread.start()
         logger.info("Polling-Fallback gestartet für Settings-Reload")
 
     def _restart_hotkey_listeners(self):
