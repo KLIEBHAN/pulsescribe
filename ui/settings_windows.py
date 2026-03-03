@@ -181,7 +181,7 @@ class SettingsWindow(QDialog):
     # Signals
     settings_changed = Signal()
     closed = Signal()
-    _hotkey_field_update = Signal(str)  # Thread-safe hotkey field updates
+    _hotkey_field_update = Signal(str, str)  # kind, value (thread-safe)
 
     def __init__(self, parent: QWidget | None = None, config: dict | None = None):
         super().__init__(parent)
@@ -1325,6 +1325,7 @@ class SettingsWindow(QDialog):
         """Aktualisiert das Hotkey-Feld basierend auf gedrückten Tasten."""
         if self._is_closed or not self._recording_hotkey_for:
             return
+        recording_kind = self._recording_hotkey_for
 
         # Thread-safe Kopie der gedrückten Tasten
         with self._pressed_keys_lock:
@@ -1349,15 +1350,17 @@ class SettingsWindow(QDialog):
 
         # UI-Update (Thread-safe via Signal, da pynput in eigenem Thread läuft)
         if not self._is_closed:
-            self._hotkey_field_update.emit(hotkey_str)
+            self._hotkey_field_update.emit(recording_kind, hotkey_str)
 
-    def _set_hotkey_field_text(self, hotkey_str: str):
+    def _set_hotkey_field_text(self, kind: str, hotkey_str: str):
         """Setzt den Text im aktiven Hotkey-Feld (Thread-safe)."""
         if self._is_closed:
             return
-        if self._recording_hotkey_for == "toggle" and self._toggle_hotkey_field:
+        if self._recording_hotkey_for != kind:
+            return
+        if kind == "toggle" and self._toggle_hotkey_field:
             self._toggle_hotkey_field.setText(hotkey_str)
-        elif self._recording_hotkey_for == "hold" and self._hold_hotkey_field:
+        elif kind == "hold" and self._hold_hotkey_field:
             self._hold_hotkey_field.setText(hotkey_str)
 
     def _stop_hotkey_recording(self, hotkey_str: str | None = None):

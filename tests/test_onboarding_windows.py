@@ -390,9 +390,22 @@ def test_set_hotkey_field_text_noop_when_wizard_is_closed():
     wizard._hold_input = _FakeField("")
     wizard._is_closed = True
 
-    wizard._set_hotkey_field_text("ctrl+shift+r")
+    wizard._set_hotkey_field_text("toggle", "ctrl+shift+r")
 
     assert wizard._toggle_input.text() == "ctrl+alt+r"
+
+
+def test_set_hotkey_field_text_ignores_stale_field_updates():
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+    wizard._recording_field = "toggle"
+    wizard._toggle_input = _FakeField("ctrl+alt+r")
+    wizard._hold_input = _FakeField("ctrl+win")
+    wizard._is_closed = False
+
+    wizard._set_hotkey_field_text("hold", "ctrl+alt+space")
+
+    assert wizard._toggle_input.text() == "ctrl+alt+r"
+    assert wizard._hold_input.text() == "ctrl+win"
 
 
 def test_keypress_qt_fallback_ignores_auto_repeat_events():

@@ -295,9 +295,20 @@ def test_set_hotkey_field_text_noop_when_window_is_closed():
     window._recording_hotkey_for = "toggle"
     window._is_closed = True
 
-    SettingsWindow._set_hotkey_field_text(window, "ctrl+shift+r")
+    SettingsWindow._set_hotkey_field_text(window, "toggle", "ctrl+shift+r")
 
     assert window._toggle_hotkey_field.text() == "ctrl+alt+r"
+
+
+def test_set_hotkey_field_text_ignores_stale_kind_updates():
+    window = _make_window("ctrl+alt+r", "ctrl+win")
+    window._recording_hotkey_for = "toggle"
+    window._is_closed = False
+
+    SettingsWindow._set_hotkey_field_text(window, "hold", "ctrl+alt+space")
+
+    assert window._toggle_hotkey_field.text() == "ctrl+alt+r"
+    assert window._hold_hotkey_field.text() == "ctrl+win"
 
 
 def test_keypress_qt_fallback_ignores_auto_repeat_events():

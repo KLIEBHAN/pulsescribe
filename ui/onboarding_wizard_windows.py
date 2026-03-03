@@ -138,7 +138,7 @@ class OnboardingWizardWindows(QDialog):
     # Signals
     settings_changed = Signal()
     completed = Signal()
-    _hotkey_field_update = Signal(str)  # Thread-safe hotkey field updates
+    _hotkey_field_update = Signal(str, str)  # field, value (thread-safe)
 
     def __init__(self, parent: QWidget | None = None, *, persist_progress: bool = True):
         super().__init__(parent)
@@ -1314,6 +1314,7 @@ class OnboardingWizardWindows(QDialog):
         """Update the hotkey field based on pressed keys."""
         if not self._recording_field:
             return
+        recording_field = self._recording_field
 
         with self._pressed_keys_lock:
             if not self._pressed_keys:
@@ -1336,15 +1337,17 @@ class OnboardingWizardWindows(QDialog):
         hotkey_str = "+".join(sorted_modifiers + sorted(keys))
 
         # Thread-safe UI update via signal
-        self._hotkey_field_update.emit(hotkey_str)
+        self._hotkey_field_update.emit(recording_field, hotkey_str)
 
-    def _set_hotkey_field_text(self, hotkey_str: str) -> None:
+    def _set_hotkey_field_text(self, field: str, hotkey_str: str) -> None:
         """Set text in the active hotkey field (thread-safe slot)."""
         if self._is_closed:
             return
-        if self._recording_field == "toggle" and self._toggle_input:
+        if self._recording_field != field:
+            return
+        if field == "toggle" and self._toggle_input:
             self._toggle_input.setText(hotkey_str)
-        elif self._recording_field == "hold" and self._hold_input:
+        elif field == "hold" and self._hold_input:
             self._hold_input.setText(hotkey_str)
 
     def _stop_hotkey_recording(self, save: bool = False) -> None:
@@ -1610,7 +1613,8 @@ class OnboardingWizardWindows(QDialog):
                 hotkey_str = "+".join(parts) if parts else ""
                 if hotkey_str:
                     self._hotkey_recorded = True
-                self._set_hotkey_field_text(hotkey_str)
+                if self._recording_field:
+                    self._set_hotkey_field_text(self._recording_field, hotkey_str)
 
             event.accept()
             return
