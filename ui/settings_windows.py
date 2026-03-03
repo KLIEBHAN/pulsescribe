@@ -1156,11 +1156,15 @@ class SettingsWindow(QDialog):
 
     def _apply_hotkey_preset(self, hotkey: str):
         """Wendet ein Hotkey-Preset an (nur Toggle)."""
+        if self._recording_hotkey_for:
+            self._stop_hotkey_recording(None)
         if self._toggle_hotkey_field:
             self._toggle_hotkey_field.setText(hotkey)
 
     def _apply_hotkey_preset_pair(self, toggle: str, hold: str):
         """Wendet ein Hotkey-Preset-Paar an."""
+        if self._recording_hotkey_for:
+            self._stop_hotkey_recording(None)
         if self._toggle_hotkey_field:
             self._toggle_hotkey_field.setText(toggle)
         if self._hold_hotkey_field:

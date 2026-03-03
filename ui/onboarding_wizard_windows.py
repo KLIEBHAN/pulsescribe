@@ -1418,6 +1418,9 @@ class OnboardingWizardWindows(QDialog):
 
     def _apply_hotkey_preset(self, toggle: str | None, hold: str | None) -> None:
         """Apply a hotkey preset."""
+        if self._recording_field:
+            self._stop_hotkey_recording(save=False)
+
         normalized_toggle, normalized_hold, error = self._validate_hotkey_pair(
             toggle, hold
         )

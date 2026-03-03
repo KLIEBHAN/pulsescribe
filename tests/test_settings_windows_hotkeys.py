@@ -209,6 +209,35 @@ def test_clear_hotkey_field_stops_active_recording_before_clearing():
     assert window._toggle_hotkey_field.text() == ""
 
 
+def test_apply_hotkey_preset_stops_active_recording_before_applying():
+    window = _make_window("ctrl+alt+r", "ctrl+win")
+    window._recording_hotkey_for = "toggle"
+
+    stop_calls: list[object] = []
+    window._stop_hotkey_recording = lambda hotkey=None: stop_calls.append(hotkey)
+
+    SettingsWindow._apply_hotkey_preset(window, "f13")
+
+    assert stop_calls == [None]
+    assert window._toggle_hotkey_field.text() == "f13"
+    assert window._hold_hotkey_field.text() == "ctrl+win"
+
+
+def test_apply_hotkey_preset_pair_stops_active_recording_before_applying():
+    window = _make_window("ctrl+alt+r", "ctrl+win")
+    window._recording_hotkey_for = "hold"
+
+    stop_calls: list[object] = []
+    window._stop_hotkey_recording = lambda hotkey=None: stop_calls.append(hotkey)
+
+    SettingsWindow._apply_hotkey_preset_pair(window, "f19", "")
+
+    assert stop_calls == [None]
+    assert window._toggle_hotkey_field.text() == "f19"
+    assert window._hold_hotkey_field.text() == ""
+    assert "preset applied" in window._hotkey_status.text.lower()
+
+
 def test_start_hotkey_recording_clears_field_and_keeps_previous_value():
     window = _make_window("ctrl+alt+r", "")
     window._pressed_keys = set()

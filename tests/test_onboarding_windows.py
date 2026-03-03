@@ -429,6 +429,51 @@ def test_clear_hotkey_updates_status_feedback(monkeypatch):
     assert "Hotkey entfernt" in wizard._hotkey_status_label.text
 
 
+def test_apply_hotkey_preset_stops_active_recording_before_applying(monkeypatch):
+    import ui.onboarding_wizard_windows as wizard_mod
+
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+    wizard._recording_field = "toggle"
+    wizard._toggle_input = _FakeField("ctrl+alt+r")
+    wizard._hold_input = _FakeField("ctrl+win")
+    wizard._hotkey_status_label = _FakeLabel()
+
+    stop_calls: list[bool] = []
+    emitted: list[bool] = []
+    refreshed: list[bool] = []
+    updated: list[bool] = []
+    saved: list[tuple[str, str]] = []
+    removed: list[str] = []
+
+    wizard._stop_hotkey_recording = lambda save=False: stop_calls.append(save)
+    wizard.settings_changed = types.SimpleNamespace(emit=lambda: emitted.append(True))
+    wizard._refresh_test_hotkey_label = lambda: refreshed.append(True)
+    wizard._update_navigation = lambda: updated.append(True)
+
+    monkeypatch.setattr(
+        wizard_mod,
+        "save_env_setting",
+        lambda key, value: saved.append((key, value)),
+    )
+    monkeypatch.setattr(
+        wizard_mod,
+        "remove_env_setting",
+        lambda key: removed.append(key),
+    )
+
+    wizard._apply_hotkey_preset("f19", None)
+
+    assert stop_calls == [False]
+    assert wizard._toggle_input.text() == "f19"
+    assert wizard._hold_input.text() == ""
+    assert saved == [("PULSESCRIBE_TOGGLE_HOTKEY", "f19")]
+    assert removed == ["PULSESCRIBE_HOLD_HOTKEY"]
+    assert emitted == [True]
+    assert refreshed == [True]
+    assert updated == [True]
+    assert "Preset angewendet" in wizard._hotkey_status_label.text
+
+
 def test_start_ipc_test_ignores_duplicate_start():
     wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
     wizard._ipc_test_cmd_id = "running"
