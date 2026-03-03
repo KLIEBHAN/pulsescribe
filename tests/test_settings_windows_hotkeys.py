@@ -132,6 +132,15 @@ def test_validate_hotkeys_for_save_allows_modifier_only_hold_hotkeys():
     assert result == ("ctrl+alt+r", "ctrl+win")
 
 
+def test_validate_hotkeys_for_save_requires_at_least_one_hotkey():
+    window = _make_window("", "")
+
+    result = window._validate_hotkeys_for_save()
+
+    assert result is None
+    assert "at least one hotkey" in window._hotkey_status.text.lower()
+
+
 def test_start_hotkey_recording_stops_previous_capture():
     window = SettingsWindow.__new__(SettingsWindow)
     window._recording_hotkey_for = "toggle"

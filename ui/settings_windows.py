@@ -44,6 +44,7 @@ from utils.preferences import (
     get_env_setting,
     get_show_welcome_on_startup,
     is_onboarding_complete,
+    read_env_file,
     remove_env_setting,
     save_env_setting,
     set_api_key,
@@ -96,6 +97,8 @@ LOCAL_MODEL_OPTIONS = [
 DEVICE_OPTIONS = ["auto", "cpu", "cuda"]
 BOOL_OVERRIDE_OPTIONS = ["default", "true", "false"]
 LIGHTNING_QUANT_OPTIONS = ["none", "8bit", "4bit"]
+DEFAULT_WINDOWS_TOGGLE_HOTKEY = "ctrl+alt+r"
+DEFAULT_WINDOWS_HOLD_HOTKEY = "ctrl+win"
 
 
 # =============================================================================
@@ -1550,6 +1553,12 @@ class SettingsWindow(QDialog):
 
         # Hold-to-talk erlaubt reine Modifier-Kombinationen (z. B. ctrl+win),
         # damit das Verhalten konsistent mit den Daemon-Defaults bleibt.
+        if not toggle and not hold:
+            self._set_hotkey_status(
+                "Configure at least one hotkey (Toggle or Hold).",
+                "error",
+            )
+            return None
 
         if toggle and hold and toggle == hold:
             self._set_hotkey_status(
@@ -2149,11 +2158,20 @@ class SettingsWindow(QDialog):
             )
 
         # Hotkeys
-        toggle = get_env_setting("PULSESCRIBE_TOGGLE_HOTKEY") or ""
+        env_values = read_env_file()
+        toggle_raw = env_values.get("PULSESCRIBE_TOGGLE_HOTKEY")
+        hold_raw = env_values.get("PULSESCRIBE_HOLD_HOTKEY")
+
+        if toggle_raw is None and hold_raw is None:
+            toggle = DEFAULT_WINDOWS_TOGGLE_HOTKEY
+            hold = DEFAULT_WINDOWS_HOLD_HOTKEY
+        else:
+            toggle = (toggle_raw or "").strip()
+            hold = (hold_raw or "").strip()
+
         if hasattr(self, "_toggle_hotkey_field") and self._toggle_hotkey_field:
             self._toggle_hotkey_field.setText(toggle)
 
-        hold = get_env_setting("PULSESCRIBE_HOLD_HOTKEY") or ""
         if hasattr(self, "_hold_hotkey_field") and self._hold_hotkey_field:
             self._hold_hotkey_field.setText(hold)
 
