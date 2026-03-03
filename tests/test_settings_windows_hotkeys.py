@@ -115,13 +115,21 @@ def test_validate_hotkeys_for_save_rejects_invalid_tokens():
     assert "invalid" in window._hotkey_status.text.lower()
 
 
-def test_validate_hotkeys_for_save_rejects_modifier_only_hotkeys():
+def test_validate_hotkeys_for_save_rejects_modifier_only_toggle_hotkeys():
     window = _make_window("ctrl+alt", "")
 
     result = window._validate_hotkeys_for_save()
 
     assert result is None
     assert "non-modifier" in window._hotkey_status.text.lower()
+
+
+def test_validate_hotkeys_for_save_allows_modifier_only_hold_hotkeys():
+    window = _make_window("ctrl+alt+r", "ctrl+win")
+
+    result = window._validate_hotkeys_for_save()
+
+    assert result == ("ctrl+alt+r", "ctrl+win")
 
 
 def test_start_hotkey_recording_stops_previous_capture():

@@ -504,6 +504,7 @@ class SettingsWindow(QDialog):
         # Hint
         hint = QLabel(
             "💡 Hold hotkey: Push-to-talk mode. Toggle hotkey: Press to start/stop.\n"
+            "Hold may use modifier-only combos (e.g. ctrl+win).\n"
             "Click 'Record' and press your desired key combination.\n"
             "Toggle/Hold must not overlap (e.g. ctrl+win and ctrl+win+r)."
         )
@@ -1543,12 +1544,8 @@ class SettingsWindow(QDialog):
             )
             return None
 
-        if hold and all(part in modifier_keys for part in hold.split("+")):
-            self._set_hotkey_status(
-                "Hold hotkey must include at least one non-modifier key.",
-                "error",
-            )
-            return None
+        # Hold-to-talk erlaubt reine Modifier-Kombinationen (z. B. ctrl+win),
+        # damit das Verhalten konsistent mit den Daemon-Defaults bleibt.
 
         if toggle and hold and toggle == hold:
             self._set_hotkey_status(

@@ -167,7 +167,7 @@ def test_go_next_fast_reapplies_choice_preset_after_api_key_entry(monkeypatch):
     assert shown_steps == [next_step(OnboardingStep.CHOOSE_GOAL)]
 
 
-def test_validate_hotkey_pair_rejects_duplicates_and_modifier_only():
+def test_validate_hotkey_pair_rejects_duplicates_and_modifier_only_toggle():
     wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
 
     _, _, duplicate_error = wizard._validate_hotkey_pair("ctrl+alt+r", "alt+ctrl+r")
@@ -177,6 +177,16 @@ def test_validate_hotkey_pair_rejects_duplicates_and_modifier_only():
     _, _, modifier_error = wizard._validate_hotkey_pair("ctrl+alt", "")
     assert modifier_error is not None
     assert "nicht-modifier" in modifier_error.lower()
+
+
+def test_validate_hotkey_pair_allows_modifier_only_hold():
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+
+    toggle, hold, error = wizard._validate_hotkey_pair("ctrl+alt+r", "ctrl+win")
+
+    assert error is None
+    assert toggle == "ctrl+alt+r"
+    assert hold == "ctrl+win"
 
 
 def test_validate_hotkey_pair_rejects_overlapping_hotkeys():

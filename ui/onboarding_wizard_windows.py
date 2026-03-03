@@ -507,7 +507,8 @@ class OnboardingWizardWindows(QDialog):
 
         # Hotkey hints
         hint = QLabel(
-            "Toggle: Drücken-Sprechen-Drücken | Hold: Halten-Sprechen-Loslassen"
+            "Toggle: Drücken-Sprechen-Drücken | Hold: Halten-Sprechen-Loslassen\n"
+            "Hold darf nur Modifier enthalten (z. B. ctrl+win)."
         )
         hint.setFont(QFont(DEFAULT_FONT_FAMILY, 9))
         hint.setStyleSheet(f"color: {COLORS['text_hint']};")
@@ -1452,12 +1453,6 @@ class OnboardingWizardWindows(QDialog):
                 "",
                 "",
                 "Toggle-Hotkey braucht mindestens eine Nicht-Modifier-Taste.",
-            )
-        if hold and self._is_modifier_only_hotkey(hold):
-            return (
-                "",
-                "",
-                "Hold-Hotkey braucht mindestens eine Nicht-Modifier-Taste.",
             )
 
         if toggle and hold and toggle == hold:
