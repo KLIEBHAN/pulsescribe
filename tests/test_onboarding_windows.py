@@ -8,6 +8,8 @@ pytest.importorskip("PySide6")
 from PySide6.QtCore import Qt
 
 from ui.onboarding_wizard_windows import (
+    DEFAULT_WINDOWS_HOLD_HOTKEY,
+    DEFAULT_WINDOWS_TOGGLE_HOTKEY,
     IPC_CONNECT_MAX_POLLS_BEFORE_TIMEOUT,
     IPC_MAX_POLLS_BEFORE_TIMEOUT,
     IPC_RECORDING_STALE_POLLS_AFTER_STOP,
@@ -198,6 +200,74 @@ def test_validate_hotkey_pair_rejects_overlapping_hotkeys():
     )
     assert overlap_error is not None
     assert "überlappen" in overlap_error.lower()
+
+
+def test_ensure_default_hotkeys_applies_recommended_pair_when_missing(monkeypatch):
+    import ui.onboarding_wizard_windows as wizard_mod
+
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+    wizard._toggle_input = _FakeField("")
+    wizard._hold_input = _FakeField("")
+    wizard._hotkey_status_label = _FakeLabel()
+
+    saved: list[tuple[str, str]] = []
+    refreshed: list[bool] = []
+    emitted: list[bool] = []
+
+    wizard.settings_changed = types.SimpleNamespace(emit=lambda: emitted.append(True))
+    wizard._refresh_test_hotkey_label = lambda: refreshed.append(True)
+
+    monkeypatch.setattr(wizard_mod, "get_env_setting", lambda _key: None)
+    monkeypatch.setattr(
+        wizard_mod,
+        "save_env_setting",
+        lambda key, value: saved.append((key, value)),
+    )
+
+    wizard._ensure_default_hotkeys()
+
+    assert wizard._toggle_input.text() == DEFAULT_WINDOWS_TOGGLE_HOTKEY
+    assert wizard._hold_input.text() == DEFAULT_WINDOWS_HOLD_HOTKEY
+    assert saved == [
+        ("PULSESCRIBE_TOGGLE_HOTKEY", DEFAULT_WINDOWS_TOGGLE_HOTKEY),
+        ("PULSESCRIBE_HOLD_HOTKEY", DEFAULT_WINDOWS_HOLD_HOTKEY),
+    ]
+    assert refreshed == [True]
+    assert emitted == [True]
+    assert "Standard gesetzt" in wizard._hotkey_status_label.text
+
+
+def test_ensure_default_hotkeys_keeps_existing_user_config(monkeypatch):
+    import ui.onboarding_wizard_windows as wizard_mod
+
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+    wizard._toggle_input = _FakeField("ctrl+shift+r")
+    wizard._hold_input = _FakeField("")
+    wizard._hotkey_status_label = _FakeLabel()
+    wizard.settings_changed = types.SimpleNamespace(
+        emit=lambda: (_ for _ in ()).throw(AssertionError("must not emit"))
+    )
+    wizard._refresh_test_hotkey_label = (
+        lambda: (_ for _ in ()).throw(AssertionError("must not refresh"))
+    )
+
+    monkeypatch.setattr(
+        wizard_mod,
+        "get_env_setting",
+        lambda key: "ctrl+shift+r" if key == "PULSESCRIBE_TOGGLE_HOTKEY" else None,
+    )
+    monkeypatch.setattr(
+        wizard_mod,
+        "save_env_setting",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("must not save defaults")
+        ),
+    )
+
+    wizard._ensure_default_hotkeys()
+
+    assert wizard._toggle_input.text() == "ctrl+shift+r"
+    assert wizard._hold_input.text() == ""
 
 
 def test_on_api_key_input_changed_updates_status_and_navigation():
@@ -591,6 +661,23 @@ def test_show_step_leaving_test_requests_ipc_cancel():
     assert cancel_calls == [True]
     assert stop_calls == [True]
     assert reset_calls == [True]
+
+
+def test_show_step_hotkey_applies_missing_defaults():
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+    wizard._step = OnboardingStep.CHOOSE_GOAL
+    wizard._mic_timer = None
+    wizard._persist_progress = False
+    wizard._progress_label = None
+    wizard._stack = types.SimpleNamespace(setCurrentIndex=lambda _idx: None)
+    wizard._update_navigation = lambda: None
+
+    ensure_calls: list[bool] = []
+    wizard._ensure_default_hotkeys = lambda: ensure_calls.append(True)
+
+    wizard._show_step(OnboardingStep.HOTKEY)
+
+    assert ensure_calls == [True]
 
 
 def test_stop_ipc_test_requires_recording_ack_before_sending_command():

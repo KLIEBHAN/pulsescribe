@@ -82,6 +82,8 @@ IPC_MAX_POLLS_BEFORE_TIMEOUT = 50
 # avoid a long/hanging "recording..." spinner in the wizard.
 #   30 polls × 200ms = 6s
 IPC_RECORDING_STALE_POLLS_AFTER_STOP = 30
+DEFAULT_WINDOWS_TOGGLE_HOTKEY = "ctrl+alt+r"
+DEFAULT_WINDOWS_HOLD_HOTKEY = "ctrl+win"
 
 
 # =============================================================================
@@ -733,6 +735,8 @@ class OnboardingWizardWindows(QDialog):
         # Step-specific actions
         if step == OnboardingStep.PERMISSIONS:
             self._start_mic_check()
+        elif step == OnboardingStep.HOTKEY:
+            self._ensure_default_hotkeys()
         elif step == OnboardingStep.TEST_DICTATION:
             self._refresh_test_hotkey_label()
         elif step == OnboardingStep.CHEAT_SHEET:
@@ -1190,6 +1194,31 @@ class OnboardingWizardWindows(QDialog):
     # -------------------------------------------------------------------------
     # Step: Hotkey
     # -------------------------------------------------------------------------
+
+    def _ensure_default_hotkeys(self) -> None:
+        """Setzt empfohlene Hotkeys beim Erstlauf, falls beide fehlen."""
+        toggle = (get_env_setting("PULSESCRIBE_TOGGLE_HOTKEY") or "").strip()
+        hold = (get_env_setting("PULSESCRIBE_HOLD_HOTKEY") or "").strip()
+
+        # Bestehende Nutzerkonfiguration niemals überschreiben.
+        if toggle or hold:
+            return
+
+        toggle = DEFAULT_WINDOWS_TOGGLE_HOTKEY
+        hold = DEFAULT_WINDOWS_HOLD_HOTKEY
+        save_env_setting("PULSESCRIBE_TOGGLE_HOTKEY", toggle)
+        save_env_setting("PULSESCRIBE_HOLD_HOTKEY", hold)
+
+        if self._toggle_input:
+            self._toggle_input.setText(toggle)
+        if self._hold_input:
+            self._hold_input.setText(hold)
+
+        self._set_hotkey_status(
+            f"Standard gesetzt: Toggle {toggle}, Hold {hold}.", "text_secondary"
+        )
+        self._refresh_test_hotkey_label()
+        self.settings_changed.emit()
 
     def _start_hotkey_recording(self, field: str) -> None:
         """Start recording a hotkey."""
