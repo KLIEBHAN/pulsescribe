@@ -4,6 +4,8 @@ import time
 import types
 
 from ui.overlay_windows import (
+    BAR_COUNT,
+    BAR_MIN_HEIGHT,
     FRAME_MS,
     FRAME_MS_ACTIVE,
     FRAME_MS_FEEDBACK,
@@ -60,6 +62,35 @@ class _FakeLabel:
 
     def config(self, **kwargs) -> None:
         self.last_config.update(kwargs)
+
+
+class _FakeCanvas:
+    def __init__(self):
+        self._item_id = 0
+        self.create_calls = 0
+        self.coords_calls = 0
+        self.delete_calls: list[object] = []
+        self.item_configs: list[dict[str, object]] = []
+
+    def _create_item(self) -> int:
+        self._item_id += 1
+        self.create_calls += 1
+        return self._item_id
+
+    def create_arc(self, *_args, **_kwargs) -> int:
+        return self._create_item()
+
+    def create_rectangle(self, *_args, **_kwargs) -> int:
+        return self._create_item()
+
+    def coords(self, *_args, **_kwargs) -> None:
+        self.coords_calls += 1
+
+    def itemconfig(self, _item_id: int, **kwargs) -> None:
+        self.item_configs.append(kwargs)
+
+    def delete(self, tag_or_id) -> None:
+        self.delete_calls.append(tag_or_id)
 
 
 def _make_controller(interim_file: Path) -> WindowsOverlayController:
@@ -341,3 +372,40 @@ def test_poll_interim_file_uses_configured_interval(tmp_path):
     controller._poll_interim_file()
 
     assert controller._root.after_calls[-1] == INTERIM_POLL_INTERVAL_MS
+
+
+def test_render_bars_reuses_canvas_items_between_frames():
+    controller = WindowsOverlayController.__new__(WindowsOverlayController)
+    controller._canvas = _FakeCanvas()
+    controller._state = "RECORDING"
+    controller._bar_heights = [BAR_MIN_HEIGHT] * BAR_COUNT
+    controller._bar_item_ids = []
+    controller._anim = types.SimpleNamespace(
+        calculate_bar_height=lambda *_args: BAR_MIN_HEIGHT + 4
+    )
+
+    controller._render_bars(0.1)
+    created_first_pass = controller._canvas.create_calls
+    coords_first_pass = controller._canvas.coords_calls
+
+    controller._render_bars(0.2)
+
+    assert created_first_pass == BAR_COUNT * 3
+    assert controller._canvas.create_calls == created_first_pass
+    assert controller._canvas.coords_calls > coords_first_pass
+    assert controller._canvas.delete_calls == []
+
+
+def test_render_bars_updates_existing_items_with_state_color():
+    controller = WindowsOverlayController.__new__(WindowsOverlayController)
+    controller._canvas = _FakeCanvas()
+    controller._state = "DONE"
+    controller._bar_heights = [BAR_MIN_HEIGHT] * BAR_COUNT
+    controller._bar_item_ids = []
+    controller._anim = types.SimpleNamespace(
+        calculate_bar_height=lambda *_args: BAR_MIN_HEIGHT
+    )
+
+    controller._render_bars(0.1)
+
+    assert controller._canvas.item_configs[-1]["fill"] == STATE_COLORS["DONE"]

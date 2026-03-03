@@ -108,6 +108,7 @@ class WindowsOverlayController:
 
         self._queue: queue.Queue = queue.Queue()
         self._running = False
+        self._bar_item_ids: list[tuple[int, int, int]] = []
         self._interim_file = interim_file
         self._last_interim_text = ""
         self._last_interim_mtime_ns: int | None = None
@@ -559,13 +560,13 @@ class WindowsOverlayController:
         if not self._canvas:
             return
 
-        self._canvas.delete("bars")
         color = STATE_COLORS.get(self._state, "#FFFFFF")
 
         # Bar-Positionen berechnen
         total_width = BAR_COUNT * BAR_WIDTH + (BAR_COUNT - 1) * BAR_GAP
         start_x = (WINDOW_WIDTH - total_width) // 2
         center_y = 35  # Etwas höher für Text darunter
+        self._ensure_pill_bar_items(start_x, center_y)
 
         for i in range(BAR_COUNT):
             target = self._anim.calculate_bar_height(i, t, self._state)
@@ -580,59 +581,87 @@ class WindowsOverlayController:
 
             # Pill-förmige Bar zeichnen
             x = start_x + i * (BAR_WIDTH + BAR_GAP)
-            self._draw_pill_bar(x, center_y, BAR_WIDTH, height, color)
+            self._draw_pill_bar(i, x, center_y, BAR_WIDTH, height, color)
+
+    def _ensure_pill_bar_items(self, start_x: float, center_y: float) -> None:
+        """Erstellt Canvas-Items einmalig und reused sie pro Frame."""
+        if not self._canvas:
+            return
+        if not hasattr(self, "_bar_item_ids"):
+            self._bar_item_ids = []
+        if len(self._bar_item_ids) == BAR_COUNT:
+            return
+
+        self._bar_item_ids = []
+        for i in range(BAR_COUNT):
+            x = start_x + i * (BAR_WIDTH + BAR_GAP)
+            y1 = center_y - BAR_MIN_HEIGHT / 2
+            y2 = center_y + BAR_MIN_HEIGHT / 2
+            top_arc = self._canvas.create_arc(
+                x,
+                y1,
+                x + BAR_WIDTH,
+                y1 + BAR_WIDTH,
+                start=0,
+                extent=180,
+                fill="#FFFFFF",
+                outline="",
+                tags="bars",
+            )
+            middle_rect = self._canvas.create_rectangle(
+                x,
+                y1 + BAR_WIDTH / 2,
+                x + BAR_WIDTH,
+                y2 - BAR_WIDTH / 2,
+                fill="#FFFFFF",
+                outline="",
+                tags="bars",
+            )
+            bottom_arc = self._canvas.create_arc(
+                x,
+                y2 - BAR_WIDTH,
+                x + BAR_WIDTH,
+                y2,
+                start=180,
+                extent=180,
+                fill="#FFFFFF",
+                outline="",
+                tags="bars",
+            )
+            self._bar_item_ids.append((top_arc, middle_rect, bottom_arc))
 
     def _draw_pill_bar(
-        self, x: float, center_y: float, width: float, height: float, color: str
+        self,
+        bar_index: int,
+        x: float,
+        center_y: float,
+        width: float,
+        height: float,
+        color: str,
     ) -> None:
         """Zeichnet eine Pill-förmige Bar (abgerundete Enden)."""
         if not self._canvas:
             return
+        if not hasattr(self, "_bar_item_ids") or len(self._bar_item_ids) <= bar_index:
+            return
+
+        top_arc, middle_rect, bottom_arc = self._bar_item_ids[bar_index]
+        height = max(height, width)
 
         y1 = center_y - height / 2
         y2 = center_y + height / 2
-        # Wenn sehr klein, einfaches Oval
-        if height <= width:
-            self._canvas.create_oval(
-                x, y1, x + width, y2, fill=color, outline="", tags="bars"
-            )
-        else:
-            # Pill: Rechteck mit abgerundeten Enden
-            # Oberes Halbrund
-            self._canvas.create_arc(
-                x,
-                y1,
-                x + width,
-                y1 + width,
-                start=0,
-                extent=180,
-                fill=color,
-                outline="",
-                tags="bars",
-            )
-            # Mittleres Rechteck
-            if y2 - width / 2 > y1 + width / 2:
-                self._canvas.create_rectangle(
-                    x,
-                    y1 + width / 2,
-                    x + width,
-                    y2 - width / 2,
-                    fill=color,
-                    outline="",
-                    tags="bars",
-                )
-            # Unteres Halbrund
-            self._canvas.create_arc(
-                x,
-                y2 - width,
-                x + width,
-                y2,
-                start=180,
-                extent=180,
-                fill=color,
-                outline="",
-                tags="bars",
-            )
+        rect_top = y1 + width / 2
+        rect_bottom = y2 - width / 2
+        if rect_bottom < rect_top:
+            rect_bottom = rect_top
+
+        self._canvas.coords(top_arc, x, y1, x + width, y1 + width)
+        self._canvas.coords(middle_rect, x, rect_top, x + width, rect_bottom)
+        self._canvas.coords(bottom_arc, x, y2 - width, x + width, y2)
+
+        self._canvas.itemconfig(top_arc, fill=color, outline="")
+        self._canvas.itemconfig(middle_rect, fill=color, outline="")
+        self._canvas.itemconfig(bottom_arc, fill=color, outline="")
 
 
 __all__ = ["WindowsOverlayController"]
