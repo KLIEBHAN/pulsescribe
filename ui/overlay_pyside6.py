@@ -53,6 +53,7 @@ from ui.animation import (
     BAR_GAP,
     BAR_MIN_HEIGHT,
 )
+from utils.log_tail import read_file_tail_text
 
 logger = logging.getLogger("pulsescribe.overlay")
 
@@ -104,6 +105,7 @@ STATE_TEXTS = {
 
 # Auto-Hide Timer für DONE/ERROR
 FEEDBACK_DISPLAY_MS = 800  # Millisekunden
+INTERIM_POLL_MAX_CHARS = 512  # Begrenztes Tail-Read für niedrige Polling-Last
 
 # =============================================================================
 # Windows 11 DWM-Konstanten (Mica Effect)
@@ -775,7 +777,11 @@ class PySide6OverlayController:
             if current_mtime_ns == self._last_interim_mtime_ns:
                 return
 
-            text = self._interim_file.read_text(encoding="utf-8").strip()
+            text = read_file_tail_text(
+                self._interim_file,
+                max_chars=INTERIM_POLL_MAX_CHARS,
+                errors="replace",
+            ).strip()
             self._last_interim_mtime_ns = current_mtime_ns
             if text and text != self._last_interim_text:
                 self._last_interim_text = text

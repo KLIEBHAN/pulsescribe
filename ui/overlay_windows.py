@@ -25,6 +25,7 @@ from ui.animation import (
     BAR_MIN_HEIGHT,
     FPS,
 )
+from utils.log_tail import read_file_tail_text
 
 logger = logging.getLogger("pulsescribe.overlay")
 
@@ -47,6 +48,7 @@ FRAME_MS_FEEDBACK = 1000 // 20  # 20 FPS für kurze DONE/ERROR-Phase
 QUEUE_POLL_ACTIVE_MS = 16  # 60Hz während Overlay sichtbar/aktiv
 QUEUE_POLL_IDLE_MS = 50  # Weniger CPU-Last im Idle
 INTERIM_QUEUE_BACKPRESSURE_LIMIT = 120
+INTERIM_POLL_MAX_CHARS = 512
 
 # =============================================================================
 # Farben
@@ -332,7 +334,11 @@ class WindowsOverlayController:
                         self._root.after(200, self._poll_interim_file)
                     return
 
-                text = self._interim_file.read_text(encoding="utf-8").strip()
+                text = read_file_tail_text(
+                    self._interim_file,
+                    max_chars=INTERIM_POLL_MAX_CHARS,
+                    errors="replace",
+                ).strip()
                 self._last_interim_mtime_ns = current_mtime_ns
                 if text and text != self._last_interim_text:
                     self._last_interim_text = text

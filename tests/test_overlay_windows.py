@@ -8,6 +8,7 @@ from ui.overlay_windows import (
     FRAME_MS_ACTIVE,
     FRAME_MS_FEEDBACK,
     INTERIM_QUEUE_BACKPRESSURE_LIMIT,
+    INTERIM_POLL_MAX_CHARS,
     QUEUE_POLL_ACTIVE_MS,
     QUEUE_POLL_IDLE_MS,
     STATE_COLORS,
@@ -80,6 +81,29 @@ def test_poll_interim_file_reads_only_when_file_changes(tmp_path):
     controller._poll_interim_file()
 
     assert seen_texts == ["hello", "hello again"]
+
+
+def test_poll_interim_file_reads_tail_text_only(tmp_path, monkeypatch):
+    interim_file = tmp_path / "interim.txt"
+    interim_file.write_text("full interim payload", encoding="utf-8")
+    controller = _make_controller(interim_file)
+
+    calls: list[tuple[object, int]] = []
+    monkeypatch.setattr(
+        "ui.overlay_windows.read_file_tail_text",
+        lambda path, *, max_chars, errors="replace", **_kwargs: (
+            calls.append((path, max_chars)),
+            "tail-only",
+        )[1],
+    )
+
+    seen_texts: list[str] = []
+    controller._handle_interim_text = seen_texts.append
+
+    controller._poll_interim_file()
+
+    assert calls == [(interim_file, INTERIM_POLL_MAX_CHARS)]
+    assert seen_texts == ["tail-only"]
 
 
 def test_update_audio_level_does_not_enqueue_messages():

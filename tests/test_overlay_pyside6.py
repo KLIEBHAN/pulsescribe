@@ -7,6 +7,7 @@ from ui.overlay_pyside6 import (
     FRAME_MS,
     FRAME_MS_ACTIVE,
     FRAME_MS_FEEDBACK,
+    INTERIM_POLL_MAX_CHARS,
     PySide6OverlayController,
     PySide6OverlayWidget,
 )
@@ -106,6 +107,33 @@ def test_poll_interim_file_uses_mtime_cache(tmp_path):
     PySide6OverlayController._poll_interim_file(controller)
     assert controller._last_interim_mtime_ns is None
     assert controller._last_interim_text == ""
+
+
+def test_poll_interim_file_reads_tail_text_only(tmp_path, monkeypatch):
+    interim_file = tmp_path / "interim.txt"
+    interim_file.write_text("full interim payload", encoding="utf-8")
+
+    calls: list[tuple[object, int]] = []
+
+    monkeypatch.setattr(
+        "ui.overlay_pyside6.read_file_tail_text",
+        lambda path, *, max_chars, errors="replace", **_kwargs: (
+            calls.append((path, max_chars)),
+            "tail-only",
+        )[1],
+    )
+
+    controller = PySide6OverlayController.__new__(PySide6OverlayController)
+    controller._running = True
+    controller._interim_file = interim_file
+    controller._widget = _FakeWidget()
+    controller._last_interim_text = ""
+    controller._last_interim_mtime_ns = None
+
+    PySide6OverlayController._poll_interim_file(controller)
+
+    assert calls == [(interim_file, INTERIM_POLL_MAX_CHARS)]
+    assert controller._widget.seen_interim == ["tail-only"]
 
 
 def test_frame_interval_ms_is_state_aware():
