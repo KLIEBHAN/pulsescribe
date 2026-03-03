@@ -62,6 +62,7 @@ from utils.log_tail import (
 )
 from utils.onboarding import OnboardingStep
 from utils.version import get_app_version
+from utils.env import parse_bool
 
 logger = logging.getLogger("pulsescribe.settings")
 
@@ -100,6 +101,14 @@ LIGHTNING_QUANT_OPTIONS = ["none", "8bit", "4bit"]
 # =============================================================================
 # Helper Functions
 # =============================================================================
+
+
+def _env_bool_default(value: str | None, default: bool) -> bool:
+    """Parst boolsche ENV-Werte robust mit Default-Fallback."""
+    parsed = parse_bool(value)
+    if parsed is None:
+        return default
+    return parsed
 
 
 def create_card(
@@ -2011,7 +2020,9 @@ class SettingsWindow(QDialog):
         # Streaming
         streaming = get_env_setting("PULSESCRIBE_STREAMING")
         if self._streaming_checkbox:
-            self._streaming_checkbox.setChecked(streaming != "false")
+            self._streaming_checkbox.setChecked(
+                _env_bool_default(streaming, default=True)
+            )
 
         # Advanced: Device
         device = get_env_setting("PULSESCRIBE_DEVICE") or "auto"
@@ -2096,7 +2107,7 @@ class SettingsWindow(QDialog):
         # Refine
         refine = get_env_setting("PULSESCRIBE_REFINE")
         if self._refine_checkbox:
-            self._refine_checkbox.setChecked(refine == "true")
+            self._refine_checkbox.setChecked(_env_bool_default(refine, default=False))
 
         # Refine Provider
         provider = get_env_setting("PULSESCRIBE_REFINE_PROVIDER") or "groq"
@@ -2113,17 +2124,19 @@ class SettingsWindow(QDialog):
         # Overlay
         overlay = get_env_setting("PULSESCRIBE_OVERLAY")
         if self._overlay_checkbox:
-            self._overlay_checkbox.setChecked(overlay != "false")
+            self._overlay_checkbox.setChecked(_env_bool_default(overlay, default=True))
 
         # RTF Display
         rtf = get_env_setting("PULSESCRIBE_SHOW_RTF")
         if self._rtf_checkbox:
-            self._rtf_checkbox.setChecked(rtf == "true")
+            self._rtf_checkbox.setChecked(_env_bool_default(rtf, default=False))
 
         # Clipboard Restore
         clipboard_restore = get_env_setting("PULSESCRIBE_CLIPBOARD_RESTORE")
         if self._clipboard_restore_checkbox:
-            self._clipboard_restore_checkbox.setChecked(clipboard_restore == "true")
+            self._clipboard_restore_checkbox.setChecked(
+                _env_bool_default(clipboard_restore, default=False)
+            )
 
         # Hotkeys
         toggle = get_env_setting("PULSESCRIBE_TOGGLE_HOTKEY") or ""
