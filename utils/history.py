@@ -9,9 +9,13 @@ import logging
 from datetime import datetime
 
 from config import USER_CONFIG_DIR
+from utils.log_tail import read_file_tail_lines
 
 HISTORY_FILE = USER_CONFIG_DIR / "history.jsonl"
 MAX_HISTORY_SIZE_MB = 10  # Max file size before rotation
+_RECENT_SCAN_BYTES_MIN = 128_000
+_RECENT_SCAN_BYTES_MAX = 4_000_000
+_RECENT_LINES_FACTOR = 3
 
 logger = logging.getLogger(__name__)
 
@@ -104,28 +108,53 @@ def get_recent_transcripts(count: int = 10) -> list[dict]:
     Returns:
         Liste von Transkript-Dictionaries (neueste zuerst)
     """
-    if not HISTORY_FILE.exists():
+    if count <= 0 or not HISTORY_FILE.exists():
         return []
 
     try:
-        lines = HISTORY_FILE.read_text(encoding="utf-8").splitlines()
-        entries = []
+        tail_max_lines = max(count * _RECENT_LINES_FACTOR, count + 10)
+        tail_max_scan_bytes = min(
+            _RECENT_SCAN_BYTES_MAX,
+            max(_RECENT_SCAN_BYTES_MIN, count * 4096),
+        )
 
-        # Parse from end (most recent first)
-        for line in reversed(lines[-count:]):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entries.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
+        tail_text = read_file_tail_lines(
+            HISTORY_FILE,
+            max_lines=tail_max_lines,
+            errors="replace",
+            max_scan_bytes=tail_max_scan_bytes,
+        )
+        entries = _parse_recent_entries(tail_text.splitlines(), count)
+        if len(entries) >= count:
+            return entries
+
+        # Fallback für sehr lange Einzelzeilen oder ungewöhnlich große JSON-Objekte.
+        file_size = HISTORY_FILE.stat().st_size
+        if file_size > tail_max_scan_bytes:
+            full_text = HISTORY_FILE.read_text(encoding="utf-8")
+            return _parse_recent_entries(full_text.splitlines(), count)
 
         return entries
 
     except Exception as e:
         logger.warning(f"Failed to read history: {e}")
         return []
+
+
+def _parse_recent_entries(lines: list[str], count: int) -> list[dict]:
+    """Parst JSONL-Zeilen rückwärts und liefert max. ``count`` gültige Einträge."""
+    entries: list[dict] = []
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entries.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+        if len(entries) >= count:
+            break
+    return entries
 
 
 def clear_history() -> bool:

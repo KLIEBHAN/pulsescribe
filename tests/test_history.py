@@ -114,6 +114,46 @@ class TestGetRecentTranscripts:
         assert len(result) == 3
         assert result[0]["text"] == "Entry 9"
 
+    def test_get_non_positive_count_returns_empty(self, history_file):
+        """Nicht-positive count-Werte liefern keine Einträge."""
+        from utils.history import get_recent_transcripts, save_transcript
+
+        save_transcript("Entry")
+
+        assert get_recent_transcripts(count=0) == []
+        assert get_recent_transcripts(count=-5) == []
+
+    def test_get_recent_prefers_tail_read_over_full_read(self, history_file, monkeypatch):
+        """Normale Reads sollen ohne Full-File read_text auskommen."""
+        from utils.history import get_recent_transcripts, save_transcript
+
+        save_transcript("First")
+        save_transcript("Second")
+        save_transcript("Third")
+
+        def fail_read_text(self, *args, **kwargs):
+            raise AssertionError("full read_text should not be used for small tail reads")
+
+        monkeypatch.setattr("pathlib.Path.read_text", fail_read_text)
+        result = get_recent_transcripts(count=2)
+
+        assert [entry["text"] for entry in result] == ["Third", "Second"]
+
+    def test_get_recent_falls_back_to_full_read_when_tail_insufficient(
+        self, history_file, monkeypatch
+    ):
+        """Fallback auf Full-Read stellt Korrektheit bei kleinem Tail-Scan sicher."""
+        from utils.history import get_recent_transcripts, save_transcript
+
+        save_transcript("First")
+        save_transcript("Second")
+
+        monkeypatch.setattr("utils.history._RECENT_SCAN_BYTES_MIN", 10)
+        monkeypatch.setattr("utils.history._RECENT_SCAN_BYTES_MAX", 10)
+
+        result = get_recent_transcripts(count=1)
+        assert [entry["text"] for entry in result] == ["Second"]
+
 
 class TestClearHistory:
     """Tests für clear_history()."""
