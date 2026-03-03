@@ -426,3 +426,52 @@ class TestWelcomeTranscriptsRefreshBehavior:
         assert ctrl._last_transcripts_text == "new text"
         assert ctrl._transcripts_count_label.value == "3 entries"
         ctrl._scroll_transcripts_to_bottom.assert_not_called()
+
+
+class TestWelcomeLogsRefreshBehavior:
+    def test_refresh_logs_skips_file_read_when_signature_unchanged(self, monkeypatch):
+        import ui.welcome as welcome_mod
+
+        ctrl = WelcomeController.__new__(WelcomeController)
+        ctrl._logs_text_view = _FakeTranscriptsTextView("cached logs", doc_height=600)
+        ctrl._logs_scroll_view = _FakeTranscriptsScrollView(
+            _FakeClipView(y=100, height=240)
+        )
+        ctrl._last_logs_text = "cached logs"
+        ctrl._last_logs_signature = (1, 2)
+        ctrl._get_logs_text = MagicMock(
+            side_effect=AssertionError("log tail should not be read")
+        )
+        ctrl._scroll_logs_to_bottom = MagicMock()
+        ctrl._restore_logs_scroll_position = MagicMock()
+
+        monkeypatch.setattr(welcome_mod, "get_file_signature", lambda _path: (1, 2))
+
+        ctrl._refresh_logs(scroll_to_bottom=False)
+
+        ctrl._get_logs_text.assert_not_called()
+        assert ctrl._logs_text_view.set_calls == []
+        ctrl._scroll_logs_to_bottom.assert_not_called()
+        ctrl._restore_logs_scroll_position.assert_not_called()
+
+    def test_refresh_logs_updates_signature_even_when_text_unchanged(self, monkeypatch):
+        import ui.welcome as welcome_mod
+
+        ctrl = WelcomeController.__new__(WelcomeController)
+        ctrl._logs_text_view = _FakeTranscriptsTextView("same logs", doc_height=600)
+        ctrl._logs_scroll_view = _FakeTranscriptsScrollView(
+            _FakeClipView(y=80, height=220)
+        )
+        ctrl._last_logs_text = "same logs"
+        ctrl._last_logs_signature = (1, 2)
+        ctrl._get_logs_text = MagicMock(return_value="same logs")
+        ctrl._scroll_logs_to_bottom = MagicMock()
+        ctrl._restore_logs_scroll_position = MagicMock()
+
+        monkeypatch.setattr(welcome_mod, "get_file_signature", lambda _path: (3, 4))
+
+        ctrl._refresh_logs(scroll_to_bottom=False)
+
+        ctrl._get_logs_text.assert_called_once()
+        assert ctrl._logs_text_view.set_calls == []
+        assert ctrl._last_logs_signature == (3, 4)

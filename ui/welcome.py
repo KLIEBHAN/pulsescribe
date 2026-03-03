@@ -11,7 +11,11 @@ from ui.hotkey_card import HotkeyCard
 from utils.env import parse_bool
 from utils.hotkey_recording import HotkeyRecorder
 from utils.local_backend import normalize_local_backend, should_remove_local_backend_env
-from utils.log_tail import read_file_tail_text, should_auto_refresh_logs
+from utils.log_tail import (
+    get_file_signature,
+    read_file_tail_text,
+    should_auto_refresh_logs,
+)
 from utils.presets import LOCAL_PRESET_BASE, LOCAL_PRESETS, LOCAL_PRESET_OPTIONS
 from utils.preferences import (
     apply_hotkey_setting,
@@ -153,6 +157,7 @@ class WelcomeController:
         self._logs_auto_refresh_timer = None
         self._logs_finder_handler = None
         self._last_logs_text = None
+        self._last_logs_signature = None
         self._last_transcripts_text = None
         # Logs/Transcripts segmented control
         self._logs_segment_control = None
@@ -2186,6 +2191,7 @@ class WelcomeController:
         initial_logs_text = self._get_logs_text()
         text_view.setString_(initial_logs_text)
         self._last_logs_text = initial_logs_text
+        self._last_logs_signature = get_file_signature(LOG_FILE)
         scroll.setDocumentView_(text_view)
         logs_container.addSubview_(scroll)
         self._logs_text_view = text_view
@@ -2509,8 +2515,14 @@ class WelcomeController:
         """Aktualisiert die Log-Anzeige mit scroll-schonendem Verhalten."""
         if self._logs_text_view:
             try:
+                signature = get_file_signature(LOG_FILE)
+                previous_signature = getattr(self, "_last_logs_signature", None)
+                if signature is not None and signature == previous_signature:
+                    return
+
                 log_text = self._get_logs_text()
                 if log_text == self._last_logs_text:
+                    self._last_logs_signature = signature
                     return
 
                 previous_y = 0.0
@@ -2522,6 +2534,7 @@ class WelcomeController:
                 was_near_bottom = self._is_logs_near_bottom()
                 self._logs_text_view.setString_(log_text)
                 self._last_logs_text = log_text
+                self._last_logs_signature = signature
 
                 if scroll_to_bottom or was_near_bottom:
                     self._scroll_logs_to_bottom()
