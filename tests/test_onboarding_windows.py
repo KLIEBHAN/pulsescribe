@@ -1,5 +1,7 @@
 import pytest
 import threading
+import types
+import sys
 
 pytest.importorskip("PySide6")
 
@@ -194,6 +196,49 @@ def test_start_hotkey_recording_uses_qt_fallback_when_pynput_missing(monkeypatch
     assert wizard._using_qt_grab is True
     assert grabbed == [True]
     assert focused == [True]
+    assert "Qt-Fallback" in wizard._hotkey_status_label.text
+
+
+def test_start_hotkey_recording_falls_back_when_listener_start_fails(monkeypatch):
+    import ui.onboarding_wizard_windows as wizard_mod
+
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+    wizard._toggle_input = _FakeField("ctrl+alt+r")
+    wizard._hold_input = _FakeField("")
+    wizard._recording_field = None
+    wizard._hotkey_recorded = False
+    wizard._using_qt_grab = False
+    wizard._pressed_keys = set()
+    wizard._pressed_keys_lock = threading.Lock()
+    wizard._hotkey_status_label = _FakeLabel()
+    wizard._hotkey_listener = None
+
+    grabbed = []
+    focused = []
+    wizard.grabKeyboard = lambda: grabbed.append(True)
+    wizard.setFocus = lambda: focused.append(True)
+    wizard.releaseKeyboard = lambda: None
+
+    class _FailingListener:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("hook unavailable")
+
+    fake_keyboard = types.SimpleNamespace(Listener=_FailingListener)
+    monkeypatch.setattr(wizard_mod, "get_pynput_key_map", lambda: (True, {}))
+    monkeypatch.setitem(
+        sys.modules,
+        "pynput",
+        types.SimpleNamespace(keyboard=fake_keyboard),
+    )
+    monkeypatch.setattr(wizard_mod, "get_env_setting", lambda _key: "ctrl+alt+r")
+
+    wizard._start_hotkey_recording("toggle")
+
+    assert wizard._recording_field == "toggle"
+    assert wizard._using_qt_grab is True
+    assert grabbed == [True]
+    assert focused == [True]
+    assert "Listener fehlgeschlagen" in wizard._hotkey_status_label.text
     assert "Qt-Fallback" in wizard._hotkey_status_label.text
 
 

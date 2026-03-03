@@ -1118,38 +1118,53 @@ class OnboardingWizardWindows(QDialog):
         with self._pressed_keys_lock:
             self._pressed_keys.clear()
 
+        self._set_hotkey_status(
+            "Drücke Hotkey und bestätige mit Enter (Esc = Abbrechen).",
+            "text_secondary",
+        )
+
         available, key_map = get_pynput_key_map()
         if not available:
             logger.warning("pynput nicht verfügbar, nutze Qt-Fallback")
-            self._using_qt_grab = True
-            self.grabKeyboard()
-            self._set_hotkey_status(
-                "pynput nicht verfügbar: Win-Taste evtl. nicht erkennbar (Qt-Fallback aktiv).",
-                "warning",
+            self._activate_qt_hotkey_fallback(
+                "pynput nicht verfügbar: Win-Taste evtl. nicht erkennbar."
             )
-            self.setFocus()
             return
 
-        from pynput import keyboard
+        try:
+            from pynput import keyboard
 
-        def on_press(key):
-            key_name = self._pynput_key_to_string(key, key_map)
-            if key_name and key_name not in ("enter", "return", "esc", "escape"):
-                with self._pressed_keys_lock:
-                    self._pressed_keys.add(key_name)
-                self._hotkey_recorded = True
-                self._update_hotkey_field_from_pressed_keys()
+            def on_press(key):
+                key_name = self._pynput_key_to_string(key, key_map)
+                if key_name and key_name not in ("enter", "return", "esc", "escape"):
+                    with self._pressed_keys_lock:
+                        self._pressed_keys.add(key_name)
+                    self._hotkey_recorded = True
+                    self._update_hotkey_field_from_pressed_keys()
 
-        def on_release(key):
-            key_name = self._pynput_key_to_string(key, key_map)
-            if key_name:
-                with self._pressed_keys_lock:
-                    self._pressed_keys.discard(key_name)
+            def on_release(key):
+                key_name = self._pynput_key_to_string(key, key_map)
+                if key_name:
+                    with self._pressed_keys_lock:
+                        self._pressed_keys.discard(key_name)
 
-        self._hotkey_listener = keyboard.Listener(
-            on_press=on_press, on_release=on_release
-        )
-        self._hotkey_listener.start()
+            self._hotkey_listener = keyboard.Listener(
+                on_press=on_press, on_release=on_release
+            )
+            self._hotkey_listener.start()
+            self.setFocus()
+        except Exception as e:
+            logger.warning(f"pynput Listener fehlgeschlagen: {e}, nutze Qt-Fallback")
+            self._hotkey_listener = None
+            self._activate_qt_hotkey_fallback(
+                "pynput Listener fehlgeschlagen: Win-Taste evtl. nicht erkennbar."
+            )
+
+    def _activate_qt_hotkey_fallback(self, message_prefix: str) -> None:
+        """Aktiviert Qt-Keyboard-Capture als Fallback."""
+        self._using_qt_grab = True
+        self.grabKeyboard()
+        self._set_hotkey_status(f"{message_prefix} (Qt-Fallback aktiv).", "warning")
         self.setFocus()
 
     def _pynput_key_to_string(self, key, key_map: dict) -> str:
