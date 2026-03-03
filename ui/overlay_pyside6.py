@@ -13,7 +13,6 @@ GPU-beschleunigtes Overlay mit:
 
 import ctypes
 import logging
-import math
 import sys
 import time
 from pathlib import Path
@@ -26,7 +25,6 @@ from PySide6.QtCore import (
     QRectF,
     QTimer,
     Qt,
-    Q_ARG,
     Signal,
     Slot,
 )
@@ -54,7 +52,6 @@ from ui.animation import (
     BAR_WIDTH,
     BAR_GAP,
     BAR_MIN_HEIGHT,
-    BAR_MAX_HEIGHT,
 )
 
 logger = logging.getLogger("pulsescribe.overlay")
@@ -74,6 +71,8 @@ WINDOW_MARGIN_BOTTOM = 60
 
 FPS = 60
 FRAME_MS = 1000 // FPS  # ~16ms
+FRAME_MS_ACTIVE = 1000 // 30  # 30 FPS für nicht-kritische Animationen
+FRAME_MS_FEEDBACK = 1000 // 20  # 20 FPS für kurze DONE/ERROR-Phase
 
 # =============================================================================
 # Farben
@@ -528,12 +527,27 @@ class PySide6OverlayWidget(QWidget):
     # =========================================================================
 
     def _start_animation(self):
+        self._update_animation_timer_interval()
         if not self._animation_timer.isActive():
             self._animation_start = time.perf_counter()
-            self._animation_timer.start(FRAME_MS)
+            self._animation_timer.start(self._frame_interval_ms())
 
     def _stop_animation(self):
         self._animation_timer.stop()
+
+    def _frame_interval_ms(self) -> int:
+        """Gibt ein state-abhängiges Frame-Intervall zurück."""
+        if self._state == "RECORDING":
+            return FRAME_MS
+        if self._state in ("DONE", "ERROR"):
+            return FRAME_MS_FEEDBACK
+        return FRAME_MS_ACTIVE
+
+    def _update_animation_timer_interval(self) -> None:
+        """Passt die Animation-FPS an den aktuellen Overlay-State an."""
+        target_interval = self._frame_interval_ms()
+        if self._animation_timer.interval() != target_interval:
+            self._animation_timer.setInterval(target_interval)
 
     @Slot()
     def _animate_frame(self):
