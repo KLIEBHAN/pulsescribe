@@ -50,6 +50,7 @@ from utils.preferences import (
     set_show_welcome_on_startup,
 )
 from utils.local_backend import normalize_local_backend, should_remove_local_backend_env
+from utils.log_tail import read_file_tail_lines
 from utils.onboarding import OnboardingStep
 
 logger = logging.getLogger("pulsescribe.settings")
@@ -1679,26 +1680,35 @@ class SettingsWindow(QDialog):
         try:
             from config import LOG_FILE
 
-            if LOG_FILE.exists() and self._logs_viewer:
-                lines = LOG_FILE.read_text(encoding="utf-8", errors="replace").split(
-                    "\n"
-                )
+            if not self._logs_viewer:
+                return
 
-                # Check if we are at the bottom before updating
+            if not LOG_FILE.exists():
+                self._logs_viewer.setPlainText(
+                    "No logs yet.\n\nLog file will appear here:\n" + str(LOG_FILE)
+                )
+                return
+
+            # Check if we are at the bottom before updating
+            scrollbar = self._logs_viewer.verticalScrollBar()
+            # Consider "at bottom" if within 10 pixels of maximum or if maximum is 0 (initial load)
+            was_at_bottom = (
+                scrollbar.maximum() == 0
+                or scrollbar.value() >= scrollbar.maximum() - 10
+            )
+
+            # Letzte 100 Zeilen (effizientes File-Tailing statt Full-Read)
+            log_text = read_file_tail_lines(
+                LOG_FILE,
+                max_lines=100,
+                errors="replace",
+            )
+            self._logs_viewer.setPlainText(log_text)
+
+            # Restore bottom position if we were there
+            if was_at_bottom:
                 scrollbar = self._logs_viewer.verticalScrollBar()
-                # Consider "at bottom" if within 10 pixels of maximum or if maximum is 0 (initial load)
-                was_at_bottom = (
-                    scrollbar.maximum() == 0
-                    or scrollbar.value() >= scrollbar.maximum() - 10
-                )
-
-                # Letzte 100 Zeilen
-                self._logs_viewer.setPlainText("\n".join(lines[-100:]))
-
-                # Restore bottom position if we were there
-                if was_at_bottom:
-                    scrollbar = self._logs_viewer.verticalScrollBar()
-                    scrollbar.setValue(scrollbar.maximum())
+                scrollbar.setValue(scrollbar.maximum())
         except Exception as e:
             logger.error(f"Logs laden fehlgeschlagen: {e}")
 

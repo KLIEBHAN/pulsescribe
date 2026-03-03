@@ -11,6 +11,7 @@ from ui.hotkey_card import HotkeyCard
 from utils.env import parse_bool
 from utils.hotkey_recording import HotkeyRecorder
 from utils.local_backend import normalize_local_backend, should_remove_local_backend_env
+from utils.log_tail import read_file_tail_text
 from utils.presets import LOCAL_PRESET_BASE, LOCAL_PRESETS, LOCAL_PRESET_OPTIONS
 from utils.preferences import (
     apply_hotkey_setting,
@@ -2348,10 +2349,11 @@ class WelcomeController:
         try:
             if not LOG_FILE.exists():
                 return "No logs yet.\n\nLog file will appear at:\n" + str(LOG_FILE)
-            text = LOG_FILE.read_text(encoding="utf-8", errors="ignore")
-            if len(text) > max_chars:
-                return "... (truncated)\n\n" + text[-max_chars:]
-            return text
+            return read_file_tail_text(
+                LOG_FILE,
+                max_chars=max_chars,
+                errors="ignore",
+            )
         except Exception as e:
             return f"Could not read logs: {e}"
 
