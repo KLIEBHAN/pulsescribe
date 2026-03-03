@@ -845,7 +845,9 @@ class OnboardingWizardWindows(QDialog):
         # Show "connecting" state while waiting for daemon acknowledgment
         self._set_test_status("Verbinde mit PulseScribe...", "text_secondary")
         self._test_start_btn and self._test_start_btn.setVisible(False)
-        self._test_stop_btn and self._test_stop_btn.setVisible(True)
+        stop_btn = getattr(self, "_test_stop_btn", None)
+        stop_btn and stop_btn.setVisible(True)
+        stop_btn and stop_btn.setEnabled(False)
         self._test_notice and self._test_notice.setVisible(False)
 
         # Poll for daemon response every 200ms
@@ -860,15 +862,23 @@ class OnboardingWizardWindows(QDialog):
         """Stop test dictation via IPC."""
         from utils.ipc import CMD_STOP_TEST
 
-        if self._ipc_client and self._ipc_test_cmd_id:
-            self._ipc_stop_requested = True
-            self._ipc_recording_polls_after_stop = 0
-            self._ipc_client.send_command(CMD_STOP_TEST)
+        if not self._ipc_client or not self._ipc_test_cmd_id:
+            return
+
+        # Verhindert Race: Stop erst erlauben, wenn Daemon die Aufnahme bestätigt.
+        if not self._ipc_seen_recording:
+            self._set_test_status("Warte auf Aufnahme-Start...", "text_secondary")
+            return
+
+        self._ipc_stop_requested = True
+        self._ipc_recording_polls_after_stop = 0
+        self._ipc_client.send_command(CMD_STOP_TEST)
 
         if self._test_status_label:
             self._test_status_label.setText("Wird gestoppt...")
-        if self._test_stop_btn:
-            self._test_stop_btn.setEnabled(False)
+        stop_btn = getattr(self, "_test_stop_btn", None)
+        if stop_btn:
+            stop_btn.setEnabled(False)
 
     def _poll_ipc_response(self) -> None:
         """Poll for IPC response from daemon."""
@@ -908,6 +918,9 @@ class OnboardingWizardWindows(QDialog):
 
         if status == STATUS_RECORDING:
             self._ipc_seen_recording = True
+            stop_btn = getattr(self, "_test_stop_btn", None)
+            if stop_btn:
+                stop_btn.setEnabled(True)
 
             if status != self._ipc_last_status:
                 self._set_test_status("Aufnahme läuft... Sprich jetzt!", "accent")

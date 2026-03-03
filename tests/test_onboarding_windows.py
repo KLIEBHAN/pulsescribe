@@ -19,12 +19,16 @@ class _FakeLabel:
     def __init__(self):
         self.text = ""
         self.style = ""
+        self.visible = True
 
     def setText(self, text: str) -> None:
         self.text = text
 
     def setStyleSheet(self, style: str) -> None:
         self.style = style
+
+    def setVisible(self, visible: bool) -> None:
+        self.visible = visible
 
 
 class _FakeField:
@@ -353,6 +357,85 @@ def test_start_ipc_test_ignores_duplicate_start():
     wizard._start_ipc_test()
 
 
+def test_start_ipc_test_disables_stop_button_until_recording_ack():
+    commands: list[str] = []
+
+    class _FakeIPCClient:
+        def send_command(self, command: str) -> str:
+            commands.append(command)
+            return "cmd-1"
+
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+    wizard._ipc_test_cmd_id = None
+    wizard._ipc_client = _FakeIPCClient()
+    wizard._ipc_poll_timer = types.SimpleNamespace(
+        start=lambda _ms: None,
+        stop=lambda: None,
+    )
+    wizard._ipc_seen_recording = False
+    wizard._ipc_stop_requested = False
+    wizard._ipc_recording_polls_after_stop = 0
+    wizard._ipc_last_status = None
+    wizard._test_status_label = _FakeLabel()
+    wizard._test_start_btn = _FakeButton()
+    wizard._test_stop_btn = _FakeButton()
+    wizard._test_notice = _FakeLabel()
+    wizard._set_test_status = lambda *_args, **_kwargs: None
+
+    wizard._start_ipc_test()
+
+    assert commands == ["start_test"]
+    assert wizard._test_stop_btn.visible is True
+    assert wizard._test_stop_btn.enabled is False
+
+
+def test_stop_ipc_test_requires_recording_ack_before_sending_command():
+    commands: list[str] = []
+    statuses: list[tuple[str, str]] = []
+
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+    wizard._ipc_client = types.SimpleNamespace(
+        send_command=lambda cmd: commands.append(cmd)
+    )
+    wizard._ipc_test_cmd_id = "cmd-1"
+    wizard._ipc_seen_recording = False
+    wizard._ipc_stop_requested = False
+    wizard._ipc_recording_polls_after_stop = 0
+    wizard._test_status_label = _FakeLabel()
+    wizard._test_stop_btn = _FakeButton()
+    wizard._set_test_status = lambda text, color: statuses.append((text, color))
+
+    wizard._stop_ipc_test()
+
+    assert commands == []
+    assert statuses == [("Warte auf Aufnahme-Start...", "text_secondary")]
+    assert wizard._ipc_stop_requested is False
+    assert wizard._test_stop_btn.enabled is True
+
+
+def test_stop_ipc_test_sends_stop_command_after_recording_ack():
+    commands: list[str] = []
+
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+    wizard._ipc_client = types.SimpleNamespace(
+        send_command=lambda cmd: commands.append(cmd)
+    )
+    wizard._ipc_test_cmd_id = "cmd-1"
+    wizard._ipc_seen_recording = True
+    wizard._ipc_stop_requested = False
+    wizard._ipc_recording_polls_after_stop = 9
+    wizard._test_status_label = _FakeLabel()
+    wizard._test_stop_btn = _FakeButton()
+
+    wizard._stop_ipc_test()
+
+    assert commands == ["stop_test"]
+    assert wizard._ipc_stop_requested is True
+    assert wizard._ipc_recording_polls_after_stop == 0
+    assert wizard._test_status_label.text == "Wird gestoppt..."
+    assert wizard._test_stop_btn.enabled is False
+
+
 def test_poll_ipc_response_timeout_after_stop_maps_to_no_speech():
     wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
     wizard._ipc_test_cmd_id = "cmd-1"
@@ -421,6 +504,8 @@ def test_poll_ipc_response_repeated_recording_status_avoids_repainting():
     wizard._ipc_stop_requested = False
     wizard._ipc_recording_polls_after_stop = 0
     wizard._ipc_last_status = "recording"
+    wizard._test_stop_btn = _FakeButton()
+    wizard._test_stop_btn.enabled = False
 
     status_updates: list[tuple[str, str]] = []
     wizard._set_test_status = lambda text, color: status_updates.append((text, color))
@@ -435,3 +520,4 @@ def test_poll_ipc_response_repeated_recording_status_avoids_repainting():
     assert status_updates == []
     assert wizard._ipc_poll_count == 0
     assert wizard._ipc_seen_recording is True
+    assert wizard._test_stop_btn.enabled is True
