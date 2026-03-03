@@ -1,7 +1,12 @@
 from pathlib import Path
 import queue
+import time
+import types
 
 from ui.overlay_windows import (
+    FRAME_MS,
+    FRAME_MS_ACTIVE,
+    FRAME_MS_FEEDBACK,
     QUEUE_POLL_ACTIVE_MS,
     QUEUE_POLL_IDLE_MS,
     STATE_COLORS,
@@ -189,3 +194,34 @@ def test_handle_state_change_restarts_animation_loop_when_overlay_becomes_active
     controller._handle_state_change("RECORDING", None)
 
     assert starts == [True]
+
+
+def test_frame_interval_ms_is_state_aware():
+    controller = WindowsOverlayController.__new__(WindowsOverlayController)
+
+    controller._state = "RECORDING"
+    assert controller._frame_interval_ms() == FRAME_MS
+
+    controller._state = "TRANSCRIBING"
+    assert controller._frame_interval_ms() == FRAME_MS_ACTIVE
+
+    controller._state = "DONE"
+    assert controller._frame_interval_ms() == FRAME_MS_FEEDBACK
+
+
+def test_animate_uses_reduced_fps_for_non_recording_states():
+    controller = WindowsOverlayController.__new__(WindowsOverlayController)
+    controller._running = True
+    controller._root = _FakeRoot()
+    controller._state = "TRANSCRIBING"
+    controller._animation_start = time.perf_counter()
+    controller._audio_level = 0.0
+    controller._anim = types.SimpleNamespace(
+        update_level=lambda _level: None,
+        update_agc=lambda: None,
+    )
+    controller._render_bars = lambda _t: None
+
+    controller._animate()
+
+    assert controller._root.after_calls[-1] == FRAME_MS_ACTIVE

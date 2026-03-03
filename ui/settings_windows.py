@@ -196,6 +196,7 @@ class SettingsWindow(QDialog):
 
         # Hotkey Recording State
         self._recording_hotkey_for: str | None = None
+        self._hotkey_recording_previous: dict[str, str] = {"toggle": "", "hold": ""}
         self._pynput_listener = None  # pynput Keyboard Listener
         self._pressed_keys: set = set()  # Aktuell gedrückte Tasten
         self._pressed_keys_lock = threading.Lock()  # Thread-safe Zugriff
@@ -1162,12 +1163,24 @@ class SettingsWindow(QDialog):
 
     def _start_hotkey_recording(self, kind: str):
         """Startet Hotkey-Recording für toggle oder hold."""
+        if not hasattr(self, "_hotkey_recording_previous"):
+            self._hotkey_recording_previous = {"toggle": "", "hold": ""}
+
         # Defensive cleanup: ensure previous low-level capture is fully stopped
         # before starting a new recording session.
         self._stop_pynput_listener()
         self._recording_hotkey_for = kind
         with self._pressed_keys_lock:
             self._pressed_keys.clear()
+
+        active_field = None
+        if kind == "toggle" and hasattr(self, "_toggle_hotkey_field"):
+            active_field = self._toggle_hotkey_field
+        elif kind == "hold" and hasattr(self, "_hold_hotkey_field"):
+            active_field = self._hold_hotkey_field
+        if active_field is not None:
+            self._hotkey_recording_previous[kind] = active_field.text().strip()
+            active_field.setText("")
 
         # Beide Buttons zunächst zurücksetzen (wichtig beim Wechsel zwischen
         # Toggle/Hold ohne vorherige Bestätigung).
@@ -1316,6 +1329,9 @@ class SettingsWindow(QDialog):
         """Beendet Hotkey-Recording."""
         kind = self._recording_hotkey_for
         self._recording_hotkey_for = None
+        previous_hotkey = (
+            self._hotkey_recording_previous.get(kind, "") if kind else ""
+        )
 
         # pynput Listener stoppen
         self._stop_pynput_listener()
@@ -1328,14 +1344,25 @@ class SettingsWindow(QDialog):
             self._hold_record_btn.setText("Record")
             self._hold_record_btn.setStyleSheet("")
 
-        if hotkey_str and kind:
+        target_field = None
+        if kind == "toggle" and self._toggle_hotkey_field:
+            target_field = self._toggle_hotkey_field
+        elif kind == "hold" and self._hold_hotkey_field:
+            target_field = self._hold_hotkey_field
+
+        if hotkey_str and kind and target_field:
             # Hotkey in Feld setzen
-            if kind == "toggle" and self._toggle_hotkey_field:
-                self._toggle_hotkey_field.setText(hotkey_str)
-            elif kind == "hold" and self._hold_hotkey_field:
-                self._hold_hotkey_field.setText(hotkey_str)
+            target_field.setText(hotkey_str)
             self._set_hotkey_status(f"✓ Recorded: {hotkey_str}", "success")
+        elif hotkey_str == "" and kind:
+            if target_field:
+                target_field.setText(previous_hotkey)
+            self._set_hotkey_status(
+                "No key detected - previous hotkey kept.", "warning"
+            )
         else:
+            if target_field:
+                target_field.setText(previous_hotkey)
             self._set_hotkey_status("Recording cancelled", "text_hint")
 
     def _clear_hotkey_field(self, kind: str) -> None:

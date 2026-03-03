@@ -42,6 +42,8 @@ WINDOW_MARGIN_BOTTOM = 60  # Abstand vom unteren Bildschirmrand
 # =============================================================================
 
 FRAME_MS = 1000 // FPS  # ~16ms
+FRAME_MS_ACTIVE = 1000 // 30  # 30 FPS für nicht-kritische Animationen
+FRAME_MS_FEEDBACK = 1000 // 20  # 20 FPS für kurze DONE/ERROR-Phase
 QUEUE_POLL_ACTIVE_MS = 16  # 60Hz während Overlay sichtbar/aktiv
 QUEUE_POLL_IDLE_MS = 50  # Weniger CPU-Last im Idle
 
@@ -485,7 +487,19 @@ class WindowsOverlayController:
             self._anim.update_agc()
 
         self._render_bars(t)
-        self._root.after(FRAME_MS, self._animate)
+        self._root.after(self._frame_interval_ms(), self._animate)
+
+    def _frame_interval_ms(self) -> int:
+        """Gibt ein state-abhängiges Frame-Intervall zurück.
+
+        RECORDING bleibt bei 60 FPS für maximale Responsiveness.
+        Andere States laufen mit reduzierter Framerate, um CPU-Last zu senken.
+        """
+        if self._state == "RECORDING":
+            return FRAME_MS
+        if self._state in ("DONE", "ERROR"):
+            return FRAME_MS_FEEDBACK
+        return FRAME_MS_ACTIVE
 
     def _render_bars(self, t: float) -> None:
         if not self._canvas:
