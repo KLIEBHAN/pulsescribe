@@ -47,8 +47,10 @@ FRAME_MS_ACTIVE = 1000 // 30  # 30 FPS für nicht-kritische Animationen
 FRAME_MS_FEEDBACK = 1000 // 20  # 20 FPS für kurze DONE/ERROR-Phase
 QUEUE_POLL_ACTIVE_MS = 16  # 60Hz während Overlay sichtbar/aktiv
 QUEUE_POLL_IDLE_MS = 50  # Weniger CPU-Last im Idle
+QUEUE_MAX_MESSAGES_PER_TICK = 200
 INTERIM_QUEUE_BACKPRESSURE_LIMIT = 120
 INTERIM_POLL_MAX_CHARS = 512
+INTERIM_POLL_INTERVAL_MS = 200
 
 # =============================================================================
 # Farben
@@ -109,6 +111,8 @@ class WindowsOverlayController:
         self._interim_file = interim_file
         self._last_interim_text = ""
         self._last_interim_mtime_ns: int | None = None
+        self._interim_polling_active = False
+        self._interim_poll_after_id: str | None = None
 
     # =========================================================================
     # Public API (thread-safe)
@@ -145,12 +149,11 @@ class WindowsOverlayController:
         self._animation_start = time.perf_counter()
         self._poll_queue()
         self._start_animation_loop()
-        if self._interim_file:
-            self._poll_interim_file()
         self._root.mainloop()
 
     def stop(self) -> None:
         self._running = False
+        self._set_interim_polling_active(False)
         if self._root:
             try:
                 self._root.after(0, self._root.destroy)
@@ -298,10 +301,12 @@ class WindowsOverlayController:
     def _poll_queue(self) -> None:
         processed_message = False
         latest_interim_text: str | None = None
+        processed_count = 0
         try:
-            while True:
+            while processed_count < QUEUE_MAX_MESSAGES_PER_TICK:
                 msg_type, value, text = self._queue.get_nowait()
                 processed_message = True
+                processed_count += 1
                 if msg_type == "state":
                     self._handle_state_change(value, text)
                 elif msg_type == "level":
@@ -323,15 +328,20 @@ class WindowsOverlayController:
             self._root.after(poll_ms, self._poll_queue)
 
     def _poll_interim_file(self) -> None:
+        self._interim_poll_after_id = None
         if not self._running or not self._root or not self._interim_file:
+            return
+        if not self._interim_polling_active:
             return
 
         if self._state == "RECORDING" and self._interim_file.exists():
             try:
                 current_mtime_ns = self._interim_file.stat().st_mtime_ns
                 if current_mtime_ns == self._last_interim_mtime_ns:
-                    if self._running:
-                        self._root.after(200, self._poll_interim_file)
+                    if self._running and self._interim_polling_active:
+                        self._interim_poll_after_id = self._root.after(
+                            INTERIM_POLL_INTERVAL_MS, self._poll_interim_file
+                        )
                     return
 
                 text = read_file_tail_text(
@@ -346,8 +356,31 @@ class WindowsOverlayController:
             except Exception:
                 pass
 
-        if self._running:
-            self._root.after(200, self._poll_interim_file)  # 200ms wie macOS
+        if self._running and self._interim_polling_active:
+            self._interim_poll_after_id = self._root.after(
+                INTERIM_POLL_INTERVAL_MS, self._poll_interim_file
+            )
+
+    def _set_interim_polling_active(self, active: bool) -> None:
+        if not self._root or not self._interim_file:
+            return
+
+        if active:
+            if self._interim_polling_active:
+                return
+            self._interim_polling_active = True
+            self._interim_poll_after_id = self._root.after(0, self._poll_interim_file)
+            return
+
+        self._interim_polling_active = False
+        if self._interim_poll_after_id is not None:
+            try:
+                self._root.after_cancel(self._interim_poll_after_id)
+            except Exception:
+                pass
+            self._interim_poll_after_id = None
+        self._last_interim_text = ""
+        self._last_interim_mtime_ns = None
 
     # =========================================================================
     # State Handling
@@ -382,6 +415,8 @@ class WindowsOverlayController:
                 font=("Segoe UI", 11),
                 fg=label_color,
             )
+
+        self._set_interim_polling_active(state == "RECORDING")
 
         if state != prev_state:
             self._animation_start = time.perf_counter()

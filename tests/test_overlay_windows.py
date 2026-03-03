@@ -7,8 +7,10 @@ from ui.overlay_windows import (
     FRAME_MS,
     FRAME_MS_ACTIVE,
     FRAME_MS_FEEDBACK,
+    INTERIM_POLL_INTERVAL_MS,
     INTERIM_QUEUE_BACKPRESSURE_LIMIT,
     INTERIM_POLL_MAX_CHARS,
+    QUEUE_MAX_MESSAGES_PER_TICK,
     QUEUE_POLL_ACTIVE_MS,
     QUEUE_POLL_IDLE_MS,
     STATE_COLORS,
@@ -24,11 +26,17 @@ class _FakeRoot:
         self._screen_w = screen_w
         self._screen_h = screen_h
         self.after_calls: list[int] = []
+        self.after_cancel_calls: list[object] = []
+        self._after_id_counter = 0
         self.last_geometry: str | None = None
 
-    def after(self, _ms: int, _callback) -> None:
+    def after(self, _ms: int, _callback) -> str:
         self.after_calls.append(_ms)
-        return
+        self._after_id_counter += 1
+        return f"after-{self._after_id_counter}"
+
+    def after_cancel(self, after_id: object) -> None:
+        self.after_cancel_calls.append(after_id)
 
     def deiconify(self) -> None:
         return
@@ -62,6 +70,8 @@ def _make_controller(interim_file: Path) -> WindowsOverlayController:
     controller._state = "RECORDING"
     controller._last_interim_text = ""
     controller._last_interim_mtime_ns = None
+    controller._interim_polling_active = True
+    controller._interim_poll_after_id = None
     return controller
 
 
@@ -228,6 +238,45 @@ def test_poll_queue_coalesces_interim_messages_to_latest_text():
     assert seen_texts == ["three"]
 
 
+def test_poll_queue_limits_messages_per_tick_to_keep_ui_responsive():
+    controller = WindowsOverlayController.__new__(WindowsOverlayController)
+    controller._running = True
+    controller._root = _FakeRoot()
+    controller._queue = queue.Queue()
+    controller._state = "IDLE"
+    controller._audio_level = 0.0
+    controller._handle_interim_text = lambda *_args: None
+
+    for idx in range(QUEUE_MAX_MESSAGES_PER_TICK + 37):
+        controller._queue.put(("interim", f"msg-{idx}", None))
+
+    controller._poll_queue()
+
+    assert controller._queue.qsize() == 37
+    assert controller._root.after_calls[-1] == QUEUE_POLL_ACTIVE_MS
+
+
+def test_handle_state_change_toggles_interim_polling_for_recording_only(tmp_path):
+    interim_file = tmp_path / "interim.txt"
+    interim_file.write_text("hello", encoding="utf-8")
+
+    controller = WindowsOverlayController(interim_file=interim_file)
+    controller._root = _FakeRoot()
+    controller._label = _FakeLabel()
+    controller._interim_poll_after_id = "after-existing"
+    controller._interim_polling_active = True
+
+    controller._handle_state_change("TRANSCRIBING", None)
+    assert controller._interim_polling_active is False
+    assert controller._root.after_cancel_calls == ["after-existing"]
+    assert controller._last_interim_text == ""
+    assert controller._last_interim_mtime_ns is None
+
+    controller._handle_state_change("RECORDING", None)
+    assert controller._interim_polling_active is True
+    assert controller._root.after_calls[-1] == 0
+
+
 def test_animate_stops_loop_while_idle():
     controller = WindowsOverlayController.__new__(WindowsOverlayController)
     controller._running = True
@@ -283,3 +332,12 @@ def test_animate_uses_reduced_fps_for_non_recording_states():
     controller._animate()
 
     assert controller._root.after_calls[-1] == FRAME_MS_ACTIVE
+
+
+def test_poll_interim_file_uses_configured_interval(tmp_path):
+    interim_file = tmp_path / "interim.txt"
+    interim_file.write_text("hello", encoding="utf-8")
+    controller = _make_controller(interim_file)
+    controller._poll_interim_file()
+
+    assert controller._root.after_calls[-1] == INTERIM_POLL_INTERVAL_MS
