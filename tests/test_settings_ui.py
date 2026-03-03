@@ -1,9 +1,9 @@
 """Tests für Settings-UI Persistierung und Helper-Funktionen."""
 
 import pytest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
-from ui.welcome import _is_env_enabled_default_true
+from ui.welcome import WelcomeController, _is_env_enabled_default_true
 
 
 class TestEnvEnabledDefaultTrue:
@@ -128,3 +128,61 @@ class TestLightningQuantizationMapping:
         else:
             result = "4bit"
         assert result == "4bit"
+
+
+class _FakeContainer:
+    def __init__(self):
+        self.hidden = None
+
+    def setHidden_(self, value):
+        self.hidden = value
+
+
+class TestWelcomeLogsSegmentSwitch:
+    """Tests für Logs/Transcripts Segment-Verhalten im macOS-Settingsfenster."""
+
+    def test_switch_to_logs_shows_logs_and_refreshes(self):
+        ctrl = WelcomeController.__new__(WelcomeController)
+        ctrl._logs_container = _FakeContainer()
+        ctrl._transcripts_container = _FakeContainer()
+        ctrl._refresh_logs = MagicMock()
+        ctrl._refresh_transcripts = MagicMock()
+
+        ctrl._switch_logs_segment(0)
+
+        assert ctrl._logs_container.hidden is False
+        assert ctrl._transcripts_container.hidden is True
+        ctrl._refresh_logs.assert_called_once_with(scroll_to_bottom=True)
+        ctrl._refresh_transcripts.assert_not_called()
+
+    def test_switch_to_transcripts_shows_transcripts_and_refreshes(self):
+        ctrl = WelcomeController.__new__(WelcomeController)
+        ctrl._logs_container = _FakeContainer()
+        ctrl._transcripts_container = _FakeContainer()
+        ctrl._refresh_logs = MagicMock()
+        ctrl._refresh_transcripts = MagicMock()
+
+        ctrl._switch_logs_segment(1)
+
+        assert ctrl._logs_container.hidden is True
+        assert ctrl._transcripts_container.hidden is False
+        ctrl._refresh_transcripts.assert_called_once_with()
+        ctrl._refresh_logs.assert_not_called()
+
+    def test_logs_view_active_when_segment_is_logs(self):
+        ctrl = WelcomeController.__new__(WelcomeController)
+        ctrl._logs_segment_control = type(
+            "_Segment",
+            (),
+            {"selectedSegment": lambda self: 0},
+        )()
+        assert ctrl._is_logs_view_active() is True
+
+    def test_logs_view_inactive_when_segment_is_transcripts(self):
+        ctrl = WelcomeController.__new__(WelcomeController)
+        ctrl._logs_segment_control = type(
+            "_Segment",
+            (),
+            {"selectedSegment": lambda self: 1},
+        )()
+        assert ctrl._is_logs_view_active() is False

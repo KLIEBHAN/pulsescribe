@@ -11,7 +11,7 @@ from ui.hotkey_card import HotkeyCard
 from utils.env import parse_bool
 from utils.hotkey_recording import HotkeyRecorder
 from utils.local_backend import normalize_local_backend, should_remove_local_backend_env
-from utils.log_tail import read_file_tail_text
+from utils.log_tail import read_file_tail_text, should_auto_refresh_logs
 from utils.presets import LOCAL_PRESET_BASE, LOCAL_PRESETS, LOCAL_PRESET_OPTIONS
 from utils.preferences import (
     apply_hotkey_setting,
@@ -152,6 +152,7 @@ class WelcomeController:
         self._logs_auto_checkbox = None
         self._logs_auto_refresh_timer = None
         self._logs_finder_handler = None
+        self._last_logs_text = None
         # Logs/Transcripts segmented control
         self._logs_segment_control = None
         self._logs_segment_handler = None
@@ -2180,7 +2181,9 @@ class WelcomeController:
         tc = text_view.textContainer()
         if tc is not None:
             tc.setWidthTracksTextView_(True)
-        text_view.setString_(self._get_logs_text())
+        initial_logs_text = self._get_logs_text()
+        text_view.setString_(initial_logs_text)
+        self._last_logs_text = initial_logs_text
         scroll.setDocumentView_(text_view)
         logs_container.addSubview_(scroll)
         self._logs_text_view = text_view
@@ -2339,10 +2342,20 @@ class WelcomeController:
             if segment_index == 0:  # Logs
                 self._logs_container.setHidden_(False)
                 self._transcripts_container.setHidden_(True)
+                self._refresh_logs(scroll_to_bottom=True)
             else:  # Transcripts
                 self._logs_container.setHidden_(True)
                 self._transcripts_container.setHidden_(False)
                 self._refresh_transcripts()
+
+    def _is_logs_view_active(self) -> bool:
+        """True, wenn das Logs-Segment aktiv ist."""
+        if self._logs_segment_control:
+            try:
+                return int(self._logs_segment_control.selectedSegment()) == 0
+            except Exception:
+                return True
+        return True
 
     def _get_logs_text(self, max_chars: int = 15000) -> str:
         """Liest einen Ausschnitt der aktuellen Log-Datei."""
@@ -2357,12 +2370,64 @@ class WelcomeController:
         except Exception as e:
             return f"Could not read logs: {e}"
 
-    def _refresh_logs(self) -> None:
-        """Aktualisiert die Log-Anzeige und scrollt nach unten."""
+    def _is_logs_near_bottom(self, tolerance: float = 24.0) -> bool:
+        """Prüft, ob die Logs-Ansicht aktuell nahe am Ende ist."""
+        if not self._logs_scroll_view or not self._logs_text_view:
+            return True
+
+        try:
+            clip_view = self._logs_scroll_view.contentView()
+            if clip_view is None:
+                return True
+            visible = clip_view.documentVisibleRect()
+            doc_height = self._logs_text_view.frame().size.height
+            max_y = max(0.0, doc_height - visible.size.height)
+            return visible.origin.y >= (max_y - max(0.0, tolerance))
+        except Exception:
+            return True
+
+    def _restore_logs_scroll_position(self, previous_y: float) -> None:
+        """Stellt die vorherige vertikale Scroll-Position best effort wieder her."""
+        if not self._logs_scroll_view or not self._logs_text_view:
+            return
+
+        try:
+            from Foundation import NSMakePoint  # type: ignore[import-not-found]
+
+            clip_view = self._logs_scroll_view.contentView()
+            if clip_view is None:
+                return
+            visible = clip_view.documentVisibleRect()
+            doc_height = self._logs_text_view.frame().size.height
+            max_y = max(0.0, doc_height - visible.size.height)
+            target_y = max(0.0, min(previous_y, max_y))
+            clip_view.scrollToPoint_(NSMakePoint(0.0, target_y))
+            self._logs_scroll_view.reflectScrolledClipView_(clip_view)
+        except Exception:
+            pass
+
+    def _refresh_logs(self, *, scroll_to_bottom: bool = True) -> None:
+        """Aktualisiert die Log-Anzeige mit scroll-schonendem Verhalten."""
         if self._logs_text_view:
             try:
-                self._logs_text_view.setString_(self._get_logs_text())
-                self._scroll_logs_to_bottom()
+                log_text = self._get_logs_text()
+                if log_text == self._last_logs_text:
+                    return
+
+                previous_y = 0.0
+                if self._logs_scroll_view:
+                    clip_view = self._logs_scroll_view.contentView()
+                    if clip_view is not None:
+                        previous_y = clip_view.documentVisibleRect().origin.y
+
+                was_near_bottom = self._is_logs_near_bottom()
+                self._logs_text_view.setString_(log_text)
+                self._last_logs_text = log_text
+
+                if scroll_to_bottom or was_near_bottom:
+                    self._scroll_logs_to_bottom()
+                else:
+                    self._restore_logs_scroll_position(previous_y)
             except Exception:
                 pass
 
@@ -2382,8 +2447,14 @@ class WelcomeController:
         self._stop_logs_auto_refresh()
 
         def tick(_timer) -> None:
-            if self._logs_auto_checkbox and self._logs_auto_checkbox.state():
-                self._refresh_logs()
+            enabled = bool(self._logs_auto_checkbox and self._logs_auto_checkbox.state())
+            should_run = should_auto_refresh_logs(
+                enabled=enabled,
+                is_logs_tab_active=True,
+                logs_view_index=0 if self._is_logs_view_active() else 1,
+            )
+            if should_run:
+                self._refresh_logs(scroll_to_bottom=False)
 
         self._logs_auto_refresh_timer = (
             NSTimer.scheduledTimerWithTimeInterval_repeats_block_(2.0, True, tick)
@@ -2795,6 +2866,7 @@ class WelcomeController:
             from AppKit import NSApp  # type: ignore[import-not-found]
 
             NSApp.activateIgnoringOtherApps_(True)
+            self._start_logs_auto_refresh()
 
     def hide(self) -> None:
         """Versteckt Window temporär (ohne zu schließen)."""
@@ -2802,6 +2874,7 @@ class WelcomeController:
         if self._window:
             self._window.orderOut_(None)
         self._stop_setup_permission_auto_refresh()
+        self._stop_logs_auto_refresh()
 
     def close(self) -> None:
         """Schließt Window und markiert Onboarding als gesehen."""
