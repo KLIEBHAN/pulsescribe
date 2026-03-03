@@ -2357,6 +2357,30 @@ class WelcomeController:
                 return True
         return True
 
+    def _is_logs_tab_active(self) -> bool:
+        """True, wenn der Haupttab 'Logs' ausgewählt ist."""
+        if not self._tab_view:
+            return False
+        try:
+            selected_item = self._tab_view.selectedTabViewItem()
+            if selected_item is None:
+                return False
+            identifier = selected_item.identifier()
+            return str(identifier) == "Logs"
+        except Exception:
+            return False
+
+    def _is_window_visible_for_logs(self) -> bool:
+        """True nur wenn das Fenster sichtbar und nicht minimiert ist."""
+        if not self._window:
+            return False
+        try:
+            return bool(self._window.isVisible()) and not bool(
+                self._window.isMiniaturized()
+            )
+        except Exception:
+            return False
+
     def _get_logs_text(self, max_chars: int = 15000) -> str:
         """Liest einen Ausschnitt der aktuellen Log-Datei."""
         try:
@@ -2450,8 +2474,9 @@ class WelcomeController:
             enabled = bool(self._logs_auto_checkbox and self._logs_auto_checkbox.state())
             should_run = should_auto_refresh_logs(
                 enabled=enabled,
-                is_logs_tab_active=True,
+                is_logs_tab_active=self._is_logs_tab_active(),
                 logs_view_index=0 if self._is_logs_view_active() else 1,
+                is_window_visible=self._is_window_visible_for_logs(),
             )
             if should_run:
                 self._refresh_logs(scroll_to_bottom=False)

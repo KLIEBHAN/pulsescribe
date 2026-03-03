@@ -186,3 +186,117 @@ class TestWelcomeLogsSegmentSwitch:
             {"selectedSegment": lambda self: 1},
         )()
         assert ctrl._is_logs_view_active() is False
+
+
+class _FakeTabItem:
+    def __init__(self, identifier):
+        self._identifier = identifier
+
+    def identifier(self):
+        return self._identifier
+
+
+class _FakeTabView:
+    def __init__(self, identifier):
+        self._item = _FakeTabItem(identifier)
+
+    def selectedTabViewItem(self):
+        return self._item
+
+
+class _FakeWindow:
+    def __init__(self, visible: bool, miniaturized: bool):
+        self._visible = visible
+        self._miniaturized = miniaturized
+
+    def isVisible(self):
+        return self._visible
+
+    def isMiniaturized(self):
+        return self._miniaturized
+
+
+class TestWelcomeLogsAutoRefreshGuards:
+    def test_logs_tab_active_detection(self):
+        ctrl = WelcomeController.__new__(WelcomeController)
+        ctrl._tab_view = _FakeTabView("Logs")
+        assert ctrl._is_logs_tab_active() is True
+
+    def test_logs_tab_inactive_detection(self):
+        ctrl = WelcomeController.__new__(WelcomeController)
+        ctrl._tab_view = _FakeTabView("Setup")
+        assert ctrl._is_logs_tab_active() is False
+
+    def test_window_visibility_detection(self):
+        ctrl = WelcomeController.__new__(WelcomeController)
+        ctrl._window = _FakeWindow(visible=True, miniaturized=False)
+        assert ctrl._is_window_visible_for_logs() is True
+
+        ctrl._window = _FakeWindow(visible=True, miniaturized=True)
+        assert ctrl._is_window_visible_for_logs() is False
+
+    def test_auto_refresh_tick_skips_when_logs_tab_not_visible(self, monkeypatch):
+        import sys
+        import types
+
+        captured: dict[str, object] = {}
+
+        class _FakeNSTimer:
+            @staticmethod
+            def scheduledTimerWithTimeInterval_repeats_block_(interval, repeats, block):
+                captured["interval"] = interval
+                captured["repeats"] = repeats
+                captured["tick"] = block
+                return object()
+
+        monkeypatch.setitem(
+            sys.modules,
+            "Foundation",
+            types.SimpleNamespace(NSTimer=_FakeNSTimer),
+        )
+
+        ctrl = WelcomeController.__new__(WelcomeController)
+        ctrl._stop_logs_auto_refresh = lambda: None
+        ctrl._logs_auto_checkbox = type("_Check", (), {"state": lambda self: 1})()
+        ctrl._is_logs_tab_active = lambda: False
+        ctrl._is_logs_view_active = lambda: True
+        ctrl._is_window_visible_for_logs = lambda: True
+        ctrl._refresh_logs = MagicMock()
+
+        ctrl._start_logs_auto_refresh()
+        captured["tick"](None)
+
+        ctrl._refresh_logs.assert_not_called()
+
+    def test_auto_refresh_tick_runs_when_logs_are_visible(self, monkeypatch):
+        import sys
+        import types
+
+        captured: dict[str, object] = {}
+
+        class _FakeNSTimer:
+            @staticmethod
+            def scheduledTimerWithTimeInterval_repeats_block_(interval, repeats, block):
+                captured["interval"] = interval
+                captured["repeats"] = repeats
+                captured["tick"] = block
+                return object()
+
+        monkeypatch.setitem(
+            sys.modules,
+            "Foundation",
+            types.SimpleNamespace(NSTimer=_FakeNSTimer),
+        )
+
+        ctrl = WelcomeController.__new__(WelcomeController)
+        ctrl._stop_logs_auto_refresh = lambda: None
+        ctrl._logs_auto_checkbox = type("_Check", (), {"state": lambda self: 1})()
+        ctrl._is_logs_tab_active = lambda: True
+        ctrl._is_logs_view_active = lambda: True
+        ctrl._is_window_visible_for_logs = lambda: True
+        ctrl._refresh_logs = MagicMock()
+
+        ctrl._start_logs_auto_refresh()
+        captured["tick"](None)
+
+        ctrl._refresh_logs.assert_called_once_with(scroll_to_bottom=False)
