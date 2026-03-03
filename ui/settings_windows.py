@@ -193,6 +193,7 @@ class SettingsWindow(QDialog):
         self._last_logs_text: str | None = None
         self._last_logs_signature: tuple[int, int] | None = None
         self._last_transcripts_text: str | None = None
+        self._last_transcripts_signature: tuple[int, int] | None = None
 
         # Hotkey Recording State
         self._recording_hotkey_for: str | None = None
@@ -1166,6 +1167,25 @@ class SettingsWindow(QDialog):
         if not hasattr(self, "_hotkey_recording_previous"):
             self._hotkey_recording_previous = {"toggle": "", "hold": ""}
 
+        # Bei laufender Aufnahme vorherigen Feldwert wiederherstellen, damit
+        # ein Wechsel zwischen Toggle/Hold nicht versehentlich den alten
+        # Hotkey löscht.
+        previous_kind = getattr(self, "_recording_hotkey_for", None)
+        if previous_kind:
+            previous_value = self._hotkey_recording_previous.get(previous_kind, "")
+            if (
+                previous_kind == "toggle"
+                and hasattr(self, "_toggle_hotkey_field")
+                and self._toggle_hotkey_field is not None
+            ):
+                self._toggle_hotkey_field.setText(previous_value)
+            elif (
+                previous_kind == "hold"
+                and hasattr(self, "_hold_hotkey_field")
+                and self._hold_hotkey_field is not None
+            ):
+                self._hold_hotkey_field.setText(previous_value)
+
         # Defensive cleanup: ensure previous low-level capture is fully stopped
         # before starting a new recording session.
         self._stop_pynput_listener()
@@ -1756,14 +1776,30 @@ class SettingsWindow(QDialog):
         """Aktualisiert Transcripts-Anzeige."""
         try:
             from utils.history import (
+                HISTORY_FILE,
                 format_transcripts_for_display,
                 get_recent_transcripts,
             )
+
+            if not HISTORY_FILE.exists():
+                self._last_transcripts_signature = None
+                self._set_transcripts_text_if_changed("No transcripts yet.")
+                if hasattr(self, "_transcripts_status"):
+                    self._transcripts_status.setText("0 entries")
+                    self._transcripts_status.setStyleSheet(
+                        f"color: {COLORS['text_secondary']};"
+                    )
+                return
+
+            signature = get_file_signature(HISTORY_FILE)
+            if signature is not None and signature == self._last_transcripts_signature:
+                return
 
             entries = get_recent_transcripts(50)  # Letzte 50 Einträge
             self._set_transcripts_text_if_changed(
                 format_transcripts_for_display(entries)
             )
+            self._last_transcripts_signature = signature
 
             if hasattr(self, "_transcripts_status"):
                 self._transcripts_status.setText(f"{len(entries)} entries")

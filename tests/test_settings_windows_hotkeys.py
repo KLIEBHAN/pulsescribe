@@ -141,6 +141,30 @@ def test_start_hotkey_recording_stops_previous_capture():
     assert window._hold_record_btn.text == "Press key..."
 
 
+def test_start_hotkey_recording_restores_previous_field_when_switching_kind():
+    window = _make_window("ctrl+alt+r", "ctrl+alt+space")
+    window._recording_hotkey_for = "toggle"
+    window._hotkey_recording_previous = {
+        "toggle": "ctrl+alt+r",
+        "hold": "ctrl+alt+space",
+    }
+    window._pressed_keys = set()
+    window._pressed_keys_lock = threading.Lock()
+    window._toggle_record_btn = _FakeButton()
+    window._hold_record_btn = _FakeButton()
+
+    window._stop_pynput_listener = lambda: None
+    window._start_pynput_listener = lambda: None
+    window._set_hotkey_status = lambda *_args, **_kwargs: None
+    window.setFocus = lambda: None
+
+    SettingsWindow._start_hotkey_recording(window, "hold")
+
+    assert window._toggle_hotkey_field.text() == "ctrl+alt+r"
+    assert window._hold_hotkey_field.text() == ""
+    assert window._recording_hotkey_for == "hold"
+
+
 def test_clear_hotkey_field_clears_toggle_and_updates_status():
     window = _make_window("ctrl+alt+r", "ctrl+win")
     window._recording_hotkey_for = None
