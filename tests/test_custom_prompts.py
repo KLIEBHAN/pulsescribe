@@ -410,6 +410,43 @@ class TestGetDefaults:
         assert defaults["app_contexts"]["Slack"] == "chat"
 
 
+class TestFilterOverridesForStorage:
+    """Tests für filter_overrides_for_storage()."""
+
+    def test_returns_only_non_default_overrides(self):
+        """Gemergte Daten werden auf echte Overrides reduziert."""
+        from utils.custom_prompts import get_defaults, filter_overrides_for_storage
+
+        defaults = get_defaults()
+        merged = {
+            "voice_commands": {"instruction": "Custom Voice"},
+            "prompts": {
+                "default": {"prompt": defaults["prompts"]["default"]["prompt"]},
+                "email": {"prompt": "Custom Email Prompt"},
+            },
+            "app_contexts": {
+                "Mail": defaults["app_contexts"]["Mail"],
+                "My App": "code",
+            },
+        }
+
+        result = filter_overrides_for_storage(merged, defaults=defaults)
+
+        assert result["voice_commands"]["instruction"] == "Custom Voice"
+        assert "default" not in result["prompts"]
+        assert result["prompts"]["email"]["prompt"] == "Custom Email Prompt"
+        assert "Mail" not in result["app_contexts"]
+        assert result["app_contexts"]["My App"] == "code"
+
+    def test_returns_empty_for_default_only_data(self):
+        """Nur Defaults führen zu leerer Persistenz-Struktur."""
+        from utils.custom_prompts import get_defaults, filter_overrides_for_storage
+
+        defaults = get_defaults()
+        result = filter_overrides_for_storage(defaults, defaults=defaults)
+        assert result == {}
+
+
 # =============================================================================
 # Edge Cases und Error Handling
 # =============================================================================

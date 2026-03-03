@@ -1442,9 +1442,10 @@ class SettingsWindow(QDialog):
         """Speichert den aktuellen Prompt."""
         try:
             from utils.custom_prompts import (
+                filter_overrides_for_storage,
                 load_custom_prompts,
-                save_custom_prompts,
                 parse_app_mappings,
+                save_custom_prompts,
             )
 
             context = (
@@ -1466,7 +1467,7 @@ class SettingsWindow(QDialog):
                     data["prompts"] = {}
                 data["prompts"][context] = {"prompt": text}
 
-            save_custom_prompts(data)
+            save_custom_prompts(filter_overrides_for_storage(data))
             self._set_prompt_status("✓ Saved", "success")
 
         except Exception as e:
@@ -1521,35 +1522,27 @@ class SettingsWindow(QDialog):
                 return
 
             from utils.custom_prompts import (
+                filter_overrides_for_storage,
                 load_custom_prompts,
-                save_custom_prompts,
                 parse_app_mappings,
-                get_defaults,
+                save_custom_prompts,
             )
 
             # Aktuelle Daten laden
             data = load_custom_prompts()
-            defaults = get_defaults()
 
             # Alle gecachten Prompts speichern
             for context, text in self._prompts_cache.items():
-                # Nur speichern wenn geändert (nicht Default)
                 if context == "voice_commands":
-                    default_text = defaults["voice_commands"]["instruction"]
-                    if text != default_text:
-                        data["voice_commands"] = {"instruction": text}
+                    data["voice_commands"] = {"instruction": text}
                 elif context == "app_mappings":
                     data["app_contexts"] = parse_app_mappings(text)
                 else:
-                    default_text = (
-                        defaults["prompts"].get(context, {}).get("prompt", "")
-                    )
-                    if text != default_text:
-                        if "prompts" not in data:
-                            data["prompts"] = {}
-                        data["prompts"][context] = {"prompt": text}
+                    if "prompts" not in data:
+                        data["prompts"] = {}
+                    data["prompts"][context] = {"prompt": text}
 
-            save_custom_prompts(data)
+            save_custom_prompts(filter_overrides_for_storage(data))
             logger.info(f"Prompts gespeichert: {list(self._prompts_cache.keys())}")
 
         except Exception as e:

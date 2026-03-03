@@ -241,6 +241,56 @@ def parse_app_mappings(text: str) -> dict[str, str]:
 
 
 # =============================================================================
+# Storage Normalization
+# =============================================================================
+
+
+def filter_overrides_for_storage(
+    data: dict,
+    *,
+    defaults: dict | None = None,
+) -> dict:
+    """Reduziert gemergte Prompt-Daten auf echte User-Overrides.
+
+    `load_custom_prompts()` liefert bereits Defaults + User-Werte. Für die
+    Persistierung soll aber nur gespeichert werden, was vom Default abweicht.
+    Dadurch funktionieren "Reset to Default"-Flows zuverlässig und die Datei
+    bleibt klein.
+    """
+    baseline = defaults or get_defaults()
+    result: dict = {}
+
+    voice_instruction = str(data.get("voice_commands", {}).get("instruction", ""))
+    default_instruction = str(baseline["voice_commands"]["instruction"])
+    if voice_instruction and voice_instruction != default_instruction:
+        result["voice_commands"] = {"instruction": voice_instruction}
+
+    prompts_result: dict[str, dict[str, str]] = {}
+    for context, config in data.get("prompts", {}).items():
+        prompt_text = str(config.get("prompt", ""))
+        default_prompt = str(baseline.get("prompts", {}).get(context, {}).get("prompt", ""))
+        if prompt_text and prompt_text != default_prompt:
+            prompts_result[context] = {"prompt": prompt_text}
+    if prompts_result:
+        result["prompts"] = prompts_result
+
+    app_contexts_result: dict[str, str] = {}
+    default_app_contexts = baseline.get("app_contexts", {})
+    for app, ctx in data.get("app_contexts", {}).items():
+        normalized_app = str(app).strip()
+        normalized_ctx = str(ctx).strip()
+        if not normalized_app or not normalized_ctx:
+            continue
+        if default_app_contexts.get(normalized_app) == normalized_ctx:
+            continue
+        app_contexts_result[normalized_app] = normalized_ctx
+    if app_contexts_result:
+        result["app_contexts"] = app_contexts_result
+
+    return result
+
+
+# =============================================================================
 # Speichern (TOML-Serialisierung)
 # =============================================================================
 
@@ -358,6 +408,7 @@ __all__ = [
     # Speichern/Reset
     "save_custom_prompts",
     "reset_to_defaults",
+    "filter_overrides_for_storage",
     # Konstanten
     "PROMPTS_FILE",
     "KNOWN_CONTEXTS",
