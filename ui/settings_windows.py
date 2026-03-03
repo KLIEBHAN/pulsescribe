@@ -426,6 +426,13 @@ class SettingsWindow(QDialog):
         )
         toggle_row.addWidget(self._toggle_record_btn)
 
+        self._toggle_clear_btn = QPushButton("Clear")
+        self._toggle_clear_btn.setFixedWidth(70)
+        self._toggle_clear_btn.clicked.connect(
+            lambda: self._clear_hotkey_field("toggle")
+        )
+        toggle_row.addWidget(self._toggle_clear_btn)
+
         card_layout.addLayout(toggle_row)
 
         # Hold Hotkey Row
@@ -446,6 +453,11 @@ class SettingsWindow(QDialog):
             lambda: self._start_hotkey_recording("hold")
         )
         hold_row.addWidget(self._hold_record_btn)
+
+        self._hold_clear_btn = QPushButton("Clear")
+        self._hold_clear_btn.setFixedWidth(70)
+        self._hold_clear_btn.clicked.connect(lambda: self._clear_hotkey_field("hold"))
+        hold_row.addWidget(self._hold_clear_btn)
 
         card_layout.addLayout(hold_row)
 
@@ -1324,6 +1336,25 @@ class SettingsWindow(QDialog):
         else:
             self._set_hotkey_status("Recording cancelled", "text_hint")
 
+    def _clear_hotkey_field(self, kind: str) -> None:
+        """Leert ein Hotkey-Feld, damit der Modus deaktiviert werden kann."""
+        if self._recording_hotkey_for:
+            self._stop_hotkey_recording(None)
+
+        if kind == "toggle" and self._toggle_hotkey_field:
+            self._toggle_hotkey_field.setText("")
+            self._set_hotkey_status(
+                "Toggle hotkey cleared. Click Save & Apply to persist.", "text_hint"
+            )
+            return
+
+        if kind == "hold" and self._hold_hotkey_field:
+            self._hold_hotkey_field.setText("")
+            self._set_hotkey_status(
+                "Hold hotkey cleared. Click Save & Apply to persist.", "text_hint"
+            )
+            return
+
     def keyPressEvent(self, event):
         """Fängt Tastendruck für Hotkey-Recording ab."""
         if self._recording_hotkey_for:
@@ -1862,7 +1893,10 @@ class SettingsWindow(QDialog):
             import subprocess
             from config import LOG_FILE
 
-            subprocess.run(["explorer", "/select,", str(LOG_FILE)], check=False)
+            if LOG_FILE.exists():
+                subprocess.run(["explorer", "/select,", str(LOG_FILE)], check=False)
+            else:
+                subprocess.run(["explorer", str(LOG_FILE.parent)], check=False)
         except Exception as e:
             logger.error(f"Explorer öffnen fehlgeschlagen: {e}")
 

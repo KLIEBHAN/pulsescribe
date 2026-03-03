@@ -110,3 +110,30 @@ def test_start_hotkey_recording_stops_previous_capture():
     assert window._pressed_keys == set()
     assert window._toggle_record_btn.text == "Record"
     assert window._hold_record_btn.text == "Press key..."
+
+
+def test_clear_hotkey_field_clears_toggle_and_updates_status():
+    window = _make_window("ctrl+alt+r", "ctrl+win")
+    window._recording_hotkey_for = None
+    window._stop_hotkey_recording = lambda *_args, **_kwargs: None
+
+    SettingsWindow._clear_hotkey_field(window, "toggle")
+
+    assert window._toggle_hotkey_field.text() == ""
+    assert window._hold_hotkey_field.text() == "ctrl+win"
+    assert "cleared" in window._hotkey_status.text.lower()
+
+
+def test_clear_hotkey_field_stops_active_recording_before_clearing():
+    window = _make_window("ctrl+alt+r", "")
+    window._recording_hotkey_for = "toggle"
+
+    stop_calls: list[object] = []
+    window._stop_hotkey_recording = (
+        lambda hotkey=None: stop_calls.append(hotkey)
+    )
+
+    SettingsWindow._clear_hotkey_field(window, "toggle")
+
+    assert stop_calls == [None]
+    assert window._toggle_hotkey_field.text() == ""
