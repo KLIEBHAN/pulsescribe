@@ -19,8 +19,8 @@ from utils.preferences import (
     get_env_setting,
     get_show_welcome_on_startup,
     remove_env_setting,
-    save_api_key,
     save_env_setting,
+    set_api_key,
     set_onboarding_seen,
     set_show_welcome_on_startup,
 )
@@ -2840,9 +2840,8 @@ class WelcomeController:
             field = getattr(self, f"_{provider}_field", None)
             status = getattr(self, f"_{provider}_status", None)
             if field and status:
-                key = field.stringValue().strip()
-                if key:
-                    save_api_key(env_key, key)
+                has_key = set_api_key(env_key, field.stringValue())
+                if has_key:
                     status.setStringValue_("✓")
                     status.setTextColor_(_get_color(51, 217, 178))
                 else:

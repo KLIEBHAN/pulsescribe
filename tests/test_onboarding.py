@@ -70,3 +70,24 @@ def test_hotkey_preset_updates_hold_without_clearing_toggle(tmp_path, monkeypatc
     assert env.get("PULSESCRIBE_HOLD_HOTKEY") == "fn"
     assert "PULSESCRIBE_HOTKEY" not in env
     assert "PULSESCRIBE_HOTKEY_MODE" not in env
+
+
+def test_set_api_key_saves_non_empty_value(tmp_path, monkeypatch):
+    _isolate_prefs(tmp_path, monkeypatch)
+
+    saved = prefs.set_api_key("DEEPGRAM_API_KEY", " dg-123 ")
+
+    env = prefs.read_env_file()
+    assert saved is True
+    assert env.get("DEEPGRAM_API_KEY") == "dg-123"
+
+
+def test_set_api_key_empty_value_removes_existing(tmp_path, monkeypatch):
+    _isolate_prefs(tmp_path, monkeypatch)
+    prefs.save_api_key("DEEPGRAM_API_KEY", "dg-123")
+
+    saved = prefs.set_api_key("DEEPGRAM_API_KEY", "   ")
+
+    env = prefs.read_env_file()
+    assert saved is False
+    assert "DEEPGRAM_API_KEY" not in env

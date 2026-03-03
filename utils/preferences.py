@@ -229,6 +229,21 @@ def save_api_key(key_name: str, value: str) -> None:
         raise
 
 
+def set_api_key(key_name: str, value: str | None) -> bool:
+    """Setzt oder entfernt einen API-Key.
+
+    Returns:
+        True wenn ein nicht-leerer Key gespeichert wurde, sonst False (Key entfernt).
+    """
+    normalized = (value or "").strip()
+    if not normalized:
+        remove_env_setting(key_name)
+        return False
+
+    save_api_key(key_name, normalized)
+    return True
+
+
 def get_api_key(key_name: str) -> str | None:
     """Liest einen API-Key aus der .env Datei.
 

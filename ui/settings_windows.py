@@ -44,8 +44,8 @@ from utils.preferences import (
     get_show_welcome_on_startup,
     is_onboarding_complete,
     remove_env_setting,
-    save_api_key,
     save_env_setting,
+    set_api_key,
     set_onboarding_step,
     set_show_welcome_on_startup,
 )
@@ -180,6 +180,7 @@ class SettingsWindow(QDialog):
         self._clipboard_restore_checkbox: QCheckBox | None = None
         self._api_fields: dict[str, QLineEdit] = {}
         self._api_status: dict[str, QLabel] = {}
+        self._last_logs_text: str | None = None
 
         # Hotkey Recording State
         self._recording_hotkey_for: str | None = None
@@ -1053,8 +1054,8 @@ class SettingsWindow(QDialog):
 
         # Links
         links = QLabel(
-            '<a href="https://github.com/pulsescribe/pulsescribe" style="color: #007AFF;">GitHub</a> · '
-            '<a href="https://pulsescribe.com/docs" style="color: #007AFF;">Documentation</a>'
+            '<a href="https://github.com/KLIEBHAN/pulsescribe" style="color: #007AFF;">GitHub</a> · '
+            '<a href="https://github.com/KLIEBHAN/pulsescribe/tree/master/docs" style="color: #007AFF;">Documentation</a>'
         )
         links.setFont(QFont("Segoe UI", 10))
         links.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1684,18 +1685,10 @@ class SettingsWindow(QDialog):
                 return
 
             if not LOG_FILE.exists():
-                self._logs_viewer.setPlainText(
+                self._set_logs_text_if_changed(
                     "No logs yet.\n\nLog file will appear here:\n" + str(LOG_FILE)
                 )
                 return
-
-            # Check if we are at the bottom before updating
-            scrollbar = self._logs_viewer.verticalScrollBar()
-            # Consider "at bottom" if within 10 pixels of maximum or if maximum is 0 (initial load)
-            was_at_bottom = (
-                scrollbar.maximum() == 0
-                or scrollbar.value() >= scrollbar.maximum() - 10
-            )
 
             # Letzte 100 Zeilen (effizientes File-Tailing statt Full-Read)
             log_text = read_file_tail_lines(
@@ -1703,14 +1696,24 @@ class SettingsWindow(QDialog):
                 max_lines=100,
                 errors="replace",
             )
-            self._logs_viewer.setPlainText(log_text)
-
-            # Restore bottom position if we were there
-            if was_at_bottom:
-                scrollbar = self._logs_viewer.verticalScrollBar()
-                scrollbar.setValue(scrollbar.maximum())
+            self._set_logs_text_if_changed(log_text)
         except Exception as e:
             logger.error(f"Logs laden fehlgeschlagen: {e}")
+
+    def _set_logs_text_if_changed(self, text: str) -> None:
+        """Aktualisiert den Log-Viewer nur bei Änderungen (vermeidet unnötiges Re-Render)."""
+        if not self._logs_viewer or text == self._last_logs_text:
+            return
+
+        scrollbar = self._logs_viewer.verticalScrollBar()
+        was_at_bottom = scrollbar.maximum() == 0 or scrollbar.value() >= scrollbar.maximum() - 10
+
+        self._logs_viewer.setPlainText(text)
+        self._last_logs_text = text
+
+        if was_at_bottom:
+            scrollbar = self._logs_viewer.verticalScrollBar()
+            scrollbar.setValue(scrollbar.maximum())
 
     def _open_logs_folder(self):
         """Öffnet Logs-Ordner im Explorer."""
@@ -2103,12 +2106,15 @@ class SettingsWindow(QDialog):
             # API Keys
             for env_key, field in self._api_fields.items():
                 value = field.text().strip()
-                if value:
-                    save_api_key(env_key, value)
-                    status = self._api_status.get(env_key)
-                    if status:
+                is_set = set_api_key(env_key, value)
+                status = self._api_status.get(env_key)
+                if status:
+                    if is_set:
                         status.setText("✓")
                         status.setStyleSheet(f"color: {COLORS['success']};")
+                    else:
+                        status.setText("")
+                        status.setStyleSheet(f"color: {COLORS['text_secondary']};")
 
             # Prompts speichern (aus Cache + aktuellem Editor)
             self._save_all_prompts()
