@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 _TAIL_CHUNK_SIZE = 8192
+_SCROLL_BOTTOM_TOLERANCE = 10
 
 
 def _read_tail_bytes(
@@ -96,3 +97,30 @@ def read_file_tail_lines(
         return ""
     return "\n".join(lines[-max_lines:])
 
+
+def is_near_bottom(
+    scroll_value: int,
+    scroll_maximum: int,
+    *,
+    tolerance: int = _SCROLL_BOTTOM_TOLERANCE,
+) -> bool:
+    """Return True when a scroll position is at/near the bottom."""
+    if scroll_maximum <= 0:
+        return True
+    threshold = max(0, scroll_maximum - max(0, tolerance))
+    return scroll_value >= threshold
+
+
+def clamp_scroll_value(scroll_value: int, scroll_maximum: int) -> int:
+    """Clamp a scroll value into valid range [0, scroll_maximum]."""
+    return max(0, min(scroll_value, max(0, scroll_maximum)))
+
+
+def should_auto_refresh_logs(
+    *,
+    enabled: bool,
+    is_logs_tab_active: bool,
+    logs_view_index: int,
+) -> bool:
+    """Auto-refresh only when enabled and the logs view is visible."""
+    return enabled and is_logs_tab_active and logs_view_index == 0

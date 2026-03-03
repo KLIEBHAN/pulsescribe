@@ -12,7 +12,6 @@ This is intended for user-support without leaking sensitive data.
 from __future__ import annotations
 
 import json
-import os
 import platform
 import re
 import subprocess
@@ -20,6 +19,8 @@ import sys
 import time
 import zipfile
 from pathlib import Path
+
+from utils.version import get_app_version
 
 
 def _user_config_dir() -> Path:
@@ -104,28 +105,7 @@ def _redact_log_text(text: str) -> str:
 
 
 def _get_app_version() -> str:
-    # In frozen app: read Info.plist. In dev: read pyproject.toml.
-    env_version = (os.getenv("WHISPERGO_VERSION") or os.getenv("VERSION") or "").strip()
-    if env_version:
-        return env_version
-
-    if getattr(sys, "frozen", False):
-        try:
-            from Foundation import NSBundle  # type: ignore[import-not-found]
-
-            v = NSBundle.mainBundle().objectForInfoDictionaryKey_(
-                "CFBundleShortVersionString"
-            )
-            if v:
-                return str(v)
-        except Exception:
-            pass
-        return "unknown"
-
-    pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
-    text = _read_text_safe(pyproject)
-    m = re.search(r'^\s*version\s*=\s*"([^"]+)"\s*$', text, flags=re.MULTILINE)
-    return m.group(1) if m else "unknown"
+    return get_app_version(default="unknown")
 
 
 def export_diagnostics_report() -> Path:

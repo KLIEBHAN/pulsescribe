@@ -50,8 +50,14 @@ from utils.preferences import (
     set_show_welcome_on_startup,
 )
 from utils.local_backend import normalize_local_backend, should_remove_local_backend_env
-from utils.log_tail import read_file_tail_lines
+from utils.log_tail import (
+    clamp_scroll_value,
+    is_near_bottom,
+    read_file_tail_lines,
+    should_auto_refresh_logs,
+)
 from utils.onboarding import OnboardingStep
+from utils.version import get_app_version
 
 logger = logging.getLogger("pulsescribe.settings")
 
@@ -1083,6 +1089,8 @@ class SettingsWindow(QDialog):
         if tab_name == "Logs":
             self._refresh_logs()
 
+        self._update_logs_auto_refresh_state()
+
     def _on_mode_changed(self, mode: str):
         """Handler für Mode-Änderung."""
         is_local = mode == "local"
@@ -1541,11 +1549,8 @@ class SettingsWindow(QDialog):
 
     def _toggle_logs_auto_refresh(self, state: int):
         """Schaltet Auto-Refresh für Logs ein/aus."""
-        if hasattr(self, "_logs_refresh_timer"):
-            if state:
-                self._logs_refresh_timer.start(2000)  # Alle 2 Sekunden
-            else:
-                self._logs_refresh_timer.stop()
+        del state
+        self._update_logs_auto_refresh_state()
 
     def _switch_logs_view(self, index: int):
         """Wechselt zwischen Logs und Transcripts Ansicht."""
@@ -1553,6 +1558,47 @@ class SettingsWindow(QDialog):
             self._logs_stack.setCurrentIndex(index)
             if index == 1:  # Transcripts
                 self._refresh_transcripts()
+            else:
+                self._refresh_logs()
+        self._update_logs_auto_refresh_state()
+
+    def _is_logs_tab_active(self) -> bool:
+        """Prüft, ob der Logs-Tab aktuell sichtbar ist."""
+        if not hasattr(self, "_tabs") or not self._tabs:
+            return False
+        current_index = self._tabs.currentIndex()
+        if current_index < 0:
+            return False
+        return self._tabs.tabText(current_index) == "Logs"
+
+    def _update_logs_auto_refresh_state(self) -> None:
+        """Aktiviert Auto-Refresh nur wenn Logs tatsächlich sichtbar sind."""
+        if not hasattr(self, "_logs_refresh_timer"):
+            return
+
+        logs_view_index = (
+            self._logs_stack.currentIndex()
+            if hasattr(self, "_logs_stack") and self._logs_stack
+            else -1
+        )
+        enabled = bool(
+            hasattr(self, "_auto_refresh_checkbox")
+            and self._auto_refresh_checkbox
+            and self._auto_refresh_checkbox.isChecked()
+        )
+
+        should_run = should_auto_refresh_logs(
+            enabled=enabled,
+            is_logs_tab_active=self._is_logs_tab_active(),
+            logs_view_index=logs_view_index,
+        )
+
+        if should_run:
+            if not self._logs_refresh_timer.isActive():
+                self._logs_refresh_timer.start(2000)  # Alle 2 Sekunden
+            return
+
+        self._logs_refresh_timer.stop()
 
     def _refresh_transcripts(self):
         """Aktualisiert Transcripts-Anzeige."""
@@ -1608,20 +1654,7 @@ class SettingsWindow(QDialog):
 
     def _get_version(self) -> str:
         """Gibt die aktuelle Version zurück."""
-        try:
-            # Versuche aus CHANGELOG.md zu lesen
-            from pathlib import Path
-
-            changelog = Path(__file__).parent.parent / "CHANGELOG.md"
-            if changelog.exists():
-                for line in changelog.read_text(encoding="utf-8").split("\n"):
-                    if line.startswith("## [") and "]" in line:
-                        # Format: ## [1.2.3] - 2024-01-01
-                        version = line.split("[")[1].split("]")[0]
-                        return version
-        except Exception:
-            pass
-        return "1.1.1"  # Fallback
+        return get_app_version(default="unknown")
 
     def _load_vocabulary(self):
         """Lädt Vocabulary aus Datei."""
@@ -1706,14 +1739,19 @@ class SettingsWindow(QDialog):
             return
 
         scrollbar = self._logs_viewer.verticalScrollBar()
-        was_at_bottom = scrollbar.maximum() == 0 or scrollbar.value() >= scrollbar.maximum() - 10
+        previous_maximum = scrollbar.maximum()
+        previous_value = scrollbar.value()
+        was_at_bottom = is_near_bottom(previous_value, previous_maximum)
 
         self._logs_viewer.setPlainText(text)
         self._last_logs_text = text
 
+        scrollbar = self._logs_viewer.verticalScrollBar()
         if was_at_bottom:
-            scrollbar = self._logs_viewer.verticalScrollBar()
             scrollbar.setValue(scrollbar.maximum())
+            return
+
+        scrollbar.setValue(clamp_scroll_value(previous_value, scrollbar.maximum()))
 
     def _open_logs_folder(self):
         """Öffnet Logs-Ordner im Explorer."""
