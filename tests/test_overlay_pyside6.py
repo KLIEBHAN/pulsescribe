@@ -7,6 +7,7 @@ from ui.overlay_pyside6 import (
     FRAME_MS,
     FRAME_MS_ACTIVE,
     FRAME_MS_FEEDBACK,
+    INTERIM_POLL_INTERVAL_MS,
     INTERIM_POLL_MAX_CHARS,
     PySide6OverlayController,
     PySide6OverlayWidget,
@@ -51,6 +52,34 @@ class _FakeAnimationTimer:
 
     def stop(self) -> None:
         self.active = False
+
+    def interval(self) -> int:
+        return self.interval_ms
+
+    def setInterval(self, interval_ms: int) -> None:
+        self.interval_ms = interval_ms
+        self.set_interval_calls.append(interval_ms)
+
+
+class _FakeInterimTimer:
+    def __init__(self, *, active: bool = False, interval_ms: int = 0):
+        self.active = active
+        self.interval_ms = interval_ms
+        self.start_calls: list[int] = []
+        self.stop_calls = 0
+        self.set_interval_calls: list[int] = []
+
+    def isActive(self) -> bool:
+        return self.active
+
+    def start(self, interval_ms: int) -> None:
+        self.active = True
+        self.interval_ms = interval_ms
+        self.start_calls.append(interval_ms)
+
+    def stop(self) -> None:
+        self.active = False
+        self.stop_calls += 1
 
     def interval(self) -> int:
         return self.interval_ms
@@ -134,6 +163,37 @@ def test_poll_interim_file_reads_tail_text_only(tmp_path, monkeypatch):
 
     assert calls == [(interim_file, INTERIM_POLL_MAX_CHARS)]
     assert controller._widget.seen_interim == ["tail-only"]
+
+
+def test_set_interim_polling_active_starts_and_stops_timer():
+    controller = PySide6OverlayController.__new__(PySide6OverlayController)
+    controller._interim_timer = _FakeInterimTimer(active=True, interval_ms=1000)
+    controller._last_interim_text = "stale"
+    controller._last_interim_mtime_ns = 123
+
+    PySide6OverlayController._set_interim_polling_active(controller, False)
+
+    assert controller._interim_timer.stop_calls == 1
+    assert controller._last_interim_text == ""
+    assert controller._last_interim_mtime_ns is None
+
+    PySide6OverlayController._set_interim_polling_active(controller, True)
+
+    assert controller._interim_timer.start_calls == [INTERIM_POLL_INTERVAL_MS]
+    assert controller._interim_timer.interval_ms == INTERIM_POLL_INTERVAL_MS
+
+
+def test_set_interim_polling_active_avoids_restarting_active_timer():
+    controller = PySide6OverlayController.__new__(PySide6OverlayController)
+    controller._interim_timer = _FakeInterimTimer(
+        active=True,
+        interval_ms=INTERIM_POLL_INTERVAL_MS,
+    )
+
+    PySide6OverlayController._set_interim_polling_active(controller, True)
+
+    assert controller._interim_timer.start_calls == []
+    assert controller._interim_timer.set_interval_calls == []
 
 
 def test_frame_interval_ms_is_state_aware():

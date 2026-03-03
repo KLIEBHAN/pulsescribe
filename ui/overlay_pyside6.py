@@ -106,6 +106,7 @@ STATE_TEXTS = {
 # Auto-Hide Timer für DONE/ERROR
 FEEDBACK_DISPLAY_MS = 800  # Millisekunden
 INTERIM_POLL_MAX_CHARS = 512  # Begrenztes Tail-Read für niedrige Polling-Last
+INTERIM_POLL_INTERVAL_MS = 200  # Polling nur während RECORDING
 
 # =============================================================================
 # Windows 11 DWM-Konstanten (Mica Effect)
@@ -287,6 +288,7 @@ class PySide6OverlayWidget(QWidget):
 
     # Signals für Thread-Safety
     state_changed = Signal(str, str)
+    recording_state_changed = Signal(bool)
     level_changed = Signal(float)
     interim_changed = Signal(str)
 
@@ -467,6 +469,8 @@ class PySide6OverlayWidget(QWidget):
         self._state = state
         self._text = text
         self._animation_start = time.perf_counter()
+        if (prev_state == "RECORDING") != (state == "RECORDING"):
+            self.recording_state_changed.emit(state == "RECORDING")
 
         if state == "IDLE":
             self._fade_out()
@@ -716,7 +720,12 @@ class PySide6OverlayController:
         if self._interim_file:
             self._interim_timer = QTimer()
             self._interim_timer.timeout.connect(self._poll_interim_file)
-            self._interim_timer.start(200)  # 200ms wie macOS
+            self._widget.recording_state_changed.connect(
+                self._set_interim_polling_active
+            )
+            self._set_interim_polling_active(
+                self._widget.current_state == "RECORDING"
+            )
 
         # Cleanup vor App-Exit (stoppt alle Timer im Qt-Thread)
         self._app.aboutToQuit.connect(self._cleanup_timers)
@@ -788,6 +797,24 @@ class PySide6OverlayController:
                 self._widget.update_interim_text(text)
         except Exception as e:
             logger.debug(f"Interim-File lesen fehlgeschlagen: {e}")
+
+    @Slot(bool)
+    def _set_interim_polling_active(self, active: bool) -> None:
+        """Steuert Interim-Polling state-basiert, um Idle-CPU-Last zu senken."""
+        if not self._interim_timer:
+            return
+
+        if active:
+            if not self._interim_timer.isActive():
+                self._interim_timer.start(INTERIM_POLL_INTERVAL_MS)
+            elif self._interim_timer.interval() != INTERIM_POLL_INTERVAL_MS:
+                self._interim_timer.setInterval(INTERIM_POLL_INTERVAL_MS)
+            return
+
+        if self._interim_timer.isActive():
+            self._interim_timer.stop()
+        self._last_interim_mtime_ns = None
+        self._last_interim_text = ""
 
 
 __all__ = ["PySide6OverlayController", "PySide6OverlayWidget"]
