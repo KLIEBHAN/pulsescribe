@@ -22,6 +22,7 @@ OVERLAY_ALPHA = 0.95  # Leicht transparent für Kontext
 OVERLAY_FONT_SIZE = 15  # SF Pro Standard-Größe
 OVERLAY_TEXT_FIELD_HEIGHT = 24  # Einzeilige Textanzeige
 OVERLAY_WINDOW_LEVEL = 25  # Über allen Fenstern, kCGFloatingWindowLevel
+OVERLAY_INTERIM_MAX_CHARS = 45  # Zeige die letzten Worte statt den Satzanfang
 
 # =============================================================================
 # Schallwellen-Visualisierung
@@ -138,6 +139,23 @@ def _get_overlay_color(r: int, g: int, b: int, a: float = 1.0):
     return NSColor.colorWithSRGBRed_green_blue_alpha_(
         r / 255.0, g / 255.0, b / 255.0, a
     )
+
+
+def _format_recording_interim_text(text: str, max_chars: int = OVERLAY_INTERIM_MAX_CHARS) -> str:
+    """Formatiert Interim-Text für das Recording-Overlay.
+
+    Bei langen Diktaten werden die letzten Zeichen gezeigt, weil diese für
+    Nutzer:innen während des Sprechens relevanter sind als der Satzanfang.
+    """
+    cleaned = " ".join(text.split())
+    if not cleaned:
+        return ""
+    if max_chars <= 0 or len(cleaned) <= max_chars:
+        return cleaned
+    tail_chars = max_chars - 3
+    if tail_chars <= 0:
+        return "..."
+    return "..." + cleaned[-tail_chars:]
 
 
 class SoundWaveView:
@@ -820,7 +838,7 @@ class OverlayController:
         elif state == AppState.RECORDING:
             if text:
                 self._wave_view.start_recording_animation()
-                display_text = f"{text} ..."
+                display_text = _format_recording_interim_text(text)
 
                 # Ghost-Look: Light + Italic + Reduced Opacity
                 font = NSFont.systemFontOfSize_weight_(

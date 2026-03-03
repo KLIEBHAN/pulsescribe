@@ -74,6 +74,7 @@ try:
         check_input_monitoring_permission,
         is_permission_related_message,
     )
+    from utils.log_tail import read_file_tail_text
     from ui import MenuBarController, OverlayController
 except Exception as e:
     emergency_log(f"CRITICAL IMPORT ERROR: {e}")
@@ -93,6 +94,7 @@ emergency_log("Imports successful")
 # DEBOUNCE_INTERVAL defined locally as it is specific to hotkey daemon
 # 150ms ist schnell genug für responsive UX, aber filtert Auto-Repeat und Doppelklicks
 DEBOUNCE_INTERVAL = 0.15
+INTERIM_POLL_MAX_CHARS = 512
 logger = logging.getLogger("pulsescribe")
 
 # =============================================================================
@@ -1355,7 +1357,11 @@ class PulseScribeDaemon:
                 mtime = INTERIM_FILE.stat().st_mtime
                 if mtime > daemon._last_interim_mtime:
                     daemon._last_interim_mtime = mtime
-                    interim_text = INTERIM_FILE.read_text().strip()
+                    interim_text = read_file_tail_text(
+                        INTERIM_FILE,
+                        max_chars=INTERIM_POLL_MAX_CHARS,
+                        errors="replace",
+                    ).strip()
                     if interim_text:
                         daemon._update_state(AppState.RECORDING, interim_text)
             except FileNotFoundError:
