@@ -98,6 +98,19 @@ def read_file_tail_lines(
     return "\n".join(lines[-max_lines:])
 
 
+def get_file_signature(path: Path) -> tuple[int, int] | None:
+    """Return ``(mtime_ns, size)`` for change detection, or ``None`` if unavailable."""
+    if not path.exists():
+        return None
+
+    try:
+        stat_result = path.stat()
+    except OSError:
+        return None
+
+    return int(stat_result.st_mtime_ns), int(stat_result.st_size)
+
+
 def is_near_bottom(
     scroll_value: int,
     scroll_maximum: int,

@@ -54,6 +54,7 @@ from utils.local_backend import normalize_local_backend, should_remove_local_bac
 from utils.local_backend import get_cpu_threads_limit
 from utils.log_tail import (
     clamp_scroll_value,
+    get_file_signature,
     is_near_bottom,
     read_file_tail_lines,
     should_auto_refresh_logs,
@@ -189,6 +190,7 @@ class SettingsWindow(QDialog):
         self._api_fields: dict[str, QLineEdit] = {}
         self._api_status: dict[str, QLabel] = {}
         self._last_logs_text: str | None = None
+        self._last_logs_signature: tuple[int, int] | None = None
         self._last_transcripts_text: str | None = None
 
         # Hotkey Recording State
@@ -1095,7 +1097,14 @@ class SettingsWindow(QDialog):
 
         # Logs automatisch laden
         if tab_name == "Logs":
-            self._refresh_logs()
+            if (
+                hasattr(self, "_logs_stack")
+                and self._logs_stack
+                and self._logs_stack.currentIndex() == 1
+            ):
+                self._refresh_transcripts()
+            else:
+                self._refresh_logs()
 
         self._update_logs_auto_refresh_state()
 
@@ -1616,6 +1625,9 @@ class SettingsWindow(QDialog):
 
             if hasattr(self, "_transcripts_status"):
                 self._transcripts_status.setText(f"{len(entries)} entries")
+                self._transcripts_status.setStyleSheet(
+                    f"color: {COLORS['text_secondary']};"
+                )
 
         except Exception as e:
             logger.error(f"Transcripts laden fehlgeschlagen: {e}")
@@ -1726,9 +1738,14 @@ class SettingsWindow(QDialog):
                 return
 
             if not LOG_FILE.exists():
+                self._last_logs_signature = None
                 self._set_logs_text_if_changed(
                     "No logs yet.\n\nLog file will appear here:\n" + str(LOG_FILE)
                 )
+                return
+
+            signature = get_file_signature(LOG_FILE)
+            if signature is not None and signature == self._last_logs_signature:
                 return
 
             # Letzte 100 Zeilen (effizientes File-Tailing statt Full-Read)
@@ -1738,6 +1755,7 @@ class SettingsWindow(QDialog):
                 errors="replace",
             )
             self._set_logs_text_if_changed(log_text)
+            self._last_logs_signature = signature
         except Exception as e:
             logger.error(f"Logs laden fehlgeschlagen: {e}")
 

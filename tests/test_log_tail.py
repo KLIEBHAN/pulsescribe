@@ -2,6 +2,7 @@ from pathlib import Path
 
 from utils.log_tail import (
     clamp_scroll_value,
+    get_file_signature,
     is_near_bottom,
     read_file_tail_lines,
     read_file_tail_text,
@@ -37,6 +38,24 @@ def test_read_file_tail_lines_returns_last_lines(tmp_path: Path) -> None:
 def test_read_file_tail_lines_handles_missing_file(tmp_path: Path) -> None:
     missing = tmp_path / "missing.log"
     assert read_file_tail_lines(missing, max_lines=10) == ""
+
+
+def test_get_file_signature_returns_none_for_missing_file(tmp_path: Path) -> None:
+    missing = tmp_path / "missing.log"
+    assert get_file_signature(missing) is None
+
+
+def test_get_file_signature_changes_when_file_content_changes(tmp_path: Path) -> None:
+    file_path = tmp_path / "signature.log"
+    file_path.write_text("abc", encoding="utf-8")
+    signature_before = get_file_signature(file_path)
+
+    file_path.write_text("abcdef", encoding="utf-8")
+    signature_after = get_file_signature(file_path)
+
+    assert signature_before is not None
+    assert signature_after is not None
+    assert signature_before != signature_after
 
 
 def test_is_near_bottom_with_tolerance() -> None:
