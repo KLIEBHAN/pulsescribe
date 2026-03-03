@@ -74,6 +74,9 @@ FOOTER_HEIGHT = 60
 # (50 polls × 200ms interval = 10 seconds)
 IPC_POLL_INTERVAL_MS = 200
 IPC_MAX_POLLS_BEFORE_TIMEOUT = 50
+# If daemon keeps reporting STATUS_RECORDING after stop, treat it as stale to
+# avoid an infinite "recording..." spinner in the wizard.
+IPC_RECORDING_STALE_POLLS_AFTER_STOP = 150
 
 
 # =============================================================================
@@ -189,6 +192,10 @@ class OnboardingWizardWindows(QDialog):
         self._ipc_test_cmd_id: str | None = None
         self._ipc_poll_timer: QTimer | None = None
         self._ipc_poll_count: int = 0
+        self._ipc_seen_recording: bool = False
+        self._ipc_stop_requested: bool = False
+        self._ipc_recording_polls_after_stop: int = 0
+        self._ipc_last_status: str | None = None
         self._test_start_btn: QPushButton | None = None
         self._test_stop_btn: QPushButton | None = None
         self._test_notice: QLabel | None = None
@@ -830,6 +837,10 @@ class OnboardingWizardWindows(QDialog):
 
         self._ipc_test_cmd_id = self._ipc_client.send_command(CMD_START_TEST)
         self._ipc_poll_count = 0
+        self._ipc_seen_recording = False
+        self._ipc_stop_requested = False
+        self._ipc_recording_polls_after_stop = 0
+        self._ipc_last_status = None
 
         # Show "connecting" state while waiting for daemon acknowledgment
         self._set_test_status("Verbinde mit PulseScribe...", "text_secondary")
@@ -850,6 +861,8 @@ class OnboardingWizardWindows(QDialog):
         from utils.ipc import CMD_STOP_TEST
 
         if self._ipc_client and self._ipc_test_cmd_id:
+            self._ipc_stop_requested = True
+            self._ipc_recording_polls_after_stop = 0
             self._ipc_client.send_command(CMD_STOP_TEST)
 
         if self._test_status_label:
@@ -873,17 +886,41 @@ class OnboardingWizardWindows(QDialog):
         if not response:
             self._ipc_poll_count += 1
             if self._ipc_poll_count >= IPC_MAX_POLLS_BEFORE_TIMEOUT:
+                saw_recording = self._ipc_seen_recording
+                stop_requested = self._ipc_stop_requested
                 self._stop_ipc_polling()
-                self._on_ipc_test_complete("", "Keine Verbindung zu PulseScribe")
+                if stop_requested and saw_recording:
+                    # After explicit stop, a timeout should not look like a
+                    # connection failure; map to "no speech / no final result".
+                    self._on_ipc_test_complete("", None)
+                elif saw_recording:
+                    self._on_ipc_test_complete(
+                        "",
+                        "Keine finale Antwort von PulseScribe. Bitte erneut versuchen.",
+                    )
+                else:
+                    self._on_ipc_test_complete("", "Keine Verbindung zu PulseScribe")
             return
 
         status = response.get("status")
         logger.debug(f"IPC response: {status}")
+        self._ipc_poll_count = 0
 
         if status == STATUS_RECORDING:
-            if self._test_status_label:
-                self._test_status_label.setText("Aufnahme läuft... Sprich jetzt!")
-                self._test_status_label.setStyleSheet(f"color: {COLORS['accent']};")
+            self._ipc_seen_recording = True
+
+            if status != self._ipc_last_status:
+                self._set_test_status("Aufnahme läuft... Sprich jetzt!", "accent")
+                self._ipc_last_status = status
+
+            if self._ipc_stop_requested:
+                self._ipc_recording_polls_after_stop += 1
+                if (
+                    self._ipc_recording_polls_after_stop
+                    >= IPC_RECORDING_STALE_POLLS_AFTER_STOP
+                ):
+                    self._stop_ipc_polling()
+                    self._on_ipc_test_complete("", None)
 
         elif status == STATUS_DONE:
             self._stop_ipc_polling()
@@ -906,6 +943,11 @@ class OnboardingWizardWindows(QDialog):
         if self._ipc_client:
             self._ipc_client.clear_response()
         self._ipc_test_cmd_id = None
+        self._ipc_poll_count = 0
+        self._ipc_seen_recording = False
+        self._ipc_stop_requested = False
+        self._ipc_recording_polls_after_stop = 0
+        self._ipc_last_status = None
 
     def _on_ipc_test_complete(self, transcript: str, error: str | None) -> None:
         """Display test result based on outcome."""

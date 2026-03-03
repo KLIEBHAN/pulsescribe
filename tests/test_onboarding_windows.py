@@ -7,7 +7,11 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtCore import Qt
 
-from ui.onboarding_wizard_windows import OnboardingWizardWindows
+from ui.onboarding_wizard_windows import (
+    IPC_MAX_POLLS_BEFORE_TIMEOUT,
+    IPC_RECORDING_STALE_POLLS_AFTER_STOP,
+    OnboardingWizardWindows,
+)
 from utils.onboarding import OnboardingChoice, OnboardingStep, next_step
 
 
@@ -347,3 +351,87 @@ def test_start_ipc_test_ignores_duplicate_start():
     )
 
     wizard._start_ipc_test()
+
+
+def test_poll_ipc_response_timeout_after_stop_maps_to_no_speech():
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+    wizard._ipc_test_cmd_id = "cmd-1"
+    wizard._ipc_client = types.SimpleNamespace(
+        poll_response=lambda _cmd_id: None,
+        clear_response=lambda: None,
+    )
+    wizard._ipc_poll_timer = types.SimpleNamespace(stop=lambda: None)
+    wizard._ipc_poll_count = IPC_MAX_POLLS_BEFORE_TIMEOUT - 1
+    wizard._ipc_seen_recording = True
+    wizard._ipc_stop_requested = True
+    wizard._ipc_recording_polls_after_stop = 0
+    wizard._ipc_last_status = "recording"
+
+    results: list[tuple[str, str | None]] = []
+    wizard._on_ipc_test_complete = lambda transcript, error: results.append(
+        (transcript, error)
+    )
+
+    wizard._poll_ipc_response()
+
+    assert results == [("", None)]
+    assert wizard._ipc_test_cmd_id is None
+    assert wizard._ipc_stop_requested is False
+
+
+def test_poll_ipc_response_stale_recording_after_stop_completes():
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+    wizard._ipc_test_cmd_id = "cmd-1"
+    wizard._ipc_client = types.SimpleNamespace(
+        poll_response=lambda _cmd_id: {"status": "recording"},
+        clear_response=lambda: None,
+    )
+    wizard._ipc_poll_timer = types.SimpleNamespace(stop=lambda: None)
+    wizard._ipc_poll_count = 0
+    wizard._ipc_seen_recording = False
+    wizard._ipc_stop_requested = True
+    wizard._ipc_recording_polls_after_stop = (
+        IPC_RECORDING_STALE_POLLS_AFTER_STOP - 1
+    )
+    wizard._ipc_last_status = "recording"
+    wizard._set_test_status = lambda *_args, **_kwargs: None
+
+    results: list[tuple[str, str | None]] = []
+    wizard._on_ipc_test_complete = lambda transcript, error: results.append(
+        (transcript, error)
+    )
+
+    wizard._poll_ipc_response()
+
+    assert results == [("", None)]
+    assert wizard._ipc_test_cmd_id is None
+    assert wizard._ipc_seen_recording is False
+
+
+def test_poll_ipc_response_repeated_recording_status_avoids_repainting():
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+    wizard._ipc_test_cmd_id = "cmd-1"
+    wizard._ipc_client = types.SimpleNamespace(
+        poll_response=lambda _cmd_id: {"status": "recording"},
+        clear_response=lambda: None,
+    )
+    wizard._ipc_poll_timer = types.SimpleNamespace(stop=lambda: None)
+    wizard._ipc_poll_count = 17
+    wizard._ipc_seen_recording = False
+    wizard._ipc_stop_requested = False
+    wizard._ipc_recording_polls_after_stop = 0
+    wizard._ipc_last_status = "recording"
+
+    status_updates: list[tuple[str, str]] = []
+    wizard._set_test_status = lambda text, color: status_updates.append((text, color))
+    wizard._on_ipc_test_complete = (
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("should not complete on regular recording status")
+        )
+    )
+
+    wizard._poll_ipc_response()
+
+    assert status_updates == []
+    assert wizard._ipc_poll_count == 0
+    assert wizard._ipc_seen_recording is True
