@@ -17,6 +17,40 @@ class _FakeLabel:
         self.style = style
 
 
+class _FakeTimer:
+    def __init__(self):
+        self.started_with: list[int] = []
+        self.stopped = False
+        self._active = False
+
+    def isActive(self) -> bool:
+        return self._active
+
+    def start(self, interval_ms: int) -> None:
+        self._active = True
+        self.started_with.append(interval_ms)
+
+    def stop(self) -> None:
+        self._active = False
+        self.stopped = True
+
+
+class _FakeCheckBox:
+    def __init__(self, checked: bool):
+        self._checked = checked
+
+    def isChecked(self) -> bool:
+        return self._checked
+
+
+class _FakeStack:
+    def __init__(self, current_index: int):
+        self._current_index = current_index
+
+    def currentIndex(self) -> int:
+        return self._current_index
+
+
 def test_open_logs_folder_selects_log_file_when_present(tmp_path, monkeypatch):
     import config
     import subprocess
@@ -125,3 +159,34 @@ def test_refresh_transcripts_updates_when_signature_changes(tmp_path, monkeypatc
     assert captured_text == ["formatted-transcripts"]
     assert window._last_transcripts_signature == (99, 42)
     assert window._transcripts_status.text == "1 entries"
+
+
+def test_update_logs_auto_refresh_state_stops_timer_when_window_not_visible():
+    window = SettingsWindow.__new__(SettingsWindow)
+    timer = _FakeTimer()
+    timer._active = True
+    window._logs_refresh_timer = timer
+    window._logs_stack = _FakeStack(current_index=0)
+    window._auto_refresh_checkbox = _FakeCheckBox(checked=True)
+    window._is_logs_tab_active = lambda: True
+    window._is_window_visible_for_logs = lambda: False
+
+    window._update_logs_auto_refresh_state()
+
+    assert timer.stopped is True
+    assert timer.isActive() is False
+
+
+def test_update_logs_auto_refresh_state_starts_timer_when_visible():
+    window = SettingsWindow.__new__(SettingsWindow)
+    timer = _FakeTimer()
+    window._logs_refresh_timer = timer
+    window._logs_stack = _FakeStack(current_index=0)
+    window._auto_refresh_checkbox = _FakeCheckBox(checked=True)
+    window._is_logs_tab_active = lambda: True
+    window._is_window_visible_for_logs = lambda: True
+
+    window._update_logs_auto_refresh_state()
+
+    assert timer.started_with == [2000]
+    assert timer.isActive() is True

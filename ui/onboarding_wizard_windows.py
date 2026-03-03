@@ -269,7 +269,7 @@ class OnboardingWizardWindows(QDialog):
 
         # Footer with navigation
         footer = QWidget()
-        footer.setFixedHeight(FOOTER_HEIGHT)
+        footer.setMinimumHeight(FOOTER_HEIGHT)
         footer_layout = QHBoxLayout(footer)
         footer_layout.setContentsMargins(PADDING, 0, PADDING, PADDING)
 

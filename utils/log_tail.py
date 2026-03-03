@@ -134,6 +134,12 @@ def should_auto_refresh_logs(
     enabled: bool,
     is_logs_tab_active: bool,
     logs_view_index: int,
+    is_window_visible: bool = True,
 ) -> bool:
     """Auto-refresh only when enabled and the logs view is visible."""
-    return enabled and is_logs_tab_active and logs_view_index == 0
+    return (
+        enabled
+        and is_logs_tab_active
+        and logs_view_index == 0
+        and is_window_visible
+    )

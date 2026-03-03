@@ -103,3 +103,12 @@ def test_should_auto_refresh_logs_only_when_logs_visible() -> None:
         )
         is False
     )
+    assert (
+        should_auto_refresh_logs(
+            enabled=True,
+            is_logs_tab_active=True,
+            logs_view_index=0,
+            is_window_visible=False,
+        )
+        is False
+    )

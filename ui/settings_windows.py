@@ -11,7 +11,7 @@ import threading
 import time
 from typing import Callable
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtGui import QDoubleValidator, QFont, QIntValidator
 from PySide6.QtWidgets import (
     QApplication,
@@ -292,7 +292,7 @@ class SettingsWindow(QDialog):
     def _build_footer(self) -> QWidget:
         """Erstellt den Footer mit Checkbox links, Buttons rechts (wie macOS)."""
         footer = QWidget()
-        footer.setFixedHeight(60)
+        footer.setMinimumHeight(60)
         layout = QHBoxLayout(footer)
         layout.setContentsMargins(20, 10, 20, 20)
 
@@ -1776,6 +1776,7 @@ class SettingsWindow(QDialog):
             enabled=enabled,
             is_logs_tab_active=self._is_logs_tab_active(),
             logs_view_index=logs_view_index,
+            is_window_visible=self._is_window_visible_for_logs(),
         )
 
         if should_run:
@@ -1784,6 +1785,14 @@ class SettingsWindow(QDialog):
             return
 
         self._logs_refresh_timer.stop()
+
+    def _is_window_visible_for_logs(self) -> bool:
+        """True nur wenn Fenster sichtbar und nicht minimiert ist."""
+        try:
+            return self.isVisible() and (not self.isMinimized())
+        except RuntimeError:
+            # Kann während/kurz nach Teardown auftreten.
+            return False
 
     def _refresh_transcripts(self):
         """Aktualisiert Transcripts-Anzeige."""
@@ -2561,6 +2570,19 @@ class SettingsWindow(QDialog):
     def set_on_settings_changed(self, callback: Callable[[], None]):
         """Setzt Callback für Settings-Änderungen."""
         self._on_settings_changed_callback = callback
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._update_logs_auto_refresh_state()
+
+    def hideEvent(self, event):
+        self._update_logs_auto_refresh_state()
+        super().hideEvent(event)
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange:
+            self._update_logs_auto_refresh_state()
 
     def closeEvent(self, event):
         """Handler für Fenster schließen."""
