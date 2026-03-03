@@ -166,7 +166,7 @@ class TestWelcomeLogsSegmentSwitch:
 
         assert ctrl._logs_container.hidden is True
         assert ctrl._transcripts_container.hidden is False
-        ctrl._refresh_transcripts.assert_called_once_with()
+        ctrl._refresh_transcripts.assert_called_once_with(scroll_to_bottom=False)
         ctrl._refresh_logs.assert_not_called()
 
     def test_logs_view_active_when_segment_is_logs(self):
@@ -300,3 +300,129 @@ class TestWelcomeLogsAutoRefreshGuards:
         captured["tick"](None)
 
         ctrl._refresh_logs.assert_called_once_with(scroll_to_bottom=False)
+
+
+class _FakePoint:
+    def __init__(self, y: float):
+        self.y = y
+
+
+class _FakeSize:
+    def __init__(self, height: float):
+        self.height = height
+
+
+class _FakeRect:
+    def __init__(self, y: float, height: float):
+        self.origin = _FakePoint(y)
+        self.size = _FakeSize(height)
+
+
+class _FakeClipView:
+    def __init__(self, *, y: float, height: float):
+        self._rect = _FakeRect(y, height)
+        self.scrolled_to = None
+
+    def documentVisibleRect(self):
+        return self._rect
+
+    def scrollToPoint_(self, point):
+        self.scrolled_to = point
+
+
+class _FakeTranscriptsScrollView:
+    def __init__(self, clip_view):
+        self._clip_view = clip_view
+        self.reflected = []
+
+    def contentView(self):
+        return self._clip_view
+
+    def reflectScrolledClipView_(self, clip_view):
+        self.reflected.append(clip_view)
+
+
+class _FakeFrame:
+    def __init__(self, height: float):
+        self.size = _FakeSize(height)
+
+
+class _FakeTranscriptsTextView:
+    def __init__(self, initial_text: str, *, doc_height: float):
+        self._text = initial_text
+        self._doc_height = doc_height
+        self.set_calls = []
+
+    def setString_(self, text: str):
+        self._text = text
+        self.set_calls.append(text)
+
+    def string(self):
+        return self._text
+
+    def frame(self):
+        return _FakeFrame(self._doc_height)
+
+
+class _FakeTranscriptsCountLabel:
+    def __init__(self):
+        self.value = ""
+
+    def setStringValue_(self, value: str):
+        self.value = value
+
+
+class TestWelcomeTranscriptsRefreshBehavior:
+    def test_refresh_transcripts_skips_rerender_when_text_unchanged(self):
+        ctrl = WelcomeController.__new__(WelcomeController)
+        ctrl._transcripts_text_view = _FakeTranscriptsTextView(
+            "cached text",
+            doc_height=800,
+        )
+        ctrl._transcripts_scroll_view = _FakeTranscriptsScrollView(
+            _FakeClipView(y=120, height=300)
+        )
+        ctrl._transcripts_count_label = _FakeTranscriptsCountLabel()
+        ctrl._last_transcripts_text = "cached text"
+        ctrl._get_transcripts_payload = lambda: ("cached text", 5)
+        ctrl._scroll_transcripts_to_bottom = MagicMock()
+        ctrl._restore_transcripts_scroll_position = MagicMock()
+
+        ctrl._refresh_transcripts(scroll_to_bottom=False)
+
+        assert ctrl._transcripts_text_view.set_calls == []
+        assert ctrl._transcripts_count_label.value == "5 entries"
+        ctrl._scroll_transcripts_to_bottom.assert_not_called()
+        ctrl._restore_transcripts_scroll_position.assert_not_called()
+
+    def test_refresh_transcripts_preserves_scroll_position_when_not_near_bottom(
+        self, monkeypatch
+    ):
+        import sys
+        import types
+
+        monkeypatch.setitem(
+            sys.modules,
+            "Foundation",
+            types.SimpleNamespace(NSMakePoint=lambda x, y: (x, y)),
+        )
+
+        ctrl = WelcomeController.__new__(WelcomeController)
+        clip_view = _FakeClipView(y=120, height=100)
+        ctrl._transcripts_scroll_view = _FakeTranscriptsScrollView(clip_view)
+        ctrl._transcripts_text_view = _FakeTranscriptsTextView(
+            "old text",
+            doc_height=900,
+        )
+        ctrl._transcripts_count_label = _FakeTranscriptsCountLabel()
+        ctrl._last_transcripts_text = "old text"
+        ctrl._get_transcripts_payload = lambda: ("new text", 3)
+        ctrl._scroll_transcripts_to_bottom = MagicMock()
+
+        ctrl._refresh_transcripts(scroll_to_bottom=False)
+
+        assert ctrl._transcripts_text_view.set_calls == ["new text"]
+        assert clip_view.scrolled_to == (0.0, 120)
+        assert ctrl._last_transcripts_text == "new text"
+        assert ctrl._transcripts_count_label.value == "3 entries"
+        ctrl._scroll_transcripts_to_bottom.assert_not_called()

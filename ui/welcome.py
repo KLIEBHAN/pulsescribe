@@ -153,6 +153,7 @@ class WelcomeController:
         self._logs_auto_refresh_timer = None
         self._logs_finder_handler = None
         self._last_logs_text = None
+        self._last_transcripts_text = None
         # Logs/Transcripts segmented control
         self._logs_segment_control = None
         self._logs_segment_handler = None
@@ -160,6 +161,7 @@ class WelcomeController:
         self._transcripts_container = None
         self._transcripts_text_view = None
         self._transcripts_scroll_view = None
+        self._transcripts_count_label = None
         self._transcripts_clear_handler = None
         self._mode_changed_handler = None
         self._save_btn = None
@@ -2238,6 +2240,7 @@ class WelcomeController:
         count_label.setFont_(NSFont.systemFontOfSize_(11))
         count_label.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6))
         transcripts_container.addSubview_(count_label)
+        self._transcripts_count_label = count_label
 
         # Transcripts ScrollView
         t_scroll = NSScrollView.alloc().initWithFrame_(
@@ -2268,7 +2271,10 @@ class WelcomeController:
         tc = t_text_view.textContainer()
         if tc is not None:
             tc.setWidthTracksTextView_(True)
-        t_text_view.setString_(self._get_transcripts_text())
+        initial_transcripts_text, entry_count = self._get_transcripts_payload()
+        t_text_view.setString_(initial_transcripts_text)
+        self._last_transcripts_text = initial_transcripts_text
+        self._update_transcripts_count_label(entry_count)
         t_scroll.setDocumentView_(t_text_view)
         transcripts_container.addSubview_(t_scroll)
         self._transcripts_text_view = t_text_view
@@ -2279,15 +2285,16 @@ class WelcomeController:
 
         return card_y - CARD_SPACING
 
-    def _get_transcripts_text(self) -> str:
-        """Lädt und formatiert die Transkript-Historie."""
+    def _get_transcripts_payload(self) -> tuple[str, int]:
+        """Lädt und formatiert die Transkript-Historie inkl. Eintragszahl."""
         from utils.history import get_recent_transcripts
 
         try:
             entries = get_recent_transcripts(count=50)
             if not entries:
                 return (
-                    "No transcriptions yet.\n\nYour transcribed texts will appear here."
+                    "No transcriptions yet.\n\nYour transcribed texts will appear here.",
+                    0,
                 )
 
             lines = []
@@ -2307,16 +2314,38 @@ class WelcomeController:
                 lines.append(text)
                 lines.append("")
 
-            return "\n".join(lines)
+            return "\n".join(lines), len(entries)
         except Exception as e:
-            return f"Could not load transcripts: {e}"
+            return f"Could not load transcripts: {e}", 0
 
-    def _refresh_transcripts(self) -> None:
-        """Aktualisiert die Transkript-Anzeige."""
+    def _get_transcripts_text(self) -> str:
+        """Lädt und formatiert die Transkript-Historie."""
+        text, _ = self._get_transcripts_payload()
+        return text
+
+    def _refresh_transcripts(self, *, scroll_to_bottom: bool = False) -> None:
+        """Aktualisiert die Transkript-Anzeige mit scroll-schonendem Verhalten."""
         if self._transcripts_text_view:
             try:
-                self._transcripts_text_view.setString_(self._get_transcripts_text())
-                self._scroll_transcripts_to_bottom()
+                transcript_text, entry_count = self._get_transcripts_payload()
+                self._update_transcripts_count_label(entry_count)
+                if transcript_text == self._last_transcripts_text:
+                    return
+
+                previous_y = 0.0
+                if self._transcripts_scroll_view:
+                    clip_view = self._transcripts_scroll_view.contentView()
+                    if clip_view is not None:
+                        previous_y = clip_view.documentVisibleRect().origin.y
+
+                was_near_bottom = self._is_transcripts_near_bottom()
+                self._transcripts_text_view.setString_(transcript_text)
+                self._last_transcripts_text = transcript_text
+
+                if scroll_to_bottom or was_near_bottom:
+                    self._scroll_transcripts_to_bottom()
+                else:
+                    self._restore_transcripts_scroll_position(previous_y)
             except Exception:
                 pass
 
@@ -2329,12 +2358,58 @@ class WelcomeController:
             except Exception:
                 pass
 
+    def _is_transcripts_near_bottom(self, tolerance: float = 24.0) -> bool:
+        """Prüft, ob die Transcripts-Ansicht aktuell nahe am Ende ist."""
+        if not self._transcripts_scroll_view or not self._transcripts_text_view:
+            return True
+
+        try:
+            clip_view = self._transcripts_scroll_view.contentView()
+            if clip_view is None:
+                return True
+            visible = clip_view.documentVisibleRect()
+            doc_height = self._transcripts_text_view.frame().size.height
+            max_y = max(0.0, doc_height - visible.size.height)
+            return visible.origin.y >= (max_y - max(0.0, tolerance))
+        except Exception:
+            return True
+
+    def _restore_transcripts_scroll_position(self, previous_y: float) -> None:
+        """Stellt die vorherige vertikale Transcript-Scroll-Position wieder her."""
+        if not self._transcripts_scroll_view or not self._transcripts_text_view:
+            return
+
+        try:
+            from Foundation import NSMakePoint  # type: ignore[import-not-found]
+
+            clip_view = self._transcripts_scroll_view.contentView()
+            if clip_view is None:
+                return
+            visible = clip_view.documentVisibleRect()
+            doc_height = self._transcripts_text_view.frame().size.height
+            max_y = max(0.0, doc_height - visible.size.height)
+            target_y = max(0.0, min(previous_y, max_y))
+            clip_view.scrollToPoint_(NSMakePoint(0.0, target_y))
+            self._transcripts_scroll_view.reflectScrolledClipView_(clip_view)
+        except Exception:
+            pass
+
+    def _update_transcripts_count_label(self, entry_count: int) -> None:
+        """Aktualisiert den Label-Text mit der aktuellen Eintragszahl."""
+        if self._transcripts_count_label:
+            try:
+                self._transcripts_count_label.setStringValue_(
+                    f"{entry_count} entr{'y' if entry_count == 1 else 'ies'}"
+                )
+            except Exception:
+                pass
+
     def _clear_transcripts(self) -> None:
         """Löscht die Transkript-Historie."""
         from utils.history import clear_history
 
         clear_history()
-        self._refresh_transcripts()
+        self._refresh_transcripts(scroll_to_bottom=True)
 
     def _switch_logs_segment(self, segment_index: int) -> None:
         """Wechselt zwischen Logs und Transcripts Ansicht."""
@@ -2346,7 +2421,7 @@ class WelcomeController:
             else:  # Transcripts
                 self._logs_container.setHidden_(True)
                 self._transcripts_container.setHidden_(False)
-                self._refresh_transcripts()
+                self._refresh_transcripts(scroll_to_bottom=False)
 
     def _is_logs_view_active(self) -> bool:
         """True, wenn das Logs-Segment aktiv ist."""
