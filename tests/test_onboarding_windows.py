@@ -169,6 +169,16 @@ def test_validate_hotkey_pair_rejects_duplicates_and_modifier_only():
     assert "nicht-modifier" in modifier_error.lower()
 
 
+def test_validate_hotkey_pair_rejects_overlapping_hotkeys():
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+
+    _, _, overlap_error = wizard._validate_hotkey_pair(
+        "ctrl+win+shift+f13", "ctrl+win+f13"
+    )
+    assert overlap_error is not None
+    assert "überlappen" in overlap_error.lower()
+
+
 def test_on_api_key_input_changed_updates_status_and_navigation():
     wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
     wizard._api_key_status = _FakeLabel()

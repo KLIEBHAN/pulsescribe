@@ -57,7 +57,7 @@ from utils.preferences import (
     set_onboarding_seen,
     set_onboarding_step,
 )
-from utils.hotkey_windows import normalize_windows_hotkey
+from utils.hotkey_windows import hotkeys_conflict, normalize_windows_hotkey
 
 logger = logging.getLogger("pulsescribe.onboarding")
 
@@ -1442,6 +1442,13 @@ class OnboardingWizardWindows(QDialog):
 
         if toggle and hold and toggle == hold:
             return "", "", "Toggle und Hold dürfen nicht identisch sein."
+        if toggle and hold and hotkeys_conflict(toggle, hold):
+            return (
+                "",
+                "",
+                "Toggle und Hold dürfen sich nicht überlappen "
+                "(z. B. ctrl+win und ctrl+win+r).",
+            )
 
         return toggle, hold, None
 

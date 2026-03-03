@@ -110,6 +110,24 @@ def normalize_windows_hotkey(hotkey_str: str | None) -> tuple[str, str | None]:
     return "+".join(modifiers + keys), None
 
 
+def hotkeys_conflict(hotkey_a: str | None, hotkey_b: str | None) -> bool:
+    """Return True when two hotkeys can trigger ambiguously.
+
+    Two hotkeys conflict when one key-set is a subset of the other, e.g.
+    ``ctrl+win`` and ``ctrl+win+r``. Duplicate hotkeys are also treated
+    as conflicting.
+    """
+    normalized_a, error_a = normalize_windows_hotkey(hotkey_a)
+    normalized_b, error_b = normalize_windows_hotkey(hotkey_b)
+
+    if error_a or error_b or not normalized_a or not normalized_b:
+        return False
+
+    parts_a = set(normalized_a.split("+"))
+    parts_b = set(normalized_b.split("+"))
+    return parts_a.issubset(parts_b) or parts_b.issubset(parts_a)
+
+
 def parse_windows_hotkey_for_pynput(hotkey_str: str, keyboard: Any) -> set[Any]:
     """Parse a hotkey string into a ``set`` of ``pynput.keyboard`` keys."""
     normalized, error = normalize_windows_hotkey(hotkey_str)
@@ -157,4 +175,8 @@ def parse_windows_hotkey_for_pynput(hotkey_str: str, keyboard: Any) -> set[Any]:
     return hotkey_keys
 
 
-__all__ = ["normalize_windows_hotkey", "parse_windows_hotkey_for_pynput"]
+__all__ = [
+    "normalize_windows_hotkey",
+    "hotkeys_conflict",
+    "parse_windows_hotkey_for_pynput",
+]

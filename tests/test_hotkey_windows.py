@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from utils.hotkey_windows import (
+    hotkeys_conflict,
     normalize_windows_hotkey,
     parse_windows_hotkey_for_pynput,
 )
@@ -64,3 +65,11 @@ def test_parse_windows_hotkey_supports_navigation_keys() -> None:
     parsed = parse_windows_hotkey_for_pynput("shift+pagedown", keyboard)
 
     assert parsed == {"key:shift", "key:page_down"}
+
+
+def test_hotkeys_conflict_detects_subset_overlap() -> None:
+    assert hotkeys_conflict("ctrl+win", "ctrl+win+r") is True
+
+
+def test_hotkeys_conflict_ignores_distinct_hotkeys() -> None:
+    assert hotkeys_conflict("ctrl+alt+r", "ctrl+shift+space") is False

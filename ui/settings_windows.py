@@ -52,7 +52,7 @@ from utils.preferences import (
 )
 from utils.local_backend import normalize_local_backend, should_remove_local_backend_env
 from utils.local_backend import get_cpu_threads_limit
-from utils.hotkey_windows import normalize_windows_hotkey
+from utils.hotkey_windows import hotkeys_conflict, normalize_windows_hotkey
 from utils.log_tail import (
     clamp_scroll_value,
     get_file_signature,
@@ -495,7 +495,8 @@ class SettingsWindow(QDialog):
         # Hint
         hint = QLabel(
             "💡 Hold hotkey: Push-to-talk mode. Toggle hotkey: Press to start/stop.\n"
-            "Click 'Record' and press your desired key combination."
+            "Click 'Record' and press your desired key combination.\n"
+            "Toggle/Hold must not overlap (e.g. ctrl+win and ctrl+win+r)."
         )
         hint.setFont(QFont("Segoe UI", 9))
         hint.setStyleSheet(f"color: {COLORS['text_hint']};")
@@ -1546,6 +1547,12 @@ class SettingsWindow(QDialog):
         if toggle and hold and toggle == hold:
             self._set_hotkey_status(
                 "Toggle and Hold must not use the same hotkey.", "error"
+            )
+            return None
+        if toggle and hold and hotkeys_conflict(toggle, hold):
+            self._set_hotkey_status(
+                "Toggle and Hold must not overlap (e.g. ctrl+win vs ctrl+win+r).",
+                "error",
             )
             return None
 

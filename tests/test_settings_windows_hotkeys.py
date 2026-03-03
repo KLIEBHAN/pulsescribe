@@ -97,6 +97,15 @@ def test_validate_hotkeys_for_save_rejects_duplicates():
     assert "same hotkey" in window._hotkey_status.text.lower()
 
 
+def test_validate_hotkeys_for_save_rejects_overlapping_hotkeys():
+    window = _make_window("ctrl+win+shift+f13", "ctrl+win+f13")
+
+    result = window._validate_hotkeys_for_save()
+
+    assert result is None
+    assert "must not overlap" in window._hotkey_status.text.lower()
+
+
 def test_validate_hotkeys_for_save_rejects_invalid_tokens():
     window = _make_window("ctrl+invalid", "")
 

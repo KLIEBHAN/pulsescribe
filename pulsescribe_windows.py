@@ -57,7 +57,7 @@ logger = get_logger()
 from utils.state import AppState
 from utils.hold_state import HoldHotkeyState
 from utils.hotkey import paste_transcript
-from utils.hotkey_windows import parse_windows_hotkey_for_pynput
+from utils.hotkey_windows import hotkeys_conflict, parse_windows_hotkey_for_pynput
 from utils.subprocess_io import start_stream_drain_thread
 from whisper_platform import get_clipboard, get_sound_player
 from config import INTERIM_FILE, get_input_device, WARM_STREAM_QUEUE_SIZE
@@ -1201,7 +1201,16 @@ class PulseScribeWindows:
             if self.toggle_hotkey:
                 bindings.append((self.toggle_hotkey, "toggle"))
             if self.hold_hotkey:
-                bindings.append((self.hold_hotkey, "hold"))
+                if self.toggle_hotkey and hotkeys_conflict(
+                    self.toggle_hotkey, self.hold_hotkey
+                ):
+                    logger.error(
+                        "Hotkey-Konflikt: Hold-Hotkey überlappt mit Toggle-Hotkey "
+                        f"({self.hold_hotkey} vs {self.toggle_hotkey}). "
+                        "Hold wird ignoriert."
+                    )
+                else:
+                    bindings.append((self.hold_hotkey, "hold"))
 
             if not bindings:
                 logger.warning("Keine Hotkeys konfiguriert")
