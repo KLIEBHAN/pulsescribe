@@ -193,6 +193,7 @@ class OnboardingWizardWindows(QDialog):
         self._test_stop_btn: QPushButton | None = None
         self._test_notice: QLabel | None = None
         self._hotkey_status_label: QLabel | None = None
+        self._is_closed = False
 
         self._setup_ui()
 
@@ -1135,6 +1136,8 @@ class OnboardingWizardWindows(QDialog):
             from pynput import keyboard
 
             def on_press(key):
+                if self._is_closed:
+                    return
                 key_name = self._pynput_key_to_string(key, key_map)
                 if key_name and key_name not in ("enter", "return", "esc", "escape"):
                     with self._pressed_keys_lock:
@@ -1143,6 +1146,8 @@ class OnboardingWizardWindows(QDialog):
                     self._update_hotkey_field_from_pressed_keys()
 
             def on_release(key):
+                if self._is_closed:
+                    return
                 key_name = self._pynput_key_to_string(key, key_map)
                 if key_name:
                     with self._pressed_keys_lock:
@@ -1219,6 +1224,8 @@ class OnboardingWizardWindows(QDialog):
 
     def _set_hotkey_field_text(self, hotkey_str: str) -> None:
         """Set text in the active hotkey field (thread-safe slot)."""
+        if self._is_closed:
+            return
         if self._recording_field == "toggle" and self._toggle_input:
             self._toggle_input.setText(hotkey_str)
         elif self._recording_field == "hold" and self._hold_input:
@@ -1454,6 +1461,11 @@ class OnboardingWizardWindows(QDialog):
                 return
 
             if self._using_qt_grab:
+                is_auto_repeat = getattr(event, "isAutoRepeat", lambda: False)()
+                if is_auto_repeat:
+                    event.accept()
+                    return
+
                 parts = []
                 modifiers = event.modifiers()
                 if modifiers & Qt.KeyboardModifier.ControlModifier:
@@ -1519,6 +1531,7 @@ class OnboardingWizardWindows(QDialog):
 
     def closeEvent(self, event) -> None:
         """Handle window close."""
+        self._is_closed = True
         self._stop_hotkey_recording()
         self._stop_ipc_polling()
         if self._mic_timer:
@@ -1527,6 +1540,7 @@ class OnboardingWizardWindows(QDialog):
 
     def reject(self) -> None:
         """Handle ESC key or Cancel - ensures proper cleanup."""
+        self._is_closed = True
         self._stop_hotkey_recording()
         self._stop_ipc_polling()
         if self._mic_timer:

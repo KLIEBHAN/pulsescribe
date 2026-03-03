@@ -51,9 +51,16 @@ class _FakeButton:
 
 
 class _FakeKeyEvent:
-    def __init__(self, key: int, modifiers: Qt.KeyboardModifier):
+    def __init__(
+        self,
+        key: int,
+        modifiers: Qt.KeyboardModifier,
+        *,
+        auto_repeat: bool = False,
+    ):
         self._key = key
         self._modifiers = modifiers
+        self._auto_repeat = auto_repeat
         self.accepted = False
 
     def key(self) -> int:
@@ -61,6 +68,9 @@ class _FakeKeyEvent:
 
     def modifiers(self) -> Qt.KeyboardModifier:
         return self._modifiers
+
+    def isAutoRepeat(self) -> bool:
+        return self._auto_repeat
 
     def accept(self) -> None:
         self.accepted = True
@@ -247,6 +257,7 @@ def test_keypress_qt_fallback_updates_hotkey_field():
     wizard._recording_field = "toggle"
     wizard._toggle_input = _FakeField("")
     wizard._hold_input = _FakeField("")
+    wizard._is_closed = False
     wizard._using_qt_grab = True
     wizard._hotkey_recorded = False
     wizard._stop_hotkey_recording = lambda save=False: None
@@ -260,6 +271,41 @@ def test_keypress_qt_fallback_updates_hotkey_field():
 
     assert wizard._toggle_input.text() == "ctrl+alt+r"
     assert wizard._hotkey_recorded is True
+    assert event.accepted is True
+
+
+def test_set_hotkey_field_text_noop_when_wizard_is_closed():
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+    wizard._recording_field = "toggle"
+    wizard._toggle_input = _FakeField("ctrl+alt+r")
+    wizard._hold_input = _FakeField("")
+    wizard._is_closed = True
+
+    wizard._set_hotkey_field_text("ctrl+shift+r")
+
+    assert wizard._toggle_input.text() == "ctrl+alt+r"
+
+
+def test_keypress_qt_fallback_ignores_auto_repeat_events():
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+    wizard._recording_field = "toggle"
+    wizard._toggle_input = _FakeField("ctrl+alt+r")
+    wizard._hold_input = _FakeField("")
+    wizard._is_closed = False
+    wizard._using_qt_grab = True
+    wizard._hotkey_recorded = False
+    wizard._stop_hotkey_recording = lambda save=False: None
+
+    event = _FakeKeyEvent(
+        Qt.Key.Key_R,
+        Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier,
+        auto_repeat=True,
+    )
+
+    wizard.keyPressEvent(event)
+
+    assert wizard._toggle_input.text() == "ctrl+alt+r"
+    assert wizard._hotkey_recorded is False
     assert event.accepted is True
 
 

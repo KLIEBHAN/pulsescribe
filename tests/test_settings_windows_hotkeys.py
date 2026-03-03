@@ -3,6 +3,8 @@ import threading
 
 pytest.importorskip("PySide6")
 
+from PySide6.QtCore import Qt
+
 from ui.settings_windows import SettingsWindow
 
 
@@ -41,11 +43,38 @@ class _FakeButton:
         self.style = style
 
 
+class _FakeKeyEvent:
+    def __init__(
+        self,
+        key: int,
+        modifiers: Qt.KeyboardModifier,
+        *,
+        auto_repeat: bool = False,
+    ):
+        self._key = key
+        self._modifiers = modifiers
+        self._auto_repeat = auto_repeat
+        self.accepted = False
+
+    def key(self) -> int:
+        return self._key
+
+    def modifiers(self) -> Qt.KeyboardModifier:
+        return self._modifiers
+
+    def isAutoRepeat(self) -> bool:
+        return self._auto_repeat
+
+    def accept(self) -> None:
+        self.accepted = True
+
+
 def _make_window(toggle: str, hold: str) -> SettingsWindow:
     window = SettingsWindow.__new__(SettingsWindow)
     window._toggle_hotkey_field = _FakeField(toggle)
     window._hold_hotkey_field = _FakeField(hold)
     window._hotkey_status = _FakeLabel()
+    window._is_closed = False
     return window
 
 
@@ -137,3 +166,30 @@ def test_clear_hotkey_field_stops_active_recording_before_clearing():
 
     assert stop_calls == [None]
     assert window._toggle_hotkey_field.text() == ""
+
+
+def test_set_hotkey_field_text_noop_when_window_is_closed():
+    window = _make_window("ctrl+alt+r", "")
+    window._recording_hotkey_for = "toggle"
+    window._is_closed = True
+
+    SettingsWindow._set_hotkey_field_text(window, "ctrl+shift+r")
+
+    assert window._toggle_hotkey_field.text() == "ctrl+alt+r"
+
+
+def test_keypress_qt_fallback_ignores_auto_repeat_events():
+    window = _make_window("ctrl+alt+r", "")
+    window._recording_hotkey_for = "toggle"
+    window._using_qt_grab = True
+
+    event = _FakeKeyEvent(
+        Qt.Key.Key_R,
+        Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier,
+        auto_repeat=True,
+    )
+
+    SettingsWindow.keyPressEvent(window, event)
+
+    assert window._toggle_hotkey_field.text() == "ctrl+alt+r"
+    assert event.accepted is True

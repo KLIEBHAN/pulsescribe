@@ -1305,6 +1305,8 @@ class SettingsWindow(QDialog):
 
     def _set_hotkey_field_text(self, hotkey_str: str):
         """Setzt den Text im aktiven Hotkey-Feld (Thread-safe)."""
+        if self._is_closed:
+            return
         if self._recording_hotkey_for == "toggle" and self._toggle_hotkey_field:
             self._toggle_hotkey_field.setText(hotkey_str)
         elif self._recording_hotkey_for == "hold" and self._hold_hotkey_field:
@@ -1379,6 +1381,11 @@ class SettingsWindow(QDialog):
 
             # Qt-Fallback: Hotkey aus Qt-Events bauen (wenn pynput nicht verfügbar)
             if self._using_qt_grab:
+                is_auto_repeat = getattr(event, "isAutoRepeat", lambda: False)()
+                if is_auto_repeat:
+                    event.accept()
+                    return
+
                 parts = []
                 modifiers = event.modifiers()
                 if modifiers & Qt.KeyboardModifier.ControlModifier:
