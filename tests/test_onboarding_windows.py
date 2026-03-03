@@ -8,6 +8,7 @@ pytest.importorskip("PySide6")
 from PySide6.QtCore import Qt
 
 from ui.onboarding_wizard_windows import (
+    IPC_CONNECT_MAX_POLLS_BEFORE_TIMEOUT,
     IPC_MAX_POLLS_BEFORE_TIMEOUT,
     IPC_RECORDING_STALE_POLLS_AFTER_STOP,
     OnboardingWizardWindows,
@@ -559,6 +560,56 @@ def test_poll_ipc_response_timeout_after_stop_maps_to_no_speech():
     assert results == [("", None)]
     assert wizard._ipc_test_cmd_id is None
     assert wizard._ipc_stop_requested is False
+
+
+def test_poll_ipc_response_timeout_before_recording_fails_fast_with_connection_error():
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+    wizard._ipc_test_cmd_id = "cmd-1"
+    wizard._ipc_client = types.SimpleNamespace(
+        poll_response=lambda _cmd_id: None,
+        clear_response=lambda: None,
+    )
+    wizard._ipc_poll_timer = types.SimpleNamespace(stop=lambda: None)
+    wizard._ipc_poll_count = IPC_CONNECT_MAX_POLLS_BEFORE_TIMEOUT - 1
+    wizard._ipc_seen_recording = False
+    wizard._ipc_stop_requested = False
+    wizard._ipc_recording_polls_after_stop = 0
+    wizard._ipc_last_status = None
+
+    results: list[tuple[str, str | None]] = []
+    wizard._on_ipc_test_complete = lambda transcript, error: results.append(
+        (transcript, error)
+    )
+
+    wizard._poll_ipc_response()
+
+    assert results == [("", "Keine Verbindung zu PulseScribe")]
+    assert wizard._ipc_test_cmd_id is None
+
+
+def test_poll_ipc_response_after_recording_uses_longer_result_timeout():
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+    wizard._ipc_test_cmd_id = "cmd-1"
+    wizard._ipc_client = types.SimpleNamespace(
+        poll_response=lambda _cmd_id: None,
+        clear_response=lambda: None,
+    )
+    wizard._ipc_poll_timer = types.SimpleNamespace(stop=lambda: None)
+    wizard._ipc_poll_count = IPC_CONNECT_MAX_POLLS_BEFORE_TIMEOUT - 1
+    wizard._ipc_seen_recording = True
+    wizard._ipc_stop_requested = False
+    wizard._ipc_recording_polls_after_stop = 0
+    wizard._ipc_last_status = "recording"
+    wizard._on_ipc_test_complete = (
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("should not timeout before result-timeout budget is reached")
+        )
+    )
+
+    wizard._poll_ipc_response()
+
+    assert wizard._ipc_poll_count == IPC_CONNECT_MAX_POLLS_BEFORE_TIMEOUT
+    assert wizard._ipc_test_cmd_id == "cmd-1"
 
 
 def test_poll_ipc_response_stale_recording_after_stop_completes():

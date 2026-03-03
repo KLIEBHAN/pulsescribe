@@ -70,13 +70,18 @@ WIZARD_HEIGHT = 580
 PADDING = 24
 FOOTER_HEIGHT = 60
 
-# IPC Test Dictation: Timeout after 10 seconds of no daemon response
-# (50 polls × 200ms interval = 10 seconds)
+# IPC Test Dictation
+# Schneller Fail bei fehlender Verbindung (kein RECORDING-Ack):
+#   15 polls × 200ms = 3s
+IPC_CONNECT_MAX_POLLS_BEFORE_TIMEOUT = 15
+# Timeout nach RECORDING-Ack (Finale Antwort darf länger dauern):
+#   50 polls × 200ms = 10s
 IPC_POLL_INTERVAL_MS = 200
 IPC_MAX_POLLS_BEFORE_TIMEOUT = 50
 # If daemon keeps reporting STATUS_RECORDING after stop, treat it as stale to
-# avoid an infinite "recording..." spinner in the wizard.
-IPC_RECORDING_STALE_POLLS_AFTER_STOP = 150
+# avoid a long/hanging "recording..." spinner in the wizard.
+#   30 polls × 200ms = 6s
+IPC_RECORDING_STALE_POLLS_AFTER_STOP = 30
 
 
 # =============================================================================
@@ -914,7 +919,12 @@ class OnboardingWizardWindows(QDialog):
         response = self._ipc_client.poll_response(self._ipc_test_cmd_id)
         if not response:
             self._ipc_poll_count += 1
-            if self._ipc_poll_count >= IPC_MAX_POLLS_BEFORE_TIMEOUT:
+            timeout_limit = (
+                IPC_MAX_POLLS_BEFORE_TIMEOUT
+                if self._ipc_seen_recording
+                else IPC_CONNECT_MAX_POLLS_BEFORE_TIMEOUT
+            )
+            if self._ipc_poll_count >= timeout_limit:
                 saw_recording = self._ipc_seen_recording
                 stop_requested = self._ipc_stop_requested
                 self._stop_ipc_polling()
