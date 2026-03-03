@@ -170,6 +170,7 @@ class OnboardingWizardWindows(QDialog):
         # Hotkey recording state
         self._recording_field: str | None = None  # "toggle" or "hold"
         self._hotkey_listener = None
+        self._using_qt_grab = False
         self._pressed_keys: set = set()
         self._pressed_keys_lock = threading.Lock()  # Thread-safe access
         self._hotkey_recorded = False  # True if user pressed any key during recording
@@ -817,6 +818,10 @@ class OnboardingWizardWindows(QDialog):
 
     def _start_ipc_test(self) -> None:
         """Request the daemon to start recording via IPC."""
+        if self._ipc_test_cmd_id is not None:
+            logger.debug("IPC test already running; ignoring duplicate start request")
+            return
+
         from utils.ipc import CMD_START_TEST, IPCClient
 
         if self._ipc_client is None:
@@ -848,6 +853,8 @@ class OnboardingWizardWindows(QDialog):
 
         if self._test_status_label:
             self._test_status_label.setText("Wird gestoppt...")
+        if self._test_stop_btn:
+            self._test_stop_btn.setEnabled(False)
 
     def _poll_ipc_response(self) -> None:
         """Poll for IPC response from daemon."""
@@ -941,7 +948,9 @@ class OnboardingWizardWindows(QDialog):
     def _reset_test_ui(self) -> None:
         """Show start button, hide stop button."""
         self._test_start_btn and self._test_start_btn.setVisible(True)
-        self._test_stop_btn and self._test_stop_btn.setVisible(False)
+        if self._test_stop_btn:
+            self._test_stop_btn.setVisible(False)
+            self._test_stop_btn.setEnabled(True)
 
     def _complete(self) -> None:
         """Complete the wizard."""
@@ -1099,6 +1108,7 @@ class OnboardingWizardWindows(QDialog):
         self._stop_hotkey_recording()
         self._recording_field = field
         self._hotkey_recorded = False
+        self._using_qt_grab = False
 
         input_field = self._toggle_input if field == "toggle" else self._hold_input
         if input_field:
@@ -1110,17 +1120,14 @@ class OnboardingWizardWindows(QDialog):
 
         available, key_map = get_pynput_key_map()
         if not available:
-            logger.warning("pynput nicht verfügbar, Recording abgebrochen")
-            # Restore previous value and exit recording mode
-            if input_field:
-                prev_value = get_env_setting(
-                    "PULSESCRIBE_TOGGLE_HOTKEY"
-                    if field == "toggle"
-                    else "PULSESCRIBE_HOLD_HOTKEY"
-                ) or ""
-                input_field.setText(prev_value)
-                input_field.setStyleSheet("")
-            self._recording_field = None
+            logger.warning("pynput nicht verfügbar, nutze Qt-Fallback")
+            self._using_qt_grab = True
+            self.grabKeyboard()
+            self._set_hotkey_status(
+                "pynput nicht verfügbar: Win-Taste evtl. nicht erkennbar (Qt-Fallback aktiv).",
+                "warning",
+            )
+            self.setFocus()
             return
 
         from pynput import keyboard
@@ -1207,6 +1214,9 @@ class OnboardingWizardWindows(QDialog):
         if self._hotkey_listener:
             self._hotkey_listener.stop()
             self._hotkey_listener = None
+        if self._using_qt_grab:
+            self.releaseKeyboard()
+            self._using_qt_grab = False
 
         field = self._recording_field
         input_field = (
@@ -1428,10 +1438,65 @@ class OnboardingWizardWindows(QDialog):
                 event.accept()
                 return
 
+            if self._using_qt_grab:
+                parts = []
+                modifiers = event.modifiers()
+                if modifiers & Qt.KeyboardModifier.ControlModifier:
+                    parts.append("ctrl")
+                if modifiers & Qt.KeyboardModifier.AltModifier:
+                    parts.append("alt")
+                if modifiers & Qt.KeyboardModifier.ShiftModifier:
+                    parts.append("shift")
+                if modifiers & Qt.KeyboardModifier.MetaModifier:
+                    parts.append("win")
+
+                key_name = self._qt_key_to_string(event.key())
+                if key_name and key_name not in ("ctrl", "alt", "shift", "win"):
+                    parts.append(key_name)
+
+                hotkey_str = "+".join(parts) if parts else ""
+                if hotkey_str:
+                    self._hotkey_recorded = True
+                self._set_hotkey_field_text(hotkey_str)
+
             event.accept()
             return
 
         super().keyPressEvent(event)
+
+    def _qt_key_to_string(self, key: int) -> str:
+        """Convert Qt key code into normalized hotkey token."""
+        special_keys = {
+            Qt.Key.Key_Space: "space",
+            Qt.Key.Key_Tab: "tab",
+            Qt.Key.Key_Backspace: "backspace",
+            Qt.Key.Key_Delete: "delete",
+            Qt.Key.Key_Home: "home",
+            Qt.Key.Key_End: "end",
+            Qt.Key.Key_PageUp: "pageup",
+            Qt.Key.Key_PageDown: "pagedown",
+            Qt.Key.Key_Up: "up",
+            Qt.Key.Key_Down: "down",
+            Qt.Key.Key_Left: "left",
+            Qt.Key.Key_Right: "right",
+            Qt.Key.Key_Control: "ctrl",
+            Qt.Key.Key_Alt: "alt",
+            Qt.Key.Key_Shift: "shift",
+            Qt.Key.Key_Meta: "win",
+        }
+        if key in special_keys:
+            return special_keys[key]
+
+        if Qt.Key.Key_F1 <= key <= Qt.Key.Key_F24:
+            return f"f{key - Qt.Key.Key_F1 + 1}"
+
+        if Qt.Key.Key_A <= key <= Qt.Key.Key_Z:
+            return chr(ord("a") + key - Qt.Key.Key_A)
+
+        if Qt.Key.Key_0 <= key <= Qt.Key.Key_9:
+            return chr(ord("0") + key - Qt.Key.Key_0)
+
+        return ""
 
     # -------------------------------------------------------------------------
     # Cleanup
