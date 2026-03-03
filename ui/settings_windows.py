@@ -5,6 +5,7 @@ Portiert von ui/welcome.py (macOS AppKit).
 """
 
 import logging
+import os
 import sys
 import threading
 import time
@@ -50,6 +51,7 @@ from utils.preferences import (
     set_show_welcome_on_startup,
 )
 from utils.local_backend import normalize_local_backend, should_remove_local_backend_env
+from utils.local_backend import get_cpu_threads_limit
 from utils.log_tail import (
     clamp_scroll_value,
     is_near_bottom,
@@ -187,6 +189,7 @@ class SettingsWindow(QDialog):
         self._api_fields: dict[str, QLineEdit] = {}
         self._api_status: dict[str, QLabel] = {}
         self._last_logs_text: str | None = None
+        self._last_transcripts_text: str | None = None
 
         # Hotkey Recording State
         self._recording_hotkey_for: str | None = None
@@ -648,11 +651,16 @@ class SettingsWindow(QDialog):
         )
 
         # CPU Threads
+        cpu_threads_max = get_cpu_threads_limit(os.cpu_count())
         self._cpu_threads_field = QLineEdit()
         self._cpu_threads_field.setPlaceholderText("0 = auto")
-        self._cpu_threads_field.setValidator(QIntValidator(0, 32))
+        self._cpu_threads_field.setValidator(QIntValidator(0, cpu_threads_max))
         card_layout.addLayout(
-            create_label_row("CPU Threads:", self._cpu_threads_field, "0-32 (0=auto)")
+            create_label_row(
+                "CPU Threads:",
+                self._cpu_threads_field,
+                f"0-{cpu_threads_max} (0=auto)",
+            )
         )
 
         # Num Workers
@@ -1603,32 +1611,15 @@ class SettingsWindow(QDialog):
     def _refresh_transcripts(self):
         """Aktualisiert Transcripts-Anzeige."""
         try:
-            from utils.history import get_recent_transcripts
+            from utils.history import (
+                format_transcripts_for_display,
+                get_recent_transcripts,
+            )
 
             entries = get_recent_transcripts(50)  # Letzte 50 Einträge
-            if not entries:
-                if self._transcripts_viewer:
-                    self._transcripts_viewer.setPlainText("No transcripts yet.")
-                if hasattr(self, "_transcripts_status"):
-                    self._transcripts_status.setText("0 entries")
-                return
-
-            # Format entries
-            lines = []
-            for entry in reversed(entries):  # Älteste zuerst
-                ts = entry.get("timestamp", "")[:19].replace("T", " ")
-                text = entry.get("text", "")
-                mode = entry.get("mode", "")
-                refined = "✨" if entry.get("refined") else ""
-                lines.append(f"[{ts}] {refined}{text}")
-                if mode:
-                    lines[-1] = f"[{ts}] ({mode}) {refined}{text}"
-
-            if self._transcripts_viewer:
-                self._transcripts_viewer.setPlainText("\n\n".join(lines))
-                # Scroll to bottom
-                scrollbar = self._transcripts_viewer.verticalScrollBar()
-                scrollbar.setValue(scrollbar.maximum())
+            self._set_transcripts_text_if_changed(
+                format_transcripts_for_display(entries)
+            )
 
             if hasattr(self, "_transcripts_status"):
                 self._transcripts_status.setText(f"{len(entries)} entries")
@@ -1637,6 +1628,30 @@ class SettingsWindow(QDialog):
             logger.error(f"Transcripts laden fehlgeschlagen: {e}")
             if self._transcripts_viewer:
                 self._transcripts_viewer.setPlainText(f"Error: {e}")
+
+    def _set_transcripts_text_if_changed(self, text: str) -> None:
+        """Aktualisiert den Transcript-Viewer nur bei Änderungen.
+
+        Verhindert unnötige Re-Renders und erhält die Scroll-Position, wenn
+        der Nutzer ältere Einträge betrachtet.
+        """
+        if not self._transcripts_viewer or text == self._last_transcripts_text:
+            return
+
+        scrollbar = self._transcripts_viewer.verticalScrollBar()
+        previous_maximum = scrollbar.maximum()
+        previous_value = scrollbar.value()
+        was_at_bottom = is_near_bottom(previous_value, previous_maximum)
+
+        self._transcripts_viewer.setPlainText(text)
+        self._last_transcripts_text = text
+
+        scrollbar = self._transcripts_viewer.verticalScrollBar()
+        if was_at_bottom:
+            scrollbar.setValue(scrollbar.maximum())
+            return
+
+        scrollbar.setValue(clamp_scroll_value(previous_value, scrollbar.maximum()))
 
     def _clear_transcripts(self):
         """Löscht Transcripts-Historie."""

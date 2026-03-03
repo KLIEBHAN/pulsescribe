@@ -155,6 +155,38 @@ class TestGetRecentTranscripts:
         assert [entry["text"] for entry in result] == ["Second"]
 
 
+class TestFormatTranscriptsForDisplay:
+    """Tests für format_transcripts_for_display()."""
+
+    def test_empty_entries_message(self):
+        from utils.history import format_transcripts_for_display
+
+        assert format_transcripts_for_display([]) == "No transcripts yet."
+
+    def test_formats_entries_oldest_first_with_metadata(self):
+        from utils.history import format_transcripts_for_display
+
+        entries = [
+            {
+                "timestamp": "2026-03-03T10:01:30.000000",
+                "text": "Neuester Eintrag",
+                "mode": "deepgram",
+                "refined": True,
+            },
+            {
+                "timestamp": "2026-03-03T10:00:00.000000",
+                "text": "Aelterer Eintrag",
+            },
+        ]
+
+        formatted = format_transcripts_for_display(entries)
+        assert "[2026-03-03 10:00:00] Aelterer Eintrag" in formatted
+        assert "[2026-03-03 10:01:30] (deepgram) ✨Neuester Eintrag" in formatted
+        first, second = formatted.split("\n\n")
+        assert "Aelterer Eintrag" in first
+        assert "Neuester Eintrag" in second
+
+
 class TestClearHistory:
     """Tests für clear_history()."""
 

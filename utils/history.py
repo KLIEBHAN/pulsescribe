@@ -157,6 +157,26 @@ def _parse_recent_entries(lines: list[str], count: int) -> list[dict]:
     return entries
 
 
+def format_transcripts_for_display(entries: list[dict]) -> str:
+    """Format transcript entries for the Windows transcripts viewer."""
+    if not entries:
+        return "No transcripts yet."
+
+    lines: list[str] = []
+    for entry in reversed(entries):  # oldest first for readable history flow
+        ts = str(entry.get("timestamp", ""))[:19].replace("T", " ")
+        text = str(entry.get("text", ""))
+        mode = str(entry.get("mode", ""))
+        refined = "✨" if entry.get("refined") else ""
+
+        line = f"[{ts}] {refined}{text}"
+        if mode:
+            line = f"[{ts}] ({mode}) {refined}{text}"
+        lines.append(line)
+
+    return "\n\n".join(lines)
+
+
 def clear_history() -> bool:
     """Löscht die gesamte Historie.
 
