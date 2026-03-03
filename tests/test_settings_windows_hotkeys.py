@@ -62,3 +62,12 @@ def test_validate_hotkeys_for_save_rejects_invalid_tokens():
 
     assert result is None
     assert "invalid" in window._hotkey_status.text.lower()
+
+
+def test_validate_hotkeys_for_save_rejects_modifier_only_hotkeys():
+    window = _make_window("ctrl+alt", "")
+
+    result = window._validate_hotkeys_for_save()
+
+    assert result is None
+    assert "non-modifier" in window._hotkey_status.text.lower()

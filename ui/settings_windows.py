@@ -1429,6 +1429,21 @@ class SettingsWindow(QDialog):
             self._set_hotkey_status(f"Hold hotkey invalid: {hold_error}", "error")
             return None
 
+        modifier_keys = {"ctrl", "alt", "shift", "win"}
+        if toggle and all(part in modifier_keys for part in toggle.split("+")):
+            self._set_hotkey_status(
+                "Toggle hotkey must include at least one non-modifier key.",
+                "error",
+            )
+            return None
+
+        if hold and all(part in modifier_keys for part in hold.split("+")):
+            self._set_hotkey_status(
+                "Hold hotkey must include at least one non-modifier key.",
+                "error",
+            )
+            return None
+
         if toggle and hold and toggle == hold:
             self._set_hotkey_status(
                 "Toggle and Hold must not use the same hotkey.", "error"

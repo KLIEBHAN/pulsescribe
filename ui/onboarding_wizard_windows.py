@@ -7,7 +7,6 @@ Guides new users through: Goal Selection → Permissions → Hotkey → Test →
 from __future__ import annotations
 
 import logging
-import subprocess
 import sys
 import threading
 from typing import Callable
@@ -58,6 +57,7 @@ from utils.preferences import (
     set_onboarding_seen,
     set_onboarding_step,
 )
+from utils.hotkey_windows import normalize_windows_hotkey
 
 logger = logging.getLogger("pulsescribe.onboarding")
 
@@ -191,6 +191,7 @@ class OnboardingWizardWindows(QDialog):
         self._test_start_btn: QPushButton | None = None
         self._test_stop_btn: QPushButton | None = None
         self._test_notice: QLabel | None = None
+        self._hotkey_status_label: QLabel | None = None
 
         self._setup_ui()
 
@@ -358,6 +359,7 @@ class OnboardingWizardWindows(QDialog):
         api_field.setEchoMode(QLineEdit.EchoMode.Password)
         api_field.setPlaceholderText("dg-...")
         api_field.setFont(QFont(DEFAULT_FONT_FAMILY, 11))
+        api_field.textChanged.connect(self._on_api_key_input_changed)
         api_row.addWidget(api_field, 1)
 
         api_status = QLabel("")
@@ -501,6 +503,11 @@ class OnboardingWizardWindows(QDialog):
         hint.setFont(QFont(DEFAULT_FONT_FAMILY, 9))
         hint.setStyleSheet(f"color: {COLORS['text_hint']};")
         card_layout.addWidget(hint)
+
+        self._hotkey_status_label = QLabel("")
+        self._hotkey_status_label.setFont(QFont(DEFAULT_FONT_FAMILY, 9))
+        self._hotkey_status_label.setStyleSheet(f"color: {COLORS['text_secondary']};")
+        card_layout.addWidget(self._hotkey_status_label)
 
         layout.addWidget(card)
 
@@ -751,7 +758,19 @@ class OnboardingWizardWindows(QDialog):
             # At least one hotkey must be configured
             toggle = get_env_setting("PULSESCRIBE_TOGGLE_HOTKEY")
             hold = get_env_setting("PULSESCRIBE_HOLD_HOTKEY")
-            return bool(toggle or hold)
+            if not (toggle or hold):
+                self._set_hotkey_status(
+                    "Mindestens ein Hotkey muss gesetzt sein.", "warning"
+                )
+                return False
+
+            _, _, error = self._validate_hotkey_pair(toggle, hold)
+            if error:
+                self._set_hotkey_status(error, "error")
+                return False
+
+            self._set_hotkey_status("", "text_secondary")
+            return True
         return True
 
     def _go_next(self) -> None:
@@ -767,6 +786,8 @@ class OnboardingWizardWindows(QDialog):
                 entered_key = self._api_key_field.text().strip()
                 if entered_key:
                     save_api_key("DEEPGRAM_API_KEY", entered_key)
+            # Re-apply after potential key entry to ensure mode is actually persisted.
+            self._apply_choice_preset(self._choice)
             set_onboarding_choice(self._choice)
 
         if self._step == OnboardingStep.CHEAT_SHEET:
@@ -1022,6 +1043,19 @@ class OnboardingWizardWindows(QDialog):
             save_env_setting("PULSESCRIBE_LANGUAGE", lang)
         self.settings_changed.emit()
 
+    def _on_api_key_input_changed(self, text: str) -> None:
+        """Update API key status + navigation while typing."""
+        if self._api_key_status:
+            if text.strip():
+                self._api_key_status.setText("✓ API-Key erkannt")
+                self._api_key_status.setStyleSheet(f"color: {COLORS['success']};")
+            else:
+                self._api_key_status.setText("Erforderlich für Fast-Modus")
+                self._api_key_status.setStyleSheet(
+                    f"color: {COLORS['text_secondary']};"
+                )
+        self._update_navigation()
+
     # -------------------------------------------------------------------------
     # Step: Permissions
     # -------------------------------------------------------------------------
@@ -1183,7 +1217,14 @@ class OnboardingWizardWindows(QDialog):
         if save and field and self._hotkey_recorded and input_field:
             hotkey = input_field.text().strip()
             if hotkey:
-                self._save_hotkey(field, hotkey)
+                saved = self._save_hotkey(field, hotkey)
+                if not saved:
+                    env_key = (
+                        "PULSESCRIBE_TOGGLE_HOTKEY"
+                        if field == "toggle"
+                        else "PULSESCRIBE_HOLD_HOTKEY"
+                    )
+                    input_field.setText(get_env_setting(env_key) or "")
         elif field and input_field:
             # Restore previous value (cancel or no input)
             env_key = (
@@ -1203,16 +1244,37 @@ class OnboardingWizardWindows(QDialog):
             if inp:
                 inp.setStyleSheet("")
 
-    def _save_hotkey(self, field: str, hotkey: str) -> None:
+    def _save_hotkey(self, field: str, hotkey: str) -> bool:
         """Save a hotkey to settings. Called by _stop_hotkey_recording."""
-        if field == "toggle":
-            save_env_setting("PULSESCRIBE_TOGGLE_HOTKEY", hotkey)
-        elif field == "hold":
-            save_env_setting("PULSESCRIBE_HOLD_HOTKEY", hotkey)
+        toggle_raw = (
+            hotkey
+            if field == "toggle"
+            else get_env_setting("PULSESCRIBE_TOGGLE_HOTKEY")
+        )
+        hold_raw = (
+            hotkey if field == "hold" else get_env_setting("PULSESCRIBE_HOLD_HOTKEY")
+        )
+        toggle, hold, error = self._validate_hotkey_pair(toggle_raw, hold_raw)
+        if error:
+            self._set_hotkey_status(error, "error")
+            return False
 
+        if field == "toggle":
+            if toggle:
+                save_env_setting("PULSESCRIBE_TOGGLE_HOTKEY", toggle)
+            else:
+                remove_env_setting("PULSESCRIBE_TOGGLE_HOTKEY")
+        elif field == "hold":
+            if hold:
+                save_env_setting("PULSESCRIBE_HOLD_HOTKEY", hold)
+            else:
+                remove_env_setting("PULSESCRIBE_HOLD_HOTKEY")
+
+        self._set_hotkey_status("✓ Hotkey gespeichert", "success")
         self.settings_changed.emit()
         self._refresh_test_hotkey_label()
         self._update_navigation()
+        return True
 
     def _clear_hotkey(self, field: str) -> None:
         """Clear a hotkey."""
@@ -1231,27 +1293,75 @@ class OnboardingWizardWindows(QDialog):
 
     def _apply_hotkey_preset(self, toggle: str | None, hold: str | None) -> None:
         """Apply a hotkey preset."""
-        if toggle:
+        normalized_toggle, normalized_hold, error = self._validate_hotkey_pair(
+            toggle, hold
+        )
+        if error:
+            self._set_hotkey_status(error, "error")
+            return
+
+        if normalized_toggle:
             if self._toggle_input:
-                self._toggle_input.setText(toggle)
-            save_env_setting("PULSESCRIBE_TOGGLE_HOTKEY", toggle)
+                self._toggle_input.setText(normalized_toggle)
+            save_env_setting("PULSESCRIBE_TOGGLE_HOTKEY", normalized_toggle)
         else:
             if self._toggle_input:
                 self._toggle_input.setText("")
             remove_env_setting("PULSESCRIBE_TOGGLE_HOTKEY")
 
-        if hold:
+        if normalized_hold:
             if self._hold_input:
-                self._hold_input.setText(hold)
-            save_env_setting("PULSESCRIBE_HOLD_HOTKEY", hold)
+                self._hold_input.setText(normalized_hold)
+            save_env_setting("PULSESCRIBE_HOLD_HOTKEY", normalized_hold)
         else:
             if self._hold_input:
                 self._hold_input.setText("")
             remove_env_setting("PULSESCRIBE_HOLD_HOTKEY")
 
+        self._set_hotkey_status("✓ Preset angewendet", "success")
         self.settings_changed.emit()
         self._refresh_test_hotkey_label()
         self._update_navigation()
+
+    @staticmethod
+    def _is_modifier_only_hotkey(hotkey: str) -> bool:
+        parts = [part for part in hotkey.split("+") if part]
+        modifiers = {"ctrl", "alt", "shift", "win"}
+        return bool(parts) and all(part in modifiers for part in parts)
+
+    def _validate_hotkey_pair(
+        self, toggle_raw: str | None, hold_raw: str | None
+    ) -> tuple[str, str, str | None]:
+        toggle, toggle_error = normalize_windows_hotkey(toggle_raw)
+        if toggle_error:
+            return "", "", f"Toggle-Hotkey ungültig: {toggle_error}"
+
+        hold, hold_error = normalize_windows_hotkey(hold_raw)
+        if hold_error:
+            return "", "", f"Hold-Hotkey ungültig: {hold_error}"
+
+        if toggle and self._is_modifier_only_hotkey(toggle):
+            return (
+                "",
+                "",
+                "Toggle-Hotkey braucht mindestens eine Nicht-Modifier-Taste.",
+            )
+        if hold and self._is_modifier_only_hotkey(hold):
+            return (
+                "",
+                "",
+                "Hold-Hotkey braucht mindestens eine Nicht-Modifier-Taste.",
+            )
+
+        if toggle and hold and toggle == hold:
+            return "", "", "Toggle und Hold dürfen nicht identisch sein."
+
+        return toggle, hold, None
+
+    def _set_hotkey_status(self, text: str, color_key: str) -> None:
+        if self._hotkey_status_label:
+            self._hotkey_status_label.setText(text)
+            self._hotkey_status_label.setStyleSheet(f"color: {COLORS[color_key]};")
 
     def _refresh_test_hotkey_label(self) -> None:
         """Aktualisiert den Hotkey-Hinweis im Test-Schritt."""
