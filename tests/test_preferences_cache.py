@@ -1,0 +1,80 @@
+from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+
+import utils.preferences as prefs
+
+
+def _isolate_prefs(tmp_path, monkeypatch):
+    monkeypatch.setattr(prefs, "PREFS_FILE", tmp_path / "preferences.json")
+    monkeypatch.setattr(prefs, "ENV_FILE", tmp_path / ".env")
+    prefs._env_cache = None
+
+
+def test_read_env_file_refreshes_when_mtime_is_unchanged_but_size_changes(
+    tmp_path, monkeypatch
+):
+    _isolate_prefs(tmp_path, monkeypatch)
+    prefs.ENV_FILE.write_text("PULSESCRIBE_MODE=deepgram\n", encoding="utf-8")
+
+    original_stat = Path.stat
+
+    def _patched_stat(self: Path):
+        stat_result = original_stat(self)
+        if self == prefs.ENV_FILE:
+            return SimpleNamespace(
+                st_mtime=123.0,
+                st_mtime_ns=123_000_000_000,
+                st_size=stat_result.st_size,
+                st_ctime=stat_result.st_ctime,
+                st_ctime_ns=stat_result.st_ctime_ns,
+            )
+        return stat_result
+
+    monkeypatch.setattr(Path, "stat", _patched_stat)
+
+    first_read = prefs.read_env_file()
+    assert first_read["PULSESCRIBE_MODE"] == "deepgram"
+
+    prefs.ENV_FILE.write_text("PULSESCRIBE_MODE=local\n", encoding="utf-8")
+    second_read = prefs.read_env_file()
+    assert second_read["PULSESCRIBE_MODE"] == "local"
+
+
+def test_save_api_key_is_noop_when_value_is_unchanged(tmp_path, monkeypatch):
+    _isolate_prefs(tmp_path, monkeypatch)
+    prefs.ENV_FILE.write_text("DEEPGRAM_API_KEY=dg-same\n", encoding="utf-8")
+
+    original_write_text = Path.write_text
+    write_calls = 0
+
+    def _patched_write_text(self: Path, *args, **kwargs):
+        nonlocal write_calls
+        if self == prefs.ENV_FILE:
+            write_calls += 1
+        return original_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", _patched_write_text)
+
+    prefs.save_api_key("DEEPGRAM_API_KEY", "dg-same")
+    assert write_calls == 0
+
+
+def test_remove_env_setting_is_noop_when_key_does_not_exist(tmp_path, monkeypatch):
+    _isolate_prefs(tmp_path, monkeypatch)
+    prefs.ENV_FILE.write_text("PULSESCRIBE_MODE=deepgram\n", encoding="utf-8")
+
+    original_write_text = Path.write_text
+    write_calls = 0
+
+    def _patched_write_text(self: Path, *args, **kwargs):
+        nonlocal write_calls
+        if self == prefs.ENV_FILE:
+            write_calls += 1
+        return original_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", _patched_write_text)
+
+    prefs.remove_env_setting("NOT_EXISTING_KEY")
+    assert write_calls == 0

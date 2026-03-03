@@ -10,7 +10,6 @@ from pathlib import Path
 
 from config import USER_CONFIG_DIR
 
-logger = logging.getLogger("pulsescribe")
 from utils.onboarding import (
     OnboardingChoice,
     OnboardingStep,
@@ -18,11 +17,13 @@ from utils.onboarding import (
     coerce_onboarding_step,
 )
 
+logger = logging.getLogger("pulsescribe")
+
 PREFS_FILE = USER_CONFIG_DIR / "preferences.json"
 ENV_FILE = USER_CONFIG_DIR / ".env"
 
-# Cache: (mtime, values)
-_env_cache: tuple[float, dict[str, str]] | None = None
+# Cache: ((mtime_ns, size, ctime_ns), values)
+_env_cache: tuple[tuple[int, int, int], dict[str, str]] | None = None
 
 
 def read_env_file(path: Path | None = None) -> dict[str, str]:
@@ -36,20 +37,38 @@ def read_env_file(path: Path | None = None) -> dict[str, str]:
 
     env_path = path or ENV_FILE
     try:
-        mtime = env_path.stat().st_mtime
+        stat_result = env_path.stat()
     except FileNotFoundError:
-        _env_cache = (0.0, {})
+        _env_cache = ((0, 0, 0), {})
         return {}
     except OSError:
-        _env_cache = (0.0, {})
+        _env_cache = ((0, 0, 0), {})
         return {}
 
-    if path is None and _env_cache is not None and _env_cache[0] == mtime:
+    signature = (
+        int(
+            getattr(
+                stat_result,
+                "st_mtime_ns",
+                int(getattr(stat_result, "st_mtime", 0.0) * 1_000_000_000),
+            )
+        ),
+        int(getattr(stat_result, "st_size", 0)),
+        int(
+            getattr(
+                stat_result,
+                "st_ctime_ns",
+                int(getattr(stat_result, "st_ctime", 0.0) * 1_000_000_000),
+            )
+        ),
+    )
+
+    if path is None and _env_cache is not None and _env_cache[0] == signature:
         return dict(_env_cache[1])
 
     values: dict[str, str] = {}
     try:
-        for raw_line in env_path.read_text().splitlines():
+        for raw_line in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
             line = raw_line.strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue
@@ -62,7 +81,7 @@ def read_env_file(path: Path | None = None) -> dict[str, str]:
         values = {}
 
     if path is None:
-        _env_cache = (mtime, values)
+        _env_cache = (signature, values)
     return dict(values)
 
 
@@ -207,6 +226,9 @@ def save_api_key(key_name: str, value: str) -> None:
     found = False
     for i, line in enumerate(lines):
         if line.startswith(f"{key_name}="):
+            existing_value = line.split("=", 1)[1]
+            if existing_value == value:
+                return
             lines[i] = f"{key_name}={value}"
             found = True
             break
@@ -292,6 +314,8 @@ def remove_env_setting(key_name: str) -> None:
     try:
         lines = env_path.read_text(encoding="utf-8").splitlines()
         new_lines = [line for line in lines if not line.startswith(f"{key_name}=")]
+        if len(new_lines) == len(lines):
+            return
         env_path.write_text("\n".join(new_lines) + "\n" if new_lines else "", encoding="utf-8")
         # Cache erst nach erfolgreichem Schreiben invalidieren
         _invalidate_env_cache()

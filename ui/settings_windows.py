@@ -216,7 +216,8 @@ class SettingsWindow(QDialog):
     def _setup_window(self):
         """Konfiguriert das Fenster."""
         self.setWindowTitle("PulseScribe Settings")
-        self.setFixedSize(SETTINGS_WIDTH, SETTINGS_HEIGHT)
+        self.resize(SETTINGS_WIDTH, SETTINGS_HEIGHT)
+        self.setMinimumSize(SETTINGS_WIDTH, SETTINGS_HEIGHT)
         self.setStyleSheet(get_settings_stylesheet())
 
         # Window Flags
