@@ -710,6 +710,7 @@ class OnboardingWizardWindows(QDialog):
         ):
             self._cancel_ipc_test_if_running()
             self._stop_ipc_polling()
+            self._reset_test_ui()
 
         self._step = step
 

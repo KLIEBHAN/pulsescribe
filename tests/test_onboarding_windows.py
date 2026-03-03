@@ -480,13 +480,16 @@ def test_show_step_leaving_test_requests_ipc_cancel():
 
     cancel_calls: list[bool] = []
     stop_calls: list[bool] = []
+    reset_calls: list[bool] = []
     wizard._cancel_ipc_test_if_running = lambda: cancel_calls.append(True)
     wizard._stop_ipc_polling = lambda: stop_calls.append(True)
+    wizard._reset_test_ui = lambda: reset_calls.append(True)
 
     wizard._show_step(OnboardingStep.HOTKEY)
 
     assert cancel_calls == [True]
     assert stop_calls == [True]
+    assert reset_calls == [True]
 
 
 def test_stop_ipc_test_requires_recording_ack_before_sending_command():
