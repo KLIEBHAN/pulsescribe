@@ -4,6 +4,8 @@ Kapselt die Logik für multiple Hold-Quellen (z.B. mehrere Tasten
 oder pynput + native Handler gleichzeitig).
 """
 
+import threading
+
 
 class HoldHotkeyState:
     """Manages state for hold-to-record hotkey behavior.
@@ -27,11 +29,12 @@ class HoldHotkeyState:
             hold_state.reset()
     """
 
-    __slots__ = ("active_sources", "started_by_hold")
+    __slots__ = ("active_sources", "started_by_hold", "_lock")
 
     def __init__(self):
         self.active_sources: set[str] = set()
         self.started_by_hold: bool = False
+        self._lock = threading.Lock()
 
     def should_start(self, source_id: str) -> bool:
         """Check if recording should start on key press.
@@ -39,10 +42,11 @@ class HoldHotkeyState:
         Returns True if this is a new source (first press).
         Automatically adds source to active set.
         """
-        if source_id in self.active_sources:
-            return False
-        self.active_sources.add(source_id)
-        return True
+        with self._lock:
+            if source_id in self.active_sources:
+                return False
+            self.active_sources.add(source_id)
+            return True
 
     def should_stop(self, source_id: str) -> bool:
         """Check if recording should stop on key release.
@@ -53,16 +57,19 @@ class HoldHotkeyState:
 
         Automatically removes source from active set.
         """
-        self.active_sources.discard(source_id)
-        return not self.active_sources and self.started_by_hold
+        with self._lock:
+            self.active_sources.discard(source_id)
+            return not self.active_sources and self.started_by_hold
 
     def is_active(self, source_id: str) -> bool:
         """Check if source is still active (for race condition check)."""
-        return source_id in self.active_sources
+        with self._lock:
+            return source_id in self.active_sources
 
     def mark_started(self):
         """Mark that recording was started by hold."""
-        self.started_by_hold = True
+        with self._lock:
+            self.started_by_hold = True
 
     def reset(self):
         """Reset after recording ends."""
@@ -70,5 +77,6 @@ class HoldHotkeyState:
 
     def clear(self):
         """Full reset (cleanup)."""
-        self.active_sources.clear()
-        self.started_by_hold = False
+        with self._lock:
+            self.active_sources.clear()
+            self.started_by_hold = False

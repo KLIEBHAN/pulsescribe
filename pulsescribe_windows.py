@@ -237,6 +237,7 @@ class PulseScribeWindows:
         self._tray = None
         self._hotkey_listeners: list = []  # Mehrere Listener (toggle + hold)
         self._recording_thread = None
+        self._recording_action_lock = threading.RLock()  # Start/Stop atomar halten
         self._stop_event = threading.Event()  # App beenden
         self._recording_stop_event = threading.Event()  # Recording stoppen
         self._prewarm_complete = threading.Event()  # Pre-Warm abgeschlossen
@@ -272,6 +273,7 @@ class PulseScribeWindows:
 
         # Provider-Cache (wichtig für LocalProvider - cached Modelle intern)
         self._provider_cache: dict[str, object] = {}
+        self._provider_cache_lock = threading.Lock()
 
         # Settings-Reload (FileWatcher + Polling-Fallback)
         self._env_observer = None
@@ -507,9 +509,10 @@ class PulseScribeWindows:
         erstellen und das interne Caching umgehen.
         """
         if mode in _STATEFUL_PROVIDERS:
-            if mode not in self._provider_cache:
-                self._provider_cache[mode] = get_provider(mode)
-            return self._provider_cache[mode]
+            with self._provider_cache_lock:
+                if mode not in self._provider_cache:
+                    self._provider_cache[mode] = get_provider(mode)
+                return self._provider_cache[mode]
         # Stateless Provider: kein Caching nötig (API-Calls)
         return get_provider(mode)
 
@@ -634,10 +637,10 @@ class PulseScribeWindows:
             return
 
         logger.debug(f"Hold-Recording starten: {source_id}")
-        self._start_recording()
+        started = self._start_recording()
 
         # Flag NUR setzen wenn Recording tatsächlich gestartet
-        if self.state in (AppState.LISTENING, AppState.RECORDING, AppState.LOADING):
+        if started:
             self._hold_state.mark_started()
 
     def _stop_recording_from_hotkey(self):
@@ -649,101 +652,133 @@ class PulseScribeWindows:
             logger.debug("Hold-Release → Recording stoppen")
             self._stop_recording()  # ruft hold_state.reset() auf
 
-    def _start_recording(self):
+    def _start_recording(self) -> bool:
         """Startet Aufnahme (Streaming oder REST)."""
-        logger.info(f"Starte Aufnahme ({'Streaming' if self.streaming else 'REST'})...")
+        with self._recording_action_lock:
+            if self._stop_event.is_set():
+                logger.debug("Start ignoriert: App wird beendet")
+                return False
 
-        # Recording-Stop-Event zurücksetzen
-        self._recording_stop_event.clear()
+            # Idempotenz: nur aus IDLE starten
+            if self.state != AppState.IDLE:
+                logger.debug(f"Start ignoriert: State={self.state}")
+                return False
 
-        if self.streaming:
-            # Prüfe ob Warm-Stream verfügbar (instant-start)
-            if self._warm_stream is not None:
-                # ═══════════════════════════════════════════════════════════════
-                # WARM-STREAM MODE: Mikrofon läuft bereits, instant-start!
-                # ═══════════════════════════════════════════════════════════════
-                logger.info("Warm-Stream Mode: instant-start")
+            logger.info(
+                f"Starte Aufnahme ({'Streaming' if self.streaming else 'REST'})..."
+            )
 
-                # Queue leeren (alte Samples verwerfen)
-                while not self._warm_stream_queue.empty():
-                    try:
-                        self._warm_stream_queue.get_nowait()
-                    except queue.Empty:
-                        break
+            # Recording-Stop-Event zurücksetzen
+            self._recording_stop_event.clear()
 
-                # Sofort LISTENING setzen und Sound spielen
-                self._set_state(AppState.LISTENING)
-                self._play_sound("ready")
+            if self.streaming:
+                # Prüfe ob Warm-Stream verfügbar (instant-start)
+                if self._warm_stream is not None:
+                    # ═══════════════════════════════════════════════════════════════
+                    # WARM-STREAM MODE: Mikrofon läuft bereits, instant-start!
+                    # ═══════════════════════════════════════════════════════════════
+                    logger.info("Warm-Stream Mode: instant-start")
 
-                # Worker mit Warm-Stream starten
-                self._recording_thread = threading.Thread(
-                    target=self._streaming_worker_warm, daemon=True
-                )
+                    # Queue leeren (alte Samples verwerfen)
+                    while not self._warm_stream_queue.empty():
+                        try:
+                            self._warm_stream_queue.get_nowait()
+                        except queue.Empty:
+                            break
+
+                    # Sofort LISTENING setzen und Sound spielen
+                    self._set_state(AppState.LISTENING)
+                    self._play_sound("ready")
+
+                    # Worker mit Warm-Stream starten
+                    self._recording_thread = threading.Thread(
+                        target=self._streaming_worker_warm, daemon=True
+                    )
+                else:
+                    # Fallback: Kein Warm-Stream, nutze alten Cold-Start-Pfad
+                    logger.warning("Kein Warm-Stream - Fallback auf Cold-Start")
+                    self._set_state(AppState.LOADING)
+
+                    if not self._prewarm_complete.is_set():
+                        logger.debug("Warte auf Pre-Warm...")
+                        if not self._prewarm_complete.wait(timeout=1.0):
+                            logger.warning("Pre-Warm Timeout - starte trotzdem")
+
+                    self._recording_thread = threading.Thread(
+                        target=self._streaming_worker, daemon=True
+                    )
             else:
-                # Fallback: Kein Warm-Stream, nutze alten Cold-Start-Pfad
-                logger.warning("Kein Warm-Stream - Fallback auf Cold-Start")
-                self._set_state(AppState.LOADING)
+                # REST-Mode (Groq, OpenAI, Local)
+                # Prüfe ob Warm-Stream verfügbar (instant-start)
+                if self._warm_stream is not None:
+                    logger.info("REST-Mode mit Warm-Stream: instant-start")
 
-                if not self._prewarm_complete.is_set():
-                    logger.debug("Warte auf Pre-Warm...")
-                    if not self._prewarm_complete.wait(timeout=1.0):
-                        logger.warning("Pre-Warm Timeout - starte trotzdem")
+                    # Queue leeren (alte Samples verwerfen)
+                    while not self._warm_stream_queue.empty():
+                        try:
+                            self._warm_stream_queue.get_nowait()
+                        except queue.Empty:
+                            break
 
-                self._recording_thread = threading.Thread(
-                    target=self._streaming_worker, daemon=True
-                )
-        else:
-            # REST-Mode (Groq, OpenAI, Local)
-            # Prüfe ob Warm-Stream verfügbar (instant-start)
-            if self._warm_stream is not None:
-                logger.info("REST-Mode mit Warm-Stream: instant-start")
+                    # Sofort LISTENING setzen und Sound spielen
+                    self._set_state(AppState.LISTENING)
+                    self._play_sound("ready")
 
-                # Queue leeren (alte Samples verwerfen)
-                while not self._warm_stream_queue.empty():
-                    try:
-                        self._warm_stream_queue.get_nowait()
-                    except queue.Empty:
-                        break
+                    # Recording-Loop mit Warm-Stream
+                    self._recording_thread = threading.Thread(
+                        target=self._recording_loop_warm, daemon=True
+                    )
+                else:
+                    # Fallback: Kein Warm-Stream, Cold-Start
+                    logger.warning("Kein Warm-Stream - Fallback auf Cold-Start")
+                    self._set_state(AppState.LISTENING)
+                    self._play_sound("ready")
+                    time.sleep(0.1)  # Sound abspielen lassen vor Audio-Stream
+                    self._recording_thread = threading.Thread(
+                        target=self._recording_loop, daemon=True
+                    )
 
-                # Sofort LISTENING setzen und Sound spielen
-                self._set_state(AppState.LISTENING)
-                self._play_sound("ready")
-
-                # Recording-Loop mit Warm-Stream
-                self._recording_thread = threading.Thread(
-                    target=self._recording_loop_warm, daemon=True
-                )
-            else:
-                # Fallback: Kein Warm-Stream, Cold-Start
-                logger.warning("Kein Warm-Stream - Fallback auf Cold-Start")
-                self._set_state(AppState.LISTENING)
-                self._play_sound("ready")
-                time.sleep(0.1)  # Sound abspielen lassen vor Audio-Stream
-                self._recording_thread = threading.Thread(
-                    target=self._recording_loop, daemon=True
-                )
-        self._recording_thread.start()
+            self._recording_thread.start()
+            return True
 
     def _stop_recording(self):
         """Stoppt Aufnahme und startet Transkription."""
-        logger.info("Stoppe Aufnahme...")
-        self._play_sound("stop")
+        recording_thread = None
+        should_transcribe_rest = False
 
-        # Hold-Flag zurücksetzen - egal wie Recording gestoppt wurde
-        self._hold_state.reset()
+        with self._recording_action_lock:
+            # Idempotenz: Stop nur in aktivem Aufnahme-Flow
+            if self.state not in (
+                AppState.LOADING,
+                AppState.LISTENING,
+                AppState.RECORDING,
+            ):
+                logger.debug(f"Stop ignoriert: State={self.state}")
+                return
 
-        # Signal zum Stoppen (nur Recording, nicht App)
-        self._recording_stop_event.set()
+            logger.info("Stoppe Aufnahme...")
+            self._play_sound("stop")
 
-        if self.streaming:
-            # Streaming: Worker beendet sich selbst via stop_event
-            # Ergebnis kommt automatisch (kein separater Transcribe-Thread nötig)
-            pass
-        else:
-            # REST: Auf Recording-Thread warten, dann transcribieren
-            if self._recording_thread and self._recording_thread.is_alive():
-                self._recording_thread.join(timeout=2.0)
+            # Hold-Flag zurücksetzen - egal wie Recording gestoppt wurde
+            self._hold_state.reset()
+
+            # Signal zum Stoppen (nur Recording, nicht App)
+            self._recording_stop_event.set()
+
+            if self.streaming:
+                # Streaming: Worker beendet sich selbst via stop_event
+                # Ergebnis kommt automatisch (kein separater Transcribe-Thread nötig)
+                return
+
+            # REST: State früh umschalten, damit parallele Stop-Aufrufe idempotent sind
             self._set_state(AppState.TRANSCRIBING)
+            recording_thread = self._recording_thread
+            should_transcribe_rest = True
+
+        # REST: Auf Recording-Thread warten, dann transcribieren
+        if should_transcribe_rest:
+            if recording_thread and recording_thread.is_alive():
+                recording_thread.join(timeout=2.0)
             threading.Thread(target=self._transcribe_rest, daemon=True).start()
 
     def _recording_loop(self):
@@ -1634,16 +1669,19 @@ class PulseScribeWindows:
 
             # GESAMTEN Provider-Cache leeren (nicht nur alten Mode)
             # Wichtig weil auch LocalProvider.invalidate_runtime_config() nötig ist
-            for provider in self._provider_cache.values():
+            with self._provider_cache_lock:
+                providers_to_invalidate = list(self._provider_cache.values())
+                self._provider_cache.clear()
+            for provider in providers_to_invalidate:
                 if hasattr(provider, "invalidate_runtime_config"):
                     provider.invalidate_runtime_config()
-            self._provider_cache.clear()
             logger.info(f"Mode geändert: {old_mode} → {new_mode}")
 
         # Bei local Mode: Runtime-Config invalidieren (auch ohne Mode-Wechsel)
         # Wichtig damit Fallback auf CPU bei Modellwechsel zurückgesetzt wird
         if new_mode == "local" and not mode_changed:
-            local_provider = self._provider_cache.get("local")
+            with self._provider_cache_lock:
+                local_provider = self._provider_cache.get("local")
             if local_provider and hasattr(local_provider, "invalidate_runtime_config"):
                 local_provider.invalidate_runtime_config()
 
@@ -2176,15 +2214,22 @@ class PulseScribeWindows:
                 )
             return
 
-        # Store command ID for result routing
+        # Start recording (uses existing mechanism)
+        started = self._start_recording()
+        if not started:
+            if self._ipc_server:
+                self._ipc_server.send_response(
+                    cmd_id, STATUS_ERROR, error="Aufnahme konnte nicht gestartet werden"
+                )
+            return
+
+        # Erst nach erfolgreichem Start setzen, um falsches Routing bei Race-Interleavings
+        # mit einem parallel abschließenden vorherigen Testlauf zu vermeiden.
         self._ipc_test_cmd_id = cmd_id
 
-        # Send "recording" status
+        # Send "recording" status erst nach erfolgreichem Start
         if self._ipc_server:
             self._ipc_server.send_response(cmd_id, STATUS_RECORDING)
-
-        # Start recording (uses existing mechanism)
-        self._start_recording()
         logger.info(f"IPC-Test gestartet (id={cmd_id})")
 
     def _stop_ipc_test(self, cmd_id: str) -> None:
