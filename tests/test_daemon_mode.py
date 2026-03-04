@@ -134,6 +134,60 @@ class TestDaemonMode(unittest.TestCase):
             self.assertIn("local", daemon._provider_cache)
             local_provider.invalidate_runtime_config.assert_called_once()
 
+    def test_provider_cache_is_thread_safe_during_reload(self):
+        daemon = PulseScribeDaemon(mode="local")
+
+        class _FakeProvider:
+            def __init__(self):
+                self.invalidated = 0
+
+            def invalidate_runtime_config(self):
+                self.invalidated += 1
+
+        created_providers = []
+
+        def fake_get_provider(_mode):
+            provider = _FakeProvider()
+            created_providers.append(provider)
+            return provider
+
+        errors = []
+
+        with (
+            patch("pulsescribe_daemon.get_provider", side_effect=fake_get_provider),
+            patch("pulsescribe_daemon.load_environment"),
+            patch(
+                "utils.preferences.read_env_file",
+                return_value={"PULSESCRIBE_MODE": "openai"},
+            ),
+            patch.object(daemon, "_resolve_hotkey_bindings", return_value=[]),
+        ):
+
+            def worker_get_provider():
+                try:
+                    for _ in range(300):
+                        daemon._get_provider("local")
+                except Exception as exc:  # pragma: no cover
+                    errors.append(exc)
+
+            def worker_reload():
+                try:
+                    for _ in range(300):
+                        daemon.mode = "local"
+                        daemon._reload_settings()
+                except Exception as exc:  # pragma: no cover
+                    errors.append(exc)
+
+            t1 = threading.Thread(target=worker_get_provider)
+            t2 = threading.Thread(target=worker_reload)
+            t1.start()
+            t2.start()
+            t1.join()
+            t2.join()
+
+        self.assertFalse(errors)
+        self.assertTrue(created_providers)
+
     def test_recording_worker_execution(self):
         daemon = PulseScribeDaemon(mode="openai", language="de")
         daemon._stop_event = threading.Event()

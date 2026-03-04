@@ -181,6 +181,7 @@ class PulseScribeDaemon:
 
         # Provider-Cache: vermeidet Re-Init (z.B. lokales Modell laden)
         self._provider_cache: dict[str, object] = {}
+        self._provider_cache_lock = threading.Lock()
         # Effective mode for the current recording run (may differ after fallbacks).
         self._run_mode: str | None = None
         # Test dictation run (in-app, no auto-paste)
@@ -406,11 +407,12 @@ class PulseScribeDaemon:
 
     def _get_provider(self, mode: str):
         """Gibt gecachten Provider zurück oder erstellt ihn."""
-        provider = self._provider_cache.get(mode)
-        if provider is None:
-            provider = get_provider(mode)
-            self._provider_cache[mode] = provider
-        return provider
+        with self._provider_cache_lock:
+            provider = self._provider_cache.get(mode)
+            if provider is None:
+                provider = get_provider(mode)
+                self._provider_cache[mode] = provider
+            return provider
 
     @staticmethod
     def _clean_model_name(model: str | None) -> str | None:
@@ -1973,13 +1975,16 @@ class PulseScribeDaemon:
         self._stop_keepalive_timer()
 
         # Provider-Cache leeren (Local Whisper kann ~500MB RAM halten)
-        for name, provider in list(self._provider_cache.items()):
+        with self._provider_cache_lock:
+            providers = list(self._provider_cache.items())
+            self._provider_cache.clear()
+
+        for name, provider in providers:
             if hasattr(provider, "cleanup"):
                 try:
                     provider.cleanup()  # type: ignore[attr-defined]
                 except Exception:
                     pass
-        self._provider_cache.clear()
         logger.debug("Provider-Cache geleert")
 
     def _paste_result(self, transcript: str) -> None:
@@ -2211,7 +2216,8 @@ class PulseScribeDaemon:
 
         # Lokalen Provider nicht wegwerfen (Modell-Load ist teuer).
         # Stattdessen Runtime-Konfig invalidieren, damit ENV-Änderungen greifen.
-        local_provider = self._provider_cache.get("local")
+        with self._provider_cache_lock:
+            local_provider = self._provider_cache.get("local")
         if local_provider is not None:
             invalidate = getattr(local_provider, "invalidate_runtime_config", None)
             if callable(invalidate):
@@ -2223,7 +2229,8 @@ class PulseScribeDaemon:
                     )
             else:
                 # Fallback: alte Implementierung (sicher, aber langsamer)
-                del self._provider_cache["local"]
+                with self._provider_cache_lock:
+                    self._provider_cache.pop("local", None)
 
         logger.info(
             f"Settings reloaded: mode={self.mode}, language={self.language}, "
