@@ -247,10 +247,14 @@ class PulseScribeWindows:
         self._ipc_server = None  # IPC-Server für Wizard-Kommunikation
         self._ipc_test_cmd_id: str | None = None  # Aktiver IPC-Test-Command
         self._event_loop = None  # Wird in _prewarm_imports() erstellt
+        self._run_mode: str | None = None  # Snapshot: Modus pro Recording-Run
+        self._run_streaming: bool | None = None  # Snapshot: Streaming pro Run
 
         # Watchdog für hängende Transcription (wie macOS)
         self._transcribing_timeout = 30.0  # Sekunden
         self._transcribing_watchdog: threading.Timer | None = None
+        self._watchdog_lock = threading.Lock()
+        self._watchdog_token = 0
 
         # Audio buffer für REST-Modus
         self._audio_buffer = []
@@ -280,6 +284,8 @@ class PulseScribeWindows:
         self._reload_polling_thread: threading.Thread | None = None
         self._reload_polling_stop = threading.Event()
         self._reload_signal_file: Path | None = None
+        self._reload_settings_lock = threading.Lock()
+        self._hotkey_listener_lock = threading.RLock()
 
         stream_mode = "Streaming" if streaming else "REST"
         hotkey_info = []
@@ -344,9 +350,12 @@ class PulseScribeWindows:
 
     def _start_transcribing_watchdog(self):
         """Startet Watchdog-Timer für hängende Transcription."""
-        self._stop_transcribing_watchdog()
-
         def timeout_handler():
+            with self._watchdog_lock:
+                # Ignore stale timer callbacks from previous runs.
+                if timer_token != self._watchdog_token:
+                    return
+
             if self.state == AppState.TRANSCRIBING:
                 logger.error(
                     f"Transcription-Timeout nach {self._transcribing_timeout}s"
@@ -355,17 +364,29 @@ class PulseScribeWindows:
                 self._play_sound("error")
                 self._schedule_idle_if_state_unchanged(2.0)
 
-        self._transcribing_watchdog = threading.Timer(
-            self._transcribing_timeout, timeout_handler
-        )
-        self._transcribing_watchdog.daemon = True
-        self._transcribing_watchdog.start()
+        with self._watchdog_lock:
+            if self._transcribing_watchdog is not None:
+                self._transcribing_watchdog.cancel()
+                self._transcribing_watchdog = None
+
+            self._watchdog_token += 1
+            timer_token = self._watchdog_token
+
+            timer = threading.Timer(self._transcribing_timeout, timeout_handler)
+            timer.daemon = True
+            self._transcribing_watchdog = timer
+
+        timer.start()
 
     def _stop_transcribing_watchdog(self):
         """Stoppt Watchdog-Timer."""
-        if self._transcribing_watchdog is not None:
-            self._transcribing_watchdog.cancel()
+        with self._watchdog_lock:
+            timer = self._transcribing_watchdog
             self._transcribing_watchdog = None
+            self._watchdog_token += 1
+
+        if timer is not None:
+            timer.cancel()
 
     def _update_tray_icon(self):
         """Aktualisiert Tray-Icon basierend auf State."""
@@ -516,15 +537,18 @@ class PulseScribeWindows:
         # Stateless Provider: kein Caching nötig (API-Calls)
         return get_provider(mode)
 
-    def _get_transcription_config(self) -> tuple[str | None, str]:
+    def _get_transcription_config(
+        self, mode: str | None = None
+    ) -> tuple[str | None, str]:
         """Gibt (model, language) für Transkription zurück.
 
         Zentralisiert die Konfigurationslogik für alle Provider-Modi.
         Local-Mode verwendet PULSESCRIBE_LOCAL_MODEL (default: base),
         andere Modi verwenden PULSESCRIBE_MODEL (default: Provider-spezifisch).
         """
+        mode_for_config = mode or self.mode
         language = os.getenv("PULSESCRIBE_LANGUAGE", "auto")
-        if self.mode == "local":
+        if mode_for_config == "local":
             # Default "base" für Windows (schneller als turbo)
             model = os.getenv("PULSESCRIBE_LOCAL_MODEL", "base")
         else:
@@ -664,14 +688,19 @@ class PulseScribeWindows:
                 logger.debug(f"Start ignoriert: State={self.state}")
                 return False
 
+            run_mode = self.mode
+            run_streaming = self.streaming
+            self._run_mode = run_mode
+            self._run_streaming = run_streaming
+
             logger.info(
-                f"Starte Aufnahme ({'Streaming' if self.streaming else 'REST'})..."
+                f"Starte Aufnahme ({'Streaming' if run_streaming else 'REST'})..."
             )
 
             # Recording-Stop-Event zurücksetzen
             self._recording_stop_event.clear()
 
-            if self.streaming:
+            if run_streaming:
                 # Prüfe ob Warm-Stream verfügbar (instant-start)
                 if self._warm_stream is not None:
                     # ═══════════════════════════════════════════════════════════════
@@ -765,7 +794,12 @@ class PulseScribeWindows:
             # Signal zum Stoppen (nur Recording, nicht App)
             self._recording_stop_event.set()
 
-            if self.streaming:
+            run_streaming = (
+                self._run_streaming
+                if self._run_streaming is not None
+                else self.streaming
+            )
+            if run_streaming:
                 # Streaming: Worker beendet sich selbst via stop_event
                 # Ergebnis kommt automatisch (kein separater Transcribe-Thread nötig)
                 return
@@ -1098,7 +1132,7 @@ class PulseScribeWindows:
             time.sleep(1.0)
             self._set_state(AppState.IDLE)
 
-    def _transcribe_rest(self):
+    def _transcribe_rest(self, mode_override: str | None = None):
         """Transkribiert aufgenommenes Audio via REST API."""
         try:
             import numpy as np
@@ -1118,11 +1152,12 @@ class PulseScribeWindows:
             logger.info(f"Transkribiere {duration:.1f}s Audio ({sample_rate}Hz)...")
 
             # Konfiguration holen (zentralisiert für alle Modi)
-            model, language = self._get_transcription_config()
-            provider = self._get_provider(self.mode)
+            mode_for_run = mode_override or self._run_mode or self.mode
+            model, language = self._get_transcription_config(mode_for_run)
+            provider = self._get_provider(mode_for_run)
 
             # Local-Mode: In-Memory Transkription (kein WAV schreiben)
-            if self.mode == "local" and hasattr(provider, "transcribe_audio"):
+            if mode_for_run == "local" and hasattr(provider, "transcribe_audio"):
                 from config import WHISPER_SAMPLE_RATE
 
                 # Tail-Padding (verhindert abgeschnittene letzte Wörter bei Whisper)
@@ -1200,7 +1235,7 @@ class PulseScribeWindows:
         try:
             save_transcript(
                 transcript,
-                mode=self.mode,
+                mode=self._run_mode or self.mode,
                 language=os.getenv("PULSESCRIBE_LANGUAGE", "auto"),
                 refined=self.refine,
             )
@@ -1447,12 +1482,13 @@ class PulseScribeWindows:
         # Hotkey-Listener: stop() aufrufen, aber NICHT warten
         # pynput-Listener blockieren bis zum nächsten Tastendruck - das umgehen wir
         # Die Listener sind Daemon-Threads und werden beim Prozessende automatisch beendet
-        for listener in self._hotkey_listeners:
-            try:
-                listener.stop()
-            except Exception:
-                pass
-        self._hotkey_listeners.clear()
+        with self._hotkey_listener_lock:
+            for listener in self._hotkey_listeners:
+                try:
+                    listener.stop()
+                except Exception:
+                    pass
+            self._hotkey_listeners.clear()
 
         # FileWatcher stoppen (kurzer Timeout)
         self._stop_env_watcher()
@@ -1649,92 +1685,105 @@ class PulseScribeWindows:
         Wird automatisch aufgerufen wenn die .env Datei geändert wird (via FileWatcher)
         oder manuell über das Tray-Menü.
         """
-        logger.info("Settings neu laden...")
+        with self._reload_settings_lock:
+            if self._stop_event.is_set():
+                logger.debug("Settings-Reload ignoriert: App wird beendet")
+                return
 
-        # WICHTIG: os.environ aktualisieren, damit alle Module die neuen Werte sehen
-        # (z.B. refine/llm.py verwendet os.getenv() direkt)
-        load_environment(override_existing=True)
+            logger.info("Settings neu laden...")
 
-        # .env auch als Dict lesen für explizite Instanzvariablen
-        from utils.preferences import read_env_file
+            # WICHTIG: os.environ aktualisieren, damit alle Module die neuen Werte sehen
+            # (z.B. refine/llm.py verwendet os.getenv() direkt)
+            load_environment(override_existing=True)
 
-        env_values = read_env_file()
+            # .env auch als Dict lesen für explizite Instanzvariablen
+            from utils.preferences import read_env_file
 
-        # Mode aktualisieren
-        new_mode = env_values.get("PULSESCRIBE_MODE", "deepgram")
-        mode_changed = new_mode != self.mode
-        if mode_changed:
-            old_mode = self.mode
-            self.mode = new_mode
+            env_values = read_env_file()
+            if self._stop_event.is_set():
+                logger.debug("Settings-Reload abgebrochen: App wird beendet")
+                return
 
-            # GESAMTEN Provider-Cache leeren (nicht nur alten Mode)
-            # Wichtig weil auch LocalProvider.invalidate_runtime_config() nötig ist
-            with self._provider_cache_lock:
-                providers_to_invalidate = list(self._provider_cache.values())
-                self._provider_cache.clear()
-            for provider in providers_to_invalidate:
-                if hasattr(provider, "invalidate_runtime_config"):
-                    provider.invalidate_runtime_config()
-            logger.info(f"Mode geändert: {old_mode} → {new_mode}")
+            # Mode aktualisieren
+            new_mode = env_values.get("PULSESCRIBE_MODE", "deepgram")
+            mode_changed = new_mode != self.mode
+            if mode_changed:
+                old_mode = self.mode
+                self.mode = new_mode
 
-        # Bei local Mode: Runtime-Config invalidieren (auch ohne Mode-Wechsel)
-        # Wichtig damit Fallback auf CPU bei Modellwechsel zurückgesetzt wird
-        if new_mode == "local" and not mode_changed:
-            with self._provider_cache_lock:
-                local_provider = self._provider_cache.get("local")
-            if local_provider and hasattr(local_provider, "invalidate_runtime_config"):
-                local_provider.invalidate_runtime_config()
+                # GESAMTEN Provider-Cache leeren (nicht nur alten Mode)
+                # Wichtig weil auch LocalProvider.invalidate_runtime_config() nötig ist
+                with self._provider_cache_lock:
+                    providers_to_invalidate = list(self._provider_cache.values())
+                    self._provider_cache.clear()
+                for provider in providers_to_invalidate:
+                    if hasattr(provider, "invalidate_runtime_config"):
+                        provider.invalidate_runtime_config()
+                logger.info(f"Mode geändert: {old_mode} → {new_mode}")
 
-        # Bei local Mode: Model preloaden (bei Mode-Wechsel oder Settings-Reload)
-        if new_mode == "local":
-            threading.Thread(target=self._preload_local_model, daemon=True).start()
+            # Bei local Mode: Runtime-Config invalidieren (auch ohne Mode-Wechsel)
+            # Wichtig damit Fallback auf CPU bei Modellwechsel zurückgesetzt wird
+            if new_mode == "local" and not mode_changed:
+                with self._provider_cache_lock:
+                    local_provider = self._provider_cache.get("local")
+                if local_provider and hasattr(
+                    local_provider, "invalidate_runtime_config"
+                ):
+                    local_provider.invalidate_runtime_config()
 
-        # Refine aktualisieren
-        self.refine = env_values.get("PULSESCRIBE_REFINE", "").lower() == "true"
-        self.refine_model = env_values.get("PULSESCRIBE_REFINE_MODEL")
-        self.refine_provider = env_values.get("PULSESCRIBE_REFINE_PROVIDER")
+            # Bei local Mode: Model preloaden (bei Mode-Wechsel oder Settings-Reload)
+            if new_mode == "local":
+                threading.Thread(target=self._preload_local_model, daemon=True).start()
 
-        # Context aktualisieren
-        self.context = env_values.get("PULSESCRIBE_CONTEXT")
+            # Refine aktualisieren
+            self.refine = env_values.get("PULSESCRIBE_REFINE", "").lower() == "true"
+            self.refine_model = env_values.get("PULSESCRIBE_REFINE_MODEL")
+            self.refine_provider = env_values.get("PULSESCRIBE_REFINE_PROVIDER")
 
-        # Streaming aktualisieren (nur Deepgram unterstützt Streaming)
-        streaming_val = env_values.get("PULSESCRIBE_STREAMING", "true")
-        streaming_enabled = streaming_val.lower() != "false"
-        self.streaming = streaming_enabled and self.mode == "deepgram"
+            # Context aktualisieren
+            self.context = env_values.get("PULSESCRIBE_CONTEXT")
 
-        # Overlay aktualisieren (mit Start/Stop wenn nötig)
-        overlay_val = env_values.get("PULSESCRIBE_OVERLAY", "true")
-        new_overlay_enabled = overlay_val.lower() != "false"
+            # Streaming aktualisieren (nur Deepgram unterstützt Streaming)
+            streaming_val = env_values.get("PULSESCRIBE_STREAMING", "true")
+            streaming_enabled = streaming_val.lower() != "false"
+            self.streaming = streaming_enabled and self.mode == "deepgram"
 
-        if new_overlay_enabled != self.overlay_enabled:
-            self.overlay_enabled = new_overlay_enabled
-            if new_overlay_enabled and self._overlay is None:
-                # Overlay aktivieren
-                logger.info("Overlay aktiviert")
-                self._setup_overlay()
-            elif not new_overlay_enabled and self._overlay is not None:
-                # Overlay deaktivieren
-                logger.info("Overlay deaktiviert")
-                self._overlay.stop()
-                self._overlay = None
+            # Overlay aktualisieren (mit Start/Stop wenn nötig)
+            overlay_val = env_values.get("PULSESCRIBE_OVERLAY", "true")
+            new_overlay_enabled = overlay_val.lower() != "false"
 
-        # Hotkeys aktualisieren (erfordert Listener-Neustart)
-        new_toggle = env_values.get("PULSESCRIBE_TOGGLE_HOTKEY")
-        new_hold = env_values.get("PULSESCRIBE_HOLD_HOTKEY")
+            if new_overlay_enabled != self.overlay_enabled:
+                self.overlay_enabled = new_overlay_enabled
+                if new_overlay_enabled and self._overlay is None:
+                    # Overlay aktivieren
+                    logger.info("Overlay aktiviert")
+                    self._setup_overlay()
+                elif not new_overlay_enabled and self._overlay is not None:
+                    # Overlay deaktivieren
+                    logger.info("Overlay deaktiviert")
+                    self._overlay.stop()
+                    self._overlay = None
 
-        # Fallback: Wenn nichts konfiguriert, beide Defaults setzen (wie beim Startup)
-        if not new_toggle and not new_hold:
-            new_toggle = _DEFAULT_TOGGLE_HOTKEY
-            new_hold = _DEFAULT_HOLD_HOTKEY
+            # Hotkeys aktualisieren (erfordert Listener-Neustart)
+            new_toggle = env_values.get("PULSESCRIBE_TOGGLE_HOTKEY")
+            new_hold = env_values.get("PULSESCRIBE_HOLD_HOTKEY")
 
-        if new_toggle != self.toggle_hotkey or new_hold != self.hold_hotkey:
-            self.toggle_hotkey = new_toggle
-            self.hold_hotkey = new_hold
-            logger.info(f"Hotkeys geändert: toggle={new_toggle}, hold={new_hold}")
-            # Listener neu starten
-            self._restart_hotkey_listeners()
+            # Fallback: Wenn nichts konfiguriert, beide Defaults setzen (wie beim Startup)
+            if not new_toggle and not new_hold:
+                new_toggle = _DEFAULT_TOGGLE_HOTKEY
+                new_hold = _DEFAULT_HOLD_HOTKEY
 
-        logger.info("Settings erfolgreich neu geladen")
+            if new_toggle != self.toggle_hotkey or new_hold != self.hold_hotkey:
+                if self._stop_event.is_set():
+                    logger.debug("Hotkey-Reload übersprungen: App wird beendet")
+                    return
+                self.toggle_hotkey = new_toggle
+                self.hold_hotkey = new_hold
+                logger.info(f"Hotkeys geändert: toggle={new_toggle}, hold={new_hold}")
+                # Listener neu starten
+                self._restart_hotkey_listeners()
+
+            logger.info("Settings erfolgreich neu geladen")
 
     def _preload_local_model(self):
         """Lädt Local-Model vor nach Settings-Änderung."""
@@ -1876,16 +1925,17 @@ class PulseScribeWindows:
 
     def _restart_hotkey_listeners(self):
         """Startet Hotkey-Listener mit neuen Einstellungen neu."""
-        # Alte Listener stoppen
-        for listener in self._hotkey_listeners:
-            try:
-                listener.stop()
-            except Exception:
-                pass
-        self._hotkey_listeners.clear()
+        with self._hotkey_listener_lock:
+            # Alte Listener stoppen
+            for listener in self._hotkey_listeners:
+                try:
+                    listener.stop()
+                except Exception:
+                    pass
+            self._hotkey_listeners.clear()
 
-        # Neue Listener starten
-        self._setup_hotkey()
+            # Neue Listener starten
+            self._setup_hotkey()
 
     def _setup_overlay(self):
         """Richtet Overlay ein (läuft in separatem Thread)."""
@@ -2257,7 +2307,8 @@ class PulseScribeWindows:
 
         # Hotkey ZUERST registrieren - User kann sofort starten
         # (Device-Erkennung läuft parallel im Pre-Warm)
-        self._setup_hotkey()
+        with self._hotkey_listener_lock:
+            self._setup_hotkey()
 
         # Overlay FRÜH starten, damit LOADING angezeigt werden kann
         self._setup_overlay()

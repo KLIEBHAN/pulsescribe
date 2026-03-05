@@ -192,6 +192,94 @@ def test_provider_cache_reload_and_get_provider_are_thread_safe(monkeypatch):
     assert created_providers
 
 
+def test_reload_settings_serializes_parallel_calls(monkeypatch):
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai",
+        streaming=False,
+        overlay=False,
+    )
+    daemon.toggle_hotkey = windows_module._DEFAULT_TOGGLE_HOTKEY
+    daemon.hold_hotkey = windows_module._DEFAULT_HOLD_HOTKEY
+
+    restart_calls = 0
+    restart_lock = threading.Lock()
+    entered = threading.Event()
+    release = threading.Event()
+
+    def fake_restart():
+        nonlocal restart_calls
+        with restart_lock:
+            restart_calls += 1
+
+    def fake_read_env_file():
+        entered.set()
+        release.wait(timeout=1.0)
+        return {
+            "PULSESCRIBE_MODE": "openai",
+            "PULSESCRIBE_TOGGLE_HOTKEY": "ctrl+alt+x",
+            "PULSESCRIBE_HOLD_HOTKEY": windows_module._DEFAULT_HOLD_HOTKEY,
+            "PULSESCRIBE_STREAMING": "false",
+            "PULSESCRIBE_OVERLAY": "false",
+        }
+
+    daemon._restart_hotkey_listeners = fake_restart
+    monkeypatch.setattr(
+        windows_module,
+        "load_environment",
+        lambda override_existing=True: None,
+    )
+    monkeypatch.setattr(preferences, "read_env_file", fake_read_env_file)
+
+    t1 = threading.Thread(target=daemon._reload_settings)
+    t1.start()
+    entered.wait(timeout=1.0)
+
+    t2 = threading.Thread(target=daemon._reload_settings)
+    t2.start()
+
+    time.sleep(0.05)
+    release.set()
+
+    t1.join()
+    t2.join()
+
+    assert restart_calls == 1
+
+
+def test_stop_recording_uses_run_snapshot_when_settings_change():
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="deepgram",
+        streaming=False,
+        overlay=False,
+    )
+    daemon._play_sound = lambda _name: None
+    daemon._set_state(AppState.RECORDING)
+
+    transcribe_calls = 0
+    transcribe_lock = threading.Lock()
+
+    def fake_transcribe_rest():
+        nonlocal transcribe_calls
+        with transcribe_lock:
+            transcribe_calls += 1
+
+    daemon._transcribe_rest = fake_transcribe_rest
+
+    # Snapshot eines laufenden Streaming-Runs; Settings wurden danach geändert.
+    daemon._run_streaming = True
+    daemon._run_mode = "deepgram"
+    daemon.streaming = False
+    daemon.mode = "openai"
+
+    daemon._stop_recording()
+    time.sleep(0.05)
+
+    assert daemon._recording_stop_event.is_set()
+    assert transcribe_calls == 0
+
+
 def test_ipc_test_id_is_only_set_after_successful_start():
     windows_module = _load_windows_module()
     daemon = windows_module.PulseScribeWindows(
