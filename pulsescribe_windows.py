@@ -286,6 +286,9 @@ class PulseScribeWindows:
         self._reload_signal_file: Path | None = None
         self._reload_settings_lock = threading.Lock()
         self._hotkey_listener_lock = threading.RLock()
+        # Inkrementiert bei jedem Hotkey-Restart/Shutdown.
+        # Alte Listener-Callbacks erkennen so, dass sie stale sind.
+        self._hotkey_listener_generation = 0
 
         stream_mode = "Streaming" if streaming else "REST"
         hotkey_info = []
@@ -330,8 +333,39 @@ class PulseScribeWindows:
                 self._stop_transcribing_watchdog()
 
         # Overlay bei State-Wechsel oder Text-Update aktualisieren.
-        if self._overlay and (state_changed or text is not None):
-            self._overlay.update_state(state.name, text)
+        if state_changed or text is not None:
+            self._overlay_update_state(state.name, text)
+
+    def _overlay_update_state(self, state: str, text: str | None = None) -> None:
+        """Best-effort Overlay-State-Update ohne check-then-use Race."""
+        overlay = self._overlay
+        if overlay is None:
+            return
+        try:
+            overlay.update_state(state, text)
+        except Exception as e:
+            logger.debug(f"Overlay state update failed: {e}")
+
+    def _overlay_update_audio_level(self, level: float) -> None:
+        """Best-effort Overlay-Level-Update ohne check-then-use Race."""
+        overlay = self._overlay
+        if overlay is None:
+            return
+        try:
+            overlay.update_audio_level(level)
+        except Exception as e:
+            logger.debug(f"Overlay level update failed: {e}")
+
+    def _stop_overlay(self) -> None:
+        """Stoppt Overlay atomar gegenüber parallelen Worker-Updates."""
+        overlay = self._overlay
+        self._overlay = None
+        if overlay is None:
+            return
+        try:
+            overlay.stop()
+        except Exception as e:
+            logger.debug(f"Overlay stop failed: {e}")
 
     def _schedule_idle_if_state_unchanged(self, delay_seconds: float) -> None:
         """Setzt State nach Delay nur auf IDLE, wenn es keinen Zwischenwechsel gab."""
@@ -586,8 +620,7 @@ class PulseScribeWindows:
             rms = float(np.sqrt(np.mean(indata.astype(np.float32) ** 2)) / INT16_MAX)
 
             # Audio-Level für Overlay (optional)
-            if self._overlay:
-                self._overlay.update_audio_level(rms)
+            self._overlay_update_audio_level(rms)
 
             # VAD: State-Transition LISTENING → RECORDING (nur wenn armed)
             if self._warm_stream_armed.is_set():
@@ -838,9 +871,8 @@ class PulseScribeWindows:
                     self._audio_buffer.append(indata.copy())
 
                 # Audio-Level für Overlay (AGC im Overlay normalisiert automatisch)
-                if self._overlay:
-                    rms = float(np.sqrt(np.mean(indata**2)))
-                    self._overlay.update_audio_level(rms)
+                rms = float(np.sqrt(np.mean(indata**2)))
+                self._overlay_update_audio_level(rms)
 
                 # State auf RECORDING setzen wenn Audio erkannt
                 if self.state == AppState.LISTENING:
@@ -992,8 +1024,7 @@ class PulseScribeWindows:
                 # Audio-Level Callback für Overlay + State-Transitions
                 # Wird alle ~64ms aufgerufen (1024 samples @ 16kHz)
                 def on_audio_level(level: float):
-                    if self._overlay:
-                        self._overlay.update_audio_level(level)
+                    self._overlay_update_audio_level(level)
 
                     # State-Machine: LOADING → LISTENING → RECORDING
                     current_state = self.state
@@ -1318,6 +1349,11 @@ class PulseScribeWindows:
                 logger.error("Keine gültigen Hotkeys konfiguriert")
                 return
 
+            # Snapshot der aktuellen Listener-Generation.
+            # Wenn zwischenzeitlich ein Restart/Shutdown passiert, ignoriert
+            # dieser Listener alle nachlaufenden Events.
+            listener_generation = self._hotkey_listener_generation
+
             # Aktuell gedrückte Tasten mit Zeitstempel (für Stale-Detection)
             # Format: {normalized_key: timestamp}
             current_keys: dict = {}
@@ -1358,6 +1394,8 @@ class PulseScribeWindows:
                     logger.debug(f"Stale Key entfernt: {k}")
 
             def on_press(key):
+                if listener_generation != self._hotkey_listener_generation:
+                    return
                 now = time.monotonic()
                 normalized = normalize_key(key)
 
@@ -1399,6 +1437,8 @@ class PulseScribeWindows:
                                     self._on_hotkey_press()
 
             def on_release(key):
+                if listener_generation != self._hotkey_listener_generation:
+                    return
                 normalized = normalize_key(key)
                 current_keys.pop(normalized, None)
 
@@ -1483,6 +1523,8 @@ class PulseScribeWindows:
         # pynput-Listener blockieren bis zum nächsten Tastendruck - das umgehen wir
         # Die Listener sind Daemon-Threads und werden beim Prozessende automatisch beendet
         with self._hotkey_listener_lock:
+            # Bereits laufende Listener sofort als stale markieren.
+            self._hotkey_listener_generation += 1
             for listener in self._hotkey_listeners:
                 try:
                     listener.stop()
@@ -1518,8 +1560,7 @@ class PulseScribeWindows:
         self._stop_ipc_server()
 
         # Overlay stoppen
-        if self._overlay:
-            self._overlay.stop()
+        self._stop_overlay()
 
         # Tray stoppen (beendet auch den Prozess)
         if self._tray:
@@ -1761,8 +1802,7 @@ class PulseScribeWindows:
                 elif not new_overlay_enabled and self._overlay is not None:
                     # Overlay deaktivieren
                     logger.info("Overlay deaktiviert")
-                    self._overlay.stop()
-                    self._overlay = None
+                    self._stop_overlay()
 
             # Hotkeys aktualisieren (erfordert Listener-Neustart)
             new_toggle = env_values.get("PULSESCRIBE_TOGGLE_HOTKEY")
@@ -1926,6 +1966,9 @@ class PulseScribeWindows:
     def _restart_hotkey_listeners(self):
         """Startet Hotkey-Listener mit neuen Einstellungen neu."""
         with self._hotkey_listener_lock:
+            # Alte Listener sofort als stale markieren.
+            self._hotkey_listener_generation += 1
+
             # Alte Listener stoppen
             for listener in self._hotkey_listeners:
                 try:
@@ -2028,8 +2071,7 @@ class PulseScribeWindows:
                     preload_start = time.perf_counter()
                     provider = self._get_provider("local")
                     model, _language = self._get_transcription_config()
-                    if self._overlay:
-                        self._overlay.update_state("LOADING", f"Loading {model}...")
+                    self._overlay_update_state("LOADING", f"Loading {model}...")
                     if hasattr(provider, "preload"):
                         provider.preload(model=model)
                     preload_ms = (time.perf_counter() - preload_start) * 1000

@@ -4,6 +4,7 @@ import io
 import sys
 import threading
 import time
+import types
 from pathlib import Path
 
 from utils.state import AppState
@@ -302,3 +303,118 @@ def test_ipc_test_id_is_only_set_after_successful_start():
     assert daemon._ipc_test_cmd_id is None
     assert responses
     assert responses[0][0] == "abc123"
+
+
+def test_set_state_uses_overlay_snapshot_to_avoid_none_race():
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai",
+        streaming=False,
+        overlay=False,
+    )
+
+    class _OverlayThatUnsetsItself:
+        def __init__(self, owner):
+            self.owner = owner
+            self.update_calls = 0
+
+        def __bool__(self):
+            # Simuliert ein konkurrierendes Overlay-Disable zwischen Check und Use.
+            self.owner._overlay = None
+            return True
+
+        def update_state(self, state, text):
+            self.update_calls += 1
+
+    overlay = _OverlayThatUnsetsItself(daemon)
+    daemon._overlay = overlay
+
+    daemon._set_state(AppState.LISTENING)
+
+    assert overlay.update_calls == 1
+
+
+def test_stale_hotkey_listener_callbacks_are_ignored_after_restart(monkeypatch):
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai",
+        streaming=False,
+        overlay=False,
+    )
+    daemon.toggle_hotkey = "x"
+    daemon.hold_hotkey = None
+
+    class _FakeKeyCode:
+        @staticmethod
+        def from_char(char):
+            return char
+
+    class _FakeKeyboard:
+        class Key:
+            ctrl = object()
+            alt = object()
+            shift = object()
+            cmd = object()
+
+        KeyCode = _FakeKeyCode
+
+        class Listener:
+            def __init__(self, on_press, on_release):
+                self.on_press = on_press
+                self.on_release = on_release
+                self.stopped = False
+
+            def start(self):
+                return None
+
+            def stop(self):
+                self.stopped = True
+
+    monkeypatch.setitem(
+        sys.modules,
+        "pynput",
+        types.SimpleNamespace(keyboard=_FakeKeyboard),
+    )
+    monkeypatch.setattr(
+        windows_module,
+        "parse_windows_hotkey_for_pynput",
+        lambda _hotkey_str, _keyboard: {"x"},
+    )
+
+    monotonic_time = [0.0]
+
+    def fake_monotonic():
+        monotonic_time[0] += 1.0
+        return monotonic_time[0]
+
+    monkeypatch.setattr(windows_module.time, "monotonic", fake_monotonic)
+
+    press_count = 0
+
+    def fake_on_hotkey_press():
+        nonlocal press_count
+        press_count += 1
+
+    daemon._on_hotkey_press = fake_on_hotkey_press
+
+    class _Key:
+        def __init__(self, char):
+            self.char = char
+
+    key = _Key("x")
+
+    daemon._setup_hotkey()
+    old_listener = daemon._hotkey_listeners[0]
+    old_listener.on_press(key)
+    assert press_count == 1
+
+    daemon._restart_hotkey_listeners()
+    new_listener = daemon._hotkey_listeners[0]
+
+    # Nach Restart darf ein nachlaufender alter Listener keine Events mehr auslösen.
+    old_listener.on_press(key)
+    assert press_count == 1
+
+    # Der neue Listener funktioniert weiterhin.
+    new_listener.on_press(key)
+    assert press_count == 2

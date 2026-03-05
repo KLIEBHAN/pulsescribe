@@ -1,4 +1,5 @@
 import utils.preferences as prefs
+import utils.permissions as permissions
 from utils.onboarding import OnboardingChoice, OnboardingStep
 from ui.onboarding_wizard import OnboardingWizardController
 
@@ -56,6 +57,11 @@ def test_hotkey_preset_updates_toggle_without_clearing_hold(tmp_path, monkeypatc
 
 def test_hotkey_preset_updates_hold_without_clearing_toggle(tmp_path, monkeypatch):
     _isolate_prefs(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        permissions,
+        "check_input_monitoring_permission",
+        lambda show_alert=False, request=False: True,
+    )
     prefs.save_env_setting("PULSESCRIBE_TOGGLE_HOTKEY", "f19")
     prefs.save_env_setting("PULSESCRIBE_HOLD_HOTKEY", "capslock")
     prefs.save_env_setting("PULSESCRIBE_HOTKEY", "f13")
