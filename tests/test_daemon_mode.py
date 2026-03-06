@@ -641,3 +641,32 @@ class TestWatchdogTimer(unittest.TestCase):
         self.assertEqual(kwargs["target"], daemon._recording_worker)
         self.assertEqual(kwargs["name"], "RecordingWorker")
         self.assertEqual(kwargs["args"][0], daemon._active_run_id)
+
+
+class TestAudioShutdown(unittest.TestCase):
+    def test_shutdown_input_stream_prefers_close_after_finished_callback(self):
+        daemon = PulseScribeDaemon(mode="local")
+        finished_event = threading.Event()
+        finished_event.set()
+        stream = MagicMock()
+
+        calls = []
+        stream.close.side_effect = lambda: calls.append("close")
+        stream.abort.side_effect = lambda: calls.append("abort")
+
+        daemon._shutdown_input_stream(stream, finished_event=finished_event, run_id=1)
+
+        self.assertEqual(calls, ["close"])
+
+    def test_shutdown_input_stream_forces_abort_when_callback_never_finishes(self):
+        daemon = PulseScribeDaemon(mode="local")
+        finished_event = threading.Event()
+        stream = MagicMock()
+
+        calls = []
+        stream.abort.side_effect = lambda: calls.append("abort")
+        stream.close.side_effect = lambda: calls.append("close")
+
+        daemon._shutdown_input_stream(stream, finished_event=finished_event, run_id=1)
+
+        self.assertEqual(calls, ["abort", "close"])

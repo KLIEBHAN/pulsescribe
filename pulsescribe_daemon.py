@@ -1444,6 +1444,61 @@ class PulseScribeDaemon:
         except queue.Full:
             pass
 
+    def _shutdown_input_stream(
+        self,
+        stream,
+        *,
+        finished_event: threading.Event,
+        run_id: int,
+    ) -> None:
+        """Beendet einen Input-Stream bevorzugt callback-gesteuert und ohne stop()-Blockade.
+
+        Für reine Aufnahme brauchen wir kein geordnetes Drain wie bei Playback.
+        Wenn der Callback nach gesetztem Stop-Event sauber mit CallbackAbort endet,
+        warten wir kurz auf finished_callback und schließen dann den inaktiven Stream.
+        Falls das nicht passiert, erzwingen wir abort()+close() in einem Helper-Thread.
+        """
+        self._set_worker_phase("recording:await-finished-callback", run_id=run_id)
+        finished_in_time = finished_event.wait(timeout=0.35)
+
+        def _close_stream() -> None:
+            if not finished_in_time:
+                abort = getattr(stream, "abort", None)
+                if callable(abort):
+                    try:
+                        abort()
+                    except Exception:
+                        pass
+                else:
+                    stop = getattr(stream, "stop", None)
+                    if callable(stop):
+                        try:
+                            stop()
+                        except Exception:
+                            pass
+            try:
+                stream.close()
+            except Exception:
+                pass
+
+        if not finished_in_time:
+            logger.warning(
+                "Audio-Stream wurde nicht via Callback beendet – erzwinge abort()+close()"
+            )
+
+        self._set_worker_phase("recording:close-stream", run_id=run_id)
+        close_thread = threading.Thread(target=_close_stream, daemon=True)
+        close_thread.start()
+        close_thread.join(timeout=2.0)
+
+        if close_thread.is_alive():
+            logger.warning(
+                "Audio-Stream Timeout beim Schließen (2s) – "
+                "PortAudio-Deadlock vermutet, fahre fort ohne sauberes Schließen"
+            )
+        else:
+            logger.debug("Audio-Stream sauber geschlossen")
+
     def _streaming_worker(
         self,
         run_id: int | None = None,
@@ -1563,6 +1618,8 @@ class PulseScribeDaemon:
         max_rms = 0.0
         had_speech = False
         player = get_sound_player()
+        finished_event = threading.Event()
+        callback_abort_exc = getattr(sd, "CallbackAbort", None)
 
         try:
             # Ready-Sound
@@ -1586,6 +1643,13 @@ class PulseScribeDaemon:
                 except queue.Full:
                     pass
 
+                if stop_event is not None and stop_event.is_set():
+                    if (
+                        isinstance(callback_abort_exc, type)
+                        and issubclass(callback_abort_exc, BaseException)
+                    ):
+                        raise callback_abort_exc
+
             # Explizites Stream-Management statt Context-Manager
             # Vermeidet PortAudio-Deadlock beim Schließen des Streams
             stream = sd.InputStream(
@@ -1593,6 +1657,7 @@ class PulseScribeDaemon:
                 channels=1,
                 dtype="float32",
                 callback=callback,
+                finished_callback=finished_event.set,
             )
             self._set_worker_phase("recording:start-stream", run_id=run_id)
             stream.start()
@@ -1603,29 +1668,11 @@ class PulseScribeDaemon:
                 while stop_event is not None and not stop_event.is_set():
                     sd.sleep(50)
             finally:
-                # Stream mit Timeout schließen – PortAudio kann beim close() deadlocken
-                def _close_stream():
-                    try:
-                        stream.stop()
-                    except Exception:
-                        pass
-                    try:
-                        stream.close()
-                    except Exception:
-                        pass
-
-                self._set_worker_phase("recording:close-stream", run_id=run_id)
-                close_thread = threading.Thread(target=_close_stream, daemon=True)
-                close_thread.start()
-                close_thread.join(timeout=2.0)
-
-                if close_thread.is_alive():
-                    logger.warning(
-                        "Audio-Stream Timeout beim Schließen (2s) – "
-                        "PortAudio-Deadlock vermutet, fahre fort ohne sauberes Schließen"
-                    )
-                else:
-                    logger.debug("Audio-Stream sauber geschlossen")
+                self._shutdown_input_stream(
+                    stream,
+                    finished_event=finished_event,
+                    run_id=run_id,
+                )
 
             # Stop-Sound
             self._set_worker_phase("recording:stop-sound", run_id=run_id)
