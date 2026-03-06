@@ -584,3 +584,60 @@ class TestWatchdogTimer(unittest.TestCase):
         # Should not raise
         daemon._drain_result_queue()
         self.assertTrue(daemon._result_queue.empty())
+
+    def test_watchdog_marks_alive_worker_abandoned(self):
+        """Ein Watchdog-Timeout muss festhängende Worker freigeben."""
+        daemon = PulseScribeDaemon(mode="local")
+        daemon._current_state = AppState.TRANSCRIBING
+        daemon._worker_phase = "recording:close-stream"
+        daemon._stop_event = threading.Event()
+        daemon._worker_thread = MagicMock()
+        daemon._worker_thread.is_alive.return_value = True
+        daemon._worker_thread.name = "RecordingWorker"
+        daemon._stop_result_polling = MagicMock()
+        daemon._drain_result_queue = MagicMock()
+        daemon._update_state = MagicMock()
+
+        mock_timer_cls = MagicMock()
+        mock_foundation = MagicMock()
+        mock_foundation.NSTimer = mock_timer_cls
+
+        with (
+            patch.dict(sys.modules, {"Foundation": mock_foundation}),
+            patch("pulsescribe_daemon.get_sound_player") as mock_get_sound_player,
+        ):
+            daemon._start_transcribing_watchdog()
+            watchdog_cb = (
+                mock_timer_cls.scheduledTimerWithTimeInterval_repeats_block_.call_args_list[
+                    0
+                ][0][2]
+            )
+            watchdog_cb(None)
+
+        self.assertTrue(daemon._worker_abandoned)
+        self.assertTrue(daemon._stop_event.is_set())
+        mock_get_sound_player.return_value.play.assert_called_with("error")
+
+    def test_start_recording_recovers_from_abandoned_worker(self):
+        """Ein aufgegebener Alt-Worker darf neue Aufnahmen nicht dauerhaft blockieren."""
+        daemon = PulseScribeDaemon(mode="local")
+        old_queue = daemon._result_queue
+        daemon._worker_phase = "recording:close-stream"
+        daemon._worker_abandoned = True
+        daemon._worker_thread = MagicMock()
+        daemon._worker_thread.is_alive.return_value = True
+
+        with (
+            patch("pulsescribe_daemon.threading.Thread") as mock_thread_cls,
+            patch("pulsescribe_daemon.INTERIM_FILE"),
+        ):
+            daemon._start_recording()
+
+        self.assertFalse(daemon._worker_abandoned)
+        self.assertTrue(daemon._recording)
+        self.assertIsNot(daemon._result_queue, old_queue)
+        self.assertEqual(daemon._current_state, AppState.LISTENING)
+        kwargs = mock_thread_cls.call_args.kwargs
+        self.assertEqual(kwargs["target"], daemon._recording_worker)
+        self.assertEqual(kwargs["name"], "RecordingWorker")
+        self.assertEqual(kwargs["args"][0], daemon._active_run_id)

@@ -165,6 +165,10 @@ class PulseScribeDaemon:
 
         # Result-Queue für Transkripte
         self._result_queue: queue.Queue[DaemonMessage | Exception] = queue.Queue()
+        self._run_counter = 0
+        self._active_run_id = 0
+        self._worker_abandoned = False
+        self._worker_phase = "idle"
 
         # NSTimer für Result-Polling und Interim-Polling
         self._result_timer = None
@@ -265,6 +269,32 @@ class PulseScribeDaemon:
             fn(*args, **kwargs)
         except Exception:
             pass
+
+    def _set_worker_phase(
+        self, phase: str, *, run_id: int | None = None, force: bool = False
+    ) -> None:
+        """Aktualisiert die aktuelle Worker-Phase für Diagnose-Logs."""
+        with self._state_lock:
+            if not force and run_id is not None and run_id != self._active_run_id:
+                return
+            self._worker_phase = phase
+
+    def _mark_current_worker_abandoned(self, reason: str) -> None:
+        """Markiert den aktiven Worker als verloren, damit neue Runs wieder starten dürfen."""
+        worker = self._worker_thread
+        if worker is None or not worker.is_alive():
+            return
+
+        self._worker_abandoned = True
+        logger.error(
+            "Worker als aufgegeben markiert (%s): thread=%s, phase=%s",
+            reason,
+            worker.name,
+            self._worker_phase,
+        )
+        emergency_log(
+            f"Worker abandoned: reason={reason}, thread={worker.name}, phase={self._worker_phase}"
+        )
 
     def _start_recording_from_hold(self, source_id: str) -> None:
         """Startet Recording nur, wenn der Hold-Hotkey noch aktiv ist."""
@@ -1289,13 +1319,27 @@ class PulseScribeDaemon:
         # WICHTIG: Nicht im Main-Thread blocken (join), sonst friert UI/Overlay ein.
         # Wenn ein Worker noch läuft, sind wir "busy" (z.B. Deepgram finalize/close).
         # In dem Fall starten wir keinen neuen Recording-Run.
+        effective_mode = run_mode_override or self.mode
+
         if self._worker_thread is not None and self._worker_thread.is_alive():
+            if not self._worker_abandoned:
+                logger.warning(
+                    "Worker-Thread läuft noch – Recording wird nicht neu gestartet "
+                    f"(phase={self._worker_phase})"
+                )
+                if self._stop_event is not None:
+                    self._stop_event.set()
+                return
             logger.warning(
-                "Worker-Thread läuft noch – Recording wird nicht neu gestartet"
+                "Vorheriger Worker hängt noch – starte neue Aufnahme mit frischem Run-Kontext "
+                f"(phase={self._worker_phase})"
             )
-            if self._stop_event is not None:
-                self._stop_event.set()
-            return
+
+        self._run_counter += 1
+        run_id = self._run_counter
+        self._active_run_id = run_id
+        self._worker_abandoned = False
+        self._set_worker_phase(f"starting:{effective_mode}", run_id=run_id)
 
         self._recording = True
         self._update_state(AppState.LISTENING)
@@ -1303,10 +1347,12 @@ class PulseScribeDaemon:
         # Interim-Datei löschen, um veralteten Text zu vermeiden
         INTERIM_FILE.unlink(missing_ok=True)
 
-        # Neues Stop-Event für diese Aufnahme
-        self._stop_event = threading.Event()
-
-        effective_mode = run_mode_override or self.mode
+        # Pro Run isolierte Queue/Stop-Event, damit ein später fertig werdender
+        # Alt-Worker keine neue Aufnahme mehr beeinflussen kann.
+        run_result_queue: queue.Queue[DaemonMessage | Exception] = queue.Queue()
+        self._result_queue = run_result_queue
+        run_stop_event = threading.Event()
+        self._stop_event = run_stop_event
 
         # Modus-Entscheidung: Streaming vs. Recording
         use_streaming = effective_mode == "deepgram" and get_env_bool_default(
@@ -1326,6 +1372,7 @@ class PulseScribeDaemon:
         # Worker-Thread starten
         self._worker_thread = threading.Thread(
             target=target,
+            args=(run_id, run_result_queue, run_stop_event),
             daemon=True,
             name=name,
         )
@@ -1381,16 +1428,28 @@ class PulseScribeDaemon:
             self._interim_timer.invalidate()
             self._interim_timer = None
 
-    def _on_audio_level(self, level: float) -> None:
+    def _on_audio_level(
+        self,
+        level: float,
+        *,
+        run_id: int | None = None,
+        result_queue_ref: queue.Queue[DaemonMessage | Exception] | None = None,
+    ) -> None:
         """Callback für Audio-Level aus dem Worker-Thread."""
+        target_queue = result_queue_ref or self._result_queue
         try:
-            self._result_queue.put_nowait(
+            target_queue.put_nowait(
                 DaemonMessage(type=MessageType.AUDIO_LEVEL, payload=level)
             )
         except queue.Full:
             pass
 
-    def _streaming_worker(self) -> None:
+    def _streaming_worker(
+        self,
+        run_id: int | None = None,
+        result_queue_ref: queue.Queue[DaemonMessage | Exception] | None = None,
+        stop_event: threading.Event | None = None,
+    ) -> None:
         """
         Hintergrund-Thread für Deepgram-Streaming.
 
@@ -1403,7 +1462,12 @@ class PulseScribeDaemon:
         """
         import asyncio
 
-        logger.debug("StreamingWorker gestartet")
+        run_id = self._active_run_id if run_id is None else run_id
+        result_queue_ref = result_queue_ref or self._result_queue
+        stop_event = stop_event or self._stop_event
+
+        self._set_worker_phase("streaming:boot", run_id=run_id)
+        logger.debug(f"StreamingWorker gestartet (run={run_id})")
         transcript = ""
 
         try:
@@ -1417,13 +1481,18 @@ class PulseScribeDaemon:
 
             try:
                 logger.debug(f"Starte deepgram_stream_core (model={model})")
+                self._set_worker_phase("streaming:capture", run_id=run_id)
                 transcript = loop.run_until_complete(
                     deepgram_stream_core(
                         model=model,
                         language=self.language,
                         play_ready=True,
-                        external_stop_event=self._stop_event,
-                        audio_level_callback=self._on_audio_level,
+                        external_stop_event=stop_event,
+                        audio_level_callback=lambda level: self._on_audio_level(
+                            level,
+                            run_id=run_id,
+                            result_queue_ref=result_queue_ref,
+                        ),
                     )
                 )
                 logger.debug(
@@ -1432,7 +1501,8 @@ class PulseScribeDaemon:
 
                 # LLM-Nachbearbeitung (optional)
                 if self.refine and transcript:
-                    self._result_queue.put(
+                    self._set_worker_phase("streaming:refining", run_id=run_id)
+                    result_queue_ref.put(
                         DaemonMessage(
                             type=MessageType.STATUS_UPDATE, payload=AppState.REFINING
                         )
@@ -1448,11 +1518,13 @@ class PulseScribeDaemon:
                     )
 
                 logger.debug("Sende TRANSCRIPT_RESULT")
-                self._result_queue.put(
+                self._set_worker_phase("streaming:publishing-result", run_id=run_id)
+                result_queue_ref.put(
                     DaemonMessage(
                         type=MessageType.TRANSCRIPT_RESULT, payload=transcript
                     )
                 )
+                self._set_worker_phase("streaming:finished", run_id=run_id)
 
             finally:
                 loop.close()
@@ -1461,9 +1533,14 @@ class PulseScribeDaemon:
         except Exception as e:
             logger.exception(f"Streaming-Worker Fehler: {e}")
             emergency_log(f"StreamingWorker Exception: {type(e).__name__}: {e}")
-            self._result_queue.put(e)
+            result_queue_ref.put(e)
 
-    def _recording_worker(self) -> None:
+    def _recording_worker(
+        self,
+        run_id: int | None = None,
+        result_queue_ref: queue.Queue[DaemonMessage | Exception] | None = None,
+        stop_event: threading.Event | None = None,
+    ) -> None:
         """
         Standard-Aufnahme für OpenAI, Groq, Local.
 
@@ -1476,7 +1553,12 @@ class PulseScribeDaemon:
         import sounddevice as sd
         import soundfile as sf
 
-        logger.debug("RecordingWorker gestartet")
+        run_id = self._active_run_id if run_id is None else run_id
+        result_queue_ref = result_queue_ref or self._result_queue
+        stop_event = stop_event or self._stop_event
+
+        self._set_worker_phase("recording:boot", run_id=run_id)
+        logger.debug(f"RecordingWorker gestartet (run={run_id})")
         recorded_chunks = []
         max_rms = 0.0
         had_speech = False
@@ -1484,6 +1566,7 @@ class PulseScribeDaemon:
 
         try:
             # Ready-Sound
+            self._set_worker_phase("recording:ready-sound", run_id=run_id)
             player.play("ready")
 
             # Aufnahme-Loop
@@ -1497,7 +1580,7 @@ class PulseScribeDaemon:
                 if rms > VAD_THRESHOLD:
                     had_speech = True
                 try:
-                    self._result_queue.put_nowait(
+                    result_queue_ref.put_nowait(
                         DaemonMessage(type=MessageType.AUDIO_LEVEL, payload=rms)
                     )
                 except queue.Full:
@@ -1511,11 +1594,12 @@ class PulseScribeDaemon:
                 dtype="float32",
                 callback=callback,
             )
+            self._set_worker_phase("recording:start-stream", run_id=run_id)
             stream.start()
             logger.debug("Audio-Stream gestartet")
 
             try:
-                stop_event = self._stop_event  # Local ref for type narrowing
+                self._set_worker_phase("recording:capture", run_id=run_id)
                 while stop_event is not None and not stop_event.is_set():
                     sd.sleep(50)
             finally:
@@ -1530,6 +1614,7 @@ class PulseScribeDaemon:
                     except Exception:
                         pass
 
+                self._set_worker_phase("recording:close-stream", run_id=run_id)
                 close_thread = threading.Thread(target=_close_stream, daemon=True)
                 close_thread.start()
                 close_thread.join(timeout=2.0)
@@ -1543,13 +1628,15 @@ class PulseScribeDaemon:
                     logger.debug("Audio-Stream sauber geschlossen")
 
             # Stop-Sound
+            self._set_worker_phase("recording:stop-sound", run_id=run_id)
             player.play("stop")
 
             # Speichern
+            self._set_worker_phase("recording:finalize-audio", run_id=run_id)
             if not recorded_chunks:
                 logger.warning("Keine Audiodaten aufgenommen")
                 # Leeres Ergebnis signalisieren, damit Result-Polling sauber endet.
-                self._result_queue.put(
+                result_queue_ref.put(
                     DaemonMessage(type=MessageType.TRANSCRIPT_RESULT, payload="")
                 )
                 return
@@ -1557,7 +1644,7 @@ class PulseScribeDaemon:
                 logger.info(
                     f"Keine Sprache erkannt (max_rms={max_rms:.4f}) – Transkription übersprungen"
                 )
-                self._result_queue.put(
+                result_queue_ref.put(
                     DaemonMessage(type=MessageType.TRANSCRIPT_RESULT, payload="")
                 )
                 return
@@ -1631,7 +1718,7 @@ class PulseScribeDaemon:
                         )
                         # On-demand Loading: Zeige LOADING statt TRANSCRIBING
                         model_name = self.model or "turbo"
-                        self._result_queue.put(
+                        result_queue_ref.put(
                             DaemonMessage(
                                 type=MessageType.STATUS_UPDATE,
                                 payload=(AppState.LOADING, f"Loading {model_name}..."),
@@ -1640,6 +1727,7 @@ class PulseScribeDaemon:
 
                 t0 = time.perf_counter()
                 try:
+                    self._set_worker_phase("recording:transcribing", run_id=run_id)
                     # self.model ist für lokale Modelle (turbo, large-v3, etc.)
                     # Andere Provider haben eigene Defaults und sollten None bekommen
                     model_for_provider = self.model if mode_for_run == "local" else None
@@ -1702,7 +1790,8 @@ class PulseScribeDaemon:
 
                 # LLM-Nachbearbeitung (optional)
                 if self.refine and transcript:
-                    self._result_queue.put(
+                    self._set_worker_phase("recording:refining", run_id=run_id)
+                    result_queue_ref.put(
                         DaemonMessage(
                             type=MessageType.STATUS_UPDATE, payload=AppState.REFINING
                         )
@@ -1718,11 +1807,13 @@ class PulseScribeDaemon:
                     )
 
                 logger.debug("Sende TRANSCRIPT_RESULT")
-                self._result_queue.put(
+                self._set_worker_phase("recording:publishing-result", run_id=run_id)
+                result_queue_ref.put(
                     DaemonMessage(
                         type=MessageType.TRANSCRIPT_RESULT, payload=transcript
                     )
                 )
+                self._set_worker_phase("recording:finished", run_id=run_id)
 
             finally:
                 if os.path.exists(temp_path):
@@ -1731,7 +1822,7 @@ class PulseScribeDaemon:
         except Exception as e:
             logger.exception(f"Recording-Worker Fehler: {e}")
             emergency_log(f"RecordingWorker Exception: {type(e).__name__}: {e}")
-            self._result_queue.put(e)
+            result_queue_ref.put(e)
 
     def _stop_recording(self) -> None:
         """Stoppt Aufnahme (non-blocking) und lässt Worker im Hintergrund auslaufen."""
@@ -1787,6 +1878,8 @@ class PulseScribeDaemon:
             return
         self._worker_thread = None
         self._stop_event = None
+        self._worker_abandoned = False
+        self._set_worker_phase("idle", force=True)
         self._apply_pending_hotkey_reconfigure_if_safe()
 
     def _start_result_polling(self) -> None:
@@ -1906,7 +1999,8 @@ class PulseScribeDaemon:
             )
             emergency_log(
                 f"Watchdog triggered: State={daemon._current_state.value}, "
-                f"worker_alive={daemon._worker_thread.is_alive() if daemon._worker_thread else 'None'}"
+                f"worker_alive={daemon._worker_thread.is_alive() if daemon._worker_thread else 'None'}, "
+                f"phase={daemon._worker_phase}"
             )
 
             # SOFORT Polling stoppen, damit keine Race-Condition mit spätem Ergebnis
@@ -1918,6 +2012,7 @@ class PulseScribeDaemon:
             # Worker stoppen falls noch aktiv
             if daemon._stop_event:
                 daemon._stop_event.set()
+            daemon._mark_current_worker_abandoned("watchdog timeout")
 
             # UI auf Error setzen
             daemon._update_state(AppState.ERROR)
