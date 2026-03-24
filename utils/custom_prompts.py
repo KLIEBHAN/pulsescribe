@@ -400,9 +400,11 @@ def _serialize_app_contexts(app_contexts: dict) -> list[str]:
     """Serialisiert App-Contexts Sektion zu TOML-Zeilen."""
     lines = ["[app_contexts]"]
     for app, ctx in sorted(app_contexts.items()):
-        # App-Namen mit Leerzeichen müssen gequotet werden
-        key = f'"{app}"' if " " in app else app
-        lines.append(f'{key} = "{ctx}"')
+        # TOML bare keys erlauben nur [A-Za-z0-9_-].
+        # Immer quoten ist sicher und verhindert Probleme mit Dots
+        # (Table-Separator), Leerzeichen, Quotes und anderen Sonderzeichen.
+        escaped_app = app.replace("\\", "\\\\").replace('"', '\\"')
+        lines.append(f'"{escaped_app}" = "{ctx}"')
     lines.append("")
     return lines
 

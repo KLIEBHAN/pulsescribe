@@ -2143,7 +2143,7 @@ class PulseScribeDaemon:
         """Fügt Transkript via Auto-Paste ein."""
         success = paste_transcript(transcript)
         if success:
-            logger.info(f"✓ Text eingefügt: '{transcript[:50]}...'")
+            logger.info(f"✓ Text eingefügt: {redacted_text_summary(transcript)}")
         else:
             logger.error("Auto-Paste fehlgeschlagen")
 

@@ -805,3 +805,55 @@ class TestSerializationEdgeCases:
         assert loaded["voice_commands"]["instruction"] == unicode_prompt
         assert "→" in loaded["voice_commands"]["instruction"]
         assert "🎤" in loaded["voice_commands"]["instruction"]
+
+    def test_serialize_app_context_with_dots_in_name(self, prompts_file):
+        """App-Namen mit Dots dürfen nicht als TOML-Tabellen interpretiert werden.
+
+        Regression: Bare keys mit Dots wurden als verschachtelte Tabellen geparst,
+        z.B. 'Microsoft.Teams = "chat"' wurde zu {Microsoft: {Teams: "chat"}}.
+        """
+        from utils.custom_prompts import save_custom_prompts, load_custom_prompts
+
+        data = {
+            "app_contexts": {
+                "Microsoft.Teams": "chat",
+                "com.apple.Mail": "email",
+            },
+        }
+
+        save_custom_prompts(data, path=prompts_file)
+
+        # TOML muss valide sein und die Keys korrekt zurückgeben
+        loaded = load_custom_prompts(path=prompts_file)
+        assert loaded["app_contexts"]["Microsoft.Teams"] == "chat"
+        assert loaded["app_contexts"]["com.apple.Mail"] == "email"
+
+    def test_serialize_app_context_with_quotes_in_name(self, prompts_file):
+        """App-Namen mit Doppel-Quotes werden korrekt escaped."""
+        from utils.custom_prompts import save_custom_prompts, load_custom_prompts
+
+        data = {
+            "app_contexts": {
+                'App "Pro"': "code",
+            },
+        }
+
+        save_custom_prompts(data, path=prompts_file)
+
+        loaded = load_custom_prompts(path=prompts_file)
+        assert loaded["app_contexts"]['App "Pro"'] == "code"
+
+    def test_serialize_app_context_with_backslash_in_name(self, prompts_file):
+        """App-Namen mit Backslashes werden korrekt escaped."""
+        from utils.custom_prompts import save_custom_prompts, load_custom_prompts
+
+        data = {
+            "app_contexts": {
+                "Path\\App": "code",
+            },
+        }
+
+        save_custom_prompts(data, path=prompts_file)
+
+        loaded = load_custom_prompts(path=prompts_file)
+        assert loaded["app_contexts"]["Path\\App"] == "code"
