@@ -112,6 +112,37 @@ def test_read_env_file_supports_export_prefix(tmp_path) -> None:
     assert values["DEEPGRAM_API_KEY"] == "dg-test"
 
 
+def test_export_diagnostics_report_cleans_up_broken_zip_on_error(
+    tmp_path, monkeypatch
+) -> None:
+    """When zip creation fails (e.g. disk full), the broken file must be removed."""
+    cfg = tmp_path / ".pulsescribe"
+    cfg.mkdir(parents=True)
+
+    monkeypatch.setattr(diagnostics, "_user_config_dir", lambda: cfg)
+    monkeypatch.setattr(diagnostics.platform, "platform", lambda: "macOS-14.0-arm64")
+    monkeypatch.setattr(
+        diagnostics.platform,
+        "mac_ver",
+        lambda: ("14.0", ("", "", ""), "arm64"),
+    )
+    monkeypatch.setattr(diagnostics.platform, "machine", lambda: "arm64")
+
+    # Simulate zipfile.ZipFile raising OSError (e.g. disk full)
+    def _failing_zipfile(*args, **kwargs):
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(zipfile, "ZipFile", _failing_zipfile)
+
+    with pytest.raises(OSError, match="No space left"):
+        diagnostics.export_diagnostics_report()
+
+    # Verify no broken zip files remain
+    diag_dir = cfg / "diagnostics"
+    zip_files = list(diag_dir.glob("*.zip"))
+    assert zip_files == [], f"Broken zip should be cleaned up, found: {zip_files}"
+
+
 def test_export_diagnostics_report_redacts_startup_log_tail(
     tmp_path, monkeypatch
 ) -> None:

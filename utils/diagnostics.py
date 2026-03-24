@@ -239,7 +239,12 @@ def export_diagnostics_report() -> Path:
             if startup_tail:
                 zf.writestr("logs/startup.log.tail.txt", startup_tail)
     except OSError:
-        return zip_path
+        # Remove broken/incomplete zip so the caller never receives a corrupt file.
+        try:
+            zip_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
     # Reveal in Finder (best-effort)
     try:

@@ -8,6 +8,7 @@ Windows: winsound mit System-Sounds
 import logging
 import subprocess
 import sys
+import threading
 
 logger = logging.getLogger("pulsescribe.platform.sound")
 
@@ -38,6 +39,7 @@ class MacOSSoundPlayer:
 
     def __init__(self) -> None:
         self._sound_ids: dict[str, int] = {}
+        self._failed_sounds: set[str] = set()
         self._audio_toolbox = None
         self._core_foundation = None
         self._use_fallback = False
@@ -143,8 +145,12 @@ class MacOSSoundPlayer:
 
         # Sound-ID aus Cache oder neu laden
         if name not in self._sound_ids:
+            if name in self._failed_sounds:
+                self._play_fallback(sound_path)
+                return
             sound_id = self._load_sound(sound_path)
             if sound_id is None:
+                self._failed_sounds.add(name)
                 self._play_fallback(sound_path)
                 return
             self._sound_ids[name] = sound_id
@@ -156,15 +162,23 @@ class MacOSSoundPlayer:
             self._play_fallback(sound_path)
 
     def _play_fallback(self, sound_path: str) -> None:
-        """Fallback auf afplay wenn CoreAudio nicht funktioniert."""
-        try:
-            subprocess.Popen(
-                ["afplay", sound_path],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        except OSError:
-            pass
+        """Fallback auf afplay wenn CoreAudio nicht funktioniert.
+
+        Runs in a daemon thread so subprocess.run reaps the child process.
+        """
+
+        def _run() -> None:
+            try:
+                subprocess.run(
+                    ["afplay", sound_path],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=5,
+                )
+            except Exception:
+                pass
+
+        threading.Thread(target=_run, daemon=True).start()
 
 
 class WindowsSoundPlayer:

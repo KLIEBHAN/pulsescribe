@@ -1,7 +1,10 @@
 """Menübar-Controller für pulsescribe."""
 
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+logger = logging.getLogger("pulsescribe.ui.menubar")
 
 try:
     import objc  # type: ignore[import-not-found]
@@ -87,6 +90,7 @@ class _MenuActionHandler(NSObjectBase):
             export_diagnostics_report()
         except Exception:
             # Diagnostics is best-effort; avoid crashing the menu bar app.
+            logger.warning("Diagnostics export failed", exc_info=True)
             return
 
 
