@@ -485,6 +485,46 @@ class TestPasteViaOsascript:
 
 
 # =============================================================================
+# Tests: Windows clipboard helper path (platform-agnostic)
+# =============================================================================
+
+
+def test_paste_transcript_windows_prefers_native_clipboard_handler(monkeypatch):
+    """Windows paste should use the native clipboard handler before pyperclip."""
+
+    class _FakeClipboard:
+        def __init__(self):
+            self.copy_calls = []
+            self.paste_calls = 0
+
+        def copy(self, text):
+            self.copy_calls.append(text)
+            return True
+
+        def paste(self):
+            self.paste_calls += 1
+            return "previous text" if self.paste_calls == 1 else "test text"
+
+    clipboard = _FakeClipboard()
+
+    monkeypatch.setenv("PULSESCRIBE_CLIPBOARD_RESTORE", "true")
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(
+        utils.hotkey,
+        "_get_windows_clipboard_handler",
+        lambda: clipboard,
+    )
+    monkeypatch.setattr(utils.hotkey, "_paste_via_pynput_windows", lambda: True)
+    monkeypatch.setattr(utils.hotkey.time, "sleep", lambda _delay: None)
+
+    result = utils.hotkey.paste_transcript("test text")
+
+    assert result is True
+    assert clipboard.copy_calls == ["test text", "previous text"]
+    assert clipboard.paste_calls == 2
+
+
+# =============================================================================
 # Tests: Windows paste_transcript (Ctrl+V via pynput)
 # =============================================================================
 
@@ -507,6 +547,7 @@ class TestPasteTranscriptWindows:
 
         # Ensure clipboard restore is disabled
         monkeypatch.delenv("PULSESCRIBE_CLIPBOARD_RESTORE", raising=False)
+        monkeypatch.setattr(utils.hotkey, "_get_windows_clipboard_handler", lambda: None)
 
         # Mock pyperclip
         import pyperclip
@@ -529,6 +570,7 @@ class TestPasteTranscriptWindows:
 
         # Ensure clipboard restore is disabled
         monkeypatch.delenv("PULSESCRIBE_CLIPBOARD_RESTORE", raising=False)
+        monkeypatch.setattr(utils.hotkey, "_get_windows_clipboard_handler", lambda: None)
 
         import pyperclip
         monkeypatch.setattr(pyperclip, "copy", mock_copy)
@@ -549,6 +591,7 @@ class TestPasteTranscriptWindows:
 
         # Ensure clipboard restore is disabled
         monkeypatch.delenv("PULSESCRIBE_CLIPBOARD_RESTORE", raising=False)
+        monkeypatch.setattr(utils.hotkey, "_get_windows_clipboard_handler", lambda: None)
 
         import pyperclip
         monkeypatch.setattr(pyperclip, "copy", mock_copy)
@@ -572,6 +615,7 @@ class TestPasteTranscriptWindows:
 
         # Ensure clipboard restore is disabled
         monkeypatch.delenv("PULSESCRIBE_CLIPBOARD_RESTORE", raising=False)
+        monkeypatch.setattr(utils.hotkey, "_get_windows_clipboard_handler", lambda: None)
 
         import pyperclip
         monkeypatch.setattr(pyperclip, "copy", mock_copy)

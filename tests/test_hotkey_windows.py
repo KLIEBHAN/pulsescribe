@@ -67,6 +67,21 @@ def test_parse_windows_hotkey_supports_navigation_keys() -> None:
     assert parsed == {"key:shift", "key:page_down"}
 
 
+def test_normalize_windows_hotkey_rejects_multiple_non_modifier_keys() -> None:
+    normalized, error = normalize_windows_hotkey("ctrl+a+b")
+
+    assert normalized == ""
+    assert error is not None
+    assert "nicht-modifier-taste" in error.lower()
+
+
+def test_parse_windows_hotkey_rejects_multiple_non_modifier_keys() -> None:
+    keyboard = _fake_keyboard()
+    parsed = parse_windows_hotkey_for_pynput("ctrl+a+b", keyboard)
+
+    assert parsed == set()
+
+
 def test_hotkeys_conflict_detects_subset_overlap() -> None:
     assert hotkeys_conflict("ctrl+win", "ctrl+win+r") is True
 

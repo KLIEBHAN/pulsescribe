@@ -107,6 +107,8 @@ def normalize_windows_hotkey(hotkey_str: str | None) -> tuple[str, str | None]:
 
     modifiers = [m for m in _MODIFIER_ORDER if m in seen]
     keys = [p for p in normalized_parts if p not in _MODIFIER_ORDER]
+    if len(keys) > 1:
+        return "", "Genau eine Nicht-Modifier-Taste ist erlaubt."
     return "+".join(modifiers + keys), None
 
 

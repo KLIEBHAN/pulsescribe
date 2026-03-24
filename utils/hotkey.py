@@ -351,6 +351,64 @@ def _paste_via_pynput_windows() -> bool:
         return False
 
 
+def _get_windows_clipboard_handler():
+    """Return the retry-capable Windows clipboard handler when available."""
+    try:
+        from whisper_platform import get_clipboard
+
+        return get_clipboard()
+    except Exception as e:
+        logger.debug(f"Native Windows-Clipboard nicht verfügbar: {e}")
+        return None
+
+
+def _copy_windows_clipboard_text(text: str, *, clipboard=None) -> bool:
+    """Copy text on Windows, preferring the native retry-capable clipboard."""
+    if clipboard is not None:
+        try:
+            if clipboard.copy(text):
+                logger.debug(f"Native Windows-Clipboard: {len(text)} Zeichen kopiert")
+                return True
+            logger.debug("Native Windows-Clipboard Copy fehlgeschlagen, nutze Fallback")
+        except Exception as e:
+            logger.debug(f"Native Windows-Clipboard Copy fehlgeschlagen: {e}")
+
+    try:
+        import pyperclip
+
+        pyperclip.copy(text)
+        logger.debug(f"pyperclip Fallback: {len(text)} Zeichen kopiert")
+        return True
+    except ImportError:
+        logger.error("pyperclip nicht installiert")
+        return False
+    except Exception as e:
+        logger.error(f"Clipboard-Fehler: {e}")
+        return False
+
+
+def _get_windows_clipboard_text(*, clipboard=None) -> str | None:
+    """Read current Windows clipboard text with native clipboard first."""
+    if clipboard is not None:
+        try:
+            text = clipboard.paste()
+            if text is not None:
+                return text
+        except Exception as e:
+            logger.debug(f"Native Windows-Clipboard Paste fehlgeschlagen: {e}")
+
+    try:
+        import pyperclip
+
+        return pyperclip.paste()
+    except ImportError:
+        logger.debug("pyperclip nicht installiert")
+        return None
+    except Exception as e:
+        logger.debug(f"Clipboard lesen fehlgeschlagen: {e}")
+        return None
+
+
 def paste_transcript(text: str) -> bool:
     """
     Kopiert Text in Clipboard und fügt via Cmd+V (macOS) bzw. Ctrl+V (Windows) ein.
@@ -374,11 +432,7 @@ def paste_transcript(text: str) -> bool:
 
     # Windows: pyperclip + pynput direkt
     if sys.platform == "win32":
-        try:
-            import pyperclip
-        except ImportError:
-            logger.error("pyperclip nicht installiert")
-            return False
+        clipboard = _get_windows_clipboard_handler()
 
         # Optional: Vorherigen Clipboard-Text merken für Restore nach dem Paste
         # (ENV: PULSESCRIBE_CLIPBOARD_RESTORE=true)
@@ -388,15 +442,11 @@ def paste_transcript(text: str) -> bool:
         previous_text = None
         if restore_clipboard:
             try:
-                previous_text = pyperclip.paste()
+                previous_text = _get_windows_clipboard_text(clipboard=clipboard)
             except Exception:
                 previous_text = None
 
-        try:
-            pyperclip.copy(text)
-            logger.debug(f"pyperclip: {len(text)} Zeichen kopiert")
-        except Exception as e:
-            logger.error(f"Clipboard-Fehler: {e}")
+        if not _copy_windows_clipboard_text(text, clipboard=clipboard):
             return False
 
         # Kurze Pause damit Zielanwendung das Clipboard-Update sieht
@@ -415,10 +465,14 @@ def paste_transcript(text: str) -> bool:
         if previous_text is not None:
             try:
                 time.sleep(0.5)  # Kurz warten bis Paste verarbeitet wurde
-                current = pyperclip.paste()
+                current = _get_windows_clipboard_text(clipboard=clipboard)
                 if current == text:
-                    pyperclip.copy(previous_text)
-                    logger.debug("Vorheriger Clipboard-Text wiederhergestellt")
+                    if _copy_windows_clipboard_text(
+                        previous_text, clipboard=clipboard
+                    ):
+                        logger.debug("Vorheriger Clipboard-Text wiederhergestellt")
+                    else:
+                        logger.warning("Clipboard-Restore fehlgeschlagen")
                 else:
                     logger.debug(
                         "Clipboard-Restore übersprungen: Inhalt wurde verändert"
