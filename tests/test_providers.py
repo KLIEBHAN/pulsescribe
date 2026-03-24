@@ -1,6 +1,9 @@
 """Tests für Provider-Module."""
 
 
+import sys
+from types import SimpleNamespace
+
 import pytest
 
 
@@ -99,3 +102,50 @@ class TestProviderValidation:
         from pathlib import Path
         with pytest.raises(ValueError, match="GROQ_API_KEY"):
             provider.transcribe(Path("/tmp/test.wav"))
+
+
+@pytest.mark.parametrize(
+    ("module_name", "module_path", "env_key", "dependency_name", "class_name"),
+    [
+        ("openai", "providers.openai", "OPENAI_API_KEY", "openai", "OpenAI"),
+        ("deepgram", "providers.deepgram", "DEEPGRAM_API_KEY", "deepgram", "DeepgramClient"),
+        ("groq", "providers.groq", "GROQ_API_KEY", "groq", "Groq"),
+    ],
+    ids=["openai", "deepgram", "groq"],
+)
+def test_provider_client_reinitializes_when_api_key_changes(
+    monkeypatch,
+    module_name: str,
+    module_path: str,
+    env_key: str,
+    dependency_name: str,
+    class_name: str,
+):
+    module = __import__(module_path, fromlist=["dummy"])
+    monkeypatch.setattr(module, "_client", None)
+    monkeypatch.setattr(module, "_client_signature", None)
+
+    created_with: list[str] = []
+
+    class _FakeClient:
+        def __init__(self, api_key=None, **_kwargs):
+            created_with.append(api_key)
+
+    monkeypatch.setitem(
+        sys.modules,
+        dependency_name,
+        SimpleNamespace(**{class_name: _FakeClient}),
+    )
+
+    monkeypatch.setenv(env_key, f"{module_name}-key-1")
+    first = module._get_client()
+    second = module._get_client()
+
+    assert first is second
+    assert created_with == [f"{module_name}-key-1"]
+
+    monkeypatch.setenv(env_key, f"{module_name}-key-2")
+    third = module._get_client()
+
+    assert third is not first
+    assert created_with == [f"{module_name}-key-1", f"{module_name}-key-2"]

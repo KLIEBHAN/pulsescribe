@@ -6,6 +6,7 @@ Für Streaming siehe deepgram_stream.py.
 
 import logging
 import os
+import threading
 from pathlib import Path
 from utils.timing import timed_operation
 from utils.vocabulary import load_vocabulary
@@ -16,19 +17,33 @@ logger = logging.getLogger("pulsescribe.providers.deepgram")
 
 # Singleton Client
 _client = None
+_client_signature: str | None = None
+_client_lock = threading.Lock()
 
 
 def _get_client():
     """Gibt Deepgram-Client Singleton zurück (Lazy Init)."""
-    global _client
-    if _client is None:
-        from deepgram import DeepgramClient
+    global _client, _client_signature
 
-        api_key = os.getenv("DEEPGRAM_API_KEY")
-        if not api_key:
-            raise ValueError("DEEPGRAM_API_KEY nicht gesetzt")
-        _client = DeepgramClient(api_key=api_key)
-        logger.debug("Deepgram-Client initialisiert")
+    api_key = os.getenv("DEEPGRAM_API_KEY")
+    if not api_key:
+        _client = None
+        _client_signature = None
+        raise ValueError("DEEPGRAM_API_KEY nicht gesetzt")
+
+    if _client is None or _client_signature != api_key:
+        with _client_lock:
+            api_key = os.getenv("DEEPGRAM_API_KEY")
+            if not api_key:
+                _client = None
+                _client_signature = None
+                raise ValueError("DEEPGRAM_API_KEY nicht gesetzt")
+            if _client is None or _client_signature != api_key:
+                from deepgram import DeepgramClient
+
+                _client = DeepgramClient(api_key=api_key)
+                _client_signature = api_key
+                logger.debug("Deepgram-Client initialisiert")
     return _client
 
 

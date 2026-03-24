@@ -15,8 +15,30 @@ from config import VOCABULARY_FILE as _DEFAULT_VOCAB_FILE
 
 logger = logging.getLogger("pulsescribe")
 
-# Cache per path: {Path: (mtime, data)}
-_cache: dict[Path, tuple[float, dict]] = {}
+# Cache per path: {Path: (signature, data)}
+_cache: dict[Path, tuple[tuple[int, int, int], dict]] = {}
+
+
+def _file_signature(path: Path) -> tuple[int, int, int]:
+    """Erzeugt eine robuste Dateisignatur für Cache-Invalidierung."""
+    stat_result = path.stat()
+    return (
+        int(
+            getattr(
+                stat_result,
+                "st_mtime_ns",
+                int(getattr(stat_result, "st_mtime", 0.0) * 1_000_000_000),
+            )
+        ),
+        int(getattr(stat_result, "st_size", 0)),
+        int(
+            getattr(
+                stat_result,
+                "st_ctime_ns",
+                int(getattr(stat_result, "st_ctime", 0.0) * 1_000_000_000),
+            )
+        ),
+    )
 
 
 def _normalize_keywords(raw_keywords: list) -> list[str]:
@@ -49,7 +71,7 @@ def load_vocabulary(path: Path | None = None) -> dict:
     vocab_file = path or _DEFAULT_VOCAB_FILE
 
     try:
-        mtime = vocab_file.stat().st_mtime
+        signature = _file_signature(vocab_file)
     except FileNotFoundError:
         _cache.pop(vocab_file, None)
         return {"keywords": []}
@@ -59,7 +81,7 @@ def load_vocabulary(path: Path | None = None) -> dict:
         return {"keywords": []}
 
     cached = _cache.get(vocab_file)
-    if cached and cached[0] == mtime:
+    if cached and cached[0] == signature:
         return cached[1]
 
     try:
@@ -72,7 +94,7 @@ def load_vocabulary(path: Path | None = None) -> dict:
         logger.warning(f"Vocabulary-Datei fehlerhaft: {e}")
         data = {"keywords": []}
 
-    _cache[vocab_file] = (mtime, data)
+    _cache[vocab_file] = (signature, data)
     return data
 
 
@@ -110,8 +132,7 @@ def save_vocabulary(keywords: list[str], path: Path | None = None) -> None:
 
     # Cache direkt aktualisieren, damit Änderungen sofort wirken.
     try:
-        mtime = vocab_file.stat().st_mtime
-        _cache[vocab_file] = (mtime, data)
+        _cache[vocab_file] = (_file_signature(vocab_file), data)
     except OSError:
         _cache.pop(vocab_file, None)
 

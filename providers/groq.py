@@ -5,6 +5,7 @@ Nutzt Groq's LPU-Chips für extrem schnelle Whisper-Inferenz (~300x Echtzeit).
 
 import logging
 import os
+import threading
 from pathlib import Path
 from utils.timing import timed_operation
 
@@ -14,19 +15,33 @@ logger = logging.getLogger("pulsescribe.providers.groq")
 
 # Singleton Client
 _client = None
+_client_signature: str | None = None
+_client_lock = threading.Lock()
 
 
 def _get_client():
     """Gibt Groq-Client Singleton zurück (Lazy Init)."""
-    global _client
-    if _client is None:
-        from groq import Groq
+    global _client, _client_signature
 
-        api_key = os.getenv("GROQ_API_KEY")
-        if not api_key:
-            raise ValueError("GROQ_API_KEY nicht gesetzt")
-        _client = Groq(api_key=api_key)
-        logger.debug("Groq-Client initialisiert")
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        _client = None
+        _client_signature = None
+        raise ValueError("GROQ_API_KEY nicht gesetzt")
+
+    if _client is None or _client_signature != api_key:
+        with _client_lock:
+            api_key = os.getenv("GROQ_API_KEY")
+            if not api_key:
+                _client = None
+                _client_signature = None
+                raise ValueError("GROQ_API_KEY nicht gesetzt")
+            if _client is None or _client_signature != api_key:
+                from groq import Groq
+
+                _client = Groq(api_key=api_key)
+                _client_signature = api_key
+                logger.debug("Groq-Client initialisiert")
     return _client
 
 

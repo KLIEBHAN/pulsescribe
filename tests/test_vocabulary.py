@@ -1,6 +1,8 @@
 """Tests für load_vocabulary() - Custom Vocabulary aus JSON laden."""
 
 import json
+from pathlib import Path
+from types import SimpleNamespace
 
 from transcribe import load_vocabulary
 from utils.vocabulary import save_vocabulary, validate_vocabulary
@@ -121,3 +123,43 @@ class TestValidateVocabulary:
         vocab_file.write_text(json.dumps({"keywords": [f"k{i}" for i in range(120)]}))
         issues = validate_vocabulary(path=vocab_file)
         assert any("Deepgram" in i for i in issues)
+
+
+class TestVocabularyCaching:
+    """Tests für robuste Cache-Invalidierung."""
+
+    def test_load_vocabulary_refreshes_when_mtime_is_unchanged_but_size_changes(
+        self, tmp_path, monkeypatch
+    ):
+        import utils.vocabulary as vocab
+
+        vocab_file = tmp_path / "vocab.json"
+        vocab_file.write_text(json.dumps({"keywords": ["alpha"]}), encoding="utf-8")
+        vocab._cache.clear()
+
+        original_stat = Path.stat
+
+        def _patched_stat(self: Path):
+            stat_result = original_stat(self)
+            if self == vocab_file:
+                return SimpleNamespace(
+                    st_mtime=123.0,
+                    st_mtime_ns=123_000_000_000,
+                    st_size=stat_result.st_size,
+                    st_ctime=stat_result.st_ctime,
+                    st_ctime_ns=stat_result.st_ctime_ns,
+                )
+            return stat_result
+
+        monkeypatch.setattr(Path, "stat", _patched_stat)
+
+        first = vocab.load_vocabulary(path=vocab_file)
+        assert first["keywords"] == ["alpha"]
+
+        vocab_file.write_text(
+            json.dumps({"keywords": ["alpha", "beta"]}),
+            encoding="utf-8",
+        )
+        second = vocab.load_vocabulary(path=vocab_file)
+
+        assert second["keywords"] == ["alpha", "beta"]
