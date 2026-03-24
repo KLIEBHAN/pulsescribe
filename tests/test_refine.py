@@ -1,6 +1,6 @@
 """Tests für Refine-Logik – Provider/Model-Auswahl und Fallbacks."""
 
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 import pytest
 
@@ -74,22 +74,38 @@ class TestGetRefineClient:
         refine.llm._openai_client = None
         refine.llm._openrouter_client = None
         refine.llm._gemini_client = None
+        refine.llm._groq_client_signature = None
+        refine.llm._openai_client_signature = None
+        refine.llm._openrouter_client_signature = None
+        refine.llm._gemini_client_signature = None
         yield
         # Cleanup nach Test
         refine.llm._groq_client = None
         refine.llm._openai_client = None
         refine.llm._openrouter_client = None
         refine.llm._gemini_client = None
+        refine.llm._groq_client_signature = None
+        refine.llm._openai_client_signature = None
+        refine.llm._openrouter_client_signature = None
+        refine.llm._gemini_client_signature = None
 
-    def test_openai_default(self):
+    def test_openai_default(self, monkeypatch):
         """OpenAI-Provider nutzt OpenAI-Client."""
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
         mock_openai_class = Mock()
         # OpenAI wird innerhalb der Funktion importiert
         with patch("openai.OpenAI", mock_openai_class):
             client = _get_refine_client("openai")
 
-        mock_openai_class.assert_called_once_with()
+        mock_openai_class.assert_called_once_with(api_key="test-key")
         assert client == mock_openai_class.return_value
+
+    def test_openai_missing_api_key(self, monkeypatch):
+        """OpenAI ohne API-Key wirft ValueError statt einen alten Client zu reusen."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        with pytest.raises(ValueError, match="OPENAI_API_KEY nicht gesetzt"):
+            _get_refine_client("openai")
 
     def test_openrouter_with_api_key(self, monkeypatch):
         """OpenRouter-Provider nutzt OpenAI-Client mit custom base_url."""
@@ -137,6 +153,37 @@ class TestGetRefineClient:
         client = _get_refine_client("gemini")
 
         assert client == mock_gemini_client
+
+    def test_groq_client_rebuilds_after_api_key_change(self, monkeypatch):
+        """Bei Key-Wechsel wird der Groq-Client neu erstellt statt stale gecached zu bleiben."""
+        monkeypatch.setenv("GROQ_API_KEY", "first-key")
+        first_client = Mock(name="first-client")
+        second_client = Mock(name="second-client")
+        mock_groq_class = Mock(side_effect=[first_client, second_client])
+
+        with patch("groq.Groq", mock_groq_class):
+            client_one = _get_refine_client("groq")
+            monkeypatch.setenv("GROQ_API_KEY", "second-key")
+            client_two = _get_refine_client("groq")
+
+        assert client_one is first_client
+        assert client_two is second_client
+        assert mock_groq_class.call_args_list == [
+            call(api_key="first-key"),
+            call(api_key="second-key"),
+        ]
+
+    def test_openai_cached_client_invalidated_when_api_key_removed(self, monkeypatch):
+        """Ein entfernter OpenAI-Key darf nicht durch einen alten Singleton kaschiert werden."""
+        monkeypatch.setenv("OPENAI_API_KEY", "active-key")
+        mock_openai_class = Mock(return_value=Mock(name="openai-client"))
+
+        with patch("openai.OpenAI", mock_openai_class):
+            _get_refine_client("openai")
+            monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+            with pytest.raises(ValueError, match="OPENAI_API_KEY nicht gesetzt"):
+                _get_refine_client("openai")
 
 
 # =============================================================================

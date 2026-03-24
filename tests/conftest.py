@@ -109,8 +109,19 @@ def reset_caches(monkeypatch):
     Wichtig für: _custom_app_contexts_cache (wird bei erstem Aufruf befüllt)
     """
     import refine.context
+    import refine.llm
+    import utils.env
 
     monkeypatch.setattr(refine.context, "_custom_app_contexts_cache", None)
+    monkeypatch.setattr(refine.llm, "_groq_client", None)
+    monkeypatch.setattr(refine.llm, "_openai_client", None)
+    monkeypatch.setattr(refine.llm, "_openrouter_client", None)
+    monkeypatch.setattr(refine.llm, "_gemini_client", None)
+    monkeypatch.setattr(refine.llm, "_groq_client_signature", None)
+    monkeypatch.setattr(refine.llm, "_openai_client_signature", None)
+    monkeypatch.setattr(refine.llm, "_openrouter_client_signature", None)
+    monkeypatch.setattr(refine.llm, "_gemini_client_signature", None)
+    monkeypatch.setattr(utils.env, "_loaded_env_values", {})
 
 
 @pytest.fixture

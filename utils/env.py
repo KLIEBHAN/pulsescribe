@@ -19,6 +19,7 @@ logger = logging.getLogger("pulsescribe")
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _FALSE_VALUES = {"0", "false", "no", "off"}
+_loaded_env_values: dict[str, str] = {}
 
 
 def parse_bool(value: str | None) -> bool | None:
@@ -73,6 +74,8 @@ def load_environment(*, override_existing: bool = False) -> None:
     On reload (`override_existing=True`), `.env` values override existing env vars,
     while user config still overrides the local project `.env`.
     """
+    global _loaded_env_values
+
     try:
         from dotenv import dotenv_values  # type: ignore[import-not-found]
     except Exception:
@@ -94,16 +97,20 @@ def load_environment(*, override_existing: bool = False) -> None:
                 continue
             merged[str(key)] = str(value)
 
+    if override_existing:
+        # Entferne nur Keys, die zuvor von load_environment gesetzt wurden und
+        # jetzt nicht mehr in den geladenen .env-Dateien vorkommen.
+        for key, value in list(_loaded_env_values.items()):
+            if key in merged:
+                continue
+            if os.environ.get(key) == value:
+                del os.environ[key]
+        _loaded_env_values = {}
+
     for key, value in merged.items():
         if override_existing or key not in os.environ:
             os.environ[key] = value
-
-    # Bei Reload: PULSESCRIBE_* Variablen entfernen, die nicht mehr in .env sind
-    # (wichtig wenn Settings von "true" auf Default/entfernt geändert werden)
-    if override_existing:
-        for key in [k for k in os.environ if k.startswith("PULSESCRIBE_")]:
-            if key not in merged:
-                del os.environ[key]
+            _loaded_env_values[key] = value
 
 
 __all__ = [

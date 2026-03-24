@@ -1,10 +1,7 @@
 """Tests für utils/env.py – Environment Loading."""
 
 import os
-from pathlib import Path
 from unittest.mock import patch
-
-import pytest
 
 from utils.env import load_environment
 
@@ -76,3 +73,40 @@ class TestLoadEnvironmentReload:
         # Cleanup
         if "PULSESCRIBE_MODE" in os.environ:
             del os.environ["PULSESCRIBE_MODE"]
+
+    def test_reload_removes_deleted_api_keys_loaded_from_env(self, tmp_path):
+        """Auch API-Keys aus .env werden bei Reload entfernt, wenn sie gelöscht wurden."""
+        user_dir = tmp_path / "user"
+        user_dir.mkdir()
+        env_file = user_dir / ".env"
+        env_file.write_text("GROQ_API_KEY=env-key\n")
+
+        with patch("config.USER_CONFIG_DIR", user_dir), patch("utils.env.Path") as mock_path:
+            mock_local = mock_path.return_value
+            mock_local.exists.return_value = False
+
+            load_environment(override_existing=True)
+            assert os.environ.get("GROQ_API_KEY") == "env-key"
+
+            env_file.write_text("")
+            load_environment(override_existing=True)
+
+            assert "GROQ_API_KEY" not in os.environ
+
+    def test_reload_preserves_api_keys_that_were_not_loaded_from_env(self, tmp_path):
+        """Bereits vorhandene Prozess-ENV-Keys bleiben erhalten, wenn .env sie nie gesetzt hat."""
+        user_dir = tmp_path / "user"
+        user_dir.mkdir()
+        (user_dir / ".env").write_text("")
+        os.environ["OPENAI_API_KEY"] = "shell-key"
+
+        try:
+            with patch("config.USER_CONFIG_DIR", user_dir), patch("utils.env.Path") as mock_path:
+                mock_local = mock_path.return_value
+                mock_local.exists.return_value = False
+
+                load_environment(override_existing=True)
+
+            assert os.environ.get("OPENAI_API_KEY") == "shell-key"
+        finally:
+            os.environ.pop("OPENAI_API_KEY", None)

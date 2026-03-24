@@ -30,51 +30,90 @@ _groq_client = None
 _openai_client = None
 _openrouter_client = None
 _gemini_client = None
+_groq_client_signature: str | None = None
+_openai_client_signature: str | None = None
+_openrouter_client_signature: tuple[str, str] | None = None
+_gemini_client_signature: str | None = None
 
 
 def _get_groq_client():
     """Gibt Groq-Client Singleton zurück (Lazy Init, Thread-Safe)."""
-    global _groq_client
-    if _groq_client is None:
+    global _groq_client, _groq_client_signature
+
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        _groq_client = None
+        _groq_client_signature = None
+        raise ValueError("GROQ_API_KEY nicht gesetzt")
+
+    if _groq_client is None or _groq_client_signature != api_key:
         with _client_lock:
-            if _groq_client is None:  # Double-check nach Lock
+            api_key = os.getenv("GROQ_API_KEY")
+            if not api_key:
+                _groq_client = None
+                _groq_client_signature = None
+                raise ValueError("GROQ_API_KEY nicht gesetzt")
+            if _groq_client is None or _groq_client_signature != api_key:
                 from groq import Groq
 
-                api_key = os.getenv("GROQ_API_KEY")
-                if not api_key:
-                    raise ValueError("GROQ_API_KEY nicht gesetzt")
                 _groq_client = Groq(api_key=api_key)
+                _groq_client_signature = api_key
                 logger.debug(f"[{get_session_id()}] Groq-Client initialisiert")
     return _groq_client
 
 
 def _get_openai_client():
     """Gibt OpenAI-Client Singleton zurück (Lazy Init, Thread-Safe)."""
-    global _openai_client
-    if _openai_client is None:
+    global _openai_client, _openai_client_signature
+
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        _openai_client = None
+        _openai_client_signature = None
+        raise ValueError("OPENAI_API_KEY nicht gesetzt")
+
+    if _openai_client is None or _openai_client_signature != api_key:
         with _client_lock:
-            if _openai_client is None:  # Double-check nach Lock
+            api_key = os.getenv("OPENAI_API_KEY")
+            if not api_key:
+                _openai_client = None
+                _openai_client_signature = None
+                raise ValueError("OPENAI_API_KEY nicht gesetzt")
+            if _openai_client is None or _openai_client_signature != api_key:
                 from openai import OpenAI
 
-                _openai_client = OpenAI()  # Nutzt OPENAI_API_KEY automatisch
+                _openai_client = OpenAI(api_key=api_key)
+                _openai_client_signature = api_key
                 logger.debug(f"[{get_session_id()}] OpenAI-Client initialisiert")
     return _openai_client
 
 
 def _get_openrouter_client():
     """Gibt OpenRouter-Client Singleton zurück (Lazy Init, Thread-Safe)."""
-    global _openrouter_client
-    if _openrouter_client is None:
+    global _openrouter_client, _openrouter_client_signature
+
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        _openrouter_client = None
+        _openrouter_client_signature = None
+        raise ValueError("OPENROUTER_API_KEY nicht gesetzt")
+    signature = (OPENROUTER_BASE_URL, api_key)
+
+    if _openrouter_client is None or _openrouter_client_signature != signature:
         with _client_lock:
-            if _openrouter_client is None:  # Double-check nach Lock
+            api_key = os.getenv("OPENROUTER_API_KEY")
+            if not api_key:
+                _openrouter_client = None
+                _openrouter_client_signature = None
+                raise ValueError("OPENROUTER_API_KEY nicht gesetzt")
+            signature = (OPENROUTER_BASE_URL, api_key)
+            if _openrouter_client is None or _openrouter_client_signature != signature:
                 from openai import OpenAI
 
-                api_key = os.getenv("OPENROUTER_API_KEY")
-                if not api_key:
-                    raise ValueError("OPENROUTER_API_KEY nicht gesetzt")
                 _openrouter_client = OpenAI(
                     base_url=OPENROUTER_BASE_URL, api_key=api_key
                 )
+                _openrouter_client_signature = signature
                 logger.debug(f"[{get_session_id()}] OpenRouter-Client initialisiert")
     return _openrouter_client
 
@@ -84,16 +123,26 @@ def _get_gemini_client():
 
     Nutzt google-genai SDK für Gemini 3 API.
     """
-    global _gemini_client
-    if _gemini_client is None:
+    global _gemini_client, _gemini_client_signature
+
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        _gemini_client = None
+        _gemini_client_signature = None
+        raise ValueError("GEMINI_API_KEY nicht gesetzt")
+
+    if _gemini_client is None or _gemini_client_signature != api_key:
         with _client_lock:
-            if _gemini_client is None:  # Double-check nach Lock
+            api_key = os.getenv("GEMINI_API_KEY")
+            if not api_key:
+                _gemini_client = None
+                _gemini_client_signature = None
+                raise ValueError("GEMINI_API_KEY nicht gesetzt")
+            if _gemini_client is None or _gemini_client_signature != api_key:
                 from google import genai
 
-                api_key = os.getenv("GEMINI_API_KEY")
-                if not api_key:
-                    raise ValueError("GEMINI_API_KEY nicht gesetzt")
                 _gemini_client = genai.Client(api_key=api_key)
+                _gemini_client_signature = api_key
                 logger.debug(f"[{get_session_id()}] Gemini-Client initialisiert")
     return _gemini_client
 
@@ -239,7 +288,11 @@ def refine_transcript(
 
             # "minimal" nur für Flash (schnellste Latenz), Pro braucht "low"
             is_flash_model = "flash" in effective_model.lower()
-            thinking_level = "minimal" if is_flash_model else "low"
+            thinking_level = (
+                types.ThinkingLevel.MINIMAL
+                if is_flash_model
+                else types.ThinkingLevel.LOW
+            )
             logger.info(f"[{session_id}] Gemini thinking_level={thinking_level}")
 
             # SDK-Timeout: 60s Default, kein zuverlässiger Override möglich
