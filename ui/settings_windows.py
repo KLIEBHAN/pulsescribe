@@ -99,6 +99,8 @@ BOOL_OVERRIDE_OPTIONS = ["default", "true", "false"]
 LIGHTNING_QUANT_OPTIONS = ["none", "8bit", "4bit"]
 DEFAULT_WINDOWS_TOGGLE_HOTKEY = "ctrl+alt+r"
 DEFAULT_WINDOWS_HOLD_HOTKEY = "ctrl+win"
+LOCAL_FP16_ENV_KEY = "PULSESCRIBE_FP16"
+LEGACY_LOCAL_FP16_ENV_KEY = "PULSESCRIBE_LOCAL_FP16"
 
 
 # =============================================================================
@@ -2104,8 +2106,12 @@ class SettingsWindow(QDialog):
             if idx >= 0:
                 self._vad_filter_combo.setCurrentIndex(idx)
 
-        # Faster-Whisper: FP16
-        fp16 = get_env_setting("PULSESCRIBE_LOCAL_FP16") or "default"
+        # FP16 override (canonical key) with legacy fallback for existing configs.
+        fp16 = (
+            get_env_setting(LOCAL_FP16_ENV_KEY)
+            or get_env_setting(LEGACY_LOCAL_FP16_ENV_KEY)
+            or "default"
+        )
         if hasattr(self, "_fp16_combo") and self._fp16_combo:
             idx = self._fp16_combo.findText(fp16)
             if idx >= 0:
@@ -2317,9 +2323,11 @@ class SettingsWindow(QDialog):
             if hasattr(self, "_fp16_combo") and self._fp16_combo:
                 fp16 = self._fp16_combo.currentText()
                 if fp16 == "default":
-                    remove_env_setting("PULSESCRIBE_LOCAL_FP16")
+                    remove_env_setting(LOCAL_FP16_ENV_KEY)
+                    remove_env_setting(LEGACY_LOCAL_FP16_ENV_KEY)
                 else:
-                    save_env_setting("PULSESCRIBE_LOCAL_FP16", fp16)
+                    save_env_setting(LOCAL_FP16_ENV_KEY, fp16)
+                    remove_env_setting(LEGACY_LOCAL_FP16_ENV_KEY)
 
             # Advanced: Lightning Batch Size
             if (

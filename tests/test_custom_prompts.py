@@ -110,6 +110,34 @@ prompt = """Mein Custom Email Prompt."""
         # app_contexts bleibt Default
         assert result["app_contexts"] == DEFAULT_APP_CONTEXTS
 
+    def test_prompt_section_without_prompt_field_falls_back_to_default(self, prompts_file):
+        """Semantisch unvollständige Prompt-Sektion darf keinen Laufzeitfehler auslösen."""
+        from utils.custom_prompts import load_custom_prompts
+
+        prompts_file.write_text(
+            """
+[prompts.email]
+note = "missing prompt field"
+"""
+        )
+
+        result = load_custom_prompts(path=prompts_file)
+
+        assert result["prompts"]["email"]["prompt"] == CONTEXT_PROMPTS["email"]
+
+    def test_non_string_prompt_value_falls_back_to_default(self, prompts_file):
+        """Nicht-string Prompt-Werte werden wie kaputte User-Konfig behandelt."""
+        from utils.custom_prompts import get_custom_prompt_for_context
+
+        prompts_file.write_text(
+            """
+[prompts.email]
+prompt = 123
+"""
+        )
+
+        assert get_custom_prompt_for_context("email") == CONTEXT_PROMPTS["email"]
+
     def test_cache_invalidation_on_mtime_change(self, prompts_file):
         """Reload bei Datei-Änderung (mtime-basierter Cache)."""
         from utils.custom_prompts import load_custom_prompts

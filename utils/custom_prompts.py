@@ -149,12 +149,18 @@ def _merge_prompts(user: dict, defaults: dict) -> dict:
     """Prompts: Jeder Kontext einzeln überschreibbar."""
     result = {}
     user_prompts = user.get("prompts", {})
+    if not isinstance(user_prompts, dict):
+        user_prompts = {}
 
-    for context in defaults["prompts"]:
-        if context in user_prompts:
-            result[context] = user_prompts[context]
-        else:
-            result[context] = defaults["prompts"][context]
+    for context, default_config in defaults["prompts"].items():
+        prompt_config = default_config
+        user_config = user_prompts.get(context)
+        if isinstance(user_config, dict):
+            user_prompt = user_config.get("prompt")
+            if isinstance(user_prompt, str):
+                prompt_config = {"prompt": user_prompt}
+
+        result[context] = prompt_config
 
     return result
 
