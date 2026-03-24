@@ -596,6 +596,7 @@ def test_start_ipc_test_disables_stop_button_until_recording_ack():
     wizard._test_stop_btn = _FakeButton()
     wizard._test_notice = _FakeLabel()
     wizard._set_test_status = lambda *_args, **_kwargs: None
+    wizard._update_navigation = lambda: None
 
     wizard._start_ipc_test()
 
@@ -631,12 +632,64 @@ def test_start_ipc_test_clears_previous_transcript():
     wizard._test_notice = _FakeLabel()
     wizard._test_transcript = transcript
     wizard._set_test_status = lambda *_args, **_kwargs: None
+    wizard._update_navigation = lambda: None
 
     wizard._start_ipc_test()
 
     assert commands == ["start_test"]
     assert transcript.value == ""
     assert transcript.clear_calls == 1
+
+
+def test_start_ipc_test_resets_previous_success_state():
+    commands: list[str] = []
+
+    class _FakeIPCClient:
+        def send_command(self, command: str) -> str:
+            commands.append(command)
+            return "cmd-1"
+
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+    wizard._ipc_test_cmd_id = None
+    wizard._ipc_client = _FakeIPCClient()
+    wizard._ipc_poll_timer = types.SimpleNamespace(
+        start=lambda _ms: None,
+        stop=lambda: None,
+    )
+    wizard._ipc_seen_recording = False
+    wizard._ipc_stop_requested = False
+    wizard._ipc_recording_polls_after_stop = 0
+    wizard._ipc_last_status = None
+    wizard._test_status_label = _FakeLabel()
+    wizard._test_start_btn = _FakeButton()
+    wizard._test_stop_btn = _FakeButton()
+    wizard._test_notice = _FakeLabel()
+    wizard._test_transcript = _FakePlainText("old success")
+    wizard._test_successful = True
+    wizard._set_test_status = lambda *_args, **_kwargs: None
+
+    navigation_updates: list[bool] = []
+    wizard._update_navigation = lambda: navigation_updates.append(
+        wizard._test_successful
+    )
+
+    wizard._start_ipc_test()
+
+    assert commands == ["start_test"]
+    assert wizard._test_successful is False
+    assert navigation_updates == [False]
+
+
+def test_can_advance_requires_successful_test_on_test_step():
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+    wizard._step = OnboardingStep.TEST_DICTATION
+    wizard._test_successful = False
+
+    assert wizard._can_advance() is False
+
+    wizard._test_successful = True
+
+    assert wizard._can_advance() is True
 
 
 def test_cancel_ipc_test_if_running_sends_stop_command():

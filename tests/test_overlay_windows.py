@@ -249,6 +249,37 @@ def test_position_window_uses_active_monitor_work_area():
     )
 
 
+def test_get_primary_work_area_prefers_windows_work_area(monkeypatch):
+    import ctypes
+    import ui.overlay_windows as overlay_mod
+
+    controller = WindowsOverlayController.__new__(WindowsOverlayController)
+    controller._root = _FakeRoot(screen_w=1920, screen_h=1080)
+
+    monkeypatch.setattr(overlay_mod.sys, "platform", "win32", raising=False)
+
+    def fake_system_parameters_info(_action, _ui_param, rect_ptr, _flags):
+        rect = rect_ptr._obj
+        rect.left = 0
+        rect.top = 0
+        rect.right = 1600
+        rect.bottom = 900
+        return 1
+
+    monkeypatch.setattr(
+        ctypes,
+        "windll",
+        types.SimpleNamespace(
+            user32=types.SimpleNamespace(
+                SystemParametersInfoW=fake_system_parameters_info
+            )
+        ),
+        raising=False,
+    )
+
+    assert controller._get_primary_work_area() == (0, 0, 1600, 900)
+
+
 def test_poll_queue_uses_idle_interval_when_idle():
     controller = WindowsOverlayController.__new__(WindowsOverlayController)
     controller._running = True

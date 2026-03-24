@@ -792,6 +792,8 @@ class OnboardingWizardWindows(QDialog):
 
             self._set_hotkey_status("", "text_secondary")
             return True
+        if self._step == OnboardingStep.TEST_DICTATION:
+            return bool(self._test_successful)
         return True
 
     def _go_next(self) -> None:
@@ -851,6 +853,11 @@ class OnboardingWizardWindows(QDialog):
         transcript_field = getattr(self, "_test_transcript", None)
         if transcript_field:
             transcript_field.clear()
+
+        # A retry must earn success again; otherwise a stale pass keeps "Weiter"
+        # enabled even after a later failed/no-speech attempt.
+        self._test_successful = False
+        self._update_navigation()
 
         self._ipc_test_cmd_id = self._ipc_client.send_command(CMD_START_TEST)
         self._ipc_poll_count = 0
@@ -1011,12 +1018,14 @@ class OnboardingWizardWindows(QDialog):
     def _show_test_error(self, error: str) -> None:
         """Display error state with troubleshooting hint."""
         self._test_transcript and self._test_transcript.clear()
+        self._test_successful = False
         self._set_test_status(f"Fehler: {error}", "error")
         if self._test_notice:
             self._test_notice.setVisible(True)
             self._test_notice.setText(
                 "Tipp: Stelle sicher, dass PulseScribe im Hintergrund läuft."
             )
+        self._update_navigation()
 
     def _show_test_success(self, transcript: str) -> None:
         """Display successful transcription."""
@@ -1028,7 +1037,9 @@ class OnboardingWizardWindows(QDialog):
     def _show_test_no_speech(self) -> None:
         """Display "no speech detected" state."""
         self._test_transcript and self._test_transcript.clear()
+        self._test_successful = False
         self._set_test_status("Keine Sprache erkannt. Nochmal versuchen?", "warning")
+        self._update_navigation()
 
     def _set_test_status(self, text: str, color_key: str) -> None:
         """Update the test status label with colored text."""

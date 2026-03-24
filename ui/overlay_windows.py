@@ -466,6 +466,26 @@ class WindowsOverlayController:
         self._root.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}+{x}+{y}")
 
     def _get_primary_work_area(self) -> tuple[int, int, int, int]:
+        if sys.platform == "win32":
+            try:
+                from ctypes import wintypes
+                import ctypes
+
+                SPI_GETWORKAREA = 0x0030
+                rect = wintypes.RECT()
+                user32 = ctypes.windll.user32
+                if user32.SystemParametersInfoW(
+                    SPI_GETWORKAREA, 0, ctypes.byref(rect), 0
+                ):
+                    return (
+                        int(rect.left),
+                        int(rect.top),
+                        int(rect.right - rect.left),
+                        int(rect.bottom - rect.top),
+                    )
+            except Exception:
+                pass
+
         if not self._root:
             return 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT
         return (
