@@ -145,11 +145,15 @@ def should_auto_refresh_logs(
     is_logs_tab_active: bool,
     logs_view_index: int,
     is_window_visible: bool = True,
+    allow_transcripts: bool = False,
 ) -> bool:
-    """Auto-refresh only when enabled and the logs view is visible."""
+    """Auto-refresh only when enabled and the selected logs view is visible."""
+    visible_indexes = {0}
+    if allow_transcripts:
+        visible_indexes.add(1)
     return (
         enabled
         and is_logs_tab_active
-        and logs_view_index == 0
+        and logs_view_index in visible_indexes
         and is_window_visible
     )

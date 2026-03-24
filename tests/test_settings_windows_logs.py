@@ -190,3 +190,31 @@ def test_update_logs_auto_refresh_state_starts_timer_when_visible():
 
     assert timer.started_with == [2000]
     assert timer.isActive() is True
+
+
+def test_update_logs_auto_refresh_state_starts_timer_for_transcripts_view():
+    window = SettingsWindow.__new__(SettingsWindow)
+    timer = _FakeTimer()
+    window._logs_refresh_timer = timer
+    window._logs_stack = _FakeStack(current_index=1)
+    window._auto_refresh_checkbox = _FakeCheckBox(checked=True)
+    window._is_logs_tab_active = lambda: True
+    window._is_window_visible_for_logs = lambda: True
+
+    window._update_logs_auto_refresh_state()
+
+    assert timer.started_with == [2000]
+    assert timer.isActive() is True
+
+
+def test_refresh_active_logs_view_routes_to_transcripts():
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._logs_stack = _FakeStack(current_index=1)
+
+    calls: list[str] = []
+    window._refresh_logs = lambda: calls.append("logs")
+    window._refresh_transcripts = lambda: calls.append("transcripts")
+
+    window._refresh_active_logs_view()
+
+    assert calls == ["transcripts"]

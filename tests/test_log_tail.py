@@ -134,3 +134,15 @@ def test_should_auto_refresh_logs_only_when_logs_visible() -> None:
         )
         is False
     )
+
+
+def test_should_auto_refresh_logs_allows_transcripts_when_explicitly_enabled() -> None:
+    assert (
+        should_auto_refresh_logs(
+            enabled=True,
+            is_logs_tab_active=True,
+            logs_view_index=1,
+            allow_transcripts=True,
+        )
+        is True
+    )

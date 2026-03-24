@@ -291,3 +291,24 @@ class TestRotation:
 
         assert history_file.stat().st_size <= limit_bytes
         assert remaining_prefixes == ["4", "5"]
+
+    def test_save_transcript_rotates_immediately_after_large_append(
+        self, history_file, monkeypatch
+    ):
+        """Ein großer neuer Save darf die Datei nicht bis zum nächsten Save oversized lassen."""
+        from utils.history import save_transcript
+
+        monkeypatch.setattr("utils.history.MAX_HISTORY_SIZE_MB", 0.001)
+        limit_bytes = int(0.001 * 1024 * 1024)
+
+        assert save_transcript("old-" + ("a" * 500)) is True
+        assert history_file.stat().st_size < limit_bytes
+
+        assert save_transcript("new-" + ("b" * 500)) is True
+
+        lines = history_file.read_text(encoding="utf-8").splitlines()
+        texts = [json.loads(line)["text"] for line in lines]
+
+        assert history_file.stat().st_size <= limit_bytes
+        assert texts[-1] == "new-" + ("b" * 500)
+        assert len(texts) == 1

@@ -6,6 +6,7 @@ Jede Zeile ist ein JSON-Objekt mit Timestamp und Text.
 
 import json
 import logging
+from collections.abc import Sequence
 from datetime import datetime
 
 from config import USER_CONFIG_DIR
@@ -66,6 +67,11 @@ def save_transcript(
 
         with HISTORY_FILE.open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+        # Ein großer neuer Eintrag kann die Datei erst nach dem Append über das
+        # Limit schieben. Direkt danach rotieren, damit die History nicht bis
+        # zum nächsten Save unnötig groß bleibt.
+        _rotate_if_needed()
 
         logger.debug(f"Transcript saved to history: {text[:50]}...")
         return True
@@ -186,7 +192,7 @@ def _parse_recent_entries(lines: list[str], count: int) -> list[dict[str, object
     return entries
 
 
-def format_transcripts_for_display(entries: list[object]) -> str:
+def format_transcripts_for_display(entries: Sequence[object]) -> str:
     """Format transcript entries for the Windows transcripts viewer."""
     valid_entries = [entry for entry in entries if isinstance(entry, dict)]
     if not valid_entries:

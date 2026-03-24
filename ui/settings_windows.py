@@ -1177,7 +1177,7 @@ class SettingsWindow(QDialog):
 
         # Auto-Refresh Timer
         self._logs_refresh_timer = QTimer(self)
-        self._logs_refresh_timer.timeout.connect(self._refresh_logs)
+        self._logs_refresh_timer.timeout.connect(self._refresh_active_logs_view)
 
         return scroll
 
@@ -1965,6 +1965,7 @@ class SettingsWindow(QDialog):
             is_logs_tab_active=self._is_logs_tab_active(),
             logs_view_index=logs_view_index,
             is_window_visible=self._is_window_visible_for_logs(),
+            allow_transcripts=True,
         )
 
         if should_run:
@@ -2021,6 +2022,18 @@ class SettingsWindow(QDialog):
             logger.error(f"Transcripts laden fehlgeschlagen: {e}")
             if self._transcripts_viewer:
                 self._transcripts_viewer.setPlainText(f"Error: {e}")
+
+    def _refresh_active_logs_view(self) -> None:
+        """Aktualisiert die aktuell sichtbare Ansicht im Logs-Tab."""
+        current_index = (
+            self._logs_stack.currentIndex()
+            if hasattr(self, "_logs_stack") and self._logs_stack
+            else 0
+        )
+        if current_index == 1:
+            self._refresh_transcripts()
+            return
+        self._refresh_logs()
 
     def _set_transcripts_text_if_changed(self, text: str) -> None:
         """Aktualisiert den Transcript-Viewer nur bei Änderungen.
