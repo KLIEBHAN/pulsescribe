@@ -282,6 +282,20 @@ class TestWelcomeSaveSettings:
         assert LEGACY_LOCAL_FP16_ENV_KEY in remove_calls
 
 
+class TestWelcomePrivacySettings:
+    def test_open_privacy_settings_passes_window(self):
+        ctrl = WelcomeController.__new__(WelcomeController)
+        ctrl._window = object()
+
+        with patch("utils.permissions.open_privacy_settings") as mock_open:
+            WelcomeController._open_privacy_settings(ctrl, "Privacy_Microphone")
+
+        mock_open.assert_called_once_with(
+            "Privacy_Microphone",
+            window=ctrl._window,
+        )
+
+
 class _FakeContainer:
     def __init__(self):
         self.hidden = None

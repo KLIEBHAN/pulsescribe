@@ -122,6 +122,7 @@ class StreamState:
 
     final_transcripts: list[str] = field(default_factory=list)
     last_interim_write: float = 0.0
+    last_interim_text: str = ""
     stream_error: Exception | None = None
     stop_event: asyncio.Event = field(default_factory=asyncio.Event)
     finalize_done: asyncio.Event = field(default_factory=asyncio.Event)
@@ -648,12 +649,15 @@ def _create_message_handler(
             state.final_transcripts.append(transcript)
             logger.info(f"[{session_id}] Final: {log_preview(transcript)}")
         else:
+            if transcript == state.last_interim_text:
+                return
             # Throttling: Max alle INTERIM_THROTTLE_MS schreiben
             now = time.perf_counter()
             if (now - state.last_interim_write) * 1000 >= INTERIM_THROTTLE_MS:
                 try:
-                    INTERIM_FILE.write_text(transcript)
+                    INTERIM_FILE.write_text(transcript, encoding="utf-8")
                     state.last_interim_write = now
+                    state.last_interim_text = transcript
                     logger.debug(f"[{session_id}] Interim: {log_preview(transcript, 30)}")
                 except OSError as e:
                     logger.warning(f"[{session_id}] Interim-Write fehlgeschlagen: {e}")

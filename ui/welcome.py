@@ -453,7 +453,7 @@ class WelcomeController:
         """Öffnet System Settings → Privacy & Security (best effort)."""
         from utils.permissions import open_privacy_settings
 
-        open_privacy_settings(anchor)
+        open_privacy_settings(anchor, window=self._window)
 
     def _handle_setup_action(self, action: str) -> None:
         from utils.permissions import (
