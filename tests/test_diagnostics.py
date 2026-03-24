@@ -1,5 +1,8 @@
+import zipfile
+
 import pytest
 
+import utils.diagnostics as diagnostics
 from utils.diagnostics import _read_env_file, _redact_log_line, _redact_log_text
 
 
@@ -86,3 +89,44 @@ def test_read_env_file_parses_quoted_values_and_inline_comments(tmp_path) -> Non
     assert values["PULSESCRIBE_HOLD_HOTKEY"] == "ctrl+win"
     assert values["PULSESCRIBE_LANGUAGE"] == "de"
     assert values["DEEPGRAM_API_KEY"] == "dg-test"
+
+
+def test_export_diagnostics_report_redacts_startup_log_tail(
+    tmp_path, monkeypatch
+) -> None:
+    cfg = tmp_path / ".pulsescribe"
+    logs_dir = cfg / "logs"
+    logs_dir.mkdir(parents=True)
+    startup_log = cfg / "startup.log"
+    startup_log.write_text(
+        "\n".join(
+            [
+                "12:00:00 [INFO] Starting PulseScribe",
+                "12:00:01 [INFO] Transkript: secret startup text",
+                "12:00:02 [DEBUG] State: AppState.DONE text='still secret'",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(diagnostics, "_user_config_dir", lambda: cfg)
+    monkeypatch.setattr(diagnostics.platform, "platform", lambda: "macOS-14.0-arm64")
+    monkeypatch.setattr(
+        diagnostics.platform,
+        "mac_ver",
+        lambda: ("14.0", ("", "", ""), "arm64"),
+    )
+    monkeypatch.setattr(diagnostics.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(diagnostics.subprocess, "Popen", lambda *_args, **_kwargs: None)
+
+    zip_path = diagnostics.export_diagnostics_report()
+
+    with zipfile.ZipFile(zip_path) as zf:
+        startup_tail = zf.read("logs/startup.log.tail.txt").decode("utf-8")
+
+    assert "Starting PulseScribe" in startup_tail
+    assert "Transkript: <redacted>" in startup_tail
+    assert "text='<redacted>'" in startup_tail
+    assert "secret startup text" not in startup_tail
+    assert "still secret" not in startup_tail

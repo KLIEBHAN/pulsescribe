@@ -232,6 +232,27 @@ prompt = """Version 2"""
         result2 = load_custom_prompts(path=prompts_file)
         assert "Version 2" in result2["prompts"]["default"]["prompt"]
 
+    def test_cache_returns_defensive_copy(self, prompts_file):
+        """Mutationen am Rückgabewert dürfen den internen Cache nicht verändern."""
+        from utils.custom_prompts import load_custom_prompts
+
+        prompts_file.write_text(
+            '''
+[prompts.default]
+prompt = """Version 1"""
+''',
+            encoding="utf-8",
+        )
+
+        first = load_custom_prompts(path=prompts_file)
+        first["prompts"]["default"]["prompt"] = "Mutated in caller"
+        first["app_contexts"]["Mail"] = "chat"
+
+        second = load_custom_prompts(path=prompts_file)
+
+        assert second["prompts"]["default"]["prompt"] == "Version 1"
+        assert second["app_contexts"]["Mail"] == DEFAULT_APP_CONTEXTS["Mail"]
+
 
 class TestGetCustomPromptForContext:
     """Tests für get_custom_prompt_for_context()."""
@@ -621,7 +642,7 @@ class TestCacheBehavior:
     """Tests für Cache-Invalidation und mtime."""
 
     def test_cache_hits_with_same_mtime(self, prompts_file):
-        """Cache wird bei gleicher mtime nicht neu geladen (identisches Objekt)."""
+        """Cache-Hits liefern stabile Inhalte, aber keine geteilte Referenz."""
         from utils.custom_prompts import load_custom_prompts
 
         prompts_file.write_text('[prompts.default]\nprompt = """Cached"""')
@@ -631,8 +652,8 @@ class TestCacheBehavior:
         # Zweites Laden (ohne Dateiänderung)
         result2 = load_custom_prompts(path=prompts_file)
 
-        # Muss dasselbe Objekt sein (nicht nur gleich, sondern identisch)
-        assert result1 is result2
+        assert result1 == result2
+        assert result1 is not result2
 
     def test_save_invalidates_cache(self, prompts_file):
         """Nach save() gibt load() frische Daten."""

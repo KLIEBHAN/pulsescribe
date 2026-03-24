@@ -16,6 +16,7 @@ Dateiformat:
 
 from __future__ import annotations
 
+from copy import deepcopy
 import logging
 import tomllib
 from pathlib import Path
@@ -134,7 +135,7 @@ def load_custom_prompts(path: Path | None = None) -> dict:
     # Cache nutzen wenn Datei unverändert
     cached = _cache.get(prompts_file)
     if cached and cached[0] == current_signature:
-        return cached[1]
+        return deepcopy(cached[1])
 
     # TOML parsen
     try:
@@ -144,12 +145,12 @@ def load_custom_prompts(path: Path | None = None) -> dict:
         # Defaults cachen um wiederholtes Parsen zu vermeiden
         defaults = get_defaults()
         _cache[prompts_file] = (current_signature, defaults)
-        return defaults
+        return deepcopy(defaults)
 
     # User-Config mit Defaults zusammenführen
     merged = _merge_user_with_defaults(user_config)
     _cache[prompts_file] = (current_signature, merged)
-    return merged
+    return deepcopy(merged)
 
 
 def _merge_user_with_defaults(user_config: dict) -> dict:

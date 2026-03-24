@@ -210,7 +210,9 @@ def export_diagnostics_report() -> Path:
 
     startup_tail = ""
     if startup_log_path.exists():
-        startup_tail = _tail_lines(_read_text_safe(startup_log_path), max_lines=200)
+        startup_tail = _tail_lines(
+            _redact_log_text(_read_text_safe(startup_log_path)), max_lines=200
+        )
 
     try:
         with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
