@@ -22,6 +22,66 @@ _FALSE_VALUES = {"0", "false", "no", "off"}
 _loaded_env_values: dict[str, str] = {}
 
 
+def _get_local_env_path() -> Path:
+    """Return the project-local `.env` path independent of the current cwd."""
+    return Path(__file__).resolve().parent.parent / ".env"
+
+
+def _fallback_dotenv_values(path: Path) -> dict[str, str]:
+    """Best-effort `.env` parser when python-dotenv is unavailable."""
+    values: dict[str, str] = {}
+    try:
+        for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            if not key:
+                continue
+            values[key] = value.strip()
+    except OSError:
+        return {}
+    return values
+
+
+def _read_dotenv_values(path: Path) -> dict[str, str]:
+    """Read one `.env` file and return normalized string values."""
+    try:
+        from dotenv import dotenv_values  # type: ignore[import-not-found]
+    except Exception:
+        return _fallback_dotenv_values(path)
+
+    try:
+        raw_values = dotenv_values(path)
+    except Exception:
+        return {}
+
+    values: dict[str, str] = {}
+    for key, value in raw_values.items():
+        if key is None or value is None:
+            continue
+        values[str(key)] = str(value)
+    return values
+
+
+def collect_env_values(
+    *,
+    user_config_dir: Path | None = None,
+    local_env_path: Path | None = None,
+) -> dict[str, str]:
+    """Collect `.env` values with precedence `local < user`."""
+    local_env = local_env_path or _get_local_env_path()
+    user_env = (user_config_dir or (Path.home() / ".pulsescribe")) / ".env"
+
+    merged: dict[str, str] = {}
+    for env_path in (local_env, user_env):
+        if not env_path.exists():
+            continue
+        merged.update(_read_dotenv_values(env_path))
+    return merged
+
+
 def parse_bool(value: str | None) -> bool | None:
     """Parses common boolean string values.
 
@@ -76,26 +136,9 @@ def load_environment(*, override_existing: bool = False) -> None:
     """
     global _loaded_env_values
 
-    try:
-        from dotenv import dotenv_values  # type: ignore[import-not-found]
-    except Exception:
-        return
-
     from config import USER_CONFIG_DIR
 
-    local_env = Path(".env")
-    user_env = USER_CONFIG_DIR / ".env"
-
-    merged: dict[str, str] = {}
-    # Local first, then user (user wins).
-    env_paths = [local_env, user_env]
-    for env_path in env_paths:
-        if not env_path.exists():
-            continue
-        for key, value in dotenv_values(env_path).items():
-            if value is None:
-                continue
-            merged[str(key)] = str(value)
+    merged = collect_env_values(user_config_dir=USER_CONFIG_DIR)
 
     if override_existing:
         # Entferne nur Keys, die zuvor von load_environment gesetzt wurden und

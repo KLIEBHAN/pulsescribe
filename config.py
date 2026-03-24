@@ -11,6 +11,24 @@ from pathlib import Path
 
 logger = logging.getLogger("pulsescribe")
 
+
+def _preload_env_for_import_time_config() -> None:
+    """Load `.env` values before import-time constants are evaluated.
+
+    Several config values are derived from environment variables during module import.
+    Entry points like `transcribe.py` and `pulsescribe_daemon.py` import `config`
+    before calling `load_environment()`, so we preload here with the same precedence:
+    process env > user `.env` > project `.env`.
+    """
+    from utils.env import collect_env_values
+
+    user_config_dir = Path.home() / ".pulsescribe"
+    for key, value in collect_env_values(user_config_dir=user_config_dir).items():
+        os.environ.setdefault(key, value)
+
+
+_preload_env_for_import_time_config()
+
 # =============================================================================
 # Audio-Konfiguration
 # =============================================================================

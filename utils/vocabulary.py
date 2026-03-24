@@ -85,12 +85,12 @@ def load_vocabulary(path: Path | None = None) -> dict:
         return cached[1]
 
     try:
-        data = json.loads(vocab_file.read_text())
+        data = json.loads(vocab_file.read_text(encoding="utf-8"))
         if not isinstance(data.get("keywords"), list):
             data["keywords"] = []
         else:
             data["keywords"] = _normalize_keywords(data.get("keywords", []))
-    except (json.JSONDecodeError, OSError) as e:
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
         logger.warning(f"Vocabulary-Datei fehlerhaft: {e}")
         data = {"keywords": []}
 
@@ -111,16 +111,19 @@ def save_vocabulary(keywords: list[str], path: Path | None = None) -> None:
     data: dict = {}
     if vocab_file.exists():
         try:
-            existing = json.loads(vocab_file.read_text())
+            existing = json.loads(vocab_file.read_text(encoding="utf-8"))
             if isinstance(existing, dict):
                 data = existing
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
             data = {}
 
     data["keywords"] = _normalize_keywords(list(keywords))
 
     try:
-        vocab_file.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+        vocab_file.write_text(
+            json.dumps(data, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
         # Sichere Permissions: Nur Owner lesen/schreiben
         try:
             vocab_file.chmod(0o600)
@@ -144,8 +147,8 @@ def validate_vocabulary(path: Path | None = None) -> list[str]:
         return []
 
     try:
-        raw_text = vocab_file.read_text()
-    except OSError as e:
+        raw_text = vocab_file.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
         return [f"Vocabulary-Datei nicht lesbar: {e}"]
 
     try:

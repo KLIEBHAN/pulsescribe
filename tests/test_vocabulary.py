@@ -34,6 +34,15 @@ class TestLoadVocabulary:
 
         assert result == {"keywords": []}
 
+    def test_invalid_utf8_returns_empty_keywords(self, temp_files):
+        """Ungültiges UTF-8 wird robust abgefangen."""
+        vocab_file = temp_files / "vocab.json"
+        vocab_file.write_bytes(b'{"keywords":["\xff"]}')
+
+        result = load_vocabulary()
+
+        assert result == {"keywords": []}
+
     def test_keywords_wrong_type(self, temp_files):
         """keywords als String statt Liste wird zu leerer Liste korrigiert."""
         vocab_file = temp_files / "vocab.json"
@@ -84,6 +93,31 @@ class TestLoadVocabulary:
 
         assert result["keywords"] == ["Foo", "Bar"]
 
+    def test_load_uses_utf8_encoding(self, temp_files, monkeypatch):
+        import utils.vocabulary as vocab
+
+        vocab_file = temp_files / "vocab.json"
+        vocab_file.write_text(
+            json.dumps({"keywords": ["Müller", "東京"]}),
+            encoding="utf-8",
+        )
+        vocab._cache.clear()
+
+        original_read_text = Path.read_text
+        encodings: list[str | None] = []
+
+        def _patched_read_text(self: Path, *args, **kwargs):
+            if self == vocab_file:
+                encodings.append(kwargs.get("encoding"))
+            return original_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", _patched_read_text)
+
+        result = vocab.load_vocabulary(path=vocab_file)
+
+        assert result["keywords"] == ["Müller", "東京"]
+        assert encodings == ["utf-8"]
+
 
 class TestSaveVocabulary:
     """Tests für save_vocabulary() - Custom Vocabulary persistieren."""
@@ -108,6 +142,23 @@ class TestSaveVocabulary:
         assert data["keywords"] == ["new"]
         assert data["extra"] == "keep"
 
+    def test_save_uses_utf8_encoding(self, temp_files, monkeypatch):
+        vocab_file = temp_files / "vocab.json"
+
+        original_write_text = Path.write_text
+        encodings: list[str | None] = []
+
+        def _patched_write_text(self: Path, *args, **kwargs):
+            if self == vocab_file:
+                encodings.append(kwargs.get("encoding"))
+            return original_write_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "write_text", _patched_write_text)
+
+        save_vocabulary(["Müller", "東京"], path=vocab_file)
+
+        assert encodings == ["utf-8"]
+
 
 class TestValidateVocabulary:
     """Tests für validate_vocabulary()."""
@@ -123,6 +174,28 @@ class TestValidateVocabulary:
         vocab_file.write_text(json.dumps({"keywords": [f"k{i}" for i in range(120)]}))
         issues = validate_vocabulary(path=vocab_file)
         assert any("Deepgram" in i for i in issues)
+
+    def test_validate_uses_utf8_encoding(self, temp_files, monkeypatch):
+        vocab_file = temp_files / "vocab.json"
+        vocab_file.write_text(
+            json.dumps({"keywords": ["Müller", "東京"]}),
+            encoding="utf-8",
+        )
+
+        original_read_text = Path.read_text
+        encodings: list[str | None] = []
+
+        def _patched_read_text(self: Path, *args, **kwargs):
+            if self == vocab_file:
+                encodings.append(kwargs.get("encoding"))
+            return original_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", _patched_read_text)
+
+        issues = validate_vocabulary(path=vocab_file)
+
+        assert issues == []
+        assert encodings == ["utf-8"]
 
 
 class TestVocabularyCaching:
