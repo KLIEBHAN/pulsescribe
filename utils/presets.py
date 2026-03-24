@@ -70,7 +70,10 @@ LOCAL_PRESET_OPTIONS = ["(none)", *LOCAL_PRESETS.keys()]
 
 def is_apple_silicon() -> bool:
     try:
-        return platform.machine().lower() in ("arm64", "aarch64")
+        return platform.system().lower() == "darwin" and platform.machine().lower() in (
+            "arm64",
+            "aarch64",
+        )
     except Exception:
         return False
 
@@ -119,7 +122,7 @@ def apply_local_preset_to_env(preset_name: str) -> bool:
     _set_or_remove(
         "PULSESCRIBE_LOCAL_BACKEND",
         values.get("local_backend"),
-        remove_when={"whisper"},
+        remove_when={"auto"},
     )
     _set_or_remove(
         "PULSESCRIBE_LOCAL_MODEL",

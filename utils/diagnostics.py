@@ -22,6 +22,16 @@ from pathlib import Path
 
 from utils.version import get_app_version
 
+_REDACTED_LOG_MARKERS = (
+    "Auto-Paste:",
+    "✓ Text eingefügt:",
+    "Transkript:",
+    "] Final:",
+    "] Interim:",
+    "] Output:",
+    "Transcript saved to history:",
+)
+
 
 def _user_config_dir() -> Path:
     return Path.home() / ".pulsescribe"
@@ -87,16 +97,22 @@ def _sanitize_env(env: dict[str, str]) -> dict[str, str]:
     return sanitized
 
 
+def _redact_after_marker(line: str, marker: str) -> str:
+    newline = "\n" if line.endswith("\n") else ""
+    body = line[:-1] if newline else line
+    prefix, sep, _rest = body.partition(marker)
+    if not sep:
+        return line
+    return f"{prefix}{sep} <redacted>{newline}"
+
+
 def _redact_log_line(line: str) -> str:
     # Remove transcript previews from logs.
-    if "Auto-Paste:" in line:
-        prefix, _sep, _rest = line.partition("Auto-Paste:")
-        return f"{prefix}Auto-Paste: <redacted>\n"
-    if "✓ Text eingefügt:" in line:
-        prefix, _sep, _rest = line.partition("✓ Text eingefügt:")
-        return f"{prefix}✓ Text eingefügt: <redacted>\n"
-    if "State: AppState.DONE text=" in line:
-        return re.sub(r"text='[^']*'", "text='<redacted>'", line)
+    for marker in _REDACTED_LOG_MARKERS:
+        if marker in line:
+            return _redact_after_marker(line, marker)
+    if " text='" in line:
+        return re.sub(r"text='.*'", "text='<redacted>'", line)
     return line
 
 
