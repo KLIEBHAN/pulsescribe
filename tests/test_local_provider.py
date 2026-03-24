@@ -5,6 +5,8 @@ Testet insbesondere das Lightning-Backend und dessen Integration.
 
 import numpy as np
 import pytest
+import threading
+import time
 from unittest.mock import MagicMock, patch
 
 
@@ -296,6 +298,76 @@ class TestLightningModelCaching:
             assert mock_lightning_class.call_count == 2
 
 
+class TestLightningWorkdir:
+    """Tests für den serialisierten Lightning-Workdir-Kontext."""
+
+    def test_lightning_workdir_serializes_process_cwd(self, tmp_path, monkeypatch):
+        import providers.local as local_mod
+
+        user_dir = tmp_path / "user"
+        lightning_dir = user_dir / "lightning_models"
+        monkeypatch.setattr(local_mod, "USER_CONFIG_DIR", user_dir)
+
+        state_lock = threading.Lock()
+        state = {
+            "current": str(tmp_path),
+            "inside_count": 0,
+            "concurrent": False,
+        }
+
+        def fake_getcwd() -> str:
+            with state_lock:
+                return state["current"]
+
+        def fake_chdir(path) -> None:
+            normalized = str(path)
+            with state_lock:
+                if normalized == str(lightning_dir):
+                    if state["inside_count"] > 0:
+                        state["concurrent"] = True
+                    state["inside_count"] += 1
+                elif state["inside_count"] > 0:
+                    state["inside_count"] -= 1
+                state["current"] = normalized
+
+        monkeypatch.setattr(local_mod.os, "getcwd", fake_getcwd)
+        monkeypatch.setattr(local_mod.os, "chdir", fake_chdir)
+
+        entered_first = threading.Event()
+        attempted_second = threading.Event()
+        release_first = threading.Event()
+
+        def first_worker() -> None:
+            with local_mod._lightning_workdir():
+                entered_first.set()
+                assert fake_getcwd() == str(lightning_dir)
+                assert release_first.wait(timeout=1)
+
+        def second_worker() -> None:
+            assert entered_first.wait(timeout=1)
+            attempted_second.set()
+            with local_mod._lightning_workdir():
+                assert fake_getcwd() == str(lightning_dir)
+
+        thread1 = threading.Thread(target=first_worker, name="lightning-workdir-1")
+        thread2 = threading.Thread(target=second_worker, name="lightning-workdir-2")
+
+        thread1.start()
+        assert entered_first.wait(timeout=1)
+
+        thread2.start()
+        assert attempted_second.wait(timeout=1)
+        time.sleep(0.05)
+        release_first.set()
+
+        thread1.join(timeout=1)
+        thread2.join(timeout=1)
+
+        assert not thread1.is_alive()
+        assert not thread2.is_alive()
+        assert state["concurrent"] is False
+
+
 class TestLightningTranscription:
     """Tests für Lightning Transkription."""
 
@@ -534,6 +606,49 @@ class TestLightningFallback:
             assert "FALLBACK" in caplog.text
             assert "Lightning" in caplog.text
 
+    def test_transcribe_audio_routes_directly_to_mlx_after_first_lightning_failure(
+        self, monkeypatch
+    ):
+        """Nach dem ersten Lightning-Fehler soll die Session direkt MLX verwenden."""
+        monkeypatch.setenv("PULSESCRIBE_LOCAL_BACKEND", "lightning")
+
+        from providers.local import LocalProvider
+
+        provider = LocalProvider()
+        audio = np.zeros(16000, dtype=np.float32)
+
+        with (
+            patch(
+                "providers.local.LocalProvider._transcribe_lightning_core",
+                side_effect=RuntimeError("Lightning crashed"),
+            ),
+            patch(
+                "providers.local.LocalProvider._transcribe_mlx",
+                return_value="MLX Fallback Result",
+            ) as mock_mlx,
+        ):
+            result = provider.transcribe_audio(audio, language="de")
+
+        assert result == "MLX Fallback Result"
+        assert provider._lightning_fallback_active is True
+        assert provider.get_runtime_info()["backend"] == "mlx"
+        mock_mlx.assert_called_once()
+
+        with (
+            patch(
+                "providers.local.LocalProvider._transcribe_lightning",
+                side_effect=AssertionError("Lightning should stay demoted"),
+            ),
+            patch(
+                "providers.local.LocalProvider._transcribe_mlx",
+                return_value="MLX Direct Result",
+            ) as mock_mlx_direct,
+        ):
+            result = provider.transcribe_audio(audio, language="de")
+
+        assert result == "MLX Direct Result"
+        mock_mlx_direct.assert_called_once()
+
     def test_fallback_logs_error_type(self, monkeypatch, caplog):
         """Fallback loggt den Fehlertyp."""
         monkeypatch.setenv("PULSESCRIBE_LOCAL_BACKEND", "lightning")
@@ -620,3 +735,18 @@ class TestLightningFallback:
             assert result == "Lightning Success"
             # MLX sollte NICHT aufgerufen werden
             mock_mlx.assert_not_called()
+
+    def test_invalidate_runtime_config_clears_lightning_demotion(self, monkeypatch):
+        """Settings-Reload darf eine frühere Lightning-Demotion zurücksetzen."""
+        monkeypatch.setenv("PULSESCRIBE_LOCAL_BACKEND", "lightning")
+
+        from providers.local import LocalProvider
+
+        provider = LocalProvider()
+        provider._ensure_runtime_config()
+        provider._lightning_fallback_active = True
+
+        provider.invalidate_runtime_config()
+        provider._ensure_runtime_config()
+
+        assert provider.get_runtime_info()["backend"] == "lightning"

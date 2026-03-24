@@ -41,6 +41,7 @@ CPU_COMPUTE_TYPE = "int8"
 # Timeout for CUDA model loading (seconds) - prevents hanging on cuDNN issues
 # 120s allows for first-time model downloads (~1.5GB for medium)
 CUDA_MODEL_LOAD_TIMEOUT = 120
+_LIGHTNING_WORKDIR_LOCK = threading.RLock()
 
 
 def _get_warmup_language() -> str:
@@ -165,16 +166,21 @@ def _lightning_workdir() -> Generator[Path, None, None]:
     1. Erstellt ~/.pulsescribe/lightning_models falls nötig
     2. Wechselt temporär dorthin
     3. Stellt das ursprüngliche CWD nach Abschluss wieder her
+
+    Da lightning-whisper-mlx den globalen Process-CWD nutzt, müssen parallele
+    Zugriffe serialisiert werden, damit sich Preload/Keepalive/Transcribe nicht
+    gegenseitig in fremde Verzeichnisse schieben.
     """
     lightning_dir = USER_CONFIG_DIR / "lightning_models"
     lightning_dir.mkdir(parents=True, exist_ok=True)
 
-    old_cwd = os.getcwd()
-    try:
-        os.chdir(lightning_dir)
-        yield lightning_dir
-    finally:
-        os.chdir(old_cwd)
+    with _LIGHTNING_WORKDIR_LOCK:
+        old_cwd = os.getcwd()
+        try:
+            os.chdir(lightning_dir)
+            yield lightning_dir
+        finally:
+            os.chdir(old_cwd)
 
 
 def _validate_cuda_runtime() -> bool:
@@ -257,6 +263,7 @@ class LocalProvider:
         self._fp16_override: bool | None = None
         self._fast_mode: bool | None = None
         self._backend: str | None = None
+        self._lightning_fallback_active = False
         self._compute_type: str | None = None
         self._load_lock = threading.Lock()
         self._transcribe_lock = threading.Lock()
@@ -273,7 +280,14 @@ class LocalProvider:
         self._device = None
         self._fp16_override = None
         self._fast_mode = None
+        self._lightning_fallback_active = False
         self._compute_type = None
+
+    def _effective_backend(self) -> str | None:
+        """Returns the backend that should handle the next local request."""
+        if self._backend == "lightning" and self._lightning_fallback_active:
+            return "mlx"
+        return self._backend
 
     def _ensure_runtime_config(self) -> None:
         if self._backend is None:
@@ -606,6 +620,7 @@ class LocalProvider:
         je nach Backend ein Subset genutzt.
         """
         self._ensure_runtime_config()
+        backend = self._effective_backend()
 
         options: dict = {}
         # "auto" bedeutet Auto-Detection → nicht setzen (None/leer = Auto)
@@ -620,7 +635,7 @@ class LocalProvider:
             options["initial_prompt"] = f"Fachbegriffe: {', '.join(keywords)}"
             logger.debug(f"Lokales Whisper mit {len(keywords)} Keywords")
 
-        if self._backend == "whisper":
+        if backend == "whisper":
             # FP16: auf CPU nicht verfügbar; auf MPS derzeit oft instabil → default FP32.
             # Override via PULSESCRIBE_FP16=true möglich.
             if self._device == "cpu":
@@ -633,7 +648,7 @@ class LocalProvider:
                 options["fp16"] = (
                     self._fp16_override if self._fp16_override is not None else True
                 )
-        elif self._backend == "faster":
+        elif backend == "faster":
             # faster-whisper: standardmäßig keine Timestamps berechnen (spart Zeit)
             wt_env = get_env_bool("PULSESCRIBE_LOCAL_WITHOUT_TIMESTAMPS")
             options["without_timestamps"] = True if wt_env is None else wt_env
@@ -641,7 +656,7 @@ class LocalProvider:
             vad_env = get_env_bool("PULSESCRIBE_LOCAL_VAD_FILTER")
             if vad_env:
                 options["vad_filter"] = True
-        elif self._backend == "mlx":
+        elif backend == "mlx":
             # mlx-whisper nutzt fp16 per Default; Override via PULSESCRIBE_FP16 möglich.
             if self._fp16_override is not None:
                 options["fp16"] = self._fp16_override
@@ -651,16 +666,16 @@ class LocalProvider:
             options.setdefault("temperature", 0.0)
             # mlx-whisper und lightning-whisper-mlx haben keinen Beam-Search Decoder.
             # Deshalb darf beam_size nicht gesetzt werden.
-            if self._backend not in ("mlx", "lightning"):
+            if backend not in ("mlx", "lightning"):
                 options.setdefault("beam_size", 1)
                 options.setdefault("best_of", 1)
             options.setdefault("condition_on_previous_text", False)
 
         # Explizite Decode-Overrides
         beam_size = get_env_int("PULSESCRIBE_LOCAL_BEAM_SIZE")
-        if beam_size is not None and self._backend in ("mlx", "lightning"):
+        if beam_size is not None and backend in ("mlx", "lightning"):
             logger.warning(
-                f"PULSESCRIBE_LOCAL_BEAM_SIZE wird ignoriert ({self._backend} backend unterstützt kein Beam Search)."
+                f"PULSESCRIBE_LOCAL_BEAM_SIZE wird ignoriert ({backend} backend unterstützt kein Beam Search)."
             )
         elif beam_size is not None:
             options["beam_size"] = beam_size
@@ -699,12 +714,13 @@ class LocalProvider:
             Dict mit backend, device, compute_type (compute_type nur bei faster-whisper).
         """
         self._ensure_runtime_config()
+        backend = self._effective_backend()
         info: dict[str, str | None] = {
-            "backend": self._backend,
+            "backend": backend,
             "device": self._device,
         }
         # compute_type nur bei faster-whisper relevant
-        if self._backend == "faster":
+        if backend == "faster":
             device = "cuda" if self._device == "cuda" else "cpu"
             info["compute_type"] = self._compute_type or (
                 "float16" if device == "cuda" else CPU_COMPUTE_TYPE
@@ -715,9 +731,10 @@ class LocalProvider:
         """Lädt ein Modell vorab in den Cache."""
         model_name = self._resolve_model_name(model)
         self._ensure_runtime_config()
-        if self._backend == "faster":
+        backend = self._effective_backend()
+        if backend == "faster":
             self._get_faster_model(model_name)
-        elif self._backend == "mlx":
+        elif backend == "mlx":
             with self._transcribe_lock:
                 import numpy as np
 
@@ -750,7 +767,7 @@ class LocalProvider:
                 logger.debug(
                     f"MLX preload complete: warmup={t_warmup:.2f}s (model loaded & compiled)"
                 )
-        elif self._backend == "lightning":
+        elif backend == "lightning":
             with self._transcribe_lock:
                 import numpy as np
 
@@ -784,7 +801,8 @@ class LocalProvider:
         self._ensure_runtime_config()
 
         # Nur für Metal-Backends relevant
-        if self._backend not in ("mlx", "lightning"):
+        backend = self._effective_backend()
+        if backend not in ("mlx", "lightning"):
             return
 
         model_name = self._resolve_model_name(model)
@@ -796,7 +814,7 @@ class LocalProvider:
 
         t0 = time.perf_counter()
         with self._transcribe_lock:
-            if self._backend == "mlx":
+            if backend == "mlx":
                 mlx_whisper = _import_mlx_whisper()
                 repo = self._map_mlx_model_name(model_name)
                 mlx_whisper.transcribe(
@@ -813,16 +831,17 @@ class LocalProvider:
                     lightning_model.transcribe(keepalive_audio, language=_get_warmup_language())  # type: ignore[union-attr]
 
         t_keepalive = time.perf_counter() - t0
-        logger.debug(f"Keep-alive complete ({self._backend}): {t_keepalive*1000:.0f}ms")
+        logger.debug(f"Keep-alive complete ({backend}): {t_keepalive*1000:.0f}ms")
 
     def _log_transcription_start(self, model_name: str, language: str | None) -> None:
         """Loggt Transkriptions-Start mit Provider/Backend/Modell/Device/Compute-Type."""
         self._ensure_runtime_config()
-        parts = [f"Local ({self._backend}): {model_name}"]
+        backend = self._effective_backend()
+        parts = [f"Local ({backend}): {model_name}"]
         # Device nur bei whisper/faster relevant (mlx/lightning nutzen immer Metal)
-        if self._backend in ("whisper", "faster"):
+        if backend in ("whisper", "faster"):
             parts.append(f"device={self._device}")
-        if self._backend == "faster":
+        if backend == "faster":
             device = "cuda" if self._device == "cuda" else "cpu"
             compute = self._compute_type or ("float16" if device == "cuda" else CPU_COMPUTE_TYPE)
             parts.append(f"compute={compute}")
@@ -839,13 +858,14 @@ class LocalProvider:
         model_name = self._resolve_model_name(model)
         self._log_transcription_start(model_name, language)
         options = self._build_options(language)
+        backend = self._effective_backend()
         with timed_operation("Local-Transkription", logger=logger, include_session=False):
             with self._transcribe_lock:
-                if self._backend == "faster":
+                if backend == "faster":
                     return self._transcribe_faster(audio, model_name, options)
-                if self._backend == "mlx":
+                if backend == "mlx":
                     return self._transcribe_mlx(audio, model_name, options)
-                if self._backend == "lightning":
+                if backend == "lightning":
                     return self._transcribe_lightning(audio, model_name, options)
                 whisper_model = self._get_whisper_model(model_name)
                 result = whisper_model.transcribe(audio, **options)
@@ -951,9 +971,12 @@ class LocalProvider:
 
         Bei Fehlern wird automatisch auf MLX zurückgefallen.
         """
+        if self._lightning_fallback_active:
+            return self._transcribe_mlx(audio, model_name, options)
         try:
             return self._transcribe_lightning_core(audio, model_name, options)
         except Exception as e:
+            self._lightning_fallback_active = True
             # Deutliche Kennzeichnung im Log
             logger.warning(
                 f"⚠️ FALLBACK: Lightning-Transkription fehlgeschlagen, "
@@ -1021,13 +1044,14 @@ class LocalProvider:
         model_name = self._resolve_model_name(model)
         self._log_transcription_start(model_name, language)
         options = self._build_options(language)
+        backend = self._effective_backend()
         with timed_operation("Local-Transkription", logger=logger, include_session=False):
             with self._transcribe_lock:
-                if self._backend == "faster":
+                if backend == "faster":
                     return self._transcribe_faster(str(audio_path), model_name, options)
-                if self._backend == "mlx":
+                if backend == "mlx":
                     return self._transcribe_mlx(str(audio_path), model_name, options)
-                if self._backend == "lightning":
+                if backend == "lightning":
                     return self._transcribe_lightning(str(audio_path), model_name, options)
                 whisper_model = self._get_whisper_model(model_name)
                 result = whisper_model.transcribe(str(audio_path), **options)
