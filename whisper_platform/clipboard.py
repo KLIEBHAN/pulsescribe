@@ -9,8 +9,12 @@ import logging
 import os
 import subprocess
 import sys
+import time
 
 logger = logging.getLogger("pulsescribe.platform.clipboard")
+
+_CLIPBOARD_OPEN_RETRIES = 5
+_CLIPBOARD_OPEN_RETRY_DELAY_SEC = 0.05
 
 
 def _get_utf8_env() -> dict:
@@ -23,6 +27,16 @@ def _get_utf8_env() -> dict:
     env["LANG"] = "en_US.UTF-8"
     env["LC_ALL"] = "en_US.UTF-8"
     return env
+
+
+def _open_clipboard_with_retry(user32) -> bool:
+    """Oeffnet das Windows-Clipboard mit kurzem Retry bei Lock-Contention."""
+    for attempt in range(_CLIPBOARD_OPEN_RETRIES):
+        if user32.OpenClipboard(None):
+            return True
+        if attempt < _CLIPBOARD_OPEN_RETRIES - 1:
+            time.sleep(_CLIPBOARD_OPEN_RETRY_DELAY_SEC)
+    return False
 
 
 class MacOSClipboard:
@@ -79,12 +93,17 @@ class WindowsClipboard:
         CF_UNICODETEXT = 13
         GMEM_MOVEABLE = 0x0002
 
-        user32 = ctypes.windll.user32
-        kernel32 = ctypes.windll.kernel32
+        windll = getattr(ctypes, "windll", None)
+        if windll is None:
+            logger.error("Windows Clipboard API nicht verfügbar")
+            return False
+
+        user32 = windll.user32
+        kernel32 = windll.kernel32
 
         try:
             # Clipboard öffnen
-            if not user32.OpenClipboard(None):
+            if not _open_clipboard_with_retry(user32):
                 logger.error("Konnte Clipboard nicht öffnen")
                 return False
 
@@ -129,11 +148,15 @@ class WindowsClipboard:
 
         CF_UNICODETEXT = 13
 
-        user32 = ctypes.windll.user32
-        kernel32 = ctypes.windll.kernel32
+        windll = getattr(ctypes, "windll", None)
+        if windll is None:
+            return None
+
+        user32 = windll.user32
+        kernel32 = windll.kernel32
 
         try:
-            if not user32.OpenClipboard(None):
+            if not _open_clipboard_with_retry(user32):
                 return None
 
             try:

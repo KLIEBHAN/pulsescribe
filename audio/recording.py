@@ -16,6 +16,7 @@ from config import (
     WHISPER_CHANNELS,
     WHISPER_BLOCKSIZE,
     TEMP_RECORDING_FILENAME,
+    get_input_device,
 )
 from utils.logging import get_session_id
 
@@ -38,6 +39,25 @@ def _play_sound(name: str) -> None:
         logger.debug(f"Sound '{name}' konnte nicht abgespielt werden: {e}")
 
 
+def _resolve_input_stream_config(
+    sample_rate: int,
+    device: int | None = None,
+) -> tuple[int | None, int]:
+    """Ermittelt Device + Sample-Rate fuer die Aufnahme.
+
+    Ohne explizites Device nutzen wir die zentrale, plattformbewusste
+    Input-Device-Erkennung. Dadurch verhalten sich CLI-Aufnahme und Daemons
+    konsistent, insbesondere auf Windows ohne gesetztes Default-Mikrofon.
+    """
+    if device is not None:
+        return device, sample_rate
+
+    resolved_device, resolved_sample_rate = get_input_device()
+    if sample_rate != WHISPER_SAMPLE_RATE:
+        return resolved_device, sample_rate
+    return resolved_device, resolved_sample_rate
+
+
 class AudioRecorder:
     """Wiederverwendbare Audio-Aufnahme Klasse.
 
@@ -55,16 +75,19 @@ class AudioRecorder:
         sample_rate: int = WHISPER_SAMPLE_RATE,
         channels: int = WHISPER_CHANNELS,
         blocksize: int = WHISPER_BLOCKSIZE,
+        device: int | None = None,
     ):
         self.sample_rate = sample_rate
         self.channels = channels
         self.blocksize = blocksize
+        self.device = device
 
         self._recorded_chunks: list = []
         self._chunks_lock = threading.Lock()  # Thread-safety für Audio-Chunks
         self._stream = None
         self._recording_start: float = 0
         self._stop_event = threading.Event()
+        self._active_sample_rate = sample_rate
 
     def _audio_callback(self, indata, _frames, _time_info, _status):
         """Callback: Sammelt Audio-Chunks während der Aufnahme."""
@@ -83,15 +106,22 @@ class AudioRecorder:
             self._recorded_chunks = []
         self._stop_event.clear()
         self._recording_start = time.perf_counter()
+        input_device, active_sample_rate = _resolve_input_stream_config(
+            self.sample_rate,
+            self.device,
+        )
+        self._active_sample_rate = active_sample_rate
 
-        self._stream = sd.InputStream(
-            samplerate=self.sample_rate,
+        stream = sd.InputStream(
+            device=input_device,
+            samplerate=active_sample_rate,
             channels=self.channels,
             blocksize=self.blocksize,
             dtype="float32",
             callback=self._audio_callback,
         )
-        self._stream.start()
+        self._stream = stream
+        stream.start()
 
         if play_ready_sound:
             _play_sound("ready")
@@ -135,7 +165,7 @@ class AudioRecorder:
         if output_path is None:
             output_path = Path(tempfile.gettempdir()) / TEMP_RECORDING_FILENAME
 
-        sf.write(output_path, audio_data, self.sample_rate)
+        sf.write(output_path, audio_data, self._active_sample_rate)
 
         return output_path
 
@@ -176,6 +206,9 @@ def record_audio() -> Path:
     import soundfile as sf
 
     recorded_chunks: list = []
+    input_device, actual_sample_rate = _resolve_input_stream_config(
+        WHISPER_SAMPLE_RATE
+    )
 
     def on_audio_chunk(indata, _frames, _time, _status):
         recorded_chunks.append(indata.copy())
@@ -186,7 +219,8 @@ def record_audio() -> Path:
     _play_sound("ready")
     _log("🔴 Aufnahme läuft... Drücke ENTER zum Beenden.")
     with sd.InputStream(
-        samplerate=WHISPER_SAMPLE_RATE,
+        device=input_device,
+        samplerate=actual_sample_rate,
         channels=1,
         dtype="float32",
         callback=on_audio_chunk,
@@ -201,6 +235,6 @@ def record_audio() -> Path:
 
     audio_data = np.concatenate(recorded_chunks)
     output_path = Path(tempfile.gettempdir()) / TEMP_RECORDING_FILENAME
-    sf.write(output_path, audio_data, WHISPER_SAMPLE_RATE)
+    sf.write(output_path, audio_data, actual_sample_rate)
 
     return output_path
