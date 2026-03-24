@@ -33,10 +33,11 @@ logger = logging.getLogger("pulsescribe")
 KNOWN_CONTEXTS = ("default", "email", "chat", "code")
 
 # =============================================================================
-# Cache (mtime-basiert für Hot-Reload)
+# Cache (Signature-basiert für Hot-Reload)
 # =============================================================================
 
-_cache: dict[Path, tuple[float, dict]] = {}
+_CacheSignature = tuple[int, int, int]
+_cache: dict[Path, tuple[_CacheSignature, dict]] = {}
 
 
 def _clear_cache() -> None:
@@ -48,6 +49,28 @@ def _clear_cache() -> None:
 def _invalidate_cache(path: Path) -> None:
     """Entfernt einen Pfad aus dem Cache."""
     _cache.pop(path, None)
+
+
+def _get_file_signature(path: Path) -> _CacheSignature:
+    """Return a stable cache signature for prompt file reloads."""
+    stat_result = path.stat()
+    return (
+        int(
+            getattr(
+                stat_result,
+                "st_mtime_ns",
+                int(getattr(stat_result, "st_mtime", 0.0) * 1_000_000_000),
+            )
+        ),
+        int(getattr(stat_result, "st_size", 0)),
+        int(
+            getattr(
+                stat_result,
+                "st_ctime_ns",
+                int(getattr(stat_result, "st_ctime", 0.0) * 1_000_000_000),
+            )
+        ),
+    )
 
 
 # =============================================================================
@@ -90,7 +113,7 @@ def load_custom_prompts(path: Path | None = None) -> dict:
 
     # Datei-Metadaten prüfen
     try:
-        current_mtime = prompts_file.stat().st_mtime
+        current_signature = _get_file_signature(prompts_file)
     except FileNotFoundError:
         _invalidate_cache(prompts_file)
         return get_defaults()
@@ -101,7 +124,7 @@ def load_custom_prompts(path: Path | None = None) -> dict:
 
     # Cache nutzen wenn Datei unverändert
     cached = _cache.get(prompts_file)
-    if cached and cached[0] == current_mtime:
+    if cached and cached[0] == current_signature:
         return cached[1]
 
     # TOML parsen
@@ -111,12 +134,12 @@ def load_custom_prompts(path: Path | None = None) -> dict:
         logger.warning(f"Prompts-Datei fehlerhaft: {e}")
         # Defaults cachen um wiederholtes Parsen zu vermeiden
         defaults = get_defaults()
-        _cache[prompts_file] = (current_mtime, defaults)
+        _cache[prompts_file] = (current_signature, defaults)
         return defaults
 
     # User-Config mit Defaults zusammenführen
     merged = _merge_user_with_defaults(user_config)
-    _cache[prompts_file] = (current_mtime, merged)
+    _cache[prompts_file] = (current_signature, merged)
     return merged
 
 

@@ -15,6 +15,7 @@ logger = logging.getLogger("pulsescribe")
 
 # Cache für custom app contexts (aus ENV)
 _custom_app_contexts_cache: dict | None = None
+_custom_app_contexts_signature: str | None = None
 
 
 def _get_frontmost_app() -> str | None:
@@ -36,12 +37,15 @@ def _get_frontmost_app() -> str | None:
 
 def _get_custom_app_contexts() -> dict:
     """Lädt und cached custom app contexts aus PULSESCRIBE_APP_CONTEXTS."""
-    global _custom_app_contexts_cache
-
-    if _custom_app_contexts_cache is not None:
-        return _custom_app_contexts_cache
+    global _custom_app_contexts_cache, _custom_app_contexts_signature
 
     custom = os.getenv("PULSESCRIBE_APP_CONTEXTS")
+    if (
+        _custom_app_contexts_cache is not None
+        and _custom_app_contexts_signature == custom
+    ):
+        return _custom_app_contexts_cache
+
     if custom:
         try:
             parsed = json.loads(custom)
@@ -76,6 +80,7 @@ def _get_custom_app_contexts() -> dict:
     else:
         _custom_app_contexts_cache = {}
 
+    _custom_app_contexts_signature = custom
     return _custom_app_contexts_cache
 
 
@@ -143,5 +148,6 @@ def detect_context(override: str | None = None) -> tuple[str, str | None, str]:
 
 def reset_cache() -> None:
     """Setzt den Cache für custom app contexts zurück (für Tests)."""
-    global _custom_app_contexts_cache
+    global _custom_app_contexts_cache, _custom_app_contexts_signature
     _custom_app_contexts_cache = None
+    _custom_app_contexts_signature = None

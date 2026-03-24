@@ -41,21 +41,35 @@ class TestGetCustomAppContexts:
         assert result == {}
 
     def test_caching(self, monkeypatch):
-        """Ergebnis wird gecacht."""
+        """Geänderte ENV-Werte invalidieren den Cache automatisch."""
         import refine.context
 
         monkeypatch.setattr(refine.context, "_custom_app_contexts_cache", None)
+        monkeypatch.setattr(refine.context, "_custom_app_contexts_signature", None)
         monkeypatch.setenv("PULSESCRIBE_APP_CONTEXTS", '{"App1": "chat"}')
 
         # Erster Aufruf
         result1 = _get_custom_app_contexts()
         assert result1 == {"App1": "chat"}
 
-        # ENV ändern - sollte ignoriert werden wegen Cache
+        # ENV ändern - neuer Wert muss sichtbar werden
         monkeypatch.setenv("PULSESCRIBE_APP_CONTEXTS", '{"App2": "code"}')
         result2 = _get_custom_app_contexts()
 
-        assert result2 == {"App1": "chat"}  # Immer noch gecachter Wert
+        assert result2 == {"App2": "code"}
+
+    def test_cache_resets_when_env_is_removed(self, monkeypatch):
+        """Wird das ENV gelöscht, muss der Cache auf leeres Mapping zurückfallen."""
+        import refine.context
+
+        monkeypatch.setattr(refine.context, "_custom_app_contexts_cache", None)
+        monkeypatch.setattr(refine.context, "_custom_app_contexts_signature", None)
+        monkeypatch.setenv("PULSESCRIBE_APP_CONTEXTS", '{"App1": "chat"}')
+
+        assert _get_custom_app_contexts() == {"App1": "chat"}
+
+        monkeypatch.delenv("PULSESCRIBE_APP_CONTEXTS", raising=False)
+        assert _get_custom_app_contexts() == {}
 
 
 class TestAppToContext:

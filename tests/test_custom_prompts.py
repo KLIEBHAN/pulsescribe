@@ -1,6 +1,7 @@
 """Tests für Custom Prompts - TOML-basierte Prompt-Konfiguration."""
 
 import tomllib
+from types import SimpleNamespace
 
 import pytest
 
@@ -163,6 +164,51 @@ prompt = """Version 1"""
 prompt = """Version 2"""
 '''
         )
+        result2 = load_custom_prompts(path=prompts_file)
+        assert "Version 2" in result2["prompts"]["default"]["prompt"]
+
+    def test_cache_invalidation_when_only_ctime_changes(self, prompts_file, monkeypatch):
+        """Prompt-Reload darf nicht nur an ``st_mtime`` hängen."""
+        from pathlib import Path
+        from utils.custom_prompts import load_custom_prompts
+
+        prompts_file.write_text(
+            '''
+[prompts.default]
+prompt = """Version 1"""
+''',
+            encoding="utf-8",
+        )
+
+        original_stat = Path.stat
+        ctime_ns = {"value": 1}
+
+        def _patched_stat(self: Path):
+            stat_result = original_stat(self)
+            if self == prompts_file:
+                return SimpleNamespace(
+                    st_mtime=123.0,
+                    st_mtime_ns=123_000_000_000,
+                    st_size=stat_result.st_size,
+                    st_ctime=ctime_ns["value"] / 1_000_000_000,
+                    st_ctime_ns=ctime_ns["value"],
+                )
+            return stat_result
+
+        monkeypatch.setattr(Path, "stat", _patched_stat)
+
+        result1 = load_custom_prompts(path=prompts_file)
+        assert "Version 1" in result1["prompts"]["default"]["prompt"]
+
+        ctime_ns["value"] = 2
+        prompts_file.write_text(
+            '''
+[prompts.default]
+prompt = """Version 2"""
+''',
+            encoding="utf-8",
+        )
+
         result2 = load_custom_prompts(path=prompts_file)
         assert "Version 2" in result2["prompts"]["default"]["prompt"]
 
