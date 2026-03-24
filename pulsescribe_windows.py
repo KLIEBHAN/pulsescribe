@@ -57,6 +57,7 @@ logger = get_logger()
 from utils.state import AppState
 from utils.hold_state import HoldHotkeyState
 from utils.hotkey import paste_transcript
+from utils.timing import redacted_text_summary
 from utils.hotkey_windows import hotkeys_conflict, parse_windows_hotkey_for_pynput
 from utils.subprocess_io import start_stream_drain_thread
 from whisper_platform import get_clipboard, get_sound_player
@@ -1275,7 +1276,7 @@ class PulseScribeWindows:
 
     def _handle_result(self, transcript: str):
         """Verarbeitet Transkriptions-Ergebnis."""
-        logger.info(f"Transkript: {transcript[:50]}...")
+        logger.info(f"Transkript: {redacted_text_summary(transcript)}")
         self._set_state(AppState.DONE)
         self._play_sound("done")
 
