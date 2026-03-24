@@ -335,6 +335,20 @@ Mail = "chat"
         # Andere Defaults erhalten
         assert result["Slack"] == "chat"
 
+    def test_normalizes_custom_app_context_values(self, prompts_file):
+        """Gemischte Großschreibung in Custom-Kontexten bleibt funktionsfähig."""
+        from utils.custom_prompts import get_custom_app_contexts
+
+        prompts_file.write_text(
+            """
+[app_contexts]
+CustomApp = "EMAIL"
+"""
+        )
+
+        result = get_custom_app_contexts()
+        assert result["CustomApp"] == "email"
+
     def test_falls_back_to_defaults_when_no_file(self, prompts_file):
         """Ohne Datei → Hardcoded Defaults."""
         from utils.custom_prompts import get_custom_app_contexts
@@ -691,6 +705,26 @@ Slack = chat
 # Another comment
 """
         assert parse_app_mappings(text) == {}
+
+    def test_parse_app_mappings_normalizes_contexts_and_strips_comments(self):
+        """Inline-Kommentare und Großschreibung dürfen Mappings nicht kaputt machen."""
+        from utils.custom_prompts import parse_app_mappings
+
+        text = """Safari = CHAT  # use chat style
+"My IDE" = CODE
+"""
+
+        assert parse_app_mappings(text) == {"Safari": "chat", "My IDE": "code"}
+
+    def test_parse_app_mappings_ignores_unknown_contexts(self):
+        """Unbekannte Kontexte werden nicht als kaputte Overrides gespeichert."""
+        from utils.custom_prompts import parse_app_mappings
+
+        text = """Safari = unknown
+Slack = chat
+"""
+
+        assert parse_app_mappings(text) == {"Slack": "chat"}
 
 
 class TestSerializationEdgeCases:

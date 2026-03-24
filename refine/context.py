@@ -12,10 +12,34 @@ import sys
 from utils.logging import get_session_id
 
 logger = logging.getLogger("pulsescribe")
+_KNOWN_CONTEXTS = {"default", "email", "chat", "code"}
 
 # Cache für custom app contexts (aus ENV)
 _custom_app_contexts_cache: dict | None = None
 _custom_app_contexts_signature: str | None = None
+
+
+def _normalize_context_value(
+    value: str | None,
+    *,
+    source: str | None = None,
+) -> str | None:
+    """Normalize context names to known values.
+
+    Unknown values are ignored so callers can safely fall back to automatic
+    detection/default behavior instead of accidentally using the default prompt
+    under a misleading custom context name.
+    """
+    normalized = (value or "").strip().lower()
+    if not normalized:
+        return None
+    if normalized in _KNOWN_CONTEXTS:
+        return normalized
+    if source:
+        logger.warning(
+            f"[{get_session_id()}] Ignoriere unbekannten Kontext aus {source}: {value!r}"
+        )
+    return None
 
 
 def _get_frontmost_app() -> str | None:
@@ -61,17 +85,22 @@ def _get_custom_app_contexts() -> dict:
                     f"[{get_session_id()}] PULSESCRIBE_APP_CONTEXTS enthält ungültige Typen "
                     "(erwartet: string → string)"
                 )
-                # Nur gültige Einträge übernehmen
-                _custom_app_contexts_cache = {
-                    k: v for k, v in parsed.items()
-                    if isinstance(k, str) and isinstance(v, str)
-                }
-            else:
-                _custom_app_contexts_cache = parsed
-                logger.debug(
-                    f"[{get_session_id()}] Custom app contexts geladen: "
-                    f"{list(_custom_app_contexts_cache.keys())}"
+            normalized_map: dict[str, str] = {}
+            for key, value in parsed.items():
+                if not isinstance(key, str) or not isinstance(value, str):
+                    continue
+                normalized_key = key.strip()
+                normalized_value = _normalize_context_value(
+                    value, source=f"PULSESCRIBE_APP_CONTEXTS[{normalized_key}]"
                 )
+                if not normalized_key or normalized_value is None:
+                    continue
+                normalized_map[normalized_key] = normalized_value
+            _custom_app_contexts_cache = normalized_map
+            logger.debug(
+                f"[{get_session_id()}] Custom app contexts geladen: "
+                f"{list(_custom_app_contexts_cache.keys())}"
+            )
         except json.JSONDecodeError as e:
             logger.warning(
                 f"[{get_session_id()}] PULSESCRIBE_APP_CONTEXTS ungültiges JSON: {e}"
@@ -102,7 +131,12 @@ def get_context_for_app(app_name: str) -> str:
     env_map = _get_custom_app_contexts()
     for key, value in env_map.items():
         if key.lower() == app_lower:
-            return value
+            normalized = _normalize_context_value(
+                value, source=f"PULSESCRIBE_APP_CONTEXTS[{key}]"
+            )
+            if normalized is not None:
+                return normalized
+            return "default"
 
     # 2. Custom TOML (merged mit Defaults, case-insensitive)
     from utils.custom_prompts import get_custom_app_contexts
@@ -110,7 +144,12 @@ def get_context_for_app(app_name: str) -> str:
     toml_map = get_custom_app_contexts()
     for key, value in toml_map.items():
         if key.lower() == app_lower:
-            return value
+            normalized = _normalize_context_value(
+                value, source=f"prompts.toml[{key}]"
+            )
+            if normalized is not None:
+                return normalized
+            return "default"
 
     return "default"
 
@@ -130,12 +169,16 @@ def detect_context(override: str | None = None) -> tuple[str, str | None, str]:
     """
     # 1. CLI-Override (höchste Priorität)
     if override:
-        return override, None, "CLI"
+        normalized_override = _normalize_context_value(override, source="CLI")
+        if normalized_override is not None:
+            return normalized_override, None, "CLI"
 
     # 2. ENV-Override
     env_context = os.getenv("PULSESCRIBE_CONTEXT")
     if env_context:
-        return env_context.lower(), None, "ENV"
+        normalized_env = _normalize_context_value(env_context, source="ENV")
+        if normalized_env is not None:
+            return normalized_env, None, "ENV"
 
     # 3. Auto-Detection via Platform API (macOS + Windows)
     if sys.platform in ("darwin", "win32"):

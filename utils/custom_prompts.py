@@ -32,6 +32,15 @@ logger = logging.getLogger("pulsescribe")
 # Bekannte Kontext-Typen für Prompt-Auswahl
 KNOWN_CONTEXTS = ("default", "email", "chat", "code")
 
+
+def _normalize_context_name(value: str | None) -> str | None:
+    normalized = (value or "").strip().strip('"').strip("'").lower()
+    if not normalized:
+        return None
+    if normalized in KNOWN_CONTEXTS:
+        return normalized
+    return None
+
 # =============================================================================
 # Cache (Signature-basiert für Hot-Reload)
 # =============================================================================
@@ -199,7 +208,7 @@ def _merge_app_contexts(user: dict, defaults: dict) -> dict:
 
     for app, ctx in user_app_contexts.items():
         normalized_app = str(app).strip()
-        normalized_ctx = str(ctx).strip()
+        normalized_ctx = _normalize_context_name(str(ctx))
         if not normalized_app or not normalized_ctx:
             continue
         merged[normalized_app] = normalized_ctx
@@ -273,9 +282,10 @@ def parse_app_mappings(text: str) -> dict[str, str]:
         if "=" in line:
             app, ctx = line.split("=", 1)
             app = app.strip().strip('"')
-            ctx = ctx.strip().strip('"')
-            if app and ctx:
-                result[app] = ctx
+            ctx = ctx.split("#", 1)[0]
+            normalized_ctx = _normalize_context_name(ctx)
+            if app and normalized_ctx:
+                result[app] = normalized_ctx
     return result
 
 
@@ -317,7 +327,7 @@ def filter_overrides_for_storage(
     default_app_contexts = baseline.get("app_contexts", {})
     for app, ctx in data.get("app_contexts", {}).items():
         normalized_app = str(app).strip()
-        normalized_ctx = str(ctx).strip()
+        normalized_ctx = _normalize_context_name(str(ctx))
         if not normalized_app or not normalized_ctx:
             continue
         if default_app_contexts.get(normalized_app) == normalized_ctx:

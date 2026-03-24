@@ -29,6 +29,18 @@ class TestGetCustomAppContexts:
 
         assert result == {"CustomApp": "email"}
 
+    def test_valid_json_normalizes_context_values(self, monkeypatch):
+        """Kontexte aus ENV-JSON werden robust normalisiert."""
+        import refine.context
+
+        monkeypatch.setattr(refine.context, "_custom_app_contexts_cache", None)
+        monkeypatch.setattr(refine.context, "_custom_app_contexts_signature", None)
+        monkeypatch.setenv("PULSESCRIBE_APP_CONTEXTS", '{"CustomApp": " CHAT "}')
+
+        result = _get_custom_app_contexts()
+
+        assert result == {"CustomApp": "chat"}
+
     def test_invalid_json(self, monkeypatch):
         """Ungültiges JSON gibt leeres Dict zurück."""
         import refine.context
@@ -106,6 +118,16 @@ class TestAppToContext:
 
         assert _app_to_context("Slack") == "code"
 
+    def test_custom_override_normalizes_context_value(self, monkeypatch):
+        """Custom Mapping darf gemischte Großschreibung verwenden."""
+        import refine.context
+
+        monkeypatch.setattr(refine.context, "_custom_app_contexts_cache", None)
+        monkeypatch.setattr(refine.context, "_custom_app_contexts_signature", None)
+        monkeypatch.setenv("PULSESCRIBE_APP_CONTEXTS", '{"Safari": "CHAT"}')
+
+        assert _app_to_context("Safari") == "chat"
+
 
 class TestDetectContext:
     """Tests für detect_context() - Priority: CLI > ENV > App > Default."""
@@ -113,6 +135,14 @@ class TestDetectContext:
     def test_cli_override_highest_priority(self, clean_env):
         """CLI-Override hat höchste Priorität."""
         context, app, source = detect_context(override="email")
+
+        assert context == "email"
+        assert app is None
+        assert source == "CLI"
+
+    def test_cli_override_normalizes_case(self, clean_env):
+        """CLI-Override wird auf bekannte Kontexte normalisiert."""
+        context, app, source = detect_context(override="EMAIL")
 
         assert context == "email"
         assert app is None
@@ -135,6 +165,17 @@ class TestDetectContext:
         context, app, source = detect_context()
 
         assert context == "email"
+
+    def test_invalid_env_override_falls_back_to_default(self, monkeypatch, clean_env):
+        """Ungültige ENV-Kontexte blockieren die Default/Auto-Erkennung nicht."""
+        monkeypatch.setenv("PULSESCRIBE_CONTEXT", "not-a-real-context")
+
+        with patch.object(sys, "platform", "linux"):
+            context, app, source = detect_context()
+
+        assert context == "default"
+        assert app is None
+        assert source == "Default"
 
     def test_cli_beats_env(self, monkeypatch, clean_env):
         """CLI-Override schlägt ENV."""
