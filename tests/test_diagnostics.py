@@ -91,6 +91,27 @@ def test_read_env_file_parses_quoted_values_and_inline_comments(tmp_path) -> Non
     assert values["DEEPGRAM_API_KEY"] == "dg-test"
 
 
+def test_read_env_file_supports_export_prefix(tmp_path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                'export PULSESCRIBE_MODE="local"',
+                "export PULSESCRIBE_LANGUAGE=de  # comment",
+                "export DEEPGRAM_API_KEY=dg-test",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    values = _read_env_file(env_file)
+
+    assert values["PULSESCRIBE_MODE"] == "local"
+    assert values["PULSESCRIBE_LANGUAGE"] == "de"
+    assert values["DEEPGRAM_API_KEY"] == "dg-test"
+
+
 def test_export_diagnostics_report_redacts_startup_log_tail(
     tmp_path, monkeypatch
 ) -> None:

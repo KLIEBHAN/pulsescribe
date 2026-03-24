@@ -546,6 +546,71 @@ def test_paste_transcript_windows_prefers_native_clipboard_handler(monkeypatch):
     assert clipboard.paste_calls == 2
 
 
+def test_paste_transcript_clipboard_restore_accepts_truthy_alias_on_macos(
+    monkeypatch,
+):
+    """Shared env bool aliases should enable restore on the macOS paste path."""
+    clipboard_values = iter(["previous text", "test"])
+    copy_calls: list[str] = []
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("PULSESCRIBE_CLIPBOARD_RESTORE", "1")
+    monkeypatch.setattr(
+        utils.hotkey,
+        "_get_clipboard_text",
+        lambda: next(clipboard_values),
+    )
+    monkeypatch.setattr(
+        utils.hotkey,
+        "_copy_to_clipboard_native",
+        lambda text: copy_calls.append(text) or True,
+    )
+    monkeypatch.setattr(utils.hotkey, "_paste_via_pynput", lambda: True)
+    monkeypatch.setattr(utils.hotkey.time, "sleep", lambda _delay: None)
+
+    result = utils.hotkey.paste_transcript("test")
+
+    assert result is True
+    assert copy_calls == ["test", "previous text"]
+
+
+def test_paste_transcript_clipboard_restore_accepts_truthy_alias_on_windows(
+    monkeypatch,
+):
+    """Shared env bool aliases should enable restore on the Windows paste path."""
+
+    class _FakeClipboard:
+        def __init__(self):
+            self.copy_calls: list[str] = []
+            self.paste_calls = 0
+
+        def copy(self, text):
+            self.copy_calls.append(text)
+            return True
+
+        def paste(self):
+            self.paste_calls += 1
+            return "previous text" if self.paste_calls == 1 else "test text"
+
+    clipboard = _FakeClipboard()
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("PULSESCRIBE_CLIPBOARD_RESTORE", "on")
+    monkeypatch.setattr(
+        utils.hotkey,
+        "_get_windows_clipboard_handler",
+        lambda: clipboard,
+    )
+    monkeypatch.setattr(utils.hotkey, "_paste_via_pynput_windows", lambda: True)
+    monkeypatch.setattr(utils.hotkey.time, "sleep", lambda _delay: None)
+
+    result = utils.hotkey.paste_transcript("test text")
+
+    assert result is True
+    assert clipboard.copy_calls == ["test text", "previous text"]
+    assert clipboard.paste_calls == 2
+
+
 # =============================================================================
 # Tests: Windows paste_transcript (Ctrl+V via pynput)
 # =============================================================================

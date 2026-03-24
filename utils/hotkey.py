@@ -8,6 +8,7 @@ import os
 import subprocess
 import time
 
+from utils.env import parse_bool
 from utils.logging import get_logger
 
 logger = get_logger()
@@ -449,7 +450,7 @@ def paste_transcript(text: str) -> bool:
         # Optional: Vorherigen Clipboard-Text merken für Restore nach dem Paste
         # (ENV: PULSESCRIBE_CLIPBOARD_RESTORE=true)
         restore_clipboard = (
-            os.getenv("PULSESCRIBE_CLIPBOARD_RESTORE", "").lower() == "true"
+            parse_bool(os.getenv("PULSESCRIBE_CLIPBOARD_RESTORE")) is True
         )
         previous_text = None
         if restore_clipboard:
@@ -499,7 +500,9 @@ def paste_transcript(text: str) -> bool:
     # (ENV: PULSESCRIBE_CLIPBOARD_RESTORE=true)
     # Dies fügt den alten Text ERNEUT ins Clipboard ein, sodass Clipboard-History
     # Tools beide Einträge sehen (Transkription + vorheriger Text).
-    restore_clipboard = os.getenv("PULSESCRIBE_CLIPBOARD_RESTORE", "").lower() == "true"
+    restore_clipboard = (
+        parse_bool(os.getenv("PULSESCRIBE_CLIPBOARD_RESTORE")) is True
+    )
     previous_text = _get_clipboard_text() if restore_clipboard else None
 
     # 1. In Clipboard kopieren via NSPasteboard (in-process, kein Subprocess)

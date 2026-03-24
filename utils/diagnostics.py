@@ -76,10 +76,15 @@ def _is_sensitive_key(key: str) -> bool:
 def _read_env_file(path: Path) -> dict[str, str]:
     def _parse_env_line(raw_line: str) -> tuple[str | None, str | None]:
         line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
+        if not line or line.startswith("#"):
             return None, None
 
-        key, value = raw_line.split("=", 1)
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        if "=" not in line:
+            return None, None
+
+        key, value = line.split("=", 1)
         key = key.strip()
         if not key:
             return None, None
