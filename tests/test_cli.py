@@ -1,6 +1,7 @@
 """Tests für CLI-Argument-Parsing mit Typer."""
 
 import re
+from pathlib import Path
 from unittest.mock import patch
 
 from typer.testing import CliRunner
@@ -175,3 +176,55 @@ class TestCLI:
         assert result.exit_code == 0
         mock_refine.assert_not_called()
         assert '{"text":"hi"}' in result.output
+
+    def test_record_mode_ignores_temp_cleanup_errors_after_success(
+        self, clean_env, monkeypatch, tmp_path
+    ):
+        """Ein Cleanup-Fehler darf eine erfolgreiche Aufnahme nicht nachträglich kippen."""
+        temp_audio = tmp_path / "recording.wav"
+        temp_audio.write_bytes(b"audio")
+        original_unlink = Path.unlink
+
+        def flaky_unlink(path_obj: Path, *args, **kwargs):
+            if path_obj == temp_audio:
+                raise OSError("file is busy")
+            return original_unlink(path_obj, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", flaky_unlink)
+
+        with (
+            patch("transcribe.record_audio", return_value=temp_audio),
+            patch("transcribe.transcribe", return_value="Recovered transcript"),
+        ):
+            result = runner.invoke(app, ["--record"])
+
+        assert result.exit_code == 0
+        assert "Recovered transcript" in result.output
+
+    def test_record_mode_preserves_original_transcribe_error_when_cleanup_also_fails(
+        self, clean_env, monkeypatch, tmp_path
+    ):
+        """Cleanup darf den eigentlichen Transkriptionsfehler nicht überdecken."""
+        temp_audio = tmp_path / "recording.wav"
+        temp_audio.write_bytes(b"audio")
+        original_unlink = Path.unlink
+
+        def flaky_unlink(path_obj: Path, *args, **kwargs):
+            if path_obj == temp_audio:
+                raise OSError("file is busy")
+            return original_unlink(path_obj, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", flaky_unlink)
+
+        with (
+            patch("transcribe.record_audio", return_value=temp_audio),
+            patch(
+                "transcribe.transcribe",
+                side_effect=RuntimeError("transcribe failed"),
+            ),
+        ):
+            result = runner.invoke(app, ["--record"])
+
+        assert result.exit_code == 1
+        assert "transcribe failed" in result.output
+        assert "file is busy" not in result.output

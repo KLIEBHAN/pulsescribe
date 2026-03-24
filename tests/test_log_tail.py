@@ -35,6 +35,28 @@ def test_read_file_tail_lines_returns_last_lines(tmp_path: Path) -> None:
     assert read_file_tail_lines(file_path, max_lines=3) == "line-17\nline-18\nline-19"
 
 
+def test_read_file_tail_lines_drops_partial_first_line_after_truncation(
+    tmp_path: Path,
+) -> None:
+    file_path = tmp_path / "truncated-lines.log"
+    file_path.write_text(
+        "\n".join(
+            [
+                "prefix-" + ("x" * 80),
+                "line-1",
+                "line-2",
+                "line-3",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    assert (
+        read_file_tail_lines(file_path, max_lines=2, max_scan_bytes=24)
+        == "line-2\nline-3"
+    )
+
+
 def test_read_file_tail_lines_handles_missing_file(tmp_path: Path) -> None:
     missing = tmp_path / "missing.log"
     assert read_file_tail_lines(missing, max_lines=10) == ""

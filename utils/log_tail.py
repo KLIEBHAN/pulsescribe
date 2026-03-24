@@ -13,20 +13,21 @@ def _read_tail_bytes(
     *,
     target_newlines: int | None = None,
     max_bytes: int | None = None,
-) -> bytes:
+) -> tuple[bytes, bool]:
     """Read bytes from the end of a file until constraints are satisfied."""
     if max_bytes is not None and max_bytes <= 0:
-        return b""
+        return b"", False
 
     with path.open("rb") as handle:
         handle.seek(0, 2)
         position = handle.tell()
         if position <= 0:
-            return b""
+            return b"", False
 
         chunks: list[bytes] = []
         collected_bytes = 0
         collected_newlines = 0
+        truncated_from_start = False
 
         while position > 0:
             read_size = min(_TAIL_CHUNK_SIZE, position)
@@ -42,15 +43,18 @@ def _read_tail_bytes(
             if target_newlines is not None:
                 collected_newlines += chunk.count(b"\n")
                 if collected_newlines > target_newlines + 1:
+                    truncated_from_start = position > 0
                     break
 
             if max_bytes is not None and collected_bytes >= max_bytes:
+                truncated_from_start = position > 0
                 break
 
     data = b"".join(reversed(chunks))
     if max_bytes is not None and len(data) > max_bytes:
         data = data[-max_bytes:]
-    return data
+        truncated_from_start = True
+    return data, truncated_from_start
 
 
 def read_file_tail_text(
@@ -67,7 +71,7 @@ def read_file_tail_text(
 
     # Worst-case UTF-8 expansion is 4 bytes per character.
     max_bytes = max_chars * 4 + _TAIL_CHUNK_SIZE
-    raw = _read_tail_bytes(path, max_bytes=max_bytes)
+    raw, _truncated_from_start = _read_tail_bytes(path, max_bytes=max_bytes)
     text = raw.decode(encoding, errors=errors)
     if len(text) <= max_chars:
         return text
@@ -86,13 +90,19 @@ def read_file_tail_lines(
     if max_lines <= 0 or not path.exists():
         return ""
 
-    raw = _read_tail_bytes(
+    raw, truncated_from_start = _read_tail_bytes(
         path,
         target_newlines=max_lines,
         max_bytes=max_scan_bytes,
     )
     text = raw.decode(encoding, errors=errors)
     lines = text.splitlines()
+    if (
+        truncated_from_start
+        and raw[:1] not in (b"\n", b"\r")
+        and len(lines) > 1
+    ):
+        lines = lines[1:]
     if not lines:
         return ""
     return "\n".join(lines[-max_lines:])

@@ -380,7 +380,13 @@ def main(
         raise typer.Exit(1)
     finally:
         if temp_file and temp_file.exists():
-            temp_file.unlink()
+            try:
+                temp_file.unlink()
+            except OSError as cleanup_error:
+                logger.warning(
+                    "Temporäre Aufnahme konnte nicht gelöscht werden: %s",
+                    cleanup_error,
+                )
 
     # LLM-Nachbearbeitung (optional)
     if response_format == ResponseFormat.text:
