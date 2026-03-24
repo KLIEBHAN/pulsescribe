@@ -81,22 +81,48 @@ def _rotate_if_needed() -> None:
         return
 
     try:
-        size_mb = HISTORY_FILE.stat().st_size / (1024 * 1024)
-        if size_mb < MAX_HISTORY_SIZE_MB:
+        max_size_bytes = max(1, int(MAX_HISTORY_SIZE_MB * 1024 * 1024))
+        if HISTORY_FILE.stat().st_size < max_size_bytes:
             return
 
-        # Rotate: Keep last 50% of entries
         lines = HISTORY_FILE.read_text(encoding="utf-8").splitlines()
-        keep_count = len(lines) // 2
-        if keep_count > 0:
+        kept_lines = _select_recent_lines_within_bytes(lines, max_size_bytes)
+        if kept_lines:
             HISTORY_FILE.write_text(
-                "\n".join(lines[-keep_count:]) + "\n",
+                "\n".join(kept_lines) + "\n",
                 encoding="utf-8",
             )
-            logger.info(f"History rotated: kept {keep_count} of {len(lines)} entries")
+            logger.info(
+                f"History rotated: kept {len(kept_lines)} of {len(lines)} entries"
+            )
 
     except Exception as e:
         logger.warning(f"History rotation failed: {e}")
+
+
+def _select_recent_lines_within_bytes(
+    lines: list[str], max_size_bytes: int
+) -> list[str]:
+    """Keep the newest JSONL lines that still fit inside the size budget.
+
+    The newest entry is always preserved, even if a single line already exceeds
+    the configured limit. This avoids corrupt partial entries while still
+    shrinking multi-entry histories as much as possible.
+    """
+    if not lines:
+        return []
+
+    kept_reversed: list[str] = []
+    total_bytes = 0
+
+    for line in reversed(lines):
+        line_size = len(line.encode("utf-8")) + 1  # JSONL newline
+        if kept_reversed and total_bytes + line_size > max_size_bytes:
+            break
+        kept_reversed.append(line)
+        total_bytes += line_size
+
+    return list(reversed(kept_reversed))
 
 
 def get_recent_transcripts(count: int = 10) -> list[dict[str, object]]:

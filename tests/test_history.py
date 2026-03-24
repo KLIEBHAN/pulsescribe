@@ -261,3 +261,33 @@ class TestRotation:
         # File should have been rotated (fewer entries than written)
         lines = history_file.read_text().strip().split("\n")
         assert len(lines) < 100
+
+    def test_rotation_trims_to_size_budget_with_few_large_entries(
+        self, history_file, monkeypatch
+    ):
+        """Rotation muss auch bei wenigen großen Einträgen unter das Größenlimit kommen."""
+        from utils.history import _rotate_if_needed
+
+        monkeypatch.setattr("utils.history.MAX_HISTORY_SIZE_MB", 0.7)
+        payload = "x" * 300_000
+        limit_bytes = int(0.7 * 1024 * 1024)
+
+        entries = [
+            json.dumps(
+                {
+                    "timestamp": f"2026-03-24T12:00:{idx:02d}",
+                    "text": f"{idx}:{payload}",
+                },
+                ensure_ascii=False,
+            )
+            for idx in range(6)
+        ]
+        history_file.write_text("\n".join(entries) + "\n", encoding="utf-8")
+
+        _rotate_if_needed()
+
+        remaining_lines = history_file.read_text(encoding="utf-8").splitlines()
+        remaining_prefixes = [json.loads(line)["text"].split(":", 1)[0] for line in remaining_lines]
+
+        assert history_file.stat().st_size <= limit_bytes
+        assert remaining_prefixes == ["4", "5"]

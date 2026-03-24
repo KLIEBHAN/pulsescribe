@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 from ui.welcome import (
     LEGACY_LOCAL_FP16_ENV_KEY,
     LOCAL_FP16_ENV_KEY,
+    LOCAL_MODEL_OPTIONS,
     WelcomeController,
     _bool_override_from_env,
     _is_env_enabled_default_true,
@@ -169,6 +170,17 @@ class TestLightningQuantizationMapping:
 
 
 class TestWelcomeLocalPresetBehavior:
+    def test_local_model_options_cover_models_used_by_presets(self):
+        from utils.presets import LOCAL_PRESETS
+
+        preset_models = {
+            values["local_model"]
+            for values in LOCAL_PRESETS.values()
+            if values.get("local_model")
+        }
+
+        assert preset_models <= set(LOCAL_MODEL_OPTIONS)
+
     def test_apply_local_preset_resets_lightning_fields(self):
         ctrl = WelcomeController.__new__(WelcomeController)
         ctrl._mode_popup = _FakePopup(["deepgram", "local"], selected="deepgram")

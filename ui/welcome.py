@@ -48,6 +48,7 @@ LOCAL_MODEL_OPTIONS = [
     "default",
     "turbo",  # Multilingual, best speed/quality
     "large",  # Multilingual, highest quality
+    "large-v3",  # Multilingual, best for Lightning preset
     "medium",
     "small",
     "base",
