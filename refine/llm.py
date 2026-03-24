@@ -55,8 +55,6 @@ def _get_groq_client():
 
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
-        _groq_client = None
-        _groq_client_signature = None
         raise ValueError("GROQ_API_KEY nicht gesetzt")
 
     if _groq_client is None or _groq_client_signature != api_key:
@@ -81,8 +79,6 @@ def _get_openai_client():
 
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
-        _openai_client = None
-        _openai_client_signature = None
         raise ValueError("OPENAI_API_KEY nicht gesetzt")
 
     if _openai_client is None or _openai_client_signature != api_key:
@@ -107,8 +103,6 @@ def _get_openrouter_client():
 
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
-        _openrouter_client = None
-        _openrouter_client_signature = None
         raise ValueError("OPENROUTER_API_KEY nicht gesetzt")
     signature = (OPENROUTER_BASE_URL, api_key)
 
@@ -140,8 +134,6 @@ def _get_gemini_client():
 
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
-        _gemini_client = None
-        _gemini_client_signature = None
         raise ValueError("GEMINI_API_KEY nicht gesetzt")
 
     if _gemini_client is None or _gemini_client_signature != api_key:

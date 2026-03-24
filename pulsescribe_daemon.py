@@ -1908,9 +1908,17 @@ class PulseScribeDaemon:
 
         def _join_and_cleanup() -> None:
             try:
-                worker.join()
+                worker.join(timeout=30)
             except Exception as e:  # pragma: no cover
                 logger.debug(f"Worker join failed: {e}")
+            if worker.is_alive():
+                logger.warning(
+                    "WorkerJoiner: Thread reagiert nach 30s nicht – "
+                    "Watchdog übernimmt Cleanup (thread=%s, phase=%s)",
+                    worker.name,
+                    self._worker_phase,
+                )
+                return
             self._call_on_main(lambda: self._cleanup_finished_worker(worker))
 
         threading.Thread(
