@@ -1053,7 +1053,7 @@ class OnboardingWizardController:
         if self._api_key_status is not None:
             try:
                 self._api_key_status.setStringValue_(
-                    message or "Deepgram API key required to continue."
+                    message or "Cloud API key required to continue."
                 )
             except Exception:
                 pass
@@ -1073,16 +1073,22 @@ class OnboardingWizardController:
                 if entered_key:
                     save_api_key("DEEPGRAM_API_KEY", entered_key)
 
-            has_key = bool(
+            has_deepgram = bool(
                 entered_key
                 or get_api_key("DEEPGRAM_API_KEY")
                 or os.getenv("DEEPGRAM_API_KEY")
             )
-            if not has_key:
+            has_groq = bool(
+                get_api_key("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
+            )
+            if not has_deepgram and not has_groq:
                 self._show_fast_api_key_prompt()
                 return False
 
-            save_env_setting("PULSESCRIBE_MODE", "deepgram")
+            save_env_setting(
+                "PULSESCRIBE_MODE",
+                "deepgram" if has_deepgram else "groq",
+            )
             if self._api_key_container is not None:
                 try:
                     self._api_key_container.setHidden_(True)

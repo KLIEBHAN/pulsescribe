@@ -5,6 +5,12 @@ from __future__ import annotations
 DEFAULT_LOCAL_BACKEND = "auto"
 VALID_LOCAL_BACKENDS = {"whisper", "faster", "mlx", "lightning", "auto"}
 DEFAULT_CPU_THREADS_LIMIT = 32
+LOCAL_BACKEND_ALIASES = {
+    "openai-whisper": "whisper",
+    "faster-whisper": "faster",
+    "mlx-whisper": "mlx",
+    "lightning-whisper-mlx": "lightning",
+}
 
 
 def normalize_local_backend(value: str | None) -> str:
@@ -13,6 +19,7 @@ def normalize_local_backend(value: str | None) -> str:
         return DEFAULT_LOCAL_BACKEND
 
     normalized = value.strip().lower()
+    normalized = LOCAL_BACKEND_ALIASES.get(normalized, normalized)
     if normalized in VALID_LOCAL_BACKENDS:
         return normalized
     return DEFAULT_LOCAL_BACKEND

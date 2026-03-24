@@ -110,11 +110,36 @@ def test_next_applies_fast_choice_and_advances_when_api_key_is_present(
     assert wizard._api_key_container.hidden is True
 
 
+def test_next_accepts_existing_groq_key_for_fast_choice(
+    tmp_path, monkeypatch
+) -> None:
+    _isolate_prefs(tmp_path, monkeypatch)
+    monkeypatch.delenv("DEEPGRAM_API_KEY", raising=False)
+    monkeypatch.setenv("GROQ_API_KEY", "grq-123")
+
+    wizard = _make_wizard(OnboardingChoice.FAST, api_key="")
+    settings_changed_calls: list[bool] = []
+    step_changes: list[OnboardingStep] = []
+    wizard._on_settings_changed = lambda: settings_changed_calls.append(True)
+    wizard._set_step = lambda step: step_changes.append(step)
+
+    wizard._handle_action("next")
+
+    env = prefs.read_env_file()
+    assert "DEEPGRAM_API_KEY" not in env
+    assert env.get("PULSESCRIBE_MODE") == "groq"
+    assert prefs.get_onboarding_choice() == OnboardingChoice.FAST
+    assert step_changes == [OnboardingStep.PERMISSIONS]
+    assert settings_changed_calls == [True]
+    assert wizard._api_key_container.hidden is True
+
+
 def test_next_prompts_for_api_key_without_advancing_when_fast_has_no_key(
     tmp_path, monkeypatch
 ) -> None:
     _isolate_prefs(tmp_path, monkeypatch)
     monkeypatch.delenv("DEEPGRAM_API_KEY", raising=False)
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
 
     wizard = _make_wizard(OnboardingChoice.FAST, api_key="")
     render_calls: list[bool] = []
@@ -127,7 +152,7 @@ def test_next_prompts_for_api_key_without_advancing_when_fast_has_no_key(
     assert step_changes == []
     assert render_calls == [True]
     assert wizard._api_key_container.hidden is False
-    assert "Deepgram API key" in wizard._api_key_status.value
+    assert "Cloud API key" in wizard._api_key_status.value
     assert wizard._api_key_field.focus_requested is True
     assert prefs.get_onboarding_choice() is None
     assert prefs.read_env_file() == {}
