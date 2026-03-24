@@ -149,6 +149,22 @@ prompt = 123
 
         assert result["voice_commands"]["instruction"] == VOICE_COMMANDS_INSTRUCTION
 
+    def test_non_string_voice_command_instruction_falls_back_to_default(
+        self, prompts_file
+    ):
+        """Nicht-string Voice-Command-Instruktionen duerfen den Prompt-Flow nicht brechen."""
+        from utils.custom_prompts import get_custom_voice_commands
+
+        prompts_file.write_text(
+            """
+[voice_commands]
+instruction = 123
+""",
+            encoding="utf-8",
+        )
+
+        assert get_custom_voice_commands() == VOICE_COMMANDS_INSTRUCTION
+
     def test_non_table_app_contexts_fall_back_to_defaults(self, prompts_file):
         """Semantisch kaputte app_contexts-Rootwerte duerfen nicht crashen."""
         from utils.custom_prompts import load_custom_prompts

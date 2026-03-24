@@ -8,6 +8,7 @@ from ui.welcome import (
     LOCAL_FP16_ENV_KEY,
     LOCAL_MODEL_OPTIONS,
     WelcomeController,
+    _build_setup_hotkey_info,
     _bool_override_from_env,
     _is_env_enabled_default_true,
 )
@@ -78,6 +79,23 @@ class TestBoolOverrideFromEnv:
         assert (
             _bool_override_from_env(LOCAL_FP16_ENV_KEY, LEGACY_LOCAL_FP16_ENV_KEY)
             == "true"
+        )
+
+
+class TestBuildSetupHotkeyInfo:
+    def test_prefers_explicit_toggle_and_hold_hotkeys(self):
+        assert (
+            _build_setup_hotkey_info("option+space", "fn", "f19")
+            == "Toggle: OPTION+SPACE • Hold: FN"
+        )
+
+    def test_uses_runtime_fallback_when_env_hotkeys_are_missing(self):
+        assert _build_setup_hotkey_info(None, "", "fn") == "Hotkey: FN"
+
+    def test_shows_empty_state_when_no_hotkey_is_available(self):
+        assert (
+            _build_setup_hotkey_info(None, None, "(nicht konfiguriert)")
+            == "No hotkey configured"
         )
 
 

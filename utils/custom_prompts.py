@@ -173,11 +173,10 @@ def _merge_voice_commands(user: dict, defaults: dict) -> dict:
     user_vc = user.get("voice_commands", {})
     if not isinstance(user_vc, dict):
         user_vc = {}
-    return {
-        "instruction": user_vc.get(
-            "instruction", defaults["voice_commands"]["instruction"]
-        )
-    }
+    instruction = user_vc.get("instruction")
+    if not isinstance(instruction, str):
+        instruction = defaults["voice_commands"]["instruction"]
+    return {"instruction": instruction}
 
 
 def _merge_prompts(user: dict, defaults: dict) -> dict:

@@ -110,6 +110,34 @@ def _is_env_enabled_default_true(key: str) -> bool:
     return value.lower() not in ("false", "0", "no", "off")
 
 
+def _build_setup_hotkey_info(
+    toggle_hotkey: str | None,
+    hold_hotkey: str | None,
+    fallback_hotkey: str | None = None,
+) -> str:
+    """Return a concise setup summary for the active hotkey configuration."""
+
+    def _display(value: str | None) -> str:
+        return (value or "").strip().upper()
+
+    toggle = _display(toggle_hotkey)
+    hold = _display(hold_hotkey)
+    fallback = _display(fallback_hotkey)
+
+    hotkey_parts = []
+    if toggle:
+        hotkey_parts.append(f"Toggle: {toggle}")
+    if hold:
+        hotkey_parts.append(f"Hold: {hold}")
+    if hotkey_parts:
+        return " • ".join(hotkey_parts)
+
+    if fallback and fallback not in {"(NICHT KONFIGURIERT)", "(NOT CONFIGURED)"}:
+        return f"Hotkey: {fallback}"
+
+    return "No hotkey configured"
+
+
 class WelcomeController:
     """Welcome/Setup Window für PulseScribe."""
 
@@ -714,21 +742,11 @@ class WelcomeController:
 
         parent_view = parent_view or self._content_view
 
-        # Hotkeys aus .env auslesen
-        toggle_hk = (get_env_setting("PULSESCRIBE_TOGGLE_HOTKEY") or "").strip().upper()
-        hold_hk = (get_env_setting("PULSESCRIBE_HOLD_HOTKEY") or "").strip().upper()
-
-        # Hotkey-Info aufbauen (beide anzeigen wenn gesetzt)
-        hotkey_parts = []
-        if toggle_hk:
-            hotkey_parts.append(f"Toggle: {toggle_hk}")
-        if hold_hk:
-            hotkey_parts.append(f"Hold: {hold_hk}")
-
-        if hotkey_parts:
-            hotkey_info = " • ".join(hotkey_parts)
-        else:
-            hotkey_info = "No hotkey configured"
+        hotkey_info = _build_setup_hotkey_info(
+            get_env_setting("PULSESCRIBE_TOGGLE_HOTKEY"),
+            get_env_setting("PULSESCRIBE_HOLD_HOTKEY"),
+            self.hotkey,
+        )
 
         card_height = 105
         card_width = WELCOME_WIDTH - 2 * WELCOME_PADDING
