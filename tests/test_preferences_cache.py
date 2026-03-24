@@ -20,8 +20,8 @@ def test_read_env_file_refreshes_when_mtime_is_unchanged_but_size_changes(
 
     original_stat = Path.stat
 
-    def _patched_stat(self: Path):
-        stat_result = original_stat(self)
+    def _patched_stat(self: Path, *args, **kwargs):
+        stat_result = original_stat(self, *args, **kwargs)
         if self == prefs.ENV_FILE:
             return SimpleNamespace(
                 st_mtime=123.0,
@@ -59,6 +59,43 @@ def test_save_api_key_is_noop_when_value_is_unchanged(tmp_path, monkeypatch):
 
     prefs.save_api_key("DEEPGRAM_API_KEY", "dg-same")
     assert write_calls == 0
+
+
+def test_save_api_key_invalidates_cache_when_same_value_hides_external_env_changes(
+    tmp_path, monkeypatch
+):
+    _isolate_prefs(tmp_path, monkeypatch)
+    prefs.ENV_FILE.write_text(
+        "PULSESCRIBE_CONTEXT=old\nDEEPGRAM_API_KEY=dg-same\n",
+        encoding="utf-8",
+    )
+
+    original_stat = Path.stat
+
+    def _patched_stat(self: Path, *args, **kwargs):
+        stat_result = original_stat(self, *args, **kwargs)
+        if self == prefs.ENV_FILE:
+            return SimpleNamespace(
+                st_mtime=123.0,
+                st_mtime_ns=123_000_000_000,
+                st_size=stat_result.st_size,
+                st_ctime=456.0,
+                st_ctime_ns=456_000_000_000,
+            )
+        return stat_result
+
+    monkeypatch.setattr(Path, "stat", _patched_stat)
+
+    assert prefs.read_env_file()["PULSESCRIBE_CONTEXT"] == "old"
+
+    prefs.ENV_FILE.write_text(
+        "PULSESCRIBE_CONTEXT=new\nDEEPGRAM_API_KEY=dg-same\n",
+        encoding="utf-8",
+    )
+
+    prefs.save_api_key("DEEPGRAM_API_KEY", "dg-same")
+
+    assert prefs.read_env_file()["PULSESCRIBE_CONTEXT"] == "new"
 
 
 def test_remove_env_setting_is_noop_when_key_does_not_exist(tmp_path, monkeypatch):
@@ -137,3 +174,30 @@ def test_load_preferences_returns_empty_dict_for_non_object_json(
 
     assert prefs.load_preferences() == {}
     assert prefs.get_show_welcome_on_startup() is True
+
+
+def test_save_preferences_writes_utf8_atomically(tmp_path, monkeypatch):
+    _isolate_prefs(tmp_path, monkeypatch)
+
+    original_write_text = Path.write_text
+    original_replace = Path.replace
+    write_calls: list[tuple[Path, str | None]] = []
+    replace_calls: list[tuple[Path, Path]] = []
+
+    def _patched_write_text(self: Path, *args, **kwargs):
+        write_calls.append((self, kwargs.get("encoding")))
+        return original_write_text(self, *args, **kwargs)
+
+    def _patched_replace(self: Path, target: Path):
+        replace_calls.append((self, target))
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "write_text", _patched_write_text)
+    monkeypatch.setattr(Path, "replace", _patched_replace)
+
+    prefs.save_preferences({"display_name": "Müller"})
+
+    assert prefs.load_preferences()["display_name"] == "Müller"
+    assert all(path != prefs.PREFS_FILE for path, _encoding in write_calls)
+    assert any(encoding == "utf-8" for _path, encoding in write_calls)
+    assert replace_calls and replace_calls[-1][1] == prefs.PREFS_FILE

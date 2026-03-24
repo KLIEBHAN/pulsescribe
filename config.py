@@ -85,23 +85,26 @@ def get_input_device() -> tuple[int | None, int]:
     if _cached_input_device is not None:
         return _cached_input_device
 
-    def _cache_and_return(result: tuple[int | None, int]) -> tuple[int | None, int]:
-        """Cached Ergebnis und gibt es zurück."""
+    def _return_result(
+        result: tuple[int | None, int], *, cache: bool = True
+    ) -> tuple[int | None, int]:
+        """Gibt Ergebnis zurueck und cached nur verlässliche Erkennungen."""
         global _cached_input_device
-        _cached_input_device = result
+        if cache:
+            _cached_input_device = result
         return result
 
     import sys
 
     try:
-        import sounddevice as sd
+        import sounddevice as sd  # type: ignore[import-not-found]
 
         default_input = sd.default.device[0]
 
         # Default ist gesetzt → verwenden
         if default_input >= 0:
             dev = sd.query_devices(default_input)
-            return _cache_and_return((None, int(dev["default_samplerate"])))
+            return _return_result((None, int(dev["default_samplerate"])))
 
         # Default nicht gesetzt → passendes Input-Device suchen
         devices = sd.query_devices()
@@ -116,7 +119,7 @@ def get_input_device() -> tuple[int | None, int]:
                 })
 
         if not input_devices:
-            return _cache_and_return((None, WHISPER_SAMPLE_RATE))
+            return _return_result((None, WHISPER_SAMPLE_RATE), cache=False)
 
         import logging
         logger = logging.getLogger("pulsescribe")
@@ -164,7 +167,7 @@ def get_input_device() -> tuple[int | None, int]:
                         logger.info(
                             f"Verwende: {dev['name']} ({dev['samplerate']}Hz)"
                         )
-                        return _cache_and_return((dev["idx"], dev["samplerate"]))
+                        return _return_result((dev["idx"], dev["samplerate"]))
 
             # Priorität 2: Mikrofon-Geräte (außer Lautsprecher)
             mic_keywords = ("mikrofon", "mic", "microphone")
@@ -176,7 +179,7 @@ def get_input_device() -> tuple[int | None, int]:
                         logger.info(
                             f"Verwende: {dev['name']} ({dev['samplerate']}Hz)"
                         )
-                        return _cache_and_return((dev["idx"], dev["samplerate"]))
+                        return _return_result((dev["idx"], dev["samplerate"]))
 
             # Priorität 3: Beliebiges funktionierendes Gerät (außer Lautsprecher)
             for dev in input_devices:
@@ -186,14 +189,14 @@ def get_input_device() -> tuple[int | None, int]:
                     logger.info(
                         f"Verwende: {dev['name']} ({dev['samplerate']}Hz)"
                     )
-                    return _cache_and_return((dev["idx"], dev["samplerate"]))
+                    return _return_result((dev["idx"], dev["samplerate"]))
 
             # Fallback ohne Test (kann fehlschlagen)
             dev = input_devices[0]
             logger.warning(
                 f"Kein funktionierendes Gerät gefunden, versuche: {dev['name']}"
             )
-            return _cache_and_return((dev["idx"], dev["samplerate"]))
+            return _return_result((dev["idx"], dev["samplerate"]), cache=False)
 
         else:
             # Nicht-Windows: Erstes Mikrofon-Gerät oder erstes Input-Device
@@ -203,16 +206,16 @@ def get_input_device() -> tuple[int | None, int]:
                     logger.info(
                         f"Verwende: {dev['name']} ({dev['samplerate']}Hz)"
                     )
-                    return _cache_and_return((dev["idx"], dev["samplerate"]))
+                    return _return_result((dev["idx"], dev["samplerate"]))
 
             dev = input_devices[0]
             logger.info(
                 f"Verwende: {dev['name']} ({dev['samplerate']}Hz)"
             )
-            return _cache_and_return((dev["idx"], dev["samplerate"]))
+            return _return_result((dev["idx"], dev["samplerate"]))
 
     except Exception:
-        return _cache_and_return((None, WHISPER_SAMPLE_RATE))
+        return _return_result((None, WHISPER_SAMPLE_RATE), cache=False)
 
 # =============================================================================
 # Streaming-Konfiguration

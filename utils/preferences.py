@@ -6,6 +6,8 @@ API-Keys werden in ~/.pulsescribe/.env gespeichert.
 
 import json
 import logging
+import os
+import tempfile
 from io import StringIO
 from pathlib import Path
 
@@ -123,6 +125,27 @@ def _invalidate_env_cache() -> None:
     _env_cache = None
 
 
+def _write_text_atomic(path: Path, content: str, *, encoding: str = "utf-8") -> None:
+    """Schreibt Text atomar, um truncierte Config-Dateien zu vermeiden."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=str(path.parent),
+    )
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+    try:
+        tmp_path.write_text(content, encoding=encoding)
+        tmp_path.replace(path)
+    except Exception:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+        raise
+
+
 def load_preferences() -> dict:
     """Lädt Preferences aus JSON."""
     if PREFS_FILE.exists():
@@ -136,8 +159,7 @@ def load_preferences() -> dict:
 
 def save_preferences(prefs: dict) -> None:
     """Speichert Preferences als JSON."""
-    PREFS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    PREFS_FILE.write_text(json.dumps(prefs, indent=2))
+    _write_text_atomic(PREFS_FILE, json.dumps(prefs, indent=2), encoding="utf-8")
 
 
 def has_seen_onboarding() -> bool:
@@ -262,6 +284,9 @@ def save_api_key(key_name: str, value: str) -> None:
         matches_key, existing_value = _env_line_has_key(line, key_name)
         if matches_key:
             if existing_value == value:
+                # Externe Updates koennen bei grober FS-Metadatenauflösung den Cache
+                # unverändert wirken lassen, obwohl Nachbar-Keys angepasst wurden.
+                _invalidate_env_cache()
                 return
             lines[i] = f"{key_name}={value}"
             found = True
@@ -271,8 +296,7 @@ def save_api_key(key_name: str, value: str) -> None:
         lines.append(f"{key_name}={value}")
 
     try:
-        env_path.parent.mkdir(parents=True, exist_ok=True)
-        env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        _write_text_atomic(env_path, "\n".join(lines) + "\n", encoding="utf-8")
         # Sichere Permissions: Nur Owner lesen/schreiben (enthält API-Keys)
         try:
             env_path.chmod(0o600)
@@ -352,7 +376,11 @@ def remove_env_setting(key_name: str) -> None:
         ]
         if len(new_lines) == len(lines):
             return
-        env_path.write_text("\n".join(new_lines) + "\n" if new_lines else "", encoding="utf-8")
+        _write_text_atomic(
+            env_path,
+            "\n".join(new_lines) + "\n" if new_lines else "",
+            encoding="utf-8",
+        )
         # Cache erst nach erfolgreichem Schreiben invalidieren
         _invalidate_env_cache()
     except OSError:
