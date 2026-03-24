@@ -10,6 +10,7 @@ from pathlib import Path
 from utils.timing import timed_operation
 
 from config import DEFAULT_API_MODEL
+from ._language import normalize_auto_language
 
 logger = logging.getLogger("pulsescribe.providers.openai")
 
@@ -82,7 +83,8 @@ def _serialize_response(response, *, requested_format: str) -> str:
 
     model_dump_json = getattr(response, "model_dump_json", None)
     if callable(model_dump_json):
-        return model_dump_json(indent=2)
+        serialized = model_dump_json(indent=2)
+        return serialized if isinstance(serialized, str) else str(serialized)
 
     text = getattr(response, "text", None)
     if isinstance(text, str):
@@ -139,6 +141,7 @@ class OpenAIProvider:
         self._validate()
 
         model = model or self.default_model
+        language = normalize_auto_language(language)
         api_response_format = _resolve_api_response_format(model, response_format)
         audio_kb = audio_path.stat().st_size // 1024
 

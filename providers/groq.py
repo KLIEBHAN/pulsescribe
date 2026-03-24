@@ -10,6 +10,7 @@ from pathlib import Path
 from utils.timing import timed_operation
 
 from config import DEFAULT_GROQ_MODEL
+from ._language import normalize_auto_language
 
 logger = logging.getLogger("pulsescribe.providers.groq")
 
@@ -92,6 +93,7 @@ class GroqProvider:
         self._validate()
 
         model = model or self.default_model
+        language = normalize_auto_language(language)
         audio_kb = audio_path.stat().st_size // 1024
 
         logger.info(f"Groq: {model}, {audio_kb}KB, lang={language or 'auto'}")

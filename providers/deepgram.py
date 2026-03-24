@@ -12,6 +12,7 @@ from utils.timing import timed_operation
 from utils.vocabulary import load_vocabulary
 
 from config import DEFAULT_DEEPGRAM_MODEL
+from ._language import normalize_auto_language
 
 logger = logging.getLogger("pulsescribe.providers.deepgram")
 
@@ -97,6 +98,7 @@ class DeepgramProvider:
         self._validate()
 
         model = model or self.default_model
+        language = normalize_auto_language(language)
         audio_kb = audio_path.stat().st_size // 1024
 
         # Vocabulary laden
@@ -123,15 +125,18 @@ class DeepgramProvider:
             else:
                 vocab_params["keywords"] = keywords
 
+        request_params = {
+            "request": audio_data,
+            "model": model,
+            "smart_format": True,
+            "punctuate": True,
+            **vocab_params,
+        }
+        if language:
+            request_params["language"] = language
+
         with timed_operation("Deepgram-Transkription", logger=logger, include_session=False):
-            response = client.listen.v1.media.transcribe_file(
-                request=audio_data,
-                model=model,
-                language=language,
-                smart_format=True,
-                punctuate=True,
-                **vocab_params,
-            )
+            response = client.listen.v1.media.transcribe_file(**request_params)
 
         # Sichere Extraktion: Prüfe auf leere channels/alternatives
         channels = getattr(response.results, "channels", [])

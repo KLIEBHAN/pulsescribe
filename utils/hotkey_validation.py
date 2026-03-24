@@ -20,7 +20,7 @@ def validate_hotkey_change(kind: str, hotkey_str: str) -> tuple[str, str, str | 
         - level is one of: "ok", "warning", "error"
         - message is present for warning/error
     """
-    from utils.hotkey import parse_hotkey
+    from utils.hotkey import hotkeys_conflict, parse_hotkey
     from utils.preferences import get_env_setting
     from utils.permissions import check_input_monitoring_permission
 
@@ -37,6 +37,13 @@ def validate_hotkey_change(kind: str, hotkey_str: str) -> tuple[str, str, str | 
             normalized,
             "error",
             "Toggle und Hold dürfen nicht denselben Hotkey verwenden.",
+        )
+
+    if other and hotkeys_conflict(normalized, other):
+        return (
+            normalized,
+            "error",
+            "Toggle und Hold dürfen sich nicht überlappen.",
         )
 
     # If unchanged, keep it.

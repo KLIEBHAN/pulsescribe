@@ -169,6 +169,39 @@ def parse_hotkey(hotkey_str: str) -> tuple[int, int]:
     return KEY_CODE_MAP[key], modifier_mask
 
 
+def hotkeys_conflict(hotkey_a: str | None, hotkey_b: str | None) -> bool:
+    """Return True when two macOS hotkeys can trigger ambiguously.
+
+    A conflict exists when both hotkeys use the same physical key and one
+    modifier set is a subset of the other, e.g. ``space`` and ``cmd+space``.
+    """
+
+    def _signature(hotkey: str | None) -> tuple[int, int] | None:
+        normalized = (hotkey or "").strip().lower()
+        if not normalized:
+            return None
+        try:
+            return parse_hotkey(normalized)
+        except ValueError:
+            return None
+
+    sig_a = _signature(hotkey_a)
+    sig_b = _signature(hotkey_b)
+    if sig_a is None or sig_b is None:
+        return False
+
+    key_a, modifiers_a = sig_a
+    key_b, modifiers_b = sig_b
+    if key_a != key_b:
+        return False
+
+    return (
+        modifiers_a == modifiers_b
+        or (modifiers_a & modifiers_b) == modifiers_a
+        or (modifiers_a & modifiers_b) == modifiers_b
+    )
+
+
 # =============================================================================
 # Auto-Paste
 # =============================================================================

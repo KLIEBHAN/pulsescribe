@@ -68,6 +68,7 @@ try:
     from utils.state import AppState, DaemonMessage, MessageType
     from utils.hold_state import HoldHotkeyState
     from utils import parse_hotkey, paste_transcript
+    from utils.hotkey import hotkeys_conflict
     from utils.permissions import (
         check_microphone_permission,
         check_accessibility_permission,
@@ -2556,13 +2557,34 @@ class PulseScribeDaemon:
             seen_keys[key_norm] = m
             deduped.append((m, hk))
 
-        # Berechtigungen prüfen (ohne modale Alerts während Settings-Änderungen)
-        input_monitoring_granted = check_input_monitoring_permission(show_alert=False)
-
         invalid_hotkeys: list[str] = []
         invalid_hotkeys.extend(duplicate_msgs)
 
+        filtered_bindings: list[tuple[str, str]] = []
         for mode, hk in deduped:
+            overlap_with = next(
+                (
+                    (other_mode, other_hk)
+                    for other_mode, other_hk in filtered_bindings
+                    if hotkeys_conflict(hk, other_hk)
+                ),
+                None,
+            )
+            if overlap_with is not None:
+                other_mode, other_hk = overlap_with
+                msg = (
+                    f"Hotkeys '{other_hk}' ({other_mode}) und '{hk}' ({mode}) "
+                    "überlappen. Nur der erste wird verwendet."
+                )
+                logger.warning(msg)
+                invalid_hotkeys.append(msg)
+                continue
+            filtered_bindings.append((mode, hk))
+
+        # Berechtigungen prüfen (ohne modale Alerts während Settings-Änderungen)
+        input_monitoring_granted = check_input_monitoring_permission(show_alert=False)
+
+        for mode, hk in filtered_bindings:
             hk_str = hk.strip().lower()
             hk_is_fn = hk_str == "fn"
             hk_is_capslock = hk_str in ("capslock", "caps_lock")

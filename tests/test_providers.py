@@ -1,6 +1,7 @@
 """Tests für Provider-Module."""
 
 
+import asyncio
 import sys
 from types import SimpleNamespace
 
@@ -238,3 +239,141 @@ def test_openai_provider_rejects_srt_for_gpt4o(tmp_path, monkeypatch):
             model="gpt-4o-transcribe",
             response_format="srt",
         )
+
+
+def test_openai_provider_omits_auto_language(monkeypatch, tmp_path):
+    from providers.openai import OpenAIProvider
+    import providers.openai as openai_mod
+
+    audio_file = tmp_path / "sample.wav"
+    audio_file.write_bytes(b"audio")
+
+    created_params: list[dict] = []
+
+    def fake_create(**kwargs):
+        created_params.append(kwargs)
+        return SimpleNamespace(text="plain transcript")
+
+    fake_client = SimpleNamespace(
+        audio=SimpleNamespace(
+            transcriptions=SimpleNamespace(create=fake_create)
+        )
+    )
+
+    monkeypatch.setattr(openai_mod, "_get_client", lambda: fake_client)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    provider = OpenAIProvider()
+    provider.transcribe(audio_file, language="auto")
+
+    assert "language" not in created_params[0]
+
+
+def test_groq_provider_omits_auto_language(monkeypatch, tmp_path):
+    from providers.groq import GroqProvider
+    import providers.groq as groq_mod
+
+    audio_file = tmp_path / "sample.wav"
+    audio_file.write_bytes(b"audio")
+
+    created_params: list[dict] = []
+
+    def fake_create(**kwargs):
+        created_params.append(kwargs)
+        return "plain transcript"
+
+    fake_client = SimpleNamespace(
+        audio=SimpleNamespace(
+            transcriptions=SimpleNamespace(create=fake_create)
+        )
+    )
+
+    monkeypatch.setattr(groq_mod, "_get_client", lambda: fake_client)
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+
+    provider = GroqProvider()
+    provider.transcribe(audio_file, language=" auto ")
+
+    assert "language" not in created_params[0]
+
+
+def test_deepgram_provider_omits_auto_language(monkeypatch, tmp_path):
+    from providers.deepgram import DeepgramProvider
+    import providers.deepgram as deepgram_mod
+
+    audio_file = tmp_path / "sample.wav"
+    audio_file.write_bytes(b"audio")
+
+    created_params: list[dict] = []
+
+    def fake_transcribe_file(**kwargs):
+        created_params.append(kwargs)
+        return SimpleNamespace(
+            results=SimpleNamespace(
+                channels=[SimpleNamespace(alternatives=[SimpleNamespace(transcript="hi")])]
+            )
+        )
+
+    fake_client = SimpleNamespace(
+        listen=SimpleNamespace(
+            v1=SimpleNamespace(media=SimpleNamespace(transcribe_file=fake_transcribe_file))
+        )
+    )
+
+    monkeypatch.setattr(deepgram_mod, "_get_client", lambda: fake_client)
+    monkeypatch.setenv("DEEPGRAM_API_KEY", "test-key")
+
+    provider = DeepgramProvider()
+    provider.transcribe(audio_file, language="auto")
+
+    assert "language" not in created_params[0]
+
+
+def test_deepgram_stream_connection_omits_auto_language(monkeypatch):
+    import providers.deepgram_stream as deepgram_stream_mod
+
+    captured: dict[str, object] = {}
+
+    class _FakeProtocol:
+        pass
+
+    class _FakeClient:
+        def __init__(self, *, websocket):
+            self.websocket = websocket
+
+    class _FakeConnect:
+        async def __aenter__(self):
+            return _FakeProtocol()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_connect(url, *, extra_headers, close_timeout):
+        captured["url"] = url
+        captured["headers"] = extra_headers
+        captured["close_timeout"] = close_timeout
+        return _FakeConnect()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "deepgram.listen.v1.socket_client",
+        SimpleNamespace(AsyncV1SocketClient=_FakeClient),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "websockets.legacy.client",
+        SimpleNamespace(connect=fake_connect),
+    )
+
+    async def _run() -> None:
+        async with deepgram_stream_mod._create_deepgram_connection(
+            "test-key",
+            model="nova-3",
+            language=" auto ",
+        ) as client:
+            assert isinstance(client, _FakeClient)
+            assert isinstance(client.websocket, _FakeProtocol)
+
+    asyncio.run(_run())
+
+    assert "language=" not in str(captured["url"])

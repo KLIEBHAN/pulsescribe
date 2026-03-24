@@ -51,6 +51,7 @@ from config import (
     WHISPER_SAMPLE_RATE,
     get_input_device,
 )
+from providers._language import normalize_auto_language
 from utils.logging import get_session_id
 from utils.timing import log_preview
 
@@ -221,6 +222,8 @@ async def _create_deepgram_connection(
     import httpx
     from deepgram.listen.v1.socket_client import AsyncV1SocketClient
     from websockets.legacy.client import connect as websockets_connect
+
+    language = normalize_auto_language(language)
 
     # Query-Parameter aufbauen
     params = httpx.QueryParams()
@@ -894,6 +897,7 @@ async def deepgram_stream_core(
 
     session_id = get_session_id()
     stream_start = time.perf_counter()
+    language = normalize_auto_language(language)
 
     # Modus bestimmen
     if warm_stream_source is not None:
