@@ -35,12 +35,19 @@ def _get_app_services():
         import ctypes
         import ctypes.util
 
-        _app_services = ctypes.cdll.LoadLibrary(
-            ctypes.util.find_library("ApplicationServices")
-        )
-        _app_services.AXIsProcessTrusted.restype = ctypes.c_bool
+        library_path = ctypes.util.find_library("ApplicationServices")
+        if not library_path:
+            return None
+
+        app_services = ctypes.cdll.LoadLibrary(library_path)
+        ax_is_process_trusted = getattr(app_services, "AXIsProcessTrusted", None)
+        if ax_is_process_trusted is None:
+            return None
+
+        ax_is_process_trusted.restype = ctypes.c_bool
+        _app_services = app_services
     except Exception:
-        pass
+        _app_services = None
     return _app_services
 
 

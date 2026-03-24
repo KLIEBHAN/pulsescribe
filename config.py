@@ -20,11 +20,17 @@ def _preload_env_for_import_time_config() -> None:
     before calling `load_environment()`, so we preload here with the same precedence:
     process env > user `.env` > project `.env`.
     """
-    from utils.env import collect_env_values
+    from utils.env import collect_env_values, _remember_loaded_env_values
 
     user_config_dir = Path.home() / ".pulsescribe"
+    preloaded: dict[str, str] = {}
     for key, value in collect_env_values(user_config_dir=user_config_dir).items():
-        os.environ.setdefault(key, value)
+        if key in os.environ:
+            continue
+        os.environ[key] = value
+        preloaded[key] = value
+
+    _remember_loaded_env_values(preloaded)
 
 
 _preload_env_for_import_time_config()

@@ -22,6 +22,17 @@ _FALSE_VALUES = {"0", "false", "no", "off"}
 _loaded_env_values: dict[str, str] = {}
 
 
+def _remember_loaded_env_values(values: dict[str, str]) -> None:
+    """Track env values that were injected from `.env` files.
+
+    This is used by import-time preload code in `config.py` so a later
+    `load_environment(override_existing=True)` can remove deleted keys again.
+    """
+    if not values:
+        return
+    _loaded_env_values.update(values)
+
+
 def _get_local_env_path() -> Path:
     """Return the project-local `.env` path independent of the current cwd."""
     return Path(__file__).resolve().parent.parent / ".env"

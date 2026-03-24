@@ -3,6 +3,8 @@
 import os
 from unittest.mock import patch
 
+import config as config_module
+import utils.env as env_module
 from utils.env import load_environment
 
 
@@ -137,3 +139,35 @@ class TestLoadEnvironmentReload:
             assert os.environ.get("PULSESCRIBE_MODE") == "local"
         finally:
             os.environ.pop("PULSESCRIBE_MODE", None)
+
+    def test_reload_removes_deleted_vars_that_were_preloaded_by_config(
+        self, tmp_path, monkeypatch
+    ):
+        """Import-time config preload must not leave deleted `.env` values behind."""
+        user_dir = tmp_path / ".pulsescribe"
+        user_dir.mkdir()
+        env_file = user_dir / ".env"
+        env_file.write_text("PULSESCRIBE_TEST_PRELOADED=one\n", encoding="utf-8")
+
+        monkeypatch.setattr(config_module.Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            env_module,
+            "_get_local_env_path",
+            lambda: tmp_path / "missing-local.env",
+        )
+
+        env_module._loaded_env_values = {}
+        os.environ.pop("PULSESCRIBE_TEST_PRELOADED", None)
+
+        try:
+            config_module._preload_env_for_import_time_config()
+            assert os.environ.get("PULSESCRIBE_TEST_PRELOADED") == "one"
+
+            env_file.write_text("", encoding="utf-8")
+            with patch("config.USER_CONFIG_DIR", user_dir):
+                load_environment(override_existing=True)
+
+            assert "PULSESCRIBE_TEST_PRELOADED" not in os.environ
+        finally:
+            os.environ.pop("PULSESCRIBE_TEST_PRELOADED", None)
+            env_module._loaded_env_values = {}
