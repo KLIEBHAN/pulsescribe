@@ -264,15 +264,13 @@ class WindowsClipboard:
             return None
 
 
-# Convenience-Funktion
 def get_clipboard():
     """Gibt den passenden Clipboard-Handler für die aktuelle Plattform zurück."""
     if sys.platform == "darwin":
         return MacOSClipboard()
     elif sys.platform == "win32":
         return WindowsClipboard()
-    # Linux Fallback auf pyperclip
-    return WindowsClipboard()
+    raise NotImplementedError(f"Clipboard nicht unterstützt für Plattform: {sys.platform}")
 
 
 __all__ = ["MacOSClipboard", "WindowsClipboard", "get_clipboard"]

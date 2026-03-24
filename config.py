@@ -130,25 +130,24 @@ def get_input_device() -> tuple[int | None, int]:
 
             def test_device(idx: int, samplerate: int) -> bool:
                 """Testet ob Device öffnet und Audio empfängt."""
+                import time
+
                 try:
                     received = [False]
 
                     def cb(indata, frames, time_info, status):
                         received[0] = True
 
-                    stream = sd.InputStream(
+                    with sd.InputStream(
                         device=idx,
                         samplerate=samplerate,
                         channels=1,
                         blocksize=1024,
                         dtype=np.int16,
                         callback=cb,
-                    )
-                    stream.start()
-                    import time
-                    time.sleep(0.05)  # 50ms reicht um Audio-Callback zu testen
-                    stream.stop()
-                    stream.close()
+                    ) as stream:
+                        stream.start()
+                        time.sleep(0.05)  # 50ms reicht um Audio-Callback zu testen
                     return received[0]
                 except Exception:
                     return False
