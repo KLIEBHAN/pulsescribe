@@ -329,6 +329,44 @@ def test_deepgram_provider_omits_auto_language(monkeypatch, tmp_path):
     assert "language" not in created_params[0]
 
 
+def test_deepgram_provider_streams_audio_request(monkeypatch, tmp_path):
+    from providers.deepgram import DeepgramProvider
+    import providers.deepgram as deepgram_mod
+
+    audio_payload = b"0123456789" * 2048
+    audio_file = tmp_path / "sample.wav"
+    audio_file.write_bytes(audio_payload)
+
+    observed: dict[str, object] = {}
+
+    def fake_transcribe_file(**kwargs):
+        request = kwargs["request"]
+        observed["is_bytes"] = isinstance(request, (bytes, bytearray))
+        observed["chunks"] = list(request)
+        return SimpleNamespace(
+            results=SimpleNamespace(
+                channels=[SimpleNamespace(alternatives=[SimpleNamespace(transcript="hi")])]
+            )
+        )
+
+    fake_client = SimpleNamespace(
+        listen=SimpleNamespace(
+            v1=SimpleNamespace(media=SimpleNamespace(transcribe_file=fake_transcribe_file))
+        )
+    )
+
+    monkeypatch.setattr(deepgram_mod, "_get_client", lambda: fake_client)
+    monkeypatch.setattr(deepgram_mod, "load_vocabulary", lambda: {"keywords": []})
+    monkeypatch.setenv("DEEPGRAM_API_KEY", "test-key")
+
+    provider = DeepgramProvider()
+    result = provider.transcribe(audio_file)
+
+    assert result == "hi"
+    assert observed["is_bytes"] is False
+    assert b"".join(observed["chunks"]) == audio_payload
+
+
 def test_deepgram_stream_connection_omits_auto_language(monkeypatch):
     import providers.deepgram_stream as deepgram_stream_mod
 

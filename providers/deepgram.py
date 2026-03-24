@@ -15,6 +15,7 @@ from config import DEFAULT_DEEPGRAM_MODEL
 from ._language import normalize_auto_language
 
 logger = logging.getLogger("pulsescribe.providers.deepgram")
+_UPLOAD_CHUNK_SIZE = 1024 * 1024
 
 # Singleton Client
 _client = None
@@ -46,6 +47,16 @@ def _get_client():
                 _client_signature = api_key
                 logger.debug("Deepgram-Client initialisiert")
     return _client
+
+
+def _iter_audio_chunks(audio_path: Path, *, chunk_size: int = _UPLOAD_CHUNK_SIZE):
+    """Yield an audio file in chunks so REST uploads do not require a full RAM copy."""
+    with audio_path.open("rb") as audio_file:
+        while True:
+            chunk = audio_file.read(chunk_size)
+            if not chunk:
+                break
+            yield chunk
 
 
 
@@ -113,9 +124,6 @@ class DeepgramProvider:
 
         client = _get_client()
 
-        with audio_path.open("rb") as f:
-            audio_data = f.read()
-
         # Nova-3 nutzt 'keyterm', ältere Modelle nutzen 'keywords'
         is_nova3 = model.startswith("nova-3")
         vocab_params = {}
@@ -126,7 +134,7 @@ class DeepgramProvider:
                 vocab_params["keywords"] = keywords
 
         request_params = {
-            "request": audio_data,
+            "request": _iter_audio_chunks(audio_path),
             "model": model,
             "smart_format": True,
             "punctuate": True,

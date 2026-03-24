@@ -12,6 +12,7 @@ from utils.state import AppState
 MENUBAR_ICONS = {
     AppState.IDLE: "🎤",
     AppState.LOADING: "⬇️",  # Model is being loaded/downloaded
+    AppState.LISTENING: "🟠",  # Hold hotkey active, waiting for speech
     AppState.RECORDING: "🔴",
     AppState.TRANSCRIBING: "⏳",
     AppState.REFINING: "⏳",  # Refining uses same icon as transcribing for now
