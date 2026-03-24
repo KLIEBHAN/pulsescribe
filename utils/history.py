@@ -11,6 +11,7 @@ from datetime import datetime
 
 from config import USER_CONFIG_DIR
 from utils.log_tail import read_file_tail_lines
+from utils.preferences import _write_text_atomic
 from utils.timing import redacted_text_summary
 
 HISTORY_FILE = USER_CONFIG_DIR / "history.jsonl"
@@ -97,9 +98,8 @@ def _rotate_if_needed() -> None:
         lines = HISTORY_FILE.read_text(encoding="utf-8").splitlines()
         kept_lines = _select_recent_lines_within_bytes(lines, max_size_bytes)
         if kept_lines:
-            HISTORY_FILE.write_text(
-                "\n".join(kept_lines) + "\n",
-                encoding="utf-8",
+            _write_text_atomic(
+                HISTORY_FILE, "\n".join(kept_lines) + "\n"
             )
             logger.info(
                 f"History rotated: kept {len(kept_lines)} of {len(lines)} entries"

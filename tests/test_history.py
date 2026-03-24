@@ -324,3 +324,28 @@ class TestRotation:
         assert history_file.stat().st_size <= limit_bytes
         assert texts[-1] == "new-" + ("b" * 500)
         assert len(texts) == 1
+
+    def test_rotation_preserves_data_on_write_failure(
+        self, history_file, monkeypatch
+    ):
+        """History bleibt intakt wenn atomarer Write während Rotation fehlschlägt."""
+        from unittest.mock import patch
+
+        from utils.history import _rotate_if_needed
+
+        monkeypatch.setattr("utils.history.MAX_HISTORY_SIZE_MB", 0.0001)
+
+        # Mehrere Einträge schreiben die über dem Limit liegen
+        entries = [
+            json.dumps({"timestamp": f"2026-03-25T10:00:{i:02d}", "text": f"Entry {i}"})
+            for i in range(20)
+        ]
+        original_content = "\n".join(entries) + "\n"
+        history_file.write_text(original_content, encoding="utf-8")
+
+        # Simuliere einen Fehler beim atomaren Write (z.B. Disk voll)
+        with patch("utils.history._write_text_atomic", side_effect=OSError("disk full")):
+            _rotate_if_needed()
+
+        # History muss INTAKT sein (keine Truncation, kein Datenverlust)
+        assert history_file.read_text(encoding="utf-8") == original_content

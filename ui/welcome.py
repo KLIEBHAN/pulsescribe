@@ -2460,7 +2460,23 @@ class WelcomeController:
                 pass
 
     def _clear_transcripts(self) -> None:
-        """Löscht die Transkript-Historie."""
+        """Löscht die Transkript-Historie nach Bestätigung."""
+        try:
+            from AppKit import NSAlert, NSAlertFirstButtonReturn  # type: ignore[import-not-found]
+        except ImportError:
+            pass  # Kein Dialog verfügbar (z.B. in Tests) → direkt löschen
+        else:
+            alert = NSAlert.alloc().init()
+            alert.setMessageText_("Clear Transcript History")
+            alert.setInformativeText_(
+                "This permanently removes the local transcript history. "
+                "This cannot be undone."
+            )
+            alert.addButtonWithTitle_("Clear")
+            alert.addButtonWithTitle_("Cancel")
+            if alert.runModal() != NSAlertFirstButtonReturn:
+                return
+
         from utils.history import clear_history
 
         clear_history()
