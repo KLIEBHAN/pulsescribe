@@ -195,6 +195,21 @@ def _parse_recent_entries(lines: list[str], count: int) -> list[dict[str, object
     return entries
 
 
+def _format_display_text(text: object) -> str:
+    """Format transcript text for list-style viewers while preserving paragraphs."""
+    normalized = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = normalized.splitlines()
+    if not lines:
+        return ""
+    if len(lines) == 1:
+        return lines[0]
+    continuation_lines = [
+        f"    {line}" if line else "    "
+        for line in lines[1:]
+    ]
+    return "\n".join([lines[0], *continuation_lines])
+
+
 def format_transcripts_for_display(entries: Sequence[object]) -> str:
     """Format transcript entries for the Windows transcripts viewer."""
     valid_entries = [entry for entry in entries if isinstance(entry, dict)]
@@ -204,7 +219,7 @@ def format_transcripts_for_display(entries: Sequence[object]) -> str:
     lines: list[str] = []
     for entry in reversed(valid_entries):  # oldest first for readable history flow
         ts = str(entry.get("timestamp", ""))[:19].replace("T", " ")
-        text = str(entry.get("text", ""))
+        text = _format_display_text(entry.get("text", ""))
         mode = str(entry.get("mode", ""))
         refined = "✨" if entry.get("refined") else ""
 

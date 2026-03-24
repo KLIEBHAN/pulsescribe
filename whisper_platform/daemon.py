@@ -5,6 +5,7 @@ macOS: Double-Fork + SIGUSR1 Signale
 Windows: CREATE_NEW_PROCESS_GROUP + Named Events
 """
 
+import csv
 import logging
 import os
 import signal
@@ -21,6 +22,47 @@ else:
     TEMP_DIR = Path("/tmp")
 
 PID_FILE = TEMP_DIR / "pulsescribe.pid"
+
+
+def _tasklist_pid_exists(pid: int) -> bool:
+    """Check for an exact PID match via ``tasklist`` output.
+
+    The plain-text fallback used by the Windows daemon controller must avoid
+    substring matches like ``12`` matching a process with PID ``512``.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "tasklist",
+                "/FO",
+                "CSV",
+                "/NH",
+                "/FI",
+                f"PID eq {pid}",
+            ],
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return False
+
+    if result.returncode != 0:
+        return False
+
+    for raw_line in result.stdout.splitlines():
+        line = raw_line.strip()
+        if not line or line.upper().startswith("INFO:"):
+            continue
+        try:
+            row = next(csv.reader([line]))
+        except Exception:
+            continue
+        if len(row) < 2:
+            continue
+        pid_field = row[1].strip().strip('"')
+        if pid_field.isdigit() and int(pid_field) == pid:
+            return True
+    return False
 
 
 class MacOSDaemonController:
@@ -173,7 +215,7 @@ class WindowsDaemonController:
 
         Setzt ein Event das der Daemon pollt.
         """
-        if self._win32event is None:
+        if self._win32event is None or self._win32api is None:
             logger.error("pywin32 nicht verfügbar")
             return False
 
@@ -198,16 +240,10 @@ class WindowsDaemonController:
 
             return psutil.pid_exists(pid)
         except ImportError:
-            # Fallback: tasklist
-            try:
-                result = subprocess.run(
-                    ["tasklist", "/FI", f"PID eq {pid}"],
-                    capture_output=True,
-                    text=True,
-                )
-                return str(pid) in result.stdout
-            except Exception:
-                return False
+            return _tasklist_pid_exists(pid)
+        except Exception as e:
+            logger.debug(f"psutil pid_exists fehlgeschlagen: {e}")
+            return _tasklist_pid_exists(pid)
 
     def kill(self, pid: int, force: bool = False) -> bool:
         """Beendet Prozess via taskkill."""
@@ -216,8 +252,16 @@ class WindowsDaemonController:
             if force:
                 cmd.append("/F")
             cmd.extend(["/PID", str(pid)])
-            subprocess.run(cmd, capture_output=True)
-            return True
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode == 0:
+                return True
+            logger.debug(
+                "taskkill fehlgeschlagen fuer PID %s (rc=%s): %s",
+                pid,
+                result.returncode,
+                (result.stderr or result.stdout).strip(),
+            )
+            return False
         except Exception:
             return False
 
