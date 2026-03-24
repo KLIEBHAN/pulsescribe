@@ -42,6 +42,7 @@ CPU_COMPUTE_TYPE = "int8"
 # 120s allows for first-time model downloads (~1.5GB for medium)
 CUDA_MODEL_LOAD_TIMEOUT = 120
 _LIGHTNING_WORKDIR_LOCK = threading.RLock()
+_NVIDIA_DLL_DIRECTORY_HANDLES: dict[str, object] = {}
 
 
 def _get_warmup_language() -> str:
@@ -93,8 +94,13 @@ def _register_nvidia_dll_directories() -> None:
                 continue
             dll_path = subdir / "bin"
             if dll_path.is_dir():
+                dll_path_str = str(dll_path)
+                if dll_path_str in _NVIDIA_DLL_DIRECTORY_HANDLES:
+                    continue
                 try:
-                    os.add_dll_directory(str(dll_path))
+                    _NVIDIA_DLL_DIRECTORY_HANDLES[dll_path_str] = os.add_dll_directory(
+                        dll_path_str
+                    )
                     logger.debug(f"NVIDIA DLL directory registered: {dll_path}")
                 except OSError as e:
                     logger.warning(f"Failed to register NVIDIA DLL directory {dll_path}: {e}")

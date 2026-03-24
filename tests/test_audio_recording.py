@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import Literal
 
 import numpy as np
+import pytest
 
 
 class _DummyInputStream:
@@ -87,3 +88,35 @@ def test_record_audio_uses_resolved_input_device_and_sample_rate(
     assert captured_stream["samplerate"] == 44_100
     assert write_call["sample_rate"] == 44_100
     assert output_path == tmp_path / recording.TEMP_RECORDING_FILENAME
+
+
+def test_audio_recorder_start_cleans_up_when_stream_start_fails(monkeypatch):
+    import audio.recording as recording
+
+    state = {"closed": 0}
+
+    class _BrokenInputStream:
+        def __init__(self, **_kwargs):
+            self.active = False
+
+        def start(self) -> None:
+            raise RuntimeError("device busy")
+
+        def close(self) -> None:
+            state["closed"] += 1
+
+    fake_sd = SimpleNamespace(
+        InputStream=lambda **kwargs: _BrokenInputStream(**kwargs)
+    )
+
+    monkeypatch.setattr(recording, "get_input_device", lambda: (7, 48_000))
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sd)
+
+    recorder = recording.AudioRecorder()
+
+    with pytest.raises(RuntimeError, match="device busy"):
+        recorder.start(play_ready_sound=False)
+
+    assert recorder._stream is None
+    assert recorder.wait_for_stop(timeout=0)
+    assert state["closed"] == 1

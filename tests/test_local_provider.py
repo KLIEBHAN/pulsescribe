@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 import threading
 import time
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 
@@ -39,6 +40,53 @@ class TestImportHelpers:
             ):
                 with pytest.raises(ImportError, match="mlx-whisper"):
                     _import_mlx_whisper()
+
+    def test_register_nvidia_dll_directories_retains_handles(
+        self, monkeypatch, tmp_path
+    ):
+        """Windows DLL-Registrierungen müssen per Handle am Leben gehalten werden."""
+        import providers.local as local_mod
+        import site
+
+        site_dir = tmp_path / "site-packages"
+        user_site = tmp_path / "user-site"
+        expected_paths = {
+            str(site_dir / "nvidia" / "cudnn" / "bin"),
+            str(user_site / "nvidia" / "cublas" / "bin"),
+        }
+        for dll_dir in expected_paths:
+            Path(dll_dir).mkdir(parents=True, exist_ok=True)
+
+        handles: list[object] = []
+
+        class _Handle:
+            def __init__(self, path: str) -> None:
+                self.path = path
+
+        original_handles = dict(local_mod._NVIDIA_DLL_DIRECTORY_HANDLES)
+        local_mod._NVIDIA_DLL_DIRECTORY_HANDLES.clear()
+
+        try:
+            monkeypatch.setattr(local_mod.sys, "platform", "win32")
+            monkeypatch.setattr(site, "getsitepackages", lambda: [str(site_dir)])
+            monkeypatch.setattr(site, "getusersitepackages", lambda: str(user_site))
+            monkeypatch.setattr(
+                local_mod.os,
+                "add_dll_directory",
+                lambda path: handles.append(_Handle(path)) or handles[-1],
+                raising=False,
+            )
+
+            local_mod._register_nvidia_dll_directories()
+            local_mod._register_nvidia_dll_directories()
+
+            assert (
+                set(local_mod._NVIDIA_DLL_DIRECTORY_HANDLES.keys()) == expected_paths
+            )
+            assert len(handles) == len(expected_paths)
+        finally:
+            local_mod._NVIDIA_DLL_DIRECTORY_HANDLES.clear()
+            local_mod._NVIDIA_DLL_DIRECTORY_HANDLES.update(original_handles)
 
 
 class TestLightningModelMapping:

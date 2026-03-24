@@ -112,16 +112,28 @@ class AudioRecorder:
         )
         self._active_sample_rate = active_sample_rate
 
-        stream = sd.InputStream(
-            device=input_device,
-            samplerate=active_sample_rate,
-            channels=self.channels,
-            blocksize=self.blocksize,
-            dtype="float32",
-            callback=self._audio_callback,
-        )
-        self._stream = stream
-        stream.start()
+        stream = None
+        try:
+            stream = sd.InputStream(
+                device=input_device,
+                samplerate=active_sample_rate,
+                channels=self.channels,
+                blocksize=self.blocksize,
+                dtype="float32",
+                callback=self._audio_callback,
+            )
+            self._stream = stream
+            stream.start()
+        except Exception:
+            if stream is not None:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+            self._stream = None
+            self._recording_start = 0
+            self._stop_event.set()
+            raise
 
         if play_ready_sound:
             _play_sound("ready")
