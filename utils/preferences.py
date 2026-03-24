@@ -6,6 +6,7 @@ API-Keys werden in ~/.pulsescribe/.env gespeichert.
 
 import json
 import logging
+from io import StringIO
 from pathlib import Path
 
 from config import USER_CONFIG_DIR
@@ -24,6 +25,36 @@ ENV_FILE = USER_CONFIG_DIR / ".env"
 
 # Cache: ((mtime_ns, size, ctime_ns), values)
 _env_cache: tuple[tuple[int, int, int], dict[str, str]] | None = None
+
+
+def _parse_env_line(raw_line: str) -> tuple[str | None, str | None]:
+    """Parst eine einzelne `.env`-Zeile möglichst dotenv-kompatibel.
+
+    Beibehaltung der bestehenden Semantik:
+    - leere Zeilen / Kommentare ignorieren
+    - nur genau ein Key-Value-Paar pro Zeile
+    - weitere Duplikate werden vom Aufrufer verworfen
+    """
+    line = raw_line.strip()
+    if not line or line.startswith("#") or "=" not in line:
+        return None, None
+
+    try:
+        from dotenv import dotenv_values  # type: ignore[import-not-found]
+
+        parsed = dotenv_values(stream=StringIO(f"{raw_line}\n"))
+    except Exception:
+        key, value = line.split("=", 1)
+        key = key.strip()
+        return (key, value.strip()) if key else (None, None)
+
+    for key, value in parsed.items():
+        normalized_key = str(key or "").strip()
+        if not normalized_key:
+            continue
+        return normalized_key, "" if value is None else str(value).strip()
+
+    return None, None
 
 
 def read_env_file(path: Path | None = None) -> dict[str, str]:
@@ -69,14 +100,10 @@ def read_env_file(path: Path | None = None) -> dict[str, str]:
     values: dict[str, str] = {}
     try:
         for raw_line in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            key = key.strip()
+            key, value = _parse_env_line(raw_line)
             if not key or key in values:
                 continue
-            values[key] = value.strip()
+            values[key] = value or ""
     except OSError:
         values = {}
 

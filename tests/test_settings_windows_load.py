@@ -22,6 +22,29 @@ class _FakeField:
         self.value = value
 
 
+class _FakeLabel:
+    def __init__(self):
+        self.text = ""
+        self.style = ""
+
+    def setText(self, value: str) -> None:
+        self.text = value
+
+    def setStyleSheet(self, value: str) -> None:
+        self.style = value
+
+
+class _FakeSlider:
+    def __init__(self, value: int):
+        self._value = value
+
+    def setValue(self, value: int) -> None:
+        self._value = value
+
+    def value(self) -> int:
+        return self._value
+
+
 class _FakeCombo:
     def __init__(self, items: list[str], current: str = "default"):
         self._items = list(items)
@@ -204,3 +227,50 @@ def test_save_settings_uses_canonical_fp16_key_and_removes_legacy(monkeypatch):
     assert not any(
         key == settings_mod.LEGACY_LOCAL_FP16_ENV_KEY for key, _ in save_calls
     )
+
+
+def test_apply_local_preset_resets_stale_advanced_values():
+    window = SettingsWindow.__new__(SettingsWindow)
+    mode_changes: list[str] = []
+
+    window._mode_combo = _FakeCombo(["deepgram", "local"], current="deepgram")
+    window._local_backend_combo = _FakeCombo(settings_mod.LOCAL_BACKEND_OPTIONS, current="whisper")
+    window._local_model_combo = _FakeCombo(settings_mod.LOCAL_MODEL_OPTIONS, current="large")
+    window._device_combo = _FakeCombo(settings_mod.DEVICE_OPTIONS, current="cuda")
+    window._compute_type_combo = _FakeCombo(["default", "float16", "int8"], current="float16")
+    window._vad_filter_combo = _FakeCombo(settings_mod.BOOL_OVERRIDE_OPTIONS, current="false")
+    window._without_timestamps_combo = _FakeCombo(settings_mod.BOOL_OVERRIDE_OPTIONS, current="false")
+    window._fp16_combo = _FakeCombo(settings_mod.BOOL_OVERRIDE_OPTIONS, current="true")
+    window._lightning_quant_combo = _FakeCombo(settings_mod.LIGHTNING_QUANT_OPTIONS, current="8bit")
+    window._beam_size_field = _FakeField()
+    window._beam_size_field.setText("9")
+    window._temperature_field = _FakeField()
+    window._temperature_field.setText("0.7")
+    window._best_of_field = _FakeField()
+    window._best_of_field.setText("4")
+    window._cpu_threads_field = _FakeField()
+    window._cpu_threads_field.setText("16")
+    window._num_workers_field = _FakeField()
+    window._num_workers_field.setText("4")
+    window._lightning_batch_slider = _FakeSlider(24)
+    window._preset_status = _FakeLabel()
+    window._on_mode_changed = lambda mode: mode_changes.append(mode)
+
+    SettingsWindow._apply_local_preset(window, "cpu_fast")
+
+    assert window._mode_combo.currentText() == "local"
+    assert mode_changes == ["local"]
+    assert window._local_backend_combo.currentText() == "faster"
+    assert window._local_model_combo.currentText() == "turbo"
+    assert window._device_combo.currentText() == "cpu"
+    assert window._compute_type_combo.currentText() == "int8"
+    assert window._beam_size_field.value == ""
+    assert window._temperature_field.value == ""
+    assert window._best_of_field.value == ""
+    assert window._cpu_threads_field.value == "0"
+    assert window._num_workers_field.value == "1"
+    assert window._vad_filter_combo.currentText() == "true"
+    assert window._without_timestamps_combo.currentText() == "true"
+    assert window._fp16_combo.currentText() == "default"
+    assert window._lightning_batch_slider.value() == 12
+    assert window._lightning_quant_combo.currentText() == "none"

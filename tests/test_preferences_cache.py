@@ -78,3 +78,27 @@ def test_remove_env_setting_is_noop_when_key_does_not_exist(tmp_path, monkeypatc
 
     prefs.remove_env_setting("NOT_EXISTING_KEY")
     assert write_calls == 0
+
+
+def test_read_env_file_parses_quoted_values_and_inline_comments(tmp_path, monkeypatch):
+    _isolate_prefs(tmp_path, monkeypatch)
+    prefs.ENV_FILE.write_text(
+        '\n'.join(
+            [
+                'PULSESCRIBE_MODE="local"',
+                "PULSESCRIBE_LANGUAGE='de'",
+                'PULSESCRIBE_HOLD_HOTKEY="ctrl+win"  # keep quoted hotkey readable',
+                'PULSESCRIBE_EMPTY=""',
+                'PULSESCRIBE_MODE="deepgram"',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    values = prefs.read_env_file()
+
+    assert values["PULSESCRIBE_MODE"] == "local"
+    assert values["PULSESCRIBE_LANGUAGE"] == "de"
+    assert values["PULSESCRIBE_HOLD_HOTKEY"] == "ctrl+win"
+    assert values["PULSESCRIBE_EMPTY"] == ""

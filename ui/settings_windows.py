@@ -101,6 +101,23 @@ DEFAULT_WINDOWS_TOGGLE_HOTKEY = "ctrl+alt+r"
 DEFAULT_WINDOWS_HOLD_HOTKEY = "ctrl+win"
 LOCAL_FP16_ENV_KEY = "PULSESCRIBE_FP16"
 LEGACY_LOCAL_FP16_ENV_KEY = "PULSESCRIBE_LOCAL_FP16"
+WINDOWS_LOCAL_PRESET_BASE = {
+    "mode": "local",
+    "local_backend": "faster",
+    "local_model": "turbo",
+    "device": "auto",
+    "compute_type": "default",
+    "beam_size": "",
+    "temperature": "",
+    "best_of": "",
+    "cpu_threads": "",
+    "num_workers": "",
+    "vad_filter": "default",
+    "without_timestamps": "default",
+    "fp16": "default",
+    "lightning_batch_size": 12,
+    "lightning_quant": "none",
+}
 
 
 # =============================================================================
@@ -2457,18 +2474,12 @@ class SettingsWindow(QDialog):
         # Windows-optimierte Presets
         presets = {
             "cuda_fast": {
-                "mode": "local",
-                "local_backend": "faster",
-                "local_model": "turbo",
                 "device": "cuda",
                 "compute_type": "float16",
                 "vad_filter": "true",
                 "without_timestamps": "true",
             },
             "cpu_fast": {
-                "mode": "local",
-                "local_backend": "faster",
-                "local_model": "turbo",
                 "device": "cpu",
                 "compute_type": "int8",
                 "cpu_threads": "0",
@@ -2477,8 +2488,6 @@ class SettingsWindow(QDialog):
                 "without_timestamps": "true",
             },
             "cpu_quality": {
-                "mode": "local",
-                "local_backend": "faster",
                 "local_model": "large-v3",
                 "device": "cpu",
                 "compute_type": "int8",
@@ -2486,9 +2495,11 @@ class SettingsWindow(QDialog):
             },
         }
 
-        values = presets.get(preset)
-        if not values:
+        preset_values = presets.get(preset)
+        if not preset_values:
             return
+        values = dict(WINDOWS_LOCAL_PRESET_BASE)
+        values.update(preset_values)
 
         # UI-Felder aktualisieren
         if self._mode_combo:
@@ -2524,6 +2535,12 @@ class SettingsWindow(QDialog):
         if hasattr(self, "_beam_size_field") and self._beam_size_field:
             self._beam_size_field.setText(values.get("beam_size", ""))
 
+        if hasattr(self, "_temperature_field") and self._temperature_field:
+            self._temperature_field.setText(values.get("temperature", ""))
+
+        if hasattr(self, "_best_of_field") and self._best_of_field:
+            self._best_of_field.setText(values.get("best_of", ""))
+
         if hasattr(self, "_cpu_threads_field") and self._cpu_threads_field:
             self._cpu_threads_field.setText(values.get("cpu_threads", ""))
 
@@ -2544,6 +2561,23 @@ class SettingsWindow(QDialog):
             )
             if idx >= 0:
                 self._without_timestamps_combo.setCurrentIndex(idx)
+
+        if hasattr(self, "_fp16_combo") and self._fp16_combo:
+            idx = self._fp16_combo.findText(values.get("fp16", "default"))
+            if idx >= 0:
+                self._fp16_combo.setCurrentIndex(idx)
+
+        if hasattr(self, "_lightning_batch_slider") and self._lightning_batch_slider:
+            self._lightning_batch_slider.setValue(
+                int(values.get("lightning_batch_size", 12))
+            )
+
+        if hasattr(self, "_lightning_quant_combo") and self._lightning_quant_combo:
+            idx = self._lightning_quant_combo.findText(
+                values.get("lightning_quant", "none")
+            )
+            if idx >= 0:
+                self._lightning_quant_combo.setCurrentIndex(idx)
 
         # Feedback
         if hasattr(self, "_preset_status") and self._preset_status:
