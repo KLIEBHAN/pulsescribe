@@ -544,6 +544,12 @@ class OnboardingWizardController:
         )
         api_field.setFont_(NSFont.systemFontOfSize_(12))
         api_field.setPlaceholderString_("dg-...")
+        enter_handler = _WizardActionHandler.alloc().initWithController_action_(
+            self, "next"
+        )
+        api_field.setTarget_(enter_handler)
+        api_field.setAction_(objc.selector(enter_handler.performAction_, signature=b"v@:@"))
+        self._handler_refs.append(enter_handler)
         api_container.addSubview_(api_field)
         self._api_key_field = api_field
 
@@ -1021,22 +1027,92 @@ class OnboardingWizardController:
         # Ensure wizard window has focus after step change.
         self._ensure_window_focus()
 
+    def _focus_api_key_field(self) -> None:
+        """Move keyboard focus into the Fast-mode API key field."""
+        field = self._api_key_field
+        if field is None:
+            return
+        try:
+            if self._window is not None:
+                self._window.makeFirstResponder_(field)
+                return
+        except Exception:
+            pass
+        try:
+            field.becomeFirstResponder()
+        except Exception:
+            pass
+
+    def _show_fast_api_key_prompt(self, message: str | None = None) -> None:
+        """Reveal the Fast-mode API key prompt and focus the input."""
+        if self._api_key_container is not None:
+            try:
+                self._api_key_container.setHidden_(False)
+            except Exception:
+                pass
+        if self._api_key_status is not None:
+            try:
+                self._api_key_status.setStringValue_(
+                    message or "Deepgram API key required to continue."
+                )
+            except Exception:
+                pass
+        self._focus_api_key_field()
+        self._render()
+
+    def _apply_selected_goal_choice(self) -> bool:
+        """Persist the selected goal choice and advance when valid."""
+        choice = self._choice
+        if choice is None:
+            return False
+
+        if choice == OnboardingChoice.FAST:
+            entered_key = ""
+            if self._api_key_field:
+                entered_key = self._api_key_field.stringValue().strip()
+                if entered_key:
+                    save_api_key("DEEPGRAM_API_KEY", entered_key)
+
+            has_key = bool(
+                entered_key
+                or get_api_key("DEEPGRAM_API_KEY")
+                or os.getenv("DEEPGRAM_API_KEY")
+            )
+            if not has_key:
+                self._show_fast_api_key_prompt()
+                return False
+
+            save_env_setting("PULSESCRIBE_MODE", "deepgram")
+            if self._api_key_container is not None:
+                try:
+                    self._api_key_container.setHidden_(True)
+                except Exception:
+                    pass
+        elif choice == OnboardingChoice.PRIVATE:
+            apply_local_preset_to_env(default_local_preset_private())
+
+        set_onboarding_choice(choice)
+
+        # Save selected language
+        if self._lang_popup:
+            lang = self._lang_popup.titleOfSelectedItem()
+            if lang and lang != "auto":
+                save_env_setting("PULSESCRIBE_LANGUAGE", lang)
+            else:
+                remove_env_setting("PULSESCRIBE_LANGUAGE")
+
+        if self._on_settings_changed:
+            try:
+                self._on_settings_changed()
+            except Exception:
+                pass
+
+        self._set_step(OnboardingStep.PERMISSIONS)
+        return True
+
     def _can_advance(self) -> bool:
         if self._step == OnboardingStep.CHOOSE_GOAL:
-            if self._choice is None:
-                return False
-            # Fast mode requires API key
-            if self._choice == OnboardingChoice.FAST:
-                entered_key = ""
-                if self._api_key_field:
-                    entered_key = self._api_key_field.stringValue().strip()
-                has_key = bool(
-                    entered_key
-                    or get_api_key("DEEPGRAM_API_KEY")
-                    or os.getenv("DEEPGRAM_API_KEY")
-                )
-                return has_key
-            return True
+            return self._choice is not None
         if self._step == OnboardingStep.PERMISSIONS:
             return get_microphone_permission_state() not in ("denied", "restricted")
         if self._step == OnboardingStep.HOTKEY:
@@ -1127,6 +1203,9 @@ class OnboardingWizardController:
             if self._step == OnboardingStep.CHEAT_SHEET:
                 self._complete(open_settings=False)
                 return
+            if self._step == OnboardingStep.CHOOSE_GOAL:
+                self._apply_selected_goal_choice()
+                return
             self._set_step(next_step(self._step))
             return
 
@@ -1147,59 +1226,11 @@ class OnboardingWizardController:
         if action in ("choose_fast", "choose_private", "choose_advanced"):
             if action == "choose_fast":
                 self._choice = OnboardingChoice.FAST
-
-                # Check for API key: existing, env var, or just entered
-                entered_key = ""
-                if self._api_key_field:
-                    entered_key = self._api_key_field.stringValue().strip()
-                    if entered_key:
-                        save_api_key("DEEPGRAM_API_KEY", entered_key)
-
-                has_key = bool(
-                    entered_key
-                    or get_api_key("DEEPGRAM_API_KEY")
-                    or os.getenv("DEEPGRAM_API_KEY")
-                )
-
-                if has_key:
-                    set_onboarding_choice(self._choice)
-                    save_env_setting("PULSESCRIBE_MODE", "deepgram")
-                    # Hide API key container if shown
-                    if self._api_key_container:
-                        self._api_key_container.setHidden_(True)
-                else:
-                    # Show API key input and don't advance yet
-                    if self._api_key_container:
-                        self._api_key_container.setHidden_(False)
-                        if self._api_key_status:
-                            self._api_key_status.setStringValue_(
-                                "Required for Fast mode"
-                            )
-                    return  # Don't advance to next step
-
             elif action == "choose_private":
                 self._choice = OnboardingChoice.PRIVATE
-                set_onboarding_choice(self._choice)
-                apply_local_preset_to_env(default_local_preset_private())
             else:
                 self._choice = OnboardingChoice.ADVANCED
-                set_onboarding_choice(self._choice)
-
-            # Save selected language
-            if self._lang_popup:
-                lang = self._lang_popup.titleOfSelectedItem()
-                if lang and lang != "auto":
-                    save_env_setting("PULSESCRIBE_LANGUAGE", lang)
-                else:
-                    remove_env_setting("PULSESCRIBE_LANGUAGE")
-
-            if self._on_settings_changed:
-                try:
-                    self._on_settings_changed()
-                except Exception:
-                    pass
-
-            self._set_step(OnboardingStep.PERMISSIONS)
+            self._apply_selected_goal_choice()
             return
 
         # Permissions actions
@@ -1243,6 +1274,14 @@ class OnboardingWizardController:
         from utils.permissions import open_privacy_settings
 
         open_privacy_settings(anchor, window=self._window)
+        if self._window is None:
+            return
+        try:
+            from AppKit import NSFloatingWindowLevel  # type: ignore[import-not-found]
+
+            self._window.setLevel_(NSFloatingWindowLevel)
+        except Exception:
+            pass
 
     def _refresh_permissions(self) -> None:
         card = self._permissions_card
