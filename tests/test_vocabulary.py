@@ -52,6 +52,18 @@ class TestLoadVocabulary:
 
         assert result == {"keywords": []}
 
+    def test_non_object_json_returns_empty_keywords(self, temp_files):
+        """Valides JSON mit falschem Root-Typ darf keinen Crash auslösen."""
+        import utils.vocabulary as vocab
+
+        vocab_file = temp_files / "vocab.json"
+        vocab_file.write_text(json.dumps(["Claude", "Anthropic"]), encoding="utf-8")
+        vocab._cache.clear()
+
+        result = vocab.load_vocabulary(path=vocab_file)
+
+        assert result == {"keywords": []}
+
     def test_missing_keywords_key(self, temp_files):
         """Fehlender keywords-Key wird zu leerer Liste."""
         vocab_file = temp_files / "vocab.json"

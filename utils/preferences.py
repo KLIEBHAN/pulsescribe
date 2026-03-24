@@ -121,9 +121,10 @@ def load_preferences() -> dict:
     """Lädt Preferences aus JSON."""
     if PREFS_FILE.exists():
         try:
-            return json.loads(PREFS_FILE.read_text())
-        except json.JSONDecodeError:
+            data = json.loads(PREFS_FILE.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
             return {}
+        return data if isinstance(data, dict) else {}
     return {}
 
 

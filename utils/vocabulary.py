@@ -86,7 +86,9 @@ def load_vocabulary(path: Path | None = None) -> dict:
 
     try:
         data = json.loads(vocab_file.read_text(encoding="utf-8"))
-        if not isinstance(data.get("keywords"), list):
+        if not isinstance(data, dict):
+            data = {"keywords": []}
+        elif not isinstance(data.get("keywords"), list):
             data["keywords"] = []
         else:
             data["keywords"] = _normalize_keywords(data.get("keywords", []))

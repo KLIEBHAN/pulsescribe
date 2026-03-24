@@ -102,3 +102,13 @@ def test_read_env_file_parses_quoted_values_and_inline_comments(tmp_path, monkey
     assert values["PULSESCRIBE_LANGUAGE"] == "de"
     assert values["PULSESCRIBE_HOLD_HOTKEY"] == "ctrl+win"
     assert values["PULSESCRIBE_EMPTY"] == ""
+
+
+def test_load_preferences_returns_empty_dict_for_non_object_json(
+    tmp_path, monkeypatch
+):
+    _isolate_prefs(tmp_path, monkeypatch)
+    prefs.PREFS_FILE.write_text('["unexpected", "list"]', encoding="utf-8")
+
+    assert prefs.load_preferences() == {}
+    assert prefs.get_show_welcome_on_startup() is True
