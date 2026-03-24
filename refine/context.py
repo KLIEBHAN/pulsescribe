@@ -79,7 +79,7 @@ def _get_custom_app_contexts() -> dict:
                     f"[{get_session_id()}] PULSESCRIBE_APP_CONTEXTS muss ein JSON-Objekt sein, "
                     f"ist aber {type(parsed).__name__}"
                 )
-                _custom_app_contexts_cache = {}
+                parsed = {}
             elif not all(isinstance(k, str) and isinstance(v, str) for k, v in parsed.items()):
                 logger.warning(
                     f"[{get_session_id()}] PULSESCRIBE_APP_CONTEXTS enthält ungültige Typen "

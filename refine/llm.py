@@ -177,10 +177,22 @@ def _extract_message_content(content) -> str:
     if content is None:
         return ""
     if isinstance(content, list):
-        # Liste von Content-Parts → Text-Parts extrahieren
+        # Liste von Content-Parts → nur echte Text-Parts extrahieren
+        parts: list[str] = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+                continue
+            if isinstance(part, dict):
+                text = part.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+                continue
+            text = getattr(part, "text", None)
+            if isinstance(text, str):
+                parts.append(text)
         return "".join(
-            part.get("text", "") if isinstance(part, dict) else str(part)
-            for part in content
+            parts
         ).strip()
     return content.strip()
 

@@ -1,5 +1,6 @@
 """Tests für Daten-Extraktion aus API-Responses."""
 
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -22,6 +23,10 @@ class TestExtractMessageContent:
             ([{"other": "ignored"}, {"text": "valid"}], "valid"),
             (["Hello", " ", "World"], "Hello World"),
             (["Prefix: ", {"text": "content"}], "Prefix: content"),
+            (
+                [SimpleNamespace(text="Hello"), SimpleNamespace(text=" World")],
+                "Hello World",
+            ),
         ],
         ids=[
             "string",
@@ -32,6 +37,7 @@ class TestExtractMessageContent:
             "missing_text_key",
             "list_of_strings",
             "mixed_list",
+            "list_of_objects",
         ],
     )
     def test_extract_message_content(self, content, expected):

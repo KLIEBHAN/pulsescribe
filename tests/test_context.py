@@ -52,6 +52,18 @@ class TestGetCustomAppContexts:
 
         assert result == {}
 
+    def test_non_object_json_returns_empty_mapping(self, monkeypatch):
+        """Valides JSON mit falschem Root-Typ darf keinen Crash auslösen."""
+        import refine.context
+
+        monkeypatch.setattr(refine.context, "_custom_app_contexts_cache", None)
+        monkeypatch.setattr(refine.context, "_custom_app_contexts_signature", None)
+        monkeypatch.setenv("PULSESCRIBE_APP_CONTEXTS", '["Slack", "chat"]')
+
+        result = _get_custom_app_contexts()
+
+        assert result == {}
+
     def test_caching(self, monkeypatch):
         """Geänderte ENV-Werte invalidieren den Cache automatisch."""
         import refine.context
