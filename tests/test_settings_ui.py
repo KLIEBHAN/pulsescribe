@@ -376,13 +376,27 @@ class TestWelcomeLogsSegmentSwitch:
         ctrl._transcripts_container = _FakeContainer()
         ctrl._refresh_logs = MagicMock()
         ctrl._refresh_transcripts = MagicMock()
+        ctrl._transcripts_view_seen = False
 
         ctrl._switch_logs_segment(1)
 
         assert ctrl._logs_container.hidden is True
         assert ctrl._transcripts_container.hidden is False
-        ctrl._refresh_transcripts.assert_called_once_with(scroll_to_bottom=False)
+        ctrl._refresh_transcripts.assert_called_once_with(scroll_to_bottom=True)
         ctrl._refresh_logs.assert_not_called()
+        assert ctrl._transcripts_view_seen is True
+
+    def test_switch_to_transcripts_preserves_position_after_first_open(self):
+        ctrl = WelcomeController.__new__(WelcomeController)
+        ctrl._logs_container = _FakeContainer()
+        ctrl._transcripts_container = _FakeContainer()
+        ctrl._refresh_logs = MagicMock()
+        ctrl._refresh_transcripts = MagicMock()
+        ctrl._transcripts_view_seen = True
+
+        ctrl._switch_logs_segment(1)
+
+        ctrl._refresh_transcripts.assert_called_once_with(scroll_to_bottom=False)
 
     def test_logs_view_active_when_segment_is_logs(self):
         ctrl = WelcomeController.__new__(WelcomeController)
@@ -516,6 +530,41 @@ class TestWelcomeLogsAutoRefreshGuards:
 
         ctrl._refresh_logs.assert_called_once_with(scroll_to_bottom=False)
 
+    def test_auto_refresh_tick_runs_when_transcripts_are_visible(self, monkeypatch):
+        import sys
+        import types
+
+        captured: dict[str, object] = {}
+
+        class _FakeNSTimer:
+            @staticmethod
+            def scheduledTimerWithTimeInterval_repeats_block_(interval, repeats, block):
+                captured["interval"] = interval
+                captured["repeats"] = repeats
+                captured["tick"] = block
+                return object()
+
+        monkeypatch.setitem(
+            sys.modules,
+            "Foundation",
+            types.SimpleNamespace(NSTimer=_FakeNSTimer),
+        )
+
+        ctrl = WelcomeController.__new__(WelcomeController)
+        ctrl._stop_logs_auto_refresh = lambda: None
+        ctrl._logs_auto_checkbox = type("_Check", (), {"state": lambda self: 1})()
+        ctrl._is_logs_tab_active = lambda: True
+        ctrl._is_logs_view_active = lambda: False
+        ctrl._is_window_visible_for_logs = lambda: True
+        ctrl._refresh_logs = MagicMock()
+        ctrl._refresh_transcripts = MagicMock()
+
+        ctrl._start_logs_auto_refresh()
+        captured["tick"](None)
+
+        ctrl._refresh_logs.assert_not_called()
+        ctrl._refresh_transcripts.assert_called_once_with(scroll_to_bottom=False)
+
 
 class _FakePoint:
     def __init__(self, y: float):
@@ -588,6 +637,62 @@ class _FakeTranscriptsCountLabel:
 
 
 class TestWelcomeTranscriptsRefreshBehavior:
+    def test_refresh_transcripts_skips_file_read_when_signature_unchanged(
+        self, monkeypatch
+    ):
+        import ui.welcome as welcome_mod
+
+        ctrl = WelcomeController.__new__(WelcomeController)
+        ctrl._transcripts_text_view = _FakeTranscriptsTextView(
+            "cached text",
+            doc_height=800,
+        )
+        ctrl._transcripts_scroll_view = _FakeTranscriptsScrollView(
+            _FakeClipView(y=120, height=300)
+        )
+        ctrl._transcripts_count_label = _FakeTranscriptsCountLabel()
+        ctrl._last_transcripts_text = "cached text"
+        ctrl._last_transcripts_signature = (1, 2)
+        ctrl._get_transcripts_payload = MagicMock(
+            side_effect=AssertionError("transcripts should not reload")
+        )
+        ctrl._scroll_transcripts_to_bottom = MagicMock()
+
+        monkeypatch.setattr(welcome_mod, "get_file_signature", lambda _path: (1, 2))
+
+        ctrl._refresh_transcripts(scroll_to_bottom=False)
+
+        ctrl._get_transcripts_payload.assert_not_called()
+        ctrl._scroll_transcripts_to_bottom.assert_not_called()
+
+    def test_refresh_transcripts_can_scroll_to_bottom_without_reloading(
+        self, monkeypatch
+    ):
+        import ui.welcome as welcome_mod
+
+        ctrl = WelcomeController.__new__(WelcomeController)
+        ctrl._transcripts_text_view = _FakeTranscriptsTextView(
+            "cached text",
+            doc_height=800,
+        )
+        ctrl._transcripts_scroll_view = _FakeTranscriptsScrollView(
+            _FakeClipView(y=120, height=300)
+        )
+        ctrl._transcripts_count_label = _FakeTranscriptsCountLabel()
+        ctrl._last_transcripts_text = "cached text"
+        ctrl._last_transcripts_signature = (1, 2)
+        ctrl._get_transcripts_payload = MagicMock(
+            side_effect=AssertionError("transcripts should not reload")
+        )
+        ctrl._scroll_transcripts_to_bottom = MagicMock()
+
+        monkeypatch.setattr(welcome_mod, "get_file_signature", lambda _path: (1, 2))
+
+        ctrl._refresh_transcripts(scroll_to_bottom=True)
+
+        ctrl._get_transcripts_payload.assert_not_called()
+        ctrl._scroll_transcripts_to_bottom.assert_called_once_with()
+
     def test_refresh_transcripts_skips_rerender_when_text_unchanged(self):
         ctrl = WelcomeController.__new__(WelcomeController)
         ctrl._transcripts_text_view = _FakeTranscriptsTextView(
@@ -599,6 +704,7 @@ class TestWelcomeTranscriptsRefreshBehavior:
         )
         ctrl._transcripts_count_label = _FakeTranscriptsCountLabel()
         ctrl._last_transcripts_text = "cached text"
+        ctrl._last_transcripts_signature = None
         ctrl._get_transcripts_payload = lambda: ("cached text", 5)
         ctrl._scroll_transcripts_to_bottom = MagicMock()
         ctrl._restore_transcripts_scroll_position = MagicMock()
@@ -631,6 +737,7 @@ class TestWelcomeTranscriptsRefreshBehavior:
         )
         ctrl._transcripts_count_label = _FakeTranscriptsCountLabel()
         ctrl._last_transcripts_text = "old text"
+        ctrl._last_transcripts_signature = None
         ctrl._get_transcripts_payload = lambda: ("new text", 3)
         ctrl._scroll_transcripts_to_bottom = MagicMock()
 

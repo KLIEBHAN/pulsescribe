@@ -176,6 +176,8 @@ class WelcomeController:
         self._last_logs_text = None
         self._last_logs_signature = None
         self._last_transcripts_text = None
+        self._last_transcripts_signature = None
+        self._transcripts_view_seen = False
         # Logs/Transcripts segmented control
         self._logs_segment_control = None
         self._logs_segment_handler = None
@@ -2288,6 +2290,7 @@ class WelcomeController:
         initial_transcripts_text, entry_count = self._get_transcripts_payload()
         t_text_view.setString_(initial_transcripts_text)
         self._last_transcripts_text = initial_transcripts_text
+        self._last_transcripts_signature = self._get_transcripts_signature()
         self._update_transcripts_count_label(entry_count)
         t_scroll.setDocumentView_(t_text_view)
         transcripts_container.addSubview_(t_scroll)
@@ -2337,13 +2340,32 @@ class WelcomeController:
         text, _ = self._get_transcripts_payload()
         return text
 
+    def _get_transcripts_signature(self):
+        """Liefert eine Dateisignatur für die Transcript-History oder None."""
+        try:
+            from utils.history import HISTORY_FILE
+
+            return get_file_signature(HISTORY_FILE)
+        except Exception:
+            return None
+
     def _refresh_transcripts(self, *, scroll_to_bottom: bool = False) -> None:
         """Aktualisiert die Transkript-Anzeige mit scroll-schonendem Verhalten."""
         if self._transcripts_text_view:
             try:
+                signature = self._get_transcripts_signature()
+                previous_signature = getattr(self, "_last_transcripts_signature", None)
+                if signature is not None and signature == previous_signature:
+                    if scroll_to_bottom:
+                        self._scroll_transcripts_to_bottom()
+                    return
+
                 transcript_text, entry_count = self._get_transcripts_payload()
                 self._update_transcripts_count_label(entry_count)
                 if transcript_text == self._last_transcripts_text:
+                    self._last_transcripts_signature = signature
+                    if scroll_to_bottom:
+                        self._scroll_transcripts_to_bottom()
                     return
 
                 previous_y = 0.0
@@ -2355,6 +2377,7 @@ class WelcomeController:
                 was_near_bottom = self._is_transcripts_near_bottom()
                 self._transcripts_text_view.setString_(transcript_text)
                 self._last_transcripts_text = transcript_text
+                self._last_transcripts_signature = signature
 
                 if scroll_to_bottom or was_near_bottom:
                     self._scroll_transcripts_to_bottom()
@@ -2435,7 +2458,11 @@ class WelcomeController:
             else:  # Transcripts
                 self._logs_container.setHidden_(True)
                 self._transcripts_container.setHidden_(False)
-                self._refresh_transcripts(scroll_to_bottom=False)
+                should_scroll_to_bottom = not getattr(
+                    self, "_transcripts_view_seen", False
+                )
+                self._refresh_transcripts(scroll_to_bottom=should_scroll_to_bottom)
+                self._transcripts_view_seen = True
 
     def _is_logs_view_active(self) -> bool:
         """True, wenn das Logs-Segment aktiv ist."""
@@ -2573,9 +2600,13 @@ class WelcomeController:
                 is_logs_tab_active=self._is_logs_tab_active(),
                 logs_view_index=0 if self._is_logs_view_active() else 1,
                 is_window_visible=self._is_window_visible_for_logs(),
+                allow_transcripts=True,
             )
             if should_run:
-                self._refresh_logs(scroll_to_bottom=False)
+                if self._is_logs_view_active():
+                    self._refresh_logs(scroll_to_bottom=False)
+                else:
+                    self._refresh_transcripts(scroll_to_bottom=False)
 
         self._logs_auto_refresh_timer = (
             NSTimer.scheduledTimerWithTimeInterval_repeats_block_(2.0, True, tick)
