@@ -496,6 +496,9 @@ class PySide6OverlayWidget(QWidget):
     @Slot(str)
     def _on_interim_changed(self, text: str):
         if self._state == "RECORDING":
+            if not text:
+                self._update_label("RECORDING", STATE_TEXTS["RECORDING"])
+                return
             if len(text) > 45:
                 text = "..." + text[-42:]
             self._update_label("RECORDING", text, italic=True)
@@ -777,6 +780,8 @@ class PySide6OverlayController:
             return
 
         if not self._interim_file.exists():
+            if self._last_interim_text:
+                self._widget.update_interim_text("")
             self._last_interim_mtime_ns = None
             self._last_interim_text = ""
             return
@@ -792,7 +797,7 @@ class PySide6OverlayController:
                 errors="replace",
             ).strip()
             self._last_interim_mtime_ns = current_mtime_ns
-            if text and text != self._last_interim_text:
+            if text != self._last_interim_text:
                 self._last_interim_text = text
                 self._widget.update_interim_text(text)
         except Exception as e:

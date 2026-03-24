@@ -460,7 +460,13 @@ def paste_transcript(text: str) -> bool:
     # beide Einträge sehen (Transkription + vorheriger Text).
     if previous_text is not None:
         time.sleep(1.0)  # Warten bis Paste verarbeitet wurde
-        _copy_to_clipboard_native(previous_text)
-        logger.debug("Vorheriger Clipboard-Text erneut kopiert")
+        current_clipboard = _get_clipboard_text()
+        if current_clipboard == text:
+            _copy_to_clipboard_native(previous_text)
+            logger.debug("Vorheriger Clipboard-Text erneut kopiert")
+        else:
+            logger.debug(
+                "Clipboard-Restore übersprungen: Inhalt wurde zwischenzeitlich verändert"
+            )
 
     return True

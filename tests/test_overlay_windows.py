@@ -124,6 +124,20 @@ def test_poll_interim_file_reads_only_when_file_changes(tmp_path):
     assert seen_texts == ["hello", "hello again"]
 
 
+def test_poll_interim_file_clears_stale_text_when_file_becomes_empty(tmp_path):
+    interim_file = tmp_path / "interim.txt"
+    interim_file.write_text("hello", encoding="utf-8")
+    controller = _make_controller(interim_file)
+    seen_texts: list[str] = []
+    controller._handle_interim_text = seen_texts.append
+
+    controller._poll_interim_file()
+    interim_file.write_text("", encoding="utf-8")
+    controller._poll_interim_file()
+
+    assert seen_texts == ["hello", ""]
+
+
 def test_poll_interim_file_reads_tail_text_only(tmp_path, monkeypatch):
     interim_file = tmp_path / "interim.txt"
     interim_file.write_text("full interim payload", encoding="utf-8")
@@ -192,6 +206,17 @@ def test_handle_interim_text_updates_label_for_short_text():
 
     assert controller._label.last_config["text"] == "short text"
     assert controller._label.last_config["fg"] == "#909090"
+
+
+def test_handle_interim_text_restores_default_recording_label_when_empty():
+    controller = WindowsOverlayController()
+    controller._state = "RECORDING"
+    controller._label = _FakeLabel()
+
+    controller._handle_interim_text("")
+
+    assert controller._label.last_config["text"] == "Recording..."
+    assert controller._label.last_config["fg"] == "white"
 
 
 def test_handle_state_change_repositions_on_active_monitor_when_leaving_idle():

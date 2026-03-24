@@ -367,9 +367,11 @@ class TestPasteTranscript:
         get_text_calls = []
         copy_calls = []
 
+        clipboard_values = iter(["previous text", "test"])
+
         def mock_get_text():
             get_text_calls.append(True)
-            return "previous text"
+            return next(clipboard_values)
 
         def mock_copy(text):
             copy_calls.append(text)
@@ -385,10 +387,40 @@ class TestPasteTranscript:
         ):
             utils.hotkey.paste_transcript("test")
 
-        # _get_clipboard_text sollte aufgerufen werden
-        assert get_text_calls == [True]
+        # _get_clipboard_text wird vor und nach dem Paste geprüft
+        assert get_text_calls == [True, True]
         # Erst Transkription, dann vorheriger Text (Re-Copy)
         assert copy_calls == ["test", "previous text"]
+
+    def test_paste_transcript_clipboard_restore_skips_when_clipboard_changed(
+        self, monkeypatch
+    ):
+        """Restore darf neueren Clipboard-Inhalt nicht überschreiben."""
+        get_text_calls = []
+        copy_calls = []
+
+        clipboard_values = iter(["previous text", "new clipboard text"])
+
+        def mock_get_text():
+            get_text_calls.append(True)
+            return next(clipboard_values)
+
+        def mock_copy(text):
+            copy_calls.append(text)
+            return True
+
+        monkeypatch.setenv("PULSESCRIBE_CLIPBOARD_RESTORE", "true")
+
+        with (
+            patch("utils.hotkey._get_clipboard_text", side_effect=mock_get_text),
+            patch("utils.hotkey._copy_to_clipboard_native", side_effect=mock_copy),
+            patch("utils.hotkey._paste_via_pynput", return_value=True),
+            patch("time.sleep"),
+        ):
+            utils.hotkey.paste_transcript("test")
+
+        assert get_text_calls == [True, True]
+        assert copy_calls == ["test"]
 
     def test_paste_transcript_clipboard_restore_with_empty_clipboard(self, monkeypatch):
         """Kein Re-Copy wenn Clipboard vor Transkription leer war."""

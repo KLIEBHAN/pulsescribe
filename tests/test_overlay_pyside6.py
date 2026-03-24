@@ -138,6 +138,24 @@ def test_poll_interim_file_uses_mtime_cache(tmp_path):
     assert controller._last_interim_text == ""
 
 
+def test_poll_interim_file_clears_stale_text_when_file_becomes_empty(tmp_path):
+    interim_file = tmp_path / "interim.txt"
+    interim_file.write_text("first", encoding="utf-8")
+
+    controller = PySide6OverlayController.__new__(PySide6OverlayController)
+    controller._running = True
+    controller._interim_file = interim_file
+    controller._widget = _FakeWidget()
+    controller._last_interim_text = ""
+    controller._last_interim_mtime_ns = None
+
+    PySide6OverlayController._poll_interim_file(controller)
+    interim_file.write_text("", encoding="utf-8")
+    PySide6OverlayController._poll_interim_file(controller)
+
+    assert controller._widget.seen_interim == ["first", ""]
+
+
 def test_poll_interim_file_reads_tail_text_only(tmp_path, monkeypatch):
     interim_file = tmp_path / "interim.txt"
     interim_file.write_text("full interim payload", encoding="utf-8")
@@ -194,6 +212,19 @@ def test_set_interim_polling_active_avoids_restarting_active_timer():
 
     assert controller._interim_timer.start_calls == []
     assert controller._interim_timer.set_interval_calls == []
+
+
+def test_on_interim_changed_restores_default_recording_label_when_empty():
+    widget = PySide6OverlayWidget.__new__(PySide6OverlayWidget)
+    widget._state = "RECORDING"
+    seen_calls: list[tuple[str, str, bool]] = []
+    widget._update_label = lambda state, text, italic=False: seen_calls.append(
+        (state, text, italic)
+    )
+
+    PySide6OverlayWidget._on_interim_changed(widget, "")
+
+    assert seen_calls == [("RECORDING", "Recording...", False)]
 
 
 def test_frame_interval_ms_is_state_aware():

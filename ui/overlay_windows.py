@@ -335,7 +335,12 @@ class WindowsOverlayController:
         if not self._interim_polling_active:
             return
 
-        if self._state == "RECORDING" and self._interim_file.exists():
+        if self._state == "RECORDING" and not self._interim_file.exists():
+            if self._last_interim_text:
+                self._last_interim_text = ""
+                self._last_interim_mtime_ns = None
+                self._handle_interim_text("")
+        elif self._state == "RECORDING" and self._interim_file.exists():
             try:
                 current_mtime_ns = self._interim_file.stat().st_mtime_ns
                 if current_mtime_ns == self._last_interim_mtime_ns:
@@ -351,7 +356,7 @@ class WindowsOverlayController:
                     errors="replace",
                 ).strip()
                 self._last_interim_mtime_ns = current_mtime_ns
-                if text and text != self._last_interim_text:
+                if text != self._last_interim_text:
                     self._last_interim_text = text
                     self._handle_interim_text(text)
             except Exception:
@@ -424,6 +429,14 @@ class WindowsOverlayController:
 
     def _handle_interim_text(self, text: str) -> None:
         if self._state != "RECORDING" or not self._label:
+            return
+
+        if not text:
+            self._label.config(
+                text=STATE_TEXTS["RECORDING"],
+                font=("Segoe UI", 11),
+                fg="white",
+            )
             return
 
         if len(text) > 45:
