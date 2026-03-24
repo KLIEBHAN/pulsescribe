@@ -157,3 +157,21 @@ class TestCLI:
         assert "Audio transkribieren" in output
         assert "--mode" in output
         assert "--record" in output
+
+    def test_structured_output_skips_refine(self, clean_env, tmp_path):
+        """JSON/SRT/VTT dürfen nicht durch LLM-Refine verändert werden."""
+        audio_file = tmp_path / "test.wav"
+        audio_file.write_bytes(b"fake audio")
+
+        with (
+            patch("transcribe.transcribe", return_value='{"text":"hi"}'),
+            patch("transcribe.maybe_refine_transcript") as mock_refine,
+        ):
+            result = runner.invoke(
+                app,
+                [str(audio_file), "--format", "json", "--refine"],
+            )
+
+        assert result.exit_code == 0
+        mock_refine.assert_not_called()
+        assert '{"text":"hi"}' in result.output

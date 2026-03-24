@@ -13,6 +13,8 @@ from config import DEFAULT_API_MODEL
 
 logger = logging.getLogger("pulsescribe.providers.openai")
 
+_JSON_ONLY_MODELS = ("gpt-4o-transcribe", "gpt-4o-mini-transcribe")
+
 # Singleton Client
 _client = None
 _client_signature: str | None = None
@@ -43,6 +45,50 @@ def _get_client():
                 _client_signature = api_key
                 logger.debug("OpenAI-Client initialisiert")
     return _client
+
+
+def _uses_json_only_response_format(model: str) -> bool:
+    """Return True for OpenAI transcription models that only support JSON output."""
+    normalized = (model or "").strip().lower()
+    return normalized.startswith(_JSON_ONLY_MODELS)
+
+
+def _resolve_api_response_format(model: str, requested_format: str) -> str:
+    """Map CLI response formats to the actual API format for a given model."""
+    normalized = (requested_format or "text").strip().lower() or "text"
+    if not _uses_json_only_response_format(model):
+        return normalized
+
+    if normalized in {"text", "json"}:
+        return "json"
+
+    raise ValueError(
+        f"OpenAI-Modell '{model}' unterstützt kein Ausgabeformat '{normalized}'. "
+        "Für SRT/VTT bitte '--model whisper-1' verwenden."
+    )
+
+
+def _serialize_response(response, *, requested_format: str) -> str:
+    """Convert SDK responses into stable CLI output."""
+    normalized = (requested_format or "text").strip().lower() or "text"
+
+    if isinstance(response, str):
+        return response
+
+    if normalized == "text":
+        text = getattr(response, "text", None)
+        if isinstance(text, str):
+            return text
+
+    model_dump_json = getattr(response, "model_dump_json", None)
+    if callable(model_dump_json):
+        return model_dump_json(indent=2)
+
+    text = getattr(response, "text", None)
+    if isinstance(text, str):
+        return text
+
+    return str(response)
 
 
 class OpenAIProvider:
@@ -93,9 +139,16 @@ class OpenAIProvider:
         self._validate()
 
         model = model or self.default_model
+        api_response_format = _resolve_api_response_format(model, response_format)
         audio_kb = audio_path.stat().st_size // 1024
 
-        logger.info(f"OpenAI: {model}, {audio_kb}KB, lang={language or 'auto'}")
+        logger.info(
+            "OpenAI: %s, %sKB, lang=%s, format=%s",
+            model,
+            audio_kb,
+            language or "auto",
+            response_format,
+        )
 
         client = _get_client()
 
@@ -104,17 +157,13 @@ class OpenAIProvider:
                 params = {
                     "model": model,
                     "file": audio_file,
-                    "response_format": response_format,
+                    "response_format": api_response_format,
                 }
                 if language:
                     params["language"] = language
                 response = client.audio.transcriptions.create(**params)
 
-        # API gibt bei format="text" String zurück, sonst Objekt
-        if response_format == "text":
-            result = response
-        else:
-            result = response.text if hasattr(response, "text") else str(response)
+        result = _serialize_response(response, requested_format=response_format)
 
         logger.debug(f"Ergebnis: {result[:100]}..." if len(result) > 100 else f"Ergebnis: {result}")
 

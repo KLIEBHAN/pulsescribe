@@ -149,3 +149,92 @@ def test_provider_client_reinitializes_when_api_key_changes(
 
     assert third is not first
     assert created_with == [f"{module_name}-key-1", f"{module_name}-key-2"]
+
+
+class _FakeOpenAIJsonResponse:
+    text = "serialized text"
+
+    def model_dump_json(self, *, indent=None):
+        assert indent == 2
+        return '{\n  "text": "serialized text"\n}'
+
+
+def test_openai_provider_uses_json_api_format_for_gpt4o_text_output(
+    monkeypatch, tmp_path
+):
+    from providers.openai import OpenAIProvider
+    import providers.openai as openai_mod
+
+    audio_file = tmp_path / "sample.wav"
+    audio_file.write_bytes(b"audio")
+
+    created_params: list[dict] = []
+
+    def fake_create(**kwargs):
+        created_params.append(kwargs)
+        return SimpleNamespace(text="plain transcript")
+
+    fake_client = SimpleNamespace(
+        audio=SimpleNamespace(
+            transcriptions=SimpleNamespace(create=fake_create)
+        )
+    )
+
+    monkeypatch.setattr(openai_mod, "_get_client", lambda: fake_client)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    provider = OpenAIProvider()
+    result = provider.transcribe(audio_file, model="gpt-4o-transcribe")
+
+    assert result == "plain transcript"
+    assert created_params[0]["response_format"] == "json"
+
+
+def test_openai_provider_serializes_json_response_objects(monkeypatch, tmp_path):
+    from providers.openai import OpenAIProvider
+    import providers.openai as openai_mod
+
+    audio_file = tmp_path / "sample.wav"
+    audio_file.write_bytes(b"audio")
+
+    created_params: list[dict] = []
+
+    def fake_create(**kwargs):
+        created_params.append(kwargs)
+        return _FakeOpenAIJsonResponse()
+
+    fake_client = SimpleNamespace(
+        audio=SimpleNamespace(
+            transcriptions=SimpleNamespace(create=fake_create)
+        )
+    )
+
+    monkeypatch.setattr(openai_mod, "_get_client", lambda: fake_client)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    provider = OpenAIProvider()
+    result = provider.transcribe(
+        audio_file,
+        model="gpt-4o-transcribe",
+        response_format="json",
+    )
+
+    assert result == '{\n  "text": "serialized text"\n}'
+    assert created_params[0]["response_format"] == "json"
+
+
+def test_openai_provider_rejects_srt_for_gpt4o(tmp_path, monkeypatch):
+    from providers.openai import OpenAIProvider
+
+    audio_file = tmp_path / "sample.wav"
+    audio_file.write_bytes(b"audio")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    provider = OpenAIProvider()
+
+    with pytest.raises(ValueError, match="whisper-1"):
+        provider.transcribe(
+            audio_file,
+            model="gpt-4o-transcribe",
+            response_format="srt",
+        )

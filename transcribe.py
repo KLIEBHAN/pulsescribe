@@ -383,14 +383,19 @@ def main(
             temp_file.unlink()
 
     # LLM-Nachbearbeitung (optional)
-    transcript = maybe_refine_transcript(
-        transcript,
-        refine=refine,
-        no_refine=no_refine,
-        refine_model=refine_model,
-        refine_provider=refine_provider.value if refine_provider else None,
-        context=context.value if context else None,
-    )
+    if response_format == ResponseFormat.text:
+        transcript = maybe_refine_transcript(
+            transcript,
+            refine=refine,
+            no_refine=no_refine,
+            refine_model=refine_model,
+            refine_provider=refine_provider.value if refine_provider else None,
+            context=context.value if context else None,
+        )
+    elif refine and not no_refine:
+        log(
+            f"Hinweis: LLM-Nachbearbeitung wird für --format {response_format.value} übersprungen"
+        )
 
     # Ausgabe
     print(transcript)
