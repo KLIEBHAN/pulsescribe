@@ -21,6 +21,9 @@ class _FakeField:
     def setText(self, value: str) -> None:
         self.value = value
 
+    def text(self) -> str:
+        return self.value
+
 
 class _FakeLabel:
     def __init__(self):
@@ -180,6 +183,44 @@ def test_load_settings_uses_default_hotkeys_when_none_are_configured(monkeypatch
         == settings_mod.DEFAULT_WINDOWS_TOGGLE_HOTKEY
     )
     assert window._hold_hotkey_field.value == settings_mod.DEFAULT_WINDOWS_HOLD_HOTKEY
+
+
+def test_load_settings_populates_api_fields_from_process_env(monkeypatch):
+    monkeypatch.setattr(settings_mod, "get_env_setting", lambda _key: None)
+    monkeypatch.setattr(settings_mod, "read_env_file", lambda: {})
+    monkeypatch.setattr(settings_mod, "get_api_key", lambda _key: None)
+    monkeypatch.setenv("DEEPGRAM_API_KEY", "dg-live-key")
+
+    window = _make_window()
+    field = _FakeField()
+    status = _FakeLabel()
+    window._api_fields = {"DEEPGRAM_API_KEY": field}
+    window._api_status = {"DEEPGRAM_API_KEY": status}
+
+    window._load_settings()
+
+    assert field.value == "dg-live-key"
+    assert status.text == "✓"
+
+
+def test_refresh_setup_overview_uses_process_env_api_keys(monkeypatch):
+    monkeypatch.setattr(settings_mod, "get_api_key", lambda _key: None)
+    monkeypatch.setenv("DEEPGRAM_API_KEY", "dg-live-key")
+
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._setup_status_label = _FakeLabel()
+    window._setup_status_detail_label = _FakeLabel()
+    window._setup_howto_label = _FakeLabel()
+    window._mode_combo = _FakeCombo(["deepgram"], current="deepgram")
+    window._toggle_hotkey_field = _FakeField()
+    window._toggle_hotkey_field.setText("ctrl+alt+r")
+    window._hold_hotkey_field = _FakeField()
+    window._api_fields = {"DEEPGRAM_API_KEY": None}
+
+    window._refresh_setup_overview()
+
+    assert window._setup_status_label.text == "Ready to Dictate"
+    assert "Deepgram" in window._setup_status_detail_label.text
 
 
 def test_load_settings_prefers_canonical_fp16_key(monkeypatch):

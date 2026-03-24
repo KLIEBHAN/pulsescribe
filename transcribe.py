@@ -256,7 +256,7 @@ def main(
             help="Transkriptions-Modus",
             envvar="PULSESCRIBE_MODE",
         ),
-    ] = TranscriptionMode.openai,
+    ] = TranscriptionMode.deepgram,
     model: Annotated[
         str | None,
         typer.Option(

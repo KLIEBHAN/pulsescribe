@@ -75,6 +75,19 @@ class TestCLI:
         # ENV-Variable wird im Help angezeigt
         assert "PULSESCRIBE_MODE" in result.output
 
+    def test_mode_default_without_env_uses_deepgram(self, clean_env, tmp_path):
+        """Ohne CLI- oder ENV-Override soll Deepgram der Default sein."""
+        audio_file = tmp_path / "test.wav"
+        audio_file.write_bytes(b"fake audio")
+
+        with patch("transcribe.transcribe") as mock_transcribe:
+            mock_transcribe.return_value = "Test transcript"
+            result = runner.invoke(app, [str(audio_file)])
+
+        assert result.exit_code == 0
+        assert mock_transcribe.call_args is not None
+        assert mock_transcribe.call_args.kwargs["mode"] == "deepgram"
+
     def test_mode_cli_beats_env(self, monkeypatch, clean_env):
         """CLI --mode schlägt ENV (implizit getestet über Ausführung)."""
         monkeypatch.setenv("PULSESCRIBE_MODE", "deepgram")

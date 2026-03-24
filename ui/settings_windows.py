@@ -148,6 +148,11 @@ def _normalize_hotkey_text(value: str | None) -> str:
     return (value or "").strip()
 
 
+def _resolve_api_key_value(key_name: str) -> str:
+    """Resolve API keys from user config first, then the process environment."""
+    return (get_api_key(key_name) or os.getenv(key_name) or "").strip()
+
+
 def _build_setup_status(
     mode: str | None,
     *,
@@ -1301,11 +1306,11 @@ class SettingsWindow(QDialog):
         )
 
         api_keys = {
-            env_key: field.text().strip() if field else get_api_key(env_key) or ""
+            env_key: field.text().strip() if field else _resolve_api_key_value(env_key)
             for env_key, field in self._api_fields.items()
         }
         for env_key in MODE_API_KEY_MAP.values():
-            api_keys.setdefault(env_key, get_api_key(env_key) or "")
+            api_keys.setdefault(env_key, _resolve_api_key_value(env_key))
 
         headline, detail, color_key = _build_setup_status(
             mode,
@@ -1656,23 +1661,23 @@ class SettingsWindow(QDialog):
     def _qt_key_to_string(self, key: int) -> str:
         """Konvertiert Qt Key zu String."""
         # Spezielle Tasten
-        special_keys = {
-            Qt.Key.Key_Space: "space",
-            Qt.Key.Key_Tab: "tab",
-            Qt.Key.Key_Backspace: "backspace",
-            Qt.Key.Key_Delete: "delete",
-            Qt.Key.Key_Home: "home",
-            Qt.Key.Key_End: "end",
-            Qt.Key.Key_PageUp: "pageup",
-            Qt.Key.Key_PageDown: "pagedown",
-            Qt.Key.Key_Up: "up",
-            Qt.Key.Key_Down: "down",
-            Qt.Key.Key_Left: "left",
-            Qt.Key.Key_Right: "right",
-            Qt.Key.Key_Control: "ctrl",
-            Qt.Key.Key_Alt: "alt",
-            Qt.Key.Key_Shift: "shift",
-            Qt.Key.Key_Meta: "win",
+        special_keys: dict[int, str] = {
+            int(Qt.Key.Key_Space): "space",
+            int(Qt.Key.Key_Tab): "tab",
+            int(Qt.Key.Key_Backspace): "backspace",
+            int(Qt.Key.Key_Delete): "delete",
+            int(Qt.Key.Key_Home): "home",
+            int(Qt.Key.Key_End): "end",
+            int(Qt.Key.Key_PageUp): "pageup",
+            int(Qt.Key.Key_PageDown): "pagedown",
+            int(Qt.Key.Key_Up): "up",
+            int(Qt.Key.Key_Down): "down",
+            int(Qt.Key.Key_Left): "left",
+            int(Qt.Key.Key_Right): "right",
+            int(Qt.Key.Key_Control): "ctrl",
+            int(Qt.Key.Key_Alt): "alt",
+            int(Qt.Key.Key_Shift): "shift",
+            int(Qt.Key.Key_Meta): "win",
         }
         if key in special_keys:
             return special_keys[key]
@@ -2372,7 +2377,7 @@ class SettingsWindow(QDialog):
 
         # API Keys
         for env_key, field in self._api_fields.items():
-            value = get_api_key(env_key) or ""
+            value = _resolve_api_key_value(env_key)
             field.setText(value)
             # Status aktualisieren
             status = self._api_status.get(env_key)
