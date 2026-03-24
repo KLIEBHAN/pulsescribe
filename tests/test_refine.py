@@ -70,24 +70,11 @@ class TestGetRefineClient:
         """Setzt Client-Singletons vor jedem Test zurück."""
         import refine.llm
 
-        refine.llm._groq_client = None
-        refine.llm._openai_client = None
-        refine.llm._openrouter_client = None
-        refine.llm._gemini_client = None
-        refine.llm._groq_client_signature = None
-        refine.llm._openai_client_signature = None
-        refine.llm._openrouter_client_signature = None
-        refine.llm._gemini_client_signature = None
+        refine.llm._clients.clear()
+        refine.llm._signatures.clear()
         yield
-        # Cleanup nach Test
-        refine.llm._groq_client = None
-        refine.llm._openai_client = None
-        refine.llm._openrouter_client = None
-        refine.llm._gemini_client = None
-        refine.llm._groq_client_signature = None
-        refine.llm._openai_client_signature = None
-        refine.llm._openrouter_client_signature = None
-        refine.llm._gemini_client_signature = None
+        refine.llm._clients.clear()
+        refine.llm._signatures.clear()
 
     def test_openai_default(self, monkeypatch):
         """OpenAI-Provider nutzt OpenAI-Client."""

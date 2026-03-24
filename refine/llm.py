@@ -27,14 +27,8 @@ _SUPPORTED_REFINE_PROVIDERS = ("gemini", "groq", "openai", "openrouter")
 
 # Client Singletons (Lazy Init, spart ~30-50ms pro Aufruf durch Connection-Reuse)
 _client_lock = threading.Lock()
-_groq_client = None
-_openai_client = None
-_openrouter_client = None
-_gemini_client = None
-_groq_client_signature: str | None = None
-_openai_client_signature: str | None = None
-_openrouter_client_signature: tuple[str, str] | None = None
-_gemini_client_signature: str | None = None
+_clients: dict[str, object] = {}         # provider -> client instance
+_signatures: dict[str, object] = {}      # provider -> signature for cache invalidation
 
 
 def _normalize_refine_provider(provider: str) -> str:
@@ -49,80 +43,65 @@ def _normalize_refine_provider(provider: str) -> str:
     )
 
 
+def _get_or_create_client(name: str, env_var: str, signature_fn, factory):
+    """Double-checked locking für Thread-Safe Lazy-Init eines LLM-Clients.
+
+    Args:
+        name: Provider-Name für Logging und Cache-Key.
+        env_var: Name der Umgebungsvariable für den API-Key.
+        signature_fn: Berechnet Cache-Signatur aus dem API-Key.
+        factory: Erstellt einen neuen Client aus dem API-Key.
+    """
+    api_key = os.getenv(env_var)
+    if not api_key:
+        raise ValueError(f"{env_var} nicht gesetzt")
+
+    sig = signature_fn(api_key)
+    if _clients.get(name) is not None and _signatures.get(name) == sig:
+        return _clients[name]
+
+    with _client_lock:
+        api_key = os.getenv(env_var)
+        if not api_key:
+            _clients.pop(name, None)
+            _signatures.pop(name, None)
+            raise ValueError(f"{env_var} nicht gesetzt")
+        sig = signature_fn(api_key)
+        if _clients.get(name) is None or _signatures.get(name) != sig:
+            _clients[name] = factory(api_key)
+            _signatures[name] = sig
+            logger.debug(f"[{get_session_id()}] {name}-Client initialisiert")
+    return _clients[name]
+
+
 def _get_groq_client():
     """Gibt Groq-Client Singleton zurück (Lazy Init, Thread-Safe)."""
-    global _groq_client, _groq_client_signature
+    def _factory(api_key):
+        from groq import Groq
+        return Groq(api_key=api_key)
 
-    api_key = os.getenv("GROQ_API_KEY")
-    if not api_key:
-        raise ValueError("GROQ_API_KEY nicht gesetzt")
-
-    if _groq_client is None or _groq_client_signature != api_key:
-        with _client_lock:
-            api_key = os.getenv("GROQ_API_KEY")
-            if not api_key:
-                _groq_client = None
-                _groq_client_signature = None
-                raise ValueError("GROQ_API_KEY nicht gesetzt")
-            if _groq_client is None or _groq_client_signature != api_key:
-                from groq import Groq
-
-                _groq_client = Groq(api_key=api_key)
-                _groq_client_signature = api_key
-                logger.debug(f"[{get_session_id()}] Groq-Client initialisiert")
-    return _groq_client
+    return _get_or_create_client("Groq", "GROQ_API_KEY", lambda k: k, _factory)
 
 
 def _get_openai_client():
     """Gibt OpenAI-Client Singleton zurück (Lazy Init, Thread-Safe)."""
-    global _openai_client, _openai_client_signature
+    def _factory(api_key):
+        from openai import OpenAI
+        return OpenAI(api_key=api_key)
 
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise ValueError("OPENAI_API_KEY nicht gesetzt")
-
-    if _openai_client is None or _openai_client_signature != api_key:
-        with _client_lock:
-            api_key = os.getenv("OPENAI_API_KEY")
-            if not api_key:
-                _openai_client = None
-                _openai_client_signature = None
-                raise ValueError("OPENAI_API_KEY nicht gesetzt")
-            if _openai_client is None or _openai_client_signature != api_key:
-                from openai import OpenAI
-
-                _openai_client = OpenAI(api_key=api_key)
-                _openai_client_signature = api_key
-                logger.debug(f"[{get_session_id()}] OpenAI-Client initialisiert")
-    return _openai_client
+    return _get_or_create_client("OpenAI", "OPENAI_API_KEY", lambda k: k, _factory)
 
 
 def _get_openrouter_client():
     """Gibt OpenRouter-Client Singleton zurück (Lazy Init, Thread-Safe)."""
-    global _openrouter_client, _openrouter_client_signature
+    def _factory(api_key):
+        from openai import OpenAI
+        return OpenAI(base_url=OPENROUTER_BASE_URL, api_key=api_key)
 
-    api_key = os.getenv("OPENROUTER_API_KEY")
-    if not api_key:
-        raise ValueError("OPENROUTER_API_KEY nicht gesetzt")
-    signature = (OPENROUTER_BASE_URL, api_key)
-
-    if _openrouter_client is None or _openrouter_client_signature != signature:
-        with _client_lock:
-            api_key = os.getenv("OPENROUTER_API_KEY")
-            if not api_key:
-                _openrouter_client = None
-                _openrouter_client_signature = None
-                raise ValueError("OPENROUTER_API_KEY nicht gesetzt")
-            signature = (OPENROUTER_BASE_URL, api_key)
-            if _openrouter_client is None or _openrouter_client_signature != signature:
-                from openai import OpenAI
-
-                _openrouter_client = OpenAI(
-                    base_url=OPENROUTER_BASE_URL, api_key=api_key
-                )
-                _openrouter_client_signature = signature
-                logger.debug(f"[{get_session_id()}] OpenRouter-Client initialisiert")
-    return _openrouter_client
+    return _get_or_create_client(
+        "OpenRouter", "OPENROUTER_API_KEY",
+        lambda k: (OPENROUTER_BASE_URL, k), _factory,
+    )
 
 
 def _get_gemini_client():
@@ -130,26 +109,11 @@ def _get_gemini_client():
 
     Nutzt google-genai SDK für Gemini 3 API.
     """
-    global _gemini_client, _gemini_client_signature
+    def _factory(api_key):
+        from google import genai
+        return genai.Client(api_key=api_key)
 
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        raise ValueError("GEMINI_API_KEY nicht gesetzt")
-
-    if _gemini_client is None or _gemini_client_signature != api_key:
-        with _client_lock:
-            api_key = os.getenv("GEMINI_API_KEY")
-            if not api_key:
-                _gemini_client = None
-                _gemini_client_signature = None
-                raise ValueError("GEMINI_API_KEY nicht gesetzt")
-            if _gemini_client is None or _gemini_client_signature != api_key:
-                from google import genai
-
-                _gemini_client = genai.Client(api_key=api_key)
-                _gemini_client_signature = api_key
-                logger.debug(f"[{get_session_id()}] Gemini-Client initialisiert")
-    return _gemini_client
+    return _get_or_create_client("Gemini", "GEMINI_API_KEY", lambda k: k, _factory)
 
 
 def _get_refine_client(provider: str):
