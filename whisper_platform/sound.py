@@ -217,6 +217,7 @@ class WindowsSoundPlayer:
 
 # Singleton-Cache für Sound-Player (vermeidet wiederholte ctypes/CDLL Initialisierung)
 _sound_player_cache: "MacOSSoundPlayer | WindowsSoundPlayer | None" = None
+_sound_player_lock = threading.Lock()
 
 
 def get_sound_player() -> "MacOSSoundPlayer | WindowsSoundPlayer":
@@ -227,12 +228,16 @@ def get_sound_player() -> "MacOSSoundPlayer | WindowsSoundPlayer":
     """
     global _sound_player_cache
     if _sound_player_cache is None:
-        if sys.platform == "darwin":
-            _sound_player_cache = MacOSSoundPlayer()
-        elif sys.platform == "win32":
-            _sound_player_cache = WindowsSoundPlayer()
-        else:
-            raise NotImplementedError(f"Sound nicht implementiert für {sys.platform}")
+        with _sound_player_lock:
+            if _sound_player_cache is None:
+                if sys.platform == "darwin":
+                    _sound_player_cache = MacOSSoundPlayer()
+                elif sys.platform == "win32":
+                    _sound_player_cache = WindowsSoundPlayer()
+                else:
+                    raise NotImplementedError(
+                        f"Sound nicht implementiert für {sys.platform}"
+                    )
     return _sound_player_cache
 
 

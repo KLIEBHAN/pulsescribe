@@ -47,6 +47,13 @@ def test_redact_log_line_removes_transcript_previews(line: str, expected: str) -
     assert _redact_log_line(line) == expected
 
 
+def test_redact_log_line_text_field_non_greedy() -> None:
+    """Non-greedy regex redacts each text='...' field independently."""
+    line = "12:00:00 [DEBUG] text='secret1' status='ok' text='secret2'\n"
+    result = _redact_log_line(line)
+    assert result == "12:00:00 [DEBUG] text='<redacted>' status='ok' text='<redacted>'\n"
+
+
 def test_redact_log_line_leaves_non_sensitive_lines_unchanged() -> None:
     line = "12:00:00 [INFO] Starting PulseScribe\n"
     assert _redact_log_line(line) == line

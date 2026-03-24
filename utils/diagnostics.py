@@ -146,7 +146,7 @@ def _redact_log_line(line: str) -> str:
         if marker in line:
             return _redact_after_marker(line, marker)
     if " text='" in line:
-        return re.sub(r"text='.*'", "text='<redacted>'", line)
+        return re.sub(r"text='.*?'(?=\s|$)", "text='<redacted>'", line)
     return line
 
 
