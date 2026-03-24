@@ -171,3 +171,30 @@ class TestLoadEnvironmentReload:
         finally:
             os.environ.pop("PULSESCRIBE_TEST_PRELOADED", None)
             env_module._loaded_env_values = {}
+
+
+def test_fallback_dotenv_values_parse_quotes_comments_and_export(tmp_path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        '\n'.join(
+            [
+                'export PULSESCRIBE_MODE="local"',
+                'PULSESCRIBE_HOLD_HOTKEY="ctrl+win"  # readable comment',
+                "PULSESCRIBE_LANGUAGE='de'",
+                "EMPTY_VALUE=",
+                "PLAIN_VALUE=no-comment",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    values = env_module._fallback_dotenv_values(env_file)
+
+    assert values == {
+        "PULSESCRIBE_MODE": "local",
+        "PULSESCRIBE_HOLD_HOTKEY": "ctrl+win",
+        "PULSESCRIBE_LANGUAGE": "de",
+        "EMPTY_VALUE": "",
+        "PLAIN_VALUE": "no-comment",
+    }

@@ -38,19 +38,55 @@ def _get_local_env_path() -> Path:
     return Path(__file__).resolve().parent.parent / ".env"
 
 
+def _parse_env_line(raw_line: str) -> tuple[str | None, str | None]:
+    """Parse one ``.env`` line with minimal quote/comment handling."""
+    line = raw_line.strip()
+    if not line or line.startswith("#"):
+        return None, None
+
+    if line.startswith("export "):
+        line = line[7:].lstrip()
+    if "=" not in line:
+        return None, None
+
+    key, value = line.split("=", 1)
+    key = key.strip()
+    if not key:
+        return None, None
+
+    value = value.strip()
+    if not value:
+        return key, ""
+
+    parsed: list[str] = []
+    in_single = False
+    in_double = False
+
+    for index, char in enumerate(value):
+        if char == "'" and not in_double:
+            in_single = not in_single
+            continue
+        if char == '"' and not in_single:
+            in_double = not in_double
+            continue
+        if char == "#" and not in_single and not in_double:
+            prev = value[index - 1] if index > 0 else ""
+            if not prev or prev.isspace():
+                break
+        parsed.append(char)
+
+    return key, "".join(parsed).strip()
+
+
 def _fallback_dotenv_values(path: Path) -> dict[str, str]:
     """Best-effort `.env` parser when python-dotenv is unavailable."""
     values: dict[str, str] = {}
     try:
         for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
+            key, value = _parse_env_line(raw_line)
+            if key is None or value is None:
                 continue
-            key, value = line.split("=", 1)
-            key = key.strip()
-            if not key:
-                continue
-            values[key] = value.strip()
+            values[key] = value
     except OSError:
         return {}
     return values

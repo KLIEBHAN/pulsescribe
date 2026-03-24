@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 _VERSION_ENV_KEYS = ("PULSESCRIBE_VERSION", "WHISPERGO_VERSION", "VERSION")
+_DIST_VERSION_NAMES = ("pulsescribe", "PulseScribe")
 
 
 def _read_text_safe(path: Path) -> str:
@@ -68,6 +69,57 @@ def _version_from_changelog(changelog_path: Path) -> str | None:
     return match.group(1) if match else None
 
 
+def _version_from_importlib_metadata() -> str | None:
+    try:
+        from importlib import metadata
+    except Exception:
+        return None
+
+    for dist_name in _DIST_VERSION_NAMES:
+        try:
+            version = metadata.version(dist_name)
+        except metadata.PackageNotFoundError:
+            continue
+        except Exception:
+            return None
+        if version:
+            return str(version)
+    return None
+
+
+def _version_from_windows_executable() -> str | None:
+    if sys.platform != "win32":
+        return None
+    if not getattr(sys, "frozen", False):
+        return None
+
+    executable = getattr(sys, "executable", "")
+    if not executable:
+        return None
+
+    try:
+        import win32api  # type: ignore[import-not-found]
+    except Exception:
+        return None
+
+    try:
+        info = win32api.GetFileVersionInfo(executable, "\\")
+        ms = int(info["FileVersionMS"])
+        ls = int(info["FileVersionLS"])
+    except Exception:
+        return None
+
+    parts = [
+        (ms >> 16) & 0xFFFF,
+        ms & 0xFFFF,
+        (ls >> 16) & 0xFFFF,
+        ls & 0xFFFF,
+    ]
+    while len(parts) > 3 and parts[-1] == 0:
+        parts.pop()
+    return ".".join(str(part) for part in parts)
+
+
 def get_app_version(*, default: str = "unknown", project_root: Path | None = None) -> str:
     """Resolve app version from environment, bundle metadata, or repo files."""
     env_version = _version_from_env()
@@ -86,5 +138,13 @@ def get_app_version(*, default: str = "unknown", project_root: Path | None = Non
     changelog_version = _version_from_changelog(root / "CHANGELOG.md")
     if changelog_version:
         return changelog_version
+
+    metadata_version = _version_from_importlib_metadata()
+    if metadata_version:
+        return metadata_version
+
+    windows_exe_version = _version_from_windows_executable()
+    if windows_exe_version:
+        return windows_exe_version
 
     return default
