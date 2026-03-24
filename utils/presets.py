@@ -24,6 +24,8 @@ LOCAL_PRESET_BASE: dict[str, str] = {
     "num_workers": "",
     "without_timestamps": "default",
     "vad_filter": "default",
+    "lightning_batch_size": "12",
+    "lightning_quant": "none",
 }
 
 LOCAL_PRESETS: dict[str, dict[str, str]] = {
@@ -170,5 +172,17 @@ def apply_local_preset_to_env(preset_name: str) -> bool:
     _save_optional_str("PULSESCRIBE_LOCAL_COMPUTE_TYPE", values.get("compute_type"))
     _save_optional_str("PULSESCRIBE_LOCAL_CPU_THREADS", values.get("cpu_threads"))
     _save_optional_str("PULSESCRIBE_LOCAL_NUM_WORKERS", values.get("num_workers"))
+
+    lightning_batch_size = (values.get("lightning_batch_size") or "").strip()
+    if not lightning_batch_size or lightning_batch_size == "12":
+        remove_env_setting("PULSESCRIBE_LIGHTNING_BATCH_SIZE")
+    else:
+        save_env_setting("PULSESCRIBE_LIGHTNING_BATCH_SIZE", lightning_batch_size)
+
+    lightning_quant = (values.get("lightning_quant") or "").strip().lower()
+    if not lightning_quant or lightning_quant == "none":
+        remove_env_setting("PULSESCRIBE_LIGHTNING_QUANT")
+    else:
+        save_env_setting("PULSESCRIBE_LIGHTNING_QUANT", lightning_quant)
 
     return True

@@ -42,3 +42,30 @@ def test_apply_local_preset_to_env_preserves_explicit_whisper_backend(
     assert ("PULSESCRIBE_MODE", "local") in saved
     assert ("PULSESCRIBE_LOCAL_BACKEND", "whisper") in saved
     assert "PULSESCRIBE_LOCAL_BACKEND" not in removed
+
+
+def test_apply_local_preset_to_env_resets_lightning_specific_defaults(
+    monkeypatch,
+) -> None:
+    custom_presets = dict(presets.LOCAL_PRESETS)
+    custom_presets["Test MLX Preset"] = {
+        "local_backend": "mlx",
+        "local_model": "turbo",
+    }
+    monkeypatch.setattr(presets, "LOCAL_PRESETS", custom_presets)
+
+    saved: list[tuple[str, str]] = []
+    removed: list[str] = []
+    monkeypatch.setattr(
+        presets, "save_env_setting", lambda key, value: saved.append((key, value))
+    )
+    monkeypatch.setattr(presets, "remove_env_setting", removed.append)
+
+    assert presets.apply_local_preset_to_env("Test MLX Preset") is True
+
+    assert "PULSESCRIBE_LIGHTNING_BATCH_SIZE" in removed
+    assert "PULSESCRIBE_LIGHTNING_QUANT" in removed
+    assert not any(
+        key in {"PULSESCRIBE_LIGHTNING_BATCH_SIZE", "PULSESCRIBE_LIGHTNING_QUANT"}
+        for key, _ in saved
+    )

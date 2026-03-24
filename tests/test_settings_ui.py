@@ -3,7 +3,13 @@
 import pytest
 from unittest.mock import MagicMock, patch
 
-from ui.welcome import WelcomeController, _is_env_enabled_default_true
+from ui.welcome import (
+    LEGACY_LOCAL_FP16_ENV_KEY,
+    LOCAL_FP16_ENV_KEY,
+    WelcomeController,
+    _bool_override_from_env,
+    _is_env_enabled_default_true,
+)
 
 
 class TestEnvEnabledDefaultTrue:
@@ -40,6 +46,38 @@ class TestEnvEnabledDefaultTrue:
         """Nicht erkannte Werte geben True zurück (default-true)."""
         with patch("utils.preferences.get_env_setting", return_value="maybe"):
             assert _is_env_enabled_default_true("TEST_KEY") is True
+
+
+class TestBoolOverrideFromEnv:
+    def test_prefers_canonical_value_over_legacy(self, monkeypatch):
+        values = {
+            LOCAL_FP16_ENV_KEY: "false",
+            LEGACY_LOCAL_FP16_ENV_KEY: "true",
+        }
+        monkeypatch.setattr(
+            "ui.welcome.get_env_setting",
+            lambda key: values.get(key),
+        )
+
+        assert (
+            _bool_override_from_env(LOCAL_FP16_ENV_KEY, LEGACY_LOCAL_FP16_ENV_KEY)
+            == "false"
+        )
+
+    def test_uses_legacy_value_when_canonical_is_missing(self, monkeypatch):
+        values = {
+            LOCAL_FP16_ENV_KEY: None,
+            LEGACY_LOCAL_FP16_ENV_KEY: "true",
+        }
+        monkeypatch.setattr(
+            "ui.welcome.get_env_setting",
+            lambda key: values.get(key),
+        )
+
+        assert (
+            _bool_override_from_env(LOCAL_FP16_ENV_KEY, LEGACY_LOCAL_FP16_ENV_KEY)
+            == "true"
+        )
 
 
 class TestLightningBatchSizeParsing:
@@ -130,12 +168,163 @@ class TestLightningQuantizationMapping:
         assert result == "4bit"
 
 
+class TestWelcomeLocalPresetBehavior:
+    def test_apply_local_preset_resets_lightning_fields(self):
+        ctrl = WelcomeController.__new__(WelcomeController)
+        ctrl._mode_popup = _FakePopup(["deepgram", "local"], selected="deepgram")
+        ctrl._local_backend_popup = _FakePopup(
+            ["auto", "whisper", "faster", "mlx", "lightning"],
+            selected="lightning",
+        )
+        ctrl._local_model_popup = _FakePopup(
+            ["default", "turbo", "large", "large-v3"],
+            selected="large-v3",
+        )
+        ctrl._device_popup = _FakePopup(["auto", "mps", "cpu", "cuda"], selected="cuda")
+        ctrl._warmup_popup = _FakePopup(["auto", "true", "false"], selected="true")
+        ctrl._local_fast_popup = _FakePopup(
+            ["default", "true", "false"],
+            selected="false",
+        )
+        ctrl._fp16_popup = _FakePopup(["default", "true", "false"], selected="true")
+        ctrl._beam_size_field = _FakeField("9")
+        ctrl._best_of_field = _FakeField("4")
+        ctrl._temperature_field = _FakeField("0.7")
+        ctrl._compute_type_field = _FakeField("float16")
+        ctrl._cpu_threads_field = _FakeField("16")
+        ctrl._num_workers_field = _FakeField("4")
+        ctrl._without_timestamps_popup = _FakePopup(
+            ["default", "true", "false"],
+            selected="false",
+        )
+        ctrl._vad_filter_popup = _FakePopup(
+            ["default", "true", "false"],
+            selected="false",
+        )
+        ctrl._lightning_batch_slider = _FakeSlider(24)
+        ctrl._lightning_batch_value_label = _FakeField("24")
+        ctrl._lightning_quant_popup = _FakePopup(
+            ["none (best quality)", "8bit", "4bit (smallest memory)"],
+            selected="4bit (smallest memory)",
+        )
+        ctrl._lightning_quant_popup.selected_index = 2
+        ctrl._update_local_settings_visibility = lambda: None
+
+        ctrl._apply_local_preset("macOS: MLX Fast (turbo)")
+
+        assert ctrl._mode_popup.titleOfSelectedItem() == "local"
+        assert ctrl._lightning_batch_slider.intValue() == 12
+        assert ctrl._lightning_batch_value_label.stringValue() == "12"
+        assert ctrl._lightning_quant_popup.indexOfSelectedItem() == 0
+
+
+class TestWelcomeSaveSettings:
+    def test_save_settings_uses_canonical_fp16_key_and_removes_legacy(self, monkeypatch):
+        save_calls: list[tuple[str, str]] = []
+        remove_calls: list[str] = []
+
+        monkeypatch.setattr(
+            "ui.welcome.save_env_setting",
+            lambda key, value: save_calls.append((key, value)),
+        )
+        monkeypatch.setattr(
+            "ui.welcome.remove_env_setting",
+            lambda key: remove_calls.append(key),
+        )
+
+        ctrl = WelcomeController.__new__(WelcomeController)
+        ctrl._mode_popup = None
+        ctrl._local_backend_popup = None
+        ctrl._local_model_popup = None
+        ctrl._lang_popup = None
+        ctrl._device_popup = None
+        ctrl._warmup_popup = None
+        ctrl._local_fast_popup = None
+        ctrl._fp16_popup = _FakePopup(["default", "true", "false"], selected="true")
+        ctrl._beam_size_field = None
+        ctrl._best_of_field = None
+        ctrl._temperature_field = None
+        ctrl._compute_type_field = None
+        ctrl._cpu_threads_field = None
+        ctrl._num_workers_field = None
+        ctrl._without_timestamps_popup = None
+        ctrl._vad_filter_popup = None
+        ctrl._lightning_batch_slider = None
+        ctrl._lightning_quant_popup = None
+        ctrl._streaming_checkbox = None
+        ctrl._refine_checkbox = None
+        ctrl._clipboard_restore_checkbox = None
+        ctrl._overlay_checkbox = None
+        ctrl._dock_icon_checkbox = None
+        ctrl._rtf_checkbox = None
+        ctrl._provider_popup = None
+        ctrl._model_field = None
+        ctrl._vocab_text_view = None
+        ctrl._save_custom_prompts = lambda: None
+        ctrl._on_settings_changed_callback = None
+        ctrl._save_btn = None
+
+        ctrl._save_all_settings()
+
+        assert (LOCAL_FP16_ENV_KEY, "true") in save_calls
+        assert LEGACY_LOCAL_FP16_ENV_KEY in remove_calls
+
+
 class _FakeContainer:
     def __init__(self):
         self.hidden = None
 
     def setHidden_(self, value):
         self.hidden = value
+
+
+class _FakePopup:
+    def __init__(self, items=None, selected=None):
+        self.items = list(items or [])
+        self.selected = selected
+        self.selected_index = 0
+
+    def addItemWithTitle_(self, title):
+        self.items.append(title)
+
+    def selectItemWithTitle_(self, title):
+        if title not in self.items:
+            raise ValueError(title)
+        self.selected = title
+        self.selected_index = self.items.index(title)
+
+    def selectItemAtIndex_(self, index):
+        self.selected_index = index
+        if 0 <= index < len(self.items):
+            self.selected = self.items[index]
+
+    def titleOfSelectedItem(self):
+        return self.selected
+
+    def indexOfSelectedItem(self):
+        return self.selected_index
+
+
+class _FakeField:
+    def __init__(self, value=""):
+        self.value = value
+
+    def setStringValue_(self, value):
+        self.value = value
+
+    def stringValue(self):
+        return self.value
+
+
+class _FakeSlider:
+    def __init__(self, value: int):
+        self._value = value
+
+    def setIntValue_(self, value: int):
+        self._value = value
+
+    def intValue(self):
+        return self._value
 
 
 class TestWelcomeLogsSegmentSwitch:

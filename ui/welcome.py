@@ -60,6 +60,22 @@ LOCAL_MODEL_OPTIONS = [
 DEVICE_OPTIONS = ["auto", "mps", "cpu", "cuda"]
 BOOL_OVERRIDE_OPTIONS = ["default", "true", "false"]
 WARMUP_OPTIONS = ["auto", "true", "false"]
+LOCAL_FP16_ENV_KEY = "PULSESCRIBE_FP16"
+LEGACY_LOCAL_FP16_ENV_KEY = "PULSESCRIBE_LOCAL_FP16"
+
+
+def _bool_override_from_env(*keys: str) -> str:
+    """Return default/true/false from the first recognized env override."""
+    for key in keys:
+        raw = get_env_setting(key)
+        if raw is None:
+            continue
+        normalized = raw.strip().lower()
+        if normalized in ("1", "true", "yes", "on"):
+            return "true"
+        if normalized in ("0", "false", "no", "off"):
+            return "false"
+    return "default"
 
 
 def _get_color(r: int, g: int, b: int, a: float = 1.0):
@@ -1206,17 +1222,6 @@ class WelcomeController:
         row_height = 28
         current_y = card_y + card_height - 78
 
-        def _bool_override_from_env(key: str) -> str:
-            raw = get_env_setting(key)
-            if raw is None:
-                return "default"
-            raw = raw.strip().lower()
-            if raw in ("1", "true", "yes", "on"):
-                return "true"
-            if raw in ("0", "false", "no", "off"):
-                return "false"
-            return "default"
-
         # Preset (applies values, not persisted)
         self._add_setting_label(base_x, current_y, "Preset:", parent_view)
         preset_popup = NSPopUpButton.alloc().initWithFrame_(
@@ -1296,7 +1301,9 @@ class WelcomeController:
         fp16_popup.setFont_(NSFont.systemFontOfSize_(11))
         for v in BOOL_OVERRIDE_OPTIONS:
             fp16_popup.addItemWithTitle_(v)
-        fp16_popup.selectItemWithTitle_(_bool_override_from_env("PULSESCRIBE_FP16"))
+        fp16_popup.selectItemWithTitle_(
+            _bool_override_from_env(LOCAL_FP16_ENV_KEY, LEGACY_LOCAL_FP16_ENV_KEY)
+        )
         self._fp16_popup = fp16_popup
         parent_view.addSubview_(fp16_popup)
         current_y -= row_height
@@ -2840,6 +2847,34 @@ class WelcomeController:
             except Exception:
                 pass
 
+        def set_slider(slider, label, value: str) -> None:
+            if slider is None:
+                return
+            try:
+                slider.setIntValue_(int(value))
+            except Exception:
+                return
+            if label is None:
+                return
+            try:
+                label.setStringValue_(str(int(slider.intValue())))
+            except Exception:
+                pass
+
+        def set_lightning_quant_popup(popup, value: str) -> None:
+            if popup is None:
+                return
+            normalized = (value or "none").strip().lower()
+            try:
+                if normalized == "4bit":
+                    popup.selectItemAtIndex_(2)
+                elif normalized == "8bit":
+                    popup.selectItemAtIndex_(1)
+                else:
+                    popup.selectItemAtIndex_(0)
+            except Exception:
+                pass
+
         # Immer Local Mode aktivieren (sonst sind Backend/Model hidden)
         set_popup(self._mode_popup, "local")
         self._update_local_settings_visibility()
@@ -2868,6 +2903,15 @@ class WelcomeController:
             values.get("without_timestamps", "default"),
         )
         set_popup(self._vad_filter_popup, values.get("vad_filter", "default"))
+        set_slider(
+            self._lightning_batch_slider,
+            self._lightning_batch_value_label,
+            values.get("lightning_batch_size", "12"),
+        )
+        set_lightning_quant_popup(
+            self._lightning_quant_popup,
+            values.get("lightning_quant", "none"),
+        )
         return
 
     def _build_footer(self) -> None:
@@ -3095,7 +3139,9 @@ class WelcomeController:
         _save_bool_override("PULSESCRIBE_LOCAL_FAST", self._local_fast_popup)
 
         # FP16 (default/true/false)
-        _save_bool_override("PULSESCRIBE_FP16", self._fp16_popup)
+        if self._fp16_popup:
+            _save_bool_override(LOCAL_FP16_ENV_KEY, self._fp16_popup)
+            remove_env_setting(LEGACY_LOCAL_FP16_ENV_KEY)
 
         def _save_optional_int(key: str, field) -> None:
             if field is None:
