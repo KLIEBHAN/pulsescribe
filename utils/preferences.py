@@ -112,6 +112,12 @@ def read_env_file(path: Path | None = None) -> dict[str, str]:
     return dict(values)
 
 
+def _env_line_has_key(raw_line: str, key_name: str) -> tuple[bool, str | None]:
+    """Return whether a raw `.env` line defines ``key_name`` and its parsed value."""
+    key, value = _parse_env_line(raw_line)
+    return key == key_name, value
+
+
 def _invalidate_env_cache() -> None:
     global _env_cache
     _env_cache = None
@@ -253,8 +259,8 @@ def save_api_key(key_name: str, value: str) -> None:
     # Key aktualisieren oder hinzufügen
     found = False
     for i, line in enumerate(lines):
-        if line.startswith(f"{key_name}="):
-            existing_value = line.split("=", 1)[1]
+        matches_key, existing_value = _env_line_has_key(line, key_name)
+        if matches_key:
             if existing_value == value:
                 return
             lines[i] = f"{key_name}={value}"
@@ -341,7 +347,9 @@ def remove_env_setting(key_name: str) -> None:
 
     try:
         lines = env_path.read_text(encoding="utf-8").splitlines()
-        new_lines = [line for line in lines if not line.startswith(f"{key_name}=")]
+        new_lines = [
+            line for line in lines if not _env_line_has_key(line, key_name)[0]
+        ]
         if len(new_lines) == len(lines):
             return
         env_path.write_text("\n".join(new_lines) + "\n" if new_lines else "", encoding="utf-8")

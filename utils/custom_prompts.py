@@ -161,6 +161,8 @@ def _merge_user_with_defaults(user_config: dict) -> dict:
 def _merge_voice_commands(user: dict, defaults: dict) -> dict:
     """Voice-Commands: User überschreibt komplett oder Default."""
     user_vc = user.get("voice_commands", {})
+    if not isinstance(user_vc, dict):
+        user_vc = {}
     return {
         "instruction": user_vc.get(
             "instruction", defaults["voice_commands"]["instruction"]
@@ -191,8 +193,16 @@ def _merge_prompts(user: dict, defaults: dict) -> dict:
 def _merge_app_contexts(user: dict, defaults: dict) -> dict:
     """App-Contexts: Defaults + User-Ergänzungen/Überschreibungen."""
     merged = dict(defaults["app_contexts"])
-    if "app_contexts" in user:
-        merged.update(user["app_contexts"])
+    user_app_contexts = user.get("app_contexts", {})
+    if not isinstance(user_app_contexts, dict):
+        return merged
+
+    for app, ctx in user_app_contexts.items():
+        normalized_app = str(app).strip()
+        normalized_ctx = str(ctx).strip()
+        if not normalized_app or not normalized_ctx:
+            continue
+        merged[normalized_app] = normalized_ctx
     return merged
 
 

@@ -80,6 +80,31 @@ def test_remove_env_setting_is_noop_when_key_does_not_exist(tmp_path, monkeypatc
     assert write_calls == 0
 
 
+def test_save_env_setting_updates_spaced_assignment_without_creating_duplicate(
+    tmp_path, monkeypatch
+):
+    _isolate_prefs(tmp_path, monkeypatch)
+    prefs.ENV_FILE.write_text("PULSESCRIBE_MODE = deepgram\n", encoding="utf-8")
+
+    prefs.save_env_setting("PULSESCRIBE_MODE", "local")
+
+    assert prefs.ENV_FILE.read_text(encoding="utf-8") == "PULSESCRIBE_MODE=local\n"
+    assert prefs.read_env_file()["PULSESCRIBE_MODE"] == "local"
+
+
+def test_remove_env_setting_removes_spaced_assignment(tmp_path, monkeypatch):
+    _isolate_prefs(tmp_path, monkeypatch)
+    prefs.ENV_FILE.write_text(
+        "PULSESCRIBE_MODE = deepgram\nPULSESCRIBE_LANGUAGE=en\n",
+        encoding="utf-8",
+    )
+
+    prefs.remove_env_setting("PULSESCRIBE_MODE")
+
+    assert prefs.ENV_FILE.read_text(encoding="utf-8") == "PULSESCRIBE_LANGUAGE=en\n"
+    assert "PULSESCRIBE_MODE" not in prefs.read_env_file()
+
+
 def test_read_env_file_parses_quoted_values_and_inline_comments(tmp_path, monkeypatch):
     _isolate_prefs(tmp_path, monkeypatch)
     prefs.ENV_FILE.write_text(

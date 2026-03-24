@@ -139,6 +139,26 @@ prompt = 123
 
         assert get_custom_prompt_for_context("email") == CONTEXT_PROMPTS["email"]
 
+    def test_non_table_voice_commands_falls_back_to_default(self, prompts_file):
+        """Semantisch kaputte voice_commands-Rootwerte duerfen nicht crashen."""
+        from utils.custom_prompts import load_custom_prompts
+
+        prompts_file.write_text('voice_commands = "broken"\n', encoding="utf-8")
+
+        result = load_custom_prompts(path=prompts_file)
+
+        assert result["voice_commands"]["instruction"] == VOICE_COMMANDS_INSTRUCTION
+
+    def test_non_table_app_contexts_fall_back_to_defaults(self, prompts_file):
+        """Semantisch kaputte app_contexts-Rootwerte duerfen nicht crashen."""
+        from utils.custom_prompts import load_custom_prompts
+
+        prompts_file.write_text("app_contexts = [1, 2]\n", encoding="utf-8")
+
+        result = load_custom_prompts(path=prompts_file)
+
+        assert result["app_contexts"] == DEFAULT_APP_CONTEXTS
+
     def test_cache_invalidation_on_mtime_change(self, prompts_file):
         """Reload bei Datei-Änderung (mtime-basierter Cache)."""
         from utils.custom_prompts import load_custom_prompts
