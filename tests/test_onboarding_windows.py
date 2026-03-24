@@ -286,6 +286,44 @@ def test_on_api_key_input_changed_updates_status_and_navigation():
     assert wizard._update_navigation_called == 2
 
 
+def test_can_advance_fast_with_existing_groq_api_key(monkeypatch):
+    import ui.onboarding_wizard_windows as wizard_mod
+
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+    wizard._step = OnboardingStep.CHOOSE_GOAL
+    wizard._choice = OnboardingChoice.FAST
+    wizard._api_key_field = _FakeField("")
+
+    monkeypatch.setattr(
+        wizard_mod,
+        "get_api_key",
+        lambda key: "grq-test-key" if key == "GROQ_API_KEY" else None,
+    )
+
+    assert wizard._can_advance() is True
+
+
+def test_select_choice_fast_hides_api_input_when_groq_key_exists(monkeypatch):
+    import ui.onboarding_wizard_windows as wizard_mod
+
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+    wizard._choice_buttons = {}
+    wizard._api_key_container = _FakeLabel()
+    wizard._api_key_status = _FakeLabel()
+    wizard._api_key_field = _FakeField("")
+    wizard._update_navigation = lambda: None
+
+    monkeypatch.setattr(
+        wizard_mod,
+        "get_api_key",
+        lambda key: "grq-test-key" if key == "GROQ_API_KEY" else None,
+    )
+
+    wizard._select_choice(OnboardingChoice.FAST, save=False)
+
+    assert wizard._api_key_container.visible is False
+
+
 def test_start_hotkey_recording_uses_qt_fallback_when_pynput_missing(monkeypatch):
     import ui.onboarding_wizard_windows as wizard_mod
 

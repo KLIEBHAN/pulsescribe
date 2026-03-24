@@ -1094,7 +1094,7 @@ class OnboardingWizardWindows(QDialog):
         self._update_navigation()
 
     def _has_api_key(self) -> bool:
-        """Check if a Deepgram API key exists (entered or saved)."""
+        """Check if a cloud fast-mode API key exists (entered or saved)."""
         import os
 
         entered_key = ""
@@ -1104,6 +1104,8 @@ class OnboardingWizardWindows(QDialog):
             entered_key
             or get_api_key("DEEPGRAM_API_KEY")
             or os.getenv("DEEPGRAM_API_KEY")
+            or get_api_key("GROQ_API_KEY")
+            or os.getenv("GROQ_API_KEY")
         )
 
     def _apply_choice_preset(self, choice: OnboardingChoice) -> None:
