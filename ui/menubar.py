@@ -1,9 +1,23 @@
 """Menübar-Controller für pulsescribe."""
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-import objc
-from Foundation import NSObject  # type: ignore[import-not-found]
+try:
+    import objc  # type: ignore[import-not-found]
+    from Foundation import NSObject  # type: ignore[import-not-found]
+except Exception:
+    objc = None
+
+    class NSObject:  # type: ignore[no-redef]
+        """Fallback-Basisklasse für import-sichere Tests ohne PyObjC."""
+
+        pass
+
+if TYPE_CHECKING:
+    NSObjectBase = object
+else:
+    NSObjectBase = NSObject
 
 from config import LOG_FILE
 from utils.state import AppState
@@ -21,19 +35,33 @@ MENUBAR_ICONS = {
 }
 
 
-class _MenuActionHandler(NSObject):
+def _objc_signature(signature: bytes):
+    """Return a no-op decorator when PyObjC is unavailable."""
+
+    def _decorate(func):
+        if objc is None:
+            return func
+        return objc.signature(signature)(func)
+
+    return _decorate
+
+
+class _MenuActionHandler(NSObjectBase):
     """Objective-C Target für Menü-Actions."""
 
     welcome_callback = None  # Callback für Settings-Fenster
 
     def initWithLogPath_(self, log_path: str):
+        if objc is None:
+            self.log_path = log_path
+            return self
         self = objc.super(_MenuActionHandler, self).init()
         if self is None:
             return None
         self.log_path = log_path
         return self
 
-    @objc.signature(b"v@:@")
+    @_objc_signature(b"v@:@")
     def openLogs_(self, _sender) -> None:
         """Öffnet die Log-Datei im Standard-Viewer."""
         from AppKit import NSWorkspace  # type: ignore[import-not-found]
@@ -44,13 +72,13 @@ class _MenuActionHandler(NSObject):
             log_path.touch()
         NSWorkspace.sharedWorkspace().openFile_(str(log_path))
 
-    @objc.signature(b"v@:@")
+    @_objc_signature(b"v@:@")
     def showSetup_(self, _sender) -> None:
         """Öffnet das Settings/Welcome-Fenster."""
         if self.welcome_callback:
             self.welcome_callback()
 
-    @objc.signature(b"v@:@")
+    @_objc_signature(b"v@:@")
     def exportDiagnostics_(self, _sender) -> None:
         """Erstellt einen Diagnostics-Report (ohne Audio) und öffnet Finder."""
         try:

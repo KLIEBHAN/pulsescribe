@@ -3585,9 +3585,13 @@ def _create_simple_handler_class():
     return SimpleHandler
 
 
-_SimpleHandler = _create_simple_handler_class()
-
-_CheckboxHandler = _create_checkbox_handler_class()
+try:
+    _SimpleHandler = _create_simple_handler_class()
+    _CheckboxHandler = _create_checkbox_handler_class()
+except Exception:
+    # Keep module import-safe for helper tests on systems without PyObjC/Foundation.
+    _SimpleHandler = None
+    _CheckboxHandler = None
 
 
 def _create_slider_handler_class():
@@ -3617,7 +3621,10 @@ def _create_slider_handler_class():
     return SliderHandler
 
 
-_SliderHandler = _create_slider_handler_class()
+try:
+    _SliderHandler = _create_slider_handler_class()
+except Exception:
+    _SliderHandler = None
 
 
 def _create_logs_auto_refresh_handler_class():
@@ -3641,7 +3648,10 @@ def _create_logs_auto_refresh_handler_class():
     return LogsAutoRefreshHandler
 
 
-_LogsAutoRefreshHandler = _create_logs_auto_refresh_handler_class()
+try:
+    _LogsAutoRefreshHandler = _create_logs_auto_refresh_handler_class()
+except Exception:
+    _LogsAutoRefreshHandler = None
 
 
 def _create_open_logs_in_finder_handler_class():
@@ -3668,7 +3678,10 @@ def _create_open_logs_in_finder_handler_class():
     return OpenLogsInFinderHandler
 
 
-_OpenLogsInFinderHandler = _create_open_logs_in_finder_handler_class()
+try:
+    _OpenLogsInFinderHandler = _create_open_logs_in_finder_handler_class()
+except Exception:
+    _OpenLogsInFinderHandler = None
 
 
 def _create_setup_action_handler_class():
@@ -3692,7 +3705,10 @@ def _create_setup_action_handler_class():
     return SetupActionHandler
 
 
-_SetupActionHandler = _create_setup_action_handler_class()
+try:
+    _SetupActionHandler = _create_setup_action_handler_class()
+except Exception:
+    _SetupActionHandler = None
 
 
 def _create_hotkey_action_handler_class():
@@ -3716,7 +3732,10 @@ def _create_hotkey_action_handler_class():
     return HotkeyActionHandler
 
 
-_HotkeyActionHandler = _create_hotkey_action_handler_class()
+try:
+    _HotkeyActionHandler = _create_hotkey_action_handler_class()
+except Exception:
+    _HotkeyActionHandler = None
 
 
 def _create_logs_segment_handler_class():
@@ -3740,7 +3759,10 @@ def _create_logs_segment_handler_class():
     return LogsSegmentHandler
 
 
-_LogsSegmentHandler = _create_logs_segment_handler_class()
+try:
+    _LogsSegmentHandler = _create_logs_segment_handler_class()
+except Exception:
+    _LogsSegmentHandler = None
 
 
 def _create_clear_transcripts_handler_class():
@@ -3767,4 +3789,7 @@ def _create_clear_transcripts_handler_class():
     return ClearTranscriptsHandler
 
 
-_ClearTranscriptsHandler = _create_clear_transcripts_handler_class()
+try:
+    _ClearTranscriptsHandler = _create_clear_transcripts_handler_class()
+except Exception:
+    _ClearTranscriptsHandler = None

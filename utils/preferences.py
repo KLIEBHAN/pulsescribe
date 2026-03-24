@@ -46,9 +46,38 @@ def _parse_env_line(raw_line: str) -> tuple[str | None, str | None]:
 
         parsed = dotenv_values(stream=StringIO(f"{raw_line}\n"))
     except Exception:
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        if "=" not in line:
+            return None, None
+
         key, value = line.split("=", 1)
         key = key.strip()
-        return (key, value.strip()) if key else (None, None)
+        if not key:
+            return None, None
+
+        value = value.strip()
+        if not value:
+            return key, ""
+
+        parsed_value: list[str] = []
+        in_single = False
+        in_double = False
+
+        for index, char in enumerate(value):
+            if char == "'" and not in_double:
+                in_single = not in_single
+                continue
+            if char == '"' and not in_single:
+                in_double = not in_double
+                continue
+            if char == "#" and not in_single and not in_double:
+                prev = value[index - 1] if index > 0 else ""
+                if not prev or prev.isspace():
+                    break
+            parsed_value.append(char)
+
+        return key, "".join(parsed_value).strip()
 
     for key, value in parsed.items():
         normalized_key = str(key or "").strip()
