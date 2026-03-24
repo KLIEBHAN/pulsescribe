@@ -17,6 +17,88 @@ _CLIPBOARD_OPEN_RETRIES = 5
 _CLIPBOARD_OPEN_RETRY_DELAY_SEC = 0.05
 
 
+def _set_ctypes_signature(func, *, restype=None, argtypes=None) -> None:
+    """Best-effort signature setup for ctypes functions.
+
+    Real Win32 DLL callables allow setting ``restype``/``argtypes``. Test doubles
+    may not, so we keep this helper forgiving.
+    """
+    try:
+        if restype is not None:
+            func.restype = restype
+        if argtypes is not None:
+            func.argtypes = argtypes
+    except Exception:
+        pass
+
+
+def _set_optional_ctypes_signature(namespace, name: str, *, restype=None, argtypes=None) -> None:
+    func = getattr(namespace, name, None)
+    if func is None:
+        return
+    _set_ctypes_signature(func, restype=restype, argtypes=argtypes)
+
+
+def _configure_windows_clipboard_api(ctypes_module, user32, kernel32) -> None:
+    """Configure pointer-sized ctypes signatures for clipboard WinAPI calls."""
+    from ctypes import wintypes
+
+    _set_optional_ctypes_signature(
+        user32,
+        "OpenClipboard",
+        restype=wintypes.BOOL,
+        argtypes=[wintypes.HWND],
+    )
+    _set_optional_ctypes_signature(
+        user32,
+        "CloseClipboard",
+        restype=wintypes.BOOL,
+        argtypes=[],
+    )
+    _set_optional_ctypes_signature(
+        user32,
+        "EmptyClipboard",
+        restype=wintypes.BOOL,
+        argtypes=[],
+    )
+    _set_optional_ctypes_signature(
+        user32,
+        "SetClipboardData",
+        restype=wintypes.HANDLE,
+        argtypes=[wintypes.UINT, wintypes.HANDLE],
+    )
+    _set_optional_ctypes_signature(
+        user32,
+        "GetClipboardData",
+        restype=wintypes.HANDLE,
+        argtypes=[wintypes.UINT],
+    )
+    _set_optional_ctypes_signature(
+        kernel32,
+        "GlobalAlloc",
+        restype=wintypes.HGLOBAL,
+        argtypes=[wintypes.UINT, ctypes_module.c_size_t],
+    )
+    _set_optional_ctypes_signature(
+        kernel32,
+        "GlobalLock",
+        restype=ctypes_module.c_void_p,
+        argtypes=[wintypes.HGLOBAL],
+    )
+    _set_optional_ctypes_signature(
+        kernel32,
+        "GlobalUnlock",
+        restype=wintypes.BOOL,
+        argtypes=[wintypes.HGLOBAL],
+    )
+    _set_optional_ctypes_signature(
+        kernel32,
+        "GlobalFree",
+        restype=wintypes.HGLOBAL,
+        argtypes=[wintypes.HGLOBAL],
+    )
+
+
 def _get_utf8_env() -> dict:
     """Erstellt Environment mit UTF-8 Locale für pbcopy/pbpaste.
 
@@ -100,6 +182,7 @@ class WindowsClipboard:
 
         user32 = windll.user32
         kernel32 = windll.kernel32
+        _configure_windows_clipboard_api(ctypes, user32, kernel32)
 
         try:
             # Clipboard öffnen
@@ -154,6 +237,7 @@ class WindowsClipboard:
 
         user32 = windll.user32
         kernel32 = windll.kernel32
+        _configure_windows_clipboard_api(ctypes, user32, kernel32)
 
         try:
             if not _open_clipboard_with_retry(user32):

@@ -1,6 +1,6 @@
 import pytest
 
-from utils.diagnostics import _redact_log_line, _redact_log_text
+from utils.diagnostics import _read_env_file, _redact_log_line, _redact_log_text
 
 
 @pytest.mark.parametrize(
@@ -63,3 +63,26 @@ def test_redact_log_text_redacts_each_matching_line() -> None:
     assert "[abc12345] Interim: <redacted>" in redacted
     assert "secret" not in redacted
     assert "partial" not in redacted
+
+
+def test_read_env_file_parses_quoted_values_and_inline_comments(tmp_path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        '\n'.join(
+            [
+                'PULSESCRIBE_MODE="local"',
+                'PULSESCRIBE_HOLD_HOTKEY="ctrl+win"  # readable comment',
+                "PULSESCRIBE_LANGUAGE='de'",
+                'DEEPGRAM_API_KEY="dg-test"',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    values = _read_env_file(env_file)
+
+    assert values["PULSESCRIBE_MODE"] == "local"
+    assert values["PULSESCRIBE_HOLD_HOTKEY"] == "ctrl+win"
+    assert values["PULSESCRIBE_LANGUAGE"] == "de"
+    assert values["DEEPGRAM_API_KEY"] == "dg-test"
