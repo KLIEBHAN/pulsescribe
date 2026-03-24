@@ -34,6 +34,14 @@ class _FakeLabel:
         self.style = value
 
 
+class _FakeVisibleWidget:
+    def __init__(self):
+        self.visible: bool | None = None
+
+    def setVisible(self, value: bool) -> None:
+        self.visible = value
+
+
 class _FakeSlider:
     def __init__(self, value: int):
         self._value = value
@@ -274,3 +282,65 @@ def test_apply_local_preset_resets_stale_advanced_values():
     assert window._fp16_combo.currentText() == "default"
     assert window._lightning_batch_slider.value() == 12
     assert window._lightning_quant_combo.currentText() == "none"
+
+
+def test_build_setup_status_requires_provider_key_for_cloud_mode():
+    headline, detail, color = settings_mod._build_setup_status(
+        "deepgram",
+        toggle_hotkey="ctrl+alt+r",
+        hold_hotkey="ctrl+win",
+        api_keys={"DEEPGRAM_API_KEY": ""},
+    )
+
+    assert headline == "Setup Incomplete"
+    assert "Deepgram API key" in detail
+    assert color == "warning"
+
+
+def test_build_setup_status_allows_local_mode_without_api_key():
+    headline, detail, color = settings_mod._build_setup_status(
+        "local",
+        toggle_hotkey="ctrl+alt+r",
+        hold_hotkey="ctrl+win",
+        api_keys={},
+    )
+
+    assert headline == "Ready for Local Dictation"
+    assert "this device" in detail
+    assert color == "success"
+
+
+def test_build_setup_how_to_text_prefers_hold_flow_when_available():
+    text = settings_mod._build_setup_how_to_text("ctrl+alt+r", "ctrl+win")
+
+    assert "Hold ctrl+win" in text
+    assert "Alternative: press ctrl+alt+r" in text
+
+
+def test_on_mode_changed_hides_local_advanced_cards_for_cloud_modes():
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._local_backend_container = _FakeVisibleWidget()
+    window._local_model_container = _FakeVisibleWidget()
+    window._streaming_container = _FakeVisibleWidget()
+    window._advanced_local_settings_card = _FakeVisibleWidget()
+    window._advanced_faster_settings_card = _FakeVisibleWidget()
+    window._advanced_lightning_settings_card = _FakeVisibleWidget()
+    window._refresh_setup_overview = lambda: None
+
+    window._on_mode_changed("deepgram")
+
+    assert window._local_backend_container.visible is False
+    assert window._local_model_container.visible is False
+    assert window._streaming_container.visible is True
+    assert window._advanced_local_settings_card.visible is False
+    assert window._advanced_faster_settings_card.visible is False
+    assert window._advanced_lightning_settings_card.visible is False
+
+    window._on_mode_changed("local")
+
+    assert window._local_backend_container.visible is True
+    assert window._local_model_container.visible is True
+    assert window._streaming_container.visible is False
+    assert window._advanced_local_settings_card.visible is True
+    assert window._advanced_faster_settings_card.visible is True
+    assert window._advanced_lightning_settings_card.visible is True
