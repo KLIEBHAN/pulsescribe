@@ -62,6 +62,7 @@ except Exception as e:
 binaries = pyside6_binaries + shiboken6_binaries
 datas = pyside6_datas + shiboken6_datas + [
     ('config.py', '.'),
+    ('pyproject.toml', '.'),
     ('utils', 'utils'),
     ('providers', 'providers'),
     ('refine', 'refine'),

@@ -44,6 +44,14 @@ def _version_from_bundle() -> str | None:
     return None
 
 
+def _default_project_root() -> Path:
+    if getattr(sys, "frozen", False):
+        executable = getattr(sys, "executable", "")
+        if executable:
+            return Path(executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
+
+
 def _version_from_pyproject(pyproject_path: Path) -> str | None:
     text = _read_text_safe(pyproject_path)
     if not text:
@@ -70,7 +78,7 @@ def get_app_version(*, default: str = "unknown", project_root: Path | None = Non
     if bundle_version:
         return bundle_version
 
-    root = project_root or Path(__file__).resolve().parent.parent
+    root = project_root or _default_project_root()
     pyproject_version = _version_from_pyproject(root / "pyproject.toml")
     if pyproject_version:
         return pyproject_version

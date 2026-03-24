@@ -99,6 +99,7 @@ except Exception as e:
 binaries = pyside6_binaries
 datas = pyside6_datas + [
     ('config.py', '.'),
+    ('pyproject.toml', '.'),
     ('utils', 'utils'),
     ('providers', 'providers'),
     ('refine', 'refine'),

@@ -38,3 +38,30 @@ def test_get_app_version_returns_default_when_not_found(tmp_path, monkeypatch):
         monkeypatch.delenv(key, raising=False)
 
     assert get_app_version(project_root=tmp_path, default="unknown") == "unknown"
+
+
+def test_get_app_version_uses_bundle_root_for_frozen_windows(tmp_path, monkeypatch):
+    import utils.version as version_mod
+
+    for key in ("PULSESCRIBE_VERSION", "WHISPERGO_VERSION", "VERSION"):
+        monkeypatch.delenv(key, raising=False)
+
+    bundle_root = tmp_path / "PulseScribe"
+    internal_dir = bundle_root / "_internal" / "utils"
+    internal_dir.mkdir(parents=True)
+    (bundle_root / "pyproject.toml").write_text(
+        '[project]\nname = "pulsescribe"\nversion = "2.3.4"\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(version_mod, "__file__", str(internal_dir / "version.py"))
+    monkeypatch.setattr(version_mod.sys, "platform", "win32")
+    monkeypatch.setattr(version_mod.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(
+        version_mod.sys,
+        "executable",
+        str(bundle_root / "PulseScribe.exe"),
+        raising=False,
+    )
+
+    assert version_mod.get_app_version(default="unknown") == "2.3.4"

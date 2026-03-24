@@ -14,6 +14,7 @@ Output:
 """
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
@@ -58,7 +59,7 @@ def clean_build_artifacts() -> None:
     print("Clean complete.")
 
 
-def build_variant(spec_file: str, variant_name: str) -> bool:
+def build_variant(spec_file: str, variant_name: str, *, build_local: bool) -> bool:
     """Build a specific variant."""
     root = Path(__file__).parent
     spec_path = root / spec_file
@@ -75,11 +76,14 @@ def build_variant(spec_file: str, variant_name: str) -> bool:
     print(f"{'='*60}\n")
 
     start_time = time.time()
+    env = os.environ.copy()
+    env["PULSESCRIBE_BUILD_LOCAL"] = "1" if build_local else "0"
 
     try:
-        result = subprocess.run(
+        subprocess.run(
             [pyinstaller, spec_file, "--clean", "--noconfirm"],
             cwd=str(root),
+            env=env,
             check=True,
         )
 
@@ -91,7 +95,7 @@ def build_variant(spec_file: str, variant_name: str) -> bool:
         print(f"\nERROR: {variant_name} build failed with exit code {e.returncode}")
         return False
     except FileNotFoundError:
-        print(f"\nERROR: PyInstaller not found. Install with: pip install pyinstaller")
+        print("\nERROR: PyInstaller not found. Install with: pip install pyinstaller")
         return False
 
 
@@ -175,11 +179,19 @@ def main():
     results = []
 
     if build_full:
-        success = build_variant("build_windows.spec", "Full Version")
+        success = build_variant(
+            "build_windows.spec",
+            "Full Version",
+            build_local=True,
+        )
         results.append(("Full", success))
 
     if build_light:
-        success = build_variant("build_windows_light.spec", "Light Version")
+        success = build_variant(
+            "build_windows_light.spec",
+            "Light Version",
+            build_local=False,
+        )
         results.append(("Light", success))
 
     print_summary()
