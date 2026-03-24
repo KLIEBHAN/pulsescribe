@@ -11,6 +11,7 @@ from ui.overlay_pyside6 import (
     INTERIM_POLL_MAX_CHARS,
     PySide6OverlayController,
     PySide6OverlayWidget,
+    _format_recording_interim_text,
 )
 
 
@@ -225,6 +226,26 @@ def test_on_interim_changed_restores_default_recording_label_when_empty():
     PySide6OverlayWidget._on_interim_changed(widget, "")
 
     assert seen_calls == [("RECORDING", "Recording...", False)]
+
+
+def test_format_recording_interim_text_compacts_whitespace():
+    text = "  hello   world \n\n from   pulse  "
+    assert _format_recording_interim_text(text) == "hello world from pulse"
+
+
+def test_on_interim_changed_uses_compacted_tail_text():
+    widget = PySide6OverlayWidget.__new__(PySide6OverlayWidget)
+    widget._state = "RECORDING"
+    seen_calls: list[tuple[str, str, bool]] = []
+    widget._update_label = lambda state, text, italic=False: seen_calls.append(
+        (state, text, italic)
+    )
+    text = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu"
+    cleaned = " ".join(text.split())
+
+    PySide6OverlayWidget._on_interim_changed(widget, text)
+
+    assert seen_calls == [("RECORDING", "..." + cleaned[-42:], True)]
 
 
 def test_frame_interval_ms_is_state_aware():

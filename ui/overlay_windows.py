@@ -63,6 +63,7 @@ STATE_COLORS = {
     "RECORDING": "#FF5252",  # Rot
     "TRANSCRIBING": "#FFB142",  # Orange
     "REFINING": "#9C27B0",  # Lila
+    "LOADING": "#42A5F5",  # Blau
     "DONE": "#4CAF50",  # Grün (satter)
     "ERROR": "#FF4757",  # Rot
 }
@@ -72,6 +73,7 @@ STATE_TEXTS = {
     "RECORDING": "Recording...",
     "TRANSCRIBING": "Transcribing...",
     "REFINING": "Refining...",
+    "LOADING": "Loading model...",
     "DONE": "Done!",
     "ERROR": "Error",
 }
@@ -79,6 +81,19 @@ STATE_TEXTS = {
 # =============================================================================
 # Overlay Controller
 # =============================================================================
+
+
+def _format_recording_interim_text(text: str, max_chars: int = 45) -> str:
+    """Normalize and tail-truncate recording interim text for compact overlays."""
+    cleaned = " ".join(text.split())
+    if not cleaned:
+        return ""
+    if max_chars <= 0 or len(cleaned) <= max_chars:
+        return cleaned
+    tail_chars = max_chars - 3
+    if tail_chars <= 0:
+        return "..."
+    return "..." + cleaned[-tail_chars:]
 
 
 class WindowsOverlayController:
@@ -100,7 +115,7 @@ class WindowsOverlayController:
         self._state = "IDLE"
         self._audio_level = 0.0
         self._anim = AnimationLogic()
-        self._bar_heights = [BAR_MIN_HEIGHT] * BAR_COUNT
+        self._bar_heights: list[float] = [float(BAR_MIN_HEIGHT)] * BAR_COUNT
 
         # Animation timing
         self._animation_start = time.perf_counter()
@@ -431,7 +446,8 @@ class WindowsOverlayController:
         if self._state != "RECORDING" or not self._label:
             return
 
-        if not text:
+        formatted = _format_recording_interim_text(text)
+        if not formatted:
             self._label.config(
                 text=STATE_TEXTS["RECORDING"],
                 font=("Segoe UI", 11),
@@ -439,11 +455,8 @@ class WindowsOverlayController:
             )
             return
 
-        if len(text) > 45:
-            text = "..." + text[-42:]
-
         self._label.config(
-            text=text,
+            text=formatted,
             font=("Segoe UI", 10, "italic"),
             fg="#909090",
         )

@@ -136,6 +136,19 @@ DWMWCP_ROUNDSMALL = 3
 # =============================================================================
 
 
+def _format_recording_interim_text(text: str, max_chars: int = 45) -> str:
+    """Normalize and tail-truncate recording interim text for compact overlays."""
+    cleaned = " ".join(text.split())
+    if not cleaned:
+        return ""
+    if max_chars <= 0 or len(cleaned) <= max_chars:
+        return cleaned
+    tail_chars = max_chars - 3
+    if tail_chars <= 0:
+        return "..."
+    return "..." + cleaned[-tail_chars:]
+
+
 def _get_active_screen() -> "QScreen | None":
     """Ermittelt den Monitor des aktiven Fensters (Windows)."""
     app = QApplication.instance()
@@ -496,12 +509,11 @@ class PySide6OverlayWidget(QWidget):
     @Slot(str)
     def _on_interim_changed(self, text: str):
         if self._state == "RECORDING":
-            if not text:
+            formatted = _format_recording_interim_text(text)
+            if not formatted:
                 self._update_label("RECORDING", STATE_TEXTS["RECORDING"])
                 return
-            if len(text) > 45:
-                text = "..." + text[-42:]
-            self._update_label("RECORDING", text, italic=True)
+            self._update_label("RECORDING", formatted, italic=True)
 
     def _update_label(self, state: str, text: str, italic: bool = False):
         """Aktualisiert das Label mit State-spezifischem Styling."""

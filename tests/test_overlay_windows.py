@@ -20,6 +20,7 @@ from ui.overlay_windows import (
     WINDOW_MARGIN_BOTTOM,
     WINDOW_WIDTH,
     WindowsOverlayController,
+    _format_recording_interim_text,
 )
 
 
@@ -197,6 +198,17 @@ def test_handle_state_change_uses_feedback_color_for_done_and_error():
     assert controller._label.last_config["fg"] == STATE_COLORS["ERROR"]
 
 
+def test_handle_state_change_uses_loading_default_text():
+    controller = WindowsOverlayController()
+    controller._root = _FakeRoot()
+    controller._label = _FakeLabel()
+
+    controller._handle_state_change("LOADING", None)
+
+    assert controller._label.last_config["text"] == "Loading model..."
+    assert "LOADING" in STATE_COLORS
+
+
 def test_handle_interim_text_updates_label_for_short_text():
     controller = WindowsOverlayController()
     controller._state = "RECORDING"
@@ -206,6 +218,18 @@ def test_handle_interim_text_updates_label_for_short_text():
 
     assert controller._label.last_config["text"] == "short text"
     assert controller._label.last_config["fg"] == "#909090"
+
+
+def test_format_recording_interim_text_compacts_whitespace():
+    text = "  hello   world \n\n from   pulse  "
+    assert _format_recording_interim_text(text) == "hello world from pulse"
+
+
+def test_format_recording_interim_text_keeps_tail_for_long_text():
+    text = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu"
+    cleaned = " ".join(text.split())
+
+    assert _format_recording_interim_text(text) == "..." + cleaned[-42:]
 
 
 def test_handle_interim_text_restores_default_recording_label_when_empty():
