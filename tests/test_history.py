@@ -154,6 +154,27 @@ class TestGetRecentTranscripts:
         result = get_recent_transcripts(count=1)
         assert [entry["text"] for entry in result] == ["Second"]
 
+    def test_get_recent_ignores_non_object_json_lines(self, history_file):
+        """Kaputte oder inkompatible JSON-Zeilen dürfen die Historie nicht brechen."""
+        from utils.history import get_recent_transcripts
+
+        history_file.write_text(
+            '\n'.join(
+                [
+                    '{"timestamp":"2026-03-03T10:00:00","text":"First"}',
+                    '"legacy-string-entry"',
+                    '["unexpected", "array"]',
+                    '{"timestamp":"2026-03-03T10:01:00","text":"Second"}',
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = get_recent_transcripts(count=5)
+
+        assert [entry["text"] for entry in result] == ["Second", "First"]
+
 
 class TestFormatTranscriptsForDisplay:
     """Tests für format_transcripts_for_display()."""
@@ -185,6 +206,19 @@ class TestFormatTranscriptsForDisplay:
         first, second = formatted.split("\n\n")
         assert "Aelterer Eintrag" in first
         assert "Neuester Eintrag" in second
+
+    def test_ignores_non_dict_entries(self):
+        from utils.history import format_transcripts_for_display
+
+        formatted = format_transcripts_for_display(
+            [
+                {"timestamp": "2026-03-03T10:01:30.000000", "text": "Neuester Eintrag"},
+                "legacy-string-entry",
+            ]
+        )
+
+        assert "Neuester Eintrag" in formatted
+        assert "legacy-string-entry" not in formatted
 
 
 class TestClearHistory:

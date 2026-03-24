@@ -49,7 +49,7 @@ def save_transcript(
         # Check file size and rotate if needed
         _rotate_if_needed()
 
-        entry = {
+        entry: dict[str, object] = {
             "timestamp": datetime.now().isoformat(),
             "text": text.strip(),
         }
@@ -99,7 +99,7 @@ def _rotate_if_needed() -> None:
         logger.warning(f"History rotation failed: {e}")
 
 
-def get_recent_transcripts(count: int = 10) -> list[dict]:
+def get_recent_transcripts(count: int = 10) -> list[dict[str, object]]:
     """Gibt die letzten N Transkripte zurück.
 
     Args:
@@ -141,29 +141,33 @@ def get_recent_transcripts(count: int = 10) -> list[dict]:
         return []
 
 
-def _parse_recent_entries(lines: list[str], count: int) -> list[dict]:
+def _parse_recent_entries(lines: list[str], count: int) -> list[dict[str, object]]:
     """Parst JSONL-Zeilen rückwärts und liefert max. ``count`` gültige Einträge."""
-    entries: list[dict] = []
+    entries: list[dict[str, object]] = []
     for line in reversed(lines):
         line = line.strip()
         if not line:
             continue
         try:
-            entries.append(json.loads(line))
+            entry = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if not isinstance(entry, dict):
+            continue
+        entries.append(entry)
         if len(entries) >= count:
             break
     return entries
 
 
-def format_transcripts_for_display(entries: list[dict]) -> str:
+def format_transcripts_for_display(entries: list[object]) -> str:
     """Format transcript entries for the Windows transcripts viewer."""
-    if not entries:
+    valid_entries = [entry for entry in entries if isinstance(entry, dict)]
+    if not valid_entries:
         return "No transcripts yet."
 
     lines: list[str] = []
-    for entry in reversed(entries):  # oldest first for readable history flow
+    for entry in reversed(valid_entries):  # oldest first for readable history flow
         ts = str(entry.get("timestamp", ""))[:19].replace("T", " ")
         text = str(entry.get("text", ""))
         mode = str(entry.get("mode", ""))

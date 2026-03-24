@@ -23,6 +23,7 @@ from config import (
 )
 
 logger = logging.getLogger("pulsescribe")
+_SUPPORTED_REFINE_PROVIDERS = ("gemini", "groq", "openai", "openrouter")
 
 # Client Singletons (Lazy Init, spart ~30-50ms pro Aufruf durch Connection-Reuse)
 _client_lock = threading.Lock()
@@ -34,6 +35,18 @@ _groq_client_signature: str | None = None
 _openai_client_signature: str | None = None
 _openrouter_client_signature: tuple[str, str] | None = None
 _gemini_client_signature: str | None = None
+
+
+def _normalize_refine_provider(provider: str) -> str:
+    """Return a normalized provider name or raise for unsupported values."""
+    normalized = (provider or "").strip().lower()
+    if normalized in _SUPPORTED_REFINE_PROVIDERS:
+        return normalized
+
+    supported = ", ".join(_SUPPORTED_REFINE_PROVIDERS)
+    raise ValueError(
+        f"Unbekannter Refine-Provider '{provider}'. Unterstützt: {supported}"
+    )
 
 
 def _get_groq_client():
@@ -149,6 +162,7 @@ def _get_gemini_client():
 
 def _get_refine_client(provider: str):
     """Gibt gecachten Client für Nachbearbeitung zurück (OpenAI, OpenRouter, Groq oder Gemini)."""
+    provider = _normalize_refine_provider(provider)
     if provider == "groq":
         return _get_groq_client()
     if provider == "openrouter":
@@ -223,9 +237,9 @@ def refine_transcript(
             )
 
     # Provider und Modell zur Laufzeit bestimmen (CLI > ENV > Default)
-    effective_provider = (
+    effective_provider = _normalize_refine_provider(
         provider or os.getenv("PULSESCRIBE_REFINE_PROVIDER", "groq")
-    ).lower()
+    )
 
     # Provider-spezifisches Default-Modell (CLI > ENV > Default)
     if effective_provider == "gemini":

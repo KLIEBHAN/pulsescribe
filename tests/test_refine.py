@@ -154,6 +154,11 @@ class TestGetRefineClient:
 
         assert client == mock_gemini_client
 
+    def test_unknown_provider_raises_clear_value_error(self):
+        """Ungültige Provider-Namen sollen nicht still auf OpenAI fallen."""
+        with pytest.raises(ValueError, match="Unbekannter Refine-Provider 'groqq'"):
+            _get_refine_client("groqq")
+
     def test_groq_client_rebuilds_after_api_key_change(self, monkeypatch):
         """Bei Key-Wechsel wird der Groq-Client neu erstellt statt stale gecached zu bleiben."""
         monkeypatch.setenv("GROQ_API_KEY", "first-key")
@@ -362,3 +367,17 @@ class TestRefineEdgeCases:
 
         mock_client.assert_not_called()
         assert result is None
+
+    def test_invalid_env_provider_is_reported_clearly(
+        self, monkeypatch, clean_env, caplog
+    ):
+        """Ein Tippfehler in PULSESCRIBE_REFINE_PROVIDER soll klar benannt werden."""
+        from refine.llm import maybe_refine_transcript
+
+        monkeypatch.setenv("PULSESCRIBE_REFINE_PROVIDER", "groqq")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        result = maybe_refine_transcript("raw transcript", refine=True)
+
+        assert result == "raw transcript"
+        assert "Unbekannter Refine-Provider 'groqq'" in caplog.text
