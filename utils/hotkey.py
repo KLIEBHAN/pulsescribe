@@ -271,15 +271,27 @@ def _paste_via_quartz() -> bool:
 def _paste_via_osascript() -> bool:
     """Fallback: Paste via osascript (braucht Accessibility!)."""
     logger.info("Versuche osascript (braucht Accessibility-Berechtigung)")
-    result = subprocess.run(
-        [
-            "osascript",
-            "-e",
-            'tell application "System Events" to keystroke "v" using command down',
-        ],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            [
+                "osascript",
+                "-e",
+                'tell application "System Events" to keystroke "v" using command down',
+            ],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning("osascript Timeout")
+        return False
+    except OSError as e:
+        logger.warning(f"osascript konnte nicht gestartet werden: {e}")
+        return False
+    except Exception as e:
+        logger.warning(f"osascript fehlgeschlagen: {e}")
+        return False
+
     if result.returncode != 0:
         logger.warning(f"osascript fehlgeschlagen: {result.stderr}")
         return False

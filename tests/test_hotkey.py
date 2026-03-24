@@ -483,6 +483,28 @@ class TestPasteViaOsascript:
         result = utils.hotkey._paste_via_osascript()
         assert result is False
 
+    def test_osascript_timeout(self, monkeypatch):
+        """Timeout beim osascript-Aufruf gibt False zurück."""
+
+        def mock_run(cmd, *args, **kwargs):
+            raise subprocess.TimeoutExpired(cmd, 2)
+
+        monkeypatch.setattr(subprocess, "run", mock_run)
+
+        result = utils.hotkey._paste_via_osascript()
+        assert result is False
+
+    def test_osascript_os_error(self, monkeypatch):
+        """Startfehler beim osascript-Aufruf gibt False zurück."""
+
+        def mock_run(cmd, *args, **kwargs):
+            raise OSError("osascript missing")
+
+        monkeypatch.setattr(subprocess, "run", mock_run)
+
+        result = utils.hotkey._paste_via_osascript()
+        assert result is False
+
 
 # =============================================================================
 # Tests: Windows clipboard helper path (platform-agnostic)

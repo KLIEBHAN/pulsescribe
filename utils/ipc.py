@@ -76,7 +76,7 @@ def _atomic_write(path: Path, data: dict) -> None:
 
 
 def _safe_read(path: Path) -> dict | None:
-    """Read JSON file, returning None if missing, empty, or corrupt.
+    """Read JSON file, returning None if missing, empty, corrupt, or wrong-shaped.
 
     Silently handles all error cases since missing/corrupt files are
     normal during the polling lifecycle (file may not exist yet, or
@@ -86,7 +86,14 @@ def _safe_read(path: Path) -> dict | None:
         if path.exists():
             content = path.read_text(encoding="utf-8").strip()
             if content:
-                return json.loads(content)
+                data = json.loads(content)
+                if isinstance(data, dict):
+                    return data
+                logger.debug(
+                    "IPC ignored %s with unexpected JSON root type: %s",
+                    path.name,
+                    type(data).__name__,
+                )
     except Exception as e:
         logger.debug(f"IPC read failed: {e}")
     return None
