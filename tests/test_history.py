@@ -1,6 +1,7 @@
 """Tests für die Transkript-Historie."""
 
 import json
+import logging
 
 import pytest
 
@@ -75,6 +76,17 @@ class TestSaveTranscript:
 
         texts = [json.loads(line)["text"] for line in lines]
         assert texts == ["First", "Second", "Third"]
+
+    def test_save_logs_redacted_summary(self, history_file, caplog):
+        """History-Logs dürfen keinen Transkriptinhalt enthalten."""
+        from utils.history import save_transcript
+
+        with caplog.at_level(logging.DEBUG, logger="utils.history"):
+            save_transcript("Highly sensitive transcript")
+
+        messages = " ".join(record.getMessage() for record in caplog.records)
+        assert "Transcript saved to history: <redacted 27 chars>" in messages
+        assert "Highly sensitive transcript" not in messages
 
 
 class TestGetRecentTranscripts:

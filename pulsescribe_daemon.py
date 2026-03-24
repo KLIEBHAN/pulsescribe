@@ -76,6 +76,7 @@ try:
         is_permission_related_message,
     )
     from utils.log_tail import read_file_tail_text
+    from utils.timing import redacted_text_summary
     from ui import MenuBarController, OverlayController
 except Exception as e:
     emergency_log(f"CRITICAL IMPORT ERROR: {e}")
@@ -658,7 +659,7 @@ class PulseScribeDaemon:
             self.__current_state = state
         logger.debug(
             f"State: {prev_state.value} → {state.value}"
-            + (f" text='{text[:20]}...'" if text else "")
+            + (f" text={redacted_text_summary(text)}" if text else "")
         )
 
         # Watchdog-Timer Management

@@ -1,5 +1,6 @@
 """Tests für utils/hotkey.py – Hotkey-Parsing und Auto-Paste."""
 
+import logging
 import sys
 
 import pytest
@@ -255,6 +256,24 @@ class TestMacOSHotkeyListenerSelection:
         assert daemon._start_hold_hotkey_listener("cmd+l") is True
         assert calls["quartz"] == 1
         assert calls["pynput"] == 0
+
+
+def test_paste_transcript_logs_redacted_text(caplog, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(utils.hotkey, "_get_windows_clipboard_handler", lambda: object())
+    monkeypatch.setattr(
+        utils.hotkey,
+        "_copy_windows_clipboard_text",
+        lambda _text, clipboard=None: False,
+    )
+
+    with caplog.at_level(logging.INFO, logger="pulsescribe"):
+        result = utils.hotkey.paste_transcript("secret transcript")
+
+    assert result is False
+    messages = " ".join(record.getMessage() for record in caplog.records)
+    assert "Auto-Paste: <redacted 17 chars>" in messages
+    assert "secret transcript" not in messages
 
 
 # =============================================================================

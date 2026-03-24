@@ -2,6 +2,7 @@ import pytest
 
 pytest.importorskip("PySide6")
 
+import ui.settings_windows as settings_mod
 from ui.settings_windows import SettingsWindow
 
 
@@ -218,3 +219,69 @@ def test_refresh_active_logs_view_routes_to_transcripts():
     window._refresh_active_logs_view()
 
     assert calls == ["transcripts"]
+
+
+def test_clear_transcripts_requires_confirmation(monkeypatch):
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._transcripts_status = _FakeLabel()
+
+    refresh_calls: list[bool] = []
+    window._refresh_transcripts = lambda: refresh_calls.append(True)
+
+    monkeypatch.setattr(
+        settings_mod.QMessageBox,
+        "question",
+        lambda *args, **kwargs: settings_mod.QMessageBox.StandardButton.Cancel,
+    )
+
+    clear_calls: list[bool] = []
+    monkeypatch.setattr(
+        "utils.history.clear_history",
+        lambda: clear_calls.append(True) or True,
+    )
+
+    window._clear_transcripts()
+
+    assert clear_calls == []
+    assert refresh_calls == []
+    assert window._transcripts_status.text == ""
+
+
+def test_clear_transcripts_updates_success_status_after_confirm(monkeypatch):
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._transcripts_status = _FakeLabel()
+
+    refresh_calls: list[bool] = []
+    window._refresh_transcripts = lambda: refresh_calls.append(True)
+
+    monkeypatch.setattr(
+        settings_mod.QMessageBox,
+        "question",
+        lambda *args, **kwargs: settings_mod.QMessageBox.StandardButton.Yes,
+    )
+    monkeypatch.setattr("utils.history.clear_history", lambda: True)
+
+    window._clear_transcripts()
+
+    assert refresh_calls == [True]
+    assert window._transcripts_status.text == "History cleared"
+
+
+def test_clear_transcripts_shows_error_when_delete_fails(monkeypatch):
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._transcripts_status = _FakeLabel()
+
+    refresh_calls: list[bool] = []
+    window._refresh_transcripts = lambda: refresh_calls.append(True)
+
+    monkeypatch.setattr(
+        settings_mod.QMessageBox,
+        "question",
+        lambda *args, **kwargs: settings_mod.QMessageBox.StandardButton.Yes,
+    )
+    monkeypatch.setattr("utils.history.clear_history", lambda: False)
+
+    window._clear_transcripts()
+
+    assert refresh_calls == []
+    assert window._transcripts_status.text == "Could not clear history. Try again."

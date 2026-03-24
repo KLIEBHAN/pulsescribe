@@ -10,7 +10,7 @@ import threading
 
 from .prompts import get_prompt_for_context
 from .context import detect_context
-from utils.timing import log_preview
+from utils.timing import redacted_text_summary
 from utils.logging import get_session_id
 from utils.env import get_env_bool_default
 
@@ -344,7 +344,7 @@ def refine_transcript(
             response = client.responses.create(**api_params)
             result = (response.output_text or "").strip()
 
-    logger.debug(f"[{session_id}] Output: {log_preview(result)}")
+    logger.debug(f"[{session_id}] Output: {redacted_text_summary(result)}")
     return result
 
 

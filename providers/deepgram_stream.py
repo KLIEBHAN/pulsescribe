@@ -53,7 +53,7 @@ from config import (
 )
 from providers._language import normalize_auto_language
 from utils.logging import get_session_id
-from utils.timing import log_preview
+from utils.timing import redacted_text_summary
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -647,7 +647,7 @@ def _create_message_handler(
 
         if is_final:
             state.final_transcripts.append(transcript)
-            logger.info(f"[{session_id}] Final: {log_preview(transcript)}")
+            logger.info(f"[{session_id}] Final: {redacted_text_summary(transcript)}")
         else:
             if transcript == state.last_interim_text:
                 return
@@ -658,7 +658,9 @@ def _create_message_handler(
                     INTERIM_FILE.write_text(transcript, encoding="utf-8")
                     state.last_interim_write = now
                     state.last_interim_text = transcript
-                    logger.debug(f"[{session_id}] Interim: {log_preview(transcript, 30)}")
+                    logger.debug(
+                        f"[{session_id}] Interim: {redacted_text_summary(transcript)}"
+                    )
                 except OSError as e:
                     logger.warning(f"[{session_id}] Interim-Write fehlgeschlagen: {e}")
 

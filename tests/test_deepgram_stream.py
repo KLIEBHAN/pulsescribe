@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 
 import providers.deepgram_stream as deepgram_stream
@@ -74,3 +75,15 @@ def test_message_handler_keeps_final_transcripts_out_of_interim_file(monkeypatch
     assert state.final_transcripts == ["final transcript"]
     assert state.finalize_done.is_set()
     assert write_calls == []
+
+
+def test_message_handler_logs_redacted_final_transcript(caplog) -> None:
+    state = deepgram_stream.StreamState()
+    handler = deepgram_stream._create_message_handler(state, "sess")
+
+    with caplog.at_level(logging.INFO, logger="pulsescribe"):
+        handler(_response("final transcript", is_final=True, from_finalize=True))
+
+    messages = " ".join(record.getMessage() for record in caplog.records)
+    assert "[sess] Final: <redacted 16 chars>" in messages
+    assert "final transcript" not in messages

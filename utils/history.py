@@ -11,6 +11,7 @@ from datetime import datetime
 
 from config import USER_CONFIG_DIR
 from utils.log_tail import read_file_tail_lines
+from utils.timing import redacted_text_summary
 
 HISTORY_FILE = USER_CONFIG_DIR / "history.jsonl"
 MAX_HISTORY_SIZE_MB = 10  # Max file size before rotation
@@ -73,7 +74,9 @@ def save_transcript(
         # zum nächsten Save unnötig groß bleibt.
         _rotate_if_needed()
 
-        logger.debug(f"Transcript saved to history: {text[:50]}...")
+        logger.debug(
+            "Transcript saved to history: %s", redacted_text_summary(text.strip())
+        )
         return True
 
     except Exception as e:

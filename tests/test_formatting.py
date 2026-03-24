@@ -2,7 +2,7 @@
 
 import pytest
 
-from utils.timing import format_duration, log_preview
+from utils.timing import format_duration, log_preview, redacted_text_summary
 
 
 class TestFormatDuration:
@@ -61,3 +61,16 @@ class TestLogPreview:
     def test_log_preview(self, text, max_length, expected):
         """Verschiedene Texte werden korrekt gekürzt."""
         assert log_preview(text, max_length) == expected
+
+
+class TestRedactedTextSummary:
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("", "<redacted empty>"),
+            ("hello", "<redacted 5 chars>"),
+            ("Grüße", "<redacted 5 chars>"),
+        ],
+    )
+    def test_redacted_text_summary(self, text, expected):
+        assert redacted_text_summary(text) == expected

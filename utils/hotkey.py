@@ -10,6 +10,7 @@ import time
 
 from utils.env import parse_bool
 from utils.logging import get_logger
+from utils.timing import redacted_text_summary
 
 logger = get_logger()
 
@@ -441,7 +442,7 @@ def paste_transcript(text: str) -> bool:
     """
     import sys
 
-    logger.info(f"Auto-Paste: '{text[:50]}{'...' if len(text) > 50 else ''}'")
+    logger.info("Auto-Paste: %s", redacted_text_summary(text))
 
     # Windows: pyperclip + pynput direkt
     if sys.platform == "win32":

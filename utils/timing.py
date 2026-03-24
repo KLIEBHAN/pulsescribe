@@ -23,6 +23,14 @@ def log_preview(text: str, max_length: int = 100) -> str:
     return f"{text[:max_length]}..."
 
 
+def redacted_text_summary(text: str) -> str:
+    """Return a privacy-safe summary for user-provided text in logs."""
+    char_count = len(text or "")
+    if char_count <= 0:
+        return "<redacted empty>"
+    return f"<redacted {char_count} chars>"
+
+
 @contextmanager
 def timed_operation(
     name: str,

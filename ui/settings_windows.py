@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
@@ -2069,7 +2070,26 @@ class SettingsWindow(QDialog):
         try:
             from utils.history import clear_history
 
-            clear_history()
+            confirmed = QMessageBox.question(
+                self,
+                "Clear Transcript History",
+                "This permanently removes the local transcript history. This cannot be undone.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if confirmed != QMessageBox.StandardButton.Yes:
+                return
+
+            if not clear_history():
+                if hasattr(self, "_transcripts_status"):
+                    self._transcripts_status.setText(
+                        "Could not clear history. Try again."
+                    )
+                    self._transcripts_status.setStyleSheet(
+                        f"color: {COLORS['error']};"
+                    )
+                return
+
             self._refresh_transcripts()
             if hasattr(self, "_transcripts_status"):
                 self._transcripts_status.setText("History cleared")
