@@ -105,6 +105,17 @@ class TestLoadVocabulary:
 
         assert result["keywords"] == ["Foo", "Bar"]
 
+    def test_normalizes_keywords_case_insensitively(self, temp_files):
+        """Groß-/Kleinschreibung darf keine zusätzlichen Keyword-Slots verbrauchen."""
+        vocab_file = temp_files / "vocab.json"
+        vocab_file.write_text(
+            json.dumps({"keywords": ["API", "api", "GraphQL", "graphql"]})
+        )
+
+        result = load_vocabulary()
+
+        assert result["keywords"] == ["API", "GraphQL"]
+
     def test_load_uses_utf8_encoding(self, temp_files, monkeypatch):
         import utils.vocabulary as vocab
 
@@ -186,6 +197,16 @@ class TestValidateVocabulary:
         vocab_file.write_text(json.dumps({"keywords": [f"k{i}" for i in range(120)]}))
         issues = validate_vocabulary(path=vocab_file)
         assert any("Deepgram" in i for i in issues)
+
+    def test_validate_reports_case_variant_duplicates(self, temp_files):
+        vocab_file = temp_files / "vocab.json"
+        vocab_file.write_text(
+            json.dumps({"keywords": ["API", "api", "GraphQL", "graphql"]})
+        )
+
+        issues = validate_vocabulary(path=vocab_file)
+
+        assert any("2 doppelte keywords" in issue.lower() for issue in issues)
 
     def test_validate_uses_utf8_encoding(self, temp_files, monkeypatch):
         vocab_file = temp_files / "vocab.json"

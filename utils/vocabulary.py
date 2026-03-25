@@ -53,8 +53,9 @@ def _normalize_keywords(raw_keywords: list) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
     for kw in cleaned:
-        if kw not in seen:
-            seen.add(kw)
+        dedupe_key = kw.casefold()
+        if dedupe_key not in seen:
+            seen.add(dedupe_key)
             result.append(kw)
     return result
 

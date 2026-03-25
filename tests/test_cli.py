@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from typer.testing import CliRunner
 
+import transcribe
 from transcribe import app
 
 
@@ -87,6 +88,47 @@ class TestCLI:
         assert result.exit_code == 0
         assert mock_transcribe.call_args is not None
         assert mock_transcribe.call_args.kwargs["mode"] == "deepgram"
+
+    def test_mode_uses_value_loaded_during_runtime_env_load(
+        self, clean_env, monkeypatch, tmp_path
+    ):
+        """`.env`-Werte müssen auch ohne bereits gesetzte Prozess-ENV greifen."""
+        audio_file = tmp_path / "test.wav"
+        audio_file.write_bytes(b"fake audio")
+
+        def fake_load_environment() -> None:
+            monkeypatch.setenv("PULSESCRIBE_MODE", "groq")
+
+        monkeypatch.setattr(transcribe, "load_environment", fake_load_environment)
+
+        with patch("transcribe.transcribe") as mock_transcribe:
+            mock_transcribe.return_value = "Test transcript"
+            result = runner.invoke(app, [str(audio_file)])
+
+        assert result.exit_code == 0
+        assert mock_transcribe.call_args is not None
+        assert mock_transcribe.call_args.kwargs["mode"] == "groq"
+
+    def test_mode_rejects_invalid_value_loaded_during_runtime_env_load(
+        self, clean_env, monkeypatch, tmp_path
+    ):
+        """Ungültige `.env`-Werte dürfen nicht still auf Defaults fallen."""
+        audio_file = tmp_path / "test.wav"
+        audio_file.write_bytes(b"fake audio")
+
+        def fake_load_environment() -> None:
+            monkeypatch.setenv("PULSESCRIBE_MODE", "invalid")
+
+        monkeypatch.setattr(transcribe, "load_environment", fake_load_environment)
+
+        with patch("transcribe.transcribe") as mock_transcribe:
+            result = runner.invoke(app, [str(audio_file)])
+
+        output = strip_ansi(result.output)
+        assert result.exit_code != 0
+        assert "PULSESCRIBE_MODE" in output
+        assert "invalid" in output
+        mock_transcribe.assert_not_called()
 
     def test_mode_cli_beats_env(self, monkeypatch, clean_env):
         """CLI --mode schlägt ENV (implizit getestet über Ausführung)."""

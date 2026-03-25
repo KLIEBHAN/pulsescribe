@@ -27,6 +27,8 @@ _PROCESS_START = _time_module.perf_counter()
 import typer  # noqa: E402
 from typing import Annotated, TYPE_CHECKING  # noqa: E402
 import logging  # noqa: E402
+import os  # noqa: E402
+from enum import Enum  # noqa: E402
 
 from pathlib import Path  # noqa: E402
 
@@ -77,7 +79,7 @@ from utils.logging import (  # noqa: E402
     error,
     get_session_id as _get_session_id,
 )
-from utils.env import load_environment  # noqa: E402
+from utils.env import load_environment, parse_bool  # noqa: E402
 from utils.timing import (  # noqa: E402
     format_duration as _format_duration,
     log_preview as _shared_log_preview,
@@ -148,6 +150,43 @@ def load_vocabulary() -> dict:
     API von transcribe.py stabil bleibt und Tests weiter greifen.
     """
     return _load_vocabulary_shared(VOCABULARY_FILE)
+
+
+def _resolve_env_string(value: str | None, env_name: str) -> str | None:
+    """Resolve CLI string options after `.env` loading."""
+    if value is not None:
+        return value
+
+    env_value = os.getenv(env_name)
+    if env_value is None:
+        return None
+
+    stripped = env_value.strip()
+    return stripped or None
+
+
+def _resolve_env_enum(
+    value,
+    *,
+    env_name: str,
+    enum_type: type[Enum],
+    default=None,
+):
+    """Resolve CLI enum options after `.env` loading."""
+    if value is not None:
+        return value
+
+    env_value = _resolve_env_string(None, env_name)
+    if env_value is None:
+        return default
+
+    try:
+        return enum_type(env_value.lower())
+    except ValueError as exc:
+        supported = ", ".join(member.value for member in enum_type)
+        raise typer.BadParameter(
+            f"Ungültiger Wert in {env_name}: {env_value!r}. Unterstützt: {supported}"
+        ) from exc
 
 
 # =============================================================================
@@ -251,12 +290,12 @@ def main(
         typer.Option("-c", "--copy", help="Ergebnis in Zwischenablage"),
     ] = False,
     mode: Annotated[
-        TranscriptionMode,
+        TranscriptionMode | None,
         typer.Option(
             help="Transkriptions-Modus",
             envvar="PULSESCRIBE_MODE",
         ),
-    ] = TranscriptionMode.deepgram,
+    ] = None,
     model: Annotated[
         str | None,
         typer.Option(
@@ -318,6 +357,22 @@ def main(
     """
     load_environment()
     setup_logging(debug=debug)
+    mode = _resolve_env_enum(
+        mode,
+        env_name="PULSESCRIBE_MODE",
+        enum_type=TranscriptionMode,
+        default=TranscriptionMode.deepgram,
+    )
+    model = _resolve_env_string(model, "PULSESCRIBE_MODEL")
+    language = _resolve_env_string(language, "PULSESCRIBE_LANGUAGE")
+    refine_model = _resolve_env_string(refine_model, "PULSESCRIBE_REFINE_MODEL")
+    refine_provider = _resolve_env_enum(
+        refine_provider,
+        env_name="PULSESCRIBE_REFINE_PROVIDER",
+        enum_type=RefineProvider,
+    )
+    if not refine and not no_refine:
+        refine = bool(parse_bool(os.getenv("PULSESCRIBE_REFINE")))
 
     # Validierung: genau eine Audio-Quelle erforderlich
     if not record and audio is None:
