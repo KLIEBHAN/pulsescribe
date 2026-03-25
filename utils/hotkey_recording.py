@@ -5,11 +5,13 @@ This is used by both the Settings window and the onboarding wizard.
 
 from __future__ import annotations
 
+import logging
 from typing import Callable
 
 from utils.hotkey import KEY_CODE_MAP
 
 _REVERSE_KEY_CODE_MAP = {v: k for k, v in KEY_CODE_MAP.items()}
+logger = logging.getLogger("pulsescribe.hotkey_recording")
 
 
 def nsevent_to_hotkey_string(event) -> str | None:
@@ -180,11 +182,16 @@ class HotkeyRecorder:
         def _on_cancel() -> None:
             self.stop(cancelled=True)
 
-        self._monitor = add_local_hotkey_monitor(on_hotkey=_on_hotkey, on_cancel=_on_cancel)
+        try:
+            self._monitor = add_local_hotkey_monitor(
+                on_hotkey=_on_hotkey,
+                on_cancel=_on_cancel,
+            )
+        except Exception as exc:
+            logger.warning("Hotkey-Aufnahme konnte nicht gestartet werden: %s", exc)
+            self.stop(cancelled=True)
 
     def stop(self, *, cancelled: bool = False) -> None:
-        from AppKit import NSEvent  # type: ignore[import-not-found]
-
         if cancelled and self._target_field is not None and self._prev_value is not None:
             try:
                 self._target_field.setStringValue_(self._prev_value)
@@ -206,9 +213,14 @@ class HotkeyRecorder:
 
         if self._monitor is not None:
             try:
+                from AppKit import NSEvent  # type: ignore[import-not-found]
+
                 NSEvent.removeMonitor_(self._monitor)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(
+                    "Hotkey-Monitor konnte nicht sauber entfernt werden: %s",
+                    exc,
+                )
             self._monitor = None
 
         self._recording = False

@@ -73,3 +73,37 @@ def test_windows_daemon_kill_returns_true_when_taskkill_succeeds(monkeypatch) ->
     controller = daemon_mod.WindowsDaemonController()
 
     assert controller.kill(4040) is True
+
+
+def test_macos_daemon_start_ignores_stale_pid_file(tmp_path, monkeypatch) -> None:
+    pid_file = tmp_path / "pulsescribe.pid"
+    pid_file.write_text("9999\n", encoding="utf-8")
+
+    waitpid_calls: list[tuple[int, int]] = []
+    controller = daemon_mod.MacOSDaemonController(pid_file=pid_file)
+
+    monkeypatch.setattr(daemon_mod.os, "fork", lambda: 1234)
+    monkeypatch.setattr(
+        daemon_mod.os,
+        "waitpid",
+        lambda pid, options: waitpid_calls.append((pid, options)),
+    )
+
+    assert controller.start(["python", "pulsescribe_daemon.py"]) is None
+    assert waitpid_calls == [(1234, 0)]
+    assert not pid_file.exists()
+
+
+def test_macos_daemon_start_handles_corrupt_pid_file(tmp_path, monkeypatch) -> None:
+    pid_file = tmp_path / "pulsescribe.pid"
+    controller = daemon_mod.MacOSDaemonController(pid_file=pid_file)
+
+    monkeypatch.setattr(daemon_mod.os, "fork", lambda: 1234)
+
+    def _waitpid(pid: int, options: int) -> tuple[int, int]:
+        pid_file.write_text("not-a-pid\n", encoding="utf-8")
+        return pid, options
+
+    monkeypatch.setattr(daemon_mod.os, "waitpid", _waitpid)
+
+    assert controller.start(["python", "pulsescribe_daemon.py"]) is None

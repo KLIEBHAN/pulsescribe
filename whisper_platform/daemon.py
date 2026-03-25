@@ -85,6 +85,15 @@ class MacOSDaemonController:
             PID des gestarteten Prozesses oder None bei Fehler
         """
         try:
+            # Alte/stale PID-Datei vor dem neuen Start verwerfen. Sonst kann der
+            # Parent bei einem frühen Startfehler versehentlich eine alte PID
+            # zurückgeben und die Daemon-Steuerung gerät in einen inkonsistenten Zustand.
+            if self.pid_file.exists():
+                try:
+                    self.pid_file.unlink()
+                except OSError as exc:
+                    logger.debug("Konnte stale PID-Datei nicht entfernen: %s", exc)
+
             # Erster Fork: Parent kann sofort exit() machen
             pid = os.fork()
             if pid > 0:
@@ -92,7 +101,10 @@ class MacOSDaemonController:
                 os.waitpid(pid, 0)
                 # PID-File lesen um die echte Daemon-PID zu bekommen
                 if self.pid_file.exists():
-                    return int(self.pid_file.read_text().strip())
+                    try:
+                        return int(self.pid_file.read_text().strip())
+                    except (OSError, ValueError) as exc:
+                        logger.warning("Ungültige PID-Datei nach Daemon-Start: %s", exc)
                 return None
 
             # Child: Neue Session starten (löst von Terminal)
