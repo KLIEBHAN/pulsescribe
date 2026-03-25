@@ -915,8 +915,8 @@ class WelcomeController:
 
         parent_view = parent_view or self._content_view
 
-        # 4 API Keys: Deepgram, Groq, OpenAI, OpenRouter
-        card_height = 265
+        # 5 API Keys: Deepgram, Groq, OpenAI, OpenRouter, Gemini
+        card_height = 340
         card_width = WELCOME_WIDTH - 2 * WELCOME_PADDING
         card_y = y - card_height
 
