@@ -128,6 +128,129 @@ def test_windows_clipboard_copy_configures_pointer_sized_signatures(monkeypatch)
     assert kernel32.GlobalLock.restype is not None
 
 
+def test_windows_clipboard_copy_does_not_clear_clipboard_when_alloc_fails(monkeypatch):
+    from whisper_platform.clipboard import WindowsClipboard
+
+    user32 = SimpleNamespace(
+        OpenClipboard=Mock(return_value=1),
+        EmptyClipboard=Mock(return_value=1),
+        SetClipboardData=Mock(return_value=1),
+        CloseClipboard=Mock(return_value=1),
+    )
+    kernel32 = SimpleNamespace(
+        GlobalAlloc=Mock(return_value=0),
+        GlobalLock=Mock(return_value=1),
+        GlobalUnlock=Mock(return_value=1),
+        GlobalFree=Mock(return_value=1),
+    )
+
+    monkeypatch.setattr(
+        ctypes,
+        "windll",
+        SimpleNamespace(user32=user32, kernel32=kernel32),
+        raising=False,
+    )
+
+    assert WindowsClipboard().copy("hello") is False
+    user32.OpenClipboard.assert_not_called()
+    user32.EmptyClipboard.assert_not_called()
+    kernel32.GlobalFree.assert_not_called()
+
+
+def test_windows_clipboard_copy_does_not_clear_clipboard_when_lock_fails(monkeypatch):
+    from whisper_platform.clipboard import WindowsClipboard
+
+    user32 = SimpleNamespace(
+        OpenClipboard=Mock(return_value=1),
+        EmptyClipboard=Mock(return_value=1),
+        SetClipboardData=Mock(return_value=1),
+        CloseClipboard=Mock(return_value=1),
+    )
+    kernel32 = SimpleNamespace(
+        GlobalAlloc=Mock(return_value=1),
+        GlobalLock=Mock(return_value=0),
+        GlobalUnlock=Mock(return_value=1),
+        GlobalFree=Mock(return_value=1),
+    )
+
+    monkeypatch.setattr(
+        ctypes,
+        "windll",
+        SimpleNamespace(user32=user32, kernel32=kernel32),
+        raising=False,
+    )
+
+    assert WindowsClipboard().copy("hello") is False
+    user32.OpenClipboard.assert_not_called()
+    user32.EmptyClipboard.assert_not_called()
+    kernel32.GlobalFree.assert_called_once_with(1)
+
+
+def test_windows_clipboard_copy_frees_memory_when_empty_clipboard_fails(monkeypatch):
+    from whisper_platform.clipboard import WindowsClipboard
+
+    user32 = SimpleNamespace(
+        OpenClipboard=Mock(return_value=1),
+        EmptyClipboard=Mock(return_value=0),
+        SetClipboardData=Mock(return_value=1),
+        CloseClipboard=Mock(return_value=1),
+    )
+    kernel32 = SimpleNamespace(
+        GlobalAlloc=Mock(return_value=1),
+        GlobalLock=Mock(return_value=1),
+        GlobalUnlock=Mock(return_value=1),
+        GlobalFree=Mock(return_value=1),
+    )
+
+    monkeypatch.setattr(
+        ctypes,
+        "windll",
+        SimpleNamespace(user32=user32, kernel32=kernel32),
+        raising=False,
+    )
+    monkeypatch.setattr(ctypes, "memmove", lambda _dest, _src, _size: None)
+
+    assert WindowsClipboard().copy("hello") is False
+    user32.OpenClipboard.assert_called_once()
+    user32.EmptyClipboard.assert_called_once()
+    kernel32.GlobalFree.assert_called_once_with(1)
+    user32.SetClipboardData.assert_not_called()
+
+
+def test_windows_clipboard_copy_frees_memory_when_memmove_raises(monkeypatch):
+    from whisper_platform.clipboard import WindowsClipboard
+
+    user32 = SimpleNamespace(
+        OpenClipboard=Mock(return_value=1),
+        EmptyClipboard=Mock(return_value=1),
+        SetClipboardData=Mock(return_value=1),
+        CloseClipboard=Mock(return_value=1),
+    )
+    kernel32 = SimpleNamespace(
+        GlobalAlloc=Mock(return_value=1),
+        GlobalLock=Mock(return_value=1),
+        GlobalUnlock=Mock(return_value=1),
+        GlobalFree=Mock(return_value=1),
+    )
+
+    monkeypatch.setattr(
+        ctypes,
+        "windll",
+        SimpleNamespace(user32=user32, kernel32=kernel32),
+        raising=False,
+    )
+
+    def raise_memmove(_dest, _src, _size):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(ctypes, "memmove", raise_memmove)
+
+    assert WindowsClipboard().copy("hello") is False
+    kernel32.GlobalUnlock.assert_called_once_with(1)
+    kernel32.GlobalFree.assert_called_once_with(1)
+    user32.OpenClipboard.assert_not_called()
+
+
 def test_windows_clipboard_paste_configures_pointer_sized_signatures(monkeypatch):
     from whisper_platform.clipboard import WindowsClipboard
 

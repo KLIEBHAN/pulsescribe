@@ -183,40 +183,43 @@ class WindowsClipboard:
         user32 = windll.user32
         kernel32 = windll.kernel32
         _configure_windows_clipboard_api(ctypes, user32, kernel32)
+        text_bytes = text.encode("utf-16-le") + b"\x00\x00"
+        h_mem = None
+        ownership_transferred = False
 
         try:
-            # Clipboard öffnen
+            # Text zuerst vorbereiten, damit ein Allokationsfehler das bestehende
+            # Clipboard nicht leer räumt.
+            h_mem = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(text_bytes))
+            if not h_mem:
+                logger.error("GlobalAlloc fehlgeschlagen")
+                return False
+
+            p_mem = kernel32.GlobalLock(h_mem)
+            if not p_mem:
+                logger.error("GlobalLock fehlgeschlagen")
+                return False
+
+            try:
+                ctypes.memmove(p_mem, text_bytes, len(text_bytes))
+            finally:
+                kernel32.GlobalUnlock(h_mem)
+
             if not _open_clipboard_with_retry(user32):
                 logger.error("Konnte Clipboard nicht öffnen")
                 return False
 
             try:
-                user32.EmptyClipboard()
-
-                # Text in globalem Speicher ablegen
-                text_bytes = text.encode("utf-16-le") + b"\x00\x00"
-                h_mem = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(text_bytes))
-                if not h_mem:
-                    logger.error("GlobalAlloc fehlgeschlagen")
+                if not user32.EmptyClipboard():
+                    logger.error("EmptyClipboard fehlgeschlagen")
                     return False
-
-                p_mem = kernel32.GlobalLock(h_mem)
-                if not p_mem:
-                    logger.error("GlobalLock fehlgeschlagen")
-                    kernel32.GlobalFree(h_mem)
-                    return False
-
-                try:
-                    ctypes.memmove(p_mem, text_bytes, len(text_bytes))
-                finally:
-                    kernel32.GlobalUnlock(h_mem)
 
                 # In Clipboard setzen (übernimmt Ownership von h_mem bei Erfolg)
                 if not user32.SetClipboardData(CF_UNICODETEXT, h_mem):
                     logger.error("SetClipboardData fehlgeschlagen")
-                    kernel32.GlobalFree(h_mem)
                     return False
 
+                ownership_transferred = True
                 return True
             finally:
                 user32.CloseClipboard()
@@ -224,6 +227,9 @@ class WindowsClipboard:
         except Exception as e:
             logger.error(f"Clipboard-Fehler: {e}")
             return False
+        finally:
+            if h_mem and not ownership_transferred:
+                kernel32.GlobalFree(h_mem)
 
     def paste(self) -> str | None:
         """Liest Text aus der Zwischenablage via Windows API."""
