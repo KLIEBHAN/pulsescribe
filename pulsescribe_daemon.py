@@ -901,6 +901,42 @@ class PulseScribeDaemon:
         self._update_state(AppState.IDLE)  # Reset nach erfolgreichem Paste
         self._apply_pending_hotkey_reconfigure_if_safe()
 
+    def _maybe_refine(
+        self,
+        transcript: str,
+        *,
+        phase_prefix: str,
+        run_id: int,
+        result_queue: queue.Queue[DaemonMessage | Exception],
+    ) -> str:
+        """Wendet optionales LLM-Refinement auf das Transkript an.
+
+        Setzt self._last_was_refined als Seiteneffekt.
+        Gibt das (ggf. verfeinerte) Transkript zurück.
+        """
+        self._last_was_refined = False
+        if not (self.refine and transcript):
+            return transcript
+
+        self._set_worker_phase(f"{phase_prefix}:refining", run_id=run_id)
+        result_queue.put(
+            DaemonMessage(
+                type=MessageType.STATUS_UPDATE, payload=AppState.REFINING
+            )
+        )
+        from refine.llm import maybe_refine_transcript
+
+        original = transcript
+        transcript = maybe_refine_transcript(
+            transcript,
+            refine=True,
+            refine_model=self.refine_model,
+            refine_provider=self.refine_provider,
+            context=self.context,
+        )
+        self._last_was_refined = transcript != original
+        return transcript
+
     def _save_to_history(self, transcript: str) -> None:
         """Speichert Transkript in der Historie."""
         from utils.history import save_transcript
@@ -1558,25 +1594,12 @@ class PulseScribeDaemon:
                 )
 
                 # LLM-Nachbearbeitung (optional)
-                self._last_was_refined = False
-                if self.refine and transcript:
-                    self._set_worker_phase("streaming:refining", run_id=run_id)
-                    result_queue_ref.put(
-                        DaemonMessage(
-                            type=MessageType.STATUS_UPDATE, payload=AppState.REFINING
-                        )
-                    )
-                    from refine.llm import maybe_refine_transcript
-
-                    original = transcript
-                    transcript = maybe_refine_transcript(
-                        transcript,
-                        refine=True,
-                        refine_model=self.refine_model,
-                        refine_provider=self.refine_provider,
-                        context=self.context,
-                    )
-                    self._last_was_refined = transcript != original
+                transcript = self._maybe_refine(
+                    transcript,
+                    phase_prefix="streaming",
+                    run_id=run_id,
+                    result_queue=result_queue_ref,
+                )
 
                 logger.debug("Sende TRANSCRIPT_RESULT")
                 self._set_worker_phase("streaming:publishing-result", run_id=run_id)
@@ -1842,25 +1865,12 @@ class PulseScribeDaemon:
                     )
 
                 # LLM-Nachbearbeitung (optional)
-                self._last_was_refined = False
-                if self.refine and transcript:
-                    self._set_worker_phase("recording:refining", run_id=run_id)
-                    result_queue_ref.put(
-                        DaemonMessage(
-                            type=MessageType.STATUS_UPDATE, payload=AppState.REFINING
-                        )
-                    )
-                    from refine.llm import maybe_refine_transcript
-
-                    original = transcript
-                    transcript = maybe_refine_transcript(
-                        transcript,
-                        refine=True,
-                        refine_model=self.refine_model,
-                        refine_provider=self.refine_provider,
-                        context=self.context,
-                    )
-                    self._last_was_refined = transcript != original
+                transcript = self._maybe_refine(
+                    transcript,
+                    phase_prefix="recording",
+                    run_id=run_id,
+                    result_queue=result_queue_ref,
+                )
 
                 logger.debug("Sende TRANSCRIPT_RESULT")
                 self._set_worker_phase("recording:publishing-result", run_id=run_id)

@@ -323,7 +323,6 @@ def _handle_buffered_audio(
                     "verwerfe weiteres Audio bis WebSocket verbunden"
                 )
                 state.buffer_overflow_logged = True
-            # Buffer voll oder Overflow geloggt → Chunk verwerfen
             return
 
     # Buffering deaktiviert: Direkt an Queue senden (außerhalb des Locks)
