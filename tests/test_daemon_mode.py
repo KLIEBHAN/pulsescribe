@@ -804,4 +804,4 @@ class TestAudioShutdown(unittest.TestCase):
         ):
             daemon._enter_error_state()
 
-        self.assertEqual(len(daemon._hold_state.active_sources), 0)
+        self.assertEqual(daemon._hold_state.active_sources, set())
