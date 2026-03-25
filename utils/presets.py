@@ -10,6 +10,9 @@ import platform
 
 from utils.preferences import remove_env_setting, save_env_setting
 
+LOCAL_FP16_ENV_KEY = "PULSESCRIBE_FP16"
+LEGACY_LOCAL_FP16_ENV_KEY = "PULSESCRIBE_LOCAL_FP16"
+
 # Local presets (UI labels). Values are strings matching the Settings UI controls.
 LOCAL_PRESET_BASE: dict[str, str] = {
     "device": "auto",
@@ -153,7 +156,8 @@ def apply_local_preset_to_env(preset_name: str) -> bool:
         save_env_setting(key, normalized)
 
     _save_bool_override("PULSESCRIBE_LOCAL_FAST", values.get("local_fast"))
-    _save_bool_override("PULSESCRIBE_FP16", values.get("fp16"))
+    _save_bool_override(LOCAL_FP16_ENV_KEY, values.get("fp16"))
+    remove_env_setting(LEGACY_LOCAL_FP16_ENV_KEY)
     _save_bool_override(
         "PULSESCRIBE_LOCAL_WITHOUT_TIMESTAMPS", values.get("without_timestamps")
     )

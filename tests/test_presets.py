@@ -69,3 +69,26 @@ def test_apply_local_preset_to_env_resets_lightning_specific_defaults(
         key in {"PULSESCRIBE_LIGHTNING_BATCH_SIZE", "PULSESCRIBE_LIGHTNING_QUANT"}
         for key, _ in saved
     )
+
+
+def test_apply_local_preset_to_env_migrates_legacy_fp16_key(monkeypatch) -> None:
+    custom_presets = dict(presets.LOCAL_PRESETS)
+    custom_presets["Test FP16 Preset"] = {
+        "local_backend": "whisper",
+        "local_model": "turbo",
+        "fp16": "true",
+    }
+    monkeypatch.setattr(presets, "LOCAL_PRESETS", custom_presets)
+
+    saved: list[tuple[str, str]] = []
+    removed: list[str] = []
+    monkeypatch.setattr(
+        presets, "save_env_setting", lambda key, value: saved.append((key, value))
+    )
+    monkeypatch.setattr(presets, "remove_env_setting", removed.append)
+
+    assert presets.apply_local_preset_to_env("Test FP16 Preset") is True
+
+    assert (presets.LOCAL_FP16_ENV_KEY, "true") in saved
+    assert presets.LEGACY_LOCAL_FP16_ENV_KEY in removed
+    assert not any(key == presets.LEGACY_LOCAL_FP16_ENV_KEY for key, _ in saved)
