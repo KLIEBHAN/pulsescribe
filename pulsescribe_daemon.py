@@ -875,10 +875,17 @@ class PulseScribeDaemon:
 
         Bei erneutem Aufruf wird der vorherige Timer invalidiert, damit
         die volle 0.8s ab dem letzten Fehler gelten.
+
+        Setzt _recording=False, damit der Hotkey-Toggle nach dem Error
+        sofort eine neue Aufnahme starten kann (statt erst die
+        "Phantom-Aufnahme" zu stoppen).
         """
         from Foundation import NSTimer  # type: ignore[import-not-found]
 
         self._stop_error_reset_timer()
+
+        self._recording = False
+        self._hold_state.reset()
 
         self._update_state(AppState.ERROR)
         get_sound_player().play("error")

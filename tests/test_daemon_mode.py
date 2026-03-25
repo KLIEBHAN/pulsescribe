@@ -765,3 +765,43 @@ class TestAudioShutdown(unittest.TestCase):
         with patch.object(daemon, "_update_state") as mock_update:
             callback(MagicMock())
             mock_update.assert_called_once_with(AppState.IDLE)
+
+    def test_enter_error_state_resets_recording_flag(self):
+        """_enter_error_state() setzt _recording=False, damit der Hotkey sofort neu starten kann."""
+        daemon = PulseScribeDaemon(mode="local")
+        daemon._recording = True
+
+        mock_timer_cls = MagicMock()
+        mock_timer_cls.scheduledTimerWithTimeInterval_repeats_block_.return_value = (
+            MagicMock()
+        )
+        mock_foundation = MagicMock()
+        mock_foundation.NSTimer = mock_timer_cls
+
+        with (
+            patch.dict(sys.modules, {"Foundation": mock_foundation}),
+            patch("pulsescribe_daemon.get_sound_player"),
+        ):
+            daemon._enter_error_state()
+
+        self.assertFalse(daemon._recording)
+
+    def test_enter_error_state_resets_hold_state(self):
+        """_enter_error_state() setzt hold_state zurück."""
+        daemon = PulseScribeDaemon(mode="local")
+        daemon._hold_state.should_start("test_source")
+
+        mock_timer_cls = MagicMock()
+        mock_timer_cls.scheduledTimerWithTimeInterval_repeats_block_.return_value = (
+            MagicMock()
+        )
+        mock_foundation = MagicMock()
+        mock_foundation.NSTimer = mock_timer_cls
+
+        with (
+            patch.dict(sys.modules, {"Foundation": mock_foundation}),
+            patch("pulsescribe_daemon.get_sound_player"),
+        ):
+            daemon._enter_error_state()
+
+        self.assertEqual(len(daemon._hold_state.active_sources), 0)
