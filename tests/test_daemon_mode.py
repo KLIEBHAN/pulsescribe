@@ -674,8 +674,6 @@ class TestAudioShutdown(unittest.TestCase):
 
         self.assertEqual(calls, ["abort", "close"])
 
-    # --- Error-Reset-Timer Tests ---
-
     def test_error_reset_timer_stored_on_enter_error(self):
         """_enter_error_state() speichert Timer-Referenz."""
         daemon = PulseScribeDaemon(mode="local")
@@ -721,8 +719,6 @@ class TestAudioShutdown(unittest.TestCase):
     def test_stop_error_reset_timer_when_none(self):
         """_stop_error_reset_timer() ist safe wenn kein Timer existiert."""
         daemon = PulseScribeDaemon(mode="local")
-        daemon._error_reset_timer = None
-
         daemon._stop_error_reset_timer()
         self.assertIsNone(daemon._error_reset_timer)
 
@@ -760,13 +756,11 @@ class TestAudioShutdown(unittest.TestCase):
 
         self.assertIsNotNone(callback)
 
-        # Wenn State schon IDLE: kein erneuter _update_state-Aufruf
         daemon._current_state = AppState.IDLE
         with patch.object(daemon, "_update_state") as mock_update:
             callback(MagicMock())
             mock_update.assert_not_called()
 
-        # Wenn State noch ERROR: wird auf IDLE gesetzt
         daemon._current_state = AppState.ERROR
         with patch.object(daemon, "_update_state") as mock_update:
             callback(MagicMock())

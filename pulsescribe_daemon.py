@@ -878,8 +878,6 @@ class PulseScribeDaemon:
         """
         from Foundation import NSTimer  # type: ignore[import-not-found]
 
-        # Vorherigen Reset-Timer invalidieren (verhindert vorzeitigen IDLE-Reset
-        # wenn mehrere Fehler in schneller Folge auftreten)
         self._stop_error_reset_timer()
 
         self._update_state(AppState.ERROR)
