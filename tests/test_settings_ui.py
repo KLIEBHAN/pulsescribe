@@ -248,6 +248,55 @@ class TestWelcomeLocalPresetBehavior:
         assert ctrl._lightning_quant_popup.indexOfSelectedItem() == 0
 
 
+def _make_minimal_welcome_controller():
+    ctrl = WelcomeController.__new__(WelcomeController)
+    ctrl._mode_popup = None
+    ctrl._local_backend_popup = None
+    ctrl._local_model_popup = None
+    ctrl._lang_popup = None
+    ctrl._device_popup = None
+    ctrl._warmup_popup = None
+    ctrl._local_fast_popup = None
+    ctrl._fp16_popup = None
+    ctrl._beam_size_field = None
+    ctrl._best_of_field = None
+    ctrl._temperature_field = None
+    ctrl._compute_type_field = None
+    ctrl._cpu_threads_field = None
+    ctrl._num_workers_field = None
+    ctrl._without_timestamps_popup = None
+    ctrl._vad_filter_popup = None
+    ctrl._lightning_batch_slider = None
+    ctrl._lightning_quant_popup = None
+    ctrl._streaming_checkbox = None
+    ctrl._refine_checkbox = None
+    ctrl._clipboard_restore_checkbox = None
+    ctrl._overlay_checkbox = None
+    ctrl._dock_icon_checkbox = None
+    ctrl._rtf_checkbox = None
+    ctrl._provider_popup = None
+    ctrl._model_field = None
+    ctrl._vocab_text_view = None
+    ctrl._save_custom_prompts = lambda: None
+    ctrl._on_settings_changed_callback = None
+    ctrl._save_btn = None
+    return ctrl
+
+
+class TestApiKeyProviderMetadata:
+    def test_api_card_height_grows_with_provider_count(self, monkeypatch):
+        import ui.welcome as welcome_mod
+
+        base_height = welcome_mod._get_api_card_height()
+        monkeypatch.setattr(
+            welcome_mod,
+            "API_KEY_PROVIDERS",
+            welcome_mod.API_KEY_PROVIDERS + [("test", "Test", "TEST_API_KEY")],
+        )
+
+        assert welcome_mod._get_api_card_height() == base_height + welcome_mod.API_KEY_ROW_SPACING
+
+
 class TestWelcomeSaveSettings:
     def test_save_settings_uses_canonical_fp16_key_and_removes_legacy(self, monkeypatch):
         save_calls: list[tuple[str, str]] = []
@@ -262,42 +311,39 @@ class TestWelcomeSaveSettings:
             lambda key: remove_calls.append(key),
         )
 
-        ctrl = WelcomeController.__new__(WelcomeController)
-        ctrl._mode_popup = None
-        ctrl._local_backend_popup = None
-        ctrl._local_model_popup = None
-        ctrl._lang_popup = None
-        ctrl._device_popup = None
-        ctrl._warmup_popup = None
-        ctrl._local_fast_popup = None
+        ctrl = _make_minimal_welcome_controller()
         ctrl._fp16_popup = _FakePopup(["default", "true", "false"], selected="true")
-        ctrl._beam_size_field = None
-        ctrl._best_of_field = None
-        ctrl._temperature_field = None
-        ctrl._compute_type_field = None
-        ctrl._cpu_threads_field = None
-        ctrl._num_workers_field = None
-        ctrl._without_timestamps_popup = None
-        ctrl._vad_filter_popup = None
-        ctrl._lightning_batch_slider = None
-        ctrl._lightning_quant_popup = None
-        ctrl._streaming_checkbox = None
-        ctrl._refine_checkbox = None
-        ctrl._clipboard_restore_checkbox = None
-        ctrl._overlay_checkbox = None
-        ctrl._dock_icon_checkbox = None
-        ctrl._rtf_checkbox = None
-        ctrl._provider_popup = None
-        ctrl._model_field = None
-        ctrl._vocab_text_view = None
-        ctrl._save_custom_prompts = lambda: None
-        ctrl._on_settings_changed_callback = None
-        ctrl._save_btn = None
 
         ctrl._save_all_settings()
 
         assert (LOCAL_FP16_ENV_KEY, "true") in save_calls
         assert LEGACY_LOCAL_FP16_ENV_KEY in remove_calls
+
+    def test_save_settings_persists_all_api_key_providers(self, monkeypatch):
+        import ui.welcome as welcome_mod
+
+        saved_keys: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            "ui.welcome.set_api_key",
+            lambda key, value: saved_keys.append((key, value)) or bool(value),
+        )
+        monkeypatch.setattr("ui.welcome._get_color", lambda *args: args)
+
+        ctrl = _make_minimal_welcome_controller()
+        expected = []
+        for provider, _label, env_key in welcome_mod.API_KEY_PROVIDERS:
+            key_value = f"{provider}-key"
+            expected.append((env_key, key_value))
+            setattr(ctrl, f"_{provider}_field", _FakeField(key_value))
+            setattr(ctrl, f"_{provider}_status", _FakeStatus())
+
+        ctrl._save_all_settings()
+
+        assert saved_keys == expected
+        for provider, _label, _env_key in welcome_mod.API_KEY_PROVIDERS:
+            status = getattr(ctrl, f"_{provider}_status")
+            assert status.value == "✓"
+            assert status.color == (51, 217, 178)
 
 
 class TestWelcomePrivacySettings:
@@ -358,6 +404,15 @@ class _FakeField:
 
     def stringValue(self):
         return self.value
+
+
+class _FakeStatus(_FakeField):
+    def __init__(self, value=""):
+        super().__init__(value)
+        self.color = None
+
+    def setTextColor_(self, value):
+        self.color = value
 
 
 class _FakeSlider:

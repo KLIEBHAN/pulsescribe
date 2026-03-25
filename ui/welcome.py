@@ -63,6 +63,16 @@ BOOL_OVERRIDE_OPTIONS = ["default", "true", "false"]
 WARMUP_OPTIONS = ["auto", "true", "false"]
 LOCAL_FP16_ENV_KEY = "PULSESCRIBE_FP16"
 LEGACY_LOCAL_FP16_ENV_KEY = "PULSESCRIBE_LOCAL_FP16"
+API_KEY_PROVIDERS = [
+    ("deepgram", "Deepgram", "DEEPGRAM_API_KEY"),
+    ("groq", "Groq", "GROQ_API_KEY"),
+    ("openai", "OpenAI", "OPENAI_API_KEY"),
+    ("openrouter", "OpenRouter", "OPENROUTER_API_KEY"),
+    ("gemini", "Gemini", "GEMINI_API_KEY"),
+]
+API_KEY_CARD_TOP_INSET = 70
+API_KEY_CARD_BOTTOM_INSET = 54
+API_KEY_ROW_SPACING = 54
 
 
 def _bool_override_from_env(*keys: str) -> str:
@@ -108,6 +118,18 @@ def _is_env_enabled_default_true(key: str) -> bool:
     if value is None:
         return True
     return value.lower() not in ("false", "0", "no", "off")
+
+
+def _get_api_card_height() -> int:
+    """Return a card height that fits all configured API key rows."""
+    row_count = len(API_KEY_PROVIDERS)
+    if row_count == 0:
+        return API_KEY_CARD_TOP_INSET + API_KEY_CARD_BOTTOM_INSET
+    return (
+        API_KEY_CARD_TOP_INSET
+        + API_KEY_CARD_BOTTOM_INSET
+        + API_KEY_ROW_SPACING * (row_count - 1)
+    )
 
 
 def _build_setup_hotkey_info(
@@ -226,7 +248,7 @@ class WelcomeController:
         self._setup_preset_status_label = None
         self._onboarding_wizard_callback = None
         # API-Key-Felder werden dynamisch via setattr gesetzt:
-        # _{provider}_field, _{provider}_status für deepgram, groq, openai, openrouter
+        # _{provider}_field, _{provider}_status für alle Einträge aus API_KEY_PROVIDERS
 
         self._build_window()
 
@@ -915,8 +937,7 @@ class WelcomeController:
 
         parent_view = parent_view or self._content_view
 
-        # 5 API Keys: Deepgram, Groq, OpenAI, OpenRouter, Gemini
-        card_height = 340
+        card_height = _get_api_card_height()
         card_width = WELCOME_WIDTH - 2 * WELCOME_PADDING
         card_y = y - card_height
 
@@ -939,35 +960,16 @@ class WelcomeController:
         parent_view.addSubview_(title)
 
         # API Key Zeilen (von oben nach unten)
-        row_y = card_y + card_height - 70
-        row_spacing = 54
-
-        # Deepgram (required for transcription)
-        self._build_api_row_compact(
-            row_y, "Deepgram", "DEEPGRAM_API_KEY", "deepgram", parent_view
-        )
-        row_y -= row_spacing
-
-        # Groq (for refine)
-        self._build_api_row_compact(row_y, "Groq", "GROQ_API_KEY", "groq", parent_view)
-        row_y -= row_spacing
-
-        # OpenAI (for refine)
-        self._build_api_row_compact(
-            row_y, "OpenAI", "OPENAI_API_KEY", "openai", parent_view
-        )
-        row_y -= row_spacing
-
-        # OpenRouter (for refine)
-        self._build_api_row_compact(
-            row_y, "OpenRouter", "OPENROUTER_API_KEY", "openrouter", parent_view
-        )
-        row_y -= row_spacing
-
-        # Gemini (for refine)
-        self._build_api_row_compact(
-            row_y, "Gemini", "GEMINI_API_KEY", "gemini", parent_view
-        )
+        row_y = card_y + card_height - API_KEY_CARD_TOP_INSET
+        for provider, label_text, key_name in API_KEY_PROVIDERS:
+            self._build_api_row_compact(
+                row_y,
+                label_text,
+                key_name,
+                provider,
+                parent_view,
+            )
+            row_y -= API_KEY_ROW_SPACING
 
         return card_y - CARD_SPACING
 
@@ -3124,15 +3126,7 @@ class WelcomeController:
 
         log = logging.getLogger(__name__)
 
-        # API Keys (alle 5 Provider)
-        api_keys = [
-            ("deepgram", "DEEPGRAM_API_KEY"),
-            ("groq", "GROQ_API_KEY"),
-            ("openai", "OPENAI_API_KEY"),
-            ("openrouter", "OPENROUTER_API_KEY"),
-            ("gemini", "GEMINI_API_KEY"),
-        ]
-        for provider, env_key in api_keys:
+        for provider, _label, env_key in API_KEY_PROVIDERS:
             field = getattr(self, f"_{provider}_field", None)
             status = getattr(self, f"_{provider}_status", None)
             if field and status:
