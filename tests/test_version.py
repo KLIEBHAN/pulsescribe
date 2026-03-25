@@ -83,6 +83,31 @@ def test_get_app_version_uses_importlib_metadata_when_repo_files_missing(
     assert version_mod.get_app_version(project_root=tmp_path) == "7.8.9"
 
 
+def test_get_app_version_prefers_windows_executable_over_bundled_pyproject(
+    tmp_path, monkeypatch
+):
+    import utils.version as version_mod
+
+    for key in ("PULSESCRIBE_VERSION", "WHISPERGO_VERSION", "VERSION"):
+        monkeypatch.delenv(key, raising=False)
+
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "pulsescribe"\nversion = "1.2.3"\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(version_mod.sys, "platform", "win32")
+    monkeypatch.setattr(version_mod.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(
+        version_mod,
+        "_version_from_windows_executable",
+        lambda: "9.8.7",
+    )
+    monkeypatch.setattr(version_mod, "_version_from_importlib_metadata", lambda: None)
+
+    assert version_mod.get_app_version(project_root=tmp_path, default="unknown") == "9.8.7"
+
+
 def test_get_app_version_uses_windows_executable_version_when_frozen(
     tmp_path, monkeypatch
 ):

@@ -130,6 +130,10 @@ def get_app_version(*, default: str = "unknown", project_root: Path | None = Non
     if bundle_version:
         return bundle_version
 
+    windows_exe_version = _version_from_windows_executable()
+    if windows_exe_version:
+        return windows_exe_version
+
     root = project_root or _default_project_root()
     pyproject_version = _version_from_pyproject(root / "pyproject.toml")
     if pyproject_version:
@@ -142,9 +146,5 @@ def get_app_version(*, default: str = "unknown", project_root: Path | None = Non
     metadata_version = _version_from_importlib_metadata()
     if metadata_version:
         return metadata_version
-
-    windows_exe_version = _version_from_windows_executable()
-    if windows_exe_version:
-        return windows_exe_version
 
     return default

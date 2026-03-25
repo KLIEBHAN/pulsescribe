@@ -25,7 +25,16 @@ def test_read_file_tail_text_truncates_large_file(tmp_path: Path) -> None:
     tail = read_file_tail_text(file_path, max_chars=60)
     assert tail.startswith("... (truncated)\n\n")
     assert "line-0499" in tail
-    assert len(tail) > 60
+    assert len(tail) <= 60
+
+
+def test_read_file_tail_text_skips_prefix_when_budget_is_too_small(
+    tmp_path: Path,
+) -> None:
+    file_path = tmp_path / "tiny-tail.log"
+    file_path.write_text("abcdefghijklmnopqrstuvwxyz", encoding="utf-8")
+
+    assert read_file_tail_text(file_path, max_chars=4) == "wxyz"
 
 
 def test_read_file_tail_lines_returns_last_lines(tmp_path: Path) -> None:

@@ -75,7 +75,12 @@ def read_file_tail_text(
     text = raw.decode(encoding, errors=errors)
     if len(text) <= max_chars:
         return text
-    return f"{truncated_prefix}{text[-max_chars:]}"
+
+    if not truncated_prefix or len(truncated_prefix) >= max_chars:
+        return text[-max_chars:]
+
+    suffix_chars = max_chars - len(truncated_prefix)
+    return f"{truncated_prefix}{text[-suffix_chars:]}"
 
 
 def read_file_tail_lines(
