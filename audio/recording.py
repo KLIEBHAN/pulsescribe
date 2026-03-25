@@ -17,6 +17,7 @@ from config import (
     WHISPER_BLOCKSIZE,
     TEMP_RECORDING_FILENAME,
     get_input_device,
+    reset_input_device_cache,
 )
 from utils.logging import get_session_id
 
@@ -88,6 +89,7 @@ class AudioRecorder:
         self._recording_start: float = 0
         self._stop_event = threading.Event()
         self._active_sample_rate = sample_rate
+        self._session_active = False
 
     def _audio_callback(self, indata, _frames, _time_info, _status):
         """Callback: Sammelt Audio-Chunks während der Aufnahme."""
@@ -106,34 +108,59 @@ class AudioRecorder:
             self._recorded_chunks = []
         self._stop_event.clear()
         self._recording_start = time.perf_counter()
+        self._session_active = False
         input_device, active_sample_rate = _resolve_input_stream_config(
             self.sample_rate,
             self.device,
         )
         self._active_sample_rate = active_sample_rate
+        should_retry_with_fresh_device = (
+            self.device is None and self.sample_rate == WHISPER_SAMPLE_RATE
+        )
 
-        stream = None
-        try:
-            stream = sd.InputStream(
-                device=input_device,
-                samplerate=active_sample_rate,
-                channels=self.channels,
-                blocksize=self.blocksize,
-                dtype="float32",
-                callback=self._audio_callback,
-            )
-            stream.start()
-            self._stream = stream
-        except Exception:
-            if stream is not None:
-                try:
-                    stream.close()
-                except Exception:
-                    pass
-            self._stream = None
-            self._recording_start = 0
-            self._stop_event.set()
-            raise
+        while True:
+            stream = None
+            try:
+                stream = sd.InputStream(
+                    device=input_device,
+                    samplerate=active_sample_rate,
+                    channels=self.channels,
+                    blocksize=self.blocksize,
+                    dtype="float32",
+                    callback=self._audio_callback,
+                )
+                stream.start()
+                self._stream = stream
+                self._session_active = True
+                break
+            except Exception:
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
+                self._stream = None
+                if should_retry_with_fresh_device:
+                    should_retry_with_fresh_device = False
+                    previous_config = (input_device, active_sample_rate)
+                    reset_input_device_cache()
+                    input_device, active_sample_rate = _resolve_input_stream_config(
+                        self.sample_rate,
+                        self.device,
+                    )
+                    self._active_sample_rate = active_sample_rate
+                    if (input_device, active_sample_rate) == previous_config:
+                        self._recording_start = 0
+                        self._stop_event.set()
+                        raise
+                    logger.info(
+                        "[%s] Aufnahme-Start fehlgeschlagen, versuche Device-Reprobe",
+                        get_session_id(),
+                    )
+                    continue
+                self._recording_start = 0
+                self._stop_event.set()
+                raise
 
         if play_ready_sound:
             _play_sound("ready")
@@ -152,9 +179,13 @@ class AudioRecorder:
         Raises:
             ValueError: Wenn keine Audiodaten aufgenommen wurden
         """
+        if not self._session_active:
+            raise RuntimeError("Keine aktive Aufnahme.")
+
         import numpy as np
         import soundfile as sf
 
+        self._session_active = False
         if self._stream:
             self._stream.stop()
             self._stream.close()
@@ -169,6 +200,7 @@ class AudioRecorder:
 
         with self._chunks_lock:
             if not self._recorded_chunks:
+                self._recording_start = 0
                 logger.error(f"[{get_session_id()}] Keine Audiodaten aufgenommen")
                 raise ValueError("Keine Audiodaten aufgenommen.")
 
@@ -178,6 +210,9 @@ class AudioRecorder:
             output_path = Path(tempfile.gettempdir()) / TEMP_RECORDING_FILENAME
 
         sf.write(output_path, audio_data, self._active_sample_rate)
+        self._recording_start = 0
+        with self._chunks_lock:
+            self._recorded_chunks = []
 
         return output_path
 

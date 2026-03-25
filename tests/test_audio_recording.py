@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from types import SimpleNamespace
 from typing import Literal
 
@@ -120,3 +121,98 @@ def test_audio_recorder_start_cleans_up_when_stream_start_fails(monkeypatch):
     assert recorder._stream is None
     assert recorder.wait_for_stop(timeout=0)
     assert state["closed"] == 1
+
+
+def test_audio_recorder_start_retries_after_stale_auto_device_cache(monkeypatch):
+    import audio.recording as recording
+
+    attempts: list[tuple[int | None, int]] = []
+    device_calls = iter([(7, 48_000), (9, 44_100)])
+    reset_calls: list[bool] = []
+
+    class _RetryInputStream:
+        def __init__(self, **kwargs):
+            self.device = kwargs["device"]
+            self.samplerate = kwargs["samplerate"]
+            self.active = False
+
+        def start(self) -> None:
+            attempts.append((self.device, self.samplerate))
+            if self.device == 7:
+                raise RuntimeError("cached device missing")
+            self.active = True
+
+        def close(self) -> None:
+            self.active = False
+
+    fake_sd = SimpleNamespace(
+        InputStream=lambda **kwargs: _RetryInputStream(**kwargs)
+    )
+
+    monkeypatch.setattr(recording, "get_input_device", lambda: next(device_calls))
+    monkeypatch.setattr(
+        recording, "reset_input_device_cache", lambda: reset_calls.append(True)
+    )
+    monkeypatch.setattr(recording, "_play_sound", lambda _name: None)
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sd)
+
+    recorder = recording.AudioRecorder()
+    recorder.start(play_ready_sound=False)
+
+    assert attempts == [(7, 48_000), (9, 44_100)]
+    assert reset_calls == [True]
+    assert recorder._active_sample_rate == 44_100
+    assert recorder._session_active is True
+
+
+def test_audio_recorder_stop_rejects_missing_active_session(monkeypatch):
+    import audio.recording as recording
+
+    sounds: list[str] = []
+    monkeypatch.setattr(recording, "_play_sound", sounds.append)
+
+    recorder = recording.AudioRecorder()
+
+    with pytest.raises(RuntimeError, match="Keine aktive Aufnahme"):
+        recorder.stop()
+
+    assert sounds == []
+
+
+def test_audio_recorder_stop_is_single_use_and_clears_buffer(
+    monkeypatch, tmp_path
+):
+    import audio.recording as recording
+
+    write_calls: list[tuple[object, int]] = []
+    sounds: list[str] = []
+    fake_sf = SimpleNamespace(
+        write=lambda path, audio_data, sample_rate: write_calls.append(
+            (path, sample_rate)
+        )
+    )
+    monkeypatch.setattr(recording, "_play_sound", sounds.append)
+    monkeypatch.setitem(sys.modules, "soundfile", fake_sf)
+
+    recorder = recording.AudioRecorder()
+    recorder._session_active = True
+    recorder._recording_start = time.perf_counter() - 0.5
+    recorder._active_sample_rate = 16_000
+    recorder._recorded_chunks = [
+        np.array([[0.1], [0.2]], dtype=np.float32),
+        np.array([[0.3]], dtype=np.float32),
+    ]
+
+    output_path = tmp_path / "recording.wav"
+    assert recorder.stop(output_path) == output_path
+
+    assert write_calls == [(output_path, 16_000)]
+    assert sounds == ["stop"]
+    assert recorder.chunks == []
+    assert recorder._recording_start == 0
+
+    with pytest.raises(RuntimeError, match="Keine aktive Aufnahme"):
+        recorder.stop(output_path)
+
+    assert write_calls == [(output_path, 16_000)]
+    assert sounds == ["stop"]

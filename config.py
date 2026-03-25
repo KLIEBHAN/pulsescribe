@@ -8,6 +8,7 @@ import logging
 import os
 import tempfile
 from pathlib import Path
+from typing import Any, cast
 
 logger = logging.getLogger("pulsescribe")
 
@@ -99,23 +100,30 @@ def get_input_device() -> tuple[int | None, int]:
     try:
         import sounddevice as sd  # type: ignore[import-not-found]
 
-        default_input = sd.default.device[0]
+        default_devices = cast(tuple[object, object], sd.default.device)
+        default_input = default_devices[0]
+        if not isinstance(default_input, int):
+            default_input = -1
 
         # Default ist gesetzt → verwenden
         if default_input >= 0:
-            dev = sd.query_devices(default_input)
-            return _return_result((None, int(dev["default_samplerate"])))
+            dev = cast(dict[str, Any], sd.query_devices(default_input))
+            samplerate = int(dev.get("default_samplerate", WHISPER_SAMPLE_RATE))
+            return _return_result((None, samplerate))
 
         # Default nicht gesetzt → passendes Input-Device suchen
         devices = sd.query_devices()
         input_devices = []
 
-        for i, dev in enumerate(devices):
-            if dev["max_input_channels"] > 0:
+        for i, raw_dev in enumerate(devices):
+            dev = cast(dict[str, Any], raw_dev)
+            if int(dev.get("max_input_channels", 0) or 0) > 0:
                 input_devices.append({
                     "idx": i,
-                    "name": dev["name"],
-                    "samplerate": int(dev["default_samplerate"]),
+                    "name": str(dev.get("name", "")),
+                    "samplerate": int(
+                        dev.get("default_samplerate", WHISPER_SAMPLE_RATE)
+                    ),
                 })
 
         if not input_devices:
@@ -215,6 +223,12 @@ def get_input_device() -> tuple[int | None, int]:
 
     except Exception:
         return _return_result((None, WHISPER_SAMPLE_RATE), cache=False)
+
+
+def reset_input_device_cache() -> None:
+    """Verwirft die gecachte Input-Device-Erkennung."""
+    global _cached_input_device
+    _cached_input_device = None
 
 # =============================================================================
 # Streaming-Konfiguration
@@ -397,4 +411,5 @@ __all__ = [
     "LOG_FILE",
     "VOCABULARY_FILE",
     "PROMPTS_FILE",
+    "reset_input_device_cache",
 ]
