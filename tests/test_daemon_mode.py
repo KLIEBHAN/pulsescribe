@@ -673,3 +673,101 @@ class TestAudioShutdown(unittest.TestCase):
         daemon._shutdown_input_stream(stream, finished_event=finished_event, run_id=1)
 
         self.assertEqual(calls, ["abort", "close"])
+
+    # --- Error-Reset-Timer Tests ---
+
+    def test_error_reset_timer_stored_on_enter_error(self):
+        """_enter_error_state() speichert Timer-Referenz."""
+        daemon = PulseScribeDaemon(mode="local")
+        mock_timer = MagicMock()
+        mock_timer_cls = MagicMock()
+        mock_timer_cls.scheduledTimerWithTimeInterval_repeats_block_.return_value = (
+            mock_timer
+        )
+        mock_foundation = MagicMock()
+        mock_foundation.NSTimer = mock_timer_cls
+
+        with (
+            patch.dict(sys.modules, {"Foundation": mock_foundation}),
+            patch("pulsescribe_daemon.get_sound_player"),
+        ):
+            daemon._enter_error_state()
+
+        self.assertIs(daemon._error_reset_timer, mock_timer)
+
+    def test_error_reset_timer_invalidated_on_reentry(self):
+        """Bei erneutem _enter_error_state() wird der alte Timer invalidiert."""
+        daemon = PulseScribeDaemon(mode="local")
+        old_timer = MagicMock()
+        new_timer = MagicMock()
+        daemon._error_reset_timer = old_timer
+
+        mock_timer_cls = MagicMock()
+        mock_timer_cls.scheduledTimerWithTimeInterval_repeats_block_.return_value = (
+            new_timer
+        )
+        mock_foundation = MagicMock()
+        mock_foundation.NSTimer = mock_timer_cls
+
+        with (
+            patch.dict(sys.modules, {"Foundation": mock_foundation}),
+            patch("pulsescribe_daemon.get_sound_player"),
+        ):
+            daemon._enter_error_state()
+
+        old_timer.invalidate.assert_called_once()
+        self.assertIs(daemon._error_reset_timer, new_timer)
+
+    def test_stop_error_reset_timer_when_none(self):
+        """_stop_error_reset_timer() ist safe wenn kein Timer existiert."""
+        daemon = PulseScribeDaemon(mode="local")
+        daemon._error_reset_timer = None
+
+        daemon._stop_error_reset_timer()
+        self.assertIsNone(daemon._error_reset_timer)
+
+    def test_error_reset_timer_cleaned_in_cleanup(self):
+        """cleanup() stoppt auch den Error-Reset-Timer."""
+        daemon = PulseScribeDaemon(mode="local")
+
+        with patch.object(daemon, "_stop_error_reset_timer") as mock_stop:
+            daemon.cleanup()
+            mock_stop.assert_called_once()
+
+    def test_error_reset_callback_only_resets_if_still_error(self):
+        """Timer-Callback setzt nur auf IDLE wenn State noch ERROR ist."""
+        daemon = PulseScribeDaemon(mode="local")
+        callback = None
+
+        mock_timer_cls = MagicMock()
+        mock_foundation = MagicMock()
+        mock_foundation.NSTimer = mock_timer_cls
+
+        def capture_callback(_interval, _repeats, block):
+            nonlocal callback
+            callback = block
+            return MagicMock()
+
+        mock_timer_cls.scheduledTimerWithTimeInterval_repeats_block_.side_effect = (
+            capture_callback
+        )
+
+        with (
+            patch.dict(sys.modules, {"Foundation": mock_foundation}),
+            patch("pulsescribe_daemon.get_sound_player"),
+        ):
+            daemon._enter_error_state()
+
+        self.assertIsNotNone(callback)
+
+        # Wenn State schon IDLE: kein erneuter _update_state-Aufruf
+        daemon._current_state = AppState.IDLE
+        with patch.object(daemon, "_update_state") as mock_update:
+            callback(MagicMock())
+            mock_update.assert_not_called()
+
+        # Wenn State noch ERROR: wird auf IDLE gesetzt
+        daemon._current_state = AppState.ERROR
+        with patch.object(daemon, "_update_state") as mock_update:
+            callback(MagicMock())
+            mock_update.assert_called_once_with(AppState.IDLE)

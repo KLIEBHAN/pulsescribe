@@ -179,6 +179,8 @@ class PulseScribeDaemon:
         self._last_interim_mtime = 0.0
         # Watchdog-Timer: Verhindert hängendes Overlay bei Worker-Problemen
         self._transcribing_watchdog = None
+        # Timer für verzögerten ERROR→IDLE Reset
+        self._error_reset_timer = None
 
         # UI-Controller (werden in run() initialisiert)
         self._menubar: MenuBarController | None = None
@@ -870,8 +872,15 @@ class PulseScribeDaemon:
         Setzt den State auf ERROR, spielt den Fehler-Sound und startet
         einen 0.8s Timer für den IDLE-Reset. Ohne Verzögerung wird ERROR
         sofort von IDLE überschrieben und ist im Overlay nie sichtbar.
+
+        Bei erneutem Aufruf wird der vorherige Timer invalidiert, damit
+        die volle 0.8s ab dem letzten Fehler gelten.
         """
         from Foundation import NSTimer  # type: ignore[import-not-found]
+
+        # Vorherigen Reset-Timer invalidieren (verhindert vorzeitigen IDLE-Reset
+        # wenn mehrere Fehler in schneller Folge auftreten)
+        self._stop_error_reset_timer()
 
         self._update_state(AppState.ERROR)
         get_sound_player().play("error")
@@ -882,13 +891,22 @@ class PulseScribeDaemon:
             daemon = weak_self()
             if daemon is None:
                 return
+            daemon._error_reset_timer = None
             if daemon._current_state == AppState.ERROR:
                 daemon._update_state(AppState.IDLE)
-            daemon._apply_pending_hotkey_reconfigure_if_safe()
+                daemon._apply_pending_hotkey_reconfigure_if_safe()
 
-        NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
-            0.8, False, reset_to_idle
+        self._error_reset_timer = (
+            NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+                0.8, False, reset_to_idle
+            )
         )
+
+    def _stop_error_reset_timer(self) -> None:
+        """Stoppt den ERROR→IDLE Reset-Timer."""
+        if self._error_reset_timer:
+            self._error_reset_timer.invalidate()
+            self._error_reset_timer = None
 
     def _handle_transcript_result(self, transcript: str) -> None:
         """Verarbeitet das fertige Transkript: UI-Update, History, Auto-Paste."""
@@ -2150,6 +2168,7 @@ class PulseScribeDaemon:
         self._stop_interim_polling()
         self._stop_result_polling()
         self._stop_transcribing_watchdog()
+        self._stop_error_reset_timer()
         self._stop_keepalive_timer()
 
         # Provider-Cache leeren (Local Whisper kann ~500MB RAM halten)
