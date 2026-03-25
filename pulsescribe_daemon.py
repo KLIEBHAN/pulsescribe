@@ -158,6 +158,7 @@ class PulseScribeDaemon:
         self._last_rtf: float | None = (
             None  # Real-Time Factor der letzten Transkription
         )
+        self._last_was_refined: bool = False  # Ob Refinement den Text tatsächlich verändert hat
 
         # Stop-Event für _deepgram_stream_core
         self._stop_event: threading.Event | None = None
@@ -909,7 +910,7 @@ class PulseScribeDaemon:
                 transcript,
                 mode=self._run_mode or self.mode,
                 language=self.language,
-                refined=self.refine,
+                refined=self._last_was_refined,
             )
         except Exception as e:
             logger.warning(f"History save failed: {e}")
@@ -1557,6 +1558,7 @@ class PulseScribeDaemon:
                 )
 
                 # LLM-Nachbearbeitung (optional)
+                self._last_was_refined = False
                 if self.refine and transcript:
                     self._set_worker_phase("streaming:refining", run_id=run_id)
                     result_queue_ref.put(
@@ -1566,6 +1568,7 @@ class PulseScribeDaemon:
                     )
                     from refine.llm import maybe_refine_transcript
 
+                    original = transcript
                     transcript = maybe_refine_transcript(
                         transcript,
                         refine=True,
@@ -1573,6 +1576,7 @@ class PulseScribeDaemon:
                         refine_provider=self.refine_provider,
                         context=self.context,
                     )
+                    self._last_was_refined = transcript != original
 
                 logger.debug("Sende TRANSCRIPT_RESULT")
                 self._set_worker_phase("streaming:publishing-result", run_id=run_id)
@@ -1838,6 +1842,7 @@ class PulseScribeDaemon:
                     )
 
                 # LLM-Nachbearbeitung (optional)
+                self._last_was_refined = False
                 if self.refine and transcript:
                     self._set_worker_phase("recording:refining", run_id=run_id)
                     result_queue_ref.put(
@@ -1847,6 +1852,7 @@ class PulseScribeDaemon:
                     )
                     from refine.llm import maybe_refine_transcript
 
+                    original = transcript
                     transcript = maybe_refine_transcript(
                         transcript,
                         refine=True,
@@ -1854,6 +1860,7 @@ class PulseScribeDaemon:
                         refine_provider=self.refine_provider,
                         context=self.context,
                     )
+                    self._last_was_refined = transcript != original
 
                 logger.debug("Sende TRANSCRIPT_RESULT")
                 self._set_worker_phase("recording:publishing-result", run_id=run_id)

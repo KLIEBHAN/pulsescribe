@@ -317,14 +317,14 @@ def _handle_buffered_audio(
         if is_buffering:
             if len(buffer_state.buffer) < CLI_BUFFER_LIMIT:
                 buffer_state.buffer.append(audio_bytes)
-                return
             elif not state.buffer_overflow_logged:
                 logger.warning(
                     f"[{session_id}] Audio-Buffer voll ({CLI_BUFFER_LIMIT} Chunks), "
                     "verwerfe weiteres Audio bis WebSocket verbunden"
                 )
                 state.buffer_overflow_logged = True
-                return
+            # Buffer voll oder Overflow geloggt → Chunk verwerfen
+            return
 
     # Buffering deaktiviert: Direkt an Queue senden (außerhalb des Locks)
     loop.call_soon_threadsafe(audio_queue.put_nowait, audio_bytes)
