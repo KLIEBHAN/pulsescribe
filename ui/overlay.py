@@ -824,6 +824,13 @@ class OverlayController:
 
         self._current_state = state
 
+        # Cancel stale feedback timer from previous DONE/ERROR state.
+        # Without this, a quick re-recording within FEEDBACK_DISPLAY_DURATION
+        # causes the timer to fire _fade_out() during the new recording.
+        if self._feedback_timer:
+            self._feedback_timer.invalidate()
+            self._feedback_timer = None
+
         if state == AppState.LISTENING:
             self._wave_view.start_listening_animation()
             self._text_field.setStringValue_("Listening ...")
