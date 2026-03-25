@@ -857,3 +857,45 @@ class TestSerializationEdgeCases:
 
         loaded = load_custom_prompts(path=prompts_file)
         assert loaded["app_contexts"]["Path\\App"] == "code"
+
+
+class TestAtomicWrite:
+    """Tests für atomare Schreibvorgänge in save_custom_prompts."""
+
+    def test_save_uses_atomic_write(self, prompts_file, monkeypatch):
+        """save_custom_prompts() nutzt _write_text_atomic statt write_text.
+
+        Stellt sicher, dass ein Crash während des Schreibens die Datei nicht
+        korrumpiert (write_text schreibt direkt, _write_text_atomic via Rename).
+        """
+        import utils.custom_prompts as cp
+
+        calls = []
+        original_write = cp._write_text_atomic
+
+        def tracking_write(path, content, **kwargs):
+            calls.append(("atomic", path))
+            return original_write(path, content, **kwargs)
+
+        monkeypatch.setattr(cp, "_write_text_atomic", tracking_write)
+
+        cp.save_custom_prompts(
+            {"prompts": {"default": {"prompt": "Test"}}},
+            path=prompts_file,
+        )
+
+        assert any(call[0] == "atomic" for call in calls), (
+            "save_custom_prompts must use _write_text_atomic for crash safety"
+        )
+
+    def test_save_leaves_no_temp_files_on_success(self, prompts_file):
+        """Nach erfolgreichem Save dürfen keine .tmp-Dateien übrig bleiben."""
+        from utils.custom_prompts import save_custom_prompts
+
+        save_custom_prompts(
+            {"prompts": {"default": {"prompt": "Clean write"}}},
+            path=prompts_file,
+        )
+
+        tmp_files = list(prompts_file.parent.glob(".*prompts*.tmp"))
+        assert tmp_files == [], f"Temp files left behind: {tmp_files}"

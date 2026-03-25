@@ -22,6 +22,7 @@ import tomllib
 from pathlib import Path
 
 from config import PROMPTS_FILE
+from utils.preferences import _write_text_atomic
 from refine.prompts import (
     CONTEXT_PROMPTS,
     DEFAULT_APP_CONTEXTS,
@@ -350,7 +351,6 @@ def save_custom_prompts(data: dict, path: Path | None = None) -> None:
     Speichert nur die übergebenen Felder (partielle Updates möglich).
     """
     prompts_file = path or PROMPTS_FILE
-    prompts_file.parent.mkdir(parents=True, exist_ok=True)
 
     lines = ["# Custom Prompts für pulsescribe", ""]
 
@@ -365,7 +365,7 @@ def save_custom_prompts(data: dict, path: Path | None = None) -> None:
         lines.extend(_serialize_app_contexts(data["app_contexts"]))
 
     try:
-        prompts_file.write_text("\n".join(lines), encoding="utf-8")
+        _write_text_atomic(prompts_file, "\n".join(lines))
     except OSError as e:
         logger.warning(f"Prompts-Datei nicht schreibbar: {e}")
         raise
