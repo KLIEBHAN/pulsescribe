@@ -852,9 +852,7 @@ class PulseScribeDaemon:
         self._last_rtf = None  # RTF bei Fehler zurücksetzen
         if self._test_run_active:
             self._finish_test_run("", str(err))
-            self._update_state(AppState.ERROR)
-            get_sound_player().play("error")
-            self._schedule_idle_after_error()
+            self._enter_error_state()
             return
 
         logger.error(f"Fehler: {err}")
@@ -864,18 +862,19 @@ class PulseScribeDaemon:
         if isinstance(err, ValueError):
             show_error_alert("API-Key fehlt", str(err))
 
-        self._update_state(AppState.ERROR)
-        get_sound_player().play("error")
-        self._schedule_idle_after_error()
+        self._enter_error_state()
 
-    def _schedule_idle_after_error(self) -> None:
-        """Verzögerter IDLE-Reset nach ERROR-State.
+    def _enter_error_state(self) -> None:
+        """Wechselt in ERROR-State mit verzögertem IDLE-Reset.
 
-        Gibt dem User 0.8s visuelles Feedback im Overlay, bevor der State
-        auf IDLE zurückgesetzt wird. Ohne Verzögerung wird ERROR sofort von
-        IDLE überschrieben und ist im Overlay nie sichtbar.
+        Setzt den State auf ERROR, spielt den Fehler-Sound und startet
+        einen 0.8s Timer für den IDLE-Reset. Ohne Verzögerung wird ERROR
+        sofort von IDLE überschrieben und ist im Overlay nie sichtbar.
         """
         from Foundation import NSTimer  # type: ignore[import-not-found]
+
+        self._update_state(AppState.ERROR)
+        get_sound_player().play("error")
 
         weak_self = weakref.ref(self)
 
@@ -2110,10 +2109,7 @@ class PulseScribeDaemon:
                 daemon._stop_event.set()
             daemon._mark_current_worker_abandoned("watchdog timeout")
 
-            # UI auf Error setzen
-            daemon._update_state(AppState.ERROR)
-            get_sound_player().play("error")
-            daemon._schedule_idle_after_error()
+            daemon._enter_error_state()
 
         logger.debug(f"Watchdog gestartet: {TRANSCRIBING_TIMEOUT}s Timeout")
         self._transcribing_watchdog = (
