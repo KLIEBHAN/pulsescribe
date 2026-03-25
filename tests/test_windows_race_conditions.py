@@ -122,6 +122,28 @@ def test_stop_recording_is_idempotent_for_rest_mode():
     assert daemon.state == AppState.TRANSCRIBING
 
 
+def test_stop_recording_from_hotkey_allows_loading_state():
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai",
+        streaming=False,
+        overlay=False,
+    )
+    daemon._set_state(AppState.LOADING)
+
+    stop_calls = 0
+
+    def fake_stop_recording():
+        nonlocal stop_calls
+        stop_calls += 1
+
+    daemon._stop_recording = fake_stop_recording
+
+    daemon._stop_recording_from_hotkey()
+
+    assert stop_calls == 1
+
+
 def test_provider_cache_reload_and_get_provider_are_thread_safe(monkeypatch):
     windows_module = _load_windows_module()
 
@@ -246,6 +268,68 @@ def test_reload_settings_serializes_parallel_calls(monkeypatch):
     t2.join()
 
     assert restart_calls == 1
+
+
+def test_maybe_refine_skips_empty_transcript_without_state_change(monkeypatch):
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai",
+        streaming=False,
+        overlay=False,
+        refine=True,
+    )
+    daemon._set_state(AppState.TRANSCRIBING)
+
+    import refine.llm as refine_llm
+
+    def fail_if_called(*_args, **_kwargs):  # pragma: no cover - defensive guard
+        raise AssertionError("maybe_refine_transcript should not be called")
+
+    monkeypatch.setattr(refine_llm, "maybe_refine_transcript", fail_if_called)
+
+    assert daemon._maybe_refine("") == ""
+    assert daemon.state == AppState.TRANSCRIBING
+    assert daemon._last_was_refined is False
+
+
+def test_save_to_history_uses_actual_refinement_status(monkeypatch):
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai",
+        streaming=False,
+        overlay=False,
+        refine=True,
+    )
+
+    import refine.llm as refine_llm
+    import utils.history as history_mod
+
+    saved_entries: list[dict[str, object]] = []
+
+    def fake_save_transcript(_text, **kwargs):
+        saved_entries.append(kwargs)
+        return True
+
+    monkeypatch.setattr(history_mod, "save_transcript", fake_save_transcript)
+
+    monkeypatch.setattr(
+        refine_llm,
+        "maybe_refine_transcript",
+        lambda transcript, **_kwargs: transcript,
+    )
+    unchanged = daemon._maybe_refine("raw transcript")
+    daemon._save_to_history(unchanged)
+
+    monkeypatch.setattr(
+        refine_llm,
+        "maybe_refine_transcript",
+        lambda transcript, **_kwargs: f"{transcript} refined",
+    )
+    changed = daemon._maybe_refine("raw transcript")
+    daemon._save_to_history(changed)
+
+    assert saved_entries[0]["refined"] is False
+    assert saved_entries[1]["refined"] is True
 
 
 def test_stop_recording_uses_run_snapshot_when_settings_change():

@@ -37,7 +37,7 @@ def save_transcript(
         text: Der transkribierte Text
         mode: Transkriptions-Modus (deepgram, local, etc.)
         language: Erkannte/gesetzte Sprache
-        refined: Ob LLM-Refine angewendet wurde
+        refined: Ob LLM-Refine den gespeicherten Text tatsächlich verändert hat
         app_context: Aktive App beim Transkribieren
 
     Returns:

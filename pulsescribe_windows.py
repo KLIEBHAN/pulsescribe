@@ -1229,7 +1229,7 @@ class PulseScribeWindows:
     def _maybe_refine(self, transcript: str) -> str:
         """Wendet LLM-Refinement an (falls aktiviert) und trackt ob Text verändert wurde."""
         self._last_was_refined = False
-        if not self.refine:
+        if not (self.refine and transcript):
             return transcript
         self._set_state(AppState.REFINING)
         from refine.llm import maybe_refine_transcript
