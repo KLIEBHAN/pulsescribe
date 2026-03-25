@@ -186,12 +186,26 @@ class AudioRecorder:
         import soundfile as sf
 
         self._session_active = False
-        if self._stream:
-            self._stream.stop()
-            self._stream.close()
-            self._stream = None
+        stream = self._stream
+        self._stream = None
+        stream_error: Exception | None = None
+        if stream:
+            try:
+                stream.stop()
+            except Exception as exc:
+                stream_error = exc
+            try:
+                stream.close()
+            except Exception as exc:
+                if stream_error is None:
+                    stream_error = exc
+                else:
+                    logger.debug("Stream close after stop failure also failed: %s", exc)
 
         self._stop_event.set()
+        if stream_error is not None:
+            self._recording_start = 0
+            raise stream_error
 
         recording_duration = time.perf_counter() - self._recording_start
         logger.info(f"[{get_session_id()}] Aufnahme: {recording_duration:.1f}s")
@@ -263,16 +277,35 @@ def record_audio() -> Path:
     _log("🎤 Drücke ENTER um die Aufnahme zu starten...")
     input()
 
-    _play_sound("ready")
-    _log("🔴 Aufnahme läuft... Drücke ENTER zum Beenden.")
-    with sd.InputStream(
-        device=input_device,
-        samplerate=actual_sample_rate,
-        channels=1,
-        dtype="float32",
-        callback=on_audio_chunk,
-    ):
-        input()
+    should_retry_with_fresh_device = True
+    while True:
+        try:
+            with sd.InputStream(
+                device=input_device,
+                samplerate=actual_sample_rate,
+                channels=1,
+                dtype="float32",
+                callback=on_audio_chunk,
+            ):
+                _play_sound("ready")
+                _log("🔴 Aufnahme läuft... Drücke ENTER zum Beenden.")
+                input()
+            break
+        except Exception:
+            if should_retry_with_fresh_device:
+                should_retry_with_fresh_device = False
+                previous_config = (input_device, actual_sample_rate)
+                reset_input_device_cache()
+                input_device, actual_sample_rate = _resolve_input_stream_config(
+                    WHISPER_SAMPLE_RATE
+                )
+                if (input_device, actual_sample_rate) != previous_config:
+                    logger.info(
+                        "[%s] CLI-Aufnahme-Start fehlgeschlagen, versuche Device-Reprobe",
+                        get_session_id(),
+                    )
+                    continue
+            raise
 
     _log("✅ Aufnahme beendet.")
     _play_sound("stop")

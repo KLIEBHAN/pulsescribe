@@ -216,3 +216,94 @@ def test_audio_recorder_stop_is_single_use_and_clears_buffer(
 
     assert write_calls == [(output_path, 16_000)]
     assert sounds == ["stop"]
+
+
+def test_audio_recorder_stop_closes_stream_when_stop_fails(monkeypatch):
+    import audio.recording as recording
+
+    state = {"close_calls": 0}
+
+    class _BrokenStopStream:
+        active = True
+
+        def stop(self) -> None:
+            raise RuntimeError("device lost")
+
+        def close(self) -> None:
+            state["close_calls"] += 1
+            self.active = False
+
+    sounds: list[str] = []
+    monkeypatch.setattr(recording, "_play_sound", sounds.append)
+
+    recorder = recording.AudioRecorder()
+    recorder._session_active = True
+    recorder._recording_start = time.perf_counter() - 0.5
+    recorder._stream = _BrokenStopStream()
+
+    with pytest.raises(RuntimeError, match="device lost"):
+        recorder.stop()
+
+    assert recorder._stream is None
+    assert recorder._session_active is False
+    assert recorder.wait_for_stop(timeout=0)
+    assert recorder._recording_start == 0
+    assert state["close_calls"] == 1
+    assert sounds == []
+
+
+def test_record_audio_retries_after_stale_auto_device_cache(monkeypatch, tmp_path):
+    import audio.recording as recording
+
+    attempts: list[tuple[int | None, int]] = []
+    sounds: list[str] = []
+    write_call: dict = {}
+    device_calls = iter([(7, 48_000), (9, 44_100)])
+    reset_calls: list[bool] = []
+    inputs = iter(["", ""])
+
+    class _RetryInputStream:
+        def __init__(self, **kwargs):
+            self.device = kwargs["device"]
+            self.samplerate = kwargs["samplerate"]
+            self._callback = kwargs["callback"]
+
+        def __enter__(self):
+            attempts.append((self.device, self.samplerate))
+            if self.device == 7:
+                raise RuntimeError("cached device missing")
+            self._callback(np.array([[0.1], [0.2]], dtype=np.float32), 2, None, None)
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> Literal[False]:
+            return False
+
+    fake_sd = SimpleNamespace(
+        InputStream=lambda **kwargs: _RetryInputStream(**kwargs)
+    )
+    fake_sf = SimpleNamespace(
+        write=lambda path, audio_data, sample_rate: write_call.update(
+            path=path,
+            audio_data=audio_data,
+            sample_rate=sample_rate,
+        )
+    )
+
+    monkeypatch.setattr(recording, "get_input_device", lambda: next(device_calls))
+    monkeypatch.setattr(
+        recording, "reset_input_device_cache", lambda: reset_calls.append(True)
+    )
+    monkeypatch.setattr(recording, "_play_sound", sounds.append)
+    monkeypatch.setattr(recording, "_log", lambda _message: None)
+    monkeypatch.setattr(recording.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr("builtins.input", lambda: next(inputs))
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sd)
+    monkeypatch.setitem(sys.modules, "soundfile", fake_sf)
+
+    output_path = recording.record_audio()
+
+    assert attempts == [(7, 48_000), (9, 44_100)]
+    assert reset_calls == [True]
+    assert sounds == ["ready", "stop"]
+    assert write_call["sample_rate"] == 44_100
+    assert output_path == tmp_path / recording.TEMP_RECORDING_FILENAME
