@@ -2663,7 +2663,7 @@ class SettingsWindow(QDialog):
                 self._save_btn.setText("❌ Error!")
                 from PySide6.QtCore import QTimer
 
-                QTimer.singleShot(1500, lambda: self._save_btn.setText("Save && Apply"))
+                QTimer.singleShot(1500, self._reset_save_button)
 
     def _apply_local_preset(self, preset: str):
         """Wendet ein Local Mode Preset an (UI-only, ohne zu speichern)."""
@@ -2819,6 +2819,8 @@ class SettingsWindow(QDialog):
 
     def _reset_save_button(self):
         """Setzt Save-Button auf Originalzustand zurück."""
+        if getattr(self, "_is_closed", False):
+            return
         if hasattr(self, "_save_btn") and self._save_btn:
             self._save_btn.setText("Save && Apply")
             self._save_btn.setStyleSheet("")  # Reset to default stylesheet

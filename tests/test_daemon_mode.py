@@ -594,6 +594,7 @@ class TestWatchdogTimer(unittest.TestCase):
         daemon._worker_thread = MagicMock()
         daemon._worker_thread.is_alive.return_value = True
         daemon._worker_thread.name = "RecordingWorker"
+        daemon._stop_interim_polling = MagicMock()
         daemon._stop_result_polling = MagicMock()
         daemon._drain_result_queue = MagicMock()
         daemon._update_state = MagicMock()
@@ -617,6 +618,8 @@ class TestWatchdogTimer(unittest.TestCase):
         self.assertTrue(daemon._worker_abandoned)
         self.assertTrue(daemon._stop_event.is_set())
         mock_get_sound_player.return_value.play.assert_called_with("error")
+        daemon._stop_interim_polling.assert_called_once()
+        daemon._stop_result_polling.assert_called_once()
 
     def test_start_recording_recovers_from_abandoned_worker(self):
         """Ein aufgegebener Alt-Worker darf neue Aufnahmen nicht dauerhaft blockieren."""

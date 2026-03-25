@@ -2078,6 +2078,7 @@ class PulseScribeDaemon:
             )
 
             # SOFORT Polling stoppen, damit keine Race-Condition mit spätem Ergebnis
+            daemon._stop_interim_polling()
             daemon._stop_result_polling()
 
             # Queue leeren, um inkonsistenten State zu vermeiden
