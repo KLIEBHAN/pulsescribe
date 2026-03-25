@@ -20,12 +20,14 @@ import time
 import zipfile
 from pathlib import Path
 
+from utils.env import parse_env_line
 from utils.version import get_app_version
 
 _REDACTED_LOG_MARKERS = (
     "Auto-Paste:",
     "✓ Text eingefügt:",
     "Transkript:",
+    "Ergebnis:",
     "] Final:",
     "] Interim:",
     "] Output:",
@@ -74,48 +76,10 @@ def _is_sensitive_key(key: str) -> bool:
 
 
 def _read_env_file(path: Path) -> dict[str, str]:
-    def _parse_env_line(raw_line: str) -> tuple[str | None, str | None]:
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            return None, None
-
-        if line.startswith("export "):
-            line = line[7:].lstrip()
-        if "=" not in line:
-            return None, None
-
-        key, value = line.split("=", 1)
-        key = key.strip()
-        if not key:
-            return None, None
-
-        value = value.strip()
-        if not value:
-            return key, ""
-
-        parsed: list[str] = []
-        in_single = False
-        in_double = False
-
-        for index, char in enumerate(value):
-            if char == "'" and not in_double:
-                in_single = not in_single
-                continue
-            if char == '"' and not in_single:
-                in_double = not in_double
-                continue
-            if char == "#" and not in_single and not in_double:
-                prev = value[index - 1] if index > 0 else ""
-                if not prev or prev.isspace():
-                    break
-            parsed.append(char)
-
-        return key, "".join(parsed).strip()
-
     values: dict[str, str] = {}
     try:
         for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-            key, value = _parse_env_line(raw_line)
+            key, value = parse_env_line(raw_line)
             if not key or key in values:
                 continue
             values[key] = value or ""

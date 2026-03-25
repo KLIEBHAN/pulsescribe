@@ -8,7 +8,7 @@ import logging
 import os
 import threading
 from pathlib import Path
-from utils.timing import timed_operation
+from utils.timing import redacted_text_summary, timed_operation
 from utils.vocabulary import load_vocabulary
 
 from config import DEFAULT_DEEPGRAM_MODEL
@@ -153,7 +153,7 @@ class DeepgramProvider:
             return ""
         result = channels[0].alternatives[0].transcript or ""
 
-        logger.debug(f"Ergebnis: {result[:100]}..." if len(result) > 100 else f"Ergebnis: {result}")
+        logger.debug("Ergebnis: %s", redacted_text_summary(result))
 
         return result
 

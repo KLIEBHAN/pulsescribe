@@ -269,6 +269,38 @@ def test_openai_provider_omits_auto_language(monkeypatch, tmp_path):
     assert "language" not in created_params[0]
 
 
+def test_openai_provider_redacts_debug_result_logging(monkeypatch, tmp_path):
+    from providers.openai import OpenAIProvider
+    import providers.openai as openai_mod
+
+    audio_file = tmp_path / "sample.wav"
+    audio_file.write_bytes(b"audio")
+    captured: list[tuple[tuple, dict]] = []
+
+    fake_client = SimpleNamespace(
+        audio=SimpleNamespace(
+            transcriptions=SimpleNamespace(
+                create=lambda **_kwargs: SimpleNamespace(text="secret transcript")
+            )
+        )
+    )
+
+    monkeypatch.setattr(openai_mod, "_get_client", lambda: fake_client)
+    monkeypatch.setattr(
+        openai_mod.logger,
+        "debug",
+        lambda *args, **kwargs: captured.append((args, kwargs)),
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    provider = OpenAIProvider()
+    assert provider.transcribe(audio_file) == "secret transcript"
+
+    assert captured
+    assert "secret transcript" not in repr(captured[-1][0])
+    assert "<redacted" in repr(captured[-1][0])
+
+
 def test_groq_provider_omits_auto_language(monkeypatch, tmp_path):
     from providers.groq import GroqProvider
     import providers.groq as groq_mod
@@ -295,6 +327,38 @@ def test_groq_provider_omits_auto_language(monkeypatch, tmp_path):
     provider.transcribe(audio_file, language=" auto ")
 
     assert "language" not in created_params[0]
+
+
+def test_groq_provider_redacts_debug_result_logging(monkeypatch, tmp_path):
+    from providers.groq import GroqProvider
+    import providers.groq as groq_mod
+
+    audio_file = tmp_path / "sample.wav"
+    audio_file.write_bytes(b"audio")
+    captured: list[tuple[tuple, dict]] = []
+
+    fake_client = SimpleNamespace(
+        audio=SimpleNamespace(
+            transcriptions=SimpleNamespace(
+                create=lambda **_kwargs: "secret transcript"
+            )
+        )
+    )
+
+    monkeypatch.setattr(groq_mod, "_get_client", lambda: fake_client)
+    monkeypatch.setattr(
+        groq_mod.logger,
+        "debug",
+        lambda *args, **kwargs: captured.append((args, kwargs)),
+    )
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+
+    provider = GroqProvider()
+    assert provider.transcribe(audio_file) == "secret transcript"
+
+    assert captured
+    assert "secret transcript" not in repr(captured[-1][0])
+    assert "<redacted" in repr(captured[-1][0])
 
 
 def test_deepgram_provider_omits_auto_language(monkeypatch, tmp_path):
@@ -327,6 +391,51 @@ def test_deepgram_provider_omits_auto_language(monkeypatch, tmp_path):
     provider.transcribe(audio_file, language="auto")
 
     assert "language" not in created_params[0]
+
+
+def test_deepgram_provider_redacts_debug_result_logging(monkeypatch, tmp_path):
+    from providers.deepgram import DeepgramProvider
+    import providers.deepgram as deepgram_mod
+
+    audio_file = tmp_path / "sample.wav"
+    audio_file.write_bytes(b"audio")
+    captured: list[tuple[tuple, dict]] = []
+
+    fake_client = SimpleNamespace(
+        listen=SimpleNamespace(
+            v1=SimpleNamespace(
+                media=SimpleNamespace(
+                    transcribe_file=lambda **_kwargs: SimpleNamespace(
+                        results=SimpleNamespace(
+                            channels=[
+                                SimpleNamespace(
+                                    alternatives=[
+                                        SimpleNamespace(transcript="secret transcript")
+                                    ]
+                                )
+                            ]
+                        )
+                    )
+                )
+            )
+        )
+    )
+
+    monkeypatch.setattr(deepgram_mod, "_get_client", lambda: fake_client)
+    monkeypatch.setattr(deepgram_mod, "load_vocabulary", lambda: {"keywords": []})
+    monkeypatch.setattr(
+        deepgram_mod.logger,
+        "debug",
+        lambda *args, **kwargs: captured.append((args, kwargs)),
+    )
+    monkeypatch.setenv("DEEPGRAM_API_KEY", "test-key")
+
+    provider = DeepgramProvider()
+    assert provider.transcribe(audio_file) == "secret transcript"
+
+    assert captured
+    assert "secret transcript" not in repr(captured[-1][0])
+    assert "<redacted" in repr(captured[-1][0])
 
 
 def test_deepgram_provider_streams_audio_request(monkeypatch, tmp_path):

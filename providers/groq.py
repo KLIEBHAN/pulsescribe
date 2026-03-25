@@ -7,7 +7,7 @@ import logging
 import os
 import threading
 from pathlib import Path
-from utils.timing import timed_operation
+from utils.timing import redacted_text_summary, timed_operation
 
 from config import DEFAULT_GROQ_MODEL
 from ._language import normalize_auto_language
@@ -121,7 +121,7 @@ class GroqProvider:
         else:
             raise TypeError(f"Unerwarteter Groq-Response-Typ: {type(response)}")
 
-        logger.debug(f"Ergebnis: {result[:100]}..." if len(result) > 100 else f"Ergebnis: {result}")
+        logger.debug("Ergebnis: %s", redacted_text_summary(result))
 
         return result
 

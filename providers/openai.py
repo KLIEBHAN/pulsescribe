@@ -7,7 +7,7 @@ import logging
 import os
 import threading
 from pathlib import Path
-from utils.timing import timed_operation
+from utils.timing import redacted_text_summary, timed_operation
 
 from config import DEFAULT_API_MODEL
 from ._language import normalize_auto_language
@@ -168,7 +168,7 @@ class OpenAIProvider:
 
         result = _serialize_response(response, requested_format=response_format)
 
-        logger.debug(f"Ergebnis: {result[:100]}..." if len(result) > 100 else f"Ergebnis: {result}")
+        logger.debug("Ergebnis: %s", redacted_text_summary(result))
 
         return result
 

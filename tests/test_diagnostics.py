@@ -22,6 +22,10 @@ from utils.diagnostics import _read_env_file, _redact_log_line, _redact_log_text
             "12:00:00 [INFO] Transkript: <redacted>\n",
         ),
         (
+            "12:00:00 [DEBUG] Ergebnis: raw transcript preview\n",
+            "12:00:00 [DEBUG] Ergebnis: <redacted>\n",
+        ),
+        (
             "12:00:00 [INFO] [abc12345] Final: final transcript preview\n",
             "12:00:00 [INFO] [abc12345] Final: <redacted>\n",
         ),

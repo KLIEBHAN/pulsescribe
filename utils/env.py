@@ -38,7 +38,7 @@ def _get_local_env_path() -> Path:
     return Path(__file__).resolve().parent.parent / ".env"
 
 
-def _parse_env_line(raw_line: str) -> tuple[str | None, str | None]:
+def parse_env_line(raw_line: str) -> tuple[str | None, str | None]:
     """Parse one ``.env`` line with minimal quote/comment handling."""
     line = raw_line.strip()
     if not line or line.startswith("#"):
@@ -78,12 +78,17 @@ def _parse_env_line(raw_line: str) -> tuple[str | None, str | None]:
     return key, "".join(parsed).strip()
 
 
+def _parse_env_line(raw_line: str) -> tuple[str | None, str | None]:
+    """Backward-compatible alias for existing internal callers/tests."""
+    return parse_env_line(raw_line)
+
+
 def _fallback_dotenv_values(path: Path) -> dict[str, str]:
     """Best-effort `.env` parser when python-dotenv is unavailable."""
     values: dict[str, str] = {}
     try:
         for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-            key, value = _parse_env_line(raw_line)
+            key, value = parse_env_line(raw_line)
             if key is None or value is None:
                 continue
             values[key] = value
@@ -208,5 +213,6 @@ __all__ = [
     "get_env_bool_default",
     "get_env_int",
     "load_environment",
+    "parse_env_line",
     "parse_bool",
 ]
