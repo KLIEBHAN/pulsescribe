@@ -343,6 +343,53 @@ def _copy_to_clipboard_native(text: str) -> bool:
         return False
 
 
+def _copy_macos_clipboard_text(text: str) -> bool:
+    """Copy text on macOS, preferring NSPasteboard and falling back to pbcopy."""
+    if _copy_to_clipboard_native(text):
+        return True
+
+    utf8_env = _get_utf8_env()
+    try:
+        process = subprocess.run(
+            ["pbcopy"],
+            input=text.encode("utf-8"),
+            capture_output=True,
+            timeout=5,
+            env=utf8_env,
+        )
+        if process.returncode != 0:
+            logger.error(f"pbcopy fehlgeschlagen: {process.stderr.decode(errors='replace')}")
+            return False
+        logger.debug(f"pbcopy Fallback: {len(text)} Zeichen kopiert")
+        # Kurze Pause für Clipboard-Sync bei Subprocess-Fallback
+        time.sleep(0.1)
+        return True
+    except subprocess.TimeoutExpired:
+        logger.error("pbcopy Timeout")
+        return False
+    except Exception as e:
+        logger.error(f"Clipboard-Fehler: {e}")
+        return False
+
+
+def _restore_macos_clipboard_text(previous_text: str, *, expected_current: str) -> bool:
+    """Restore the previous macOS clipboard text when our copy is still current."""
+    try:
+        current_clipboard = _get_clipboard_text()
+        if current_clipboard != expected_current:
+            logger.debug(
+                "Clipboard-Restore übersprungen: Inhalt wurde zwischenzeitlich verändert"
+            )
+            return False
+        if _copy_macos_clipboard_text(previous_text):
+            logger.debug("Vorheriger Clipboard-Text erneut kopiert")
+            return True
+        logger.warning("Clipboard-Restore fehlgeschlagen")
+    except Exception as e:
+        logger.warning(f"Clipboard-Restore fehlgeschlagen: {e}")
+    return False
+
+
 def _paste_via_pynput_windows() -> bool:
     """Paste via pynput auf Windows (Ctrl+V statt Cmd+V)."""
     try:
@@ -423,6 +470,27 @@ def _get_windows_clipboard_text(*, clipboard=None) -> str | None:
         return None
 
 
+def _restore_windows_clipboard_text(
+    previous_text: str,
+    *,
+    expected_current: str,
+    clipboard=None,
+) -> bool:
+    """Restore the previous Windows clipboard text when our copy is still current."""
+    try:
+        current = _get_windows_clipboard_text(clipboard=clipboard)
+        if current != expected_current:
+            logger.debug("Clipboard-Restore übersprungen: Inhalt wurde verändert")
+            return False
+        if _copy_windows_clipboard_text(previous_text, clipboard=clipboard):
+            logger.debug("Vorheriger Clipboard-Text wiederhergestellt")
+            return True
+        logger.warning("Clipboard-Restore fehlgeschlagen")
+    except Exception as e:
+        logger.warning(f"Clipboard-Restore fehlgeschlagen: {e}")
+    return False
+
+
 def paste_transcript(text: str) -> bool:
     """
     Kopiert Text in Clipboard und fügt via Cmd+V (macOS) bzw. Ctrl+V (Windows) ein.
@@ -467,6 +535,12 @@ def paste_transcript(text: str) -> bool:
         time.sleep(0.05)
 
         if not _paste_via_pynput_windows():
+            if previous_text is not None:
+                _restore_windows_clipboard_text(
+                    previous_text,
+                    expected_current=text,
+                    clipboard=clipboard,
+                )
             logger.error(
                 "Auto-Paste fehlgeschlagen. "
                 "Text wurde in Zwischenablage kopiert - manuell mit Ctrl+V einfügen."
@@ -477,22 +551,12 @@ def paste_transcript(text: str) -> bool:
         # Safety check: Nur restore wenn Clipboard noch unseren Text enthält
         # (verhindert Überschreiben wenn User/App zwischenzeitlich kopiert hat)
         if previous_text is not None:
-            try:
-                time.sleep(0.5)  # Kurz warten bis Paste verarbeitet wurde
-                current = _get_windows_clipboard_text(clipboard=clipboard)
-                if current == text:
-                    if _copy_windows_clipboard_text(
-                        previous_text, clipboard=clipboard
-                    ):
-                        logger.debug("Vorheriger Clipboard-Text wiederhergestellt")
-                    else:
-                        logger.warning("Clipboard-Restore fehlgeschlagen")
-                else:
-                    logger.debug(
-                        "Clipboard-Restore übersprungen: Inhalt wurde verändert"
-                    )
-            except Exception as e:
-                logger.warning(f"Clipboard-Restore fehlgeschlagen: {e}")
+            time.sleep(0.5)  # Kurz warten bis Paste verarbeitet wurde
+            _restore_windows_clipboard_text(
+                previous_text,
+                expected_current=text,
+                clipboard=clipboard,
+            )
 
         return True
 
@@ -508,29 +572,8 @@ def paste_transcript(text: str) -> bool:
 
     # 1. In Clipboard kopieren via NSPasteboard (in-process, kein Subprocess)
     # Dies ist wichtig für das Einfügen in eigene App-Fenster (z.B. Settings)
-    if not _copy_to_clipboard_native(text):
-        # Fallback zu pbcopy wenn NSPasteboard fehlschlägt
-        utf8_env = _get_utf8_env()
-        try:
-            process = subprocess.run(
-                ["pbcopy"],
-                input=text.encode("utf-8"),
-                capture_output=True,
-                timeout=5,
-                env=utf8_env,
-            )
-            if process.returncode != 0:
-                logger.error(f"pbcopy fehlgeschlagen: {process.stderr.decode()}")
-                return False
-            logger.debug(f"pbcopy Fallback: {len(text)} Zeichen kopiert")
-            # Kurze Pause für Clipboard-Sync bei Subprocess-Fallback
-            time.sleep(0.1)
-        except subprocess.TimeoutExpired:
-            logger.error("pbcopy Timeout")
-            return False
-        except Exception as e:
-            logger.error(f"Clipboard-Fehler: {e}")
-            return False
+    if not _copy_macos_clipboard_text(text):
+        return False
 
     # 2. Cmd+V senden (verschiedene Methoden in Prioritätsreihenfolge)
     pasted_ok = False
@@ -549,6 +592,11 @@ def paste_transcript(text: str) -> bool:
 
     # 3. Ergebnis verarbeiten
     if not pasted_ok:
+        if previous_text is not None:
+            _restore_macos_clipboard_text(
+                previous_text,
+                expected_current=text,
+            )
         logger.error(
             "Auto-Paste fehlgeschlagen (alle 3 Methoden). "
             "Mögliche Ursachen:\n"
@@ -563,13 +611,9 @@ def paste_transcript(text: str) -> bool:
     # beide Einträge sehen (Transkription + vorheriger Text).
     if previous_text is not None:
         time.sleep(1.0)  # Warten bis Paste verarbeitet wurde
-        current_clipboard = _get_clipboard_text()
-        if current_clipboard == text:
-            _copy_to_clipboard_native(previous_text)
-            logger.debug("Vorheriger Clipboard-Text erneut kopiert")
-        else:
-            logger.debug(
-                "Clipboard-Restore übersprungen: Inhalt wurde zwischenzeitlich verändert"
-            )
+        _restore_macos_clipboard_text(
+            previous_text,
+            expected_current=text,
+        )
 
     return True
