@@ -626,6 +626,24 @@ def _init_cli_stream(
 # =============================================================================
 
 
+def _write_interim_text(path: Path, transcript: str) -> None:
+    """Write interim text atomically so readers never see partial payloads."""
+    if not hasattr(path, "with_name") or not hasattr(path, "replace"):
+        path.write_text(transcript, encoding="utf-8")
+        return
+
+    tmp_path = path.with_name(f"{path.name}.tmp")
+    try:
+        tmp_path.write_text(transcript, encoding="utf-8")
+        tmp_path.replace(path)
+    except Exception:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
 def _create_message_handler(
     state: StreamState,
     session_id: str,
@@ -654,7 +672,7 @@ def _create_message_handler(
             now = time.perf_counter()
             if (now - state.last_interim_write) * 1000 >= INTERIM_THROTTLE_MS:
                 try:
-                    INTERIM_FILE.write_text(transcript, encoding="utf-8")
+                    _write_interim_text(INTERIM_FILE, transcript)
                     state.last_interim_write = now
                     state.last_interim_text = transcript
                     logger.debug(

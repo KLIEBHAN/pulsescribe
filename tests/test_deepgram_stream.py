@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 from types import SimpleNamespace
 
+import pytest
+
 import providers.deepgram_stream as deepgram_stream
 
 
@@ -87,3 +89,37 @@ def test_message_handler_logs_redacted_final_transcript(caplog) -> None:
     messages = " ".join(record.getMessage() for record in caplog.records)
     assert "[sess] Final: <redacted 16 chars>" in messages
     assert "final transcript" not in messages
+
+
+def test_write_interim_text_replaces_file_atomically(tmp_path) -> None:
+    interim_file = tmp_path / "interim.txt"
+    interim_file.write_text("old interim", encoding="utf-8")
+
+    deepgram_stream._write_interim_text(interim_file, "new interim")
+
+    assert interim_file.read_text(encoding="utf-8") == "new interim"
+    assert not interim_file.with_name("interim.txt.tmp").exists()
+
+
+def test_write_interim_text_preserves_existing_file_on_temp_write_error(
+    tmp_path, monkeypatch
+) -> None:
+    interim_file = tmp_path / "interim.txt"
+    interim_file.write_text("stable interim", encoding="utf-8")
+    tmp_file = interim_file.with_name("interim.txt.tmp")
+
+    path_cls = type(interim_file)
+    original_write_text = path_cls.write_text
+
+    def failing_write_text(self, text: str, *args, **kwargs):
+        if self == tmp_file:
+            raise OSError("disk full")
+        return original_write_text(self, text, *args, **kwargs)
+
+    monkeypatch.setattr(path_cls, "write_text", failing_write_text)
+
+    with pytest.raises(OSError, match="disk full"):
+        deepgram_stream._write_interim_text(interim_file, "new interim")
+
+    assert interim_file.read_text(encoding="utf-8") == "stable interim"
+    assert not tmp_file.exists()

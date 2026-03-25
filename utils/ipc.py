@@ -196,6 +196,9 @@ class IPCServer:
         """Start background polling thread."""
         if self._running:
             return
+        # Discard stale IPC artifacts from previous crashed/abandoned wizard runs
+        # before the new polling loop begins.
+        self._cleanup_files()
         self._running = True
         self._thread = threading.Thread(target=self._poll_loop, daemon=True)
         self._thread.start()
