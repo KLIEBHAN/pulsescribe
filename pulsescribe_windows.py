@@ -230,6 +230,7 @@ class PulseScribeWindows:
         self._state_lock = threading.Lock()
         self._state_generation = 0  # Inkrementiert bei jedem State-Update
         self._last_hotkey_time = 0.0  # Für Debouncing
+        self._last_was_refined: bool = False  # Ob Refinement den Text tatsächlich verändert hat
 
         # Hold-Mode State (wie macOS)
         self._hold_state = HoldHotkeyState()
@@ -706,7 +707,7 @@ class PulseScribeWindows:
 
         Wie macOS: Einheitlicher Name für Stop-Aktion von Hotkey.
         """
-        if self.state in (AppState.LISTENING, AppState.RECORDING):
+        if self.state in (AppState.LOADING, AppState.LISTENING, AppState.RECORDING):
             logger.debug("Hold-Release → Recording stoppen")
             self._stop_recording()  # ruft hold_state.reset() auf
 
@@ -1056,19 +1057,7 @@ class PulseScribeWindows:
 
                 if transcript:
                     self._set_state(AppState.TRANSCRIBING)
-
-                    # LLM-Nachbearbeitung (optional)
-                    if self.refine:
-                        self._set_state(AppState.REFINING)
-                        from refine.llm import maybe_refine_transcript
-
-                        transcript = maybe_refine_transcript(
-                            transcript,
-                            refine=True,
-                            refine_model=self.refine_model,
-                            refine_provider=self.refine_provider,
-                            context=self.context,
-                        )
+                    transcript = self._maybe_refine(transcript)
 
                     self._handle_result(transcript)
                 else:
@@ -1129,19 +1118,7 @@ class PulseScribeWindows:
 
                 if transcript:
                     self._set_state(AppState.TRANSCRIBING)
-
-                    # LLM-Nachbearbeitung (optional)
-                    if self.refine:
-                        self._set_state(AppState.REFINING)
-                        from refine.llm import maybe_refine_transcript
-
-                        transcript = maybe_refine_transcript(
-                            transcript,
-                            refine=True,
-                            refine_model=self.refine_model,
-                            refine_provider=self.refine_provider,
-                            context=self.context,
-                        )
+                    transcript = self._maybe_refine(transcript)
 
                     self._handle_result(transcript)
                 else:
@@ -1229,18 +1206,7 @@ class PulseScribeWindows:
                         temp_path.unlink()
 
             if transcript:
-                # LLM-Nachbearbeitung (optional)
-                if self.refine:
-                    self._set_state(AppState.REFINING)
-                    from refine.llm import maybe_refine_transcript
-
-                    transcript = maybe_refine_transcript(
-                        transcript,
-                        refine=True,
-                        refine_model=self.refine_model,
-                        refine_provider=self.refine_provider,
-                        context=self.context,
-                    )
+                transcript = self._maybe_refine(transcript)
 
                 self._handle_result(transcript)
             else:
@@ -1260,6 +1226,24 @@ class PulseScribeWindows:
             time.sleep(1.0)
             self._set_state(AppState.IDLE)
 
+    def _maybe_refine(self, transcript: str) -> str:
+        """Wendet LLM-Refinement an (falls aktiviert) und trackt ob Text verändert wurde."""
+        self._last_was_refined = False
+        if not self.refine:
+            return transcript
+        self._set_state(AppState.REFINING)
+        from refine.llm import maybe_refine_transcript
+
+        refined = maybe_refine_transcript(
+            transcript,
+            refine=True,
+            refine_model=self.refine_model,
+            refine_provider=self.refine_provider,
+            context=self.context,
+        )
+        self._last_was_refined = refined != transcript
+        return refined
+
     def _save_to_history(self, transcript: str) -> None:
         """Speichert Transkript in der Historie."""
         from utils.history import save_transcript
@@ -1269,7 +1253,7 @@ class PulseScribeWindows:
                 transcript,
                 mode=self._run_mode or self.mode,
                 language=os.getenv("PULSESCRIBE_LANGUAGE", "auto"),
-                refined=self.refine,
+                refined=self._last_was_refined,
             )
         except Exception as e:
             logger.warning(f"History save failed: {e}")
@@ -2020,9 +2004,6 @@ class PulseScribeWindows:
 
                 # Deepgram SDK-Klassen (werden in deepgram_stream_core benötigt)
                 from deepgram.core.events import EventType  # noqa: F401
-                from deepgram.extensions.types.sockets import (
-                    ListenV1ControlMessage,
-                )  # noqa: F401
 
                 # Event-Loop vorab erstellen (spart ~50-100ms beim ersten Recording)
                 import asyncio
