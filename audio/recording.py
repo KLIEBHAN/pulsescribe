@@ -122,8 +122,8 @@ class AudioRecorder:
                 dtype="float32",
                 callback=self._audio_callback,
             )
-            self._stream = stream
             stream.start()
+            self._stream = stream
         except Exception:
             if stream is not None:
                 try:

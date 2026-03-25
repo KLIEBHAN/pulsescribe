@@ -854,8 +854,7 @@ class PulseScribeDaemon:
             self._finish_test_run("", str(err))
             self._update_state(AppState.ERROR)
             get_sound_player().play("error")
-            self._update_state(AppState.IDLE)  # Reset nach Error
-            self._apply_pending_hotkey_reconfigure_if_safe()
+            self._schedule_idle_after_error()
             return
 
         logger.error(f"Fehler: {err}")
@@ -867,8 +866,30 @@ class PulseScribeDaemon:
 
         self._update_state(AppState.ERROR)
         get_sound_player().play("error")
-        self._update_state(AppState.IDLE)  # Reset nach Error
-        self._apply_pending_hotkey_reconfigure_if_safe()
+        self._schedule_idle_after_error()
+
+    def _schedule_idle_after_error(self) -> None:
+        """Verzögerter IDLE-Reset nach ERROR-State.
+
+        Gibt dem User 0.8s visuelles Feedback im Overlay, bevor der State
+        auf IDLE zurückgesetzt wird. Ohne Verzögerung wird ERROR sofort von
+        IDLE überschrieben und ist im Overlay nie sichtbar.
+        """
+        from Foundation import NSTimer  # type: ignore[import-not-found]
+
+        weak_self = weakref.ref(self)
+
+        def reset_to_idle(_timer):
+            daemon = weak_self()
+            if daemon is None:
+                return
+            if daemon._current_state == AppState.ERROR:
+                daemon._update_state(AppState.IDLE)
+            daemon._apply_pending_hotkey_reconfigure_if_safe()
+
+        NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+            0.8, False, reset_to_idle
+        )
 
     def _handle_transcript_result(self, transcript: str) -> None:
         """Verarbeitet das fertige Transkript: UI-Update, History, Auto-Paste."""
@@ -2092,16 +2113,7 @@ class PulseScribeDaemon:
             # UI auf Error setzen
             daemon._update_state(AppState.ERROR)
             get_sound_player().play("error")
-
-            # Nach kurzem Feedback zurück auf IDLE
-            from Foundation import NSTimer as NST
-
-            def reset_to_idle(_t):
-                d = weak_self()
-                if d and d._current_state == AppState.ERROR:
-                    d._update_state(AppState.IDLE)
-
-            NST.scheduledTimerWithTimeInterval_repeats_block_(0.8, False, reset_to_idle)
+            daemon._schedule_idle_after_error()
 
         logger.debug(f"Watchdog gestartet: {TRANSCRIBING_TIMEOUT}s Timeout")
         self._transcribing_watchdog = (
