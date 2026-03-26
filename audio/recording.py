@@ -107,7 +107,7 @@ class AudioRecorder:
         with self._chunks_lock:
             self._recorded_chunks = []
         self._stop_event.clear()
-        self._recording_start = time.perf_counter()
+        self._recording_start = 0
         self._session_active = False
         input_device, active_sample_rate = _resolve_input_stream_config(
             self.sample_rate,
@@ -130,6 +130,7 @@ class AudioRecorder:
                     callback=self._audio_callback,
                 )
                 stream.start()
+                self._recording_start = time.perf_counter()
                 self._stream = stream
                 self._session_active = True
                 break

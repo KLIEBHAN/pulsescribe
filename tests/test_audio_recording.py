@@ -165,6 +165,51 @@ def test_audio_recorder_start_retries_after_stale_auto_device_cache(monkeypatch)
     assert recorder._session_active is True
 
 
+def test_audio_recorder_start_timestamps_successful_retry_only(monkeypatch):
+    import audio.recording as recording
+
+    attempts: list[tuple[int | None, int]] = []
+    device_calls = iter([(7, 48_000), (9, 44_100)])
+    reset_calls: list[bool] = []
+    clock = {"now": 0.0}
+
+    class _RetryInputStream:
+        def __init__(self, **kwargs):
+            self.device = kwargs["device"]
+            self.samplerate = kwargs["samplerate"]
+            self.active = False
+
+        def start(self) -> None:
+            attempts.append((self.device, self.samplerate))
+            if self.device == 7:
+                clock["now"] = 10.0
+                raise RuntimeError("cached device missing")
+            clock["now"] = 20.0
+            self.active = True
+
+        def close(self) -> None:
+            self.active = False
+
+    fake_sd = SimpleNamespace(
+        InputStream=lambda **kwargs: _RetryInputStream(**kwargs)
+    )
+
+    monkeypatch.setattr(recording, "get_input_device", lambda: next(device_calls))
+    monkeypatch.setattr(
+        recording, "reset_input_device_cache", lambda: reset_calls.append(True)
+    )
+    monkeypatch.setattr(recording, "_play_sound", lambda _name: None)
+    monkeypatch.setattr(recording.time, "perf_counter", lambda: clock["now"])
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sd)
+
+    recorder = recording.AudioRecorder()
+    recorder.start(play_ready_sound=False)
+
+    assert attempts == [(7, 48_000), (9, 44_100)]
+    assert reset_calls == [True]
+    assert recorder._recording_start == 20.0
+
+
 def test_audio_recorder_stop_rejects_missing_active_session(monkeypatch):
     import audio.recording as recording
 
