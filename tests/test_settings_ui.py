@@ -201,6 +201,7 @@ class TestWelcomeLocalPresetBehavior:
 
     def test_apply_local_preset_resets_lightning_fields(self):
         ctrl = WelcomeController.__new__(WelcomeController)
+        ctrl._ensure_tab_built = lambda _label: False
         ctrl._mode_popup = _FakePopup(["deepgram", "local"], selected="deepgram")
         ctrl._local_backend_popup = _FakePopup(
             ["auto", "whisper", "faster", "mlx", "lightning"],
@@ -250,6 +251,9 @@ class TestWelcomeLocalPresetBehavior:
 
 def _make_minimal_welcome_controller():
     ctrl = WelcomeController.__new__(WelcomeController)
+    ctrl._tab_builders = {}
+    ctrl._built_tabs = set()
+    ctrl._ensure_tab_built = lambda _label: False
     ctrl._mode_popup = None
     ctrl._local_backend_popup = None
     ctrl._local_model_popup = None
@@ -295,6 +299,85 @@ class TestApiKeyProviderMetadata:
         )
 
         assert welcome_mod._get_api_card_height() == base_height + welcome_mod.API_KEY_ROW_SPACING
+
+
+class TestWelcomeLazyTabs:
+    def test_ensure_tab_built_runs_builder_once(self):
+        ctrl = WelcomeController.__new__(WelcomeController)
+        built: list[tuple[object, int]] = []
+        content = object()
+        ctrl._tab_builders = {
+            "Logs": (lambda parent, height: built.append((parent, height)), content, 320)
+        }
+        ctrl._built_tabs = set()
+
+        assert ctrl._ensure_tab_built("Logs") is True
+        assert ctrl._ensure_tab_built("Logs") is False
+        assert built == [(content, 320)]
+        assert ctrl._is_tab_built("Logs") is True
+
+    def test_apply_local_preset_builds_required_tabs_before_touching_controls(self):
+        ctrl = _make_minimal_welcome_controller()
+        built: list[str] = []
+
+        def ensure_tab_built(label: str) -> bool:
+            built.append(label)
+            if label == "Providers":
+                ctrl._mode_popup = _FakePopup(["deepgram", "local"], selected="deepgram")
+                ctrl._local_backend_popup = _FakePopup(
+                    ["auto", "whisper", "faster", "mlx", "lightning"],
+                    selected="auto",
+                )
+                ctrl._local_model_popup = _FakePopup(
+                    ["default", "turbo", "large", "large-v3"],
+                    selected="default",
+                )
+            elif label == "Advanced":
+                ctrl._device_popup = _FakePopup(
+                    ["auto", "mps", "cpu", "cuda"], selected="cuda"
+                )
+                ctrl._warmup_popup = _FakePopup(
+                    ["auto", "true", "false"], selected="true"
+                )
+                ctrl._local_fast_popup = _FakePopup(
+                    ["default", "true", "false"], selected="false"
+                )
+                ctrl._fp16_popup = _FakePopup(
+                    ["default", "true", "false"], selected="true"
+                )
+                ctrl._beam_size_field = _FakeField("9")
+                ctrl._best_of_field = _FakeField("4")
+                ctrl._temperature_field = _FakeField("0.7")
+                ctrl._compute_type_field = _FakeField("float16")
+                ctrl._cpu_threads_field = _FakeField("16")
+                ctrl._num_workers_field = _FakeField("4")
+                ctrl._without_timestamps_popup = _FakePopup(
+                    ["default", "true", "false"],
+                    selected="false",
+                )
+                ctrl._vad_filter_popup = _FakePopup(
+                    ["default", "true", "false"],
+                    selected="false",
+                )
+                ctrl._lightning_batch_slider = _FakeSlider(24)
+                ctrl._lightning_batch_value_label = _FakeField("24")
+                ctrl._lightning_quant_popup = _FakePopup(
+                    ["none (best quality)", "8bit", "4bit (smallest memory)"],
+                    selected="4bit (smallest memory)",
+                )
+                ctrl._lightning_quant_popup.selected_index = 2
+            return True
+
+        ctrl._ensure_tab_built = ensure_tab_built
+        ctrl._update_local_settings_visibility = lambda: None
+
+        ctrl._apply_local_preset("macOS: MLX Balanced (large)")
+
+        assert built == ["Providers", "Advanced"]
+        assert ctrl._mode_popup.titleOfSelectedItem() == "local"
+        assert ctrl._local_backend_popup.titleOfSelectedItem() == "mlx"
+        assert ctrl._local_model_popup.titleOfSelectedItem() == "large"
+        assert ctrl._local_fast_popup.titleOfSelectedItem() == "true"
 
 
 class TestWelcomeSaveSettings:

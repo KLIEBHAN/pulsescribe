@@ -214,6 +214,9 @@ class WelcomeController:
         self._dock_icon_checkbox = None
         self._rtf_checkbox = None
         self._tab_view = None
+        self._tab_builders: dict[str, tuple[object, object, int]] = {}
+        self._built_tabs: set[str] = set()
+        self._tab_delegate = None
         self._vocab_text_view = None
         self._vocab_warning_label = None
         self._logs_text_view = None
@@ -416,7 +419,7 @@ class WelcomeController:
     # =============================================================================
 
     def _build_tabs(self, header_bottom: int) -> None:
-        """Erstellt Tab-View und baut alle Tab-Inhalte."""
+        """Erstellt die Tab-View und lädt Inhalte nur bei Bedarf."""
         from AppKit import (  # type: ignore[import-not-found]
             NSFont,
             NSTabView,
@@ -442,19 +445,51 @@ class WelcomeController:
         except Exception:
             content_height = tab_height
 
-        self._add_tab(tab_view, "Setup", self._build_setup_tab, content_height)
-        self._add_tab(tab_view, "Hotkeys", self._build_hotkeys_tab, content_height)
-        self._add_tab(tab_view, "Providers", self._build_providers_tab, content_height)
-        self._add_tab(tab_view, "Advanced", self._build_advanced_tab, content_height)
-        self._add_tab(tab_view, "Refine", self._build_refine_tab, content_height)
-        self._add_tab(tab_view, "Prompts", self._build_prompts_tab, content_height)
-        self._add_tab(
-            tab_view, "Vocabulary", self._build_vocabulary_tab, content_height
-        )
-        self._add_tab(tab_view, "Logs", self._build_logs_tab, content_height)
-        self._add_tab(tab_view, "About", self._build_about_tab, content_height)
+        self._tab_builders = {}
+        self._built_tabs = set()
 
-    def _add_tab(self, tab_view, label: str, builder, tab_height: int) -> None:
+        lazy_tabs_supported = _TabSelectionHandler is not None
+        if lazy_tabs_supported:
+            delegate = _TabSelectionHandler.alloc().initWithController_(self)
+            self._tab_delegate = delegate
+            try:
+                tab_view.setDelegate_(delegate)
+            except Exception:
+                lazy_tabs_supported = False
+                self._tab_delegate = None
+
+        tab_specs = [
+            ("Setup", self._build_setup_tab),
+            ("Hotkeys", self._build_hotkeys_tab),
+            ("Providers", self._build_providers_tab),
+            ("Advanced", self._build_advanced_tab),
+            ("Refine", self._build_refine_tab),
+            ("Prompts", self._build_prompts_tab),
+            ("Vocabulary", self._build_vocabulary_tab),
+            ("Logs", self._build_logs_tab),
+            ("About", self._build_about_tab),
+        ]
+        for label, builder in tab_specs:
+            self._add_tab(
+                tab_view,
+                label,
+                builder,
+                content_height,
+                build_immediately=not lazy_tabs_supported,
+            )
+
+        if lazy_tabs_supported:
+            self._ensure_selected_tab_built()
+
+    def _add_tab(
+        self,
+        tab_view,
+        label: str,
+        builder,
+        tab_height: int,
+        *,
+        build_immediately: bool,
+    ) -> None:
         from AppKit import NSTabViewItem, NSView  # type: ignore[import-not-found]
         from Foundation import NSMakeRect  # type: ignore[import-not-found]
 
@@ -465,7 +500,40 @@ class WelcomeController:
         )
         item.setView_(content)
         tab_view.addTabViewItem_(item)
+        self._tab_builders[label] = (builder, content, tab_height)
+        if build_immediately:
+            self._ensure_tab_built(label)
+
+    def _is_tab_built(self, label: str) -> bool:
+        return label in getattr(self, "_built_tabs", set())
+
+    def _ensure_tab_built(self, label: str | None) -> bool:
+        if not label or self._is_tab_built(label):
+            return False
+
+        builder_entry = getattr(self, "_tab_builders", {}).get(label)
+        if builder_entry is None:
+            return False
+
+        builder, content, tab_height = builder_entry
         builder(content, tab_height)
+        self._built_tabs.add(label)
+        return True
+
+    def _ensure_selected_tab_built(self) -> bool:
+        if self._tab_view is None:
+            return False
+        try:
+            selected_item = self._tab_view.selectedTabViewItem()
+        except Exception:
+            return False
+        if selected_item is None:
+            return False
+        try:
+            label = str(selected_item.identifier())
+        except Exception:
+            return False
+        return self._ensure_tab_built(label)
 
     def _build_setup_tab(self, parent_view, tab_height: int) -> None:
         """Setup overview + shortcuts (wizard lives in a separate window)."""
@@ -572,6 +640,7 @@ class WelcomeController:
             # Tab index 1 = Hotkeys (Setup=0, Hotkeys=1, Providers=2, ...)
             if self._tab_view is not None:
                 self._tab_view.selectTabViewItemAtIndex_(1)
+                self._ensure_selected_tab_built()
             return
 
     def _refresh_setup_permissions(self) -> None:
@@ -606,6 +675,7 @@ class WelcomeController:
             return
         try:
             self._tab_view.selectTabViewItemWithIdentifier_(label)
+            self._ensure_tab_built(label)
         except Exception:
             pass
 
@@ -2627,6 +2697,9 @@ class WelcomeController:
         """Startet den Auto-Refresh Timer für Logs (alle 2 Sekunden)."""
         from Foundation import NSTimer  # type: ignore[import-not-found]
 
+        if not self._is_tab_built("Logs") and not self._logs_auto_checkbox:
+            return
+
         self._stop_logs_auto_refresh()
 
         def tick(_timer) -> None:
@@ -2893,6 +2966,8 @@ class WelcomeController:
 
     def _apply_local_preset(self, preset: str) -> None:
         """Setzt empfohlene Settings (UI-only; Speichern via 'Save & Apply')."""
+        self._ensure_tab_built("Providers")
+        self._ensure_tab_built("Advanced")
 
         def set_popup(popup, title: str) -> None:
             if popup is None or not title:
@@ -3086,6 +3161,7 @@ class WelcomeController:
     def show(self) -> None:
         """Zeigt Window (nicht-modal)."""
         if self._window:
+            self._ensure_selected_tab_built()
             self._window.makeKeyAndOrderFront_(None)
             self._window.center()
             from AppKit import NSApp  # type: ignore[import-not-found]
@@ -3764,6 +3840,36 @@ try:
     _HotkeyActionHandler = _create_hotkey_action_handler_class()
 except Exception:
     _HotkeyActionHandler = None
+
+
+def _create_tab_selection_handler_class():
+    """Erstellt NSObject-Delegate für Lazy-Building beim Tab-Wechsel."""
+    from Foundation import NSObject  # type: ignore[import-not-found]
+    import objc  # type: ignore[import-not-found]
+
+    class TabSelectionHandler(NSObject):
+        def initWithController_(self, controller):
+            self = objc.super(TabSelectionHandler, self).init()
+            if self is None:
+                return None
+            self._controller = controller
+            return self
+
+        @objc.signature(b"v@:@@")
+        def tabView_didSelectTabViewItem_(self, _tab_view, tab_view_item) -> None:
+            try:
+                label = str(tab_view_item.identifier())
+            except Exception:
+                label = None
+            self._controller._ensure_tab_built(label)
+
+    return TabSelectionHandler
+
+
+try:
+    _TabSelectionHandler = _create_tab_selection_handler_class()
+except Exception:
+    _TabSelectionHandler = None
 
 
 def _create_logs_segment_handler_class():

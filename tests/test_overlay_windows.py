@@ -60,8 +60,10 @@ class _FakeRoot:
 class _FakeLabel:
     def __init__(self):
         self.last_config: dict[str, object] = {}
+        self.config_calls = 0
 
     def config(self, **kwargs) -> None:
+        self.config_calls += 1
         self.last_config.update(kwargs)
 
 
@@ -218,6 +220,17 @@ def test_handle_interim_text_updates_label_for_short_text():
 
     assert controller._label.last_config["text"] == "short text"
     assert controller._label.last_config["fg"] == "#909090"
+
+
+def test_handle_interim_text_skips_duplicate_label_configurations():
+    controller = WindowsOverlayController()
+    controller._state = "RECORDING"
+    controller._label = _FakeLabel()
+
+    controller._handle_interim_text("short text")
+    controller._handle_interim_text("short text")
+
+    assert controller._label.config_calls == 1
 
 
 def test_format_recording_interim_text_compacts_whitespace():
@@ -482,6 +495,7 @@ def test_render_bars_updates_existing_items_with_state_color():
     controller._state = "DONE"
     controller._bar_heights = [BAR_MIN_HEIGHT] * BAR_COUNT
     controller._bar_item_ids = []
+    controller._bar_color = None
     controller._anim = types.SimpleNamespace(
         calculate_bar_height=lambda *_args: BAR_MIN_HEIGHT
     )
@@ -489,3 +503,28 @@ def test_render_bars_updates_existing_items_with_state_color():
     controller._render_bars(0.1)
 
     assert controller._canvas.item_configs[-1]["fill"] == STATE_COLORS["DONE"]
+
+
+def test_render_bars_reuses_existing_fill_color_until_state_changes():
+    controller = WindowsOverlayController.__new__(WindowsOverlayController)
+    controller._canvas = _FakeCanvas()
+    controller._state = "DONE"
+    controller._bar_heights = [BAR_MIN_HEIGHT] * BAR_COUNT
+    controller._bar_item_ids = []
+    controller._bar_color = None
+    controller._anim = types.SimpleNamespace(
+        calculate_bar_height=lambda *_args: BAR_MIN_HEIGHT
+    )
+
+    controller._render_bars(0.1)
+    color_updates_first_pass = len(controller._canvas.item_configs)
+
+    controller._render_bars(0.2)
+
+    assert len(controller._canvas.item_configs) == color_updates_first_pass
+
+    controller._state = "ERROR"
+    controller._render_bars(0.3)
+
+    assert len(controller._canvas.item_configs) == color_updates_first_pass * 2
+    assert controller._canvas.item_configs[-1]["fill"] == STATE_COLORS["ERROR"]

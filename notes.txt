@@ -1,33 +1,31 @@
 Performance work log - 2026-03-28
 
 Scope
-- Focused on frontend-adjacent startup and settings performance.
-- Avoided the areas changed in the last two commits (`audio/recording.py`, provider/env diagnostics code).
+- Focused on frontend-heavy UI paths outside the last two commits.
+- Left the recent settings-cache/prompt-load work and `audio/recording.py` untouched.
 
-Hotspots identified
-- Repeated `preferences.json` reads on startup/UI paths caused avoidable disk I/O.
-- `SettingsWindow._load_settings()` re-read environment-backed settings key-by-key instead of working from one snapshot.
-- Settings bulk initialization and local preset application triggered redundant setup-overview recomputations.
-- The Prompts tab loaded prompt data eagerly even when the tab was never opened.
+Hotspots reviewed
+- `ui/welcome.py`: the macOS welcome window eagerly built every tab on open, including Prompts, Vocabulary, Logs, Transcripts and About.
+- `ui/welcome.py`: the logs auto-refresh timer could start even before the Logs tab UI existed.
+- `ui/overlay_windows.py`: the Windows overlay re-applied identical label configs and bar fill colors every frame.
 
-Changes made
-- Added file-signature caching for `preferences.json` in `utils/preferences.py`.
-- Reworked Windows settings loading to use one `read_env_file()` snapshot plus cached process-env API-key fallbacks.
-- Batched setup-overview refreshes during bulk UI updates so the expensive status recomputation only runs once per load/apply cycle.
-- Deferred prompt loading until the Prompts tab is actually opened.
-- Added regression tests for the new caching and deferred-load behavior.
+Changes in this pass
+- Added lazy tab building for the macOS welcome window so only the selected tab is built immediately; other tabs are created on first selection.
+- Kept setup presets safe by materializing the Providers and Advanced tabs before a preset mutates hidden controls.
+- Guarded logs auto-refresh so the timer stays off until the Logs tab has actually been built.
+- Cached Windows overlay label configs to skip duplicate `Label.config(...)` calls.
+- Cached Windows overlay bar colors so identical `Canvas.itemconfig(...)` fill updates are not repeated every frame.
+- Added regression tests for lazy-tab behavior, preset safety and the new overlay no-op guards.
 
 Why this helps
-- Faster startup/settings open paths due to less filesystem churn.
-- Less unnecessary UI work while the settings form is populated.
-- Better responsiveness when applying local presets.
-- Reduced eager work for tabs the user may never open.
+- Faster welcome-window open time because heavy editors and log/history readers no longer initialize up front.
+- Less background UI work before the user ever visits Logs.
+- Lower steady-state Tkinter overhead during recording/feedback because repeated style writes are eliminated.
 
 Validation
-- `pytest tests/test_preferences_cache.py tests/test_settings_windows_load.py tests/test_settings_windows_prompts.py -q`
-- `pytest tests/test_settings_windows_logs.py tests/test_settings_ui.py -q`
+- `pytest tests/test_settings_ui.py tests/test_overlay_windows.py tests/test_overlay.py -q`
 
 Next worthwhile areas
-- macOS `WelcomeController` still does substantial eager tab construction and would benefit from the same lazy-loading strategy.
-- Overlay rendering can be profiled next for paint-path allocations and label/style churn under long recording sessions.
-- Large AppKit/PySide tab builders could be lazily created on first activation if window-open latency still feels high.
+- macOS overlay rendering still updates every bar every frame and could be profiled for no-op geometry work.
+- `ui/welcome.py` Logs tab still loads transcript history when the tab is built; segment-level lazy loading would trim that path further.
+- Large onboarding windows (`ui/onboarding_wizard.py`, `ui/onboarding_wizard_windows.py`) are still good candidates for first-open profiling and deferred section construction.

@@ -124,6 +124,8 @@ class WindowsOverlayController:
         self._queue: queue.Queue = queue.Queue()
         self._running = False
         self._bar_item_ids: list[tuple[int, int, int]] = []
+        self._bar_color: str | None = None
+        self._last_label_config: tuple[str, tuple[object, ...], str] | None = None
         self._interim_file = interim_file
         self._last_interim_text = ""
         self._last_interim_mtime_ns: int | None = None
@@ -418,6 +420,8 @@ class WindowsOverlayController:
             self._root.withdraw()
             self._last_interim_text = ""
             self._last_interim_mtime_ns = None
+            self._last_label_config = None
+            self._bar_color = None
             self._anim = AnimationLogic()
         else:
             if prev_state == "IDLE":
@@ -431,7 +435,7 @@ class WindowsOverlayController:
                 if state in ("DONE", "ERROR")
                 else "white"
             )
-            self._label.config(
+            self._set_label_config(
                 text=display_text,
                 font=("Segoe UI", 11),
                 fg=label_color,
@@ -448,18 +452,31 @@ class WindowsOverlayController:
 
         formatted = _format_recording_interim_text(text)
         if not formatted:
-            self._label.config(
+            self._set_label_config(
                 text=STATE_TEXTS["RECORDING"],
                 font=("Segoe UI", 11),
                 fg="white",
             )
             return
 
-        self._label.config(
+        self._set_label_config(
             text=formatted,
             font=("Segoe UI", 10, "italic"),
             fg="#909090",
         )
+
+    def _set_label_config(
+        self, *, text: str, font: tuple[object, ...], fg: str
+    ) -> None:
+        if not self._label:
+            return
+
+        config = (text, font, fg)
+        if getattr(self, "_last_label_config", None) == config:
+            return
+
+        self._last_label_config = config
+        self._label.config(text=text, font=font, fg=fg)
 
     def _position_window(self, use_active_monitor: bool) -> None:
         if not self._root:
@@ -613,6 +630,7 @@ class WindowsOverlayController:
         start_x = (WINDOW_WIDTH - total_width) // 2
         center_y = 35  # Etwas höher für Text darunter
         self._ensure_pill_bar_items(start_x, center_y)
+        self._set_bar_color(color)
 
         for i in range(BAR_COUNT):
             target = self._anim.calculate_bar_height(i, t, self._state)
@@ -627,7 +645,7 @@ class WindowsOverlayController:
 
             # Pill-förmige Bar zeichnen
             x = start_x + i * (BAR_WIDTH + BAR_GAP)
-            self._draw_pill_bar(i, x, center_y, BAR_WIDTH, height, color)
+            self._draw_pill_bar(i, x, center_y, BAR_WIDTH, height)
 
     def _ensure_pill_bar_items(self, start_x: float, center_y: float) -> None:
         """Erstellt Canvas-Items einmalig und reused sie pro Frame."""
@@ -676,6 +694,18 @@ class WindowsOverlayController:
             )
             self._bar_item_ids.append((top_arc, middle_rect, bottom_arc))
 
+    def _set_bar_color(self, color: str) -> None:
+        if not self._canvas:
+            return
+        if getattr(self, "_bar_color", None) == color and self._bar_item_ids:
+            return
+
+        self._bar_color = color
+        for top_arc, middle_rect, bottom_arc in self._bar_item_ids:
+            self._canvas.itemconfig(top_arc, fill=color, outline="")
+            self._canvas.itemconfig(middle_rect, fill=color, outline="")
+            self._canvas.itemconfig(bottom_arc, fill=color, outline="")
+
     def _draw_pill_bar(
         self,
         bar_index: int,
@@ -683,7 +713,6 @@ class WindowsOverlayController:
         center_y: float,
         width: float,
         height: float,
-        color: str,
     ) -> None:
         """Zeichnet eine Pill-förmige Bar (abgerundete Enden)."""
         if not self._canvas:
@@ -704,10 +733,6 @@ class WindowsOverlayController:
         self._canvas.coords(top_arc, x, y1, x + width, y1 + width)
         self._canvas.coords(middle_rect, x, rect_top, x + width, rect_bottom)
         self._canvas.coords(bottom_arc, x, y2 - width, x + width, y2)
-
-        self._canvas.itemconfig(top_arc, fill=color, outline="")
-        self._canvas.itemconfig(middle_rect, fill=color, outline="")
-        self._canvas.itemconfig(bottom_arc, fill=color, outline="")
 
 
 __all__ = ["WindowsOverlayController"]
