@@ -546,13 +546,29 @@ class TestWelcomeLogsSegmentSwitch:
         ctrl = WelcomeController.__new__(WelcomeController)
         ctrl._logs_container = _FakeContainer()
         ctrl._transcripts_container = _FakeContainer()
+        ctrl._ensure_transcripts_view_built = MagicMock(return_value=False)
         ctrl._refresh_logs = MagicMock()
         ctrl._refresh_transcripts = MagicMock()
         ctrl._transcripts_view_seen = True
 
         ctrl._switch_logs_segment(1)
 
+        ctrl._ensure_transcripts_view_built.assert_called_once_with()
         ctrl._refresh_transcripts.assert_called_once_with(scroll_to_bottom=False)
+
+    def test_switch_to_transcripts_builds_panel_before_refresh(self):
+        ctrl = WelcomeController.__new__(WelcomeController)
+        ctrl._logs_container = _FakeContainer()
+        ctrl._transcripts_container = _FakeContainer()
+        ctrl._ensure_transcripts_view_built = MagicMock(return_value=True)
+        ctrl._refresh_logs = MagicMock()
+        ctrl._refresh_transcripts = MagicMock()
+        ctrl._transcripts_view_seen = False
+
+        ctrl._switch_logs_segment(1)
+
+        ctrl._ensure_transcripts_view_built.assert_called_once_with()
+        ctrl._refresh_transcripts.assert_called_once_with(scroll_to_bottom=True)
 
     def test_logs_view_active_when_segment_is_logs(self):
         ctrl = WelcomeController.__new__(WelcomeController)
@@ -793,6 +809,38 @@ class _FakeTranscriptsCountLabel:
 
 
 class TestWelcomeTranscriptsRefreshBehavior:
+    def test_refresh_transcripts_builds_view_when_needed(self):
+        ctrl = WelcomeController.__new__(WelcomeController)
+        clip_view = _FakeClipView(y=120, height=300)
+
+        build_calls: list[bool] = []
+
+        def ensure_view():
+            build_calls.append(True)
+            ctrl._transcripts_text_view = _FakeTranscriptsTextView(
+                "old text",
+                doc_height=800,
+            )
+            ctrl._transcripts_scroll_view = _FakeTranscriptsScrollView(clip_view)
+            ctrl._transcripts_count_label = _FakeTranscriptsCountLabel()
+            return True
+
+        ctrl._transcripts_text_view = None
+        ctrl._transcripts_scroll_view = None
+        ctrl._transcripts_count_label = None
+        ctrl._ensure_transcripts_view_built = ensure_view
+        ctrl._last_transcripts_text = "old text"
+        ctrl._last_transcripts_signature = None
+        ctrl._get_transcripts_payload = lambda: ("new text", 2)
+        ctrl._scroll_transcripts_to_bottom = MagicMock()
+        ctrl._restore_transcripts_scroll_position = MagicMock()
+
+        ctrl._refresh_transcripts(scroll_to_bottom=False)
+
+        assert build_calls == [True]
+        assert ctrl._transcripts_text_view.set_calls == ["new text"]
+        assert ctrl._transcripts_count_label.value == "2 entries"
+
     def test_refresh_transcripts_skips_file_read_when_signature_unchanged(
         self, monkeypatch
     ):

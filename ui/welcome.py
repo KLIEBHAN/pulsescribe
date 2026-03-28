@@ -230,6 +230,8 @@ class WelcomeController:
         self._last_logs_signature = None
         self._last_transcripts_text = None
         self._last_transcripts_signature = None
+        self._transcripts_view_built = False
+        self._transcripts_layout_metrics = None
         self._transcripts_view_seen = False
         # Logs/Transcripts segmented control
         self._logs_segment_control = None
@@ -2302,9 +2304,51 @@ class WelcomeController:
         )
         transcripts_container.setHidden_(True)  # Initially hidden
         self._transcripts_container = transcripts_container
+        self._transcripts_view_built = False
+        self._transcripts_layout_metrics = {
+            "content_width": content_width,
+            "content_height": content_height,
+            "scroll_height": scroll_height,
+            "button_width": btn_w,
+            "button_spacing": btn_spacing,
+        }
         parent_view.addSubview_(transcripts_container)
 
-        # Clear History Button
+        # Initial scroll and auto-refresh
+        self._scroll_logs_to_bottom()
+        self._start_logs_auto_refresh()
+
+        return card_y - CARD_SPACING
+
+    def _ensure_transcripts_view_built(self) -> bool:
+        """Build the transcripts panel only when it is actually opened."""
+        if getattr(self, "_transcripts_view_built", False):
+            return False
+
+        container = getattr(self, "_transcripts_container", None)
+        metrics = getattr(self, "_transcripts_layout_metrics", None)
+        if container is None or not metrics:
+            return False
+
+        from AppKit import (  # type: ignore[import-not-found]
+            NSBezelBorder,
+            NSBezelStyleRounded,
+            NSButton,
+            NSColor,
+            NSFont,
+            NSMakeRect,
+            NSScrollView,
+            NSTextField,
+            NSTextView,
+        )
+        import objc  # type: ignore[import-not-found]
+
+        content_width = metrics["content_width"]
+        content_height = metrics["content_height"]
+        scroll_height = metrics["scroll_height"]
+        btn_w = metrics["button_width"]
+        btn_spacing = metrics["button_spacing"]
+
         clear_btn = NSButton.alloc().initWithFrame_(
             NSMakeRect(content_width - btn_w, content_height - 24, btn_w, 22)
         )
@@ -2317,9 +2361,8 @@ class WelcomeController:
             objc.selector(clear_handler.clearTranscripts_, signature=b"v@:@")
         )
         self._transcripts_clear_handler = clear_handler
-        transcripts_container.addSubview_(clear_btn)
+        container.addSubview_(clear_btn)
 
-        # Refresh Transcripts Button
         refresh_t_btn = NSButton.alloc().initWithFrame_(
             NSMakeRect(
                 content_width - btn_w * 2 - btn_spacing, content_height - 24, btn_w, 22
@@ -2332,9 +2375,8 @@ class WelcomeController:
         refresh_t_btn.setAction_(
             objc.selector(clear_handler.refreshTranscripts_, signature=b"v@:@")
         )
-        transcripts_container.addSubview_(refresh_t_btn)
+        container.addSubview_(refresh_t_btn)
 
-        # Transcripts count label
         count_label = NSTextField.alloc().initWithFrame_(
             NSMakeRect(0, content_height - 20, content_width - 150, 14)
         )
@@ -2345,10 +2387,9 @@ class WelcomeController:
         count_label.setSelectable_(False)
         count_label.setFont_(NSFont.systemFontOfSize_(11))
         count_label.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6))
-        transcripts_container.addSubview_(count_label)
+        container.addSubview_(count_label)
         self._transcripts_count_label = count_label
 
-        # Transcripts ScrollView
         t_scroll = NSScrollView.alloc().initWithFrame_(
             NSMakeRect(0, 0, content_width, scroll_height)
         )
@@ -2377,20 +2418,17 @@ class WelcomeController:
         tc = t_text_view.textContainer()
         if tc is not None:
             tc.setWidthTracksTextView_(True)
+
         initial_transcripts_text, entry_count = self._get_transcripts_payload()
         t_text_view.setString_(initial_transcripts_text)
         self._last_transcripts_text = initial_transcripts_text
         self._last_transcripts_signature = self._get_transcripts_signature()
         self._update_transcripts_count_label(entry_count)
         t_scroll.setDocumentView_(t_text_view)
-        transcripts_container.addSubview_(t_scroll)
+        container.addSubview_(t_scroll)
         self._transcripts_text_view = t_text_view
-
-        # Initial scroll and auto-refresh
-        self._scroll_logs_to_bottom()
-        self._start_logs_auto_refresh()
-
-        return card_y - CARD_SPACING
+        self._transcripts_view_built = True
+        return True
 
     def _get_transcripts_payload(self) -> tuple[str, int]:
         """Lädt und formatiert die Transkript-Historie inkl. Eintragszahl."""
@@ -2441,6 +2479,12 @@ class WelcomeController:
 
     def _refresh_transcripts(self, *, scroll_to_bottom: bool = False) -> None:
         """Aktualisiert die Transkript-Anzeige mit scroll-schonendem Verhalten."""
+        if (
+            self._transcripts_text_view is None
+            and not self._ensure_transcripts_view_built()
+        ):
+            return
+
         if self._transcripts_text_view:
             try:
                 signature = self._get_transcripts_signature()
@@ -2562,6 +2606,7 @@ class WelcomeController:
                 self._transcripts_container.setHidden_(True)
                 self._refresh_logs(scroll_to_bottom=True)
             else:  # Transcripts
+                self._ensure_transcripts_view_built()
                 self._logs_container.setHidden_(True)
                 self._transcripts_container.setHidden_(False)
                 should_scroll_to_bottom = not getattr(

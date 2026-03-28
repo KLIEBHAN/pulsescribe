@@ -25,6 +25,19 @@ class _FakeField:
         return self.value
 
 
+class _FakeEditor:
+    def __init__(self, text: str = ""):
+        self.value = text
+        self.set_calls: list[str] = []
+
+    def setPlainText(self, value: str) -> None:
+        self.value = value
+        self.set_calls.append(value)
+
+    def toPlainText(self) -> str:
+        return self.value
+
+
 class _FakeLabel:
     def __init__(self):
         self.text = ""
@@ -82,6 +95,22 @@ class _FakeSignal:
 
     def emit(self) -> None:
         self.emitted = True
+
+
+class _FakeLayout:
+    def __init__(self):
+        self.widgets: list[object] = []
+
+    def addWidget(self, widget: object) -> None:
+        self.widgets.append(widget)
+
+
+class _FakeTabs:
+    def __init__(self, label: str):
+        self._label = label
+
+    def tabText(self, _index: int) -> str:
+        return self._label
 
 
 def _make_window() -> SettingsWindow:
@@ -218,6 +247,97 @@ def test_refresh_setup_overview_uses_process_env_api_keys(monkeypatch):
 
     assert window._setup_status_label.text == "Ready to Dictate"
     assert "Deepgram" in window._setup_status_detail_label.text
+
+
+def test_ensure_tab_built_builds_lazy_tab_only_once():
+    window = SettingsWindow.__new__(SettingsWindow)
+    built: list[str] = []
+    layout = _FakeLayout()
+
+    window._tab_builders = {"Logs": lambda: built.append("logs") or "logs-widget"}
+    window._lazy_tab_layouts = {"Logs": layout}
+    window._built_tabs = set()
+
+    assert window._ensure_tab_built("Logs") is True
+    assert window._ensure_tab_built("Logs") is False
+    assert built == ["logs"]
+    assert layout.widgets == ["logs-widget"]
+
+
+def test_on_tab_changed_builds_lazy_prompts_tab_before_loading():
+    window = SettingsWindow.__new__(SettingsWindow)
+    built: list[str] = []
+    prompt_calls: list[str] = []
+
+    window._tabs = _FakeTabs("Prompts")
+    window._ensure_tab_built = lambda label: built.append(label) or True
+    window._ensure_prompts_loaded = lambda: prompt_calls.append("prompts")
+    window._load_vocabulary = lambda **_kwargs: (_ for _ in ()).throw(
+        AssertionError("vocabulary should not load")
+    )
+    window._refresh_logs = lambda: (_ for _ in ()).throw(
+        AssertionError("logs should not refresh")
+    )
+    window._refresh_transcripts = lambda: (_ for _ in ()).throw(
+        AssertionError("transcripts should not refresh")
+    )
+    window._update_logs_auto_refresh_state = lambda: None
+    window._logs_stack = None
+
+    window._on_tab_changed(0)
+
+    assert built == ["Prompts"]
+    assert prompt_calls == ["prompts"]
+
+
+def test_load_vocabulary_skips_reload_when_signature_unchanged(monkeypatch):
+    from utils import vocabulary as vocabulary_mod
+
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._vocab_editor = _FakeEditor("draft keyword")
+    window._vocab_status = _FakeLabel()
+    window._vocabulary_loaded = True
+    window._last_vocabulary_signature = (7, 9)
+
+    monkeypatch.setattr(settings_mod, "get_file_signature", lambda _path: (7, 9))
+    monkeypatch.setattr(
+        vocabulary_mod,
+        "load_vocabulary",
+        lambda: (_ for _ in ()).throw(AssertionError("disk load should not happen")),
+    )
+    monkeypatch.setattr(
+        vocabulary_mod,
+        "validate_vocabulary",
+        lambda: (_ for _ in ()).throw(AssertionError("validation should not happen")),
+    )
+
+    window._load_vocabulary()
+
+    assert window._vocab_editor.value == "draft keyword"
+    assert window._vocab_editor.set_calls == []
+
+
+def test_load_vocabulary_force_reloads_even_when_signature_unchanged(monkeypatch):
+    from utils import vocabulary as vocabulary_mod
+
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._vocab_editor = _FakeEditor("draft keyword")
+    window._vocab_status = _FakeLabel()
+    window._vocabulary_loaded = True
+    window._last_vocabulary_signature = (7, 9)
+
+    monkeypatch.setattr(settings_mod, "get_file_signature", lambda _path: (7, 9))
+    monkeypatch.setattr(
+        vocabulary_mod,
+        "load_vocabulary",
+        lambda: {"keywords": ["alpha"]},
+    )
+    monkeypatch.setattr(vocabulary_mod, "validate_vocabulary", lambda: [])
+
+    window._load_vocabulary(force=True)
+
+    assert window._vocab_editor.set_calls == ["alpha"]
+    assert window._vocab_status.text == "1 keywords loaded"
 
 
 def test_load_settings_prefers_canonical_fp16_key(monkeypatch):

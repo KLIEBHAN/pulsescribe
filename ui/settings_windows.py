@@ -73,6 +73,7 @@ logger = logging.getLogger("pulsescribe.settings")
 
 SETTINGS_WIDTH = 600
 SETTINGS_HEIGHT = 700
+LAZY_SETTINGS_TAB_LABELS = frozenset({"Prompts", "Vocabulary", "Logs"})
 
 # =============================================================================
 # Dropdown-Optionen (identisch mit macOS)
@@ -281,6 +282,21 @@ def create_status_label(text: str = "", color: str = "text") -> QLabel:
     return label
 
 
+def set_plain_text_if_changed(editor: QPlainTextEdit | None, text: str) -> bool:
+    """Avoid expensive document rebuilds when the text is already current."""
+    if editor is None:
+        return False
+
+    try:
+        if editor.toPlainText() == text:
+            return False
+    except Exception:
+        pass
+
+    editor.setPlainText(text)
+    return True
+
+
 # =============================================================================
 # Settings Window
 # =============================================================================
@@ -322,6 +338,11 @@ class SettingsWindow(QDialog):
         self._setup_howto_label: QLabel | None = None
         self._setup_overview_refresh_suspend_count = 0
         self._process_env_api_keys: dict[str, str] | None = None
+        self._tab_builders: dict[str, Callable[[], QWidget]] = {}
+        self._lazy_tab_layouts: dict[str, QVBoxLayout] = {}
+        self._built_tabs: set[str] = set()
+        self._vocabulary_loaded = False
+        self._last_vocabulary_signature: tuple[int, int] | None = None
 
         # Hotkey Recording State
         self._recording_hotkey_for: str | None = None
@@ -369,16 +390,27 @@ class SettingsWindow(QDialog):
         self._tabs.setDocumentMode(True)
         layout.addWidget(self._tabs, 1)
 
-        # Tabs hinzufügen
-        self._tabs.addTab(self._build_setup_tab(), "Setup")
-        self._tabs.addTab(self._build_hotkeys_tab(), "Hotkeys")
-        self._tabs.addTab(self._build_providers_tab(), "Providers")
-        self._tabs.addTab(self._build_advanced_tab(), "Advanced")
-        self._tabs.addTab(self._build_refine_tab(), "Refine")
-        self._tabs.addTab(self._build_prompts_tab(), "Prompts")
-        self._tabs.addTab(self._build_vocabulary_tab(), "Vocabulary")
-        self._tabs.addTab(self._build_logs_tab(), "Logs")
-        self._tabs.addTab(self._build_about_tab(), "About")
+        self._tab_builders = {}
+        self._lazy_tab_layouts = {}
+        self._built_tabs = set()
+
+        tab_specs: list[tuple[str, Callable[[], QWidget]]] = [
+            ("Setup", self._build_setup_tab),
+            ("Hotkeys", self._build_hotkeys_tab),
+            ("Providers", self._build_providers_tab),
+            ("Advanced", self._build_advanced_tab),
+            ("Refine", self._build_refine_tab),
+            ("Prompts", self._build_prompts_tab),
+            ("Vocabulary", self._build_vocabulary_tab),
+            ("Logs", self._build_logs_tab),
+            ("About", self._build_about_tab),
+        ]
+        for label, builder in tab_specs:
+            self._add_tab(
+                label,
+                builder,
+                lazy=label in LAZY_SETTINGS_TAB_LABELS,
+            )
 
         # Tab-Wechsel Handler für Auto-Load
         self._tabs.currentChanged.connect(self._on_tab_changed)
@@ -386,6 +418,44 @@ class SettingsWindow(QDialog):
         # Footer
         footer = self._build_footer()
         layout.addWidget(footer)
+
+    def _add_tab(
+        self,
+        label: str,
+        builder: Callable[[], QWidget],
+        *,
+        lazy: bool,
+    ) -> None:
+        """Adds a tab and defers heavy widgets until first interaction when useful."""
+        if lazy:
+            container = QWidget()
+            container_layout = QVBoxLayout(container)
+            container_layout.setContentsMargins(0, 0, 0, 0)
+            container_layout.setSpacing(0)
+            self._tabs.addTab(container, label)
+            self._tab_builders[label] = builder
+            self._lazy_tab_layouts[label] = container_layout
+            return
+
+        self._tabs.addTab(builder(), label)
+        self._built_tabs.add(label)
+
+    def _is_tab_built(self, label: str) -> bool:
+        return label in getattr(self, "_built_tabs", set())
+
+    def _ensure_tab_built(self, label: str) -> bool:
+        """Build a deferred tab the first time it is selected."""
+        if not label or self._is_tab_built(label):
+            return False
+
+        builder = self._tab_builders.get(label)
+        layout = self._lazy_tab_layouts.get(label)
+        if builder is None or layout is None:
+            return False
+
+        layout.addWidget(builder())
+        self._built_tabs.add(label)
+        return True
 
     def _build_header(self) -> QWidget:
         """Erstellt den Header."""
@@ -1039,7 +1109,9 @@ class SettingsWindow(QDialog):
         btn_layout.addStretch()
 
         load_btn = QPushButton("Load")
-        load_btn.clicked.connect(self._load_vocabulary)
+        load_btn.clicked.connect(
+            lambda _checked=False: self._load_vocabulary(force=True)
+        )
         btn_layout.addWidget(load_btn)
 
         save_btn = QPushButton("Save")
@@ -1270,6 +1342,7 @@ class SettingsWindow(QDialog):
     def _on_tab_changed(self, index: int):
         """Handler für Tab-Wechsel."""
         tab_name = self._tabs.tabText(index) if self._tabs else ""
+        self._ensure_tab_built(tab_name)
 
         if tab_name == "Prompts":
             self._ensure_prompts_loaded()
@@ -1815,7 +1888,10 @@ class SettingsWindow(QDialog):
         # beim Tab-Wechsel und spart wiederholtes Disk-Laden).
         if context in self._prompts_cache:
             if self._prompt_editor:
-                self._prompt_editor.setPlainText(self._prompts_cache[context])
+                set_plain_text_if_changed(
+                    self._prompt_editor,
+                    self._prompts_cache[context],
+                )
                 self._set_prompt_status("", "text")
                 self._prompts_loaded = True
             return
@@ -1838,7 +1914,7 @@ class SettingsWindow(QDialog):
                 text = prompts.get(context, {}).get("prompt", "")
 
             if self._prompt_editor:
-                self._prompt_editor.setPlainText(text)
+                set_plain_text_if_changed(self._prompt_editor, text)
                 self._prompts_cache[context] = text
                 self._set_prompt_status("", "text")
                 self._prompts_loaded = True
@@ -1905,7 +1981,7 @@ class SettingsWindow(QDialog):
                 text = defaults["prompts"].get(context, {}).get("prompt", "")
 
             if self._prompt_editor:
-                self._prompt_editor.setPlainText(text)
+                set_plain_text_if_changed(self._prompt_editor, text)
                 self._prompts_cache[context] = text
                 self._prompts_loaded = True
                 self._set_prompt_status("Reset to default (not saved)", "warning")
@@ -2141,15 +2217,24 @@ class SettingsWindow(QDialog):
         """Gibt die aktuelle Version zurück."""
         return get_app_version(default="unknown")
 
-    def _load_vocabulary(self):
+    def _load_vocabulary(self, *, force: bool = False):
         """Lädt Vocabulary aus Datei."""
         try:
+            from config import VOCABULARY_FILE
             from utils.vocabulary import load_vocabulary, validate_vocabulary
+
+            signature = get_file_signature(VOCABULARY_FILE)
+            if (
+                not force
+                and getattr(self, "_vocabulary_loaded", False)
+                and signature == getattr(self, "_last_vocabulary_signature", None)
+            ):
+                return
 
             vocab = load_vocabulary()
             if self._vocab_editor:
                 keywords = vocab.get("keywords", [])
-                self._vocab_editor.setPlainText("\n".join(keywords))
+                set_plain_text_if_changed(self._vocab_editor, "\n".join(keywords))
 
                 # Validierung und Warnungen
                 warnings = validate_vocabulary()
@@ -2162,6 +2247,8 @@ class SettingsWindow(QDialog):
                     self._vocab_status.setStyleSheet(
                         f"color: {COLORS['text_secondary']};"
                     )
+            self._vocabulary_loaded = True
+            self._last_vocabulary_signature = signature
         except Exception as e:
             logger.error(f"Vocabulary laden fehlgeschlagen: {e}")
             if hasattr(self, "_vocab_status"):
@@ -2171,12 +2258,15 @@ class SettingsWindow(QDialog):
     def _save_vocabulary(self):
         """Speichert Vocabulary in Datei."""
         try:
+            from config import VOCABULARY_FILE
             from utils.vocabulary import save_vocabulary, validate_vocabulary
 
             if self._vocab_editor:
                 text = self._vocab_editor.toPlainText()
                 keywords = [line.strip() for line in text.split("\n") if line.strip()]
                 save_vocabulary(keywords)
+                self._vocabulary_loaded = True
+                self._last_vocabulary_signature = get_file_signature(VOCABULARY_FILE)
 
                 # Validierung nach Speichern
                 warnings = validate_vocabulary()
