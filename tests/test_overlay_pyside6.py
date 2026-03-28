@@ -1,8 +1,12 @@
 import pytest
+import types
 
 pytest.importorskip("PySide6")
 
 from ui.overlay_pyside6 import (
+    BAR_COUNT,
+    BAR_HEIGHT_UPDATE_EPSILON,
+    BAR_MIN_HEIGHT,
     FEEDBACK_DISPLAY_MS,
     FRAME_MS,
     FRAME_MS_ACTIVE,
@@ -333,3 +337,27 @@ def test_update_label_only_mutates_changed_parts():
     assert widget._label.font_calls == 2
     assert widget._label.style_calls == 2
     assert widget._label.text_calls == 2
+
+
+def test_animate_frame_skips_repaint_for_subpixel_height_changes(monkeypatch):
+    widget = PySide6OverlayWidget.__new__(PySide6OverlayWidget)
+    widget._state = "RECORDING"
+    widget._animation_start = 0.0
+    widget._audio_level = 0.0
+    widget._bar_heights = [float(BAR_MIN_HEIGHT)] * BAR_COUNT
+    widget._painted_bar_heights = [float(BAR_MIN_HEIGHT)] * BAR_COUNT
+    widget._last_painted_state = "RECORDING"
+    widget._anim = types.SimpleNamespace(
+        update_level=lambda _level: None,
+        update_agc=lambda: None,
+        calculate_bar_height=lambda *_args: BAR_MIN_HEIGHT
+        + (BAR_HEIGHT_UPDATE_EPSILON / 2),
+    )
+    repaint_calls: list[str] = []
+    widget.update = lambda: repaint_calls.append("update")
+
+    monkeypatch.setattr("ui.overlay_pyside6.time.perf_counter", lambda: 1.0)
+
+    PySide6OverlayWidget._animate_frame(widget)
+
+    assert repaint_calls == []

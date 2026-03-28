@@ -36,6 +36,21 @@ def _create_card(x: int, y: int, width: int, height: int, *, corner_radius: int 
     return card
 
 
+def _get_status_palette() -> dict[str, object]:
+    palette = getattr(_get_status_palette, "_cache", None)
+    if palette is None:
+        from AppKit import NSColor  # type: ignore[import-not-found]
+
+        palette = {
+            "ok": _get_color(120, 255, 150),
+            "warn": _get_color(255, 200, 90),
+            "err": _get_color(255, 120, 120),
+            "neutral": NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6),
+        }
+        _get_status_palette._cache = palette
+    return palette
+
+
 @dataclass
 class PermissionCardWidgets:
     mic_status: object
@@ -187,20 +202,29 @@ class PermissionsCard:
 
         return cls(widgets=widgets, after_refresh=after_refresh)
 
-    def _set_status_if_changed(self, key: str, field, text: str, color) -> None:
+    def _set_status_if_changed(
+        self,
+        key: str,
+        field,
+        text: str,
+        color,
+        *,
+        cache_value: object | None = None,
+    ) -> bool:
         if field is None:
-            return
+            return False
 
-        next_state = (text, color)
+        next_state = (text, cache_value if cache_value is not None else color)
         if self._status_cache.get(key) == next_state:
-            return
+            return False
 
         try:
             field.setStringValue_(text)
             field.setTextColor_(color)
             self._status_cache[key] = next_state
+            return True
         except Exception:
-            pass
+            return False
 
     def _set_action_if_changed(
         self,
@@ -210,89 +234,92 @@ class PermissionsCard:
         title: str,
         enabled: bool,
         hidden: bool,
-    ) -> None:
+    ) -> bool:
         if btn is None:
-            return
+            return False
 
         next_state = (title, enabled, hidden)
         if self._action_cache.get(key) == next_state:
-            return
+            return False
 
         try:
             btn.setTitle_(title)
             btn.setEnabled_(enabled)
             btn.setHidden_(hidden)
             self._action_cache[key] = next_state
+            return True
         except Exception:
-            pass
+            return False
 
     def refresh(self) -> bool:
-        from AppKit import NSColor  # type: ignore[import-not-found]
         from utils.permissions import (
             get_microphone_permission_state,
             has_accessibility_permission,
             has_input_monitoring_permission,
         )
 
-        ok_color = _get_color(120, 255, 150)
-        warn_color = _get_color(255, 200, 90)
-        err_color = _get_color(255, 120, 120)
-        neutral_color = NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6)
+        palette = _get_status_palette()
+        changed = False
 
         mic_state = get_microphone_permission_state()
         if mic_state == "authorized":
-            self._set_status_if_changed(
+            changed |= self._set_status_if_changed(
                 "mic_status",
                 self._widgets.mic_status,
                 "✅ Granted",
-                ok_color,
+                palette["ok"],
+                cache_value="ok",
             )
-            self._set_action_if_changed(
+            changed |= self._set_action_if_changed(
                 "mic_action",
                 self._widgets.mic_action, title="Open", enabled=False, hidden=True
             )
         elif mic_state == "not_determined":
-            self._set_status_if_changed(
+            changed |= self._set_status_if_changed(
                 "mic_status",
                 self._widgets.mic_status,
                 "⚠ Not requested yet",
-                warn_color,
+                palette["warn"],
+                cache_value="warn",
             )
-            self._set_action_if_changed(
+            changed |= self._set_action_if_changed(
                 "mic_action",
                 self._widgets.mic_action, title="Request", enabled=True, hidden=False
             )
         elif mic_state in ("denied", "restricted"):
-            self._set_status_if_changed(
+            changed |= self._set_status_if_changed(
                 "mic_status",
                 self._widgets.mic_status,
                 "❌ Denied",
-                err_color,
+                palette["err"],
+                cache_value="err",
             )
-            self._set_action_if_changed(
+            changed |= self._set_action_if_changed(
                 "mic_action",
                 self._widgets.mic_action, title="Open", enabled=True, hidden=False
             )
         else:
-            self._set_status_if_changed(
+            changed |= self._set_status_if_changed(
                 "mic_status",
                 self._widgets.mic_status,
                 "Unknown",
-                neutral_color,
+                palette["neutral"],
+                cache_value="neutral",
             )
-            self._set_action_if_changed(
+            changed |= self._set_action_if_changed(
                 "mic_action",
                 self._widgets.mic_action, title="Open", enabled=True, hidden=False
             )
 
         acc_ok = has_accessibility_permission()
-        self._set_status_if_changed(
+        changed |= self._set_status_if_changed(
             "access_status",
             self._widgets.access_status,
             "✅ Granted" if acc_ok else "⚠ Not granted",
-            ok_color if acc_ok else warn_color,
+            palette["ok"] if acc_ok else palette["warn"],
+            cache_value="ok" if acc_ok else "warn",
         )
-        self._set_action_if_changed(
+        changed |= self._set_action_if_changed(
             "access_action",
             self._widgets.access_action,
             title="Open",
@@ -301,13 +328,14 @@ class PermissionsCard:
         )
 
         input_ok = has_input_monitoring_permission()
-        self._set_status_if_changed(
+        changed |= self._set_status_if_changed(
             "input_status",
             self._widgets.input_status,
             "✅ Granted" if input_ok else "⚠ Not granted",
-            ok_color if input_ok else warn_color,
+            palette["ok"] if input_ok else palette["warn"],
+            cache_value="ok" if input_ok else "warn",
         )
-        self._set_action_if_changed(
+        changed |= self._set_action_if_changed(
             "input_action",
             self._widgets.input_action,
             title="Open",
@@ -315,7 +343,7 @@ class PermissionsCard:
             hidden=bool(input_ok),
         )
 
-        if callable(self._after_refresh):
+        if changed and callable(self._after_refresh):
             try:
                 self._after_refresh()
             except Exception:

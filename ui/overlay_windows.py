@@ -45,6 +45,7 @@ WINDOW_MARGIN_BOTTOM = 60  # Abstand vom unteren Bildschirmrand
 FRAME_MS = 1000 // FPS  # ~16ms
 FRAME_MS_ACTIVE = 1000 // 30  # 30 FPS für nicht-kritische Animationen
 FRAME_MS_FEEDBACK = 1000 // 20  # 20 FPS für kurze DONE/ERROR-Phase
+BAR_HEIGHT_UPDATE_EPSILON = 0.25  # Spare Canvas-Updates für subpixel-kleine Änderungen
 QUEUE_POLL_ACTIVE_MS = 16  # 60Hz während Overlay sichtbar/aktiv
 QUEUE_POLL_IDLE_MS = 50  # Weniger CPU-Last im Idle
 QUEUE_MAX_MESSAGES_PER_TICK = 200
@@ -116,6 +117,7 @@ class WindowsOverlayController:
         self._audio_level = 0.0
         self._anim = AnimationLogic()
         self._bar_heights: list[float] = [float(BAR_MIN_HEIGHT)] * BAR_COUNT
+        self._drawn_bar_heights: list[float] = [float(BAR_MIN_HEIGHT)] * BAR_COUNT
 
         # Animation timing
         self._animation_start = time.perf_counter()
@@ -423,6 +425,7 @@ class WindowsOverlayController:
             self._last_label_config = None
             self._bar_color = None
             self._anim = AnimationLogic()
+            self._drawn_bar_heights = [float(BAR_MIN_HEIGHT)] * BAR_COUNT
         else:
             if prev_state == "IDLE":
                 # Bei Start auf Monitor des aktiven Fensters zentrieren.
@@ -653,10 +656,13 @@ class WindowsOverlayController:
             return
         if not hasattr(self, "_bar_item_ids"):
             self._bar_item_ids = []
+        if not hasattr(self, "_drawn_bar_heights") or len(self._drawn_bar_heights) != BAR_COUNT:
+            self._drawn_bar_heights = [float(BAR_MIN_HEIGHT)] * BAR_COUNT
         if len(self._bar_item_ids) == BAR_COUNT:
             return
 
         self._bar_item_ids = []
+        self._drawn_bar_heights = [float(BAR_MIN_HEIGHT)] * BAR_COUNT
         for i in range(BAR_COUNT):
             x = start_x + i * (BAR_WIDTH + BAR_GAP)
             y1 = center_y - BAR_MIN_HEIGHT / 2
@@ -719,9 +725,17 @@ class WindowsOverlayController:
             return
         if not hasattr(self, "_bar_item_ids") or len(self._bar_item_ids) <= bar_index:
             return
+        if not hasattr(self, "_drawn_bar_heights") or len(self._drawn_bar_heights) != BAR_COUNT:
+            self._drawn_bar_heights = [float(BAR_MIN_HEIGHT)] * BAR_COUNT
 
         top_arc, middle_rect, bottom_arc = self._bar_item_ids[bar_index]
         height = max(height, width)
+        if (
+            bar_index < len(self._drawn_bar_heights)
+            and abs(self._drawn_bar_heights[bar_index] - height)
+            < BAR_HEIGHT_UPDATE_EPSILON
+        ):
+            return
 
         y1 = center_y - height / 2
         y2 = center_y + height / 2
@@ -733,6 +747,8 @@ class WindowsOverlayController:
         self._canvas.coords(top_arc, x, y1, x + width, y1 + width)
         self._canvas.coords(middle_rect, x, rect_top, x + width, rect_bottom)
         self._canvas.coords(bottom_arc, x, y2 - width, x + width, y2)
+        if bar_index < len(self._drawn_bar_heights):
+            self._drawn_bar_heights[bar_index] = height
 
 
 __all__ = ["WindowsOverlayController"]

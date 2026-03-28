@@ -5,6 +5,7 @@ import types
 
 from ui.overlay_windows import (
     BAR_COUNT,
+    BAR_HEIGHT_UPDATE_EPSILON,
     BAR_MIN_HEIGHT,
     FRAME_MS,
     FRAME_MS_ACTIVE,
@@ -503,6 +504,33 @@ def test_render_bars_updates_existing_items_with_state_color():
     controller._render_bars(0.1)
 
     assert controller._canvas.item_configs[-1]["fill"] == STATE_COLORS["DONE"]
+
+
+def test_draw_pill_bar_skips_subpixel_canvas_updates():
+    controller = WindowsOverlayController.__new__(WindowsOverlayController)
+    controller._canvas = _FakeCanvas()
+    controller._bar_item_ids = [(1, 2, 3)]
+    controller._drawn_bar_heights = [10.0] + [BAR_MIN_HEIGHT] * (BAR_COUNT - 1)
+
+    controller._draw_pill_bar(
+        0,
+        x=0.0,
+        center_y=20.0,
+        width=4.0,
+        height=10.0 + (BAR_HEIGHT_UPDATE_EPSILON / 2),
+    )
+
+    assert controller._canvas.coords_calls == 0
+
+    controller._draw_pill_bar(
+        0,
+        x=0.0,
+        center_y=20.0,
+        width=4.0,
+        height=10.0 + BAR_HEIGHT_UPDATE_EPSILON + 0.1,
+    )
+
+    assert controller._canvas.coords_calls == 3
 
 
 def test_render_bars_reuses_existing_fill_color_until_state_changes():

@@ -1,36 +1,40 @@
 Performance work log - 2026-03-28
 
 Scope
-- Focused on frontend refresh paths outside the last two commits (`bc51fa9`, `c57906e`).
-- Left recent overlay, onboarding and hotkey changes untouched unless compatibility required otherwise.
-- Kept existing log and transcript behavior functionally unchanged.
+- Kept the transcript/log refresh work from `49efeb1` and `bc51fa9` untouched.
+- Focused on permission refresh churn and Windows overlay paint hot paths.
+- Preserved existing onboarding, settings and overlay behavior.
 
-Hotspots reviewed
-- `ui/settings_windows.py`: transcript auto-refresh re-read `history.jsonl`, reformatted the last 50 entries and replaced the full `QPlainTextEdit` document on every history change.
-- `ui/welcome.py`: the macOS transcripts panel did the same work and re-laid out the full `NSTextView` on each refresh.
-- `utils/history.py`: transcript history already had efficient tail reads, but no append-aware delta reader or bounded merge helpers for transcript views.
+Current weaknesses reviewed
+- `ui/permissions_card.py`: every refresh rebuilt status colors and used the color objects in the cache key. On real AppKit objects that can defeat the dedupe path and reapply the same text/color updates repeatedly.
+- `ui/permissions_card.py`: `after_refresh` ran on every auto-refresh tick, which could retrigger expensive parent renders even when no permission state changed.
+- `ui/overlay_windows.py`: Tk canvas bars updated all coordinates every frame, including subpixel changes with no visible payoff.
+- `ui/overlay_pyside6.py`: the animation loop requested a full repaint on every tick even when smoothed bar heights had barely moved.
 
 Changes in this pass
-- `utils/history.py`
-  Added append-only history delta reads, bounded visible-window merging and shared per-entry formatters for Windows and macOS transcript views.
-- `ui/settings_windows.py`
-  Cached the visible 50 transcript entries, skipped full `history.jsonl` reloads on append-only updates and appended new transcript blocks directly into the viewer when the visible window could stay incremental. When the 50-entry window needs trimming, it now rebuilds from the in-memory cache instead of rereading the file.
-- `ui/welcome.py`
-  Applied the same cached transcript window strategy, moved safe append-only updates onto `NSTextStorage` and kept the old full-refresh behavior as a fallback for unsafe states.
+- `ui/permissions_card.py`
+  Reused a lazy status-color palette, cached status updates by stable semantic keys instead of transient color objects, and only ran `after_refresh` when the card actually changed.
+- `ui/overlay_windows.py`
+  Added per-bar drawn-height tracking and skipped canvas coordinate updates for subpixel-only height deltas.
+- `ui/overlay_pyside6.py`
+  Added painted-height tracking and only requested a repaint once bar movement crossed a visible threshold or the overlay state changed.
 - Tests
-  Added regression coverage for the new history delta helpers and for both transcript incremental refresh paths.
+  Added regression coverage for stable permission-card dedupe with fresh color objects, change-only `after_refresh` behavior, and the new overlay subpixel skip paths.
 
 Why this helps
-- Removes repeated tail reads, parsing and formatting work from the hot transcript refresh loop in the common append-only case.
-- Avoids expensive full document resets on both Qt and AppKit transcript widgets when only new entries were added.
-- Preserves the visible 50-entry window and safe fallback behavior for non-append-only or oversized updates.
+- Cuts redundant AppKit widget mutations and avoids unnecessary onboarding re-renders during permission polling.
+- Reduces Tk canvas work in the hottest Windows overlay loop.
+- Lowers avoidable Qt repaint pressure without changing the visible animation behavior.
 
 Validation
-- `pytest tests/test_settings_windows_load.py tests/test_settings_windows_logs.py tests/test_settings_ui.py tests/test_history.py tests/test_history_display.py -q`
-- `python -m py_compile utils/history.py ui/settings_windows.py ui/welcome.py tests/test_history.py tests/test_history_display.py tests/test_settings_windows_logs.py tests/test_settings_ui.py`
-- `ruff check utils/history.py ui/settings_windows.py ui/welcome.py tests/test_history.py tests/test_history_display.py tests/test_settings_windows_logs.py tests/test_settings_ui.py`
+- `pytest tests/test_permissions_card.py tests/test_overlay_windows.py tests/test_overlay.py -q`
+- `pytest tests/test_overlay_pyside6.py -q`
+- `pytest tests/test_onboarding.py tests/test_settings_ui.py -q`
+- `pytest tests/test_onboarding_wizard_flow.py -q`
+- `python -m py_compile ui/permissions_card.py ui/overlay_windows.py ui/overlay_pyside6.py tests/test_permissions_card.py tests/test_overlay_windows.py tests/test_overlay_pyside6.py`
+- `ruff check ui/permissions_card.py ui/overlay_windows.py ui/overlay_pyside6.py tests/test_permissions_card.py tests/test_overlay_windows.py tests/test_overlay_pyside6.py`
 
 Next worthwhile areas
-- Transcript views still rebuild the in-memory text snapshot when the visible 50-entry window has to trim older entries from the top; top-trim editing would be the next micro-optimization if profiling still points there.
-- `ui/overlay_windows.py`: queue and interim polling cadence is a good next profiling target for idle CPU and perceived responsiveness.
-- `ui/permissions_card.py`: permission refresh timers are already bounded, but coalescing repeated checks may still reduce needless work on slower systems.
+- `ui/welcome.py`: setup/overview tab switching still has some large build paths that are only partly lazy-loaded.
+- `ui/onboarding_wizard_windows.py`: hotkey recording and IPC polling are already guarded, but the test-dictation step is still the most likely Windows responsiveness target after the overlay path.
+- `utils/permissions.py`: if permission checks show up in profiling, a short-lived polling cache around repeated OS probes would be the next step, but only with profiling evidence.

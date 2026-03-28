@@ -61,6 +61,21 @@ def _install_fake_appkit(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "AppKit", types.SimpleNamespace(NSColor=_FakeNSColor))
 
 
+class _UnstableNSColor:
+    @staticmethod
+    def colorWithCalibratedWhite_alpha_(white: float, alpha: float):
+        return ("gray", white, alpha, object())
+
+    @staticmethod
+    def colorWithSRGBRed_green_blue_alpha_(
+        red: float,
+        green: float,
+        blue: float,
+        alpha: float,
+    ):
+        return ("rgb", red, green, blue, alpha, object())
+
+
 def _build_card() -> PermissionsCard:
     return PermissionsCard(
         widgets=PermissionCardWidgets(
@@ -109,6 +124,87 @@ def test_refresh_skips_duplicate_widget_updates(monkeypatch) -> None:
     assert card._widgets.access_action.title_calls == 1
     assert card._widgets.input_status.text_calls == 1
     assert card._widgets.input_action.title_calls == 1
+
+
+def test_refresh_skips_duplicate_updates_with_fresh_color_objects(monkeypatch) -> None:
+    import utils.permissions as permissions_mod
+
+    monkeypatch.setitem(
+        sys.modules,
+        "AppKit",
+        types.SimpleNamespace(NSColor=_UnstableNSColor),
+    )
+    monkeypatch.setattr(
+        permissions_mod,
+        "get_microphone_permission_state",
+        lambda: "authorized",
+    )
+    monkeypatch.setattr(
+        permissions_mod,
+        "has_accessibility_permission",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        permissions_mod,
+        "has_input_monitoring_permission",
+        lambda: False,
+    )
+
+    card = _build_card()
+
+    assert card.refresh() is False
+    assert card.refresh() is False
+
+    assert card._widgets.mic_status.color_calls == 1
+    assert card._widgets.access_status.color_calls == 1
+    assert card._widgets.input_status.color_calls == 1
+
+
+def test_refresh_calls_after_refresh_only_when_permissions_change(monkeypatch) -> None:
+    import utils.permissions as permissions_mod
+
+    _install_fake_appkit(monkeypatch)
+    states = {
+        "mic": "authorized",
+        "access": False,
+        "input": False,
+    }
+    monkeypatch.setattr(
+        permissions_mod,
+        "get_microphone_permission_state",
+        lambda: states["mic"],
+    )
+    monkeypatch.setattr(
+        permissions_mod,
+        "has_accessibility_permission",
+        lambda: states["access"],
+    )
+    monkeypatch.setattr(
+        permissions_mod,
+        "has_input_monitoring_permission",
+        lambda: states["input"],
+    )
+
+    refresh_calls: list[str] = []
+    card = PermissionsCard(
+        widgets=PermissionCardWidgets(
+            mic_status=_FakeField(),
+            mic_action=_FakeButton(),
+            input_status=_FakeField(),
+            input_action=_FakeButton(),
+            access_status=_FakeField(),
+            access_action=_FakeButton(),
+        ),
+        after_refresh=lambda: refresh_calls.append("refresh"),
+    )
+
+    assert card.refresh() is False
+    assert card.refresh() is False
+
+    states["access"] = True
+    assert card.refresh() is False
+
+    assert refresh_calls == ["refresh", "refresh"]
 
 
 def test_kick_auto_refresh_avoids_timer_when_permissions_are_already_granted(

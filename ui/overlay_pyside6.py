@@ -74,6 +74,7 @@ FPS = 60
 FRAME_MS = 1000 // FPS  # ~16ms
 FRAME_MS_ACTIVE = 1000 // 30  # 30 FPS für nicht-kritische Animationen
 FRAME_MS_FEEDBACK = 1000 // 20  # 20 FPS für kurze DONE/ERROR-Phase
+BAR_HEIGHT_UPDATE_EPSILON = 0.25  # Spare Repaints für subpixel-kleine Änderungen
 
 # =============================================================================
 # Farben
@@ -314,6 +315,8 @@ class PySide6OverlayWidget(QWidget):
         self._audio_level = 0.0
         self._anim = AnimationLogic()
         self._bar_heights = [float(BAR_MIN_HEIGHT)] * BAR_COUNT
+        self._painted_bar_heights = [float(BAR_MIN_HEIGHT)] * BAR_COUNT
+        self._last_painted_state = "IDLE"
         self._animation_start = time.perf_counter()
         self._mica_enabled = False
         self._fade_out_timer: QTimer | None = None
@@ -576,6 +579,8 @@ class PySide6OverlayWidget(QWidget):
         self._audio_level = 0.0
         self._anim = AnimationLogic()
         self._bar_heights = [float(BAR_MIN_HEIGHT)] * BAR_COUNT
+        self._painted_bar_heights = [float(BAR_MIN_HEIGHT)] * BAR_COUNT
+        self._last_painted_state = self._state
 
     # =========================================================================
     # Animation
@@ -610,6 +615,10 @@ class PySide6OverlayWidget(QWidget):
             return
 
         t = time.perf_counter() - self._animation_start
+        painted_bar_heights = getattr(self, "_painted_bar_heights", None)
+        if painted_bar_heights is None or len(painted_bar_heights) != BAR_COUNT:
+            painted_bar_heights = [float(BAR_MIN_HEIGHT)] * BAR_COUNT
+            self._painted_bar_heights = painted_bar_heights
 
         # Audio-Level an Animation-Logik übergeben
         self._anim.update_level(self._audio_level)
@@ -619,6 +628,7 @@ class PySide6OverlayWidget(QWidget):
             self._anim.update_agc()
 
         # Bar-Höhen berechnen
+        needs_repaint = getattr(self, "_last_painted_state", None) != self._state
         for i in range(BAR_COUNT):
             target_height = self._anim.calculate_bar_height(i, t, self._state)
 
@@ -628,8 +638,18 @@ class PySide6OverlayWidget(QWidget):
             else:
                 bar_alpha = 0.15
             self._bar_heights[i] += bar_alpha * (target_height - self._bar_heights[i])
+            if (
+                not needs_repaint
+                and abs(painted_bar_heights[i] - self._bar_heights[i])
+                >= BAR_HEIGHT_UPDATE_EPSILON
+            ):
+                needs_repaint = True
 
-        # Repaint anfordern
+        if not needs_repaint:
+            return
+
+        self._painted_bar_heights = list(self._bar_heights)
+        self._last_painted_state = self._state
         self.update()
 
     # =========================================================================
