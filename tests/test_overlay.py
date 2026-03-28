@@ -1,5 +1,11 @@
+import sys
+import types
+
 from ui.overlay import (
     OVERLAY_INTERIM_MAX_CHARS,
+    WAVE_ANIMATION_FPS,
+    WAVE_ANIMATION_FPS_ACTIVE,
+    WAVE_ANIMATION_FPS_FEEDBACK,
     WAVE_HEIGHT_UPDATE_EPSILON,
     OverlayController,
     SoundWaveView,
@@ -43,6 +49,25 @@ class _FakeBar:
     def setPosition_(self, position) -> None:
         self.last_position = position
         self.position_calls += 1
+
+
+def _install_fake_foundation(monkeypatch):
+    scheduled_calls: list[tuple[float, bool, object]] = []
+
+    class _FakeNSTimer:
+        @staticmethod
+        def scheduledTimerWithTimeInterval_repeats_block_(
+            interval: float, repeats: bool, block
+        ):
+            scheduled_calls.append((interval, repeats, block))
+            return object()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "Foundation",
+        types.SimpleNamespace(NSTimer=_FakeNSTimer),
+    )
+    return scheduled_calls
 
 
 def test_format_recording_interim_text_compacts_whitespace():
@@ -107,6 +132,39 @@ def test_sound_wave_view_only_repositions_when_center_changes():
     assert [bar.position_calls for bar in view.bars] == [2, 2]
     assert view.bars[0].last_position == (5.0, 22.0)
     assert view.bars[1].last_position == (15.0, 22.0)
+
+
+def test_sound_wave_view_start_level_timer_uses_recording_interval(monkeypatch):
+    scheduled_calls = _install_fake_foundation(monkeypatch)
+    view = SoundWaveView.__new__(SoundWaveView)
+    view._level_timer = None
+
+    SoundWaveView._start_level_timer(view)
+
+    assert scheduled_calls[0][0] == 1.0 / WAVE_ANIMATION_FPS
+    assert scheduled_calls[0][1] is True
+
+
+def test_sound_wave_view_start_processing_timer_uses_active_interval(monkeypatch):
+    scheduled_calls = _install_fake_foundation(monkeypatch)
+    view = SoundWaveView.__new__(SoundWaveView)
+    view._processing_timer = None
+
+    SoundWaveView._start_processing_timer(view)
+
+    assert scheduled_calls[0][0] == 1.0 / WAVE_ANIMATION_FPS_ACTIVE
+    assert scheduled_calls[0][1] is True
+
+
+def test_sound_wave_view_start_done_timer_uses_feedback_interval(monkeypatch):
+    scheduled_calls = _install_fake_foundation(monkeypatch)
+    view = SoundWaveView.__new__(SoundWaveView)
+    view._done_timer = None
+
+    SoundWaveView._start_done_timer(view)
+
+    assert scheduled_calls[0][0] == 1.0 / WAVE_ANIMATION_FPS_FEEDBACK
+    assert scheduled_calls[0][1] is True
 
 
 def test_overlay_controller_text_presentation_skips_duplicate_widget_updates():

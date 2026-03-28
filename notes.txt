@@ -1,84 +1,35 @@
 Performance work log - 2026-03-28
 
 Guardrails
-- Focused on UI-heavy paths outside the last two commits.
-- Left the recent work in `ui/welcome.py`, `ui/onboarding_wizard.py`, `ui/onboarding_wizard_windows.py`, `ui/overlay_pyside6.py` and `ui/overlay_windows.py` alone unless compatibility required it.
+- Focused on performance-heavy UI paths outside the last two commits unless compatibility required otherwise.
+- Left the recent work in `ui/welcome.py`, `ui/settings_windows.py`, `ui/onboarding_wizard.py`, `ui/onboarding_wizard_windows.py` and `ui/hotkey_card.py` alone for this pass.
 - Kept onboarding flows, hotkeys, permissions behavior and overlay UX functionally unchanged.
 
-Previously completed
-- `ui/welcome.py`: lazy-built heavy welcome/settings tabs.
-- `ui/overlay_windows.py`: skipped duplicate label and bar-color updates in the Windows Tk overlay.
-- `ui/onboarding_wizard.py` / `ui/onboarding_wizard_windows.py`: lazy-built onboarding steps/pages.
-- `ui/overlay_pyside6.py`: cached duplicate label font/style/text work in the Windows/PySide overlay.
+Recent passes kept
+- `ui/welcome.py`: lazy-built heavy welcome/settings tabs and deferred the transcripts panel/history load until the user actually opens it.
+- `ui/settings_windows.py`: lazy-built `Prompts`, `Vocabulary` and `Logs`; skipped no-op editor rewrites; cached the vocabulary file signature to avoid redundant reloads.
+- `ui/onboarding_wizard.py` / `ui/onboarding_wizard_windows.py` / `ui/hotkey_card.py`: deduped repeated label, button, preview, transcript and status updates to trim render churn during onboarding and hotkey capture.
+- `ui/overlay.py` / `ui/overlay_windows.py` / `ui/overlay_pyside6.py`: cached duplicate overlay text/color/geometry work and avoided redundant redraws or polling where possible.
+- `ui/permissions_card.py` / `ui/menubar.py`: skipped unchanged permission widget mutations, ended permission polling early once complete, and avoided duplicate menu bar title writes.
 
-Earlier pass: hotspots reviewed
-- `ui/overlay.py`: the macOS overlay still recreated text styling on state churn and pushed CALayer geometry updates every frame, including redundant position writes.
-- `ui/permissions_card.py`: short-lived permission polling kept reapplying identical field/button state and continued polling even after all permissions were already granted.
-- `ui/menubar.py`: recording updates rewrote the menu bar title even when the visible preview string had not changed.
+Current pass: macOS overlay timer throttling
+Hotspot reviewed
+- `ui/overlay.py`: listening, transcribing/refining and success feedback animations still scheduled timer-driven frames at 60 FPS even though those states do not need live audio-level responsiveness.
 
-Earlier pass: changes
-- `ui/overlay.py`: cached overlay text font/color/value state so repeated recording/listening/transcribing updates skip duplicate `setFont_`, `setTextColor_` and `setStringValue_` calls.
-- `ui/overlay.py`: cached static bar positions and skipped sub-pixel CALayer height writes to reduce geometry churn in the macOS animation path.
-- `ui/permissions_card.py`: cached status/button presentation per row so repeated refreshes avoid redundant widget mutations.
-- `ui/permissions_card.py`: stopped auto-refresh early once microphone, accessibility and input-monitoring permissions are all granted.
-- `ui/menubar.py`: cached the last visible menu bar title and skipped duplicate title writes, including truncated recording previews that resolve to the same visible text.
-- Added regression tests for the new overlay no-op guards, menu bar deduping and permission-card refresh/polling behavior.
+Changes
+- `ui/overlay.py`: kept recording at 60 FPS, but reduced timer-driven waiting/processing animation loops to 30 FPS and done-feedback frames to 20 FPS.
+- `tests/test_overlay.py`: added regression coverage to assert the actual scheduled timer intervals for recording, active and feedback animation timers.
 
-Earlier pass: why this helps
-- Lower steady-state macOS overlay cost during recording and animated states because the hot path now avoids repeated text styling work and unnecessary layer mutations.
-- Lower onboarding/settings permission overhead because the card stops mutating unchanged controls and quits polling as soon as there is nothing left to wait for.
-- Lower menu bar churn during recording because identical visible titles no longer trigger redundant AppKit updates.
+Why this helps
+- Lowers steady-state CPU wakeups and Core Animation work while the overlay is visible in non-recording states.
+- Preserves recording responsiveness because live audio visualization still uses the existing 60 FPS path.
 
-Earlier pass: validation
-- `pytest tests/test_overlay.py tests/test_menubar.py tests/test_permissions_card.py tests/test_onboarding.py tests/test_onboarding_wizard_flow.py -q`
-
-Latest pass: hotspots reviewed
-- `ui/settings_windows.py`: the Windows settings window still eagerly built the heavy `Prompts`, `Vocabulary` and `Logs` tabs even before the user visited them.
-- `ui/settings_windows.py`: vocabulary reloads still re-read/re-validated the same file on every revisit and rewrote large editor contents even when nothing changed.
-- `ui/welcome.py`: the macOS Logs tab still created the hidden transcripts panel and loaded transcript history immediately, even when the user only needed logs.
-
-Latest pass: changes
-- `ui/settings_windows.py`: lazy-built `Prompts`, `Vocabulary` and `Logs` so the settings window no longer pays those text-editor construction costs on open.
-- `ui/settings_windows.py`: added no-op `QPlainTextEdit` guards for prompt and vocabulary reloads so unchanged text no longer rebuilds the document.
-- `ui/settings_windows.py`: cached the vocabulary file signature and skipped repeated auto-reloads/validation while the underlying file is unchanged; the explicit `Load` action still forces a refresh.
-- `ui/welcome.py`: deferred transcripts controls and the first transcript-history load until the user actually switches from Logs to Transcripts.
-- Added regression tests for Windows lazy-tab initialization, vocabulary signature guards and the macOS on-demand transcripts build.
-
-Latest pass: why this helps
-- Faster perceived open time for the Windows settings window because the common path no longer constructs the heavy text tabs up front.
-- Lower repeated UI churn in prompt/vocabulary editors because identical content no longer triggers full `QPlainTextEdit` document resets.
-- Faster first entry into the macOS Logs tab because the hidden transcripts view is no longer built or populated until needed.
-
-Latest pass: validation
-- `pytest tests/test_settings_windows_load.py tests/test_settings_windows_logs.py tests/test_settings_windows_prompts.py tests/test_settings_ui.py -q`
-
-Current pass: hotspots reviewed
-- `ui/onboarding_wizard_windows.py`: the Windows onboarding test flow still pushed repeated `setText`/`setStyleSheet`/visibility changes during IPC polling and replayed full transcript documents for growing text.
-- `ui/onboarding_wizard_windows.py`: hotkey capture could emit the same preview string repeatedly while the pressed-key set had not changed.
-- `ui/onboarding_wizard.py`: the macOS onboarding render path still walked every step view and rewrote header/footer labels on every render even when the visible step and button state were unchanged.
-- `ui/hotkey_card.py`: shared hotkey field/status syncing still rewrote identical values during repeated render cycles.
-
-Current pass: changes
-- `ui/onboarding_wizard_windows.py`: added no-op guards for label text, styles, button enabled/visible state and summary/hotkey labels so repeated wizard updates skip identical Qt widget mutations.
-- `ui/onboarding_wizard_windows.py`: made test transcript updates incremental when the daemon extends existing text and skip duplicate document resets for unchanged content.
-- `ui/onboarding_wizard_windows.py`: deduped hotkey preview emissions so the UI no longer processes identical preview strings repeatedly during capture.
-- `ui/onboarding_wizard.py`: cached the currently visible step plus header/footer state so repeated renders only touch AppKit views when the visible output actually changes.
-- `ui/onboarding_wizard.py`: cached the test-hotkey help text so repeated renders on the dictation step stop rewriting the same label.
-- `ui/hotkey_card.py`: cached synced hotkey field values and status messages so repeated render-driven refreshes skip identical field and label writes.
-- Added regression tests for Windows transcript append/dedupe behavior, hotkey preview dedupe, macOS render no-op guards and shared hotkey-card sync/status dedupe.
-
-Current pass: why this helps
-- Lower onboarding CPU/UI churn during IPC test dictation because polling and transcript updates no longer trigger the same widget work over and over.
-- Faster perceived response in the Windows test step because growing transcripts append instead of rebuilding the full `QPlainTextEdit` document each time.
-- Lower macOS wizard redraw cost because unchanged renders stop iterating across all step views and stop reapplying identical button/title state.
-- Lower shared hotkey UI overhead because repeated env/status syncs now no-op when the visible values are already correct.
-
-Current pass: validation
-- `pytest tests/test_hotkey_card.py tests/test_onboarding.py tests/test_onboarding_windows.py tests/test_onboarding_wizard_flow.py -q`
-- `python -m py_compile ui/onboarding_wizard_windows.py ui/onboarding_wizard.py ui/hotkey_card.py tests/test_hotkey_card.py`
+Validation
+- `pytest tests/test_overlay.py tests/test_overlay_windows.py tests/test_overlay_pyside6.py tests/test_animation.py -q`
+- `python -m py_compile ui/overlay.py tests/test_overlay.py`
 
 Next worthwhile areas
-- `ui/onboarding_wizard_windows.py`: choice buttons still toggle all checked states on each selection; if the step sees more churn later, targeted no-op guards there are the next small win.
 - `ui/settings_windows.py`: logs and transcripts still replace the full viewer payload when content changes; incremental append/chunked updates remain the next large-file win.
 - `ui/welcome.py`: the logs view still swaps the full tailed text buffer on each file change; append-style updates would further reduce redraw cost on busy sessions.
-- `ui/overlay.py`: if runtime profiling still shows overlay cost, state-based FPS reduction for non-recording animations is the next targeted optimization.
+- `ui/onboarding_wizard_windows.py`: choice buttons still toggle all checked states on each selection if that step becomes hot again.
+- `ui/overlay.py`: if runtime profiling still shows recording-path cost, silence-aware throttling for bar updates would be the next targeted optimization.

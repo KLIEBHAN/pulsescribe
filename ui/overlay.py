@@ -57,9 +57,12 @@ WAVE_AGC_MIN_PEAK = 0.01  # Untergrenze gegen Überverstärkung von Stille
 WAVE_AGC_HEADROOM = 2.0  # Mehr Headroom = weniger Sensitivität/Clipping
 
 # Rendering/Animation:
-# Wir rendern die Welle unabhängig von Audio-Level-Updates, damit sie auch bei ~15Hz
-# RMS-Callbacks smooth "wandert" (ähnlicher zu iOS/Whisper Flow).
+# Wir rendern Recording weiter mit 60 FPS für direkte Audio-Rückmeldung.
+# Nicht-audiogetriebene Waiting/Processing-Animationen laufen mit reduzierter
+# Framerate, damit der Overlay-Hotpath im Leerlauf/Busy-Wait weniger CPU kostet.
 WAVE_ANIMATION_FPS = 60.0
+WAVE_ANIMATION_FPS_ACTIVE = 30.0
+WAVE_ANIMATION_FPS_FEEDBACK = 20.0
 
 # Sanfte, deterministische "Wander"-Modulation (traveling wave) statt Random-Jitter.
 WAVE_WANDER_AMOUNT = 0.22  # Relative Modulation (0..~0.35 sinnvoll)
@@ -98,6 +101,10 @@ def _clamp01(value: float) -> float:
 
 def _lerp(a: float, b: float, t: float) -> float:
     return a + (b - a) * t
+
+
+def _fps_to_interval_seconds(fps: float) -> float:
+    return 1.0 / max(float(fps), 1.0)
 
 
 def _gaussian(distance: float, sigma: float) -> float:
@@ -467,7 +474,7 @@ class SoundWaveView:
                 return
             self_obj._render_level_frame()
 
-        interval = 1.0 / max(WAVE_ANIMATION_FPS, 1.0)
+        interval = self._level_timer_interval()
         self._level_timer = NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
             interval, True, tick
         )
@@ -501,7 +508,7 @@ class SoundWaveView:
                 return
             self_obj._render_processing_frame()
 
-        interval = 1.0 / max(WAVE_ANIMATION_FPS, 1.0)
+        interval = self._active_timer_interval()
         self._processing_timer = NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
             interval, True, tick
         )
@@ -537,7 +544,7 @@ class SoundWaveView:
                 return
             self_obj._render_listening_frame()
 
-        interval = 1.0 / max(WAVE_ANIMATION_FPS, 1.0)
+        interval = self._active_timer_interval()
         self._listening_timer = NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
             interval, True, tick
         )
@@ -573,7 +580,7 @@ class SoundWaveView:
                 return
             self_obj._render_done_frame()
 
-        interval = 1.0 / max(WAVE_ANIMATION_FPS, 1.0)
+        interval = self._feedback_timer_interval()
         self._done_timer = NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
             interval, True, tick
         )
@@ -612,6 +619,15 @@ class SoundWaveView:
             self._set_bar_height(i, height)
 
         CATransaction.commit()
+
+    def _level_timer_interval(self) -> float:
+        return _fps_to_interval_seconds(WAVE_ANIMATION_FPS)
+
+    def _active_timer_interval(self) -> float:
+        return _fps_to_interval_seconds(WAVE_ANIMATION_FPS_ACTIVE)
+
+    def _feedback_timer_interval(self) -> float:
+        return _fps_to_interval_seconds(WAVE_ANIMATION_FPS_FEEDBACK)
 
     def _render_listening_frame(self) -> None:
         """Rendert einen Frame der Listening-Animation (via AnimationLogic)."""
