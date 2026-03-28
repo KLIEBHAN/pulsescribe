@@ -119,7 +119,8 @@ class MenuBarController:
         self._status_item = self._status_bar.statusItemWithLength_(
             NSVariableStatusItemLength
         )
-        self._status_item.setTitle_(MENUBAR_ICONS[AppState.IDLE])
+        self._current_title = MENUBAR_ICONS[AppState.IDLE]
+        self._status_item.setTitle_(self._current_title)
 
         # Dropdown Menü erstellen
         menu = NSMenu.alloc().init()
@@ -174,9 +175,15 @@ class MenuBarController:
         if state == AppState.RECORDING and text:
             # Kürzen für Menübar
             preview = text[:20] + "…" if len(text) > 20 else text
-            self._status_item.setTitle_(f"{icon} {preview}")
+            title = f"{icon} {preview}"
         else:
-            self._status_item.setTitle_(icon)
+            title = icon
+
+        if getattr(self, "_current_title", None) == title:
+            return
+
+        self._status_item.setTitle_(title)
+        self._current_title = title
 
     def set_welcome_callback(self, callback) -> None:
         """Setzt Callback für Settings-Menü-Item."""

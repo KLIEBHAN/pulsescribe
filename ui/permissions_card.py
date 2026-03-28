@@ -59,6 +59,8 @@ class PermissionsCard:
         self._after_refresh = after_refresh
         self._refresh_timer = None
         self._refresh_ticks = 0
+        self._status_cache: dict[str, tuple[str, object]] = {}
+        self._action_cache: dict[str, tuple[str, bool, bool]] = {}
 
     @classmethod
     def build(
@@ -185,7 +187,46 @@ class PermissionsCard:
 
         return cls(widgets=widgets, after_refresh=after_refresh)
 
-    def refresh(self) -> None:
+    def _set_status_if_changed(self, key: str, field, text: str, color) -> None:
+        if field is None:
+            return
+
+        next_state = (text, color)
+        if self._status_cache.get(key) == next_state:
+            return
+
+        try:
+            field.setStringValue_(text)
+            field.setTextColor_(color)
+            self._status_cache[key] = next_state
+        except Exception:
+            pass
+
+    def _set_action_if_changed(
+        self,
+        key: str,
+        btn,
+        *,
+        title: str,
+        enabled: bool,
+        hidden: bool,
+    ) -> None:
+        if btn is None:
+            return
+
+        next_state = (title, enabled, hidden)
+        if self._action_cache.get(key) == next_state:
+            return
+
+        try:
+            btn.setTitle_(title)
+            btn.setEnabled_(enabled)
+            btn.setHidden_(hidden)
+            self._action_cache[key] = next_state
+        except Exception:
+            pass
+
+    def refresh(self) -> bool:
         from AppKit import NSColor  # type: ignore[import-not-found]
         from utils.permissions import (
             get_microphone_permission_state,
@@ -198,54 +239,61 @@ class PermissionsCard:
         err_color = _get_color(255, 120, 120)
         neutral_color = NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6)
 
-        def set_status(field, text: str, color) -> None:
-            if field is None:
-                return
-            try:
-                field.setStringValue_(text)
-                field.setTextColor_(color)
-            except Exception:
-                pass
-
-        def set_action(btn, *, title: str, enabled: bool, hidden: bool) -> None:
-            if btn is None:
-                return
-            try:
-                btn.setTitle_(title)
-                btn.setEnabled_(enabled)
-                btn.setHidden_(hidden)
-            except Exception:
-                pass
-
         mic_state = get_microphone_permission_state()
         if mic_state == "authorized":
-            set_status(self._widgets.mic_status, "✅ Granted", ok_color)
-            set_action(
+            self._set_status_if_changed(
+                "mic_status",
+                self._widgets.mic_status,
+                "✅ Granted",
+                ok_color,
+            )
+            self._set_action_if_changed(
+                "mic_action",
                 self._widgets.mic_action, title="Open", enabled=False, hidden=True
             )
         elif mic_state == "not_determined":
-            set_status(self._widgets.mic_status, "⚠ Not requested yet", warn_color)
-            set_action(
+            self._set_status_if_changed(
+                "mic_status",
+                self._widgets.mic_status,
+                "⚠ Not requested yet",
+                warn_color,
+            )
+            self._set_action_if_changed(
+                "mic_action",
                 self._widgets.mic_action, title="Request", enabled=True, hidden=False
             )
         elif mic_state in ("denied", "restricted"):
-            set_status(self._widgets.mic_status, "❌ Denied", err_color)
-            set_action(
+            self._set_status_if_changed(
+                "mic_status",
+                self._widgets.mic_status,
+                "❌ Denied",
+                err_color,
+            )
+            self._set_action_if_changed(
+                "mic_action",
                 self._widgets.mic_action, title="Open", enabled=True, hidden=False
             )
         else:
-            set_status(self._widgets.mic_status, "Unknown", neutral_color)
-            set_action(
+            self._set_status_if_changed(
+                "mic_status",
+                self._widgets.mic_status,
+                "Unknown",
+                neutral_color,
+            )
+            self._set_action_if_changed(
+                "mic_action",
                 self._widgets.mic_action, title="Open", enabled=True, hidden=False
             )
 
         acc_ok = has_accessibility_permission()
-        set_status(
+        self._set_status_if_changed(
+            "access_status",
             self._widgets.access_status,
             "✅ Granted" if acc_ok else "⚠ Not granted",
             ok_color if acc_ok else warn_color,
         )
-        set_action(
+        self._set_action_if_changed(
+            "access_action",
             self._widgets.access_action,
             title="Open",
             enabled=not acc_ok,
@@ -253,12 +301,14 @@ class PermissionsCard:
         )
 
         input_ok = has_input_monitoring_permission()
-        set_status(
+        self._set_status_if_changed(
+            "input_status",
             self._widgets.input_status,
             "✅ Granted" if input_ok else "⚠ Not granted",
             ok_color if input_ok else warn_color,
         )
-        set_action(
+        self._set_action_if_changed(
+            "input_action",
             self._widgets.input_action,
             title="Open",
             enabled=not input_ok,
@@ -270,6 +320,8 @@ class PermissionsCard:
                 self._after_refresh()
             except Exception:
                 pass
+
+        return mic_state == "authorized" and acc_ok and input_ok
 
     def stop_auto_refresh(self) -> None:
         timer = self._refresh_timer
@@ -287,14 +339,17 @@ class PermissionsCard:
 
         self.stop_auto_refresh()
         self._refresh_ticks = max(1, int(ticks))
-        self.refresh()
+        if self.refresh():
+            self.stop_auto_refresh()
+            return
 
         def tick() -> None:
             if self._refresh_ticks <= 0:
                 self.stop_auto_refresh()
                 return
             self._refresh_ticks -= 1
-            self.refresh()
+            if self.refresh():
+                self.stop_auto_refresh()
 
         self._refresh_timer = NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
             1.0, True, lambda _timer: tick()

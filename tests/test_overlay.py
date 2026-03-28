@@ -1,4 +1,48 @@
-from ui.overlay import OVERLAY_INTERIM_MAX_CHARS, _format_recording_interim_text
+from ui.overlay import (
+    OVERLAY_INTERIM_MAX_CHARS,
+    WAVE_HEIGHT_UPDATE_EPSILON,
+    OverlayController,
+    SoundWaveView,
+    _format_recording_interim_text,
+)
+
+
+class _FakeTextField:
+    def __init__(self) -> None:
+        self.font_calls = 0
+        self.color_calls = 0
+        self.text_calls = 0
+        self.font = None
+        self.color = None
+        self.text = ""
+
+    def setFont_(self, font) -> None:
+        self.font = font
+        self.font_calls += 1
+
+    def setTextColor_(self, color) -> None:
+        self.color = color
+        self.color_calls += 1
+
+    def setStringValue_(self, text: str) -> None:
+        self.text = text
+        self.text_calls += 1
+
+
+class _FakeBar:
+    def __init__(self) -> None:
+        self.bounds_calls = 0
+        self.position_calls = 0
+        self.last_bounds = None
+        self.last_position = None
+
+    def setBounds_(self, bounds) -> None:
+        self.last_bounds = bounds
+        self.bounds_calls += 1
+
+    def setPosition_(self, position) -> None:
+        self.last_position = position
+        self.position_calls += 1
 
 
 def test_format_recording_interim_text_compacts_whitespace():
@@ -22,3 +66,82 @@ def test_format_recording_interim_text_uses_default_limit():
 
     assert formatted.startswith("...")
     assert len(formatted) == OVERLAY_INTERIM_MAX_CHARS
+
+
+def test_sound_wave_view_set_bar_height_skips_small_deltas():
+    view = SoundWaveView.__new__(SoundWaveView)
+    view.bars = [_FakeBar()]
+    view._last_heights = [10.0]
+
+    changed = SoundWaveView._set_bar_height(
+        view,
+        0,
+        10.0 + (WAVE_HEIGHT_UPDATE_EPSILON / 2),
+        rect_factory=lambda *args: args,
+    )
+
+    assert changed is False
+    assert view.bars[0].bounds_calls == 0
+
+    changed = SoundWaveView._set_bar_height(
+        view,
+        0,
+        10.0 + WAVE_HEIGHT_UPDATE_EPSILON + 0.1,
+        rect_factory=lambda *args: args,
+    )
+
+    assert changed is True
+    assert view.bars[0].bounds_calls == 1
+
+
+def test_sound_wave_view_only_repositions_when_center_changes():
+    view = SoundWaveView.__new__(SoundWaveView)
+    view.bars = [_FakeBar(), _FakeBar()]
+    view._bar_positions = [5.0, 15.0]
+    view._last_center_y = None
+
+    SoundWaveView._ensure_bar_positions(view, 20.0)
+    SoundWaveView._ensure_bar_positions(view, 20.0)
+    SoundWaveView._ensure_bar_positions(view, 22.0)
+
+    assert [bar.position_calls for bar in view.bars] == [2, 2]
+    assert view.bars[0].last_position == (5.0, 22.0)
+    assert view.bars[1].last_position == (15.0, 22.0)
+
+
+def test_overlay_controller_text_presentation_skips_duplicate_widget_updates():
+    controller = OverlayController.__new__(OverlayController)
+    controller._text_field = _FakeTextField()
+    controller._text_fonts = {
+        "default": "font-default",
+        "ghost": "font-ghost",
+    }
+    controller._text_colors = {
+        "muted": "color-muted",
+    }
+    controller._text_font_key = None
+    controller._text_color_key = None
+    controller._text_value = None
+
+    OverlayController._apply_text_presentation(
+        controller,
+        text="Listening ...",
+        font_key="default",
+        color_key="muted",
+    )
+    OverlayController._apply_text_presentation(
+        controller,
+        text="Listening ...",
+        font_key="default",
+        color_key="muted",
+    )
+    OverlayController._apply_text_presentation(
+        controller,
+        text="Listening again",
+        font_key="default",
+        color_key="muted",
+    )
+
+    assert controller._text_field.font_calls == 1
+    assert controller._text_field.color_calls == 1
+    assert controller._text_field.text_calls == 2

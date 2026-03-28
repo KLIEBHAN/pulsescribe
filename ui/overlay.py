@@ -81,6 +81,7 @@ WAVE_ENVELOPE_BLEND = 0.62  # 0..1 mix primary/secondary
 
 # Feedback-Anzeigedauer
 FEEDBACK_DISPLAY_DURATION = 0.8  # Sekunden für Done/Error-Anzeige
+WAVE_HEIGHT_UPDATE_EPSILON = 0.25  # Spare Layer-Updates für subpixel-kleine Änderungen
 
 # =============================================================================
 # Helpers
@@ -193,6 +194,11 @@ class SoundWaveView:
         self._height_factors = _build_height_factors()
         self._recording_durations = _build_recording_durations()
         self._last_heights = [WAVE_BAR_MIN_HEIGHT for _ in range(WAVE_BAR_COUNT)]
+        self._bar_positions = [
+            i * (WAVE_BAR_WIDTH + WAVE_BAR_GAP) + WAVE_BAR_WIDTH / 2
+            for i in range(WAVE_BAR_COUNT)
+        ]
+        self._last_center_y = frame.size.height / 2
         self._anim = AnimationLogic()  # Shared animation logic
 
         self._bar_center = (WAVE_BAR_COUNT - 1) / 2
@@ -243,6 +249,37 @@ class SoundWaveView:
     @property
     def view(self):
         return self._view
+
+    def _ensure_bar_positions(self, center_y: float) -> None:
+        if self._last_center_y == center_y:
+            return
+
+        for i, bar in enumerate(self.bars):
+            bar.setPosition_((self._bar_positions[i], center_y))
+        self._last_center_y = center_y
+
+    def _set_bar_height(
+        self,
+        index: int,
+        height: float,
+        *,
+        rect_factory=None,
+        force: bool = False,
+    ) -> bool:
+        if (
+            not force
+            and abs(self._last_heights[index] - height) < WAVE_HEIGHT_UPDATE_EPSILON
+        ):
+            return False
+
+        if rect_factory is None:
+            from AppKit import NSMakeRect  # type: ignore[import-not-found]
+
+            rect_factory = NSMakeRect
+
+        self.bars[index].setBounds_(rect_factory(0, 0, WAVE_BAR_WIDTH, height))
+        self._last_heights[index] = height
+        return True
 
     def set_bar_color(self, ns_color) -> None:
         """Setzt die Farbe aller Balken."""
@@ -401,11 +438,12 @@ class SoundWaveView:
         self._stop_done_timer()
         self.animations_running = False
         self.current_animation = None
-        from AppKit import NSMakeRect  # type: ignore[import-not-found]
+        center_y = self._view.frame().size.height / 2
+        self._ensure_bar_positions(center_y)
 
-        for bar in self.bars:
+        for i, bar in enumerate(self.bars):
             bar.removeAllAnimations()
-            bar.setBounds_(NSMakeRect(0, 0, WAVE_BAR_WIDTH, WAVE_BAR_MIN_HEIGHT))
+            self._set_bar_height(i, WAVE_BAR_MIN_HEIGHT, force=True)
         self._last_heights = [WAVE_BAR_MIN_HEIGHT for _ in range(WAVE_BAR_COUNT)]
         self._agc_peak = WAVE_AGC_MIN_PEAK
         self._smoothed_level = 0.0
@@ -553,7 +591,6 @@ class SoundWaveView:
 
     def _render_done_frame(self) -> None:
         """Rendert einen Frame der Done-Animation (via AnimationLogic)."""
-        from AppKit import NSMakeRect  # type: ignore[import-not-found]
         from Quartz import CATransaction  # type: ignore[import-not-found]
 
         if self._done_start_time is None:
@@ -565,21 +602,19 @@ class SoundWaveView:
         CATransaction.setDisableActions_(True)
 
         center_y = self._view.frame().size.height / 2
+        self._ensure_bar_positions(center_y)
         height_range = WAVE_BAR_MAX_HEIGHT - WAVE_BAR_MIN_HEIGHT
 
         for i, bar in enumerate(self.bars):
             normalized = self._anim.calculate_bar_normalized(i, t, "DONE")
             height = WAVE_BAR_MIN_HEIGHT + height_range * normalized
 
-            bar.setBounds_(NSMakeRect(0, 0, WAVE_BAR_WIDTH, height))
-            x = i * (WAVE_BAR_WIDTH + WAVE_BAR_GAP)
-            bar.setPosition_((x + WAVE_BAR_WIDTH / 2, center_y))
+            self._set_bar_height(i, height)
 
         CATransaction.commit()
 
     def _render_listening_frame(self) -> None:
         """Rendert einen Frame der Listening-Animation (via AnimationLogic)."""
-        from AppKit import NSMakeRect  # type: ignore[import-not-found]
         from Quartz import CATransaction  # type: ignore[import-not-found]
 
         if self._listening_start_time is None:
@@ -591,21 +626,19 @@ class SoundWaveView:
         CATransaction.setDisableActions_(True)
 
         center_y = self._view.frame().size.height / 2
+        self._ensure_bar_positions(center_y)
         height_range = WAVE_BAR_MAX_HEIGHT - WAVE_BAR_MIN_HEIGHT
 
-        for i, bar in enumerate(self.bars):
+        for i, _bar in enumerate(self.bars):
             normalized = self._anim.calculate_bar_normalized(i, t, "LISTENING")
             height = WAVE_BAR_MIN_HEIGHT + height_range * normalized
 
-            bar.setBounds_(NSMakeRect(0, 0, WAVE_BAR_WIDTH, height))
-            x = i * (WAVE_BAR_WIDTH + WAVE_BAR_GAP)
-            bar.setPosition_((x + WAVE_BAR_WIDTH / 2, center_y))
+            self._set_bar_height(i, height)
 
         CATransaction.commit()
 
     def _render_processing_frame(self) -> None:
         """Rendert einen Frame der Wanderpuls-Animation (via AnimationLogic)."""
-        from AppKit import NSMakeRect  # type: ignore[import-not-found]
         from Quartz import CATransaction  # type: ignore[import-not-found]
 
         if self._processing_start_time is None:
@@ -617,21 +650,19 @@ class SoundWaveView:
         CATransaction.setDisableActions_(True)
 
         center_y = self._view.frame().size.height / 2
+        self._ensure_bar_positions(center_y)
         height_range = WAVE_BAR_MAX_HEIGHT - WAVE_BAR_MIN_HEIGHT
 
-        for i, bar in enumerate(self.bars):
+        for i, _bar in enumerate(self.bars):
             normalized = self._anim.calculate_bar_normalized(i, t, "TRANSCRIBING")
             height = WAVE_BAR_MIN_HEIGHT + height_range * normalized
 
-            bar.setBounds_(NSMakeRect(0, 0, WAVE_BAR_WIDTH, height))
-            x = i * (WAVE_BAR_WIDTH + WAVE_BAR_GAP)
-            bar.setPosition_((x + WAVE_BAR_WIDTH / 2, center_y))
+            self._set_bar_height(i, height)
 
         CATransaction.commit()
 
     def _render_level_frame(self) -> None:
         """Rendert einen Frame der Level-Visualisierung (läuft im Main-Thread via NSTimer)."""
-        from AppKit import NSMakeRect  # type: ignore[import-not-found]
         from Quartz import CATransaction  # type: ignore[import-not-found]
 
         # Ziel-Level sanft verfolgen (reduziert Zittern durch RMS-Fluktuationen).
@@ -673,7 +704,7 @@ class SoundWaveView:
         # aber skaliert mit Level, damit es ruhig bleibt.
         wander_strength = WAVE_WANDER_AMOUNT * _lerp(0.20, 1.0, level)
 
-        for i, bar in enumerate(self.bars):
+        for i, _bar in enumerate(self.bars):
             travel_primary = math.sin(phase_primary + self._wander_offset_primary[i])
             travel_secondary = math.sin(
                 phase_secondary + self._wander_offset_secondary[i]
@@ -699,8 +730,7 @@ class SoundWaveView:
             )
             smoothed_height = _lerp(prev_height, height, alpha)
 
-            bar.setBounds_(NSMakeRect(0, 0, WAVE_BAR_WIDTH, smoothed_height))
-            self._last_heights[i] = smoothed_height
+            self._set_bar_height(i, smoothed_height)
 
         CATransaction.commit()
 
@@ -718,7 +748,11 @@ class OverlayController:
             NSBackingStoreBuffered,
             NSColor,
             NSFont,
+            NSFontItalicTrait,
+            NSFontManager,
             NSFontWeightSemibold,
+            NSFontWeightLight,
+            NSFontWeightMedium,
             NSMakeRect,
             NSScreen,
             NSTextField,
@@ -806,21 +840,65 @@ class OverlayController:
         self._current_state = AppState.IDLE
         self._state_timestamp = 0.0
         self._feedback_timer = None
+        ghost_font = NSFont.systemFontOfSize_weight_(OVERLAY_FONT_SIZE, NSFontWeightLight)
+        ghost_italic_font = NSFontManager.sharedFontManager().convertFont_toHaveTrait_(
+            ghost_font, NSFontItalicTrait
+        )
+        self._text_fonts = {
+            "default": NSFont.systemFontOfSize_weight_(
+                OVERLAY_FONT_SIZE, NSFontWeightSemibold
+            ),
+            "medium": NSFont.systemFontOfSize_weight_(
+                OVERLAY_FONT_SIZE, NSFontWeightMedium
+            ),
+            "ghost": ghost_italic_font or ghost_font,
+        }
+        self._text_colors = {
+            "default": NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.95),
+            "muted": NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6),
+            "recording": NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.9),
+            "ghost": NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.5),
+            "error": _get_overlay_color(255, 71, 87),
+        }
+        self._text_font_key = "default"
+        self._text_color_key = "default"
+        self._text_value = ""
+
+    def _set_text_font(self, font_key: str) -> None:
+        if self._text_font_key == font_key:
+            return
+        self._text_field.setFont_(self._text_fonts[font_key])
+        self._text_font_key = font_key
+
+    def _set_text_color(self, color_key: str) -> None:
+        if self._text_color_key == color_key:
+            return
+        self._text_field.setTextColor_(self._text_colors[color_key])
+        self._text_color_key = color_key
+
+    def _set_text_value(self, text: str) -> None:
+        if self._text_value == text:
+            return
+        self._text_field.setStringValue_(text)
+        self._text_value = text
+
+    def _apply_text_presentation(
+        self,
+        *,
+        text: str,
+        font_key: str | None = None,
+        color_key: str | None = None,
+    ) -> None:
+        if font_key is not None:
+            self._set_text_font(font_key)
+        if color_key is not None:
+            self._set_text_color(color_key)
+        self._set_text_value(text)
 
     def update_state(self, state: AppState, text: str | None = None) -> None:
         """Aktualisiert Overlay basierend auf State."""
         if not self.window:
             return
-
-        from AppKit import (  # type: ignore[import-not-found]
-            NSColor,
-            NSFont,
-            NSFontWeightMedium,
-            NSFontWeightSemibold,
-            NSFontWeightLight,
-            NSFontManager,
-            NSFontItalicTrait,
-        )
 
         self._current_state = state
 
@@ -833,12 +911,10 @@ class OverlayController:
 
         if state == AppState.LISTENING:
             self._wave_view.start_listening_animation()
-            self._text_field.setStringValue_("Listening ...")
-            self._text_field.setFont_(
-                NSFont.systemFontOfSize_weight_(OVERLAY_FONT_SIZE, NSFontWeightMedium)
-            )
-            self._text_field.setTextColor_(
-                NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6)
+            self._apply_text_presentation(
+                text="Listening ...",
+                font_key="medium",
+                color_key="muted",
             )
             self._fade_in()
 
@@ -846,58 +922,43 @@ class OverlayController:
             if text:
                 self._wave_view.start_recording_animation()
                 display_text = _format_recording_interim_text(text)
-
-                # Ghost-Look: Light + Italic + Reduced Opacity
-                font = NSFont.systemFontOfSize_weight_(
-                    OVERLAY_FONT_SIZE, NSFontWeightLight
-                )
-                italic_font = (
-                    NSFontManager.sharedFontManager().convertFont_toHaveTrait_(
-                        font, NSFontItalicTrait
-                    )
-                )
-                self._text_field.setFont_(italic_font)
-
-                self._text_field.setTextColor_(
-                    NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.5)
+                self._apply_text_presentation(
+                    text=display_text,
+                    font_key="ghost",
+                    color_key="ghost",
                 )
             else:
                 # Fallback falls Recording ohne Text (sollte eigentlich Visualisierung haben)
                 self._wave_view.start_recording_animation()
-                display_text = "Recording ..."
-                self._text_field.setFont_(
-                    NSFont.systemFontOfSize_weight_(
-                        OVERLAY_FONT_SIZE, NSFontWeightMedium
-                    )
+                self._apply_text_presentation(
+                    text="Recording ...",
+                    font_key="medium",
+                    color_key="recording",
                 )
-                self._text_field.setTextColor_(
-                    NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.9)
-                )
-            self._text_field.setStringValue_(display_text)
             self._fade_in()
 
         elif state == AppState.TRANSCRIBING:
             self._wave_view.start_transcribing_animation()
-            self._text_field.setStringValue_("Transcribing ...")
-            self._text_field.setTextColor_(
-                NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6)
+            self._apply_text_presentation(
+                text="Transcribing ...",
+                color_key="muted",
             )
             self._fade_in()
 
         elif state == AppState.REFINING:
             self._wave_view.start_refining_animation()
-            self._text_field.setStringValue_("Refining ...")
-            self._text_field.setTextColor_(
-                NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6)
+            self._apply_text_presentation(
+                text="Refining ...",
+                color_key="muted",
             )
             self._fade_in()
 
         elif state == AppState.LOADING:
             self._wave_view.start_loading_animation()
             loading_text = text or "Loading model..."
-            self._text_field.setStringValue_(loading_text)
-            self._text_field.setTextColor_(
-                NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6)
+            self._apply_text_presentation(
+                text=loading_text,
+                color_key="muted",
             )
             self._fade_in()
 
@@ -910,22 +971,20 @@ class OverlayController:
             else:
                 display_text = "Done"
 
-            self._text_field.setStringValue_(display_text)
-            self._text_field.setTextColor_(
-                NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.95)
-            )
-            self._text_field.setFont_(
-                NSFont.systemFontOfSize_weight_(OVERLAY_FONT_SIZE, NSFontWeightSemibold)
+            self._apply_text_presentation(
+                text=display_text,
+                font_key="default",
+                color_key="default",
             )
             self._fade_in()
             self._start_fade_out_timer()
 
         elif state == AppState.ERROR:
             self._wave_view.start_error_animation()
-            self._text_field.setStringValue_("Error")
-            self._text_field.setTextColor_(_get_overlay_color(255, 71, 87))
-            self._text_field.setFont_(
-                NSFont.systemFontOfSize_weight_(OVERLAY_FONT_SIZE, NSFontWeightSemibold)
+            self._apply_text_presentation(
+                text="Error",
+                font_key="default",
+                color_key="error",
             )
             self._fade_in()
             self._start_fade_out_timer()

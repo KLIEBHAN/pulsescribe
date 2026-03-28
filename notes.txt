@@ -2,40 +2,37 @@ Performance work log - 2026-03-28
 
 Guardrails
 - Focused on UI-heavy paths outside the last two commits.
-- Left the recent work in `ui/welcome.py`, `ui/settings_windows.py`, `utils/preferences.py` and `ui/overlay_windows.py` alone unless compatibility required it.
-- Kept onboarding flows, hotkey handling and overlay behavior functionally unchanged.
+- Left the recent work in `ui/welcome.py`, `ui/onboarding_wizard.py`, `ui/onboarding_wizard_windows.py`, `ui/overlay_pyside6.py` and `ui/overlay_windows.py` alone unless compatibility required it.
+- Kept onboarding flows, hotkeys, permissions behavior and overlay UX functionally unchanged.
 
-Previous pass already completed
-- `ui/welcome.py`: lazy tab building for heavy macOS settings tabs.
-- `ui/welcome.py`: prevented Logs auto-refresh from starting before the Logs UI exists.
+Already completed before this pass
+- `ui/welcome.py`: lazy-built heavy welcome/settings tabs.
 - `ui/overlay_windows.py`: skipped duplicate label and bar-color updates in the Windows Tk overlay.
+- `ui/onboarding_wizard.py` / `ui/onboarding_wizard_windows.py`: lazy-built onboarding steps/pages.
+- `ui/overlay_pyside6.py`: cached duplicate label font/style/text work in the Windows/PySide overlay.
 
 Hotspots reviewed in this pass
-- `ui/onboarding_wizard.py`: macOS onboarding eagerly built every step at window creation, including permissions, hotkey, transcript and summary UI.
-- `ui/onboarding_wizard_windows.py`: Windows onboarding built every `QStackedWidget` page up front even though only one page is visible.
-- `ui/overlay_pyside6.py`: active recording/interim updates recreated fonts and reapplied identical label styles/text in a high-frequency path.
-
-Current weaknesses identified
-- Unnecessary first-open work in both onboarding flows from constructing hidden step trees before the user reaches them.
-- Hidden-control mutations in the macOS onboarding hotkey path depended on eager build and would become fragile once step construction was deferred.
-- Repeated `QLabel.setFont(...)`, `QLabel.setStyleSheet(...)` and `QLabel.setText(...)` calls in the PySide overlay added avoidable churn during interim updates.
+- `ui/overlay.py`: the macOS overlay still recreated text styling on state churn and pushed CALayer geometry updates every frame, including redundant position writes.
+- `ui/permissions_card.py`: short-lived permission polling kept reapplying identical field/button state and continued polling even after all permissions were already granted.
+- `ui/menubar.py`: recording updates rewrote the menu bar title even when the visible preview string had not changed.
 
 Changes in this pass
-- Added lazy step building to `ui/onboarding_wizard.py` so only the active macOS onboarding step is created initially; other steps materialize on first navigation.
-- Added lazy page building to `ui/onboarding_wizard_windows.py` so the `QStackedWidget` only receives a page when that step is first shown.
-- Kept macOS hotkey actions safe by forcing the Hotkey step to build before presets or recording actions mutate hidden controls.
-- Cached PySide6 overlay label font/style/text state so duplicate interim updates skip redundant widget mutations.
-- Added regression tests for lazy onboarding step/page creation and the new PySide overlay no-op guards.
+- `ui/overlay.py`: cached overlay text font/color/value state so repeated recording/listening/transcribing updates skip duplicate `setFont_`, `setTextColor_` and `setStringValue_` calls.
+- `ui/overlay.py`: cached static bar positions and skipped sub-pixel CALayer height writes to reduce geometry churn in the macOS animation path.
+- `ui/permissions_card.py`: cached status/button presentation per row so repeated refreshes avoid redundant widget mutations.
+- `ui/permissions_card.py`: stopped auto-refresh early once microphone, accessibility and input-monitoring permissions are all granted.
+- `ui/menubar.py`: cached the last visible menu bar title and skipped duplicate title writes, including truncated recording previews that resolve to the same visible text.
+- Added regression tests for the new overlay no-op guards, menu bar deduping and permission-card refresh/polling behavior.
 
 Why this helps
-- Faster onboarding open time on both platforms because hidden cards, transcript widgets and summary controls no longer build eagerly.
-- Lower initial UI memory/setup cost when resuming the wizard on an early step.
-- Lower steady-state overlay overhead on Windows/PySide during recording because label styling work is only done when something actually changes.
+- Lower steady-state macOS overlay cost during recording and animated states because the hot path now avoids repeated text styling work and unnecessary layer mutations.
+- Lower onboarding/settings permission overhead because the card stops mutating unchanged controls and quits polling as soon as there is nothing left to wait for.
+- Lower menu bar churn during recording because identical visible titles no longer trigger redundant AppKit updates.
 
 Validation
-- `pytest tests/test_onboarding_wizard_flow.py tests/test_onboarding.py tests/test_onboarding_windows.py tests/test_overlay.py tests/test_overlay_pyside6.py -q`
+- `pytest tests/test_overlay.py tests/test_menubar.py tests/test_permissions_card.py tests/test_onboarding.py tests/test_onboarding_wizard_flow.py -q`
 
 Next worthwhile areas
-- `ui/overlay.py`: macOS overlay bars still update CALayer geometry every frame and remain the next best runtime optimization target.
-- `ui/welcome.py`: the Logs/Transcripts area still does its data load when the tab is first built; segment-level lazy loading would trim that path further.
-- `ui/onboarding_wizard.py` and `ui/onboarding_wizard_windows.py`: if profiling still shows first-open cost, the heavy steps themselves can be split into smaller lazy sections.
+- `ui/settings_windows.py`: logs/transcripts/vocabulary still swap full `QPlainTextEdit` payloads in one shot; chunked or view-scoped updates would reduce large-text UI stalls.
+- `ui/welcome.py`: the Logs/Transcripts area still pays its first-load cost when the tab is created; interaction-level lazy sections are the next easy win there.
+- `ui/overlay.py`: if runtime profiling still shows overlay cost, state-based FPS reduction for non-recording animations is the next targeted optimization.
