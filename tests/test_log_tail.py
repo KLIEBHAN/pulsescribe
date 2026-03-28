@@ -4,8 +4,11 @@ from utils.log_tail import (
     clamp_scroll_value,
     get_file_signature,
     is_near_bottom,
+    merge_tail_lines,
+    merge_tail_text,
     read_file_tail_lines,
     read_file_tail_text,
+    read_file_text_from_offset,
     should_auto_refresh_logs,
 )
 
@@ -69,6 +72,42 @@ def test_read_file_tail_lines_drops_partial_first_line_after_truncation(
 def test_read_file_tail_lines_handles_missing_file(tmp_path: Path) -> None:
     missing = tmp_path / "missing.log"
     assert read_file_tail_lines(missing, max_lines=10) == ""
+
+
+def test_read_file_text_from_offset_returns_appended_region(tmp_path: Path) -> None:
+    file_path = tmp_path / "append.log"
+    file_path.write_text("line-1\nline-2\nline-3", encoding="utf-8")
+
+    assert (
+        read_file_text_from_offset(file_path, start_offset=len("line-1\nline-2\n"))
+        == "line-3"
+    )
+
+
+def test_read_file_text_from_offset_respects_max_bytes_budget(tmp_path: Path) -> None:
+    file_path = tmp_path / "append-budget.log"
+    file_path.write_text("0123456789", encoding="utf-8")
+
+    assert read_file_text_from_offset(file_path, start_offset=2, max_bytes=4) == ""
+
+
+def test_merge_tail_lines_keeps_last_visible_lines() -> None:
+    assert (
+        merge_tail_lines("line-1\nline-2", "\nline-3\nline-4", max_lines=3)
+        == "line-2\nline-3\nline-4"
+    )
+
+
+def test_merge_tail_text_preserves_single_truncation_prefix() -> None:
+    merged = merge_tail_text(
+        "... (truncated)\n\nolder tail",
+        "\nnew tail",
+        max_chars=80,
+    )
+
+    assert merged.startswith("... (truncated)\n\n")
+    assert merged.count("... (truncated)\n\n") == 1
+    assert merged.endswith("older tail\nnew tail")
 
 
 def test_get_file_signature_returns_none_for_missing_file(tmp_path: Path) -> None:

@@ -13,7 +13,9 @@ from utils.hotkey_recording import HotkeyRecorder
 from utils.local_backend import normalize_local_backend, should_remove_local_backend_env
 from utils.log_tail import (
     get_file_signature,
+    merge_tail_text,
     read_file_tail_text,
+    read_file_text_from_offset,
     should_auto_refresh_logs,
 )
 from utils.presets import LOCAL_PRESET_BASE, LOCAL_PRESETS, LOCAL_PRESET_OPTIONS
@@ -73,6 +75,9 @@ API_KEY_PROVIDERS = [
 API_KEY_CARD_TOP_INSET = 70
 API_KEY_CARD_BOTTOM_INSET = 54
 API_KEY_ROW_SPACING = 54
+WELCOME_LOG_MAX_CHARS = 15_000
+INCREMENTAL_LOG_APPEND_MAX_BYTES = 64_000
+LOG_TRUNCATED_PREFIX = "... (truncated)\n\n"
 
 
 def _bool_override_from_env(*keys: str) -> str:
@@ -2648,7 +2653,7 @@ class WelcomeController:
         except Exception:
             return False
 
-    def _get_logs_text(self, max_chars: int = 15000) -> str:
+    def _get_logs_text(self, max_chars: int = WELCOME_LOG_MAX_CHARS) -> str:
         """Liest einen Ausschnitt der aktuellen Log-Datei."""
         try:
             if not LOG_FILE.exists():
@@ -2657,6 +2662,7 @@ class WelcomeController:
                 LOG_FILE,
                 max_chars=max_chars,
                 errors="ignore",
+                truncated_prefix=LOG_TRUNCATED_PREFIX,
             )
         except Exception as e:
             return f"Could not read logs: {e}"
@@ -2697,6 +2703,78 @@ class WelcomeController:
         except Exception:
             pass
 
+    def _try_append_logs_delta(
+        self,
+        signature,
+        *,
+        scroll_to_bottom: bool,
+    ) -> bool:
+        """Append only the newly written log bytes when the visible tail stays append-only."""
+        if self._logs_text_view is None or signature is None or self._last_logs_text is None:
+            return False
+
+        previous_signature = getattr(self, "_last_logs_signature", None)
+        if previous_signature is None:
+            return False
+
+        previous_size = int(previous_signature[1])
+        current_size = int(signature[1])
+        if current_size <= previous_size:
+            return False
+
+        if current_size - previous_size > INCREMENTAL_LOG_APPEND_MAX_BYTES:
+            return False
+
+        if not (scroll_to_bottom or self._is_logs_near_bottom()):
+            return False
+
+        appended_text = read_file_text_from_offset(
+            LOG_FILE,
+            start_offset=previous_size,
+            errors="ignore",
+            max_bytes=INCREMENTAL_LOG_APPEND_MAX_BYTES,
+        )
+        if not appended_text:
+            return False
+
+        previous_text = self._last_logs_text
+        merged_text = merge_tail_text(
+            previous_text,
+            appended_text,
+            max_chars=WELCOME_LOG_MAX_CHARS,
+            truncated_prefix=LOG_TRUNCATED_PREFIX,
+        )
+        if merged_text == previous_text:
+            self._last_logs_signature = signature
+            if scroll_to_bottom:
+                self._scroll_logs_to_bottom()
+            return True
+
+        if not merged_text.startswith(previous_text):
+            return False
+
+        appended_visible_text = merged_text[len(previous_text) :]
+        if not appended_visible_text:
+            self._last_logs_signature = signature
+            return True
+
+        try:
+            text_storage = self._logs_text_view.textStorage()
+            if text_storage is None:
+                return False
+            text_storage.beginEditing()
+            try:
+                text_storage.mutableString().appendString_(appended_visible_text)
+            finally:
+                text_storage.endEditing()
+        except Exception:
+            return False
+
+        self._last_logs_text = merged_text
+        self._last_logs_signature = signature
+        self._scroll_logs_to_bottom()
+        return True
+
     def _refresh_logs(self, *, scroll_to_bottom: bool = True) -> None:
         """Aktualisiert die Log-Anzeige mit scroll-schonendem Verhalten."""
         if self._logs_text_view:
@@ -2704,6 +2782,12 @@ class WelcomeController:
                 signature = get_file_signature(LOG_FILE)
                 previous_signature = getattr(self, "_last_logs_signature", None)
                 if signature is not None and signature == previous_signature:
+                    return
+
+                if self._try_append_logs_delta(
+                    signature,
+                    scroll_to_bottom=scroll_to_bottom,
+                ):
                     return
 
                 log_text = self._get_logs_text()

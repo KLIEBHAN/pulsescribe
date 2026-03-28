@@ -955,6 +955,30 @@ class TestWelcomeTranscriptsRefreshBehavior:
 
 
 class TestWelcomeLogsRefreshBehavior:
+    def test_refresh_logs_uses_incremental_append_when_possible(self, monkeypatch):
+        import ui.welcome as welcome_mod
+
+        ctrl = WelcomeController.__new__(WelcomeController)
+        ctrl._logs_text_view = _FakeTranscriptsTextView("cached logs", doc_height=600)
+        ctrl._logs_scroll_view = _FakeTranscriptsScrollView(
+            _FakeClipView(y=100, height=240)
+        )
+        ctrl._last_logs_text = "cached logs"
+        ctrl._last_logs_signature = (1, 2)
+        ctrl._get_logs_text = MagicMock(
+            side_effect=AssertionError("full log reload should be skipped")
+        )
+        ctrl._try_append_logs_delta = MagicMock(return_value=True)
+
+        monkeypatch.setattr(welcome_mod, "get_file_signature", lambda _path: (3, 4))
+
+        ctrl._refresh_logs(scroll_to_bottom=False)
+
+        ctrl._try_append_logs_delta.assert_called_once_with(
+            (3, 4), scroll_to_bottom=False
+        )
+        ctrl._get_logs_text.assert_not_called()
+
     def test_refresh_logs_skips_file_read_when_signature_unchanged(self, monkeypatch):
         import ui.welcome as welcome_mod
 

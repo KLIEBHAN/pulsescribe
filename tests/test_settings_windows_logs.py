@@ -52,6 +52,45 @@ class _FakeStack:
         return self._current_index
 
 
+class _FakeScrollBar:
+    def __init__(self, value: int = 100, maximum: int = 100):
+        self._value = value
+        self._maximum = maximum
+
+    def value(self) -> int:
+        return self._value
+
+    def maximum(self) -> int:
+        return self._maximum
+
+    def setValue(self, value: int) -> None:
+        self._value = value
+
+
+class _FakeCursor:
+    def __init__(self, viewer):
+        self._viewer = viewer
+        self.moved_to = None
+
+    def movePosition(self, operation) -> None:
+        self.moved_to = operation
+
+    def insertText(self, text: str) -> None:
+        self._viewer.text += text
+
+
+class _FakeLogsViewer:
+    def __init__(self, text: str, *, scroll_value: int = 100, scroll_maximum: int = 100):
+        self.text = text
+        self._scrollbar = _FakeScrollBar(scroll_value, scroll_maximum)
+
+    def verticalScrollBar(self):
+        return self._scrollbar
+
+    def textCursor(self):
+        return _FakeCursor(self)
+
+
 def test_open_logs_folder_selects_log_file_when_present(tmp_path, monkeypatch):
     import config
     import subprocess
@@ -160,6 +199,56 @@ def test_refresh_transcripts_updates_when_signature_changes(tmp_path, monkeypatc
     assert captured_text == ["formatted-transcripts"]
     assert window._last_transcripts_signature == (99, 42)
     assert window._transcripts_status.text == "1 entries"
+
+
+def test_try_append_logs_delta_appends_only_new_text(tmp_path, monkeypatch):
+    import config
+
+    initial_text = "line-1"
+    full_text = "line-1\nline-2"
+    log_file = tmp_path / "pulsescribe.log"
+    log_file.write_text(full_text, encoding="utf-8")
+    monkeypatch.setattr(config, "LOG_FILE", log_file)
+
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._logs_viewer = _FakeLogsViewer(initial_text)
+    window._last_logs_text = initial_text
+    window._last_logs_signature = (1, len(initial_text))
+
+    assert window._try_append_logs_delta((2, len(full_text))) is True
+    assert window._logs_viewer.text == full_text
+    assert window._last_logs_text == full_text
+    assert window._last_logs_signature == (2, len(full_text))
+
+
+def test_refresh_logs_skips_full_tail_read_when_incremental_append_succeeds(
+    tmp_path, monkeypatch
+):
+    import config
+
+    full_text = "line-1\nline-2"
+    log_file = tmp_path / "pulsescribe.log"
+    log_file.write_text(full_text, encoding="utf-8")
+    monkeypatch.setattr(config, "LOG_FILE", log_file)
+    monkeypatch.setattr(settings_mod, "get_file_signature", lambda _path: (9, len(full_text)))
+    monkeypatch.setattr(
+        settings_mod,
+        "read_file_tail_lines",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("full tail read should be skipped")
+        ),
+    )
+
+    append_calls: list[tuple[int, int]] = []
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._logs_viewer = object()
+    window._last_logs_text = "line-1"
+    window._last_logs_signature = (1, len("line-1"))
+    window._try_append_logs_delta = lambda signature: append_calls.append(signature) or True
+
+    window._refresh_logs()
+
+    assert append_calls == [(9, len(full_text))]
 
 
 def test_update_logs_auto_refresh_state_stops_timer_when_window_not_visible():

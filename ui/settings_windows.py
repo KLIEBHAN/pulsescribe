@@ -13,7 +13,7 @@ import time
 from typing import Callable
 
 from PySide6.QtCore import QEvent, Qt, Signal
-from PySide6.QtGui import QDoubleValidator, QFont, QIntValidator
+from PySide6.QtGui import QDoubleValidator, QFont, QIntValidator, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -58,7 +58,9 @@ from utils.log_tail import (
     clamp_scroll_value,
     get_file_signature,
     is_near_bottom,
+    merge_tail_lines,
     read_file_tail_lines,
+    read_file_text_from_offset,
     should_auto_refresh_logs,
 )
 from utils.onboarding import OnboardingStep
@@ -74,6 +76,8 @@ logger = logging.getLogger("pulsescribe.settings")
 SETTINGS_WIDTH = 600
 SETTINGS_HEIGHT = 700
 LAZY_SETTINGS_TAB_LABELS = frozenset({"Prompts", "Vocabulary", "Logs"})
+LOG_VIEW_MAX_LINES = 100
+INCREMENTAL_LOG_APPEND_MAX_BYTES = 64_000
 
 # =============================================================================
 # Dropdown-Optionen (identisch mit macOS)
@@ -1188,6 +1192,10 @@ class SettingsWindow(QDialog):
         self._logs_viewer.setReadOnly(True)
         self._logs_viewer.setMinimumHeight(300)
         self._logs_viewer.setPlaceholderText("Logs will appear here...")
+        try:
+            self._logs_viewer.document().setMaximumBlockCount(LOG_VIEW_MAX_LINES)
+        except Exception:
+            pass
         logs_layout.addWidget(self._logs_viewer)
 
         # Logs Buttons
@@ -2303,16 +2311,74 @@ class SettingsWindow(QDialog):
             if signature is not None and signature == self._last_logs_signature:
                 return
 
-            # Letzte 100 Zeilen (effizientes File-Tailing statt Full-Read)
+            if self._try_append_logs_delta(signature):
+                return
+
+            # Letzte Zeilen (effizientes File-Tailing statt Full-Read)
             log_text = read_file_tail_lines(
                 LOG_FILE,
-                max_lines=100,
+                max_lines=LOG_VIEW_MAX_LINES,
                 errors="replace",
             )
             self._set_logs_text_if_changed(log_text)
             self._last_logs_signature = signature
         except Exception as e:
             logger.error(f"Logs laden fehlgeschlagen: {e}")
+
+    def _try_append_logs_delta(self, signature: tuple[int, int] | None) -> bool:
+        """Append only the new log tail when the visible document can stay incremental."""
+        if not self._logs_viewer or signature is None or self._last_logs_text is None:
+            return False
+
+        previous_signature = self._last_logs_signature
+        if previous_signature is None:
+            return False
+
+        previous_size = int(previous_signature[1])
+        current_size = int(signature[1])
+        if current_size <= previous_size:
+            return False
+
+        if current_size - previous_size > INCREMENTAL_LOG_APPEND_MAX_BYTES:
+            return False
+
+        scrollbar = self._logs_viewer.verticalScrollBar()
+        previous_maximum = scrollbar.maximum()
+        previous_value = scrollbar.value()
+        if not is_near_bottom(previous_value, previous_maximum):
+            return False
+
+        from config import LOG_FILE
+
+        appended_text = read_file_text_from_offset(
+            LOG_FILE,
+            start_offset=previous_size,
+            errors="replace",
+            max_bytes=INCREMENTAL_LOG_APPEND_MAX_BYTES,
+        )
+        if not appended_text:
+            return False
+
+        merged_text = merge_tail_lines(
+            self._last_logs_text,
+            appended_text,
+            max_lines=LOG_VIEW_MAX_LINES,
+        )
+        if merged_text == self._last_logs_text:
+            self._last_logs_signature = signature
+            return True
+
+        try:
+            cursor = self._logs_viewer.textCursor()
+            cursor.movePosition(QTextCursor.MoveOperation.End)
+            cursor.insertText(appended_text)
+        except Exception:
+            return False
+
+        self._last_logs_text = merged_text
+        self._last_logs_signature = signature
+        scrollbar.setValue(scrollbar.maximum())
+        return True
 
     def _set_logs_text_if_changed(self, text: str) -> None:
         """Aktualisiert den Log-Viewer nur bei Änderungen (vermeidet unnötiges Re-Render)."""

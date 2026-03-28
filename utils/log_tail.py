@@ -113,6 +113,79 @@ def read_file_tail_lines(
     return "\n".join(lines[-max_lines:])
 
 
+def read_file_text_from_offset(
+    path: Path,
+    *,
+    start_offset: int,
+    encoding: str = "utf-8",
+    errors: str = "replace",
+    max_bytes: int | None = None,
+) -> str:
+    """Return text appended after ``start_offset`` or ``""`` when unsuitable.
+
+    ``max_bytes`` acts as a safety budget for incremental UI refresh paths. If the
+    appended region exceeds the budget, callers should fall back to a normal tail
+    reload instead of trying to stream a large delta into the widget.
+    """
+    if start_offset < 0 or not path.exists():
+        return ""
+    if max_bytes is not None and max_bytes <= 0:
+        return ""
+
+    with path.open("rb") as handle:
+        handle.seek(0, 2)
+        file_size = handle.tell()
+        if start_offset >= file_size:
+            return ""
+
+        read_size = file_size - start_offset
+        if max_bytes is not None and read_size > max_bytes:
+            return ""
+
+        handle.seek(start_offset)
+        return handle.read(read_size).decode(encoding, errors=errors)
+
+
+def merge_tail_lines(previous_text: str, appended_text: str, *, max_lines: int) -> str:
+    """Merge appended text into a fixed line window."""
+    if max_lines <= 0:
+        return ""
+
+    combined = f"{previous_text}{appended_text}"
+    lines = combined.splitlines()
+    if not lines:
+        return ""
+    return "\n".join(lines[-max_lines:])
+
+
+def merge_tail_text(
+    previous_text: str,
+    appended_text: str,
+    *,
+    max_chars: int,
+    truncated_prefix: str = "... (truncated)\n\n",
+) -> str:
+    """Merge appended text into a fixed-size tail buffer without duplicating prefixes."""
+    if max_chars <= 0:
+        return ""
+
+    prefix = truncated_prefix or ""
+    was_truncated = bool(prefix and previous_text.startswith(prefix))
+    visible_previous_text = previous_text[len(prefix) :] if was_truncated else previous_text
+    combined = f"{visible_previous_text}{appended_text}"
+
+    if not prefix or len(prefix) >= max_chars:
+        return combined[-max_chars:]
+
+    if not was_truncated and len(combined) <= max_chars:
+        return combined
+
+    suffix_chars = max_chars - len(prefix)
+    if len(combined) <= suffix_chars:
+        return f"{prefix}{combined}"
+    return f"{prefix}{combined[-suffix_chars:]}"
+
+
 def get_file_signature(path: Path) -> tuple[int, int] | None:
     """Return ``(mtime_ns, size)`` for change detection, or ``None`` if unavailable."""
     if not path.exists():

@@ -1,35 +1,35 @@
 Performance work log - 2026-03-28
 
-Guardrails
-- Focused on performance-heavy UI paths outside the last two commits unless compatibility required otherwise.
-- Left the recent work in `ui/welcome.py`, `ui/settings_windows.py`, `ui/onboarding_wizard.py`, `ui/onboarding_wizard_windows.py` and `ui/hotkey_card.py` alone for this pass.
-- Kept onboarding flows, hotkeys, permissions behavior and overlay UX functionally unchanged.
+Scope
+- Focused on frontend-heavy refresh paths outside the last two commits.
+- Left the most recent `overlay`, `onboarding` and `hotkey` changes untouched for this pass unless compatibility required otherwise.
+- Kept existing log, transcript, onboarding and settings behavior functionally unchanged.
 
-Recent passes kept
-- `ui/welcome.py`: lazy-built heavy welcome/settings tabs and deferred the transcripts panel/history load until the user actually opens it.
-- `ui/settings_windows.py`: lazy-built `Prompts`, `Vocabulary` and `Logs`; skipped no-op editor rewrites; cached the vocabulary file signature to avoid redundant reloads.
-- `ui/onboarding_wizard.py` / `ui/onboarding_wizard_windows.py` / `ui/hotkey_card.py`: deduped repeated label, button, preview, transcript and status updates to trim render churn during onboarding and hotkey capture.
-- `ui/overlay.py` / `ui/overlay_windows.py` / `ui/overlay_pyside6.py`: cached duplicate overlay text/color/geometry work and avoided redundant redraws or polling where possible.
-- `ui/permissions_card.py` / `ui/menubar.py`: skipped unchanged permission widget mutations, ended permission polling early once complete, and avoided duplicate menu bar title writes.
+Hotspots reviewed
+- `ui/welcome.py`: the macOS logs view rebuilt the full visible tail buffer whenever the log file grew.
+- `ui/settings_windows.py`: the Windows logs view replaced the whole `QPlainTextEdit` document on each log change, even for small append-only updates.
+- Both paths sit behind auto-refresh timers, so repeated full document swaps added unnecessary render work during active sessions.
 
-Current pass: macOS overlay timer throttling
-Hotspot reviewed
-- `ui/overlay.py`: listening, transcribing/refining and success feedback animations still scheduled timer-driven frames at 60 FPS even though those states do not need live audio-level responsiveness.
-
-Changes
-- `ui/overlay.py`: kept recording at 60 FPS, but reduced timer-driven waiting/processing animation loops to 30 FPS and done-feedback frames to 20 FPS.
-- `tests/test_overlay.py`: added regression coverage to assert the actual scheduled timer intervals for recording, active and feedback animation timers.
+Changes in this pass
+- `utils/log_tail.py`
+  Added shared helpers to read only the appended file region and to merge append-only updates back into fixed line/character windows.
+- `ui/settings_windows.py`
+  Enabled a bounded log document block count and switched append-only log growth at the bottom of the view to incremental cursor inserts instead of full `setPlainText()` rebuilds.
+- `ui/welcome.py`
+  Switched append-only log growth at the bottom of the macOS logs view to incremental text storage appends, with fallback to the existing full refresh path when truncation, rotation or scroll state makes incremental updates unsafe.
+- Tests
+  Added regression coverage for the new tail helpers and for both incremental log refresh paths.
 
 Why this helps
-- Lowers steady-state CPU wakeups and Core Animation work while the overlay is visible in non-recording states.
-- Preserves recording responsiveness because live audio visualization still uses the existing 60 FPS path.
+- Reduces expensive full-text widget rebuilds on the hottest auto-refreshing log paths.
+- Cuts repeated text layout and repaint work when logs are simply growing at the end, which is the common case during active sessions.
+- Keeps the previous safe full-refresh behavior for rotated, truncated or large-jump updates.
 
 Validation
-- `pytest tests/test_overlay.py tests/test_overlay_windows.py tests/test_overlay_pyside6.py tests/test_animation.py -q`
-- `python -m py_compile ui/overlay.py tests/test_overlay.py`
+- `pytest tests/test_settings_windows_load.py tests/test_settings_windows_logs.py tests/test_settings_ui.py tests/test_log_tail.py -q`
+- `python -m py_compile ui/settings_windows.py ui/welcome.py utils/log_tail.py tests/test_settings_windows_logs.py tests/test_settings_ui.py tests/test_log_tail.py`
 
 Next worthwhile areas
-- `ui/settings_windows.py`: logs and transcripts still replace the full viewer payload when content changes; incremental append/chunked updates remain the next large-file win.
-- `ui/welcome.py`: the logs view still swaps the full tailed text buffer on each file change; append-style updates would further reduce redraw cost on busy sessions.
-- `ui/onboarding_wizard_windows.py`: choice buttons still toggle all checked states on each selection if that step becomes hot again.
-- `ui/overlay.py`: if runtime profiling still shows recording-path cost, silence-aware throttling for bar updates would be the next targeted optimization.
+- `ui/settings_windows.py`: transcripts still rebuild the full formatted history when `history.jsonl` changes; append-aware history updates are the next clear win.
+- `ui/welcome.py`: transcripts still rebuild the visible history payload on each change; incremental entry formatting would reduce redraws there too.
+- `ui/welcome.py`: once the visible log tail re-truncates past the fixed 15k window, the code still falls back to a full refresh; if profiling still points there, bounded incremental re-trimming would be the next refinement.
