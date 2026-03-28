@@ -77,10 +77,35 @@ class _FakePlainText:
     def __init__(self, value: str = ""):
         self.value = value
         self.clear_calls = 0
+        self.set_plain_text_calls = 0
+        self.insert_plain_text_calls: list[str] = []
+        self.move_cursor_calls = 0
 
     def clear(self) -> None:
         self.value = ""
         self.clear_calls += 1
+
+    def setPlainText(self, value: str) -> None:
+        self.value = value
+        self.set_plain_text_calls += 1
+
+    def toPlainText(self) -> str:
+        return self.value
+
+    def insertPlainText(self, value: str) -> None:
+        self.value += value
+        self.insert_plain_text_calls.append(value)
+
+    def moveCursor(self, *_args, **_kwargs) -> None:
+        self.move_cursor_calls += 1
+
+
+class _FakeSignal:
+    def __init__(self):
+        self.calls: list[tuple[str, str]] = []
+
+    def emit(self, field: str, value: str) -> None:
+        self.calls.append((field, value))
 
 
 class _FakeKeyEvent:
@@ -141,6 +166,41 @@ def test_refresh_test_hotkey_label_handles_missing_hotkeys(monkeypatch):
 
     wizard._refresh_test_hotkey_label()
     assert wizard._test_hotkey_label.text == "Kein Hotkey konfiguriert"
+
+
+def test_update_test_transcript_appends_growth_and_skips_duplicates():
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+    wizard._test_transcript = _FakePlainText()
+    wizard._test_status_label = _FakeLabel()
+    wizard._test_successful = False
+    wizard._update_navigation_calls = 0
+    wizard._update_navigation = lambda: setattr(
+        wizard, "_update_navigation_calls", wizard._update_navigation_calls + 1
+    )
+
+    wizard.update_test_transcript("Hallo")
+    wizard.update_test_transcript("Hallo Welt")
+    wizard.update_test_transcript("Hallo Welt")
+
+    assert wizard._test_transcript.value == "Hallo Welt"
+    assert wizard._test_transcript.set_plain_text_calls == 1
+    assert wizard._test_transcript.insert_plain_text_calls == [" Welt"]
+    assert wizard._test_transcript.move_cursor_calls == 1
+    assert wizard._test_status_label.text == "Transkription erfolgreich!"
+    assert wizard._update_navigation_calls == 2
+
+
+def test_update_hotkey_field_from_pressed_keys_skips_duplicate_signal():
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+    wizard._recording_field = "toggle"
+    wizard._pressed_keys = {"ctrl", "alt", "r"}
+    wizard._pressed_keys_lock = threading.Lock()
+    wizard._hotkey_field_update = _FakeSignal()
+
+    wizard._update_hotkey_field_from_pressed_keys()
+    wizard._update_hotkey_field_from_pressed_keys()
+
+    assert wizard._hotkey_field_update.calls == [("toggle", "ctrl+alt+r")]
 
 
 def test_go_next_fast_reapplies_choice_preset_after_api_key_entry(monkeypatch):

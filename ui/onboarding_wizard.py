@@ -114,6 +114,13 @@ class OnboardingWizardController:
         self._step_builders: dict[OnboardingStep, Callable[[object, int], None]] = {}
         self._step_content_height = 0
         self._step_frame = None
+        self._visible_step: OnboardingStep | None = None
+        self._last_title_text: str | None = None
+        self._last_progress_text: str | None = None
+        self._last_back_hidden: bool | None = None
+        self._last_next_title: str | None = None
+        self._last_next_enabled: bool | None = None
+        self._last_test_hotkey_text: str | None = None
 
         # Permissions UI (shared component)
         self._permissions_card = None
@@ -1154,35 +1161,65 @@ class OnboardingWizardController:
             step = OnboardingStep.CHEAT_SHEET
         self._ensure_step_built(step)
 
-        for s, view in self._step_views.items():
-            try:
-                view.setHidden_(s != step)
-            except Exception:
-                pass
+        previous_visible_step = getattr(self, "_visible_step", None)
+        if previous_visible_step is None:
+            for s, view in self._step_views.items():
+                try:
+                    view.setHidden_(s != step)
+                except Exception:
+                    pass
+        elif previous_visible_step != step:
+            previous_view = self._step_views.get(previous_visible_step)
+            if previous_view is not None:
+                try:
+                    previous_view.setHidden_(True)
+                except Exception:
+                    pass
+            current_view = self._step_views.get(step)
+            if current_view is not None:
+                try:
+                    current_view.setHidden_(False)
+                except Exception:
+                    pass
+        self._visible_step = step
 
         if self._step_label is not None:
+            title_text = self._wizard_title(step)
             try:
-                self._step_label.setStringValue_(self._wizard_title(step))
+                if getattr(self, "_last_title_text", None) != title_text:
+                    self._step_label.setStringValue_(title_text)
+                    self._last_title_text = title_text
             except Exception:
                 pass
         if self._progress_label is not None:
+            idx = step_index(step)
+            progress_text = f"Step {idx}/{total_steps()}"
             try:
-                idx = step_index(step)
-                self._progress_label.setStringValue_(f"Step {idx}/{total_steps()}")
+                if getattr(self, "_last_progress_text", None) != progress_text:
+                    self._progress_label.setStringValue_(progress_text)
+                    self._last_progress_text = progress_text
             except Exception:
                 pass
 
         if self._back_btn is not None:
+            back_hidden = step == OnboardingStep.CHOOSE_GOAL
             try:
-                self._back_btn.setHidden_(step == OnboardingStep.CHOOSE_GOAL)
+                if getattr(self, "_last_back_hidden", None) != back_hidden:
+                    self._back_btn.setHidden_(back_hidden)
+                    self._last_back_hidden = back_hidden
             except Exception:
                 pass
 
         if self._next_btn is not None:
             title = "Finish" if step == OnboardingStep.CHEAT_SHEET else "Next"
+            can_advance = bool(self._can_advance())
             try:
-                self._next_btn.setTitle_(title)
-                self._next_btn.setEnabled_(bool(self._can_advance()))
+                if getattr(self, "_last_next_title", None) != title:
+                    self._next_btn.setTitle_(title)
+                    self._last_next_title = title
+                if getattr(self, "_last_next_enabled", None) != can_advance:
+                    self._next_btn.setEnabled_(can_advance)
+                    self._last_next_enabled = can_advance
             except Exception:
                 pass
 
@@ -1212,8 +1249,11 @@ class OnboardingWizardController:
         if not lines:
             lines.append("No hotkeys configured. Go back and set a hotkey first.")
 
+        label_text = "\n".join(lines)
         try:
-            label.setStringValue_("\n".join(lines))
+            if getattr(self, "_last_test_hotkey_text", None) != label_text:
+                label.setStringValue_(label_text)
+                self._last_test_hotkey_text = label_text
         except Exception:
             pass
 

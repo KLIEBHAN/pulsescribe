@@ -127,6 +127,130 @@ def _create_description(text: str) -> QLabel:
     return label
 
 
+def _get_widget_text(widget) -> str | None:
+    if widget is None:
+        return None
+
+    getter = getattr(widget, "text", None)
+    if callable(getter):
+        try:
+            return str(getter())
+        except TypeError:
+            pass
+
+    value = getattr(widget, "text", None)
+    if isinstance(value, str):
+        return value
+    return None
+
+
+def _set_widget_text_if_changed(widget, text: str) -> bool:
+    if widget is None:
+        return False
+    if _get_widget_text(widget) == text:
+        return False
+    widget.setText(text)
+    return True
+
+
+def _get_widget_stylesheet(widget) -> str | None:
+    if widget is None:
+        return None
+
+    getter = getattr(widget, "styleSheet", None)
+    if callable(getter):
+        try:
+            return str(getter())
+        except TypeError:
+            pass
+
+    value = getattr(widget, "style", None)
+    if isinstance(value, str):
+        return value
+    return None
+
+
+def _set_widget_stylesheet_if_changed(widget, style: str) -> bool:
+    if widget is None:
+        return False
+    if _get_widget_stylesheet(widget) == style:
+        return False
+    widget.setStyleSheet(style)
+    return True
+
+
+def _get_widget_visible(widget) -> bool | None:
+    if widget is None:
+        return None
+
+    getter = getattr(widget, "isVisible", None)
+    if callable(getter):
+        try:
+            return bool(getter())
+        except TypeError:
+            pass
+
+    value = getattr(widget, "visible", None)
+    if isinstance(value, bool):
+        return value
+    return None
+
+
+def _set_widget_visible_if_changed(widget, visible: bool) -> bool:
+    if widget is None:
+        return False
+    if _get_widget_visible(widget) == visible:
+        return False
+    widget.setVisible(visible)
+    return True
+
+
+def _get_widget_enabled(widget) -> bool | None:
+    if widget is None:
+        return None
+
+    getter = getattr(widget, "isEnabled", None)
+    if callable(getter):
+        try:
+            return bool(getter())
+        except TypeError:
+            pass
+
+    value = getattr(widget, "enabled", None)
+    if isinstance(value, bool):
+        return value
+    return None
+
+
+def _set_widget_enabled_if_changed(widget, enabled: bool) -> bool:
+    if widget is None:
+        return False
+    if _get_widget_enabled(widget) == enabled:
+        return False
+    widget.setEnabled(enabled)
+    return True
+
+
+def _set_plain_text_if_changed(widget, text: str) -> bool:
+    if widget is None:
+        return False
+
+    getter = getattr(widget, "toPlainText", None)
+    if callable(getter):
+        try:
+            if str(getter()) == text:
+                return False
+        except TypeError:
+            pass
+    else:
+        current = getattr(widget, "value", None)
+        if isinstance(current, str) and current == text:
+            return False
+
+    widget.setPlainText(text)
+    return True
+
+
 # =============================================================================
 # Onboarding Wizard
 # =============================================================================
@@ -211,6 +335,8 @@ class OnboardingWizardWindows(QDialog):
         self._test_notice: QLabel | None = None
         self._hotkey_status_label: QLabel | None = None
         self._is_closed = False
+        self._last_test_transcript_text = ""
+        self._last_hotkey_preview_by_field: dict[str, str] = {}
 
         self._setup_ui()
 
@@ -227,16 +353,10 @@ class OnboardingWizardWindows(QDialog):
 
     def update_test_transcript(self, text: str) -> None:
         """Update the test dictation transcript (called by daemon)."""
-        if self._test_transcript:
-            self._test_transcript.setPlainText(text)
-            if text.strip():
-                self._test_successful = True
-                if self._test_status_label:
-                    self._test_status_label.setText("Transkription erfolgreich!")
-                    self._test_status_label.setStyleSheet(
-                        f"color: {COLORS['success']};"
-                    )
-                self._update_navigation()
+        if self._set_test_transcript_text(text) and text.strip():
+            self._test_successful = True
+            self._set_test_status("Transkription erfolgreich!", "success")
+            self._update_navigation()
 
     # -------------------------------------------------------------------------
     # UI Setup
@@ -755,7 +875,9 @@ class OnboardingWizardWindows(QDialog):
         if self._progress_label:
             idx = step_index(step)
             total = total_steps()
-            self._progress_label.setText(f"Schritt {idx} von {total}")
+            _set_widget_text_if_changed(
+                self._progress_label, f"Schritt {idx} von {total}"
+            )
 
         # Step-specific actions
         if step == OnboardingStep.PERMISSIONS:
@@ -779,17 +901,19 @@ class OnboardingWizardWindows(QDialog):
             return
 
         # Back button
-        self._back_btn.setVisible(self._step != OnboardingStep.CHOOSE_GOAL)
+        _set_widget_visible_if_changed(
+            self._back_btn, self._step != OnboardingStep.CHOOSE_GOAL
+        )
 
         # Next button text and state
         if self._step == OnboardingStep.CHEAT_SHEET:
-            self._next_btn.setText("Fertig")
+            _set_widget_text_if_changed(self._next_btn, "Fertig")
         else:
-            self._next_btn.setText("Weiter")
+            _set_widget_text_if_changed(self._next_btn, "Weiter")
 
         # Enable/disable based on step requirements
         can_advance = self._can_advance()
-        self._next_btn.setEnabled(can_advance)
+        _set_widget_enabled_if_changed(self._next_btn, can_advance)
 
     def _can_advance(self) -> bool:
         """Check if user can advance to next step."""
@@ -877,7 +1001,7 @@ class OnboardingWizardWindows(QDialog):
         # Vorherigen Testinhalt löschen, damit keine stale Ergebnisse sichtbar bleiben.
         transcript_field = getattr(self, "_test_transcript", None)
         if transcript_field:
-            transcript_field.clear()
+            self._set_test_transcript_text("")
 
         # A retry must earn success again; otherwise a stale pass keeps "Weiter"
         # enabled even after a later failed/no-speech attempt.
@@ -893,11 +1017,11 @@ class OnboardingWizardWindows(QDialog):
 
         # Show "connecting" state while waiting for daemon acknowledgment
         self._set_test_status("Verbinde mit PulseScribe...", "text_secondary")
-        self._test_start_btn and self._test_start_btn.setVisible(False)
+        _set_widget_visible_if_changed(self._test_start_btn, False)
         stop_btn = getattr(self, "_test_stop_btn", None)
-        stop_btn and stop_btn.setVisible(True)
-        stop_btn and stop_btn.setEnabled(False)
-        self._test_notice and self._test_notice.setVisible(False)
+        _set_widget_visible_if_changed(stop_btn, True)
+        _set_widget_enabled_if_changed(stop_btn, False)
+        _set_widget_visible_if_changed(self._test_notice, False)
 
         # Poll for daemon response every 200ms
         if self._ipc_poll_timer is None:
@@ -935,11 +1059,9 @@ class OnboardingWizardWindows(QDialog):
         self._ipc_recording_polls_after_stop = 0
         self._ipc_client.send_command(CMD_STOP_TEST)
 
-        if self._test_status_label:
-            self._test_status_label.setText("Wird gestoppt...")
+        _set_widget_text_if_changed(self._test_status_label, "Wird gestoppt...")
         stop_btn = getattr(self, "_test_stop_btn", None)
-        if stop_btn:
-            stop_btn.setEnabled(False)
+        _set_widget_enabled_if_changed(stop_btn, False)
 
     def _poll_ipc_response(self) -> None:
         """Poll for IPC response from daemon."""
@@ -985,8 +1107,7 @@ class OnboardingWizardWindows(QDialog):
         if status == STATUS_RECORDING:
             self._ipc_seen_recording = True
             stop_btn = getattr(self, "_test_stop_btn", None)
-            if stop_btn:
-                stop_btn.setEnabled(True)
+            _set_widget_enabled_if_changed(stop_btn, True)
 
             if status != self._ipc_last_status:
                 self._set_test_status("Aufnahme läuft... Sprich jetzt!", "accent")
@@ -1042,44 +1163,46 @@ class OnboardingWizardWindows(QDialog):
 
     def _show_test_error(self, error: str) -> None:
         """Display error state with troubleshooting hint."""
-        self._test_transcript and self._test_transcript.clear()
+        self._set_test_transcript_text("")
         self._test_successful = False
         self._set_test_status(f"Fehler: {error}", "error")
         if self._test_notice:
-            self._test_notice.setVisible(True)
-            self._test_notice.setText(
+            _set_widget_visible_if_changed(self._test_notice, True)
+            _set_widget_text_if_changed(
+                self._test_notice,
                 "Tipp: Stelle sicher, dass PulseScribe im Hintergrund läuft."
             )
         self._update_navigation()
 
     def _show_test_success(self, transcript: str) -> None:
         """Display successful transcription."""
-        self._test_transcript and self._test_transcript.setPlainText(transcript)
+        self._set_test_transcript_text(transcript)
         self._set_test_status("Erfolgreich!", "success")
         self._test_successful = True
         self._update_navigation()
 
     def _show_test_no_speech(self) -> None:
         """Display "no speech detected" state."""
-        self._test_transcript and self._test_transcript.clear()
+        self._set_test_transcript_text("")
         self._test_successful = False
         self._set_test_status("Keine Sprache erkannt. Nochmal versuchen?", "warning")
         self._update_navigation()
 
     def _set_test_status(self, text: str, color_key: str) -> None:
         """Update the test status label with colored text."""
-        if self._test_status_label:
-            self._test_status_label.setText(text)
-            self._test_status_label.setStyleSheet(f"color: {COLORS[color_key]};")
+        if self._test_status_label is None:
+            return
+        _set_widget_text_if_changed(self._test_status_label, text)
+        _set_widget_stylesheet_if_changed(
+            self._test_status_label, f"color: {COLORS[color_key]};"
+        )
 
     def _reset_test_ui(self) -> None:
         """Show start button, hide stop button."""
-        self._test_start_btn and self._test_start_btn.setVisible(True)
-        if self._test_stop_btn:
-            self._test_stop_btn.setVisible(False)
-            self._test_stop_btn.setEnabled(True)
-        if self._test_notice:
-            self._test_notice.setVisible(False)
+        _set_widget_visible_if_changed(self._test_start_btn, True)
+        _set_widget_visible_if_changed(self._test_stop_btn, False)
+        _set_widget_enabled_if_changed(self._test_stop_btn, True)
+        _set_widget_visible_if_changed(self._test_notice, False)
 
     def _complete(self) -> None:
         """Complete the wizard."""
@@ -1107,9 +1230,11 @@ class OnboardingWizardWindows(QDialog):
         # Show/hide API key input based on choice
         if self._api_key_container:
             show_api = choice == OnboardingChoice.FAST and not self._has_api_key()
-            self._api_key_container.setVisible(show_api)
+            _set_widget_visible_if_changed(self._api_key_container, show_api)
             if show_api and self._api_key_status:
-                self._api_key_status.setText("Erforderlich für Fast-Modus")
+                _set_widget_text_if_changed(
+                    self._api_key_status, "Erforderlich für Fast-Modus"
+                )
 
         if save:
             set_onboarding_choice(choice)
@@ -1158,17 +1283,19 @@ class OnboardingWizardWindows(QDialog):
             if has_deepgram:
                 save_env_setting("PULSESCRIBE_MODE", "deepgram")
                 if self._api_key_container:
-                    self._api_key_container.setVisible(False)
+                    _set_widget_visible_if_changed(self._api_key_container, False)
             elif has_groq:
                 save_env_setting("PULSESCRIBE_MODE", "groq")
                 if self._api_key_container:
-                    self._api_key_container.setVisible(False)
+                    _set_widget_visible_if_changed(self._api_key_container, False)
             else:
                 # Show API key input, don't apply preset yet
                 if self._api_key_container:
-                    self._api_key_container.setVisible(True)
+                    _set_widget_visible_if_changed(self._api_key_container, True)
                     if self._api_key_status:
-                        self._api_key_status.setText("Erforderlich für Fast-Modus")
+                        _set_widget_text_if_changed(
+                            self._api_key_status, "Erforderlich für Fast-Modus"
+                        )
 
         elif choice == OnboardingChoice.PRIVATE:
             save_env_setting("PULSESCRIBE_MODE", "local")
@@ -1187,12 +1314,16 @@ class OnboardingWizardWindows(QDialog):
         """Update API key status + navigation while typing."""
         if self._api_key_status:
             if text.strip():
-                self._api_key_status.setText("✓ API-Key erkannt")
-                self._api_key_status.setStyleSheet(f"color: {COLORS['success']};")
+                _set_widget_text_if_changed(self._api_key_status, "✓ API-Key erkannt")
+                _set_widget_stylesheet_if_changed(
+                    self._api_key_status, f"color: {COLORS['success']};"
+                )
             else:
-                self._api_key_status.setText("Erforderlich für Fast-Modus")
-                self._api_key_status.setStyleSheet(
-                    f"color: {COLORS['text_secondary']};"
+                _set_widget_text_if_changed(
+                    self._api_key_status, "Erforderlich für Fast-Modus"
+                )
+                _set_widget_stylesheet_if_changed(
+                    self._api_key_status, f"color: {COLORS['text_secondary']};"
                 )
         self._update_navigation()
 
@@ -1217,8 +1348,12 @@ class OnboardingWizardWindows(QDialog):
 
         # On Windows, we can't directly check mic permission without attempting recording.
         # We'll show a generic "ready" status and let the user test in the next step.
-        self._mic_status_label.setText("Bereit (wird beim Test geprüft)")
-        self._mic_status_label.setStyleSheet(f"color: {COLORS['success']};")
+        _set_widget_text_if_changed(
+            self._mic_status_label, "Bereit (wird beim Test geprüft)"
+        )
+        _set_widget_stylesheet_if_changed(
+            self._mic_status_label, f"color: {COLORS['success']};"
+        )
 
     def _open_mic_settings(self) -> None:
         """Open Windows microphone settings."""
@@ -1264,10 +1399,17 @@ class OnboardingWizardWindows(QDialog):
         self._recording_field = field
         self._hotkey_recorded = False
         self._using_qt_grab = False
+        last_hotkey_preview_by_field = getattr(
+            self, "_last_hotkey_preview_by_field", None
+        )
+        if last_hotkey_preview_by_field is None:
+            last_hotkey_preview_by_field = {}
+            self._last_hotkey_preview_by_field = last_hotkey_preview_by_field
+        last_hotkey_preview_by_field.pop(field, None)
 
         input_field = self._toggle_input if field == "toggle" else self._hold_input
         if input_field:
-            input_field.setText("Drücke Hotkey, dann Enter...")
+            _set_widget_text_if_changed(input_field, "Drücke Hotkey, dann Enter...")
             input_field.setStyleSheet(f"border-color: {COLORS['accent']};")
 
         with self._pressed_keys_lock:
@@ -1373,6 +1515,15 @@ class OnboardingWizardWindows(QDialog):
         sorted_modifiers = [m for m in modifier_order if m in modifiers]
 
         hotkey_str = "+".join(sorted_modifiers + sorted(keys))
+        last_hotkey_preview_by_field = getattr(
+            self, "_last_hotkey_preview_by_field", None
+        )
+        if last_hotkey_preview_by_field is None:
+            last_hotkey_preview_by_field = {}
+            self._last_hotkey_preview_by_field = last_hotkey_preview_by_field
+        if last_hotkey_preview_by_field.get(recording_field) == hotkey_str:
+            return
+        last_hotkey_preview_by_field[recording_field] = hotkey_str
 
         # Thread-safe UI update via signal
         self._hotkey_field_update.emit(recording_field, hotkey_str)
@@ -1384,9 +1535,9 @@ class OnboardingWizardWindows(QDialog):
         if self._recording_field != field:
             return
         if field == "toggle" and self._toggle_input:
-            self._toggle_input.setText(hotkey_str)
+            _set_widget_text_if_changed(self._toggle_input, hotkey_str)
         elif field == "hold" and self._hold_input:
-            self._hold_input.setText(hotkey_str)
+            _set_widget_text_if_changed(self._hold_input, hotkey_str)
 
     def _stop_hotkey_recording(self, save: bool = False) -> None:
         """Stop hotkey recording."""
@@ -1398,6 +1549,12 @@ class OnboardingWizardWindows(QDialog):
             self._using_qt_grab = False
 
         field = self._recording_field
+        if field:
+            last_hotkey_preview_by_field = getattr(
+                self, "_last_hotkey_preview_by_field", None
+            )
+            if last_hotkey_preview_by_field is not None:
+                last_hotkey_preview_by_field.pop(field, None)
         input_field = (
             self._toggle_input if field == "toggle" else self._hold_input
         ) if field else None
@@ -1413,7 +1570,9 @@ class OnboardingWizardWindows(QDialog):
                         if field == "toggle"
                         else "PULSESCRIBE_HOLD_HOTKEY"
                     )
-                    input_field.setText(get_env_setting(env_key) or "")
+                    _set_widget_text_if_changed(
+                        input_field, get_env_setting(env_key) or ""
+                    )
         elif field and input_field:
             # Restore previous value (cancel or no input)
             env_key = (
@@ -1421,7 +1580,7 @@ class OnboardingWizardWindows(QDialog):
                 if field == "toggle"
                 else "PULSESCRIBE_HOLD_HOTKEY"
             )
-            input_field.setText(get_env_setting(env_key) or "")
+            _set_widget_text_if_changed(input_field, get_env_setting(env_key) or "")
 
         self._recording_field = None
         self._hotkey_recorded = False
@@ -1474,11 +1633,11 @@ class OnboardingWizardWindows(QDialog):
 
         if field == "toggle":
             if self._toggle_input:
-                self._toggle_input.setText("")
+                _set_widget_text_if_changed(self._toggle_input, "")
             remove_env_setting("PULSESCRIBE_TOGGLE_HOTKEY")
         elif field == "hold":
             if self._hold_input:
-                self._hold_input.setText("")
+                _set_widget_text_if_changed(self._hold_input, "")
             remove_env_setting("PULSESCRIBE_HOLD_HOTKEY")
 
         self._set_hotkey_status("Hotkey entfernt", "text_secondary")
@@ -1500,20 +1659,20 @@ class OnboardingWizardWindows(QDialog):
 
         if normalized_toggle:
             if self._toggle_input:
-                self._toggle_input.setText(normalized_toggle)
+                _set_widget_text_if_changed(self._toggle_input, normalized_toggle)
             save_env_setting("PULSESCRIBE_TOGGLE_HOTKEY", normalized_toggle)
         else:
             if self._toggle_input:
-                self._toggle_input.setText("")
+                _set_widget_text_if_changed(self._toggle_input, "")
             remove_env_setting("PULSESCRIBE_TOGGLE_HOTKEY")
 
         if normalized_hold:
             if self._hold_input:
-                self._hold_input.setText(normalized_hold)
+                _set_widget_text_if_changed(self._hold_input, normalized_hold)
             save_env_setting("PULSESCRIBE_HOLD_HOTKEY", normalized_hold)
         else:
             if self._hold_input:
-                self._hold_input.setText("")
+                _set_widget_text_if_changed(self._hold_input, "")
             remove_env_setting("PULSESCRIBE_HOLD_HOTKEY")
 
         self._set_hotkey_status("✓ Preset angewendet", "success")
@@ -1559,8 +1718,10 @@ class OnboardingWizardWindows(QDialog):
 
     def _set_hotkey_status(self, text: str, color_key: str) -> None:
         if self._hotkey_status_label:
-            self._hotkey_status_label.setText(text)
-            self._hotkey_status_label.setStyleSheet(f"color: {COLORS[color_key]};")
+            _set_widget_text_if_changed(self._hotkey_status_label, text)
+            _set_widget_stylesheet_if_changed(
+                self._hotkey_status_label, f"color: {COLORS[color_key]};"
+            )
 
     def _refresh_test_hotkey_label(self) -> None:
         """Aktualisiert den Hotkey-Hinweis im Test-Schritt."""
@@ -1575,8 +1736,9 @@ class OnboardingWizardWindows(QDialog):
         if hold:
             parts.append(f"Hold: {hold}")
 
-        self._test_hotkey_label.setText(
-            " | ".join(parts) if parts else "Kein Hotkey konfiguriert"
+        _set_widget_text_if_changed(
+            self._test_hotkey_label,
+            " | ".join(parts) if parts else "Kein Hotkey konfiguriert",
         )
 
     # -------------------------------------------------------------------------
@@ -1588,7 +1750,9 @@ class OnboardingWizardWindows(QDialog):
         # Mode
         mode = get_env_setting("PULSESCRIBE_MODE") or "deepgram"
         if "mode" in self._summary_labels:
-            self._summary_labels["mode"].setText(mode.capitalize())
+            _set_widget_text_if_changed(
+                self._summary_labels["mode"], mode.capitalize()
+            )
 
         # Hotkeys
         toggle = get_env_setting("PULSESCRIBE_TOGGLE_HOTKEY")
@@ -1599,14 +1763,71 @@ class OnboardingWizardWindows(QDialog):
         if hold:
             hotkey_parts.append(f"Hold: {hold}")
         if "hotkeys" in self._summary_labels:
-            self._summary_labels["hotkeys"].setText(
-                " | ".join(hotkey_parts) if hotkey_parts else "Nicht konfiguriert"
+            _set_widget_text_if_changed(
+                self._summary_labels["hotkeys"],
+                " | ".join(hotkey_parts) if hotkey_parts else "Nicht konfiguriert",
             )
 
         # Language
         lang = get_env_setting("PULSESCRIBE_LANGUAGE") or "auto"
         if "language" in self._summary_labels:
-            self._summary_labels["language"].setText(lang)
+            _set_widget_text_if_changed(self._summary_labels["language"], lang)
+
+    def _set_test_transcript_text(self, text: str) -> bool:
+        editor = self._test_transcript
+        if editor is None:
+            self._last_test_transcript_text = text or ""
+            return False
+
+        next_text = text or ""
+        previous_text = getattr(self, "_last_test_transcript_text", None)
+        if previous_text is None:
+            current_text = getattr(editor, "toPlainText", None)
+            if callable(current_text):
+                try:
+                    previous_text = str(current_text())
+                except TypeError:
+                    previous_text = ""
+            else:
+                previous_text = str(getattr(editor, "value", "") or "")
+        if next_text == previous_text:
+            return False
+
+        appended = False
+        if previous_text and next_text.startswith(previous_text):
+            delta = next_text[len(previous_text):]
+            move_cursor = getattr(editor, "moveCursor", None)
+            insert_plain_text = getattr(editor, "insertPlainText", None)
+            if delta and callable(move_cursor) and callable(insert_plain_text):
+                try:
+                    from PySide6.QtGui import QTextCursor
+
+                    move_cursor(QTextCursor.MoveOperation.End)
+                    insert_plain_text(delta)
+                    appended = True
+                except Exception:
+                    appended = False
+
+        if not appended:
+            if next_text:
+                _set_plain_text_if_changed(editor, next_text)
+            else:
+                clear = getattr(editor, "clear", None)
+                if callable(clear):
+                    current_text = getattr(editor, "toPlainText", None)
+                    if callable(current_text):
+                        try:
+                            if current_text():
+                                clear()
+                        except TypeError:
+                            clear()
+                    elif getattr(editor, "value", ""):
+                        clear()
+                else:
+                    _set_plain_text_if_changed(editor, "")
+
+        self._last_test_transcript_text = next_text
+        return True
 
     # -------------------------------------------------------------------------
     # Keyboard Events

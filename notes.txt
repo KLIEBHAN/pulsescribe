@@ -52,7 +52,33 @@ Latest pass: why this helps
 Latest pass: validation
 - `pytest tests/test_settings_windows_load.py tests/test_settings_windows_logs.py tests/test_settings_windows_prompts.py tests/test_settings_ui.py -q`
 
+Current pass: hotspots reviewed
+- `ui/onboarding_wizard_windows.py`: the Windows onboarding test flow still pushed repeated `setText`/`setStyleSheet`/visibility changes during IPC polling and replayed full transcript documents for growing text.
+- `ui/onboarding_wizard_windows.py`: hotkey capture could emit the same preview string repeatedly while the pressed-key set had not changed.
+- `ui/onboarding_wizard.py`: the macOS onboarding render path still walked every step view and rewrote header/footer labels on every render even when the visible step and button state were unchanged.
+- `ui/hotkey_card.py`: shared hotkey field/status syncing still rewrote identical values during repeated render cycles.
+
+Current pass: changes
+- `ui/onboarding_wizard_windows.py`: added no-op guards for label text, styles, button enabled/visible state and summary/hotkey labels so repeated wizard updates skip identical Qt widget mutations.
+- `ui/onboarding_wizard_windows.py`: made test transcript updates incremental when the daemon extends existing text and skip duplicate document resets for unchanged content.
+- `ui/onboarding_wizard_windows.py`: deduped hotkey preview emissions so the UI no longer processes identical preview strings repeatedly during capture.
+- `ui/onboarding_wizard.py`: cached the currently visible step plus header/footer state so repeated renders only touch AppKit views when the visible output actually changes.
+- `ui/onboarding_wizard.py`: cached the test-hotkey help text so repeated renders on the dictation step stop rewriting the same label.
+- `ui/hotkey_card.py`: cached synced hotkey field values and status messages so repeated render-driven refreshes skip identical field and label writes.
+- Added regression tests for Windows transcript append/dedupe behavior, hotkey preview dedupe, macOS render no-op guards and shared hotkey-card sync/status dedupe.
+
+Current pass: why this helps
+- Lower onboarding CPU/UI churn during IPC test dictation because polling and transcript updates no longer trigger the same widget work over and over.
+- Faster perceived response in the Windows test step because growing transcripts append instead of rebuilding the full `QPlainTextEdit` document each time.
+- Lower macOS wizard redraw cost because unchanged renders stop iterating across all step views and stop reapplying identical button/title state.
+- Lower shared hotkey UI overhead because repeated env/status syncs now no-op when the visible values are already correct.
+
+Current pass: validation
+- `pytest tests/test_hotkey_card.py tests/test_onboarding.py tests/test_onboarding_windows.py tests/test_onboarding_wizard_flow.py -q`
+- `python -m py_compile ui/onboarding_wizard_windows.py ui/onboarding_wizard.py ui/hotkey_card.py tests/test_hotkey_card.py`
+
 Next worthwhile areas
-- `ui/settings_windows.py`: logs and transcripts still replace the full viewer payload when content changes; incremental append/chunked updates are the next targeted win for very large histories.
+- `ui/onboarding_wizard_windows.py`: choice buttons still toggle all checked states on each selection; if the step sees more churn later, targeted no-op guards there are the next small win.
+- `ui/settings_windows.py`: logs and transcripts still replace the full viewer payload when content changes; incremental append/chunked updates remain the next large-file win.
 - `ui/welcome.py`: the logs view still swaps the full tailed text buffer on each file change; append-style updates would further reduce redraw cost on busy sessions.
 - `ui/overlay.py`: if runtime profiling still shows overlay cost, state-based FPS reduction for non-recording animations is the next targeted optimization.

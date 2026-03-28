@@ -7,9 +7,43 @@ from ui.onboarding_wizard import OnboardingWizardController
 class _FakeView:
     def __init__(self):
         self.hidden = None
+        self.hidden_calls: list[bool] = []
 
     def setHidden_(self, value) -> None:
         self.hidden = value
+        self.hidden_calls.append(value)
+
+
+class _FakeTextField:
+    def __init__(self):
+        self.value = ""
+        self.set_calls = 0
+
+    def setStringValue_(self, value) -> None:
+        self.value = value
+        self.set_calls += 1
+
+
+class _FakeButton:
+    def __init__(self):
+        self.hidden = None
+        self.hidden_calls: list[bool] = []
+        self.title = ""
+        self.title_calls = 0
+        self.enabled = None
+        self.enabled_calls: list[bool] = []
+
+    def setHidden_(self, value) -> None:
+        self.hidden = value
+        self.hidden_calls.append(value)
+
+    def setTitle_(self, value) -> None:
+        self.title = value
+        self.title_calls += 1
+
+    def setEnabled_(self, value) -> None:
+        self.enabled = value
+        self.enabled_calls.append(value)
 
 
 class _FakeContentView:
@@ -164,3 +198,44 @@ def test_render_builds_selected_step_on_demand():
     assert built == [(wizard._content_view.subviews[0], 280)]
     assert hotkey_updates == [True]
     assert wizard._content_view.subviews[0].hidden is False
+
+
+def test_render_skips_duplicate_ui_mutations_for_same_step(monkeypatch):
+    import ui.onboarding_wizard as wizard_mod
+
+    wizard = OnboardingWizardController.__new__(OnboardingWizardController)
+    wizard._step = OnboardingStep.TEST_DICTATION
+    wizard._step_views = {
+        OnboardingStep.TEST_DICTATION: _FakeView(),
+        OnboardingStep.HOTKEY: _FakeView(),
+    }
+    wizard._step_label = _FakeTextField()
+    wizard._progress_label = _FakeTextField()
+    wizard._back_btn = _FakeButton()
+    wizard._next_btn = _FakeButton()
+    wizard._test_hotkey_label = _FakeTextField()
+    wizard._ensure_step_built = lambda _step: None
+    wizard._wizard_title = lambda _step: "Test Dictation"
+    wizard._can_advance = lambda: True
+    wizard._sync_hotkey_fields_from_env = lambda: None
+
+    monkeypatch.setattr(
+        wizard_mod,
+        "get_env_setting",
+        lambda key: "f19" if key == "PULSESCRIBE_TOGGLE_HOTKEY" else None,
+    )
+
+    wizard._render()
+    wizard._render()
+
+    current_view = wizard._step_views[OnboardingStep.TEST_DICTATION]
+    other_view = wizard._step_views[OnboardingStep.HOTKEY]
+
+    assert current_view.hidden_calls == [False]
+    assert other_view.hidden_calls == [True]
+    assert wizard._step_label.set_calls == 1
+    assert wizard._progress_label.set_calls == 1
+    assert wizard._back_btn.hidden_calls == [False]
+    assert wizard._next_btn.title_calls == 1
+    assert wizard._next_btn.enabled_calls == [True]
+    assert wizard._test_hotkey_label.set_calls == 1

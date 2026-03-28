@@ -56,6 +56,8 @@ class HotkeyCard:
         self._recorder = hotkey_recorder
         self._on_hotkey_change = on_hotkey_change
         self._on_after_change = on_after_change
+        self._last_synced_values: tuple[str, str] | None = None
+        self._last_status: tuple[str, str] | None = None
 
     @classmethod
     def build(
@@ -259,14 +261,21 @@ class HotkeyCard:
         try:
             toggle = (get_env_setting("PULSESCRIBE_TOGGLE_HOTKEY") or "").strip()
             hold = (get_env_setting("PULSESCRIBE_HOLD_HOTKEY") or "").strip()
-            self._widgets.toggle_field.setStringValue_(toggle.upper())
-            self._widgets.hold_field.setStringValue_(hold.upper())
+            rendered_values = (toggle.upper(), hold.upper())
+            if self._last_synced_values == rendered_values:
+                return
+            self._widgets.toggle_field.setStringValue_(rendered_values[0])
+            self._widgets.hold_field.setStringValue_(rendered_values[1])
+            self._last_synced_values = rendered_values
         except Exception:
             pass
 
     def set_status(self, level: str, message: str | None) -> None:
         """Update status label with message and color based on level."""
         if self._widgets.status_label is None or not message:
+            return
+        status = (level, message)
+        if self._last_status == status:
             return
 
         color = _get_color(180, 180, 180)
@@ -280,6 +289,7 @@ class HotkeyCard:
         try:
             self._widgets.status_label.setStringValue_(message)
             self._widgets.status_label.setTextColor_(color)
+            self._last_status = status
         except Exception:
             pass
 
