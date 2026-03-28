@@ -1,40 +1,36 @@
 Performance work log - 2026-03-28
 
 Scope
-- Kept the transcript/log refresh work from `49efeb1` and `bc51fa9` untouched.
-- Focused on permission refresh churn and Windows overlay paint hot paths.
-- Preserved existing onboarding, settings and overlay behavior.
+- Left the last two commit areas untouched: transcript/log incremental refresh and permission/overlay repaint work.
+- Focused on `.env` persistence churn in Windows settings/local preset flows and setup overview UI churn.
+- Preserved current onboarding, settings, preset, and API key behavior.
 
 Current weaknesses reviewed
-- `ui/permissions_card.py`: every refresh rebuilt status colors and used the color objects in the cache key. On real AppKit objects that can defeat the dedupe path and reapply the same text/color updates repeatedly.
-- `ui/permissions_card.py`: `after_refresh` ran on every auto-refresh tick, which could retrigger expensive parent renders even when no permission state changed.
-- `ui/overlay_windows.py`: Tk canvas bars updated all coordinates every frame, including subpixel changes with no visible payoff.
-- `ui/overlay_pyside6.py`: the animation loop requested a full repaint on every tick even when smoothed bar heights had barely moved.
+- `ui/settings_windows.py`: `Save && Apply` rewrote `.env` once per setting and once per API key, causing a long chain of small disk reads/writes in one UI action.
+- `utils/presets.py`: applying a local preset performed many separate `.env` mutations even though the user triggered one atomic configuration change.
+- `ui/settings_windows.py`: setup overview labels/styles and mode-dependent card visibility were reapplied even when the rendered result had not changed, causing avoidable repaints and layout work.
 
 Changes in this pass
-- `ui/permissions_card.py`
-  Reused a lazy status-color palette, cached status updates by stable semantic keys instead of transient color objects, and only ran `after_refresh` when the card actually changed.
-- `ui/overlay_windows.py`
-  Added per-bar drawn-height tracking and skipped canvas coordinate updates for subpixel-only height deltas.
-- `ui/overlay_pyside6.py`
-  Added painted-height tracking and only requested a repaint once bar movement crossed a visible threshold or the overlay state changed.
+- `utils/preferences.py`
+  Added `update_env_settings()` to batch multiple `.env` mutations into one atomic read/write pass, preserve unrelated lines, collapse duplicate updated keys, and skip unchanged rewrites.
+- `ui/settings_windows.py`
+  Switched the Windows settings save path to one batched `.env` update for settings and API keys, and deduped repeated setup overview/status/visibility widget updates.
+- `utils/presets.py`
+  Switched local preset application to the batched `.env` update path.
 - Tests
-  Added regression coverage for stable permission-card dedupe with fresh color objects, change-only `after_refresh` behavior, and the new overlay subpixel skip paths.
+  Added regression coverage for batched env writes, no-op env updates, preset batching, canonical FP16 handling in batched saves, and batched API key persistence.
 
 Why this helps
-- Cuts redundant AppKit widget mutations and avoids unnecessary onboarding re-renders during permission polling.
-- Reduces Tk canvas work in the hottest Windows overlay loop.
-- Lowers avoidable Qt repaint pressure without changing the visible animation behavior.
+- `Save && Apply` no longer blocks on a long series of tiny `.env` writes, so the settings window responds faster and feels less sticky.
+- Local preset application now lands as one atomic config update instead of many serial writes.
+- Setup overview refreshes and mode switches avoid redundant text/style/visibility churn, which trims repaint/layout pressure in a frequently hit UI path.
 
 Validation
-- `pytest tests/test_permissions_card.py tests/test_overlay_windows.py tests/test_overlay.py -q`
-- `pytest tests/test_overlay_pyside6.py -q`
-- `pytest tests/test_onboarding.py tests/test_settings_ui.py -q`
-- `pytest tests/test_onboarding_wizard_flow.py -q`
-- `python -m py_compile ui/permissions_card.py ui/overlay_windows.py ui/overlay_pyside6.py tests/test_permissions_card.py tests/test_overlay_windows.py tests/test_overlay_pyside6.py`
-- `ruff check ui/permissions_card.py ui/overlay_windows.py ui/overlay_pyside6.py tests/test_permissions_card.py tests/test_overlay_windows.py tests/test_overlay_pyside6.py`
+- `pytest tests/test_preferences_cache.py tests/test_presets.py tests/test_settings_windows_load.py tests/test_settings_windows_hotkeys.py tests/test_settings_windows_logs.py tests/test_onboarding_windows.py -q`
+- `python -m py_compile utils/preferences.py utils/presets.py ui/settings_windows.py tests/test_preferences_cache.py tests/test_presets.py tests/test_settings_windows_load.py`
+- `ruff check utils/preferences.py utils/presets.py ui/settings_windows.py tests/test_preferences_cache.py tests/test_presets.py tests/test_settings_windows_load.py`
 
 Next worthwhile areas
-- `ui/welcome.py`: setup/overview tab switching still has some large build paths that are only partly lazy-loaded.
-- `ui/onboarding_wizard_windows.py`: hotkey recording and IPC polling are already guarded, but the test-dictation step is still the most likely Windows responsiveness target after the overlay path.
-- `utils/permissions.py`: if permission checks show up in profiling, a short-lived polling cache around repeated OS probes would be the next step, but only with profiling evidence.
+- `ui/onboarding_wizard_windows.py`: hotkey/test-summary paths still reread env-backed values more often than needed; a small local state cache would trim more UI churn.
+- `ui/welcome.py`: the save/apply path still performs many individual env writes, but it was intentionally skipped here because welcome/log work was part of the recent commit history.
+- `utils/custom_prompts.py` and vocabulary-driven tab loads: if profiling still shows tab-open spikes, add signature-based caches similar to the history/log optimizations.

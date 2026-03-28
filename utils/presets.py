@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import platform
 
-from utils.preferences import remove_env_setting, save_env_setting
+from utils.preferences import update_env_settings
 
 LOCAL_FP16_ENV_KEY = "PULSESCRIBE_FP16"
 LEGACY_LOCAL_FP16_ENV_KEY = "PULSESCRIBE_LOCAL_FP16"
@@ -105,24 +105,25 @@ def apply_local_preset_to_env(preset_name: str) -> bool:
 
     values = dict(LOCAL_PRESET_BASE)
     values.update(preset_values)
+    env_updates: dict[str, str | None] = {
+        "PULSESCRIBE_MODE": "local",
+        LEGACY_LOCAL_FP16_ENV_KEY: None,
+    }
 
     def _set_or_remove(
         key: str, value: str | None, *, remove_when: set[str] | None = None
     ) -> None:
         if value is None:
-            remove_env_setting(key)
+            env_updates[key] = None
             return
         normalized = str(value).strip().lower()
         if not normalized:
-            remove_env_setting(key)
+            env_updates[key] = None
             return
         if remove_when and normalized in remove_when:
-            remove_env_setting(key)
+            env_updates[key] = None
             return
-        save_env_setting(key, normalized)
-
-    # Ensure local mode when applying local presets.
-    save_env_setting("PULSESCRIBE_MODE", "local")
+        env_updates[key] = normalized
 
     _set_or_remove(
         "PULSESCRIBE_LOCAL_BACKEND",
@@ -147,17 +148,16 @@ def apply_local_preset_to_env(preset_name: str) -> bool:
 
     def _save_bool_override(key: str, raw: str | None) -> None:
         if raw is None:
-            remove_env_setting(key)
+            env_updates[key] = None
             return
         normalized = str(raw).strip().lower()
         if not normalized or normalized == "default":
-            remove_env_setting(key)
+            env_updates[key] = None
             return
-        save_env_setting(key, normalized)
+        env_updates[key] = normalized
 
     _save_bool_override("PULSESCRIBE_LOCAL_FAST", values.get("local_fast"))
     _save_bool_override(LOCAL_FP16_ENV_KEY, values.get("fp16"))
-    remove_env_setting(LEGACY_LOCAL_FP16_ENV_KEY)
     _save_bool_override(
         "PULSESCRIBE_LOCAL_WITHOUT_TIMESTAMPS", values.get("without_timestamps")
     )
@@ -166,9 +166,9 @@ def apply_local_preset_to_env(preset_name: str) -> bool:
     def _save_optional_str(key: str, raw: str | None) -> None:
         normalized = (raw or "").strip()
         if not normalized:
-            remove_env_setting(key)
+            env_updates[key] = None
             return
-        save_env_setting(key, normalized)
+        env_updates[key] = normalized
 
     _save_optional_str("PULSESCRIBE_LOCAL_BEAM_SIZE", values.get("beam_size"))
     _save_optional_str("PULSESCRIBE_LOCAL_BEST_OF", values.get("best_of"))
@@ -179,14 +179,16 @@ def apply_local_preset_to_env(preset_name: str) -> bool:
 
     lightning_batch_size = (values.get("lightning_batch_size") or "").strip()
     if not lightning_batch_size or lightning_batch_size == "12":
-        remove_env_setting("PULSESCRIBE_LIGHTNING_BATCH_SIZE")
+        env_updates["PULSESCRIBE_LIGHTNING_BATCH_SIZE"] = None
     else:
-        save_env_setting("PULSESCRIBE_LIGHTNING_BATCH_SIZE", lightning_batch_size)
+        env_updates["PULSESCRIBE_LIGHTNING_BATCH_SIZE"] = lightning_batch_size
 
     lightning_quant = (values.get("lightning_quant") or "").strip().lower()
     if not lightning_quant or lightning_quant == "none":
-        remove_env_setting("PULSESCRIBE_LIGHTNING_QUANT")
+        env_updates["PULSESCRIBE_LIGHTNING_QUANT"] = None
     else:
-        save_env_setting("PULSESCRIBE_LIGHTNING_QUANT", lightning_quant)
+        env_updates["PULSESCRIBE_LIGHTNING_QUANT"] = lightning_quant
+
+    update_env_settings(env_updates)
 
     return True

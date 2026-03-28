@@ -45,11 +45,9 @@ from utils.preferences import (
     get_show_welcome_on_startup,
     is_onboarding_complete,
     read_env_file,
-    remove_env_setting,
-    save_env_setting,
-    set_api_key,
     set_onboarding_step,
     set_show_welcome_on_startup,
+    update_env_settings,
 )
 from utils.local_backend import normalize_local_backend, should_remove_local_backend_env
 from utils.local_backend import get_cpu_threads_limit
@@ -303,6 +301,84 @@ def set_plain_text_if_changed(editor: QPlainTextEdit | None, text: str) -> bool:
     return True
 
 
+def _get_widget_text(widget) -> str | None:
+    if widget is None:
+        return None
+
+    getter = getattr(widget, "text", None)
+    if callable(getter):
+        try:
+            return str(getter())
+        except TypeError:
+            pass
+
+    value = getattr(widget, "text", None)
+    if isinstance(value, str):
+        return value
+    return None
+
+
+def _set_widget_text_if_changed(widget, text: str) -> bool:
+    if widget is None:
+        return False
+    if _get_widget_text(widget) == text:
+        return False
+    widget.setText(text)
+    return True
+
+
+def _get_widget_stylesheet(widget) -> str | None:
+    if widget is None:
+        return None
+
+    getter = getattr(widget, "styleSheet", None)
+    if callable(getter):
+        try:
+            return str(getter())
+        except TypeError:
+            pass
+
+    value = getattr(widget, "style", None)
+    if isinstance(value, str):
+        return value
+    return None
+
+
+def _set_widget_stylesheet_if_changed(widget, style: str) -> bool:
+    if widget is None:
+        return False
+    if _get_widget_stylesheet(widget) == style:
+        return False
+    widget.setStyleSheet(style)
+    return True
+
+
+def _get_widget_visible(widget) -> bool | None:
+    if widget is None:
+        return None
+
+    getter = getattr(widget, "isVisible", None)
+    if callable(getter):
+        try:
+            return bool(getter())
+        except TypeError:
+            pass
+
+    value = getattr(widget, "visible", None)
+    if isinstance(value, bool):
+        return value
+    return None
+
+
+def _set_widget_visible_if_changed(widget, visible: bool) -> bool:
+    if widget is None:
+        return False
+    if _get_widget_visible(widget) == visible:
+        return False
+    widget.setVisible(visible)
+    return True
+
+
 # =============================================================================
 # Settings Window
 # =============================================================================
@@ -344,6 +420,7 @@ class SettingsWindow(QDialog):
         self._setup_status_detail_label: QLabel | None = None
         self._setup_howto_label: QLabel | None = None
         self._setup_overview_refresh_suspend_count = 0
+        self._last_setup_overview_snapshot = None
         self._process_env_api_keys: dict[str, str] | None = None
         self._tab_builders: dict[str, Callable[[], QWidget]] = {}
         self._lazy_tab_layouts: dict[str, QVBoxLayout] = {}
@@ -1382,17 +1459,21 @@ class SettingsWindow(QDialog):
 
         # Local-spezifische Container ein-/ausblenden
         if hasattr(self, "_local_backend_container"):
-            self._local_backend_container.setVisible(is_local)
+            _set_widget_visible_if_changed(self._local_backend_container, is_local)
         if hasattr(self, "_local_model_container"):
-            self._local_model_container.setVisible(is_local)
+            _set_widget_visible_if_changed(self._local_model_container, is_local)
         if hasattr(self, "_streaming_container"):
-            self._streaming_container.setVisible(is_deepgram)
+            _set_widget_visible_if_changed(self._streaming_container, is_deepgram)
         if hasattr(self, "_advanced_local_settings_card"):
-            self._advanced_local_settings_card.setVisible(is_local)
+            _set_widget_visible_if_changed(self._advanced_local_settings_card, is_local)
         if hasattr(self, "_advanced_faster_settings_card"):
-            self._advanced_faster_settings_card.setVisible(is_local)
+            _set_widget_visible_if_changed(
+                self._advanced_faster_settings_card, is_local
+            )
         if hasattr(self, "_advanced_lightning_settings_card"):
-            self._advanced_lightning_settings_card.setVisible(is_local)
+            _set_widget_visible_if_changed(
+                self._advanced_lightning_settings_card, is_local
+            )
 
         self._refresh_setup_overview()
 
@@ -1421,12 +1502,30 @@ class SettingsWindow(QDialog):
         )
 
         process_api_keys = self._get_process_env_api_keys()
-        api_keys = {}
-        for env_key, field in self._api_fields.items():
-            current_value = field.text().strip() if field else ""
-            api_keys[env_key] = current_value or process_api_keys.get(env_key, "")
-        for env_key in MODE_API_KEY_MAP.values():
-            api_keys.setdefault(env_key, process_api_keys.get(env_key, ""))
+        api_presence = tuple(
+            (
+                env_key,
+                bool(
+                    (field.text().strip() if field else "")
+                    or process_api_keys.get(env_key, "")
+                ),
+            )
+            for env_key, field in sorted(self._api_fields.items())
+        )
+        for env_key in sorted(MODE_API_KEY_MAP.values()):
+            if any(existing_key == env_key for existing_key, _present in api_presence):
+                continue
+            api_presence += ((env_key, bool(process_api_keys.get(env_key, ""))),)
+
+        snapshot = (mode, toggle, hold, api_presence)
+        if snapshot == getattr(self, "_last_setup_overview_snapshot", None):
+            return
+        self._last_setup_overview_snapshot = snapshot
+
+        api_keys = {
+            env_key: ("configured" if is_present else "")
+            for env_key, is_present in api_presence
+        }
 
         headline, detail, color_key = _build_setup_status(
             mode,
@@ -1434,10 +1533,12 @@ class SettingsWindow(QDialog):
             hold_hotkey=hold,
             api_keys=api_keys,
         )
-        status_label.setText(headline)
-        status_label.setStyleSheet(f"color: {COLORS[color_key]};")
-        status_detail_label.setText(detail)
-        howto_label.setText(_build_setup_how_to_text(toggle, hold))
+        _set_widget_text_if_changed(status_label, headline)
+        _set_widget_stylesheet_if_changed(
+            status_label, f"color: {COLORS[color_key]};"
+        )
+        _set_widget_text_if_changed(status_detail_label, detail)
+        _set_widget_text_if_changed(howto_label, _build_setup_how_to_text(toggle, hold))
 
     def _on_batch_size_changed(self, value: int):
         """Handler für Batch-Size Slider."""
@@ -1815,9 +1916,11 @@ class SettingsWindow(QDialog):
     def _set_hotkey_status(self, text: str, color: str):
         """Setzt Hotkey-Status-Text."""
         if hasattr(self, "_hotkey_status") and self._hotkey_status:
-            self._hotkey_status.setText(text)
+            _set_widget_text_if_changed(self._hotkey_status, text)
             color_value = COLORS.get(color, COLORS["text"])
-            self._hotkey_status.setStyleSheet(f"color: {color_value};")
+            _set_widget_stylesheet_if_changed(
+                self._hotkey_status, f"color: {color_value};"
+            )
 
     def _validate_hotkeys_for_save(self) -> tuple[str, str] | None:
         """Validiert Hotkeys vor dem Speichern und gibt normalisierte Werte zurück."""
@@ -2728,98 +2831,95 @@ class SettingsWindow(QDialog):
             if validated_hotkeys is None:
                 return
             toggle_hotkey, hold_hotkey = validated_hotkeys
+            env_updates: dict[str, str | None] = {}
+
+            def _set_optional_env(
+                key: str,
+                raw_value: str | None,
+                *,
+                remove_when: set[str] | None = None,
+            ) -> None:
+                normalized = (raw_value or "").strip()
+                if not normalized or (remove_when and normalized in remove_when):
+                    env_updates[key] = None
+                    return
+                env_updates[key] = normalized
 
             # Mode
             if self._mode_combo:
-                mode = self._mode_combo.currentText()
-                save_env_setting("PULSESCRIBE_MODE", mode)
+                env_updates["PULSESCRIBE_MODE"] = self._mode_combo.currentText()
 
             # Language
             if self._lang_combo:
                 lang = self._lang_combo.currentText()
-                if lang == "auto":
-                    remove_env_setting("PULSESCRIBE_LANGUAGE")
-                else:
-                    save_env_setting("PULSESCRIBE_LANGUAGE", lang)
+                env_updates["PULSESCRIBE_LANGUAGE"] = None if lang == "auto" else lang
 
             # Local Backend
             if self._local_backend_combo:
                 backend = normalize_local_backend(self._local_backend_combo.currentText())
-                if should_remove_local_backend_env(backend):
-                    remove_env_setting("PULSESCRIBE_LOCAL_BACKEND")
-                else:
-                    save_env_setting("PULSESCRIBE_LOCAL_BACKEND", backend)
+                env_updates["PULSESCRIBE_LOCAL_BACKEND"] = (
+                    None if should_remove_local_backend_env(backend) else backend
+                )
 
             # Local Model
             if self._local_model_combo:
                 model = self._local_model_combo.currentText()
-                if model == "default":
-                    remove_env_setting("PULSESCRIBE_LOCAL_MODEL")
-                else:
-                    save_env_setting("PULSESCRIBE_LOCAL_MODEL", model)
+                env_updates["PULSESCRIBE_LOCAL_MODEL"] = (
+                    None if model == "default" else model
+                )
 
             # Streaming
             if self._streaming_checkbox:
-                if self._streaming_checkbox.isChecked():
-                    remove_env_setting("PULSESCRIBE_STREAMING")  # Default is true
-                else:
-                    save_env_setting("PULSESCRIBE_STREAMING", "false")
+                env_updates["PULSESCRIBE_STREAMING"] = (
+                    None if self._streaming_checkbox.isChecked() else "false"
+                )
 
             # Advanced: Device
             if hasattr(self, "_device_combo") and self._device_combo:
                 device = self._device_combo.currentText()
-                if device == "auto":
-                    remove_env_setting("PULSESCRIBE_DEVICE")
-                else:
-                    save_env_setting("PULSESCRIBE_DEVICE", device)
+                env_updates["PULSESCRIBE_DEVICE"] = None if device == "auto" else device
 
             # Advanced: Beam Size
             if hasattr(self, "_beam_size_field") and self._beam_size_field:
-                beam_size = self._beam_size_field.text().strip()
-                if beam_size:
-                    save_env_setting("PULSESCRIBE_LOCAL_BEAM_SIZE", beam_size)
-                else:
-                    remove_env_setting("PULSESCRIBE_LOCAL_BEAM_SIZE")
+                _set_optional_env(
+                    "PULSESCRIBE_LOCAL_BEAM_SIZE",
+                    self._beam_size_field.text(),
+                )
 
             # Advanced: Temperature
             if hasattr(self, "_temperature_field") and self._temperature_field:
-                temperature = self._temperature_field.text().strip()
-                if temperature:
-                    save_env_setting("PULSESCRIBE_LOCAL_TEMPERATURE", temperature)
-                else:
-                    remove_env_setting("PULSESCRIBE_LOCAL_TEMPERATURE")
+                _set_optional_env(
+                    "PULSESCRIBE_LOCAL_TEMPERATURE",
+                    self._temperature_field.text(),
+                )
 
             # Advanced: Best Of
             if hasattr(self, "_best_of_field") and self._best_of_field:
-                best_of = self._best_of_field.text().strip()
-                if best_of:
-                    save_env_setting("PULSESCRIBE_LOCAL_BEST_OF", best_of)
-                else:
-                    remove_env_setting("PULSESCRIBE_LOCAL_BEST_OF")
+                _set_optional_env(
+                    "PULSESCRIBE_LOCAL_BEST_OF",
+                    self._best_of_field.text(),
+                )
 
             # Faster-Whisper: Compute Type
             if hasattr(self, "_compute_type_combo") and self._compute_type_combo:
                 compute_type = self._compute_type_combo.currentText()
-                if compute_type == "default":
-                    remove_env_setting("PULSESCRIBE_LOCAL_COMPUTE_TYPE")
-                else:
-                    save_env_setting("PULSESCRIBE_LOCAL_COMPUTE_TYPE", compute_type)
+                env_updates["PULSESCRIBE_LOCAL_COMPUTE_TYPE"] = (
+                    None if compute_type == "default" else compute_type
+                )
 
             # Faster-Whisper: CPU Threads
             if hasattr(self, "_cpu_threads_field") and self._cpu_threads_field:
-                cpu_threads = self._cpu_threads_field.text().strip()
-                if cpu_threads:
-                    save_env_setting("PULSESCRIBE_LOCAL_CPU_THREADS", cpu_threads)
-                else:
-                    remove_env_setting("PULSESCRIBE_LOCAL_CPU_THREADS")
+                _set_optional_env(
+                    "PULSESCRIBE_LOCAL_CPU_THREADS",
+                    self._cpu_threads_field.text(),
+                )
 
             # Faster-Whisper: Num Workers
             if hasattr(self, "_num_workers_field") and self._num_workers_field:
-                num_workers = self._num_workers_field.text().strip()
-                if num_workers:
-                    save_env_setting("PULSESCRIBE_LOCAL_NUM_WORKERS", num_workers)
-                else:
-                    remove_env_setting("PULSESCRIBE_LOCAL_NUM_WORKERS")
+                _set_optional_env(
+                    "PULSESCRIBE_LOCAL_NUM_WORKERS",
+                    self._num_workers_field.text(),
+                )
 
             # Faster-Whisper: Without Timestamps
             if (
@@ -2827,28 +2927,22 @@ class SettingsWindow(QDialog):
                 and self._without_timestamps_combo
             ):
                 without_ts = self._without_timestamps_combo.currentText()
-                if without_ts == "default":
-                    remove_env_setting("PULSESCRIBE_LOCAL_WITHOUT_TIMESTAMPS")
-                else:
-                    save_env_setting("PULSESCRIBE_LOCAL_WITHOUT_TIMESTAMPS", without_ts)
+                env_updates["PULSESCRIBE_LOCAL_WITHOUT_TIMESTAMPS"] = (
+                    None if without_ts == "default" else without_ts
+                )
 
             # Faster-Whisper: VAD Filter
             if hasattr(self, "_vad_filter_combo") and self._vad_filter_combo:
                 vad = self._vad_filter_combo.currentText()
-                if vad == "default":
-                    remove_env_setting("PULSESCRIBE_LOCAL_VAD_FILTER")
-                else:
-                    save_env_setting("PULSESCRIBE_LOCAL_VAD_FILTER", vad)
+                env_updates["PULSESCRIBE_LOCAL_VAD_FILTER"] = (
+                    None if vad == "default" else vad
+                )
 
             # Faster-Whisper: FP16
             if hasattr(self, "_fp16_combo") and self._fp16_combo:
                 fp16 = self._fp16_combo.currentText()
-                if fp16 == "default":
-                    remove_env_setting(LOCAL_FP16_ENV_KEY)
-                    remove_env_setting(LEGACY_LOCAL_FP16_ENV_KEY)
-                else:
-                    save_env_setting(LOCAL_FP16_ENV_KEY, fp16)
-                    remove_env_setting(LEGACY_LOCAL_FP16_ENV_KEY)
+                env_updates[LOCAL_FP16_ENV_KEY] = None if fp16 == "default" else fp16
+                env_updates[LEGACY_LOCAL_FP16_ENV_KEY] = None
 
             # Advanced: Lightning Batch Size
             if (
@@ -2856,90 +2950,81 @@ class SettingsWindow(QDialog):
                 and self._lightning_batch_slider
             ):
                 batch_size = self._lightning_batch_slider.value()
-                if batch_size == 12:
-                    remove_env_setting("PULSESCRIBE_LIGHTNING_BATCH_SIZE")  # Default
-                else:
-                    save_env_setting(
-                        "PULSESCRIBE_LIGHTNING_BATCH_SIZE", str(batch_size)
-                    )
+                env_updates["PULSESCRIBE_LIGHTNING_BATCH_SIZE"] = (
+                    None if batch_size == 12 else str(batch_size)
+                )
 
             # Advanced: Lightning Quantization
             if hasattr(self, "_lightning_quant_combo") and self._lightning_quant_combo:
                 quant = self._lightning_quant_combo.currentText()
-                if quant == "none":
-                    remove_env_setting("PULSESCRIBE_LIGHTNING_QUANT")
-                else:
-                    save_env_setting("PULSESCRIBE_LIGHTNING_QUANT", quant)
+                env_updates["PULSESCRIBE_LIGHTNING_QUANT"] = (
+                    None if quant == "none" else quant
+                )
 
             # Refine
             if self._refine_checkbox:
-                save_env_setting(
-                    "PULSESCRIBE_REFINE",
-                    "true" if self._refine_checkbox.isChecked() else "false",
+                env_updates["PULSESCRIBE_REFINE"] = (
+                    "true" if self._refine_checkbox.isChecked() else "false"
                 )
 
             # Refine Provider
             if self._refine_provider_combo:
                 provider = self._refine_provider_combo.currentText()
-                if provider == "groq":
-                    remove_env_setting("PULSESCRIBE_REFINE_PROVIDER")
-                else:
-                    save_env_setting("PULSESCRIBE_REFINE_PROVIDER", provider)
+                env_updates["PULSESCRIBE_REFINE_PROVIDER"] = (
+                    None if provider == "groq" else provider
+                )
 
             # Refine Model
             if self._refine_model_field:
-                model = self._refine_model_field.text().strip()
-                if model:
-                    save_env_setting("PULSESCRIBE_REFINE_MODEL", model)
-                else:
-                    remove_env_setting("PULSESCRIBE_REFINE_MODEL")
+                _set_optional_env(
+                    "PULSESCRIBE_REFINE_MODEL",
+                    self._refine_model_field.text(),
+                )
 
             # Overlay
             if self._overlay_checkbox:
-                if self._overlay_checkbox.isChecked():
-                    remove_env_setting("PULSESCRIBE_OVERLAY")  # Default is true
-                else:
-                    save_env_setting("PULSESCRIBE_OVERLAY", "false")
+                env_updates["PULSESCRIBE_OVERLAY"] = (
+                    None if self._overlay_checkbox.isChecked() else "false"
+                )
 
             # RTF Display
             if self._rtf_checkbox:
-                if self._rtf_checkbox.isChecked():
-                    save_env_setting("PULSESCRIBE_SHOW_RTF", "true")
-                else:
-                    remove_env_setting("PULSESCRIBE_SHOW_RTF")  # Default is false
+                env_updates["PULSESCRIBE_SHOW_RTF"] = (
+                    "true" if self._rtf_checkbox.isChecked() else None
+                )
 
             # Clipboard Restore
             if self._clipboard_restore_checkbox:
-                if self._clipboard_restore_checkbox.isChecked():
-                    save_env_setting("PULSESCRIBE_CLIPBOARD_RESTORE", "true")
-                else:
-                    remove_env_setting("PULSESCRIBE_CLIPBOARD_RESTORE")
+                env_updates["PULSESCRIBE_CLIPBOARD_RESTORE"] = (
+                    "true" if self._clipboard_restore_checkbox.isChecked() else None
+                )
 
             # Hotkeys
-            if hasattr(self, "_toggle_hotkey_field") and self._toggle_hotkey_field:
-                if toggle_hotkey:
-                    save_env_setting("PULSESCRIBE_TOGGLE_HOTKEY", toggle_hotkey)
-                else:
-                    remove_env_setting("PULSESCRIBE_TOGGLE_HOTKEY")
-
-            if hasattr(self, "_hold_hotkey_field") and self._hold_hotkey_field:
-                if hold_hotkey:
-                    save_env_setting("PULSESCRIBE_HOLD_HOTKEY", hold_hotkey)
-                else:
-                    remove_env_setting("PULSESCRIBE_HOLD_HOTKEY")
+            env_updates["PULSESCRIBE_TOGGLE_HOTKEY"] = toggle_hotkey or None
+            env_updates["PULSESCRIBE_HOLD_HOTKEY"] = hold_hotkey or None
 
             # API Keys
             for env_key, field in self._api_fields.items():
                 value = field.text().strip()
-                is_set = set_api_key(env_key, value)
+                env_updates[env_key] = value or None
+
+            update_env_settings(env_updates)
+
+            for env_key, field in self._api_fields.items():
+                value = field.text().strip()
+                is_set = bool(value)
                 status = self._api_status.get(env_key)
                 if status:
                     if is_set:
-                        status.setText("✓")
-                        status.setStyleSheet(f"color: {COLORS['success']};")
+                        _set_widget_text_if_changed(status, "✓")
+                        _set_widget_stylesheet_if_changed(
+                            status, f"color: {COLORS['success']};"
+                        )
                     else:
-                        status.setText("")
-                        status.setStyleSheet(f"color: {COLORS['text_secondary']};")
+                        _set_widget_text_if_changed(status, "")
+                        _set_widget_stylesheet_if_changed(
+                            status, f"color: {COLORS['text_secondary']};"
+                        )
 
             # Prompts speichern (aus Cache + aktuellem Editor)
             self._save_all_prompts()

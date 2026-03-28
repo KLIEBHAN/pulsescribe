@@ -367,30 +367,47 @@ def test_load_settings_falls_back_to_legacy_fp16_key(monkeypatch):
 
 
 def test_save_settings_uses_canonical_fp16_key_and_removes_legacy(monkeypatch):
-    save_calls: list[tuple[str, str]] = []
-    remove_calls: list[str] = []
+    recorded_updates: dict[str, str | None] = {}
 
     monkeypatch.setattr(
         settings_mod,
-        "save_env_setting",
-        lambda key, value: save_calls.append((key, value)),
+        "update_env_settings",
+        lambda updates: recorded_updates.update(updates),
     )
-    monkeypatch.setattr(
-        settings_mod,
-        "remove_env_setting",
-        lambda key: remove_calls.append(key),
-    )
-    monkeypatch.setattr(settings_mod, "set_api_key", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(settings_mod, "is_onboarding_complete", lambda: True)
 
     window = _make_save_window("true")
     window._save_settings()
 
-    assert (settings_mod.LOCAL_FP16_ENV_KEY, "true") in save_calls
-    assert settings_mod.LEGACY_LOCAL_FP16_ENV_KEY in remove_calls
-    assert not any(
-        key == settings_mod.LEGACY_LOCAL_FP16_ENV_KEY for key, _ in save_calls
+    assert recorded_updates[settings_mod.LOCAL_FP16_ENV_KEY] == "true"
+    assert recorded_updates[settings_mod.LEGACY_LOCAL_FP16_ENV_KEY] is None
+
+
+def test_save_settings_batches_api_key_updates(monkeypatch):
+    recorded_updates: dict[str, str | None] = {}
+
+    monkeypatch.setattr(
+        settings_mod,
+        "update_env_settings",
+        lambda updates: recorded_updates.update(updates),
     )
+    monkeypatch.setattr(settings_mod, "is_onboarding_complete", lambda: True)
+
+    window = _make_save_window("default")
+    window._api_fields = {"DEEPGRAM_API_KEY": _FakeField(), "GROQ_API_KEY": _FakeField()}
+    window._api_fields["DEEPGRAM_API_KEY"].setText("dg-key")
+    window._api_fields["GROQ_API_KEY"].setText("")
+    window._api_status = {
+        "DEEPGRAM_API_KEY": _FakeLabel(),
+        "GROQ_API_KEY": _FakeLabel(),
+    }
+
+    window._save_settings()
+
+    assert recorded_updates["DEEPGRAM_API_KEY"] == "dg-key"
+    assert recorded_updates["GROQ_API_KEY"] is None
+    assert window._api_status["DEEPGRAM_API_KEY"].text == "✓"
+    assert window._api_status["GROQ_API_KEY"].text == ""
 
 
 def test_apply_local_preset_resets_stale_advanced_values():

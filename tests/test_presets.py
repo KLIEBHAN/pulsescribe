@@ -1,6 +1,16 @@
 import utils.presets as presets
 
 
+def _capture_env_updates(monkeypatch):
+    recorded: dict[str, str | None] = {}
+    monkeypatch.setattr(
+        presets,
+        "update_env_settings",
+        lambda updates: recorded.update(updates),
+    )
+    return recorded
+
+
 def test_default_local_presets_do_not_treat_windows_arm_as_apple_silicon(
     monkeypatch,
 ) -> None:
@@ -29,19 +39,13 @@ def test_apply_local_preset_to_env_preserves_explicit_whisper_backend(
         "local_model": "turbo",
     }
     monkeypatch.setattr(presets, "LOCAL_PRESETS", custom_presets)
-
-    saved: list[tuple[str, str]] = []
-    removed: list[str] = []
-    monkeypatch.setattr(
-        presets, "save_env_setting", lambda key, value: saved.append((key, value))
-    )
-    monkeypatch.setattr(presets, "remove_env_setting", removed.append)
+    updates = _capture_env_updates(monkeypatch)
 
     assert presets.apply_local_preset_to_env("Test Whisper Preset") is True
 
-    assert ("PULSESCRIBE_MODE", "local") in saved
-    assert ("PULSESCRIBE_LOCAL_BACKEND", "whisper") in saved
-    assert "PULSESCRIBE_LOCAL_BACKEND" not in removed
+    assert updates["PULSESCRIBE_MODE"] == "local"
+    assert updates["PULSESCRIBE_LOCAL_BACKEND"] == "whisper"
+    assert updates["PULSESCRIBE_LOCAL_BACKEND"] is not None
 
 
 def test_apply_local_preset_to_env_resets_lightning_specific_defaults(
@@ -53,22 +57,12 @@ def test_apply_local_preset_to_env_resets_lightning_specific_defaults(
         "local_model": "turbo",
     }
     monkeypatch.setattr(presets, "LOCAL_PRESETS", custom_presets)
-
-    saved: list[tuple[str, str]] = []
-    removed: list[str] = []
-    monkeypatch.setattr(
-        presets, "save_env_setting", lambda key, value: saved.append((key, value))
-    )
-    monkeypatch.setattr(presets, "remove_env_setting", removed.append)
+    updates = _capture_env_updates(monkeypatch)
 
     assert presets.apply_local_preset_to_env("Test MLX Preset") is True
 
-    assert "PULSESCRIBE_LIGHTNING_BATCH_SIZE" in removed
-    assert "PULSESCRIBE_LIGHTNING_QUANT" in removed
-    assert not any(
-        key in {"PULSESCRIBE_LIGHTNING_BATCH_SIZE", "PULSESCRIBE_LIGHTNING_QUANT"}
-        for key, _ in saved
-    )
+    assert updates["PULSESCRIBE_LIGHTNING_BATCH_SIZE"] is None
+    assert updates["PULSESCRIBE_LIGHTNING_QUANT"] is None
 
 
 def test_apply_local_preset_to_env_migrates_legacy_fp16_key(monkeypatch) -> None:
@@ -79,16 +73,9 @@ def test_apply_local_preset_to_env_migrates_legacy_fp16_key(monkeypatch) -> None
         "fp16": "true",
     }
     monkeypatch.setattr(presets, "LOCAL_PRESETS", custom_presets)
-
-    saved: list[tuple[str, str]] = []
-    removed: list[str] = []
-    monkeypatch.setattr(
-        presets, "save_env_setting", lambda key, value: saved.append((key, value))
-    )
-    monkeypatch.setattr(presets, "remove_env_setting", removed.append)
+    updates = _capture_env_updates(monkeypatch)
 
     assert presets.apply_local_preset_to_env("Test FP16 Preset") is True
 
-    assert (presets.LOCAL_FP16_ENV_KEY, "true") in saved
-    assert presets.LEGACY_LOCAL_FP16_ENV_KEY in removed
-    assert not any(key == presets.LEGACY_LOCAL_FP16_ENV_KEY for key, _ in saved)
+    assert updates[presets.LOCAL_FP16_ENV_KEY] == "true"
+    assert updates[presets.LEGACY_LOCAL_FP16_ENV_KEY] is None

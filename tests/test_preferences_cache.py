@@ -143,6 +143,61 @@ def test_remove_env_setting_removes_spaced_assignment(tmp_path, monkeypatch):
     assert "PULSESCRIBE_MODE" not in prefs.read_env_file()
 
 
+def test_update_env_settings_batches_updates_in_single_atomic_write(tmp_path, monkeypatch):
+    _isolate_prefs(tmp_path, monkeypatch)
+    prefs.ENV_FILE.write_text(
+        "PULSESCRIBE_MODE=deepgram\nPULSESCRIBE_LANGUAGE=en\n",
+        encoding="utf-8",
+    )
+
+    write_calls: list[dict[str, str | None]] = []
+    original_write = prefs._write_text_atomic
+
+    def _patched_write(path, content, *, encoding="utf-8"):
+        write_calls.append({"path": str(path), "content": content, "encoding": encoding})
+        return original_write(path, content, encoding=encoding)
+
+    monkeypatch.setattr(prefs, "_write_text_atomic", _patched_write)
+
+    prefs.update_env_settings(
+        {
+            "PULSESCRIBE_MODE": "local",
+            "PULSESCRIBE_LANGUAGE": None,
+            "PULSESCRIBE_DEVICE": "cpu",
+        }
+    )
+
+    assert len(write_calls) == 1
+    assert prefs.ENV_FILE.read_text(encoding="utf-8") == (
+        "PULSESCRIBE_MODE=local\nPULSESCRIBE_DEVICE=cpu\n"
+    )
+
+
+def test_update_env_settings_skips_write_when_target_values_are_already_current(
+    tmp_path, monkeypatch
+):
+    _isolate_prefs(tmp_path, monkeypatch)
+    prefs.ENV_FILE.write_text(
+        "PULSESCRIBE_MODE=local\nPULSESCRIBE_DEVICE=cpu\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        prefs,
+        "_write_text_atomic",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("should not rewrite unchanged env")
+        ),
+    )
+
+    prefs.update_env_settings(
+        {
+            "PULSESCRIBE_MODE": "local",
+            "PULSESCRIBE_DEVICE": "cpu",
+        }
+    )
+
+
 def test_read_env_file_parses_quoted_values_and_inline_comments(tmp_path, monkeypatch):
     _isolate_prefs(tmp_path, monkeypatch)
     prefs.ENV_FILE.write_text(

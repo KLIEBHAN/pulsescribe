@@ -381,6 +381,78 @@ def save_env_setting(key_name: str, value: str) -> None:
     save_api_key(key_name, value)  # Gleiche Logik wie bei API-Keys
 
 
+def update_env_settings(updates: dict[str, str | None]) -> None:
+    """Apply multiple `.env` mutations in a single read/write pass.
+
+    ``None`` removes the key, any other value stores ``KEY=value`` in canonical form.
+    Unrelated lines are preserved, while duplicate definitions of updated keys are
+    collapsed to a single canonical line.
+    """
+
+    if not updates:
+        return
+
+    env_path = ENV_FILE
+    lines: list[str] = []
+    try:
+        if env_path.exists():
+            lines = env_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        logger.exception("Konnte .env nicht lesen")
+        raise
+
+    handled_keys: set[str] = set()
+    new_lines: list[str] = []
+    changed = False
+
+    for line in lines:
+        key, _existing_value = _parse_env_line(line)
+        if not key or key not in updates:
+            new_lines.append(line)
+            continue
+
+        # Collapse duplicate entries for keys we are explicitly updating.
+        if key in handled_keys:
+            changed = True
+            continue
+
+        handled_keys.add(key)
+        new_value = updates[key]
+        if new_value is None:
+            changed = True
+            continue
+
+        canonical_line = f"{key}={new_value}"
+        if line != canonical_line:
+            changed = True
+        new_lines.append(canonical_line)
+
+    for key, value in updates.items():
+        if key in handled_keys or value is None:
+            continue
+        new_lines.append(f"{key}={value}")
+        changed = True
+
+    if not changed:
+        _invalidate_env_cache()
+        return
+
+    try:
+        _write_text_atomic(
+            env_path,
+            "\n".join(new_lines) + "\n" if new_lines else "",
+            encoding="utf-8",
+        )
+        try:
+            env_path.chmod(0o600)
+        except OSError:
+            pass
+        _invalidate_env_cache()
+    except OSError:
+        logger.exception("Konnte .env nicht aktualisieren")
+        raise
+
+
 def remove_env_setting(key_name: str) -> None:
     """Entfernt eine Einstellung aus der .env Datei.
 
