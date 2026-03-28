@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from utils.history import format_transcripts_for_display
+from utils.history import format_transcripts_for_display, format_transcripts_for_welcome
 
 
 def test_format_transcripts_for_display_indents_multiline_entries() -> None:
@@ -18,4 +18,29 @@ def test_format_transcripts_for_display_indents_multiline_entries() -> None:
         "    \n"
         "    Zweiter Absatz\n"
         "    Dritte Zeile"
+    )
+
+
+def test_format_transcripts_for_welcome_preserves_given_order() -> None:
+    formatted = format_transcripts_for_welcome(
+        [
+            {
+                "timestamp": "2026-03-24T10:00:00.000000",
+                "text": "Erster Eintrag",
+            },
+            {
+                "timestamp": "2026-03-24T10:01:00.000000",
+                "text": "Zweiter Eintrag",
+                "mode": "deepgram",
+                "language": "de",
+            },
+        ],
+        newest_first=False,
+    )
+
+    assert formatted == (
+        "[2026-03-24 10:00:00]\n"
+        "Erster Eintrag\n\n"
+        "[2026-03-24 10:01:00] (deepgram de)\n"
+        "Zweiter Eintrag"
     )

@@ -10,7 +10,7 @@ from collections.abc import Sequence
 from datetime import datetime
 
 from config import USER_CONFIG_DIR
-from utils.log_tail import read_file_tail_lines
+from utils.log_tail import read_file_tail_lines, read_file_text_from_offset
 from utils.preferences import _write_text_atomic
 from utils.timing import redacted_text_summary
 
@@ -180,19 +180,137 @@ def _parse_recent_entries(lines: list[str], count: int) -> list[dict[str, object
     """Parst JSONL-Zeilen rückwärts und liefert max. ``count`` gültige Einträge."""
     entries: list[dict[str, object]] = []
     for line in reversed(lines):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            entry = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(entry, dict):
+        entry = _parse_transcript_line(line)
+        if entry is None:
             continue
         entries.append(entry)
         if len(entries) >= count:
             break
     return entries
+
+
+def _parse_transcript_line(line: str) -> dict[str, object] | None:
+    """Parse a single JSONL transcript entry or return ``None`` for invalid lines."""
+    line = line.strip()
+    if not line:
+        return None
+    try:
+        entry = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(entry, dict):
+        return None
+    return entry
+
+
+def _parse_transcript_lines_in_order(lines: Sequence[str]) -> list[dict[str, object]]:
+    """Parse JSONL transcript lines while preserving file order."""
+    entries: list[dict[str, object]] = []
+    for line in lines:
+        entry = _parse_transcript_line(line)
+        if entry is not None:
+            entries.append(entry)
+    return entries
+
+
+def read_transcripts_from_offset(
+    start_offset: int, *, max_bytes: int | None = None
+) -> list[dict[str, object]]:
+    """Read newly appended transcript entries from ``history.jsonl`` in file order."""
+    if start_offset < 0 or not HISTORY_FILE.exists():
+        return []
+
+    appended_text = read_file_text_from_offset(
+        HISTORY_FILE,
+        start_offset=start_offset,
+        encoding="utf-8",
+        errors="replace",
+        max_bytes=max_bytes,
+    )
+    if not appended_text:
+        return []
+    return _parse_transcript_lines_in_order(appended_text.splitlines())
+
+
+def merge_recent_transcript_entries(
+    previous_entries: Sequence[object],
+    appended_entries: Sequence[object],
+    *,
+    max_entries: int,
+) -> list[dict[str, object]]:
+    """Merge append-only entries into an oldest-first visible transcript window."""
+    if max_entries <= 0:
+        return []
+
+    previous_valid = [
+        entry for entry in previous_entries if isinstance(entry, dict)
+    ]
+    appended_valid = [
+        entry for entry in appended_entries if isinstance(entry, dict)
+    ]
+    if not appended_valid:
+        return previous_valid[-max_entries:]
+    return [*previous_valid, *appended_valid][-max_entries:]
+
+
+def format_transcript_entry_for_display(entry: object) -> str:
+    """Format a single transcript entry for the Windows transcripts viewer."""
+    if not isinstance(entry, dict):
+        return ""
+
+    ts = str(entry.get("timestamp", ""))[:19].replace("T", " ")
+    text = _format_display_text(entry.get("text", ""))
+    mode = str(entry.get("mode", ""))
+    refined = "✨" if entry.get("refined") else ""
+
+    line = f"[{ts}] {refined}{text}"
+    if mode:
+        line = f"[{ts}] ({mode}) {refined}{text}"
+    return line
+
+
+def format_transcripts_for_display(
+    entries: Sequence[object], *, newest_first: bool = True
+) -> str:
+    """Format transcript entries for the Windows transcripts viewer."""
+    valid_entries = [entry for entry in entries if isinstance(entry, dict)]
+    if not valid_entries:
+        return "No transcripts yet."
+
+    ordered_entries = reversed(valid_entries) if newest_first else valid_entries
+    lines = [format_transcript_entry_for_display(entry) for entry in ordered_entries]
+    return "\n\n".join(line for line in lines if line)
+
+
+def format_transcript_entry_for_welcome(entry: object) -> str:
+    """Format a single transcript entry for the macOS welcome/history view."""
+    if not isinstance(entry, dict):
+        return ""
+
+    ts = str(entry.get("timestamp", ""))[:19].replace("T", " ")
+    text = str(entry.get("text", "")).strip()
+    mode = str(entry.get("mode", "")).strip()
+    language = str(entry.get("language", "")).strip()
+
+    header = f"[{ts}]"
+    if mode or language:
+        header += f" ({' '.join(filter(None, [mode, language]))})"
+    if not text:
+        return header
+    return f"{header}\n{text}"
+
+
+def format_transcripts_for_welcome(
+    entries: Sequence[object], *, newest_first: bool = True
+) -> str:
+    """Format transcript entries for the macOS welcome/history viewer."""
+    valid_entries = [entry for entry in entries if isinstance(entry, dict)]
+    if not valid_entries:
+        return "No transcriptions yet.\n\nYour transcribed texts will appear here."
+
+    ordered_entries = reversed(valid_entries) if newest_first else valid_entries
+    blocks = [format_transcript_entry_for_welcome(entry) for entry in ordered_entries]
+    return "\n\n".join(block for block in blocks if block)
 
 
 def _format_display_text(text: object) -> str:
@@ -203,32 +321,8 @@ def _format_display_text(text: object) -> str:
         return ""
     if len(lines) == 1:
         return lines[0]
-    continuation_lines = [
-        f"    {line}" if line else "    "
-        for line in lines[1:]
-    ]
+    continuation_lines = [f"    {line}" if line else "    " for line in lines[1:]]
     return "\n".join([lines[0], *continuation_lines])
-
-
-def format_transcripts_for_display(entries: Sequence[object]) -> str:
-    """Format transcript entries for the Windows transcripts viewer."""
-    valid_entries = [entry for entry in entries if isinstance(entry, dict)]
-    if not valid_entries:
-        return "No transcripts yet."
-
-    lines: list[str] = []
-    for entry in reversed(valid_entries):  # oldest first for readable history flow
-        ts = str(entry.get("timestamp", ""))[:19].replace("T", " ")
-        text = _format_display_text(entry.get("text", ""))
-        mode = str(entry.get("mode", ""))
-        refined = "✨" if entry.get("refined") else ""
-
-        line = f"[{ts}] {refined}{text}"
-        if mode:
-            line = f"[{ts}] ({mode}) {refined}{text}"
-        lines.append(line)
-
-    return "\n\n".join(lines)
 
 
 def clear_history() -> bool:

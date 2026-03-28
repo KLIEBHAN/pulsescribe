@@ -187,6 +187,48 @@ class TestGetRecentTranscripts:
 
         assert [entry["text"] for entry in result] == ["Second", "First"]
 
+    def test_read_transcripts_from_offset_returns_valid_entries_in_file_order(
+        self, history_file
+    ):
+        """Append-only Delta-Reads sollen nur neue, gültige JSONL-Einträge liefern."""
+        from utils.history import read_transcripts_from_offset
+
+        original = (
+            '{"timestamp":"2026-03-03T10:00:00","text":"First"}\n'
+            '{"timestamp":"2026-03-03T10:00:01","text":"Second"}\n'
+        )
+        appended = (
+            '{"timestamp":"2026-03-03T10:00:02","text":"Third"}\n'
+            '"legacy-string-entry"\n'
+            '{"timestamp":"2026-03-03T10:00:03","text":"Fourth"}\n'
+        )
+        history_file.write_text(original + appended, encoding="utf-8")
+
+        entries = read_transcripts_from_offset(len(original.encode("utf-8")))
+
+        assert [entry["text"] for entry in entries] == ["Third", "Fourth"]
+
+    def test_merge_recent_transcript_entries_keeps_visible_window(self):
+        """Merged transcript windows sollen alte Einträge vorne verwerfen."""
+        from utils.history import merge_recent_transcript_entries
+
+        previous_entries = [
+            {"timestamp": "2026-03-03T10:00:00", "text": "First"},
+            {"timestamp": "2026-03-03T10:00:01", "text": "Second"},
+        ]
+        appended_entries = [
+            {"timestamp": "2026-03-03T10:00:02", "text": "Third"},
+            {"timestamp": "2026-03-03T10:00:03", "text": "Fourth"},
+        ]
+
+        merged = merge_recent_transcript_entries(
+            previous_entries,
+            appended_entries,
+            max_entries=3,
+        )
+
+        assert [entry["text"] for entry in merged] == ["Second", "Third", "Fourth"]
+
 
 class TestFormatTranscriptsForDisplay:
     """Tests für format_transcripts_for_display()."""

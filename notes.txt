@@ -1,35 +1,36 @@
 Performance work log - 2026-03-28
 
 Scope
-- Focused on frontend-heavy refresh paths outside the last two commits.
-- Left the most recent `overlay`, `onboarding` and `hotkey` changes untouched for this pass unless compatibility required otherwise.
-- Kept existing log, transcript, onboarding and settings behavior functionally unchanged.
+- Focused on frontend refresh paths outside the last two commits (`bc51fa9`, `c57906e`).
+- Left recent overlay, onboarding and hotkey changes untouched unless compatibility required otherwise.
+- Kept existing log and transcript behavior functionally unchanged.
 
 Hotspots reviewed
-- `ui/welcome.py`: the macOS logs view rebuilt the full visible tail buffer whenever the log file grew.
-- `ui/settings_windows.py`: the Windows logs view replaced the whole `QPlainTextEdit` document on each log change, even for small append-only updates.
-- Both paths sit behind auto-refresh timers, so repeated full document swaps added unnecessary render work during active sessions.
+- `ui/settings_windows.py`: transcript auto-refresh re-read `history.jsonl`, reformatted the last 50 entries and replaced the full `QPlainTextEdit` document on every history change.
+- `ui/welcome.py`: the macOS transcripts panel did the same work and re-laid out the full `NSTextView` on each refresh.
+- `utils/history.py`: transcript history already had efficient tail reads, but no append-aware delta reader or bounded merge helpers for transcript views.
 
 Changes in this pass
-- `utils/log_tail.py`
-  Added shared helpers to read only the appended file region and to merge append-only updates back into fixed line/character windows.
+- `utils/history.py`
+  Added append-only history delta reads, bounded visible-window merging and shared per-entry formatters for Windows and macOS transcript views.
 - `ui/settings_windows.py`
-  Enabled a bounded log document block count and switched append-only log growth at the bottom of the view to incremental cursor inserts instead of full `setPlainText()` rebuilds.
+  Cached the visible 50 transcript entries, skipped full `history.jsonl` reloads on append-only updates and appended new transcript blocks directly into the viewer when the visible window could stay incremental. When the 50-entry window needs trimming, it now rebuilds from the in-memory cache instead of rereading the file.
 - `ui/welcome.py`
-  Switched append-only log growth at the bottom of the macOS logs view to incremental text storage appends, with fallback to the existing full refresh path when truncation, rotation or scroll state makes incremental updates unsafe.
+  Applied the same cached transcript window strategy, moved safe append-only updates onto `NSTextStorage` and kept the old full-refresh behavior as a fallback for unsafe states.
 - Tests
-  Added regression coverage for the new tail helpers and for both incremental log refresh paths.
+  Added regression coverage for the new history delta helpers and for both transcript incremental refresh paths.
 
 Why this helps
-- Reduces expensive full-text widget rebuilds on the hottest auto-refreshing log paths.
-- Cuts repeated text layout and repaint work when logs are simply growing at the end, which is the common case during active sessions.
-- Keeps the previous safe full-refresh behavior for rotated, truncated or large-jump updates.
+- Removes repeated tail reads, parsing and formatting work from the hot transcript refresh loop in the common append-only case.
+- Avoids expensive full document resets on both Qt and AppKit transcript widgets when only new entries were added.
+- Preserves the visible 50-entry window and safe fallback behavior for non-append-only or oversized updates.
 
 Validation
-- `pytest tests/test_settings_windows_load.py tests/test_settings_windows_logs.py tests/test_settings_ui.py tests/test_log_tail.py -q`
-- `python -m py_compile ui/settings_windows.py ui/welcome.py utils/log_tail.py tests/test_settings_windows_logs.py tests/test_settings_ui.py tests/test_log_tail.py`
+- `pytest tests/test_settings_windows_load.py tests/test_settings_windows_logs.py tests/test_settings_ui.py tests/test_history.py tests/test_history_display.py -q`
+- `python -m py_compile utils/history.py ui/settings_windows.py ui/welcome.py tests/test_history.py tests/test_history_display.py tests/test_settings_windows_logs.py tests/test_settings_ui.py`
+- `ruff check utils/history.py ui/settings_windows.py ui/welcome.py tests/test_history.py tests/test_history_display.py tests/test_settings_windows_logs.py tests/test_settings_ui.py`
 
 Next worthwhile areas
-- `ui/settings_windows.py`: transcripts still rebuild the full formatted history when `history.jsonl` changes; append-aware history updates are the next clear win.
-- `ui/welcome.py`: transcripts still rebuild the visible history payload on each change; incremental entry formatting would reduce redraws there too.
-- `ui/welcome.py`: once the visible log tail re-truncates past the fixed 15k window, the code still falls back to a full refresh; if profiling still points there, bounded incremental re-trimming would be the next refinement.
+- Transcript views still rebuild the in-memory text snapshot when the visible 50-entry window has to trim older entries from the top; top-trim editing would be the next micro-optimization if profiling still points there.
+- `ui/overlay_windows.py`: queue and interim polling cadence is a good next profiling target for idle CPU and perceived responsiveness.
+- `ui/permissions_card.py`: permission refresh timers are already bounded, but coalescing repeated checks may still reduce needless work on slower systems.

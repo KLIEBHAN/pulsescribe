@@ -77,7 +77,9 @@ SETTINGS_WIDTH = 600
 SETTINGS_HEIGHT = 700
 LAZY_SETTINGS_TAB_LABELS = frozenset({"Prompts", "Vocabulary", "Logs"})
 LOG_VIEW_MAX_LINES = 100
+TRANSCRIPTS_VIEW_MAX_ENTRIES = 50
 INCREMENTAL_LOG_APPEND_MAX_BYTES = 64_000
+INCREMENTAL_TRANSCRIPT_APPEND_MAX_BYTES = 64_000
 
 # =============================================================================
 # Dropdown-Optionen (identisch mit macOS)
@@ -337,6 +339,7 @@ class SettingsWindow(QDialog):
         self._last_logs_signature: tuple[int, int] | None = None
         self._last_transcripts_text: str | None = None
         self._last_transcripts_signature: tuple[int, int] | None = None
+        self._last_transcripts_entries: list[dict[str, object]] | None = None
         self._setup_status_label: QLabel | None = None
         self._setup_status_detail_label: QLabel | None = None
         self._setup_howto_label: QLabel | None = None
@@ -2123,6 +2126,7 @@ class SettingsWindow(QDialog):
 
             if not HISTORY_FILE.exists():
                 self._last_transcripts_signature = None
+                self._last_transcripts_entries = []
                 self._set_transcripts_text_if_changed("No transcripts yet.")
                 if hasattr(self, "_transcripts_status"):
                     self._transcripts_status.setText("0 entries")
@@ -2135,10 +2139,13 @@ class SettingsWindow(QDialog):
             if signature is not None and signature == self._last_transcripts_signature:
                 return
 
-            entries = get_recent_transcripts(50)  # Letzte 50 Einträge
-            self._set_transcripts_text_if_changed(
-                format_transcripts_for_display(entries)
-            )
+            if self._try_append_transcripts_delta(signature):
+                return
+
+            entries = get_recent_transcripts(TRANSCRIPTS_VIEW_MAX_ENTRIES)
+            ordered_entries = list(reversed(entries))
+            self._set_transcripts_text_if_changed(format_transcripts_for_display(entries))
+            self._last_transcripts_entries = ordered_entries
             self._last_transcripts_signature = signature
 
             if hasattr(self, "_transcripts_status"):
@@ -2149,8 +2156,106 @@ class SettingsWindow(QDialog):
 
         except Exception as e:
             logger.error(f"Transcripts laden fehlgeschlagen: {e}")
-            if self._transcripts_viewer:
-                self._transcripts_viewer.setPlainText(f"Error: {e}")
+            viewer = getattr(self, "_transcripts_viewer", None)
+            if viewer:
+                viewer.setPlainText(f"Error: {e}")
+
+    def _try_append_transcripts_delta(self, signature: tuple[int, int] | None) -> bool:
+        """Reuse an append-only history delta without re-reading the full transcript tail."""
+        viewer = getattr(self, "_transcripts_viewer", None)
+        previous_entries = getattr(self, "_last_transcripts_entries", None)
+        if (
+            not viewer
+            or signature is None
+            or previous_entries is None
+        ):
+            return False
+
+        previous_signature = self._last_transcripts_signature
+        if previous_signature is None:
+            return False
+
+        previous_size = int(previous_signature[1])
+        current_size = int(signature[1])
+        if current_size <= previous_size:
+            return False
+
+        if current_size - previous_size > INCREMENTAL_TRANSCRIPT_APPEND_MAX_BYTES:
+            return False
+
+        from utils.history import (
+            format_transcript_entry_for_display,
+            format_transcripts_for_display,
+            merge_recent_transcript_entries,
+            read_transcripts_from_offset,
+        )
+
+        appended_entries = read_transcripts_from_offset(
+            previous_size,
+            max_bytes=INCREMENTAL_TRANSCRIPT_APPEND_MAX_BYTES,
+        )
+        if not appended_entries:
+            return False
+
+        merged_entries = merge_recent_transcript_entries(
+            previous_entries,
+            appended_entries,
+            max_entries=TRANSCRIPTS_VIEW_MAX_ENTRIES,
+        )
+        if not merged_entries:
+            return False
+
+        if hasattr(self, "_transcripts_status"):
+            self._transcripts_status.setText(f"{len(merged_entries)} entries")
+            self._transcripts_status.setStyleSheet(
+                f"color: {COLORS['text_secondary']};"
+            )
+
+        scrollbar = viewer.verticalScrollBar()
+        previous_maximum = scrollbar.maximum()
+        previous_value = scrollbar.value()
+        entries_trimmed = len(merged_entries) < (
+            len(previous_entries) + len(appended_entries)
+        )
+        can_append_in_place = (
+            not entries_trimmed
+            and self._last_transcripts_text is not None
+            and is_near_bottom(previous_value, previous_maximum)
+        )
+
+        if can_append_in_place:
+            appended_blocks = [
+                format_transcript_entry_for_display(entry)
+                for entry in appended_entries
+            ]
+            appended_text = "\n\n".join(block for block in appended_blocks if block)
+            if not appended_text:
+                return False
+
+            separator = "\n\n" if self._last_transcripts_text else ""
+            try:
+                cursor = viewer.textCursor()
+                cursor.movePosition(QTextCursor.MoveOperation.End)
+                cursor.insertText(f"{separator}{appended_text}")
+            except Exception:
+                return False
+
+            self._last_transcripts_text = (
+                f"{self._last_transcripts_text or ''}{separator}{appended_text}"
+            )
+            self._last_transcripts_entries = merged_entries
+            self._last_transcripts_signature = signature
+            scrollbar.setValue(scrollbar.maximum())
+            return True
+
+        merged_text = format_transcripts_for_display(
+            merged_entries,
+            newest_first=False,
+        )
+        self._set_transcripts_text_if_changed(merged_text)
+        self._last_transcripts_entries = merged_entries
+        self._last_transcripts_signature = signature
+        return True
 
     def _refresh_active_logs_view(self) -> None:
         """Aktualisiert die aktuell sichtbare Ansicht im Logs-Tab."""

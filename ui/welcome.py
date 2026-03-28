@@ -76,7 +76,9 @@ API_KEY_CARD_TOP_INSET = 70
 API_KEY_CARD_BOTTOM_INSET = 54
 API_KEY_ROW_SPACING = 54
 WELCOME_LOG_MAX_CHARS = 15_000
+TRANSCRIPTS_VIEW_MAX_ENTRIES = 50
 INCREMENTAL_LOG_APPEND_MAX_BYTES = 64_000
+INCREMENTAL_TRANSCRIPT_APPEND_MAX_BYTES = 64_000
 LOG_TRUNCATED_PREFIX = "... (truncated)\n\n"
 
 
@@ -235,6 +237,7 @@ class WelcomeController:
         self._last_logs_signature = None
         self._last_transcripts_text = None
         self._last_transcripts_signature = None
+        self._last_transcripts_entries = None
         self._transcripts_view_built = False
         self._transcripts_layout_metrics = None
         self._transcripts_view_seen = False
@@ -2428,6 +2431,11 @@ class WelcomeController:
         t_text_view.setString_(initial_transcripts_text)
         self._last_transcripts_text = initial_transcripts_text
         self._last_transcripts_signature = self._get_transcripts_signature()
+        self._last_transcripts_entries = getattr(
+            self,
+            "_pending_transcripts_entries",
+            [],
+        )
         self._update_transcripts_count_label(entry_count)
         t_scroll.setDocumentView_(t_text_view)
         container.addSubview_(t_scroll)
@@ -2437,35 +2445,14 @@ class WelcomeController:
 
     def _get_transcripts_payload(self) -> tuple[str, int]:
         """Lädt und formatiert die Transkript-Historie inkl. Eintragszahl."""
-        from utils.history import get_recent_transcripts
+        from utils.history import format_transcripts_for_welcome, get_recent_transcripts
 
         try:
-            entries = get_recent_transcripts(count=50)
-            if not entries:
-                return (
-                    "No transcriptions yet.\n\nYour transcribed texts will appear here.",
-                    0,
-                )
-
-            lines = []
-            # Chronological order (oldest first, newest last) - like logs
-            for entry in reversed(entries):
-                ts = entry.get("timestamp", "")[:19].replace("T", " ")
-                text = entry.get("text", "").strip()
-                mode = entry.get("mode", "")
-                lang = entry.get("language", "")
-
-                header = f"[{ts}]"
-                if mode or lang:
-                    meta = " ".join(filter(None, [mode, lang]))
-                    header += f" ({meta})"
-
-                lines.append(header)
-                lines.append(text)
-                lines.append("")
-
-            return "\n".join(lines), len(entries)
+            entries = get_recent_transcripts(count=TRANSCRIPTS_VIEW_MAX_ENTRIES)
+            self._pending_transcripts_entries = list(reversed(entries))
+            return format_transcripts_for_welcome(entries), len(entries)
         except Exception as e:
+            self._pending_transcripts_entries = []
             return f"Could not load transcripts: {e}", 0
 
     def _get_transcripts_text(self) -> str:
@@ -2499,31 +2486,160 @@ class WelcomeController:
                         self._scroll_transcripts_to_bottom()
                     return
 
-                transcript_text, entry_count = self._get_transcripts_payload()
-                self._update_transcripts_count_label(entry_count)
-                if transcript_text == self._last_transcripts_text:
-                    self._last_transcripts_signature = signature
-                    if scroll_to_bottom:
-                        self._scroll_transcripts_to_bottom()
+                if self._try_append_transcripts_delta(
+                    signature,
+                    scroll_to_bottom=scroll_to_bottom,
+                ):
                     return
 
-                previous_y = 0.0
-                if self._transcripts_scroll_view:
-                    clip_view = self._transcripts_scroll_view.contentView()
-                    if clip_view is not None:
-                        previous_y = clip_view.documentVisibleRect().origin.y
-
-                was_near_bottom = self._is_transcripts_near_bottom()
-                self._transcripts_text_view.setString_(transcript_text)
-                self._last_transcripts_text = transcript_text
-                self._last_transcripts_signature = signature
-
-                if scroll_to_bottom or was_near_bottom:
-                    self._scroll_transcripts_to_bottom()
-                else:
-                    self._restore_transcripts_scroll_position(previous_y)
+                transcript_text, entry_count = self._get_transcripts_payload()
+                self._last_transcripts_entries = getattr(
+                    self,
+                    "_pending_transcripts_entries",
+                    getattr(self, "_last_transcripts_entries", None),
+                )
+                self._apply_transcripts_payload(
+                    transcript_text,
+                    signature,
+                    entry_count,
+                    scroll_to_bottom=scroll_to_bottom,
+                )
             except Exception:
                 pass
+
+    def _try_append_transcripts_delta(
+        self,
+        signature,
+        *,
+        scroll_to_bottom: bool = False,
+    ) -> bool:
+        """Refresh transcript history from an append-only delta when possible."""
+        previous_entries = getattr(self, "_last_transcripts_entries", None)
+        if (
+            self._transcripts_text_view is None
+            or signature is None
+            or previous_entries is None
+        ):
+            return False
+
+        previous_signature = self._last_transcripts_signature
+        if previous_signature is None:
+            return False
+
+        previous_size = int(previous_signature[1])
+        current_size = int(signature[1])
+        if current_size <= previous_size:
+            return False
+
+        if current_size - previous_size > INCREMENTAL_TRANSCRIPT_APPEND_MAX_BYTES:
+            return False
+
+        from utils.history import (
+            format_transcripts_for_welcome,
+            merge_recent_transcript_entries,
+            read_transcripts_from_offset,
+        )
+
+        appended_entries = read_transcripts_from_offset(
+            previous_size,
+            max_bytes=INCREMENTAL_TRANSCRIPT_APPEND_MAX_BYTES,
+        )
+        if not appended_entries:
+            return False
+
+        merged_entries = merge_recent_transcript_entries(
+            previous_entries,
+            appended_entries,
+            max_entries=TRANSCRIPTS_VIEW_MAX_ENTRIES,
+        )
+        if not merged_entries:
+            return False
+
+        entries_trimmed = len(merged_entries) < (
+            len(previous_entries) + len(appended_entries)
+        )
+        can_append_in_place = (
+            not entries_trimmed
+            and self._last_transcripts_text is not None
+            and (scroll_to_bottom or self._is_transcripts_near_bottom())
+        )
+
+        if can_append_in_place:
+            appended_text = format_transcripts_for_welcome(
+                appended_entries,
+                newest_first=False,
+            )
+            if not appended_text:
+                return False
+
+            separator = "\n\n" if self._last_transcripts_text else ""
+            try:
+                text_storage = self._transcripts_text_view.textStorage()
+                if text_storage is None:
+                    return False
+                text_storage.beginEditing()
+                try:
+                    text_storage.mutableString().appendString_(
+                        f"{separator}{appended_text}"
+                    )
+                finally:
+                    text_storage.endEditing()
+            except Exception:
+                return False
+
+            self._last_transcripts_text = (
+                f"{self._last_transcripts_text or ''}{separator}{appended_text}"
+            )
+            self._last_transcripts_entries = merged_entries
+            self._last_transcripts_signature = signature
+            self._update_transcripts_count_label(len(merged_entries))
+            self._scroll_transcripts_to_bottom()
+            return True
+
+        self._last_transcripts_entries = merged_entries
+        self._apply_transcripts_payload(
+            format_transcripts_for_welcome(
+                merged_entries,
+                newest_first=False,
+            ),
+            signature,
+            len(merged_entries),
+            scroll_to_bottom=scroll_to_bottom,
+        )
+        return True
+
+    def _apply_transcripts_payload(
+        self,
+        transcript_text: str,
+        signature,
+        entry_count: int,
+        *,
+        scroll_to_bottom: bool = False,
+    ) -> None:
+        """Apply transcript text updates while preserving scroll position."""
+        self._update_transcripts_count_label(entry_count)
+        if transcript_text == self._last_transcripts_text:
+            self._last_transcripts_signature = signature
+            if scroll_to_bottom:
+                self._scroll_transcripts_to_bottom()
+            return
+
+        previous_y = 0.0
+        if self._transcripts_scroll_view:
+            clip_view = self._transcripts_scroll_view.contentView()
+            if clip_view is not None:
+                previous_y = clip_view.documentVisibleRect().origin.y
+
+        was_near_bottom = self._is_transcripts_near_bottom()
+        self._transcripts_text_view.setString_(transcript_text)
+        self._last_transcripts_text = transcript_text
+        self._last_transcripts_signature = signature
+
+        if scroll_to_bottom or was_near_bottom:
+            self._scroll_transcripts_to_bottom()
+            return
+
+        self._restore_transcripts_scroll_position(previous_y)
 
     def _scroll_transcripts_to_bottom(self) -> None:
         """Scrollt die Transcripts-Ansicht ans Ende (neueste unten)."""
