@@ -34,3 +34,42 @@ Next worthwhile areas
 - `ui/onboarding_wizard_windows.py`: hotkey/test-summary paths still reread env-backed values more often than needed; a small local state cache would trim more UI churn.
 - `ui/welcome.py`: the save/apply path still performs many individual env writes, but it was intentionally skipped here because welcome/log work was part of the recent commit history.
 - `utils/custom_prompts.py` and vocabulary-driven tab loads: if profiling still shows tab-open spikes, add signature-based caches similar to the history/log optimizations.
+
+Performance work log - 2026-03-28 (Onboarding pass)
+
+Scope
+- Kept the last two commit areas untouched again: settings/env batching setup work and permission/overlay repaint work.
+- Focused on `ui/onboarding_wizard_windows.py`, which was the clearest remaining frontend hotspot outside those commit boundaries.
+- Preserved onboarding flow, hotkey behavior, summary output, and daemon settings reload semantics.
+
+Current weaknesses reviewed
+- `ui/onboarding_wizard_windows.py`: the wizard repeatedly reread env-backed values across choose-goal, hotkey, test, summary, and navigation paths even though the same values were already known within the current dialog session.
+- `ui/onboarding_wizard_windows.py`: fast/private onboarding could trigger redundant persistence work, including duplicate Deepgram key handling on Next and an extra `PULSESCRIBE_MODE=local` write before local preset application.
+- `ui/onboarding_wizard_windows.py`: hotkey defaults, hotkey saves, preset application, and clears performed separate per-key env mutations and always emitted `settings_changed`, even when nothing actually changed.
+
+Changes in this pass
+- `ui/onboarding_wizard_windows.py`
+  Added a lightweight wizard-local env cache with explicit refresh on step changes, so hotkey/mode/language/API-key reads no longer keep walking the env helper path on every small UI update.
+- `ui/onboarding_wizard_windows.py`
+  Added a single batched env update helper for the wizard and routed hotkey defaults, hotkey edits, preset application, language changes, and fast-mode mode selection through it.
+- `ui/onboarding_wizard_windows.py`
+  Removed duplicate fast/private writes: Next now relies on the preset application path for Deepgram key persistence, and private mode no longer writes `PULSESCRIBE_MODE=local` twice before the local preset helper runs.
+- `ui/onboarding_wizard_windows.py`
+  Suppressed no-op `settings_changed` emissions when language, hotkeys, API key, or mode were already current, which avoids unnecessary daemon reload work from the onboarding UI.
+- Tests
+  Updated Windows onboarding tests for the batched persistence path and added coverage for no-op language changes and duplicate fast-mode persistence avoidance.
+
+Why this helps
+- The Windows onboarding dialog now does materially less env I/O while the user configures hotkeys, mode, and language.
+- Hotkey interactions persist as one atomic pair update instead of multiple independent writes, which shortens the critical UI path and keeps the state transition consistent.
+- Avoiding no-op `settings_changed` emissions removes unnecessary downstream reload work, improving responsiveness especially when users revisit the same selection or preset.
+
+Validation
+- `pytest tests/test_onboarding_windows.py -q`
+- `python -m py_compile ui/onboarding_wizard_windows.py tests/test_onboarding_windows.py`
+- `ruff check ui/onboarding_wizard_windows.py tests/test_onboarding_windows.py`
+
+Next worthwhile areas
+- `ui/onboarding_wizard.py` and `ui/hotkey_card.py`: the macOS onboarding flow still re-queries env-backed hotkey state during render cycles; a similar local-state pass would keep cross-platform behavior aligned.
+- `ui/welcome.py`: the welcome save/apply flow still has a large batched-settings opportunity, but it remains adjacent to recent commit history and should be handled in a separate pass.
+- Prompt/vocabulary editor tabs remain the next likely source of open-tab latency if profiling still shows spikes after the onboarding cleanup.

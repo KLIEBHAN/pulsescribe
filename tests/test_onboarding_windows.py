@@ -214,20 +214,16 @@ def test_go_next_fast_reapplies_choice_preset_after_api_key_entry(monkeypatch):
 
     applied_choices: list[OnboardingChoice] = []
     shown_steps: list[OnboardingStep] = []
-    saved_keys: list[tuple[str, str]] = []
     saved_choice: list[OnboardingChoice] = []
+    emitted: list[bool] = []
 
-    wizard._apply_choice_preset = lambda choice: applied_choices.append(choice)
+    wizard.settings_changed = types.SimpleNamespace(emit=lambda: emitted.append(True))
+    wizard._apply_choice_preset = lambda choice: applied_choices.append(choice) or True
     wizard._show_step = lambda step: shown_steps.append(step)
     wizard._complete = lambda: (_ for _ in ()).throw(
         AssertionError("should not complete on CHOOSE_GOAL")
     )
 
-    monkeypatch.setattr(
-        wizard_mod,
-        "save_api_key",
-        lambda key, value: saved_keys.append((key, value)),
-    )
     monkeypatch.setattr(
         wizard_mod,
         "set_onboarding_choice",
@@ -236,9 +232,9 @@ def test_go_next_fast_reapplies_choice_preset_after_api_key_entry(monkeypatch):
 
     wizard._go_next()
 
-    assert saved_keys == [("DEEPGRAM_API_KEY", "dg-test-key")]
     assert applied_choices == [OnboardingChoice.FAST]
     assert saved_choice == [OnboardingChoice.FAST]
+    assert emitted == [True]
     assert shown_steps == [next_step(OnboardingStep.CHOOSE_GOAL)]
 
 
@@ -275,65 +271,46 @@ def test_validate_hotkey_pair_rejects_overlapping_hotkeys():
 
 
 def test_ensure_default_hotkeys_applies_recommended_pair_when_missing(monkeypatch):
-    import ui.onboarding_wizard_windows as wizard_mod
-
     wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
     wizard._toggle_input = _FakeField("")
     wizard._hold_input = _FakeField("")
     wizard._hotkey_status_label = _FakeLabel()
+    wizard._env_settings_cache = {}
 
-    saved: list[tuple[str, str]] = []
+    saved: list[tuple[str, str | None]] = []
     refreshed: list[bool] = []
     emitted: list[bool] = []
 
     wizard.settings_changed = types.SimpleNamespace(emit=lambda: emitted.append(True))
     wizard._refresh_test_hotkey_label = lambda: refreshed.append(True)
-
-    monkeypatch.setattr(wizard_mod, "get_env_setting", lambda _key: None)
-    monkeypatch.setattr(
-        wizard_mod,
-        "save_env_setting",
-        lambda key, value: saved.append((key, value)),
-    )
+    wizard._persist_hotkeys = lambda toggle, hold: saved.append((toggle, hold)) or True
 
     wizard._ensure_default_hotkeys()
 
     assert wizard._toggle_input.text() == DEFAULT_WINDOWS_TOGGLE_HOTKEY
     assert wizard._hold_input.text() == DEFAULT_WINDOWS_HOLD_HOTKEY
     assert saved == [
-        ("PULSESCRIBE_TOGGLE_HOTKEY", DEFAULT_WINDOWS_TOGGLE_HOTKEY),
-        ("PULSESCRIBE_HOLD_HOTKEY", DEFAULT_WINDOWS_HOLD_HOTKEY),
+        (DEFAULT_WINDOWS_TOGGLE_HOTKEY, DEFAULT_WINDOWS_HOLD_HOTKEY),
     ]
     assert refreshed == [True]
     assert emitted == [True]
     assert "Standard gesetzt" in wizard._hotkey_status_label.text
 
 
-def test_ensure_default_hotkeys_keeps_existing_user_config(monkeypatch):
-    import ui.onboarding_wizard_windows as wizard_mod
-
+def test_ensure_default_hotkeys_keeps_existing_user_config():
     wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
     wizard._toggle_input = _FakeField("ctrl+shift+r")
     wizard._hold_input = _FakeField("")
     wizard._hotkey_status_label = _FakeLabel()
+    wizard._env_settings_cache = {"PULSESCRIBE_TOGGLE_HOTKEY": "ctrl+shift+r"}
     wizard.settings_changed = types.SimpleNamespace(
         emit=lambda: (_ for _ in ()).throw(AssertionError("must not emit"))
     )
     wizard._refresh_test_hotkey_label = (
         lambda: (_ for _ in ()).throw(AssertionError("must not refresh"))
     )
-
-    monkeypatch.setattr(
-        wizard_mod,
-        "get_env_setting",
-        lambda key: "ctrl+shift+r" if key == "PULSESCRIBE_TOGGLE_HOTKEY" else None,
-    )
-    monkeypatch.setattr(
-        wizard_mod,
-        "save_env_setting",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("must not save defaults")
-        ),
+    wizard._persist_hotkeys = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        AssertionError("must not save defaults")
     )
 
     wizard._ensure_default_hotkeys()
@@ -358,6 +335,28 @@ def test_on_api_key_input_changed_updates_status_and_navigation():
     assert wizard._update_navigation_called == 2
 
 
+def test_on_language_changed_skips_noop_persistence_and_emit(monkeypatch):
+    import ui.onboarding_wizard_windows as wizard_mod
+
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+    wizard._env_settings_cache = {"PULSESCRIBE_LANGUAGE": "de"}
+
+    emitted: list[bool] = []
+    persisted: list[dict[str, str | None]] = []
+    wizard.settings_changed = types.SimpleNamespace(emit=lambda: emitted.append(True))
+
+    monkeypatch.setattr(
+        wizard_mod,
+        "update_env_settings",
+        lambda updates: persisted.append(dict(updates)),
+    )
+
+    wizard._on_language_changed("de")
+
+    assert persisted == []
+    assert emitted == []
+
+
 def test_can_advance_fast_with_existing_groq_api_key(monkeypatch):
     import ui.onboarding_wizard_windows as wizard_mod
 
@@ -373,6 +372,41 @@ def test_can_advance_fast_with_existing_groq_api_key(monkeypatch):
     )
 
     assert wizard._can_advance() is True
+
+
+def test_apply_choice_preset_fast_skips_duplicate_api_key_and_mode_writes(monkeypatch):
+    import ui.onboarding_wizard_windows as wizard_mod
+
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+    wizard._choice = OnboardingChoice.FAST
+    wizard._api_key_field = _FakeField("dg-same")
+    wizard._api_key_container = _FakeLabel()
+    wizard._api_key_status = _FakeLabel()
+    wizard._env_settings_cache = {
+        "DEEPGRAM_API_KEY": "dg-same",
+        "PULSESCRIBE_MODE": "deepgram",
+    }
+
+    save_calls: list[tuple[str, str]] = []
+    env_updates: list[dict[str, str | None]] = []
+
+    monkeypatch.setattr(
+        wizard_mod,
+        "save_api_key",
+        lambda key, value: save_calls.append((key, value)),
+    )
+    monkeypatch.setattr(
+        wizard_mod,
+        "update_env_settings",
+        lambda updates: env_updates.append(dict(updates)),
+    )
+
+    changed = wizard._apply_choice_preset(OnboardingChoice.FAST)
+
+    assert changed is False
+    assert save_calls == []
+    assert env_updates == []
+    assert wizard._api_key_container.visible is False
 
 
 def test_select_choice_fast_hides_api_input_when_groq_key_exists(monkeypatch):
@@ -567,64 +601,57 @@ def test_stop_hotkey_recording_releases_qt_grab(monkeypatch):
 
 
 def test_clear_hotkey_stops_active_recording_before_clearing(monkeypatch):
-    import ui.onboarding_wizard_windows as wizard_mod
-
     wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
     wizard._recording_field = "toggle"
     wizard._toggle_input = _FakeField("ctrl+alt+r")
     wizard._hold_input = _FakeField("ctrl+win")
     wizard._hotkey_status_label = _FakeLabel()
+    wizard._env_settings_cache = {
+        "PULSESCRIBE_TOGGLE_HOTKEY": "ctrl+alt+r",
+        "PULSESCRIBE_HOLD_HOTKEY": "ctrl+win",
+    }
 
     stop_calls: list[bool] = []
     emitted: list[bool] = []
     refreshed: list[bool] = []
     updated: list[bool] = []
-    removed_keys: list[str] = []
+    persisted: list[tuple[str | None, str | None]] = []
 
     wizard._stop_hotkey_recording = lambda save=False: stop_calls.append(save)
     wizard.settings_changed = types.SimpleNamespace(emit=lambda: emitted.append(True))
     wizard._refresh_test_hotkey_label = lambda: refreshed.append(True)
     wizard._update_navigation = lambda: updated.append(True)
-
-    monkeypatch.setattr(
-        wizard_mod,
-        "remove_env_setting",
-        lambda key: removed_keys.append(key),
-    )
+    wizard._persist_hotkeys = lambda toggle, hold: persisted.append((toggle, hold)) or True
 
     wizard._clear_hotkey("toggle")
 
     assert stop_calls == [False]
     assert wizard._toggle_input.text() == ""
     assert wizard._hold_input.text() == "ctrl+win"
-    assert removed_keys == ["PULSESCRIBE_TOGGLE_HOTKEY"]
+    assert persisted == [(None, "ctrl+win")]
     assert emitted == [True]
     assert refreshed == [True]
     assert updated == [True]
 
 
-def test_clear_hotkey_updates_status_feedback(monkeypatch):
-    import ui.onboarding_wizard_windows as wizard_mod
-
+def test_clear_hotkey_updates_status_feedback():
     wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
     wizard._recording_field = None
     wizard._toggle_input = _FakeField("ctrl+alt+r")
     wizard._hold_input = _FakeField("")
     wizard._hotkey_status_label = _FakeLabel()
+    wizard._env_settings_cache = {"PULSESCRIBE_TOGGLE_HOTKEY": "ctrl+alt+r"}
     wizard.settings_changed = types.SimpleNamespace(emit=lambda: None)
     wizard._refresh_test_hotkey_label = lambda: None
     wizard._update_navigation = lambda: None
-
-    monkeypatch.setattr(wizard_mod, "remove_env_setting", lambda _key: None)
+    wizard._persist_hotkeys = lambda *_args, **_kwargs: True
 
     wizard._clear_hotkey("toggle")
 
     assert "Hotkey entfernt" in wizard._hotkey_status_label.text
 
 
-def test_apply_hotkey_preset_stops_active_recording_before_applying(monkeypatch):
-    import ui.onboarding_wizard_windows as wizard_mod
-
+def test_apply_hotkey_preset_stops_active_recording_before_applying():
     wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
     wizard._recording_field = "toggle"
     wizard._toggle_input = _FakeField("ctrl+alt+r")
@@ -635,32 +662,20 @@ def test_apply_hotkey_preset_stops_active_recording_before_applying(monkeypatch)
     emitted: list[bool] = []
     refreshed: list[bool] = []
     updated: list[bool] = []
-    saved: list[tuple[str, str]] = []
-    removed: list[str] = []
+    persisted: list[tuple[str | None, str | None]] = []
 
     wizard._stop_hotkey_recording = lambda save=False: stop_calls.append(save)
     wizard.settings_changed = types.SimpleNamespace(emit=lambda: emitted.append(True))
     wizard._refresh_test_hotkey_label = lambda: refreshed.append(True)
     wizard._update_navigation = lambda: updated.append(True)
-
-    monkeypatch.setattr(
-        wizard_mod,
-        "save_env_setting",
-        lambda key, value: saved.append((key, value)),
-    )
-    monkeypatch.setattr(
-        wizard_mod,
-        "remove_env_setting",
-        lambda key: removed.append(key),
-    )
+    wizard._persist_hotkeys = lambda toggle, hold: persisted.append((toggle, hold)) or True
 
     wizard._apply_hotkey_preset("f19", None)
 
     assert stop_calls == [False]
     assert wizard._toggle_input.text() == "f19"
     assert wizard._hold_input.text() == ""
-    assert saved == [("PULSESCRIBE_TOGGLE_HOTKEY", "f19")]
-    assert removed == ["PULSESCRIBE_HOLD_HOTKEY"]
+    assert persisted == [("f19", "")]
     assert emitted == [True]
     assert refreshed == [True]
     assert updated == [True]

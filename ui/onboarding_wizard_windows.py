@@ -50,12 +50,12 @@ from utils.preferences import (
     get_env_setting,
     get_onboarding_choice,
     get_onboarding_step,
-    remove_env_setting,
+    read_env_file,
     save_api_key,
-    save_env_setting,
     set_onboarding_choice,
     set_onboarding_seen,
     set_onboarding_step,
+    update_env_settings,
 )
 from utils.hotkey_windows import hotkeys_conflict, normalize_windows_hotkey
 
@@ -337,12 +337,89 @@ class OnboardingWizardWindows(QDialog):
         self._is_closed = False
         self._last_test_transcript_text = ""
         self._last_hotkey_preview_by_field: dict[str, str] = {}
+        self._env_settings_cache: dict[str, str] = read_env_file()
 
         self._setup_ui()
 
     # -------------------------------------------------------------------------
     # Public API
     # -------------------------------------------------------------------------
+
+    def _refresh_env_settings_cache(self) -> dict[str, str]:
+        cache = read_env_file()
+        self._env_settings_cache = cache
+        return cache
+
+    def _get_cached_env_setting(self, key_name: str) -> str | None:
+        cache = getattr(self, "_env_settings_cache", None)
+        if cache is None:
+            return get_env_setting(key_name)
+        return cache.get(key_name)
+
+    def _apply_env_updates(self, updates: dict[str, str | None]) -> bool:
+        normalized_updates: dict[str, str | None] = {}
+        for key, value in updates.items():
+            if value is None:
+                normalized_updates[key] = None
+            else:
+                normalized_updates[key] = str(value)
+
+        cache = getattr(self, "_env_settings_cache", None)
+        if cache is not None:
+            changed = False
+            for key, value in normalized_updates.items():
+                current = cache.get(key)
+                if value is None:
+                    if current is not None:
+                        changed = True
+                        break
+                elif current != value:
+                    changed = True
+                    break
+            if not changed:
+                return False
+
+        update_env_settings(normalized_updates)
+
+        cache = getattr(self, "_env_settings_cache", None)
+        if cache is None:
+            return True
+
+        for key, value in normalized_updates.items():
+            if value is None:
+                cache.pop(key, None)
+            else:
+                cache[key] = value
+        return True
+
+    def _cache_api_key(self, key_name: str, value: str | None) -> None:
+        cache = getattr(self, "_env_settings_cache", None)
+        if cache is None:
+            return
+        if value is None:
+            cache.pop(key_name, None)
+        else:
+            cache[key_name] = value
+
+    def _get_cached_api_key(self, key_name: str) -> str | None:
+        cache = getattr(self, "_env_settings_cache", None)
+        if cache is None:
+            return get_api_key(key_name)
+        return cache.get(key_name)
+
+    def _get_cached_hotkeys(self) -> tuple[str, str]:
+        return (
+            (self._get_cached_env_setting("PULSESCRIBE_TOGGLE_HOTKEY") or "").strip(),
+            (self._get_cached_env_setting("PULSESCRIBE_HOLD_HOTKEY") or "").strip(),
+        )
+
+    def _persist_hotkeys(self, toggle: str | None, hold: str | None) -> bool:
+        return self._apply_env_updates(
+            {
+                "PULSESCRIBE_TOGGLE_HOTKEY": toggle or None,
+                "PULSESCRIBE_HOLD_HOTKEY": hold or None,
+            }
+        )
 
     def set_test_dictation_callbacks(
         self, *, start: Callable[[], None], stop: Callable[[], None]
@@ -501,7 +578,7 @@ class OnboardingWizardWindows(QDialog):
 
         self._lang_combo = QComboBox()
         self._lang_combo.addItems(LANGUAGE_OPTIONS)
-        current_lang = get_env_setting("PULSESCRIBE_LANGUAGE") or "auto"
+        current_lang = self._get_cached_env_setting("PULSESCRIBE_LANGUAGE") or "auto"
         if current_lang in LANGUAGE_OPTIONS:
             self._lang_combo.setCurrentText(current_lang)
         self._lang_combo.currentTextChanged.connect(self._on_language_changed)
@@ -627,7 +704,9 @@ class OnboardingWizardWindows(QDialog):
         self._toggle_input = QLineEdit()
         self._toggle_input.setPlaceholderText("Klicken zum Aufnehmen...")
         self._toggle_input.setReadOnly(True)
-        self._toggle_input.setText(get_env_setting("PULSESCRIBE_TOGGLE_HOTKEY") or "")
+        self._toggle_input.setText(
+            self._get_cached_env_setting("PULSESCRIBE_TOGGLE_HOTKEY") or ""
+        )
         self._toggle_input.mousePressEvent = lambda e: self._start_hotkey_recording(
             "toggle"
         )
@@ -650,7 +729,9 @@ class OnboardingWizardWindows(QDialog):
         self._hold_input = QLineEdit()
         self._hold_input.setPlaceholderText("Klicken zum Aufnehmen...")
         self._hold_input.setReadOnly(True)
-        self._hold_input.setText(get_env_setting("PULSESCRIBE_HOLD_HOTKEY") or "")
+        self._hold_input.setText(
+            self._get_cached_env_setting("PULSESCRIBE_HOLD_HOTKEY") or ""
+        )
         self._hold_input.mousePressEvent = lambda e: self._start_hotkey_recording(
             "hold"
         )
@@ -848,6 +929,8 @@ class OnboardingWizardWindows(QDialog):
 
     def _show_step(self, step: OnboardingStep) -> None:
         """Show the specified step."""
+        self._refresh_env_settings_cache()
+
         # Stop mic timer when leaving PERMISSIONS step
         if (
             self._step == OnboardingStep.PERMISSIONS
@@ -926,8 +1009,7 @@ class OnboardingWizardWindows(QDialog):
             return True
         elif self._step == OnboardingStep.HOTKEY:
             # At least one hotkey must be configured
-            toggle = get_env_setting("PULSESCRIBE_TOGGLE_HOTKEY")
-            hold = get_env_setting("PULSESCRIBE_HOLD_HOTKEY")
+            toggle, hold = self._get_cached_hotkeys()
             if not (toggle or hold):
                 self._set_hotkey_status(
                     "Mindestens ein Hotkey muss gesetzt sein.", "warning"
@@ -954,13 +1036,11 @@ class OnboardingWizardWindows(QDialog):
             self._step == OnboardingStep.CHOOSE_GOAL
             and self._choice == OnboardingChoice.FAST
         ):
-            if self._api_key_field:
-                entered_key = self._api_key_field.text().strip()
-                if entered_key:
-                    save_api_key("DEEPGRAM_API_KEY", entered_key)
             # Re-apply after potential key entry to ensure mode is actually persisted.
-            self._apply_choice_preset(self._choice)
+            changed = self._apply_choice_preset(self._choice)
             set_onboarding_choice(self._choice)
+            if changed:
+                self.settings_changed.emit()
 
         if self._step == OnboardingStep.CHEAT_SHEET:
             self._complete()
@@ -1238,8 +1318,9 @@ class OnboardingWizardWindows(QDialog):
 
         if save:
             set_onboarding_choice(choice)
-            self._apply_choice_preset(choice)
-            self.settings_changed.emit()
+            changed = self._apply_choice_preset(choice)
+            if changed:
+                self.settings_changed.emit()
 
         self._update_navigation()
 
@@ -1252,13 +1333,13 @@ class OnboardingWizardWindows(QDialog):
             entered_key = self._api_key_field.text().strip()
         return bool(
             entered_key
-            or get_api_key("DEEPGRAM_API_KEY")
+            or self._get_cached_api_key("DEEPGRAM_API_KEY")
             or os.getenv("DEEPGRAM_API_KEY")
-            or get_api_key("GROQ_API_KEY")
+            or self._get_cached_api_key("GROQ_API_KEY")
             or os.getenv("GROQ_API_KEY")
         )
 
-    def _apply_choice_preset(self, choice: OnboardingChoice) -> None:
+    def _apply_choice_preset(self, choice: OnboardingChoice) -> bool:
         """Apply the preset for the selected choice."""
         import os
 
@@ -1268,24 +1349,33 @@ class OnboardingWizardWindows(QDialog):
         )
 
         if choice == OnboardingChoice.FAST:
+            changed = False
             # Save entered API key if present
             if self._api_key_field:
                 entered_key = self._api_key_field.text().strip()
                 if entered_key:
-                    save_api_key("DEEPGRAM_API_KEY", entered_key)
+                    cached_key = self._get_cached_api_key("DEEPGRAM_API_KEY")
+                    if cached_key != entered_key:
+                        save_api_key("DEEPGRAM_API_KEY", entered_key)
+                        self._cache_api_key("DEEPGRAM_API_KEY", entered_key)
+                        changed = True
 
             # Check for API keys
             has_deepgram = bool(
-                get_api_key("DEEPGRAM_API_KEY") or os.getenv("DEEPGRAM_API_KEY")
+                self._get_cached_api_key("DEEPGRAM_API_KEY")
+                or os.getenv("DEEPGRAM_API_KEY")
             )
-            has_groq = bool(get_api_key("GROQ_API_KEY") or os.getenv("GROQ_API_KEY"))
+            has_groq = bool(
+                self._get_cached_api_key("GROQ_API_KEY")
+                or os.getenv("GROQ_API_KEY")
+            )
 
             if has_deepgram:
-                save_env_setting("PULSESCRIBE_MODE", "deepgram")
+                changed = self._apply_env_updates({"PULSESCRIBE_MODE": "deepgram"}) or changed
                 if self._api_key_container:
                     _set_widget_visible_if_changed(self._api_key_container, False)
             elif has_groq:
-                save_env_setting("PULSESCRIBE_MODE", "groq")
+                changed = self._apply_env_updates({"PULSESCRIBE_MODE": "groq"}) or changed
                 if self._api_key_container:
                     _set_widget_visible_if_changed(self._api_key_container, False)
             else:
@@ -1296,19 +1386,24 @@ class OnboardingWizardWindows(QDialog):
                         _set_widget_text_if_changed(
                             self._api_key_status, "Erforderlich für Fast-Modus"
                         )
+                return False
+
+            return changed
 
         elif choice == OnboardingChoice.PRIVATE:
-            save_env_setting("PULSESCRIBE_MODE", "local")
-            apply_local_preset_to_env(default_local_preset_private())
+            changed = apply_local_preset_to_env(default_local_preset_private())
+            self._refresh_env_settings_cache()
+            return changed
         # ADVANCED: No automatic configuration
+        return False
 
     def _on_language_changed(self, lang: str) -> None:
         """Handle language selection change."""
-        if lang == "auto":
-            remove_env_setting("PULSESCRIBE_LANGUAGE")
-        else:
-            save_env_setting("PULSESCRIBE_LANGUAGE", lang)
-        self.settings_changed.emit()
+        changed = self._apply_env_updates(
+            {"PULSESCRIBE_LANGUAGE": None if lang == "auto" else lang}
+        )
+        if changed:
+            self.settings_changed.emit()
 
     def _on_api_key_input_changed(self, text: str) -> None:
         """Update API key status + navigation while typing."""
@@ -1370,8 +1465,7 @@ class OnboardingWizardWindows(QDialog):
 
     def _ensure_default_hotkeys(self) -> None:
         """Setzt empfohlene Hotkeys beim Erstlauf, falls beide fehlen."""
-        toggle = (get_env_setting("PULSESCRIBE_TOGGLE_HOTKEY") or "").strip()
-        hold = (get_env_setting("PULSESCRIBE_HOLD_HOTKEY") or "").strip()
+        toggle, hold = self._get_cached_hotkeys()
 
         # Bestehende Nutzerkonfiguration niemals überschreiben.
         if toggle or hold:
@@ -1379,8 +1473,7 @@ class OnboardingWizardWindows(QDialog):
 
         toggle = DEFAULT_WINDOWS_TOGGLE_HOTKEY
         hold = DEFAULT_WINDOWS_HOLD_HOTKEY
-        save_env_setting("PULSESCRIBE_TOGGLE_HOTKEY", toggle)
-        save_env_setting("PULSESCRIBE_HOLD_HOTKEY", hold)
+        changed = self._persist_hotkeys(toggle, hold)
 
         if self._toggle_input:
             self._toggle_input.setText(toggle)
@@ -1391,7 +1484,8 @@ class OnboardingWizardWindows(QDialog):
             f"Standard gesetzt: Toggle {toggle}, Hold {hold}.", "text_secondary"
         )
         self._refresh_test_hotkey_label()
-        self.settings_changed.emit()
+        if changed:
+            self.settings_changed.emit()
 
     def _start_hotkey_recording(self, field: str) -> None:
         """Start recording a hotkey."""
@@ -1571,7 +1665,7 @@ class OnboardingWizardWindows(QDialog):
                         else "PULSESCRIBE_HOLD_HOTKEY"
                     )
                     _set_widget_text_if_changed(
-                        input_field, get_env_setting(env_key) or ""
+                        input_field, self._get_cached_env_setting(env_key) or ""
                     )
         elif field and input_field:
             # Restore previous value (cancel or no input)
@@ -1580,7 +1674,9 @@ class OnboardingWizardWindows(QDialog):
                 if field == "toggle"
                 else "PULSESCRIBE_HOLD_HOTKEY"
             )
-            _set_widget_text_if_changed(input_field, get_env_setting(env_key) or "")
+            _set_widget_text_if_changed(
+                input_field, self._get_cached_env_setting(env_key) or ""
+            )
 
         self._recording_field = None
         self._hotkey_recorded = False
@@ -1597,29 +1693,23 @@ class OnboardingWizardWindows(QDialog):
         toggle_raw = (
             hotkey
             if field == "toggle"
-            else get_env_setting("PULSESCRIBE_TOGGLE_HOTKEY")
+            else self._get_cached_env_setting("PULSESCRIBE_TOGGLE_HOTKEY")
         )
         hold_raw = (
-            hotkey if field == "hold" else get_env_setting("PULSESCRIBE_HOLD_HOTKEY")
+            hotkey
+            if field == "hold"
+            else self._get_cached_env_setting("PULSESCRIBE_HOLD_HOTKEY")
         )
         toggle, hold, error = self._validate_hotkey_pair(toggle_raw, hold_raw)
         if error:
             self._set_hotkey_status(error, "error")
             return False
 
-        if field == "toggle":
-            if toggle:
-                save_env_setting("PULSESCRIBE_TOGGLE_HOTKEY", toggle)
-            else:
-                remove_env_setting("PULSESCRIBE_TOGGLE_HOTKEY")
-        elif field == "hold":
-            if hold:
-                save_env_setting("PULSESCRIBE_HOLD_HOTKEY", hold)
-            else:
-                remove_env_setting("PULSESCRIBE_HOLD_HOTKEY")
+        changed = self._persist_hotkeys(toggle, hold)
 
         self._set_hotkey_status("✓ Hotkey gespeichert", "success")
-        self.settings_changed.emit()
+        if changed:
+            self.settings_changed.emit()
         self._refresh_test_hotkey_label()
         self._update_navigation()
         return True
@@ -1634,14 +1724,17 @@ class OnboardingWizardWindows(QDialog):
         if field == "toggle":
             if self._toggle_input:
                 _set_widget_text_if_changed(self._toggle_input, "")
-            remove_env_setting("PULSESCRIBE_TOGGLE_HOTKEY")
+            changed = self._persist_hotkeys(None, self._get_cached_hotkeys()[1])
         elif field == "hold":
             if self._hold_input:
                 _set_widget_text_if_changed(self._hold_input, "")
-            remove_env_setting("PULSESCRIBE_HOLD_HOTKEY")
+            changed = self._persist_hotkeys(self._get_cached_hotkeys()[0], None)
+        else:
+            changed = False
 
         self._set_hotkey_status("Hotkey entfernt", "text_secondary")
-        self.settings_changed.emit()
+        if changed:
+            self.settings_changed.emit()
         self._refresh_test_hotkey_label()
         self._update_navigation()
 
@@ -1660,23 +1753,22 @@ class OnboardingWizardWindows(QDialog):
         if normalized_toggle:
             if self._toggle_input:
                 _set_widget_text_if_changed(self._toggle_input, normalized_toggle)
-            save_env_setting("PULSESCRIBE_TOGGLE_HOTKEY", normalized_toggle)
         else:
             if self._toggle_input:
                 _set_widget_text_if_changed(self._toggle_input, "")
-            remove_env_setting("PULSESCRIBE_TOGGLE_HOTKEY")
 
         if normalized_hold:
             if self._hold_input:
                 _set_widget_text_if_changed(self._hold_input, normalized_hold)
-            save_env_setting("PULSESCRIBE_HOLD_HOTKEY", normalized_hold)
         else:
             if self._hold_input:
                 _set_widget_text_if_changed(self._hold_input, "")
-            remove_env_setting("PULSESCRIBE_HOLD_HOTKEY")
+
+        changed = self._persist_hotkeys(normalized_toggle, normalized_hold)
 
         self._set_hotkey_status("✓ Preset angewendet", "success")
-        self.settings_changed.emit()
+        if changed:
+            self.settings_changed.emit()
         self._refresh_test_hotkey_label()
         self._update_navigation()
 
@@ -1728,8 +1820,7 @@ class OnboardingWizardWindows(QDialog):
         if not self._test_hotkey_label:
             return
 
-        toggle = get_env_setting("PULSESCRIBE_TOGGLE_HOTKEY")
-        hold = get_env_setting("PULSESCRIBE_HOLD_HOTKEY")
+        toggle, hold = self._get_cached_hotkeys()
         parts = []
         if toggle:
             parts.append(f"Toggle: {toggle}")
@@ -1748,15 +1839,14 @@ class OnboardingWizardWindows(QDialog):
     def _update_summary(self) -> None:
         """Update the summary labels."""
         # Mode
-        mode = get_env_setting("PULSESCRIBE_MODE") or "deepgram"
+        mode = self._get_cached_env_setting("PULSESCRIBE_MODE") or "deepgram"
         if "mode" in self._summary_labels:
             _set_widget_text_if_changed(
                 self._summary_labels["mode"], mode.capitalize()
             )
 
         # Hotkeys
-        toggle = get_env_setting("PULSESCRIBE_TOGGLE_HOTKEY")
-        hold = get_env_setting("PULSESCRIBE_HOLD_HOTKEY")
+        toggle, hold = self._get_cached_hotkeys()
         hotkey_parts = []
         if toggle:
             hotkey_parts.append(f"Toggle: {toggle}")
@@ -1769,7 +1859,7 @@ class OnboardingWizardWindows(QDialog):
             )
 
         # Language
-        lang = get_env_setting("PULSESCRIBE_LANGUAGE") or "auto"
+        lang = self._get_cached_env_setting("PULSESCRIBE_LANGUAGE") or "auto"
         if "language" in self._summary_labels:
             _set_widget_text_if_changed(self._summary_labels["language"], lang)
 
