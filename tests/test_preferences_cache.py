@@ -10,6 +10,7 @@ def _isolate_prefs(tmp_path, monkeypatch):
     monkeypatch.setattr(prefs, "PREFS_FILE", tmp_path / "preferences.json")
     monkeypatch.setattr(prefs, "ENV_FILE", tmp_path / ".env")
     prefs._env_cache = None
+    prefs._prefs_cache = None
 
 
 def test_read_env_file_refreshes_when_mtime_is_unchanged_but_size_changes(
@@ -174,6 +175,29 @@ def test_load_preferences_returns_empty_dict_for_non_object_json(
 
     assert prefs.load_preferences() == {}
     assert prefs.get_show_welcome_on_startup() is True
+
+
+def test_load_preferences_uses_cache_until_signature_changes(tmp_path, monkeypatch):
+    _isolate_prefs(tmp_path, monkeypatch)
+    prefs.PREFS_FILE.write_text(
+        '{"show_welcome_on_startup": false}',
+        encoding="utf-8",
+    )
+
+    original_read_text = Path.read_text
+    read_calls = 0
+
+    def _patched_read_text(self: Path, *args, **kwargs):
+        nonlocal read_calls
+        if self == prefs.PREFS_FILE:
+            read_calls += 1
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", _patched_read_text)
+
+    assert prefs.load_preferences()["show_welcome_on_startup"] is False
+    assert prefs.load_preferences()["show_welcome_on_startup"] is False
+    assert read_calls == 1
 
 
 def test_save_preferences_writes_utf8_atomically(tmp_path, monkeypatch):

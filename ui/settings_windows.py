@@ -4,6 +4,7 @@ PySide6-basiertes Settings-Fenster mit Dark Theme.
 Portiert von ui/welcome.py (macOS AppKit).
 """
 
+from contextlib import contextmanager
 import logging
 import os
 import sys
@@ -41,8 +42,6 @@ from ui.styles_windows import (
     get_settings_stylesheet,
 )
 from utils.preferences import (
-    get_api_key,
-    get_env_setting,
     get_show_welcome_on_startup,
     is_onboarding_complete,
     read_env_file,
@@ -147,11 +146,6 @@ def _env_bool_default(value: str | None, default: bool) -> bool:
 
 def _normalize_hotkey_text(value: str | None) -> str:
     return (value or "").strip()
-
-
-def _resolve_api_key_value(key_name: str) -> str:
-    """Resolve API keys from user config first, then the process environment."""
-    return (get_api_key(key_name) or os.getenv(key_name) or "").strip()
 
 
 def _build_setup_status(
@@ -326,6 +320,8 @@ class SettingsWindow(QDialog):
         self._setup_status_label: QLabel | None = None
         self._setup_status_detail_label: QLabel | None = None
         self._setup_howto_label: QLabel | None = None
+        self._setup_overview_refresh_suspend_count = 0
+        self._process_env_api_keys: dict[str, str] | None = None
 
         # Hotkey Recording State
         self._recording_hotkey_for: str | None = None
@@ -342,6 +338,7 @@ class SettingsWindow(QDialog):
         # Prompt Cache für Save & Apply
         self._prompts_cache: dict[str, str] = {}
         self._current_prompt_context: str = "default"
+        self._prompts_loaded = False
 
         self._setup_window()
         self._build_ui()
@@ -999,10 +996,6 @@ class SettingsWindow(QDialog):
         layout.addStretch()
 
         scroll.setWidget(content)
-
-        # Initial load
-        self._load_prompt_for_context("default")
-
         return scroll
 
     def _build_vocabulary_tab(self) -> QWidget:
@@ -1239,6 +1232,37 @@ class SettingsWindow(QDialog):
 
         return content
 
+    @contextmanager
+    def _suspend_setup_overview_refresh(self):
+        """Batches UI field updates and refreshes the setup overview once afterwards."""
+        self._setup_overview_refresh_suspend_count = (
+            getattr(self, "_setup_overview_refresh_suspend_count", 0) + 1
+        )
+        try:
+            yield
+        finally:
+            self._setup_overview_refresh_suspend_count = max(
+                0,
+                getattr(self, "_setup_overview_refresh_suspend_count", 1) - 1,
+            )
+
+    def _get_process_env_api_keys(self) -> dict[str, str]:
+        """Caches process-environment API keys for responsive setup checks."""
+        cached = getattr(self, "_process_env_api_keys", None)
+        if cached is not None:
+            return cached
+
+        keys = set(self._api_fields) | set(MODE_API_KEY_MAP.values())
+        cached = {env_key: (os.getenv(env_key) or "").strip() for env_key in keys}
+        self._process_env_api_keys = cached
+        return cached
+
+    def _ensure_prompts_loaded(self) -> None:
+        """Defers prompt disk I/O until the Prompts tab is actually used."""
+        if getattr(self, "_prompts_loaded", False):
+            return
+        self._load_prompt_for_context(self._current_prompt_context or "default")
+
     # =========================================================================
     # Event Handlers
     # =========================================================================
@@ -1246,6 +1270,9 @@ class SettingsWindow(QDialog):
     def _on_tab_changed(self, index: int):
         """Handler für Tab-Wechsel."""
         tab_name = self._tabs.tabText(index) if self._tabs else ""
+
+        if tab_name == "Prompts":
+            self._ensure_prompts_loaded()
 
         # Vocabulary automatisch laden
         if tab_name == "Vocabulary":
@@ -1287,6 +1314,9 @@ class SettingsWindow(QDialog):
 
     def _refresh_setup_overview(self) -> None:
         """Aktualisiert Status- und How-to-Text im Setup-Tab."""
+        if getattr(self, "_setup_overview_refresh_suspend_count", 0) > 0:
+            return
+
         status_label = getattr(self, "_setup_status_label", None)
         status_detail_label = getattr(self, "_setup_status_detail_label", None)
         howto_label = getattr(self, "_setup_howto_label", None)
@@ -1306,12 +1336,13 @@ class SettingsWindow(QDialog):
             else ""
         )
 
-        api_keys = {
-            env_key: field.text().strip() if field else _resolve_api_key_value(env_key)
-            for env_key, field in self._api_fields.items()
-        }
+        process_api_keys = self._get_process_env_api_keys()
+        api_keys = {}
+        for env_key, field in self._api_fields.items():
+            current_value = field.text().strip() if field else ""
+            api_keys[env_key] = current_value or process_api_keys.get(env_key, "")
         for env_key in MODE_API_KEY_MAP.values():
-            api_keys.setdefault(env_key, _resolve_api_key_value(env_key))
+            api_keys.setdefault(env_key, process_api_keys.get(env_key, ""))
 
         headline, detail, color_key = _build_setup_status(
             mode,
@@ -1786,6 +1817,7 @@ class SettingsWindow(QDialog):
             if self._prompt_editor:
                 self._prompt_editor.setPlainText(self._prompts_cache[context])
                 self._set_prompt_status("", "text")
+                self._prompts_loaded = True
             return
 
         try:
@@ -1809,6 +1841,7 @@ class SettingsWindow(QDialog):
                 self._prompt_editor.setPlainText(text)
                 self._prompts_cache[context] = text
                 self._set_prompt_status("", "text")
+                self._prompts_loaded = True
 
         except Exception as e:
             logger.error(f"Prompt laden fehlgeschlagen: {e}")
@@ -1831,6 +1864,7 @@ class SettingsWindow(QDialog):
             )
             text = self._prompt_editor.toPlainText() if self._prompt_editor else ""
             self._prompts_cache[context] = text
+            self._prompts_loaded = True
 
             # Aktuelle Daten laden
             data = load_custom_prompts()
@@ -1873,6 +1907,7 @@ class SettingsWindow(QDialog):
             if self._prompt_editor:
                 self._prompt_editor.setPlainText(text)
                 self._prompts_cache[context] = text
+                self._prompts_loaded = True
                 self._set_prompt_status("Reset to default (not saved)", "warning")
 
         except Exception as e:
@@ -1890,7 +1925,11 @@ class SettingsWindow(QDialog):
         """Speichert alle geänderten Prompts aus dem Cache."""
         try:
             # Aktuellen Editor-Inhalt zum Cache hinzufügen
-            if self._prompt_editor and self._current_prompt_context:
+            if (
+                getattr(self, "_prompts_loaded", False)
+                and self._prompt_editor
+                and self._current_prompt_context
+            ):
                 self._prompts_cache[self._current_prompt_context] = (
                     self._prompt_editor.toPlainText()
                 )
@@ -2224,191 +2263,200 @@ class SettingsWindow(QDialog):
 
     def _load_settings(self):
         """Lädt aktuelle Settings in die UI."""
-        # Mode
-        mode = get_env_setting("PULSESCRIBE_MODE") or "deepgram"
-        if self._mode_combo:
-            idx = self._mode_combo.findText(mode)
-            if idx >= 0:
-                self._mode_combo.setCurrentIndex(idx)
-
-        # Language
-        lang = get_env_setting("PULSESCRIBE_LANGUAGE") or "auto"
-        if self._lang_combo:
-            idx = self._lang_combo.findText(lang)
-            if idx >= 0:
-                self._lang_combo.setCurrentIndex(idx)
-
-        # Local Backend
-        backend = normalize_local_backend(get_env_setting("PULSESCRIBE_LOCAL_BACKEND"))
-        if self._local_backend_combo:
-            idx = self._local_backend_combo.findText(backend)
-            if idx >= 0:
-                self._local_backend_combo.setCurrentIndex(idx)
-
-        # Local Model
-        model = get_env_setting("PULSESCRIBE_LOCAL_MODEL") or "default"
-        if self._local_model_combo:
-            idx = self._local_model_combo.findText(model)
-            if idx >= 0:
-                self._local_model_combo.setCurrentIndex(idx)
-
-        # Streaming
-        streaming = get_env_setting("PULSESCRIBE_STREAMING")
-        if self._streaming_checkbox:
-            self._streaming_checkbox.setChecked(
-                _env_bool_default(streaming, default=True)
-            )
-
-        # Advanced: Device
-        device = get_env_setting("PULSESCRIBE_DEVICE") or "auto"
-        if hasattr(self, "_device_combo") and self._device_combo:
-            idx = self._device_combo.findText(device)
-            if idx >= 0:
-                self._device_combo.setCurrentIndex(idx)
-
-        # Advanced: Beam Size
-        beam_size = get_env_setting("PULSESCRIBE_LOCAL_BEAM_SIZE") or ""
-        if hasattr(self, "_beam_size_field") and self._beam_size_field:
-            self._beam_size_field.setText(beam_size)
-
-        # Advanced: Temperature
-        temperature = get_env_setting("PULSESCRIBE_LOCAL_TEMPERATURE") or ""
-        if hasattr(self, "_temperature_field") and self._temperature_field:
-            self._temperature_field.setText(temperature)
-
-        # Advanced: Best Of
-        best_of = get_env_setting("PULSESCRIBE_LOCAL_BEST_OF") or ""
-        if hasattr(self, "_best_of_field") and self._best_of_field:
-            self._best_of_field.setText(best_of)
-
-        # Faster-Whisper: Compute Type
-        compute_type = get_env_setting("PULSESCRIBE_LOCAL_COMPUTE_TYPE") or "default"
-        if hasattr(self, "_compute_type_combo") and self._compute_type_combo:
-            idx = self._compute_type_combo.findText(compute_type)
-            if idx >= 0:
-                self._compute_type_combo.setCurrentIndex(idx)
-
-        # Faster-Whisper: CPU Threads
-        cpu_threads = get_env_setting("PULSESCRIBE_LOCAL_CPU_THREADS") or ""
-        if hasattr(self, "_cpu_threads_field") and self._cpu_threads_field:
-            self._cpu_threads_field.setText(cpu_threads)
-
-        # Faster-Whisper: Num Workers
-        num_workers = get_env_setting("PULSESCRIBE_LOCAL_NUM_WORKERS") or ""
-        if hasattr(self, "_num_workers_field") and self._num_workers_field:
-            self._num_workers_field.setText(num_workers)
-
-        # Faster-Whisper: Without Timestamps
-        without_ts = (
-            get_env_setting("PULSESCRIBE_LOCAL_WITHOUT_TIMESTAMPS") or "default"
-        )
-        if (
-            hasattr(self, "_without_timestamps_combo")
-            and self._without_timestamps_combo
-        ):
-            idx = self._without_timestamps_combo.findText(without_ts)
-            if idx >= 0:
-                self._without_timestamps_combo.setCurrentIndex(idx)
-
-        # Faster-Whisper: VAD Filter
-        vad = get_env_setting("PULSESCRIBE_LOCAL_VAD_FILTER") or "default"
-        if hasattr(self, "_vad_filter_combo") and self._vad_filter_combo:
-            idx = self._vad_filter_combo.findText(vad)
-            if idx >= 0:
-                self._vad_filter_combo.setCurrentIndex(idx)
-
-        # FP16 override (canonical key) with legacy fallback for existing configs.
-        fp16 = (
-            get_env_setting(LOCAL_FP16_ENV_KEY)
-            or get_env_setting(LEGACY_LOCAL_FP16_ENV_KEY)
-            or "default"
-        )
-        if hasattr(self, "_fp16_combo") and self._fp16_combo:
-            idx = self._fp16_combo.findText(fp16)
-            if idx >= 0:
-                self._fp16_combo.setCurrentIndex(idx)
-
-        # Advanced: Lightning Batch Size
-        batch_size = get_env_setting("PULSESCRIBE_LIGHTNING_BATCH_SIZE") or "12"
-        if hasattr(self, "_lightning_batch_slider") and self._lightning_batch_slider:
-            try:
-                self._lightning_batch_slider.setValue(int(batch_size))
-            except ValueError:
-                self._lightning_batch_slider.setValue(12)
-
-        # Advanced: Lightning Quantization
-        quant = get_env_setting("PULSESCRIBE_LIGHTNING_QUANT") or "none"
-        if hasattr(self, "_lightning_quant_combo") and self._lightning_quant_combo:
-            idx = self._lightning_quant_combo.findText(quant)
-            if idx >= 0:
-                self._lightning_quant_combo.setCurrentIndex(idx)
-
-        # Refine
-        refine = get_env_setting("PULSESCRIBE_REFINE")
-        if self._refine_checkbox:
-            self._refine_checkbox.setChecked(_env_bool_default(refine, default=False))
-
-        # Refine Provider
-        provider = get_env_setting("PULSESCRIBE_REFINE_PROVIDER") or "groq"
-        if self._refine_provider_combo:
-            idx = self._refine_provider_combo.findText(provider)
-            if idx >= 0:
-                self._refine_provider_combo.setCurrentIndex(idx)
-
-        # Refine Model
-        refine_model = get_env_setting("PULSESCRIBE_REFINE_MODEL") or ""
-        if self._refine_model_field:
-            self._refine_model_field.setText(refine_model)
-
-        # Overlay
-        overlay = get_env_setting("PULSESCRIBE_OVERLAY")
-        if self._overlay_checkbox:
-            self._overlay_checkbox.setChecked(_env_bool_default(overlay, default=True))
-
-        # RTF Display
-        rtf = get_env_setting("PULSESCRIBE_SHOW_RTF")
-        if self._rtf_checkbox:
-            self._rtf_checkbox.setChecked(_env_bool_default(rtf, default=False))
-
-        # Clipboard Restore
-        clipboard_restore = get_env_setting("PULSESCRIBE_CLIPBOARD_RESTORE")
-        if self._clipboard_restore_checkbox:
-            self._clipboard_restore_checkbox.setChecked(
-                _env_bool_default(clipboard_restore, default=False)
-            )
-
-        # Hotkeys
         env_values = read_env_file()
-        toggle_raw = env_values.get("PULSESCRIBE_TOGGLE_HOTKEY")
-        hold_raw = env_values.get("PULSESCRIBE_HOLD_HOTKEY")
+        env_get = env_values.get
+        self._process_env_api_keys = None
+        process_api_keys = self._get_process_env_api_keys()
 
-        if toggle_raw is None and hold_raw is None:
-            toggle = DEFAULT_WINDOWS_TOGGLE_HOTKEY
-            hold = DEFAULT_WINDOWS_HOLD_HOTKEY
-        else:
-            toggle = (toggle_raw or "").strip()
-            hold = (hold_raw or "").strip()
+        with self._suspend_setup_overview_refresh():
+            # Mode
+            mode = env_get("PULSESCRIBE_MODE") or "deepgram"
+            if self._mode_combo:
+                idx = self._mode_combo.findText(mode)
+                if idx >= 0:
+                    self._mode_combo.setCurrentIndex(idx)
 
-        if hasattr(self, "_toggle_hotkey_field") and self._toggle_hotkey_field:
-            self._toggle_hotkey_field.setText(toggle)
+            # Language
+            lang = env_get("PULSESCRIBE_LANGUAGE") or "auto"
+            if self._lang_combo:
+                idx = self._lang_combo.findText(lang)
+                if idx >= 0:
+                    self._lang_combo.setCurrentIndex(idx)
 
-        if hasattr(self, "_hold_hotkey_field") and self._hold_hotkey_field:
-            self._hold_hotkey_field.setText(hold)
+            # Local Backend
+            backend = normalize_local_backend(env_get("PULSESCRIBE_LOCAL_BACKEND"))
+            if self._local_backend_combo:
+                idx = self._local_backend_combo.findText(backend)
+                if idx >= 0:
+                    self._local_backend_combo.setCurrentIndex(idx)
 
-        # API Keys
-        for env_key, field in self._api_fields.items():
-            value = _resolve_api_key_value(env_key)
-            field.setText(value)
-            # Status aktualisieren
-            status = self._api_status.get(env_key)
-            if status:
-                if value:
-                    status.setText("✓")
-                    status.setStyleSheet(f"color: {COLORS['success']};")
-                else:
-                    status.setText("")
+            # Local Model
+            model = env_get("PULSESCRIBE_LOCAL_MODEL") or "default"
+            if self._local_model_combo:
+                idx = self._local_model_combo.findText(model)
+                if idx >= 0:
+                    self._local_model_combo.setCurrentIndex(idx)
 
-        # Mode-abhängige Sichtbarkeit
+            # Streaming
+            streaming = env_get("PULSESCRIBE_STREAMING")
+            if self._streaming_checkbox:
+                self._streaming_checkbox.setChecked(
+                    _env_bool_default(streaming, default=True)
+                )
+
+            # Advanced: Device
+            device = env_get("PULSESCRIBE_DEVICE") or "auto"
+            if hasattr(self, "_device_combo") and self._device_combo:
+                idx = self._device_combo.findText(device)
+                if idx >= 0:
+                    self._device_combo.setCurrentIndex(idx)
+
+            # Advanced: Beam Size
+            beam_size = env_get("PULSESCRIBE_LOCAL_BEAM_SIZE") or ""
+            if hasattr(self, "_beam_size_field") and self._beam_size_field:
+                self._beam_size_field.setText(beam_size)
+
+            # Advanced: Temperature
+            temperature = env_get("PULSESCRIBE_LOCAL_TEMPERATURE") or ""
+            if hasattr(self, "_temperature_field") and self._temperature_field:
+                self._temperature_field.setText(temperature)
+
+            # Advanced: Best Of
+            best_of = env_get("PULSESCRIBE_LOCAL_BEST_OF") or ""
+            if hasattr(self, "_best_of_field") and self._best_of_field:
+                self._best_of_field.setText(best_of)
+
+            # Faster-Whisper: Compute Type
+            compute_type = env_get("PULSESCRIBE_LOCAL_COMPUTE_TYPE") or "default"
+            if hasattr(self, "_compute_type_combo") and self._compute_type_combo:
+                idx = self._compute_type_combo.findText(compute_type)
+                if idx >= 0:
+                    self._compute_type_combo.setCurrentIndex(idx)
+
+            # Faster-Whisper: CPU Threads
+            cpu_threads = env_get("PULSESCRIBE_LOCAL_CPU_THREADS") or ""
+            if hasattr(self, "_cpu_threads_field") and self._cpu_threads_field:
+                self._cpu_threads_field.setText(cpu_threads)
+
+            # Faster-Whisper: Num Workers
+            num_workers = env_get("PULSESCRIBE_LOCAL_NUM_WORKERS") or ""
+            if hasattr(self, "_num_workers_field") and self._num_workers_field:
+                self._num_workers_field.setText(num_workers)
+
+            # Faster-Whisper: Without Timestamps
+            without_ts = env_get("PULSESCRIBE_LOCAL_WITHOUT_TIMESTAMPS") or "default"
+            if (
+                hasattr(self, "_without_timestamps_combo")
+                and self._without_timestamps_combo
+            ):
+                idx = self._without_timestamps_combo.findText(without_ts)
+                if idx >= 0:
+                    self._without_timestamps_combo.setCurrentIndex(idx)
+
+            # Faster-Whisper: VAD Filter
+            vad = env_get("PULSESCRIBE_LOCAL_VAD_FILTER") or "default"
+            if hasattr(self, "_vad_filter_combo") and self._vad_filter_combo:
+                idx = self._vad_filter_combo.findText(vad)
+                if idx >= 0:
+                    self._vad_filter_combo.setCurrentIndex(idx)
+
+            # FP16 override (canonical key) with legacy fallback for existing configs.
+            fp16 = (
+                env_get(LOCAL_FP16_ENV_KEY)
+                or env_get(LEGACY_LOCAL_FP16_ENV_KEY)
+                or "default"
+            )
+            if hasattr(self, "_fp16_combo") and self._fp16_combo:
+                idx = self._fp16_combo.findText(fp16)
+                if idx >= 0:
+                    self._fp16_combo.setCurrentIndex(idx)
+
+            # Advanced: Lightning Batch Size
+            batch_size = env_get("PULSESCRIBE_LIGHTNING_BATCH_SIZE") or "12"
+            if hasattr(self, "_lightning_batch_slider") and self._lightning_batch_slider:
+                try:
+                    self._lightning_batch_slider.setValue(int(batch_size))
+                except ValueError:
+                    self._lightning_batch_slider.setValue(12)
+
+            # Advanced: Lightning Quantization
+            quant = env_get("PULSESCRIBE_LIGHTNING_QUANT") or "none"
+            if hasattr(self, "_lightning_quant_combo") and self._lightning_quant_combo:
+                idx = self._lightning_quant_combo.findText(quant)
+                if idx >= 0:
+                    self._lightning_quant_combo.setCurrentIndex(idx)
+
+            # Refine
+            refine = env_get("PULSESCRIBE_REFINE")
+            if self._refine_checkbox:
+                self._refine_checkbox.setChecked(
+                    _env_bool_default(refine, default=False)
+                )
+
+            # Refine Provider
+            provider = env_get("PULSESCRIBE_REFINE_PROVIDER") or "groq"
+            if self._refine_provider_combo:
+                idx = self._refine_provider_combo.findText(provider)
+                if idx >= 0:
+                    self._refine_provider_combo.setCurrentIndex(idx)
+
+            # Refine Model
+            refine_model = env_get("PULSESCRIBE_REFINE_MODEL") or ""
+            if self._refine_model_field:
+                self._refine_model_field.setText(refine_model)
+
+            # Overlay
+            overlay = env_get("PULSESCRIBE_OVERLAY")
+            if self._overlay_checkbox:
+                self._overlay_checkbox.setChecked(
+                    _env_bool_default(overlay, default=True)
+                )
+
+            # RTF Display
+            rtf = env_get("PULSESCRIBE_SHOW_RTF")
+            if self._rtf_checkbox:
+                self._rtf_checkbox.setChecked(_env_bool_default(rtf, default=False))
+
+            # Clipboard Restore
+            clipboard_restore = env_get("PULSESCRIBE_CLIPBOARD_RESTORE")
+            if self._clipboard_restore_checkbox:
+                self._clipboard_restore_checkbox.setChecked(
+                    _env_bool_default(clipboard_restore, default=False)
+                )
+
+            # Hotkeys
+            toggle_raw = env_values.get("PULSESCRIBE_TOGGLE_HOTKEY")
+            hold_raw = env_values.get("PULSESCRIBE_HOLD_HOTKEY")
+
+            if toggle_raw is None and hold_raw is None:
+                toggle = DEFAULT_WINDOWS_TOGGLE_HOTKEY
+                hold = DEFAULT_WINDOWS_HOLD_HOTKEY
+            else:
+                toggle = (toggle_raw or "").strip()
+                hold = (hold_raw or "").strip()
+
+            if hasattr(self, "_toggle_hotkey_field") and self._toggle_hotkey_field:
+                self._toggle_hotkey_field.setText(toggle)
+
+            if hasattr(self, "_hold_hotkey_field") and self._hold_hotkey_field:
+                self._hold_hotkey_field.setText(hold)
+
+            # API Keys
+            for env_key, field in self._api_fields.items():
+                value = ((env_values.get(env_key) or "").strip()) or process_api_keys.get(
+                    env_key, ""
+                )
+                field.setText(value)
+                status = self._api_status.get(env_key)
+                if status:
+                    if value:
+                        status.setText("✓")
+                        status.setStyleSheet(f"color: {COLORS['success']};")
+                    else:
+                        status.setText("")
+                        status.setStyleSheet(f"color: {COLORS['text_secondary']};")
+
+        # Mode-abhängige Sichtbarkeit und Setup-Status nur einmal am Ende aktualisieren
         self._on_mode_changed(mode)
         self._refresh_setup_overview()
 
@@ -2697,83 +2745,90 @@ class SettingsWindow(QDialog):
         values = dict(WINDOWS_LOCAL_PRESET_BASE)
         values.update(preset_values)
 
-        # UI-Felder aktualisieren
-        if self._mode_combo:
-            idx = self._mode_combo.findText(values.get("mode", "local"))
-            if idx >= 0:
-                self._mode_combo.setCurrentIndex(idx)
-                self._on_mode_changed("local")  # Sichtbarkeit aktualisieren
+        with self._suspend_setup_overview_refresh():
+            # UI-Felder aktualisieren
+            if self._mode_combo:
+                idx = self._mode_combo.findText(values.get("mode", "local"))
+                if idx >= 0:
+                    self._mode_combo.setCurrentIndex(idx)
+                    self._on_mode_changed("local")  # Sichtbarkeit aktualisieren
 
-        if self._local_backend_combo:
-            idx = self._local_backend_combo.findText(
-                values.get("local_backend", "faster")
-            )
-            if idx >= 0:
-                self._local_backend_combo.setCurrentIndex(idx)
+            if self._local_backend_combo:
+                idx = self._local_backend_combo.findText(
+                    values.get("local_backend", "faster")
+                )
+                if idx >= 0:
+                    self._local_backend_combo.setCurrentIndex(idx)
 
-        if self._local_model_combo:
-            idx = self._local_model_combo.findText(values.get("local_model", "turbo"))
-            if idx >= 0:
-                self._local_model_combo.setCurrentIndex(idx)
+            if self._local_model_combo:
+                idx = self._local_model_combo.findText(
+                    values.get("local_model", "turbo")
+                )
+                if idx >= 0:
+                    self._local_model_combo.setCurrentIndex(idx)
 
-        if hasattr(self, "_device_combo") and self._device_combo:
-            idx = self._device_combo.findText(values.get("device", "auto"))
-            if idx >= 0:
-                self._device_combo.setCurrentIndex(idx)
+            if hasattr(self, "_device_combo") and self._device_combo:
+                idx = self._device_combo.findText(values.get("device", "auto"))
+                if idx >= 0:
+                    self._device_combo.setCurrentIndex(idx)
 
-        if hasattr(self, "_compute_type_combo") and self._compute_type_combo:
-            idx = self._compute_type_combo.findText(
-                values.get("compute_type", "default")
-            )
-            if idx >= 0:
-                self._compute_type_combo.setCurrentIndex(idx)
+            if hasattr(self, "_compute_type_combo") and self._compute_type_combo:
+                idx = self._compute_type_combo.findText(
+                    values.get("compute_type", "default")
+                )
+                if idx >= 0:
+                    self._compute_type_combo.setCurrentIndex(idx)
 
-        if hasattr(self, "_beam_size_field") and self._beam_size_field:
-            self._beam_size_field.setText(values.get("beam_size", ""))
+            if hasattr(self, "_beam_size_field") and self._beam_size_field:
+                self._beam_size_field.setText(values.get("beam_size", ""))
 
-        if hasattr(self, "_temperature_field") and self._temperature_field:
-            self._temperature_field.setText(values.get("temperature", ""))
+            if hasattr(self, "_temperature_field") and self._temperature_field:
+                self._temperature_field.setText(values.get("temperature", ""))
 
-        if hasattr(self, "_best_of_field") and self._best_of_field:
-            self._best_of_field.setText(values.get("best_of", ""))
+            if hasattr(self, "_best_of_field") and self._best_of_field:
+                self._best_of_field.setText(values.get("best_of", ""))
 
-        if hasattr(self, "_cpu_threads_field") and self._cpu_threads_field:
-            self._cpu_threads_field.setText(values.get("cpu_threads", ""))
+            if hasattr(self, "_cpu_threads_field") and self._cpu_threads_field:
+                self._cpu_threads_field.setText(values.get("cpu_threads", ""))
 
-        if hasattr(self, "_num_workers_field") and self._num_workers_field:
-            self._num_workers_field.setText(values.get("num_workers", ""))
+            if hasattr(self, "_num_workers_field") and self._num_workers_field:
+                self._num_workers_field.setText(values.get("num_workers", ""))
 
-        if hasattr(self, "_vad_filter_combo") and self._vad_filter_combo:
-            idx = self._vad_filter_combo.findText(values.get("vad_filter", "default"))
-            if idx >= 0:
-                self._vad_filter_combo.setCurrentIndex(idx)
+            if hasattr(self, "_vad_filter_combo") and self._vad_filter_combo:
+                idx = self._vad_filter_combo.findText(
+                    values.get("vad_filter", "default")
+                )
+                if idx >= 0:
+                    self._vad_filter_combo.setCurrentIndex(idx)
 
-        if (
-            hasattr(self, "_without_timestamps_combo")
-            and self._without_timestamps_combo
-        ):
-            idx = self._without_timestamps_combo.findText(
-                values.get("without_timestamps", "default")
-            )
-            if idx >= 0:
-                self._without_timestamps_combo.setCurrentIndex(idx)
+            if (
+                hasattr(self, "_without_timestamps_combo")
+                and self._without_timestamps_combo
+            ):
+                idx = self._without_timestamps_combo.findText(
+                    values.get("without_timestamps", "default")
+                )
+                if idx >= 0:
+                    self._without_timestamps_combo.setCurrentIndex(idx)
 
-        if hasattr(self, "_fp16_combo") and self._fp16_combo:
-            idx = self._fp16_combo.findText(values.get("fp16", "default"))
-            if idx >= 0:
-                self._fp16_combo.setCurrentIndex(idx)
+            if hasattr(self, "_fp16_combo") and self._fp16_combo:
+                idx = self._fp16_combo.findText(values.get("fp16", "default"))
+                if idx >= 0:
+                    self._fp16_combo.setCurrentIndex(idx)
 
-        if hasattr(self, "_lightning_batch_slider") and self._lightning_batch_slider:
-            self._lightning_batch_slider.setValue(
-                int(values.get("lightning_batch_size", 12))
-            )
+            if hasattr(self, "_lightning_batch_slider") and self._lightning_batch_slider:
+                self._lightning_batch_slider.setValue(
+                    int(values.get("lightning_batch_size", 12))
+                )
 
-        if hasattr(self, "_lightning_quant_combo") and self._lightning_quant_combo:
-            idx = self._lightning_quant_combo.findText(
-                values.get("lightning_quant", "none")
-            )
-            if idx >= 0:
-                self._lightning_quant_combo.setCurrentIndex(idx)
+            if hasattr(self, "_lightning_quant_combo") and self._lightning_quant_combo:
+                idx = self._lightning_quant_combo.findText(
+                    values.get("lightning_quant", "none")
+                )
+                if idx >= 0:
+                    self._lightning_quant_combo.setCurrentIndex(idx)
+
+        self._refresh_setup_overview()
 
         # Feedback
         if hasattr(self, "_preset_status") and self._preset_status:

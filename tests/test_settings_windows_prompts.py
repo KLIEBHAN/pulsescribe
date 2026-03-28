@@ -22,6 +22,7 @@ def _make_window() -> SettingsWindow:
     window._prompt_status = None
     window._prompts_cache = {}
     window._current_prompt_context = "default"
+    window._prompts_loaded = True
     return window
 
 
@@ -67,3 +68,20 @@ def test_load_prompt_for_context_prefers_cache_over_disk(monkeypatch):
 
     window._load_prompt_for_context("default")
     assert window._prompt_editor.toPlainText() == "cached default"
+
+
+def test_save_all_prompts_skips_unloaded_editor(monkeypatch):
+    from utils import custom_prompts
+
+    window = _make_window()
+    window._prompts_loaded = False
+
+    monkeypatch.setattr(
+        custom_prompts,
+        "load_custom_prompts",
+        lambda: (_ for _ in ()).throw(AssertionError("disk load should not happen")),
+    )
+
+    window._save_all_prompts()
+
+    assert window._prompts_cache == {}

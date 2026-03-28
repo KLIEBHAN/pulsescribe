@@ -28,6 +28,35 @@ ENV_FILE = USER_CONFIG_DIR / ".env"
 
 # Cache: ((mtime_ns, size, ctime_ns), values)
 _env_cache: tuple[tuple[int, int, int], dict[str, str]] | None = None
+_prefs_cache: tuple[tuple[int, int, int], dict[str, object]] | None = None
+
+
+def _build_file_signature(path: Path) -> tuple[int, int, int] | None:
+    """Return a stable file signature for lightweight cache invalidation."""
+    try:
+        stat_result = path.stat()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return None
+
+    return (
+        int(
+            getattr(
+                stat_result,
+                "st_mtime_ns",
+                int(getattr(stat_result, "st_mtime", 0.0) * 1_000_000_000),
+            )
+        ),
+        int(getattr(stat_result, "st_size", 0)),
+        int(
+            getattr(
+                stat_result,
+                "st_ctime_ns",
+                int(getattr(stat_result, "st_ctime", 0.0) * 1_000_000_000),
+            )
+        ),
+    )
 
 
 def _parse_env_line(raw_line: str) -> tuple[str | None, str | None]:
@@ -68,32 +97,10 @@ def read_env_file(path: Path | None = None) -> dict[str, str]:
     global _env_cache
 
     env_path = path or ENV_FILE
-    try:
-        stat_result = env_path.stat()
-    except FileNotFoundError:
+    signature = _build_file_signature(env_path)
+    if signature is None:
         _env_cache = ((0, 0, 0), {})
         return {}
-    except OSError:
-        _env_cache = ((0, 0, 0), {})
-        return {}
-
-    signature = (
-        int(
-            getattr(
-                stat_result,
-                "st_mtime_ns",
-                int(getattr(stat_result, "st_mtime", 0.0) * 1_000_000_000),
-            )
-        ),
-        int(getattr(stat_result, "st_size", 0)),
-        int(
-            getattr(
-                stat_result,
-                "st_ctime_ns",
-                int(getattr(stat_result, "st_ctime", 0.0) * 1_000_000_000),
-            )
-        ),
-    )
 
     if path is None and _env_cache is not None and _env_cache[0] == signature:
         return dict(_env_cache[1])
@@ -124,6 +131,11 @@ def _invalidate_env_cache() -> None:
     _env_cache = None
 
 
+def _invalidate_preferences_cache() -> None:
+    global _prefs_cache
+    _prefs_cache = None
+
+
 def _write_text_atomic(path: Path, content: str, *, encoding: str = "utf-8") -> None:
     """Schreibt Text atomar, um truncierte Config-Dateien zu vermeiden."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -147,18 +159,30 @@ def _write_text_atomic(path: Path, content: str, *, encoding: str = "utf-8") -> 
 
 def load_preferences() -> dict:
     """Lädt Preferences aus JSON."""
-    if PREFS_FILE.exists():
-        try:
-            data = json.loads(PREFS_FILE.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return {}
-        return data if isinstance(data, dict) else {}
-    return {}
+    global _prefs_cache
+
+    signature = _build_file_signature(PREFS_FILE)
+    if signature is None:
+        _prefs_cache = ((0, 0, 0), {})
+        return {}
+
+    if _prefs_cache is not None and _prefs_cache[0] == signature:
+        return dict(_prefs_cache[1])
+
+    try:
+        data = json.loads(PREFS_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        data = {}
+
+    values = data if isinstance(data, dict) else {}
+    _prefs_cache = (signature, values)
+    return dict(values)
 
 
 def save_preferences(prefs: dict) -> None:
     """Speichert Preferences als JSON."""
     _write_text_atomic(PREFS_FILE, json.dumps(prefs, indent=2), encoding="utf-8")
+    _invalidate_preferences_cache()
 
 
 def has_seen_onboarding() -> bool:

@@ -139,7 +139,7 @@ def test_load_settings_parses_common_bool_variants(monkeypatch):
         "PULSESCRIBE_SHOW_RTF": "ON",
         "PULSESCRIBE_CLIPBOARD_RESTORE": "off",
     }
-    monkeypatch.setattr(settings_mod, "get_env_setting", lambda key: values.get(key))
+    monkeypatch.setattr(settings_mod, "read_env_file", lambda: dict(values))
 
     window = _make_window()
     window._load_settings()
@@ -159,7 +159,7 @@ def test_load_settings_uses_defaults_for_missing_or_invalid_bool_values(monkeypa
         "PULSESCRIBE_SHOW_RTF": "maybe",
         "PULSESCRIBE_CLIPBOARD_RESTORE": None,
     }
-    monkeypatch.setattr(settings_mod, "get_env_setting", lambda key: values.get(key))
+    monkeypatch.setattr(settings_mod, "read_env_file", lambda: dict(values))
 
     window = _make_window()
     window._load_settings()
@@ -172,7 +172,6 @@ def test_load_settings_uses_defaults_for_missing_or_invalid_bool_values(monkeypa
 
 
 def test_load_settings_uses_default_hotkeys_when_none_are_configured(monkeypatch):
-    monkeypatch.setattr(settings_mod, "get_env_setting", lambda _key: None)
     monkeypatch.setattr(settings_mod, "read_env_file", lambda: {})
 
     window = _make_window()
@@ -186,9 +185,7 @@ def test_load_settings_uses_default_hotkeys_when_none_are_configured(monkeypatch
 
 
 def test_load_settings_populates_api_fields_from_process_env(monkeypatch):
-    monkeypatch.setattr(settings_mod, "get_env_setting", lambda _key: None)
     monkeypatch.setattr(settings_mod, "read_env_file", lambda: {})
-    monkeypatch.setattr(settings_mod, "get_api_key", lambda _key: None)
     monkeypatch.setenv("DEEPGRAM_API_KEY", "dg-live-key")
 
     window = _make_window()
@@ -204,7 +201,6 @@ def test_load_settings_populates_api_fields_from_process_env(monkeypatch):
 
 
 def test_refresh_setup_overview_uses_process_env_api_keys(monkeypatch):
-    monkeypatch.setattr(settings_mod, "get_api_key", lambda _key: None)
     monkeypatch.setenv("DEEPGRAM_API_KEY", "dg-live-key")
 
     window = SettingsWindow.__new__(SettingsWindow)
@@ -216,6 +212,7 @@ def test_refresh_setup_overview_uses_process_env_api_keys(monkeypatch):
     window._toggle_hotkey_field.setText("ctrl+alt+r")
     window._hold_hotkey_field = _FakeField()
     window._api_fields = {"DEEPGRAM_API_KEY": None}
+    window._process_env_api_keys = None
 
     window._refresh_setup_overview()
 
@@ -228,8 +225,7 @@ def test_load_settings_prefers_canonical_fp16_key(monkeypatch):
         settings_mod.LOCAL_FP16_ENV_KEY: "false",
         settings_mod.LEGACY_LOCAL_FP16_ENV_KEY: "true",
     }
-    monkeypatch.setattr(settings_mod, "get_env_setting", lambda key: values.get(key))
-    monkeypatch.setattr(settings_mod, "read_env_file", lambda: {})
+    monkeypatch.setattr(settings_mod, "read_env_file", lambda: dict(values))
 
     window = _make_window()
     window._load_settings()
@@ -242,8 +238,7 @@ def test_load_settings_falls_back_to_legacy_fp16_key(monkeypatch):
         settings_mod.LOCAL_FP16_ENV_KEY: None,
         settings_mod.LEGACY_LOCAL_FP16_ENV_KEY: "true",
     }
-    monkeypatch.setattr(settings_mod, "get_env_setting", lambda key: values.get(key))
-    monkeypatch.setattr(settings_mod, "read_env_file", lambda: {})
+    monkeypatch.setattr(settings_mod, "read_env_file", lambda: dict(values))
 
     window = _make_window()
     window._load_settings()
