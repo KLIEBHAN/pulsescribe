@@ -61,6 +61,18 @@ class _FakeButton:
         self.enabled = enabled
 
 
+class _FakeStack:
+    def __init__(self):
+        self.widgets = []
+        self.current_widget = None
+
+    def addWidget(self, widget) -> None:
+        self.widgets.append(widget)
+
+    def setCurrentWidget(self, widget) -> None:
+        self.current_widget = widget
+
+
 class _FakePlainText:
     def __init__(self, value: str = ""):
         self.value = value
@@ -750,7 +762,9 @@ def test_show_step_leaving_test_requests_ipc_cancel():
     wizard._mic_timer = None
     wizard._persist_progress = False
     wizard._progress_label = None
-    wizard._stack = types.SimpleNamespace(setCurrentIndex=lambda _idx: None)
+    wizard._stack = _FakeStack()
+    wizard._step_widgets = {}
+    wizard._step_builders = {}
     wizard._update_navigation = lambda: None
 
     cancel_calls: list[bool] = []
@@ -773,15 +787,43 @@ def test_show_step_hotkey_applies_missing_defaults():
     wizard._mic_timer = None
     wizard._persist_progress = False
     wizard._progress_label = None
-    wizard._stack = types.SimpleNamespace(setCurrentIndex=lambda _idx: None)
+    wizard._stack = _FakeStack()
+    wizard._step_widgets = {}
     wizard._update_navigation = lambda: None
 
     ensure_calls: list[bool] = []
-    wizard._ensure_default_hotkeys = lambda: ensure_calls.append(True)
+    wizard._ensure_default_hotkeys = lambda: ensure_calls.append(
+        isinstance(wizard._toggle_input, _FakeField)
+    )
+    wizard._step_builders = {
+        OnboardingStep.HOTKEY: lambda: setattr(
+            wizard, "_toggle_input", _FakeField("")
+        )
+        or object()
+    }
 
     wizard._show_step(OnboardingStep.HOTKEY)
 
     assert ensure_calls == [True]
+    assert wizard._stack.current_widget is not None
+
+
+def test_ensure_step_widget_builds_once():
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+    wizard._stack = _FakeStack()
+    wizard._step_widgets = {}
+
+    built: list[str] = []
+    hotkey_widget = object()
+    wizard._step_builders = {
+        OnboardingStep.HOTKEY: lambda: built.append("hotkey") or hotkey_widget
+    }
+
+    assert wizard._ensure_step_widget(OnboardingStep.HOTKEY) is hotkey_widget
+    assert wizard._ensure_step_widget(OnboardingStep.HOTKEY) is hotkey_widget
+    assert wizard._is_step_widget_built(OnboardingStep.HOTKEY) is True
+    assert built == ["hotkey"]
+    assert wizard._stack.widgets == [hotkey_widget]
 
 
 def test_stop_ipc_test_requires_recording_ack_before_sending_command():

@@ -176,6 +176,9 @@ class OnboardingWizardWindows(QDialog):
         self._test_hotkey_label: QLabel | None = None
         self._test_successful = False
         self._summary_labels: dict[str, QLabel] = {}
+        self._stack: QStackedWidget | None = None
+        self._step_widgets: dict[OnboardingStep, QWidget] = {}
+        self._step_builders: dict[OnboardingStep, Callable[[], QWidget]] = {}
 
         # Hotkey recording state
         self._recording_field: str | None = None  # "toggle" or "hold"
@@ -267,11 +270,14 @@ class OnboardingWizardWindows(QDialog):
 
         # Content area (stacked widget for steps)
         self._stack = QStackedWidget()
-        self._stack.addWidget(self._build_choose_goal_step())
-        self._stack.addWidget(self._build_permissions_step())
-        self._stack.addWidget(self._build_hotkey_step())
-        self._stack.addWidget(self._build_test_dictation_step())
-        self._stack.addWidget(self._build_cheat_sheet_step())
+        self._step_builders = {
+            OnboardingStep.CHOOSE_GOAL: self._build_choose_goal_step,
+            OnboardingStep.PERMISSIONS: self._build_permissions_step,
+            OnboardingStep.HOTKEY: self._build_hotkey_step,
+            OnboardingStep.TEST_DICTATION: self._build_test_dictation_step,
+            OnboardingStep.CHEAT_SHEET: self._build_cheat_sheet_step,
+        }
+        self._ensure_step_widget(self._step)
         main_layout.addWidget(self._stack, 1)
 
         # Footer with navigation
@@ -295,6 +301,31 @@ class OnboardingWizardWindows(QDialog):
 
         # Show current step
         self._show_step(self._step)
+
+    def _is_step_widget_built(self, step: OnboardingStep | None) -> bool:
+        if step == OnboardingStep.DONE:
+            step = OnboardingStep.CHEAT_SHEET
+        return step in self._step_widgets
+
+    def _ensure_step_widget(self, step: OnboardingStep | None) -> QWidget | None:
+        if step is None:
+            return None
+        if step == OnboardingStep.DONE:
+            step = OnboardingStep.CHEAT_SHEET
+
+        widget = self._step_widgets.get(step)
+        if widget is not None:
+            return widget
+
+        builder = self._step_builders.get(step)
+        if builder is None:
+            return None
+
+        widget = builder()
+        self._step_widgets[step] = widget
+        if self._stack is not None:
+            self._stack.addWidget(widget)
+        return widget
 
     def _build_choose_goal_step(self) -> QWidget:
         """Build the goal selection step."""
@@ -716,15 +747,9 @@ class OnboardingWizardWindows(QDialog):
 
         self._step = step
 
-        # Update stack index
-        step_indices = {
-            OnboardingStep.CHOOSE_GOAL: 0,
-            OnboardingStep.PERMISSIONS: 1,
-            OnboardingStep.HOTKEY: 2,
-            OnboardingStep.TEST_DICTATION: 3,
-            OnboardingStep.CHEAT_SHEET: 4,
-        }
-        self._stack.setCurrentIndex(step_indices.get(step, 0))
+        current_widget = self._ensure_step_widget(step)
+        if self._stack is not None and current_widget is not None:
+            self._stack.setCurrentWidget(current_widget)
 
         # Update progress label
         if self._progress_label:

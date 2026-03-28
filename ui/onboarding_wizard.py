@@ -111,6 +111,9 @@ class OnboardingWizardController:
         self._next_btn = None
         self._skip_btn = None
         self._step_views: dict[OnboardingStep, object] = {}
+        self._step_builders: dict[OnboardingStep, Callable[[object, int], None]] = {}
+        self._step_content_height = 0
+        self._step_frame = None
 
         # Permissions UI (shared component)
         self._permissions_card = None
@@ -251,8 +254,9 @@ class OnboardingWizardController:
         self._build_header()
         self._build_steps()
         self._build_footer()
-        self._refresh_permissions()
         self._render()
+        if self._step == OnboardingStep.PERMISSIONS:
+            self._refresh_permissions()
 
     def _build_header(self) -> None:
         from AppKit import (  # type: ignore[import-not-found]
@@ -292,39 +296,54 @@ class OnboardingWizardController:
         self._progress_label = progress
 
     def _build_steps(self) -> None:
-        from AppKit import NSView  # type: ignore[import-not-found]
         from Foundation import NSMakeRect  # type: ignore[import-not-found]
 
         content_top = WIZARD_HEIGHT - 90
         content_bottom = FOOTER_HEIGHT + 10
         content_h = max(200, content_top - content_bottom)
-        frame = NSMakeRect(0, content_bottom, WIZARD_WIDTH, content_h)
+        self._step_content_height = content_h
+        self._step_frame = NSMakeRect(0, content_bottom, WIZARD_WIDTH, content_h)
+        self._step_builders = {
+            OnboardingStep.CHOOSE_GOAL: self._build_step_choose_goal,
+            OnboardingStep.PERMISSIONS: self._build_step_permissions,
+            OnboardingStep.HOTKEY: self._build_step_hotkey,
+            OnboardingStep.TEST_DICTATION: self._build_step_test_dictation,
+            OnboardingStep.CHEAT_SHEET: self._build_step_cheat_sheet,
+        }
+        self._ensure_step_built(self._step)
 
-        for step in (
-            OnboardingStep.CHOOSE_GOAL,
-            OnboardingStep.PERMISSIONS,
-            OnboardingStep.HOTKEY,
-            OnboardingStep.TEST_DICTATION,
-            OnboardingStep.CHEAT_SHEET,
-        ):
-            view = NSView.alloc().initWithFrame_(frame)
-            view.setHidden_(True)
-            self._content_view.addSubview_(view)
-            self._step_views[step] = view
+    def _create_step_container(self):
+        from AppKit import NSView  # type: ignore[import-not-found]
 
-        self._build_step_choose_goal(
-            self._step_views[OnboardingStep.CHOOSE_GOAL], content_h
-        )
-        self._build_step_permissions(
-            self._step_views[OnboardingStep.PERMISSIONS], content_h
-        )
-        self._build_step_hotkey(self._step_views[OnboardingStep.HOTKEY], content_h)
-        self._build_step_test_dictation(
-            self._step_views[OnboardingStep.TEST_DICTATION], content_h
-        )
-        self._build_step_cheat_sheet(
-            self._step_views[OnboardingStep.CHEAT_SHEET], content_h
-        )
+        frame = self._step_frame
+        if frame is None:
+            raise RuntimeError("step frame is not initialized")
+        view = NSView.alloc().initWithFrame_(frame)
+        view.setHidden_(True)
+        return view
+
+    def _is_step_built(self, step: OnboardingStep | None) -> bool:
+        if step == OnboardingStep.DONE:
+            step = OnboardingStep.CHEAT_SHEET
+        return step in self._step_views
+
+    def _ensure_step_built(self, step: OnboardingStep | None) -> bool:
+        if step is None:
+            return False
+        if step == OnboardingStep.DONE:
+            step = OnboardingStep.CHEAT_SHEET
+        if step in self._step_views:
+            return False
+
+        builder = self._step_builders.get(step)
+        if builder is None or self._content_view is None:
+            return False
+
+        view = self._create_step_container()
+        self._content_view.addSubview_(view)
+        self._step_views[step] = view
+        builder(view, self._step_content_height)
+        return True
 
     def _build_footer(self) -> None:
         from AppKit import (  # type: ignore[import-not-found]
@@ -1133,6 +1152,7 @@ class OnboardingWizardController:
         step = self._step
         if step == OnboardingStep.DONE:
             step = OnboardingStep.CHEAT_SHEET
+        self._ensure_step_built(step)
 
         for s, view in self._step_views.items():
             try:
@@ -1261,12 +1281,14 @@ class OnboardingWizardController:
 
         # Hotkey presets (delegated to HotkeyCard)
         if action in ("hotkey_f19_toggle", "hotkey_fn_hold", "hotkey_opt_space"):
+            self._ensure_step_built(OnboardingStep.HOTKEY)
             if self._hotkey_card:
                 preset = action.replace("hotkey_", "")  # f19_toggle, fn_hold, opt_space
                 self._hotkey_card.apply_preset(preset)
             return
 
         if action.startswith("record_hotkey:"):
+            self._ensure_step_built(OnboardingStep.HOTKEY)
             kind = action.split(":", 1)[1].strip().lower()
             if kind in ("toggle", "hold"):
                 self._toggle_hotkey_recording(kind)

@@ -4,6 +4,22 @@ from utils.onboarding import OnboardingChoice, OnboardingStep
 from ui.onboarding_wizard import OnboardingWizardController
 
 
+class _FakeView:
+    def __init__(self):
+        self.hidden = None
+
+    def setHidden_(self, value) -> None:
+        self.hidden = value
+
+
+class _FakeContentView:
+    def __init__(self):
+        self.subviews = []
+
+    def addSubview_(self, view) -> None:
+        self.subviews.append(view)
+
+
 def _isolate_prefs(tmp_path, monkeypatch):
     monkeypatch.setattr(prefs, "PREFS_FILE", tmp_path / "preferences.json")
     monkeypatch.setattr(prefs, "ENV_FILE", tmp_path / ".env")
@@ -97,3 +113,54 @@ def test_set_api_key_empty_value_removes_existing(tmp_path, monkeypatch):
     env = prefs.read_env_file()
     assert saved is False
     assert "DEEPGRAM_API_KEY" not in env
+
+
+def test_ensure_step_built_runs_builder_once():
+    wizard = OnboardingWizardController.__new__(OnboardingWizardController)
+    wizard._content_view = _FakeContentView()
+    wizard._step_views = {}
+    wizard._step_content_height = 320
+    wizard._step_frame = object()
+
+    built: list[tuple[object, int]] = []
+    wizard._step_builders = {
+        OnboardingStep.HOTKEY: lambda parent, height: built.append((parent, height))
+    }
+    wizard._create_step_container = lambda: _FakeView()
+
+    assert wizard._ensure_step_built(OnboardingStep.HOTKEY) is True
+    assert wizard._ensure_step_built(OnboardingStep.HOTKEY) is False
+    assert wizard._is_step_built(OnboardingStep.HOTKEY) is True
+    assert len(wizard._content_view.subviews) == 1
+    assert built == [(wizard._content_view.subviews[0], 320)]
+
+
+def test_render_builds_selected_step_on_demand():
+    wizard = OnboardingWizardController.__new__(OnboardingWizardController)
+    wizard._step = OnboardingStep.TEST_DICTATION
+    wizard._content_view = _FakeContentView()
+    wizard._step_views = {}
+    wizard._step_content_height = 280
+    wizard._step_frame = object()
+    wizard._step_label = None
+    wizard._progress_label = None
+    wizard._back_btn = None
+    wizard._next_btn = None
+    wizard._create_step_container = lambda: _FakeView()
+
+    built: list[tuple[object, int]] = []
+    wizard._step_builders = {
+        OnboardingStep.TEST_DICTATION: lambda parent, height: built.append(
+            (parent, height)
+        )
+    }
+    hotkey_updates: list[bool] = []
+    wizard._update_test_dictation_hotkeys = lambda: hotkey_updates.append(True)
+    wizard._sync_hotkey_fields_from_env = lambda: None
+    wizard._can_advance = lambda: True
+
+    wizard._render()
+
+    assert built == [(wizard._content_view.subviews[0], 280)]
+    assert hotkey_updates == [True]
+    assert wizard._content_view.subviews[0].hidden is False

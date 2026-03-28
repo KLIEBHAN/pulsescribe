@@ -373,11 +373,45 @@ class PySide6OverlayWidget(QWidget):
         self._label = QLabel(self)
         self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._label.setGeometry(10, 55, WINDOW_WIDTH - 20, 30)
-        self._label.setStyleSheet(
-            "QLabel { color: white; background: transparent; }"
-        )
-        font = QFont("Segoe UI", 11)
-        self._label.setFont(font)
+        self._label.setStyleSheet(self._get_label_styles()["default"])
+        self._label.setFont(self._get_label_font(False))
+        self._label_font_key = "default"
+        self._label_style_key = "default"
+        self._label_text_value = ""
+
+    def _get_label_font(self, italic: bool) -> QFont:
+        attr_name = "_italic_label_font" if italic else "_default_label_font"
+        font = getattr(self, attr_name, None)
+        if font is None:
+            font = QFont("Segoe UI", 10 if italic else 11)
+            font.setItalic(italic)
+            setattr(self, attr_name, font)
+        return font
+
+    def _get_label_styles(self) -> dict[str, str]:
+        styles = getattr(self, "_label_styles", None)
+        if styles is None:
+            done = STATE_COLORS["DONE"]
+            error = STATE_COLORS["ERROR"]
+            styles = {
+                "default": "QLabel { color: white; background: transparent; }",
+                "italic": (
+                    "QLabel { color: rgba(255, 255, 255, 0.6); "
+                    "background: transparent; }"
+                ),
+                "DONE": (
+                    "QLabel { color: "
+                    f"rgb({done.red()}, {done.green()}, {done.blue()}); "
+                    "background: transparent; }"
+                ),
+                "ERROR": (
+                    "QLabel { color: "
+                    f"rgb({error.red()}, {error.green()}, {error.blue()}); "
+                    "background: transparent; }"
+                ),
+            }
+            self._label_styles = styles
+        return styles
 
     def _setup_animation(self):
         """Konfiguriert den Animation-Timer."""
@@ -517,25 +551,25 @@ class PySide6OverlayWidget(QWidget):
 
     def _update_label(self, state: str, text: str, italic: bool = False):
         """Aktualisiert das Label mit State-spezifischem Styling."""
-        font = QFont("Segoe UI", 11 if not italic else 10)
-        font.setItalic(italic)
-        self._label.setFont(font)
+        font_key = "italic" if italic else "default"
+        if getattr(self, "_label_font_key", None) != font_key:
+            self._label.setFont(self._get_label_font(italic))
+            self._label_font_key = font_key
 
         if italic:
-            self._label.setStyleSheet(
-                "QLabel { color: rgba(255, 255, 255, 0.6); background: transparent; }"
-            )
+            style_key = "italic"
         elif state in ("DONE", "ERROR"):
-            color = STATE_COLORS.get(state, QColor(255, 255, 255))
-            self._label.setStyleSheet(
-                f"QLabel {{ color: rgb({color.red()}, {color.green()}, {color.blue()}); background: transparent; }}"
-            )
+            style_key = state
         else:
-            self._label.setStyleSheet(
-                "QLabel { color: white; background: transparent; }"
-            )
+            style_key = "default"
 
-        self._label.setText(text)
+        if getattr(self, "_label_style_key", None) != style_key:
+            self._label.setStyleSheet(self._get_label_styles()[style_key])
+            self._label_style_key = style_key
+
+        if getattr(self, "_label_text_value", None) != text:
+            self._label.setText(text)
+            self._label_text_value = text
 
     def _reset_levels(self):
         """Setzt Audio-Level zurück."""

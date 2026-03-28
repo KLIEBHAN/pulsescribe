@@ -1,31 +1,41 @@
 Performance work log - 2026-03-28
 
-Scope
-- Focused on frontend-heavy UI paths outside the last two commits.
-- Left the recent settings-cache/prompt-load work and `audio/recording.py` untouched.
+Guardrails
+- Focused on UI-heavy paths outside the last two commits.
+- Left the recent work in `ui/welcome.py`, `ui/settings_windows.py`, `utils/preferences.py` and `ui/overlay_windows.py` alone unless compatibility required it.
+- Kept onboarding flows, hotkey handling and overlay behavior functionally unchanged.
 
-Hotspots reviewed
-- `ui/welcome.py`: the macOS welcome window eagerly built every tab on open, including Prompts, Vocabulary, Logs, Transcripts and About.
-- `ui/welcome.py`: the logs auto-refresh timer could start even before the Logs tab UI existed.
-- `ui/overlay_windows.py`: the Windows overlay re-applied identical label configs and bar fill colors every frame.
+Previous pass already completed
+- `ui/welcome.py`: lazy tab building for heavy macOS settings tabs.
+- `ui/welcome.py`: prevented Logs auto-refresh from starting before the Logs UI exists.
+- `ui/overlay_windows.py`: skipped duplicate label and bar-color updates in the Windows Tk overlay.
+
+Hotspots reviewed in this pass
+- `ui/onboarding_wizard.py`: macOS onboarding eagerly built every step at window creation, including permissions, hotkey, transcript and summary UI.
+- `ui/onboarding_wizard_windows.py`: Windows onboarding built every `QStackedWidget` page up front even though only one page is visible.
+- `ui/overlay_pyside6.py`: active recording/interim updates recreated fonts and reapplied identical label styles/text in a high-frequency path.
+
+Current weaknesses identified
+- Unnecessary first-open work in both onboarding flows from constructing hidden step trees before the user reaches them.
+- Hidden-control mutations in the macOS onboarding hotkey path depended on eager build and would become fragile once step construction was deferred.
+- Repeated `QLabel.setFont(...)`, `QLabel.setStyleSheet(...)` and `QLabel.setText(...)` calls in the PySide overlay added avoidable churn during interim updates.
 
 Changes in this pass
-- Added lazy tab building for the macOS welcome window so only the selected tab is built immediately; other tabs are created on first selection.
-- Kept setup presets safe by materializing the Providers and Advanced tabs before a preset mutates hidden controls.
-- Guarded logs auto-refresh so the timer stays off until the Logs tab has actually been built.
-- Cached Windows overlay label configs to skip duplicate `Label.config(...)` calls.
-- Cached Windows overlay bar colors so identical `Canvas.itemconfig(...)` fill updates are not repeated every frame.
-- Added regression tests for lazy-tab behavior, preset safety and the new overlay no-op guards.
+- Added lazy step building to `ui/onboarding_wizard.py` so only the active macOS onboarding step is created initially; other steps materialize on first navigation.
+- Added lazy page building to `ui/onboarding_wizard_windows.py` so the `QStackedWidget` only receives a page when that step is first shown.
+- Kept macOS hotkey actions safe by forcing the Hotkey step to build before presets or recording actions mutate hidden controls.
+- Cached PySide6 overlay label font/style/text state so duplicate interim updates skip redundant widget mutations.
+- Added regression tests for lazy onboarding step/page creation and the new PySide overlay no-op guards.
 
 Why this helps
-- Faster welcome-window open time because heavy editors and log/history readers no longer initialize up front.
-- Less background UI work before the user ever visits Logs.
-- Lower steady-state Tkinter overhead during recording/feedback because repeated style writes are eliminated.
+- Faster onboarding open time on both platforms because hidden cards, transcript widgets and summary controls no longer build eagerly.
+- Lower initial UI memory/setup cost when resuming the wizard on an early step.
+- Lower steady-state overlay overhead on Windows/PySide during recording because label styling work is only done when something actually changes.
 
 Validation
-- `pytest tests/test_settings_ui.py tests/test_overlay_windows.py tests/test_overlay.py -q`
+- `pytest tests/test_onboarding_wizard_flow.py tests/test_onboarding.py tests/test_onboarding_windows.py tests/test_overlay.py tests/test_overlay_pyside6.py -q`
 
 Next worthwhile areas
-- macOS overlay rendering still updates every bar every frame and could be profiled for no-op geometry work.
-- `ui/welcome.py` Logs tab still loads transcript history when the tab is built; segment-level lazy loading would trim that path further.
-- Large onboarding windows (`ui/onboarding_wizard.py`, `ui/onboarding_wizard_windows.py`) are still good candidates for first-open profiling and deferred section construction.
+- `ui/overlay.py`: macOS overlay bars still update CALayer geometry every frame and remain the next best runtime optimization target.
+- `ui/welcome.py`: the Logs/Transcripts area still does its data load when the tab is first built; segment-level lazy loading would trim that path further.
+- `ui/onboarding_wizard.py` and `ui/onboarding_wizard_windows.py`: if profiling still shows first-open cost, the heavy steps themselves can be split into smaller lazy sections.

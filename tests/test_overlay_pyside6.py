@@ -90,6 +90,28 @@ class _FakeInterimTimer:
         self.set_interval_calls.append(interval_ms)
 
 
+class _FakeQtLabel:
+    def __init__(self):
+        self.font_calls = 0
+        self.style_calls = 0
+        self.text_calls = 0
+        self.text = ""
+        self.style = ""
+        self.font = None
+
+    def setFont(self, font) -> None:
+        self.font = font
+        self.font_calls += 1
+
+    def setStyleSheet(self, style: str) -> None:
+        self.style = style
+        self.style_calls += 1
+
+    def setText(self, text: str) -> None:
+        self.text = text
+        self.text_calls += 1
+
+
 def test_fade_out_timer_is_reused(monkeypatch):
     widget = PySide6OverlayWidget.__new__(PySide6OverlayWidget)
     widget._fade_out_timer = _FakeTimer()
@@ -287,3 +309,27 @@ def test_update_animation_timer_interval_updates_active_timer():
 
     assert widget._animation_timer.set_interval_calls == [FRAME_MS_FEEDBACK]
     assert widget._animation_timer.interval_ms == FRAME_MS_FEEDBACK
+
+
+def test_update_label_skips_duplicate_font_style_and_text_updates():
+    widget = PySide6OverlayWidget.__new__(PySide6OverlayWidget)
+    widget._label = _FakeQtLabel()
+
+    PySide6OverlayWidget._update_label(widget, "RECORDING", "Recording...")
+    PySide6OverlayWidget._update_label(widget, "RECORDING", "Recording...")
+
+    assert widget._label.font_calls == 1
+    assert widget._label.style_calls == 1
+    assert widget._label.text_calls == 1
+
+
+def test_update_label_only_mutates_changed_parts():
+    widget = PySide6OverlayWidget.__new__(PySide6OverlayWidget)
+    widget._label = _FakeQtLabel()
+
+    PySide6OverlayWidget._update_label(widget, "RECORDING", "Recording...")
+    PySide6OverlayWidget._update_label(widget, "RECORDING", "Interim...", italic=True)
+
+    assert widget._label.font_calls == 2
+    assert widget._label.style_calls == 2
+    assert widget._label.text_calls == 2
