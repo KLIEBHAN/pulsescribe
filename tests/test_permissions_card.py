@@ -124,6 +124,7 @@ def test_refresh_skips_duplicate_widget_updates(monkeypatch) -> None:
     assert card._widgets.access_action.title_calls == 1
     assert card._widgets.input_status.text_calls == 1
     assert card._widgets.input_action.title_calls == 1
+    assert card.get_cached_permission_signature() == ("authorized", False, False)
 
 
 def test_refresh_skips_duplicate_updates_with_fresh_color_objects(monkeypatch) -> None:

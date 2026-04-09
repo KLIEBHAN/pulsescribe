@@ -81,6 +81,10 @@ class PermissionsCard:
         self._status_cache: dict[str, tuple[str, object]] = {}
         self._action_cache: dict[str, tuple[str, bool, bool]] = {}
 
+    def get_cached_permission_signature(self) -> tuple[str, bool, bool] | None:
+        """Return the most recent permission snapshot from refresh(), if any."""
+        return self._last_permission_signature
+
     def _read_permission_signature(self) -> tuple[str, bool, bool]:
         from utils.permissions import (
             get_microphone_permission_state,

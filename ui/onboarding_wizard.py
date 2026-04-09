@@ -209,6 +209,29 @@ class OnboardingWizardController:
             (self._get_cached_env_setting("PULSESCRIBE_HOLD_HOTKEY") or "").strip(),
         )
 
+    def _read_permission_signature(self) -> tuple[str, bool, bool]:
+        """Reuse the permissions card snapshot before re-querying OS helpers."""
+        card = getattr(self, "_permissions_card", None)
+        if card is not None:
+            try:
+                signature = card.get_cached_permission_signature()
+            except Exception:
+                signature = None
+            if signature is not None:
+                return signature
+
+        from utils.permissions import (
+            get_microphone_permission_state,
+            has_accessibility_permission,
+            has_input_monitoring_permission,
+        )
+
+        return (
+            get_microphone_permission_state(),
+            has_accessibility_permission(),
+            has_input_monitoring_permission(),
+        )
+
     # ---------------------------------------------------------------------
     # Public API
     # ---------------------------------------------------------------------
@@ -986,11 +1009,6 @@ class OnboardingWizardController:
 
     def _update_summary(self) -> None:
         """Aktualisiert die Summary-Labels mit aktuellen Werten."""
-        from utils.permissions import (
-            has_accessibility_permission,
-            has_input_monitoring_permission,
-        )
-
         ok_color = _get_color(120, 255, 150)
         warn_color = _get_color(255, 200, 90)
 
@@ -1037,9 +1055,8 @@ class OnboardingWizardController:
                 pass
 
         # Permissions
-        mic_ok = get_microphone_permission_state() == "authorized"
-        access_ok = has_accessibility_permission()
-        input_ok = has_input_monitoring_permission()
+        mic_state, access_ok, input_ok = self._read_permission_signature()
+        mic_ok = mic_state == "authorized"
         perm_parts = []
         if mic_ok:
             perm_parts.append("🎤 Mic ✓")
@@ -1220,7 +1237,8 @@ class OnboardingWizardController:
         if self._step == OnboardingStep.CHOOSE_GOAL:
             return self._choice is not None
         if self._step == OnboardingStep.PERMISSIONS:
-            return get_microphone_permission_state() not in ("denied", "restricted")
+            mic_state, _, _ = self._read_permission_signature()
+            return mic_state not in ("denied", "restricted")
         if self._step == OnboardingStep.HOTKEY:
             toggle, hold = self._get_cached_hotkeys()
             return bool(toggle or hold)
@@ -1515,9 +1533,6 @@ class OnboardingWizardController:
             self._set_hotkey_status("warning", message)
         else:
             self._set_hotkey_status("ok", "✓ Saved")
-
-        self._sync_hotkey_fields_from_env()
-        self._render()
         return True
 
     # ---------------------------------------------------------------------

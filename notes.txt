@@ -1,3 +1,42 @@
+Performance work log - 2026-04-09 (macOS onboarding permission snapshot reuse)
+
+Scope
+- Left the last two commit areas untouched: `ui/overlay.py`, `ui/overlay_windows.py`, `ui/overlay_pyside6.py`, and `ui/welcome.py`.
+- Avoided the already dirty prompt/permissions/vocabulary files and their related tests.
+- Focused on the remaining macOS onboarding path in `ui/onboarding_wizard.py` plus the shared permission-card cache surface in `ui/permissions_card.py`.
+
+Current weaknesses reviewed
+- `ui/onboarding_wizard.py`: every permissions-step render recomputed `can_advance` by calling OS permission helpers again, even when `PermissionsCard.refresh()` had just read the same state.
+- `ui/onboarding_wizard.py`: the summary step also re-queried microphone/accessibility/input-monitoring state instead of reusing the already known permission snapshot.
+- `ui/onboarding_wizard.py` + `ui/hotkey_card.py`: a successful hotkey change triggered follow-up field sync and render work twice in a row, once in the wizard callback and once again in the shared hotkey card.
+
+Changes in this pass
+- `ui/permissions_card.py`
+  Exposed the most recent permission snapshot through a small accessor so host UIs can reuse the last refresh result.
+- `ui/onboarding_wizard.py`
+  Added a local permission-signature reader that prefers the cached card snapshot before falling back to OS permission helpers.
+- `ui/onboarding_wizard.py`
+  Routed both permissions-step navigation gating and summary rendering through the shared permission snapshot.
+- `ui/onboarding_wizard.py`
+  Removed duplicate hotkey success follow-up work from the wizard so `HotkeyCard` remains the single owner of the post-save sync/render pass.
+- Tests
+  Added regression coverage for permission-cache reuse and for the streamlined hotkey success path.
+
+Why this helps
+- The macOS onboarding wizard now avoids repeated permission-helper calls on a render-heavy path where the permissions card already owns fresh state.
+- Hotkey changes do one post-save UI sync/render pass instead of two, which trims unnecessary widget churn on an interactive setup step.
+- The changes stay small and local while keeping onboarding behavior unchanged.
+
+Validation
+- `pytest tests/test_onboarding.py tests/test_permissions_card.py -q`
+- `python -m py_compile ui/onboarding_wizard.py ui/permissions_card.py tests/test_onboarding.py tests/test_permissions_card.py`
+- `ruff check ui/onboarding_wizard.py ui/permissions_card.py tests/test_onboarding.py tests/test_permissions_card.py`
+
+Next worthwhile areas
+- `ui/overlay.py`: animation timers still look like the next likely high-frequency CPU hotspot on macOS if profiling shows wakeups outside interim formatting.
+- `ui/menubar.py`: long dictation sessions may still benefit from stronger preview stabilization if menu-bar title updates show up in traces.
+- `ui/onboarding_wizard.py`: the Fast-mode API-key prompt still forces a render after focusing; if onboarding traces still show churn there, the prompt visibility path could be narrowed further.
+
 Performance work log - 2026-04-09 (overlay interim tail normalization fast path)
 
 Scope

@@ -291,6 +291,112 @@ def test_update_summary_skips_duplicate_widget_updates(monkeypatch):
     assert wizard._summary_perm_label.color_calls == 1
 
 
+def test_can_advance_reuses_cached_permission_signature(monkeypatch):
+    import ui.onboarding_wizard as wizard_mod
+
+    wizard = OnboardingWizardController.__new__(OnboardingWizardController)
+    wizard._step = OnboardingStep.PERMISSIONS
+    wizard._permissions_card = type(
+        "_Card",
+        (),
+        {"get_cached_permission_signature": lambda self: ("authorized", False, False)},
+    )()
+
+    monkeypatch.setattr(
+        wizard_mod,
+        "get_microphone_permission_state",
+        lambda: (_ for _ in ()).throw(AssertionError("should use cached signature")),
+    )
+
+    assert wizard._can_advance() is True
+
+
+def test_update_summary_reuses_cached_permission_signature(monkeypatch):
+    import ui.onboarding_wizard as wizard_mod
+
+    wizard = OnboardingWizardController.__new__(OnboardingWizardController)
+    wizard._summary_provider_label = _FakeTextField()
+    wizard._summary_hotkey_label = _FakeTextField()
+    wizard._summary_perm_label = _FakeTextField()
+    wizard._last_summary_provider_text = None
+    wizard._last_summary_hotkey_text = None
+    wizard._last_summary_hotkey_has_value = None
+    wizard._last_summary_perm_text = None
+    wizard._last_summary_perm_mic_ok = None
+    wizard._permissions_card = type(
+        "_Card",
+        (),
+        {"get_cached_permission_signature": lambda self: ("authorized", True, True)},
+    )()
+    wizard._get_cached_env_setting = lambda key: {
+        "PULSESCRIBE_MODE": "deepgram",
+        "PULSESCRIBE_TOGGLE_HOTKEY": "f19",
+        "PULSESCRIBE_HOLD_HOTKEY": "",
+    }.get(key)
+    wizard._get_cached_hotkeys = lambda: ("f19", "")
+
+    monkeypatch.setattr(wizard_mod, "_get_color", lambda *args, **kwargs: args)
+    monkeypatch.setattr(
+        wizard_mod,
+        "get_microphone_permission_state",
+        lambda: (_ for _ in ()).throw(AssertionError("should use cached signature")),
+    )
+    monkeypatch.setattr(
+        wizard_mod,
+        "has_accessibility_permission",
+        lambda: (_ for _ in ()).throw(AssertionError("should use cached signature")),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        wizard_mod,
+        "has_input_monitoring_permission",
+        lambda: (_ for _ in ()).throw(AssertionError("should use cached signature")),
+        raising=False,
+    )
+
+    wizard._update_summary()
+
+    assert wizard._summary_perm_label.value == "🎤 Mic ✓  ♿ Accessibility ✓  ⌨️ Input ✓"
+
+
+def test_apply_hotkey_change_success_relies_on_hotkey_card_follow_up(monkeypatch):
+    import utils.hotkey_validation as hotkey_validation_mod
+
+    wizard = OnboardingWizardController.__new__(OnboardingWizardController)
+    wizard._on_settings_changed = lambda: on_settings_changed.append(True)
+    wizard._get_cached_hotkeys = lambda: ("option+space", "")
+    wizard._apply_env_updates = lambda updates: applied_updates.append(updates) or True
+    wizard._set_hotkey_status = lambda level, message: statuses.append((level, message))
+    wizard._sync_hotkey_fields_from_env = lambda: (_ for _ in ()).throw(
+        AssertionError("follow-up sync should come from HotkeyCard")
+    )
+    wizard._render = lambda: (_ for _ in ()).throw(
+        AssertionError("follow-up render should come from HotkeyCard")
+    )
+
+    applied_updates: list[dict[str, str | None]] = []
+    on_settings_changed: list[bool] = []
+    statuses: list[tuple[str, str | None]] = []
+
+    monkeypatch.setattr(
+        hotkey_validation_mod,
+        "validate_hotkey_change",
+        lambda kind, hotkey: ("f19", "ok", "Saved"),
+    )
+
+    assert wizard._apply_hotkey_change("toggle", "f19") is True
+    assert applied_updates == [
+        {
+            "PULSESCRIBE_TOGGLE_HOTKEY": "f19",
+            "PULSESCRIBE_HOLD_HOTKEY": None,
+            "PULSESCRIBE_HOTKEY": None,
+            "PULSESCRIBE_HOTKEY_MODE": None,
+        }
+    ]
+    assert on_settings_changed == [True]
+    assert statuses == [("ok", "✓ Saved")]
+
+
 def test_show_fast_api_key_prompt_skips_duplicate_widget_updates():
     wizard = OnboardingWizardController.__new__(OnboardingWizardController)
     wizard._api_key_container = _FakeView()
