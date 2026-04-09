@@ -28,6 +28,16 @@ def normalize_requested_response_format(
     return (requested_format or default).strip().lower() or default
 
 
+def _serialize_model_dump_json(response: object) -> str | None:
+    """Serialize SDK responses exposing ``model_dump_json`` in a stable format."""
+    model_dump_json = getattr(response, "model_dump_json", None)
+    if not callable(model_dump_json):
+        return None
+
+    serialized = model_dump_json(indent=2)
+    return serialized if isinstance(serialized, str) else str(serialized)
+
+
 def serialize_openai_response(response: object, *, requested_format: str) -> str:
     """Convert OpenAI SDK responses into stable CLI output."""
     normalized = normalize_requested_response_format(requested_format)
@@ -36,10 +46,9 @@ def serialize_openai_response(response: object, *, requested_format: str) -> str
     if normalized == "text" and text_response is not None:
         return text_response
 
-    model_dump_json = getattr(response, "model_dump_json", None)
-    if callable(model_dump_json):
-        serialized = model_dump_json(indent=2)
-        return serialized if isinstance(serialized, str) else str(serialized)
+    serialized_json = _serialize_model_dump_json(response)
+    if serialized_json is not None:
+        return serialized_json
 
     if text_response is not None:
         return text_response

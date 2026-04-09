@@ -38,6 +38,30 @@ class EnvClientCache:
         """Return True when the cached client does not match the current key."""
         return self._client is None or self._signature != api_key
 
+    def _get_cached_client(self, api_key: str) -> Any | None:
+        """Return the cached client when it already matches the current API key."""
+        if self._needs_refresh(api_key):
+            return None
+        return self._client
+
+    def _refresh_client(
+        self,
+        api_key: str,
+        *,
+        create_client: Callable[[str], Any],
+        logger: logging.Logger,
+        client_label: str,
+    ) -> Any:
+        """Create or reuse the cached client after a synchronized refresh check."""
+        cached_client = self._get_cached_client(api_key)
+        if cached_client is not None:
+            return cached_client
+
+        self._client = create_client(api_key)
+        self._signature = api_key
+        logger.debug("%s initialisiert", client_label)
+        return self._client
+
     def get(
         self,
         *,
@@ -48,17 +72,18 @@ class EnvClientCache:
         client_label: str,
     ) -> Any:
         api_key = self._read_api_key(env_var=env_var, missing_error=missing_error)
-        if not self._needs_refresh(api_key):
-            return self._client
+        cached_client = self._get_cached_client(api_key)
+        if cached_client is not None:
+            return cached_client
 
         with self._lock:
             api_key = self._read_api_key(env_var=env_var, missing_error=missing_error)
-            if self._needs_refresh(api_key):
-                self._client = create_client(api_key)
-                self._signature = api_key
-                logger.debug("%s initialisiert", client_label)
-
-        return self._client
+            return self._refresh_client(
+                api_key,
+                create_client=create_client,
+                logger=logger,
+                client_label=client_label,
+            )
 
 
 def build_cached_env_client_getter(
