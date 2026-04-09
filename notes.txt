@@ -387,3 +387,44 @@ Next worthwhile areas
 - `ui/overlay.py`: the macOS overlay animation timers remain the clearest long-session CPU hotspot outside the current commit boundary.
 - `ui/welcome.py`: prompt/vocabulary editors still do non-trivial text/session work on save and would benefit from a similar no-op/status-dedupe pass once the dirty `utils/custom_prompts.py` worktree is resolved.
 - `ui/menubar.py`: the recording-title updates are already cheap, but the diagnostics/export actions are the next macOS surface to profile if menu interaction still feels sticky.
+
+Performance work log - 2026-04-09 (web i18n payload + hash navigation pass)
+
+Scope
+- Left the recent desktop-app commit areas untouched (`ui/welcome.py`, `ui/settings_windows.py`, and adjacent Python-side follow-ups).
+- Focused on the isolated web frontend under `web/`, where the next clear user-visible hotspots were layout-level i18n payload and hash-navigation retry work.
+- Preserved locale switching, localized navigation, mobile menu behavior, SEO metadata, and static generation.
+
+Current weaknesses reviewed
+- `web/src/app/[locale]/layout.tsx`: the layout loaded full locale messages into `NextIntlClientProvider` even though the client only needed locale context plus a small set of already-known header/footer strings.
+- `web/src/components/SiteHeader.tsx` and `web/src/components/LanguageSwitcher.tsx`: interactive header controls pulled translation/locale state through client hooks instead of receiving the already-resolved server values, increasing client work and hydration payload.
+- `web/src/components/HashAnchorScroller.tsx`: late-anchor recovery used a per-frame retry loop, which kept waking the client during route transitions until the target appeared or retries were exhausted.
+
+Changes in this pass
+- `web/src/app/[locale]/layout.tsx`
+  Reduced the client provider to locale context only and moved header/footer/common strings onto the server-resolved prop path, removing full message payload delivery from the layout.
+- `web/src/components/SiteHeader.tsx`
+  Switched the header to plain label props for navigation/common text so the client path no longer depends on translation hooks.
+- `web/src/components/LanguageSwitcher.tsx`
+  Removed translation/locale hook reads, normalized localized-path calculation locally, and kept locale transitions on the lighter client-router path when no hash is involved.
+- `web/src/components/SiteFooter.tsx`
+  Switched the footer to plain server-provided labels instead of client translation lookups.
+- `web/src/components/HashAnchorScroller.tsx`
+  Replaced the frame-by-frame retry loop with a short timeout-plus-mutation-observer path so late anchors still resolve without repeated per-frame work.
+- Tests
+  Updated component tests for the prop-driven i18n path and added coverage that late-anchor retry no longer relies on `requestAnimationFrame`.
+
+Why this helps
+- The web layout now ships materially less locale data to the client on every page, reducing hydration payload and translation-related client work.
+- Header/footer rendering keeps more work on the server and turns the interactive client layer into a narrower state/interaction shell.
+- Hash deep links still recover for streamed or delayed content, but the browser no longer burns a frame-based retry loop while waiting.
+
+Validation
+- `cd web && npm run test:run -- src/components/LanguageSwitcher.test.tsx src/components/SiteHeader.test.tsx src/components/SiteFooter.test.tsx src/components/HashAnchorScroller.test.tsx`
+- `cd web && npm run lint`
+- `cd web && npm run build`
+
+Next worthwhile areas
+- `web/src/app/[locale]/page.tsx` and `web/src/app/[locale]/docs/page.tsx`: large `t.raw(...)` sections could be profiled for opportunities to hoist more static data shaping out of render.
+- `web/src/components/SiteHeader.tsx`: if the mobile menu still dominates interaction traces, split the always-visible shell from the open-menu dialog path to narrow the hydrated code further.
+- `ui/overlay.py`: outside the web repo, the macOS overlay animation timers remain the next desktop-side long-session hotspot.
