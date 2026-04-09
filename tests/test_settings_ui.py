@@ -479,7 +479,7 @@ class TestWelcomeSaveSettings:
         ctrl._prompts_cache = {}
         ctrl._prompts_status_label = _FakeField("")
 
-        ctrl._save_custom_prompts()
+        WelcomeController._save_custom_prompts(ctrl)
 
         assert save_calls == []
         assert reset_calls == []
