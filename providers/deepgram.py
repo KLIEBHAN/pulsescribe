@@ -5,7 +5,6 @@ Für Streaming siehe deepgram_stream.py.
 """
 
 import logging
-import os
 from pathlib import Path
 from utils.timing import redacted_text_summary, timed_operation
 from utils.vocabulary import load_vocabulary
@@ -13,6 +12,7 @@ from utils.vocabulary import load_vocabulary
 from config import DEFAULT_DEEPGRAM_MODEL
 from ._client_cache import EnvClientCache
 from ._language import normalize_auto_language
+from .base import EnvValidatedProvider
 
 logger = logging.getLogger("pulsescribe.providers.deepgram")
 _UPLOAD_CHUNK_SIZE = 1024 * 1024
@@ -100,7 +100,7 @@ def _extract_transcript(response) -> str:
     return getattr(alternatives[0], "transcript", "") or ""
 
 
-class DeepgramProvider:
+class DeepgramProvider(EnvValidatedProvider):
     """Deepgram REST API Provider.
 
     Unterstützt:
@@ -114,20 +114,11 @@ class DeepgramProvider:
 
     name = "deepgram"
     default_model = DEFAULT_DEEPGRAM_MODEL
-
-    def __init__(self) -> None:
-        self._validated = False
-
-    def _validate(self) -> None:
-        """Prüft ob API-Key gesetzt ist."""
-        if self._validated:
-            return
-        if not os.getenv("DEEPGRAM_API_KEY"):
-            raise ValueError(
-                "DEEPGRAM_API_KEY nicht gesetzt. "
-                "Registrierung unter https://console.deepgram.com (200$ Startguthaben)"
-            )
-        self._validated = True
+    api_key_env_var = "DEEPGRAM_API_KEY"
+    missing_api_key_message = (
+        "DEEPGRAM_API_KEY nicht gesetzt. "
+        "Registrierung unter https://console.deepgram.com (200$ Startguthaben)"
+    )
 
     def transcribe(
         self,
@@ -175,9 +166,6 @@ class DeepgramProvider:
 
         return result
 
-    def supports_streaming(self) -> bool:
-        """REST API unterstützt kein Streaming (siehe DeepgramStreamProvider)."""
-        return False
 
 
 __all__ = ["DeepgramProvider"]

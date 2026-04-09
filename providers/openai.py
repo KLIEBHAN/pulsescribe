@@ -4,13 +4,13 @@ Nutzt die OpenAI Transcription API mit gpt-4o-transcribe oder whisper-1.
 """
 
 import logging
-import os
 from pathlib import Path
 from utils.timing import redacted_text_summary, timed_operation
 
 from config import DEFAULT_API_MODEL
 from ._client_cache import EnvClientCache
 from ._language import normalize_auto_language
+from .base import EnvValidatedProvider
 
 logger = logging.getLogger("pulsescribe.providers.openai")
 
@@ -81,7 +81,7 @@ def _serialize_response(response, *, requested_format: str) -> str:
     return str(response)
 
 
-class OpenAIProvider:
+class OpenAIProvider(EnvValidatedProvider):
     """OpenAI Whisper API Provider.
 
     Unterstützt:
@@ -92,21 +92,11 @@ class OpenAIProvider:
 
     name = "openai"
     default_model = DEFAULT_API_MODEL
-
-    def __init__(self) -> None:
-        # API-Key Validierung beim ersten Aufruf
-        self._validated = False
-
-    def _validate(self) -> None:
-        """Prüft ob API-Key gesetzt ist."""
-        if self._validated:
-            return
-        if not os.getenv("OPENAI_API_KEY"):
-            raise ValueError(
-                "OPENAI_API_KEY nicht gesetzt. "
-                "Bitte `export OPENAI_API_KEY='sk-...'` ausführen."
-            )
-        self._validated = True
+    api_key_env_var = "OPENAI_API_KEY"
+    missing_api_key_message = (
+        "OPENAI_API_KEY nicht gesetzt. "
+        "Bitte `export OPENAI_API_KEY='sk-...'` ausführen."
+    )
 
     def transcribe(
         self,
@@ -160,9 +150,6 @@ class OpenAIProvider:
 
         return result
 
-    def supports_streaming(self) -> bool:
-        """OpenAI API unterstützt kein Streaming."""
-        return False
 
 
 __all__ = ["OpenAIProvider"]

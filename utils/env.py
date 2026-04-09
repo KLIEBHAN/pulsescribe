@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+from io import StringIO
 from pathlib import Path
 
 logger = logging.getLogger("pulsescribe")
@@ -76,6 +77,32 @@ def parse_env_line(raw_line: str) -> tuple[str | None, str | None]:
         parsed.append(char)
 
     return key, "".join(parsed).strip()
+
+
+def parse_env_line_with_dotenv(raw_line: str) -> tuple[str | None, str | None]:
+    """Parse one `.env` line with python-dotenv when available.
+
+    This is primarily used by mutation code that needs to recognize existing
+    assignments written with `export`, quotes, comments, or extra spacing before
+    rewriting them into canonical `KEY=value` lines.
+    """
+    try:
+        from dotenv import dotenv_values  # type: ignore[import-not-found]
+    except Exception:
+        return parse_env_line(raw_line)
+
+    try:
+        parsed = dotenv_values(stream=StringIO(f"{raw_line}\n"))
+    except Exception:
+        return parse_env_line(raw_line)
+
+    for key, value in parsed.items():
+        normalized_key = str(key or "").strip()
+        if not normalized_key:
+            continue
+        return normalized_key, "" if value is None else str(value).strip()
+
+    return None, None
 
 
 def _parse_env_line(raw_line: str) -> tuple[str | None, str | None]:
@@ -236,6 +263,7 @@ __all__ = [
     "get_env_int",
     "load_environment",
     "parse_env_line",
+    "parse_env_line_with_dotenv",
     "parse_bool",
     "read_env_file_values",
 ]

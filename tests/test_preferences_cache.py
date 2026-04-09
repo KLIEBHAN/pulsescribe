@@ -146,6 +146,23 @@ def test_save_env_setting_updates_spaced_assignment_without_creating_duplicate(
     assert prefs.read_env_file()["PULSESCRIBE_MODE"] == "local"
 
 
+def test_save_env_setting_updates_export_assignment_without_creating_duplicate(
+    tmp_path, monkeypatch
+):
+    _isolate_prefs(tmp_path, monkeypatch)
+    prefs.ENV_FILE.write_text(
+        'export PULSESCRIBE_MODE = "deepgram"  # keep readable\nUNCHANGED_KEY=keep\n',
+        encoding="utf-8",
+    )
+
+    prefs.save_env_setting("PULSESCRIBE_MODE", "local")
+
+    assert prefs.ENV_FILE.read_text(encoding="utf-8") == (
+        "PULSESCRIBE_MODE=local\nUNCHANGED_KEY=keep\n"
+    )
+    assert prefs.read_env_file()["PULSESCRIBE_MODE"] == "local"
+
+
 def test_remove_env_setting_removes_spaced_assignment(tmp_path, monkeypatch):
     _isolate_prefs(tmp_path, monkeypatch)
     prefs.ENV_FILE.write_text(
@@ -232,6 +249,27 @@ def test_update_env_settings_preserves_comments_and_collapses_updated_duplicates
 
     assert prefs.ENV_FILE.read_text(encoding="utf-8") == (
         "# top\nPULSESCRIBE_MODE=local\nUNCHANGED_KEY=keep\n# keep\n"
+    )
+
+
+def test_update_env_settings_handles_export_assignments_for_updated_keys(
+    tmp_path, monkeypatch
+):
+    _isolate_prefs(tmp_path, monkeypatch)
+    prefs.ENV_FILE.write_text(
+        'export PULSESCRIBE_MODE = "deepgram"\nUNCHANGED_KEY=keep\nexport PULSESCRIBE_DEVICE="auto"\n',
+        encoding="utf-8",
+    )
+
+    prefs.update_env_settings(
+        {
+            "PULSESCRIBE_MODE": None,
+            "PULSESCRIBE_DEVICE": "cpu",
+        }
+    )
+
+    assert prefs.ENV_FILE.read_text(encoding="utf-8") == (
+        "UNCHANGED_KEY=keep\nPULSESCRIBE_DEVICE=cpu\n"
     )
 
 

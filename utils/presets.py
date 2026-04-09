@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import platform
 
+from utils.local_backend import normalize_local_backend, should_remove_local_backend_env
 from utils.preferences import update_env_settings
 
 LOCAL_FP16_ENV_KEY = "PULSESCRIBE_FP16"
@@ -73,6 +74,102 @@ LOCAL_PRESETS: dict[str, dict[str, str]] = {
 LOCAL_PRESET_OPTIONS = ["(none)", *LOCAL_PRESETS.keys()]
 
 
+def _normalize_lower_value(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    return normalized or None
+
+
+def _normalize_lower_override(
+    value: str | None,
+    *,
+    remove_when: set[str] | None = None,
+) -> str | None:
+    normalized = _normalize_lower_value(value)
+    if normalized is None:
+        return None
+    if remove_when and normalized in remove_when:
+        return None
+    return normalized
+
+
+def _normalize_optional_str(value: str | None) -> str | None:
+    normalized = (value or "").strip()
+    return normalized or None
+
+
+def _normalize_local_backend_override(value: str | None) -> str | None:
+    backend = normalize_local_backend(value)
+    if should_remove_local_backend_env(backend):
+        return None
+    return backend
+
+
+def _normalize_lightning_batch_size(value: str | None) -> str | None:
+    normalized = _normalize_optional_str(value)
+    if not normalized or normalized == "12":
+        return None
+    return normalized
+
+
+def _normalize_lightning_quant(value: str | None) -> str | None:
+    return _normalize_lower_override(value, remove_when={"none"})
+
+
+def _build_local_preset_env_updates(values: dict[str, str]) -> dict[str, str | None]:
+    env_updates: dict[str, str | None] = {
+        "PULSESCRIBE_MODE": "local",
+        LEGACY_LOCAL_FP16_ENV_KEY: None,
+    }
+
+    env_updates["PULSESCRIBE_LOCAL_BACKEND"] = _normalize_local_backend_override(
+        values.get("local_backend")
+    )
+    env_updates["PULSESCRIBE_LOCAL_MODEL"] = _normalize_lower_override(
+        values.get("local_model"),
+        remove_when={"default"},
+    )
+    env_updates["PULSESCRIBE_DEVICE"] = _normalize_lower_override(
+        values.get("device"),
+        remove_when={"auto"},
+    )
+    env_updates["PULSESCRIBE_LOCAL_WARMUP"] = _normalize_lower_override(
+        values.get("warmup"),
+        remove_when={"auto"},
+    )
+
+    for env_key, preset_key in (
+        ("PULSESCRIBE_LOCAL_FAST", "local_fast"),
+        (LOCAL_FP16_ENV_KEY, "fp16"),
+        ("PULSESCRIBE_LOCAL_WITHOUT_TIMESTAMPS", "without_timestamps"),
+        ("PULSESCRIBE_LOCAL_VAD_FILTER", "vad_filter"),
+    ):
+        env_updates[env_key] = _normalize_lower_override(
+            values.get(preset_key),
+            remove_when={"default"},
+        )
+
+    for env_key, preset_key in (
+        ("PULSESCRIBE_LOCAL_BEAM_SIZE", "beam_size"),
+        ("PULSESCRIBE_LOCAL_BEST_OF", "best_of"),
+        ("PULSESCRIBE_LOCAL_TEMPERATURE", "temperature"),
+        ("PULSESCRIBE_LOCAL_COMPUTE_TYPE", "compute_type"),
+        ("PULSESCRIBE_LOCAL_CPU_THREADS", "cpu_threads"),
+        ("PULSESCRIBE_LOCAL_NUM_WORKERS", "num_workers"),
+    ):
+        env_updates[env_key] = _normalize_optional_str(values.get(preset_key))
+
+    env_updates["PULSESCRIBE_LIGHTNING_BATCH_SIZE"] = _normalize_lightning_batch_size(
+        values.get("lightning_batch_size")
+    )
+    env_updates["PULSESCRIBE_LIGHTNING_QUANT"] = _normalize_lightning_quant(
+        values.get("lightning_quant")
+    )
+
+    return env_updates
+
+
 def is_apple_silicon() -> bool:
     try:
         return platform.system().lower() == "darwin" and platform.machine().lower() in (
@@ -105,90 +202,5 @@ def apply_local_preset_to_env(preset_name: str) -> bool:
 
     values = dict(LOCAL_PRESET_BASE)
     values.update(preset_values)
-    env_updates: dict[str, str | None] = {
-        "PULSESCRIBE_MODE": "local",
-        LEGACY_LOCAL_FP16_ENV_KEY: None,
-    }
-
-    def _set_or_remove(
-        key: str, value: str | None, *, remove_when: set[str] | None = None
-    ) -> None:
-        if value is None:
-            env_updates[key] = None
-            return
-        normalized = str(value).strip().lower()
-        if not normalized:
-            env_updates[key] = None
-            return
-        if remove_when and normalized in remove_when:
-            env_updates[key] = None
-            return
-        env_updates[key] = normalized
-
-    _set_or_remove(
-        "PULSESCRIBE_LOCAL_BACKEND",
-        values.get("local_backend"),
-        remove_when={"auto"},
-    )
-    _set_or_remove(
-        "PULSESCRIBE_LOCAL_MODEL",
-        values.get("local_model"),
-        remove_when={"default"},
-    )
-    _set_or_remove(
-        "PULSESCRIBE_DEVICE",
-        values.get("device"),
-        remove_when={"auto"},
-    )
-    _set_or_remove(
-        "PULSESCRIBE_LOCAL_WARMUP",
-        values.get("warmup"),
-        remove_when={"auto"},
-    )
-
-    def _save_bool_override(key: str, raw: str | None) -> None:
-        if raw is None:
-            env_updates[key] = None
-            return
-        normalized = str(raw).strip().lower()
-        if not normalized or normalized == "default":
-            env_updates[key] = None
-            return
-        env_updates[key] = normalized
-
-    _save_bool_override("PULSESCRIBE_LOCAL_FAST", values.get("local_fast"))
-    _save_bool_override(LOCAL_FP16_ENV_KEY, values.get("fp16"))
-    _save_bool_override(
-        "PULSESCRIBE_LOCAL_WITHOUT_TIMESTAMPS", values.get("without_timestamps")
-    )
-    _save_bool_override("PULSESCRIBE_LOCAL_VAD_FILTER", values.get("vad_filter"))
-
-    def _save_optional_str(key: str, raw: str | None) -> None:
-        normalized = (raw or "").strip()
-        if not normalized:
-            env_updates[key] = None
-            return
-        env_updates[key] = normalized
-
-    _save_optional_str("PULSESCRIBE_LOCAL_BEAM_SIZE", values.get("beam_size"))
-    _save_optional_str("PULSESCRIBE_LOCAL_BEST_OF", values.get("best_of"))
-    _save_optional_str("PULSESCRIBE_LOCAL_TEMPERATURE", values.get("temperature"))
-    _save_optional_str("PULSESCRIBE_LOCAL_COMPUTE_TYPE", values.get("compute_type"))
-    _save_optional_str("PULSESCRIBE_LOCAL_CPU_THREADS", values.get("cpu_threads"))
-    _save_optional_str("PULSESCRIBE_LOCAL_NUM_WORKERS", values.get("num_workers"))
-
-    lightning_batch_size = (values.get("lightning_batch_size") or "").strip()
-    if not lightning_batch_size or lightning_batch_size == "12":
-        env_updates["PULSESCRIBE_LIGHTNING_BATCH_SIZE"] = None
-    else:
-        env_updates["PULSESCRIBE_LIGHTNING_BATCH_SIZE"] = lightning_batch_size
-
-    lightning_quant = (values.get("lightning_quant") or "").strip().lower()
-    if not lightning_quant or lightning_quant == "none":
-        env_updates["PULSESCRIBE_LIGHTNING_QUANT"] = None
-    else:
-        env_updates["PULSESCRIBE_LIGHTNING_QUANT"] = lightning_quant
-
-    update_env_settings(env_updates)
-
+    update_env_settings(_build_local_preset_env_updates(values))
     return True

@@ -9,15 +9,11 @@ import logging
 import os
 import tempfile
 from collections.abc import Callable
-from io import StringIO
 from pathlib import Path
 
 from config import USER_CONFIG_DIR
 
-from utils.env import (
-    parse_env_line as _shared_parse_env_line,
-    read_env_file_values,
-)
+from utils.env import parse_env_line_with_dotenv, read_env_file_values
 from utils.file_signatures import FileSignature, build_file_signature
 from utils.onboarding import (
     OnboardingChoice,
@@ -47,31 +43,8 @@ def _build_file_signature(path: Path) -> FileSignature | None:
 
 
 def _parse_env_line(raw_line: str) -> tuple[str | None, str | None]:
-    """Parst eine einzelne `.env`-Zeile möglichst dotenv-kompatibel.
-
-    Beibehaltung der bestehenden Semantik:
-    - leere Zeilen / Kommentare ignorieren
-    - nur genau ein Key-Value-Paar pro Zeile
-    - weitere Duplikate werden vom Aufrufer verworfen
-    """
-    line = raw_line.strip()
-    if not line or line.startswith("#") or "=" not in line:
-        return None, None
-
-    try:
-        from dotenv import dotenv_values  # type: ignore[import-not-found]
-
-        parsed = dotenv_values(stream=StringIO(f"{raw_line}\n"))
-    except Exception:
-        return _shared_parse_env_line(raw_line)
-
-    for key, value in parsed.items():
-        normalized_key = str(key or "").strip()
-        if not normalized_key:
-            continue
-        return normalized_key, "" if value is None else str(value).strip()
-
-    return None, None
+    """Parst eine einzelne `.env`-Zeile möglichst dotenv-kompatibel."""
+    return parse_env_line_with_dotenv(raw_line)
 
 
 def read_env_file(path: Path | None = None) -> dict[str, str]:
@@ -104,10 +77,8 @@ def read_env_file(path: Path | None = None) -> dict[str, str]:
     return dict(values)
 
 
-def _env_line_has_key(raw_line: str, key_name: str) -> tuple[bool, str | None]:
-    """Return whether a raw `.env` line defines ``key_name`` and its parsed value."""
-    key, value = _parse_env_line(raw_line)
-    return key == key_name, value
+def _canonical_env_line(key_name: str, value: str) -> str:
+    return f"{key_name}={value}"
 
 
 def _set_first_env_line(
@@ -116,17 +87,19 @@ def _set_first_env_line(
     value: str,
 ) -> tuple[list[str], bool]:
     """Set the first matching assignment while preserving later duplicates."""
+    canonical_line = _canonical_env_line(key_name, value)
+
     for index, line in enumerate(lines):
-        matches_key, existing_value = _env_line_has_key(line, key_name)
-        if not matches_key:
+        parsed_key, existing_value = _parse_env_line(line)
+        if parsed_key != key_name:
             continue
         if existing_value == value:
             return list(lines), False
         new_lines = list(lines)
-        new_lines[index] = f"{key_name}={value}"
+        new_lines[index] = canonical_line
         return new_lines, True
 
-    return [*lines, f"{key_name}={value}"], True
+    return [*lines, canonical_line], True
 
 
 def _apply_env_updates_to_lines(
@@ -134,13 +107,17 @@ def _apply_env_updates_to_lines(
     updates: dict[str, str | None],
 ) -> tuple[list[str], bool]:
     """Apply batched `.env` updates while preserving unrelated lines."""
+    canonical_updates = {
+        key: None if value is None else _canonical_env_line(key, value)
+        for key, value in updates.items()
+    }
     handled_keys: set[str] = set()
     new_lines: list[str] = []
     changed = False
 
     for line in lines:
         key, _existing_value = _parse_env_line(line)
-        if not key or key not in updates:
+        if not key or key not in canonical_updates:
             new_lines.append(line)
             continue
 
@@ -150,20 +127,19 @@ def _apply_env_updates_to_lines(
             continue
 
         handled_keys.add(key)
-        new_value = updates[key]
-        if new_value is None:
+        canonical_line = canonical_updates[key]
+        if canonical_line is None:
             changed = True
             continue
 
-        canonical_line = f"{key}={new_value}"
         if line != canonical_line:
             changed = True
         new_lines.append(canonical_line)
 
-    for key, value in updates.items():
-        if key in handled_keys or value is None:
+    for key, canonical_line in canonical_updates.items():
+        if key in handled_keys or canonical_line is None:
             continue
-        new_lines.append(f"{key}={value}")
+        new_lines.append(canonical_line)
         changed = True
 
     return new_lines, changed

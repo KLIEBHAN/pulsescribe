@@ -3,6 +3,7 @@
 Alle Provider müssen dieses Interface implementieren.
 """
 
+import os
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -56,4 +57,27 @@ class TranscriptionProvider(Protocol):
         ...
 
 
-__all__ = ["TranscriptionProvider"]
+class EnvValidatedProvider:
+    """Shared base for providers that require a single env-backed credential."""
+
+    api_key_env_var: str = ""
+    missing_api_key_message: str = ""
+
+    def __init__(self) -> None:
+        self._validated = False
+
+    def _validate(self) -> None:
+        if self._validated:
+            return
+        if not self.api_key_env_var:
+            raise RuntimeError("api_key_env_var ist nicht konfiguriert")
+        if not os.getenv(self.api_key_env_var):
+            raise ValueError(self.missing_api_key_message)
+        self._validated = True
+
+    def supports_streaming(self) -> bool:
+        """Env-validated REST providers do not stream by default."""
+        return False
+
+
+__all__ = ["TranscriptionProvider", "EnvValidatedProvider"]

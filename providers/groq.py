@@ -4,13 +4,13 @@ Nutzt Groq's LPU-Chips für extrem schnelle Whisper-Inferenz (~300x Echtzeit).
 """
 
 import logging
-import os
 from pathlib import Path
 from utils.timing import redacted_text_summary, timed_operation
 
 from config import DEFAULT_GROQ_MODEL
 from ._client_cache import EnvClientCache
 from ._language import normalize_auto_language
+from .base import EnvValidatedProvider
 
 logger = logging.getLogger("pulsescribe.providers.groq")
 
@@ -34,7 +34,7 @@ def _get_client():
     )
 
 
-class GroqProvider:
+class GroqProvider(EnvValidatedProvider):
     """Groq Whisper Provider.
 
     Nutzt LPU-Chips für ~300x Echtzeit Whisper-Inferenz
@@ -47,20 +47,11 @@ class GroqProvider:
 
     name = "groq"
     default_model = DEFAULT_GROQ_MODEL
-
-    def __init__(self) -> None:
-        self._validated = False
-
-    def _validate(self) -> None:
-        """Prüft ob API-Key gesetzt ist."""
-        if self._validated:
-            return
-        if not os.getenv("GROQ_API_KEY"):
-            raise ValueError(
-                "GROQ_API_KEY nicht gesetzt. "
-                "Registrierung unter https://console.groq.com (kostenlose Credits)"
-            )
-        self._validated = True
+    api_key_env_var = "GROQ_API_KEY"
+    missing_api_key_message = (
+        "GROQ_API_KEY nicht gesetzt. "
+        "Registrierung unter https://console.groq.com (kostenlose Credits)"
+    )
 
     def transcribe(
         self,
@@ -113,9 +104,6 @@ class GroqProvider:
 
         return result
 
-    def supports_streaming(self) -> bool:
-        """Groq API unterstützt kein Streaming."""
-        return False
 
 
 __all__ = ["GroqProvider"]

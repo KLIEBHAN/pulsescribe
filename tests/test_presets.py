@@ -48,6 +48,39 @@ def test_apply_local_preset_to_env_preserves_explicit_whisper_backend(
     assert updates["PULSESCRIBE_LOCAL_BACKEND"] is not None
 
 
+def test_apply_local_preset_to_env_normalizes_aliases_and_default_like_values(
+    monkeypatch,
+) -> None:
+    custom_presets = dict(presets.LOCAL_PRESETS)
+    custom_presets["Test Alias Preset"] = {
+        "local_backend": " MLX-WHISPER ",
+        "local_model": " default ",
+        "device": " AUTO ",
+        "warmup": " auto ",
+        "local_fast": " TRUE ",
+        "fp16": " default ",
+        "without_timestamps": " FALSE ",
+        "vad_filter": " default ",
+        "compute_type": "INT8",
+        "cpu_threads": "8",
+    }
+    monkeypatch.setattr(presets, "LOCAL_PRESETS", custom_presets)
+    updates = _capture_env_updates(monkeypatch)
+
+    assert presets.apply_local_preset_to_env("Test Alias Preset") is True
+
+    assert updates["PULSESCRIBE_LOCAL_BACKEND"] == "mlx"
+    assert updates["PULSESCRIBE_LOCAL_MODEL"] is None
+    assert updates["PULSESCRIBE_DEVICE"] is None
+    assert updates["PULSESCRIBE_LOCAL_WARMUP"] is None
+    assert updates["PULSESCRIBE_LOCAL_FAST"] == "true"
+    assert updates[presets.LOCAL_FP16_ENV_KEY] is None
+    assert updates["PULSESCRIBE_LOCAL_WITHOUT_TIMESTAMPS"] == "false"
+    assert updates["PULSESCRIBE_LOCAL_VAD_FILTER"] is None
+    assert updates["PULSESCRIBE_LOCAL_COMPUTE_TYPE"] == "INT8"
+    assert updates["PULSESCRIBE_LOCAL_CPU_THREADS"] == "8"
+
+
 def test_apply_local_preset_to_env_resets_lightning_specific_defaults(
     monkeypatch,
 ) -> None:
@@ -79,3 +112,17 @@ def test_apply_local_preset_to_env_migrates_legacy_fp16_key(monkeypatch) -> None
 
     assert updates[presets.LOCAL_FP16_ENV_KEY] == "true"
     assert updates[presets.LEGACY_LOCAL_FP16_ENV_KEY] is None
+
+
+def test_apply_local_preset_to_env_returns_false_without_writing_for_unknown_presets(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        presets,
+        "update_env_settings",
+        lambda updates: (_ for _ in ()).throw(
+            AssertionError(f"unexpected env write: {updates}")
+        ),
+    )
+
+    assert presets.apply_local_preset_to_env("missing preset") is False
