@@ -1,3 +1,35 @@
+Performance work log - 2026-04-09 (daemon-side menu bar preview dedupe)
+
+Scope
+- Left the last two commit areas untouched again: `ui/welcome.py` and the overlay frontends/tests from the previous two performance passes.
+- Avoided the already dirty settings/permissions/vocabulary/custom-prompts files and their tests.
+- Focused on the remaining high-frequency frontend path between `pulsescribe_daemon.py` and `ui/menubar.py`.
+
+Current weaknesses reviewed
+- `pulsescribe_daemon.py`: every changed recording/interim text still called into the menu-bar controller, even when the visible menu-bar title stayed identical because only non-visible suffix text changed.
+- `ui/menubar.py`: the title-building logic lived only inside `update_state()`, so the daemon could not cheaply short-circuit menu-bar work before entering the AppKit controller path.
+
+Changes in this pass
+- `ui/menubar.py`
+  Extracted a small shared `build_menubar_title()` helper so the visible menu-bar payload is defined once and can be reused consistently by callers and tests.
+- `pulsescribe_daemon.py`
+  Added a daemon-side last-title guard so unchanged visible menu-bar previews no longer call `MenuBarController.update_state()` during long recording/interim runs.
+- Tests
+  Added regression coverage for visible-preview-equivalent titles and for daemon-side skipping of unchanged menu-bar previews while overlay updates still continue.
+
+Why this helps
+- Long dictation sessions often append text beyond the first visible menu-bar preview characters; those updates still need overlay refreshes, but they no longer spend work on redundant menu-bar controller calls.
+- The optimization is local, keeps behavior unchanged, and makes the UI dispatch path more explicit by separating menu-bar visibility changes from overlay text changes.
+
+Validation
+- `pytest tests/test_menubar.py tests/test_daemon_mode.py -q`
+- `python -m py_compile ui/menubar.py pulsescribe_daemon.py tests/test_menubar.py tests/test_daemon_mode.py`
+- `ruff check ui/menubar.py pulsescribe_daemon.py tests/test_menubar.py tests/test_daemon_mode.py`
+
+Next worthwhile areas
+- `utils/log_tail.py` + `ui/welcome.py`: coalescing shared file-signature checks across logs/transcripts refreshes is still a likely next step if profiling shows filesystem overhead.
+- `pulsescribe_daemon.py`: audio-level queue draining may still deserve batching/throttling if overlay audio animations show up in traces on slower systems.
+
 Performance work log - 2026-04-09 (welcome logs auto-refresh interval backoff)
 
 Scope

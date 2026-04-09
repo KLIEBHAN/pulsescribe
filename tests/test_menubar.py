@@ -1,6 +1,6 @@
 from utils.state import AppState
 
-from ui.menubar import MENUBAR_ICONS, MenuBarController
+from ui.menubar import MENUBAR_ICONS, MenuBarController, build_menubar_title
 
 
 class _FakeStatusItem:
@@ -39,3 +39,10 @@ def test_update_state_skips_duplicate_title_updates() -> None:
     controller.update_state(AppState.RECORDING, "abcdefghijklmnopqrstwx")
 
     assert controller._status_item.calls == 1
+
+
+def test_build_menubar_title_depends_only_on_visible_preview() -> None:
+    first = build_menubar_title(AppState.RECORDING, "abcdefghijklmnopqrstuv")
+    second = build_menubar_title(AppState.RECORDING, "abcdefghijklmnopqrstwx")
+
+    assert first == second

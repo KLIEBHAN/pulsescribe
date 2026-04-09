@@ -605,6 +605,20 @@ class TestWatchdogTimer(unittest.TestCase):
         self.assertEqual(daemon._menubar.update_state.call_count, 2)
         self.assertEqual(daemon._overlay.update_state.call_count, 2)
 
+    def test_update_state_skips_menubar_updates_when_visible_preview_is_unchanged(self):
+        daemon = PulseScribeDaemon(mode="local")
+        daemon._menubar = MagicMock()
+        daemon._overlay = MagicMock()
+
+        daemon._update_state(AppState.RECORDING, "abcdefghijklmnopqrstuv")
+        daemon._update_state(AppState.RECORDING, "abcdefghijklmnopqrstwx")
+
+        daemon._menubar.update_state.assert_called_once_with(
+            AppState.RECORDING,
+            "abcdefghijklmnopqrstuv",
+        )
+        self.assertEqual(daemon._overlay.update_state.call_count, 2)
+
     def test_result_polling_reschedules_for_transcribing_interval(self):
         daemon = PulseScribeDaemon(mode="local")
         daemon._current_state = AppState.RECORDING

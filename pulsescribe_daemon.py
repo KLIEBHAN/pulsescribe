@@ -78,6 +78,7 @@ try:
     from utils.log_tail import read_file_tail_text
     from utils.timing import redacted_text_summary
     from ui import MenuBarController, OverlayController
+    from ui.menubar import build_menubar_title
 except Exception as e:
     emergency_log(f"CRITICAL IMPORT ERROR: {e}")
     # Auch direkt auf stderr ausgeben, damit der Fehler bei CLI-Start sichtbar ist
@@ -188,6 +189,7 @@ class PulseScribeDaemon:
         self._last_interim_mtime = 0.0
         self._interim_idle_ticks = 0
         self._last_ui_state_payload: tuple[AppState, str | None] | None = None
+        self._last_menubar_title: str | None = None
         # Watchdog-Timer: Verhindert hängendes Overlay bei Worker-Problemen
         self._transcribing_watchdog = None
         # Timer für verzögerten ERROR→IDLE Reset
@@ -715,7 +717,10 @@ class PulseScribeDaemon:
     def _do_ui_update(self, state: AppState, text: str | None) -> None:
         """Führt das eigentliche UI-Update aus (muss auf Main-Thread laufen)."""
         if self._menubar:
-            self._menubar.update_state(state, text)
+            next_menubar_title = build_menubar_title(state, text)
+            if self._last_menubar_title != next_menubar_title:
+                self._menubar.update_state(state, text)
+                self._last_menubar_title = next_menubar_title
         if self._overlay:
             self._overlay.update_state(state, text)
 

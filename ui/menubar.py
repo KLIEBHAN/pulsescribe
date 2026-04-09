@@ -4,6 +4,9 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from config import LOG_FILE
+from utils.state import AppState
+
 logger = logging.getLogger("pulsescribe.ui.menubar")
 
 try:
@@ -22,9 +25,6 @@ if TYPE_CHECKING:
 else:
     NSObjectBase = NSObject
 
-from config import LOG_FILE
-from utils.state import AppState
-
 # Status-Icons für Menübar
 MENUBAR_ICONS = {
     AppState.IDLE: "🎤",
@@ -36,6 +36,21 @@ MENUBAR_ICONS = {
     AppState.DONE: "✅",
     AppState.ERROR: "❌",
 }
+MENUBAR_PREVIEW_MAX_CHARS = 20
+
+
+def build_menubar_title(state: AppState, text: str | None = None) -> str:
+    """Return the visible menu bar title for a given state payload."""
+    icon = MENUBAR_ICONS.get(state, MENUBAR_ICONS[AppState.IDLE])
+    if state != AppState.RECORDING or not text:
+        return icon
+
+    preview = (
+        f"{text[:MENUBAR_PREVIEW_MAX_CHARS]}…"
+        if len(text) > MENUBAR_PREVIEW_MAX_CHARS
+        else text
+    )
+    return f"{icon} {preview}"
 
 
 def _objc_signature(signature: bytes):
@@ -170,14 +185,7 @@ class MenuBarController:
     def update_state(self, state: AppState, text: str | None = None) -> None:
         """Aktualisiert Menübar-Icon und optional Text."""
         self._current_state = state
-        icon = MENUBAR_ICONS.get(state, MENUBAR_ICONS[AppState.IDLE])
-
-        if state == AppState.RECORDING and text:
-            # Kürzen für Menübar
-            preview = text[:20] + "…" if len(text) > 20 else text
-            title = f"{icon} {preview}"
-        else:
-            title = icon
+        title = build_menubar_title(state, text)
 
         if getattr(self, "_current_title", None) == title:
             return
