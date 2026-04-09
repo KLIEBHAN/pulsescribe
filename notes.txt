@@ -268,3 +268,42 @@ Next worthwhile areas
 - `ui/welcome.py`: logs/transcripts auto-refresh is still the next likely long-session frontend hotspot outside the most recent commit pair.
 - `ui/onboarding_wizard_windows.py`: if profiling still shows test-step wait churn, the next step would be to reduce redundant IPC file reads in `utils/ipc.py` rather than only adjusting the UI-side timer cadence.
 - `ui/overlay.py`: the macOS overlay animation timers remain a likely CPU hotspot during long active sessions once they are outside the recent-change boundary.
+
+Performance work log - 2026-04-09 (web header + metadata pass)
+
+Scope
+- Left the last two root-repo commit areas untouched again: the recent Windows/macOS desktop UI performance work stayed out of scope.
+- Focused on the untouched web frontend hotspot in `web/src/components/SiteHeader.tsx` plus adjacent metadata loading in `web/src/app/[locale]/layout.tsx`.
+- Preserved mobile navigation behavior, locale switching, focus trapping, and page metadata semantics.
+
+Current weaknesses reviewed
+- `web/src/components/SiteHeader.tsx`: the header forced a full remount on every locale/path change via a changing `key`, recreating menu state, focus management, media-query listeners, body scroll locking, and `main/footer` accessibility toggles on each navigation.
+- `web/src/components/SiteHeader.tsx`: the mobile focus trap re-queried focusable DOM nodes on every `Tab` keypress inside the menu, adding unnecessary DOM work in a hot interaction path.
+- `web/src/app/[locale]/layout.tsx`: locale metadata generation loaded the full message object tree even though it only needed the `metadata.landing` namespace.
+
+Changes in this pass
+- `web/src/components/SiteHeader.tsx`
+  Removed the forced keyed remount and replaced it with a route-scoped open state so route/locale changes close the mobile menu without rebuilding the whole header component tree.
+- `web/src/components/SiteHeader.tsx`
+  Cached the menu's focusable elements for the lifetime of an open session and reused the cached list inside the focus trap instead of re-running DOM queries on each `Tab`.
+- `web/src/components/SiteHeader.tsx`
+  Reused the discovered `main/footer` background landmark list across menu openings so the open/close path does less repeated DOM discovery work.
+- `web/src/app/[locale]/layout.tsx`
+  Switched metadata generation from `getMessages()` to namespace-scoped `getTranslations({ locale, namespace: "metadata.landing" })`.
+- Tests
+  Added coverage that the mobile menu closes correctly on route changes without depending on a component remount.
+
+Why this helps
+- Header interactions and locale/page navigations now avoid a full client-side header teardown/rebuild, which reduces no-op listener churn and DOM mutation work in the most complex client component on the site.
+- The mobile menu focus trap now does its expensive DOM scan once per open instead of once per `Tab`, which trims interaction cost on slower devices.
+- Locale layout metadata generation now reads only the translation namespace it needs, reducing server-side message work for page loads/builds.
+
+Validation
+- `npm run test:run -- SiteHeader HashAnchorScroller LanguageSwitcher` (in `web/`)
+- `npm run lint -- 'src/components/SiteHeader.tsx' 'src/components/SiteHeader.test.tsx' 'src/app/[locale]/layout.tsx'` (in `web/`)
+- `npm run build` (in `web/`)
+
+Next worthwhile areas
+- `web/src/components/HashAnchorScroller.tsx`: the 45-frame retry loop is still the next clear client-side interaction hotspot if hash-navigation traces show idle frame churn.
+- `web/src/app/[locale]/page.tsx`: the landing page still performs several large `t.raw(...)` normalizations in one render pass and is the next candidate if server render time matters.
+- `web/src/app/[locale]/docs/page.tsx`: the docs page has the heaviest static content derivation footprint and would benefit from the same normalization pass after the smaller header hotpath win.
