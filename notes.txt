@@ -1,3 +1,40 @@
+Performance work log - 2026-04-09 (overlay direct-update dedupe + Windows interim poll backoff)
+
+Scope
+- Left the last two commit areas untouched: `pulsescribe_daemon.py`, `ui/animation.py`, `ui/onboarding_wizard_windows.py`, and their related tests.
+- Avoided the already dirty settings/permissions/vocabulary/custom-prompts files and their tests.
+- Focused on the remaining high-frequency frontend hot paths in `ui/overlay_windows.py` and `ui/overlay_pyside6.py`.
+
+Current weaknesses reviewed
+- `ui/overlay_windows.py`: repeated identical state payloads still entered the Tk queue and retriggered overlay-state work even when nothing visible changed.
+- `ui/overlay_windows.py`: direct interim updates did not slow or suppress fallback file polling, so the overlay kept stat/tail-reading the interim file during active direct-update periods.
+- `ui/overlay_pyside6.py`: repeated identical state/interim payloads still flowed through the controller layer and Qt signal path even though the rendered UI stayed unchanged.
+
+Changes in this pass
+- `ui/overlay_windows.py`
+  Added duplicate state suppression before queueing, duplicate interim suppression for direct text updates, and a short direct-update grace window that temporarily backs fallback file polling off to a much slower interval.
+- `ui/overlay_windows.py`
+  Reset the direct-update grace/cache when leaving recording so new sessions start cleanly.
+- `ui/overlay_pyside6.py`
+  Added controller-level dedupe for repeated state/interim payloads while preserving the existing direct-update polling grace behavior.
+- Tests
+  Added regression coverage for duplicate state/interim suppression plus Windows direct-update grace/backoff scheduling.
+
+Why this helps
+- The overlay controllers now avoid redundant cross-thread/UI dispatch work on the hottest recording paths.
+- The Windows fallback overlay performs far fewer interim-file reads while direct interim updates are already keeping the label current.
+- The changes stay local to the overlay boundary and preserve existing rendering, polling fallback, and state transitions.
+
+Validation
+- `pytest tests/test_overlay_windows.py tests/test_overlay_pyside6.py tests/test_menubar.py -q`
+- `python -m py_compile ui/overlay_windows.py ui/overlay_pyside6.py tests/test_overlay_windows.py tests/test_overlay_pyside6.py tests/test_menubar.py`
+- `ruff check ui/overlay_windows.py ui/overlay_pyside6.py tests/test_overlay_windows.py tests/test_overlay_pyside6.py tests/test_menubar.py`
+
+Next worthwhile areas
+- `ui/menubar.py`: a daemon-side preview-signature shortcut could cut more string work before the menu-bar path when long dictations keep sending unchanged visible previews.
+- `ui/welcome.py`: the logs/transcripts auto-refresh loop is already incremental, but the next pass could target timer wakeups and inactive-tab refresh scheduling rather than text formatting.
+- `ui/overlay.py`: if traces still show CPU cost on macOS, the next step is reducing no-op frame work when the non-recording animation state has visually settled.
+
 Performance work log - 2026-04-09 (daemon UI dispatch dedupe + adaptive result polling)
 
 Scope

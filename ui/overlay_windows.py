@@ -54,6 +54,8 @@ QUEUE_MAX_MESSAGES_PER_TICK = 200
 INTERIM_QUEUE_BACKPRESSURE_LIMIT = 120
 INTERIM_POLL_MAX_CHARS = 512
 INTERIM_POLL_INTERVAL_MS = 200
+INTERIM_POLL_DIRECT_INTERVAL_MS = 1000
+INTERIM_DIRECT_UPDATE_GRACE_S = 1.5
 
 # =============================================================================
 # Farben
@@ -164,13 +166,24 @@ class WindowsOverlayController:
         self._last_interim_signature: tuple[int, int] | None = None
         self._interim_polling_active = False
         self._interim_poll_after_id: str | None = None
+        self._direct_interim_until = 0.0
+        self._last_state_payload: tuple[str, str] | None = None
+        self._queued_state_payload: tuple[str, str] | None = None
 
     # =========================================================================
     # Public API (thread-safe)
     # =========================================================================
 
     def update_state(self, state: str, text: str | None = None) -> None:
-        self._queue.put(("state", state, text))
+        normalized_text = text or ""
+        payload = (state, normalized_text)
+        if (
+            payload == getattr(self, "_queued_state_payload", None)
+            or payload == getattr(self, "_last_state_payload", None)
+        ):
+            return
+        self._queued_state_payload = payload
+        self._queue.put(("state", state, normalized_text))
 
     def update_audio_level(self, level: float) -> None:
         """Aktualisiert Audio-Level ohne Queue-Druck.
@@ -182,6 +195,12 @@ class WindowsOverlayController:
         self._audio_level = level
 
     def update_interim_text(self, text: str) -> None:
+        normalized_text = text or ""
+        self._direct_interim_until = (
+            time.monotonic() + INTERIM_DIRECT_UPDATE_GRACE_S
+        )
+        if normalized_text == self._last_interim_text:
+            return
         # Bei hoher Last ältere Interim-Updates verwerfen, damit State-Updates
         # (DONE/ERROR) nicht durch veraltete Text-Events ausgebremst werden.
         try:
@@ -190,7 +209,9 @@ class WindowsOverlayController:
         except NotImplementedError:
             # qsize() ist auf manchen Plattformen optional; dann normal enqueuen.
             pass
-        self._queue.put(("interim", text, None))
+        self._last_interim_text = normalized_text
+        self._last_interim_signature = None
+        self._queue.put(("interim", normalized_text, None))
 
     def run(self) -> None:
         """Start tkinter mainloop (call from dedicated thread)."""
@@ -389,6 +410,20 @@ class WindowsOverlayController:
             return
         if not self._interim_polling_active:
             return
+        if self._state != "RECORDING":
+            self._last_interim_text = ""
+            self._last_interim_signature = None
+            self._direct_interim_until = 0.0
+            return
+
+        poll_interval_ms = INTERIM_POLL_INTERVAL_MS
+        if time.monotonic() < getattr(self, "_direct_interim_until", 0.0):
+            poll_interval_ms = INTERIM_POLL_DIRECT_INTERVAL_MS
+            if self._running and self._interim_polling_active:
+                self._interim_poll_after_id = self._root.after(
+                    poll_interval_ms, self._poll_interim_file
+                )
+            return
 
         signature = (
             get_file_signature(self._interim_file)
@@ -405,7 +440,7 @@ class WindowsOverlayController:
                 if signature == self._last_interim_signature:
                     if self._running and self._interim_polling_active:
                         self._interim_poll_after_id = self._root.after(
-                            INTERIM_POLL_INTERVAL_MS, self._poll_interim_file
+                            poll_interval_ms, self._poll_interim_file
                         )
                     return
 
@@ -423,7 +458,7 @@ class WindowsOverlayController:
 
         if self._running and self._interim_polling_active:
             self._interim_poll_after_id = self._root.after(
-                INTERIM_POLL_INTERVAL_MS, self._poll_interim_file
+                poll_interval_ms, self._poll_interim_file
             )
 
     def _set_interim_polling_active(self, active: bool) -> None:
@@ -446,12 +481,19 @@ class WindowsOverlayController:
             self._interim_poll_after_id = None
         self._last_interim_text = ""
         self._last_interim_signature = None
+        self._direct_interim_until = 0.0
 
     # =========================================================================
     # State Handling
     # =========================================================================
 
     def _handle_state_change(self, state: str, text: str | None) -> None:
+        normalized_text = text or ""
+        payload = (state, normalized_text)
+        self._queued_state_payload = None
+        if payload == getattr(self, "_last_state_payload", None):
+            return
+        self._last_state_payload = payload
         prev_state = self._state
         self._state = state
 
@@ -462,6 +504,7 @@ class WindowsOverlayController:
             self._root.withdraw()
             self._last_interim_text = ""
             self._last_interim_signature = None
+            self._direct_interim_until = 0.0
             self._last_label_config = None
             self._bar_color = None
             self._anim = AnimationLogic()
@@ -472,7 +515,7 @@ class WindowsOverlayController:
                 self._position_window(use_active_monitor=True)
             self._start_animation_loop()
             self._root.deiconify()
-            display_text = text or STATE_TEXTS.get(state, "")
+            display_text = normalized_text or STATE_TEXTS.get(state, "")
             label_color = (
                 STATE_COLORS.get(state, "white")
                 if state in ("DONE", "ERROR")
@@ -483,6 +526,8 @@ class WindowsOverlayController:
                 font=("Segoe UI", 11),
                 fg=label_color,
             )
+            if state != "RECORDING":
+                self._direct_interim_until = 0.0
 
         self._set_interim_polling_active(state == "RECORDING")
 

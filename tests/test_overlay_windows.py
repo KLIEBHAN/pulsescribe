@@ -10,6 +10,8 @@ from ui.overlay_windows import (
     FRAME_MS,
     FRAME_MS_ACTIVE,
     FRAME_MS_FEEDBACK,
+    INTERIM_DIRECT_UPDATE_GRACE_S,
+    INTERIM_POLL_DIRECT_INTERVAL_MS,
     INTERIM_POLL_INTERVAL_MS,
     INTERIM_QUEUE_BACKPRESSURE_LIMIT,
     INTERIM_POLL_MAX_CHARS,
@@ -108,6 +110,7 @@ def _make_controller(interim_file: Path) -> WindowsOverlayController:
     controller._last_interim_signature = None
     controller._interim_polling_active = True
     controller._interim_poll_after_id = None
+    controller._direct_interim_until = 0.0
     return controller
 
 
@@ -166,6 +169,53 @@ def test_poll_interim_file_reads_tail_text_only(tmp_path, monkeypatch):
     assert seen_texts == ["tail-only"]
 
 
+def test_poll_interim_file_skips_reads_during_direct_update_grace(
+    tmp_path, monkeypatch
+):
+    interim_file = tmp_path / "interim.txt"
+    interim_file.write_text("hello", encoding="utf-8")
+    controller = _make_controller(interim_file)
+
+    monkeypatch.setattr("ui.overlay_windows.time.monotonic", lambda: 10.0)
+    monkeypatch.setattr(
+        "ui.overlay_windows.read_file_tail_text",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("file read should be skipped during direct-update grace")
+        ),
+    )
+    controller._direct_interim_until = 10.0 + INTERIM_DIRECT_UPDATE_GRACE_S
+
+    controller._poll_interim_file()
+
+    assert controller._root.after_calls == [INTERIM_POLL_DIRECT_INTERVAL_MS]
+
+
+def test_poll_interim_file_restores_fast_interval_after_direct_update_grace(
+    tmp_path, monkeypatch
+):
+    interim_file = tmp_path / "interim.txt"
+    interim_file.write_text("hello", encoding="utf-8")
+    controller = _make_controller(interim_file)
+
+    monotonic_values = iter([10.0, 10.0 + INTERIM_DIRECT_UPDATE_GRACE_S + 0.1])
+    monkeypatch.setattr(
+        "ui.overlay_windows.time.monotonic",
+        lambda: next(monotonic_values),
+    )
+    controller._direct_interim_until = 10.0 + INTERIM_DIRECT_UPDATE_GRACE_S
+    seen_texts: list[str] = []
+    controller._handle_interim_text = seen_texts.append
+
+    controller._poll_interim_file()
+    controller._poll_interim_file()
+
+    assert controller._root.after_calls == [
+        INTERIM_POLL_DIRECT_INTERVAL_MS,
+        INTERIM_POLL_INTERVAL_MS,
+    ]
+    assert seen_texts == ["hello"]
+
+
 def test_update_audio_level_does_not_enqueue_messages():
     controller = WindowsOverlayController()
 
@@ -186,6 +236,32 @@ def test_update_interim_text_applies_backpressure_under_heavy_queue_load():
     controller.update_interim_text("newest")
 
     assert controller._queue.qsize() == size_before
+
+
+def test_update_state_skips_duplicate_payloads() -> None:
+    controller = WindowsOverlayController()
+
+    controller.update_state("LISTENING")
+    controller.update_state("LISTENING")
+    controller.update_state("LISTENING", "ready")
+
+    assert controller._queue.qsize() == 2
+
+
+def test_update_interim_text_skips_duplicate_queue_messages(monkeypatch) -> None:
+    controller = WindowsOverlayController()
+
+    monotonic_values = iter([10.0, 10.4])
+    monkeypatch.setattr(
+        "ui.overlay_windows.time.monotonic",
+        lambda: next(monotonic_values),
+    )
+
+    controller.update_interim_text("alpha")
+    controller.update_interim_text("alpha")
+
+    assert controller._queue.qsize() == 1
+    assert controller._direct_interim_until == 10.4 + INTERIM_DIRECT_UPDATE_GRACE_S
 
 
 def test_handle_state_change_uses_feedback_color_for_done_and_error():

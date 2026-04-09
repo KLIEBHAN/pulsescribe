@@ -37,6 +37,10 @@ class _FakeWidget:
     def __init__(self):
         self.current_state = "RECORDING"
         self.seen_interim: list[str] = []
+        self.state_calls: list[tuple[str, str]] = []
+
+    def update_state(self, state: str, text: str | None = None) -> None:
+        self.state_calls.append((state, text or ""))
 
     def update_interim_text(self, text: str) -> None:
         self.seen_interim.append(text)
@@ -228,6 +232,45 @@ def test_update_interim_text_slows_file_polling_after_direct_update():
         INTERIM_POLL_DIRECT_INTERVAL_MS
     ]
     assert controller._direct_interim_until > 0
+
+
+def test_update_state_skips_duplicate_payloads() -> None:
+    controller = PySide6OverlayController.__new__(PySide6OverlayController)
+    controller._widget = _FakeWidget()
+    controller._pending_state = None
+
+    PySide6OverlayController.update_state(controller, "LISTENING")
+    PySide6OverlayController.update_state(controller, "LISTENING")
+    PySide6OverlayController.update_state(controller, "LISTENING", "ready")
+
+    assert controller._widget.state_calls == [
+        ("LISTENING", ""),
+        ("LISTENING", "ready"),
+    ]
+
+
+def test_update_interim_text_skips_duplicate_widget_updates(monkeypatch):
+    controller = PySide6OverlayController.__new__(PySide6OverlayController)
+    controller._widget = _FakeWidget()
+    controller._interim_timer = _FakeInterimTimer(
+        active=True,
+        interval_ms=INTERIM_POLL_INTERVAL_MS,
+    )
+
+    monotonic_values = iter([10.0, 10.4])
+    monkeypatch.setattr(
+        "ui.overlay_pyside6.time.monotonic",
+        lambda: next(monotonic_values),
+    )
+
+    PySide6OverlayController.update_interim_text(controller, "alpha")
+    PySide6OverlayController.update_interim_text(controller, "alpha")
+
+    assert controller._widget.seen_interim == ["alpha"]
+    assert controller._interim_timer.set_interval_calls == [
+        INTERIM_POLL_DIRECT_INTERVAL_MS
+    ]
+    assert controller._direct_interim_until == 10.4 + INTERIM_DIRECT_UPDATE_GRACE_S
 
 
 def test_poll_interim_file_skips_file_reads_while_direct_updates_are_recent(

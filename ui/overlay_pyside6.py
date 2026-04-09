@@ -781,6 +781,8 @@ class PySide6OverlayController:
         self._last_interim_mtime_ns: int | None = None
         self._interim_timer: QTimer | None = None
         self._direct_interim_until = 0.0
+        self._last_requested_state_payload: tuple[str, str] | None = None
+        self._last_requested_interim_text = ""
         # Ready-Event: Wird gesetzt sobald Widget bereit ist
         self._ready_event = threading.Event()
         # Pending State: Falls update_state vor ready aufgerufen wird
@@ -851,11 +853,19 @@ class PySide6OverlayController:
 
     def update_state(self, state: str, text: str | None = None):
         """Thread-safe State-Update."""
+        normalized_text = text or ""
+        payload = (state, normalized_text)
+        if (
+            payload == getattr(self, "_pending_state", None)
+            or payload == getattr(self, "_last_requested_state_payload", None)
+        ):
+            return
+        self._last_requested_state_payload = payload
         if self._widget:
-            self._widget.update_state(state, text)
+            self._widget.update_state(state, normalized_text)
         else:
             # Widget noch nicht bereit - State für später speichern
-            self._pending_state = (state, text or "")
+            self._pending_state = payload
 
     def update_audio_level(self, level: float):
         """Thread-safe Level-Update."""
@@ -864,6 +874,7 @@ class PySide6OverlayController:
 
     def update_interim_text(self, text: str):
         """Thread-safe Interim-Text-Update."""
+        normalized_text = text or ""
         self._direct_interim_until = time.monotonic() + INTERIM_DIRECT_UPDATE_GRACE_S
         if (
             self._interim_timer
@@ -871,8 +882,11 @@ class PySide6OverlayController:
             and self._interim_timer.interval() != INTERIM_POLL_DIRECT_INTERVAL_MS
         ):
             self._interim_timer.setInterval(INTERIM_POLL_DIRECT_INTERVAL_MS)
+        if normalized_text == getattr(self, "_last_requested_interim_text", ""):
+            return
+        self._last_requested_interim_text = normalized_text
         if self._widget:
-            self._widget.update_interim_text(text)
+            self._widget.update_interim_text(normalized_text)
 
     def _poll_interim_file(self):
         """Pollt Interim-File für Text-Updates."""
@@ -883,6 +897,7 @@ class PySide6OverlayController:
             self._last_interim_mtime_ns = None
             self._last_interim_text = ""
             self._direct_interim_until = 0.0
+            self._last_requested_interim_text = ""
             return
 
         if time.monotonic() < getattr(self, "_direct_interim_until", 0.0):
@@ -901,6 +916,7 @@ class PySide6OverlayController:
                 self._widget.update_interim_text("")
             self._last_interim_mtime_ns = None
             self._last_interim_text = ""
+            self._last_requested_interim_text = ""
             return
 
         try:
@@ -938,6 +954,7 @@ class PySide6OverlayController:
         self._last_interim_mtime_ns = None
         self._last_interim_text = ""
         self._direct_interim_until = 0.0
+        self._last_requested_interim_text = ""
 
 
 __all__ = ["PySide6OverlayController", "PySide6OverlayWidget"]
