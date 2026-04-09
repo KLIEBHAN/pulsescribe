@@ -59,6 +59,66 @@ def _resolve_input_stream_config(
     return resolved_device, resolved_sample_rate
 
 
+
+def _should_retry_with_fresh_auto_device(
+    sample_rate: int,
+    device: int | None,
+) -> bool:
+    """Nur Auto-Device + Standard-Whisper-Rate profitieren von einer Reprobe."""
+    return device is None and sample_rate == WHISPER_SAMPLE_RATE
+
+
+
+def _reprobe_input_stream_config(
+    current_config: tuple[int | None, int],
+    *,
+    sample_rate: int,
+    device: int | None,
+    log_message: str,
+) -> tuple[int | None, int] | None:
+    """Verwirft den Cache und liefert nur dann eine neue Konfiguration zurück.
+
+    Wenn die Reprobe auf dieselbe Device/Samplerate-Kombination fällt,
+    soll der ursprüngliche Fehler unverändert hochlaufen.
+    """
+    reset_input_device_cache()
+    refreshed_config = _resolve_input_stream_config(sample_rate, device)
+    if refreshed_config == current_config:
+        return None
+
+    logger.info("[%s] %s", get_session_id(), log_message)
+    return refreshed_config
+
+
+
+def _close_stream_quietly(stream) -> None:
+    """Schließt einen Stream best effort ohne Sekundärfehler."""
+    try:
+        stream.close()
+    except Exception:
+        pass
+
+
+
+def _stop_and_close_stream(stream) -> Exception | None:
+    """Stoppt und schließt einen Stream, gibt den primären Fehler zurück."""
+    stream_error: Exception | None = None
+    try:
+        stream.stop()
+    except Exception as exc:
+        stream_error = exc
+
+    try:
+        stream.close()
+    except Exception as exc:
+        if stream_error is None:
+            stream_error = exc
+        else:
+            logger.debug("Stream close after stop failure also failed: %s", exc)
+
+    return stream_error
+
+
 class AudioRecorder:
     """Wiederverwendbare Audio-Aufnahme Klasse.
 
@@ -114,8 +174,9 @@ class AudioRecorder:
             self.device,
         )
         self._active_sample_rate = active_sample_rate
-        should_retry_with_fresh_device = (
-            self.device is None and self.sample_rate == WHISPER_SAMPLE_RATE
+        should_retry_with_fresh_device = _should_retry_with_fresh_auto_device(
+            self.sample_rate,
+            self.device,
         )
 
         while True:
@@ -136,29 +197,23 @@ class AudioRecorder:
                 break
             except Exception:
                 if stream is not None:
-                    try:
-                        stream.close()
-                    except Exception:
-                        pass
+                    _close_stream_quietly(stream)
                 self._stream = None
                 if should_retry_with_fresh_device:
                     should_retry_with_fresh_device = False
-                    previous_config = (input_device, active_sample_rate)
-                    reset_input_device_cache()
-                    input_device, active_sample_rate = _resolve_input_stream_config(
-                        self.sample_rate,
-                        self.device,
+                    refreshed_config = _reprobe_input_stream_config(
+                        (input_device, active_sample_rate),
+                        sample_rate=self.sample_rate,
+                        device=self.device,
+                        log_message="Aufnahme-Start fehlgeschlagen, versuche Device-Reprobe",
                     )
-                    self._active_sample_rate = active_sample_rate
-                    if (input_device, active_sample_rate) == previous_config:
-                        self._recording_start = 0
-                        self._stop_event.set()
-                        raise
-                    logger.info(
-                        "[%s] Aufnahme-Start fehlgeschlagen, versuche Device-Reprobe",
-                        get_session_id(),
-                    )
-                    continue
+                    if refreshed_config is not None:
+                        input_device, active_sample_rate = refreshed_config
+                        self._active_sample_rate = active_sample_rate
+                        continue
+                    self._recording_start = 0
+                    self._stop_event.set()
+                    raise
                 self._recording_start = 0
                 self._stop_event.set()
                 raise
@@ -189,19 +244,7 @@ class AudioRecorder:
         self._session_active = False
         stream = self._stream
         self._stream = None
-        stream_error: Exception | None = None
-        if stream:
-            try:
-                stream.stop()
-            except Exception as exc:
-                stream_error = exc
-            try:
-                stream.close()
-            except Exception as exc:
-                if stream_error is None:
-                    stream_error = exc
-                else:
-                    logger.debug("Stream close after stop failure also failed: %s", exc)
+        stream_error = _stop_and_close_stream(stream) if stream else None
 
         self._stop_event.set()
         if stream_error is not None:
@@ -278,7 +321,10 @@ def record_audio() -> Path:
     _log("🎤 Drücke ENTER um die Aufnahme zu starten...")
     input()
 
-    should_retry_with_fresh_device = True
+    should_retry_with_fresh_device = _should_retry_with_fresh_auto_device(
+        WHISPER_SAMPLE_RATE,
+        None,
+    )
     while True:
         try:
             with sd.InputStream(
@@ -295,16 +341,14 @@ def record_audio() -> Path:
         except Exception:
             if should_retry_with_fresh_device:
                 should_retry_with_fresh_device = False
-                previous_config = (input_device, actual_sample_rate)
-                reset_input_device_cache()
-                input_device, actual_sample_rate = _resolve_input_stream_config(
-                    WHISPER_SAMPLE_RATE
+                refreshed_config = _reprobe_input_stream_config(
+                    (input_device, actual_sample_rate),
+                    sample_rate=WHISPER_SAMPLE_RATE,
+                    device=None,
+                    log_message="CLI-Aufnahme-Start fehlgeschlagen, versuche Device-Reprobe",
                 )
-                if (input_device, actual_sample_rate) != previous_config:
-                    logger.info(
-                        "[%s] CLI-Aufnahme-Start fehlgeschlagen, versuche Device-Reprobe",
-                        get_session_id(),
-                    )
+                if refreshed_config is not None:
+                    input_device, actual_sample_rate = refreshed_config
                     continue
             raise
 

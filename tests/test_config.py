@@ -111,3 +111,91 @@ def test_get_input_device_keeps_caching_successful_probe(monkeypatch) -> None:
         assert query_calls == 1
     finally:
         config_module._cached_input_device = original_cache
+
+
+
+def test_get_input_device_non_windows_prefers_named_microphone(monkeypatch) -> None:
+    import config as config_module
+
+    original_cache = config_module._cached_input_device
+    config_module._cached_input_device = None
+
+    fake_sounddevice = SimpleNamespace(
+        default=SimpleNamespace(device=[-1, None]),
+        query_devices=lambda: [
+            {
+                "name": "Line In",
+                "max_input_channels": 1,
+                "default_samplerate": 44_100,
+            },
+            {
+                "name": "USB Microphone",
+                "max_input_channels": 1,
+                "default_samplerate": 48_000,
+            },
+        ],
+    )
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sounddevice)
+
+    try:
+        assert config_module.get_input_device() == (1, 48_000)
+    finally:
+        config_module._cached_input_device = original_cache
+
+
+
+def test_get_input_device_windows_prefers_working_mic_array(monkeypatch) -> None:
+    import config as config_module
+
+    original_cache = config_module._cached_input_device
+    config_module._cached_input_device = None
+    attempts: list[tuple[int | None, int]] = []
+
+    class _ProbeStream:
+        def __init__(self, **kwargs):
+            self.device = kwargs["device"]
+            self.samplerate = kwargs["samplerate"]
+            self._callback = kwargs["callback"]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def start(self) -> None:
+            attempts.append((self.device, self.samplerate))
+            if self.device != 1:
+                raise RuntimeError("device unavailable")
+            self._callback(object(), 0, None, None)
+
+    fake_sounddevice = SimpleNamespace(
+        default=SimpleNamespace(device=[-1, None]),
+        query_devices=lambda: [
+            {
+                "name": "USB Speaker",
+                "max_input_channels": 2,
+                "default_samplerate": 44_100,
+            },
+            {
+                "name": "Mic Array (Realtek)",
+                "max_input_channels": 2,
+                "default_samplerate": 48_000,
+            },
+            {
+                "name": "Microphone (USB)",
+                "max_input_channels": 1,
+                "default_samplerate": 16_000,
+            },
+        ],
+        InputStream=lambda **kwargs: _ProbeStream(**kwargs),
+    )
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sounddevice)
+
+    try:
+        assert config_module.get_input_device() == (1, 48_000)
+        assert attempts == [(1, 48_000)]
+    finally:
+        config_module._cached_input_device = original_cache

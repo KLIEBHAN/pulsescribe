@@ -59,6 +59,158 @@ INT16_MAX = 32767
 _cached_input_device: tuple[int | None, int] | None = None
 
 
+
+def _return_input_device_result(
+    result: tuple[int | None, int], *, cache: bool = True
+) -> tuple[int | None, int]:
+    """Gibt Ergebnis zurück und cached nur verlässliche Erkennungen."""
+    global _cached_input_device
+    if cache:
+        _cached_input_device = result
+    return result
+
+
+
+def _get_default_input_index(sd: Any) -> int:
+    """Liest den konfigurierten sounddevice-Default-Input robust aus."""
+    default_devices = cast(tuple[object, object], sd.default.device)
+    default_input = default_devices[0]
+    return default_input if isinstance(default_input, int) else -1
+
+
+
+def _build_input_device_info(index: int, raw_device: object) -> dict[str, Any]:
+    """Normalisiert ein sounddevice-Gerät auf die Felder, die wir wirklich nutzen."""
+    device = cast(dict[str, Any], raw_device)
+    return {
+        "idx": index,
+        "name": str(device.get("name", "")),
+        "samplerate": int(device.get("default_samplerate", WHISPER_SAMPLE_RATE)),
+    }
+
+
+
+def _list_input_devices(sd: Any) -> list[dict[str, Any]]:
+    """Sammelt alle verfügbaren Input-Geräte mit einheitlicher Struktur."""
+    input_devices: list[dict[str, Any]] = []
+    for index, raw_device in enumerate(sd.query_devices()):
+        device = cast(dict[str, Any], raw_device)
+        if int(device.get("max_input_channels", 0) or 0) <= 0:
+            continue
+        input_devices.append(_build_input_device_info(index, raw_device))
+    return input_devices
+
+
+
+def _device_name_matches(name: str, keywords: tuple[str, ...]) -> bool:
+    """Prüft Keywords case-insensitiv gegen einen Gerätenamen."""
+    lower_name = name.lower()
+    return any(keyword in lower_name for keyword in keywords)
+
+
+
+def _should_skip_windows_device(name: str) -> bool:
+    """Filtert bekannte Output-/Monitor-Geräte aus der Windows-Autodetektion."""
+    return _device_name_matches(name, ("lautsprecher", "speaker", "output", "monitor"))
+
+
+
+def _log_selected_input_device(device: dict[str, Any]) -> None:
+    """Protokolliert ein ausgewähltes Eingabegerät konsistent."""
+    logger.info("Verwende: %s (%sHz)", device["name"], device["samplerate"])
+
+
+
+def _probe_windows_input_device(sd: Any, device: dict[str, Any]) -> bool:
+    """Testet, ob ein Windows-Input-Device geöffnet wird und Audio liefert."""
+    import time
+    import numpy as np
+
+    received = [False]
+
+    def callback(indata, frames, time_info, status):
+        received[0] = True
+
+    try:
+        with sd.InputStream(
+            device=device["idx"],
+            samplerate=device["samplerate"],
+            channels=1,
+            blocksize=1024,
+            dtype=np.int16,
+            callback=callback,
+        ) as stream:
+            stream.start()
+            time.sleep(0.05)  # 50ms reicht um Audio-Callback zu testen
+        return received[0]
+    except Exception:
+        return False
+
+
+
+def _select_windows_input_device(
+    sd: Any,
+    input_devices: list[dict[str, Any]],
+) -> tuple[int | None, int]:
+    """Wählt unter Windows das bestgeeignete funktionierende Input-Device."""
+    mic_array_keywords = ("mikrofonarray", "mic array")
+    mic_keywords = ("mikrofon", "mic", "microphone")
+
+    # Priorität 1: Mikrofonarray-Geräte (funktionieren meist gut auf Windows)
+    for device in input_devices:
+        if _device_name_matches(device["name"], mic_array_keywords):
+            if _probe_windows_input_device(sd, device):
+                _log_selected_input_device(device)
+                return _return_input_device_result((device["idx"], device["samplerate"]))
+
+    # Priorität 2: Mikrofon-Geräte (außer Lautsprecher)
+    for device in input_devices:
+        if _should_skip_windows_device(device["name"]):
+            continue
+        if _device_name_matches(device["name"], mic_keywords):
+            if _probe_windows_input_device(sd, device):
+                _log_selected_input_device(device)
+                return _return_input_device_result((device["idx"], device["samplerate"]))
+
+    # Priorität 3: Beliebiges funktionierendes Gerät (außer Lautsprecher)
+    for device in input_devices:
+        if _should_skip_windows_device(device["name"]):
+            continue
+        if _probe_windows_input_device(sd, device):
+            _log_selected_input_device(device)
+            return _return_input_device_result((device["idx"], device["samplerate"]))
+
+    # Fallback ohne Test (kann fehlschlagen)
+    fallback_device = input_devices[0]
+    logger.warning(
+        "Kein funktionierendes Gerät gefunden, versuche: %s",
+        fallback_device["name"],
+    )
+    return _return_input_device_result(
+        (fallback_device["idx"], fallback_device["samplerate"]),
+        cache=False,
+    )
+
+
+
+def _select_non_windows_input_device(
+    input_devices: list[dict[str, Any]],
+) -> tuple[int | None, int]:
+    """Wählt auf Nicht-Windows-Systemen bevorzugt ein Mikrofon-Gerät."""
+    mic_keywords = ("mikrofon", "mic", "microphone")
+    for device in input_devices:
+        if _device_name_matches(device["name"], mic_keywords):
+            _log_selected_input_device(device)
+            return _return_input_device_result((device["idx"], device["samplerate"]))
+
+    fallback_device = input_devices[0]
+    _log_selected_input_device(fallback_device)
+    return _return_input_device_result(
+        (fallback_device["idx"], fallback_device["samplerate"])
+    )
+
+
+
 def get_input_device() -> tuple[int | None, int]:
     """Ermittelt das zu verwendende Eingabegerät und dessen Sample Rate.
 
@@ -80,149 +232,30 @@ def get_input_device() -> tuple[int | None, int]:
         - device_index: int oder None für sounddevice-Default
         - sample_rate: Native Sample Rate des Geräts (oder WHISPER_SAMPLE_RATE als Default)
     """
-    global _cached_input_device
-
-    # Cache-Hit
     if _cached_input_device is not None:
         return _cached_input_device
-
-    def _return_result(
-        result: tuple[int | None, int], *, cache: bool = True
-    ) -> tuple[int | None, int]:
-        """Gibt Ergebnis zurueck und cached nur verlässliche Erkennungen."""
-        global _cached_input_device
-        if cache:
-            _cached_input_device = result
-        return result
 
     import sys
 
     try:
         import sounddevice as sd  # type: ignore[import-not-found]
 
-        default_devices = cast(tuple[object, object], sd.default.device)
-        default_input = default_devices[0]
-        if not isinstance(default_input, int):
-            default_input = -1
-
-        # Default ist gesetzt → verwenden
+        default_input = _get_default_input_index(sd)
         if default_input >= 0:
-            dev = cast(dict[str, Any], sd.query_devices(default_input))
-            samplerate = int(dev.get("default_samplerate", WHISPER_SAMPLE_RATE))
-            return _return_result((None, samplerate))
+            device = cast(dict[str, Any], sd.query_devices(default_input))
+            samplerate = int(device.get("default_samplerate", WHISPER_SAMPLE_RATE))
+            return _return_input_device_result((None, samplerate))
 
-        # Default nicht gesetzt → passendes Input-Device suchen
-        devices = sd.query_devices()
-        input_devices = []
-
-        for i, raw_dev in enumerate(devices):
-            dev = cast(dict[str, Any], raw_dev)
-            if int(dev.get("max_input_channels", 0) or 0) > 0:
-                input_devices.append({
-                    "idx": i,
-                    "name": str(dev.get("name", "")),
-                    "samplerate": int(
-                        dev.get("default_samplerate", WHISPER_SAMPLE_RATE)
-                    ),
-                })
-
+        input_devices = _list_input_devices(sd)
         if not input_devices:
-            return _return_result((None, WHISPER_SAMPLE_RATE), cache=False)
+            return _return_input_device_result((None, WHISPER_SAMPLE_RATE), cache=False)
 
-        import logging
-        logger = logging.getLogger("pulsescribe")
-
-        # Auf Windows: Geräte testen, da WDM-KS oft "Invalid device" wirft
         if sys.platform == "win32":
-            import numpy as np
-
-            def test_device(idx: int, samplerate: int) -> bool:
-                """Testet ob Device öffnet und Audio empfängt."""
-                import time
-
-                try:
-                    received = [False]
-
-                    def cb(indata, frames, time_info, status):
-                        received[0] = True
-
-                    with sd.InputStream(
-                        device=idx,
-                        samplerate=samplerate,
-                        channels=1,
-                        blocksize=1024,
-                        dtype=np.int16,
-                        callback=cb,
-                    ) as stream:
-                        stream.start()
-                        time.sleep(0.05)  # 50ms reicht um Audio-Callback zu testen
-                    return received[0]
-                except Exception:
-                    return False
-
-            # Geräte die wahrscheinlich nicht funktionieren überspringen
-            skip_keywords = ("lautsprecher", "speaker", "output", "monitor")
-
-            def should_skip(name: str) -> bool:
-                lower = name.lower()
-                return any(kw in lower for kw in skip_keywords)
-
-            # Priorität 1: Mikrofonarray-Geräte (funktionieren meist gut auf Windows)
-            for dev in input_devices:
-                if "mikrofonarray" in dev["name"].lower() or "mic array" in dev["name"].lower():
-                    if test_device(dev["idx"], dev["samplerate"]):
-                        logger.info(
-                            f"Verwende: {dev['name']} ({dev['samplerate']}Hz)"
-                        )
-                        return _return_result((dev["idx"], dev["samplerate"]))
-
-            # Priorität 2: Mikrofon-Geräte (außer Lautsprecher)
-            mic_keywords = ("mikrofon", "mic", "microphone")
-            for dev in input_devices:
-                if should_skip(dev["name"]):
-                    continue
-                if any(kw in dev["name"].lower() for kw in mic_keywords):
-                    if test_device(dev["idx"], dev["samplerate"]):
-                        logger.info(
-                            f"Verwende: {dev['name']} ({dev['samplerate']}Hz)"
-                        )
-                        return _return_result((dev["idx"], dev["samplerate"]))
-
-            # Priorität 3: Beliebiges funktionierendes Gerät (außer Lautsprecher)
-            for dev in input_devices:
-                if should_skip(dev["name"]):
-                    continue
-                if test_device(dev["idx"], dev["samplerate"]):
-                    logger.info(
-                        f"Verwende: {dev['name']} ({dev['samplerate']}Hz)"
-                    )
-                    return _return_result((dev["idx"], dev["samplerate"]))
-
-            # Fallback ohne Test (kann fehlschlagen)
-            dev = input_devices[0]
-            logger.warning(
-                f"Kein funktionierendes Gerät gefunden, versuche: {dev['name']}"
-            )
-            return _return_result((dev["idx"], dev["samplerate"]), cache=False)
-
-        else:
-            # Nicht-Windows: Erstes Mikrofon-Gerät oder erstes Input-Device
-            mic_keywords = ("mikrofon", "mic", "microphone")
-            for dev in input_devices:
-                if any(kw in dev["name"].lower() for kw in mic_keywords):
-                    logger.info(
-                        f"Verwende: {dev['name']} ({dev['samplerate']}Hz)"
-                    )
-                    return _return_result((dev["idx"], dev["samplerate"]))
-
-            dev = input_devices[0]
-            logger.info(
-                f"Verwende: {dev['name']} ({dev['samplerate']}Hz)"
-            )
-            return _return_result((dev["idx"], dev["samplerate"]))
-
+            return _select_windows_input_device(sd, input_devices)
+        return _select_non_windows_input_device(input_devices)
     except Exception:
-        return _return_result((None, WHISPER_SAMPLE_RATE), cache=False)
+        return _return_input_device_result((None, WHISPER_SAMPLE_RATE), cache=False)
+
 
 
 def reset_input_device_cache() -> None:

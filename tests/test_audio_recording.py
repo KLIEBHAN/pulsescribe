@@ -210,6 +210,48 @@ def test_audio_recorder_start_timestamps_successful_retry_only(monkeypatch):
     assert recorder._recording_start == 20.0
 
 
+
+def test_audio_recorder_start_stops_after_reprobe_returns_same_config(monkeypatch):
+    import audio.recording as recording
+
+    attempts: list[tuple[int | None, int]] = []
+    device_calls = iter([(7, 48_000), (7, 48_000)])
+    reset_calls: list[bool] = []
+
+    class _BrokenInputStream:
+        def __init__(self, **kwargs):
+            self.device = kwargs["device"]
+            self.samplerate = kwargs["samplerate"]
+            self.active = False
+
+        def start(self) -> None:
+            attempts.append((self.device, self.samplerate))
+            raise RuntimeError("cached device missing")
+
+        def close(self) -> None:
+            self.active = False
+
+    fake_sd = SimpleNamespace(
+        InputStream=lambda **kwargs: _BrokenInputStream(**kwargs)
+    )
+
+    monkeypatch.setattr(recording, "get_input_device", lambda: next(device_calls))
+    monkeypatch.setattr(
+        recording, "reset_input_device_cache", lambda: reset_calls.append(True)
+    )
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sd)
+
+    recorder = recording.AudioRecorder()
+
+    with pytest.raises(RuntimeError, match="cached device missing"):
+        recorder.start(play_ready_sound=False)
+
+    assert attempts == [(7, 48_000)]
+    assert reset_calls == [True]
+    assert recorder._stream is None
+    assert recorder.wait_for_stop(timeout=0)
+
+
 def test_audio_recorder_stop_rejects_missing_active_session(monkeypatch):
     import audio.recording as recording
 
@@ -352,3 +394,43 @@ def test_record_audio_retries_after_stale_auto_device_cache(monkeypatch, tmp_pat
     assert sounds == ["ready", "stop"]
     assert write_call["sample_rate"] == 44_100
     assert output_path == tmp_path / recording.TEMP_RECORDING_FILENAME
+
+
+
+def test_record_audio_stops_after_reprobe_returns_same_config(monkeypatch):
+    import audio.recording as recording
+
+    attempts: list[tuple[int | None, int]] = []
+    device_calls = iter([(7, 48_000), (7, 48_000)])
+    reset_calls: list[bool] = []
+    inputs = iter([""])
+
+    class _BrokenInputStream:
+        def __init__(self, **kwargs):
+            self.device = kwargs["device"]
+            self.samplerate = kwargs["samplerate"]
+
+        def __enter__(self):
+            attempts.append((self.device, self.samplerate))
+            raise RuntimeError("cached device missing")
+
+        def __exit__(self, exc_type, exc, tb) -> Literal[False]:
+            return False
+
+    fake_sd = SimpleNamespace(
+        InputStream=lambda **kwargs: _BrokenInputStream(**kwargs)
+    )
+
+    monkeypatch.setattr(recording, "get_input_device", lambda: next(device_calls))
+    monkeypatch.setattr(
+        recording, "reset_input_device_cache", lambda: reset_calls.append(True)
+    )
+    monkeypatch.setattr(recording, "_log", lambda _message: None)
+    monkeypatch.setattr("builtins.input", lambda: next(inputs))
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sd)
+
+    with pytest.raises(RuntimeError, match="cached device missing"):
+        recording.record_audio()
+
+    assert attempts == [(7, 48_000)]
+    assert reset_calls == [True]
