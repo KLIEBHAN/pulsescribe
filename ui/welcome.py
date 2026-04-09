@@ -315,6 +315,13 @@ class WelcomeController:
                     cache[key] = value
         return True
 
+    def _get_cached_hotkeys(self) -> tuple[str, str]:
+        cache = getattr(self, "_env_settings_cache", None) or {}
+        return (
+            (cache.get("PULSESCRIBE_TOGGLE_HOTKEY") or "").strip(),
+            (cache.get("PULSESCRIBE_HOLD_HOTKEY") or "").strip(),
+        )
+
     def _setup_edit_menu(self) -> None:
         """Erstellt Edit-Menü für CMD+V/C/X/A in TextViews.
 
@@ -1049,6 +1056,7 @@ class WelcomeController:
             hotkey_recorder=self._hotkey_recorder,
             on_hotkey_change=self._apply_hotkey_change,
             on_after_change=self._on_settings_changed,
+            get_current_hotkeys=self._get_cached_hotkeys,
             show_presets=True,
             show_hint=True,
         )
@@ -3975,6 +3983,14 @@ class WelcomeController:
             return False
 
         apply_hotkey_setting(kind, normalized)
+        cache = getattr(self, "_env_settings_cache", None)
+        if cache is not None:
+            if kind == "hold":
+                cache["PULSESCRIBE_HOLD_HOTKEY"] = normalized
+            else:
+                cache["PULSESCRIBE_TOGGLE_HOTKEY"] = normalized
+            cache.pop("PULSESCRIBE_HOTKEY", None)
+            cache.pop("PULSESCRIBE_HOTKEY_MODE", None)
 
         if callable(self._on_settings_changed_callback):
             try:

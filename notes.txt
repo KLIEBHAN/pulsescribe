@@ -115,3 +115,40 @@ Next worthwhile areas
 - `ui/hotkey_card.py`: still reads env-backed hotkey state directly; a tiny shared cache layer would align it with the wizard optimizations.
 - `ui/welcome.py` logs/transcripts view switching could be profiled for further paint/layout trimming if the window is kept open for long sessions.
 - If tab-open latency remains noticeable, the next likely area is moving prompt/vocabulary validation work off the immediate interaction path.
+
+Performance work log - 2026-04-09 (hotkey card follow-up)
+
+Scope
+- Built on the current macOS welcome/onboarding state without touching the last two Windows-focused commits.
+- Focused only on the shared hotkey UI path in `ui/hotkey_card.py` and its macOS callers in `ui/welcome.py` and `ui/onboarding_wizard.py`.
+- Preserved hotkey validation, persistence semantics, recorder behavior, and visible UI flow.
+
+Current weaknesses reviewed
+- `ui/hotkey_card.py`: after successful hotkey changes, the card still reread hotkeys through the env/preferences path even when the parent controller already had current values cached.
+- `ui/welcome.py`: the welcome window cached env settings broadly, but hotkey saves did not feed that cache back into the shared hotkey card.
+- `ui/onboarding_wizard.py`: the wizard already tracked cached hotkey state, but the shared hotkey card still fell back to fresh env reads instead of reusing it.
+
+Changes in this pass
+- `ui/hotkey_card.py`
+  Added an optional current-hotkeys provider so the shared card can sync from caller-owned cached state instead of always reading env-backed preferences.
+- `ui/welcome.py`
+  Wired the hotkey card to the welcome-window env cache and refreshed that cache immediately after successful hotkey saves.
+- `ui/onboarding_wizard.py`
+  Wired the hotkey card to the wizard-local hotkey cache so repeat syncs during onboarding stay in-memory.
+- Tests
+  Added regression coverage that the shared hotkey card prefers the cached provider path over direct env reads.
+
+Why this helps
+- Hotkey preset clicks, recorded hotkey saves, and follow-up field syncs now avoid redundant env lookups in the main macOS UI flows.
+- The shared hotkey component no longer forces an extra read path immediately after the controller has already updated its own hotkey state.
+- This trims repeated work on a user-visible interaction path that tends to be exercised several times while configuring shortcuts.
+
+Validation
+- `pytest tests/test_hotkey_card.py tests/test_settings_ui.py tests/test_onboarding.py tests/test_onboarding_wizard_flow.py -q`
+- `python -m py_compile ui/hotkey_card.py ui/welcome.py ui/onboarding_wizard.py tests/test_hotkey_card.py tests/test_settings_ui.py`
+- `ruff check ui/hotkey_card.py ui/welcome.py ui/onboarding_wizard.py tests/test_hotkey_card.py tests/test_settings_ui.py`
+
+Next worthwhile areas
+- `ui/welcome.py` logs/transcripts view switching remains the next likely long-session UI hotspot.
+- `ui/onboarding_wizard.py` still has some render-adjacent status and summary recomputation that could be deduped further if profiling still shows churn.
+- If prompt/vocabulary tabs still feel heavy, move non-essential validation or formatting work off the immediate interaction path.

@@ -51,11 +51,13 @@ class HotkeyCard:
         hotkey_recorder: "HotkeyRecorder",
         on_hotkey_change: Callable[[str, str], bool],
         on_after_change: Callable[[], None] | None = None,
+        get_current_hotkeys: Callable[[], tuple[str, str]] | None = None,
     ) -> None:
         self._widgets = widgets
         self._recorder = hotkey_recorder
         self._on_hotkey_change = on_hotkey_change
         self._on_after_change = on_after_change
+        self._get_current_hotkeys = get_current_hotkeys
         self._last_synced_values: tuple[str, str] | None = None
         self._last_status: tuple[str, str] | None = None
 
@@ -75,6 +77,7 @@ class HotkeyCard:
         hotkey_recorder: "HotkeyRecorder",
         on_hotkey_change: Callable[[str, str], bool],
         on_after_change: Callable[[], None] | None = None,
+        get_current_hotkeys: Callable[[], tuple[str, str]] | None = None,
         show_presets: bool = True,
         show_hint: bool = True,
     ) -> "HotkeyCard":
@@ -248,6 +251,7 @@ class HotkeyCard:
             hotkey_recorder=hotkey_recorder,
             on_hotkey_change=on_hotkey_change,
             on_after_change=on_after_change,
+            get_current_hotkeys=get_current_hotkeys,
         )
         card_instance.sync_from_env()
         return card_instance
@@ -256,11 +260,17 @@ class HotkeyCard:
         """Update fields from current .env settings."""
         if self._recorder.recording:
             return
-        from utils.preferences import get_env_setting
 
         try:
-            toggle = (get_env_setting("PULSESCRIBE_TOGGLE_HOTKEY") or "").strip()
-            hold = (get_env_setting("PULSESCRIBE_HOLD_HOTKEY") or "").strip()
+            if callable(self._get_current_hotkeys):
+                toggle, hold = self._get_current_hotkeys()
+                toggle = (toggle or "").strip()
+                hold = (hold or "").strip()
+            else:
+                from utils.preferences import get_env_setting
+
+                toggle = (get_env_setting("PULSESCRIBE_TOGGLE_HOTKEY") or "").strip()
+                hold = (get_env_setting("PULSESCRIBE_HOLD_HOTKEY") or "").strip()
             rendered_values = (toggle.upper(), hold.upper())
             if self._last_synced_values == rendered_values:
                 return

@@ -694,6 +694,7 @@ class OnboardingWizardController:
             hotkey_recorder=self._hotkey_recorder,
             on_hotkey_change=self._apply_hotkey_change,
             on_after_change=self._render,
+            get_current_hotkeys=self._get_cached_hotkeys,
             show_presets=True,
             show_hint=True,
         )

@@ -89,3 +89,31 @@ def test_set_status_skips_duplicate_label_updates(monkeypatch) -> None:
     assert status_label.value == "Check hotkey"
     assert status_label.value_calls == 1
     assert status_label.color_calls == 1
+
+
+def test_sync_from_env_prefers_cached_hotkeys_provider(monkeypatch) -> None:
+    card = HotkeyCard(
+        widgets=HotkeyCardWidgets(
+            toggle_field=_FakeField(),
+            toggle_record_btn=None,
+            hold_field=_FakeField(),
+            hold_record_btn=None,
+            status_label=_FakeStatusLabel(),
+        ),
+        hotkey_recorder=SimpleNamespace(recording=False),
+        on_hotkey_change=lambda *_args: True,
+        get_current_hotkeys=lambda: ("option+space", "fn"),
+    )
+
+    import utils.preferences as prefs_mod
+
+    monkeypatch.setattr(
+        prefs_mod,
+        "get_env_setting",
+        lambda _key: (_ for _ in ()).throw(AssertionError("env read should be skipped")),
+    )
+
+    card.sync_from_env()
+
+    assert card._widgets.toggle_field.value == "OPTION+SPACE"
+    assert card._widgets.hold_field.value == "FN"
