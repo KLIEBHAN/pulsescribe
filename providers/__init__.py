@@ -21,6 +21,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .base import TranscriptionProvider
 
+_ProviderSpec = tuple[str, str]
+
 # Defaults zentral in config.py halten (vermeidet Drift)
 from config import (
     DEFAULT_API_MODEL,
@@ -38,6 +40,36 @@ DEFAULT_MODELS = {
     "local": DEFAULT_LOCAL_MODEL,
 }
 
+_PROVIDER_SPECS: dict[str, _ProviderSpec] = {
+    "openai": ("openai", "OpenAIProvider"),
+    "deepgram": ("deepgram", "DeepgramProvider"),
+    "deepgram_stream": ("deepgram_stream", "DeepgramStreamProvider"),
+    "groq": ("groq", "GroqProvider"),
+    "local": ("local", "LocalProvider"),
+}
+
+
+def _raise_local_mode_unavailable(exc: ImportError) -> None:
+    raise ValueError(
+        "Lokaler Modus nicht verfügbar. "
+        "Dies ist wahrscheinlich ein Slim-Build ohne lokale Whisper-Backends. "
+        "Verwende einen Cloud-Provider (deepgram, openai, groq) oder installiere "
+        "den Full-Build mit lokalen Backends.\n"
+        f"Original-Fehler: {exc}"
+    ) from None
+
+
+def _load_provider_class(mode: str):
+    module_name, class_name = _PROVIDER_SPECS[mode]
+    try:
+        module = __import__(module_name, globals(), locals(), [class_name], 1)
+    except ImportError as exc:
+        if mode == "local":
+            _raise_local_mode_unavailable(exc)
+        raise
+    return getattr(module, class_name)
+
+
 
 def get_provider(mode: str) -> "TranscriptionProvider":
     """Factory für Transkriptions-Provider.
@@ -51,38 +83,11 @@ def get_provider(mode: str) -> "TranscriptionProvider":
     Raises:
         ValueError: Bei unbekanntem Provider
     """
-    if mode == "openai":
-        from .openai import OpenAIProvider
-
-        return OpenAIProvider()
-    elif mode == "deepgram":
-        from .deepgram import DeepgramProvider
-
-        return DeepgramProvider()
-    elif mode == "deepgram_stream":
-        from .deepgram_stream import DeepgramStreamProvider
-
-        return DeepgramStreamProvider()
-    elif mode == "groq":
-        from .groq import GroqProvider
-
-        return GroqProvider()
-    elif mode == "local":
-        # Prüfe ob lokale Backends verfügbar sind (Slim-Build hat keine)
-        try:
-            from .local import LocalProvider
-        except ImportError as e:
-            raise ValueError(
-                "Lokaler Modus nicht verfügbar. "
-                "Dies ist wahrscheinlich ein Slim-Build ohne lokale Whisper-Backends. "
-                "Verwende einen Cloud-Provider (deepgram, openai, groq) oder installiere "
-                "den Full-Build mit lokalen Backends.\n"
-                f"Original-Fehler: {e}"
-            ) from None
-
-        return LocalProvider()
-    else:
-        raise ValueError(f"Unbekannter Provider: {mode}")
+    try:
+        provider_class = _load_provider_class(mode)
+    except KeyError:
+        raise ValueError(f"Unbekannter Provider: {mode}") from None
+    return provider_class()
 
 
 def get_default_model(mode: str) -> str:

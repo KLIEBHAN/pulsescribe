@@ -17,6 +17,7 @@ from utils.env import (
     parse_env_line as _shared_parse_env_line,
     read_env_file_values,
 )
+from utils.file_signatures import FileSignature, build_file_signature
 from utils.onboarding import (
     OnboardingChoice,
     OnboardingStep,
@@ -30,36 +31,18 @@ PREFS_FILE = USER_CONFIG_DIR / "preferences.json"
 ENV_FILE = USER_CONFIG_DIR / ".env"
 
 # Cache: ((mtime_ns, size, ctime_ns), values)
-_env_cache: tuple[tuple[int, int, int], dict[str, str]] | None = None
-_prefs_cache: tuple[tuple[int, int, int], dict[str, object]] | None = None
+_env_cache: tuple[FileSignature, dict[str, str]] | None = None
+_prefs_cache: tuple[FileSignature, dict[str, object]] | None = None
 
 
-def _build_file_signature(path: Path) -> tuple[int, int, int] | None:
+def _build_file_signature(path: Path) -> FileSignature | None:
     """Return a stable file signature for lightweight cache invalidation."""
     try:
-        stat_result = path.stat()
+        return build_file_signature(path)
     except FileNotFoundError:
         return None
     except OSError:
         return None
-
-    return (
-        int(
-            getattr(
-                stat_result,
-                "st_mtime_ns",
-                int(getattr(stat_result, "st_mtime", 0.0) * 1_000_000_000),
-            )
-        ),
-        int(getattr(stat_result, "st_size", 0)),
-        int(
-            getattr(
-                stat_result,
-                "st_ctime_ns",
-                int(getattr(stat_result, "st_ctime", 0.0) * 1_000_000_000),
-            )
-        ),
-    )
 
 
 def _parse_env_line(raw_line: str) -> tuple[str | None, str | None]:
@@ -503,11 +486,15 @@ def apply_hotkey_setting(kind: str, hotkey_str: str) -> None:
     if not value:
         return
 
-    if kind == "hold":
-        save_env_setting("PULSESCRIBE_HOLD_HOTKEY", value)
-    else:
-        save_env_setting("PULSESCRIBE_TOGGLE_HOTKEY", value)
-
-    # Remove legacy single-hotkey keys if present.
-    remove_env_setting("PULSESCRIBE_HOTKEY")
-    remove_env_setting("PULSESCRIBE_HOTKEY_MODE")
+    key_name = (
+        "PULSESCRIBE_HOLD_HOTKEY"
+        if kind == "hold"
+        else "PULSESCRIBE_TOGGLE_HOTKEY"
+    )
+    update_env_settings(
+        {
+            key_name: value,
+            "PULSESCRIBE_HOTKEY": None,
+            "PULSESCRIBE_HOTKEY_MODE": None,
+        }
+    )

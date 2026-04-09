@@ -13,8 +13,8 @@ class TestProviderFactory:
 
     @pytest.mark.parametrize(
         "mode",
-        ["openai", "deepgram", "groq", "local"],
-        ids=["openai", "deepgram", "groq", "local"],
+        ["openai", "deepgram", "deepgram_stream", "groq", "local"],
+        ids=["openai", "deepgram", "deepgram_stream", "groq", "local"],
     )
     def test_get_provider_has_default_model(self, mode: str):
         """Provider wird erstellt und liefert ein Default-Model aus DEFAULT_MODELS."""
@@ -39,6 +39,7 @@ class TestDefaultModels:
         from providers import DEFAULT_MODELS
         assert "openai" in DEFAULT_MODELS
         assert "deepgram" in DEFAULT_MODELS
+        assert "deepgram_stream" in DEFAULT_MODELS
         assert "groq" in DEFAULT_MODELS
         assert "local" in DEFAULT_MODELS
 
@@ -64,11 +65,42 @@ class TestProviderInterface:
         provider = get_provider("groq")
         assert provider.supports_streaming() is False
 
+    def test_deepgram_stream_supports_streaming(self):
+        """Deepgram WebSocket Provider unterstützt Streaming."""
+        from providers import get_provider
+        provider = get_provider("deepgram_stream")
+        assert provider.supports_streaming() is True
+
     def test_local_supports_streaming(self):
         """Lokales Whisper unterstützt kein Streaming."""
         from providers import get_provider
         provider = get_provider("local")
         assert provider.supports_streaming() is False
+
+
+def test_get_provider_local_reports_slim_build_import_error(monkeypatch):
+    import builtins
+
+    from providers import get_provider
+
+    real_import = builtins.__import__
+
+    def _patched_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if (
+            name == "local"
+            and level == 1
+            and globals
+            and globals.get("__package__") == "providers"
+        ):
+            raise ImportError("mock missing local backend")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _patched_import)
+
+    with pytest.raises(ValueError, match="Lokaler Modus nicht verfügbar") as exc_info:
+        get_provider("local")
+
+    assert "Original-Fehler: mock missing local backend" in str(exc_info.value)
 
 
 class TestProviderValidation:

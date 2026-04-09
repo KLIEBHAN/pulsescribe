@@ -22,6 +22,7 @@ import tomllib
 from pathlib import Path
 
 from config import PROMPTS_FILE
+from utils.file_signatures import FileSignature, build_file_signature
 from utils.preferences import _write_text_atomic
 from refine.prompts import (
     CONTEXT_PROMPTS,
@@ -47,8 +48,7 @@ def _normalize_context_name(value: str | None) -> str | None:
 # Cache (Signature-basiert für Hot-Reload)
 # =============================================================================
 
-_CacheSignature = tuple[int, int, int]
-_cache: dict[Path, tuple[_CacheSignature, dict]] = {}
+_cache: dict[Path, tuple[FileSignature, dict]] = {}
 
 
 def _clear_cache() -> None:
@@ -62,26 +62,9 @@ def _invalidate_cache(path: Path) -> None:
     _cache.pop(path, None)
 
 
-def _get_file_signature(path: Path) -> _CacheSignature:
+def _get_file_signature(path: Path) -> FileSignature:
     """Return a stable cache signature for prompt file reloads."""
-    stat_result = path.stat()
-    return (
-        int(
-            getattr(
-                stat_result,
-                "st_mtime_ns",
-                int(getattr(stat_result, "st_mtime", 0.0) * 1_000_000_000),
-            )
-        ),
-        int(getattr(stat_result, "st_size", 0)),
-        int(
-            getattr(
-                stat_result,
-                "st_ctime_ns",
-                int(getattr(stat_result, "st_ctime", 0.0) * 1_000_000_000),
-            )
-        ),
-    )
+    return build_file_signature(path)
 
 
 # =============================================================================

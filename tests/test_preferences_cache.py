@@ -267,6 +267,39 @@ def test_read_env_file_supports_export_prefix(tmp_path, monkeypatch):
     assert prefs.read_env_file() == {"PULSESCRIBE_MODE": "local"}
 
 
+def test_read_env_file_returns_empty_after_cached_env_file_is_deleted(
+    tmp_path, monkeypatch
+):
+    _isolate_prefs(tmp_path, monkeypatch)
+    prefs.ENV_FILE.write_text("PULSESCRIBE_MODE=deepgram\n", encoding="utf-8")
+
+    assert prefs.read_env_file() == {"PULSESCRIBE_MODE": "deepgram"}
+
+    prefs.ENV_FILE.unlink()
+
+    assert prefs.read_env_file() == {}
+
+
+def test_apply_hotkey_setting_updates_selected_key_and_removes_legacy_keys(
+    tmp_path, monkeypatch
+):
+    _isolate_prefs(tmp_path, monkeypatch)
+    prefs.ENV_FILE.write_text(
+        "PULSESCRIBE_HOTKEY=f18\n"
+        "PULSESCRIBE_HOTKEY_MODE=toggle\n"
+        "PULSESCRIBE_TOGGLE_HOTKEY=f19\n",
+        encoding="utf-8",
+    )
+
+    prefs.apply_hotkey_setting("hold", "Fn")
+
+    values = prefs.read_env_file()
+    assert values == {
+        "PULSESCRIBE_TOGGLE_HOTKEY": "f19",
+        "PULSESCRIBE_HOLD_HOTKEY": "fn",
+    }
+
+
 def test_load_preferences_returns_empty_dict_for_non_object_json(
     tmp_path, monkeypatch
 ):

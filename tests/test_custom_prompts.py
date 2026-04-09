@@ -671,6 +671,26 @@ class TestCacheBehavior:
         assert result1 == result2
         assert result1 is not result2
 
+    def test_deleted_file_invalidates_cached_prompts(self, prompts_file):
+        """Wird die Datei gelöscht, darf kein veralteter Cache-Inhalt zurückkommen."""
+        from utils.custom_prompts import load_custom_prompts
+
+        prompts_file.write_text(
+            '''
+[prompts.default]
+prompt = """Cached version"""
+''',
+            encoding="utf-8",
+        )
+
+        cached = load_custom_prompts(path=prompts_file)
+        assert cached["prompts"]["default"]["prompt"] == "Cached version"
+
+        prompts_file.unlink()
+
+        after_delete = load_custom_prompts(path=prompts_file)
+        assert after_delete["prompts"]["default"]["prompt"] == CONTEXT_PROMPTS["default"]
+
     def test_save_invalidates_cache(self, prompts_file):
         """Nach save() gibt load() frische Daten."""
         from utils.custom_prompts import save_custom_prompts, load_custom_prompts
