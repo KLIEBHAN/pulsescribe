@@ -26,42 +26,6 @@ class EnvClientCache:
         self._client = None
         self._signature = None
 
-    def _read_api_key(self, *, env_var: str, missing_error: str) -> str:
-        """Return the current API key or clear stale cache state before failing."""
-        api_key = os.getenv(env_var)
-        if api_key:
-            return api_key
-        self.reset()
-        raise ValueError(missing_error)
-
-    def _needs_refresh(self, api_key: str) -> bool:
-        """Return True when the cached client does not match the current key."""
-        return self._client is None or self._signature != api_key
-
-    def _get_cached_client(self, api_key: str) -> Any | None:
-        """Return the cached client when it already matches the current API key."""
-        if self._needs_refresh(api_key):
-            return None
-        return self._client
-
-    def _refresh_client(
-        self,
-        api_key: str,
-        *,
-        create_client: Callable[[str], Any],
-        logger: logging.Logger,
-        client_label: str,
-    ) -> Any:
-        """Create or reuse the cached client after a synchronized refresh check."""
-        cached_client = self._get_cached_client(api_key)
-        if cached_client is not None:
-            return cached_client
-
-        self._client = create_client(api_key)
-        self._signature = api_key
-        logger.debug("%s initialisiert", client_label)
-        return self._client
-
     def get(
         self,
         *,
@@ -71,19 +35,27 @@ class EnvClientCache:
         logger: logging.Logger,
         client_label: str,
     ) -> Any:
-        api_key = self._read_api_key(env_var=env_var, missing_error=missing_error)
-        cached_client = self._get_cached_client(api_key)
-        if cached_client is not None:
-            return cached_client
+        api_key = os.getenv(env_var)
+        if not api_key:
+            self.reset()
+            raise ValueError(missing_error)
+
+        if self._client is not None and self._signature == api_key:
+            return self._client
 
         with self._lock:
-            api_key = self._read_api_key(env_var=env_var, missing_error=missing_error)
-            return self._refresh_client(
-                api_key,
-                create_client=create_client,
-                logger=logger,
-                client_label=client_label,
-            )
+            # Double-check after acquiring lock
+            api_key = os.getenv(env_var)
+            if not api_key:
+                self.reset()
+                raise ValueError(missing_error)
+            if self._client is not None and self._signature == api_key:
+                return self._client
+
+            self._client = create_client(api_key)
+            self._signature = api_key
+            logger.debug("%s initialisiert", client_label)
+            return self._client
 
 
 def build_cached_env_client_getter(

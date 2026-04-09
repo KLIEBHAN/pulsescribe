@@ -46,16 +46,6 @@ TEnum = TypeVar("TEnum", bound=Enum)
 TCacheValue = TypeVar("TCacheValue")
 
 
-def _build_file_signature(path: Path) -> FileSignature | None:
-    """Return a stable file signature for lightweight cache invalidation."""
-    try:
-        return build_file_signature(path)
-    except FileNotFoundError:
-        return None
-    except OSError:
-        return None
-
-
 def _load_cached_mapping_file(
     path: Path,
     *,
@@ -63,8 +53,9 @@ def _load_cached_mapping_file(
     loader: Callable[[Path], dict[str, TCacheValue]],
 ) -> tuple[dict[str, TCacheValue], tuple[FileSignature, dict[str, TCacheValue]]]:
     """Load a small key/value file with shared file-signature cache handling."""
-    signature = _build_file_signature(path)
-    if signature is None:
+    try:
+        signature = build_file_signature(path)
+    except (FileNotFoundError, OSError):
         empty_values: dict[str, TCacheValue] = {}
         return {}, (_EMPTY_FILE_SIGNATURE, empty_values)
 
@@ -82,11 +73,6 @@ def _load_env_values(env_path: Path) -> dict[str, str]:
         errors="replace",
         first_wins=True,
     )
-
-
-def _parse_env_line(raw_line: str) -> tuple[str | None, str | None]:
-    """Parst eine einzelne `.env`-Zeile möglichst dotenv-kompatibel."""
-    return parse_env_line_with_dotenv(raw_line)
 
 
 def read_env_file(path: Path | None = None) -> dict[str, str]:
@@ -110,25 +96,14 @@ def read_env_file(path: Path | None = None) -> dict[str, str]:
     return values
 
 
-def _canonical_env_line(key_name: str, value: str) -> str:
-    return f"{key_name}={value}"
-
-
 def _canonical_env_updates(
     updates: dict[str, str | None],
 ) -> dict[str, str | None]:
     """Normalize raw env updates into canonical persisted lines."""
     return {
-        key: None if value is None else _canonical_env_line(key, value)
+        key: None if value is None else f"{key}={value}"
         for key, value in updates.items()
     }
-
-
-def _iter_parsed_env_lines(lines: list[str]):
-    """Yield raw lines together with their parsed key/value pair."""
-    for line in lines:
-        key, existing_value = _parse_env_line(line)
-        yield line, key, existing_value
 
 
 def _resolve_updated_env_line(
@@ -183,7 +158,8 @@ def _apply_env_updates_to_lines(
     new_lines: list[str] = []
     changed = False
 
-    for line, key, existing_value in _iter_parsed_env_lines(lines):
+    for line in lines:
+        key, existing_value = parse_env_line_with_dotenv(line)
         if not key or key not in canonical_updates:
             new_lines.append(line)
             continue
@@ -257,7 +233,6 @@ def _write_env_lines(env_path: Path, lines: list[str]) -> None:
     except OSError:
         pass  # Windows unterstützt chmod nicht vollständig
     _invalidate_env_cache()
-
 
 
 def _update_env_file(
@@ -655,10 +630,10 @@ def _normalize_hotkey_value(hotkey_str: str) -> str:
 
 def _build_hotkey_env_updates(kind: str, value: str) -> dict[str, str | None]:
     """Build the env updates for one hotkey change while clearing legacy keys."""
-    key_name = _resolve_hotkey_env_key(kind)
-    env_updates: dict[str, str | None] = {key_name: value}
-    env_updates.update({legacy_key: None for legacy_key in _LEGACY_HOTKEY_ENV_KEYS})
-    return env_updates
+    return {
+        _resolve_hotkey_env_key(kind): value,
+        **{legacy_key: None for legacy_key in _LEGACY_HOTKEY_ENV_KEYS},
+    }
 
 
 def apply_hotkey_setting(kind: str, hotkey_str: str) -> None:
