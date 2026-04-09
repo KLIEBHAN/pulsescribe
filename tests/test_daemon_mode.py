@@ -12,6 +12,26 @@ from utils.state import AppState, DaemonMessage, MessageType
 runner = CliRunner()
 
 
+class _FakeRepeatingTimer:
+    def __init__(self, interval, callback):
+        self.interval = interval
+        self.callback = callback
+        self.invalidated = False
+
+    def invalidate(self):
+        self.invalidated = True
+
+
+class _FakeNSTimerFactory:
+    def __init__(self):
+        self.created_timers = []
+
+    def scheduledTimerWithTimeInterval_repeats_block_(self, interval, _repeats, block):
+        timer = _FakeRepeatingTimer(interval, block)
+        self.created_timers.append(timer)
+        return timer
+
+
 class TestDaemonMode(unittest.TestCase):
     @patch("pulsescribe_daemon.threading.Thread")
     def test_start_recording_openai_mode(self, mock_thread_cls):
@@ -556,6 +576,50 @@ class TestWatchdogTimer(unittest.TestCase):
             call_args = mock_logger.debug.call_args[0][0]
             self.assertIn("listening", call_args.lower())
             self.assertIn("recording", call_args.lower())
+
+    def test_update_state_skips_duplicate_ui_dispatch(self):
+        daemon = PulseScribeDaemon(mode="local")
+        daemon._menubar = MagicMock()
+        daemon._overlay = MagicMock()
+
+        daemon._update_state(AppState.RECORDING, "live preview")
+        daemon._update_state(AppState.RECORDING, "live preview")
+
+        daemon._menubar.update_state.assert_called_once_with(
+            AppState.RECORDING,
+            "live preview",
+        )
+        daemon._overlay.update_state.assert_called_once_with(
+            AppState.RECORDING,
+            "live preview",
+        )
+
+    def test_update_state_still_updates_ui_when_text_changes(self):
+        daemon = PulseScribeDaemon(mode="local")
+        daemon._menubar = MagicMock()
+        daemon._overlay = MagicMock()
+
+        daemon._update_state(AppState.RECORDING, "first preview")
+        daemon._update_state(AppState.RECORDING, "second preview")
+
+        self.assertEqual(daemon._menubar.update_state.call_count, 2)
+        self.assertEqual(daemon._overlay.update_state.call_count, 2)
+
+    def test_result_polling_reschedules_for_transcribing_interval(self):
+        daemon = PulseScribeDaemon(mode="local")
+        daemon._current_state = AppState.RECORDING
+        timer_factory = _FakeNSTimerFactory()
+
+        with patch.dict(sys.modules, {"Foundation": MagicMock(NSTimer=timer_factory)}):
+            daemon._start_result_polling()
+            active_timer = timer_factory.created_timers[-1]
+
+            daemon._current_state = AppState.TRANSCRIBING
+            active_timer.callback(active_timer)
+
+        self.assertEqual(timer_factory.created_timers[0].interval, 0.03)
+        self.assertTrue(active_timer.invalidated)
+        self.assertEqual(timer_factory.created_timers[-1].interval, 0.06)
 
     def test_drain_result_queue_empties_queue(self):
         """_drain_result_queue() leert die Queue vollständig."""

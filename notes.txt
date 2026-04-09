@@ -1,3 +1,38 @@
+Performance work log - 2026-04-09 (daemon UI dispatch dedupe + adaptive result polling)
+
+Scope
+- Left the last two commit areas untouched again: `ui/onboarding_wizard.py`, `ui/permissions_card.py`, `ui/animation.py`, and `ui/onboarding_wizard_windows.py`.
+- Avoided the already dirty prompt/permissions/vocabulary/settings files and their related tests.
+- Focused on the shared daemon-to-frontend hot path in `pulsescribe_daemon.py`.
+
+Current weaknesses reviewed
+- `pulsescribe_daemon.py`: duplicate `(state, text)` updates still walked through the daemon UI path and dispatched to both menu bar and overlay even when nothing visible changed.
+- `pulsescribe_daemon.py`: result polling stayed at the most aggressive interval even after the run had left the audio-hot path and was simply waiting for worker status or transcript completion.
+
+Changes in this pass
+- `pulsescribe_daemon.py`
+  Added a small last-UI-payload guard so unchanged state/text updates now return before logging and UI dispatch work.
+- `pulsescribe_daemon.py`
+  Split result polling into state-aware intervals: fast for listening/recording, slower for loading/transcribing/refining, slowest for idle-like states.
+- `pulsescribe_daemon.py`
+  Added a light interim-poll backoff so stable recording periods poll the interim file less aggressively until new text arrives again.
+- Tests
+  Added regression coverage for duplicate UI-update suppression, same-state text-change handling, result-timer rescheduling, and interim-poll backoff after repeated unchanged polls.
+
+Why this helps
+- High-frequency recording and interim flows now avoid redundant main-thread work when the effective UI payload is unchanged.
+- The daemon no longer wakes the main loop as aggressively once it has left the real-time audio path, which reduces background CPU churn during transcribing/refining waits.
+
+Validation
+- `pytest tests/test_daemon_mode.py tests/test_daemon_interim_polling.py tests/test_local_feedback.py tests/test_menubar.py -q`
+- `python -m py_compile pulsescribe_daemon.py tests/test_daemon_mode.py tests/test_daemon_interim_polling.py`
+- `ruff check pulsescribe_daemon.py tests/test_daemon_mode.py tests/test_daemon_interim_polling.py`
+
+Next worthwhile areas
+- `pulsescribe_daemon.py` interim polling: the file-based interim reader still wakes on a fixed cadence and can likely adopt a similar state-aware/backoff strategy.
+- `ui/menubar.py`: recording preview truncation is already deduped at the title level, but a daemon-side preview-signature shortcut could trim some remaining string work before the menu bar path.
+- `ui/overlay_pyside6.py` and `ui/overlay_windows.py`: direct interim updates plus fallback file polling are still likely the next cross-platform high-frequency UI cost once the daemon path is cheaper.
+
 Performance work log - 2026-04-09 (macOS onboarding permission snapshot reuse)
 
 Performance work log - 2026-04-09 (shared animation frame cache + Windows onboarding dedupe)

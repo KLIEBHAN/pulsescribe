@@ -97,6 +97,12 @@ emergency_log("Imports successful")
 # 150ms ist schnell genug für responsive UX, aber filtert Auto-Repeat und Doppelklicks
 DEBOUNCE_INTERVAL = 0.15
 INTERIM_POLL_MAX_CHARS = 512
+INTERIM_POLL_INTERVAL_ACTIVE = 0.2
+INTERIM_POLL_INTERVAL_IDLE = 0.35
+INTERIM_POLL_IDLE_THRESHOLD = 3
+RESULT_POLL_INTERVAL_ACTIVE = 0.03
+RESULT_POLL_INTERVAL_BUSY = 0.06
+RESULT_POLL_INTERVAL_IDLE = 0.12
 logger = logging.getLogger("pulsescribe")
 
 # =============================================================================
@@ -175,8 +181,13 @@ class PulseScribeDaemon:
 
         # NSTimer für Result-Polling und Interim-Polling
         self._result_timer = None
+        self._result_timer_interval_seconds = None
+        self._result_timer_activity_mode = "idle"
         self._interim_timer = None
+        self._interim_timer_interval_seconds = None
         self._last_interim_mtime = 0.0
+        self._interim_idle_ticks = 0
+        self._last_ui_state_payload: tuple[AppState, str | None] | None = None
         # Watchdog-Timer: Verhindert hängendes Overlay bei Worker-Problemen
         self._transcribing_watchdog = None
         # Timer für verzögerten ERROR→IDLE Reset
@@ -659,7 +670,16 @@ class PulseScribeDaemon:
         # Atomares Read-Modify-Write mit explizitem Lock
         with self._state_lock:
             prev_state = self.__current_state
+            previous_ui_payload = self._last_ui_state_payload
             self.__current_state = state
+            next_ui_payload = (state, text)
+            should_update_ui = previous_ui_payload != next_ui_payload
+            if should_update_ui:
+                self._last_ui_state_payload = next_ui_payload
+
+        if not should_update_ui:
+            return
+
         logger.debug(
             f"State: {prev_state.value} → {state.value}"
             + (f" text={redacted_text_summary(text)}" if text else "")
@@ -1473,14 +1493,34 @@ class PulseScribeDaemon:
         Verwendet weakref um Circular References zu vermeiden:
         NSTimer → Block → self → NSTimer würde Memory-Leak verursachen.
         """
-        from Foundation import NSTimer  # type: ignore[import-not-found]
+        if self._interim_timer is not None:
+            self._update_interim_timer_interval()
+            return
 
         self._last_interim_mtime = 0.0
+        self._interim_idle_ticks = 0
+        self._schedule_interim_timer(INTERIM_POLL_INTERVAL_ACTIVE)
+
+    def _desired_interim_poll_interval(self) -> float:
+        """Verlangsamt Dateipolling leicht, wenn sich Interim-Inhalte stabilisieren."""
+        if self._interim_idle_ticks >= INTERIM_POLL_IDLE_THRESHOLD:
+            return INTERIM_POLL_INTERVAL_IDLE
+        return INTERIM_POLL_INTERVAL_ACTIVE
+
+    def _schedule_interim_timer(self, interval: float) -> None:
+        """Plant den Interim-Dateipoller mit dem gewünschten Intervall."""
+        from Foundation import NSTimer  # type: ignore[import-not-found]
+
         weak_self = weakref.ref(self)
+        self._interim_timer_interval_seconds = interval
 
         def poll_interim(_timer) -> None:
             daemon = weak_self()
             if daemon is None:
+                try:
+                    _timer.invalidate()
+                except Exception:
+                    pass
                 return
             if daemon._current_state != AppState.RECORDING:
                 return
@@ -1488,6 +1528,7 @@ class PulseScribeDaemon:
                 mtime = INTERIM_FILE.stat().st_mtime
                 if mtime > daemon._last_interim_mtime:
                     daemon._last_interim_mtime = mtime
+                    daemon._interim_idle_ticks = 0
                     interim_text = read_file_tail_text(
                         INTERIM_FILE,
                         max_chars=INTERIM_POLL_MAX_CHARS,
@@ -1495,20 +1536,48 @@ class PulseScribeDaemon:
                     ).strip()
                     if interim_text:
                         daemon._update_state(AppState.RECORDING, interim_text)
+                else:
+                    daemon._interim_idle_ticks += 1
             except FileNotFoundError:
-                pass
+                daemon._interim_idle_ticks += 1
             except OSError:
-                pass
+                daemon._interim_idle_ticks += 1
+            finally:
+                daemon._update_interim_timer_interval()
 
         self._interim_timer = NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
-            0.2, True, poll_interim
+            interval, True, poll_interim
         )
+
+    def _update_interim_timer_interval(self) -> None:
+        """Passt das Polling-Intervall an, sobald Interim-Änderungen ausbleiben."""
+        desired_interval = self._desired_interim_poll_interval()
+        if (
+            self._interim_timer is None
+            or self._interim_timer_interval_seconds == desired_interval
+        ):
+            return
+
+        current_timer = self._interim_timer
+        self._interim_timer = None
+        try:
+            current_timer.invalidate()
+        except Exception:
+            pass
+        self._schedule_interim_timer(desired_interval)
+
+    def _reset_interim_polling_state(self) -> None:
+        """Setzt gecachten Zustand des Interim-Pollers zurück."""
+        self._last_interim_mtime = 0.0
+        self._interim_idle_ticks = 0
+        self._interim_timer_interval_seconds = None
 
     def _stop_interim_polling(self) -> None:
         """Stoppt Interim-Polling."""
         if self._interim_timer:
             self._interim_timer.invalidate()
             self._interim_timer = None
+        self._reset_interim_polling_state()
 
     def _on_audio_level(
         self,
@@ -2005,13 +2074,45 @@ class PulseScribeDaemon:
         Verwendet weakref um Circular References zu vermeiden:
         NSTimer → Block → self → NSTimer würde Memory-Leak verursachen.
         """
+        if self._result_timer is not None:
+            self._update_result_timer_interval()
+            return
+
+        self._schedule_result_timer(self._result_poll_interval())
+
+    def _result_poll_interval(self) -> float:
+        """Wählt ein Intervall passend zur aktuellen UI-Relevanz des Workers."""
+        state = self._current_state
+        if state in (AppState.LISTENING, AppState.RECORDING):
+            return RESULT_POLL_INTERVAL_ACTIVE
+        if state in (AppState.LOADING, AppState.TRANSCRIBING, AppState.REFINING):
+            return RESULT_POLL_INTERVAL_BUSY
+        return RESULT_POLL_INTERVAL_IDLE
+
+    def _result_poll_activity_mode(self) -> str:
+        """Klassifiziert das Result-Polling grob nach Lastprofil."""
+        state = self._current_state
+        if state in (AppState.LISTENING, AppState.RECORDING):
+            return "active"
+        if state in (AppState.LOADING, AppState.TRANSCRIBING, AppState.REFINING):
+            return "busy"
+        return "idle"
+
+    def _schedule_result_timer(self, interval: float) -> None:
+        """Plant den Result-Poller mit dem gewünschten Intervall."""
         from Foundation import NSTimer  # type: ignore[import-not-found]
 
         weak_self = weakref.ref(self)
+        self._result_timer_interval_seconds = interval
+        self._result_timer_activity_mode = self._result_poll_activity_mode()
 
         def check_result(_timer) -> None:
             daemon = weak_self()
             if daemon is None:
+                try:
+                    _timer.invalidate()
+                except Exception:
+                    pass
                 return
 
             # Queue drainen um Backlog zu vermeiden (z.B. hunderte Audio-Level Messages)
@@ -2068,17 +2169,42 @@ class PulseScribeDaemon:
 
             except queue.Empty:
                 pass
+            finally:
+                daemon._update_result_timer_interval()
 
-        # Etwas schnelleres Polling für direkteres UI-Feedback (Wellen/Level)
         self._result_timer = NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
-            0.03, True, check_result
+            interval, True, check_result
         )
+
+    def _update_result_timer_interval(self) -> None:
+        """Reduziert Timer-Wakeups, sobald der Worker nicht mehr im Audio-Hotpath ist."""
+        desired_interval = self._result_poll_interval()
+        desired_mode = self._result_poll_activity_mode()
+        if (
+            self._result_timer is None
+            or self._result_timer_interval_seconds == desired_interval
+            and self._result_timer_activity_mode == desired_mode
+        ):
+            self._result_timer_activity_mode = desired_mode
+            return
+
+        current_timer = self._result_timer
+        self._result_timer = None
+        try:
+            current_timer.invalidate()
+        except Exception:
+            pass
+
+        self._result_timer_activity_mode = desired_mode
+        self._schedule_result_timer(desired_interval)
 
     def _stop_result_polling(self) -> None:
         """Stoppt NSTimer."""
         if self._result_timer:
             self._result_timer.invalidate()
             self._result_timer = None
+        self._result_timer_interval_seconds = None
+        self._result_timer_activity_mode = "idle"
 
     def _start_transcribing_watchdog(self) -> None:
         """Startet Watchdog-Timer für TRANSCRIBING-State.
