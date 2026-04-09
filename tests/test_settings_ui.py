@@ -663,6 +663,7 @@ class TestWelcomeLogsSegmentSwitch:
         ctrl._transcripts_container = _FakeContainer()
         ctrl._refresh_logs = MagicMock()
         ctrl._refresh_transcripts = MagicMock()
+        ctrl._active_logs_segment = None
 
         ctrl._switch_logs_segment(0)
 
@@ -678,6 +679,7 @@ class TestWelcomeLogsSegmentSwitch:
         ctrl._refresh_logs = MagicMock()
         ctrl._refresh_transcripts = MagicMock()
         ctrl._transcripts_view_seen = False
+        ctrl._active_logs_segment = None
 
         ctrl._switch_logs_segment(1)
 
@@ -695,6 +697,7 @@ class TestWelcomeLogsSegmentSwitch:
         ctrl._refresh_logs = MagicMock()
         ctrl._refresh_transcripts = MagicMock()
         ctrl._transcripts_view_seen = True
+        ctrl._active_logs_segment = None
 
         ctrl._switch_logs_segment(1)
 
@@ -709,11 +712,27 @@ class TestWelcomeLogsSegmentSwitch:
         ctrl._refresh_logs = MagicMock()
         ctrl._refresh_transcripts = MagicMock()
         ctrl._transcripts_view_seen = False
+        ctrl._active_logs_segment = None
 
         ctrl._switch_logs_segment(1)
 
         ctrl._ensure_transcripts_view_built.assert_called_once_with()
         ctrl._refresh_transcripts.assert_called_once_with(scroll_to_bottom=True)
+
+    def test_switch_logs_segment_skips_refresh_for_same_segment(self):
+        ctrl = WelcomeController.__new__(WelcomeController)
+        ctrl._logs_container = _FakeContainer()
+        ctrl._transcripts_container = _FakeContainer()
+        ctrl._refresh_logs = MagicMock()
+        ctrl._refresh_transcripts = MagicMock()
+        ctrl._active_logs_segment = 0
+
+        ctrl._switch_logs_segment(0)
+
+        ctrl._refresh_logs.assert_not_called()
+        ctrl._refresh_transcripts.assert_not_called()
+        assert ctrl._logs_container.hidden_calls == []
+        assert ctrl._transcripts_container.hidden_calls == []
 
     def test_logs_view_active_when_segment_is_logs(self):
         ctrl = WelcomeController.__new__(WelcomeController)
@@ -978,9 +997,11 @@ class _FakeTranscriptsTextView:
 class _FakeTranscriptsCountLabel:
     def __init__(self):
         self.value = ""
+        self.calls = 0
 
     def setStringValue_(self, value: str):
         self.value = value
+        self.calls += 1
 
 
 class TestWelcomeTranscriptsRefreshBehavior:
@@ -1094,6 +1115,18 @@ class TestWelcomeTranscriptsRefreshBehavior:
         assert ctrl._transcripts_count_label.value == "5 entries"
         ctrl._scroll_transcripts_to_bottom.assert_not_called()
         ctrl._restore_transcripts_scroll_position.assert_not_called()
+
+    def test_refresh_transcripts_count_label_skips_duplicate_updates(self):
+        ctrl = WelcomeController.__new__(WelcomeController)
+        ctrl._transcripts_count_label = _FakeTranscriptsCountLabel()
+        ctrl._last_transcripts_count_text = None
+
+        ctrl._update_transcripts_count_label(5)
+        ctrl._update_transcripts_count_label(5)
+        ctrl._update_transcripts_count_label(1)
+
+        assert ctrl._transcripts_count_label.calls == 2
+        assert ctrl._transcripts_count_label.value == "1 entry"
 
     def test_refresh_transcripts_preserves_scroll_position_when_not_near_bottom(
         self, monkeypatch
@@ -1227,6 +1260,28 @@ class TestWelcomeLogsRefreshBehavior:
         assert ctrl._logs_text_view.set_calls == []
         ctrl._scroll_logs_to_bottom.assert_not_called()
         ctrl._restore_logs_scroll_position.assert_not_called()
+
+    def test_refresh_logs_can_scroll_to_bottom_without_reloading(self, monkeypatch):
+        import ui.welcome as welcome_mod
+
+        ctrl = WelcomeController.__new__(WelcomeController)
+        ctrl._logs_text_view = _FakeTranscriptsTextView("cached logs", doc_height=600)
+        ctrl._logs_scroll_view = _FakeTranscriptsScrollView(
+            _FakeClipView(y=100, height=240)
+        )
+        ctrl._last_logs_text = "cached logs"
+        ctrl._last_logs_signature = (1, 2)
+        ctrl._get_logs_text = MagicMock(
+            side_effect=AssertionError("log tail should not be read")
+        )
+        ctrl._scroll_logs_to_bottom = MagicMock()
+
+        monkeypatch.setattr(welcome_mod, "get_file_signature", lambda _path: (1, 2))
+
+        ctrl._refresh_logs(scroll_to_bottom=True)
+
+        ctrl._get_logs_text.assert_not_called()
+        ctrl._scroll_logs_to_bottom.assert_called_once_with()
 
     def test_refresh_logs_updates_signature_even_when_text_unchanged(self, monkeypatch):
         import ui.welcome as welcome_mod

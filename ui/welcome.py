@@ -21,7 +21,6 @@ from utils.log_tail import (
 from utils.presets import LOCAL_PRESET_BASE, LOCAL_PRESETS, LOCAL_PRESET_OPTIONS
 from utils.preferences import (
     apply_hotkey_setting,
-    get_api_key,
     get_env_setting,
     get_show_welcome_on_startup,
     read_env_file,
@@ -155,6 +154,24 @@ def _set_hidden_if_changed(view, hidden: bool) -> None:
         pass
 
 
+def _set_string_value_if_changed(field, value: str) -> bool:
+    """Avoid redundant AppKit text updates when the rendered text is unchanged."""
+    if field is None:
+        return False
+    current_value = getattr(field, "stringValue", None)
+    if callable(current_value):
+        try:
+            if str(current_value()) == value:
+                return False
+        except Exception:
+            pass
+    try:
+        field.setStringValue_(value)
+        return True
+    except Exception:
+        return False
+
+
 def _build_setup_hotkey_info(
     toggle_hotkey: str | None,
     hold_hotkey: str | None,
@@ -263,9 +280,11 @@ class WelcomeController:
         self._logs_segment_handler = None
         self._logs_container = None
         self._transcripts_container = None
+        self._active_logs_segment = 0
         self._transcripts_text_view = None
         self._transcripts_scroll_view = None
         self._transcripts_count_label = None
+        self._last_transcripts_count_text: str | None = None
         self._transcripts_clear_handler = None
         self._mode_changed_handler = None
         self._save_btn = None
@@ -321,6 +340,12 @@ class WelcomeController:
             (cache.get("PULSESCRIBE_TOGGLE_HOTKEY") or "").strip(),
             (cache.get("PULSESCRIBE_HOLD_HOTKEY") or "").strip(),
         )
+
+    def _get_cached_env_setting(self, key: str) -> str | None:
+        cache = getattr(self, "_env_settings_cache", None)
+        if cache is not None:
+            return cache.get(key)
+        return get_env_setting(key)
 
     def _setup_edit_menu(self) -> None:
         """Erstellt Edit-Menü für CMD+V/C/X/A in TextViews.
@@ -902,8 +927,8 @@ class WelcomeController:
         parent_view = parent_view or self._content_view
 
         hotkey_info = _build_setup_hotkey_info(
-            get_env_setting("PULSESCRIBE_TOGGLE_HOTKEY"),
-            get_env_setting("PULSESCRIBE_HOLD_HOTKEY"),
+            self._get_cached_env_setting("PULSESCRIBE_TOGGLE_HOTKEY"),
+            self._get_cached_env_setting("PULSESCRIBE_HOLD_HOTKEY"),
             self.hotkey,
         )
 
@@ -1146,7 +1171,7 @@ class WelcomeController:
         field.setPlaceholderString_("Enter API key...")
         field.setFont_(NSFont.systemFontOfSize_(11))
 
-        existing_key = get_api_key(key_name) or os.getenv(key_name)
+        existing_key = self._get_cached_env_setting(key_name) or os.getenv(key_name)
         if existing_key:
             field.setStringValue_(existing_key)
 
@@ -1225,7 +1250,9 @@ class WelcomeController:
         for mode in MODE_OPTIONS:
             mode_popup.addItemWithTitle_(mode)
         current_mode = (
-            get_env_setting("PULSESCRIBE_MODE") or self.config.get("mode") or "deepgram"
+            self._get_cached_env_setting("PULSESCRIBE_MODE")
+            or self.config.get("mode")
+            or "deepgram"
         )
         if current_mode in MODE_OPTIONS:
             mode_popup.selectItemWithTitle_(current_mode)
@@ -1253,7 +1280,7 @@ class WelcomeController:
         for backend in LOCAL_BACKEND_OPTIONS:
             local_backend_popup.addItemWithTitle_(backend)
         current_backend = normalize_local_backend(
-            get_env_setting("PULSESCRIBE_LOCAL_BACKEND")
+            self._get_cached_env_setting("PULSESCRIBE_LOCAL_BACKEND")
         )
         if current_backend not in LOCAL_BACKEND_OPTIONS:
             current_backend = "auto"
@@ -1282,7 +1309,9 @@ class WelcomeController:
         local_model_popup.setFont_(NSFont.systemFontOfSize_(11))
         for m in LOCAL_MODEL_OPTIONS:
             local_model_popup.addItemWithTitle_(m)
-        current_local_model = get_env_setting("PULSESCRIBE_LOCAL_MODEL") or "default"
+        current_local_model = (
+            self._get_cached_env_setting("PULSESCRIBE_LOCAL_MODEL") or "default"
+        )
         if current_local_model not in LOCAL_MODEL_OPTIONS and current_local_model:
             local_model_popup.addItemWithTitle_(current_local_model)
         local_model_popup.selectItemWithTitle_(current_local_model)
@@ -1299,7 +1328,7 @@ class WelcomeController:
         for lang in LANGUAGE_OPTIONS:
             lang_popup.addItemWithTitle_(lang)
         current_lang = (
-            get_env_setting("PULSESCRIBE_LANGUAGE")
+            self._get_cached_env_setting("PULSESCRIBE_LANGUAGE")
             or self.config.get("language")
             or "auto"
         )
@@ -1413,7 +1442,9 @@ class WelcomeController:
         for d in DEVICE_OPTIONS:
             device_popup.addItemWithTitle_(d)
         current_device = (
-            (get_env_setting("PULSESCRIBE_DEVICE") or "auto").strip().lower()
+            (self._get_cached_env_setting("PULSESCRIBE_DEVICE") or "auto")
+            .strip()
+            .lower()
         )
         if current_device not in DEVICE_OPTIONS:
             current_device = "auto"
@@ -1430,7 +1461,7 @@ class WelcomeController:
         warmup_popup.setFont_(NSFont.systemFontOfSize_(11))
         for v in WARMUP_OPTIONS:
             warmup_popup.addItemWithTitle_(v)
-        warmup_env = get_env_setting("PULSESCRIBE_LOCAL_WARMUP")
+        warmup_env = self._get_cached_env_setting("PULSESCRIBE_LOCAL_WARMUP")
         warmup_value = (warmup_env or "auto").strip().lower()
         if warmup_value not in WARMUP_OPTIONS:
             warmup_value = "auto"
@@ -1476,7 +1507,9 @@ class WelcomeController:
         )
         beam_field.setFont_(NSFont.systemFontOfSize_(11))
         beam_field.setPlaceholderString_("default")
-        beam_field.setStringValue_(get_env_setting("PULSESCRIBE_LOCAL_BEAM_SIZE") or "")
+        beam_field.setStringValue_(
+            self._get_cached_env_setting("PULSESCRIBE_LOCAL_BEAM_SIZE") or ""
+        )
         self._beam_size_field = beam_field
         parent_view.addSubview_(beam_field)
         current_y -= row_height
@@ -1488,7 +1521,9 @@ class WelcomeController:
         )
         best_field.setFont_(NSFont.systemFontOfSize_(11))
         best_field.setPlaceholderString_("default")
-        best_field.setStringValue_(get_env_setting("PULSESCRIBE_LOCAL_BEST_OF") or "")
+        best_field.setStringValue_(
+            self._get_cached_env_setting("PULSESCRIBE_LOCAL_BEST_OF") or ""
+        )
         self._best_of_field = best_field
         parent_view.addSubview_(best_field)
         current_y -= row_height
@@ -1501,7 +1536,7 @@ class WelcomeController:
         temp_field.setFont_(NSFont.systemFontOfSize_(11))
         temp_field.setPlaceholderString_("e.g. 0.0 or 0.0,0.2,0.4")
         temp_field.setStringValue_(
-            get_env_setting("PULSESCRIBE_LOCAL_TEMPERATURE") or ""
+            self._get_cached_env_setting("PULSESCRIBE_LOCAL_TEMPERATURE") or ""
         )
         self._temperature_field = temp_field
         parent_view.addSubview_(temp_field)
@@ -1515,7 +1550,7 @@ class WelcomeController:
         compute_field.setFont_(NSFont.systemFontOfSize_(11))
         compute_field.setPlaceholderString_("default (e.g. int8, int8_float16)")
         compute_field.setStringValue_(
-            get_env_setting("PULSESCRIBE_LOCAL_COMPUTE_TYPE") or ""
+            self._get_cached_env_setting("PULSESCRIBE_LOCAL_COMPUTE_TYPE") or ""
         )
         self._compute_type_field = compute_field
         parent_view.addSubview_(compute_field)
@@ -1529,7 +1564,7 @@ class WelcomeController:
         threads_field.setFont_(NSFont.systemFontOfSize_(11))
         threads_field.setPlaceholderString_("0 = auto")
         threads_field.setStringValue_(
-            get_env_setting("PULSESCRIBE_LOCAL_CPU_THREADS") or ""
+            self._get_cached_env_setting("PULSESCRIBE_LOCAL_CPU_THREADS") or ""
         )
         self._cpu_threads_field = threads_field
         parent_view.addSubview_(threads_field)
@@ -1543,7 +1578,7 @@ class WelcomeController:
         workers_field.setFont_(NSFont.systemFontOfSize_(11))
         workers_field.setPlaceholderString_("1")
         workers_field.setStringValue_(
-            get_env_setting("PULSESCRIBE_LOCAL_NUM_WORKERS") or ""
+            self._get_cached_env_setting("PULSESCRIBE_LOCAL_NUM_WORKERS") or ""
         )
         self._num_workers_field = workers_field
         parent_view.addSubview_(workers_field)
@@ -1607,7 +1642,7 @@ class WelcomeController:
         )
         batch_slider.setMinValue_(4)
         batch_slider.setMaxValue_(24)
-        current_batch = get_env_setting("PULSESCRIBE_LIGHTNING_BATCH_SIZE")
+        current_batch = self._get_cached_env_setting("PULSESCRIBE_LIGHTNING_BATCH_SIZE")
         try:
             batch_val = int(current_batch) if current_batch else 12
         except ValueError:
@@ -1653,7 +1688,9 @@ class WelcomeController:
         quant_popup.addItemWithTitle_("8bit")
         quant_popup.addItemWithTitle_("4bit (smallest memory)")
         current_quant = (
-            (get_env_setting("PULSESCRIBE_LIGHTNING_QUANT") or "").strip().lower()
+            (self._get_cached_env_setting("PULSESCRIBE_LIGHTNING_QUANT") or "")
+            .strip()
+            .lower()
         )
         if current_quant == "4bit":
             quant_popup.selectItemAtIndex_(2)
@@ -1719,7 +1756,7 @@ class WelcomeController:
         refine_checkbox.setButtonType_(NSButtonTypeSwitch)
         refine_checkbox.setTitle_("Enable LLM post-processing")
         refine_checkbox.setFont_(NSFont.systemFontOfSize_(11))
-        refine_enabled = get_env_setting("PULSESCRIBE_REFINE")
+        refine_enabled = self._get_cached_env_setting("PULSESCRIBE_REFINE")
         if refine_enabled is None:
             refine_enabled = self.config.get("refine", False)
         else:
@@ -1737,7 +1774,7 @@ class WelcomeController:
         clipboard_checkbox.setButtonType_(NSButtonTypeSwitch)
         clipboard_checkbox.setTitle_("Restore after paste")
         clipboard_checkbox.setFont_(NSFont.systemFontOfSize_(11))
-        clipboard_restore = get_env_setting("PULSESCRIBE_CLIPBOARD_RESTORE")
+        clipboard_restore = self._get_cached_env_setting("PULSESCRIBE_CLIPBOARD_RESTORE")
         clipboard_restore = (
             bool(parse_bool(clipboard_restore)) if clipboard_restore else False
         )
@@ -1755,7 +1792,7 @@ class WelcomeController:
         for provider in REFINE_PROVIDER_OPTIONS:
             provider_popup.addItemWithTitle_(provider)
         current_provider = (
-            get_env_setting("PULSESCRIBE_REFINE_PROVIDER")
+            self._get_cached_env_setting("PULSESCRIBE_REFINE_PROVIDER")
             or self.config.get("refine_provider")
             or "groq"
         )
@@ -1773,7 +1810,7 @@ class WelcomeController:
         model_field.setFont_(NSFont.systemFontOfSize_(11))
         model_field.setPlaceholderString_("e.g. openai/gpt-oss-120b")
         current_model = (
-            get_env_setting("PULSESCRIBE_REFINE_MODEL")
+            self._get_cached_env_setting("PULSESCRIBE_REFINE_MODEL")
             or self.config.get("refine_model")
             or "openai/gpt-oss-120b"
         )
@@ -1820,7 +1857,7 @@ class WelcomeController:
         rtf_checkbox.setTitle_("Show RTF after transcription")
         rtf_checkbox.setFont_(NSFont.systemFontOfSize_(11))
         # RTF default: deaktiviert (nur wenn explizit "true" gesetzt)
-        rtf_setting = get_env_setting("PULSESCRIBE_SHOW_RTF")
+        rtf_setting = self._get_cached_env_setting("PULSESCRIBE_SHOW_RTF")
         rtf_enabled = rtf_setting is not None and rtf_setting.lower() in (
             "true",
             "1",
@@ -2274,6 +2311,7 @@ class WelcomeController:
         )
         self._logs_segment_control = segment
         self._logs_segment_handler = segment_handler
+        self._active_logs_segment = 0
         parent_view.addSubview_(segment)
 
         # Content area dimensions
@@ -2395,7 +2433,7 @@ class WelcomeController:
         transcripts_container = NSView.alloc().initWithFrame_(
             NSMakeRect(base_x, content_y, content_width, content_height)
         )
-        transcripts_container.setHidden_(True)  # Initially hidden
+        _set_hidden_if_changed(transcripts_container, True)
         self._transcripts_container = transcripts_container
         self._transcripts_view_built = False
         self._transcripts_layout_metrics = {
@@ -2521,6 +2559,7 @@ class WelcomeController:
             "_pending_transcripts_entries",
             [],
         )
+        self._last_transcripts_count_text = None
         self._update_transcripts_count_label(entry_count)
         t_scroll.setDocumentView_(t_text_view)
         container.addSubview_(t_scroll)
@@ -2775,9 +2814,14 @@ class WelcomeController:
         """Aktualisiert den Label-Text mit der aktuellen Eintragszahl."""
         if self._transcripts_count_label:
             try:
-                self._transcripts_count_label.setStringValue_(
-                    f"{entry_count} entr{'y' if entry_count == 1 else 'ies'}"
-                )
+                label_text = f"{entry_count} entr{'y' if entry_count == 1 else 'ies'}"
+                if getattr(self, "_last_transcripts_count_text", None) == label_text:
+                    return
+                if _set_string_value_if_changed(
+                    self._transcripts_count_label,
+                    label_text,
+                ):
+                    self._last_transcripts_count_text = label_text
             except Exception:
                 pass
 
@@ -2807,14 +2851,17 @@ class WelcomeController:
     def _switch_logs_segment(self, segment_index: int) -> None:
         """Wechselt zwischen Logs und Transcripts Ansicht."""
         if self._logs_container and self._transcripts_container:
+            if getattr(self, "_active_logs_segment", None) == segment_index:
+                return
+            self._active_logs_segment = segment_index
             if segment_index == 0:  # Logs
-                self._logs_container.setHidden_(False)
-                self._transcripts_container.setHidden_(True)
+                _set_hidden_if_changed(self._logs_container, False)
+                _set_hidden_if_changed(self._transcripts_container, True)
                 self._refresh_logs(scroll_to_bottom=True)
             else:  # Transcripts
                 self._ensure_transcripts_view_built()
-                self._logs_container.setHidden_(True)
-                self._transcripts_container.setHidden_(False)
+                _set_hidden_if_changed(self._logs_container, True)
+                _set_hidden_if_changed(self._transcripts_container, False)
                 should_scroll_to_bottom = not getattr(
                     self, "_transcripts_view_seen", False
                 )
@@ -2983,6 +3030,8 @@ class WelcomeController:
                 signature = get_file_signature(LOG_FILE)
                 previous_signature = getattr(self, "_last_logs_signature", None)
                 if signature is not None and signature == previous_signature:
+                    if scroll_to_bottom:
+                        self._scroll_logs_to_bottom()
                     return
 
                 if self._try_append_logs_delta(
@@ -3728,10 +3777,10 @@ class WelcomeController:
             if status is None or provider not in api_key_states:
                 continue
             if api_key_states[provider]:
-                status.setStringValue_("✓")
+                _set_string_value_if_changed(status, "✓")
                 status.setTextColor_(_get_color(51, 217, 178))
             else:
-                status.setStringValue_("✗")
+                _set_string_value_if_changed(status, "✗")
                 status.setTextColor_(_get_color(255, 82, 82, 0.7))
 
         # Vocabulary / Keywords

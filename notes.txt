@@ -347,3 +347,43 @@ Next worthwhile areas
 - `ui/welcome.py`: logs/transcripts auto-refresh and segment switching still look like the next macOS/frontend hotspot outside the most recent commit boundaries.
 - `ui/settings_windows.py`: if traces still show expensive open-time work, the next pass should target prompt/vocabulary/log tab initialization and timer backoff rather than more field-level diffs.
 - `ui/overlay.py`: the macOS overlay animation path remains a likely long-session CPU hotspot once it is the oldest untouched area again.
+
+Performance work log - 2026-04-09 (macOS welcome logs + cached settings pass)
+
+Scope
+- Left the last two commit areas untouched: the recent `ui/settings_windows.py` load/preset optimization and the note-only follow-up commit stayed out of scope.
+- Avoided `utils/custom_prompts.py` again because the worktree still contains unrelated local edits there.
+- Focused on the remaining macOS/frontend hotspot in `ui/welcome.py`, especially the Logs/Transcripts tab and repeated settings initialization reads.
+
+Current weaknesses reviewed
+- `ui/welcome.py`: the Logs/Transcripts segmented control always replayed hide/show work and refresh logic even when the user reselected the already-active segment.
+- `ui/welcome.py`: the logs view skipped the explicit scroll-to-bottom request when the log signature was unchanged, which kept re-opened log views from reusing the cheap cached path for the expected UI result.
+- `ui/welcome.py`: the transcript count label was reassigned on every refresh even when the count text had not changed.
+- `ui/welcome.py`: heavy welcome tab builders still called `get_env_setting(...)` repeatedly even though the controller already maintains an env snapshot cache for the current window session.
+
+Changes in this pass
+- `ui/welcome.py`
+  Added a small `stringValue` diff helper and used it for transcript count/status updates so unchanged text widgets are left alone.
+- `ui/welcome.py`
+  Tracked the active Logs/Transcripts segment and skipped no-op segment switches, while routing container visibility changes through the existing hidden-state guard.
+- `ui/welcome.py`
+  Honored `scroll_to_bottom=True` on the unchanged-log-signature fast path so the logs panel can satisfy repeat-open behavior without rereading the file.
+- `ui/welcome.py`
+  Routed the welcome setup/provider/advanced/refine tab initialization reads through the controller's existing env cache instead of repeated helper lookups.
+- Tests
+  Added regression coverage for no-op segment reselection, transcript count-label deduping, and cached log scrolling without a reload.
+
+Why this helps
+- Re-clicking the active Logs/Transcripts segment no longer triggers redundant container mutations and refresh work on a visible tab with potentially large text content.
+- The logs panel can now reuse the cached-signature fast path while still jumping to the latest tail position, which improves perceived responsiveness on repeated openings.
+- Repeated transcript refreshes do less widget churn, and heavy welcome tab construction now reuses the already-loaded env snapshot more consistently.
+
+Validation
+- `pytest tests/test_settings_ui.py -q`
+- `python -m py_compile ui/welcome.py tests/test_settings_ui.py`
+- `ruff check ui/welcome.py tests/test_settings_ui.py`
+
+Next worthwhile areas
+- `ui/overlay.py`: the macOS overlay animation timers remain the clearest long-session CPU hotspot outside the current commit boundary.
+- `ui/welcome.py`: prompt/vocabulary editors still do non-trivial text/session work on save and would benefit from a similar no-op/status-dedupe pass once the dirty `utils/custom_prompts.py` worktree is resolved.
+- `ui/menubar.py`: the recording-title updates are already cheap, but the diagnostics/export actions are the next macOS surface to profile if menu interaction still feels sticky.
