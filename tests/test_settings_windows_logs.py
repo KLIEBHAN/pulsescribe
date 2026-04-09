@@ -106,6 +106,27 @@ class _FakeLogsViewer:
         self.set_plain_text_calls.append(text)
 
 
+class _FakeGrowingLogsViewer(_FakeLogsViewer):
+    def __init__(
+        self,
+        text: str,
+        *,
+        scroll_value: int,
+        scroll_maximum: int,
+        next_scroll_maximum: int,
+    ):
+        super().__init__(
+            text,
+            scroll_value=scroll_value,
+            scroll_maximum=scroll_maximum,
+        )
+        self._next_scroll_maximum = next_scroll_maximum
+
+    def setPlainText(self, text: str) -> None:
+        super().setPlainText(text)
+        self._scrollbar._maximum = self._next_scroll_maximum
+
+
 def test_open_logs_folder_selects_log_file_when_present(tmp_path, monkeypatch):
     import config
     import subprocess
@@ -334,6 +355,28 @@ def test_refresh_transcripts_reuses_cached_blocks_when_append_replaces_visible_t
     ]
 
 
+def test_try_append_transcripts_delta_skips_when_growth_exceeds_budget() -> None:
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._transcripts_viewer = _FakeLogsViewer("[2026-01-01 10:00:00] hello")
+    window._last_transcripts_text = "[2026-01-01 10:00:00] hello"
+    window._last_transcripts_signature = (1, 25)
+    window._last_transcripts_entries = [
+        {"timestamp": "2026-01-01T10:00:00", "text": "hello"}
+    ]
+    window._last_transcripts_blocks = ["[2026-01-01 10:00:00] hello"]
+
+    oversized_signature = (
+        2,
+        25 + settings_mod.INCREMENTAL_TRANSCRIPT_APPEND_MAX_BYTES + 1,
+    )
+
+    assert window._try_append_transcripts_delta(oversized_signature) is False
+    assert window._last_transcripts_signature == (1, 25)
+    assert window._last_transcripts_entries == [
+        {"timestamp": "2026-01-01T10:00:00", "text": "hello"}
+    ]
+
+
 def test_try_append_logs_delta_appends_only_new_text(tmp_path, monkeypatch):
     import config
 
@@ -352,6 +395,18 @@ def test_try_append_logs_delta_appends_only_new_text(tmp_path, monkeypatch):
     assert window._logs_viewer.text == full_text
     assert window._last_logs_text == full_text
     assert window._last_logs_signature == (2, len(full_text))
+
+
+def test_try_append_logs_delta_skips_when_file_size_does_not_grow() -> None:
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._logs_viewer = _FakeLogsViewer("line-1")
+    window._last_logs_text = "line-1"
+    window._last_logs_signature = (5, len("line-1"))
+
+    assert window._try_append_logs_delta((6, len("line"))) is False
+    assert window._logs_viewer.text == "line-1"
+    assert window._last_logs_text == "line-1"
+    assert window._last_logs_signature == (5, len("line-1"))
 
 
 def test_refresh_logs_skips_full_tail_read_when_incremental_append_succeeds(
@@ -382,6 +437,42 @@ def test_refresh_logs_skips_full_tail_read_when_incremental_append_succeeds(
     window._refresh_logs()
 
     assert append_calls == [(9, len(full_text))]
+
+
+def test_set_logs_text_if_changed_preserves_scroll_position_when_reading_older_lines() -> None:
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._logs_viewer = _FakeGrowingLogsViewer(
+        "line-1",
+        scroll_value=25,
+        scroll_maximum=100,
+        next_scroll_maximum=220,
+    )
+    window._last_logs_text = "line-1"
+
+    window._set_logs_text_if_changed("line-1\nline-2")
+
+    scrollbar = window._logs_viewer.verticalScrollBar()
+    assert window._logs_viewer.text == "line-1\nline-2"
+    assert scrollbar.value() == 25
+    assert window._last_logs_text == "line-1\nline-2"
+
+
+def test_set_transcripts_text_if_changed_keeps_view_pinned_to_bottom() -> None:
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._transcripts_viewer = _FakeGrowingLogsViewer(
+        "[10:00] hello",
+        scroll_value=95,
+        scroll_maximum=100,
+        next_scroll_maximum=260,
+    )
+    window._last_transcripts_text = "[10:00] hello"
+
+    window._set_transcripts_text_if_changed("[10:00] hello\n\n[10:01] world")
+
+    scrollbar = window._transcripts_viewer.verticalScrollBar()
+    assert window._transcripts_viewer.text == "[10:00] hello\n\n[10:01] world"
+    assert scrollbar.value() == 260
+    assert window._last_transcripts_text == "[10:00] hello\n\n[10:01] world"
 
 
 def test_update_logs_auto_refresh_state_stops_timer_when_window_not_visible():

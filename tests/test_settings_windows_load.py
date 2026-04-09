@@ -404,6 +404,65 @@ def test_load_vocabulary_force_reloads_even_when_signature_unchanged(monkeypatch
     assert window._vocab_status.text == "1 keywords loaded"
 
 
+def test_load_vocabulary_surfaces_validation_warnings(monkeypatch):
+    from utils import vocabulary as vocabulary_mod
+
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._vocab_editor = _FakeEditor("")
+    window._vocab_status = _FakeLabel()
+    window._vocabulary_loaded = False
+    window._last_vocabulary_signature = None
+
+    monkeypatch.setattr(settings_mod, "get_file_signature", lambda _path: (11, 22))
+    monkeypatch.setattr(
+        vocabulary_mod,
+        "load_vocabulary",
+        lambda: {"keywords": ["alpha", "beta"]},
+    )
+    monkeypatch.setattr(
+        vocabulary_mod,
+        "validate_vocabulary",
+        lambda: ["2 doppelte Keywords gefunden."],
+    )
+
+    window._load_vocabulary()
+
+    assert window._vocab_editor.value == "alpha\nbeta"
+    assert window._vocab_status.text == "⚠ 2 doppelte Keywords gefunden."
+
+
+def test_save_vocabulary_surfaces_saved_warning_summary(monkeypatch):
+    from utils import vocabulary as vocabulary_mod
+
+    saved_keywords: list[list[str]] = []
+
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._vocab_editor = _FakeEditor("alpha\nbeta\n")
+    window._vocab_status = _FakeLabel()
+    window._vocabulary_loaded = False
+    window._last_vocabulary_signature = None
+
+    monkeypatch.setattr(
+        vocabulary_mod,
+        "save_vocabulary",
+        lambda keywords: saved_keywords.append(list(keywords)),
+    )
+    monkeypatch.setattr(
+        vocabulary_mod,
+        "validate_vocabulary",
+        lambda: ["2 doppelte Keywords gefunden."],
+    )
+    monkeypatch.setattr(settings_mod, "get_file_signature", lambda _path: (33, 44))
+
+    window._save_vocabulary()
+
+    assert saved_keywords == [["alpha", "beta"]]
+    assert window._vocab_status.text == (
+        "✓ Saved (2 keywords) - ⚠ 2 doppelte Keywords gefunden."
+    )
+    assert window._last_vocabulary_signature == (33, 44)
+
+
 def test_load_settings_prefers_canonical_fp16_key(monkeypatch):
     values = {
         settings_mod.LOCAL_FP16_ENV_KEY: "false",

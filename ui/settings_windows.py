@@ -231,6 +231,44 @@ def _build_setup_how_to_text(toggle_hotkey: str | None, hold_hotkey: str | None)
     )
 
 
+def _get_incremental_append_start(
+    previous_signature: tuple[int, int] | None,
+    current_signature: tuple[int, int] | None,
+    *,
+    max_bytes: int,
+) -> int | None:
+    """Return the previous file size when a file only grew within the append budget."""
+    if previous_signature is None or current_signature is None or max_bytes <= 0:
+        return None
+
+    previous_size = int(previous_signature[1])
+    current_size = int(current_signature[1])
+    if current_size <= previous_size:
+        return None
+
+    if current_size - previous_size > max_bytes:
+        return None
+
+    return previous_size
+
+
+def _build_vocabulary_status(
+    *,
+    keyword_count: int,
+    warnings: list[str],
+    saved: bool,
+) -> tuple[str, str]:
+    """Build the user-facing vocabulary status message and color."""
+    if warnings:
+        warning_prefix = f"✓ Saved ({keyword_count} keywords) - " if saved else ""
+        return f"{warning_prefix}⚠ {'; '.join(warnings)}", "warning"
+
+    if saved:
+        return f"✓ Saved ({keyword_count} keywords)", "success"
+
+    return f"{keyword_count} keywords loaded", "text_secondary"
+
+
 def create_card(
     title: str | None = None, description: str | None = None
 ) -> tuple[QFrame, QVBoxLayout]:
@@ -300,6 +338,32 @@ def set_plain_text_if_changed(editor: QPlainTextEdit | None, text: str) -> bool:
 
     editor.setPlainText(text)
     return True
+
+
+def _set_scrolling_plain_text_if_changed(
+    viewer: QPlainTextEdit | None,
+    text: str,
+    *,
+    previous_text: str | None,
+) -> str | None:
+    """Update a scrolling text viewer while preserving the user's scroll intent."""
+    if viewer is None or text == previous_text:
+        return previous_text
+
+    scrollbar = viewer.verticalScrollBar()
+    previous_maximum = scrollbar.maximum()
+    previous_value = scrollbar.value()
+    was_at_bottom = is_near_bottom(previous_value, previous_maximum)
+
+    viewer.setPlainText(text)
+
+    scrollbar = viewer.verticalScrollBar()
+    if was_at_bottom:
+        scrollbar.setValue(scrollbar.maximum())
+    else:
+        scrollbar.setValue(clamp_scroll_value(previous_value, scrollbar.maximum()))
+
+    return text
 
 
 def _get_widget_text(widget) -> str | None:
@@ -2504,16 +2568,12 @@ class SettingsWindow(QDialog):
         ):
             return False
 
-        previous_signature = self._last_transcripts_signature
-        if previous_signature is None:
-            return False
-
-        previous_size = int(previous_signature[1])
-        current_size = int(signature[1])
-        if current_size <= previous_size:
-            return False
-
-        if current_size - previous_size > INCREMENTAL_TRANSCRIPT_APPEND_MAX_BYTES:
+        previous_size = _get_incremental_append_start(
+            self._last_transcripts_signature,
+            signature,
+            max_bytes=INCREMENTAL_TRANSCRIPT_APPEND_MAX_BYTES,
+        )
+        if previous_size is None:
             return False
 
         from utils.history import (
@@ -2638,23 +2698,11 @@ class SettingsWindow(QDialog):
         Verhindert unnötige Re-Renders und erhält die Scroll-Position, wenn
         der Nutzer ältere Einträge betrachtet.
         """
-        if not self._transcripts_viewer or text == self._last_transcripts_text:
-            return
-
-        scrollbar = self._transcripts_viewer.verticalScrollBar()
-        previous_maximum = scrollbar.maximum()
-        previous_value = scrollbar.value()
-        was_at_bottom = is_near_bottom(previous_value, previous_maximum)
-
-        self._transcripts_viewer.setPlainText(text)
-        self._last_transcripts_text = text
-
-        scrollbar = self._transcripts_viewer.verticalScrollBar()
-        if was_at_bottom:
-            scrollbar.setValue(scrollbar.maximum())
-            return
-
-        scrollbar.setValue(clamp_scroll_value(previous_value, scrollbar.maximum()))
+        self._last_transcripts_text = _set_scrolling_plain_text_if_changed(
+            self._transcripts_viewer,
+            text,
+            previous_text=self._last_transcripts_text,
+        )
 
     def _clear_transcripts(self):
         """Löscht Transcripts-Historie."""
@@ -2714,20 +2762,16 @@ class SettingsWindow(QDialog):
                 keywords = vocab.get("keywords", [])
                 set_plain_text_if_changed(self._vocab_editor, "\n".join(keywords))
 
-                warnings = validate_vocabulary()
-                if warnings:
-                    _set_status_label_if_changed(
-                        getattr(self, "_vocab_status", None),
-                        "⚠ " + "; ".join(warnings),
-                        "warning",
-                    )
-                elif hasattr(self, "_vocab_status"):
-                    count = len(keywords)
-                    _set_status_label_if_changed(
-                        self._vocab_status,
-                        f"{count} keywords loaded",
-                        "text_secondary",
-                    )
+                status_text, status_color = _build_vocabulary_status(
+                    keyword_count=len(keywords),
+                    warnings=validate_vocabulary(),
+                    saved=False,
+                )
+                _set_status_label_if_changed(
+                    getattr(self, "_vocab_status", None),
+                    status_text,
+                    status_color,
+                )
             self._vocabulary_loaded = True
             self._last_vocabulary_signature = signature
         except Exception as e:
@@ -2749,20 +2793,16 @@ class SettingsWindow(QDialog):
                 self._vocabulary_loaded = True
                 self._last_vocabulary_signature = get_file_signature(VOCABULARY_FILE)
 
-                warnings = validate_vocabulary()
-                if warnings:
-                    _set_status_label_if_changed(
-                        getattr(self, "_vocab_status", None),
-                        f"✓ Saved ({len(keywords)} keywords) - ⚠ "
-                        + "; ".join(warnings),
-                        "warning",
-                    )
-                elif hasattr(self, "_vocab_status"):
-                    _set_status_label_if_changed(
-                        self._vocab_status,
-                        f"✓ Saved ({len(keywords)} keywords)",
-                        "success",
-                    )
+                status_text, status_color = _build_vocabulary_status(
+                    keyword_count=len(keywords),
+                    warnings=validate_vocabulary(),
+                    saved=True,
+                )
+                _set_status_label_if_changed(
+                    getattr(self, "_vocab_status", None),
+                    status_text,
+                    status_color,
+                )
         except Exception as e:
             logger.error(f"Vocabulary speichern fehlgeschlagen: {e}")
             _set_status_label_if_changed(
@@ -2809,16 +2849,12 @@ class SettingsWindow(QDialog):
         if not self._logs_viewer or signature is None or self._last_logs_text is None:
             return False
 
-        previous_signature = self._last_logs_signature
-        if previous_signature is None:
-            return False
-
-        previous_size = int(previous_signature[1])
-        current_size = int(signature[1])
-        if current_size <= previous_size:
-            return False
-
-        if current_size - previous_size > INCREMENTAL_LOG_APPEND_MAX_BYTES:
+        previous_size = _get_incremental_append_start(
+            self._last_logs_signature,
+            signature,
+            max_bytes=INCREMENTAL_LOG_APPEND_MAX_BYTES,
+        )
+        if previous_size is None:
             return False
 
         scrollbar = self._logs_viewer.verticalScrollBar()
@@ -2861,23 +2897,11 @@ class SettingsWindow(QDialog):
 
     def _set_logs_text_if_changed(self, text: str) -> None:
         """Aktualisiert den Log-Viewer nur bei Änderungen (vermeidet unnötiges Re-Render)."""
-        if not self._logs_viewer or text == self._last_logs_text:
-            return
-
-        scrollbar = self._logs_viewer.verticalScrollBar()
-        previous_maximum = scrollbar.maximum()
-        previous_value = scrollbar.value()
-        was_at_bottom = is_near_bottom(previous_value, previous_maximum)
-
-        self._logs_viewer.setPlainText(text)
-        self._last_logs_text = text
-
-        scrollbar = self._logs_viewer.verticalScrollBar()
-        if was_at_bottom:
-            scrollbar.setValue(scrollbar.maximum())
-            return
-
-        scrollbar.setValue(clamp_scroll_value(previous_value, scrollbar.maximum()))
+        self._last_logs_text = _set_scrolling_plain_text_if_changed(
+            self._logs_viewer,
+            text,
+            previous_text=self._last_logs_text,
+        )
 
     def _open_logs_folder(self):
         """Öffnet Logs-Ordner im Explorer."""
