@@ -496,3 +496,40 @@ Next worthwhile areas
 - `web/src/i18n/request.ts`: request-time locale loading still pulls the full locale payload and remains the next web render-path hotspot.
 - `web/src/components/SiteHeader.tsx`: the mobile menu still bundles a large interactive path into the header shell and is the next client-side bundle/hydration candidate once it is safely outside the recent-change boundary.
 - `ui/overlay.py`: if traces still show overlay cost during active speech, the next step is to reduce per-frame math/allocation work inside `_render_level_frame()` rather than the timer cadence itself.
+
+Performance work log - 2026-04-09 (web request-config cache pass)
+
+Scope
+- Left the last two web commit areas untouched again: `web/src/app/[locale]/page.tsx`, `web/src/app/[locale]/docs/page.tsx`, `web/src/app/[locale]/layout.tsx`, `web/src/components/SiteHeader.tsx`, `web/src/components/LanguageSwitcher.tsx`, and related tests stayed out of scope.
+- Focused on the next untouched web render-path hotspot from the notes backlog: `web/src/i18n/request.ts`.
+- Preserved locale routing, translation lookup behavior, and existing page/build output.
+
+Current weaknesses reviewed
+- `web/src/i18n/request.ts`: the request config used a dynamic JSON import on every lookup path and rebuilt the `{locale, messages}` object even though the app only has two static locale payloads.
+- `web/src/i18n/request.ts`: explicit locale overrides supported by `next-intl` were not consumed, so the config path still awaited `requestLocale` unnecessarily.
+- `web/src/test/setup.ts`: the shared `next-intl/server` mock did not expose `getRequestConfig`, which blocked focused regression coverage for the request-config path.
+
+Changes in this pass
+- `web/src/i18n/request.ts`
+  Replaced the dynamic per-request locale import with a static in-memory locale map and cached request-config objects for `en` and `de`.
+- `web/src/i18n/request.ts`
+  Honored the explicit `locale` override before awaiting `requestLocale`, so server-side callers can take the direct fast path.
+- `web/src/i18n/request.test.ts`
+  Added regression coverage for invalid-locale fallback, override-without-await behavior, and repeated-locale config reuse.
+- `web/src/test/setup.ts`
+  Extended the shared `next-intl/server` test mock with `getRequestConfig` so request-config tests run against the existing Web test harness cleanly.
+
+Why this helps
+- Request-time i18n setup no longer pays dynamic import/module-resolution work on the hot path for the only two supported locales.
+- Reusing stable per-locale config objects trims repeated allocation work and keeps server render-path setup more predictable.
+- Explicit locale overrides now avoid an unnecessary async wait, which slightly shortens metadata/request helper paths that already know their locale.
+
+Validation
+- `cd web && npm run test:run -- src/i18n/request.test.ts src/components/LanguageSwitcher.test.tsx src/components/SiteHeader.test.tsx`
+- `cd web && npm run lint -- src/i18n/request.ts src/i18n/request.test.ts src/test/setup.ts`
+- `cd web && npm run build`
+
+Next worthwhile areas
+- `web/src/components/SiteHeader.tsx`: once it is outside the recent-commit boundary, split the always-visible shell from the mobile-menu interaction path to reduce hydrated client work.
+- `web/src/app/[locale]/layout.tsx`: if traces still show client payload overhead, pass an explicit minimal or null `messages` prop to `NextIntlClientProvider` instead of letting it resolve the full request message set implicitly.
+- `web/src/i18n/request.ts`: if server traces still show i18n cost after this cache pass, the next step is namespace-level message loading rather than more micro-optimizations in page bodies.
