@@ -262,6 +262,26 @@ class TestGetRecentTranscripts:
 
         assert [entry["text"] for entry in merged] == ["First", "Second", "Third"]
 
+    def test_merge_recent_transcript_entries_trims_previous_window_when_no_valid_appends(
+        self,
+    ):
+        """Ohne gültige neue Einträge bleibt nur das getrimmte bestehende Fenster sichtbar."""
+        from utils.history import merge_recent_transcript_entries
+
+        merged = merge_recent_transcript_entries(
+            [
+                {"timestamp": "2026-03-03T10:00:00", "text": "First"},
+                {"timestamp": "2026-03-03T10:00:01", "text": "Second"},
+                "legacy-string-entry",
+                {"timestamp": "2026-03-03T10:00:02", "text": "Third"},
+                {"timestamp": "2026-03-03T10:00:03", "text": "Fourth"},
+            ],
+            ["invalid-appended-entry", None],
+            max_entries=2,
+        )
+
+        assert [entry["text"] for entry in merged] == ["Third", "Fourth"]
+
 
 class TestFormatTranscriptsForDisplay:
     """Tests für format_transcripts_for_display()."""

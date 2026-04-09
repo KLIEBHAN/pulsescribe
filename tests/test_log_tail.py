@@ -111,6 +111,10 @@ def test_merge_tail_text_preserves_single_truncation_prefix() -> None:
     assert merged.endswith("older tail\nnew tail")
 
 
+def test_merge_tail_text_skips_prefix_when_budget_is_too_small() -> None:
+    assert merge_tail_text("... (truncated)\n\nabcdef", "ghij", max_chars=4) == "ghij"
+
+
 def test_get_file_signature_returns_none_for_missing_file(tmp_path: Path) -> None:
     missing = tmp_path / "missing.log"
     assert get_file_signature(missing) is None

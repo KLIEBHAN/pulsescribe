@@ -210,6 +210,13 @@ def _parse_recent_entries(lines: list[str], count: int) -> list[dict[str, object
     return entries
 
 
+def _coerce_transcript_entry(entry: object) -> dict[str, object] | None:
+    """Return dictionary-backed transcript entries and ignore legacy payloads."""
+    if not isinstance(entry, dict):
+        return None
+    return entry
+
+
 def _parse_transcript_line(line: str) -> dict[str, object] | None:
     """Parse a single JSONL transcript entry or return ``None`` for invalid lines."""
     line = line.strip()
@@ -219,9 +226,7 @@ def _parse_transcript_line(line: str) -> dict[str, object] | None:
         entry = json.loads(line)
     except json.JSONDecodeError:
         return None
-    if not isinstance(entry, dict):
-        return None
-    return entry
+    return _coerce_transcript_entry(entry)
 
 
 def _parse_transcript_lines_in_order(lines: Sequence[str]) -> list[dict[str, object]]:
@@ -253,8 +258,9 @@ def _iter_valid_transcript_entries(
 ) -> Iterator[dict[str, object]]:
     """Yield only dictionary-backed transcript entries."""
     for entry in entries:
-        if isinstance(entry, dict):
-            yield entry
+        coerced_entry = _coerce_transcript_entry(entry)
+        if coerced_entry is not None:
+            yield coerced_entry
 
 
 def _order_valid_transcript_entries(
@@ -282,8 +288,14 @@ def merge_recent_transcript_entries(
     if max_entries <= 0:
         return []
 
-    previous_valid = list(_iter_valid_transcript_entries(previous_entries))
-    appended_valid = list(_iter_valid_transcript_entries(appended_entries))
+    previous_valid = _order_valid_transcript_entries(
+        previous_entries,
+        newest_first=False,
+    )
+    appended_valid = _order_valid_transcript_entries(
+        appended_entries,
+        newest_first=False,
+    )
     if not appended_valid:
         return previous_valid[-max_entries:]
     return [*previous_valid, *appended_valid][-max_entries:]
@@ -343,15 +355,23 @@ def _format_transcript_blocks(
     ]
 
 
+def _join_transcript_blocks(blocks: Sequence[str], *, empty_message: str) -> str:
+    """Join preformatted transcript blocks or return a caller-specific empty state."""
+    if not blocks:
+        return empty_message
+    return "\n\n".join(block for block in blocks if block)
+
+
 def format_transcript_entry_for_display(entry: object) -> str:
     """Format a single transcript entry for the Windows transcripts viewer."""
-    if not isinstance(entry, dict):
+    transcript_entry = _coerce_transcript_entry(entry)
+    if transcript_entry is None:
         return ""
 
-    text = _format_display_text(entry.get("text", ""))
-    refined = "✨" if entry.get("refined") else ""
+    text = _format_display_text(transcript_entry.get("text", ""))
+    refined = "✨" if transcript_entry.get("refined") else ""
     header = _format_entry_header(
-        entry,
+        transcript_entry,
         metadata_keys=("mode",),
         strip_metadata=False,
     )
@@ -367,19 +387,18 @@ def format_transcripts_for_display(
         newest_first=newest_first,
         formatter=format_transcript_entry_for_display,
     )
-    if not blocks:
-        return "No transcripts yet."
-    return "\n\n".join(blocks)
+    return _join_transcript_blocks(blocks, empty_message="No transcripts yet.")
 
 
 def format_transcript_entry_for_welcome(entry: object) -> str:
     """Format a single transcript entry for the macOS welcome/history view."""
-    if not isinstance(entry, dict):
+    transcript_entry = _coerce_transcript_entry(entry)
+    if transcript_entry is None:
         return ""
 
-    text = str(entry.get("text", "")).strip()
+    text = str(transcript_entry.get("text", "")).strip()
     header = _format_entry_header(
-        entry,
+        transcript_entry,
         metadata_keys=("mode", "language"),
         strip_metadata=True,
     )
@@ -407,10 +426,10 @@ def format_transcripts_for_welcome(
         entries,
         newest_first=newest_first,
     )
-    if not blocks:
-        return "No transcriptions yet.\n\nYour transcribed texts will appear here."
-
-    return "\n\n".join(block for block in blocks if block)
+    return _join_transcript_blocks(
+        blocks,
+        empty_message="No transcriptions yet.\n\nYour transcribed texts will appear here.",
+    )
 
 
 def _format_display_text(text: object) -> str:

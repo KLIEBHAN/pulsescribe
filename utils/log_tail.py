@@ -74,6 +74,30 @@ def _read_tail_bytes(
     return data, truncated_from_start
 
 
+def _truncate_visible_tail(
+    text: str,
+    *,
+    max_chars: int,
+    truncated_prefix: str,
+    force_prefix: bool,
+) -> str:
+    """Apply the shared tail-budget/prefix rules for file and merge helpers."""
+    if max_chars <= 0:
+        return ""
+
+    prefix = truncated_prefix or ""
+    if not force_prefix and len(text) <= max_chars:
+        return text
+
+    if not prefix or len(prefix) >= max_chars:
+        return text[-max_chars:]
+
+    suffix_chars = max_chars - len(prefix)
+    if len(text) <= suffix_chars:
+        return f"{prefix}{text}" if force_prefix else text
+    return f"{prefix}{text[-suffix_chars:]}"
+
+
 def read_file_tail_text(
     path: Path,
     *,
@@ -90,14 +114,12 @@ def read_file_tail_text(
     max_bytes = max_chars * 4 + _TAIL_CHUNK_SIZE
     raw, _truncated_from_start = _read_tail_bytes(path, max_bytes=max_bytes)
     text = raw.decode(encoding, errors=errors)
-    if len(text) <= max_chars:
-        return text
-
-    if not truncated_prefix or len(truncated_prefix) >= max_chars:
-        return text[-max_chars:]
-
-    suffix_chars = max_chars - len(truncated_prefix)
-    return f"{truncated_prefix}{text[-suffix_chars:]}"
+    return _truncate_visible_tail(
+        text,
+        max_chars=max_chars,
+        truncated_prefix=truncated_prefix,
+        force_prefix=len(text) > max_chars,
+    )
 
 
 def read_file_tail_lines(
@@ -192,17 +214,12 @@ def merge_tail_text(
     was_truncated = bool(prefix and previous_text.startswith(prefix))
     visible_previous_text = previous_text[len(prefix) :] if was_truncated else previous_text
     combined = f"{visible_previous_text}{appended_text}"
-
-    if not prefix or len(prefix) >= max_chars:
-        return combined[-max_chars:]
-
-    if not was_truncated and len(combined) <= max_chars:
-        return combined
-
-    suffix_chars = max_chars - len(prefix)
-    if len(combined) <= suffix_chars:
-        return f"{prefix}{combined}"
-    return f"{prefix}{combined[-suffix_chars:]}"
+    return _truncate_visible_tail(
+        combined,
+        max_chars=max_chars,
+        truncated_prefix=prefix,
+        force_prefix=was_truncated or len(combined) > max_chars,
+    )
 
 
 def get_file_signature(path: Path) -> tuple[int, int] | None:
