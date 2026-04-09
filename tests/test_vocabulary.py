@@ -182,6 +182,27 @@ class TestSaveVocabulary:
 
         assert encodings == ["utf-8"]
 
+    def test_save_skips_noop_rewrite_when_keywords_are_unchanged(self, temp_files, monkeypatch):
+        vocab_file = temp_files / "vocab.json"
+        vocab_file.write_text(
+            json.dumps({"keywords": ["Alpha", "Beta"], "extra": "keep"}),
+            encoding="utf-8",
+        )
+
+        original_write_text = Path.write_text
+        write_calls: list[Path] = []
+
+        def _patched_write_text(self: Path, *args, **kwargs):
+            if self == vocab_file:
+                write_calls.append(self)
+            return original_write_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "write_text", _patched_write_text)
+
+        save_vocabulary(["Alpha", "Beta"], path=vocab_file)
+
+        assert write_calls == []
+
 
 class TestValidateVocabulary:
     """Tests für validate_vocabulary()."""
@@ -229,6 +250,33 @@ class TestValidateVocabulary:
 
         assert issues == []
         assert encodings == ["utf-8"]
+
+    def test_validate_reuses_cached_load_without_rereading_file(self, temp_files, monkeypatch):
+        import utils.vocabulary as vocab
+
+        vocab_file = temp_files / "vocab.json"
+        vocab_file.write_text(
+            json.dumps({"keywords": ["API", "api", "GraphQL"]}),
+            encoding="utf-8",
+        )
+        vocab._cache.clear()
+
+        original_read_text = Path.read_text
+        read_calls: list[Path] = []
+
+        def _patched_read_text(self: Path, *args, **kwargs):
+            if self == vocab_file:
+                read_calls.append(self)
+            return original_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", _patched_read_text)
+
+        loaded = vocab.load_vocabulary(path=vocab_file)
+        issues = vocab.validate_vocabulary(path=vocab_file)
+
+        assert loaded["keywords"] == ["API", "GraphQL"]
+        assert any("doppelte" in issue for issue in issues)
+        assert read_calls == [vocab_file]
 
 
 class TestVocabularyCaching:

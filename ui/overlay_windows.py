@@ -47,6 +47,7 @@ FRAME_MS_ACTIVE = 1000 // 30  # 30 FPS für nicht-kritische Animationen
 FRAME_MS_FEEDBACK = 1000 // 20  # 20 FPS für kurze DONE/ERROR-Phase
 BAR_HEIGHT_UPDATE_EPSILON = 0.25  # Spare Canvas-Updates für subpixel-kleine Änderungen
 QUEUE_POLL_ACTIVE_MS = 16  # 60Hz während Overlay sichtbar/aktiv
+QUEUE_POLL_ACTIVE_IDLE_MS = 33  # Weniger Wakeups wenn die UI aktiv, die Queue aber leer ist
 QUEUE_POLL_IDLE_MS = 50  # Weniger CPU-Last im Idle
 QUEUE_MAX_MESSAGES_PER_TICK = 200
 INTERIM_QUEUE_BACKPRESSURE_LIMIT = 120
@@ -340,10 +341,15 @@ class WindowsOverlayController:
             self._handle_interim_text(latest_interim_text)
 
         if self._running and self._root:
+            has_backlog = processed_count >= QUEUE_MAX_MESSAGES_PER_TICK
             poll_ms = (
                 QUEUE_POLL_ACTIVE_MS
-                if self._state != "IDLE" or processed_message
-                else QUEUE_POLL_IDLE_MS
+                if processed_message or has_backlog
+                else (
+                    QUEUE_POLL_IDLE_MS
+                    if self._state == "IDLE"
+                    else QUEUE_POLL_ACTIVE_IDLE_MS
+                )
             )
             self._root.after(poll_ms, self._poll_queue)
 

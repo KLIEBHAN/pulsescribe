@@ -379,6 +379,13 @@ def _set_widget_visible_if_changed(widget, visible: bool) -> bool:
     return True
 
 
+def _set_status_label_if_changed(widget, text: str, color: str) -> None:
+    if widget is None:
+        return
+    _set_widget_text_if_changed(widget, text)
+    _set_widget_stylesheet_if_changed(widget, f"color: {COLORS[color]};")
+
+
 # =============================================================================
 # Settings Window
 # =============================================================================
@@ -2452,24 +2459,27 @@ class SettingsWindow(QDialog):
                 keywords = vocab.get("keywords", [])
                 set_plain_text_if_changed(self._vocab_editor, "\n".join(keywords))
 
-                # Validierung und Warnungen
                 warnings = validate_vocabulary()
-                if warnings and hasattr(self, "_vocab_status"):
-                    self._vocab_status.setText("⚠ " + "; ".join(warnings))
-                    self._vocab_status.setStyleSheet(f"color: {COLORS['warning']};")
+                if warnings:
+                    _set_status_label_if_changed(
+                        getattr(self, "_vocab_status", None),
+                        "⚠ " + "; ".join(warnings),
+                        "warning",
+                    )
                 elif hasattr(self, "_vocab_status"):
                     count = len(keywords)
-                    self._vocab_status.setText(f"{count} keywords loaded")
-                    self._vocab_status.setStyleSheet(
-                        f"color: {COLORS['text_secondary']};"
+                    _set_status_label_if_changed(
+                        self._vocab_status,
+                        f"{count} keywords loaded",
+                        "text_secondary",
                     )
             self._vocabulary_loaded = True
             self._last_vocabulary_signature = signature
         except Exception as e:
             logger.error(f"Vocabulary laden fehlgeschlagen: {e}")
-            if hasattr(self, "_vocab_status"):
-                self._vocab_status.setText(f"Error: {e}")
-                self._vocab_status.setStyleSheet(f"color: {COLORS['error']};")
+            _set_status_label_if_changed(
+                getattr(self, "_vocab_status", None), f"Error: {e}", "error"
+            )
 
     def _save_vocabulary(self):
         """Speichert Vocabulary in Datei."""
@@ -2484,21 +2494,25 @@ class SettingsWindow(QDialog):
                 self._vocabulary_loaded = True
                 self._last_vocabulary_signature = get_file_signature(VOCABULARY_FILE)
 
-                # Validierung nach Speichern
                 warnings = validate_vocabulary()
-                if warnings and hasattr(self, "_vocab_status"):
-                    self._vocab_status.setText(
-                        f"✓ Saved ({len(keywords)} keywords) - ⚠ " + "; ".join(warnings)
+                if warnings:
+                    _set_status_label_if_changed(
+                        getattr(self, "_vocab_status", None),
+                        f"✓ Saved ({len(keywords)} keywords) - ⚠ "
+                        + "; ".join(warnings),
+                        "warning",
                     )
-                    self._vocab_status.setStyleSheet(f"color: {COLORS['warning']};")
                 elif hasattr(self, "_vocab_status"):
-                    self._vocab_status.setText(f"✓ Saved ({len(keywords)} keywords)")
-                    self._vocab_status.setStyleSheet(f"color: {COLORS['success']};")
+                    _set_status_label_if_changed(
+                        self._vocab_status,
+                        f"✓ Saved ({len(keywords)} keywords)",
+                        "success",
+                    )
         except Exception as e:
             logger.error(f"Vocabulary speichern fehlgeschlagen: {e}")
-            if hasattr(self, "_vocab_status"):
-                self._vocab_status.setText(f"Error: {e}")
-                self._vocab_status.setStyleSheet(f"color: {COLORS['error']};")
+            _set_status_label_if_changed(
+                getattr(self, "_vocab_status", None), f"Error: {e}", "error"
+            )
 
     def _refresh_logs(self):
         """Aktualisiert Log-Anzeige."""

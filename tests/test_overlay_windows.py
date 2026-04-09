@@ -15,6 +15,7 @@ from ui.overlay_windows import (
     INTERIM_POLL_MAX_CHARS,
     QUEUE_MAX_MESSAGES_PER_TICK,
     QUEUE_POLL_ACTIVE_MS,
+    QUEUE_POLL_ACTIVE_IDLE_MS,
     QUEUE_POLL_IDLE_MS,
     STATE_COLORS,
     WINDOW_HEIGHT,
@@ -336,6 +337,22 @@ def test_poll_queue_uses_active_interval_when_overlay_visible():
     controller._root = _FakeRoot()
     controller._queue = queue.Queue()
     controller._state = "RECORDING"
+
+    controller._poll_queue()
+
+    assert controller._root.after_calls[-1] == QUEUE_POLL_ACTIVE_IDLE_MS
+
+
+def test_poll_queue_keeps_fast_interval_after_processing_active_messages():
+    controller = WindowsOverlayController.__new__(WindowsOverlayController)
+    controller._running = True
+    controller._root = _FakeRoot()
+    controller._queue = queue.Queue()
+    controller._state = "RECORDING"
+    controller._audio_level = 0.0
+    controller._handle_state_change = lambda *_args: None
+    controller._handle_interim_text = lambda *_args: None
+    controller._queue.put(("state", "RECORDING", None))
 
     controller._poll_queue()
 

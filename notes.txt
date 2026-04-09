@@ -152,3 +152,48 @@ Next worthwhile areas
 - `ui/welcome.py` logs/transcripts view switching remains the next likely long-session UI hotspot.
 - `ui/onboarding_wizard.py` still has some render-adjacent status and summary recomputation that could be deduped further if profiling still shows churn.
 - If prompt/vocabulary tabs still feel heavy, move non-essential validation or formatting work off the immediate interaction path.
+
+Performance work plan - 2026-04-09 (settings vocabulary pass)
+
+Scope
+- Leave the last two commit areas untouched: `ui/hotkey_card.py`, `ui/welcome.py`, `ui/onboarding_wizard.py`, and their immediate test-only follow-up.
+- Avoid `utils/custom_prompts.py` because the worktree already contains unrelated local edits there.
+- Focus on the remaining Windows frontend hotspot in the settings vocabulary tab.
+
+Current weaknesses reviewed
+- `ui/settings_windows.py`: opening or saving the vocabulary tab still triggers duplicate vocabulary file work: `load_vocabulary()` reads/parses the JSON, then `validate_vocabulary()` rereads/reparses the same file immediately afterward.
+- `utils/vocabulary.py`: saving unchanged keywords still rewrites the JSON file, causing unnecessary disk I/O and cache invalidation on a user-visible save path.
+- `ui/settings_windows.py`: vocabulary status labels are reassigned even when the text/style is already current, creating avoidable UI churn on tab revisits and repeated saves.
+
+Planned changes
+- Share parsed vocabulary results and validation issues through one cache-backed path in `utils/vocabulary.py`.
+- Skip no-op vocabulary writes when the normalized persisted data is unchanged.
+- Dedupe vocabulary status label updates in `ui/settings_windows.py`.
+- Add regression coverage for cached validation reuse and no-op vocabulary saves.
+
+Changes in this pass
+- `ui/overlay_windows.py`
+  Reduced queue-poller wakeups while the overlay is active but the UI queue is empty by backing the idle-active poll interval off from 16 ms to 33 ms, while keeping the fast interval for real message bursts/backlog.
+- `utils/vocabulary.py`
+  Unified vocabulary parsing and validation behind one cache-backed state path so load + validate no longer reread/reparse the same JSON file on each tab open/save.
+- `utils/vocabulary.py`
+  Skipped no-op vocabulary rewrites when the normalized persisted payload is already current, while still preserving extra JSON fields and refreshing the cache.
+- `ui/settings_windows.py`
+  Deduped vocabulary status label text/style updates so repeated tab revisits and saves avoid redundant widget churn.
+- Tests
+  Added coverage for active-overlay queue backoff, fast follow-up polling after real queue work, cached vocabulary validation reuse, and no-op vocabulary saves.
+
+Why this helps
+- The Windows overlay now wakes the UI thread less aggressively during long recording/transcribing stretches when queue traffic is sparse, which reduces avoidable scheduling churn in a hot visual path.
+- Opening or saving the vocabulary tab no longer performs duplicate UTF-8 reads and JSON parsing for the same file state.
+- Repeated vocabulary saves that do not change the effective keyword payload stop rewriting the file, reducing disk I/O and unnecessary cache invalidation.
+
+Validation
+- `pytest tests/test_overlay_windows.py tests/test_vocabulary.py tests/test_settings_windows_load.py -q`
+- `python -m py_compile ui/overlay_windows.py ui/settings_windows.py utils/vocabulary.py tests/test_overlay_windows.py tests/test_vocabulary.py tests/test_settings_windows_load.py`
+- `ruff check ui/overlay_windows.py ui/settings_windows.py utils/vocabulary.py tests/test_overlay_windows.py tests/test_vocabulary.py tests/test_settings_windows_load.py`
+
+Next worthwhile areas
+- `ui/overlay_windows.py`: interim text still has a second file-poll path during recording; if runtime profiling still shows overlay churn, consider reducing or suspending file polling when direct interim queue updates are flowing.
+- `ui/settings_windows.py`: the large `_load_settings()` / `_apply_local_preset()` field population path still has room for broader signal-blocking/change-guard cleanup.
+- `ui/permissions_card.py`: the auto-refresh loop still repeats stable permission checks for up to 30 seconds even after the UI state has converged.
