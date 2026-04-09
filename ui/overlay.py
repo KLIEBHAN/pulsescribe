@@ -158,15 +158,44 @@ def _format_recording_interim_text(text: str, max_chars: int = OVERLAY_INTERIM_M
     Bei langen Diktaten werden die letzten Zeichen gezeigt, weil diese für
     Nutzer:innen während des Sprechens relevanter sind als der Satzanfang.
     """
-    cleaned = " ".join(text.split())
-    if not cleaned:
+    if not text:
         return ""
-    if max_chars <= 0 or len(cleaned) <= max_chars:
-        return cleaned
+
+    normalized_tail_reversed: list[str] = []
+    normalized_length = 0
+    pending_space = False
+    truncated = False
+
+    for char in reversed(text):
+        if char.isspace():
+            if normalized_length > 0:
+                pending_space = True
+            continue
+
+        if pending_space:
+            normalized_tail_reversed.append(" ")
+            normalized_length += 1
+            pending_space = False
+
+        normalized_tail_reversed.append(char)
+        normalized_length += 1
+        if max_chars > 0 and normalized_length > max_chars:
+            truncated = True
+            break
+
+    if not normalized_tail_reversed:
+        return ""
+
+    cleaned_tail = "".join(reversed(normalized_tail_reversed))
+    if not truncated:
+        return cleaned_tail
+    if max_chars <= 0:
+        return cleaned_tail
+
     tail_chars = max_chars - 3
     if tail_chars <= 0:
         return "..."
-    return "..." + cleaned[-tail_chars:]
+    return "..." + cleaned_tail[-tail_chars:]
 
 
 class SoundWaveView:

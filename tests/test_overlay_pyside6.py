@@ -359,6 +359,12 @@ def test_on_interim_changed_uses_compacted_tail_text():
     assert seen_calls == [("RECORDING", "..." + cleaned[-42:], True)]
 
 
+def test_format_recording_interim_text_handles_long_whitespace_heavy_text():
+    text = ("alpha   beta   " * 80) + "  final   words  here "
+
+    assert _format_recording_interim_text(text, max_chars=20) == "... final words here"
+
+
 def test_frame_interval_ms_is_state_aware():
     widget = PySide6OverlayWidget.__new__(PySide6OverlayWidget)
 

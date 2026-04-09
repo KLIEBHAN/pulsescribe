@@ -107,6 +107,14 @@ def test_format_recording_interim_text_uses_default_limit():
     assert len(formatted) == OVERLAY_INTERIM_MAX_CHARS
 
 
+def test_format_recording_interim_text_trims_from_tail_without_full_normalization():
+    text = ("alpha   beta   " * 80) + "  final   words  here "
+
+    formatted = _format_recording_interim_text(text, max_chars=20)
+
+    assert formatted == "... final words here"
+
+
 def test_sound_wave_view_set_bar_height_skips_small_deltas():
     view = SoundWaveView.__new__(SoundWaveView)
     view.bars = [_FakeBar()]

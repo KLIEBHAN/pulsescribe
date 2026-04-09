@@ -247,6 +247,12 @@ def test_format_recording_interim_text_keeps_tail_for_long_text():
     assert _format_recording_interim_text(text) == "..." + cleaned[-42:]
 
 
+def test_format_recording_interim_text_handles_long_whitespace_heavy_text():
+    text = ("alpha   beta   " * 80) + "  final   words  here "
+
+    assert _format_recording_interim_text(text, max_chars=20) == "... final words here"
+
+
 def test_handle_interim_text_restores_default_recording_label_when_empty():
     controller = WindowsOverlayController()
     controller._state = "RECORDING"

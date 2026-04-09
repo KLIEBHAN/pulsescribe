@@ -1,3 +1,40 @@
+Performance work log - 2026-04-09 (overlay interim tail normalization fast path)
+
+Scope
+- Left the last two commit areas untouched again: `ui/welcome.py` and `ui/settings_windows.py`.
+- Avoided the already dirty prompt/permissions/vocabulary files and their related tests.
+- Focused on the shared overlay recording-interim formatting path in `ui/overlay.py`, `ui/overlay_windows.py`, and `ui/overlay_pyside6.py`.
+
+Current weaknesses reviewed
+- All overlay implementations normalized recording interim text with `" ".join(text.split())` on every update, even though the UI only renders a short tail preview.
+- During dictation this path runs repeatedly on visible UI updates, so long whitespace-heavy interim payloads paid full-string splitting and joining cost without improving what the user sees.
+- The same avoidable recomputation existed across macOS, Tk, and PySide overlay frontends.
+
+Changes in this pass
+- `ui/overlay.py`
+  Reworked recording interim formatting to normalize from the tail backwards and stop once the visible preview is known.
+- `ui/overlay_windows.py`
+  Applied the same tail-oriented normalization so the Windows fallback overlay avoids full-text recomputation on interim updates.
+- `ui/overlay_pyside6.py`
+  Applied the same optimization to the PySide6 overlay path for parity with the other frontends.
+- Tests
+  Added regression coverage for long whitespace-heavy interim payloads across all overlay implementations.
+
+Why this helps
+- Recording overlays now scale with the short visible preview instead of the full interim text payload on each update.
+- This reduces repeated allocations and string work in a high-frequency, user-visible UI path while preserving the rendered output.
+- The change is local, architecture-friendly, and keeps overlay behavior consistent across frontends.
+
+Validation
+- `pytest tests/test_overlay.py tests/test_overlay_windows.py tests/test_overlay_pyside6.py -q`
+- `python -m py_compile ui/overlay.py ui/overlay_windows.py ui/overlay_pyside6.py tests/test_overlay.py tests/test_overlay_windows.py tests/test_overlay_pyside6.py`
+- `ruff check ui/overlay.py ui/overlay_windows.py ui/overlay_pyside6.py tests/test_overlay.py tests/test_overlay_windows.py tests/test_overlay_pyside6.py`
+
+Next worthwhile areas
+- `ui/overlay.py`: the recording/listening animation timers still execute frequent per-bar math; if traces still show CPU cost there, the next pass should short-circuit fully settled frames and avoid no-op transactions.
+- `ui/menubar.py`: recording preview churn is already deduped at the title level, but long dictations may still justify stronger preview stabilization if profiling shows menu-bar wakeups.
+- `ui/overlay_windows.py` and `ui/overlay_pyside6.py`: if recording sessions still show pressure after this pass, the next likely improvement is skipping label/style updates earlier in the state path before formatting work happens.
+
 Performance work log - 2026-04-09 (macOS welcome logs incremental chunk reuse)
 
 Scope
