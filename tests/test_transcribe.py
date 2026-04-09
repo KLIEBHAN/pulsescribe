@@ -401,3 +401,123 @@ class TestTranscribeHelpers:
         assert result == '{"text":"raw"}'
         mock_refine.assert_not_called()
         mock_log.assert_called_once()
+
+    def test_transcribe_and_maybe_refine_cleans_up_temp_file_when_transcription_fails(
+        self, tmp_path
+    ):
+        from cli.types import ResponseFormat
+        from transcribe import _transcribe_and_maybe_refine
+
+        audio_file = tmp_path / "input.wav"
+        audio_file.write_bytes(b"audio")
+        temp_file = tmp_path / "recording.wav"
+        temp_file.write_bytes(b"audio")
+
+        with (
+            patch(
+                "transcribe._transcribe_with_cli_error_handling",
+                side_effect=typer.Exit(1),
+            ),
+            patch("transcribe._cleanup_temp_audio_file") as mock_cleanup,
+            patch("transcribe.maybe_refine_transcript") as mock_refine,
+        ):
+            with pytest.raises(typer.Exit):
+                _transcribe_and_maybe_refine(
+                    audio_file,
+                    temp_file=temp_file,
+                    mode="groq",
+                    model=None,
+                    language=None,
+                    response_format=ResponseFormat.text,
+                    refine=True,
+                    no_refine=False,
+                    refine_model=None,
+                    refine_provider=None,
+                    context=None,
+                )
+
+        mock_cleanup.assert_called_once_with(temp_file)
+        mock_refine.assert_not_called()
+
+    def test_main_orchestrates_cli_pipeline_with_resolved_options(self, tmp_path):
+        from cli.types import Context, RefineProvider, ResponseFormat, TranscriptionMode
+        from transcribe import _ResolvedCliOptions, main
+
+        audio_file = tmp_path / "input.wav"
+        temp_file = tmp_path / "recording.wav"
+        resolved = _ResolvedCliOptions(
+            mode=TranscriptionMode.local,
+            model="turbo",
+            language="de",
+            refine=True,
+            refine_model="gpt-4.1-mini",
+            refine_provider=RefineProvider.groq,
+        )
+
+        with (
+            patch("transcribe.load_environment") as mock_load_environment,
+            patch("transcribe.setup_logging") as mock_setup_logging,
+            patch(
+                "transcribe._resolve_runtime_cli_options",
+                return_value=resolved,
+            ) as mock_resolve_runtime_cli_options,
+            patch(
+                "transcribe._resolve_audio_source",
+                return_value=(audio_file, temp_file),
+            ) as mock_resolve_audio_source,
+            patch(
+                "transcribe._transcribe_and_maybe_refine",
+                return_value="fertig",
+            ) as mock_transcribe_and_maybe_refine,
+            patch("transcribe.copy_to_clipboard", return_value=True) as mock_copy,
+            patch("transcribe.log") as mock_log,
+            patch("transcribe.logger.info") as mock_info,
+            patch("transcribe.logger.debug") as mock_debug,
+            patch("builtins.print") as mock_print,
+        ):
+            main(
+                audio=audio_file,
+                record=False,
+                copy=True,
+                mode=None,
+                model=None,
+                language=None,
+                response_format=ResponseFormat.text,
+                debug=True,
+                refine=False,
+                no_refine=False,
+                refine_model=None,
+                refine_provider=None,
+                context=Context.code,
+            )
+
+        mock_load_environment.assert_called_once_with()
+        mock_setup_logging.assert_called_once_with(debug=True)
+        mock_resolve_runtime_cli_options.assert_called_once_with(
+            mode=None,
+            model=None,
+            language=None,
+            refine=False,
+            no_refine=False,
+            refine_model=None,
+            refine_provider=None,
+        )
+        mock_resolve_audio_source.assert_called_once_with(audio_file, record=False)
+        mock_transcribe_and_maybe_refine.assert_called_once_with(
+            audio_file,
+            temp_file=temp_file,
+            mode="local",
+            model="turbo",
+            language="de",
+            response_format=ResponseFormat.text,
+            refine=True,
+            no_refine=False,
+            refine_model="gpt-4.1-mini",
+            refine_provider=RefineProvider.groq,
+            context=Context.code,
+        )
+        mock_print.assert_called_once_with("fertig")
+        mock_copy.assert_called_once_with("fertig")
+        mock_log.assert_called_once_with("📋 In Zwischenablage kopiert!")
+        assert mock_info.call_count == 2
+        mock_debug.assert_called_once()

@@ -25,7 +25,7 @@ import time as _time_module  # noqa: E402 - muss vor anderen Imports sein
 _PROCESS_START = _time_module.perf_counter()
 
 import typer  # noqa: E402
-from typing import Annotated, TYPE_CHECKING  # noqa: E402
+from typing import Annotated, NoReturn, TYPE_CHECKING  # noqa: E402
 import logging  # noqa: E402
 import os  # noqa: E402
 from dataclasses import dataclass  # noqa: E402
@@ -77,10 +77,7 @@ from utils.logging import (  # noqa: E402
     get_session_id as _get_session_id,
 )
 from utils.env import load_environment, parse_bool  # noqa: E402
-from utils.timing import (  # noqa: E402
-    format_duration as _format_duration,
-    log_preview as _shared_log_preview,
-)
+from utils.timing import format_duration as _format_duration  # noqa: E402
 from utils.vocabulary import load_vocabulary as _load_vocabulary_shared  # noqa: E402
 
 
@@ -121,19 +118,6 @@ def play_sound(name: str) -> None:
 
 
 from audio.recording import record_audio  # noqa: E402
-
-# =============================================================================
-# Logging-Helfer
-# =============================================================================
-
-
-def _log_preview(text: str, max_length: int = 100) -> str:
-    """Kürzt Logtexte, um Logfiles schlank zu halten.
-
-    Wrapper um utils.timing.log_preview für vereinheitlichte Log-Formatierung.
-    """
-    return _shared_log_preview(text, max_length)
-
 
 # =============================================================================
 # Custom Vocabulary (Fachbegriffe, Namen)
@@ -251,6 +235,46 @@ def _provider_accepts_response_format(provider) -> bool:
     return "response_format" in parameters
 
 
+def _build_common_provider_transcribe_kwargs(
+    *,
+    model: str | None,
+    language: str | None,
+) -> dict[str, str | None]:
+    """Build the provider kwargs shared by all transcription backends."""
+    return {
+        "model": model,
+        "language": language,
+    }
+
+
+
+def _warn_ignored_response_format(mode: str, response_format: str) -> None:
+    """Explain when ``--format`` has no effect for non-OpenAI providers."""
+    if response_format != "text":
+        log(f"Hinweis: --format wird im {mode}-Modus ignoriert")
+
+
+
+def _build_openai_provider_transcribe_kwargs(
+    provider,
+    *,
+    base_kwargs: dict[str, str | None],
+    response_format: str,
+) -> dict[str, str | None]:
+    """Add OpenAI's optional response-format support on top of common kwargs."""
+    if not _provider_accepts_response_format(provider):
+        raise TypeError(
+            "Expected OpenAIProvider-compatible provider for mode='openai', "
+            f"got {type(provider).__name__}"
+        )
+
+    return {
+        **base_kwargs,
+        "response_format": response_format,
+    }
+
+
+
 def _build_provider_transcribe_kwargs(
     mode: str,
     provider,
@@ -260,25 +284,26 @@ def _build_provider_transcribe_kwargs(
     response_format: str,
 ) -> dict[str, str | None]:
     """Build provider kwargs while keeping OpenAI's response-format special case."""
-    kwargs: dict[str, str | None] = {
-        "model": model,
-        "language": language,
-    }
+    base_kwargs = _build_common_provider_transcribe_kwargs(
+        model=model,
+        language=language,
+    )
     if mode != "openai":
-        if response_format != "text":
-            log(f"Hinweis: --format wird im {mode}-Modus ignoriert")
-        return kwargs
+        _warn_ignored_response_format(mode, response_format)
+        return base_kwargs
 
-    if not _provider_accepts_response_format(provider):
-        raise TypeError(
-            "Expected OpenAIProvider-compatible provider for mode='openai', "
-            f"got {type(provider).__name__}"
-        )
+    return _build_openai_provider_transcribe_kwargs(
+        provider,
+        base_kwargs=base_kwargs,
+        response_format=response_format,
+    )
 
-    return {
-        **kwargs,
-        "response_format": response_format,
-    }
+
+def _raise_cli_error(message: str) -> NoReturn:
+    """Emit a stable CLI error message and abort with exit code 1."""
+    error(message)
+    raise typer.Exit(1)
+
 
 
 def _validate_audio_source_selection(
@@ -293,6 +318,28 @@ def _validate_audio_source_selection(
         raise typer.BadParameter("Audiodatei und --record schliessen sich aus")
 
 
+
+def _record_audio_source() -> tuple[Path, Path]:
+    """Record a temporary audio file and surface CLI-friendly failures."""
+    try:
+        audio_path = record_audio()
+    except ImportError:
+        _raise_cli_error("Für Aufnahme: pip install sounddevice soundfile")
+    except ValueError as exc:
+        _raise_cli_error(str(exc))
+    return audio_path, audio_path
+
+
+
+def _resolve_existing_audio_source(audio: Path | None) -> tuple[Path, None]:
+    """Validate an explicit audio file path for the CLI pipeline."""
+    assert audio is not None
+    if not audio.exists():
+        _raise_cli_error(f"Datei nicht gefunden: {audio}")
+    return audio, None
+
+
+
 def _resolve_audio_source(
     audio: Path | None,
     *,
@@ -300,23 +347,10 @@ def _resolve_audio_source(
 ) -> tuple[Path, Path | None]:
     """Resolve the requested audio input and track temporary recordings."""
     _validate_audio_source_selection(audio, record=record)
-
     if record:
-        try:
-            audio_path = record_audio()
-            return audio_path, audio_path
-        except ImportError:
-            error("Für Aufnahme: pip install sounddevice soundfile")
-            raise typer.Exit(1)
-        except ValueError as e:
-            error(str(e))
-            raise typer.Exit(1)
+        return _record_audio_source()
+    return _resolve_existing_audio_source(audio)
 
-    assert audio is not None
-    if not audio.exists():
-        error(f"Datei nicht gefunden: {audio}")
-        raise typer.Exit(1)
-    return audio, None
 
 
 def _cleanup_temp_audio_file(temp_file: Path | None) -> None:
@@ -402,11 +436,11 @@ def _transcribe_with_cli_error_handling(
             response_format=response_format,
         )
     except ImportError as exc:
-        error(f"Modul nicht installiert: pip install {_package_for_import_error(exc)}")
-        raise typer.Exit(1)
+        _raise_cli_error(
+            f"Modul nicht installiert: pip install {_package_for_import_error(exc)}"
+        )
     except Exception as exc:
-        error(str(exc))
-        raise typer.Exit(1)
+        _raise_cli_error(str(exc))
 
 
 def _maybe_refine_output_transcript(
@@ -505,6 +539,76 @@ def transcribe(
     return provider.transcribe(audio_path, **kwargs)
 
 
+
+def _log_cli_startup(*, resolved: _ResolvedCliOptions, record: bool) -> None:
+    """Emit startup timing and resolved CLI arguments once the env is loaded."""
+    startup_ms = (time.perf_counter() - _PROCESS_START) * 1000
+    logger.info(f"[{_get_session_id()}] Startup: {_format_duration(startup_ms)}")
+    logger.debug(
+        f"[{_get_session_id()}] Args: mode={resolved.mode.value}, model={resolved.model}, "
+        f"record={record}, refine={resolved.refine}"
+    )
+
+
+
+def _copy_transcript_to_clipboard_if_requested(
+    transcript: str,
+    *,
+    copy_requested: bool,
+) -> None:
+    """Handle optional clipboard export without cluttering the main CLI flow."""
+    if not copy_requested:
+        return
+    if copy_to_clipboard(transcript):
+        log("📋 In Zwischenablage kopiert!")
+    else:
+        log("⚠️  Zwischenablage nicht verfügbar")
+
+
+
+def _run_cli_pipeline(
+    *,
+    audio: Path | None,
+    record: bool,
+    copy_requested: bool,
+    resolved: _ResolvedCliOptions,
+    response_format: ResponseFormat,
+    no_refine: bool,
+    context: Context | None,
+) -> str:
+    """Execute the resolved CLI request and return the final transcript."""
+    audio_path, temp_file = _resolve_audio_source(audio, record=record)
+    transcript = _transcribe_and_maybe_refine(
+        audio_path,
+        temp_file=temp_file,
+        mode=resolved.mode.value,
+        model=resolved.model,
+        language=resolved.language,
+        response_format=response_format,
+        refine=resolved.refine,
+        no_refine=no_refine,
+        refine_model=resolved.refine_model,
+        refine_provider=resolved.refine_provider,
+        context=context,
+    )
+    print(transcript)
+    _copy_transcript_to_clipboard_if_requested(
+        transcript,
+        copy_requested=copy_requested,
+    )
+    return transcript
+
+
+
+def _log_cli_summary(transcript: str) -> None:
+    """Emit a consistent end-of-run timing summary for the CLI."""
+    total_ms = (time.perf_counter() - _PROCESS_START) * 1000
+    logger.info(
+        f"[{_get_session_id()}] ✓ Pipeline: {_format_duration(total_ms)}, "
+        f"{len(transcript)} Zeichen"
+    )
+
+
 @app.command()
 def main(
     audio: Annotated[
@@ -597,47 +701,17 @@ def main(
         refine_provider=refine_provider,
     )
 
-    # Startup-Timing loggen (seit Prozessstart)
-    startup_ms = (time.perf_counter() - _PROCESS_START) * 1000
-    logger.info(f"[{_get_session_id()}] Startup: {_format_duration(startup_ms)}")
-
-    logger.debug(
-        f"[{_get_session_id()}] Args: mode={resolved.mode.value}, model={resolved.model}, "
-        f"record={record}, refine={resolved.refine}"
-    )
-
-    # Audio-Quelle bestimmen
-    audio_path, temp_file = _resolve_audio_source(audio, record=record)
-
-    transcript = _transcribe_and_maybe_refine(
-        audio_path,
-        temp_file=temp_file,
-        mode=resolved.mode.value,
-        model=resolved.model,
-        language=resolved.language,
+    _log_cli_startup(resolved=resolved, record=record)
+    transcript = _run_cli_pipeline(
+        audio=audio,
+        record=record,
+        copy_requested=copy,
+        resolved=resolved,
         response_format=response_format,
-        refine=resolved.refine,
         no_refine=no_refine,
-        refine_model=resolved.refine_model,
-        refine_provider=resolved.refine_provider,
         context=context,
     )
-
-    # Ausgabe
-    print(transcript)
-
-    if copy:
-        if copy_to_clipboard(transcript):
-            log("📋 In Zwischenablage kopiert!")
-        else:
-            log("⚠️  Zwischenablage nicht verfügbar")
-
-    # Pipeline-Summary
-    total_ms = (time.perf_counter() - _PROCESS_START) * 1000
-    logger.info(
-        f"[{_get_session_id()}] ✓ Pipeline: {_format_duration(total_ms)}, "
-        f"{len(transcript)} Zeichen"
-    )
+    _log_cli_summary(transcript)
 
 
 if __name__ == "__main__":
