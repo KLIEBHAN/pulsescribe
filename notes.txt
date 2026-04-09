@@ -1,3 +1,40 @@
+Performance work log - 2026-04-09 (macOS welcome logs incremental chunk reuse)
+
+Scope
+- Left the last two commit areas untouched again: `ui/settings_windows.py`, `ui/overlay_windows.py`, and `utils/log_tail.py`.
+- Avoided the already dirty worktree files from earlier local changes (`utils/custom_prompts.py`, `utils/permissions.py`, `utils/vocabulary.py`, related tests).
+- Focused on the remaining macOS frontend hotspot in `ui/welcome.py` for the Logs tab refresh path.
+
+Current weaknesses reviewed
+- `ui/welcome.py`: append-only log growth still rebuilt the visible tail string from the full cached payload on every refresh attempt.
+- `ui/welcome.py`: when the log file only grew but the user was not scrolled to the bottom, the refresh path fell back to a full tail reload instead of reusing already rendered content.
+- `ui/welcome.py`: log refresh state tracked only the rendered string/signature, not reusable visible chunks, so incremental updates could not cheaply rebuild a trimmed tail.
+
+Changes in this pass
+- `ui/welcome.py`
+  Added a lightweight cache for visible log chunks plus truncation state.
+- `ui/welcome.py`
+  Extended append-only log refreshes so they can reuse cached chunks even when the view is not near the bottom, rebuilding only the visible tail instead of rereading the full log tail.
+- `ui/welcome.py`
+  Consolidated full log payload application into one helper that preserves scroll position while keeping the chunk cache in sync.
+- Tests
+  Added regression coverage that append-only log growth reuses cached chunks and skips a full reload when the viewer is scrolled away from the bottom.
+
+Why this helps
+- The macOS Logs tab now avoids repeated full-tail recomputation during long-running sessions with steady log append traffic.
+- Background auto-refresh and manual refresh remain responsive because append-only updates reuse in-memory state even for users reading older log lines.
+- The optimization keeps behavior intact while reducing file I/O and string rebuilding on a visible UI path.
+
+Validation
+- `pytest tests/test_settings_ui.py -q`
+- `python -m py_compile ui/welcome.py tests/test_settings_ui.py`
+- `ruff check ui/welcome.py tests/test_settings_ui.py`
+
+Next worthwhile areas
+- `ui/overlay.py`: the macOS overlay still updates visual state at high frequency and is the next likely CPU hotspot if traces still show wakeups outside recording.
+- `ui/menubar.py`: interim preview title updates could be further short-circuited if long dictation sessions still show menu-bar churn.
+- `ui/welcome.py`: prompt/vocabulary save validation remains a candidate if tab-edit latency is still noticeable after the log-viewer improvement.
+
 Performance work log - 2026-04-09 (Windows settings transcripts incremental block reuse)
 
 Scope

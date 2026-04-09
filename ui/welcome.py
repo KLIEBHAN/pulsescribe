@@ -13,7 +13,6 @@ from utils.hotkey_recording import HotkeyRecorder
 from utils.local_backend import normalize_local_backend, should_remove_local_backend_env
 from utils.log_tail import (
     get_file_signature,
-    merge_tail_text,
     read_file_tail_text,
     read_file_text_from_offset,
     should_auto_refresh_logs,
@@ -269,6 +268,8 @@ class WelcomeController:
         self._logs_finder_handler = None
         self._last_logs_text = None
         self._last_logs_signature = None
+        self._last_logs_chunks = None
+        self._last_logs_truncated = False
         self._last_transcripts_text = None
         self._last_transcripts_signature = None
         self._last_transcripts_entries = None
@@ -2424,7 +2425,7 @@ class WelcomeController:
             tc.setWidthTracksTextView_(True)
         initial_logs_text = self._get_logs_text()
         text_view.setString_(initial_logs_text)
-        self._last_logs_text = initial_logs_text
+        self._set_logs_cache(initial_logs_text)
         self._last_logs_signature = get_file_signature(LOG_FILE)
         scroll.setDocumentView_(text_view)
         logs_container.addSubview_(scroll)
@@ -2995,13 +2996,102 @@ class WelcomeController:
         except Exception:
             pass
 
+    def _split_logs_text_cache(self, log_text: str) -> tuple[list[str], bool]:
+        """Split the rendered log payload into cacheable visible chunks."""
+        if not log_text:
+            return [], False
+
+        prefix = LOG_TRUNCATED_PREFIX
+        if prefix and log_text.startswith(prefix):
+            visible_text = log_text[len(prefix) :]
+            return ([visible_text] if visible_text else []), True
+        return [log_text], False
+
+    def _compose_logs_text_from_cache(
+        self,
+        log_chunks: list[str],
+        *,
+        truncated: bool,
+        max_chars: int = WELCOME_LOG_MAX_CHARS,
+    ) -> str:
+        """Compose the rendered log payload from cached visible chunks."""
+        visible_text = "".join(chunk for chunk in log_chunks if chunk)
+        prefix = LOG_TRUNCATED_PREFIX if truncated else ""
+        if not prefix or len(prefix) >= max_chars:
+            return visible_text[-max_chars:]
+        if not truncated and len(visible_text) <= max_chars:
+            return visible_text
+
+        visible_budget = max_chars - len(prefix)
+        if visible_budget <= 0:
+            return visible_text[-max_chars:]
+        if len(visible_text) <= visible_budget:
+            return f"{prefix}{visible_text}"
+        return f"{prefix}{visible_text[-visible_budget:]}"
+
+    def _set_logs_cache(self, log_text: str) -> None:
+        """Update cached rendered logs plus the visible chunk representation."""
+        chunks, truncated = self._split_logs_text_cache(log_text)
+        self._last_logs_text = log_text
+        self._last_logs_chunks = chunks
+        self._last_logs_truncated = truncated
+
+    def _get_cached_logs_chunks(self) -> tuple[list[str], bool]:
+        """Return cached log chunks, deriving them from rendered text if needed."""
+        cached_chunks = getattr(self, "_last_logs_chunks", None)
+        if isinstance(cached_chunks, list):
+            return list(cached_chunks), bool(getattr(self, "_last_logs_truncated", False))
+        return self._split_logs_text_cache(self._last_logs_text or "")
+
+    def _apply_logs_payload(
+        self,
+        log_text: str,
+        signature,
+        *,
+        log_chunks: list[str] | None = None,
+        log_truncated: bool | None = None,
+        scroll_to_bottom: bool = False,
+    ) -> None:
+        """Apply log text updates while preserving scroll position."""
+        if log_text == self._last_logs_text:
+            self._last_logs_signature = signature
+            if log_chunks is not None:
+                self._last_logs_chunks = list(log_chunks)
+            if log_truncated is not None:
+                self._last_logs_truncated = log_truncated
+            if scroll_to_bottom:
+                self._scroll_logs_to_bottom()
+            return
+
+        previous_y = 0.0
+        if self._logs_scroll_view:
+            clip_view = self._logs_scroll_view.contentView()
+            if clip_view is not None:
+                previous_y = clip_view.documentVisibleRect().origin.y
+
+        was_near_bottom = self._is_logs_near_bottom()
+        self._logs_text_view.setString_(log_text)
+        if log_chunks is not None and log_truncated is not None:
+            self._last_logs_text = log_text
+            self._last_logs_chunks = list(log_chunks)
+            self._last_logs_truncated = log_truncated
+        else:
+            self._set_logs_cache(log_text)
+        self._last_logs_signature = signature
+
+        if scroll_to_bottom or was_near_bottom:
+            self._scroll_logs_to_bottom()
+            return
+
+        self._restore_logs_scroll_position(previous_y)
+
     def _try_append_logs_delta(
         self,
         signature,
         *,
         scroll_to_bottom: bool,
     ) -> bool:
-        """Append only the newly written log bytes when the visible tail stays append-only."""
+        """Refresh logs from an append-only delta when the file only grows."""
         if self._logs_text_view is None or signature is None or self._last_logs_text is None:
             return False
 
@@ -3017,9 +3107,6 @@ class WelcomeController:
         if current_size - previous_size > INCREMENTAL_LOG_APPEND_MAX_BYTES:
             return False
 
-        if not (scroll_to_bottom or self._is_logs_near_bottom()):
-            return False
-
         appended_text = read_file_text_from_offset(
             LOG_FILE,
             start_offset=previous_size,
@@ -3029,42 +3116,76 @@ class WelcomeController:
         if not appended_text:
             return False
 
-        previous_text = self._last_logs_text
-        merged_text = merge_tail_text(
-            previous_text,
-            appended_text,
-            max_chars=WELCOME_LOG_MAX_CHARS,
-            truncated_prefix=LOG_TRUNCATED_PREFIX,
+        previous_chunks, was_truncated = self._get_cached_logs_chunks()
+        merged_chunks = list(previous_chunks)
+        merged_chunks.append(appended_text)
+
+        visible_budget = WELCOME_LOG_MAX_CHARS
+        prefix = LOG_TRUNCATED_PREFIX
+        if prefix and len(prefix) < WELCOME_LOG_MAX_CHARS:
+            visible_budget = WELCOME_LOG_MAX_CHARS - len(prefix)
+        visible_budget = max(0, visible_budget)
+
+        trimmed_existing = False
+        total_visible_length = sum(len(chunk) for chunk in merged_chunks)
+        while merged_chunks and total_visible_length > visible_budget:
+            overflow = total_visible_length - visible_budget
+            first_chunk = merged_chunks[0]
+            trimmed_existing = True
+            if overflow >= len(first_chunk):
+                total_visible_length -= len(first_chunk)
+                merged_chunks.pop(0)
+                continue
+            merged_chunks[0] = first_chunk[overflow:]
+            total_visible_length -= overflow
+            break
+
+        merged_truncated = was_truncated or trimmed_existing
+        merged_text = self._compose_logs_text_from_cache(
+            merged_chunks,
+            truncated=merged_truncated,
         )
+        previous_text = self._last_logs_text
         if merged_text == previous_text:
             self._last_logs_signature = signature
+            self._last_logs_chunks = merged_chunks
+            self._last_logs_truncated = merged_truncated
             if scroll_to_bottom:
                 self._scroll_logs_to_bottom()
             return True
 
-        if not merged_text.startswith(previous_text):
-            return False
+        can_append_in_place = (
+            not trimmed_existing
+            and (scroll_to_bottom or self._is_logs_near_bottom())
+        )
 
-        appended_visible_text = merged_text[len(previous_text) :]
-        if not appended_visible_text:
+        if can_append_in_place:
+            try:
+                text_storage = self._logs_text_view.textStorage()
+                if text_storage is None:
+                    return False
+                text_storage.beginEditing()
+                try:
+                    text_storage.mutableString().appendString_(appended_text)
+                finally:
+                    text_storage.endEditing()
+            except Exception:
+                return False
+
+            self._last_logs_text = merged_text
+            self._last_logs_chunks = merged_chunks
+            self._last_logs_truncated = merged_truncated
             self._last_logs_signature = signature
+            self._scroll_logs_to_bottom()
             return True
 
-        try:
-            text_storage = self._logs_text_view.textStorage()
-            if text_storage is None:
-                return False
-            text_storage.beginEditing()
-            try:
-                text_storage.mutableString().appendString_(appended_visible_text)
-            finally:
-                text_storage.endEditing()
-        except Exception:
-            return False
-
-        self._last_logs_text = merged_text
-        self._last_logs_signature = signature
-        self._scroll_logs_to_bottom()
+        self._apply_logs_payload(
+            merged_text,
+            signature,
+            log_chunks=merged_chunks,
+            log_truncated=merged_truncated,
+            scroll_to_bottom=scroll_to_bottom,
+        )
         return True
 
     def _refresh_logs(self, *, scroll_to_bottom: bool = True) -> None:
@@ -3085,25 +3206,11 @@ class WelcomeController:
                     return
 
                 log_text = self._get_logs_text()
-                if log_text == self._last_logs_text:
-                    self._last_logs_signature = signature
-                    return
-
-                previous_y = 0.0
-                if self._logs_scroll_view:
-                    clip_view = self._logs_scroll_view.contentView()
-                    if clip_view is not None:
-                        previous_y = clip_view.documentVisibleRect().origin.y
-
-                was_near_bottom = self._is_logs_near_bottom()
-                self._logs_text_view.setString_(log_text)
-                self._last_logs_text = log_text
-                self._last_logs_signature = signature
-
-                if scroll_to_bottom or was_near_bottom:
-                    self._scroll_logs_to_bottom()
-                else:
-                    self._restore_logs_scroll_position(previous_y)
+                self._apply_logs_payload(
+                    log_text,
+                    signature,
+                    scroll_to_bottom=scroll_to_bottom,
+                )
             except Exception:
                 pass
 

@@ -1354,6 +1354,7 @@ class TestWelcomeLogsRefreshBehavior:
         ctrl._last_logs_text = "same logs"
         ctrl._last_logs_signature = (1, 2)
         ctrl._get_logs_text = MagicMock(return_value="same logs")
+        ctrl._try_append_logs_delta = MagicMock(return_value=False)
         ctrl._scroll_logs_to_bottom = MagicMock()
         ctrl._restore_logs_scroll_position = MagicMock()
 
@@ -1361,6 +1362,52 @@ class TestWelcomeLogsRefreshBehavior:
 
         ctrl._refresh_logs(scroll_to_bottom=False)
 
+        ctrl._try_append_logs_delta.assert_called_once_with(
+            (3, 4), scroll_to_bottom=False
+        )
         ctrl._get_logs_text.assert_called_once()
         assert ctrl._logs_text_view.set_calls == []
         assert ctrl._last_logs_signature == (3, 4)
+
+    def test_refresh_logs_reuses_cached_chunks_when_not_near_bottom(
+        self, monkeypatch, tmp_path
+    ):
+        import ui.welcome as welcome_mod
+
+        log_file = tmp_path / "app.log"
+        original_text = "01234567890"
+        appended_text = "ABCD"
+        log_file.write_text(f"{original_text}{appended_text}", encoding="utf-8")
+
+        ctrl = WelcomeController.__new__(WelcomeController)
+        clip_view = _FakeClipView(y=120, height=240)
+        ctrl._logs_text_view = _FakeTranscriptsTextView("...|34567890", doc_height=600)
+        ctrl._logs_scroll_view = _FakeTranscriptsScrollView(clip_view)
+        ctrl._last_logs_text = "...|34567890"
+        ctrl._last_logs_signature = (1, len(original_text.encode("utf-8")))
+        ctrl._last_logs_chunks = ["34567890"]
+        ctrl._last_logs_truncated = True
+        ctrl._get_logs_text = MagicMock(
+            side_effect=AssertionError("full log reload should be skipped")
+        )
+        ctrl._scroll_logs_to_bottom = MagicMock()
+        ctrl._restore_logs_scroll_position = MagicMock()
+
+        monkeypatch.setattr(welcome_mod, "LOG_FILE", log_file)
+        monkeypatch.setattr(welcome_mod, "LOG_TRUNCATED_PREFIX", "...|")
+        monkeypatch.setattr(welcome_mod, "WELCOME_LOG_MAX_CHARS", 12)
+        monkeypatch.setattr(
+            welcome_mod,
+            "get_file_signature",
+            lambda _path: (9, len(f"{original_text}{appended_text}".encode("utf-8"))),
+        )
+
+        ctrl._refresh_logs(scroll_to_bottom=False)
+
+        ctrl._get_logs_text.assert_not_called()
+        assert ctrl._logs_text_view.set_calls == ["...|7890ABCD"]
+        assert ctrl._logs_text_view.append_calls == []
+        assert "".join(ctrl._last_logs_chunks) == "7890ABCD"
+        assert ctrl._last_logs_truncated is True
+        ctrl._scroll_logs_to_bottom.assert_not_called()
+        ctrl._restore_logs_scroll_position.assert_called_once_with(120)
