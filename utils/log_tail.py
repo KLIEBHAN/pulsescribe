@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import BinaryIO
 
+from utils.file_signatures import build_file_signature
+
 _TAIL_CHUNK_SIZE = 8192
 _SCROLL_BOTTOM_TOLERANCE = 10
 
@@ -206,11 +208,11 @@ def merge_tail_text(
 def get_file_signature(path: Path) -> tuple[int, int] | None:
     """Return ``(mtime_ns, size)`` for change detection, or ``None`` if unavailable."""
     try:
-        stat_result = path.stat()
-    except OSError:
+        mtime_ns, size, _ctime_ns = build_file_signature(path)
+    except (FileNotFoundError, OSError):
         return None
 
-    return int(stat_result.st_mtime_ns), int(stat_result.st_size)
+    return mtime_ns, size
 
 
 def is_near_bottom(

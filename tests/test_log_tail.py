@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 from utils.log_tail import (
     clamp_scroll_value,
@@ -126,6 +127,28 @@ def test_get_file_signature_changes_when_file_content_changes(tmp_path: Path) ->
     assert signature_before is not None
     assert signature_after is not None
     assert signature_before != signature_after
+
+
+def test_get_file_signature_falls_back_to_second_precision_metadata(
+    tmp_path: Path, monkeypatch
+) -> None:
+    file_path = tmp_path / "fallback-signature.log"
+    file_path.write_text("abc", encoding="utf-8")
+
+    original_stat = Path.stat
+
+    def _patched_stat(self: Path, *args, **kwargs):
+        stat_result = original_stat(self, *args, **kwargs)
+        if self == file_path:
+            return SimpleNamespace(
+                st_mtime=123.25,
+                st_size=stat_result.st_size,
+            )
+        return stat_result
+
+    monkeypatch.setattr(Path, "stat", _patched_stat)
+
+    assert get_file_signature(file_path) == (123_250_000_000, 3)
 
 
 def test_is_near_bottom_with_tolerance() -> None:

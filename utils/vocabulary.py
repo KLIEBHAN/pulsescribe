@@ -7,39 +7,50 @@ parsed vocabulary and only reloads when the file changes.
 
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 import logging
 from pathlib import Path
 from typing import Any
 
 from config import VOCABULARY_FILE as _DEFAULT_VOCAB_FILE
+from utils.file_signatures import FileSignature, build_file_signature
 
 logger = logging.getLogger("pulsescribe")
 
 # Cache per path: {Path: (signature, normalized data, validation issues)}
-_cache: dict[Path, tuple[tuple[int, int, int], dict[str, Any], list[str]]] = {}
+_cache: dict[Path, tuple[FileSignature, dict[str, Any], list[str]]] = {}
 
 
-def _file_signature(path: Path) -> tuple[int, int, int]:
+def _file_signature(path: Path) -> FileSignature:
     """Erzeugt eine robuste Dateisignatur für Cache-Invalidierung."""
-    stat_result = path.stat()
-    return (
-        int(
-            getattr(
-                stat_result,
-                "st_mtime_ns",
-                int(getattr(stat_result, "st_mtime", 0.0) * 1_000_000_000),
-            )
-        ),
-        int(getattr(stat_result, "st_size", 0)),
-        int(
-            getattr(
-                stat_result,
-                "st_ctime_ns",
-                int(getattr(stat_result, "st_ctime", 0.0) * 1_000_000_000),
-            )
-        ),
-    )
+    return build_file_signature(path)
+
+
+def _copy_vocabulary_data(data: dict[str, Any]) -> dict[str, Any]:
+    """Return a defensive copy so callers cannot mutate cached state."""
+    return deepcopy(data)
+
+
+def _update_cached_state(
+    vocab_file: Path,
+    signature: FileSignature,
+    data: dict[str, Any],
+    issues: list[str],
+) -> None:
+    """Store normalized vocabulary state in the per-path cache."""
+    _cache[vocab_file] = (signature, _copy_vocabulary_data(data), list(issues))
+
+
+def _get_cached_state(
+    vocab_file: Path,
+    signature: FileSignature,
+) -> tuple[dict[str, Any], list[str]] | None:
+    """Return cached vocabulary state when the signature still matches."""
+    cached = _cache.get(vocab_file)
+    if cached and cached[0] == signature:
+        return _copy_vocabulary_data(cached[1]), list(cached[2])
+    return None
 
 
 def _normalize_keywords(raw_keywords: list) -> list[str]:
@@ -112,11 +123,11 @@ def _parse_vocabulary_text(raw_text: str) -> tuple[dict[str, Any], list[str]]:
 
 
 def _read_vocabulary_state(
-    vocab_file: Path, signature: tuple[int, int, int]
+    vocab_file: Path, signature: FileSignature
 ) -> tuple[dict[str, Any], list[str]]:
-    cached = _cache.get(vocab_file)
-    if cached and cached[0] == signature:
-        return cached[1], list(cached[2])
+    cached = _get_cached_state(vocab_file, signature)
+    if cached is not None:
+        return cached
 
     try:
         raw_text = vocab_file.read_text(encoding="utf-8")
@@ -127,8 +138,8 @@ def _read_vocabulary_state(
     else:
         data, issues = _parse_vocabulary_text(raw_text)
 
-    _cache[vocab_file] = (signature, data, list(issues))
-    return data, issues
+    _update_cached_state(vocab_file, signature, data, issues)
+    return _copy_vocabulary_data(data), list(issues)
 
 
 def load_vocabulary(path: Path | None = None) -> dict:
@@ -186,7 +197,8 @@ def save_vocabulary(keywords: list[str], path: Path | None = None) -> None:
         current_signature = None
 
     if existing_data == data and current_signature is not None:
-        _cache[vocab_file] = (
+        _update_cached_state(
+            vocab_file,
             current_signature,
             data,
             _collect_keyword_issues(normalized_keywords),
@@ -216,7 +228,7 @@ def save_vocabulary(keywords: list[str], path: Path | None = None) -> None:
 
     # Cache direkt aktualisieren, damit Änderungen sofort wirken.
     try:
-        _cache[vocab_file] = (_file_signature(vocab_file), data, issues)
+        _update_cached_state(vocab_file, _file_signature(vocab_file), data, issues)
     except OSError:
         _cache.pop(vocab_file, None)
 

@@ -141,6 +141,25 @@ class TestLoadVocabulary:
         assert result["keywords"] == ["Müller", "東京"]
         assert encodings == ["utf-8"]
 
+    def test_load_returns_defensive_copy_from_cache(self, temp_files):
+        import utils.vocabulary as vocab
+
+        vocab_file = temp_files / "vocab.json"
+        vocab_file.write_text(
+            json.dumps({"keywords": ["Alpha"], "extra": "keep"}),
+            encoding="utf-8",
+        )
+        vocab._cache.clear()
+
+        first = vocab.load_vocabulary(path=vocab_file)
+        first["keywords"].append("Mutated")
+        first["extra"] = "changed"
+
+        second = vocab.load_vocabulary(path=vocab_file)
+
+        assert second["keywords"] == ["Alpha"]
+        assert second["extra"] == "keep"
+
 
 class TestSaveVocabulary:
     """Tests für save_vocabulary() - Custom Vocabulary persistieren."""
