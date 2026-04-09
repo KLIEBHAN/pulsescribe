@@ -36,6 +36,127 @@ def test_validate_hotkey_change_rejects_overlapping_hotkeys(monkeypatch) -> None
     assert "überlappen" in message.lower()
 
 
+def test_validate_hotkey_change_accepts_unchanged_hotkey_without_extra_checks(
+    monkeypatch,
+) -> None:
+    values = {
+        "PULSESCRIBE_TOGGLE_HOTKEY": "F19",
+        "PULSESCRIBE_HOLD_HOTKEY": "",
+    }
+
+    monkeypatch.setattr(
+        "utils.preferences.get_env_setting",
+        lambda key: values.get(key),
+    )
+    monkeypatch.setattr(
+        "utils.permissions.check_input_monitoring_permission",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("unchanged hotkeys should return before permission checks")
+        ),
+    )
+    monkeypatch.setattr(
+        "utils.hotkey.parse_hotkey",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("unchanged hotkeys should return before parsing")
+        ),
+    )
+
+    normalized, level, message = validate_hotkey_change("toggle", " f19 ")
+
+    assert normalized == "f19"
+    assert level == "ok"
+    assert message is None
+
+
+def test_validate_hotkey_change_special_toggle_requires_input_monitoring(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("utils.preferences.get_env_setting", lambda _key: None)
+    monkeypatch.setattr(
+        "utils.permissions.check_input_monitoring_permission",
+        lambda show_alert=False: False,
+    )
+    monkeypatch.setattr(
+        "utils.hotkey.parse_hotkey",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("special-key validation should fail before parsing")
+        ),
+    )
+
+    normalized, level, message = validate_hotkey_change("toggle", "Fn")
+
+    assert normalized == "fn"
+    assert level == "error"
+    assert message is not None
+    assert "eingabemonitoring" in message.lower()
+
+
+def test_validate_hotkey_change_warns_when_carbon_hotkey_is_blocked_but_input_monitoring_is_available(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("utils.preferences.get_env_setting", lambda _key: None)
+    monkeypatch.setattr(
+        "utils.permissions.check_input_monitoring_permission",
+        lambda show_alert=False: True,
+    )
+    monkeypatch.setattr("utils.hotkey.parse_hotkey", lambda _hotkey: (79, 0))
+
+    class _BlockedCarbonRegistration:
+        def __init__(self, **_kwargs):
+            self.unregister_calls = 0
+
+        def register(self):
+            return False, "blocked"
+
+        def unregister(self):
+            self.unregister_calls += 1
+
+    monkeypatch.setattr(
+        "utils.carbon_hotkey.CarbonHotKeyRegistration",
+        _BlockedCarbonRegistration,
+    )
+
+    normalized, level, message = validate_hotkey_change("toggle", "f19")
+
+    assert normalized == "f19"
+    assert level == "warning"
+    assert message is not None
+    assert "fallback" in message.lower()
+
+
+def test_validate_hotkey_change_errors_when_carbon_hotkey_is_blocked_without_input_monitoring(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("utils.preferences.get_env_setting", lambda _key: None)
+    monkeypatch.setattr(
+        "utils.permissions.check_input_monitoring_permission",
+        lambda show_alert=False: False,
+    )
+    monkeypatch.setattr("utils.hotkey.parse_hotkey", lambda _hotkey: (79, 0))
+
+    class _BlockedCarbonRegistration:
+        def __init__(self, **_kwargs):
+            pass
+
+        def register(self):
+            return False, "blocked"
+
+        def unregister(self):
+            raise AssertionError("failed registrations must not unregister")
+
+    monkeypatch.setattr(
+        "utils.carbon_hotkey.CarbonHotKeyRegistration",
+        _BlockedCarbonRegistration,
+    )
+
+    normalized, level, message = validate_hotkey_change("toggle", "f19")
+
+    assert normalized == "f19"
+    assert level == "error"
+    assert message is not None
+    assert "aktiviere eingabemonitoring" in message.lower()
+
+
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS-only daemon hotkeys")
 def test_daemon_registration_skips_overlapping_hotkeys(monkeypatch) -> None:
     import pulsescribe_daemon as daemon_mod

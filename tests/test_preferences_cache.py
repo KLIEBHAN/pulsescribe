@@ -383,6 +383,26 @@ def test_apply_hotkey_setting_updates_selected_key_and_removes_legacy_keys(
     }
 
 
+def test_apply_hotkey_setting_updates_toggle_and_preserves_hold_key(
+    tmp_path, monkeypatch
+):
+    _isolate_prefs(tmp_path, monkeypatch)
+    prefs.ENV_FILE.write_text(
+        "PULSESCRIBE_HOTKEY=f18\n"
+        "PULSESCRIBE_HOTKEY_MODE=toggle\n"
+        "PULSESCRIBE_HOLD_HOTKEY=fn\n",
+        encoding="utf-8",
+    )
+
+    prefs.apply_hotkey_setting("toggle", " F19 ")
+
+    values = prefs.read_env_file()
+    assert values == {
+        "PULSESCRIBE_HOLD_HOTKEY": "fn",
+        "PULSESCRIBE_TOGGLE_HOTKEY": "f19",
+    }
+
+
 def test_load_preferences_returns_empty_dict_for_non_object_json(
     tmp_path, monkeypatch
 ):

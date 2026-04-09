@@ -73,6 +73,28 @@ LOCAL_PRESETS: dict[str, dict[str, str]] = {
 
 LOCAL_PRESET_OPTIONS = ["(none)", *LOCAL_PRESETS.keys()]
 
+_LOWER_OVERRIDE_FIELD_SPECS: tuple[tuple[str, str, set[str]], ...] = (
+    ("PULSESCRIBE_LOCAL_MODEL", "local_model", {"default"}),
+    ("PULSESCRIBE_DEVICE", "device", {"auto"}),
+    ("PULSESCRIBE_LOCAL_WARMUP", "warmup", {"auto"}),
+    ("PULSESCRIBE_LOCAL_FAST", "local_fast", {"default"}),
+    (LOCAL_FP16_ENV_KEY, "fp16", {"default"}),
+    (
+        "PULSESCRIBE_LOCAL_WITHOUT_TIMESTAMPS",
+        "without_timestamps",
+        {"default"},
+    ),
+    ("PULSESCRIBE_LOCAL_VAD_FILTER", "vad_filter", {"default"}),
+)
+_OPTIONAL_STRING_FIELD_SPECS: tuple[tuple[str, str], ...] = (
+    ("PULSESCRIBE_LOCAL_BEAM_SIZE", "beam_size"),
+    ("PULSESCRIBE_LOCAL_BEST_OF", "best_of"),
+    ("PULSESCRIBE_LOCAL_TEMPERATURE", "temperature"),
+    ("PULSESCRIBE_LOCAL_COMPUTE_TYPE", "compute_type"),
+    ("PULSESCRIBE_LOCAL_CPU_THREADS", "cpu_threads"),
+    ("PULSESCRIBE_LOCAL_NUM_WORKERS", "num_workers"),
+)
+
 
 def _normalize_lower_value(value: str | None) -> str | None:
     if value is None:
@@ -117,6 +139,25 @@ def _normalize_lightning_quant(value: str | None) -> str | None:
     return _normalize_lower_override(value, remove_when={"none"})
 
 
+def _apply_lower_override_fields(
+    env_updates: dict[str, str | None],
+    values: dict[str, str],
+) -> None:
+    for env_key, preset_key, remove_when in _LOWER_OVERRIDE_FIELD_SPECS:
+        env_updates[env_key] = _normalize_lower_override(
+            values.get(preset_key),
+            remove_when=remove_when,
+        )
+
+
+def _apply_optional_string_fields(
+    env_updates: dict[str, str | None],
+    values: dict[str, str],
+) -> None:
+    for env_key, preset_key in _OPTIONAL_STRING_FIELD_SPECS:
+        env_updates[env_key] = _normalize_optional_str(values.get(preset_key))
+
+
 def _build_local_preset_env_updates(values: dict[str, str]) -> dict[str, str | None]:
     env_updates: dict[str, str | None] = {
         "PULSESCRIBE_MODE": "local",
@@ -126,40 +167,8 @@ def _build_local_preset_env_updates(values: dict[str, str]) -> dict[str, str | N
     env_updates["PULSESCRIBE_LOCAL_BACKEND"] = _normalize_local_backend_override(
         values.get("local_backend")
     )
-    env_updates["PULSESCRIBE_LOCAL_MODEL"] = _normalize_lower_override(
-        values.get("local_model"),
-        remove_when={"default"},
-    )
-    env_updates["PULSESCRIBE_DEVICE"] = _normalize_lower_override(
-        values.get("device"),
-        remove_when={"auto"},
-    )
-    env_updates["PULSESCRIBE_LOCAL_WARMUP"] = _normalize_lower_override(
-        values.get("warmup"),
-        remove_when={"auto"},
-    )
-
-    for env_key, preset_key in (
-        ("PULSESCRIBE_LOCAL_FAST", "local_fast"),
-        (LOCAL_FP16_ENV_KEY, "fp16"),
-        ("PULSESCRIBE_LOCAL_WITHOUT_TIMESTAMPS", "without_timestamps"),
-        ("PULSESCRIBE_LOCAL_VAD_FILTER", "vad_filter"),
-    ):
-        env_updates[env_key] = _normalize_lower_override(
-            values.get(preset_key),
-            remove_when={"default"},
-        )
-
-    for env_key, preset_key in (
-        ("PULSESCRIBE_LOCAL_BEAM_SIZE", "beam_size"),
-        ("PULSESCRIBE_LOCAL_BEST_OF", "best_of"),
-        ("PULSESCRIBE_LOCAL_TEMPERATURE", "temperature"),
-        ("PULSESCRIBE_LOCAL_COMPUTE_TYPE", "compute_type"),
-        ("PULSESCRIBE_LOCAL_CPU_THREADS", "cpu_threads"),
-        ("PULSESCRIBE_LOCAL_NUM_WORKERS", "num_workers"),
-    ):
-        env_updates[env_key] = _normalize_optional_str(values.get(preset_key))
-
+    _apply_lower_override_fields(env_updates, values)
+    _apply_optional_string_fields(env_updates, values)
     env_updates["PULSESCRIBE_LIGHTNING_BATCH_SIZE"] = _normalize_lightning_batch_size(
         values.get("lightning_batch_size")
     )
@@ -194,13 +203,20 @@ def default_local_preset_private() -> str:
     )
 
 
+def _merge_local_preset_values(preset_values: dict[str, str]) -> dict[str, str]:
+    """Overlay one preset on top of the shared local preset defaults."""
+    values = dict(LOCAL_PRESET_BASE)
+    values.update(preset_values)
+    return values
+
+
 def apply_local_preset_to_env(preset_name: str) -> bool:
     """Applies a local preset directly to `.env` via preferences helpers."""
     preset_values = LOCAL_PRESETS.get(preset_name)
     if not preset_values:
         return False
 
-    values = dict(LOCAL_PRESET_BASE)
-    values.update(preset_values)
-    update_env_settings(_build_local_preset_env_updates(values))
+    update_env_settings(
+        _build_local_preset_env_updates(_merge_local_preset_values(preset_values))
+    )
     return True

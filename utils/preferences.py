@@ -26,6 +26,14 @@ logger = logging.getLogger("pulsescribe")
 
 PREFS_FILE = USER_CONFIG_DIR / "preferences.json"
 ENV_FILE = USER_CONFIG_DIR / ".env"
+_HOTKEY_ENV_KEYS = {
+    "toggle": "PULSESCRIBE_TOGGLE_HOTKEY",
+    "hold": "PULSESCRIBE_HOLD_HOTKEY",
+}
+_LEGACY_HOTKEY_ENV_KEYS = (
+    "PULSESCRIBE_HOTKEY",
+    "PULSESCRIBE_HOTKEY_MODE",
+)
 
 # Cache: ((mtime_ns, size, ctime_ns), values)
 _env_cache: tuple[FileSignature, dict[str, str]] | None = None
@@ -372,6 +380,17 @@ def set_show_welcome_on_startup(show: bool) -> None:
     _store_preference("show_welcome_on_startup", show)
 
 
+def _save_first_env_setting(key_name: str, value: str) -> None:
+    """Persist one env assignment while preserving later duplicates for that key."""
+    _update_env_file(
+        ENV_FILE,
+        apply_changes=lambda lines: _set_first_env_line(lines, key_name, value),
+        read_error_message="Konnte .env nicht lesen",
+        write_error_message="Konnte .env nicht schreiben",
+        invalidate_cache_on_noop=True,
+    )
+
+
 def save_api_key(key_name: str, value: str) -> None:
     """Speichert/aktualisiert einen API-Key in der .env Datei.
 
@@ -382,13 +401,7 @@ def save_api_key(key_name: str, value: str) -> None:
     Raises:
         OSError: Bei Schreibfehlern (Disk voll, keine Berechtigung)
     """
-    _update_env_file(
-        ENV_FILE,
-        apply_changes=lambda lines: _set_first_env_line(lines, key_name, value),
-        read_error_message="Konnte .env nicht lesen",
-        write_error_message="Konnte .env nicht schreiben",
-        invalidate_cache_on_noop=True,
-    )
+    _save_first_env_setting(key_name, value)
 
 
 def set_api_key(key_name: str, value: str | None) -> bool:
@@ -406,6 +419,11 @@ def set_api_key(key_name: str, value: str | None) -> bool:
     return True
 
 
+def _get_env_value(key_name: str) -> str | None:
+    """Read one value from the cached `.env` mapping."""
+    return read_env_file().get(key_name)
+
+
 def get_api_key(key_name: str) -> str | None:
     """Liest einen API-Key aus der .env Datei.
 
@@ -415,7 +433,7 @@ def get_api_key(key_name: str) -> str | None:
     Returns:
         Der API-Key Wert oder None wenn nicht gefunden
     """
-    return read_env_file().get(key_name)
+    return _get_env_value(key_name)
 
 
 def get_env_setting(key_name: str) -> str | None:
@@ -427,7 +445,7 @@ def get_env_setting(key_name: str) -> str | None:
     Returns:
         Der Wert oder None wenn nicht gefunden
     """
-    return read_env_file().get(key_name)
+    return _get_env_value(key_name)
 
 
 def save_env_setting(key_name: str, value: str) -> None:
@@ -437,7 +455,7 @@ def save_env_setting(key_name: str, value: str) -> None:
         key_name: Name der Einstellung (z.B. "PULSESCRIBE_MODE")
         value: Der Wert
     """
-    save_api_key(key_name, value)  # Gleiche Logik wie bei API-Keys
+    _save_first_env_setting(key_name, value)
 
 
 def update_env_settings(updates: dict[str, str | None]) -> None:
@@ -480,6 +498,14 @@ def remove_env_setting(key_name: str) -> None:
     )
 
 
+def _build_hotkey_env_updates(kind: str, value: str) -> dict[str, str | None]:
+    """Build the env updates for one hotkey change while clearing legacy keys."""
+    key_name = _HOTKEY_ENV_KEYS.get(kind, _HOTKEY_ENV_KEYS["toggle"])
+    env_updates: dict[str, str | None] = {key_name: value}
+    env_updates.update({legacy_key: None for legacy_key in _LEGACY_HOTKEY_ENV_KEYS})
+    return env_updates
+
+
 def apply_hotkey_setting(kind: str, hotkey_str: str) -> None:
     """Speichert Toggle/Hold Hotkey und entfernt Legacy Keys.
 
@@ -489,15 +515,4 @@ def apply_hotkey_setting(kind: str, hotkey_str: str) -> None:
     if not value:
         return
 
-    key_name = (
-        "PULSESCRIBE_HOLD_HOTKEY"
-        if kind == "hold"
-        else "PULSESCRIBE_TOGGLE_HOTKEY"
-    )
-    update_env_settings(
-        {
-            key_name: value,
-            "PULSESCRIBE_HOTKEY": None,
-            "PULSESCRIBE_HOTKEY_MODE": None,
-        }
-    )
+    update_env_settings(_build_hotkey_env_updates(kind, value))
