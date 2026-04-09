@@ -223,6 +223,82 @@ DEFAULT_MODELS = {
 }
 
 
+def _validate_transcription_mode(mode: str) -> None:
+    """Raise a stable error for unsupported transcription modes."""
+    if mode in DEFAULT_MODELS:
+        return
+    supported = ", ".join(sorted(DEFAULT_MODELS.keys()))
+    raise ValueError(f"Ungültiger Modus '{mode}'. Unterstützt: {supported}")
+
+
+def _build_provider_transcribe_kwargs(
+    mode: str,
+    provider,
+    *,
+    model: str | None,
+    language: str | None,
+    response_format: str,
+) -> dict[str, str | None]:
+    """Build provider kwargs while keeping OpenAI's response-format special case."""
+    kwargs: dict[str, str | None] = {
+        "model": model,
+        "language": language,
+    }
+    if mode != "openai":
+        if response_format != "text":
+            log(f"Hinweis: --format wird im {mode}-Modus ignoriert")
+        return kwargs
+
+    from providers.openai import OpenAIProvider
+
+    if not isinstance(provider, OpenAIProvider):
+        raise TypeError(
+            f"Expected OpenAIProvider for mode='openai', got {type(provider).__name__}"
+        )
+
+    return {
+        **kwargs,
+        "response_format": response_format,
+    }
+
+
+def _resolve_audio_source(
+    audio: Path | None,
+    *,
+    record: bool,
+) -> tuple[Path, Path | None]:
+    """Resolve the requested audio input and track temporary recordings."""
+    if record:
+        try:
+            audio_path = record_audio()
+            return audio_path, audio_path
+        except ImportError:
+            error("Für Aufnahme: pip install sounddevice soundfile")
+            raise typer.Exit(1)
+        except ValueError as e:
+            error(str(e))
+            raise typer.Exit(1)
+
+    assert audio is not None  # Validated by CLI input checks
+    if not audio.exists():
+        error(f"Datei nicht gefunden: {audio}")
+        raise typer.Exit(1)
+    return audio, None
+
+
+def _cleanup_temp_audio_file(temp_file: Path | None) -> None:
+    """Best-effort cleanup for temporary recording files."""
+    if temp_file is None or not temp_file.exists():
+        return
+    try:
+        temp_file.unlink()
+    except OSError as cleanup_error:
+        logger.warning(
+            "Temporäre Aufnahme konnte nicht gelöscht werden: %s",
+            cleanup_error,
+        )
+
+
 def transcribe(
     audio_path: Path,
     mode: str,
@@ -240,39 +316,18 @@ def transcribe(
     """
     from providers import get_provider
 
-    # Provider validieren
-    if mode not in DEFAULT_MODELS:
-        supported = ", ".join(sorted(DEFAULT_MODELS.keys()))
-        raise ValueError(f"Ungültiger Modus '{mode}'. Unterstützt: {supported}")
+    _validate_transcription_mode(mode)
 
     # Provider holen und transkribieren
     provider = get_provider(mode)
-
-    # Deepgram, Groq und lokal unterstützen kein response_format
-    if response_format != "text" and mode != "openai":
-        log(f"Hinweis: --format wird im {mode}-Modus ignoriert")
-
-    # OpenAI unterstützt response_format
-    if mode == "openai":
-        from providers.openai import OpenAIProvider
-
-        if not isinstance(provider, OpenAIProvider):
-            raise TypeError(
-                f"Expected OpenAIProvider for mode='openai', got {type(provider).__name__}"
-            )
-        return provider.transcribe(
-            audio_path,
-            model=model,
-            language=language,
-            response_format=response_format,
-        )
-
-    # Andere Provider
-    return provider.transcribe(
-        audio_path,
+    kwargs = _build_provider_transcribe_kwargs(
+        mode,
+        provider,
         model=model,
         language=language,
+        response_format=response_format,
     )
+    return provider.transcribe(audio_path, **kwargs)
 
 
 @app.command()
@@ -390,26 +445,7 @@ def main(
     )
 
     # Audio-Quelle bestimmen
-    temp_file: Path | None = None
-
-    if record:
-        try:
-            audio_path = record_audio()
-            temp_file = audio_path
-        except ImportError:
-            error("Für Aufnahme: pip install sounddevice soundfile")
-            raise typer.Exit(1)
-        except ValueError as e:
-            error(str(e))
-            raise typer.Exit(1)
-    else:
-        assert (
-            audio is not None
-        )  # Validated above: either record=True or audio provided
-        audio_path = audio
-        if not audio_path.exists():
-            error(f"Datei nicht gefunden: {audio_path}")
-            raise typer.Exit(1)
+    audio_path, temp_file = _resolve_audio_source(audio, record=record)
 
     # Transkription durchführen
     try:
@@ -434,14 +470,7 @@ def main(
         error(str(e))
         raise typer.Exit(1)
     finally:
-        if temp_file and temp_file.exists():
-            try:
-                temp_file.unlink()
-            except OSError as cleanup_error:
-                logger.warning(
-                    "Temporäre Aufnahme konnte nicht gelöscht werden: %s",
-                    cleanup_error,
-                )
+        _cleanup_temp_audio_file(temp_file)
 
     # LLM-Nachbearbeitung (optional)
     if response_format == ResponseFormat.text:

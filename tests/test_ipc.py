@@ -74,3 +74,38 @@ def test_ipc_server_start_cleans_up_stale_ipc_files(tmp_path, monkeypatch) -> No
     assert handled == []
 
     server.stop()
+
+
+def test_ipc_client_clear_response_removes_response_file(tmp_path, monkeypatch) -> None:
+    response_file = tmp_path / "ipc_response.json"
+    monkeypatch.setattr(ipc, "IPC_RESPONSE_FILE", response_file)
+    response_file.write_text(json.dumps({"id": "cmd-1"}), encoding="utf-8")
+
+    client = ipc.IPCClient()
+    client.clear_response()
+
+    assert not response_file.exists()
+
+
+def test_ipc_server_handler_failure_returns_error_response(
+    tmp_path, monkeypatch
+) -> None:
+    command_file = tmp_path / "ipc_command.json"
+    response_file = tmp_path / "ipc_response.json"
+    monkeypatch.setattr(ipc, "IPC_COMMAND_FILE", command_file)
+    monkeypatch.setattr(ipc, "IPC_RESPONSE_FILE", response_file)
+
+    command_file.write_text(
+        json.dumps({"id": "cmd-123", "command": ipc.CMD_START_TEST}),
+        encoding="utf-8",
+    )
+
+    server = ipc.IPCServer(lambda _cmd_id, _command: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    server._process_pending_command()
+
+    response = json.loads(response_file.read_text(encoding="utf-8"))
+    assert response["id"] == "cmd-123"
+    assert response["status"] == ipc.STATUS_ERROR
+    assert response["error"] == "boom"
+    assert not command_file.exists()

@@ -2,6 +2,7 @@
 
 
 import asyncio
+import builtins
 import sys
 from types import SimpleNamespace
 
@@ -43,6 +44,12 @@ class TestDefaultModels:
         assert "groq" in DEFAULT_MODELS
         assert "local" in DEFAULT_MODELS
 
+    def test_get_default_model_unknown_falls_back_to_whisper_1(self):
+        """Unbekannte Provider sollen denselben sicheren Fallback behalten."""
+        from providers import get_default_model
+
+        assert get_default_model("unknown") == "whisper-1"
+
 
 class TestProviderInterface:
     """Tests für Provider-Interface."""
@@ -79,8 +86,6 @@ class TestProviderInterface:
 
 
 def test_get_provider_local_reports_slim_build_import_error(monkeypatch):
-    import builtins
-
     from providers import get_provider
 
     real_import = builtins.__import__
@@ -101,6 +106,27 @@ def test_get_provider_local_reports_slim_build_import_error(monkeypatch):
         get_provider("local")
 
     assert "Original-Fehler: mock missing local backend" in str(exc_info.value)
+
+
+def test_get_provider_non_local_import_error_bubbles_up(monkeypatch):
+    from providers import get_provider
+
+    real_import = builtins.__import__
+
+    def _patched_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if (
+            name == "openai"
+            and level == 1
+            and globals
+            and globals.get("__package__") == "providers"
+        ):
+            raise ImportError("mock missing openai backend")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _patched_import)
+
+    with pytest.raises(ImportError, match="mock missing openai backend"):
+        get_provider("openai")
 
 
 class TestProviderValidation:

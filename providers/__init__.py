@@ -16,12 +16,8 @@ Unterstützte Provider:
     - local: Lokales Whisper-Modell
 """
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from .base import TranscriptionProvider
-
-_ProviderSpec = tuple[str, str]
 
 # Defaults zentral in config.py halten (vermeidet Drift)
 from config import (
@@ -31,21 +27,33 @@ from config import (
     DEFAULT_LOCAL_MODEL,
 )
 
-# Default-Modelle pro Provider
-DEFAULT_MODELS = {
-    "openai": DEFAULT_API_MODEL,
-    "deepgram": DEFAULT_DEEPGRAM_MODEL,
-    "deepgram_stream": DEFAULT_DEEPGRAM_MODEL,
-    "groq": DEFAULT_GROQ_MODEL,
-    "local": DEFAULT_LOCAL_MODEL,
-}
+if TYPE_CHECKING:
+    from .base import TranscriptionProvider
+
+
+@dataclass(frozen=True)
+class _ProviderSpec:
+    module_name: str
+    class_name: str
+    default_model: str
+
+_UNKNOWN_PROVIDER_DEFAULT_MODEL = "whisper-1"
 
 _PROVIDER_SPECS: dict[str, _ProviderSpec] = {
-    "openai": ("openai", "OpenAIProvider"),
-    "deepgram": ("deepgram", "DeepgramProvider"),
-    "deepgram_stream": ("deepgram_stream", "DeepgramStreamProvider"),
-    "groq": ("groq", "GroqProvider"),
-    "local": ("local", "LocalProvider"),
+    "openai": _ProviderSpec("openai", "OpenAIProvider", DEFAULT_API_MODEL),
+    "deepgram": _ProviderSpec("deepgram", "DeepgramProvider", DEFAULT_DEEPGRAM_MODEL),
+    "deepgram_stream": _ProviderSpec(
+        "deepgram_stream",
+        "DeepgramStreamProvider",
+        DEFAULT_DEEPGRAM_MODEL,
+    ),
+    "groq": _ProviderSpec("groq", "GroqProvider", DEFAULT_GROQ_MODEL),
+    "local": _ProviderSpec("local", "LocalProvider", DEFAULT_LOCAL_MODEL),
+}
+
+# Default-Modelle pro Provider
+DEFAULT_MODELS = {
+    mode: spec.default_model for mode, spec in _PROVIDER_SPECS.items()
 }
 
 
@@ -59,16 +67,22 @@ def _raise_local_mode_unavailable(exc: ImportError) -> None:
     ) from None
 
 
-def _load_provider_class(mode: str):
-    module_name, class_name = _PROVIDER_SPECS[mode]
+def _get_provider_spec(mode: str) -> _ProviderSpec:
     try:
-        module = __import__(module_name, globals(), locals(), [class_name], 1)
+        return _PROVIDER_SPECS[mode]
+    except KeyError:
+        raise ValueError(f"Unbekannter Provider: {mode}") from None
+
+
+def _load_provider_class(mode: str):
+    spec = _get_provider_spec(mode)
+    try:
+        module = __import__(spec.module_name, globals(), locals(), [spec.class_name], 1)
     except ImportError as exc:
         if mode == "local":
             _raise_local_mode_unavailable(exc)
         raise
-    return getattr(module, class_name)
-
+    return getattr(module, spec.class_name)
 
 
 def get_provider(mode: str) -> "TranscriptionProvider":
@@ -83,16 +97,16 @@ def get_provider(mode: str) -> "TranscriptionProvider":
     Raises:
         ValueError: Bei unbekanntem Provider
     """
-    try:
-        provider_class = _load_provider_class(mode)
-    except KeyError:
-        raise ValueError(f"Unbekannter Provider: {mode}") from None
+    provider_class = _load_provider_class(mode)
     return provider_class()
 
 
 def get_default_model(mode: str) -> str:
     """Gibt das Default-Modell für einen Provider zurück."""
-    return DEFAULT_MODELS.get(mode, "whisper-1")
+    spec = _PROVIDER_SPECS.get(mode)
+    if spec is None:
+        return _UNKNOWN_PROVIDER_DEFAULT_MODEL
+    return spec.default_model
 
 
 __all__ = [

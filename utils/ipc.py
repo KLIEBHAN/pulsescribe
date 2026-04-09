@@ -99,6 +99,35 @@ def _safe_read(path: Path) -> dict | None:
     return None
 
 
+def _delete_file_if_exists(path: Path) -> None:
+    """Delete a file best-effort without surfacing cleanup noise."""
+    try:
+        if path.exists():
+            path.unlink()
+    except Exception:
+        pass
+
+
+def _matching_response(cmd_id: str) -> dict | None:
+    """Return the response payload only when it belongs to the requested command."""
+    response = _safe_read(IPC_RESPONSE_FILE)
+    if response and response.get("id") == cmd_id:
+        return response
+    return None
+
+
+def _extract_pending_command(command: dict | None, *, last_processed_id: str | None):
+    """Return the next unprocessed command tuple or ``None``."""
+    if not command:
+        return None
+
+    cmd_id = command.get("id")
+    cmd_type = command.get("command")
+    if not cmd_id or not cmd_type or cmd_id == last_processed_id:
+        return None
+    return cmd_id, cmd_type
+
+
 # -----------------------------------------------------------------------------
 # IPCClient - Used by the Wizard subprocess
 # -----------------------------------------------------------------------------
@@ -116,9 +145,6 @@ class IPCClient:
             handle_response(response)
     """
 
-    def __init__(self) -> None:
-        self._last_cmd_id: str | None = None
-
     def send_command(self, command: str) -> str:
         """Write a command to the IPC file for the daemon to pick up.
 
@@ -133,7 +159,6 @@ class IPCClient:
                 "timestamp": time.time(),
             },
         )
-        self._last_cmd_id = cmd_id
         logger.debug(f"IPC command sent: {command} (id={cmd_id})")
         return cmd_id
 
@@ -143,18 +168,11 @@ class IPCClient:
         Returns the response dict if available, None otherwise.
         Caller should poll this repeatedly (e.g., via QTimer).
         """
-        response = _safe_read(IPC_RESPONSE_FILE)
-        if response and response.get("id") == cmd_id:
-            return response
-        return None
+        return _matching_response(cmd_id)
 
     def clear_response(self) -> None:
         """Delete response file after processing (cleanup)."""
-        try:
-            if IPC_RESPONSE_FILE.exists():
-                IPC_RESPONSE_FILE.unlink()
-        except Exception:
-            pass  # Best-effort cleanup
+        _delete_file_if_exists(IPC_RESPONSE_FILE)
 
 
 # -----------------------------------------------------------------------------
@@ -246,22 +264,19 @@ class IPCServer:
     def _process_pending_command(self) -> None:
         """Check for and process a single pending command."""
         try:
-            command = _safe_read(IPC_COMMAND_FILE)
-            if not command:
+            pending = _extract_pending_command(
+                _safe_read(IPC_COMMAND_FILE),
+                last_processed_id=self._last_processed_id,
+            )
+            if pending is None:
                 return
 
-            cmd_id = command.get("id")
-            cmd_type = command.get("command")
-
-            # Skip if already processed (deduplication)
-            if not cmd_id or not cmd_type or cmd_id == self._last_processed_id:
-                return
-
+            cmd_id, cmd_type = pending
             self._last_processed_id = cmd_id
             logger.debug(f"IPC command received: {cmd_type} (id={cmd_id})")
 
             # Remove command file to prevent re-processing on next poll
-            self._delete_file(IPC_COMMAND_FILE)
+            _delete_file_if_exists(IPC_COMMAND_FILE)
 
             # Dispatch to handler
             self._invoke_handler(cmd_id, cmd_type)
@@ -277,15 +292,7 @@ class IPCServer:
             logger.exception(f"IPC command handler error: {e}")
             self.send_response(cmd_id, STATUS_ERROR, error=str(e))
 
-    def _delete_file(self, path: Path) -> None:
-        """Delete file if it exists (best-effort)."""
-        try:
-            if path.exists():
-                path.unlink()
-        except Exception:
-            pass
-
     def _cleanup_files(self) -> None:
         """Remove IPC files on shutdown."""
-        self._delete_file(IPC_COMMAND_FILE)
-        self._delete_file(IPC_RESPONSE_FILE)
+        _delete_file_if_exists(IPC_COMMAND_FILE)
+        _delete_file_if_exists(IPC_RESPONSE_FILE)

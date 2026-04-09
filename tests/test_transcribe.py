@@ -78,6 +78,14 @@ class TestTranscribeFunction:
         call_kwargs = mock_provider.transcribe.call_args[1]
         assert call_kwargs.get("response_format") == "json"
 
+    def test_openai_requires_openai_provider_instance(self, audio_file):
+        """Die OpenAI-Sonderbehandlung darf keinen falschen Provider schlucken."""
+        with patch("providers.get_provider", return_value=Mock()):
+            from transcribe import transcribe
+
+            with pytest.raises(TypeError, match="Expected OpenAIProvider"):
+                transcribe(audio_file, mode="openai")
+
     def test_deepgram_ignores_response_format(self, audio_file):
         """Deepgram ignoriert response_format (kein Parameter übergeben)."""
         with patch("providers.get_provider") as mock_get_provider:

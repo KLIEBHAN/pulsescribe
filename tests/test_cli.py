@@ -232,6 +232,17 @@ class TestCLI:
         mock_refine.assert_not_called()
         assert '{"text":"hi"}' in result.output
 
+    def test_missing_audio_file_exits_before_transcribing(self, clean_env, tmp_path):
+        """Nicht vorhandene Dateien sollen früh und eindeutig abgewiesen werden."""
+        missing_audio = tmp_path / "missing.wav"
+
+        with patch("transcribe.transcribe") as mock_transcribe:
+            result = runner.invoke(app, [str(missing_audio)])
+
+        assert result.exit_code == 1
+        assert "Datei nicht gefunden" in strip_ansi(result.output)
+        mock_transcribe.assert_not_called()
+
     def test_record_mode_ignores_temp_cleanup_errors_after_success(
         self, clean_env, monkeypatch, tmp_path
     ):
