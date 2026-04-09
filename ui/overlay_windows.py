@@ -26,6 +26,7 @@ from ui.animation import (
     FPS,
 )
 from utils.log_tail import read_file_tail_text
+from utils.log_tail import get_file_signature
 
 logger = logging.getLogger("pulsescribe.overlay")
 
@@ -131,7 +132,7 @@ class WindowsOverlayController:
         self._last_label_config: tuple[str, tuple[object, ...], str] | None = None
         self._interim_file = interim_file
         self._last_interim_text = ""
-        self._last_interim_mtime_ns: int | None = None
+        self._last_interim_signature: tuple[int, int] | None = None
         self._interim_polling_active = False
         self._interim_poll_after_id: str | None = None
 
@@ -360,15 +361,19 @@ class WindowsOverlayController:
         if not self._interim_polling_active:
             return
 
-        if self._state == "RECORDING" and not self._interim_file.exists():
+        signature = (
+            get_file_signature(self._interim_file)
+            if self._state == "RECORDING"
+            else None
+        )
+        if self._state == "RECORDING" and signature is None:
             if self._last_interim_text:
                 self._last_interim_text = ""
-                self._last_interim_mtime_ns = None
+                self._last_interim_signature = None
                 self._handle_interim_text("")
-        elif self._state == "RECORDING" and self._interim_file.exists():
+        elif self._state == "RECORDING":
             try:
-                current_mtime_ns = self._interim_file.stat().st_mtime_ns
-                if current_mtime_ns == self._last_interim_mtime_ns:
+                if signature == self._last_interim_signature:
                     if self._running and self._interim_polling_active:
                         self._interim_poll_after_id = self._root.after(
                             INTERIM_POLL_INTERVAL_MS, self._poll_interim_file
@@ -380,7 +385,7 @@ class WindowsOverlayController:
                     max_chars=INTERIM_POLL_MAX_CHARS,
                     errors="replace",
                 ).strip()
-                self._last_interim_mtime_ns = current_mtime_ns
+                self._last_interim_signature = signature
                 if text != self._last_interim_text:
                     self._last_interim_text = text
                     self._handle_interim_text(text)
@@ -411,7 +416,7 @@ class WindowsOverlayController:
                 pass
             self._interim_poll_after_id = None
         self._last_interim_text = ""
-        self._last_interim_mtime_ns = None
+        self._last_interim_signature = None
 
     # =========================================================================
     # State Handling
@@ -427,7 +432,7 @@ class WindowsOverlayController:
         if state == "IDLE":
             self._root.withdraw()
             self._last_interim_text = ""
-            self._last_interim_mtime_ns = None
+            self._last_interim_signature = None
             self._last_label_config = None
             self._bar_color = None
             self._anim = AnimationLogic()

@@ -105,7 +105,7 @@ def _make_controller(interim_file: Path) -> WindowsOverlayController:
     controller._interim_file = interim_file
     controller._state = "RECORDING"
     controller._last_interim_text = ""
-    controller._last_interim_mtime_ns = None
+    controller._last_interim_signature = None
     controller._interim_polling_active = True
     controller._interim_poll_after_id = None
     return controller
@@ -412,7 +412,7 @@ def test_handle_state_change_toggles_interim_polling_for_recording_only(tmp_path
     assert controller._interim_polling_active is False
     assert controller._root.after_cancel_calls == ["after-existing"]
     assert controller._last_interim_text == ""
-    assert controller._last_interim_mtime_ns is None
+    assert controller._last_interim_signature is None
 
     controller._handle_state_change("RECORDING", None)
     assert controller._interim_polling_active is True

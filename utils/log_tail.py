@@ -3,9 +3,25 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import BinaryIO
 
 _TAIL_CHUNK_SIZE = 8192
 _SCROLL_BOTTOM_TOLERANCE = 10
+
+
+def _open_tail_handle(path: Path) -> tuple[BinaryIO | None, int]:
+    """Open a file once for tail helpers and return its size."""
+    try:
+        handle = path.open("rb")
+    except OSError:
+        return None, 0
+
+    try:
+        handle.seek(0, 2)
+        return handle, handle.tell()
+    except OSError:
+        handle.close()
+        return None, 0
 
 
 def _read_tail_bytes(
@@ -18,12 +34,11 @@ def _read_tail_bytes(
     if max_bytes is not None and max_bytes <= 0:
         return b"", False
 
-    with path.open("rb") as handle:
-        handle.seek(0, 2)
-        position = handle.tell()
-        if position <= 0:
-            return b"", False
+    handle, position = _open_tail_handle(path)
+    if handle is None or position <= 0:
+        return b"", False
 
+    with handle:
         chunks: list[bytes] = []
         collected_bytes = 0
         collected_newlines = 0
@@ -66,7 +81,7 @@ def read_file_tail_text(
     truncated_prefix: str = "... (truncated)\n\n",
 ) -> str:
     """Return at most the last ``max_chars`` characters from a text file."""
-    if max_chars <= 0 or not path.exists():
+    if max_chars <= 0:
         return ""
 
     # Worst-case UTF-8 expansion is 4 bytes per character.
@@ -92,7 +107,7 @@ def read_file_tail_lines(
     max_scan_bytes: int = 512_000,
 ) -> str:
     """Return the last ``max_lines`` lines from a text file."""
-    if max_lines <= 0 or not path.exists():
+    if max_lines <= 0:
         return ""
 
     raw, truncated_from_start = _read_tail_bytes(
@@ -127,14 +142,16 @@ def read_file_text_from_offset(
     appended region exceeds the budget, callers should fall back to a normal tail
     reload instead of trying to stream a large delta into the widget.
     """
-    if start_offset < 0 or not path.exists():
+    if start_offset < 0:
         return ""
     if max_bytes is not None and max_bytes <= 0:
         return ""
 
-    with path.open("rb") as handle:
-        handle.seek(0, 2)
-        file_size = handle.tell()
+    handle, file_size = _open_tail_handle(path)
+    if handle is None:
+        return ""
+
+    with handle:
         if start_offset >= file_size:
             return ""
 
@@ -188,9 +205,6 @@ def merge_tail_text(
 
 def get_file_signature(path: Path) -> tuple[int, int] | None:
     """Return ``(mtime_ns, size)`` for change detection, or ``None`` if unavailable."""
-    if not path.exists():
-        return None
-
     try:
         stat_result = path.stat()
     except OSError:

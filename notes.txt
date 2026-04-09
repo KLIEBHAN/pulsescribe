@@ -678,3 +678,75 @@ Next worthwhile areas
 - `ui/settings_windows.py`: `_load_settings()` remains the clearest Windows UI hot path if the settings dialog is reopened frequently.
 - `ui/overlay.py`: if macOS traces still show overlay cost during active speech, reduce per-frame math/allocation work in `_render_level_frame()`.
 - `utils/ipc.py`: the Windows onboarding test flow may still benefit from reducing redundant file/status reads now that the UI-side cadence has already been tuned.
+
+Performance work log - 2026-04-09 (Windows polling and tail helper pass)
+
+Scope
+- Left the last two root commits untouched: `ui/onboarding_wizard_windows.py`, `ui/welcome.py`, and `utils/history.py` stayed out of scope in this pass.
+- Avoided unrelated local worktree edits in `utils/custom_prompts.py` and `tests/test_custom_prompts.py`.
+- Focused on shared polling/file-tail helpers used by the Windows overlay and logs paths.
+
+Current weaknesses reviewed
+- `utils/log_tail.py`: multiple tail/signature helpers performed separate `exists()`/`stat()`/open sequences, which adds avoidable filesystem work on polling-heavy UI paths.
+- `ui/overlay_windows.py`: interim polling checked file existence, then stat metadata, then reopened the file, so each recording poll paid duplicate file metadata work before any real text change handling.
+- `ui/settings_windows.py`: log and transcript refreshes still depend on the shared tail/signature helpers, so duplicate filesystem metadata work there propagates directly into the visible settings UI.
+
+Changes in this pass
+- `utils/log_tail.py`
+  Consolidated tail-reader setup around one open/size path and removed redundant pre-check syscalls from signature and append-read helpers.
+- `ui/overlay_windows.py`
+  Switched interim-file change detection to the shared `(mtime_ns, size)` signature and reset/compare that cached signature instead of doing separate existence and mtime checks.
+- Tests
+  Added regression coverage for the overlay signature cache reset path and kept the shared log-tail tests green against the new helper behavior.
+
+Why this helps
+- High-frequency overlay polling now does less repeated filesystem metadata work while recording.
+- Shared tail helpers are cheaper for every caller that only needs "has this file changed?" or "read the tail from here?" behavior.
+- The Windows logs/transcript views benefit indirectly because their incremental refresh paths now lean on cheaper shared file-tail primitives.
+
+Validation
+- `pytest tests/test_log_tail.py tests/test_overlay_windows.py tests/test_settings_windows_logs.py -q`
+- `python -m py_compile utils/log_tail.py ui/overlay_windows.py ui/settings_windows.py tests/test_log_tail.py tests/test_overlay_windows.py tests/test_settings_windows_logs.py`
+- `ruff check utils/log_tail.py ui/overlay_windows.py ui/settings_windows.py tests/test_log_tail.py tests/test_overlay_windows.py tests/test_settings_windows_logs.py`
+
+Next worthwhile areas
+- `ui/settings_windows.py`: `_load_settings()` still repopulates many fields in one pass and remains the clearest remaining Windows settings hotspot.
+- `ui/overlay.py`: the macOS overlay still does per-frame math for every active wave bar, which is the next likely place to trim render cost on long recordings.
+- `utils/ipc.py`: if trace data still shows polling overhead during Windows setup/recording transitions, reduce repeated file-status reads there next.
+
+Performance work log - 2026-04-09 (Windows logs auto-refresh cadence pass)
+
+Scope
+- Left the last two root commits untouched: `ui/onboarding_wizard_windows.py`, `ui/welcome.py`, and `utils/history.py` stayed out of scope again.
+- Avoided unrelated local worktree edits in `utils/custom_prompts.py` and `tests/test_custom_prompts.py`.
+- Focused on the remaining Windows settings hotspot called out in the notes backlog: idle wakeups and no-op polling pressure in the Logs/Transcripts tab.
+
+Current weaknesses reviewed
+- `ui/settings_windows.py`: the Logs tab auto-refresh stayed at a fixed 2-second cadence even after several unchanged polls, so an open settings window kept waking the UI and touching the filesystem more often than necessary.
+- `ui/settings_windows.py`: after the cadence had been slowed by stable content, explicit user interactions like opening the Logs tab, switching segments, or pressing Refresh did not restore the fast cadence immediately.
+- `tests/test_settings_windows_load.py`: vocabulary-load regression coverage still mocked the older `load_vocabulary()`/`validate_vocabulary()` split even though the production path now uses `load_vocabulary_state()`.
+
+Changes in this pass
+- `ui/settings_windows.py`
+  Added a small adaptive auto-refresh cadence for the Logs/Transcripts tab that backs off from 2s to 4s to 8s while the visible content remains unchanged.
+- `ui/settings_windows.py`
+  Reset the cadence to the fast path on user-driven interactions such as opening the Logs tab, switching between Logs and Transcripts, enabling auto-refresh, and manual refresh actions.
+- `ui/settings_windows.py`
+  Kept the existing no-op guard for reselecting the already active Logs/Transcripts segment so the new cadence logic does not reintroduce redundant refresh work.
+- Tests
+  Added regression coverage for idle backoff and fast-cadence reset, and updated vocabulary-load tests to match the current cache-backed loader API.
+
+Why this helps
+- A long-lived Windows settings session now does less timer and file-tail work when the log/transcript files are stable, which reduces idle CPU churn in a visible troubleshooting path.
+- As soon as the user looks at the tab again or content starts changing, the refresh cadence snaps back to the more responsive interval instead of feeling stale.
+- The change stays local to the Logs tab and does not alter log/transcript rendering semantics.
+
+Validation
+- `pytest tests/test_settings_windows_logs.py tests/test_settings_windows_load.py -q`
+- `python -m py_compile ui/settings_windows.py tests/test_settings_windows_logs.py tests/test_settings_windows_load.py`
+- `ruff check ui/settings_windows.py tests/test_settings_windows_logs.py tests/test_settings_windows_load.py`
+
+Next worthwhile areas
+- `ui/settings_windows.py`: `_load_settings()` is still the clearest remaining Windows settings hotspot if dialog-open traces keep showing bulk widget churn.
+- `ui/overlay.py`: the macOS overlay still looks like the next long-session render hotspot if active recording traces remain expensive.
+- `utils/ipc.py`: once the UI-side cadence has been tuned, the next Windows onboarding/test-step win is likely reducing repeated IPC file reads themselves.
