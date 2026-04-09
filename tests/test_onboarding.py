@@ -117,6 +117,17 @@ def test_set_onboarding_step_persists_and_marks_seen_on_done(tmp_path, monkeypat
     assert data["has_seen_onboarding"] is True
 
 
+def test_set_onboarding_step_invalid_value_falls_back_to_done(tmp_path, monkeypatch):
+    _isolate_prefs(tmp_path, monkeypatch)
+
+    prefs.set_onboarding_step("totally-unknown")
+
+    assert prefs.load_preferences() == {
+        "onboarding_step": "done",
+        "has_seen_onboarding": True,
+    }
+
+
 def test_onboarding_choice_roundtrip(tmp_path, monkeypatch):
     _isolate_prefs(tmp_path, monkeypatch)
     assert prefs.get_onboarding_choice() is None

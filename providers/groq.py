@@ -9,7 +9,7 @@ from utils.timing import redacted_text_summary, timed_operation
 
 from config import DEFAULT_GROQ_MODEL
 from ._client_cache import EnvClientCache, build_cached_env_client_getter
-from ._language import normalize_auto_language
+from ._transcription_request import resolve_transcription_request
 from .base import EnvValidatedProvider
 
 logger = logging.getLogger("pulsescribe.providers.groq")
@@ -65,11 +65,17 @@ class GroqProvider(EnvValidatedProvider):
         """
         self._validate()
 
-        model = model or self.default_model
-        language = normalize_auto_language(language)
-        audio_kb = audio_path.stat().st_size // 1024
+        request = resolve_transcription_request(
+            audio_path,
+            model=model,
+            default_model=self.default_model,
+            language=language,
+        )
 
-        logger.info(f"Groq: {model}, {audio_kb}KB, lang={language or 'auto'}")
+        logger.info(
+            f"Groq: {request.model}, {request.audio_kb}KB, "
+            f"lang={request.language or 'auto'}"
+        )
 
         client = _get_client()
 
@@ -78,12 +84,12 @@ class GroqProvider(EnvValidatedProvider):
                 params = {
                     # File-Handle statt .read() – spart Speicher bei großen Dateien
                     "file": (audio_path.name, audio_file),
-                    "model": model,
+                    "model": request.model,
                     "response_format": "text",
                     "temperature": 0.0,  # Konsistente Ergebnisse ohne Kreativität
                 }
-                if language:
-                    params["language"] = language
+                if request.language:
+                    params["language"] = request.language
                 response = client.audio.transcriptions.create(**params)
 
         # Groq gibt bei response_format="text" String zurück

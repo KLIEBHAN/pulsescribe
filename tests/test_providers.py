@@ -298,6 +298,85 @@ class _FakeOpenAIJsonResponse:
         return '{\n  "text": "serialized text"\n}'
 
 
+def _build_openai_test_client(observed: dict[str, object]) -> SimpleNamespace:
+    def fake_create(**kwargs):
+        observed.update(kwargs)
+        return SimpleNamespace(text="plain transcript")
+
+    return SimpleNamespace(
+        audio=SimpleNamespace(
+            transcriptions=SimpleNamespace(create=fake_create)
+        )
+    )
+
+
+def _build_groq_test_client(observed: dict[str, object]) -> SimpleNamespace:
+    def fake_create(**kwargs):
+        observed.update(kwargs)
+        return "plain transcript"
+
+    return SimpleNamespace(
+        audio=SimpleNamespace(
+            transcriptions=SimpleNamespace(create=fake_create)
+        )
+    )
+
+
+def _build_deepgram_test_client(observed: dict[str, object]) -> SimpleNamespace:
+    def fake_transcribe_file(**kwargs):
+        observed.update(kwargs)
+        return SimpleNamespace(
+            results=SimpleNamespace(
+                channels=[SimpleNamespace(alternatives=[SimpleNamespace(transcript="plain transcript")])]
+            )
+        )
+
+    return SimpleNamespace(
+        listen=SimpleNamespace(
+            v1=SimpleNamespace(media=SimpleNamespace(transcribe_file=fake_transcribe_file))
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    ("module_path", "provider_class_name", "env_key", "client_builder"),
+    [
+        ("providers.openai", "OpenAIProvider", "OPENAI_API_KEY", _build_openai_test_client),
+        ("providers.groq", "GroqProvider", "GROQ_API_KEY", _build_groq_test_client),
+        (
+            "providers.deepgram",
+            "DeepgramProvider",
+            "DEEPGRAM_API_KEY",
+            _build_deepgram_test_client,
+        ),
+    ],
+    ids=["openai", "groq", "deepgram"],
+)
+def test_cloud_providers_use_default_model_when_none(
+    monkeypatch,
+    tmp_path,
+    module_path: str,
+    provider_class_name: str,
+    env_key: str,
+    client_builder,
+):
+    module = __import__(module_path, fromlist=[provider_class_name])
+    provider_class = getattr(module, provider_class_name)
+
+    audio_file = tmp_path / "sample.wav"
+    audio_file.write_bytes(b"audio")
+
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(module, "_get_client", lambda: client_builder(observed))
+    if module_path == "providers.deepgram":
+        monkeypatch.setattr(module, "load_vocabulary", lambda: {"keywords": []})
+    monkeypatch.setenv(env_key, "test-key")
+
+    provider = provider_class()
+    assert provider.transcribe(audio_file) == "plain transcript"
+    assert observed["model"] == provider.default_model
+
+
 def test_openai_provider_uses_json_api_format_for_gpt4o_text_output(
     monkeypatch, tmp_path
 ):
@@ -465,6 +544,30 @@ def test_groq_provider_omits_auto_language(monkeypatch, tmp_path):
     provider.transcribe(audio_file, language=" auto ")
 
     assert "language" not in created_params[0]
+
+
+def test_groq_provider_accepts_response_objects_with_text_attribute(
+    monkeypatch, tmp_path
+):
+    from providers.groq import GroqProvider
+    import providers.groq as groq_mod
+
+    audio_file = tmp_path / "sample.wav"
+    audio_file.write_bytes(b"audio")
+
+    fake_client = SimpleNamespace(
+        audio=SimpleNamespace(
+            transcriptions=SimpleNamespace(
+                create=lambda **_kwargs: SimpleNamespace(text="plain transcript")
+            )
+        )
+    )
+
+    monkeypatch.setattr(groq_mod, "_get_client", lambda: fake_client)
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+
+    provider = GroqProvider()
+    assert provider.transcribe(audio_file) == "plain transcript"
 
 
 def test_groq_provider_redacts_debug_result_logging(monkeypatch, tmp_path):

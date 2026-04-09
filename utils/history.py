@@ -6,7 +6,7 @@ Jede Zeile ist ein JSON-Objekt mit Timestamp und Text.
 
 import json
 import logging
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from datetime import datetime
 
 from config import USER_CONFIG_DIR
@@ -21,6 +21,27 @@ _RECENT_SCAN_BYTES_MAX = 4_000_000
 _RECENT_LINES_FACTOR = 3
 
 logger = logging.getLogger(__name__)
+
+
+def _build_transcript_entry(
+    text: str,
+    *,
+    mode: str | None = None,
+    language: str | None = None,
+    refined: bool = False,
+    app_context: str | None = None,
+) -> dict[str, object]:
+    """Build one persisted transcript entry while omitting empty optional fields."""
+    entry: dict[str, object] = {
+        "timestamp": datetime.now().isoformat(),
+        "text": text,
+    }
+    for key, value in (("mode", mode), ("language", language), ("app", app_context)):
+        if value:
+            entry[key] = value
+    if refined:
+        entry["refined"] = True
+    return entry
 
 
 def save_transcript(
@@ -43,7 +64,8 @@ def save_transcript(
     Returns:
         True bei Erfolg, False bei Fehler
     """
-    if not text or not text.strip():
+    clean_text = (text or "").strip()
+    if not clean_text:
         return False
 
     try:
@@ -52,20 +74,13 @@ def save_transcript(
         # Check file size and rotate if needed
         _rotate_if_needed()
 
-        entry: dict[str, object] = {
-            "timestamp": datetime.now().isoformat(),
-            "text": text.strip(),
-        }
-
-        # Optional fields (nur wenn gesetzt)
-        if mode:
-            entry["mode"] = mode
-        if language:
-            entry["language"] = language
-        if refined:
-            entry["refined"] = True
-        if app_context:
-            entry["app"] = app_context
+        entry = _build_transcript_entry(
+            clean_text,
+            mode=mode,
+            language=language,
+            refined=refined,
+            app_context=app_context,
+        )
 
         with HISTORY_FILE.open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -75,9 +90,7 @@ def save_transcript(
         # zum nächsten Save unnötig groß bleibt.
         _rotate_if_needed()
 
-        logger.debug(
-            "Transcript saved to history: %s", redacted_text_summary(text.strip())
-        )
+        logger.debug("Transcript saved to history: %s", redacted_text_summary(clean_text))
         return True
 
     except Exception as e:
@@ -276,35 +289,87 @@ def merge_recent_transcript_entries(
     return [*previous_valid, *appended_valid][-max_entries:]
 
 
+def _collect_entry_metadata(
+    entry: dict[str, object],
+    metadata_keys: Sequence[str],
+    *,
+    strip_values: bool,
+) -> list[str]:
+    """Collect non-empty stringified metadata values for transcript headers."""
+    values: list[str] = []
+    for key in metadata_keys:
+        value = str(entry.get(key, ""))
+        if strip_values:
+            value = value.strip()
+        if value:
+            values.append(value)
+    return values
+
+
+def _format_entry_header(
+    entry: dict[str, object],
+    *,
+    metadata_keys: Sequence[str] = (),
+    strip_metadata: bool,
+) -> str:
+    """Build a normalized transcript header for display and welcome views."""
+    ts = _format_timestamp(entry.get("timestamp", ""))
+    header = f"[{ts}]"
+    metadata_values = _collect_entry_metadata(
+        entry,
+        metadata_keys,
+        strip_values=strip_metadata,
+    )
+    if metadata_values:
+        header += f" ({' '.join(metadata_values)})"
+    return header
+
+
+def _format_transcript_blocks(
+    entries: Sequence[object],
+    *,
+    newest_first: bool,
+    formatter: Callable[[dict[str, object]], str],
+) -> list[str]:
+    """Format ordered transcript entries into non-empty blocks."""
+    ordered_entries = _order_valid_transcript_entries(
+        entries,
+        newest_first=newest_first,
+    )
+    return [
+        block
+        for block in (formatter(entry) for entry in ordered_entries)
+        if block
+    ]
+
+
 def format_transcript_entry_for_display(entry: object) -> str:
     """Format a single transcript entry for the Windows transcripts viewer."""
     if not isinstance(entry, dict):
         return ""
 
-    ts = _format_timestamp(entry.get("timestamp", ""))
     text = _format_display_text(entry.get("text", ""))
-    mode = str(entry.get("mode", ""))
     refined = "✨" if entry.get("refined") else ""
-
-    line = f"[{ts}] {refined}{text}"
-    if mode:
-        line = f"[{ts}] ({mode}) {refined}{text}"
-    return line
+    header = _format_entry_header(
+        entry,
+        metadata_keys=("mode",),
+        strip_metadata=False,
+    )
+    return f"{header} {refined}{text}"
 
 
 def format_transcripts_for_display(
     entries: Sequence[object], *, newest_first: bool = True
 ) -> str:
     """Format transcript entries for the Windows transcripts viewer."""
-    ordered_entries = _order_valid_transcript_entries(
+    blocks = _format_transcript_blocks(
         entries,
         newest_first=newest_first,
+        formatter=format_transcript_entry_for_display,
     )
-    if not ordered_entries:
+    if not blocks:
         return "No transcripts yet."
-
-    lines = [format_transcript_entry_for_display(entry) for entry in ordered_entries]
-    return "\n\n".join(line for line in lines if line)
+    return "\n\n".join(blocks)
 
 
 def format_transcript_entry_for_welcome(entry: object) -> str:
@@ -312,14 +377,12 @@ def format_transcript_entry_for_welcome(entry: object) -> str:
     if not isinstance(entry, dict):
         return ""
 
-    ts = _format_timestamp(entry.get("timestamp", ""))
     text = str(entry.get("text", "")).strip()
-    mode = str(entry.get("mode", "")).strip()
-    language = str(entry.get("language", "")).strip()
-
-    header = f"[{ts}]"
-    if mode or language:
-        header += f" ({' '.join(filter(None, [mode, language]))})"
+    header = _format_entry_header(
+        entry,
+        metadata_keys=("mode", "language"),
+        strip_metadata=True,
+    )
     if not text:
         return header
     return f"{header}\n{text}"
@@ -329,18 +392,11 @@ def format_transcript_entries_for_welcome(
     entries: Sequence[object], *, newest_first: bool = True
 ) -> list[str]:
     """Format transcript entries into welcome-view blocks without joining them."""
-    ordered_entries = _order_valid_transcript_entries(
+    return _format_transcript_blocks(
         entries,
         newest_first=newest_first,
+        formatter=format_transcript_entry_for_welcome,
     )
-    if not ordered_entries:
-        return []
-
-    return [
-        block
-        for block in (format_transcript_entry_for_welcome(entry) for entry in ordered_entries)
-        if block
-    ]
 
 
 def format_transcripts_for_welcome(

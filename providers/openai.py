@@ -9,7 +9,7 @@ from utils.timing import redacted_text_summary, timed_operation
 
 from config import DEFAULT_API_MODEL
 from ._client_cache import EnvClientCache, build_cached_env_client_getter
-from ._language import normalize_auto_language
+from ._transcription_request import resolve_transcription_request
 from .base import EnvValidatedProvider
 
 logger = logging.getLogger("pulsescribe.providers.openai")
@@ -112,16 +112,22 @@ class OpenAIProvider(EnvValidatedProvider):
         """
         self._validate()
 
-        model = model or self.default_model
-        language = normalize_auto_language(language)
-        api_response_format = _resolve_api_response_format(model, response_format)
-        audio_kb = audio_path.stat().st_size // 1024
+        request = resolve_transcription_request(
+            audio_path,
+            model=model,
+            default_model=self.default_model,
+            language=language,
+        )
+        api_response_format = _resolve_api_response_format(
+            request.model,
+            response_format,
+        )
 
         logger.info(
             "OpenAI: %s, %sKB, lang=%s, format=%s",
-            model,
-            audio_kb,
-            language or "auto",
+            request.model,
+            request.audio_kb,
+            request.language or "auto",
             response_format,
         )
 
@@ -130,12 +136,12 @@ class OpenAIProvider(EnvValidatedProvider):
         with timed_operation("OpenAI-Transkription", logger=logger, include_session=False):
             with audio_path.open("rb") as audio_file:
                 params = {
-                    "model": model,
+                    "model": request.model,
                     "file": audio_file,
                     "response_format": api_response_format,
                 }
-                if language:
-                    params["language"] = language
+                if request.language:
+                    params["language"] = request.language
                 response = client.audio.transcriptions.create(**params)
 
         result = _serialize_response(response, requested_format=response_format)

@@ -11,7 +11,7 @@ from utils.vocabulary import load_vocabulary
 
 from config import DEFAULT_DEEPGRAM_MODEL
 from ._client_cache import EnvClientCache, build_cached_env_client_getter
-from ._language import normalize_auto_language
+from ._transcription_request import resolve_transcription_request
 from .base import EnvValidatedProvider
 
 logger = logging.getLogger("pulsescribe.providers.deepgram")
@@ -132,22 +132,25 @@ class DeepgramProvider(EnvValidatedProvider):
         """
         self._validate()
 
-        model = model or self.default_model
-        language = normalize_auto_language(language)
-        audio_kb = audio_path.stat().st_size // 1024
+        request = resolve_transcription_request(
+            audio_path,
+            model=model,
+            default_model=self.default_model,
+            language=language,
+        )
 
         keywords = _load_keywords()
 
         logger.info(
-            f"Deepgram: {model}, {audio_kb}KB, lang={language or 'auto'}, "
-            f"vocab={len(keywords)}"
+            f"Deepgram: {request.model}, {request.audio_kb}KB, "
+            f"lang={request.language or 'auto'}, vocab={len(keywords)}"
         )
 
         client = _get_client()
         request_params = _build_request_params(
             audio_path,
-            model=model,
-            language=language,
+            model=request.model,
+            language=request.language,
             keywords=keywords,
         )
 

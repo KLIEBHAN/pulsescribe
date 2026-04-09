@@ -88,6 +88,19 @@ class TestSaveTranscript:
         assert "Transcript saved to history: <redacted 27 chars>" in messages
         assert "Highly sensitive transcript" not in messages
 
+    def test_save_trims_text_and_omits_empty_optional_metadata(self, history_file):
+        """Leere Metadaten sollen nicht als Keys in der History landen."""
+        from utils.history import save_transcript
+
+        assert save_transcript("  Hello World  ", mode="", language=None, app_context="") is True
+
+        entry = json.loads(history_file.read_text(encoding="utf-8").strip())
+
+        assert entry == {
+            "timestamp": entry["timestamp"],
+            "text": "Hello World",
+        }
+
 
 class TestGetRecentTranscripts:
     """Tests für get_recent_transcripts()."""
@@ -258,6 +271,25 @@ class TestFormatTranscriptsForDisplay:
 
         assert format_transcripts_for_display([]) == "No transcripts yet."
 
+    def test_format_transcript_entry_for_display_indents_multiline_text(self):
+        from utils.history import format_transcript_entry_for_display
+
+        formatted = format_transcript_entry_for_display(
+            {
+                "timestamp": "2026-03-03T10:01:30.000000",
+                "text": "First line\nSecond line\n\nFourth line",
+                "mode": "deepgram",
+                "refined": True,
+            }
+        )
+
+        assert formatted == (
+            "[2026-03-03 10:01:30] (deepgram) ✨First line\n"
+            "    Second line\n"
+            "    \n"
+            "    Fourth line"
+        )
+
     def test_formats_entries_oldest_first_with_metadata(self):
         from utils.history import format_transcripts_for_display
 
@@ -297,6 +329,20 @@ class TestFormatTranscriptsForDisplay:
 
 class TestFormatTranscriptsForWelcome:
     """Tests für format_transcripts_for_welcome()."""
+
+    def test_format_transcript_entry_for_welcome_returns_header_without_text(self):
+        from utils.history import format_transcript_entry_for_welcome
+
+        formatted = format_transcript_entry_for_welcome(
+            {
+                "timestamp": "2026-03-03T10:01:30.000000",
+                "text": "   ",
+                "mode": "deepgram",
+                "language": "de",
+            }
+        )
+
+        assert formatted == "[2026-03-03 10:01:30] (deepgram de)"
 
     def test_formats_entries_with_optional_metadata(self):
         from utils.history import format_transcripts_for_welcome

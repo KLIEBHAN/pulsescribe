@@ -8,6 +8,7 @@ import json
 import logging
 from collections.abc import Callable
 from pathlib import Path
+from typing import TypeVar
 
 from config import USER_CONFIG_DIR
 
@@ -37,6 +38,8 @@ _LEGACY_HOTKEY_ENV_KEYS = (
 # Cache: ((mtime_ns, size, ctime_ns), values)
 _env_cache: tuple[FileSignature, dict[str, str]] | None = None
 _prefs_cache: tuple[FileSignature, dict[str, object]] | None = None
+
+TValue = TypeVar("TValue")
 
 
 def _build_file_signature(path: Path) -> FileSignature | None:
@@ -271,6 +274,40 @@ def _store_preference(key: str, value: object) -> None:
     _mutate_preferences(_apply)
 
 
+def _coerce_loaded_preference(
+    raw_value: object | None,
+    coercer: Callable[[str | None], TValue | None],
+) -> TValue | None:
+    """Normalize a persisted preference value via a shared coercion path."""
+    if raw_value is None:
+        return None
+    return coercer(str(raw_value))
+
+
+def _normalize_preference_input(
+    value: TValue | str | None,
+    *,
+    enum_type: type[TValue],
+    coercer: Callable[[str | None], TValue | None],
+) -> TValue | None:
+    """Accept enum instances or raw strings and coerce them consistently."""
+    if isinstance(value, enum_type):
+        return value
+    return _coerce_loaded_preference(value, coercer)
+
+
+def _set_optional_preference_value(key: str, value: object | None) -> None:
+    """Store or remove one preference key without touching unrelated values."""
+
+    def _apply(prefs: dict[str, object]) -> None:
+        if value is None:
+            prefs.pop(key, None)
+            return
+        prefs[key] = value
+
+    _mutate_preferences(_apply)
+
+
 def has_seen_onboarding() -> bool:
     """Prüft ob User das Onboarding bereits gesehen hat."""
     return load_preferences().get("has_seen_onboarding", False)
@@ -290,8 +327,10 @@ def get_onboarding_step() -> OnboardingStep:
         plötzlich wieder im Wizard landen.
     """
     prefs = load_preferences()
-    raw = prefs.get("onboarding_step")
-    step = coerce_onboarding_step(str(raw)) if raw is not None else None
+    step = _coerce_loaded_preference(
+        prefs.get("onboarding_step"),
+        coerce_onboarding_step,
+    )
     if step is not None:
         return step
     if prefs.get("has_seen_onboarding", False):
@@ -301,8 +340,11 @@ def get_onboarding_step() -> OnboardingStep:
 
 def set_onboarding_step(step: OnboardingStep | str) -> None:
     """Setzt den aktuellen Wizard-Step."""
-    raw = step.value if isinstance(step, OnboardingStep) else str(step)
-    normalized = coerce_onboarding_step(raw) or OnboardingStep.DONE
+    normalized = _normalize_preference_input(
+        step,
+        enum_type=OnboardingStep,
+        coercer=coerce_onboarding_step,
+    ) or OnboardingStep.DONE
 
     def _apply(prefs: dict[str, object]) -> None:
         prefs["onboarding_step"] = normalized.value
@@ -315,25 +357,23 @@ def set_onboarding_step(step: OnboardingStep | str) -> None:
 
 def get_onboarding_choice() -> OnboardingChoice | None:
     """Letzte Wizard-Auswahl (fast/private/advanced)."""
-    raw = load_preferences().get("onboarding_choice")
-    return coerce_onboarding_choice(str(raw)) if raw is not None else None
+    return _coerce_loaded_preference(
+        load_preferences().get("onboarding_choice"),
+        coerce_onboarding_choice,
+    )
 
 
 def set_onboarding_choice(choice: OnboardingChoice | str | None) -> None:
     """Speichert die Wizard-Auswahl oder löscht sie."""
-    normalized = (
-        choice
-        if isinstance(choice, OnboardingChoice)
-        else coerce_onboarding_choice(str(choice)) if choice is not None else None
+    normalized = _normalize_preference_input(
+        choice,
+        enum_type=OnboardingChoice,
+        coercer=coerce_onboarding_choice,
     )
-
-    def _apply(prefs: dict[str, object]) -> None:
-        if normalized is None:
-            prefs.pop("onboarding_choice", None)
-            return
-        prefs["onboarding_choice"] = normalized.value
-
-    _mutate_preferences(_apply)
+    _set_optional_preference_value(
+        "onboarding_choice",
+        normalized.value if normalized is not None else None,
+    )
 
 
 def is_onboarding_complete() -> bool:
