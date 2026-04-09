@@ -6,7 +6,7 @@ Jede Zeile ist ein JSON-Objekt mit Timestamp und Text.
 
 import json
 import logging
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from datetime import datetime
 
 from config import USER_CONFIG_DIR
@@ -176,13 +176,21 @@ def get_recent_transcripts(count: int = 10) -> list[dict[str, object]]:
         return []
 
 
+def _iter_parsed_transcript_lines(
+    lines: Sequence[str], *, reverse: bool = False
+) -> Iterator[dict[str, object]]:
+    """Yield valid transcript entries while optionally scanning newest-first."""
+    source = reversed(lines) if reverse else lines
+    for line in source:
+        entry = _parse_transcript_line(line)
+        if entry is not None:
+            yield entry
+
+
 def _parse_recent_entries(lines: list[str], count: int) -> list[dict[str, object]]:
     """Parst JSONL-Zeilen rückwärts und liefert max. ``count`` gültige Einträge."""
     entries: list[dict[str, object]] = []
-    for line in reversed(lines):
-        entry = _parse_transcript_line(line)
-        if entry is None:
-            continue
+    for entry in _iter_parsed_transcript_lines(lines, reverse=True):
         entries.append(entry)
         if len(entries) >= count:
             break
@@ -205,12 +213,7 @@ def _parse_transcript_line(line: str) -> dict[str, object] | None:
 
 def _parse_transcript_lines_in_order(lines: Sequence[str]) -> list[dict[str, object]]:
     """Parse JSONL transcript lines while preserving file order."""
-    entries: list[dict[str, object]] = []
-    for line in lines:
-        entry = _parse_transcript_line(line)
-        if entry is not None:
-            entries.append(entry)
-    return entries
+    return list(_iter_parsed_transcript_lines(lines))
 
 
 def read_transcripts_from_offset(
@@ -232,6 +235,30 @@ def read_transcripts_from_offset(
     return _parse_transcript_lines_in_order(appended_text.splitlines())
 
 
+def _iter_valid_transcript_entries(
+    entries: Sequence[object],
+) -> Iterator[dict[str, object]]:
+    """Yield only dictionary-backed transcript entries."""
+    for entry in entries:
+        if isinstance(entry, dict):
+            yield entry
+
+
+def _order_valid_transcript_entries(
+    entries: Sequence[object], *, newest_first: bool
+) -> list[dict[str, object]]:
+    """Filter invalid entries and return them in the requested display order."""
+    ordered_entries = list(_iter_valid_transcript_entries(entries))
+    if newest_first:
+        ordered_entries.reverse()
+    return ordered_entries
+
+
+def _format_timestamp(timestamp: object) -> str:
+    """Normalize transcript timestamps for UI display."""
+    return str(timestamp or "")[:19].replace("T", " ")
+
+
 def merge_recent_transcript_entries(
     previous_entries: Sequence[object],
     appended_entries: Sequence[object],
@@ -242,12 +269,8 @@ def merge_recent_transcript_entries(
     if max_entries <= 0:
         return []
 
-    previous_valid = [
-        entry for entry in previous_entries if isinstance(entry, dict)
-    ]
-    appended_valid = [
-        entry for entry in appended_entries if isinstance(entry, dict)
-    ]
+    previous_valid = list(_iter_valid_transcript_entries(previous_entries))
+    appended_valid = list(_iter_valid_transcript_entries(appended_entries))
     if not appended_valid:
         return previous_valid[-max_entries:]
     return [*previous_valid, *appended_valid][-max_entries:]
@@ -258,7 +281,7 @@ def format_transcript_entry_for_display(entry: object) -> str:
     if not isinstance(entry, dict):
         return ""
 
-    ts = str(entry.get("timestamp", ""))[:19].replace("T", " ")
+    ts = _format_timestamp(entry.get("timestamp", ""))
     text = _format_display_text(entry.get("text", ""))
     mode = str(entry.get("mode", ""))
     refined = "✨" if entry.get("refined") else ""
@@ -273,11 +296,13 @@ def format_transcripts_for_display(
     entries: Sequence[object], *, newest_first: bool = True
 ) -> str:
     """Format transcript entries for the Windows transcripts viewer."""
-    valid_entries = [entry for entry in entries if isinstance(entry, dict)]
-    if not valid_entries:
+    ordered_entries = _order_valid_transcript_entries(
+        entries,
+        newest_first=newest_first,
+    )
+    if not ordered_entries:
         return "No transcripts yet."
 
-    ordered_entries = reversed(valid_entries) if newest_first else valid_entries
     lines = [format_transcript_entry_for_display(entry) for entry in ordered_entries]
     return "\n\n".join(line for line in lines if line)
 
@@ -287,7 +312,7 @@ def format_transcript_entry_for_welcome(entry: object) -> str:
     if not isinstance(entry, dict):
         return ""
 
-    ts = str(entry.get("timestamp", ""))[:19].replace("T", " ")
+    ts = _format_timestamp(entry.get("timestamp", ""))
     text = str(entry.get("text", "")).strip()
     mode = str(entry.get("mode", "")).strip()
     language = str(entry.get("language", "")).strip()
@@ -304,11 +329,13 @@ def format_transcript_entries_for_welcome(
     entries: Sequence[object], *, newest_first: bool = True
 ) -> list[str]:
     """Format transcript entries into welcome-view blocks without joining them."""
-    valid_entries = [entry for entry in entries if isinstance(entry, dict)]
-    if not valid_entries:
+    ordered_entries = _order_valid_transcript_entries(
+        entries,
+        newest_first=newest_first,
+    )
+    if not ordered_entries:
         return []
 
-    ordered_entries = reversed(valid_entries) if newest_first else valid_entries
     return [
         block
         for block in (format_transcript_entry_for_welcome(entry) for entry in ordered_entries)

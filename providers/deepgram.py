@@ -6,47 +6,36 @@ Für Streaming siehe deepgram_stream.py.
 
 import logging
 import os
-import threading
 from pathlib import Path
 from utils.timing import redacted_text_summary, timed_operation
 from utils.vocabulary import load_vocabulary
 
 from config import DEFAULT_DEEPGRAM_MODEL
+from ._client_cache import EnvClientCache
 from ._language import normalize_auto_language
 
 logger = logging.getLogger("pulsescribe.providers.deepgram")
 _UPLOAD_CHUNK_SIZE = 1024 * 1024
+_MAX_KEYWORDS = 100
 
-# Singleton Client
-_client = None
-_client_signature: str | None = None
-_client_lock = threading.Lock()
+_client_cache = EnvClientCache()
 
 
 def _get_client():
     """Gibt Deepgram-Client Singleton zurück (Lazy Init)."""
-    global _client, _client_signature
 
-    api_key = os.getenv("DEEPGRAM_API_KEY")
-    if not api_key:
-        _client = None
-        _client_signature = None
-        raise ValueError("DEEPGRAM_API_KEY nicht gesetzt")
+    def _factory(api_key: str):
+        from deepgram import DeepgramClient
 
-    if _client is None or _client_signature != api_key:
-        with _client_lock:
-            api_key = os.getenv("DEEPGRAM_API_KEY")
-            if not api_key:
-                _client = None
-                _client_signature = None
-                raise ValueError("DEEPGRAM_API_KEY nicht gesetzt")
-            if _client is None or _client_signature != api_key:
-                from deepgram import DeepgramClient
+        return DeepgramClient(api_key=api_key)
 
-                _client = DeepgramClient(api_key=api_key)
-                _client_signature = api_key
-                logger.debug("Deepgram-Client initialisiert")
-    return _client
+    return _client_cache.get(
+        env_var="DEEPGRAM_API_KEY",
+        missing_error="DEEPGRAM_API_KEY nicht gesetzt",
+        create_client=_factory,
+        logger=logger,
+        client_label="Deepgram-Client",
+    )
 
 
 def _iter_audio_chunks(audio_path: Path, *, chunk_size: int = _UPLOAD_CHUNK_SIZE):
@@ -59,6 +48,56 @@ def _iter_audio_chunks(audio_path: Path, *, chunk_size: int = _UPLOAD_CHUNK_SIZE
             yield chunk
 
 
+def _load_keywords(max_keywords: int = _MAX_KEYWORDS) -> list[str]:
+    """Load and cap normalized vocabulary keywords for Deepgram requests."""
+    raw_keywords = load_vocabulary().get("keywords", [])
+    if not isinstance(raw_keywords, list):
+        return []
+    return raw_keywords[:max_keywords]
+
+
+def _build_vocabulary_params(model: str, keywords: list[str]) -> dict[str, list[str]]:
+    """Map normalized keywords to the Deepgram model-specific API field."""
+    if not keywords:
+        return {}
+    if model.startswith("nova-3"):
+        return {"keyterm": list(keywords)}
+    return {"keywords": list(keywords)}
+
+
+def _build_request_params(
+    audio_path: Path,
+    *,
+    model: str,
+    language: str | None,
+    keywords: list[str],
+) -> dict[str, object]:
+    """Build a Deepgram REST request without mixing I/O, vocab and response logic."""
+    request_params: dict[str, object] = {
+        "request": _iter_audio_chunks(audio_path),
+        "model": model,
+        "smart_format": True,
+        "punctuate": True,
+        **_build_vocabulary_params(model, keywords),
+    }
+    if language:
+        request_params["language"] = language
+    return request_params
+
+
+def _extract_transcript(response) -> str:
+    """Extract transcript text from a Deepgram REST response."""
+    channels = getattr(getattr(response, "results", None), "channels", [])
+    if not channels:
+        logger.warning("Deepgram-Antwort enthält keine Transkription")
+        return ""
+
+    alternatives = getattr(channels[0], "alternatives", [])
+    if not alternatives:
+        logger.warning("Deepgram-Antwort enthält keine Transkription")
+        return ""
+
+    return getattr(alternatives[0], "transcript", "") or ""
 
 
 class DeepgramProvider:
@@ -112,10 +151,7 @@ class DeepgramProvider:
         language = normalize_auto_language(language)
         audio_kb = audio_path.stat().st_size // 1024
 
-        # Vocabulary laden
-        MAX_KEYWORDS = 100
-        vocab = load_vocabulary()
-        keywords = vocab.get("keywords", [])[:MAX_KEYWORDS]
+        keywords = _load_keywords()
 
         logger.info(
             f"Deepgram: {model}, {audio_kb}KB, lang={language or 'auto'}, "
@@ -123,35 +159,17 @@ class DeepgramProvider:
         )
 
         client = _get_client()
-
-        # Nova-3 nutzt 'keyterm', ältere Modelle nutzen 'keywords'
-        is_nova3 = model.startswith("nova-3")
-        vocab_params = {}
-        if keywords:
-            if is_nova3:
-                vocab_params["keyterm"] = keywords
-            else:
-                vocab_params["keywords"] = keywords
-
-        request_params = {
-            "request": _iter_audio_chunks(audio_path),
-            "model": model,
-            "smart_format": True,
-            "punctuate": True,
-            **vocab_params,
-        }
-        if language:
-            request_params["language"] = language
+        request_params = _build_request_params(
+            audio_path,
+            model=model,
+            language=language,
+            keywords=keywords,
+        )
 
         with timed_operation("Deepgram-Transkription", logger=logger, include_session=False):
             response = client.listen.v1.media.transcribe_file(**request_params)
 
-        # Sichere Extraktion: Prüfe auf leere channels/alternatives
-        channels = getattr(response.results, "channels", [])
-        if not channels or not getattr(channels[0], "alternatives", []):
-            logger.warning("Deepgram-Antwort enthält keine Transkription")
-            return ""
-        result = channels[0].alternatives[0].transcript or ""
+        result = _extract_transcript(response)
 
         logger.debug("Ergebnis: %s", redacted_text_summary(result))
 

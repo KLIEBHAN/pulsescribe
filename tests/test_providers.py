@@ -155,8 +155,7 @@ def test_provider_client_reinitializes_when_api_key_changes(
     class_name: str,
 ):
     module = __import__(module_path, fromlist=["dummy"])
-    monkeypatch.setattr(module, "_client", None)
-    monkeypatch.setattr(module, "_client_signature", None)
+    module._client_cache.reset()
 
     created_with: list[str] = []
 
@@ -181,6 +180,52 @@ def test_provider_client_reinitializes_when_api_key_changes(
     third = module._get_client()
 
     assert third is not first
+    assert created_with == [f"{module_name}-key-1", f"{module_name}-key-2"]
+
+
+@pytest.mark.parametrize(
+    ("module_name", "module_path", "env_key", "dependency_name", "class_name"),
+    [
+        ("openai", "providers.openai", "OPENAI_API_KEY", "openai", "OpenAI"),
+        ("deepgram", "providers.deepgram", "DEEPGRAM_API_KEY", "deepgram", "DeepgramClient"),
+        ("groq", "providers.groq", "GROQ_API_KEY", "groq", "Groq"),
+    ],
+    ids=["openai", "deepgram", "groq"],
+)
+def test_provider_client_recovers_after_api_key_is_removed(
+    monkeypatch,
+    module_name: str,
+    module_path: str,
+    env_key: str,
+    dependency_name: str,
+    class_name: str,
+):
+    module = __import__(module_path, fromlist=["dummy"])
+    module._client_cache.reset()
+
+    created_with: list[str] = []
+
+    class _FakeClient:
+        def __init__(self, api_key=None, **_kwargs):
+            created_with.append(api_key)
+
+    monkeypatch.setitem(
+        sys.modules,
+        dependency_name,
+        SimpleNamespace(**{class_name: _FakeClient}),
+    )
+
+    monkeypatch.setenv(env_key, f"{module_name}-key-1")
+    first = module._get_client()
+
+    monkeypatch.delenv(env_key, raising=False)
+    with pytest.raises(ValueError, match=env_key):
+        module._get_client()
+
+    monkeypatch.setenv(env_key, f"{module_name}-key-2")
+    second = module._get_client()
+
+    assert second is not first
     assert created_with == [f"{module_name}-key-1", f"{module_name}-key-2"]
 
 
@@ -468,6 +513,81 @@ def test_deepgram_provider_redacts_debug_result_logging(monkeypatch, tmp_path):
     assert captured
     assert "secret transcript" not in repr(captured[-1][0])
     assert "<redacted" in repr(captured[-1][0])
+
+
+@pytest.mark.parametrize(
+    ("model", "expected_field"),
+    [("nova-3", "keyterm"), ("nova-2", "keywords")],
+    ids=["nova-3-keyterm", "legacy-keywords"],
+)
+def test_deepgram_provider_maps_vocabulary_to_model_specific_request_fields(
+    monkeypatch, tmp_path, model: str, expected_field: str
+):
+    from providers.deepgram import DeepgramProvider
+    import providers.deepgram as deepgram_mod
+
+    audio_file = tmp_path / "sample.wav"
+    audio_file.write_bytes(b"audio")
+
+    observed: dict[str, object] = {}
+
+    def fake_transcribe_file(**kwargs):
+        observed.update(kwargs)
+        return SimpleNamespace(
+            results=SimpleNamespace(
+                channels=[SimpleNamespace(alternatives=[SimpleNamespace(transcript="hi")])]
+            )
+        )
+
+    fake_client = SimpleNamespace(
+        listen=SimpleNamespace(
+            v1=SimpleNamespace(media=SimpleNamespace(transcribe_file=fake_transcribe_file))
+        )
+    )
+
+    monkeypatch.setattr(deepgram_mod, "_get_client", lambda: fake_client)
+    monkeypatch.setattr(
+        deepgram_mod,
+        "load_vocabulary",
+        lambda: {"keywords": [f"kw{i}" for i in range(120)]},
+    )
+    monkeypatch.setenv("DEEPGRAM_API_KEY", "test-key")
+
+    provider = DeepgramProvider()
+    provider.transcribe(audio_file, model=model)
+
+    assert expected_field in observed
+    assert len(observed[expected_field]) == 100
+    assert ("keywords" if expected_field == "keyterm" else "keyterm") not in observed
+
+
+def test_deepgram_provider_returns_empty_string_when_transcript_is_missing(
+    monkeypatch, tmp_path
+):
+    from providers.deepgram import DeepgramProvider
+    import providers.deepgram as deepgram_mod
+
+    audio_file = tmp_path / "sample.wav"
+    audio_file.write_bytes(b"audio")
+
+    fake_client = SimpleNamespace(
+        listen=SimpleNamespace(
+            v1=SimpleNamespace(
+                media=SimpleNamespace(
+                    transcribe_file=lambda **_kwargs: SimpleNamespace(
+                        results=SimpleNamespace(channels=[])
+                    )
+                )
+            )
+        )
+    )
+
+    monkeypatch.setattr(deepgram_mod, "_get_client", lambda: fake_client)
+    monkeypatch.setattr(deepgram_mod, "load_vocabulary", lambda: {"keywords": []})
+    monkeypatch.setenv("DEEPGRAM_API_KEY", "test-key")
+
+    provider = DeepgramProvider()
+    assert provider.transcribe(audio_file) == ""
 
 
 def test_deepgram_provider_streams_audio_request(monkeypatch, tmp_path):

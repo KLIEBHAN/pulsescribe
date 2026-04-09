@@ -5,45 +5,33 @@ Nutzt Groq's LPU-Chips für extrem schnelle Whisper-Inferenz (~300x Echtzeit).
 
 import logging
 import os
-import threading
 from pathlib import Path
 from utils.timing import redacted_text_summary, timed_operation
 
 from config import DEFAULT_GROQ_MODEL
+from ._client_cache import EnvClientCache
 from ._language import normalize_auto_language
 
 logger = logging.getLogger("pulsescribe.providers.groq")
 
-# Singleton Client
-_client = None
-_client_signature: str | None = None
-_client_lock = threading.Lock()
+_client_cache = EnvClientCache()
 
 
 def _get_client():
     """Gibt Groq-Client Singleton zurück (Lazy Init)."""
-    global _client, _client_signature
 
-    api_key = os.getenv("GROQ_API_KEY")
-    if not api_key:
-        _client = None
-        _client_signature = None
-        raise ValueError("GROQ_API_KEY nicht gesetzt")
+    def _factory(api_key: str):
+        from groq import Groq
 
-    if _client is None or _client_signature != api_key:
-        with _client_lock:
-            api_key = os.getenv("GROQ_API_KEY")
-            if not api_key:
-                _client = None
-                _client_signature = None
-                raise ValueError("GROQ_API_KEY nicht gesetzt")
-            if _client is None or _client_signature != api_key:
-                from groq import Groq
+        return Groq(api_key=api_key)
 
-                _client = Groq(api_key=api_key)
-                _client_signature = api_key
-                logger.debug("Groq-Client initialisiert")
-    return _client
+    return _client_cache.get(
+        env_var="GROQ_API_KEY",
+        missing_error="GROQ_API_KEY nicht gesetzt",
+        create_client=_factory,
+        logger=logger,
+        client_label="Groq-Client",
+    )
 
 
 class GroqProvider:

@@ -5,47 +5,35 @@ Nutzt die OpenAI Transcription API mit gpt-4o-transcribe oder whisper-1.
 
 import logging
 import os
-import threading
 from pathlib import Path
 from utils.timing import redacted_text_summary, timed_operation
 
 from config import DEFAULT_API_MODEL
+from ._client_cache import EnvClientCache
 from ._language import normalize_auto_language
 
 logger = logging.getLogger("pulsescribe.providers.openai")
 
 _JSON_ONLY_MODELS = ("gpt-4o-transcribe", "gpt-4o-mini-transcribe")
 
-# Singleton Client
-_client = None
-_client_signature: str | None = None
-_client_lock = threading.Lock()
+_client_cache = EnvClientCache()
 
 
 def _get_client():
     """Gibt OpenAI-Client Singleton zurück (Lazy Init)."""
-    global _client, _client_signature
 
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        _client = None
-        _client_signature = None
-        raise ValueError("OPENAI_API_KEY nicht gesetzt")
+    def _factory(api_key: str):
+        from openai import OpenAI
 
-    if _client is None or _client_signature != api_key:
-        with _client_lock:
-            api_key = os.getenv("OPENAI_API_KEY")
-            if not api_key:
-                _client = None
-                _client_signature = None
-                raise ValueError("OPENAI_API_KEY nicht gesetzt")
-            if _client is None or _client_signature != api_key:
-                from openai import OpenAI
+        return OpenAI(api_key=api_key)
 
-                _client = OpenAI(api_key=api_key)
-                _client_signature = api_key
-                logger.debug("OpenAI-Client initialisiert")
-    return _client
+    return _client_cache.get(
+        env_var="OPENAI_API_KEY",
+        missing_error="OPENAI_API_KEY nicht gesetzt",
+        create_client=_factory,
+        logger=logger,
+        client_label="OpenAI-Client",
+    )
 
 
 def _uses_json_only_response_format(model: str) -> bool:

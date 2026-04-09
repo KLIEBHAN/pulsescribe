@@ -229,6 +229,26 @@ class TestGetRecentTranscripts:
 
         assert [entry["text"] for entry in merged] == ["Second", "Third", "Fourth"]
 
+    def test_merge_recent_transcript_entries_ignores_invalid_payloads(self):
+        """Nur Dict-Einträge dürfen im sichtbaren Transcript-Fenster landen."""
+        from utils.history import merge_recent_transcript_entries
+
+        merged = merge_recent_transcript_entries(
+            [
+                {"timestamp": "2026-03-03T10:00:00", "text": "First"},
+                "legacy-string-entry",
+                None,
+                {"timestamp": "2026-03-03T10:00:01", "text": "Second"},
+            ],
+            [
+                "invalid-appended-entry",
+                {"timestamp": "2026-03-03T10:00:02", "text": "Third"},
+            ],
+            max_entries=3,
+        )
+
+        assert [entry["text"] for entry in merged] == ["First", "Second", "Third"]
+
 
 class TestFormatTranscriptsForDisplay:
     """Tests für format_transcripts_for_display()."""
@@ -275,6 +295,47 @@ class TestFormatTranscriptsForDisplay:
         assert "legacy-string-entry" not in formatted
 
 
+class TestFormatTranscriptsForWelcome:
+    """Tests für format_transcripts_for_welcome()."""
+
+    def test_formats_entries_with_optional_metadata(self):
+        from utils.history import format_transcripts_for_welcome
+
+        entries = [
+            {
+                "timestamp": "2026-03-03T10:01:30.000000",
+                "text": "Neuester Eintrag",
+                "mode": "deepgram",
+                "language": "de",
+            },
+            {
+                "timestamp": "2026-03-03T10:00:00.000000",
+                "text": "Aelterer Eintrag",
+            },
+        ]
+
+        formatted = format_transcripts_for_welcome(entries)
+        first, second = formatted.split("\n\n")
+
+        assert first == "[2026-03-03 10:00:00]\nAelterer Eintrag"
+        assert second == "[2026-03-03 10:01:30] (deepgram de)\nNeuester Eintrag"
+
+    def test_ignores_non_dict_entries_and_can_preserve_newest_first_order(self):
+        from utils.history import format_transcripts_for_welcome
+
+        formatted = format_transcripts_for_welcome(
+            [
+                {"timestamp": "2026-03-03T10:00:00.000000", "text": "First"},
+                "legacy-string-entry",
+                {"timestamp": "2026-03-03T10:01:30.000000", "text": "Second"},
+            ],
+            newest_first=False,
+        )
+
+        assert formatted == "[2026-03-03 10:00:00]\nFirst\n\n[2026-03-03 10:01:30]\nSecond"
+        assert "legacy-string-entry" not in formatted
+
+
 class TestClearHistory:
     """Tests für clear_history()."""
 
@@ -300,6 +361,19 @@ class TestClearHistory:
 
 class TestRotation:
     """Tests für automatische Rotation."""
+
+    def test_select_recent_lines_within_bytes_keeps_oversized_newest_entry(self):
+        """Auch ein einzelner zu großer neuester Eintrag darf nicht verworfen werden."""
+        from utils.history import _select_recent_lines_within_bytes
+
+        lines = [
+            json.dumps({"timestamp": "2026-03-25T10:00:00", "text": "old"}),
+            json.dumps({"timestamp": "2026-03-25T10:00:01", "text": "x" * 200}),
+        ]
+
+        kept = _select_recent_lines_within_bytes(lines, max_size_bytes=32)
+
+        assert kept == [lines[-1]]
 
     def test_rotation_when_file_too_large(self, history_file, monkeypatch):
         """Rotation bei zu großer Datei."""
