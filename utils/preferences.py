@@ -264,6 +264,22 @@ def save_preferences(prefs: dict) -> None:
     _invalidate_preferences_cache()
 
 
+def _mutate_preferences(mutator: Callable[[dict[str, object]], None]) -> None:
+    """Load, mutate and persist preferences in one shared code path."""
+    prefs = load_preferences()
+    mutator(prefs)
+    save_preferences(prefs)
+
+
+def _store_preference(key: str, value: object) -> None:
+    """Persist one preference key while preserving all unrelated values."""
+
+    def _apply(prefs: dict[str, object]) -> None:
+        prefs[key] = value
+
+    _mutate_preferences(_apply)
+
+
 def has_seen_onboarding() -> bool:
     """Prüft ob User das Onboarding bereits gesehen hat."""
     return load_preferences().get("has_seen_onboarding", False)
@@ -271,9 +287,7 @@ def has_seen_onboarding() -> bool:
 
 def set_onboarding_seen(seen: bool = True) -> None:
     """Markiert Onboarding als gesehen."""
-    prefs = load_preferences()
-    prefs["has_seen_onboarding"] = seen
-    save_preferences(prefs)
+    _store_preference("has_seen_onboarding", seen)
 
 
 def get_onboarding_step() -> OnboardingStep:
@@ -298,12 +312,14 @@ def set_onboarding_step(step: OnboardingStep | str) -> None:
     """Setzt den aktuellen Wizard-Step."""
     raw = step.value if isinstance(step, OnboardingStep) else str(step)
     normalized = coerce_onboarding_step(raw) or OnboardingStep.DONE
-    prefs = load_preferences()
-    prefs["onboarding_step"] = normalized.value
-    # Completion implies "seen".
-    if normalized == OnboardingStep.DONE:
-        prefs["has_seen_onboarding"] = True
-    save_preferences(prefs)
+
+    def _apply(prefs: dict[str, object]) -> None:
+        prefs["onboarding_step"] = normalized.value
+        # Completion implies "seen".
+        if normalized == OnboardingStep.DONE:
+            prefs["has_seen_onboarding"] = True
+
+    _mutate_preferences(_apply)
 
 
 def get_onboarding_choice() -> OnboardingChoice | None:
@@ -314,21 +330,19 @@ def get_onboarding_choice() -> OnboardingChoice | None:
 
 def set_onboarding_choice(choice: OnboardingChoice | str | None) -> None:
     """Speichert die Wizard-Auswahl oder löscht sie."""
-    prefs = load_preferences()
-    if choice is None:
-        prefs.pop("onboarding_choice", None)
-        save_preferences(prefs)
-        return
     normalized = (
         choice
         if isinstance(choice, OnboardingChoice)
-        else coerce_onboarding_choice(str(choice))
+        else coerce_onboarding_choice(str(choice)) if choice is not None else None
     )
-    if normalized is None:
-        prefs.pop("onboarding_choice", None)
-    else:
+
+    def _apply(prefs: dict[str, object]) -> None:
+        if normalized is None:
+            prefs.pop("onboarding_choice", None)
+            return
         prefs["onboarding_choice"] = normalized.value
-    save_preferences(prefs)
+
+    _mutate_preferences(_apply)
 
 
 def is_onboarding_complete() -> bool:
@@ -355,9 +369,7 @@ def get_show_welcome_on_startup() -> bool:
 
 def set_show_welcome_on_startup(show: bool) -> None:
     """Setzt ob Welcome-Window bei jedem Start gezeigt werden soll."""
-    prefs = load_preferences()
-    prefs["show_welcome_on_startup"] = show
-    save_preferences(prefs)
+    _store_preference("show_welcome_on_startup", show)
 
 
 def save_api_key(key_name: str, value: str) -> None:

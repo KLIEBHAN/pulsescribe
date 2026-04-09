@@ -854,6 +854,37 @@ class LocalProvider:
         parts.append(f"lang={language or 'auto'}")
         logger.info(", ".join(parts))
 
+    def _dispatch_backend_transcription(
+        self,
+        audio_source,
+        *,
+        backend: str | None,
+        model_name: str,
+        options: dict,
+    ) -> str:
+        """Dispatch one local transcription request to the active backend."""
+        if backend == "faster":
+            return self._transcribe_faster(audio_source, model_name, options)
+        if backend == "mlx":
+            return self._transcribe_mlx(audio_source, model_name, options)
+        if backend == "lightning":
+            return self._transcribe_lightning(audio_source, model_name, options)
+        whisper_model = self._get_whisper_model(model_name)
+        result = whisper_model.transcribe(audio_source, **options)
+        return result["text"]
+
+    def _transcribe_with_backend(self, audio_source, *, model_name: str, options: dict) -> str:
+        """Run one local transcription through the selected backend with shared timing."""
+        backend = self._effective_backend()
+        with timed_operation("Local-Transkription", logger=logger, include_session=False):
+            with self._transcribe_lock:
+                return self._dispatch_backend_transcription(
+                    audio_source,
+                    backend=backend,
+                    model_name=model_name,
+                    options=options,
+                )
+
     def transcribe_audio(
         self,
         audio,
@@ -864,18 +895,7 @@ class LocalProvider:
         model_name = self._resolve_model_name(model)
         self._log_transcription_start(model_name, language)
         options = self._build_options(language)
-        backend = self._effective_backend()
-        with timed_operation("Local-Transkription", logger=logger, include_session=False):
-            with self._transcribe_lock:
-                if backend == "faster":
-                    return self._transcribe_faster(audio, model_name, options)
-                if backend == "mlx":
-                    return self._transcribe_mlx(audio, model_name, options)
-                if backend == "lightning":
-                    return self._transcribe_lightning(audio, model_name, options)
-                whisper_model = self._get_whisper_model(model_name)
-                result = whisper_model.transcribe(audio, **options)
-                return result["text"]
+        return self._transcribe_with_backend(audio, model_name=model_name, options=options)
 
     def _transcribe_faster(self, audio, model_name: str, options: dict) -> str:
         model = self._get_faster_model(model_name)
@@ -923,6 +943,12 @@ class LocalProvider:
                 return "".join(seg.text for seg in segments)
             raise
 
+    def _coerce_transcription_result(self, result: object) -> str:
+        """Normalize backend-specific transcription payloads to plain text."""
+        if isinstance(result, dict):
+            return str(result.get("text", ""))
+        return str(result)
+
     def _transcribe_mlx(self, audio, model_name: str, options: dict) -> str:
         """Transkription via mlx-whisper (Apple Silicon / Metal)."""
         t0 = time.perf_counter()
@@ -968,9 +994,7 @@ class LocalProvider:
             f"transcribe={t_transcribe:.2f}s (RTF={rtf:.2f}x)"
         )
 
-        if isinstance(result, dict):
-            return str(result.get("text", ""))
-        return str(result)
+        return self._coerce_transcription_result(result)
 
     def _transcribe_lightning(self, audio, model_name: str, options: dict) -> str:
         """Transkription via lightning-whisper-mlx (Apple Silicon, ~4x faster).
@@ -1027,9 +1051,7 @@ class LocalProvider:
             f"transcribe={t_transcribe:.2f}s (RTF={rtf:.2f}x)"
         )
 
-        if isinstance(result, dict):
-            return str(result.get("text", ""))
-        return str(result)
+        return self._coerce_transcription_result(result)
 
     def transcribe(
         self,
@@ -1050,18 +1072,11 @@ class LocalProvider:
         model_name = self._resolve_model_name(model)
         self._log_transcription_start(model_name, language)
         options = self._build_options(language)
-        backend = self._effective_backend()
-        with timed_operation("Local-Transkription", logger=logger, include_session=False):
-            with self._transcribe_lock:
-                if backend == "faster":
-                    return self._transcribe_faster(str(audio_path), model_name, options)
-                if backend == "mlx":
-                    return self._transcribe_mlx(str(audio_path), model_name, options)
-                if backend == "lightning":
-                    return self._transcribe_lightning(str(audio_path), model_name, options)
-                whisper_model = self._get_whisper_model(model_name)
-                result = whisper_model.transcribe(str(audio_path), **options)
-                return result["text"]
+        return self._transcribe_with_backend(
+            str(audio_path),
+            model_name=model_name,
+            options=options,
+        )
 
     def supports_streaming(self) -> bool:
         """Lokales Whisper unterstützt kein Streaming."""

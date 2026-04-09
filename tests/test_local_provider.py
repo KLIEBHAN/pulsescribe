@@ -416,6 +416,48 @@ class TestLightningWorkdir:
         assert state["concurrent"] is False
 
 
+class TestMLXTranscription:
+    """Tests für MLX-Transkription."""
+
+    def test_transcribe_mlx_returns_text(self, monkeypatch):
+        """MLX-Transkription gibt den Text aus Dict-Responses zurück."""
+        monkeypatch.setenv("PULSESCRIBE_LOCAL_BACKEND", "mlx")
+
+        mock_mlx = MagicMock()
+        mock_mlx.transcribe.return_value = {"text": "Hallo Welt"}
+
+        with patch("providers.local._import_mlx_whisper", return_value=mock_mlx):
+            from providers.local import LocalProvider
+
+            provider = LocalProvider()
+            provider._ensure_runtime_config()
+
+            audio = np.zeros(16000, dtype=np.float32)
+            result = provider._transcribe_mlx(audio, "turbo", {"language": "de"})
+
+            assert result == "Hallo Welt"
+            mock_mlx.transcribe.assert_called_once()
+
+    def test_transcribe_mlx_handles_string_result(self, monkeypatch):
+        """MLX-Transkription behandelt direkte String-Rückgaben."""
+        monkeypatch.setenv("PULSESCRIBE_LOCAL_BACKEND", "mlx")
+
+        mock_mlx = MagicMock()
+        mock_mlx.transcribe.return_value = "Direkt als String"
+
+        with patch("providers.local._import_mlx_whisper", return_value=mock_mlx):
+            from providers.local import LocalProvider
+
+            provider = LocalProvider()
+            provider._ensure_runtime_config()
+
+            audio = np.zeros(16000, dtype=np.float32)
+            result = provider._transcribe_mlx(audio, "turbo", {"language": "de"})
+
+            assert result == "Direkt als String"
+            mock_mlx.transcribe.assert_called_once()
+
+
 class TestLightningTranscription:
     """Tests für Lightning Transkription."""
 
@@ -528,6 +570,86 @@ class TestTranscribeAudioDispatch:
 
             assert result == "MLX Result"
             mock_mlx.assert_called_once()
+
+
+class TestTranscribeFileDispatch:
+    """Tests für transcribe Dispatch mit Dateipfaden."""
+
+    def test_transcribe_dispatches_to_lightning(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("PULSESCRIBE_LOCAL_BACKEND", "lightning")
+        audio_file = tmp_path / "sample.wav"
+        audio_file.write_bytes(b"audio")
+
+        with patch(
+            "providers.local.LocalProvider._transcribe_lightning",
+            return_value="Lightning Result",
+        ) as mock_lightning:
+            from providers.local import LocalProvider
+
+            provider = LocalProvider()
+            result = provider.transcribe(audio_file, language="de")
+
+            assert result == "Lightning Result"
+            mock_lightning.assert_called_once()
+            assert mock_lightning.call_args.args[0] == str(audio_file)
+
+    def test_transcribe_dispatches_to_mlx(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("PULSESCRIBE_LOCAL_BACKEND", "mlx")
+        audio_file = tmp_path / "sample.wav"
+        audio_file.write_bytes(b"audio")
+
+        with patch(
+            "providers.local.LocalProvider._transcribe_mlx",
+            return_value="MLX Result",
+        ) as mock_mlx:
+            from providers.local import LocalProvider
+
+            provider = LocalProvider()
+            result = provider.transcribe(audio_file, language="de")
+
+            assert result == "MLX Result"
+            mock_mlx.assert_called_once()
+            assert mock_mlx.call_args.args[0] == str(audio_file)
+
+    def test_transcribe_dispatches_to_faster(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("PULSESCRIBE_LOCAL_BACKEND", "faster")
+        audio_file = tmp_path / "sample.wav"
+        audio_file.write_bytes(b"audio")
+
+        with patch(
+            "providers.local.LocalProvider._transcribe_faster",
+            return_value="Faster Result",
+        ) as mock_faster:
+            from providers.local import LocalProvider
+
+            provider = LocalProvider()
+            result = provider.transcribe(audio_file, language="de")
+
+            assert result == "Faster Result"
+            mock_faster.assert_called_once()
+            assert mock_faster.call_args.args[0] == str(audio_file)
+
+    def test_transcribe_dispatches_to_whisper_with_string_path(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("PULSESCRIBE_LOCAL_BACKEND", "whisper")
+        audio_file = tmp_path / "sample.wav"
+        audio_file.write_bytes(b"audio")
+
+        mock_model = MagicMock()
+        mock_model.transcribe.return_value = {"text": "Whisper Result"}
+
+        with patch(
+            "providers.local.LocalProvider._get_whisper_model",
+            return_value=mock_model,
+        ):
+            from providers.local import LocalProvider
+
+            provider = LocalProvider()
+            result = provider.transcribe(audio_file, language="de")
+
+            assert result == "Whisper Result"
+            assert mock_model.transcribe.call_args.args[0] == str(audio_file)
 
 
 class TestLightningEnvOptions:

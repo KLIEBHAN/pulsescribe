@@ -63,6 +63,8 @@ class _FakeContentView:
 def _isolate_prefs(tmp_path, monkeypatch):
     monkeypatch.setattr(prefs, "PREFS_FILE", tmp_path / "preferences.json")
     monkeypatch.setattr(prefs, "ENV_FILE", tmp_path / ".env")
+    prefs._env_cache = None
+    prefs._prefs_cache = None
 
 
 def test_onboarding_step_default_is_choose_goal(tmp_path, monkeypatch):
@@ -95,6 +97,46 @@ def test_onboarding_choice_roundtrip(tmp_path, monkeypatch):
     assert prefs.get_onboarding_choice() == OnboardingChoice.FAST
     prefs.set_onboarding_choice(None)
     assert prefs.get_onboarding_choice() is None
+
+
+def test_set_onboarding_choice_invalid_value_clears_choice_only(tmp_path, monkeypatch):
+    _isolate_prefs(tmp_path, monkeypatch)
+    prefs.save_preferences(
+        {
+            "onboarding_choice": "fast",
+            "display_name": "Müller",
+        }
+    )
+
+    prefs.set_onboarding_choice("not-a-choice")
+
+    assert prefs.load_preferences() == {"display_name": "Müller"}
+
+
+def test_set_onboarding_seen_preserves_existing_preferences(tmp_path, monkeypatch):
+    _isolate_prefs(tmp_path, monkeypatch)
+    prefs.save_preferences({"display_name": "Müller"})
+
+    prefs.set_onboarding_seen(True)
+
+    assert prefs.load_preferences() == {
+        "display_name": "Müller",
+        "has_seen_onboarding": True,
+    }
+
+
+def test_set_show_welcome_on_startup_preserves_existing_preferences(
+    tmp_path, monkeypatch
+):
+    _isolate_prefs(tmp_path, monkeypatch)
+    prefs.save_preferences({"display_name": "Müller"})
+
+    prefs.set_show_welcome_on_startup(False)
+
+    assert prefs.load_preferences() == {
+        "display_name": "Müller",
+        "show_welcome_on_startup": False,
+    }
 
 
 def test_hotkey_preset_updates_toggle_without_clearing_hold(tmp_path, monkeypatch):
