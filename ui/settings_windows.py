@@ -2503,7 +2503,7 @@ class SettingsWindow(QDialog):
         try:
             from utils.history import (
                 HISTORY_FILE,
-                format_transcript_entry_for_display,
+                format_transcript_entries_for_display,
                 format_transcripts_for_display,
                 get_recent_transcripts,
             )
@@ -2530,15 +2530,10 @@ class SettingsWindow(QDialog):
 
             entries = get_recent_transcripts(TRANSCRIPTS_VIEW_MAX_ENTRIES)
             ordered_entries = list(reversed(entries))
-            transcript_blocks = [
-                format_transcript_entry_for_display(entry)
-                for entry in ordered_entries
-            ]
+            transcript_blocks = format_transcript_entries_for_display(entries)
             self._set_transcripts_text_if_changed(format_transcripts_for_display(entries))
             self._last_transcripts_entries = ordered_entries
-            self._last_transcripts_blocks = [
-                block for block in transcript_blocks if block
-            ]
+            self._last_transcripts_blocks = transcript_blocks
             self._last_transcripts_signature = signature
 
             if hasattr(self, "_transcripts_status"):
@@ -2577,7 +2572,7 @@ class SettingsWindow(QDialog):
             return False
 
         from utils.history import (
-            format_transcript_entry_for_display,
+            format_transcript_entries_for_display,
             merge_recent_transcript_entries,
             read_transcripts_from_offset,
         )
@@ -2616,12 +2611,13 @@ class SettingsWindow(QDialog):
             and is_near_bottom(previous_value, previous_maximum)
         )
 
+        appended_blocks = format_transcript_entries_for_display(
+            appended_entries,
+            newest_first=False,
+        )
+
         if can_append_in_place:
-            appended_blocks = [
-                format_transcript_entry_for_display(entry)
-                for entry in appended_entries
-            ]
-            appended_text = "\n\n".join(block for block in appended_blocks if block)
+            appended_text = "\n\n".join(appended_blocks)
             if not appended_text:
                 return False
 
@@ -2640,12 +2636,12 @@ class SettingsWindow(QDialog):
             merged_blocks = (
                 list(previous_blocks)
                 if previous_blocks is not None
-                else [
-                    format_transcript_entry_for_display(entry)
-                    for entry in previous_entries
-                ]
+                else format_transcript_entries_for_display(
+                    previous_entries,
+                    newest_first=False,
+                )
             )
-            merged_blocks.extend(block for block in appended_blocks if block)
+            merged_blocks.extend(appended_blocks)
             self._last_transcripts_blocks = merged_blocks[-TRANSCRIPTS_VIEW_MAX_ENTRIES:]
             self._last_transcripts_signature = signature
             scrollbar.setValue(scrollbar.maximum())
@@ -2653,22 +2649,17 @@ class SettingsWindow(QDialog):
 
         if previous_blocks is not None:
             merged_blocks = list(previous_blocks)
-            merged_blocks.extend(
-                format_transcript_entry_for_display(entry)
-                for entry in appended_entries
-            )
-            merged_blocks = [
-                block for block in merged_blocks[-TRANSCRIPTS_VIEW_MAX_ENTRIES:] if block
-            ]
+            merged_blocks.extend(appended_blocks)
+            merged_blocks = merged_blocks[-TRANSCRIPTS_VIEW_MAX_ENTRIES:]
             merged_text = (
                 "\n\n".join(merged_blocks) if merged_blocks else "No transcripts yet."
             )
             self._last_transcripts_blocks = merged_blocks
         else:
-            merged_blocks = [
-                format_transcript_entry_for_display(entry) for entry in merged_entries
-            ]
-            merged_blocks = [block for block in merged_blocks if block]
+            merged_blocks = format_transcript_entries_for_display(
+                merged_entries,
+                newest_first=False,
+            )
             merged_text = (
                 "\n\n".join(merged_blocks) if merged_blocks else "No transcripts yet."
             )

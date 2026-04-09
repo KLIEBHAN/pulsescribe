@@ -237,11 +237,6 @@ def _parse_transcript_line(line: str) -> dict[str, object] | None:
     return _coerce_transcript_entry(entry)
 
 
-def _parse_transcript_lines_in_order(lines: Sequence[str]) -> list[dict[str, object]]:
-    """Parse JSONL transcript lines while preserving file order."""
-    return list(_iter_parsed_transcript_lines(lines))
-
-
 def read_transcripts_from_offset(
     start_offset: int, *, max_bytes: int | None = None
 ) -> list[dict[str, object]]:
@@ -258,7 +253,7 @@ def read_transcripts_from_offset(
     )
     if not appended_text:
         return []
-    return _parse_transcript_lines_in_order(appended_text.splitlines())
+    return list(_iter_parsed_transcript_lines(appended_text.splitlines()))
 
 
 def _iter_valid_transcript_entries(
@@ -271,14 +266,21 @@ def _iter_valid_transcript_entries(
             yield coerced_entry
 
 
-def _order_valid_transcript_entries(
-    entries: Sequence[object], *, newest_first: bool
+def _collect_valid_transcript_entries(
+    entries: Sequence[object], *, newest_first: bool, max_entries: int | None = None
 ) -> list[dict[str, object]]:
     """Filter invalid entries and return them in the requested display order."""
     ordered_entries = list(_iter_valid_transcript_entries(entries))
     if newest_first:
         ordered_entries.reverse()
-    return ordered_entries
+
+    if max_entries is None:
+        return ordered_entries
+    if max_entries <= 0:
+        return []
+    if newest_first:
+        return ordered_entries[:max_entries]
+    return ordered_entries[-max_entries:]
 
 
 def _format_timestamp(timestamp: object) -> str:
@@ -296,17 +298,25 @@ def merge_recent_transcript_entries(
     if max_entries <= 0:
         return []
 
-    previous_valid = _order_valid_transcript_entries(
+    previous_valid = _collect_valid_transcript_entries(
         previous_entries,
         newest_first=False,
     )
-    appended_valid = _order_valid_transcript_entries(
+    appended_valid = _collect_valid_transcript_entries(
         appended_entries,
         newest_first=False,
     )
     if not appended_valid:
-        return previous_valid[-max_entries:]
-    return [*previous_valid, *appended_valid][-max_entries:]
+        return _collect_valid_transcript_entries(
+            previous_valid,
+            newest_first=False,
+            max_entries=max_entries,
+        )
+    return _collect_valid_transcript_entries(
+        [*previous_valid, *appended_valid],
+        newest_first=False,
+        max_entries=max_entries,
+    )
 
 
 def _collect_entry_metadata(
@@ -352,7 +362,7 @@ def _format_transcript_blocks(
     formatter: Callable[[dict[str, object]], str],
 ) -> list[str]:
     """Format ordered transcript entries into non-empty blocks."""
-    ordered_entries = _order_valid_transcript_entries(
+    ordered_entries = _collect_valid_transcript_entries(
         entries,
         newest_first=newest_first,
     )
@@ -405,14 +415,24 @@ def format_transcript_entry_for_display(entry: object) -> str:
     return f"{header} {refined}{text}"
 
 
+def format_transcript_entries_for_display(
+    entries: Sequence[object], *, newest_first: bool = True
+) -> list[str]:
+    """Format transcript entries into display-view blocks without joining them."""
+    return _format_transcript_blocks(
+        entries,
+        newest_first=newest_first,
+        formatter=format_transcript_entry_for_display,
+    )
+
+
 def format_transcripts_for_display(
     entries: Sequence[object], *, newest_first: bool = True
 ) -> str:
     """Format transcript entries for the Windows transcripts viewer."""
-    blocks = _format_transcript_blocks(
+    blocks = format_transcript_entries_for_display(
         entries,
         newest_first=newest_first,
-        formatter=format_transcript_entry_for_display,
     )
     return _join_transcript_blocks(blocks, empty_message="No transcripts yet.")
 

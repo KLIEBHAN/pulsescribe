@@ -237,6 +237,55 @@ def test_refresh_transcripts_updates_when_signature_changes(tmp_path, monkeypatc
     assert window._transcripts_status.text == "1 entries"
 
 
+def test_refresh_transcripts_caches_oldest_first_blocks_on_full_reload(
+    tmp_path, monkeypatch
+):
+    import ui.settings_windows as settings_mod
+    import utils.history as history_mod
+
+    history_file = tmp_path / "history.jsonl"
+    history_file.write_text(
+        '\n'.join(
+            [
+                '{"timestamp":"2026-01-01T10:00:00","text":"hello"}',
+                '{"timestamp":"2026-01-01T10:00:01","text":"world","mode":"deepgram"}',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(history_mod, "HISTORY_FILE", history_file)
+    monkeypatch.setattr(settings_mod, "get_file_signature", lambda _path: (99, 42))
+
+    entries = [
+        {
+            "timestamp": "2026-01-01T10:00:01",
+            "text": "world",
+            "mode": "deepgram",
+        },
+        {"timestamp": "2026-01-01T10:00:00", "text": "hello"},
+    ]
+    monkeypatch.setattr(history_mod, "get_recent_transcripts", lambda _count: entries)
+
+    captured_text: list[str] = []
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._last_transcripts_signature = None
+    window._transcripts_status = _FakeLabel()
+    window._set_transcripts_text_if_changed = lambda text: captured_text.append(text)
+
+    window._refresh_transcripts()
+
+    assert captured_text == [history_mod.format_transcripts_for_display(entries)]
+    assert [entry["text"] for entry in window._last_transcripts_entries] == [
+        "hello",
+        "world",
+    ]
+    assert window._last_transcripts_blocks == [
+        "[2026-01-01 10:00:00] hello",
+        "[2026-01-01 10:00:01] (deepgram) world",
+    ]
+
+
 def test_refresh_transcripts_skips_full_reload_when_incremental_append_succeeds(
     tmp_path, monkeypatch
 ):

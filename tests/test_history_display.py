@@ -91,3 +91,25 @@ def test_format_transcript_entries_for_welcome_returns_blocks() -> None:
         "[2026-03-24 10:00:00]\nErster Eintrag",
         "[2026-03-24 10:01:00]\nZweiter Eintrag",
     ]
+
+
+def test_format_transcripts_for_display_string_splits_into_oldest_first_blocks() -> None:
+    formatted = format_transcripts_for_display(
+        [
+            {
+                "timestamp": "2026-03-24T10:01:00.000000",
+                "text": "Zweiter Eintrag",
+                "mode": "deepgram",
+            },
+            {
+                "timestamp": "2026-03-24T10:00:00.000000",
+                "text": "Erster Eintrag",
+            },
+        ],
+        newest_first=True,
+    )
+
+    assert formatted.split("\n\n") == [
+        "[2026-03-24 10:00:00] Erster Eintrag",
+        "[2026-03-24 10:01:00] (deepgram) Zweiter Eintrag",
+    ]
