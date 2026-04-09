@@ -85,6 +85,8 @@ def _build_height_factors() -> list[float]:
 
 
 _HEIGHT_FACTORS = _build_height_factors()
+_BAR_INDEXES = tuple(range(BAR_COUNT))
+_CENTER_INDEX = (BAR_COUNT - 1) / 2
 
 
 # =============================================================================
@@ -100,6 +102,12 @@ class AnimationLogic:
         self._level_smoothed = 0.0  # Second smoothing layer
         self._agc_peak = AGC_MIN_PEAK
         self._normalized_level = 0.0
+        self._frame_cache_key: tuple[str, float, float] | None = None
+        self._frame_cache_values: tuple[float, ...] | None = None
+
+    def _invalidate_frame_cache(self) -> None:
+        self._frame_cache_key = None
+        self._frame_cache_values = None
 
     def update_level(self, target_level: float):
         """Updates and smoothes the audio level."""
@@ -132,6 +140,7 @@ class AnimationLogic:
             else LEVEL_SMOOTHING_FALL
         )
         self._level_smoothed += alpha2 * (self._smoothed_level - self._level_smoothed)
+        self._invalidate_frame_cache()
 
     def update_agc(self):
         """Updates Adaptive Gain Control logic."""
@@ -152,6 +161,7 @@ class AnimationLogic:
 
         shaped = (min(1.0, normalized) ** VISUAL_EXPONENT) * VISUAL_GAIN
         self._normalized_level = min(1.0, shaped)
+        self._invalidate_frame_cache()
 
     def calculate_bar_height(self, i: int, t: float, state: str) -> float:
         """Calculates the target height for a specific bar index `i` at time `t`.
@@ -168,53 +178,69 @@ class AnimationLogic:
         This allows each platform to apply its own MIN/MAX heights:
             height = min_height + (max_height - min_height) * normalized
         """
+        if not 0 <= i < BAR_COUNT:
+            return 0.0
+
+        cache_key = (state, t, self._normalized_level if state == "RECORDING" else 0.0)
+        if self._frame_cache_key != cache_key or self._frame_cache_values is None:
+            self._frame_cache_key = cache_key
+            self._frame_cache_values = self._build_frame_values(t, state)
+
+        return self._frame_cache_values[i]
+
+    def _build_frame_values(self, t: float, state: str) -> tuple[float, ...]:
         if state == "RECORDING":
-            return self._calc_recording_normalized(i, t)
-        elif state == "LISTENING":
-            return self._calc_listening_normalized(i, t)
-        elif state in ("TRANSCRIBING", "REFINING"):
-            return self._calc_processing_normalized(i, t)
-        elif state == "LOADING":
-            return self._calc_loading_normalized(i, t)
-        elif state == "DONE":
-            return self._calc_done_normalized(i, t)
-        elif state == "ERROR":
-            return self._calc_error_normalized(t)
+            return self._build_recording_frame_values(t)
+        if state == "LISTENING":
+            return tuple(self._calc_listening_normalized(i, t) for i in _BAR_INDEXES)
+        if state in ("TRANSCRIBING", "REFINING"):
+            value = self._calc_processing_normalized(t)
+            return (value,) * BAR_COUNT
+        if state == "LOADING":
+            return tuple(self._calc_loading_normalized(i, t) for i in _BAR_INDEXES)
+        if state == "DONE":
+            return tuple(self._calc_done_normalized(i, t) for i in _BAR_INDEXES)
+        if state == "ERROR":
+            value = self._calc_error_normalized(t)
+            return (value,) * BAR_COUNT
+        return (0.0,) * BAR_COUNT
 
-        return 0.0
-
-    def _calc_recording_normalized(self, i: int, t: float) -> float:
-        """Recording: Audio-responsive with Traveling Wave and Envelope. Returns 0-1."""
-        center = (BAR_COUNT - 1) / 2
+    def _build_recording_frame_values(self, t: float) -> tuple[float, ...]:
+        """Precompute shared recording-frame math once per frame."""
         level = self._normalized_level
+        if level <= 0.0:
+            return (0.0,) * BAR_COUNT
 
-        # Traveling Wave
-        phase1 = TAU * WAVE_WANDER_HZ_PRIMARY * t + i * WAVE_WANDER_PHASE_STEP_PRIMARY
-        phase2 = (
-            TAU * WAVE_WANDER_HZ_SECONDARY * t + i * WAVE_WANDER_PHASE_STEP_SECONDARY
-        )
-        wave1 = (math.sin(phase1) + 1) / 2
-        wave2 = (math.sin(phase2) + 1) / 2
-        wave_mod = WAVE_WANDER_BLEND * wave1 + (1 - WAVE_WANDER_BLEND) * wave2
-        wave_factor = 1.0 - WAVE_WANDER_AMOUNT + WAVE_WANDER_AMOUNT * wave_mod
-
-        # Gaussian Envelope
         env_phase1 = TAU * ENVELOPE_HZ_PRIMARY * t
         env_phase2 = TAU * ENVELOPE_HZ_SECONDARY * t
-        env_offset1 = math.sin(env_phase1) * center * 0.8
-        env_offset2 = math.sin(env_phase2) * center * 0.6
+        env_offset1 = math.sin(env_phase1) * _CENTER_INDEX * 0.8
+        env_offset2 = math.sin(env_phase2) * _CENTER_INDEX * 0.6
         env_center = (
-            center + ENVELOPE_BLEND * env_offset1 + (1 - ENVELOPE_BLEND) * env_offset2
+            _CENTER_INDEX
+            + ENVELOPE_BLEND * env_offset1
+            + (1 - ENVELOPE_BLEND) * env_offset2
         )
 
-        distance = abs(i - env_center)
-        env_factor = ENVELOPE_BASE + (1 - ENVELOPE_BASE) * _gaussian(
-            distance, ENVELOPE_SIGMA
-        )
-        env_factor = ENVELOPE_STRENGTH * env_factor + (1 - ENVELOPE_STRENGTH) * 1.0
+        values: list[float] = []
+        for i in _BAR_INDEXES:
+            phase1 = TAU * WAVE_WANDER_HZ_PRIMARY * t + i * WAVE_WANDER_PHASE_STEP_PRIMARY
+            phase2 = (
+                TAU * WAVE_WANDER_HZ_SECONDARY * t
+                + i * WAVE_WANDER_PHASE_STEP_SECONDARY
+            )
+            wave1 = (math.sin(phase1) + 1) / 2
+            wave2 = (math.sin(phase2) + 1) / 2
+            wave_mod = WAVE_WANDER_BLEND * wave1 + (1 - WAVE_WANDER_BLEND) * wave2
+            wave_factor = 1.0 - WAVE_WANDER_AMOUNT + WAVE_WANDER_AMOUNT * wave_mod
 
-        base_factor = _HEIGHT_FACTORS[i]
-        return level * base_factor * wave_factor * env_factor
+            distance = abs(i - env_center)
+            env_factor = ENVELOPE_BASE + (1 - ENVELOPE_BASE) * _gaussian(
+                distance, ENVELOPE_SIGMA
+            )
+            env_factor = ENVELOPE_STRENGTH * env_factor + (1 - ENVELOPE_STRENGTH) * 1.0
+            values.append(level * _HEIGHT_FACTORS[i] * wave_factor * env_factor)
+
+        return tuple(values)
 
     def _calc_listening_normalized(self, i: int, t: float) -> float:
         """Listening: Dual sine waves for organic waiting animation. Returns 0-1."""
@@ -232,7 +258,7 @@ class AnimationLogic:
         # Apply height factors (center higher), scale to ~40% of range
         return 0.4 * wave * _HEIGHT_FACTORS[i]
 
-    def _calc_processing_normalized(self, i: int, t: float) -> float:
+    def _calc_processing_normalized(self, t: float) -> float:
         """Transcribing/Refining: Synchronized pulsing (original macOS style). Returns 0-1."""
         # All bars pulse together to same height with ~1s period
         phase = t * math.pi  # ~1s full cycle (up and down)

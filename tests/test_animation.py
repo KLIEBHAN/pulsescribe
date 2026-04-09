@@ -1,4 +1,5 @@
 import math
+from unittest.mock import patch
 
 from ui.animation import AnimationLogic
 
@@ -34,3 +35,24 @@ def test_update_level_accepts_non_numeric_input_without_crashing() -> None:
 
     value = anim.calculate_bar_height(0, 0.0, "RECORDING")
     assert math.isfinite(value)
+
+
+def test_calculate_bar_normalized_reuses_frame_cache_for_same_state_and_time() -> None:
+    anim = AnimationLogic()
+    anim.update_level(0.6)
+    anim.update_agc()
+
+    with patch.object(
+        anim,
+        "_build_frame_values",
+        wraps=anim._build_frame_values,
+    ) as build_frame_values:
+        first_pass = [
+            anim.calculate_bar_normalized(i, 0.25, "RECORDING") for i in range(10)
+        ]
+        second_pass = [
+            anim.calculate_bar_normalized(i, 0.25, "RECORDING") for i in range(10)
+        ]
+
+    assert build_frame_values.call_count == 1
+    assert second_pass == first_pass

@@ -231,6 +231,7 @@ def test_go_next_fast_reapplies_choice_preset_after_api_key_entry(monkeypatch):
     wizard._step = OnboardingStep.CHOOSE_GOAL
     wizard._choice = OnboardingChoice.FAST
     wizard._api_key_field = _FakeField("dg-test-key")
+    wizard._fast_choice_requires_reapply = True
     wizard._stop_hotkey_recording = lambda: None
 
     applied_choices: list[OnboardingChoice] = []
@@ -256,6 +257,42 @@ def test_go_next_fast_reapplies_choice_preset_after_api_key_entry(monkeypatch):
     assert applied_choices == [OnboardingChoice.FAST]
     assert saved_choice == [OnboardingChoice.FAST]
     assert emitted == [True]
+    assert shown_steps == [next_step(OnboardingStep.CHOOSE_GOAL)]
+
+
+def test_go_next_fast_skips_reapply_without_new_api_key_input(monkeypatch):
+    import ui.onboarding_wizard_windows as wizard_mod
+
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+    wizard._step = OnboardingStep.CHOOSE_GOAL
+    wizard._choice = OnboardingChoice.FAST
+    wizard._api_key_field = _FakeField("")
+    wizard._fast_choice_requires_reapply = False
+    wizard._stop_hotkey_recording = lambda: None
+
+    shown_steps: list[OnboardingStep] = []
+    saved_choice: list[OnboardingChoice] = []
+    emitted: list[bool] = []
+
+    wizard.settings_changed = types.SimpleNamespace(emit=lambda: emitted.append(True))
+    wizard._apply_choice_preset = lambda _choice: (_ for _ in ()).throw(
+        AssertionError("should not reapply unchanged fast preset")
+    )
+    wizard._show_step = lambda step: shown_steps.append(step)
+    wizard._complete = lambda: (_ for _ in ()).throw(
+        AssertionError("should not complete on CHOOSE_GOAL")
+    )
+
+    monkeypatch.setattr(
+        wizard_mod,
+        "set_onboarding_choice",
+        lambda choice: saved_choice.append(choice),
+    )
+
+    wizard._go_next()
+
+    assert saved_choice == [OnboardingChoice.FAST]
+    assert emitted == []
     assert shown_steps == [next_step(OnboardingStep.CHOOSE_GOAL)]
 
 
@@ -393,6 +430,29 @@ def test_can_advance_fast_with_existing_groq_api_key(monkeypatch):
     )
 
     assert wizard._can_advance() is True
+
+
+def test_can_advance_hotkey_reuses_cached_validation_result():
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+    wizard._step = OnboardingStep.HOTKEY
+    wizard._hotkey_status_label = _FakeLabel()
+    wizard._env_settings_cache = {
+        "PULSESCRIBE_TOGGLE_HOTKEY": "ctrl+alt+r",
+        "PULSESCRIBE_HOLD_HOTKEY": "ctrl+win",
+    }
+    wizard._last_hotkey_validation_input = None
+    wizard._last_hotkey_validation_result = None
+
+    calls: list[tuple[str | None, str | None]] = []
+    wizard._validate_hotkey_pair = lambda toggle, hold: calls.append((toggle, hold)) or (
+        "ctrl+alt+r",
+        "ctrl+win",
+        None,
+    )
+
+    assert wizard._can_advance() is True
+    assert wizard._can_advance() is True
+    assert calls == [("ctrl+alt+r", "ctrl+win")]
 
 
 def test_apply_choice_preset_fast_skips_duplicate_api_key_and_mode_writes(monkeypatch):
@@ -1150,6 +1210,31 @@ def test_poll_ipc_response_noop_after_recording_uses_slower_idle_polling():
 
     assert wizard._ipc_poll_count == 1
     assert wizard._ipc_poll_timer.intervals == [IPC_RECORDING_IDLE_POLL_INTERVAL_MS]
+
+
+def test_poll_ipc_response_noop_after_recording_skips_duplicate_idle_interval():
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+    wizard._ipc_test_cmd_id = "cmd-1"
+    wizard._ipc_client = types.SimpleNamespace(
+        poll_response=lambda _cmd_id: None,
+        clear_response=lambda: None,
+    )
+    wizard._ipc_poll_timer = _FakeTimer(interval=IPC_RECORDING_IDLE_POLL_INTERVAL_MS)
+    wizard._ipc_poll_count = 0
+    wizard._ipc_seen_recording = True
+    wizard._ipc_stop_requested = False
+    wizard._ipc_recording_polls_after_stop = 0
+    wizard._ipc_last_status = "recording"
+    wizard._on_ipc_test_complete = (
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("should not complete while idle polling budget remains")
+        )
+    )
+
+    wizard._poll_ipc_response()
+
+    assert wizard._ipc_poll_count == 1
+    assert wizard._ipc_poll_timer.intervals == []
 
 
 def test_poll_ipc_response_stopped_resets_ui_and_sets_status():

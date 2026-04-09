@@ -234,6 +234,17 @@ def _set_widget_enabled_if_changed(widget, enabled: bool) -> bool:
 def _set_timer_interval_if_supported(timer, interval_ms: int) -> bool:
     if timer is None:
         return False
+    getter = getattr(timer, "interval", None)
+    if callable(getter):
+        try:
+            if int(getter()) == interval_ms:
+                return False
+        except (TypeError, ValueError):
+            pass
+    else:
+        current = getattr(timer, "interval", None)
+        if isinstance(current, int) and current == interval_ms:
+            return False
     setter = getattr(timer, "setInterval", None)
     if not callable(setter):
         return False
@@ -356,7 +367,11 @@ class OnboardingWizardWindows(QDialog):
         self._is_closed = False
         self._last_test_transcript_text = ""
         self._last_hotkey_preview_by_field: dict[str, str] = {}
+        self._last_test_hotkey_summary: str | None = None
+        self._last_hotkey_validation_input: tuple[str, str] | None = None
+        self._last_hotkey_validation_result: tuple[str, str, str | None] | None = None
         self._env_settings_cache: dict[str, str] = read_env_file()
+        self._fast_choice_requires_reapply = False
 
         self._setup_ui()
 
@@ -431,6 +446,21 @@ class OnboardingWizardWindows(QDialog):
             (self._get_cached_env_setting("PULSESCRIBE_TOGGLE_HOTKEY") or "").strip(),
             (self._get_cached_env_setting("PULSESCRIBE_HOLD_HOTKEY") or "").strip(),
         )
+
+    def _get_hotkey_validation_result(
+        self, toggle_raw: str | None, hold_raw: str | None
+    ) -> tuple[str, str, str | None]:
+        cache_key = ((toggle_raw or "").strip(), (hold_raw or "").strip())
+        if getattr(self, "_last_hotkey_validation_input", None) != cache_key:
+            self._last_hotkey_validation_input = cache_key
+            self._last_hotkey_validation_result = self._validate_hotkey_pair(
+                toggle_raw, hold_raw
+            )
+        result = self._last_hotkey_validation_result
+        if result is None:
+            result = self._validate_hotkey_pair(toggle_raw, hold_raw)
+            self._last_hotkey_validation_result = result
+        return result
 
     def _persist_hotkeys(self, toggle: str | None, hold: str | None) -> bool:
         return self._apply_env_updates(
@@ -1033,7 +1063,7 @@ class OnboardingWizardWindows(QDialog):
                 )
                 return False
 
-            _, _, error = self._validate_hotkey_pair(toggle, hold)
+            _, _, error = self._get_hotkey_validation_result(toggle, hold)
             if error:
                 self._set_hotkey_status(error, "error")
                 return False
@@ -1054,7 +1084,9 @@ class OnboardingWizardWindows(QDialog):
             and self._choice == OnboardingChoice.FAST
         ):
             # Re-apply after potential key entry to ensure mode is actually persisted.
-            changed = self._apply_choice_preset(self._choice)
+            changed = False
+            if self._fast_choice_requires_reapply:
+                changed = self._apply_choice_preset(self._choice)
             set_onboarding_choice(self._choice)
             if changed:
                 self.settings_changed.emit()
@@ -1409,6 +1441,7 @@ class OnboardingWizardWindows(QDialog):
                     )
                 if self._api_key_container:
                     _set_widget_visible_if_changed(self._api_key_container, False)
+                self._fast_choice_requires_reapply = False
             elif has_groq:
                 changed = (
                     self._apply_env_updates({"PULSESCRIBE_MODE": "groq"})
@@ -1417,6 +1450,7 @@ class OnboardingWizardWindows(QDialog):
                 )
                 if self._api_key_container:
                     _set_widget_visible_if_changed(self._api_key_container, False)
+                self._fast_choice_requires_reapply = False
             else:
                 # Show API key input, don't apply preset yet
                 if self._api_key_container:
@@ -1446,6 +1480,7 @@ class OnboardingWizardWindows(QDialog):
 
     def _on_api_key_input_changed(self, text: str) -> None:
         """Update API key status + navigation while typing."""
+        self._fast_choice_requires_reapply = bool(text.strip())
         if self._api_key_status:
             if text.strip():
                 _set_widget_text_if_changed(self._api_key_status, "✓ API-Key erkannt")
@@ -1739,7 +1774,7 @@ class OnboardingWizardWindows(QDialog):
             if field == "hold"
             else self._get_cached_env_setting("PULSESCRIBE_HOLD_HOTKEY")
         )
-        toggle, hold, error = self._validate_hotkey_pair(toggle_raw, hold_raw)
+        toggle, hold, error = self._get_hotkey_validation_result(toggle_raw, hold_raw)
         if error:
             self._set_hotkey_status(error, "error")
             return False
@@ -1782,7 +1817,7 @@ class OnboardingWizardWindows(QDialog):
         if self._recording_field:
             self._stop_hotkey_recording(save=False)
 
-        normalized_toggle, normalized_hold, error = self._validate_hotkey_pair(
+        normalized_toggle, normalized_hold, error = self._get_hotkey_validation_result(
             toggle, hold
         )
         if error:
@@ -1860,10 +1895,13 @@ class OnboardingWizardWindows(QDialog):
             return
 
         toggle, hold = self._get_cached_hotkeys()
-        _set_widget_text_if_changed(
-            self._test_hotkey_label,
-            _format_hotkey_summary_text(toggle, hold) or "Kein Hotkey konfiguriert",
+        summary_text = (
+            _format_hotkey_summary_text(toggle, hold) or "Kein Hotkey konfiguriert"
         )
+        if getattr(self, "_last_test_hotkey_summary", None) == summary_text:
+            return
+        self._last_test_hotkey_summary = summary_text
+        _set_widget_text_if_changed(self._test_hotkey_label, summary_text)
 
     # -------------------------------------------------------------------------
     # Step: Cheat Sheet

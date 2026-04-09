@@ -1,5 +1,45 @@
 Performance work log - 2026-04-09 (macOS onboarding permission snapshot reuse)
 
+Performance work log - 2026-04-09 (shared animation frame cache + Windows onboarding dedupe)
+
+Scope
+- Left the last two commit areas untouched again: `ui/onboarding_wizard.py`, `ui/permissions_card.py`, `ui/overlay.py`, `ui/overlay_windows.py`, and `ui/overlay_pyside6.py`.
+- Avoided the already dirty prompt/permissions/vocabulary/settings files and their related tests.
+- Focused on the shared frontend math path in `ui/animation.py` plus the Windows onboarding flow in `ui/onboarding_wizard_windows.py`.
+
+Current weaknesses reviewed
+- `ui/animation.py`: every overlay frame recomputed the same state/time-specific animation math once per bar, even though all bars in a frame share the same timestamp and most phase inputs.
+- `ui/onboarding_wizard_windows.py`: repeated navigation updates revalidated unchanged hotkey pairs and rebuilt unchanged hotkey summary text.
+- `ui/onboarding_wizard_windows.py`: FAST mode reapplied its preset on `Weiter` even when the user had not changed the API key since the previous apply.
+- `ui/onboarding_wizard_windows.py`: IPC polling repeatedly called `setInterval()` with the interval already in effect.
+
+Changes in this pass
+- `ui/animation.py`
+  Added a tiny per-frame cache so each overlay backend reuses one animation-value build per state/timestamp instead of recomputing shared math for every bar call.
+- `ui/onboarding_wizard_windows.py`
+  Cached hotkey validation results for unchanged toggle/hold pairs and skipped redundant test-step hotkey summary refresh work.
+- `ui/onboarding_wizard_windows.py`
+  Added a FAST-mode reapply flag so the wizard only reapplies the preset when new API-key input actually needs persistence.
+- `ui/onboarding_wizard_windows.py`
+  Deduped timer-interval changes on the IPC polling path when the target interval is already active.
+- Tests
+  Added regression coverage for animation frame-cache reuse, unchanged FAST-mode next-step behavior, hotkey-validation caching, and duplicate idle-interval suppression.
+
+Why this helps
+- All overlay implementations now pay the heavy animation math once per rendered frame instead of once per bar, which trims CPU work on a central high-frequency UI path without changing visuals.
+- The Windows onboarding wizard does less repeated validation, less repeated text work, and fewer no-op timer updates while preserving the same flow and guardrails.
+- The FAST-mode first-run path avoids unnecessary env/preset work when the user simply proceeds with already-applied settings.
+
+Validation
+- `pytest tests/test_animation.py tests/test_onboarding_windows.py -q`
+- `python -m py_compile ui/animation.py ui/onboarding_wizard_windows.py tests/test_animation.py tests/test_onboarding_windows.py`
+- `ruff check ui/animation.py ui/onboarding_wizard_windows.py tests/test_animation.py tests/test_onboarding_windows.py`
+
+Next worthwhile areas
+- `pulsescribe_daemon.py` + `ui/menubar.py`: the recording preview still dispatches high-frequency UI updates even when the visible menu-bar preview does not materially change.
+- `ui/settings_windows.py`: the still-dirty settings surface likely has remaining no-op label/visibility churn, but it should be handled only after the current unrelated local edits are settled.
+- `ui/animation.py`: if traces still show overlay cost, the next step is frame-level batch APIs in callers so each backend can consume one precomputed bar vector directly.
+
 Scope
 - Left the last two commit areas untouched: `ui/overlay.py`, `ui/overlay_windows.py`, `ui/overlay_pyside6.py`, and `ui/welcome.py`.
 - Avoided the already dirty prompt/permissions/vocabulary files and their related tests.
