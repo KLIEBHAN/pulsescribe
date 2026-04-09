@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from utils.history import format_transcripts_for_display, format_transcripts_for_welcome
+from utils.history import (
+    format_transcript_entries_for_welcome,
+    format_transcripts_for_display,
+    format_transcripts_for_welcome,
+)
 
 
 def test_format_transcripts_for_display_indents_multiline_entries() -> None:
@@ -44,3 +48,24 @@ def test_format_transcripts_for_welcome_preserves_given_order() -> None:
         "[2026-03-24 10:01:00] (deepgram de)\n"
         "Zweiter Eintrag"
     )
+
+
+def test_format_transcript_entries_for_welcome_returns_blocks() -> None:
+    blocks = format_transcript_entries_for_welcome(
+        [
+            {
+                "timestamp": "2026-03-24T10:00:00.000000",
+                "text": "Erster Eintrag",
+            },
+            {
+                "timestamp": "2026-03-24T10:01:00.000000",
+                "text": "Zweiter Eintrag",
+            },
+        ],
+        newest_first=False,
+    )
+
+    assert blocks == [
+        "[2026-03-24 10:00:00]\nErster Eintrag",
+        "[2026-03-24 10:01:00]\nZweiter Eintrag",
+    ]

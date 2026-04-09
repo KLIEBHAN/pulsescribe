@@ -1,5 +1,42 @@
 Performance work log - 2026-03-28
 
+Performance work log - 2026-04-09 (macOS welcome transcripts incremental formatting pass)
+
+Scope
+- Left the last two commit areas untouched again: the recent Windows prompt/settings persistence path and unrelated local edits in `utils/custom_prompts.py`.
+- Focused on the remaining macOS frontend hotspot called out in the notes: long-running transcript refreshes inside `ui/welcome.py`.
+- Preserved welcome-window behavior, transcript ordering, count labels, auto-refresh flow, and scroll-position behavior.
+
+Current weaknesses reviewed
+- `ui/welcome.py`: when transcript history grew and the view was not eligible for in-place append, the refresh path reformatted the entire visible transcript history string even though the previously rendered blocks were already known in memory.
+- `ui/welcome.py`: the append-aware transcript path cached raw entries, but not the already formatted welcome-view blocks, so incremental refreshes still paid avoidable per-entry formatting cost.
+- `utils/history.py`: welcome transcript formatting only exposed a fully joined string API, which made block-level reuse in the UI path awkward.
+
+Changes in this pass
+- `utils/history.py`
+  Added `format_transcript_entries_for_welcome()` so welcome/history rendering can reuse per-entry blocks without recomputing the entire joined payload every refresh.
+- `ui/welcome.py`
+  Cached the last rendered transcript blocks alongside entries/text and reused them during incremental append refreshes.
+- `ui/welcome.py`
+  When new transcript lines arrive but in-place UI append is not possible, the welcome window now rebuilds the visible text from cached blocks plus only the newly formatted blocks, instead of reformatting every retained transcript entry.
+- Tests
+  Added regression coverage for block-level formatting and for transcript refreshes that must preserve scroll position while still avoiding a full payload reload.
+
+Why this helps
+- Long-running welcome-window transcript sessions do less repeated formatting work on every append-only refresh.
+- Auto-refresh keeps the transcript viewer responsive even when the user is scrolled away from the bottom and the code must replace the document text instead of appending directly.
+- The optimization stays local to the render path and keeps behavior unchanged while reducing repeated computation on a visible UI path.
+
+Validation
+- `pytest tests/test_settings_ui.py tests/test_history_display.py -q`
+- `python -m py_compile ui/welcome.py utils/history.py tests/test_settings_ui.py tests/test_history_display.py`
+- `ruff check ui/welcome.py utils/history.py tests/test_settings_ui.py tests/test_history_display.py`
+
+Next worthwhile areas
+- `ui/welcome.py`: the logs viewer still recomputes merged visible tails on every append path; if profiling shows it, the same block-cache idea could be applied there.
+- `ui/onboarding_wizard.py`: summary/status text still has a few render-adjacent recomputation paths that could be deduped further.
+- `ui/permissions_card.py`: if permission polling still shows up in traces, the next step would be short-circuiting stable checks earlier before hitting OS permission helpers.
+
 Scope
 - Left the last two commit areas untouched: transcript/log incremental refresh and permission/overlay repaint work.
 - Focused on `.env` persistence churn in Windows settings/local preset flows and setup overview UI churn.

@@ -1210,6 +1210,66 @@ class TestWelcomeTranscriptsRefreshBehavior:
         assert ctrl._transcripts_count_label.value == "2 entries"
         ctrl._scroll_transcripts_to_bottom.assert_called_once_with()
 
+    def test_refresh_transcripts_reuses_cached_blocks_when_not_appending_in_place(
+        self, monkeypatch, tmp_path
+    ):
+        import sys
+        import types
+
+        import ui.welcome as welcome_mod
+        import utils.history as history_mod
+
+        monkeypatch.setitem(
+            sys.modules,
+            "Foundation",
+            types.SimpleNamespace(NSMakePoint=lambda x, y: (x, y)),
+        )
+
+        original_line = '{"timestamp":"2026-03-24T10:00:00","text":"Alpha"}\n'
+        appended_line = '{"timestamp":"2026-03-24T10:00:01","text":"Beta"}\n'
+        history_file = tmp_path / "history.jsonl"
+        history_file.write_text(original_line + appended_line, encoding="utf-8")
+
+        ctrl = WelcomeController.__new__(WelcomeController)
+        clip_view = _FakeClipView(y=120, height=100)
+        ctrl._transcripts_text_view = _FakeTranscriptsTextView(
+            "[2026-03-24 10:00:00]\nAlpha",
+            doc_height=900,
+        )
+        ctrl._transcripts_scroll_view = _FakeTranscriptsScrollView(clip_view)
+        ctrl._transcripts_count_label = _FakeTranscriptsCountLabel()
+        ctrl._last_transcripts_text = "[2026-03-24 10:00:00]\nAlpha"
+        ctrl._last_transcripts_signature = (1, len(original_line.encode("utf-8")))
+        ctrl._last_transcripts_entries = [
+            {"timestamp": "2026-03-24T10:00:00", "text": "Alpha"}
+        ]
+        ctrl._last_transcripts_blocks = ["[2026-03-24 10:00:00]\nAlpha"]
+        ctrl._get_transcripts_payload = MagicMock(
+            side_effect=AssertionError("full transcript reload should be skipped")
+        )
+        ctrl._scroll_transcripts_to_bottom = MagicMock()
+
+        monkeypatch.setattr(history_mod, "HISTORY_FILE", history_file)
+        monkeypatch.setattr(
+            welcome_mod,
+            "get_file_signature",
+            lambda _path: (99, len((original_line + appended_line).encode("utf-8"))),
+        )
+
+        ctrl._refresh_transcripts(scroll_to_bottom=False)
+
+        assert ctrl._get_transcripts_payload.call_count == 0
+        assert ctrl._transcripts_text_view.set_calls == [
+            "[2026-03-24 10:00:00]\nAlpha\n\n[2026-03-24 10:00:01]\nBeta"
+        ]
+        assert ctrl._transcripts_text_view.append_calls == []
+        assert ctrl._last_transcripts_blocks == [
+            "[2026-03-24 10:00:00]\nAlpha",
+            "[2026-03-24 10:00:01]\nBeta",
+        ]
+        assert clip_view.scrolled_to == (0.0, 120)
+        ctrl._scroll_transcripts_to_bottom.assert_not_called()
+
 
 class TestWelcomeLogsRefreshBehavior:
     def test_refresh_logs_uses_incremental_append_when_possible(self, monkeypatch):

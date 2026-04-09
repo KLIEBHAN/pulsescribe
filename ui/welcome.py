@@ -272,6 +272,7 @@ class WelcomeController:
         self._last_transcripts_text = None
         self._last_transcripts_signature = None
         self._last_transcripts_entries = None
+        self._last_transcripts_blocks = None
         self._transcripts_view_built = False
         self._transcripts_layout_metrics = None
         self._transcripts_view_seen = False
@@ -2559,6 +2560,11 @@ class WelcomeController:
             "_pending_transcripts_entries",
             [],
         )
+        self._last_transcripts_blocks = getattr(
+            self,
+            "_pending_transcripts_blocks",
+            [],
+        )
         self._last_transcripts_count_text = None
         self._update_transcripts_count_label(entry_count)
         t_scroll.setDocumentView_(t_text_view)
@@ -2569,14 +2575,21 @@ class WelcomeController:
 
     def _get_transcripts_payload(self) -> tuple[str, int]:
         """Lädt und formatiert die Transkript-Historie inkl. Eintragszahl."""
-        from utils.history import format_transcripts_for_welcome, get_recent_transcripts
+        from utils.history import (
+            format_transcript_entries_for_welcome,
+            get_recent_transcripts,
+        )
 
         try:
             entries = get_recent_transcripts(count=TRANSCRIPTS_VIEW_MAX_ENTRIES)
             self._pending_transcripts_entries = list(reversed(entries))
-            return format_transcripts_for_welcome(entries), len(entries)
+            self._pending_transcripts_blocks = format_transcript_entries_for_welcome(
+                entries
+            )
+            return "\n\n".join(self._pending_transcripts_blocks), len(entries)
         except Exception as e:
             self._pending_transcripts_entries = []
+            self._pending_transcripts_blocks = []
             return f"Could not load transcripts: {e}", 0
 
     def _get_transcripts_text(self) -> str:
@@ -2617,15 +2630,20 @@ class WelcomeController:
                     return
 
                 transcript_text, entry_count = self._get_transcripts_payload()
-                self._last_transcripts_entries = getattr(
-                    self,
-                    "_pending_transcripts_entries",
-                    getattr(self, "_last_transcripts_entries", None),
-                )
                 self._apply_transcripts_payload(
                     transcript_text,
                     signature,
                     entry_count,
+                    transcript_entries=getattr(
+                        self,
+                        "_pending_transcripts_entries",
+                        getattr(self, "_last_transcripts_entries", None),
+                    ),
+                    transcript_blocks=getattr(
+                        self,
+                        "_pending_transcripts_blocks",
+                        getattr(self, "_last_transcripts_blocks", None),
+                    ),
                     scroll_to_bottom=scroll_to_bottom,
                 )
             except Exception:
@@ -2659,7 +2677,7 @@ class WelcomeController:
             return False
 
         from utils.history import (
-            format_transcripts_for_welcome,
+            format_transcript_entries_for_welcome,
             merge_recent_transcript_entries,
             read_transcripts_from_offset,
         )
@@ -2688,11 +2706,28 @@ class WelcomeController:
             and (scroll_to_bottom or self._is_transcripts_near_bottom())
         )
 
-        if can_append_in_place:
-            appended_text = format_transcripts_for_welcome(
-                appended_entries,
+        appended_blocks = format_transcript_entries_for_welcome(
+            appended_entries,
+            newest_first=False,
+        )
+        if not appended_blocks:
+            return False
+
+        previous_blocks = getattr(self, "_last_transcripts_blocks", None)
+        if isinstance(previous_blocks, list):
+            merged_blocks = [*previous_blocks, *appended_blocks][
+                -TRANSCRIPTS_VIEW_MAX_ENTRIES:
+            ]
+        else:
+            merged_blocks = format_transcript_entries_for_welcome(
+                merged_entries,
                 newest_first=False,
             )
+        if not merged_blocks:
+            return False
+
+        if can_append_in_place:
+            appended_text = "\n\n".join(appended_blocks)
             if not appended_text:
                 return False
 
@@ -2715,19 +2750,18 @@ class WelcomeController:
                 f"{self._last_transcripts_text or ''}{separator}{appended_text}"
             )
             self._last_transcripts_entries = merged_entries
+            self._last_transcripts_blocks = merged_blocks
             self._last_transcripts_signature = signature
             self._update_transcripts_count_label(len(merged_entries))
             self._scroll_transcripts_to_bottom()
             return True
 
-        self._last_transcripts_entries = merged_entries
         self._apply_transcripts_payload(
-            format_transcripts_for_welcome(
-                merged_entries,
-                newest_first=False,
-            ),
+            "\n\n".join(merged_blocks),
             signature,
             len(merged_entries),
+            transcript_entries=merged_entries,
+            transcript_blocks=merged_blocks,
             scroll_to_bottom=scroll_to_bottom,
         )
         return True
@@ -2738,11 +2772,17 @@ class WelcomeController:
         signature,
         entry_count: int,
         *,
+        transcript_entries=None,
+        transcript_blocks=None,
         scroll_to_bottom: bool = False,
     ) -> None:
         """Apply transcript text updates while preserving scroll position."""
         self._update_transcripts_count_label(entry_count)
         if transcript_text == self._last_transcripts_text:
+            if transcript_entries is not None:
+                self._last_transcripts_entries = transcript_entries
+            if transcript_blocks is not None:
+                self._last_transcripts_blocks = transcript_blocks
             self._last_transcripts_signature = signature
             if scroll_to_bottom:
                 self._scroll_transcripts_to_bottom()
@@ -2758,6 +2798,10 @@ class WelcomeController:
         self._transcripts_text_view.setString_(transcript_text)
         self._last_transcripts_text = transcript_text
         self._last_transcripts_signature = signature
+        if transcript_entries is not None:
+            self._last_transcripts_entries = transcript_entries
+        if transcript_blocks is not None:
+            self._last_transcripts_blocks = transcript_blocks
 
         if scroll_to_bottom or was_near_bottom:
             self._scroll_transcripts_to_bottom()

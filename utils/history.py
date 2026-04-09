@@ -300,16 +300,33 @@ def format_transcript_entry_for_welcome(entry: object) -> str:
     return f"{header}\n{text}"
 
 
+def format_transcript_entries_for_welcome(
+    entries: Sequence[object], *, newest_first: bool = True
+) -> list[str]:
+    """Format transcript entries into welcome-view blocks without joining them."""
+    valid_entries = [entry for entry in entries if isinstance(entry, dict)]
+    if not valid_entries:
+        return []
+
+    ordered_entries = reversed(valid_entries) if newest_first else valid_entries
+    return [
+        block
+        for block in (format_transcript_entry_for_welcome(entry) for entry in ordered_entries)
+        if block
+    ]
+
+
 def format_transcripts_for_welcome(
     entries: Sequence[object], *, newest_first: bool = True
 ) -> str:
     """Format transcript entries for the macOS welcome/history viewer."""
-    valid_entries = [entry for entry in entries if isinstance(entry, dict)]
-    if not valid_entries:
+    blocks = format_transcript_entries_for_welcome(
+        entries,
+        newest_first=newest_first,
+    )
+    if not blocks:
         return "No transcriptions yet.\n\nYour transcribed texts will appear here."
 
-    ordered_entries = reversed(valid_entries) if newest_first else valid_entries
-    blocks = [format_transcript_entry_for_welcome(entry) for entry in ordered_entries]
     return "\n\n".join(block for block in blocks if block)
 
 
