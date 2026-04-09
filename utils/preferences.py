@@ -131,6 +131,46 @@ def _iter_parsed_env_lines(lines: list[str]):
         yield line, key, existing_value
 
 
+def _resolve_updated_env_line(
+    line: str,
+    *,
+    existing_value: str | None,
+    requested_value: str | None,
+    canonical_line: str | None,
+    is_duplicate: bool,
+    collapse_handled_duplicates: bool,
+) -> tuple[str | None, bool]:
+    """Resolve one matching `.env` line into keep/replace/remove plus changed-flag."""
+    if is_duplicate:
+        if collapse_handled_duplicates or canonical_line is None:
+            return None, True
+        return line, False
+
+    if canonical_line is None:
+        return None, True
+
+    if not collapse_handled_duplicates and existing_value == requested_value:
+        return line, False
+
+    return canonical_line, line != canonical_line
+
+
+def _append_missing_env_updates(
+    new_lines: list[str],
+    *,
+    canonical_updates: dict[str, str | None],
+    handled_keys: set[str],
+) -> bool:
+    """Append updates for keys that were not present in the original file."""
+    changed = False
+    for key, canonical_line in canonical_updates.items():
+        if key in handled_keys or canonical_line is None:
+            continue
+        new_lines.append(canonical_line)
+        changed = True
+    return changed
+
+
 def _apply_env_updates_to_lines(
     lines: list[str],
     updates: dict[str, str | None],
@@ -148,33 +188,25 @@ def _apply_env_updates_to_lines(
             new_lines.append(line)
             continue
 
-        canonical_line = canonical_updates[key]
-
-        if key in handled_keys:
-            if collapse_handled_duplicates or canonical_line is None:
-                changed = True
-                continue
-            new_lines.append(line)
-            continue
-
+        is_duplicate = key in handled_keys
         handled_keys.add(key)
-        if canonical_line is None:
-            changed = True
-            continue
+        updated_line, line_changed = _resolve_updated_env_line(
+            line,
+            existing_value=existing_value,
+            requested_value=updates[key],
+            canonical_line=canonical_updates[key],
+            is_duplicate=is_duplicate,
+            collapse_handled_duplicates=collapse_handled_duplicates,
+        )
+        changed = changed or line_changed
+        if updated_line is not None:
+            new_lines.append(updated_line)
 
-        if not collapse_handled_duplicates and existing_value == updates[key]:
-            new_lines.append(line)
-            continue
-
-        if line != canonical_line:
-            changed = True
-        new_lines.append(canonical_line)
-
-    for key, canonical_line in canonical_updates.items():
-        if key in handled_keys or canonical_line is None:
-            continue
-        new_lines.append(canonical_line)
-        changed = True
+    changed = _append_missing_env_updates(
+        new_lines,
+        canonical_updates=canonical_updates,
+        handled_keys=handled_keys,
+    ) or changed
 
     return new_lines, changed
 

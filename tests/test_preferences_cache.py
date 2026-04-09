@@ -179,6 +179,28 @@ def test_save_env_setting_updates_export_assignment_without_creating_duplicate(
     assert prefs.read_env_file()["PULSESCRIBE_MODE"] == "local"
 
 
+def test_save_env_setting_same_export_assignment_is_noop_and_preserves_format(
+    tmp_path, monkeypatch
+):
+    _isolate_prefs(tmp_path, monkeypatch)
+    original_content = (
+        'export PULSESCRIBE_MODE = "local"  # keep readable\nUNCHANGED_KEY=keep\n'
+    )
+    prefs.ENV_FILE.write_text(original_content, encoding="utf-8")
+
+    monkeypatch.setattr(
+        prefs,
+        "_write_text_atomic",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("should not rewrite unchanged env")
+        ),
+    )
+
+    prefs.save_env_setting("PULSESCRIBE_MODE", "local")
+
+    assert prefs.ENV_FILE.read_text(encoding="utf-8") == original_content
+
+
 def test_remove_env_setting_removes_spaced_assignment(tmp_path, monkeypatch):
     _isolate_prefs(tmp_path, monkeypatch)
     prefs.ENV_FILE.write_text(
@@ -327,6 +349,28 @@ def test_update_env_settings_handles_export_assignments_for_updated_keys(
 
     assert prefs.ENV_FILE.read_text(encoding="utf-8") == (
         "UNCHANGED_KEY=keep\nPULSESCRIBE_DEVICE=cpu\n"
+    )
+
+
+def test_update_env_settings_appends_new_keys_in_given_update_order(
+    tmp_path, monkeypatch
+):
+    _isolate_prefs(tmp_path, monkeypatch)
+    prefs.ENV_FILE.write_text("UNCHANGED_KEY=keep\n", encoding="utf-8")
+
+    prefs.update_env_settings(
+        {
+            "PULSESCRIBE_MODE": "local",
+            "PULSESCRIBE_DEVICE": "cpu",
+            "PULSESCRIBE_LANGUAGE": "de",
+        }
+    )
+
+    assert prefs.ENV_FILE.read_text(encoding="utf-8") == (
+        "UNCHANGED_KEY=keep\n"
+        "PULSESCRIBE_MODE=local\n"
+        "PULSESCRIBE_DEVICE=cpu\n"
+        "PULSESCRIBE_LANGUAGE=de\n"
     )
 
 

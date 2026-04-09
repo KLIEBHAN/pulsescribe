@@ -513,6 +513,29 @@ class TestSaveCustomPrompts:
 
         assert loaded["prompts"]["email"]["prompt"] == tricky_prompt
 
+    def test_save_ignores_malformed_sections_but_persists_valid_entries(self, prompts_file):
+        """Kaputte UI-Payloads sollen beim Speichern nicht die ganze Datei blockieren."""
+        from utils.custom_prompts import save_custom_prompts, load_custom_prompts
+
+        save_custom_prompts(
+            {
+                "voice_commands": "broken",
+                "prompts": {
+                    "default": {"prompt": "Keep me"},
+                    "email": 123,
+                },
+                "app_contexts": {"My App": "code"},
+            },
+            path=prompts_file,
+        )
+
+        loaded = load_custom_prompts(path=prompts_file)
+
+        assert loaded["voice_commands"]["instruction"] == VOICE_COMMANDS_INSTRUCTION
+        assert loaded["prompts"]["default"]["prompt"] == "Keep me"
+        assert loaded["prompts"]["email"]["prompt"] == CONTEXT_PROMPTS["email"]
+        assert loaded["app_contexts"]["My App"] == "code"
+
 
 class TestResetToDefaults:
     """Tests für reset_to_defaults()."""
@@ -647,6 +670,33 @@ class TestFilterOverridesForStorage:
         )
 
         assert result == {"app_contexts": {"My App": "email"}}
+
+    def test_ignores_malformed_sections_but_keeps_valid_overrides(self):
+        """Storage-Reduktion soll bei kaputten UI-Daten nicht crashen."""
+        from utils.custom_prompts import get_defaults, filter_overrides_for_storage
+
+        defaults = get_defaults()
+        result = filter_overrides_for_storage(
+            {
+                "voice_commands": "broken",
+                "prompts": {
+                    "default": {"prompt": defaults["prompts"]["default"]["prompt"]},
+                    "email": {"prompt": "Custom Email Prompt"},
+                    "chat": 123,
+                },
+                "app_contexts": {
+                    " Mail ": defaults["app_contexts"]["Mail"],
+                    "  My App  ": "CODE",
+                    "Ignored": "unknown",
+                },
+            },
+            defaults=defaults,
+        )
+
+        assert result == {
+            "prompts": {"email": {"prompt": "Custom Email Prompt"}},
+            "app_contexts": {"My App": "code"},
+        }
 
 
 # =============================================================================

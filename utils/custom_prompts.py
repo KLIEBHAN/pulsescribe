@@ -67,6 +67,34 @@ def _iter_normalized_app_context_entries(app_contexts: dict) -> list[tuple[str, 
         if normalized is not None
     ]
 
+
+def _coerce_mapping(value: object) -> dict:
+    """Return only dict-like sections so malformed UI payloads stay ignorable."""
+    return value if isinstance(value, dict) else {}
+
+
+def _get_section_mapping(data: dict, section_name: str) -> dict:
+    """Read one top-level section while falling back to an empty mapping."""
+    return _coerce_mapping(data.get(section_name))
+
+
+def _get_string_field(mapping: object, field_name: str) -> str | None:
+    """Return one string field from a section/config mapping when present."""
+    if not isinstance(mapping, dict):
+        return None
+    value = mapping.get(field_name)
+    return value if isinstance(value, str) else None
+
+
+def _iter_prompt_entries(prompts: object) -> list[tuple[str, str]]:
+    """Yield only prompt entries that still match the expected ``{prompt: str}`` shape."""
+    return [
+        (str(context), prompt_text)
+        for context, config in _coerce_mapping(prompts).items()
+        if (prompt_text := _get_string_field(config, "prompt")) is not None
+    ]
+
+
 # =============================================================================
 # Cache (Signature-basiert für Hot-Reload)
 # =============================================================================
@@ -201,11 +229,11 @@ def _merge_user_with_defaults(user_config: dict) -> dict:
 
 def _merge_voice_commands(user: dict, defaults: dict) -> dict:
     """Voice-Commands: User überschreibt komplett oder Default."""
-    user_vc = user.get("voice_commands", {})
-    if not isinstance(user_vc, dict):
-        user_vc = {}
-    instruction = user_vc.get("instruction")
-    if not isinstance(instruction, str):
+    instruction = _get_string_field(
+        _get_section_mapping(user, "voice_commands"),
+        "instruction",
+    )
+    if instruction is None:
         instruction = defaults["voice_commands"]["instruction"]
     return {"instruction": instruction}
 
@@ -213,19 +241,11 @@ def _merge_voice_commands(user: dict, defaults: dict) -> dict:
 def _merge_prompts(user: dict, defaults: dict) -> dict:
     """Prompts: Jeder Kontext einzeln überschreibbar."""
     result = {}
-    user_prompts = user.get("prompts", {})
-    if not isinstance(user_prompts, dict):
-        user_prompts = {}
+    user_prompts = _get_section_mapping(user, "prompts")
 
     for context, default_config in defaults["prompts"].items():
-        prompt_config = default_config
-        user_config = user_prompts.get(context)
-        if isinstance(user_config, dict):
-            user_prompt = user_config.get("prompt")
-            if isinstance(user_prompt, str):
-                prompt_config = {"prompt": user_prompt}
-
-        result[context] = prompt_config
+        user_prompt = _get_string_field(user_prompts.get(context), "prompt")
+        result[context] = {"prompt": user_prompt} if user_prompt is not None else default_config
 
     return result
 
@@ -233,11 +253,10 @@ def _merge_prompts(user: dict, defaults: dict) -> dict:
 def _merge_app_contexts(user: dict, defaults: dict) -> dict:
     """App-Contexts: Defaults + User-Ergänzungen/Überschreibungen."""
     merged = dict(defaults["app_contexts"])
-    user_app_contexts = user.get("app_contexts", {})
-    if not isinstance(user_app_contexts, dict):
-        return merged
 
-    for app, ctx in _iter_normalized_app_context_entries(user_app_contexts):
+    for app, ctx in _iter_normalized_app_context_entries(
+        _get_section_mapping(user, "app_contexts")
+    ):
         merged[app] = ctx
     return merged
 
@@ -342,24 +361,27 @@ def filter_overrides_for_storage(
     baseline = defaults or get_defaults()
     result: dict = {}
 
-    voice_instruction = str(data.get("voice_commands", {}).get("instruction", ""))
+    voice_instruction = _get_string_field(
+        _get_section_mapping(data, "voice_commands"),
+        "instruction",
+    )
     default_instruction = str(baseline["voice_commands"]["instruction"])
     if voice_instruction and voice_instruction != default_instruction:
         result["voice_commands"] = {"instruction": voice_instruction}
 
     prompts_result: dict[str, dict[str, str]] = {}
-    for context, config in data.get("prompts", {}).items():
-        prompt_text = str(config.get("prompt", ""))
-        default_prompt = str(baseline.get("prompts", {}).get(context, {}).get("prompt", ""))
+    default_prompts = _get_section_mapping(baseline, "prompts")
+    for context, prompt_text in _iter_prompt_entries(_get_section_mapping(data, "prompts")):
+        default_prompt = str(_get_string_field(default_prompts.get(context), "prompt") or "")
         if prompt_text and prompt_text != default_prompt:
             prompts_result[context] = {"prompt": prompt_text}
     if prompts_result:
         result["prompts"] = prompts_result
 
     app_contexts_result: dict[str, str] = {}
-    default_app_contexts = baseline.get("app_contexts", {})
+    default_app_contexts = _get_section_mapping(baseline, "app_contexts")
     for normalized_app, normalized_ctx in _iter_normalized_app_context_entries(
-        data.get("app_contexts", {})
+        _get_section_mapping(data, "app_contexts")
     ):
         if default_app_contexts.get(normalized_app) == normalized_ctx:
             continue
@@ -383,10 +405,9 @@ def _serialize_prompt_sections(data: dict) -> list[str]:
         ("prompts", _serialize_prompts),
         ("app_contexts", _serialize_app_contexts),
     ):
-        section_data = data.get(section_name)
-        if section_data is None:
+        if section_name not in data:
             continue
-        lines.extend(serializer(section_data))
+        lines.extend(serializer(_get_section_mapping(data, section_name)))
     return lines
 
 
@@ -410,29 +431,33 @@ def save_custom_prompts(data: dict, path: Path | None = None) -> None:
 
 def _serialize_voice_commands(voice_commands: dict) -> list[str]:
     """Serialisiert Voice-Commands Sektion zu TOML-Zeilen."""
-    if "instruction" not in voice_commands:
+    instruction_value = _get_string_field(voice_commands, "instruction")
+    if instruction_value is None:
         return []
 
-    instruction = _escape_toml_multiline(voice_commands["instruction"])
+    instruction = _escape_toml_multiline(instruction_value)
     return ["[voice_commands]", f'instruction = """\n{instruction}"""', ""]
 
 
 def _serialize_prompts(prompts: dict) -> list[str]:
     """Serialisiert Prompts Sektion zu TOML-Zeilen."""
     lines = []
-    for context, config in prompts.items():
-        if "prompt" in config:
-            prompt_text = _escape_toml_multiline(config["prompt"])
-            lines.extend(
-                [f"[prompts.{context}]", f'prompt = """\n{prompt_text}"""', ""]
-            )
+    for context, prompt_value in _iter_prompt_entries(prompts):
+        prompt_text = _escape_toml_multiline(prompt_value)
+        lines.extend(
+            [f"[prompts.{context}]", f'prompt = """\n{prompt_text}"""', ""]
+        )
     return lines
 
 
 def _serialize_app_contexts(app_contexts: dict) -> list[str]:
     """Serialisiert App-Contexts Sektion zu TOML-Zeilen."""
+    items = sorted((str(app), str(ctx)) for app, ctx in app_contexts.items())
+    if not items:
+        return []
+
     lines = ["[app_contexts]"]
-    for app, ctx in sorted(app_contexts.items()):
+    for app, ctx in items:
         # TOML bare keys erlauben nur [A-Za-z0-9_-].
         # Immer quoten ist sicher und verhindert Probleme mit Dots
         # (Table-Separator), Leerzeichen, Quotes und anderen Sonderzeichen.
