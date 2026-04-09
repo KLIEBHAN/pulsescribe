@@ -32,6 +32,7 @@ from utils.local_backend import (
     VALID_LOCAL_BACKENDS,
     normalize_local_backend,
 )
+from ._language import is_auto_language
 from utils.logging import log
 from utils.timing import timed_operation
 from utils.vocabulary import load_vocabulary
@@ -47,6 +48,8 @@ CPU_COMPUTE_TYPE = "int8"
 # Timeout for CUDA model loading (seconds) - prevents hanging on cuDNN issues
 # 120s allows for first-time model downloads (~1.5GB for medium)
 CUDA_MODEL_LOAD_TIMEOUT = 120
+_LOCAL_VOCAB_KEYWORDS_MAX = 50
+_BACKENDS_WITHOUT_BEAM_SEARCH = ("mlx", "lightning")
 _LIGHTNING_WORKDIR_LOCK = threading.RLock()
 _NVIDIA_DLL_DIRECTORY_HANDLES: dict[str, object] = {}
 
@@ -57,7 +60,25 @@ def _get_warmup_language() -> str:
     Normalisiert 'auto' zu 'en', da Warmup eine konkrete Sprache braucht.
     """
     lang = os.getenv("PULSESCRIBE_LANGUAGE") or "en"
-    return "en" if lang.strip().lower() == "auto" else lang
+    return "en" if is_auto_language(lang) else lang
+
+
+def _load_local_vocabulary_keywords(max_keywords: int = _LOCAL_VOCAB_KEYWORDS_MAX):
+    """Return capped local vocabulary keywords for the initial prompt."""
+    vocab = load_vocabulary()
+    return vocab.get("keywords", [])[:max_keywords]
+
+
+def _backend_supports_beam_search(backend: str | None) -> bool:
+    """Return whether a local backend accepts beam-search decoding options."""
+    return backend not in _BACKENDS_WITHOUT_BEAM_SEARCH
+
+
+def _parse_temperature_override(raw_value: str) -> float | tuple[float, ...]:
+    """Parse the raw temperature override string into Whisper-compatible values."""
+    if "," in raw_value:
+        return tuple(float(t.strip()) for t in raw_value.split(",") if t.strip())
+    return float(raw_value.strip())
 
 
 def _register_nvidia_dll_directories() -> None:
@@ -638,28 +659,20 @@ class LocalProvider:
                 )
             return self._model_cache[cache_key]
 
-    def _build_options(self, language: str | None) -> dict:
-        """Baut Options inkl. Vocabulary und Speed-Overrides.
-
-        Rückgabe ist kompatibel zu openai-whisper; für faster-whisper/mlx-whisper wird
-        je nach Backend ein Subset genutzt.
-        """
-        self._ensure_runtime_config()
-        backend = self._effective_backend()
-
-        options: dict = {}
-        # "auto" bedeutet Auto-Detection → nicht setzen (None/leer = Auto)
-        if language and language.strip().lower() != "auto":
+    def _apply_language_option(self, options: dict, language: str | None) -> None:
+        """Apply the optional transcription language while keeping ``auto`` unset."""
+        if language and not is_auto_language(language):
             options["language"] = language
 
-        # Custom Vocabulary als initial_prompt für bessere Erkennung
-        MAX_KEYWORDS = 50
-        vocab = load_vocabulary()
-        keywords = vocab.get("keywords", [])[:MAX_KEYWORDS]
+    def _apply_vocabulary_prompt(self, options: dict) -> None:
+        """Attach the vocabulary prompt used to bias local transcription models."""
+        keywords = _load_local_vocabulary_keywords()
         if keywords:
             options["initial_prompt"] = f"Fachbegriffe: {', '.join(keywords)}"
-            logger.debug(f"Lokales Whisper mit {len(keywords)} Keywords")
+            logger.debug("Lokales Whisper mit %s Keywords", len(keywords))
 
+    def _apply_backend_specific_options(self, options: dict, *, backend: str | None) -> None:
+        """Apply backend defaults without mixing them with global decode overrides."""
         if backend == "whisper":
             # FP16: auf CPU nicht verfügbar; auf MPS derzeit oft instabil → default FP32.
             # Override via PULSESCRIBE_FP16=true möglich.
@@ -673,7 +686,9 @@ class LocalProvider:
                 options["fp16"] = (
                     self._fp16_override if self._fp16_override is not None else True
                 )
-        elif backend == "faster":
+            return
+
+        if backend == "faster":
             # faster-whisper: standardmäßig keine Timestamps berechnen (spart Zeit)
             wt_env = get_env_bool("PULSESCRIBE_LOCAL_WITHOUT_TIMESTAMPS")
             options["without_timestamps"] = True if wt_env is None else wt_env
@@ -681,24 +696,29 @@ class LocalProvider:
             vad_env = get_env_bool("PULSESCRIBE_LOCAL_VAD_FILTER")
             if vad_env:
                 options["vad_filter"] = True
-        elif backend == "mlx":
+            return
+
+        if backend == "mlx" and self._fp16_override is not None:
             # mlx-whisper nutzt fp16 per Default; Override via PULSESCRIBE_FP16 möglich.
-            if self._fp16_override is not None:
-                options["fp16"] = self._fp16_override
+            options["fp16"] = self._fp16_override
 
-        # Fast-Mode: schnellere Decoding Defaults (kann via ENV überschrieben werden)
-        if self._fast_mode:
-            options.setdefault("temperature", 0.0)
-            # mlx-whisper und lightning-whisper-mlx haben keinen Beam-Search Decoder.
-            # Deshalb darf beam_size nicht gesetzt werden.
-            if backend not in ("mlx", "lightning"):
-                options.setdefault("beam_size", 1)
-                options.setdefault("best_of", 1)
-            options.setdefault("condition_on_previous_text", False)
+    def _apply_fast_mode_defaults(self, options: dict, *, backend: str | None) -> None:
+        """Apply the fast-mode decoding defaults shared across local backends."""
+        if not self._fast_mode:
+            return
 
-        # Explizite Decode-Overrides
+        options.setdefault("temperature", 0.0)
+        # mlx-whisper und lightning-whisper-mlx haben keinen Beam-Search Decoder.
+        # Deshalb darf beam_size nicht gesetzt werden.
+        if _backend_supports_beam_search(backend):
+            options.setdefault("beam_size", 1)
+            options.setdefault("best_of", 1)
+        options.setdefault("condition_on_previous_text", False)
+
+    def _apply_decode_overrides(self, options: dict, *, backend: str | None) -> None:
+        """Apply explicit decode overrides from the environment."""
         beam_size = get_env_int("PULSESCRIBE_LOCAL_BEAM_SIZE")
-        if beam_size is not None and backend in ("mlx", "lightning"):
+        if beam_size is not None and not _backend_supports_beam_search(backend):
             logger.warning(
                 f"PULSESCRIBE_LOCAL_BEAM_SIZE wird ignoriert ({backend} backend unterstützt kein Beam Search)."
             )
@@ -712,15 +732,25 @@ class LocalProvider:
         temp_env = os.getenv("PULSESCRIBE_LOCAL_TEMPERATURE")
         if temp_env:
             try:
-                if "," in temp_env:
-                    options["temperature"] = tuple(
-                        float(t.strip()) for t in temp_env.split(",") if t.strip()
-                    )
-                else:
-                    options["temperature"] = float(temp_env.strip())
+                options["temperature"] = _parse_temperature_override(temp_env)
             except ValueError:
                 logger.warning(f"Ungültiger PULSESCRIBE_LOCAL_TEMPERATURE: {temp_env}")
 
+    def _build_options(self, language: str | None) -> dict:
+        """Baut Options inkl. Vocabulary und Speed-Overrides.
+
+        Rückgabe ist kompatibel zu openai-whisper; für faster-whisper/mlx-whisper wird
+        je nach Backend ein Subset genutzt.
+        """
+        self._ensure_runtime_config()
+        backend = self._effective_backend()
+
+        options: dict = {}
+        self._apply_language_option(options, language)
+        self._apply_vocabulary_prompt(options)
+        self._apply_backend_specific_options(options, backend=backend)
+        self._apply_fast_mode_defaults(options, backend=backend)
+        self._apply_decode_overrides(options, backend=backend)
         return options
 
     def _resolve_model_name(self, model: str | None) -> str:

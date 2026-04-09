@@ -7,7 +7,7 @@ import pytest
 
 import providers._client_cache as client_cache_mod
 from providers._client_cache import EnvClientCache, build_cached_env_client_getter
-from providers._language import normalize_auto_language
+from providers._language import is_auto_language, normalize_auto_language
 from providers._response_utils import (
     log_transcription_result,
     require_text_response,
@@ -31,6 +31,13 @@ class _FakeJsonResponse:
 
 def _test_logger() -> logging.Logger:
     return logging.getLogger("tests.provider_helpers")
+
+
+def test_is_auto_language_recognizes_empty_and_auto_like_values() -> None:
+    assert is_auto_language(None) is True
+    assert is_auto_language("") is True
+    assert is_auto_language(" auto ") is True
+    assert is_auto_language("de") is False
 
 
 def test_normalize_auto_language_returns_none_for_auto_like_values() -> None:

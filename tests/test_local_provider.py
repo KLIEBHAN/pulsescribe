@@ -210,6 +210,69 @@ class TestBuildOptions:
 
         assert options.get("language") == "de"
 
+    def test_build_options_adds_vocabulary_initial_prompt(self, monkeypatch):
+        """Vocabulary-Keywords werden als initial_prompt weitergereicht."""
+        import providers.local as local_mod
+        from providers.local import LocalProvider
+
+        monkeypatch.setattr(
+            local_mod,
+            "load_vocabulary",
+            lambda: {"keywords": ["Alpha", "Beta"]},
+        )
+
+        provider = LocalProvider()
+        provider._backend = "whisper"
+        provider._device = "cpu"
+        provider._fast_mode = False
+
+        options = provider._build_options("de")
+
+        assert options["initial_prompt"] == "Fachbegriffe: Alpha, Beta"
+
+    def test_build_options_defaults_without_timestamps_for_faster_backend(
+        self, monkeypatch
+    ):
+        """faster-whisper nutzt ohne ENV-Override weiterhin timestamp-losen Default."""
+        from providers.local import LocalProvider
+
+        provider = LocalProvider()
+        provider._backend = "faster"
+        provider._device = "cpu"
+        provider._fast_mode = False
+
+        options = provider._build_options("de")
+
+        assert options["without_timestamps"] is True
+
+    def test_build_options_parses_temperature_override_list(self, monkeypatch):
+        """Komma-separierte Temperature-Overrides bleiben Tupel von Floats."""
+        monkeypatch.setenv("PULSESCRIBE_LOCAL_TEMPERATURE", "0.0, 0.2, 0.4")
+
+        from providers.local import LocalProvider
+
+        provider = LocalProvider()
+        provider._backend = "whisper"
+        provider._device = "cpu"
+        provider._fast_mode = False
+
+        options = provider._build_options("de")
+
+        assert options["temperature"] == (0.0, 0.2, 0.4)
+
+
+def test_get_warmup_language_normalizes_auto_to_english(monkeypatch):
+    from providers.local import _get_warmup_language
+
+    monkeypatch.delenv("PULSESCRIBE_LANGUAGE", raising=False)
+    assert _get_warmup_language() == "en"
+
+    monkeypatch.setenv("PULSESCRIBE_LANGUAGE", " auto ")
+    assert _get_warmup_language() == "en"
+
+    monkeypatch.setenv("PULSESCRIBE_LANGUAGE", "de")
+    assert _get_warmup_language() == "de"
+
 
 class TestBeamSizeWarning:
     """Tests für Warnungen bei ignorierten ENV-Overrides."""
