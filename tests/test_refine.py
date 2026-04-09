@@ -1,5 +1,6 @@
 """Tests für Refine-Logik – Provider/Model-Auswahl und Fallbacks."""
 
+from types import SimpleNamespace
 from unittest.mock import Mock, call, patch
 
 import pytest
@@ -319,6 +320,141 @@ class TestRefineModelSelection:
 
         call_kwargs = mock_client.return_value.chat.completions.create.call_args
         assert call_kwargs[1]["model"] == DEFAULT_REFINE_MODEL
+
+
+class TestRefineRequestComposition:
+    """Tests für Request-Aufbau und Prompt-/Provider-spezifische Optionen."""
+
+    def test_explicit_prompt_skips_context_detection(self, clean_env):
+        """Ein expliziter Prompt darf keine automatische Kontext-Erkennung auslösen."""
+        custom_prompt = "Bitte nur leicht glätten"
+
+        with patch("refine.llm.detect_context") as mock_detect_context, patch(
+            "refine.llm.get_prompt_for_context"
+        ) as mock_get_prompt, patch("refine.llm._get_refine_client") as mock_client:
+            mock_client.return_value.responses.create.return_value = Mock(
+                output_text="refined"
+            )
+
+            refine_transcript(
+                "test",
+                provider="openai",
+                model="gpt-4o-mini",
+                prompt=custom_prompt,
+            )
+
+        mock_detect_context.assert_not_called()
+        mock_get_prompt.assert_not_called()
+        call_kwargs = mock_client.return_value.responses.create.call_args
+        assert call_kwargs[1]["input"] == f"{custom_prompt}\n\nTranskript:\ntest"
+
+    def test_blank_prompt_falls_back_to_context_prompt(self, clean_env):
+        """Leere Prompt-Strings sollen wie None behandelt werden."""
+        with patch(
+            "refine.llm.detect_context",
+            return_value=("chat", "Slack", "App"),
+        ) as mock_detect_context, patch(
+            "refine.llm.get_prompt_for_context",
+            return_value="context prompt",
+        ) as mock_get_prompt, patch("refine.llm._get_refine_client") as mock_client:
+            mock_client.return_value.responses.create.return_value = Mock(
+                output_text="refined"
+            )
+
+            refine_transcript(
+                "test",
+                provider="openai",
+                model="gpt-4o-mini",
+                prompt="",
+            )
+
+        mock_detect_context.assert_called_once_with(None)
+        mock_get_prompt.assert_called_once_with("chat")
+        call_kwargs = mock_client.return_value.responses.create.call_args
+        assert call_kwargs[1]["input"] == "context prompt\n\nTranskript:\ntest"
+
+    def test_openrouter_forwards_provider_routing_configuration(
+        self, monkeypatch, clean_env
+    ):
+        """OpenRouter-Routing-Optionen sollen unverändert an das SDK weitergereicht werden."""
+        monkeypatch.setenv("OPENROUTER_PROVIDER_ORDER", "openai, groq")
+        monkeypatch.setenv("OPENROUTER_ALLOW_FALLBACKS", "false")
+
+        with patch("refine.llm._get_refine_client") as mock_client:
+            mock_client.return_value.chat.completions.create.return_value = Mock(
+                choices=[Mock(message=Mock(content="refined"))]
+            )
+
+            refine_transcript(
+                "test",
+                provider="openrouter",
+                model="openai/gpt-oss-120b",
+            )
+
+        call_kwargs = mock_client.return_value.chat.completions.create.call_args
+        assert call_kwargs[1]["extra_body"] == {
+            "provider": {
+                "order": ["openai", "groq"],
+                "allow_fallbacks": False,
+            }
+        }
+
+    @pytest.mark.parametrize(
+        ("model", "expected_level"),
+        [
+            ("gemini-3-flash-preview", "MINIMAL"),
+            ("gemini-3-pro", "LOW"),
+        ],
+    )
+    def test_gemini_uses_expected_thinking_level(
+        self, model, expected_level, clean_env
+    ):
+        """Gemini-Modelle sollen das passende Thinking-Level erhalten."""
+        mock_types = SimpleNamespace(
+            ThinkingLevel=SimpleNamespace(MINIMAL="MINIMAL", LOW="LOW"),
+            ThinkingConfig=Mock(
+                side_effect=lambda *, thinking_level: {
+                    "thinking_level": thinking_level
+                }
+            ),
+            GenerateContentConfig=Mock(
+                side_effect=lambda *, thinking_config: {
+                    "thinking_config": thinking_config
+                }
+            ),
+        )
+        mock_genai = SimpleNamespace(types=mock_types)
+
+        with patch("refine.llm._get_refine_client") as mock_client, patch.dict(
+            "sys.modules",
+            {
+                "google": SimpleNamespace(genai=mock_genai),
+                "google.genai": mock_genai,
+                "google.genai.types": mock_types,
+            },
+        ):
+            mock_client.return_value.models.generate_content.return_value = Mock(
+                text="refined"
+            )
+
+            refine_transcript("test", provider="gemini", model=model)
+
+        call_kwargs = mock_client.return_value.models.generate_content.call_args
+        assert call_kwargs[1]["config"] == {
+            "thinking_config": {"thinking_level": expected_level}
+        }
+
+    def test_openai_gpt5_models_enable_minimal_reasoning(self, clean_env):
+        """GPT-5 Modelle sollen den minimalen Reasoning-Modus aktivieren."""
+        with patch("refine.llm._get_refine_client") as mock_client:
+            mock_client.return_value.responses.create.return_value = Mock(
+                output_text="refined"
+            )
+
+            refine_transcript("test", provider="openai", model="gpt-5-mini")
+
+        call_kwargs = mock_client.return_value.responses.create.call_args
+        assert call_kwargs[1]["reasoning"] == {"effort": "minimal"}
 
 
 class TestRefineEdgeCases:

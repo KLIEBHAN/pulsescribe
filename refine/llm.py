@@ -153,6 +153,232 @@ def _extract_message_content(content) -> str:
     return content.strip()
 
 
+def _log_detected_context(
+    *,
+    session_id: str,
+    effective_context: str,
+    source: str,
+    app_name: str | None,
+) -> None:
+    """Log the resolved prompt context in one shared format."""
+    if app_name:
+        logger.info(
+            f"[{session_id}] Kontext: {effective_context} (Quelle: {source}, App: {app_name})"
+        )
+        return
+
+    logger.info(f"[{session_id}] Kontext: {effective_context} (Quelle: {source})")
+
+
+def _resolve_refine_prompt(
+    prompt: str | None,
+    *,
+    context: str | None,
+    session_id: str,
+) -> str:
+    """Resolve the effective prompt while preserving current fallback behavior."""
+    if prompt:
+        return prompt
+
+    effective_context, app_name, source = detect_context(context)
+    resolved_prompt = get_prompt_for_context(effective_context)
+    _log_detected_context(
+        session_id=session_id,
+        effective_context=effective_context,
+        source=source,
+        app_name=app_name,
+    )
+    return resolved_prompt
+
+
+def _default_refine_model_for_provider(provider: str) -> str:
+    """Return the provider-specific default model."""
+    if provider == "gemini":
+        return DEFAULT_GEMINI_REFINE_MODEL
+    return DEFAULT_REFINE_MODEL
+
+
+def _resolve_refine_provider(provider: str | None) -> str:
+    """Resolve the effective refine provider from CLI/env/default values."""
+    return _normalize_refine_provider(
+        provider or os.getenv("PULSESCRIBE_REFINE_PROVIDER", "groq")
+    )
+
+
+def _resolve_refine_model(provider: str, model: str | None) -> str:
+    """Resolve the effective refine model from CLI/env/provider defaults."""
+    return (
+        model
+        or os.getenv("PULSESCRIBE_REFINE_MODEL")
+        or _default_refine_model_for_provider(provider)
+    )
+
+
+def _resolve_refine_target(
+    provider: str | None,
+    model: str | None,
+) -> tuple[str, str]:
+    """Resolve provider and model together so callers stay in sync."""
+    effective_provider = _resolve_refine_provider(provider)
+    return effective_provider, _resolve_refine_model(effective_provider, model)
+
+
+def _build_chat_messages(full_prompt: str) -> list[dict[str, str]]:
+    """Build the shared chat-completions message payload."""
+    return [{"role": "user", "content": full_prompt}]
+
+
+def _extract_choice_message_text(response: object, *, provider_name: str) -> str:
+    """Extract the first choice text from chat-based provider responses."""
+    choices = getattr(response, "choices", None)
+    if not choices:
+        raise ValueError(f"{provider_name}-Antwort enthält keine choices")
+    return _extract_message_content(choices[0].message.content)
+
+
+def _build_openrouter_create_kwargs(
+    model: str,
+    full_prompt: str,
+    *,
+    session_id: str,
+) -> dict[str, object]:
+    """Build OpenRouter request kwargs, including optional routing hints."""
+    create_kwargs: dict[str, object] = {
+        "model": model,
+        "messages": _build_chat_messages(full_prompt),
+        "timeout": LLM_REFINE_TIMEOUT,
+    }
+
+    provider_order = os.getenv("OPENROUTER_PROVIDER_ORDER")
+    if provider_order:
+        providers = [p.strip() for p in provider_order.split(",")]
+        allow_fallbacks = get_env_bool_default("OPENROUTER_ALLOW_FALLBACKS", True)
+        create_kwargs["extra_body"] = {
+            "provider": {
+                "order": providers,
+                "allow_fallbacks": allow_fallbacks,
+            }
+        }
+        logger.info(
+            f"[{session_id}] OpenRouter Provider: {', '.join(providers)} "
+            f"(fallbacks: {allow_fallbacks})"
+        )
+
+    return create_kwargs
+
+
+def _resolve_gemini_thinking_level(types_module: object, model: str):
+    """Choose the current Gemini thinking level based on model family."""
+    thinking_level = getattr(types_module, "ThinkingLevel")
+    if "flash" in model.lower():
+        return thinking_level.MINIMAL
+    return thinking_level.LOW
+
+
+def _build_openai_api_params(model: str, full_prompt: str) -> dict[str, object]:
+    """Build the OpenAI Responses API params with the existing GPT-5 tweak."""
+    api_params: dict[str, object] = {
+        "model": model,
+        "input": full_prompt,
+        "timeout": LLM_REFINE_TIMEOUT,
+    }
+    if model.startswith("gpt-5"):
+        api_params["reasoning"] = {"effort": "minimal"}
+    return api_params
+
+
+def _execute_groq_refine(
+    client: object,
+    model: str,
+    full_prompt: str,
+    *,
+    session_id: str,
+) -> str:
+    """Execute the Groq chat-completions refine request."""
+    del session_id
+    response = client.chat.completions.create(
+        model=model,
+        messages=_build_chat_messages(full_prompt),
+        timeout=LLM_REFINE_TIMEOUT,
+    )
+    return _extract_choice_message_text(response, provider_name="Groq")
+
+
+def _execute_openrouter_refine(
+    client: object,
+    model: str,
+    full_prompt: str,
+    *,
+    session_id: str,
+) -> str:
+    """Execute the OpenRouter refine request with optional routing config."""
+    response = client.chat.completions.create(
+        **_build_openrouter_create_kwargs(model, full_prompt, session_id=session_id)
+    )
+    return _extract_choice_message_text(response, provider_name="OpenRouter")
+
+
+def _execute_gemini_refine(
+    client: object,
+    model: str,
+    full_prompt: str,
+    *,
+    session_id: str,
+) -> str:
+    """Execute the Gemini refine request with provider-specific thinking config."""
+    from google.genai import types
+
+    thinking_level = _resolve_gemini_thinking_level(types, model)
+    logger.info(f"[{session_id}] Gemini thinking_level={thinking_level}")
+
+    response = client.models.generate_content(
+        model=model,
+        contents=full_prompt,
+        config=types.GenerateContentConfig(
+            thinking_config=types.ThinkingConfig(thinking_level=thinking_level)
+        ),
+    )
+    return (response.text or "").strip()
+
+
+def _execute_openai_refine(
+    client: object,
+    model: str,
+    full_prompt: str,
+    *,
+    session_id: str,
+) -> str:
+    """Execute the OpenAI Responses API refine request."""
+    del session_id
+    response = client.responses.create(**_build_openai_api_params(model, full_prompt))
+    return (response.output_text or "").strip()
+
+
+_REFINE_REQUEST_EXECUTORS = {
+    "groq": _execute_groq_refine,
+    "openrouter": _execute_openrouter_refine,
+    "gemini": _execute_gemini_refine,
+    "openai": _execute_openai_refine,
+}
+
+
+def _execute_refine_request(
+    provider: str,
+    client: object,
+    model: str,
+    full_prompt: str,
+    *,
+    session_id: str,
+) -> str:
+    """Dispatch the normalized refine request to the provider-specific executor."""
+    return _REFINE_REQUEST_EXECUTORS[provider](
+        client,
+        model,
+        full_prompt,
+        session_id=session_id,
+    )
+
+
 def refine_transcript(
     transcript: str,
     model: str | None = None,
@@ -189,32 +415,13 @@ def refine_transcript(
         logger.debug(f"[{session_id}] Leeres Transkript, überspringe Nachbearbeitung")
         return transcript
 
-    # Kontext-spezifischen Prompt wählen (falls nicht explizit übergeben)
-    # Auch leere Strings werden wie None behandelt (Fallback auf Kontext-Prompt)
-    if not prompt:
-        effective_context, app_name, source = detect_context(context)
-        prompt = get_prompt_for_context(effective_context)
-        # Detailliertes Logging mit Quelle
-        if app_name:
-            logger.info(
-                f"[{session_id}] Kontext: {effective_context} (Quelle: {source}, App: {app_name})"
-            )
-        else:
-            logger.info(
-                f"[{session_id}] Kontext: {effective_context} (Quelle: {source})"
-            )
-
-    # Provider und Modell zur Laufzeit bestimmen (CLI > ENV > Default)
-    effective_provider = _normalize_refine_provider(
-        provider or os.getenv("PULSESCRIBE_REFINE_PROVIDER", "groq")
+    prompt = _resolve_refine_prompt(
+        prompt,
+        context=context,
+        session_id=session_id,
     )
 
-    # Provider-spezifisches Default-Modell (CLI > ENV > Default)
-    if effective_provider == "gemini":
-        default_model = DEFAULT_GEMINI_REFINE_MODEL
-    else:
-        default_model = DEFAULT_REFINE_MODEL
-    effective_model = model or os.getenv("PULSESCRIBE_REFINE_MODEL") or default_model
+    effective_provider, effective_model = _resolve_refine_target(provider, model)
 
     logger.info(
         f"[{session_id}] LLM-Nachbearbeitung: provider={effective_provider}, model={effective_model}"
@@ -225,80 +432,13 @@ def refine_transcript(
     full_prompt = f"{prompt}\n\nTranskript:\n{transcript}"
 
     with timed_operation("LLM-Nachbearbeitung"):
-        if effective_provider == "groq":
-            # Groq nutzt chat.completions API (wie OpenRouter)
-            response = client.chat.completions.create(
-                model=effective_model,
-                messages=[{"role": "user", "content": full_prompt}],
-                timeout=LLM_REFINE_TIMEOUT,
-            )
-            if not response.choices:
-                raise ValueError("Groq-Antwort enthält keine choices")
-            result = _extract_message_content(response.choices[0].message.content)
-        elif effective_provider == "openrouter":
-            # OpenRouter API-Aufruf vorbereiten
-            create_kwargs: dict = {
-                "model": effective_model,
-                "messages": [{"role": "user", "content": full_prompt}],
-                "timeout": LLM_REFINE_TIMEOUT,
-            }
-
-            # Provider-Routing konfigurieren (optional)
-            provider_order = os.getenv("OPENROUTER_PROVIDER_ORDER")
-            if provider_order:
-                providers = [p.strip() for p in provider_order.split(",")]
-                allow_fallbacks = get_env_bool_default(
-                    "OPENROUTER_ALLOW_FALLBACKS", True
-                )
-                create_kwargs["extra_body"] = {
-                    "provider": {
-                        "order": providers,
-                        "allow_fallbacks": allow_fallbacks,
-                    }
-                }
-                logger.info(
-                    f"[{session_id}] OpenRouter Provider: {', '.join(providers)} "
-                    f"(fallbacks: {allow_fallbacks})"
-                )
-
-            response = client.chat.completions.create(**create_kwargs)
-            if not response.choices:
-                raise ValueError("OpenRouter-Antwort enthält keine choices")
-            result = _extract_message_content(response.choices[0].message.content)
-        elif effective_provider == "gemini":
-            from google.genai import types
-
-            # "minimal" nur für Flash (schnellste Latenz), Pro braucht "low"
-            is_flash_model = "flash" in effective_model.lower()
-            thinking_level = (
-                types.ThinkingLevel.MINIMAL
-                if is_flash_model
-                else types.ThinkingLevel.LOW
-            )
-            logger.info(f"[{session_id}] Gemini thinking_level={thinking_level}")
-
-            # SDK-Timeout: 60s Default, kein zuverlässiger Override möglich
-            response = client.models.generate_content(
-                model=effective_model,
-                contents=full_prompt,
-                config=types.GenerateContentConfig(
-                    thinking_config=types.ThinkingConfig(thinking_level=thinking_level)
-                ),
-            )
-            result = (response.text or "").strip()
-        else:
-            # OpenAI responses API
-            api_params: dict = {
-                "model": effective_model,
-                "input": full_prompt,
-                "timeout": LLM_REFINE_TIMEOUT,
-            }
-            # GPT-5 nutzt "reasoning" API – "minimal" für schnelle Korrekturen
-            # statt tiefgehender Analyse (spart Tokens und Latenz)
-            if effective_model.startswith("gpt-5"):
-                api_params["reasoning"] = {"effort": "minimal"}
-            response = client.responses.create(**api_params)
-            result = (response.output_text or "").strip()
+        result = _execute_refine_request(
+            effective_provider,
+            client,
+            effective_model,
+            full_prompt,
+            session_id=session_id,
+        )
 
     logger.debug(f"[{session_id}] Output: {redacted_text_summary(result)}")
     return result
