@@ -250,6 +250,78 @@ def test_refresh_transcripts_skips_full_reload_when_incremental_append_succeeds(
         "hello",
         "world",
     ]
+    assert window._last_transcripts_blocks == [
+        "[2026-01-01 10:00:00] hello",
+        "[2026-01-01 10:00:01] world",
+    ]
+
+
+def test_refresh_transcripts_reuses_cached_blocks_when_append_replaces_visible_text(
+    tmp_path, monkeypatch
+):
+    import ui.settings_windows as settings_mod
+    import utils.history as history_mod
+
+    original_line = '{"timestamp":"2026-01-01T10:00:00","text":"hello"}\n'
+    appended_line = '{"timestamp":"2026-01-01T10:00:01","text":"world"}\n'
+    history_file = tmp_path / "history.jsonl"
+    history_file.write_text(original_line + appended_line, encoding="utf-8")
+    monkeypatch.setattr(history_mod, "HISTORY_FILE", history_file)
+    monkeypatch.setattr(
+        settings_mod,
+        "get_file_signature",
+        lambda _path: (99, len((original_line + appended_line).encode("utf-8"))),
+    )
+    monkeypatch.setattr(
+        history_mod,
+        "get_recent_transcripts",
+        lambda _count: (_ for _ in ()).throw(
+            AssertionError("full transcript reload should be skipped")
+        ),
+    )
+
+    formatted_entries: list[str] = []
+    original_formatter = history_mod.format_transcript_entry_for_display
+
+    def _tracking_formatter(entry):
+        text = entry.get("text", "") if isinstance(entry, dict) else ""
+        formatted_entries.append(str(text))
+        return original_formatter(entry)
+
+    monkeypatch.setattr(
+        history_mod,
+        "format_transcript_entry_for_display",
+        _tracking_formatter,
+    )
+
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._transcripts_viewer = _FakeLogsViewer(
+        "[2026-01-01 10:00:00] hello",
+        scroll_value=10,
+        scroll_maximum=100,
+    )
+    window._transcripts_status = _FakeLabel()
+    window._last_transcripts_text = "[2026-01-01 10:00:00] hello"
+    window._last_transcripts_signature = (1, len(original_line.encode("utf-8")))
+    window._last_transcripts_entries = [
+        {"timestamp": "2026-01-01T10:00:00", "text": "hello"}
+    ]
+    window._last_transcripts_blocks = ["[2026-01-01 10:00:00] hello"]
+
+    window._refresh_transcripts()
+
+    assert window._transcripts_viewer.text == (
+        "[2026-01-01 10:00:00] hello\n\n[2026-01-01 10:00:01] world"
+    )
+    assert window._transcripts_viewer.set_plain_text_calls == [
+        "[2026-01-01 10:00:00] hello\n\n[2026-01-01 10:00:01] world"
+    ]
+    assert formatted_entries == ["world"]
+    assert window._transcripts_status.text == "2 entries"
+    assert window._last_transcripts_blocks == [
+        "[2026-01-01 10:00:00] hello",
+        "[2026-01-01 10:00:01] world",
+    ]
 
 
 def test_try_append_logs_delta_appends_only_new_text(tmp_path, monkeypatch):

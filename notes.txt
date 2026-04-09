@@ -1,3 +1,37 @@
+Performance work log - 2026-04-09 (Windows settings transcripts incremental block reuse)
+
+Scope
+- Left the last two commit areas untouched again: `ui/onboarding_wizard_windows.py`, `ui/welcome.py`, and `utils/history.py`.
+- Focused on the remaining Windows frontend hotspot in `ui/settings_windows.py` when the transcript history grows while the user is viewing older entries.
+- Preserved transcript ordering, scroll-position behavior, transcript count labels, and the existing incremental append path.
+
+Current weaknesses reviewed
+- `ui/settings_windows.py`: the transcripts viewer already avoided full history rereads on append-only updates, but if the user was not scrolled to the bottom it still reformatted every visible transcript entry before replacing the document text.
+- `ui/settings_windows.py`: transcript status labels were reassigned repeatedly even when the rendered count/state had not changed.
+
+Changes in this pass
+- `ui/settings_windows.py`
+  Added a local cache of already formatted transcript blocks for the Windows settings viewer.
+- `ui/settings_windows.py`
+  Reused cached blocks plus only newly formatted entries when append-only history updates require a document replace instead of an in-place append.
+- `ui/settings_windows.py`
+  Switched transcript status/error/success label writes to the existing deduping label helper.
+- Tests
+  Added regression coverage that append-only transcript refreshes reuse cached blocks and avoid reformatting older visible entries.
+
+Why this helps
+- Long-running Windows settings sessions with an open transcript tab now avoid repeated per-entry formatting work on every append-only refresh when the user is inspecting older transcript history.
+- The visible transcript view stays responsive because the heavy part of the replace path scales with only new entries instead of the whole retained window.
+
+Validation
+- `pytest tests/test_settings_windows_logs.py -q`
+- `python -m py_compile ui/settings_windows.py tests/test_settings_windows_logs.py`
+- `ruff check ui/settings_windows.py tests/test_settings_windows_logs.py`
+
+Next worthwhile areas
+- `ui/settings_windows.py`: the logs viewer still rebuilds merged visible text from the full tail string on each append path; a line/block cache similar to transcripts would trim that path too if profiling still shows it.
+- `ui/overlay_windows.py`: interim-file polling still stats the file every 200 ms during recording; if traces still show wakeups there, the next step is reducing polling work when content is stable for longer stretches.
+
 Performance work log - 2026-03-28
 
 Performance work log - 2026-04-09 (macOS welcome transcripts incremental formatting pass)

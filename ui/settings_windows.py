@@ -511,6 +511,7 @@ class SettingsWindow(QDialog):
         self._last_transcripts_text: str | None = None
         self._last_transcripts_signature: tuple[int, int] | None = None
         self._last_transcripts_entries: list[dict[str, object]] | None = None
+        self._last_transcripts_blocks: list[str] | None = None
         self._setup_status_label: QLabel | None = None
         self._setup_status_detail_label: QLabel | None = None
         self._setup_howto_label: QLabel | None = None
@@ -2303,6 +2304,9 @@ class SettingsWindow(QDialog):
     def _switch_logs_view(self, index: int):
         """Wechselt zwischen Logs und Transcripts Ansicht."""
         if hasattr(self, "_logs_stack"):
+            if self._logs_stack.currentIndex() == index:
+                self._update_logs_auto_refresh_state()
+                return
             self._logs_stack.setCurrentIndex(index)
             if index == 1:  # Transcripts
                 self._refresh_transcripts()
@@ -2363,6 +2367,7 @@ class SettingsWindow(QDialog):
         try:
             from utils.history import (
                 HISTORY_FILE,
+                format_transcript_entry_for_display,
                 format_transcripts_for_display,
                 get_recent_transcripts,
             )
@@ -2370,11 +2375,13 @@ class SettingsWindow(QDialog):
             if not HISTORY_FILE.exists():
                 self._last_transcripts_signature = None
                 self._last_transcripts_entries = []
+                self._last_transcripts_blocks = []
                 self._set_transcripts_text_if_changed("No transcripts yet.")
                 if hasattr(self, "_transcripts_status"):
-                    self._transcripts_status.setText("0 entries")
-                    self._transcripts_status.setStyleSheet(
-                        f"color: {COLORS['text_secondary']};"
+                    _set_status_label_if_changed(
+                        self._transcripts_status,
+                        "0 entries",
+                        "text_secondary",
                     )
                 return
 
@@ -2387,14 +2394,22 @@ class SettingsWindow(QDialog):
 
             entries = get_recent_transcripts(TRANSCRIPTS_VIEW_MAX_ENTRIES)
             ordered_entries = list(reversed(entries))
+            transcript_blocks = [
+                format_transcript_entry_for_display(entry)
+                for entry in ordered_entries
+            ]
             self._set_transcripts_text_if_changed(format_transcripts_for_display(entries))
             self._last_transcripts_entries = ordered_entries
+            self._last_transcripts_blocks = [
+                block for block in transcript_blocks if block
+            ]
             self._last_transcripts_signature = signature
 
             if hasattr(self, "_transcripts_status"):
-                self._transcripts_status.setText(f"{len(entries)} entries")
-                self._transcripts_status.setStyleSheet(
-                    f"color: {COLORS['text_secondary']};"
+                _set_status_label_if_changed(
+                    self._transcripts_status,
+                    f"{len(entries)} entries",
+                    "text_secondary",
                 )
 
         except Exception as e:
@@ -2407,6 +2422,7 @@ class SettingsWindow(QDialog):
         """Reuse an append-only history delta without re-reading the full transcript tail."""
         viewer = getattr(self, "_transcripts_viewer", None)
         previous_entries = getattr(self, "_last_transcripts_entries", None)
+        previous_blocks = getattr(self, "_last_transcripts_blocks", None)
         if (
             not viewer
             or signature is None
@@ -2428,7 +2444,6 @@ class SettingsWindow(QDialog):
 
         from utils.history import (
             format_transcript_entry_for_display,
-            format_transcripts_for_display,
             merge_recent_transcript_entries,
             read_transcripts_from_offset,
         )
@@ -2449,9 +2464,10 @@ class SettingsWindow(QDialog):
             return False
 
         if hasattr(self, "_transcripts_status"):
-            self._transcripts_status.setText(f"{len(merged_entries)} entries")
-            self._transcripts_status.setStyleSheet(
-                f"color: {COLORS['text_secondary']};"
+            _set_status_label_if_changed(
+                self._transcripts_status,
+                f"{len(merged_entries)} entries",
+                "text_secondary",
             )
 
         scrollbar = viewer.verticalScrollBar()
@@ -2487,14 +2503,42 @@ class SettingsWindow(QDialog):
                 f"{self._last_transcripts_text or ''}{separator}{appended_text}"
             )
             self._last_transcripts_entries = merged_entries
+            merged_blocks = (
+                list(previous_blocks)
+                if previous_blocks is not None
+                else [
+                    format_transcript_entry_for_display(entry)
+                    for entry in previous_entries
+                ]
+            )
+            merged_blocks.extend(block for block in appended_blocks if block)
+            self._last_transcripts_blocks = merged_blocks[-TRANSCRIPTS_VIEW_MAX_ENTRIES:]
             self._last_transcripts_signature = signature
             scrollbar.setValue(scrollbar.maximum())
             return True
 
-        merged_text = format_transcripts_for_display(
-            merged_entries,
-            newest_first=False,
-        )
+        if previous_blocks is not None:
+            merged_blocks = list(previous_blocks)
+            merged_blocks.extend(
+                format_transcript_entry_for_display(entry)
+                for entry in appended_entries
+            )
+            merged_blocks = [
+                block for block in merged_blocks[-TRANSCRIPTS_VIEW_MAX_ENTRIES:] if block
+            ]
+            merged_text = (
+                "\n\n".join(merged_blocks) if merged_blocks else "No transcripts yet."
+            )
+            self._last_transcripts_blocks = merged_blocks
+        else:
+            merged_blocks = [
+                format_transcript_entry_for_display(entry) for entry in merged_entries
+            ]
+            merged_blocks = [block for block in merged_blocks if block]
+            merged_text = (
+                "\n\n".join(merged_blocks) if merged_blocks else "No transcripts yet."
+            )
+            self._last_transcripts_blocks = merged_blocks
         self._set_transcripts_text_if_changed(merged_text)
         self._last_transcripts_entries = merged_entries
         self._last_transcripts_signature = signature
@@ -2553,18 +2597,20 @@ class SettingsWindow(QDialog):
 
             if not clear_history():
                 if hasattr(self, "_transcripts_status"):
-                    self._transcripts_status.setText(
-                        "Could not clear history. Try again."
-                    )
-                    self._transcripts_status.setStyleSheet(
-                        f"color: {COLORS['error']};"
+                    _set_status_label_if_changed(
+                        self._transcripts_status,
+                        "Could not clear history. Try again.",
+                        "error",
                     )
                 return
 
             self._refresh_transcripts()
             if hasattr(self, "_transcripts_status"):
-                self._transcripts_status.setText("History cleared")
-                self._transcripts_status.setStyleSheet(f"color: {COLORS['success']};")
+                _set_status_label_if_changed(
+                    self._transcripts_status,
+                    "History cleared",
+                    "success",
+                )
 
         except Exception as e:
             logger.error(f"Transcripts löschen fehlgeschlagen: {e}")
