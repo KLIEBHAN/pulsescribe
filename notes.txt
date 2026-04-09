@@ -73,3 +73,45 @@ Next worthwhile areas
 - `ui/onboarding_wizard.py` and `ui/hotkey_card.py`: the macOS onboarding flow still re-queries env-backed hotkey state during render cycles; a similar local-state pass would keep cross-platform behavior aligned.
 - `ui/welcome.py`: the welcome save/apply flow still has a large batched-settings opportunity, but it remains adjacent to recent commit history and should be handled in a separate pass.
 - Prompt/vocabulary editor tabs remain the next likely source of open-tab latency if profiling still shows spikes after the onboarding cleanup.
+
+Performance work log - 2026-04-09 (macOS welcome + onboarding pass)
+
+Scope
+- Kept the last two commits untouched again: Windows settings batching and Windows onboarding env churn.
+- Focused on the next macOS/frontend hotspots instead: `ui/welcome.py` and `ui/onboarding_wizard.py`.
+- Preserved onboarding flow, welcome-window behavior, prompt/vocabulary editing, and settings persistence semantics.
+
+Current weaknesses reviewed
+- `ui/welcome.py`: `Save & Apply` still wrote `.env` one key at a time, so one UI action could trigger a long serial chain of reads/writes.
+- `ui/welcome.py`: prompt/vocabulary tabs reloaded backing data more often than needed during a single window session.
+- `ui/welcome.py`: mode-dependent hide/show updates still hit AppKit views even when the visibility state was unchanged.
+- `ui/onboarding_wizard.py`: render-adjacent paths (`_can_advance`, summary, hotkey preview, fast-mode selection) repeatedly reread env-backed values inside the same wizard session.
+
+Changes in this pass
+- `ui/welcome.py`
+  Switched the macOS `Save & Apply` path to a single batched `.env` update, including API keys, provider settings, local overrides, refine/display toggles, and legacy key cleanup.
+- `ui/welcome.py`
+  Added lightweight session caches for loaded prompts/defaults and vocabulary keywords so tab-open and save paths stop reloading the same data repeatedly within one window session.
+- `ui/welcome.py`
+  Deduped mode-dependent visibility changes so AppKit hide/show work is skipped when the effective state is already current.
+- `ui/onboarding_wizard.py`
+  Added a wizard-local env cache and routed fast-mode persistence, language persistence, hotkey validation/save state, summary rendering, and test-hotkey preview reads through it.
+- Tests
+  Updated welcome/onboarding tests for batched env persistence, session caching, and no-op visibility churn suppression.
+
+Why this helps
+- The macOS welcome window now persists settings in one atomic `.env` write instead of many small writes, which shortens the critical save path and reduces UI stickiness.
+- Prompt/vocabulary tabs reuse already loaded data during the same session, so opening or saving those heavier editors avoids redundant disk work and recomputation.
+- The macOS onboarding wizard no longer re-reads the same env values on each small render/update step, which trims unnecessary work in a render-sensitive first-run flow.
+- Skipping redundant AppKit `setHidden_` churn reduces needless UI work on frequent mode/backend toggles.
+
+Validation
+- `pytest tests/test_settings_ui.py tests/test_onboarding.py tests/test_onboarding_wizard_flow.py -q`
+- `pytest tests/test_custom_prompts.py tests/test_vocabulary.py -q`
+- `python -m py_compile ui/welcome.py ui/onboarding_wizard.py tests/test_settings_ui.py tests/test_onboarding.py tests/test_onboarding_wizard_flow.py`
+- `ruff check ui/welcome.py ui/onboarding_wizard.py tests/test_settings_ui.py tests/test_onboarding.py tests/test_onboarding_wizard_flow.py`
+
+Next worthwhile areas
+- `ui/hotkey_card.py`: still reads env-backed hotkey state directly; a tiny shared cache layer would align it with the wizard optimizations.
+- `ui/welcome.py` logs/transcripts view switching could be profiled for further paint/layout trimming if the window is kept open for long sessions.
+- If tab-open latency remains noticeable, the next likely area is moving prompt/vocabulary validation work off the immediate interaction path.

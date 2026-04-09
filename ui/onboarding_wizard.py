@@ -22,17 +22,14 @@ from utils.permissions import (
     get_microphone_permission_state,
 )
 from utils.preferences import (
-    get_api_key,
     get_env_setting,
     get_onboarding_choice,
     get_onboarding_step,
-    apply_hotkey_setting,
-    remove_env_setting,
-    save_api_key,
-    save_env_setting,
+    read_env_file,
     set_onboarding_choice,
     set_onboarding_step,
     set_onboarding_seen,
+    update_env_settings,
 )
 from utils.presets import (
     apply_local_preset_to_env,
@@ -121,6 +118,7 @@ class OnboardingWizardController:
         self._last_next_title: str | None = None
         self._last_next_enabled: bool | None = None
         self._last_test_hotkey_text: str | None = None
+        self._env_settings_cache: dict[str, str] = read_env_file()
 
         # Permissions UI (shared component)
         self._permissions_card = None
@@ -153,6 +151,56 @@ class OnboardingWizardController:
         self._handler_refs: list[object] = []
 
         self._build_window()
+
+    def _refresh_env_settings_cache(self) -> dict[str, str]:
+        cache = read_env_file()
+        self._env_settings_cache = cache
+        return cache
+
+    def _get_cached_env_setting(self, key_name: str) -> str | None:
+        cache = getattr(self, "_env_settings_cache", None)
+        if cache is None:
+            return get_env_setting(key_name)
+        return cache.get(key_name)
+
+    def _get_cached_api_key(self, key_name: str) -> str | None:
+        return self._get_cached_env_setting(key_name)
+
+    def _apply_env_updates(self, updates: dict[str, str | None]) -> bool:
+        normalized_updates = {
+            key: (None if value is None else str(value))
+            for key, value in updates.items()
+        }
+        cache = getattr(self, "_env_settings_cache", None)
+        if cache is not None:
+            changed = False
+            for key, value in normalized_updates.items():
+                current = cache.get(key)
+                if value is None:
+                    if current is not None:
+                        changed = True
+                        break
+                elif current != value:
+                    changed = True
+                    break
+            if not changed:
+                return False
+
+        update_env_settings(normalized_updates)
+
+        if cache is not None:
+            for key, value in normalized_updates.items():
+                if value is None:
+                    cache.pop(key, None)
+                else:
+                    cache[key] = value
+        return True
+
+    def _get_cached_hotkeys(self) -> tuple[str, str]:
+        return (
+            (self._get_cached_env_setting("PULSESCRIBE_TOGGLE_HOTKEY") or "").strip(),
+            (self._get_cached_env_setting("PULSESCRIBE_HOLD_HOTKEY") or "").strip(),
+        )
 
     # ---------------------------------------------------------------------
     # Public API
@@ -939,7 +987,7 @@ class OnboardingWizardController:
         warn_color = _get_color(255, 200, 90)
 
         # Provider
-        mode = (get_env_setting("PULSESCRIBE_MODE") or "deepgram").strip()
+        mode = (self._get_cached_env_setting("PULSESCRIBE_MODE") or "deepgram").strip()
         mode_display = {
             "deepgram": "Deepgram (Cloud, fastest)",
             "openai": "OpenAI Whisper (Cloud)",
@@ -954,8 +1002,9 @@ class OnboardingWizardController:
                 pass
 
         # Hotkeys
-        toggle_hk = (get_env_setting("PULSESCRIBE_TOGGLE_HOTKEY") or "").strip().upper()
-        hold_hk = (get_env_setting("PULSESCRIBE_HOLD_HOTKEY") or "").strip().upper()
+        toggle_hk, hold_hk = self._get_cached_hotkeys()
+        toggle_hk = toggle_hk.upper()
+        hold_hk = hold_hk.upper()
         hotkey_parts = []
         if toggle_hk:
             hotkey_parts.append(f"Toggle: {toggle_hk}")
@@ -1096,24 +1145,22 @@ class OnboardingWizardController:
             entered_key = ""
             if self._api_key_field:
                 entered_key = self._api_key_field.stringValue().strip()
-                if entered_key:
-                    save_api_key("DEEPGRAM_API_KEY", entered_key)
 
             has_deepgram = bool(
                 entered_key
-                or get_api_key("DEEPGRAM_API_KEY")
+                or self._get_cached_api_key("DEEPGRAM_API_KEY")
                 or os.getenv("DEEPGRAM_API_KEY")
             )
-            has_groq = bool(
-                get_api_key("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
-            )
+            has_groq = bool(self._get_cached_api_key("GROQ_API_KEY") or os.getenv("GROQ_API_KEY"))
             if not has_deepgram and not has_groq:
                 self._show_fast_api_key_prompt()
                 return False
 
-            save_env_setting(
-                "PULSESCRIBE_MODE",
-                "deepgram" if has_deepgram else "groq",
+            self._apply_env_updates(
+                {
+                    "DEEPGRAM_API_KEY": entered_key or None,
+                    "PULSESCRIBE_MODE": "deepgram" if has_deepgram else "groq",
+                }
             )
             if self._api_key_container is not None:
                 try:
@@ -1128,10 +1175,13 @@ class OnboardingWizardController:
         # Save selected language
         if self._lang_popup:
             lang = self._lang_popup.titleOfSelectedItem()
-            if lang and lang != "auto":
-                save_env_setting("PULSESCRIBE_LANGUAGE", lang)
-            else:
-                remove_env_setting("PULSESCRIBE_LANGUAGE")
+            self._apply_env_updates(
+                {
+                    "PULSESCRIBE_LANGUAGE": (
+                        lang if lang and lang != "auto" else None
+                    )
+                }
+            )
 
         if self._on_settings_changed:
             try:
@@ -1148,8 +1198,7 @@ class OnboardingWizardController:
         if self._step == OnboardingStep.PERMISSIONS:
             return get_microphone_permission_state() not in ("denied", "restricted")
         if self._step == OnboardingStep.HOTKEY:
-            toggle = (get_env_setting("PULSESCRIBE_TOGGLE_HOTKEY") or "").strip()
-            hold = (get_env_setting("PULSESCRIBE_HOLD_HOTKEY") or "").strip()
+            toggle, hold = self._get_cached_hotkeys()
             return bool(toggle or hold)
         if self._step == OnboardingStep.TEST_DICTATION:
             return bool(self._test_successful)
@@ -1233,8 +1282,7 @@ class OnboardingWizardController:
         if label is None:
             return
 
-        toggle = (get_env_setting("PULSESCRIBE_TOGGLE_HOTKEY") or "").strip()
-        hold = (get_env_setting("PULSESCRIBE_HOLD_HOTKEY") or "").strip()
+        toggle, hold = self._get_cached_hotkeys()
 
         def disp(value: str) -> str:
             return (value or "").strip().upper()
@@ -1418,7 +1466,20 @@ class OnboardingWizardController:
             self._render()
             return False
 
-        apply_hotkey_setting(kind, normalized)
+        toggle, hold = self._get_cached_hotkeys()
+        if kind == "hold":
+            hold = normalized
+        else:
+            toggle = normalized
+
+        self._apply_env_updates(
+            {
+                "PULSESCRIBE_TOGGLE_HOTKEY": toggle or None,
+                "PULSESCRIBE_HOLD_HOTKEY": hold or None,
+                "PULSESCRIBE_HOTKEY": None,
+                "PULSESCRIBE_HOTKEY_MODE": None,
+            }
+        )
 
         if self._on_settings_changed:
             try:

@@ -381,38 +381,36 @@ class TestWelcomeLazyTabs:
 
 
 class TestWelcomeSaveSettings:
-    def test_save_settings_uses_canonical_fp16_key_and_removes_legacy(self, monkeypatch):
-        save_calls: list[tuple[str, str]] = []
-        remove_calls: list[str] = []
+    def test_save_settings_batches_env_updates_and_removes_legacy_fp16(
+        self, monkeypatch
+    ):
+        env_updates: list[dict[str, str | None]] = []
 
         monkeypatch.setattr(
-            "ui.welcome.save_env_setting",
-            lambda key, value: save_calls.append((key, value)),
-        )
-        monkeypatch.setattr(
-            "ui.welcome.remove_env_setting",
-            lambda key: remove_calls.append(key),
+            "ui.welcome.update_env_settings",
+            lambda updates: env_updates.append(dict(updates)),
         )
 
         ctrl = _make_minimal_welcome_controller()
+        ctrl._env_settings_cache = {}
         ctrl._fp16_popup = _FakePopup(["default", "true", "false"], selected="true")
 
         ctrl._save_all_settings()
 
-        assert (LOCAL_FP16_ENV_KEY, "true") in save_calls
-        assert LEGACY_LOCAL_FP16_ENV_KEY in remove_calls
+        assert env_updates == [{LOCAL_FP16_ENV_KEY: "true", LEGACY_LOCAL_FP16_ENV_KEY: None}]
 
     def test_save_settings_persists_all_api_key_providers(self, monkeypatch):
         import ui.welcome as welcome_mod
 
-        saved_keys: list[tuple[str, str]] = []
+        env_updates: list[dict[str, str | None]] = []
         monkeypatch.setattr(
-            "ui.welcome.set_api_key",
-            lambda key, value: saved_keys.append((key, value)) or bool(value),
+            "ui.welcome.update_env_settings",
+            lambda updates: env_updates.append(dict(updates)),
         )
         monkeypatch.setattr("ui.welcome._get_color", lambda *args: args)
 
         ctrl = _make_minimal_welcome_controller()
+        ctrl._env_settings_cache = {}
         expected = []
         for provider, _label, env_key in welcome_mod.API_KEY_PROVIDERS:
             key_value = f"{provider}-key"
@@ -422,11 +420,151 @@ class TestWelcomeSaveSettings:
 
         ctrl._save_all_settings()
 
-        assert saved_keys == expected
+        assert len(env_updates) == 1
+        for key, value in expected:
+            assert env_updates[0][key] == value
         for provider, _label, _env_key in welcome_mod.API_KEY_PROVIDERS:
             status = getattr(ctrl, f"_{provider}_status")
             assert status.value == "✓"
             assert status.color == (51, 217, 178)
+
+    def test_save_custom_prompts_skips_rewrite_when_overrides_are_unchanged(
+        self, monkeypatch
+    ):
+        from utils import custom_prompts as custom_prompts_mod
+
+        save_calls: list[dict] = []
+        reset_calls: list[bool] = []
+
+        monkeypatch.setattr(
+            custom_prompts_mod,
+            "filter_overrides_for_storage",
+            lambda data, defaults=None: {
+                "prompts": {"default": {"prompt": "custom prompt"}}
+            },
+        )
+        monkeypatch.setattr(
+            custom_prompts_mod,
+            "save_custom_prompts",
+            lambda data: save_calls.append(data),
+        )
+        monkeypatch.setattr(
+            custom_prompts_mod,
+            "reset_to_defaults",
+            lambda: reset_calls.append(True),
+        )
+        monkeypatch.setattr(
+            custom_prompts_mod,
+            "parse_app_mappings",
+            lambda _text: {"Mail": "email"},
+        )
+
+        ctrl = _make_minimal_welcome_controller()
+        ctrl._prompts_defaults_data = {
+            "voice_commands": {"instruction": "default vc"},
+            "prompts": {"default": {"prompt": "default prompt"}},
+            "app_contexts": {"Mail": "email"},
+        }
+        ctrl._prompts_loaded_data = {
+            "voice_commands": {"instruction": "default vc"},
+            "prompts": {"default": {"prompt": "custom prompt"}},
+            "app_contexts": {"Mail": "email"},
+        }
+        ctrl._prompts_text_view = type(
+            "_PromptView",
+            (),
+            {"string": lambda self: "custom prompt"},
+        )()
+        ctrl._prompts_current_context = "default"
+        ctrl._prompts_cache = {}
+        ctrl._prompts_status_label = _FakeField("")
+
+        ctrl._save_custom_prompts()
+
+        assert save_calls == []
+        assert reset_calls == []
+        assert ctrl._prompts_status_label.value == "✓ Prompts unchanged"
+
+
+class TestWelcomeEditorCaches:
+    def test_get_loaded_prompts_data_caches_until_forced(self, monkeypatch):
+        ctrl = _make_minimal_welcome_controller()
+        payloads = [
+            {
+                "prompts": {"default": {"prompt": "first"}},
+                "voice_commands": {"instruction": "vc-1"},
+                "app_contexts": {},
+            },
+            {
+                "prompts": {"default": {"prompt": "second"}},
+                "voice_commands": {"instruction": "vc-2"},
+                "app_contexts": {},
+            },
+        ]
+        calls = {"count": 0}
+
+        def fake_load():
+            index = calls["count"]
+            calls["count"] += 1
+            return payloads[index]
+
+        monkeypatch.setattr("utils.custom_prompts.load_custom_prompts", fake_load)
+
+        first = ctrl._get_loaded_prompts_data()
+        second = ctrl._get_loaded_prompts_data()
+        refreshed = ctrl._get_loaded_prompts_data(force=True)
+
+        assert first is second
+        assert refreshed["prompts"]["default"]["prompt"] == "second"
+        assert calls["count"] == 2
+
+    def test_get_loaded_vocabulary_keywords_caches_until_forced(self, monkeypatch):
+        ctrl = _make_minimal_welcome_controller()
+        payloads = [{"keywords": ["alpha"]}, {"keywords": ["beta"]}]
+        calls = {"count": 0}
+
+        def fake_load():
+            index = calls["count"]
+            calls["count"] += 1
+            return payloads[index]
+
+        monkeypatch.setattr("ui.welcome.load_vocabulary", fake_load)
+
+        first = ctrl._get_loaded_vocabulary_keywords()
+        second = ctrl._get_loaded_vocabulary_keywords()
+        refreshed = ctrl._get_loaded_vocabulary_keywords(force=True)
+
+        assert first == ["alpha"]
+        assert second == ["alpha"]
+        assert refreshed == ["beta"]
+        assert calls["count"] == 2
+
+    def test_visibility_updates_skip_redundant_hide_show_mutations(self):
+        ctrl = _make_minimal_welcome_controller()
+        ctrl._mode_popup = _FakePopup(["deepgram", "local"], selected="deepgram")
+        ctrl._local_backend_popup = _FakePopup(
+            ["auto", "whisper", "faster", "mlx", "lightning"],
+            selected="auto",
+        )
+        ctrl._local_backend_label = _FakeHideable()
+        ctrl._local_model_popup = _FakeHideable()
+        ctrl._local_model_label = _FakeHideable()
+        ctrl._lightning_header = _FakeHideable()
+        ctrl._lightning_batch_label = _FakeHideable()
+        ctrl._lightning_batch_slider = _FakeHideable()
+        ctrl._lightning_batch_value_label = _FakeHideable()
+        ctrl._lightning_quant_label = _FakeHideable()
+        ctrl._lightning_quant_popup = _FakeHideable()
+        ctrl._streaming_label = _FakeHideable()
+        ctrl._streaming_checkbox = _FakeHideable()
+
+        ctrl._update_all_visibility()
+        ctrl._update_all_visibility()
+
+        assert ctrl._local_backend_label.hidden_calls == [True]
+        assert ctrl._local_model_popup.hidden_calls == [True]
+        assert ctrl._streaming_label.hidden_calls == []
+        assert ctrl._streaming_checkbox.hidden_calls == []
 
 
 class TestWelcomePrivacySettings:
@@ -446,9 +584,16 @@ class TestWelcomePrivacySettings:
 class _FakeContainer:
     def __init__(self):
         self.hidden = None
+        self.hidden_calls = []
 
     def setHidden_(self, value):
         self.hidden = value
+        self.hidden_calls.append(value)
+
+
+class _FakeHideable(_FakeContainer):
+    def isHidden(self):
+        return bool(self.hidden)
 
 
 class _FakePopup:

@@ -24,11 +24,10 @@ from utils.preferences import (
     get_api_key,
     get_env_setting,
     get_show_welcome_on_startup,
-    remove_env_setting,
-    save_env_setting,
-    set_api_key,
+    read_env_file,
     set_onboarding_seen,
     set_show_welcome_on_startup,
+    update_env_settings,
 )
 from utils.vocabulary import load_vocabulary, save_vocabulary
 
@@ -139,6 +138,23 @@ def _get_api_card_height() -> int:
     )
 
 
+def _set_hidden_if_changed(view, hidden: bool) -> None:
+    """Avoid redundant hide/show mutations on AppKit views."""
+    if view is None:
+        return
+    current_hidden = getattr(view, "isHidden", None)
+    if callable(current_hidden):
+        try:
+            if bool(current_hidden()) == bool(hidden):
+                return
+        except Exception:
+            pass
+    try:
+        view.setHidden_(hidden)
+    except Exception:
+        pass
+
+
 def _build_setup_hotkey_info(
     toggle_hotkey: str | None,
     hold_hotkey: str | None,
@@ -226,6 +242,7 @@ class WelcomeController:
         self._tab_delegate = None
         self._vocab_text_view = None
         self._vocab_warning_label = None
+        self._loaded_vocabulary_keywords: list[str] | None = None
         self._logs_text_view = None
         self._logs_scroll_view = None
         self._logs_refresh_handler = None
@@ -253,6 +270,8 @@ class WelcomeController:
         self._mode_changed_handler = None
         self._save_btn = None
         self._restart_handler = None
+        self._prompts_defaults_data: dict | None = None
+        self._prompts_loaded_data: dict | None = None
         self._hotkey_card: HotkeyCard | None = None
         self._hotkey_recorder = HotkeyRecorder()
         # Setup/Onboarding Tab
@@ -260,10 +279,41 @@ class WelcomeController:
         self._setup_permissions_card = None
         self._setup_preset_status_label = None
         self._onboarding_wizard_callback = None
+        self._env_settings_cache: dict[str, str] = read_env_file()
         # API-Key-Felder werden dynamisch via setattr gesetzt:
         # _{provider}_field, _{provider}_status für alle Einträge aus API_KEY_PROVIDERS
 
         self._build_window()
+
+    def _apply_env_updates(self, updates: dict[str, str | None]) -> bool:
+        normalized_updates = {
+            key: (None if value is None else str(value))
+            for key, value in updates.items()
+        }
+        cache = getattr(self, "_env_settings_cache", None)
+        if cache is not None:
+            changed = False
+            for key, value in normalized_updates.items():
+                current = cache.get(key)
+                if value is None:
+                    if current is not None:
+                        changed = True
+                        break
+                elif current != value:
+                    changed = True
+                    break
+            if not changed:
+                return False
+
+        update_env_settings(normalized_updates)
+
+        if cache is not None:
+            for key, value in normalized_updates.items():
+                if value is None:
+                    cache.pop(key, None)
+                else:
+                    cache[key] = value
+        return True
 
     def _setup_edit_menu(self) -> None:
         """Erstellt Edit-Menü für CMD+V/C/X/A in TextViews.
@@ -1798,10 +1848,6 @@ class WelcomeController:
         from utils.custom_prompts import (
             KNOWN_CONTEXTS,
             format_app_mappings,
-            get_custom_app_contexts,
-            get_custom_prompt_for_context,
-            get_custom_voice_commands,
-            get_defaults,
         )
 
         parent_view = parent_view or self._content_view
@@ -1910,7 +1956,8 @@ class WelcomeController:
             tc.setWidthTracksTextView_(True)
 
         # Initial laden
-        current_prompt = get_custom_prompt_for_context("default")
+        prompt_data = self._get_loaded_prompts_data()
+        current_prompt = prompt_data["prompts"]["default"]["prompt"]
         text_view.setString_(current_prompt)
         scroll.setDocumentView_(text_view)
         parent_view.addSubview_(scroll)
@@ -1962,21 +2009,26 @@ class WelcomeController:
             # Aus Cache oder frisch laden
             if new_ctx in self._prompts_cache:
                 self._prompts_text_view.setString_(self._prompts_cache[new_ctx])
-            elif new_ctx == "── Voice Commands":
-                # Voice Commands laden
-                vc = get_custom_voice_commands()
-                self._prompts_text_view.setString_(vc)
-            elif new_ctx == "── App Mappings":
-                # App Mappings als Text laden
-                mappings = get_custom_app_contexts()
-                self._prompts_text_view.setString_(format_app_mappings(mappings))
-            else:
-                prompt = get_custom_prompt_for_context(new_ctx)
-                self._prompts_text_view.setString_(prompt)
+                return
+
+            loaded_prompts = self._get_loaded_prompts_data()
+            if new_ctx == "── Voice Commands":
+                self._prompts_text_view.setString_(
+                    loaded_prompts["voice_commands"]["instruction"]
+                )
+                return
+            if new_ctx == "── App Mappings":
+                self._prompts_text_view.setString_(
+                    format_app_mappings(loaded_prompts["app_contexts"])
+                )
+                return
+
+            prompt = loaded_prompts["prompts"][new_ctx]["prompt"]
+            self._prompts_text_view.setString_(prompt)
 
         def on_reset(_sender) -> None:
             ctx = str(self._prompts_context_popup.titleOfSelectedItem())
-            defaults = get_defaults()
+            defaults = self._get_prompt_defaults_data()
 
             if ctx == "── Voice Commands":
                 # Voice Commands auf Default zurücksetzen
@@ -2111,7 +2163,7 @@ class WelcomeController:
         if tc is not None:
             tc.setWidthTracksTextView_(True)
 
-        keywords = load_vocabulary().get("keywords", [])
+        keywords = self._get_loaded_vocabulary_keywords()
         text_view.setString_("\n".join(str(k) for k in keywords))
         scroll.setDocumentView_(text_view)
         parent_view.addSubview_(scroll)
@@ -2132,6 +2184,31 @@ class WelcomeController:
         self._update_vocabulary_warning()
 
         return card_y - CARD_SPACING
+
+    def _get_prompt_defaults_data(self) -> dict:
+        cached = getattr(self, "_prompts_defaults_data", None)
+        if cached is None:
+            from utils.custom_prompts import get_defaults
+
+            cached = get_defaults()
+            self._prompts_defaults_data = cached
+        return cached
+
+    def _get_loaded_prompts_data(self, *, force: bool = False) -> dict:
+        cached = getattr(self, "_prompts_loaded_data", None)
+        if force or cached is None:
+            from utils.custom_prompts import load_custom_prompts
+
+            cached = load_custom_prompts()
+            self._prompts_loaded_data = cached
+        return cached
+
+    def _get_loaded_vocabulary_keywords(self, *, force: bool = False) -> list[str]:
+        cached = getattr(self, "_loaded_vocabulary_keywords", None)
+        if force or cached is None:
+            cached = list(load_vocabulary().get("keywords", []))
+            self._loaded_vocabulary_keywords = cached
+        return list(cached)
 
     def _build_logs_card(
         self, y: int, parent_view=None, tab_height: int | None = None
@@ -3166,8 +3243,7 @@ class WelcomeController:
             self._local_model_label,
             self._local_model_popup,
         ):
-            if view is not None:
-                view.setHidden_(not is_local)
+            _set_hidden_if_changed(view, not is_local)
 
         # Lightning-Settings: nur sichtbar wenn mode=local UND backend=lightning
         is_lightning = False
@@ -3183,8 +3259,7 @@ class WelcomeController:
             self._lightning_quant_label,
             self._lightning_quant_popup,
         ):
-            if view is not None:
-                view.setHidden_(not is_lightning)
+            _set_hidden_if_changed(view, not is_lightning)
 
     def _update_streaming_visibility(self) -> None:
         """Blendet Streaming-Toggle nur bei Deepgram ein."""
@@ -3192,8 +3267,7 @@ class WelcomeController:
             return
         is_deepgram = self._mode_popup.titleOfSelectedItem() == "deepgram"
         for view in (self._streaming_label, self._streaming_checkbox):
-            if view is not None:
-                view.setHidden_(not is_deepgram)
+            _set_hidden_if_changed(view, not is_deepgram)
 
     def _update_all_visibility(self) -> None:
         """Update all mode-dependent visibility settings."""
@@ -3447,23 +3521,22 @@ class WelcomeController:
 
         log = logging.getLogger(__name__)
 
+        env_updates: dict[str, str | None] = {}
+        api_key_states: dict[str, bool] = {}
+
         for provider, _label, env_key in API_KEY_PROVIDERS:
             field = getattr(self, f"_{provider}_field", None)
             status = getattr(self, f"_{provider}_status", None)
             if field and status:
-                has_key = set_api_key(env_key, field.stringValue())
-                if has_key:
-                    status.setStringValue_("✓")
-                    status.setTextColor_(_get_color(51, 217, 178))
-                else:
-                    status.setStringValue_("✗")
-                    status.setTextColor_(_get_color(255, 82, 82, 0.7))
+                normalized_key = field.stringValue().strip()
+                env_updates[env_key] = normalized_key or None
+                api_key_states[provider] = bool(normalized_key)
 
         # Mode
         if self._mode_popup:
             mode = self._mode_popup.titleOfSelectedItem()
             if mode:
-                save_env_setting("PULSESCRIBE_MODE", mode)
+                env_updates["PULSESCRIBE_MODE"] = mode
 
         # Local Backend
         if self._local_backend_popup:
@@ -3471,50 +3544,50 @@ class WelcomeController:
                 self._local_backend_popup.titleOfSelectedItem()
             )
             if should_remove_local_backend_env(backend):
-                remove_env_setting("PULSESCRIBE_LOCAL_BACKEND")
+                env_updates["PULSESCRIBE_LOCAL_BACKEND"] = None
             elif backend:
-                save_env_setting("PULSESCRIBE_LOCAL_BACKEND", backend)
+                env_updates["PULSESCRIBE_LOCAL_BACKEND"] = backend
 
         # Local Model
         if self._local_model_popup:
             local_model = self._local_model_popup.titleOfSelectedItem()
             if local_model == "default":
-                remove_env_setting("PULSESCRIBE_LOCAL_MODEL")
+                env_updates["PULSESCRIBE_LOCAL_MODEL"] = None
             elif local_model:
-                save_env_setting("PULSESCRIBE_LOCAL_MODEL", local_model)
+                env_updates["PULSESCRIBE_LOCAL_MODEL"] = local_model
 
         # Language
         if self._lang_popup:
             lang = self._lang_popup.titleOfSelectedItem()
             if lang == "auto":
-                remove_env_setting("PULSESCRIBE_LANGUAGE")
+                env_updates["PULSESCRIBE_LANGUAGE"] = None
             elif lang:
-                save_env_setting("PULSESCRIBE_LANGUAGE", lang)
+                env_updates["PULSESCRIBE_LANGUAGE"] = lang
 
         # Local Device (openai-whisper)
         if self._device_popup:
             device = (self._device_popup.titleOfSelectedItem() or "").strip().lower()
             if not device or device == "auto":
-                remove_env_setting("PULSESCRIBE_DEVICE")
+                env_updates["PULSESCRIBE_DEVICE"] = None
             else:
-                save_env_setting("PULSESCRIBE_DEVICE", device)
+                env_updates["PULSESCRIBE_DEVICE"] = device
 
         # Local Warmup (auto/true/false)
         if self._warmup_popup:
             warmup = (self._warmup_popup.titleOfSelectedItem() or "").strip().lower()
             if not warmup or warmup == "auto":
-                remove_env_setting("PULSESCRIBE_LOCAL_WARMUP")
+                env_updates["PULSESCRIBE_LOCAL_WARMUP"] = None
             else:
-                save_env_setting("PULSESCRIBE_LOCAL_WARMUP", warmup)
+                env_updates["PULSESCRIBE_LOCAL_WARMUP"] = warmup
 
         def _save_bool_override(key: str, popup) -> None:
             if popup is None:
                 return
             sel = (popup.titleOfSelectedItem() or "").strip().lower()
             if not sel or sel == "default":
-                remove_env_setting(key)
+                env_updates[key] = None
             else:
-                save_env_setting(key, sel)
+                env_updates[key] = sel
 
         # Local Fast (default/true/false)
         _save_bool_override("PULSESCRIBE_LOCAL_FAST", self._local_fast_popup)
@@ -3522,30 +3595,30 @@ class WelcomeController:
         # FP16 (default/true/false)
         if self._fp16_popup:
             _save_bool_override(LOCAL_FP16_ENV_KEY, self._fp16_popup)
-            remove_env_setting(LEGACY_LOCAL_FP16_ENV_KEY)
+            env_updates[LEGACY_LOCAL_FP16_ENV_KEY] = None
 
         def _save_optional_int(key: str, field) -> None:
             if field is None:
                 return
             raw = field.stringValue().strip()
             if not raw:
-                remove_env_setting(key)
+                env_updates[key] = None
                 return
             try:
                 int(raw)
             except ValueError:
                 log.warning(f"Invalid {key}={raw!r}, not saved")
                 return
-            save_env_setting(key, raw)
+            env_updates[key] = raw
 
         def _save_optional_str(key: str, field) -> None:
             if field is None:
                 return
             raw = field.stringValue().strip()
             if not raw:
-                remove_env_setting(key)
+                env_updates[key] = None
                 return
-            save_env_setting(key, raw)
+            env_updates[key] = raw
 
         # Decode overrides
         _save_optional_int("PULSESCRIBE_LOCAL_BEAM_SIZE", self._beam_size_field)
@@ -3565,19 +3638,19 @@ class WelcomeController:
         if self._lightning_batch_slider:
             batch_val = int(self._lightning_batch_slider.intValue())
             if batch_val == 12:  # Default
-                remove_env_setting("PULSESCRIBE_LIGHTNING_BATCH_SIZE")
+                env_updates["PULSESCRIBE_LIGHTNING_BATCH_SIZE"] = None
             else:
-                save_env_setting("PULSESCRIBE_LIGHTNING_BATCH_SIZE", str(batch_val))
+                env_updates["PULSESCRIBE_LIGHTNING_BATCH_SIZE"] = str(batch_val)
 
         # Lightning Quantization
         if self._lightning_quant_popup:
             quant_idx = self._lightning_quant_popup.indexOfSelectedItem()
             if quant_idx == 0:  # none (default)
-                remove_env_setting("PULSESCRIBE_LIGHTNING_QUANT")
+                env_updates["PULSESCRIBE_LIGHTNING_QUANT"] = None
             elif quant_idx == 1:
-                save_env_setting("PULSESCRIBE_LIGHTNING_QUANT", "8bit")
+                env_updates["PULSESCRIBE_LIGHTNING_QUANT"] = "8bit"
             else:
-                save_env_setting("PULSESCRIBE_LIGHTNING_QUANT", "4bit")
+                env_updates["PULSESCRIBE_LIGHTNING_QUANT"] = "4bit"
 
         # Streaming (only relevant for Deepgram mode)
         if self._streaming_checkbox and self._mode_popup:
@@ -3585,68 +3658,82 @@ class WelcomeController:
             if is_deepgram:
                 enabled = self._streaming_checkbox.state() == 1
                 if enabled:  # Default is true
-                    remove_env_setting("PULSESCRIBE_STREAMING")
+                    env_updates["PULSESCRIBE_STREAMING"] = None
                 else:
-                    save_env_setting("PULSESCRIBE_STREAMING", "false")
+                    env_updates["PULSESCRIBE_STREAMING"] = "false"
 
         # Refine
         if self._refine_checkbox:
             enabled = self._refine_checkbox.state() == 1
-            save_env_setting("PULSESCRIBE_REFINE", "true" if enabled else "false")
+            env_updates["PULSESCRIBE_REFINE"] = "true" if enabled else "false"
 
         # Clipboard Restore
         if self._clipboard_restore_checkbox:
             enabled = self._clipboard_restore_checkbox.state() == 1
             if enabled:
-                save_env_setting("PULSESCRIBE_CLIPBOARD_RESTORE", "true")
+                env_updates["PULSESCRIBE_CLIPBOARD_RESTORE"] = "true"
             else:
-                remove_env_setting("PULSESCRIBE_CLIPBOARD_RESTORE")
+                env_updates["PULSESCRIBE_CLIPBOARD_RESTORE"] = None
 
         # Overlay
         if self._overlay_checkbox:
             enabled = self._overlay_checkbox.state() == 1
             if enabled:  # Default is true
-                remove_env_setting("PULSESCRIBE_OVERLAY")
+                env_updates["PULSESCRIBE_OVERLAY"] = None
             else:
-                save_env_setting("PULSESCRIBE_OVERLAY", "false")
+                env_updates["PULSESCRIBE_OVERLAY"] = "false"
 
         # Dock Icon
         if self._dock_icon_checkbox:
             enabled = self._dock_icon_checkbox.state() == 1
             if enabled:  # Default is true
-                remove_env_setting("PULSESCRIBE_DOCK_ICON")
+                env_updates["PULSESCRIBE_DOCK_ICON"] = None
             else:
-                save_env_setting("PULSESCRIBE_DOCK_ICON", "false")
+                env_updates["PULSESCRIBE_DOCK_ICON"] = "false"
 
         # RTF Display (Performance-Anzeige) - default: false
         if self._rtf_checkbox:
             enabled = self._rtf_checkbox.state() == 1
             if enabled:
-                save_env_setting("PULSESCRIBE_SHOW_RTF", "true")
+                env_updates["PULSESCRIBE_SHOW_RTF"] = "true"
             else:  # Default is false
-                remove_env_setting("PULSESCRIBE_SHOW_RTF")
+                env_updates["PULSESCRIBE_SHOW_RTF"] = None
 
         # Refine Provider
         if self._provider_popup:
             provider = self._provider_popup.titleOfSelectedItem()
             if provider:
-                save_env_setting("PULSESCRIBE_REFINE_PROVIDER", provider)
+                env_updates["PULSESCRIBE_REFINE_PROVIDER"] = provider
 
         # Refine Model
         if self._model_field:
             model = self._model_field.stringValue().strip()
             if model:
-                save_env_setting("PULSESCRIBE_REFINE_MODEL", model)
+                env_updates["PULSESCRIBE_REFINE_MODEL"] = model
             else:
-                remove_env_setting("PULSESCRIBE_REFINE_MODEL")
+                env_updates["PULSESCRIBE_REFINE_MODEL"] = None
+
+        self._apply_env_updates(env_updates)
+
+        for provider, _label, _env_key in API_KEY_PROVIDERS:
+            status = getattr(self, f"_{provider}_status", None)
+            if status is None or provider not in api_key_states:
+                continue
+            if api_key_states[provider]:
+                status.setStringValue_("✓")
+                status.setTextColor_(_get_color(51, 217, 178))
+            else:
+                status.setStringValue_("✗")
+                status.setTextColor_(_get_color(255, 82, 82, 0.7))
 
         # Vocabulary / Keywords
         if self._vocab_text_view:
             keywords = self._get_current_keywords()
-            existing_keywords = load_vocabulary().get("keywords", [])
+            existing_keywords = self._get_loaded_vocabulary_keywords()
             if keywords != existing_keywords:
                 try:
                     save_vocabulary(keywords)
+                    self._loaded_vocabulary_keywords = list(keywords)
                     log.info(f"Saved {len(keywords)} vocabulary keywords")
                 except Exception as e:
                     log.warning(f"Could not save vocabulary: {e}")
@@ -3685,8 +3772,7 @@ class WelcomeController:
 
         from utils.custom_prompts import (
             KNOWN_CONTEXTS,
-            get_defaults,
-            load_custom_prompts,
+            filter_overrides_for_storage,
             parse_app_mappings,
             save_custom_prompts,
         )
@@ -3704,8 +3790,8 @@ class WelcomeController:
         self._prompts_cache[current_ctx] = current_text
 
         # Defaults und existierende Custom-Config laden
-        defaults = get_defaults()
-        existing = load_custom_prompts()
+        defaults = self._get_prompt_defaults_data()
+        existing = self._get_loaded_prompts_data()
 
         # Mit existierenden Custom-Prompts starten, dann Session-Änderungen mergen
         merged_prompts: dict = {}
@@ -3753,6 +3839,8 @@ class WelcomeController:
         elif existing_apps != default_apps:
             merged_app_contexts = existing_apps
 
+        existing_overrides = filter_overrides_for_storage(existing, defaults=defaults)
+
         # Speichern oder Datei löschen
         if merged_prompts or merged_vc or merged_app_contexts:
             # Es gibt Custom-Werte → speichern
@@ -3764,8 +3852,18 @@ class WelcomeController:
             if merged_app_contexts:
                 data_to_save["app_contexts"] = merged_app_contexts
 
+            if data_to_save == existing_overrides:
+                log.info("Custom prompts unchanged, skipped prompts.toml rewrite")
+                if (
+                    hasattr(self, "_prompts_status_label")
+                    and self._prompts_status_label
+                ):
+                    self._prompts_status_label.setStringValue_("✓ Prompts unchanged")
+                return
+
             try:
                 save_custom_prompts(data_to_save)
+                self._get_loaded_prompts_data(force=True)
                 saved_items = list(merged_prompts.keys())
                 if merged_vc:
                     saved_items.append("Voice Commands")
@@ -3785,10 +3883,19 @@ class WelcomeController:
                 ):
                     self._prompts_status_label.setStringValue_(f"Error: {e}")
         else:
+            if not existing_overrides:
+                log.info("Custom prompts unchanged, defaults already active")
+                if (
+                    hasattr(self, "_prompts_status_label")
+                    and self._prompts_status_label
+                ):
+                    self._prompts_status_label.setStringValue_("✓ Prompts unchanged")
+                return
             # Alles auf Default → Datei löschen falls vorhanden
             from utils.custom_prompts import reset_to_defaults
 
             reset_to_defaults()
+            self._get_loaded_prompts_data(force=True)
             log.info("All prompts reset to defaults, removed prompts.toml")
             if hasattr(self, "_prompts_status_label") and self._prompts_status_label:
                 self._prompts_status_label.setStringValue_("✓ Reset to defaults")
