@@ -1,3 +1,4 @@
+import json
 import zipfile
 
 import pytest
@@ -193,3 +194,130 @@ def test_export_diagnostics_report_redacts_startup_log_tail(
     assert "text='<redacted>'" in startup_tail
     assert "secret startup text" not in startup_tail
     assert "still secret" not in startup_tail
+
+
+def test_export_diagnostics_report_includes_sanitized_env_preferences_and_main_log(
+    tmp_path, monkeypatch
+) -> None:
+    cfg = tmp_path / ".pulsescribe"
+    logs_dir = cfg / "logs"
+    logs_dir.mkdir(parents=True)
+    (cfg / ".env").write_text(
+        "\n".join(
+            [
+                "PULSESCRIBE_MODE=local",
+                "DEEPGRAM_API_KEY=dg-secret-1234",
+                "AUTH_TOKEN=abc123",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (cfg / "preferences.json").write_text(
+        '{"show_welcome_on_startup": false}',
+        encoding="utf-8",
+    )
+    (logs_dir / "pulsescribe.log").write_text(
+        "\n".join(
+            [
+                "12:00:00 [INFO] Starting PulseScribe",
+                "12:00:01 [INFO] Transkript: secret main text",
+                "12:00:02 [DEBUG] State: AppState.DONE text='still secret'",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(diagnostics, "_user_config_dir", lambda: cfg)
+    monkeypatch.setattr(diagnostics.platform, "platform", lambda: "macOS-14.0-arm64")
+    monkeypatch.setattr(
+        diagnostics.platform,
+        "mac_ver",
+        lambda: ("14.0", ("", "", ""), "arm64"),
+    )
+    monkeypatch.setattr(diagnostics.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(diagnostics, "_get_app_version", lambda: "1.2.3")
+    monkeypatch.setattr(
+        diagnostics.time,
+        "strftime",
+        lambda fmt: {
+            "%Y%m%d_%H%M%S": "20260409_150000",
+            "%Y-%m-%d %H:%M:%S": "2026-04-09 15:00:00",
+        }[fmt],
+    )
+    monkeypatch.setattr(diagnostics.subprocess, "Popen", lambda *_args, **_kwargs: None)
+
+    zip_path = diagnostics.export_diagnostics_report()
+
+    assert zip_path.name == "pulsescribe_diagnostics_20260409_150000.zip"
+
+    with zipfile.ZipFile(zip_path) as zf:
+        names = set(zf.namelist())
+        report = json.loads(zf.read("report.json"))
+        env_values = json.loads(zf.read("env_sanitized.json"))
+        prefs = json.loads(zf.read("preferences.json"))
+        log_tail = zf.read("logs/pulsescribe.log.tail.txt").decode("utf-8")
+
+    assert names == {
+        "report.json",
+        "env_sanitized.json",
+        "preferences.json",
+        "logs/pulsescribe.log.tail.txt",
+    }
+    assert env_values == {
+        "PULSESCRIBE_MODE": "local",
+        "DEEPGRAM_API_KEY": "dg…1234",
+        "AUTH_TOKEN": "********",
+    }
+    assert prefs == {"show_welcome_on_startup": False}
+    assert report["app"] == {
+        "name": "PulseScribe",
+        "version": "1.2.3",
+        "frozen": False,
+    }
+    assert report["settings"] == {
+        "env_sanitized": env_values,
+        "preferences": prefs,
+    }
+    assert report["paths"]["config_dir"] == str(cfg)
+    assert report["paths"]["log_file"] == str(logs_dir / "pulsescribe.log")
+    assert "Starting PulseScribe" in log_tail
+    assert "Transkript: <redacted>" in log_tail
+    assert "text='<redacted>'" in log_tail
+    assert "secret main text" not in log_tail
+    assert "still secret" not in log_tail
+
+
+def test_export_diagnostics_report_ignores_invalid_preferences_json(
+    tmp_path, monkeypatch
+) -> None:
+    cfg = tmp_path / ".pulsescribe"
+    cfg.mkdir(parents=True)
+    (cfg / "preferences.json").write_text("{invalid json", encoding="utf-8")
+
+    monkeypatch.setattr(diagnostics, "_user_config_dir", lambda: cfg)
+    monkeypatch.setattr(diagnostics.platform, "platform", lambda: "macOS-14.0-arm64")
+    monkeypatch.setattr(
+        diagnostics.platform,
+        "mac_ver",
+        lambda: ("14.0", ("", "", ""), "arm64"),
+    )
+    monkeypatch.setattr(diagnostics.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(
+        diagnostics.time,
+        "strftime",
+        lambda fmt: {
+            "%Y%m%d_%H%M%S": "20260409_150100",
+            "%Y-%m-%d %H:%M:%S": "2026-04-09 15:01:00",
+        }[fmt],
+    )
+    monkeypatch.setattr(diagnostics.subprocess, "Popen", lambda *_args, **_kwargs: None)
+
+    zip_path = diagnostics.export_diagnostics_report()
+
+    with zipfile.ZipFile(zip_path) as zf:
+        report = json.loads(zf.read("report.json"))
+        assert "preferences.json" not in zf.namelist()
+
+    assert report["settings"]["preferences"] == {}

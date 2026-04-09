@@ -118,31 +118,28 @@ def _get_app_version() -> str:
     return get_app_version(default="unknown")
 
 
-def export_diagnostics_report() -> Path:
-    """Create a diagnostics zip and reveal it in Finder (best-effort)."""
-    cfg = _user_config_dir()
-    cfg.mkdir(parents=True, exist_ok=True)
-    out_dir = cfg / "diagnostics"
-    out_dir.mkdir(parents=True, exist_ok=True)
+def _load_preferences_payload(path: Path) -> dict:
+    """Read preferences JSON defensively for diagnostics export."""
+    if not path.exists():
+        return {}
 
-    ts = time.strftime("%Y%m%d_%H%M%S")
-    zip_path = out_dir / f"pulsescribe_diagnostics_{ts}.zip"
+    try:
+        prefs = json.loads(_read_text_safe(path) or "{}")
+    except json.JSONDecodeError:
+        return {}
 
-    env_path = cfg / ".env"
-    prefs_path = cfg / "preferences.json"
-    log_path = cfg / "logs" / "pulsescribe.log"
-    startup_log_path = cfg / "startup.log"
+    return prefs if isinstance(prefs, dict) else {}
 
-    env_values = _sanitize_env(_read_env_file(env_path)) if env_path.exists() else {}
 
-    prefs: dict = {}
-    if prefs_path.exists():
-        try:
-            prefs = json.loads(_read_text_safe(prefs_path) or "{}")
-        except json.JSONDecodeError:
-            prefs = {}
-
-    report = {
+def _build_report(
+    *,
+    config_dir: Path,
+    log_path: Path,
+    env_values: dict[str, str],
+    prefs: dict,
+) -> dict[str, object]:
+    """Build the structured diagnostics report payload."""
+    return {
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "app": {
             "name": "PulseScribe",
@@ -161,43 +158,81 @@ def export_diagnostics_report() -> Path:
             "preferences": prefs,
         },
         "paths": {
-            "config_dir": str(cfg),
+            "config_dir": str(config_dir),
             "log_file": str(log_path),
         },
     }
 
-    # Redacted log tail (avoid transcripts)
-    log_tail = ""
-    if log_path.exists():
-        log_tail = _tail_lines(
-            _redact_log_text(_read_text_safe(log_path)), max_lines=800
-        )
 
-    startup_tail = ""
-    if startup_log_path.exists():
-        startup_tail = _tail_lines(
-            _redact_log_text(_read_text_safe(startup_log_path)), max_lines=200
-        )
+def _read_redacted_log_tail(path: Path, *, max_lines: int) -> str:
+    """Return a redacted tail for one optional log file."""
+    if not path.exists():
+        return ""
+    return _tail_lines(_redact_log_text(_read_text_safe(path)), max_lines=max_lines)
+
+
+def _dump_json(data: object) -> str:
+    """Serialize diagnostics JSON payloads consistently."""
+    return json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+
+
+def _iter_archive_entries(
+    *,
+    report: dict[str, object],
+    env_values: dict[str, str],
+    prefs: dict,
+    log_tail: str,
+    startup_tail: str,
+):
+    """Yield archive members while skipping empty optional payloads."""
+    yield "report.json", _dump_json(report)
+    if env_values:
+        yield "env_sanitized.json", _dump_json(env_values)
+    if prefs:
+        yield "preferences.json", _dump_json(prefs)
+    if log_tail:
+        yield "logs/pulsescribe.log.tail.txt", log_tail
+    if startup_tail:
+        yield "logs/startup.log.tail.txt", startup_tail
+
+
+def export_diagnostics_report() -> Path:
+    """Create a diagnostics zip and reveal it in Finder (best-effort)."""
+    cfg = _user_config_dir()
+    cfg.mkdir(parents=True, exist_ok=True)
+    out_dir = cfg / "diagnostics"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    zip_path = out_dir / f"pulsescribe_diagnostics_{ts}.zip"
+
+    env_path = cfg / ".env"
+    prefs_path = cfg / "preferences.json"
+    log_path = cfg / "logs" / "pulsescribe.log"
+    startup_log_path = cfg / "startup.log"
+
+    env_values = _sanitize_env(_read_env_file(env_path)) if env_path.exists() else {}
+    prefs = _load_preferences_payload(prefs_path)
+    report = _build_report(
+        config_dir=cfg,
+        log_path=log_path,
+        env_values=env_values,
+        prefs=prefs,
+    )
+
+    log_tail = _read_redacted_log_tail(log_path, max_lines=800)
+    startup_tail = _read_redacted_log_tail(startup_log_path, max_lines=200)
 
     try:
         with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr(
-                "report.json", json.dumps(report, indent=2, ensure_ascii=False) + "\n"
-            )
-            if env_values:
-                zf.writestr(
-                    "env_sanitized.json",
-                    json.dumps(env_values, indent=2, ensure_ascii=False) + "\n",
-                )
-            if prefs:
-                zf.writestr(
-                    "preferences.json",
-                    json.dumps(prefs, indent=2, ensure_ascii=False) + "\n",
-                )
-            if log_tail:
-                zf.writestr("logs/pulsescribe.log.tail.txt", log_tail)
-            if startup_tail:
-                zf.writestr("logs/startup.log.tail.txt", startup_tail)
+            for archive_path, content in _iter_archive_entries(
+                report=report,
+                env_values=env_values,
+                prefs=prefs,
+                log_tail=log_tail,
+                startup_tail=startup_tail,
+            ):
+                zf.writestr(archive_path, content)
     except OSError:
         # Remove broken/incomplete zip so the caller never receives a corrupt file.
         try:

@@ -147,6 +147,37 @@ def _select_recent_lines_within_bytes(
     return list(reversed(kept_reversed))
 
 
+def _recent_history_read_limits(count: int) -> tuple[int, int]:
+    """Return the shared tail-read limits for recent history lookups."""
+    tail_max_lines = max(count * _RECENT_LINES_FACTOR, count + 10)
+    tail_max_scan_bytes = min(
+        _RECENT_SCAN_BYTES_MAX,
+        max(_RECENT_SCAN_BYTES_MIN, count * 4096),
+    )
+    return tail_max_lines, tail_max_scan_bytes
+
+
+def _load_recent_transcript_entries(count: int) -> list[dict[str, object]]:
+    """Load recent entries with a tail-first strategy and full-read fallback."""
+    tail_max_lines, tail_max_scan_bytes = _recent_history_read_limits(count)
+    tail_text = read_file_tail_lines(
+        HISTORY_FILE,
+        max_lines=tail_max_lines,
+        errors="replace",
+        max_scan_bytes=tail_max_scan_bytes,
+    )
+    entries = _parse_recent_entries(tail_text.splitlines(), count)
+    if len(entries) >= count:
+        return entries
+
+    # Fallback für sehr lange Einzelzeilen oder ungewöhnlich große JSON-Objekte.
+    if HISTORY_FILE.stat().st_size <= tail_max_scan_bytes:
+        return entries
+
+    full_text = HISTORY_FILE.read_text(encoding="utf-8")
+    return _parse_recent_entries(full_text.splitlines(), count)
+
+
 def get_recent_transcripts(count: int = 10) -> list[dict[str, object]]:
     """Gibt die letzten N Transkripte zurück.
 
@@ -160,30 +191,7 @@ def get_recent_transcripts(count: int = 10) -> list[dict[str, object]]:
         return []
 
     try:
-        tail_max_lines = max(count * _RECENT_LINES_FACTOR, count + 10)
-        tail_max_scan_bytes = min(
-            _RECENT_SCAN_BYTES_MAX,
-            max(_RECENT_SCAN_BYTES_MIN, count * 4096),
-        )
-
-        tail_text = read_file_tail_lines(
-            HISTORY_FILE,
-            max_lines=tail_max_lines,
-            errors="replace",
-            max_scan_bytes=tail_max_scan_bytes,
-        )
-        entries = _parse_recent_entries(tail_text.splitlines(), count)
-        if len(entries) >= count:
-            return entries
-
-        # Fallback für sehr lange Einzelzeilen oder ungewöhnlich große JSON-Objekte.
-        file_size = HISTORY_FILE.stat().st_size
-        if file_size > tail_max_scan_bytes:
-            full_text = HISTORY_FILE.read_text(encoding="utf-8")
-            return _parse_recent_entries(full_text.splitlines(), count)
-
-        return entries
-
+        return _load_recent_transcript_entries(count)
     except Exception as e:
         logger.warning(f"Failed to read history: {e}")
         return []
@@ -362,19 +370,38 @@ def _join_transcript_blocks(blocks: Sequence[str], *, empty_message: str) -> str
     return "\n\n".join(block for block in blocks if block)
 
 
-def format_transcript_entry_for_display(entry: object) -> str:
-    """Format a single transcript entry for the Windows transcripts viewer."""
+def _prepare_formatted_transcript_entry(
+    entry: object,
+    *,
+    metadata_keys: Sequence[str],
+    strip_metadata: bool,
+) -> tuple[dict[str, object], str] | None:
+    """Coerce one entry and compute its header for view-specific formatters."""
     transcript_entry = _coerce_transcript_entry(entry)
     if transcript_entry is None:
-        return ""
+        return None
 
-    text = _format_display_text(transcript_entry.get("text", ""))
-    refined = "✨" if transcript_entry.get("refined") else ""
     header = _format_entry_header(
         transcript_entry,
+        metadata_keys=metadata_keys,
+        strip_metadata=strip_metadata,
+    )
+    return transcript_entry, header
+
+
+def format_transcript_entry_for_display(entry: object) -> str:
+    """Format a single transcript entry for the Windows transcripts viewer."""
+    prepared = _prepare_formatted_transcript_entry(
+        entry,
         metadata_keys=("mode",),
         strip_metadata=False,
     )
+    if prepared is None:
+        return ""
+
+    transcript_entry, header = prepared
+    text = _format_display_text(transcript_entry.get("text", ""))
+    refined = "✨" if transcript_entry.get("refined") else ""
     return f"{header} {refined}{text}"
 
 
@@ -392,16 +419,16 @@ def format_transcripts_for_display(
 
 def format_transcript_entry_for_welcome(entry: object) -> str:
     """Format a single transcript entry for the macOS welcome/history view."""
-    transcript_entry = _coerce_transcript_entry(entry)
-    if transcript_entry is None:
-        return ""
-
-    text = str(transcript_entry.get("text", "")).strip()
-    header = _format_entry_header(
-        transcript_entry,
+    prepared = _prepare_formatted_transcript_entry(
+        entry,
         metadata_keys=("mode", "language"),
         strip_metadata=True,
     )
+    if prepared is None:
+        return ""
+
+    transcript_entry, header = prepared
+    text = str(transcript_entry.get("text", "")).strip()
     if not text:
         return header
     return f"{header}\n{text}"
