@@ -13,7 +13,10 @@ from pathlib import Path
 
 from config import USER_CONFIG_DIR
 
-from utils.env import parse_env_line as _shared_parse_env_line
+from utils.env import (
+    parse_env_line as _shared_parse_env_line,
+    read_env_file_values,
+)
 from utils.onboarding import (
     OnboardingChoice,
     OnboardingStep,
@@ -105,15 +108,12 @@ def read_env_file(path: Path | None = None) -> dict[str, str]:
     if path is None and _env_cache is not None and _env_cache[0] == signature:
         return dict(_env_cache[1])
 
-    values: dict[str, str] = {}
-    try:
-        for raw_line in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
-            key, value = _parse_env_line(raw_line)
-            if not key or key in values:
-                continue
-            values[key] = value or ""
-    except OSError:
-        values = {}
+    values = read_env_file_values(
+        env_path,
+        encoding="utf-8",
+        errors="replace",
+        first_wins=True,
+    )
 
     if path is None:
         _env_cache = (signature, values)
@@ -126,6 +126,65 @@ def _env_line_has_key(raw_line: str, key_name: str) -> tuple[bool, str | None]:
     return key == key_name, value
 
 
+def _set_first_env_line(
+    lines: list[str],
+    key_name: str,
+    value: str,
+) -> tuple[list[str], bool]:
+    """Set the first matching assignment while preserving later duplicates."""
+    for index, line in enumerate(lines):
+        matches_key, existing_value = _env_line_has_key(line, key_name)
+        if not matches_key:
+            continue
+        if existing_value == value:
+            return list(lines), False
+        new_lines = list(lines)
+        new_lines[index] = f"{key_name}={value}"
+        return new_lines, True
+
+    return [*lines, f"{key_name}={value}"], True
+
+
+def _apply_env_updates_to_lines(
+    lines: list[str],
+    updates: dict[str, str | None],
+) -> tuple[list[str], bool]:
+    """Apply batched `.env` updates while preserving unrelated lines."""
+    handled_keys: set[str] = set()
+    new_lines: list[str] = []
+    changed = False
+
+    for line in lines:
+        key, _existing_value = _parse_env_line(line)
+        if not key or key not in updates:
+            new_lines.append(line)
+            continue
+
+        # Collapse duplicate entries for keys we are explicitly updating.
+        if key in handled_keys:
+            changed = True
+            continue
+
+        handled_keys.add(key)
+        new_value = updates[key]
+        if new_value is None:
+            changed = True
+            continue
+
+        canonical_line = f"{key}={new_value}"
+        if line != canonical_line:
+            changed = True
+        new_lines.append(canonical_line)
+
+    for key, value in updates.items():
+        if key in handled_keys or value is None:
+            continue
+        new_lines.append(f"{key}={value}")
+        changed = True
+
+    return new_lines, changed
+
+
 def _invalidate_env_cache() -> None:
     global _env_cache
     _env_cache = None
@@ -134,6 +193,27 @@ def _invalidate_env_cache() -> None:
 def _invalidate_preferences_cache() -> None:
     global _prefs_cache
     _prefs_cache = None
+
+
+def _read_existing_env_lines(env_path: Path) -> list[str]:
+    """Read `.env` lines while tolerating a missing file."""
+    if not env_path.exists():
+        return []
+    return env_path.read_text(encoding="utf-8").splitlines()
+
+
+def _write_env_lines(env_path: Path, lines: list[str]) -> None:
+    """Persist `.env` lines atomically and refresh the cache afterwards."""
+    _write_text_atomic(
+        env_path,
+        "\n".join(lines) + "\n" if lines else "",
+        encoding="utf-8",
+    )
+    try:
+        env_path.chmod(0o600)
+    except OSError:
+        pass  # Windows unterstützt chmod nicht vollständig
+    _invalidate_env_cache()
 
 
 def _write_text_atomic(path: Path, content: str, *, encoding: str = "utf-8") -> None:
@@ -293,40 +373,21 @@ def save_api_key(key_name: str, value: str) -> None:
     """
     env_path = ENV_FILE
 
-    lines = []
     try:
-        if env_path.exists():
-            lines = env_path.read_text(encoding="utf-8").splitlines()
+        lines = _read_existing_env_lines(env_path)
     except OSError:
         logger.exception("Konnte .env nicht lesen")
         raise
 
-    # Key aktualisieren oder hinzufügen
-    found = False
-    for i, line in enumerate(lines):
-        matches_key, existing_value = _env_line_has_key(line, key_name)
-        if matches_key:
-            if existing_value == value:
-                # Externe Updates koennen bei grober FS-Metadatenauflösung den Cache
-                # unverändert wirken lassen, obwohl Nachbar-Keys angepasst wurden.
-                _invalidate_env_cache()
-                return
-            lines[i] = f"{key_name}={value}"
-            found = True
-            break
-
-    if not found:
-        lines.append(f"{key_name}={value}")
+    lines, changed = _set_first_env_line(lines, key_name, value)
+    if not changed:
+        # Externe Updates koennen bei grober FS-Metadatenauflösung den Cache
+        # unverändert wirken lassen, obwohl Nachbar-Keys angepasst wurden.
+        _invalidate_env_cache()
+        return
 
     try:
-        _write_text_atomic(env_path, "\n".join(lines) + "\n", encoding="utf-8")
-        # Sichere Permissions: Nur Owner lesen/schreiben (enthält API-Keys)
-        try:
-            env_path.chmod(0o600)
-        except OSError:
-            pass  # Windows unterstützt chmod nicht vollständig
-        # Cache erst nach erfolgreichem Schreiben invalidieren
-        _invalidate_env_cache()
+        _write_env_lines(env_path, lines)
     except OSError:
         logger.exception("Konnte .env nicht schreiben")
         raise
@@ -393,61 +454,20 @@ def update_env_settings(updates: dict[str, str | None]) -> None:
         return
 
     env_path = ENV_FILE
-    lines: list[str] = []
     try:
-        if env_path.exists():
-            lines = env_path.read_text(encoding="utf-8").splitlines()
+        lines = _read_existing_env_lines(env_path)
     except OSError:
         logger.exception("Konnte .env nicht lesen")
         raise
 
-    handled_keys: set[str] = set()
-    new_lines: list[str] = []
-    changed = False
-
-    for line in lines:
-        key, _existing_value = _parse_env_line(line)
-        if not key or key not in updates:
-            new_lines.append(line)
-            continue
-
-        # Collapse duplicate entries for keys we are explicitly updating.
-        if key in handled_keys:
-            changed = True
-            continue
-
-        handled_keys.add(key)
-        new_value = updates[key]
-        if new_value is None:
-            changed = True
-            continue
-
-        canonical_line = f"{key}={new_value}"
-        if line != canonical_line:
-            changed = True
-        new_lines.append(canonical_line)
-
-    for key, value in updates.items():
-        if key in handled_keys or value is None:
-            continue
-        new_lines.append(f"{key}={value}")
-        changed = True
+    new_lines, changed = _apply_env_updates_to_lines(lines, updates)
 
     if not changed:
         _invalidate_env_cache()
         return
 
     try:
-        _write_text_atomic(
-            env_path,
-            "\n".join(new_lines) + "\n" if new_lines else "",
-            encoding="utf-8",
-        )
-        try:
-            env_path.chmod(0o600)
-        except OSError:
-            pass
-        _invalidate_env_cache()
+        _write_env_lines(env_path, new_lines)
     except OSError:
         logger.exception("Konnte .env nicht aktualisieren")
         raise
@@ -465,19 +485,11 @@ def remove_env_setting(key_name: str) -> None:
         return
 
     try:
-        lines = env_path.read_text(encoding="utf-8").splitlines()
-        new_lines = [
-            line for line in lines if not _env_line_has_key(line, key_name)[0]
-        ]
-        if len(new_lines) == len(lines):
+        lines = _read_existing_env_lines(env_path)
+        new_lines, changed = _apply_env_updates_to_lines(lines, {key_name: None})
+        if not changed:
             return
-        _write_text_atomic(
-            env_path,
-            "\n".join(new_lines) + "\n" if new_lines else "",
-            encoding="utf-8",
-        )
-        # Cache erst nach erfolgreichem Schreiben invalidieren
-        _invalidate_env_cache()
+        _write_env_lines(env_path, new_lines)
     except OSError:
         logger.warning("Konnte .env nicht aktualisieren", exc_info=True)
 

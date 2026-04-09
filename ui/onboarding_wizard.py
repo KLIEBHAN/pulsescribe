@@ -1156,9 +1156,10 @@ class OnboardingWizardController:
 
     def _show_fast_api_key_prompt(self, message: str | None = None) -> None:
         """Reveal the Fast-mode API key prompt and focus the input."""
+        last_visible = getattr(self, "_last_api_key_prompt_visible", None)
         if self._api_key_container is not None:
             try:
-                if self._last_api_key_prompt_visible is not True:
+                if last_visible is not True:
                     self._api_key_container.setHidden_(False)
                     self._last_api_key_prompt_visible = True
             except Exception:
@@ -1166,7 +1167,7 @@ class OnboardingWizardController:
         if self._api_key_status is not None:
             prompt_message = message or "Cloud API key required to continue."
             try:
-                if self._last_api_key_prompt_message != prompt_message:
+                if getattr(self, "_last_api_key_prompt_message", None) != prompt_message:
                     self._api_key_status.setStringValue_(prompt_message)
                     self._last_api_key_prompt_message = prompt_message
             except Exception:
@@ -1203,7 +1204,7 @@ class OnboardingWizardController:
             )
             if self._api_key_container is not None:
                 try:
-                    if self._last_api_key_prompt_visible is not False:
+                    if getattr(self, "_last_api_key_prompt_visible", None) is not False:
                         self._api_key_container.setHidden_(True)
                         self._last_api_key_prompt_visible = False
                 except Exception:

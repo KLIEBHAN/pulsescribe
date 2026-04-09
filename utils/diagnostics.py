@@ -20,7 +20,7 @@ import time
 import zipfile
 from pathlib import Path
 
-from utils.env import parse_env_line
+from utils.env import read_env_file_values
 from utils.version import get_app_version
 
 _REDACTED_LOG_MARKERS = (
@@ -76,16 +76,12 @@ def _is_sensitive_key(key: str) -> bool:
 
 
 def _read_env_file(path: Path) -> dict[str, str]:
-    values: dict[str, str] = {}
-    try:
-        for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-            key, value = parse_env_line(raw_line)
-            if not key or key in values:
-                continue
-            values[key] = value or ""
-    except OSError:
-        return {}
-    return values
+    return read_env_file_values(
+        path,
+        encoding="utf-8",
+        errors="replace",
+        first_wins=True,
+    )
 
 
 def _sanitize_env(env: dict[str, str]) -> dict[str, str]:

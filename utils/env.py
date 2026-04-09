@@ -83,18 +83,40 @@ def _parse_env_line(raw_line: str) -> tuple[str | None, str | None]:
     return parse_env_line(raw_line)
 
 
-def _fallback_dotenv_values(path: Path) -> dict[str, str]:
-    """Best-effort `.env` parser when python-dotenv is unavailable."""
+def read_env_file_values(
+    path: Path,
+    *,
+    encoding: str = "utf-8",
+    errors: str = "replace",
+    first_wins: bool = False,
+) -> dict[str, str]:
+    """Read one `.env` file via the lightweight line parser.
+
+    Args:
+        path: `.env` file to parse.
+        encoding: Text encoding for the file read.
+        errors: Error strategy forwarded to ``Path.read_text``.
+        first_wins: Keep the first assignment for duplicate keys instead of the last.
+    """
     values: dict[str, str] = {}
     try:
-        for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-            key, value = parse_env_line(raw_line)
-            if key is None or value is None:
-                continue
-            values[key] = value
+        raw_lines = path.read_text(encoding=encoding, errors=errors).splitlines()
     except OSError:
         return {}
+
+    for raw_line in raw_lines:
+        key, value = parse_env_line(raw_line)
+        if key is None or value is None:
+            continue
+        if first_wins and key in values:
+            continue
+        values[key] = value
     return values
+
+
+def _fallback_dotenv_values(path: Path) -> dict[str, str]:
+    """Best-effort `.env` parser when python-dotenv is unavailable."""
+    return read_env_file_values(path)
 
 
 def _read_dotenv_values(path: Path) -> dict[str, str]:
@@ -215,4 +237,5 @@ __all__ = [
     "load_environment",
     "parse_env_line",
     "parse_bool",
+    "read_env_file_values",
 ]

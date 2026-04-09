@@ -99,6 +99,20 @@ def test_save_api_key_invalidates_cache_when_same_value_hides_external_env_chang
     assert prefs.read_env_file()["PULSESCRIBE_CONTEXT"] == "new"
 
 
+def test_save_api_key_preserves_following_duplicate_assignments(tmp_path, monkeypatch):
+    _isolate_prefs(tmp_path, monkeypatch)
+    prefs.ENV_FILE.write_text(
+        "# comment\nDEEPGRAM_API_KEY=old\nDEEPGRAM_API_KEY=legacy\nPULSESCRIBE_MODE=deepgram\n",
+        encoding="utf-8",
+    )
+
+    prefs.save_api_key("DEEPGRAM_API_KEY", "new")
+
+    assert prefs.ENV_FILE.read_text(encoding="utf-8") == (
+        "# comment\nDEEPGRAM_API_KEY=new\nDEEPGRAM_API_KEY=legacy\nPULSESCRIBE_MODE=deepgram\n"
+    )
+
+
 def test_remove_env_setting_is_noop_when_key_does_not_exist(tmp_path, monkeypatch):
     _isolate_prefs(tmp_path, monkeypatch)
     prefs.ENV_FILE.write_text("PULSESCRIBE_MODE=deepgram\n", encoding="utf-8")
@@ -198,6 +212,27 @@ def test_update_env_settings_skips_write_when_target_values_are_already_current(
     )
 
 
+def test_update_env_settings_preserves_comments_and_collapses_updated_duplicates(
+    tmp_path, monkeypatch
+):
+    _isolate_prefs(tmp_path, monkeypatch)
+    prefs.ENV_FILE.write_text(
+        "# top\nPULSESCRIBE_MODE=deepgram\nPULSESCRIBE_MODE=groq\nUNCHANGED_KEY=keep\n# keep\nPULSESCRIBE_LANGUAGE=en\n",
+        encoding="utf-8",
+    )
+
+    prefs.update_env_settings(
+        {
+            "PULSESCRIBE_MODE": "local",
+            "PULSESCRIBE_LANGUAGE": None,
+        }
+    )
+
+    assert prefs.ENV_FILE.read_text(encoding="utf-8") == (
+        "# top\nPULSESCRIBE_MODE=local\nUNCHANGED_KEY=keep\n# keep\n"
+    )
+
+
 def test_read_env_file_parses_quoted_values_and_inline_comments(tmp_path, monkeypatch):
     _isolate_prefs(tmp_path, monkeypatch)
     prefs.ENV_FILE.write_text(
@@ -220,6 +255,16 @@ def test_read_env_file_parses_quoted_values_and_inline_comments(tmp_path, monkey
     assert values["PULSESCRIBE_LANGUAGE"] == "de"
     assert values["PULSESCRIBE_HOLD_HOTKEY"] == "ctrl+win"
     assert values["PULSESCRIBE_EMPTY"] == ""
+
+
+def test_read_env_file_supports_export_prefix(tmp_path, monkeypatch):
+    _isolate_prefs(tmp_path, monkeypatch)
+    prefs.ENV_FILE.write_text(
+        'export PULSESCRIBE_MODE="local"\nPULSESCRIBE_MODE=deepgram\n',
+        encoding="utf-8",
+    )
+
+    assert prefs.read_env_file() == {"PULSESCRIBE_MODE": "local"}
 
 
 def test_load_preferences_returns_empty_dict_for_non_object_json(
