@@ -2610,6 +2610,14 @@ class PulseScribeDaemon:
         except Exception as e:  # pragma: no cover
             logger.warning(f"Deferred hotkey reconfigure fehlgeschlagen: {e}")
 
+    @staticmethod
+    def _normalize_hotkey_mode(mode: str | None) -> str:
+        """Normalize hotkey modes and keep unknown values on the safe toggle path."""
+        normalized = (mode or "toggle").strip().lower()
+        if normalized in ("toggle", "hold"):
+            return normalized
+        return "toggle"
+
     def _resolve_hotkey_bindings(self) -> list[tuple[str, str]]:
         """Ermittelt Hotkey-Bindings (mode, hotkey) inkl. Backwards-Compat."""
         bindings: list[tuple[str, str]] = []
@@ -2626,11 +2634,10 @@ class PulseScribeDaemon:
 
         # Fallback: altes Single-Hotkey-Setup
         legacy_hotkey = (self.hotkey or "").strip()
-        legacy_mode = (self.hotkey_mode or "toggle").lower()
         if legacy_hotkey:
-            if legacy_mode not in ("toggle", "hold"):
-                legacy_mode = "toggle"
-            bindings.append((legacy_mode, legacy_hotkey))
+            bindings.append(
+                (self._normalize_hotkey_mode(self.hotkey_mode), legacy_hotkey)
+            )
         return bindings
 
     @staticmethod
@@ -2640,14 +2647,60 @@ class PulseScribeDaemon:
         """Normalisierte Signatur für Bindings-Vergleiche."""
         normalized: list[tuple[str, str]] = []
         for mode, hk in bindings:
-            m = (mode or "toggle").strip().lower()
             key = (hk or "").strip().lower()
             if not key:
                 continue
-            if m not in ("toggle", "hold"):
-                m = "toggle"
-            normalized.append((m, key))
+            normalized.append((PulseScribeDaemon._normalize_hotkey_mode(mode), key))
         return tuple(normalized)
+
+    @staticmethod
+    def _dedupe_hotkey_bindings(
+        bindings: list[tuple[str, str]],
+    ) -> tuple[list[tuple[str, str]], list[str]]:
+        """Drop exact duplicate hotkeys while preserving the first configured binding."""
+        deduped: list[tuple[str, str]] = []
+        seen_keys: dict[str, str] = {}
+        duplicate_msgs: list[str] = []
+        for mode, hk in bindings:
+            key_norm = hk.strip().lower()
+            if not key_norm:
+                continue
+            if key_norm in seen_keys:
+                duplicate_msgs.append(
+                    f"Hotkey '{hk}' ist doppelt konfiguriert "
+                    f"({seen_keys[key_norm]} + {mode}). Nur der erste wird verwendet."
+                )
+                continue
+            seen_keys[key_norm] = mode
+            deduped.append((mode, hk))
+        return deduped, duplicate_msgs
+
+    @staticmethod
+    def _filter_overlapping_hotkey_bindings(
+        bindings: list[tuple[str, str]],
+    ) -> tuple[list[tuple[str, str]], list[str]]:
+        """Drop overlapping hotkeys while keeping the first non-conflicting binding."""
+        filtered_bindings: list[tuple[str, str]] = []
+        invalid_msgs: list[str] = []
+        for mode, hk in bindings:
+            overlap_with = next(
+                (
+                    (other_mode, other_hk)
+                    for other_mode, other_hk in filtered_bindings
+                    if hotkeys_conflict(hk, other_hk)
+                ),
+                None,
+            )
+            if overlap_with is None:
+                filtered_bindings.append((mode, hk))
+                continue
+
+            other_mode, other_hk = overlap_with
+            invalid_msgs.append(
+                f"Hotkeys '{other_hk}' ({other_mode}) und '{hk}' ({mode}) "
+                "überlappen. Nur der erste wird verwendet."
+            )
+        return filtered_bindings, invalid_msgs
 
     def _unregister_all_hotkeys(self) -> None:
         """Stoppt alle registrierten Hotkeys/Listener (best-effort)."""
@@ -2722,54 +2775,27 @@ class PulseScribeDaemon:
 
         normalized: list[tuple[str, str]] = []
         for mode, hk in bindings:
-            m = (mode or "toggle").lower()
-            if m not in ("toggle", "hold"):
-                logger.warning(f"Unbekannter Hotkey-Modus '{m}', fallback auf toggle")
-                m = "toggle"
-            normalized.append((m, hk))
+            normalized_mode = self._normalize_hotkey_mode(mode)
+            if normalized_mode != (mode or "toggle").strip().lower():
+                logger.warning(
+                    f"Unbekannter Hotkey-Modus '{(mode or '').strip().lower()}', fallback auf toggle"
+                )
+            normalized.append((normalized_mode, hk))
 
         # Doppelte Hotkeys entfernen (z.B. gleicher Key für Toggle und Hold)
-        deduped: list[tuple[str, str]] = []
-        seen_keys: dict[str, str] = {}
-        duplicate_msgs: list[str] = []
-        for m, hk in normalized:
-            key_norm = hk.strip().lower()
-            if not key_norm:
-                continue
-            if key_norm in seen_keys:
-                msg = (
-                    f"Hotkey '{hk}' ist doppelt konfiguriert "
-                    f"({seen_keys[key_norm]} + {m}). Nur der erste wird verwendet."
-                )
-                logger.warning(msg)
-                duplicate_msgs.append(msg)
-                continue
-            seen_keys[key_norm] = m
-            deduped.append((m, hk))
+        deduped, duplicate_msgs = self._dedupe_hotkey_bindings(normalized)
+        for msg in duplicate_msgs:
+            logger.warning(msg)
 
         invalid_hotkeys: list[str] = []
         invalid_hotkeys.extend(duplicate_msgs)
 
-        filtered_bindings: list[tuple[str, str]] = []
-        for mode, hk in deduped:
-            overlap_with = next(
-                (
-                    (other_mode, other_hk)
-                    for other_mode, other_hk in filtered_bindings
-                    if hotkeys_conflict(hk, other_hk)
-                ),
-                None,
-            )
-            if overlap_with is not None:
-                other_mode, other_hk = overlap_with
-                msg = (
-                    f"Hotkeys '{other_hk}' ({other_mode}) und '{hk}' ({mode}) "
-                    "überlappen. Nur der erste wird verwendet."
-                )
-                logger.warning(msg)
-                invalid_hotkeys.append(msg)
-                continue
-            filtered_bindings.append((mode, hk))
+        filtered_bindings, overlapping_msgs = self._filter_overlapping_hotkey_bindings(
+            deduped
+        )
+        for msg in overlapping_msgs:
+            logger.warning(msg)
+        invalid_hotkeys.extend(overlapping_msgs)
 
         # Berechtigungen prüfen (ohne modale Alerts während Settings-Änderungen)
         input_monitoring_granted = check_input_monitoring_permission(show_alert=False)
