@@ -522,6 +522,8 @@ class SettingsWindow(QDialog):
         self._built_tabs: set[str] = set()
         self._vocabulary_loaded = False
         self._last_vocabulary_signature: tuple[int, int] | None = None
+        self._prompts_loaded_data: dict | None = None
+        self._dirty_prompt_contexts: set[str] = set()
 
         # Hotkey Recording State
         self._recording_hotkey_for: str | None = None
@@ -1518,6 +1520,51 @@ class SettingsWindow(QDialog):
             return
         self._load_prompt_for_context(self._current_prompt_context or "default")
 
+    def _get_loaded_prompts_data(self, *, force: bool = False) -> dict:
+        cached = getattr(self, "_prompts_loaded_data", None)
+        if force or cached is None:
+            from utils.custom_prompts import load_custom_prompts
+
+            cached = load_custom_prompts()
+            self._prompts_loaded_data = cached
+        return cached
+
+    def _get_prompt_text_for_context(self, context: str, *, data: dict | None = None) -> str:
+        prompt_data = data or self._get_loaded_prompts_data()
+
+        if context == "voice_commands":
+            return str(prompt_data.get("voice_commands", {}).get("instruction", ""))
+
+        if context == "app_mappings":
+            from utils.custom_prompts import format_app_mappings
+
+            return format_app_mappings(prompt_data.get("app_contexts", {}))
+
+        return str(prompt_data.get("prompts", {}).get(context, {}).get("prompt", ""))
+
+    def _cache_prompt_text(self, context: str, text: str) -> None:
+        self._prompts_cache[context] = text
+        baseline = self._get_prompt_text_for_context(context)
+
+        if text == baseline:
+            self._dirty_prompt_contexts.discard(context)
+            return
+
+        self._dirty_prompt_contexts.add(context)
+
+    def _cache_current_prompt_editor_text(self) -> None:
+        if (
+            not getattr(self, "_prompts_loaded", False)
+            or not self._prompt_editor
+            or not self._current_prompt_context
+        ):
+            return
+
+        self._cache_prompt_text(
+            self._current_prompt_context,
+            self._prompt_editor.toPlainText(),
+        )
+
     # =========================================================================
     # Event Handlers
     # =========================================================================
@@ -2084,9 +2131,7 @@ class SettingsWindow(QDialog):
         """Lädt Prompt für gewählten Kontext."""
         # Aktuellen Prompt im Cache speichern
         if self._prompt_editor and self._current_prompt_context:
-            self._prompts_cache[self._current_prompt_context] = (
-                self._prompt_editor.toPlainText()
-            )
+            self._cache_current_prompt_editor_text()
 
         self._current_prompt_context = context
         self._load_prompt_for_context(context)
@@ -2106,25 +2151,12 @@ class SettingsWindow(QDialog):
             return
 
         try:
-            from utils.custom_prompts import (
-                load_custom_prompts,
-                get_voice_commands,
-                format_app_mappings,
-                get_app_contexts,
-            )
-
-            if context == "voice_commands":
-                text = get_voice_commands()
-            elif context == "app_mappings":
-                text = format_app_mappings(get_app_contexts())
-            else:
-                data = load_custom_prompts()
-                prompts = data.get("prompts", {})
-                text = prompts.get(context, {}).get("prompt", "")
+            data = self._get_loaded_prompts_data()
+            text = self._get_prompt_text_for_context(context, data=data)
 
             if self._prompt_editor:
                 set_plain_text_if_changed(self._prompt_editor, text)
-                self._prompts_cache[context] = text
+                self._cache_prompt_text(context, text)
                 self._set_prompt_status("", "text")
                 self._prompts_loaded = True
 
@@ -2137,7 +2169,6 @@ class SettingsWindow(QDialog):
         try:
             from utils.custom_prompts import (
                 filter_overrides_for_storage,
-                load_custom_prompts,
                 parse_app_mappings,
                 save_custom_prompts,
             )
@@ -2148,11 +2179,16 @@ class SettingsWindow(QDialog):
                 else "default"
             )
             text = self._prompt_editor.toPlainText() if self._prompt_editor else ""
-            self._prompts_cache[context] = text
+            self._cache_prompt_text(context, text)
             self._prompts_loaded = True
 
+            if context not in self._dirty_prompt_contexts:
+                self._set_prompt_status("✓ Unchanged", "success")
+                return
+
             # Aktuelle Daten laden
-            data = load_custom_prompts()
+            data = self._get_loaded_prompts_data()
+            existing_overrides = filter_overrides_for_storage(data)
 
             if context == "voice_commands":
                 data["voice_commands"] = {"instruction": text}
@@ -2163,7 +2199,15 @@ class SettingsWindow(QDialog):
                     data["prompts"] = {}
                 data["prompts"][context] = {"prompt": text}
 
-            save_custom_prompts(filter_overrides_for_storage(data))
+            next_overrides = filter_overrides_for_storage(data)
+            if next_overrides == existing_overrides:
+                self._dirty_prompt_contexts.discard(context)
+                self._set_prompt_status("✓ Unchanged", "success")
+                return
+
+            save_custom_prompts(next_overrides)
+            self._get_loaded_prompts_data(force=True)
+            self._dirty_prompt_contexts.discard(context)
             self._set_prompt_status("✓ Saved", "success")
 
         except Exception as e:
@@ -2191,7 +2235,7 @@ class SettingsWindow(QDialog):
 
             if self._prompt_editor:
                 set_plain_text_if_changed(self._prompt_editor, text)
-                self._prompts_cache[context] = text
+                self._cache_prompt_text(context, text)
                 self._prompts_loaded = True
                 self._set_prompt_status("Reset to default (not saved)", "warning")
 
@@ -2210,31 +2254,24 @@ class SettingsWindow(QDialog):
         """Speichert alle geänderten Prompts aus dem Cache."""
         try:
             # Aktuellen Editor-Inhalt zum Cache hinzufügen
-            if (
-                getattr(self, "_prompts_loaded", False)
-                and self._prompt_editor
-                and self._current_prompt_context
-            ):
-                self._prompts_cache[self._current_prompt_context] = (
-                    self._prompt_editor.toPlainText()
-                )
+            self._cache_current_prompt_editor_text()
 
-            # Nichts zu speichern?
-            if not self._prompts_cache:
+            dirty_contexts = set(getattr(self, "_dirty_prompt_contexts", set()))
+            if not dirty_contexts:
                 return
 
             from utils.custom_prompts import (
                 filter_overrides_for_storage,
-                load_custom_prompts,
                 parse_app_mappings,
                 save_custom_prompts,
             )
 
-            # Aktuelle Daten laden
-            data = load_custom_prompts()
+            data = self._get_loaded_prompts_data()
+            existing_overrides = filter_overrides_for_storage(data)
 
-            # Alle gecachten Prompts speichern
-            for context, text in self._prompts_cache.items():
+            # Nur tatsächlich veränderte Kontexte mergen.
+            for context in dirty_contexts:
+                text = self._prompts_cache.get(context, "")
                 if context == "voice_commands":
                     data["voice_commands"] = {"instruction": text}
                 elif context == "app_mappings":
@@ -2244,8 +2281,16 @@ class SettingsWindow(QDialog):
                         data["prompts"] = {}
                     data["prompts"][context] = {"prompt": text}
 
-            save_custom_prompts(filter_overrides_for_storage(data))
-            logger.info(f"Prompts gespeichert: {list(self._prompts_cache.keys())}")
+            next_overrides = filter_overrides_for_storage(data)
+            if next_overrides == existing_overrides:
+                self._dirty_prompt_contexts.difference_update(dirty_contexts)
+                logger.info("Prompts unverändert, prompts.toml rewrite übersprungen")
+                return
+
+            save_custom_prompts(next_overrides)
+            self._get_loaded_prompts_data(force=True)
+            self._dirty_prompt_contexts.difference_update(dirty_contexts)
+            logger.info(f"Prompts gespeichert: {sorted(dirty_contexts)}")
 
         except Exception as e:
             logger.error(f"Prompts speichern fehlgeschlagen: {e}")

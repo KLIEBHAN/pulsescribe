@@ -533,3 +533,40 @@ Next worthwhile areas
 - `web/src/components/SiteHeader.tsx`: once it is outside the recent-commit boundary, split the always-visible shell from the mobile-menu interaction path to reduce hydrated client work.
 - `web/src/app/[locale]/layout.tsx`: if traces still show client payload overhead, pass an explicit minimal or null `messages` prop to `NextIntlClientProvider` instead of letting it resolve the full request message set implicitly.
 - `web/src/i18n/request.ts`: if server traces still show i18n cost after this cache pass, the next step is namespace-level message loading rather than more micro-optimizations in page bodies.
+
+Performance work log - 2026-04-09 (Windows settings prompt save pass)
+
+Scope
+- Left the last two root commits untouched: `notes.txt` and the recent `ui/overlay.py` timer work stayed out of scope.
+- Focused on the next untouched Windows frontend save-path hotspot in `ui/settings_windows.py`.
+- Preserved prompt editing behavior, prompt-context switching, and `Save && Apply` semantics.
+
+Current weaknesses reviewed
+- `ui/settings_windows.py`: visiting the Prompts tab populated `_prompts_cache` with loaded prompt text even when the user made no edits.
+- `ui/settings_windows.py`: the general `Save && Apply` path always ran `_save_all_prompts()` against that cache, so unchanged prompt tabs still triggered prompt loading, merge work, serialization, and a `prompts.toml` rewrite attempt.
+- `ui/settings_windows.py`: prompt context switches cached text but did not distinguish between loaded-baseline data and actual user edits, so unchanged prompt state looked dirty to the save path.
+
+Changes in this pass
+- `ui/settings_windows.py`
+  Added prompt-session dirty tracking plus a cached loaded-prompt snapshot so unchanged prompt contexts no longer count as pending writes.
+- `ui/settings_windows.py`
+  Routed prompt context caching through baseline comparison, which keeps viewed-but-unchanged contexts clean while still marking real edits and resets as dirty.
+- `ui/settings_windows.py`
+  Updated `_save_all_prompts()` and `_save_current_prompt()` to skip no-op prompt persistence work and only merge/save truly dirty contexts.
+- `tests/test_settings_windows_prompts.py`
+  Added regression coverage that unchanged prompt views do not trigger prompt rewrites and that dirty-context saves keep existing overrides intact.
+
+Why this helps
+- The main Windows `Save && Apply` path is cheaper after prompt-tab visits because it avoids unnecessary prompt TOML parsing, merge work, and rewrite attempts when the prompt data is effectively unchanged.
+- Prompt context switching stays responsive without turning every loaded context into extra save-time work later in the session.
+- Dirty-only prompt persistence keeps the architecture straightforward: cache loaded state once, mark real edits, and persist only the delta.
+
+Validation
+- `pytest tests/test_settings_windows_prompts.py tests/test_settings_windows_load.py -q`
+- `python -m py_compile ui/settings_windows.py tests/test_settings_windows_prompts.py tests/test_settings_windows_load.py`
+- `ruff check ui/settings_windows.py tests/test_settings_windows_prompts.py tests/test_settings_windows_load.py`
+
+Next worthwhile areas
+- `ui/settings_windows.py`: the large `_load_settings()` field population path is still the next Windows UI hotspot if the settings dialog is reopened or rebuilt often.
+- `ui/settings_windows.py`: the logs/transcripts tab can still be profiled for additional status-label and view-refresh deduping during long-running sessions.
+- `web/src/components/SiteHeader.tsx`: on the web side, the mobile-menu interaction path is still the clearest remaining hydrated client-work candidate once it is safely outside the recent-change boundary.

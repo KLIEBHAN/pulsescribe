@@ -23,6 +23,8 @@ def _make_window() -> SettingsWindow:
     window._prompts_cache = {}
     window._current_prompt_context = "default"
     window._prompts_loaded = True
+    window._prompts_loaded_data = None
+    window._dirty_prompt_contexts = set()
     return window
 
 
@@ -85,3 +87,67 @@ def test_save_all_prompts_skips_unloaded_editor(monkeypatch):
     window._save_all_prompts()
 
     assert window._prompts_cache == {}
+
+
+def test_save_all_prompts_skips_rewrite_when_prompt_text_is_unchanged(monkeypatch):
+    from utils import custom_prompts
+
+    load_calls = {"count": 0}
+    save_calls: list[dict] = []
+
+    def fake_load():
+        load_calls["count"] += 1
+        return {
+            "voice_commands": {"instruction": "voice default"},
+            "prompts": {"default": {"prompt": "disk default"}},
+            "app_contexts": {"Mail": "email"},
+        }
+
+    monkeypatch.setattr(custom_prompts, "load_custom_prompts", fake_load)
+    monkeypatch.setattr(
+        custom_prompts,
+        "save_custom_prompts",
+        lambda data: save_calls.append(data),
+    )
+
+    window = _make_window()
+    window._load_prompt_for_context("default")
+    window._save_all_prompts()
+
+    assert load_calls["count"] == 1
+    assert save_calls == []
+    assert window._dirty_prompt_contexts == set()
+
+
+def test_save_all_prompts_saves_only_dirty_contexts_and_keeps_existing_overrides(
+    monkeypatch,
+):
+    from utils import custom_prompts
+
+    save_calls: list[dict] = []
+
+    monkeypatch.setattr(
+        custom_prompts,
+        "save_custom_prompts",
+        lambda data: save_calls.append(data),
+    )
+
+    window = _make_window()
+    window._prompt_editor = _FakeEditor("edited default")
+    window._prompts_loaded_data = {
+        "voice_commands": {"instruction": "default vc"},
+        "prompts": {
+            "default": {"prompt": "disk default"},
+            "email": {"prompt": "custom email"},
+        },
+        "app_contexts": {"Mail": "email"},
+    }
+
+    window._save_all_prompts()
+
+    assert len(save_calls) == 1
+    assert save_calls[0]["prompts"] == {
+        "default": {"prompt": "edited default"},
+        "email": {"prompt": "custom email"},
+    }
+    assert window._dirty_prompt_contexts == set()
