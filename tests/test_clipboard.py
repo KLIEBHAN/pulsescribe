@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import subprocess
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -18,6 +19,53 @@ class _FakeCFunction:
         if self.restype is None and isinstance(result, int):
             return ctypes.c_int(result).value
         return result
+
+
+def test_macos_clipboard_copy_uses_utf8_locale(monkeypatch):
+    from whisper_platform.clipboard import MacOSClipboard
+
+    observed: dict[str, object] = {}
+
+    def _mock_run(cmd, *args, **kwargs):
+        observed["cmd"] = cmd
+        observed["input"] = kwargs["input"]
+        observed["timeout"] = kwargs["timeout"]
+        observed["env"] = kwargs["env"]
+        return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(subprocess, "run", _mock_run)
+
+    assert MacOSClipboard().copy("Grüße 你好") is True
+    assert observed["cmd"] == ["pbcopy"]
+    assert observed["input"] == "Grüße 你好".encode("utf-8")
+    assert observed["timeout"] == 2
+    assert observed["env"]["LANG"] == "en_US.UTF-8"
+    assert observed["env"]["LC_ALL"] == "en_US.UTF-8"
+
+
+def test_macos_clipboard_paste_uses_utf8_locale(monkeypatch):
+    from whisper_platform.clipboard import MacOSClipboard
+
+    observed: dict[str, object] = {}
+
+    def _mock_run(cmd, *args, **kwargs):
+        observed["cmd"] = cmd
+        observed["timeout"] = kwargs["timeout"]
+        observed["env"] = kwargs["env"]
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout="Grüße 你好".encode("utf-8"),
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(subprocess, "run", _mock_run)
+
+    assert MacOSClipboard().paste() == "Grüße 你好"
+    assert observed["cmd"] == ["pbpaste"]
+    assert observed["timeout"] == 2
+    assert observed["env"]["LANG"] == "en_US.UTF-8"
+    assert observed["env"]["LC_ALL"] == "en_US.UTF-8"
 
 
 def test_windows_clipboard_copy_retries_until_clipboard_is_available(monkeypatch):

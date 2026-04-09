@@ -111,6 +111,64 @@ def _get_utf8_env() -> dict:
     return env
 
 
+def _run_macos_clipboard_command(
+    command: list[str],
+    *,
+    input_bytes: bytes | None = None,
+    timeout: float = 2,
+) -> subprocess.CompletedProcess[bytes]:
+    """Run ``pbcopy``/``pbpaste`` with the project-standard UTF-8 locale."""
+    return subprocess.run(
+        command,
+        input=input_bytes,
+        timeout=timeout,
+        capture_output=True,
+        env=_get_utf8_env(),
+    )
+
+
+def _copy_text_via_pbcopy(
+    text: str,
+    *,
+    timeout: float = 2,
+    sync_delay_sec: float = 0.0,
+    success_log_prefix: str = "pbcopy",
+) -> bool:
+    """Copy UTF-8 text via ``pbcopy`` with consistent logging and optional sync delay."""
+    try:
+        process = _run_macos_clipboard_command(
+            ["pbcopy"],
+            input_bytes=text.encode("utf-8"),
+            timeout=timeout,
+        )
+        if process.returncode != 0:
+            logger.error(
+                f"pbcopy fehlgeschlagen: {process.stderr.decode(errors='replace')}"
+            )
+            return False
+        logger.debug(f"{success_log_prefix}: {len(text)} Zeichen kopiert")
+        if sync_delay_sec > 0:
+            time.sleep(sync_delay_sec)
+        return True
+    except subprocess.TimeoutExpired:
+        logger.error("pbcopy Timeout")
+        return False
+    except Exception as e:
+        logger.error(f"Clipboard-Fehler: {e}")
+        return False
+
+
+def _paste_text_via_pbpaste(*, timeout: float = 2) -> str | None:
+    """Read UTF-8 text via ``pbpaste`` using the shared locale configuration."""
+    try:
+        process = _run_macos_clipboard_command(["pbpaste"], timeout=timeout)
+        if process.returncode != 0:
+            return None
+        return process.stdout.decode("utf-8")
+    except Exception:
+        return None
+
+
 def _open_clipboard_with_retry(user32) -> bool:
     """Oeffnet das Windows-Clipboard mit kurzem Retry bei Lock-Contention."""
     for attempt in range(_CLIPBOARD_OPEN_RETRIES):
@@ -126,40 +184,11 @@ class MacOSClipboard:
 
     def copy(self, text: str) -> bool:
         """Kopiert Text in die Zwischenablage via pbcopy."""
-        try:
-            process = subprocess.run(
-                ["pbcopy"],
-                input=text.encode("utf-8"),
-                timeout=2,
-                capture_output=True,
-                env=_get_utf8_env(),
-            )
-            if process.returncode != 0:
-                logger.error(f"pbcopy fehlgeschlagen: {process.stderr.decode()}")
-                return False
-            logger.debug(f"pbcopy: {len(text)} Zeichen kopiert")
-            return True
-        except subprocess.TimeoutExpired:
-            logger.error("pbcopy Timeout")
-            return False
-        except Exception as e:
-            logger.error(f"Clipboard-Fehler: {e}")
-            return False
+        return _copy_text_via_pbcopy(text)
 
     def paste(self) -> str | None:
         """Liest Text aus der Zwischenablage via pbpaste."""
-        try:
-            process = subprocess.run(
-                ["pbpaste"],
-                capture_output=True,
-                timeout=2,
-                env=_get_utf8_env(),
-            )
-            if process.returncode != 0:
-                return None
-            return process.stdout.decode("utf-8")
-        except Exception:
-            return None
+        return _paste_text_via_pbpaste()
 
 
 class WindowsClipboard:

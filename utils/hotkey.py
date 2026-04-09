@@ -301,14 +301,6 @@ def _paste_via_osascript() -> bool:
     return True
 
 
-def _get_utf8_env() -> dict:
-    """Erstellt Environment mit UTF-8 Locale für pbcopy/pbpaste."""
-    env = os.environ.copy()
-    env["LANG"] = "en_US.UTF-8"
-    env["LC_ALL"] = "en_US.UTF-8"
-    return env
-
-
 def _get_clipboard_text() -> str | None:
     """Liest den aktuellen Text-Inhalt des Clipboards.
 
@@ -348,28 +340,14 @@ def _copy_macos_clipboard_text(text: str) -> bool:
     if _copy_to_clipboard_native(text):
         return True
 
-    utf8_env = _get_utf8_env()
-    try:
-        process = subprocess.run(
-            ["pbcopy"],
-            input=text.encode("utf-8"),
-            capture_output=True,
-            timeout=5,
-            env=utf8_env,
-        )
-        if process.returncode != 0:
-            logger.error(f"pbcopy fehlgeschlagen: {process.stderr.decode(errors='replace')}")
-            return False
-        logger.debug(f"pbcopy Fallback: {len(text)} Zeichen kopiert")
-        # Kurze Pause für Clipboard-Sync bei Subprocess-Fallback
-        time.sleep(0.1)
-        return True
-    except subprocess.TimeoutExpired:
-        logger.error("pbcopy Timeout")
-        return False
-    except Exception as e:
-        logger.error(f"Clipboard-Fehler: {e}")
-        return False
+    from whisper_platform.clipboard import _copy_text_via_pbcopy
+
+    return _copy_text_via_pbcopy(
+        text,
+        timeout=5,
+        sync_delay_sec=0.1,
+        success_log_prefix="pbcopy Fallback",
+    )
 
 
 def _restore_macos_clipboard_text(previous_text: str, *, expected_current: str) -> bool:
@@ -491,6 +469,86 @@ def _restore_windows_clipboard_text(
     return False
 
 
+def _should_restore_clipboard() -> bool:
+    """Return whether clipboard restore/re-copy is enabled via environment."""
+    return parse_bool(os.getenv("PULSESCRIBE_CLIPBOARD_RESTORE")) is True
+
+
+def _paste_transcript_windows(text: str) -> bool:
+    """Paste text on Windows while preserving the current restore semantics."""
+    clipboard = _get_windows_clipboard_handler()
+    previous_text = None
+    if _should_restore_clipboard():
+        try:
+            previous_text = _get_windows_clipboard_text(clipboard=clipboard)
+        except Exception:
+            previous_text = None
+
+    if not _copy_windows_clipboard_text(text, clipboard=clipboard):
+        return False
+
+    # Kurze Pause damit Zielanwendung das Clipboard-Update sieht
+    time.sleep(0.05)
+
+    if not _paste_via_pynput_windows():
+        if previous_text is not None:
+            _restore_windows_clipboard_text(
+                previous_text,
+                expected_current=text,
+                clipboard=clipboard,
+            )
+        logger.error(
+            "Auto-Paste fehlgeschlagen. "
+            "Text wurde in Zwischenablage kopiert - manuell mit Ctrl+V einfügen."
+        )
+        return False
+
+    if previous_text is not None:
+        time.sleep(0.5)  # Kurz warten bis Paste verarbeitet wurde
+        _restore_windows_clipboard_text(
+            previous_text,
+            expected_current=text,
+            clipboard=clipboard,
+        )
+
+    return True
+
+
+def _paste_transcript_macos(text: str) -> bool:
+    """Paste text on macOS while preserving the current fallback chain."""
+    previous_text = _get_clipboard_text() if _should_restore_clipboard() else None
+
+    # 1. In Clipboard kopieren via NSPasteboard (in-process, kein Subprocess)
+    # Dies ist wichtig für das Einfügen in eigene App-Fenster (z.B. Settings)
+    if not _copy_macos_clipboard_text(text):
+        return False
+
+    pasted_ok = _paste_via_pynput() or _paste_via_quartz() or _paste_via_osascript()
+    if not pasted_ok:
+        if previous_text is not None:
+            _restore_macos_clipboard_text(
+                previous_text,
+                expected_current=text,
+            )
+        logger.error(
+            "Auto-Paste fehlgeschlagen (alle 3 Methoden). "
+            "Mögliche Ursachen:\n"
+            "  1. PulseScribe.app fehlt in: Systemeinstellungen → Datenschutz → Bedienungshilfen\n"
+            "  2. Nach App-Neubuild: App entfernen und neu hinzufügen (Signatur geändert)\n"
+            "  3. Text wurde in Zwischenablage kopiert - manuell mit CMD+V einfügen"
+        )
+        return False
+
+    if previous_text is not None:
+        time.sleep(1.0)  # Warten bis Paste verarbeitet wurde
+        _restore_macos_clipboard_text(
+            previous_text,
+            expected_current=text,
+        )
+
+    return True
+
+
 def paste_transcript(text: str) -> bool:
     """
     Kopiert Text in Clipboard und fügt via Cmd+V (macOS) bzw. Ctrl+V (Windows) ein.
@@ -511,109 +569,6 @@ def paste_transcript(text: str) -> bool:
     import sys
 
     logger.info("Auto-Paste: %s", redacted_text_summary(text))
-
-    # Windows: pyperclip + pynput direkt
     if sys.platform == "win32":
-        clipboard = _get_windows_clipboard_handler()
-
-        # Optional: Vorherigen Clipboard-Text merken für Restore nach dem Paste
-        # (ENV: PULSESCRIBE_CLIPBOARD_RESTORE=true)
-        restore_clipboard = (
-            parse_bool(os.getenv("PULSESCRIBE_CLIPBOARD_RESTORE")) is True
-        )
-        previous_text = None
-        if restore_clipboard:
-            try:
-                previous_text = _get_windows_clipboard_text(clipboard=clipboard)
-            except Exception:
-                previous_text = None
-
-        if not _copy_windows_clipboard_text(text, clipboard=clipboard):
-            return False
-
-        # Kurze Pause damit Zielanwendung das Clipboard-Update sieht
-        time.sleep(0.05)
-
-        if not _paste_via_pynput_windows():
-            if previous_text is not None:
-                _restore_windows_clipboard_text(
-                    previous_text,
-                    expected_current=text,
-                    clipboard=clipboard,
-                )
-            logger.error(
-                "Auto-Paste fehlgeschlagen. "
-                "Text wurde in Zwischenablage kopiert - manuell mit Ctrl+V einfügen."
-            )
-            return False
-
-        # Optional: Vorherigen Text erneut ins Clipboard kopieren
-        # Safety check: Nur restore wenn Clipboard noch unseren Text enthält
-        # (verhindert Überschreiben wenn User/App zwischenzeitlich kopiert hat)
-        if previous_text is not None:
-            time.sleep(0.5)  # Kurz warten bis Paste verarbeitet wurde
-            _restore_windows_clipboard_text(
-                previous_text,
-                expected_current=text,
-                clipboard=clipboard,
-            )
-
-        return True
-
-    # macOS: Bestehende komplexe Logik mit Fallbacks
-    # Optional: Vorherigen Clipboard-Text merken für Re-Copy nach dem Paste
-    # (ENV: PULSESCRIBE_CLIPBOARD_RESTORE=true)
-    # Dies fügt den alten Text ERNEUT ins Clipboard ein, sodass Clipboard-History
-    # Tools beide Einträge sehen (Transkription + vorheriger Text).
-    restore_clipboard = (
-        parse_bool(os.getenv("PULSESCRIBE_CLIPBOARD_RESTORE")) is True
-    )
-    previous_text = _get_clipboard_text() if restore_clipboard else None
-
-    # 1. In Clipboard kopieren via NSPasteboard (in-process, kein Subprocess)
-    # Dies ist wichtig für das Einfügen in eigene App-Fenster (z.B. Settings)
-    if not _copy_macos_clipboard_text(text):
-        return False
-
-    # 2. Cmd+V senden (verschiedene Methoden in Prioritätsreihenfolge)
-    pasted_ok = False
-
-    # 2a. pynput (Cross-Platform, bevorzugt)
-    if _paste_via_pynput():
-        pasted_ok = True
-
-    # 2b. CGEventPost (Quartz)
-    elif _paste_via_quartz():
-        pasted_ok = True
-
-    # 2c. osascript (letzter Fallback)
-    elif _paste_via_osascript():
-        pasted_ok = True
-
-    # 3. Ergebnis verarbeiten
-    if not pasted_ok:
-        if previous_text is not None:
-            _restore_macos_clipboard_text(
-                previous_text,
-                expected_current=text,
-            )
-        logger.error(
-            "Auto-Paste fehlgeschlagen (alle 3 Methoden). "
-            "Mögliche Ursachen:\n"
-            "  1. PulseScribe.app fehlt in: Systemeinstellungen → Datenschutz → Bedienungshilfen\n"
-            "  2. Nach App-Neubuild: App entfernen und neu hinzufügen (Signatur geändert)\n"
-            "  3. Text wurde in Zwischenablage kopiert - manuell mit CMD+V einfügen"
-        )
-        return False
-
-    # 4. Optional: Vorherigen Text erneut ins Clipboard kopieren
-    # Dies ist besser als ein kompletter Restore, weil Clipboard-History Tools
-    # beide Einträge sehen (Transkription + vorheriger Text).
-    if previous_text is not None:
-        time.sleep(1.0)  # Warten bis Paste verarbeitet wurde
-        _restore_macos_clipboard_text(
-            previous_text,
-            expected_current=text,
-        )
-
-    return True
+        return _paste_transcript_windows(text)
+    return _paste_transcript_macos(text)

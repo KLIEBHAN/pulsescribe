@@ -354,6 +354,37 @@ class TestPasteTranscript:
         # Leerer Text sollte trotzdem verarbeitet werden
         assert native_calls == [""]
 
+    def test_copy_macos_clipboard_text_fallback_uses_utf8_env_and_sync_delay(
+        self, monkeypatch
+    ):
+        """pbcopy-Fallback soll UTF-8-Locale und den Sync-Delay beibehalten."""
+        observed: dict[str, object] = {}
+        sleep_calls: list[float] = []
+
+        def _mock_run(cmd, *args, **kwargs):
+            observed["cmd"] = cmd
+            observed["input"] = kwargs["input"]
+            observed["timeout"] = kwargs["timeout"]
+            observed["env"] = kwargs["env"]
+            return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+        monkeypatch.setattr(subprocess, "run", _mock_run)
+        monkeypatch.setattr(
+            utils.hotkey.time,
+            "sleep",
+            lambda delay: sleep_calls.append(delay),
+        )
+
+        with patch("utils.hotkey._copy_to_clipboard_native", return_value=False):
+            assert utils.hotkey._copy_macos_clipboard_text("Grüße 你好") is True
+
+        assert observed["cmd"] == ["pbcopy"]
+        assert observed["input"] == "Grüße 你好".encode("utf-8")
+        assert observed["timeout"] == 5
+        assert observed["env"]["LANG"] == "en_US.UTF-8"
+        assert observed["env"]["LC_ALL"] == "en_US.UTF-8"
+        assert sleep_calls == [0.1]
+
     def test_paste_transcript_clipboard_restore_disabled_by_default(self, monkeypatch):
         """Clipboard-Restore ist standardmäßig deaktiviert."""
         get_text_calls = []
