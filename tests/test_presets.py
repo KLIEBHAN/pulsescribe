@@ -148,6 +148,24 @@ def test_apply_local_preset_to_env_migrates_legacy_fp16_key(monkeypatch) -> None
     assert updates[presets.LEGACY_LOCAL_FP16_ENV_KEY] is None
 
 
+def test_build_local_preset_env_updates_merges_base_defaults_before_normalizing() -> None:
+    updates = presets._build_local_preset_env_updates(
+        {
+            "local_backend": "mlx",
+            "local_model": "turbo",
+        }
+    )
+
+    assert updates["PULSESCRIBE_MODE"] == "local"
+    assert updates["PULSESCRIBE_LOCAL_BACKEND"] == "mlx"
+    assert updates["PULSESCRIBE_LOCAL_MODEL"] == "turbo"
+    assert updates["PULSESCRIBE_DEVICE"] is None
+    assert updates["PULSESCRIBE_LOCAL_WARMUP"] is None
+    assert updates["PULSESCRIBE_LOCAL_FAST"] is None
+    assert updates["PULSESCRIBE_LIGHTNING_BATCH_SIZE"] is None
+    assert updates[presets.LEGACY_LOCAL_FP16_ENV_KEY] is None
+
+
 def test_apply_local_preset_to_env_returns_false_without_writing_for_unknown_presets(
     monkeypatch,
 ) -> None:

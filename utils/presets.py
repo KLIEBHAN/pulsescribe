@@ -7,6 +7,7 @@ configuration quickly.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from functools import partial
 import platform
 
@@ -15,6 +16,9 @@ from utils.preferences import update_env_settings
 
 LOCAL_FP16_ENV_KEY = "PULSESCRIBE_FP16"
 LEGACY_LOCAL_FP16_ENV_KEY = "PULSESCRIBE_LOCAL_FP16"
+DEFAULT_CPU_LOCAL_PRESET_NAME = "CPU: faster int8 (turbo)"
+APPLE_SILICON_FAST_LOCAL_PRESET_NAME = "macOS: MLX Fast (turbo)"
+APPLE_SILICON_PRIVATE_LOCAL_PRESET_NAME = "macOS: MLX Balanced (large)"
 
 # Local presets (UI labels). Values are strings matching the Settings UI controls.
 LOCAL_PRESET_BASE: dict[str, str] = {
@@ -44,12 +48,12 @@ LOCAL_PRESETS: dict[str, dict[str, str]] = {
         "local_model": "turbo",
         "local_fast": "true",
     },
-    "macOS: MLX Balanced (large)": {
+    APPLE_SILICON_PRIVATE_LOCAL_PRESET_NAME: {
         "local_backend": "mlx",
         "local_model": "large",
         "local_fast": "true",
     },
-    "macOS: MLX Fast (turbo)": {
+    APPLE_SILICON_FAST_LOCAL_PRESET_NAME: {
         "local_backend": "mlx",
         "local_model": "turbo",
         "local_fast": "true",
@@ -59,7 +63,7 @@ LOCAL_PRESETS: dict[str, dict[str, str]] = {
         "local_model": "large-v3",
         "local_fast": "true",
     },
-    "CPU: faster int8 (turbo)": {
+    DEFAULT_CPU_LOCAL_PRESET_NAME: {
         "local_backend": "faster",
         "local_model": "turbo",
         "device": "cpu",
@@ -76,6 +80,16 @@ LOCAL_PRESETS: dict[str, dict[str, str]] = {
 LOCAL_PRESET_OPTIONS = ["(none)", *LOCAL_PRESETS.keys()]
 
 EnvOverrideNormalizer = Callable[[str | None], str | None]
+
+
+@dataclass(frozen=True)
+class EnvOverrideSpec:
+    env_key: str
+    preset_key: str
+    normalizer: EnvOverrideNormalizer
+
+    def apply(self, values: dict[str, str]) -> tuple[str, str | None]:
+        return self.env_key, self.normalizer(values.get(self.preset_key))
 
 
 def _normalize_lower_value(value: str | None) -> str | None:
@@ -121,71 +135,83 @@ def _normalize_lightning_quant(value: str | None) -> str | None:
     return _normalize_lower_override(value, remove_when={"none"})
 
 
-_ENV_OVERRIDE_SPECS: tuple[tuple[str, str, EnvOverrideNormalizer], ...] = (
-    ("PULSESCRIBE_LOCAL_BACKEND", "local_backend", _normalize_local_backend_override),
-    (
+_ENV_OVERRIDE_SPECS: tuple[EnvOverrideSpec, ...] = (
+    EnvOverrideSpec(
+        "PULSESCRIBE_LOCAL_BACKEND",
+        "local_backend",
+        _normalize_local_backend_override,
+    ),
+    EnvOverrideSpec(
         "PULSESCRIBE_LOCAL_MODEL",
         "local_model",
         partial(_normalize_lower_override, remove_when={"default"}),
     ),
-    (
+    EnvOverrideSpec(
         "PULSESCRIBE_DEVICE",
         "device",
         partial(_normalize_lower_override, remove_when={"auto"}),
     ),
-    (
+    EnvOverrideSpec(
         "PULSESCRIBE_LOCAL_WARMUP",
         "warmup",
         partial(_normalize_lower_override, remove_when={"auto"}),
     ),
-    (
+    EnvOverrideSpec(
         "PULSESCRIBE_LOCAL_FAST",
         "local_fast",
         partial(_normalize_lower_override, remove_when={"default"}),
     ),
-    (
+    EnvOverrideSpec(
         LOCAL_FP16_ENV_KEY,
         "fp16",
         partial(_normalize_lower_override, remove_when={"default"}),
     ),
-    ("PULSESCRIBE_LOCAL_BEAM_SIZE", "beam_size", _normalize_optional_str),
-    ("PULSESCRIBE_LOCAL_BEST_OF", "best_of", _normalize_optional_str),
-    (
+    EnvOverrideSpec(
+        "PULSESCRIBE_LOCAL_BEAM_SIZE",
+        "beam_size",
+        _normalize_optional_str,
+    ),
+    EnvOverrideSpec(
+        "PULSESCRIBE_LOCAL_BEST_OF",
+        "best_of",
+        _normalize_optional_str,
+    ),
+    EnvOverrideSpec(
         "PULSESCRIBE_LOCAL_TEMPERATURE",
         "temperature",
         _normalize_optional_str,
     ),
-    (
+    EnvOverrideSpec(
         "PULSESCRIBE_LOCAL_COMPUTE_TYPE",
         "compute_type",
         _normalize_optional_str,
     ),
-    (
+    EnvOverrideSpec(
         "PULSESCRIBE_LOCAL_CPU_THREADS",
         "cpu_threads",
         _normalize_optional_str,
     ),
-    (
+    EnvOverrideSpec(
         "PULSESCRIBE_LOCAL_NUM_WORKERS",
         "num_workers",
         _normalize_optional_str,
     ),
-    (
+    EnvOverrideSpec(
         "PULSESCRIBE_LOCAL_WITHOUT_TIMESTAMPS",
         "without_timestamps",
         partial(_normalize_lower_override, remove_when={"default"}),
     ),
-    (
+    EnvOverrideSpec(
         "PULSESCRIBE_LOCAL_VAD_FILTER",
         "vad_filter",
         partial(_normalize_lower_override, remove_when={"default"}),
     ),
-    (
+    EnvOverrideSpec(
         "PULSESCRIBE_LIGHTNING_BATCH_SIZE",
         "lightning_batch_size",
         _normalize_lightning_batch_size,
     ),
-    (
+    EnvOverrideSpec(
         "PULSESCRIBE_LIGHTNING_QUANT",
         "lightning_quant",
         _normalize_lightning_quant,
@@ -197,8 +223,9 @@ def _apply_env_override_specs(
     env_updates: dict[str, str | None],
     values: dict[str, str],
 ) -> None:
-    for env_key, preset_key, normalizer in _ENV_OVERRIDE_SPECS:
-        env_updates[env_key] = normalizer(values.get(preset_key))
+    for spec in _ENV_OVERRIDE_SPECS:
+        env_key, normalized_value = spec.apply(values)
+        env_updates[env_key] = normalized_value
 
 
 def _build_local_preset_env_updates(
@@ -226,15 +253,15 @@ def is_apple_silicon() -> bool:
 def _default_local_preset_for_platform(apple_silicon_preset: str) -> str:
     if is_apple_silicon():
         return apple_silicon_preset
-    return "CPU: faster int8 (turbo)"
+    return DEFAULT_CPU_LOCAL_PRESET_NAME
 
 
 def default_local_preset_fast() -> str:
-    return _default_local_preset_for_platform("macOS: MLX Fast (turbo)")
+    return _default_local_preset_for_platform(APPLE_SILICON_FAST_LOCAL_PRESET_NAME)
 
 
 def default_local_preset_private() -> str:
-    return _default_local_preset_for_platform("macOS: MLX Balanced (large)")
+    return _default_local_preset_for_platform(APPLE_SILICON_PRIVATE_LOCAL_PRESET_NAME)
 
 
 def _merge_local_preset_values(preset_values: dict[str, str]) -> dict[str, str]:

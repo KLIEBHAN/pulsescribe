@@ -39,9 +39,11 @@ _LEGACY_HOTKEY_ENV_KEYS = (
 # Cache: ((mtime_ns, size, ctime_ns), values)
 _env_cache: tuple[FileSignature, dict[str, str]] | None = None
 _prefs_cache: tuple[FileSignature, dict[str, object]] | None = None
+_EMPTY_FILE_SIGNATURE: FileSignature = (0, 0, 0)
 
 TValue = TypeVar("TValue")
 TEnum = TypeVar("TEnum", bound=Enum)
+TCacheValue = TypeVar("TCacheValue")
 
 
 def _build_file_signature(path: Path) -> FileSignature | None:
@@ -52,6 +54,34 @@ def _build_file_signature(path: Path) -> FileSignature | None:
         return None
     except OSError:
         return None
+
+
+def _load_cached_mapping_file(
+    path: Path,
+    *,
+    cache: tuple[FileSignature, dict[str, TCacheValue]] | None,
+    loader: Callable[[Path], dict[str, TCacheValue]],
+) -> tuple[dict[str, TCacheValue], tuple[FileSignature, dict[str, TCacheValue]]]:
+    """Load a small key/value file with shared file-signature cache handling."""
+    signature = _build_file_signature(path)
+    if signature is None:
+        empty_values: dict[str, TCacheValue] = {}
+        return {}, (_EMPTY_FILE_SIGNATURE, empty_values)
+
+    if cache is not None and cache[0] == signature:
+        return dict(cache[1]), cache
+
+    values = loader(path)
+    return dict(values), (signature, values)
+
+
+def _load_env_values(env_path: Path) -> dict[str, str]:
+    return read_env_file_values(
+        env_path,
+        encoding="utf-8",
+        errors="replace",
+        first_wins=True,
+    )
 
 
 def _parse_env_line(raw_line: str) -> tuple[str | None, str | None]:
@@ -69,24 +99,15 @@ def read_env_file(path: Path | None = None) -> dict[str, str]:
     global _env_cache
 
     env_path = path or ENV_FILE
-    signature = _build_file_signature(env_path)
-    if signature is None:
-        _env_cache = ((0, 0, 0), {})
-        return {}
+    if path is not None:
+        return _load_env_values(env_path)
 
-    if path is None and _env_cache is not None and _env_cache[0] == signature:
-        return dict(_env_cache[1])
-
-    values = read_env_file_values(
+    values, _env_cache = _load_cached_mapping_file(
         env_path,
-        encoding="utf-8",
-        errors="replace",
-        first_wins=True,
+        cache=_env_cache,
+        loader=_load_env_values,
     )
-
-    if path is None:
-        _env_cache = (signature, values)
-    return dict(values)
+    return values
 
 
 def _canonical_env_line(key_name: str, value: str) -> str:
@@ -244,32 +265,30 @@ def _update_env_file(
     return True
 
 
-
 def _write_text_atomic(path: Path, content: str, *, encoding: str = "utf-8") -> None:
     """Schreibt Text atomar, um truncierte Config-Dateien zu vermeiden."""
     write_text_atomic(path, content, encoding=encoding)
+
+
+def _load_preferences_values(path: Path) -> dict[str, object]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+    return data if isinstance(data, dict) else {}
 
 
 def load_preferences() -> dict:
     """Lädt Preferences aus JSON."""
     global _prefs_cache
 
-    signature = _build_file_signature(PREFS_FILE)
-    if signature is None:
-        _prefs_cache = ((0, 0, 0), {})
-        return {}
-
-    if _prefs_cache is not None and _prefs_cache[0] == signature:
-        return dict(_prefs_cache[1])
-
-    try:
-        data = json.loads(PREFS_FILE.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        data = {}
-
-    values = data if isinstance(data, dict) else {}
-    _prefs_cache = (signature, values)
-    return dict(values)
+    values, _prefs_cache = _load_cached_mapping_file(
+        PREFS_FILE,
+        cache=_prefs_cache,
+        loader=_load_preferences_values,
+    )
+    return values
 
 
 def save_preferences(prefs: dict) -> None:
@@ -323,18 +342,6 @@ def _normalize_preference_input(
     if isinstance(value, enum_type):
         return value
     return _coerce_loaded_preference(value, coercer)
-
-
-def _set_optional_preference_value(key: str, value: object | None) -> None:
-    """Store or remove one preference key without touching unrelated values."""
-
-    def _apply(prefs: dict[str, object]) -> None:
-        if value is None:
-            prefs.pop(key, None)
-            return
-        prefs[key] = value
-
-    _mutate_preferences(_apply)
 
 
 def _set_normalized_preference(
