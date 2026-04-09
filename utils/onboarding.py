@@ -32,6 +32,18 @@ ONBOARDING_ORDER: list[OnboardingStep] = [
     OnboardingStep.CHEAT_SHEET,
     OnboardingStep.DONE,
 ]
+_ONBOARDING_INDEX_BY_STEP = {
+    step: index for index, step in enumerate(ONBOARDING_ORDER)
+}
+
+
+def _step_order_index(step: OnboardingStep | str) -> int | None:
+    normalized_step = (
+        step if isinstance(step, OnboardingStep) else coerce_onboarding_step(step)
+    )
+    if normalized_step is None:
+        return None
+    return _ONBOARDING_INDEX_BY_STEP.get(normalized_step)
 
 
 def coerce_onboarding_step(value: str | None) -> OnboardingStep | None:
@@ -53,26 +65,23 @@ def coerce_onboarding_choice(value: str | None) -> OnboardingChoice | None:
 
 
 def next_step(step: OnboardingStep) -> OnboardingStep:
-    try:
-        idx = ONBOARDING_ORDER.index(step)
-    except ValueError:
+    idx = _step_order_index(step)
+    if idx is None:
         return OnboardingStep.DONE
     return ONBOARDING_ORDER[min(idx + 1, len(ONBOARDING_ORDER) - 1)]
 
 
 def prev_step(step: OnboardingStep) -> OnboardingStep:
-    try:
-        idx = ONBOARDING_ORDER.index(step)
-    except ValueError:
+    idx = _step_order_index(step)
+    if idx is None:
         return OnboardingStep.CHOOSE_GOAL
     return ONBOARDING_ORDER[max(idx - 1, 0)]
 
 
 def step_index(step: OnboardingStep) -> int:
     """Returns 1-based index for UI progress (excluding DONE)."""
-    try:
-        idx = ONBOARDING_ORDER.index(step)
-    except ValueError:
+    idx = _step_order_index(step)
+    if idx is None:
         idx = 0
     # Clamp to the last "real" step.
     max_step = len(ONBOARDING_ORDER) - 2

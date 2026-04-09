@@ -46,6 +46,13 @@ def test_normalize_windows_hotkey_canonicalizes_aliases_and_order() -> None:
     assert normalized == "ctrl+alt+enter"
 
 
+def test_normalize_windows_hotkey_deduplicates_repeated_tokens() -> None:
+    normalized, error = normalize_windows_hotkey("CTRL+ctrl+R+r")
+
+    assert error is None
+    assert normalized == "ctrl+r"
+
+
 def test_parse_windows_hotkey_supports_space_token() -> None:
     keyboard = _fake_keyboard()
     parsed = parse_windows_hotkey_for_pynput("ctrl+alt+space", keyboard)
@@ -65,6 +72,13 @@ def test_parse_windows_hotkey_supports_navigation_keys() -> None:
     parsed = parse_windows_hotkey_for_pynput("shift+pagedown", keyboard)
 
     assert parsed == {"key:shift", "key:page_down"}
+
+
+def test_parse_windows_hotkey_returns_empty_when_keyboard_lacks_requested_key() -> None:
+    keyboard = _fake_keyboard()
+    delattr(keyboard.Key, "page_down")
+
+    assert parse_windows_hotkey_for_pynput("shift+pagedown", keyboard) == set()
 
 
 def test_normalize_windows_hotkey_rejects_multiple_non_modifier_keys() -> None:

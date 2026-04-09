@@ -43,6 +43,12 @@ _SPECIAL_KEY_ALIASES = {
 }
 
 _MODIFIER_ORDER = ("ctrl", "alt", "shift", "win")
+_PYNPUT_MODIFIER_KEY_ATTRS = {
+    "ctrl": "ctrl",
+    "alt": "alt",
+    "shift": "shift",
+    "win": "cmd",
+}
 _PYNPUT_SPECIAL_KEY_ATTRS = {
     "space": "space",
     "tab": "tab",
@@ -130,6 +136,23 @@ def hotkeys_conflict(hotkey_a: str | None, hotkey_b: str | None) -> bool:
     return parts_a.issubset(parts_b) or parts_b.issubset(parts_a)
 
 
+def _resolve_named_pynput_key(part: str, keyboard: Any) -> Any | None:
+    if part.startswith("f") and part[1:].isdigit():
+        key_obj = getattr(keyboard.Key, part, None)
+        if key_obj is None:
+            logger.warning(f"F-Taste nicht unterstuetzt: {part}")
+        return key_obj
+
+    if part in _PYNPUT_SPECIAL_KEY_ATTRS:
+        key_attr = _PYNPUT_SPECIAL_KEY_ATTRS[part]
+        key_obj = getattr(keyboard.Key, key_attr, None)
+        if key_obj is None:
+            logger.warning(f"Sondertaste nicht unterstuetzt: {part}")
+        return key_obj
+
+    return None
+
+
 def parse_windows_hotkey_for_pynput(hotkey_str: str, keyboard: Any) -> set[Any]:
     """Parse a hotkey string into a ``set`` of ``pynput.keyboard`` keys."""
     normalized, error = normalize_windows_hotkey(hotkey_str)
@@ -141,33 +164,20 @@ def parse_windows_hotkey_for_pynput(hotkey_str: str, keyboard: Any) -> set[Any]:
 
     hotkey_keys: set[Any] = set()
     for part in normalized.split("+"):
-        if part == "ctrl":
-            hotkey_keys.add(keyboard.Key.ctrl)
+        modifier_attr = _PYNPUT_MODIFIER_KEY_ATTRS.get(part)
+        if modifier_attr is not None:
+            hotkey_keys.add(getattr(keyboard.Key, modifier_attr))
             continue
-        if part == "alt":
-            hotkey_keys.add(keyboard.Key.alt)
-            continue
-        if part == "shift":
-            hotkey_keys.add(keyboard.Key.shift)
-            continue
-        if part == "win":
-            hotkey_keys.add(keyboard.Key.cmd)
+
+        named_key = _resolve_named_pynput_key(part, keyboard)
+        if named_key is not None:
+            hotkey_keys.add(named_key)
             continue
         if part.startswith("f") and part[1:].isdigit():
-            key_obj = getattr(keyboard.Key, part, None)
-            if key_obj is None:
-                logger.warning(f"F-Taste nicht unterstuetzt: {part}")
-                return set()
-            hotkey_keys.add(key_obj)
-            continue
+            return set()
         if part in _PYNPUT_SPECIAL_KEY_ATTRS:
-            key_attr = _PYNPUT_SPECIAL_KEY_ATTRS[part]
-            key_obj = getattr(keyboard.Key, key_attr, None)
-            if key_obj is None:
-                logger.warning(f"Sondertaste nicht unterstuetzt: {part}")
-                return set()
-            hotkey_keys.add(key_obj)
-            continue
+            return set()
+
         if len(part) == 1:
             hotkey_keys.add(keyboard.KeyCode.from_char(part))
             continue

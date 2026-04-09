@@ -201,7 +201,10 @@ def _apply_env_override_specs(
         env_updates[env_key] = normalizer(values.get(preset_key))
 
 
-def _build_local_preset_env_updates(values: dict[str, str]) -> dict[str, str | None]:
+def _build_local_preset_env_updates(
+    preset_values: dict[str, str],
+) -> dict[str, str | None]:
+    values = _merge_local_preset_values(preset_values)
     env_updates: dict[str, str | None] = {
         "PULSESCRIBE_MODE": "local",
         LEGACY_LOCAL_FP16_ENV_KEY: None,
@@ -220,18 +223,18 @@ def is_apple_silicon() -> bool:
         return False
 
 
+def _default_local_preset_for_platform(apple_silicon_preset: str) -> str:
+    if is_apple_silicon():
+        return apple_silicon_preset
+    return "CPU: faster int8 (turbo)"
+
+
 def default_local_preset_fast() -> str:
-    return (
-        "macOS: MLX Fast (turbo)" if is_apple_silicon() else "CPU: faster int8 (turbo)"
-    )
+    return _default_local_preset_for_platform("macOS: MLX Fast (turbo)")
 
 
 def default_local_preset_private() -> str:
-    return (
-        "macOS: MLX Balanced (large)"
-        if is_apple_silicon()
-        else "CPU: faster int8 (turbo)"
-    )
+    return _default_local_preset_for_platform("macOS: MLX Balanced (large)")
 
 
 def _merge_local_preset_values(preset_values: dict[str, str]) -> dict[str, str]:
@@ -247,7 +250,5 @@ def apply_local_preset_to_env(preset_name: str) -> bool:
     if not preset_values:
         return False
 
-    update_env_settings(
-        _build_local_preset_env_updates(_merge_local_preset_values(preset_values))
-    )
+    update_env_settings(_build_local_preset_env_updates(preset_values))
     return True

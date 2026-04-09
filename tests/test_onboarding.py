@@ -1,6 +1,15 @@
 import utils.preferences as prefs
 import utils.permissions as permissions
-from utils.onboarding import OnboardingChoice, OnboardingStep
+from utils.onboarding import (
+    OnboardingChoice,
+    OnboardingStep,
+    coerce_onboarding_choice,
+    coerce_onboarding_step,
+    next_step,
+    prev_step,
+    step_index,
+    total_steps,
+)
 from ui.onboarding_wizard import OnboardingWizardController
 
 
@@ -70,6 +79,24 @@ def _isolate_prefs(tmp_path, monkeypatch):
 def test_onboarding_step_default_is_choose_goal(tmp_path, monkeypatch):
     _isolate_prefs(tmp_path, monkeypatch)
     assert prefs.get_onboarding_step() == OnboardingStep.CHOOSE_GOAL
+
+
+def test_onboarding_helpers_progress_and_clamp_at_bounds() -> None:
+    assert next_step(OnboardingStep.CHOOSE_GOAL) == OnboardingStep.PERMISSIONS
+    assert next_step(OnboardingStep.DONE) == OnboardingStep.DONE
+    assert prev_step(OnboardingStep.PERMISSIONS) == OnboardingStep.CHOOSE_GOAL
+    assert prev_step(OnboardingStep.CHOOSE_GOAL) == OnboardingStep.CHOOSE_GOAL
+    assert step_index(OnboardingStep.CHOOSE_GOAL) == 1
+    assert step_index(OnboardingStep.CHEAT_SHEET) == total_steps()
+    assert step_index(OnboardingStep.DONE) == total_steps()
+
+
+def test_onboarding_helpers_handle_unknown_values_gracefully() -> None:
+    assert coerce_onboarding_step("unknown") is None
+    assert coerce_onboarding_choice("unknown") is None
+    assert next_step("unknown") == OnboardingStep.DONE
+    assert prev_step("unknown") == OnboardingStep.CHOOSE_GOAL
+    assert step_index("unknown") == 1
 
 
 def test_onboarding_step_defaults_to_done_when_seen(tmp_path, monkeypatch):

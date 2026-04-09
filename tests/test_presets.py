@@ -30,6 +30,20 @@ def test_default_local_private_preset_uses_mlx_on_macos_arm(monkeypatch) -> None
     assert presets.default_local_preset_private() == "macOS: MLX Balanced (large)"
 
 
+def test_default_local_presets_fall_back_to_cpu_when_platform_detection_fails(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        presets.platform,
+        "system",
+        lambda: (_ for _ in ()).throw(RuntimeError("platform unavailable")),
+    )
+
+    assert presets.is_apple_silicon() is False
+    assert presets.default_local_preset_fast() == "CPU: faster int8 (turbo)"
+    assert presets.default_local_preset_private() == "CPU: faster int8 (turbo)"
+
+
 def test_apply_local_preset_to_env_preserves_explicit_whisper_backend(
     monkeypatch,
 ) -> None:
