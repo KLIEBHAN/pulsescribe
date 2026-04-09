@@ -12,6 +12,7 @@ from ui.overlay import (
     SoundWaveView,
     _format_recording_interim_text,
 )
+from utils.state import AppState
 
 
 class _FakeTextField:
@@ -50,6 +51,14 @@ class _FakeBar:
     def setPosition_(self, position) -> None:
         self.last_position = position
         self.position_calls += 1
+
+
+class _FakeWaveView:
+    def __init__(self) -> None:
+        self.recording_calls = 0
+
+    def start_recording_animation(self) -> None:
+        self.recording_calls += 1
 
 
 def _install_fake_foundation(monkeypatch):
@@ -268,3 +277,21 @@ def test_overlay_controller_text_presentation_skips_duplicate_widget_updates():
     assert controller._text_field.font_calls == 1
     assert controller._text_field.color_calls == 1
     assert controller._text_field.text_calls == 2
+
+
+def test_overlay_controller_update_state_skips_duplicate_transition_work():
+    controller = OverlayController.__new__(OverlayController)
+    controller.window = object()
+    controller._wave_view = _FakeWaveView()
+    controller._current_state = AppState.IDLE
+    controller._last_state_payload = None
+    controller._feedback_timer = None
+    controller._apply_text_presentation = lambda **_kwargs: None
+    fade_calls: list[str] = []
+    controller._fade_in = lambda: fade_calls.append("in")
+
+    OverlayController.update_state(controller, AppState.RECORDING, "alpha")
+    OverlayController.update_state(controller, AppState.RECORDING, "alpha")
+
+    assert controller._wave_view.recording_calls == 1
+    assert fade_calls == ["in"]

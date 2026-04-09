@@ -54,6 +54,8 @@ QUEUE_MAX_MESSAGES_PER_TICK = 200
 INTERIM_QUEUE_BACKPRESSURE_LIMIT = 120
 INTERIM_POLL_MAX_CHARS = 512
 INTERIM_POLL_INTERVAL_MS = 200
+INTERIM_POLL_STABLE_INTERVAL_MS = 500
+INTERIM_POLL_STABLE_THRESHOLD = 3
 INTERIM_POLL_DIRECT_INTERVAL_MS = 1000
 INTERIM_DIRECT_UPDATE_GRACE_S = 1.5
 
@@ -164,6 +166,7 @@ class WindowsOverlayController:
         self._interim_file = interim_file
         self._last_interim_text = ""
         self._last_interim_signature: tuple[int, int] | None = None
+        self._stable_interim_polls = 0
         self._interim_polling_active = False
         self._interim_poll_after_id: str | None = None
         self._direct_interim_until = 0.0
@@ -416,7 +419,7 @@ class WindowsOverlayController:
             self._direct_interim_until = 0.0
             return
 
-        poll_interval_ms = INTERIM_POLL_INTERVAL_MS
+        poll_interval_ms = self._current_interim_poll_interval_ms()
         if time.monotonic() < getattr(self, "_direct_interim_until", 0.0):
             poll_interval_ms = INTERIM_POLL_DIRECT_INTERVAL_MS
             if self._running and self._interim_polling_active:
@@ -434,13 +437,18 @@ class WindowsOverlayController:
             if self._last_interim_text:
                 self._last_interim_text = ""
                 self._last_interim_signature = None
+                self._stable_interim_polls = 0
                 self._handle_interim_text("")
+            else:
+                self._stable_interim_polls += 1
         elif self._state == "RECORDING":
             try:
                 if signature == self._last_interim_signature:
+                    self._stable_interim_polls += 1
                     if self._running and self._interim_polling_active:
                         self._interim_poll_after_id = self._root.after(
-                            poll_interval_ms, self._poll_interim_file
+                            self._current_interim_poll_interval_ms(),
+                            self._poll_interim_file,
                         )
                     return
 
@@ -452,13 +460,17 @@ class WindowsOverlayController:
                 self._last_interim_signature = signature
                 if text != self._last_interim_text:
                     self._last_interim_text = text
+                    self._stable_interim_polls = 0
                     self._handle_interim_text(text)
+                else:
+                    self._stable_interim_polls += 1
             except Exception:
                 pass
 
         if self._running and self._interim_polling_active:
             self._interim_poll_after_id = self._root.after(
-                poll_interval_ms, self._poll_interim_file
+                self._current_interim_poll_interval_ms(),
+                self._poll_interim_file,
             )
 
     def _set_interim_polling_active(self, active: bool) -> None:
@@ -479,9 +491,15 @@ class WindowsOverlayController:
             except Exception:
                 pass
             self._interim_poll_after_id = None
+        self._stable_interim_polls = 0
         self._last_interim_text = ""
         self._last_interim_signature = None
         self._direct_interim_until = 0.0
+
+    def _current_interim_poll_interval_ms(self) -> int:
+        if self._stable_interim_polls >= INTERIM_POLL_STABLE_THRESHOLD:
+            return INTERIM_POLL_STABLE_INTERVAL_MS
+        return INTERIM_POLL_INTERVAL_MS
 
     # =========================================================================
     # State Handling
@@ -496,25 +514,29 @@ class WindowsOverlayController:
         self._last_state_payload = payload
         prev_state = self._state
         self._state = state
+        state_changed = state != prev_state
 
         if not self._root or not self._label:
             return
 
         if state == "IDLE":
-            self._root.withdraw()
-            self._last_interim_text = ""
-            self._last_interim_signature = None
-            self._direct_interim_until = 0.0
-            self._last_label_config = None
-            self._bar_color = None
-            self._anim = AnimationLogic()
-            self._drawn_bar_heights = [float(BAR_MIN_HEIGHT)] * BAR_COUNT
+            if state_changed:
+                self._root.withdraw()
+                self._last_interim_text = ""
+                self._last_interim_signature = None
+                self._stable_interim_polls = 0
+                self._direct_interim_until = 0.0
+                self._last_label_config = None
+                self._bar_color = None
+                self._anim = AnimationLogic()
+                self._drawn_bar_heights = [float(BAR_MIN_HEIGHT)] * BAR_COUNT
         else:
             if prev_state == "IDLE":
                 # Bei Start auf Monitor des aktiven Fensters zentrieren.
                 self._position_window(use_active_monitor=True)
-            self._start_animation_loop()
-            self._root.deiconify()
+            if state_changed:
+                self._start_animation_loop()
+                self._root.deiconify()
             display_text = normalized_text or STATE_TEXTS.get(state, "")
             label_color = (
                 STATE_COLORS.get(state, "white")
@@ -529,9 +551,10 @@ class WindowsOverlayController:
             if state != "RECORDING":
                 self._direct_interim_until = 0.0
 
-        self._set_interim_polling_active(state == "RECORDING")
+        if state_changed:
+            self._set_interim_polling_active(state == "RECORDING")
 
-        if state != prev_state:
+        if state_changed:
             self._animation_start = time.perf_counter()
 
     def _handle_interim_text(self, text: str) -> None:

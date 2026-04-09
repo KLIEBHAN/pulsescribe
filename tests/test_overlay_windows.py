@@ -13,6 +13,8 @@ from ui.overlay_windows import (
     INTERIM_DIRECT_UPDATE_GRACE_S,
     INTERIM_POLL_DIRECT_INTERVAL_MS,
     INTERIM_POLL_INTERVAL_MS,
+    INTERIM_POLL_STABLE_INTERVAL_MS,
+    INTERIM_POLL_STABLE_THRESHOLD,
     INTERIM_QUEUE_BACKPRESSURE_LIMIT,
     INTERIM_POLL_MAX_CHARS,
     QUEUE_MAX_MESSAGES_PER_TICK,
@@ -108,6 +110,7 @@ def _make_controller(interim_file: Path) -> WindowsOverlayController:
     controller._state = "RECORDING"
     controller._last_interim_text = ""
     controller._last_interim_signature = None
+    controller._stable_interim_polls = 0
     controller._interim_polling_active = True
     controller._interim_poll_after_id = None
     controller._direct_interim_until = 0.0
@@ -565,6 +568,26 @@ def test_poll_interim_file_uses_configured_interval(tmp_path):
     controller._poll_interim_file()
 
     assert controller._root.after_calls[-1] == INTERIM_POLL_INTERVAL_MS
+
+
+def test_poll_interim_file_uses_stable_interval_after_repeated_unchanged_polls(tmp_path):
+    interim_file = tmp_path / "interim.txt"
+    interim_file.write_text("hello", encoding="utf-8")
+    controller = _make_controller(interim_file)
+    controller._last_interim_text = "hello"
+    controller._last_interim_signature = (1, len("hello".encode("utf-8")))
+    controller._stable_interim_polls = INTERIM_POLL_STABLE_THRESHOLD
+    controller._handle_interim_text = lambda *_args: None
+
+    import ui.overlay_windows as overlay_mod
+
+    original_signature = overlay_mod.get_file_signature(interim_file)
+    assert original_signature is not None
+    controller._last_interim_signature = original_signature
+
+    controller._poll_interim_file()
+
+    assert controller._root.after_calls[-1] == INTERIM_POLL_STABLE_INTERVAL_MS
 
 
 def test_render_bars_reuses_canvas_items_between_frames():

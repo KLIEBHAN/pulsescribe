@@ -4,24 +4,30 @@ Scope
 - Left the last two commit areas untouched: `pulsescribe_daemon.py`, `ui/animation.py`, `ui/onboarding_wizard_windows.py`, and their related tests.
 - Avoided the already dirty settings/permissions/vocabulary/custom-prompts files and their tests.
 - Focused on the remaining high-frequency frontend hot paths in `ui/overlay_windows.py` and `ui/overlay_pyside6.py`.
+- Focused on the remaining high-frequency frontend hot paths in `ui/overlay.py`, `ui/overlay_windows.py`, and `ui/overlay_pyside6.py`.
 
 Current weaknesses reviewed
 - `ui/overlay_windows.py`: repeated identical state payloads still entered the Tk queue and retriggered overlay-state work even when nothing visible changed.
 - `ui/overlay_windows.py`: direct interim updates did not slow or suppress fallback file polling, so the overlay kept stat/tail-reading the interim file during active direct-update periods.
 - `ui/overlay_pyside6.py`: repeated identical state/interim payloads still flowed through the controller layer and Qt signal path even though the rendered UI stayed unchanged.
+- `ui/overlay.py`: repeated identical state payloads could still retrigger overlay transition work even when the visible state/text had not changed.
 
 Changes in this pass
 - `ui/overlay_windows.py`
   Added duplicate state suppression before queueing, duplicate interim suppression for direct text updates, and a short direct-update grace window that temporarily backs fallback file polling off to a much slower interval.
 - `ui/overlay_windows.py`
+  Kept the fallback poller adaptive after unchanged interim reads so stable recording periods back off further before returning to the fast interval when text changes again.
+- `ui/overlay_windows.py`
   Reset the direct-update grace/cache when leaving recording so new sessions start cleanly.
 - `ui/overlay_pyside6.py`
-  Added controller-level dedupe for repeated state/interim payloads while preserving the existing direct-update polling grace behavior.
+  Added widget/controller-level dedupe for repeated state/interim payloads and kept fallback polling adaptive after stable direct/file interim periods.
+- `ui/overlay.py`
+  Added duplicate state-payload suppression so the AppKit overlay avoids restarting fade/animation work when the effective state payload is unchanged.
 - Tests
   Added regression coverage for duplicate state/interim suppression plus Windows direct-update grace/backoff scheduling.
 
 Why this helps
-- The overlay controllers now avoid redundant cross-thread/UI dispatch work on the hottest recording paths.
+- The overlay controllers now avoid redundant cross-thread/UI dispatch work on the hottest recording paths across AppKit, Tk, and PySide6.
 - The Windows fallback overlay performs far fewer interim-file reads while direct interim updates are already keeping the label current.
 - The changes stay local to the overlay boundary and preserve existing rendering, polling fallback, and state transitions.
 

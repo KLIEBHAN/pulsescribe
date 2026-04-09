@@ -15,6 +15,8 @@ from ui.overlay_pyside6 import (
     INTERIM_POLL_DIRECT_INTERVAL_MS,
     INTERIM_POLL_INTERVAL_MS,
     INTERIM_POLL_MAX_CHARS,
+    INTERIM_POLL_STABLE_INTERVAL_MS,
+    INTERIM_POLL_STABLE_THRESHOLD,
     PySide6OverlayController,
     PySide6OverlayWidget,
     _format_recording_interim_text,
@@ -336,6 +338,46 @@ def test_poll_interim_file_restores_fast_interval_after_direct_update_grace(
     assert controller._widget.seen_interim == ["disk"]
 
 
+def test_apply_interim_poll_interval_uses_stable_interval() -> None:
+    controller = PySide6OverlayController.__new__(PySide6OverlayController)
+    controller._interim_timer = _FakeInterimTimer(
+        active=True,
+        interval_ms=INTERIM_POLL_INTERVAL_MS,
+    )
+    controller._stable_interim_polls = INTERIM_POLL_STABLE_THRESHOLD
+
+    PySide6OverlayController._apply_interim_poll_interval(controller)
+
+    assert controller._interim_timer.set_interval_calls == [
+        INTERIM_POLL_STABLE_INTERVAL_MS
+    ]
+
+
+def test_poll_interim_file_backs_off_after_repeated_stable_checks(tmp_path):
+    interim_file = tmp_path / "interim.txt"
+    interim_file.write_text("disk", encoding="utf-8")
+    current_mtime_ns = interim_file.stat().st_mtime_ns
+
+    controller = PySide6OverlayController.__new__(PySide6OverlayController)
+    controller._running = True
+    controller._interim_file = interim_file
+    controller._widget = _FakeWidget()
+    controller._interim_timer = _FakeInterimTimer(
+        active=True,
+        interval_ms=INTERIM_POLL_INTERVAL_MS,
+    )
+    controller._direct_interim_until = 0.0
+    controller._last_interim_text = "disk"
+    controller._last_interim_mtime_ns = current_mtime_ns
+    controller._stable_interim_polls = INTERIM_POLL_STABLE_THRESHOLD
+
+    PySide6OverlayController._poll_interim_file(controller)
+
+    assert controller._interim_timer.set_interval_calls[-1] == (
+        INTERIM_POLL_STABLE_INTERVAL_MS
+    )
+
+
 def test_set_interim_polling_active_starts_and_stops_timer():
     controller = PySide6OverlayController.__new__(PySide6OverlayController)
     controller._interim_timer = _FakeInterimTimer(active=True, interval_ms=1000)
@@ -471,6 +513,28 @@ def test_update_label_only_mutates_changed_parts():
     assert widget._label.font_calls == 2
     assert widget._label.style_calls == 2
     assert widget._label.text_calls == 2
+
+
+def test_on_state_changed_skips_duplicate_transition_work(monkeypatch):
+    widget = PySide6OverlayWidget.__new__(PySide6OverlayWidget)
+    widget._state = "IDLE"
+    widget._text = ""
+    widget._last_state_payload = None
+    widget._update_label = lambda *_args, **_kwargs: None
+    widget._center_on_screen = lambda **_kwargs: None
+    widget._fade_in = lambda: None
+    widget._fade_out = lambda: None
+    widget._start_fade_out_timer = lambda: None
+    start_calls: list[str] = []
+    widget._start_animation = lambda: start_calls.append("start")
+    widget.recording_state_changed = types.SimpleNamespace(emit=lambda *_args: None)
+
+    monkeypatch.setattr("ui.overlay_pyside6.time.perf_counter", lambda: 123.0)
+
+    PySide6OverlayWidget._on_state_changed(widget, "TRANSCRIBING", "")
+    PySide6OverlayWidget._on_state_changed(widget, "TRANSCRIBING", "")
+
+    assert start_calls == ["start"]
 
 
 def test_animate_frame_skips_repaint_for_subpixel_height_changes(monkeypatch):

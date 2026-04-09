@@ -108,6 +108,8 @@ STATE_TEXTS = {
 FEEDBACK_DISPLAY_MS = 800  # Millisekunden
 INTERIM_POLL_MAX_CHARS = 512  # Begrenztes Tail-Read für niedrige Polling-Last
 INTERIM_POLL_INTERVAL_MS = 200  # Polling nur während RECORDING
+INTERIM_POLL_STABLE_INTERVAL_MS = 500
+INTERIM_POLL_STABLE_THRESHOLD = 3
 INTERIM_POLL_DIRECT_INTERVAL_MS = 1000  # Weniger Wakeups bei direkten Interim-Updates
 INTERIM_DIRECT_UPDATE_GRACE_S = 1.5
 
@@ -547,14 +549,20 @@ class PySide6OverlayWidget(QWidget):
     @Slot(str, str)
     def _on_state_changed(self, state: str, text: str):
         prev_state = self._state
+        if getattr(self, "_last_state_payload", None) == (state, text):
+            return
         self._state = state
         self._text = text
-        self._animation_start = time.perf_counter()
-        if (prev_state == "RECORDING") != (state == "RECORDING"):
+        state_changed = state != prev_state
+        self._last_state_payload = (state, text)
+        if state_changed:
+            self._animation_start = time.perf_counter()
+        if state_changed and (prev_state == "RECORDING") != (state == "RECORDING"):
             self.recording_state_changed.emit(state == "RECORDING")
 
         if state == "IDLE":
-            self._fade_out()
+            if state_changed:
+                self._fade_out()
         else:
             # Bei Übergang von IDLE: Auf aktivem Monitor positionieren
             if prev_state == "IDLE":
@@ -563,11 +571,12 @@ class PySide6OverlayWidget(QWidget):
             # Label aktualisieren
             display_text = text or STATE_TEXTS.get(state, "")
             self._update_label(state, display_text)
-            self._fade_in()
-            self._start_animation()
+            if state_changed:
+                self._fade_in()
+                self._start_animation()
 
             # Auto-Hide für DONE/ERROR
-            if state in ("DONE", "ERROR"):
+            if state in ("DONE", "ERROR") and state_changed:
                 self._start_fade_out_timer()
 
     @Slot(float)
@@ -779,6 +788,7 @@ class PySide6OverlayController:
         self._running = False
         self._last_interim_text = ""
         self._last_interim_mtime_ns: int | None = None
+        self._stable_interim_polls = 0
         self._interim_timer: QTimer | None = None
         self._direct_interim_until = 0.0
         self._last_requested_state_payload: tuple[str, str] | None = None
@@ -876,6 +886,7 @@ class PySide6OverlayController:
         """Thread-safe Interim-Text-Update."""
         normalized_text = text or ""
         self._direct_interim_until = time.monotonic() + INTERIM_DIRECT_UPDATE_GRACE_S
+        self._stable_interim_polls = 0
         if (
             self._interim_timer
             and self._interim_timer.isActive()
@@ -896,6 +907,7 @@ class PySide6OverlayController:
         if self._widget.current_state != "RECORDING":
             self._last_interim_mtime_ns = None
             self._last_interim_text = ""
+            self._stable_interim_polls = 0
             self._direct_interim_until = 0.0
             self._last_requested_interim_text = ""
             return
@@ -903,25 +915,23 @@ class PySide6OverlayController:
         if time.monotonic() < getattr(self, "_direct_interim_until", 0.0):
             return
 
-        interim_timer = getattr(self, "_interim_timer", None)
-        if (
-            interim_timer
-            and interim_timer.isActive()
-            and interim_timer.interval() != INTERIM_POLL_INTERVAL_MS
-        ):
-            interim_timer.setInterval(INTERIM_POLL_INTERVAL_MS)
-
         if not self._interim_file.exists():
             if self._last_interim_text:
                 self._widget.update_interim_text("")
+                self._stable_interim_polls = 0
+            else:
+                self._stable_interim_polls += 1
             self._last_interim_mtime_ns = None
             self._last_interim_text = ""
             self._last_requested_interim_text = ""
+            self._apply_interim_poll_interval()
             return
 
         try:
             current_mtime_ns = self._interim_file.stat().st_mtime_ns
             if current_mtime_ns == self._last_interim_mtime_ns:
+                self._stable_interim_polls += 1
+                self._apply_interim_poll_interval()
                 return
 
             text = read_file_tail_text(
@@ -932,7 +942,11 @@ class PySide6OverlayController:
             self._last_interim_mtime_ns = current_mtime_ns
             if text != self._last_interim_text:
                 self._last_interim_text = text
+                self._stable_interim_polls = 0
                 self._widget.update_interim_text(text)
+            else:
+                self._stable_interim_polls += 1
+            self._apply_interim_poll_interval()
         except Exception as e:
             logger.debug(f"Interim-File lesen fehlgeschlagen: {e}")
 
@@ -943,6 +957,7 @@ class PySide6OverlayController:
             return
 
         if active:
+            self._stable_interim_polls = 0
             if not self._interim_timer.isActive():
                 self._interim_timer.start(INTERIM_POLL_INTERVAL_MS)
             elif self._interim_timer.interval() != INTERIM_POLL_INTERVAL_MS:
@@ -951,10 +966,23 @@ class PySide6OverlayController:
 
         if self._interim_timer.isActive():
             self._interim_timer.stop()
+        self._stable_interim_polls = 0
         self._last_interim_mtime_ns = None
         self._last_interim_text = ""
         self._direct_interim_until = 0.0
         self._last_requested_interim_text = ""
+
+    def _apply_interim_poll_interval(self) -> None:
+        interim_timer = getattr(self, "_interim_timer", None)
+        if not interim_timer or not interim_timer.isActive():
+            return
+        target_interval = (
+            INTERIM_POLL_STABLE_INTERVAL_MS
+            if self._stable_interim_polls >= INTERIM_POLL_STABLE_THRESHOLD
+            else INTERIM_POLL_INTERVAL_MS
+        )
+        if interim_timer.interval() != target_interval:
+            interim_timer.setInterval(target_interval)
 
 
 __all__ = ["PySide6OverlayController", "PySide6OverlayWidget"]

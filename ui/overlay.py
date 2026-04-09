@@ -932,6 +932,7 @@ class OverlayController:
         self._current_state = AppState.IDLE
         self._state_timestamp = 0.0
         self._feedback_timer = None
+        self._last_state_payload: tuple[AppState, str | None] | None = None
         ghost_font = NSFont.systemFontOfSize_weight_(OVERLAY_FONT_SIZE, NSFontWeightLight)
         ghost_italic_font = NSFontManager.sharedFontManager().convertFont_toHaveTrait_(
             ghost_font, NSFontItalicTrait
@@ -992,27 +993,35 @@ class OverlayController:
         if not self.window:
             return
 
+        previous_state = self._current_state
+        if getattr(self, "_last_state_payload", None) == (state, text):
+            return
+        self._last_state_payload = (state, text)
         self._current_state = state
+        state_changed = state != previous_state
 
         # Cancel stale feedback timer from previous DONE/ERROR state.
         # Without this, a quick re-recording within FEEDBACK_DISPLAY_DURATION
         # causes the timer to fire _fade_out() during the new recording.
-        if self._feedback_timer:
+        if state_changed and self._feedback_timer:
             self._feedback_timer.invalidate()
             self._feedback_timer = None
 
         if state == AppState.LISTENING:
-            self._wave_view.start_listening_animation()
+            if state_changed:
+                self._wave_view.start_listening_animation()
             self._apply_text_presentation(
                 text="Listening ...",
                 font_key="medium",
                 color_key="muted",
             )
-            self._fade_in()
+            if state_changed:
+                self._fade_in()
 
         elif state == AppState.RECORDING:
-            if text:
+            if state_changed:
                 self._wave_view.start_recording_animation()
+            if text:
                 display_text = _format_recording_interim_text(text)
                 self._apply_text_presentation(
                     text=display_text,
@@ -1021,41 +1030,48 @@ class OverlayController:
                 )
             else:
                 # Fallback falls Recording ohne Text (sollte eigentlich Visualisierung haben)
-                self._wave_view.start_recording_animation()
                 self._apply_text_presentation(
                     text="Recording ...",
                     font_key="medium",
                     color_key="recording",
                 )
-            self._fade_in()
+            if state_changed:
+                self._fade_in()
 
         elif state == AppState.TRANSCRIBING:
-            self._wave_view.start_transcribing_animation()
+            if state_changed:
+                self._wave_view.start_transcribing_animation()
             self._apply_text_presentation(
                 text="Transcribing ...",
                 color_key="muted",
             )
-            self._fade_in()
+            if state_changed:
+                self._fade_in()
 
         elif state == AppState.REFINING:
-            self._wave_view.start_refining_animation()
+            if state_changed:
+                self._wave_view.start_refining_animation()
             self._apply_text_presentation(
                 text="Refining ...",
                 color_key="muted",
             )
-            self._fade_in()
+            if state_changed:
+                self._fade_in()
 
         elif state == AppState.LOADING:
-            self._wave_view.start_loading_animation()
+            if state_changed:
+                self._wave_view.start_loading_animation()
             loading_text = text or "Loading model..."
             self._apply_text_presentation(
                 text=loading_text,
                 color_key="muted",
             )
-            self._fade_in()
+            if state_changed:
+                self._fade_in()
 
         elif state == AppState.DONE:
-            self._wave_view.start_success_animation()
+            if state_changed:
+                self._wave_view.start_success_animation()
 
             # Show actual text if available
             if text:
@@ -1068,22 +1084,26 @@ class OverlayController:
                 font_key="default",
                 color_key="default",
             )
-            self._fade_in()
-            self._start_fade_out_timer()
+            if state_changed:
+                self._fade_in()
+                self._start_fade_out_timer()
 
         elif state == AppState.ERROR:
-            self._wave_view.start_error_animation()
+            if state_changed:
+                self._wave_view.start_error_animation()
             self._apply_text_presentation(
                 text="Error",
                 font_key="default",
                 color_key="error",
             )
-            self._fade_in()
-            self._start_fade_out_timer()
+            if state_changed:
+                self._fade_in()
+                self._start_fade_out_timer()
 
         else:  # idle
-            self._wave_view.stop_animating()
-            self._fade_out()
+            if state_changed:
+                self._wave_view.stop_animating()
+                self._fade_out()
 
     def _fade_in(self) -> None:
         """Blendet Overlay ein."""
