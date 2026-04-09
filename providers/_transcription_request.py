@@ -82,28 +82,29 @@ def _resolve_audio_file_payload(
     return build_file_payload(audio_path, audio_file)
 
 
-def _build_audio_transcription_params(
-    audio_path: Path,
-    audio_file: BinaryIO,
-    *,
-    model: str,
-    language: str | None,
-    extra_params: Mapping[str, object] | None,
-    build_file_payload: Callable[[Path, BinaryIO], object] | None,
-) -> dict[str, object]:
-    """Assemble a file-based transcription request without nesting SDK I/O logic."""
-    return build_transcription_params(
-        model=model,
-        language=language,
-        extra_params={
-            "file": _resolve_audio_file_payload(
-                audio_path,
-                audio_file,
-                build_file_payload=build_file_payload,
-            ),
-            **dict(extra_params or {}),
-        },
-    )
+@dataclass(frozen=True)
+class _AudioTranscriptionRequestSpec:
+    """Shared specification for one file-based cloud transcription request."""
+
+    model: str
+    language: str | None
+    extra_params: Mapping[str, object] | None = None
+    build_file_payload: Callable[[Path, BinaryIO], object] | None = None
+
+    def build_params(self, audio_path: Path, audio_file: BinaryIO) -> dict[str, object]:
+        """Assemble the provider request params for an already opened audio file."""
+        return build_transcription_params(
+            model=self.model,
+            language=self.language,
+            extra_params={
+                "file": _resolve_audio_file_payload(
+                    audio_path,
+                    audio_file,
+                    build_file_payload=self.build_file_payload,
+                ),
+                **dict(self.extra_params or {}),
+            },
+        )
 
 
 def execute_audio_transcription_request(
@@ -116,15 +117,14 @@ def execute_audio_transcription_request(
     build_file_payload: Callable[[Path, BinaryIO], object] | None = None,
 ) -> Any:
     """Execute a file-based transcription request with shared param assembly."""
+    request_spec = _AudioTranscriptionRequestSpec(
+        model=model,
+        language=language,
+        extra_params=extra_params,
+        build_file_payload=build_file_payload,
+    )
     return execute_audio_file_request(
         audio_path,
         request_callable=request_callable,
-        build_params=lambda audio_file: _build_audio_transcription_params(
-            audio_path,
-            audio_file,
-            model=model,
-            language=language,
-            extra_params=extra_params,
-            build_file_payload=build_file_payload,
-        ),
+        build_params=lambda audio_file: request_spec.build_params(audio_path, audio_file),
     )

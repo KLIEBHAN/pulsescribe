@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -131,6 +132,40 @@ def test_execute_audio_transcription_request_supports_custom_file_payload(
     assert observed["response_format"] == "text"
     assert observed["file"][0] == "sample.wav"
     assert observed["file"][1].closed is True
+
+
+def test_execute_audio_transcription_request_uses_raw_file_payload_by_default(
+    tmp_path,
+) -> None:
+    audio_file = tmp_path / "sample.wav"
+    audio_file.write_bytes(b"audio")
+    observed: dict[str, object] = {}
+
+    def _fake_request(**kwargs):
+        sdk_file = kwargs["file"]
+        observed["language_present"] = "language" in kwargs
+        observed["name"] = Path(sdk_file.name).name
+        observed["payload"] = sdk_file.read()
+        observed["closed_during_call"] = sdk_file.closed
+        observed["temperature"] = kwargs["temperature"]
+        return "ok"
+
+    result = execute_audio_transcription_request(
+        audio_file,
+        request_callable=_fake_request,
+        model="whisper-1",
+        language=None,
+        extra_params={"temperature": 0.0},
+    )
+
+    assert result == "ok"
+    assert observed == {
+        "language_present": False,
+        "name": "sample.wav",
+        "payload": b"audio",
+        "closed_during_call": False,
+        "temperature": 0.0,
+    }
 
 
 def test_serialize_openai_response_prefers_json_dump_for_non_text_formats() -> None:

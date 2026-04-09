@@ -310,6 +310,28 @@ class TestFormatTranscriptsForDisplay:
             "    Fourth line"
         )
 
+    def test_format_transcript_entries_for_display_returns_oldest_first_blocks(self):
+        from utils.history import format_transcript_entries_for_display
+
+        entries = [
+            {
+                "timestamp": "2026-03-03T10:01:30.000000",
+                "text": "Neuester Eintrag",
+                "mode": "deepgram",
+                "refined": True,
+            },
+            "legacy-string-entry",
+            {
+                "timestamp": "2026-03-03T10:00:00.000000",
+                "text": "Aelterer Eintrag",
+            },
+        ]
+
+        assert format_transcript_entries_for_display(entries) == [
+            "[2026-03-03 10:00:00] Aelterer Eintrag",
+            "[2026-03-03 10:01:30] (deepgram) ✨Neuester Eintrag",
+        ]
+
     def test_formats_entries_oldest_first_with_metadata(self):
         from utils.history import format_transcripts_for_display
 
@@ -363,6 +385,22 @@ class TestFormatTranscriptsForWelcome:
         )
 
         assert formatted == "[2026-03-03 10:01:30] (deepgram de)"
+
+    def test_format_transcript_entries_for_welcome_keeps_header_only_entries(self):
+        from utils.history import format_transcript_entries_for_welcome
+
+        entries = [
+            {
+                "timestamp": "2026-03-03T10:01:30.000000",
+                "text": "   ",
+                "mode": "deepgram",
+                "language": "de",
+            }
+        ]
+
+        assert format_transcript_entries_for_welcome(entries) == [
+            "[2026-03-03 10:01:30] (deepgram de)"
+        ]
 
     def test_formats_entries_with_optional_metadata(self):
         from utils.history import format_transcripts_for_welcome
