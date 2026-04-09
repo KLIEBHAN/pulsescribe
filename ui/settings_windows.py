@@ -252,6 +252,14 @@ def _get_incremental_append_start(
     return previous_size
 
 
+def _signature_means_missing_file(
+    path,
+    signature: tuple[int, int] | None,
+) -> bool:
+    """Treat ``None`` as missing only when the file truly is absent."""
+    return signature is None and not path.exists()
+
+
 def _build_vocabulary_status(
     *,
     keyword_count: int,
@@ -267,6 +275,31 @@ def _build_vocabulary_status(
         return f"✓ Saved ({keyword_count} keywords)", "success"
 
     return f"{keyword_count} keywords loaded", "text_secondary"
+
+
+def _transcript_blocks_to_text(blocks: list[str]) -> str:
+    """Join transcript blocks using the viewer's empty-state message."""
+    return "\n\n".join(blocks) if blocks else "No transcripts yet."
+
+
+def _merge_recent_transcript_blocks(
+    *,
+    previous_blocks: list[str] | None,
+    previous_entries: list[dict[str, object]],
+    appended_blocks: list[str],
+    merged_entries: list[dict[str, object]],
+    format_entries: Callable[..., list[str]],
+) -> list[str]:
+    """Reuse cached transcript blocks when possible before falling back to formatting."""
+    if previous_blocks is None:
+        if not appended_blocks:
+            return format_entries(merged_entries, newest_first=False)
+        merged_blocks = format_entries(previous_entries, newest_first=False)
+    else:
+        merged_blocks = list(previous_blocks)
+
+    merged_blocks.extend(appended_blocks)
+    return merged_blocks[-TRANSCRIPTS_VIEW_MAX_ENTRIES:]
 
 
 def create_card(
@@ -2498,6 +2531,22 @@ class SettingsWindow(QDialog):
             # Kann während/kurz nach Teardown auftreten.
             return False
 
+    def _set_transcripts_entry_count(self, entry_count: int) -> None:
+        """Aktualisiert den Transcript-Status konsistent."""
+        _set_status_label_if_changed(
+            getattr(self, "_transcripts_status", None),
+            f"{entry_count} entries",
+            "text_secondary",
+        )
+
+    def _reset_transcripts_view(self) -> None:
+        """Setzt gecachte Transcript-Daten auf den leeren Ausgangszustand zurück."""
+        self._last_transcripts_signature = None
+        self._last_transcripts_entries = []
+        self._last_transcripts_blocks = []
+        self._set_transcripts_text_if_changed("No transcripts yet.")
+        self._set_transcripts_entry_count(0)
+
     def _refresh_transcripts(self) -> bool:
         """Aktualisiert Transcripts-Anzeige."""
         try:
@@ -2508,20 +2557,11 @@ class SettingsWindow(QDialog):
                 get_recent_transcripts,
             )
 
-            if not HISTORY_FILE.exists():
-                self._last_transcripts_signature = None
-                self._last_transcripts_entries = []
-                self._last_transcripts_blocks = []
-                self._set_transcripts_text_if_changed("No transcripts yet.")
-                if hasattr(self, "_transcripts_status"):
-                    _set_status_label_if_changed(
-                        self._transcripts_status,
-                        "0 entries",
-                        "text_secondary",
-                    )
+            signature = get_file_signature(HISTORY_FILE)
+            if _signature_means_missing_file(HISTORY_FILE, signature):
+                self._reset_transcripts_view()
                 return True
 
-            signature = get_file_signature(HISTORY_FILE)
             if signature is not None and signature == self._last_transcripts_signature:
                 return False
 
@@ -2536,12 +2576,7 @@ class SettingsWindow(QDialog):
             self._last_transcripts_blocks = transcript_blocks
             self._last_transcripts_signature = signature
 
-            if hasattr(self, "_transcripts_status"):
-                _set_status_label_if_changed(
-                    self._transcripts_status,
-                    f"{len(entries)} entries",
-                    "text_secondary",
-                )
+            self._set_transcripts_entry_count(len(entries))
             return True
 
         except Exception as e:
@@ -2592,12 +2627,7 @@ class SettingsWindow(QDialog):
         if not merged_entries:
             return False
 
-        if hasattr(self, "_transcripts_status"):
-            _set_status_label_if_changed(
-                self._transcripts_status,
-                f"{len(merged_entries)} entries",
-                "text_secondary",
-            )
+        self._set_transcripts_entry_count(len(merged_entries))
 
         scrollbar = viewer.verticalScrollBar()
         previous_maximum = scrollbar.maximum()
@@ -2633,38 +2663,26 @@ class SettingsWindow(QDialog):
                 f"{self._last_transcripts_text or ''}{separator}{appended_text}"
             )
             self._last_transcripts_entries = merged_entries
-            merged_blocks = (
-                list(previous_blocks)
-                if previous_blocks is not None
-                else format_transcript_entries_for_display(
-                    previous_entries,
-                    newest_first=False,
-                )
+            self._last_transcripts_blocks = _merge_recent_transcript_blocks(
+                previous_blocks=previous_blocks,
+                previous_entries=previous_entries,
+                appended_blocks=appended_blocks,
+                merged_entries=merged_entries,
+                format_entries=format_transcript_entries_for_display,
             )
-            merged_blocks.extend(appended_blocks)
-            self._last_transcripts_blocks = merged_blocks[-TRANSCRIPTS_VIEW_MAX_ENTRIES:]
             self._last_transcripts_signature = signature
             scrollbar.setValue(scrollbar.maximum())
             return True
 
-        if previous_blocks is not None:
-            merged_blocks = list(previous_blocks)
-            merged_blocks.extend(appended_blocks)
-            merged_blocks = merged_blocks[-TRANSCRIPTS_VIEW_MAX_ENTRIES:]
-            merged_text = (
-                "\n\n".join(merged_blocks) if merged_blocks else "No transcripts yet."
-            )
-            self._last_transcripts_blocks = merged_blocks
-        else:
-            merged_blocks = format_transcript_entries_for_display(
-                merged_entries,
-                newest_first=False,
-            )
-            merged_text = (
-                "\n\n".join(merged_blocks) if merged_blocks else "No transcripts yet."
-            )
-            self._last_transcripts_blocks = merged_blocks
-        self._set_transcripts_text_if_changed(merged_text)
+        merged_blocks = _merge_recent_transcript_blocks(
+            previous_blocks=previous_blocks,
+            previous_entries=previous_entries,
+            appended_blocks=appended_blocks,
+            merged_entries=merged_entries,
+            format_entries=format_transcript_entries_for_display,
+        )
+        self._set_transcripts_text_if_changed(_transcript_blocks_to_text(merged_blocks))
+        self._last_transcripts_blocks = merged_blocks
         self._last_transcripts_entries = merged_entries
         self._last_transcripts_signature = signature
         return True
@@ -2808,14 +2826,14 @@ class SettingsWindow(QDialog):
             if not self._logs_viewer:
                 return False
 
-            if not LOG_FILE.exists():
+            signature = get_file_signature(LOG_FILE)
+            if _signature_means_missing_file(LOG_FILE, signature):
                 self._last_logs_signature = None
                 self._set_logs_text_if_changed(
                     "No logs yet.\n\nLog file will appear here:\n" + str(LOG_FILE)
                 )
                 return True
 
-            signature = get_file_signature(LOG_FILE)
             if signature is not None and signature == self._last_logs_signature:
                 return False
 

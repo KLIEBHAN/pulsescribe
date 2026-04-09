@@ -170,6 +170,42 @@ def test_open_logs_folder_falls_back_to_parent_folder_when_log_missing(
     assert calls == [["explorer", str(log_file.parent)]]
 
 
+def test_refresh_transcripts_resets_cached_state_when_history_file_is_missing(
+    tmp_path, monkeypatch
+):
+    import ui.settings_windows as settings_mod
+    import utils.history as history_mod
+
+    history_file = tmp_path / "history.jsonl"
+    monkeypatch.setattr(history_mod, "HISTORY_FILE", history_file)
+    monkeypatch.setattr(settings_mod, "get_file_signature", lambda _path: None)
+    monkeypatch.setattr(
+        history_mod,
+        "get_recent_transcripts",
+        lambda _count: (_ for _ in ()).throw(
+            AssertionError("missing history should not trigger a full reload")
+        ),
+    )
+
+    captured_text: list[str] = []
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._last_transcripts_signature = (123, 456)
+    window._last_transcripts_entries = [
+        {"timestamp": "2026-01-01T10:00:00", "text": "stale"}
+    ]
+    window._last_transcripts_blocks = ["stale"]
+    window._transcripts_status = _FakeLabel()
+    window._set_transcripts_text_if_changed = lambda text: captured_text.append(text)
+
+    assert window._refresh_transcripts() is True
+
+    assert captured_text == ["No transcripts yet."]
+    assert window._last_transcripts_signature is None
+    assert window._last_transcripts_entries == []
+    assert window._last_transcripts_blocks == []
+    assert window._transcripts_status.text == "0 entries"
+
+
 def test_refresh_transcripts_skips_reload_when_signature_unchanged(
     tmp_path, monkeypatch
 ):
@@ -456,6 +492,37 @@ def test_try_append_logs_delta_skips_when_file_size_does_not_grow() -> None:
     assert window._logs_viewer.text == "line-1"
     assert window._last_logs_text == "line-1"
     assert window._last_logs_signature == (5, len("line-1"))
+
+
+def test_refresh_logs_resets_placeholder_when_log_file_is_missing(
+    tmp_path, monkeypatch
+):
+    import config
+
+    log_file = tmp_path / "pulsescribe.log"
+    monkeypatch.setattr(config, "LOG_FILE", log_file)
+    monkeypatch.setattr(settings_mod, "get_file_signature", lambda _path: None)
+    monkeypatch.setattr(
+        settings_mod,
+        "read_file_tail_lines",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("missing log file should not trigger a tail read")
+        ),
+    )
+
+    captured_text: list[str] = []
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._logs_viewer = object()
+    window._last_logs_text = "stale"
+    window._last_logs_signature = (1, 5)
+    window._set_logs_text_if_changed = lambda text: captured_text.append(text)
+
+    assert window._refresh_logs() is True
+
+    assert captured_text == [
+        "No logs yet.\n\nLog file will appear here:\n" + str(log_file)
+    ]
+    assert window._last_logs_signature is None
 
 
 def test_refresh_logs_skips_full_tail_read_when_incremental_append_succeeds(
