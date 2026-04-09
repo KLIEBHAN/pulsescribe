@@ -155,6 +155,19 @@ def _apply_env_updates_to_lines(
     return new_lines, changed
 
 
+def _apply_single_env_update(
+    lines: list[str],
+    key_name: str,
+    value: str | None,
+    *,
+    preserve_following_duplicates: bool = False,
+) -> tuple[list[str], bool]:
+    """Apply one `.env` mutation via the shared line-update helpers."""
+    if preserve_following_duplicates and value is not None:
+        return _set_first_env_line(lines, key_name, value)
+    return _apply_env_updates_to_lines(lines, {key_name: value})
+
+
 def _invalidate_env_cache() -> None:
     global _env_cache
     _env_cache = None
@@ -403,14 +416,41 @@ def set_show_welcome_on_startup(show: bool) -> None:
     _store_preference("show_welcome_on_startup", show)
 
 
+def _update_single_env_setting(
+    key_name: str,
+    value: str | None,
+    *,
+    read_error_message: str,
+    write_error_message: str,
+    invalidate_cache_on_noop: bool = False,
+    suppress_errors: bool = False,
+    preserve_following_duplicates: bool = False,
+) -> bool:
+    """Update one `.env` key through the shared file-mutation pipeline."""
+    return _update_env_file(
+        ENV_FILE,
+        apply_changes=lambda lines: _apply_single_env_update(
+            lines,
+            key_name,
+            value,
+            preserve_following_duplicates=preserve_following_duplicates,
+        ),
+        read_error_message=read_error_message,
+        write_error_message=write_error_message,
+        invalidate_cache_on_noop=invalidate_cache_on_noop,
+        suppress_errors=suppress_errors,
+    )
+
+
 def _save_first_env_setting(key_name: str, value: str) -> None:
     """Persist one env assignment while preserving later duplicates for that key."""
-    _update_env_file(
-        ENV_FILE,
-        apply_changes=lambda lines: _set_first_env_line(lines, key_name, value),
+    _update_single_env_setting(
+        key_name,
+        value,
         read_error_message="Konnte .env nicht lesen",
         write_error_message="Konnte .env nicht schreiben",
         invalidate_cache_on_noop=True,
+        preserve_following_duplicates=True,
     )
 
 
@@ -507,14 +547,9 @@ def remove_env_setting(key_name: str) -> None:
     Args:
         key_name: Name der Einstellung (z.B. "PULSESCRIBE_REFINE")
     """
-    env_path = ENV_FILE
-
-    if not env_path.exists():
-        return
-
-    _update_env_file(
-        env_path,
-        apply_changes=lambda lines: _apply_env_updates_to_lines(lines, {key_name: None}),
+    _update_single_env_setting(
+        key_name,
+        None,
         read_error_message="Konnte .env nicht aktualisieren",
         write_error_message="Konnte .env nicht aktualisieren",
         suppress_errors=True,

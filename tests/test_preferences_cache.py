@@ -115,6 +115,22 @@ def test_save_api_key_preserves_following_duplicate_assignments(tmp_path, monkey
     )
 
 
+def test_save_env_setting_preserves_following_duplicate_assignments(
+    tmp_path, monkeypatch
+):
+    _isolate_prefs(tmp_path, monkeypatch)
+    prefs.ENV_FILE.write_text(
+        "# comment\nPULSESCRIBE_MODE=deepgram\nPULSESCRIBE_MODE=legacy\nUNCHANGED_KEY=keep\n",
+        encoding="utf-8",
+    )
+
+    prefs.save_env_setting("PULSESCRIBE_MODE", "local")
+
+    assert prefs.ENV_FILE.read_text(encoding="utf-8") == (
+        "# comment\nPULSESCRIBE_MODE=local\nPULSESCRIBE_MODE=legacy\nUNCHANGED_KEY=keep\n"
+    )
+
+
 def test_remove_env_setting_is_noop_when_key_does_not_exist(tmp_path, monkeypatch):
     _isolate_prefs(tmp_path, monkeypatch)
     prefs.ENV_FILE.write_text("PULSESCRIBE_MODE=deepgram\n", encoding="utf-8")
@@ -174,6 +190,21 @@ def test_remove_env_setting_removes_spaced_assignment(tmp_path, monkeypatch):
 
     assert prefs.ENV_FILE.read_text(encoding="utf-8") == "PULSESCRIBE_LANGUAGE=en\n"
     assert "PULSESCRIBE_MODE" not in prefs.read_env_file()
+
+
+def test_remove_env_setting_removes_all_duplicate_assignments_for_key(
+    tmp_path, monkeypatch
+):
+    _isolate_prefs(tmp_path, monkeypatch)
+    prefs.ENV_FILE.write_text(
+        "# comment\nPULSESCRIBE_MODE=deepgram\nPULSESCRIBE_MODE=legacy\nUNCHANGED_KEY=keep\n",
+        encoding="utf-8",
+    )
+
+    prefs.remove_env_setting("PULSESCRIBE_MODE")
+
+    assert prefs.ENV_FILE.read_text(encoding="utf-8") == "# comment\nUNCHANGED_KEY=keep\n"
+    assert prefs.read_env_file() == {"UNCHANGED_KEY": "keep"}
 
 
 def test_update_env_settings_batches_updates_in_single_atomic_write(tmp_path, monkeypatch):

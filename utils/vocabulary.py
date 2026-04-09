@@ -8,6 +8,7 @@ parsed vocabulary and only reloads when the file changes.
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import dataclass
 import json
 import logging
 from pathlib import Path
@@ -53,54 +54,76 @@ def _get_cached_state(
     return None
 
 
-def _normalize_keywords(raw_keywords: list) -> list[str]:
-    """Normalisiert Keyword-Liste (nur Strings, trim, dedup in Reihenfolge)."""
-    cleaned: list[str] = []
-    for item in raw_keywords:
-        if isinstance(item, str):
-            kw = item.strip()
-            if kw:
-                cleaned.append(kw)
+@dataclass(frozen=True)
+class _KeywordAnalysis:
+    normalized: list[str]
+    issues: list[str]
 
+
+def _clean_keyword_strings(raw_keywords: list[Any]) -> tuple[list[str], int]:
+    """Return trimmed string keywords plus the count of ignored non-strings."""
+    cleaned: list[str] = []
+    non_string_count = 0
+    for item in raw_keywords:
+        if not isinstance(item, str):
+            non_string_count += 1
+            continue
+        keyword = item.strip()
+        if keyword:
+            cleaned.append(keyword)
+    return cleaned, non_string_count
+
+
+def _dedupe_keywords(keywords: list[str]) -> list[str]:
+    """Deduplicate keywords case-insensitively while preserving order."""
     seen: set[str] = set()
     result: list[str] = []
-    for kw in cleaned:
-        dedupe_key = kw.casefold()
+    for keyword in keywords:
+        dedupe_key = keyword.casefold()
         if dedupe_key not in seen:
             seen.add(dedupe_key)
-            result.append(kw)
+            result.append(keyword)
     return result
 
 
-def _collect_keyword_issues(raw_keywords: Any) -> list[str]:
-    """Collect validation issues from raw keyword data without rereading the file."""
-    if raw_keywords is None:
-        return []
-    if not isinstance(raw_keywords, list):
-        return ["'keywords' muss eine Liste sein."]
-
+def _build_keyword_issues(
+    *,
+    non_string_count: int,
+    duplicate_count: int,
+    keyword_count: int,
+) -> list[str]:
+    """Build stable validation messages from analyzed keyword counts."""
     issues: list[str] = []
-    non_strings = [k for k in raw_keywords if not isinstance(k, str)]
-    if non_strings:
+    if non_string_count > 0:
         issues.append(
-            f"{len(non_strings)} Keywords sind keine Strings und werden ignoriert."
+            f"{non_string_count} Keywords sind keine Strings und werden ignoriert."
         )
-
-    normalized = _normalize_keywords(raw_keywords)
-    duplicate_count = len(
-        [k for k in raw_keywords if isinstance(k, str) and k.strip()]
-    ) - len(normalized)
     if duplicate_count > 0:
         issues.append(f"{duplicate_count} doppelte Keywords gefunden.")
-
-    if len(normalized) > 100:
+    if keyword_count > 100:
         issues.append(
-            f"{len(normalized)} Keywords: Deepgram nutzt max. 100, Local max. 50."
+            f"{keyword_count} Keywords: Deepgram nutzt max. 100, Local max. 50."
         )
-    elif len(normalized) > 50:
-        issues.append(f"{len(normalized)} Keywords: Local nutzt max. 50.")
-
+    elif keyword_count > 50:
+        issues.append(f"{keyword_count} Keywords: Local nutzt max. 50.")
     return issues
+
+
+def _analyze_keywords(raw_keywords: Any) -> _KeywordAnalysis:
+    """Normalize raw keyword data once and derive validation issues from it."""
+    if raw_keywords is None:
+        return _KeywordAnalysis([], [])
+    if not isinstance(raw_keywords, list):
+        return _KeywordAnalysis([], ["'keywords' muss eine Liste sein."])
+
+    cleaned, non_string_count = _clean_keyword_strings(raw_keywords)
+    normalized = _dedupe_keywords(cleaned)
+    issues = _build_keyword_issues(
+        non_string_count=non_string_count,
+        duplicate_count=len(cleaned) - len(normalized),
+        keyword_count=len(normalized),
+    )
+    return _KeywordAnalysis(normalized, issues)
 
 
 def _parse_vocabulary_text(raw_text: str) -> tuple[dict[str, Any], list[str]]:
@@ -114,12 +137,9 @@ def _parse_vocabulary_text(raw_text: str) -> tuple[dict[str, Any], list[str]]:
         return {"keywords": []}, ["Vocabulary-Datei muss ein JSON-Objekt sein."]
 
     parsed = dict(data)
-    raw_keywords = parsed.get("keywords")
-    issues = _collect_keyword_issues(raw_keywords)
-    parsed["keywords"] = (
-        _normalize_keywords(raw_keywords) if isinstance(raw_keywords, list) else []
-    )
-    return parsed, issues
+    analysis = _analyze_keywords(parsed.get("keywords"))
+    parsed["keywords"] = analysis.normalized
+    return parsed, analysis.issues
 
 
 def _read_vocabulary_state(
@@ -167,6 +187,47 @@ def load_vocabulary(path: Path | None = None) -> dict:
     return data
 
 
+def _read_existing_vocabulary_data(vocab_file: Path) -> dict[str, Any]:
+    """Load the current JSON object if present, otherwise return an empty payload."""
+    if not vocab_file.exists():
+        return {}
+    try:
+        existing = json.loads(vocab_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        return {}
+    return dict(existing) if isinstance(existing, dict) else {}
+
+
+def _get_current_vocabulary_signature(vocab_file: Path) -> FileSignature | None:
+    """Return the current file signature when available."""
+    try:
+        return _file_signature(vocab_file)
+    except (FileNotFoundError, OSError):
+        return None
+
+
+def _reuse_current_vocabulary_state(
+    vocab_file: Path,
+    *,
+    current_signature: FileSignature | None,
+    data: dict[str, Any],
+    issues: list[str],
+    file_matches_target: bool,
+) -> bool:
+    """Refresh or reuse cached state when the on-disk file already matches."""
+    if current_signature is None:
+        return False
+
+    cached = _cache.get(vocab_file)
+    if cached and cached[0] == current_signature and cached[1] == data:
+        return True
+    if not file_matches_target:
+        return False
+
+    _update_cached_state(vocab_file, current_signature, data, issues)
+    return True
+
+
 def save_vocabulary(keywords: list[str], path: Path | None = None) -> None:
     """Speichert Custom Vocabulary als JSON.
 
@@ -177,38 +238,20 @@ def save_vocabulary(keywords: list[str], path: Path | None = None) -> None:
     vocab_file = path or _DEFAULT_VOCAB_FILE
     vocab_file.parent.mkdir(parents=True, exist_ok=True)
 
-    data: dict[str, Any] = {}
-    existing_data: dict[str, Any] | None = None
-    normalized_keywords = _normalize_keywords(list(keywords))
-    if vocab_file.exists():
-        try:
-            existing = json.loads(vocab_file.read_text(encoding="utf-8"))
-            if isinstance(existing, dict):
-                data = existing
-                existing_data = dict(existing)
-        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-            data = {}
+    analysis = _analyze_keywords(list(keywords))
+    existing_data = _read_existing_vocabulary_data(vocab_file)
+    data = dict(existing_data)
+    data["keywords"] = analysis.normalized
 
-    data["keywords"] = normalized_keywords
-
-    try:
-        current_signature = _file_signature(vocab_file)
-    except (FileNotFoundError, OSError):
-        current_signature = None
-
-    if existing_data == data and current_signature is not None:
-        _update_cached_state(
-            vocab_file,
-            current_signature,
-            data,
-            _collect_keyword_issues(normalized_keywords),
-        )
+    current_signature = _get_current_vocabulary_signature(vocab_file)
+    if _reuse_current_vocabulary_state(
+        vocab_file,
+        current_signature=current_signature,
+        data=data,
+        issues=analysis.issues,
+        file_matches_target=existing_data == data,
+    ):
         return
-
-    if current_signature is not None:
-        cached = _cache.get(vocab_file)
-        if cached and cached[0] == current_signature and cached[1] == data:
-            return
 
     try:
         vocab_file.write_text(
@@ -224,11 +267,14 @@ def save_vocabulary(keywords: list[str], path: Path | None = None) -> None:
         logger.warning(f"Vocabulary-Datei nicht schreibbar: {e}")
         raise
 
-    issues = _collect_keyword_issues(normalized_keywords)
-
     # Cache direkt aktualisieren, damit Änderungen sofort wirken.
     try:
-        _update_cached_state(vocab_file, _file_signature(vocab_file), data, issues)
+        _update_cached_state(
+            vocab_file,
+            _file_signature(vocab_file),
+            data,
+            analysis.issues,
+        )
     except OSError:
         _cache.pop(vocab_file, None)
 

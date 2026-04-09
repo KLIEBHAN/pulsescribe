@@ -184,6 +184,22 @@ class TestSaveVocabulary:
         assert data["keywords"] == ["new"]
         assert data["extra"] == "keep"
 
+    def test_save_normalizes_keywords_before_persisting(self, temp_files):
+        import utils.vocabulary as vocab
+
+        vocab_file = temp_files / "vocab.json"
+        vocab_file.write_text(
+            json.dumps({"keywords": ["old"], "extra": "keep"}),
+            encoding="utf-8",
+        )
+        vocab._cache.clear()
+
+        save_vocabulary(["  API ", "api", "GraphQL", "graphql"], path=vocab_file)
+
+        data = json.loads(vocab_file.read_text(encoding="utf-8"))
+        assert data == {"keywords": ["API", "GraphQL"], "extra": "keep"}
+        assert vocab.load_vocabulary(path=vocab_file) == data
+
     def test_save_uses_utf8_encoding(self, temp_files, monkeypatch):
         vocab_file = temp_files / "vocab.json"
 
@@ -221,6 +237,38 @@ class TestSaveVocabulary:
         save_vocabulary(["Alpha", "Beta"], path=vocab_file)
 
         assert write_calls == []
+
+    def test_save_noop_refreshes_stale_cache_without_rewriting(
+        self, temp_files, monkeypatch
+    ):
+        import utils.vocabulary as vocab
+
+        vocab_file = temp_files / "vocab.json"
+        vocab_file.write_text(
+            json.dumps({"keywords": ["Alpha"], "extra": "keep"}),
+            encoding="utf-8",
+        )
+        signature = vocab._file_signature(vocab_file)
+        vocab._cache[vocab_file] = (
+            signature,
+            {"keywords": ["Stale"], "extra": "wrong"},
+            ["stale"],
+        )
+
+        monkeypatch.setattr(
+            Path,
+            "write_text",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("unchanged save should not rewrite the file")
+            ),
+        )
+
+        save_vocabulary(["Alpha"], path=vocab_file)
+
+        assert vocab.load_vocabulary(path=vocab_file) == {
+            "keywords": ["Alpha"],
+            "extra": "keep",
+        }
 
 
 class TestValidateVocabulary:
