@@ -23,17 +23,27 @@ class _FakeTimer:
         self.started_with: list[int] = []
         self.stopped = False
         self._active = False
+        self._interval_ms = 0
+        self.set_interval_calls: list[int] = []
 
     def isActive(self) -> bool:
         return self._active
 
     def start(self, interval_ms: int) -> None:
         self._active = True
+        self._interval_ms = interval_ms
         self.started_with.append(interval_ms)
 
     def stop(self) -> None:
         self._active = False
         self.stopped = True
+
+    def interval(self) -> int:
+        return self._interval_ms
+
+    def setInterval(self, interval_ms: int) -> None:
+        self._interval_ms = interval_ms
+        self.set_interval_calls.append(interval_ms)
 
 
 class _FakeCheckBox:
@@ -394,6 +404,7 @@ def test_update_logs_auto_refresh_state_starts_timer_when_visible():
     window = SettingsWindow.__new__(SettingsWindow)
     timer = _FakeTimer()
     window._logs_refresh_timer = timer
+    window._logs_auto_refresh_step = 0
     window._logs_stack = _FakeStack(current_index=0)
     window._auto_refresh_checkbox = _FakeCheckBox(checked=True)
     window._is_logs_tab_active = lambda: True
@@ -409,6 +420,7 @@ def test_update_logs_auto_refresh_state_starts_timer_for_transcripts_view():
     window = SettingsWindow.__new__(SettingsWindow)
     timer = _FakeTimer()
     window._logs_refresh_timer = timer
+    window._logs_auto_refresh_step = 0
     window._logs_stack = _FakeStack(current_index=1)
     window._auto_refresh_checkbox = _FakeCheckBox(checked=True)
     window._is_logs_tab_active = lambda: True
@@ -431,6 +443,41 @@ def test_refresh_active_logs_view_routes_to_transcripts():
     window._refresh_active_logs_view()
 
     assert calls == ["transcripts"]
+
+
+def test_refresh_active_logs_view_backs_off_auto_refresh_when_idle():
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._logs_stack = _FakeStack(current_index=0)
+    window._logs_refresh_timer = _FakeTimer()
+    window._logs_refresh_timer.start(2000)
+    window._logs_auto_refresh_step = 0
+    window._refresh_logs = lambda: False
+    window._refresh_transcripts = lambda: (_ for _ in ()).throw(
+        AssertionError("logs view should be refreshed")
+    )
+
+    window._refresh_active_logs_view()
+    window._refresh_active_logs_view()
+
+    assert window._logs_auto_refresh_step == 2
+    assert window._logs_refresh_timer.set_interval_calls == [4000, 8000]
+
+
+def test_refresh_active_logs_view_resets_auto_refresh_after_change():
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._logs_stack = _FakeStack(current_index=1)
+    window._logs_refresh_timer = _FakeTimer()
+    window._logs_refresh_timer.start(8000)
+    window._logs_auto_refresh_step = 2
+    window._refresh_logs = lambda: (_ for _ in ()).throw(
+        AssertionError("transcripts view should be refreshed")
+    )
+    window._refresh_transcripts = lambda: True
+
+    window._refresh_active_logs_view()
+
+    assert window._logs_auto_refresh_step == 0
+    assert window._logs_refresh_timer.set_interval_calls == [2000]
 
 
 def test_clear_transcripts_requires_confirmation(monkeypatch):

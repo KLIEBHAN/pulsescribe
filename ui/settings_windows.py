@@ -78,6 +78,7 @@ LOG_VIEW_MAX_LINES = 100
 TRANSCRIPTS_VIEW_MAX_ENTRIES = 50
 INCREMENTAL_LOG_APPEND_MAX_BYTES = 64_000
 INCREMENTAL_TRANSCRIPT_APPEND_MAX_BYTES = 64_000
+LOGS_AUTO_REFRESH_INTERVALS_MS = (2000, 4000, 8000)
 
 # =============================================================================
 # Dropdown-Optionen (identisch mit macOS)
@@ -521,6 +522,7 @@ class SettingsWindow(QDialog):
         self._tab_builders: dict[str, Callable[[], QWidget]] = {}
         self._lazy_tab_layouts: dict[str, QVBoxLayout] = {}
         self._built_tabs: set[str] = set()
+        self._logs_auto_refresh_step = 0
         self._vocabulary_loaded = False
         self._last_vocabulary_signature: tuple[int, int] | None = None
         self._prompts_loaded_data: dict | None = None
@@ -1384,7 +1386,7 @@ class SettingsWindow(QDialog):
         logs_btn_layout.addStretch()
 
         refresh_btn = QPushButton("Refresh")
-        refresh_btn.clicked.connect(self._refresh_logs)
+        refresh_btn.clicked.connect(self._refresh_logs_on_demand)
         logs_btn_layout.addWidget(refresh_btn)
 
         open_btn = QPushButton("Open in Explorer")
@@ -1418,7 +1420,7 @@ class SettingsWindow(QDialog):
         transcripts_btn_layout.addStretch()
 
         refresh_t_btn = QPushButton("Refresh")
-        refresh_t_btn.clicked.connect(self._refresh_transcripts)
+        refresh_t_btn.clicked.connect(self._refresh_transcripts_on_demand)
         transcripts_btn_layout.addWidget(refresh_t_btn)
 
         clear_t_btn = QPushButton("Clear History")
@@ -1584,6 +1586,7 @@ class SettingsWindow(QDialog):
 
         # Logs automatisch laden
         if tab_name == "Logs":
+            self._reset_logs_auto_refresh_cadence()
             if (
                 hasattr(self, "_logs_stack")
                 and self._logs_stack
@@ -2299,7 +2302,21 @@ class SettingsWindow(QDialog):
     def _toggle_logs_auto_refresh(self, state: int):
         """Schaltet Auto-Refresh für Logs ein/aus."""
         del state
+        if (
+            hasattr(self, "_auto_refresh_checkbox")
+            and self._auto_refresh_checkbox
+            and self._auto_refresh_checkbox.isChecked()
+        ):
+            self._reset_logs_auto_refresh_cadence()
         self._update_logs_auto_refresh_state()
+
+    def _refresh_logs_on_demand(self) -> bool:
+        self._reset_logs_auto_refresh_cadence()
+        return self._refresh_logs()
+
+    def _refresh_transcripts_on_demand(self) -> bool:
+        self._reset_logs_auto_refresh_cadence()
+        return self._refresh_transcripts()
 
     def _switch_logs_view(self, index: int):
         """Wechselt zwischen Logs und Transcripts Ansicht."""
@@ -2308,6 +2325,7 @@ class SettingsWindow(QDialog):
                 self._update_logs_auto_refresh_state()
                 return
             self._logs_stack.setCurrentIndex(index)
+            self._reset_logs_auto_refresh_cadence()
             if index == 1:  # Transcripts
                 self._refresh_transcripts()
             else:
@@ -2349,10 +2367,64 @@ class SettingsWindow(QDialog):
 
         if should_run:
             if not self._logs_refresh_timer.isActive():
-                self._logs_refresh_timer.start(2000)  # Alle 2 Sekunden
+                self._logs_refresh_timer.start(self._get_logs_auto_refresh_interval_ms())
             return
 
         self._logs_refresh_timer.stop()
+
+    def _get_logs_auto_refresh_interval_ms(self) -> int:
+        step = max(
+            0,
+            min(
+                int(getattr(self, "_logs_auto_refresh_step", 0)),
+                len(LOGS_AUTO_REFRESH_INTERVALS_MS) - 1,
+            ),
+        )
+        return LOGS_AUTO_REFRESH_INTERVALS_MS[step]
+
+    def _reset_logs_auto_refresh_cadence(self) -> None:
+        self._set_logs_auto_refresh_step(0)
+
+    def _note_logs_auto_refresh_result(self, *, changed: bool) -> None:
+        next_step = (
+            0
+            if changed
+            else min(
+                int(getattr(self, "_logs_auto_refresh_step", 0)) + 1,
+                len(LOGS_AUTO_REFRESH_INTERVALS_MS) - 1,
+            )
+        )
+        self._set_logs_auto_refresh_step(next_step)
+
+    def _set_logs_auto_refresh_step(self, step: int) -> None:
+        bounded_step = max(0, min(int(step), len(LOGS_AUTO_REFRESH_INTERVALS_MS) - 1))
+        previous_step = int(getattr(self, "_logs_auto_refresh_step", 0))
+        self._logs_auto_refresh_step = bounded_step
+        if bounded_step == previous_step:
+            return
+
+        timer = getattr(self, "_logs_refresh_timer", None)
+        if timer is None or not timer.isActive():
+            return
+
+        next_interval = self._get_logs_auto_refresh_interval_ms()
+        current_interval = None
+        interval_getter = getattr(timer, "interval", None)
+        if callable(interval_getter):
+            try:
+                current_interval = int(interval_getter())
+            except (TypeError, ValueError):
+                current_interval = None
+
+        if current_interval == next_interval:
+            return
+
+        interval_setter = getattr(timer, "setInterval", None)
+        if callable(interval_setter):
+            interval_setter(next_interval)
+            return
+
+        timer.start(next_interval)
 
     def _is_window_visible_for_logs(self) -> bool:
         """True nur wenn Fenster sichtbar und nicht minimiert ist."""
@@ -2362,7 +2434,7 @@ class SettingsWindow(QDialog):
             # Kann während/kurz nach Teardown auftreten.
             return False
 
-    def _refresh_transcripts(self):
+    def _refresh_transcripts(self) -> bool:
         """Aktualisiert Transcripts-Anzeige."""
         try:
             from utils.history import (
@@ -2383,14 +2455,14 @@ class SettingsWindow(QDialog):
                         "0 entries",
                         "text_secondary",
                     )
-                return
+                return True
 
             signature = get_file_signature(HISTORY_FILE)
             if signature is not None and signature == self._last_transcripts_signature:
-                return
+                return False
 
             if self._try_append_transcripts_delta(signature):
-                return
+                return True
 
             entries = get_recent_transcripts(TRANSCRIPTS_VIEW_MAX_ENTRIES)
             ordered_entries = list(reversed(entries))
@@ -2411,12 +2483,14 @@ class SettingsWindow(QDialog):
                     f"{len(entries)} entries",
                     "text_secondary",
                 )
+            return True
 
         except Exception as e:
             logger.error(f"Transcripts laden fehlgeschlagen: {e}")
             viewer = getattr(self, "_transcripts_viewer", None)
             if viewer:
                 viewer.setPlainText(f"Error: {e}")
+            return True
 
     def _try_append_transcripts_delta(self, signature: tuple[int, int] | None) -> bool:
         """Reuse an append-only history delta without re-reading the full transcript tail."""
@@ -2552,9 +2626,11 @@ class SettingsWindow(QDialog):
             else 0
         )
         if current_index == 1:
-            self._refresh_transcripts()
+            changed = self._refresh_transcripts()
+            self._note_logs_auto_refresh_result(changed=changed)
             return
-        self._refresh_logs()
+        changed = self._refresh_logs()
+        self._note_logs_auto_refresh_result(changed=changed)
 
     def _set_transcripts_text_if_changed(self, text: str) -> None:
         """Aktualisiert den Transcript-Viewer nur bei Änderungen.
@@ -2693,27 +2769,27 @@ class SettingsWindow(QDialog):
                 getattr(self, "_vocab_status", None), f"Error: {e}", "error"
             )
 
-    def _refresh_logs(self):
+    def _refresh_logs(self) -> bool:
         """Aktualisiert Log-Anzeige."""
         try:
             from config import LOG_FILE
 
             if not self._logs_viewer:
-                return
+                return False
 
             if not LOG_FILE.exists():
                 self._last_logs_signature = None
                 self._set_logs_text_if_changed(
                     "No logs yet.\n\nLog file will appear here:\n" + str(LOG_FILE)
                 )
-                return
+                return True
 
             signature = get_file_signature(LOG_FILE)
             if signature is not None and signature == self._last_logs_signature:
-                return
+                return False
 
             if self._try_append_logs_delta(signature):
-                return
+                return True
 
             # Letzte Zeilen (effizientes File-Tailing statt Full-Read)
             log_text = read_file_tail_lines(
@@ -2723,8 +2799,10 @@ class SettingsWindow(QDialog):
             )
             self._set_logs_text_if_changed(log_text)
             self._last_logs_signature = signature
+            return True
         except Exception as e:
             logger.error(f"Logs laden fehlgeschlagen: {e}")
+            return True
 
     def _try_append_logs_delta(self, signature: tuple[int, int] | None) -> bool:
         """Append only the new log tail when the visible document can stay incremental."""

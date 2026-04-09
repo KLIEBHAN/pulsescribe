@@ -724,7 +724,6 @@ Scope
 Current weaknesses reviewed
 - `ui/settings_windows.py`: the Logs tab auto-refresh stayed at a fixed 2-second cadence even after several unchanged polls, so an open settings window kept waking the UI and touching the filesystem more often than necessary.
 - `ui/settings_windows.py`: after the cadence had been slowed by stable content, explicit user interactions like opening the Logs tab, switching segments, or pressing Refresh did not restore the fast cadence immediately.
-- `tests/test_settings_windows_load.py`: vocabulary-load regression coverage still mocked the older `load_vocabulary()`/`validate_vocabulary()` split even though the production path now uses `load_vocabulary_state()`.
 
 Changes in this pass
 - `ui/settings_windows.py`
@@ -734,7 +733,7 @@ Changes in this pass
 - `ui/settings_windows.py`
   Kept the existing no-op guard for reselecting the already active Logs/Transcripts segment so the new cadence logic does not reintroduce redundant refresh work.
 - Tests
-  Added regression coverage for idle backoff and fast-cadence reset, and updated vocabulary-load tests to match the current cache-backed loader API.
+  Added regression coverage for idle backoff and fast-cadence reset.
 
 Why this helps
 - A long-lived Windows settings session now does less timer and file-tail work when the log/transcript files are stable, which reduces idle CPU churn in a visible troubleshooting path.
@@ -743,8 +742,8 @@ Why this helps
 
 Validation
 - `pytest tests/test_settings_windows_logs.py tests/test_settings_windows_load.py -q`
-- `python -m py_compile ui/settings_windows.py tests/test_settings_windows_logs.py tests/test_settings_windows_load.py`
-- `ruff check ui/settings_windows.py tests/test_settings_windows_logs.py tests/test_settings_windows_load.py`
+- `python -m py_compile ui/settings_windows.py tests/test_settings_windows_logs.py`
+- `ruff check ui/settings_windows.py tests/test_settings_windows_logs.py`
 
 Next worthwhile areas
 - `ui/settings_windows.py`: `_load_settings()` is still the clearest remaining Windows settings hotspot if dialog-open traces keep showing bulk widget churn.
