@@ -394,6 +394,26 @@ CustomApp = "EMAIL"
         result = get_custom_app_contexts()
         assert result == DEFAULT_APP_CONTEXTS
 
+    def test_trims_app_names_and_ignores_invalid_contexts(self, prompts_file):
+        """Merge-Logik soll App-Namen bereinigen und kaputte Werte verwerfen."""
+        from utils.custom_prompts import get_custom_app_contexts
+
+        prompts_file.write_text(
+            """
+[app_contexts]
+"  Custom App  " = "EMAIL"
+IgnoredApp = "unknown"
+"   " = "chat"
+"""
+        )
+
+        result = get_custom_app_contexts()
+
+        assert result["Custom App"] == "email"
+        assert "  Custom App  " not in result
+        assert "IgnoredApp" not in result
+        assert "" not in result
+
 
 class TestSaveCustomPrompts:
     """Tests für save_custom_prompts()."""
@@ -440,6 +460,24 @@ class TestSaveCustomPrompts:
         assert "Test Voice Commands" in loaded["voice_commands"]["instruction"]
         assert "Chat Prompt mit Umlauten" in loaded["prompts"]["chat"]["prompt"]
         assert loaded["app_contexts"]["Test App"] == "email"
+
+    def test_save_writes_sections_in_stable_order(self, prompts_file):
+        """Section-Reihenfolge ist Teil des lesbaren Dateiformats."""
+        from utils.custom_prompts import save_custom_prompts
+
+        save_custom_prompts(
+            {
+                "app_contexts": {"My App": "code"},
+                "prompts": {"default": {"prompt": "Prompt"}},
+                "voice_commands": {"instruction": "Commands"},
+            },
+            path=prompts_file,
+        )
+
+        content = prompts_file.read_text(encoding="utf-8")
+
+        assert content.index("[voice_commands]") < content.index("[prompts.default]")
+        assert content.index("[prompts.default]") < content.index("[app_contexts]")
 
     def test_save_escapes_triple_quotes(self, prompts_file):
         """Triple-Quotes im Prompt werden korrekt escaped."""
@@ -590,6 +628,25 @@ class TestFilterOverridesForStorage:
         defaults = get_defaults()
         result = filter_overrides_for_storage(defaults, defaults=defaults)
         assert result == {}
+
+    def test_normalizes_and_filters_invalid_app_context_overrides(self):
+        """Persistiert werden nur bereinigte, gültige App-Mappings."""
+        from utils.custom_prompts import get_defaults, filter_overrides_for_storage
+
+        defaults = get_defaults()
+        result = filter_overrides_for_storage(
+            {
+                "app_contexts": {
+                    "  My App  ": "EMAIL",
+                    "Ignored": "unknown",
+                    "   ": "chat",
+                    "Mail": defaults["app_contexts"]["Mail"],
+                }
+            },
+            defaults=defaults,
+        )
+
+        assert result == {"app_contexts": {"My App": "email"}}
 
 
 # =============================================================================

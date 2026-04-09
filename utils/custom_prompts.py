@@ -44,6 +44,29 @@ def _normalize_context_name(value: str | None) -> str | None:
         return normalized
     return None
 
+
+def _normalize_app_context_entry(
+    app: object,
+    ctx: object,
+) -> tuple[str, str] | None:
+    """Normalize one app→context mapping while preserving current rules."""
+    normalized_app = str(app).strip()
+    normalized_ctx = _normalize_context_name(str(ctx))
+    if not normalized_app or not normalized_ctx:
+        return None
+    return normalized_app, normalized_ctx
+
+
+def _iter_normalized_app_context_entries(app_contexts: dict) -> list[tuple[str, str]]:
+    """Return only valid, normalized app-context mappings."""
+    return [
+        normalized
+        for normalized in (
+            _normalize_app_context_entry(app, ctx) for app, ctx in app_contexts.items()
+        )
+        if normalized is not None
+    ]
+
 # =============================================================================
 # Cache (Signature-basiert für Hot-Reload)
 # =============================================================================
@@ -65,6 +88,31 @@ def _invalidate_cache(path: Path) -> None:
 def _get_file_signature(path: Path) -> FileSignature:
     """Return a stable cache signature for prompt file reloads."""
     return build_file_signature(path)
+
+
+def _copy_prompt_data(data: dict) -> dict:
+    """Return a defensive copy so callers cannot mutate cached prompt state."""
+    return deepcopy(data)
+
+
+def _get_cached_prompt_data(
+    prompts_file: Path,
+    signature: FileSignature,
+) -> dict | None:
+    """Return cached prompt data when the signature still matches."""
+    cached = _cache.get(prompts_file)
+    if cached and cached[0] == signature:
+        return _copy_prompt_data(cached[1])
+    return None
+
+
+def _cache_prompt_data(
+    prompts_file: Path,
+    signature: FileSignature,
+    data: dict,
+) -> None:
+    """Store prompt data in the cache using a defensive copy."""
+    _cache[prompts_file] = (signature, _copy_prompt_data(data))
 
 
 # =============================================================================
@@ -92,6 +140,17 @@ def get_defaults() -> dict:
 # =============================================================================
 
 
+def _load_prompt_data_from_disk(prompts_file: Path) -> dict:
+    """Read prompt config from disk and fall back to defaults on parse failures."""
+    try:
+        user_config = tomllib.loads(prompts_file.read_text(encoding="utf-8"))
+    except (tomllib.TOMLDecodeError, OSError, UnicodeDecodeError) as e:
+        logger.warning(f"Prompts-Datei fehlerhaft: {e}")
+        return get_defaults()
+
+    return _merge_user_with_defaults(user_config)
+
+
 def load_custom_prompts(path: Path | None = None) -> dict:
     """Lädt Custom Prompts mit automatischem Fallback auf Defaults.
 
@@ -116,25 +175,13 @@ def load_custom_prompts(path: Path | None = None) -> dict:
         _invalidate_cache(prompts_file)
         return get_defaults()
 
-    # Cache nutzen wenn Datei unverändert
-    cached = _cache.get(prompts_file)
-    if cached and cached[0] == current_signature:
-        return deepcopy(cached[1])
+    cached = _get_cached_prompt_data(prompts_file, current_signature)
+    if cached is not None:
+        return cached
 
-    # TOML parsen
-    try:
-        user_config = tomllib.loads(prompts_file.read_text(encoding="utf-8"))
-    except (tomllib.TOMLDecodeError, OSError, UnicodeDecodeError) as e:
-        logger.warning(f"Prompts-Datei fehlerhaft: {e}")
-        # Defaults cachen um wiederholtes Parsen zu vermeiden
-        defaults = get_defaults()
-        _cache[prompts_file] = (current_signature, defaults)
-        return deepcopy(defaults)
-
-    # User-Config mit Defaults zusammenführen
-    merged = _merge_user_with_defaults(user_config)
-    _cache[prompts_file] = (current_signature, merged)
-    return deepcopy(merged)
+    data = _load_prompt_data_from_disk(prompts_file)
+    _cache_prompt_data(prompts_file, current_signature, data)
+    return _copy_prompt_data(data)
 
 
 def _merge_user_with_defaults(user_config: dict) -> dict:
@@ -190,12 +237,8 @@ def _merge_app_contexts(user: dict, defaults: dict) -> dict:
     if not isinstance(user_app_contexts, dict):
         return merged
 
-    for app, ctx in user_app_contexts.items():
-        normalized_app = str(app).strip()
-        normalized_ctx = _normalize_context_name(str(ctx))
-        if not normalized_app or not normalized_ctx:
-            continue
-        merged[normalized_app] = normalized_ctx
+    for app, ctx in _iter_normalized_app_context_entries(user_app_contexts):
+        merged[app] = ctx
     return merged
 
 
@@ -263,13 +306,19 @@ def parse_app_mappings(text: str) -> dict[str, str]:
         # Leerzeilen und Kommentare überspringen
         if not line or line.startswith("#"):
             continue
-        if "=" in line:
-            app, ctx = line.split("=", 1)
-            app = app.strip().strip('"')
-            ctx = ctx.split("#", 1)[0]
-            normalized_ctx = _normalize_context_name(ctx)
-            if app and normalized_ctx:
-                result[app] = normalized_ctx
+        if "=" not in line:
+            continue
+
+        app, ctx = line.split("=", 1)
+        normalized = _normalize_app_context_entry(
+            app.strip().strip('"'),
+            ctx.split("#", 1)[0],
+        )
+        if normalized is None:
+            continue
+
+        normalized_app, normalized_ctx = normalized
+        result[normalized_app] = normalized_ctx
     return result
 
 
@@ -309,11 +358,9 @@ def filter_overrides_for_storage(
 
     app_contexts_result: dict[str, str] = {}
     default_app_contexts = baseline.get("app_contexts", {})
-    for app, ctx in data.get("app_contexts", {}).items():
-        normalized_app = str(app).strip()
-        normalized_ctx = _normalize_context_name(str(ctx))
-        if not normalized_app or not normalized_ctx:
-            continue
+    for normalized_app, normalized_ctx in _iter_normalized_app_context_entries(
+        data.get("app_contexts", {})
+    ):
         if default_app_contexts.get(normalized_app) == normalized_ctx:
             continue
         app_contexts_result[normalized_app] = normalized_ctx
@@ -328,6 +375,21 @@ def filter_overrides_for_storage(
 # =============================================================================
 
 
+def _serialize_prompt_sections(data: dict) -> list[str]:
+    """Serialize prompt sections in one stable, human-readable order."""
+    lines = ["# Custom Prompts für pulsescribe", ""]
+    for section_name, serializer in (
+        ("voice_commands", _serialize_voice_commands),
+        ("prompts", _serialize_prompts),
+        ("app_contexts", _serialize_app_contexts),
+    ):
+        section_data = data.get(section_name)
+        if section_data is None:
+            continue
+        lines.extend(serializer(section_data))
+    return lines
+
+
 def save_custom_prompts(data: dict, path: Path | None = None) -> None:
     """Speichert Custom Prompts als TOML-Datei.
 
@@ -335,20 +397,8 @@ def save_custom_prompts(data: dict, path: Path | None = None) -> None:
     """
     prompts_file = path or PROMPTS_FILE
 
-    lines = ["# Custom Prompts für pulsescribe", ""]
-
-    # Jede Sektion einzeln serialisieren
-    if "voice_commands" in data:
-        lines.extend(_serialize_voice_commands(data["voice_commands"]))
-
-    if "prompts" in data:
-        lines.extend(_serialize_prompts(data["prompts"]))
-
-    if "app_contexts" in data:
-        lines.extend(_serialize_app_contexts(data["app_contexts"]))
-
     try:
-        _write_text_atomic(prompts_file, "\n".join(lines))
+        _write_text_atomic(prompts_file, "\n".join(_serialize_prompt_sections(data)))
     except OSError as e:
         logger.warning(f"Prompts-Datei nicht schreibbar: {e}")
         raise
