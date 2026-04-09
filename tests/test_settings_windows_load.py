@@ -7,19 +7,29 @@ from ui.settings_windows import SettingsWindow
 
 
 class _FakeCheckbox:
-    def __init__(self):
+    def __init__(self, checked: bool | None = None):
         self.checked: bool | None = None
+        self.set_calls = 0
+        if checked is not None:
+            self.checked = checked
 
     def setChecked(self, value: bool) -> None:
         self.checked = value
+        self.set_calls += 1
+
+    def isChecked(self) -> bool:
+        return bool(self.checked)
 
 
 class _FakeField:
-    def __init__(self):
+    def __init__(self, value: str = ""):
         self.value = ""
+        self.set_calls = 0
+        self.value = value
 
     def setText(self, value: str) -> None:
         self.value = value
+        self.set_calls += 1
 
     def text(self) -> str:
         return self.value
@@ -42,12 +52,16 @@ class _FakeLabel:
     def __init__(self):
         self.text = ""
         self.style = ""
+        self.text_calls = 0
+        self.style_calls = 0
 
     def setText(self, value: str) -> None:
         self.text = value
+        self.text_calls += 1
 
     def setStyleSheet(self, value: str) -> None:
         self.style = value
+        self.style_calls += 1
 
 
 class _FakeVisibleWidget:
@@ -61,9 +75,11 @@ class _FakeVisibleWidget:
 class _FakeSlider:
     def __init__(self, value: int):
         self._value = value
+        self.set_calls = 0
 
     def setValue(self, value: int) -> None:
         self._value = value
+        self.set_calls += 1
 
     def value(self) -> int:
         return self._value
@@ -73,6 +89,7 @@ class _FakeCombo:
     def __init__(self, items: list[str], current: str = "default"):
         self._items = list(items)
         self._current_index = 0
+        self.set_calls = 0
         if current in self._items:
             self._current_index = self._items.index(current)
 
@@ -84,6 +101,7 @@ class _FakeCombo:
 
     def setCurrentIndex(self, index: int) -> None:
         self._current_index = index
+        self.set_calls += 1
 
     def currentText(self) -> str:
         return self._items[self._current_index]
@@ -227,6 +245,52 @@ def test_load_settings_populates_api_fields_from_process_env(monkeypatch):
 
     assert field.value == "dg-live-key"
     assert status.text == "✓"
+
+
+def test_load_settings_skips_no_op_widget_mutations(monkeypatch):
+    values = {
+        "PULSESCRIBE_MODE": "deepgram",
+        "PULSESCRIBE_LANGUAGE": "auto",
+        "PULSESCRIBE_STREAMING": "true",
+        "PULSESCRIBE_OVERLAY": "true",
+        "PULSESCRIBE_SHOW_RTF": "false",
+        "PULSESCRIBE_CLIPBOARD_RESTORE": "false",
+        "DEEPGRAM_API_KEY": "dg-live-key",
+    }
+    monkeypatch.setattr(settings_mod, "read_env_file", lambda: dict(values))
+
+    mode_changes: list[str] = []
+    window = _make_window()
+    window._mode_combo = _FakeCombo(settings_mod.MODE_OPTIONS, current="deepgram")
+    window._lang_combo = _FakeCombo(settings_mod.LANGUAGE_OPTIONS, current="auto")
+    window._streaming_checkbox = _FakeCheckbox(True)
+    window._overlay_checkbox = _FakeCheckbox(True)
+    window._rtf_checkbox = _FakeCheckbox(False)
+    window._clipboard_restore_checkbox = _FakeCheckbox(False)
+    window._toggle_hotkey_field = _FakeField(
+        settings_mod.DEFAULT_WINDOWS_TOGGLE_HOTKEY
+    )
+    window._hold_hotkey_field = _FakeField(settings_mod.DEFAULT_WINDOWS_HOLD_HOTKEY)
+    window._api_fields = {"DEEPGRAM_API_KEY": _FakeField("dg-live-key")}
+    window._api_status = {"DEEPGRAM_API_KEY": _FakeLabel()}
+    window._api_status["DEEPGRAM_API_KEY"].text = "✓"
+    window._api_status["DEEPGRAM_API_KEY"].style = f"color: {settings_mod.COLORS['success']};"
+    window._on_mode_changed = lambda mode: mode_changes.append(mode)
+
+    window._load_settings()
+
+    assert window._mode_combo.set_calls == 0
+    assert window._lang_combo.set_calls == 0
+    assert window._streaming_checkbox.set_calls == 0
+    assert window._overlay_checkbox.set_calls == 0
+    assert window._rtf_checkbox.set_calls == 0
+    assert window._clipboard_restore_checkbox.set_calls == 0
+    assert window._toggle_hotkey_field.set_calls == 0
+    assert window._hold_hotkey_field.set_calls == 0
+    assert window._api_fields["DEEPGRAM_API_KEY"].set_calls == 0
+    assert window._api_status["DEEPGRAM_API_KEY"].text_calls == 0
+    assert window._api_status["DEEPGRAM_API_KEY"].style_calls == 0
+    assert mode_changes == ["deepgram"]
 
 
 def test_refresh_setup_overview_uses_process_env_api_keys(monkeypatch):
@@ -455,6 +519,67 @@ def test_apply_local_preset_resets_stale_advanced_values():
     assert window._fp16_combo.currentText() == "default"
     assert window._lightning_batch_slider.value() == 12
     assert window._lightning_quant_combo.currentText() == "none"
+
+
+def test_apply_local_preset_skips_refresh_for_idempotent_values():
+    window = SettingsWindow.__new__(SettingsWindow)
+    mode_changes: list[str] = []
+    refresh_calls: list[str] = []
+
+    window._mode_combo = _FakeCombo(["deepgram", "local"], current="local")
+    window._local_backend_combo = _FakeCombo(
+        settings_mod.LOCAL_BACKEND_OPTIONS, current="faster"
+    )
+    window._local_model_combo = _FakeCombo(
+        settings_mod.LOCAL_MODEL_OPTIONS, current="turbo"
+    )
+    window._device_combo = _FakeCombo(settings_mod.DEVICE_OPTIONS, current="cpu")
+    window._compute_type_combo = _FakeCombo(
+        ["default", "float16", "int8"], current="int8"
+    )
+    window._vad_filter_combo = _FakeCombo(
+        settings_mod.BOOL_OVERRIDE_OPTIONS, current="true"
+    )
+    window._without_timestamps_combo = _FakeCombo(
+        settings_mod.BOOL_OVERRIDE_OPTIONS, current="true"
+    )
+    window._fp16_combo = _FakeCombo(settings_mod.BOOL_OVERRIDE_OPTIONS, current="default")
+    window._lightning_quant_combo = _FakeCombo(
+        settings_mod.LIGHTNING_QUANT_OPTIONS, current="none"
+    )
+    window._beam_size_field = _FakeField("")
+    window._temperature_field = _FakeField("")
+    window._best_of_field = _FakeField("")
+    window._cpu_threads_field = _FakeField("0")
+    window._num_workers_field = _FakeField("1")
+    window._lightning_batch_slider = _FakeSlider(12)
+    window._preset_status = _FakeLabel()
+    window._preset_status.text = "✓ 'cpu_fast' preset applied — click 'Save & Apply' to persist."
+    window._preset_status.style = f"color: {settings_mod.COLORS['success']};"
+    window._on_mode_changed = lambda mode: mode_changes.append(mode)
+    window._refresh_setup_overview = lambda: refresh_calls.append("refresh")
+
+    SettingsWindow._apply_local_preset(window, "cpu_fast")
+
+    assert mode_changes == []
+    assert refresh_calls == []
+    assert window._mode_combo.set_calls == 0
+    assert window._local_backend_combo.set_calls == 0
+    assert window._local_model_combo.set_calls == 0
+    assert window._device_combo.set_calls == 0
+    assert window._compute_type_combo.set_calls == 0
+    assert window._vad_filter_combo.set_calls == 0
+    assert window._without_timestamps_combo.set_calls == 0
+    assert window._fp16_combo.set_calls == 0
+    assert window._lightning_quant_combo.set_calls == 0
+    assert window._beam_size_field.set_calls == 0
+    assert window._temperature_field.set_calls == 0
+    assert window._best_of_field.set_calls == 0
+    assert window._cpu_threads_field.set_calls == 0
+    assert window._num_workers_field.set_calls == 0
+    assert window._lightning_batch_slider.set_calls == 0
+    assert window._preset_status.text_calls == 0
+    assert window._preset_status.style_calls == 0
 
 
 def test_build_setup_status_requires_provider_key_for_cloud_mode():

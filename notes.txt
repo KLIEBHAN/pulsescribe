@@ -307,3 +307,43 @@ Next worthwhile areas
 - `web/src/components/HashAnchorScroller.tsx`: the 45-frame retry loop is still the next clear client-side interaction hotspot if hash-navigation traces show idle frame churn.
 - `web/src/app/[locale]/page.tsx`: the landing page still performs several large `t.raw(...)` normalizations in one render pass and is the next candidate if server render time matters.
 - `web/src/app/[locale]/docs/page.tsx`: the docs page has the heaviest static content derivation footprint and would benefit from the same normalization pass after the smaller header hotpath win.
+
+Performance work log - 2026-04-09 (Windows settings load + preset pass)
+
+Scope
+- Left the last two desktop-UI commit areas untouched: `ui/onboarding_wizard.py`, `ui/onboarding_wizard_windows.py`, and the note-only web follow-up commit stayed out of scope.
+- Focused on the next remaining frontend hotspot from the notes backlog: the bulk field population path in `ui/settings_windows.py`.
+- Preserved settings semantics, setup overview behavior, preset behavior, and API-key persistence.
+
+Current weaknesses reviewed
+- `ui/settings_windows.py`: `_load_settings()` rewrote many combo boxes, line edits, checkboxes, sliders, and API-key status labels even when the UI already matched the loaded env snapshot.
+- `ui/settings_windows.py`: bulk settings load and local preset application could still emit avoidable widget signals and mode-change side effects while populating fields.
+- `ui/settings_windows.py`: `_apply_local_preset()` always refreshed setup overview and rewrote the full preset field set, even when the selected preset was already reflected in the form.
+- `ui/settings_windows.py`: `_save_settings()` reread API-key fields after persistence only to derive the same status UI it had already computed.
+
+Changes in this pass
+- `ui/settings_windows.py`
+  Added small widget diff helpers for checkboxes, combo boxes, and sliders, plus a temporary signal-blocking context for bulk field population.
+- `ui/settings_windows.py`
+  Routed `_load_settings()` through the new diff-only helpers so unchanged widget state is left alone, and blocked cascaded signals during the bulk load before applying one final mode-driven visibility update.
+- `ui/settings_windows.py`
+  Made `_apply_local_preset()` idempotent: repeated clicks on an already-applied preset now skip redundant field writes and skip setup-overview refresh when nothing visible changed.
+- `ui/settings_windows.py`
+  Reused the already-normalized API-key presence map in `_save_settings()` so status labels no longer require a second field-text pass after saving.
+- Tests
+  Added regression coverage that no-op settings loads avoid widget churn and that idempotent preset application avoids redundant refresh/mutation work.
+
+Why this helps
+- Opening the Windows settings window or reloading its form does less UI work, which reduces unnecessary repainting and signal/slot fan-out on a hot setup path.
+- Reapplying the same local preset no longer replays the whole form population sequence, so the UI feels more immediate and avoids unnecessary setup-status recomputation.
+- Saving settings keeps API-key status updates on the already-computed fast path instead of reparsing the same fields again.
+
+Validation
+- `pytest tests/test_settings_windows_load.py tests/test_settings_windows_hotkeys.py tests/test_settings_windows_logs.py -q`
+- `python -m py_compile ui/settings_windows.py tests/test_settings_windows_load.py`
+- `ruff check ui/settings_windows.py tests/test_settings_windows_load.py`
+
+Next worthwhile areas
+- `ui/welcome.py`: logs/transcripts auto-refresh and segment switching still look like the next macOS/frontend hotspot outside the most recent commit boundaries.
+- `ui/settings_windows.py`: if traces still show expensive open-time work, the next pass should target prompt/vocabulary/log tab initialization and timer backoff rather than more field-level diffs.
+- `ui/overlay.py`: the macOS overlay animation path remains a likely long-session CPU hotspot once it is the oldest untouched area again.

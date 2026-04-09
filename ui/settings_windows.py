@@ -386,6 +386,94 @@ def _set_status_label_if_changed(widget, text: str, color: str) -> None:
     _set_widget_stylesheet_if_changed(widget, f"color: {COLORS[color]};")
 
 
+def _set_checkbox_if_changed(widget, checked: bool) -> bool:
+    if widget is None:
+        return False
+
+    current = getattr(widget, "checked", None)
+    if isinstance(current, bool):
+        if current == checked:
+            return False
+    elif hasattr(widget, "checked"):
+        current = None
+    else:
+        current = "unavailable"
+
+    getter = getattr(widget, "isChecked", None)
+    if callable(getter) and current == "unavailable":
+        try:
+            if bool(getter()) == bool(checked):
+                return False
+        except TypeError:
+            pass
+
+    widget.setChecked(checked)
+    return True
+
+
+def _set_combo_text_if_changed(widget, value: str) -> bool:
+    if widget is None:
+        return False
+
+    current_text = getattr(widget, "currentText", None)
+    if callable(current_text):
+        try:
+            if str(current_text()) == value:
+                return False
+        except TypeError:
+            pass
+
+    find_text = getattr(widget, "findText", None)
+    if not callable(find_text):
+        return False
+
+    idx = find_text(value)
+    if idx < 0:
+        return False
+
+    widget.setCurrentIndex(idx)
+    return True
+
+
+def _set_slider_value_if_changed(widget, value: int) -> bool:
+    if widget is None:
+        return False
+
+    getter = getattr(widget, "value", None)
+    if callable(getter):
+        try:
+            if int(getter()) == int(value):
+                return False
+        except (TypeError, ValueError):
+            pass
+
+    widget.setValue(value)
+    return True
+
+
+@contextmanager
+def _block_widget_signals(*widgets) -> None:
+    """Prevent cascaded signal work during bulk UI population when supported."""
+    previous_states: list[tuple[object, bool]] = []
+    try:
+        for widget in widgets:
+            if widget is None:
+                continue
+            blocker = getattr(widget, "blockSignals", None)
+            if not callable(blocker):
+                continue
+            try:
+                previous_states.append((widget, bool(blocker(True))))
+            except TypeError:
+                continue
+        yield
+    finally:
+        for widget, previous_state in reversed(previous_states):
+            blocker = getattr(widget, "blockSignals", None)
+            if callable(blocker):
+                blocker(previous_state)
+
+
 # =============================================================================
 # Settings Window
 # =============================================================================
@@ -2645,198 +2733,157 @@ class SettingsWindow(QDialog):
         env_get = env_values.get
         self._process_env_api_keys = None
         process_api_keys = self._get_process_env_api_keys()
+        mode = env_get("PULSESCRIBE_MODE") or "deepgram"
+        lang = env_get("PULSESCRIBE_LANGUAGE") or "auto"
+        backend = normalize_local_backend(env_get("PULSESCRIBE_LOCAL_BACKEND"))
+        model = env_get("PULSESCRIBE_LOCAL_MODEL") or "default"
+        streaming = env_get("PULSESCRIBE_STREAMING")
+        device = env_get("PULSESCRIBE_DEVICE") or "auto"
+        beam_size = env_get("PULSESCRIBE_LOCAL_BEAM_SIZE") or ""
+        temperature = env_get("PULSESCRIBE_LOCAL_TEMPERATURE") or ""
+        best_of = env_get("PULSESCRIBE_LOCAL_BEST_OF") or ""
+        compute_type = env_get("PULSESCRIBE_LOCAL_COMPUTE_TYPE") or "default"
+        cpu_threads = env_get("PULSESCRIBE_LOCAL_CPU_THREADS") or ""
+        num_workers = env_get("PULSESCRIBE_LOCAL_NUM_WORKERS") or ""
+        without_ts = env_get("PULSESCRIBE_LOCAL_WITHOUT_TIMESTAMPS") or "default"
+        vad = env_get("PULSESCRIBE_LOCAL_VAD_FILTER") or "default"
+        fp16 = (
+            env_get(LOCAL_FP16_ENV_KEY) or env_get(LEGACY_LOCAL_FP16_ENV_KEY) or "default"
+        )
+        batch_size = env_get("PULSESCRIBE_LIGHTNING_BATCH_SIZE") or "12"
+        quant = env_get("PULSESCRIBE_LIGHTNING_QUANT") or "none"
+        refine = env_get("PULSESCRIBE_REFINE")
+        provider = env_get("PULSESCRIBE_REFINE_PROVIDER") or "groq"
+        refine_model = env_get("PULSESCRIBE_REFINE_MODEL") or ""
+        overlay = env_get("PULSESCRIBE_OVERLAY")
+        rtf = env_get("PULSESCRIBE_SHOW_RTF")
+        clipboard_restore = env_get("PULSESCRIBE_CLIPBOARD_RESTORE")
 
         with self._suspend_setup_overview_refresh():
-            # Mode
-            mode = env_get("PULSESCRIBE_MODE") or "deepgram"
-            if self._mode_combo:
-                idx = self._mode_combo.findText(mode)
-                if idx >= 0:
-                    self._mode_combo.setCurrentIndex(idx)
-
-            # Language
-            lang = env_get("PULSESCRIBE_LANGUAGE") or "auto"
-            if self._lang_combo:
-                idx = self._lang_combo.findText(lang)
-                if idx >= 0:
-                    self._lang_combo.setCurrentIndex(idx)
-
-            # Local Backend
-            backend = normalize_local_backend(env_get("PULSESCRIBE_LOCAL_BACKEND"))
-            if self._local_backend_combo:
-                idx = self._local_backend_combo.findText(backend)
-                if idx >= 0:
-                    self._local_backend_combo.setCurrentIndex(idx)
-
-            # Local Model
-            model = env_get("PULSESCRIBE_LOCAL_MODEL") or "default"
-            if self._local_model_combo:
-                idx = self._local_model_combo.findText(model)
-                if idx >= 0:
-                    self._local_model_combo.setCurrentIndex(idx)
-
-            # Streaming
-            streaming = env_get("PULSESCRIBE_STREAMING")
-            if self._streaming_checkbox:
-                self._streaming_checkbox.setChecked(
-                    _env_bool_default(streaming, default=True)
-                )
-
-            # Advanced: Device
-            device = env_get("PULSESCRIBE_DEVICE") or "auto"
-            if hasattr(self, "_device_combo") and self._device_combo:
-                idx = self._device_combo.findText(device)
-                if idx >= 0:
-                    self._device_combo.setCurrentIndex(idx)
-
-            # Advanced: Beam Size
-            beam_size = env_get("PULSESCRIBE_LOCAL_BEAM_SIZE") or ""
-            if hasattr(self, "_beam_size_field") and self._beam_size_field:
-                self._beam_size_field.setText(beam_size)
-
-            # Advanced: Temperature
-            temperature = env_get("PULSESCRIBE_LOCAL_TEMPERATURE") or ""
-            if hasattr(self, "_temperature_field") and self._temperature_field:
-                self._temperature_field.setText(temperature)
-
-            # Advanced: Best Of
-            best_of = env_get("PULSESCRIBE_LOCAL_BEST_OF") or ""
-            if hasattr(self, "_best_of_field") and self._best_of_field:
-                self._best_of_field.setText(best_of)
-
-            # Faster-Whisper: Compute Type
-            compute_type = env_get("PULSESCRIBE_LOCAL_COMPUTE_TYPE") or "default"
-            if hasattr(self, "_compute_type_combo") and self._compute_type_combo:
-                idx = self._compute_type_combo.findText(compute_type)
-                if idx >= 0:
-                    self._compute_type_combo.setCurrentIndex(idx)
-
-            # Faster-Whisper: CPU Threads
-            cpu_threads = env_get("PULSESCRIBE_LOCAL_CPU_THREADS") or ""
-            if hasattr(self, "_cpu_threads_field") and self._cpu_threads_field:
-                self._cpu_threads_field.setText(cpu_threads)
-
-            # Faster-Whisper: Num Workers
-            num_workers = env_get("PULSESCRIBE_LOCAL_NUM_WORKERS") or ""
-            if hasattr(self, "_num_workers_field") and self._num_workers_field:
-                self._num_workers_field.setText(num_workers)
-
-            # Faster-Whisper: Without Timestamps
-            without_ts = env_get("PULSESCRIBE_LOCAL_WITHOUT_TIMESTAMPS") or "default"
-            if (
-                hasattr(self, "_without_timestamps_combo")
-                and self._without_timestamps_combo
+            with _block_widget_signals(
+                self._mode_combo,
+                self._lang_combo,
+                self._local_backend_combo,
+                self._local_model_combo,
+                self._streaming_checkbox,
+                getattr(self, "_device_combo", None),
+                getattr(self, "_beam_size_field", None),
+                getattr(self, "_temperature_field", None),
+                getattr(self, "_best_of_field", None),
+                getattr(self, "_compute_type_combo", None),
+                getattr(self, "_cpu_threads_field", None),
+                getattr(self, "_num_workers_field", None),
+                getattr(self, "_without_timestamps_combo", None),
+                getattr(self, "_vad_filter_combo", None),
+                getattr(self, "_fp16_combo", None),
+                getattr(self, "_lightning_batch_slider", None),
+                getattr(self, "_lightning_quant_combo", None),
+                self._refine_checkbox,
+                self._refine_provider_combo,
+                self._refine_model_field,
+                self._overlay_checkbox,
+                self._rtf_checkbox,
+                self._clipboard_restore_checkbox,
+                getattr(self, "_toggle_hotkey_field", None),
+                getattr(self, "_hold_hotkey_field", None),
+                *self._api_fields.values(),
             ):
-                idx = self._without_timestamps_combo.findText(without_ts)
-                if idx >= 0:
-                    self._without_timestamps_combo.setCurrentIndex(idx)
-
-            # Faster-Whisper: VAD Filter
-            vad = env_get("PULSESCRIBE_LOCAL_VAD_FILTER") or "default"
-            if hasattr(self, "_vad_filter_combo") and self._vad_filter_combo:
-                idx = self._vad_filter_combo.findText(vad)
-                if idx >= 0:
-                    self._vad_filter_combo.setCurrentIndex(idx)
-
-            # FP16 override (canonical key) with legacy fallback for existing configs.
-            fp16 = (
-                env_get(LOCAL_FP16_ENV_KEY)
-                or env_get(LEGACY_LOCAL_FP16_ENV_KEY)
-                or "default"
-            )
-            if hasattr(self, "_fp16_combo") and self._fp16_combo:
-                idx = self._fp16_combo.findText(fp16)
-                if idx >= 0:
-                    self._fp16_combo.setCurrentIndex(idx)
-
-            # Advanced: Lightning Batch Size
-            batch_size = env_get("PULSESCRIBE_LIGHTNING_BATCH_SIZE") or "12"
-            if hasattr(self, "_lightning_batch_slider") and self._lightning_batch_slider:
+                _set_combo_text_if_changed(self._mode_combo, mode)
+                _set_combo_text_if_changed(self._lang_combo, lang)
+                _set_combo_text_if_changed(self._local_backend_combo, backend)
+                _set_combo_text_if_changed(self._local_model_combo, model)
+                _set_checkbox_if_changed(
+                    self._streaming_checkbox,
+                    _env_bool_default(streaming, default=True),
+                )
+                _set_combo_text_if_changed(getattr(self, "_device_combo", None), device)
+                _set_widget_text_if_changed(
+                    getattr(self, "_beam_size_field", None), beam_size
+                )
+                _set_widget_text_if_changed(
+                    getattr(self, "_temperature_field", None), temperature
+                )
+                _set_widget_text_if_changed(
+                    getattr(self, "_best_of_field", None), best_of
+                )
+                _set_combo_text_if_changed(
+                    getattr(self, "_compute_type_combo", None), compute_type
+                )
+                _set_widget_text_if_changed(
+                    getattr(self, "_cpu_threads_field", None), cpu_threads
+                )
+                _set_widget_text_if_changed(
+                    getattr(self, "_num_workers_field", None), num_workers
+                )
+                _set_combo_text_if_changed(
+                    getattr(self, "_without_timestamps_combo", None), without_ts
+                )
+                _set_combo_text_if_changed(
+                    getattr(self, "_vad_filter_combo", None), vad
+                )
+                _set_combo_text_if_changed(getattr(self, "_fp16_combo", None), fp16)
                 try:
-                    self._lightning_batch_slider.setValue(int(batch_size))
+                    parsed_batch_size = int(batch_size)
                 except ValueError:
-                    self._lightning_batch_slider.setValue(12)
-
-            # Advanced: Lightning Quantization
-            quant = env_get("PULSESCRIBE_LIGHTNING_QUANT") or "none"
-            if hasattr(self, "_lightning_quant_combo") and self._lightning_quant_combo:
-                idx = self._lightning_quant_combo.findText(quant)
-                if idx >= 0:
-                    self._lightning_quant_combo.setCurrentIndex(idx)
-
-            # Refine
-            refine = env_get("PULSESCRIBE_REFINE")
-            if self._refine_checkbox:
-                self._refine_checkbox.setChecked(
-                    _env_bool_default(refine, default=False)
+                    parsed_batch_size = 12
+                _set_slider_value_if_changed(
+                    getattr(self, "_lightning_batch_slider", None),
+                    parsed_batch_size,
+                )
+                _set_combo_text_if_changed(
+                    getattr(self, "_lightning_quant_combo", None), quant
+                )
+                _set_checkbox_if_changed(
+                    self._refine_checkbox,
+                    _env_bool_default(refine, default=False),
+                )
+                _set_combo_text_if_changed(self._refine_provider_combo, provider)
+                _set_widget_text_if_changed(self._refine_model_field, refine_model)
+                _set_checkbox_if_changed(
+                    self._overlay_checkbox,
+                    _env_bool_default(overlay, default=True),
+                )
+                _set_checkbox_if_changed(
+                    self._rtf_checkbox,
+                    _env_bool_default(rtf, default=False),
+                )
+                _set_checkbox_if_changed(
+                    self._clipboard_restore_checkbox,
+                    _env_bool_default(clipboard_restore, default=False),
                 )
 
-            # Refine Provider
-            provider = env_get("PULSESCRIBE_REFINE_PROVIDER") or "groq"
-            if self._refine_provider_combo:
-                idx = self._refine_provider_combo.findText(provider)
-                if idx >= 0:
-                    self._refine_provider_combo.setCurrentIndex(idx)
+                # Hotkeys
+                toggle_raw = env_values.get("PULSESCRIBE_TOGGLE_HOTKEY")
+                hold_raw = env_values.get("PULSESCRIBE_HOLD_HOTKEY")
 
-            # Refine Model
-            refine_model = env_get("PULSESCRIBE_REFINE_MODEL") or ""
-            if self._refine_model_field:
-                self._refine_model_field.setText(refine_model)
+                if toggle_raw is None and hold_raw is None:
+                    toggle = DEFAULT_WINDOWS_TOGGLE_HOTKEY
+                    hold = DEFAULT_WINDOWS_HOLD_HOTKEY
+                else:
+                    toggle = (toggle_raw or "").strip()
+                    hold = (hold_raw or "").strip()
 
-            # Overlay
-            overlay = env_get("PULSESCRIBE_OVERLAY")
-            if self._overlay_checkbox:
-                self._overlay_checkbox.setChecked(
-                    _env_bool_default(overlay, default=True)
+                _set_widget_text_if_changed(
+                    getattr(self, "_toggle_hotkey_field", None), toggle
+                )
+                _set_widget_text_if_changed(
+                    getattr(self, "_hold_hotkey_field", None), hold
                 )
 
-            # RTF Display
-            rtf = env_get("PULSESCRIBE_SHOW_RTF")
-            if self._rtf_checkbox:
-                self._rtf_checkbox.setChecked(_env_bool_default(rtf, default=False))
-
-            # Clipboard Restore
-            clipboard_restore = env_get("PULSESCRIBE_CLIPBOARD_RESTORE")
-            if self._clipboard_restore_checkbox:
-                self._clipboard_restore_checkbox.setChecked(
-                    _env_bool_default(clipboard_restore, default=False)
-                )
-
-            # Hotkeys
-            toggle_raw = env_values.get("PULSESCRIBE_TOGGLE_HOTKEY")
-            hold_raw = env_values.get("PULSESCRIBE_HOLD_HOTKEY")
-
-            if toggle_raw is None and hold_raw is None:
-                toggle = DEFAULT_WINDOWS_TOGGLE_HOTKEY
-                hold = DEFAULT_WINDOWS_HOLD_HOTKEY
-            else:
-                toggle = (toggle_raw or "").strip()
-                hold = (hold_raw or "").strip()
-
-            if hasattr(self, "_toggle_hotkey_field") and self._toggle_hotkey_field:
-                self._toggle_hotkey_field.setText(toggle)
-
-            if hasattr(self, "_hold_hotkey_field") and self._hold_hotkey_field:
-                self._hold_hotkey_field.setText(hold)
-
-            # API Keys
-            for env_key, field in self._api_fields.items():
-                value = ((env_values.get(env_key) or "").strip()) or process_api_keys.get(
-                    env_key, ""
-                )
-                field.setText(value)
-                status = self._api_status.get(env_key)
-                if status:
-                    if value:
-                        status.setText("✓")
-                        status.setStyleSheet(f"color: {COLORS['success']};")
-                    else:
-                        status.setText("")
-                        status.setStyleSheet(f"color: {COLORS['text_secondary']};")
+                # API Keys
+                for env_key, field in self._api_fields.items():
+                    value = ((env_values.get(env_key) or "").strip()) or process_api_keys.get(
+                        env_key, ""
+                    )
+                    _set_widget_text_if_changed(field, value)
+                    _set_status_label_if_changed(
+                        self._api_status.get(env_key),
+                        "✓" if value else "",
+                        "success" if value else "text_secondary",
+                    )
 
         # Mode-abhängige Sichtbarkeit und Setup-Status nur einmal am Ende aktualisieren
         self._on_mode_changed(mode)
-        self._refresh_setup_overview()
 
     def _save_settings(self):
         """Speichert alle Settings."""
@@ -3018,27 +3065,21 @@ class SettingsWindow(QDialog):
             env_updates["PULSESCRIBE_HOLD_HOTKEY"] = hold_hotkey or None
 
             # API Keys
+            api_key_values: dict[str, bool] = {}
             for env_key, field in self._api_fields.items():
                 value = field.text().strip()
+                is_set = bool(value)
+                api_key_values[env_key] = is_set
                 env_updates[env_key] = value or None
 
             update_env_settings(env_updates)
 
-            for env_key, field in self._api_fields.items():
-                value = field.text().strip()
-                is_set = bool(value)
-                status = self._api_status.get(env_key)
-                if status:
-                    if is_set:
-                        _set_widget_text_if_changed(status, "✓")
-                        _set_widget_stylesheet_if_changed(
-                            status, f"color: {COLORS['success']};"
-                        )
-                    else:
-                        _set_widget_text_if_changed(status, "")
-                        _set_widget_stylesheet_if_changed(
-                            status, f"color: {COLORS['text_secondary']};"
-                        )
+            for env_key, is_set in api_key_values.items():
+                _set_status_label_if_changed(
+                    self._api_status.get(env_key),
+                    "✓" if is_set else "",
+                    "success" if is_set else "text_secondary",
+                )
 
             # Prompts speichern (aus Cache + aktuellem Editor)
             self._save_all_prompts()
@@ -3104,98 +3145,141 @@ class SettingsWindow(QDialog):
             return
         values = dict(WINDOWS_LOCAL_PRESET_BASE)
         values.update(preset_values)
+        ui_changed = False
+        mode_changed = False
 
         with self._suspend_setup_overview_refresh():
-            # UI-Felder aktualisieren
-            if self._mode_combo:
-                idx = self._mode_combo.findText(values.get("mode", "local"))
-                if idx >= 0:
-                    self._mode_combo.setCurrentIndex(idx)
-                    self._on_mode_changed("local")  # Sichtbarkeit aktualisieren
-
-            if self._local_backend_combo:
-                idx = self._local_backend_combo.findText(
-                    values.get("local_backend", "faster")
-                )
-                if idx >= 0:
-                    self._local_backend_combo.setCurrentIndex(idx)
-
-            if self._local_model_combo:
-                idx = self._local_model_combo.findText(
-                    values.get("local_model", "turbo")
-                )
-                if idx >= 0:
-                    self._local_model_combo.setCurrentIndex(idx)
-
-            if hasattr(self, "_device_combo") and self._device_combo:
-                idx = self._device_combo.findText(values.get("device", "auto"))
-                if idx >= 0:
-                    self._device_combo.setCurrentIndex(idx)
-
-            if hasattr(self, "_compute_type_combo") and self._compute_type_combo:
-                idx = self._compute_type_combo.findText(
-                    values.get("compute_type", "default")
-                )
-                if idx >= 0:
-                    self._compute_type_combo.setCurrentIndex(idx)
-
-            if hasattr(self, "_beam_size_field") and self._beam_size_field:
-                self._beam_size_field.setText(values.get("beam_size", ""))
-
-            if hasattr(self, "_temperature_field") and self._temperature_field:
-                self._temperature_field.setText(values.get("temperature", ""))
-
-            if hasattr(self, "_best_of_field") and self._best_of_field:
-                self._best_of_field.setText(values.get("best_of", ""))
-
-            if hasattr(self, "_cpu_threads_field") and self._cpu_threads_field:
-                self._cpu_threads_field.setText(values.get("cpu_threads", ""))
-
-            if hasattr(self, "_num_workers_field") and self._num_workers_field:
-                self._num_workers_field.setText(values.get("num_workers", ""))
-
-            if hasattr(self, "_vad_filter_combo") and self._vad_filter_combo:
-                idx = self._vad_filter_combo.findText(
-                    values.get("vad_filter", "default")
-                )
-                if idx >= 0:
-                    self._vad_filter_combo.setCurrentIndex(idx)
-
-            if (
-                hasattr(self, "_without_timestamps_combo")
-                and self._without_timestamps_combo
+            with _block_widget_signals(
+                self._mode_combo,
+                self._local_backend_combo,
+                self._local_model_combo,
+                getattr(self, "_device_combo", None),
+                getattr(self, "_compute_type_combo", None),
+                getattr(self, "_beam_size_field", None),
+                getattr(self, "_temperature_field", None),
+                getattr(self, "_best_of_field", None),
+                getattr(self, "_cpu_threads_field", None),
+                getattr(self, "_num_workers_field", None),
+                getattr(self, "_vad_filter_combo", None),
+                getattr(self, "_without_timestamps_combo", None),
+                getattr(self, "_fp16_combo", None),
+                getattr(self, "_lightning_batch_slider", None),
+                getattr(self, "_lightning_quant_combo", None),
             ):
-                idx = self._without_timestamps_combo.findText(
-                    values.get("without_timestamps", "default")
+                mode_changed = _set_combo_text_if_changed(
+                    self._mode_combo, values.get("mode", "local")
                 )
-                if idx >= 0:
-                    self._without_timestamps_combo.setCurrentIndex(idx)
-
-            if hasattr(self, "_fp16_combo") and self._fp16_combo:
-                idx = self._fp16_combo.findText(values.get("fp16", "default"))
-                if idx >= 0:
-                    self._fp16_combo.setCurrentIndex(idx)
-
-            if hasattr(self, "_lightning_batch_slider") and self._lightning_batch_slider:
-                self._lightning_batch_slider.setValue(
-                    int(values.get("lightning_batch_size", 12))
+                ui_changed = mode_changed or ui_changed
+                ui_changed = (
+                    _set_combo_text_if_changed(
+                        self._local_backend_combo,
+                        values.get("local_backend", "faster"),
+                    )
+                    or ui_changed
+                )
+                ui_changed = (
+                    _set_combo_text_if_changed(
+                        self._local_model_combo,
+                        values.get("local_model", "turbo"),
+                    )
+                    or ui_changed
+                )
+                ui_changed = (
+                    _set_combo_text_if_changed(
+                        getattr(self, "_device_combo", None),
+                        values.get("device", "auto"),
+                    )
+                    or ui_changed
+                )
+                ui_changed = (
+                    _set_combo_text_if_changed(
+                        getattr(self, "_compute_type_combo", None),
+                        values.get("compute_type", "default"),
+                    )
+                    or ui_changed
+                )
+                ui_changed = (
+                    _set_widget_text_if_changed(
+                        getattr(self, "_beam_size_field", None),
+                        values.get("beam_size", ""),
+                    )
+                    or ui_changed
+                )
+                ui_changed = (
+                    _set_widget_text_if_changed(
+                        getattr(self, "_temperature_field", None),
+                        values.get("temperature", ""),
+                    )
+                    or ui_changed
+                )
+                ui_changed = (
+                    _set_widget_text_if_changed(
+                        getattr(self, "_best_of_field", None),
+                        values.get("best_of", ""),
+                    )
+                    or ui_changed
+                )
+                ui_changed = (
+                    _set_widget_text_if_changed(
+                        getattr(self, "_cpu_threads_field", None),
+                        values.get("cpu_threads", ""),
+                    )
+                    or ui_changed
+                )
+                ui_changed = (
+                    _set_widget_text_if_changed(
+                        getattr(self, "_num_workers_field", None),
+                        values.get("num_workers", ""),
+                    )
+                    or ui_changed
+                )
+                ui_changed = (
+                    _set_combo_text_if_changed(
+                        getattr(self, "_vad_filter_combo", None),
+                        values.get("vad_filter", "default"),
+                    )
+                    or ui_changed
+                )
+                ui_changed = (
+                    _set_combo_text_if_changed(
+                        getattr(self, "_without_timestamps_combo", None),
+                        values.get("without_timestamps", "default"),
+                    )
+                    or ui_changed
+                )
+                ui_changed = (
+                    _set_combo_text_if_changed(
+                        getattr(self, "_fp16_combo", None),
+                        values.get("fp16", "default"),
+                    )
+                    or ui_changed
+                )
+                ui_changed = (
+                    _set_slider_value_if_changed(
+                        getattr(self, "_lightning_batch_slider", None),
+                        int(values.get("lightning_batch_size", 12)),
+                    )
+                    or ui_changed
+                )
+                ui_changed = (
+                    _set_combo_text_if_changed(
+                        getattr(self, "_lightning_quant_combo", None),
+                        values.get("lightning_quant", "none"),
+                    )
+                    or ui_changed
                 )
 
-            if hasattr(self, "_lightning_quant_combo") and self._lightning_quant_combo:
-                idx = self._lightning_quant_combo.findText(
-                    values.get("lightning_quant", "none")
-                )
-                if idx >= 0:
-                    self._lightning_quant_combo.setCurrentIndex(idx)
-
-        self._refresh_setup_overview()
+        if mode_changed:
+            self._on_mode_changed("local")
+        elif ui_changed:
+            self._refresh_setup_overview()
 
         # Feedback
-        if hasattr(self, "_preset_status") and self._preset_status:
-            self._preset_status.setText(
-                f"✓ '{preset}' preset applied — click 'Save & Apply' to persist."
-            )
-            self._preset_status.setStyleSheet(f"color: {COLORS['success']};")
+        _set_status_label_if_changed(
+            getattr(self, "_preset_status", None),
+            f"✓ '{preset}' preset applied — click 'Save & Apply' to persist.",
+            "success",
+        )
 
     def _write_reload_signal(self):
         """Schreibt Signal-Datei für Daemon-Reload.
