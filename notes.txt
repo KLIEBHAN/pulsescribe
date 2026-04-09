@@ -428,3 +428,40 @@ Next worthwhile areas
 - `web/src/app/[locale]/page.tsx` and `web/src/app/[locale]/docs/page.tsx`: large `t.raw(...)` sections could be profiled for opportunities to hoist more static data shaping out of render.
 - `web/src/components/SiteHeader.tsx`: if the mobile menu still dominates interaction traces, split the always-visible shell from the open-menu dialog path to narrow the hydrated code further.
 - `ui/overlay.py`: outside the web repo, the macOS overlay animation timers remain the next desktop-side long-session hotspot.
+
+Performance work log - 2026-04-09 (web SSR translation pass)
+
+Scope
+- Left the last two commit areas untouched again: the recent `ui/welcome.py` desktop pass and the note-only follow-up stayed out of scope.
+- Focused on untouched web render-path cost in `web/src/app/[locale]/page.tsx`, `web/src/app/[locale]/docs/page.tsx`, and a tiny repeat-allocation path in `web/src/components/LanguageSwitcher.tsx`.
+- Preserved landing-page content, docs content, locale switching behavior, and existing routing semantics.
+
+Current weaknesses reviewed
+- `web/src/app/[locale]/page.tsx`: the landing page fetched `getTranslations("landing")` and `getTranslations("common")` sequentially even though both are independent.
+- `web/src/app/[locale]/docs/page.tsx`: the docs page had the same serial translation-fetch pattern on a heavier server-render path.
+- `web/src/components/LanguageSwitcher.tsx`: locale label metadata was recreated on every render even though it is static.
+
+Changes in this pass
+- `web/src/app/[locale]/page.tsx`
+  Switched the landing page translation fetches to `Promise.all(...)` so the render path stops waiting on two independent async steps in series.
+- `web/src/app/[locale]/docs/page.tsx`
+  Switched the docs page translation fetches to the same parallel path, trimming server-side setup time on the heaviest content page.
+- `web/src/components/LanguageSwitcher.tsx`
+  Hoisted the static locale-name map out of the component so renders stop reallocating the same object.
+- Tests
+  Added a docs-page regression test file covering render success, primary call-to-action presence, and breadcrumb JSON-LD output.
+
+Why this helps
+- The landing page and docs page now start rendering as soon as both translation namespaces resolve, instead of paying avoidable serialized latency.
+- The docs page benefits most because it is the larger static page and spends more total time in server-side content assembly.
+- The language switcher client path is slightly cheaper on repeated renders and keeps the component work closer to pure input -> output.
+
+Validation
+- `cd web && npm run test:run -- 'src/app/[locale]/page.test.tsx' 'src/app/[locale]/docs/page.test.tsx' 'src/components/LanguageSwitcher.test.tsx'`
+- `cd web && npm run lint -- 'src/app/[locale]/page.tsx' 'src/app/[locale]/docs/page.tsx' 'src/app/[locale]/docs/page.test.tsx' 'src/components/LanguageSwitcher.tsx' 'src/components/LanguageSwitcher.test.tsx'`
+- `cd web && npm run build`
+
+Next worthwhile areas
+- `web/src/i18n/request.ts`: the request config still loads the full locale JSON for each request; splitting message payloads by namespace would reduce server-side i18n work further.
+- `web/src/app/[locale]/page.tsx` and `web/src/app/[locale]/docs/page.tsx`: if traces still show render cost, hoist more static content shaping out of the page bodies instead of repeatedly normalizing `t.raw(...)` payloads inline.
+- `web/src/components/SiteHeader.tsx`: if mobile-menu traces still dominate, split the always-visible shell from the dialog/open-menu path to shrink hydrated interaction work.
