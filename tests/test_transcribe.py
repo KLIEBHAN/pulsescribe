@@ -90,6 +90,25 @@ class TestTranscribeFunction:
         call_kwargs = mock_provider.transcribe.call_args[1]
         assert call_kwargs.get("response_format") == "json"
 
+    def test_openai_accepts_provider_subclasses(self, audio_file):
+        """OpenAI-Sonderlogik soll auch Subklassen nicht unnötig blockieren."""
+        from providers.openai import OpenAIProvider
+
+        class CustomOpenAIProvider(OpenAIProvider):
+            pass
+
+        with patch("providers.get_provider") as mock_get_provider:
+            mock_provider = Mock(spec=CustomOpenAIProvider)
+            mock_provider.transcribe.return_value = "text"
+            mock_get_provider.return_value = mock_provider
+
+            from transcribe import transcribe
+
+            transcribe(audio_file, mode="openai", response_format="json")
+
+        call_kwargs = mock_provider.transcribe.call_args[1]
+        assert call_kwargs.get("response_format") == "json"
+
     def test_openai_requires_openai_provider_instance(self, audio_file):
         """Die OpenAI-Sonderbehandlung darf keinen falschen Provider schlucken."""
         with patch("providers.get_provider", return_value=Mock()):

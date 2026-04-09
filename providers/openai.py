@@ -9,6 +9,7 @@ from utils.timing import redacted_text_summary, timed_operation
 
 from config import DEFAULT_API_MODEL
 from ._client_cache import EnvClientCache, build_cached_env_client_getter
+from ._response_utils import serialize_openai_response
 from ._transcription_request import resolve_transcription_request
 from .base import EnvValidatedProvider
 
@@ -49,30 +50,6 @@ def _resolve_api_response_format(model: str, requested_format: str) -> str:
         f"OpenAI-Modell '{model}' unterstützt kein Ausgabeformat '{normalized}'. "
         "Für SRT/VTT bitte '--model whisper-1' verwenden."
     )
-
-
-def _serialize_response(response, *, requested_format: str) -> str:
-    """Convert SDK responses into stable CLI output."""
-    normalized = (requested_format or "text").strip().lower() or "text"
-
-    if isinstance(response, str):
-        return response
-
-    if normalized == "text":
-        text = getattr(response, "text", None)
-        if isinstance(text, str):
-            return text
-
-    model_dump_json = getattr(response, "model_dump_json", None)
-    if callable(model_dump_json):
-        serialized = model_dump_json(indent=2)
-        return serialized if isinstance(serialized, str) else str(serialized)
-
-    text = getattr(response, "text", None)
-    if isinstance(text, str):
-        return text
-
-    return str(response)
 
 
 class OpenAIProvider(EnvValidatedProvider):
@@ -144,7 +121,10 @@ class OpenAIProvider(EnvValidatedProvider):
                     params["language"] = request.language
                 response = client.audio.transcriptions.create(**params)
 
-        result = _serialize_response(response, requested_format=response_format)
+        result = serialize_openai_response(
+            response,
+            requested_format=response_format,
+        )
 
         logger.debug("Ergebnis: %s", redacted_text_summary(result))
 

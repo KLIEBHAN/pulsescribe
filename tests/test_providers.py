@@ -441,6 +441,40 @@ def test_openai_provider_serializes_json_response_objects(monkeypatch, tmp_path)
     assert created_params[0]["response_format"] == "json"
 
 
+def test_openai_provider_text_output_falls_back_to_model_dump_json(
+    monkeypatch, tmp_path
+):
+    from providers.openai import OpenAIProvider
+    import providers.openai as openai_mod
+
+    audio_file = tmp_path / "sample.wav"
+    audio_file.write_bytes(b"audio")
+
+    class _JsonOnlyResponse:
+        def model_dump_json(self, *, indent=None):
+            assert indent == 2
+            return '{\n  "text": "serialized text"\n}'
+
+    fake_client = SimpleNamespace(
+        audio=SimpleNamespace(
+            transcriptions=SimpleNamespace(create=lambda **_kwargs: _JsonOnlyResponse())
+        )
+    )
+
+    monkeypatch.setattr(openai_mod, "_get_client", lambda: fake_client)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    provider = OpenAIProvider()
+    assert (
+        provider.transcribe(
+            audio_file,
+            model="gpt-4o-transcribe",
+            response_format="text",
+        )
+        == '{\n  "text": "serialized text"\n}'
+    )
+
+
 def test_openai_provider_rejects_srt_for_gpt4o(tmp_path, monkeypatch):
     from providers.openai import OpenAIProvider
 
@@ -568,6 +602,27 @@ def test_groq_provider_accepts_response_objects_with_text_attribute(
 
     provider = GroqProvider()
     assert provider.transcribe(audio_file) == "plain transcript"
+
+
+def test_groq_provider_rejects_unexpected_response_objects(monkeypatch, tmp_path):
+    from providers.groq import GroqProvider
+    import providers.groq as groq_mod
+
+    audio_file = tmp_path / "sample.wav"
+    audio_file.write_bytes(b"audio")
+
+    fake_client = SimpleNamespace(
+        audio=SimpleNamespace(
+            transcriptions=SimpleNamespace(create=lambda **_kwargs: object())
+        )
+    )
+
+    monkeypatch.setattr(groq_mod, "_get_client", lambda: fake_client)
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+
+    provider = GroqProvider()
+    with pytest.raises(TypeError, match="Unerwarteter Groq-Response-Typ"):
+        provider.transcribe(audio_file)
 
 
 def test_groq_provider_redacts_debug_result_logging(monkeypatch, tmp_path):
@@ -740,6 +795,37 @@ def test_deepgram_provider_returns_empty_string_when_transcript_is_missing(
                 media=SimpleNamespace(
                     transcribe_file=lambda **_kwargs: SimpleNamespace(
                         results=SimpleNamespace(channels=[])
+                    )
+                )
+            )
+        )
+    )
+
+    monkeypatch.setattr(deepgram_mod, "_get_client", lambda: fake_client)
+    monkeypatch.setattr(deepgram_mod, "load_vocabulary", lambda: {"keywords": []})
+    monkeypatch.setenv("DEEPGRAM_API_KEY", "test-key")
+
+    provider = DeepgramProvider()
+    assert provider.transcribe(audio_file) == ""
+
+
+def test_deepgram_provider_returns_empty_string_when_alternatives_are_missing(
+    monkeypatch, tmp_path
+):
+    from providers.deepgram import DeepgramProvider
+    import providers.deepgram as deepgram_mod
+
+    audio_file = tmp_path / "sample.wav"
+    audio_file.write_bytes(b"audio")
+
+    fake_client = SimpleNamespace(
+        listen=SimpleNamespace(
+            v1=SimpleNamespace(
+                media=SimpleNamespace(
+                    transcribe_file=lambda **_kwargs: SimpleNamespace(
+                        results=SimpleNamespace(
+                            channels=[SimpleNamespace(alternatives=[])]
+                        )
                     )
                 )
             )

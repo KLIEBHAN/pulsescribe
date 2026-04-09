@@ -30,6 +30,7 @@ import logging  # noqa: E402
 import os  # noqa: E402
 from dataclasses import dataclass  # noqa: E402
 from enum import Enum  # noqa: E402
+from inspect import signature as _inspect_signature  # noqa: E402
 
 from pathlib import Path  # noqa: E402
 
@@ -234,6 +235,22 @@ def _validate_transcription_mode(mode: str) -> None:
     raise ValueError(f"Ungültiger Modus '{mode}'. Unterstützt: {supported}")
 
 
+def _provider_accepts_response_format(provider) -> bool:
+    """Detect whether a provider's transcribe() supports ``response_format``."""
+    transcribe_method = getattr(provider.__class__, "transcribe", None)
+    if transcribe_method is None:
+        transcribe_method = getattr(provider, "transcribe", None)
+    if transcribe_method is None:
+        return False
+
+    try:
+        parameters = _inspect_signature(transcribe_method).parameters
+    except (TypeError, ValueError):
+        return False
+
+    return "response_format" in parameters
+
+
 def _build_provider_transcribe_kwargs(
     mode: str,
     provider,
@@ -252,11 +269,10 @@ def _build_provider_transcribe_kwargs(
             log(f"Hinweis: --format wird im {mode}-Modus ignoriert")
         return kwargs
 
-    from providers.openai import OpenAIProvider
-
-    if not isinstance(provider, OpenAIProvider):
+    if not _provider_accepts_response_format(provider):
         raise TypeError(
-            f"Expected OpenAIProvider for mode='openai', got {type(provider).__name__}"
+            "Expected OpenAIProvider-compatible provider for mode='openai', "
+            f"got {type(provider).__name__}"
         )
 
     return {

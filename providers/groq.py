@@ -9,6 +9,7 @@ from utils.timing import redacted_text_summary, timed_operation
 
 from config import DEFAULT_GROQ_MODEL
 from ._client_cache import EnvClientCache, build_cached_env_client_getter
+from ._response_utils import require_text_response
 from ._transcription_request import resolve_transcription_request
 from .base import EnvValidatedProvider
 
@@ -92,13 +93,7 @@ class GroqProvider(EnvValidatedProvider):
                     params["language"] = request.language
                 response = client.audio.transcriptions.create(**params)
 
-        # Groq gibt bei response_format="text" String zurück
-        if isinstance(response, str):
-            result = response
-        elif hasattr(response, "text"):
-            result = response.text
-        else:
-            raise TypeError(f"Unerwarteter Groq-Response-Typ: {type(response)}")
+        result = require_text_response(response, provider_name="Groq")
 
         logger.debug("Ergebnis: %s", redacted_text_summary(result))
 

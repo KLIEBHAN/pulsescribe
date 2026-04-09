@@ -79,19 +79,26 @@ def _build_request_params(
     return request_params
 
 
-def _extract_transcript(response) -> str:
-    """Extract transcript text from a Deepgram REST response."""
+def _get_first_transcript_alternative(response):
+    """Return the first Deepgram transcript alternative when present."""
     channels = getattr(getattr(response, "results", None), "channels", [])
     if not channels:
-        logger.warning("Deepgram-Antwort enthält keine Transkription")
-        return ""
+        return None
 
     alternatives = getattr(channels[0], "alternatives", [])
     if not alternatives:
+        return None
+
+    return alternatives[0]
+
+
+def _extract_transcript(response) -> str:
+    """Extract transcript text from a Deepgram REST response."""
+    alternative = _get_first_transcript_alternative(response)
+    if alternative is None:
         logger.warning("Deepgram-Antwort enthält keine Transkription")
         return ""
-
-    return getattr(alternatives[0], "transcript", "") or ""
+    return getattr(alternative, "transcript", "") or ""
 
 
 class DeepgramProvider(EnvValidatedProvider):
