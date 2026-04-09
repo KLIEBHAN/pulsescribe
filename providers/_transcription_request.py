@@ -43,7 +43,7 @@ def build_transcription_params(
     """Build provider request params while omitting auto-detect languages."""
     params: dict[str, object] = {"model": model}
     if extra_params:
-        params.update(dict(extra_params))
+        params.update(extra_params)
     if language:
         params["language"] = language
     return params
@@ -57,7 +57,7 @@ def execute_audio_file_request(
 ) -> Any:
     """Open an audio file once and execute a provider SDK request with it."""
     with audio_path.open("rb") as audio_file:
-        return request_callable(**dict(build_params(audio_file)))
+        return request_callable(**build_params(audio_file))
 
 
 def execute_audio_transcription_request(
@@ -80,7 +80,7 @@ def execute_audio_transcription_request(
         return build_transcription_params(
             model=model,
             language=language,
-            extra_params={"file": file_payload, **dict(extra_params or {})},
+            extra_params={"file": file_payload, **(extra_params or {})},
         )
 
     return execute_audio_file_request(
