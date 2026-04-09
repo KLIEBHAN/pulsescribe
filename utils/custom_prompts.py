@@ -22,8 +22,8 @@ import tomllib
 from pathlib import Path
 
 from config import PROMPTS_FILE
+from utils.atomic_io import write_text_atomic as _write_text_atomic
 from utils.file_signatures import FileSignature, build_file_signature
-from utils.preferences import _write_text_atomic
 from refine.prompts import (
     CONTEXT_PROMPTS,
     DEFAULT_APP_CONTEXTS,

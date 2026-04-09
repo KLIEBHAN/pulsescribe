@@ -6,13 +6,12 @@ API-Keys werden in ~/.pulsescribe/.env gespeichert.
 
 import json
 import logging
-import os
-import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
 from config import USER_CONFIG_DIR
 
+from utils.atomic_io import write_text_atomic
 from utils.env import parse_env_line_with_dotenv, read_env_file_values
 from utils.file_signatures import FileSignature, build_file_signature
 from utils.onboarding import (
@@ -225,23 +224,7 @@ def _update_env_file(
 
 def _write_text_atomic(path: Path, content: str, *, encoding: str = "utf-8") -> None:
     """Schreibt Text atomar, um truncierte Config-Dateien zu vermeiden."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-        dir=str(path.parent),
-    )
-    os.close(fd)
-    tmp_path = Path(tmp_name)
-    try:
-        tmp_path.write_text(content, encoding=encoding)
-        tmp_path.replace(path)
-    except Exception:
-        try:
-            tmp_path.unlink()
-        except OSError:
-            pass
-        raise
+    write_text_atomic(path, content, encoding=encoding)
 
 
 def load_preferences() -> dict:

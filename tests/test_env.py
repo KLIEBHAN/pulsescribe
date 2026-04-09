@@ -1,6 +1,7 @@
 """Tests für utils/env.py – Environment Loading."""
 
 import os
+import sys
 from unittest.mock import patch
 
 import config as config_module
@@ -197,4 +198,62 @@ def test_fallback_dotenv_values_parse_quotes_comments_and_export(tmp_path) -> No
         "PULSESCRIBE_LANGUAGE": "de",
         "EMPTY_VALUE": "",
         "PLAIN_VALUE": "no-comment",
+    }
+
+
+def test_parse_env_line_with_dotenv_normalizes_key_and_value(monkeypatch) -> None:
+    class _FakeDotenvModule:
+        @staticmethod
+        def dotenv_values(*_args, **_kwargs):
+            return {
+                None: "ignored",
+                " PULSESCRIBE_MODE ": " local ",
+            }
+
+    monkeypatch.setitem(sys.modules, "dotenv", _FakeDotenvModule)
+
+    assert env_module.parse_env_line_with_dotenv("ignored") == (
+        "PULSESCRIBE_MODE",
+        "local",
+    )
+
+
+def test_read_env_file_values_supports_first_and_last_wins(tmp_path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "PULSESCRIBE_MODE=deepgram\nPULSESCRIBE_MODE=local\nUNCHANGED=value\n",
+        encoding="utf-8",
+    )
+
+    assert env_module.read_env_file_values(env_file, first_wins=True) == {
+        "PULSESCRIBE_MODE": "deepgram",
+        "UNCHANGED": "value",
+    }
+    assert env_module.read_env_file_values(env_file, first_wins=False) == {
+        "PULSESCRIBE_MODE": "local",
+        "UNCHANGED": "value",
+    }
+
+
+def test_collect_env_values_prefers_user_env_over_local_env(tmp_path) -> None:
+    user_config_dir = tmp_path / "user"
+    user_config_dir.mkdir()
+    (user_config_dir / ".env").write_text(
+        "SHARED=user\nUSER_ONLY=yes\n",
+        encoding="utf-8",
+    )
+    local_env = tmp_path / "repo.env"
+    local_env.write_text(
+        "PULSESCRIBE_MODE=local\nSHARED=repo\nLOCAL_ONLY=yes\n",
+        encoding="utf-8",
+    )
+
+    assert env_module.collect_env_values(
+        user_config_dir=user_config_dir,
+        local_env_path=local_env,
+    ) == {
+        "PULSESCRIBE_MODE": "local",
+        "SHARED": "user",
+        "LOCAL_ONLY": "yes",
+        "USER_ONLY": "yes",
     }

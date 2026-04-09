@@ -98,6 +98,26 @@ def test_apply_local_preset_to_env_resets_lightning_specific_defaults(
     assert updates["PULSESCRIBE_LIGHTNING_QUANT"] is None
 
 
+def test_apply_local_preset_to_env_uses_shared_defaults_without_mutating_base(
+    monkeypatch,
+) -> None:
+    custom_presets = dict(presets.LOCAL_PRESETS)
+    custom_presets["Test Minimal Preset"] = {
+        "local_backend": "mlx",
+        "local_model": "turbo",
+    }
+    monkeypatch.setattr(presets, "LOCAL_PRESETS", custom_presets)
+    updates = _capture_env_updates(monkeypatch)
+    original_base = dict(presets.LOCAL_PRESET_BASE)
+
+    assert presets.apply_local_preset_to_env("Test Minimal Preset") is True
+
+    assert updates["PULSESCRIBE_LOCAL_COMPUTE_TYPE"] is None
+    assert updates["PULSESCRIBE_LOCAL_CPU_THREADS"] is None
+    assert updates["PULSESCRIBE_LIGHTNING_BATCH_SIZE"] is None
+    assert presets.LOCAL_PRESET_BASE == original_base
+
+
 def test_apply_local_preset_to_env_migrates_legacy_fp16_key(monkeypatch) -> None:
     custom_presets = dict(presets.LOCAL_PRESETS)
     custom_presets["Test FP16 Preset"] = {

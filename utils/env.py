@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Iterator, Mapping
 from io import StringIO
 from pathlib import Path
 
@@ -37,6 +38,43 @@ def _remember_loaded_env_values(values: dict[str, str]) -> None:
 def _get_local_env_path() -> Path:
     """Return the project-local `.env` path independent of the current cwd."""
     return Path(__file__).resolve().parent.parent / ".env"
+
+
+def _iter_normalized_dotenv_items(
+    raw_values: Mapping[object, object | None],
+    *,
+    strip_values: bool = False,
+    include_none_as_empty: bool = False,
+) -> Iterator[tuple[str, str]]:
+    """Yield normalized ``KEY=value`` pairs from dotenv-style mappings."""
+    for key, value in raw_values.items():
+        normalized_key = str(key or "").strip()
+        if not normalized_key:
+            continue
+        if value is None:
+            if include_none_as_empty:
+                yield normalized_key, ""
+            continue
+        normalized_value = str(value)
+        if strip_values:
+            normalized_value = normalized_value.strip()
+        yield normalized_key, normalized_value
+
+
+def _first_normalized_dotenv_item(
+    raw_values: Mapping[object, object | None],
+    *,
+    strip_values: bool = False,
+    include_none_as_empty: bool = False,
+) -> tuple[str | None, str | None]:
+    """Return the first normalized item from a dotenv-style mapping."""
+    for key, value in _iter_normalized_dotenv_items(
+        raw_values,
+        strip_values=strip_values,
+        include_none_as_empty=include_none_as_empty,
+    ):
+        return key, value
+    return None, None
 
 
 def parse_env_line(raw_line: str) -> tuple[str | None, str | None]:
@@ -96,13 +134,11 @@ def parse_env_line_with_dotenv(raw_line: str) -> tuple[str | None, str | None]:
     except Exception:
         return parse_env_line(raw_line)
 
-    for key, value in parsed.items():
-        normalized_key = str(key or "").strip()
-        if not normalized_key:
-            continue
-        return normalized_key, "" if value is None else str(value).strip()
-
-    return None, None
+    return _first_normalized_dotenv_item(
+        parsed,
+        strip_values=True,
+        include_none_as_empty=True,
+    )
 
 
 def _parse_env_line(raw_line: str) -> tuple[str | None, str | None]:
@@ -158,12 +194,7 @@ def _read_dotenv_values(path: Path) -> dict[str, str]:
     except Exception:
         return {}
 
-    values: dict[str, str] = {}
-    for key, value in raw_values.items():
-        if key is None or value is None:
-            continue
-        values[str(key)] = str(value)
-    return values
+    return dict(_iter_normalized_dotenv_items(raw_values))
 
 
 def collect_env_values(
