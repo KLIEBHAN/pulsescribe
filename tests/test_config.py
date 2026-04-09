@@ -7,6 +7,10 @@ import sys
 from types import SimpleNamespace
 
 
+def _restore_input_device_cache(config_module, original_cache):
+    config_module._cached_input_device = original_cache
+
+
 def test_config_preloads_user_env_before_import_time_constants(
     tmp_path, monkeypatch
 ) -> None:
@@ -110,7 +114,7 @@ def test_get_input_device_keeps_caching_successful_probe(monkeypatch) -> None:
         assert config_module.get_input_device() == (None, 44_100)
         assert query_calls == 1
     finally:
-        config_module._cached_input_device = original_cache
+        _restore_input_device_cache(config_module, original_cache)
 
 
 
@@ -141,7 +145,7 @@ def test_get_input_device_non_windows_prefers_named_microphone(monkeypatch) -> N
     try:
         assert config_module.get_input_device() == (1, 48_000)
     finally:
-        config_module._cached_input_device = original_cache
+        _restore_input_device_cache(config_module, original_cache)
 
 
 
@@ -198,4 +202,128 @@ def test_get_input_device_windows_prefers_working_mic_array(monkeypatch) -> None
         assert config_module.get_input_device() == (1, 48_000)
         assert attempts == [(1, 48_000)]
     finally:
-        config_module._cached_input_device = original_cache
+        _restore_input_device_cache(config_module, original_cache)
+
+
+
+def test_get_input_device_windows_falls_back_to_working_microphone(monkeypatch) -> None:
+    import config as config_module
+
+    original_cache = config_module._cached_input_device
+    config_module._cached_input_device = None
+    attempts: list[tuple[int | None, int]] = []
+
+    class _ProbeStream:
+        def __init__(self, **kwargs):
+            self.device = kwargs["device"]
+            self.samplerate = kwargs["samplerate"]
+            self._callback = kwargs["callback"]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def start(self) -> None:
+            attempts.append((self.device, self.samplerate))
+            if self.device == 1:
+                raise RuntimeError("mic array unavailable")
+            if self.device == 2:
+                self._callback(object(), 0, None, None)
+                return
+            raise AssertionError("speaker should be skipped")
+
+    fake_sounddevice = SimpleNamespace(
+        default=SimpleNamespace(device=[-1, None]),
+        query_devices=lambda: [
+            {
+                "name": "USB Speaker",
+                "max_input_channels": 2,
+                "default_samplerate": 44_100,
+            },
+            {
+                "name": "Mic Array (Realtek)",
+                "max_input_channels": 2,
+                "default_samplerate": 48_000,
+            },
+            {
+                "name": "Microphone (USB)",
+                "max_input_channels": 1,
+                "default_samplerate": 16_000,
+            },
+        ],
+        InputStream=lambda **kwargs: _ProbeStream(**kwargs),
+    )
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sounddevice)
+
+    try:
+        assert config_module.get_input_device() == (2, 16_000)
+        assert attempts[-1] == (2, 16_000)
+        assert all(device != 0 for device, _samplerate in attempts)
+    finally:
+        _restore_input_device_cache(config_module, original_cache)
+
+
+
+def test_get_input_device_windows_fallback_result_is_not_cached(monkeypatch) -> None:
+    import config as config_module
+
+    original_cache = config_module._cached_input_device
+    config_module._cached_input_device = None
+    attempts: list[tuple[int | None, int]] = []
+    query_calls = 0
+
+    class _ProbeStream:
+        def __init__(self, **kwargs):
+            self.device = kwargs["device"]
+            self.samplerate = kwargs["samplerate"]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def start(self) -> None:
+            attempts.append((self.device, self.samplerate))
+            raise RuntimeError("device unavailable")
+
+    def _query_devices(device: int | None = None):
+        nonlocal query_calls
+        query_calls += 1
+        assert device is None
+        return [
+            {
+                "name": "Line In",
+                "max_input_channels": 1,
+                "default_samplerate": 44_100,
+            },
+            {
+                "name": "Studio Capture",
+                "max_input_channels": 1,
+                "default_samplerate": 48_000,
+            },
+        ]
+
+    fake_sounddevice = SimpleNamespace(
+        default=SimpleNamespace(device=[-1, None]),
+        query_devices=_query_devices,
+        InputStream=lambda **kwargs: _ProbeStream(**kwargs),
+    )
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sounddevice)
+
+    try:
+        assert config_module.get_input_device() == (0, 44_100)
+        assert config_module.get_input_device() == (0, 44_100)
+        assert query_calls == 2
+        assert attempts == [
+            (0, 44_100),
+            (1, 48_000),
+            (0, 44_100),
+            (1, 48_000),
+        ]
+    finally:
+        _restore_input_device_cache(config_module, original_cache)

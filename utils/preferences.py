@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import tempfile
+from collections.abc import Callable
 from io import StringIO
 from pathlib import Path
 
@@ -199,6 +200,45 @@ def _write_env_lines(env_path: Path, lines: list[str]) -> None:
     _invalidate_env_cache()
 
 
+
+def _update_env_file(
+    env_path: Path,
+    *,
+    apply_changes: Callable[[list[str]], tuple[list[str], bool]],
+    read_error_message: str,
+    write_error_message: str,
+    invalidate_cache_on_noop: bool = False,
+    suppress_errors: bool = False,
+) -> bool:
+    """Liest, mutiert und schreibt `.env`-Zeilen mit konsistentem Fehlerverhalten."""
+    try:
+        lines = _read_existing_env_lines(env_path)
+    except OSError:
+        if suppress_errors:
+            logger.warning(read_error_message, exc_info=True)
+            return False
+        logger.exception(read_error_message)
+        raise
+
+    new_lines, changed = apply_changes(lines)
+    if not changed:
+        if invalidate_cache_on_noop:
+            _invalidate_env_cache()
+        return False
+
+    try:
+        _write_env_lines(env_path, new_lines)
+    except OSError:
+        if suppress_errors:
+            logger.warning(write_error_message, exc_info=True)
+            return False
+        logger.exception(write_error_message)
+        raise
+
+    return True
+
+
+
 def _write_text_atomic(path: Path, content: str, *, encoding: str = "utf-8") -> None:
     """Schreibt Text atomar, um truncierte Config-Dateien zu vermeiden."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -354,26 +394,13 @@ def save_api_key(key_name: str, value: str) -> None:
     Raises:
         OSError: Bei Schreibfehlern (Disk voll, keine Berechtigung)
     """
-    env_path = ENV_FILE
-
-    try:
-        lines = _read_existing_env_lines(env_path)
-    except OSError:
-        logger.exception("Konnte .env nicht lesen")
-        raise
-
-    lines, changed = _set_first_env_line(lines, key_name, value)
-    if not changed:
-        # Externe Updates koennen bei grober FS-Metadatenauflösung den Cache
-        # unverändert wirken lassen, obwohl Nachbar-Keys angepasst wurden.
-        _invalidate_env_cache()
-        return
-
-    try:
-        _write_env_lines(env_path, lines)
-    except OSError:
-        logger.exception("Konnte .env nicht schreiben")
-        raise
+    _update_env_file(
+        ENV_FILE,
+        apply_changes=lambda lines: _set_first_env_line(lines, key_name, value),
+        read_error_message="Konnte .env nicht lesen",
+        write_error_message="Konnte .env nicht schreiben",
+        invalidate_cache_on_noop=True,
+    )
 
 
 def set_api_key(key_name: str, value: str | None) -> bool:
@@ -436,24 +463,13 @@ def update_env_settings(updates: dict[str, str | None]) -> None:
     if not updates:
         return
 
-    env_path = ENV_FILE
-    try:
-        lines = _read_existing_env_lines(env_path)
-    except OSError:
-        logger.exception("Konnte .env nicht lesen")
-        raise
-
-    new_lines, changed = _apply_env_updates_to_lines(lines, updates)
-
-    if not changed:
-        _invalidate_env_cache()
-        return
-
-    try:
-        _write_env_lines(env_path, new_lines)
-    except OSError:
-        logger.exception("Konnte .env nicht aktualisieren")
-        raise
+    _update_env_file(
+        ENV_FILE,
+        apply_changes=lambda lines: _apply_env_updates_to_lines(lines, updates),
+        read_error_message="Konnte .env nicht lesen",
+        write_error_message="Konnte .env nicht aktualisieren",
+        invalidate_cache_on_noop=True,
+    )
 
 
 def remove_env_setting(key_name: str) -> None:
@@ -467,14 +483,13 @@ def remove_env_setting(key_name: str) -> None:
     if not env_path.exists():
         return
 
-    try:
-        lines = _read_existing_env_lines(env_path)
-        new_lines, changed = _apply_env_updates_to_lines(lines, {key_name: None})
-        if not changed:
-            return
-        _write_env_lines(env_path, new_lines)
-    except OSError:
-        logger.warning("Konnte .env nicht aktualisieren", exc_info=True)
+    _update_env_file(
+        env_path,
+        apply_changes=lambda lines: _apply_env_updates_to_lines(lines, {key_name: None}),
+        read_error_message="Konnte .env nicht aktualisieren",
+        write_error_message="Konnte .env nicht aktualisieren",
+        suppress_errors=True,
+    )
 
 
 def apply_hotkey_setting(kind: str, hotkey_str: str) -> None:

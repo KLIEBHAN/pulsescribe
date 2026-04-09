@@ -7,6 +7,7 @@ Vermeidet Duplikation zwischen Modulen.
 import logging
 import os
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
 
@@ -148,6 +149,48 @@ def _probe_windows_input_device(sd: Any, device: dict[str, Any]) -> bool:
 
 
 
+def _build_input_device_result(
+    device: dict[str, Any], *, cache: bool = True
+) -> tuple[int | None, int]:
+    """Konvertiert normalisierte Gerätedaten in das gecachte Rückgabeformat."""
+    return _return_input_device_result((device["idx"], device["samplerate"]), cache=cache)
+
+
+
+def _select_matching_input_device(
+    input_devices: list[dict[str, Any]],
+    *,
+    matches: Callable[[dict[str, Any]], bool],
+    is_ready: Callable[[dict[str, Any]], bool] | None = None,
+) -> tuple[int | None, int] | None:
+    """Wählt das erste passende Gerät, optional mit Readiness-Probe."""
+    for device in input_devices:
+        if not matches(device):
+            continue
+        if is_ready is not None and not is_ready(device):
+            continue
+        _log_selected_input_device(device)
+        return _build_input_device_result(device)
+    return None
+
+
+
+def _select_fallback_input_device(
+    input_devices: list[dict[str, Any]],
+    *,
+    cache: bool = True,
+    warning_message: str | None = None,
+) -> tuple[int | None, int]:
+    """Wählt das erste verfügbare Gerät als letzte Rückfallebene."""
+    device = input_devices[0]
+    if warning_message:
+        logger.warning(warning_message, device["name"])
+    else:
+        _log_selected_input_device(device)
+    return _build_input_device_result(device, cache=cache)
+
+
+
 def _select_windows_input_device(
     sd: Any,
     input_devices: list[dict[str, Any]],
@@ -155,40 +198,39 @@ def _select_windows_input_device(
     """Wählt unter Windows das bestgeeignete funktionierende Input-Device."""
     mic_array_keywords = ("mikrofonarray", "mic array")
     mic_keywords = ("mikrofon", "mic", "microphone")
+    probe_device = lambda device: _probe_windows_input_device(sd, device)
 
-    # Priorität 1: Mikrofonarray-Geräte (funktionieren meist gut auf Windows)
-    for device in input_devices:
-        if _device_name_matches(device["name"], mic_array_keywords):
-            if _probe_windows_input_device(sd, device):
-                _log_selected_input_device(device)
-                return _return_input_device_result((device["idx"], device["samplerate"]))
-
-    # Priorität 2: Mikrofon-Geräte (außer Lautsprecher)
-    for device in input_devices:
-        if _should_skip_windows_device(device["name"]):
-            continue
-        if _device_name_matches(device["name"], mic_keywords):
-            if _probe_windows_input_device(sd, device):
-                _log_selected_input_device(device)
-                return _return_input_device_result((device["idx"], device["samplerate"]))
-
-    # Priorität 3: Beliebiges funktionierendes Gerät (außer Lautsprecher)
-    for device in input_devices:
-        if _should_skip_windows_device(device["name"]):
-            continue
-        if _probe_windows_input_device(sd, device):
-            _log_selected_input_device(device)
-            return _return_input_device_result((device["idx"], device["samplerate"]))
-
-    # Fallback ohne Test (kann fehlschlagen)
-    fallback_device = input_devices[0]
-    logger.warning(
-        "Kein funktionierendes Gerät gefunden, versuche: %s",
-        fallback_device["name"],
+    selected = _select_matching_input_device(
+        input_devices,
+        matches=lambda device: _device_name_matches(device["name"], mic_array_keywords),
+        is_ready=probe_device,
     )
-    return _return_input_device_result(
-        (fallback_device["idx"], fallback_device["samplerate"]),
+    if selected is not None:
+        return selected
+
+    selected = _select_matching_input_device(
+        input_devices,
+        matches=lambda device: (
+            not _should_skip_windows_device(device["name"])
+            and _device_name_matches(device["name"], mic_keywords)
+        ),
+        is_ready=probe_device,
+    )
+    if selected is not None:
+        return selected
+
+    selected = _select_matching_input_device(
+        input_devices,
+        matches=lambda device: not _should_skip_windows_device(device["name"]),
+        is_ready=probe_device,
+    )
+    if selected is not None:
+        return selected
+
+    return _select_fallback_input_device(
+        input_devices,
         cache=False,
+        warning_message="Kein funktionierendes Gerät gefunden, versuche: %s",
     )
 
 
@@ -198,16 +240,13 @@ def _select_non_windows_input_device(
 ) -> tuple[int | None, int]:
     """Wählt auf Nicht-Windows-Systemen bevorzugt ein Mikrofon-Gerät."""
     mic_keywords = ("mikrofon", "mic", "microphone")
-    for device in input_devices:
-        if _device_name_matches(device["name"], mic_keywords):
-            _log_selected_input_device(device)
-            return _return_input_device_result((device["idx"], device["samplerate"]))
-
-    fallback_device = input_devices[0]
-    _log_selected_input_device(fallback_device)
-    return _return_input_device_result(
-        (fallback_device["idx"], fallback_device["samplerate"])
+    selected = _select_matching_input_device(
+        input_devices,
+        matches=lambda device: _device_name_matches(device["name"], mic_keywords),
     )
+    if selected is not None:
+        return selected
+    return _select_fallback_input_device(input_devices)
 
 
 

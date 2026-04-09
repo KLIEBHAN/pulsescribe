@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 import utils.preferences as prefs
 
 
@@ -231,6 +233,49 @@ def test_update_env_settings_preserves_comments_and_collapses_updated_duplicates
     assert prefs.ENV_FILE.read_text(encoding="utf-8") == (
         "# top\nPULSESCRIBE_MODE=local\nUNCHANGED_KEY=keep\n# keep\n"
     )
+
+
+def test_save_api_key_reraises_write_errors(tmp_path, monkeypatch):
+    _isolate_prefs(tmp_path, monkeypatch)
+    prefs.ENV_FILE.write_text("DEEPGRAM_API_KEY=old\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        prefs,
+        "_write_env_lines",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    with pytest.raises(OSError, match="disk full"):
+        prefs.save_api_key("DEEPGRAM_API_KEY", "new")
+
+
+def test_update_env_settings_reraises_write_errors(tmp_path, monkeypatch):
+    _isolate_prefs(tmp_path, monkeypatch)
+    prefs.ENV_FILE.write_text("PULSESCRIBE_MODE=deepgram\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        prefs,
+        "_write_env_lines",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    with pytest.raises(OSError, match="disk full"):
+        prefs.update_env_settings({"PULSESCRIBE_MODE": "local"})
+
+
+def test_remove_env_setting_suppresses_write_errors(tmp_path, monkeypatch):
+    _isolate_prefs(tmp_path, monkeypatch)
+    prefs.ENV_FILE.write_text("PULSESCRIBE_MODE=deepgram\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        prefs,
+        "_write_env_lines",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    prefs.remove_env_setting("PULSESCRIBE_MODE")
+
+    assert prefs.ENV_FILE.read_text(encoding="utf-8") == "PULSESCRIBE_MODE=deepgram\n"
 
 
 def test_read_env_file_parses_quoted_values_and_inline_comments(tmp_path, monkeypatch):
