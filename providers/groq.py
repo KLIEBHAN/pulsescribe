@@ -5,12 +5,16 @@ Nutzt Groq's LPU-Chips für extrem schnelle Whisper-Inferenz (~300x Echtzeit).
 
 import logging
 from pathlib import Path
-from utils.timing import redacted_text_summary, timed_operation
+from utils.timing import timed_operation
 
 from config import DEFAULT_GROQ_MODEL
 from ._client_cache import EnvClientCache, build_cached_env_client_getter
-from ._response_utils import require_text_response
-from ._transcription_request import resolve_transcription_request
+from ._response_utils import log_transcription_result, require_text_response
+from ._transcription_request import (
+    build_transcription_params,
+    execute_audio_file_request,
+    resolve_transcription_request,
+)
 from .base import EnvValidatedProvider
 
 logger = logging.getLogger("pulsescribe.providers.groq")
@@ -81,21 +85,24 @@ class GroqProvider(EnvValidatedProvider):
         client = _get_client()
 
         with timed_operation("Groq-Transkription", logger=logger, include_session=False):
-            with audio_path.open("rb") as audio_file:
-                params = {
-                    # File-Handle statt .read() – spart Speicher bei großen Dateien
-                    "file": (audio_path.name, audio_file),
-                    "model": request.model,
-                    "response_format": "text",
-                    "temperature": 0.0,  # Konsistente Ergebnisse ohne Kreativität
-                }
-                if request.language:
-                    params["language"] = request.language
-                response = client.audio.transcriptions.create(**params)
+            response = execute_audio_file_request(
+                audio_path,
+                request_callable=client.audio.transcriptions.create,
+                build_params=lambda audio_file: build_transcription_params(
+                    model=request.model,
+                    language=request.language,
+                    extra_params={
+                        # File-Handle statt .read() – spart Speicher bei großen Dateien
+                        "file": (audio_path.name, audio_file),
+                        "response_format": "text",
+                        "temperature": 0.0,  # Konsistente Ergebnisse ohne Kreativität
+                    },
+                ),
+            )
 
         result = require_text_response(response, provider_name="Groq")
 
-        logger.debug("Ergebnis: %s", redacted_text_summary(result))
+        log_transcription_result(logger, result)
 
         return result
 

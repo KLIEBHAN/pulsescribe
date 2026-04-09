@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import logging
+
+from utils.timing import redacted_text_summary
+
 
 def extract_text_response(response: object) -> str | None:
     """Return plain transcript text from common SDK response shapes."""
@@ -41,3 +45,8 @@ def require_text_response(response: object, *, provider_name: str) -> str:
         return text_response
 
     raise TypeError(f"Unerwarteter {provider_name}-Response-Typ: {type(response)}")
+
+
+def log_transcription_result(logger: logging.Logger, result: str) -> None:
+    """Emit a privacy-safe debug log for provider transcription results."""
+    logger.debug("Ergebnis: %s", redacted_text_summary(result))

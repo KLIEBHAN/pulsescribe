@@ -3,6 +3,7 @@
 
 import asyncio
 import builtins
+from pathlib import Path
 import sys
 from types import SimpleNamespace
 
@@ -520,6 +521,47 @@ def test_openai_provider_omits_auto_language(monkeypatch, tmp_path):
     assert "language" not in created_params[0]
 
 
+def test_openai_provider_streams_file_handle_to_sdk(monkeypatch, tmp_path):
+    from providers.openai import OpenAIProvider
+    import providers.openai as openai_mod
+
+    audio_file = tmp_path / "sample.wav"
+    audio_file.write_bytes(b"audio")
+
+    observed: dict[str, object] = {}
+
+    def fake_create(**kwargs):
+        sdk_file = kwargs["file"]
+        observed["is_bytes"] = isinstance(sdk_file, (bytes, bytearray))
+        observed["name"] = Path(sdk_file.name).name
+        observed["payload"] = sdk_file.read()
+        observed["language"] = kwargs.get("language")
+        observed["response_format"] = kwargs["response_format"]
+        return SimpleNamespace(text="plain transcript")
+
+    fake_client = SimpleNamespace(
+        audio=SimpleNamespace(
+            transcriptions=SimpleNamespace(create=fake_create)
+        )
+    )
+
+    monkeypatch.setattr(openai_mod, "_get_client", lambda: fake_client)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    provider = OpenAIProvider()
+    assert provider.transcribe(audio_file, language="de") == "plain transcript"
+
+    assert observed == {
+        "is_bytes": False,
+        "name": "sample.wav",
+        "payload": b"audio",
+        "language": "de",
+        # gpt-4o-transcribe ist JSON-only; text wird intern als json angefragt.
+        "response_format": "json",
+    }
+
+
+
 def test_openai_provider_redacts_debug_result_logging(monkeypatch, tmp_path):
     from providers.openai import OpenAIProvider
     import providers.openai as openai_mod
@@ -578,6 +620,48 @@ def test_groq_provider_omits_auto_language(monkeypatch, tmp_path):
     provider.transcribe(audio_file, language=" auto ")
 
     assert "language" not in created_params[0]
+
+
+def test_groq_provider_passes_named_file_tuple_and_stable_defaults(
+    monkeypatch, tmp_path
+):
+    from providers.groq import GroqProvider
+    import providers.groq as groq_mod
+
+    audio_file = tmp_path / "sample.wav"
+    audio_file.write_bytes(b"audio")
+
+    observed: dict[str, object] = {}
+
+    def fake_create(**kwargs):
+        filename, sdk_file = kwargs["file"]
+        observed["filename"] = filename
+        observed["payload"] = sdk_file.read()
+        observed["language"] = kwargs.get("language")
+        observed["response_format"] = kwargs["response_format"]
+        observed["temperature"] = kwargs["temperature"]
+        return "plain transcript"
+
+    fake_client = SimpleNamespace(
+        audio=SimpleNamespace(
+            transcriptions=SimpleNamespace(create=fake_create)
+        )
+    )
+
+    monkeypatch.setattr(groq_mod, "_get_client", lambda: fake_client)
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+
+    provider = GroqProvider()
+    assert provider.transcribe(audio_file, language="de") == "plain transcript"
+
+    assert observed == {
+        "filename": "sample.wav",
+        "payload": b"audio",
+        "language": "de",
+        "response_format": "text",
+        "temperature": 0.0,
+    }
+
 
 
 def test_groq_provider_accepts_response_objects_with_text_attribute(
@@ -687,6 +771,48 @@ def test_deepgram_provider_omits_auto_language(monkeypatch, tmp_path):
     provider.transcribe(audio_file, language="auto")
 
     assert "language" not in created_params[0]
+
+
+def test_deepgram_provider_keeps_rest_defaults_and_explicit_language(
+    monkeypatch, tmp_path
+):
+    from providers.deepgram import DeepgramProvider
+    import providers.deepgram as deepgram_mod
+
+    audio_file = tmp_path / "sample.wav"
+    audio_file.write_bytes(b"audio")
+
+    observed: dict[str, object] = {}
+
+    def fake_transcribe_file(**kwargs):
+        observed.update(kwargs)
+        observed["payload"] = b"".join(kwargs["request"])
+        return SimpleNamespace(
+            results=SimpleNamespace(
+                channels=[SimpleNamespace(alternatives=[SimpleNamespace(transcript="hi")])]
+            )
+        )
+
+    fake_client = SimpleNamespace(
+        listen=SimpleNamespace(
+            v1=SimpleNamespace(media=SimpleNamespace(transcribe_file=fake_transcribe_file))
+        )
+    )
+
+    monkeypatch.setattr(deepgram_mod, "_get_client", lambda: fake_client)
+    monkeypatch.setattr(deepgram_mod, "load_vocabulary", lambda: {"keywords": ["API"]})
+    monkeypatch.setenv("DEEPGRAM_API_KEY", "test-key")
+
+    provider = DeepgramProvider()
+    assert provider.transcribe(audio_file, model="nova-3", language="de") == "hi"
+
+    assert observed["model"] == "nova-3"
+    assert observed["language"] == "de"
+    assert observed["smart_format"] is True
+    assert observed["punctuate"] is True
+    assert observed["keyterm"] == ["API"]
+    assert observed["payload"] == b"audio"
+
 
 
 def test_deepgram_provider_redacts_debug_result_logging(monkeypatch, tmp_path):

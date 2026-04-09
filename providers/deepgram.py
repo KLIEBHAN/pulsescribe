@@ -6,12 +6,16 @@ Für Streaming siehe deepgram_stream.py.
 
 import logging
 from pathlib import Path
-from utils.timing import redacted_text_summary, timed_operation
+from utils.timing import timed_operation
 from utils.vocabulary import load_vocabulary
 
 from config import DEFAULT_DEEPGRAM_MODEL
 from ._client_cache import EnvClientCache, build_cached_env_client_getter
-from ._transcription_request import resolve_transcription_request
+from ._response_utils import log_transcription_result
+from ._transcription_request import (
+    build_transcription_params,
+    resolve_transcription_request,
+)
 from .base import EnvValidatedProvider
 
 logger = logging.getLogger("pulsescribe.providers.deepgram")
@@ -67,16 +71,16 @@ def _build_request_params(
     keywords: list[str],
 ) -> dict[str, object]:
     """Build a Deepgram REST request without mixing I/O, vocab and response logic."""
-    request_params: dict[str, object] = {
-        "request": _iter_audio_chunks(audio_path),
-        "model": model,
-        "smart_format": True,
-        "punctuate": True,
-        **_build_vocabulary_params(model, keywords),
-    }
-    if language:
-        request_params["language"] = language
-    return request_params
+    return build_transcription_params(
+        model=model,
+        language=language,
+        extra_params={
+            "request": _iter_audio_chunks(audio_path),
+            "smart_format": True,
+            "punctuate": True,
+            **_build_vocabulary_params(model, keywords),
+        },
+    )
 
 
 def _get_first_transcript_alternative(response):
@@ -166,7 +170,7 @@ class DeepgramProvider(EnvValidatedProvider):
 
         result = _extract_transcript(response)
 
-        logger.debug("Ergebnis: %s", redacted_text_summary(result))
+        log_transcription_result(logger, result)
 
         return result
 
