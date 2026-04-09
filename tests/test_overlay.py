@@ -6,6 +6,7 @@ from ui.overlay import (
     WAVE_ANIMATION_FPS,
     WAVE_ANIMATION_FPS_ACTIVE,
     WAVE_ANIMATION_FPS_FEEDBACK,
+    WAVE_ANIMATION_FPS_IDLE,
     WAVE_HEIGHT_UPDATE_EPSILON,
     OverlayController,
     SoundWaveView,
@@ -53,6 +54,17 @@ class _FakeBar:
 
 def _install_fake_foundation(monkeypatch):
     scheduled_calls: list[tuple[float, bool, object]] = []
+    created_timers: list[object] = []
+
+    class _FakeTimer:
+        def __init__(self, interval: float, repeats: bool, block) -> None:
+            self.interval = interval
+            self.repeats = repeats
+            self.block = block
+            self.invalidated = 0
+
+        def invalidate(self) -> None:
+            self.invalidated += 1
 
     class _FakeNSTimer:
         @staticmethod
@@ -60,14 +72,16 @@ def _install_fake_foundation(monkeypatch):
             interval: float, repeats: bool, block
         ):
             scheduled_calls.append((interval, repeats, block))
-            return object()
+            timer = _FakeTimer(interval, repeats, block)
+            created_timers.append(timer)
+            return timer
 
     monkeypatch.setitem(
         sys.modules,
         "Foundation",
         types.SimpleNamespace(NSTimer=_FakeNSTimer),
     )
-    return scheduled_calls
+    return scheduled_calls, created_timers
 
 
 def test_format_recording_interim_text_compacts_whitespace():
@@ -135,9 +149,12 @@ def test_sound_wave_view_only_repositions_when_center_changes():
 
 
 def test_sound_wave_view_start_level_timer_uses_recording_interval(monkeypatch):
-    scheduled_calls = _install_fake_foundation(monkeypatch)
+    scheduled_calls, _created_timers = _install_fake_foundation(monkeypatch)
     view = SoundWaveView.__new__(SoundWaveView)
     view._level_timer = None
+    view._target_level = 1.0
+    view._smoothed_level = 1.0
+    view._level_timer_activity_mode = "active"
 
     SoundWaveView._start_level_timer(view)
 
@@ -146,7 +163,7 @@ def test_sound_wave_view_start_level_timer_uses_recording_interval(monkeypatch):
 
 
 def test_sound_wave_view_start_processing_timer_uses_active_interval(monkeypatch):
-    scheduled_calls = _install_fake_foundation(monkeypatch)
+    scheduled_calls, _created_timers = _install_fake_foundation(monkeypatch)
     view = SoundWaveView.__new__(SoundWaveView)
     view._processing_timer = None
 
@@ -157,7 +174,7 @@ def test_sound_wave_view_start_processing_timer_uses_active_interval(monkeypatch
 
 
 def test_sound_wave_view_start_done_timer_uses_feedback_interval(monkeypatch):
-    scheduled_calls = _install_fake_foundation(monkeypatch)
+    scheduled_calls, _created_timers = _install_fake_foundation(monkeypatch)
     view = SoundWaveView.__new__(SoundWaveView)
     view._done_timer = None
 
@@ -165,6 +182,46 @@ def test_sound_wave_view_start_done_timer_uses_feedback_interval(monkeypatch):
 
     assert scheduled_calls[0][0] == 1.0 / WAVE_ANIMATION_FPS_FEEDBACK
     assert scheduled_calls[0][1] is True
+
+
+def test_sound_wave_view_start_level_timer_uses_idle_interval_for_quiet_input(
+    monkeypatch,
+):
+    scheduled_calls, _created_timers = _install_fake_foundation(monkeypatch)
+    view = SoundWaveView.__new__(SoundWaveView)
+    view._level_timer = None
+    view._target_level = 0.0
+    view._smoothed_level = 0.0
+    view._level_timer_activity_mode = "idle"
+
+    SoundWaveView._start_level_timer(view)
+
+    assert scheduled_calls[0][0] == 1.0 / WAVE_ANIMATION_FPS_IDLE
+    assert scheduled_calls[0][1] is True
+
+
+def test_sound_wave_view_level_timer_reschedules_when_activity_mode_changes(
+    monkeypatch,
+):
+    scheduled_calls, created_timers = _install_fake_foundation(monkeypatch)
+    view = SoundWaveView.__new__(SoundWaveView)
+    view._target_level = 0.0
+    view._smoothed_level = 0.0
+    view._level_timer = None
+    view._level_timer_interval_seconds = None
+    view._level_timer_activity_mode = "idle"
+
+    SoundWaveView._start_level_timer(view)
+
+    view._target_level = 0.2
+    view._smoothed_level = 0.2
+    SoundWaveView._update_level_timer_interval(view)
+
+    assert len(scheduled_calls) == 2
+    assert scheduled_calls[0][0] == 1.0 / WAVE_ANIMATION_FPS_IDLE
+    assert scheduled_calls[1][0] == 1.0 / WAVE_ANIMATION_FPS
+    assert created_timers[0].invalidated == 1
+    assert view._level_timer is created_timers[1]
 
 
 def test_overlay_controller_text_presentation_skips_duplicate_widget_updates():

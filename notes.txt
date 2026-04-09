@@ -465,3 +465,34 @@ Next worthwhile areas
 - `web/src/i18n/request.ts`: the request config still loads the full locale JSON for each request; splitting message payloads by namespace would reduce server-side i18n work further.
 - `web/src/app/[locale]/page.tsx` and `web/src/app/[locale]/docs/page.tsx`: if traces still show render cost, hoist more static content shaping out of the page bodies instead of repeatedly normalizing `t.raw(...)` payloads inline.
 - `web/src/components/SiteHeader.tsx`: if mobile-menu traces still dominate, split the always-visible shell from the dialog/open-menu path to shrink hydrated interaction work.
+
+Performance work log - 2026-04-09 (macOS overlay adaptive recording cadence pass)
+
+Scope
+- Left the recent web and desktop settings/onboarding work untouched.
+- Focused on `ui/overlay.py`, which remained the clearest older long-session frontend hotspot from the notes backlog.
+- Preserved overlay visuals, recording responsiveness, state transitions, and feedback timing semantics.
+
+Current weaknesses reviewed
+- `ui/overlay.py`: once direct audio-level rendering started, the recording overlay kept its 60 FPS NSTimer cadence even through near-silent stretches, which meant unnecessary main-thread wakeups during long dictation sessions.
+- `ui/overlay.py`: the timer cadence had no hysteresis, so a naive slowdown risked oscillating between intervals around the silence/speech boundary.
+
+Changes in this pass
+- `ui/overlay.py`
+  Added an adaptive recording cadence with hysteresis: keep the fast 60 FPS path while speech energy is meaningfully active, and back off to a lower idle cadence during quiet stretches without changing the visible state model.
+- `tests/test_overlay.py`
+  Added regression coverage for quiet-start idle cadence and for rescheduling the recording timer when the overlay transitions from idle audio activity back to active speech.
+
+Why this helps
+- Long recording sessions now spend materially less time waking the main thread when the user pauses between phrases, while louder/active speech still returns to the high-frequency path quickly.
+- The hysteresis keeps the timer from flapping between cadences around the silence threshold, so the optimization stays stable instead of trading CPU churn for timer churn.
+
+Validation
+- `pytest tests/test_overlay.py -q`
+- `python -m py_compile ui/overlay.py tests/test_overlay.py`
+- `ruff check ui/overlay.py tests/test_overlay.py`
+
+Next worthwhile areas
+- `web/src/i18n/request.ts`: request-time locale loading still pulls the full locale payload and remains the next web render-path hotspot.
+- `web/src/components/SiteHeader.tsx`: the mobile menu still bundles a large interactive path into the header shell and is the next client-side bundle/hydration candidate once it is safely outside the recent-change boundary.
+- `ui/overlay.py`: if traces still show overlay cost during active speech, the next step is to reduce per-frame math/allocation work inside `_render_level_frame()` rather than the timer cadence itself.

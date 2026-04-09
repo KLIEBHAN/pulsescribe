@@ -63,6 +63,9 @@ WAVE_AGC_HEADROOM = 2.0  # Mehr Headroom = weniger Sensitivität/Clipping
 WAVE_ANIMATION_FPS = 60.0
 WAVE_ANIMATION_FPS_ACTIVE = 30.0
 WAVE_ANIMATION_FPS_FEEDBACK = 20.0
+WAVE_ANIMATION_FPS_IDLE = 24.0
+WAVE_LEVEL_ACTIVE_THRESHOLD = 0.035
+WAVE_LEVEL_IDLE_THRESHOLD = 0.02
 
 # Sanfte, deterministische "Wander"-Modulation (traveling wave) statt Random-Jitter.
 WAVE_WANDER_AMOUNT = 0.22  # Relative Modulation (0..~0.35 sinnvoll)
@@ -217,6 +220,8 @@ class SoundWaveView:
         self._target_level = 0.0
         self._smoothed_level = 0.0
         self._level_timer = None
+        self._level_timer_interval_seconds = None
+        self._level_timer_activity_mode = "idle"
         self._processing_timer = None
         self._processing_start_time = None
         self._listening_timer = None
@@ -342,7 +347,10 @@ class SoundWaveView:
         self._target_level = self._compute_target_level(level)
 
         # Timer-basiertes Rendering starten (smooth wandering unabhängig von Audio callback rate)
-        self._start_level_timer()
+        if self._level_timer is None:
+            self._start_level_timer()
+        else:
+            self._update_level_timer_interval()
 
     def _ensure_recording_mode(self) -> None:
         if self.current_animation != "recording":
@@ -460,8 +468,12 @@ class SoundWaveView:
         if self._level_timer is not None:
             return
 
+        self._schedule_level_timer(self._level_timer_interval())
+
+    def _schedule_level_timer(self, interval: float) -> None:
         from Foundation import NSTimer  # type: ignore[import-not-found]
 
+        self._level_timer_interval_seconds = interval
         self_ref = weakref.ref(self)
 
         def tick(_timer) -> None:
@@ -474,10 +486,36 @@ class SoundWaveView:
                 return
             self_obj._render_level_frame()
 
-        interval = self._level_timer_interval()
         self._level_timer = NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
             interval, True, tick
         )
+
+    def _recording_level_activity_mode(self) -> str:
+        peak_level = max(self._target_level, self._smoothed_level)
+        if self._level_timer_activity_mode == "active":
+            return "active" if peak_level >= WAVE_LEVEL_IDLE_THRESHOLD else "idle"
+        return "active" if peak_level >= WAVE_LEVEL_ACTIVE_THRESHOLD else "idle"
+
+    def _update_level_timer_interval(self) -> None:
+        desired_mode = self._recording_level_activity_mode()
+        desired_interval = self._level_timer_interval()
+        if (
+            self._level_timer is None
+            or self._level_timer_interval_seconds == desired_interval
+            and self._level_timer_activity_mode == desired_mode
+        ):
+            self._level_timer_activity_mode = desired_mode
+            return
+
+        current_timer = self._level_timer
+        self._level_timer = None
+        try:
+            current_timer.invalidate()
+        except Exception:
+            pass
+
+        self._level_timer_activity_mode = desired_mode
+        self._schedule_level_timer(desired_interval)
 
     def _stop_level_timer(self) -> None:
         if self._level_timer is None:
@@ -487,6 +525,8 @@ class SoundWaveView:
         except Exception:
             pass
         self._level_timer = None
+        self._level_timer_interval_seconds = None
+        self._level_timer_activity_mode = "idle"
 
     def _start_processing_timer(self) -> None:
         """Startet Timer für Wanderpuls-Animation (Transcribing/Refining)."""
@@ -621,7 +661,13 @@ class SoundWaveView:
         CATransaction.commit()
 
     def _level_timer_interval(self) -> float:
-        return _fps_to_interval_seconds(WAVE_ANIMATION_FPS)
+        activity_mode = self._recording_level_activity_mode()
+        fps = (
+            WAVE_ANIMATION_FPS
+            if activity_mode == "active"
+            else WAVE_ANIMATION_FPS_IDLE
+        )
+        return _fps_to_interval_seconds(fps)
 
     def _active_timer_interval(self) -> float:
         return _fps_to_interval_seconds(WAVE_ANIMATION_FPS_ACTIVE)
@@ -691,6 +737,7 @@ class SoundWaveView:
         )
         level = _lerp(prev_level, target_level, alpha_level)
         self._smoothed_level = level
+        self._update_level_timer_interval()
 
         now = time.perf_counter()
         phase_primary = 2 * math.pi * WAVE_WANDER_HZ_PRIMARY * now
