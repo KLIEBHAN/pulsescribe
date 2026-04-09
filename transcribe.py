@@ -281,12 +281,26 @@ def _build_provider_transcribe_kwargs(
     }
 
 
+def _validate_audio_source_selection(
+    audio: Path | None,
+    *,
+    record: bool,
+) -> None:
+    """Validate that exactly one CLI audio source was selected."""
+    if not record and audio is None:
+        raise typer.BadParameter("Entweder Audiodatei oder --record verwenden")
+    if record and audio is not None:
+        raise typer.BadParameter("Audiodatei und --record schliessen sich aus")
+
+
 def _resolve_audio_source(
     audio: Path | None,
     *,
     record: bool,
 ) -> tuple[Path, Path | None]:
     """Resolve the requested audio input and track temporary recordings."""
+    _validate_audio_source_selection(audio, record=record)
+
     if record:
         try:
             audio_path = record_audio()
@@ -298,7 +312,7 @@ def _resolve_audio_source(
             error(str(e))
             raise typer.Exit(1)
 
-    assert audio is not None  # Validated by CLI input checks
+    assert audio is not None
     if not audio.exists():
         error(f"Datei nicht gefunden: {audio}")
         raise typer.Exit(1)
@@ -318,6 +332,15 @@ def _cleanup_temp_audio_file(temp_file: Path | None) -> None:
         )
 
 
+def _resolve_refine_enabled(*, refine: bool, no_refine: bool) -> bool:
+    """Resolve refine precedence explicitly: CLI enable > CLI disable > env."""
+    if refine:
+        return True
+    if no_refine:
+        return False
+    return bool(parse_bool(os.getenv("PULSESCRIBE_REFINE")))
+
+
 def _resolve_runtime_cli_options(
     *,
     mode: TranscriptionMode | None,
@@ -329,10 +352,6 @@ def _resolve_runtime_cli_options(
     refine_provider: RefineProvider | None,
 ) -> _ResolvedCliOptions:
     """Resolve CLI options after `.env` loading in one place."""
-    resolved_refine = refine
-    if not resolved_refine and not no_refine:
-        resolved_refine = bool(parse_bool(os.getenv("PULSESCRIBE_REFINE")))
-
     return _ResolvedCliOptions(
         mode=_resolve_env_enum(
             mode,
@@ -342,7 +361,7 @@ def _resolve_runtime_cli_options(
         ),
         model=_resolve_env_string(model, "PULSESCRIBE_MODEL"),
         language=_resolve_env_string(language, "PULSESCRIBE_LANGUAGE"),
-        refine=resolved_refine,
+        refine=_resolve_refine_enabled(refine=refine, no_refine=no_refine),
         refine_model=_resolve_env_string(
             refine_model,
             "PULSESCRIBE_REFINE_MODEL",
@@ -416,6 +435,43 @@ def _maybe_refine_output_transcript(
             f"Hinweis: LLM-Nachbearbeitung wird für --format {response_format.value} übersprungen"
         )
     return transcript
+
+
+def _transcribe_and_maybe_refine(
+    audio_path: Path,
+    *,
+    temp_file: Path | None,
+    mode: str,
+    model: str | None,
+    language: str | None,
+    response_format: ResponseFormat,
+    refine: bool,
+    no_refine: bool,
+    refine_model: str | None,
+    refine_provider: RefineProvider | None,
+    context: Context | None,
+) -> str:
+    """Run the core CLI transcription pipeline with guaranteed temp cleanup."""
+    try:
+        transcript = _transcribe_with_cli_error_handling(
+            audio_path,
+            mode=mode,
+            model=model,
+            language=language,
+            response_format=response_format.value,
+        )
+    finally:
+        _cleanup_temp_audio_file(temp_file)
+
+    return _maybe_refine_output_transcript(
+        transcript,
+        response_format=response_format,
+        refine=refine,
+        no_refine=no_refine,
+        refine_model=refine_model,
+        refine_provider=refine_provider,
+        context=context,
+    )
 
 
 def transcribe(
@@ -541,12 +597,6 @@ def main(
         refine_provider=refine_provider,
     )
 
-    # Validierung: genau eine Audio-Quelle erforderlich
-    if not record and audio is None:
-        raise typer.BadParameter("Entweder Audiodatei oder --record verwenden")
-    if record and audio is not None:
-        raise typer.BadParameter("Audiodatei und --record schliessen sich aus")
-
     # Startup-Timing loggen (seit Prozessstart)
     startup_ms = (time.perf_counter() - _PROCESS_START) * 1000
     logger.info(f"[{_get_session_id()}] Startup: {_format_duration(startup_ms)}")
@@ -559,21 +609,12 @@ def main(
     # Audio-Quelle bestimmen
     audio_path, temp_file = _resolve_audio_source(audio, record=record)
 
-    # Transkription durchführen
-    try:
-        transcript = _transcribe_with_cli_error_handling(
-            audio_path,
-            mode=resolved.mode.value,
-            model=resolved.model,
-            language=resolved.language,
-            response_format=response_format.value,
-        )
-    finally:
-        _cleanup_temp_audio_file(temp_file)
-
-    # LLM-Nachbearbeitung (optional)
-    transcript = _maybe_refine_output_transcript(
-        transcript,
+    transcript = _transcribe_and_maybe_refine(
+        audio_path,
+        temp_file=temp_file,
+        mode=resolved.mode.value,
+        model=resolved.model,
+        language=resolved.language,
         response_format=response_format,
         refine=resolved.refine,
         no_refine=no_refine,
