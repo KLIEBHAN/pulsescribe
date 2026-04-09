@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import logging
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -90,3 +93,36 @@ def test_env_client_cache_recreates_client_after_env_value_changes(monkeypatch) 
 
     assert second is not first
     assert created_with == ["key-1", "key-2"]
+
+
+def test_env_client_cache_creates_one_client_for_concurrent_same_key_access(
+    monkeypatch,
+) -> None:
+    cache = EnvClientCache()
+    created_with: list[str] = []
+    start_event = threading.Event()
+
+    def _create_client(api_key: str) -> object:
+        created_with.append(api_key)
+        time.sleep(0.05)
+        return object()
+
+    def _get_client() -> object:
+        assert start_event.wait(timeout=1)
+        return cache.get(
+            env_var="TEST_API_KEY",
+            missing_error="TEST_API_KEY missing",
+            create_client=_create_client,
+            logger=_test_logger(),
+            client_label="Test client",
+        )
+
+    monkeypatch.setenv("TEST_API_KEY", "key-1")
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(_get_client) for _ in range(8)]
+        start_event.set()
+        clients = [future.result() for future in futures]
+
+    assert len({id(client) for client in clients}) == 1
+    assert created_with == ["key-1"]

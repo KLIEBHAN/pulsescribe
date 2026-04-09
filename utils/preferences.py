@@ -146,6 +146,31 @@ def _append_missing_env_updates(
     return changed
 
 
+def _apply_env_update_to_line(
+    line: str,
+    *,
+    updates: dict[str, str | None],
+    canonical_updates: dict[str, str | None],
+    handled_keys: set[str],
+    collapse_handled_duplicates: bool,
+) -> tuple[str | None, bool]:
+    """Apply matching `.env` updates to one raw line while tracking duplicates."""
+    key, existing_value = parse_env_line_with_dotenv(line)
+    if not key or key not in canonical_updates:
+        return line, False
+
+    is_duplicate = key in handled_keys
+    handled_keys.add(key)
+    return _resolve_updated_env_line(
+        line,
+        existing_value=existing_value,
+        requested_value=updates[key],
+        canonical_line=canonical_updates[key],
+        is_duplicate=is_duplicate,
+        collapse_handled_duplicates=collapse_handled_duplicates,
+    )
+
+
 def _apply_env_updates_to_lines(
     lines: list[str],
     updates: dict[str, str | None],
@@ -159,19 +184,11 @@ def _apply_env_updates_to_lines(
     changed = False
 
     for line in lines:
-        key, existing_value = parse_env_line_with_dotenv(line)
-        if not key or key not in canonical_updates:
-            new_lines.append(line)
-            continue
-
-        is_duplicate = key in handled_keys
-        handled_keys.add(key)
-        updated_line, line_changed = _resolve_updated_env_line(
+        updated_line, line_changed = _apply_env_update_to_line(
             line,
-            existing_value=existing_value,
-            requested_value=updates[key],
-            canonical_line=canonical_updates[key],
-            is_duplicate=is_duplicate,
+            updates=updates,
+            canonical_updates=canonical_updates,
+            handled_keys=handled_keys,
             collapse_handled_duplicates=collapse_handled_duplicates,
         )
         changed = changed or line_changed

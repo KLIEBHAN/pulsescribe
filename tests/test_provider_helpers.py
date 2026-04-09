@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 
 import pytest
 
@@ -82,6 +82,21 @@ def test_build_transcription_params_merges_extra_params_and_omits_empty_language
     }
 
 
+def test_build_transcription_params_accepts_read_only_mappings() -> None:
+    assert build_transcription_params(
+        model="whisper-1",
+        language="de",
+        extra_params=MappingProxyType(
+            {"response_format": "json", "temperature": 0.0}
+        ),
+    ) == {
+        "model": "whisper-1",
+        "response_format": "json",
+        "temperature": 0.0,
+        "language": "de",
+    }
+
+
 def test_execute_audio_file_request_closes_file_after_callback(tmp_path) -> None:
     audio_file = tmp_path / "sample.wav"
     audio_file.write_bytes(b"audio")
@@ -104,6 +119,25 @@ def test_execute_audio_file_request_closes_file_after_callback(tmp_path) -> None
     assert observed["closed_during_call"] is False
     assert observed["payload"] == b"audio"
     assert observed["file"].closed is True
+
+
+def test_execute_audio_file_request_accepts_read_only_param_mappings(tmp_path) -> None:
+    audio_file = tmp_path / "sample.wav"
+    audio_file.write_bytes(b"audio")
+
+    def _fake_request(**kwargs):
+        assert kwargs["model"] == "whisper-1"
+        return kwargs["file"].read()
+
+    result = execute_audio_file_request(
+        audio_file,
+        request_callable=_fake_request,
+        build_params=lambda sdk_file: MappingProxyType(
+            {"file": sdk_file, "model": "whisper-1"}
+        ),
+    )
+
+    assert result == b"audio"
 
 
 def test_execute_audio_transcription_request_supports_custom_file_payload(
@@ -132,6 +166,30 @@ def test_execute_audio_transcription_request_supports_custom_file_payload(
     assert observed["response_format"] == "text"
     assert observed["file"][0] == "sample.wav"
     assert observed["file"][1].closed is True
+
+
+def test_execute_audio_transcription_request_accepts_read_only_extra_params(
+    tmp_path,
+) -> None:
+    audio_file = tmp_path / "sample.wav"
+    audio_file.write_bytes(b"audio")
+    observed: dict[str, object] = {}
+
+    def _fake_request(**kwargs):
+        observed.update(kwargs)
+        return "ok"
+
+    result = execute_audio_transcription_request(
+        audio_file,
+        request_callable=_fake_request,
+        model="whisper-1",
+        language=None,
+        extra_params=MappingProxyType({"temperature": 0.0}),
+    )
+
+    assert result == "ok"
+    assert observed["temperature"] == 0.0
+    assert observed["file"].closed is True
 
 
 def test_execute_audio_transcription_request_uses_raw_file_payload_by_default(
