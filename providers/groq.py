@@ -8,7 +8,7 @@ from pathlib import Path
 from utils.timing import redacted_text_summary, timed_operation
 
 from config import DEFAULT_GROQ_MODEL
-from ._client_cache import EnvClientCache
+from ._client_cache import EnvClientCache, build_cached_env_client_getter
 from ._language import normalize_auto_language
 from .base import EnvValidatedProvider
 
@@ -17,21 +17,15 @@ logger = logging.getLogger("pulsescribe.providers.groq")
 _client_cache = EnvClientCache()
 
 
-def _get_client():
-    """Gibt Groq-Client Singleton zurück (Lazy Init)."""
-
-    def _factory(api_key: str):
-        from groq import Groq
-
-        return Groq(api_key=api_key)
-
-    return _client_cache.get(
-        env_var="GROQ_API_KEY",
-        missing_error="GROQ_API_KEY nicht gesetzt",
-        create_client=_factory,
-        logger=logger,
-        client_label="Groq-Client",
-    )
+_get_client = build_cached_env_client_getter(
+    cache=_client_cache,
+    env_var="GROQ_API_KEY",
+    missing_error="GROQ_API_KEY nicht gesetzt",
+    dependency_module="groq",
+    dependency_class="Groq",
+    logger=logger,
+    client_label="Groq-Client",
+)
 
 
 class GroqProvider(EnvValidatedProvider):

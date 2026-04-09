@@ -8,7 +8,7 @@ from pathlib import Path
 from utils.timing import redacted_text_summary, timed_operation
 
 from config import DEFAULT_API_MODEL
-from ._client_cache import EnvClientCache
+from ._client_cache import EnvClientCache, build_cached_env_client_getter
 from ._language import normalize_auto_language
 from .base import EnvValidatedProvider
 
@@ -19,21 +19,15 @@ _JSON_ONLY_MODELS = ("gpt-4o-transcribe", "gpt-4o-mini-transcribe")
 _client_cache = EnvClientCache()
 
 
-def _get_client():
-    """Gibt OpenAI-Client Singleton zurück (Lazy Init)."""
-
-    def _factory(api_key: str):
-        from openai import OpenAI
-
-        return OpenAI(api_key=api_key)
-
-    return _client_cache.get(
-        env_var="OPENAI_API_KEY",
-        missing_error="OPENAI_API_KEY nicht gesetzt",
-        create_client=_factory,
-        logger=logger,
-        client_label="OpenAI-Client",
-    )
+_get_client = build_cached_env_client_getter(
+    cache=_client_cache,
+    env_var="OPENAI_API_KEY",
+    missing_error="OPENAI_API_KEY nicht gesetzt",
+    dependency_module="openai",
+    dependency_class="OpenAI",
+    logger=logger,
+    client_label="OpenAI-Client",
+)
 
 
 def _uses_json_only_response_format(model: str) -> bool:

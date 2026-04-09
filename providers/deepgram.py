@@ -10,7 +10,7 @@ from utils.timing import redacted_text_summary, timed_operation
 from utils.vocabulary import load_vocabulary
 
 from config import DEFAULT_DEEPGRAM_MODEL
-from ._client_cache import EnvClientCache
+from ._client_cache import EnvClientCache, build_cached_env_client_getter
 from ._language import normalize_auto_language
 from .base import EnvValidatedProvider
 
@@ -21,21 +21,15 @@ _MAX_KEYWORDS = 100
 _client_cache = EnvClientCache()
 
 
-def _get_client():
-    """Gibt Deepgram-Client Singleton zurück (Lazy Init)."""
-
-    def _factory(api_key: str):
-        from deepgram import DeepgramClient
-
-        return DeepgramClient(api_key=api_key)
-
-    return _client_cache.get(
-        env_var="DEEPGRAM_API_KEY",
-        missing_error="DEEPGRAM_API_KEY nicht gesetzt",
-        create_client=_factory,
-        logger=logger,
-        client_label="Deepgram-Client",
-    )
+_get_client = build_cached_env_client_getter(
+    cache=_client_cache,
+    env_var="DEEPGRAM_API_KEY",
+    missing_error="DEEPGRAM_API_KEY nicht gesetzt",
+    dependency_module="deepgram",
+    dependency_class="DeepgramClient",
+    logger=logger,
+    client_label="Deepgram-Client",
+)
 
 
 def _iter_audio_chunks(audio_path: Path, *, chunk_size: int = _UPLOAD_CHUNK_SIZE):

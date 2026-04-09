@@ -8,6 +8,8 @@ import logging
 import os
 import tempfile
 from collections.abc import Callable
+from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any, cast
 
@@ -60,6 +62,15 @@ INT16_MAX = 32767
 _cached_input_device: tuple[int | None, int] | None = None
 
 
+@dataclass(frozen=True)
+class _InputDeviceInfo:
+    """Kompakte, normalisierte Sicht auf ein relevantes Input-Gerät."""
+
+    idx: int
+    name: str
+    samplerate: int
+
+
 
 def _return_input_device_result(
     result: tuple[int | None, int], *, cache: bool = True
@@ -80,20 +91,20 @@ def _get_default_input_index(sd: Any) -> int:
 
 
 
-def _build_input_device_info(index: int, raw_device: object) -> dict[str, Any]:
+def _build_input_device_info(index: int, raw_device: object) -> _InputDeviceInfo:
     """Normalisiert ein sounddevice-Gerät auf die Felder, die wir wirklich nutzen."""
     device = cast(dict[str, Any], raw_device)
-    return {
-        "idx": index,
-        "name": str(device.get("name", "")),
-        "samplerate": int(device.get("default_samplerate", WHISPER_SAMPLE_RATE)),
-    }
+    return _InputDeviceInfo(
+        idx=index,
+        name=str(device.get("name", "")),
+        samplerate=int(device.get("default_samplerate", WHISPER_SAMPLE_RATE)),
+    )
 
 
 
-def _list_input_devices(sd: Any) -> list[dict[str, Any]]:
+def _list_input_devices(sd: Any) -> list[_InputDeviceInfo]:
     """Sammelt alle verfügbaren Input-Geräte mit einheitlicher Struktur."""
-    input_devices: list[dict[str, Any]] = []
+    input_devices: list[_InputDeviceInfo] = []
     for index, raw_device in enumerate(sd.query_devices()):
         device = cast(dict[str, Any], raw_device)
         if int(device.get("max_input_channels", 0) or 0) <= 0:
@@ -116,13 +127,39 @@ def _should_skip_windows_device(name: str) -> bool:
 
 
 
-def _log_selected_input_device(device: dict[str, Any]) -> None:
+def _is_named_microphone_device(device: _InputDeviceInfo) -> bool:
+    """Erkennt klassische Mikrofon-Bezeichnungen plattformübergreifend."""
+    return _device_name_matches(device.name, ("mikrofon", "mic", "microphone"))
+
+
+
+def _is_windows_mic_array_device(device: _InputDeviceInfo) -> bool:
+    """Bevorzugt Windows-Mikrofonarrays, die meist stabil funktionieren."""
+    return _device_name_matches(device.name, ("mikrofonarray", "mic array"))
+
+
+
+def _is_windows_microphone_device(device: _InputDeviceInfo) -> bool:
+    """Wählt echte Mikrofone, aber keine Lautsprecher-/Monitor-Geräte."""
+    return not _should_skip_windows_device(device.name) and _is_named_microphone_device(
+        device
+    )
+
+
+
+def _is_windows_capture_device(device: _InputDeviceInfo) -> bool:
+    """Dritte Priorität: irgendein nicht als Output erkennbares Capture-Gerät."""
+    return not _should_skip_windows_device(device.name)
+
+
+
+def _log_selected_input_device(device: _InputDeviceInfo) -> None:
     """Protokolliert ein ausgewähltes Eingabegerät konsistent."""
-    logger.info("Verwende: %s (%sHz)", device["name"], device["samplerate"])
+    logger.info("Verwende: %s (%sHz)", device.name, device.samplerate)
 
 
 
-def _probe_windows_input_device(sd: Any, device: dict[str, Any]) -> bool:
+def _probe_windows_input_device(sd: Any, device: _InputDeviceInfo) -> bool:
     """Testet, ob ein Windows-Input-Device geöffnet wird und Audio liefert."""
     import time
     import numpy as np
@@ -134,8 +171,8 @@ def _probe_windows_input_device(sd: Any, device: dict[str, Any]) -> bool:
 
     try:
         with sd.InputStream(
-            device=device["idx"],
-            samplerate=device["samplerate"],
+            device=device.idx,
+            samplerate=device.samplerate,
             channels=1,
             blocksize=1024,
             dtype=np.int16,
@@ -150,18 +187,18 @@ def _probe_windows_input_device(sd: Any, device: dict[str, Any]) -> bool:
 
 
 def _build_input_device_result(
-    device: dict[str, Any], *, cache: bool = True
+    device: _InputDeviceInfo, *, cache: bool = True
 ) -> tuple[int | None, int]:
     """Konvertiert normalisierte Gerätedaten in das gecachte Rückgabeformat."""
-    return _return_input_device_result((device["idx"], device["samplerate"]), cache=cache)
+    return _return_input_device_result((device.idx, device.samplerate), cache=cache)
 
 
 
 def _select_matching_input_device(
-    input_devices: list[dict[str, Any]],
+    input_devices: list[_InputDeviceInfo],
     *,
-    matches: Callable[[dict[str, Any]], bool],
-    is_ready: Callable[[dict[str, Any]], bool] | None = None,
+    matches: Callable[[_InputDeviceInfo], bool],
+    is_ready: Callable[[_InputDeviceInfo], bool] | None = None,
 ) -> tuple[int | None, int] | None:
     """Wählt das erste passende Gerät, optional mit Readiness-Probe."""
     for device in input_devices:
@@ -176,7 +213,7 @@ def _select_matching_input_device(
 
 
 def _select_fallback_input_device(
-    input_devices: list[dict[str, Any]],
+    input_devices: list[_InputDeviceInfo],
     *,
     cache: bool = True,
     warning_message: str | None = None,
@@ -184,7 +221,7 @@ def _select_fallback_input_device(
     """Wählt das erste verfügbare Gerät als letzte Rückfallebene."""
     device = input_devices[0]
     if warning_message:
-        logger.warning(warning_message, device["name"])
+        logger.warning(warning_message, device.name)
     else:
         _log_selected_input_device(device)
     return _build_input_device_result(device, cache=cache)
@@ -193,39 +230,23 @@ def _select_fallback_input_device(
 
 def _select_windows_input_device(
     sd: Any,
-    input_devices: list[dict[str, Any]],
+    input_devices: list[_InputDeviceInfo],
 ) -> tuple[int | None, int]:
     """Wählt unter Windows das bestgeeignete funktionierende Input-Device."""
-    mic_array_keywords = ("mikrofonarray", "mic array")
-    mic_keywords = ("mikrofon", "mic", "microphone")
-    probe_device = lambda device: _probe_windows_input_device(sd, device)
+    probe_device = partial(_probe_windows_input_device, sd)
 
-    selected = _select_matching_input_device(
-        input_devices,
-        matches=lambda device: _device_name_matches(device["name"], mic_array_keywords),
-        is_ready=probe_device,
-    )
-    if selected is not None:
-        return selected
-
-    selected = _select_matching_input_device(
-        input_devices,
-        matches=lambda device: (
-            not _should_skip_windows_device(device["name"])
-            and _device_name_matches(device["name"], mic_keywords)
-        ),
-        is_ready=probe_device,
-    )
-    if selected is not None:
-        return selected
-
-    selected = _select_matching_input_device(
-        input_devices,
-        matches=lambda device: not _should_skip_windows_device(device["name"]),
-        is_ready=probe_device,
-    )
-    if selected is not None:
-        return selected
+    for matches in (
+        _is_windows_mic_array_device,
+        _is_windows_microphone_device,
+        _is_windows_capture_device,
+    ):
+        selected = _select_matching_input_device(
+            input_devices,
+            matches=matches,
+            is_ready=probe_device,
+        )
+        if selected is not None:
+            return selected
 
     return _select_fallback_input_device(
         input_devices,
@@ -236,13 +257,12 @@ def _select_windows_input_device(
 
 
 def _select_non_windows_input_device(
-    input_devices: list[dict[str, Any]],
+    input_devices: list[_InputDeviceInfo],
 ) -> tuple[int | None, int]:
     """Wählt auf Nicht-Windows-Systemen bevorzugt ein Mikrofon-Gerät."""
-    mic_keywords = ("mikrofon", "mic", "microphone")
     selected = _select_matching_input_device(
         input_devices,
-        matches=lambda device: _device_name_matches(device["name"], mic_keywords),
+        matches=_is_named_microphone_device,
     )
     if selected is not None:
         return selected

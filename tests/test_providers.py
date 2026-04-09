@@ -172,6 +172,41 @@ class TestProviderValidation:
     ],
     ids=["openai", "deepgram", "groq"],
 )
+def test_provider_client_skips_sdk_import_when_api_key_is_missing(
+    monkeypatch,
+    module_name: str,
+    module_path: str,
+    env_key: str,
+    dependency_name: str,
+    class_name: str,
+):
+    module = __import__(module_path, fromlist=["dummy"])
+    module._client_cache.reset()
+
+    class _ImportShouldNotRun:
+        def __init__(self, api_key=None, **_kwargs):
+            raise AssertionError("SDK client should not be constructed without API key")
+
+    monkeypatch.setitem(
+        sys.modules,
+        dependency_name,
+        SimpleNamespace(**{class_name: _ImportShouldNotRun}),
+    )
+    monkeypatch.delenv(env_key, raising=False)
+
+    with pytest.raises(ValueError, match=env_key):
+        module._get_client()
+
+
+@pytest.mark.parametrize(
+    ("module_name", "module_path", "env_key", "dependency_name", "class_name"),
+    [
+        ("openai", "providers.openai", "OPENAI_API_KEY", "openai", "OpenAI"),
+        ("deepgram", "providers.deepgram", "DEEPGRAM_API_KEY", "deepgram", "DeepgramClient"),
+        ("groq", "providers.groq", "GROQ_API_KEY", "groq", "Groq"),
+    ],
+    ids=["openai", "deepgram", "groq"],
+)
 def test_provider_client_reinitializes_when_api_key_changes(
     monkeypatch,
     module_name: str,

@@ -267,6 +267,66 @@ def test_get_input_device_windows_falls_back_to_working_microphone(monkeypatch) 
 
 
 
+def test_get_input_device_windows_uses_non_output_capture_before_final_fallback(
+    monkeypatch,
+) -> None:
+    import config as config_module
+
+    original_cache = config_module._cached_input_device
+    config_module._cached_input_device = None
+    attempts: list[tuple[int | None, int]] = []
+
+    class _ProbeStream:
+        def __init__(self, **kwargs):
+            self.device = kwargs["device"]
+            self.samplerate = kwargs["samplerate"]
+            self._callback = kwargs["callback"]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def start(self) -> None:
+            attempts.append((self.device, self.samplerate))
+            if self.device == 2:
+                self._callback(object(), 0, None, None)
+                return
+            raise AssertionError("Only non-output capture device should be probed")
+
+    fake_sounddevice = SimpleNamespace(
+        default=SimpleNamespace(device=[-1, None]),
+        query_devices=lambda: [
+            {
+                "name": "USB Speaker",
+                "max_input_channels": 2,
+                "default_samplerate": 44_100,
+            },
+            {
+                "name": "Monitor Mix",
+                "max_input_channels": 2,
+                "default_samplerate": 48_000,
+            },
+            {
+                "name": "Studio Capture",
+                "max_input_channels": 1,
+                "default_samplerate": 16_000,
+            },
+        ],
+        InputStream=lambda **kwargs: _ProbeStream(**kwargs),
+    )
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sounddevice)
+
+    try:
+        assert config_module.get_input_device() == (2, 16_000)
+        assert attempts == [(2, 16_000)]
+    finally:
+        _restore_input_device_cache(config_module, original_cache)
+
+
+
 def test_get_input_device_windows_fallback_result_is_not_cached(monkeypatch) -> None:
     import config as config_module
 
