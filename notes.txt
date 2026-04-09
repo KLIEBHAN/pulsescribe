@@ -607,3 +607,40 @@ Next worthwhile areas
 - `ui/settings_windows.py`: the large `_load_settings()` field population path is still the next Windows UI hotspot if the settings dialog is reopened or rebuilt often.
 - `ui/settings_windows.py`: the logs/transcripts tab can still be profiled for additional status-label and view-refresh deduping during long-running sessions.
 - `web/src/components/SiteHeader.tsx`: on the web side, the mobile-menu interaction path is still the clearest remaining hydrated client-work candidate once it is safely outside the recent-change boundary.
+
+Performance work log - 2026-04-09 (Windows onboarding fast-path follow-up)
+
+Scope
+- Left the last two commit areas untouched: `ui/welcome.py`, `utils/history.py`, `ui/settings_windows.py`, and their latest tests stayed out of scope.
+- Focused on one remaining Windows onboarding save/navigation hotspot in `ui/onboarding_wizard_windows.py`.
+- Preserved onboarding flow, Fast-mode behavior, summary/test labels, and hotkey handling.
+
+Current weaknesses reviewed
+- `ui/onboarding_wizard_windows.py`: the Fast-mode path still split Deepgram key persistence and mode selection across separate save logic, which added avoidable `.env` write/setup work in one UI action.
+- `ui/onboarding_wizard_windows.py`: step navigation still refreshed the wizard env cache on every step transition even though the dialog already maintains the current state for its own writes.
+- `ui/onboarding_wizard_windows.py`: test-hotkey and summary labels rebuilt the same hotkey presentation separately, adding a small but repeated render-adjacent code path.
+
+Changes in this pass
+- `ui/onboarding_wizard_windows.py`
+  Batched Fast-mode Deepgram key persistence and `PULSESCRIBE_MODE` updates into the wizard-local env update path and skipped the batch entirely for duplicate values.
+- `ui/onboarding_wizard_windows.py`
+  Stopped unconditional env-cache refreshes during `_show_step()`, relying on the wizard's maintained cache except where external preset helpers already trigger an explicit refresh.
+- `ui/onboarding_wizard_windows.py`
+  Consolidated hotkey summary formatting so test and cheat-sheet labels share one helper.
+- `tests/test_onboarding_windows.py`
+  Added regression coverage for the batched Fast-mode update and for step transitions not forcing an env-cache refresh.
+
+Why this helps
+- Advancing through Fast-mode performs one coherent persistence pass instead of separate key/mode work, reducing disk churn on a user-visible onboarding action.
+- Step changes no longer pay repeated env reload work when the wizard already knows the current values, which keeps navigation lighter.
+- Shared hotkey summary formatting trims duplicate render-adjacent work and keeps the display path simpler.
+
+Validation
+- `pytest tests/test_onboarding_windows.py -q`
+- `python -m py_compile ui/onboarding_wizard_windows.py tests/test_onboarding_windows.py`
+- `ruff check ui/onboarding_wizard_windows.py tests/test_onboarding_windows.py`
+
+Next worthwhile areas
+- `ui/settings_windows.py`: `_load_settings()` remains the clearest Windows UI hot path if the settings dialog is reopened frequently.
+- `ui/overlay.py`: if macOS traces still show overlay cost during active speech, reduce per-frame math/allocation work in `_render_level_frame()`.
+- `utils/ipc.py`: the Windows onboarding test flow may still benefit from reducing redundant file/status reads now that the UI-side cadence has already been tuned.

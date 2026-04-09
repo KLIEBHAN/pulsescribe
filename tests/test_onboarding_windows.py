@@ -396,8 +396,6 @@ def test_can_advance_fast_with_existing_groq_api_key(monkeypatch):
 
 
 def test_apply_choice_preset_fast_skips_duplicate_api_key_and_mode_writes(monkeypatch):
-    import ui.onboarding_wizard_windows as wizard_mod
-
     wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
     wizard._choice = OnboardingChoice.FAST
     wizard._api_key_field = _FakeField("dg-same")
@@ -407,26 +405,48 @@ def test_apply_choice_preset_fast_skips_duplicate_api_key_and_mode_writes(monkey
         "DEEPGRAM_API_KEY": "dg-same",
         "PULSESCRIBE_MODE": "deepgram",
     }
-
-    save_calls: list[tuple[str, str]] = []
-    env_updates: list[dict[str, str | None]] = []
-
-    monkeypatch.setattr(
-        wizard_mod,
-        "save_api_key",
-        lambda key, value: save_calls.append((key, value)),
+    wizard._apply_env_updates = lambda updates: (_ for _ in ()).throw(
+        AssertionError(f"should not persist duplicate updates: {updates}")
     )
-    monkeypatch.setattr(
-        wizard_mod,
-        "update_env_settings",
-        lambda updates: env_updates.append(dict(updates)),
+    wizard._cache_api_key = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        AssertionError("should not rewrite cached key")
     )
 
     changed = wizard._apply_choice_preset(OnboardingChoice.FAST)
 
     assert changed is False
-    assert save_calls == []
-    assert env_updates == []
+    assert wizard._api_key_container.visible is False
+
+
+def test_apply_choice_preset_fast_batches_new_api_key_and_mode_update(monkeypatch):
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+    wizard._choice = OnboardingChoice.FAST
+    wizard._api_key_field = _FakeField("dg-new")
+    wizard._api_key_container = _FakeLabel()
+    wizard._api_key_status = _FakeLabel()
+    wizard._env_settings_cache = {"PULSESCRIBE_MODE": "groq"}
+
+    applied_updates: list[dict[str, str | None]] = []
+    cached_keys: list[tuple[str, str | None]] = []
+
+    wizard._apply_env_updates = (
+        lambda updates: applied_updates.append(dict(updates)) or True
+    )
+    wizard._cache_api_key = lambda key, value: cached_keys.append((key, value))
+
+    monkeypatch.delenv("DEEPGRAM_API_KEY", raising=False)
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+
+    changed = wizard._apply_choice_preset(OnboardingChoice.FAST)
+
+    assert changed is True
+    assert applied_updates == [
+        {
+            "DEEPGRAM_API_KEY": "dg-new",
+            "PULSESCRIBE_MODE": "deepgram",
+        }
+    ]
+    assert cached_keys == [("DEEPGRAM_API_KEY", "dg-new")]
     assert wizard._api_key_container.visible is False
 
 
@@ -883,9 +903,11 @@ def test_show_step_hotkey_applies_missing_defaults():
     wizard._update_navigation = lambda: None
 
     ensure_calls: list[bool] = []
+    refresh_calls: list[bool] = []
     wizard._ensure_default_hotkeys = lambda: ensure_calls.append(
         isinstance(wizard._toggle_input, _FakeField)
     )
+    wizard._refresh_env_settings_cache = lambda: refresh_calls.append(True)
     wizard._step_builders = {
         OnboardingStep.HOTKEY: lambda: setattr(
             wizard, "_toggle_input", _FakeField("")
@@ -896,6 +918,7 @@ def test_show_step_hotkey_applies_missing_defaults():
     wizard._show_step(OnboardingStep.HOTKEY)
 
     assert ensure_calls == [True]
+    assert refresh_calls == []
     assert wizard._stack.current_widget is not None
 
 

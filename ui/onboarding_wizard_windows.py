@@ -51,7 +51,6 @@ from utils.preferences import (
     get_onboarding_choice,
     get_onboarding_step,
     read_env_file,
-    save_api_key,
     set_onboarding_choice,
     set_onboarding_seen,
     set_onboarding_step,
@@ -260,6 +259,15 @@ def _set_plain_text_if_changed(widget, text: str) -> bool:
 
     widget.setPlainText(text)
     return True
+
+
+def _format_hotkey_summary_text(toggle: str, hold: str) -> str:
+    parts: list[str] = []
+    if toggle:
+        parts.append(f"Toggle: {toggle}")
+    if hold:
+        parts.append(f"Hold: {hold}")
+    return " | ".join(parts)
 
 
 # =============================================================================
@@ -940,8 +948,6 @@ class OnboardingWizardWindows(QDialog):
 
     def _show_step(self, step: OnboardingStep) -> None:
         """Show the specified step."""
-        self._refresh_env_settings_cache()
-
         # Stop mic timer when leaving PERMISSIONS step
         if (
             self._step == OnboardingStep.PERMISSIONS
@@ -1369,20 +1375,19 @@ class OnboardingWizardWindows(QDialog):
         )
 
         if choice == OnboardingChoice.FAST:
-            changed = False
+            pending_updates: dict[str, str | None] = {}
             # Save entered API key if present
             if self._api_key_field:
                 entered_key = self._api_key_field.text().strip()
                 if entered_key:
                     cached_key = self._get_cached_api_key("DEEPGRAM_API_KEY")
                     if cached_key != entered_key:
-                        save_api_key("DEEPGRAM_API_KEY", entered_key)
-                        self._cache_api_key("DEEPGRAM_API_KEY", entered_key)
-                        changed = True
+                        pending_updates["DEEPGRAM_API_KEY"] = entered_key
 
             # Check for API keys
             has_deepgram = bool(
-                self._get_cached_api_key("DEEPGRAM_API_KEY")
+                pending_updates.get("DEEPGRAM_API_KEY")
+                or self._get_cached_api_key("DEEPGRAM_API_KEY")
                 or os.getenv("DEEPGRAM_API_KEY")
             )
             has_groq = bool(
@@ -1391,11 +1396,25 @@ class OnboardingWizardWindows(QDialog):
             )
 
             if has_deepgram:
-                changed = self._apply_env_updates({"PULSESCRIBE_MODE": "deepgram"}) or changed
+                if self._get_cached_env_setting("PULSESCRIBE_MODE") != "deepgram":
+                    pending_updates["PULSESCRIBE_MODE"] = "deepgram"
+                changed = (
+                    self._apply_env_updates(pending_updates)
+                    if pending_updates
+                    else False
+                )
+                if "DEEPGRAM_API_KEY" in pending_updates:
+                    self._cache_api_key(
+                        "DEEPGRAM_API_KEY", pending_updates["DEEPGRAM_API_KEY"]
+                    )
                 if self._api_key_container:
                     _set_widget_visible_if_changed(self._api_key_container, False)
             elif has_groq:
-                changed = self._apply_env_updates({"PULSESCRIBE_MODE": "groq"}) or changed
+                changed = (
+                    self._apply_env_updates({"PULSESCRIBE_MODE": "groq"})
+                    if self._get_cached_env_setting("PULSESCRIBE_MODE") != "groq"
+                    else False
+                )
                 if self._api_key_container:
                     _set_widget_visible_if_changed(self._api_key_container, False)
             else:
@@ -1841,15 +1860,9 @@ class OnboardingWizardWindows(QDialog):
             return
 
         toggle, hold = self._get_cached_hotkeys()
-        parts = []
-        if toggle:
-            parts.append(f"Toggle: {toggle}")
-        if hold:
-            parts.append(f"Hold: {hold}")
-
         _set_widget_text_if_changed(
             self._test_hotkey_label,
-            " | ".join(parts) if parts else "Kein Hotkey konfiguriert",
+            _format_hotkey_summary_text(toggle, hold) or "Kein Hotkey konfiguriert",
         )
 
     # -------------------------------------------------------------------------
@@ -1867,15 +1880,10 @@ class OnboardingWizardWindows(QDialog):
 
         # Hotkeys
         toggle, hold = self._get_cached_hotkeys()
-        hotkey_parts = []
-        if toggle:
-            hotkey_parts.append(f"Toggle: {toggle}")
-        if hold:
-            hotkey_parts.append(f"Hold: {hold}")
         if "hotkeys" in self._summary_labels:
             _set_widget_text_if_changed(
                 self._summary_labels["hotkeys"],
-                " | ".join(hotkey_parts) if hotkey_parts else "Nicht konfiguriert",
+                _format_hotkey_summary_text(toggle, hold) or "Nicht konfiguriert",
             )
 
         # Language
