@@ -274,6 +274,17 @@ class TestBackendDetection:
 
         assert provider._backend == "lightning"
 
+    def test_backend_openai_whisper_alias(self, monkeypatch):
+        """Backend 'openai-whisper' wird als 'whisper' erkannt."""
+        monkeypatch.setenv("PULSESCRIBE_LOCAL_BACKEND", "openai-whisper")
+
+        from providers.local import LocalProvider
+
+        provider = LocalProvider()
+        provider._ensure_runtime_config()
+
+        assert provider._backend == "whisper"
+
     def test_backend_mlx_from_env(self, monkeypatch):
         """Backend 'mlx' wird aus ENV erkannt."""
         monkeypatch.setenv("PULSESCRIBE_LOCAL_BACKEND", "mlx")
@@ -284,6 +295,24 @@ class TestBackendDetection:
         provider._ensure_runtime_config()
 
         assert provider._backend == "mlx"
+
+    def test_backend_invalid_value_warns_and_falls_back_to_whisper(
+        self, monkeypatch, caplog
+    ):
+        """Ungültige Backend-Werte sollen weiter klar auf whisper zurückfallen."""
+        monkeypatch.setenv("PULSESCRIBE_LOCAL_BACKEND", " definitely-not-valid ")
+
+        import logging
+
+        caplog.set_level(logging.WARNING)
+
+        from providers.local import LocalProvider
+
+        provider = LocalProvider()
+        provider._ensure_runtime_config()
+
+        assert provider._backend == "whisper"
+        assert "Unbekannter PULSESCRIBE_LOCAL_BACKEND='definitely-not-valid'" in caplog.text
 
 
 class TestLightningModelCaching:

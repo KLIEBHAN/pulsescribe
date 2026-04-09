@@ -28,6 +28,7 @@ import typer  # noqa: E402
 from typing import Annotated, TYPE_CHECKING  # noqa: E402
 import logging  # noqa: E402
 import os  # noqa: E402
+from dataclasses import dataclass  # noqa: E402
 from enum import Enum  # noqa: E402
 
 from pathlib import Path  # noqa: E402
@@ -44,13 +45,7 @@ time = _time_module  # Alias für restlichen Code
 # =============================================================================
 
 from config import (  # noqa: E402
-    # Models
-    DEFAULT_API_MODEL,
-    DEFAULT_LOCAL_MODEL,
-    DEFAULT_DEEPGRAM_MODEL,
-    DEFAULT_GROQ_MODEL,
     DEFAULT_REFINE_MODEL,
-    # Paths
     VOCABULARY_FILE,
 )
 
@@ -60,6 +55,7 @@ from cli.types import (  # noqa: E402
     RefineProvider,
     ResponseFormat,
 )
+from providers import DEFAULT_MODELS as _PROVIDER_DEFAULT_MODELS  # noqa: E402
 
 # Typer-App
 app = typer.Typer(
@@ -189,6 +185,16 @@ def _resolve_env_enum(
         ) from exc
 
 
+@dataclass(frozen=True)
+class _ResolvedCliOptions:
+    mode: TranscriptionMode
+    model: str | None
+    language: str | None
+    refine: bool
+    refine_model: str | None
+    refine_provider: RefineProvider | None
+
+
 # =============================================================================
 # Transkription (delegiert an providers/)
 # =============================================================================
@@ -214,12 +220,9 @@ def _resolve_env_enum(
 from refine.llm import maybe_refine_transcript  # noqa: E402
 
 
-# Standard-Modelle pro Modus
+# Standard-Modelle nur für die öffentlich unterstützten CLI-Modi.
 DEFAULT_MODELS = {
-    "openai": DEFAULT_API_MODEL,
-    "deepgram": DEFAULT_DEEPGRAM_MODEL,
-    "groq": DEFAULT_GROQ_MODEL,
-    "local": DEFAULT_LOCAL_MODEL,
+    mode.value: _PROVIDER_DEFAULT_MODELS[mode.value] for mode in TranscriptionMode
 }
 
 
@@ -297,6 +300,106 @@ def _cleanup_temp_audio_file(temp_file: Path | None) -> None:
             "Temporäre Aufnahme konnte nicht gelöscht werden: %s",
             cleanup_error,
         )
+
+
+def _resolve_runtime_cli_options(
+    *,
+    mode: TranscriptionMode | None,
+    model: str | None,
+    language: str | None,
+    refine: bool,
+    no_refine: bool,
+    refine_model: str | None,
+    refine_provider: RefineProvider | None,
+) -> _ResolvedCliOptions:
+    """Resolve CLI options after `.env` loading in one place."""
+    resolved_refine = refine
+    if not resolved_refine and not no_refine:
+        resolved_refine = bool(parse_bool(os.getenv("PULSESCRIBE_REFINE")))
+
+    return _ResolvedCliOptions(
+        mode=_resolve_env_enum(
+            mode,
+            env_name="PULSESCRIBE_MODE",
+            enum_type=TranscriptionMode,
+            default=TranscriptionMode.deepgram,
+        ),
+        model=_resolve_env_string(model, "PULSESCRIBE_MODEL"),
+        language=_resolve_env_string(language, "PULSESCRIBE_LANGUAGE"),
+        refine=resolved_refine,
+        refine_model=_resolve_env_string(
+            refine_model,
+            "PULSESCRIBE_REFINE_MODEL",
+        ),
+        refine_provider=_resolve_env_enum(
+            refine_provider,
+            env_name="PULSESCRIBE_REFINE_PROVIDER",
+            enum_type=RefineProvider,
+        ),
+    )
+
+
+def _package_for_import_error(exc: ImportError) -> str:
+    """Return the install hint package name for a missing dependency."""
+    err_str = str(exc).lower()
+    if "openai" in err_str:
+        return "openai"
+    if "deepgram" in err_str:
+        return "deepgram-sdk"
+    return "openai-whisper"
+
+
+def _transcribe_with_cli_error_handling(
+    audio_path: Path,
+    *,
+    mode: str,
+    model: str | None,
+    language: str | None,
+    response_format: str,
+) -> str:
+    """Run transcription and translate exceptions into user-facing CLI errors."""
+    try:
+        return transcribe(
+            audio_path,
+            mode=mode,
+            model=model,
+            language=language,
+            response_format=response_format,
+        )
+    except ImportError as exc:
+        error(f"Modul nicht installiert: pip install {_package_for_import_error(exc)}")
+        raise typer.Exit(1)
+    except Exception as exc:
+        error(str(exc))
+        raise typer.Exit(1)
+
+
+def _maybe_refine_output_transcript(
+    transcript: str,
+    *,
+    response_format: ResponseFormat,
+    refine: bool,
+    no_refine: bool,
+    refine_model: str | None,
+    refine_provider: RefineProvider | None,
+    context: Context | None,
+) -> str:
+    """Apply refine only for plain-text output and keep skip logging in one place."""
+    if response_format == ResponseFormat.text:
+        return maybe_refine_transcript(
+            transcript,
+            refine=refine,
+            no_refine=no_refine,
+            refine_model=refine_model,
+            refine_provider=refine_provider.value if refine_provider else None,
+            context=context.value if context else None,
+        )
+
+    if refine and not no_refine:
+        log(
+            f"Hinweis: LLM-Nachbearbeitung wird für --format {response_format.value} übersprungen"
+        )
+    return transcript
 
 
 def transcribe(
@@ -412,22 +515,15 @@ def main(
     """
     load_environment()
     setup_logging(debug=debug)
-    mode = _resolve_env_enum(
-        mode,
-        env_name="PULSESCRIBE_MODE",
-        enum_type=TranscriptionMode,
-        default=TranscriptionMode.deepgram,
+    resolved = _resolve_runtime_cli_options(
+        mode=mode,
+        model=model,
+        language=language,
+        refine=refine,
+        no_refine=no_refine,
+        refine_model=refine_model,
+        refine_provider=refine_provider,
     )
-    model = _resolve_env_string(model, "PULSESCRIBE_MODEL")
-    language = _resolve_env_string(language, "PULSESCRIBE_LANGUAGE")
-    refine_model = _resolve_env_string(refine_model, "PULSESCRIBE_REFINE_MODEL")
-    refine_provider = _resolve_env_enum(
-        refine_provider,
-        env_name="PULSESCRIBE_REFINE_PROVIDER",
-        enum_type=RefineProvider,
-    )
-    if not refine and not no_refine:
-        refine = bool(parse_bool(os.getenv("PULSESCRIBE_REFINE")))
 
     # Validierung: genau eine Audio-Quelle erforderlich
     if not record and audio is None:
@@ -440,8 +536,8 @@ def main(
     logger.info(f"[{_get_session_id()}] Startup: {_format_duration(startup_ms)}")
 
     logger.debug(
-        f"[{_get_session_id()}] Args: mode={mode.value}, model={model}, "
-        f"record={record}, refine={refine}"
+        f"[{_get_session_id()}] Args: mode={resolved.mode.value}, model={resolved.model}, "
+        f"record={record}, refine={resolved.refine}"
     )
 
     # Audio-Quelle bestimmen
@@ -449,43 +545,26 @@ def main(
 
     # Transkription durchführen
     try:
-        transcript = transcribe(
+        transcript = _transcribe_with_cli_error_handling(
             audio_path,
-            mode=mode.value,
-            model=model,
-            language=language,
+            mode=resolved.mode.value,
+            model=resolved.model,
+            language=resolved.language,
             response_format=response_format.value,
         )
-    except ImportError as e:
-        err_str = str(e).lower()
-        if "openai" in err_str:
-            package = "openai"
-        elif "deepgram" in err_str:
-            package = "deepgram-sdk"
-        else:
-            package = "openai-whisper"
-        error(f"Modul nicht installiert: pip install {package}")
-        raise typer.Exit(1)
-    except Exception as e:
-        error(str(e))
-        raise typer.Exit(1)
     finally:
         _cleanup_temp_audio_file(temp_file)
 
     # LLM-Nachbearbeitung (optional)
-    if response_format == ResponseFormat.text:
-        transcript = maybe_refine_transcript(
-            transcript,
-            refine=refine,
-            no_refine=no_refine,
-            refine_model=refine_model,
-            refine_provider=refine_provider.value if refine_provider else None,
-            context=context.value if context else None,
-        )
-    elif refine and not no_refine:
-        log(
-            f"Hinweis: LLM-Nachbearbeitung wird für --format {response_format.value} übersprungen"
-        )
+    transcript = _maybe_refine_output_transcript(
+        transcript,
+        response_format=response_format,
+        refine=resolved.refine,
+        no_refine=no_refine,
+        refine_model=resolved.refine_model,
+        refine_provider=resolved.refine_provider,
+        context=context,
+    )
 
     # Ausgabe
     print(transcript)

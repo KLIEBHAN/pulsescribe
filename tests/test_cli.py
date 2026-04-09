@@ -232,6 +232,37 @@ class TestCLI:
         mock_refine.assert_not_called()
         assert '{"text":"hi"}' in result.output
 
+    def test_import_errors_show_install_hint_for_expected_package(
+        self,
+        clean_env,
+        tmp_path,
+    ):
+        """Import-Fehler sollen eine passende Installationshilfe zeigen."""
+        audio_file = tmp_path / "test.wav"
+        audio_file.write_bytes(b"fake audio")
+
+        cases = [
+            (ImportError("No module named 'openai'"), "pip install openai"),
+            (
+                ImportError("deepgram SDK missing"),
+                "pip install deepgram-sdk",
+            ),
+            (
+                ImportError("mlx_whisper import failed"),
+                "pip install openai-whisper",
+            ),
+        ]
+
+        for import_error, expected_hint in cases:
+            with patch(
+                "transcribe.transcribe",
+                side_effect=import_error,
+            ):
+                result = runner.invoke(app, [str(audio_file)])
+
+            assert result.exit_code == 1
+            assert expected_hint in strip_ansi(result.output)
+
     def test_missing_audio_file_exits_before_transcribing(self, clean_env, tmp_path):
         """Nicht vorhandene Dateien sollen früh und eindeutig abgewiesen werden."""
         missing_audio = tmp_path / "missing.wav"

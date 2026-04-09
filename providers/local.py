@@ -26,6 +26,12 @@ from config import (
     WHISPER_SAMPLE_RATE,
 )
 from utils.env import get_env_bool, get_env_int
+from utils.local_backend import (
+    DEFAULT_LOCAL_BACKEND,
+    LOCAL_BACKEND_ALIASES,
+    VALID_LOCAL_BACKENDS,
+    normalize_local_backend,
+)
 from utils.logging import log
 from utils.timing import timed_operation
 from utils.vocabulary import load_vocabulary
@@ -113,6 +119,44 @@ _register_nvidia_dll_directories()
 def _is_apple_silicon() -> bool:
     """Prüft ob wir auf Apple Silicon (arm64 macOS) laufen."""
     return sys.platform == "darwin" and platform.machine() == "arm64"
+
+
+def _default_local_backend() -> str:
+    """Returns the platform-aware default local backend value."""
+    return "lightning" if _is_apple_silicon() else DEFAULT_LOCAL_BACKEND
+
+
+def _is_known_local_backend_value(value: str) -> bool:
+    """Checks whether an explicit backend value is supported or known as an alias."""
+    normalized = value.strip().lower()
+    return normalized in VALID_LOCAL_BACKENDS or normalized in LOCAL_BACKEND_ALIASES
+
+
+def _is_faster_whisper_available() -> bool:
+    """Returns whether faster-whisper can be used for the auto backend."""
+    try:
+        import faster_whisper  # noqa: F401
+    except Exception:
+        return False
+    return True
+
+
+def _resolve_local_backend(env_value: str | None) -> str:
+    """Resolve the configured backend while reusing shared UI/backend normalization."""
+    raw_value = (env_value or "").strip()
+    requested_backend = raw_value or _default_local_backend()
+    normalized_backend = normalize_local_backend(requested_backend)
+
+    if raw_value and not _is_known_local_backend_value(raw_value):
+        logger.warning(
+            "Unbekannter PULSESCRIBE_LOCAL_BACKEND='%s', nutze whisper",
+            raw_value.lower(),
+        )
+        return "whisper"
+
+    if normalized_backend == DEFAULT_LOCAL_BACKEND:
+        return "faster" if _is_faster_whisper_available() else "whisper"
+    return normalized_backend
 
 
 def _mlx_whisper_import_hint() -> str:
@@ -297,34 +341,9 @@ class LocalProvider:
 
     def _ensure_runtime_config(self) -> None:
         if self._backend is None:
-            # Default: "lightning" auf Apple Silicon (schnellstes Backend)
-            # Fallback: "auto" versucht faster-whisper, dann openai-whisper
-            default_backend = "lightning" if _is_apple_silicon() else "auto"
-            backend_env = (
-                (os.getenv("PULSESCRIBE_LOCAL_BACKEND") or default_backend)
-                .strip()
-                .lower()
+            self._backend = _resolve_local_backend(
+                os.getenv("PULSESCRIBE_LOCAL_BACKEND")
             )
-            if backend_env in {"faster", "faster-whisper"}:
-                self._backend = "faster"
-            elif backend_env in {"mlx", "mlx-whisper"}:
-                self._backend = "mlx"
-            elif backend_env in {"lightning", "lightning-whisper-mlx"}:
-                self._backend = "lightning"
-            elif backend_env == "auto":
-                try:
-                    import faster_whisper  # noqa: F401
-
-                    self._backend = "faster"
-                except Exception:
-                    self._backend = "whisper"
-            elif backend_env in {"whisper", "openai-whisper"}:
-                self._backend = "whisper"
-            else:
-                logger.warning(
-                    f"Unbekannter PULSESCRIBE_LOCAL_BACKEND='{backend_env}', nutze whisper"
-                )
-                self._backend = "whisper"
             log(f"Lokales Whisper Backend: {self._backend}")
 
         if self._device is None:

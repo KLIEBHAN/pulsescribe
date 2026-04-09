@@ -5,6 +5,18 @@ from unittest.mock import Mock, patch
 import pytest
 
 
+def test_default_models_match_provider_defaults_for_cli_modes() -> None:
+    """transcribe.py soll für alle CLI-Modi dieselben Defaults wie providers nutzen."""
+    from cli.types import TranscriptionMode
+    from providers import DEFAULT_MODELS as provider_default_models
+    from transcribe import DEFAULT_MODELS
+
+    expected = {
+        mode.value: provider_default_models[mode.value] for mode in TranscriptionMode
+    }
+    assert DEFAULT_MODELS == expected
+
+
 class TestTranscribeFunction:
     """Tests für transcribe() – Provider-Integration."""
 
