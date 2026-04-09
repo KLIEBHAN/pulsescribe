@@ -9,10 +9,13 @@ from utils.timing import timed_operation
 
 from config import DEFAULT_API_MODEL
 from ._client_cache import EnvClientCache, build_cached_env_client_getter
-from ._response_utils import log_transcription_result, serialize_openai_response
+from ._response_utils import (
+    log_transcription_result,
+    normalize_requested_response_format,
+    serialize_openai_response,
+)
 from ._transcription_request import (
-    build_transcription_params,
-    execute_audio_file_request,
+    execute_audio_transcription_request,
     resolve_transcription_request,
 )
 from .base import EnvValidatedProvider
@@ -43,7 +46,7 @@ def _uses_json_only_response_format(model: str) -> bool:
 
 def _resolve_api_response_format(model: str, requested_format: str) -> str:
     """Map CLI response formats to the actual API format for a given model."""
-    normalized = (requested_format or "text").strip().lower() or "text"
+    normalized = normalize_requested_response_format(requested_format)
     if not _uses_json_only_response_format(model):
         return normalized
 
@@ -115,17 +118,14 @@ class OpenAIProvider(EnvValidatedProvider):
         client = _get_client()
 
         with timed_operation("OpenAI-Transkription", logger=logger, include_session=False):
-            response = execute_audio_file_request(
+            response = execute_audio_transcription_request(
                 audio_path,
                 request_callable=client.audio.transcriptions.create,
-                build_params=lambda audio_file: build_transcription_params(
-                    model=request.model,
-                    language=request.language,
-                    extra_params={
-                        "file": audio_file,
-                        "response_format": api_response_format,
-                    },
-                ),
+                model=request.model,
+                language=request.language,
+                extra_params={
+                    "response_format": api_response_format,
+                },
             )
 
         result = serialize_openai_response(

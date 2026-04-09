@@ -260,14 +260,35 @@ def get_env_int(name: str) -> int | None:
         return None
 
 
+def _remove_stale_loaded_env_values(merged: Mapping[str, str]) -> None:
+    """Remove env values that were loaded earlier but disappeared from `.env` files."""
+    global _loaded_env_values
+
+    for key, value in list(_loaded_env_values.items()):
+        if key in merged:
+            continue
+        if os.environ.get(key) == value:
+            del os.environ[key]
+    _loaded_env_values = {}
+
+
+def _apply_loaded_env_values(
+    merged: Mapping[str, str], *, override_existing: bool
+) -> None:
+    """Apply collected `.env` values and remember only what we actually injected."""
+    for key, value in merged.items():
+        if not override_existing and key in os.environ:
+            continue
+        os.environ[key] = value
+        _loaded_env_values[key] = value
+
+
 def load_environment(*, override_existing: bool = False) -> None:
     """Loads `.env` values into `os.environ` if python-dotenv is available.
 
     On reload (`override_existing=True`), `.env` values override existing env vars,
     while user config still overrides the local project `.env`.
     """
-    global _loaded_env_values
-
     from config import USER_CONFIG_DIR
 
     merged = collect_env_values(user_config_dir=USER_CONFIG_DIR)
@@ -275,17 +296,9 @@ def load_environment(*, override_existing: bool = False) -> None:
     if override_existing:
         # Entferne nur Keys, die zuvor von load_environment gesetzt wurden und
         # jetzt nicht mehr in den geladenen .env-Dateien vorkommen.
-        for key, value in list(_loaded_env_values.items()):
-            if key in merged:
-                continue
-            if os.environ.get(key) == value:
-                del os.environ[key]
-        _loaded_env_values = {}
+        _remove_stale_loaded_env_values(merged)
 
-    for key, value in merged.items():
-        if override_existing or key not in os.environ:
-            os.environ[key] = value
-            _loaded_env_values[key] = value
+    _apply_loaded_env_values(merged, override_existing=override_existing)
 
 
 __all__ = [

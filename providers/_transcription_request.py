@@ -58,3 +58,34 @@ def execute_audio_file_request(
     """Open an audio file once and execute a provider SDK request with it."""
     with audio_path.open("rb") as audio_file:
         return request_callable(**dict(build_params(audio_file)))
+
+
+def execute_audio_transcription_request(
+    audio_path: Path,
+    *,
+    request_callable: Callable[..., Any],
+    model: str,
+    language: str | None,
+    extra_params: Mapping[str, object] | None = None,
+    build_file_payload: Callable[[Path, BinaryIO], object] | None = None,
+) -> Any:
+    """Execute a file-based transcription request with shared param assembly."""
+
+    def _build_params(audio_file: BinaryIO) -> Mapping[str, object]:
+        file_payload = audio_file
+        if build_file_payload is not None:
+            file_payload = build_file_payload(audio_path, audio_file)
+        return build_transcription_params(
+            model=model,
+            language=language,
+            extra_params={
+                "file": file_payload,
+                **dict(extra_params or {}),
+            },
+        )
+
+    return execute_audio_file_request(
+        audio_path,
+        request_callable=request_callable,
+        build_params=_build_params,
+    )

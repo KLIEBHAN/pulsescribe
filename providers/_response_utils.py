@@ -19,9 +19,18 @@ def extract_text_response(response: object) -> str | None:
     return None
 
 
+def normalize_requested_response_format(
+    requested_format: str | None,
+    *,
+    default: str = "text",
+) -> str:
+    """Normalize response-format values consistently across provider helpers."""
+    return (requested_format or default).strip().lower() or default
+
+
 def serialize_openai_response(response: object, *, requested_format: str) -> str:
     """Convert OpenAI SDK responses into stable CLI output."""
-    normalized = (requested_format or "text").strip().lower() or "text"
+    normalized = normalize_requested_response_format(requested_format)
     text_response = extract_text_response(response)
 
     if normalized == "text" and text_response is not None:

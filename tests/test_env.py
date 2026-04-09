@@ -117,6 +117,29 @@ class TestLoadEnvironmentReload:
         finally:
             os.environ.pop("OPENAI_API_KEY", None)
 
+    def test_reload_preserves_process_override_after_loaded_value_is_deleted(self, tmp_path):
+        """Später gesetzte Prozesswerte dürfen beim Entfernen der .env-Zeile nicht gelöscht werden."""
+        user_dir = tmp_path / "user"
+        user_dir.mkdir()
+        env_file = user_dir / ".env"
+        env_file.write_text("GROQ_API_KEY=env-key\n", encoding="utf-8")
+
+        try:
+            with patch("config.USER_CONFIG_DIR", user_dir), patch(
+                "utils.env._get_local_env_path",
+                return_value=tmp_path / "missing-local.env",
+            ):
+                load_environment(override_existing=True)
+                assert os.environ.get("GROQ_API_KEY") == "env-key"
+
+                os.environ["GROQ_API_KEY"] = "shell-key"
+                env_file.write_text("", encoding="utf-8")
+                load_environment(override_existing=True)
+
+            assert os.environ.get("GROQ_API_KEY") == "shell-key"
+        finally:
+            os.environ.pop("GROQ_API_KEY", None)
+
     def test_reload_uses_project_local_env_instead_of_current_working_directory(
         self, tmp_path, monkeypatch
     ):

@@ -562,6 +562,51 @@ def test_openai_provider_streams_file_handle_to_sdk(monkeypatch, tmp_path):
 
 
 
+def test_openai_provider_closes_file_handle_after_sdk_call(monkeypatch, tmp_path):
+    from providers.openai import OpenAIProvider
+    import providers.openai as openai_mod
+
+    audio_file = tmp_path / "sample.wav"
+    audio_file.write_bytes(b"audio")
+
+    observed: dict[str, object] = {}
+
+    def fake_create(**kwargs):
+        sdk_file = kwargs["file"]
+        observed["file"] = sdk_file
+        observed["closed_during_call"] = sdk_file.closed
+        return SimpleNamespace(text="plain transcript")
+
+    fake_client = SimpleNamespace(
+        audio=SimpleNamespace(
+            transcriptions=SimpleNamespace(create=fake_create)
+        )
+    )
+
+    monkeypatch.setattr(openai_mod, "_get_client", lambda: fake_client)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    provider = OpenAIProvider()
+    assert provider.transcribe(audio_file) == "plain transcript"
+
+    assert observed["closed_during_call"] is False
+    assert observed["file"].closed is True
+
+
+
+def test_openai_response_format_helpers_normalize_case_and_whitespace() -> None:
+    from providers._response_utils import serialize_openai_response
+    from providers.openai import _resolve_api_response_format
+
+    assert _resolve_api_response_format("gpt-4o-transcribe", " JSON ") == "json"
+    assert _resolve_api_response_format("whisper-1", " VTT ") == "vtt"
+    assert (
+        serialize_openai_response(_FakeOpenAIJsonResponse(), requested_format=" JSON ")
+        == '{\n  "text": "serialized text"\n}'
+    )
+
+
+
 def test_openai_provider_redacts_debug_result_logging(monkeypatch, tmp_path):
     from providers.openai import OpenAIProvider
     import providers.openai as openai_mod
@@ -661,6 +706,38 @@ def test_groq_provider_passes_named_file_tuple_and_stable_defaults(
         "response_format": "text",
         "temperature": 0.0,
     }
+
+
+
+def test_groq_provider_closes_file_handle_after_sdk_call(monkeypatch, tmp_path):
+    from providers.groq import GroqProvider
+    import providers.groq as groq_mod
+
+    audio_file = tmp_path / "sample.wav"
+    audio_file.write_bytes(b"audio")
+
+    observed: dict[str, object] = {}
+
+    def fake_create(**kwargs):
+        _filename, sdk_file = kwargs["file"]
+        observed["file"] = sdk_file
+        observed["closed_during_call"] = sdk_file.closed
+        return "plain transcript"
+
+    fake_client = SimpleNamespace(
+        audio=SimpleNamespace(
+            transcriptions=SimpleNamespace(create=fake_create)
+        )
+    )
+
+    monkeypatch.setattr(groq_mod, "_get_client", lambda: fake_client)
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+
+    provider = GroqProvider()
+    assert provider.transcribe(audio_file) == "plain transcript"
+
+    assert observed["closed_during_call"] is False
+    assert observed["file"].closed is True
 
 
 

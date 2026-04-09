@@ -11,8 +11,7 @@ from config import DEFAULT_GROQ_MODEL
 from ._client_cache import EnvClientCache, build_cached_env_client_getter
 from ._response_utils import log_transcription_result, require_text_response
 from ._transcription_request import (
-    build_transcription_params,
-    execute_audio_file_request,
+    execute_audio_transcription_request,
     resolve_transcription_request,
 )
 from .base import EnvValidatedProvider
@@ -85,19 +84,16 @@ class GroqProvider(EnvValidatedProvider):
         client = _get_client()
 
         with timed_operation("Groq-Transkription", logger=logger, include_session=False):
-            response = execute_audio_file_request(
+            response = execute_audio_transcription_request(
                 audio_path,
                 request_callable=client.audio.transcriptions.create,
-                build_params=lambda audio_file: build_transcription_params(
-                    model=request.model,
-                    language=request.language,
-                    extra_params={
-                        # File-Handle statt .read() – spart Speicher bei großen Dateien
-                        "file": (audio_path.name, audio_file),
-                        "response_format": "text",
-                        "temperature": 0.0,  # Konsistente Ergebnisse ohne Kreativität
-                    },
-                ),
+                model=request.model,
+                language=request.language,
+                build_file_payload=lambda path, audio_file: (path.name, audio_file),
+                extra_params={
+                    "response_format": "text",
+                    "temperature": 0.0,  # Konsistente Ergebnisse ohne Kreativität
+                },
             )
 
         result = require_text_response(response, provider_name="Groq")
