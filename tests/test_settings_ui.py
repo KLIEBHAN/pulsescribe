@@ -5,6 +5,8 @@ from unittest.mock import MagicMock, patch
 
 from ui.welcome import (
     LEGACY_LOCAL_FP16_ENV_KEY,
+    LOGS_AUTO_REFRESH_ACTIVE_INTERVAL_S,
+    LOGS_AUTO_REFRESH_IDLE_INTERVAL_S,
     LOCAL_FP16_ENV_KEY,
     LOCAL_MODEL_OPTIONS,
     WelcomeController,
@@ -829,6 +831,7 @@ class TestWelcomeLogsAutoRefreshGuards:
         ctrl._refresh_logs = MagicMock()
 
         ctrl._start_logs_auto_refresh()
+        assert captured["interval"] == LOGS_AUTO_REFRESH_IDLE_INTERVAL_S
         captured["tick"](None)
 
         ctrl._refresh_logs.assert_not_called()
@@ -862,6 +865,7 @@ class TestWelcomeLogsAutoRefreshGuards:
         ctrl._refresh_logs = MagicMock()
 
         ctrl._start_logs_auto_refresh()
+        assert captured["interval"] == LOGS_AUTO_REFRESH_ACTIVE_INTERVAL_S
         captured["tick"](None)
 
         ctrl._refresh_logs.assert_called_once_with(scroll_to_bottom=False)
@@ -896,10 +900,64 @@ class TestWelcomeLogsAutoRefreshGuards:
         ctrl._refresh_transcripts = MagicMock()
 
         ctrl._start_logs_auto_refresh()
+        assert captured["interval"] == LOGS_AUTO_REFRESH_ACTIVE_INTERVAL_S
         captured["tick"](None)
 
         ctrl._refresh_logs.assert_not_called()
         ctrl._refresh_transcripts.assert_called_once_with(scroll_to_bottom=False)
+
+    def test_auto_refresh_tick_reschedules_to_idle_interval_when_view_hides(
+        self, monkeypatch
+    ):
+        import sys
+        import types
+
+        scheduled_intervals: list[float] = []
+        created_timers: list[object] = []
+
+        class _FakeTimer:
+            def __init__(self, interval: float) -> None:
+                self.interval = interval
+                self.invalidated = 0
+
+            def invalidate(self) -> None:
+                self.invalidated += 1
+
+        class _FakeNSTimer:
+            @staticmethod
+            def scheduledTimerWithTimeInterval_repeats_block_(interval, repeats, block):
+                scheduled_intervals.append(interval)
+                timer = _FakeTimer(interval)
+                created_timers.append((timer, block, repeats))
+                return timer
+
+        monkeypatch.setitem(
+            sys.modules,
+            "Foundation",
+            types.SimpleNamespace(NSTimer=_FakeNSTimer),
+        )
+
+        ctrl = WelcomeController.__new__(WelcomeController)
+        ctrl._logs_auto_refresh_timer = None
+        ctrl._logs_auto_refresh_interval_seconds = None
+        ctrl._logs_auto_checkbox = type("_Check", (), {"state": lambda self: 1})()
+        visible = {"value": True}
+        ctrl._is_logs_tab_active = lambda: visible["value"]
+        ctrl._is_logs_view_active = lambda: True
+        ctrl._is_window_visible_for_logs = lambda: True
+        ctrl._refresh_logs = MagicMock()
+        ctrl._refresh_transcripts = MagicMock()
+
+        ctrl._start_logs_auto_refresh()
+        first_timer, first_tick, _repeats = created_timers[-1]
+        visible["value"] = False
+        first_tick(None)
+
+        assert scheduled_intervals == [
+            LOGS_AUTO_REFRESH_ACTIVE_INTERVAL_S,
+            LOGS_AUTO_REFRESH_IDLE_INTERVAL_S,
+        ]
+        assert first_timer.invalidated == 1
 
 
 class _FakePoint:

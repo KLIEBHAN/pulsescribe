@@ -1,9 +1,42 @@
+Performance work log - 2026-04-09 (welcome logs auto-refresh interval backoff)
+
+Scope
+- Left the last two commit areas untouched: `ui/overlay.py`, `ui/overlay_windows.py`, `ui/overlay_pyside6.py`, and their related tests.
+- Avoided the already dirty settings/permissions/vocabulary/custom-prompts files and their tests.
+- Focused on the welcome-window logs/transcripts auto-refresh path in `ui/welcome.py`.
+
+Current weaknesses reviewed
+- `ui/welcome.py`: the logs/transcripts auto-refresh timer kept waking every 2 seconds even when the Logs tab was hidden, the transcripts segment was inactive, or the window was not effectively visible.
+- `ui/welcome.py`: inactive auto-refresh states already skipped the expensive reload work, but the fixed timer still caused avoidable AppKit wakeups and visibility checks on a background UI path.
+
+Changes in this pass
+- `ui/welcome.py`
+  Switched the logs/transcripts auto-refresh timer from one fixed cadence to an adaptive schedule: fast while the relevant view is visible, slow while the UI path is inactive.
+- `ui/welcome.py`
+  Added interval dedupe and rescheduling so the timer only recreates itself when the visibility/segment state actually changes.
+- Tests
+  Added regression coverage for active-vs-idle startup intervals and for rescheduling from the active interval to the slower idle interval when the view becomes inactive.
+
+Why this helps
+- The welcome window now spends much less time waking the main loop for a background timer when the user is not actively looking at logs or transcripts.
+- Active logs/transcripts behavior stays responsive because the fast interval is still used while the relevant view is visible.
+- The optimization is local to the welcome auto-refresh boundary and preserves the existing incremental refresh logic.
+
+Validation
+- `pytest tests/test_settings_ui.py -q`
+- `python -m py_compile ui/welcome.py tests/test_settings_ui.py`
+- `ruff check ui/welcome.py tests/test_settings_ui.py`
+
+Next worthwhile areas
+- `ui/menubar.py`: a daemon-side preview-signature shortcut could cut more string work before the menu-bar path when long dictations keep sending unchanged visible previews.
+- `ui/welcome.py`: after timer wakeups are cheaper, the next pass could target initial tab-build cost or further reduce segment-switch no-op work.
+- `utils/log_tail.py` + `ui/welcome.py`: if traces still show file-system pressure, the next likely step is coalescing signature checks across logs/transcripts refreshes.
+
 Performance work log - 2026-04-09 (overlay direct-update dedupe + Windows interim poll backoff)
 
 Scope
 - Left the last two commit areas untouched: `pulsescribe_daemon.py`, `ui/animation.py`, `ui/onboarding_wizard_windows.py`, and their related tests.
 - Avoided the already dirty settings/permissions/vocabulary/custom-prompts files and their tests.
-- Focused on the remaining high-frequency frontend hot paths in `ui/overlay_windows.py` and `ui/overlay_pyside6.py`.
 - Focused on the remaining high-frequency frontend hot paths in `ui/overlay.py`, `ui/overlay_windows.py`, and `ui/overlay_pyside6.py`.
 
 Current weaknesses reviewed
@@ -32,9 +65,9 @@ Why this helps
 - The changes stay local to the overlay boundary and preserve existing rendering, polling fallback, and state transitions.
 
 Validation
-- `pytest tests/test_overlay_windows.py tests/test_overlay_pyside6.py tests/test_menubar.py -q`
-- `python -m py_compile ui/overlay_windows.py ui/overlay_pyside6.py tests/test_overlay_windows.py tests/test_overlay_pyside6.py tests/test_menubar.py`
-- `ruff check ui/overlay_windows.py ui/overlay_pyside6.py tests/test_overlay_windows.py tests/test_overlay_pyside6.py tests/test_menubar.py`
+- `pytest tests/test_overlay.py tests/test_overlay_windows.py tests/test_overlay_pyside6.py -q`
+- `python -m py_compile ui/overlay.py ui/overlay_windows.py ui/overlay_pyside6.py tests/test_overlay.py tests/test_overlay_windows.py tests/test_overlay_pyside6.py`
+- `ruff check ui/overlay.py ui/overlay_windows.py ui/overlay_pyside6.py tests/test_overlay.py tests/test_overlay_windows.py tests/test_overlay_pyside6.py`
 
 Next worthwhile areas
 - `ui/menubar.py`: a daemon-side preview-signature shortcut could cut more string work before the menu-bar path when long dictations keep sending unchanged visible previews.

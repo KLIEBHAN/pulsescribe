@@ -77,6 +77,8 @@ TRANSCRIPTS_VIEW_MAX_ENTRIES = 50
 INCREMENTAL_LOG_APPEND_MAX_BYTES = 64_000
 INCREMENTAL_TRANSCRIPT_APPEND_MAX_BYTES = 64_000
 LOG_TRUNCATED_PREFIX = "... (truncated)\n\n"
+LOGS_AUTO_REFRESH_ACTIVE_INTERVAL_S = 2.0
+LOGS_AUTO_REFRESH_IDLE_INTERVAL_S = 8.0
 
 
 def _bool_override_from_env(*keys: str) -> str:
@@ -265,6 +267,7 @@ class WelcomeController:
         self._logs_auto_refresh_handler = None
         self._logs_auto_checkbox = None
         self._logs_auto_refresh_timer = None
+        self._logs_auto_refresh_interval_seconds: float | None = None
         self._logs_finder_handler = None
         self._last_logs_text = None
         self._last_logs_signature = None
@@ -3232,24 +3235,50 @@ class WelcomeController:
 
         self._stop_logs_auto_refresh()
 
-        def tick(_timer) -> None:
-            enabled = bool(self._logs_auto_checkbox and self._logs_auto_checkbox.state())
-            should_run = should_auto_refresh_logs(
+        def _should_run(enabled: bool) -> bool:
+            return should_auto_refresh_logs(
                 enabled=enabled,
                 is_logs_tab_active=self._is_logs_tab_active(),
                 logs_view_index=0 if self._is_logs_view_active() else 1,
                 is_window_visible=self._is_window_visible_for_logs(),
                 allow_transcripts=True,
             )
+
+        def _schedule(interval_seconds: float) -> None:
+            self._logs_auto_refresh_interval_seconds = interval_seconds
+            self._logs_auto_refresh_timer = (
+                NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+                    interval_seconds, True, tick
+                )
+            )
+
+        def tick(_timer) -> None:
+            enabled = bool(self._logs_auto_checkbox and self._logs_auto_checkbox.state())
+            should_run = _should_run(enabled)
             if should_run:
                 if self._is_logs_view_active():
                     self._refresh_logs(scroll_to_bottom=False)
                 else:
                     self._refresh_transcripts(scroll_to_bottom=False)
+            desired_interval = (
+                LOGS_AUTO_REFRESH_ACTIVE_INTERVAL_S
+                if should_run
+                else LOGS_AUTO_REFRESH_IDLE_INTERVAL_S
+            )
+            if (
+                desired_interval
+                != getattr(self, "_logs_auto_refresh_interval_seconds", None)
+            ):
+                self._stop_logs_auto_refresh()
+                _schedule(desired_interval)
 
-        self._logs_auto_refresh_timer = (
-            NSTimer.scheduledTimerWithTimeInterval_repeats_block_(2.0, True, tick)
+        initial_enabled = bool(self._logs_auto_checkbox and self._logs_auto_checkbox.state())
+        initial_interval = (
+            LOGS_AUTO_REFRESH_ACTIVE_INTERVAL_S
+            if _should_run(initial_enabled)
+            else LOGS_AUTO_REFRESH_IDLE_INTERVAL_S
         )
+        _schedule(initial_interval)
 
     def _stop_logs_auto_refresh(self) -> None:
         """Stoppt den Auto-Refresh Timer."""
@@ -3259,6 +3288,7 @@ class WelcomeController:
             except Exception:
                 pass
             self._logs_auto_refresh_timer = None
+        self._logs_auto_refresh_interval_seconds = None
 
     def _build_about_card(self, y: int, parent_view=None) -> int:
         """Erstellt About Tab mit umfassender App-Beschreibung."""
