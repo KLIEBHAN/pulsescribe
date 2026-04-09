@@ -137,6 +137,15 @@ def test_onboarding_choice_roundtrip(tmp_path, monkeypatch):
     assert prefs.get_onboarding_choice() is None
 
 
+def test_set_onboarding_choice_accepts_string_values(tmp_path, monkeypatch):
+    _isolate_prefs(tmp_path, monkeypatch)
+
+    prefs.set_onboarding_choice("advanced")
+
+    assert prefs.load_preferences()["onboarding_choice"] == "advanced"
+    assert prefs.get_onboarding_choice() == OnboardingChoice.ADVANCED
+
+
 def test_set_onboarding_choice_invalid_value_clears_choice_only(tmp_path, monkeypatch):
     _isolate_prefs(tmp_path, monkeypatch)
     prefs.save_preferences(

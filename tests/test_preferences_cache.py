@@ -283,6 +283,32 @@ def test_update_env_settings_preserves_comments_and_collapses_updated_duplicates
     )
 
 
+def test_update_env_settings_leaves_unrelated_duplicate_keys_intact(
+    tmp_path, monkeypatch
+):
+    _isolate_prefs(tmp_path, monkeypatch)
+    prefs.ENV_FILE.write_text(
+        "PULSESCRIBE_MODE=deepgram\n"
+        "UNCHANGED_KEY=first\n"
+        "UNCHANGED_KEY=second\n"
+        "PULSESCRIBE_LANGUAGE=en\n",
+        encoding="utf-8",
+    )
+
+    prefs.update_env_settings(
+        {
+            "PULSESCRIBE_MODE": "local",
+            "PULSESCRIBE_LANGUAGE": None,
+        }
+    )
+
+    assert prefs.ENV_FILE.read_text(encoding="utf-8") == (
+        "PULSESCRIBE_MODE=local\n"
+        "UNCHANGED_KEY=first\n"
+        "UNCHANGED_KEY=second\n"
+    )
+
+
 def test_update_env_settings_handles_export_assignments_for_updated_keys(
     tmp_path, monkeypatch
 ):
@@ -432,6 +458,16 @@ def test_apply_hotkey_setting_updates_toggle_and_preserves_hold_key(
         "PULSESCRIBE_HOLD_HOTKEY": "fn",
         "PULSESCRIBE_TOGGLE_HOTKEY": "f19",
     }
+
+
+def test_apply_hotkey_setting_unknown_kind_falls_back_to_toggle(
+    tmp_path, monkeypatch
+):
+    _isolate_prefs(tmp_path, monkeypatch)
+
+    prefs.apply_hotkey_setting("unexpected", " F20 ")
+
+    assert prefs.read_env_file() == {"PULSESCRIBE_TOGGLE_HOTKEY": "f20"}
 
 
 def test_load_preferences_returns_empty_dict_for_non_object_json(

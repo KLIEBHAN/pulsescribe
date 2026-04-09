@@ -7,6 +7,7 @@ API-Keys werden in ~/.pulsescribe/.env gespeichert.
 import json
 import logging
 from collections.abc import Callable
+from enum import Enum
 from pathlib import Path
 from typing import TypeVar
 
@@ -40,6 +41,7 @@ _env_cache: tuple[FileSignature, dict[str, str]] | None = None
 _prefs_cache: tuple[FileSignature, dict[str, object]] | None = None
 
 TValue = TypeVar("TValue")
+TEnum = TypeVar("TEnum", bound=Enum)
 
 
 def _build_file_signature(path: Path) -> FileSignature | None:
@@ -91,55 +93,56 @@ def _canonical_env_line(key_name: str, value: str) -> str:
     return f"{key_name}={value}"
 
 
-def _set_first_env_line(
-    lines: list[str],
-    key_name: str,
-    value: str,
-) -> tuple[list[str], bool]:
-    """Set the first matching assignment while preserving later duplicates."""
-    canonical_line = _canonical_env_line(key_name, value)
+def _canonical_env_updates(
+    updates: dict[str, str | None],
+) -> dict[str, str | None]:
+    """Normalize raw env updates into canonical persisted lines."""
+    return {
+        key: None if value is None else _canonical_env_line(key, value)
+        for key, value in updates.items()
+    }
 
-    for index, line in enumerate(lines):
-        parsed_key, existing_value = _parse_env_line(line)
-        if parsed_key != key_name:
-            continue
-        if existing_value == value:
-            return list(lines), False
-        new_lines = list(lines)
-        new_lines[index] = canonical_line
-        return new_lines, True
 
-    return [*lines, canonical_line], True
+def _iter_parsed_env_lines(lines: list[str]):
+    """Yield raw lines together with their parsed key/value pair."""
+    for line in lines:
+        key, existing_value = _parse_env_line(line)
+        yield line, key, existing_value
 
 
 def _apply_env_updates_to_lines(
     lines: list[str],
     updates: dict[str, str | None],
+    *,
+    collapse_handled_duplicates: bool = True,
 ) -> tuple[list[str], bool]:
-    """Apply batched `.env` updates while preserving unrelated lines."""
-    canonical_updates = {
-        key: None if value is None else _canonical_env_line(key, value)
-        for key, value in updates.items()
-    }
+    """Apply `.env` updates while preserving unrelated lines and order."""
+    canonical_updates = _canonical_env_updates(updates)
     handled_keys: set[str] = set()
     new_lines: list[str] = []
     changed = False
 
-    for line in lines:
-        key, _existing_value = _parse_env_line(line)
+    for line, key, existing_value in _iter_parsed_env_lines(lines):
         if not key or key not in canonical_updates:
             new_lines.append(line)
             continue
 
-        # Collapse duplicate entries for keys we are explicitly updating.
+        canonical_line = canonical_updates[key]
+
         if key in handled_keys:
-            changed = True
+            if collapse_handled_duplicates or canonical_line is None:
+                changed = True
+                continue
+            new_lines.append(line)
             continue
 
         handled_keys.add(key)
-        canonical_line = canonical_updates[key]
         if canonical_line is None:
             changed = True
+            continue
+
+        if not collapse_handled_duplicates and existing_value == updates[key]:
+            new_lines.append(line)
             continue
 
         if line != canonical_line:
@@ -163,9 +166,13 @@ def _apply_single_env_update(
     preserve_following_duplicates: bool = False,
 ) -> tuple[list[str], bool]:
     """Apply one `.env` mutation via the shared line-update helpers."""
-    if preserve_following_duplicates and value is not None:
-        return _set_first_env_line(lines, key_name, value)
-    return _apply_env_updates_to_lines(lines, {key_name: value})
+    return _apply_env_updates_to_lines(
+        lines,
+        {key_name: value},
+        collapse_handled_duplicates=not (
+            preserve_following_duplicates and value is not None
+        ),
+    )
 
 
 def _invalidate_env_cache() -> None:
@@ -297,12 +304,21 @@ def _coerce_loaded_preference(
     return coercer(str(raw_value))
 
 
-def _normalize_preference_input(
-    value: TValue | str | None,
+def _get_normalized_preference(
+    key: str,
     *,
-    enum_type: type[TValue],
     coercer: Callable[[str | None], TValue | None],
 ) -> TValue | None:
+    """Load and coerce one stored preference via the shared JSON cache path."""
+    return _coerce_loaded_preference(load_preferences().get(key), coercer)
+
+
+def _normalize_preference_input(
+    value: TEnum | str | None,
+    *,
+    enum_type: type[TEnum],
+    coercer: Callable[[str | None], TEnum | None],
+) -> TEnum | None:
     """Accept enum instances or raw strings and coerce them consistently."""
     if isinstance(value, enum_type):
         return value
@@ -319,6 +335,36 @@ def _set_optional_preference_value(key: str, value: object | None) -> None:
         prefs[key] = value
 
     _mutate_preferences(_apply)
+
+
+def _set_normalized_preference(
+    key: str,
+    value: TEnum | str | None,
+    *,
+    enum_type: type[TEnum],
+    coercer: Callable[[str | None], TEnum | None],
+    fallback: TEnum | None = None,
+    after_set: Callable[[dict[str, object], TEnum | None], None] | None = None,
+) -> TEnum | None:
+    """Normalize one enum-like preference and persist it through one shared path."""
+    normalized = _normalize_preference_input(
+        value,
+        enum_type=enum_type,
+        coercer=coercer,
+    )
+    if normalized is None:
+        normalized = fallback
+
+    def _apply(prefs: dict[str, object]) -> None:
+        if normalized is None:
+            prefs.pop(key, None)
+        else:
+            prefs[key] = normalized.value
+        if after_set is not None:
+            after_set(prefs, normalized)
+
+    _mutate_preferences(_apply)
+    return normalized
 
 
 def has_seen_onboarding() -> bool:
@@ -353,39 +399,40 @@ def get_onboarding_step() -> OnboardingStep:
 
 def set_onboarding_step(step: OnboardingStep | str) -> None:
     """Setzt den aktuellen Wizard-Step."""
-    normalized = _normalize_preference_input(
-        step,
-        enum_type=OnboardingStep,
-        coercer=coerce_onboarding_step,
-    ) or OnboardingStep.DONE
 
-    def _apply(prefs: dict[str, object]) -> None:
-        prefs["onboarding_step"] = normalized.value
+    def _mark_seen_when_done(
+        prefs: dict[str, object],
+        normalized: OnboardingStep | None,
+    ) -> None:
         # Completion implies "seen".
         if normalized == OnboardingStep.DONE:
             prefs["has_seen_onboarding"] = True
 
-    _mutate_preferences(_apply)
+    _set_normalized_preference(
+        "onboarding_step",
+        step,
+        enum_type=OnboardingStep,
+        coercer=coerce_onboarding_step,
+        fallback=OnboardingStep.DONE,
+        after_set=_mark_seen_when_done,
+    )
 
 
 def get_onboarding_choice() -> OnboardingChoice | None:
     """Letzte Wizard-Auswahl (fast/private/advanced)."""
-    return _coerce_loaded_preference(
-        load_preferences().get("onboarding_choice"),
-        coerce_onboarding_choice,
+    return _get_normalized_preference(
+        "onboarding_choice",
+        coercer=coerce_onboarding_choice,
     )
 
 
 def set_onboarding_choice(choice: OnboardingChoice | str | None) -> None:
     """Speichert die Wizard-Auswahl oder löscht sie."""
-    normalized = _normalize_preference_input(
+    _set_normalized_preference(
+        "onboarding_choice",
         choice,
         enum_type=OnboardingChoice,
         coercer=coerce_onboarding_choice,
-    )
-    _set_optional_preference_value(
-        "onboarding_choice",
-        normalized.value if normalized is not None else None,
     )
 
 
@@ -556,9 +603,20 @@ def remove_env_setting(key_name: str) -> None:
     )
 
 
+def _resolve_hotkey_env_key(kind: str) -> str:
+    """Return the target env key for a hotkey kind, defaulting to toggle."""
+    normalized_kind = (kind or "").strip().lower()
+    return _HOTKEY_ENV_KEYS.get(normalized_kind, _HOTKEY_ENV_KEYS["toggle"])
+
+
+def _normalize_hotkey_value(hotkey_str: str) -> str:
+    """Normalize user-facing hotkey input before persisting it."""
+    return (hotkey_str or "").strip().lower()
+
+
 def _build_hotkey_env_updates(kind: str, value: str) -> dict[str, str | None]:
     """Build the env updates for one hotkey change while clearing legacy keys."""
-    key_name = _HOTKEY_ENV_KEYS.get(kind, _HOTKEY_ENV_KEYS["toggle"])
+    key_name = _resolve_hotkey_env_key(kind)
     env_updates: dict[str, str | None] = {key_name: value}
     env_updates.update({legacy_key: None for legacy_key in _LEGACY_HOTKEY_ENV_KEYS})
     return env_updates
@@ -569,7 +627,7 @@ def apply_hotkey_setting(kind: str, hotkey_str: str) -> None:
 
     `kind` ist "toggle" oder "hold". Die jeweils andere Konfiguration bleibt unverändert.
     """
-    value = (hotkey_str or "").strip().lower()
+    value = _normalize_hotkey_value(hotkey_str)
     if not value:
         return
 
