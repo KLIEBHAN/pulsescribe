@@ -77,6 +77,7 @@ IPC_CONNECT_MAX_POLLS_BEFORE_TIMEOUT = 15
 # Timeout nach RECORDING-Ack (Finale Antwort darf länger dauern):
 #   50 polls × 200ms = 10s
 IPC_POLL_INTERVAL_MS = 200
+IPC_RECORDING_IDLE_POLL_INTERVAL_MS = 350
 IPC_MAX_POLLS_BEFORE_TIMEOUT = 50
 # If daemon keeps reporting STATUS_RECORDING after stop, treat it as stale to
 # avoid a long/hanging "recording..." spinner in the wizard.
@@ -228,6 +229,16 @@ def _set_widget_enabled_if_changed(widget, enabled: bool) -> bool:
     if _get_widget_enabled(widget) == enabled:
         return False
     widget.setEnabled(enabled)
+    return True
+
+
+def _set_timer_interval_if_supported(timer, interval_ms: int) -> bool:
+    if timer is None:
+        return False
+    setter = getattr(timer, "setInterval", None)
+    if not callable(setter):
+        return False
+    setter(interval_ms)
     return True
 
 
@@ -1138,6 +1149,7 @@ class OnboardingWizardWindows(QDialog):
         self._ipc_stop_requested = True
         self._ipc_recording_polls_after_stop = 0
         self._ipc_client.send_command(CMD_STOP_TEST)
+        _set_timer_interval_if_supported(self._ipc_poll_timer, IPC_POLL_INTERVAL_MS)
 
         _set_widget_text_if_changed(self._test_status_label, "Wird gestoppt...")
         stop_btn = getattr(self, "_test_stop_btn", None)
@@ -1157,6 +1169,10 @@ class OnboardingWizardWindows(QDialog):
 
         response = self._ipc_client.poll_response(self._ipc_test_cmd_id)
         if not response:
+            if self._ipc_seen_recording and not self._ipc_stop_requested:
+                _set_timer_interval_if_supported(
+                    self._ipc_poll_timer, IPC_RECORDING_IDLE_POLL_INTERVAL_MS
+                )
             self._ipc_poll_count += 1
             timeout_limit = (
                 IPC_MAX_POLLS_BEFORE_TIMEOUT
@@ -1188,6 +1204,10 @@ class OnboardingWizardWindows(QDialog):
             self._ipc_seen_recording = True
             stop_btn = getattr(self, "_test_stop_btn", None)
             _set_widget_enabled_if_changed(stop_btn, True)
+            if not self._ipc_stop_requested:
+                _set_timer_interval_if_supported(
+                    self._ipc_poll_timer, IPC_RECORDING_IDLE_POLL_INTERVAL_MS
+                )
 
             if status != self._ipc_last_status:
                 self._set_test_status("Aufnahme läuft... Sprich jetzt!", "accent")

@@ -231,3 +231,40 @@ Next worthwhile areas
 - `ui/settings_windows.py`: the large settings load/apply path still looks like the next Windows UI hotspot once it is safely outside the recent-commit boundary.
 - `ui/onboarding_wizard_windows.py`: the IPC test flow still polls on a fixed cadence and may benefit from similar adaptive timing if profiling shows idle wait churn.
 - `ui/permissions_card.py`: if permission checks still show up in traces, add a tiny short-lived shared snapshot cache across the immediate welcome/onboarding refresh burst.
+
+Performance work log - 2026-04-09 (onboarding render + IPC cadence pass)
+
+Scope
+- Left the last two commit areas untouched: `ui/overlay_pyside6.py`, `ui/overlay_windows.py`, `ui/permissions_card.py`, `ui/settings_windows.py`, and `utils/vocabulary.py`.
+- Avoided `utils/custom_prompts.py` because the worktree already contains unrelated local edits there.
+- Focused on the remaining onboarding-facing frontend hotspots in `ui/onboarding_wizard.py` and `ui/onboarding_wizard_windows.py`.
+
+Current weaknesses reviewed
+- `ui/onboarding_wizard.py`: the macOS goal step still performed a direct env lookup for language selection during UI build even though the wizard already carried an in-memory env cache.
+- `ui/onboarding_wizard.py`: summary labels and Fast-mode API-key prompt widgets were still being reassigned on repeat renders even when the visible text/color/visibility was unchanged.
+- `ui/onboarding_wizard_windows.py`: the Windows test-dictation IPC loop kept polling at the fast 200 ms cadence throughout a live recording session, even while waiting in an effectively idle state for the user to finish speaking.
+
+Changes in this pass
+- `ui/onboarding_wizard.py`
+  Routed the language selector initialization through the wizard-local env cache instead of a fresh env helper read.
+- `ui/onboarding_wizard.py`
+  Added no-op guards for summary provider/hotkey/permission labels and for the Fast-mode API-key prompt visibility/message path so repeated renders stop mutating identical AppKit widgets.
+- `ui/onboarding_wizard_windows.py`
+  Added a small adaptive IPC polling cadence for the test-dictation flow: stay fast while connecting, slow to a gentler interval during steady-state recording, and return to the fast cadence immediately after the user requests stop.
+- Tests
+  Added regression coverage for duplicate summary/API-key prompt updates on macOS and for the Windows onboarding IPC polling cadence transitions.
+
+Why this helps
+- The macOS onboarding wizard now does less Objective-C/AppKit widget churn on repeated step renders, especially in the summary and Fast-mode validation paths.
+- The Windows onboarding test step wakes the UI loop less aggressively while the user is actively dictating, without delaying connect or stop/result responsiveness.
+- Both changes reduce frontend no-op work on first-run/setup flows while preserving existing behavior.
+
+Validation
+- `pytest tests/test_onboarding.py tests/test_onboarding_windows.py -q`
+- `python -m py_compile ui/onboarding_wizard.py ui/onboarding_wizard_windows.py tests/test_onboarding.py tests/test_onboarding_windows.py`
+- `ruff check ui/onboarding_wizard.py ui/onboarding_wizard_windows.py tests/test_onboarding.py tests/test_onboarding_windows.py`
+
+Next worthwhile areas
+- `ui/welcome.py`: logs/transcripts auto-refresh is still the next likely long-session frontend hotspot outside the most recent commit pair.
+- `ui/onboarding_wizard_windows.py`: if profiling still shows test-step wait churn, the next step would be to reduce redundant IPC file reads in `utils/ipc.py` rather than only adjusting the UI-side timer cadence.
+- `ui/overlay.py`: the macOS overlay animation timers remain a likely CPU hotspot during long active sessions once they are outside the recent-change boundary.

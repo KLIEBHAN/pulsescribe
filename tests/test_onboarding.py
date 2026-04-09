@@ -18,10 +18,16 @@ class _FakeTextField:
     def __init__(self):
         self.value = ""
         self.set_calls = 0
+        self.color = None
+        self.color_calls = 0
 
     def setStringValue_(self, value) -> None:
         self.value = value
         self.set_calls += 1
+
+    def setTextColor_(self, value) -> None:
+        self.color = value
+        self.color_calls += 1
 
 
 class _FakeButton:
@@ -239,3 +245,68 @@ def test_render_skips_duplicate_ui_mutations_for_same_step(monkeypatch):
     assert wizard._next_btn.title_calls == 1
     assert wizard._next_btn.enabled_calls == [True]
     assert wizard._test_hotkey_label.set_calls == 1
+
+
+def test_update_summary_skips_duplicate_widget_updates(monkeypatch):
+    import ui.onboarding_wizard as wizard_mod
+
+    wizard = OnboardingWizardController.__new__(OnboardingWizardController)
+    wizard._summary_provider_label = _FakeTextField()
+    wizard._summary_hotkey_label = _FakeTextField()
+    wizard._summary_perm_label = _FakeTextField()
+    wizard._last_summary_provider_text = None
+    wizard._last_summary_hotkey_text = None
+    wizard._last_summary_hotkey_has_value = None
+    wizard._last_summary_perm_text = None
+    wizard._last_summary_perm_mic_ok = None
+    wizard._get_cached_env_setting = lambda key: {
+        "PULSESCRIBE_MODE": "deepgram",
+        "PULSESCRIBE_TOGGLE_HOTKEY": "f19",
+        "PULSESCRIBE_HOLD_HOTKEY": "",
+    }.get(key)
+    wizard._get_cached_hotkeys = lambda: ("f19", "")
+
+    monkeypatch.setattr(wizard_mod, "get_microphone_permission_state", lambda: "authorized")
+    monkeypatch.setattr(wizard_mod, "_get_color", lambda *args, **kwargs: args)
+    monkeypatch.setattr(
+        wizard_mod,
+        "has_accessibility_permission",
+        lambda: True,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        wizard_mod,
+        "has_input_monitoring_permission",
+        lambda: True,
+        raising=False,
+    )
+
+    wizard._update_summary()
+    wizard._update_summary()
+
+    assert wizard._summary_provider_label.set_calls == 1
+    assert wizard._summary_hotkey_label.set_calls == 1
+    assert wizard._summary_hotkey_label.color_calls == 1
+    assert wizard._summary_perm_label.set_calls == 1
+    assert wizard._summary_perm_label.color_calls == 1
+
+
+def test_show_fast_api_key_prompt_skips_duplicate_widget_updates():
+    wizard = OnboardingWizardController.__new__(OnboardingWizardController)
+    wizard._api_key_container = _FakeView()
+    wizard._api_key_status = _FakeTextField()
+    wizard._last_api_key_prompt_visible = None
+    wizard._last_api_key_prompt_message = None
+
+    focus_calls: list[bool] = []
+    render_calls: list[bool] = []
+    wizard._focus_api_key_field = lambda: focus_calls.append(True)
+    wizard._render = lambda: render_calls.append(True)
+
+    wizard._show_fast_api_key_prompt()
+    wizard._show_fast_api_key_prompt()
+
+    assert wizard._api_key_container.hidden_calls == [False]
+    assert wizard._api_key_status.set_calls == 1
+    assert focus_calls == [True, True]
+    assert render_calls == [True, True]

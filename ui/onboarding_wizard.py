@@ -118,6 +118,13 @@ class OnboardingWizardController:
         self._last_next_title: str | None = None
         self._last_next_enabled: bool | None = None
         self._last_test_hotkey_text: str | None = None
+        self._last_api_key_prompt_visible: bool | None = None
+        self._last_api_key_prompt_message: str | None = None
+        self._last_summary_provider_text: str | None = None
+        self._last_summary_hotkey_text: str | None = None
+        self._last_summary_hotkey_has_value: bool | None = None
+        self._last_summary_perm_text: str | None = None
+        self._last_summary_perm_mic_ok: bool | None = None
         self._env_settings_cache: dict[str, str] = read_env_file()
 
         # Permissions UI (shared component)
@@ -573,7 +580,7 @@ class OnboardingWizardController:
         lang_popup.setFont_(NSFont.systemFontOfSize_(11))
         for lang in LANGUAGE_OPTIONS:
             lang_popup.addItemWithTitle_(lang)
-        current_lang = get_env_setting("PULSESCRIBE_LANGUAGE") or "auto"
+        current_lang = self._get_cached_env_setting("PULSESCRIBE_LANGUAGE") or "auto"
         if current_lang in LANGUAGE_OPTIONS:
             lang_popup.selectItemWithTitle_(current_lang)
         self._lang_popup = lang_popup
@@ -998,7 +1005,9 @@ class OnboardingWizardController:
 
         if self._summary_provider_label:
             try:
-                self._summary_provider_label.setStringValue_(mode_display)
+                if self._last_summary_provider_text != mode_display:
+                    self._summary_provider_label.setStringValue_(mode_display)
+                    self._last_summary_provider_text = mode_display
             except Exception:
                 pass
 
@@ -1015,10 +1024,15 @@ class OnboardingWizardController:
 
         if self._summary_hotkey_label:
             try:
-                self._summary_hotkey_label.setStringValue_(hotkey_display)
-                self._summary_hotkey_label.setTextColor_(
-                    ok_color if hotkey_parts else warn_color
-                )
+                has_hotkeys = bool(hotkey_parts)
+                if self._last_summary_hotkey_text != hotkey_display:
+                    self._summary_hotkey_label.setStringValue_(hotkey_display)
+                    self._last_summary_hotkey_text = hotkey_display
+                if self._last_summary_hotkey_has_value != has_hotkeys:
+                    self._summary_hotkey_label.setTextColor_(
+                        ok_color if has_hotkeys else warn_color
+                    )
+                    self._last_summary_hotkey_has_value = has_hotkeys
             except Exception:
                 pass
 
@@ -1037,10 +1051,14 @@ class OnboardingWizardController:
 
         if self._summary_perm_label:
             try:
-                self._summary_perm_label.setStringValue_(perm_display)
-                self._summary_perm_label.setTextColor_(
-                    ok_color if mic_ok else warn_color
-                )
+                if self._last_summary_perm_text != perm_display:
+                    self._summary_perm_label.setStringValue_(perm_display)
+                    self._last_summary_perm_text = perm_display
+                if self._last_summary_perm_mic_ok != mic_ok:
+                    self._summary_perm_label.setTextColor_(
+                        ok_color if mic_ok else warn_color
+                    )
+                    self._last_summary_perm_mic_ok = mic_ok
             except Exception:
                 pass
 
@@ -1123,14 +1141,17 @@ class OnboardingWizardController:
         """Reveal the Fast-mode API key prompt and focus the input."""
         if self._api_key_container is not None:
             try:
-                self._api_key_container.setHidden_(False)
+                if self._last_api_key_prompt_visible is not True:
+                    self._api_key_container.setHidden_(False)
+                    self._last_api_key_prompt_visible = True
             except Exception:
                 pass
         if self._api_key_status is not None:
+            prompt_message = message or "Cloud API key required to continue."
             try:
-                self._api_key_status.setStringValue_(
-                    message or "Cloud API key required to continue."
-                )
+                if self._last_api_key_prompt_message != prompt_message:
+                    self._api_key_status.setStringValue_(prompt_message)
+                    self._last_api_key_prompt_message = prompt_message
             except Exception:
                 pass
         self._focus_api_key_field()
@@ -1165,7 +1186,9 @@ class OnboardingWizardController:
             )
             if self._api_key_container is not None:
                 try:
-                    self._api_key_container.setHidden_(True)
+                    if self._last_api_key_prompt_visible is not False:
+                        self._api_key_container.setHidden_(True)
+                        self._last_api_key_prompt_visible = False
                 except Exception:
                     pass
         elif choice == OnboardingChoice.PRIVATE:

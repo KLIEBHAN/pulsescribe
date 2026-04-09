@@ -12,6 +12,8 @@ from ui.onboarding_wizard_windows import (
     DEFAULT_WINDOWS_TOGGLE_HOTKEY,
     IPC_CONNECT_MAX_POLLS_BEFORE_TIMEOUT,
     IPC_MAX_POLLS_BEFORE_TIMEOUT,
+    IPC_POLL_INTERVAL_MS,
+    IPC_RECORDING_IDLE_POLL_INTERVAL_MS,
     IPC_RECORDING_STALE_POLLS_AFTER_STOP,
     OnboardingWizardWindows,
 )
@@ -59,6 +61,25 @@ class _FakeButton:
 
     def setEnabled(self, enabled: bool) -> None:
         self.enabled = enabled
+
+
+class _FakeTimer:
+    def __init__(self, interval: int | None = None):
+        self.started_with: list[int] = []
+        self.intervals: list[int] = []
+        self.stopped = False
+        self.interval = interval
+
+    def start(self, interval: int) -> None:
+        self.interval = interval
+        self.started_with.append(interval)
+
+    def stop(self) -> None:
+        self.stopped = True
+
+    def setInterval(self, interval: int) -> None:
+        self.interval = interval
+        self.intervals.append(interval)
 
 
 class _FakeStack:
@@ -708,10 +729,7 @@ def test_start_ipc_test_disables_stop_button_until_recording_ack():
     wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
     wizard._ipc_test_cmd_id = None
     wizard._ipc_client = _FakeIPCClient()
-    wizard._ipc_poll_timer = types.SimpleNamespace(
-        start=lambda _ms: None,
-        stop=lambda: None,
-    )
+    wizard._ipc_poll_timer = _FakeTimer()
     wizard._ipc_seen_recording = False
     wizard._ipc_stop_requested = False
     wizard._ipc_recording_polls_after_stop = 0
@@ -728,6 +746,7 @@ def test_start_ipc_test_disables_stop_button_until_recording_ack():
     assert commands == ["start_test"]
     assert wizard._test_stop_btn.visible is True
     assert wizard._test_stop_btn.enabled is False
+    assert wizard._ipc_poll_timer.started_with == [IPC_POLL_INTERVAL_MS]
 
 
 def test_start_ipc_test_clears_previous_transcript():
@@ -743,10 +762,7 @@ def test_start_ipc_test_clears_previous_transcript():
     wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
     wizard._ipc_test_cmd_id = None
     wizard._ipc_client = _FakeIPCClient()
-    wizard._ipc_poll_timer = types.SimpleNamespace(
-        start=lambda _ms: None,
-        stop=lambda: None,
-    )
+    wizard._ipc_poll_timer = _FakeTimer()
     wizard._ipc_seen_recording = False
     wizard._ipc_stop_requested = False
     wizard._ipc_recording_polls_after_stop = 0
@@ -936,6 +952,7 @@ def test_stop_ipc_test_sends_stop_command_after_recording_ack():
     wizard._ipc_seen_recording = True
     wizard._ipc_stop_requested = False
     wizard._ipc_recording_polls_after_stop = 9
+    wizard._ipc_poll_timer = _FakeTimer(interval=IPC_RECORDING_IDLE_POLL_INTERVAL_MS)
     wizard._test_status_label = _FakeLabel()
     wizard._test_stop_btn = _FakeButton()
 
@@ -944,6 +961,7 @@ def test_stop_ipc_test_sends_stop_command_after_recording_ack():
     assert commands == ["stop_test"]
     assert wizard._ipc_stop_requested is True
     assert wizard._ipc_recording_polls_after_stop == 0
+    assert wizard._ipc_poll_timer.intervals == [IPC_POLL_INTERVAL_MS]
     assert wizard._test_status_label.text == "Wird gestoppt..."
     assert wizard._test_stop_btn.enabled is False
 
@@ -1060,7 +1078,7 @@ def test_poll_ipc_response_repeated_recording_status_avoids_repainting():
         poll_response=lambda _cmd_id: {"status": "recording"},
         clear_response=lambda: None,
     )
-    wizard._ipc_poll_timer = types.SimpleNamespace(stop=lambda: None)
+    wizard._ipc_poll_timer = _FakeTimer(interval=IPC_POLL_INTERVAL_MS)
     wizard._ipc_poll_count = 17
     wizard._ipc_seen_recording = False
     wizard._ipc_stop_requested = False
@@ -1082,7 +1100,33 @@ def test_poll_ipc_response_repeated_recording_status_avoids_repainting():
     assert status_updates == []
     assert wizard._ipc_poll_count == 0
     assert wizard._ipc_seen_recording is True
+    assert wizard._ipc_poll_timer.intervals == [IPC_RECORDING_IDLE_POLL_INTERVAL_MS]
     assert wizard._test_stop_btn.enabled is True
+
+
+def test_poll_ipc_response_noop_after_recording_uses_slower_idle_polling():
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+    wizard._ipc_test_cmd_id = "cmd-1"
+    wizard._ipc_client = types.SimpleNamespace(
+        poll_response=lambda _cmd_id: None,
+        clear_response=lambda: None,
+    )
+    wizard._ipc_poll_timer = _FakeTimer(interval=IPC_POLL_INTERVAL_MS)
+    wizard._ipc_poll_count = 0
+    wizard._ipc_seen_recording = True
+    wizard._ipc_stop_requested = False
+    wizard._ipc_recording_polls_after_stop = 0
+    wizard._ipc_last_status = "recording"
+    wizard._on_ipc_test_complete = (
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("should not complete while idle polling budget remains")
+        )
+    )
+
+    wizard._poll_ipc_response()
+
+    assert wizard._ipc_poll_count == 1
+    assert wizard._ipc_poll_timer.intervals == [IPC_RECORDING_IDLE_POLL_INTERVAL_MS]
 
 
 def test_poll_ipc_response_stopped_resets_ui_and_sets_status():
