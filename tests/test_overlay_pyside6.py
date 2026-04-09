@@ -8,9 +8,11 @@ from ui.overlay_pyside6 import (
     BAR_HEIGHT_UPDATE_EPSILON,
     BAR_MIN_HEIGHT,
     FEEDBACK_DISPLAY_MS,
+    INTERIM_DIRECT_UPDATE_GRACE_S,
     FRAME_MS,
     FRAME_MS_ACTIVE,
     FRAME_MS_FEEDBACK,
+    INTERIM_POLL_DIRECT_INTERVAL_MS,
     INTERIM_POLL_INTERVAL_MS,
     INTERIM_POLL_MAX_CHARS,
     PySide6OverlayController,
@@ -210,17 +212,100 @@ def test_poll_interim_file_reads_tail_text_only(tmp_path, monkeypatch):
     assert controller._widget.seen_interim == ["tail-only"]
 
 
+def test_update_interim_text_slows_file_polling_after_direct_update():
+    controller = PySide6OverlayController.__new__(PySide6OverlayController)
+    controller._interim_timer = _FakeInterimTimer(
+        active=True,
+        interval_ms=INTERIM_POLL_INTERVAL_MS,
+    )
+    controller._widget = _FakeWidget()
+    controller._direct_interim_until = 0.0
+
+    PySide6OverlayController.update_interim_text(controller, "alpha")
+
+    assert controller._widget.seen_interim == ["alpha"]
+    assert controller._interim_timer.set_interval_calls == [
+        INTERIM_POLL_DIRECT_INTERVAL_MS
+    ]
+    assert controller._direct_interim_until > 0
+
+
+def test_poll_interim_file_skips_file_reads_while_direct_updates_are_recent(
+    tmp_path,
+    monkeypatch,
+):
+    interim_file = tmp_path / "interim.txt"
+    interim_file.write_text("disk", encoding="utf-8")
+
+    monkeypatch.setattr("ui.overlay_pyside6.time.monotonic", lambda: 10.0)
+    monkeypatch.setattr(
+        "ui.overlay_pyside6.read_file_tail_text",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("file read should be skipped during direct-update grace")
+        ),
+    )
+
+    controller = PySide6OverlayController.__new__(PySide6OverlayController)
+    controller._running = True
+    controller._interim_file = interim_file
+    controller._widget = _FakeWidget()
+    controller._interim_timer = _FakeInterimTimer(
+        active=True,
+        interval_ms=INTERIM_POLL_DIRECT_INTERVAL_MS,
+    )
+    controller._direct_interim_until = 10.0 + INTERIM_DIRECT_UPDATE_GRACE_S
+    controller._last_interim_text = ""
+    controller._last_interim_mtime_ns = None
+
+    PySide6OverlayController._poll_interim_file(controller)
+
+    assert controller._widget.seen_interim == []
+    assert controller._interim_timer.set_interval_calls == []
+
+
+def test_poll_interim_file_restores_fast_interval_after_direct_update_grace(
+    tmp_path,
+    monkeypatch,
+):
+    interim_file = tmp_path / "interim.txt"
+    interim_file.write_text("disk", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "ui.overlay_pyside6.time.monotonic",
+        lambda: 10.0 + INTERIM_DIRECT_UPDATE_GRACE_S + 0.1,
+    )
+
+    controller = PySide6OverlayController.__new__(PySide6OverlayController)
+    controller._running = True
+    controller._interim_file = interim_file
+    controller._widget = _FakeWidget()
+    controller._interim_timer = _FakeInterimTimer(
+        active=True,
+        interval_ms=INTERIM_POLL_DIRECT_INTERVAL_MS,
+    )
+    controller._direct_interim_until = 10.0 + INTERIM_DIRECT_UPDATE_GRACE_S
+    controller._last_interim_text = ""
+    controller._last_interim_mtime_ns = None
+
+    PySide6OverlayController._poll_interim_file(controller)
+
+    assert controller._interim_timer.set_interval_calls == [INTERIM_POLL_INTERVAL_MS]
+    assert controller._widget.seen_interim == ["disk"]
+
+
 def test_set_interim_polling_active_starts_and_stops_timer():
     controller = PySide6OverlayController.__new__(PySide6OverlayController)
     controller._interim_timer = _FakeInterimTimer(active=True, interval_ms=1000)
     controller._last_interim_text = "stale"
     controller._last_interim_mtime_ns = 123
+    controller._direct_interim_until = 42.0
 
     PySide6OverlayController._set_interim_polling_active(controller, False)
 
     assert controller._interim_timer.stop_calls == 1
     assert controller._last_interim_text == ""
     assert controller._last_interim_mtime_ns is None
+    assert controller._direct_interim_until == 0.0
 
     PySide6OverlayController._set_interim_polling_active(controller, True)
 

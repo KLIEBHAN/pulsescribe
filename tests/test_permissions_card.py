@@ -245,3 +245,120 @@ def test_kick_auto_refresh_avoids_timer_when_permissions_are_already_granted(
 
     assert card._refresh_timer is None
     assert card._refresh_ticks == 0
+
+
+def test_kick_auto_refresh_uses_backoff_for_stable_permission_state(monkeypatch) -> None:
+    import utils.permissions as permissions_mod
+
+    _install_fake_appkit(monkeypatch)
+    monkeypatch.setattr(
+        permissions_mod,
+        "get_microphone_permission_state",
+        lambda: "authorized",
+    )
+    monkeypatch.setattr(
+        permissions_mod,
+        "has_accessibility_permission",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        permissions_mod,
+        "has_input_monitoring_permission",
+        lambda: False,
+    )
+
+    intervals: list[float] = []
+    callbacks: list[object] = []
+
+    class _FakeTimer:
+        def invalidate(self) -> None:
+            return None
+
+    def _schedule(interval, repeats, callback):
+        intervals.append(interval)
+        callbacks.append(callback)
+        assert repeats is False
+        return _FakeTimer()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "Foundation",
+        types.SimpleNamespace(
+            NSTimer=types.SimpleNamespace(
+                scheduledTimerWithTimeInterval_repeats_block_=_schedule
+            )
+        ),
+    )
+
+    card = _build_card()
+    card.kick_auto_refresh(ticks=4)
+
+    assert intervals == [0.5]
+
+    callbacks.pop(0)(None)
+    assert intervals == [0.5, 1.0]
+
+    callbacks.pop(0)(None)
+    assert intervals == [0.5, 1.0, 2.0]
+
+    callbacks.pop(0)(None)
+    assert intervals == [0.5, 1.0, 2.0, 4.0]
+
+    callbacks.pop(0)(None)
+    assert card._refresh_timer is None
+    assert card._refresh_ticks == 0
+
+
+def test_kick_auto_refresh_resets_backoff_after_permission_change(monkeypatch) -> None:
+    import utils.permissions as permissions_mod
+
+    _install_fake_appkit(monkeypatch)
+    states = {"mic": "authorized", "access": False, "input": False}
+    monkeypatch.setattr(
+        permissions_mod,
+        "get_microphone_permission_state",
+        lambda: states["mic"],
+    )
+    monkeypatch.setattr(
+        permissions_mod,
+        "has_accessibility_permission",
+        lambda: states["access"],
+    )
+    monkeypatch.setattr(
+        permissions_mod,
+        "has_input_monitoring_permission",
+        lambda: states["input"],
+    )
+
+    intervals: list[float] = []
+    callbacks: list[object] = []
+
+    class _FakeTimer:
+        def invalidate(self) -> None:
+            return None
+
+    def _schedule(interval, repeats, callback):
+        intervals.append(interval)
+        callbacks.append(callback)
+        assert repeats is False
+        return _FakeTimer()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "Foundation",
+        types.SimpleNamespace(
+            NSTimer=types.SimpleNamespace(
+                scheduledTimerWithTimeInterval_repeats_block_=_schedule
+            )
+        ),
+    )
+
+    card = _build_card()
+    card.kick_auto_refresh(ticks=4)
+
+    callbacks.pop(0)(None)
+    assert intervals == [0.5, 1.0]
+
+    states["access"] = True
+    callbacks.pop(0)(None)
+    assert intervals == [0.5, 1.0, 0.5]

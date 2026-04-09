@@ -64,6 +64,8 @@ class PermissionCardWidgets:
 class PermissionsCard:
     """A simple permission status card with 3 rows and auto-refresh."""
 
+    _AUTO_REFRESH_INTERVALS = (0.5, 1.0, 2.0, 4.0)
+
     def __init__(
         self,
         *,
@@ -74,8 +76,23 @@ class PermissionsCard:
         self._after_refresh = after_refresh
         self._refresh_timer = None
         self._refresh_ticks = 0
+        self._refresh_interval_index = 0
+        self._last_permission_signature: tuple[str, bool, bool] | None = None
         self._status_cache: dict[str, tuple[str, object]] = {}
         self._action_cache: dict[str, tuple[str, bool, bool]] = {}
+
+    def _read_permission_signature(self) -> tuple[str, bool, bool]:
+        from utils.permissions import (
+            get_microphone_permission_state,
+            has_accessibility_permission,
+            has_input_monitoring_permission,
+        )
+
+        return (
+            get_microphone_permission_state(),
+            has_accessibility_permission(),
+            has_input_monitoring_permission(),
+        )
 
     @classmethod
     def build(
@@ -252,16 +269,11 @@ class PermissionsCard:
             return False
 
     def refresh(self) -> bool:
-        from utils.permissions import (
-            get_microphone_permission_state,
-            has_accessibility_permission,
-            has_input_monitoring_permission,
-        )
-
         palette = _get_status_palette()
         changed = False
 
-        mic_state = get_microphone_permission_state()
+        mic_state, acc_ok, input_ok = self._read_permission_signature()
+        self._last_permission_signature = (mic_state, acc_ok, input_ok)
         if mic_state == "authorized":
             changed |= self._set_status_if_changed(
                 "mic_status",
@@ -311,7 +323,6 @@ class PermissionsCard:
                 self._widgets.mic_action, title="Open", enabled=True, hidden=False
             )
 
-        acc_ok = has_accessibility_permission()
         changed |= self._set_status_if_changed(
             "access_status",
             self._widgets.access_status,
@@ -327,7 +338,6 @@ class PermissionsCard:
             hidden=bool(acc_ok),
         )
 
-        input_ok = has_input_monitoring_permission()
         changed |= self._set_status_if_changed(
             "input_status",
             self._widgets.input_status,
@@ -361,24 +371,46 @@ class PermissionsCard:
             except Exception:
                 pass
 
-    def kick_auto_refresh(self, *, ticks: int = 30) -> None:
-        """Refresh permission state for a short period (helps after opening System Settings)."""
+    def _schedule_auto_refresh(self) -> None:
         from Foundation import NSTimer  # type: ignore[import-not-found]
 
-        self.stop_auto_refresh()
-        self._refresh_ticks = max(1, int(ticks))
+        interval = self._AUTO_REFRESH_INTERVALS[
+            min(self._refresh_interval_index, len(self._AUTO_REFRESH_INTERVALS) - 1)
+        ]
+        self._refresh_timer = NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+            interval, False, lambda _timer: self._run_auto_refresh_tick()
+        )
+
+    def _run_auto_refresh_tick(self) -> None:
+        self._refresh_timer = None
+        if self._refresh_ticks <= 0:
+            self.stop_auto_refresh()
+            return
+
+        previous_signature = self._last_permission_signature
+        self._refresh_ticks -= 1
         if self.refresh():
             self.stop_auto_refresh()
             return
 
-        def tick() -> None:
-            if self._refresh_ticks <= 0:
-                self.stop_auto_refresh()
-                return
-            self._refresh_ticks -= 1
-            if self.refresh():
-                self.stop_auto_refresh()
+        current_signature = self._last_permission_signature
+        if current_signature != previous_signature:
+            self._refresh_interval_index = 0
+        else:
+            self._refresh_interval_index += 1
 
-        self._refresh_timer = NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
-            1.0, True, lambda _timer: tick()
-        )
+        if self._refresh_ticks <= 0:
+            self.stop_auto_refresh()
+            return
+
+        self._schedule_auto_refresh()
+
+    def kick_auto_refresh(self, *, ticks: int = 8) -> None:
+        """Refresh permission state for a short period (helps after opening System Settings)."""
+        self.stop_auto_refresh()
+        self._refresh_ticks = max(1, int(ticks))
+        self._refresh_interval_index = 0
+        if self.refresh():
+            self.stop_auto_refresh()
+            return
+        self._schedule_auto_refresh()

@@ -108,6 +108,8 @@ STATE_TEXTS = {
 FEEDBACK_DISPLAY_MS = 800  # Millisekunden
 INTERIM_POLL_MAX_CHARS = 512  # Begrenztes Tail-Read für niedrige Polling-Last
 INTERIM_POLL_INTERVAL_MS = 200  # Polling nur während RECORDING
+INTERIM_POLL_DIRECT_INTERVAL_MS = 1000  # Weniger Wakeups bei direkten Interim-Updates
+INTERIM_DIRECT_UPDATE_GRACE_S = 1.5
 
 # =============================================================================
 # Windows 11 DWM-Konstanten (Mica Effect)
@@ -749,6 +751,7 @@ class PySide6OverlayController:
         self._last_interim_text = ""
         self._last_interim_mtime_ns: int | None = None
         self._interim_timer: QTimer | None = None
+        self._direct_interim_until = 0.0
         # Ready-Event: Wird gesetzt sobald Widget bereit ist
         self._ready_event = threading.Event()
         # Pending State: Falls update_state vor ready aufgerufen wird
@@ -832,6 +835,13 @@ class PySide6OverlayController:
 
     def update_interim_text(self, text: str):
         """Thread-safe Interim-Text-Update."""
+        self._direct_interim_until = time.monotonic() + INTERIM_DIRECT_UPDATE_GRACE_S
+        if (
+            self._interim_timer
+            and self._interim_timer.isActive()
+            and self._interim_timer.interval() != INTERIM_POLL_DIRECT_INTERVAL_MS
+        ):
+            self._interim_timer.setInterval(INTERIM_POLL_DIRECT_INTERVAL_MS)
         if self._widget:
             self._widget.update_interim_text(text)
 
@@ -843,7 +853,19 @@ class PySide6OverlayController:
         if self._widget.current_state != "RECORDING":
             self._last_interim_mtime_ns = None
             self._last_interim_text = ""
+            self._direct_interim_until = 0.0
             return
+
+        if time.monotonic() < getattr(self, "_direct_interim_until", 0.0):
+            return
+
+        interim_timer = getattr(self, "_interim_timer", None)
+        if (
+            interim_timer
+            and interim_timer.isActive()
+            and interim_timer.interval() != INTERIM_POLL_INTERVAL_MS
+        ):
+            interim_timer.setInterval(INTERIM_POLL_INTERVAL_MS)
 
         if not self._interim_file.exists():
             if self._last_interim_text:
@@ -886,6 +908,7 @@ class PySide6OverlayController:
             self._interim_timer.stop()
         self._last_interim_mtime_ns = None
         self._last_interim_text = ""
+        self._direct_interim_until = 0.0
 
 
 __all__ = ["PySide6OverlayController", "PySide6OverlayWidget"]

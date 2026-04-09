@@ -197,3 +197,37 @@ Next worthwhile areas
 - `ui/overlay_windows.py`: interim text still has a second file-poll path during recording; if runtime profiling still shows overlay churn, consider reducing or suspending file polling when direct interim queue updates are flowing.
 - `ui/settings_windows.py`: the large `_load_settings()` / `_apply_local_preset()` field population path still has room for broader signal-blocking/change-guard cleanup.
 - `ui/permissions_card.py`: the auto-refresh loop still repeats stable permission checks for up to 30 seconds even after the UI state has converged.
+
+Performance work log - 2026-04-09 (permissions + PySide6 overlay pass)
+
+Scope
+- Kept the last two commit areas untouched again: `ui/settings_windows.py`, `utils/vocabulary.py`, `ui/overlay_windows.py`, `ui/hotkey_card.py`, `ui/welcome.py`, and `ui/onboarding_wizard.py`.
+- Focused on two remaining UI hotspots outside that boundary: macOS permissions auto-refresh and PySide6 overlay interim polling.
+- Preserved permission flows, overlay behavior, and visible status transitions.
+
+Current weaknesses reviewed
+- `ui/permissions_card.py`: after opening System Settings, the card used a fixed 1-second repeating timer for up to 30 polls, even when the permission state stayed unchanged, creating unnecessary permission checks and UI wakeups in welcome/onboarding flows.
+- `ui/overlay_pyside6.py`: during recording, the overlay continued polling the interim text file at the fast cadence even while direct interim updates were already arriving, duplicating work on a hot visible path.
+
+Changes in this pass
+- `ui/permissions_card.py`
+  Replaced the fixed repeating permission refresh timer with adaptive one-shot polling that backs off from fast to slower intervals and resets to the fast cadence when a permission state actually changes.
+- `ui/overlay_pyside6.py`
+  Added a short grace window after direct interim updates and slowed interim-file polling during that window, then restored the fast polling interval once direct updates stop.
+- Tests
+  Added regression coverage for permission refresh backoff/reset behavior and for suspending/restoring PySide6 interim file polling around direct interim updates.
+
+Why this helps
+- The shared permissions card now performs materially fewer redundant system permission checks while the UI waits for the user to react in System Settings.
+- The PySide6 overlay no longer keeps hammering the interim text file while fresher direct updates are already driving the visible text, which cuts avoidable timer wakeups and file I/O during recording.
+
+Validation
+- `pytest tests/test_permissions_card.py tests/test_overlay_pyside6.py -q`
+- `pytest tests/test_onboarding.py tests/test_settings_ui.py -q`
+- `python -m py_compile ui/permissions_card.py ui/overlay_pyside6.py tests/test_permissions_card.py tests/test_overlay_pyside6.py`
+- `ruff check ui/permissions_card.py ui/overlay_pyside6.py tests/test_permissions_card.py tests/test_overlay_pyside6.py`
+
+Next worthwhile areas
+- `ui/settings_windows.py`: the large settings load/apply path still looks like the next Windows UI hotspot once it is safely outside the recent-commit boundary.
+- `ui/onboarding_wizard_windows.py`: the IPC test flow still polls on a fixed cadence and may benefit from similar adaptive timing if profiling shows idle wait churn.
+- `ui/permissions_card.py`: if permission checks still show up in traces, add a tiny short-lived shared snapshot cache across the immediate welcome/onboarding refresh burst.
