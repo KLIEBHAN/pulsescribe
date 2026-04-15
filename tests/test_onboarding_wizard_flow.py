@@ -110,6 +110,30 @@ def test_next_applies_fast_choice_and_advances_when_api_key_is_present(
     assert wizard._api_key_container.hidden is True
 
 
+def test_next_keeps_existing_deepgram_key_for_fast_choice(
+    tmp_path, monkeypatch
+) -> None:
+    _isolate_prefs(tmp_path, monkeypatch)
+    monkeypatch.delenv("DEEPGRAM_API_KEY", raising=False)
+    prefs.save_api_key("DEEPGRAM_API_KEY", "dg-existing")
+
+    wizard = _make_wizard(OnboardingChoice.FAST, api_key="")
+    settings_changed_calls: list[bool] = []
+    step_changes: list[OnboardingStep] = []
+    wizard._on_settings_changed = lambda: settings_changed_calls.append(True)
+    wizard._set_step = lambda step: step_changes.append(step)
+
+    wizard._handle_action("next")
+
+    env = prefs.read_env_file()
+    assert env.get("DEEPGRAM_API_KEY") == "dg-existing"
+    assert env.get("PULSESCRIBE_MODE") == "deepgram"
+    assert prefs.get_onboarding_choice() == OnboardingChoice.FAST
+    assert step_changes == [OnboardingStep.PERMISSIONS]
+    assert settings_changed_calls == [True]
+    assert wizard._api_key_container.hidden is True
+
+
 def test_next_accepts_existing_groq_key_for_fast_choice(
     tmp_path, monkeypatch
 ) -> None:

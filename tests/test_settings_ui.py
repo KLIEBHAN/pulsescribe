@@ -1063,6 +1063,21 @@ class _FakeTranscriptsCountLabel:
 
 
 class TestWelcomeTranscriptsRefreshBehavior:
+    def test_get_transcripts_payload_uses_empty_state_message_when_history_is_empty(
+        self, monkeypatch
+    ):
+        import utils.history as history_mod
+
+        ctrl = WelcomeController.__new__(WelcomeController)
+        monkeypatch.setattr(history_mod, "get_recent_transcripts", lambda count: [])
+
+        transcript_text, entry_count = ctrl._get_transcripts_payload()
+
+        assert transcript_text == history_mod.format_transcripts_for_welcome([])
+        assert entry_count == 0
+        assert ctrl._pending_transcripts_entries == []
+        assert ctrl._pending_transcripts_blocks == []
+
     def test_refresh_transcripts_builds_view_when_needed(self):
         ctrl = WelcomeController.__new__(WelcomeController)
         clip_view = _FakeClipView(y=120, height=300)
@@ -1266,6 +1281,53 @@ class TestWelcomeTranscriptsRefreshBehavior:
             "\n\n[2026-03-24 10:00:01]\nBeta"
         ]
         assert ctrl._transcripts_count_label.value == "2 entries"
+        ctrl._scroll_transcripts_to_bottom.assert_called_once_with()
+
+    def test_refresh_transcripts_replaces_empty_state_instead_of_appending_to_it(
+        self, monkeypatch, tmp_path
+    ):
+        import ui.welcome as welcome_mod
+        import utils.history as history_mod
+
+        history_file = tmp_path / "history.jsonl"
+        history_file.write_text(
+            '{"timestamp":"2026-03-24T10:00:01","text":"Beta"}\n',
+            encoding="utf-8",
+        )
+
+        ctrl = WelcomeController.__new__(WelcomeController)
+        ctrl._transcripts_text_view = _FakeTranscriptsTextView(
+            "No transcriptions yet.\n\nYour transcribed texts will appear here.",
+            doc_height=800,
+        )
+        ctrl._transcripts_scroll_view = _FakeTranscriptsScrollView(
+            _FakeClipView(y=700, height=100)
+        )
+        ctrl._transcripts_count_label = _FakeTranscriptsCountLabel()
+        ctrl._last_transcripts_text = (
+            "No transcriptions yet.\n\nYour transcribed texts will appear here."
+        )
+        ctrl._last_transcripts_signature = (1, 0)
+        ctrl._last_transcripts_entries = []
+        ctrl._last_transcripts_blocks = []
+        ctrl._get_transcripts_payload = MagicMock(
+            side_effect=AssertionError("full transcript reload should be skipped")
+        )
+        ctrl._scroll_transcripts_to_bottom = MagicMock()
+
+        monkeypatch.setattr(history_mod, "HISTORY_FILE", history_file)
+        monkeypatch.setattr(
+            welcome_mod,
+            "get_file_signature",
+            lambda _path: (99, len(history_file.read_bytes())),
+        )
+
+        ctrl._refresh_transcripts(scroll_to_bottom=False)
+
+        assert ctrl._get_transcripts_payload.call_count == 0
+        assert ctrl._transcripts_text_view.set_calls == ["[2026-03-24 10:00:01]\nBeta"]
+        assert ctrl._transcripts_text_view.append_calls == []
+        assert ctrl._transcripts_count_label.value == "1 entry"
         ctrl._scroll_transcripts_to_bottom.assert_called_once_with()
 
     def test_refresh_transcripts_reuses_cached_blocks_when_not_appending_in_place(

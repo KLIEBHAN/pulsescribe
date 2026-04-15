@@ -2581,6 +2581,7 @@ class WelcomeController:
         """Lädt und formatiert die Transkript-Historie inkl. Eintragszahl."""
         from utils.history import (
             format_transcript_entries_for_welcome,
+            format_transcripts_for_welcome,
             get_recent_transcripts,
         )
 
@@ -2590,7 +2591,9 @@ class WelcomeController:
             self._pending_transcripts_blocks = format_transcript_entries_for_welcome(
                 entries
             )
-            return "\n\n".join(self._pending_transcripts_blocks), len(entries)
+            if self._pending_transcripts_blocks:
+                return "\n\n".join(self._pending_transcripts_blocks), len(entries)
+            return format_transcripts_for_welcome([]), 0
         except Exception as e:
             self._pending_transcripts_entries = []
             self._pending_transcripts_blocks = []
@@ -2706,6 +2709,7 @@ class WelcomeController:
         )
         can_append_in_place = (
             not entries_trimmed
+            and bool(previous_entries)
             and self._last_transcripts_text is not None
             and (scroll_to_bottom or self._is_transcripts_near_bottom())
         )

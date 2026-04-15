@@ -1186,22 +1186,24 @@ class OnboardingWizardController:
             if self._api_key_field:
                 entered_key = self._api_key_field.stringValue().strip()
 
+            pending_updates: dict[str, str | None] = {}
+            if entered_key:
+                pending_updates["DEEPGRAM_API_KEY"] = entered_key
+
             has_deepgram = bool(
-                entered_key
+                pending_updates.get("DEEPGRAM_API_KEY")
                 or self._get_cached_api_key("DEEPGRAM_API_KEY")
                 or os.getenv("DEEPGRAM_API_KEY")
             )
-            has_groq = bool(self._get_cached_api_key("GROQ_API_KEY") or os.getenv("GROQ_API_KEY"))
+            has_groq = bool(
+                self._get_cached_api_key("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
+            )
             if not has_deepgram and not has_groq:
                 self._show_fast_api_key_prompt()
                 return False
 
-            self._apply_env_updates(
-                {
-                    "DEEPGRAM_API_KEY": entered_key or None,
-                    "PULSESCRIBE_MODE": "deepgram" if has_deepgram else "groq",
-                }
-            )
+            pending_updates["PULSESCRIBE_MODE"] = "deepgram" if has_deepgram else "groq"
+            self._apply_env_updates(pending_updates)
             if self._api_key_container is not None:
                 try:
                     if getattr(self, "_last_api_key_prompt_visible", None) is not False:
