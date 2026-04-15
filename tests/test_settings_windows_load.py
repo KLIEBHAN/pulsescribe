@@ -72,6 +72,26 @@ class _FakeVisibleWidget:
         self.visible = value
 
 
+class _FakePreShowVisibleWidget:
+    """Mimics Qt widgets before first show: not hidden, but isVisible() is False."""
+
+    def __init__(self, *, hidden: bool = False, visible: bool = False):
+        self.hidden = hidden
+        self.visible = visible
+        self.set_calls: list[bool] = []
+
+    def isHidden(self) -> bool:
+        return self.hidden
+
+    def isVisible(self) -> bool:
+        return self.visible
+
+    def setVisible(self, value: bool) -> None:
+        self.hidden = not value
+        self.visible = value
+        self.set_calls.append(value)
+
+
 class _FakeSlider:
     def __init__(self, value: int):
         self._value = value
@@ -719,3 +739,23 @@ def test_on_mode_changed_hides_local_advanced_cards_for_cloud_modes():
     assert window._advanced_local_settings_card.visible is True
     assert window._advanced_faster_settings_card.visible is True
     assert window._advanced_lightning_settings_card.visible is True
+
+
+def test_on_mode_changed_uses_hidden_state_before_first_show():
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._local_backend_container = _FakePreShowVisibleWidget()
+    window._local_model_container = _FakePreShowVisibleWidget()
+    window._streaming_container = _FakePreShowVisibleWidget()
+    window._advanced_local_settings_card = _FakePreShowVisibleWidget()
+    window._advanced_faster_settings_card = _FakePreShowVisibleWidget()
+    window._advanced_lightning_settings_card = _FakePreShowVisibleWidget()
+    window._refresh_setup_overview = lambda: None
+
+    window._on_mode_changed("deepgram")
+
+    assert window._local_backend_container.hidden is True
+    assert window._local_model_container.hidden is True
+    assert window._advanced_local_settings_card.hidden is True
+    assert window._advanced_faster_settings_card.hidden is True
+    assert window._advanced_lightning_settings_card.hidden is True
+    assert window._streaming_container.hidden is False

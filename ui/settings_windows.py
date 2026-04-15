@@ -10,7 +10,7 @@ import os
 import sys
 import threading
 import time
-from typing import Callable
+from typing import Callable, Iterator, TypeAlias
 
 from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtGui import QDoubleValidator, QFont, QIntValidator, QTextCursor
@@ -118,7 +118,11 @@ MODE_LABELS = {
     "groq": "Groq",
     "local": "Local Whisper",
 }
-WINDOWS_LOCAL_PRESET_BASE = {
+_SetupOverviewSnapshot: TypeAlias = tuple[str, str, str, tuple[tuple[str, bool], ...]]
+_WindowsLocalPresetValue: TypeAlias = str | int
+_WindowsLocalPreset: TypeAlias = dict[str, _WindowsLocalPresetValue]
+
+WINDOWS_LOCAL_PRESET_BASE: _WindowsLocalPreset = {
     "mode": "local",
     "local_backend": "faster",
     "local_model": "turbo",
@@ -455,6 +459,13 @@ def _get_widget_visible(widget) -> bool | None:
     if widget is None:
         return None
 
+    hidden_getter = getattr(widget, "isHidden", None)
+    if callable(hidden_getter):
+        try:
+            return not bool(hidden_getter())
+        except TypeError:
+            pass
+
     getter = getattr(widget, "isVisible", None)
     if callable(getter):
         try:
@@ -550,7 +561,7 @@ def _set_slider_value_if_changed(widget, value: int) -> bool:
 
 
 @contextmanager
-def _block_widget_signals(*widgets) -> None:
+def _block_widget_signals(*widgets: object) -> Iterator[None]:
     """Prevent cascaded signal work during bulk UI population when supported."""
     previous_states: list[tuple[object, bool]] = []
     try:
@@ -614,7 +625,7 @@ class SettingsWindow(QDialog):
         self._setup_status_detail_label: QLabel | None = None
         self._setup_howto_label: QLabel | None = None
         self._setup_overview_refresh_suspend_count = 0
-        self._last_setup_overview_snapshot = None
+        self._last_setup_overview_snapshot: _SetupOverviewSnapshot | None = None
         self._process_env_api_keys: dict[str, str] | None = None
         self._tab_builders: dict[str, Callable[[], QWidget]] = {}
         self._lazy_tab_layouts: dict[str, QVBoxLayout] = {}
@@ -1745,7 +1756,7 @@ class SettingsWindow(QDialog):
         )
 
         process_api_keys = self._get_process_env_api_keys()
-        api_presence = tuple(
+        api_presence: tuple[tuple[str, bool], ...] = tuple(
             (
                 env_key,
                 bool(
@@ -3347,7 +3358,7 @@ class SettingsWindow(QDialog):
     def _apply_local_preset(self, preset: str):
         """Wendet ein Local Mode Preset an (UI-only, ohne zu speichern)."""
         # Windows-optimierte Presets
-        presets = {
+        presets: dict[str, _WindowsLocalPreset] = {
             "cuda_fast": {
                 "device": "cuda",
                 "compute_type": "float16",
@@ -3373,7 +3384,7 @@ class SettingsWindow(QDialog):
         preset_values = presets.get(preset)
         if not preset_values:
             return
-        values = dict(WINDOWS_LOCAL_PRESET_BASE)
+        values: _WindowsLocalPreset = dict(WINDOWS_LOCAL_PRESET_BASE)
         values.update(preset_values)
         ui_changed = False
         mode_changed = False
@@ -3397,90 +3408,90 @@ class SettingsWindow(QDialog):
                 getattr(self, "_lightning_quant_combo", None),
             ):
                 mode_changed = _set_combo_text_if_changed(
-                    self._mode_combo, values.get("mode", "local")
+                    self._mode_combo, str(values.get("mode", "local"))
                 )
                 ui_changed = mode_changed or ui_changed
                 ui_changed = (
                     _set_combo_text_if_changed(
                         self._local_backend_combo,
-                        values.get("local_backend", "faster"),
+                        str(values.get("local_backend", "faster")),
                     )
                     or ui_changed
                 )
                 ui_changed = (
                     _set_combo_text_if_changed(
                         self._local_model_combo,
-                        values.get("local_model", "turbo"),
+                        str(values.get("local_model", "turbo")),
                     )
                     or ui_changed
                 )
                 ui_changed = (
                     _set_combo_text_if_changed(
                         getattr(self, "_device_combo", None),
-                        values.get("device", "auto"),
+                        str(values.get("device", "auto")),
                     )
                     or ui_changed
                 )
                 ui_changed = (
                     _set_combo_text_if_changed(
                         getattr(self, "_compute_type_combo", None),
-                        values.get("compute_type", "default"),
+                        str(values.get("compute_type", "default")),
                     )
                     or ui_changed
                 )
                 ui_changed = (
                     _set_widget_text_if_changed(
                         getattr(self, "_beam_size_field", None),
-                        values.get("beam_size", ""),
+                        str(values.get("beam_size", "")),
                     )
                     or ui_changed
                 )
                 ui_changed = (
                     _set_widget_text_if_changed(
                         getattr(self, "_temperature_field", None),
-                        values.get("temperature", ""),
+                        str(values.get("temperature", "")),
                     )
                     or ui_changed
                 )
                 ui_changed = (
                     _set_widget_text_if_changed(
                         getattr(self, "_best_of_field", None),
-                        values.get("best_of", ""),
+                        str(values.get("best_of", "")),
                     )
                     or ui_changed
                 )
                 ui_changed = (
                     _set_widget_text_if_changed(
                         getattr(self, "_cpu_threads_field", None),
-                        values.get("cpu_threads", ""),
+                        str(values.get("cpu_threads", "")),
                     )
                     or ui_changed
                 )
                 ui_changed = (
                     _set_widget_text_if_changed(
                         getattr(self, "_num_workers_field", None),
-                        values.get("num_workers", ""),
+                        str(values.get("num_workers", "")),
                     )
                     or ui_changed
                 )
                 ui_changed = (
                     _set_combo_text_if_changed(
                         getattr(self, "_vad_filter_combo", None),
-                        values.get("vad_filter", "default"),
+                        str(values.get("vad_filter", "default")),
                     )
                     or ui_changed
                 )
                 ui_changed = (
                     _set_combo_text_if_changed(
                         getattr(self, "_without_timestamps_combo", None),
-                        values.get("without_timestamps", "default"),
+                        str(values.get("without_timestamps", "default")),
                     )
                     or ui_changed
                 )
                 ui_changed = (
                     _set_combo_text_if_changed(
                         getattr(self, "_fp16_combo", None),
-                        values.get("fp16", "default"),
+                        str(values.get("fp16", "default")),
                     )
                     or ui_changed
                 )
@@ -3494,7 +3505,7 @@ class SettingsWindow(QDialog):
                 ui_changed = (
                     _set_combo_text_if_changed(
                         getattr(self, "_lightning_quant_combo", None),
-                        values.get("lightning_quant", "none"),
+                        str(values.get("lightning_quant", "none")),
                     )
                     or ui_changed
                 )
