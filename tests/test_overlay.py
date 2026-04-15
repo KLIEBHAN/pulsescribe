@@ -7,6 +7,7 @@ from ui.overlay import (
     WAVE_ANIMATION_FPS_ACTIVE,
     WAVE_ANIMATION_FPS_FEEDBACK,
     WAVE_ANIMATION_FPS_IDLE,
+    WAVE_BAR_MIN_HEIGHT,
     WAVE_HEIGHT_UPDATE_EPSILON,
     OverlayController,
     SoundWaveView,
@@ -59,6 +60,51 @@ class _FakeWaveView:
 
     def start_recording_animation(self) -> None:
         self.recording_calls += 1
+
+
+class _FakeCATransaction:
+    begin_calls = 0
+    commit_calls = 0
+    disable_calls = 0
+
+    @classmethod
+    def reset(cls) -> None:
+        cls.begin_calls = 0
+        cls.commit_calls = 0
+        cls.disable_calls = 0
+
+    @classmethod
+    def begin(cls) -> None:
+        cls.begin_calls += 1
+
+    @classmethod
+    def commit(cls) -> None:
+        cls.commit_calls += 1
+
+    @classmethod
+    def setDisableActions_(cls, _value: bool) -> None:
+        cls.disable_calls += 1
+
+
+class _FakeOverlayFrame:
+    def __init__(self, height: float) -> None:
+        self.size = types.SimpleNamespace(height=height)
+
+
+class _FakeOverlayView:
+    def __init__(self, height: float) -> None:
+        self._frame = _FakeOverlayFrame(height)
+
+    def frame(self):
+        return self._frame
+
+
+class _FakeAnimationLogic:
+    def __init__(self, normalized: float) -> None:
+        self.normalized = normalized
+
+    def calculate_bar_normalized(self, _index: int, _time_value: float, _state: str) -> float:
+        return self.normalized
 
 
 def _install_fake_foundation(monkeypatch):
@@ -163,6 +209,64 @@ def test_sound_wave_view_only_repositions_when_center_changes():
     assert [bar.position_calls for bar in view.bars] == [2, 2]
     assert view.bars[0].last_position == (5.0, 22.0)
     assert view.bars[1].last_position == (15.0, 22.0)
+
+
+def test_sound_wave_view_done_frame_skips_transaction_when_nothing_changes(
+    monkeypatch,
+):
+    _FakeCATransaction.reset()
+    monkeypatch.setitem(
+        sys.modules,
+        "Quartz",
+        types.SimpleNamespace(CATransaction=_FakeCATransaction),
+    )
+
+    view = SoundWaveView.__new__(SoundWaveView)
+    view._done_start_time = 1.0
+    view._view = _FakeOverlayView(48.0)
+    view.bars = [_FakeBar(), _FakeBar()]
+    view._bar_positions = [5.0, 15.0]
+    view._last_center_y = 24.0
+    view._last_heights = [WAVE_BAR_MIN_HEIGHT, WAVE_BAR_MIN_HEIGHT]
+    view._anim = _FakeAnimationLogic(0.0)
+
+    monkeypatch.setattr("ui.overlay.time.perf_counter", lambda: 1.5)
+
+    SoundWaveView._render_done_frame(view)
+
+    assert _FakeCATransaction.begin_calls == 0
+    assert _FakeCATransaction.commit_calls == 0
+    assert [bar.bounds_calls for bar in view.bars] == [0, 0]
+    assert [bar.position_calls for bar in view.bars] == [0, 0]
+
+
+def test_sound_wave_view_done_frame_keeps_transaction_for_reposition_only(
+    monkeypatch,
+):
+    _FakeCATransaction.reset()
+    monkeypatch.setitem(
+        sys.modules,
+        "Quartz",
+        types.SimpleNamespace(CATransaction=_FakeCATransaction),
+    )
+
+    view = SoundWaveView.__new__(SoundWaveView)
+    view._done_start_time = 1.0
+    view._view = _FakeOverlayView(52.0)
+    view.bars = [_FakeBar(), _FakeBar()]
+    view._bar_positions = [5.0, 15.0]
+    view._last_center_y = 24.0
+    view._last_heights = [WAVE_BAR_MIN_HEIGHT, WAVE_BAR_MIN_HEIGHT]
+    view._anim = _FakeAnimationLogic(0.0)
+
+    monkeypatch.setattr("ui.overlay.time.perf_counter", lambda: 1.5)
+
+    SoundWaveView._render_done_frame(view)
+
+    assert _FakeCATransaction.begin_calls == 1
+    assert _FakeCATransaction.commit_calls == 1
+    assert [bar.bounds_calls for bar in view.bars] == [0, 0]
+    assert [bar.position_calls for bar in view.bars] == [1, 1]
 
 
 def test_sound_wave_view_start_level_timer_uses_recording_interval(monkeypatch):

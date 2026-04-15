@@ -232,7 +232,7 @@ class SoundWaveView:
 
         self._height_factors = _build_height_factors()
         self._recording_durations = _build_recording_durations()
-        self._last_heights = [WAVE_BAR_MIN_HEIGHT for _ in range(WAVE_BAR_COUNT)]
+        self._last_heights = [float(WAVE_BAR_MIN_HEIGHT) for _ in range(WAVE_BAR_COUNT)]
         self._bar_positions = [
             i * (WAVE_BAR_WIDTH + WAVE_BAR_GAP) + WAVE_BAR_WIDTH / 2
             for i in range(WAVE_BAR_COUNT)
@@ -488,7 +488,7 @@ class SoundWaveView:
         for i, bar in enumerate(self.bars):
             bar.removeAllAnimations()
             self._set_bar_height(i, WAVE_BAR_MIN_HEIGHT, force=True)
-        self._last_heights = [WAVE_BAR_MIN_HEIGHT for _ in range(WAVE_BAR_COUNT)]
+        self._last_heights = [float(WAVE_BAR_MIN_HEIGHT) for _ in range(WAVE_BAR_COUNT)]
         self._agc_peak = WAVE_AGC_MIN_PEAK
         self._smoothed_level = 0.0
         self._target_level = 0.0
@@ -667,27 +667,19 @@ class SoundWaveView:
 
     def _render_done_frame(self) -> None:
         """Rendert einen Frame der Done-Animation (via AnimationLogic)."""
-        from Quartz import CATransaction  # type: ignore[import-not-found]
-
         if self._done_start_time is None:
             return
 
         t = time.perf_counter() - self._done_start_time
 
-        CATransaction.begin()
-        CATransaction.setDisableActions_(True)
-
         center_y = self._view.frame().size.height / 2
-        self._ensure_bar_positions(center_y)
         height_range = WAVE_BAR_MAX_HEIGHT - WAVE_BAR_MIN_HEIGHT
-
-        for i, bar in enumerate(self.bars):
-            normalized = self._anim.calculate_bar_normalized(i, t, "DONE")
-            height = WAVE_BAR_MIN_HEIGHT + height_range * normalized
-
-            self._set_bar_height(i, height)
-
-        CATransaction.commit()
+        heights = [
+            WAVE_BAR_MIN_HEIGHT
+            + height_range * self._anim.calculate_bar_normalized(i, t, "DONE")
+            for i, _bar in enumerate(self.bars)
+        ]
+        self._apply_bar_heights(heights, center_y=center_y)
 
     def _level_timer_interval(self) -> float:
         activity_mode = self._recording_level_activity_mode()
@@ -704,58 +696,72 @@ class SoundWaveView:
     def _feedback_timer_interval(self) -> float:
         return _fps_to_interval_seconds(WAVE_ANIMATION_FPS_FEEDBACK)
 
+    def _apply_bar_heights(self, heights: list[float], *, center_y: float) -> bool:
+        """Commit bar updates only when positions or heights actually changed."""
+        transaction = None
+        positions_changed = self._last_center_y != center_y
+
+        if positions_changed:
+            from Quartz import CATransaction  # type: ignore[import-not-found]
+
+            transaction = CATransaction
+            transaction.begin()
+            transaction.setDisableActions_(True)
+            self._ensure_bar_positions(center_y)
+
+        for index, height in enumerate(heights):
+            if abs(self._last_heights[index] - height) < WAVE_HEIGHT_UPDATE_EPSILON:
+                continue
+
+            if transaction is None:
+                from Quartz import CATransaction  # type: ignore[import-not-found]
+
+                transaction = CATransaction
+                transaction.begin()
+                transaction.setDisableActions_(True)
+
+            self._set_bar_height(index, height, force=True)
+
+        if transaction is None:
+            return False
+
+        transaction.commit()
+        return True
+
     def _render_listening_frame(self) -> None:
         """Rendert einen Frame der Listening-Animation (via AnimationLogic)."""
-        from Quartz import CATransaction  # type: ignore[import-not-found]
-
         if self._listening_start_time is None:
             return
 
         t = time.perf_counter() - self._listening_start_time
 
-        CATransaction.begin()
-        CATransaction.setDisableActions_(True)
-
         center_y = self._view.frame().size.height / 2
-        self._ensure_bar_positions(center_y)
         height_range = WAVE_BAR_MAX_HEIGHT - WAVE_BAR_MIN_HEIGHT
-
-        for i, _bar in enumerate(self.bars):
-            normalized = self._anim.calculate_bar_normalized(i, t, "LISTENING")
-            height = WAVE_BAR_MIN_HEIGHT + height_range * normalized
-
-            self._set_bar_height(i, height)
-
-        CATransaction.commit()
+        heights = [
+            WAVE_BAR_MIN_HEIGHT
+            + height_range * self._anim.calculate_bar_normalized(i, t, "LISTENING")
+            for i, _bar in enumerate(self.bars)
+        ]
+        self._apply_bar_heights(heights, center_y=center_y)
 
     def _render_processing_frame(self) -> None:
         """Rendert einen Frame der Wanderpuls-Animation (via AnimationLogic)."""
-        from Quartz import CATransaction  # type: ignore[import-not-found]
-
         if self._processing_start_time is None:
             return
 
         t = time.perf_counter() - self._processing_start_time
 
-        CATransaction.begin()
-        CATransaction.setDisableActions_(True)
-
         center_y = self._view.frame().size.height / 2
-        self._ensure_bar_positions(center_y)
         height_range = WAVE_BAR_MAX_HEIGHT - WAVE_BAR_MIN_HEIGHT
-
-        for i, _bar in enumerate(self.bars):
-            normalized = self._anim.calculate_bar_normalized(i, t, "TRANSCRIBING")
-            height = WAVE_BAR_MIN_HEIGHT + height_range * normalized
-
-            self._set_bar_height(i, height)
-
-        CATransaction.commit()
+        heights = [
+            WAVE_BAR_MIN_HEIGHT
+            + height_range * self._anim.calculate_bar_normalized(i, t, "TRANSCRIBING")
+            for i, _bar in enumerate(self.bars)
+        ]
+        self._apply_bar_heights(heights, center_y=center_y)
 
     def _render_level_frame(self) -> None:
         """Rendert einen Frame der Level-Visualisierung (läuft im Main-Thread via NSTimer)."""
-        from Quartz import CATransaction  # type: ignore[import-not-found]
-
         # Ziel-Level sanft verfolgen (reduziert Zittern durch RMS-Fluktuationen).
         prev_level = self._smoothed_level
         target_level = self._target_level
@@ -786,15 +792,13 @@ class SoundWaveView:
         envelope_center = self._bar_center + shift_strength * env_mix
         envelope_center = _clamp(envelope_center, 0.0, WAVE_BAR_COUNT - 1)
 
-        CATransaction.begin()
-        CATransaction.setDisableActions_(True)
-
         base_height = WAVE_BAR_MIN_HEIGHT
         max_add = WAVE_BAR_MAX_HEIGHT - WAVE_BAR_MIN_HEIGHT
 
         # Kleine Baseline-Bewegung, damit es nicht "steht" bei leiser Sprache,
         # aber skaliert mit Level, damit es ruhig bleibt.
         wander_strength = WAVE_WANDER_AMOUNT * _lerp(0.20, 1.0, level)
+        heights: list[float] = []
 
         for i, _bar in enumerate(self.bars):
             travel_primary = math.sin(phase_primary + self._wander_offset_primary[i])
@@ -820,11 +824,10 @@ class SoundWaveView:
                 if height > prev_height
                 else WAVE_SMOOTHING_ALPHA_FALL
             )
-            smoothed_height = _lerp(prev_height, height, alpha)
+            heights.append(_lerp(prev_height, height, alpha))
 
-            self._set_bar_height(i, smoothed_height)
-
-        CATransaction.commit()
+        center_y = self._view.frame().size.height / 2
+        self._apply_bar_heights(heights, center_y=center_y)
 
 
 class OverlayController:
@@ -1107,16 +1110,20 @@ class OverlayController:
 
     def _fade_in(self) -> None:
         """Blendet Overlay ein."""
-        if self._target_alpha != OVERLAY_ALPHA:
-            self._target_alpha = OVERLAY_ALPHA
-            self.window.orderFront_(None)
-            self.window.animator().setAlphaValue_(OVERLAY_ALPHA)
+        window = self.window
+        if window is None or self._target_alpha == OVERLAY_ALPHA:
+            return
+        self._target_alpha = OVERLAY_ALPHA
+        window.orderFront_(None)
+        window.animator().setAlphaValue_(OVERLAY_ALPHA)
 
     def _fade_out(self) -> None:
         """Blendet Overlay aus."""
-        if self._target_alpha != 0.0:
-            self._target_alpha = 0.0
-            self.window.animator().setAlphaValue_(0.0)
+        window = self.window
+        if window is None or self._target_alpha == 0.0:
+            return
+        self._target_alpha = 0.0
+        window.animator().setAlphaValue_(0.0)
 
     def _start_fade_out_timer(self) -> None:
         """Startet Timer für automatisches Ausblenden nach Done/Error."""
