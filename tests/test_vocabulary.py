@@ -200,43 +200,42 @@ class TestSaveVocabulary:
         assert data == {"keywords": ["API", "GraphQL"], "extra": "keep"}
         assert vocab.load_vocabulary(path=vocab_file) == data
 
-    def test_save_uses_utf8_encoding(self, temp_files, monkeypatch):
+    def test_save_uses_atomic_write_helper_with_utf8_encoding(self, temp_files, monkeypatch):
+        import utils.vocabulary as vocab
+
         vocab_file = temp_files / "vocab.json"
+        atomic_calls: list[tuple[Path, str]] = []
 
-        original_write_text = Path.write_text
-        encodings: list[str | None] = []
+        def _patched_atomic_write(path: Path, content: str, *, encoding: str) -> None:
+            atomic_calls.append((path, encoding))
+            path.write_text(content, encoding=encoding)
 
-        def _patched_write_text(self: Path, *args, **kwargs):
-            if self == vocab_file:
-                encodings.append(kwargs.get("encoding"))
-            return original_write_text(self, *args, **kwargs)
-
-        monkeypatch.setattr(Path, "write_text", _patched_write_text)
+        monkeypatch.setattr(vocab, "write_text_atomic", _patched_atomic_write)
 
         save_vocabulary(["Müller", "東京"], path=vocab_file)
 
-        assert encodings == ["utf-8"]
+        assert atomic_calls == [(vocab_file, "utf-8")]
 
     def test_save_skips_noop_rewrite_when_keywords_are_unchanged(self, temp_files, monkeypatch):
+        import utils.vocabulary as vocab
+
         vocab_file = temp_files / "vocab.json"
         vocab_file.write_text(
             json.dumps({"keywords": ["Alpha", "Beta"], "extra": "keep"}),
             encoding="utf-8",
         )
 
-        original_write_text = Path.write_text
-        write_calls: list[Path] = []
+        atomic_calls: list[Path] = []
 
-        def _patched_write_text(self: Path, *args, **kwargs):
-            if self == vocab_file:
-                write_calls.append(self)
-            return original_write_text(self, *args, **kwargs)
+        def _patched_atomic_write(path: Path, content: str, *, encoding: str) -> None:
+            atomic_calls.append(path)
+            path.write_text(content, encoding=encoding)
 
-        monkeypatch.setattr(Path, "write_text", _patched_write_text)
+        monkeypatch.setattr(vocab, "write_text_atomic", _patched_atomic_write)
 
         save_vocabulary(["Alpha", "Beta"], path=vocab_file)
 
-        assert write_calls == []
+        assert atomic_calls == []
 
     def test_save_noop_refreshes_stale_cache_without_rewriting(
         self, temp_files, monkeypatch
@@ -256,8 +255,8 @@ class TestSaveVocabulary:
         )
 
         monkeypatch.setattr(
-            Path,
-            "write_text",
+            vocab,
+            "write_text_atomic",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(
                 AssertionError("unchanged save should not rewrite the file")
             ),

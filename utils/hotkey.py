@@ -6,13 +6,18 @@ Extrahiert aus hotkey_daemon.py.
 
 import os
 import subprocess
+import threading
 import time
+from collections.abc import Callable
 
 from utils.env import parse_bool
 from utils.logging import get_logger
 from utils.timing import redacted_text_summary
 
 logger = get_logger()
+
+_MACOS_CLIPBOARD_RESTORE_DELAY_SEC = 1.0
+_WINDOWS_CLIPBOARD_RESTORE_DELAY_SEC = 0.5
 
 # =============================================================================
 # Hotkey-Parsing (QuickMacHotKey)
@@ -474,6 +479,34 @@ def _should_restore_clipboard() -> bool:
     return parse_bool(os.getenv("PULSESCRIBE_CLIPBOARD_RESTORE")) is True
 
 
+def _schedule_clipboard_restore(
+    *,
+    delay_sec: float,
+    restore_callback: Callable[[], object],
+) -> threading.Thread:
+    """Run clipboard restoration asynchronously after a short grace period.
+
+    The paste operation itself is latency-sensitive; the clipboard restore is not.
+    Running the delayed restore in a daemon thread preserves the old semantics
+    without blocking the user-visible transcription flow.
+    """
+
+    def _worker() -> None:
+        try:
+            time.sleep(max(0.0, delay_sec))
+            restore_callback()
+        except Exception as e:
+            logger.warning(f"Asynchrones Clipboard-Restore fehlgeschlagen: {e}")
+
+    thread = threading.Thread(
+        target=_worker,
+        daemon=True,
+        name="pulsescribe-clipboard-restore",
+    )
+    thread.start()
+    return thread
+
+
 def _paste_transcript_windows(text: str) -> bool:
     """Paste text on Windows while preserving the current restore semantics."""
     clipboard = _get_windows_clipboard_handler()
@@ -504,11 +537,13 @@ def _paste_transcript_windows(text: str) -> bool:
         return False
 
     if previous_text is not None:
-        time.sleep(0.5)  # Kurz warten bis Paste verarbeitet wurde
-        _restore_windows_clipboard_text(
-            previous_text,
-            expected_current=text,
-            clipboard=clipboard,
+        _schedule_clipboard_restore(
+            delay_sec=_WINDOWS_CLIPBOARD_RESTORE_DELAY_SEC,
+            restore_callback=lambda: _restore_windows_clipboard_text(
+                previous_text,
+                expected_current=text,
+                clipboard=clipboard,
+            ),
         )
 
     return True
@@ -540,10 +575,12 @@ def _paste_transcript_macos(text: str) -> bool:
         return False
 
     if previous_text is not None:
-        time.sleep(1.0)  # Warten bis Paste verarbeitet wurde
-        _restore_macos_clipboard_text(
-            previous_text,
-            expected_current=text,
+        _schedule_clipboard_restore(
+            delay_sec=_MACOS_CLIPBOARD_RESTORE_DELAY_SEC,
+            restore_callback=lambda: _restore_macos_clipboard_text(
+                previous_text,
+                expected_current=text,
+            ),
         )
 
     return True

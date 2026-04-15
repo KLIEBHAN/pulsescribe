@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from config import VOCABULARY_FILE as _DEFAULT_VOCAB_FILE
+from utils.atomic_io import write_text_atomic
 from utils.file_signatures import FileSignature, build_file_signature
 
 logger = logging.getLogger("pulsescribe")
@@ -254,7 +255,8 @@ def save_vocabulary(keywords: list[str], path: Path | None = None) -> None:
         return
 
     try:
-        vocab_file.write_text(
+        write_text_atomic(
+            vocab_file,
             json.dumps(data, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )

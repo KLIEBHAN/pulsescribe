@@ -2,12 +2,19 @@
 
 import logging
 import sys
+import threading
 
 import pytest
 from unittest.mock import patch
 import subprocess
 
 import utils.hotkey
+
+
+def _run_clipboard_restore_immediately(*, delay_sec: float, restore_callback):
+    del delay_sec
+    restore_callback()
+    return None
 
 
 # =============================================================================
@@ -428,6 +435,11 @@ class TestPasteTranscript:
             return True
 
         monkeypatch.setenv("PULSESCRIBE_CLIPBOARD_RESTORE", "true")
+        monkeypatch.setattr(
+            utils.hotkey,
+            "_schedule_clipboard_restore",
+            _run_clipboard_restore_immediately,
+        )
 
         with (
             patch("utils.hotkey._get_clipboard_text", side_effect=mock_get_text),
@@ -460,6 +472,11 @@ class TestPasteTranscript:
             return True
 
         monkeypatch.setenv("PULSESCRIBE_CLIPBOARD_RESTORE", "true")
+        monkeypatch.setattr(
+            utils.hotkey,
+            "_schedule_clipboard_restore",
+            _run_clipboard_restore_immediately,
+        )
 
         with (
             patch("utils.hotkey._get_clipboard_text", side_effect=mock_get_text),
@@ -494,6 +511,43 @@ class TestPasteTranscript:
 
         # Nur Transkription, kein Re-Copy (da vorheriger Clipboard leer)
         assert copy_calls == ["test"]
+
+
+def test_paste_transcript_schedules_macos_restore_off_main_thread(monkeypatch):
+    """Successful restore should no longer block the main paste path."""
+    clipboard_values = iter(["previous text", "test text"])
+    restore_called = threading.Event()
+    sleep_threads: list[tuple[str, float]] = []
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("PULSESCRIBE_CLIPBOARD_RESTORE", "true")
+    monkeypatch.setattr(
+        utils.hotkey,
+        "_get_clipboard_text",
+        lambda: next(clipboard_values),
+    )
+    monkeypatch.setattr(utils.hotkey, "_copy_to_clipboard_native", lambda _text: True)
+    monkeypatch.setattr(utils.hotkey, "_paste_via_pynput", lambda: True)
+    monkeypatch.setattr(utils.hotkey, "_paste_via_quartz", lambda: False)
+    monkeypatch.setattr(utils.hotkey, "_paste_via_osascript", lambda: False)
+    monkeypatch.setattr(
+        utils.hotkey,
+        "_restore_macos_clipboard_text",
+        lambda *_args, **_kwargs: restore_called.set() or True,
+    )
+
+    def _fake_sleep(delay: float) -> None:
+        sleep_threads.append((threading.current_thread().name, delay))
+
+    monkeypatch.setattr(utils.hotkey.time, "sleep", _fake_sleep)
+
+    result = utils.hotkey.paste_transcript("test text")
+
+    assert result is True
+    assert restore_called.wait(timeout=1.0)
+    assert sleep_threads
+    assert all(thread_name != "MainThread" for thread_name, _delay in sleep_threads)
+    assert sleep_threads[0][1] == utils.hotkey._MACOS_CLIPBOARD_RESTORE_DELAY_SEC
 
 
 # =============================================================================
@@ -583,6 +637,11 @@ def test_paste_transcript_windows_prefers_native_clipboard_handler(monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(
         utils.hotkey,
+        "_schedule_clipboard_restore",
+        _run_clipboard_restore_immediately,
+    )
+    monkeypatch.setattr(
+        utils.hotkey,
         "_get_windows_clipboard_handler",
         lambda: clipboard,
     )
@@ -605,6 +664,11 @@ def test_paste_transcript_clipboard_restore_accepts_truthy_alias_on_macos(
 
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setenv("PULSESCRIBE_CLIPBOARD_RESTORE", "1")
+    monkeypatch.setattr(
+        utils.hotkey,
+        "_schedule_clipboard_restore",
+        _run_clipboard_restore_immediately,
+    )
     monkeypatch.setattr(
         utils.hotkey,
         "_get_clipboard_text",
@@ -646,6 +710,11 @@ def test_paste_transcript_clipboard_restore_accepts_truthy_alias_on_windows(
 
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setenv("PULSESCRIBE_CLIPBOARD_RESTORE", "on")
+    monkeypatch.setattr(
+        utils.hotkey,
+        "_schedule_clipboard_restore",
+        _run_clipboard_restore_immediately,
+    )
     monkeypatch.setattr(
         utils.hotkey,
         "_get_windows_clipboard_handler",
