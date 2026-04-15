@@ -21,6 +21,7 @@ import zipfile
 from pathlib import Path
 
 from utils.env import read_env_file_values
+from utils.log_tail import read_file_tail_lines
 from utils.version import get_app_version
 
 _REDACTED_LOG_MARKERS = (
@@ -33,6 +34,9 @@ _REDACTED_LOG_MARKERS = (
     "] Output:",
     "Transcript saved to history:",
 )
+_LOG_TAIL_SCAN_BYTES_MIN = 512_000
+_LOG_TAIL_SCAN_BYTES_MAX = 8_000_000
+_LOG_TAIL_SCAN_BYTES_PER_LINE = 8_192
 
 
 def _user_config_dir() -> Path:
@@ -44,15 +48,6 @@ def _read_text_safe(path: Path) -> str:
         return path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return ""
-
-
-def _tail_lines(text: str, max_lines: int) -> str:
-    if not text:
-        return ""
-    lines = text.splitlines()
-    if len(lines) <= max_lines:
-        return "\n".join(lines) + "\n"
-    return "\n".join(lines[-max_lines:]) + "\n"
 
 
 def _mask_secret(value: str) -> str:
@@ -164,11 +159,44 @@ def _build_report(
     }
 
 
+def _log_tail_scan_bytes(max_lines: int) -> int:
+    """Return a generous scan budget without reading entire large log files."""
+    return min(
+        _LOG_TAIL_SCAN_BYTES_MAX,
+        max(_LOG_TAIL_SCAN_BYTES_MIN, max_lines * _LOG_TAIL_SCAN_BYTES_PER_LINE),
+    )
+
+
+
 def _read_redacted_log_tail(path: Path, *, max_lines: int) -> str:
     """Return a redacted tail for one optional log file."""
-    if not path.exists():
+    if not path.exists() or max_lines <= 0:
         return ""
-    return _tail_lines(_redact_log_text(_read_text_safe(path)), max_lines=max_lines)
+
+    tail_text = read_file_tail_lines(
+        path,
+        max_lines=max_lines,
+        errors="replace",
+        max_scan_bytes=_log_tail_scan_bytes(max_lines),
+    )
+    if not tail_text:
+        return ""
+    return _redact_log_text(tail_text)
+
+
+
+def _reveal_exported_file(path: Path) -> None:
+    """Reveal a generated diagnostics archive in the platform file manager."""
+    try:
+        if sys.platform == "darwin":
+            subprocess.Popen(["open", "-R", str(path)])
+            return
+        if sys.platform == "win32":
+            subprocess.Popen(["explorer", "/select,", str(path)])
+            return
+        subprocess.Popen(["xdg-open", str(path.parent)])
+    except Exception:
+        pass
 
 
 def _dump_json(data: object) -> str:
@@ -197,7 +225,7 @@ def _iter_archive_entries(
 
 
 def export_diagnostics_report() -> Path:
-    """Create a diagnostics zip and reveal it in Finder (best-effort)."""
+    """Create a diagnostics zip and reveal it in the file manager (best-effort)."""
     cfg = _user_config_dir()
     cfg.mkdir(parents=True, exist_ok=True)
     out_dir = cfg / "diagnostics"
@@ -241,10 +269,6 @@ def export_diagnostics_report() -> Path:
             pass
         raise
 
-    # Reveal in Finder (best-effort)
-    try:
-        subprocess.Popen(["open", "-R", str(zip_path)])
-    except Exception:
-        pass
+    _reveal_exported_file(zip_path)
 
     return zip_path

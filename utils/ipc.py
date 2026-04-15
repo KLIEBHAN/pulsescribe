@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Callable
 
 from config import USER_CONFIG_DIR
+from utils.file_signatures import FileSignature, build_file_signature
 
 logger = logging.getLogger("pulsescribe.ipc")
 
@@ -145,6 +146,27 @@ class IPCClient:
             handle_response(response)
     """
 
+    def __init__(self) -> None:
+        self._last_response_signature: FileSignature | None = None
+        self._last_response_payload: dict | None = None
+
+    def _read_response_payload(self) -> dict | None:
+        """Read and cache the current response file until its signature changes."""
+        try:
+            signature = build_file_signature(IPC_RESPONSE_FILE)
+        except (FileNotFoundError, OSError):
+            self._last_response_signature = None
+            self._last_response_payload = None
+            return None
+
+        if signature == self._last_response_signature:
+            return self._last_response_payload
+
+        payload = _safe_read(IPC_RESPONSE_FILE)
+        self._last_response_signature = signature
+        self._last_response_payload = payload
+        return payload
+
     def send_command(self, command: str) -> str:
         """Write a command to the IPC file for the daemon to pick up.
 
@@ -168,11 +190,16 @@ class IPCClient:
         Returns the response dict if available, None otherwise.
         Caller should poll this repeatedly (e.g., via QTimer).
         """
-        return _matching_response(cmd_id)
+        response = self._read_response_payload()
+        if response and response.get("id") == cmd_id:
+            return response
+        return None
 
     def clear_response(self) -> None:
         """Delete response file after processing (cleanup)."""
         _delete_file_if_exists(IPC_RESPONSE_FILE)
+        self._last_response_signature = None
+        self._last_response_payload = None
 
 
 # -----------------------------------------------------------------------------

@@ -87,6 +87,82 @@ def test_ipc_client_clear_response_removes_response_file(tmp_path, monkeypatch) 
     assert not response_file.exists()
 
 
+
+def test_ipc_client_poll_response_reuses_cached_payload_when_file_is_unchanged(
+    tmp_path, monkeypatch
+) -> None:
+    response_file = tmp_path / "ipc_response.json"
+    response_file.write_text(
+        json.dumps({"id": "cmd-1", "status": ipc.STATUS_RECORDING}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ipc, "IPC_RESPONSE_FILE", response_file)
+
+    read_calls: list[object] = []
+    real_safe_read = ipc._safe_read
+
+    def counting_safe_read(path):
+        read_calls.append(path)
+        return real_safe_read(path)
+
+    monkeypatch.setattr(ipc, "_safe_read", counting_safe_read)
+
+    client = ipc.IPCClient()
+
+    first = client.poll_response("cmd-1")
+    second = client.poll_response("cmd-1")
+
+    assert first == second == {"id": "cmd-1", "status": ipc.STATUS_RECORDING}
+    assert read_calls == [response_file]
+
+
+
+def test_ipc_client_clear_response_invalidates_cached_payload(
+    tmp_path, monkeypatch
+) -> None:
+    response_file = tmp_path / "ipc_response.json"
+    monkeypatch.setattr(ipc, "IPC_RESPONSE_FILE", response_file)
+
+    read_payloads: list[str] = []
+    real_safe_read = ipc._safe_read
+
+    def counting_safe_read(path):
+        read_payloads.append(path.read_text(encoding="utf-8"))
+        return real_safe_read(path)
+
+    monkeypatch.setattr(ipc, "_safe_read", counting_safe_read)
+
+    client = ipc.IPCClient()
+
+    response_file.write_text(
+        json.dumps({"id": "cmd-1", "status": ipc.STATUS_RECORDING}),
+        encoding="utf-8",
+    )
+    assert client.poll_response("cmd-1") == {
+        "id": "cmd-1",
+        "status": ipc.STATUS_RECORDING,
+    }
+
+    client.clear_response()
+
+    response_file.write_text(
+        json.dumps(
+            {
+                "id": "cmd-22",
+                "status": ipc.STATUS_DONE,
+                "transcript": "hello",
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert client.poll_response("cmd-22") == {
+        "id": "cmd-22",
+        "status": ipc.STATUS_DONE,
+        "transcript": "hello",
+    }
+    assert len(read_payloads) == 2
+
+
 def test_ipc_server_handler_failure_returns_error_response(
     tmp_path, monkeypatch
 ) -> None:

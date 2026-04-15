@@ -124,6 +124,56 @@ def test_read_env_file_supports_export_prefix(tmp_path) -> None:
     assert values["DEEPGRAM_API_KEY"] == "dg-test"
 
 
+
+def test_read_redacted_log_tail_uses_tail_reader_instead_of_full_file_read(
+    tmp_path, monkeypatch
+) -> None:
+    log_file = tmp_path / "pulsescribe.log"
+    log_file.write_text("ignored\n", encoding="utf-8")
+
+    tail_calls: list[tuple[object, int, int]] = []
+
+    def fake_tail_reader(
+        path, *, max_lines, encoding="utf-8", errors="replace", max_scan_bytes=0
+    ) -> str:
+        tail_calls.append((path, max_lines, max_scan_bytes))
+        return "12:00:01 [INFO] Transkript: secret tail\n"
+
+    monkeypatch.setattr(diagnostics, "read_file_tail_lines", fake_tail_reader)
+    monkeypatch.setattr(
+        diagnostics,
+        "_read_text_safe",
+        lambda _path: (_ for _ in ()).throw(
+            AssertionError("full file read should not happen")
+        ),
+    )
+
+    result = diagnostics._read_redacted_log_tail(log_file, max_lines=800)
+
+    assert tail_calls == [
+        (log_file, 800, diagnostics._log_tail_scan_bytes(800))
+    ]
+    assert result == "12:00:01 [INFO] Transkript: <redacted>\n"
+
+
+
+def test_reveal_exported_file_uses_windows_explorer(tmp_path, monkeypatch) -> None:
+    zip_path = tmp_path / "pulsescribe_diagnostics.zip"
+    zip_path.write_text("zip", encoding="utf-8")
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(diagnostics.sys, "platform", "win32")
+    monkeypatch.setattr(
+        diagnostics.subprocess,
+        "Popen",
+        lambda cmd: calls.append(cmd),
+    )
+
+    diagnostics._reveal_exported_file(zip_path)
+
+    assert calls == [["explorer", "/select,", str(zip_path)]]
+
+
 def test_export_diagnostics_report_cleans_up_broken_zip_on_error(
     tmp_path, monkeypatch
 ) -> None:
