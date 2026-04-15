@@ -525,6 +525,24 @@ def test_refresh_logs_resets_placeholder_when_log_file_is_missing(
     assert window._last_logs_signature is None
 
 
+def test_refresh_logs_missing_file_reports_idle_once_placeholder_is_current(
+    tmp_path, monkeypatch
+):
+    import config
+
+    log_file = tmp_path / "pulsescribe.log"
+    monkeypatch.setattr(config, "LOG_FILE", log_file)
+    monkeypatch.setattr(settings_mod, "get_file_signature", lambda _path: None)
+
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._logs_viewer = _FakeLogsViewer("stale")
+    window._last_logs_text = "stale"
+    window._last_logs_signature = (1, 5)
+
+    assert window._refresh_logs() is True
+    assert window._refresh_logs() is False
+
+
 def test_refresh_logs_skips_full_tail_read_when_incremental_append_succeeds(
     tmp_path, monkeypatch
 ):
@@ -668,6 +686,30 @@ def test_refresh_active_logs_view_backs_off_auto_refresh_when_idle():
 
     assert window._logs_auto_refresh_step == 2
     assert window._logs_refresh_timer.set_interval_calls == [4000, 8000]
+
+
+def test_refresh_transcripts_missing_file_reports_idle_once_placeholder_is_current(
+    tmp_path, monkeypatch
+):
+    import ui.settings_windows as settings_mod
+    import utils.history as history_mod
+
+    history_file = tmp_path / "history.jsonl"
+    monkeypatch.setattr(history_mod, "HISTORY_FILE", history_file)
+    monkeypatch.setattr(settings_mod, "get_file_signature", lambda _path: None)
+
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._transcripts_viewer = _FakeLogsViewer("stale")
+    window._transcripts_status = _FakeLabel()
+    window._last_transcripts_text = "stale"
+    window._last_transcripts_signature = (1, 5)
+    window._last_transcripts_entries = [
+        {"timestamp": "2026-01-01T10:00:00", "text": "stale"}
+    ]
+    window._last_transcripts_blocks = ["stale"]
+
+    assert window._refresh_transcripts() is True
+    assert window._refresh_transcripts() is False
 
 
 def test_refresh_active_logs_view_resets_auto_refresh_after_change():

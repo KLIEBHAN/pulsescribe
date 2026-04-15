@@ -2539,13 +2539,29 @@ class SettingsWindow(QDialog):
             "text_secondary",
         )
 
-    def _reset_transcripts_view(self) -> None:
-        """Setzt gecachte Transcript-Daten auf den leeren Ausgangszustand zurück."""
+    def _reset_transcripts_view(self) -> bool:
+        """Setzt gecachte Transcript-Daten auf den leeren Ausgangszustand zurück.
+
+        Returns ``True`` when the visible/cached state actually changed.
+        This lets the auto-refresh cadence back off once the empty placeholder
+        is already current.
+        """
+        empty_text = "No transcripts yet."
+        changed = bool(
+            getattr(self, "_last_transcripts_signature", None) is not None
+            or getattr(self, "_last_transcripts_entries", None)
+            or getattr(self, "_last_transcripts_blocks", None)
+            or getattr(self, "_last_transcripts_text", None) != empty_text
+            or _get_widget_text(getattr(self, "_transcripts_status", None))
+            != "0 entries"
+        )
+
         self._last_transcripts_signature = None
         self._last_transcripts_entries = []
         self._last_transcripts_blocks = []
-        self._set_transcripts_text_if_changed("No transcripts yet.")
+        self._set_transcripts_text_if_changed(empty_text)
         self._set_transcripts_entry_count(0)
+        return changed
 
     def _refresh_transcripts(self) -> bool:
         """Aktualisiert Transcripts-Anzeige."""
@@ -2559,8 +2575,7 @@ class SettingsWindow(QDialog):
 
             signature = get_file_signature(HISTORY_FILE)
             if _signature_means_missing_file(HISTORY_FILE, signature):
-                self._reset_transcripts_view()
-                return True
+                return self._reset_transcripts_view()
 
             if signature is not None and signature == self._last_transcripts_signature:
                 return False
@@ -2828,11 +2843,16 @@ class SettingsWindow(QDialog):
 
             signature = get_file_signature(LOG_FILE)
             if _signature_means_missing_file(LOG_FILE, signature):
-                self._last_logs_signature = None
-                self._set_logs_text_if_changed(
-                    "No logs yet.\n\nLog file will appear here:\n" + str(LOG_FILE)
+                placeholder = "No logs yet.\n\nLog file will appear here:\n" + str(
+                    LOG_FILE
                 )
-                return True
+                changed = bool(
+                    getattr(self, "_last_logs_signature", None) is not None
+                    or getattr(self, "_last_logs_text", None) != placeholder
+                )
+                self._last_logs_signature = None
+                self._set_logs_text_if_changed(placeholder)
+                return changed
 
             if signature is not None and signature == self._last_logs_signature:
                 return False
@@ -3084,8 +3104,16 @@ class SettingsWindow(QDialog):
                         "success" if value else "text_secondary",
                     )
 
-        # Mode-abhängige Sichtbarkeit und Setup-Status nur einmal am Ende aktualisieren
-        self._on_mode_changed(mode)
+        # Mode-abhängige Sichtbarkeit und Setup-Status nur einmal am Ende aktualisieren.
+        # Bei ungültigen ENV-Werten dem tatsächlich gewählten Combo-Wert folgen,
+        # damit Sichtbarkeit und Setup-Status nicht auseinanderlaufen.
+        applied_mode = mode
+        mode_combo = getattr(self, "_mode_combo", None)
+        if mode_combo is not None:
+            current_mode_text = mode_combo.currentText()
+            if current_mode_text:
+                applied_mode = current_mode_text
+        self._on_mode_changed(applied_mode)
 
     def _save_settings(self):
         """Speichert alle Settings."""

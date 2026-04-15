@@ -293,6 +293,24 @@ def test_load_settings_skips_no_op_widget_mutations(monkeypatch):
     assert mode_changes == ["deepgram"]
 
 
+def test_load_settings_uses_applied_combo_mode_when_env_mode_is_invalid(monkeypatch):
+    monkeypatch.setattr(
+        settings_mod,
+        "read_env_file",
+        lambda: {"PULSESCRIBE_MODE": "bogus"},
+    )
+
+    mode_changes: list[str] = []
+    window = _make_window()
+    window._mode_combo = _FakeCombo(settings_mod.MODE_OPTIONS, current="deepgram")
+    window._on_mode_changed = lambda mode: mode_changes.append(mode)
+
+    window._load_settings()
+
+    assert window._mode_combo.currentText() == "deepgram"
+    assert mode_changes == ["deepgram"]
+
+
 def test_refresh_setup_overview_uses_process_env_api_keys(monkeypatch):
     monkeypatch.setenv("DEEPGRAM_API_KEY", "dg-live-key")
 
