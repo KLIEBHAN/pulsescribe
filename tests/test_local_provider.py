@@ -8,6 +8,7 @@ import pytest
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 
@@ -831,6 +832,112 @@ class TestLightningEnvOptions:
 
 class TestLightningFallback:
     """Tests für Lightning → MLX Fallback."""
+
+    def test_preload_falls_back_to_mlx_when_lightning_preload_fails(
+        self, monkeypatch, caplog
+    ):
+        """Lightning-Preload soll denselben MLX-Fallback wie Transkription nutzen."""
+        monkeypatch.setenv("PULSESCRIBE_LOCAL_BACKEND", "lightning")
+
+        import logging
+
+        caplog.set_level(logging.WARNING)
+        mlx_calls: list[dict[str, object]] = []
+
+        def _fake_mlx_transcribe(audio, *, path_or_hf_repo, verbose=None, **kwargs):
+            mlx_calls.append(
+                {
+                    "shape": tuple(audio.shape),
+                    "repo": path_or_hf_repo,
+                    "verbose": verbose,
+                    "kwargs": kwargs,
+                }
+            )
+            return {"text": "ok"}
+
+        with (
+            patch(
+                "providers.local.LocalProvider._get_lightning_model",
+                side_effect=ImportError("missing lightning"),
+            ),
+            patch("providers.local._get_warmup_language", return_value="en"),
+            patch(
+                "providers.local._import_mlx_whisper",
+                return_value=SimpleNamespace(transcribe=_fake_mlx_transcribe),
+            ),
+        ):
+            from providers.local import LocalProvider
+
+            provider = LocalProvider()
+            provider.preload(model="turbo")
+
+        assert provider._lightning_fallback_active is True
+        assert mlx_calls == [
+            {
+                "shape": (8000,),
+                "repo": "mlx-community/whisper-large-v3-turbo",
+                "verbose": None,
+                "kwargs": {
+                    "language": "en",
+                    "temperature": 0.0,
+                    "condition_on_previous_text": False,
+                },
+            }
+        ]
+        assert "Lightning-Preload fehlgeschlagen" in caplog.text
+
+    def test_keepalive_falls_back_to_mlx_when_lightning_keepalive_fails(
+        self, monkeypatch, caplog
+    ):
+        """Lightning-Keep-Alive soll bei Fehlern dauerhaft auf MLX umschwenken."""
+        monkeypatch.setenv("PULSESCRIBE_LOCAL_BACKEND", "lightning")
+
+        import logging
+
+        caplog.set_level(logging.WARNING)
+        mlx_calls: list[dict[str, object]] = []
+
+        def _fake_mlx_transcribe(audio, *, path_or_hf_repo, verbose=None, **kwargs):
+            mlx_calls.append(
+                {
+                    "shape": tuple(audio.shape),
+                    "repo": path_or_hf_repo,
+                    "verbose": verbose,
+                    "kwargs": kwargs,
+                }
+            )
+            return {"text": "ok"}
+
+        with (
+            patch(
+                "providers.local.LocalProvider._get_lightning_model",
+                side_effect=RuntimeError("keepalive failed"),
+            ),
+            patch("providers.local._get_warmup_language", return_value="en"),
+            patch(
+                "providers.local._import_mlx_whisper",
+                return_value=SimpleNamespace(transcribe=_fake_mlx_transcribe),
+            ),
+        ):
+            from providers.local import LocalProvider
+
+            provider = LocalProvider()
+            provider.keepalive(model="turbo")
+
+        assert provider._lightning_fallback_active is True
+        assert mlx_calls == [
+            {
+                "shape": (1600,),
+                "repo": "mlx-community/whisper-large-v3-turbo",
+                "verbose": None,
+                "kwargs": {
+                    "language": "en",
+                    "temperature": 0.0,
+                    "condition_on_previous_text": False,
+                },
+            }
+        ]
+        assert "Lightning-Keep-Alive fehlgeschlagen" in caplog.text
 
     def test_fallback_to_mlx_on_lightning_error(self, monkeypatch, caplog):
         """Bei Lightning-Fehler wird auf MLX zurückgefallen."""

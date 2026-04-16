@@ -823,24 +823,34 @@ class LocalProvider:
                     f"MLX preload complete: warmup={t_warmup:.2f}s (model loaded & compiled)"
                 )
         elif backend == "lightning":
-            with self._transcribe_lock:
-                import numpy as np
+            try:
+                with self._transcribe_lock:
+                    import numpy as np
 
-                t0 = time.perf_counter()
-                model = self._get_lightning_model(model_name)
-                t_load = time.perf_counter() - t0
+                    t0 = time.perf_counter()
+                    model = self._get_lightning_model(model_name)
+                    t_load = time.perf_counter() - t0
 
-                warmup_samples = int(WHISPER_SAMPLE_RATE * PRELOAD_WARMUP_DURATION)
-                warmup_audio = np.zeros(warmup_samples, dtype=np.float32)
+                    warmup_samples = int(WHISPER_SAMPLE_RATE * PRELOAD_WARMUP_DURATION)
+                    warmup_audio = np.zeros(warmup_samples, dtype=np.float32)
 
-                t1 = time.perf_counter()
-                with _lightning_workdir():
-                    model.transcribe(warmup_audio, language=_get_warmup_language())  # type: ignore[union-attr]
-                t_warmup = time.perf_counter() - t1
+                    t1 = time.perf_counter()
+                    with _lightning_workdir():
+                        model.transcribe(warmup_audio, language=_get_warmup_language())  # type: ignore[union-attr]
+                    t_warmup = time.perf_counter() - t1
 
-                logger.debug(
-                    f"Lightning preload complete: load={t_load:.2f}s, warmup={t_warmup:.2f}s"
+                    logger.debug(
+                        f"Lightning preload complete: load={t_load:.2f}s, warmup={t_warmup:.2f}s"
+                    )
+            except Exception as e:
+                self._lightning_fallback_active = True
+                logger.warning(
+                    f"⚠️ FALLBACK: Lightning-Preload fehlgeschlagen, "
+                    f"wechsle zu MLX. Fehler: {e}"
                 )
+                log(f"⚠️ Lightning Preload → MLX Fallback (Grund: {type(e).__name__})")
+                self.preload(model=model_name)
+                return
         else:
             self._get_whisper_model(model_name)
 
@@ -868,8 +878,23 @@ class LocalProvider:
         keepalive_audio = np.zeros(keepalive_samples, dtype=np.float32)
 
         t0 = time.perf_counter()
-        with self._transcribe_lock:
-            if backend == "mlx":
+        if backend == "lightning":
+            try:
+                with self._transcribe_lock:
+                    lightning_model = self._get_lightning_model(model_name)
+                    with _lightning_workdir():
+                        lightning_model.transcribe(keepalive_audio, language=_get_warmup_language())  # type: ignore[union-attr]
+            except Exception as e:
+                self._lightning_fallback_active = True
+                logger.warning(
+                    f"⚠️ FALLBACK: Lightning-Keep-Alive fehlgeschlagen, "
+                    f"wechsle zu MLX. Fehler: {e}"
+                )
+                log(f"⚠️ Lightning Keep-Alive → MLX Fallback (Grund: {type(e).__name__})")
+                self.keepalive(model=model_name)
+                return
+        else:
+            with self._transcribe_lock:
                 mlx_whisper = _import_mlx_whisper()
                 repo = self._map_mlx_model_name(model_name)
                 mlx_whisper.transcribe(
@@ -880,10 +905,6 @@ class LocalProvider:
                     temperature=0.0,
                     condition_on_previous_text=False,
                 )
-            else:  # lightning
-                lightning_model = self._get_lightning_model(model_name)
-                with _lightning_workdir():
-                    lightning_model.transcribe(keepalive_audio, language=_get_warmup_language())  # type: ignore[union-attr]
 
         t_keepalive = time.perf_counter() - t0
         logger.debug(f"Keep-alive complete ({backend}): {t_keepalive*1000:.0f}ms")

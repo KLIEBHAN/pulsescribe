@@ -7,6 +7,7 @@ import pytest
 
 from refine.llm import (
     refine_transcript,
+    _extract_message_content,
     _get_refine_client,
     DEFAULT_REFINE_MODEL,
     DEFAULT_GEMINI_REFINE_MODEL,
@@ -399,6 +400,30 @@ class TestRefineRequestComposition:
             }
         }
 
+    def test_openrouter_ignores_blank_provider_entries(self, monkeypatch, clean_env):
+        """Leere Provider-Tokens dürfen keine ungültige OpenRouter-Payload erzeugen."""
+        monkeypatch.setenv("OPENROUTER_PROVIDER_ORDER", " openai, , groq,  ")
+        monkeypatch.setenv("OPENROUTER_ALLOW_FALLBACKS", "false")
+
+        with patch("refine.llm._get_refine_client") as mock_client:
+            mock_client.return_value.chat.completions.create.return_value = Mock(
+                choices=[Mock(message=Mock(content="refined"))]
+            )
+
+            refine_transcript(
+                "test",
+                provider="openrouter",
+                model="openai/gpt-oss-120b",
+            )
+
+        call_kwargs = mock_client.return_value.chat.completions.create.call_args
+        assert call_kwargs[1]["extra_body"] == {
+            "provider": {
+                "order": ["openai", "groq"],
+                "allow_fallbacks": False,
+            }
+        }
+
     @pytest.mark.parametrize(
         ("model", "expected_level"),
         [
@@ -459,6 +484,12 @@ class TestRefineRequestComposition:
 
 class TestRefineEdgeCases:
     """Tests für Edge-Cases in refine_transcript()."""
+
+    def test_extract_message_content_supports_single_text_part_objects(self):
+        """SDK-Content-Objekte mit .text sollen wie String-Content behandelt werden."""
+        content = SimpleNamespace(text=" refined ")
+
+        assert _extract_message_content(content) == "refined"
 
     def test_empty_transcript_returns_unchanged(self, clean_env):
         """Leeres Transkript wird nicht verarbeitet."""

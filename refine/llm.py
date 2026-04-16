@@ -132,25 +132,27 @@ def _extract_message_content(content) -> str:
     """Extrahiert Text aus OpenAI/OpenRouter Message-Content (String, Liste oder None)."""
     if content is None:
         return ""
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, dict):
+        text = content.get("text")
+        return text.strip() if isinstance(text, str) else ""
     if isinstance(content, list):
         # Liste von Content-Parts → nur echte Text-Parts extrahieren
         parts: list[str] = []
         for part in content:
-            if isinstance(part, str):
-                parts.append(part)
-                continue
-            if isinstance(part, dict):
-                text = part.get("text")
-                if isinstance(text, str):
-                    parts.append(text)
-                continue
-            text = getattr(part, "text", None)
-            if isinstance(text, str):
-                parts.append(text)
-        return "".join(
-            parts
-        ).strip()
-    return content.strip()
+            parts.append(_extract_message_content(part))
+        return "".join(parts).strip()
+
+    text = getattr(content, "text", None)
+    if isinstance(text, str):
+        return text.strip()
+
+    nested_parts = getattr(content, "parts", None)
+    if isinstance(nested_parts, list):
+        return _extract_message_content(nested_parts)
+
+    raise TypeError(f"Unerwarteter Message-Content-Typ: {type(content)}")
 
 
 def _log_detected_context(
@@ -251,18 +253,24 @@ def _build_openrouter_create_kwargs(
 
     provider_order = os.getenv("OPENROUTER_PROVIDER_ORDER")
     if provider_order:
-        providers = [p.strip() for p in provider_order.split(",")]
-        allow_fallbacks = get_env_bool_default("OPENROUTER_ALLOW_FALLBACKS", True)
-        create_kwargs["extra_body"] = {
-            "provider": {
-                "order": providers,
-                "allow_fallbacks": allow_fallbacks,
+        providers = [p.strip() for p in provider_order.split(",") if p.strip()]
+        if providers:
+            allow_fallbacks = get_env_bool_default("OPENROUTER_ALLOW_FALLBACKS", True)
+            create_kwargs["extra_body"] = {
+                "provider": {
+                    "order": providers,
+                    "allow_fallbacks": allow_fallbacks,
+                }
             }
-        }
-        logger.info(
-            f"[{session_id}] OpenRouter Provider: {', '.join(providers)} "
-            f"(fallbacks: {allow_fallbacks})"
-        )
+            logger.info(
+                f"[{session_id}] OpenRouter Provider: {', '.join(providers)} "
+                f"(fallbacks: {allow_fallbacks})"
+            )
+        else:
+            logger.warning(
+                f"[{session_id}] OPENROUTER_PROVIDER_ORDER ignoriert "
+                "(keine gültigen Provider nach Normalisierung)"
+            )
 
     return create_kwargs
 
