@@ -318,9 +318,9 @@ class PermissionsCard:
             changed |= self._set_status_if_changed(
                 "mic_status",
                 self._widgets.mic_status,
-                "Unknown",
-                palette["neutral"],
-                cache_value="neutral",
+                "⚠ Status unavailable",
+                palette["warn"],
+                cache_value="warn",
             )
             changed |= self._set_action_if_changed(
                 "mic_action",

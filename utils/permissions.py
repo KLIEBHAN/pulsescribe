@@ -58,7 +58,7 @@ def has_accessibility_permission() -> bool:
     try:
         app_services = _get_app_services()
         if app_services is None:
-            return True
+            return False
         return bool(app_services.AXIsProcessTrusted())
     except Exception:
         return False
@@ -71,7 +71,7 @@ def has_input_monitoring_permission() -> bool:
     try:
         from Quartz import CGPreflightListenEventAccess  # type: ignore[import-not-found]
     except Exception:
-        return True
+        return False
 
     try:
         return bool(CGPreflightListenEventAccess())
@@ -150,7 +150,8 @@ def check_microphone_permission(show_alert: bool = True, request: bool = False) 
         logger.error("Mikrofon-Zugriff verweigert!")
         return False
 
-    return True
+    logger.warning("Mikrofon-Berechtigungsstatus konnte nicht ermittelt werden")
+    return False
 
 
 def check_accessibility_permission(
@@ -207,7 +208,7 @@ def check_input_monitoring_permission(
     try:
         from Quartz import CGRequestListenEventAccess  # type: ignore[import-not-found]
     except Exception:
-        return True
+        CGRequestListenEventAccess = None  # type: ignore[assignment]
 
     ok = has_input_monitoring_permission()
 
@@ -218,7 +219,7 @@ def check_input_monitoring_permission(
         "Input‑Monitoring‑Berechtigung fehlt – globale Hotkeys funktionieren nicht"
     )
 
-    if request:
+    if request and CGRequestListenEventAccess is not None:
         try:
             CGRequestListenEventAccess()
         except Exception:

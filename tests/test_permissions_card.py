@@ -208,6 +208,35 @@ def test_refresh_calls_after_refresh_only_when_permissions_change(monkeypatch) -
     assert refresh_calls == ["refresh", "refresh"]
 
 
+def test_refresh_marks_unknown_microphone_state_as_warning(monkeypatch) -> None:
+    import utils.permissions as permissions_mod
+
+    _install_fake_appkit(monkeypatch)
+    monkeypatch.setattr(
+        permissions_mod,
+        "get_microphone_permission_state",
+        lambda: "unknown",
+    )
+    monkeypatch.setattr(
+        permissions_mod,
+        "has_accessibility_permission",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        permissions_mod,
+        "has_input_monitoring_permission",
+        lambda: True,
+    )
+
+    card = _build_card()
+
+    assert card.refresh() is False
+    assert card._widgets.mic_status.text == "⚠ Status unavailable"
+    assert card._widgets.mic_action.title == "Open"
+    assert card._widgets.mic_action.enabled is True
+    assert card._widgets.mic_action.hidden is False
+
+
 def test_kick_auto_refresh_avoids_timer_when_permissions_are_already_granted(
     monkeypatch,
 ) -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 import ctypes
 import ctypes.util
 
@@ -63,3 +64,41 @@ def test_get_app_services_does_not_cache_invalid_handle(monkeypatch) -> None:
         assert len(load_calls) == 2
     finally:
         permissions._app_services = None
+
+
+def test_has_accessibility_permission_false_when_framework_unavailable(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(permissions.sys, "platform", "darwin")
+    monkeypatch.setattr(permissions, "_get_app_services", lambda: None)
+
+    assert permissions.has_accessibility_permission() is False
+
+
+def test_input_monitoring_checks_fail_closed_when_quartz_is_unavailable(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(permissions.sys, "platform", "darwin")
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "Quartz":
+            raise ImportError("Quartz missing")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    assert permissions.has_input_monitoring_permission() is False
+    assert permissions.check_input_monitoring_permission(show_alert=False) is False
+
+
+def test_check_microphone_permission_returns_false_for_unknown_state(monkeypatch) -> None:
+    monkeypatch.setattr(permissions.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        permissions,
+        "get_microphone_permission_state",
+        lambda: "unknown",
+    )
+
+    assert permissions.check_microphone_permission(show_alert=False) is False
