@@ -7,6 +7,7 @@ Enthält Funktionen für die Nachbearbeitung von Transkripten mit LLMs
 import logging
 import os
 import threading
+from collections.abc import Mapping
 
 from .prompts import get_prompt_for_context
 from .context import detect_context
@@ -128,29 +129,49 @@ def _get_refine_client(provider: str):
     return _get_openai_client()
 
 
-def _extract_message_content(content) -> str:
-    """Extrahiert Text aus OpenAI/OpenRouter Message-Content (String, Liste oder None)."""
+def _extract_message_content(content, *, _strip_outer: bool = True) -> str:
+    """Extrahiert Text aus OpenAI/OpenRouter/Gemini-Message-Content.
+
+    Whitespace innerhalb segmentierter Content-Parts muss erhalten bleiben,
+    damit Antworten wie ["Hello", " World"] nicht zu ``HelloWorld`` werden.
+    """
     if content is None:
         return ""
     if isinstance(content, str):
-        return content.strip()
-    if isinstance(content, dict):
+        return content.strip() if _strip_outer else content
+    if isinstance(content, Mapping):
         text = content.get("text")
-        return text.strip() if isinstance(text, str) else ""
+        if isinstance(text, str):
+            return text.strip() if _strip_outer else text
+
+        nested_parts = content.get("parts")
+        if isinstance(nested_parts, list):
+            return _extract_message_content(nested_parts, _strip_outer=_strip_outer)
+
+        nested_content = content.get("content")
+        if nested_content is not None:
+            return _extract_message_content(nested_content, _strip_outer=_strip_outer)
+
+        return ""
     if isinstance(content, list):
-        # Liste von Content-Parts → nur echte Text-Parts extrahieren
-        parts: list[str] = []
-        for part in content:
-            parts.append(_extract_message_content(part))
-        return "".join(parts).strip()
+        parts = [
+            _extract_message_content(part, _strip_outer=False)
+            for part in content
+        ]
+        joined = "".join(parts)
+        return joined.strip() if _strip_outer else joined
 
     text = getattr(content, "text", None)
     if isinstance(text, str):
-        return text.strip()
+        return text.strip() if _strip_outer else text
 
     nested_parts = getattr(content, "parts", None)
     if isinstance(nested_parts, list):
-        return _extract_message_content(nested_parts)
+        return _extract_message_content(nested_parts, _strip_outer=_strip_outer)
+
+    nested_content = getattr(content, "content", None)
+    if nested_content is not None:
+        return _extract_message_content(nested_content, _strip_outer=_strip_outer)
 
     raise TypeError(f"Unerwarteter Message-Content-Typ: {type(content)}")
 

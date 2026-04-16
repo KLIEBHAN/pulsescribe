@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
+from collections.abc import Mapping
 
 from utils.timing import redacted_text_summary
 
@@ -11,6 +13,11 @@ def extract_text_response(response: object) -> str | None:
     """Return plain transcript text from common SDK response shapes."""
     if isinstance(response, str):
         return response
+
+    if isinstance(response, Mapping):
+        text = response.get("text")
+        if isinstance(text, str):
+            return text
 
     text = getattr(response, "text", None)
     if isinstance(text, str):
@@ -30,6 +37,12 @@ def normalize_requested_response_format(
 
 def _serialize_model_dump_json(response: object) -> str | None:
     """Serialize SDK responses exposing ``model_dump_json`` in a stable format."""
+    if isinstance(response, Mapping):
+        try:
+            return json.dumps(dict(response), indent=2, ensure_ascii=False)
+        except TypeError:
+            return None
+
     model_dump_json = getattr(response, "model_dump_json", None)
     if not callable(model_dump_json):
         return None

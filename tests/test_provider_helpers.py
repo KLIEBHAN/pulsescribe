@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -164,8 +165,9 @@ def test_execute_audio_transcription_request_supports_custom_file_payload(
     assert observed["model"] == "whisper-1"
     assert observed["language"] == "de"
     assert observed["response_format"] == "text"
-    assert observed["file"][0] == "sample.wav"
-    assert observed["file"][1].closed is True
+    file_payload = cast(tuple[str, object], observed["file"])
+    assert file_payload[0] == "sample.wav"
+    assert getattr(file_payload[1], "closed") is True
 
 
 def test_execute_audio_transcription_request_accepts_read_only_extra_params(
@@ -245,10 +247,33 @@ def test_serialize_openai_response_falls_back_to_text_or_string() -> None:
     )
 
 
+
+def test_serialize_openai_response_supports_mapping_payloads() -> None:
+    response = {
+        "text": "mapped transcript",
+        "segments": [
+            {"id": 1, "text": "mapped transcript"},
+        ],
+    }
+
+    assert serialize_openai_response(response, requested_format="text") == "mapped transcript"
+    assert (
+        serialize_openai_response(response, requested_format="json")
+        == '{\n  "text": "mapped transcript",\n  "segments": [\n    {\n      "id": 1,\n      "text": "mapped transcript"\n    }\n  ]\n}'
+    )
+
+
+
 def test_require_text_response_accepts_text_shapes_and_rejects_other_payloads() -> None:
     assert (
         require_text_response("plain transcript", provider_name="Groq")
         == "plain transcript"
+    )
+    assert (
+        require_text_response(
+            {"text": "mapped transcript"}, provider_name="Groq"
+        )
+        == "mapped transcript"
     )
     assert (
         require_text_response(

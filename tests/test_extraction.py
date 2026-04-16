@@ -24,7 +24,19 @@ class TestExtractMessageContent:
             (["Hello", " ", "World"], "Hello World"),
             (["Prefix: ", {"text": "content"}], "Prefix: content"),
             (
+                {"parts": [{"text": "Hello"}, {"text": " World"}]},
+                "Hello World",
+            ),
+            (
+                {"content": ["Hello", {"text": " World"}]},
+                "Hello World",
+            ),
+            (
                 [SimpleNamespace(text="Hello"), SimpleNamespace(text=" World")],
+                "Hello World",
+            ),
+            (
+                SimpleNamespace(parts=[SimpleNamespace(text="Hello"), " World"]),
                 "Hello World",
             ),
         ],
@@ -37,7 +49,10 @@ class TestExtractMessageContent:
             "missing_text_key",
             "list_of_strings",
             "mixed_list",
+            "dict_with_parts",
+            "dict_with_nested_content",
             "list_of_objects",
+            "object_with_parts",
         ],
     )
     def test_extract_message_content(self, content, expected):
