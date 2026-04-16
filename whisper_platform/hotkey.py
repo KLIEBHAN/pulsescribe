@@ -7,7 +7,7 @@ Windows: pynput
 
 import logging
 import sys
-from typing import Callable
+from typing import Callable, Any
 
 # Reuse the canonical macOS hotkey parsing + maps from utils to avoid duplication
 from utils.hotkey import (  # noqa: F401
@@ -15,6 +15,7 @@ from utils.hotkey import (  # noqa: F401
     MODIFIER_MAP as MODIFIER_MASKS,
     parse_hotkey,
 )
+from utils.hotkey_windows import parse_windows_hotkey_for_pynput
 
 logger = logging.getLogger("pulsescribe.platform.hotkey")
 
@@ -100,49 +101,39 @@ class WindowsHotkeyListener:
         self.hotkey = hotkey
         self.callback = callback
         self._listener = None
-        self._current_keys: set = set()
-        self._hotkey_keys: set = set()
+        self._current_keys: set[Any] = set()
+        self._hotkey_keys: set[Any] = set()
+        self._hotkey_active = False
 
         self._parse_hotkey()
 
     def _parse_hotkey(self) -> None:
-        """Parst Hotkey für pynput."""
+        """Parst Hotkey für pynput über die kanonische Windows-Hotkey-Logik."""
         try:
             from pynput import keyboard  # type: ignore[import-not-found]
-
-            parts = [p.strip().lower() for p in self.hotkey.split("+")]
-
-            for part in parts:
-                if part in ("ctrl", "control"):
-                    self._hotkey_keys.add(keyboard.Key.ctrl)
-                elif part in ("alt", "option"):
-                    self._hotkey_keys.add(keyboard.Key.alt)
-                elif part in ("shift",):
-                    self._hotkey_keys.add(keyboard.Key.shift)
-                elif part in ("cmd", "command", "win"):
-                    self._hotkey_keys.add(keyboard.Key.cmd)
-                elif part.startswith("f") and part[1:].isdigit():
-                    # Funktionstasten
-                    f_key = getattr(keyboard.Key, part, None)
-                    if f_key:
-                        self._hotkey_keys.add(f_key)
-                elif part:  # Leere Parts überspringen (z.B. bei "f1++a")
-                    # Normale Taste
-                    try:
-                        self._hotkey_keys.add(keyboard.KeyCode.from_char(part))
-                    except (ValueError, TypeError) as e:
-                        logger.warning(f"Ungültige Hotkey-Taste '{part}': {e}")
         except ImportError:
             logger.error("pynput nicht installiert")
+            self._hotkey_keys = set()
+            return
+
+        self._hotkey_keys = parse_windows_hotkey_for_pynput(self.hotkey, keyboard)
+        if not self._hotkey_keys and (self.hotkey or "").strip():
+            logger.warning("Windows-Hotkey konnte nicht registriert werden: %s", self.hotkey)
 
     def register(self) -> None:
         """Registriert den Hotkey-Listener."""
         pass  # Wird in run() gemacht
 
     def unregister(self) -> None:
-        """Stoppt den Listener."""
+        """Stoppt den Listener und setzt den Tastenzustand zurück."""
         if self._listener:
             self._listener.stop()
+            self._listener = None
+        self._current_keys.clear()
+        self._hotkey_active = False
+
+    def _is_hotkey_active(self) -> bool:
+        return bool(self._hotkey_keys) and self._hotkey_keys.issubset(self._current_keys)
 
     def run(self) -> None:
         """Startet den Keyboard-Listener (blockiert)."""
@@ -151,11 +142,15 @@ class WindowsHotkeyListener:
 
             def on_press(key):
                 self._current_keys.add(key)
-                if self._hotkey_keys.issubset(self._current_keys):
+                is_active = self._is_hotkey_active()
+                if is_active and not self._hotkey_active:
+                    self._hotkey_active = True
                     self.callback()
 
             def on_release(key):
                 self._current_keys.discard(key)
+                if not self._is_hotkey_active():
+                    self._hotkey_active = False
 
             with keyboard.Listener(on_press=on_press, on_release=on_release) as listener:
                 self._listener = listener
