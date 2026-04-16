@@ -18,6 +18,10 @@ from utils.log_tail import (
     should_auto_refresh_logs,
 )
 from utils.presets import LOCAL_PRESET_BASE, LOCAL_PRESETS, LOCAL_PRESET_OPTIONS
+from utils.transcript_view_logic import (
+    build_transcript_payload,
+    should_append_transcript_delta_in_place,
+)
 from utils.preferences import (
     apply_hotkey_setting,
     get_env_setting,
@@ -2587,13 +2591,18 @@ class WelcomeController:
 
         try:
             entries = get_recent_transcripts(count=TRANSCRIPTS_VIEW_MAX_ENTRIES)
-            self._pending_transcripts_entries = list(reversed(entries))
-            self._pending_transcripts_blocks = format_transcript_entries_for_welcome(
-                entries
+            blocks = format_transcript_entries_for_welcome(entries)
+            (
+                transcript_text,
+                self._pending_transcripts_entries,
+                self._pending_transcripts_blocks,
+                entry_count,
+            ) = build_transcript_payload(
+                entries,
+                blocks=blocks,
+                empty_text=format_transcripts_for_welcome([]),
             )
-            if self._pending_transcripts_blocks:
-                return "\n\n".join(self._pending_transcripts_blocks), len(entries)
-            return format_transcripts_for_welcome([]), 0
+            return transcript_text, entry_count
         except Exception as e:
             self._pending_transcripts_entries = []
             self._pending_transcripts_blocks = []
@@ -2707,11 +2716,12 @@ class WelcomeController:
         entries_trimmed = len(merged_entries) < (
             len(previous_entries) + len(appended_entries)
         )
-        can_append_in_place = (
-            not entries_trimmed
-            and bool(previous_entries)
-            and self._last_transcripts_text is not None
-            and (scroll_to_bottom or self._is_transcripts_near_bottom())
+        can_append_in_place = should_append_transcript_delta_in_place(
+            previous_entries,
+            entries_trimmed=entries_trimmed,
+            last_text=self._last_transcripts_text,
+            scroll_to_bottom=scroll_to_bottom,
+            is_near_bottom=self._is_transcripts_near_bottom(),
         )
 
         appended_blocks = format_transcript_entries_for_welcome(

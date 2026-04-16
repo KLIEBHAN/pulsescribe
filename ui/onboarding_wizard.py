@@ -15,6 +15,7 @@ from utils.onboarding import (
 )
 from ui.hotkey_card import HotkeyCard
 from utils.hotkey_recording import HotkeyRecorder
+from utils.onboarding_fast_choice import resolve_fast_choice_updates
 from utils.permissions import (
     check_accessibility_permission,
     check_input_monitoring_permission,
@@ -1186,24 +1187,19 @@ class OnboardingWizardController:
             if self._api_key_field:
                 entered_key = self._api_key_field.stringValue().strip()
 
-            pending_updates: dict[str, str | None] = {}
-            if entered_key:
-                pending_updates["DEEPGRAM_API_KEY"] = entered_key
-
-            has_deepgram = bool(
-                pending_updates.get("DEEPGRAM_API_KEY")
-                or self._get_cached_api_key("DEEPGRAM_API_KEY")
-                or os.getenv("DEEPGRAM_API_KEY")
+            resolution = resolve_fast_choice_updates(
+                entered_deepgram_key=entered_key,
+                cached_deepgram_key=self._get_cached_api_key("DEEPGRAM_API_KEY"),
+                env_deepgram_key=os.getenv("DEEPGRAM_API_KEY"),
+                cached_groq_key=self._get_cached_api_key("GROQ_API_KEY"),
+                env_groq_key=os.getenv("GROQ_API_KEY"),
+                current_mode=self._get_cached_env_setting("PULSESCRIBE_MODE"),
             )
-            has_groq = bool(
-                self._get_cached_api_key("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
-            )
-            if not has_deepgram and not has_groq:
+            if resolution.should_prompt_for_api_key:
                 self._show_fast_api_key_prompt()
                 return False
 
-            pending_updates["PULSESCRIBE_MODE"] = "deepgram" if has_deepgram else "groq"
-            self._apply_env_updates(pending_updates)
+            self._apply_env_updates(resolution.pending_updates)
             if self._api_key_container is not None:
                 try:
                     if getattr(self, "_last_api_key_prompt_visible", None) is not False:
