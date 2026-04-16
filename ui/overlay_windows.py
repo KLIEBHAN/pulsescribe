@@ -10,12 +10,21 @@ Inspiriert vom macOS-Overlay mit:
 - Unterschiedliches Smoothing für Rise/Fall
 """
 
+from __future__ import annotations
+
 import logging
 import queue
 import sys
 import time
-import tkinter as tk
 from pathlib import Path
+
+try:
+    import tkinter as tk
+except ImportError as exc:  # pragma: no cover - depends on host Python build
+    tk = None
+    _TK_IMPORT_ERROR: ImportError | None = exc
+else:
+    _TK_IMPORT_ERROR = None
 
 from ui.animation import (
     AnimationLogic,
@@ -29,6 +38,8 @@ from utils.log_tail import read_file_tail_text
 from utils.log_tail import get_file_signature
 
 logger = logging.getLogger("pulsescribe.overlay")
+
+TK_AVAILABLE = tk is not None
 
 # =============================================================================
 # Window-Konstanten
@@ -218,6 +229,10 @@ class WindowsOverlayController:
 
     def run(self) -> None:
         """Start tkinter mainloop (call from dedicated thread)."""
+        if not TK_AVAILABLE:
+            logger.warning("Tkinter overlay unavailable: %s", _TK_IMPORT_ERROR)
+            return
+
         self._root = tk.Tk()
         self._setup_window()
         self._running = True

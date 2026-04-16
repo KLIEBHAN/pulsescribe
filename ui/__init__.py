@@ -53,6 +53,8 @@ def __getattr__(name: str):
             value = getattr(module, "PySide6OverlayController")
         except ImportError:
             module = import_module(".overlay_windows", __name__)
+            if not getattr(module, "TK_AVAILABLE", True):
+                raise ImportError(str(getattr(module, "_TK_IMPORT_ERROR", "tkinter unavailable")))
             value = getattr(module, "WindowsOverlayController")
 
         globals()[name] = value

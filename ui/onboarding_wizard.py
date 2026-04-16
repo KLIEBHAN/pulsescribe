@@ -299,16 +299,20 @@ class OnboardingWizardController:
     # ---------------------------------------------------------------------
 
     def _build_window(self) -> None:
-        from AppKit import (  # type: ignore[import-not-found]
-            NSBackingStoreBuffered,
-            NSClosableWindowMask,
-            NSFloatingWindowLevel,
-            NSMakeRect,
-            NSScreen,
-            NSTitledWindowMask,
-            NSVisualEffectView,
-            NSWindow,
-        )
+        try:
+            from AppKit import (  # type: ignore[import-not-found]
+                NSBackingStoreBuffered,
+                NSClosableWindowMask,
+                NSFloatingWindowLevel,
+                NSMakeRect,
+                NSScreen,
+                NSTitledWindowMask,
+                NSVisualEffectView,
+                NSWindow,
+            )
+        except Exception:
+            # Keep controller logic importable/testable on systems without PyObjC.
+            return
 
         screen = NSScreen.mainScreen()
         if not screen:
@@ -1411,9 +1415,8 @@ class OnboardingWizardController:
         # Hotkey presets (delegated to HotkeyCard)
         if action in ("hotkey_f19_toggle", "hotkey_fn_hold", "hotkey_opt_space"):
             self._ensure_step_built(OnboardingStep.HOTKEY)
-            if self._hotkey_card:
-                preset = action.replace("hotkey_", "")  # f19_toggle, fn_hold, opt_space
-                self._hotkey_card.apply_preset(preset)
+            preset = action.replace("hotkey_", "")  # f19_toggle, fn_hold, opt_space
+            self._apply_hotkey_preset(preset)
             return
 
         if action.startswith("record_hotkey:"):
@@ -1478,6 +1481,46 @@ class OnboardingWizardController:
     def _toggle_hotkey_recording(self, kind: str) -> None:
         if self._hotkey_card:
             self._hotkey_card.toggle_recording(kind)
+
+    def _apply_hotkey_preset(self, preset: str) -> bool:
+        """Apply one preset even when the AppKit hotkey card is not available."""
+        if self._hotkey_card:
+            self._hotkey_card.apply_preset(preset)
+            return True
+
+        preset_map = {
+            "f19_toggle": ("toggle", "f19"),
+            "fn_hold": ("hold", "fn"),
+            "opt_space": ("toggle", "option+space"),
+        }
+        target = preset_map.get(preset)
+        if target is None:
+            return False
+
+        kind, hotkey = target
+        toggle, hold = self._get_cached_hotkeys()
+        if kind == "hold":
+            hold = hotkey
+        else:
+            toggle = hotkey
+
+        self._apply_env_updates(
+            {
+                "PULSESCRIBE_TOGGLE_HOTKEY": toggle or None,
+                "PULSESCRIBE_HOLD_HOTKEY": hold or None,
+                "PULSESCRIBE_HOTKEY": None,
+                "PULSESCRIBE_HOTKEY_MODE": None,
+            }
+        )
+
+        if self._on_settings_changed:
+            try:
+                self._on_settings_changed()
+            except Exception:
+                pass
+
+        self._set_hotkey_status("ok", "✓ Saved")
+        return True
 
     def _stop_hotkey_recording(self, *, cancelled: bool = False) -> None:
         if self._hotkey_card:
@@ -1636,4 +1679,7 @@ def _create_wizard_action_handler_class():
     return WizardActionHandler
 
 
-_WizardActionHandler = _create_wizard_action_handler_class()
+try:
+    _WizardActionHandler = _create_wizard_action_handler_class()
+except Exception:
+    _WizardActionHandler = None

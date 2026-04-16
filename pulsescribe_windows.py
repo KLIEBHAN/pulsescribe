@@ -98,9 +98,20 @@ def _load_overlay():
 
     # Versuch 2: Tkinter (Fallback)
     try:
-        from ui.overlay_windows import WindowsOverlayController as _Overlay
+        from ui import overlay_windows as _overlay_windows
 
-        WindowsOverlayController = _Overlay
+        if not getattr(_overlay_windows, "TK_AVAILABLE", True):
+            raise ImportError(
+                str(
+                    getattr(
+                        _overlay_windows,
+                        "_TK_IMPORT_ERROR",
+                        "tkinter unavailable",
+                    )
+                )
+            )
+
+        WindowsOverlayController = _overlay_windows.WindowsOverlayController
         logger.info("Overlay: Tkinter (Fallback)")
         return True
     except ImportError as e:
