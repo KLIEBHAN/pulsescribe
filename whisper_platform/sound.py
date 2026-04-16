@@ -84,6 +84,12 @@ class MacOSSoundPlayer:
                 ctypes.POINTER(ctypes.c_uint32),
             ]
 
+            # AudioServicesPlaySystemSound
+            self._audio_toolbox.AudioServicesPlaySystemSound.restype = ctypes.c_int32
+            self._audio_toolbox.AudioServicesPlaySystemSound.argtypes = [
+                ctypes.c_uint32
+            ]
+
             # CFRelease für Memory Management
             self._core_foundation.CFRelease.restype = None
             self._core_foundation.CFRelease.argtypes = [ctypes.c_void_p]
@@ -143,11 +149,12 @@ class MacOSSoundPlayer:
             self._play_fallback(sound_path)
             return
 
+        if name in self._failed_sounds:
+            self._play_fallback(sound_path)
+            return
+
         # Sound-ID aus Cache oder neu laden
         if name not in self._sound_ids:
-            if name in self._failed_sounds:
-                self._play_fallback(sound_path)
-                return
             sound_id = self._load_sound(sound_path)
             if sound_id is None:
                 self._failed_sounds.add(name)
@@ -157,9 +164,17 @@ class MacOSSoundPlayer:
 
         # Sound abspielen (non-blocking, ~0.2ms)
         try:
-            self._audio_toolbox.AudioServicesPlaySystemSound(self._sound_ids[name])
+            result = self._audio_toolbox.AudioServicesPlaySystemSound(
+                self._sound_ids[name]
+            )
+            if result == 0:
+                return
         except Exception:
-            self._play_fallback(sound_path)
+            pass
+
+        self._failed_sounds.add(name)
+        self._sound_ids.pop(name, None)
+        self._play_fallback(sound_path)
 
     def _play_fallback(self, sound_path: str) -> None:
         """Fallback auf afplay wenn CoreAudio nicht funktioniert.

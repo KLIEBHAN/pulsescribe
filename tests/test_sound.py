@@ -87,8 +87,31 @@ class TestFailureCache:
 
         player._load_sound = lambda path: 42  # Fake sound ID
         player._audio_toolbox = MagicMock()
+        player._audio_toolbox.AudioServicesPlaySystemSound.return_value = 0
 
         player.play("ready")
 
         assert "ready" not in player._failed_sounds
         assert player._sound_ids["ready"] == 42
+
+    def test_playback_error_uses_fallback_and_caches_failure(self) -> None:
+        """Non-zero CoreAudio results should fall back and stop retrying CoreAudio."""
+        player = _make_fallback_player()
+        player._use_fallback = False
+
+        fallback_calls: list[str] = []
+        player._load_sound = lambda path: 42
+        player._play_fallback = lambda path: fallback_calls.append(path)
+        player._audio_toolbox = MagicMock()
+        player._audio_toolbox.AudioServicesPlaySystemSound.return_value = 1
+
+        player.play("ready")
+        player.play("ready")
+
+        assert fallback_calls == [
+            "/System/Library/Sounds/Tink.aiff",
+            "/System/Library/Sounds/Tink.aiff",
+        ]
+        assert "ready" in player._failed_sounds
+        assert "ready" not in player._sound_ids
+        assert player._audio_toolbox.AudioServicesPlaySystemSound.call_count == 1

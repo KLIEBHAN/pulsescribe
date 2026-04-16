@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 import utils.preferences as prefs
+from utils.onboarding import OnboardingStep
 
 
 def _isolate_prefs(tmp_path, monkeypatch):
@@ -227,6 +228,22 @@ def test_remove_env_setting_removes_all_duplicate_assignments_for_key(
 
     assert prefs.ENV_FILE.read_text(encoding="utf-8") == "# comment\nUNCHANGED_KEY=keep\n"
     assert prefs.read_env_file() == {"UNCHANGED_KEY": "keep"}
+
+
+def test_save_env_setting_tolerates_invalid_utf8_in_existing_env(
+    tmp_path, monkeypatch
+):
+    _isolate_prefs(tmp_path, monkeypatch)
+    prefs.ENV_FILE.write_bytes(
+        b"PULSESCRIBE_MODE=deepgram\nBROKEN=\xff\nUNCHANGED_KEY=keep\n"
+    )
+
+    prefs.save_env_setting("PULSESCRIBE_MODE", "local")
+
+    assert prefs.ENV_FILE.read_text(encoding="utf-8") == (
+        "PULSESCRIBE_MODE=local\nBROKEN=�\nUNCHANGED_KEY=keep\n"
+    )
+    assert prefs.read_env_file()["PULSESCRIBE_MODE"] == "local"
 
 
 def test_update_env_settings_batches_updates_in_single_atomic_write(tmp_path, monkeypatch):
@@ -522,6 +539,30 @@ def test_load_preferences_returns_empty_dict_for_non_object_json(
 
     assert prefs.load_preferences() == {}
     assert prefs.get_show_welcome_on_startup() is True
+
+
+def test_bool_preferences_coerce_legacy_string_and_numeric_values(
+    tmp_path, monkeypatch
+):
+    _isolate_prefs(tmp_path, monkeypatch)
+    prefs.PREFS_FILE.write_text(
+        '{"show_welcome_on_startup": "false", "has_seen_onboarding": "0"}',
+        encoding="utf-8",
+    )
+
+    assert prefs.get_show_welcome_on_startup() is False
+    assert prefs.has_seen_onboarding() is False
+    assert prefs.get_onboarding_step() == OnboardingStep.CHOOSE_GOAL
+
+    prefs.PREFS_FILE.write_text(
+        '{"show_welcome_on_startup": 1, "has_seen_onboarding": "true"}',
+        encoding="utf-8",
+    )
+    prefs._prefs_cache = None
+
+    assert prefs.get_show_welcome_on_startup() is True
+    assert prefs.has_seen_onboarding() is True
+    assert prefs.get_onboarding_step() == OnboardingStep.DONE
 
 
 def test_load_preferences_uses_cache_until_signature_changes(tmp_path, monkeypatch):

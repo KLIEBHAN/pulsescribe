@@ -14,7 +14,7 @@ from typing import TypeVar
 from config import USER_CONFIG_DIR
 
 from utils.atomic_io import write_text_atomic
-from utils.env import parse_env_line_with_dotenv, read_env_file_values
+from utils.env import parse_bool, parse_env_line_with_dotenv, read_env_file_values
 from utils.file_signatures import FileSignature, build_file_signature
 from utils.onboarding import (
     OnboardingChoice,
@@ -232,10 +232,10 @@ def _invalidate_preferences_cache() -> None:
 
 
 def _read_existing_env_lines(env_path: Path) -> list[str]:
-    """Read `.env` lines while tolerating a missing file."""
+    """Read `.env` lines while tolerating missing/partially malformed files."""
     if not env_path.exists():
         return []
-    return env_path.read_text(encoding="utf-8").splitlines()
+    return env_path.read_text(encoding="utf-8", errors="replace").splitlines()
 
 
 def _write_env_lines(env_path: Path, lines: list[str]) -> None:
@@ -398,9 +398,24 @@ def _set_normalized_preference(
     return normalized
 
 
+def _coerce_bool_preference(raw_value: object | None, *, default: bool) -> bool:
+    """Normalize persisted bool-like values from JSON or manual edits."""
+    if isinstance(raw_value, bool):
+        return raw_value
+    if raw_value is None:
+        return default
+    parsed = parse_bool(str(raw_value))
+    return default if parsed is None else parsed
+
+
+def _get_bool_preference(key: str, *, default: bool) -> bool:
+    """Read one stored bool-like preference with sensible fallbacks."""
+    return _coerce_bool_preference(load_preferences().get(key), default=default)
+
+
 def has_seen_onboarding() -> bool:
     """Prüft ob User das Onboarding bereits gesehen hat."""
-    return load_preferences().get("has_seen_onboarding", False)
+    return _get_bool_preference("has_seen_onboarding", default=False)
 
 
 def set_onboarding_seen(seen: bool = True) -> None:
@@ -423,7 +438,7 @@ def get_onboarding_step() -> OnboardingStep:
     )
     if step is not None:
         return step
-    if prefs.get("has_seen_onboarding", False):
+    if _coerce_bool_preference(prefs.get("has_seen_onboarding"), default=False):
         return OnboardingStep.DONE
     return OnboardingStep.CHOOSE_GOAL
 
@@ -486,7 +501,7 @@ def env_file_exists() -> bool:
 
 def get_show_welcome_on_startup() -> bool:
     """Prüft ob Welcome-Window bei jedem Start gezeigt werden soll."""
-    return load_preferences().get("show_welcome_on_startup", True)
+    return _get_bool_preference("show_welcome_on_startup", default=True)
 
 
 def set_show_welcome_on_startup(show: bool) -> None:
