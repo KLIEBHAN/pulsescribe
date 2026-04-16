@@ -502,3 +502,101 @@ def test_stale_hotkey_listener_callbacks_are_ignored_after_restart(monkeypatch):
     # Der neue Listener funktioniert weiterhin.
     new_listener.on_press(key)
     assert press_count == 2
+
+
+
+def test_windows_env_flag_parses_common_bool_variants():
+    windows_module = _load_windows_module()
+
+    assert windows_module._env_flag("YES", default=False) is True
+    assert windows_module._env_flag("off", default=True) is False
+    assert windows_module._env_flag("0", default=True) is False
+    assert windows_module._env_flag("invalid", default=True) is True
+    assert windows_module._env_flag(None, default=False) is False
+
+
+
+def test_reload_settings_uses_shared_bool_parsing(monkeypatch):
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="deepgram",
+        streaming=False,
+        overlay=True,
+        refine=False,
+    )
+    daemon._overlay = object()
+
+    stop_overlay_calls = 0
+
+    def fake_stop_overlay():
+        nonlocal stop_overlay_calls
+        stop_overlay_calls += 1
+        daemon._overlay = None
+
+    daemon._stop_overlay = fake_stop_overlay
+    daemon._restart_hotkey_listeners = lambda: None
+
+    monkeypatch.setattr(
+        windows_module,
+        "load_environment",
+        lambda override_existing=True: None,
+    )
+    monkeypatch.setattr(
+        preferences,
+        "read_env_file",
+        lambda: {
+            "PULSESCRIBE_MODE": "deepgram",
+            "PULSESCRIBE_REFINE": "YES",
+            "PULSESCRIBE_STREAMING": "0",
+            "PULSESCRIBE_OVERLAY": "off",
+            "PULSESCRIBE_TOGGLE_HOTKEY": daemon.toggle_hotkey,
+            "PULSESCRIBE_HOLD_HOTKEY": daemon.hold_hotkey,
+        },
+    )
+
+    daemon._reload_settings()
+
+    assert daemon.refine is True
+    assert daemon.streaming is False
+    assert daemon.overlay_enabled is False
+    assert stop_overlay_calls == 1
+
+
+
+def test_main_reconfigures_logging_and_parses_bool_env_variants(monkeypatch):
+    windows_module = _load_windows_module()
+
+    setup_calls: list[bool] = []
+    daemon_kwargs: list[dict[str, object]] = []
+
+    class _FakeDaemon:
+        def __init__(self, **kwargs):
+            daemon_kwargs.append(kwargs)
+
+        def run(self):
+            return None
+
+    monkeypatch.setattr(
+        windows_module,
+        "setup_logging",
+        lambda debug=False: setup_calls.append(debug),
+    )
+    monkeypatch.setattr(windows_module, "PulseScribeWindows", _FakeDaemon)
+    monkeypatch.setattr(
+        windows_module.sys,
+        "argv",
+        ["pulsescribe_windows.py", "--debug"],
+        raising=False,
+    )
+    monkeypatch.setenv("PULSESCRIBE_DEBUG", "off")
+    monkeypatch.setenv("PULSESCRIBE_REFINE", "YES")
+    monkeypatch.setenv("PULSESCRIBE_STREAMING", "0")
+    monkeypatch.setenv("PULSESCRIBE_OVERLAY", "off")
+
+    windows_module.main()
+
+    assert setup_calls[-1] is True
+    assert daemon_kwargs
+    assert daemon_kwargs[0]["refine"] is True
+    assert daemon_kwargs[0]["streaming"] is False
+    assert daemon_kwargs[0]["overlay"] is False

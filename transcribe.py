@@ -375,6 +375,12 @@ def _resolve_refine_enabled(*, refine: bool, no_refine: bool) -> bool:
     return bool(parse_bool(os.getenv("PULSESCRIBE_REFINE")))
 
 
+
+def _resolve_debug_logging_enabled(debug: bool) -> bool:
+    """Allow `.env` debug logging unless the CLI explicitly leaves it off."""
+    return debug or parse_bool(os.getenv("PULSESCRIBE_DEBUG")) is True
+
+
 def _resolve_runtime_cli_options(
     *,
     mode: TranscriptionMode | None,
@@ -690,7 +696,7 @@ def main(
         transcribe.py --record --copy --language de
     """
     load_environment()
-    setup_logging(debug=debug)
+    setup_logging(debug=_resolve_debug_logging_enabled(debug))
     resolved = _resolve_runtime_cli_options(
         mode=mode,
         model=model,

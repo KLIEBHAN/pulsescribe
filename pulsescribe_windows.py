@@ -43,14 +43,22 @@ PROJECT_ROOT = Path(__file__).parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 # .env ZUERST laden (vor Logging-Setup, damit PULSESCRIBE_DEBUG wirkt)
-from utils.env import load_environment
+from utils.env import load_environment, parse_bool
+
+
+
+def _env_flag(raw_value: str | None, *, default: bool) -> bool:
+    """Parse common bool env variants while preserving an explicit default."""
+    parsed = parse_bool(raw_value)
+    return default if parsed is None else parsed
+
 
 load_environment()
 
 # Logging Setup (nach .env, damit PULSESCRIBE_DEBUG aus .env funktioniert)
 from utils.logging import setup_logging, get_logger
 
-setup_logging(debug=os.getenv("PULSESCRIBE_DEBUG", "").lower() == "true")
+setup_logging(debug=_env_flag(os.getenv("PULSESCRIBE_DEBUG"), default=False))
 logger = get_logger()
 
 # Imports nach Logging-Setup
@@ -1762,7 +1770,10 @@ class PulseScribeWindows:
                 threading.Thread(target=self._preload_local_model, daemon=True).start()
 
             # Refine aktualisieren
-            self.refine = env_values.get("PULSESCRIBE_REFINE", "").lower() == "true"
+            self.refine = _env_flag(
+                env_values.get("PULSESCRIBE_REFINE"),
+                default=False,
+            )
             self.refine_model = env_values.get("PULSESCRIBE_REFINE_MODEL")
             self.refine_provider = env_values.get("PULSESCRIBE_REFINE_PROVIDER")
 
@@ -1770,13 +1781,17 @@ class PulseScribeWindows:
             self.context = env_values.get("PULSESCRIBE_CONTEXT")
 
             # Streaming aktualisieren (nur Deepgram unterstützt Streaming)
-            streaming_val = env_values.get("PULSESCRIBE_STREAMING", "true")
-            streaming_enabled = streaming_val.lower() != "false"
+            streaming_enabled = _env_flag(
+                env_values.get("PULSESCRIBE_STREAMING"),
+                default=True,
+            )
             self.streaming = streaming_enabled and self.mode == "deepgram"
 
             # Overlay aktualisieren (mit Start/Stop wenn nötig)
-            overlay_val = env_values.get("PULSESCRIBE_OVERLAY", "true")
-            new_overlay_enabled = overlay_val.lower() != "false"
+            new_overlay_enabled = _env_flag(
+                env_values.get("PULSESCRIBE_OVERLAY"),
+                default=True,
+            )
 
             if new_overlay_enabled != self.overlay_enabled:
                 self.overlay_enabled = new_overlay_enabled
@@ -2483,12 +2498,16 @@ def main():
             print(f"Onboarding-Wizard nicht verfügbar: {e}", file=sys.stderr)
             sys.exit(1)
 
-    if args.debug:
-        logging.getLogger().setLevel(logging.DEBUG)
+    effective_debug = args.debug or _env_flag(
+        os.getenv("PULSESCRIBE_DEBUG"),
+        default=False,
+    )
+    setup_logging(debug=effective_debug)
 
     # Refine: CLI > ENV > Default (False)
-    effective_refine = (
-        args.refine or os.getenv("PULSESCRIBE_REFINE", "").lower() == "true"
+    effective_refine = args.refine or _env_flag(
+        os.getenv("PULSESCRIBE_REFINE"),
+        default=False,
     )
     effective_refine_model = args.refine_model or os.getenv("PULSESCRIBE_REFINE_MODEL")
     effective_refine_provider = args.refine_provider or os.getenv(
@@ -2500,7 +2519,7 @@ def main():
     # Streaming: Default True, kann via --no-streaming oder ENV deaktiviert werden
     effective_streaming = (
         not args.no_streaming
-        and os.getenv("PULSESCRIBE_STREAMING", "true").lower() != "false"
+        and _env_flag(os.getenv("PULSESCRIBE_STREAMING"), default=True)
     )
 
     # Nur Deepgram unterstützt aktuell Streaming im Daemon
@@ -2513,7 +2532,7 @@ def main():
     # Overlay: Default True, kann via --no-overlay oder ENV deaktiviert werden
     effective_overlay = (
         not args.no_overlay
-        and os.getenv("PULSESCRIBE_OVERLAY", "true").lower() != "false"
+        and _env_flag(os.getenv("PULSESCRIBE_OVERLAY"), default=True)
     )
 
     # Hotkeys: CLI > ENV > Default

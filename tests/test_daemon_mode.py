@@ -128,6 +128,19 @@ class TestDaemonMode(unittest.TestCase):
         _, kwargs = mock_daemon_cls.call_args
         self.assertEqual(kwargs.get("mode"), "deepgram")
 
+    @patch("pulsescribe_daemon.PulseScribeDaemon")
+    def test_main_uses_env_debug_for_logging(self, mock_daemon_cls):
+        with (
+            patch.dict(os.environ, {"PULSESCRIBE_DEBUG": "on"}),
+            patch("pulsescribe_daemon.load_environment"),
+            patch("pulsescribe_daemon.setup_logging") as mock_setup_logging,
+            patch("pulsescribe_daemon.PulseScribeDaemon.run"),
+        ):
+            runner.invoke(app, [])
+
+        mock_setup_logging.assert_called_once_with(debug=True)
+        mock_daemon_cls.assert_called_once()
+
     def test_model_name_for_logging_local_uses_local_env(self):
         """Im local-Mode soll für Logs PULSESCRIBE_LOCAL_MODEL genutzt werden."""
         daemon = PulseScribeDaemon(mode="local", model=None)

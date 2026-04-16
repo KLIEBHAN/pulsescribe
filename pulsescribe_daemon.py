@@ -3110,7 +3110,7 @@ def main(
     # Environment laden
     load_environment()
 
-    setup_logging(debug=debug)
+    setup_logging(debug=debug or get_env_bool_default("PULSESCRIBE_DEBUG", False))
 
     # Refine: CLI (--refine/--no-refine) > ENV > Default
     # --no-refine hat höchste Priorität um ENV zu überschreiben

@@ -304,6 +304,16 @@ class TestTranscribeHelpers:
 
         assert resolved.refine is True
 
+    def test_resolve_debug_logging_enabled_uses_env_bool_variants(self, monkeypatch):
+        from transcribe import _resolve_debug_logging_enabled
+
+        monkeypatch.setenv("PULSESCRIBE_DEBUG", "ON")
+        assert _resolve_debug_logging_enabled(False) is True
+
+        monkeypatch.setenv("PULSESCRIBE_DEBUG", "invalid")
+        assert _resolve_debug_logging_enabled(False) is False
+        assert _resolve_debug_logging_enabled(True) is True
+
     def test_transcribe_with_cli_error_handling_maps_known_import_errors(self, tmp_path):
         from transcribe import _transcribe_with_cli_error_handling
 
