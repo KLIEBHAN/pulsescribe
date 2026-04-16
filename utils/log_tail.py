@@ -141,11 +141,7 @@ def read_file_tail_lines(
     )
     text = raw.decode(encoding, errors=errors)
     lines = text.splitlines()
-    if (
-        truncated_from_start
-        and raw[:1] not in (b"\n", b"\r")
-        and len(lines) > 1
-    ):
+    if truncated_from_start and raw[:1] not in (b"\n", b"\r") and lines:
         lines = lines[1:]
     if not lines:
         return ""

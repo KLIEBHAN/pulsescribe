@@ -39,21 +39,62 @@ MENUBAR_ICONS = {
 MENUBAR_PREVIEW_MAX_CHARS = 20
 
 
+def _build_normalized_preview_prefix(
+    text: str,
+    *,
+    max_chars: int,
+) -> tuple[str, bool]:
+    """Return a whitespace-normalized prefix plus whether more visible text exists.
+
+    The menu bar only renders a tiny leading preview. Scanning the whole interim
+    transcript on every update would be wasteful, so this helper collapses
+    whitespace incrementally and stops as soon as the visible preview budget is
+    known.
+    """
+    if max_chars <= 0:
+        return "", False
+
+    visible_limit = max_chars + 1
+    preview_chars: list[str] = []
+    saw_content = False
+    pending_space = False
+
+    for ch in text:
+        if ch.isspace():
+            if saw_content:
+                pending_space = True
+            continue
+
+        if pending_space and preview_chars:
+            preview_chars.append(" ")
+            if len(preview_chars) >= visible_limit:
+                return "".join(preview_chars), True
+            pending_space = False
+
+        saw_content = True
+        preview_chars.append(ch)
+        if len(preview_chars) >= visible_limit:
+            return "".join(preview_chars), True
+
+    return "".join(preview_chars), False
+
+
 def build_menubar_title(state: AppState, text: str | None = None) -> str:
     """Return the visible menu bar title for a given state payload."""
     icon = MENUBAR_ICONS.get(state, MENUBAR_ICONS[AppState.IDLE])
     if state != AppState.RECORDING or not text:
         return icon
 
-    normalized_text = " ".join(text.split())
-    if not normalized_text:
+    normalized_prefix, is_truncated = _build_normalized_preview_prefix(
+        text,
+        max_chars=MENUBAR_PREVIEW_MAX_CHARS,
+    )
+    if not normalized_prefix:
         return icon
 
-    preview = (
-        f"{normalized_text[:MENUBAR_PREVIEW_MAX_CHARS]}…"
-        if len(normalized_text) > MENUBAR_PREVIEW_MAX_CHARS
-        else normalized_text
-    )
+    preview = normalized_prefix[:MENUBAR_PREVIEW_MAX_CHARS]
+    if is_truncated:
+        preview = f"{preview}…"
     return f"{icon} {preview}"
 
 

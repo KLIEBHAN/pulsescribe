@@ -60,3 +60,11 @@ def test_build_menubar_title_hides_empty_whitespace_preview() -> None:
     assert build_menubar_title(AppState.RECORDING, "  \n\t  ") == MENUBAR_ICONS[
         AppState.RECORDING
     ]
+
+
+def test_build_menubar_title_matches_visible_preview_for_whitespace_heavy_text() -> None:
+    text = ("alpha   beta\n" * 2000) + "omega"
+
+    title = build_menubar_title(AppState.RECORDING, text)
+
+    assert title == f"{MENUBAR_ICONS[AppState.RECORDING]} alpha beta alpha bet…"

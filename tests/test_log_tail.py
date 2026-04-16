@@ -70,6 +70,15 @@ def test_read_file_tail_lines_drops_partial_first_line_after_truncation(
     )
 
 
+def test_read_file_tail_lines_returns_empty_for_truncated_single_line_fragment(
+    tmp_path: Path,
+) -> None:
+    file_path = tmp_path / "single-line.log"
+    file_path.write_text("prefix-" + ("x" * 200), encoding="utf-8")
+
+    assert read_file_tail_lines(file_path, max_lines=1, max_scan_bytes=32) == ""
+
+
 def test_read_file_tail_lines_handles_missing_file(tmp_path: Path) -> None:
     missing = tmp_path / "missing.log"
     assert read_file_tail_lines(missing, max_lines=10) == ""
