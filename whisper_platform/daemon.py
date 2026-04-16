@@ -84,6 +84,7 @@ class MacOSDaemonController:
         Returns:
             PID des gestarteten Prozesses oder None bei Fehler
         """
+        forked_child = False
         try:
             # Alte/stale PID-Datei vor dem neuen Start verwerfen. Sonst kann der
             # Parent bei einem frühen Startfehler versehentlich eine alte PID
@@ -107,6 +108,8 @@ class MacOSDaemonController:
                         logger.warning("Ungültige PID-Datei nach Daemon-Start: %s", exc)
                 return None
 
+            forked_child = True
+
             # Child: Neue Session starten (löst von Terminal)
             os.setsid()
 
@@ -122,6 +125,8 @@ class MacOSDaemonController:
 
         except OSError as e:
             logger.error(f"Daemon-Start fehlgeschlagen: {e}")
+            if forked_child:
+                os._exit(1)
             return None
 
         return None  # Wird nie erreicht im Grandchild

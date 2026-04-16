@@ -345,6 +345,58 @@ def test_sound_wave_view_level_timer_reschedules_when_activity_mode_changes(
     assert view._level_timer is created_timers[1]
 
 
+def test_sound_wave_view_level_frame_skips_settled_noop_work(monkeypatch):
+    view = SoundWaveView.__new__(SoundWaveView)
+    view._smoothed_level = 0.0
+    view._target_level = 0.0
+    view._view = _FakeOverlayView(48.0)
+    view._last_center_y = 24.0
+    view._last_heights = [float(WAVE_BAR_MIN_HEIGHT)] * 10
+    view._update_level_timer_interval = lambda: None
+    view._apply_bar_heights = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        AssertionError("settled frame should not touch bar updates")
+    )
+
+    monkeypatch.setattr(
+        "ui.overlay.time.perf_counter",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("settled frame should return before timing/math work")
+        ),
+    )
+
+    SoundWaveView._render_level_frame(view)
+
+
+def test_sound_wave_view_level_frame_keeps_rendering_until_bars_settle(monkeypatch):
+    view = SoundWaveView.__new__(SoundWaveView)
+    view._smoothed_level = 0.0
+    view._target_level = 0.0
+    view._view = _FakeOverlayView(48.0)
+    view._last_center_y = 24.0
+    view._last_heights = [float(WAVE_BAR_MIN_HEIGHT) + 1.0] + [float(WAVE_BAR_MIN_HEIGHT)] * 9
+    view._bar_center = 4.5
+    view._envelope_max_shift_base = max(0.0, view._bar_center * 1.25)
+    view._envelope_phase_primary = 0.1
+    view._envelope_phase_secondary = 0.2
+    view._wander_offset_primary = [0.0] * 10
+    view._wander_offset_secondary = [0.0] * 10
+    view._height_factors = [1.0] * 10
+    view.bars = [object()] * 10
+    view._update_level_timer_interval = lambda: None
+
+    apply_calls: list[tuple[list[float], float]] = []
+    view._apply_bar_heights = (
+        lambda heights, *, center_y: apply_calls.append((heights, center_y))
+    )
+
+    monkeypatch.setattr("ui.overlay.time.perf_counter", lambda: 10.0)
+
+    SoundWaveView._render_level_frame(view)
+
+    assert len(apply_calls) == 1
+    assert apply_calls[0][1] == 24.0
+
+
 def test_overlay_controller_text_presentation_skips_duplicate_widget_updates():
     controller = OverlayController.__new__(OverlayController)
     controller._text_field = _FakeTextField()

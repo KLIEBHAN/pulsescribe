@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 from types import SimpleNamespace
 
+import pytest
+
 import whisper_platform.daemon as daemon_mod
 
 
@@ -107,3 +109,30 @@ def test_macos_daemon_start_handles_corrupt_pid_file(tmp_path, monkeypatch) -> N
     monkeypatch.setattr(daemon_mod.os, "waitpid", _waitpid)
 
     assert controller.start(["python", "pulsescribe_daemon.py"]) is None
+
+
+def test_macos_daemon_start_exits_forked_child_when_exec_fails(
+    tmp_path, monkeypatch
+) -> None:
+    pid_file = tmp_path / "pulsescribe.pid"
+    controller = daemon_mod.MacOSDaemonController(pid_file=pid_file)
+    fork_results = iter([0, 0])
+    exit_calls: list[int] = []
+
+    monkeypatch.setattr(daemon_mod.os, "fork", lambda: next(fork_results))
+    monkeypatch.setattr(daemon_mod.os, "setsid", lambda: None)
+
+    def _execvp(_program: str, _command: list[str]) -> None:
+        raise OSError("exec failed")
+
+    def _exit(code: int) -> None:
+        exit_calls.append(code)
+        raise RuntimeError("child exited")
+
+    monkeypatch.setattr(daemon_mod.os, "execvp", _execvp)
+    monkeypatch.setattr(daemon_mod.os, "_exit", _exit)
+
+    with pytest.raises(RuntimeError, match="child exited"):
+        controller.start(["python", "missing.py"])
+
+    assert exit_calls == [1]

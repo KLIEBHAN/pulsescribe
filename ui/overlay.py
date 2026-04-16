@@ -48,6 +48,7 @@ WAVE_VISUAL_EXPONENT = 1.3
 # Das reduziert "Zittern" durch RMS-Fluktuationen zwischen Frames.
 WAVE_LEVEL_SMOOTHING_RISE = 0.30
 WAVE_LEVEL_SMOOTHING_FALL = 0.10
+WAVE_LEVEL_SETTLED_EPSILON = 0.001
 
 # Adaptive Gain Control (AGC):
 # Hält die Visualisierung bei leisen/lauteren Mics dynamisch.
@@ -108,6 +109,14 @@ def _lerp(a: float, b: float, t: float) -> float:
 
 def _fps_to_interval_seconds(fps: float) -> float:
     return 1.0 / max(float(fps), 1.0)
+
+
+def _wave_heights_are_settled(heights: list[float]) -> bool:
+    """Return True when all bars are already visually at rest."""
+    return all(
+        abs(height - WAVE_BAR_MIN_HEIGHT) < WAVE_HEIGHT_UPDATE_EPSILON
+        for height in heights
+    )
 
 
 def _gaussian(distance: float, sigma: float) -> float:
@@ -774,6 +783,15 @@ class SoundWaveView:
         self._smoothed_level = level
         self._update_level_timer_interval()
 
+        center_y = self._view.frame().size.height / 2
+        if (
+            target_level <= WAVE_LEVEL_SETTLED_EPSILON
+            and level <= WAVE_LEVEL_SETTLED_EPSILON
+            and self._last_center_y == center_y
+            and _wave_heights_are_settled(self._last_heights)
+        ):
+            return
+
         now = time.perf_counter()
         phase_primary = 2 * math.pi * WAVE_WANDER_HZ_PRIMARY * now
         phase_secondary = 2 * math.pi * WAVE_WANDER_HZ_SECONDARY * now + 1.7
@@ -826,7 +844,6 @@ class SoundWaveView:
             )
             heights.append(_lerp(prev_height, height, alpha))
 
-        center_y = self._view.frame().size.height / 2
         self._apply_bar_heights(heights, center_y=center_y)
 
 
