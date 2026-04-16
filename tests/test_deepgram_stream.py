@@ -65,6 +65,63 @@ def test_message_handler_skips_duplicate_interim_writes(monkeypatch) -> None:
     assert write_calls == [("same interim", "utf-8")]
 
 
+def test_message_handler_keeps_latest_interim_for_fallback_when_write_is_throttled(
+    monkeypatch,
+) -> None:
+    state = deepgram_stream.StreamState()
+    handler = deepgram_stream._create_message_handler(state, "sess")
+    write_calls: list[tuple[str, str]] = []
+
+    class _FakeInterimFile:
+        def write_text(self, text: str, *, encoding: str) -> None:
+            write_calls.append((text, encoding))
+
+    perf_counter_values = iter((1.0, 1.05))
+
+    monkeypatch.setattr(deepgram_stream, "INTERIM_FILE", _FakeInterimFile())
+    monkeypatch.setattr(
+        deepgram_stream.time,
+        "perf_counter",
+        lambda: next(perf_counter_values),
+    )
+
+    handler(_response("hello"))
+    handler(_response("hello world"))
+
+    assert write_calls == [("hello", "utf-8")]
+    assert state.last_interim_text == "hello world"
+    assert state.last_interim_written_text == "hello"
+    assert deepgram_stream._resolve_stream_result(state, "sess") == "hello world"
+
+
+def test_message_handler_writes_pending_interim_once_throttle_window_passes(
+    monkeypatch,
+) -> None:
+    state = deepgram_stream.StreamState()
+    handler = deepgram_stream._create_message_handler(state, "sess")
+    write_calls: list[tuple[str, str]] = []
+
+    class _FakeInterimFile:
+        def write_text(self, text: str, *, encoding: str) -> None:
+            write_calls.append((text, encoding))
+
+    perf_counter_values = iter((1.0, 1.05, 1.2))
+
+    monkeypatch.setattr(deepgram_stream, "INTERIM_FILE", _FakeInterimFile())
+    monkeypatch.setattr(
+        deepgram_stream.time,
+        "perf_counter",
+        lambda: next(perf_counter_values),
+    )
+
+    handler(_response("hello"))
+    handler(_response("hello world"))
+    handler(_response("hello world"))
+
+    assert write_calls == [("hello", "utf-8"), ("hello world", "utf-8")]
+    assert state.last_interim_written_text == "hello world"
+
+
 def test_message_handler_keeps_final_transcripts_out_of_interim_file(monkeypatch) -> None:
     state = deepgram_stream.StreamState()
     handler = deepgram_stream._create_message_handler(state, "sess")

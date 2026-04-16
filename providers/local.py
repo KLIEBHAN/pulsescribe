@@ -176,6 +176,9 @@ def _resolve_local_backend(env_value: str | None) -> str:
         return "whisper"
 
     if normalized_backend == DEFAULT_LOCAL_BACKEND:
+        platform_default = _default_local_backend()
+        if platform_default != DEFAULT_LOCAL_BACKEND:
+            return platform_default
         return "faster" if _is_faster_whisper_available() else "whisper"
     return normalized_backend
 

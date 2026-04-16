@@ -360,6 +360,17 @@ class TestBackendDetection:
 
         assert provider._backend == "mlx"
 
+    def test_backend_auto_respects_platform_default_before_generic_fallback(
+        self, monkeypatch
+    ):
+        """Explizites 'auto' soll denselben platform-aware Default wie fehlende ENV nutzen."""
+        import providers.local as local_mod
+
+        monkeypatch.setattr(local_mod, "_default_local_backend", lambda: "lightning")
+        monkeypatch.setattr(local_mod, "_is_faster_whisper_available", lambda: True)
+
+        assert local_mod._resolve_local_backend("auto") == "lightning"
+
     def test_backend_invalid_value_warns_and_falls_back_to_whisper(
         self, monkeypatch, caplog
     ):
