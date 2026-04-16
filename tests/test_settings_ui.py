@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 from ui.welcome import (
     LEGACY_LOCAL_FP16_ENV_KEY,
     LOGS_AUTO_REFRESH_ACTIVE_INTERVAL_S,
+    LOGS_AUTO_REFRESH_BACKOFF_INTERVAL_S,
     LOGS_AUTO_REFRESH_IDLE_INTERVAL_S,
     LOCAL_FP16_ENV_KEY,
     LOCAL_MODEL_OPTIONS,
@@ -945,7 +946,7 @@ class TestWelcomeLogsAutoRefreshGuards:
         ctrl._is_logs_tab_active = lambda: visible["value"]
         ctrl._is_logs_view_active = lambda: True
         ctrl._is_window_visible_for_logs = lambda: True
-        ctrl._refresh_logs = MagicMock()
+        ctrl._refresh_logs = MagicMock(return_value=True)
         ctrl._refresh_transcripts = MagicMock()
 
         ctrl._start_logs_auto_refresh()
@@ -958,6 +959,142 @@ class TestWelcomeLogsAutoRefreshGuards:
             LOGS_AUTO_REFRESH_IDLE_INTERVAL_S,
         ]
         assert first_timer.invalidated == 1
+
+    def test_auto_refresh_tick_backs_off_when_visible_view_stays_unchanged(
+        self, monkeypatch
+    ):
+        import sys
+        import types
+
+        scheduled_intervals: list[float] = []
+        created_timers: list[object] = []
+
+        class _FakeTimer:
+            def __init__(self, interval: float) -> None:
+                self.interval = interval
+                self.invalidated = 0
+
+            def invalidate(self) -> None:
+                self.invalidated += 1
+
+        class _FakeNSTimer:
+            @staticmethod
+            def scheduledTimerWithTimeInterval_repeats_block_(interval, repeats, block):
+                scheduled_intervals.append(interval)
+                timer = _FakeTimer(interval)
+                created_timers.append((timer, block, repeats))
+                return timer
+
+        monkeypatch.setitem(
+            sys.modules,
+            "Foundation",
+            types.SimpleNamespace(NSTimer=_FakeNSTimer),
+        )
+
+        ctrl = WelcomeController.__new__(WelcomeController)
+        ctrl._logs_auto_refresh_timer = None
+        ctrl._logs_auto_refresh_interval_seconds = None
+        ctrl._logs_auto_checkbox = type("_Check", (), {"state": lambda self: 1})()
+        ctrl._is_logs_tab_active = lambda: True
+        ctrl._is_logs_view_active = lambda: True
+        ctrl._is_window_visible_for_logs = lambda: True
+        ctrl._refresh_logs = MagicMock(return_value=False)
+        ctrl._refresh_transcripts = MagicMock()
+
+        ctrl._start_logs_auto_refresh()
+        first_timer, first_tick, _ = created_timers[-1]
+        first_tick(None)
+        second_timer, second_tick, _ = created_timers[-1]
+        second_tick(None)
+
+        assert scheduled_intervals == [
+            LOGS_AUTO_REFRESH_ACTIVE_INTERVAL_S,
+            LOGS_AUTO_REFRESH_BACKOFF_INTERVAL_S,
+            LOGS_AUTO_REFRESH_IDLE_INTERVAL_S,
+        ]
+        assert first_timer.invalidated == 1
+        assert second_timer.invalidated == 1
+        assert ctrl._logs_auto_refresh_step == 2
+
+    def test_update_logs_auto_refresh_state_stops_timer_immediately_when_disabled(
+        self, monkeypatch
+    ):
+        class _FakeTimer:
+            def __init__(self) -> None:
+                self.invalidated = 0
+
+            def invalidate(self) -> None:
+                self.invalidated += 1
+
+        fake_timer = _FakeTimer()
+        ctrl = WelcomeController.__new__(WelcomeController)
+        ctrl._logs_auto_refresh_timer = fake_timer
+        ctrl._logs_auto_refresh_interval_seconds = LOGS_AUTO_REFRESH_ACTIVE_INTERVAL_S
+        ctrl._logs_auto_checkbox = type("_Check", (), {"state": lambda self: 0})()
+        ctrl._is_tab_built = lambda label: label == "Logs"
+
+        ctrl._update_logs_auto_refresh_state(reset_cadence=True)
+
+        assert fake_timer.invalidated == 1
+        assert ctrl._logs_auto_refresh_timer is None
+        assert ctrl._logs_auto_refresh_interval_seconds is None
+
+    def test_logs_auto_refresh_handler_updates_controller_immediately(self):
+        import ui.welcome as welcome_mod
+
+        calls: list[bool] = []
+
+        class _Controller:
+            def _update_logs_auto_refresh_state(self, *, reset_cadence: bool = False):
+                calls.append(reset_cadence)
+
+        handler = welcome_mod._LogsAutoRefreshHandler.alloc().initWithController_(
+            _Controller()
+        )
+        handler.toggleAutoRefresh_(None)
+
+        assert calls == [True]
+
+
+class TestWelcomeLogFinder:
+    def test_open_logs_in_finder_reveals_log_file_when_present(
+        self, tmp_path, monkeypatch
+    ):
+        import ui.welcome as welcome_mod
+
+        log_file = tmp_path / "pulsescribe.log"
+        log_file.write_text("hello", encoding="utf-8")
+        monkeypatch.setattr(welcome_mod, "LOG_FILE", log_file)
+
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            "subprocess.Popen",
+            lambda cmd: calls.append(cmd),
+        )
+
+        ctrl = WelcomeController.__new__(WelcomeController)
+        ctrl._open_logs_in_finder()
+
+        assert calls == [["open", "-R", str(log_file)]]
+
+    def test_open_logs_in_finder_falls_back_to_parent_folder_when_log_missing(
+        self, tmp_path, monkeypatch
+    ):
+        import ui.welcome as welcome_mod
+
+        log_file = tmp_path / "pulsescribe.log"
+        monkeypatch.setattr(welcome_mod, "LOG_FILE", log_file)
+
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            "subprocess.Popen",
+            lambda cmd: calls.append(cmd),
+        )
+
+        ctrl = WelcomeController.__new__(WelcomeController)
+        ctrl._open_logs_in_finder()
+
+        assert calls == [["open", str(log_file.parent)]]
 
 
 class _FakePoint:

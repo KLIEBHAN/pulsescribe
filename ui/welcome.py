@@ -82,7 +82,13 @@ INCREMENTAL_LOG_APPEND_MAX_BYTES = 64_000
 INCREMENTAL_TRANSCRIPT_APPEND_MAX_BYTES = 64_000
 LOG_TRUNCATED_PREFIX = "... (truncated)\n\n"
 LOGS_AUTO_REFRESH_ACTIVE_INTERVAL_S = 2.0
+LOGS_AUTO_REFRESH_BACKOFF_INTERVAL_S = 4.0
 LOGS_AUTO_REFRESH_IDLE_INTERVAL_S = 8.0
+LOGS_AUTO_REFRESH_INTERVALS_S = (
+    LOGS_AUTO_REFRESH_ACTIVE_INTERVAL_S,
+    LOGS_AUTO_REFRESH_BACKOFF_INTERVAL_S,
+    LOGS_AUTO_REFRESH_IDLE_INTERVAL_S,
+)
 
 
 def _bool_override_from_env(*keys: str) -> str:
@@ -272,6 +278,7 @@ class WelcomeController:
         self._logs_auto_checkbox = None
         self._logs_auto_refresh_timer = None
         self._logs_auto_refresh_interval_seconds: float | None = None
+        self._logs_auto_refresh_step = 0
         self._logs_finder_handler = None
         self._last_logs_text = None
         self._last_logs_signature = None
@@ -2622,13 +2629,13 @@ class WelcomeController:
         except Exception:
             return None
 
-    def _refresh_transcripts(self, *, scroll_to_bottom: bool = False) -> None:
+    def _refresh_transcripts(self, *, scroll_to_bottom: bool = False) -> bool:
         """Aktualisiert die Transkript-Anzeige mit scroll-schonendem Verhalten."""
         if (
             self._transcripts_text_view is None
             and not self._ensure_transcripts_view_built()
         ):
-            return
+            return False
 
         if self._transcripts_text_view:
             try:
@@ -2637,16 +2644,16 @@ class WelcomeController:
                 if signature is not None and signature == previous_signature:
                     if scroll_to_bottom:
                         self._scroll_transcripts_to_bottom()
-                    return
+                    return False
 
                 if self._try_append_transcripts_delta(
                     signature,
                     scroll_to_bottom=scroll_to_bottom,
                 ):
-                    return
+                    return True
 
                 transcript_text, entry_count = self._get_transcripts_payload()
-                self._apply_transcripts_payload(
+                return self._apply_transcripts_payload(
                     transcript_text,
                     signature,
                     entry_count,
@@ -2663,7 +2670,8 @@ class WelcomeController:
                     scroll_to_bottom=scroll_to_bottom,
                 )
             except Exception:
-                pass
+                return False
+        return False
 
     def _try_append_transcripts_delta(
         self,
@@ -2793,9 +2801,9 @@ class WelcomeController:
         transcript_entries=None,
         transcript_blocks=None,
         scroll_to_bottom: bool = False,
-    ) -> None:
+    ) -> bool:
         """Apply transcript text updates while preserving scroll position."""
-        self._update_transcripts_count_label(entry_count)
+        count_changed = self._update_transcripts_count_label(entry_count)
         if transcript_text == self._last_transcripts_text:
             if transcript_entries is not None:
                 self._last_transcripts_entries = transcript_entries
@@ -2804,7 +2812,7 @@ class WelcomeController:
             self._last_transcripts_signature = signature
             if scroll_to_bottom:
                 self._scroll_transcripts_to_bottom()
-            return
+            return count_changed
 
         previous_y = 0.0
         if self._transcripts_scroll_view:
@@ -2823,9 +2831,10 @@ class WelcomeController:
 
         if scroll_to_bottom or was_near_bottom:
             self._scroll_transcripts_to_bottom()
-            return
+            return True
 
         self._restore_transcripts_scroll_position(previous_y)
+        return True
 
     def _scroll_transcripts_to_bottom(self) -> None:
         """Scrollt die Transcripts-Ansicht ans Ende (neueste unten)."""
@@ -2872,20 +2881,22 @@ class WelcomeController:
         except Exception:
             pass
 
-    def _update_transcripts_count_label(self, entry_count: int) -> None:
+    def _update_transcripts_count_label(self, entry_count: int) -> bool:
         """Aktualisiert den Label-Text mit der aktuellen Eintragszahl."""
         if self._transcripts_count_label:
             try:
                 label_text = f"{entry_count} entr{'y' if entry_count == 1 else 'ies'}"
                 if getattr(self, "_last_transcripts_count_text", None) == label_text:
-                    return
+                    return False
                 if _set_string_value_if_changed(
                     self._transcripts_count_label,
                     label_text,
                 ):
                     self._last_transcripts_count_text = label_text
+                    return True
             except Exception:
-                pass
+                return False
+        return False
 
     def _clear_transcripts(self) -> None:
         """Löscht die Transkript-Historie nach Bestätigung."""
@@ -2929,6 +2940,7 @@ class WelcomeController:
                 )
                 self._refresh_transcripts(scroll_to_bottom=should_scroll_to_bottom)
                 self._transcripts_view_seen = True
+            self._update_logs_auto_refresh_state(reset_cadence=True)
 
     def _is_logs_view_active(self) -> bool:
         """True, wenn das Logs-Segment aktiv ist."""
@@ -2962,6 +2974,142 @@ class WelcomeController:
             )
         except Exception:
             return False
+
+    def _is_logs_auto_refresh_enabled(self) -> bool:
+        """Return the effective checkbox state for the logs auto-refresh timer."""
+        checkbox = getattr(self, "_logs_auto_checkbox", None)
+        return bool(checkbox and checkbox.state())
+
+    def _should_run_logs_auto_refresh(self, *, enabled: bool | None = None) -> bool:
+        """Return whether the active logs/transcripts view should refresh now."""
+        effective_enabled = (
+            self._is_logs_auto_refresh_enabled() if enabled is None else bool(enabled)
+        )
+        return should_auto_refresh_logs(
+            enabled=effective_enabled,
+            is_logs_tab_active=self._is_logs_tab_active(),
+            logs_view_index=0 if self._is_logs_view_active() else 1,
+            is_window_visible=self._is_window_visible_for_logs(),
+            allow_transcripts=True,
+        )
+
+    def _get_logs_auto_refresh_interval_seconds(self) -> float:
+        """Return the current active refresh cadence for logs/transcripts."""
+        step = max(
+            0,
+            min(
+                int(getattr(self, "_logs_auto_refresh_step", 0)),
+                len(LOGS_AUTO_REFRESH_INTERVALS_S) - 1,
+            ),
+        )
+        return LOGS_AUTO_REFRESH_INTERVALS_S[step]
+
+    def _set_logs_auto_refresh_step(self, step: int) -> None:
+        """Clamp and store the adaptive auto-refresh backoff step."""
+        self._logs_auto_refresh_step = max(
+            0,
+            min(int(step), len(LOGS_AUTO_REFRESH_INTERVALS_S) - 1),
+        )
+
+    def _reset_logs_auto_refresh_cadence(self) -> None:
+        """Reset active logs/transcripts polling to the fastest cadence."""
+        self._set_logs_auto_refresh_step(0)
+
+    def _note_logs_auto_refresh_result(self, *, changed: bool) -> None:
+        """Back off polling when nothing visible changed and reset on updates."""
+        next_step = (
+            0
+            if changed
+            else min(
+                int(getattr(self, "_logs_auto_refresh_step", 0)) + 1,
+                len(LOGS_AUTO_REFRESH_INTERVALS_S) - 1,
+            )
+        )
+        self._set_logs_auto_refresh_step(next_step)
+
+    def _get_desired_logs_auto_refresh_interval_seconds(
+        self,
+        *,
+        enabled: bool | None = None,
+    ) -> float | None:
+        """Return the desired timer interval or ``None`` when auto-refresh is off."""
+        effective_enabled = (
+            self._is_logs_auto_refresh_enabled() if enabled is None else bool(enabled)
+        )
+        if not effective_enabled:
+            return None
+        if self._should_run_logs_auto_refresh(enabled=effective_enabled):
+            return self._get_logs_auto_refresh_interval_seconds()
+        return LOGS_AUTO_REFRESH_IDLE_INTERVAL_S
+
+    def _schedule_logs_auto_refresh_timer(self, interval_seconds: float) -> None:
+        """Create the repeating AppKit timer for logs/transcripts refreshes."""
+        from Foundation import NSTimer  # type: ignore[import-not-found]
+
+        self._logs_auto_refresh_interval_seconds = interval_seconds
+        self._logs_auto_refresh_timer = (
+            NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+                interval_seconds,
+                True,
+                self._handle_logs_auto_refresh_tick,
+            )
+        )
+
+    def _refresh_active_logs_view(self) -> bool:
+        """Refresh the currently visible logs/transcripts sub-view."""
+        if self._is_logs_view_active():
+            return self._refresh_logs(scroll_to_bottom=False)
+        return self._refresh_transcripts(scroll_to_bottom=False)
+
+    def _handle_logs_auto_refresh_tick(self, _timer) -> None:
+        """Drive one adaptive auto-refresh timer tick."""
+        enabled = self._is_logs_auto_refresh_enabled()
+        changed = False
+        if self._should_run_logs_auto_refresh(enabled=enabled):
+            changed = self._refresh_active_logs_view()
+            self._note_logs_auto_refresh_result(changed=changed)
+
+        desired_interval = self._get_desired_logs_auto_refresh_interval_seconds(
+            enabled=enabled
+        )
+        current_interval = getattr(self, "_logs_auto_refresh_interval_seconds", None)
+        if desired_interval is None:
+            self._stop_logs_auto_refresh()
+            return
+        if desired_interval == current_interval:
+            return
+        self._stop_logs_auto_refresh()
+        self._schedule_logs_auto_refresh_timer(desired_interval)
+
+    def _update_logs_auto_refresh_state(self, *, reset_cadence: bool = False) -> None:
+        """Synchronize the logs auto-refresh timer with current UI state."""
+        logs_auto_checkbox = getattr(self, "_logs_auto_checkbox", None)
+        if not logs_auto_checkbox and not self._is_tab_built("Logs"):
+            return
+        if reset_cadence:
+            self._reset_logs_auto_refresh_cadence()
+
+        desired_interval = self._get_desired_logs_auto_refresh_interval_seconds()
+        current_interval = getattr(self, "_logs_auto_refresh_interval_seconds", None)
+        if desired_interval is None:
+            self._stop_logs_auto_refresh()
+            return
+        if getattr(self, "_logs_auto_refresh_timer", None) and current_interval == desired_interval:
+            return
+        self._stop_logs_auto_refresh()
+        self._schedule_logs_auto_refresh_timer(desired_interval)
+
+    def _open_logs_in_finder(self) -> None:
+        """Reveal the current log file or open the logs folder when it is missing."""
+        import subprocess
+
+        try:
+            if LOG_FILE.exists():
+                subprocess.Popen(["open", "-R", str(LOG_FILE)])
+            else:
+                subprocess.Popen(["open", str(LOG_FILE.parent)])
+        except Exception:
+            pass
 
     def _get_logs_text(self, max_chars: int = WELCOME_LOG_MAX_CHARS) -> str:
         """Liest einen Ausschnitt der aktuellen Log-Datei."""
@@ -3068,7 +3216,7 @@ class WelcomeController:
         log_chunks: list[str] | None = None,
         log_truncated: bool | None = None,
         scroll_to_bottom: bool = False,
-    ) -> None:
+    ) -> bool:
         """Apply log text updates while preserving scroll position."""
         if log_text == self._last_logs_text:
             self._last_logs_signature = signature
@@ -3078,7 +3226,7 @@ class WelcomeController:
                 self._last_logs_truncated = log_truncated
             if scroll_to_bottom:
                 self._scroll_logs_to_bottom()
-            return
+            return False
 
         previous_y = 0.0
         if self._logs_scroll_view:
@@ -3098,9 +3246,10 @@ class WelcomeController:
 
         if scroll_to_bottom or was_near_bottom:
             self._scroll_logs_to_bottom()
-            return
+            return True
 
         self._restore_logs_scroll_position(previous_y)
+        return True
 
     def _try_append_logs_delta(
         self,
@@ -3205,7 +3354,7 @@ class WelcomeController:
         )
         return True
 
-    def _refresh_logs(self, *, scroll_to_bottom: bool = True) -> None:
+    def _refresh_logs(self, *, scroll_to_bottom: bool = True) -> bool:
         """Aktualisiert die Log-Anzeige mit scroll-schonendem Verhalten."""
         if self._logs_text_view:
             try:
@@ -3214,22 +3363,24 @@ class WelcomeController:
                 if signature is not None and signature == previous_signature:
                     if scroll_to_bottom:
                         self._scroll_logs_to_bottom()
-                    return
+                    return False
 
+                previous_text = self._last_logs_text
                 if self._try_append_logs_delta(
                     signature,
                     scroll_to_bottom=scroll_to_bottom,
                 ):
-                    return
+                    return self._last_logs_text != previous_text
 
                 log_text = self._get_logs_text()
-                self._apply_logs_payload(
+                return self._apply_logs_payload(
                     log_text,
                     signature,
                     scroll_to_bottom=scroll_to_bottom,
                 )
             except Exception:
-                pass
+                return False
+        return False
 
     def _scroll_logs_to_bottom(self) -> None:
         """Scrollt die Log-Ansicht ans Ende."""
@@ -3240,59 +3391,9 @@ class WelcomeController:
             except Exception:
                 pass
 
-    def _start_logs_auto_refresh(self) -> None:
-        """Startet den Auto-Refresh Timer für Logs (alle 2 Sekunden)."""
-        from Foundation import NSTimer  # type: ignore[import-not-found]
-
-        if not self._is_tab_built("Logs") and not self._logs_auto_checkbox:
-            return
-
-        self._stop_logs_auto_refresh()
-
-        def _should_run(enabled: bool) -> bool:
-            return should_auto_refresh_logs(
-                enabled=enabled,
-                is_logs_tab_active=self._is_logs_tab_active(),
-                logs_view_index=0 if self._is_logs_view_active() else 1,
-                is_window_visible=self._is_window_visible_for_logs(),
-                allow_transcripts=True,
-            )
-
-        def _schedule(interval_seconds: float) -> None:
-            self._logs_auto_refresh_interval_seconds = interval_seconds
-            self._logs_auto_refresh_timer = (
-                NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
-                    interval_seconds, True, tick
-                )
-            )
-
-        def tick(_timer) -> None:
-            enabled = bool(self._logs_auto_checkbox and self._logs_auto_checkbox.state())
-            should_run = _should_run(enabled)
-            if should_run:
-                if self._is_logs_view_active():
-                    self._refresh_logs(scroll_to_bottom=False)
-                else:
-                    self._refresh_transcripts(scroll_to_bottom=False)
-            desired_interval = (
-                LOGS_AUTO_REFRESH_ACTIVE_INTERVAL_S
-                if should_run
-                else LOGS_AUTO_REFRESH_IDLE_INTERVAL_S
-            )
-            if (
-                desired_interval
-                != getattr(self, "_logs_auto_refresh_interval_seconds", None)
-            ):
-                self._stop_logs_auto_refresh()
-                _schedule(desired_interval)
-
-        initial_enabled = bool(self._logs_auto_checkbox and self._logs_auto_checkbox.state())
-        initial_interval = (
-            LOGS_AUTO_REFRESH_ACTIVE_INTERVAL_S
-            if _should_run(initial_enabled)
-            else LOGS_AUTO_REFRESH_IDLE_INTERVAL_S
-        )
-        _schedule(initial_interval)
+    def _start_logs_auto_refresh(self, *, reset_cadence: bool = True) -> None:
+        """Startet den adaptiven Auto-Refresh Timer für Logs und Transcripts."""
+        self._update_logs_auto_refresh_state(reset_cadence=reset_cadence)
 
     def _stop_logs_auto_refresh(self) -> None:
         """Stoppt den Auto-Refresh Timer."""
@@ -4358,8 +4459,7 @@ def _create_logs_auto_refresh_handler_class():
 
         @objc.signature(b"v@:@")
         def toggleAutoRefresh_(self, _sender) -> None:
-            # Checkbox-Zustand wird direkt im Timer-Callback geprüft
-            pass
+            self._controller._update_logs_auto_refresh_state(reset_cadence=True)
 
     return LogsAutoRefreshHandler
 
@@ -4374,7 +4474,6 @@ def _create_open_logs_in_finder_handler_class():
     """Erstellt NSObject-Subklasse für Open in Finder Button."""
     from Foundation import NSObject  # type: ignore[import-not-found]
     import objc  # type: ignore[import-not-found]
-    import subprocess
 
     class OpenLogsInFinderHandler(NSObject):
         def initWithController_(self, controller):
@@ -4386,10 +4485,7 @@ def _create_open_logs_in_finder_handler_class():
 
         @objc.signature(b"v@:@")
         def openInFinder_(self, _sender) -> None:
-            try:
-                subprocess.Popen(["open", "-R", str(LOG_FILE)])
-            except Exception:
-                pass
+            self._controller._open_logs_in_finder()
 
     return OpenLogsInFinderHandler
 
@@ -4474,6 +4570,9 @@ def _create_tab_selection_handler_class():
             except Exception:
                 label = None
             self._controller._ensure_tab_built(label)
+            self._controller._update_logs_auto_refresh_state(
+                reset_cadence=(label == "Logs")
+            )
 
     return TabSelectionHandler
 
