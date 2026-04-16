@@ -200,6 +200,47 @@ class TestGetRecentTranscripts:
 
         assert [entry["text"] for entry in result] == ["Second", "First"]
 
+    def test_get_recent_falls_back_when_tail_line_window_misses_valid_entries(
+        self, history_file
+    ):
+        """Auch kleine History-Dateien brauchen Full-Read, wenn max_lines ältere gültige Einträge abschneidet."""
+        from utils.history import get_recent_transcripts
+
+        history_file.write_text(
+            "\n".join(
+                [
+                    '{"timestamp":"2026-03-03T10:00:00","text":"First"}',
+                    '"invalid-01"',
+                    '"invalid-02"',
+                    '"invalid-03"',
+                    '"invalid-04"',
+                    '"invalid-05"',
+                    '"invalid-06"',
+                    '"invalid-07"',
+                    '"invalid-08"',
+                    '"invalid-09"',
+                    '"invalid-10"',
+                    '"invalid-11"',
+                    '{"timestamp":"2026-03-03T10:00:01","text":"Second"}',
+                    '{"timestamp":"2026-03-03T10:00:02","text":"Third"}',
+                    '{"timestamp":"2026-03-03T10:00:03","text":"Fourth"}',
+                    '{"timestamp":"2026-03-03T10:00:04","text":"Fifth"}',
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = get_recent_transcripts(count=5)
+
+        assert [entry["text"] for entry in result] == [
+            "Fifth",
+            "Fourth",
+            "Third",
+            "Second",
+            "First",
+        ]
+
     def test_read_transcripts_from_offset_returns_valid_entries_in_file_order(
         self, history_file
     ):

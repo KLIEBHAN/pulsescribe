@@ -167,12 +167,18 @@ def _load_recent_transcript_entries(count: int) -> list[dict[str, object]]:
         errors="replace",
         max_scan_bytes=tail_max_scan_bytes,
     )
-    entries = _parse_recent_entries(tail_text.splitlines(), count)
+    tail_lines = tail_text.splitlines()
+    entries = _parse_recent_entries(tail_lines, count)
     if len(entries) >= count:
         return entries
 
-    # Fallback für sehr lange Einzelzeilen oder ungewöhnlich große JSON-Objekte.
-    if HISTORY_FILE.stat().st_size <= tail_max_scan_bytes:
+    file_size = HISTORY_FILE.stat().st_size
+
+    # Wenn Tail-Read bereits die ganze Datei abdeckt, ist ein Full-Read unnötig.
+    # Sonst kann der Tail entweder per Byte-Limit oder max_lines abgeschnitten
+    # worden sein – dann brauchen wir für korrekte History-Einträge einen
+    # vollständigen Reload.
+    if file_size <= tail_max_scan_bytes and len(tail_lines) < tail_max_lines:
         return entries
 
     full_text = HISTORY_FILE.read_text(encoding="utf-8")

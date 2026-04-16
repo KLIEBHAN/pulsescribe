@@ -46,3 +46,17 @@ def test_build_menubar_title_depends_only_on_visible_preview() -> None:
     second = build_menubar_title(AppState.RECORDING, "abcdefghijklmnopqrstwx")
 
     assert first == second
+
+
+def test_build_menubar_title_collapses_multiline_whitespace() -> None:
+    title = build_menubar_title(AppState.RECORDING, "alpha\n\tbeta   gamma")
+
+    assert title == f"{MENUBAR_ICONS[AppState.RECORDING]} alpha beta gamma"
+    assert "\n" not in title
+    assert "\t" not in title
+
+
+def test_build_menubar_title_hides_empty_whitespace_preview() -> None:
+    assert build_menubar_title(AppState.RECORDING, "  \n\t  ") == MENUBAR_ICONS[
+        AppState.RECORDING
+    ]

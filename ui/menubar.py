@@ -45,10 +45,14 @@ def build_menubar_title(state: AppState, text: str | None = None) -> str:
     if state != AppState.RECORDING or not text:
         return icon
 
+    normalized_text = " ".join(text.split())
+    if not normalized_text:
+        return icon
+
     preview = (
-        f"{text[:MENUBAR_PREVIEW_MAX_CHARS]}…"
-        if len(text) > MENUBAR_PREVIEW_MAX_CHARS
-        else text
+        f"{normalized_text[:MENUBAR_PREVIEW_MAX_CHARS]}…"
+        if len(normalized_text) > MENUBAR_PREVIEW_MAX_CHARS
+        else normalized_text
     )
     return f"{icon} {preview}"
 
