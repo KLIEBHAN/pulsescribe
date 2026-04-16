@@ -1,10 +1,18 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "pulsescribe"
 version = "1.2.0"
 description = "Spracheingabe für macOS und Windows – Transkription mit OpenAI Whisper, Deepgram, Groq oder lokal"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "MIT"
+
+[tool.setuptools]
+packages = ["audio", "cli", "providers", "refine", "ui", "utils", "whisper_platform"]
+py-modules = ["config", "transcribe", "pulsescribe_daemon", "pulsescribe_windows", "build_windows"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -40,6 +48,38 @@ exclude_lines = [
 
 [tool.pyright]
 pythonVersion = "3.10"
+include = [
+    "audio",
+    "cli",
+    "providers",
+    "refine",
+    "utils",
+    "config.py",
+    "pulsescribe_daemon.py",
+    "transcribe.py",
+]
+exclude = [
+    ".git",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".tmp",
+    ".venv",
+    "build",
+    "dist",
+    "htmlcov",
+    "logs",
+    "mlx_models",
+    "web/node_modules",
+    "web/.next",
+]
+ignore = [
+    "build_windows.py",
+    "pulsescribe_windows.py",
+    "ui",
+    "whisper_platform",
+]
+reportMissingImports = "none"
 # pyobjc (Quartz/Foundation) hat keine Type Stubs – auf macOS funktioniert der Code.
 # Diese Regel ist für dieses Projekt nicht sinnvoll.
 reportAttributeAccessIssue = "none"

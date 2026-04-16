@@ -134,6 +134,7 @@ def get_app_version(*, default: str = "unknown", project_root: Path | None = Non
     if windows_exe_version:
         return windows_exe_version
 
+    explicit_project_root = project_root is not None
     root = project_root or _default_project_root()
     pyproject_version = _version_from_pyproject(root / "pyproject.toml")
     if pyproject_version:
@@ -142,6 +143,12 @@ def get_app_version(*, default: str = "unknown", project_root: Path | None = Non
     changelog_version = _version_from_changelog(root / "CHANGELOG.md")
     if changelog_version:
         return changelog_version
+
+    # When callers explicitly point us at another project root, falling back to
+    # the current interpreter's installed package metadata would leak an
+    # unrelated version and make tests/build checks depend on local artifacts.
+    if explicit_project_root:
+        return default
 
     metadata_version = _version_from_importlib_metadata()
     if metadata_version:

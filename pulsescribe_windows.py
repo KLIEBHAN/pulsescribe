@@ -1,3 +1,5 @@
+# ruff: noqa: E402
+
 """
 PulseScribe Windows Daemon.
 

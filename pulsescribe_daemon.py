@@ -83,7 +83,7 @@ except Exception as e:
     emergency_log(f"CRITICAL IMPORT ERROR: {e}")
     # Auch direkt auf stderr ausgeben, damit der Fehler bei CLI-Start sichtbar ist
     try:
-        import traceback  # noqa: WPS433 (safety import inside except)
+        import traceback
 
         traceback.print_exc()
     except Exception:

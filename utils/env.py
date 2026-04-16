@@ -41,7 +41,7 @@ def _get_local_env_path() -> Path:
 
 
 def _iter_normalized_dotenv_items(
-    raw_values: Mapping[object, object | None],
+    raw_values: Mapping[str, str | None],
     *,
     strip_values: bool = False,
     include_none_as_empty: bool = False,
@@ -62,7 +62,7 @@ def _iter_normalized_dotenv_items(
 
 
 def _first_normalized_dotenv_item(
-    raw_values: Mapping[object, object | None],
+    raw_values: Mapping[str, str | None],
     *,
     strip_values: bool = False,
     include_none_as_empty: bool = False,
@@ -134,8 +134,9 @@ def parse_env_line_with_dotenv(raw_line: str) -> tuple[str | None, str | None]:
     except Exception:
         return parse_env_line(raw_line)
 
+    normalized_parsed = {str(key or ""): value for key, value in parsed.items()}
     return _first_normalized_dotenv_item(
-        parsed,
+        normalized_parsed,
         strip_values=True,
         include_none_as_empty=True,
     )
@@ -194,7 +195,10 @@ def _read_dotenv_values(path: Path) -> dict[str, str]:
     except Exception:
         return {}
 
-    return dict(_iter_normalized_dotenv_items(raw_values))
+    normalized_raw_values = {
+        str(key or ""): value for key, value in raw_values.items()
+    }
+    return dict(_iter_normalized_dotenv_items(normalized_raw_values))
 
 
 def collect_env_values(

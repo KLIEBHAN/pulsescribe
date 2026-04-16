@@ -77,10 +77,26 @@ def test_get_app_version_uses_importlib_metadata_when_repo_files_missing(
     for key in ("PULSESCRIBE_VERSION", "WHISPERGO_VERSION", "VERSION"):
         monkeypatch.delenv(key, raising=False)
 
+    monkeypatch.setattr(version_mod, "_default_project_root", lambda: tmp_path)
     monkeypatch.setattr(version_mod, "_version_from_importlib_metadata", lambda: "7.8.9")
     monkeypatch.setattr(version_mod, "_version_from_windows_executable", lambda: None)
 
-    assert version_mod.get_app_version(project_root=tmp_path) == "7.8.9"
+    assert version_mod.get_app_version() == "7.8.9"
+
+
+def test_get_app_version_explicit_project_root_skips_installed_metadata(
+    tmp_path, monkeypatch
+):
+    import utils.version as version_mod
+
+    for key in ("PULSESCRIBE_VERSION", "WHISPERGO_VERSION", "VERSION"):
+        monkeypatch.delenv(key, raising=False)
+
+    monkeypatch.setattr(version_mod, "_version_from_importlib_metadata", lambda: "7.8.9")
+    monkeypatch.setattr(version_mod, "_version_from_windows_executable", lambda: None)
+
+    assert version_mod.get_app_version(project_root=tmp_path, default="unknown") == "unknown"
+
 
 
 def test_get_app_version_prefers_windows_executable_over_bundled_pyproject(
