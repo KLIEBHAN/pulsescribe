@@ -60,8 +60,9 @@ if TYPE_CHECKING:
 
     import numpy as np
     import sounddevice as sd
-    from deepgram.clients.listen.v1 import LiveResultResponse
-    from deepgram.listen.v1.socket_client import AsyncV1SocketClient
+
+    LiveResultResponse = Any
+    AsyncV1SocketClient = Any
 
 logger = logging.getLogger("pulsescribe")
 
@@ -697,6 +698,8 @@ def _create_error_handler(
             state.stream_error = error
         else:
             state.stream_error = Exception(str(error))
+        # Bei Verbindungsfehlern kommen keine weiteren Finalize-Events mehr.
+        state.finalize_done.set()
         state.stop_event.set()
 
     return on_error
@@ -711,9 +714,36 @@ def _create_close_handler(
     def on_close(_data: Any) -> None:
         """Behandelt Verbindungs-Ende."""
         logger.debug(f"[{session_id}] Connection closed")
+        # Wenn der Socket bereits geschlossen ist, kann kein separates
+        # Finalize-Ack mehr eintreffen. Das gilt für den Shutdown-Pfad als
+        # terminales Signal und verhindert unnötige Timeout-Wartezeiten.
+        state.finalize_done.set()
         state.stop_event.set()
 
     return on_close
+
+
+def _resolve_stream_result(state: StreamState, session_id: str) -> str:
+    """Return the best available transcript for the completed stream.
+
+    Prefer confirmed final transcripts. If Deepgram only emitted interim text
+    before the socket closed, fall back to the last interim instead of losing
+    the user's short dictation entirely.
+    """
+    final_result = " ".join(part for part in state.final_transcripts if part).strip()
+    if final_result:
+        return final_result
+
+    interim_fallback = state.last_interim_text.strip()
+    if interim_fallback:
+        logger.info(
+            "[%s] Kein Final-Transkript erhalten, nutze letztes Interim als Fallback: %s",
+            session_id,
+            redacted_text_summary(interim_fallback),
+        )
+        return interim_fallback
+
+    return ""
 
 
 # =============================================================================
@@ -1144,7 +1174,7 @@ async def deepgram_stream_core(
     if state.stream_error:
         raise state.stream_error
 
-    result = " ".join(state.final_transcripts)
+    result = _resolve_stream_result(state, session_id)
     logger.info(f"[{session_id}] Streaming abgeschlossen: {len(result)} Zeichen")
     return result
 
