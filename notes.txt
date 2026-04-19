@@ -1,95 +1,32 @@
 UX notes - 2026-04-19
 
-Current pass focus
-- Intentionally avoided the areas touched in the last two commits:
-  - `ui/settings_windows.py`
-  - prompt-related parts of `ui/welcome.py`
-  - `utils/custom_prompts.py`
-- Worked instead on onboarding / first-run guidance and shared setup UI:
-  - `ui/onboarding_wizard_windows.py`
-  - `ui/permissions_card.py`
-  - `ui/hotkey_card.py`
-  - `ui/styles_windows.py`
+Latest pass - Settings UX (`ui/settings_windows.py`)
+- Scope: targeted the next high-value UX area in Windows Settings without touching prompt editors.
+- Reviewed weaknesses first:
+  1. Providers tab only showed a bare `✓`, so it was unclear which API key was required vs optional.
+  2. Setup overview/how-to copy was functional but not especially actionable or scannable.
+  3. Save feedback was too thin: success/error mostly lived in the button text.
+  4. Hotkey guidance in Settings lagged behind the clearer onboarding experience.
+- Changes in this pass:
+  - added mode-aware provider guidance text in the Providers tab
+  - replaced opaque API-key checkmarks with inline states like `Required`, `Configured`, `Optional`, `Not needed`
+  - improved API-key placeholders/tooltips and added basic accessibility names
+  - improved Setup card copy and formatted displayed hotkeys for readability
+  - improved Hotkeys guidance/tooltips and clearer status messages during recording/preset/clear flows
+  - added persistent footer save status feedback, including restart guidance when daemon reload signaling fails
+  - kept existing settings behavior / persistence model unchanged
+- Validation:
+  - `pytest tests/test_settings_windows_load.py tests/test_settings_windows_hotkeys.py tests/test_settings_windows_logs.py tests/test_settings_ui.py -q`
+  - `python -m py_compile ui/settings_windows.py tests/test_settings_windows_load.py tests/test_settings_windows_hotkeys.py tests/test_settings_windows_logs.py`
+  - `ruff check ui/settings_windows.py tests/test_settings_windows_load.py tests/test_settings_windows_hotkeys.py tests/test_settings_windows_logs.py`
 
-Main UX weaknesses reviewed first
-1. Windows onboarding had several unclear interaction patterns:
-   - Fast mode showed technical API-key handling with weak guidance.
-   - language selection used raw codes instead of readable names.
-   - hotkey capture relied on clicking read-only fields, which was easy to miss and poor for keyboard accessibility.
-   - test dictation copy suggested hotkey-driven behavior although the Windows flow is primarily button/IPC-driven.
-   - summary values were too raw (`deepgram`, `auto`, lowercase hotkeys) and did not clearly confirm whether the dictation test succeeded.
-2. Shared macOS setup cards still communicated optional permissions too aggressively:
-   - Accessibility/Input Monitoring looked like hard errors instead of optional/recommended capabilities.
-   - action labels like `Open` were vague.
-3. Windows visual feedback was inconsistent:
-   - weak focus visibility on buttons/choice cards
-   - sparse empty states in onboarding cards
-   - minimal recovery guidance after test / permission / hotkey issues
-
-What changed in this pass
-1. Windows onboarding (`ui/onboarding_wizard_windows.py`)
-- Goal selection
-  - clearer copy for Fast / Private / Advanced
-  - readable language names instead of raw language codes
-  - extra hint explaining when `Automatisch` is preferable
-  - stronger Fast-mode API-key guidance and automatic focus when input is required
-- Permissions step
-  - clearer expectation-setting for Windows microphone access
-  - better status wording and feedback when Windows settings open/fail to open
-  - stronger troubleshooting hint for failed recordings
-- Hotkey step
-  - added explicit `Aufnehmen` / `Entfernen` buttons for toggle + hold rows
-  - preserved click-on-field behavior, but made the main action much clearer
-  - improved per-row explanations for Toggle vs Hold
-  - added clearer recording microcopy (`Enter` / `Speichern` / `Esc`)
-  - improved button state changes during active hotkey capture
-  - improved success / preset / removal feedback text
-- Test dictation step
-  - clarified that the Windows test is a safe in-wizard recording and does not paste anything
-  - improved initial empty state, button labels and troubleshooting copy
-  - improved success / no-speech / error messages
-  - hotkey reminder is now formatted and easier to scan
-- Summary step
-  - friendlier provider / language / hotkey formatting
-  - added explicit dictation-test status (`Erfolgreich geprüft`, `Noch nicht getestet`, etc.)
-
-2. Shared permissions card (`ui/permissions_card.py`)
-- simplified description text
-- changed vague `Open` actions to `Settings`
-- distinguished required vs optional capabilities more clearly:
-  - microphone = required
-  - accessibility = recommended for auto-paste
-  - input monitoring = needed for Hold / some hotkeys
-- reduced alarmist wording for optional missing permissions
-
-3. Shared hotkey card (`ui/hotkey_card.py`)
-- clearer empty-state placeholder (`Use Record…`)
-- better hint text for Toggle vs Hold behavior
-- added a neutral default status when no hotkeys are configured yet
-
-4. Shared Windows styling (`ui/styles_windows.py`)
-- better focus visibility for buttons and choice cards
-- placeholder text styling for inputs/editors
-- stronger keyboard-navigation affordances without changing behavior
-
-Why this improves UX
-- onboarding is easier to understand on first use
-- the next action is clearer on every step
-- hotkey capture is more discoverable and more keyboard-friendly
-- loading / empty / failure states provide better recovery guidance
-- summary information now confirms setup outcomes instead of exposing raw config values
-- optional permissions no longer feel like blocking errors
-
-Validation
-- `pytest tests/test_onboarding_windows.py tests/test_permissions_card.py tests/test_hotkey_card.py tests/test_onboarding.py -q`
-- `pytest tests/test_settings_ui.py -q`
-- `python -m py_compile ui/onboarding_wizard_windows.py ui/permissions_card.py ui/hotkey_card.py ui/styles_windows.py`
-- `ruff check ui/onboarding_wizard_windows.py ui/permissions_card.py ui/hotkey_card.py ui/styles_windows.py tests/test_onboarding_windows.py tests/test_permissions_card.py tests/test_hotkey_card.py`
+Previous pass - Onboarding / shared setup UX
+- Improved Windows onboarding guidance, hotkey capture discoverability, safe dictation test messaging, shared permission card wording, and Windows focus/placeholder styling.
 
 Next worthwhile UX areas
-1. `ui/settings_windows.py`
-- provider/API credential guidance and inline validation can still become clearer, but this was intentionally skipped because the last two commits already touched that area.
-2. `ui/welcome.py`
-- empty states and action hierarchy in the welcome/setup overview would benefit from another dedicated UX pass.
-3. overlay / recording feedback
-- some status transitions could still be made more self-explanatory, especially around transient processing and retry scenarios.
+1. `ui/welcome.py`
+- empty states, setup overview hierarchy and action clarity
+2. overlay / recording feedback
+- more explicit transient processing / retry messaging
+3. advanced local settings in `ui/settings_windows.py`
+- optional defaults vs advanced overrides could be explained even more clearly

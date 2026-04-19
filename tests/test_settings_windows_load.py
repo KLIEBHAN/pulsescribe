@@ -275,7 +275,7 @@ def test_load_settings_populates_api_fields_from_process_env(monkeypatch):
     window._load_settings()
 
     assert field.value == "dg-live-key"
-    assert status.text == "✓"
+    assert status.text == "Configured"
 
 
 def test_load_settings_skips_no_op_widget_mutations(monkeypatch):
@@ -304,7 +304,7 @@ def test_load_settings_skips_no_op_widget_mutations(monkeypatch):
     window._hold_hotkey_field = _FakeField(settings_mod.DEFAULT_WINDOWS_HOLD_HOTKEY)
     window._api_fields = {"DEEPGRAM_API_KEY": _FakeField("dg-live-key")}
     window._api_status = {"DEEPGRAM_API_KEY": _FakeLabel()}
-    window._api_status["DEEPGRAM_API_KEY"].text = "✓"
+    window._api_status["DEEPGRAM_API_KEY"].text = "Configured"
     window._api_status["DEEPGRAM_API_KEY"].style = f"color: {settings_mod.COLORS['success']};"
     window._on_mode_changed = lambda mode: mode_changes.append(mode)
 
@@ -400,6 +400,28 @@ def test_refresh_setup_overview_uses_process_env_api_keys(monkeypatch):
 
     assert window._setup_status_label.text == "Ready to Dictate"
     assert "Deepgram" in window._setup_status_detail_label.text
+
+
+def test_refresh_provider_key_statuses_marks_current_mode_key_as_required():
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._mode_combo = _FakeCombo(settings_mod.MODE_OPTIONS, current="deepgram")
+    window._api_fields = {
+        "DEEPGRAM_API_KEY": _FakeField(""),
+        "GROQ_API_KEY": _FakeField("grq-live"),
+    }
+    window._api_status = {
+        "DEEPGRAM_API_KEY": _FakeLabel(),
+        "GROQ_API_KEY": _FakeLabel(),
+    }
+    window._provider_guidance_label = _FakeLabel()
+    window._process_env_api_keys = {}
+    window._last_provider_key_status_snapshot = None
+
+    window._refresh_provider_key_statuses()
+
+    assert window._provider_guidance_label.text.startswith("Deepgram is selected")
+    assert window._api_status["DEEPGRAM_API_KEY"].text == "Required"
+    assert window._api_status["GROQ_API_KEY"].text == "Configured"
 
 
 def test_ensure_tab_built_builds_lazy_tab_only_once():
@@ -587,6 +609,18 @@ def test_save_settings_uses_canonical_fp16_key_and_removes_legacy(monkeypatch):
     assert recorded_updates[settings_mod.LEGACY_LOCAL_FP16_ENV_KEY] is None
 
 
+def test_save_settings_invalid_hotkeys_show_footer_hint(monkeypatch):
+    monkeypatch.setattr(settings_mod, "is_onboarding_complete", lambda: True)
+
+    window = _make_save_window("default")
+    window._validate_hotkeys_for_save = lambda: None
+    window._footer_status_label = _FakeLabel()
+
+    window._save_settings()
+
+    assert "hotkey issues" in window._footer_status_label.text.lower()
+
+
 def test_save_settings_batches_api_key_updates(monkeypatch):
     recorded_updates: dict[str, str | None] = {}
 
@@ -610,8 +644,8 @@ def test_save_settings_batches_api_key_updates(monkeypatch):
 
     assert recorded_updates["DEEPGRAM_API_KEY"] == "dg-key"
     assert recorded_updates["GROQ_API_KEY"] is None
-    assert window._api_status["DEEPGRAM_API_KEY"].text == "✓"
-    assert window._api_status["GROQ_API_KEY"].text == ""
+    assert window._api_status["DEEPGRAM_API_KEY"].text == "Configured"
+    assert window._api_status["GROQ_API_KEY"].text == "Optional"
 
 
 def test_apply_local_preset_resets_stale_advanced_values():
@@ -740,7 +774,8 @@ def test_build_setup_status_requires_provider_key_for_cloud_mode():
     )
 
     assert headline == "Setup Incomplete"
-    assert "Deepgram API key" in detail
+    assert "Deepgram is selected" in detail
+    assert "API key" in detail
     assert color == "warning"
 
 
@@ -760,8 +795,36 @@ def test_build_setup_status_allows_local_mode_without_api_key():
 def test_build_setup_how_to_text_prefers_hold_flow_when_available():
     text = settings_mod._build_setup_how_to_text("ctrl+alt+r", "ctrl+win")
 
-    assert "Hold ctrl+win" in text
-    assert "Alternative: press ctrl+alt+r" in text
+    assert "Hold Ctrl+Win" in text
+    assert "Alternative: press Ctrl+Alt+R" in text
+
+
+def test_build_provider_guidance_text_for_missing_required_key():
+    text = settings_mod._build_provider_guidance_text(
+        "deepgram",
+        required_key_present=False,
+    )
+
+    assert "Deepgram" in text
+    assert "Add its API key" in text
+
+
+def test_build_api_key_status_marks_required_and_optional_states():
+    assert settings_mod._build_api_key_status(
+        "DEEPGRAM_API_KEY",
+        mode="deepgram",
+        configured=False,
+    ) == ("Required", "warning")
+    assert settings_mod._build_api_key_status(
+        "GROQ_API_KEY",
+        mode="deepgram",
+        configured=False,
+    ) == ("Optional", "text_secondary")
+    assert settings_mod._build_api_key_status(
+        "OPENAI_API_KEY",
+        mode="local",
+        configured=False,
+    ) == ("Not needed", "text_secondary")
 
 
 def test_on_mode_changed_hides_local_advanced_cards_for_cloud_modes():

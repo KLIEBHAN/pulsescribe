@@ -119,6 +119,41 @@ MODE_LABELS = {
     "groq": "Groq",
     "local": "Local Whisper",
 }
+PROVIDER_API_KEY_LABELS = {
+    "DEEPGRAM_API_KEY": "Deepgram",
+    "OPENAI_API_KEY": "OpenAI",
+    "GROQ_API_KEY": "Groq",
+    "OPENROUTER_API_KEY": "OpenRouter",
+    "GEMINI_API_KEY": "Gemini",
+}
+PROVIDER_API_KEY_PLACEHOLDERS = {
+    "DEEPGRAM_API_KEY": "dg-...",
+    "OPENAI_API_KEY": "sk-...",
+    "GROQ_API_KEY": "gsk_...",
+    "OPENROUTER_API_KEY": "sk-or-...",
+    "GEMINI_API_KEY": "AIza...",
+}
+HOTKEY_TOKEN_LABELS = {
+    "ctrl": "Ctrl",
+    "alt": "Alt",
+    "shift": "Shift",
+    "win": "Win",
+    "space": "Space",
+    "tab": "Tab",
+    "enter": "Enter",
+    "esc": "Esc",
+    "backspace": "Backspace",
+    "delete": "Delete",
+    "home": "Home",
+    "end": "End",
+    "pageup": "Page Up",
+    "pagedown": "Page Down",
+    "up": "↑",
+    "down": "↓",
+    "left": "←",
+    "right": "→",
+    "capslock": "Caps Lock",
+}
 _SetupOverviewSnapshot: TypeAlias = tuple[str, str, str, tuple[tuple[str, bool], ...]]
 _WindowsLocalPresetValue: TypeAlias = str | int
 _WindowsLocalPreset: TypeAlias = dict[str, _WindowsLocalPresetValue]
@@ -159,6 +194,89 @@ def _normalize_hotkey_text(value: str | None) -> str:
     return (value or "").strip()
 
 
+def _format_hotkey_for_display(value: str | None) -> str:
+    hotkey = _normalize_hotkey_text(value).lower()
+    if not hotkey:
+        return ""
+
+    display_parts: list[str] = []
+    for part in hotkey.split("+"):
+        display = HOTKEY_TOKEN_LABELS.get(part)
+        if display is None:
+            if part.startswith("f") and part[1:].isdigit():
+                display = part.upper()
+            elif len(part) == 1:
+                display = part.upper()
+            else:
+                display = part.capitalize()
+        display_parts.append(display)
+    return "+".join(display_parts)
+
+
+def _build_provider_guidance_text(
+    mode: str | None,
+    *,
+    required_key_present: bool,
+) -> str:
+    current_mode = (mode or "deepgram").strip().lower() or "deepgram"
+    provider = MODE_LABELS.get(current_mode, current_mode.capitalize())
+
+    if current_mode == "local":
+        return (
+            "Local Whisper works without a cloud API key. Keep cloud keys empty unless "
+            "you want to switch providers later or use a cloud Refine provider."
+        )
+
+    if required_key_present:
+        return (
+            f"{provider} is ready for transcription. Other provider keys can stay empty "
+            "until you switch modes or use them for refinement."
+        )
+
+    return (
+        f"{provider} is selected for transcription. Add its API key below to start dictation; "
+        "other provider keys are optional for now."
+    )
+
+
+def _build_api_key_status(
+    env_key: str,
+    *,
+    mode: str | None,
+    configured: bool,
+) -> tuple[str, str]:
+    if configured:
+        return "Configured", "success"
+
+    current_mode = (mode or "deepgram").strip().lower() or "deepgram"
+    if current_mode == "local":
+        return "Not needed", "text_secondary"
+
+    if env_key == MODE_API_KEY_MAP.get(current_mode):
+        return "Required", "warning"
+
+    return "Optional", "text_secondary"
+
+
+def _build_api_key_tooltip(env_key: str, *, mode: str | None) -> str:
+    provider = PROVIDER_API_KEY_LABELS.get(env_key, env_key)
+    current_mode = (mode or "deepgram").strip().lower() or "deepgram"
+
+    if current_mode == "local":
+        return (
+            f"{provider} is not needed for local transcription. Leave it empty unless you "
+            "want to use a cloud provider later."
+        )
+
+    if env_key == MODE_API_KEY_MAP.get(current_mode):
+        return f"{provider} is required for the currently selected transcription mode."
+
+    return (
+        f"Optional. Save a {provider} key here if you want to switch providers or use it "
+        "for refinement later."
+    )
+
+
 def _build_setup_status(
     mode: str | None,
     *,
@@ -175,7 +293,7 @@ def _build_setup_status(
     if not (toggle or hold):
         return (
             "Action Required",
-            "Configure at least one Toggle or Hold hotkey before dictation can start.",
+            "Add at least one Toggle or Hold hotkey in the Hotkeys tab before dictation can start.",
             "warning",
         )
 
@@ -186,7 +304,7 @@ def _build_setup_status(
         provider = MODE_LABELS.get(current_mode, current_mode.capitalize())
         return (
             "Setup Incomplete",
-            f"Add a {provider} API key in Providers to start dictation.",
+            f"{provider} is selected. Add its API key in Providers before dictation can start.",
             "warning",
         )
 
@@ -211,23 +329,27 @@ def _build_setup_how_to_text(toggle_hotkey: str | None, hold_hotkey: str | None)
     hold = _normalize_hotkey_text(hold_hotkey)
 
     if hold and toggle:
+        hold_display = _format_hotkey_for_display(hold)
+        toggle_display = _format_hotkey_for_display(toggle)
         return (
-            f"1. Hold {hold} to use push-to-talk.\n"
+            f"1. Hold {hold_display} to use push-to-talk.\n"
             "2. Speak while holding the keys.\n"
             "3. Release the keys to stop and transcribe.\n"
-            f"Alternative: press {toggle} once to start and again to stop."
+            f"Alternative: press {toggle_display} once to start and again to stop."
         )
     if hold:
+        hold_display = _format_hotkey_for_display(hold)
         return (
-            f"1. Hold {hold} to start recording.\n"
+            f"1. Hold {hold_display} to start recording.\n"
             "2. Speak while holding the keys.\n"
             "3. Release the keys to stop and transcribe."
         )
     if toggle:
+        toggle_display = _format_hotkey_for_display(toggle)
         return (
-            f"1. Press {toggle} to start recording.\n"
+            f"1. Press {toggle_display} to start recording.\n"
             "2. Speak clearly.\n"
-            f"3. Press {toggle} again to stop and transcribe."
+            f"3. Press {toggle_display} again to stop and transcribe."
         )
     return (
         "1. Configure a Toggle or Hold hotkey in the Hotkeys tab.\n"
@@ -380,6 +502,7 @@ def create_label_row(
         hint_label = QLabel(hint)
         hint_label.setFont(QFont("Segoe UI", 9))
         hint_label.setStyleSheet(f"color: {COLORS['text_hint']};")
+        hint_label.setWordWrap(True)
         row.addWidget(hint_label)
 
     return row
@@ -389,6 +512,7 @@ def create_status_label(text: str = "", color: str = "text") -> QLabel:
     """Erstellt ein Status-Label."""
     label = QLabel(text)
     label.setFont(QFont("Segoe UI", 10))
+    label.setWordWrap(True)
     label.setStyleSheet(f"color: {COLORS.get(color, color)};")
     return label
 
@@ -483,6 +607,35 @@ def _set_widget_stylesheet_if_changed(widget, style: str) -> bool:
     if _get_widget_stylesheet(widget) == style:
         return False
     widget.setStyleSheet(style)
+    return True
+
+
+def _get_widget_tooltip(widget) -> str | None:
+    if widget is None:
+        return None
+
+    getter = getattr(widget, "toolTip", None)
+    if callable(getter):
+        try:
+            return str(getter())
+        except TypeError:
+            pass
+
+    value = getattr(widget, "tooltip", None)
+    if isinstance(value, str):
+        return value
+    return None
+
+
+def _set_widget_tooltip_if_changed(widget, text: str) -> bool:
+    if widget is None:
+        return False
+    setter = getattr(widget, "setToolTip", None)
+    if not callable(setter):
+        return False
+    if _get_widget_tooltip(widget) == text:
+        return False
+    setter(text)
     return True
 
 
@@ -704,6 +857,12 @@ class SettingsWindow(QDialog):
         self._clipboard_restore_checkbox: QCheckBox | None = None
         self._api_fields: dict[str, QLineEdit] = {}
         self._api_status: dict[str, QLabel] = {}
+        self._provider_guidance_label: QLabel | None = None
+        self._footer_status_label: QLabel | None = None
+        self._last_provider_key_status_snapshot: tuple[
+            str,
+            tuple[tuple[str, bool], ...],
+        ] | None = None
         self._last_logs_text: str | None = None
         self._last_logs_signature: tuple[int, int] | None = None
         self._last_transcripts_text: str | None = None
@@ -716,6 +875,7 @@ class SettingsWindow(QDialog):
         self._setup_overview_refresh_suspend_count = 0
         self._last_setup_overview_snapshot: _SetupOverviewSnapshot | None = None
         self._process_env_api_keys: dict[str, str] | None = None
+        self._last_reload_signal_written: bool = True
         self._tab_builders: dict[str, Callable[[], QWidget]] = {}
         self._lazy_tab_layouts: dict[str, QVBoxLayout] = {}
         self._built_tabs: set[str] = set()
@@ -880,7 +1040,10 @@ class SettingsWindow(QDialog):
         )
         layout.addWidget(self._show_at_startup_checkbox)
 
-        layout.addStretch()
+        self._footer_status_label = create_status_label("", "text_secondary")
+        self._footer_status_label.setFont(QFont("Segoe UI", 9))
+        self._footer_status_label.setMinimumWidth(220)
+        layout.addWidget(self._footer_status_label, 1)
 
         self._save_btn = QPushButton("Save && Apply")
         self._save_btn.setObjectName("primary")
@@ -910,7 +1073,10 @@ class SettingsWindow(QDialog):
         layout.setSpacing(CARD_SPACING)
 
         # Status Card
-        card, card_layout = create_card("Status")
+        card, card_layout = create_card(
+            "Status",
+            "Quick overview of what is still missing before dictation can start.",
+        )
 
         self._setup_status_label = QLabel("Checking current setup…")
         self._setup_status_label.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
@@ -929,12 +1095,13 @@ class SettingsWindow(QDialog):
         # How-To Card
         card, card_layout = create_card(
             "📖 How to Use",
-            "Guide based on your current mode and hotkeys.",
+            "This guide updates automatically based on your current mode and hotkeys.",
         )
 
         self._setup_howto_label = QLabel(
-            "1. Configure your API keys in the Providers tab.\n"
-            "2. Set up your preferred hotkey in the Hotkeys tab."
+            "1. Choose a transcription mode in Providers.\n"
+            "2. Add the required API key if you use a cloud mode.\n"
+            "3. Set up at least one hotkey in Hotkeys."
         )
         self._setup_howto_label.setFont(QFont("Segoe UI", 10))
         self._setup_howto_label.setWordWrap(True)
@@ -996,7 +1163,8 @@ class SettingsWindow(QDialog):
 
         # Hotkey Card
         card, card_layout = create_card(
-            "⌨️ Hotkeys", "Configure keyboard shortcuts for recording."
+            "⌨️ Hotkeys",
+            "Set one or two shortcuts. Toggle is ideal for longer dictation, Hold for push-to-talk.",
         )
 
         # Toggle Hotkey Row
@@ -1009,9 +1177,11 @@ class SettingsWindow(QDialog):
         self._toggle_hotkey_field = QLineEdit()
         self._toggle_hotkey_field.setPlaceholderText("e.g., ctrl+alt+r")
         self._toggle_hotkey_field.setReadOnly(True)
+        self._toggle_hotkey_field.setToolTip("Toggle: press once to start, press again to stop")
         toggle_row.addWidget(self._toggle_hotkey_field, 1)
 
         self._toggle_record_btn = QPushButton("Record")
+        self._toggle_record_btn.setToolTip("Start recording a Toggle hotkey")
         self._toggle_record_btn.setFixedWidth(80)
         self._toggle_record_btn.clicked.connect(
             lambda: self._start_hotkey_recording("toggle")
@@ -1019,6 +1189,7 @@ class SettingsWindow(QDialog):
         toggle_row.addWidget(self._toggle_record_btn)
 
         self._toggle_clear_btn = QPushButton("Clear")
+        self._toggle_clear_btn.setToolTip("Remove the saved Toggle hotkey")
         self._toggle_clear_btn.setFixedWidth(70)
         self._toggle_clear_btn.clicked.connect(
             lambda: self._clear_hotkey_field("toggle")
@@ -1037,9 +1208,11 @@ class SettingsWindow(QDialog):
         self._hold_hotkey_field = QLineEdit()
         self._hold_hotkey_field.setPlaceholderText("e.g., ctrl+alt+space")
         self._hold_hotkey_field.setReadOnly(True)
+        self._hold_hotkey_field.setToolTip("Hold: keep pressed while speaking, release to stop")
         hold_row.addWidget(self._hold_hotkey_field, 1)
 
         self._hold_record_btn = QPushButton("Record")
+        self._hold_record_btn.setToolTip("Start recording a Hold hotkey")
         self._hold_record_btn.setFixedWidth(80)
         self._hold_record_btn.clicked.connect(
             lambda: self._start_hotkey_recording("hold")
@@ -1047,6 +1220,7 @@ class SettingsWindow(QDialog):
         hold_row.addWidget(self._hold_record_btn)
 
         self._hold_clear_btn = QPushButton("Clear")
+        self._hold_clear_btn.setToolTip("Remove the saved Hold hotkey")
         self._hold_clear_btn.setFixedWidth(70)
         self._hold_clear_btn.clicked.connect(lambda: self._clear_hotkey_field("hold"))
         hold_row.addWidget(self._hold_clear_btn)
@@ -1056,6 +1230,7 @@ class SettingsWindow(QDialog):
         # Status Label für Recording
         self._hotkey_status = QLabel("")
         self._hotkey_status.setFont(QFont("Segoe UI", 9))
+        self._hotkey_status.setWordWrap(True)
         card_layout.addWidget(self._hotkey_status)
 
         # Presets
@@ -1084,10 +1259,11 @@ class SettingsWindow(QDialog):
 
         # Hint
         hint = QLabel(
-            "💡 Hold hotkey: Push-to-talk mode. Toggle hotkey: Press to start/stop.\n"
+            "💡 Toggle: press once to start and once again to stop.\n"
+            "Hold: keep the keys pressed while speaking and release to stop.\n"
             "Hold may use modifier-only combos (e.g. ctrl+win).\n"
-            "Click 'Record' and press your desired key combination.\n"
-            "Toggle/Hold must not overlap (e.g. ctrl+win and ctrl+win+r)."
+            "Click 'Record', then press Enter to confirm or Esc to cancel.\n"
+            "Toggle and Hold must not overlap (e.g. ctrl+win and ctrl+win+r)."
         )
         hint.setFont(QFont("Segoe UI", 9))
         hint.setStyleSheet(f"color: {COLORS['text_hint']};")
@@ -1115,18 +1291,22 @@ class SettingsWindow(QDialog):
         # Settings Card
         card, card_layout = create_card(
             "⚙️ Transcription Settings",
-            "Configure the transcription provider and language.",
+            "Choose how PulseScribe should transcribe audio. Use Local Whisper for offline dictation.",
         )
 
         # Mode
         self._mode_combo = QComboBox()
         _add_combo_items(self._mode_combo, MODE_OPTIONS)
+        self._mode_combo.setAccessibleName("Transcription mode")
+        self._mode_combo.setToolTip("Choose the transcription provider PulseScribe uses for speech-to-text")
         self._mode_combo.currentTextChanged.connect(self._on_mode_changed)
         card_layout.addLayout(create_label_row("Mode:", self._mode_combo))
 
         # Language
         self._lang_combo = QComboBox()
         _add_combo_items(self._lang_combo, LANGUAGE_OPTIONS)
+        self._lang_combo.setAccessibleName("Recognition language")
+        self._lang_combo.setToolTip("Use auto for automatic language detection")
         card_layout.addLayout(create_label_row("Language:", self._lang_combo))
 
         # Local Backend Container (nur für local mode)
@@ -1158,15 +1338,21 @@ class SettingsWindow(QDialog):
         streaming_layout = QHBoxLayout(self._streaming_container)
         streaming_layout.setContentsMargins(0, 0, 0, 0)
         self._streaming_checkbox = QCheckBox("Enable WebSocket Streaming")
+        self._streaming_checkbox.setToolTip("Deepgram only: enables lower-latency streaming transcription")
         streaming_layout.addWidget(self._streaming_checkbox)
         streaming_layout.addStretch()
         card_layout.addWidget(self._streaming_container)
+
+        self._provider_guidance_label = create_status_label("", "text_secondary")
+        self._provider_guidance_label.setFont(QFont("Segoe UI", 9))
+        card_layout.addWidget(self._provider_guidance_label)
 
         layout.addWidget(card)
 
         # API Keys Card
         card, card_layout = create_card(
-            "🔑 API Keys", "Enter your API keys for cloud providers."
+            "🔑 API Keys",
+            "Only the key for the active cloud transcription mode is required. Unused keys can stay empty.",
         )
 
         for provider, env_key in [
@@ -1184,13 +1370,30 @@ class SettingsWindow(QDialog):
             row.addWidget(label)
 
             field = QLineEdit()
+            field.setAccessibleName(f"{provider} API key")
             field.setEchoMode(QLineEdit.EchoMode.Password)
-            field.setPlaceholderText(f"Enter {provider} API key...")
+            field.setPlaceholderText(
+                PROVIDER_API_KEY_PLACEHOLDERS.get(
+                    env_key,
+                    f"Enter {provider} API key...",
+                )
+            )
+            field.setToolTip(_build_api_key_tooltip(env_key, mode="deepgram"))
+            try:
+                field.setClearButtonEnabled(True)
+            except Exception:
+                pass
             field.textChanged.connect(self._refresh_setup_overview)
+            field.textChanged.connect(self._refresh_provider_key_statuses)
             self._api_fields[env_key] = field
             row.addWidget(field, 1)
 
             status = create_status_label()
+            status.setAccessibleName(f"{provider} API key status")
+            status.setMinimumWidth(82)
+            status.setAlignment(
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            )
             self._api_status[env_key] = status
             row.addWidget(status)
 
@@ -1355,7 +1558,7 @@ class SettingsWindow(QDialog):
         # Refine Card
         card, card_layout = create_card(
             "✨ LLM Refinement",
-            "Post-process transcriptions with AI for better formatting.",
+            "Optional: clean up transcriptions with an LLM for punctuation, formatting and commands.",
         )
 
         self._refine_checkbox = QCheckBox("Enable LLM Refinement")
@@ -1370,7 +1573,10 @@ class SettingsWindow(QDialog):
 
         # Model
         self._refine_model_field = QLineEdit()
-        self._refine_model_field.setPlaceholderText("e.g., openai/gpt-4o")
+        self._refine_model_field.setPlaceholderText("Optional — leave empty for the provider default")
+        self._refine_model_field.setToolTip(
+            "Leave empty to use the default model for the selected Refine provider"
+        )
         card_layout.addLayout(create_label_row("Model:", self._refine_model_field))
 
         layout.addWidget(card)
@@ -1716,7 +1922,7 @@ class SettingsWindow(QDialog):
         if cached is not None:
             return cached
 
-        keys = set(self._api_fields) | set(MODE_API_KEY_MAP.values())
+        keys = set(getattr(self, "_api_fields", {})) | set(MODE_API_KEY_MAP.values())
         cached = {env_key: (os.getenv(env_key) or "").strip() for env_key in keys}
         self._process_env_api_keys = cached
         return cached
@@ -1872,7 +2078,65 @@ class SettingsWindow(QDialog):
                 self._advanced_lightning_settings_card, is_local
             )
 
+        self._refresh_provider_key_statuses()
         self._refresh_setup_overview()
+
+    def _get_api_key_presence_snapshot(self) -> tuple[tuple[str, bool], ...]:
+        process_api_keys = self._get_process_env_api_keys()
+        api_fields = getattr(self, "_api_fields", {})
+        api_presence: tuple[tuple[str, bool], ...] = tuple(
+            (
+                env_key,
+                bool(
+                    (field.text().strip() if field else "")
+                    or process_api_keys.get(env_key, "")
+                ),
+            )
+            for env_key, field in sorted(api_fields.items())
+        )
+        for env_key in sorted(PROVIDER_API_KEY_LABELS):
+            if any(existing_key == env_key for existing_key, _present in api_presence):
+                continue
+            api_presence += ((env_key, bool(process_api_keys.get(env_key, ""))),)
+        return api_presence
+
+    def _refresh_provider_key_statuses(self) -> None:
+        mode_combo = getattr(self, "_mode_combo", None)
+        mode = mode_combo.currentText() if mode_combo else "deepgram"
+        api_presence = self._get_api_key_presence_snapshot()
+        snapshot = (mode, api_presence)
+        if snapshot == getattr(self, "_last_provider_key_status_snapshot", None):
+            return
+        self._last_provider_key_status_snapshot = snapshot
+
+        required_key = MODE_API_KEY_MAP.get((mode or "").strip().lower())
+        presence_by_key = dict(api_presence)
+        required_key_present = bool(required_key and presence_by_key.get(required_key))
+
+        guidance_label = getattr(self, "_provider_guidance_label", None)
+        if guidance_label is not None:
+            _set_widget_text_if_changed(
+                guidance_label,
+                _build_provider_guidance_text(
+                    mode,
+                    required_key_present=required_key_present,
+                ),
+            )
+            _set_widget_stylesheet_if_changed(
+                guidance_label, f"color: {COLORS['text_secondary']};"
+            )
+
+        for env_key, field in getattr(self, "_api_fields", {}).items():
+            configured = bool(presence_by_key.get(env_key))
+            status_text, status_color = _build_api_key_status(
+                env_key,
+                mode=mode,
+                configured=configured,
+            )
+            _set_status_label_if_changed(self._api_status.get(env_key), status_text, status_color)
+            tooltip = _build_api_key_tooltip(env_key, mode=mode)
+            _set_widget_tooltip_if_changed(field, tooltip)
+            _set_widget_tooltip_if_changed(self._api_status.get(env_key), tooltip)
 
     def _refresh_setup_overview(self) -> None:
         """Aktualisiert Status- und How-to-Text im Setup-Tab."""
@@ -1898,22 +2162,7 @@ class SettingsWindow(QDialog):
             else ""
         )
 
-        process_api_keys = self._get_process_env_api_keys()
-        api_presence: tuple[tuple[str, bool], ...] = tuple(
-            (
-                env_key,
-                bool(
-                    (field.text().strip() if field else "")
-                    or process_api_keys.get(env_key, "")
-                ),
-            )
-            for env_key, field in sorted(self._api_fields.items())
-        )
-        for env_key in sorted(MODE_API_KEY_MAP.values()):
-            if any(existing_key == env_key for existing_key, _present in api_presence):
-                continue
-            api_presence += ((env_key, bool(process_api_keys.get(env_key, ""))),)
-
+        api_presence = self._get_api_key_presence_snapshot()
         snapshot = (mode, toggle, hold, api_presence)
         if snapshot == getattr(self, "_last_setup_overview_snapshot", None):
             return
@@ -1942,6 +2191,9 @@ class SettingsWindow(QDialog):
         if self._lightning_batch_value:
             self._lightning_batch_value.setText(str(value))
 
+    def _set_footer_status(self, text: str, color: str = "text_secondary") -> None:
+        _set_status_label_if_changed(getattr(self, "_footer_status_label", None), text, color)
+
     def _on_show_at_startup_changed(self, state: int):
         """Handler für Show at startup Checkbox."""
         set_show_welcome_on_startup(state == Qt.CheckState.Checked.value)
@@ -1961,8 +2213,10 @@ class SettingsWindow(QDialog):
             self._toggle_hotkey_field.setText(toggle)
         if self._hold_hotkey_field:
             self._hold_hotkey_field.setText(hold)
+        toggle_text = _format_hotkey_for_display(toggle) or "not set"
+        hold_text = _format_hotkey_for_display(hold) or "not set"
         self._set_hotkey_status(
-            f"Preset applied: Toggle={toggle or 'none'}, Hold={hold or 'none'}",
+            f"Preset applied: Toggle {toggle_text}, Hold {hold_text}. Click Save & Apply to persist.",
             "success",
         )
         self._refresh_setup_overview()
@@ -2029,7 +2283,8 @@ class SettingsWindow(QDialog):
             )
 
         self._set_hotkey_status(
-            "Press your hotkey combination, then press Enter to confirm...", "warning"
+            "Press the desired key combination, then press Enter to confirm or Esc to cancel.",
+            "warning",
         )
 
         # Low-level pynput Hook für Win-Taste (Qt kann sie nicht abfangen)
@@ -2181,17 +2436,24 @@ class SettingsWindow(QDialog):
         if hotkey_str and kind and target_field:
             # Hotkey in Feld setzen
             target_field.setText(hotkey_str)
-            self._set_hotkey_status(f"✓ Recorded: {hotkey_str}", "success")
+            self._set_hotkey_status(
+                f"✓ Recorded: {_format_hotkey_for_display(hotkey_str)}",
+                "success",
+            )
         elif hotkey_str == "" and kind:
             if target_field:
                 target_field.setText(previous_hotkey)
             self._set_hotkey_status(
-                "No key detected - previous hotkey kept.", "warning"
+                "No key detected — previous hotkey kept.",
+                "warning",
             )
         else:
             if target_field:
                 target_field.setText(previous_hotkey)
-            self._set_hotkey_status("Recording cancelled", "text_hint")
+            self._set_hotkey_status(
+                "Recording cancelled — the previous hotkey was kept.",
+                "text_hint",
+            )
 
         self._refresh_setup_overview()
 
@@ -2203,7 +2465,8 @@ class SettingsWindow(QDialog):
         if kind == "toggle" and self._toggle_hotkey_field:
             self._toggle_hotkey_field.setText("")
             self._set_hotkey_status(
-                "Toggle hotkey cleared. Click Save & Apply to persist.", "text_hint"
+                "Toggle hotkey cleared. Click Save & Apply to persist the change.",
+                "text_hint",
             )
             self._refresh_setup_overview()
             return
@@ -2211,7 +2474,8 @@ class SettingsWindow(QDialog):
         if kind == "hold" and self._hold_hotkey_field:
             self._hold_hotkey_field.setText("")
             self._set_hotkey_status(
-                "Hold hotkey cleared. Click Save & Apply to persist.", "text_hint"
+                "Hold hotkey cleared. Click Save & Apply to persist the change.",
+                "text_hint",
             )
             self._refresh_setup_overview()
             return
@@ -3116,6 +3380,8 @@ class SettingsWindow(QDialog):
         env_values = read_env_file()
         env_get = env_values.get
         self._process_env_api_keys = None
+        self._last_provider_key_status_snapshot = None
+        self._last_setup_overview_snapshot = None
         process_api_keys = self._get_process_env_api_keys()
         mode = env_get("PULSESCRIBE_MODE") or "deepgram"
         lang = env_get("PULSESCRIBE_LANGUAGE") or "auto"
@@ -3260,11 +3526,6 @@ class SettingsWindow(QDialog):
                         env_key, ""
                     )
                     _set_widget_text_if_changed(field, value)
-                    _set_status_label_if_changed(
-                        self._api_status.get(env_key),
-                        "✓" if value else "",
-                        "success" if value else "text_secondary",
-                    )
 
         # Mode-abhängige Sichtbarkeit und Setup-Status nur einmal am Ende aktualisieren.
         # Bei ungültigen ENV-Werten dem tatsächlich gewählten Combo-Wert folgen,
@@ -3275,6 +3536,7 @@ class SettingsWindow(QDialog):
             current_mode_text = mode_combo.currentText()
             if current_mode_text:
                 applied_mode = current_mode_text
+        self._refresh_provider_key_statuses()
         self._on_mode_changed(applied_mode)
 
     def _save_settings(self):
@@ -3282,6 +3544,10 @@ class SettingsWindow(QDialog):
         try:
             validated_hotkeys = self._validate_hotkeys_for_save()
             if validated_hotkeys is None:
+                self._set_footer_status(
+                    "Fix the highlighted hotkey issues before saving.",
+                    "warning",
+                )
                 return
             toggle_hotkey, hold_hotkey = validated_hotkeys
             env_updates: dict[str, str | None] = {}
@@ -3457,21 +3723,13 @@ class SettingsWindow(QDialog):
             env_updates["PULSESCRIBE_HOLD_HOTKEY"] = hold_hotkey or None
 
             # API Keys
-            api_key_values: dict[str, bool] = {}
             for env_key, field in self._api_fields.items():
                 value = field.text().strip()
-                is_set = bool(value)
-                api_key_values[env_key] = is_set
                 env_updates[env_key] = value or None
 
             update_env_settings(env_updates)
-
-            for env_key, is_set in api_key_values.items():
-                _set_status_label_if_changed(
-                    self._api_status.get(env_key),
-                    "✓" if is_set else "",
-                    "success" if is_set else "text_secondary",
-                )
+            self._last_provider_key_status_snapshot = None
+            self._refresh_provider_key_statuses()
 
             # Prompts speichern (aus Cache + aktuellem Editor)
             self._save_all_prompts()
@@ -3487,7 +3745,7 @@ class SettingsWindow(QDialog):
 
             # Signal-Datei für Daemon-Reload erstellen
             # (Settings-Fenster läuft als separater Prozess, daher IPC via Datei)
-            self._write_reload_signal()
+            self._last_reload_signal_written = self._write_reload_signal()
 
             # Visual Save Feedback
             self._show_save_feedback()
@@ -3499,6 +3757,10 @@ class SettingsWindow(QDialog):
 
         except Exception as e:
             logger.error(f"Settings speichern fehlgeschlagen: {e}")
+            self._set_footer_status(
+                f"Saving failed: {e}",
+                "error",
+            )
             # Error Feedback
             if hasattr(self, "_save_btn") and self._save_btn:
                 self._save_btn.setText("❌ Error!")
@@ -3673,7 +3935,7 @@ class SettingsWindow(QDialog):
             "success",
         )
 
-    def _write_reload_signal(self):
+    def _write_reload_signal(self) -> bool:
         """Schreibt Signal-Datei für Daemon-Reload.
 
         Der Daemon prüft periodisch auf diese Datei und lädt Settings neu.
@@ -3685,15 +3947,28 @@ class SettingsWindow(QDialog):
             signal_file = ENV_FILE.parent / ".reload"
             signal_file.write_text(str(time.time()))
             logger.debug(f"Reload-Signal geschrieben: {signal_file}")
+            return True
         except Exception as e:
             # Warning statt debug, damit Benutzer sieht wenn Reload nicht funktioniert
             logger.warning(
                 f"Reload-Signal konnte nicht geschrieben werden: {e} - "
                 "Daemon wird Änderungen erst nach Neustart übernehmen"
             )
+            return False
 
     def _show_save_feedback(self):
         """Zeigt visuelles Feedback nach erfolgreichem Speichern."""
+        if getattr(self, "_last_reload_signal_written", True):
+            self._set_footer_status(
+                "Settings saved. PulseScribe will reload them automatically.",
+                "success",
+            )
+        else:
+            self._set_footer_status(
+                "Settings saved, but automatic reload failed. Restart PulseScribe to apply the changes.",
+                "warning",
+            )
+
         if hasattr(self, "_save_btn") and self._save_btn:
             self._save_btn.setText("✓ Saved!")
             self._save_btn.setStyleSheet(
