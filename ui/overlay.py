@@ -86,6 +86,21 @@ WAVE_ENVELOPE_HZ_PRIMARY = 0.15  # Drift (öfter links/rechts)
 WAVE_ENVELOPE_HZ_SECONDARY = 0.24  # Zweite Frequenz für weniger Periodizität
 WAVE_ENVELOPE_BLEND = 0.62  # 0..1 mix primary/secondary
 
+# Recording-Helfer für den Hotpath: spart wiederholte Subtraktionen/Divisionen.
+WAVE_WANDER_BLEND_COMPLEMENT = 1.0 - WAVE_WANDER_BLEND
+WAVE_ENVELOPE_BLEND_COMPLEMENT = 1.0 - WAVE_ENVELOPE_BLEND
+WAVE_ENVELOPE_STRENGTH_COMPLEMENT = 1.0 - WAVE_ENVELOPE_STRENGTH
+WAVE_ENVELOPE_FACTOR_SPAN = 1.0 - WAVE_ENVELOPE_BASE
+WAVE_RECORDING_SHIFT_LEVEL_BASE = 0.15
+WAVE_RECORDING_SHIFT_LEVEL_SPAN = 1.0 - WAVE_RECORDING_SHIFT_LEVEL_BASE
+WAVE_RECORDING_WANDER_LEVEL_BASE = 0.20
+WAVE_RECORDING_WANDER_LEVEL_SPAN = 1.0 - WAVE_RECORDING_WANDER_LEVEL_BASE
+WAVE_ENVELOPE_GAUSSIAN_SCALE = (
+    -0.5 / (WAVE_ENVELOPE_SIGMA * WAVE_ENVELOPE_SIGMA)
+    if WAVE_ENVELOPE_SIGMA > 0
+    else None
+)
+
 # Feedback-Anzeigedauer
 FEEDBACK_DISPLAY_DURATION = 0.8  # Sekunden für Done/Error-Anzeige
 WAVE_HEIGHT_UPDATE_EPSILON = 0.25  # Spare Layer-Updates für subpixel-kleine Änderungen
@@ -282,6 +297,23 @@ class SoundWaveView:
             + random.uniform(-0.10, 0.10)
             for i in range(WAVE_BAR_COUNT)
         ]
+        self._wander_offset_primary_sin = tuple(
+            math.sin(offset) for offset in self._wander_offset_primary
+        )
+        self._wander_offset_primary_cos = tuple(
+            math.cos(offset) for offset in self._wander_offset_primary
+        )
+        self._wander_offset_secondary_sin = tuple(
+            math.sin(offset) for offset in self._wander_offset_secondary
+        )
+        self._wander_offset_secondary_cos = tuple(
+            math.cos(offset) for offset in self._wander_offset_secondary
+        )
+        self._recording_frame_heights = [
+            float(WAVE_BAR_MIN_HEIGHT) for _ in range(WAVE_BAR_COUNT)
+        ]
+        self._envelope_gaussian_scale = WAVE_ENVELOPE_GAUSSIAN_SCALE
+        self._rect_factory = None
         # Balken erstellen
         center_y = self._center_y
         for i in range(WAVE_BAR_COUNT):
@@ -325,9 +357,12 @@ class SoundWaveView:
             return False
 
         if rect_factory is None:
-            from AppKit import NSMakeRect  # type: ignore[import-not-found]
+            rect_factory = getattr(self, "_rect_factory", None)
+            if rect_factory is None:
+                from AppKit import NSMakeRect  # type: ignore[import-not-found]
 
-            rect_factory = NSMakeRect
+                rect_factory = NSMakeRect
+                self._rect_factory = rect_factory
 
         self.bars[index].setBounds_(rect_factory(0, 0, WAVE_BAR_WIDTH, height))
         self._last_heights[index] = height
@@ -730,6 +765,39 @@ class SoundWaveView:
             for i, _bar in enumerate(self.bars)
         ]
 
+    def _recording_frame_buffer(self) -> list[float]:
+        heights = getattr(self, "_recording_frame_heights", None)
+        if heights is None or len(heights) != WAVE_BAR_COUNT:
+            heights = [float(WAVE_BAR_MIN_HEIGHT) for _ in range(WAVE_BAR_COUNT)]
+            self._recording_frame_heights = heights
+        return heights
+
+    def _recording_phase_tables(
+        self,
+    ) -> tuple[tuple[float, ...], tuple[float, ...], tuple[float, ...], tuple[float, ...]]:
+        primary_offsets = getattr(self, "_wander_offset_primary", ())
+        secondary_offsets = getattr(self, "_wander_offset_secondary", ())
+
+        primary_sin = getattr(self, "_wander_offset_primary_sin", None)
+        primary_cos = getattr(self, "_wander_offset_primary_cos", None)
+        secondary_sin = getattr(self, "_wander_offset_secondary_sin", None)
+        secondary_cos = getattr(self, "_wander_offset_secondary_cos", None)
+
+        if primary_sin is None or len(primary_sin) != len(primary_offsets):
+            primary_sin = tuple(math.sin(offset) for offset in primary_offsets)
+            self._wander_offset_primary_sin = primary_sin
+        if primary_cos is None or len(primary_cos) != len(primary_offsets):
+            primary_cos = tuple(math.cos(offset) for offset in primary_offsets)
+            self._wander_offset_primary_cos = primary_cos
+        if secondary_sin is None or len(secondary_sin) != len(secondary_offsets):
+            secondary_sin = tuple(math.sin(offset) for offset in secondary_offsets)
+            self._wander_offset_secondary_sin = secondary_sin
+        if secondary_cos is None or len(secondary_cos) != len(secondary_offsets):
+            secondary_cos = tuple(math.cos(offset) for offset in secondary_offsets)
+            self._wander_offset_secondary_cos = secondary_cos
+
+        return primary_sin, primary_cos, secondary_sin, secondary_cos
+
     def _apply_bar_heights(self, heights: list[float], *, center_y: float) -> bool:
         """Commit bar updates only when positions or heights actually changed."""
         transaction = None
@@ -794,7 +862,7 @@ class SoundWaveView:
             if target_level > prev_level
             else WAVE_LEVEL_SMOOTHING_FALL
         )
-        level = _lerp(prev_level, target_level, alpha_level)
+        level = prev_level + alpha_level * (target_level - prev_level)
         self._smoothed_level = level
         self._update_level_timer_interval()
 
@@ -808,56 +876,101 @@ class SoundWaveView:
             return
 
         now = time.perf_counter()
-        phase_primary = 2 * math.pi * WAVE_WANDER_HZ_PRIMARY * now
-        phase_secondary = 2 * math.pi * WAVE_WANDER_HZ_SECONDARY * now + 1.7
+        primary_tau = math.tau * WAVE_WANDER_HZ_PRIMARY
+        secondary_tau = math.tau * WAVE_WANDER_HZ_SECONDARY
+        phase_primary = primary_tau * now
+        phase_secondary = secondary_tau * now + 1.7
+
+        sin_phase_primary = math.sin(phase_primary)
+        cos_phase_primary = math.cos(phase_primary)
+        sin_phase_secondary = math.sin(phase_secondary)
+        cos_phase_secondary = math.cos(phase_secondary)
 
         # Envelope-Center driftet nach links/rechts (wie ein Paket).
         # Bewegung skaliert mit Level: bei Stille wenig, beim Sprechen deutlich.
-        shift_strength = self._envelope_max_shift_base * _lerp(0.15, 1.0, level)
+        shift_strength = self._envelope_max_shift_base * (
+            WAVE_RECORDING_SHIFT_LEVEL_BASE
+            + WAVE_RECORDING_SHIFT_LEVEL_SPAN * level
+        )
         env_primary = math.sin(
-            2 * math.pi * WAVE_ENVELOPE_HZ_PRIMARY * now + self._envelope_phase_primary
+            math.tau * WAVE_ENVELOPE_HZ_PRIMARY * now + self._envelope_phase_primary
         )
         env_secondary = math.sin(
-            2 * math.pi * WAVE_ENVELOPE_HZ_SECONDARY * now
+            math.tau * WAVE_ENVELOPE_HZ_SECONDARY * now
             + self._envelope_phase_secondary
         )
-        env_mix = _lerp(env_secondary, env_primary, WAVE_ENVELOPE_BLEND)
+        env_mix = (
+            env_primary * WAVE_ENVELOPE_BLEND
+            + env_secondary * WAVE_ENVELOPE_BLEND_COMPLEMENT
+        )
         envelope_center = self._bar_center + shift_strength * env_mix
         envelope_center = _clamp(envelope_center, 0.0, WAVE_BAR_COUNT - 1)
 
-        base_height = WAVE_BAR_MIN_HEIGHT
-        max_add = self._wave_height_range()
-
         # Kleine Baseline-Bewegung, damit es nicht "steht" bei leiser Sprache,
         # aber skaliert mit Level, damit es ruhig bleibt.
-        wander_strength = WAVE_WANDER_AMOUNT * _lerp(0.20, 1.0, level)
-        heights: list[float] = []
+        wander_strength = WAVE_WANDER_AMOUNT * (
+            WAVE_RECORDING_WANDER_LEVEL_BASE
+            + WAVE_RECORDING_WANDER_LEVEL_SPAN * level
+        )
+        max_add = self._wave_height_range()
+        level_height_scale = level * max_add
+        last_heights = self._last_heights
+        height_factors = self._height_factors
+        heights = self._recording_frame_buffer()
+        (
+            primary_offset_sin,
+            primary_offset_cos,
+            secondary_offset_sin,
+            secondary_offset_cos,
+        ) = self._recording_phase_tables()
+        gaussian_scale = getattr(
+            self,
+            "_envelope_gaussian_scale",
+            WAVE_ENVELOPE_GAUSSIAN_SCALE,
+        )
 
-        for i, _bar in enumerate(self.bars):
-            travel_primary = math.sin(phase_primary + self._wander_offset_primary[i])
-            travel_secondary = math.sin(
-                phase_secondary + self._wander_offset_secondary[i]
+        for i in range(WAVE_BAR_COUNT):
+            travel_primary = (
+                sin_phase_primary * primary_offset_cos[i]
+                + cos_phase_primary * primary_offset_sin[i]
             )
-            travel = _lerp(travel_secondary, travel_primary, WAVE_WANDER_BLEND)
+            travel_secondary = (
+                sin_phase_secondary * secondary_offset_cos[i]
+                + cos_phase_secondary * secondary_offset_sin[i]
+            )
+            travel = (
+                travel_primary * WAVE_WANDER_BLEND
+                + travel_secondary * WAVE_WANDER_BLEND_COMPLEMENT
+            )
             wiggle = 1.0 + wander_strength * travel
 
             # Dynamische Envelope verschiebt den "Energie"-Schwerpunkt über die Balken.
-            envelope = _gaussian(i - envelope_center, WAVE_ENVELOPE_SIGMA)
-            envelope_factor = _lerp(WAVE_ENVELOPE_BASE, 1.0, envelope)
+            distance = i - envelope_center
+            if gaussian_scale is None:
+                envelope = 0.0
+            else:
+                envelope = math.exp((distance * distance) * gaussian_scale)
+            envelope_factor = WAVE_ENVELOPE_BASE + WAVE_ENVELOPE_FACTOR_SPAN * envelope
 
-            base_factor = self._height_factors[i]
-            height_factor = _lerp(base_factor, envelope_factor, WAVE_ENVELOPE_STRENGTH)
+            base_factor = height_factors[i]
+            height_factor = (
+                base_factor * WAVE_ENVELOPE_STRENGTH_COMPLEMENT
+                + envelope_factor * WAVE_ENVELOPE_STRENGTH
+            )
 
-            height = base_height + (level * height_factor * wiggle * max_add)
-            height = _clamp(height, WAVE_BAR_MIN_HEIGHT, WAVE_BAR_MAX_HEIGHT)
+            height = WAVE_BAR_MIN_HEIGHT + (level_height_scale * height_factor * wiggle)
+            if height < WAVE_BAR_MIN_HEIGHT:
+                height = WAVE_BAR_MIN_HEIGHT
+            elif height > WAVE_BAR_MAX_HEIGHT:
+                height = WAVE_BAR_MAX_HEIGHT
 
-            prev_height = self._last_heights[i]
+            prev_height = last_heights[i]
             alpha = (
                 WAVE_SMOOTHING_ALPHA_RISE
                 if height > prev_height
                 else WAVE_SMOOTHING_ALPHA_FALL
             )
-            heights.append(_lerp(prev_height, height, alpha))
+            heights[i] = prev_height + alpha * (height - prev_height)
 
         self._apply_bar_heights(heights, center_y=center_y)
 

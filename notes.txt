@@ -1,5 +1,26 @@
 Performance notes - 2026-04-19
 
+Latest pass - macOS overlay recording-frame hot path
+- Focused specifically on `ui/overlay.py::_render_level_frame` and its direct recording/drawing helpers.
+- Remaining hotspots identified there:
+  1. recording frames still called `math.sin(...)` per bar for both wander phases even though the bar offsets are static for the lifetime of the view
+  2. the hottest frame loop still allocated a fresh heights list every frame
+  3. `_set_bar_height()` could still resolve/import its rect factory repeatedly on changed bars
+  4. the per-frame loop still repeated several small blend/scale computations that are stable or cheaply precomputable
+- Changes in this pass:
+  - precomputed and cached `sin/cos` tables for the fixed per-bar wander offsets
+  - reused one recording-frame height buffer across frames instead of allocating a new list each tick
+  - cached the rect factory used for bar bounds updates
+  - simplified repeated recording-frame blend/scale math to use cached constants and local frame values
+- Why this helps:
+  - cuts the heaviest remaining trig/call overhead from the 60 FPS macOS recording path
+  - reduces per-frame allocations and repeated helper/import work on the main thread
+  - preserves the visual waveform behavior because the trig rewrite uses equivalent phase identities
+- Validation for this pass:
+  - `pytest tests/test_overlay.py tests/test_overlay_windows.py tests/test_overlay_pyside6.py tests/test_animation.py -q`
+  - `python -m py_compile ui/overlay.py tests/test_overlay.py`
+  - `ruff check ui/overlay.py tests/test_overlay.py`
+
 Latest pass - overlay animation hot paths
 - Reviewed the highest-frequency overlay paths in:
   - `ui/overlay.py`
@@ -92,11 +113,11 @@ Recent completed areas (archived summary)
 - Menubar/daemon UI dispatch: duplicate payload suppression, preview-title dedupe, adaptive result/interim polling
 
 Next worthwhile areas
-1. `ui/overlay.py`
-- the remaining overlay hotspot is still the custom macOS recording-frame math itself (`_render_level_frame`): if traces still show pressure, the next step is reducing trig/math work or batching more of the recording-specific calculations without changing the visual feel.
-
-2. `ui/welcome.py` + `utils/log_tail.py`
+1. `ui/welcome.py` + `utils/log_tail.py`
 - shared signature/tail-state reuse across logs/transcripts refresh paths is still the most likely remaining long-session file-I/O hotspot on macOS.
+
+2. `ui/overlay.py`
+- if overlay traces still show pressure after the recording-frame cleanup, the next smaller target is `SoundWaveView._apply_bar_heights()` / CoreAnimation transaction setup on frames where multiple bars change together.
 
 3. `ui/settings_windows.py`
 - the large settings load/apply field-population path still looks promising once it is safely outside the recent-commit boundary again.

@@ -1,3 +1,4 @@
+import math
 import sys
 import types
 
@@ -7,6 +8,7 @@ from ui.overlay import (
     WAVE_ANIMATION_FPS_ACTIVE,
     WAVE_ANIMATION_FPS_FEEDBACK,
     WAVE_ANIMATION_FPS_IDLE,
+    WAVE_BAR_COUNT,
     WAVE_BAR_MIN_HEIGHT,
     WAVE_HEIGHT_UPDATE_EPSILON,
     OverlayController,
@@ -116,6 +118,39 @@ class _FakeBatchAnimationLogic:
 
     def calculate_bar_normalized(self, *_args, **_kwargs):
         raise AssertionError("batch frame API should be used")
+
+
+def _build_active_recording_view() -> SoundWaveView:
+    view = SoundWaveView.__new__(SoundWaveView)
+    view._smoothed_level = 0.1
+    view._target_level = 0.6
+    view._view = _FakeOverlayView(48.0)
+    view._center_y = 24.0
+    view._last_center_y = 24.0
+    view._last_heights = [float(WAVE_BAR_MIN_HEIGHT)] * WAVE_BAR_COUNT
+    view._bar_center = (WAVE_BAR_COUNT - 1) / 2
+    view._envelope_max_shift_base = max(0.0, view._bar_center * 1.25)
+    view._envelope_phase_primary = 0.1
+    view._envelope_phase_secondary = 0.2
+    view._wander_offset_primary = [0.1 * (i + 1) for i in range(WAVE_BAR_COUNT)]
+    view._wander_offset_secondary = [0.2 * (i + 1) for i in range(WAVE_BAR_COUNT)]
+    view._wander_offset_primary_sin = tuple(
+        math.sin(offset) for offset in view._wander_offset_primary
+    )
+    view._wander_offset_primary_cos = tuple(
+        math.cos(offset) for offset in view._wander_offset_primary
+    )
+    view._wander_offset_secondary_sin = tuple(
+        math.sin(offset) for offset in view._wander_offset_secondary
+    )
+    view._wander_offset_secondary_cos = tuple(
+        math.cos(offset) for offset in view._wander_offset_secondary
+    )
+    view._height_factors = [1.0] * WAVE_BAR_COUNT
+    view._recording_frame_heights = [float(WAVE_BAR_MIN_HEIGHT)] * WAVE_BAR_COUNT
+    view.bars = [object()] * WAVE_BAR_COUNT
+    view._update_level_timer_interval = lambda: None
+    return view
 
 
 def _install_fake_foundation(monkeypatch):
@@ -432,6 +467,50 @@ def test_sound_wave_view_level_frame_keeps_rendering_until_bars_settle(monkeypat
 
     assert len(apply_calls) == 1
     assert apply_calls[0][1] == 24.0
+
+
+def test_sound_wave_view_level_frame_reuses_recording_height_buffer(monkeypatch):
+    view = _build_active_recording_view()
+    seen_ids: list[int] = []
+    view._apply_bar_heights = lambda heights, *, center_y: seen_ids.append(id(heights))
+
+    time_values = iter((10.0, 10.1))
+    monkeypatch.setattr("ui.overlay.time.perf_counter", lambda: next(time_values))
+
+    SoundWaveView._render_level_frame(view)
+    SoundWaveView._render_level_frame(view)
+
+    assert len(seen_ids) == 2
+    assert seen_ids[0] == seen_ids[1]
+
+
+def test_sound_wave_view_level_frame_uses_cached_trig_tables(monkeypatch):
+    view = _build_active_recording_view()
+    view._apply_bar_heights = lambda *_args, **_kwargs: None
+
+    sin_calls = 0
+    cos_calls = 0
+    real_sin = math.sin
+    real_cos = math.cos
+
+    def counting_sin(value: float) -> float:
+        nonlocal sin_calls
+        sin_calls += 1
+        return real_sin(value)
+
+    def counting_cos(value: float) -> float:
+        nonlocal cos_calls
+        cos_calls += 1
+        return real_cos(value)
+
+    monkeypatch.setattr("ui.overlay.math.sin", counting_sin)
+    monkeypatch.setattr("ui.overlay.math.cos", counting_cos)
+    monkeypatch.setattr("ui.overlay.time.perf_counter", lambda: 10.0)
+
+    SoundWaveView._render_level_frame(view)
+
+    assert sin_calls == 4
+    assert cos_calls == 2
 
 
 def test_overlay_controller_text_presentation_skips_duplicate_widget_updates():
