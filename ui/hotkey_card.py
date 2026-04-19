@@ -186,7 +186,7 @@ class HotkeyCard:
             field = NSTextField.alloc().initWithFrame_(
                 NSMakeRect(field_x, y_pos, field_w, row_h)
             )
-            field.setPlaceholderString_("Record…")
+            field.setPlaceholderString_("Use Record…")
             field.setFont_(NSFont.systemFontOfSize_(13))
             field.setAlignment_(NSTextAlignmentCenter)
             field.setEditable_(False)
@@ -214,7 +214,7 @@ class HotkeyCard:
                 NSMakeRect(base_x, hint_y, content_w, 16)
             )
             hint.setStringValue_(
-                "Tip: Hold is push‑to‑talk (may require Input Monitoring)."
+                "Toggle starts/stops with one press. Hold is push‑to‑talk and may require Input Monitoring."
             )
             hint.setBezeled_(False)
             hint.setDrawsBackground_(False)
@@ -277,6 +277,10 @@ class HotkeyCard:
             self._widgets.toggle_field.setStringValue_(rendered_values[0])
             self._widgets.hold_field.setStringValue_(rendered_values[1])
             self._last_synced_values = rendered_values
+            if not any(rendered_values) and self._last_status is None:
+                self.set_status(
+                    "info", "Choose a preset or record a custom hotkey."
+                )
         except Exception:
             pass
 

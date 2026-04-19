@@ -231,8 +231,8 @@ def test_refresh_marks_unknown_microphone_state_as_warning(monkeypatch) -> None:
     card = _build_card()
 
     assert card.refresh() is False
-    assert card._widgets.mic_status.text == "⚠ Status unavailable"
-    assert card._widgets.mic_action.title == "Open"
+    assert card._widgets.mic_status.text == "Required • status unavailable"
+    assert card._widgets.mic_action.title == "Settings"
     assert card._widgets.mic_action.enabled is True
     assert card._widgets.mic_action.hidden is False
 

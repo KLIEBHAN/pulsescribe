@@ -173,7 +173,7 @@ def test_refresh_test_hotkey_label_shows_toggle_and_hold(monkeypatch):
     wizard._refresh_test_hotkey_label()
     assert (
         wizard._test_hotkey_label.text
-        == "Toggle: ctrl+alt+r | Hold: ctrl+alt+space"
+        == "Gespeicherte Hotkeys:\nToggle: Ctrl+Alt+R\nHold: Ctrl+Alt+Space"
     )
 
 
@@ -186,7 +186,7 @@ def test_refresh_test_hotkey_label_handles_missing_hotkeys(monkeypatch):
     monkeypatch.setattr(wizard_mod, "get_env_setting", lambda _key: None)
 
     wizard._refresh_test_hotkey_label()
-    assert wizard._test_hotkey_label.text == "Kein Hotkey konfiguriert"
+    assert wizard._test_hotkey_label.text == "Noch kein Hotkey konfiguriert"
 
 
 def test_update_test_transcript_appends_growth_and_skips_duplicates():
@@ -391,6 +391,32 @@ def test_on_api_key_input_changed_updates_status_and_navigation():
     wizard._on_api_key_input_changed(" ")
     assert "Erforderlich" in wizard._api_key_status.text
     assert wizard._update_navigation_called == 2
+
+
+def test_update_summary_uses_friendly_labels_and_test_state():
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+    wizard._summary_labels = {
+        "mode": _FakeLabel(),
+        "hotkeys": _FakeLabel(),
+        "language": _FakeLabel(),
+        "test": _FakeLabel(),
+    }
+    wizard._env_settings_cache = {
+        "PULSESCRIBE_MODE": "local",
+        "PULSESCRIBE_LANGUAGE": "de",
+        "PULSESCRIBE_TOGGLE_HOTKEY": "ctrl+alt+r",
+        "PULSESCRIBE_HOLD_HOTKEY": "ctrl+win",
+    }
+    wizard._test_successful = True
+    wizard._test_started_once = True
+
+    wizard._update_summary()
+
+    assert wizard._summary_labels["mode"].text == "Lokal / Whisper (privat)"
+    assert wizard._summary_labels["hotkeys"].text == "Toggle: Ctrl+Alt+R • Hold: Ctrl+Win"
+    assert wizard._summary_labels["language"].text == "Deutsch"
+    assert wizard._summary_labels["test"].text == "Erfolgreich geprüft"
+    assert "#4CAF50" in wizard._summary_labels["test"].style
 
 
 def test_on_language_changed_skips_noop_persistence_and_emit(monkeypatch):

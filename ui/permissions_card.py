@@ -11,9 +11,9 @@ from typing import Callable
 
 # Shared description text for permissions card (used in Wizard + Settings)
 PERMISSIONS_DESCRIPTION = (
-    "Microphone is required. Accessibility improves auto‑paste.\n"
-    "Input Monitoring enables Hold + some global hotkeys.\n"
-    "💡 Accessibility/Input Monitoring not working? Remove & re‑add the app."
+    "Required: Microphone.\n"
+    "Recommended: Accessibility for auto‑paste.\n"
+    "Input Monitoring: needed for Hold + some global hotkeys."
 )
 
 
@@ -198,7 +198,7 @@ class PermissionsCard:
             action_btn = NSButton.alloc().initWithFrame_(
                 NSMakeRect(btn_x, row_y, btn_w, btn_h)
             )
-            action_btn.setTitle_("Open")
+            action_btn.setTitle_("Settings")
             action_btn.setBezelStyle_(NSBezelStyleRounded)
             action_btn.setFont_(NSFont.systemFontOfSize_(11))
             bind_action(action_btn, action)
@@ -282,62 +282,74 @@ class PermissionsCard:
             changed |= self._set_status_if_changed(
                 "mic_status",
                 self._widgets.mic_status,
-                "✅ Granted",
+                "Ready",
                 palette["ok"],
                 cache_value="ok",
             )
             changed |= self._set_action_if_changed(
                 "mic_action",
-                self._widgets.mic_action, title="Open", enabled=False, hidden=True
+                self._widgets.mic_action,
+                title="Settings",
+                enabled=False,
+                hidden=True,
             )
         elif mic_state == "not_determined":
             changed |= self._set_status_if_changed(
                 "mic_status",
                 self._widgets.mic_status,
-                "⚠ Not requested yet",
+                "Required • request",
                 palette["warn"],
                 cache_value="warn",
             )
             changed |= self._set_action_if_changed(
                 "mic_action",
-                self._widgets.mic_action, title="Request", enabled=True, hidden=False
+                self._widgets.mic_action,
+                title="Request",
+                enabled=True,
+                hidden=False,
             )
         elif mic_state in ("denied", "restricted"):
             changed |= self._set_status_if_changed(
                 "mic_status",
                 self._widgets.mic_status,
-                "❌ Denied",
+                "Required • denied",
                 palette["err"],
                 cache_value="err",
             )
             changed |= self._set_action_if_changed(
                 "mic_action",
-                self._widgets.mic_action, title="Open", enabled=True, hidden=False
+                self._widgets.mic_action,
+                title="Settings",
+                enabled=True,
+                hidden=False,
             )
         else:
             changed |= self._set_status_if_changed(
                 "mic_status",
                 self._widgets.mic_status,
-                "⚠ Status unavailable",
+                "Required • status unavailable",
                 palette["warn"],
                 cache_value="warn",
             )
             changed |= self._set_action_if_changed(
                 "mic_action",
-                self._widgets.mic_action, title="Open", enabled=True, hidden=False
+                self._widgets.mic_action,
+                title="Settings",
+                enabled=True,
+                hidden=False,
             )
 
         changed |= self._set_status_if_changed(
             "access_status",
             self._widgets.access_status,
-            "✅ Granted" if acc_ok else "⚠ Not granted",
-            palette["ok"] if acc_ok else palette["warn"],
-            cache_value="ok" if acc_ok else "warn",
+            "Enabled" if acc_ok else "Optional • auto‑paste",
+            palette["ok"] if acc_ok else palette["neutral"],
+            cache_value="ok" if acc_ok else "neutral",
         )
         changed |= self._set_action_if_changed(
             "access_action",
             self._widgets.access_action,
-            title="Open",
+            title="Settings",
             enabled=not acc_ok,
             hidden=bool(acc_ok),
         )
@@ -345,14 +357,14 @@ class PermissionsCard:
         changed |= self._set_status_if_changed(
             "input_status",
             self._widgets.input_status,
-            "✅ Granted" if input_ok else "⚠ Not granted",
-            palette["ok"] if input_ok else palette["warn"],
-            cache_value="ok" if input_ok else "warn",
+            "Enabled" if input_ok else "Needed for Hold",
+            palette["ok"] if input_ok else palette["neutral"],
+            cache_value="ok" if input_ok else "neutral",
         )
         changed |= self._set_action_if_changed(
             "input_action",
             self._widgets.input_action,
-            title="Open",
+            title="Settings",
             enabled=not input_ok,
             hidden=bool(input_ok),
         )

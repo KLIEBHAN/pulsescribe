@@ -66,6 +66,7 @@ QLineEdit {{
     padding: 8px 12px;
     color: {COLORS["text"]};
     selection-background-color: {COLORS["accent"]};
+    placeholder-text-color: {COLORS["text_hint"]};
 }}
 
 QLineEdit:focus {{
@@ -140,6 +141,11 @@ QPushButton:hover {{
     background-color: rgba(255, 255, 255, 0.12);
 }}
 
+QPushButton:focus {{
+    border-color: {COLORS["accent"]};
+    background-color: rgba(0, 122, 255, 0.10);
+}}
+
 QPushButton:pressed {{
     background-color: rgba(255, 255, 255, 0.08);
 }}
@@ -169,6 +175,7 @@ QPlainTextEdit {{
     padding: 8px;
     color: {COLORS["text"]};
     selection-background-color: {COLORS["accent"]};
+    placeholder-text-color: {COLORS["text_hint"]};
 }}
 
 QPlainTextEdit:focus {{
@@ -261,7 +268,12 @@ QPushButton#choice {{
     min-height: 60px;
 }}
 
-QPushButton#choice:checked {{
+QPushButton#choice:hover {{
+    background-color: rgba(255, 255, 255, 0.10);
+}}
+
+QPushButton#choice:checked,
+QPushButton#choice:focus {{
     border-color: {COLORS["accent"]};
     background-color: rgba(0, 122, 255, 0.15);
 }}

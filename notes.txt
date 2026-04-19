@@ -1,230 +1,95 @@
-Performance notes - 2026-04-19
+UX notes - 2026-04-19
 
-Latest pass - prompt switch/load-path caching (`ui/settings_windows.py` / `ui/welcome.py` / `utils/custom_prompts.py`)
-- Reviewed the next remaining prompt-editor hotspot specifically around context switches / loads.
-- Clearest concrete weaknesses there:
-  1. app-mappings text was still repeatedly reformatted during prompt context switches and dirty-baseline checks even while the loaded prompt data stayed unchanged
-  2. `ui/settings_windows.py::_load_prompt_for_context()` formatted/loaded prompt text and then immediately recomputed the same baseline again for dirty tracking
-  3. the macOS prompt editor still replaced NSTextView content/status eagerly during context/reset flows even when the effective text was already current
-- Chosen optimization:
-  - added a shared prompt-editor text helper in `utils.custom_prompts.py` with optional per-context text caching
-  - reused that cache in Windows/macOS prompt load/reset/switch flows so app-mappings formatting is computed once per loaded/default prompt state instead of per check
-  - allowed dirty-baseline comparisons to reuse already-known baseline text instead of recomputing it right after load/reset
-  - avoided redundant NSTextView / prompt-status updates on macOS and redundant prompt-status restyles on Windows when content is unchanged
-- Why this helps:
-  - cheaper context switches, especially for large app-mappings editors
-  - less repeated sorting/formatting and less UI churn while moving between prompt contexts
-  - no behavior change; only less repeated work in the prompt editor load/switch path
-- Validation for this pass:
-  - `pytest tests/test_custom_prompts.py tests/test_prompts.py tests/test_settings_windows_prompts.py tests/test_settings_windows_load.py tests/test_settings_ui.py -q`
-  - `python -m py_compile utils/custom_prompts.py ui/settings_windows.py ui/welcome.py tests/test_custom_prompts.py tests/test_settings_windows_prompts.py tests/test_settings_ui.py`
-  - `ruff check utils/custom_prompts.py ui/settings_windows.py ui/welcome.py tests/test_custom_prompts.py tests/test_settings_windows_prompts.py tests/test_settings_ui.py`
-
-Latest pass - prompt editor save-path reuse (`ui/settings_windows.py` / `ui/welcome.py` / `utils/custom_prompts.py`)
-- Reviewed the remaining prompt-editor hotspots with focus on app-mappings / multi-context saves.
-- Clearest concrete weaknesses there:
-  1. `utils.custom_prompts.save_custom_prompts()` still wrote TOML and then reloaded/reparsed the same file only to warm the cache again
-  2. settings/welcome prompt saves then followed that with their own post-save prompt-state refresh path, even though the saved merged state was already derivable in memory
-  3. app-mappings and multi-context saves therefore still paid avoidable write → parse → cache-refresh coordination cost on the heaviest prompt-editor path
-- Chosen optimization:
-  - added a combined prompt-save helper that writes overrides, rebuilds merged prompt state in memory, and refreshes the prompt cache without re-reading TOML
-  - updated Windows/macOS prompt save paths to reuse that returned state instead of forcing another prompt-data refresh after save
-- Why this helps:
-  - reduces disk/parse work on multi-context prompt saves and app-mappings saves
-  - keeps later context switches cheaper because the UI already has the fresh merged prompt data in memory
-  - preserves prompt behavior and file format while removing redundant cache-warming work
-- Validation for this pass:
-  - `pytest tests/test_custom_prompts.py tests/test_prompts.py tests/test_settings_windows_prompts.py tests/test_settings_windows_load.py tests/test_settings_ui.py -q`
-  - `python -m py_compile utils/custom_prompts.py ui/settings_windows.py ui/welcome.py tests/test_custom_prompts.py tests/test_settings_windows_prompts.py tests/test_settings_ui.py`
-  - `ruff check utils/custom_prompts.py ui/settings_windows.py ui/welcome.py tests/test_custom_prompts.py tests/test_settings_windows_prompts.py tests/test_settings_ui.py`
-
-Latest pass - prompt/vocabulary editor review + vocabulary state reuse
-- Reviewed the relevant prompt/vocabulary editor paths in:
+Current pass focus
+- Intentionally avoided the areas touched in the last two commits:
   - `ui/settings_windows.py`
-  - `ui/welcome.py`
+  - prompt-related parts of `ui/welcome.py`
   - `utils/custom_prompts.py`
-  - `utils/vocabulary.py`
-- Most likely concrete hotspots there:
-  1. vocabulary editor load/save in `ui/settings_windows.py` still chained multiple helper passes (`load`/`save` + separate validation/signature follow-ups)
-  2. `utils.vocabulary.py` save path still re-read the current JSON object even when a trusted cache already held the current parsed file state
-  3. prompt editors already avoid a lot of work via lazy tab build + per-context caches, so their remaining costs are narrower and more save-specific
-- Chosen hotspot:
-  - vocabulary editor state coordination (`ui/settings_windows.py` + `utils/vocabulary.py`)
-- Changes in this pass:
-  - added combined vocabulary state helpers that return normalized data + validation issues + signature in one path
-  - updated the Windows vocabulary editor to use the combined load/save helpers instead of separate validation/signature follow-up calls
-  - let `utils.vocabulary.py` reuse trusted cached JSON state on no-op saves instead of re-reading/parsing the file again
-- Why this helps:
-  - less helper churn and file/signature work when opening or saving the vocabulary editor
-  - cheaper no-op saves for larger vocabulary files
-  - keeps UI behavior unchanged while reducing redundant parsing/validation coordination
-- Validation for this pass:
-  - `pytest tests/test_vocabulary.py tests/test_settings_windows_load.py tests/test_settings_windows_prompts.py tests/test_settings_ui.py tests/test_custom_prompts.py -q`
-  - `python -m py_compile utils/vocabulary.py ui/settings_windows.py tests/test_vocabulary.py tests/test_settings_windows_load.py`
-  - `ruff check utils/vocabulary.py ui/settings_windows.py tests/test_vocabulary.py tests/test_settings_windows_load.py`
+- Worked instead on onboarding / first-run guidance and shared setup UI:
+  - `ui/onboarding_wizard_windows.py`
+  - `ui/permissions_card.py`
+  - `ui/hotkey_card.py`
+  - `ui/styles_windows.py`
 
-Latest pass - `ui/settings_windows.py` load/apply/preset paths
-- Reviewed the main frontend-heavy settings-window paths around `_load_settings()`, `_apply_local_preset()` and the surrounding setup-tab synchronization.
-- Most concrete remaining weaknesses there:
-  1. repeated `QComboBox.findText(...)` scans during bulk loads/preset applies even though the combo item lists are static for the whole window lifetime
-  2. the same combo lookup cost was paid again on every preset click across mode/backend/model/device/advanced override controls
-  3. the bulk field population already avoids most no-op writes/signals, so the next best win was reducing lookup work before those guarded writes happen
-- Chosen optimization:
-  - cache per-combo text→index maps and prime them when settings combos are populated
-  - route `_load_settings()` / `_apply_local_preset()` combo updates through the cached path instead of repeated linear lookups
-- Why this helps:
-  - makes initial settings-window hydration and repeated preset application cheaper without changing visible behavior
-  - especially helps the broadest field-population path because many settings loads touch multiple static combos in one burst
-- Validation for this pass:
-  - `pytest tests/test_settings_windows_load.py tests/test_settings_windows_logs.py tests/test_settings_windows_hotkeys.py tests/test_settings_windows_prompts.py tests/test_settings_ui.py -q`
-  - `python -m py_compile ui/settings_windows.py tests/test_settings_windows_load.py`
-  - `ruff check ui/settings_windows.py tests/test_settings_windows_load.py`
+Main UX weaknesses reviewed first
+1. Windows onboarding had several unclear interaction patterns:
+   - Fast mode showed technical API-key handling with weak guidance.
+   - language selection used raw codes instead of readable names.
+   - hotkey capture relied on clicking read-only fields, which was easy to miss and poor for keyboard accessibility.
+   - test dictation copy suggested hotkey-driven behavior although the Windows flow is primarily button/IPC-driven.
+   - summary values were too raw (`deepgram`, `auto`, lowercase hotkeys) and did not clearly confirm whether the dictation test succeeded.
+2. Shared macOS setup cards still communicated optional permissions too aggressively:
+   - Accessibility/Input Monitoring looked like hard errors instead of optional/recommended capabilities.
+   - action labels like `Open` were vague.
+3. Windows visual feedback was inconsistent:
+   - weak focus visibility on buttons/choice cards
+   - sparse empty states in onboarding cards
+   - minimal recovery guidance after test / permission / hotkey issues
 
-Latest pass - next frontend hotspot review + welcome/history file I/O
-- Reviewed the next likely frontend-heavy candidates outside the last two overlay commits:
-  1. `ui/welcome.py` + `utils/log_tail.py` + `utils/history.py`
-     - adaptive logs/transcripts refresh is already incremental, but the full-reload/initial-load paths still repeated signature/file-state work across UI + helper layers.
-  2. `ui/settings_windows.py`
-     - the large `_load_settings()` / `_apply_local_preset()` population path is still broad and frequently touched, but much of the obvious widget churn is already guarded.
-  3. prompt/vocabulary tabs
-     - less likely now because signature/session caches are already in place and tab access is less frequent than logs/transcripts refreshes.
-- Chosen hotspot:
-  - `ui/welcome.py` + `utils/history.py` / `utils/log_tail.py`
-  - reason: this is still the clearest remaining long-session frontend path with repeated file-signature / file-read coordination during logs/transcripts loads and refreshes.
-- Changes in this pass:
-  - `utils/log_tail.py`
-    - added a helper to read tail text together with one matching file signature from the same file-open path.
-  - `utils/history.py`
-    - added `get_recent_transcripts_with_signature()` and allowed recent transcript loading to reuse a known file size/signature instead of stat-ing again.
-  - `ui/welcome.py`
-    - reused pending signatures from the combined helper paths during initial logs/transcripts loads
-    - reused the already-known transcript signature on the full transcript reload path so welcome refreshes avoid redundant file metadata work.
-- Why this helps:
-  - trims redundant file metadata lookups and state recomputation on repeated welcome logs/transcripts refresh paths
-  - keeps the UI flow unchanged while making the macOS long-session viewer path cheaper
-- Validation for this pass:
-  - `pytest tests/test_settings_ui.py tests/test_settings_windows_logs.py tests/test_log_tail.py tests/test_history.py tests/test_history_display.py -q`
-  - `python -m py_compile utils/log_tail.py utils/history.py ui/welcome.py tests/test_log_tail.py tests/test_history.py tests/test_settings_ui.py`
-  - `ruff check utils/log_tail.py utils/history.py ui/welcome.py tests/test_log_tail.py tests/test_history.py tests/test_settings_ui.py`
+What changed in this pass
+1. Windows onboarding (`ui/onboarding_wizard_windows.py`)
+- Goal selection
+  - clearer copy for Fast / Private / Advanced
+  - readable language names instead of raw language codes
+  - extra hint explaining when `Automatisch` is preferable
+  - stronger Fast-mode API-key guidance and automatic focus when input is required
+- Permissions step
+  - clearer expectation-setting for Windows microphone access
+  - better status wording and feedback when Windows settings open/fail to open
+  - stronger troubleshooting hint for failed recordings
+- Hotkey step
+  - added explicit `Aufnehmen` / `Entfernen` buttons for toggle + hold rows
+  - preserved click-on-field behavior, but made the main action much clearer
+  - improved per-row explanations for Toggle vs Hold
+  - added clearer recording microcopy (`Enter` / `Speichern` / `Esc`)
+  - improved button state changes during active hotkey capture
+  - improved success / preset / removal feedback text
+- Test dictation step
+  - clarified that the Windows test is a safe in-wizard recording and does not paste anything
+  - improved initial empty state, button labels and troubleshooting copy
+  - improved success / no-speech / error messages
+  - hotkey reminder is now formatted and easier to scan
+- Summary step
+  - friendlier provider / language / hotkey formatting
+  - added explicit dictation-test status (`Erfolgreich geprüft`, `Noch nicht getestet`, etc.)
 
-Latest pass - macOS overlay recording-frame hot path
-- Focused specifically on `ui/overlay.py::_render_level_frame` and its direct recording/drawing helpers.
-- Remaining hotspots identified there:
-  1. recording frames still called `math.sin(...)` per bar for both wander phases even though the bar offsets are static for the lifetime of the view
-  2. the hottest frame loop still allocated a fresh heights list every frame
-  3. `_set_bar_height()` could still resolve/import its rect factory repeatedly on changed bars
-  4. the per-frame loop still repeated several small blend/scale computations that are stable or cheaply precomputable
-- Changes in this pass:
-  - precomputed and cached `sin/cos` tables for the fixed per-bar wander offsets
-  - reused one recording-frame height buffer across frames instead of allocating a new list each tick
-  - cached the rect factory used for bar bounds updates
-  - simplified repeated recording-frame blend/scale math to use cached constants and local frame values
-- Why this helps:
-  - cuts the heaviest remaining trig/call overhead from the 60 FPS macOS recording path
-  - reduces per-frame allocations and repeated helper/import work on the main thread
-  - preserves the visual waveform behavior because the trig rewrite uses equivalent phase identities
-- Validation for this pass:
-  - `pytest tests/test_overlay.py tests/test_overlay_windows.py tests/test_overlay_pyside6.py tests/test_animation.py -q`
-  - `python -m py_compile ui/overlay.py tests/test_overlay.py`
-  - `ruff check ui/overlay.py tests/test_overlay.py`
+2. Shared permissions card (`ui/permissions_card.py`)
+- simplified description text
+- changed vague `Open` actions to `Settings`
+- distinguished required vs optional capabilities more clearly:
+  - microphone = required
+  - accessibility = recommended for auto-paste
+  - input monitoring = needed for Hold / some hotkeys
+- reduced alarmist wording for optional missing permissions
 
-Latest pass - overlay animation hot paths
-- Reviewed the highest-frequency overlay paths in:
-  - `ui/overlay.py`
-  - `ui/overlay_windows.py`
-  - `ui/overlay_pyside6.py`
-  - shared math in `ui/animation.py`
-- Main hotspots identified:
-  1. Windows/PySide recording animations still asked `AnimationLogic` for one bar at a time every frame, which repeated Python method/call overhead on the hottest 60 FPS path.
-  2. macOS overlay animation frames still re-read fixed wave-view geometry from AppKit and rebuilt non-recording frame vectors bar-by-bar on the main thread.
-  3. Windows Tk overlay still recomputed static bar layout data during frame rendering even though those positions never change after setup.
-- Changes in this pass:
-  - `ui/animation.py`
-    - added frame-level APIs for normalized values/heights so callers can consume one cached vector per frame instead of repeatedly calling per-bar helpers.
-  - `ui/overlay_windows.py`
-    - switched the render loop to the batch height API and cached static bar x-positions/center once.
-  - `ui/overlay_pyside6.py`
-    - switched the animation loop to the batch height API so recording frames no longer repeat per-bar cache/key work.
-  - `ui/overlay.py`
-    - reused cached wave geometry on hot frame paths and routed listening/transcribing/done frame building through one batch helper.
-- Why this helps:
-  - lowers Python call overhead on 60 FPS recording loops
-  - removes redundant per-frame geometry/layout recomputation
-  - trims main-thread work on the macOS overlay and CPU work on the Windows overlays without changing visuals
-- Validation for this pass:
-  - `pytest tests/test_animation.py tests/test_overlay.py tests/test_overlay_windows.py tests/test_overlay_pyside6.py -q`
-  - `python -m py_compile ui/animation.py ui/overlay.py ui/overlay_windows.py ui/overlay_pyside6.py tests/test_animation.py tests/test_overlay.py tests/test_overlay_windows.py tests/test_overlay_pyside6.py`
-  - `ruff check ui/animation.py ui/overlay.py ui/overlay_windows.py ui/overlay_pyside6.py tests/test_animation.py tests/test_overlay.py tests/test_overlay_windows.py tests/test_overlay_pyside6.py`
+3. Shared hotkey card (`ui/hotkey_card.py`)
+- clearer empty-state placeholder (`Use Record…`)
+- better hint text for Toggle vs Hold behavior
+- added a neutral default status when no hotkeys are configured yet
 
-Current scope
-- Reviewed the main frontend/perf-sensitive areas again before changing code:
-  - `pulsescribe_daemon.py` main-thread dispatch + polling hot paths
-  - `ui/overlay.py`, `ui/overlay_windows.py`, `ui/overlay_pyside6.py`
-  - `ui/onboarding_wizard.py`, `ui/permissions_card.py`, `utils/permissions.py`
-  - `ui/welcome.py` logs/transcripts/setup flows
-  - recent Windows/settings/provider commit boundaries to avoid reworking the same area again
-- Kept the last/previous commit areas out of this pass:
-  - `ui/settings_windows.py`
-  - `providers/deepgram_stream.py`
-  - `providers/local.py`
+4. Shared Windows styling (`ui/styles_windows.py`)
+- better focus visibility for buttons and choice cards
+- placeholder text styling for inputs/editors
+- stronger keyboard-navigation affordances without changing behavior
 
-Current frontend weaknesses reviewed
-1. Daemon result polling / overlay feedback
-- `pulsescribe_daemon.py` still drained result-queue bursts one message at a time.
-- Audio level traffic is much hotter than status/result traffic, but every queued audio-level message still triggered its own overlay update during a poll tick.
-- Long or bursty recording periods could therefore spend unnecessary main-thread work on redundant overlay audio updates.
-- The previous safety break limited each tick to 50 messages, which also made backlog clearing slower once many audio messages accumulated.
-
-2. Permission state reads during onboarding / setup bursts
-- The app already reuses the live `PermissionsCard` snapshot when available, but fallback reads still call three separate macOS permission helpers.
-- Those helpers are comparatively expensive and can be hit repeatedly during short onboarding/setup render bursts.
-- There was no short-lived shared snapshot for these immediate repeat reads.
-
-Changes in this pass
-1. `pulsescribe_daemon.py`
-- Extracted result-queue batch processing into a dedicated helper.
-- Coalesced bursty `AUDIO_LEVEL` messages so one poll tick now forwards only the newest visible level to the overlay.
-- Preserved VAD responsiveness by remembering whether any coalesced level crossed the trigger threshold, even if the final level in the burst dropped again.
-- Flushed pending audio before later status transitions in the same tick, so ordering stays sane when a burst is followed by `TRANSCRIBING`/other status updates.
-- Increased the per-tick drain budget now that hot audio traffic is coalesced, which reduces backlog pressure without spamming UI updates.
-
-2. `utils/permissions.py`
-- Added a tiny shared permission-signature cache for immediate repeat reads.
-- Added explicit cache invalidation on permission-request/open-settings paths so user-triggered permission changes do not stay stale.
-
-3. `ui/onboarding_wizard.py`
-- Routed the non-card fallback permission read through the new shared permission-signature helper.
-
-Tests added/updated
-- `tests/test_local_feedback.py`
-  - burst audio levels collapse to one overlay update
-  - pending audio is flushed before later status transitions in the same poll tick
-- `tests/test_permissions.py`
-  - shared permission snapshot is reused only within the short cache window
-  - permission-request flow invalidates the shared snapshot cache
-
-Why this helps
-- Recording responsiveness improves because the hottest queue traffic now scales with the latest visible state instead of every intermediate audio sample delivered to the daemon.
-- Overlay/UI work on the main thread is lower during active dictation bursts.
-- Permission-heavy onboarding/setup bursts avoid some duplicate macOS permission checks while still refreshing quickly after real user-triggered permission changes.
+Why this improves UX
+- onboarding is easier to understand on first use
+- the next action is clearer on every step
+- hotkey capture is more discoverable and more keyboard-friendly
+- loading / empty / failure states provide better recovery guidance
+- summary information now confirms setup outcomes instead of exposing raw config values
+- optional permissions no longer feel like blocking errors
 
 Validation
-- `pytest tests/test_daemon_mode.py tests/test_local_feedback.py tests/test_permissions.py tests/test_permissions_card.py tests/test_onboarding.py -q`
-- `python -m py_compile pulsescribe_daemon.py utils/permissions.py ui/onboarding_wizard.py tests/test_local_feedback.py tests/test_permissions.py`
-- `ruff check pulsescribe_daemon.py utils/permissions.py ui/onboarding_wizard.py tests/test_local_feedback.py tests/test_permissions.py`
+- `pytest tests/test_onboarding_windows.py tests/test_permissions_card.py tests/test_hotkey_card.py tests/test_onboarding.py -q`
+- `pytest tests/test_settings_ui.py -q`
+- `python -m py_compile ui/onboarding_wizard_windows.py ui/permissions_card.py ui/hotkey_card.py ui/styles_windows.py`
+- `ruff check ui/onboarding_wizard_windows.py ui/permissions_card.py ui/hotkey_card.py ui/styles_windows.py tests/test_onboarding_windows.py tests/test_permissions_card.py tests/test_hotkey_card.py`
 
-Recent completed areas (archived summary)
-- Welcome logs/transcripts: incremental append reuse, adaptive refresh timing, chunk/block caches
-- Overlay frontends: duplicate state/interim suppression, adaptive fallback polling, whitespace-tail fast path
-- Onboarding/settings: env batching, local session caches, repeated label/visibility dedupe, hotkey follow-up cleanup
-- Menubar/daemon UI dispatch: duplicate payload suppression, preview-title dedupe, adaptive result/interim polling
-
-Next worthwhile areas
+Next worthwhile UX areas
 1. `ui/settings_windows.py`
-- after the combo lookup cleanup and prompt-editor caching, the next follow-up inside settings would be the larger setup-overview/API-field synchronization path if real traces still show cost while editing provider credentials.
-
-2. prompt editors (`ui/welcome.py` / `ui/settings_windows.py` + `utils/custom_prompts.py`)
-- next prompt-specific candidate is the remaining multi-context merge/build work on save if very large prompt configs are edited across many contexts in one session.
-
-3. `ui/overlay.py`
-- if overlay traces still show pressure after the recording-frame cleanup, the next smaller target is `SoundWaveView._apply_bar_heights()` / CoreAnimation transaction setup on frames where multiple bars change together.
+- provider/API credential guidance and inline validation can still become clearer, but this was intentionally skipped because the last two commits already touched that area.
+2. `ui/welcome.py`
+- empty states and action hierarchy in the welcome/setup overview would benefit from another dedicated UX pass.
+3. overlay / recording feedback
+- some status transitions could still be made more self-explanatory, especially around transient processing and retry scenarios.

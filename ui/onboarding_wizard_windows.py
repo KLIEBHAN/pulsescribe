@@ -85,6 +85,49 @@ IPC_RECORDING_STALE_POLLS_AFTER_STOP = 30
 DEFAULT_WINDOWS_TOGGLE_HOTKEY = "ctrl+alt+r"
 DEFAULT_WINDOWS_HOLD_HOTKEY = "ctrl+win"
 
+LANGUAGE_LABELS = {
+    "auto": "Automatisch",
+    "de": "Deutsch",
+    "en": "Englisch",
+    "es": "Spanisch",
+    "fr": "Französisch",
+    "it": "Italienisch",
+    "pt": "Portugiesisch",
+    "nl": "Niederländisch",
+    "pl": "Polnisch",
+    "ru": "Russisch",
+    "zh": "Chinesisch",
+}
+
+MODE_LABELS = {
+    "deepgram": "Deepgram (Cloud, schnell)",
+    "groq": "Groq (Cloud, schnell)",
+    "openai": "OpenAI (Cloud)",
+    "local": "Lokal / Whisper (privat)",
+}
+
+HOTKEY_TOKEN_LABELS = {
+    "ctrl": "Ctrl",
+    "alt": "Alt",
+    "shift": "Shift",
+    "win": "Win",
+    "space": "Space",
+    "tab": "Tab",
+    "enter": "Enter",
+    "esc": "Esc",
+    "backspace": "Backspace",
+    "delete": "Delete",
+    "home": "Home",
+    "end": "End",
+    "pageup": "Page Up",
+    "pagedown": "Page Down",
+    "up": "↑",
+    "down": "↓",
+    "left": "←",
+    "right": "→",
+    "capslock": "Caps Lock",
+}
+
 
 # =============================================================================
 # Helper Functions
@@ -272,13 +315,49 @@ def _set_plain_text_if_changed(widget, text: str) -> bool:
     return True
 
 
-def _format_hotkey_summary_text(toggle: str, hold: str) -> str:
+def _format_mode_label(mode: str | None) -> str:
+    normalized = (mode or "").strip().lower()
+    if not normalized:
+        normalized = "deepgram"
+    return MODE_LABELS.get(normalized, normalized.capitalize())
+
+
+def _format_language_label(language: str | None) -> str:
+    normalized = (language or "").strip().lower()
+    if not normalized:
+        normalized = "auto"
+    return LANGUAGE_LABELS.get(normalized, normalized.upper())
+
+
+def _format_hotkey_for_display(hotkey: str | None) -> str:
+    normalized = (hotkey or "").strip().lower()
+    if not normalized:
+        return ""
+
+    parts = [part for part in normalized.split("+") if part]
+    display_parts: list[str] = []
+    for part in parts:
+        display = HOTKEY_TOKEN_LABELS.get(part)
+        if display is None:
+            if part.startswith("f") and part[1:].isdigit():
+                display = part.upper()
+            elif len(part) == 1:
+                display = part.upper()
+            else:
+                display = part.capitalize()
+        display_parts.append(display)
+    return "+".join(display_parts)
+
+
+def _format_hotkey_summary_text(
+    toggle: str, hold: str, *, separator: str = " • "
+) -> str:
     parts: list[str] = []
     if toggle:
-        parts.append(f"Toggle: {toggle}")
+        parts.append(f"Toggle: {_format_hotkey_for_display(toggle)}")
     if hold:
-        parts.append(f"Hold: {hold}")
-    return " | ".join(parts)
+        parts.append(f"Hold: {_format_hotkey_for_display(hold)}")
+    return separator.join(parts)
 
 
 # =============================================================================
@@ -324,11 +403,16 @@ class OnboardingWizardWindows(QDialog):
         self._api_key_status: QLabel | None = None
         self._toggle_input: QLineEdit | None = None
         self._hold_input: QLineEdit | None = None
+        self._toggle_record_btn: QPushButton | None = None
+        self._hold_record_btn: QPushButton | None = None
+        self._toggle_clear_btn: QPushButton | None = None
+        self._hold_clear_btn: QPushButton | None = None
         self._mic_status_label: QLabel | None = None
         self._test_transcript: QPlainTextEdit | None = None
         self._test_status_label: QLabel | None = None
         self._test_hotkey_label: QLabel | None = None
         self._test_successful = False
+        self._test_started_once = False
         self._summary_labels: dict[str, QLabel] = {}
         self._stack: QStackedWidget | None = None
         self._step_widgets: dict[OnboardingStep, QWidget] = {}
@@ -583,8 +667,8 @@ class OnboardingWizardWindows(QDialog):
         layout.addWidget(_create_section_title("Wie möchtest du PulseScribe nutzen?"))
         layout.addWidget(
             _create_description(
-                "Wähle eine Option basierend auf deinen Prioritäten. "
-                "Du kannst die Einstellungen später jederzeit ändern."
+                "Wir richten dir eine sinnvolle Startkonfiguration ein. "
+                "Alles lässt sich später jederzeit in den Einstellungen anpassen."
             )
         )
 
@@ -593,17 +677,17 @@ class OnboardingWizardWindows(QDialog):
             (
                 OnboardingChoice.FAST,
                 "Schnell",
-                "Cloud-basiert (Deepgram/Groq) – minimale Latenz",
+                "Empfohlen für den Alltag – Cloud-basiert und besonders reaktionsschnell",
             ),
             (
                 OnboardingChoice.PRIVATE,
                 "Privat",
-                "Lokal (Whisper) – keine Daten verlassen deinen PC",
+                "Lokal mit Whisper – Audio bleibt auf deinem Gerät",
             ),
             (
                 OnboardingChoice.ADVANCED,
                 "Erweitert",
-                "Manuelle Konfiguration – volle Kontrolle",
+                "Du entscheidest alles selbst – für individuelle Setups",
             ),
         ]
 
@@ -621,46 +705,56 @@ class OnboardingWizardWindows(QDialog):
 
         # Language selection
         lang_row = QHBoxLayout()
-        lang_label = QLabel("Sprache:")
+        lang_label = QLabel("Erkennungssprache:")
         lang_label.setFont(QFont(DEFAULT_FONT_FAMILY, 10))
         lang_row.addWidget(lang_label)
 
         self._lang_combo = QComboBox()
-        self._lang_combo.addItems(LANGUAGE_OPTIONS)
+        for language in LANGUAGE_OPTIONS:
+            self._lang_combo.addItem(_format_language_label(language), language)
         current_lang = self._get_cached_env_setting("PULSESCRIBE_LANGUAGE") or "auto"
-        if current_lang in LANGUAGE_OPTIONS:
-            self._lang_combo.setCurrentText(current_lang)
-        self._lang_combo.currentTextChanged.connect(self._on_language_changed)
+        current_index = self._lang_combo.findData(current_lang)
+        if current_index >= 0:
+            self._lang_combo.setCurrentIndex(current_index)
+        self._lang_combo.currentIndexChanged.connect(self._on_language_combo_changed)
         lang_row.addWidget(self._lang_combo)
         lang_row.addStretch()
 
         layout.addLayout(lang_row)
+
+        lang_hint = QLabel(
+            "Automatisch erkennt die Sprache beim Sprechen. Wähle eine feste Sprache nur, "
+            "wenn du fast immer dieselbe Sprache diktierst."
+        )
+        lang_hint.setFont(QFont(DEFAULT_FONT_FAMILY, 9))
+        lang_hint.setStyleSheet(f"color: {COLORS['text_hint']};")
+        lang_hint.setWordWrap(True)
+        layout.addWidget(lang_hint)
 
         # API Key input (shown when Fast is selected without existing key)
         api_container = QWidget()
         api_container.setVisible(False)
         api_layout = QVBoxLayout(api_container)
         api_layout.setContentsMargins(0, 8, 0, 0)
-        api_layout.setSpacing(4)
+        api_layout.setSpacing(6)
 
-        api_label = QLabel("Deepgram API Key:")
+        api_label = QLabel("Deepgram API-Key für den Fast-Modus")
         api_label.setFont(QFont(DEFAULT_FONT_FAMILY, 10))
         api_layout.addWidget(api_label)
 
-        api_row = QHBoxLayout()
         api_field = QLineEdit()
         api_field.setEchoMode(QLineEdit.EchoMode.Password)
         api_field.setPlaceholderText("dg-...")
         api_field.setFont(QFont(DEFAULT_FONT_FAMILY, 11))
         api_field.textChanged.connect(self._on_api_key_input_changed)
-        api_row.addWidget(api_field, 1)
+        api_layout.addWidget(api_field)
 
         api_status = QLabel("")
         api_status.setFont(QFont(DEFAULT_FONT_FAMILY, 9))
         api_status.setStyleSheet(f"color: {COLORS['text_secondary']};")
-        api_row.addWidget(api_status)
+        api_status.setWordWrap(True)
+        api_layout.addWidget(api_status)
 
-        api_layout.addLayout(api_row)
         layout.addWidget(api_container)
 
         self._api_key_container = api_container
@@ -681,7 +775,8 @@ class OnboardingWizardWindows(QDialog):
         layout.addWidget(_create_section_title("Berechtigungen"))
         layout.addWidget(
             _create_description(
-                "PulseScribe benötigt Zugriff auf dein Mikrofon für die Spracherkennung."
+                "Windows fragt den Mikrofonzugriff bei Bedarf an. "
+                "Im nächsten Schritt kannst du direkt eine sichere Testaufnahme starten."
             )
         )
 
@@ -698,14 +793,15 @@ class OnboardingWizardWindows(QDialog):
         mic_title.setFont(QFont(DEFAULT_FONT_FAMILY, 11, QFont.Weight.Bold))
         mic_text.addWidget(mic_title)
 
-        self._mic_status_label = QLabel("Wird geprüft...")
+        self._mic_status_label = QLabel("Noch nicht geprüft")
         self._mic_status_label.setFont(QFont(DEFAULT_FONT_FAMILY, 9))
         self._mic_status_label.setStyleSheet(f"color: {COLORS['text_secondary']};")
+        self._mic_status_label.setWordWrap(True)
         mic_text.addWidget(self._mic_status_label)
 
         mic_row.addLayout(mic_text, 1)
 
-        mic_btn = QPushButton("Einstellungen öffnen")
+        mic_btn = QPushButton("Windows öffnen")
         mic_btn.clicked.connect(self._open_mic_settings)
         mic_row.addWidget(mic_btn)
 
@@ -714,8 +810,9 @@ class OnboardingWizardWindows(QDialog):
 
         # Info text
         info = QLabel(
-            "Hinweis: Unter Windows sind keine weiteren Berechtigungen erforderlich. "
-            "Hotkeys funktionieren systemweit ohne zusätzliche Einstellungen."
+            "Unter Windows ist normalerweise nur der Mikrofonzugriff relevant. "
+            "Falls der Test fehlschlägt, prüfe Standardmikrofon, Datenschutz-Einstellungen "
+            "und ob PulseScribe im Hintergrund läuft."
         )
         info.setFont(QFont(DEFAULT_FONT_FAMILY, 9))
         info.setStyleSheet(f"color: {COLORS['text_hint']};")
@@ -736,75 +833,100 @@ class OnboardingWizardWindows(QDialog):
         layout.addWidget(_create_section_title("Hotkey-Konfiguration"))
         layout.addWidget(
             _create_description(
-                "Konfiguriere die Tastenkombinationen zum Starten der Aufnahme."
+                "Lege einen oder zwei Hotkeys fest. Toggle ist ideal für längere Diktate, "
+                "Hold für schnelles Push-to-talk."
             )
         )
 
         # Hotkey card
         card, card_layout = _create_card()
 
-        # Toggle hotkey
-        toggle_row = QHBoxLayout()
-        toggle_label = QLabel("Toggle-Hotkey:")
-        toggle_label.setFont(QFont(DEFAULT_FONT_FAMILY, 10))
-        toggle_label.setMinimumWidth(120)
-        toggle_row.addWidget(toggle_label)
+        def add_hotkey_row(
+            label_text: str,
+            hint_text: str,
+            field_kind: str,
+            current_value: str,
+        ) -> tuple[QLineEdit, QPushButton, QPushButton]:
+            row_layout = QVBoxLayout()
+            row_layout.setSpacing(4)
 
-        self._toggle_input = QLineEdit()
-        self._toggle_input.setPlaceholderText("Klicken zum Aufnehmen...")
-        self._toggle_input.setReadOnly(True)
-        self._toggle_input.setText(
-            self._get_cached_env_setting("PULSESCRIBE_TOGGLE_HOTKEY") or ""
+            controls = QHBoxLayout()
+            controls.setSpacing(8)
+
+            label = QLabel(label_text)
+            label.setFont(QFont(DEFAULT_FONT_FAMILY, 10, QFont.Weight.Bold))
+            label.setMinimumWidth(120)
+            controls.addWidget(label)
+
+            input_field = QLineEdit()
+            input_field.setPlaceholderText("Noch nicht gesetzt")
+            input_field.setReadOnly(True)
+            input_field.setToolTip("Zum Aufzeichnen klicken oder die Schaltfläche verwenden")
+            input_field.setText(current_value)
+            input_field.mousePressEvent = lambda _event, k=field_kind: self._toggle_hotkey_capture(
+                k
+            )
+            controls.addWidget(input_field, 1)
+
+            record_btn = QPushButton("Aufnehmen")
+            record_btn.setToolTip("Hotkey aufzeichnen")
+            record_btn.clicked.connect(
+                lambda _checked=False, k=field_kind: self._toggle_hotkey_capture(k)
+            )
+            controls.addWidget(record_btn)
+
+            clear_btn = QPushButton("Entfernen")
+            clear_btn.setToolTip("Gespeicherten Hotkey löschen")
+            clear_btn.clicked.connect(
+                lambda _checked=False, k=field_kind: self._clear_hotkey(k)
+            )
+            controls.addWidget(clear_btn)
+
+            row_layout.addLayout(controls)
+
+            hint = QLabel(hint_text)
+            hint.setFont(QFont(DEFAULT_FONT_FAMILY, 9))
+            hint.setStyleSheet(f"color: {COLORS['text_hint']};")
+            hint.setWordWrap(True)
+            row_layout.addWidget(hint)
+
+            card_layout.addLayout(row_layout)
+            return input_field, record_btn, clear_btn
+
+        (
+            self._toggle_input,
+            self._toggle_record_btn,
+            self._toggle_clear_btn,
+        ) = add_hotkey_row(
+            "Toggle-Hotkey",
+            "Einmal drücken → sprechen → erneut drücken. Gut für längere Diktate.",
+            "toggle",
+            self._get_cached_env_setting("PULSESCRIBE_TOGGLE_HOTKEY") or "",
         )
-        self._toggle_input.mousePressEvent = lambda e: self._start_hotkey_recording(
-            "toggle"
+        (
+            self._hold_input,
+            self._hold_record_btn,
+            self._hold_clear_btn,
+        ) = add_hotkey_row(
+            "Hold-Hotkey",
+            "Gedrückt halten → sprechen → loslassen. Hold darf nur Modifier enthalten, z. B. ctrl+win.",
+            "hold",
+            self._get_cached_env_setting("PULSESCRIBE_HOLD_HOTKEY") or "",
         )
-        toggle_row.addWidget(self._toggle_input, 1)
 
-        toggle_clear = QPushButton("×")
-        toggle_clear.setFixedWidth(32)
-        toggle_clear.clicked.connect(lambda: self._clear_hotkey("toggle"))
-        toggle_row.addWidget(toggle_clear)
-
-        card_layout.addLayout(toggle_row)
-
-        # Hold hotkey
-        hold_row = QHBoxLayout()
-        hold_label = QLabel("Hold-Hotkey:")
-        hold_label.setFont(QFont(DEFAULT_FONT_FAMILY, 10))
-        hold_label.setMinimumWidth(120)
-        hold_row.addWidget(hold_label)
-
-        self._hold_input = QLineEdit()
-        self._hold_input.setPlaceholderText("Klicken zum Aufnehmen...")
-        self._hold_input.setReadOnly(True)
-        self._hold_input.setText(
-            self._get_cached_env_setting("PULSESCRIBE_HOLD_HOTKEY") or ""
-        )
-        self._hold_input.mousePressEvent = lambda e: self._start_hotkey_recording(
-            "hold"
-        )
-        hold_row.addWidget(self._hold_input, 1)
-
-        hold_clear = QPushButton("×")
-        hold_clear.setFixedWidth(32)
-        hold_clear.clicked.connect(lambda: self._clear_hotkey("hold"))
-        hold_row.addWidget(hold_clear)
-
-        card_layout.addLayout(hold_row)
-
-        # Hotkey hints
         hint = QLabel(
-            "Toggle: Drücken-Sprechen-Drücken | Hold: Halten-Sprechen-Loslassen\n"
-            "Hold darf nur Modifier enthalten (z. B. ctrl+win)."
+            "Während der Aufzeichnung: Enter speichert, Esc bricht ab. "
+            "Du kannst Toggle und Hold parallel aktivieren."
         )
         hint.setFont(QFont(DEFAULT_FONT_FAMILY, 9))
         hint.setStyleSheet(f"color: {COLORS['text_hint']};")
+        hint.setWordWrap(True)
         card_layout.addWidget(hint)
 
         self._hotkey_status_label = QLabel("")
         self._hotkey_status_label.setFont(QFont(DEFAULT_FONT_FAMILY, 9))
         self._hotkey_status_label.setStyleSheet(f"color: {COLORS['text_secondary']};")
+        self._hotkey_status_label.setWordWrap(True)
         card_layout.addWidget(self._hotkey_status_label)
 
         layout.addWidget(card)
@@ -816,17 +938,22 @@ class OnboardingWizardWindows(QDialog):
 
         presets_row = QHBoxLayout()
 
-        preset_f19 = QPushButton("F19 Toggle")
+        preset_f19 = QPushButton("F19 (Toggle)")
+        preset_f19.setToolTip("Setzt nur den Toggle-Hotkey auf F19")
         preset_f19.clicked.connect(lambda: self._apply_hotkey_preset("f19", None))
         presets_row.addWidget(preset_f19)
 
-        preset_ctrl_alt = QPushButton("Ctrl+Alt+R / Ctrl+Alt+Space")
+        preset_ctrl_alt = QPushButton("Ctrl+Alt-Set")
+        preset_ctrl_alt.setToolTip(
+            "Toggle: Ctrl+Alt+R • Hold: Ctrl+Alt+Space"
+        )
         preset_ctrl_alt.clicked.connect(
             lambda: self._apply_hotkey_preset("ctrl+alt+r", "ctrl+alt+space")
         )
         presets_row.addWidget(preset_ctrl_alt)
 
-        preset_f13 = QPushButton("F13 Toggle")
+        preset_f13 = QPushButton("F13 (Toggle)")
+        preset_f13.setToolTip("Setzt nur den Toggle-Hotkey auf F13")
         preset_f13.clicked.connect(lambda: self._apply_hotkey_preset("f13", None))
         presets_row.addWidget(preset_f13)
 
@@ -834,6 +961,7 @@ class OnboardingWizardWindows(QDialog):
         layout.addLayout(presets_row)
 
         layout.addStretch()
+        self._update_hotkey_capture_ui()
 
         return widget
 
@@ -847,28 +975,33 @@ class OnboardingWizardWindows(QDialog):
         layout.addWidget(_create_section_title("Teste die Diktierfunktion"))
         layout.addWidget(
             _create_description(
-                "Drücke deinen Hotkey und sprich etwas. Der transkribierte Text erscheint unten."
+                "Starte eine sichere Testaufnahme direkt im Assistenten. "
+                "Der erkannte Text wird nur hier angezeigt und nicht eingefügt."
             )
         )
 
         # Hotkey reminder
         self._test_hotkey_label = QLabel()
-        self._test_hotkey_label.setFont(QFont(DEFAULT_FONT_FAMILY, 11, QFont.Weight.Bold))
+        self._test_hotkey_label.setFont(
+            QFont(DEFAULT_FONT_FAMILY, 10, QFont.Weight.Bold)
+        )
         self._test_hotkey_label.setStyleSheet(f"color: {COLORS['accent']};")
+        self._test_hotkey_label.setWordWrap(True)
         self._refresh_test_hotkey_label()
         layout.addWidget(self._test_hotkey_label)
 
         # Transcript area
         card, card_layout = _create_card()
 
-        self._test_status_label = QLabel("Warte auf Hotkey...")
+        self._test_status_label = QLabel("Noch kein Test gestartet.")
         self._test_status_label.setFont(QFont(DEFAULT_FONT_FAMILY, 10))
         self._test_status_label.setStyleSheet(f"color: {COLORS['text_secondary']};")
+        self._test_status_label.setWordWrap(True)
         card_layout.addWidget(self._test_status_label)
 
         self._test_transcript = QPlainTextEdit()
         self._test_transcript.setPlaceholderText(
-            "Transkribierter Text erscheint hier..."
+            "Sobald eine Testaufnahme abgeschlossen ist, erscheint der erkannte Text hier."
         )
         self._test_transcript.setReadOnly(True)
         self._test_transcript.setMinimumHeight(120)
@@ -879,11 +1012,12 @@ class OnboardingWizardWindows(QDialog):
         # Test buttons (IPC-based when daemon is running)
         btn_row = QHBoxLayout()
 
-        self._test_start_btn = QPushButton("Test starten")
+        self._test_start_btn = QPushButton("Aufnahme starten")
+        self._test_start_btn.setToolTip("Startet eine sichere Testaufnahme im Hintergrunddienst")
         self._test_start_btn.clicked.connect(self._start_ipc_test)
         btn_row.addWidget(self._test_start_btn)
 
-        self._test_stop_btn = QPushButton("Stoppen")
+        self._test_stop_btn = QPushButton("Aufnahme stoppen")
         self._test_stop_btn.clicked.connect(self._stop_ipc_test)
         self._test_stop_btn.setVisible(False)
         btn_row.addWidget(self._test_stop_btn)
@@ -893,7 +1027,7 @@ class OnboardingWizardWindows(QDialog):
 
         # Info text (shown when daemon not running)
         self._test_notice = QLabel(
-            "Tipp: Starte PulseScribe im Hintergrund, um den Test hier durchzuführen."
+            "Falls der Test nicht startet, prüfe bitte zuerst, ob PulseScribe im Hintergrund läuft."
         )
         self._test_notice.setFont(QFont(DEFAULT_FONT_FAMILY, 9))
         self._test_notice.setStyleSheet(f"color: {COLORS['text_secondary']};")
@@ -923,7 +1057,7 @@ class OnboardingWizardWindows(QDialog):
         layout.addWidget(_create_section_title("Alles bereit!"))
         layout.addWidget(
             _create_description(
-                "PulseScribe ist konfiguriert. Hier eine Zusammenfassung deiner Einstellungen:"
+                "Hier ist deine Startkonfiguration. Du kannst später alles jederzeit in den Einstellungen ändern."
             )
         )
 
@@ -955,16 +1089,26 @@ class OnboardingWizardWindows(QDialog):
         lang_row.addWidget(self._summary_labels["language"], 1)
         card_layout.addLayout(lang_row)
 
+        test_row = QHBoxLayout()
+        test_row.addWidget(QLabel("Diktiertest:"))
+        self._summary_labels["test"] = QLabel()
+        self._summary_labels["test"].setWordWrap(True)
+        test_row.addWidget(self._summary_labels["test"], 1)
+        card_layout.addLayout(test_row)
+
         layout.addWidget(card)
 
         # Ready message
-        ready = QLabel("Du kannst jetzt mit dem Diktieren beginnen!")
+        ready = QLabel(
+            "Du kannst jetzt in jeder App diktieren. PulseScribe transkribiert deine Sprache und fügt den Text danach automatisch ein."
+        )
         ready.setFont(QFont(DEFAULT_FONT_FAMILY, 11))
         ready.setStyleSheet(f"color: {COLORS['success']};")
+        ready.setWordWrap(True)
         layout.addWidget(ready)
 
         # Open settings button
-        settings_btn = QPushButton("Einstellungen öffnen...")
+        settings_btn = QPushButton("Weitere Einstellungen öffnen...")
         settings_btn.clicked.connect(self._open_settings_after)
         layout.addWidget(settings_btn)
 
@@ -1134,6 +1278,7 @@ class OnboardingWizardWindows(QDialog):
 
         # A retry must earn success again; otherwise a stale pass keeps "Weiter"
         # enabled even after a later failed/no-speech attempt.
+        self._test_started_once = True
         self._test_successful = False
         self._update_navigation()
 
@@ -1303,27 +1448,44 @@ class OnboardingWizardWindows(QDialog):
         """Display error state with troubleshooting hint."""
         self._set_test_transcript_text("")
         self._test_successful = False
-        self._set_test_status(f"Fehler: {error}", "error")
+        self._set_test_status(
+            f"Fehler: {error}",
+            "error",
+        )
         if self._test_notice:
             _set_widget_visible_if_changed(self._test_notice, True)
             _set_widget_text_if_changed(
                 self._test_notice,
-                "Tipp: Stelle sicher, dass PulseScribe im Hintergrund läuft."
+                "Prüfe, ob PulseScribe läuft, dein Mikrofon verfügbar ist und versuche es dann erneut.",
             )
         self._update_navigation()
 
     def _show_test_success(self, transcript: str) -> None:
         """Display successful transcription."""
         self._set_test_transcript_text(transcript)
-        self._set_test_status("Erfolgreich!", "success")
+        self._set_test_status(
+            "Erfolgreich – du kannst jetzt fortfahren.",
+            "success",
+        )
         self._test_successful = True
+        if self._test_notice:
+            _set_widget_visible_if_changed(self._test_notice, False)
         self._update_navigation()
 
     def _show_test_no_speech(self) -> None:
         """Display "no speech detected" state."""
         self._set_test_transcript_text("")
         self._test_successful = False
-        self._set_test_status("Keine Sprache erkannt. Nochmal versuchen?", "warning")
+        self._set_test_status(
+            "Keine Sprache erkannt. Sprich etwas lauter oder näher am Mikrofon.",
+            "warning",
+        )
+        if self._test_notice:
+            _set_widget_visible_if_changed(self._test_notice, True)
+            _set_widget_text_if_changed(
+                self._test_notice,
+                "Tipp: Prüfe das richtige Eingabegerät in Windows oder versuche es noch einmal.",
+            )
         self._update_navigation()
 
     def _set_test_status(self, text: str, color_key: str) -> None:
@@ -1371,8 +1533,13 @@ class OnboardingWizardWindows(QDialog):
             _set_widget_visible_if_changed(self._api_key_container, show_api)
             if show_api and self._api_key_status:
                 _set_widget_text_if_changed(
-                    self._api_key_status, "Erforderlich für Fast-Modus"
+                    self._api_key_status,
+                    "Erforderlich für Fast-Modus: Deepgram-Key einfügen. Ein vorhandener Groq-Key wird automatisch erkannt.",
                 )
+                _set_widget_stylesheet_if_changed(
+                    self._api_key_status, f"color: {COLORS['text_secondary']};"
+                )
+                self._focus_api_key_field()
 
         if save:
             set_onboarding_choice(choice)
@@ -1457,7 +1624,8 @@ class OnboardingWizardWindows(QDialog):
                     _set_widget_visible_if_changed(self._api_key_container, True)
                     if self._api_key_status:
                         _set_widget_text_if_changed(
-                            self._api_key_status, "Erforderlich für Fast-Modus"
+                            self._api_key_status,
+                            "Erforderlich für Fast-Modus: Deepgram-Key einfügen. Ein vorhandener Groq-Key wird automatisch erkannt.",
                         )
                 return False
 
@@ -1469,6 +1637,25 @@ class OnboardingWizardWindows(QDialog):
             return changed
         # ADVANCED: No automatic configuration
         return False
+
+    def _focus_api_key_field(self) -> None:
+        field = self._api_key_field
+        if field is None:
+            return
+        try:
+            QTimer.singleShot(0, field.setFocus)
+        except Exception:
+            try:
+                field.setFocus()
+            except Exception:
+                pass
+
+    def _on_language_combo_changed(self, index: int) -> None:
+        combo = self._lang_combo
+        if combo is None:
+            return
+        selected = combo.itemData(index)
+        self._on_language_changed(str(selected or "auto"))
 
     def _on_language_changed(self, lang: str) -> None:
         """Handle language selection change."""
@@ -1483,13 +1670,17 @@ class OnboardingWizardWindows(QDialog):
         self._fast_choice_requires_reapply = bool(text.strip())
         if self._api_key_status:
             if text.strip():
-                _set_widget_text_if_changed(self._api_key_status, "✓ API-Key erkannt")
+                _set_widget_text_if_changed(
+                    self._api_key_status,
+                    "✓ API-Key erkannt – Fast-Modus nutzt Deepgram.",
+                )
                 _set_widget_stylesheet_if_changed(
                     self._api_key_status, f"color: {COLORS['success']};"
                 )
             else:
                 _set_widget_text_if_changed(
-                    self._api_key_status, "Erforderlich für Fast-Modus"
+                    self._api_key_status,
+                    "Erforderlich für Fast-Modus: Deepgram-Key einfügen. Ein vorhandener Groq-Key wird automatisch erkannt.",
                 )
                 _set_widget_stylesheet_if_changed(
                     self._api_key_status, f"color: {COLORS['text_secondary']};"
@@ -1518,7 +1709,7 @@ class OnboardingWizardWindows(QDialog):
         # On Windows, we can't directly check mic permission without attempting recording.
         # We'll show a generic "ready" status and let the user test in the next step.
         _set_widget_text_if_changed(
-            self._mic_status_label, "Bereit (wird beim Test geprüft)"
+            self._mic_status_label, "Wird im nächsten Schritt per Testaufnahme geprüft"
         )
         _set_widget_stylesheet_if_changed(
             self._mic_status_label, f"color: {COLORS['success']};"
@@ -1529,9 +1720,26 @@ class OnboardingWizardWindows(QDialog):
         try:
             # os.startfile ist die sichere Windows-API (kein shell=True nötig)
             import os
+
             os.startfile("ms-settings:privacy-microphone")
+            if self._mic_status_label is not None:
+                _set_widget_text_if_changed(
+                    self._mic_status_label,
+                    "Windows-Mikrofoneinstellungen wurden geöffnet",
+                )
+                _set_widget_stylesheet_if_changed(
+                    self._mic_status_label, f"color: {COLORS['text_secondary']};"
+                )
         except Exception as e:
             logger.warning(f"Konnte Einstellungen nicht öffnen: {e}")
+            if self._mic_status_label is not None:
+                _set_widget_text_if_changed(
+                    self._mic_status_label,
+                    "Konnte Windows-Mikrofoneinstellungen nicht öffnen",
+                )
+                _set_widget_stylesheet_if_changed(
+                    self._mic_status_label, f"color: {COLORS['warning']};"
+                )
 
     # -------------------------------------------------------------------------
     # Step: Hotkey
@@ -1555,11 +1763,50 @@ class OnboardingWizardWindows(QDialog):
             self._hold_input.setText(hold)
 
         self._set_hotkey_status(
-            f"Standard gesetzt: Toggle {toggle}, Hold {hold}.", "text_secondary"
+            "Standard gesetzt: "
+            f"Toggle {_format_hotkey_for_display(toggle)}, "
+            f"Hold {_format_hotkey_for_display(hold)}.",
+            "text_secondary",
         )
         self._refresh_test_hotkey_label()
         if changed:
             self.settings_changed.emit()
+
+    def _toggle_hotkey_capture(self, field: str) -> None:
+        if self._recording_field == field:
+            if self._hotkey_recorded:
+                self._stop_hotkey_recording(save=True)
+            else:
+                self._set_hotkey_status(
+                    "Drücke zuerst die gewünschte Tastenkombination.", "warning"
+                )
+            return
+        self._start_hotkey_recording(field)
+
+    def _update_hotkey_capture_ui(self) -> None:
+        active_field = self._recording_field
+        button_rows = (
+            (
+                "toggle",
+                getattr(self, "_toggle_record_btn", None),
+                getattr(self, "_toggle_clear_btn", None),
+            ),
+            (
+                "hold",
+                getattr(self, "_hold_record_btn", None),
+                getattr(self, "_hold_clear_btn", None),
+            ),
+        )
+        for field_name, record_btn, clear_btn in button_rows:
+            is_active = active_field == field_name
+            other_active = active_field is not None and not is_active
+            if record_btn is not None:
+                _set_widget_text_if_changed(
+                    record_btn, "Speichern" if is_active else "Aufnehmen"
+                )
+                _set_widget_enabled_if_changed(record_btn, not other_active)
+            if clear_btn is not None:
+                _set_widget_enabled_if_changed(clear_btn, active_field is None)
 
     def _start_hotkey_recording(self, field: str) -> None:
         """Start recording a hotkey."""
@@ -1577,16 +1824,17 @@ class OnboardingWizardWindows(QDialog):
 
         input_field = self._toggle_input if field == "toggle" else self._hold_input
         if input_field:
-            _set_widget_text_if_changed(input_field, "Drücke Hotkey, dann Enter...")
+            _set_widget_text_if_changed(input_field, "Tastenkombination drücken…")
             input_field.setStyleSheet(f"border-color: {COLORS['accent']};")
 
         with self._pressed_keys_lock:
             self._pressed_keys.clear()
 
         self._set_hotkey_status(
-            "Drücke Hotkey und bestätige mit Enter (Esc = Abbrechen).",
+            "Drücke die gewünschte Tastenkombination und bestätige mit Enter oder „Speichern“. Esc bricht ab.",
             "text_secondary",
         )
+        self._update_hotkey_capture_ui()
 
         available, key_map = get_pynput_key_map()
         if not available:
@@ -1761,6 +2009,7 @@ class OnboardingWizardWindows(QDialog):
         for inp in (self._toggle_input, self._hold_input):
             if inp:
                 inp.setStyleSheet("")
+        self._update_hotkey_capture_ui()
 
     def _save_hotkey(self, field: str, hotkey: str) -> bool:
         """Save a hotkey to settings. Called by _stop_hotkey_recording."""
@@ -1781,7 +2030,10 @@ class OnboardingWizardWindows(QDialog):
 
         changed = self._persist_hotkeys(toggle, hold)
 
-        self._set_hotkey_status("✓ Hotkey gespeichert", "success")
+        self._set_hotkey_status(
+            "✓ Hotkey gespeichert – du kannst ihn im nächsten Schritt testen.",
+            "success",
+        )
         if changed:
             self.settings_changed.emit()
         self._refresh_test_hotkey_label()
@@ -1806,7 +2058,10 @@ class OnboardingWizardWindows(QDialog):
         else:
             changed = False
 
-        self._set_hotkey_status("Hotkey entfernt", "text_secondary")
+        self._set_hotkey_status(
+            "Hotkey entfernt. Mindestens ein Hotkey sollte aktiv bleiben.",
+            "text_secondary",
+        )
         if changed:
             self.settings_changed.emit()
         self._refresh_test_hotkey_label()
@@ -1840,7 +2095,10 @@ class OnboardingWizardWindows(QDialog):
 
         changed = self._persist_hotkeys(normalized_toggle, normalized_hold)
 
-        self._set_hotkey_status("✓ Preset angewendet", "success")
+        self._set_hotkey_status(
+            "✓ Preset angewendet – du kannst die Werte bei Bedarf noch anpassen.",
+            "success",
+        )
         if changed:
             self.settings_changed.emit()
         self._refresh_test_hotkey_label()
@@ -1895,9 +2153,11 @@ class OnboardingWizardWindows(QDialog):
             return
 
         toggle, hold = self._get_cached_hotkeys()
-        summary_text = (
-            _format_hotkey_summary_text(toggle, hold) or "Kein Hotkey konfiguriert"
-        )
+        summary_text = _format_hotkey_summary_text(toggle, hold, separator="\n")
+        if summary_text:
+            summary_text = f"Gespeicherte Hotkeys:\n{summary_text}"
+        else:
+            summary_text = "Noch kein Hotkey konfiguriert"
         if getattr(self, "_last_test_hotkey_summary", None) == summary_text:
             return
         self._last_test_hotkey_summary = summary_text
@@ -1913,7 +2173,7 @@ class OnboardingWizardWindows(QDialog):
         mode = self._get_cached_env_setting("PULSESCRIBE_MODE") or "deepgram"
         if "mode" in self._summary_labels:
             _set_widget_text_if_changed(
-                self._summary_labels["mode"], mode.capitalize()
+                self._summary_labels["mode"], _format_mode_label(mode)
             )
 
         # Hotkeys
@@ -1927,7 +2187,24 @@ class OnboardingWizardWindows(QDialog):
         # Language
         lang = self._get_cached_env_setting("PULSESCRIBE_LANGUAGE") or "auto"
         if "language" in self._summary_labels:
-            _set_widget_text_if_changed(self._summary_labels["language"], lang)
+            _set_widget_text_if_changed(
+                self._summary_labels["language"], _format_language_label(lang)
+            )
+
+        if "test" in self._summary_labels:
+            if self._test_successful:
+                test_text = "Erfolgreich geprüft"
+                test_color = COLORS["success"]
+            elif self._test_started_once:
+                test_text = "Noch nicht erfolgreich"
+                test_color = COLORS["warning"]
+            else:
+                test_text = "Noch nicht getestet"
+                test_color = COLORS["text_secondary"]
+            _set_widget_text_if_changed(self._summary_labels["test"], test_text)
+            _set_widget_stylesheet_if_changed(
+                self._summary_labels["test"], f"color: {test_color};"
+            )
 
     def _set_test_transcript_text(self, text: str) -> bool:
         editor = self._test_transcript
@@ -2000,6 +2277,11 @@ class OnboardingWizardWindows(QDialog):
 
             # Enter = Confirm
             if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                if not self._hotkey_recorded:
+                    self._set_hotkey_status(
+                        "Drücke zuerst die gewünschte Tastenkombination.",
+                        "warning",
+                    )
                 self._stop_hotkey_recording(save=True)
                 event.accept()
                 return
