@@ -1,5 +1,25 @@
 Performance notes - 2026-04-19
 
+Latest pass - prompt switch/load-path caching (`ui/settings_windows.py` / `ui/welcome.py` / `utils/custom_prompts.py`)
+- Reviewed the next remaining prompt-editor hotspot specifically around context switches / loads.
+- Clearest concrete weaknesses there:
+  1. app-mappings text was still repeatedly reformatted during prompt context switches and dirty-baseline checks even while the loaded prompt data stayed unchanged
+  2. `ui/settings_windows.py::_load_prompt_for_context()` formatted/loaded prompt text and then immediately recomputed the same baseline again for dirty tracking
+  3. the macOS prompt editor still replaced NSTextView content/status eagerly during context/reset flows even when the effective text was already current
+- Chosen optimization:
+  - added a shared prompt-editor text helper in `utils.custom_prompts.py` with optional per-context text caching
+  - reused that cache in Windows/macOS prompt load/reset/switch flows so app-mappings formatting is computed once per loaded/default prompt state instead of per check
+  - allowed dirty-baseline comparisons to reuse already-known baseline text instead of recomputing it right after load/reset
+  - avoided redundant NSTextView / prompt-status updates on macOS and redundant prompt-status restyles on Windows when content is unchanged
+- Why this helps:
+  - cheaper context switches, especially for large app-mappings editors
+  - less repeated sorting/formatting and less UI churn while moving between prompt contexts
+  - no behavior change; only less repeated work in the prompt editor load/switch path
+- Validation for this pass:
+  - `pytest tests/test_custom_prompts.py tests/test_prompts.py tests/test_settings_windows_prompts.py tests/test_settings_windows_load.py tests/test_settings_ui.py -q`
+  - `python -m py_compile utils/custom_prompts.py ui/settings_windows.py ui/welcome.py tests/test_custom_prompts.py tests/test_settings_windows_prompts.py tests/test_settings_ui.py`
+  - `ruff check utils/custom_prompts.py ui/settings_windows.py ui/welcome.py tests/test_custom_prompts.py tests/test_settings_windows_prompts.py tests/test_settings_ui.py`
+
 Latest pass - prompt editor save-path reuse (`ui/settings_windows.py` / `ui/welcome.py` / `utils/custom_prompts.py`)
 - Reviewed the remaining prompt-editor hotspots with focus on app-mappings / multi-context saves.
 - Clearest concrete weaknesses there:
@@ -200,11 +220,11 @@ Recent completed areas (archived summary)
 - Menubar/daemon UI dispatch: duplicate payload suppression, preview-title dedupe, adaptive result/interim polling
 
 Next worthwhile areas
-1. prompt editors (`ui/welcome.py` / `ui/settings_windows.py` + `utils/custom_prompts.py`)
-- after the save-path cleanup, the next likely prompt hotspot is repeated app-mappings formatting / dirty-baseline work during context switches if very large mappings are edited frequently.
+1. `ui/settings_windows.py`
+- after the combo lookup cleanup and prompt-editor caching, the next follow-up inside settings would be the larger setup-overview/API-field synchronization path if real traces still show cost while editing provider credentials.
 
-2. `ui/settings_windows.py`
-- after the combo lookup cleanup, the next follow-up inside settings would be the larger setup-overview/API-field synchronization path if real traces still show cost while editing provider credentials.
+2. prompt editors (`ui/welcome.py` / `ui/settings_windows.py` + `utils/custom_prompts.py`)
+- next prompt-specific candidate is the remaining multi-context merge/build work on save if very large prompt configs are edited across many contexts in one session.
 
 3. `ui/overlay.py`
 - if overlay traces still show pressure after the recording-frame cleanup, the next smaller target is `SoundWaveView._apply_bar_heights()` / CoreAnimation transaction setup on frames where multiple bars change together.

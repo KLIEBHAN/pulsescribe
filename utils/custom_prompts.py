@@ -299,6 +299,47 @@ def get_app_contexts() -> dict[str, str]:
 get_custom_app_contexts = get_app_contexts
 
 
+def get_prompt_editor_text(
+    context: str,
+    *,
+    data: dict,
+    text_cache: dict[str, str] | None = None,
+) -> str:
+    """Return editable UI text for one prompt-editor context.
+
+    ``text_cache`` lets callers reuse expensive formatted text such as
+    app-mappings across repeated context switches and dirty-baseline checks.
+    """
+    normalized_context = str(context or "")
+    if text_cache is not None:
+        cached = text_cache.get(normalized_context)
+        if isinstance(cached, str):
+            return cached
+
+    if normalized_context == "voice_commands":
+        text = str(
+            _get_string_field(
+                _get_section_mapping(data, "voice_commands"),
+                "instruction",
+            )
+            or ""
+        )
+    elif normalized_context == "app_mappings":
+        text = format_app_mappings(_get_section_mapping(data, "app_contexts"))
+    else:
+        text = str(
+            _get_string_field(
+                _get_section_mapping(data, "prompts").get(normalized_context),
+                "prompt",
+            )
+            or ""
+        )
+
+    if text_cache is not None:
+        text_cache[normalized_context] = text
+    return text
+
+
 # =============================================================================
 # App-Mappings: Text-Format für UI-Editor
 # =============================================================================
@@ -523,7 +564,8 @@ __all__ = [
     "get_custom_prompt_for_context",
     "get_custom_voice_commands",
     "get_custom_app_contexts",
-    # App-Mappings Format
+    # App-Mappings / Editor-Format
+    "get_prompt_editor_text",
     "format_app_mappings",
     "parse_app_mappings",
     # Speichern/Reset

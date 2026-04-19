@@ -183,6 +183,25 @@ def _set_string_value_if_changed(field, value: str) -> bool:
         return False
 
 
+
+def _set_text_view_string_if_changed(text_view, value: str) -> bool:
+    """Avoid redundant NSTextView content replacements on context switches."""
+    if text_view is None:
+        return False
+    current_value = getattr(text_view, "string", None)
+    if callable(current_value):
+        try:
+            if str(current_value()) == value:
+                return False
+        except Exception:
+            pass
+    try:
+        text_view.setString_(value)
+        return True
+    except Exception:
+        return False
+
+
 def _build_setup_hotkey_info(
     toggle_hotkey: str | None,
     hold_hotkey: str | None,
@@ -307,6 +326,10 @@ class WelcomeController:
         self._restart_handler = None
         self._prompts_defaults_data: dict | None = None
         self._prompts_loaded_data: dict | None = None
+        self._prompt_text_cache: dict[str, str] = {}
+        self._prompt_text_cache_source: dict | None = None
+        self._prompt_defaults_text_cache: dict[str, str] = {}
+        self._prompt_defaults_text_cache_source: dict | None = None
         self._hotkey_card: HotkeyCard | None = None
         self._hotkey_recorder = HotkeyRecorder()
         # Setup/Onboarding Tab
@@ -1906,10 +1929,7 @@ class WelcomeController:
         )
         import objc  # type: ignore[import-not-found]
 
-        from utils.custom_prompts import (
-            KNOWN_CONTEXTS,
-            format_app_mappings,
-        )
+        from utils.custom_prompts import KNOWN_CONTEXTS
 
         parent_view = parent_view or self._content_view
 
@@ -2017,8 +2037,7 @@ class WelcomeController:
             tc.setWidthTracksTextView_(True)
 
         # Initial laden
-        prompt_data = self._get_loaded_prompts_data()
-        current_prompt = prompt_data["prompts"]["default"]["prompt"]
+        current_prompt = self._get_prompt_editor_text_for_context("default")
         text_view.setString_(current_prompt)
         scroll.setDocumentView_(text_view)
         parent_view.addSubview_(scroll)
@@ -2069,46 +2088,38 @@ class WelcomeController:
 
             # Aus Cache oder frisch laden
             if new_ctx in self._prompts_cache:
-                self._prompts_text_view.setString_(self._prompts_cache[new_ctx])
-                return
-
-            loaded_prompts = self._get_loaded_prompts_data()
-            if new_ctx == "── Voice Commands":
-                self._prompts_text_view.setString_(
-                    loaded_prompts["voice_commands"]["instruction"]
-                )
-                return
-            if new_ctx == "── App Mappings":
-                self._prompts_text_view.setString_(
-                    format_app_mappings(loaded_prompts["app_contexts"])
+                _set_text_view_string_if_changed(
+                    self._prompts_text_view,
+                    self._prompts_cache[new_ctx],
                 )
                 return
 
-            prompt = loaded_prompts["prompts"][new_ctx]["prompt"]
-            self._prompts_text_view.setString_(prompt)
+            _set_text_view_string_if_changed(
+                self._prompts_text_view,
+                self._get_prompt_editor_text_for_context(new_ctx),
+            )
 
         def on_reset(_sender) -> None:
             ctx = str(self._prompts_context_popup.titleOfSelectedItem())
-            defaults = self._get_prompt_defaults_data()
 
+            text = self._get_prompt_editor_text_for_context(ctx, defaults=True)
+            _set_text_view_string_if_changed(self._prompts_text_view, text)
+            self._prompts_cache[ctx] = text
             if ctx == "── Voice Commands":
-                # Voice Commands auf Default zurücksetzen
-                default_vc = defaults["voice_commands"]["instruction"]
-                self._prompts_text_view.setString_(default_vc)
-                self._prompts_cache[ctx] = default_vc
-                self._prompts_status_label.setStringValue_("Reset Voice Commands")
+                _set_string_value_if_changed(
+                    self._prompts_status_label,
+                    "Reset Voice Commands",
+                )
             elif ctx == "── App Mappings":
-                # App Mappings auf Default zurücksetzen
-                default_mappings = defaults["app_contexts"]
-                text = format_app_mappings(default_mappings)
-                self._prompts_text_view.setString_(text)
-                self._prompts_cache[ctx] = text
-                self._prompts_status_label.setStringValue_("Reset App Mappings")
+                _set_string_value_if_changed(
+                    self._prompts_status_label,
+                    "Reset App Mappings",
+                )
             else:
-                default_prompt = defaults["prompts"].get(ctx, {}).get("prompt", "")
-                self._prompts_text_view.setString_(default_prompt)
-                self._prompts_cache[ctx] = default_prompt
-                self._prompts_status_label.setStringValue_(f"Reset '{ctx}' to default")
+                _set_string_value_if_changed(
+                    self._prompts_status_label,
+                    f"Reset '{ctx}' to default",
+                )
 
         # Handler-Klasse für ObjC
         class _PromptsActionHandler(objc.lookUpClass("NSObject")):
@@ -2263,6 +2274,52 @@ class WelcomeController:
             cached = load_custom_prompts()
             self._prompts_loaded_data = cached
         return cached
+
+    def _prompt_editor_context_key(self, context: str | None) -> str:
+        if context == "── Voice Commands":
+            return "voice_commands"
+        if context == "── App Mappings":
+            return "app_mappings"
+        return str(context or "default")
+
+    def _get_prompt_text_cache(
+        self,
+        data: dict,
+        *,
+        defaults: bool = False,
+    ) -> dict[str, str]:
+        cache_attr = "_prompt_defaults_text_cache" if defaults else "_prompt_text_cache"
+        source_attr = (
+            "_prompt_defaults_text_cache_source"
+            if defaults
+            else "_prompt_text_cache_source"
+        )
+        cached_source = getattr(self, source_attr, None)
+        cached_texts = getattr(self, cache_attr, None)
+        if data is not cached_source or not isinstance(cached_texts, dict):
+            cached_texts = {}
+            setattr(self, cache_attr, cached_texts)
+            setattr(self, source_attr, data)
+        return cached_texts
+
+    def _get_prompt_editor_text_for_context(
+        self,
+        context: str,
+        *,
+        defaults: bool = False,
+    ) -> str:
+        from utils.custom_prompts import get_prompt_editor_text
+
+        prompt_data = (
+            self._get_prompt_defaults_data()
+            if defaults
+            else self._get_loaded_prompts_data()
+        )
+        return get_prompt_editor_text(
+            self._prompt_editor_context_key(context),
+            data=prompt_data,
+            text_cache=self._get_prompt_text_cache(prompt_data, defaults=defaults),
+        )
 
     def _get_loaded_vocabulary_keywords(self, *, force: bool = False) -> list[str]:
         cached = getattr(self, "_loaded_vocabulary_keywords", None)

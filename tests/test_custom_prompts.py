@@ -647,6 +647,38 @@ class TestGetDefaults:
         assert defaults["app_contexts"]["Slack"] == "chat"
 
 
+class TestPromptEditorText:
+    """Tests für get_prompt_editor_text()."""
+
+    def test_reuses_cached_app_mappings_formatting(self, monkeypatch):
+        import utils.custom_prompts as cp
+
+        data = cp.get_defaults()
+        calls: list[dict[str, str]] = []
+        original_formatter = cp.format_app_mappings
+
+        def _tracked_format(mappings: dict[str, str]) -> str:
+            calls.append(dict(mappings))
+            return original_formatter(mappings)
+
+        monkeypatch.setattr(cp, "format_app_mappings", _tracked_format)
+
+        text_cache: dict[str, str] = {}
+        first = cp.get_prompt_editor_text(
+            "app_mappings",
+            data=data,
+            text_cache=text_cache,
+        )
+        second = cp.get_prompt_editor_text(
+            "app_mappings",
+            data=data,
+            text_cache=text_cache,
+        )
+
+        assert first == second
+        assert len(calls) == 1
+
+
 class TestFilterOverridesForStorage:
     """Tests für filter_overrides_for_storage()."""
 

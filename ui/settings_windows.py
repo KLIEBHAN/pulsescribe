@@ -722,7 +722,12 @@ class SettingsWindow(QDialog):
         self._logs_auto_refresh_step = 0
         self._vocabulary_loaded = False
         self._last_vocabulary_signature: tuple[int, int] | None = None
+        self._prompts_defaults_data: dict | None = None
         self._prompts_loaded_data: dict | None = None
+        self._prompt_text_cache: dict[str, str] = {}
+        self._prompt_text_cache_source: dict | None = None
+        self._prompt_defaults_text_cache: dict[str, str] = {}
+        self._prompt_defaults_text_cache_source: dict | None = None
         self._dirty_prompt_contexts: set[str] = set()
 
         # Hotkey Recording State
@@ -1722,6 +1727,15 @@ class SettingsWindow(QDialog):
             return
         self._load_prompt_for_context(self._current_prompt_context or "default")
 
+    def _get_prompt_defaults_data(self) -> dict:
+        cached = getattr(self, "_prompts_defaults_data", None)
+        if cached is None:
+            from utils.custom_prompts import get_defaults
+
+            cached = get_defaults()
+            self._prompts_defaults_data = cached
+        return cached
+
     def _get_loaded_prompts_data(self, *, force: bool = False) -> dict:
         cached = getattr(self, "_prompts_loaded_data", None)
         if force or cached is None:
@@ -1731,22 +1745,60 @@ class SettingsWindow(QDialog):
             self._prompts_loaded_data = cached
         return cached
 
+    def _get_prompt_text_cache(
+        self,
+        data: dict,
+        *,
+        defaults: bool = False,
+    ) -> dict[str, str]:
+        cache_attr = "_prompt_defaults_text_cache" if defaults else "_prompt_text_cache"
+        source_attr = (
+            "_prompt_defaults_text_cache_source"
+            if defaults
+            else "_prompt_text_cache_source"
+        )
+        cached_source = getattr(self, source_attr, None)
+        cached_texts = getattr(self, cache_attr, None)
+        if data is not cached_source or not isinstance(cached_texts, dict):
+            cached_texts = {}
+            setattr(self, cache_attr, cached_texts)
+            setattr(self, source_attr, data)
+        return cached_texts
+
     def _get_prompt_text_for_context(self, context: str, *, data: dict | None = None) -> str:
+        from utils.custom_prompts import get_prompt_editor_text
+
         prompt_data = data or self._get_loaded_prompts_data()
+        text_cache = self._get_prompt_text_cache(prompt_data)
+        return get_prompt_editor_text(
+            context,
+            data=prompt_data,
+            text_cache=text_cache,
+        )
 
-        if context == "voice_commands":
-            return str(prompt_data.get("voice_commands", {}).get("instruction", ""))
+    def _get_prompt_default_text_for_context(self, context: str) -> str:
+        from utils.custom_prompts import get_prompt_editor_text
 
-        if context == "app_mappings":
-            from utils.custom_prompts import format_app_mappings
+        defaults = self._get_prompt_defaults_data()
+        return get_prompt_editor_text(
+            context,
+            data=defaults,
+            text_cache=self._get_prompt_text_cache(defaults, defaults=True),
+        )
 
-            return format_app_mappings(prompt_data.get("app_contexts", {}))
-
-        return str(prompt_data.get("prompts", {}).get(context, {}).get("prompt", ""))
-
-    def _cache_prompt_text(self, context: str, text: str) -> None:
+    def _cache_prompt_text(
+        self,
+        context: str,
+        text: str,
+        *,
+        baseline_text: str | None = None,
+    ) -> None:
         self._prompts_cache[context] = text
-        baseline = self._get_prompt_text_for_context(context)
+        baseline = (
+            baseline_text
+            if baseline_text is not None
+            else self._get_prompt_text_for_context(context)
+        )
 
         if text == baseline:
             self._dirty_prompt_contexts.discard(context)
@@ -2359,7 +2411,7 @@ class SettingsWindow(QDialog):
 
             if self._prompt_editor:
                 set_plain_text_if_changed(self._prompt_editor, text)
-                self._cache_prompt_text(context, text)
+                self._cache_prompt_text(context, text, baseline_text=text)
                 self._set_prompt_status("", "text")
                 self._prompts_loaded = True
 
@@ -2419,25 +2471,16 @@ class SettingsWindow(QDialog):
     def _reset_prompt_to_default(self):
         """Setzt aktuellen Prompt auf Default zurück."""
         try:
-            from utils.custom_prompts import get_defaults, format_app_mappings
-
             context = (
                 self._prompt_context_combo.currentText()
                 if self._prompt_context_combo
                 else "default"
             )
-            defaults = get_defaults()
-
-            if context == "voice_commands":
-                text = defaults["voice_commands"]["instruction"]
-            elif context == "app_mappings":
-                text = format_app_mappings(defaults["app_contexts"])
-            else:
-                text = defaults["prompts"].get(context, {}).get("prompt", "")
+            text = self._get_prompt_default_text_for_context(context)
 
             if self._prompt_editor:
                 set_plain_text_if_changed(self._prompt_editor, text)
-                self._cache_prompt_text(context, text)
+                self._cache_prompt_text(context, text, baseline_text=text)
                 self._prompts_loaded = True
                 self._set_prompt_status("Reset to default (not saved)", "warning")
 
@@ -2448,9 +2491,12 @@ class SettingsWindow(QDialog):
     def _set_prompt_status(self, text: str, color: str):
         """Setzt Status-Text mit Farbe."""
         if self._prompt_status:
-            self._prompt_status.setText(text)
+            _set_widget_text_if_changed(self._prompt_status, text)
             color_value = COLORS.get(color, COLORS["text"])
-            self._prompt_status.setStyleSheet(f"color: {color_value};")
+            _set_widget_stylesheet_if_changed(
+                self._prompt_status,
+                f"color: {color_value};",
+            )
 
     def _save_all_prompts(self):
         """Speichert alle geänderten Prompts aus dem Cache."""

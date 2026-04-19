@@ -544,6 +544,39 @@ class TestWelcomeSaveSettings:
 
 
 class TestWelcomeEditorCaches:
+    def test_get_prompt_editor_text_for_context_reuses_cached_app_mappings_formatting(
+        self, monkeypatch
+    ):
+        import utils.custom_prompts as custom_prompts_mod
+
+        ctrl = _make_minimal_welcome_controller()
+        ctrl._prompts_loaded_data = {
+            "voice_commands": {"instruction": "default vc"},
+            "prompts": {"default": {"prompt": "default prompt"}},
+            "app_contexts": {"Mail": "email", "Slack": "chat"},
+        }
+
+        format_calls: list[dict[str, str]] = []
+        original_formatter = custom_prompts_mod.format_app_mappings
+
+        def _tracked_format(mappings: dict[str, str]) -> str:
+            format_calls.append(dict(mappings))
+            return original_formatter(mappings)
+
+        monkeypatch.setattr(custom_prompts_mod, "format_app_mappings", _tracked_format)
+
+        first = WelcomeController._get_prompt_editor_text_for_context(
+            ctrl,
+            "── App Mappings",
+        )
+        second = WelcomeController._get_prompt_editor_text_for_context(
+            ctrl,
+            "── App Mappings",
+        )
+
+        assert first == second
+        assert len(format_calls) == 1
+
     def test_get_loaded_prompts_data_caches_until_forced(self, monkeypatch):
         ctrl = _make_minimal_welcome_controller()
         payloads = [

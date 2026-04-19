@@ -72,6 +72,33 @@ def test_load_prompt_for_context_prefers_cache_over_disk(monkeypatch):
     assert window._prompt_editor.toPlainText() == "cached default"
 
 
+def test_get_prompt_text_for_app_mappings_reuses_cached_formatting(monkeypatch):
+    from utils import custom_prompts
+
+    window = _make_window()
+    window._prompts_loaded_data = {
+        "voice_commands": {"instruction": "default vc"},
+        "prompts": {"default": {"prompt": "disk default"}},
+        "app_contexts": {"Mail": "email", "Slack": "chat"},
+    }
+
+    format_calls: list[dict[str, str]] = []
+    original_formatter = custom_prompts.format_app_mappings
+
+    def _tracked_format(mappings: dict[str, str]) -> str:
+        format_calls.append(dict(mappings))
+        return original_formatter(mappings)
+
+    monkeypatch.setattr(custom_prompts, "format_app_mappings", _tracked_format)
+
+    first = window._get_prompt_text_for_context("app_mappings")
+    window._cache_prompt_text("app_mappings", first)
+    second = window._get_prompt_text_for_context("app_mappings")
+
+    assert first == second
+    assert len(format_calls) == 1
+
+
 def test_save_all_prompts_skips_unloaded_editor(monkeypatch):
     from utils import custom_prompts
 
