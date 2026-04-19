@@ -246,7 +246,9 @@ class SoundWaveView:
             i * (WAVE_BAR_WIDTH + WAVE_BAR_GAP) + WAVE_BAR_WIDTH / 2
             for i in range(WAVE_BAR_COUNT)
         ]
-        self._last_center_y = frame.size.height / 2
+        self._center_y = frame.size.height / 2
+        self._height_range = WAVE_BAR_MAX_HEIGHT - WAVE_BAR_MIN_HEIGHT
+        self._last_center_y = self._center_y
         self._anim = AnimationLogic()  # Shared animation logic
 
         self._bar_center = (WAVE_BAR_COUNT - 1) / 2
@@ -281,7 +283,7 @@ class SoundWaveView:
             for i in range(WAVE_BAR_COUNT)
         ]
         # Balken erstellen
-        center_y = frame.size.height / 2
+        center_y = self._center_y
         for i in range(WAVE_BAR_COUNT):
             x = i * (WAVE_BAR_WIDTH + WAVE_BAR_GAP)
             bar = CALayer.alloc().init()
@@ -491,7 +493,7 @@ class SoundWaveView:
         self._stop_done_timer()
         self.animations_running = False
         self.current_animation = None
-        center_y = self._view.frame().size.height / 2
+        center_y = self._wave_center_y()
         self._ensure_bar_positions(center_y)
 
         for i, bar in enumerate(self.bars):
@@ -681,13 +683,8 @@ class SoundWaveView:
 
         t = time.perf_counter() - self._done_start_time
 
-        center_y = self._view.frame().size.height / 2
-        height_range = WAVE_BAR_MAX_HEIGHT - WAVE_BAR_MIN_HEIGHT
-        heights = [
-            WAVE_BAR_MIN_HEIGHT
-            + height_range * self._anim.calculate_bar_normalized(i, t, "DONE")
-            for i, _bar in enumerate(self.bars)
-        ]
+        center_y = self._wave_center_y()
+        heights = self._state_frame_heights(t, "DONE")
         self._apply_bar_heights(heights, center_y=center_y)
 
     def _level_timer_interval(self) -> float:
@@ -704,6 +701,34 @@ class SoundWaveView:
 
     def _feedback_timer_interval(self) -> float:
         return _fps_to_interval_seconds(WAVE_ANIMATION_FPS_FEEDBACK)
+
+    def _wave_center_y(self) -> float:
+        center_y = getattr(self, "_center_y", None)
+        if center_y is not None:
+            return center_y
+        return self._view.frame().size.height / 2
+
+    def _wave_height_range(self) -> float:
+        return getattr(self, "_height_range", WAVE_BAR_MAX_HEIGHT - WAVE_BAR_MIN_HEIGHT)
+
+    def _state_frame_heights(self, t: float, state: str) -> list[float]:
+        calculate_frame_heights = getattr(self._anim, "calculate_frame_heights", None)
+        if callable(calculate_frame_heights):
+            return list(
+                calculate_frame_heights(
+                    t,
+                    state,
+                    min_height=WAVE_BAR_MIN_HEIGHT,
+                    max_height=WAVE_BAR_MAX_HEIGHT,
+                )
+            )
+
+        height_range = self._wave_height_range()
+        return [
+            WAVE_BAR_MIN_HEIGHT
+            + height_range * self._anim.calculate_bar_normalized(i, t, state)
+            for i, _bar in enumerate(self.bars)
+        ]
 
     def _apply_bar_heights(self, heights: list[float], *, center_y: float) -> bool:
         """Commit bar updates only when positions or heights actually changed."""
@@ -744,13 +769,8 @@ class SoundWaveView:
 
         t = time.perf_counter() - self._listening_start_time
 
-        center_y = self._view.frame().size.height / 2
-        height_range = WAVE_BAR_MAX_HEIGHT - WAVE_BAR_MIN_HEIGHT
-        heights = [
-            WAVE_BAR_MIN_HEIGHT
-            + height_range * self._anim.calculate_bar_normalized(i, t, "LISTENING")
-            for i, _bar in enumerate(self.bars)
-        ]
+        center_y = self._wave_center_y()
+        heights = self._state_frame_heights(t, "LISTENING")
         self._apply_bar_heights(heights, center_y=center_y)
 
     def _render_processing_frame(self) -> None:
@@ -760,13 +780,8 @@ class SoundWaveView:
 
         t = time.perf_counter() - self._processing_start_time
 
-        center_y = self._view.frame().size.height / 2
-        height_range = WAVE_BAR_MAX_HEIGHT - WAVE_BAR_MIN_HEIGHT
-        heights = [
-            WAVE_BAR_MIN_HEIGHT
-            + height_range * self._anim.calculate_bar_normalized(i, t, "TRANSCRIBING")
-            for i, _bar in enumerate(self.bars)
-        ]
+        center_y = self._wave_center_y()
+        heights = self._state_frame_heights(t, "TRANSCRIBING")
         self._apply_bar_heights(heights, center_y=center_y)
 
     def _render_level_frame(self) -> None:
@@ -783,7 +798,7 @@ class SoundWaveView:
         self._smoothed_level = level
         self._update_level_timer_interval()
 
-        center_y = self._view.frame().size.height / 2
+        center_y = self._wave_center_y()
         if (
             target_level <= WAVE_LEVEL_SETTLED_EPSILON
             and level <= WAVE_LEVEL_SETTLED_EPSILON
@@ -811,7 +826,7 @@ class SoundWaveView:
         envelope_center = _clamp(envelope_center, 0.0, WAVE_BAR_COUNT - 1)
 
         base_height = WAVE_BAR_MIN_HEIGHT
-        max_add = WAVE_BAR_MAX_HEIGHT - WAVE_BAR_MIN_HEIGHT
+        max_add = self._wave_height_range()
 
         # Kleine Baseline-Bewegung, damit es nicht "steht" bei leiser Sprache,
         # aber skaliert mit Level, damit es ruhig bleibt.

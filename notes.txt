@@ -1,5 +1,33 @@
 Performance notes - 2026-04-19
 
+Latest pass - overlay animation hot paths
+- Reviewed the highest-frequency overlay paths in:
+  - `ui/overlay.py`
+  - `ui/overlay_windows.py`
+  - `ui/overlay_pyside6.py`
+  - shared math in `ui/animation.py`
+- Main hotspots identified:
+  1. Windows/PySide recording animations still asked `AnimationLogic` for one bar at a time every frame, which repeated Python method/call overhead on the hottest 60 FPS path.
+  2. macOS overlay animation frames still re-read fixed wave-view geometry from AppKit and rebuilt non-recording frame vectors bar-by-bar on the main thread.
+  3. Windows Tk overlay still recomputed static bar layout data during frame rendering even though those positions never change after setup.
+- Changes in this pass:
+  - `ui/animation.py`
+    - added frame-level APIs for normalized values/heights so callers can consume one cached vector per frame instead of repeatedly calling per-bar helpers.
+  - `ui/overlay_windows.py`
+    - switched the render loop to the batch height API and cached static bar x-positions/center once.
+  - `ui/overlay_pyside6.py`
+    - switched the animation loop to the batch height API so recording frames no longer repeat per-bar cache/key work.
+  - `ui/overlay.py`
+    - reused cached wave geometry on hot frame paths and routed listening/transcribing/done frame building through one batch helper.
+- Why this helps:
+  - lowers Python call overhead on 60 FPS recording loops
+  - removes redundant per-frame geometry/layout recomputation
+  - trims main-thread work on the macOS overlay and CPU work on the Windows overlays without changing visuals
+- Validation for this pass:
+  - `pytest tests/test_animation.py tests/test_overlay.py tests/test_overlay_windows.py tests/test_overlay_pyside6.py -q`
+  - `python -m py_compile ui/animation.py ui/overlay.py ui/overlay_windows.py ui/overlay_pyside6.py tests/test_animation.py tests/test_overlay.py tests/test_overlay_windows.py tests/test_overlay_pyside6.py`
+  - `ruff check ui/animation.py ui/overlay.py ui/overlay_windows.py ui/overlay_pyside6.py tests/test_animation.py tests/test_overlay.py tests/test_overlay_windows.py tests/test_overlay_pyside6.py`
+
 Current scope
 - Reviewed the main frontend/perf-sensitive areas again before changing code:
   - `pulsescribe_daemon.py` main-thread dispatch + polling hot paths
@@ -65,7 +93,7 @@ Recent completed areas (archived summary)
 
 Next worthwhile areas
 1. `ui/overlay.py`
-- macOS recording animation still does custom per-frame math on the main thread; if profiling still shows CPU pressure, the next pass should reduce no-op frame work further or batch more of the recording-frame computation.
+- the remaining overlay hotspot is still the custom macOS recording-frame math itself (`_render_level_frame`): if traces still show pressure, the next step is reducing trig/math work or batching more of the recording-specific calculations without changing the visual feel.
 
 2. `ui/welcome.py` + `utils/log_tail.py`
 - shared signature/tail-state reuse across logs/transcripts refresh paths is still the most likely remaining long-session file-I/O hotspot on macOS.

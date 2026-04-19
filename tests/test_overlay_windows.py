@@ -628,6 +628,27 @@ def test_render_bars_updates_existing_items_with_state_color():
     assert controller._canvas.item_configs[-1]["fill"] == STATE_COLORS["DONE"]
 
 
+def test_render_bars_prefers_batch_height_api():
+    controller = WindowsOverlayController.__new__(WindowsOverlayController)
+    controller._canvas = _FakeCanvas()
+    controller._state = "RECORDING"
+    controller._bar_heights = [BAR_MIN_HEIGHT] * BAR_COUNT
+    controller._bar_item_ids = []
+    controller._anim = types.SimpleNamespace(
+        calculate_frame_heights=lambda *_args, **_kwargs: (
+            BAR_MIN_HEIGHT + 4,
+        )
+        * BAR_COUNT,
+        calculate_bar_height=lambda *_args: (_ for _ in ()).throw(
+            AssertionError("batch frame API should be used")
+        ),
+    )
+
+    controller._render_bars(0.1)
+
+    assert controller._canvas.create_calls == BAR_COUNT * 3
+
+
 def test_draw_pill_bar_skips_subpixel_canvas_updates():
     controller = WindowsOverlayController.__new__(WindowsOverlayController)
     controller._canvas = _FakeCanvas()

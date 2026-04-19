@@ -649,6 +649,14 @@ class PySide6OverlayWidget(QWidget):
         if self._animation_timer.interval() != target_interval:
             self._animation_timer.setInterval(target_interval)
 
+    def _target_bar_heights(self, t: float) -> tuple[float, ...]:
+        calculate_frame_heights = getattr(self._anim, "calculate_frame_heights", None)
+        if callable(calculate_frame_heights):
+            return tuple(calculate_frame_heights(t, self._state))
+        return tuple(
+            self._anim.calculate_bar_height(i, t, self._state) for i in range(BAR_COUNT)
+        )
+
     @Slot()
     def _animate_frame(self):
         if self._state == "IDLE":
@@ -669,9 +677,7 @@ class PySide6OverlayWidget(QWidget):
 
         # Bar-Höhen berechnen
         needs_repaint = getattr(self, "_last_painted_state", None) != self._state
-        for i in range(BAR_COUNT):
-            target_height = self._anim.calculate_bar_height(i, t, self._state)
-
+        for i, target_height in enumerate(self._target_bar_heights(t)):
             # Per-Bar Smoothing
             if target_height > self._bar_heights[i]:
                 bar_alpha = 0.4

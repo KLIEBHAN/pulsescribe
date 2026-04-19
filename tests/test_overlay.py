@@ -107,6 +107,17 @@ class _FakeAnimationLogic:
         return self.normalized
 
 
+class _FakeBatchAnimationLogic:
+    def __init__(self, height: float) -> None:
+        self.height = height
+
+    def calculate_frame_heights(self, _time_value: float, _state: str, **_kwargs):
+        return (self.height, self.height)
+
+    def calculate_bar_normalized(self, *_args, **_kwargs):
+        raise AssertionError("batch frame API should be used")
+
+
 def _install_fake_foundation(monkeypatch):
     scheduled_calls: list[tuple[float, bool, object]] = []
     created_timers: list[object] = []
@@ -267,6 +278,32 @@ def test_sound_wave_view_done_frame_keeps_transaction_for_reposition_only(
     assert _FakeCATransaction.commit_calls == 1
     assert [bar.bounds_calls for bar in view.bars] == [0, 0]
     assert [bar.position_calls for bar in view.bars] == [1, 1]
+
+
+def test_sound_wave_view_done_frame_prefers_batch_height_api(monkeypatch):
+    _FakeCATransaction.reset()
+    monkeypatch.setitem(
+        sys.modules,
+        "Quartz",
+        types.SimpleNamespace(CATransaction=_FakeCATransaction),
+    )
+
+    view = SoundWaveView.__new__(SoundWaveView)
+    view._done_start_time = 1.0
+    view._view = _FakeOverlayView(48.0)
+    view.bars = [_FakeBar(), _FakeBar()]
+    view._bar_positions = [5.0, 15.0]
+    view._last_center_y = 24.0
+    view._last_heights = [WAVE_BAR_MIN_HEIGHT, WAVE_BAR_MIN_HEIGHT]
+    view._anim = _FakeBatchAnimationLogic(WAVE_BAR_MIN_HEIGHT + 4)
+
+    monkeypatch.setattr("ui.overlay.time.perf_counter", lambda: 1.5)
+
+    SoundWaveView._render_done_frame(view)
+
+    assert _FakeCATransaction.begin_calls == 1
+    assert _FakeCATransaction.commit_calls == 1
+    assert [bar.bounds_calls for bar in view.bars] == [1, 1]
 
 
 def test_sound_wave_view_start_level_timer_uses_recording_interval(monkeypatch):

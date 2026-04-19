@@ -559,3 +559,32 @@ def test_animate_frame_skips_repaint_for_subpixel_height_changes(monkeypatch):
     PySide6OverlayWidget._animate_frame(widget)
 
     assert repaint_calls == []
+
+
+def test_animate_frame_prefers_batch_height_api(monkeypatch):
+    widget = PySide6OverlayWidget.__new__(PySide6OverlayWidget)
+    widget._state = "RECORDING"
+    widget._animation_start = 0.0
+    widget._audio_level = 0.0
+    widget._bar_heights = [float(BAR_MIN_HEIGHT)] * BAR_COUNT
+    widget._painted_bar_heights = [float(BAR_MIN_HEIGHT)] * BAR_COUNT
+    widget._last_painted_state = "IDLE"
+    widget._anim = types.SimpleNamespace(
+        update_level=lambda _level: None,
+        update_agc=lambda: None,
+        calculate_frame_heights=lambda *_args, **_kwargs: (
+            BAR_MIN_HEIGHT + 4,
+        )
+        * BAR_COUNT,
+        calculate_bar_height=lambda *_args: (_ for _ in ()).throw(
+            AssertionError("batch frame API should be used")
+        ),
+    )
+    repaint_calls: list[str] = []
+    widget.update = lambda: repaint_calls.append("update")
+
+    monkeypatch.setattr("ui.overlay_pyside6.time.perf_counter", lambda: 1.0)
+
+    PySide6OverlayWidget._animate_frame(widget)
+
+    assert repaint_calls == ["update"]

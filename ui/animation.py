@@ -163,14 +163,46 @@ class AnimationLogic:
         self._normalized_level = min(1.0, shaped)
         self._invalidate_frame_cache()
 
+    def _frame_values(self, t: float, state: str) -> tuple[float, ...]:
+        """Return cached normalized frame values for all bars."""
+        cache_key = (state, t, self._normalized_level if state == "RECORDING" else 0.0)
+        if self._frame_cache_key != cache_key or self._frame_cache_values is None:
+            self._frame_cache_key = cache_key
+            self._frame_cache_values = self._build_frame_values(t, state)
+        return self._frame_cache_values
+
+    def calculate_frame_normalized(self, t: float, state: str) -> tuple[float, ...]:
+        """Return normalized frame values for all bars in one call."""
+        return self._frame_values(t, state)
+
+    def calculate_frame_heights(
+        self,
+        t: float,
+        state: str,
+        *,
+        min_height: float = BAR_MIN_HEIGHT,
+        max_height: float = BAR_MAX_HEIGHT,
+    ) -> tuple[float, ...]:
+        """Return concrete bar heights for the full frame.
+
+        Callers on hot render paths can consume one cached vector instead of
+        repeatedly calling ``calculate_bar_height()`` per bar.
+        """
+        normalized_values = self._frame_values(t, state)
+        height_range = max_height - min_height
+        if height_range == 0:
+            return (float(min_height),) * BAR_COUNT
+        return tuple(min_height + height_range * value for value in normalized_values)
+
     def calculate_bar_height(self, i: int, t: float, state: str) -> float:
         """Calculates the target height for a specific bar index `i` at time `t`.
 
         Uses local constants BAR_MIN_HEIGHT and BAR_MAX_HEIGHT.
         For custom min/max, use calculate_bar_normalized() instead.
         """
-        normalized = self.calculate_bar_normalized(i, t, state)
-        return BAR_MIN_HEIGHT + (BAR_MAX_HEIGHT - BAR_MIN_HEIGHT) * normalized
+        if not 0 <= i < BAR_COUNT:
+            return BAR_MIN_HEIGHT
+        return self.calculate_frame_heights(t, state)[i]
 
     def calculate_bar_normalized(self, i: int, t: float, state: str) -> float:
         """Returns normalized height value (0.0-1.0) for a bar.
@@ -181,12 +213,7 @@ class AnimationLogic:
         if not 0 <= i < BAR_COUNT:
             return 0.0
 
-        cache_key = (state, t, self._normalized_level if state == "RECORDING" else 0.0)
-        if self._frame_cache_key != cache_key or self._frame_cache_values is None:
-            self._frame_cache_key = cache_key
-            self._frame_cache_values = self._build_frame_values(t, state)
-
-        return self._frame_cache_values[i]
+        return self._frame_values(t, state)[i]
 
     def _build_frame_values(self, t: float, state: str) -> tuple[float, ...]:
         if state == "RECORDING":

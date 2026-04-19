@@ -171,6 +171,12 @@ class WindowsOverlayController:
 
         self._queue: queue.Queue = queue.Queue()
         self._running = False
+        total_width = BAR_COUNT * BAR_WIDTH + (BAR_COUNT - 1) * BAR_GAP
+        start_x = (WINDOW_WIDTH - total_width) // 2
+        self._bar_x_positions = [
+            start_x + i * (BAR_WIDTH + BAR_GAP) for i in range(BAR_COUNT)
+        ]
+        self._bar_center_y = 35
         self._bar_item_ids: list[tuple[int, int, int]] = []
         self._bar_color: str | None = None
         self._last_label_config: tuple[str, tuple[object, ...], str] | None = None
@@ -745,22 +751,34 @@ class WindowsOverlayController:
             return FRAME_MS_FEEDBACK
         return FRAME_MS_ACTIVE
 
+    def _bar_positions(self) -> tuple[list[float], float]:
+        positions = getattr(self, "_bar_x_positions", None)
+        if positions is None or len(positions) != BAR_COUNT:
+            total_width = BAR_COUNT * BAR_WIDTH + (BAR_COUNT - 1) * BAR_GAP
+            start_x = (WINDOW_WIDTH - total_width) // 2
+            positions = [start_x + i * (BAR_WIDTH + BAR_GAP) for i in range(BAR_COUNT)]
+            self._bar_x_positions = positions
+        center_y = getattr(self, "_bar_center_y", 35)
+        return positions, center_y
+
+    def _target_bar_heights(self, t: float) -> tuple[float, ...]:
+        calculate_frame_heights = getattr(self._anim, "calculate_frame_heights", None)
+        if callable(calculate_frame_heights):
+            return tuple(calculate_frame_heights(t, self._state))
+        return tuple(
+            self._anim.calculate_bar_height(i, t, self._state) for i in range(BAR_COUNT)
+        )
+
     def _render_bars(self, t: float) -> None:
         if not self._canvas:
             return
 
         color = STATE_COLORS.get(self._state, "#FFFFFF")
-
-        # Bar-Positionen berechnen
-        total_width = BAR_COUNT * BAR_WIDTH + (BAR_COUNT - 1) * BAR_GAP
-        start_x = (WINDOW_WIDTH - total_width) // 2
-        center_y = 35  # Etwas höher für Text darunter
-        self._ensure_pill_bar_items(start_x, center_y)
+        bar_x_positions, center_y = self._bar_positions()
+        self._ensure_pill_bar_items(bar_x_positions, center_y)
         self._set_bar_color(color)
 
-        for i in range(BAR_COUNT):
-            target = self._anim.calculate_bar_height(i, t, self._state)
-
+        for i, target in enumerate(self._target_bar_heights(t)):
             # Smoothing pro Bar
             if target > self._bar_heights[i]:
                 alpha = 0.4
@@ -770,10 +788,9 @@ class WindowsOverlayController:
             height = max(BAR_MIN_HEIGHT, self._bar_heights[i])
 
             # Pill-förmige Bar zeichnen
-            x = start_x + i * (BAR_WIDTH + BAR_GAP)
-            self._draw_pill_bar(i, x, center_y, BAR_WIDTH, height)
+            self._draw_pill_bar(i, bar_x_positions[i], center_y, BAR_WIDTH, height)
 
-    def _ensure_pill_bar_items(self, start_x: float, center_y: float) -> None:
+    def _ensure_pill_bar_items(self, bar_x_positions: list[float], center_y: float) -> None:
         """Erstellt Canvas-Items einmalig und reused sie pro Frame."""
         if not self._canvas:
             return
@@ -786,8 +803,7 @@ class WindowsOverlayController:
 
         self._bar_item_ids = []
         self._drawn_bar_heights = [float(BAR_MIN_HEIGHT)] * BAR_COUNT
-        for i in range(BAR_COUNT):
-            x = start_x + i * (BAR_WIDTH + BAR_GAP)
+        for x in bar_x_positions:
             y1 = center_y - BAR_MIN_HEIGHT / 2
             y2 = center_y + BAR_MIN_HEIGHT / 2
             top_arc = self._canvas.create_arc(
