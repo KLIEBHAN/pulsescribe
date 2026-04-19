@@ -5,6 +5,7 @@ from __future__ import annotations
 import builtins
 import ctypes
 import ctypes.util
+import sys
 
 import utils.permissions as permissions
 
@@ -102,3 +103,78 @@ def test_check_microphone_permission_returns_false_for_unknown_state(monkeypatch
     )
 
     assert permissions.check_microphone_permission(show_alert=False) is False
+
+
+def test_get_permission_signature_reuses_recent_snapshot(monkeypatch) -> None:
+    calls = {"mic": 0, "access": 0, "input": 0}
+    times = iter((100.0, 100.1, 100.4))
+
+    monkeypatch.setattr(permissions.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(
+        permissions,
+        "get_microphone_permission_state",
+        lambda: calls.__setitem__("mic", calls["mic"] + 1) or "authorized",
+    )
+    monkeypatch.setattr(
+        permissions,
+        "has_accessibility_permission",
+        lambda: calls.__setitem__("access", calls["access"] + 1) or True,
+    )
+    monkeypatch.setattr(
+        permissions,
+        "has_input_monitoring_permission",
+        lambda: calls.__setitem__("input", calls["input"] + 1) or False,
+    )
+    permissions.invalidate_permission_signature_cache()
+
+    try:
+        assert permissions.get_permission_signature() == ("authorized", True, False)
+        assert permissions.get_permission_signature() == ("authorized", True, False)
+        assert permissions.get_permission_signature() == ("authorized", True, False)
+    finally:
+        permissions.invalidate_permission_signature_cache()
+
+    assert calls == {"mic": 2, "access": 2, "input": 2}
+
+
+def test_check_microphone_permission_request_invalidates_permission_cache(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(permissions.sys, "platform", "darwin")
+    permissions._permission_signature_cache = (123.0, ("authorized", True, True))
+    requested: list[str] = []
+
+    fake_avfoundation = type(
+        "_FakeAVFoundation",
+        (),
+        {
+            "AVCaptureDevice": type(
+                "_FakeCaptureDevice",
+                (),
+                {
+                    "requestAccessForMediaType_completionHandler_": staticmethod(
+                        lambda _media_type, _callback: requested.append("requested")
+                    )
+                },
+            ),
+            "AVMediaTypeAudio": "audio",
+        },
+    )
+
+    monkeypatch.setitem(sys.modules, "AVFoundation", fake_avfoundation)
+    monkeypatch.setattr(
+        permissions,
+        "get_microphone_permission_state",
+        lambda: "not_determined",
+    )
+
+    try:
+        assert (
+            permissions.check_microphone_permission(show_alert=False, request=True)
+            is True
+        )
+        assert requested == ["requested"]
+        assert permissions._permission_signature_cache is None
+    finally:
+        permissions.invalidate_permission_signature_cache()
+        sys.modules.pop("AVFoundation", None)

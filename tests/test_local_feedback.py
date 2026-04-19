@@ -106,6 +106,64 @@ class TestLocalFeedback(unittest.TestCase):
             # Should still update levels
             self.daemon._overlay.update_audio_level.assert_called_with(level)
 
+    def test_result_polling_coalesces_audio_bursts_to_latest_overlay_level(self):
+        """Only the newest level from a burst should hit the overlay once."""
+        self.daemon._current_state = AppState.LISTENING
+
+        levels = [VAD_THRESHOLD - 0.002] * 80
+        levels[40] = VAD_THRESHOLD + 0.004
+        levels[-1] = VAD_THRESHOLD - 0.001
+        for level in levels:
+            self.daemon._result_queue.put(
+                DaemonMessage(type=MessageType.AUDIO_LEVEL, payload=level)
+            )
+
+        mock_foundation = MagicMock()
+        mock_timer_cls = MagicMock()
+        mock_foundation.NSTimer = mock_timer_cls
+
+        with patch.dict(sys.modules, {"Foundation": mock_foundation}):
+            self.daemon._start_result_polling()
+            callback = (
+                mock_timer_cls.scheduledTimerWithTimeInterval_repeats_block_.call_args[
+                    0
+                ][2]
+            )
+            callback(None)
+
+        self.assertEqual(self.daemon._current_state, AppState.RECORDING)
+        self.daemon._overlay.update_audio_level.assert_called_once_with(levels[-1])
+        self.assertTrue(self.daemon._result_queue.empty())
+
+    def test_result_polling_flushes_latest_audio_before_status_transition(self):
+        """Pending audio should be flushed before later status updates in the same tick."""
+        self.daemon._current_state = AppState.LISTENING
+        level = VAD_THRESHOLD + 0.002
+        self.daemon._result_queue.put(
+            DaemonMessage(type=MessageType.AUDIO_LEVEL, payload=level)
+        )
+        self.daemon._result_queue.put(
+            DaemonMessage(type=MessageType.STATUS_UPDATE, payload=AppState.TRANSCRIBING)
+        )
+
+        mock_foundation = MagicMock()
+        mock_timer_cls = MagicMock()
+        mock_foundation.NSTimer = mock_timer_cls
+
+        with patch.dict(sys.modules, {"Foundation": mock_foundation}):
+            self.daemon._start_result_polling()
+            callback = (
+                mock_timer_cls.scheduledTimerWithTimeInterval_repeats_block_.call_args[
+                    0
+                ][2]
+            )
+            callback(None)
+
+        self.assertEqual(self.daemon._current_state, AppState.TRANSCRIBING)
+        self.daemon._overlay.update_audio_level.assert_called_once_with(level)
+        self.daemon._overlay.update_state.assert_any_call(AppState.RECORDING, None)
+        self.daemon._overlay.update_state.assert_any_call(AppState.TRANSCRIBING, None)
+
     @patch("numpy.mean")
     @patch("numpy.sqrt")
     def test_recording_worker_calculates_rms(self, mock_sqrt, mock_mean):

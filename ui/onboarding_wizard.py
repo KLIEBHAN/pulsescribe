@@ -221,17 +221,9 @@ class OnboardingWizardController:
             if signature is not None:
                 return signature
 
-        from utils.permissions import (
-            get_microphone_permission_state,
-            has_accessibility_permission,
-            has_input_monitoring_permission,
-        )
+        from utils.permissions import get_permission_signature
 
-        return (
-            get_microphone_permission_state(),
-            has_accessibility_permission(),
-            has_input_monitoring_permission(),
-        )
+        return get_permission_signature()
 
     # ---------------------------------------------------------------------
     # Public API

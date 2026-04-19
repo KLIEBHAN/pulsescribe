@@ -7,6 +7,7 @@ geben sie sichere Defaults zurück (True für Berechtigungen, "authorized" für 
 
 import logging
 import sys
+import time
 
 logger = logging.getLogger("pulsescribe")
 
@@ -22,6 +23,8 @@ _PERMISSION_MESSAGE_TOKENS = (
 
 # Accessibility API (macOS only, lazy loaded)
 _app_services = None
+_PERMISSION_SIGNATURE_CACHE_TTL_SECONDS = 0.25
+_permission_signature_cache: tuple[float, tuple[str, bool, bool]] | None = None
 
 
 def _get_app_services():
@@ -49,6 +52,40 @@ def _get_app_services():
     except Exception:
         _app_services = None
     return _app_services
+
+
+def invalidate_permission_signature_cache() -> None:
+    """Clear the short-lived shared permission snapshot cache."""
+    global _permission_signature_cache
+    _permission_signature_cache = None
+
+
+def get_permission_signature(
+    *,
+    max_age_seconds: float = _PERMISSION_SIGNATURE_CACHE_TTL_SECONDS,
+) -> tuple[str, bool, bool]:
+    """Return a short-lived shared permission snapshot.
+
+    The welcome screen, onboarding wizard, and permission card often query the
+    same three macOS permission helpers in quick succession. Those calls are
+    relatively expensive, so we reuse a very short-lived snapshot across the
+    immediate UI burst while still allowing the regular auto-refresh cadence to
+    observe changes quickly.
+    """
+    global _permission_signature_cache
+
+    now = time.monotonic()
+    cached = _permission_signature_cache
+    if cached is not None and now - cached[0] <= max(0.0, max_age_seconds):
+        return cached[1]
+
+    signature = (
+        get_microphone_permission_state(),
+        has_accessibility_permission(),
+        has_input_monitoring_permission(),
+    )
+    _permission_signature_cache = (now, signature)
+    return signature
 
 
 def has_accessibility_permission() -> bool:
@@ -133,6 +170,7 @@ def check_microphone_permission(show_alert: bool = True, request: bool = False) 
     if state == "not_determined":
         # OS wird beim ersten Zugriff fragen
         if request:
+            invalidate_permission_signature_cache()
             try:
                 from AVFoundation import (  # type: ignore[import-not-found]
                     AVCaptureDevice,
@@ -171,6 +209,7 @@ def check_accessibility_permission(
         return True
 
     if request:
+        invalidate_permission_signature_cache()
         try:
             from Quartz import (  # type: ignore[import-not-found]
                 AXIsProcessTrustedWithOptions,
@@ -220,6 +259,7 @@ def check_input_monitoring_permission(
     )
 
     if request and CGRequestListenEventAccess is not None:
+        invalidate_permission_signature_cache()
         try:
             CGRequestListenEventAccess()
         except Exception:
@@ -246,6 +286,7 @@ def open_privacy_settings(anchor: str, *, window=None) -> None:
 
     import subprocess
 
+    invalidate_permission_signature_cache()
     url = f"x-apple.systempreferences:com.apple.preference.security?{anchor}"
     try:
         # Lower window level so System Settings appears in front

@@ -104,6 +104,7 @@ INTERIM_POLL_IDLE_THRESHOLD = 3
 RESULT_POLL_INTERVAL_ACTIVE = 0.03
 RESULT_POLL_INTERVAL_BUSY = 0.06
 RESULT_POLL_INTERVAL_IDLE = 0.12
+RESULT_POLL_MAX_MESSAGES_PER_TICK = 250
 logger = logging.getLogger("pulsescribe")
 
 # =============================================================================
@@ -2103,6 +2104,84 @@ class PulseScribeDaemon:
             return "busy"
         return "idle"
 
+    def _flush_pending_audio_level(
+        self,
+        *,
+        latest_level: float | None,
+        saw_vad_trigger: bool,
+    ) -> None:
+        """Apply the newest audio level once after a drained queue burst."""
+        if latest_level is None:
+            return
+
+        if self._current_state == AppState.LISTENING and saw_vad_trigger:
+            self._update_state(AppState.RECORDING)
+
+        if self._overlay and self._current_state in (
+            AppState.LISTENING,
+            AppState.RECORDING,
+        ):
+            self._overlay.update_audio_level(latest_level)
+
+    def _process_result_queue_batch(self) -> bool:
+        """Drain one result-queue burst while coalescing hot audio-level traffic."""
+        latest_audio_level: float | None = None
+        saw_vad_trigger = False
+        processed_count = 0
+
+        while processed_count < RESULT_POLL_MAX_MESSAGES_PER_TICK:
+            try:
+                result = self._result_queue.get_nowait()
+            except queue.Empty:
+                break
+
+            processed_count += 1
+
+            if isinstance(result, Exception):
+                self._stop_result_polling()
+                self._handle_worker_error(result)
+                return True
+
+            if not isinstance(result, DaemonMessage):
+                continue
+
+            if result.type == MessageType.STATUS_UPDATE:
+                self._flush_pending_audio_level(
+                    latest_level=latest_audio_level,
+                    saw_vad_trigger=saw_vad_trigger,
+                )
+                latest_audio_level = None
+                saw_vad_trigger = False
+
+                # Support both simple state and (state, text) tuple
+                if isinstance(result.payload, tuple):
+                    state, text = result.payload
+                    self._update_state(state, text)
+                else:
+                    self._update_state(result.payload)
+                continue
+
+            if result.type == MessageType.AUDIO_LEVEL:
+                latest_audio_level = result.payload
+                if (
+                    self._current_state == AppState.LISTENING
+                    and latest_audio_level > VAD_THRESHOLD
+                ):
+                    saw_vad_trigger = True
+                continue
+
+            if result.type == MessageType.TRANSCRIPT_RESULT:
+                self._stop_result_polling()
+                transcript = str(result.payload or "")
+                self._handle_transcript_result(transcript)
+                return True
+
+        self._flush_pending_audio_level(
+            latest_level=latest_audio_level,
+            saw_vad_trigger=saw_vad_trigger,
+        )
+        return False
+
     def _schedule_result_timer(self, interval: float) -> None:
         """Plant den Result-Poller mit dem gewünschten Intervall."""
         from Foundation import NSTimer  # type: ignore[import-not-found]
@@ -2120,60 +2199,8 @@ class PulseScribeDaemon:
                     pass
                 return
 
-            # Queue drainen um Backlog zu vermeiden (z.B. hunderte Audio-Level Messages)
-            # Wir verarbeiten ALLE Messages, aber UI-Updates passieren so schnell wie möglich
             try:
-                processed_count = 0
-                while True:
-                    result = daemon._result_queue.get_nowait()
-                    processed_count += 1
-
-                    # Exception Handling
-                    if isinstance(result, Exception):
-                        daemon._stop_result_polling()
-                        daemon._handle_worker_error(result)
-                        return
-
-                    # DaemonMessage Handling
-                    if isinstance(result, DaemonMessage):
-                        if result.type == MessageType.STATUS_UPDATE:
-                            # Support both simple state and (state, text) tuple
-                            if isinstance(result.payload, tuple):
-                                state, text = result.payload
-                                daemon._update_state(state, text)
-                            else:
-                                daemon._update_state(result.payload)
-                            # Continue draining
-
-                        elif result.type == MessageType.AUDIO_LEVEL:
-                            level = result.payload
-                            # VAD Logic: Switch LISTENING -> RECORDING
-                            if (
-                                daemon._current_state == AppState.LISTENING
-                                and level > VAD_THRESHOLD
-                            ):
-                                daemon._update_state(AppState.RECORDING)
-
-                            # Forward to Overlay (nur wenn noch Recording/Listening)
-                            if daemon._overlay and daemon._current_state in [
-                                AppState.LISTENING,
-                                AppState.RECORDING,
-                            ]:
-                                daemon._overlay.update_audio_level(level)
-                            # Continue draining
-
-                        elif result.type == MessageType.TRANSCRIPT_RESULT:
-                            daemon._stop_result_polling()
-                            transcript = str(result.payload or "")
-                            daemon._handle_transcript_result(transcript)
-                            return
-
-                    # Safety Break nach zu vielen Messages pro Tick, um UI nicht zu blockieren
-                    if processed_count > 50:
-                        break
-
-            except queue.Empty:
-                pass
+                daemon._process_result_queue_batch()
             finally:
                 daemon._update_result_timer_interval()
 
