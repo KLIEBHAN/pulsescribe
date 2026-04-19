@@ -2373,7 +2373,7 @@ class SettingsWindow(QDialog):
             from utils.custom_prompts import (
                 filter_overrides_for_storage,
                 parse_app_mappings,
-                save_custom_prompts,
+                save_custom_prompts_state,
             )
 
             context = (
@@ -2408,8 +2408,7 @@ class SettingsWindow(QDialog):
                 self._set_prompt_status("✓ Unchanged", "success")
                 return
 
-            save_custom_prompts(next_overrides)
-            self._get_loaded_prompts_data(force=True)
+            self._prompts_loaded_data = save_custom_prompts_state(next_overrides)
             self._dirty_prompt_contexts.discard(context)
             self._set_prompt_status("✓ Saved", "success")
 
@@ -2466,7 +2465,7 @@ class SettingsWindow(QDialog):
             from utils.custom_prompts import (
                 filter_overrides_for_storage,
                 parse_app_mappings,
-                save_custom_prompts,
+                save_custom_prompts_state,
             )
 
             data = self._get_loaded_prompts_data()
@@ -2490,8 +2489,7 @@ class SettingsWindow(QDialog):
                 logger.info("Prompts unverändert, prompts.toml rewrite übersprungen")
                 return
 
-            save_custom_prompts(next_overrides)
-            self._get_loaded_prompts_data(force=True)
+            self._prompts_loaded_data = save_custom_prompts_state(next_overrides)
             self._dirty_prompt_contexts.difference_update(dirty_contexts)
             logger.info(f"Prompts gespeichert: {sorted(dirty_contexts)}")
 

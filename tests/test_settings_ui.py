@@ -448,7 +448,7 @@ class TestWelcomeSaveSettings:
         )
         monkeypatch.setattr(
             custom_prompts_mod,
-            "save_custom_prompts",
+            "save_custom_prompts_state",
             lambda data: save_calls.append(data),
         )
         monkeypatch.setattr(
@@ -487,6 +487,60 @@ class TestWelcomeSaveSettings:
         assert save_calls == []
         assert reset_calls == []
         assert ctrl._prompts_status_label.value == "✓ Prompts unchanged"
+
+    def test_save_custom_prompts_reuses_saved_state_without_force_reload(
+        self, monkeypatch
+    ):
+        from utils import custom_prompts as custom_prompts_mod
+
+        save_calls: list[dict] = []
+        saved_state = {
+            "voice_commands": {"instruction": "default vc"},
+            "prompts": {
+                "default": {"prompt": "custom prompt"},
+                "email": {"prompt": "default email"},
+            },
+            "app_contexts": {"Mail": "email"},
+        }
+
+        monkeypatch.setattr(
+            custom_prompts_mod,
+            "save_custom_prompts_state",
+            lambda data: save_calls.append(data) or saved_state,
+        )
+
+        ctrl = _make_minimal_welcome_controller()
+        ctrl._prompts_defaults_data = {
+            "voice_commands": {"instruction": "default vc"},
+            "prompts": {
+                "default": {"prompt": "default prompt"},
+                "email": {"prompt": "default email"},
+            },
+            "app_contexts": {"Mail": "email"},
+        }
+        ctrl._prompts_loaded_data = {
+            "voice_commands": {"instruction": "default vc"},
+            "prompts": {
+                "default": {"prompt": "default prompt"},
+                "email": {"prompt": "default email"},
+            },
+            "app_contexts": {"Mail": "email"},
+        }
+        ctrl._prompts_text_view = type(
+            "_PromptView",
+            (),
+            {"string": lambda self: "custom prompt"},
+        )()
+        ctrl._prompts_current_context = "default"
+        ctrl._prompts_cache = {}
+        ctrl._prompts_status_label = _FakeField("")
+
+        WelcomeController._save_custom_prompts(ctrl)
+
+        assert len(save_calls) == 1
+        assert save_calls[0] == {"prompts": {"default": {"prompt": "custom prompt"}}}
+        assert ctrl._prompts_loaded_data == saved_state
+        assert ctrl._prompts_status_label.value == "✓ Prompts saved"
 
 
 class TestWelcomeEditorCaches:

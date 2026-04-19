@@ -106,7 +106,7 @@ def test_save_all_prompts_skips_rewrite_when_prompt_text_is_unchanged(monkeypatc
     monkeypatch.setattr(custom_prompts, "load_custom_prompts", fake_load)
     monkeypatch.setattr(
         custom_prompts,
-        "save_custom_prompts",
+        "save_custom_prompts_state",
         lambda data: save_calls.append(data),
     )
 
@@ -119,17 +119,67 @@ def test_save_all_prompts_skips_rewrite_when_prompt_text_is_unchanged(monkeypatc
     assert window._dirty_prompt_contexts == set()
 
 
+def test_save_current_prompt_reuses_returned_saved_state(monkeypatch):
+    from utils import custom_prompts
+
+    save_calls: list[dict] = []
+    saved_state = {
+        "voice_commands": {"instruction": "default vc"},
+        "prompts": {
+            "default": {"prompt": "edited default"},
+            "email": {"prompt": "custom email"},
+        },
+        "app_contexts": {"Mail": "email"},
+    }
+
+    monkeypatch.setattr(
+        custom_prompts,
+        "save_custom_prompts_state",
+        lambda data: save_calls.append(data) or saved_state,
+    )
+
+    window = _make_window()
+    window._prompt_editor = _FakeEditor("edited default")
+    window._prompt_context_combo = None
+    window._prompts_loaded_data = {
+        "voice_commands": {"instruction": "default vc"},
+        "prompts": {
+            "default": {"prompt": "disk default"},
+            "email": {"prompt": "custom email"},
+        },
+        "app_contexts": {"Mail": "email"},
+    }
+
+    window._save_current_prompt()
+
+    assert len(save_calls) == 1
+    assert save_calls[0]["prompts"] == {
+        "default": {"prompt": "edited default"},
+        "email": {"prompt": "custom email"},
+    }
+    assert window._prompts_loaded_data == saved_state
+    assert window._dirty_prompt_contexts == set()
+
+
 def test_save_all_prompts_saves_only_dirty_contexts_and_keeps_existing_overrides(
     monkeypatch,
 ):
     from utils import custom_prompts
 
     save_calls: list[dict] = []
+    saved_state = {
+        "voice_commands": {"instruction": "default vc"},
+        "prompts": {
+            "default": {"prompt": "edited default"},
+            "email": {"prompt": "custom email"},
+        },
+        "app_contexts": {"Mail": "email"},
+    }
 
     monkeypatch.setattr(
         custom_prompts,
-        "save_custom_prompts",
-        lambda data: save_calls.append(data),
+        "save_custom_prompts_state",
+        lambda data: save_calls.append(data) or saved_state,
     )
 
     window = _make_window()
@@ -150,4 +200,5 @@ def test_save_all_prompts_saves_only_dirty_contexts_and_keeps_existing_overrides
         "default": {"prompt": "edited default"},
         "email": {"prompt": "custom email"},
     }
+    assert window._prompts_loaded_data == saved_state
     assert window._dirty_prompt_contexts == set()

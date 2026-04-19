@@ -4170,7 +4170,7 @@ class WelcomeController:
             KNOWN_CONTEXTS,
             filter_overrides_for_storage,
             parse_app_mappings,
-            save_custom_prompts,
+            save_custom_prompts_state,
         )
 
         log = logging.getLogger(__name__)
@@ -4258,8 +4258,7 @@ class WelcomeController:
                 return
 
             try:
-                save_custom_prompts(data_to_save)
-                self._get_loaded_prompts_data(force=True)
+                self._prompts_loaded_data = save_custom_prompts_state(data_to_save)
                 saved_items = list(merged_prompts.keys())
                 if merged_vc:
                     saved_items.append("Voice Commands")

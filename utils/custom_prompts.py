@@ -411,11 +411,8 @@ def _serialize_prompt_sections(data: dict) -> list[str]:
     return lines
 
 
-def save_custom_prompts(data: dict, path: Path | None = None) -> None:
-    """Speichert Custom Prompts als TOML-Datei.
-
-    Speichert nur die übergebenen Felder (partielle Updates möglich).
-    """
+def save_custom_prompts_state(data: dict, path: Path | None = None) -> dict:
+    """Save prompt overrides and return the merged prompt state without reloading TOML."""
     prompts_file = path or PROMPTS_FILE
 
     try:
@@ -424,9 +421,24 @@ def save_custom_prompts(data: dict, path: Path | None = None) -> None:
         logger.warning(f"Prompts-Datei nicht schreibbar: {e}")
         raise
 
-    # Cache aktualisieren damit nächster Load die neuen Daten sieht
-    _invalidate_cache(prompts_file)
-    load_custom_prompts(path=prompts_file)
+    merged_data = _merge_user_with_defaults(data)
+    try:
+        current_signature = _get_file_signature(prompts_file)
+    except (FileNotFoundError, OSError):
+        _invalidate_cache(prompts_file)
+        return _copy_prompt_data(merged_data)
+
+    _cache_prompt_data(prompts_file, current_signature, merged_data)
+    return _copy_prompt_data(merged_data)
+
+
+
+def save_custom_prompts(data: dict, path: Path | None = None) -> None:
+    """Speichert Custom Prompts als TOML-Datei.
+
+    Speichert nur die übergebenen Felder (partielle Updates möglich).
+    """
+    save_custom_prompts_state(data, path=path)
 
 
 def _serialize_voice_commands(voice_commands: dict) -> list[str]:
@@ -516,6 +528,7 @@ __all__ = [
     "parse_app_mappings",
     # Speichern/Reset
     "save_custom_prompts",
+    "save_custom_prompts_state",
     "reset_to_defaults",
     "filter_overrides_for_storage",
     # Konstanten

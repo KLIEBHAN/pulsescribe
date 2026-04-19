@@ -1,5 +1,23 @@
 Performance notes - 2026-04-19
 
+Latest pass - prompt editor save-path reuse (`ui/settings_windows.py` / `ui/welcome.py` / `utils/custom_prompts.py`)
+- Reviewed the remaining prompt-editor hotspots with focus on app-mappings / multi-context saves.
+- Clearest concrete weaknesses there:
+  1. `utils.custom_prompts.save_custom_prompts()` still wrote TOML and then reloaded/reparsed the same file only to warm the cache again
+  2. settings/welcome prompt saves then followed that with their own post-save prompt-state refresh path, even though the saved merged state was already derivable in memory
+  3. app-mappings and multi-context saves therefore still paid avoidable write → parse → cache-refresh coordination cost on the heaviest prompt-editor path
+- Chosen optimization:
+  - added a combined prompt-save helper that writes overrides, rebuilds merged prompt state in memory, and refreshes the prompt cache without re-reading TOML
+  - updated Windows/macOS prompt save paths to reuse that returned state instead of forcing another prompt-data refresh after save
+- Why this helps:
+  - reduces disk/parse work on multi-context prompt saves and app-mappings saves
+  - keeps later context switches cheaper because the UI already has the fresh merged prompt data in memory
+  - preserves prompt behavior and file format while removing redundant cache-warming work
+- Validation for this pass:
+  - `pytest tests/test_custom_prompts.py tests/test_prompts.py tests/test_settings_windows_prompts.py tests/test_settings_windows_load.py tests/test_settings_ui.py -q`
+  - `python -m py_compile utils/custom_prompts.py ui/settings_windows.py ui/welcome.py tests/test_custom_prompts.py tests/test_settings_windows_prompts.py tests/test_settings_ui.py`
+  - `ruff check utils/custom_prompts.py ui/settings_windows.py ui/welcome.py tests/test_custom_prompts.py tests/test_settings_windows_prompts.py tests/test_settings_ui.py`
+
 Latest pass - prompt/vocabulary editor review + vocabulary state reuse
 - Reviewed the relevant prompt/vocabulary editor paths in:
   - `ui/settings_windows.py`
@@ -183,7 +201,7 @@ Recent completed areas (archived summary)
 
 Next worthwhile areas
 1. prompt editors (`ui/welcome.py` / `ui/settings_windows.py` + `utils/custom_prompts.py`)
-- next likely editor hotspot is the app-mappings / multi-context save path if large prompt configs still show save latency after the vocabulary cleanup.
+- after the save-path cleanup, the next likely prompt hotspot is repeated app-mappings formatting / dirty-baseline work during context switches if very large mappings are edited frequently.
 
 2. `ui/settings_windows.py`
 - after the combo lookup cleanup, the next follow-up inside settings would be the larger setup-overview/API-field synchronization path if real traces still show cost while editing provider credentials.

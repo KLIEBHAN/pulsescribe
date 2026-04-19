@@ -1,5 +1,6 @@
 """Tests für Custom Prompts - TOML-basierte Prompt-Konfiguration."""
 
+from pathlib import Path
 import tomllib
 from types import SimpleNamespace
 
@@ -460,6 +461,36 @@ class TestSaveCustomPrompts:
         assert "Test Voice Commands" in loaded["voice_commands"]["instruction"]
         assert "Chat Prompt mit Umlauten" in loaded["prompts"]["chat"]["prompt"]
         assert loaded["app_contexts"]["Test App"] == "email"
+
+    def test_save_state_warms_cache_without_reloading_toml(self, prompts_file, monkeypatch):
+        """Der Save-Pfad soll die gemergten Prompt-Daten direkt cachen."""
+        from utils.custom_prompts import load_custom_prompts, save_custom_prompts_state
+
+        saved_state = save_custom_prompts_state(
+            {
+                "prompts": {"email": {"prompt": "Custom Email Prompt"}},
+                "app_contexts": {"My App": "code"},
+            },
+            path=prompts_file,
+        )
+
+        assert saved_state["prompts"]["default"]["prompt"] == CONTEXT_PROMPTS["default"]
+        assert saved_state["prompts"]["email"]["prompt"] == "Custom Email Prompt"
+        assert saved_state["app_contexts"]["My App"] == "code"
+
+        original_read_text = Path.read_text
+
+        def _patched_read_text(self: Path, *args, **kwargs):
+            if self == prompts_file:
+                raise AssertionError("save should have warmed the prompt cache")
+            return original_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", _patched_read_text)
+
+        loaded = load_custom_prompts(path=prompts_file)
+
+        assert loaded["prompts"]["email"]["prompt"] == "Custom Email Prompt"
+        assert loaded["app_contexts"]["My App"] == "code"
 
     def test_save_writes_sections_in_stable_order(self, prompts_file):
         """Section-Reihenfolge ist Teil des lesbaren Dateiformats."""
