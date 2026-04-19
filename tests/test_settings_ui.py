@@ -12,6 +12,9 @@ from ui.welcome import (
     LOCAL_MODEL_OPTIONS,
     WelcomeController,
     _build_setup_hotkey_info,
+    _build_setup_try_it_content,
+    _build_welcome_api_key_status,
+    _build_welcome_provider_guidance_text,
     _bool_override_from_env,
     _is_env_enabled_default_true,
 )
@@ -89,17 +92,59 @@ class TestBuildSetupHotkeyInfo:
     def test_prefers_explicit_toggle_and_hold_hotkeys(self):
         assert (
             _build_setup_hotkey_info("option+space", "fn", "f19")
-            == "Toggle: OPTION+SPACE • Hold: FN"
+            == "Toggle: Option+Space • Hold: Fn"
         )
 
     def test_uses_runtime_fallback_when_env_hotkeys_are_missing(self):
-        assert _build_setup_hotkey_info(None, "", "fn") == "Hotkey: FN"
+        assert _build_setup_hotkey_info(None, "", "fn") == "Hotkey: Fn"
 
     def test_shows_empty_state_when_no_hotkey_is_available(self):
         assert (
             _build_setup_hotkey_info(None, None, "(nicht konfiguriert)")
             == "No hotkey configured"
         )
+
+
+class TestWelcomeSetupTryItContent:
+    def test_build_setup_try_it_content_uses_actionable_empty_state(self):
+        hotkey_info, body, hint, button_title = _build_setup_try_it_content(
+            None,
+            None,
+            "",
+        )
+
+        assert hotkey_info == "No hotkey configured"
+        assert "No hotkey yet" in body
+        assert "Accessibility" in hint
+        assert button_title == "Set up Hotkeys…"
+
+
+class TestWelcomeProviderStatusHelpers:
+    def test_build_welcome_provider_guidance_text_mentions_selected_provider(self):
+        text = _build_welcome_provider_guidance_text(
+            "deepgram",
+            required_key_present=False,
+        )
+
+        assert "Deepgram is selected" in text
+        assert "API key" in text
+
+    def test_build_welcome_api_key_status_marks_required_optional_and_local_states(self):
+        assert _build_welcome_api_key_status(
+            "deepgram",
+            mode="deepgram",
+            configured=False,
+        ) == ("Required", "warning")
+        assert _build_welcome_api_key_status(
+            "groq",
+            mode="deepgram",
+            configured=False,
+        ) == ("Optional", "text_secondary")
+        assert _build_welcome_api_key_status(
+            "openai",
+            mode="local",
+            configured=False,
+        ) == ("Not needed", "text_secondary")
 
 
 class TestLightningBatchSizeParsing:
@@ -287,6 +332,7 @@ def _make_minimal_welcome_controller():
     ctrl._save_custom_prompts = lambda: None
     ctrl._on_settings_changed_callback = None
     ctrl._save_btn = None
+    ctrl._footer_status_label = None
     return ctrl
 
 
@@ -428,8 +474,49 @@ class TestWelcomeSaveSettings:
             assert env_updates[0][key] == value
         for provider, _label, _env_key in welcome_mod.API_KEY_PROVIDERS:
             status = getattr(ctrl, f"_{provider}_status")
-            assert status.value == "✓"
+            assert status.value == "Configured"
             assert status.color == (51, 217, 178)
+
+    def test_refresh_provider_key_statuses_updates_guidance_and_inline_states(
+        self, monkeypatch
+    ):
+        import ui.welcome as welcome_mod
+
+        monkeypatch.setattr("ui.welcome._get_color", lambda *args: args)
+
+        ctrl = _make_minimal_welcome_controller()
+        ctrl._mode_popup = _FakePopup(
+            ["deepgram", "openai", "groq", "local"],
+            selected="deepgram",
+        )
+        ctrl._provider_guidance_label = _FakeField("")
+        for provider, _label, _env_key in welcome_mod.API_KEY_PROVIDERS:
+            setattr(
+                ctrl,
+                f"_{provider}_field",
+                _FakeField("gsk-live" if provider == "groq" else ""),
+            )
+            setattr(ctrl, f"_{provider}_status", _FakeStatus())
+
+        ctrl._refresh_provider_key_statuses()
+
+        assert ctrl._provider_guidance_label.value.startswith("Deepgram is selected")
+        assert ctrl._deepgram_status.value == "Required"
+        assert ctrl._deepgram_status.color == (255, 177, 66, 0.95)
+        assert ctrl._groq_status.value == "Configured"
+        assert ctrl._openai_status.value == "Optional"
+
+    def test_save_settings_sets_footer_success_status(self, monkeypatch):
+        monkeypatch.setattr("ui.welcome._get_color", lambda *args: args)
+
+        ctrl = _make_minimal_welcome_controller()
+        ctrl._env_settings_cache = {}
+        ctrl._footer_status_label = _FakeStatus()
+
+        ctrl._save_all_settings()
+
+        assert ctrl._footer_status_label.value == "Settings saved."
+        assert ctrl._footer_status_label.color == (51, 217, 178)
 
     def test_save_custom_prompts_skips_rewrite_when_overrides_are_unchanged(
         self, monkeypatch

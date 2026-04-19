@@ -277,7 +277,7 @@ def test_handle_state_change_uses_feedback_color_for_done_and_error():
     assert controller._label.last_config["fg"] == STATE_COLORS["DONE"]
 
     controller._handle_state_change("ERROR", "Boom")
-    assert controller._label.last_config["text"] == "Boom"
+    assert controller._label.last_config["text"] == "Error: Boom"
     assert controller._label.last_config["fg"] == STATE_COLORS["ERROR"]
 
 
@@ -356,6 +356,17 @@ def test_handle_state_change_repositions_on_active_monitor_when_leaving_idle():
     controller._handle_state_change("RECORDING", None)
 
     assert calls == [True]
+
+
+def test_handle_state_change_formats_error_feedback_text():
+    controller = WindowsOverlayController()
+    controller._root = _FakeRoot()
+    controller._label = _FakeLabel()
+
+    controller._handle_state_change("ERROR", " microphone\nmissing ")
+
+    assert controller._label.last_config["text"] == "Error: microphone missing"
+    assert controller._label.last_config["fg"] == STATE_COLORS["ERROR"]
 
 
 def test_position_window_uses_active_monitor_work_area():

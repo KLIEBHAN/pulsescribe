@@ -567,3 +567,20 @@ def test_overlay_controller_update_state_skips_duplicate_transition_work():
 
     assert controller._wave_view.recording_calls == 1
     assert fade_calls == ["in"]
+
+
+def test_overlay_controller_error_state_uses_friendly_error_detail():
+    controller = OverlayController.__new__(OverlayController)
+    controller.window = object()
+    controller._current_state = AppState.IDLE
+    controller._last_state_payload = None
+    controller._feedback_timer = None
+    controller._wave_view = types.SimpleNamespace(start_error_animation=lambda: None)
+    seen_presentations: list[dict[str, object]] = []
+    controller._apply_text_presentation = lambda **kwargs: seen_presentations.append(kwargs)
+    controller._fade_in = lambda: None
+    controller._start_fade_out_timer = lambda: None
+
+    OverlayController.update_state(controller, AppState.ERROR, " microphone\nmissing ")
+
+    assert seen_presentations[-1]["text"] == "Error: microphone missing"

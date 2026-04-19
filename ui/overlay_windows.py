@@ -34,6 +34,10 @@ from ui.animation import (
     BAR_MIN_HEIGHT,
     FPS,
 )
+from ui.overlay_feedback import (
+    DEFAULT_OVERLAY_STATE_TEXTS,
+    format_overlay_status_text,
+)
 from utils.log_tail import read_file_tail_text
 from utils.log_tail import get_file_signature
 
@@ -86,15 +90,7 @@ STATE_COLORS = {
     "ERROR": "#FF4757",  # Rot
 }
 
-STATE_TEXTS = {
-    "LISTENING": "Listening...",
-    "RECORDING": "Recording...",
-    "TRANSCRIBING": "Transcribing...",
-    "REFINING": "Refining...",
-    "LOADING": "Loading model...",
-    "DONE": "Done!",
-    "ERROR": "Error",
-}
+STATE_TEXTS = DEFAULT_OVERLAY_STATE_TEXTS
 
 # =============================================================================
 # Overlay Controller
@@ -558,7 +554,7 @@ class WindowsOverlayController:
             if state_changed:
                 self._start_animation_loop()
                 self._root.deiconify()
-            display_text = normalized_text or STATE_TEXTS.get(state, "")
+            display_text = format_overlay_status_text(state, normalized_text)
             label_color = (
                 STATE_COLORS.get(state, "white")
                 if state in ("DONE", "ERROR")
@@ -585,7 +581,7 @@ class WindowsOverlayController:
         formatted = _format_recording_interim_text(text)
         if not formatted:
             self._set_label_config(
-                text=STATE_TEXTS["RECORDING"],
+                text=format_overlay_status_text("RECORDING"),
                 font=("Segoe UI", 11),
                 fg="white",
             )

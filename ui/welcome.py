@@ -73,7 +73,44 @@ API_KEY_PROVIDERS = [
     ("openrouter", "OpenRouter", "OPENROUTER_API_KEY"),
     ("gemini", "Gemini", "GEMINI_API_KEY"),
 ]
-API_KEY_CARD_TOP_INSET = 70
+PROVIDER_LABELS = {provider: label for provider, label, _env_key in API_KEY_PROVIDERS}
+PROVIDER_ENV_KEYS = {provider: env_key for provider, _label, env_key in API_KEY_PROVIDERS}
+MODE_API_KEY_PROVIDERS = {
+    "deepgram": "deepgram",
+    "groq": "groq",
+    "openai": "openai",
+}
+API_KEY_PLACEHOLDERS = {
+    "deepgram": "dg-...",
+    "groq": "gsk_...",
+    "openai": "sk-...",
+    "openrouter": "sk-or-...",
+    "gemini": "AIza...",
+}
+HOTKEY_TOKEN_LABELS = {
+    "cmd": "Command",
+    "command": "Command",
+    "ctrl": "Control",
+    "control": "Control",
+    "option": "Option",
+    "opt": "Option",
+    "alt": "Option",
+    "shift": "Shift",
+    "fn": "Fn",
+    "space": "Space",
+    "tab": "Tab",
+    "enter": "Return",
+    "return": "Return",
+    "esc": "Esc",
+    "escape": "Esc",
+    "backspace": "Delete",
+    "delete": "Delete",
+    "up": "↑",
+    "down": "↓",
+    "left": "←",
+    "right": "→",
+}
+API_KEY_CARD_TOP_INSET = 92
 API_KEY_CARD_BOTTOM_INSET = 54
 API_KEY_ROW_SPACING = 54
 WELCOME_LOG_MAX_CHARS = 15_000
@@ -202,6 +239,132 @@ def _set_text_view_string_if_changed(text_view, value: str) -> bool:
         return False
 
 
+def _normalize_hotkey_text(value: str | None) -> str:
+    return (value or "").strip()
+
+
+
+def _format_hotkey_for_display(value: str | None) -> str:
+    hotkey = _normalize_hotkey_text(value).lower()
+    if not hotkey:
+        return ""
+
+    display_parts: list[str] = []
+    for part in hotkey.split("+"):
+        display = HOTKEY_TOKEN_LABELS.get(part)
+        if display is None:
+            if part.startswith("f") and part[1:].isdigit():
+                display = part.upper()
+            elif len(part) == 1:
+                display = part.upper()
+            else:
+                display = part.capitalize()
+        display_parts.append(display)
+    return "+".join(display_parts)
+
+
+
+def _status_color(level: str):
+    if level == "success":
+        return _get_color(51, 217, 178)
+    if level == "warning":
+        return _get_color(255, 177, 66, 0.95)
+    if level == "error":
+        return _get_color(255, 82, 82, 0.9)
+    return _get_color(255, 255, 255, 0.6)
+
+
+
+def _apply_status_text(field, text: str, color: str = "text_secondary") -> None:
+    if field is None:
+        return
+    _set_string_value_if_changed(field, text)
+    try:
+        field.setTextColor_(_status_color(color))
+    except Exception:
+        pass
+
+
+
+def _set_tooltip_if_supported(view, text: str) -> None:
+    if view is None:
+        return
+    setter = getattr(view, "setToolTip_", None)
+    if callable(setter):
+        try:
+            setter(text)
+        except Exception:
+            pass
+
+
+
+def _build_welcome_provider_guidance_text(
+    mode: str | None,
+    *,
+    required_key_present: bool,
+) -> str:
+    current_mode = (mode or "deepgram").strip().lower() or "deepgram"
+    provider = PROVIDER_LABELS.get(current_mode, current_mode.capitalize())
+
+    if current_mode == "local":
+        return (
+            "Local dictation works without a cloud API key. Keep cloud keys empty unless "
+            "you want a cloud provider for transcription or refinement later."
+        )
+
+    if required_key_present:
+        return (
+            f"{provider} is ready for transcription. Other provider keys can stay empty "
+            "until you switch modes or use them for refinement."
+        )
+
+    return (
+        f"{provider} is selected for transcription. Add its API key below before you start "
+        "dictation; the other keys are optional for now."
+    )
+
+
+
+def _build_welcome_api_key_status(
+    provider: str,
+    *,
+    mode: str | None,
+    configured: bool,
+) -> tuple[str, str]:
+    if configured:
+        return "Configured", "success"
+
+    current_mode = (mode or "deepgram").strip().lower() or "deepgram"
+    if current_mode == "local":
+        return "Not needed", "text_secondary"
+
+    if provider == MODE_API_KEY_PROVIDERS.get(current_mode):
+        return "Required", "warning"
+
+    return "Optional", "text_secondary"
+
+
+
+def _build_welcome_api_key_tooltip(provider: str, *, mode: str | None) -> str:
+    provider_label = PROVIDER_LABELS.get(provider, provider.capitalize())
+    current_mode = (mode or "deepgram").strip().lower() or "deepgram"
+
+    if current_mode == "local":
+        return (
+            f"{provider_label} is not needed for local dictation. Add it only if you want "
+            "to switch to a cloud provider later."
+        )
+
+    if provider == MODE_API_KEY_PROVIDERS.get(current_mode):
+        return f"{provider_label} is required for the currently selected transcription mode."
+
+    return (
+        f"Optional. Save a {provider_label} key here if you want to switch providers or "
+        "use it for refinement later."
+    )
+
+
+
 def _build_setup_hotkey_info(
     toggle_hotkey: str | None,
     hold_hotkey: str | None,
@@ -209,12 +372,10 @@ def _build_setup_hotkey_info(
 ) -> str:
     """Return a concise setup summary for the active hotkey configuration."""
 
-    def _display(value: str | None) -> str:
-        return (value or "").strip().upper()
-
-    toggle = _display(toggle_hotkey)
-    hold = _display(hold_hotkey)
-    fallback = _display(fallback_hotkey)
+    toggle = _format_hotkey_for_display(toggle_hotkey)
+    hold = _format_hotkey_for_display(hold_hotkey)
+    fallback_raw = _normalize_hotkey_text(fallback_hotkey)
+    fallback = _format_hotkey_for_display(fallback_hotkey)
 
     hotkey_parts = []
     if toggle:
@@ -224,10 +385,58 @@ def _build_setup_hotkey_info(
     if hotkey_parts:
         return " • ".join(hotkey_parts)
 
-    if fallback and fallback not in {"(NICHT KONFIGURIERT)", "(NOT CONFIGURED)"}:
+    if fallback and fallback_raw.lower() not in {"(nicht konfiguriert)", "(not configured)"}:
         return f"Hotkey: {fallback}"
 
     return "No hotkey configured"
+
+
+
+def _build_setup_try_it_content(
+    toggle_hotkey: str | None,
+    hold_hotkey: str | None,
+    fallback_hotkey: str | None = None,
+) -> tuple[str, str, str, str]:
+    hotkey_info = _build_setup_hotkey_info(toggle_hotkey, hold_hotkey, fallback_hotkey)
+    toggle = _format_hotkey_for_display(toggle_hotkey)
+    hold = _format_hotkey_for_display(hold_hotkey)
+    fallback = _format_hotkey_for_display(fallback_hotkey)
+    active_key = toggle or fallback
+    hint = (
+        "Need permissions? Accessibility enables pasting; Input Monitoring enables "
+        "global hotkeys."
+    )
+
+    if hold and toggle:
+        return (
+            hotkey_info,
+            f"Hold {hold} for push-to-talk, or press {toggle} once to start and again to stop.",
+            hint,
+            "Change Hotkeys…",
+        )
+
+    if hold:
+        return (
+            hotkey_info,
+            f"Hold {hold} while speaking, then release it to transcribe into the frontmost app.",
+            hint,
+            "Change Hotkeys…",
+        )
+
+    if active_key:
+        return (
+            hotkey_info,
+            f"Press {active_key} to start dictation, then use it again to stop and paste the result.",
+            hint,
+            "Change Hotkeys…",
+        )
+
+    return (
+        hotkey_info,
+        "No hotkey yet. Open Hotkeys to record one before you test dictation.",
+        hint,
+        "Set up Hotkeys…",
+    )
 
 
 class WelcomeController:
@@ -336,8 +545,14 @@ class WelcomeController:
         self._setup_action_handlers = []
         self._setup_permissions_card = None
         self._setup_preset_status_label = None
+        self._setup_try_hotkey_label = None
+        self._setup_try_body_label = None
+        self._setup_try_hint_label = None
+        self._setup_try_change_button = None
         self._onboarding_wizard_callback = None
         self._env_settings_cache: dict[str, str] = read_env_file()
+        self._provider_guidance_label = None
+        self._footer_status_label = None
         # API-Key-Felder werden dynamisch via setattr gesetzt:
         # _{provider}_field, _{provider}_status für alle Einträge aus API_KEY_PROVIDERS
 
@@ -745,26 +960,29 @@ class WelcomeController:
 
         if action == "apply_mlx_large_preset":
             self._apply_local_preset("macOS: MLX Balanced (large)")
-            if self._setup_preset_status_label is not None:
-                self._setup_preset_status_label.setStringValue_(
-                    "Preset applied — click 'Save & Apply' to persist."
-                )
+            _apply_status_text(
+                self._setup_preset_status_label,
+                "MLX Large selected — click 'Save & Apply' to keep it.",
+                "success",
+            )
             return
 
         if action == "apply_mlx_turbo_preset":
             self._apply_local_preset("macOS: MLX Fast (turbo)")
-            if self._setup_preset_status_label is not None:
-                self._setup_preset_status_label.setStringValue_(
-                    "Preset applied — click 'Save & Apply' to persist."
-                )
+            _apply_status_text(
+                self._setup_preset_status_label,
+                "MLX Turbo selected — click 'Save & Apply' to keep it.",
+                "success",
+            )
             return
 
         if action == "apply_lightning_preset":
             self._apply_local_preset("macOS: Lightning Fast (large-v3)")
-            if self._setup_preset_status_label is not None:
-                self._setup_preset_status_label.setStringValue_(
-                    "Preset applied — click 'Save & Apply' to persist."
-                )
+            _apply_status_text(
+                self._setup_preset_status_label,
+                "Lightning selected — click 'Save & Apply' to keep it.",
+                "success",
+            )
             return
 
         if action == "goto_hotkeys_tab":
@@ -800,6 +1018,94 @@ class WelcomeController:
             card.kick_auto_refresh()
         except Exception:
             pass
+
+    def _current_mode(self) -> str:
+        mode_popup = getattr(self, "_mode_popup", None)
+        if mode_popup:
+            selected = mode_popup.titleOfSelectedItem()
+            if selected:
+                return str(selected).strip().lower() or "deepgram"
+        cached_mode = self._get_cached_env_setting("PULSESCRIBE_MODE")
+        config = getattr(self, "config", {}) or {}
+        return (cached_mode or config.get("mode") or "deepgram").strip().lower()
+
+    def _get_welcome_api_key_states(self) -> dict[str, bool]:
+        api_key_states: dict[str, bool] = {}
+        for provider, _label, env_key in API_KEY_PROVIDERS:
+            field = getattr(self, f"_{provider}_field", None)
+            raw_value = ""
+            if field is not None:
+                try:
+                    raw_value = field.stringValue().strip()
+                except Exception:
+                    raw_value = ""
+            if not raw_value:
+                raw_value = (
+                    self._get_cached_env_setting(env_key)
+                    or os.getenv(env_key)
+                    or ""
+                ).strip()
+            api_key_states[provider] = bool(raw_value)
+        return api_key_states
+
+    def _refresh_provider_key_statuses(self) -> None:
+        api_key_states = self._get_welcome_api_key_states()
+        mode = self._current_mode()
+        required_provider = MODE_API_KEY_PROVIDERS.get(mode)
+        required_key_present = bool(
+            required_provider and api_key_states.get(required_provider)
+        )
+
+        guidance_label = getattr(self, "_provider_guidance_label", None)
+        if guidance_label is not None:
+            _apply_status_text(
+                guidance_label,
+                _build_welcome_provider_guidance_text(
+                    mode,
+                    required_key_present=required_key_present,
+                ),
+                "text_secondary",
+            )
+
+        for provider, _label, _env_key in API_KEY_PROVIDERS:
+            status = getattr(self, f"_{provider}_status", None)
+            if status is None:
+                continue
+            status_text, color = _build_welcome_api_key_status(
+                provider,
+                mode=mode,
+                configured=api_key_states.get(provider, False),
+            )
+            _apply_status_text(status, status_text, color)
+            tooltip = _build_welcome_api_key_tooltip(provider, mode=mode)
+            _set_tooltip_if_supported(getattr(self, f"_{provider}_field", None), tooltip)
+            _set_tooltip_if_supported(status, tooltip)
+
+    def _refresh_setup_try_card(self) -> None:
+        hotkey_label = getattr(self, "_setup_try_hotkey_label", None)
+        body_label = getattr(self, "_setup_try_body_label", None)
+        hint_label = getattr(self, "_setup_try_hint_label", None)
+        change_button = getattr(self, "_setup_try_change_button", None)
+        if not (hotkey_label and body_label and hint_label and change_button):
+            return
+
+        toggle_hotkey, hold_hotkey = self._get_cached_hotkeys()
+        hotkey_info, body_text, hint_text, button_title = _build_setup_try_it_content(
+            toggle_hotkey,
+            hold_hotkey,
+            getattr(self, "hotkey", None),
+        )
+        _set_string_value_if_changed(hotkey_label, hotkey_info)
+        _set_string_value_if_changed(body_label, body_text)
+        _set_string_value_if_changed(hint_label, hint_text)
+        try:
+            if str(change_button.title()) != button_title:
+                change_button.setTitle_(button_title)
+        except Exception:
+            try:
+                change_button.setTitle_(button_title)
+            except Exception:
+                pass
 
     def _select_tab(self, label: str) -> None:
         if self._tab_view is None:
@@ -938,7 +1244,7 @@ class WelcomeController:
         status = NSTextField.alloc().initWithFrame_(
             NSMakeRect(base_x, card_y + 26, card_width - 2 * CARD_PADDING, 18)
         )
-        status.setStringValue_("")
+        status.setStringValue_("Choose a preset, then click 'Save & Apply' to keep it.")
         status.setBezeled_(False)
         status.setDrawsBackground_(False)
         status.setEditable_(False)
@@ -965,7 +1271,7 @@ class WelcomeController:
 
         parent_view = parent_view or self._content_view
 
-        hotkey_info = _build_setup_hotkey_info(
+        hotkey_info, body_text, hint_text, button_title = _build_setup_try_it_content(
             self._get_cached_env_setting("PULSESCRIBE_TOGGLE_HOTKEY"),
             self._get_cached_env_setting("PULSESCRIBE_HOLD_HOTKEY"),
             self.hotkey,
@@ -1005,15 +1311,13 @@ class WelcomeController:
         hotkey_label.setFont_(NSFont.systemFontOfSize_(11))
         hotkey_label.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6))
         parent_view.addSubview_(hotkey_label)
+        self._setup_try_hotkey_label = hotkey_label
 
         # Beschreibung
         body = NSTextField.alloc().initWithFrame_(
             NSMakeRect(base_x, card_y + card_height - 60, content_w, 28)
         )
-        body.setStringValue_(
-            "Press/hold your hotkey and speak. PulseScribe transcribes and "
-            "pastes the text into the frontmost app."
-        )
+        body.setStringValue_(body_text)
         body.setBezeled_(False)
         body.setDrawsBackground_(False)
         body.setEditable_(False)
@@ -1021,15 +1325,15 @@ class WelcomeController:
         body.setFont_(NSFont.systemFontOfSize_weight_(11, NSFontWeightMedium))
         body.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.7))
         parent_view.addSubview_(body)
+        self._setup_try_body_label = body
 
         # Footer-Zeile: Button links, Hint rechts
         footer_y = card_y + 12
 
-        # "Change Hotkey" Button
         change_btn = NSButton.alloc().initWithFrame_(
             NSMakeRect(base_x, footer_y, 130, 24)
         )
-        change_btn.setTitle_("Change Hotkey…")
+        change_btn.setTitle_(button_title)
         change_btn.setBezelStyle_(NSBezelStyleRounded)
         change_btn.setFont_(NSFont.systemFontOfSize_(11))
         h_change = _SetupActionHandler.alloc().initWithController_action_(
@@ -1039,14 +1343,12 @@ class WelcomeController:
         change_btn.setAction_(objc.selector(h_change.performAction_, signature=b"v@:@"))
         self._setup_action_handlers.append(h_change)
         parent_view.addSubview_(change_btn)
+        self._setup_try_change_button = change_btn
 
-        # Hint rechts vom Button
         hint = NSTextField.alloc().initWithFrame_(
             NSMakeRect(base_x + 140, footer_y + 5, content_w - 140, 14)
         )
-        hint.setStringValue_(
-            "Paste fails? Grant Accessibility. Hotkeys fail? Grant Input Monitoring."
-        )
+        hint.setStringValue_(hint_text)
         hint.setBezeled_(False)
         hint.setDrawsBackground_(False)
         hint.setEditable_(False)
@@ -1054,6 +1356,7 @@ class WelcomeController:
         hint.setFont_(NSFont.systemFontOfSize_(10))
         hint.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.45))
         parent_view.addSubview_(hint)
+        self._setup_try_hint_label = hint
 
         return card_y - CARD_SPACING
 
@@ -1146,11 +1449,11 @@ class WelcomeController:
         card = _create_card(WELCOME_PADDING, card_y, card_width, card_height)
         parent_view.addSubview_(card)
 
-        # Section-Titel
+        base_x = WELCOME_PADDING + CARD_PADDING
+        content_width = card_width - 2 * CARD_PADDING
+
         title = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(
-                WELCOME_PADDING + CARD_PADDING, card_y + card_height - 30, 200, 18
-            )
+            NSMakeRect(base_x, card_y + card_height - 30, 200, 18)
         )
         title.setStringValue_("🔑 API Keys")
         title.setBezeled_(False)
@@ -1161,7 +1464,19 @@ class WelcomeController:
         title.setTextColor_(NSColor.whiteColor())
         parent_view.addSubview_(title)
 
-        # API Key Zeilen (von oben nach unten)
+        guidance = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(base_x, card_y + card_height - 50, content_width, 16)
+        )
+        guidance.setStringValue_("")
+        guidance.setBezeled_(False)
+        guidance.setDrawsBackground_(False)
+        guidance.setEditable_(False)
+        guidance.setSelectable_(False)
+        guidance.setFont_(NSFont.systemFontOfSize_(11))
+        guidance.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6))
+        parent_view.addSubview_(guidance)
+        self._provider_guidance_label = guidance
+
         row_y = card_y + card_height - API_KEY_CARD_TOP_INSET
         for provider, label_text, key_name in API_KEY_PROVIDERS:
             self._build_api_row_compact(
@@ -1173,12 +1488,13 @@ class WelcomeController:
             )
             row_y -= API_KEY_ROW_SPACING
 
+        self._refresh_provider_key_statuses()
         return card_y - CARD_SPACING
 
     def _build_api_row_compact(
         self, y: int, label_text: str, key_name: str, provider: str, parent_view=None
     ) -> None:
-        """Erstellt kompakte API-Key-Zeile (ohne Save-Button, mit Copy/Paste)."""
+        """Erstellt kompakte API-Key-Zeile mit verständlichem Inline-Status."""
         from AppKit import (  # type: ignore[import-not-found]
             NSColor,
             NSFont,
@@ -1190,8 +1506,8 @@ class WelcomeController:
         parent_view = parent_view or self._content_view
 
         base_x = WELCOME_PADDING + CARD_PADDING
+        status_width = 84
 
-        # Label
         label = NSTextField.alloc().initWithFrame_(NSMakeRect(base_x, y + 22, 120, 14))
         label.setStringValue_(label_text)
         label.setBezeled_(False)
@@ -1202,12 +1518,13 @@ class WelcomeController:
         label.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.7))
         parent_view.addSubview_(label)
 
-        # Textfeld (normales NSTextField für Copy/Paste Support)
-        field_width = WELCOME_WIDTH - 2 * WELCOME_PADDING - 2 * CARD_PADDING - 24
+        field_width = (
+            WELCOME_WIDTH - 2 * WELCOME_PADDING - 2 * CARD_PADDING - status_width - 8
+        )
         field = NSTextField.alloc().initWithFrame_(
             NSMakeRect(base_x, y, field_width, 22)
         )
-        field.setPlaceholderString_("Enter API key...")
+        field.setPlaceholderString_(API_KEY_PLACEHOLDERS.get(provider, "Enter API key..."))
         field.setFont_(NSFont.systemFontOfSize_(11))
 
         existing_key = self._get_cached_env_setting(key_name) or os.getenv(key_name)
@@ -1216,25 +1533,20 @@ class WelcomeController:
 
         parent_view.addSubview_(field)
 
-        # Status-Indicator
-        has_key = bool(existing_key) or self.config.get(f"{provider}_key", False)
         status = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(base_x + field_width + 6, y + 2, 18, 18)
+            NSMakeRect(base_x + field_width + 8, y + 2, status_width, 18)
         )
         status.setBezeled_(False)
         status.setDrawsBackground_(False)
         status.setEditable_(False)
         status.setSelectable_(False)
-        status.setFont_(NSFont.systemFontOfSize_(13))
-        status.setStringValue_("✓" if has_key else "✗")
-        status.setTextColor_(
-            _get_color(51, 217, 178) if has_key else _get_color(255, 82, 82, 0.7)
-        )
+        status.setFont_(NSFont.systemFontOfSize_(11))
         parent_view.addSubview_(status)
 
-        # Referenzen speichern für Save
         setattr(self, f"_{provider}_field", field)
         setattr(self, f"_{provider}_status", status)
+        _set_tooltip_if_supported(field, _build_welcome_api_key_tooltip(provider, mode=None))
+        _set_tooltip_if_supported(status, _build_welcome_api_key_tooltip(provider, mode=None))
 
     def _build_settings_card(self, y: int, parent_view=None) -> int:
         """Erstellt Provider-Einstellungen (Mode/Local/Language)."""
@@ -3716,16 +4028,22 @@ class WelcomeController:
 
     def _update_streaming_visibility(self) -> None:
         """Blendet Streaming-Toggle nur bei Deepgram ein."""
-        if not self._mode_popup:
+        mode_popup = getattr(self, "_mode_popup", None)
+        if not mode_popup:
             return
-        is_deepgram = self._mode_popup.titleOfSelectedItem() == "deepgram"
-        for view in (self._streaming_label, self._streaming_checkbox):
+        is_deepgram = mode_popup.titleOfSelectedItem() == "deepgram"
+        for view in (
+            getattr(self, "_streaming_label", None),
+            getattr(self, "_streaming_checkbox", None),
+        ):
             _set_hidden_if_changed(view, not is_deepgram)
 
     def _update_all_visibility(self) -> None:
         """Update all mode-dependent visibility settings."""
         self._update_local_settings_visibility()
         self._update_streaming_visibility()
+        self._refresh_provider_key_statuses()
+        self._refresh_setup_try_card()
 
     def _apply_selected_local_preset(self) -> None:
         """Wendet das aktuell gewählte Local-Preset auf die UI an."""
@@ -3792,7 +4110,7 @@ class WelcomeController:
 
         # Immer Local Mode aktivieren (sonst sind Backend/Model hidden)
         set_popup(self._mode_popup, "local")
-        self._update_local_settings_visibility()
+        self._update_all_visibility()
 
         preset_values = LOCAL_PRESETS.get(preset)
         if not preset_values:
@@ -3827,6 +4145,7 @@ class WelcomeController:
             self._lightning_quant_popup,
             values.get("lightning_quant", "none"),
         )
+        self._update_all_visibility()
         return
 
     def _build_footer(self) -> None:
@@ -3835,10 +4154,12 @@ class WelcomeController:
             NSBezelStyleRounded,
             NSButton,
             NSButtonTypeSwitch,
+            NSColor,
             NSFont,
             NSFontWeightMedium,
             NSFontWeightSemibold,
             NSMakeRect,
+            NSTextField,
         )
         import objc  # type: ignore[import-not-found]
 
@@ -3872,6 +4193,20 @@ class WelcomeController:
         right_edge = WELCOME_WIDTH - WELCOME_PADDING
         close_x = right_edge - btn_w
         save_x = close_x - btn_spacing - btn_w
+
+        status_label = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(WELCOME_PADDING + 145, footer_y + 8, save_x - (WELCOME_PADDING + 155), 16)
+        )
+        status_label.setStringValue_("")
+        status_label.setBezeled_(False)
+        status_label.setDrawsBackground_(False)
+        status_label.setEditable_(False)
+        status_label.setSelectable_(False)
+        status_label.setFont_(NSFont.systemFontOfSize_(10))
+        status_label.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6))
+        self._content_view.addSubview_(status_label)
+        self._footer_status_label = status_label
+
         save_btn = NSButton.alloc().initWithFrame_(
             NSMakeRect(save_x, footer_y, btn_w, btn_h)
         )
@@ -3912,6 +4247,9 @@ class WelcomeController:
         self._start_handler = start_handler
 
         self._content_view.addSubview_(start_btn)
+
+    def _set_footer_status(self, text: str, color: str = "text_secondary") -> None:
+        _apply_status_text(getattr(self, "_footer_status_label", None), text, color)
 
     def set_on_start_callback(self, callback) -> None:
         """Setzt Callback für Start-Button."""
@@ -3975,15 +4313,12 @@ class WelcomeController:
         log = logging.getLogger(__name__)
 
         env_updates: dict[str, str | None] = {}
-        api_key_states: dict[str, bool] = {}
 
         for provider, _label, env_key in API_KEY_PROVIDERS:
             field = getattr(self, f"_{provider}_field", None)
-            status = getattr(self, f"_{provider}_status", None)
-            if field and status:
+            if field is not None:
                 normalized_key = field.stringValue().strip()
                 env_updates[env_key] = normalized_key or None
-                api_key_states[provider] = bool(normalized_key)
 
         # Mode
         if self._mode_popup:
@@ -4167,17 +4502,7 @@ class WelcomeController:
                 env_updates["PULSESCRIBE_REFINE_MODEL"] = None
 
         self._apply_env_updates(env_updates)
-
-        for provider, _label, _env_key in API_KEY_PROVIDERS:
-            status = getattr(self, f"_{provider}_status", None)
-            if status is None or provider not in api_key_states:
-                continue
-            if api_key_states[provider]:
-                _set_string_value_if_changed(status, "✓")
-                status.setTextColor_(_get_color(51, 217, 178))
-            else:
-                _set_string_value_if_changed(status, "✗")
-                status.setTextColor_(_get_color(255, 82, 82, 0.7))
+        self._refresh_provider_key_statuses()
 
         # Vocabulary / Keywords
         if self._vocab_text_view:
@@ -4200,6 +4525,8 @@ class WelcomeController:
         # Callback aufrufen damit Daemon Settings neu lädt
         if self._on_settings_changed_callback:
             self._on_settings_changed_callback()
+
+        self._set_footer_status("Settings saved.", "success")
 
         # Visuelles Feedback: Button-Text kurz ändern
         if hasattr(self, "_save_btn") and self._save_btn:
@@ -4435,6 +4762,8 @@ class WelcomeController:
                 cache["PULSESCRIBE_TOGGLE_HOTKEY"] = normalized
             cache.pop("PULSESCRIBE_HOTKEY", None)
             cache.pop("PULSESCRIBE_HOTKEY_MODE", None)
+
+        self._refresh_setup_try_card()
 
         if callable(self._on_settings_changed_callback):
             try:

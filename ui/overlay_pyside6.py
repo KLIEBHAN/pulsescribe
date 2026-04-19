@@ -53,6 +53,10 @@ from ui.animation import (
     BAR_GAP,
     BAR_MIN_HEIGHT,
 )
+from ui.overlay_feedback import (
+    DEFAULT_OVERLAY_STATE_TEXTS,
+    format_overlay_status_text,
+)
 from utils.log_tail import read_file_tail_text
 
 logger = logging.getLogger("pulsescribe.overlay")
@@ -94,15 +98,7 @@ STATE_COLORS = {
     "ERROR": QColor(255, 71, 87),  # Rot
 }
 
-STATE_TEXTS = {
-    "LISTENING": "Listening...",
-    "RECORDING": "Recording...",
-    "TRANSCRIBING": "Transcribing...",
-    "REFINING": "Refining...",
-    "LOADING": "Loading model...",
-    "DONE": "Done!",
-    "ERROR": "Error",
-}
+STATE_TEXTS = DEFAULT_OVERLAY_STATE_TEXTS
 
 # Auto-Hide Timer für DONE/ERROR
 FEEDBACK_DISPLAY_MS = 800  # Millisekunden
@@ -569,7 +565,7 @@ class PySide6OverlayWidget(QWidget):
                 self._center_on_screen(use_active_screen=True)
 
             # Label aktualisieren
-            display_text = text or STATE_TEXTS.get(state, "")
+            display_text = format_overlay_status_text(state, text)
             self._update_label(state, display_text)
             if state_changed:
                 self._fade_in()
@@ -588,7 +584,7 @@ class PySide6OverlayWidget(QWidget):
         if self._state == "RECORDING":
             formatted = _format_recording_interim_text(text)
             if not formatted:
-                self._update_label("RECORDING", STATE_TEXTS["RECORDING"])
+                self._update_label("RECORDING", format_overlay_status_text("RECORDING"))
                 return
             self._update_label("RECORDING", formatted, italic=True)
 

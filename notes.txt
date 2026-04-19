@@ -1,32 +1,37 @@
 UX notes - 2026-04-19
 
-Latest pass - Settings UX (`ui/settings_windows.py`)
-- Scope: targeted the next high-value UX area in Windows Settings without touching prompt editors.
+Latest pass - Welcome + status feedback UX (`ui/welcome.py`, overlays)
+- Scope: focused the next high-value UX area on the Welcome window and status/overlay feedback surfaces without reworking the recently touched Windows Settings/Onboarding flows again.
 - Reviewed weaknesses first:
-  1. Providers tab only showed a bare `✓`, so it was unclear which API key was required vs optional.
-  2. Setup overview/how-to copy was functional but not especially actionable or scannable.
-  3. Save feedback was too thin: success/error mostly lived in the button text.
-  4. Hotkey guidance in Settings lagged behind the clearer onboarding experience.
+  1. Welcome still used weak provider/API-key feedback (`✓` / `✗`) instead of showing what is required vs optional.
+  2. The Setup → Try it section was not very helpful when no hotkey was configured and its hotkey display was hard to scan.
+  3. Welcome save feedback still relied mostly on the button label and lacked a persistent status hint.
+  4. Overlay error/loading/status text was not fully consistent across implementations, and macOS error feedback hid useful detail.
 - Changes in this pass:
-  - added mode-aware provider guidance text in the Providers tab
-  - replaced opaque API-key checkmarks with inline states like `Required`, `Configured`, `Optional`, `Not needed`
-  - improved API-key placeholders/tooltips and added basic accessibility names
-  - improved Setup card copy and formatted displayed hotkeys for readability
-  - improved Hotkeys guidance/tooltips and clearer status messages during recording/preset/clear flows
-  - added persistent footer save status feedback, including restart guidance when daemon reload signaling fails
-  - kept existing settings behavior / persistence model unchanged
+  - added mode-aware provider guidance text in Welcome
+  - replaced Welcome API-key checkmarks with inline states like `Required`, `Configured`, `Optional`, `Not needed`
+  - improved API-key placeholders/tooltips in Welcome
+  - improved Setup → Try it messaging, including a clearer empty state when no hotkey exists
+  - formatted displayed hotkeys into friendlier labels (for example `Option+Space`, `Fn`)
+  - made the Setup → Try it card refresh after hotkey changes
+  - improved preset feedback copy in Setup and added persistent footer save feedback in Welcome
+  - unified overlay feedback text handling across macOS / PySide6 / Tk overlays
+  - macOS overlay now shows concise error details instead of only `Error`
 - Validation:
-  - `pytest tests/test_settings_windows_load.py tests/test_settings_windows_hotkeys.py tests/test_settings_windows_logs.py tests/test_settings_ui.py -q`
-  - `python -m py_compile ui/settings_windows.py tests/test_settings_windows_load.py tests/test_settings_windows_hotkeys.py tests/test_settings_windows_logs.py`
-  - `ruff check ui/settings_windows.py tests/test_settings_windows_load.py tests/test_settings_windows_hotkeys.py tests/test_settings_windows_logs.py`
+  - `pytest tests/test_settings_ui.py tests/test_overlay.py tests/test_overlay_pyside6.py tests/test_overlay_windows.py -q`
+  - `python -m py_compile ui/welcome.py ui/overlay.py ui/overlay_pyside6.py ui/overlay_windows.py ui/overlay_feedback.py tests/test_settings_ui.py tests/test_overlay.py tests/test_overlay_pyside6.py tests/test_overlay_windows.py`
+  - `ruff check ui/welcome.py ui/overlay.py ui/overlay_pyside6.py ui/overlay_windows.py ui/overlay_feedback.py tests/test_settings_ui.py tests/test_overlay.py tests/test_overlay_pyside6.py tests/test_overlay_windows.py`
 
-Previous pass - Onboarding / shared setup UX
+Previous pass - Settings UX (`ui/settings_windows.py`)
+- Improved provider guidance, inline API-key states, Setup overview copy, Settings hotkey guidance, and persistent footer save feedback.
+
+Earlier pass - Onboarding / shared setup UX
 - Improved Windows onboarding guidance, hotkey capture discoverability, safe dictation test messaging, shared permission card wording, and Windows focus/placeholder styling.
 
 Next worthwhile UX areas
-1. `ui/welcome.py`
-- empty states, setup overview hierarchy and action clarity
-2. overlay / recording feedback
-- more explicit transient processing / retry messaging
-3. advanced local settings in `ui/settings_windows.py`
-- optional defaults vs advanced overrides could be explained even more clearly
+1. welcome logs / transcripts panel
+- clearer refresh / empty / failure feedback and stronger visual hierarchy between logs vs transcript history
+2. advanced local settings copy
+- explain defaults vs overrides and performance tradeoffs even more clearly
+3. transient daemon / retry states outside the overlay
+- clearer recovery messaging when startup / provider initialization fails
