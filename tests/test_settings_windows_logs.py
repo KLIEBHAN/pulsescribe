@@ -494,6 +494,64 @@ def test_try_append_logs_delta_skips_when_file_size_does_not_grow() -> None:
     assert window._last_logs_signature == (5, len("line-1"))
 
 
+def test_try_append_logs_delta_preserves_line_boundaries_after_trailing_newline(
+    tmp_path, monkeypatch
+):
+    import config
+
+    initial_file_text = "line-1\n"
+    full_file_text = initial_file_text + "line-2\n"
+    log_file = tmp_path / "pulsescribe.log"
+    log_file.write_text(full_file_text, encoding="utf-8")
+    monkeypatch.setattr(config, "LOG_FILE", log_file)
+
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._logs_viewer = _FakeLogsViewer("line-1")
+    window._last_logs_text = "line-1"
+    window._last_logs_signature = (1, len(initial_file_text.encode("utf-8")))
+
+    assert window._try_append_logs_delta((2, len(full_file_text.encode("utf-8")))) is True
+    assert window._logs_viewer.text == "line-1\nline-2"
+    assert window._last_logs_text == "line-1\nline-2"
+    assert window._logs_viewer.set_plain_text_calls == []
+
+
+def test_try_append_logs_delta_replaces_view_when_tail_window_must_trim(
+    tmp_path, monkeypatch
+):
+    import config
+
+    initial_lines = [
+        f"line-{index}" for index in range(1, settings_mod.LOG_VIEW_MAX_LINES + 1)
+    ]
+    appended_lines = [
+        f"line-{index}"
+        for index in range(
+            len(initial_lines) + 1,
+            len(initial_lines) + 3,
+        )
+    ]
+    initial_file_text = "\n".join(initial_lines) + "\n"
+    full_file_text = initial_file_text + "\n".join(appended_lines) + "\n"
+    expected_visible_lines = initial_lines[len(appended_lines) :] + appended_lines
+    expected_visible_text = "\n".join(expected_visible_lines)
+
+    log_file = tmp_path / "pulsescribe.log"
+    log_file.write_text(full_file_text, encoding="utf-8")
+    monkeypatch.setattr(config, "LOG_FILE", log_file)
+
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._logs_viewer = _FakeLogsViewer("\n".join(initial_lines))
+    window._last_logs_text = "\n".join(initial_lines)
+    window._last_logs_signature = (1, len(initial_file_text.encode("utf-8")))
+
+    assert window._try_append_logs_delta((2, len(full_file_text.encode("utf-8")))) is True
+    assert window._logs_viewer.text == expected_visible_text
+    assert window._last_logs_text == expected_visible_text
+    assert window._logs_viewer.set_plain_text_calls == [expected_visible_text]
+    assert window._last_logs_signature == (2, len(full_file_text.encode("utf-8")))
+
+
 def test_refresh_logs_resets_placeholder_when_log_file_is_missing(
     tmp_path, monkeypatch
 ):

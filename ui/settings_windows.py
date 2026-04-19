@@ -7,6 +7,7 @@ Portiert von ui/welcome.py (macOS AppKit).
 from contextlib import contextmanager
 import logging
 import os
+from pathlib import Path
 import sys
 import threading
 import time
@@ -254,6 +255,36 @@ def _get_incremental_append_start(
         return None
 
     return previous_size
+
+
+def _file_ends_with_linebreak_before_offset(path: Path, end_offset: int) -> bool:
+    """Return True when the file byte right before ``end_offset`` is a line break."""
+    if end_offset <= 0:
+        return False
+
+    try:
+        with path.open("rb") as handle:
+            handle.seek(end_offset - 1)
+            return handle.read(1) in {b"\n", b"\r"}
+    except OSError:
+        return False
+
+
+def _normalize_incremental_log_delta(
+    previous_text: str,
+    appended_text: str,
+    *,
+    previous_file_ended_with_linebreak: bool,
+) -> str:
+    """Map raw appended log bytes to the viewer's normalized line representation."""
+    normalized_delta = "\n".join(appended_text.splitlines())
+    if (
+        previous_file_ended_with_linebreak
+        and previous_text
+        and normalized_delta
+    ):
+        return f"\n{normalized_delta}"
+    return normalized_delta
 
 
 def _signature_means_missing_file(
@@ -2914,19 +2945,33 @@ class SettingsWindow(QDialog):
         if not appended_text:
             return False
 
-        merged_text = merge_tail_lines(
+        display_delta = _normalize_incremental_log_delta(
             self._last_logs_text,
             appended_text,
+            previous_file_ended_with_linebreak=_file_ends_with_linebreak_before_offset(
+                LOG_FILE,
+                previous_size,
+            ),
+        )
+        merged_text = merge_tail_lines(
+            self._last_logs_text,
+            display_delta,
             max_lines=LOG_VIEW_MAX_LINES,
         )
         if merged_text == self._last_logs_text:
             self._last_logs_signature = signature
             return True
 
+        expected_visible_text = f"{self._last_logs_text}{display_delta}"
+        if merged_text != expected_visible_text:
+            self._set_logs_text_if_changed(merged_text)
+            self._last_logs_signature = signature
+            return True
+
         try:
             cursor = self._logs_viewer.textCursor()
             cursor.movePosition(QTextCursor.MoveOperation.End)
-            cursor.insertText(appended_text)
+            cursor.insertText(display_delta)
         except Exception:
             return False
 
