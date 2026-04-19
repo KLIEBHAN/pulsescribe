@@ -1,5 +1,32 @@
 Performance notes - 2026-04-19
 
+Latest pass - next frontend hotspot review + welcome/history file I/O
+- Reviewed the next likely frontend-heavy candidates outside the last two overlay commits:
+  1. `ui/welcome.py` + `utils/log_tail.py` + `utils/history.py`
+     - adaptive logs/transcripts refresh is already incremental, but the full-reload/initial-load paths still repeated signature/file-state work across UI + helper layers.
+  2. `ui/settings_windows.py`
+     - the large `_load_settings()` / `_apply_local_preset()` population path is still broad and frequently touched, but much of the obvious widget churn is already guarded.
+  3. prompt/vocabulary tabs
+     - less likely now because signature/session caches are already in place and tab access is less frequent than logs/transcripts refreshes.
+- Chosen hotspot:
+  - `ui/welcome.py` + `utils/history.py` / `utils/log_tail.py`
+  - reason: this is still the clearest remaining long-session frontend path with repeated file-signature / file-read coordination during logs/transcripts loads and refreshes.
+- Changes in this pass:
+  - `utils/log_tail.py`
+    - added a helper to read tail text together with one matching file signature from the same file-open path.
+  - `utils/history.py`
+    - added `get_recent_transcripts_with_signature()` and allowed recent transcript loading to reuse a known file size/signature instead of stat-ing again.
+  - `ui/welcome.py`
+    - reused pending signatures from the combined helper paths during initial logs/transcripts loads
+    - reused the already-known transcript signature on the full transcript reload path so welcome refreshes avoid redundant file metadata work.
+- Why this helps:
+  - trims redundant file metadata lookups and state recomputation on repeated welcome logs/transcripts refresh paths
+  - keeps the UI flow unchanged while making the macOS long-session viewer path cheaper
+- Validation for this pass:
+  - `pytest tests/test_settings_ui.py tests/test_settings_windows_logs.py tests/test_log_tail.py tests/test_history.py tests/test_history_display.py -q`
+  - `python -m py_compile utils/log_tail.py utils/history.py ui/welcome.py tests/test_log_tail.py tests/test_history.py tests/test_settings_ui.py`
+  - `ruff check utils/log_tail.py utils/history.py ui/welcome.py tests/test_log_tail.py tests/test_history.py tests/test_settings_ui.py`
+
 Latest pass - macOS overlay recording-frame hot path
 - Focused specifically on `ui/overlay.py::_render_level_frame` and its direct recording/drawing helpers.
 - Remaining hotspots identified there:
@@ -113,11 +140,11 @@ Recent completed areas (archived summary)
 - Menubar/daemon UI dispatch: duplicate payload suppression, preview-title dedupe, adaptive result/interim polling
 
 Next worthwhile areas
-1. `ui/welcome.py` + `utils/log_tail.py`
-- shared signature/tail-state reuse across logs/transcripts refresh paths is still the most likely remaining long-session file-I/O hotspot on macOS.
+1. `ui/settings_windows.py`
+- the large settings load/apply field-population path still looks like the next broad Windows frontend hotspot now that welcome/log-history coordination is cheaper.
 
 2. `ui/overlay.py`
 - if overlay traces still show pressure after the recording-frame cleanup, the next smaller target is `SoundWaveView._apply_bar_heights()` / CoreAnimation transaction setup on frames where multiple bars change together.
 
-3. `ui/settings_windows.py`
-- the large settings load/apply field-population path still looks promising once it is safely outside the recent-commit boundary again.
+3. prompt/vocabulary editors (`ui/welcome.py` / `ui/settings_windows.py` + custom prompt/vocabulary helpers)
+- likely the next tab-open/save latency candidate if real-world traces still show spikes outside logs/transcripts.

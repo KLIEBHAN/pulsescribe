@@ -148,6 +148,29 @@ class TestGetRecentTranscripts:
         assert get_recent_transcripts(count=0) == []
         assert get_recent_transcripts(count=-5) == []
 
+    def test_get_recent_with_signature_reuses_provided_signature(self, history_file, monkeypatch):
+        """Bekannte Dateisignaturen sollen ohne erneuten get_file_signature-Call nutzbar sein."""
+        from utils.history import get_recent_transcripts_with_signature, save_transcript
+
+        save_transcript("First")
+        save_transcript("Second")
+        provided_signature = (123, history_file.stat().st_size)
+
+        monkeypatch.setattr(
+            "utils.history.get_file_signature",
+            lambda _path: (_ for _ in ()).throw(
+                AssertionError("provided signature should be reused")
+            ),
+        )
+
+        entries, signature = get_recent_transcripts_with_signature(
+            count=2,
+            signature=provided_signature,
+        )
+
+        assert [entry["text"] for entry in entries] == ["Second", "First"]
+        assert signature == provided_signature
+
     def test_get_recent_prefers_tail_read_over_full_read(self, history_file, monkeypatch):
         """Normale Reads sollen ohne Full-File read_text auskommen."""
         from utils.history import get_recent_transcripts, save_transcript

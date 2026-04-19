@@ -1206,7 +1206,11 @@ class TestWelcomeTranscriptsRefreshBehavior:
         import utils.history as history_mod
 
         ctrl = WelcomeController.__new__(WelcomeController)
-        monkeypatch.setattr(history_mod, "get_recent_transcripts", lambda count: [])
+        monkeypatch.setattr(
+            history_mod,
+            "get_recent_transcripts_with_signature",
+            lambda count, signature=Ellipsis: ([], None),
+        )
 
         transcript_text, entry_count = ctrl._get_transcripts_payload()
 
@@ -1214,6 +1218,29 @@ class TestWelcomeTranscriptsRefreshBehavior:
         assert entry_count == 0
         assert ctrl._pending_transcripts_entries == []
         assert ctrl._pending_transcripts_blocks == []
+
+    def test_get_transcripts_payload_reuses_requested_signature(self, monkeypatch):
+        import utils.history as history_mod
+
+        ctrl = WelcomeController.__new__(WelcomeController)
+        ctrl._requested_transcripts_signature = (9, 42)
+        captured: list[object] = []
+
+        monkeypatch.setattr(
+            history_mod,
+            "get_recent_transcripts_with_signature",
+            lambda count, signature=Ellipsis: (
+                captured.append(signature),
+                ([{"timestamp": "2026-03-24T10:00:00", "text": "Alpha"}], signature),
+            )[1],
+        )
+
+        transcript_text, entry_count = ctrl._get_transcripts_payload()
+
+        assert captured == [(9, 42)]
+        assert transcript_text == "[2026-03-24 10:00:00]\nAlpha"
+        assert entry_count == 1
+        assert ctrl._pending_transcripts_signature == (9, 42)
 
     def test_refresh_transcripts_builds_view_when_needed(self):
         ctrl = WelcomeController.__new__(WelcomeController)
@@ -1552,6 +1579,25 @@ class TestWelcomeLogsRefreshBehavior:
             (3, 4), scroll_to_bottom=False
         )
         ctrl._get_logs_text.assert_not_called()
+
+    def test_get_logs_text_caches_signature_from_shared_tail_helper(
+        self, monkeypatch, tmp_path
+    ):
+        import ui.welcome as welcome_mod
+
+        ctrl = WelcomeController.__new__(WelcomeController)
+        log_file = tmp_path / "app.log"
+        log_file.write_text("hello", encoding="utf-8")
+
+        monkeypatch.setattr(welcome_mod, "LOG_FILE", log_file)
+        monkeypatch.setattr(
+            welcome_mod,
+            "read_file_tail_text_with_signature",
+            lambda *_args, **_kwargs: ("cached logs", (7, 9)),
+        )
+
+        assert ctrl._get_logs_text() == "cached logs"
+        assert ctrl._pending_logs_signature == (7, 9)
 
     def test_refresh_logs_skips_file_read_when_signature_unchanged(self, monkeypatch):
         import ui.welcome as welcome_mod

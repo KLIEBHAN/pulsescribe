@@ -11,7 +11,11 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from config import USER_CONFIG_DIR
-from utils.log_tail import read_file_tail_lines, read_file_text_from_offset
+from utils.log_tail import (
+    get_file_signature,
+    read_file_tail_lines,
+    read_file_text_from_offset,
+)
 from utils.preferences import _write_text_atomic
 from utils.timing import redacted_text_summary
 
@@ -158,7 +162,11 @@ def _recent_history_read_limits(count: int) -> tuple[int, int]:
     return tail_max_lines, tail_max_scan_bytes
 
 
-def _load_recent_transcript_entries(count: int) -> list[dict[str, object]]:
+def _load_recent_transcript_entries(
+    count: int,
+    *,
+    file_size: int | None = None,
+) -> list[dict[str, object]]:
     """Load recent entries with a tail-first strategy and full-read fallback."""
     tail_max_lines, tail_max_scan_bytes = _recent_history_read_limits(count)
     tail_text = read_file_tail_lines(
@@ -172,7 +180,8 @@ def _load_recent_transcript_entries(count: int) -> list[dict[str, object]]:
     if len(entries) >= count:
         return entries
 
-    file_size = HISTORY_FILE.stat().st_size
+    if file_size is None:
+        file_size = HISTORY_FILE.stat().st_size
 
     # Wenn Tail-Read bereits die ganze Datei abdeckt, ist ein Full-Read unnötig.
     # Sonst kann der Tail entweder per Byte-Limit oder max_lines abgeschnitten
@@ -185,6 +194,32 @@ def _load_recent_transcript_entries(count: int) -> list[dict[str, object]]:
     return _parse_recent_entries(full_text.splitlines(), count)
 
 
+def get_recent_transcripts_with_signature(
+    count: int = 10,
+    *,
+    signature: tuple[int, int] | None | object = Ellipsis,
+) -> tuple[list[dict[str, object]], tuple[int, int] | None]:
+    """Return recent entries together with one matching file signature."""
+    if count <= 0:
+        return [], None
+
+    current_signature = (
+        get_file_signature(HISTORY_FILE) if signature is Ellipsis else signature
+    )
+    if current_signature is None:
+        return [], None
+
+    try:
+        entries = _load_recent_transcript_entries(
+            count,
+            file_size=int(current_signature[1]),
+        )
+        return entries, current_signature
+    except Exception as e:
+        logger.warning(f"Failed to read history: {e}")
+        return [], current_signature
+
+
 def get_recent_transcripts(count: int = 10) -> list[dict[str, object]]:
     """Gibt die letzten N Transkripte zurück.
 
@@ -194,14 +229,8 @@ def get_recent_transcripts(count: int = 10) -> list[dict[str, object]]:
     Returns:
         Liste von Transkript-Dictionaries (neueste zuerst)
     """
-    if count <= 0 or not HISTORY_FILE.exists():
-        return []
-
-    try:
-        return _load_recent_transcript_entries(count)
-    except Exception as e:
-        logger.warning(f"Failed to read history: {e}")
-        return []
+    entries, _signature = get_recent_transcripts_with_signature(count)
+    return entries
 
 
 def _iter_parsed_transcript_lines(

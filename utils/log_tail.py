@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import BinaryIO
 
@@ -26,6 +27,53 @@ def _open_tail_handle(path: Path) -> tuple[BinaryIO | None, int]:
         return None, 0
 
 
+def _read_tail_bytes_from_open_handle(
+    handle: BinaryIO,
+    *,
+    file_size: int,
+    target_newlines: int | None = None,
+    max_bytes: int | None = None,
+) -> tuple[bytes, bool]:
+    """Read bytes from the end of an already opened file handle."""
+    if max_bytes is not None and max_bytes <= 0:
+        return b"", False
+    if file_size <= 0:
+        return b"", False
+
+    position = file_size
+    chunks: list[bytes] = []
+    collected_bytes = 0
+    collected_newlines = 0
+    truncated_from_start = False
+
+    while position > 0:
+        read_size = min(_TAIL_CHUNK_SIZE, position)
+        position -= read_size
+        handle.seek(position)
+        chunk = handle.read(read_size)
+        if not chunk:
+            break
+
+        chunks.append(chunk)
+        collected_bytes += len(chunk)
+
+        if target_newlines is not None:
+            collected_newlines += chunk.count(b"\n")
+            if collected_newlines > target_newlines + 1:
+                truncated_from_start = position > 0
+                break
+
+        if max_bytes is not None and collected_bytes >= max_bytes:
+            truncated_from_start = position > 0
+            break
+
+    data = b"".join(reversed(chunks))
+    if max_bytes is not None and len(data) > max_bytes:
+        data = data[-max_bytes:]
+        truncated_from_start = True
+    return data, truncated_from_start
+
+
 def _read_tail_bytes(
     path: Path,
     *,
@@ -33,45 +81,17 @@ def _read_tail_bytes(
     max_bytes: int | None = None,
 ) -> tuple[bytes, bool]:
     """Read bytes from the end of a file until constraints are satisfied."""
-    if max_bytes is not None and max_bytes <= 0:
-        return b"", False
-
-    handle, position = _open_tail_handle(path)
-    if handle is None or position <= 0:
+    handle, file_size = _open_tail_handle(path)
+    if handle is None:
         return b"", False
 
     with handle:
-        chunks: list[bytes] = []
-        collected_bytes = 0
-        collected_newlines = 0
-        truncated_from_start = False
-
-        while position > 0:
-            read_size = min(_TAIL_CHUNK_SIZE, position)
-            position -= read_size
-            handle.seek(position)
-            chunk = handle.read(read_size)
-            if not chunk:
-                break
-
-            chunks.append(chunk)
-            collected_bytes += len(chunk)
-
-            if target_newlines is not None:
-                collected_newlines += chunk.count(b"\n")
-                if collected_newlines > target_newlines + 1:
-                    truncated_from_start = position > 0
-                    break
-
-            if max_bytes is not None and collected_bytes >= max_bytes:
-                truncated_from_start = position > 0
-                break
-
-    data = b"".join(reversed(chunks))
-    if max_bytes is not None and len(data) > max_bytes:
-        data = data[-max_bytes:]
-        truncated_from_start = True
-    return data, truncated_from_start
+        return _read_tail_bytes_from_open_handle(
+            handle,
+            file_size=file_size,
+            target_newlines=target_newlines,
+            max_bytes=max_bytes,
+        )
 
 
 def _truncate_visible_tail(
@@ -120,6 +140,50 @@ def read_file_tail_text(
         truncated_prefix=truncated_prefix,
         force_prefix=len(text) > max_chars,
     )
+
+
+def read_file_tail_text_with_signature(
+    path: Path,
+    *,
+    max_chars: int,
+    encoding: str = "utf-8",
+    errors: str = "replace",
+    truncated_prefix: str = "... (truncated)\n\n",
+) -> tuple[str, tuple[int, int] | None]:
+    """Return tail text together with one matching file signature.
+
+    This avoids a second ``stat()`` call in UI refresh paths that need both the
+    rendered tail text and a change-detection signature for the same file read.
+    """
+    if max_chars <= 0:
+        return "", None
+
+    handle, file_size = _open_tail_handle(path)
+    if handle is None:
+        return "", None
+
+    with handle:
+        try:
+            stat_result = os.fstat(handle.fileno())
+            signature = (int(stat_result.st_mtime_ns), int(stat_result.st_size))
+        except (AttributeError, OSError):
+            signature = None
+
+        max_bytes = max_chars * 4 + _TAIL_CHUNK_SIZE
+        raw, _truncated_from_start = _read_tail_bytes_from_open_handle(
+            handle,
+            file_size=file_size,
+            max_bytes=max_bytes,
+        )
+
+    text = raw.decode(encoding, errors=errors)
+    rendered_text = _truncate_visible_tail(
+        text,
+        max_chars=max_chars,
+        truncated_prefix=truncated_prefix,
+        force_prefix=len(text) > max_chars,
+    )
+    return rendered_text, signature
 
 
 def read_file_tail_lines(

@@ -13,7 +13,7 @@ from utils.hotkey_recording import HotkeyRecorder
 from utils.local_backend import normalize_local_backend, should_remove_local_backend_env
 from utils.log_tail import (
     get_file_signature,
-    read_file_tail_text,
+    read_file_tail_text_with_signature,
     read_file_text_from_offset,
     should_auto_refresh_logs,
 )
@@ -2440,7 +2440,11 @@ class WelcomeController:
         initial_logs_text = self._get_logs_text()
         text_view.setString_(initial_logs_text)
         self._set_logs_cache(initial_logs_text)
-        self._last_logs_signature = get_file_signature(LOG_FILE)
+        initial_logs_signature = getattr(self, "_pending_logs_signature", None)
+        if initial_logs_signature is None and LOG_FILE.exists():
+            initial_logs_signature = get_file_signature(LOG_FILE)
+        self._last_logs_signature = initial_logs_signature
+        self._pending_logs_signature = None
         scroll.setDocumentView_(text_view)
         logs_container.addSubview_(scroll)
         self._logs_text_view = text_view
@@ -2569,7 +2573,15 @@ class WelcomeController:
         initial_transcripts_text, entry_count = self._get_transcripts_payload()
         t_text_view.setString_(initial_transcripts_text)
         self._last_transcripts_text = initial_transcripts_text
-        self._last_transcripts_signature = self._get_transcripts_signature()
+        initial_transcripts_signature = getattr(
+            self,
+            "_pending_transcripts_signature",
+            None,
+        )
+        if initial_transcripts_signature is None:
+            initial_transcripts_signature = self._get_transcripts_signature()
+        self._last_transcripts_signature = initial_transcripts_signature
+        self._pending_transcripts_signature = None
         self._last_transcripts_entries = getattr(
             self,
             "_pending_transcripts_entries",
@@ -2593,11 +2605,21 @@ class WelcomeController:
         from utils.history import (
             format_transcript_entries_for_welcome,
             format_transcripts_for_welcome,
-            get_recent_transcripts,
+            get_recent_transcripts_with_signature,
+        )
+
+        requested_signature = getattr(
+            self,
+            "_requested_transcripts_signature",
+            Ellipsis,
         )
 
         try:
-            entries = get_recent_transcripts(count=TRANSCRIPTS_VIEW_MAX_ENTRIES)
+            entries, signature = get_recent_transcripts_with_signature(
+                count=TRANSCRIPTS_VIEW_MAX_ENTRIES,
+                signature=requested_signature,
+            )
+            self._pending_transcripts_signature = signature
             blocks = format_transcript_entries_for_welcome(entries)
             (
                 transcript_text,
@@ -2611,6 +2633,7 @@ class WelcomeController:
             )
             return transcript_text, entry_count
         except Exception as e:
+            self._pending_transcripts_signature = None
             self._pending_transcripts_entries = []
             self._pending_transcripts_blocks = []
             return f"Could not load transcripts: {e}", 0
@@ -2652,10 +2675,22 @@ class WelcomeController:
                 ):
                     return True
 
-                transcript_text, entry_count = self._get_transcripts_payload()
+                self._requested_transcripts_signature = signature
+                try:
+                    transcript_text, entry_count = self._get_transcripts_payload()
+                finally:
+                    self._requested_transcripts_signature = Ellipsis
+                resolved_signature = getattr(
+                    self,
+                    "_pending_transcripts_signature",
+                    None,
+                )
+                if resolved_signature is None:
+                    resolved_signature = signature
+                self._pending_transcripts_signature = None
                 return self._apply_transcripts_payload(
                     transcript_text,
-                    signature,
+                    resolved_signature,
                     entry_count,
                     transcript_entries=getattr(
                         self,
@@ -3115,14 +3150,18 @@ class WelcomeController:
         """Liest einen Ausschnitt der aktuellen Log-Datei."""
         try:
             if not LOG_FILE.exists():
+                self._pending_logs_signature = None
                 return "No logs yet.\n\nLog file will appear at:\n" + str(LOG_FILE)
-            return read_file_tail_text(
+            log_text, signature = read_file_tail_text_with_signature(
                 LOG_FILE,
                 max_chars=max_chars,
                 errors="ignore",
                 truncated_prefix=LOG_TRUNCATED_PREFIX,
             )
+            self._pending_logs_signature = signature
+            return log_text
         except Exception as e:
+            self._pending_logs_signature = None
             return f"Could not read logs: {e}"
 
     def _is_logs_near_bottom(self, tolerance: float = 24.0) -> bool:
@@ -3373,9 +3412,13 @@ class WelcomeController:
                     return self._last_logs_text != previous_text
 
                 log_text = self._get_logs_text()
+                resolved_signature = getattr(self, "_pending_logs_signature", None)
+                if resolved_signature is None:
+                    resolved_signature = signature
+                self._pending_logs_signature = None
                 return self._apply_logs_payload(
                     log_text,
-                    signature,
+                    resolved_signature,
                     scroll_to_bottom=scroll_to_bottom,
                 )
             except Exception:

@@ -9,6 +9,7 @@ from utils.log_tail import (
     merge_tail_text,
     read_file_tail_lines,
     read_file_tail_text,
+    read_file_tail_text_with_signature,
     read_file_text_from_offset,
     should_auto_refresh_logs,
 )
@@ -39,6 +40,18 @@ def test_read_file_tail_text_skips_prefix_when_budget_is_too_small(
     file_path.write_text("abcdefghijklmnopqrstuvwxyz", encoding="utf-8")
 
     assert read_file_tail_text(file_path, max_chars=4) == "wxyz"
+
+
+def test_read_file_tail_text_with_signature_returns_matching_metadata(
+    tmp_path: Path,
+) -> None:
+    file_path = tmp_path / "signature-tail.log"
+    file_path.write_text("line-1\nline-2\n", encoding="utf-8")
+
+    tail_text, signature = read_file_tail_text_with_signature(file_path, max_chars=100)
+
+    assert tail_text == "line-1\nline-2\n"
+    assert signature == get_file_signature(file_path)
 
 
 def test_read_file_tail_lines_returns_last_lines(tmp_path: Path) -> None:
