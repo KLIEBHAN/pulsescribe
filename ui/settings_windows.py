@@ -2873,7 +2873,7 @@ class SettingsWindow(QDialog):
         """Lädt Vocabulary aus Datei."""
         try:
             from config import VOCABULARY_FILE
-            from utils.vocabulary import load_vocabulary, validate_vocabulary
+            from utils.vocabulary import load_vocabulary_state
 
             signature = get_file_signature(VOCABULARY_FILE)
             if (
@@ -2883,14 +2883,14 @@ class SettingsWindow(QDialog):
             ):
                 return
 
-            vocab = load_vocabulary()
+            vocab, warnings, _state_signature = load_vocabulary_state()
             if self._vocab_editor:
                 keywords = vocab.get("keywords", [])
                 set_plain_text_if_changed(self._vocab_editor, "\n".join(keywords))
 
                 status_text, status_color = _build_vocabulary_status(
                     keyword_count=len(keywords),
-                    warnings=validate_vocabulary(),
+                    warnings=warnings,
                     saved=False,
                 )
                 _set_status_label_if_changed(
@@ -2909,19 +2909,21 @@ class SettingsWindow(QDialog):
     def _save_vocabulary(self):
         """Speichert Vocabulary in Datei."""
         try:
-            from config import VOCABULARY_FILE
-            from utils.vocabulary import save_vocabulary, validate_vocabulary
+            from utils.vocabulary import save_vocabulary_state
 
             if self._vocab_editor:
                 text = self._vocab_editor.toPlainText()
                 keywords = [line.strip() for line in text.split("\n") if line.strip()]
-                save_vocabulary(keywords)
+                vocab, warnings, signature = save_vocabulary_state(keywords)
+                normalized_keywords = vocab.get("keywords", [])
                 self._vocabulary_loaded = True
-                self._last_vocabulary_signature = get_file_signature(VOCABULARY_FILE)
+                self._last_vocabulary_signature = (
+                    (signature[0], signature[1]) if signature is not None else None
+                )
 
                 status_text, status_color = _build_vocabulary_status(
-                    keyword_count=len(keywords),
-                    warnings=validate_vocabulary(),
+                    keyword_count=len(normalized_keywords),
+                    warnings=warnings,
                     saved=True,
                 )
                 _set_status_label_if_changed(

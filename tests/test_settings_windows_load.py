@@ -455,13 +455,8 @@ def test_load_vocabulary_skips_reload_when_signature_unchanged(monkeypatch):
     monkeypatch.setattr(settings_mod, "get_file_signature", lambda _path: (7, 9))
     monkeypatch.setattr(
         vocabulary_mod,
-        "load_vocabulary",
+        "load_vocabulary_state",
         lambda: (_ for _ in ()).throw(AssertionError("disk load should not happen")),
-    )
-    monkeypatch.setattr(
-        vocabulary_mod,
-        "validate_vocabulary",
-        lambda: (_ for _ in ()).throw(AssertionError("validation should not happen")),
     )
 
     window._load_vocabulary()
@@ -482,10 +477,9 @@ def test_load_vocabulary_force_reloads_even_when_signature_unchanged(monkeypatch
     monkeypatch.setattr(settings_mod, "get_file_signature", lambda _path: (7, 9))
     monkeypatch.setattr(
         vocabulary_mod,
-        "load_vocabulary",
-        lambda: {"keywords": ["alpha"]},
+        "load_vocabulary_state",
+        lambda: ({"keywords": ["alpha"]}, [], (1, 2, 3)),
     )
-    monkeypatch.setattr(vocabulary_mod, "validate_vocabulary", lambda: [])
 
     window._load_vocabulary(force=True)
 
@@ -505,13 +499,12 @@ def test_load_vocabulary_surfaces_validation_warnings(monkeypatch):
     monkeypatch.setattr(settings_mod, "get_file_signature", lambda _path: (11, 22))
     monkeypatch.setattr(
         vocabulary_mod,
-        "load_vocabulary",
-        lambda: {"keywords": ["alpha", "beta"]},
-    )
-    monkeypatch.setattr(
-        vocabulary_mod,
-        "validate_vocabulary",
-        lambda: ["2 doppelte Keywords gefunden."],
+        "load_vocabulary_state",
+        lambda: (
+            {"keywords": ["alpha", "beta"]},
+            ["2 doppelte Keywords gefunden."],
+            (11, 22, 33),
+        ),
     )
 
     window._load_vocabulary()
@@ -533,15 +526,14 @@ def test_save_vocabulary_surfaces_saved_warning_summary(monkeypatch):
 
     monkeypatch.setattr(
         vocabulary_mod,
-        "save_vocabulary",
-        lambda keywords: saved_keywords.append(list(keywords)),
+        "save_vocabulary_state",
+        lambda keywords: (
+            saved_keywords.append(list(keywords)),
+            {"keywords": ["alpha", "beta"]},
+            ["2 doppelte Keywords gefunden."],
+            (33, 44, 55),
+        )[1:],
     )
-    monkeypatch.setattr(
-        vocabulary_mod,
-        "validate_vocabulary",
-        lambda: ["2 doppelte Keywords gefunden."],
-    )
-    monkeypatch.setattr(settings_mod, "get_file_signature", lambda _path: (33, 44))
 
     window._save_vocabulary()
 

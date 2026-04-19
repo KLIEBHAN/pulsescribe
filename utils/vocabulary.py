@@ -22,6 +22,7 @@ logger = logging.getLogger("pulsescribe")
 
 # Cache per path: {Path: (signature, normalized data, validation issues)}
 _cache: dict[Path, tuple[FileSignature, dict[str, Any], list[str]]] = {}
+_trusted_cache_signatures: dict[Path, FileSignature] = {}
 
 
 def _file_signature(path: Path) -> FileSignature:
@@ -42,6 +43,7 @@ def _update_cached_state(
 ) -> None:
     """Store normalized vocabulary state in the per-path cache."""
     _cache[vocab_file] = (signature, _copy_vocabulary_data(data), list(issues))
+    _trusted_cache_signatures[vocab_file] = signature
 
 
 def _get_cached_state(
@@ -163,6 +165,29 @@ def _read_vocabulary_state(
     return _copy_vocabulary_data(data), list(issues)
 
 
+def load_vocabulary_state(
+    path: Path | None = None,
+) -> tuple[dict[str, Any], list[str], FileSignature | None]:
+    """Load normalized vocabulary plus validation issues and signature in one pass."""
+    vocab_file = path or _DEFAULT_VOCAB_FILE
+
+    try:
+        signature = _file_signature(vocab_file)
+    except FileNotFoundError:
+        _cache.pop(vocab_file, None)
+        _trusted_cache_signatures.pop(vocab_file, None)
+        return {"keywords": []}, [], None
+    except OSError as e:
+        logger.warning(f"Vocabulary-Datei nicht lesbar: {e}")
+        _cache.pop(vocab_file, None)
+        _trusted_cache_signatures.pop(vocab_file, None)
+        return {"keywords": []}, [f"Vocabulary-Datei nicht lesbar: {e}"], None
+
+    data, issues = _read_vocabulary_state(vocab_file, signature)
+    return data, issues, signature
+
+
+
 def load_vocabulary(path: Path | None = None) -> dict:
     """Loads custom vocabulary from JSON.
 
@@ -172,19 +197,7 @@ def load_vocabulary(path: Path | None = None) -> dict:
     Returns:
         Dict with a guaranteed "keywords" list.
     """
-    vocab_file = path or _DEFAULT_VOCAB_FILE
-
-    try:
-        signature = _file_signature(vocab_file)
-    except FileNotFoundError:
-        _cache.pop(vocab_file, None)
-        return {"keywords": []}
-    except OSError as e:
-        logger.warning(f"Vocabulary-Datei nicht lesbar: {e}")
-        _cache.pop(vocab_file, None)
-        return {"keywords": []}
-
-    data, _issues = _read_vocabulary_state(vocab_file, signature)
+    data, _issues, _signature = load_vocabulary_state(path=path)
     return data
 
 
@@ -197,6 +210,25 @@ def _read_existing_vocabulary_data(vocab_file: Path) -> dict[str, Any]:
     except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         return {}
     return dict(existing) if isinstance(existing, dict) else {}
+
+
+
+def _get_existing_vocabulary_data(
+    vocab_file: Path,
+    *,
+    current_signature: FileSignature | None,
+) -> dict[str, Any]:
+    """Prefer the current cached JSON object before falling back to a fresh file read."""
+    if current_signature is not None:
+        cached = _cache.get(vocab_file)
+        if (
+            cached
+            and cached[0] == current_signature
+            and _trusted_cache_signatures.get(vocab_file) == current_signature
+        ):
+            return _copy_vocabulary_data(cached[1])
+
+    return _read_existing_vocabulary_data(vocab_file)
 
 
 def _get_current_vocabulary_signature(vocab_file: Path) -> FileSignature | None:
@@ -229,22 +261,23 @@ def _reuse_current_vocabulary_state(
     return True
 
 
-def save_vocabulary(keywords: list[str], path: Path | None = None) -> None:
-    """Speichert Custom Vocabulary als JSON.
-
-    Args:
-        keywords: Liste der Keywords.
-        path: Optionaler Pfad-Override (Tests).
-    """
+def save_vocabulary_state(
+    keywords: list[str],
+    path: Path | None = None,
+) -> tuple[dict[str, Any], list[str], FileSignature | None]:
+    """Save normalized vocabulary and return the resulting state in one pass."""
     vocab_file = path or _DEFAULT_VOCAB_FILE
     vocab_file.parent.mkdir(parents=True, exist_ok=True)
 
     analysis = _analyze_keywords(list(keywords))
-    existing_data = _read_existing_vocabulary_data(vocab_file)
+    current_signature = _get_current_vocabulary_signature(vocab_file)
+    existing_data = _get_existing_vocabulary_data(
+        vocab_file,
+        current_signature=current_signature,
+    )
     data = dict(existing_data)
     data["keywords"] = analysis.normalized
 
-    current_signature = _get_current_vocabulary_signature(vocab_file)
     if _reuse_current_vocabulary_state(
         vocab_file,
         current_signature=current_signature,
@@ -252,7 +285,7 @@ def save_vocabulary(keywords: list[str], path: Path | None = None) -> None:
         issues=analysis.issues,
         file_matches_target=existing_data == data,
     ):
-        return
+        return _copy_vocabulary_data(data), list(analysis.issues), current_signature
 
     try:
         write_text_atomic(
@@ -271,29 +304,42 @@ def save_vocabulary(keywords: list[str], path: Path | None = None) -> None:
 
     # Cache direkt aktualisieren, damit Änderungen sofort wirken.
     try:
+        new_signature = _file_signature(vocab_file)
         _update_cached_state(
             vocab_file,
-            _file_signature(vocab_file),
+            new_signature,
             data,
             analysis.issues,
         )
     except OSError:
         _cache.pop(vocab_file, None)
+        _trusted_cache_signatures.pop(vocab_file, None)
+        new_signature = None
+
+    return _copy_vocabulary_data(data), list(analysis.issues), new_signature
+
+
+
+def save_vocabulary(keywords: list[str], path: Path | None = None) -> None:
+    """Speichert Custom Vocabulary als JSON.
+
+    Args:
+        keywords: Liste der Keywords.
+        path: Optionaler Pfad-Override (Tests).
+    """
+    save_vocabulary_state(keywords, path=path)
 
 
 def validate_vocabulary(path: Path | None = None) -> list[str]:
     """Validiert die Vocabulary-Datei und gibt Warnungen zurück."""
-    vocab_file = path or _DEFAULT_VOCAB_FILE
-    if not vocab_file.exists():
-        return []
-
-    try:
-        signature = _file_signature(vocab_file)
-    except OSError as e:
-        return [f"Vocabulary-Datei nicht lesbar: {e}"]
-
-    _data, issues = _read_vocabulary_state(vocab_file, signature)
+    _data, issues, _signature = load_vocabulary_state(path=path)
     return issues
 
 
-__all__ = ["load_vocabulary", "save_vocabulary", "validate_vocabulary"]
+__all__ = [
+    "load_vocabulary",
+    "load_vocabulary_state",
+    "save_vocabulary",
+    "save_vocabulary_state",
+    "validate_vocabulary",
+]

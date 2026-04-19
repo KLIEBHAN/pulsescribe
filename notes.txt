@@ -1,5 +1,30 @@
 Performance notes - 2026-04-19
 
+Latest pass - prompt/vocabulary editor review + vocabulary state reuse
+- Reviewed the relevant prompt/vocabulary editor paths in:
+  - `ui/settings_windows.py`
+  - `ui/welcome.py`
+  - `utils/custom_prompts.py`
+  - `utils/vocabulary.py`
+- Most likely concrete hotspots there:
+  1. vocabulary editor load/save in `ui/settings_windows.py` still chained multiple helper passes (`load`/`save` + separate validation/signature follow-ups)
+  2. `utils.vocabulary.py` save path still re-read the current JSON object even when a trusted cache already held the current parsed file state
+  3. prompt editors already avoid a lot of work via lazy tab build + per-context caches, so their remaining costs are narrower and more save-specific
+- Chosen hotspot:
+  - vocabulary editor state coordination (`ui/settings_windows.py` + `utils/vocabulary.py`)
+- Changes in this pass:
+  - added combined vocabulary state helpers that return normalized data + validation issues + signature in one path
+  - updated the Windows vocabulary editor to use the combined load/save helpers instead of separate validation/signature follow-up calls
+  - let `utils.vocabulary.py` reuse trusted cached JSON state on no-op saves instead of re-reading/parsing the file again
+- Why this helps:
+  - less helper churn and file/signature work when opening or saving the vocabulary editor
+  - cheaper no-op saves for larger vocabulary files
+  - keeps UI behavior unchanged while reducing redundant parsing/validation coordination
+- Validation for this pass:
+  - `pytest tests/test_vocabulary.py tests/test_settings_windows_load.py tests/test_settings_windows_prompts.py tests/test_settings_ui.py tests/test_custom_prompts.py -q`
+  - `python -m py_compile utils/vocabulary.py ui/settings_windows.py tests/test_vocabulary.py tests/test_settings_windows_load.py`
+  - `ruff check utils/vocabulary.py ui/settings_windows.py tests/test_vocabulary.py tests/test_settings_windows_load.py`
+
 Latest pass - `ui/settings_windows.py` load/apply/preset paths
 - Reviewed the main frontend-heavy settings-window paths around `_load_settings()`, `_apply_local_preset()` and the surrounding setup-tab synchronization.
 - Most concrete remaining weaknesses there:
@@ -157,8 +182,8 @@ Recent completed areas (archived summary)
 - Menubar/daemon UI dispatch: duplicate payload suppression, preview-title dedupe, adaptive result/interim polling
 
 Next worthwhile areas
-1. prompt/vocabulary editors (`ui/welcome.py` / `ui/settings_windows.py` + custom prompt/vocabulary helpers)
-- likely the next tab-open/save latency candidate now that welcome log-history coordination and settings combo hydration are cheaper.
+1. prompt editors (`ui/welcome.py` / `ui/settings_windows.py` + `utils/custom_prompts.py`)
+- next likely editor hotspot is the app-mappings / multi-context save path if large prompt configs still show save latency after the vocabulary cleanup.
 
 2. `ui/settings_windows.py`
 - after the combo lookup cleanup, the next follow-up inside settings would be the larger setup-overview/API-field synchronization path if real traces still show cost while editing provider credentials.

@@ -5,7 +5,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from transcribe import load_vocabulary
-from utils.vocabulary import save_vocabulary, validate_vocabulary
+from utils.vocabulary import (
+    load_vocabulary_state,
+    save_vocabulary,
+    save_vocabulary_state,
+    validate_vocabulary,
+)
 
 
 class TestLoadVocabulary:
@@ -160,6 +165,19 @@ class TestLoadVocabulary:
         assert second["keywords"] == ["Alpha"]
         assert second["extra"] == "keep"
 
+    def test_load_vocabulary_state_returns_data_issues_and_signature(self, temp_files):
+        vocab_file = temp_files / "vocab.json"
+        vocab_file.write_text(
+            json.dumps({"keywords": ["API", "api", "GraphQL"]}),
+            encoding="utf-8",
+        )
+
+        data, issues, signature = load_vocabulary_state(path=vocab_file)
+
+        assert data["keywords"] == ["API", "GraphQL"]
+        assert any("doppelte" in issue for issue in issues)
+        assert signature is not None
+
 
 class TestSaveVocabulary:
     """Tests für save_vocabulary() - Custom Vocabulary persistieren."""
@@ -268,6 +286,48 @@ class TestSaveVocabulary:
             "keywords": ["Alpha"],
             "extra": "keep",
         }
+
+    def test_save_vocabulary_state_reuses_current_cached_json_without_rereading_file(
+        self, temp_files, monkeypatch
+    ):
+        import utils.vocabulary as vocab
+
+        vocab_file = temp_files / "vocab.json"
+        vocab_file.write_text(
+            json.dumps({"keywords": ["Alpha"], "extra": "keep"}),
+            encoding="utf-8",
+        )
+        signature = vocab._file_signature(vocab_file)
+        assert vocab.load_vocabulary(path=vocab_file) == {
+            "keywords": ["Alpha"],
+            "extra": "keep",
+        }
+        assert vocab._trusted_cache_signatures[vocab_file] == signature
+
+        original_read_text = Path.read_text
+
+        def _patched_read_text(self: Path, *args, **kwargs):
+            if self == vocab_file:
+                raise AssertionError("cached save should not reread the JSON file")
+            return original_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", _patched_read_text)
+        monkeypatch.setattr(
+            vocab,
+            "write_text_atomic",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("unchanged save should not rewrite the file")
+            ),
+        )
+
+        data, issues, returned_signature = save_vocabulary_state(
+            ["Alpha"],
+            path=vocab_file,
+        )
+
+        assert data == {"keywords": ["Alpha"], "extra": "keep"}
+        assert issues == []
+        assert returned_signature == signature
 
 
 class TestValidateVocabulary:
