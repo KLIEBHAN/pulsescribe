@@ -110,10 +110,21 @@ class _FakeCombo:
         self._items = list(items)
         self._current_index = 0
         self.set_calls = 0
+        self.find_calls = 0
         if current in self._items:
             self._current_index = self._items.index(current)
 
+    def addItems(self, items: list[str]) -> None:
+        self._items.extend(items)
+
+    def count(self) -> int:
+        return len(self._items)
+
+    def itemText(self, index: int) -> str:
+        return self._items[index]
+
     def findText(self, value: str) -> int:
+        self.find_calls += 1
         try:
             return self._items.index(value)
         except ValueError:
@@ -329,6 +340,46 @@ def test_load_settings_uses_applied_combo_mode_when_env_mode_is_invalid(monkeypa
 
     assert window._mode_combo.currentText() == "deepgram"
     assert mode_changes == ["deepgram"]
+
+
+def test_load_settings_uses_cached_combo_indices_for_bulk_updates(monkeypatch):
+    monkeypatch.setattr(
+        settings_mod,
+        "read_env_file",
+        lambda: {
+            "PULSESCRIBE_MODE": "local",
+            "PULSESCRIBE_LANGUAGE": "de",
+            "PULSESCRIBE_LOCAL_BACKEND": "lightning",
+            "PULSESCRIBE_LOCAL_MODEL": "large-v3",
+            settings_mod.LOCAL_FP16_ENV_KEY: "true",
+        },
+    )
+
+    window = _make_window()
+    window._mode_combo = _FakeCombo(settings_mod.MODE_OPTIONS, current="deepgram")
+    window._lang_combo = _FakeCombo(settings_mod.LANGUAGE_OPTIONS, current="auto")
+    window._local_backend_combo = _FakeCombo(
+        settings_mod.LOCAL_BACKEND_OPTIONS,
+        current="auto",
+    )
+    window._local_model_combo = _FakeCombo(
+        settings_mod.LOCAL_MODEL_OPTIONS,
+        current="default",
+    )
+    window._on_mode_changed = lambda _mode: None
+
+    window._load_settings()
+
+    assert window._mode_combo.currentText() == "local"
+    assert window._lang_combo.currentText() == "de"
+    assert window._local_backend_combo.currentText() == "lightning"
+    assert window._local_model_combo.currentText() == "large-v3"
+    assert window._fp16_combo.currentText() == "true"
+    assert window._mode_combo.find_calls == 0
+    assert window._lang_combo.find_calls == 0
+    assert window._local_backend_combo.find_calls == 0
+    assert window._local_model_combo.find_calls == 0
+    assert window._fp16_combo.find_calls == 0
 
 
 def test_refresh_setup_overview_uses_process_env_api_keys(monkeypatch):
@@ -616,6 +667,15 @@ def test_apply_local_preset_resets_stale_advanced_values():
     assert window._fp16_combo.currentText() == "default"
     assert window._lightning_batch_slider.value() == 12
     assert window._lightning_quant_combo.currentText() == "none"
+    assert window._mode_combo.find_calls == 0
+    assert window._local_backend_combo.find_calls == 0
+    assert window._local_model_combo.find_calls == 0
+    assert window._device_combo.find_calls == 0
+    assert window._compute_type_combo.find_calls == 0
+    assert window._vad_filter_combo.find_calls == 0
+    assert window._without_timestamps_combo.find_calls == 0
+    assert window._fp16_combo.find_calls == 0
+    assert window._lightning_quant_combo.find_calls == 0
 
 
 def test_apply_local_preset_skips_refresh_for_idempotent_values():

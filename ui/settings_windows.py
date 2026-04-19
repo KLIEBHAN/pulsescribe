@@ -551,6 +551,55 @@ def _set_checkbox_if_changed(widget, checked: bool) -> bool:
     return True
 
 
+def _cache_combo_index_map(
+    widget,
+    values: list[str] | tuple[str, ...],
+) -> dict[str, int]:
+    index_map = {str(item): idx for idx, item in enumerate(values)}
+    try:
+        setattr(widget, "_pulsescribe_combo_index_map", index_map)
+    except Exception:
+        pass
+    return index_map
+
+
+def _get_combo_index_map(widget) -> dict[str, int] | None:
+    if widget is None:
+        return None
+
+    cached = getattr(widget, "_pulsescribe_combo_index_map", None)
+    if isinstance(cached, dict):
+        return cached
+
+    items = getattr(widget, "_items", None)
+    if isinstance(items, (list, tuple)):
+        return _cache_combo_index_map(widget, [str(item) for item in items])
+
+    count_getter = getattr(widget, "count", None)
+    item_text_getter = getattr(widget, "itemText", None)
+    if callable(count_getter) and callable(item_text_getter):
+        try:
+            item_count = int(count_getter())
+        except (TypeError, ValueError):
+            return None
+        return _cache_combo_index_map(
+            widget,
+            [str(item_text_getter(idx)) for idx in range(item_count)],
+        )
+
+    return None
+
+
+def _add_combo_items(
+    widget: QComboBox | None,
+    values: list[str] | tuple[str, ...],
+) -> None:
+    if widget is None:
+        return
+    widget.addItems(list(values))
+    _cache_combo_index_map(widget, values)
+
+
 def _set_combo_text_if_changed(widget, value: str) -> bool:
     if widget is None:
         return False
@@ -563,13 +612,22 @@ def _set_combo_text_if_changed(widget, value: str) -> bool:
         except TypeError:
             pass
 
-    find_text = getattr(widget, "findText", None)
-    if not callable(find_text):
-        return False
-
-    idx = find_text(value)
+    index_map = _get_combo_index_map(widget)
+    idx = index_map.get(value, -1) if index_map else -1
     if idx < 0:
-        return False
+        find_text = getattr(widget, "findText", None)
+        if not callable(find_text):
+            return False
+        idx = find_text(value)
+        if idx < 0:
+            return False
+        if index_map is None:
+            index_map = {}
+            try:
+                setattr(widget, "_pulsescribe_combo_index_map", index_map)
+            except Exception:
+                pass
+        index_map[value] = idx
 
     widget.setCurrentIndex(idx)
     return True
@@ -1057,13 +1115,13 @@ class SettingsWindow(QDialog):
 
         # Mode
         self._mode_combo = QComboBox()
-        self._mode_combo.addItems(MODE_OPTIONS)
+        _add_combo_items(self._mode_combo, MODE_OPTIONS)
         self._mode_combo.currentTextChanged.connect(self._on_mode_changed)
         card_layout.addLayout(create_label_row("Mode:", self._mode_combo))
 
         # Language
         self._lang_combo = QComboBox()
-        self._lang_combo.addItems(LANGUAGE_OPTIONS)
+        _add_combo_items(self._lang_combo, LANGUAGE_OPTIONS)
         card_layout.addLayout(create_label_row("Language:", self._lang_combo))
 
         # Local Backend Container (nur für local mode)
@@ -1071,7 +1129,7 @@ class SettingsWindow(QDialog):
         backend_layout = QHBoxLayout(self._local_backend_container)
         backend_layout.setContentsMargins(0, 0, 0, 0)
         self._local_backend_combo = QComboBox()
-        self._local_backend_combo.addItems(LOCAL_BACKEND_OPTIONS)
+        _add_combo_items(self._local_backend_combo, LOCAL_BACKEND_OPTIONS)
         backend_label = QLabel("Local Backend:")
         backend_label.setMinimumWidth(120)
         backend_layout.addWidget(backend_label)
@@ -1083,7 +1141,7 @@ class SettingsWindow(QDialog):
         model_layout = QHBoxLayout(self._local_model_container)
         model_layout.setContentsMargins(0, 0, 0, 0)
         self._local_model_combo = QComboBox()
-        self._local_model_combo.addItems(LOCAL_MODEL_OPTIONS)
+        _add_combo_items(self._local_model_combo, LOCAL_MODEL_OPTIONS)
         model_label = QLabel("Local Model:")
         model_label.setMinimumWidth(120)
         model_layout.addWidget(model_label)
@@ -1157,7 +1215,7 @@ class SettingsWindow(QDialog):
 
         # Device
         self._device_combo = QComboBox()
-        self._device_combo.addItems(DEVICE_OPTIONS)
+        _add_combo_items(self._device_combo, DEVICE_OPTIONS)
         card_layout.addLayout(create_label_row("Device:", self._device_combo))
 
         # Beam Size (Integer 1-10)
@@ -1192,8 +1250,9 @@ class SettingsWindow(QDialog):
 
         # Compute Type
         self._compute_type_combo = QComboBox()
-        self._compute_type_combo.addItems(
-            ["default", "float16", "float32", "int8", "int8_float16"]
+        _add_combo_items(
+            self._compute_type_combo,
+            ["default", "float16", "float32", "int8", "int8_float16"],
         )
         card_layout.addLayout(
             create_label_row("Compute Type:", self._compute_type_combo)
@@ -1222,17 +1281,17 @@ class SettingsWindow(QDialog):
 
         # Boolean Overrides
         self._without_timestamps_combo = QComboBox()
-        self._without_timestamps_combo.addItems(BOOL_OVERRIDE_OPTIONS)
+        _add_combo_items(self._without_timestamps_combo, BOOL_OVERRIDE_OPTIONS)
         card_layout.addLayout(
             create_label_row("Without Timestamps:", self._without_timestamps_combo)
         )
 
         self._vad_filter_combo = QComboBox()
-        self._vad_filter_combo.addItems(BOOL_OVERRIDE_OPTIONS)
+        _add_combo_items(self._vad_filter_combo, BOOL_OVERRIDE_OPTIONS)
         card_layout.addLayout(create_label_row("VAD Filter:", self._vad_filter_combo))
 
         self._fp16_combo = QComboBox()
-        self._fp16_combo.addItems(BOOL_OVERRIDE_OPTIONS)
+        _add_combo_items(self._fp16_combo, BOOL_OVERRIDE_OPTIONS)
         card_layout.addLayout(create_label_row("FP16:", self._fp16_combo))
 
         self._advanced_faster_settings_card = card
@@ -1265,7 +1324,7 @@ class SettingsWindow(QDialog):
 
         # Quantization
         self._lightning_quant_combo = QComboBox()
-        self._lightning_quant_combo.addItems(LIGHTNING_QUANT_OPTIONS)
+        _add_combo_items(self._lightning_quant_combo, LIGHTNING_QUANT_OPTIONS)
         card_layout.addLayout(
             create_label_row("Quantization:", self._lightning_quant_combo)
         )
@@ -1299,7 +1358,7 @@ class SettingsWindow(QDialog):
 
         # Provider
         self._refine_provider_combo = QComboBox()
-        self._refine_provider_combo.addItems(REFINE_PROVIDER_OPTIONS)
+        _add_combo_items(self._refine_provider_combo, REFINE_PROVIDER_OPTIONS)
         card_layout.addLayout(
             create_label_row("Provider:", self._refine_provider_combo)
         )
@@ -1351,8 +1410,9 @@ class SettingsWindow(QDialog):
 
         # Context Selector
         self._prompt_context_combo = QComboBox()
-        self._prompt_context_combo.addItems(
-            ["default", "email", "chat", "code", "voice_commands", "app_mappings"]
+        _add_combo_items(
+            self._prompt_context_combo,
+            ["default", "email", "chat", "code", "voice_commands", "app_mappings"],
         )
         self._prompt_context_combo.currentTextChanged.connect(
             self._on_prompt_context_changed

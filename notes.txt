@@ -1,5 +1,22 @@
 Performance notes - 2026-04-19
 
+Latest pass - `ui/settings_windows.py` load/apply/preset paths
+- Reviewed the main frontend-heavy settings-window paths around `_load_settings()`, `_apply_local_preset()` and the surrounding setup-tab synchronization.
+- Most concrete remaining weaknesses there:
+  1. repeated `QComboBox.findText(...)` scans during bulk loads/preset applies even though the combo item lists are static for the whole window lifetime
+  2. the same combo lookup cost was paid again on every preset click across mode/backend/model/device/advanced override controls
+  3. the bulk field population already avoids most no-op writes/signals, so the next best win was reducing lookup work before those guarded writes happen
+- Chosen optimization:
+  - cache per-combo text→index maps and prime them when settings combos are populated
+  - route `_load_settings()` / `_apply_local_preset()` combo updates through the cached path instead of repeated linear lookups
+- Why this helps:
+  - makes initial settings-window hydration and repeated preset application cheaper without changing visible behavior
+  - especially helps the broadest field-population path because many settings loads touch multiple static combos in one burst
+- Validation for this pass:
+  - `pytest tests/test_settings_windows_load.py tests/test_settings_windows_logs.py tests/test_settings_windows_hotkeys.py tests/test_settings_windows_prompts.py tests/test_settings_ui.py -q`
+  - `python -m py_compile ui/settings_windows.py tests/test_settings_windows_load.py`
+  - `ruff check ui/settings_windows.py tests/test_settings_windows_load.py`
+
 Latest pass - next frontend hotspot review + welcome/history file I/O
 - Reviewed the next likely frontend-heavy candidates outside the last two overlay commits:
   1. `ui/welcome.py` + `utils/log_tail.py` + `utils/history.py`
@@ -140,11 +157,11 @@ Recent completed areas (archived summary)
 - Menubar/daemon UI dispatch: duplicate payload suppression, preview-title dedupe, adaptive result/interim polling
 
 Next worthwhile areas
-1. `ui/settings_windows.py`
-- the large settings load/apply field-population path still looks like the next broad Windows frontend hotspot now that welcome/log-history coordination is cheaper.
+1. prompt/vocabulary editors (`ui/welcome.py` / `ui/settings_windows.py` + custom prompt/vocabulary helpers)
+- likely the next tab-open/save latency candidate now that welcome log-history coordination and settings combo hydration are cheaper.
 
-2. `ui/overlay.py`
+2. `ui/settings_windows.py`
+- after the combo lookup cleanup, the next follow-up inside settings would be the larger setup-overview/API-field synchronization path if real traces still show cost while editing provider credentials.
+
+3. `ui/overlay.py`
 - if overlay traces still show pressure after the recording-frame cleanup, the next smaller target is `SoundWaveView._apply_bar_heights()` / CoreAnimation transaction setup on frames where multiple bars change together.
-
-3. prompt/vocabulary editors (`ui/welcome.py` / `ui/settings_windows.py` + custom prompt/vocabulary helpers)
-- likely the next tab-open/save latency candidate if real-world traces still show spikes outside logs/transcripts.
