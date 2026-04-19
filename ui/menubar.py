@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from config import LOG_FILE
+from ui.overlay_feedback import format_overlay_status_text
 from utils.state import AppState
 
 logger = logging.getLogger("pulsescribe.ui.menubar")
@@ -37,6 +38,18 @@ MENUBAR_ICONS = {
     AppState.ERROR: "❌",
 }
 MENUBAR_PREVIEW_MAX_CHARS = 20
+MENUBAR_STATUS_MAX_CHARS = 44
+MENUBAR_HINT_MAX_CHARS = 68
+MENUBAR_STATE_LABELS = {
+    AppState.IDLE: "Ready",
+    AppState.LOADING: "Loading…",
+    AppState.LISTENING: "Listening…",
+    AppState.RECORDING: "Recording…",
+    AppState.TRANSCRIBING: "Transcribing…",
+    AppState.REFINING: "Refining…",
+    AppState.DONE: "Done",
+    AppState.ERROR: "Error",
+}
 
 
 def _build_normalized_preview_prefix(
@@ -79,23 +92,108 @@ def _build_normalized_preview_prefix(
     return "".join(preview_chars), False
 
 
+def _truncate_menubar_text(text: str | None, *, max_chars: int) -> str:
+    normalized_prefix, is_truncated = _build_normalized_preview_prefix(
+        text or "",
+        max_chars=max_chars,
+    )
+    if not normalized_prefix:
+        return ""
+
+    preview = normalized_prefix[:max_chars]
+    if is_truncated:
+        preview = f"{preview}…"
+    return preview
+
+
+
+def build_menubar_status_text(state: AppState, text: str | None = None) -> str:
+    """Return a friendly status sentence for the dropdown menu."""
+    if state == AppState.IDLE:
+        return "Ready to dictate"
+
+    if state == AppState.RECORDING:
+        preview = _truncate_menubar_text(text, max_chars=MENUBAR_STATUS_MAX_CHARS)
+        if preview:
+            return f"Recording: {preview}"
+        return "Recording — speak now"
+
+    if state in (AppState.LOADING, AppState.DONE, AppState.ERROR):
+        preview = _truncate_menubar_text(
+            format_overlay_status_text(state.name, text),
+            max_chars=MENUBAR_STATUS_MAX_CHARS,
+        )
+        if preview:
+            return preview
+
+    return MENUBAR_STATE_LABELS.get(state, MENUBAR_STATE_LABELS[AppState.IDLE]).replace(
+        "…", ""
+    )
+
+
+
+def build_menubar_hint_text(state: AppState, text: str | None = None) -> str:
+    """Return a short contextual hint for the dropdown menu."""
+    hints = {
+        AppState.IDLE: "Use your hotkey to start dictation.",
+        AppState.LOADING: "First launch or provider changes can take a moment.",
+        AppState.LISTENING: "Start speaking, or release the hold hotkey to cancel.",
+        AppState.RECORDING: "PulseScribe will transcribe and paste into the frontmost app.",
+        AppState.TRANSCRIBING: "Audio is being converted into text.",
+        AppState.REFINING: "The transcript is being polished before paste.",
+        AppState.DONE: "The latest transcript was sent to the frontmost app.",
+        AppState.ERROR: "Open Setup & Settings or export diagnostics if this keeps happening.",
+    }
+    hint = hints.get(state, hints[AppState.IDLE])
+    return _truncate_menubar_text(hint, max_chars=MENUBAR_HINT_MAX_CHARS) or hint
+
+
+
+def _set_menu_item_title_if_changed(item, title: str) -> bool:
+    if item is None:
+        return False
+    current_title = getattr(item, "title", None)
+    if callable(current_title):
+        try:
+            if str(current_title()) == title:
+                return False
+        except Exception:
+            pass
+    else:
+        try:
+            if str(current_title) == title:
+                return False
+        except Exception:
+            pass
+    try:
+        item.setTitle_(title)
+        return True
+    except Exception:
+        return False
+
+
+
 def build_menubar_title(state: AppState, text: str | None = None) -> str:
     """Return the visible menu bar title for a given state payload."""
     icon = MENUBAR_ICONS.get(state, MENUBAR_ICONS[AppState.IDLE])
-    if state != AppState.RECORDING or not text:
+    if state == AppState.IDLE:
         return icon
 
-    normalized_prefix, is_truncated = _build_normalized_preview_prefix(
-        text,
-        max_chars=MENUBAR_PREVIEW_MAX_CHARS,
-    )
-    if not normalized_prefix:
-        return icon
+    if state == AppState.RECORDING:
+        preview = _truncate_menubar_text(text, max_chars=MENUBAR_PREVIEW_MAX_CHARS)
+        if not preview:
+            return f"{icon} {MENUBAR_STATE_LABELS[state]}"
+        return f"{icon} {preview}"
 
-    preview = normalized_prefix[:MENUBAR_PREVIEW_MAX_CHARS]
-    if is_truncated:
-        preview = f"{preview}…"
-    return f"{icon} {preview}"
+    if state in (AppState.LOADING, AppState.DONE, AppState.ERROR):
+        preview = _truncate_menubar_text(
+            format_overlay_status_text(state.name, text),
+            max_chars=MENUBAR_PREVIEW_MAX_CHARS,
+        )
+        if preview:
+            return f"{icon} {preview}"
+
+    return f"{icon} {MENUBAR_STATE_LABELS.get(state, MENUBAR_STATE_LABELS[AppState.IDLE])}"
 
 
 def _objc_signature(signature: bytes):
@@ -113,15 +211,18 @@ class _MenuActionHandler(NSObjectBase):
     """Objective-C Target für Menü-Actions."""
 
     welcome_callback = None  # Callback für Settings-Fenster
+    feedback_callback = None
 
     def initWithLogPath_(self, log_path: str):
         if objc is None:
             self.log_path = log_path
+            self.feedback_callback = None
             return self
         self = objc.super(_MenuActionHandler, self).init()
         if self is None:
             return None
         self.log_path = log_path
+        self.feedback_callback = None
         return self
 
     @_objc_signature(b"v@:@")
@@ -130,14 +231,32 @@ class _MenuActionHandler(NSObjectBase):
         from AppKit import NSWorkspace  # type: ignore[import-not-found]
 
         log_path = Path(self.log_path)
-        if not log_path.exists():
-            log_path.parent.mkdir(parents=True, exist_ok=True)
-            log_path.touch()
-        NSWorkspace.sharedWorkspace().openFile_(str(log_path))
+        created_file = False
+        try:
+            if not log_path.exists():
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                log_path.touch()
+                created_file = True
+            opened = bool(NSWorkspace.sharedWorkspace().openFile_(str(log_path)))
+        except Exception:
+            logger.warning("Opening log file failed", exc_info=True)
+            if callable(self.feedback_callback):
+                self.feedback_callback("Could not open the log file.")
+            return
+
+        if callable(self.feedback_callback):
+            if opened and created_file:
+                self.feedback_callback("Created and opened a new log file.")
+            elif opened:
+                self.feedback_callback("Opened the log file.")
+            else:
+                self.feedback_callback("Could not open the log file.")
 
     @_objc_signature(b"v@:@")
     def showSetup_(self, _sender) -> None:
         """Öffnet das Settings/Welcome-Fenster."""
+        if callable(self.feedback_callback):
+            self.feedback_callback("Opening Setup & Settings…")
         if self.welcome_callback:
             self.welcome_callback()
 
@@ -147,11 +266,19 @@ class _MenuActionHandler(NSObjectBase):
         try:
             from utils.diagnostics import export_diagnostics_report
 
-            export_diagnostics_report()
+            zip_path = export_diagnostics_report()
         except Exception:
             # Diagnostics is best-effort; avoid crashing the menu bar app.
             logger.warning("Diagnostics export failed", exc_info=True)
+            if callable(self.feedback_callback):
+                self.feedback_callback(
+                    "Diagnostics export failed — check the log file and try again."
+                )
             return
+
+        if callable(self.feedback_callback):
+            archive_name = getattr(zip_path, "name", None) or str(zip_path)
+            self.feedback_callback(f"Diagnostics exported: {archive_name}")
 
 
 class MenuBarController:
@@ -185,58 +312,75 @@ class MenuBarController:
         # Dropdown Menü erstellen
         menu = NSMenu.alloc().init()
 
-        # Titel-Item (Info)
         title_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
             "PulseScribe", None, ""
         )
         title_item.setEnabled_(False)
         menu.addItem_(title_item)
+        self._menu_title_item = title_item
+
+        state_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            build_menubar_status_text(AppState.IDLE), None, ""
+        )
+        state_item.setEnabled_(False)
+        menu.addItem_(state_item)
+        self._menu_status_item = state_item
+
+        hint_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            build_menubar_hint_text(AppState.IDLE), None, ""
+        )
+        hint_item.setEnabled_(False)
+        menu.addItem_(hint_item)
+        self._menu_hint_item = hint_item
 
         menu.addItem_(NSMenuItem.separatorItem())
 
-        # Settings öffnen
         setup_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-            "Settings...", "showSetup:", ""
+            "Open Setup & Settings…", "showSetup:", ""
         )
         setup_item.setTarget_(self._action_handler)
         menu.addItem_(setup_item)
 
-        # Logs öffnen
         logs_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-            "Open Logs", "openLogs:", ""
+            "Open Log File", "openLogs:", ""
         )
         logs_item.setTarget_(self._action_handler)
         menu.addItem_(logs_item)
 
-        # Diagnostics export
         diag_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-            "Export Diagnostics…", "exportDiagnostics:", ""
+            "Export Redacted Diagnostics…", "exportDiagnostics:", ""
         )
         diag_item.setTarget_(self._action_handler)
         menu.addItem_(diag_item)
 
         menu.addItem_(NSMenuItem.separatorItem())
 
-        # Quit-Item (kein Shortcut - CMD+Q läuft über Application Menu)
         quit_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-            "Quit", "terminate:", ""
+            "Quit PulseScribe", "terminate:", ""
         )
         menu.addItem_(quit_item)
 
+        self._action_handler.feedback_callback = self._set_menu_hint
         self._status_item.setMenu_(menu)
 
         self._current_state = AppState.IDLE
+
+    def _set_menu_hint(self, text: str) -> None:
+        _set_menu_item_title_if_changed(getattr(self, "_menu_hint_item", None), text)
 
     def update_state(self, state: AppState, text: str | None = None) -> None:
         """Aktualisiert Menübar-Icon und optional Text."""
         self._current_state = state
         title = build_menubar_title(state, text)
+        status_text = build_menubar_status_text(state, text)
+        hint_text = build_menubar_hint_text(state, text)
 
-        if getattr(self, "_current_title", None) == title:
-            return
+        if getattr(self, "_current_title", None) != title:
+            self._status_item.setTitle_(title)
+            self._current_title = title
 
-        self._status_item.setTitle_(title)
-        self._current_title = title
+        _set_menu_item_title_if_changed(getattr(self, "_menu_status_item", None), status_text)
+        _set_menu_item_title_if_changed(getattr(self, "_menu_hint_item", None), hint_text)
 
     def set_welcome_callback(self, callback) -> None:
         """Setzt Callback für Settings-Menü-Item."""

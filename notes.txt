@@ -1,28 +1,28 @@
 UX notes - 2026-04-19
 
-Latest pass - Welcome + status feedback UX (`ui/welcome.py`, overlays)
-- Scope: focused the next high-value UX area on the Welcome window and status/overlay feedback surfaces without reworking the recently touched Windows Settings/Onboarding flows again.
+Latest pass - Menubar action flow UX (`ui/menubar.py`)
+- Scope: targeted the next broad-impact UI area outside Onboarding / Settings / Welcome by improving the menu bar action menu and its state feedback.
 - Reviewed weaknesses first:
-  1. Welcome still used weak provider/API-key feedback (`✓` / `✗`) instead of showing what is required vs optional.
-  2. The Setup → Try it section was not very helpful when no hotkey was configured and its hotkey display was hard to scan.
-  3. Welcome save feedback still relied mostly on the button label and lacked a persistent status hint.
-  4. Overlay error/loading/status text was not fully consistent across implementations, and macOS error feedback hid useful detail.
+  1. The menu itself exposed too little context; it mostly showed a static app title plus vague actions.
+  2. Action labels like `Settings...`, `Open Logs`, and `Export Diagnostics…` were understandable for power users but not especially clear or screenreader-friendly.
+  3. Opening logs / exporting diagnostics had almost no direct feedback in the UI; failures were effectively silent unless users checked logs.
+  4. The menubar title relied too heavily on icons, so short transient states were easy to miss.
 - Changes in this pass:
-  - added mode-aware provider guidance text in Welcome
-  - replaced Welcome API-key checkmarks with inline states like `Required`, `Configured`, `Optional`, `Not needed`
-  - improved API-key placeholders/tooltips in Welcome
-  - improved Setup → Try it messaging, including a clearer empty state when no hotkey exists
-  - formatted displayed hotkeys into friendlier labels (for example `Option+Space`, `Fn`)
-  - made the Setup → Try it card refresh after hotkey changes
-  - improved preset feedback copy in Setup and added persistent footer save feedback in Welcome
-  - unified overlay feedback text handling across macOS / PySide6 / Tk overlays
-  - macOS overlay now shows concise error details instead of only `Error`
+  - improved menubar title feedback for central transient states (`Listening…`, `Recording…`, `Loading…`, etc.)
+  - added disabled current-status + hint rows at the top of the menu for better guidance and scanability
+  - renamed actions for clarity: `Open Setup & Settings…`, `Open Log File`, `Export Redacted Diagnostics…`, `Quit PulseScribe`
+  - added inline menu feedback for explicit actions like opening logs and exporting diagnostics
+  - improved failure feedback for diagnostics / log opening without changing the underlying actions
+  - kept the existing daemon / menu wiring intact
 - Validation:
-  - `pytest tests/test_settings_ui.py tests/test_overlay.py tests/test_overlay_pyside6.py tests/test_overlay_windows.py -q`
-  - `python -m py_compile ui/welcome.py ui/overlay.py ui/overlay_pyside6.py ui/overlay_windows.py ui/overlay_feedback.py tests/test_settings_ui.py tests/test_overlay.py tests/test_overlay_pyside6.py tests/test_overlay_windows.py`
-  - `ruff check ui/welcome.py ui/overlay.py ui/overlay_pyside6.py ui/overlay_windows.py ui/overlay_feedback.py tests/test_settings_ui.py tests/test_overlay.py tests/test_overlay_pyside6.py tests/test_overlay_windows.py`
+  - `pytest tests/test_menubar.py tests/test_daemon_mode.py -q`
+  - `python -m py_compile ui/menubar.py tests/test_menubar.py`
+  - `ruff check ui/menubar.py tests/test_menubar.py`
 
-Previous pass - Settings UX (`ui/settings_windows.py`)
+Previous pass - Welcome + status feedback UX (`ui/welcome.py`, overlays)
+- Improved Welcome provider guidance, Try-it empty states, footer save feedback, and unified overlay status/error messaging.
+
+Earlier pass - Settings UX (`ui/settings_windows.py`)
 - Improved provider guidance, inline API-key states, Setup overview copy, Settings hotkey guidance, and persistent footer save feedback.
 
 Earlier pass - Onboarding / shared setup UX
