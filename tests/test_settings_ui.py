@@ -1317,9 +1317,11 @@ class TestWelcomeLogFinder:
             "text_secondary",
         )]
 
-    def test_clear_transcripts_sets_footer_feedback_after_success(self, monkeypatch):
+    def test_clear_transcripts_uses_direct_footer_feedback_path_when_alert_is_unavailable(
+        self, monkeypatch
+    ):
+        import builtins
         import sys
-        import types
 
         ctrl = WelcomeController.__new__(WelcomeController)
         refresh_calls: list[bool] = []
@@ -1329,7 +1331,15 @@ class TestWelcomeLogFinder:
             (text, color)
         )
 
-        monkeypatch.setitem(sys.modules, "AppKit", types.SimpleNamespace())
+        original_import = builtins.__import__
+
+        def _fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "AppKit" and fromlist:
+                raise ImportError("NSAlert unavailable in regression test")
+            return original_import(name, globals, locals, fromlist, level)
+
+        monkeypatch.delitem(sys.modules, "AppKit", raising=False)
+        monkeypatch.setattr(builtins, "__import__", _fake_import)
         monkeypatch.setattr("utils.history.clear_history", lambda: True)
 
         ctrl._clear_transcripts()
