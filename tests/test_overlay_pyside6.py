@@ -537,6 +537,29 @@ def test_on_state_changed_skips_duplicate_transition_work(monkeypatch):
     assert start_calls == ["start"]
 
 
+def test_on_state_changed_uses_clear_loading_copy(monkeypatch):
+    widget = PySide6OverlayWidget.__new__(PySide6OverlayWidget)
+    widget._state = "IDLE"
+    widget._text = ""
+    widget._last_state_payload = None
+    seen_calls: list[tuple[str, str, bool]] = []
+    widget._update_label = lambda state, text, italic=False: seen_calls.append(
+        (state, text, italic)
+    )
+    widget._center_on_screen = lambda **_kwargs: None
+    widget._fade_in = lambda: None
+    widget._fade_out = lambda: None
+    widget._start_fade_out_timer = lambda: None
+    widget._start_animation = lambda: None
+    widget.recording_state_changed = types.SimpleNamespace(emit=lambda *_args: None)
+
+    monkeypatch.setattr("ui.overlay_pyside6.time.perf_counter", lambda: 123.0)
+
+    PySide6OverlayWidget._on_state_changed(widget, "LOADING", "")
+
+    assert seen_calls[-1] == ("LOADING", "Preparing transcription…", False)
+
+
 def test_on_state_changed_formats_error_feedback_text(monkeypatch):
     widget = PySide6OverlayWidget.__new__(PySide6OverlayWidget)
     widget._state = "IDLE"

@@ -12,6 +12,16 @@ DEFAULT_OVERLAY_STATE_TEXTS = {
     "ERROR": "Error",
 }
 
+OVERLAY_FEEDBACK_DEFAULTS = {
+    "LISTENING": "Listening — start speaking",
+    "RECORDING": "Recording...",
+    "TRANSCRIBING": "Transcribing audio…",
+    "REFINING": "Polishing transcript…",
+    "LOADING": "Preparing transcription…",
+    "DONE": "Transcript pasted",
+    "ERROR": "Something went wrong",
+}
+
 
 
 def _normalize_overlay_text(text: str | None) -> str:
@@ -43,3 +53,23 @@ def format_overlay_status_text(
         return _truncate_overlay_text(normalized_text, max_chars)
 
     return DEFAULT_OVERLAY_STATE_TEXTS.get(normalized_state, "")
+
+
+
+def build_overlay_feedback_text(
+    state: str | None,
+    text: str | None = None,
+    *,
+    max_chars: int = 72,
+) -> str:
+    normalized_state = str(state or "").strip().upper()
+    normalized_text = _normalize_overlay_text(text)
+
+    if normalized_text:
+        return format_overlay_status_text(normalized_state, normalized_text, max_chars=max_chars)
+
+    fallback = OVERLAY_FEEDBACK_DEFAULTS.get(
+        normalized_state,
+        DEFAULT_OVERLAY_STATE_TEXTS.get(normalized_state, ""),
+    )
+    return _truncate_overlay_text(fallback, max_chars)

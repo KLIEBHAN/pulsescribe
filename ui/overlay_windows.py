@@ -36,6 +36,7 @@ from ui.animation import (
 )
 from ui.overlay_feedback import (
     DEFAULT_OVERLAY_STATE_TEXTS,
+    build_overlay_feedback_text,
     format_overlay_status_text,
 )
 from utils.log_tail import read_file_tail_text
@@ -554,7 +555,7 @@ class WindowsOverlayController:
             if state_changed:
                 self._start_animation_loop()
                 self._root.deiconify()
-            display_text = format_overlay_status_text(state, normalized_text)
+            display_text = build_overlay_feedback_text(state, normalized_text)
             label_color = (
                 STATE_COLORS.get(state, "white")
                 if state in ("DONE", "ERROR")

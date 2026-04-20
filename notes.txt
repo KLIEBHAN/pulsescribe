@@ -1,25 +1,28 @@
 UX notes - 2026-04-19
 
-Latest pass - Shared action/status card UX (`ui/hotkey_card.py`, `ui/permissions_card.py`)
-- Scope: improved the remaining broad-impact shared UI cards outside Onboarding / Settings / Welcome / Menubar.
+Latest pass - Overlay state UX (`ui/overlay.py`, `ui/overlay_pyside6.py`, `ui/overlay_windows.py`)
+- Scope: improved the remaining broad-impact status views outside Onboarding / Settings / Welcome / Menubar.
 - Reviewed flows:
-  - shared Hotkey card
-  - shared Permissions card
+  - macOS overlay
+  - Windows PySide6 overlay
+  - Windows Tk fallback overlay
 - Main weaknesses found:
-  1. Hotkeys were still shown in raw uppercase forms, which were harder to scan quickly.
-  2. The Hotkey empty/recording states were functional but not especially actionable.
-  3. Permission row statuses and button labels were sometimes too terse or technical.
-  4. The Permissions card lacked a clear card-level summary / “all set” / checking message.
+  1. Several transient states still used overly generic copy (`Done!`, `Error`, `Loading model...`).
+  2. Success / failure overlays did not communicate the outcome clearly enough in short-lived states.
+  3. The PySide6 overlay had room for better accessibility metadata on its main status widgets.
 - Changes in this pass:
-  - formatted displayed hotkeys into friendlier labels like `Option+Space` and `Fn`
-  - improved Hotkey empty-state copy and added clearer recording/cancelled guidance
-  - improved shared permission microcopy (`Allow`, `Open Settings`, clearer row statuses)
-  - added a card-level permission summary message for blocked / checking / partially ready / all set states
-  - widened permission action buttons a bit to fit clearer labels without changing behavior
+  - added dedicated overlay feedback defaults with clearer user-facing outcome text
+  - improved transient copy such as `Preparing transcription…`, `Transcript pasted`, and better processing wording
+  - kept explicit error details when available while improving generic fallback error text
+  - added basic accessible names / descriptions to the PySide6 overlay and kept the live label description in sync with visible text
+  - kept behavior / timing / state flow unchanged
 - Validation:
-  - `pytest tests/test_hotkey_card.py tests/test_permissions_card.py tests/test_onboarding.py tests/test_settings_ui.py -q`
-  - `python -m py_compile ui/hotkey_card.py ui/permissions_card.py tests/test_hotkey_card.py tests/test_permissions_card.py`
-  - `ruff check ui/hotkey_card.py ui/permissions_card.py tests/test_hotkey_card.py tests/test_permissions_card.py`
+  - `pytest tests/test_overlay.py tests/test_overlay_pyside6.py tests/test_overlay_windows.py tests/test_daemon_mode.py tests/test_windows_race_conditions.py -q`
+  - `python -m py_compile ui/overlay_feedback.py ui/overlay.py ui/overlay_pyside6.py ui/overlay_windows.py tests/test_overlay.py tests/test_overlay_pyside6.py tests/test_overlay_windows.py`
+  - `ruff check ui/overlay_feedback.py ui/overlay.py ui/overlay_pyside6.py ui/overlay_windows.py tests/test_overlay.py tests/test_overlay_pyside6.py tests/test_overlay_windows.py`
+
+Previous pass - Shared action/status card UX (`ui/hotkey_card.py`, `ui/permissions_card.py`)
+- Improved friendlier hotkey formatting, clearer recording/empty states, better permission microcopy, and added a card-level permission summary.
 
 Previous pass - Menubar action flow UX (`ui/menubar.py`)
 - Added clearer status/hint rows, better transient menubar state text, clearer action labels, and explicit feedback for log/diagnostics actions.

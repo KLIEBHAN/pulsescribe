@@ -273,7 +273,7 @@ def test_handle_state_change_uses_feedback_color_for_done_and_error():
     controller._label = _FakeLabel()
 
     controller._handle_state_change("DONE", None)
-    assert controller._label.last_config["text"] == "Done!"
+    assert controller._label.last_config["text"] == "Transcript pasted"
     assert controller._label.last_config["fg"] == STATE_COLORS["DONE"]
 
     controller._handle_state_change("ERROR", "Boom")
@@ -288,7 +288,7 @@ def test_handle_state_change_uses_loading_default_text():
 
     controller._handle_state_change("LOADING", None)
 
-    assert controller._label.last_config["text"] == "Loading model..."
+    assert controller._label.last_config["text"] == "Preparing transcription…"
     assert "LOADING" in STATE_COLORS
 
 

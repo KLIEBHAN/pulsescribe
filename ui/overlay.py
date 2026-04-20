@@ -7,7 +7,7 @@ import weakref
 
 from config import VISUAL_GAIN, VISUAL_NOISE_GATE
 from ui.animation import AnimationLogic
-from ui.overlay_feedback import format_overlay_status_text
+from ui.overlay_feedback import build_overlay_feedback_text, format_overlay_status_text
 from utils.state import AppState
 
 # =============================================================================
@@ -1160,7 +1160,7 @@ class OverlayController:
             if state_changed:
                 self._wave_view.start_listening_animation()
             self._apply_text_presentation(
-                text=format_overlay_status_text("LISTENING"),
+                text=build_overlay_feedback_text("LISTENING"),
                 font_key="medium",
                 color_key="muted",
             )
@@ -1191,7 +1191,7 @@ class OverlayController:
             if state_changed:
                 self._wave_view.start_transcribing_animation()
             self._apply_text_presentation(
-                text=format_overlay_status_text("TRANSCRIBING"),
+                text=build_overlay_feedback_text("TRANSCRIBING"),
                 color_key="muted",
             )
             if state_changed:
@@ -1201,7 +1201,7 @@ class OverlayController:
             if state_changed:
                 self._wave_view.start_refining_animation()
             self._apply_text_presentation(
-                text=format_overlay_status_text("REFINING"),
+                text=build_overlay_feedback_text("REFINING"),
                 color_key="muted",
             )
             if state_changed:
@@ -1210,7 +1210,7 @@ class OverlayController:
         elif state == AppState.LOADING:
             if state_changed:
                 self._wave_view.start_loading_animation()
-            loading_text = format_overlay_status_text("LOADING", text)
+            loading_text = build_overlay_feedback_text("LOADING", text)
             self._apply_text_presentation(
                 text=loading_text,
                 color_key="muted",
@@ -1222,7 +1222,7 @@ class OverlayController:
             if state_changed:
                 self._wave_view.start_success_animation()
 
-            display_text = format_overlay_status_text("DONE", text)
+            display_text = build_overlay_feedback_text("DONE", text)
 
             self._apply_text_presentation(
                 text=display_text,
@@ -1237,7 +1237,7 @@ class OverlayController:
             if state_changed:
                 self._wave_view.start_error_animation()
             self._apply_text_presentation(
-                text=format_overlay_status_text("ERROR", text),
+                text=build_overlay_feedback_text("ERROR", text),
                 font_key="default",
                 color_key="error",
             )

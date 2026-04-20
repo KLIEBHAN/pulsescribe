@@ -55,6 +55,7 @@ from ui.animation import (
 )
 from ui.overlay_feedback import (
     DEFAULT_OVERLAY_STATE_TEXTS,
+    build_overlay_feedback_text,
     format_overlay_status_text,
 )
 from utils.log_tail import read_file_tail_text
@@ -402,11 +403,17 @@ class PySide6OverlayWidget(QWidget):
 
     def _setup_label(self):
         """Erstellt das Text-Label."""
+        self.setAccessibleName("PulseScribe overlay")
+        self.setAccessibleDescription(
+            "Shows current recording and transcription feedback."
+        )
         self._label = QLabel(self)
         self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._label.setGeometry(10, 55, WINDOW_WIDTH - 20, 30)
         self._label.setStyleSheet(self._get_label_styles()["default"])
         self._label.setFont(self._get_label_font(False))
+        self._label.setAccessibleName("Overlay status")
+        self._label.setAccessibleDescription("Current PulseScribe status")
         self._label_font_key = "default"
         self._label_style_key = "default"
         self._label_text_value = ""
@@ -565,7 +572,7 @@ class PySide6OverlayWidget(QWidget):
                 self._center_on_screen(use_active_screen=True)
 
             # Label aktualisieren
-            display_text = format_overlay_status_text(state, text)
+            display_text = build_overlay_feedback_text(state, text)
             self._update_label(state, display_text)
             if state_changed:
                 self._fade_in()
@@ -608,6 +615,10 @@ class PySide6OverlayWidget(QWidget):
 
         if getattr(self, "_label_text_value", None) != text:
             self._label.setText(text)
+            try:
+                self._label.setAccessibleDescription(text)
+            except Exception:
+                pass
             self._label_text_value = text
 
     def _reset_levels(self):
