@@ -3377,12 +3377,17 @@ class WelcomeController:
         self._set_footer_status(text, color)
         return changed
 
+    def _should_clear_transcripts_without_dialog(self) -> bool:
+        """Allow transcript-history clearing when no modal confirmation is available."""
+        return True
+
     def _clear_transcripts(self) -> None:
         """Löscht die Transkript-Historie nach Bestätigung."""
         try:
             from AppKit import NSAlert, NSAlertFirstButtonReturn  # type: ignore[import-not-found]
         except ImportError:
-            pass  # Kein Dialog verfügbar (z.B. in Tests) → direkt löschen
+            if not self._should_clear_transcripts_without_dialog():
+                return
         else:
             alert = NSAlert.alloc().init()
             alert.setMessageText_("Clear Transcript History")

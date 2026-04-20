@@ -1384,6 +1384,44 @@ class TestWelcomeLogFinder:
         assert refresh_calls == [True]
         assert footer_calls == [("Transcript history cleared.", "success")]
 
+    def test_clear_transcripts_does_nothing_when_fallback_clear_is_rejected(
+        self, monkeypatch
+    ):
+        import builtins
+        import sys
+
+        ctrl = WelcomeController.__new__(WelcomeController)
+        clear_calls: list[bool] = []
+        refresh_calls: list[bool] = []
+        footer_calls: list[tuple[str, str]] = []
+        ctrl._refresh_transcripts = lambda scroll_to_bottom=True: refresh_calls.append(
+            bool(scroll_to_bottom)
+        )
+        ctrl._set_footer_status = lambda text, color="text_secondary": footer_calls.append(
+            (text, color)
+        )
+        ctrl._should_clear_transcripts_without_dialog = lambda: False
+
+        original_import = builtins.__import__
+
+        def _fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "AppKit" and fromlist:
+                raise ImportError("NSAlert unavailable in regression test")
+            return original_import(name, globals, locals, fromlist, level)
+
+        monkeypatch.delitem(sys.modules, "AppKit", raising=False)
+        monkeypatch.setattr(builtins, "__import__", _fake_import)
+        monkeypatch.setattr(
+            "utils.history.clear_history",
+            lambda: clear_calls.append(True) or True,
+        )
+
+        ctrl._clear_transcripts()
+
+        assert clear_calls == []
+        assert refresh_calls == []
+        assert footer_calls == []
+
     def test_clear_transcripts_sets_footer_feedback_after_failure(self, monkeypatch):
         import sys
         import types
