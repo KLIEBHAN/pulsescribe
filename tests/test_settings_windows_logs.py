@@ -143,9 +143,11 @@ def test_open_logs_folder_selects_log_file_when_present(tmp_path, monkeypatch):
     )
 
     window = SettingsWindow.__new__(SettingsWindow)
+    window._footer_status_label = _FakeLabel()
     window._open_logs_folder()
 
     assert calls == [["explorer", "/select,", str(log_file)]]
+    assert window._footer_status_label.text == "Opened log file in Explorer."
 
 
 def test_open_logs_folder_falls_back_to_parent_folder_when_log_missing(
@@ -165,9 +167,11 @@ def test_open_logs_folder_falls_back_to_parent_folder_when_log_missing(
     )
 
     window = SettingsWindow.__new__(SettingsWindow)
+    window._footer_status_label = _FakeLabel()
     window._open_logs_folder()
 
     assert calls == [["explorer", str(log_file.parent)]]
+    assert window._footer_status_label.text == "Opened logs folder in Explorer."
 
 
 def test_refresh_transcripts_resets_cached_state_when_history_file_is_missing(
@@ -203,7 +207,7 @@ def test_refresh_transcripts_resets_cached_state_when_history_file_is_missing(
     assert window._last_transcripts_signature is None
     assert window._last_transcripts_entries == []
     assert window._last_transcripts_blocks == []
-    assert window._transcripts_status.text == "0 entries"
+    assert window._transcripts_status.text == "No transcript history yet"
 
 
 def test_refresh_transcripts_skips_reload_when_signature_unchanged(
@@ -270,7 +274,7 @@ def test_refresh_transcripts_updates_when_signature_changes(tmp_path, monkeypatc
 
     assert captured_text == ["formatted-transcripts"]
     assert window._last_transcripts_signature == (99, 42)
-    assert window._transcripts_status.text == "1 entries"
+    assert window._transcripts_status.text == "1 recent transcription"
 
 
 def test_refresh_transcripts_caches_oldest_first_blocks_on_full_reload(
@@ -361,7 +365,7 @@ def test_refresh_transcripts_skips_full_reload_when_incremental_append_succeeds(
         "[2026-01-01 10:00:00] hello\n\n[2026-01-01 10:00:01] world"
     )
     assert window._transcripts_viewer.set_plain_text_calls == []
-    assert window._transcripts_status.text == "2 entries"
+    assert window._transcripts_status.text == "2 recent transcriptions"
     assert [entry["text"] for entry in window._last_transcripts_entries] == [
         "hello",
         "world",
@@ -433,7 +437,7 @@ def test_refresh_transcripts_reuses_cached_blocks_when_append_replaces_visible_t
         "[2026-01-01 10:00:00] hello\n\n[2026-01-01 10:00:01] world"
     ]
     assert formatted_entries == ["world"]
-    assert window._transcripts_status.text == "2 entries"
+    assert window._transcripts_status.text == "2 recent transcriptions"
     assert window._last_transcripts_blocks == [
         "[2026-01-01 10:00:00] hello",
         "[2026-01-01 10:00:01] world",
@@ -578,7 +582,7 @@ def test_refresh_logs_resets_placeholder_when_log_file_is_missing(
     assert window._refresh_logs() is True
 
     assert captured_text == [
-        "No logs yet.\n\nLog file will appear here:\n" + str(log_file)
+        "No logs yet.\n\nPulseScribe will create a log file here:\n" + str(log_file)
     ]
     assert window._last_logs_signature is None
 
@@ -599,6 +603,35 @@ def test_refresh_logs_missing_file_reports_idle_once_placeholder_is_current(
 
     assert window._refresh_logs() is True
     assert window._refresh_logs() is False
+
+
+def test_refresh_logs_shows_visible_error_text_when_tail_read_fails(
+    tmp_path, monkeypatch
+):
+    import config
+
+    log_file = tmp_path / "pulsescribe.log"
+    log_file.write_text("hello", encoding="utf-8")
+    monkeypatch.setattr(config, "LOG_FILE", log_file)
+    monkeypatch.setattr(settings_mod, "get_file_signature", lambda _path: (9, 5))
+    monkeypatch.setattr(
+        settings_mod,
+        "read_file_tail_lines",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("disk busy")),
+    )
+
+    captured_text: list[str] = []
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._logs_viewer = object()
+    window._last_logs_text = "stale"
+    window._last_logs_signature = None
+    window._set_logs_text_if_changed = lambda text: captured_text.append(text)
+    window._try_append_logs_delta = lambda _signature: False
+
+    assert window._refresh_logs() is True
+    assert captured_text == [
+        "Could not read the log file.\n\nDetails: disk busy"
+    ]
 
 
 def test_refresh_logs_skips_full_tail_read_when_incremental_append_succeeds(
@@ -746,6 +779,26 @@ def test_refresh_active_logs_view_backs_off_auto_refresh_when_idle():
     assert window._logs_refresh_timer.set_interval_calls == [4000, 8000]
 
 
+def test_refresh_logs_on_demand_sets_footer_feedback() -> None:
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._footer_status_label = _FakeLabel()
+    window._refresh_logs = lambda: True
+    window._reset_logs_auto_refresh_cadence = lambda: None
+
+    assert window._refresh_logs_on_demand() is True
+    assert window._footer_status_label.text == "Logs refreshed."
+
+
+def test_refresh_transcripts_on_demand_sets_idle_footer_feedback() -> None:
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._footer_status_label = _FakeLabel()
+    window._refresh_transcripts = lambda: False
+    window._reset_logs_auto_refresh_cadence = lambda: None
+
+    assert window._refresh_transcripts_on_demand() is False
+    assert window._footer_status_label.text == "Transcript history is already up to date."
+
+
 def test_refresh_transcripts_missing_file_reports_idle_once_placeholder_is_current(
     tmp_path, monkeypatch
 ):
@@ -830,7 +883,7 @@ def test_clear_transcripts_updates_success_status_after_confirm(monkeypatch):
     window._clear_transcripts()
 
     assert refresh_calls == [True]
-    assert window._transcripts_status.text == "History cleared"
+    assert window._transcripts_status.text == "Transcript history cleared."
 
 
 def test_clear_transcripts_shows_error_when_delete_fails(monkeypatch):
@@ -850,4 +903,4 @@ def test_clear_transcripts_shows_error_when_delete_fails(monkeypatch):
     window._clear_transcripts()
 
     assert refresh_calls == []
-    assert window._transcripts_status.text == "Could not clear history. Try again."
+    assert window._transcripts_status.text == "Could not clear transcript history. Try again."

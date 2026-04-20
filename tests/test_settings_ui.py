@@ -1246,10 +1246,15 @@ class TestWelcomeLogFinder:
             lambda cmd: calls.append(cmd),
         )
 
+        footer_calls: list[tuple[str, str]] = []
         ctrl = WelcomeController.__new__(WelcomeController)
+        ctrl._set_footer_status = lambda text, color="text_secondary": footer_calls.append(
+            (text, color)
+        )
         ctrl._open_logs_in_finder()
 
         assert calls == [["open", "-R", str(log_file)]]
+        assert footer_calls == [("Opened log file in Finder.", "success")]
 
     def test_open_logs_in_finder_falls_back_to_parent_folder_when_log_missing(
         self, tmp_path, monkeypatch
@@ -1265,10 +1270,95 @@ class TestWelcomeLogFinder:
             lambda cmd: calls.append(cmd),
         )
 
+        footer_calls: list[tuple[str, str]] = []
         ctrl = WelcomeController.__new__(WelcomeController)
+        ctrl._set_footer_status = lambda text, color="text_secondary": footer_calls.append(
+            (text, color)
+        )
         ctrl._open_logs_in_finder()
 
         assert calls == [["open", str(log_file.parent)]]
+        assert footer_calls == [("Opened logs folder in Finder.", "success")]
+
+    def test_get_logs_text_uses_clear_empty_state_copy(self, tmp_path, monkeypatch):
+        import ui.welcome as welcome_mod
+
+        log_file = tmp_path / "pulsescribe.log"
+        monkeypatch.setattr(welcome_mod, "LOG_FILE", log_file)
+
+        ctrl = WelcomeController.__new__(WelcomeController)
+
+        assert ctrl._get_logs_text() == (
+            "No logs yet.\n\nPulseScribe will create a log file here:\n" + str(log_file)
+        )
+
+    def test_refresh_logs_on_demand_sets_footer_feedback(self):
+        ctrl = WelcomeController.__new__(WelcomeController)
+        ctrl._refresh_logs = lambda scroll_to_bottom=True: True
+        ctrl._set_footer_status = lambda text, color="text_secondary": statuses.append(
+            (text, color)
+        )
+
+        statuses: list[tuple[str, str]] = []
+        assert ctrl._refresh_logs_on_demand() is True
+        assert statuses == [("Logs refreshed.", "success")]
+
+    def test_refresh_transcripts_on_demand_sets_idle_feedback(self):
+        ctrl = WelcomeController.__new__(WelcomeController)
+        ctrl._refresh_transcripts = lambda scroll_to_bottom=True: False
+        ctrl._set_footer_status = lambda text, color="text_secondary": statuses.append(
+            (text, color)
+        )
+
+        statuses: list[tuple[str, str]] = []
+        assert ctrl._refresh_transcripts_on_demand() is False
+        assert statuses == [(
+            "Transcript history is already up to date.",
+            "text_secondary",
+        )]
+
+    def test_clear_transcripts_sets_footer_feedback_after_success(self, monkeypatch):
+        import sys
+        import types
+
+        ctrl = WelcomeController.__new__(WelcomeController)
+        refresh_calls: list[bool] = []
+        footer_calls: list[tuple[str, str]] = []
+        ctrl._refresh_transcripts = lambda scroll_to_bottom=True: refresh_calls.append(True)
+        ctrl._set_footer_status = lambda text, color="text_secondary": footer_calls.append(
+            (text, color)
+        )
+
+        monkeypatch.setitem(sys.modules, "AppKit", types.SimpleNamespace())
+        monkeypatch.setattr("utils.history.clear_history", lambda: True)
+
+        ctrl._clear_transcripts()
+
+        assert refresh_calls == [True]
+        assert footer_calls == [("Transcript history cleared.", "success")]
+
+    def test_clear_transcripts_sets_footer_feedback_after_failure(self, monkeypatch):
+        import sys
+        import types
+
+        ctrl = WelcomeController.__new__(WelcomeController)
+        refresh_calls: list[bool] = []
+        footer_calls: list[tuple[str, str]] = []
+        ctrl._refresh_transcripts = lambda scroll_to_bottom=True: refresh_calls.append(True)
+        ctrl._set_footer_status = lambda text, color="text_secondary": footer_calls.append(
+            (text, color)
+        )
+
+        monkeypatch.setitem(sys.modules, "AppKit", types.SimpleNamespace())
+        monkeypatch.setattr("utils.history.clear_history", lambda: False)
+
+        ctrl._clear_transcripts()
+
+        assert refresh_calls == []
+        assert footer_calls == [(
+            "Could not clear transcript history. Try again.",
+            "error",
+        )]
 
 
 class _FakePoint:
@@ -1446,7 +1536,7 @@ class TestWelcomeTranscriptsRefreshBehavior:
 
         assert build_calls == [True]
         assert ctrl._transcripts_text_view.set_calls == ["new text"]
-        assert ctrl._transcripts_count_label.value == "2 entries"
+        assert ctrl._transcripts_count_label.value == "2 recent transcriptions"
 
     def test_refresh_transcripts_skips_file_read_when_signature_unchanged(
         self, monkeypatch
@@ -1523,7 +1613,7 @@ class TestWelcomeTranscriptsRefreshBehavior:
         ctrl._refresh_transcripts(scroll_to_bottom=False)
 
         assert ctrl._transcripts_text_view.set_calls == []
-        assert ctrl._transcripts_count_label.value == "5 entries"
+        assert ctrl._transcripts_count_label.value == "5 recent transcriptions"
         ctrl._scroll_transcripts_to_bottom.assert_not_called()
         ctrl._restore_transcripts_scroll_position.assert_not_called()
 
@@ -1537,7 +1627,7 @@ class TestWelcomeTranscriptsRefreshBehavior:
         ctrl._update_transcripts_count_label(1)
 
         assert ctrl._transcripts_count_label.calls == 2
-        assert ctrl._transcripts_count_label.value == "1 entry"
+        assert ctrl._transcripts_count_label.value == "1 recent transcription"
 
     def test_refresh_transcripts_preserves_scroll_position_when_not_near_bottom(
         self, monkeypatch
@@ -1569,7 +1659,7 @@ class TestWelcomeTranscriptsRefreshBehavior:
         assert ctrl._transcripts_text_view.set_calls == ["new text"]
         assert clip_view.scrolled_to == (0.0, 120)
         assert ctrl._last_transcripts_text == "new text"
-        assert ctrl._transcripts_count_label.value == "3 entries"
+        assert ctrl._transcripts_count_label.value == "3 recent transcriptions"
         ctrl._scroll_transcripts_to_bottom.assert_not_called()
 
     def test_refresh_transcripts_uses_incremental_append_when_possible(
@@ -1618,7 +1708,7 @@ class TestWelcomeTranscriptsRefreshBehavior:
         assert ctrl._transcripts_text_view.append_calls == [
             "\n\n[2026-03-24 10:00:01]\nBeta"
         ]
-        assert ctrl._transcripts_count_label.value == "2 entries"
+        assert ctrl._transcripts_count_label.value == "2 recent transcriptions"
         ctrl._scroll_transcripts_to_bottom.assert_called_once_with()
 
     def test_refresh_transcripts_replaces_empty_state_instead_of_appending_to_it(
@@ -1667,7 +1757,7 @@ class TestWelcomeTranscriptsRefreshBehavior:
         assert ctrl._get_transcripts_payload.call_count == 0
         assert ctrl._transcripts_text_view.set_calls == ["[2026-03-24 10:00:01]\nBeta"]
         assert ctrl._transcripts_text_view.append_calls == []
-        assert ctrl._transcripts_count_label.value == "1 entry"
+        assert ctrl._transcripts_count_label.value == "1 recent transcription"
         ctrl._scroll_transcripts_to_bottom.assert_called_once_with()
 
     def test_refresh_transcripts_reuses_cached_blocks_when_not_appending_in_place(

@@ -1,21 +1,29 @@
 UX notes - 2026-04-20
 
-Latest pass - shared hotkey card UX (`ui/hotkey_card.py`)
-- Re-checked the remaining shared visible card flow and focused on `ui/hotkey_card.py` as the next still-meaningful UX surface.
-- Main weaknesses found:
-  1. The shared card depended too much on callers to provide save/error feedback.
-  2. Some microcopy was slightly mouse-centric or too terse for cancellation / recording states.
-  3. Fields and buttons lacked contextual hints for keyboard / screenreader-adjacent guidance.
-  4. Longer feedback text could feel cramped in smaller card widths.
+Latest pass - logs / transcripts UX closure (`ui/welcome.py`, `ui/settings_windows.py`)
+- Final app-wide UX round after re-checking the remaining visible `ui/` surfaces and consistency gaps.
+- Reviewed remaining user-facing areas with open impact:
+  - Welcome logs / transcripts panel
+  - Windows Settings logs / transcripts tab
+  - shared copy / feedback consistency between those panels
+- Main remaining problems that were closed:
+  1. Manual log / transcript actions still gave little or no user feedback.
+  2. Empty / error copy for logs was still inconsistent between macOS Welcome and Windows Settings.
+  3. Some logs / transcript actions were still slightly ambiguous (`Finder`, weak clear labels, emoji-heavy segment labels).
+  4. Transcript history count / status text was more technical than helpful.
 - Changes in this pass:
-  - added fallback success/error feedback when callers do not set a status themselves
-  - improved empty / recording / cancelled microcopy and shortened the recording status text
-  - added contextual tooltips to preset buttons, record buttons and hotkey fields
-  - refreshed field placeholders / hints so the card reads better in tighter layouts
+  - added shared logs/transcripts copy helpers for consistent empty states, error states and manual action feedback
+  - improved Welcome logs / transcripts controls, labels, tooltips and footer feedback
+  - improved Windows Settings logs / transcripts controls, placeholder copy and manual action feedback
+  - made transcript count / status text more descriptive and aligned across the visible history views
 - Validation:
-  - `pytest tests/test_hotkey_card.py tests/test_onboarding.py -q`
-  - `python -m py_compile ui/hotkey_card.py tests/test_hotkey_card.py`
-  - `ruff check ui/hotkey_card.py tests/test_hotkey_card.py`
+  - `pytest tests/test_logs_panel_feedback.py tests/test_settings_ui.py tests/test_settings_windows_logs.py -q`
+  - `pytest tests/test_settings_windows_load.py -q`
+  - `python -m py_compile ui/logs_panel_feedback.py ui/welcome.py ui/settings_windows.py tests/test_logs_panel_feedback.py tests/test_settings_ui.py tests/test_settings_windows_logs.py`
+  - `ruff check ui/logs_panel_feedback.py ui/welcome.py ui/settings_windows.py tests/test_logs_panel_feedback.py tests/test_settings_ui.py tests/test_settings_windows_logs.py`
+
+Previous pass - shared hotkey card UX (`ui/hotkey_card.py`)
+- Added fallback save/error feedback, clearer recording/cancelled microcopy and better contextual hints.
 
 Previous pass - shared permissions card UX (`ui/permissions_card.py`)
 - Improved initial checking text, descriptive ready states, multiline summary feedback and permission action tooltips.

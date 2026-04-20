@@ -34,6 +34,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ui.logs_panel_feedback import (
+    build_logs_empty_state_text,
+    build_logs_load_error_text,
+    build_logs_manual_refresh_feedback,
+    build_logs_open_feedback,
+    build_transcripts_clear_feedback,
+    build_transcripts_count_text,
+    build_transcripts_load_error_text,
+)
 from ui.styles_windows import (
     CARD_PADDING,
     CARD_SPACING,
@@ -1781,7 +1790,10 @@ class SettingsWindow(QDialog):
         self._logs_viewer = QPlainTextEdit()
         self._logs_viewer.setReadOnly(True)
         self._logs_viewer.setMinimumHeight(300)
-        self._logs_viewer.setPlaceholderText("Logs will appear here...")
+        self._logs_viewer.setPlaceholderText("The newest PulseScribe logs will appear here.")
+        self._logs_viewer.setToolTip(
+            "Shows the newest PulseScribe log output. Manual refresh keeps your current scroll position when possible."
+        )
         try:
             self._logs_viewer.document().setMaximumBlockCount(LOG_VIEW_MAX_LINES)
         except Exception:
@@ -1791,15 +1803,22 @@ class SettingsWindow(QDialog):
         # Logs Buttons
         logs_btn_layout = QHBoxLayout()
         self._auto_refresh_checkbox = QCheckBox("Auto-refresh")
+        self._auto_refresh_checkbox.setToolTip(
+            "Automatically refresh logs or transcript history while this tab is visible."
+        )
         self._auto_refresh_checkbox.stateChanged.connect(self._toggle_logs_auto_refresh)
         logs_btn_layout.addWidget(self._auto_refresh_checkbox)
         logs_btn_layout.addStretch()
 
         refresh_btn = QPushButton("Refresh")
+        refresh_btn.setToolTip("Refresh the visible log output now.")
         refresh_btn.clicked.connect(self._refresh_logs_on_demand)
         logs_btn_layout.addWidget(refresh_btn)
 
-        open_btn = QPushButton("Open in Explorer")
+        open_btn = QPushButton("Open Logs")
+        open_btn.setToolTip(
+            "Reveal the current log file in Explorer, or open the logs folder if no log exists yet."
+        )
         open_btn.clicked.connect(self._open_logs_folder)
         logs_btn_layout.addWidget(open_btn)
 
@@ -1815,7 +1834,10 @@ class SettingsWindow(QDialog):
         self._transcripts_viewer.setReadOnly(True)
         self._transcripts_viewer.setMinimumHeight(300)
         self._transcripts_viewer.setPlaceholderText(
-            "Transcripts history will appear here..."
+            "Your recent transcript history will appear here."
+        )
+        self._transcripts_viewer.setToolTip(
+            "Shows the newest local transcript history. Refresh reloads the history without changing any dictation settings."
         )
         transcripts_layout.addWidget(self._transcripts_viewer)
 
@@ -1830,10 +1852,14 @@ class SettingsWindow(QDialog):
         transcripts_btn_layout.addStretch()
 
         refresh_t_btn = QPushButton("Refresh")
+        refresh_t_btn.setToolTip("Refresh transcript history now.")
         refresh_t_btn.clicked.connect(self._refresh_transcripts_on_demand)
         transcripts_btn_layout.addWidget(refresh_t_btn)
 
-        clear_t_btn = QPushButton("Clear History")
+        clear_t_btn = QPushButton("Clear History…")
+        clear_t_btn.setToolTip(
+            "Permanently remove the local transcript history after confirmation."
+        )
         clear_t_btn.clicked.connect(self._clear_transcripts)
         transcripts_btn_layout.addWidget(clear_t_btn)
 
@@ -2819,11 +2845,20 @@ class SettingsWindow(QDialog):
 
     def _refresh_logs_on_demand(self) -> bool:
         self._reset_logs_auto_refresh_cadence()
-        return self._refresh_logs()
+        changed = bool(self._refresh_logs())
+        text, color = build_logs_manual_refresh_feedback(changed=changed, view="logs")
+        self._set_footer_status(text, color)
+        return changed
 
     def _refresh_transcripts_on_demand(self) -> bool:
         self._reset_logs_auto_refresh_cadence()
-        return self._refresh_transcripts()
+        changed = bool(self._refresh_transcripts())
+        text, color = build_logs_manual_refresh_feedback(
+            changed=changed,
+            view="transcripts",
+        )
+        self._set_footer_status(text, color)
+        return changed
 
     def _switch_logs_view(self, index: int):
         """Wechselt zwischen Logs und Transcripts Ansicht."""
@@ -2945,7 +2980,7 @@ class SettingsWindow(QDialog):
         """Aktualisiert den Transcript-Status konsistent."""
         _set_status_label_if_changed(
             getattr(self, "_transcripts_status", None),
-            f"{entry_count} entries",
+            build_transcripts_count_text(entry_count),
             "text_secondary",
         )
 
@@ -2963,7 +2998,7 @@ class SettingsWindow(QDialog):
             or getattr(self, "_last_transcripts_blocks", None)
             or getattr(self, "_last_transcripts_text", None) != empty_text
             or _get_widget_text(getattr(self, "_transcripts_status", None))
-            != "0 entries"
+            != build_transcripts_count_text(0)
         )
 
         self._last_transcripts_signature = None
@@ -3008,7 +3043,8 @@ class SettingsWindow(QDialog):
             logger.error(f"Transcripts laden fehlgeschlagen: {e}")
             viewer = getattr(self, "_transcripts_viewer", None)
             if viewer:
-                viewer.setPlainText(f"Error: {e}")
+                viewer.setPlainText(build_transcripts_load_error_text(e))
+            self._set_transcripts_entry_count(0)
             return True
 
     def _try_append_transcripts_delta(self, signature: tuple[int, int] | None) -> bool:
@@ -3154,21 +3190,17 @@ class SettingsWindow(QDialog):
                 return
 
             if not clear_history():
+                text, color = build_transcripts_clear_feedback(success=False)
                 if hasattr(self, "_transcripts_status"):
-                    _set_status_label_if_changed(
-                        self._transcripts_status,
-                        "Could not clear history. Try again.",
-                        "error",
-                    )
+                    _set_status_label_if_changed(self._transcripts_status, text, color)
+                self._set_footer_status(text, color)
                 return
 
             self._refresh_transcripts()
+            text, color = build_transcripts_clear_feedback(success=True)
             if hasattr(self, "_transcripts_status"):
-                _set_status_label_if_changed(
-                    self._transcripts_status,
-                    "History cleared",
-                    "success",
-                )
+                _set_status_label_if_changed(self._transcripts_status, text, color)
+            self._set_footer_status(text, color)
 
         except Exception as e:
             logger.error(f"Transcripts löschen fehlgeschlagen: {e}")
@@ -3255,9 +3287,7 @@ class SettingsWindow(QDialog):
 
             signature = get_file_signature(LOG_FILE)
             if _signature_means_missing_file(LOG_FILE, signature):
-                placeholder = "No logs yet.\n\nLog file will appear here:\n" + str(
-                    LOG_FILE
-                )
+                placeholder = build_logs_empty_state_text(LOG_FILE)
                 changed = bool(
                     getattr(self, "_last_logs_signature", None) is not None
                     or getattr(self, "_last_logs_text", None) != placeholder
@@ -3283,6 +3313,7 @@ class SettingsWindow(QDialog):
             return True
         except Exception as e:
             logger.error(f"Logs laden fehlgeschlagen: {e}")
+            self._set_logs_text_if_changed(build_logs_load_error_text(e))
             return True
 
     def _try_append_logs_delta(self, signature: tuple[int, int] | None) -> bool:
@@ -3364,12 +3395,19 @@ class SettingsWindow(QDialog):
             import subprocess
             from config import LOG_FILE
 
-            if LOG_FILE.exists():
+            found_log = bool(LOG_FILE.exists())
+            if found_log:
                 subprocess.run(["explorer", "/select,", str(LOG_FILE)], check=False)
             else:
                 subprocess.run(["explorer", str(LOG_FILE.parent)], check=False)
+            text, color = build_logs_open_feedback(
+                found_log=found_log,
+                destination="Explorer",
+            )
+            self._set_footer_status(text, color)
         except Exception as e:
             logger.error(f"Explorer öffnen fehlgeschlagen: {e}")
+            self._set_footer_status("Could not open logs in Explorer. Try again.", "error")
 
     # =========================================================================
     # Settings Load/Save

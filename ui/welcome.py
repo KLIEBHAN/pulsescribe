@@ -8,6 +8,15 @@ import os
 
 from config import LOG_FILE
 from ui.hotkey_card import HotkeyCard
+from ui.logs_panel_feedback import (
+    build_logs_empty_state_text,
+    build_logs_load_error_text,
+    build_logs_manual_refresh_feedback,
+    build_logs_open_feedback,
+    build_transcripts_clear_feedback,
+    build_transcripts_count_text,
+    build_transcripts_load_error_text,
+)
 from utils.env import parse_bool
 from utils.hotkey_recording import HotkeyRecorder
 from utils.local_backend import normalize_local_backend, should_remove_local_backend_env
@@ -2677,13 +2686,13 @@ class WelcomeController:
         # Segmented Control: Logs | Transcripts
         segment_y = card_y + card_height - 30
         segment = NSSegmentedControl.alloc().initWithFrame_(
-            NSMakeRect(base_x, segment_y, 180, 22)
+            NSMakeRect(base_x, segment_y, 170, 22)
         )
         segment.setSegmentCount_(2)
-        segment.setLabel_forSegment_("🪵 Logs", 0)
-        segment.setLabel_forSegment_("📝 Transcripts", 1)
-        segment.setWidth_forSegment_(85, 0)
-        segment.setWidth_forSegment_(95, 1)
+        segment.setLabel_forSegment_("Logs", 0)
+        segment.setLabel_forSegment_("Transcripts", 1)
+        segment.setWidth_forSegment_(72, 0)
+        segment.setWidth_forSegment_(98, 1)
         segment.setSelectedSegment_(0)
         try:
             segment.setSegmentStyle_(NSSegmentStyleTexturedRounded)
@@ -2697,6 +2706,10 @@ class WelcomeController:
         self._logs_segment_control = segment
         self._logs_segment_handler = segment_handler
         self._active_logs_segment = 0
+        _set_tooltip_if_supported(
+            segment,
+            "Switch between the live log view and local transcript history.",
+        )
         parent_view.addSubview_(segment)
 
         # Content area dimensions
@@ -2711,8 +2724,15 @@ class WelcomeController:
         parent_view.addSubview_(logs_container)
 
         # Auto-refresh Checkbox (in logs container header)
+        refresh_btn_w = 74
+        open_btn_w = 86
+        btn_spacing = 6
+        auto_checkbox_w = 112
+        actions_left_x = content_width - (
+            auto_checkbox_w + open_btn_w + refresh_btn_w + btn_spacing * 3
+        )
         auto_checkbox = NSButton.alloc().initWithFrame_(
-            NSMakeRect(content_width - 230, content_height - 22, 100, 20)
+            NSMakeRect(max(0, actions_left_x), content_height - 22, auto_checkbox_w, 20)
         )
         auto_checkbox.setButtonType_(NSSwitchButton)
         auto_checkbox.setTitle_("Auto-refresh")
@@ -2725,17 +2745,22 @@ class WelcomeController:
         )
         self._logs_auto_refresh_handler = auto_handler
         self._logs_auto_checkbox = auto_checkbox
+        _set_tooltip_if_supported(
+            auto_checkbox,
+            "Automatically refresh logs or transcript history while this tab is visible.",
+        )
         logs_container.addSubview_(auto_checkbox)
 
-        # Finder Button
-        btn_w = 65
-        btn_spacing = 4
+        # Open Logs Button
         finder_btn = NSButton.alloc().initWithFrame_(
             NSMakeRect(
-                content_width - btn_w * 2 - btn_spacing, content_height - 24, btn_w, 22
+                content_width - open_btn_w - refresh_btn_w - btn_spacing,
+                content_height - 24,
+                open_btn_w,
+                22,
             )
         )
-        finder_btn.setTitle_("Finder")
+        finder_btn.setTitle_("Open Logs")
         finder_btn.setBezelStyle_(NSBezelStyleRounded)
         finder_btn.setFont_(NSFont.systemFontOfSize_(11))
         finder_handler = _OpenLogsInFinderHandler.alloc().initWithController_(self)
@@ -2744,28 +2769,33 @@ class WelcomeController:
             objc.selector(finder_handler.openInFinder_, signature=b"v@:@")
         )
         self._logs_finder_handler = finder_handler
+        _set_tooltip_if_supported(
+            finder_btn,
+            "Reveal the current log file in Finder, or open the logs folder if no log exists yet.",
+        )
         logs_container.addSubview_(finder_btn)
 
         # Refresh Button
         refresh_btn = NSButton.alloc().initWithFrame_(
-            NSMakeRect(content_width - btn_w, content_height - 24, btn_w, 22)
+            NSMakeRect(content_width - refresh_btn_w, content_height - 24, refresh_btn_w, 22)
         )
         refresh_btn.setTitle_("Refresh")
         refresh_btn.setBezelStyle_(NSBezelStyleRounded)
         refresh_btn.setFont_(NSFont.systemFontOfSize_(11))
         refresh_handler = _SimpleHandler.alloc().initWithController_method_(
-            self, "_refresh_logs"
+            self, "_refresh_logs_on_demand"
         )
         refresh_btn.setTarget_(refresh_handler)
         refresh_btn.setAction_(
             objc.selector(refresh_handler.performAction_, signature=b"v@:@")
         )
         self._logs_refresh_handler = refresh_handler
+        _set_tooltip_if_supported(refresh_btn, "Refresh the visible log output now.")
         logs_container.addSubview_(refresh_btn)
 
         # Log-Pfad
         path_label = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(0, content_height - 20, content_width - 240, 14)
+            NSMakeRect(0, content_height - 20, max(140, actions_left_x - 8), 14)
         )
         path_label.setStringValue_(str(LOG_FILE))
         path_label.setBezeled_(False)
@@ -2774,6 +2804,7 @@ class WelcomeController:
         path_label.setSelectable_(True)
         path_label.setFont_(NSFont.systemFontOfSize_(9))
         path_label.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.4))
+        _set_tooltip_if_supported(path_label, f"Current log file path:\n{LOG_FILE}")
         logs_container.addSubview_(path_label)
 
         # Logs ScrollView
@@ -2803,6 +2834,10 @@ class WelcomeController:
         text_view.setSelectable_(True)
         text_view.setVerticallyResizable_(True)
         text_view.setHorizontallyResizable_(False)
+        _set_tooltip_if_supported(
+            text_view,
+            "Shows the newest PulseScribe log output. Manual refresh keeps your current scroll position when possible.",
+        )
         tc = text_view.textContainer()
         if tc is not None:
             tc.setWidthTracksTextView_(True)
@@ -2829,7 +2864,7 @@ class WelcomeController:
             "content_width": content_width,
             "content_height": content_height,
             "scroll_height": scroll_height,
-            "button_width": btn_w,
+            "button_width": refresh_btn_w,
             "button_spacing": btn_spacing,
         }
         parent_view.addSubview_(transcripts_container)
@@ -2866,13 +2901,14 @@ class WelcomeController:
         content_width = metrics["content_width"]
         content_height = metrics["content_height"]
         scroll_height = metrics["scroll_height"]
-        btn_w = metrics["button_width"]
         btn_spacing = metrics["button_spacing"]
+        refresh_btn_w = 74
+        clear_btn_w = 104
 
         clear_btn = NSButton.alloc().initWithFrame_(
-            NSMakeRect(content_width - btn_w, content_height - 24, btn_w, 22)
+            NSMakeRect(content_width - clear_btn_w, content_height - 24, clear_btn_w, 22)
         )
-        clear_btn.setTitle_("Clear")
+        clear_btn.setTitle_("Clear History…")
         clear_btn.setBezelStyle_(NSBezelStyleRounded)
         clear_btn.setFont_(NSFont.systemFontOfSize_(11))
         clear_handler = _ClearTranscriptsHandler.alloc().initWithController_(self)
@@ -2881,11 +2917,18 @@ class WelcomeController:
             objc.selector(clear_handler.clearTranscripts_, signature=b"v@:@")
         )
         self._transcripts_clear_handler = clear_handler
+        _set_tooltip_if_supported(
+            clear_btn,
+            "Permanently remove the local transcript history after confirmation.",
+        )
         container.addSubview_(clear_btn)
 
         refresh_t_btn = NSButton.alloc().initWithFrame_(
             NSMakeRect(
-                content_width - btn_w * 2 - btn_spacing, content_height - 24, btn_w, 22
+                content_width - clear_btn_w - refresh_btn_w - btn_spacing,
+                content_height - 24,
+                refresh_btn_w,
+                22,
             )
         )
         refresh_t_btn.setTitle_("Refresh")
@@ -2895,18 +2938,31 @@ class WelcomeController:
         refresh_t_btn.setAction_(
             objc.selector(clear_handler.refreshTranscripts_, signature=b"v@:@")
         )
+        _set_tooltip_if_supported(
+            refresh_t_btn,
+            "Refresh transcript history now.",
+        )
         container.addSubview_(refresh_t_btn)
 
         count_label = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(0, content_height - 20, content_width - 150, 14)
+            NSMakeRect(
+                0,
+                content_height - 20,
+                max(140, content_width - clear_btn_w - refresh_btn_w - btn_spacing - 8),
+                14,
+            )
         )
-        count_label.setStringValue_("Recent transcriptions")
+        count_label.setStringValue_(build_transcripts_count_text(0))
         count_label.setBezeled_(False)
         count_label.setDrawsBackground_(False)
         count_label.setEditable_(False)
         count_label.setSelectable_(False)
         count_label.setFont_(NSFont.systemFontOfSize_(11))
         count_label.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6))
+        _set_tooltip_if_supported(
+            count_label,
+            "Shows how many recent transcript entries are available locally.",
+        )
         container.addSubview_(count_label)
         self._transcripts_count_label = count_label
 
@@ -2935,6 +2991,10 @@ class WelcomeController:
         t_text_view.setSelectable_(True)
         t_text_view.setVerticallyResizable_(True)
         t_text_view.setHorizontallyResizable_(False)
+        _set_tooltip_if_supported(
+            t_text_view,
+            "Shows the newest local transcript history. Refresh reloads the history without changing any dictation settings.",
+        )
         tc = t_text_view.textContainer()
         if tc is not None:
             tc.setWidthTracksTextView_(True)
@@ -3005,7 +3065,7 @@ class WelcomeController:
             self._pending_transcripts_signature = None
             self._pending_transcripts_entries = []
             self._pending_transcripts_blocks = []
-            return f"Could not load transcripts: {e}", 0
+            return build_transcripts_load_error_text(e), 0
 
     def _get_transcripts_text(self) -> str:
         """Lädt und formatiert die Transkript-Historie."""
@@ -3289,7 +3349,7 @@ class WelcomeController:
         """Aktualisiert den Label-Text mit der aktuellen Eintragszahl."""
         if self._transcripts_count_label:
             try:
-                label_text = f"{entry_count} entr{'y' if entry_count == 1 else 'ies'}"
+                label_text = build_transcripts_count_text(entry_count)
                 if getattr(self, "_last_transcripts_count_text", None) == label_text:
                     return False
                 if _set_string_value_if_changed(
@@ -3301,6 +3361,21 @@ class WelcomeController:
             except Exception:
                 return False
         return False
+
+    def _refresh_logs_on_demand(self) -> bool:
+        changed = bool(self._refresh_logs(scroll_to_bottom=True))
+        text, color = build_logs_manual_refresh_feedback(changed=changed, view="logs")
+        self._set_footer_status(text, color)
+        return changed
+
+    def _refresh_transcripts_on_demand(self) -> bool:
+        changed = bool(self._refresh_transcripts(scroll_to_bottom=True))
+        text, color = build_logs_manual_refresh_feedback(
+            changed=changed,
+            view="transcripts",
+        )
+        self._set_footer_status(text, color)
+        return changed
 
     def _clear_transcripts(self) -> None:
         """Löscht die Transkript-Historie nach Bestätigung."""
@@ -3322,8 +3397,15 @@ class WelcomeController:
 
         from utils.history import clear_history
 
-        clear_history()
+        success = bool(clear_history())
+        if not success:
+            text, color = build_transcripts_clear_feedback(success=False)
+            self._set_footer_status(text, color)
+            return
+
         self._refresh_transcripts(scroll_to_bottom=True)
+        text, color = build_transcripts_clear_feedback(success=True)
+        self._set_footer_status(text, color)
 
     def _switch_logs_segment(self, segment_index: int) -> None:
         """Wechselt zwischen Logs und Transcripts Ansicht."""
@@ -3507,20 +3589,29 @@ class WelcomeController:
         """Reveal the current log file or open the logs folder when it is missing."""
         import subprocess
 
+        found_log = bool(LOG_FILE.exists())
         try:
-            if LOG_FILE.exists():
+            if found_log:
                 subprocess.Popen(["open", "-R", str(LOG_FILE)])
             else:
                 subprocess.Popen(["open", str(LOG_FILE.parent)])
+            text, color = build_logs_open_feedback(
+                found_log=found_log,
+                destination="Finder",
+            )
+            self._set_footer_status(text, color)
         except Exception:
-            pass
+            self._set_footer_status(
+                "Could not open logs in Finder. Try again.",
+                "error",
+            )
 
     def _get_logs_text(self, max_chars: int = WELCOME_LOG_MAX_CHARS) -> str:
         """Liest einen Ausschnitt der aktuellen Log-Datei."""
         try:
             if not LOG_FILE.exists():
                 self._pending_logs_signature = None
-                return "No logs yet.\n\nLog file will appear at:\n" + str(LOG_FILE)
+                return build_logs_empty_state_text(LOG_FILE)
             log_text, signature = read_file_tail_text_with_signature(
                 LOG_FILE,
                 max_chars=max_chars,
@@ -3531,7 +3622,7 @@ class WelcomeController:
             return log_text
         except Exception as e:
             self._pending_logs_signature = None
-            return f"Could not read logs: {e}"
+            return build_logs_load_error_text(e)
 
     def _is_logs_near_bottom(self, tolerance: float = 24.0) -> bool:
         """Prüft, ob die Logs-Ansicht aktuell nahe am Ende ist."""
@@ -5057,7 +5148,7 @@ def _create_clear_transcripts_handler_class():
 
         @objc.signature(b"v@:@")
         def refreshTranscripts_(self, _sender) -> None:
-            self._controller._refresh_transcripts()
+            self._controller._refresh_transcripts_on_demand()
 
     return ClearTranscriptsHandler
 
