@@ -20,7 +20,7 @@ def build_transcript_payload(
     empty_text: str,
 ) -> tuple[str, list[TranscriptEntry], list[str], int]:
     """Build the rendered transcript payload plus cached oldest-first state."""
-    rendered_blocks = [block for block in blocks if block]
+    rendered_blocks = [block for block in blocks if block and block.strip()]
     text = "\n\n".join(rendered_blocks) if rendered_blocks else empty_text
     newest_first_entries = list(entries)
     oldest_first_entries = list(reversed(newest_first_entries))

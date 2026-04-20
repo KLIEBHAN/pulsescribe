@@ -25,6 +25,22 @@ def test_format_transcripts_for_display_indents_multiline_entries() -> None:
     )
 
 
+def test_format_transcripts_for_display_trims_outer_blank_lines() -> None:
+    formatted = format_transcripts_for_display(
+        [
+            {
+                "timestamp": "2026-03-24T10:00:00.000000",
+                "text": "\n\nErste Zeile\nZweite Zeile\n\n",
+            }
+        ]
+    )
+
+    assert formatted == (
+        "[2026-03-24 10:00:00] Erste Zeile\n"
+        "    Zweite Zeile"
+    )
+
+
 def test_format_transcripts_for_welcome_preserves_given_order() -> None:
     formatted = format_transcripts_for_welcome(
         [

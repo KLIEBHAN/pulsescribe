@@ -1,25 +1,26 @@
 UX notes - 2026-04-19
 
-Latest pass - Overlay state UX (`ui/overlay.py`, `ui/overlay_pyside6.py`, `ui/overlay_windows.py`)
-- Scope: improved the remaining broad-impact status views outside Onboarding / Settings / Welcome / Menubar.
-- Reviewed flows:
-  - macOS overlay
-  - Windows PySide6 overlay
-  - Windows Tk fallback overlay
+Latest pass - Transcript/history list presentation helpers (`utils/history.py`, `utils/transcript_view_logic.py`)
+- Scope: the remaining transcript/history panels themselves currently live in Welcome / Settings, which are intentionally not being reopened right now, so this pass improved their shared rendering logic instead.
+- Reviewed flows first:
+  - transcript history rendering used by Welcome / Settings transcript panels
+  - transcript payload assembly used by incremental refresh paths
 - Main weaknesses found:
-  1. Several transient states still used overly generic copy (`Done!`, `Error`, `Loading model...`).
-  2. Success / failure overlays did not communicate the outcome clearly enough in short-lived states.
-  3. The PySide6 overlay had room for better accessibility metadata on its main status widgets.
+  1. Empty transcript states were still terse and not very helpful.
+  2. Transcript entries with accidental outer blank lines could render with weak visual hierarchy.
+  3. Payload assembly kept whitespace-only blocks, which made empty / malformed edge cases less robust.
 - Changes in this pass:
-  - added dedicated overlay feedback defaults with clearer user-facing outcome text
-  - improved transient copy such as `Preparing transcription…`, `Transcript pasted`, and better processing wording
-  - kept explicit error details when available while improving generic fallback error text
-  - added basic accessible names / descriptions to the PySide6 overlay and kept the live label description in sync with visible text
-  - kept behavior / timing / state flow unchanged
+  - improved shared empty-state copy for transcript history views
+  - trimmed outer blank lines from displayed transcript bodies while preserving paragraphs
+  - filtered whitespace-only transcript blocks in shared payload assembly so empty states stay clean
+  - kept ordering / incremental refresh behavior unchanged
 - Validation:
-  - `pytest tests/test_overlay.py tests/test_overlay_pyside6.py tests/test_overlay_windows.py tests/test_daemon_mode.py tests/test_windows_race_conditions.py -q`
-  - `python -m py_compile ui/overlay_feedback.py ui/overlay.py ui/overlay_pyside6.py ui/overlay_windows.py tests/test_overlay.py tests/test_overlay_pyside6.py tests/test_overlay_windows.py`
-  - `ruff check ui/overlay_feedback.py ui/overlay.py ui/overlay_pyside6.py ui/overlay_windows.py tests/test_overlay.py tests/test_overlay_pyside6.py tests/test_overlay_windows.py`
+  - `pytest tests/test_history.py tests/test_history_display.py tests/test_transcript_view_logic.py tests/test_settings_ui.py tests/test_settings_windows_logs.py -q`
+  - `python -m py_compile utils/history.py utils/transcript_view_logic.py tests/test_history.py tests/test_history_display.py tests/test_transcript_view_logic.py tests/test_settings_ui.py tests/test_settings_windows_logs.py`
+  - `ruff check utils/history.py utils/transcript_view_logic.py tests/test_history.py tests/test_history_display.py tests/test_transcript_view_logic.py tests/test_settings_ui.py tests/test_settings_windows_logs.py`
+
+Previous pass - Overlay state UX (`ui/overlay.py`, `ui/overlay_pyside6.py`, `ui/overlay_windows.py`)
+- Added clearer transient overlay copy, better outcome wording, and small PySide accessibility improvements.
 
 Previous pass - Shared action/status card UX (`ui/hotkey_card.py`, `ui/permissions_card.py`)
 - Improved friendlier hotkey formatting, clearer recording/empty states, better permission microcopy, and added a card-level permission summary.
@@ -37,8 +38,8 @@ Previous pass - Onboarding / shared setup UX
 - Improved Windows onboarding guidance, hotkey capture discoverability, safe dictation test messaging, shared permission card wording, and Windows focus/placeholder styling.
 
 Next worthwhile UX areas
-1. welcome logs / transcripts panel
-- clearer refresh / empty / failure feedback and stronger visual hierarchy between logs vs transcript history
+1. welcome logs / transcripts panel itself
+- stronger refresh / action hierarchy, clearer count / failure feedback, and better visible separation between logs vs transcript history
 2. advanced local settings copy
 - explain defaults vs overrides and performance tradeoffs even more clearly
 3. transient daemon / retry states outside the overlay

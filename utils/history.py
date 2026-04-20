@@ -424,11 +424,23 @@ class _TranscriptFormatSpec:
     include_separator_when_body_empty: bool = False
 
 
+DISPLAY_TRANSCRIPTS_EMPTY_MESSAGE = (
+    "No transcripts yet.\n\n"
+    "Your recent dictations will appear here after the first transcription."
+)
+WELCOME_TRANSCRIPTS_EMPTY_MESSAGE = (
+    "No transcriptions yet.\n\n"
+    "Your recent dictations will appear here after the first transcription."
+)
+
+
+
 def _join_transcript_blocks(blocks: Sequence[str], *, empty_message: str) -> str:
     """Join preformatted transcript blocks or return a caller-specific empty state."""
-    if not blocks:
+    rendered_blocks = [block for block in blocks if block and block.strip()]
+    if not rendered_blocks:
         return empty_message
-    return "\n\n".join(block for block in blocks if block)
+    return "\n\n".join(rendered_blocks)
 
 
 def _prepare_formatted_transcript_entry(
@@ -529,7 +541,10 @@ def format_transcripts_for_display(
         entries,
         newest_first=newest_first,
     )
-    return _join_transcript_blocks(blocks, empty_message="No transcripts yet.")
+    return _join_transcript_blocks(
+        blocks,
+        empty_message=DISPLAY_TRANSCRIPTS_EMPTY_MESSAGE,
+    )
 
 
 def format_transcript_entry_for_welcome(entry: object) -> str:
@@ -558,14 +573,25 @@ def format_transcripts_for_welcome(
     )
     return _join_transcript_blocks(
         blocks,
-        empty_message="No transcriptions yet.\n\nYour transcribed texts will appear here.",
+        empty_message=WELCOME_TRANSCRIPTS_EMPTY_MESSAGE,
     )
 
 
 def _format_display_text(text: object) -> str:
     """Format transcript text for list-style viewers while preserving paragraphs."""
     normalized = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
-    lines = normalized.splitlines()
+    raw_lines = normalized.splitlines()
+    if not raw_lines:
+        return ""
+
+    start = 0
+    end = len(raw_lines)
+    while start < end and not raw_lines[start].strip():
+        start += 1
+    while end > start and not raw_lines[end - 1].strip():
+        end -= 1
+
+    lines = [line.rstrip() for line in raw_lines[start:end]]
     if not lines:
         return ""
     if len(lines) == 1:

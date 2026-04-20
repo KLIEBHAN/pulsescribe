@@ -1635,7 +1635,8 @@ class TestWelcomeTranscriptsRefreshBehavior:
 
         ctrl = WelcomeController.__new__(WelcomeController)
         ctrl._transcripts_text_view = _FakeTranscriptsTextView(
-            "No transcriptions yet.\n\nYour transcribed texts will appear here.",
+            "No transcriptions yet.\n\n"
+            "Your recent dictations will appear here after the first transcription.",
             doc_height=800,
         )
         ctrl._transcripts_scroll_view = _FakeTranscriptsScrollView(
@@ -1643,7 +1644,8 @@ class TestWelcomeTranscriptsRefreshBehavior:
         )
         ctrl._transcripts_count_label = _FakeTranscriptsCountLabel()
         ctrl._last_transcripts_text = (
-            "No transcriptions yet.\n\nYour transcribed texts will appear here."
+            "No transcriptions yet.\n\n"
+            "Your recent dictations will appear here after the first transcription."
         )
         ctrl._last_transcripts_signature = (1, 0)
         ctrl._last_transcripts_entries = []

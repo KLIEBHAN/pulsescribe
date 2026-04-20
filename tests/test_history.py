@@ -353,7 +353,10 @@ class TestFormatTranscriptsForDisplay:
     def test_empty_entries_message(self):
         from utils.history import format_transcripts_for_display
 
-        assert format_transcripts_for_display([]) == "No transcripts yet."
+        assert format_transcripts_for_display([]) == (
+            "No transcripts yet.\n\n"
+            "Your recent dictations will appear here after the first transcription."
+        )
 
     def test_format_transcript_entry_for_display_indents_multiline_text(self):
         from utils.history import format_transcript_entry_for_display
@@ -372,6 +375,21 @@ class TestFormatTranscriptsForDisplay:
             "    Second line\n"
             "    \n"
             "    Fourth line"
+        )
+
+    def test_format_transcript_entry_for_display_trims_outer_blank_lines(self):
+        from utils.history import format_transcript_entry_for_display
+
+        formatted = format_transcript_entry_for_display(
+            {
+                "timestamp": "2026-03-03T10:01:30.000000",
+                "text": "\n\nFirst line\nSecond line\n\n",
+            }
+        )
+
+        assert formatted == (
+            "[2026-03-03 10:01:30] First line\n"
+            "    Second line"
         )
 
     def test_format_transcript_entries_for_display_returns_oldest_first_blocks(self):
