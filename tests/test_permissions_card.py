@@ -40,9 +40,11 @@ class _FakeButton:
         self.title_calls = 0
         self.enabled_calls = 0
         self.hidden_calls = 0
+        self.tooltip_calls = 0
         self.title = ""
         self.enabled = True
         self.hidden = False
+        self.tooltip = ""
 
     def setTitle_(self, title: str) -> None:
         self.title = title
@@ -55,6 +57,10 @@ class _FakeButton:
     def setHidden_(self, hidden: bool) -> None:
         self.hidden = hidden
         self.hidden_calls += 1
+
+    def setToolTip_(self, tooltip: str) -> None:
+        self.tooltip = tooltip
+        self.tooltip_calls += 1
 
 
 def _install_fake_appkit(monkeypatch) -> None:
@@ -120,6 +126,7 @@ def test_refresh_skips_duplicate_widget_updates(monkeypatch) -> None:
     assert card._widgets.mic_action.title_calls == 1
     assert card._widgets.mic_action.enabled_calls == 1
     assert card._widgets.mic_action.hidden_calls == 1
+    assert card._widgets.mic_action.tooltip_calls == 1
 
     assert card._widgets.access_status.text_calls == 1
     assert card._widgets.access_action.title_calls == 1
@@ -237,6 +244,9 @@ def test_refresh_marks_unknown_microphone_state_as_warning(monkeypatch) -> None:
     assert card._widgets.mic_action.title == "Open Settings"
     assert card._widgets.mic_action.enabled is True
     assert card._widgets.mic_action.hidden is False
+    assert card._widgets.mic_action.tooltip == (
+        "Open the macOS Microphone privacy page for PulseScribe."
+    )
 
 
 def test_refresh_uses_more_actionable_permission_copy(monkeypatch) -> None:
@@ -263,10 +273,45 @@ def test_refresh_uses_more_actionable_permission_copy(monkeypatch) -> None:
 
     assert card.refresh() is False
     assert card._widgets.mic_status.text == "Required • allow access"
-    assert card._widgets.mic_action.title == "Allow"
+    assert card._widgets.mic_action.title == "Allow access"
     assert card._widgets.access_status.text == "Recommended • auto-paste"
     assert card._widgets.input_status.text == "Optional • Hold hotkeys"
     assert "Click Allow" in card._widgets.summary_status.text
+    assert card._widgets.access_action.tooltip == (
+        "Open the macOS Accessibility page so PulseScribe can auto-paste."
+    )
+
+
+def test_refresh_uses_checking_copy_while_auto_refresh_is_active(monkeypatch) -> None:
+    import utils.permissions as permissions_mod
+
+    _install_fake_appkit(monkeypatch)
+    monkeypatch.setattr(
+        permissions_mod,
+        "get_microphone_permission_state",
+        lambda: "not_determined",
+    )
+    monkeypatch.setattr(
+        permissions_mod,
+        "has_accessibility_permission",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        permissions_mod,
+        "has_input_monitoring_permission",
+        lambda: False,
+    )
+
+    card = _build_card()
+    card._refresh_ticks = 3
+
+    assert card.refresh() is False
+    assert card._widgets.mic_status.text == "Required • waiting for prompt"
+    assert card._widgets.access_status.text == "Recommended • checking…"
+    assert card._widgets.input_status.text == "Optional • checking…"
+    assert card._widgets.summary_status.text == (
+        "Waiting for microphone access. Approve the macOS prompt, then return here."
+    )
 
 
 def test_refresh_summary_mentions_all_set_when_everything_is_ready(monkeypatch) -> None:
@@ -292,6 +337,9 @@ def test_refresh_summary_mentions_all_set_when_everything_is_ready(monkeypatch) 
     card = _build_card()
 
     assert card.refresh() is True
+    assert card._widgets.mic_status.text == "Required • ready"
+    assert card._widgets.access_status.text == "Enabled • auto-paste ready"
+    assert card._widgets.input_status.text == "Enabled • Hold hotkeys ready"
     assert card._widgets.summary_status.text == (
         "All set. Auto-paste and Hold hotkeys are available."
     )

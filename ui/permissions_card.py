@@ -15,6 +15,8 @@ PERMISSIONS_DESCRIPTION = (
     "Recommended: Accessibility for auto-paste.\n"
     "Optional: Input Monitoring for Hold and some global hotkeys."
 )
+PERMISSION_STATUS_CHECKING_TEXT = "Checking access…"
+PERMISSION_SUMMARY_CHECKING_TEXT = "Checking current access…"
 
 
 def _get_color(r: int, g: int, b: int, a: float = 1.0):
@@ -52,6 +54,31 @@ def _get_status_palette() -> dict[str, object]:
 
 
 
+def _set_tooltip_if_supported(view, text: str | None) -> None:
+    if view is None:
+        return
+    try:
+        view.setToolTip_(text or "")
+    except Exception:
+        pass
+
+
+
+def _build_permission_action_tooltip(permission: str, *, mic_state: str) -> str:
+    if permission == "mic":
+        if mic_state == "not_determined":
+            return "Request microphone access from macOS."
+        return "Open the macOS Microphone privacy page for PulseScribe."
+    if permission == "access":
+        return "Open the macOS Accessibility page so PulseScribe can auto-paste."
+    if permission == "input":
+        return (
+            "Open the macOS Input Monitoring page for Hold and some global hotkeys."
+        )
+    return "Open macOS privacy settings for this permission."
+
+
+
 def _build_permission_summary(
     mic_state: str,
     *,
@@ -60,6 +87,11 @@ def _build_permission_summary(
     checking: bool,
 ) -> tuple[str, str]:
     if mic_state == "not_determined":
+        if checking:
+            return (
+                "Waiting for microphone access. Approve the macOS prompt, then return here.",
+                "warn",
+            )
         return (
             "Microphone access is still missing. Click Allow and approve the macOS prompt.",
             "warn",
@@ -129,7 +161,7 @@ class PermissionsCard:
         self._refresh_interval_index = 0
         self._last_permission_signature: tuple[str, bool, bool] | None = None
         self._status_cache: dict[str, tuple[str, object]] = {}
-        self._action_cache: dict[str, tuple[str, bool, bool]] = {}
+        self._action_cache: dict[str, tuple[str, bool, bool, str | None]] = {}
 
     def get_cached_permission_signature(self) -> tuple[str, bool, bool] | None:
         """Return the most recent permission snapshot from refresh(), if any."""
@@ -215,12 +247,17 @@ class PermissionsCard:
 
         label_w = 130
         status_x = base_x + label_w + 8
-        btn_w = 108
+        btn_w = 120
         btn_h = 22
         btn_x = right_edge - btn_w
         status_w = max(80, btn_x - status_x - 8)
 
-        def add_row(row_y: int, label_text: str, action: str) -> tuple[object, object]:
+        def add_row(
+            row_y: int,
+            label_text: str,
+            action: str,
+            tooltip: str,
+        ) -> tuple[object, object]:
             label = NSTextField.alloc().initWithFrame_(
                 NSMakeRect(base_x, row_y + 4, label_w, 16)
             )
@@ -236,7 +273,7 @@ class PermissionsCard:
             status = NSTextField.alloc().initWithFrame_(
                 NSMakeRect(status_x, row_y + 2, status_w, 18)
             )
-            status.setStringValue_("…")
+            status.setStringValue_(PERMISSION_STATUS_CHECKING_TEXT)
             status.setBezeled_(False)
             status.setDrawsBackground_(False)
             status.setEditable_(False)
@@ -248,30 +285,51 @@ class PermissionsCard:
             action_btn = NSButton.alloc().initWithFrame_(
                 NSMakeRect(btn_x, row_y, btn_w, btn_h)
             )
-            action_btn.setTitle_("Settings")
+            action_btn.setTitle_("Check access")
             action_btn.setBezelStyle_(NSBezelStyleRounded)
             action_btn.setFont_(NSFont.systemFontOfSize_(11))
             bind_action(action_btn, action)
+            _set_tooltip_if_supported(action_btn, tooltip)
             parent_view.addSubview_(action_btn)
 
             return status, action_btn
 
         header_gap = 12
         row_y = desc_y - header_gap - btn_h
-        mic_status, mic_btn = add_row(row_y, "Microphone", "perm_mic")
-        input_status, input_btn = add_row(row_y - 32, "Input Monitoring", "perm_input")
-        access_status, access_btn = add_row(row_y - 64, "Accessibility", "perm_access")
+        mic_status, mic_btn = add_row(
+            row_y,
+            "Microphone",
+            "perm_mic",
+            "Request or review microphone access for PulseScribe.",
+        )
+        input_status, input_btn = add_row(
+            row_y - 32,
+            "Input Monitoring",
+            "perm_input",
+            "Open Input Monitoring for Hold and some global hotkeys.",
+        )
+        access_status, access_btn = add_row(
+            row_y - 64,
+            "Accessibility",
+            "perm_access",
+            "Open Accessibility so PulseScribe can auto-paste.",
+        )
 
         summary = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(base_x, card_y + 12, card_w - 2 * inner_padding, 16)
+            NSMakeRect(base_x, card_y + 12, card_w - 2 * inner_padding, 34)
         )
-        summary.setStringValue_("")
+        summary.setStringValue_(PERMISSION_SUMMARY_CHECKING_TEXT)
         summary.setBezeled_(False)
         summary.setDrawsBackground_(False)
         summary.setEditable_(False)
         summary.setSelectable_(False)
         summary.setFont_(NSFont.systemFontOfSize_(10))
         summary.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6))
+        try:
+            summary.setUsesSingleLineMode_(False)
+            summary.setLineBreakMode_(0)
+        except Exception:
+            pass
         parent_view.addSubview_(summary)
 
         widgets = PermissionCardWidgets(
@@ -318,11 +376,12 @@ class PermissionsCard:
         title: str,
         enabled: bool,
         hidden: bool,
+        tooltip: str | None = None,
     ) -> bool:
         if btn is None:
             return False
 
-        next_state = (title, enabled, hidden)
+        next_state = (title, enabled, hidden, tooltip)
         if self._action_cache.get(key) == next_state:
             return False
 
@@ -330,6 +389,7 @@ class PermissionsCard:
             btn.setTitle_(title)
             btn.setEnabled_(enabled)
             btn.setHidden_(hidden)
+            _set_tooltip_if_supported(btn, tooltip)
             self._action_cache[key] = next_state
             return True
         except Exception:
@@ -338,6 +398,7 @@ class PermissionsCard:
     def refresh(self) -> bool:
         palette = _get_status_palette()
         changed = False
+        checking = bool(self._refresh_ticks)
 
         mic_state, acc_ok, input_ok = self._read_permission_signature()
         self._last_permission_signature = (mic_state, acc_ok, input_ok)
@@ -345,7 +406,7 @@ class PermissionsCard:
             changed |= self._set_status_if_changed(
                 "mic_status",
                 self._widgets.mic_status,
-                "Ready",
+                "Required • ready",
                 palette["ok"],
                 cache_value="ok",
             )
@@ -355,21 +416,27 @@ class PermissionsCard:
                 title="Open Settings",
                 enabled=False,
                 hidden=True,
+                tooltip=_build_permission_action_tooltip("mic", mic_state=mic_state),
             )
         elif mic_state == "not_determined":
             changed |= self._set_status_if_changed(
                 "mic_status",
                 self._widgets.mic_status,
-                "Required • allow access",
+                (
+                    "Required • waiting for prompt"
+                    if checking
+                    else "Required • allow access"
+                ),
                 palette["warn"],
-                cache_value="warn",
+                cache_value="warn_waiting" if checking else "warn",
             )
             changed |= self._set_action_if_changed(
                 "mic_action",
                 self._widgets.mic_action,
-                title="Allow",
+                title="Allow access",
                 enabled=True,
                 hidden=False,
+                tooltip=_build_permission_action_tooltip("mic", mic_state=mic_state),
             )
         elif mic_state in ("denied", "restricted"):
             changed |= self._set_status_if_changed(
@@ -385,6 +452,7 @@ class PermissionsCard:
                 title="Open Settings",
                 enabled=True,
                 hidden=False,
+                tooltip=_build_permission_action_tooltip("mic", mic_state=mic_state),
             )
         else:
             changed |= self._set_status_if_changed(
@@ -400,14 +468,18 @@ class PermissionsCard:
                 title="Open Settings",
                 enabled=True,
                 hidden=False,
+                tooltip=_build_permission_action_tooltip("mic", mic_state=mic_state),
             )
 
+        access_status = "Enabled • auto-paste ready" if acc_ok else "Recommended • auto-paste"
+        if checking and not acc_ok:
+            access_status = "Recommended • checking…"
         changed |= self._set_status_if_changed(
             "access_status",
             self._widgets.access_status,
-            "Enabled" if acc_ok else "Recommended • auto-paste",
+            access_status,
             palette["ok"] if acc_ok else palette["neutral"],
-            cache_value="ok" if acc_ok else "neutral",
+            cache_value="ok" if acc_ok else ("neutral_checking" if checking else "neutral"),
         )
         changed |= self._set_action_if_changed(
             "access_action",
@@ -415,14 +487,18 @@ class PermissionsCard:
             title="Open Settings",
             enabled=not acc_ok,
             hidden=bool(acc_ok),
+            tooltip=_build_permission_action_tooltip("access", mic_state=mic_state),
         )
 
+        input_status = "Enabled • Hold hotkeys ready" if input_ok else "Optional • Hold hotkeys"
+        if checking and not input_ok:
+            input_status = "Optional • checking…"
         changed |= self._set_status_if_changed(
             "input_status",
             self._widgets.input_status,
-            "Enabled" if input_ok else "Optional • Hold hotkeys",
+            input_status,
             palette["ok"] if input_ok else palette["neutral"],
-            cache_value="ok" if input_ok else "neutral",
+            cache_value="ok" if input_ok else ("neutral_checking" if checking else "neutral"),
         )
         changed |= self._set_action_if_changed(
             "input_action",
@@ -430,13 +506,14 @@ class PermissionsCard:
             title="Open Settings",
             enabled=not input_ok,
             hidden=bool(input_ok),
+            tooltip=_build_permission_action_tooltip("input", mic_state=mic_state),
         )
 
         summary_text, summary_color = _build_permission_summary(
             mic_state,
             accessibility_ok=acc_ok,
             input_ok=input_ok,
-            checking=bool(self._refresh_ticks),
+            checking=checking,
         )
         changed |= self._set_status_if_changed(
             "summary_status",

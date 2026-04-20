@@ -1,21 +1,30 @@
 UX notes - 2026-04-20
 
-Latest pass - macOS onboarding wizard UX (`ui/onboarding_wizard.py`)
-- Reviewed remaining visible `ui/` surfaces outside Welcome / Settings / Overlay / Menubar and focused on the still-unhandled macOS onboarding wizard.
+Latest pass - shared permissions card UX (`ui/permissions_card.py`)
+- Restflächen-Inventur under `ui/` after excluding Welcome / Settings / Overlay / Menubar / Onboarding focused on:
+  - `ui/permissions_card.py`
+  - `ui/hotkey_card.py`
+  - `ui/styles_windows.py` (style helper only)
+  - `ui/animation.py` (not an interactive surface)
+- Selected area: `ui/permissions_card.py` because it is still a visible shared status/action surface with broad user impact.
 - Main weaknesses found:
-  1. Goal selection still used older, vague copy and raw language codes.
-  2. Secondary actions were misleading (`Cancel`, `Skip →`) compared with what they actually do.
-  3. Practice dictation had a weak empty state and less helpful error / retry feedback.
-  4. The final summary still used raw hotkeys and a hard-to-scan permission summary, and it did not show whether the practice test was completed.
+  1. Initial permission states were too vague (`…`, empty summary).
+  2. The summary area was effectively one line high even though the feedback text is longer.
+  3. Some ready states were too generic (`Enabled`) and did not explain what became available.
+  4. Permission action buttons lacked contextual guidance.
 - Changes in this pass:
-  - improved goal-step copy, language labels, API-key prompt wording and layout
-  - clarified footer / skip button microcopy so actions are easier to predict
-  - improved practice dictation placeholder text, status messages, error / no-speech feedback and hotkey instructions
-  - improved summary hierarchy with friendlier hotkey formatting, clearer permission summary and a practice-test status row
+  - improved initial checking text and clearer waiting/checking microcopy during refresh
+  - made ready states more descriptive (`auto-paste ready`, `Hold hotkeys ready`)
+  - enlarged the summary feedback area and enabled multiline wrapping
+  - widened action buttons slightly and added contextual tooltips for the permission actions
 - Validation:
-  - `pytest tests/test_onboarding.py -q`
-  - `python -m py_compile ui/onboarding_wizard.py tests/test_onboarding.py`
-  - `ruff check ui/onboarding_wizard.py tests/test_onboarding.py`
+  - `pytest tests/test_permissions_card.py -q`
+  - `pytest tests/test_permissions_card.py tests/test_onboarding.py -q`
+  - `python -m py_compile ui/permissions_card.py tests/test_permissions_card.py`
+  - `ruff check ui/permissions_card.py tests/test_permissions_card.py`
+
+Previous pass - macOS onboarding wizard UX (`ui/onboarding_wizard.py`)
+- Improved goal-step copy, practice dictation feedback, clearer secondary actions and a better summary.
 
 Previous pass - Transcript/history list presentation helpers (`utils/history.py`, `utils/transcript_view_logic.py`)
 - Scope: the remaining transcript/history panels themselves currently live in Welcome / Settings, which are intentionally not being reopened right now, so this pass improved their shared rendering logic instead.
