@@ -186,8 +186,7 @@ def test_resolve_stream_result_falls_back_to_last_interim(caplog) -> None:
     assert "short dictation" not in messages
 
 
-@pytest.mark.asyncio
-async def test_graceful_shutdown_returns_quickly_after_connection_close(monkeypatch) -> None:
+def test_graceful_shutdown_returns_quickly_after_connection_close(monkeypatch) -> None:
     class _FakeControlMessage:
         def __init__(self, type: str) -> None:
             self.type = type
@@ -198,40 +197,43 @@ async def test_graceful_shutdown_returns_quickly_after_connection_close(monkeypa
         SimpleNamespace(ListenV1ControlMessage=_FakeControlMessage),
     )
 
-    state = deepgram_stream.StreamState()
-    audio_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+    async def _run() -> float:
+        state = deepgram_stream.StreamState()
+        audio_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
 
-    async def _send_worker() -> None:
-        while True:
-            item = await audio_queue.get()
-            if item is None:
+        async def _send_worker() -> None:
+            while True:
+                item = await audio_queue.get()
+                if item is None:
+                    return
+
+        async def _listen_worker() -> None:
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
                 return
 
-    async def _listen_worker() -> None:
-        try:
-            await asyncio.Future()
-        except asyncio.CancelledError:
-            return
+        send_task = asyncio.create_task(_send_worker())
+        listen_task = asyncio.create_task(_listen_worker())
+        close_handler = deepgram_stream._create_close_handler(state, "sess")
 
-    send_task = asyncio.create_task(_send_worker())
-    listen_task = asyncio.create_task(_listen_worker())
-    close_handler = deepgram_stream._create_close_handler(state, "sess")
+        class _FakeConnection:
+            async def send_control(self, message) -> None:
+                if getattr(message, "type", "") == "Finalize":
+                    close_handler(None)
 
-    class _FakeConnection:
-        async def send_control(self, message) -> None:
-            if getattr(message, "type", "") == "Finalize":
-                close_handler(None)
+        start = time.perf_counter()
+        await deepgram_stream._graceful_shutdown(
+            connection=cast(Any, _FakeConnection()),
+            state=state,
+            audio_queue=audio_queue,
+            send_task=send_task,
+            listen_task=listen_task,
+            session_id="sess",
+        )
+        return time.perf_counter() - start
 
-    start = time.perf_counter()
-    await deepgram_stream._graceful_shutdown(
-        connection=cast(Any, _FakeConnection()),
-        state=state,
-        audio_queue=audio_queue,
-        send_task=send_task,
-        listen_task=listen_task,
-        session_id="sess",
-    )
-    elapsed = time.perf_counter() - start
+    elapsed = asyncio.run(_run())
 
     assert elapsed < 0.2
 
