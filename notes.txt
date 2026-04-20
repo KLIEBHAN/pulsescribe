@@ -1,31 +1,36 @@
 UX notes - 2026-04-19
 
-Latest pass - Menubar action flow UX (`ui/menubar.py`)
-- Scope: targeted the next broad-impact UI area outside Onboarding / Settings / Welcome by improving the menu bar action menu and its state feedback.
-- Reviewed weaknesses first:
-  1. The menu itself exposed too little context; it mostly showed a static app title plus vague actions.
-  2. Action labels like `Settings...`, `Open Logs`, and `Export Diagnostics…` were understandable for power users but not especially clear or screenreader-friendly.
-  3. Opening logs / exporting diagnostics had almost no direct feedback in the UI; failures were effectively silent unless users checked logs.
-  4. The menubar title relied too heavily on icons, so short transient states were easy to miss.
+Latest pass - Shared action/status card UX (`ui/hotkey_card.py`, `ui/permissions_card.py`)
+- Scope: improved the remaining broad-impact shared UI cards outside Onboarding / Settings / Welcome / Menubar.
+- Reviewed flows:
+  - shared Hotkey card
+  - shared Permissions card
+- Main weaknesses found:
+  1. Hotkeys were still shown in raw uppercase forms, which were harder to scan quickly.
+  2. The Hotkey empty/recording states were functional but not especially actionable.
+  3. Permission row statuses and button labels were sometimes too terse or technical.
+  4. The Permissions card lacked a clear card-level summary / “all set” / checking message.
 - Changes in this pass:
-  - improved menubar title feedback for central transient states (`Listening…`, `Recording…`, `Loading…`, etc.)
-  - added disabled current-status + hint rows at the top of the menu for better guidance and scanability
-  - renamed actions for clarity: `Open Setup & Settings…`, `Open Log File`, `Export Redacted Diagnostics…`, `Quit PulseScribe`
-  - added inline menu feedback for explicit actions like opening logs and exporting diagnostics
-  - improved failure feedback for diagnostics / log opening without changing the underlying actions
-  - kept the existing daemon / menu wiring intact
+  - formatted displayed hotkeys into friendlier labels like `Option+Space` and `Fn`
+  - improved Hotkey empty-state copy and added clearer recording/cancelled guidance
+  - improved shared permission microcopy (`Allow`, `Open Settings`, clearer row statuses)
+  - added a card-level permission summary message for blocked / checking / partially ready / all set states
+  - widened permission action buttons a bit to fit clearer labels without changing behavior
 - Validation:
-  - `pytest tests/test_menubar.py tests/test_daemon_mode.py -q`
-  - `python -m py_compile ui/menubar.py tests/test_menubar.py`
-  - `ruff check ui/menubar.py tests/test_menubar.py`
+  - `pytest tests/test_hotkey_card.py tests/test_permissions_card.py tests/test_onboarding.py tests/test_settings_ui.py -q`
+  - `python -m py_compile ui/hotkey_card.py ui/permissions_card.py tests/test_hotkey_card.py tests/test_permissions_card.py`
+  - `ruff check ui/hotkey_card.py ui/permissions_card.py tests/test_hotkey_card.py tests/test_permissions_card.py`
+
+Previous pass - Menubar action flow UX (`ui/menubar.py`)
+- Added clearer status/hint rows, better transient menubar state text, clearer action labels, and explicit feedback for log/diagnostics actions.
 
 Previous pass - Welcome + status feedback UX (`ui/welcome.py`, overlays)
 - Improved Welcome provider guidance, Try-it empty states, footer save feedback, and unified overlay status/error messaging.
 
-Earlier pass - Settings UX (`ui/settings_windows.py`)
+Previous pass - Settings UX (`ui/settings_windows.py`)
 - Improved provider guidance, inline API-key states, Setup overview copy, Settings hotkey guidance, and persistent footer save feedback.
 
-Earlier pass - Onboarding / shared setup UX
+Previous pass - Onboarding / shared setup UX
 - Improved Windows onboarding guidance, hotkey capture discoverability, safe dictation test messaging, shared permission card wording, and Windows focus/placeholder styling.
 
 Next worthwhile UX areas

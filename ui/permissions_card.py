@@ -12,8 +12,8 @@ from typing import Callable
 # Shared description text for permissions card (used in Wizard + Settings)
 PERMISSIONS_DESCRIPTION = (
     "Required: Microphone.\n"
-    "Recommended: Accessibility for auto‑paste.\n"
-    "Input Monitoring: needed for Hold + some global hotkeys."
+    "Recommended: Accessibility for auto-paste.\n"
+    "Optional: Input Monitoring for Hold and some global hotkeys."
 )
 
 
@@ -51,6 +51,55 @@ def _get_status_palette() -> dict[str, object]:
     return palette
 
 
+
+def _build_permission_summary(
+    mic_state: str,
+    *,
+    accessibility_ok: bool,
+    input_ok: bool,
+    checking: bool,
+) -> tuple[str, str]:
+    if mic_state == "not_determined":
+        return (
+            "Microphone access is still missing. Click Allow and approve the macOS prompt.",
+            "warn",
+        )
+    if mic_state in ("denied", "restricted"):
+        return (
+            "Microphone access is blocked. Open Settings and allow PulseScribe to record audio.",
+            "err",
+        )
+    if mic_state != "authorized":
+        return (
+            "Microphone access could not be verified. Open Settings and confirm access.",
+            "warn",
+        )
+    if checking and not (accessibility_ok and input_ok):
+        return (
+            "Checking permission changes… return here after granting access in System Settings.",
+            "neutral",
+        )
+    if accessibility_ok and input_ok:
+        return (
+            "All set. Auto-paste and Hold hotkeys are available.",
+            "ok",
+        )
+    if not accessibility_ok and not input_ok:
+        return (
+            "Dictation can start now. Add Accessibility for auto-paste and Input Monitoring for Hold hotkeys.",
+            "neutral",
+        )
+    if not accessibility_ok:
+        return (
+            "Dictation can start now. Add Accessibility if you want PulseScribe to paste automatically.",
+            "neutral",
+        )
+    return (
+        "Dictation can start now. Add Input Monitoring if you want Hold or some global hotkeys.",
+        "neutral",
+    )
+
+
 @dataclass
 class PermissionCardWidgets:
     mic_status: object
@@ -59,6 +108,7 @@ class PermissionCardWidgets:
     input_action: object
     access_status: object
     access_action: object
+    summary_status: object | None = None
 
 
 class PermissionsCard:
@@ -165,7 +215,7 @@ class PermissionsCard:
 
         label_w = 130
         status_x = base_x + label_w + 8
-        btn_w = 90
+        btn_w = 108
         btn_h = 22
         btn_x = right_edge - btn_w
         status_w = max(80, btn_x - status_x - 8)
@@ -212,6 +262,18 @@ class PermissionsCard:
         input_status, input_btn = add_row(row_y - 32, "Input Monitoring", "perm_input")
         access_status, access_btn = add_row(row_y - 64, "Accessibility", "perm_access")
 
+        summary = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(base_x, card_y + 12, card_w - 2 * inner_padding, 16)
+        )
+        summary.setStringValue_("")
+        summary.setBezeled_(False)
+        summary.setDrawsBackground_(False)
+        summary.setEditable_(False)
+        summary.setSelectable_(False)
+        summary.setFont_(NSFont.systemFontOfSize_(10))
+        summary.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6))
+        parent_view.addSubview_(summary)
+
         widgets = PermissionCardWidgets(
             mic_status=mic_status,
             mic_action=mic_btn,
@@ -219,6 +281,7 @@ class PermissionsCard:
             input_action=input_btn,
             access_status=access_status,
             access_action=access_btn,
+            summary_status=summary,
         )
 
         return cls(widgets=widgets, after_refresh=after_refresh)
@@ -289,7 +352,7 @@ class PermissionsCard:
             changed |= self._set_action_if_changed(
                 "mic_action",
                 self._widgets.mic_action,
-                title="Settings",
+                title="Open Settings",
                 enabled=False,
                 hidden=True,
             )
@@ -297,14 +360,14 @@ class PermissionsCard:
             changed |= self._set_status_if_changed(
                 "mic_status",
                 self._widgets.mic_status,
-                "Required • request",
+                "Required • allow access",
                 palette["warn"],
                 cache_value="warn",
             )
             changed |= self._set_action_if_changed(
                 "mic_action",
                 self._widgets.mic_action,
-                title="Request",
+                title="Allow",
                 enabled=True,
                 hidden=False,
             )
@@ -312,14 +375,14 @@ class PermissionsCard:
             changed |= self._set_status_if_changed(
                 "mic_status",
                 self._widgets.mic_status,
-                "Required • denied",
+                "Required • blocked",
                 palette["err"],
                 cache_value="err",
             )
             changed |= self._set_action_if_changed(
                 "mic_action",
                 self._widgets.mic_action,
-                title="Settings",
+                title="Open Settings",
                 enabled=True,
                 hidden=False,
             )
@@ -327,14 +390,14 @@ class PermissionsCard:
             changed |= self._set_status_if_changed(
                 "mic_status",
                 self._widgets.mic_status,
-                "Required • status unavailable",
+                "Required • check access",
                 palette["warn"],
                 cache_value="warn",
             )
             changed |= self._set_action_if_changed(
                 "mic_action",
                 self._widgets.mic_action,
-                title="Settings",
+                title="Open Settings",
                 enabled=True,
                 hidden=False,
             )
@@ -342,14 +405,14 @@ class PermissionsCard:
         changed |= self._set_status_if_changed(
             "access_status",
             self._widgets.access_status,
-            "Enabled" if acc_ok else "Optional • auto‑paste",
+            "Enabled" if acc_ok else "Recommended • auto-paste",
             palette["ok"] if acc_ok else palette["neutral"],
             cache_value="ok" if acc_ok else "neutral",
         )
         changed |= self._set_action_if_changed(
             "access_action",
             self._widgets.access_action,
-            title="Settings",
+            title="Open Settings",
             enabled=not acc_ok,
             hidden=bool(acc_ok),
         )
@@ -357,16 +420,30 @@ class PermissionsCard:
         changed |= self._set_status_if_changed(
             "input_status",
             self._widgets.input_status,
-            "Enabled" if input_ok else "Needed for Hold",
+            "Enabled" if input_ok else "Optional • Hold hotkeys",
             palette["ok"] if input_ok else palette["neutral"],
             cache_value="ok" if input_ok else "neutral",
         )
         changed |= self._set_action_if_changed(
             "input_action",
             self._widgets.input_action,
-            title="Settings",
+            title="Open Settings",
             enabled=not input_ok,
             hidden=bool(input_ok),
+        )
+
+        summary_text, summary_color = _build_permission_summary(
+            mic_state,
+            accessibility_ok=acc_ok,
+            input_ok=input_ok,
+            checking=bool(self._refresh_ticks),
+        )
+        changed |= self._set_status_if_changed(
+            "summary_status",
+            self._widgets.summary_status,
+            summary_text,
+            palette[summary_color],
+            cache_value=summary_color,
         )
 
         if changed and callable(self._after_refresh):

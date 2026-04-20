@@ -13,6 +13,29 @@ if TYPE_CHECKING:
     from utils.hotkey_recording import HotkeyRecorder
 
 
+HOTKEY_TOKEN_LABELS = {
+    "cmd": "Command",
+    "command": "Command",
+    "ctrl": "Control",
+    "control": "Control",
+    "option": "Option",
+    "opt": "Option",
+    "alt": "Option",
+    "shift": "Shift",
+    "fn": "Fn",
+    "space": "Space",
+    "tab": "Tab",
+    "enter": "Return",
+    "return": "Return",
+    "esc": "Esc",
+    "escape": "Esc",
+    "up": "↑",
+    "down": "↓",
+    "left": "←",
+    "right": "→",
+}
+
+
 def _get_color(r: int, g: int, b: int, a: float = 1.0):
     from AppKit import NSColor  # type: ignore[import-not-found]
 
@@ -30,6 +53,26 @@ def _create_card(x: int, y: int, width: int, height: int, *, corner_radius: int 
     card.setCornerRadius_(corner_radius)
     card.setContentViewMargins_((0, 0))
     return card
+
+
+
+def _format_hotkey_for_display(value: str | None) -> str:
+    hotkey = (value or "").strip().lower()
+    if not hotkey:
+        return ""
+
+    display_parts: list[str] = []
+    for part in hotkey.split("+"):
+        display = HOTKEY_TOKEN_LABELS.get(part)
+        if display is None:
+            if part.startswith("f") and part[1:].isdigit():
+                display = part.upper()
+            elif len(part) == 1:
+                display = part.upper()
+            else:
+                display = part.capitalize()
+        display_parts.append(display)
+    return "+".join(display_parts)
 
 
 @dataclass
@@ -186,7 +229,7 @@ class HotkeyCard:
             field = NSTextField.alloc().initWithFrame_(
                 NSMakeRect(field_x, y_pos, field_w, row_h)
             )
-            field.setPlaceholderString_("Use Record…")
+            field.setPlaceholderString_("Click Record…")
             field.setFont_(NSFont.systemFontOfSize_(13))
             field.setAlignment_(NSTextAlignmentCenter)
             field.setEditable_(False)
@@ -271,7 +314,10 @@ class HotkeyCard:
 
                 toggle = (get_env_setting("PULSESCRIBE_TOGGLE_HOTKEY") or "").strip()
                 hold = (get_env_setting("PULSESCRIBE_HOLD_HOTKEY") or "").strip()
-            rendered_values = (toggle.upper(), hold.upper())
+            rendered_values = (
+                _format_hotkey_for_display(toggle),
+                _format_hotkey_for_display(hold),
+            )
             if self._last_synced_values == rendered_values:
                 return
             self._widgets.toggle_field.setStringValue_(rendered_values[0])
@@ -279,7 +325,7 @@ class HotkeyCard:
             self._last_synced_values = rendered_values
             if not any(rendered_values) and self._last_status is None:
                 self.set_status(
-                    "info", "Choose a preset or record a custom hotkey."
+                    "info", "Choose a preset or click Record to save a custom hotkey."
                 )
         except Exception:
             pass
@@ -311,14 +357,19 @@ class HotkeyCard:
         """Start or stop recording for toggle/hold hotkey."""
         if self._recorder.recording:
             self.stop_recording(cancelled=True)
+            self.set_status("info", "Recording cancelled.")
             return
 
         if kind == "toggle":
             field = self._widgets.toggle_field
             btn = self._widgets.toggle_record_btn
-        else:
+            kind_label = "Toggle"
+        elif kind == "hold":
             field = self._widgets.hold_field
             btn = self._widgets.hold_record_btn
+            kind_label = "Hold"
+        else:
+            return
 
         buttons = [self._widgets.toggle_record_btn, self._widgets.hold_record_btn]
         self._recorder.start(
@@ -326,6 +377,11 @@ class HotkeyCard:
             button=btn,
             buttons_to_reset=buttons,
             on_hotkey=lambda hk: self._handle_recorded_hotkey(kind, hk),
+            placeholder="Press shortcut…",
+        )
+        self.set_status(
+            "warning",
+            f"Recording {kind_label} hotkey — press your shortcut, or press Esc to cancel.",
         )
 
     def stop_recording(self, *, cancelled: bool = False) -> None:

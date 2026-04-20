@@ -85,6 +85,7 @@ def _build_card() -> PermissionsCard:
             input_action=_FakeButton(),
             access_status=_FakeField(),
             access_action=_FakeButton(),
+            summary_status=_FakeField(),
         )
     )
 
@@ -195,6 +196,7 @@ def test_refresh_calls_after_refresh_only_when_permissions_change(monkeypatch) -
             input_action=_FakeButton(),
             access_status=_FakeField(),
             access_action=_FakeButton(),
+            summary_status=_FakeField(),
         ),
         after_refresh=lambda: refresh_calls.append("refresh"),
     )
@@ -231,10 +233,68 @@ def test_refresh_marks_unknown_microphone_state_as_warning(monkeypatch) -> None:
     card = _build_card()
 
     assert card.refresh() is False
-    assert card._widgets.mic_status.text == "Required • status unavailable"
-    assert card._widgets.mic_action.title == "Settings"
+    assert card._widgets.mic_status.text == "Required • check access"
+    assert card._widgets.mic_action.title == "Open Settings"
     assert card._widgets.mic_action.enabled is True
     assert card._widgets.mic_action.hidden is False
+
+
+def test_refresh_uses_more_actionable_permission_copy(monkeypatch) -> None:
+    import utils.permissions as permissions_mod
+
+    _install_fake_appkit(monkeypatch)
+    monkeypatch.setattr(
+        permissions_mod,
+        "get_microphone_permission_state",
+        lambda: "not_determined",
+    )
+    monkeypatch.setattr(
+        permissions_mod,
+        "has_accessibility_permission",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        permissions_mod,
+        "has_input_monitoring_permission",
+        lambda: False,
+    )
+
+    card = _build_card()
+
+    assert card.refresh() is False
+    assert card._widgets.mic_status.text == "Required • allow access"
+    assert card._widgets.mic_action.title == "Allow"
+    assert card._widgets.access_status.text == "Recommended • auto-paste"
+    assert card._widgets.input_status.text == "Optional • Hold hotkeys"
+    assert "Click Allow" in card._widgets.summary_status.text
+
+
+def test_refresh_summary_mentions_all_set_when_everything_is_ready(monkeypatch) -> None:
+    import utils.permissions as permissions_mod
+
+    _install_fake_appkit(monkeypatch)
+    monkeypatch.setattr(
+        permissions_mod,
+        "get_microphone_permission_state",
+        lambda: "authorized",
+    )
+    monkeypatch.setattr(
+        permissions_mod,
+        "has_accessibility_permission",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        permissions_mod,
+        "has_input_monitoring_permission",
+        lambda: True,
+    )
+
+    card = _build_card()
+
+    assert card.refresh() is True
+    assert card._widgets.summary_status.text == (
+        "All set. Auto-paste and Hold hotkeys are available."
+    )
 
 
 def test_kick_auto_refresh_avoids_timer_when_permissions_are_already_granted(
