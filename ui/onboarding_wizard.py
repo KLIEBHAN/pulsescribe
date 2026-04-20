@@ -45,6 +45,182 @@ CARD_PADDING = 16
 CARD_CORNER_RADIUS = 12
 
 LANGUAGE_OPTIONS = ["auto", "de", "en", "es", "fr", "it", "pt", "nl", "pl", "ru", "zh"]
+LANGUAGE_LABELS = {
+    "auto": "Automatic",
+    "de": "German",
+    "en": "English",
+    "es": "Spanish",
+    "fr": "French",
+    "it": "Italian",
+    "pt": "Portuguese",
+    "nl": "Dutch",
+    "pl": "Polish",
+    "ru": "Russian",
+    "zh": "Chinese",
+}
+MODE_LABELS = {
+    "deepgram": "Deepgram (Cloud, fastest)",
+    "openai": "OpenAI Whisper (Cloud)",
+    "groq": "Groq (Cloud, fast)",
+    "local": "Local (Private, offline)",
+}
+HOTKEY_TOKEN_LABELS = {
+    "command": "Command",
+    "cmd": "Command",
+    "control": "Control",
+    "ctrl": "Control",
+    "option": "Option",
+    "opt": "Option",
+    "alt": "Option",
+    "shift": "Shift",
+    "fn": "Fn",
+    "space": "Space",
+    "tab": "Tab",
+    "enter": "Enter",
+    "return": "Return",
+    "esc": "Esc",
+    "escape": "Esc",
+    "capslock": "Caps Lock",
+    "delete": "Delete",
+    "backspace": "Backspace",
+    "up": "↑",
+    "down": "↓",
+    "left": "←",
+    "right": "→",
+}
+TEST_DICTATION_EMPTY_TEXT = (
+    "Your practice transcript will appear here.\n"
+    "Nothing is pasted during this step."
+)
+TEST_DICTATION_NO_SPEECH_TEXT = (
+    "No speech was detected in the practice run.\n"
+    "Try again with a short sentence."
+)
+TEST_DICTATION_ERROR_TEXT = (
+    "The practice run could not be completed.\n"
+    "Check the error above and try again."
+)
+
+
+
+def _format_language_label(language: str | None) -> str:
+    normalized = (language or "auto").strip().lower()
+    if not normalized:
+        normalized = "auto"
+    return LANGUAGE_LABELS.get(normalized, normalized.upper())
+
+
+
+def _language_code_from_title(title: str | None) -> str:
+    normalized = (title or "").strip()
+    if not normalized:
+        return "auto"
+    for code, label in LANGUAGE_LABELS.items():
+        if label == normalized:
+            return code
+    return normalized.lower()
+
+
+
+def _format_hotkey_for_display(hotkey: str | None) -> str:
+    normalized = (hotkey or "").strip()
+    if not normalized:
+        return ""
+
+    display_parts: list[str] = []
+    for raw_part in normalized.split("+"):
+        part = raw_part.strip().lower()
+        if not part:
+            continue
+        display = HOTKEY_TOKEN_LABELS.get(part)
+        if display is None:
+            if len(part) == 1 or (part.startswith("f") and part[1:].isdigit()):
+                display = part.upper()
+            else:
+                display = part.replace("_", " ").title()
+        display_parts.append(display)
+    return "+".join(display_parts)
+
+
+
+def _build_hotkey_summary_text(toggle: str, hold: str) -> tuple[str, bool]:
+    parts: list[str] = []
+    if toggle:
+        parts.append(f"Toggle: {_format_hotkey_for_display(toggle)}")
+    if hold:
+        parts.append(f"Hold: {_format_hotkey_for_display(hold)}")
+    if not parts:
+        return "Choose a hotkey in the previous step", False
+    return " • ".join(parts), True
+
+
+
+def _build_permission_summary_text(
+    mic_state: str,
+    access_ok: bool,
+    input_ok: bool,
+) -> tuple[str, bool]:
+    mic_ok = mic_state == "authorized"
+    if not mic_ok:
+        return "Microphone required", False
+    if access_ok and input_ok:
+        return "Microphone ready • Auto-paste and Hold hotkeys available", True
+    if access_ok:
+        return "Microphone ready • Auto-paste available", True
+    if input_ok:
+        return "Microphone ready • Hold hotkeys available", True
+    return "Microphone ready • Optional extras still off", True
+
+
+
+def _build_test_summary_text(outcome: str | None) -> tuple[str, bool]:
+    normalized = (outcome or "pending").strip().lower()
+    if normalized == "passed":
+        return "Completed", True
+    if normalized == "skipped":
+        return "Skipped", False
+    if normalized == "empty":
+        return "Needs another try", False
+    if normalized == "error":
+        return "Needs attention", False
+    if normalized in {"recording", "processing"}:
+        return "In progress", False
+    return "Not run yet", False
+
+
+
+def _build_test_status_text(outcome: str | None, *, error: str | None = None) -> str:
+    normalized = (outcome or "pending").strip().lower()
+    if normalized == "recording":
+        return "Listening… say a short sentence."
+    if normalized == "processing":
+        return "Transcribing your practice dictation…"
+    if normalized == "passed":
+        return "✅ Practice dictation worked. You can continue."
+    if normalized == "empty":
+        return "No speech detected. Try again with a short sentence."
+    if normalized == "error":
+        detail = (error or "").strip()
+        return (
+            f"Couldn’t finish the practice test: {detail}"
+            if detail
+            else "Couldn’t finish the practice test. Try again."
+        )
+    return "Press your hotkey to start a short practice dictation."
+
+
+
+def _build_test_preview_text(outcome: str | None, transcript: str | None) -> str:
+    cleaned = (transcript or "").strip()
+    if cleaned:
+        return cleaned
+    normalized = (outcome or "pending").strip().lower()
+    if normalized == "empty":
+        return TEST_DICTATION_NO_SPEECH_TEXT
+    if normalized == "error":
+        return TEST_DICTATION_ERROR_TEXT
+    return TEST_DICTATION_EMPTY_TEXT
+
 
 
 def _get_color(r: int, g: int, b: int, a: float = 1.0):
@@ -119,6 +295,9 @@ class OnboardingWizardController:
         self._last_next_title: str | None = None
         self._last_next_enabled: bool | None = None
         self._last_test_hotkey_text: str | None = None
+        self._last_test_status_text: str | None = None
+        self._last_test_status_level: str | None = None
+        self._last_test_preview_text: str | None = None
         self._last_api_key_prompt_visible: bool | None = None
         self._last_api_key_prompt_message: str | None = None
         self._last_summary_provider_text: str | None = None
@@ -126,6 +305,9 @@ class OnboardingWizardController:
         self._last_summary_hotkey_has_value: bool | None = None
         self._last_summary_perm_text: str | None = None
         self._last_summary_perm_mic_ok: bool | None = None
+        self._last_summary_test_text: str | None = None
+        self._last_summary_test_passed: bool | None = None
+        self._test_outcome = "pending"
         self._env_settings_cache: dict[str, str] = read_env_file()
 
         # Permissions UI (shared component)
@@ -146,6 +328,7 @@ class OnboardingWizardController:
         self._summary_provider_label = None
         self._summary_hotkey_label = None
         self._summary_perm_label = None
+        self._summary_test_label = None
 
         # Language selector
         self._lang_popup = None
@@ -469,8 +652,10 @@ class OnboardingWizardController:
         self._content_view.addSubview_(back_btn)
         self._back_btn = back_btn
 
-        skip_btn = NSButton.alloc().initWithFrame_(NSMakeRect(PADDING, y, 80, btn_h))
-        skip_btn.setTitle_("Cancel")
+        skip_btn = NSButton.alloc().initWithFrame_(
+            NSMakeRect(PADDING, y, 122, btn_h)
+        )
+        skip_btn.setTitle_("Open Settings…")
         skip_btn.setBezelStyle_(NSBezelStyleRounded)
         skip_btn.setFont_(NSFont.systemFontOfSize_(12))
         h_skip = _WizardActionHandler.alloc().initWithController_action_(self, "cancel")
@@ -509,7 +694,7 @@ class OnboardingWizardController:
         title = NSTextField.alloc().initWithFrame_(
             NSMakeRect(base_x, card_y + card_h - 28, 320, 18)
         )
-        title.setStringValue_("What do you want?")
+        title.setStringValue_("Choose your setup")
         title.setBezeled_(False)
         title.setDrawsBackground_(False)
         title.setEditable_(False)
@@ -522,7 +707,7 @@ class OnboardingWizardController:
             NSMakeRect(base_x, card_y + card_h - 72, card_w - 2 * CARD_PADDING, 34)
         )
         desc.setStringValue_(
-            "Pick a default — you can change everything later in Settings."
+            "Start with a recommended default. You can adjust providers, prompts and hotkeys later in Settings."
         )
         desc.setBezeled_(False)
         desc.setDrawsBackground_(False)
@@ -563,19 +748,19 @@ class OnboardingWizardController:
 
         add_choice(
             "Fast",
-            "Ultra low latency (Deepgram streaming if configured).",
+            "Best latency. Uses Deepgram streaming when available.",
             "choose_fast",
             start_y,
         )
         add_choice(
             "Private",
-            "Local-only dictation (no audio leaves your Mac).",
+            "Runs locally on your Mac. Best for privacy.",
             "choose_private",
             start_y - 70,
         )
         add_choice(
             "Advanced",
-            "Configure providers, models and refine settings.",
+            "Pick providers, models and refinement yourself.",
             "choose_advanced",
             start_y - 140,
         )
@@ -595,21 +780,21 @@ class OnboardingWizardController:
         parent_view.addSubview_(lang_label)
 
         lang_popup = NSPopUpButton.alloc().initWithFrame_(
-            NSMakeRect(base_x + 74, lang_y, 120, 22)
+            NSMakeRect(base_x + 74, lang_y, 148, 22)
         )
         lang_popup.setFont_(NSFont.systemFontOfSize_(11))
         for lang in LANGUAGE_OPTIONS:
-            lang_popup.addItemWithTitle_(lang)
+            lang_popup.addItemWithTitle_(_format_language_label(lang))
         current_lang = self._get_cached_env_setting("PULSESCRIBE_LANGUAGE") or "auto"
         if current_lang in LANGUAGE_OPTIONS:
-            lang_popup.selectItemWithTitle_(current_lang)
+            lang_popup.selectItemWithTitle_(_format_language_label(current_lang))
         self._lang_popup = lang_popup
         parent_view.addSubview_(lang_popup)
 
         lang_hint = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(base_x + 200, lang_y + 3, btn_w - 200, 16)
+            NSMakeRect(base_x + 228, lang_y + 3, btn_w - 228, 16)
         )
-        lang_hint.setStringValue_("auto = detect from speech")
+        lang_hint.setStringValue_("Automatic = detect from speech")
         lang_hint.setBezeled_(False)
         lang_hint.setDrawsBackground_(False)
         lang_hint.setEditable_(False)
@@ -621,17 +806,16 @@ class OnboardingWizardController:
         # API Key input (shown when Fast is selected without existing key)
         from AppKit import NSSecureTextField  # type: ignore[import-not-found]
 
-        api_y = card_y - 70
-        api_container = _create_card(PADDING, api_y, card_w, 60)
+        api_y = card_y - 96
+        api_container = _create_card(PADDING, api_y, card_w, 86)
         api_container.setHidden_(True)
         parent_view.addSubview_(api_container)
         self._api_key_container = api_container
 
-        # Coordinates relative to api_container (height=60)
         api_label = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(CARD_PADDING, 38, 200, 16)
+            NSMakeRect(CARD_PADDING, 58, card_w - 2 * CARD_PADDING, 16)
         )
-        api_label.setStringValue_("Deepgram API Key:")
+        api_label.setStringValue_("Deepgram API key for Fast mode")
         api_label.setBezeled_(False)
         api_label.setDrawsBackground_(False)
         api_label.setEditable_(False)
@@ -641,10 +825,10 @@ class OnboardingWizardController:
         api_container.addSubview_(api_label)
 
         api_field = NSSecureTextField.alloc().initWithFrame_(
-            NSMakeRect(CARD_PADDING, 12, card_w - 2 * CARD_PADDING - 80, 22)
+            NSMakeRect(CARD_PADDING, 28, card_w - 2 * CARD_PADDING, 22)
         )
         api_field.setFont_(NSFont.systemFontOfSize_(12))
-        api_field.setPlaceholderString_("dg-...")
+        api_field.setPlaceholderString_("Paste your Deepgram key (dg-...)")
         enter_handler = _WizardActionHandler.alloc().initWithController_action_(
             self, "next"
         )
@@ -655,7 +839,7 @@ class OnboardingWizardController:
         self._api_key_field = api_field
 
         api_status = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(card_w - CARD_PADDING - 70, 14, 60, 16)
+            NSMakeRect(CARD_PADDING, 8, card_w - 2 * CARD_PADDING, 16)
         )
         api_status.setStringValue_("")
         api_status.setBezeled_(False)
@@ -663,7 +847,7 @@ class OnboardingWizardController:
         api_status.setEditable_(False)
         api_status.setSelectable_(False)
         api_status.setFont_(NSFont.systemFontOfSize_(10))
-        api_status.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.5))
+        api_status.setTextColor_(_get_color(255, 200, 90))
         api_container.addSubview_(api_status)
         self._api_key_status = api_status
 
@@ -714,8 +898,8 @@ class OnboardingWizardController:
             inner_padding=CARD_PADDING,
             title="Hotkey",
             description=(
-                "Set your hotkey to start transcription.\n"
-                "Toggle: Press → speak → press again.  Hold: Hold → speak → release."
+                "Choose how you want to start dictation.\n"
+                "Toggle: press once to start and once to stop. Hold: hold while speaking."
             ),
             bind_action=bind_action,
             hotkey_recorder=self._hotkey_recorder,
@@ -753,7 +937,7 @@ class OnboardingWizardController:
         title = NSTextField.alloc().initWithFrame_(
             NSMakeRect(base_x, card_y + card_h - 28, 320, 18)
         )
-        title.setStringValue_("Test dictation (safe)")
+        title.setStringValue_("Practice dictation (safe)")
         title.setBezeled_(False)
         title.setDrawsBackground_(False)
         title.setEditable_(False)
@@ -769,8 +953,8 @@ class OnboardingWizardController:
             NSMakeRect(base_x, desc_y, content_w, desc_h)
         )
         desc.setStringValue_(
-            "This will not auto‑paste.\n"
-            "Use your hotkeys to start/stop. Transcript appears here."
+            "Nothing is pasted during this step.\n"
+            "Use your hotkey to start and stop; the transcript only appears here."
         )
         desc.setBezeled_(False)
         desc.setDrawsBackground_(False)
@@ -803,7 +987,7 @@ class OnboardingWizardController:
         status = NSTextField.alloc().initWithFrame_(
             NSMakeRect(base_x, status_y, content_w, 18)
         )
-        status.setStringValue_("Press your hotkey to start")
+        status.setStringValue_("")
         status.setBezeled_(False)
         status.setDrawsBackground_(False)
         status.setEditable_(False)
@@ -838,7 +1022,7 @@ class OnboardingWizardController:
             pass
         text_view.setEditable_(False)
         text_view.setSelectable_(True)
-        text_view.setString_("")
+        text_view.setString_(TEST_DICTATION_EMPTY_TEXT)
         tc = text_view.textContainer()
         if tc is not None:
             tc.setWidthTracksTextView_(True)
@@ -846,9 +1030,11 @@ class OnboardingWizardController:
         scroll.setDocumentView_(text_view)
         parent_view.addSubview_(scroll)
         self._test_text_view = text_view
+        self._set_test_status("pending", _build_test_status_text("pending"))
+        self._set_test_preview_text(TEST_DICTATION_EMPTY_TEXT)
 
         # Skip test link (top right of card, next to title)
-        skip_btn_w = 70
+        skip_btn_w = 92
         skip_test_btn = NSButton.alloc().initWithFrame_(
             NSMakeRect(
                 base_x + content_w - skip_btn_w,  # Right-aligned
@@ -857,7 +1043,7 @@ class OnboardingWizardController:
                 18,
             )
         )
-        skip_test_btn.setTitle_("Skip →")
+        skip_test_btn.setTitle_("Skip for now")
         skip_test_btn.setBezelStyle_(0)  # Borderless
         skip_test_btn.setBordered_(False)
         skip_test_btn.setFont_(NSFont.systemFontOfSize_(11))
@@ -891,7 +1077,7 @@ class OnboardingWizardController:
         import objc  # type: ignore[import-not-found]
 
         card_w = WIZARD_WIDTH - 2 * PADDING
-        card_h = 280
+        card_h = 312
         card_y = content_h - card_h - 10
         card = _create_card(PADDING, card_y, card_w, card_h)
         parent_view.addSubview_(card)
@@ -956,16 +1142,21 @@ class OnboardingWizardController:
         # Permissions row
         add_label(row_y, "Permissions:")
         self._summary_perm_label = add_value(row_y)
+        row_y -= row_h
+
+        # Test row
+        add_label(row_y, "Practice test:")
+        self._summary_test_label = add_value(row_y)
 
         # Abschluss-Text
-        ready_y = card_y + 50
+        ready_y = card_y + 58
         ready = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(base_x, ready_y, content_w, 50)
+            NSMakeRect(base_x, ready_y, content_w, 58)
         )
         ready.setStringValue_(
-            "You're ready to go! Press your hotkey anywhere to start dictating. "
-            "PulseScribe will transcribe your speech and paste automatically.\n\n"
-            "You can change all settings anytime via the menu bar icon."
+            "You're ready. Press your hotkey anywhere to start dictating. "
+            "PulseScribe will transcribe your speech and paste automatically when the needed permissions are enabled.\n\n"
+            "You can change these defaults anytime from the menu bar icon."
         )
         ready.setBezeled_(False)
         ready.setDrawsBackground_(False)
@@ -976,9 +1167,9 @@ class OnboardingWizardController:
         parent_view.addSubview_(ready)
 
         more_label = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(base_x, card_y + 22, 95, 16)
+            NSMakeRect(base_x, card_y + 22, 112, 16)
         )
-        more_label.setStringValue_("More settings:")
+        more_label.setStringValue_("Need to change something?")
         more_label.setBezeled_(False)
         more_label.setDrawsBackground_(False)
         more_label.setEditable_(False)
@@ -988,7 +1179,7 @@ class OnboardingWizardController:
         parent_view.addSubview_(more_label)
 
         open_btn = NSButton.alloc().initWithFrame_(
-            NSMakeRect(base_x + 96, card_y + 18, 150, 24)
+            NSMakeRect(base_x + 114, card_y + 18, 150, 24)
         )
         open_btn.setTitle_("Open Settings…")
         open_btn.setBezelStyle_(NSBezelStyleRounded)
@@ -1011,12 +1202,7 @@ class OnboardingWizardController:
 
         # Provider
         mode = (self._get_cached_env_setting("PULSESCRIBE_MODE") or "deepgram").strip()
-        mode_display = {
-            "deepgram": "Deepgram (Cloud, fastest)",
-            "openai": "OpenAI Whisper (Cloud)",
-            "groq": "Groq (Cloud, fast)",
-            "local": "Local (Private, offline)",
-        }.get(mode, mode.title())
+        mode_display = MODE_LABELS.get(mode, mode.title())
 
         if self._summary_provider_label:
             try:
@@ -1028,18 +1214,10 @@ class OnboardingWizardController:
 
         # Hotkeys
         toggle_hk, hold_hk = self._get_cached_hotkeys()
-        toggle_hk = toggle_hk.upper()
-        hold_hk = hold_hk.upper()
-        hotkey_parts = []
-        if toggle_hk:
-            hotkey_parts.append(f"Toggle: {toggle_hk}")
-        if hold_hk:
-            hotkey_parts.append(f"Hold: {hold_hk}")
-        hotkey_display = " • ".join(hotkey_parts) if hotkey_parts else "Not configured"
+        hotkey_display, has_hotkeys = _build_hotkey_summary_text(toggle_hk, hold_hk)
 
         if self._summary_hotkey_label:
             try:
-                has_hotkeys = bool(hotkey_parts)
                 if self._last_summary_hotkey_text != hotkey_display:
                     self._summary_hotkey_label.setStringValue_(hotkey_display)
                     self._last_summary_hotkey_text = hotkey_display
@@ -1053,15 +1231,11 @@ class OnboardingWizardController:
 
         # Permissions
         mic_state, access_ok, input_ok = self._read_permission_signature()
-        mic_ok = mic_state == "authorized"
-        perm_parts = []
-        if mic_ok:
-            perm_parts.append("🎤 Mic ✓")
-        if access_ok:
-            perm_parts.append("♿ Accessibility ✓")
-        if input_ok:
-            perm_parts.append("⌨️ Input ✓")
-        perm_display = "  ".join(perm_parts) if perm_parts else "No permissions granted"
+        perm_display, mic_ok = _build_permission_summary_text(
+            mic_state,
+            access_ok,
+            input_ok,
+        )
 
         if self._summary_perm_label:
             try:
@@ -1076,6 +1250,24 @@ class OnboardingWizardController:
             except Exception:
                 pass
 
+        # Practice test
+        test_display, test_passed = _build_test_summary_text(
+            getattr(self, "_test_outcome", "pending")
+        )
+        summary_test_label = getattr(self, "_summary_test_label", None)
+        if summary_test_label:
+            try:
+                if getattr(self, "_last_summary_test_text", None) != test_display:
+                    summary_test_label.setStringValue_(test_display)
+                    self._last_summary_test_text = test_display
+                if getattr(self, "_last_summary_test_passed", None) != test_passed:
+                    summary_test_label.setTextColor_(
+                        ok_color if test_passed else warn_color
+                    )
+                    self._last_summary_test_passed = test_passed
+            except Exception:
+                pass
+
     # ---------------------------------------------------------------------
     # Actions + State
     # ---------------------------------------------------------------------
@@ -1085,8 +1277,8 @@ class OnboardingWizardController:
             OnboardingStep.CHOOSE_GOAL: "Welcome to PulseScribe",
             OnboardingStep.PERMISSIONS: "Permissions",
             OnboardingStep.HOTKEY: "Hotkey",
-            OnboardingStep.TEST_DICTATION: "Test dictation",
-            OnboardingStep.CHEAT_SHEET: "All set",
+            OnboardingStep.TEST_DICTATION: "Practice dictation",
+            OnboardingStep.CHEAT_SHEET: "Review your setup",
         }
         return titles.get(step, "Setup")
 
@@ -1162,7 +1354,10 @@ class OnboardingWizardController:
             except Exception:
                 pass
         if self._api_key_status is not None:
-            prompt_message = message or "Cloud API key required to continue."
+            prompt_message = (
+                message
+                or "Fast mode needs a Deepgram API key. Paste one to continue."
+            )
             try:
                 if getattr(self, "_last_api_key_prompt_message", None) != prompt_message:
                     self._api_key_status.setStringValue_(prompt_message)
@@ -1210,7 +1405,8 @@ class OnboardingWizardController:
 
         # Save selected language
         if self._lang_popup:
-            lang = self._lang_popup.titleOfSelectedItem()
+            selected_title = self._lang_popup.titleOfSelectedItem()
+            lang = _language_code_from_title(selected_title)
             self._apply_env_updates(
                 {
                     "PULSESCRIBE_LANGUAGE": (
@@ -1321,18 +1517,18 @@ class OnboardingWizardController:
 
         toggle, hold = self._get_cached_hotkeys()
 
-        def disp(value: str) -> str:
-            return (value or "").strip().upper()
-
         lines: list[str] = []
         if toggle:
             lines.append(
-                f"Toggle: {disp(toggle)} — press once to start, press again to stop."
+                "Toggle: "
+                f"{_format_hotkey_for_display(toggle)} — press once to start and again to stop."
             )
         if hold:
-            lines.append(f"Hold: {disp(hold)} — hold to record, release to stop.")
+            lines.append(
+                f"Hold: {_format_hotkey_for_display(hold)} — hold while speaking, then release."
+            )
         if not lines:
-            lines.append("No hotkeys configured. Go back and set a hotkey first.")
+            lines.append("No hotkeys configured. Go back to choose one first.")
 
         label_text = "\n".join(lines)
         try:
@@ -1366,6 +1562,8 @@ class OnboardingWizardController:
 
         if action == "skip_test":
             # Skip the test dictation and go to next step
+            if getattr(self, "_test_outcome", "pending") != "passed":
+                self._test_outcome = "skipped"
             self._set_step(next_step(self._step))
             return
 
@@ -1573,6 +1771,50 @@ class OnboardingWizardController:
     # Test dictation
     # ---------------------------------------------------------------------
 
+    def _set_test_status(self, level: str, message: str) -> None:
+        label = self._test_status_label
+        if label is None:
+            return
+
+        try:
+            if getattr(self, "_last_test_status_text", None) != message:
+                label.setStringValue_(message)
+                self._last_test_status_text = message
+        except Exception:
+            pass
+
+        try:
+            colors = {
+                "pending": _get_color(255, 255, 255, 0.6),
+                "recording": _get_color(140, 220, 255),
+                "processing": _get_color(140, 220, 255),
+                "passed": _get_color(120, 255, 150),
+                "empty": _get_color(255, 200, 90),
+                "error": _get_color(255, 120, 120),
+            }
+            color = colors.get(level, colors["pending"])
+        except Exception:
+            color = None
+        if color is None:
+            return
+        try:
+            if getattr(self, "_last_test_status_level", None) != level:
+                label.setTextColor_(color)
+                self._last_test_status_level = level
+        except Exception:
+            pass
+
+    def _set_test_preview_text(self, text: str) -> None:
+        view = self._test_text_view
+        if view is None:
+            return
+        try:
+            if getattr(self, "_last_test_preview_text", None) != text:
+                view.setString_(text)
+                self._last_test_preview_text = text
+        except Exception:
+            pass
+
     def on_test_dictation_hotkey_state(self, state: str) -> None:
         """Keeps the test step UI in sync when the user uses the hotkey."""
         if self._step != OnboardingStep.TEST_DICTATION:
@@ -1583,13 +1825,9 @@ class OnboardingWizardController:
                 return
             self._test_successful = False
             self._test_state = "recording"
-            if self._test_text_view is not None:
-                try:
-                    self._test_text_view.setString_("")
-                except Exception:
-                    pass
-            if self._test_status_label is not None:
-                self._test_status_label.setStringValue_("Listening…")
+            self._test_outcome = "recording"
+            self._set_test_preview_text("")
+            self._set_test_status("recording", _build_test_status_text("recording"))
             self._render()
             return
 
@@ -1597,8 +1835,8 @@ class OnboardingWizardController:
             if self._test_state != "recording":
                 return
             self._test_state = "stopping"
-            if self._test_status_label is not None:
-                self._test_status_label.setStringValue_("Processing…")
+            self._test_outcome = "processing"
+            self._set_test_status("processing", _build_test_status_text("processing"))
             self._render()
             return
 
@@ -1609,22 +1847,20 @@ class OnboardingWizardController:
 
         if error:
             self._test_successful = False
-            if self._test_status_label is not None:
-                self._test_status_label.setStringValue_(f"Error: {error}")
+            self._test_outcome = "error"
+            self._set_test_status("error", _build_test_status_text("error", error=error))
         else:
             cleaned = (transcript or "").strip()
             self._test_successful = bool(cleaned)
-            if self._test_status_label is not None:
-                self._test_status_label.setStringValue_(
-                    "✅ Success" if cleaned else "No speech detected — try again."
-                )
+            self._test_outcome = "passed" if cleaned else "empty"
+            self._set_test_status(
+                self._test_outcome,
+                _build_test_status_text(self._test_outcome),
+            )
 
-        if self._test_text_view is not None:
-            try:
-                self._test_text_view.setString_(transcript or "")
-            except Exception:
-                pass
-
+        self._set_test_preview_text(
+            _build_test_preview_text(self._test_outcome, transcript)
+        )
         self._render()
 
     # ---------------------------------------------------------------------
@@ -1636,7 +1872,7 @@ class OnboardingWizardController:
 
         Args:
             open_settings: If True, opens the Settings window after closing.
-                          Only True when user clicks "Open Settings...".
+                          Used by the footer secondary action and the summary button.
         """
         # Persist completion for first-run flow.
         set_onboarding_step(OnboardingStep.DONE)

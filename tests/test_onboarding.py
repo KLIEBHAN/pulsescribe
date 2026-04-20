@@ -10,7 +10,12 @@ from utils.onboarding import (
     step_index,
     total_steps,
 )
-from ui.onboarding_wizard import OnboardingWizardController
+from ui.onboarding_wizard import (
+    OnboardingWizardController,
+    _format_hotkey_for_display,
+    _format_language_label,
+    _language_code_from_title,
+)
 
 
 class _FakeView:
@@ -61,6 +66,16 @@ class _FakeButton:
         self.enabled_calls.append(value)
 
 
+class _FakeTextView:
+    def __init__(self):
+        self.value = ""
+        self.set_calls: list[str] = []
+
+    def setString_(self, value) -> None:
+        self.value = value
+        self.set_calls.append(value)
+
+
 class _FakeContentView:
     def __init__(self):
         self.subviews = []
@@ -97,6 +112,15 @@ def test_onboarding_helpers_handle_unknown_values_gracefully() -> None:
     assert next_step("unknown") == OnboardingStep.DONE
     assert prev_step("unknown") == OnboardingStep.CHOOSE_GOAL
     assert step_index("unknown") == 1
+
+
+def test_onboarding_display_helpers_use_friendly_labels() -> None:
+    assert _format_language_label("de") == "German"
+    assert _language_code_from_title("German") == "de"
+    assert _language_code_from_title("auto") == "auto"
+    assert _format_hotkey_for_display("option+space") == "Option+Space"
+    assert _format_hotkey_for_display("f19") == "F19"
+    assert _format_hotkey_for_display("capslock") == "Caps Lock"
 
 
 def test_onboarding_step_defaults_to_done_when_seen(tmp_path, monkeypatch):
@@ -343,32 +367,24 @@ def test_update_summary_skips_duplicate_widget_updates(monkeypatch):
     wizard._summary_provider_label = _FakeTextField()
     wizard._summary_hotkey_label = _FakeTextField()
     wizard._summary_perm_label = _FakeTextField()
+    wizard._summary_test_label = _FakeTextField()
     wizard._last_summary_provider_text = None
     wizard._last_summary_hotkey_text = None
     wizard._last_summary_hotkey_has_value = None
     wizard._last_summary_perm_text = None
     wizard._last_summary_perm_mic_ok = None
+    wizard._last_summary_test_text = None
+    wizard._last_summary_test_passed = None
+    wizard._test_outcome = "passed"
     wizard._get_cached_env_setting = lambda key: {
         "PULSESCRIBE_MODE": "deepgram",
         "PULSESCRIBE_TOGGLE_HOTKEY": "f19",
         "PULSESCRIBE_HOLD_HOTKEY": "",
     }.get(key)
     wizard._get_cached_hotkeys = lambda: ("f19", "")
+    wizard._read_permission_signature = lambda: ("authorized", True, True)
 
-    monkeypatch.setattr(wizard_mod, "get_microphone_permission_state", lambda: "authorized")
     monkeypatch.setattr(wizard_mod, "_get_color", lambda *args, **kwargs: args)
-    monkeypatch.setattr(
-        wizard_mod,
-        "has_accessibility_permission",
-        lambda: True,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        wizard_mod,
-        "has_input_monitoring_permission",
-        lambda: True,
-        raising=False,
-    )
 
     wizard._update_summary()
     wizard._update_summary()
@@ -378,6 +394,8 @@ def test_update_summary_skips_duplicate_widget_updates(monkeypatch):
     assert wizard._summary_hotkey_label.color_calls == 1
     assert wizard._summary_perm_label.set_calls == 1
     assert wizard._summary_perm_label.color_calls == 1
+    assert wizard._summary_test_label.set_calls == 1
+    assert wizard._summary_test_label.color_calls == 1
 
 
 def test_can_advance_reuses_cached_permission_signature(monkeypatch):
@@ -407,11 +425,15 @@ def test_update_summary_reuses_cached_permission_signature(monkeypatch):
     wizard._summary_provider_label = _FakeTextField()
     wizard._summary_hotkey_label = _FakeTextField()
     wizard._summary_perm_label = _FakeTextField()
+    wizard._summary_test_label = _FakeTextField()
     wizard._last_summary_provider_text = None
     wizard._last_summary_hotkey_text = None
     wizard._last_summary_hotkey_has_value = None
     wizard._last_summary_perm_text = None
     wizard._last_summary_perm_mic_ok = None
+    wizard._last_summary_test_text = None
+    wizard._last_summary_test_passed = None
+    wizard._test_outcome = "passed"
     wizard._permissions_card = type(
         "_Card",
         (),
@@ -419,10 +441,10 @@ def test_update_summary_reuses_cached_permission_signature(monkeypatch):
     )()
     wizard._get_cached_env_setting = lambda key: {
         "PULSESCRIBE_MODE": "deepgram",
-        "PULSESCRIBE_TOGGLE_HOTKEY": "f19",
-        "PULSESCRIBE_HOLD_HOTKEY": "",
+        "PULSESCRIBE_TOGGLE_HOTKEY": "option+space",
+        "PULSESCRIBE_HOLD_HOTKEY": "fn",
     }.get(key)
-    wizard._get_cached_hotkeys = lambda: ("f19", "")
+    wizard._get_cached_hotkeys = lambda: ("option+space", "fn")
 
     monkeypatch.setattr(wizard_mod, "_get_color", lambda *args, **kwargs: args)
     monkeypatch.setattr(
@@ -445,7 +467,72 @@ def test_update_summary_reuses_cached_permission_signature(monkeypatch):
 
     wizard._update_summary()
 
-    assert wizard._summary_perm_label.value == "🎤 Mic ✓  ♿ Accessibility ✓  ⌨️ Input ✓"
+    assert wizard._summary_hotkey_label.value == "Toggle: Option+Space • Hold: Fn"
+    assert (
+        wizard._summary_perm_label.value
+        == "Microphone ready • Auto-paste and Hold hotkeys available"
+    )
+    assert wizard._summary_test_label.value == "Completed"
+
+
+def test_update_test_dictation_hotkeys_uses_friendly_labels() -> None:
+    wizard = OnboardingWizardController.__new__(OnboardingWizardController)
+    wizard._test_hotkey_label = _FakeTextField()
+    wizard._last_test_hotkey_text = None
+    wizard._get_cached_hotkeys = lambda: ("option+space", "fn")
+
+    wizard._update_test_dictation_hotkeys()
+
+    assert wizard._test_hotkey_label.value == (
+        "Toggle: Option+Space — press once to start and again to stop.\n"
+        "Hold: Fn — hold while speaking, then release."
+    )
+
+
+def test_on_test_dictation_result_shows_actionable_feedback(monkeypatch):
+    import ui.onboarding_wizard as wizard_mod
+
+    wizard = OnboardingWizardController.__new__(OnboardingWizardController)
+    wizard._step = OnboardingStep.TEST_DICTATION
+    wizard._test_state = "recording"
+    wizard._test_successful = False
+    wizard._test_outcome = "pending"
+    wizard._test_status_label = _FakeTextField()
+    wizard._test_text_view = _FakeTextView()
+    wizard._last_test_status_text = None
+    wizard._last_test_status_level = None
+    wizard._last_test_preview_text = None
+
+    render_calls: list[bool] = []
+    wizard._render = lambda: render_calls.append(True)
+
+    monkeypatch.setattr(wizard_mod, "_get_color", lambda *args, **kwargs: args)
+
+    wizard.on_test_dictation_result("", error="microphone missing")
+
+    assert wizard._test_outcome == "error"
+    assert wizard._test_status_label.value == (
+        "Couldn’t finish the practice test: microphone missing"
+    )
+    assert wizard._test_text_view.value == (
+        "The practice run could not be completed.\n"
+        "Check the error above and try again."
+    )
+    assert render_calls == [True]
+
+
+def test_skip_test_marks_outcome_before_advancing() -> None:
+    wizard = OnboardingWizardController.__new__(OnboardingWizardController)
+    wizard._step = OnboardingStep.TEST_DICTATION
+    wizard._test_outcome = "pending"
+
+    advanced_to: list[OnboardingStep] = []
+    wizard._set_step = lambda step: advanced_to.append(step)
+
+    wizard._handle_action("skip_test")
+
+    assert wizard._test_outcome == "skipped"
+    assert advanced_to == [OnboardingStep.CHEAT_SHEET]
 
 
 def test_apply_hotkey_change_success_relies_on_hotkey_card_follow_up(monkeypatch):
@@ -503,5 +590,8 @@ def test_show_fast_api_key_prompt_skips_duplicate_widget_updates():
 
     assert wizard._api_key_container.hidden_calls == [False]
     assert wizard._api_key_status.set_calls == 1
+    assert wizard._api_key_status.value == (
+        "Fast mode needs a Deepgram API key. Paste one to continue."
+    )
     assert focus_calls == [True, True]
     assert render_calls == [True, True]

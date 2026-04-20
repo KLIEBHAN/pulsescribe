@@ -1,6 +1,23 @@
-UX notes - 2026-04-19
+UX notes - 2026-04-20
 
-Latest pass - Transcript/history list presentation helpers (`utils/history.py`, `utils/transcript_view_logic.py`)
+Latest pass - macOS onboarding wizard UX (`ui/onboarding_wizard.py`)
+- Reviewed remaining visible `ui/` surfaces outside Welcome / Settings / Overlay / Menubar and focused on the still-unhandled macOS onboarding wizard.
+- Main weaknesses found:
+  1. Goal selection still used older, vague copy and raw language codes.
+  2. Secondary actions were misleading (`Cancel`, `Skip →`) compared with what they actually do.
+  3. Practice dictation had a weak empty state and less helpful error / retry feedback.
+  4. The final summary still used raw hotkeys and a hard-to-scan permission summary, and it did not show whether the practice test was completed.
+- Changes in this pass:
+  - improved goal-step copy, language labels, API-key prompt wording and layout
+  - clarified footer / skip button microcopy so actions are easier to predict
+  - improved practice dictation placeholder text, status messages, error / no-speech feedback and hotkey instructions
+  - improved summary hierarchy with friendlier hotkey formatting, clearer permission summary and a practice-test status row
+- Validation:
+  - `pytest tests/test_onboarding.py -q`
+  - `python -m py_compile ui/onboarding_wizard.py tests/test_onboarding.py`
+  - `ruff check ui/onboarding_wizard.py tests/test_onboarding.py`
+
+Previous pass - Transcript/history list presentation helpers (`utils/history.py`, `utils/transcript_view_logic.py`)
 - Scope: the remaining transcript/history panels themselves currently live in Welcome / Settings, which are intentionally not being reopened right now, so this pass improved their shared rendering logic instead.
 - Reviewed flows first:
   - transcript history rendering used by Welcome / Settings transcript panels
