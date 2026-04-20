@@ -34,6 +34,9 @@ HOTKEY_TOKEN_LABELS = {
     "left": "←",
     "right": "→",
 }
+HOTKEY_EMPTY_STATE_MESSAGE = "Choose a preset or use Record to save a custom hotkey."
+HOTKEY_RECORD_PLACEHOLDER = "Press shortcut…"
+HOTKEY_CANCELLED_MESSAGE = "Recording cancelled. Previous hotkey kept."
 
 
 def _get_color(r: int, g: int, b: int, a: float = 1.0):
@@ -53,6 +56,69 @@ def _create_card(x: int, y: int, width: int, height: int, *, corner_radius: int 
     card.setCornerRadius_(corner_radius)
     card.setContentViewMargins_((0, 0))
     return card
+
+
+
+def _set_tooltip_if_supported(view, text: str | None) -> None:
+    if view is None:
+        return
+    try:
+        view.setToolTip_(text or "")
+    except Exception:
+        pass
+
+
+
+def _kind_label(kind: str) -> str:
+    return "Hold" if (kind or "").strip().lower() == "hold" else "Toggle"
+
+
+
+def _build_field_tooltip(kind: str, value: str | None = None) -> str:
+    label = _kind_label(kind)
+    rendered = _format_hotkey_for_display(value)
+    if rendered:
+        return f"Current {label} hotkey: {rendered}. Use Record to change it."
+    return f"No {label} hotkey saved yet. Choose a preset or use Record to add one."
+
+
+
+def _build_record_button_tooltip(kind: str) -> str:
+    label = _kind_label(kind)
+    return f"Record a custom {label} hotkey. Press Esc to cancel."
+
+
+
+def _build_preset_tooltip(preset: str) -> str:
+    normalized = (preset or "").strip().lower()
+    if normalized == "fn_hold":
+        return "Use Fn / Globe as a Hold hotkey."
+    if normalized == "opt_space":
+        return "Use Option+Space as a Toggle hotkey."
+    if normalized == "f19_toggle":
+        return "Use F19 as a Toggle hotkey."
+    return "Apply this hotkey preset."
+
+
+
+def _build_recording_status(kind: str) -> str:
+    label = _kind_label(kind)
+    return f"Recording {label} hotkey — press shortcut, Esc cancels."
+
+
+
+def _build_saved_status(kind: str, hotkey: str) -> str:
+    label = _kind_label(kind)
+    rendered = _format_hotkey_for_display(hotkey)
+    if rendered:
+        return f"{label} hotkey saved: {rendered}."
+    return f"{label} hotkey saved."
+
+
+
+def _build_failed_save_status(kind: str) -> str:
+    label = _kind_label(kind)
+    return f"{label} hotkey was not saved. Try another shortcut."
 
 
 
@@ -171,6 +237,10 @@ class HotkeyCard:
         desc_field.setSelectable_(False)
         desc_field.setFont_(NSFont.systemFontOfSize_weight_(11, NSFontWeightMedium))
         desc_field.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6))
+        try:
+            desc_field.setUsesSingleLineMode_(False)
+        except Exception:
+            pass
         parent_view.addSubview_(desc_field)
 
         # Preset buttons (optional)
@@ -187,6 +257,10 @@ class HotkeyCard:
                 btn.setBezelStyle_(NSBezelStyleRounded)
                 btn.setFont_(NSFont.systemFontOfSize_(11))
                 bind_action(btn, action)
+                _set_tooltip_if_supported(
+                    btn,
+                    _build_preset_tooltip(action.replace("hotkey_", "")),
+                )
                 parent_view.addSubview_(btn)
 
             # Calculate button widths (3 buttons with spacing)
@@ -229,11 +303,12 @@ class HotkeyCard:
             field = NSTextField.alloc().initWithFrame_(
                 NSMakeRect(field_x, y_pos, field_w, row_h)
             )
-            field.setPlaceholderString_("Click Record…")
+            field.setPlaceholderString_("Use Record…")
             field.setFont_(NSFont.systemFontOfSize_(13))
             field.setAlignment_(NSTextAlignmentCenter)
             field.setEditable_(False)
             field.setSelectable_(True)
+            _set_tooltip_if_supported(field, _build_field_tooltip(kind))
             parent_view.addSubview_(field)
 
             rec_btn = NSButton.alloc().initWithFrame_(
@@ -243,6 +318,7 @@ class HotkeyCard:
             rec_btn.setBezelStyle_(NSBezelStyleRounded)
             rec_btn.setFont_(NSFont.systemFontOfSize_(11))
             bind_action(rec_btn, f"record_hotkey:{kind}")
+            _set_tooltip_if_supported(rec_btn, _build_record_button_tooltip(kind))
             parent_view.addSubview_(rec_btn)
 
             return field, rec_btn
@@ -257,7 +333,7 @@ class HotkeyCard:
                 NSMakeRect(base_x, hint_y, content_w, 16)
             )
             hint.setStringValue_(
-                "Toggle starts/stops with one press. Hold is push‑to‑talk and may require Input Monitoring."
+                "Toggle starts and stops with one press. Hold is push-to-talk and may need Input Monitoring."
             )
             hint.setBezeled_(False)
             hint.setDrawsBackground_(False)
@@ -265,6 +341,10 @@ class HotkeyCard:
             hint.setSelectable_(False)
             hint.setFont_(NSFont.systemFontOfSize_(10))
             hint.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.55))
+            try:
+                hint.setUsesSingleLineMode_(False)
+            except Exception:
+                pass
             parent_view.addSubview_(hint)
             hint_y -= 18
 
@@ -279,6 +359,14 @@ class HotkeyCard:
         status.setSelectable_(False)
         status.setFont_(NSFont.systemFontOfSize_(10))
         status.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6))
+        try:
+            status.setUsesSingleLineMode_(False)
+        except Exception:
+            pass
+        _set_tooltip_if_supported(
+            status,
+            "Shows save, validation and recording feedback for the hotkey card.",
+        )
         parent_view.addSubview_(status)
 
         widgets = HotkeyCardWidgets(
@@ -322,11 +410,17 @@ class HotkeyCard:
                 return
             self._widgets.toggle_field.setStringValue_(rendered_values[0])
             self._widgets.hold_field.setStringValue_(rendered_values[1])
+            _set_tooltip_if_supported(
+                self._widgets.toggle_field,
+                _build_field_tooltip("toggle", toggle),
+            )
+            _set_tooltip_if_supported(
+                self._widgets.hold_field,
+                _build_field_tooltip("hold", hold),
+            )
             self._last_synced_values = rendered_values
             if not any(rendered_values) and self._last_status is None:
-                self.set_status(
-                    "info", "Choose a preset or click Record to save a custom hotkey."
-                )
+                self.set_status("info", HOTKEY_EMPTY_STATE_MESSAGE)
         except Exception:
             pass
 
@@ -357,17 +451,15 @@ class HotkeyCard:
         """Start or stop recording for toggle/hold hotkey."""
         if self._recorder.recording:
             self.stop_recording(cancelled=True)
-            self.set_status("info", "Recording cancelled.")
+            self.set_status("info", HOTKEY_CANCELLED_MESSAGE)
             return
 
         if kind == "toggle":
             field = self._widgets.toggle_field
             btn = self._widgets.toggle_record_btn
-            kind_label = "Toggle"
         elif kind == "hold":
             field = self._widgets.hold_field
             btn = self._widgets.hold_record_btn
-            kind_label = "Hold"
         else:
             return
 
@@ -377,12 +469,9 @@ class HotkeyCard:
             button=btn,
             buttons_to_reset=buttons,
             on_hotkey=lambda hk: self._handle_recorded_hotkey(kind, hk),
-            placeholder="Press shortcut…",
+            placeholder=HOTKEY_RECORD_PLACEHOLDER,
         )
-        self.set_status(
-            "warning",
-            f"Recording {kind_label} hotkey — press your shortcut, or press Esc to cancel.",
-        )
+        self.set_status("warning", _build_recording_status(kind))
 
     def stop_recording(self, *, cancelled: bool = False) -> None:
         """Stop any active hotkey recording."""
@@ -404,11 +493,20 @@ class HotkeyCard:
 
     def _apply_change(self, kind: str, hotkey_str: str) -> None:
         """Apply a hotkey change and update UI."""
+        previous_status = self._last_status
         success = self._on_hotkey_change(kind, hotkey_str)
+        status_was_updated = self._last_status != previous_status
+
         if success:
             self.sync_from_env()
+            if not status_was_updated:
+                self.set_status("ok", _build_saved_status(kind, hotkey_str))
             if callable(self._on_after_change):
                 try:
                     self._on_after_change()
                 except Exception:
                     pass
+            return
+
+        if not status_was_updated:
+            self.set_status("error", _build_failed_save_status(kind))

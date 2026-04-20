@@ -1,27 +1,24 @@
 UX notes - 2026-04-20
 
-Latest pass - shared permissions card UX (`ui/permissions_card.py`)
-- Restflächen-Inventur under `ui/` after excluding Welcome / Settings / Overlay / Menubar / Onboarding focused on:
-  - `ui/permissions_card.py`
-  - `ui/hotkey_card.py`
-  - `ui/styles_windows.py` (style helper only)
-  - `ui/animation.py` (not an interactive surface)
-- Selected area: `ui/permissions_card.py` because it is still a visible shared status/action surface with broad user impact.
+Latest pass - shared hotkey card UX (`ui/hotkey_card.py`)
+- Re-checked the remaining shared visible card flow and focused on `ui/hotkey_card.py` as the next still-meaningful UX surface.
 - Main weaknesses found:
-  1. Initial permission states were too vague (`…`, empty summary).
-  2. The summary area was effectively one line high even though the feedback text is longer.
-  3. Some ready states were too generic (`Enabled`) and did not explain what became available.
-  4. Permission action buttons lacked contextual guidance.
+  1. The shared card depended too much on callers to provide save/error feedback.
+  2. Some microcopy was slightly mouse-centric or too terse for cancellation / recording states.
+  3. Fields and buttons lacked contextual hints for keyboard / screenreader-adjacent guidance.
+  4. Longer feedback text could feel cramped in smaller card widths.
 - Changes in this pass:
-  - improved initial checking text and clearer waiting/checking microcopy during refresh
-  - made ready states more descriptive (`auto-paste ready`, `Hold hotkeys ready`)
-  - enlarged the summary feedback area and enabled multiline wrapping
-  - widened action buttons slightly and added contextual tooltips for the permission actions
+  - added fallback success/error feedback when callers do not set a status themselves
+  - improved empty / recording / cancelled microcopy and shortened the recording status text
+  - added contextual tooltips to preset buttons, record buttons and hotkey fields
+  - refreshed field placeholders / hints so the card reads better in tighter layouts
 - Validation:
-  - `pytest tests/test_permissions_card.py -q`
-  - `pytest tests/test_permissions_card.py tests/test_onboarding.py -q`
-  - `python -m py_compile ui/permissions_card.py tests/test_permissions_card.py`
-  - `ruff check ui/permissions_card.py tests/test_permissions_card.py`
+  - `pytest tests/test_hotkey_card.py tests/test_onboarding.py -q`
+  - `python -m py_compile ui/hotkey_card.py tests/test_hotkey_card.py`
+  - `ruff check ui/hotkey_card.py tests/test_hotkey_card.py`
+
+Previous pass - shared permissions card UX (`ui/permissions_card.py`)
+- Improved initial checking text, descriptive ready states, multiline summary feedback and permission action tooltips.
 
 Previous pass - macOS onboarding wizard UX (`ui/onboarding_wizard.py`)
 - Improved goal-step copy, practice dictation feedback, clearer secondary actions and a better summary.

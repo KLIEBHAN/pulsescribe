@@ -8,10 +8,16 @@ class _FakeField:
     def __init__(self) -> None:
         self.value = ""
         self.calls = 0
+        self.tooltip = ""
+        self.tooltip_calls = 0
 
     def setStringValue_(self, value: str) -> None:
         self.value = value
         self.calls += 1
+
+    def setToolTip_(self, value: str) -> None:
+        self.tooltip = value
+        self.tooltip_calls += 1
 
 
 class _FakeStatusLabel:
@@ -20,6 +26,7 @@ class _FakeStatusLabel:
         self.color = None
         self.value_calls = 0
         self.color_calls = 0
+        self.tooltip = ""
 
     def setStringValue_(self, value: str) -> None:
         self.value = value
@@ -28,6 +35,9 @@ class _FakeStatusLabel:
     def setTextColor_(self, color) -> None:
         self.color = color
         self.color_calls += 1
+
+    def setToolTip_(self, value: str) -> None:
+        self.tooltip = value
 
 
 def _make_card() -> HotkeyCard:
@@ -75,6 +85,12 @@ def test_sync_from_env_skips_duplicate_field_updates(monkeypatch) -> None:
     assert card._widgets.hold_field.value == "Fn"
     assert card._widgets.toggle_field.calls == 1
     assert card._widgets.hold_field.calls == 1
+    assert card._widgets.toggle_field.tooltip == (
+        "Current Toggle hotkey: F19. Use Record to change it."
+    )
+    assert card._widgets.hold_field.tooltip == (
+        "Current Hold hotkey: Fn. Use Record to change it."
+    )
 
 
 def test_set_status_skips_duplicate_label_updates(monkeypatch) -> None:
@@ -126,16 +142,20 @@ def test_sync_from_env_sets_more_actionable_empty_state() -> None:
     card.sync_from_env()
 
     assert card._widgets.status_label.value == (
-        "Choose a preset or click Record to save a custom hotkey."
+        "Choose a preset or use Record to save a custom hotkey."
     )
 
 
 class _FakeButton:
     def __init__(self) -> None:
         self.title = "Record"
+        self.tooltip = ""
 
     def setTitle_(self, value: str) -> None:
         self.title = value
+
+    def setToolTip_(self, value: str) -> None:
+        self.tooltip = value
 
 
 class _FakeRecorder:
@@ -171,7 +191,9 @@ def test_toggle_recording_sets_guidance_status_and_placeholder() -> None:
 
     assert recorder.start_kwargs is not None
     assert recorder.start_kwargs["placeholder"] == "Press shortcut…"
-    assert card._widgets.status_label.value.startswith("Recording Toggle hotkey")
+    assert card._widgets.status_label.value == (
+        "Recording Toggle hotkey — press shortcut, Esc cancels."
+    )
 
 
 def test_toggle_recording_cancels_active_recording_with_feedback() -> None:
@@ -193,4 +215,68 @@ def test_toggle_recording_cancels_active_recording_with_feedback() -> None:
     card.toggle_recording("toggle")
 
     assert recorder.stop_calls == [True]
-    assert card._widgets.status_label.value == "Recording cancelled."
+    assert card._widgets.status_label.value == "Recording cancelled. Previous hotkey kept."
+
+
+def test_apply_change_sets_fallback_saved_status_when_callback_has_no_feedback() -> None:
+    card = HotkeyCard(
+        widgets=HotkeyCardWidgets(
+            toggle_field=_FakeField(),
+            toggle_record_btn=None,
+            hold_field=_FakeField(),
+            hold_record_btn=None,
+            status_label=_FakeStatusLabel(),
+        ),
+        hotkey_recorder=SimpleNamespace(recording=False),
+        on_hotkey_change=lambda *_args: True,
+        get_current_hotkeys=lambda: ("option+space", ""),
+    )
+
+    card._apply_change("toggle", "option+space")
+
+    assert card._widgets.status_label.value == "Toggle hotkey saved: Option+Space."
+
+
+def test_apply_change_sets_fallback_error_status_when_callback_has_no_feedback() -> None:
+    card = HotkeyCard(
+        widgets=HotkeyCardWidgets(
+            toggle_field=_FakeField(),
+            toggle_record_btn=None,
+            hold_field=_FakeField(),
+            hold_record_btn=None,
+            status_label=_FakeStatusLabel(),
+        ),
+        hotkey_recorder=SimpleNamespace(recording=False),
+        on_hotkey_change=lambda *_args: False,
+    )
+
+    card._apply_change("hold", "fn")
+
+    assert card._widgets.status_label.value == (
+        "Hold hotkey was not saved. Try another shortcut."
+    )
+
+
+def test_apply_change_keeps_existing_callback_feedback() -> None:
+    widgets = HotkeyCardWidgets(
+        toggle_field=_FakeField(),
+        toggle_record_btn=None,
+        hold_field=_FakeField(),
+        hold_record_btn=None,
+        status_label=_FakeStatusLabel(),
+    )
+    card = HotkeyCard(
+        widgets=widgets,
+        hotkey_recorder=SimpleNamespace(recording=False),
+        on_hotkey_change=lambda *_args: True,
+        get_current_hotkeys=lambda: ("f19", ""),
+    )
+
+    def _callback(kind: str, hotkey: str) -> bool:
+        card.set_status("warning", f"Custom feedback for {kind}: {hotkey}")
+        return True
+
+    card._on_hotkey_change = _callback
+    card._apply_change("toggle", "f19")
+
+    assert card._widgets.status_label.value == "Custom feedback for toggle: f19"
