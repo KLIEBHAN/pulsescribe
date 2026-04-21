@@ -1,5 +1,25 @@
 UX notes - 2026-04-21
 
+Latest pass - daemon startup / recovery status clarity outside onboarding (`ui/daemon_status_feedback.py`, `ui/menubar.py`, `pulsescribe_windows.py`)
+- Focused on the next central non-onboarding reliability surface: what users see while the daemon is starting, reconnecting or needs recovery.
+- Main weaknesses found:
+  1. Startup / reconnect states were too generic, especially in compact menu-bar / tray surfaces.
+  2. The Windows tray could appear idle when it was first created, even though startup loading was still in progress.
+  3. Recovery hints for permission-related failures were not explicit enough about the next step.
+  4. Compact loading titles were not optimized for tight spaces, which weakened hierarchy and readability.
+- Changes in this pass:
+  - refined shared startup / loading / reconnect / permission-recovery copy for daemon status labels, hints and tray titles
+  - added clearer startup phrasing like `Starting up PulseScribe`, better reconnect wording and more actionable permission guidance
+  - made the macOS menu-bar title stay compact for loading-without-detail states while keeping richer detail in the dropdown
+  - made the Windows tray initialize from the current daemon state instead of always starting from an idle title
+  - aligned Windows tray recovery actions with clearer labels like `Open Setup & Settings…` and `Reload Settings & Retry`
+  - made Windows local-preload startup feedback update the shared state path so tray + overlay stay in sync during loading
+- Validation:
+  - `pytest tests/test_daemon_status_feedback.py tests/test_menubar.py tests/test_windows_race_conditions.py -q`
+  - `pytest tests/test_daemon_mode.py tests/test_overlay_feedback.py -q`
+  - `python -m py_compile ui/daemon_status_feedback.py ui/menubar.py pulsescribe_windows.py tests/test_daemon_status_feedback.py tests/test_menubar.py tests/test_windows_race_conditions.py`
+  - `ruff check ui/daemon_status_feedback.py ui/menubar.py pulsescribe_windows.py tests/test_daemon_status_feedback.py tests/test_menubar.py tests/test_windows_race_conditions.py`
+
 Latest pass - no-speech / silent-result feedback in the everyday dictation flow (`pulsescribe_daemon.py`, `pulsescribe_windows.py`, `ui/daemon_status_feedback.py`, overlay surfaces)
 - Focused on the everyday empty-result path next, instead of revisiting the recent overlay-copy or onboarding work.
 - Main weaknesses found:
@@ -180,9 +200,9 @@ Previous pass - Onboarding / shared setup UX
 - Improved Windows onboarding guidance, hotkey capture discoverability, safe dictation test messaging, shared permission card wording, and Windows focus/placeholder styling.
 
 Next worthwhile UX areas
-1. daemon startup / recovery flow outside onboarding
-- especially first-launch background readiness, recovery after provider failures and clearer next-step guidance when the service is not yet ready
-2. prompt / vocabulary editing follow-through on real devices
-- verify the current prompt/vocabulary editor guidance, save affordances and wrapping on smaller windows after the latest transcript/history and overlay cleanup
-3. targeted real-device QA across the active dictation flow
-- check how the newer overlay + no-speech states read on small screens, different DPI/scaling setups and fast repeated retry attempts
+1. prompt / vocabulary editing follow-through on real devices
+- verify the current prompt/vocabulary editor guidance, save affordances and wrapping on smaller windows after the latest transcript/history, overlay and daemon-state cleanup
+2. targeted real-device QA across the active dictation flow
+- check how the newer overlay + no-speech + startup/recovery states read on small screens, different DPI/scaling setups and fast repeated retry attempts
+3. deeper daemon recovery flow follow-up
+- if revisiting this area, the next likely gain is richer surfaced recovery for invalid hotkeys / permission problems on macOS itself instead of mostly alert/log driven feedback

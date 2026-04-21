@@ -8,6 +8,7 @@ from config import LOG_FILE
 from ui.daemon_status_feedback import (
     build_daemon_status_hint,
     build_daemon_status_label,
+    normalize_daemon_status_text,
 )
 from utils.state import AppState
 
@@ -164,6 +165,9 @@ def build_menubar_title(state: AppState, text: str | None = None) -> str:
         preview = _truncate_menubar_text(text, max_chars=MENUBAR_PREVIEW_MAX_CHARS)
         if preview:
             return f"{icon} {preview}"
+        return f"{icon} {MENUBAR_STATE_LABELS[state]}"
+
+    if state == AppState.LOADING and not normalize_daemon_status_text(text):
         return f"{icon} {MENUBAR_STATE_LABELS[state]}"
 
     if state in (AppState.LISTENING, AppState.TRANSCRIBING, AppState.REFINING):

@@ -92,6 +92,12 @@ def test_build_menubar_title_uses_loading_text_preview() -> None:
     assert title.startswith(f"{MENUBAR_ICONS[AppState.LOADING]} Loading large-v3")
 
 
+def test_build_menubar_title_uses_compact_loading_title_without_detail() -> None:
+    assert build_menubar_title(AppState.LOADING) == (
+        f"{MENUBAR_ICONS[AppState.LOADING]} Loading…"
+    )
+
+
 def test_build_menubar_status_text_uses_recording_preview() -> None:
     status = build_menubar_status_text(AppState.RECORDING, "alpha beta gamma")
 

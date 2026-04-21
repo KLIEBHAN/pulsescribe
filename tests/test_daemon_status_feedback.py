@@ -21,6 +21,22 @@ def test_build_daemon_status_label_prefers_loading_detail_when_helpful() -> None
         build_daemon_status_label(AppState.LOADING, "Warming up...")
         == "Warming up local model"
     )
+    assert (
+        build_daemon_status_label(AppState.LOADING, "Starting up...")
+        == "Starting up PulseScribe"
+    )
+
+
+def test_build_daemon_status_hint_explains_startup_loading_and_permission_recovery() -> None:
+    startup_hint = build_daemon_status_hint(AppState.LOADING, "Starting up...")
+    permission_hint = build_daemon_status_hint(
+        AppState.ERROR,
+        "Input monitoring permission missing",
+    )
+
+    assert "hotkeys" in startup_hint.lower()
+    assert "audio" in startup_hint.lower()
+    assert "grant the missing permission" in permission_hint.lower()
 
 
 def test_build_daemon_status_label_classifies_common_error_types() -> None:

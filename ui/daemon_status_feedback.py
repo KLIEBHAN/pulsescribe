@@ -71,8 +71,17 @@ def _build_loading_label(detail: str, *, prefer_detail: bool) -> str:
         return DEFAULT_DAEMON_STATUS_LABELS[AppState.LOADING]
 
     detail_lower = detail.lower()
+    if _contains_any(detail_lower, ("starting up", "startup", "initializing", "prewarm")):
+        return "Starting up PulseScribe"
     if "warming up" in detail_lower:
         return "Warming up local model"
+    if _contains_any(detail_lower, ("input device", "microphone", "audio")):
+        return "Preparing microphone"
+    if _contains_any(
+        detail_lower,
+        ("connection", "connect", "network", "socket", "websocket", "service"),
+    ):
+        return "Connecting to transcription service"
     if prefer_detail and detail:
         return detail.rstrip(".")
     if detail_lower.startswith("loading "):
@@ -124,6 +133,15 @@ def _build_error_label(detail: str) -> str:
         return "PulseScribe is busy"
     if _contains_any(detail_lower, ("timeout", "timed out", "watchdog", "no final response")):
         return "Transcription timed out"
+    if _contains_any(detail_lower, ("input monitoring",)):
+        return "Input monitoring needed"
+    if _contains_any(detail_lower, ("accessibility", "assistive access", "access permission")):
+        return "Accessibility permission needed"
+    if _contains_any(detail_lower, ("microphone", "mic")) and _contains_any(
+        detail_lower,
+        ("permission", "denied", "not permitted", "not allowed", "access"),
+    ):
+        return "Microphone permission needed"
     if _contains_any(
         detail_lower,
         (
@@ -205,10 +223,19 @@ def build_daemon_status_hint(
     detail_lower = detail.lower()
 
     if normalized_state == AppState.LOADING:
-        if "warming up" in detail_lower:
+        if _contains_any(detail_lower, ("starting up", "startup", "initializing", "prewarm")):
+            hint = "PulseScribe is starting in the background. Hotkeys and audio are still getting ready."
+        elif "warming up" in detail_lower:
             hint = (
                 "Offline dictation is warming up after a model or settings change."
             )
+        elif detail_lower.startswith("loading "):
+            hint = "Offline dictation is loading your selected local model. The first run can take a moment."
+        elif _contains_any(
+            detail_lower,
+            ("connection", "connect", "network", "socket", "websocket", "service"),
+        ):
+            hint = "PulseScribe is reconnecting to the transcription service. Try again once it returns to ready."
         elif detail:
             hint = "PulseScribe is preparing the current provider or model."
         else:
@@ -246,6 +273,13 @@ def build_daemon_status_hint(
                 "PulseScribe will return to ready automatically. Export diagnostics "
                 "or open Setup if it repeats."
             )
+        elif _contains_any(detail_lower, ("input monitoring", "accessibility", "assistive access", "access permission")):
+            hint = "Open Setup & Settings, grant the missing permission, then try again."
+        elif _contains_any(detail_lower, ("microphone", "mic")) and _contains_any(
+            detail_lower,
+            ("permission", "denied", "not permitted", "not allowed", "access"),
+        ):
+            hint = "Open Setup & Settings, allow microphone access, then try again."
         elif _contains_any(
             detail_lower,
             (

@@ -589,6 +589,51 @@ def test_set_state_updates_tray_title_when_same_state_text_changes(monkeypatch):
     assert "Warming up local model" in second_title
 
 
+def test_setup_tray_uses_current_loading_state_and_clear_recovery_labels(monkeypatch):
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai",
+        streaming=False,
+        overlay=False,
+    )
+    daemon._state = AppState.LOADING
+    daemon._last_status_text = "Starting up..."
+    daemon._create_icon = lambda _color: object()
+
+    class _FakeMenuItem:
+        def __init__(self, text, action, enabled=True):
+            self.text = text
+            self.action = action
+            self.enabled = enabled
+
+    class _FakeIcon:
+        def __init__(self, name, icon, title, menu):
+            self.name = name
+            self.icon = icon
+            self.title = title
+            self.menu = menu
+
+    fake_pystray = types.SimpleNamespace(
+        Menu=lambda *items: items,
+        MenuItem=lambda text, action, enabled=True: _FakeMenuItem(
+            text, action, enabled=enabled
+        ),
+        Icon=_FakeIcon,
+    )
+    fake_pystray.Menu.SEPARATOR = object()
+
+    monkeypatch.setattr(windows_module, "_load_tray_dependencies", lambda: True)
+    monkeypatch.setattr(windows_module, "pystray", fake_pystray, raising=False)
+
+    daemon._setup_tray()
+
+    menu_labels = [item.text for item in daemon._tray.menu if hasattr(item, "text")]
+    assert daemon._tray.title.startswith("PulseScribe — Starting up PulseScribe")
+    assert "Open Setup & Settings…" in menu_labels
+    assert "Reload Settings & Retry" in menu_labels
+    assert "Quit PulseScribe" in menu_labels
+
+
 def test_start_recording_allows_retry_from_no_speech_state(monkeypatch):
     windows_module = _load_windows_module()
     daemon = windows_module.PulseScribeWindows(

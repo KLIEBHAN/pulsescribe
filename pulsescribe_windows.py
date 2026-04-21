@@ -1510,7 +1510,9 @@ class PulseScribeWindows:
             logger.warning("Tray-Icon deaktiviert (pystray/Pillow nicht verfügbar)")
             return
 
-        icon = self._create_icon(self.COLORS[AppState.IDLE])
+        current_state = self.state
+        current_text = self._last_status_text
+        icon = self._create_icon(self.COLORS.get(current_state, self.COLORS[AppState.IDLE]))
 
         # Hotkey-Info für Menü
         hotkey_items = []
@@ -1525,16 +1527,16 @@ class PulseScribeWindows:
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(f"Hotkeys: {hotkey_text}", None, enabled=False),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Settings...", self._show_settings),
-            pystray.MenuItem("Reload Settings", self._reload_settings),
+            pystray.MenuItem("Open Setup & Settings…", self._show_settings),
+            pystray.MenuItem("Reload Settings & Retry", self._reload_settings),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Beenden", self._quit),
+            pystray.MenuItem("Quit PulseScribe", self._quit),
         )
 
         self._tray = pystray.Icon(
             "pulsescribe",
             icon,
-            build_daemon_tray_title(AppState.IDLE),
+            build_daemon_tray_title(current_state, current_text),
             menu,
         )
 
@@ -2107,7 +2109,7 @@ class PulseScribeWindows:
                     preload_start = time.perf_counter()
                     provider = self._get_provider("local")
                     model, _language = self._get_transcription_config()
-                    self._overlay_update_state("LOADING", f"Loading {model}...")
+                    self._set_state(AppState.LOADING, f"Loading {model}...")
                     if hasattr(provider, "preload"):
                         provider.preload(model=model)
                     preload_ms = (time.perf_counter() - preload_start) * 1000
@@ -2393,7 +2395,7 @@ class PulseScribeWindows:
 
         # LOADING-State während Pre-Warm anzeigen (für alle Modi mit Warm-Stream)
         self._is_prewarm_loading = True
-        self._set_state(AppState.LOADING)
+        self._set_state(AppState.LOADING, "Starting up...")
 
         # Pre-Warm: Teure Imports + Warm-Stream starten
         def _prewarm_and_ready():
