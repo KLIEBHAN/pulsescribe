@@ -28,17 +28,32 @@ def build_settings_saved_feedback(
     relaunch_required: bool = False,
 ) -> tuple[str, str]:
     if auto_reload_worked is True:
-        text = "Settings saved. PulseScribe will reload them automatically."
-        color = "success"
-    elif auto_reload_worked is False:
-        text = (
-            "Settings saved, but automatic reload failed. Restart PulseScribe to "
-            "apply the changes."
+        if relaunch_required:
+            return (
+                "Settings saved. PulseScribe will reload most changes automatically. "
+                "Relaunch PulseScribe to apply the Dock icon change.",
+                "success",
+            )
+        return (
+            "Settings saved. PulseScribe will reload them automatically.",
+            "success",
         )
-        color = "warning"
-    else:
-        text = "Settings saved."
-        color = "success"
+
+    if auto_reload_worked is False:
+        if relaunch_required:
+            return (
+                "Settings saved, but automatic reload failed. Relaunch PulseScribe "
+                "to apply the changes, including the Dock icon change.",
+                "warning",
+            )
+        return (
+            "Settings saved, but automatic reload failed. Restart PulseScribe to "
+            "apply the changes.",
+            "warning",
+        )
+
+    text = "Settings saved."
+    color = "success"
 
     if relaunch_required:
         text = f"{text} Relaunch PulseScribe to apply the Dock icon change."

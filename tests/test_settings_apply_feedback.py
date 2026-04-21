@@ -28,6 +28,14 @@ def test_build_settings_saved_feedback_handles_reload_and_relaunch_cases() -> No
     relaunch_text, relaunch_color = build_settings_saved_feedback(
         relaunch_required=True,
     )
+    combined_auto_text, combined_auto_color = build_settings_saved_feedback(
+        auto_reload_worked=True,
+        relaunch_required=True,
+    )
+    combined_failed_text, combined_failed_color = build_settings_saved_feedback(
+        auto_reload_worked=False,
+        relaunch_required=True,
+    )
 
     assert "reload them automatically" in auto_text
     assert auto_color == "success"
@@ -39,6 +47,18 @@ def test_build_settings_saved_feedback_handles_reload_and_relaunch_cases() -> No
         "Settings saved. Relaunch PulseScribe to apply the Dock icon change."
     )
     assert relaunch_color == "success"
+
+    assert combined_auto_text == (
+        "Settings saved. PulseScribe will reload most changes automatically. "
+        "Relaunch PulseScribe to apply the Dock icon change."
+    )
+    assert combined_auto_color == "success"
+
+    assert combined_failed_text == (
+        "Settings saved, but automatic reload failed. Relaunch PulseScribe to "
+        "apply the changes, including the Dock icon change."
+    )
+    assert combined_failed_color == "warning"
 
 
 def test_build_save_apply_change_hint_switches_between_singular_and_plural() -> None:
