@@ -1186,7 +1186,7 @@ class WelcomeController:
 
         parent_view = parent_view or self._content_view
 
-        card_height = 206  # Extra height for 3-line description
+        card_height = 236  # Fits 3-line description, 3 rows, and summary
         card_y = y - card_height - CARD_SPACING
 
         def bind_action(btn, action: str) -> None:
