@@ -5,7 +5,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from config import LOG_FILE
-from ui.overlay_feedback import format_overlay_status_text
+from ui.daemon_status_feedback import (
+    build_daemon_status_hint,
+    build_daemon_status_label,
+)
 from utils.state import AppState
 
 logger = logging.getLogger("pulsescribe.ui.menubar")
@@ -39,7 +42,7 @@ MENUBAR_ICONS = {
 }
 MENUBAR_PREVIEW_MAX_CHARS = 20
 MENUBAR_STATUS_MAX_CHARS = 44
-MENUBAR_HINT_MAX_CHARS = 68
+MENUBAR_HINT_MAX_CHARS = 84
 MENUBAR_STATE_LABELS = {
     AppState.IDLE: "Ready",
     AppState.LOADING: "Loading…",
@@ -109,42 +112,18 @@ def _truncate_menubar_text(text: str | None, *, max_chars: int) -> str:
 
 def build_menubar_status_text(state: AppState, text: str | None = None) -> str:
     """Return a friendly status sentence for the dropdown menu."""
-    if state == AppState.IDLE:
-        return "Ready to dictate"
-
-    if state == AppState.RECORDING:
-        preview = _truncate_menubar_text(text, max_chars=MENUBAR_STATUS_MAX_CHARS)
-        if preview:
-            return f"Recording: {preview}"
-        return "Recording — speak now"
-
-    if state in (AppState.LOADING, AppState.DONE, AppState.ERROR):
-        preview = _truncate_menubar_text(
-            format_overlay_status_text(state.name, text),
-            max_chars=MENUBAR_STATUS_MAX_CHARS,
-        )
-        if preview:
-            return preview
-
-    return MENUBAR_STATE_LABELS.get(state, MENUBAR_STATE_LABELS[AppState.IDLE]).replace(
-        "…", ""
+    return build_daemon_status_label(
+        state,
+        text,
+        prefer_detail=True,
+        max_chars=MENUBAR_STATUS_MAX_CHARS,
     )
 
 
 
 def build_menubar_hint_text(state: AppState, text: str | None = None) -> str:
     """Return a short contextual hint for the dropdown menu."""
-    hints = {
-        AppState.IDLE: "Use your hotkey to start dictation.",
-        AppState.LOADING: "First launch or provider changes can take a moment.",
-        AppState.LISTENING: "Start speaking, or release the hold hotkey to cancel.",
-        AppState.RECORDING: "PulseScribe will transcribe and paste into the frontmost app.",
-        AppState.TRANSCRIBING: "Audio is being converted into text.",
-        AppState.REFINING: "The transcript is being polished before paste.",
-        AppState.DONE: "The latest transcript was sent to the frontmost app.",
-        AppState.ERROR: "Open Setup & Settings or export diagnostics if this keeps happening.",
-    }
-    hint = hints.get(state, hints[AppState.IDLE])
+    hint = build_daemon_status_hint(state, text, max_chars=MENUBAR_HINT_MAX_CHARS)
     return _truncate_menubar_text(hint, max_chars=MENUBAR_HINT_MAX_CHARS) or hint
 
 
@@ -181,19 +160,22 @@ def build_menubar_title(state: AppState, text: str | None = None) -> str:
 
     if state == AppState.RECORDING:
         preview = _truncate_menubar_text(text, max_chars=MENUBAR_PREVIEW_MAX_CHARS)
-        if not preview:
-            return f"{icon} {MENUBAR_STATE_LABELS[state]}"
-        return f"{icon} {preview}"
-
-    if state in (AppState.LOADING, AppState.DONE, AppState.ERROR):
-        preview = _truncate_menubar_text(
-            format_overlay_status_text(state.name, text),
-            max_chars=MENUBAR_PREVIEW_MAX_CHARS,
-        )
         if preview:
             return f"{icon} {preview}"
+        return f"{icon} {MENUBAR_STATE_LABELS[state]}"
 
-    return f"{icon} {MENUBAR_STATE_LABELS.get(state, MENUBAR_STATE_LABELS[AppState.IDLE])}"
+    if state in (AppState.LISTENING, AppState.TRANSCRIBING, AppState.REFINING):
+        return f"{icon} {MENUBAR_STATE_LABELS.get(state, MENUBAR_STATE_LABELS[AppState.IDLE])}"
+
+    title_text = build_daemon_status_label(
+        state,
+        text,
+        prefer_detail=True,
+        max_chars=MENUBAR_PREVIEW_MAX_CHARS,
+    )
+    if not title_text:
+        title_text = MENUBAR_STATE_LABELS.get(state, MENUBAR_STATE_LABELS[AppState.IDLE])
+    return f"{icon} {title_text}"
 
 
 def _objc_signature(signature: bytes):

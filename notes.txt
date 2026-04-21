@@ -1,25 +1,25 @@
 UX notes - 2026-04-21
 
-Latest pass - advanced local settings + prompt editor UX (`ui/settings_windows.py`, `ui/welcome.py`, `utils/local_backend.py`, `utils/custom_prompts.py`)
-- Focused on visible UX gaps that were not part of the most recent logs / transcript work.
-- Reviewed these remaining pain points first:
-  1. Advanced local settings exposed too many irrelevant expert controls at once.
-  2. Defaults vs. true overrides were not explained clearly enough.
-  3. The Advanced tab on Windows had a weak non-local empty state.
-  4. Prompt contexts were named too technically / inconsistently (`voice_commands`, `app_mappings`, old separator labels).
-  5. Prompt-editor guidance and action feedback were too terse.
+Latest pass - daemon / retry / status UX outside the overlay (`ui/daemon_status_feedback.py`, `ui/menubar.py`, `pulsescribe_daemon.py`, `pulsescribe_windows.py`)
+- Focused on non-overlay daemon state feedback after reviewing the remaining startup / retry / recovery surfaces.
+- Main weaknesses found:
+  1. macOS menu bar loading / error states were often too generic to explain what PulseScribe was doing.
+  2. Windows tray status ignored same-state text changes, so loading / warmup progress could stay stale.
+  3. Recovery guidance was inconsistent or missing, especially around transient errors and automatic return-to-ready behavior.
+  4. Non-overlay status copy was duplicated and inconsistent across macOS + Windows.
 - Changes in this pass:
-  - added shared local-backend UX helpers so Windows + macOS show clearer backend-specific guidance
-  - improved Windows Advanced tab with a real non-local empty state, clearer override hints, and backend-specific card visibility
-  - reduced confusion by showing Faster-Whisper and Lightning controls only when their backend is actually selected
-  - improved macOS Advanced tab guidance and hid Faster-Whisper-only controls when they are not relevant
-  - added shared prompt-context labels / descriptions so prompt editors use human-friendly naming consistently
-  - improved prompt-editor helper text, context descriptions, and reset/save feedback on Windows + macOS
-  - normalized prompt context handling so friendly UI labels stay compatible with existing prompt storage behavior
+  - added shared daemon-status copy helpers for concise non-overlay labels, loading guidance and error recovery hints
+  - improved macOS menu bar status + hint text for loading, warmup, missing API keys, busy states and timeout-style failures
+  - improved Windows tray titles so they reflect the latest state text even when the state itself does not change
+  - aligned Windows tray microcopy with the newer app wording and made status titles more descriptive / accessible
+  - started passing clearer friendly error labels from daemon timeout / worker failure paths instead of falling back to generic `Error` everywhere
 - Validation:
-  - `pytest tests/test_local_backend_ui.py tests/test_custom_prompts.py tests/test_settings_windows_prompts.py tests/test_settings_windows_load.py tests/test_settings_ui.py -q`
-  - `python -m py_compile utils/local_backend.py utils/custom_prompts.py ui/settings_windows.py ui/welcome.py tests/test_local_backend_ui.py tests/test_custom_prompts.py tests/test_settings_windows_prompts.py tests/test_settings_windows_load.py tests/test_settings_ui.py`
-  - `ruff check utils/local_backend.py utils/custom_prompts.py ui/settings_windows.py ui/welcome.py tests/test_local_backend_ui.py tests/test_custom_prompts.py tests/test_settings_windows_prompts.py tests/test_settings_windows_load.py tests/test_settings_ui.py`
+  - `pytest tests/test_daemon_status_feedback.py tests/test_menubar.py tests/test_windows_race_conditions.py -q`
+  - `python -m py_compile ui/daemon_status_feedback.py ui/menubar.py pulsescribe_daemon.py pulsescribe_windows.py tests/test_daemon_status_feedback.py tests/test_menubar.py tests/test_windows_race_conditions.py`
+  - `ruff check ui/daemon_status_feedback.py ui/menubar.py pulsescribe_daemon.py pulsescribe_windows.py tests/test_daemon_status_feedback.py tests/test_menubar.py tests/test_windows_race_conditions.py`
+
+Previous pass - advanced local settings + prompt editor UX (`ui/settings_windows.py`, `ui/welcome.py`, `utils/local_backend.py`, `utils/custom_prompts.py`)
+- Added backend-specific guidance / visibility improvements for local settings and clearer prompt-editor labels, hints and feedback.
 
 Previous pass - logs / transcripts UX closure (`ui/welcome.py`, `ui/settings_windows.py`)
 - Added shared logs/transcripts copy helpers and improved manual feedback, labels, empty states and transcript count wording.
@@ -71,9 +71,9 @@ Previous pass - Onboarding / shared setup UX
 - Improved Windows onboarding guidance, hotkey capture discoverability, safe dictation test messaging, shared permission card wording, and Windows focus/placeholder styling.
 
 Next worthwhile UX areas
-1. transient daemon / retry states outside the overlay
-- clearer recovery messaging when startup, provider initialization, or background reconnects fail
-2. vocabulary editor guidance
+1. vocabulary editor guidance
 - stronger limit feedback, duplicate cleanup hints, and clearer save / unchanged states
-3. final polish for secondary settings surfaces
+2. final polish for secondary settings surfaces
 - refine tab wording, display / clipboard tradeoff hints, and a last responsive-spacing / hierarchy pass on smaller windows
+3. onboarding daemon handoff / retry polish
+- especially Windows test-dictation connect / stop / retry messaging when the daemon is slow or unavailable

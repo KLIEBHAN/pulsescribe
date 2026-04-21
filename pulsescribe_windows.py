@@ -73,6 +73,7 @@ from utils.subprocess_io import start_stream_drain_thread
 from whisper_platform import get_clipboard, get_sound_player
 from config import INTERIM_FILE, get_input_device, WARM_STREAM_QUEUE_SIZE
 from providers import get_provider
+from ui.daemon_status_feedback import build_daemon_status_label, build_daemon_tray_title
 
 # Lazy imports für optionale Features
 pystray = None
@@ -258,6 +259,7 @@ class PulseScribeWindows:
 
         # Components
         self._tray = None
+        self._last_status_text: str | None = None
         self._hotkey_listeners: list = []  # Mehrere Listener (toggle + hold)
         self._recording_thread = None
         self._recording_action_lock = threading.RLock()  # Start/Stop atomar halten
@@ -341,13 +343,15 @@ class PulseScribeWindows:
         """Setzt State und aktualisiert Tray-Icon + Overlay."""
         with self._state_lock:
             old_state = self._state
+            old_text = self._last_status_text
             self._state = state
+            self._last_status_text = text
             self._state_generation += 1
 
         state_changed = old_state != state
+        text_changed = old_text != text
         if state_changed:
             logger.info(f"State: {old_state.value} → {state.value}")
-            self._update_tray_icon()
 
             # Watchdog-Management (wie macOS)
             if state == AppState.TRANSCRIBING:
@@ -355,8 +359,8 @@ class PulseScribeWindows:
             elif state in (AppState.DONE, AppState.ERROR, AppState.IDLE):
                 self._stop_transcribing_watchdog()
 
-        # Overlay bei State-Wechsel oder Text-Update aktualisieren.
-        if state_changed or text is not None:
+        if state_changed or text_changed:
+            self._update_tray_icon(text)
             self._overlay_update_state(state.name, text)
 
     def _overlay_update_state(self, state: str, text: str | None = None) -> None:
@@ -417,7 +421,7 @@ class PulseScribeWindows:
                 logger.error(
                     f"Transcription-Timeout nach {self._transcribing_timeout}s"
                 )
-                self._set_state(AppState.ERROR)
+                self._set_state(AppState.ERROR, "Transcription timed out")
                 self._play_sound("error")
                 self._schedule_idle_if_state_unchanged(2.0)
 
@@ -445,27 +449,15 @@ class PulseScribeWindows:
         if timer is not None:
             timer.cancel()
 
-    def _update_tray_icon(self):
-        """Aktualisiert Tray-Icon basierend auf State."""
+    def _update_tray_icon(self, text: str | None = None):
+        """Aktualisiert Tray-Icon basierend auf State + Status-Text."""
         if self._tray is None or PIL_Image is None or PIL_ImageDraw is None:
             return
 
         color = self.COLORS.get(self.state, (128, 128, 128))
         icon = self._create_icon(color)
         self._tray.icon = icon
-
-        # Tooltip aktualisieren
-        state_text = {
-            AppState.IDLE: "Bereit",
-            AppState.LOADING: "Lade Modell...",
-            AppState.LISTENING: "Warte auf Sprache...",
-            AppState.RECORDING: "Aufnahme...",
-            AppState.TRANSCRIBING: "Transkribiere...",
-            AppState.REFINING: "Verfeinere...",
-            AppState.DONE: "Fertig",
-            AppState.ERROR: "Fehler",
-        }
-        self._tray.title = f"PulseScribe - {state_text.get(self.state, 'Unbekannt')}"
+        self._tray.title = build_daemon_tray_title(self.state, text)
 
     def _create_icon(self, color: tuple[int, int, int]) -> "PIL_Image.Image":
         """Erstellt ein Mikrofon-Icon wie bei macOS (mit Caching)."""
@@ -916,13 +908,16 @@ class PulseScribeWindows:
 
         except ImportError:
             logger.error("sounddevice nicht installiert")
-            self._set_state(AppState.ERROR)
+            self._set_state(AppState.ERROR, "Microphone dependency missing")
             self._play_sound("error")
             time.sleep(1.0)
             self._set_state(AppState.IDLE)
         except Exception as e:
             logger.error(f"Recording-Fehler: {e}")
-            self._set_state(AppState.ERROR)
+            self._set_state(
+                AppState.ERROR,
+                build_daemon_status_label(AppState.ERROR, str(e), max_chars=80),
+            )
             self._play_sound("error")
             time.sleep(1.0)
             self._set_state(AppState.IDLE)
@@ -987,7 +982,10 @@ class PulseScribeWindows:
 
         except Exception as e:
             logger.error(f"Recording-Fehler (Warm): {e}")
-            self._set_state(AppState.ERROR)
+            self._set_state(
+                AppState.ERROR,
+                build_daemon_status_label(AppState.ERROR, str(e), max_chars=80),
+            )
             self._play_sound("error")
             time.sleep(1.0)
             self._set_state(AppState.IDLE)
@@ -1091,7 +1089,10 @@ class PulseScribeWindows:
         except Exception as e:
             error_type = "Import-Fehler" if isinstance(e, ImportError) else "Streaming-Fehler"
             logger.error(f"{error_type}: {e}")
-            self._set_state(AppState.ERROR)
+            self._set_state(
+                AppState.ERROR,
+                build_daemon_status_label(AppState.ERROR, str(e), max_chars=80),
+            )
             self._play_sound("error")
             time.sleep(1.0)
             self._set_state(AppState.IDLE)
@@ -1157,7 +1158,10 @@ class PulseScribeWindows:
             self._warm_stream_draining.set()
             self._warm_stream_armed.clear()
             self._warm_stream_draining.clear()
-            self._set_state(AppState.ERROR)
+            self._set_state(
+                AppState.ERROR,
+                build_daemon_status_label(AppState.ERROR, str(e), max_chars=80),
+            )
             self._play_sound("error")
             time.sleep(1.0)
             self._set_state(AppState.IDLE)
@@ -1236,13 +1240,19 @@ class PulseScribeWindows:
 
         except ImportError as e:
             logger.error(f"Import-Fehler: {e}")
-            self._set_state(AppState.ERROR)
+            self._set_state(
+                AppState.ERROR,
+                build_daemon_status_label(AppState.ERROR, str(e), max_chars=80),
+            )
             self._play_sound("error")
             time.sleep(1.0)
             self._set_state(AppState.IDLE)
         except Exception as e:
             logger.error(f"Transkriptions-Fehler: {e}")
-            self._set_state(AppState.ERROR)
+            self._set_state(
+                AppState.ERROR,
+                build_daemon_status_label(AppState.ERROR, str(e), max_chars=80),
+            )
             self._play_sound("error")
             time.sleep(1.0)
             self._set_state(AppState.IDLE)
@@ -1510,7 +1520,12 @@ class PulseScribeWindows:
             pystray.MenuItem("Beenden", self._quit),
         )
 
-        self._tray = pystray.Icon("pulsescribe", icon, "PulseScribe - Bereit", menu)
+        self._tray = pystray.Icon(
+            "pulsescribe",
+            icon,
+            build_daemon_tray_title(AppState.IDLE),
+            menu,
+        )
 
     def _quit(self):
         """Beendet den Daemon.

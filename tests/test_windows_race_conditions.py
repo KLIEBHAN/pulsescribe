@@ -563,6 +563,31 @@ def test_reload_settings_uses_shared_bool_parsing(monkeypatch):
 
 
 
+def test_set_state_updates_tray_title_when_same_state_text_changes(monkeypatch):
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="local",
+        streaming=False,
+        overlay=False,
+    )
+    daemon._tray = types.SimpleNamespace(icon=None, title="")
+    daemon._create_icon = lambda _color: object()
+    daemon._overlay_update_state = lambda _state, _text=None: None
+
+    monkeypatch.setattr(windows_module, "PIL_Image", object(), raising=False)
+    monkeypatch.setattr(windows_module, "PIL_ImageDraw", object(), raising=False)
+
+    daemon._set_state(AppState.LOADING, "Loading large-v3...")
+    first_title = daemon._tray.title
+
+    daemon._set_state(AppState.LOADING, "Warming up...")
+    second_title = daemon._tray.title
+
+    assert first_title != second_title
+    assert "Loading large-v3" in first_title
+    assert "Warming up local model" in second_title
+
+
 def test_main_reconfigures_logging_and_parses_bool_env_variants(monkeypatch):
     windows_module = _load_windows_module()
 

@@ -98,11 +98,27 @@ def test_build_menubar_status_text_uses_recording_preview() -> None:
     assert status == "Recording: alpha beta gamma"
 
 
+def test_build_menubar_status_text_classifies_missing_api_key_errors() -> None:
+    status = build_menubar_status_text(
+        AppState.ERROR,
+        "OPENAI_API_KEY not set",
+    )
+
+    assert status == "Missing API key"
+
+
 def test_build_menubar_hint_text_guides_error_recovery() -> None:
     hint = build_menubar_hint_text(AppState.ERROR)
 
-    assert "Setup & Settings" in hint
+    assert "return to ready automatically" in hint.lower()
     assert "diagnostics" in hint.lower()
+
+
+def test_build_menubar_hint_text_explains_loading_warmup() -> None:
+    hint = build_menubar_hint_text(AppState.LOADING, "Warming up...")
+
+    assert "offline dictation" in hint.lower()
+    assert "settings change" in hint.lower()
 
 
 def test_set_menu_hint_updates_disabled_hint_item() -> None:
