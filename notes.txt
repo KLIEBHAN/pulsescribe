@@ -14,7 +14,7 @@ Latest pass - final Welcome + settings consistency polish (`ui/settings_apply_fe
   - improved final save feedback so macOS now calls out Dock icon relaunch requirements explicitly
   - widened / reflowed the macOS footer status area and small status-label wrap points for better readability on tighter layouts
   - trimmed redundant Save & Apply wording from secondary card descriptions once footer / section feedback covered it
-  - later hardened shared saved-settings feedback so bool-like `0` / `1` reload flags still map to the correct reload success / failure copy
+  - later hardened shared saved-settings feedback so bool-like `0` / `1` and string flags like `"true"` / `"false"` still map to the correct reload success / failure copy
 - Validation:
   - `pytest tests/test_settings_apply_feedback.py tests/test_secondary_settings_feedback.py tests/test_settings_windows_load.py tests/test_settings_windows_prompts.py tests/test_settings_windows_logs.py tests/test_settings_ui.py tests/test_vocabulary.py tests/test_vocabulary_feedback.py -q`
   - `pytest tests/test_local_backend_ui.py tests/test_custom_prompts.py -q`

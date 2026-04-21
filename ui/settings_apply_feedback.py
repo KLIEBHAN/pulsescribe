@@ -30,6 +30,12 @@ def build_settings_saved_feedback(
     normalized_reload_state = auto_reload_worked
     if auto_reload_worked in (0, 1):
         normalized_reload_state = bool(auto_reload_worked)
+    elif isinstance(auto_reload_worked, str):
+        normalized_text = auto_reload_worked.strip().lower()
+        if normalized_text in {"true", "1", "yes", "on"}:
+            normalized_reload_state = True
+        elif normalized_text in {"false", "0", "no", "off"}:
+            normalized_reload_state = False
 
     if normalized_reload_state is True:
         if relaunch_required:
