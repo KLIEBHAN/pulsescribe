@@ -76,14 +76,23 @@ def test_build_settings_saved_feedback_accepts_integer_reload_flags() -> None:
 
 def test_build_settings_saved_feedback_accepts_string_reload_flags() -> None:
     success_text, success_color = build_settings_saved_feedback(
-        auto_reload_worked=" true ",
+        auto_reload_worked=" True ",
+    )
+    alternate_success_text, alternate_success_color = build_settings_saved_feedback(
+        auto_reload_worked="YES ",
     )
     failure_text, failure_color = build_settings_saved_feedback(
-        auto_reload_worked="false",
+        auto_reload_worked=" false ",
     )
 
     assert success_text == "Settings saved. PulseScribe will reload them automatically."
     assert success_color == "success"
+
+    assert (
+        alternate_success_text
+        == "Settings saved. PulseScribe will reload them automatically."
+    )
+    assert alternate_success_color == "success"
 
     assert failure_text == (
         "Settings saved, but automatic reload failed. Restart PulseScribe to apply the changes."
