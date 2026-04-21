@@ -27,7 +27,11 @@ def build_settings_saved_feedback(
     auto_reload_worked: bool | None = None,
     relaunch_required: bool = False,
 ) -> tuple[str, str]:
-    if auto_reload_worked is True:
+    normalized_reload_state = auto_reload_worked
+    if auto_reload_worked in (0, 1):
+        normalized_reload_state = bool(auto_reload_worked)
+
+    if normalized_reload_state is True:
         if relaunch_required:
             return (
                 "Settings saved. PulseScribe will reload most changes automatically. "
@@ -39,7 +43,7 @@ def build_settings_saved_feedback(
             "success",
         )
 
-    if auto_reload_worked is False:
+    if normalized_reload_state is False:
         if relaunch_required:
             return (
                 "Settings saved, but automatic reload failed. Relaunch PulseScribe "

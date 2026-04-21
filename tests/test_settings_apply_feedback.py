@@ -61,6 +61,19 @@ def test_build_settings_saved_feedback_handles_reload_and_relaunch_cases() -> No
     assert combined_failed_color == "warning"
 
 
+def test_build_settings_saved_feedback_accepts_integer_reload_flags() -> None:
+    success_text, success_color = build_settings_saved_feedback(auto_reload_worked=1)
+    failure_text, failure_color = build_settings_saved_feedback(auto_reload_worked=0)
+
+    assert success_text == "Settings saved. PulseScribe will reload them automatically."
+    assert success_color == "success"
+
+    assert failure_text == (
+        "Settings saved, but automatic reload failed. Restart PulseScribe to apply the changes."
+    )
+    assert failure_color == "warning"
+
+
 def test_build_save_apply_change_hint_switches_between_singular_and_plural() -> None:
     assert build_save_apply_change_hint() == "Click Save & Apply to keep this change."
     assert (
