@@ -8,12 +8,16 @@ from ui.settings_windows import SettingsWindow
 class _FakeEditor:
     def __init__(self, text: str = ""):
         self._text = text
+        self.accessible_description = ""
 
     def toPlainText(self) -> str:
         return self._text
 
     def setPlainText(self, text: str) -> None:
         self._text = text
+
+    def setAccessibleDescription(self, text: str) -> None:
+        self.accessible_description = text
 
 
 class _FakeCombo:
@@ -26,6 +30,32 @@ class _FakeCombo:
 
     def currentData(self) -> str | None:
         return self._data
+
+
+class _FakeLabel:
+    def __init__(self, text: str = ""):
+        self._text = text
+        self._style = ""
+
+    def text(self) -> str:
+        return self._text
+
+    def setText(self, text: str) -> None:
+        self._text = text
+
+    def styleSheet(self) -> str:
+        return self._style
+
+    def setStyleSheet(self, style: str) -> None:
+        self._style = style
+
+
+class _FakeButton:
+    def __init__(self, enabled: bool = True):
+        self.enabled = enabled
+
+    def setEnabled(self, enabled: bool) -> None:
+        self.enabled = enabled
 
 
 def _make_window() -> SettingsWindow:
@@ -205,6 +235,51 @@ def test_save_current_prompt_reuses_returned_saved_state(monkeypatch):
     }
     assert window._prompts_loaded_data == saved_state
     assert window._dirty_prompt_contexts == set()
+
+
+def test_refresh_prompt_editor_feedback_updates_state_label_buttons_and_accessibility():
+    window = _make_window()
+    window._prompt_editor = _FakeEditor("edited email")
+    window._current_prompt_context = "email"
+    window._prompt_context_combo = None
+    window._prompt_context_state_label = _FakeLabel()
+    window._prompt_save_btn = _FakeButton(enabled=False)
+    window._prompt_reset_btn = _FakeButton(enabled=False)
+    window._get_saved_prompt_text_for_context = lambda _context: "saved email"
+    window._get_prompt_default_text_for_context = lambda _context: "default email"
+
+    window._refresh_prompt_editor_feedback()
+
+    assert window._prompt_context_state_label.text() == "Unsaved changes to Email prompt."
+    assert window._prompt_save_btn.enabled is True
+    assert window._prompt_reset_btn.enabled is True
+    assert "Unsaved changes to Email prompt." in window._prompt_editor.accessible_description
+
+
+def test_refresh_vocabulary_action_buttons_disables_save_when_editor_is_unchanged():
+    window = _make_window()
+    window._vocab_editor = _FakeEditor("Alpha\nBeta")
+    window._saved_vocabulary_keywords = ["Alpha", "Beta"]
+    window._vocabulary_loaded = True
+    window._last_vocabulary_signature = (1, 2)
+    window._vocab_save_btn = _FakeButton(enabled=True)
+
+    window._refresh_vocabulary_action_buttons()
+
+    assert window._vocab_save_btn.enabled is False
+
+
+def test_refresh_vocabulary_action_buttons_enables_save_for_unsaved_changes():
+    window = _make_window()
+    window._vocab_editor = _FakeEditor("Alpha\nGamma")
+    window._saved_vocabulary_keywords = ["Alpha", "Beta"]
+    window._vocabulary_loaded = True
+    window._last_vocabulary_signature = (1, 2)
+    window._vocab_save_btn = _FakeButton(enabled=False)
+
+    window._refresh_vocabulary_action_buttons()
+
+    assert window._vocab_save_btn.enabled is True
 
 
 def test_save_all_prompts_saves_only_dirty_contexts_and_keeps_existing_overrides(

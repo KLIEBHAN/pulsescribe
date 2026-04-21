@@ -1,5 +1,23 @@
 UX notes - 2026-04-21
 
+Latest pass - prompt / vocabulary editor follow-through across settings surfaces (`ui/prompt_editor_feedback.py`, `ui/settings_windows.py`, `ui/welcome.py`)
+- Focused on the next central settings flow: editing prompts and vocabulary without losing orientation in compact or resized editor surfaces.
+- Main weaknesses found:
+  1. The prompt editor did not keep a persistent, context-aware state summary, so it was too easy to lose track of whether you were editing defaults, a saved custom prompt, or an unsaved draft.
+  2. Save / reset affordances stayed active even when the action was not meaningful, which added noise and hesitation.
+  3. Vocabulary guidance was decent but the save affordance still stayed more active than necessary, and local-only persistence was not surfaced clearly enough.
+  4. macOS Welcome and Windows Settings diverged too much in prompt-editor guidance after the earlier vocabulary work.
+- Changes in this pass:
+  - added shared prompt-editor state feedback for built-in, saved-custom, restored-default and unsaved-draft states, including lightweight validation for app-mapping lines
+  - upgraded Windows prompt editing with clearer persistent state text, better accessibility descriptions and disabled save/reset actions when no action is needed
+  - upgraded macOS prompt editing with live state feedback and less misleading stale success text while people keep editing drafts
+  - clarified vocabulary hints so local-only storage and save normalization are easier to understand, and disabled the Windows vocabulary save action when the editor is already up to date
+  - kept the underlying prompt/vocabulary save behavior intact while making the editing flow visibly calmer and easier to follow
+- Validation:
+  - `pytest tests/test_prompt_editor_feedback.py tests/test_settings_windows_prompts.py tests/test_settings_ui.py tests/test_vocabulary_feedback.py tests/test_vocabulary.py tests/test_custom_prompts.py -q`
+  - `python -m py_compile ui/prompt_editor_feedback.py ui/settings_windows.py ui/welcome.py tests/test_prompt_editor_feedback.py tests/test_settings_windows_prompts.py tests/test_settings_ui.py tests/test_vocabulary_feedback.py`
+  - `ruff check ui/prompt_editor_feedback.py ui/settings_windows.py ui/welcome.py tests/test_prompt_editor_feedback.py tests/test_settings_windows_prompts.py tests/test_settings_ui.py tests/test_vocabulary_feedback.py`
+
 Latest pass - daemon startup / recovery status clarity outside onboarding (`ui/daemon_status_feedback.py`, `ui/menubar.py`, `pulsescribe_windows.py`)
 - Focused on the next central non-onboarding reliability surface: what users see while the daemon is starting, reconnecting or needs recovery.
 - Main weaknesses found:
@@ -200,9 +218,9 @@ Previous pass - Onboarding / shared setup UX
 - Improved Windows onboarding guidance, hotkey capture discoverability, safe dictation test messaging, shared permission card wording, and Windows focus/placeholder styling.
 
 Next worthwhile UX areas
-1. prompt / vocabulary editing follow-through on real devices
-- verify the current prompt/vocabulary editor guidance, save affordances and wrapping on smaller windows after the latest transcript/history, overlay and daemon-state cleanup
-2. targeted real-device QA across the active dictation flow
-- check how the newer overlay + no-speech + startup/recovery states read on small screens, different DPI/scaling setups and fast repeated retry attempts
-3. deeper daemon recovery flow follow-up
+1. targeted real-device QA across the active dictation + settings flows
+- check how the newer overlay + no-speech + startup/recovery + prompt-editor states read on small screens, different DPI/scaling setups and fast repeated retries / context switches
+2. deeper daemon recovery flow follow-up
 - if revisiting this area, the next likely gain is richer surfaced recovery for invalid hotkeys / permission problems on macOS itself instead of mostly alert/log driven feedback
+3. smaller settings-card simplification passes
+- review whether remaining advanced / provider / clipboard sections can lose more redundant copy now that persistent state feedback is stronger

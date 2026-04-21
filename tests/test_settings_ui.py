@@ -334,6 +334,8 @@ def _make_minimal_welcome_controller():
     ctrl._saved_refine_settings_state = None
     ctrl._saved_display_settings_state = None
     ctrl._vocab_text_view = None
+    ctrl._prompts_state_label = None
+    ctrl._prompts_reset_btn = None
     ctrl._save_custom_prompts = lambda: None
     ctrl._on_settings_changed_callback = None
     ctrl._save_btn = None
@@ -730,6 +732,48 @@ class TestWelcomeSaveSettings:
         assert save_calls[0] == {"prompts": {"default": {"prompt": "custom prompt"}}}
         assert ctrl._prompts_loaded_data == saved_state
         assert ctrl._prompts_status_label.value == "✓ Prompts saved"
+
+    def test_refresh_prompt_editor_feedback_updates_state_and_reset_affordance(
+        self, monkeypatch
+    ):
+        ctrl = _make_minimal_welcome_controller()
+        ctrl._prompts_defaults_data = {
+            "voice_commands": {"instruction": "default vc"},
+            "prompts": {"default": {"prompt": "default prompt"}},
+            "app_contexts": {"Mail": "email"},
+        }
+        ctrl._prompts_loaded_data = {
+            "voice_commands": {"instruction": "default vc"},
+            "prompts": {"default": {"prompt": "default prompt"}},
+            "app_contexts": {"Mail": "email"},
+        }
+        ctrl._prompts_current_context = "default"
+        ctrl._prompts_text_view = _FakeTranscriptsTextView(
+            "default prompt",
+            doc_height=120,
+        )
+        ctrl._prompts_state_label = _FakeStatus("")
+        ctrl._prompts_status_label = _FakeField("✓ Prompts saved")
+        ctrl._prompts_reset_btn = _FakeAppKitButton(enabled=True)
+
+        monkeypatch.setattr("ui.welcome._status_color", lambda color: color)
+
+        ctrl._refresh_prompt_editor_feedback()
+
+        assert ctrl._prompts_state_label.value == "Using the built-in default prompt."
+        assert ctrl._prompts_state_label.color == "text_secondary"
+        assert ctrl._prompts_reset_btn.enabled is False
+
+        ctrl._prompts_text_view._text = "custom prompt"
+        ctrl._on_prompt_editor_text_changed()
+
+        assert ctrl._prompts_cache["default"] == "custom prompt"
+        assert ctrl._prompts_status_label.value == ""
+        assert ctrl._prompts_state_label.value == (
+            "Unsaved custom default prompt. Save to keep this override."
+        )
+        assert ctrl._prompts_state_label.color == "warning"
+        assert ctrl._prompts_reset_btn.enabled is True
 
 
 class TestWelcomeEditorCaches:

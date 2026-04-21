@@ -53,6 +53,7 @@ from ui.secondary_settings_feedback import (
     get_refine_provider_label,
     normalize_refine_provider,
 )
+from ui.prompt_editor_feedback import build_prompt_editor_state_feedback
 from ui.settings_apply_feedback import (
     build_save_apply_change_hint,
     build_settings_loaded_feedback,
@@ -1810,7 +1811,7 @@ class SettingsWindow(QDialog):
 
         card, card_layout = create_card(
             "📝 Custom Prompts",
-            "Fine-tune Refine prompts for each context. Switching contexts keeps your current draft in this window until you save.",
+            "Fine-tune Refine prompts for each context. Switch contexts freely, then save only the visible prompt when you're ready.",
         )
 
         self._prompt_context_combo = QComboBox()
@@ -1823,28 +1824,42 @@ class SettingsWindow(QDialog):
 
         self._prompt_context_help_label = create_status_label("", "text_secondary")
         self._prompt_context_help_label.setFont(QFont("Segoe UI", 9))
+        self._prompt_context_help_label.setAccessibleName("Prompt context help")
         card_layout.addWidget(self._prompt_context_help_label)
+
+        self._prompt_context_state_label = create_status_label("", "text_secondary")
+        self._prompt_context_state_label.setFont(QFont("Segoe UI", 9))
+        self._prompt_context_state_label.setAccessibleName("Prompt editor state")
+        card_layout.addWidget(self._prompt_context_state_label)
 
         self._prompt_editor = QPlainTextEdit()
         self._prompt_editor.setMinimumHeight(200)
+        self._prompt_editor.setAccessibleName("Custom prompt editor")
+        self._prompt_editor.textChanged.connect(self._on_prompt_editor_text_changed)
         card_layout.addWidget(self._prompt_editor)
 
         self._prompt_status = QLabel("")
         self._prompt_status.setFont(QFont("Segoe UI", 9))
+        self._prompt_status.setWordWrap(True)
+        self._prompt_status.setAccessibleName("Prompt save feedback")
         card_layout.addWidget(self._prompt_status)
 
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 
         reset_btn = QPushButton("Reset to Default")
-        reset_btn.setToolTip("Load the default text for the selected context. Save it if you want to keep that change.")
+        reset_btn.setAccessibleName("Reset current prompt to default")
+        reset_btn.setToolTip("Load the built-in text for the selected context. Save it if you want to keep that change.")
         reset_btn.clicked.connect(self._reset_prompt_to_default)
+        self._prompt_reset_btn = reset_btn
         btn_layout.addWidget(reset_btn)
 
         save_prompt_btn = QPushButton("Save Prompt")
         save_prompt_btn.setObjectName("primary")
+        save_prompt_btn.setAccessibleName("Save current prompt context")
         save_prompt_btn.setToolTip("Save only the currently visible prompt context.")
         save_prompt_btn.clicked.connect(self._save_current_prompt)
+        self._prompt_save_btn = save_prompt_btn
         btn_layout.addWidget(save_prompt_btn)
 
         card_layout.addLayout(btn_layout)
@@ -1854,6 +1869,7 @@ class SettingsWindow(QDialog):
 
         scroll.setWidget(content)
         self._update_prompt_context_ui(self._current_prompt_context)
+        self._refresh_prompt_editor_feedback()
         return scroll
 
     def _build_vocabulary_tab(self) -> QWidget:
@@ -1874,7 +1890,7 @@ class SettingsWindow(QDialog):
         )
 
         vocab_hint = QLabel(
-            "Use one keyword or phrase per line; commas also work. Duplicate entries are merged automatically on save."
+            "Use one keyword or phrase per line; commas also work. Duplicate entries are merged automatically on save, and this list stays local to this device."
         )
         vocab_hint.setFont(QFont("Segoe UI", 9))
         vocab_hint.setStyleSheet(f"color: {COLORS['text_hint']};")
@@ -1887,6 +1903,9 @@ class SettingsWindow(QDialog):
         self._vocab_editor.setAccessibleName("Custom vocabulary editor")
         self._vocab_editor.setToolTip(
             "Add one keyword or phrase per line. Commas also work. Duplicate entries are merged automatically on save."
+        )
+        self._vocab_editor.setAccessibleDescription(
+            "Add custom names, product terms, and jargon. One keyword or phrase per line; commas also work."
         )
         self._vocab_editor.textChanged.connect(self._refresh_vocabulary_editor_feedback)
         card_layout.addWidget(self._vocab_editor)
@@ -1907,6 +1926,7 @@ class SettingsWindow(QDialog):
         load_btn.clicked.connect(
             lambda _checked=False: self._load_vocabulary(force=True)
         )
+        self._vocab_reload_btn = load_btn
         btn_layout.addWidget(load_btn)
 
         save_btn = QPushButton("Save Vocabulary")
@@ -1914,6 +1934,7 @@ class SettingsWindow(QDialog):
         save_btn.setAccessibleName("Save custom vocabulary")
         save_btn.setToolTip("Save the normalized custom vocabulary shown in this editor.")
         save_btn.clicked.connect(self._save_vocabulary)
+        self._vocab_save_btn = save_btn
         btn_layout.addWidget(save_btn)
 
         card_layout.addLayout(btn_layout)
@@ -2324,6 +2345,62 @@ class SettingsWindow(QDialog):
                 pass
 
         return normalize_prompt_editor_context(self._current_prompt_context)
+
+    def _current_prompt_editor_text(self) -> str:
+        editor = getattr(self, "_prompt_editor", None)
+        if editor is None:
+            return ""
+        try:
+            return str(editor.toPlainText())
+        except Exception:
+            return ""
+
+    def _get_saved_prompt_text_for_context(self, context: str) -> str:
+        context_key = normalize_prompt_editor_context(context)
+        cached_text = getattr(self, "_prompts_cache", {}).get(context_key)
+        if isinstance(cached_text, str) and context_key not in getattr(
+            self, "_dirty_prompt_contexts", set()
+        ):
+            return cached_text
+        return self._get_prompt_text_for_context(context_key)
+
+    def _refresh_prompt_editor_feedback(self) -> None:
+        context = self._selected_prompt_context()
+        feedback = build_prompt_editor_state_feedback(
+            context,
+            self._current_prompt_editor_text(),
+            saved_text=self._get_saved_prompt_text_for_context(context),
+            default_text=self._get_prompt_default_text_for_context(context),
+        )
+        _set_status_label_if_changed(
+            getattr(self, "_prompt_context_state_label", None),
+            feedback.text,
+            feedback.color,
+        )
+        _set_widget_enabled_if_changed(
+            getattr(self, "_prompt_save_btn", None),
+            feedback.save_enabled,
+        )
+        _set_widget_enabled_if_changed(
+            getattr(self, "_prompt_reset_btn", None),
+            feedback.reset_enabled,
+        )
+        editor = getattr(self, "_prompt_editor", None)
+        if editor is not None:
+            try:
+                editor.setAccessibleDescription(
+                    f"{get_prompt_editor_context_description(context)} {feedback.text}"
+                )
+            except Exception:
+                pass
+
+    def _on_prompt_editor_text_changed(self) -> None:
+        context = getattr(self, "_current_prompt_context", None)
+        if not context:
+            return
+        self._cache_prompt_text(context, self._current_prompt_editor_text())
+        self._set_prompt_status("", "text_secondary")
+        self._refresh_prompt_editor_feedback()
 
     def _update_prompt_context_ui(self, context: str) -> None:
         context_key = normalize_prompt_editor_context(context)
@@ -3155,6 +3232,7 @@ class SettingsWindow(QDialog):
                 )
                 self._set_prompt_status("", "text_secondary")
                 self._prompts_loaded = True
+                self._refresh_prompt_editor_feedback()
             return
 
         try:
@@ -3166,6 +3244,7 @@ class SettingsWindow(QDialog):
                 self._cache_prompt_text(context_key, text, baseline_text=text)
                 self._set_prompt_status("", "text_secondary")
                 self._prompts_loaded = True
+                self._refresh_prompt_editor_feedback()
 
         except Exception as e:
             logger.error(f"Prompt laden fehlgeschlagen: {e}")
@@ -3174,6 +3253,7 @@ class SettingsWindow(QDialog):
                 f"Could not load {label}: {e}",
                 "error",
             )
+            self._refresh_prompt_editor_feedback()
 
     def _save_current_prompt(self):
         """Speichert den aktuellen Prompt."""
@@ -3192,6 +3272,7 @@ class SettingsWindow(QDialog):
 
             if context not in self._dirty_prompt_contexts:
                 self._set_prompt_status(f"No changes to save for {label}.", "text_secondary")
+                self._refresh_prompt_editor_feedback()
                 return
 
             data = self._get_loaded_prompts_data()
@@ -3210,16 +3291,19 @@ class SettingsWindow(QDialog):
             if next_overrides == existing_overrides:
                 self._dirty_prompt_contexts.discard(context)
                 self._set_prompt_status(f"No changes to save for {label}.", "text_secondary")
+                self._refresh_prompt_editor_feedback()
                 return
 
             self._prompts_loaded_data = save_custom_prompts_state(next_overrides)
             self._dirty_prompt_contexts.discard(context)
             self._set_prompt_status(f"Saved {label}.", "success")
+            self._refresh_prompt_editor_feedback()
 
         except Exception as e:
             logger.error(f"Prompt speichern fehlgeschlagen: {e}")
             label = get_prompt_editor_context_label(self._selected_prompt_context())
             self._set_prompt_status(f"Could not save {label}: {e}", "error")
+            self._refresh_prompt_editor_feedback()
 
     def _reset_prompt_to_default(self):
         """Setzt aktuellen Prompt auf Default zurück."""
@@ -3236,11 +3320,13 @@ class SettingsWindow(QDialog):
                     f"Restored the default {label}. Save it to keep this change.",
                     "warning",
                 )
+                self._refresh_prompt_editor_feedback()
 
         except Exception as e:
             logger.error(f"Reset fehlgeschlagen: {e}")
             label = get_prompt_editor_context_label(self._selected_prompt_context())
             self._set_prompt_status(f"Could not reset {label}: {e}", "error")
+            self._refresh_prompt_editor_feedback()
 
     def _set_prompt_status(self, text: str, color: str):
         """Setzt Status-Text mit Farbe."""
@@ -3260,6 +3346,8 @@ class SettingsWindow(QDialog):
 
             dirty_contexts = set(getattr(self, "_dirty_prompt_contexts", set()))
             if not dirty_contexts:
+                if getattr(self, "_prompts_loaded", False):
+                    self._refresh_prompt_editor_feedback()
                 return
 
             from utils.custom_prompts import (
@@ -3287,14 +3375,17 @@ class SettingsWindow(QDialog):
             if next_overrides == existing_overrides:
                 self._dirty_prompt_contexts.difference_update(dirty_contexts)
                 logger.info("Prompts unverändert, prompts.toml rewrite übersprungen")
+                self._refresh_prompt_editor_feedback()
                 return
 
             self._prompts_loaded_data = save_custom_prompts_state(next_overrides)
             self._dirty_prompt_contexts.difference_update(dirty_contexts)
             logger.info(f"Prompts gespeichert: {sorted(dirty_contexts)}")
+            self._refresh_prompt_editor_feedback()
 
         except Exception as e:
             logger.error(f"Prompts speichern fehlgeschlagen: {e}")
+            self._refresh_prompt_editor_feedback()
 
     def _toggle_logs_auto_refresh(self, state: int):
         """Schaltet Auto-Refresh für Logs ein/aus."""
@@ -3710,6 +3801,20 @@ class SettingsWindow(QDialog):
             saved_keywords=self._get_saved_vocabulary_keywords(),
         )
         _set_status_label_if_changed(getattr(self, "_vocab_status", None), text, color)
+        self._refresh_vocabulary_action_buttons()
+
+    def _refresh_vocabulary_action_buttons(self) -> None:
+        analysis = analyze_vocabulary_text(self._current_vocabulary_raw_text())
+        saved_keywords = self._get_saved_vocabulary_keywords()
+        loaded = bool(getattr(self, "_vocabulary_loaded", False))
+        can_save = bool(
+            analysis.keywords != saved_keywords
+            or ((not loaded) and bool(analysis.keywords))
+        )
+        _set_widget_enabled_if_changed(
+            getattr(self, "_vocab_save_btn", None),
+            can_save,
+        )
 
     def _load_vocabulary(self, *, force: bool = False):
         """Lädt Vocabulary aus Datei."""
@@ -3742,6 +3847,7 @@ class SettingsWindow(QDialog):
             )
             self._vocabulary_loaded = True
             self._last_vocabulary_signature = signature
+            self._refresh_vocabulary_action_buttons()
         except Exception as e:
             logger.error(f"Vocabulary laden fehlgeschlagen: {e}")
             _set_status_label_if_changed(
@@ -3749,6 +3855,7 @@ class SettingsWindow(QDialog):
                 f"Could not load the vocabulary: {e}",
                 "error",
             )
+            self._refresh_vocabulary_action_buttons()
 
     def _save_vocabulary(self):
         """Speichert Vocabulary in Datei."""
@@ -3773,6 +3880,7 @@ class SettingsWindow(QDialog):
                     status_text,
                     status_color,
                 )
+                self._refresh_vocabulary_action_buttons()
                 return
 
             vocab, _warnings, new_signature = save_vocabulary_state(analysis.keywords)
@@ -3794,6 +3902,7 @@ class SettingsWindow(QDialog):
                 status_text,
                 status_color,
             )
+            self._refresh_vocabulary_action_buttons()
         except Exception as e:
             logger.error(f"Vocabulary speichern fehlgeschlagen: {e}")
             _set_status_label_if_changed(
@@ -3801,6 +3910,7 @@ class SettingsWindow(QDialog):
                 f"Could not save the vocabulary: {e}",
                 "error",
             )
+            self._refresh_vocabulary_action_buttons()
 
     def _refresh_logs(self) -> bool:
         """Aktualisiert Log-Anzeige."""

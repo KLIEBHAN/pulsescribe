@@ -18,6 +18,7 @@ from ui.logs_panel_feedback import (
     build_transcripts_hint_text,
     build_transcripts_load_error_text,
 )
+from ui.prompt_editor_feedback import build_prompt_editor_state_feedback
 from ui.secondary_settings_feedback import (
     build_display_settings_feedback,
     build_refine_model_guidance,
@@ -586,6 +587,12 @@ class WelcomeController:
         self._restart_handler = None
         self._prompts_defaults_data: dict | None = None
         self._prompts_loaded_data: dict | None = None
+        self._prompts_text_view = None
+        self._prompts_hint_label = None
+        self._prompts_state_label = None
+        self._prompts_status_label = None
+        self._prompts_reset_btn = None
+        self._prompts_text_change_handler = None
         self._prompt_text_cache: dict[str, str] = {}
         self._prompt_text_cache_source: dict | None = None
         self._prompt_defaults_text_cache: dict[str, str] = {}
@@ -2784,7 +2791,7 @@ class WelcomeController:
             NSMakeRect(base_x, card_y + card_height - 46, content_width, 14)
         )
         desc.setStringValue_(
-            "Fine-tune Refine prompts by context. Draft changes stay here until you click Save & Apply."
+            "Fine-tune Refine prompts by context. Switch contexts freely, then use Save & Apply when you're ready."
         )
         desc.setBezeled_(False)
         desc.setDrawsBackground_(False)
@@ -2824,6 +2831,10 @@ class WelcomeController:
         reset_btn.setTitle_("Reset to Default")
         reset_btn.setBezelStyle_(NSBezelStyleRounded)
         reset_btn.setFont_(NSFont.systemFontOfSize_(10))
+        _set_tooltip_if_supported(
+            reset_btn,
+            "Load the built-in text for the selected context. Save & Apply if you want to keep that change.",
+        )
         parent_view.addSubview_(reset_btn)
         self._prompts_reset_btn = reset_btn
 
@@ -2853,6 +2864,10 @@ class WelcomeController:
         text_view.setVerticallyResizable_(True)
         text_view.setHorizontallyResizable_(False)
         text_view.setAllowsUndo_(True)  # CMD+Z / CMD+Shift+Z
+        _set_tooltip_if_supported(
+            text_view,
+            "Edit the selected prompt context here. Draft changes stay in this window until you click Save & Apply.",
+        )
         tc = text_view.textContainer()
         if tc is not None:
             tc.setWidthTracksTextView_(True)
@@ -2879,6 +2894,19 @@ class WelcomeController:
         hint_label.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.5))
         parent_view.addSubview_(hint_label)
         self._prompts_hint_label = hint_label
+
+        state_label = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(base_x, card_y + 34, content_width, 14)
+        )
+        state_label.setStringValue_("")
+        state_label.setBezeled_(False)
+        state_label.setDrawsBackground_(False)
+        state_label.setEditable_(False)
+        state_label.setSelectable_(False)
+        state_label.setFont_(NSFont.systemFontOfSize_(10))
+        state_label.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6))
+        parent_view.addSubview_(state_label)
+        self._prompts_state_label = state_label
 
         # Status-Label
         status_label = NSTextField.alloc().initWithFrame_(
@@ -2911,18 +2939,21 @@ class WelcomeController:
                 self._prompts_hint_label,
                 get_prompt_editor_context_description(new_ctx),
             )
+            _set_string_value_if_changed(self._prompts_status_label, "")
 
             if new_ctx in self._prompts_cache:
                 _set_text_view_string_if_changed(
                     self._prompts_text_view,
                     self._prompts_cache[new_ctx],
                 )
+                self._refresh_prompt_editor_feedback()
                 return
 
             _set_text_view_string_if_changed(
                 self._prompts_text_view,
                 self._get_prompt_editor_text_for_context(new_ctx),
             )
+            self._refresh_prompt_editor_feedback()
 
         def on_reset(_sender) -> None:
             ctx = normalize_prompt_editor_context(
@@ -2936,6 +2967,7 @@ class WelcomeController:
                 self._prompts_status_label,
                 f"Restored default {get_prompt_editor_context_label(ctx)}. {build_save_apply_change_hint()}",
             )
+            self._refresh_prompt_editor_feedback()
 
         # Handler-Klasse für ObjC
         class _PromptsActionHandler(objc.lookUpClass("NSObject")):
@@ -2965,6 +2997,19 @@ class WelcomeController:
         )
         self._prompts_reset_handler = reset_handler
 
+        if _TextChangeHandler is not None:
+            prompts_change_handler = _TextChangeHandler.alloc().initWithController_method_(
+                self, "_on_prompt_editor_text_changed"
+            )
+            try:
+                text_view.setDelegate_(prompts_change_handler)
+            except Exception:
+                prompts_change_handler = None
+            self._prompts_text_change_handler = prompts_change_handler
+        else:
+            self._prompts_text_change_handler = None
+
+        self._refresh_prompt_editor_feedback()
         return card_y - CARD_SPACING
 
     def _build_vocabulary_card(
@@ -3012,7 +3057,7 @@ class WelcomeController:
             NSMakeRect(base_x, card_y + card_height - 46, content_width, 14)
         )
         desc.setStringValue_(
-            "Add names, product terms, and jargon that PulseScribe should recognize more reliably. Changes are saved with Save & Apply."
+            "Add names, product terms, and jargon that PulseScribe should recognize more reliably. Changes are saved with Save & Apply and stay local to this device."
         )
         desc.setBezeled_(False)
         desc.setDrawsBackground_(False)
@@ -3153,6 +3198,55 @@ class WelcomeController:
             data=prompt_data,
             text_cache=self._get_prompt_text_cache(prompt_data, defaults=defaults),
         )
+
+    def _current_prompt_editor_text(self) -> str:
+        text_view = getattr(self, "_prompts_text_view", None)
+        if text_view is None:
+            return ""
+        try:
+            return str(text_view.string() or "")
+        except Exception:
+            return ""
+
+    def _get_saved_prompt_editor_text_for_context(self, context: str) -> str:
+        return self._get_prompt_editor_text_for_context(
+            self._prompt_editor_context_key(context)
+        )
+
+    def _refresh_prompt_editor_feedback(self) -> None:
+        context = getattr(self, "_prompts_current_context", "default")
+        feedback = build_prompt_editor_state_feedback(
+            context,
+            self._current_prompt_editor_text(),
+            saved_text=self._get_saved_prompt_editor_text_for_context(context),
+            default_text=self._get_prompt_editor_text_for_context(context, defaults=True),
+        )
+        _apply_status_text(
+            getattr(self, "_prompts_state_label", None),
+            feedback.text,
+            feedback.color,
+        )
+        reset_btn = getattr(self, "_prompts_reset_btn", None)
+        if reset_btn is not None:
+            try:
+                enabled_getter = getattr(reset_btn, "isEnabled", None)
+                current_enabled = (
+                    bool(enabled_getter()) if callable(enabled_getter) else None
+                )
+                if current_enabled != feedback.reset_enabled:
+                    reset_btn.setEnabled_(feedback.reset_enabled)
+            except Exception:
+                pass
+
+    def _on_prompt_editor_text_changed(self) -> None:
+        context = getattr(self, "_prompts_current_context", None)
+        if not context:
+            return
+        if not hasattr(self, "_prompts_cache"):
+            self._prompts_cache = {}
+        self._prompts_cache[context] = self._current_prompt_editor_text()
+        _set_string_value_if_changed(getattr(self, "_prompts_status_label", None), "")
+        self._refresh_prompt_editor_feedback()
 
     def _get_loaded_vocabulary_keywords(self, *, force: bool = False) -> list[str]:
         cached = getattr(self, "_loaded_vocabulary_keywords", None)
@@ -5372,6 +5466,7 @@ class WelcomeController:
                     and self._prompts_status_label
                 ):
                     self._prompts_status_label.setStringValue_("✓ Prompts unchanged")
+                self._refresh_prompt_editor_feedback()
                 return
 
             try:
@@ -5387,6 +5482,7 @@ class WelcomeController:
                     and self._prompts_status_label
                 ):
                     self._prompts_status_label.setStringValue_("✓ Prompts saved")
+                self._refresh_prompt_editor_feedback()
             except Exception as e:
                 log.warning(f"Could not save custom prompts: {e}")
                 if (
@@ -5394,6 +5490,7 @@ class WelcomeController:
                     and self._prompts_status_label
                 ):
                     self._prompts_status_label.setStringValue_(f"Error: {e}")
+                self._refresh_prompt_editor_feedback()
         else:
             if not existing_overrides:
                 log.info("Custom prompts unchanged, defaults already active")
@@ -5402,6 +5499,7 @@ class WelcomeController:
                     and self._prompts_status_label
                 ):
                     self._prompts_status_label.setStringValue_("✓ Prompts unchanged")
+                self._refresh_prompt_editor_feedback()
                 return
             # Alles auf Default → Datei löschen falls vorhanden
             from utils.custom_prompts import reset_to_defaults
@@ -5411,6 +5509,7 @@ class WelcomeController:
             log.info("All prompts reset to defaults, removed prompts.toml")
             if hasattr(self, "_prompts_status_label") and self._prompts_status_label:
                 self._prompts_status_label.setStringValue_("✓ Reset to defaults")
+            self._refresh_prompt_editor_feedback()
 
     def _restart_application(self) -> None:
         """Speichert Settings und startet die Applikation neu."""
