@@ -388,6 +388,21 @@ class TestDaemonMode(unittest.TestCase):
         self.assertIsNotNone(result_msg)
         self.assertEqual(result_msg.payload, "")
 
+    def test_handle_transcript_result_uses_no_speech_feedback_for_empty_transcript(self):
+        daemon = PulseScribeDaemon(mode="openai")
+
+        with (
+            patch.object(daemon, "_enter_no_speech_state") as mock_no_speech,
+            patch.object(
+                daemon,
+                "_apply_pending_hotkey_reconfigure_if_safe",
+            ) as mock_apply_pending,
+        ):
+            daemon._handle_transcript_result("")
+
+        mock_no_speech.assert_called_once_with()
+        mock_apply_pending.assert_not_called()
+
     def test_recording_worker_local_keeps_trailing_audio_and_pads_tail(self):
         """Local mode: Trimming darf leise Enden nicht abschneiden; zusätzlich wird Tail-Padding angehängt."""
         import numpy as np
@@ -549,6 +564,15 @@ class TestWatchdogTimer(unittest.TestCase):
 
         with patch.object(daemon, "_stop_transcribing_watchdog") as mock_stop:
             daemon._update_state(AppState.ERROR)
+            mock_stop.assert_called_once()
+
+    def test_watchdog_stops_on_no_speech_state(self):
+        """Watchdog-Timer wird bei neutralem No-Speech-Feedback gestoppt."""
+        daemon = PulseScribeDaemon(mode="local")
+        daemon._current_state = AppState.TRANSCRIBING
+
+        with patch.object(daemon, "_stop_transcribing_watchdog") as mock_stop:
+            daemon._update_state(AppState.NO_SPEECH)
             mock_stop.assert_called_once()
 
     def test_watchdog_stops_on_idle_state(self):

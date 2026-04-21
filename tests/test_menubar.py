@@ -107,6 +107,16 @@ def test_build_menubar_status_text_classifies_missing_api_key_errors() -> None:
     assert status == "Missing API key"
 
 
+def test_build_menubar_status_text_covers_no_speech_feedback() -> None:
+    status = build_menubar_status_text(AppState.NO_SPEECH)
+    hint = build_menubar_hint_text(AppState.NO_SPEECH)
+    title = build_menubar_title(AppState.NO_SPEECH)
+
+    assert status == "No speech detected"
+    assert "try again" in hint.lower()
+    assert title.startswith(f"{MENUBAR_ICONS[AppState.NO_SPEECH]} No speech")
+
+
 def test_build_menubar_hint_text_guides_error_recovery() -> None:
     hint = build_menubar_hint_text(AppState.ERROR)
 

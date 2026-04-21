@@ -252,6 +252,7 @@ class SoundWaveView:
         self._color_transcribing = _get_overlay_color(255, 177, 66)
         self._color_refining = _get_overlay_color(156, 39, 176)
         self._color_success = _get_overlay_color(51, 217, 178)
+        self._color_no_speech = _get_overlay_color(255, 177, 66)
         self._color_error = _get_overlay_color(255, 71, 87)
         self._color_loading = _get_overlay_color(66, 165, 245)  # Material Blue 400
 
@@ -508,6 +509,13 @@ class SoundWaveView:
         self.stop_animating()
         self.current_animation = "success"
         self.set_bar_color(self._color_success)
+        self._start_done_timer()
+
+    def start_no_speech_animation(self) -> None:
+        """Kurze Hinweis-Animation für leere / stille Ergebnisse."""
+        self.stop_animating()
+        self.current_animation = "no_speech"
+        self.set_bar_color(self._color_no_speech)
         self._start_done_timer()
 
     def start_error_animation(self) -> None:
@@ -1100,6 +1108,7 @@ class OverlayController:
             "muted": NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6),
             "recording": NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.9),
             "ghost": NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.5),
+            "warning": _get_overlay_color(255, 177, 66),
             "error": _get_overlay_color(255, 71, 87),
         }
         self._text_font_key = "default"
@@ -1228,6 +1237,18 @@ class OverlayController:
                 text=display_text,
                 font_key="default",
                 color_key="default",
+            )
+            if state_changed:
+                self._fade_in()
+                self._start_fade_out_timer()
+
+        elif state == AppState.NO_SPEECH:
+            if state_changed:
+                self._wave_view.start_no_speech_animation()
+            self._apply_text_presentation(
+                text=build_overlay_feedback_text("NO_SPEECH", text),
+                font_key="default",
+                color_key="warning",
             )
             if state_changed:
                 self._fade_in()

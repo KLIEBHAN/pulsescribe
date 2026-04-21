@@ -96,12 +96,13 @@ STATE_COLORS = {
     "REFINING": QColor(156, 39, 176),  # Lila
     "LOADING": QColor(66, 165, 245),  # Material Blue 400
     "DONE": QColor(76, 175, 80),  # Grün
+    "NO_SPEECH": QColor(255, 177, 66),  # Amber
     "ERROR": QColor(255, 71, 87),  # Rot
 }
 
 STATE_TEXTS = DEFAULT_OVERLAY_STATE_TEXTS
 
-# Auto-Hide Timer für DONE/ERROR
+# Auto-Hide Timer für kurze Ergebnis- / Fehler-Feedbacks
 FEEDBACK_DISPLAY_MS = 800  # Millisekunden
 INTERIM_POLL_MAX_CHARS = 512  # Begrenztes Tail-Read für niedrige Polling-Last
 INTERIM_POLL_INTERVAL_MS = 200  # Polling nur während RECORDING
@@ -431,6 +432,7 @@ class PySide6OverlayWidget(QWidget):
         styles = getattr(self, "_label_styles", None)
         if styles is None:
             done = STATE_COLORS["DONE"]
+            no_speech = STATE_COLORS["NO_SPEECH"]
             error = STATE_COLORS["ERROR"]
             styles = {
                 "default": "QLabel { color: white; background: transparent; }",
@@ -441,6 +443,11 @@ class PySide6OverlayWidget(QWidget):
                 "DONE": (
                     "QLabel { color: "
                     f"rgb({done.red()}, {done.green()}, {done.blue()}); "
+                    "background: transparent; }"
+                ),
+                "NO_SPEECH": (
+                    "QLabel { color: "
+                    f"rgb({no_speech.red()}, {no_speech.green()}, {no_speech.blue()}); "
                     "background: transparent; }"
                 ),
                 "ERROR": (
@@ -578,8 +585,8 @@ class PySide6OverlayWidget(QWidget):
                 self._fade_in()
                 self._start_animation()
 
-            # Auto-Hide für DONE/ERROR
-            if state in ("DONE", "ERROR") and state_changed:
+            # Auto-Hide für kurze Ergebnis- / Fehler-Feedbacks
+            if state in ("DONE", "NO_SPEECH", "ERROR") and state_changed:
                 self._start_fade_out_timer()
 
     @Slot(float)
@@ -604,7 +611,7 @@ class PySide6OverlayWidget(QWidget):
 
         if italic:
             style_key = "italic"
-        elif state in ("DONE", "ERROR"):
+        elif state in ("DONE", "NO_SPEECH", "ERROR"):
             style_key = state
         else:
             style_key = "default"
@@ -646,7 +653,7 @@ class PySide6OverlayWidget(QWidget):
         """Gibt ein state-abhängiges Frame-Intervall zurück."""
         if self._state == "RECORDING":
             return FRAME_MS
-        if self._state in ("DONE", "ERROR"):
+        if self._state in ("DONE", "NO_SPEECH", "ERROR"):
             return FRAME_MS_FEEDBACK
         return FRAME_MS_ACTIVE
 

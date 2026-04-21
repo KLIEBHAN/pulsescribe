@@ -47,8 +47,22 @@ def test_build_daemon_status_hint_returns_targeted_recovery_guidance() -> None:
     ).lower()
 
 
+def test_build_daemon_status_helpers_cover_no_speech_retry_guidance() -> None:
+    assert build_daemon_status_label(AppState.NO_SPEECH) == "No speech detected"
+    hint = build_daemon_status_hint(AppState.NO_SPEECH, "empty transcript")
+    assert "try again" in hint.lower()
+    assert "microphone" in hint.lower()
+
+
 def test_build_daemon_tray_title_combines_status_with_recovery_help() -> None:
     title = build_daemon_tray_title(AppState.ERROR, "OPENAI_API_KEY not set")
 
     assert title.startswith("PulseScribe — Missing API key")
+    assert "try again" in title.lower()
+
+
+def test_build_daemon_tray_title_includes_no_speech_hint() -> None:
+    title = build_daemon_tray_title(AppState.NO_SPEECH)
+
+    assert title.startswith("PulseScribe — No speech detected")
     assert "try again" in title.lower()

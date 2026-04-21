@@ -6,6 +6,7 @@ import threading
 import time
 import types
 from pathlib import Path
+from unittest.mock import patch
 
 from utils.state import AppState
 import utils.preferences as preferences
@@ -586,6 +587,50 @@ def test_set_state_updates_tray_title_when_same_state_text_changes(monkeypatch):
     assert first_title != second_title
     assert "Loading large-v3" in first_title
     assert "Warming up local model" in second_title
+
+
+def test_start_recording_allows_retry_from_no_speech_state(monkeypatch):
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai",
+        streaming=False,
+        overlay=False,
+    )
+    daemon._state = AppState.NO_SPEECH
+    daemon._play_sound = lambda _name: None
+
+    fake_thread = types.SimpleNamespace(start=lambda: None)
+    thread_calls: list[dict[str, object]] = []
+
+    def _fake_thread_factory(*args, **kwargs):
+        thread_calls.append(kwargs)
+        return fake_thread
+
+    monkeypatch.setattr(windows_module.threading, "Thread", _fake_thread_factory)
+
+    assert daemon._start_recording() is True
+    assert daemon.state == AppState.LISTENING
+    assert thread_calls
+
+
+def test_handle_no_speech_result_preserves_ipc_empty_result_behavior():
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai",
+        streaming=False,
+        overlay=False,
+    )
+    daemon._ipc_test_cmd_id = "cmd-1"
+    daemon._ipc_server = object()
+
+    with (
+        patch.object(daemon, "_set_state") as mock_set_state,
+        patch.object(daemon, "_enter_no_speech_state") as mock_no_speech,
+    ):
+        daemon._handle_no_speech_result()
+
+    mock_set_state.assert_called_once_with(AppState.IDLE)
+    mock_no_speech.assert_not_called()
 
 
 def test_main_reconfigures_logging_and_parses_bool_env_variants(monkeypatch):

@@ -14,6 +14,7 @@ DEFAULT_OVERLAY_STATE_TEXTS = {
     "REFINING": "Refining…",
     "LOADING": "Preparing transcription…",
     "DONE": "Transcript pasted",
+    "NO_SPEECH": "No speech detected",
     "ERROR": "Error",
 }
 
@@ -24,6 +25,7 @@ OVERLAY_FEEDBACK_DEFAULTS = {
     "REFINING": "Polishing wording and punctuation…",
     "LOADING": "Preparing transcription…",
     "DONE": "Transcript pasted",
+    "NO_SPEECH": "No speech detected — try again",
     "ERROR": "Something went wrong",
 }
 
@@ -86,6 +88,19 @@ def _build_done_feedback_text(detail: str, *, max_chars: int) -> str:
     return format_overlay_status_text("DONE", detail, max_chars=max_chars)
 
 
+def _build_no_speech_feedback_text(detail: str, *, max_chars: int) -> str:
+    label = _normalize_overlay_text(
+        build_daemon_status_label(
+            AppState.NO_SPEECH,
+            detail,
+            max_chars=max_chars,
+        )
+    )
+    if label:
+        return _truncate_overlay_text(label, max_chars)
+    return _truncate_overlay_text(OVERLAY_FEEDBACK_DEFAULTS["NO_SPEECH"], max_chars)
+
+
 def _build_error_feedback_text(detail: str, *, max_chars: int) -> str:
     label = _normalize_overlay_text(
         build_daemon_status_label(
@@ -130,6 +145,8 @@ def build_overlay_feedback_text(
             return _build_loading_feedback_text(normalized_text, max_chars=max_chars)
         if normalized_state == "DONE":
             return _build_done_feedback_text(normalized_text, max_chars=max_chars)
+        if normalized_state == "NO_SPEECH":
+            return _build_no_speech_feedback_text(normalized_text, max_chars=max_chars)
         if normalized_state == "ERROR":
             return _build_error_feedback_text(normalized_text, max_chars=max_chars)
         return format_overlay_status_text(

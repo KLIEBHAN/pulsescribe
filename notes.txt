@@ -1,5 +1,24 @@
 UX notes - 2026-04-21
 
+Latest pass - no-speech / silent-result feedback in the everyday dictation flow (`pulsescribe_daemon.py`, `pulsescribe_windows.py`, `ui/daemon_status_feedback.py`, overlay surfaces)
+- Focused on the everyday empty-result path next, instead of revisiting the recent overlay-copy or onboarding work.
+- Main weaknesses found:
+  1. If a dictation produced no usable transcript, the app often dropped straight back to ready with almost no visible explanation.
+  2. Empty-result outcomes were not clearly separated from successful paste states or real errors across overlay, menu bar and tray surfaces.
+  3. Retry guidance was too implicit after silent/too-short dictations, especially in compact one-line UI surfaces.
+  4. Windows retry behavior was unnecessarily sticky because the temporary feedback state was not modeled explicitly.
+- Changes in this pass:
+  - introduced an explicit neutral `NO_SPEECH` feedback state for daily dictation results without changing the underlying transcription behavior
+  - added shared no-speech labels, hints and tray/menu-bar copy with clearer next-step guidance
+  - updated macOS + Windows overlays to show a brief neutral no-speech result instead of silently disappearing back to ready
+  - kept no-speech feedback visually distinct from success and error states, including clearer icons/colors and accessible overlay text
+  - allowed immediate retry from the temporary Windows no-speech state so the feedback does not block the next dictation attempt
+  - preserved existing onboarding / IPC empty-result behavior on Windows to avoid cross-flow regressions
+- Validation:
+  - `pytest tests/test_daemon_status_feedback.py tests/test_menubar.py tests/test_overlay_feedback.py tests/test_overlay.py tests/test_overlay_windows.py tests/test_overlay_pyside6.py tests/test_daemon_mode.py tests/test_windows_race_conditions.py -q`
+  - `python -m py_compile utils/state.py ui/daemon_status_feedback.py ui/overlay_feedback.py ui/animation.py ui/overlay.py ui/overlay_pyside6.py ui/overlay_windows.py ui/menubar.py pulsescribe_daemon.py pulsescribe_windows.py tests/test_daemon_status_feedback.py tests/test_menubar.py tests/test_overlay_feedback.py tests/test_overlay.py tests/test_overlay_windows.py tests/test_overlay_pyside6.py tests/test_daemon_mode.py tests/test_windows_race_conditions.py`
+  - `ruff check utils/state.py ui/daemon_status_feedback.py ui/overlay_feedback.py ui/animation.py ui/overlay.py ui/overlay_pyside6.py ui/overlay_windows.py ui/menubar.py pulsescribe_daemon.py pulsescribe_windows.py tests/test_daemon_status_feedback.py tests/test_menubar.py tests/test_overlay_feedback.py tests/test_overlay.py tests/test_overlay_windows.py tests/test_overlay_pyside6.py tests/test_daemon_mode.py tests/test_windows_race_conditions.py`
+
 Latest pass - active dictation overlay feedback clarity (`ui/overlay_feedback.py`)
 - Focused on the everyday active-dictation overlay flow next, instead of revisiting the recent transcript-history or onboarding work.
 - Main weaknesses found:
@@ -161,9 +180,9 @@ Previous pass - Onboarding / shared setup UX
 - Improved Windows onboarding guidance, hotkey capture discoverability, safe dictation test messaging, shared permission card wording, and Windows focus/placeholder styling.
 
 Next worthwhile UX areas
-1. no-speech / silent-result feedback in the everyday dictation flow
-- active dictation currently falls back to IDLE very quietly when no usable transcript is produced; the next likely gain is a brief, clearer non-error empty-result state
-2. daemon startup / recovery flow outside onboarding
+1. daemon startup / recovery flow outside onboarding
 - especially first-launch background readiness, recovery after provider failures and clearer next-step guidance when the service is not yet ready
-3. prompt / vocabulary editing follow-through on real devices
+2. prompt / vocabulary editing follow-through on real devices
 - verify the current prompt/vocabulary editor guidance, save affordances and wrapping on smaller windows after the latest transcript/history and overlay cleanup
+3. targeted real-device QA across the active dictation flow
+- check how the newer overlay + no-speech states read on small screens, different DPI/scaling setups and fast repeated retry attempts

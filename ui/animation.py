@@ -225,7 +225,7 @@ class AnimationLogic:
             return (value,) * BAR_COUNT
         if state == "LOADING":
             return tuple(self._calc_loading_normalized(i, t) for i in _BAR_INDEXES)
-        if state == "DONE":
+        if state in ("DONE", "NO_SPEECH"):
             return tuple(self._calc_done_normalized(i, t) for i in _BAR_INDEXES)
         if state == "ERROR":
             value = self._calc_error_normalized(t)

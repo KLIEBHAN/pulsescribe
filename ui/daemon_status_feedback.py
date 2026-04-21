@@ -18,6 +18,7 @@ DEFAULT_DAEMON_STATUS_LABELS = {
     AppState.TRANSCRIBING: "Transcribing",
     AppState.REFINING: "Refining",
     AppState.DONE: "Transcript pasted",
+    AppState.NO_SPEECH: "No speech detected",
     AppState.ERROR: "Something went wrong",
 }
 
@@ -29,6 +30,7 @@ DEFAULT_DAEMON_HINTS = {
     AppState.TRANSCRIBING: "PulseScribe is turning your speech into text.",
     AppState.REFINING: "PulseScribe is polishing punctuation and formatting before paste.",
     AppState.DONE: "Ready for another dictation.",
+    AppState.NO_SPEECH: "Try again and speak a short sentence after the listening prompt.",
     AppState.ERROR: (
         "Try again. PulseScribe will return to ready automatically. "
         "Export diagnostics or open Setup if it keeps happening."
@@ -76,6 +78,28 @@ def _build_loading_label(detail: str, *, prefer_detail: bool) -> str:
     if detail_lower.startswith("loading "):
         return detail.rstrip(".")
     return DEFAULT_DAEMON_STATUS_LABELS[AppState.LOADING]
+
+
+def _build_no_speech_label(detail: str) -> str:
+    if not detail:
+        return DEFAULT_DAEMON_STATUS_LABELS[AppState.NO_SPEECH]
+
+    detail_lower = detail.lower()
+    if _contains_any(
+        detail_lower,
+        (
+            "no speech",
+            "empty transcript",
+            "no transcript",
+            "no audio",
+            "silent",
+            "silence",
+            "kein audio",
+            "keine sprache",
+        ),
+    ):
+        return DEFAULT_DAEMON_STATUS_LABELS[AppState.NO_SPEECH]
+    return detail.rstrip(".")
 
 
 def _build_error_label(detail: str) -> str:
@@ -156,6 +180,9 @@ def build_daemon_status_label(
             return _truncate_status_text(detail, max_chars)
         return _truncate_status_text(DEFAULT_DAEMON_STATUS_LABELS[AppState.DONE], max_chars)
 
+    if normalized_state == AppState.NO_SPEECH:
+        return _truncate_status_text(_build_no_speech_label(detail), max_chars)
+
     if normalized_state == AppState.ERROR:
         return _truncate_status_text(_build_error_label(detail), max_chars)
 
@@ -186,6 +213,16 @@ def build_daemon_status_hint(
             hint = "PulseScribe is preparing the current provider or model."
         else:
             hint = DEFAULT_DAEMON_HINTS[AppState.LOADING]
+        return _truncate_status_text(hint, max_chars)
+
+    if normalized_state == AppState.NO_SPEECH:
+        if _contains_any(
+            detail_lower,
+            ("no audio", "empty transcript", "silent", "silence", "too short"),
+        ):
+            hint = "Try again and speak a little earlier, louder, or closer to the microphone."
+        else:
+            hint = DEFAULT_DAEMON_HINTS[AppState.NO_SPEECH]
         return _truncate_status_text(hint, max_chars)
 
     if normalized_state == AppState.ERROR:
@@ -264,7 +301,7 @@ def build_daemon_tray_title(
         max_chars=max_chars,
     )
 
-    if normalized_state in (AppState.LOADING, AppState.ERROR):
+    if normalized_state in (AppState.LOADING, AppState.NO_SPEECH, AppState.ERROR):
         hint = build_daemon_status_hint(normalized_state, text, max_chars=max_chars)
         summary = f"{label} — {hint}"
     else:

@@ -462,6 +462,9 @@ def test_frame_interval_ms_is_state_aware():
     widget._state = "DONE"
     assert widget._frame_interval_ms() == FRAME_MS_FEEDBACK
 
+    widget._state = "NO_SPEECH"
+    assert widget._frame_interval_ms() == FRAME_MS_FEEDBACK
+
 
 def test_start_animation_uses_state_dependent_interval(monkeypatch):
     widget = PySide6OverlayWidget.__new__(PySide6OverlayWidget)
@@ -581,6 +584,29 @@ def test_on_state_changed_formats_error_feedback_text(monkeypatch):
     PySide6OverlayWidget._on_state_changed(widget, "ERROR", " microphone\nmissing ")
 
     assert seen_calls[-1] == ("ERROR", "Microphone unavailable", False)
+
+
+def test_on_state_changed_formats_no_speech_feedback_text(monkeypatch):
+    widget = PySide6OverlayWidget.__new__(PySide6OverlayWidget)
+    widget._state = "IDLE"
+    widget._text = ""
+    widget._last_state_payload = None
+    seen_calls: list[tuple[str, str, bool]] = []
+    widget._update_label = lambda state, text, italic=False: seen_calls.append(
+        (state, text, italic)
+    )
+    widget._center_on_screen = lambda **_kwargs: None
+    widget._fade_in = lambda: None
+    widget._fade_out = lambda: None
+    widget._start_fade_out_timer = lambda: None
+    widget._start_animation = lambda: None
+    widget.recording_state_changed = types.SimpleNamespace(emit=lambda *_args: None)
+
+    monkeypatch.setattr("ui.overlay_pyside6.time.perf_counter", lambda: 123.0)
+
+    PySide6OverlayWidget._on_state_changed(widget, "NO_SPEECH", "")
+
+    assert seen_calls[-1] == ("NO_SPEECH", "No speech detected — try again", False)
 
 
 def test_animate_frame_skips_repaint_for_subpixel_height_changes(monkeypatch):

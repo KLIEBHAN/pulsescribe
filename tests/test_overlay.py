@@ -601,3 +601,21 @@ def test_overlay_controller_done_state_uses_clear_success_copy():
     OverlayController.update_state(controller, AppState.DONE)
 
     assert seen_presentations[-1]["text"] == "Transcript pasted"
+
+
+def test_overlay_controller_no_speech_state_uses_retry_copy():
+    controller = OverlayController.__new__(OverlayController)
+    controller.window = object()
+    controller._current_state = AppState.IDLE
+    controller._last_state_payload = None
+    controller._feedback_timer = None
+    controller._wave_view = types.SimpleNamespace(start_no_speech_animation=lambda: None)
+    seen_presentations: list[dict[str, object]] = []
+    controller._apply_text_presentation = lambda **kwargs: seen_presentations.append(kwargs)
+    controller._fade_in = lambda: None
+    controller._start_fade_out_timer = lambda: None
+
+    OverlayController.update_state(controller, AppState.NO_SPEECH)
+
+    assert seen_presentations[-1]["text"] == "No speech detected — try again"
+    assert seen_presentations[-1]["color_key"] == "warning"

@@ -11,6 +11,7 @@ class AppState(Enum):
     TRANSCRIBING = "transcribing"
     REFINING = "refining"
     DONE = "done"
+    NO_SPEECH = "no_speech"  # Recording finished but no usable transcript was produced
     ERROR = "error"
 
 

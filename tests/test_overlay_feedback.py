@@ -32,3 +32,15 @@ def test_build_overlay_feedback_text_makes_rtf_done_copy_human_readable() -> Non
         build_overlay_feedback_text("DONE", "✓ (0.3x)")
         == "Transcript pasted • 0.3x realtime"
     )
+
+
+def test_build_overlay_feedback_text_covers_no_speech_defaults() -> None:
+    assert format_overlay_status_text("NO_SPEECH") == "No speech detected"
+    assert (
+        build_overlay_feedback_text("NO_SPEECH")
+        == "No speech detected — try again"
+    )
+    assert (
+        build_overlay_feedback_text("NO_SPEECH", "empty transcript")
+        == "No speech detected"
+    )

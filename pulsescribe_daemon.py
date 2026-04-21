@@ -693,7 +693,7 @@ class PulseScribeDaemon:
         if state == AppState.TRANSCRIBING:
             # Starte Watchdog wenn TRANSCRIBING beginnt
             self._start_transcribing_watchdog()
-        elif state in (AppState.DONE, AppState.ERROR, AppState.IDLE):
+        elif state in (AppState.DONE, AppState.NO_SPEECH, AppState.ERROR, AppState.IDLE):
             # Stoppe Watchdog bei Abschluss
             self._stop_transcribing_watchdog()
 
@@ -946,6 +946,22 @@ class PulseScribeDaemon:
             self._error_reset_timer.invalidate()
             self._error_reset_timer = None
 
+    def _enter_no_speech_state(self, *, delay_seconds: float = 1.2) -> None:
+        """Show a brief neutral no-speech result before returning to ready."""
+        self._last_rtf = None
+        self._recording = False
+        self._hold_state.reset()
+        self._update_state(AppState.NO_SPEECH)
+
+        def reset_to_idle() -> None:
+            if self._current_state == AppState.NO_SPEECH:
+                self._update_state(AppState.IDLE)
+            self._apply_pending_hotkey_reconfigure_if_safe()
+
+        timer = threading.Timer(delay_seconds, reset_to_idle)
+        timer.daemon = True
+        timer.start()
+
     def _handle_transcript_result(self, transcript: str) -> None:
         """Verarbeitet das fertige Transkript: UI-Update, History, Auto-Paste."""
         # Test-Modus: Callback ausführen, kein Auto-Paste
@@ -958,12 +974,10 @@ class PulseScribeDaemon:
             self._apply_pending_hotkey_reconfigure_if_safe()
             return
 
-        # Leeres Transkript: Nichts zu tun
+        # Leeres Transkript: kurzes, neutrales Feedback statt stillem Reset
         if not transcript:
-            self._last_rtf = None  # RTF zurücksetzen
             logger.warning("Leeres Transkript")
-            self._update_state(AppState.IDLE)
-            self._apply_pending_hotkey_reconfigure_if_safe()
+            self._enter_no_speech_state()
             return
 
         # Erfolgreiche Transkription: State → Sound → UI-Flush → History → Paste

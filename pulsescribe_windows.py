@@ -217,6 +217,7 @@ class PulseScribeWindows:
         AppState.TRANSCRIBING: (255, 255, 0),  # Gelb
         AppState.REFINING: (0, 255, 255),  # Cyan
         AppState.DONE: (0, 255, 0),  # Grün
+        AppState.NO_SPEECH: (255, 177, 66),  # Amber
         AppState.ERROR: (255, 0, 0),  # Rot
     }
 
@@ -356,7 +357,7 @@ class PulseScribeWindows:
             # Watchdog-Management (wie macOS)
             if state == AppState.TRANSCRIBING:
                 self._start_transcribing_watchdog()
-            elif state in (AppState.DONE, AppState.ERROR, AppState.IDLE):
+            elif state in (AppState.DONE, AppState.NO_SPEECH, AppState.ERROR, AppState.IDLE):
                 self._stop_transcribing_watchdog()
 
         if state_changed or text_changed:
@@ -408,6 +409,20 @@ class PulseScribeWindows:
         timer = threading.Timer(delay_seconds, _set_idle_if_unchanged)
         timer.daemon = True
         timer.start()
+
+    def _enter_no_speech_state(self, *, delay_seconds: float = 1.2) -> None:
+        """Show a brief neutral no-speech result before returning to ready."""
+        self._set_state(AppState.NO_SPEECH)
+        self._schedule_idle_if_state_unchanged(delay_seconds)
+
+    def _handle_no_speech_result(self, log_message: str = "Leeres Transkript") -> None:
+        """Surface a short no-speech retry hint without changing core behavior."""
+        logger.warning(log_message)
+        if self._ipc_test_cmd_id and self._ipc_server:
+            # Preserve the existing onboarding / IPC empty-result behavior.
+            self._set_state(AppState.IDLE)
+            return
+        self._enter_no_speech_state()
 
     def _start_transcribing_watchdog(self):
         """Startet Watchdog-Timer für hängende Transcription."""
@@ -688,7 +703,7 @@ class PulseScribeWindows:
 
     def _on_hotkey_press(self):
         """Callback wenn Hotkey gedrückt wird (Toggle-Mode)."""
-        if self.state == AppState.IDLE:
+        if self.state in (AppState.IDLE, AppState.NO_SPEECH):
             self._start_recording()
         elif self.state == AppState.LOADING and self._is_prewarm_loading:
             # Pre-Warm LOADING: Ignorieren, System noch nicht bereit
@@ -703,8 +718,8 @@ class PulseScribeWindows:
             logger.debug(f"Hold abgebrochen (Race): {source_id} nicht mehr aktiv")
             return
 
-        # Bereits am Aufnehmen
-        if self.state not in (AppState.IDLE,):
+        # Bereits am Aufnehmen / noch nicht wieder startklar
+        if self.state not in (AppState.IDLE, AppState.NO_SPEECH):
             logger.debug(f"Hold-Recording ignoriert: State={self.state}")
             return
 
@@ -731,8 +746,8 @@ class PulseScribeWindows:
                 logger.debug("Start ignoriert: App wird beendet")
                 return False
 
-            # Idempotenz: nur aus IDLE starten
-            if self.state != AppState.IDLE:
+            # Idempotenz: nur aus Ready-/Retry-Zuständen starten
+            if self.state not in (AppState.IDLE, AppState.NO_SPEECH):
                 logger.debug(f"Start ignoriert: State={self.state}")
                 return False
 
@@ -1080,8 +1095,7 @@ class PulseScribeWindows:
 
                     self._handle_result(transcript)
                 else:
-                    logger.warning("Leeres Transkript")
-                    self._set_state(AppState.IDLE)
+                    self._handle_no_speech_result()
 
             finally:
                 loop.close()
@@ -1144,8 +1158,7 @@ class PulseScribeWindows:
 
                     self._handle_result(transcript)
                 else:
-                    logger.warning("Leeres Transkript")
-                    self._set_state(AppState.IDLE)
+                    self._handle_no_speech_result()
 
             finally:
                 loop.close()
@@ -1174,8 +1187,7 @@ class PulseScribeWindows:
             # Audio-Buffer zusammenfügen
             with self._audio_lock:
                 if not self._audio_buffer:
-                    logger.warning("Kein Audio aufgenommen")
-                    self._set_state(AppState.IDLE)
+                    self._handle_no_speech_result("Kein Audio aufgenommen")
                     return
 
                 audio_data = np.concatenate(self._audio_buffer)
@@ -1235,8 +1247,7 @@ class PulseScribeWindows:
 
                 self._handle_result(transcript)
             else:
-                logger.warning("Leeres Transkript")
-                self._set_state(AppState.IDLE)
+                self._handle_no_speech_result()
 
         except ImportError as e:
             logger.error(f"Import-Fehler: {e}")

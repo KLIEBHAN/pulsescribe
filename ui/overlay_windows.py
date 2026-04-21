@@ -88,6 +88,7 @@ STATE_COLORS = {
     "REFINING": "#9C27B0",  # Lila
     "LOADING": "#42A5F5",  # Blau
     "DONE": "#4CAF50",  # Grün (satter)
+    "NO_SPEECH": "#FFB142",  # Amber
     "ERROR": "#FF4757",  # Rot
 }
 
@@ -558,7 +559,7 @@ class WindowsOverlayController:
             display_text = build_overlay_feedback_text(state, normalized_text)
             label_color = (
                 STATE_COLORS.get(state, "white")
-                if state in ("DONE", "ERROR")
+                if state in ("DONE", "NO_SPEECH", "ERROR")
                 else "white"
             )
             self._set_label_config(
@@ -744,7 +745,7 @@ class WindowsOverlayController:
         """
         if self._state == "RECORDING":
             return FRAME_MS
-        if self._state in ("DONE", "ERROR"):
+        if self._state in ("DONE", "NO_SPEECH", "ERROR"):
             return FRAME_MS_FEEDBACK
         return FRAME_MS_ACTIVE
 

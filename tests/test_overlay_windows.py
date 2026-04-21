@@ -267,7 +267,7 @@ def test_update_interim_text_skips_duplicate_queue_messages(monkeypatch) -> None
     assert controller._direct_interim_until == 10.4 + INTERIM_DIRECT_UPDATE_GRACE_S
 
 
-def test_handle_state_change_uses_feedback_color_for_done_and_error():
+def test_handle_state_change_uses_feedback_color_for_done_no_speech_and_error():
     controller = WindowsOverlayController()
     controller._root = _FakeRoot()
     controller._label = _FakeLabel()
@@ -275,6 +275,10 @@ def test_handle_state_change_uses_feedback_color_for_done_and_error():
     controller._handle_state_change("DONE", None)
     assert controller._label.last_config["text"] == "Transcript pasted"
     assert controller._label.last_config["fg"] == STATE_COLORS["DONE"]
+
+    controller._handle_state_change("NO_SPEECH", None)
+    assert controller._label.last_config["text"] == "No speech detected — try again"
+    assert controller._label.last_config["fg"] == STATE_COLORS["NO_SPEECH"]
 
     controller._handle_state_change("ERROR", "Boom")
     assert controller._label.last_config["text"] == "Error: Boom"
@@ -551,6 +555,9 @@ def test_frame_interval_ms_is_state_aware():
     assert controller._frame_interval_ms() == FRAME_MS_ACTIVE
 
     controller._state = "DONE"
+    assert controller._frame_interval_ms() == FRAME_MS_FEEDBACK
+
+    controller._state = "NO_SPEECH"
     assert controller._frame_interval_ms() == FRAME_MS_FEEDBACK
 
 

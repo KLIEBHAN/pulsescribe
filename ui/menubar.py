@@ -38,6 +38,7 @@ MENUBAR_ICONS = {
     AppState.TRANSCRIBING: "⏳",
     AppState.REFINING: "⏳",  # Refining uses same icon as transcribing for now
     AppState.DONE: "✅",
+    AppState.NO_SPEECH: "🔇",
     AppState.ERROR: "❌",
 }
 MENUBAR_PREVIEW_MAX_CHARS = 20
@@ -51,6 +52,7 @@ MENUBAR_STATE_LABELS = {
     AppState.TRANSCRIBING: "Transcribing…",
     AppState.REFINING: "Refining…",
     AppState.DONE: "Done",
+    AppState.NO_SPEECH: "No speech",
     AppState.ERROR: "Error",
 }
 
