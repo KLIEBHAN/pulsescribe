@@ -59,8 +59,13 @@ from utils.preferences import (
     set_show_welcome_on_startup,
     update_env_settings,
 )
-from utils.local_backend import normalize_local_backend, should_remove_local_backend_env
-from utils.local_backend import get_cpu_threads_limit
+from utils.local_backend import (
+    DEFAULT_LOCAL_BACKEND,
+    get_cpu_threads_limit,
+    get_local_advanced_ui_state,
+    normalize_local_backend,
+    should_remove_local_backend_env,
+)
 from utils.hotkey_windows import hotkeys_conflict, normalize_windows_hotkey
 from utils.log_tail import (
     clamp_scroll_value,
@@ -74,6 +79,13 @@ from utils.log_tail import (
 from utils.onboarding import OnboardingStep
 from utils.version import get_app_version
 from utils.env import parse_bool
+from utils.custom_prompts import (
+    PROMPT_EDITOR_CONTEXT_OPTIONS,
+    get_prompt_editor_context_description,
+    get_prompt_editor_context_label,
+    get_prompt_editor_placeholder,
+    normalize_prompt_editor_context,
+)
 
 logger = logging.getLogger("pulsescribe.settings")
 
@@ -1324,6 +1336,12 @@ class SettingsWindow(QDialog):
         backend_layout.setContentsMargins(0, 0, 0, 0)
         self._local_backend_combo = QComboBox()
         _add_combo_items(self._local_backend_combo, LOCAL_BACKEND_OPTIONS)
+        self._local_backend_combo.setToolTip(
+            "Auto keeps PulseScribe's recommended backend. Choose a specific backend to reveal expert-only controls in Advanced."
+        )
+        self._local_backend_combo.currentTextChanged.connect(
+            self._refresh_local_advanced_ui
+        )
         backend_label = QLabel("Local Backend:")
         backend_label.setMinimumWidth(120)
         backend_layout.addWidget(backend_label)
@@ -1425,101 +1443,125 @@ class SettingsWindow(QDialog):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(CARD_SPACING)
 
-        # Local Settings Card
+        # Empty / non-local state
         card, card_layout = create_card(
-            "🔧 Local Model Settings", "Advanced settings for local Whisper models."
+            "Local Whisper only",
+            "These expert controls are only relevant for offline dictation.",
         )
+        self._advanced_empty_state_label = create_status_label("", "text_secondary")
+        self._advanced_empty_state_label.setFont(QFont("Segoe UI", 9))
+        card_layout.addWidget(self._advanced_empty_state_label)
+        self._advanced_empty_state_card = card
+        layout.addWidget(card)
 
-        # Device
+        # General local overrides
+        card, card_layout = create_card(
+            "🔧 Local Model Settings",
+            "Optional expert overrides for offline dictation. Leave fields empty or on 'default' to keep PulseScribe's recommended values.",
+        )
+        self._advanced_guidance_label = create_status_label("", "text_secondary")
+        self._advanced_guidance_label.setFont(QFont("Segoe UI", 9))
+        card_layout.addWidget(self._advanced_guidance_label)
+
         self._device_combo = QComboBox()
         _add_combo_items(self._device_combo, DEVICE_OPTIONS)
-        card_layout.addLayout(create_label_row("Device:", self._device_combo))
+        self._device_combo.setToolTip("Auto is recommended unless you explicitly want CPU or GPU inference.")
+        card_layout.addLayout(create_label_row("Device:", self._device_combo, "auto recommended"))
 
-        # Beam Size (Integer 1-10)
         self._beam_size_field = QLineEdit()
-        self._beam_size_field.setPlaceholderText("5")
+        self._beam_size_field.setPlaceholderText("Leave empty = default")
+        self._beam_size_field.setToolTip("Optional decoding override. Leave empty to keep PulseScribe's default.")
         self._beam_size_field.setValidator(QIntValidator(1, 20))
         card_layout.addLayout(
-            create_label_row("Beam Size:", self._beam_size_field, "1-20")
+            create_label_row("Beam Size:", self._beam_size_field, "optional override")
         )
 
-        # Temperature (Float 0.0-1.0)
         self._temperature_field = QLineEdit()
-        self._temperature_field.setPlaceholderText("0.0")
+        self._temperature_field.setPlaceholderText("Leave empty = default")
+        self._temperature_field.setToolTip("Optional decoding temperature. Leave empty to keep the backend default.")
         self._temperature_field.setValidator(QDoubleValidator(0.0, 1.0, 2))
         card_layout.addLayout(
             create_label_row("Temperature:", self._temperature_field, "0.0-1.0")
         )
 
-        # Best Of (Integer)
         self._best_of_field = QLineEdit()
-        self._best_of_field.setPlaceholderText("default")
+        self._best_of_field.setPlaceholderText("Leave empty = default")
+        self._best_of_field.setToolTip("Optional sampling override. Leave empty to keep the backend default.")
         self._best_of_field.setValidator(QIntValidator(1, 10))
-        card_layout.addLayout(create_label_row("Best Of:", self._best_of_field, "1-10"))
+        card_layout.addLayout(
+            create_label_row("Best Of:", self._best_of_field, "optional override")
+        )
+
+        self._fp16_combo = QComboBox()
+        _add_combo_items(self._fp16_combo, BOOL_OVERRIDE_OPTIONS)
+        self._fp16_combo.setToolTip(
+            "Use default unless you explicitly want to force half-precision on or off."
+        )
+        card_layout.addLayout(create_label_row("FP16:", self._fp16_combo, "default keeps auto"))
 
         self._advanced_local_settings_card = card
         layout.addWidget(card)
 
-        # Faster-Whisper Card
+        # Faster-Whisper-specific controls
         card, card_layout = create_card(
-            "🚀 Faster-Whisper Settings", "Settings for faster-whisper backend."
+            "🚀 Faster-Whisper Settings",
+            "Shown only when Local Backend is set to faster-whisper.",
         )
 
-        # Compute Type
         self._compute_type_combo = QComboBox()
         _add_combo_items(
             self._compute_type_combo,
             ["default", "float16", "float32", "int8", "int8_float16"],
         )
+        self._compute_type_combo.setToolTip("Default is recommended unless you need a specific precision or quantization mode.")
         card_layout.addLayout(
-            create_label_row("Compute Type:", self._compute_type_combo)
+            create_label_row("Compute Type:", self._compute_type_combo, "default recommended")
         )
 
-        # CPU Threads
         cpu_threads_max = get_cpu_threads_limit(os.cpu_count())
         self._cpu_threads_field = QLineEdit()
         self._cpu_threads_field.setPlaceholderText("0 = auto")
+        self._cpu_threads_field.setToolTip("Set 0 or leave the default to let Faster-Whisper choose automatically.")
         self._cpu_threads_field.setValidator(QIntValidator(0, cpu_threads_max))
         card_layout.addLayout(
             create_label_row(
                 "CPU Threads:",
                 self._cpu_threads_field,
-                f"0-{cpu_threads_max} (0=auto)",
+                f"0-{cpu_threads_max}",
             )
         )
 
-        # Num Workers
         self._num_workers_field = QLineEdit()
         self._num_workers_field.setPlaceholderText("1")
+        self._num_workers_field.setToolTip("Increase only if you know your system benefits from extra decoding workers.")
         self._num_workers_field.setValidator(QIntValidator(1, 8))
         card_layout.addLayout(
-            create_label_row("Num Workers:", self._num_workers_field, "1-8")
+            create_label_row("Num Workers:", self._num_workers_field, "advanced only")
         )
 
-        # Boolean Overrides
         self._without_timestamps_combo = QComboBox()
         _add_combo_items(self._without_timestamps_combo, BOOL_OVERRIDE_OPTIONS)
+        self._without_timestamps_combo.setToolTip("Default keeps Faster-Whisper's normal timestamp behavior.")
         card_layout.addLayout(
-            create_label_row("Without Timestamps:", self._without_timestamps_combo)
+            create_label_row("Without Timestamps:", self._without_timestamps_combo, "default keeps auto")
         )
 
         self._vad_filter_combo = QComboBox()
         _add_combo_items(self._vad_filter_combo, BOOL_OVERRIDE_OPTIONS)
-        card_layout.addLayout(create_label_row("VAD Filter:", self._vad_filter_combo))
-
-        self._fp16_combo = QComboBox()
-        _add_combo_items(self._fp16_combo, BOOL_OVERRIDE_OPTIONS)
-        card_layout.addLayout(create_label_row("FP16:", self._fp16_combo))
+        self._vad_filter_combo.setToolTip("Default keeps Faster-Whisper's normal voice activity detection behavior.")
+        card_layout.addLayout(
+            create_label_row("VAD Filter:", self._vad_filter_combo, "default keeps auto")
+        )
 
         self._advanced_faster_settings_card = card
         layout.addWidget(card)
 
-        # Lightning Card
+        # Lightning-specific controls
         card, card_layout = create_card(
-            "⚡ Lightning Settings", "Settings for Lightning Whisper backend."
+            "⚡ Lightning Settings",
+            "Shown only when Local Backend is set to Lightning.",
         )
 
-        # Batch Size
         batch_layout = QHBoxLayout()
         batch_layout.setSpacing(12)
 
@@ -1530,6 +1572,7 @@ class SettingsWindow(QDialog):
         self._lightning_batch_slider = QSlider(Qt.Orientation.Horizontal)
         self._lightning_batch_slider.setRange(4, 32)
         self._lightning_batch_slider.setValue(12)
+        self._lightning_batch_slider.setToolTip("Higher values may improve speed but use more memory.")
         self._lightning_batch_slider.valueChanged.connect(self._on_batch_size_changed)
         batch_layout.addWidget(self._lightning_batch_slider, 1)
 
@@ -1539,11 +1582,13 @@ class SettingsWindow(QDialog):
 
         card_layout.addLayout(batch_layout)
 
-        # Quantization
         self._lightning_quant_combo = QComboBox()
         _add_combo_items(self._lightning_quant_combo, LIGHTNING_QUANT_OPTIONS)
+        self._lightning_quant_combo.setToolTip(
+            "Lower precision reduces memory usage but can affect quality. Leave on 'none' unless you need the trade-off."
+        )
         card_layout.addLayout(
-            create_label_row("Quantization:", self._lightning_quant_combo)
+            create_label_row("Quantization:", self._lightning_quant_combo, "none = best quality")
         )
 
         self._advanced_lightning_settings_card = card
@@ -1551,6 +1596,7 @@ class SettingsWindow(QDialog):
         layout.addStretch()
 
         scroll.setWidget(content)
+        self._refresh_local_advanced_ui()
         return scroll
 
     def _build_refine_tab(self) -> QWidget:
@@ -1623,43 +1669,42 @@ class SettingsWindow(QDialog):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(CARD_SPACING)
 
-        # Prompts Card
         card, card_layout = create_card(
-            "📝 Custom Prompts", "Customize prompts for different contexts."
+            "📝 Custom Prompts",
+            "Fine-tune Refine prompts for each context. Switching contexts keeps your current draft in this window until you save.",
         )
 
-        # Context Selector
         self._prompt_context_combo = QComboBox()
-        _add_combo_items(
-            self._prompt_context_combo,
-            ["default", "email", "chat", "code", "voice_commands", "app_mappings"],
-        )
+        for context_key, label in PROMPT_EDITOR_CONTEXT_OPTIONS:
+            self._prompt_context_combo.addItem(label, context_key)
         self._prompt_context_combo.currentTextChanged.connect(
             self._on_prompt_context_changed
         )
         card_layout.addLayout(create_label_row("Context:", self._prompt_context_combo))
 
-        # Prompt Editor
+        self._prompt_context_help_label = create_status_label("", "text_secondary")
+        self._prompt_context_help_label.setFont(QFont("Segoe UI", 9))
+        card_layout.addWidget(self._prompt_context_help_label)
+
         self._prompt_editor = QPlainTextEdit()
-        self._prompt_editor.setPlaceholderText("Custom prompt for this context...")
         self._prompt_editor.setMinimumHeight(200)
         card_layout.addWidget(self._prompt_editor)
 
-        # Status Label
         self._prompt_status = QLabel("")
         self._prompt_status.setFont(QFont("Segoe UI", 9))
         card_layout.addWidget(self._prompt_status)
 
-        # Buttons
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 
         reset_btn = QPushButton("Reset to Default")
+        reset_btn.setToolTip("Load the default text for the selected context. Save it if you want to keep that change.")
         reset_btn.clicked.connect(self._reset_prompt_to_default)
         btn_layout.addWidget(reset_btn)
 
         save_prompt_btn = QPushButton("Save Prompt")
         save_prompt_btn.setObjectName("primary")
+        save_prompt_btn.setToolTip("Save only the currently visible prompt context.")
         save_prompt_btn.clicked.connect(self._save_current_prompt)
         btn_layout.addWidget(save_prompt_btn)
 
@@ -1669,6 +1714,7 @@ class SettingsWindow(QDialog):
         layout.addStretch()
 
         scroll.setWidget(content)
+        self._update_prompt_context_ui(self._current_prompt_context)
         return scroll
 
     def _build_vocabulary_tab(self) -> QWidget:
@@ -2025,18 +2071,19 @@ class SettingsWindow(QDialog):
         *,
         baseline_text: str | None = None,
     ) -> None:
-        self._prompts_cache[context] = text
+        context_key = normalize_prompt_editor_context(context)
+        self._prompts_cache[context_key] = text
         baseline = (
             baseline_text
             if baseline_text is not None
-            else self._get_prompt_text_for_context(context)
+            else self._get_prompt_text_for_context(context_key)
         )
 
         if text == baseline:
-            self._dirty_prompt_contexts.discard(context)
+            self._dirty_prompt_contexts.discard(context_key)
             return
 
-        self._dirty_prompt_contexts.add(context)
+        self._dirty_prompt_contexts.add(context_key)
 
     def _cache_current_prompt_editor_text(self) -> None:
         if (
@@ -2050,6 +2097,97 @@ class SettingsWindow(QDialog):
             self._current_prompt_context,
             self._prompt_editor.toPlainText(),
         )
+
+    def _current_local_backend(self) -> str:
+        combo = getattr(self, "_local_backend_combo", None)
+        backend_text = combo.currentText() if combo else DEFAULT_LOCAL_BACKEND
+        return normalize_local_backend(backend_text)
+
+    def _refresh_local_advanced_ui(self, mode: str | None = None, *_args) -> None:
+        mode_combo = getattr(self, "_mode_combo", None)
+        current_mode = mode if isinstance(mode, str) and mode in MODE_OPTIONS else None
+        if current_mode is None:
+            current_mode = mode_combo.currentText() if mode_combo else "deepgram"
+        state = get_local_advanced_ui_state(current_mode, self._current_local_backend())
+
+        _set_widget_visible_if_changed(
+            getattr(self, "_advanced_empty_state_card", None),
+            not state.show_general,
+        )
+        _set_widget_visible_if_changed(
+            getattr(self, "_advanced_local_settings_card", None),
+            state.show_general,
+        )
+        _set_widget_visible_if_changed(
+            getattr(self, "_advanced_faster_settings_card", None),
+            state.show_faster,
+        )
+        _set_widget_visible_if_changed(
+            getattr(self, "_advanced_lightning_settings_card", None),
+            state.show_lightning,
+        )
+
+        _set_status_label_if_changed(
+            getattr(self, "_advanced_empty_state_label", None),
+            state.guidance if not state.show_general else "",
+            "text_secondary",
+        )
+        _set_status_label_if_changed(
+            getattr(self, "_advanced_guidance_label", None),
+            state.guidance if state.show_general else "",
+            "text_secondary",
+        )
+
+    def _selected_prompt_context(self) -> str:
+        combo = getattr(self, "_prompt_context_combo", None)
+        if combo is None:
+            return normalize_prompt_editor_context(self._current_prompt_context)
+
+        current_data = getattr(combo, "currentData", None)
+        if callable(current_data):
+            try:
+                data = current_data()
+            except TypeError:
+                data = None
+            if isinstance(data, str) and data.strip():
+                return normalize_prompt_editor_context(data)
+
+        current_text = getattr(combo, "currentText", None)
+        if callable(current_text):
+            try:
+                return normalize_prompt_editor_context(current_text())
+            except TypeError:
+                pass
+
+        return normalize_prompt_editor_context(self._current_prompt_context)
+
+    def _update_prompt_context_ui(self, context: str) -> None:
+        context_key = normalize_prompt_editor_context(context)
+        description = get_prompt_editor_context_description(context_key)
+        label = get_prompt_editor_context_label(context_key)
+        placeholder = get_prompt_editor_placeholder(context_key)
+
+        _set_status_label_if_changed(
+            getattr(self, "_prompt_context_help_label", None),
+            description,
+            "text_secondary",
+        )
+
+        editor = getattr(self, "_prompt_editor", None)
+        if editor is None:
+            return
+        try:
+            editor.setPlaceholderText(placeholder)
+        except Exception:
+            pass
+        _set_widget_tooltip_if_changed(
+            editor,
+            f"{description} Draft changes stay in this window until you save.",
+        )
+        try:
+            editor.setAccessibleName(f"{label} prompt editor")
+        except Exception:
+            pass
 
     # =========================================================================
     # Event Handlers
@@ -2086,24 +2224,14 @@ class SettingsWindow(QDialog):
         is_local = mode == "local"
         is_deepgram = mode == "deepgram"
 
-        # Local-spezifische Container ein-/ausblenden
         if hasattr(self, "_local_backend_container"):
             _set_widget_visible_if_changed(self._local_backend_container, is_local)
         if hasattr(self, "_local_model_container"):
             _set_widget_visible_if_changed(self._local_model_container, is_local)
         if hasattr(self, "_streaming_container"):
             _set_widget_visible_if_changed(self._streaming_container, is_deepgram)
-        if hasattr(self, "_advanced_local_settings_card"):
-            _set_widget_visible_if_changed(self._advanced_local_settings_card, is_local)
-        if hasattr(self, "_advanced_faster_settings_card"):
-            _set_widget_visible_if_changed(
-                self._advanced_faster_settings_card, is_local
-            )
-        if hasattr(self, "_advanced_lightning_settings_card"):
-            _set_widget_visible_if_changed(
-                self._advanced_lightning_settings_card, is_local
-            )
 
+        self._refresh_local_advanced_ui(mode)
         self._refresh_provider_key_statuses()
         self._refresh_setup_overview()
 
@@ -2674,40 +2802,46 @@ class SettingsWindow(QDialog):
 
     def _on_prompt_context_changed(self, context: str):
         """Lädt Prompt für gewählten Kontext."""
-        # Aktuellen Prompt im Cache speichern
         if self._prompt_editor and self._current_prompt_context:
             self._cache_current_prompt_editor_text()
 
-        self._current_prompt_context = context
-        self._load_prompt_for_context(context)
+        context_key = normalize_prompt_editor_context(context)
+        self._current_prompt_context = context_key
+        self._update_prompt_context_ui(context_key)
+        self._load_prompt_for_context(context_key)
 
     def _load_prompt_for_context(self, context: str):
         """Lädt den Prompt-Text für einen Kontext."""
-        # Unsaved Änderungen pro Kontext bevorzugen (verhindert Datenverlust
-        # beim Tab-Wechsel und spart wiederholtes Disk-Laden).
-        if context in self._prompts_cache:
+        context_key = normalize_prompt_editor_context(context)
+        self._update_prompt_context_ui(context_key)
+
+        if context_key in self._prompts_cache:
             if self._prompt_editor:
                 set_plain_text_if_changed(
                     self._prompt_editor,
-                    self._prompts_cache[context],
+                    self._prompts_cache[context_key],
                 )
-                self._set_prompt_status("", "text")
+                self._set_prompt_status("", "text_secondary")
                 self._prompts_loaded = True
             return
 
         try:
             data = self._get_loaded_prompts_data()
-            text = self._get_prompt_text_for_context(context, data=data)
+            text = self._get_prompt_text_for_context(context_key, data=data)
 
             if self._prompt_editor:
                 set_plain_text_if_changed(self._prompt_editor, text)
-                self._cache_prompt_text(context, text, baseline_text=text)
-                self._set_prompt_status("", "text")
+                self._cache_prompt_text(context_key, text, baseline_text=text)
+                self._set_prompt_status("", "text_secondary")
                 self._prompts_loaded = True
 
         except Exception as e:
             logger.error(f"Prompt laden fehlgeschlagen: {e}")
-            self._set_prompt_status(f"Error: {e}", "error")
+            label = get_prompt_editor_context_label(context_key)
+            self._set_prompt_status(
+                f"Could not load {label}: {e}",
+                "error",
+            )
 
     def _save_current_prompt(self):
         """Speichert den aktuellen Prompt."""
@@ -2718,20 +2852,16 @@ class SettingsWindow(QDialog):
                 save_custom_prompts_state,
             )
 
-            context = (
-                self._prompt_context_combo.currentText()
-                if self._prompt_context_combo
-                else "default"
-            )
+            context = self._selected_prompt_context()
+            label = get_prompt_editor_context_label(context)
             text = self._prompt_editor.toPlainText() if self._prompt_editor else ""
             self._cache_prompt_text(context, text)
             self._prompts_loaded = True
 
             if context not in self._dirty_prompt_contexts:
-                self._set_prompt_status("✓ Unchanged", "success")
+                self._set_prompt_status(f"No changes to save for {label}.", "text_secondary")
                 return
 
-            # Aktuelle Daten laden
             data = self._get_loaded_prompts_data()
             existing_overrides = filter_overrides_for_storage(data)
 
@@ -2747,36 +2877,38 @@ class SettingsWindow(QDialog):
             next_overrides = filter_overrides_for_storage(data)
             if next_overrides == existing_overrides:
                 self._dirty_prompt_contexts.discard(context)
-                self._set_prompt_status("✓ Unchanged", "success")
+                self._set_prompt_status(f"No changes to save for {label}.", "text_secondary")
                 return
 
             self._prompts_loaded_data = save_custom_prompts_state(next_overrides)
             self._dirty_prompt_contexts.discard(context)
-            self._set_prompt_status("✓ Saved", "success")
+            self._set_prompt_status(f"Saved {label}.", "success")
 
         except Exception as e:
             logger.error(f"Prompt speichern fehlgeschlagen: {e}")
-            self._set_prompt_status(f"Error: {e}", "error")
+            label = get_prompt_editor_context_label(self._selected_prompt_context())
+            self._set_prompt_status(f"Could not save {label}: {e}", "error")
 
     def _reset_prompt_to_default(self):
         """Setzt aktuellen Prompt auf Default zurück."""
         try:
-            context = (
-                self._prompt_context_combo.currentText()
-                if self._prompt_context_combo
-                else "default"
-            )
+            context = self._selected_prompt_context()
+            label = get_prompt_editor_context_label(context)
             text = self._get_prompt_default_text_for_context(context)
 
             if self._prompt_editor:
                 set_plain_text_if_changed(self._prompt_editor, text)
                 self._cache_prompt_text(context, text, baseline_text=text)
                 self._prompts_loaded = True
-                self._set_prompt_status("Reset to default (not saved)", "warning")
+                self._set_prompt_status(
+                    f"Restored the default {label}. Save it to keep this change.",
+                    "warning",
+                )
 
         except Exception as e:
             logger.error(f"Reset fehlgeschlagen: {e}")
-            self._set_prompt_status(f"Error: {e}", "error")
+            label = get_prompt_editor_context_label(self._selected_prompt_context())
+            self._set_prompt_status(f"Could not reset {label}: {e}", "error")
 
     def _set_prompt_status(self, text: str, color: str):
         """Setzt Status-Text mit Farbe."""

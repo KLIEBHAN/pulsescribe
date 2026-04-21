@@ -19,7 +19,11 @@ from ui.logs_panel_feedback import (
 )
 from utils.env import parse_bool
 from utils.hotkey_recording import HotkeyRecorder
-from utils.local_backend import normalize_local_backend, should_remove_local_backend_env
+from utils.local_backend import (
+    get_local_advanced_ui_state,
+    normalize_local_backend,
+    should_remove_local_backend_env,
+)
 from utils.log_tail import (
     get_file_signature,
     read_file_tail_text_with_signature,
@@ -41,6 +45,12 @@ from utils.preferences import (
     update_env_settings,
 )
 from utils.vocabulary import load_vocabulary, save_vocabulary
+from utils.custom_prompts import (
+    PROMPT_EDITOR_CONTEXT_OPTIONS,
+    get_prompt_editor_context_description,
+    get_prompt_editor_context_label,
+    normalize_prompt_editor_context,
+)
 
 # Window-Konfiguration
 WELCOME_WIDTH = 600
@@ -1760,7 +1770,7 @@ class WelcomeController:
         desc = NSTextField.alloc().initWithFrame_(
             NSMakeRect(base_x, card_y + card_height - 46, control_width, 14)
         )
-        desc.setStringValue_("Tweaks for local transcription (Whisper / Faster / MLX).")
+        desc.setStringValue_("Optional expert overrides for local dictation.")
         desc.setBezeled_(False)
         desc.setDrawsBackground_(False)
         desc.setEditable_(False)
@@ -1769,8 +1779,21 @@ class WelcomeController:
         desc.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6))
         parent_view.addSubview_(desc)
 
+        status = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(base_x, card_y + card_height - 64, control_width, 14)
+        )
+        status.setStringValue_("")
+        status.setBezeled_(False)
+        status.setDrawsBackground_(False)
+        status.setEditable_(False)
+        status.setSelectable_(False)
+        status.setFont_(NSFont.systemFontOfSize_(10))
+        status.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.55))
+        parent_view.addSubview_(status)
+        self._advanced_local_status_label = status
+
         row_height = 28
-        current_y = card_y + card_height - 78
+        current_y = card_y + card_height - 96
 
         # Preset (applies values, not persisted)
         self._add_setting_label(base_x, current_y, "Preset:", parent_view)
@@ -1903,7 +1926,9 @@ class WelcomeController:
         current_y -= row_height
 
         # faster-whisper compute type
-        self._add_setting_label(base_x, current_y, "Compute type:", parent_view)
+        self._compute_type_label = self._add_setting_label(
+            base_x, current_y, "Compute type:", parent_view
+        )
         compute_field = NSTextField.alloc().initWithFrame_(
             NSMakeRect(control_x, current_y, control_width, 22)
         )
@@ -1917,7 +1942,9 @@ class WelcomeController:
         current_y -= row_height
 
         # CPU threads
-        self._add_setting_label(base_x, current_y, "CPU threads:", parent_view)
+        self._cpu_threads_label = self._add_setting_label(
+            base_x, current_y, "CPU threads:", parent_view
+        )
         threads_field = NSTextField.alloc().initWithFrame_(
             NSMakeRect(control_x, current_y, control_width, 22)
         )
@@ -1931,7 +1958,9 @@ class WelcomeController:
         current_y -= row_height
 
         # Workers
-        self._add_setting_label(base_x, current_y, "Workers:", parent_view)
+        self._num_workers_label = self._add_setting_label(
+            base_x, current_y, "Workers:", parent_view
+        )
         workers_field = NSTextField.alloc().initWithFrame_(
             NSMakeRect(control_x, current_y, control_width, 22)
         )
@@ -1945,7 +1974,9 @@ class WelcomeController:
         current_y -= row_height
 
         # without_timestamps (faster-whisper)
-        self._add_setting_label(base_x, current_y, "No timestamps:", parent_view)
+        self._without_timestamps_label = self._add_setting_label(
+            base_x, current_y, "No timestamps:", parent_view
+        )
         wt_popup = NSPopUpButton.alloc().initWithFrame_(
             NSMakeRect(control_x, current_y, control_width, 22)
         )
@@ -1960,7 +1991,9 @@ class WelcomeController:
         current_y -= row_height
 
         # VAD filter (faster-whisper)
-        self._add_setting_label(base_x, current_y, "VAD filter:", parent_view)
+        self._vad_filter_label = self._add_setting_label(
+            base_x, current_y, "VAD filter:", parent_view
+        )
         vad_popup = NSPopUpButton.alloc().initWithFrame_(
             NSMakeRect(control_x, current_y, control_width, 22)
         )
@@ -2250,8 +2283,6 @@ class WelcomeController:
         )
         import objc  # type: ignore[import-not-found]
 
-        from utils.custom_prompts import KNOWN_CONTEXTS
-
         parent_view = parent_view or self._content_view
 
         card_width = WELCOME_WIDTH - 2 * WELCOME_PADDING
@@ -2283,7 +2314,7 @@ class WelcomeController:
             NSMakeRect(base_x, card_y + card_height - 46, content_width, 14)
         )
         desc.setStringValue_(
-            "Edit prompts for LLM post-processing. Changes saved to ~/.pulsescribe/prompts.toml"
+            "Fine-tune Refine prompts by context. Draft changes stay here until you click Save & Apply."
         )
         desc.setBezeled_(False)
         desc.setDrawsBackground_(False)
@@ -2311,9 +2342,8 @@ class WelcomeController:
             NSMakeRect(base_x + 65, row_y, 140, 22)
         )
         context_popup.setFont_(NSFont.systemFontOfSize_(11))
-        # Kontexte aus KNOWN_CONTEXTS + Voice Commands + App Mappings
-        for ctx in [*KNOWN_CONTEXTS, "── Voice Commands", "── App Mappings"]:
-            context_popup.addItemWithTitle_(ctx)
+        for _context_key, label in PROMPT_EDITOR_CONTEXT_OPTIONS:
+            context_popup.addItemWithTitle_(label)
         parent_view.addSubview_(context_popup)
         self._prompts_context_popup = context_popup
 
@@ -2369,7 +2399,7 @@ class WelcomeController:
             NSMakeRect(base_x, card_y + 54, content_width, 14)
         )
         hint_label.setStringValue_(
-            "💡 Use dropdown to edit Voice Commands or App Mappings"
+            get_prompt_editor_context_description("default")
         )
         hint_label.setBezeled_(False)
         hint_label.setDrawsBackground_(False)
@@ -2378,6 +2408,7 @@ class WelcomeController:
         hint_label.setFont_(NSFont.systemFontOfSize_weight_(10, NSFontWeightMedium))
         hint_label.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.5))
         parent_view.addSubview_(hint_label)
+        self._prompts_hint_label = hint_label
 
         # Status-Label
         status_label = NSTextField.alloc().initWithFrame_(
@@ -2399,15 +2430,18 @@ class WelcomeController:
 
         # Action Handlers
         def on_context_change(_sender) -> None:
-            # Aktuellen Prompt speichern
             old_ctx = self._prompts_current_context
             self._prompts_cache[old_ctx] = str(self._prompts_text_view.string())
 
-            # Neuen Kontext laden
-            new_ctx = str(self._prompts_context_popup.titleOfSelectedItem())
+            new_ctx = normalize_prompt_editor_context(
+                str(self._prompts_context_popup.titleOfSelectedItem())
+            )
             self._prompts_current_context = new_ctx
+            _set_string_value_if_changed(
+                self._prompts_hint_label,
+                get_prompt_editor_context_description(new_ctx),
+            )
 
-            # Aus Cache oder frisch laden
             if new_ctx in self._prompts_cache:
                 _set_text_view_string_if_changed(
                     self._prompts_text_view,
@@ -2421,26 +2455,17 @@ class WelcomeController:
             )
 
         def on_reset(_sender) -> None:
-            ctx = str(self._prompts_context_popup.titleOfSelectedItem())
+            ctx = normalize_prompt_editor_context(
+                str(self._prompts_context_popup.titleOfSelectedItem())
+            )
 
             text = self._get_prompt_editor_text_for_context(ctx, defaults=True)
             _set_text_view_string_if_changed(self._prompts_text_view, text)
             self._prompts_cache[ctx] = text
-            if ctx == "── Voice Commands":
-                _set_string_value_if_changed(
-                    self._prompts_status_label,
-                    "Reset Voice Commands",
-                )
-            elif ctx == "── App Mappings":
-                _set_string_value_if_changed(
-                    self._prompts_status_label,
-                    "Reset App Mappings",
-                )
-            else:
-                _set_string_value_if_changed(
-                    self._prompts_status_label,
-                    f"Reset '{ctx}' to default",
-                )
+            _set_string_value_if_changed(
+                self._prompts_status_label,
+                f"Restored default {get_prompt_editor_context_label(ctx)}. Save & Apply to keep this change.",
+            )
 
         # Handler-Klasse für ObjC
         class _PromptsActionHandler(objc.lookUpClass("NSObject")):
@@ -2597,11 +2622,7 @@ class WelcomeController:
         return cached
 
     def _prompt_editor_context_key(self, context: str | None) -> str:
-        if context == "── Voice Commands":
-            return "voice_commands"
-        if context == "── App Mappings":
-            return "app_mappings"
-        return str(context or "default")
+        return normalize_prompt_editor_context(context)
 
     def _get_prompt_text_cache(
         self,
@@ -4097,7 +4118,15 @@ class WelcomeController:
         """Blendet Local-spezifische Einstellungen je nach Mode ein/aus."""
         if not self._mode_popup:
             return
-        is_local = self._mode_popup.titleOfSelectedItem() == "local"
+        mode = self._mode_popup.titleOfSelectedItem()
+        is_local = mode == "local"
+        backend = (
+            self._local_backend_popup.titleOfSelectedItem()
+            if self._local_backend_popup
+            else "auto"
+        )
+        state = get_local_advanced_ui_state(mode, backend)
+
         for view in (
             self._local_backend_label,
             self._local_backend_popup,
@@ -4106,12 +4135,25 @@ class WelcomeController:
         ):
             _set_hidden_if_changed(view, not is_local)
 
-        # Lightning-Settings: nur sichtbar wenn mode=local UND backend=lightning
-        is_lightning = False
-        if is_local and self._local_backend_popup:
-            is_lightning = (
-                self._local_backend_popup.titleOfSelectedItem() == "lightning"
-            )
+        _set_string_value_if_changed(
+            getattr(self, "_advanced_local_status_label", None),
+            state.guidance,
+        )
+
+        for view in (
+            getattr(self, "_compute_type_label", None),
+            getattr(self, "_compute_type_field", None),
+            getattr(self, "_cpu_threads_label", None),
+            getattr(self, "_cpu_threads_field", None),
+            getattr(self, "_num_workers_label", None),
+            getattr(self, "_num_workers_field", None),
+            getattr(self, "_without_timestamps_label", None),
+            getattr(self, "_without_timestamps_popup", None),
+            getattr(self, "_vad_filter_label", None),
+            getattr(self, "_vad_filter_popup", None),
+        ):
+            _set_hidden_if_changed(view, not state.show_faster)
+
         for view in (
             self._lightning_header,
             self._lightning_batch_label,
@@ -4120,7 +4162,7 @@ class WelcomeController:
             self._lightning_quant_label,
             self._lightning_quant_popup,
         ):
-            _set_hidden_if_changed(view, not is_lightning)
+            _set_hidden_if_changed(view, not state.show_lightning)
 
     def _update_streaming_visibility(self) -> None:
         """Blendet Streaming-Toggle nur bei Deepgram ein."""
@@ -4687,7 +4729,7 @@ class WelcomeController:
 
         # Voice Commands: gleiche Logik
         merged_vc: dict = {}
-        vc_key = "── Voice Commands"
+        vc_key = "voice_commands"
         cached_vc = self._prompts_cache.get(vc_key)
         default_vc = defaults["voice_commands"]["instruction"]
         existing_vc = existing["voice_commands"]["instruction"]
@@ -4703,7 +4745,7 @@ class WelcomeController:
 
         # App Mappings: Session > Existierend > Default
         merged_app_contexts: dict = {}
-        app_key = "── App Mappings"
+        app_key = "app_mappings"
         cached_apps = self._prompts_cache.get(app_key)
         default_apps = defaults["app_contexts"]
         existing_apps = existing["app_contexts"]

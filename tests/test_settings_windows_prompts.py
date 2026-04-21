@@ -16,6 +16,18 @@ class _FakeEditor:
         self._text = text
 
 
+class _FakeCombo:
+    def __init__(self, text: str, data: str | None = None):
+        self._text = text
+        self._data = data
+
+    def currentText(self) -> str:
+        return self._text
+
+    def currentData(self) -> str | None:
+        return self._data
+
+
 def _make_window() -> SettingsWindow:
     window = SettingsWindow.__new__(SettingsWindow)
     window._prompt_editor = _FakeEditor()
@@ -144,6 +156,13 @@ def test_save_all_prompts_skips_rewrite_when_prompt_text_is_unchanged(monkeypatc
     assert load_calls["count"] == 1
     assert save_calls == []
     assert window._dirty_prompt_contexts == set()
+
+
+def test_selected_prompt_context_normalizes_friendly_labels() -> None:
+    window = _make_window()
+    window._prompt_context_combo = _FakeCombo("Voice Commands", "voice_commands")
+
+    assert window._selected_prompt_context() == "voice_commands"
 
 
 def test_save_current_prompt_reuses_returned_saved_state(monkeypatch):

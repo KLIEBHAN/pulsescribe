@@ -271,6 +271,21 @@ prompt = """Version 1"""
         assert second["app_contexts"]["Mail"] == DEFAULT_APP_CONTEXTS["Mail"]
 
 
+def test_prompt_editor_context_helpers_accept_friendly_labels() -> None:
+    from utils.custom_prompts import (
+        get_prompt_editor_context_description,
+        get_prompt_editor_context_label,
+        get_prompt_editor_placeholder,
+        normalize_prompt_editor_context,
+    )
+
+    assert normalize_prompt_editor_context("Voice Commands") == "voice_commands"
+    assert normalize_prompt_editor_context("── App Mappings") == "app_mappings"
+    assert get_prompt_editor_context_label("voice_commands") == "Voice Commands"
+    assert "editing commands" in get_prompt_editor_context_description("voice_commands")
+    assert "Slack = chat" in get_prompt_editor_placeholder("app_mappings")
+
+
 class TestGetCustomPromptForContext:
     """Tests für get_custom_prompt_for_context()."""
 

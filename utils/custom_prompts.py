@@ -34,6 +34,41 @@ logger = logging.getLogger("pulsescribe")
 
 # Bekannte Kontext-Typen für Prompt-Auswahl
 KNOWN_CONTEXTS = ("default", "email", "chat", "code")
+PROMPT_EDITOR_CONTEXT_OPTIONS = (
+    ("default", "Default"),
+    ("email", "Email"),
+    ("chat", "Chat"),
+    ("code", "Code"),
+    ("voice_commands", "Voice Commands"),
+    ("app_mappings", "App Mappings"),
+)
+PROMPT_EDITOR_CONTEXT_LABELS = {
+    context: label for context, label in PROMPT_EDITOR_CONTEXT_OPTIONS
+}
+PROMPT_EDITOR_CONTEXT_DESCRIPTIONS = {
+    "default": "Fallback instructions used when PulseScribe cannot infer a more specific writing context.",
+    "email": "Tune how rewritten dictation should sound in emails, including tone, structure, and sign-offs.",
+    "chat": "Tune short back-and-forth messages for chat apps and messengers.",
+    "code": "Tune formatting and cleanup when you dictate technical text, code, or commit messages.",
+    "voice_commands": "Define spoken editing commands such as punctuation, formatting, or cursor actions.",
+    "app_mappings": "Map app names to prompt contexts so PulseScribe can choose the right rewrite style automatically.",
+}
+PROMPT_EDITOR_PLACEHOLDERS = {
+    "default": "Add custom fallback instructions for general dictation…",
+    "email": "Add custom instructions for email dictation…",
+    "chat": "Add custom instructions for chat dictation…",
+    "code": "Add custom instructions for technical or code-heavy dictation…",
+    "voice_commands": "Customize spoken editing commands…",
+    "app_mappings": "Add one mapping per line, for example: Slack = chat",
+}
+_PROMPT_EDITOR_CONTEXT_ALIASES = {
+    "voice commands": "voice_commands",
+    "voice_commands": "voice_commands",
+    "── voice commands": "voice_commands",
+    "app mappings": "app_mappings",
+    "app_mappings": "app_mappings",
+    "── app mappings": "app_mappings",
+}
 
 
 def _normalize_context_name(value: str | None) -> str | None:
@@ -43,6 +78,32 @@ def _normalize_context_name(value: str | None) -> str | None:
     if normalized in KNOWN_CONTEXTS:
         return normalized
     return None
+
+
+def normalize_prompt_editor_context(value: str | None) -> str:
+    """Normalize UI-facing prompt editor labels back to stable internal keys."""
+    normalized = (value or "").strip().strip('"').strip("'").lower()
+    if not normalized:
+        return "default"
+    normalized = _PROMPT_EDITOR_CONTEXT_ALIASES.get(normalized, normalized)
+    return normalized if normalized in PROMPT_EDITOR_CONTEXT_LABELS else "default"
+
+
+def get_prompt_editor_context_label(value: str | None) -> str:
+    """Return a human-friendly label for one prompt editor context."""
+    return PROMPT_EDITOR_CONTEXT_LABELS[normalize_prompt_editor_context(value)]
+
+
+def get_prompt_editor_context_description(value: str | None) -> str:
+    """Return short guidance for the selected prompt editor context."""
+    return PROMPT_EDITOR_CONTEXT_DESCRIPTIONS[
+        normalize_prompt_editor_context(value)
+    ]
+
+
+def get_prompt_editor_placeholder(value: str | None) -> str:
+    """Return context-aware placeholder text for prompt editors."""
+    return PROMPT_EDITOR_PLACEHOLDERS[normalize_prompt_editor_context(value)]
 
 
 def _normalize_app_context_entry(
@@ -310,7 +371,7 @@ def get_prompt_editor_text(
     ``text_cache`` lets callers reuse expensive formatted text such as
     app-mappings across repeated context switches and dirty-baseline checks.
     """
-    normalized_context = str(context or "")
+    normalized_context = normalize_prompt_editor_context(context)
     if text_cache is not None:
         cached = text_cache.get(normalized_context)
         if isinstance(cached, str):
@@ -565,7 +626,12 @@ __all__ = [
     "get_custom_voice_commands",
     "get_custom_app_contexts",
     # App-Mappings / Editor-Format
+    "PROMPT_EDITOR_CONTEXT_OPTIONS",
     "get_prompt_editor_text",
+    "get_prompt_editor_context_label",
+    "get_prompt_editor_context_description",
+    "get_prompt_editor_placeholder",
+    "normalize_prompt_editor_context",
     "format_app_mappings",
     "parse_app_mappings",
     # Speichern/Reset

@@ -832,9 +832,14 @@ def test_on_mode_changed_hides_local_advanced_cards_for_cloud_modes():
     window._local_backend_container = _FakeVisibleWidget()
     window._local_model_container = _FakeVisibleWidget()
     window._streaming_container = _FakeVisibleWidget()
+    window._advanced_empty_state_card = _FakeVisibleWidget()
+    window._advanced_empty_state_label = _FakeLabel()
+    window._advanced_guidance_label = _FakeLabel()
     window._advanced_local_settings_card = _FakeVisibleWidget()
     window._advanced_faster_settings_card = _FakeVisibleWidget()
     window._advanced_lightning_settings_card = _FakeVisibleWidget()
+    window._local_backend_combo = _FakeCombo(settings_mod.LOCAL_BACKEND_OPTIONS, current="auto")
+    window._refresh_provider_key_statuses = lambda: None
     window._refresh_setup_overview = lambda: None
 
     window._on_mode_changed("deepgram")
@@ -842,18 +847,21 @@ def test_on_mode_changed_hides_local_advanced_cards_for_cloud_modes():
     assert window._local_backend_container.visible is False
     assert window._local_model_container.visible is False
     assert window._streaming_container.visible is True
+    assert window._advanced_empty_state_card.visible is True
     assert window._advanced_local_settings_card.visible is False
     assert window._advanced_faster_settings_card.visible is False
     assert window._advanced_lightning_settings_card.visible is False
 
+    window._local_backend_combo = _FakeCombo(settings_mod.LOCAL_BACKEND_OPTIONS, current="faster")
     window._on_mode_changed("local")
 
     assert window._local_backend_container.visible is True
     assert window._local_model_container.visible is True
     assert window._streaming_container.visible is False
+    assert window._advanced_empty_state_card.visible is False
     assert window._advanced_local_settings_card.visible is True
     assert window._advanced_faster_settings_card.visible is True
-    assert window._advanced_lightning_settings_card.visible is True
+    assert window._advanced_lightning_settings_card.visible is False
 
 
 def test_on_mode_changed_uses_hidden_state_before_first_show():
@@ -861,15 +869,21 @@ def test_on_mode_changed_uses_hidden_state_before_first_show():
     window._local_backend_container = _FakePreShowVisibleWidget()
     window._local_model_container = _FakePreShowVisibleWidget()
     window._streaming_container = _FakePreShowVisibleWidget()
+    window._advanced_empty_state_card = _FakePreShowVisibleWidget()
+    window._advanced_empty_state_label = _FakeLabel()
+    window._advanced_guidance_label = _FakeLabel()
     window._advanced_local_settings_card = _FakePreShowVisibleWidget()
     window._advanced_faster_settings_card = _FakePreShowVisibleWidget()
     window._advanced_lightning_settings_card = _FakePreShowVisibleWidget()
+    window._local_backend_combo = _FakeCombo(settings_mod.LOCAL_BACKEND_OPTIONS, current="auto")
+    window._refresh_provider_key_statuses = lambda: None
     window._refresh_setup_overview = lambda: None
 
     window._on_mode_changed("deepgram")
 
     assert window._local_backend_container.hidden is True
     assert window._local_model_container.hidden is True
+    assert window._advanced_empty_state_card.hidden is False
     assert window._advanced_local_settings_card.hidden is True
     assert window._advanced_faster_settings_card.hidden is True
     assert window._advanced_lightning_settings_card.hidden is True
