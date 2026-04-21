@@ -25,6 +25,12 @@ from ui.secondary_settings_feedback import (
     get_refine_provider_label,
     normalize_refine_provider,
 )
+from ui.settings_apply_feedback import (
+    build_save_apply_change_hint,
+    build_settings_loaded_feedback,
+    build_settings_saved_feedback,
+    build_unsaved_settings_feedback,
+)
 from ui.vocabulary_feedback import (
     build_vocabulary_editor_feedback,
     build_vocabulary_save_feedback,
@@ -535,6 +541,8 @@ class WelcomeController:
         self._tab_builders: dict[str, tuple[object, object, int]] = {}
         self._built_tabs: set[str] = set()
         self._tab_delegate = None
+        self._saved_settings_signature: tuple | None = None
+        self._saved_dock_icon_enabled: bool | None = None
         self._saved_refine_settings_state: tuple[bool, str, str] | None = None
         self._saved_display_settings_state: tuple[bool, ...] | None = None
         self._vocab_text_view = None
@@ -759,6 +767,10 @@ class WelcomeController:
         header_bottom = self._build_header(y_pos)
         self._build_tabs(header_bottom)
         self._build_footer()
+        self._saved_settings_signature = self._get_current_settings_signature()
+        self._saved_dock_icon_enabled = self._get_current_dock_icon_enabled()
+        text, color = build_settings_loaded_feedback()
+        self._set_footer_status(text, color)
 
     def _build_header(self, y: int) -> int:
         """Erstellt zentrierten Header."""
@@ -1004,7 +1016,7 @@ class WelcomeController:
             self._apply_local_preset("macOS: MLX Balanced (large)")
             _apply_status_text(
                 self._setup_preset_status_label,
-                "MLX Large selected — click 'Save & Apply' to keep it.",
+                f"MLX Large selected. {build_save_apply_change_hint()}",
                 "success",
             )
             return
@@ -1013,7 +1025,7 @@ class WelcomeController:
             self._apply_local_preset("macOS: MLX Fast (turbo)")
             _apply_status_text(
                 self._setup_preset_status_label,
-                "MLX Turbo selected — click 'Save & Apply' to keep it.",
+                f"MLX Turbo selected. {build_save_apply_change_hint()}",
                 "success",
             )
             return
@@ -1022,7 +1034,7 @@ class WelcomeController:
             self._apply_local_preset("macOS: Lightning Fast (large-v3)")
             _apply_status_text(
                 self._setup_preset_status_label,
-                "Lightning selected — click 'Save & Apply' to keep it.",
+                f"Lightning selected. {build_save_apply_change_hint()}",
                 "success",
             )
             return
@@ -1122,6 +1134,8 @@ class WelcomeController:
             tooltip = _build_welcome_api_key_tooltip(provider, mode=mode)
             _set_tooltip_if_supported(getattr(self, f"_{provider}_field", None), tooltip)
             _set_tooltip_if_supported(status, tooltip)
+
+        self._refresh_footer_settings_hint()
 
     def _refresh_setup_try_card(self) -> None:
         hotkey_label = getattr(self, "_setup_try_hotkey_label", None)
@@ -1284,15 +1298,20 @@ class WelcomeController:
         parent_view.addSubview_(btn3)
 
         status = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(base_x, card_y + 26, card_width - 2 * CARD_PADDING, 18)
+            NSMakeRect(base_x, card_y + 18, card_width - 2 * CARD_PADDING, 30)
         )
-        status.setStringValue_("Choose a preset, then click 'Save & Apply' to keep it.")
+        status.setStringValue_(f"Choose a preset, then {build_save_apply_change_hint()}")
         status.setBezeled_(False)
         status.setDrawsBackground_(False)
         status.setEditable_(False)
         status.setSelectable_(False)
         status.setFont_(NSFont.systemFontOfSize_(11))
         status.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6))
+        try:
+            status.setLineBreakMode_(0)
+            status.setUsesSingleLineMode_(False)
+        except Exception:
+            pass
         parent_view.addSubview_(status)
         self._setup_preset_status_label = status
 
@@ -1417,7 +1436,7 @@ class WelcomeController:
 
     def _build_refine_tab(self, parent_view, tab_height: int) -> None:
         y_pos = tab_height - WELCOME_PADDING
-        self._build_refine_card(y_pos, parent_view)
+        self._build_refine_card(y_pos, parent_view, tab_height)
 
     def _build_prompts_tab(self, parent_view, tab_height: int) -> None:
         y_pos = tab_height - WELCOME_PADDING
@@ -1544,6 +1563,7 @@ class WelcomeController:
             NSMakeRect,
             NSTextField,
         )
+        import objc  # type: ignore[import-not-found]
 
         parent_view = parent_view or self._content_view
 
@@ -1572,6 +1592,19 @@ class WelcomeController:
         existing_key = self._get_cached_env_setting(key_name) or os.getenv(key_name)
         if existing_key:
             field.setStringValue_(existing_key)
+
+        if _SimpleHandler is not None:
+            field_handler = _SimpleHandler.alloc().initWithController_method_(
+                self, "_refresh_provider_key_statuses"
+            )
+            try:
+                field.setTarget_(field_handler)
+                field.setAction_(
+                    objc.selector(field_handler.performAction_, signature=b"v@:@")
+                )
+            except Exception:
+                field_handler = None
+            setattr(self, f"_{provider}_field_handler", field_handler)
 
         parent_view.addSubview_(field)
 
@@ -1708,6 +1741,15 @@ class WelcomeController:
         if current_local_model not in LOCAL_MODEL_OPTIONS and current_local_model:
             local_model_popup.addItemWithTitle_(current_local_model)
         local_model_popup.selectItemWithTitle_(current_local_model)
+        if _SimpleHandler is not None:
+            local_model_handler = _SimpleHandler.alloc().initWithController_method_(
+                self, "_refresh_footer_settings_hint"
+            )
+            local_model_popup.setTarget_(local_model_handler)
+            local_model_popup.setAction_(
+                objc.selector(local_model_handler.performAction_, signature=b"v@:@")
+            )
+            self._local_model_changed_handler = local_model_handler
         self._local_model_popup = local_model_popup
         parent_view.addSubview_(local_model_popup)
         current_y -= row_height
@@ -1727,6 +1769,15 @@ class WelcomeController:
         )
         if current_lang in LANGUAGE_OPTIONS:
             lang_popup.selectItemWithTitle_(current_lang)
+        if _SimpleHandler is not None:
+            lang_handler = _SimpleHandler.alloc().initWithController_method_(
+                self, "_refresh_footer_settings_hint"
+            )
+            lang_popup.setTarget_(lang_handler)
+            lang_popup.setAction_(
+                objc.selector(lang_handler.performAction_, signature=b"v@:@")
+            )
+            self._lang_changed_handler = lang_handler
         self._lang_popup = lang_popup
         parent_view.addSubview_(lang_popup)
         current_y -= row_height
@@ -1743,6 +1794,15 @@ class WelcomeController:
         streaming_checkbox.setFont_(NSFont.systemFontOfSize_(11))
         streaming_enabled = _is_env_enabled_default_true("PULSESCRIBE_STREAMING")
         streaming_checkbox.setState_(1 if streaming_enabled else 0)
+        if _SimpleHandler is not None:
+            streaming_handler = _SimpleHandler.alloc().initWithController_method_(
+                self, "_refresh_footer_settings_hint"
+            )
+            streaming_checkbox.setTarget_(streaming_handler)
+            streaming_checkbox.setAction_(
+                objc.selector(streaming_handler.performAction_, signature=b"v@:@")
+            )
+            self._streaming_changed_handler = streaming_handler
         self._streaming_checkbox = streaming_checkbox
         parent_view.addSubview_(streaming_checkbox)
 
@@ -2146,6 +2206,168 @@ class WelcomeController:
             bool(dock.state() == 1) if dock else True,
         )
 
+    def _get_current_dock_icon_enabled(self) -> bool:
+        checkbox = getattr(self, "_dock_icon_checkbox", None)
+        if checkbox is not None:
+            try:
+                return bool(checkbox.state() == 1)
+            except Exception:
+                pass
+        cache = getattr(self, "_env_settings_cache", None) or {}
+        value = cache.get("PULSESCRIBE_DOCK_ICON")
+        if value is None:
+            return True
+        try:
+            return bool(parse_bool(value))
+        except Exception:
+            return True
+
+    def _get_current_settings_signature(self) -> tuple:
+        cache = getattr(self, "_env_settings_cache", None) or {}
+        config = getattr(self, "config", None) or {}
+        api_keys = tuple(
+            (
+                env_key,
+                (
+                    getattr(self, f"_{provider}_field", None).stringValue().strip()
+                    if getattr(self, f"_{provider}_field", None) is not None
+                    else str(cache.get(env_key) or os.getenv(env_key) or "").strip()
+                ),
+            )
+            for provider, _label, env_key in API_KEY_PROVIDERS
+        )
+        mode_popup = getattr(self, "_mode_popup", None)
+        lang_popup = getattr(self, "_lang_popup", None)
+        backend_popup = getattr(self, "_local_backend_popup", None)
+        model_popup = getattr(self, "_local_model_popup", None)
+        streaming_checkbox = getattr(self, "_streaming_checkbox", None)
+        refine_checkbox = getattr(self, "_refine_checkbox", None)
+        provider_popup = getattr(self, "_provider_popup", None)
+        refine_model_field = getattr(self, "_model_field", None)
+        overlay_checkbox = getattr(self, "_overlay_checkbox", None)
+        rtf_checkbox = getattr(self, "_rtf_checkbox", None)
+        clipboard_checkbox = getattr(self, "_clipboard_restore_checkbox", None)
+        dock_checkbox = getattr(self, "_dock_icon_checkbox", None)
+
+        mode = (
+            mode_popup.titleOfSelectedItem()
+            if mode_popup is not None
+            else (cache.get("PULSESCRIBE_MODE") or config.get("mode") or "deepgram")
+        )
+        lang = (
+            lang_popup.titleOfSelectedItem()
+            if lang_popup is not None
+            else (cache.get("PULSESCRIBE_LANGUAGE") or config.get("language") or "auto")
+        )
+        backend = (
+            backend_popup.titleOfSelectedItem()
+            if backend_popup is not None
+            else normalize_local_backend(cache.get("PULSESCRIBE_LOCAL_BACKEND"))
+        )
+        local_model = (
+            model_popup.titleOfSelectedItem()
+            if model_popup is not None
+            else (cache.get("PULSESCRIBE_LOCAL_MODEL") or "default")
+        )
+        if streaming_checkbox is not None:
+            streaming = bool(streaming_checkbox.state() == 1)
+        else:
+            streaming_raw = cache.get("PULSESCRIBE_STREAMING")
+            streaming = (
+                bool(parse_bool(streaming_raw)) if streaming_raw is not None else True
+            )
+
+        if refine_checkbox is not None:
+            refine_enabled = bool(refine_checkbox.state() == 1)
+        else:
+            refine_raw = cache.get("PULSESCRIBE_REFINE")
+            refine_enabled = (
+                bool(parse_bool(refine_raw))
+                if refine_raw is not None
+                else bool(config.get("refine", False))
+            )
+        refine_provider = normalize_refine_provider(
+            provider_popup.titleOfSelectedItem()
+            if provider_popup is not None
+            else (
+                cache.get("PULSESCRIBE_REFINE_PROVIDER")
+                or config.get("refine_provider")
+                or "groq"
+            )
+        )
+        refine_model = (
+            refine_model_field.stringValue().strip()
+            if refine_model_field is not None
+            else (
+                cache.get("PULSESCRIBE_REFINE_MODEL")
+                or config.get("refine_model")
+                or "openai/gpt-oss-120b"
+            )
+        )
+
+        overlay_enabled = (
+            bool(overlay_checkbox.state() == 1)
+            if overlay_checkbox is not None
+            else (
+                bool(parse_bool(cache.get("PULSESCRIBE_OVERLAY")))
+                if cache.get("PULSESCRIBE_OVERLAY") is not None
+                else True
+            )
+        )
+        rtf_enabled = (
+            bool(rtf_checkbox.state() == 1)
+            if rtf_checkbox is not None
+            else bool(parse_bool(cache.get("PULSESCRIBE_SHOW_RTF") or "false"))
+        )
+        clipboard_enabled = (
+            bool(clipboard_checkbox.state() == 1)
+            if clipboard_checkbox is not None
+            else bool(
+                parse_bool(cache.get("PULSESCRIBE_CLIPBOARD_RESTORE") or "false")
+            )
+        )
+        dock_enabled = (
+            bool(dock_checkbox.state() == 1)
+            if dock_checkbox is not None
+            else (
+                bool(parse_bool(cache.get("PULSESCRIBE_DOCK_ICON")))
+                if cache.get("PULSESCRIBE_DOCK_ICON") is not None
+                else True
+            )
+        )
+
+        return (
+            mode,
+            lang,
+            backend,
+            local_model,
+            streaming,
+            refine_enabled,
+            refine_provider,
+            refine_model,
+            overlay_enabled,
+            rtf_enabled,
+            clipboard_enabled,
+            dock_enabled,
+            api_keys,
+        )
+
+    def _refresh_footer_settings_hint(self) -> None:
+        saved_signature = getattr(self, "_saved_settings_signature", None)
+        relaunch_required = (
+            getattr(self, "_saved_dock_icon_enabled", None)
+            is not None
+            and self._get_current_dock_icon_enabled()
+            != getattr(self, "_saved_dock_icon_enabled", None)
+        )
+        if saved_signature is None or self._get_current_settings_signature() == saved_signature:
+            text, color = build_settings_loaded_feedback()
+        else:
+            text, color = build_unsaved_settings_feedback(
+                relaunch_required=relaunch_required
+            )
+        self._set_footer_status(text, color)
+
     def _update_refine_model_affordances(self) -> None:
         _enabled, provider_key, model_text = self._get_current_refine_settings_state()
         provider_label = get_refine_provider_label(provider_key)
@@ -2199,8 +2421,11 @@ class WelcomeController:
     def _refresh_secondary_settings_feedback(self) -> None:
         self._refresh_refine_settings_feedback()
         self._refresh_display_settings_feedback()
+        self._refresh_footer_settings_hint()
 
-    def _build_refine_card(self, y: int, parent_view=None) -> int:
+    def _build_refine_card(
+        self, y: int, parent_view=None, tab_height: int | None = None
+    ) -> int:
         """Erstellt Refine-Einstellungen."""
         from AppKit import (  # type: ignore[import-not-found]
             NSButton,
@@ -2217,7 +2442,8 @@ class WelcomeController:
 
         parent_view = parent_view or self._content_view
 
-        card_height = 360
+        max_height = (tab_height - 2 * WELCOME_PADDING) if tab_height else 360
+        card_height = min(352, max_height)
         card_width = WELCOME_WIDTH - 2 * WELCOME_PADDING
         card_y = y - card_height
 
@@ -2246,7 +2472,7 @@ class WelcomeController:
             NSMakeRect(base_x, card_y + card_height - 56, content_width, 28)
         )
         desc.setStringValue_(
-            "Choose whether PulseScribe cleans up transcript text after dictation, what it shows on screen, and whether your clipboard gets restored after pasting. Changes stay local until you click Save & Apply."
+            "Choose whether PulseScribe cleans up transcript text after dictation, what it shows on screen, and whether your clipboard gets restored after pasting."
         )
         desc.setBezeled_(False)
         desc.setDrawsBackground_(False)
@@ -2400,7 +2626,7 @@ class WelcomeController:
             NSMakeRect(control_x, current_y, control_width, 22)
         )
         clipboard_checkbox.setButtonType_(NSButtonTypeSwitch)
-        clipboard_checkbox.setTitle_("Restore previous clipboard text after paste")
+        clipboard_checkbox.setTitle_("Restore clipboard after paste")
         clipboard_checkbox.setFont_(NSFont.systemFontOfSize_(11))
         clipboard_restore = self._get_cached_env_setting("PULSESCRIBE_CLIPBOARD_RESTORE")
         clipboard_restore = (
@@ -2421,7 +2647,7 @@ class WelcomeController:
             NSMakeRect(control_x, current_y, control_width, 22)
         )
         dock_checkbox.setButtonType_(NSButtonTypeSwitch)
-        dock_checkbox.setTitle_("Show PulseScribe in the Dock")
+        dock_checkbox.setTitle_("Show in the Dock")
         dock_checkbox.setFont_(NSFont.systemFontOfSize_(11))
         dock_enabled = _is_env_enabled_default_true("PULSESCRIBE_DOCK_ICON")
         dock_checkbox.setState_(1 if dock_enabled else 0)
@@ -2439,7 +2665,7 @@ class WelcomeController:
             NSMakeRect(control_x, current_y, control_width, 22)
         )
         rtf_checkbox.setButtonType_(NSButtonTypeSwitch)
-        rtf_checkbox.setTitle_("Show transcription speed (RTF) after each result")
+        rtf_checkbox.setTitle_("Show transcription speed after each result")
         rtf_checkbox.setFont_(NSFont.systemFontOfSize_(11))
         rtf_setting = self._get_cached_env_setting("PULSESCRIBE_SHOW_RTF")
         rtf_enabled = rtf_setting is not None and rtf_setting.lower() in (
@@ -2707,7 +2933,7 @@ class WelcomeController:
             self._prompts_cache[ctx] = text
             _set_string_value_if_changed(
                 self._prompts_status_label,
-                f"Restored default {get_prompt_editor_context_label(ctx)}. Save & Apply to keep this change.",
+                f"Restored default {get_prompt_editor_context_label(ctx)}. {build_save_apply_change_hint()}",
             )
 
         # Handler-Klasse für ObjC
@@ -4443,6 +4669,7 @@ class WelcomeController:
         self._update_streaming_visibility()
         self._refresh_provider_key_statuses()
         self._refresh_setup_try_card()
+        self._refresh_footer_settings_hint()
 
     def _apply_selected_local_preset(self) -> None:
         """Wendet das aktuell gewählte Local-Preset auf die UI an."""
@@ -4545,6 +4772,7 @@ class WelcomeController:
             values.get("lightning_quant", "none"),
         )
         self._update_all_visibility()
+        self._refresh_footer_settings_hint()
         return
 
     def _build_footer(self) -> None:
@@ -4565,7 +4793,7 @@ class WelcomeController:
         footer_y = WELCOME_PADDING
 
         # Button layout (right-aligned)
-        btn_w = 140
+        btn_w = 132
         btn_h = 32
         btn_spacing = 10
         btn_font_size = 13
@@ -4594,7 +4822,7 @@ class WelcomeController:
         save_x = close_x - btn_spacing - btn_w
 
         status_label = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(WELCOME_PADDING + 145, footer_y + 8, save_x - (WELCOME_PADDING + 155), 16)
+            NSMakeRect(WELCOME_PADDING, footer_y + 36, WELCOME_WIDTH - 2 * WELCOME_PADDING, 32)
         )
         status_label.setStringValue_("")
         status_label.setBezeled_(False)
@@ -4603,6 +4831,11 @@ class WelcomeController:
         status_label.setSelectable_(False)
         status_label.setFont_(NSFont.systemFontOfSize_(10))
         status_label.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6))
+        try:
+            status_label.setLineBreakMode_(0)
+            status_label.setUsesSingleLineMode_(False)
+        except Exception:
+            pass
         self._content_view.addSubview_(status_label)
         self._footer_status_label = status_label
 
@@ -4624,6 +4857,7 @@ class WelcomeController:
         )
         self._save_all_handler = save_handler
         self._save_btn = save_btn
+        _set_tooltip_if_supported(save_btn, "Save the current settings shown in this window.")
         self._content_view.addSubview_(save_btn)
 
         # Start-Button (prominent, rechts)
@@ -4644,6 +4878,7 @@ class WelcomeController:
             objc.selector(start_handler.performAction_, signature=b"v@:@")
         )
         self._start_handler = start_handler
+        _set_tooltip_if_supported(start_btn, "Close this settings window.")
 
         self._content_view.addSubview_(start_btn)
 
@@ -4900,6 +5135,7 @@ class WelcomeController:
             else:
                 env_updates["PULSESCRIBE_REFINE_MODEL"] = None
 
+        previous_dock_state = getattr(self, "_saved_dock_icon_enabled", None)
         self._apply_env_updates(env_updates)
         self._refresh_provider_key_statuses()
 
@@ -4945,6 +5181,12 @@ class WelcomeController:
 
         log.info("All settings saved to .env file")
 
+        current_dock_state = self._get_current_dock_icon_enabled()
+        dock_changed = (
+            previous_dock_state is not None and previous_dock_state != current_dock_state
+        )
+        self._saved_settings_signature = self._get_current_settings_signature()
+        self._saved_dock_icon_enabled = current_dock_state
         self._saved_refine_settings_state = self._get_current_refine_settings_state()
         self._saved_display_settings_state = self._get_current_display_settings_state()
         self._refresh_secondary_settings_feedback()
@@ -4953,7 +5195,10 @@ class WelcomeController:
         if self._on_settings_changed_callback:
             self._on_settings_changed_callback()
 
-        self._set_footer_status("Settings saved.", "success")
+        text, color = build_settings_saved_feedback(
+            relaunch_required=dock_changed,
+        )
+        self._set_footer_status(text, color)
 
         # Visuelles Feedback: Button-Text kurz ändern
         if hasattr(self, "_save_btn") and self._save_btn:

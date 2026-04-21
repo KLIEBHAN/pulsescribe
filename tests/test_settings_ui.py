@@ -381,6 +381,39 @@ class TestWelcomeSecondarySettingsFeedback:
         assert "Dock icon is hidden after you relaunch" in ctrl._display_status_label.value
         assert ctrl._display_status_label.color == "warning"
 
+    def test_refresh_footer_settings_hint_reports_loaded_and_dirty_states(
+        self, monkeypatch
+    ):
+        ctrl = _make_minimal_welcome_controller()
+
+        class _FakeToggle:
+            def __init__(self, enabled: bool):
+                self._state = 1 if enabled else 0
+
+            def state(self):
+                return self._state
+
+        ctrl._footer_status_label = _FakeStatus()
+        ctrl._env_settings_cache = {"PULSESCRIBE_DOCK_ICON": "true"}
+        ctrl._saved_settings_signature = ctrl._get_current_settings_signature()
+        ctrl._saved_dock_icon_enabled = True
+
+        monkeypatch.setattr("ui.welcome._status_color", lambda color: color)
+
+        ctrl._refresh_footer_settings_hint()
+        assert ctrl._footer_status_label.value.startswith(
+            "Showing the current saved settings"
+        )
+        assert ctrl._footer_status_label.color == "text_secondary"
+
+        ctrl._dock_icon_checkbox = _FakeToggle(False)
+        ctrl._refresh_footer_settings_hint()
+        assert ctrl._footer_status_label.value == (
+            "You have local changes. Click Save & Apply to keep them. "
+            "Dock icon changes still need a relaunch."
+        )
+        assert ctrl._footer_status_label.color == "warning"
+
 
 class TestApiKeyProviderMetadata:
     def test_api_card_height_grows_with_provider_count(self, monkeypatch):
@@ -562,6 +595,29 @@ class TestWelcomeSaveSettings:
         ctrl._save_all_settings()
 
         assert ctrl._footer_status_label.value == "Settings saved."
+        assert ctrl._footer_status_label.color == (51, 217, 178)
+
+    def test_save_settings_mentions_relaunch_when_dock_icon_changed(self, monkeypatch):
+        monkeypatch.setattr("ui.welcome._get_color", lambda *args: args)
+
+        class _FakeToggle:
+            def __init__(self, enabled: bool):
+                self._state = 1 if enabled else 0
+
+            def state(self):
+                return self._state
+
+        ctrl = _make_minimal_welcome_controller()
+        ctrl._env_settings_cache = {}
+        ctrl._footer_status_label = _FakeStatus()
+        ctrl._saved_dock_icon_enabled = True
+        ctrl._dock_icon_checkbox = _FakeToggle(False)
+
+        ctrl._save_all_settings()
+
+        assert ctrl._footer_status_label.value == (
+            "Settings saved. Relaunch PulseScribe to apply the Dock icon change."
+        )
         assert ctrl._footer_status_label.color == (51, 217, 178)
 
     def test_save_custom_prompts_skips_rewrite_when_overrides_are_unchanged(

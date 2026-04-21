@@ -51,6 +51,12 @@ from ui.secondary_settings_feedback import (
     get_refine_provider_label,
     normalize_refine_provider,
 )
+from ui.settings_apply_feedback import (
+    build_save_apply_change_hint,
+    build_settings_loaded_feedback,
+    build_settings_saved_feedback,
+    build_unsaved_settings_feedback,
+)
 from ui.vocabulary_feedback import (
     build_vocabulary_editor_feedback,
     build_vocabulary_load_feedback,
@@ -914,6 +920,7 @@ class SettingsWindow(QDialog):
         self._last_setup_overview_snapshot: _SetupOverviewSnapshot | None = None
         self._process_env_api_keys: dict[str, str] | None = None
         self._last_reload_signal_written: bool = True
+        self._saved_settings_signature: tuple | None = None
         self._saved_refine_settings_state: tuple[bool, str, str] | None = None
         self._saved_display_settings_state: tuple[bool, ...] | None = None
         self._tab_builders: dict[str, Callable[[], QWidget]] = {}
@@ -1072,6 +1079,7 @@ class SettingsWindow(QDialog):
         footer.setMinimumHeight(60)
         layout = QHBoxLayout(footer)
         layout.setContentsMargins(20, 10, 20, 20)
+        layout.setSpacing(12)
 
         # Checkbox links (wie macOS Welcome Window)
         self._show_at_startup_checkbox = QCheckBox("Show at startup")
@@ -1083,16 +1091,19 @@ class SettingsWindow(QDialog):
 
         self._footer_status_label = create_status_label("", "text_secondary")
         self._footer_status_label.setFont(QFont("Segoe UI", 9))
-        self._footer_status_label.setMinimumWidth(220)
+        self._footer_status_label.setMinimumWidth(0)
+        self._footer_status_label.setAccessibleName("Settings status")
         layout.addWidget(self._footer_status_label, 1)
 
         self._save_btn = QPushButton("Save && Apply")
         self._save_btn.setObjectName("primary")
+        self._save_btn.setAccessibleName("Save and apply settings")
         self._save_btn.clicked.connect(self._save_settings)
         layout.addWidget(self._save_btn)
 
         # Close-Button (rechts vom Save-Button, wie macOS)
         self._close_btn = QPushButton("Close")
+        self._close_btn.setAccessibleName("Close settings")
         self._close_btn.clicked.connect(self.reject)  # QDialog-konform
         layout.addWidget(self._close_btn)
 
@@ -1219,6 +1230,7 @@ class SettingsWindow(QDialog):
         self._toggle_hotkey_field.setPlaceholderText("e.g., ctrl+alt+r")
         self._toggle_hotkey_field.setReadOnly(True)
         self._toggle_hotkey_field.setToolTip("Toggle: press once to start, press again to stop")
+        self._toggle_hotkey_field.textChanged.connect(self._refresh_footer_settings_hint)
         toggle_row.addWidget(self._toggle_hotkey_field, 1)
 
         self._toggle_record_btn = QPushButton("Record")
@@ -1250,6 +1262,7 @@ class SettingsWindow(QDialog):
         self._hold_hotkey_field.setPlaceholderText("e.g., ctrl+alt+space")
         self._hold_hotkey_field.setReadOnly(True)
         self._hold_hotkey_field.setToolTip("Hold: keep pressed while speaking, release to stop")
+        self._hold_hotkey_field.textChanged.connect(self._refresh_footer_settings_hint)
         hold_row.addWidget(self._hold_hotkey_field, 1)
 
         self._hold_record_btn = QPushButton("Record")
@@ -1341,6 +1354,7 @@ class SettingsWindow(QDialog):
         self._mode_combo.setAccessibleName("Transcription mode")
         self._mode_combo.setToolTip("Choose the transcription provider PulseScribe uses for speech-to-text")
         self._mode_combo.currentTextChanged.connect(self._on_mode_changed)
+        self._mode_combo.currentTextChanged.connect(self._refresh_footer_settings_hint)
         card_layout.addLayout(create_label_row("Mode:", self._mode_combo))
 
         # Language
@@ -1348,6 +1362,7 @@ class SettingsWindow(QDialog):
         _add_combo_items(self._lang_combo, LANGUAGE_OPTIONS)
         self._lang_combo.setAccessibleName("Recognition language")
         self._lang_combo.setToolTip("Use auto for automatic language detection")
+        self._lang_combo.currentTextChanged.connect(self._refresh_footer_settings_hint)
         card_layout.addLayout(create_label_row("Language:", self._lang_combo))
 
         # Local Backend Container (nur für local mode)
@@ -1362,6 +1377,9 @@ class SettingsWindow(QDialog):
         self._local_backend_combo.currentTextChanged.connect(
             self._refresh_local_advanced_ui
         )
+        self._local_backend_combo.currentTextChanged.connect(
+            self._refresh_footer_settings_hint
+        )
         backend_label = QLabel("Local Backend:")
         backend_label.setMinimumWidth(120)
         backend_layout.addWidget(backend_label)
@@ -1374,6 +1392,9 @@ class SettingsWindow(QDialog):
         model_layout.setContentsMargins(0, 0, 0, 0)
         self._local_model_combo = QComboBox()
         _add_combo_items(self._local_model_combo, LOCAL_MODEL_OPTIONS)
+        self._local_model_combo.currentTextChanged.connect(
+            self._refresh_footer_settings_hint
+        )
         model_label = QLabel("Local Model:")
         model_label.setMinimumWidth(120)
         model_layout.addWidget(model_label)
@@ -1386,6 +1407,7 @@ class SettingsWindow(QDialog):
         streaming_layout.setContentsMargins(0, 0, 0, 0)
         self._streaming_checkbox = QCheckBox("Enable WebSocket Streaming")
         self._streaming_checkbox.setToolTip("Deepgram only: enables lower-latency streaming transcription")
+        self._streaming_checkbox.toggled.connect(self._refresh_footer_settings_hint)
         streaming_layout.addWidget(self._streaming_checkbox)
         streaming_layout.addStretch()
         card_layout.addWidget(self._streaming_container)
@@ -1432,6 +1454,7 @@ class SettingsWindow(QDialog):
                 pass
             field.textChanged.connect(self._refresh_setup_overview)
             field.textChanged.connect(self._refresh_provider_key_statuses)
+            field.textChanged.connect(self._refresh_footer_settings_hint)
             self._api_fields[env_key] = field
             row.addWidget(field, 1)
 
@@ -1486,11 +1509,13 @@ class SettingsWindow(QDialog):
         self._device_combo = QComboBox()
         _add_combo_items(self._device_combo, DEVICE_OPTIONS)
         self._device_combo.setToolTip("Auto is recommended unless you explicitly want CPU or GPU inference.")
+        self._device_combo.currentTextChanged.connect(self._refresh_footer_settings_hint)
         card_layout.addLayout(create_label_row("Device:", self._device_combo, "auto recommended"))
 
         self._beam_size_field = QLineEdit()
         self._beam_size_field.setPlaceholderText("Leave empty = default")
         self._beam_size_field.setToolTip("Optional decoding override. Leave empty to keep PulseScribe's default.")
+        self._beam_size_field.textChanged.connect(self._refresh_footer_settings_hint)
         self._beam_size_field.setValidator(QIntValidator(1, 20))
         card_layout.addLayout(
             create_label_row("Beam Size:", self._beam_size_field, "optional override")
@@ -1499,6 +1524,7 @@ class SettingsWindow(QDialog):
         self._temperature_field = QLineEdit()
         self._temperature_field.setPlaceholderText("Leave empty = default")
         self._temperature_field.setToolTip("Optional decoding temperature. Leave empty to keep the backend default.")
+        self._temperature_field.textChanged.connect(self._refresh_footer_settings_hint)
         self._temperature_field.setValidator(QDoubleValidator(0.0, 1.0, 2))
         card_layout.addLayout(
             create_label_row("Temperature:", self._temperature_field, "0.0-1.0")
@@ -1507,6 +1533,7 @@ class SettingsWindow(QDialog):
         self._best_of_field = QLineEdit()
         self._best_of_field.setPlaceholderText("Leave empty = default")
         self._best_of_field.setToolTip("Optional sampling override. Leave empty to keep the backend default.")
+        self._best_of_field.textChanged.connect(self._refresh_footer_settings_hint)
         self._best_of_field.setValidator(QIntValidator(1, 10))
         card_layout.addLayout(
             create_label_row("Best Of:", self._best_of_field, "optional override")
@@ -1517,6 +1544,7 @@ class SettingsWindow(QDialog):
         self._fp16_combo.setToolTip(
             "Use default unless you explicitly want to force half-precision on or off."
         )
+        self._fp16_combo.currentTextChanged.connect(self._refresh_footer_settings_hint)
         card_layout.addLayout(create_label_row("FP16:", self._fp16_combo, "default keeps auto"))
 
         self._advanced_local_settings_card = card
@@ -1534,6 +1562,7 @@ class SettingsWindow(QDialog):
             ["default", "float16", "float32", "int8", "int8_float16"],
         )
         self._compute_type_combo.setToolTip("Default is recommended unless you need a specific precision or quantization mode.")
+        self._compute_type_combo.currentTextChanged.connect(self._refresh_footer_settings_hint)
         card_layout.addLayout(
             create_label_row("Compute Type:", self._compute_type_combo, "default recommended")
         )
@@ -1542,6 +1571,7 @@ class SettingsWindow(QDialog):
         self._cpu_threads_field = QLineEdit()
         self._cpu_threads_field.setPlaceholderText("0 = auto")
         self._cpu_threads_field.setToolTip("Set 0 or leave the default to let Faster-Whisper choose automatically.")
+        self._cpu_threads_field.textChanged.connect(self._refresh_footer_settings_hint)
         self._cpu_threads_field.setValidator(QIntValidator(0, cpu_threads_max))
         card_layout.addLayout(
             create_label_row(
@@ -1554,6 +1584,7 @@ class SettingsWindow(QDialog):
         self._num_workers_field = QLineEdit()
         self._num_workers_field.setPlaceholderText("1")
         self._num_workers_field.setToolTip("Increase only if you know your system benefits from extra decoding workers.")
+        self._num_workers_field.textChanged.connect(self._refresh_footer_settings_hint)
         self._num_workers_field.setValidator(QIntValidator(1, 8))
         card_layout.addLayout(
             create_label_row("Num Workers:", self._num_workers_field, "advanced only")
@@ -1562,6 +1593,9 @@ class SettingsWindow(QDialog):
         self._without_timestamps_combo = QComboBox()
         _add_combo_items(self._without_timestamps_combo, BOOL_OVERRIDE_OPTIONS)
         self._without_timestamps_combo.setToolTip("Default keeps Faster-Whisper's normal timestamp behavior.")
+        self._without_timestamps_combo.currentTextChanged.connect(
+            self._refresh_footer_settings_hint
+        )
         card_layout.addLayout(
             create_label_row("Without Timestamps:", self._without_timestamps_combo, "default keeps auto")
         )
@@ -1569,6 +1603,7 @@ class SettingsWindow(QDialog):
         self._vad_filter_combo = QComboBox()
         _add_combo_items(self._vad_filter_combo, BOOL_OVERRIDE_OPTIONS)
         self._vad_filter_combo.setToolTip("Default keeps Faster-Whisper's normal voice activity detection behavior.")
+        self._vad_filter_combo.currentTextChanged.connect(self._refresh_footer_settings_hint)
         card_layout.addLayout(
             create_label_row("VAD Filter:", self._vad_filter_combo, "default keeps auto")
         )
@@ -1594,6 +1629,7 @@ class SettingsWindow(QDialog):
         self._lightning_batch_slider.setValue(12)
         self._lightning_batch_slider.setToolTip("Higher values may improve speed but use more memory.")
         self._lightning_batch_slider.valueChanged.connect(self._on_batch_size_changed)
+        self._lightning_batch_slider.valueChanged.connect(self._refresh_footer_settings_hint)
         batch_layout.addWidget(self._lightning_batch_slider, 1)
 
         self._lightning_batch_value = QLabel("12")
@@ -1606,6 +1642,9 @@ class SettingsWindow(QDialog):
         _add_combo_items(self._lightning_quant_combo, LIGHTNING_QUANT_OPTIONS)
         self._lightning_quant_combo.setToolTip(
             "Lower precision reduces memory usage but can affect quality. Leave on 'none' unless you need the trade-off."
+        )
+        self._lightning_quant_combo.currentTextChanged.connect(
+            self._refresh_footer_settings_hint
         )
         card_layout.addLayout(
             create_label_row("Quantization:", self._lightning_quant_combo, "none = best quality")
@@ -1633,7 +1672,7 @@ class SettingsWindow(QDialog):
         # Refine Card
         card, card_layout = create_card(
             "✨ Transcript Cleanup",
-            "Optional post-processing after transcription. The selected provider uses its API key from the Providers tab. Changes stay local until you click Save & Apply.",
+            "Optional post-processing after transcription. The selected provider uses its API key from the Providers tab.",
         )
 
         self._refine_checkbox = QCheckBox("Clean up transcript text with an LLM")
@@ -1677,7 +1716,7 @@ class SettingsWindow(QDialog):
         # Display Card
         card, card_layout = create_card(
             "🖥️ Output & Clipboard",
-            "Control what PulseScribe shows while you dictate and what happens to the clipboard after pasting. Changes stay local until you click Save & Apply.",
+            "Control what PulseScribe shows while you dictate and what happens to the clipboard after pasting.",
         )
 
         self._overlay_checkbox = QCheckBox("Show recording overlay")
@@ -1689,7 +1728,7 @@ class SettingsWindow(QDialog):
         card_layout.addWidget(self._overlay_checkbox)
 
         self._rtf_checkbox = QCheckBox(
-            "Show transcription speed (RTF) after each result"
+            "Show transcription speed after each result"
         )
         self._rtf_checkbox.setAccessibleName("Show transcription speed details")
         self._rtf_checkbox.setToolTip(
@@ -2291,6 +2330,82 @@ class SettingsWindow(QDialog):
             bool(clipboard.isChecked()) if clipboard is not None else False,
         )
 
+    def _get_current_settings_signature(self) -> tuple:
+        api_keys = tuple(
+            (
+                env_key,
+                (field.text().strip() if field is not None else ""),
+            )
+            for env_key, field in sorted(getattr(self, "_api_fields", {}).items())
+        )
+        mode_combo = getattr(self, "_mode_combo", None)
+        lang_combo = getattr(self, "_lang_combo", None)
+        local_backend_combo = getattr(self, "_local_backend_combo", None)
+        local_model_combo = getattr(self, "_local_model_combo", None)
+        streaming_checkbox = getattr(self, "_streaming_checkbox", None)
+        toggle_hotkey_field = getattr(self, "_toggle_hotkey_field", None)
+        hold_hotkey_field = getattr(self, "_hold_hotkey_field", None)
+        return (
+            mode_combo.currentText() if mode_combo else "deepgram",
+            lang_combo.currentText() if lang_combo else "auto",
+            local_backend_combo.currentText()
+            if local_backend_combo
+            else DEFAULT_LOCAL_BACKEND,
+            local_model_combo.currentText() if local_model_combo else "default",
+            bool(streaming_checkbox.isChecked())
+            if streaming_checkbox is not None
+            else True,
+            getattr(self, "_device_combo", None).currentText()
+            if getattr(self, "_device_combo", None) is not None
+            else "auto",
+            getattr(self, "_beam_size_field", None).text()
+            if getattr(self, "_beam_size_field", None) is not None
+            else "",
+            getattr(self, "_temperature_field", None).text()
+            if getattr(self, "_temperature_field", None) is not None
+            else "",
+            getattr(self, "_best_of_field", None).text()
+            if getattr(self, "_best_of_field", None) is not None
+            else "",
+            getattr(self, "_compute_type_combo", None).currentText()
+            if getattr(self, "_compute_type_combo", None) is not None
+            else "default",
+            getattr(self, "_cpu_threads_field", None).text()
+            if getattr(self, "_cpu_threads_field", None) is not None
+            else "",
+            getattr(self, "_num_workers_field", None).text()
+            if getattr(self, "_num_workers_field", None) is not None
+            else "",
+            getattr(self, "_without_timestamps_combo", None).currentText()
+            if getattr(self, "_without_timestamps_combo", None) is not None
+            else "default",
+            getattr(self, "_vad_filter_combo", None).currentText()
+            if getattr(self, "_vad_filter_combo", None) is not None
+            else "default",
+            getattr(self, "_fp16_combo", None).currentText()
+            if getattr(self, "_fp16_combo", None) is not None
+            else "default",
+            getattr(self, "_lightning_batch_slider", None).value()
+            if getattr(self, "_lightning_batch_slider", None) is not None
+            else 12,
+            getattr(self, "_lightning_quant_combo", None).currentText()
+            if getattr(self, "_lightning_quant_combo", None) is not None
+            else "none",
+            *self._get_current_refine_settings_state(),
+            *self._get_current_display_settings_state(),
+            toggle_hotkey_field.text() if toggle_hotkey_field else "",
+            hold_hotkey_field.text() if hold_hotkey_field else "",
+            api_keys,
+        )
+
+    def _refresh_footer_settings_hint(self) -> None:
+        saved_signature = getattr(self, "_saved_settings_signature", None)
+        if saved_signature is None or self._get_current_settings_signature() == saved_signature:
+            text, color = build_settings_loaded_feedback()
+        else:
+            text, color = build_unsaved_settings_feedback()
+        self._set_footer_status(text, color)
+
     def _update_refine_model_affordances(self) -> None:
         _enabled, provider_key, model_text = self._get_current_refine_settings_state()
         provider_label = get_refine_provider_label(provider_key)
@@ -2359,6 +2474,7 @@ class SettingsWindow(QDialog):
     def _refresh_secondary_settings_feedback(self) -> None:
         self._refresh_refine_settings_feedback()
         self._refresh_display_settings_feedback()
+        self._refresh_footer_settings_hint()
 
     # =========================================================================
     # Event Handlers
@@ -2541,7 +2657,7 @@ class SettingsWindow(QDialog):
         toggle_text = _format_hotkey_for_display(toggle) or "not set"
         hold_text = _format_hotkey_for_display(hold) or "not set"
         self._set_hotkey_status(
-            f"Preset applied: Toggle {toggle_text}, Hold {hold_text}. Click Save & Apply to persist.",
+            f"Preset applied: Toggle {toggle_text}, Hold {hold_text}. {build_save_apply_change_hint(plural=True)}",
             "success",
         )
         self._refresh_setup_overview()
@@ -2790,7 +2906,7 @@ class SettingsWindow(QDialog):
         if kind == "toggle" and self._toggle_hotkey_field:
             self._toggle_hotkey_field.setText("")
             self._set_hotkey_status(
-                "Toggle hotkey cleared. Click Save & Apply to persist the change.",
+                f"Toggle hotkey cleared. {build_save_apply_change_hint()}",
                 "text_hint",
             )
             self._refresh_setup_overview()
@@ -2799,7 +2915,7 @@ class SettingsWindow(QDialog):
         if kind == "hold" and self._hold_hotkey_field:
             self._hold_hotkey_field.setText("")
             self._set_hotkey_status(
-                "Hold hotkey cleared. Click Save & Apply to persist the change.",
+                f"Hold hotkey cleared. {build_save_apply_change_hint()}",
                 "text_hint",
             )
             self._refresh_setup_overview()
@@ -3920,10 +4036,12 @@ class SettingsWindow(QDialog):
             if current_mode_text:
                 applied_mode = current_mode_text
         self._refresh_provider_key_statuses()
+        self._saved_settings_signature = self._get_current_settings_signature()
         self._saved_refine_settings_state = self._get_current_refine_settings_state()
         self._saved_display_settings_state = self._get_current_display_settings_state()
         self._refresh_secondary_settings_feedback()
         self._on_mode_changed(applied_mode)
+        self._refresh_footer_settings_hint()
 
     def _save_settings(self):
         """Speichert alle Settings."""
@@ -4133,6 +4251,7 @@ class SettingsWindow(QDialog):
             # (Settings-Fenster läuft als separater Prozess, daher IPC via Datei)
             self._last_reload_signal_written = self._write_reload_signal()
 
+            self._saved_settings_signature = self._get_current_settings_signature()
             self._saved_refine_settings_state = self._get_current_refine_settings_state()
             self._saved_display_settings_state = self._get_current_display_settings_state()
             self._refresh_secondary_settings_feedback()
@@ -4318,10 +4437,13 @@ class SettingsWindow(QDialog):
         elif ui_changed:
             self._refresh_setup_overview()
 
+        if ui_changed or mode_changed:
+            self._refresh_footer_settings_hint()
+
         # Feedback
         _set_status_label_if_changed(
             getattr(self, "_preset_status", None),
-            f"✓ '{preset}' preset applied — click 'Save & Apply' to persist.",
+            f"✓ '{preset}' preset applied — {build_save_apply_change_hint(plural=True)}",
             "success",
         )
 
@@ -4348,16 +4470,10 @@ class SettingsWindow(QDialog):
 
     def _show_save_feedback(self):
         """Zeigt visuelles Feedback nach erfolgreichem Speichern."""
-        if getattr(self, "_last_reload_signal_written", True):
-            self._set_footer_status(
-                "Settings saved. PulseScribe will reload them automatically.",
-                "success",
-            )
-        else:
-            self._set_footer_status(
-                "Settings saved, but automatic reload failed. Restart PulseScribe to apply the changes.",
-                "warning",
-            )
+        text, color = build_settings_saved_feedback(
+            auto_reload_worked=getattr(self, "_last_reload_signal_written", True)
+        )
+        self._set_footer_status(text, color)
 
         if hasattr(self, "_save_btn") and self._save_btn:
             self._save_btn.setText("✓ Saved!")

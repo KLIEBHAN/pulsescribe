@@ -806,7 +806,9 @@ def test_apply_local_preset_skips_refresh_for_idempotent_values():
     window._num_workers_field = _FakeField("1")
     window._lightning_batch_slider = _FakeSlider(12)
     window._preset_status = _FakeLabel()
-    window._preset_status.text = "✓ 'cpu_fast' preset applied — click 'Save & Apply' to persist."
+    window._preset_status.text = (
+        "✓ 'cpu_fast' preset applied — Click Save & Apply to keep these changes."
+    )
     window._preset_status.style = f"color: {settings_mod.COLORS['success']};"
     window._on_mode_changed = lambda mode: mode_changes.append(mode)
     window._refresh_setup_overview = lambda: refresh_calls.append("refresh")
@@ -866,6 +868,25 @@ def test_build_setup_how_to_text_prefers_hold_flow_when_available():
 
     assert "Hold Ctrl+Win" in text
     assert "Alternative: press Ctrl+Alt+R" in text
+
+
+def test_refresh_footer_settings_hint_switches_between_loaded_and_unsaved_states() -> None:
+    window = _make_window()
+    window._footer_status_label = _FakeLabel()
+    window._saved_settings_signature = window._get_current_settings_signature()
+
+    window._refresh_footer_settings_hint()
+
+    assert window._footer_status_label.text.startswith(
+        "Showing the current saved settings"
+    )
+
+    window._refine_checkbox.setChecked(True)
+    window._refresh_footer_settings_hint()
+
+    assert window._footer_status_label.text == (
+        "You have local changes. Click Save & Apply to keep them."
+    )
 
 
 def test_build_provider_guidance_text_for_missing_required_key():
