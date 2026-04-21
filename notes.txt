@@ -1,25 +1,27 @@
 UX notes - 2026-04-21
 
-Latest pass - vocabulary editor UX (`utils/vocabulary.py`, `ui/vocabulary_feedback.py`, `ui/settings_windows.py`, `ui/welcome.py`)
-- Focused on the custom vocabulary editors after reviewing their remaining guidance / validation / save-feedback gaps.
+Latest pass - secondary settings surfaces (`ui/secondary_settings_feedback.py`, `ui/settings_windows.py`, `ui/welcome.py`)
+- Focused on the remaining Refine / output / clipboard settings after reviewing their weak guidance and section-level feedback.
 - Main weaknesses found:
-  1. Limits were mentioned, but not explained in a way that helped users decide what to do.
-  2. Duplicate handling and normalization were too opaque, especially across comma-separated input and case variants.
-  3. Save vs. unchanged states were weak or inconsistent.
-  4. Empty states and input guidance did not clearly explain what belongs in the vocabulary editor.
-  5. Windows and macOS vocabulary surfaces behaved and explained themselves differently.
+  1. Refine, clipboard and display options were technically correct, but not explained in a way that made their trade-offs obvious.
+  2. Section-level Save & Apply expectations were mostly implicit, so unsaved changes vs. unchanged states were hard to spot.
+  3. Windows and macOS used noticeably different wording for the same secondary settings.
+  4. RTF / clipboard restore / refine model override copy leaned too technical or too terse.
+  5. The macOS Refine card had weak grouping and cramped hierarchy for several unrelated toggles.
 - Changes in this pass:
-  - added shared vocabulary parsing + analysis helpers so editor feedback can use the same normalization rules as persistence
-  - added shared vocabulary UX copy helpers for empty states, live edit feedback, load feedback and save / unchanged states
-  - improved Windows vocabulary editor copy, placeholder text, tooltips, accessibility names and button labels
-  - added live Windows editor feedback for duplicates, pending clears, limits and unchanged states
-  - normalized the Windows editor text after save so users immediately see the persisted result
-  - improved macOS Welcome vocabulary guidance and bottom status copy, including duplicate / empty / unchanged feedback
-  - wired live vocabulary warning updates on macOS while editing
+  - added shared feedback helpers for refine-model guidance, refine section summaries, and output / clipboard summaries
+  - improved Windows secondary settings copy, tooltips, accessible names and live section feedback for unchanged vs. unsaved states
+  - clarified Windows model guidance so the selected provider's default model is visible without making the field feel mandatory
+  - renamed several labels to be less technical, especially around transcript cleanup, RTF, overlay and clipboard restore
+  - improved the macOS Refine tab hierarchy with clearer section grouping, better descriptions, provider/model guidance and section status summaries
+  - added macOS section feedback for unsaved vs. already-applied settings and clearer relaunch wording for Dock icon changes
 - Validation:
-  - `pytest tests/test_vocabulary.py tests/test_vocabulary_feedback.py tests/test_settings_windows_load.py tests/test_settings_ui.py -q`
-  - `python -m py_compile utils/vocabulary.py ui/vocabulary_feedback.py ui/settings_windows.py ui/welcome.py tests/test_vocabulary.py tests/test_vocabulary_feedback.py tests/test_settings_windows_load.py tests/test_settings_ui.py`
-  - `ruff check utils/vocabulary.py ui/vocabulary_feedback.py ui/settings_windows.py ui/welcome.py tests/test_vocabulary.py tests/test_vocabulary_feedback.py tests/test_settings_windows_load.py tests/test_settings_ui.py`
+  - `pytest tests/test_secondary_settings_feedback.py tests/test_settings_windows_load.py tests/test_settings_ui.py -q`
+  - `python -m py_compile ui/secondary_settings_feedback.py ui/settings_windows.py ui/welcome.py tests/test_secondary_settings_feedback.py tests/test_settings_windows_load.py tests/test_settings_ui.py`
+  - `ruff check ui/secondary_settings_feedback.py ui/settings_windows.py ui/welcome.py tests/test_secondary_settings_feedback.py tests/test_settings_windows_load.py tests/test_settings_ui.py`
+
+Previous pass - vocabulary editor UX (`utils/vocabulary.py`, `ui/vocabulary_feedback.py`, `ui/settings_windows.py`, `ui/welcome.py`)
+- Added shared vocabulary parsing + analysis helpers, clearer editor guidance, and better live/save feedback across Windows + macOS.
 
 Previous pass - daemon / retry / status UX outside the overlay (`ui/daemon_status_feedback.py`, `ui/menubar.py`, `pulsescribe_daemon.py`, `pulsescribe_windows.py`)
 - Added shared daemon-status copy helpers and improved non-overlay loading, error and recovery messaging.
@@ -77,9 +79,9 @@ Previous pass - Onboarding / shared setup UX
 - Improved Windows onboarding guidance, hotkey capture discoverability, safe dictation test messaging, shared permission card wording, and Windows focus/placeholder styling.
 
 Next worthwhile UX areas
-1. final polish for secondary settings surfaces
-- refine tab wording, display / clipboard tradeoff hints, and a last responsive-spacing / hierarchy pass on smaller windows
-2. onboarding daemon handoff / retry polish
+1. onboarding daemon handoff / retry polish
 - especially Windows test-dictation connect / stop / retry messaging when the daemon is slow or unavailable
-3. remaining setup consistency details
+2. remaining setup consistency details
 - check whether secondary save / reload actions across Welcome + Settings expose enough inline confirmation and undo expectations
+3. final secondary-surface cleanup on smaller layouts
+- verify tab spacing / wrapping / hierarchy after the newer helper text on compact window sizes

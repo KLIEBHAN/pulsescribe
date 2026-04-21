@@ -24,6 +24,8 @@ class _FakeCheckbox:
 class _FakeField:
     def __init__(self, value: str = ""):
         self.value = ""
+        self.placeholder = ""
+        self.tooltip = ""
         self.set_calls = 0
         self.value = value
 
@@ -33,6 +35,12 @@ class _FakeField:
 
     def text(self) -> str:
         return self.value
+
+    def setPlaceholderText(self, value: str) -> None:
+        self.placeholder = value
+
+    def setToolTip(self, value: str) -> None:
+        self.tooltip = value
 
 
 class _FakeEditor:
@@ -598,6 +606,33 @@ def test_save_vocabulary_reports_unchanged_state_without_writing(monkeypatch):
     window._save_vocabulary()
 
     assert window._vocab_status.text == "No vocabulary changes to save (1 keyword)."
+
+
+def test_refresh_secondary_settings_feedback_reports_unsaved_changes() -> None:
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._refine_checkbox = _FakeCheckbox(True)
+    window._refine_provider_combo = _FakeCombo(
+        settings_mod.REFINE_PROVIDER_OPTIONS,
+        current="gemini",
+    )
+    window._refine_model_field = _FakeField("gemini-custom")
+    window._refine_model_help_label = _FakeLabel()
+    window._refine_settings_status_label = _FakeLabel()
+    window._overlay_checkbox = _FakeCheckbox(False)
+    window._rtf_checkbox = _FakeCheckbox(True)
+    window._clipboard_restore_checkbox = _FakeCheckbox(True)
+    window._display_settings_status_label = _FakeLabel()
+    window._saved_refine_settings_state = (False, "groq", "")
+    window._saved_display_settings_state = (True, False, False)
+
+    window._refresh_secondary_settings_feedback()
+
+    assert window._refine_model_help_label.text.startswith("Custom override")
+    assert "Unsaved changes here" in window._refine_settings_status_label.text
+    assert "gemini-custom" in window._refine_settings_status_label.text
+    assert "Unsaved changes here" in window._display_settings_status_label.text
+    assert "clipboard text is restored after paste" in window._display_settings_status_label.text
+    assert window._refine_model_field.placeholder.startswith("Optional — default:")
 
 
 def test_load_settings_prefers_canonical_fp16_key(monkeypatch):

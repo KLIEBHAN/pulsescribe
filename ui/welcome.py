@@ -17,6 +17,14 @@ from ui.logs_panel_feedback import (
     build_transcripts_count_text,
     build_transcripts_load_error_text,
 )
+from ui.secondary_settings_feedback import (
+    build_display_settings_feedback,
+    build_refine_model_guidance,
+    build_refine_settings_feedback,
+    get_refine_provider_default_model,
+    get_refine_provider_label,
+    normalize_refine_provider,
+)
 from ui.vocabulary_feedback import (
     build_vocabulary_editor_feedback,
     build_vocabulary_save_feedback,
@@ -486,6 +494,9 @@ class WelcomeController:
         self._clipboard_restore_checkbox = None
         self._provider_popup = None
         self._model_field = None
+        self._refine_model_help_label = None
+        self._refine_status_label = None
+        self._display_status_label = None
         self._local_backend_popup = None
         self._local_model_popup = None
         self._local_backend_label = None
@@ -524,6 +535,8 @@ class WelcomeController:
         self._tab_builders: dict[str, tuple[object, object, int]] = {}
         self._built_tabs: set[str] = set()
         self._tab_delegate = None
+        self._saved_refine_settings_state: tuple[bool, str, str] | None = None
+        self._saved_display_settings_state: tuple[bool, ...] | None = None
         self._vocab_text_view = None
         self._vocab_warning_label = None
         self._vocab_text_change_handler = None
@@ -2109,6 +2122,84 @@ class WelcomeController:
 
         return card_y - CARD_SPACING
 
+    def _get_current_refine_settings_state(self) -> tuple[bool, str, str]:
+        refine_checkbox = getattr(self, "_refine_checkbox", None)
+        provider_popup = getattr(self, "_provider_popup", None)
+        model_field = getattr(self, "_model_field", None)
+        provider = provider_popup.titleOfSelectedItem() if provider_popup else "groq"
+        model = model_field.stringValue().strip() if model_field else ""
+        return (
+            bool(refine_checkbox.state() == 1) if refine_checkbox else False,
+            normalize_refine_provider(provider),
+            model,
+        )
+
+    def _get_current_display_settings_state(self) -> tuple[bool, bool, bool, bool]:
+        overlay = getattr(self, "_overlay_checkbox", None)
+        rtf = getattr(self, "_rtf_checkbox", None)
+        clipboard = getattr(self, "_clipboard_restore_checkbox", None)
+        dock = getattr(self, "_dock_icon_checkbox", None)
+        return (
+            bool(overlay.state() == 1) if overlay else True,
+            bool(rtf.state() == 1) if rtf else False,
+            bool(clipboard.state() == 1) if clipboard else False,
+            bool(dock.state() == 1) if dock else True,
+        )
+
+    def _update_refine_model_affordances(self) -> None:
+        _enabled, provider_key, model_text = self._get_current_refine_settings_state()
+        provider_label = get_refine_provider_label(provider_key)
+        default_model = get_refine_provider_default_model(provider_key)
+        field = getattr(self, "_model_field", None)
+        popup = getattr(self, "_provider_popup", None)
+        if popup is not None:
+            _set_tooltip_if_supported(
+                popup,
+                "Choose which provider should clean up transcript text after transcription. The matching API key is managed on the Providers tab.",
+            )
+        if field is not None:
+            try:
+                field.setPlaceholderString_(f"Optional — default: {default_model}")
+            except Exception:
+                pass
+            _set_tooltip_if_supported(
+                field,
+                f"Leave this empty to use {provider_label}'s default refine model ({default_model}). Enter a custom model only if you want to override it.",
+            )
+        _apply_status_text(
+            getattr(self, "_refine_model_help_label", None),
+            build_refine_model_guidance(provider_key, model_text),
+            "text_secondary",
+        )
+
+    def _refresh_refine_settings_feedback(self) -> None:
+        self._update_refine_model_affordances()
+        enabled, provider_key, model_text = self._get_current_refine_settings_state()
+        text, color = build_refine_settings_feedback(
+            refine_enabled=enabled,
+            provider=provider_key,
+            model=model_text,
+            saved_state=getattr(self, "_saved_refine_settings_state", None),
+        )
+        _apply_status_text(getattr(self, "_refine_status_label", None), text, color)
+
+    def _refresh_display_settings_feedback(self) -> None:
+        overlay_enabled, rtf_enabled, clipboard_restore_enabled, dock_icon_enabled = (
+            self._get_current_display_settings_state()
+        )
+        text, color = build_display_settings_feedback(
+            overlay_enabled=overlay_enabled,
+            rtf_enabled=rtf_enabled,
+            clipboard_restore_enabled=clipboard_restore_enabled,
+            dock_icon_enabled=dock_icon_enabled,
+            saved_state=getattr(self, "_saved_display_settings_state", None),
+        )
+        _apply_status_text(getattr(self, "_display_status_label", None), text, color)
+
+    def _refresh_secondary_settings_feedback(self) -> None:
+        self._refresh_refine_settings_feedback()
+        self._refresh_display_settings_feedback()
+
     def _build_refine_card(self, y: int, parent_view=None) -> int:
         """Erstellt Refine-Einstellungen."""
         from AppKit import (  # type: ignore[import-not-found]
@@ -2116,15 +2207,17 @@ class WelcomeController:
             NSButtonTypeSwitch,
             NSColor,
             NSFont,
+            NSFontWeightMedium,
             NSFontWeightSemibold,
             NSMakeRect,
             NSPopUpButton,
             NSTextField,
         )
+        import objc  # type: ignore[import-not-found]
 
         parent_view = parent_view or self._content_view
 
-        card_height = 230  # Increased for Overlay/Dock toggles
+        card_height = 360
         card_width = WELCOME_WIDTH - 2 * WELCOME_PADDING
         card_y = y - card_height
 
@@ -2135,11 +2228,12 @@ class WelcomeController:
         label_width = 110
         control_x = base_x + label_width + 8
         control_width = card_width - 2 * CARD_PADDING - label_width - 8
+        content_width = card_width - 2 * CARD_PADDING
 
         title = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(base_x, card_y + card_height - 28, 200, 18)
+            NSMakeRect(base_x, card_y + card_height - 28, 220, 18)
         )
-        title.setStringValue_("✨ Refine")
+        title.setStringValue_("✨ Refine & Output")
         title.setBezeled_(False)
         title.setDrawsBackground_(False)
         title.setEditable_(False)
@@ -2148,8 +2242,44 @@ class WelcomeController:
         title.setTextColor_(NSColor.whiteColor())
         parent_view.addSubview_(title)
 
+        desc = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(base_x, card_y + card_height - 56, content_width, 28)
+        )
+        desc.setStringValue_(
+            "Choose whether PulseScribe cleans up transcript text after dictation, what it shows on screen, and whether your clipboard gets restored after pasting. Changes stay local until you click Save & Apply."
+        )
+        desc.setBezeled_(False)
+        desc.setDrawsBackground_(False)
+        desc.setEditable_(False)
+        desc.setSelectable_(False)
+        desc.setFont_(NSFont.systemFontOfSize_weight_(11, NSFontWeightMedium))
+        desc.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6))
+        try:
+            desc.setLineBreakMode_(0)
+            desc.setUsesSingleLineMode_(False)
+        except Exception:
+            pass
+        parent_view.addSubview_(desc)
+
+        def _add_section_label(text: str, y_pos: int):
+            label = NSTextField.alloc().initWithFrame_(
+                NSMakeRect(base_x, y_pos, content_width, 14)
+            )
+            label.setStringValue_(text)
+            label.setBezeled_(False)
+            label.setDrawsBackground_(False)
+            label.setEditable_(False)
+            label.setSelectable_(False)
+            label.setFont_(NSFont.systemFontOfSize_weight_(10, NSFontWeightSemibold))
+            label.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.55))
+            parent_view.addSubview_(label)
+            return label
+
         row_height = 28
-        current_y = card_y + card_height - 58
+        current_y = card_y + card_height - 88
+
+        _add_section_label("Transcript cleanup", current_y)
+        current_y -= 20
 
         # Refine Checkbox
         self._add_setting_label(base_x, current_y, "Refine:", parent_view)
@@ -2157,7 +2287,7 @@ class WelcomeController:
             NSMakeRect(control_x, current_y, control_width, 22)
         )
         refine_checkbox.setButtonType_(NSButtonTypeSwitch)
-        refine_checkbox.setTitle_("Enable LLM post-processing")
+        refine_checkbox.setTitle_("Clean up transcript text with an LLM")
         refine_checkbox.setFont_(NSFont.systemFontOfSize_(11))
         refine_enabled = self._get_cached_env_setting("PULSESCRIBE_REFINE")
         if refine_enabled is None:
@@ -2165,29 +2295,16 @@ class WelcomeController:
         else:
             refine_enabled = bool(parse_bool(refine_enabled))
         refine_checkbox.setState_(1 if refine_enabled else 0)
+        _set_tooltip_if_supported(
+            refine_checkbox,
+            "Use an LLM to improve punctuation, formatting, and spoken commands after transcription.",
+        )
         self._refine_checkbox = refine_checkbox
         parent_view.addSubview_(refine_checkbox)
         current_y -= row_height
 
-        # Clipboard Restore Checkbox
-        self._add_setting_label(base_x, current_y, "Clipboard:", parent_view)
-        clipboard_checkbox = NSButton.alloc().initWithFrame_(
-            NSMakeRect(control_x, current_y, control_width, 22)
-        )
-        clipboard_checkbox.setButtonType_(NSButtonTypeSwitch)
-        clipboard_checkbox.setTitle_("Restore after paste")
-        clipboard_checkbox.setFont_(NSFont.systemFontOfSize_(11))
-        clipboard_restore = self._get_cached_env_setting("PULSESCRIBE_CLIPBOARD_RESTORE")
-        clipboard_restore = (
-            bool(parse_bool(clipboard_restore)) if clipboard_restore else False
-        )
-        clipboard_checkbox.setState_(1 if clipboard_restore else 0)
-        self._clipboard_restore_checkbox = clipboard_checkbox
-        parent_view.addSubview_(clipboard_checkbox)
-        current_y -= row_height
-
         # Refine Provider
-        self._add_setting_label(base_x, current_y, "Refine Provider:", parent_view)
+        self._add_setting_label(base_x, current_y, "Provider:", parent_view)
         provider_popup = NSPopUpButton.alloc().initWithFrame_(
             NSMakeRect(control_x, current_y, control_width, 22)
         )
@@ -2199,6 +2316,7 @@ class WelcomeController:
             or self.config.get("refine_provider")
             or "groq"
         )
+        current_provider = normalize_refine_provider(current_provider)
         if current_provider in REFINE_PROVIDER_OPTIONS:
             provider_popup.selectItemWithTitle_(current_provider)
         self._provider_popup = provider_popup
@@ -2206,12 +2324,11 @@ class WelcomeController:
         current_y -= row_height
 
         # Refine Model
-        self._add_setting_label(base_x, current_y, "Refine Model:", parent_view)
+        self._add_setting_label(base_x, current_y, "Model:", parent_view)
         model_field = NSTextField.alloc().initWithFrame_(
             NSMakeRect(control_x, current_y, control_width, 22)
         )
         model_field.setFont_(NSFont.systemFontOfSize_(11))
-        model_field.setPlaceholderString_("e.g. openai/gpt-oss-120b")
         current_model = (
             self._get_cached_env_setting("PULSESCRIBE_REFINE_MODEL")
             or self.config.get("refine_model")
@@ -2220,21 +2337,82 @@ class WelcomeController:
         model_field.setStringValue_(current_model)
         self._model_field = model_field
         parent_view.addSubview_(model_field)
-        current_y -= row_height
+        current_y -= 24
 
-        # --- Display Settings ---
+        refine_model_help = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(base_x, current_y, content_width, 28)
+        )
+        refine_model_help.setBezeled_(False)
+        refine_model_help.setDrawsBackground_(False)
+        refine_model_help.setEditable_(False)
+        refine_model_help.setSelectable_(False)
+        refine_model_help.setFont_(NSFont.systemFontOfSize_(10))
+        try:
+            refine_model_help.setLineBreakMode_(0)
+            refine_model_help.setUsesSingleLineMode_(False)
+        except Exception:
+            pass
+        parent_view.addSubview_(refine_model_help)
+        self._refine_model_help_label = refine_model_help
+        current_y -= 34
+
+        refine_status = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(base_x, current_y, content_width, 30)
+        )
+        refine_status.setBezeled_(False)
+        refine_status.setDrawsBackground_(False)
+        refine_status.setEditable_(False)
+        refine_status.setSelectable_(False)
+        refine_status.setFont_(NSFont.systemFontOfSize_(10))
+        try:
+            refine_status.setLineBreakMode_(0)
+            refine_status.setUsesSingleLineMode_(False)
+        except Exception:
+            pass
+        parent_view.addSubview_(refine_status)
+        self._refine_status_label = refine_status
+        current_y -= 38
+
+        _add_section_label("Visual & paste behavior", current_y)
+        current_y -= 20
+
         # Overlay Toggle
         self._add_setting_label(base_x, current_y, "Overlay:", parent_view)
         overlay_checkbox = NSButton.alloc().initWithFrame_(
             NSMakeRect(control_x, current_y, control_width, 22)
         )
         overlay_checkbox.setButtonType_(NSButtonTypeSwitch)
-        overlay_checkbox.setTitle_("Show subtitle overlay")
+        overlay_checkbox.setTitle_("Show recording overlay")
         overlay_checkbox.setFont_(NSFont.systemFontOfSize_(11))
         overlay_enabled = _is_env_enabled_default_true("PULSESCRIBE_OVERLAY")
         overlay_checkbox.setState_(1 if overlay_enabled else 0)
+        _set_tooltip_if_supported(
+            overlay_checkbox,
+            "Show a floating overlay while recording so you can see dictation status.",
+        )
         self._overlay_checkbox = overlay_checkbox
         parent_view.addSubview_(overlay_checkbox)
+        current_y -= row_height
+
+        # Clipboard Restore Checkbox
+        self._add_setting_label(base_x, current_y, "Clipboard:", parent_view)
+        clipboard_checkbox = NSButton.alloc().initWithFrame_(
+            NSMakeRect(control_x, current_y, control_width, 22)
+        )
+        clipboard_checkbox.setButtonType_(NSButtonTypeSwitch)
+        clipboard_checkbox.setTitle_("Restore previous clipboard text after paste")
+        clipboard_checkbox.setFont_(NSFont.systemFontOfSize_(11))
+        clipboard_restore = self._get_cached_env_setting("PULSESCRIBE_CLIPBOARD_RESTORE")
+        clipboard_restore = (
+            bool(parse_bool(clipboard_restore)) if clipboard_restore else False
+        )
+        clipboard_checkbox.setState_(1 if clipboard_restore else 0)
+        _set_tooltip_if_supported(
+            clipboard_checkbox,
+            "Put your previous clipboard text back after auto-paste. Helpful if you frequently reuse clipboard contents.",
+        )
+        self._clipboard_restore_checkbox = clipboard_checkbox
+        parent_view.addSubview_(clipboard_checkbox)
         current_y -= row_height
 
         # Dock Icon Toggle
@@ -2243,23 +2421,26 @@ class WelcomeController:
             NSMakeRect(control_x, current_y, control_width, 22)
         )
         dock_checkbox.setButtonType_(NSButtonTypeSwitch)
-        dock_checkbox.setTitle_("Show in Dock (restart required)")
+        dock_checkbox.setTitle_("Show PulseScribe in the Dock")
         dock_checkbox.setFont_(NSFont.systemFontOfSize_(11))
         dock_enabled = _is_env_enabled_default_true("PULSESCRIBE_DOCK_ICON")
         dock_checkbox.setState_(1 if dock_enabled else 0)
+        _set_tooltip_if_supported(
+            dock_checkbox,
+            "Show or hide the Dock icon. This change only appears after you relaunch PulseScribe.",
+        )
         self._dock_icon_checkbox = dock_checkbox
         parent_view.addSubview_(dock_checkbox)
         current_y -= row_height
 
-        # RTF Display Toggle (Performance-Anzeige nach Transkription)
+        # RTF Display Toggle
         self._add_setting_label(base_x, current_y, "Performance:", parent_view)
         rtf_checkbox = NSButton.alloc().initWithFrame_(
             NSMakeRect(control_x, current_y, control_width, 22)
         )
         rtf_checkbox.setButtonType_(NSButtonTypeSwitch)
-        rtf_checkbox.setTitle_("Show RTF after transcription")
+        rtf_checkbox.setTitle_("Show transcription speed (RTF) after each result")
         rtf_checkbox.setFont_(NSFont.systemFontOfSize_(11))
-        # RTF default: deaktiviert (nur wenn explizit "true" gesetzt)
         rtf_setting = self._get_cached_env_setting("PULSESCRIBE_SHOW_RTF")
         rtf_enabled = rtf_setting is not None and rtf_setting.lower() in (
             "true",
@@ -2268,8 +2449,60 @@ class WelcomeController:
             "on",
         )
         rtf_checkbox.setState_(1 if rtf_enabled else 0)
+        _set_tooltip_if_supported(
+            rtf_checkbox,
+            "Display the Real-Time Factor after each transcription. Useful for performance tuning; most people can leave this off.",
+        )
         self._rtf_checkbox = rtf_checkbox
         parent_view.addSubview_(rtf_checkbox)
+        current_y -= 30
+
+        display_status = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(base_x, current_y, content_width, 34)
+        )
+        display_status.setBezeled_(False)
+        display_status.setDrawsBackground_(False)
+        display_status.setEditable_(False)
+        display_status.setSelectable_(False)
+        display_status.setFont_(NSFont.systemFontOfSize_(10))
+        try:
+            display_status.setLineBreakMode_(0)
+            display_status.setUsesSingleLineMode_(False)
+        except Exception:
+            pass
+        parent_view.addSubview_(display_status)
+        self._display_status_label = display_status
+
+        if _SimpleHandler is not None:
+            change_handler = _SimpleHandler.alloc().initWithController_method_(
+                self, "_refresh_secondary_settings_feedback"
+            )
+            action = objc.selector(change_handler.performAction_, signature=b"v@:@")
+            for control in (
+                refine_checkbox,
+                provider_popup,
+                model_field,
+                overlay_checkbox,
+                clipboard_checkbox,
+                dock_checkbox,
+                rtf_checkbox,
+            ):
+                try:
+                    control.setTarget_(change_handler)
+                    control.setAction_(action)
+                except Exception:
+                    continue
+            try:
+                model_field.setSendsActionOnEndEditing_(True)
+            except Exception:
+                pass
+            self._secondary_settings_change_handler = change_handler
+        else:
+            self._secondary_settings_change_handler = None
+
+        self._saved_refine_settings_state = self._get_current_refine_settings_state()
+        self._saved_display_settings_state = self._get_current_display_settings_state()
+        self._refresh_secondary_settings_feedback()
 
         return card_y - CARD_SPACING
 
@@ -4711,6 +4944,10 @@ class WelcomeController:
         self._save_custom_prompts()
 
         log.info("All settings saved to .env file")
+
+        self._saved_refine_settings_state = self._get_current_refine_settings_state()
+        self._saved_display_settings_state = self._get_current_display_settings_state()
+        self._refresh_secondary_settings_feedback()
 
         # Callback aufrufen damit Daemon Settings neu lädt
         if self._on_settings_changed_callback:

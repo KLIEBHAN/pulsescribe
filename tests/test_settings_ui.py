@@ -328,12 +328,58 @@ def _make_minimal_welcome_controller():
     ctrl._rtf_checkbox = None
     ctrl._provider_popup = None
     ctrl._model_field = None
+    ctrl._refine_model_help_label = None
+    ctrl._refine_status_label = None
+    ctrl._display_status_label = None
+    ctrl._saved_refine_settings_state = None
+    ctrl._saved_display_settings_state = None
     ctrl._vocab_text_view = None
     ctrl._save_custom_prompts = lambda: None
     ctrl._on_settings_changed_callback = None
     ctrl._save_btn = None
     ctrl._footer_status_label = None
     return ctrl
+
+
+class TestWelcomeSecondarySettingsFeedback:
+    def test_refresh_secondary_settings_feedback_updates_refine_and_display_summaries(
+        self, monkeypatch
+    ):
+        ctrl = _make_minimal_welcome_controller()
+
+        class _FakeToggle:
+            def __init__(self, enabled: bool):
+                self._state = 1 if enabled else 0
+
+            def state(self):
+                return self._state
+
+        ctrl._refine_checkbox = _FakeToggle(True)
+        ctrl._provider_popup = _FakePopup(
+            ["groq", "openai", "openrouter", "gemini"],
+            selected="gemini",
+        )
+        ctrl._model_field = _FakeField("gemini-custom")
+        ctrl._refine_model_help_label = _FakeStatus()
+        ctrl._refine_status_label = _FakeStatus()
+        ctrl._overlay_checkbox = _FakeToggle(False)
+        ctrl._clipboard_restore_checkbox = _FakeToggle(True)
+        ctrl._dock_icon_checkbox = _FakeToggle(False)
+        ctrl._rtf_checkbox = _FakeToggle(True)
+        ctrl._display_status_label = _FakeStatus()
+        ctrl._saved_refine_settings_state = (False, "groq", "")
+        ctrl._saved_display_settings_state = (True, False, False, True)
+
+        monkeypatch.setattr("ui.welcome._status_color", lambda color: color)
+
+        ctrl._refresh_secondary_settings_feedback()
+
+        assert ctrl._refine_model_help_label.value.startswith("Custom override")
+        assert "Unsaved changes here" in ctrl._refine_status_label.value
+        assert "gemini-custom" in ctrl._refine_status_label.value
+        assert ctrl._refine_status_label.color == "warning"
+        assert "Dock icon is hidden after you relaunch" in ctrl._display_status_label.value
+        assert ctrl._display_status_label.color == "warning"
 
 
 class TestApiKeyProviderMetadata:

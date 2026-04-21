@@ -43,6 +43,14 @@ from ui.logs_panel_feedback import (
     build_transcripts_count_text,
     build_transcripts_load_error_text,
 )
+from ui.secondary_settings_feedback import (
+    build_display_settings_feedback,
+    build_refine_model_guidance,
+    build_refine_settings_feedback,
+    get_refine_provider_default_model,
+    get_refine_provider_label,
+    normalize_refine_provider,
+)
 from ui.vocabulary_feedback import (
     build_vocabulary_editor_feedback,
     build_vocabulary_load_feedback,
@@ -882,6 +890,9 @@ class SettingsWindow(QDialog):
         self._overlay_checkbox: QCheckBox | None = None
         self._rtf_checkbox: QCheckBox | None = None
         self._clipboard_restore_checkbox: QCheckBox | None = None
+        self._refine_model_help_label: QLabel | None = None
+        self._refine_settings_status_label: QLabel | None = None
+        self._display_settings_status_label: QLabel | None = None
         self._api_fields: dict[str, QLineEdit] = {}
         self._api_status: dict[str, QLabel] = {}
         self._provider_guidance_label: QLabel | None = None
@@ -903,6 +914,8 @@ class SettingsWindow(QDialog):
         self._last_setup_overview_snapshot: _SetupOverviewSnapshot | None = None
         self._process_env_api_keys: dict[str, str] | None = None
         self._last_reload_signal_written: bool = True
+        self._saved_refine_settings_state: tuple[bool, str, str] | None = None
+        self._saved_display_settings_state: tuple[bool, ...] | None = None
         self._tab_builders: dict[str, Callable[[], QWidget]] = {}
         self._lazy_tab_layouts: dict[str, QVBoxLayout] = {}
         self._built_tabs: set[str] = set()
@@ -1619,50 +1632,100 @@ class SettingsWindow(QDialog):
 
         # Refine Card
         card, card_layout = create_card(
-            "✨ LLM Refinement",
-            "Optional: clean up transcriptions with an LLM for punctuation, formatting and commands.",
+            "✨ Transcript Cleanup",
+            "Optional post-processing after transcription. The selected provider uses its API key from the Providers tab. Changes stay local until you click Save & Apply.",
         )
 
-        self._refine_checkbox = QCheckBox("Enable LLM Refinement")
+        self._refine_checkbox = QCheckBox("Clean up transcript text with an LLM")
+        self._refine_checkbox.setAccessibleName("Enable transcript cleanup")
+        self._refine_checkbox.setToolTip(
+            "Use an LLM to improve punctuation, formatting, and spoken commands after transcription."
+        )
+        self._refine_checkbox.toggled.connect(self._refresh_secondary_settings_feedback)
         card_layout.addWidget(self._refine_checkbox)
 
         # Provider
         self._refine_provider_combo = QComboBox()
         _add_combo_items(self._refine_provider_combo, REFINE_PROVIDER_OPTIONS)
+        self._refine_provider_combo.currentTextChanged.connect(
+            self._refresh_secondary_settings_feedback
+        )
         card_layout.addLayout(
             create_label_row("Provider:", self._refine_provider_combo)
         )
 
         # Model
         self._refine_model_field = QLineEdit()
-        self._refine_model_field.setPlaceholderText("Optional — leave empty for the provider default")
-        self._refine_model_field.setToolTip(
-            "Leave empty to use the default model for the selected Refine provider"
+        self._refine_model_field.textChanged.connect(
+            self._refresh_secondary_settings_feedback
         )
         card_layout.addLayout(create_label_row("Model:", self._refine_model_field))
+
+        self._refine_model_help_label = create_status_label("", "text_secondary")
+        self._refine_model_help_label.setFont(QFont("Segoe UI", 9))
+        card_layout.addWidget(self._refine_model_help_label)
+
+        self._refine_settings_status_label = create_status_label("", "text_secondary")
+        self._refine_settings_status_label.setFont(QFont("Segoe UI", 9))
+        self._refine_settings_status_label.setAccessibleName(
+            "Transcript cleanup section status"
+        )
+        card_layout.addWidget(self._refine_settings_status_label)
 
         layout.addWidget(card)
 
         # Display Card
         card, card_layout = create_card(
-            "🖥️ Display Settings", "Configure visual feedback during transcription."
+            "🖥️ Output & Clipboard",
+            "Control what PulseScribe shows while you dictate and what happens to the clipboard after pasting. Changes stay local until you click Save & Apply.",
         )
 
-        self._overlay_checkbox = QCheckBox("Show Overlay during recording")
+        self._overlay_checkbox = QCheckBox("Show recording overlay")
+        self._overlay_checkbox.setAccessibleName("Show recording overlay")
+        self._overlay_checkbox.setToolTip(
+            "Show a floating overlay while recording so you can see live dictation status."
+        )
+        self._overlay_checkbox.toggled.connect(self._refresh_secondary_settings_feedback)
         card_layout.addWidget(self._overlay_checkbox)
 
         self._rtf_checkbox = QCheckBox(
-            "Show RTF (Real-Time Factor) after transcription"
+            "Show transcription speed (RTF) after each result"
         )
+        self._rtf_checkbox.setAccessibleName("Show transcription speed details")
+        self._rtf_checkbox.setToolTip(
+            "Display the Real-Time Factor after each transcription. Useful for performance tuning; most people can leave this off."
+        )
+        self._rtf_checkbox.toggled.connect(self._refresh_secondary_settings_feedback)
         card_layout.addWidget(self._rtf_checkbox)
 
-        self._clipboard_restore_checkbox = QCheckBox("Restore clipboard after paste")
+        self._clipboard_restore_checkbox = QCheckBox(
+            "Restore previous clipboard text after paste"
+        )
+        self._clipboard_restore_checkbox.setAccessibleName(
+            "Restore previous clipboard text after paste"
+        )
+        self._clipboard_restore_checkbox.setToolTip(
+            "Put your previous clipboard text back after auto-paste. Helpful if you frequently reuse clipboard contents."
+        )
+        self._clipboard_restore_checkbox.toggled.connect(
+            self._refresh_secondary_settings_feedback
+        )
         card_layout.addWidget(self._clipboard_restore_checkbox)
+
+        self._display_settings_status_label = create_status_label(
+            "", "text_secondary"
+        )
+        self._display_settings_status_label.setFont(QFont("Segoe UI", 9))
+        self._display_settings_status_label.setAccessibleName(
+            "Output and clipboard section status"
+        )
+        card_layout.addWidget(self._display_settings_status_label)
 
         layout.addWidget(card)
         layout.addStretch()
 
         scroll.setWidget(content)
+        self._refresh_secondary_settings_feedback()
         return scroll
 
     def _build_prompts_tab(self) -> QWidget:
@@ -2205,6 +2268,97 @@ class SettingsWindow(QDialog):
             editor.setAccessibleName(f"{label} prompt editor")
         except Exception:
             pass
+
+    def _get_current_refine_settings_state(self) -> tuple[bool, str, str]:
+        checkbox = getattr(self, "_refine_checkbox", None)
+        provider_combo = getattr(self, "_refine_provider_combo", None)
+        model_field = getattr(self, "_refine_model_field", None)
+        provider_text = provider_combo.currentText() if provider_combo else "groq"
+        model_text = model_field.text().strip() if model_field else ""
+        return (
+            bool(checkbox.isChecked()) if checkbox is not None else False,
+            normalize_refine_provider(provider_text),
+            model_text,
+        )
+
+    def _get_current_display_settings_state(self) -> tuple[bool, bool, bool]:
+        overlay = getattr(self, "_overlay_checkbox", None)
+        rtf = getattr(self, "_rtf_checkbox", None)
+        clipboard = getattr(self, "_clipboard_restore_checkbox", None)
+        return (
+            bool(overlay.isChecked()) if overlay is not None else True,
+            bool(rtf.isChecked()) if rtf is not None else False,
+            bool(clipboard.isChecked()) if clipboard is not None else False,
+        )
+
+    def _update_refine_model_affordances(self) -> None:
+        _enabled, provider_key, model_text = self._get_current_refine_settings_state()
+        provider_label = get_refine_provider_label(provider_key)
+        default_model = get_refine_provider_default_model(provider_key)
+        field = getattr(self, "_refine_model_field", None)
+        combo = getattr(self, "_refine_provider_combo", None)
+        if combo is not None:
+            _set_widget_tooltip_if_changed(
+                combo,
+                "Choose which provider should clean up transcript text after transcription. The matching API key is managed on the Providers tab.",
+            )
+            try:
+                combo.setAccessibleName("Refine provider")
+            except Exception:
+                pass
+        if field is not None:
+            try:
+                field.setPlaceholderText(f"Optional — default: {default_model}")
+            except Exception:
+                pass
+            _set_widget_tooltip_if_changed(
+                field,
+                f"Leave this empty to use {provider_label}'s default refine model ({default_model}). Enter a custom model only if you want to override it.",
+            )
+            try:
+                field.setAccessibleName("Refine model override")
+            except Exception:
+                pass
+        _set_status_label_if_changed(
+            getattr(self, "_refine_model_help_label", None),
+            build_refine_model_guidance(provider_key, model_text),
+            "text_secondary",
+        )
+
+    def _refresh_refine_settings_feedback(self) -> None:
+        self._update_refine_model_affordances()
+        enabled, provider_key, model_text = self._get_current_refine_settings_state()
+        text, color = build_refine_settings_feedback(
+            refine_enabled=enabled,
+            provider=provider_key,
+            model=model_text,
+            saved_state=getattr(self, "_saved_refine_settings_state", None),
+        )
+        _set_status_label_if_changed(
+            getattr(self, "_refine_settings_status_label", None),
+            text,
+            color,
+        )
+
+    def _refresh_display_settings_feedback(self) -> None:
+        overlay_enabled, rtf_enabled, clipboard_restore_enabled = (
+            self._get_current_display_settings_state()
+        )
+        text, color = build_display_settings_feedback(
+            overlay_enabled=overlay_enabled,
+            rtf_enabled=rtf_enabled,
+            clipboard_restore_enabled=clipboard_restore_enabled,
+            saved_state=getattr(self, "_saved_display_settings_state", None),
+        )
+        _set_status_label_if_changed(
+            getattr(self, "_display_settings_status_label", None),
+            text,
+            color,
+        )
+
+    def _refresh_secondary_settings_feedback(self) -> None:
+        self._refresh_refine_settings_feedback()
+        self._refresh_display_settings_feedback()
 
     # =========================================================================
     # Event Handlers
@@ -3766,6 +3920,9 @@ class SettingsWindow(QDialog):
             if current_mode_text:
                 applied_mode = current_mode_text
         self._refresh_provider_key_statuses()
+        self._saved_refine_settings_state = self._get_current_refine_settings_state()
+        self._saved_display_settings_state = self._get_current_display_settings_state()
+        self._refresh_secondary_settings_feedback()
         self._on_mode_changed(applied_mode)
 
     def _save_settings(self):
@@ -3975,6 +4132,10 @@ class SettingsWindow(QDialog):
             # Signal-Datei für Daemon-Reload erstellen
             # (Settings-Fenster läuft als separater Prozess, daher IPC via Datei)
             self._last_reload_signal_written = self._write_reload_signal()
+
+            self._saved_refine_settings_state = self._get_current_refine_settings_state()
+            self._saved_display_settings_state = self._get_current_display_settings_state()
+            self._refresh_secondary_settings_feedback()
 
             # Visual Save Feedback
             self._show_save_feedback()
