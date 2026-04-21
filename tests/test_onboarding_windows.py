@@ -52,15 +52,19 @@ class _FakeField:
 
 
 class _FakeButton:
-    def __init__(self):
+    def __init__(self, text: str = ""):
         self.visible = True
         self.enabled = True
+        self.text = text
 
     def setVisible(self, visible: bool) -> None:
         self.visible = visible
 
     def setEnabled(self, enabled: bool) -> None:
         self.enabled = enabled
+
+    def setText(self, text: str) -> None:
+        self.text = text
 
 
 class _FakeTimer:
@@ -194,6 +198,7 @@ def test_update_test_transcript_appends_growth_and_skips_duplicates():
     wizard._test_transcript = _FakePlainText()
     wizard._test_status_label = _FakeLabel()
     wizard._test_successful = False
+    wizard._test_outcome = "pending"
     wizard._update_navigation_calls = 0
     wizard._update_navigation = lambda: setattr(
         wizard, "_update_navigation_calls", wizard._update_navigation_calls + 1
@@ -409,6 +414,7 @@ def test_update_summary_uses_friendly_labels_and_test_state():
     }
     wizard._test_successful = True
     wizard._test_started_once = True
+    wizard._test_outcome = "passed"
 
     wizard._update_summary()
 
@@ -824,7 +830,7 @@ def test_start_ipc_test_ignores_duplicate_start():
     wizard._start_ipc_test()
 
 
-def test_start_ipc_test_disables_stop_button_until_recording_ack():
+def test_start_ipc_test_shows_cancel_action_until_recording_ack():
     commands: list[str] = []
 
     class _FakeIPCClient:
@@ -851,7 +857,8 @@ def test_start_ipc_test_disables_stop_button_until_recording_ack():
 
     assert commands == ["start_test"]
     assert wizard._test_stop_btn.visible is True
-    assert wizard._test_stop_btn.enabled is False
+    assert wizard._test_stop_btn.enabled is True
+    assert wizard._test_stop_btn.text == "Abbrechen"
     assert wizard._ipc_poll_timer.started_with == [IPC_POLL_INTERVAL_MS]
 
 
@@ -884,8 +891,8 @@ def test_start_ipc_test_clears_previous_transcript():
     wizard._start_ipc_test()
 
     assert commands == ["start_test"]
-    assert transcript.value == ""
-    assert transcript.clear_calls == 1
+    assert transcript.value.startswith("Die Testaufnahme wird vorbereitet.")
+    assert transcript.clear_calls == 0
 
 
 def test_start_ipc_test_resets_previous_success_state():
@@ -1026,28 +1033,38 @@ def test_ensure_step_widget_builds_once():
     assert wizard._stack.widgets == [hotkey_widget]
 
 
-def test_stop_ipc_test_requires_recording_ack_before_sending_command():
+def test_stop_ipc_test_before_recording_ack_cancels_pending_start():
     commands: list[str] = []
-    statuses: list[tuple[str, str]] = []
 
     wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
     wizard._ipc_client = types.SimpleNamespace(
-        send_command=lambda cmd: commands.append(cmd)
+        send_command=lambda cmd: commands.append(cmd),
+        clear_response=lambda: None,
     )
+    wizard._ipc_poll_timer = types.SimpleNamespace(stop=lambda: None)
     wizard._ipc_test_cmd_id = "cmd-1"
     wizard._ipc_seen_recording = False
     wizard._ipc_stop_requested = False
     wizard._ipc_recording_polls_after_stop = 0
+    wizard._ipc_last_status = None
     wizard._test_status_label = _FakeLabel()
+    wizard._test_start_btn = _FakeButton()
     wizard._test_stop_btn = _FakeButton()
-    wizard._set_test_status = lambda text, color: statuses.append((text, color))
+    wizard._test_notice = _FakeLabel()
+    wizard._test_transcript = _FakePlainText()
+    navigation_updates: list[bool] = []
+    wizard._update_navigation = lambda: navigation_updates.append(True)
 
     wizard._stop_ipc_test()
 
-    assert commands == []
-    assert statuses == [("Warte auf Aufnahme-Start...", "text_secondary")]
-    assert wizard._ipc_stop_requested is False
-    assert wizard._test_stop_btn.enabled is True
+    assert commands == ["stop_test"]
+    assert wizard._ipc_test_cmd_id is None
+    assert wizard._test_outcome == "cancelled"
+    assert wizard._test_status_label.text == "Test abgebrochen."
+    assert wizard._test_start_btn.visible is True
+    assert wizard._test_stop_btn.visible is False
+    assert wizard._test_transcript.value.startswith("Der Test wurde abgebrochen.")
+    assert navigation_updates == [True]
 
 
 def test_stop_ipc_test_sends_stop_command_after_recording_ack():
@@ -1071,7 +1088,8 @@ def test_stop_ipc_test_sends_stop_command_after_recording_ack():
     assert wizard._ipc_stop_requested is True
     assert wizard._ipc_recording_polls_after_stop == 0
     assert wizard._ipc_poll_timer.intervals == [IPC_POLL_INTERVAL_MS]
-    assert wizard._test_status_label.text == "Wird gestoppt..."
+    assert wizard._test_status_label.text == "Verarbeite Testaufnahme…"
+    assert wizard._test_stop_btn.text == "Wird gestoppt…"
     assert wizard._test_stop_btn.enabled is False
 
 
@@ -1278,26 +1296,37 @@ def test_poll_ipc_response_stopped_resets_ui_and_sets_status():
     wizard._ipc_last_status = "recording"
 
     reset_calls: list[bool] = []
-    status_updates: list[tuple[str, str]] = []
+    notice_updates: list[tuple[str, str]] = []
+    wizard._test_status_label = _FakeLabel()
+    wizard._test_notice = _FakeLabel()
+    wizard._test_transcript = _FakePlainText()
+    wizard._update_navigation = lambda: None
     wizard._reset_test_ui = lambda: reset_calls.append(True)
-    wizard._set_test_status = lambda text, color: status_updates.append((text, color))
+    wizard._set_test_notice = lambda text, color: notice_updates.append((text, color))
 
     wizard._poll_ipc_response()
 
     assert reset_calls == [True]
-    assert status_updates == [("Aufnahme gestoppt.", "text_secondary")]
+    assert wizard._test_status_label.text == "Test abgebrochen."
+    assert wizard._test_transcript.value.startswith("Der Test wurde abgebrochen.")
+    assert notice_updates == [
+        ("Kein Problem — starte den Test erneut, sobald PulseScribe bereit ist.", "text_secondary")
+    ]
     assert wizard._ipc_test_cmd_id is None
 
 
-def test_reset_test_ui_hides_notice():
+def test_reset_test_ui_restores_retry_button_without_hiding_notice():
     wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
     wizard._test_start_btn = _FakeButton()
     wizard._test_stop_btn = _FakeButton()
     wizard._test_notice = _FakeLabel()
     wizard._test_notice.visible = True
+    wizard._test_started_once = True
+    wizard._test_outcome = "cancelled"
 
     wizard._reset_test_ui()
 
     assert wizard._test_start_btn.visible is True
+    assert wizard._test_start_btn.text == "Erneut testen"
     assert wizard._test_stop_btn.visible is False
-    assert wizard._test_notice.visible is False
+    assert wizard._test_notice.visible is True

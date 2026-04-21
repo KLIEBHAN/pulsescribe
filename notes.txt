@@ -1,5 +1,25 @@
 UX notes - 2026-04-21
 
+Latest pass - Windows onboarding test-dictation guidance + retry flow (`ui/onboarding_wizard_windows.py`)
+- Focused deliberately on the onboarding practice/test step instead of reopening the recent settings feedback work.
+- Main weaknesses found:
+  1. The test step opened with a failure-oriented warning instead of calm step-by-step guidance.
+  2. While waiting for the daemon ack, the UI hid the start action and showed a disabled stop button, which left users stuck on slow starts.
+  3. Cancelled, no-speech and error outcomes reused an almost empty transcript area, so the result felt broken rather than explained.
+  4. Retry, cancel and summary wording collapsed too many different outcomes into generic states.
+- Changes in this pass:
+  - added explicit state copy for idle, connecting, recording, processing, cancelled, no-speech, success and error test states
+  - kept the transcript area informative with clear empty / processing / cancelled / no-speech text instead of blank space
+  - turned the pre-recording stop action into an explicit cancel path so slow or unavailable daemon handoff is less confusing
+  - added adaptive CTA labels like `Test starten`, `Erneut testen` and `Nochmal testen`
+  - kept the contextual helper notice visible and state-aware during critical handoff moments instead of hiding it
+  - improved summary feedback so skipped / cancelled / attention-needed states are distinguishable from a successful test
+  - normalized common test errors into more actionable user-facing wording
+- Validation:
+  - `pytest tests/test_onboarding_windows.py tests/test_onboarding.py -q`
+  - `python -m py_compile ui/onboarding_wizard_windows.py tests/test_onboarding_windows.py`
+  - `ruff check ui/onboarding_wizard_windows.py tests/test_onboarding_windows.py`
+
 Latest pass - final Welcome + settings consistency polish (`ui/settings_apply_feedback.py`, `ui/settings_windows.py`, `ui/welcome.py`)
 - Focused on the last remaining Save / Apply / already-saved / local-change / relaunch details plus a final wrap / spacing polish.
 - Main weaknesses found:
@@ -85,9 +105,9 @@ Previous pass - Onboarding / shared setup UX
 - Improved Windows onboarding guidance, hotkey capture discoverability, safe dictation test messaging, shared permission card wording, and Windows focus/placeholder styling.
 
 Next worthwhile UX areas
-1. onboarding daemon handoff / retry polish
-- especially Windows test-dictation connect / stop / retry messaging when the daemon is slow or unavailable
+1. macOS onboarding test-state parity + runtime QA
+- the Windows handoff / retry flow is now clearer; the remaining worthwhile onboarding work is mostly parity and device-level validation on macOS
 2. targeted real-device visual QA
-- verify the latest footer / wrap polish on actual small screens and higher DPI scaling, especially on macOS
-3. no further code-driven settings UX pass currently required
-- the remaining worthwhile work is mostly runtime / onboarding flow polish rather than static settings copy or layout work
+- verify the updated onboarding states and the latest footer / wrap polish on actual small screens and higher DPI scaling
+3. daemon startup / recovery flow outside onboarding
+- especially first-launch background readiness, recovery after provider failures and clearer next-step guidance when the service is not yet ready

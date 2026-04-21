@@ -128,6 +128,35 @@ HOTKEY_TOKEN_LABELS = {
     "capslock": "Caps Lock",
 }
 
+TEST_TRANSCRIPT_DEFAULT_TEXT = (
+    "Hier erscheint dein Testtext.\n"
+    "Während dieses Schritts wird nichts eingefügt."
+)
+TEST_TRANSCRIPT_CONNECTING_TEXT = (
+    "Die Testaufnahme wird vorbereitet.\n"
+    "Beim ersten Versuch kann das einen Moment dauern."
+)
+TEST_TRANSCRIPT_RECORDING_TEXT = (
+    "Aufnahme läuft.\n"
+    "Sprich jetzt einen kurzen Satz und stoppe die Aufnahme danach."
+)
+TEST_TRANSCRIPT_PROCESSING_TEXT = (
+    "Die Aufnahme wird ausgewertet.\n"
+    "Der erkannte Text erscheint gleich hier."
+)
+TEST_TRANSCRIPT_NO_SPEECH_TEXT = (
+    "Es wurde keine Sprache erkannt.\n"
+    "Versuche es erneut mit einem kurzen Satz wie „Hallo, dies ist ein Test.“"
+)
+TEST_TRANSCRIPT_ERROR_TEXT = (
+    "Der Test konnte nicht abgeschlossen werden.\n"
+    "Prüfe den Hinweis darunter und versuche es erneut."
+)
+TEST_TRANSCRIPT_CANCELLED_TEXT = (
+    "Der Test wurde abgebrochen.\n"
+    "Du kannst ihn jederzeit erneut starten."
+)
+
 
 # =============================================================================
 # Helper Functions
@@ -360,6 +389,160 @@ def _format_hotkey_summary_text(
     return separator.join(parts)
 
 
+def _normalize_test_error_message(error: str | None) -> str:
+    detail = " ".join((error or "").split())
+    if not detail:
+        return "Der Test konnte nicht abgeschlossen werden."
+
+    detail_lower = detail.lower()
+    if "keine verbindung" in detail_lower:
+        return "Keine Verbindung zu PulseScribe."
+    if "bereits in aufnahme" in detail_lower or "busy" in detail_lower:
+        return "PulseScribe verarbeitet gerade noch eine andere Aufnahme."
+    if "keine finale antwort" in detail_lower:
+        return "PulseScribe hat noch kein fertiges Ergebnis zurückgegeben."
+    if "mikro" in detail_lower:
+        return "Das Mikrofon ist für den Test gerade nicht verfügbar."
+    if "aufnahme konnte nicht gestartet werden" in detail_lower:
+        return "Die Testaufnahme konnte nicht gestartet werden."
+
+    if detail[0].islower():
+        detail = detail[0].upper() + detail[1:]
+    return detail
+
+
+def _build_test_status_text(state: str | None, *, error: str | None = None) -> str:
+    normalized = (state or "pending").strip().lower()
+    if normalized == "connecting":
+        return "Verbinde mit PulseScribe…"
+    if normalized == "recording":
+        return "Aufnahme läuft — sprich jetzt."
+    if normalized == "processing":
+        return "Verarbeite Testaufnahme…"
+    if normalized == "passed":
+        return "Erfolgreich — du kannst jetzt fortfahren."
+    if normalized == "no_speech":
+        return "Keine Sprache erkannt."
+    if normalized == "error":
+        return f"Fehler — {_normalize_test_error_message(error)}"
+    if normalized == "cancelled":
+        return "Test abgebrochen."
+    if normalized == "skipped":
+        return "Test übersprungen."
+    return "Bereit für einen sicheren Test."
+
+
+def _build_test_notice_feedback(
+    state: str | None,
+    *,
+    error: str | None = None,
+) -> tuple[str, str]:
+    normalized = (state or "pending").strip().lower()
+    if normalized == "connecting":
+        return (
+            "PulseScribe wird im Hintergrund kontaktiert. Beim ersten Test kann das ein paar Sekunden dauern.",
+            "text_secondary",
+        )
+    if normalized == "recording":
+        return (
+            "Sprich jetzt einen kurzen Satz. Der Text wird nur hier im Assistenten angezeigt.",
+            "accent",
+        )
+    if normalized == "processing":
+        return (
+            "Die Aufnahme wird gerade ausgewertet. Warte kurz auf das Ergebnis hier im Assistenten.",
+            "text_secondary",
+        )
+    if normalized == "passed":
+        return (
+            "Alles gut: Nichts wurde eingefügt. Mit „Weiter“ kommst du zur Zusammenfassung.",
+            "success",
+        )
+    if normalized == "no_speech":
+        return (
+            "Tipp: Prüfe Mikrofonabstand und Eingabegerät und versuche es danach erneut.",
+            "warning",
+        )
+    if normalized == "cancelled":
+        return (
+            "Kein Problem — starte den Test erneut, sobald PulseScribe bereit ist.",
+            "text_secondary",
+        )
+    if normalized == "error":
+        detail_lower = " ".join((error or "").split()).lower()
+        if "keine verbindung" in detail_lower:
+            return (
+                "Prüfe, ob PulseScribe im Hintergrund läuft, und starte den Test danach erneut.",
+                "warning",
+            )
+        if "bereits in aufnahme" in detail_lower or "busy" in detail_lower:
+            return (
+                "Warte kurz, bis die aktuelle Aufnahme beendet ist, und versuche es dann erneut.",
+                "warning",
+            )
+        if "mikro" in detail_lower:
+            return (
+                "Prüfe den Mikrofonzugriff und das richtige Eingabegerät in Windows und versuche es dann erneut.",
+                "warning",
+            )
+        return (
+            "Prüfe, ob PulseScribe läuft und dein Mikrofon verfügbar ist, und versuche es dann erneut.",
+            "warning",
+        )
+    if normalized == "skipped":
+        return (
+            "Du kannst den Test später jederzeit erneut im Setup durchführen.",
+            "text_secondary",
+        )
+    return (
+        "Ablauf: Test starten, einen kurzen Satz sprechen und die Aufnahme danach wieder stoppen.",
+        "text_secondary",
+    )
+
+
+def _build_test_transcript_text(state: str | None) -> str:
+    normalized = (state or "pending").strip().lower()
+    if normalized == "connecting":
+        return TEST_TRANSCRIPT_CONNECTING_TEXT
+    if normalized == "recording":
+        return TEST_TRANSCRIPT_RECORDING_TEXT
+    if normalized == "processing":
+        return TEST_TRANSCRIPT_PROCESSING_TEXT
+    if normalized == "no_speech":
+        return TEST_TRANSCRIPT_NO_SPEECH_TEXT
+    if normalized == "error":
+        return TEST_TRANSCRIPT_ERROR_TEXT
+    if normalized in {"cancelled", "skipped"}:
+        return TEST_TRANSCRIPT_CANCELLED_TEXT
+    return TEST_TRANSCRIPT_DEFAULT_TEXT
+
+
+def _build_test_summary_feedback(outcome: str | None) -> tuple[str, str]:
+    normalized = (outcome or "pending").strip().lower()
+    if normalized == "passed":
+        return "Erfolgreich geprüft", "success"
+    if normalized == "skipped":
+        return "Übersprungen", "text_secondary"
+    if normalized == "cancelled":
+        return "Abgebrochen", "text_secondary"
+    if normalized == "error":
+        return "Benötigt Aufmerksamkeit", "warning"
+    if normalized == "no_speech":
+        return "Bitte erneut testen", "warning"
+    if normalized in {"connecting", "recording", "processing"}:
+        return "Läuft gerade", "warning"
+    return "Noch nicht getestet", "text_secondary"
+
+
+def _build_test_start_button_text(outcome: str | None, *, started_once: bool) -> str:
+    normalized = (outcome or "pending").strip().lower()
+    if normalized == "passed":
+        return "Nochmal testen"
+    if normalized in {"no_speech", "error", "cancelled", "skipped"} or started_once:
+        return "Erneut testen"
+    return "Test starten"
+
+
 # =============================================================================
 # Onboarding Wizard
 # =============================================================================
@@ -413,6 +596,7 @@ class OnboardingWizardWindows(QDialog):
         self._test_hotkey_label: QLabel | None = None
         self._test_successful = False
         self._test_started_once = False
+        self._test_outcome = "pending"
         self._summary_labels: dict[str, QLabel] = {}
         self._stack: QStackedWidget | None = None
         self._step_widgets: dict[OnboardingStep, QWidget] = {}
@@ -565,7 +749,9 @@ class OnboardingWizardWindows(QDialog):
         """Update the test dictation transcript (called by daemon)."""
         if self._set_test_transcript_text(text) and text.strip():
             self._test_successful = True
+            self._test_outcome = "passed"
             self._set_test_status("Transkription erfolgreich!", "success")
+            self._set_test_notice(*_build_test_notice_feedback("passed"))
             self._update_navigation()
 
     # -------------------------------------------------------------------------
@@ -993,7 +1179,7 @@ class OnboardingWizardWindows(QDialog):
         # Transcript area
         card, card_layout = _create_card()
 
-        self._test_status_label = QLabel("Noch kein Test gestartet.")
+        self._test_status_label = QLabel(_build_test_status_text("pending"))
         self._test_status_label.setFont(QFont(DEFAULT_FONT_FAMILY, 10))
         self._test_status_label.setStyleSheet(f"color: {COLORS['text_secondary']};")
         self._test_status_label.setWordWrap(True)
@@ -1005,6 +1191,7 @@ class OnboardingWizardWindows(QDialog):
         )
         self._test_transcript.setReadOnly(True)
         self._test_transcript.setMinimumHeight(120)
+        self._test_transcript.setPlainText(TEST_TRANSCRIPT_DEFAULT_TEXT)
         card_layout.addWidget(self._test_transcript)
 
         layout.addWidget(card)
@@ -1012,7 +1199,7 @@ class OnboardingWizardWindows(QDialog):
         # Test buttons (IPC-based when daemon is running)
         btn_row = QHBoxLayout()
 
-        self._test_start_btn = QPushButton("Aufnahme starten")
+        self._test_start_btn = QPushButton("Test starten")
         self._test_start_btn.setToolTip("Startet eine sichere Testaufnahme im Hintergrunddienst")
         self._test_start_btn.clicked.connect(self._start_ipc_test)
         btn_row.addWidget(self._test_start_btn)
@@ -1026,11 +1213,10 @@ class OnboardingWizardWindows(QDialog):
         layout.addLayout(btn_row)
 
         # Info text (shown when daemon not running)
-        self._test_notice = QLabel(
-            "Falls der Test nicht startet, prüfe bitte zuerst, ob PulseScribe im Hintergrund läuft."
-        )
+        notice_text, notice_color = _build_test_notice_feedback("pending")
+        self._test_notice = QLabel(notice_text)
         self._test_notice.setFont(QFont(DEFAULT_FONT_FAMILY, 9))
-        self._test_notice.setStyleSheet(f"color: {COLORS['text_secondary']};")
+        self._test_notice.setStyleSheet(f"color: {COLORS[notice_color]};")
         self._test_notice.setWordWrap(True)
         layout.addWidget(self._test_notice)
 
@@ -1160,6 +1346,7 @@ class OnboardingWizardWindows(QDialog):
             self._ensure_default_hotkeys()
         elif step == OnboardingStep.TEST_DICTATION:
             self._refresh_test_hotkey_label()
+            self._refresh_test_start_button_label()
         elif step == OnboardingStep.CHEAT_SHEET:
             self._update_summary()
 
@@ -1247,6 +1434,8 @@ class OnboardingWizardWindows(QDialog):
 
     def _skip_test(self) -> None:
         """Skip the test dictation step."""
+        if not self._test_successful:
+            self._test_outcome = "skipped"
         self._show_step(OnboardingStep.CHEAT_SHEET)
 
     # -------------------------------------------------------------------------
@@ -1272,14 +1461,13 @@ class OnboardingWizardWindows(QDialog):
             self._ipc_client = IPCClient()
 
         # Vorherigen Testinhalt löschen, damit keine stale Ergebnisse sichtbar bleiben.
-        transcript_field = getattr(self, "_test_transcript", None)
-        if transcript_field:
-            self._set_test_transcript_text("")
+        self._set_test_transcript_text(_build_test_transcript_text("connecting"))
 
         # A retry must earn success again; otherwise a stale pass keeps "Weiter"
         # enabled even after a later failed/no-speech attempt.
         self._test_started_once = True
         self._test_successful = False
+        self._test_outcome = "connecting"
         self._update_navigation()
 
         self._ipc_test_cmd_id = self._ipc_client.send_command(CMD_START_TEST)
@@ -1290,12 +1478,13 @@ class OnboardingWizardWindows(QDialog):
         self._ipc_last_status = None
 
         # Show "connecting" state while waiting for daemon acknowledgment
-        self._set_test_status("Verbinde mit PulseScribe...", "text_secondary")
+        self._set_test_status(_build_test_status_text("connecting"), "text_secondary")
+        self._set_test_notice(*_build_test_notice_feedback("connecting"))
         _set_widget_visible_if_changed(self._test_start_btn, False)
         stop_btn = getattr(self, "_test_stop_btn", None)
+        _set_widget_text_if_changed(stop_btn, "Abbrechen")
         _set_widget_visible_if_changed(stop_btn, True)
-        _set_widget_enabled_if_changed(stop_btn, False)
-        _set_widget_visible_if_changed(self._test_notice, False)
+        _set_widget_enabled_if_changed(stop_btn, True)
 
         # Poll for daemon response every 200ms
         if self._ipc_poll_timer is None:
@@ -1324,9 +1513,19 @@ class OnboardingWizardWindows(QDialog):
         if not self._ipc_client or not self._ipc_test_cmd_id:
             return
 
-        # Verhindert Race: Stop erst erlauben, wenn Daemon die Aufnahme bestätigt.
         if not self._ipc_seen_recording:
-            self._set_test_status("Warte auf Aufnahme-Start...", "text_secondary")
+            try:
+                self._ipc_client.send_command(CMD_STOP_TEST)
+            except Exception as e:
+                logger.debug(f"IPC cancel request failed: {e}")
+            self._stop_ipc_polling()
+            self._reset_test_ui()
+            self._test_successful = False
+            self._test_outcome = "cancelled"
+            self._set_test_status(_build_test_status_text("cancelled"), "text_secondary")
+            self._set_test_transcript_text(_build_test_transcript_text("cancelled"))
+            self._set_test_notice(*_build_test_notice_feedback("cancelled"))
+            self._update_navigation()
             return
 
         self._ipc_stop_requested = True
@@ -1334,8 +1533,12 @@ class OnboardingWizardWindows(QDialog):
         self._ipc_client.send_command(CMD_STOP_TEST)
         _set_timer_interval_if_supported(self._ipc_poll_timer, IPC_POLL_INTERVAL_MS)
 
-        _set_widget_text_if_changed(self._test_status_label, "Wird gestoppt...")
+        self._test_outcome = "processing"
+        self._set_test_status(_build_test_status_text("processing"), "text_secondary")
+        self._set_test_transcript_text(_build_test_transcript_text("processing"))
+        self._set_test_notice(*_build_test_notice_feedback("processing"))
         stop_btn = getattr(self, "_test_stop_btn", None)
+        _set_widget_text_if_changed(stop_btn, "Wird gestoppt…")
         _set_widget_enabled_if_changed(stop_btn, False)
 
     def _poll_ipc_response(self) -> None:
@@ -1393,7 +1596,11 @@ class OnboardingWizardWindows(QDialog):
                 )
 
             if status != self._ipc_last_status:
-                self._set_test_status("Aufnahme läuft... Sprich jetzt!", "accent")
+                self._test_outcome = "recording"
+                self._set_test_status(_build_test_status_text("recording"), "accent")
+                self._set_test_transcript_text(_build_test_transcript_text("recording"))
+                self._set_test_notice(*_build_test_notice_feedback("recording"))
+                _set_widget_text_if_changed(stop_btn, "Aufnahme stoppen")
                 self._ipc_last_status = status
 
             if self._ipc_stop_requested:
@@ -1418,7 +1625,12 @@ class OnboardingWizardWindows(QDialog):
         elif status == STATUS_STOPPED:
             self._stop_ipc_polling()
             self._reset_test_ui()
-            self._set_test_status("Aufnahme gestoppt.", "text_secondary")
+            self._test_successful = False
+            self._test_outcome = "cancelled"
+            self._set_test_status(_build_test_status_text("cancelled"), "text_secondary")
+            self._set_test_transcript_text(_build_test_transcript_text("cancelled"))
+            self._set_test_notice(*_build_test_notice_feedback("cancelled"))
+            self._update_navigation()
 
     def _stop_ipc_polling(self) -> None:
         """Stop polling and clean up IPC state."""
@@ -1446,46 +1658,38 @@ class OnboardingWizardWindows(QDialog):
 
     def _show_test_error(self, error: str) -> None:
         """Display error state with troubleshooting hint."""
-        self._set_test_transcript_text("")
         self._test_successful = False
+        self._test_outcome = "error"
         self._set_test_status(
-            f"Fehler: {error}",
+            _build_test_status_text("error", error=error),
             "error",
         )
-        if self._test_notice:
-            _set_widget_visible_if_changed(self._test_notice, True)
-            _set_widget_text_if_changed(
-                self._test_notice,
-                "Prüfe, ob PulseScribe läuft, dein Mikrofon verfügbar ist und versuche es dann erneut.",
-            )
+        self._set_test_transcript_text(_build_test_transcript_text("error"))
+        self._set_test_notice(*_build_test_notice_feedback("error", error=error))
         self._update_navigation()
 
     def _show_test_success(self, transcript: str) -> None:
         """Display successful transcription."""
         self._set_test_transcript_text(transcript)
         self._set_test_status(
-            "Erfolgreich – du kannst jetzt fortfahren.",
+            _build_test_status_text("passed"),
             "success",
         )
         self._test_successful = True
-        if self._test_notice:
-            _set_widget_visible_if_changed(self._test_notice, False)
+        self._test_outcome = "passed"
+        self._set_test_notice(*_build_test_notice_feedback("passed"))
         self._update_navigation()
 
     def _show_test_no_speech(self) -> None:
         """Display "no speech detected" state."""
-        self._set_test_transcript_text("")
         self._test_successful = False
+        self._test_outcome = "no_speech"
         self._set_test_status(
-            "Keine Sprache erkannt. Sprich etwas lauter oder näher am Mikrofon.",
+            _build_test_status_text("no_speech"),
             "warning",
         )
-        if self._test_notice:
-            _set_widget_visible_if_changed(self._test_notice, True)
-            _set_widget_text_if_changed(
-                self._test_notice,
-                "Tipp: Prüfe das richtige Eingabegerät in Windows oder versuche es noch einmal.",
-            )
+        self._set_test_transcript_text(_build_test_transcript_text("no_speech"))
+        self._set_test_notice(*_build_test_notice_feedback("no_speech"))
         self._update_navigation()
 
     def _set_test_status(self, text: str, color_key: str) -> None:
@@ -1497,12 +1701,28 @@ class OnboardingWizardWindows(QDialog):
             self._test_status_label, f"color: {COLORS[color_key]};"
         )
 
+    def _set_test_notice(self, text: str, color_key: str) -> None:
+        notice = getattr(self, "_test_notice", None)
+        if notice is None:
+            return
+        _set_widget_visible_if_changed(notice, True)
+        _set_widget_text_if_changed(notice, text)
+        _set_widget_stylesheet_if_changed(notice, f"color: {COLORS[color_key]};")
+
+    def _refresh_test_start_button_label(self) -> None:
+        label = _build_test_start_button_text(
+            getattr(self, "_test_outcome", "pending"),
+            started_once=bool(getattr(self, "_test_started_once", False)),
+        )
+        _set_widget_text_if_changed(getattr(self, "_test_start_btn", None), label)
+
     def _reset_test_ui(self) -> None:
-        """Show start button, hide stop button."""
+        """Show start button, hide stop button and restore adaptive button labels."""
         _set_widget_visible_if_changed(self._test_start_btn, True)
+        self._refresh_test_start_button_label()
         _set_widget_visible_if_changed(self._test_stop_btn, False)
         _set_widget_enabled_if_changed(self._test_stop_btn, True)
-        _set_widget_visible_if_changed(self._test_notice, False)
+        _set_widget_text_if_changed(self._test_stop_btn, "Aufnahme stoppen")
 
     def _complete(self) -> None:
         """Complete the wizard."""
@@ -2192,22 +2412,16 @@ class OnboardingWizardWindows(QDialog):
             )
 
         if "test" in self._summary_labels:
-            if self._test_successful:
-                test_text = "Erfolgreich geprüft"
-                test_color = COLORS["success"]
-            elif self._test_started_once:
-                test_text = "Noch nicht erfolgreich"
-                test_color = COLORS["warning"]
-            else:
-                test_text = "Noch nicht getestet"
-                test_color = COLORS["text_secondary"]
+            test_text, test_color_key = _build_test_summary_feedback(
+                getattr(self, "_test_outcome", "pending")
+            )
             _set_widget_text_if_changed(self._summary_labels["test"], test_text)
             _set_widget_stylesheet_if_changed(
-                self._summary_labels["test"], f"color: {test_color};"
+                self._summary_labels["test"], f"color: {COLORS[test_color_key]};"
             )
 
     def _set_test_transcript_text(self, text: str) -> bool:
-        editor = self._test_transcript
+        editor = getattr(self, "_test_transcript", None)
         if editor is None:
             self._last_test_transcript_text = text or ""
             return False
