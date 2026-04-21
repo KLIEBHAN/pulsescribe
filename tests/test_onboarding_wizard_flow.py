@@ -176,7 +176,9 @@ def test_next_prompts_for_api_key_without_advancing_when_fast_has_no_key(
     assert step_changes == []
     assert render_calls == [True]
     assert wizard._api_key_container.hidden is False
-    assert "Cloud API key" in wizard._api_key_status.value
+    assert wizard._api_key_status.value == (
+        "Fast mode needs a Deepgram API key. Paste one to continue."
+    )
     assert wizard._api_key_field.focus_requested is True
     assert prefs.get_onboarding_choice() is None
     assert prefs.read_env_file() == {}

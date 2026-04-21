@@ -1,5 +1,25 @@
 UX notes - 2026-04-21
 
+Latest pass - macOS onboarding practice-dictation flow (`ui/onboarding_wizard.py`, `pulsescribe_daemon.py`)
+- Focused on the central macOS onboarding test step next, instead of reopening the recent Windows onboarding or settings feedback work.
+- Main weaknesses found:
+  1. The practice step was effectively hotkey-only even though start/stop callbacks already existed, which hurt discoverability and accessibility.
+  2. Recording / processing phases reused sparse status text and a mostly blank transcript area, so the flow felt uncertain while nothing was pasted yet.
+  3. Cancelled, skipped, empty and error outcomes were not clearly separated in either inline feedback or the final summary.
+  4. Button / CTA guidance was too implicit for a first-run onboarding moment on macOS.
+- Changes in this pass:
+  - added explicit in-step `Start practice` / `Stop` controls on macOS and wired them to the safe onboarding dictation callbacks
+  - upgraded daemon callback wiring so button-driven practice runs now receive the same recording / processing state feedback as hotkey-driven runs
+  - added richer test-state handling for starting, recording, processing, cancelled, skipped, empty, success and error outcomes
+  - kept the transcript area informative during all transient states instead of leaving it mostly blank
+  - added a dedicated helper notice line with clearer next-step guidance and more actionable error feedback
+  - improved CTA states so users now see `Start practice`, `Try again`, `Run again`, `Cancel`, `Stop` and `Working…` at the right moments
+  - improved final summary wording so cancelled / skipped outcomes read as neutral states instead of generic warnings
+- Validation:
+  - `pytest tests/test_onboarding.py tests/test_onboarding_wizard_flow.py tests/test_daemon_mode.py -q`
+  - `python -m py_compile ui/onboarding_wizard.py pulsescribe_daemon.py tests/test_onboarding.py tests/test_onboarding_wizard_flow.py tests/test_daemon_mode.py`
+  - `ruff check ui/onboarding_wizard.py pulsescribe_daemon.py tests/test_onboarding.py tests/test_onboarding_wizard_flow.py tests/test_daemon_mode.py`
+
 Latest pass - Windows onboarding test-dictation guidance + retry flow (`ui/onboarding_wizard_windows.py`)
 - Focused deliberately on the onboarding practice/test step instead of reopening the recent settings feedback work.
 - Main weaknesses found:
@@ -105,9 +125,9 @@ Previous pass - Onboarding / shared setup UX
 - Improved Windows onboarding guidance, hotkey capture discoverability, safe dictation test messaging, shared permission card wording, and Windows focus/placeholder styling.
 
 Next worthwhile UX areas
-1. macOS onboarding test-state parity + runtime QA
-- the Windows handoff / retry flow is now clearer; the remaining worthwhile onboarding work is mostly parity and device-level validation on macOS
-2. targeted real-device visual QA
-- verify the updated onboarding states and the latest footer / wrap polish on actual small screens and higher DPI scaling
-3. daemon startup / recovery flow outside onboarding
+1. targeted real-device onboarding QA
+- verify the updated macOS + Windows practice-test states, button hierarchy and wrapping on actual small screens and different DPI / scaling setups
+2. daemon startup / recovery flow outside onboarding
 - especially first-launch background readiness, recovery after provider failures and clearer next-step guidance when the service is not yet ready
+3. choose-goal / permissions onboarding simplification
+- the next remaining onboarding gains are likely in reducing decision load and sharpening first-run guidance before users reach the hotkey / practice steps

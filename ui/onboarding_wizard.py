@@ -92,13 +92,29 @@ TEST_DICTATION_EMPTY_TEXT = (
     "Your practice transcript will appear here.\n"
     "Nothing is pasted during this step."
 )
+TEST_DICTATION_STARTING_TEXT = (
+    "Starting a safe practice dictation…\n"
+    "PulseScribe is getting ready to listen only inside this window."
+)
+TEST_DICTATION_RECORDING_TEXT = (
+    "Practice dictation is listening…\n"
+    "Say a short sentence, then stop with your hotkey or the Stop button."
+)
+TEST_DICTATION_PROCESSING_TEXT = (
+    "Practice dictation is finishing up…\n"
+    "The result will appear here in a moment."
+)
 TEST_DICTATION_NO_SPEECH_TEXT = (
     "No speech was detected in the practice run.\n"
     "Try again with a short sentence."
 )
 TEST_DICTATION_ERROR_TEXT = (
     "The practice run could not be completed.\n"
-    "Check the error above and try again."
+    "Check the message above and try again."
+)
+TEST_DICTATION_CANCELLED_TEXT = (
+    "The practice run was cancelled.\n"
+    "You can start another safe test whenever you're ready."
 )
 
 
@@ -173,24 +189,44 @@ def _build_permission_summary_text(
 
 
 
-def _build_test_summary_text(outcome: str | None) -> tuple[str, bool]:
+def _normalize_test_error_message(error: str | None) -> str:
+    detail = " ".join((error or "").split())
+    if not detail:
+        return "PulseScribe couldn’t finish the practice test."
+
+    detail_lower = detail.lower()
+    if "already recording" in detail_lower or "busy" in detail_lower:
+        return "PulseScribe is still busy with another dictation."
+    if "microphone" in detail_lower or "permission" in detail_lower:
+        return "Microphone access is unavailable for the practice test."
+    if detail[0].islower():
+        detail = detail[0].upper() + detail[1:]
+    return detail
+
+
+
+def _build_test_summary_text(outcome: str | None) -> tuple[str, str]:
     normalized = (outcome or "pending").strip().lower()
     if normalized == "passed":
-        return "Completed", True
+        return "Completed", "ok"
     if normalized == "skipped":
-        return "Skipped", False
+        return "Skipped for now", "neutral"
+    if normalized == "cancelled":
+        return "Cancelled", "neutral"
     if normalized == "empty":
-        return "Needs another try", False
+        return "Needs another try", "warn"
     if normalized == "error":
-        return "Needs attention", False
-    if normalized in {"recording", "processing"}:
-        return "In progress", False
-    return "Not run yet", False
+        return "Needs attention", "warn"
+    if normalized in {"starting", "recording", "processing"}:
+        return "In progress", "warn"
+    return "Not run yet", "neutral"
 
 
 
 def _build_test_status_text(outcome: str | None, *, error: str | None = None) -> str:
     normalized = (outcome or "pending").strip().lower()
+    if normalized == "starting":
+        return "Starting your practice dictation…"
     if normalized == "recording":
         return "Listening… say a short sentence."
     if normalized == "processing":
@@ -199,14 +235,88 @@ def _build_test_status_text(outcome: str | None, *, error: str | None = None) ->
         return "✅ Practice dictation worked. You can continue."
     if normalized == "empty":
         return "No speech detected. Try again with a short sentence."
+    if normalized == "cancelled":
+        return "Practice dictation cancelled."
+    if normalized == "skipped":
+        return "Practice dictation skipped for now."
     if normalized == "error":
-        detail = (error or "").strip()
+        detail = _normalize_test_error_message(error)
+        return f"Couldn’t finish the practice test: {detail}"
+    return "Use your hotkey or start the practice test below."
+
+
+
+def _build_test_notice_feedback(
+    outcome: str | None,
+    *,
+    error: str | None = None,
+) -> tuple[str, str]:
+    normalized = (outcome or "pending").strip().lower()
+    if normalized == "starting":
         return (
-            f"Couldn’t finish the practice test: {detail}"
-            if detail
-            else "Couldn’t finish the practice test. Try again."
+            "PulseScribe is starting a safe practice run. Nothing will be pasted during this step.",
+            "neutral",
         )
-    return "Press your hotkey to start a short practice dictation."
+    if normalized == "recording":
+        return (
+            "Speak a short sentence, then stop with your hotkey or the Stop button.",
+            "accent",
+        )
+    if normalized == "processing":
+        return (
+            "The recording has stopped. Wait a moment while PulseScribe prepares the result here.",
+            "neutral",
+        )
+    if normalized == "passed":
+        return (
+            "Nothing was pasted. Continue when you're ready, or run one more quick check.",
+            "success",
+        )
+    if normalized == "empty":
+        return (
+            "Try again with a slightly longer sentence or speak a little closer to the microphone.",
+            "warn",
+        )
+    if normalized == "cancelled":
+        return (
+            "No problem — start another safe practice run whenever you're ready.",
+            "neutral",
+        )
+    if normalized == "skipped":
+        return (
+            "You can always return to Setup & Settings and run the practice test later.",
+            "neutral",
+        )
+    if normalized == "error":
+        detail_lower = " ".join((error or "").split()).lower()
+        if "already recording" in detail_lower or "busy" in detail_lower:
+            return (
+                "Wait for the current dictation to finish, then try the practice test again.",
+                "warn",
+            )
+        if "microphone" in detail_lower or "permission" in detail_lower:
+            return (
+                "Check microphone access in the Permissions step, then try the practice test again.",
+                "warn",
+            )
+        return (
+            "Check the message above, then try the practice test again.",
+            "warn",
+        )
+    return (
+        "You can press your hotkey or use the buttons below. The transcript only appears here.",
+        "neutral",
+    )
+
+
+
+def _build_test_primary_action_text(outcome: str | None) -> str:
+    normalized = (outcome or "pending").strip().lower()
+    if normalized == "passed":
+        return "Run again"
+    if normalized in {"empty", "error", "cancelled", "skipped"}:
+        return "Try again"
+    return "Start practice"
 
 
 
@@ -215,10 +325,18 @@ def _build_test_preview_text(outcome: str | None, transcript: str | None) -> str
     if cleaned:
         return cleaned
     normalized = (outcome or "pending").strip().lower()
+    if normalized == "starting":
+        return TEST_DICTATION_STARTING_TEXT
+    if normalized == "recording":
+        return TEST_DICTATION_RECORDING_TEXT
+    if normalized == "processing":
+        return TEST_DICTATION_PROCESSING_TEXT
     if normalized == "empty":
         return TEST_DICTATION_NO_SPEECH_TEXT
     if normalized == "error":
         return TEST_DICTATION_ERROR_TEXT
+    if normalized in {"cancelled", "skipped"}:
+        return TEST_DICTATION_CANCELLED_TEXT
     return TEST_DICTATION_EMPTY_TEXT
 
 
@@ -297,6 +415,8 @@ class OnboardingWizardController:
         self._last_test_hotkey_text: str | None = None
         self._last_test_status_text: str | None = None
         self._last_test_status_level: str | None = None
+        self._last_test_notice_text: str | None = None
+        self._last_test_notice_level: str | None = None
         self._last_test_preview_text: str | None = None
         self._last_api_key_prompt_visible: bool | None = None
         self._last_api_key_prompt_message: str | None = None
@@ -315,10 +435,13 @@ class OnboardingWizardController:
 
         # Test dictation widgets/state
         self._test_status_label = None
+        self._test_notice_label = None
         self._test_hotkey_label = None
         self._test_text_view = None
+        self._test_start_btn = None
+        self._test_stop_btn = None
         self._test_successful = False
-        self._test_state = "idle"  # idle|recording|stopping
+        self._test_state = "idle"  # idle|starting|recording|stopping
 
         # Hotkey card (shared component)
         self._hotkey_card: HotkeyCard | None = None
@@ -914,6 +1037,7 @@ class OnboardingWizardController:
         import objc  # type: ignore[import-not-found]
         from AppKit import (  # type: ignore[import-not-found]
             NSBezelBorder,
+            NSBezelStyleRounded,
             NSButton,
             NSColor,
             NSFont,
@@ -954,7 +1078,7 @@ class OnboardingWizardController:
         )
         desc.setStringValue_(
             "Nothing is pasted during this step.\n"
-            "Use your hotkey to start and stop; the transcript only appears here."
+            "Use your hotkey or the buttons below; the transcript only appears here."
         )
         desc.setBezeled_(False)
         desc.setDrawsBackground_(False)
@@ -983,9 +1107,10 @@ class OnboardingWizardController:
         parent_view.addSubview_(hotkeys)
         self._test_hotkey_label = hotkeys
 
-        status_y = hotkeys_y - 8 - 18
+        status_h = 32
+        status_y = hotkeys_y - 8 - status_h
         status = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(base_x, status_y, content_w, 18)
+            NSMakeRect(base_x, status_y, content_w, status_h)
         )
         status.setStringValue_("")
         status.setBezeled_(False)
@@ -994,12 +1119,67 @@ class OnboardingWizardController:
         status.setSelectable_(False)
         status.setFont_(NSFont.systemFontOfSize_(11))
         status.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6))
+        try:
+            status.setUsesSingleLineMode_(False)
+        except Exception:
+            pass
         parent_view.addSubview_(status)
         self._test_status_label = status
 
+        buttons_y = status_y - 8 - 24
+        start_btn = NSButton.alloc().initWithFrame_(
+            NSMakeRect(base_x, buttons_y, 122, 24)
+        )
+        start_btn.setTitle_("Start practice")
+        start_btn.setBezelStyle_(NSBezelStyleRounded)
+        start_btn.setFont_(NSFont.systemFontOfSize_(11))
+        h_start = _WizardActionHandler.alloc().initWithController_action_(
+            self, "start_test"
+        )
+        start_btn.setTarget_(h_start)
+        start_btn.setAction_(objc.selector(h_start.performAction_, signature=b"v@:@"))
+        self._handler_refs.append(h_start)
+        parent_view.addSubview_(start_btn)
+        self._test_start_btn = start_btn
+
+        stop_btn = NSButton.alloc().initWithFrame_(
+            NSMakeRect(base_x + 130, buttons_y, 96, 24)
+        )
+        stop_btn.setTitle_("Stop")
+        stop_btn.setBezelStyle_(NSBezelStyleRounded)
+        stop_btn.setFont_(NSFont.systemFontOfSize_(11))
+        stop_btn.setHidden_(True)
+        h_stop = _WizardActionHandler.alloc().initWithController_action_(
+            self, "stop_test"
+        )
+        stop_btn.setTarget_(h_stop)
+        stop_btn.setAction_(objc.selector(h_stop.performAction_, signature=b"v@:@"))
+        self._handler_refs.append(h_stop)
+        parent_view.addSubview_(stop_btn)
+        self._test_stop_btn = stop_btn
+
+        notice_h = 30
+        notice_y = buttons_y - 8 - notice_h
+        notice = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(base_x, notice_y, content_w, notice_h)
+        )
+        notice.setStringValue_("")
+        notice.setBezeled_(False)
+        notice.setDrawsBackground_(False)
+        notice.setEditable_(False)
+        notice.setSelectable_(False)
+        notice.setFont_(NSFont.systemFontOfSize_(10))
+        notice.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.55))
+        try:
+            notice.setUsesSingleLineMode_(False)
+        except Exception:
+            pass
+        parent_view.addSubview_(notice)
+        self._test_notice_label = notice
+
         scroll_y = card_y + 18
-        scroll_top = status_y - 12
-        scroll_h = max(140, int(scroll_top - scroll_y))
+        scroll_top = notice_y - 10
+        scroll_h = max(120, int(scroll_top - scroll_y))
         scroll = NSScrollView.alloc().initWithFrame_(
             NSMakeRect(base_x, scroll_y, content_w, scroll_h)
         )
@@ -1031,20 +1211,23 @@ class OnboardingWizardController:
         parent_view.addSubview_(scroll)
         self._test_text_view = text_view
         self._set_test_status("pending", _build_test_status_text("pending"))
+        notice_text, notice_level = _build_test_notice_feedback("pending")
+        self._set_test_notice(notice_level, notice_text)
         self._set_test_preview_text(TEST_DICTATION_EMPTY_TEXT)
+        self._refresh_test_action_buttons()
 
         # Skip test link (top right of card, next to title)
         skip_btn_w = 92
         skip_test_btn = NSButton.alloc().initWithFrame_(
             NSMakeRect(
-                base_x + content_w - skip_btn_w,  # Right-aligned
-                card_y + card_h - 28,  # Same Y as title
+                base_x + content_w - skip_btn_w,
+                card_y + card_h - 28,
                 skip_btn_w,
                 18,
             )
         )
         skip_test_btn.setTitle_("Skip for now")
-        skip_test_btn.setBezelStyle_(0)  # Borderless
+        skip_test_btn.setBezelStyle_(0)
         skip_test_btn.setBordered_(False)
         skip_test_btn.setFont_(NSFont.systemFontOfSize_(11))
         try:
@@ -1251,20 +1434,23 @@ class OnboardingWizardController:
                 pass
 
         # Practice test
-        test_display, test_passed = _build_test_summary_text(
+        test_display, test_tone = _build_test_summary_text(
             getattr(self, "_test_outcome", "pending")
         )
+        tone_color = {
+            "ok": ok_color,
+            "warn": warn_color,
+            "neutral": _get_color(255, 255, 255, 0.65),
+        }.get(test_tone, warn_color)
         summary_test_label = getattr(self, "_summary_test_label", None)
         if summary_test_label:
             try:
                 if getattr(self, "_last_summary_test_text", None) != test_display:
                     summary_test_label.setStringValue_(test_display)
                     self._last_summary_test_text = test_display
-                if getattr(self, "_last_summary_test_passed", None) != test_passed:
-                    summary_test_label.setTextColor_(
-                        ok_color if test_passed else warn_color
-                    )
-                    self._last_summary_test_passed = test_passed
+                if getattr(self, "_last_summary_test_passed", None) != test_tone:
+                    summary_test_label.setTextColor_(tone_color)
+                    self._last_summary_test_passed = test_tone
             except Exception:
                 pass
 
@@ -1509,6 +1695,7 @@ class OnboardingWizardController:
             self._sync_hotkey_fields_from_env()
         if step == OnboardingStep.TEST_DICTATION:
             self._update_test_dictation_hotkeys()
+            self._refresh_test_action_buttons()
 
     def _update_test_dictation_hotkeys(self) -> None:
         label = self._test_hotkey_label
@@ -1558,6 +1745,14 @@ class OnboardingWizardController:
 
         if action == "cancel":
             self._complete(open_settings=True)
+            return
+
+        if action == "start_test":
+            self._start_test_dictation()
+            return
+
+        if action == "stop_test":
+            self._stop_test_dictation()
             return
 
         if action == "skip_test":
@@ -1772,7 +1967,7 @@ class OnboardingWizardController:
     # ---------------------------------------------------------------------
 
     def _set_test_status(self, level: str, message: str) -> None:
-        label = self._test_status_label
+        label = getattr(self, "_test_status_label", None)
         if label is None:
             return
 
@@ -1786,10 +1981,13 @@ class OnboardingWizardController:
         try:
             colors = {
                 "pending": _get_color(255, 255, 255, 0.6),
+                "starting": _get_color(140, 220, 255),
                 "recording": _get_color(140, 220, 255),
                 "processing": _get_color(140, 220, 255),
                 "passed": _get_color(120, 255, 150),
                 "empty": _get_color(255, 200, 90),
+                "cancelled": _get_color(255, 255, 255, 0.65),
+                "skipped": _get_color(255, 255, 255, 0.65),
                 "error": _get_color(255, 120, 120),
             }
             color = colors.get(level, colors["pending"])
@@ -1804,8 +2002,39 @@ class OnboardingWizardController:
         except Exception:
             pass
 
+    def _set_test_notice(self, level: str, message: str) -> None:
+        label = getattr(self, "_test_notice_label", None)
+        if label is None:
+            return
+
+        try:
+            if getattr(self, "_last_test_notice_text", None) != message:
+                label.setStringValue_(message)
+                self._last_test_notice_text = message
+        except Exception:
+            pass
+
+        try:
+            colors = {
+                "neutral": _get_color(255, 255, 255, 0.6),
+                "accent": _get_color(140, 220, 255),
+                "success": _get_color(120, 255, 150),
+                "warn": _get_color(255, 200, 90),
+            }
+            color = colors.get(level, colors["neutral"])
+        except Exception:
+            color = None
+        if color is None:
+            return
+        try:
+            if getattr(self, "_last_test_notice_level", None) != level:
+                label.setTextColor_(color)
+                self._last_test_notice_level = level
+        except Exception:
+            pass
+
     def _set_test_preview_text(self, text: str) -> None:
-        view = self._test_text_view
+        view = getattr(self, "_test_text_view", None)
         if view is None:
             return
         try:
@@ -1814,6 +2043,104 @@ class OnboardingWizardController:
                 self._last_test_preview_text = text
         except Exception:
             pass
+
+    def _refresh_test_action_buttons(self) -> None:
+        start_btn = getattr(self, "_test_start_btn", None)
+        stop_btn = getattr(self, "_test_stop_btn", None)
+        if start_btn is None or stop_btn is None:
+            return
+
+        state = getattr(self, "_test_state", "idle")
+        outcome = getattr(self, "_test_outcome", "pending")
+        start_title = _build_test_primary_action_text(outcome)
+        start_hidden = state in {"starting", "recording"}
+        start_enabled = state != "stopping" and callable(
+            getattr(self, "_on_test_dictation_start", None)
+        )
+        stop_hidden = state not in {"starting", "recording"}
+        stop_title = "Cancel" if state == "starting" else "Stop"
+        stop_enabled = callable(getattr(self, "_on_test_dictation_stop", None)) or callable(
+            getattr(self, "_on_test_dictation_cancel", None)
+        )
+
+        if state == "stopping":
+            start_title = "Working…"
+            start_hidden = False
+            start_enabled = False
+
+        try:
+            start_btn.setTitle_(start_title)
+            start_btn.setHidden_(start_hidden)
+            start_btn.setEnabled_(start_enabled)
+            stop_btn.setTitle_(stop_title)
+            stop_btn.setHidden_(stop_hidden)
+            stop_btn.setEnabled_(stop_enabled)
+        except Exception:
+            pass
+
+    def _start_test_dictation(self) -> None:
+        if self._step != OnboardingStep.TEST_DICTATION:
+            return
+        if self._test_state in {"starting", "recording", "stopping"}:
+            return
+        start_callback = getattr(self, "_on_test_dictation_start", None)
+        if not callable(start_callback):
+            return
+
+        self._test_successful = False
+        self._test_state = "starting"
+        self._test_outcome = "starting"
+        self._set_test_status("starting", _build_test_status_text("starting"))
+        notice_text, notice_level = _build_test_notice_feedback("starting")
+        self._set_test_notice(notice_level, notice_text)
+        self._set_test_preview_text(_build_test_preview_text("starting", None))
+        self._refresh_test_action_buttons()
+        self._render()
+
+        try:
+            start_callback()
+        except Exception as exc:
+            self.on_test_dictation_result("", error=str(exc))
+
+    def _stop_test_dictation(self) -> None:
+        if self._step != OnboardingStep.TEST_DICTATION:
+            return
+
+        cancel_callback = getattr(self, "_on_test_dictation_cancel", None)
+        stop_callback = getattr(self, "_on_test_dictation_stop", None)
+
+        if self._test_state == "starting" and callable(cancel_callback):
+            self._test_successful = False
+            self._test_state = "idle"
+            self._test_outcome = "cancelled"
+            self._set_test_status("cancelled", _build_test_status_text("cancelled"))
+            notice_text, notice_level = _build_test_notice_feedback("cancelled")
+            self._set_test_notice(notice_level, notice_text)
+            self._set_test_preview_text(_build_test_preview_text("cancelled", None))
+            self._refresh_test_action_buttons()
+            self._render()
+            try:
+                cancel_callback()
+            except Exception:
+                pass
+            return
+
+        if self._test_state != "recording" or not callable(stop_callback):
+            return
+
+        self._test_state = "stopping"
+        self._test_outcome = "processing"
+        self._set_test_status("processing", _build_test_status_text("processing"))
+        notice_text, notice_level = _build_test_notice_feedback("processing")
+        self._set_test_notice(notice_level, notice_text)
+        self._set_test_preview_text(_build_test_preview_text("processing", None))
+        self._refresh_test_action_buttons()
+        self._render()
+
+        try:
+            stop_callback()
+        except Exception as exc:
+            self.on_test_dictation_result("", error=str(exc))
 
     def on_test_dictation_hotkey_state(self, state: str) -> None:
         """Keeps the test step UI in sync when the user uses the hotkey."""
@@ -1826,17 +2153,24 @@ class OnboardingWizardController:
             self._test_successful = False
             self._test_state = "recording"
             self._test_outcome = "recording"
-            self._set_test_preview_text("")
+            self._set_test_preview_text(_build_test_preview_text("recording", None))
             self._set_test_status("recording", _build_test_status_text("recording"))
+            notice_text, notice_level = _build_test_notice_feedback("recording")
+            self._set_test_notice(notice_level, notice_text)
+            self._refresh_test_action_buttons()
             self._render()
             return
 
         if normalized in ("stopping", "processing"):
-            if self._test_state != "recording":
+            if self._test_state == "stopping":
                 return
             self._test_state = "stopping"
             self._test_outcome = "processing"
+            self._set_test_preview_text(_build_test_preview_text("processing", None))
             self._set_test_status("processing", _build_test_status_text("processing"))
+            notice_text, notice_level = _build_test_notice_feedback("processing")
+            self._set_test_notice(notice_level, notice_text)
+            self._refresh_test_action_buttons()
             self._render()
             return
 
@@ -1849,6 +2183,10 @@ class OnboardingWizardController:
             self._test_successful = False
             self._test_outcome = "error"
             self._set_test_status("error", _build_test_status_text("error", error=error))
+            notice_text, notice_level = _build_test_notice_feedback(
+                "error", error=error
+            )
+            self._set_test_notice(notice_level, notice_text)
         else:
             cleaned = (transcript or "").strip()
             self._test_successful = bool(cleaned)
@@ -1857,10 +2195,13 @@ class OnboardingWizardController:
                 self._test_outcome,
                 _build_test_status_text(self._test_outcome),
             )
+            notice_text, notice_level = _build_test_notice_feedback(self._test_outcome)
+            self._set_test_notice(notice_level, notice_text)
 
         self._set_test_preview_text(
             _build_test_preview_text(self._test_outcome, transcript)
         )
+        self._refresh_test_action_buttons()
         self._render()
 
     # ---------------------------------------------------------------------

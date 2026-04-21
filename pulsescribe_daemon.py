@@ -2433,8 +2433,13 @@ class PulseScribeDaemon:
 
         wizard = self._onboarding_wizard
         wizard.set_test_dictation_callbacks(
-            start=lambda: self.start_test_dictation(wizard.on_test_dictation_result),
-            stop=self.stop_test_dictation,
+            start=lambda: self._start_test_dictation_run(
+                wizard.on_test_dictation_result,
+                state_callback=wizard.on_test_dictation_hotkey_state,
+            ),
+            stop=lambda: self._stop_test_dictation_run(
+                state_callback=wizard.on_test_dictation_hotkey_state,
+            ),
             cancel=self.cancel_test_dictation,
         )
         wizard.set_test_hotkey_mode_callbacks(
