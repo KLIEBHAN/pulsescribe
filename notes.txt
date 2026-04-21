@@ -16,6 +16,7 @@ Latest pass - final Welcome + settings consistency polish (`ui/settings_apply_fe
   - trimmed redundant Save & Apply wording from secondary card descriptions once footer / section feedback covered it
   - later hardened shared saved-settings feedback so bool-like `0` / `1` and string flags like `"true"` / `"false"` still map to the correct reload success / failure copy
   - added focused coverage for whitespace/case-normalized string reload flags like `" True "`, `"YES "`, and `" false "`
+  - added focused no-op coverage so empty / whitespace-only reload strings keep the neutral `"Settings saved."` message
 - Validation:
   - `pytest tests/test_settings_apply_feedback.py tests/test_secondary_settings_feedback.py tests/test_settings_windows_load.py tests/test_settings_windows_prompts.py tests/test_settings_windows_logs.py tests/test_settings_ui.py tests/test_vocabulary.py tests/test_vocabulary_feedback.py -q`
   - `pytest tests/test_local_backend_ui.py tests/test_custom_prompts.py -q`

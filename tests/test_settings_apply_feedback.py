@@ -100,6 +100,19 @@ def test_build_settings_saved_feedback_accepts_string_reload_flags() -> None:
     assert failure_color == "warning"
 
 
+def test_build_settings_saved_feedback_ignores_empty_reload_state_strings() -> None:
+    empty_text, empty_color = build_settings_saved_feedback(auto_reload_worked="")
+    whitespace_text, whitespace_color = build_settings_saved_feedback(
+        auto_reload_worked="   ",
+    )
+
+    assert empty_text == "Settings saved."
+    assert empty_color == "success"
+
+    assert whitespace_text == "Settings saved."
+    assert whitespace_color == "success"
+
+
 def test_build_save_apply_change_hint_switches_between_singular_and_plural() -> None:
     assert build_save_apply_change_hint() == "Click Save & Apply to keep this change."
     assert (
