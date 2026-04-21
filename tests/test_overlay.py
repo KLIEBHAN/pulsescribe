@@ -583,7 +583,7 @@ def test_overlay_controller_error_state_uses_friendly_error_detail():
 
     OverlayController.update_state(controller, AppState.ERROR, " microphone\nmissing ")
 
-    assert seen_presentations[-1]["text"] == "Error: microphone missing"
+    assert seen_presentations[-1]["text"] == "Microphone unavailable"
 
 
 def test_overlay_controller_done_state_uses_clear_success_copy():

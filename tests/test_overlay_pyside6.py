@@ -421,7 +421,7 @@ def test_on_interim_changed_restores_default_recording_label_when_empty():
 
     PySide6OverlayWidget._on_interim_changed(widget, "")
 
-    assert seen_calls == [("RECORDING", "Recording...", False)]
+    assert seen_calls == [("RECORDING", "Recording — keep speaking", False)]
 
 
 def test_format_recording_interim_text_compacts_whitespace():
@@ -580,7 +580,7 @@ def test_on_state_changed_formats_error_feedback_text(monkeypatch):
 
     PySide6OverlayWidget._on_state_changed(widget, "ERROR", " microphone\nmissing ")
 
-    assert seen_calls[-1] == ("ERROR", "Error: microphone missing", False)
+    assert seen_calls[-1] == ("ERROR", "Microphone unavailable", False)
 
 
 def test_animate_frame_skips_repaint_for_subpixel_height_changes(monkeypatch):

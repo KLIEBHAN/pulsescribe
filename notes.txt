@@ -1,5 +1,23 @@
 UX notes - 2026-04-21
 
+Latest pass - active dictation overlay feedback clarity (`ui/overlay_feedback.py`)
+- Focused on the everyday active-dictation overlay flow next, instead of revisiting the recent transcript-history or onboarding work.
+- Main weaknesses found:
+  1. The overlay still showed terse or technical raw status/error text in a very small single-line surface, which made loading and failure states harder to parse quickly.
+  2. The recording fallback label was too generic, so brief no-interim moments looked less intentional than they should.
+  3. Optional RTF/speed feedback used a cryptic `✓ (0.3x)` shorthand that was hard to understand without prior context.
+  4. Because PySide accessibility descriptions mirror overlay text, unclear overlay copy also reduced accessibility quality.
+- Changes in this pass:
+  - added shared normalization for overlay loading/error feedback so common technical details are turned into concise user-facing copy
+  - made loading/warmup text calmer and more consistent for narrow overlay layouts
+  - replaced the cryptic RTF checkmark shorthand with readable success copy like `Transcript pasted • 0.3x realtime`
+  - improved the fallback recording label so short gaps before interim text still feel guided and intentional
+  - kept the existing overlay state machine and animations intact while making the visible copy clearer across macOS AppKit, Windows Tk and PySide overlays
+- Validation:
+  - `pytest tests/test_overlay_feedback.py tests/test_overlay.py tests/test_overlay_windows.py tests/test_overlay_pyside6.py -q`
+  - `python -m py_compile ui/overlay_feedback.py tests/test_overlay_feedback.py tests/test_overlay.py tests/test_overlay_windows.py tests/test_overlay_pyside6.py`
+  - `ruff check ui/overlay_feedback.py tests/test_overlay_feedback.py tests/test_overlay.py tests/test_overlay_windows.py tests/test_overlay_pyside6.py`
+
 Latest pass - transcript history panel clarity across Welcome + Windows Settings (`ui/welcome.py`, `ui/settings_windows.py`, `ui/logs_panel_feedback.py`)
 - Focused on an everyday transcript/settings flow outside onboarding, instead of revisiting the two recent onboarding passes.
 - Main weaknesses found:
@@ -143,9 +161,9 @@ Previous pass - Onboarding / shared setup UX
 - Improved Windows onboarding guidance, hotkey capture discoverability, safe dictation test messaging, shared permission card wording, and Windows focus/placeholder styling.
 
 Next worthwhile UX areas
-1. daemon startup / recovery flow outside onboarding
+1. no-speech / silent-result feedback in the everyday dictation flow
+- active dictation currently falls back to IDLE very quietly when no usable transcript is produced; the next likely gain is a brief, clearer non-error empty-result state
+2. daemon startup / recovery flow outside onboarding
 - especially first-launch background readiness, recovery after provider failures and clearer next-step guidance when the service is not yet ready
-2. prompt / vocabulary editing follow-through on real devices
-- verify the current prompt/vocabulary editor guidance, save affordances and wrapping on smaller windows after the latest transcript/history cleanup
-3. targeted real-device QA across recent UX passes
-- sanity-check the updated onboarding plus transcript-history states on actual small screens and different DPI / scaling setups
+3. prompt / vocabulary editing follow-through on real devices
+- verify the current prompt/vocabulary editor guidance, save affordances and wrapping on smaller windows after the latest transcript/history and overlay cleanup

@@ -339,7 +339,7 @@ def test_handle_interim_text_restores_default_recording_label_when_empty():
 
     controller._handle_interim_text("")
 
-    assert controller._label.last_config["text"] == "Recording..."
+    assert controller._label.last_config["text"] == "Recording — keep speaking"
     assert controller._label.last_config["fg"] == "white"
 
 
@@ -365,7 +365,7 @@ def test_handle_state_change_formats_error_feedback_text():
 
     controller._handle_state_change("ERROR", " microphone\nmissing ")
 
-    assert controller._label.last_config["text"] == "Error: microphone missing"
+    assert controller._label.last_config["text"] == "Microphone unavailable"
     assert controller._label.last_config["fg"] == STATE_COLORS["ERROR"]
 
 
