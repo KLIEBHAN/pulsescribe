@@ -1,22 +1,28 @@
 UX notes - 2026-04-21
 
-Latest pass - daemon / retry / status UX outside the overlay (`ui/daemon_status_feedback.py`, `ui/menubar.py`, `pulsescribe_daemon.py`, `pulsescribe_windows.py`)
-- Focused on non-overlay daemon state feedback after reviewing the remaining startup / retry / recovery surfaces.
+Latest pass - vocabulary editor UX (`utils/vocabulary.py`, `ui/vocabulary_feedback.py`, `ui/settings_windows.py`, `ui/welcome.py`)
+- Focused on the custom vocabulary editors after reviewing their remaining guidance / validation / save-feedback gaps.
 - Main weaknesses found:
-  1. macOS menu bar loading / error states were often too generic to explain what PulseScribe was doing.
-  2. Windows tray status ignored same-state text changes, so loading / warmup progress could stay stale.
-  3. Recovery guidance was inconsistent or missing, especially around transient errors and automatic return-to-ready behavior.
-  4. Non-overlay status copy was duplicated and inconsistent across macOS + Windows.
+  1. Limits were mentioned, but not explained in a way that helped users decide what to do.
+  2. Duplicate handling and normalization were too opaque, especially across comma-separated input and case variants.
+  3. Save vs. unchanged states were weak or inconsistent.
+  4. Empty states and input guidance did not clearly explain what belongs in the vocabulary editor.
+  5. Windows and macOS vocabulary surfaces behaved and explained themselves differently.
 - Changes in this pass:
-  - added shared daemon-status copy helpers for concise non-overlay labels, loading guidance and error recovery hints
-  - improved macOS menu bar status + hint text for loading, warmup, missing API keys, busy states and timeout-style failures
-  - improved Windows tray titles so they reflect the latest state text even when the state itself does not change
-  - aligned Windows tray microcopy with the newer app wording and made status titles more descriptive / accessible
-  - started passing clearer friendly error labels from daemon timeout / worker failure paths instead of falling back to generic `Error` everywhere
+  - added shared vocabulary parsing + analysis helpers so editor feedback can use the same normalization rules as persistence
+  - added shared vocabulary UX copy helpers for empty states, live edit feedback, load feedback and save / unchanged states
+  - improved Windows vocabulary editor copy, placeholder text, tooltips, accessibility names and button labels
+  - added live Windows editor feedback for duplicates, pending clears, limits and unchanged states
+  - normalized the Windows editor text after save so users immediately see the persisted result
+  - improved macOS Welcome vocabulary guidance and bottom status copy, including duplicate / empty / unchanged feedback
+  - wired live vocabulary warning updates on macOS while editing
 - Validation:
-  - `pytest tests/test_daemon_status_feedback.py tests/test_menubar.py tests/test_windows_race_conditions.py -q`
-  - `python -m py_compile ui/daemon_status_feedback.py ui/menubar.py pulsescribe_daemon.py pulsescribe_windows.py tests/test_daemon_status_feedback.py tests/test_menubar.py tests/test_windows_race_conditions.py`
-  - `ruff check ui/daemon_status_feedback.py ui/menubar.py pulsescribe_daemon.py pulsescribe_windows.py tests/test_daemon_status_feedback.py tests/test_menubar.py tests/test_windows_race_conditions.py`
+  - `pytest tests/test_vocabulary.py tests/test_vocabulary_feedback.py tests/test_settings_windows_load.py tests/test_settings_ui.py -q`
+  - `python -m py_compile utils/vocabulary.py ui/vocabulary_feedback.py ui/settings_windows.py ui/welcome.py tests/test_vocabulary.py tests/test_vocabulary_feedback.py tests/test_settings_windows_load.py tests/test_settings_ui.py`
+  - `ruff check utils/vocabulary.py ui/vocabulary_feedback.py ui/settings_windows.py ui/welcome.py tests/test_vocabulary.py tests/test_vocabulary_feedback.py tests/test_settings_windows_load.py tests/test_settings_ui.py`
+
+Previous pass - daemon / retry / status UX outside the overlay (`ui/daemon_status_feedback.py`, `ui/menubar.py`, `pulsescribe_daemon.py`, `pulsescribe_windows.py`)
+- Added shared daemon-status copy helpers and improved non-overlay loading, error and recovery messaging.
 
 Previous pass - advanced local settings + prompt editor UX (`ui/settings_windows.py`, `ui/welcome.py`, `utils/local_backend.py`, `utils/custom_prompts.py`)
 - Added backend-specific guidance / visibility improvements for local settings and clearer prompt-editor labels, hints and feedback.
@@ -71,9 +77,9 @@ Previous pass - Onboarding / shared setup UX
 - Improved Windows onboarding guidance, hotkey capture discoverability, safe dictation test messaging, shared permission card wording, and Windows focus/placeholder styling.
 
 Next worthwhile UX areas
-1. vocabulary editor guidance
-- stronger limit feedback, duplicate cleanup hints, and clearer save / unchanged states
-2. final polish for secondary settings surfaces
+1. final polish for secondary settings surfaces
 - refine tab wording, display / clipboard tradeoff hints, and a last responsive-spacing / hierarchy pass on smaller windows
-3. onboarding daemon handoff / retry polish
+2. onboarding daemon handoff / retry polish
 - especially Windows test-dictation connect / stop / retry messaging when the daemon is slow or unavailable
+3. remaining setup consistency details
+- check whether secondary save / reload actions across Welcome + Settings expose enough inline confirmation and undo expectations

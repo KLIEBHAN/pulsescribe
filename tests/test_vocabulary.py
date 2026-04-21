@@ -6,11 +6,31 @@ from types import SimpleNamespace
 
 from transcribe import load_vocabulary
 from utils.vocabulary import (
+    analyze_vocabulary_text,
     load_vocabulary_state,
     save_vocabulary,
     save_vocabulary_state,
+    split_vocabulary_text,
     validate_vocabulary,
 )
+
+
+def test_split_vocabulary_text_supports_lines_and_commas() -> None:
+    assert split_vocabulary_text("Claude, Anthropic\nGraphQL") == [
+        "Claude",
+        "Anthropic",
+        "GraphQL",
+    ]
+
+
+def test_analyze_vocabulary_text_tracks_duplicates_and_limits() -> None:
+    analysis = analyze_vocabulary_text("API\napi\n" + "\n".join(f"kw{i}" for i in range(60)))
+
+    assert analysis.keywords[0] == "API"
+    assert analysis.duplicate_count == 1
+    assert analysis.keyword_count == 61
+    assert analysis.exceeds_local_limit is True
+    assert analysis.exceeds_deepgram_limit is False
 
 
 class TestLoadVocabulary:

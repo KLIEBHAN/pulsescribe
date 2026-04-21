@@ -716,6 +716,29 @@ class TestWelcomeEditorCaches:
         assert refreshed == ["beta"]
         assert calls["count"] == 2
 
+    def test_parse_keywords_text_supports_commas_and_lines(self):
+        ctrl = _make_minimal_welcome_controller()
+
+        assert ctrl._parse_keywords_text("Claude, Anthropic\nGraphQL") == [
+            "Claude",
+            "Anthropic",
+            "GraphQL",
+        ]
+
+    def test_update_vocabulary_warning_uses_editor_feedback(self, monkeypatch):
+        ctrl = _make_minimal_welcome_controller()
+        ctrl._vocab_warning_label = _FakeStatus("")
+        ctrl._vocab_text_view = _FakeTranscriptsTextView("API\napi", doc_height=120)
+        ctrl._loaded_vocabulary_keywords = ["API"]
+
+        monkeypatch.setattr("ui.welcome._status_color", lambda color: color)
+
+        ctrl._update_vocabulary_warning()
+
+        assert "No changes to save" in ctrl._vocab_warning_label.value
+        assert "Duplicate entries will be merged automatically" in ctrl._vocab_warning_label.value
+        assert ctrl._vocab_warning_label.color == "warning"
+
     def test_visibility_updates_skip_redundant_hide_show_mutations(self):
         ctrl = _make_minimal_welcome_controller()
         ctrl._mode_popup = _FakePopup(["deepgram", "local"], selected="deepgram")

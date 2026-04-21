@@ -43,6 +43,11 @@ from ui.logs_panel_feedback import (
     build_transcripts_count_text,
     build_transcripts_load_error_text,
 )
+from ui.vocabulary_feedback import (
+    build_vocabulary_editor_feedback,
+    build_vocabulary_load_feedback,
+    build_vocabulary_save_feedback,
+)
 from ui.styles_windows import (
     CARD_PADDING,
     CARD_SPACING,
@@ -86,6 +91,7 @@ from utils.custom_prompts import (
     get_prompt_editor_placeholder,
     normalize_prompt_editor_context,
 )
+from utils.vocabulary import analyze_vocabulary_text
 
 logger = logging.getLogger("pulsescribe.settings")
 
@@ -903,6 +909,7 @@ class SettingsWindow(QDialog):
         self._logs_auto_refresh_step = 0
         self._vocabulary_loaded = False
         self._last_vocabulary_signature: tuple[int, int] | None = None
+        self._saved_vocabulary_keywords: list[str] = []
         self._prompts_defaults_data: dict | None = None
         self._prompts_loaded_data: dict | None = None
         self._prompt_text_cache: dict[str, str] = {}
@@ -1731,40 +1738,49 @@ class SettingsWindow(QDialog):
         # Vocabulary Card
         card, card_layout = create_card(
             "📚 Custom Vocabulary",
-            "Add custom words and phrases to improve transcription accuracy.",
+            "Add names, product terms, and jargon that PulseScribe should recognize more reliably.",
         )
 
-        self._vocab_editor = QPlainTextEdit()
-        self._vocab_editor.setPlaceholderText("One word/phrase per line...")
-        self._vocab_editor.setMinimumHeight(250)
-        card_layout.addWidget(self._vocab_editor)
-
-        # Status Label
-        self._vocab_status = QLabel("")
-        self._vocab_status.setFont(QFont("Segoe UI", 9))
-        card_layout.addWidget(self._vocab_status)
-
-        # Hint
         vocab_hint = QLabel(
-            "💡 Deepgram supports max 100 keywords, Local Whisper max 50."
+            "Use one keyword or phrase per line; commas also work. Duplicate entries are merged automatically on save."
         )
         vocab_hint.setFont(QFont("Segoe UI", 9))
         vocab_hint.setStyleSheet(f"color: {COLORS['text_hint']};")
         vocab_hint.setWordWrap(True)
         card_layout.addWidget(vocab_hint)
 
+        self._vocab_editor = QPlainTextEdit()
+        self._vocab_editor.setPlaceholderText("Examples:\nClaude\nGraphQL\nVS Code")
+        self._vocab_editor.setMinimumHeight(250)
+        self._vocab_editor.setAccessibleName("Custom vocabulary editor")
+        self._vocab_editor.setToolTip(
+            "Add one keyword or phrase per line. Commas also work. Duplicate entries are merged automatically on save."
+        )
+        self._vocab_editor.textChanged.connect(self._refresh_vocabulary_editor_feedback)
+        card_layout.addWidget(self._vocab_editor)
+
+        # Status Label
+        self._vocab_status = QLabel("")
+        self._vocab_status.setFont(QFont("Segoe UI", 9))
+        self._vocab_status.setWordWrap(True)
+        card_layout.addWidget(self._vocab_status)
+
         # Buttons
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 
-        load_btn = QPushButton("Load")
+        load_btn = QPushButton("Reload from File")
+        load_btn.setAccessibleName("Reload custom vocabulary from file")
+        load_btn.setToolTip("Discard unsaved edits in this editor and reload the saved vocabulary file.")
         load_btn.clicked.connect(
             lambda _checked=False: self._load_vocabulary(force=True)
         )
         btn_layout.addWidget(load_btn)
 
-        save_btn = QPushButton("Save")
+        save_btn = QPushButton("Save Vocabulary")
         save_btn.setObjectName("primary")
+        save_btn.setAccessibleName("Save custom vocabulary")
+        save_btn.setToolTip("Save the normalized custom vocabulary shown in this editor.")
         save_btn.clicked.connect(self._save_vocabulary)
         btn_layout.addWidget(save_btn)
 
@@ -1774,6 +1790,7 @@ class SettingsWindow(QDialog):
         layout.addStretch()
 
         scroll.setWidget(content)
+        self._refresh_vocabulary_editor_feedback()
         return scroll
 
     def _build_logs_tab(self) -> QWidget:
@@ -3341,6 +3358,25 @@ class SettingsWindow(QDialog):
         """Gibt die aktuelle Version zurück."""
         return get_app_version(default="unknown")
 
+    def _get_saved_vocabulary_keywords(self) -> list[str]:
+        return list(getattr(self, "_saved_vocabulary_keywords", []) or [])
+
+    def _current_vocabulary_raw_text(self) -> str:
+        editor = getattr(self, "_vocab_editor", None)
+        if editor is None:
+            return ""
+        try:
+            return str(editor.toPlainText())
+        except Exception:
+            return ""
+
+    def _refresh_vocabulary_editor_feedback(self) -> None:
+        text, color = build_vocabulary_editor_feedback(
+            self._current_vocabulary_raw_text(),
+            saved_keywords=self._get_saved_vocabulary_keywords(),
+        )
+        _set_status_label_if_changed(getattr(self, "_vocab_status", None), text, color)
+
     def _load_vocabulary(self, *, force: bool = False):
         """Lädt Vocabulary aus Datei."""
         try:
@@ -3356,26 +3392,28 @@ class SettingsWindow(QDialog):
                 return
 
             vocab, warnings, _state_signature = load_vocabulary_state()
+            keywords = list(vocab.get("keywords", []))
+            self._saved_vocabulary_keywords = list(keywords)
             if self._vocab_editor:
-                keywords = vocab.get("keywords", [])
                 set_plain_text_if_changed(self._vocab_editor, "\n".join(keywords))
 
-                status_text, status_color = _build_vocabulary_status(
-                    keyword_count=len(keywords),
-                    warnings=warnings,
-                    saved=False,
-                )
-                _set_status_label_if_changed(
-                    getattr(self, "_vocab_status", None),
-                    status_text,
-                    status_color,
-                )
+            status_text, status_color = build_vocabulary_load_feedback(
+                keywords=keywords,
+                issues=warnings,
+            )
+            _set_status_label_if_changed(
+                getattr(self, "_vocab_status", None),
+                status_text,
+                status_color,
+            )
             self._vocabulary_loaded = True
             self._last_vocabulary_signature = signature
         except Exception as e:
             logger.error(f"Vocabulary laden fehlgeschlagen: {e}")
             _set_status_label_if_changed(
-                getattr(self, "_vocab_status", None), f"Error: {e}", "error"
+                getattr(self, "_vocab_status", None),
+                f"Could not load the vocabulary: {e}",
+                "error",
             )
 
     def _save_vocabulary(self):
@@ -3383,30 +3421,51 @@ class SettingsWindow(QDialog):
         try:
             from utils.vocabulary import save_vocabulary_state
 
-            if self._vocab_editor:
-                text = self._vocab_editor.toPlainText()
-                keywords = [line.strip() for line in text.split("\n") if line.strip()]
-                vocab, warnings, signature = save_vocabulary_state(keywords)
-                normalized_keywords = vocab.get("keywords", [])
-                self._vocabulary_loaded = True
-                self._last_vocabulary_signature = (
-                    (signature[0], signature[1]) if signature is not None else None
-                )
+            if not self._vocab_editor:
+                return
 
-                status_text, status_color = _build_vocabulary_status(
-                    keyword_count=len(normalized_keywords),
-                    warnings=warnings,
-                    saved=True,
+            raw_text = self._current_vocabulary_raw_text()
+            analysis = analyze_vocabulary_text(raw_text)
+            saved_keywords = self._get_saved_vocabulary_keywords()
+            signature = getattr(self, "_last_vocabulary_signature", None)
+            unchanged = analysis.keywords == saved_keywords and signature is not None
+            if unchanged:
+                status_text, status_color = build_vocabulary_save_feedback(
+                    raw_text,
+                    unchanged=True,
                 )
                 _set_status_label_if_changed(
                     getattr(self, "_vocab_status", None),
                     status_text,
                     status_color,
                 )
+                return
+
+            vocab, _warnings, new_signature = save_vocabulary_state(analysis.keywords)
+            normalized_keywords = list(vocab.get("keywords", []))
+            normalized_text = "\n".join(normalized_keywords)
+            set_plain_text_if_changed(self._vocab_editor, normalized_text)
+            self._saved_vocabulary_keywords = list(normalized_keywords)
+            self._vocabulary_loaded = True
+            self._last_vocabulary_signature = (
+                (new_signature[0], new_signature[1]) if new_signature is not None else None
+            )
+
+            status_text, status_color = build_vocabulary_save_feedback(
+                raw_text,
+                unchanged=False,
+            )
+            _set_status_label_if_changed(
+                getattr(self, "_vocab_status", None),
+                status_text,
+                status_color,
+            )
         except Exception as e:
             logger.error(f"Vocabulary speichern fehlgeschlagen: {e}")
             _set_status_label_if_changed(
-                getattr(self, "_vocab_status", None), f"Error: {e}", "error"
+                getattr(self, "_vocab_status", None),
+                f"Could not save the vocabulary: {e}",
+                "error",
             )
 
     def _refresh_logs(self) -> bool:

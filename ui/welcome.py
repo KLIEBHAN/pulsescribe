@@ -17,6 +17,10 @@ from ui.logs_panel_feedback import (
     build_transcripts_count_text,
     build_transcripts_load_error_text,
 )
+from ui.vocabulary_feedback import (
+    build_vocabulary_editor_feedback,
+    build_vocabulary_save_feedback,
+)
 from utils.env import parse_bool
 from utils.hotkey_recording import HotkeyRecorder
 from utils.local_backend import (
@@ -44,7 +48,12 @@ from utils.preferences import (
     set_show_welcome_on_startup,
     update_env_settings,
 )
-from utils.vocabulary import load_vocabulary, save_vocabulary
+from utils.vocabulary import (
+    analyze_vocabulary_text,
+    load_vocabulary,
+    save_vocabulary_state,
+    split_vocabulary_text,
+)
 from utils.custom_prompts import (
     PROMPT_EDITOR_CONTEXT_OPTIONS,
     get_prompt_editor_context_description,
@@ -517,6 +526,7 @@ class WelcomeController:
         self._tab_delegate = None
         self._vocab_text_view = None
         self._vocab_warning_label = None
+        self._vocab_text_change_handler = None
         self._loaded_vocabulary_keywords: list[str] | None = None
         self._logs_text_view = None
         self._logs_scroll_view = None
@@ -2542,7 +2552,7 @@ class WelcomeController:
             NSMakeRect(base_x, card_y + card_height - 46, content_width, 14)
         )
         desc.setStringValue_(
-            "One keyword per line (or comma-separated). Used by Local and Deepgram."
+            "Add names, product terms, and jargon that PulseScribe should recognize more reliably. Changes are saved with Save & Apply."
         )
         desc.setBezeled_(False)
         desc.setDrawsBackground_(False)
@@ -2577,6 +2587,10 @@ class WelcomeController:
         text_view.setVerticallyResizable_(True)
         text_view.setHorizontallyResizable_(False)
         text_view.setAllowsUndo_(True)  # CMD+Z / CMD+Shift+Z
+        _set_tooltip_if_supported(
+            text_view,
+            "Add one keyword or phrase per line. Commas also work. Duplicate entries are merged automatically when you save.",
+        )
         tc = text_view.textContainer()
         if tc is not None:
             tc.setWidthTracksTextView_(True)
@@ -2589,16 +2603,33 @@ class WelcomeController:
         self._vocab_text_view = text_view
 
         warning = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(base_x, card_y + 16, content_width, 16)
+            NSMakeRect(base_x, card_y + 12, content_width, 28)
         )
         warning.setBezeled_(False)
         warning.setDrawsBackground_(False)
         warning.setEditable_(False)
         warning.setSelectable_(False)
-        warning.setFont_(NSFont.systemFontOfSize_weight_(11, NSFontWeightMedium))
-        warning.setTextColor_(_get_color(255, 193, 7, 0.9))
+        warning.setFont_(NSFont.systemFontOfSize_(10))
+        try:
+            warning.setLineBreakMode_(0)
+            warning.setUsesSingleLineMode_(False)
+        except Exception:
+            pass
         parent_view.addSubview_(warning)
         self._vocab_warning_label = warning
+
+        if _TextChangeHandler is not None:
+            vocab_change_handler = _TextChangeHandler.alloc().initWithController_method_(
+                self, "_update_vocabulary_warning"
+            )
+            try:
+                text_view.setDelegate_(vocab_change_handler)
+            except Exception:
+                vocab_change_handler = None
+            self._vocab_text_change_handler = vocab_change_handler
+        else:
+            self._vocab_text_change_handler = None
+
         self._update_vocabulary_warning()
 
         return card_y - CARD_SPACING
@@ -4057,19 +4088,7 @@ class WelcomeController:
 
     def _parse_keywords_text(self, raw: str) -> list[str]:
         """Parst Keywords aus Multiline/Comma Input."""
-        parts: list[str] = []
-        for line in raw.splitlines():
-            for chunk in line.split(","):
-                kw = chunk.strip()
-                if kw:
-                    parts.append(kw)
-        seen: set[str] = set()
-        result: list[str] = []
-        for kw in parts:
-            if kw not in seen:
-                seen.add(kw)
-                result.append(kw)
-        return result
+        return split_vocabulary_text(raw)
 
     def _get_current_keywords(self) -> list[str]:
         if not self._vocab_text_view:
@@ -4081,16 +4100,25 @@ class WelcomeController:
         return self._parse_keywords_text(raw)
 
     def _update_vocabulary_warning(self) -> None:
-        if not self._vocab_warning_label:
+        label = getattr(self, "_vocab_warning_label", None)
+        if not label:
             return
-        count = len(self._get_current_keywords())
-        if count > 100:
-            msg = f"Warning: {count} keywords. Deepgram: first 100, Local: first 50."
-        elif count > 50:
-            msg = f"Note: {count} keywords. Local uses first 50; Deepgram first 100."
-        else:
-            msg = f"{count} keywords"
-        self._vocab_warning_label.setStringValue_(msg)
+        raw_text = ""
+        text_view = getattr(self, "_vocab_text_view", None)
+        if text_view is not None:
+            try:
+                raw_text = str(text_view.string() or "")
+            except Exception:
+                raw_text = ""
+        text, color = build_vocabulary_editor_feedback(
+            raw_text,
+            saved_keywords=self._get_loaded_vocabulary_keywords(),
+        )
+        try:
+            label.setStringValue_(text)
+            label.setTextColor_(_status_color(color))
+        except Exception:
+            pass
 
     def _add_setting_label(self, x: int, y: int, text: str, parent_view=None):
         """Erstellt ein Label für eine Einstellung."""
@@ -4644,16 +4672,40 @@ class WelcomeController:
 
         # Vocabulary / Keywords
         if self._vocab_text_view:
-            keywords = self._get_current_keywords()
+            raw_keywords_text = str(self._vocab_text_view.string() or "")
+            analysis = analyze_vocabulary_text(raw_keywords_text)
             existing_keywords = self._get_loaded_vocabulary_keywords()
-            if keywords != existing_keywords:
-                try:
-                    save_vocabulary(keywords)
-                    self._loaded_vocabulary_keywords = list(keywords)
-                    log.info(f"Saved {len(keywords)} vocabulary keywords")
-                except Exception as e:
-                    log.warning(f"Could not save vocabulary: {e}")
-            self._update_vocabulary_warning()
+            keywords_changed = analysis.keywords != existing_keywords
+            try:
+                if keywords_changed:
+                    vocab_data, _warnings, _signature = save_vocabulary_state(
+                        analysis.keywords
+                    )
+                    normalized_keywords = list(vocab_data.get("keywords", []))
+                    self._loaded_vocabulary_keywords = list(normalized_keywords)
+                    _set_text_view_string_if_changed(
+                        self._vocab_text_view,
+                        "\n".join(normalized_keywords),
+                    )
+                    text, color = build_vocabulary_save_feedback(
+                        raw_keywords_text,
+                        unchanged=False,
+                    )
+                    _apply_status_text(self._vocab_warning_label, text, color)
+                    log.info(f"Saved {len(normalized_keywords)} vocabulary keywords")
+                else:
+                    text, color = build_vocabulary_save_feedback(
+                        raw_keywords_text,
+                        unchanged=True,
+                    )
+                    _apply_status_text(self._vocab_warning_label, text, color)
+            except Exception as e:
+                log.warning(f"Could not save vocabulary: {e}")
+                _apply_status_text(
+                    self._vocab_warning_label,
+                    f"Could not save the custom vocabulary: {e}",
+                    "error",
+                )
 
         # Custom Prompts speichern
         self._save_custom_prompts()
@@ -5114,6 +5166,35 @@ try:
     _HotkeyActionHandler = _create_hotkey_action_handler_class()
 except Exception:
     _HotkeyActionHandler = None
+
+
+def _create_text_change_handler_class():
+    """Erstellt NSObject-Delegate für NSTextView-Textänderungen."""
+    from Foundation import NSObject  # type: ignore[import-not-found]
+    import objc  # type: ignore[import-not-found]
+
+    class TextChangeHandler(NSObject):
+        def initWithController_method_(self, controller, method_name):
+            self = objc.super(TextChangeHandler, self).init()
+            if self is None:
+                return None
+            self._controller = controller
+            self._method_name = method_name
+            return self
+
+        @objc.signature(b"v@:@")
+        def textDidChange_(self, _notification) -> None:
+            method = getattr(self._controller, self._method_name, None)
+            if callable(method):
+                method()
+
+    return TextChangeHandler
+
+
+try:
+    _TextChangeHandler = _create_text_change_handler_class()
+except Exception:
+    _TextChangeHandler = None
 
 
 def _create_tab_selection_handler_class():

@@ -506,7 +506,7 @@ def test_load_vocabulary_force_reloads_even_when_signature_unchanged(monkeypatch
     window._load_vocabulary(force=True)
 
     assert window._vocab_editor.set_calls == ["alpha"]
-    assert window._vocab_status.text == "1 keywords loaded"
+    assert window._vocab_status.text == "Loaded 1 keyword."
 
 
 def test_load_vocabulary_surfaces_validation_warnings(monkeypatch):
@@ -532,7 +532,9 @@ def test_load_vocabulary_surfaces_validation_warnings(monkeypatch):
     window._load_vocabulary()
 
     assert window._vocab_editor.value == "alpha\nbeta"
-    assert window._vocab_status.text == "⚠ 2 doppelte Keywords gefunden."
+    assert window._vocab_status.text == (
+        "Loaded 2 keywords. Duplicate entries in the file were merged automatically."
+    )
 
 
 def test_save_vocabulary_surfaces_saved_warning_summary(monkeypatch):
@@ -542,6 +544,7 @@ def test_save_vocabulary_surfaces_saved_warning_summary(monkeypatch):
 
     window = SettingsWindow.__new__(SettingsWindow)
     window._vocab_editor = _FakeEditor("alpha\nbeta\n")
+    window._saved_vocabulary_keywords = []
     window._vocab_status = _FakeLabel()
     window._vocabulary_loaded = False
     window._last_vocabulary_signature = None
@@ -560,10 +563,41 @@ def test_save_vocabulary_surfaces_saved_warning_summary(monkeypatch):
     window._save_vocabulary()
 
     assert saved_keywords == [["alpha", "beta"]]
-    assert window._vocab_status.text == (
-        "✓ Saved (2 keywords) - ⚠ 2 doppelte Keywords gefunden."
-    )
+    assert window._vocab_status.text == "Saved 2 keywords."
     assert window._last_vocabulary_signature == (33, 44)
+
+
+def test_refresh_vocabulary_editor_feedback_shows_pending_clear_state() -> None:
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._vocab_editor = _FakeEditor("")
+    window._vocab_status = _FakeLabel()
+    window._saved_vocabulary_keywords = ["Alpha"]
+
+    window._refresh_vocabulary_editor_feedback()
+
+    assert window._vocab_status.text == (
+        "The custom vocabulary is now empty. Save to clear the existing list."
+    )
+
+
+def test_save_vocabulary_reports_unchanged_state_without_writing(monkeypatch):
+    from utils import vocabulary as vocabulary_mod
+
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._vocab_editor = _FakeEditor("Alpha")
+    window._vocab_status = _FakeLabel()
+    window._saved_vocabulary_keywords = ["Alpha"]
+    window._last_vocabulary_signature = (9, 9)
+
+    monkeypatch.setattr(
+        vocabulary_mod,
+        "save_vocabulary_state",
+        lambda _keywords: (_ for _ in ()).throw(AssertionError("save should not run")),
+    )
+
+    window._save_vocabulary()
+
+    assert window._vocab_status.text == "No vocabulary changes to save (1 keyword)."
 
 
 def test_load_settings_prefers_canonical_fp16_key(monkeypatch):

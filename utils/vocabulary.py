@@ -61,6 +61,25 @@ def _get_cached_state(
 class _KeywordAnalysis:
     normalized: list[str]
     issues: list[str]
+    input_count: int
+    duplicate_count: int
+    non_string_count: int
+    exceeds_local_limit: bool
+    exceeds_deepgram_limit: bool
+
+
+@dataclass(frozen=True)
+class VocabularyInputAnalysis:
+    keywords: list[str]
+    issues: list[str]
+    input_count: int
+    duplicate_count: int
+    exceeds_local_limit: bool
+    exceeds_deepgram_limit: bool
+
+    @property
+    def keyword_count(self) -> int:
+        return len(self.keywords)
 
 
 def _clean_keyword_strings(raw_keywords: list[Any]) -> tuple[list[str], int]:
@@ -115,18 +134,60 @@ def _build_keyword_issues(
 def _analyze_keywords(raw_keywords: Any) -> _KeywordAnalysis:
     """Normalize raw keyword data once and derive validation issues from it."""
     if raw_keywords is None:
-        return _KeywordAnalysis([], [])
+        return _KeywordAnalysis([], [], 0, 0, 0, False, False)
     if not isinstance(raw_keywords, list):
-        return _KeywordAnalysis([], ["'keywords' muss eine Liste sein."])
+        return _KeywordAnalysis(
+            [],
+            ["'keywords' muss eine Liste sein."],
+            0,
+            0,
+            0,
+            False,
+            False,
+        )
 
     cleaned, non_string_count = _clean_keyword_strings(raw_keywords)
     normalized = _dedupe_keywords(cleaned)
+    duplicate_count = len(cleaned) - len(normalized)
+    keyword_count = len(normalized)
     issues = _build_keyword_issues(
         non_string_count=non_string_count,
-        duplicate_count=len(cleaned) - len(normalized),
-        keyword_count=len(normalized),
+        duplicate_count=duplicate_count,
+        keyword_count=keyword_count,
     )
-    return _KeywordAnalysis(normalized, issues)
+    return _KeywordAnalysis(
+        normalized,
+        issues,
+        len(cleaned),
+        duplicate_count,
+        non_string_count,
+        keyword_count > 50,
+        keyword_count > 100,
+    )
+
+
+def split_vocabulary_text(raw_text: str | None) -> list[str]:
+    """Split editor text into keyword candidates using lines and commas."""
+    parts: list[str] = []
+    for line in (raw_text or "").splitlines():
+        for chunk in line.split(","):
+            keyword = chunk.strip()
+            if keyword:
+                parts.append(keyword)
+    return parts
+
+
+def analyze_vocabulary_text(raw_text: str | None) -> VocabularyInputAnalysis:
+    """Analyze vocabulary editor text using the same normalization as persistence."""
+    analysis = _analyze_keywords(split_vocabulary_text(raw_text))
+    return VocabularyInputAnalysis(
+        keywords=list(analysis.normalized),
+        issues=list(analysis.issues),
+        input_count=analysis.input_count,
+        duplicate_count=analysis.duplicate_count,
+        exceeds_local_limit=analysis.exceeds_local_limit,
+        exceeds_deepgram_limit=analysis.exceeds_deepgram_limit,
+    )
 
 
 def _parse_vocabulary_text(raw_text: str) -> tuple[dict[str, Any], list[str]]:
@@ -337,9 +398,12 @@ def validate_vocabulary(path: Path | None = None) -> list[str]:
 
 
 __all__ = [
+    "VocabularyInputAnalysis",
+    "analyze_vocabulary_text",
     "load_vocabulary",
     "load_vocabulary_state",
     "save_vocabulary",
     "save_vocabulary_state",
+    "split_vocabulary_text",
     "validate_vocabulary",
 ]
