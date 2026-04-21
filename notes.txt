@@ -1,5 +1,23 @@
 UX notes - 2026-04-21
 
+Latest pass - transcript history panel clarity across Welcome + Windows Settings (`ui/welcome.py`, `ui/settings_windows.py`, `ui/logs_panel_feedback.py`)
+- Focused on an everyday transcript/settings flow outside onboarding, instead of revisiting the two recent onboarding passes.
+- Main weaknesses found:
+  1. The Windows transcript panel overloaded one label for both entry count and action/error feedback, so context disappeared after refresh or clear actions.
+  2. Transcript history stayed visually under-explained: it was not obvious enough that entries are local-only and what Clear History actually affects.
+  3. Destructive `Clear History…` actions stayed available even when there was nothing useful to clear, which added noise and hesitation.
+  4. Transcript panel hierarchy differed between macOS Welcome and Windows Settings more than necessary.
+- Changes in this pass:
+  - added shared transcript-panel hint copy that explains the history is stored locally and what clearing does
+  - separated persistent transcript count from transient action/error feedback in the Windows Settings transcript panel
+  - disabled transcript-history clear actions when no local entries are available, while still allowing recovery from load-error states
+  - added a small persistent transcript-history hint line in the macOS Welcome history panel for better guidance and consistency
+  - kept existing refresh / clear behavior intact while making the visible state and destructive affordances clearer
+- Validation:
+  - `pytest tests/test_logs_panel_feedback.py tests/test_settings_windows_logs.py tests/test_settings_ui.py -q`
+  - `python -m py_compile ui/logs_panel_feedback.py ui/settings_windows.py ui/welcome.py tests/test_logs_panel_feedback.py tests/test_settings_windows_logs.py tests/test_settings_ui.py`
+  - `ruff check ui/logs_panel_feedback.py ui/settings_windows.py ui/welcome.py tests/test_logs_panel_feedback.py tests/test_settings_windows_logs.py tests/test_settings_ui.py`
+
 Latest pass - macOS onboarding practice-dictation flow (`ui/onboarding_wizard.py`, `pulsescribe_daemon.py`)
 - Focused on the central macOS onboarding test step next, instead of reopening the recent Windows onboarding or settings feedback work.
 - Main weaknesses found:
@@ -125,9 +143,9 @@ Previous pass - Onboarding / shared setup UX
 - Improved Windows onboarding guidance, hotkey capture discoverability, safe dictation test messaging, shared permission card wording, and Windows focus/placeholder styling.
 
 Next worthwhile UX areas
-1. targeted real-device onboarding QA
-- verify the updated macOS + Windows practice-test states, button hierarchy and wrapping on actual small screens and different DPI / scaling setups
-2. daemon startup / recovery flow outside onboarding
+1. daemon startup / recovery flow outside onboarding
 - especially first-launch background readiness, recovery after provider failures and clearer next-step guidance when the service is not yet ready
-3. choose-goal / permissions onboarding simplification
-- the next remaining onboarding gains are likely in reducing decision load and sharpening first-run guidance before users reach the hotkey / practice steps
+2. prompt / vocabulary editing follow-through on real devices
+- verify the current prompt/vocabulary editor guidance, save affordances and wrapping on smaller windows after the latest transcript/history cleanup
+3. targeted real-device QA across recent UX passes
+- sanity-check the updated onboarding plus transcript-history states on actual small screens and different DPI / scaling setups

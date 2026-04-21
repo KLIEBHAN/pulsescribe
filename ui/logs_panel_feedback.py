@@ -66,6 +66,23 @@ def build_transcripts_count_text(entry_count: int) -> str:
 
 
 
+def build_transcripts_hint_text(entry_count: int) -> str:
+    count = max(0, int(entry_count))
+    if count == 0:
+        return (
+            "Stored locally on this device. Your next dictation will appear here automatically."
+        )
+    return (
+        "Stored locally on this device. Clear History permanently removes these entries from this device."
+    )
+
+
+
+def build_transcripts_load_feedback() -> tuple[str, str]:
+    return "Could not load transcript history. Try Refresh or Clear History.", "error"
+
+
+
 def build_transcripts_clear_feedback(*, success: bool) -> tuple[str, str]:
     if success:
         return "Transcript history cleared.", "success"

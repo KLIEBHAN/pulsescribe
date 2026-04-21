@@ -15,6 +15,7 @@ from ui.logs_panel_feedback import (
     build_logs_open_feedback,
     build_transcripts_clear_feedback,
     build_transcripts_count_text,
+    build_transcripts_hint_text,
     build_transcripts_load_error_text,
 )
 from ui.secondary_settings_feedback import (
@@ -3226,6 +3227,7 @@ class WelcomeController:
         # Content area dimensions
         content_y = card_y + 16
         content_height = card_height - 56
+        transcripts_scroll_height = content_height - 58
 
         # ===== LOGS CONTAINER =====
         logs_container = NSView.alloc().initWithFrame_(
@@ -3374,7 +3376,7 @@ class WelcomeController:
         self._transcripts_layout_metrics = {
             "content_width": content_width,
             "content_height": content_height,
-            "scroll_height": scroll_height,
+            "scroll_height": transcripts_scroll_height,
             "button_width": refresh_btn_w,
             "button_spacing": btn_spacing,
         }
@@ -3477,6 +3479,28 @@ class WelcomeController:
         container.addSubview_(count_label)
         self._transcripts_count_label = count_label
 
+        hint_label = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(0, scroll_height + 4, content_width, 24)
+        )
+        hint_label.setStringValue_(build_transcripts_hint_text(0))
+        hint_label.setBezeled_(False)
+        hint_label.setDrawsBackground_(False)
+        hint_label.setEditable_(False)
+        hint_label.setSelectable_(False)
+        hint_label.setFont_(NSFont.systemFontOfSize_(10))
+        hint_label.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.45))
+        try:
+            hint_label.setUsesSingleLineMode_(False)
+        except Exception:
+            pass
+        _set_tooltip_if_supported(
+            hint_label,
+            "Transcript history stays local to this Mac unless you export it yourself.",
+        )
+        container.addSubview_(hint_label)
+        self._transcripts_hint_label = hint_label
+        self._transcripts_clear_btn = clear_btn
+
         t_scroll = NSScrollView.alloc().initWithFrame_(
             NSMakeRect(0, 0, content_width, scroll_height)
         )
@@ -3533,7 +3557,7 @@ class WelcomeController:
             [],
         )
         self._last_transcripts_count_text = None
-        self._update_transcripts_count_label(entry_count)
+        self._update_transcripts_meta_state(entry_count)
         t_scroll.setDocumentView_(t_text_view)
         container.addSubview_(t_scroll)
         self._transcripts_text_view = t_text_view
@@ -3559,6 +3583,7 @@ class WelcomeController:
                 count=TRANSCRIPTS_VIEW_MAX_ENTRIES,
                 signature=requested_signature,
             )
+            self._pending_transcripts_had_error = False
             self._pending_transcripts_signature = signature
             blocks = format_transcript_entries_for_welcome(entries)
             (
@@ -3573,6 +3598,7 @@ class WelcomeController:
             )
             return transcript_text, entry_count
         except Exception as e:
+            self._pending_transcripts_had_error = True
             self._pending_transcripts_signature = None
             self._pending_transcripts_entries = []
             self._pending_transcripts_blocks = []
@@ -3753,7 +3779,7 @@ class WelcomeController:
             self._last_transcripts_entries = merged_entries
             self._last_transcripts_blocks = merged_blocks
             self._last_transcripts_signature = signature
-            self._update_transcripts_count_label(len(merged_entries))
+            self._update_transcripts_meta_state(len(merged_entries))
             self._scroll_transcripts_to_bottom()
             return True
 
@@ -3778,7 +3804,10 @@ class WelcomeController:
         scroll_to_bottom: bool = False,
     ) -> bool:
         """Apply transcript text updates while preserving scroll position."""
-        count_changed = self._update_transcripts_count_label(entry_count)
+        count_changed = self._update_transcripts_meta_state(
+            entry_count,
+            has_load_error=bool(getattr(self, "_pending_transcripts_had_error", False)),
+        )
         if transcript_text == self._last_transcripts_text:
             if transcript_entries is not None:
                 self._last_transcripts_entries = transcript_entries
@@ -3856,22 +3885,54 @@ class WelcomeController:
         except Exception:
             pass
 
-    def _update_transcripts_count_label(self, entry_count: int) -> bool:
-        """Aktualisiert den Label-Text mit der aktuellen Eintragszahl."""
-        if self._transcripts_count_label:
+    def _update_transcripts_meta_state(
+        self,
+        entry_count: int,
+        *,
+        has_load_error: bool = False,
+    ) -> bool:
+        changed = False
+        count_label = getattr(self, "_transcripts_count_label", None)
+        if count_label:
             try:
                 label_text = build_transcripts_count_text(entry_count)
-                if getattr(self, "_last_transcripts_count_text", None) == label_text:
-                    return False
-                if _set_string_value_if_changed(
-                    self._transcripts_count_label,
-                    label_text,
-                ):
-                    self._last_transcripts_count_text = label_text
-                    return True
+                if getattr(self, "_last_transcripts_count_text", None) != label_text:
+                    if _set_string_value_if_changed(count_label, label_text):
+                        self._last_transcripts_count_text = label_text
+                        changed = True
             except Exception:
-                return False
-        return False
+                pass
+
+        hint_label = getattr(self, "_transcripts_hint_label", None)
+        if hint_label is not None:
+            try:
+                changed = (
+                    _set_string_value_if_changed(
+                        hint_label,
+                        build_transcripts_hint_text(entry_count),
+                    )
+                    or changed
+                )
+            except Exception:
+                pass
+
+        clear_btn = getattr(self, "_transcripts_clear_btn", None)
+        if clear_btn is not None:
+            should_enable = bool(has_load_error or entry_count > 0)
+            try:
+                current_enabled = None
+                enabled_getter = getattr(clear_btn, "isEnabled", None)
+                if callable(enabled_getter):
+                    current_enabled = bool(enabled_getter())
+                else:
+                    current_enabled = getattr(clear_btn, "enabled", None)
+                if current_enabled != should_enable:
+                    clear_btn.setEnabled_(should_enable)
+                    changed = True
+            except Exception:
+                pass
+
+        return changed
 
     def _refresh_logs_on_demand(self) -> bool:
         changed = bool(self._refresh_logs(scroll_to_bottom=True))

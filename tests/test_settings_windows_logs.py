@@ -18,6 +18,14 @@ class _FakeLabel:
         self.style = style
 
 
+class _FakeButton:
+    def __init__(self, *, enabled: bool = True):
+        self.enabled = enabled
+
+    def setEnabled(self, enabled: bool) -> None:
+        self.enabled = enabled
+
+
 class _FakeTimer:
     def __init__(self):
         self.started_with: list[int] = []
@@ -198,7 +206,10 @@ def test_refresh_transcripts_resets_cached_state_when_history_file_is_missing(
         {"timestamp": "2026-01-01T10:00:00", "text": "stale"}
     ]
     window._last_transcripts_blocks = ["stale"]
+    window._transcripts_count_label = _FakeLabel()
+    window._transcripts_hint_label = _FakeLabel()
     window._transcripts_status = _FakeLabel()
+    window._transcripts_clear_btn = _FakeButton(enabled=True)
     window._set_transcripts_text_if_changed = lambda text: captured_text.append(text)
 
     assert window._refresh_transcripts() is True
@@ -207,7 +218,12 @@ def test_refresh_transcripts_resets_cached_state_when_history_file_is_missing(
     assert window._last_transcripts_signature is None
     assert window._last_transcripts_entries == []
     assert window._last_transcripts_blocks == []
-    assert window._transcripts_status.text == "No transcript history yet"
+    assert window._transcripts_count_label.text == "No transcript history yet"
+    assert window._transcripts_hint_label.text == (
+        "Stored locally on this device. Your next dictation will appear here automatically."
+    )
+    assert window._transcripts_clear_btn.enabled is False
+    assert window._transcripts_status.text == ""
 
 
 def test_refresh_transcripts_skips_reload_when_signature_unchanged(
@@ -234,6 +250,8 @@ def test_refresh_transcripts_skips_reload_when_signature_unchanged(
 
     window = SettingsWindow.__new__(SettingsWindow)
     window._last_transcripts_signature = (123, 456)
+    window._transcripts_count_label = _FakeLabel()
+    window._transcripts_hint_label = _FakeLabel()
     window._transcripts_status = _FakeLabel()
     window._set_transcripts_text_if_changed = lambda _text: (_ for _ in ()).throw(
         AssertionError("transcripts should not refresh")
@@ -267,14 +285,19 @@ def test_refresh_transcripts_updates_when_signature_changes(tmp_path, monkeypatc
     captured_text: list[str] = []
     window = SettingsWindow.__new__(SettingsWindow)
     window._last_transcripts_signature = None
+    window._transcripts_count_label = _FakeLabel()
+    window._transcripts_hint_label = _FakeLabel()
     window._transcripts_status = _FakeLabel()
+    window._transcripts_clear_btn = _FakeButton(enabled=False)
     window._set_transcripts_text_if_changed = lambda text: captured_text.append(text)
 
     window._refresh_transcripts()
 
     assert captured_text == ["formatted-transcripts"]
     assert window._last_transcripts_signature == (99, 42)
-    assert window._transcripts_status.text == "1 recent transcription"
+    assert window._transcripts_count_label.text == "1 recent transcription"
+    assert window._transcripts_clear_btn.enabled is True
+    assert window._transcripts_status.text == ""
 
 
 def test_refresh_transcripts_caches_oldest_first_blocks_on_full_reload(
@@ -310,6 +333,8 @@ def test_refresh_transcripts_caches_oldest_first_blocks_on_full_reload(
     captured_text: list[str] = []
     window = SettingsWindow.__new__(SettingsWindow)
     window._last_transcripts_signature = None
+    window._transcripts_count_label = _FakeLabel()
+    window._transcripts_hint_label = _FakeLabel()
     window._transcripts_status = _FakeLabel()
     window._set_transcripts_text_if_changed = lambda text: captured_text.append(text)
 
@@ -352,6 +377,8 @@ def test_refresh_transcripts_skips_full_reload_when_incremental_append_succeeds(
 
     window = SettingsWindow.__new__(SettingsWindow)
     window._transcripts_viewer = _FakeLogsViewer("[2026-01-01 10:00:00] hello")
+    window._transcripts_count_label = _FakeLabel()
+    window._transcripts_hint_label = _FakeLabel()
     window._transcripts_status = _FakeLabel()
     window._last_transcripts_text = "[2026-01-01 10:00:00] hello"
     window._last_transcripts_signature = (1, len(original_line.encode("utf-8")))
@@ -365,7 +392,7 @@ def test_refresh_transcripts_skips_full_reload_when_incremental_append_succeeds(
         "[2026-01-01 10:00:00] hello\n\n[2026-01-01 10:00:01] world"
     )
     assert window._transcripts_viewer.set_plain_text_calls == []
-    assert window._transcripts_status.text == "2 recent transcriptions"
+    assert window._transcripts_count_label.text == "2 recent transcriptions"
     assert [entry["text"] for entry in window._last_transcripts_entries] == [
         "hello",
         "world",
@@ -420,6 +447,8 @@ def test_refresh_transcripts_reuses_cached_blocks_when_append_replaces_visible_t
         scroll_value=10,
         scroll_maximum=100,
     )
+    window._transcripts_count_label = _FakeLabel()
+    window._transcripts_hint_label = _FakeLabel()
     window._transcripts_status = _FakeLabel()
     window._last_transcripts_text = "[2026-01-01 10:00:00] hello"
     window._last_transcripts_signature = (1, len(original_line.encode("utf-8")))
@@ -437,7 +466,7 @@ def test_refresh_transcripts_reuses_cached_blocks_when_append_replaces_visible_t
         "[2026-01-01 10:00:00] hello\n\n[2026-01-01 10:00:01] world"
     ]
     assert formatted_entries == ["world"]
-    assert window._transcripts_status.text == "2 recent transcriptions"
+    assert window._transcripts_count_label.text == "2 recent transcriptions"
     assert window._last_transcripts_blocks == [
         "[2026-01-01 10:00:00] hello",
         "[2026-01-01 10:00:01] world",
@@ -811,7 +840,10 @@ def test_refresh_transcripts_missing_file_reports_idle_once_placeholder_is_curre
 
     window = SettingsWindow.__new__(SettingsWindow)
     window._transcripts_viewer = _FakeLogsViewer("stale")
+    window._transcripts_count_label = _FakeLabel()
+    window._transcripts_hint_label = _FakeLabel()
     window._transcripts_status = _FakeLabel()
+    window._transcripts_clear_btn = _FakeButton(enabled=True)
     window._last_transcripts_text = "stale"
     window._last_transcripts_signature = (1, 5)
     window._last_transcripts_entries = [

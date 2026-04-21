@@ -41,7 +41,9 @@ from ui.logs_panel_feedback import (
     build_logs_open_feedback,
     build_transcripts_clear_feedback,
     build_transcripts_count_text,
+    build_transcripts_hint_text,
     build_transcripts_load_error_text,
+    build_transcripts_load_feedback,
 )
 from ui.secondary_settings_feedback import (
     build_display_settings_feedback,
@@ -711,6 +713,34 @@ def _set_widget_visible_if_changed(widget, visible: bool) -> bool:
         return False
     widget.setVisible(visible)
     return True
+
+
+def _get_widget_enabled(widget) -> bool | None:
+    if widget is None:
+        return None
+
+    getter = getattr(widget, "isEnabled", None)
+    if callable(getter):
+        try:
+            return bool(getter())
+        except TypeError:
+            pass
+
+    value = getattr(widget, "enabled", None)
+    if isinstance(value, bool):
+        return value
+    return None
+
+
+
+def _set_widget_enabled_if_changed(widget, enabled: bool) -> bool:
+    if widget is None:
+        return False
+    if _get_widget_enabled(widget) == enabled:
+        return False
+    widget.setEnabled(enabled)
+    return True
+
 
 
 def _set_status_label_if_changed(widget, text: str, color: str) -> None:
@@ -2006,6 +2036,19 @@ class SettingsWindow(QDialog):
         )
         transcripts_layout.addWidget(self._transcripts_viewer)
 
+        self._transcripts_count_label = QLabel(build_transcripts_count_text(0))
+        self._transcripts_count_label.setFont(QFont("Segoe UI", 9))
+        self._transcripts_count_label.setStyleSheet(
+            f"color: {COLORS['text_secondary']};"
+        )
+        transcripts_layout.addWidget(self._transcripts_count_label)
+
+        self._transcripts_hint_label = QLabel(build_transcripts_hint_text(0))
+        self._transcripts_hint_label.setFont(QFont("Segoe UI", 9))
+        self._transcripts_hint_label.setStyleSheet(f"color: {COLORS['text_hint']};")
+        self._transcripts_hint_label.setWordWrap(True)
+        transcripts_layout.addWidget(self._transcripts_hint_label)
+
         # Transcripts Status
         self._transcripts_status = QLabel("")
         self._transcripts_status.setFont(QFont("Segoe UI", 9))
@@ -2025,7 +2068,9 @@ class SettingsWindow(QDialog):
         clear_t_btn.setToolTip(
             "Permanently remove the local transcript history after confirmation."
         )
+        clear_t_btn.setEnabled(False)
         clear_t_btn.clicked.connect(self._clear_transcripts)
+        self._transcripts_clear_btn = clear_t_btn
         transcripts_btn_layout.addWidget(clear_t_btn)
 
         transcripts_layout.addLayout(transcripts_btn_layout)
@@ -3395,12 +3440,29 @@ class SettingsWindow(QDialog):
             # Kann während/kurz nach Teardown auftreten.
             return False
 
-    def _set_transcripts_entry_count(self, entry_count: int) -> None:
-        """Aktualisiert den Transcript-Status konsistent."""
+    def _set_transcripts_feedback(self, text: str, color: str = "text_secondary") -> None:
+        _set_status_label_if_changed(getattr(self, "_transcripts_status", None), text, color)
+
+    def _set_transcripts_entry_count(
+        self,
+        entry_count: int,
+        *,
+        has_load_error: bool = False,
+    ) -> None:
+        """Keep transcript count, hint text and destructive action state in sync."""
         _set_status_label_if_changed(
-            getattr(self, "_transcripts_status", None),
+            getattr(self, "_transcripts_count_label", None),
             build_transcripts_count_text(entry_count),
             "text_secondary",
+        )
+        _set_status_label_if_changed(
+            getattr(self, "_transcripts_hint_label", None),
+            build_transcripts_hint_text(entry_count),
+            "text_hint",
+        )
+        _set_widget_enabled_if_changed(
+            getattr(self, "_transcripts_clear_btn", None),
+            bool(has_load_error or entry_count > 0),
         )
 
     def _reset_transcripts_view(self) -> bool:
@@ -3416,7 +3478,7 @@ class SettingsWindow(QDialog):
             or getattr(self, "_last_transcripts_entries", None)
             or getattr(self, "_last_transcripts_blocks", None)
             or getattr(self, "_last_transcripts_text", None) != empty_text
-            or _get_widget_text(getattr(self, "_transcripts_status", None))
+            or _get_widget_text(getattr(self, "_transcripts_count_label", None))
             != build_transcripts_count_text(0)
         )
 
@@ -3425,6 +3487,7 @@ class SettingsWindow(QDialog):
         self._last_transcripts_blocks = []
         self._set_transcripts_text_if_changed(empty_text)
         self._set_transcripts_entry_count(0)
+        self._set_transcripts_feedback("")
         return changed
 
     def _refresh_transcripts(self) -> bool:
@@ -3456,6 +3519,7 @@ class SettingsWindow(QDialog):
             self._last_transcripts_signature = signature
 
             self._set_transcripts_entry_count(len(entries))
+            self._set_transcripts_feedback("")
             return True
 
         except Exception as e:
@@ -3463,7 +3527,9 @@ class SettingsWindow(QDialog):
             viewer = getattr(self, "_transcripts_viewer", None)
             if viewer:
                 viewer.setPlainText(build_transcripts_load_error_text(e))
-            self._set_transcripts_entry_count(0)
+            self._set_transcripts_entry_count(0, has_load_error=True)
+            text, color = build_transcripts_load_feedback()
+            self._set_transcripts_feedback(text, color)
             return True
 
     def _try_append_transcripts_delta(self, signature: tuple[int, int] | None) -> bool:
@@ -3610,15 +3676,13 @@ class SettingsWindow(QDialog):
 
             if not clear_history():
                 text, color = build_transcripts_clear_feedback(success=False)
-                if hasattr(self, "_transcripts_status"):
-                    _set_status_label_if_changed(self._transcripts_status, text, color)
+                self._set_transcripts_feedback(text, color)
                 self._set_footer_status(text, color)
                 return
 
             self._refresh_transcripts()
             text, color = build_transcripts_clear_feedback(success=True)
-            if hasattr(self, "_transcripts_status"):
-                _set_status_label_if_changed(self._transcripts_status, text, color)
+            self._set_transcripts_feedback(text, color)
             self._set_footer_status(text, color)
 
         except Exception as e:

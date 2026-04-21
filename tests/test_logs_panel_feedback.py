@@ -5,7 +5,9 @@ from ui.logs_panel_feedback import (
     build_logs_open_feedback,
     build_transcripts_clear_feedback,
     build_transcripts_count_text,
+    build_transcripts_hint_text,
     build_transcripts_load_error_text,
+    build_transcripts_load_feedback,
 )
 
 
@@ -58,8 +60,18 @@ def test_build_transcripts_copy_helpers_cover_count_load_and_clear_states() -> N
     assert build_transcripts_count_text(0) == "No transcript history yet"
     assert build_transcripts_count_text(1) == "1 recent transcription"
     assert build_transcripts_count_text(3) == "3 recent transcriptions"
+    assert build_transcripts_hint_text(0) == (
+        "Stored locally on this device. Your next dictation will appear here automatically."
+    )
+    assert build_transcripts_hint_text(2) == (
+        "Stored locally on this device. Clear History permanently removes these entries from this device."
+    )
     assert build_transcripts_load_error_text("permission denied") == (
         "Could not load transcript history.\n\nDetails: permission denied"
+    )
+    assert build_transcripts_load_feedback() == (
+        "Could not load transcript history. Try Refresh or Clear History.",
+        "error",
     )
     assert build_transcripts_clear_feedback(success=True) == (
         "Transcript history cleared.",

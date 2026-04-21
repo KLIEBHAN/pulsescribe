@@ -1706,6 +1706,16 @@ class _FakeTranscriptsCountLabel:
         self.calls += 1
 
 
+class _FakeAppKitButton:
+    def __init__(self, enabled: bool = True):
+        self.enabled = enabled
+        self.calls = 0
+
+    def setEnabled_(self, enabled: bool):
+        self.enabled = enabled
+        self.calls += 1
+
+
 class TestWelcomeTranscriptsRefreshBehavior:
     def test_get_transcripts_payload_uses_empty_state_message_when_history_is_empty(
         self, monkeypatch
@@ -1860,17 +1870,24 @@ class TestWelcomeTranscriptsRefreshBehavior:
         ctrl._scroll_transcripts_to_bottom.assert_not_called()
         ctrl._restore_transcripts_scroll_position.assert_not_called()
 
-    def test_refresh_transcripts_count_label_skips_duplicate_updates(self):
+    def test_refresh_transcripts_meta_state_skips_duplicate_count_updates(self):
         ctrl = WelcomeController.__new__(WelcomeController)
         ctrl._transcripts_count_label = _FakeTranscriptsCountLabel()
+        ctrl._transcripts_hint_label = _FakeTranscriptsCountLabel()
+        ctrl._transcripts_clear_btn = _FakeAppKitButton(enabled=True)
         ctrl._last_transcripts_count_text = None
 
-        ctrl._update_transcripts_count_label(5)
-        ctrl._update_transcripts_count_label(5)
-        ctrl._update_transcripts_count_label(1)
+        ctrl._update_transcripts_meta_state(5)
+        ctrl._update_transcripts_meta_state(5)
+        ctrl._update_transcripts_meta_state(1)
+        ctrl._update_transcripts_meta_state(0)
 
-        assert ctrl._transcripts_count_label.calls == 2
-        assert ctrl._transcripts_count_label.value == "1 recent transcription"
+        assert ctrl._transcripts_count_label.calls == 3
+        assert ctrl._transcripts_count_label.value == "No transcript history yet"
+        assert ctrl._transcripts_hint_label.value == (
+            "Stored locally on this device. Your next dictation will appear here automatically."
+        )
+        assert ctrl._transcripts_clear_btn.enabled is False
 
     def test_refresh_transcripts_preserves_scroll_position_when_not_near_bottom(
         self, monkeypatch
