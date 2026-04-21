@@ -29,6 +29,20 @@ def test_prompt_editor_feedback_handles_unsaved_custom_override() -> None:
     assert feedback.reset_enabled is True
 
 
+def test_prompt_editor_feedback_handles_saved_custom_state() -> None:
+    feedback = build_prompt_editor_state_feedback(
+        "email",
+        "custom email",
+        saved_text="custom email",
+        default_text="default email",
+    )
+
+    assert feedback.text == "Using a saved custom Email prompt."
+    assert feedback.color == "text_secondary"
+    assert feedback.save_enabled is False
+    assert feedback.reset_enabled is True
+
+
 def test_prompt_editor_feedback_handles_restored_default_from_custom_state() -> None:
     feedback = build_prompt_editor_state_feedback(
         "voice_commands",
