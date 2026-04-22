@@ -48,6 +48,12 @@ def build_logs_open_feedback(*, found_log: bool, destination: str) -> tuple[str,
 
 
 
+def build_logs_open_error_feedback(destination: str) -> tuple[str, str]:
+    place = _normalize_detail(destination) or "file browser"
+    return f"Could not open logs in {place}. Try again.", "error"
+
+
+
 def build_transcripts_load_error_text(error: object) -> str:
     detail = _normalize_detail(error)
     if detail:

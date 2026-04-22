@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from utils.custom_prompts import (
     get_prompt_editor_context_label,
+    get_prompt_editor_semantic_state,
     normalize_prompt_editor_context,
     parse_app_mappings,
 )
@@ -44,14 +45,6 @@ def _has_invalid_app_mapping_lines(text: str) -> bool:
     return len(parse_app_mappings(text)) < len(relevant_lines)
 
 
-def _semantic_editor_state(context: str, text: str | None) -> object:
-    context_key = normalize_prompt_editor_context(context)
-    normalized_text = _normalize_text(text)
-    if context_key == "app_mappings":
-        return tuple(sorted(parse_app_mappings(normalized_text).items()))
-    return normalized_text
-
-
 def build_prompt_editor_state_feedback(
     context: str | None,
     draft_text: str | None,
@@ -65,9 +58,9 @@ def build_prompt_editor_state_feedback(
     draft = _normalize_text(draft_text)
     saved = _normalize_text(saved_text)
     default = _normalize_text(default_text)
-    draft_state = _semantic_editor_state(context_key, draft)
-    saved_state = _semantic_editor_state(context_key, saved)
-    default_state = _semantic_editor_state(context_key, default)
+    draft_state = get_prompt_editor_semantic_state(context_key, draft)
+    saved_state = get_prompt_editor_semantic_state(context_key, saved)
+    default_state = get_prompt_editor_semantic_state(context_key, default)
 
     save_enabled = draft_state != saved_state
     reset_enabled = draft_state != default_state

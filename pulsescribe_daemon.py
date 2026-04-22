@@ -78,7 +78,7 @@ try:
     from utils.log_tail import read_file_tail_text
     from utils.timing import redacted_text_summary
     from ui import MenuBarController, OverlayController
-    from ui.daemon_status_feedback import build_daemon_status_label
+    from ui.daemon_status_feedback import build_daemon_status_label, infer_daemon_status_error
     from ui.menubar import build_menubar_title
 except Exception as e:
     emergency_log(f"CRITICAL IMPORT ERROR: {e}")
@@ -879,9 +879,10 @@ class PulseScribeDaemon:
 
     def _handle_worker_error(self, err: Exception) -> None:
         self._last_rtf = None  # RTF bei Fehler zurücksetzen
+        error_info = infer_daemon_status_error(err)
         error_text = build_daemon_status_label(
             AppState.ERROR,
-            str(err),
+            error_info or err,
             prefer_detail=True,
             max_chars=80,
         )
@@ -894,7 +895,7 @@ class PulseScribeDaemon:
         emergency_log(f"Worker Exception: {err}")  # Backup log
 
         # API-Key-Fehler als Pop-up anzeigen
-        if isinstance(err, ValueError):
+        if isinstance(err, ValueError) and error_text == "Missing API key":
             show_error_alert("API-Key fehlt", str(err))
 
         self._enter_error_state(error_text)

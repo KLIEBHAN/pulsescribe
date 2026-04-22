@@ -12,6 +12,7 @@ from ui.logs_panel_feedback import (
     build_logs_empty_state_text,
     build_logs_load_error_text,
     build_logs_manual_refresh_feedback,
+    build_logs_open_error_feedback,
     build_logs_open_feedback,
     build_transcripts_clear_feedback,
     build_transcripts_count_text,
@@ -72,6 +73,7 @@ from utils.vocabulary import (
 )
 from utils.custom_prompts import (
     PROMPT_EDITOR_CONTEXT_OPTIONS,
+    build_prompt_overrides_from_editor_state,
     get_prompt_editor_context_description,
     get_prompt_editor_context_label,
     normalize_prompt_editor_context,
@@ -4282,19 +4284,21 @@ class WelcomeController:
         found_log = bool(LOG_FILE.exists())
         try:
             if found_log:
-                subprocess.Popen(["open", "-R", str(LOG_FILE)])
+                result = subprocess.run(["open", "-R", str(LOG_FILE)], check=False)
             else:
-                subprocess.Popen(["open", str(LOG_FILE.parent)])
-            text, color = build_logs_open_feedback(
-                found_log=found_log,
-                destination="Finder",
-            )
+                result = subprocess.run(["open", str(LOG_FILE.parent)], check=False)
+
+            if getattr(result, "returncode", 1) == 0:
+                text, color = build_logs_open_feedback(
+                    found_log=found_log,
+                    destination="Finder",
+                )
+            else:
+                text, color = build_logs_open_error_feedback("Finder")
             self._set_footer_status(text, color)
         except Exception:
-            self._set_footer_status(
-                "Could not open logs in Finder. Try again.",
-                "error",
-            )
+            text, color = build_logs_open_error_feedback("Finder")
+            self._set_footer_status(text, color)
 
     def _get_logs_text(self, max_chars: int = WELCOME_LOG_MAX_CHARS) -> str:
         """Liest einen Ausschnitt der aktuellen Log-Datei."""
@@ -5392,17 +5396,12 @@ class WelcomeController:
             )
 
     def _save_custom_prompts(self) -> None:
-        """Speichert Custom Prompts und Voice Commands in prompts.toml.
-
-        WICHTIG: Lädt erst existierende Config und mergt Session-Änderungen,
-        um bereits gespeicherte Custom-Prompts nicht zu verlieren.
-        """
+        """Persist prompt-editor drafts while preserving untouched saved overrides."""
         import logging
 
         from utils.custom_prompts import (
-            KNOWN_CONTEXTS,
             filter_overrides_for_storage,
-            parse_app_mappings,
+            reset_to_defaults,
             save_custom_prompts_state,
         )
 
@@ -5411,127 +5410,54 @@ class WelcomeController:
         if not hasattr(self, "_prompts_text_view") or not self._prompts_text_view:
             return
 
-        # Aktuellen Kontext in Cache speichern
         current_ctx = getattr(self, "_prompts_current_context", "default")
         current_text = str(self._prompts_text_view.string())
         if not hasattr(self, "_prompts_cache"):
             self._prompts_cache = {}
         self._prompts_cache[current_ctx] = current_text
 
-        # Defaults und existierende Custom-Config laden
         defaults = self._get_prompt_defaults_data()
         existing = self._get_loaded_prompts_data()
-
-        # Mit existierenden Custom-Prompts starten, dann Session-Änderungen mergen
-        merged_prompts: dict = {}
-        for ctx in KNOWN_CONTEXTS:
-            default_prompt = defaults["prompts"].get(ctx, {}).get("prompt", "")
-            existing_prompt = existing["prompts"].get(ctx, {}).get("prompt", "")
-            cached_prompt = self._prompts_cache.get(ctx)
-
-            if cached_prompt is not None:
-                # User hat diesen Kontext in dieser Session bearbeitet
-                if cached_prompt != default_prompt:
-                    merged_prompts[ctx] = {"prompt": cached_prompt}
-                # else: User hat auf Default zurückgesetzt → nicht speichern
-            elif existing_prompt != default_prompt:
-                # User hat diesen Kontext nicht angefasst → existierenden behalten
-                merged_prompts[ctx] = {"prompt": existing_prompt}
-
-        # Voice Commands: gleiche Logik
-        merged_vc: dict = {}
-        vc_key = "voice_commands"
-        cached_vc = self._prompts_cache.get(vc_key)
-        default_vc = defaults["voice_commands"]["instruction"]
-        existing_vc = existing["voice_commands"]["instruction"]
-
-        if cached_vc is not None:
-            # User hat Voice Commands in dieser Session bearbeitet
-            if cached_vc != default_vc:
-                merged_vc = {"instruction": cached_vc}
-            # else: User hat auf Default zurückgesetzt → nicht speichern
-        elif existing_vc != default_vc:
-            # User hat nicht angefasst → existierenden behalten
-            merged_vc = {"instruction": existing_vc}
-
-        # App Mappings: Session > Existierend > Default
-        merged_app_contexts: dict = {}
-        app_key = "app_mappings"
-        cached_apps = self._prompts_cache.get(app_key)
-        default_apps = defaults["app_contexts"]
-        existing_apps = existing["app_contexts"]
-
-        if cached_apps is not None:
-            parsed_apps = parse_app_mappings(cached_apps)
-            if parsed_apps != default_apps:
-                merged_app_contexts = parsed_apps
-        elif existing_apps != default_apps:
-            merged_app_contexts = existing_apps
-
         existing_overrides = filter_overrides_for_storage(existing, defaults=defaults)
+        data_to_save = build_prompt_overrides_from_editor_state(
+            existing=existing,
+            drafts=getattr(self, "_prompts_cache", {}),
+            contexts=set(getattr(self, "_prompts_cache", {}).keys()),
+            defaults=defaults,
+        )
 
-        # Speichern oder Datei löschen
-        if merged_prompts or merged_vc or merged_app_contexts:
-            # Es gibt Custom-Werte → speichern
-            data_to_save: dict = {}
-            if merged_prompts:
-                data_to_save["prompts"] = merged_prompts
-            if merged_vc:
-                data_to_save["voice_commands"] = merged_vc
-            if merged_app_contexts:
-                data_to_save["app_contexts"] = merged_app_contexts
+        if data_to_save == existing_overrides:
+            log.info("Custom prompts unchanged, skipped prompts.toml rewrite")
+            if hasattr(self, "_prompts_status_label") and self._prompts_status_label:
+                self._prompts_status_label.setStringValue_("✓ Prompts unchanged")
+            self._refresh_prompt_editor_feedback()
+            return
 
-            if data_to_save == existing_overrides:
-                log.info("Custom prompts unchanged, skipped prompts.toml rewrite")
-                if (
-                    hasattr(self, "_prompts_status_label")
-                    and self._prompts_status_label
-                ):
-                    self._prompts_status_label.setStringValue_("✓ Prompts unchanged")
-                self._refresh_prompt_editor_feedback()
-                return
-
+        if data_to_save:
             try:
                 self._prompts_loaded_data = save_custom_prompts_state(data_to_save)
-                saved_items = list(merged_prompts.keys())
-                if merged_vc:
+                saved_items = sorted(data_to_save.get("prompts", {}).keys())
+                if "voice_commands" in data_to_save:
                     saved_items.append("Voice Commands")
-                if merged_app_contexts:
+                if "app_contexts" in data_to_save:
                     saved_items.append("App Mappings")
                 log.info(f"Saved custom prompts for: {saved_items}")
-                if (
-                    hasattr(self, "_prompts_status_label")
-                    and self._prompts_status_label
-                ):
+                if hasattr(self, "_prompts_status_label") and self._prompts_status_label:
                     self._prompts_status_label.setStringValue_("✓ Prompts saved")
                 self._refresh_prompt_editor_feedback()
             except Exception as e:
                 log.warning(f"Could not save custom prompts: {e}")
-                if (
-                    hasattr(self, "_prompts_status_label")
-                    and self._prompts_status_label
-                ):
+                if hasattr(self, "_prompts_status_label") and self._prompts_status_label:
                     self._prompts_status_label.setStringValue_(f"Error: {e}")
                 self._refresh_prompt_editor_feedback()
-        else:
-            if not existing_overrides:
-                log.info("Custom prompts unchanged, defaults already active")
-                if (
-                    hasattr(self, "_prompts_status_label")
-                    and self._prompts_status_label
-                ):
-                    self._prompts_status_label.setStringValue_("✓ Prompts unchanged")
-                self._refresh_prompt_editor_feedback()
-                return
-            # Alles auf Default → Datei löschen falls vorhanden
-            from utils.custom_prompts import reset_to_defaults
+            return
 
-            reset_to_defaults()
-            self._get_loaded_prompts_data(force=True)
-            log.info("All prompts reset to defaults, removed prompts.toml")
-            if hasattr(self, "_prompts_status_label") and self._prompts_status_label:
-                self._prompts_status_label.setStringValue_("✓ Reset to defaults")
-            self._refresh_prompt_editor_feedback()
+        reset_to_defaults()
+        self._get_loaded_prompts_data(force=True)
+        log.info("All prompts reset to defaults, removed prompts.toml")
+        if hasattr(self, "_prompts_status_label") and self._prompts_status_label:
+            self._prompts_status_label.setStringValue_("✓ Reset to defaults")
+        self._refresh_prompt_editor_feedback()
 
     def _restart_application(self) -> None:
         """Speichert Settings und startet die Applikation neu."""

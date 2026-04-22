@@ -1,9 +1,10 @@
-from utils.state import AppState
+from utils.state import AppState, DaemonErrorCode, DaemonStatusError
 
 from ui.daemon_status_feedback import (
     build_daemon_status_hint,
     build_daemon_status_label,
     build_daemon_tray_title,
+    infer_daemon_status_error,
     normalize_daemon_status_text,
 )
 
@@ -79,6 +80,18 @@ def test_build_daemon_status_helpers_classify_invalid_provider_configuration() -
         )
         == "Open Setup & Settings, choose a supported provider, then try again."
     )
+
+
+
+def test_build_daemon_status_helpers_accept_structured_error_codes() -> None:
+    error = DaemonStatusError(DaemonErrorCode.INVALID_PROVIDER, "Unbekannter Provider: foo")
+
+    assert build_daemon_status_label(AppState.ERROR, error) == "Invalid provider setting"
+    assert (
+        build_daemon_status_hint(AppState.ERROR, error)
+        == "Open Setup & Settings, choose a supported provider, then try again."
+    )
+    assert infer_daemon_status_error(error) == error
 
 
 

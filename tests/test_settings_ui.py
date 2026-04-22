@@ -1439,6 +1439,7 @@ class TestWelcomeLogFinder:
         self, tmp_path, monkeypatch
     ):
         import ui.welcome as welcome_mod
+        from types import SimpleNamespace
 
         log_file = tmp_path / "pulsescribe.log"
         log_file.write_text("hello", encoding="utf-8")
@@ -1446,8 +1447,8 @@ class TestWelcomeLogFinder:
 
         calls: list[list[str]] = []
         monkeypatch.setattr(
-            "subprocess.Popen",
-            lambda cmd: calls.append(cmd),
+            "subprocess.run",
+            lambda cmd, check=False: calls.append(cmd) or SimpleNamespace(returncode=0),
         )
 
         footer_calls: list[tuple[str, str]] = []
@@ -1464,14 +1465,15 @@ class TestWelcomeLogFinder:
         self, tmp_path, monkeypatch
     ):
         import ui.welcome as welcome_mod
+        from types import SimpleNamespace
 
         log_file = tmp_path / "pulsescribe.log"
         monkeypatch.setattr(welcome_mod, "LOG_FILE", log_file)
 
         calls: list[list[str]] = []
         monkeypatch.setattr(
-            "subprocess.Popen",
-            lambda cmd: calls.append(cmd),
+            "subprocess.run",
+            lambda cmd, check=False: calls.append(cmd) or SimpleNamespace(returncode=0),
         )
 
         footer_calls: list[tuple[str, str]] = []
@@ -1483,6 +1485,29 @@ class TestWelcomeLogFinder:
 
         assert calls == [["open", str(log_file.parent)]]
         assert footer_calls == [("Opened logs folder in Finder.", "success")]
+
+    def test_open_logs_in_finder_reports_error_when_open_fails(
+        self, tmp_path, monkeypatch
+    ):
+        import ui.welcome as welcome_mod
+        from types import SimpleNamespace
+
+        log_file = tmp_path / "pulsescribe.log"
+        log_file.write_text("hello", encoding="utf-8")
+        monkeypatch.setattr(welcome_mod, "LOG_FILE", log_file)
+        monkeypatch.setattr(
+            "subprocess.run",
+            lambda cmd, check=False: SimpleNamespace(returncode=1),
+        )
+
+        footer_calls: list[tuple[str, str]] = []
+        ctrl = WelcomeController.__new__(WelcomeController)
+        ctrl._set_footer_status = lambda text, color="text_secondary": footer_calls.append(
+            (text, color)
+        )
+        ctrl._open_logs_in_finder()
+
+        assert footer_calls == [("Could not open logs in Finder. Try again.", "error")]
 
     def test_get_logs_text_uses_clear_empty_state_copy(self, tmp_path, monkeypatch):
         import ui.welcome as welcome_mod

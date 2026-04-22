@@ -915,6 +915,47 @@ class TestMergeBehavior:
         assert result["prompts"]["code"]["prompt"] == CONTEXT_PROMPTS["code"]
 
 
+class TestPromptEditorStateHelpers:
+    def test_get_prompt_editor_semantic_state_normalizes_app_mapping_comments(self):
+        from utils.custom_prompts import get_prompt_editor_semantic_state
+
+        left = "# App → Context Mappings (one per line: AppName = context)\nMail = email"
+        right = left + "\n# personal note"
+
+        assert get_prompt_editor_semantic_state("app_mappings", left) == (
+            get_prompt_editor_semantic_state("app_mappings", right)
+        )
+
+    def test_build_prompt_overrides_from_editor_state_keeps_untouched_overrides(self):
+        from utils.custom_prompts import build_prompt_overrides_from_editor_state, get_defaults
+
+        defaults = get_defaults()
+        existing = {
+            "voice_commands": {"instruction": defaults["voice_commands"]["instruction"]},
+            "prompts": {
+                "default": {"prompt": defaults["prompts"]["default"]["prompt"]},
+                "email": {"prompt": "Custom email prompt"},
+                "chat": {"prompt": defaults["prompts"]["chat"]["prompt"]},
+                "code": {"prompt": defaults["prompts"]["code"]["prompt"]},
+            },
+            "app_contexts": dict(defaults["app_contexts"]),
+        }
+
+        overrides = build_prompt_overrides_from_editor_state(
+            existing=existing,
+            drafts={"default": "Edited default prompt"},
+            contexts=["default"],
+            defaults=defaults,
+        )
+
+        assert overrides == {
+            "prompts": {
+                "default": {"prompt": "Edited default prompt"},
+                "email": {"prompt": "Custom email prompt"},
+            }
+        }
+
+
 class TestParseAppMappings:
     """Tests für parse_app_mappings() Edge Cases."""
 

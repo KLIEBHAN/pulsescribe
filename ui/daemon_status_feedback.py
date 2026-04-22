@@ -8,7 +8,7 @@ without changing daemon behavior.
 
 from __future__ import annotations
 
-from utils.state import AppState
+from utils.state import AppState, DaemonErrorCode, DaemonStatusError
 
 DEFAULT_DAEMON_STATUS_LABELS = {
     AppState.IDLE: "Ready to dictate",
@@ -37,6 +37,34 @@ DEFAULT_DAEMON_HINTS = {
     ),
 }
 
+ERROR_CODE_LABELS = {
+    DaemonErrorCode.MISSING_API_KEY: "Missing API key",
+    DaemonErrorCode.BUSY: "PulseScribe is busy",
+    DaemonErrorCode.TIMEOUT: "Transcription timed out",
+    DaemonErrorCode.INVALID_PROVIDER: "Invalid provider setting",
+    DaemonErrorCode.INPUT_MONITORING: "Input monitoring needed",
+    DaemonErrorCode.ACCESSIBILITY_PERMISSION: "Accessibility permission needed",
+    DaemonErrorCode.MICROPHONE_PERMISSION: "Microphone permission needed",
+    DaemonErrorCode.MICROPHONE_UNAVAILABLE: "Microphone unavailable",
+    DaemonErrorCode.CONNECTION: "Could not reach the transcription service",
+    DaemonErrorCode.MISSING_DEPENDENCY: "Missing dependency",
+}
+
+ERROR_CODE_HINTS = {
+    DaemonErrorCode.MISSING_API_KEY: "Add the required key in Setup & Settings, then try again.",
+    DaemonErrorCode.BUSY: "Wait a moment for the current task to finish, then try again.",
+    DaemonErrorCode.TIMEOUT: (
+        "PulseScribe will return to ready automatically. Export diagnostics or open Setup if it repeats."
+    ),
+    DaemonErrorCode.INVALID_PROVIDER: "Open Setup & Settings, choose a supported provider, then try again.",
+    DaemonErrorCode.INPUT_MONITORING: "Open Setup & Settings, grant the missing permission, then try again.",
+    DaemonErrorCode.ACCESSIBILITY_PERMISSION: "Open Setup & Settings, grant the missing permission, then try again.",
+    DaemonErrorCode.MICROPHONE_PERMISSION: "Open Setup & Settings, allow microphone access, then try again.",
+    DaemonErrorCode.MICROPHONE_UNAVAILABLE: "Check microphone access and the selected input device, then try again.",
+    DaemonErrorCode.CONNECTION: "Check your internet connection or provider status, then try again.",
+    DaemonErrorCode.MISSING_DEPENDENCY: "Install the missing dependency or switch providers in Setup & Settings.",
+}
+
 
 def _normalize_state(state: AppState | str | None) -> AppState:
     if isinstance(state, AppState):
@@ -52,6 +80,18 @@ def _normalize_state(state: AppState | str | None) -> AppState:
 def normalize_daemon_status_text(text: str | None) -> str:
     """Collapse whitespace so titles and hints stay readable."""
     return " ".join((text or "").replace("\n", " ").split())
+
+
+
+def _normalize_error_input(
+    value: DaemonStatusError | Exception | str | None,
+) -> tuple[DaemonErrorCode | None, str]:
+    if isinstance(value, DaemonStatusError):
+        return value.code, normalize_daemon_status_text(value.detail)
+    if isinstance(value, Exception):
+        return None, normalize_daemon_status_text(str(value))
+    return None, normalize_daemon_status_text(value)
+
 
 
 def _truncate_status_text(text: str, max_chars: int) -> str:
@@ -121,6 +161,67 @@ def _contains_dependency_error(text: str) -> bool:
     )
 
 
+
+def infer_daemon_status_error(
+    value: DaemonStatusError | Exception | str | None,
+) -> DaemonStatusError | None:
+    """Return a structured daemon error when one common category is recognized."""
+    if isinstance(value, DaemonStatusError):
+        return value
+
+    _code, detail = _normalize_error_input(value)
+    if not detail:
+        return None
+
+    detail_lower = detail.lower()
+    if _contains_any(
+        detail_lower,
+        (
+            "api key",
+            "_api_key",
+            "deepgram_api_key",
+            "openai_api_key",
+            "groq_api_key",
+            "openrouter_api_key",
+            "gemini_api_key",
+        ),
+    ):
+        return DaemonStatusError(DaemonErrorCode.MISSING_API_KEY, detail)
+    if _contains_any(detail_lower, ("busy", "already recording", "still running")):
+        return DaemonStatusError(DaemonErrorCode.BUSY, detail)
+    if _contains_any(detail_lower, ("timeout", "timed out", "watchdog", "no final response")):
+        return DaemonStatusError(DaemonErrorCode.TIMEOUT, detail)
+    if _contains_provider_config_error(detail_lower):
+        return DaemonStatusError(DaemonErrorCode.INVALID_PROVIDER, detail)
+    if _contains_any(detail_lower, ("input monitoring",)):
+        return DaemonStatusError(DaemonErrorCode.INPUT_MONITORING, detail)
+    if _contains_any(detail_lower, ("accessibility", "assistive access", "access permission")):
+        return DaemonStatusError(DaemonErrorCode.ACCESSIBILITY_PERMISSION, detail)
+    if _contains_any(detail_lower, ("microphone", "mic")) and _contains_any(
+        detail_lower,
+        ("permission", "denied", "not permitted", "not allowed", "access"),
+    ):
+        return DaemonStatusError(DaemonErrorCode.MICROPHONE_PERMISSION, detail)
+    if _contains_any(
+        detail_lower,
+        (
+            "microphone",
+            "mic",
+            "input device",
+            "audio",
+            "sounddevice",
+            "wasapi",
+        ),
+    ):
+        return DaemonStatusError(DaemonErrorCode.MICROPHONE_UNAVAILABLE, detail)
+    if _contains_connection_error(detail_lower):
+        return DaemonStatusError(DaemonErrorCode.CONNECTION, detail)
+    if _contains_dependency_error(detail_lower):
+        return DaemonStatusError(DaemonErrorCode.MISSING_DEPENDENCY, detail)
+    return DaemonStatusError(DaemonErrorCode.UNKNOWN, detail)
+
+
+
 def _build_loading_label(detail: str, *, prefer_detail: bool) -> str:
     if not detail:
         return DEFAULT_DAEMON_STATUS_LABELS[AppState.LOADING]
@@ -166,68 +267,28 @@ def _build_no_speech_label(detail: str) -> str:
     return detail.rstrip(".")
 
 
-def _build_error_label(detail: str) -> str:
-    if not detail:
+def _build_error_label(detail: DaemonStatusError | Exception | str | None) -> str:
+    error_info = infer_daemon_status_error(detail)
+    if error_info is None:
         return DEFAULT_DAEMON_STATUS_LABELS[AppState.ERROR]
-
-    detail_lower = detail.lower()
-    if _contains_any(
-        detail_lower,
-        (
-            "api key",
-            "_api_key",
-            "deepgram_api_key",
-            "openai_api_key",
-            "groq_api_key",
-            "openrouter_api_key",
-            "gemini_api_key",
-        ),
-    ):
-        return "Missing API key"
-    if _contains_any(detail_lower, ("busy", "already recording", "still running")):
-        return "PulseScribe is busy"
-    if _contains_any(detail_lower, ("timeout", "timed out", "watchdog", "no final response")):
-        return "Transcription timed out"
-    if _contains_provider_config_error(detail_lower):
-        return "Invalid provider setting"
-    if _contains_any(detail_lower, ("input monitoring",)):
-        return "Input monitoring needed"
-    if _contains_any(detail_lower, ("accessibility", "assistive access", "access permission")):
-        return "Accessibility permission needed"
-    if _contains_any(detail_lower, ("microphone", "mic")) and _contains_any(
-        detail_lower,
-        ("permission", "denied", "not permitted", "not allowed", "access"),
-    ):
-        return "Microphone permission needed"
-    if _contains_any(
-        detail_lower,
-        (
-            "microphone",
-            "mic",
-            "input device",
-            "audio",
-            "sounddevice",
-            "wasapi",
-        ),
-    ):
-        return "Microphone unavailable"
-    if _contains_connection_error(detail_lower):
-        return "Could not reach the transcription service"
-    if _contains_dependency_error(detail_lower):
-        return "Missing dependency"
-    return detail
+    if error_info.code == DaemonErrorCode.UNKNOWN:
+        return error_info.detail or DEFAULT_DAEMON_STATUS_LABELS[AppState.ERROR]
+    return ERROR_CODE_LABELS.get(
+        error_info.code,
+        error_info.detail or DEFAULT_DAEMON_STATUS_LABELS[AppState.ERROR],
+    )
 
 
 def build_daemon_status_label(
     state: AppState | str | None,
-    text: str | None = None,
+    text: DaemonStatusError | Exception | str | None = None,
     *,
     prefer_detail: bool = True,
     max_chars: int = 80,
 ) -> str:
     """Return a concise, user-facing status label for non-overlay surfaces."""
     normalized_state = _normalize_state(state)
-    detail = normalize_daemon_status_text(text)
+    detail = normalize_daemon_status_text(str(text or ""))
 
     if normalized_state == AppState.RECORDING and prefer_detail and detail:
         return _truncate_status_text(f"Recording: {detail}", max_chars)
@@ -258,13 +319,13 @@ def build_daemon_status_label(
 
 def build_daemon_status_hint(
     state: AppState | str | None,
-    text: str | None = None,
+    text: DaemonStatusError | Exception | str | None = None,
     *,
     max_chars: int = 120,
 ) -> str:
     """Return contextual guidance or recovery help for a daemon state."""
     normalized_state = _normalize_state(state)
-    detail = normalize_daemon_status_text(text)
+    detail = normalize_daemon_status_text(str(text or ""))
     detail_lower = detail.lower()
 
     if normalized_state == AppState.LOADING:
@@ -298,51 +359,9 @@ def build_daemon_status_hint(
         return _truncate_status_text(hint, max_chars)
 
     if normalized_state == AppState.ERROR:
-        if _contains_any(
-            detail_lower,
-            (
-                "api key",
-                "_api_key",
-                "deepgram_api_key",
-                "openai_api_key",
-                "groq_api_key",
-                "openrouter_api_key",
-                "gemini_api_key",
-            ),
-        ):
-            hint = "Add the required key in Setup & Settings, then try again."
-        elif _contains_any(detail_lower, ("busy", "already recording", "still running")):
-            hint = "Wait a moment for the current task to finish, then try again."
-        elif _contains_any(detail_lower, ("timeout", "timed out", "watchdog", "no final response")):
-            hint = (
-                "PulseScribe will return to ready automatically. Export diagnostics "
-                "or open Setup if it repeats."
-            )
-        elif _contains_provider_config_error(detail_lower):
-            hint = "Open Setup & Settings, choose a supported provider, then try again."
-        elif _contains_any(detail_lower, ("input monitoring", "accessibility", "assistive access", "access permission")):
-            hint = "Open Setup & Settings, grant the missing permission, then try again."
-        elif _contains_any(detail_lower, ("microphone", "mic")) and _contains_any(
-            detail_lower,
-            ("permission", "denied", "not permitted", "not allowed", "access"),
-        ):
-            hint = "Open Setup & Settings, allow microphone access, then try again."
-        elif _contains_any(
-            detail_lower,
-            (
-                "microphone",
-                "mic",
-                "input device",
-                "audio",
-                "sounddevice",
-                "wasapi",
-            ),
-        ):
-            hint = "Check microphone access and the selected input device, then try again."
-        elif _contains_connection_error(detail_lower):
-            hint = "Check your internet connection or provider status, then try again."
-        elif _contains_dependency_error(detail_lower):
-            hint = "Install the missing dependency or switch providers in Setup & Settings."
+        error_info = infer_daemon_status_error(text)
+        if error_info is not None and error_info.code in ERROR_CODE_HINTS:
+            hint = ERROR_CODE_HINTS[error_info.code]
         else:
             hint = DEFAULT_DAEMON_HINTS[AppState.ERROR]
         return _truncate_status_text(hint, max_chars)
@@ -356,7 +375,7 @@ def build_daemon_status_hint(
 
 def build_daemon_tray_title(
     state: AppState | str | None,
-    text: str | None = None,
+    text: DaemonStatusError | Exception | str | None = None,
     *,
     app_name: str = "PulseScribe",
     max_chars: int = 128,
@@ -385,5 +404,6 @@ __all__ = [
     "build_daemon_status_hint",
     "build_daemon_status_label",
     "build_daemon_tray_title",
+    "infer_daemon_status_error",
     "normalize_daemon_status_text",
 ]

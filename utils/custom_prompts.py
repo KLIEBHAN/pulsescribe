@@ -401,6 +401,83 @@ def get_prompt_editor_text(
     return text
 
 
+PROMPT_EDITOR_CONTEXT_KEYS = (*KNOWN_CONTEXTS, "voice_commands", "app_mappings")
+
+
+
+def get_prompt_editor_semantic_state(context: str | None, text: str | None) -> object:
+    """Return one normalized editor state suitable for dirty/no-op comparisons."""
+    normalized_context = normalize_prompt_editor_context(context)
+    normalized_text = str(text or "")
+    if normalized_context == "app_mappings":
+        return tuple(sorted(parse_app_mappings(normalized_text).items()))
+    return normalized_text
+
+
+
+def apply_prompt_editor_text(
+    data: dict,
+    *,
+    context: str | None,
+    text: str | None,
+) -> dict:
+    """Return prompt data with one editor draft applied using storage semantics."""
+    normalized_context = normalize_prompt_editor_context(context)
+    normalized_text = str(text or "")
+    next_data = _copy_prompt_data(data)
+
+    if normalized_context == "voice_commands":
+        next_data["voice_commands"] = {"instruction": normalized_text}
+        return next_data
+
+    if normalized_context == "app_mappings":
+        next_data["app_contexts"] = parse_app_mappings(normalized_text)
+        return next_data
+
+    prompts = dict(_get_section_mapping(next_data, "prompts"))
+    prompts[normalized_context] = {"prompt": normalized_text}
+    next_data["prompts"] = prompts
+    return next_data
+
+
+
+def build_prompt_overrides_from_editor_state(
+    *,
+    existing: dict,
+    drafts: dict[str, str] | None,
+    contexts: list[str] | tuple[str, ...] | set[str] | None = None,
+    defaults: dict | None = None,
+) -> dict:
+    """Build canonical prompt overrides from one set of editor drafts.
+
+    ``existing`` is expected to be the merged prompt state (defaults + saved
+    overrides). ``drafts`` contains raw editor text keyed by UI context.
+    ``contexts`` limits which drafts should be applied; omitted contexts keep
+    their existing saved value.
+    """
+    baseline = defaults or get_defaults()
+    normalized_drafts = {
+        normalize_prompt_editor_context(context): str(text or "")
+        for context, text in (drafts or {}).items()
+    }
+    normalized_contexts = [
+        normalize_prompt_editor_context(context)
+        for context in (contexts if contexts is not None else normalized_drafts.keys())
+    ]
+
+    next_data = _copy_prompt_data(existing)
+    for context in normalized_contexts:
+        if context not in normalized_drafts:
+            continue
+        next_data = apply_prompt_editor_text(
+            next_data,
+            context=context,
+            text=normalized_drafts[context],
+        )
+
+    return filter_overrides_for_storage(next_data, defaults=baseline)
+
+
 # =============================================================================
 # App-Mappings: Text-Format für UI-Editor
 # =============================================================================
@@ -627,11 +704,15 @@ __all__ = [
     "get_custom_app_contexts",
     # App-Mappings / Editor-Format
     "PROMPT_EDITOR_CONTEXT_OPTIONS",
+    "PROMPT_EDITOR_CONTEXT_KEYS",
     "get_prompt_editor_text",
     "get_prompt_editor_context_label",
     "get_prompt_editor_context_description",
     "get_prompt_editor_placeholder",
+    "get_prompt_editor_semantic_state",
     "normalize_prompt_editor_context",
+    "apply_prompt_editor_text",
+    "build_prompt_overrides_from_editor_state",
     "format_app_mappings",
     "parse_app_mappings",
     # Speichern/Reset

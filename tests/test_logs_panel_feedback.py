@@ -2,6 +2,7 @@ from ui.logs_panel_feedback import (
     build_logs_empty_state_text,
     build_logs_load_error_text,
     build_logs_manual_refresh_feedback,
+    build_logs_open_error_feedback,
     build_logs_open_feedback,
     build_transcripts_clear_feedback,
     build_transcripts_count_text,
@@ -52,6 +53,10 @@ def test_build_logs_open_feedback_handles_file_and_folder() -> None:
     assert build_logs_open_feedback(found_log=False, destination="Explorer") == (
         "Opened logs folder in Explorer.",
         "success",
+    )
+    assert build_logs_open_error_feedback("Finder") == (
+        "Could not open logs in Finder. Try again.",
+        "error",
     )
 
 

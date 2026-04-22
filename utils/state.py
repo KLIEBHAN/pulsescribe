@@ -22,6 +22,29 @@ class MessageType(Enum):
     ERROR = auto()
 
 
+class DaemonErrorCode(str, Enum):
+    MISSING_API_KEY = "missing_api_key"
+    BUSY = "busy"
+    TIMEOUT = "timeout"
+    INVALID_PROVIDER = "invalid_provider"
+    INPUT_MONITORING = "input_monitoring"
+    ACCESSIBILITY_PERMISSION = "accessibility_permission"
+    MICROPHONE_PERMISSION = "microphone_permission"
+    MICROPHONE_UNAVAILABLE = "microphone_unavailable"
+    CONNECTION = "connection"
+    MISSING_DEPENDENCY = "missing_dependency"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class DaemonStatusError:
+    code: DaemonErrorCode
+    detail: str | None = None
+
+    def __str__(self) -> str:
+        return self.detail or self.code.value
+
+
 @dataclass
 class DaemonMessage:
     type: MessageType

@@ -38,6 +38,7 @@ from ui.logs_panel_feedback import (
     build_logs_empty_state_text,
     build_logs_load_error_text,
     build_logs_manual_refresh_feedback,
+    build_logs_open_error_feedback,
     build_logs_open_feedback,
     build_transcripts_clear_feedback,
     build_transcripts_count_text,
@@ -103,9 +104,11 @@ from utils.version import get_app_version
 from utils.env import parse_bool
 from utils.custom_prompts import (
     PROMPT_EDITOR_CONTEXT_OPTIONS,
+    build_prompt_overrides_from_editor_state,
     get_prompt_editor_context_description,
     get_prompt_editor_context_label,
     get_prompt_editor_placeholder,
+    get_prompt_editor_semantic_state,
     normalize_prompt_editor_context,
 )
 from utils.vocabulary import analyze_vocabulary_text
@@ -2263,8 +2266,10 @@ class SettingsWindow(QDialog):
             if baseline_text is not None
             else self._get_prompt_text_for_context(context_key)
         )
+        draft_state = get_prompt_editor_semantic_state(context_key, text)
+        baseline_state = get_prompt_editor_semantic_state(context_key, baseline)
 
-        if text == baseline:
+        if draft_state == baseline_state:
             self._dirty_prompt_contexts.discard(context_key)
             return
 
@@ -3260,7 +3265,6 @@ class SettingsWindow(QDialog):
         try:
             from utils.custom_prompts import (
                 filter_overrides_for_storage,
-                parse_app_mappings,
                 save_custom_prompts_state,
             )
 
@@ -3277,17 +3281,11 @@ class SettingsWindow(QDialog):
 
             data = self._get_loaded_prompts_data()
             existing_overrides = filter_overrides_for_storage(data)
-
-            if context == "voice_commands":
-                data["voice_commands"] = {"instruction": text}
-            elif context == "app_mappings":
-                data["app_contexts"] = parse_app_mappings(text)
-            else:
-                if "prompts" not in data:
-                    data["prompts"] = {}
-                data["prompts"][context] = {"prompt": text}
-
-            next_overrides = filter_overrides_for_storage(data)
+            next_overrides = build_prompt_overrides_from_editor_state(
+                existing=data,
+                drafts={context: text},
+                contexts=[context],
+            )
             if next_overrides == existing_overrides:
                 self._dirty_prompt_contexts.discard(context)
                 self._set_prompt_status(f"No changes to save for {label}.", "text_secondary")
@@ -3352,26 +3350,16 @@ class SettingsWindow(QDialog):
 
             from utils.custom_prompts import (
                 filter_overrides_for_storage,
-                parse_app_mappings,
                 save_custom_prompts_state,
             )
 
             data = self._get_loaded_prompts_data()
             existing_overrides = filter_overrides_for_storage(data)
-
-            # Nur tatsächlich veränderte Kontexte mergen.
-            for context in dirty_contexts:
-                text = self._prompts_cache.get(context, "")
-                if context == "voice_commands":
-                    data["voice_commands"] = {"instruction": text}
-                elif context == "app_mappings":
-                    data["app_contexts"] = parse_app_mappings(text)
-                else:
-                    if "prompts" not in data:
-                        data["prompts"] = {}
-                    data["prompts"][context] = {"prompt": text}
-
-            next_overrides = filter_overrides_for_storage(data)
+            next_overrides = build_prompt_overrides_from_editor_state(
+                existing=data,
+                drafts=getattr(self, "_prompts_cache", {}),
+                contexts=dirty_contexts,
+            )
             if next_overrides == existing_overrides:
                 self._dirty_prompt_contexts.difference_update(dirty_contexts)
                 logger.info("Prompts unverändert, prompts.toml rewrite übersprungen")
@@ -4032,17 +4020,25 @@ class SettingsWindow(QDialog):
 
             found_log = bool(LOG_FILE.exists())
             if found_log:
-                subprocess.run(["explorer", "/select,", str(LOG_FILE)], check=False)
+                result = subprocess.run(
+                    ["explorer", "/select,", str(LOG_FILE)],
+                    check=False,
+                )
             else:
-                subprocess.run(["explorer", str(LOG_FILE.parent)], check=False)
-            text, color = build_logs_open_feedback(
-                found_log=found_log,
-                destination="Explorer",
-            )
+                result = subprocess.run(["explorer", str(LOG_FILE.parent)], check=False)
+
+            if getattr(result, "returncode", 1) == 0:
+                text, color = build_logs_open_feedback(
+                    found_log=found_log,
+                    destination="Explorer",
+                )
+            else:
+                text, color = build_logs_open_error_feedback("Explorer")
             self._set_footer_status(text, color)
         except Exception as e:
             logger.error(f"Explorer öffnen fehlgeschlagen: {e}")
-            self._set_footer_status("Could not open logs in Explorer. Try again.", "error")
+            text, color = build_logs_open_error_feedback("Explorer")
+            self._set_footer_status(text, color)
 
     # =========================================================================
     # Settings Load/Save

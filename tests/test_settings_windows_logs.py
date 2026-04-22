@@ -138,6 +138,7 @@ class _FakeGrowingLogsViewer(_FakeLogsViewer):
 def test_open_logs_folder_selects_log_file_when_present(tmp_path, monkeypatch):
     import config
     import subprocess
+    from types import SimpleNamespace
 
     log_file = tmp_path / "pulsescribe.log"
     log_file.write_text("hello", encoding="utf-8")
@@ -147,7 +148,7 @@ def test_open_logs_folder_selects_log_file_when_present(tmp_path, monkeypatch):
     monkeypatch.setattr(
         subprocess,
         "run",
-        lambda cmd, check=False: calls.append(cmd),
+        lambda cmd, check=False: calls.append(cmd) or SimpleNamespace(returncode=0),
     )
 
     window = SettingsWindow.__new__(SettingsWindow)
@@ -163,6 +164,7 @@ def test_open_logs_folder_falls_back_to_parent_folder_when_log_missing(
 ):
     import config
     import subprocess
+    from types import SimpleNamespace
 
     log_file = tmp_path / "pulsescribe.log"
 
@@ -171,7 +173,7 @@ def test_open_logs_folder_falls_back_to_parent_folder_when_log_missing(
     monkeypatch.setattr(
         subprocess,
         "run",
-        lambda cmd, check=False: calls.append(cmd),
+        lambda cmd, check=False: calls.append(cmd) or SimpleNamespace(returncode=0),
     )
 
     window = SettingsWindow.__new__(SettingsWindow)
@@ -180,6 +182,28 @@ def test_open_logs_folder_falls_back_to_parent_folder_when_log_missing(
 
     assert calls == [["explorer", str(log_file.parent)]]
     assert window._footer_status_label.text == "Opened logs folder in Explorer."
+
+
+def test_open_logs_folder_reports_error_when_explorer_fails(tmp_path, monkeypatch):
+    import config
+    import subprocess
+    from types import SimpleNamespace
+
+    log_file = tmp_path / "pulsescribe.log"
+    log_file.write_text("hello", encoding="utf-8")
+
+    monkeypatch.setattr(config, "LOG_FILE", log_file)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, check=False: SimpleNamespace(returncode=1),
+    )
+
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._footer_status_label = _FakeLabel()
+    window._open_logs_folder()
+
+    assert window._footer_status_label.text == "Could not open logs in Explorer. Try again."
 
 
 def test_refresh_transcripts_resets_cached_state_when_history_file_is_missing(

@@ -256,6 +256,21 @@ def test_refresh_prompt_editor_feedback_updates_state_label_buttons_and_accessib
     assert "Unsaved changes to Email prompt." in window._prompt_editor.accessible_description
 
 
+
+def test_cache_prompt_text_treats_comment_only_app_mapping_edits_as_clean() -> None:
+    window = _make_window()
+    baseline = "# App → Context Mappings (one per line: AppName = context)\nMail = email"
+
+    window._cache_prompt_text(
+        "app_mappings",
+        baseline + "\n# personal note",
+        baseline_text=baseline,
+    )
+
+    assert window._dirty_prompt_contexts == set()
+
+
+
 def test_refresh_vocabulary_action_buttons_disables_save_when_editor_is_unchanged():
     window = _make_window()
     window._vocab_editor = _FakeEditor("Alpha\nBeta")

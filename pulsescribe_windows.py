@@ -73,13 +73,25 @@ from utils.subprocess_io import start_stream_drain_thread
 from whisper_platform import get_clipboard, get_sound_player
 from config import INTERIM_FILE, get_input_device, WARM_STREAM_QUEUE_SIZE
 from providers import get_provider
-from ui.daemon_status_feedback import build_daemon_status_label, build_daemon_tray_title
+from ui.daemon_status_feedback import (
+    build_daemon_status_label,
+    build_daemon_tray_title,
+    infer_daemon_status_error,
+)
 
 # Lazy imports für optionale Features
 pystray = None
 PIL_Image = None
 PIL_ImageDraw = None
 WindowsOverlayController = None
+
+
+def _friendly_error_status_text(error: Exception | str) -> str:
+    return build_daemon_status_label(
+        AppState.ERROR,
+        infer_daemon_status_error(error) or error,
+        max_chars=80,
+    )
 
 
 def _load_overlay():
@@ -929,10 +941,7 @@ class PulseScribeWindows:
             self._set_state(AppState.IDLE)
         except Exception as e:
             logger.error(f"Recording-Fehler: {e}")
-            self._set_state(
-                AppState.ERROR,
-                build_daemon_status_label(AppState.ERROR, str(e), max_chars=80),
-            )
+            self._set_state(AppState.ERROR, _friendly_error_status_text(e))
             self._play_sound("error")
             time.sleep(1.0)
             self._set_state(AppState.IDLE)
@@ -997,10 +1006,7 @@ class PulseScribeWindows:
 
         except Exception as e:
             logger.error(f"Recording-Fehler (Warm): {e}")
-            self._set_state(
-                AppState.ERROR,
-                build_daemon_status_label(AppState.ERROR, str(e), max_chars=80),
-            )
+            self._set_state(AppState.ERROR, _friendly_error_status_text(e))
             self._play_sound("error")
             time.sleep(1.0)
             self._set_state(AppState.IDLE)
@@ -1103,10 +1109,7 @@ class PulseScribeWindows:
         except Exception as e:
             error_type = "Import-Fehler" if isinstance(e, ImportError) else "Streaming-Fehler"
             logger.error(f"{error_type}: {e}")
-            self._set_state(
-                AppState.ERROR,
-                build_daemon_status_label(AppState.ERROR, str(e), max_chars=80),
-            )
+            self._set_state(AppState.ERROR, _friendly_error_status_text(e))
             self._play_sound("error")
             time.sleep(1.0)
             self._set_state(AppState.IDLE)
@@ -1171,10 +1174,7 @@ class PulseScribeWindows:
             self._warm_stream_draining.set()
             self._warm_stream_armed.clear()
             self._warm_stream_draining.clear()
-            self._set_state(
-                AppState.ERROR,
-                build_daemon_status_label(AppState.ERROR, str(e), max_chars=80),
-            )
+            self._set_state(AppState.ERROR, _friendly_error_status_text(e))
             self._play_sound("error")
             time.sleep(1.0)
             self._set_state(AppState.IDLE)
@@ -1251,19 +1251,13 @@ class PulseScribeWindows:
 
         except ImportError as e:
             logger.error(f"Import-Fehler: {e}")
-            self._set_state(
-                AppState.ERROR,
-                build_daemon_status_label(AppState.ERROR, str(e), max_chars=80),
-            )
+            self._set_state(AppState.ERROR, _friendly_error_status_text(e))
             self._play_sound("error")
             time.sleep(1.0)
             self._set_state(AppState.IDLE)
         except Exception as e:
             logger.error(f"Transkriptions-Fehler: {e}")
-            self._set_state(
-                AppState.ERROR,
-                build_daemon_status_label(AppState.ERROR, str(e), max_chars=80),
-            )
+            self._set_state(AppState.ERROR, _friendly_error_status_text(e))
             self._play_sound("error")
             time.sleep(1.0)
             self._set_state(AppState.IDLE)
