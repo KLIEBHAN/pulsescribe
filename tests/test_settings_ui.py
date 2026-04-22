@@ -305,6 +305,8 @@ def _make_minimal_welcome_controller():
     ctrl._mode_popup = None
     ctrl._local_backend_popup = None
     ctrl._local_model_popup = None
+    ctrl._local_backend_label = None
+    ctrl._local_model_label = None
     ctrl._lang_popup = None
     ctrl._device_popup = None
     ctrl._warmup_popup = None
@@ -318,8 +320,14 @@ def _make_minimal_welcome_controller():
     ctrl._num_workers_field = None
     ctrl._without_timestamps_popup = None
     ctrl._vad_filter_popup = None
+    ctrl._lightning_header = None
+    ctrl._lightning_batch_label = None
     ctrl._lightning_batch_slider = None
+    ctrl._lightning_batch_value_label = None
+    ctrl._lightning_quant_label = None
     ctrl._lightning_quant_popup = None
+    ctrl._advanced_general_views = ()
+    ctrl._advanced_local_status_label = None
     ctrl._streaming_checkbox = None
     ctrl._refine_checkbox = None
     ctrl._clipboard_restore_checkbox = None
@@ -895,6 +903,7 @@ class TestWelcomeEditorCaches:
         ctrl._local_backend_label = _FakeHideable()
         ctrl._local_model_popup = _FakeHideable()
         ctrl._local_model_label = _FakeHideable()
+        ctrl._advanced_general_views = (_FakeHideable(), _FakeHideable())
         ctrl._lightning_header = _FakeHideable()
         ctrl._lightning_batch_label = _FakeHideable()
         ctrl._lightning_batch_slider = _FakeHideable()
@@ -909,8 +918,34 @@ class TestWelcomeEditorCaches:
 
         assert ctrl._local_backend_label.hidden_calls == [True]
         assert ctrl._local_model_popup.hidden_calls == [True]
+        assert all(view.hidden_calls == [True] for view in ctrl._advanced_general_views)
         assert ctrl._streaming_label.hidden_calls == []
         assert ctrl._streaming_checkbox.hidden_calls == []
+
+    def test_local_advanced_controls_follow_show_general_state(self):
+        ctrl = _make_minimal_welcome_controller()
+        ctrl._mode_popup = _FakePopup(["deepgram", "local"], selected="deepgram")
+        ctrl._local_backend_popup = _FakePopup(
+            ["auto", "whisper", "faster", "mlx", "lightning"],
+            selected="auto",
+        )
+        ctrl._advanced_general_views = (
+            _FakeHideable(),
+            _FakeHideable(),
+            _FakeHideable(),
+        )
+        ctrl._advanced_local_status_label = _FakeStatus("")
+
+        ctrl._update_local_settings_visibility()
+
+        assert all(view.hidden is True for view in ctrl._advanced_general_views)
+        assert "Local Whisper mode" in ctrl._advanced_local_status_label.value
+
+        ctrl._mode_popup.selectItemWithTitle_("local")
+        ctrl._update_local_settings_visibility()
+
+        assert all(view.hidden is False for view in ctrl._advanced_general_views)
+        assert "recommended local defaults" in ctrl._advanced_local_status_label.value
 
 
 class TestWelcomePrivacySettings:

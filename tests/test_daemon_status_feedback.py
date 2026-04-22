@@ -46,6 +46,10 @@ def test_build_daemon_status_label_classifies_common_error_types() -> None:
         build_daemon_status_label(AppState.ERROR, "Watchdog timeout while transcribing")
         == "Transcription timed out"
     )
+    assert (
+        build_daemon_status_label(AppState.ERROR, "No module named 'faster_whisper'")
+        == "Missing dependency"
+    )
 
 
 def test_build_daemon_status_hint_returns_targeted_recovery_guidance() -> None:
@@ -61,6 +65,31 @@ def test_build_daemon_status_hint_returns_targeted_recovery_guidance() -> None:
         AppState.ERROR,
         "Microphone unavailable",
     ).lower()
+
+
+def test_build_daemon_status_helpers_classify_invalid_provider_configuration() -> None:
+    assert (
+        build_daemon_status_label(AppState.ERROR, "Unbekannter Provider: foo")
+        == "Invalid provider setting"
+    )
+    assert (
+        build_daemon_status_hint(
+            AppState.ERROR,
+            "Unbekannter Refine-Provider 'bar'. Unterstützt: groq, openai",
+        )
+        == "Open Setup & Settings, choose a supported provider, then try again."
+    )
+
+
+
+def test_build_daemon_status_helpers_keep_unclassified_module_attribute_errors_verbatim() -> None:
+    detail = "module 'x' has no attribute 'y'"
+
+    assert build_daemon_status_label(AppState.ERROR, detail) == detail
+    assert build_daemon_status_hint(AppState.ERROR, detail) == (
+        "Try again. PulseScribe will return to ready automatically. "
+        "Export diagnostics or open Setup if it keeps happening."
+    )
 
 
 def test_build_daemon_status_helpers_cover_no_speech_retry_guidance() -> None:

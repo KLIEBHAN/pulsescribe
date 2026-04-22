@@ -44,6 +44,14 @@ def _has_invalid_app_mapping_lines(text: str) -> bool:
     return len(parse_app_mappings(text)) < len(relevant_lines)
 
 
+def _semantic_editor_state(context: str, text: str | None) -> object:
+    context_key = normalize_prompt_editor_context(context)
+    normalized_text = _normalize_text(text)
+    if context_key == "app_mappings":
+        return tuple(sorted(parse_app_mappings(normalized_text).items()))
+    return normalized_text
+
+
 def build_prompt_editor_state_feedback(
     context: str | None,
     draft_text: str | None,
@@ -57,23 +65,26 @@ def build_prompt_editor_state_feedback(
     draft = _normalize_text(draft_text)
     saved = _normalize_text(saved_text)
     default = _normalize_text(default_text)
+    draft_state = _semantic_editor_state(context_key, draft)
+    saved_state = _semantic_editor_state(context_key, saved)
+    default_state = _semantic_editor_state(context_key, default)
 
-    save_enabled = draft != saved
-    reset_enabled = draft != default
+    save_enabled = draft_state != saved_state
+    reset_enabled = draft_state != default_state
 
-    if draft == saved:
-        if draft == default:
+    if draft_state == saved_state:
+        if draft_state == default_state:
             text = f"Using the built-in {subject}."
         else:
             text = f"Using a saved custom {subject}."
         color = "text_secondary"
-    elif draft == default:
+    elif draft_state == default_state:
         text = f"Built-in {subject} restored here. Save to remove the custom version."
         color = "warning"
     elif not draft.strip() and default.strip():
         text = f"This draft is empty. Saving will fall back to the built-in {subject}."
         color = "warning"
-    elif saved == default:
+    elif saved_state == default_state:
         text = f"Unsaved custom {subject}. Save to keep this override."
         color = "warning"
     else:

@@ -532,6 +532,7 @@ class WelcomeController:
         self._lightning_quant_label = None
         self._lightning_quant_popup = None
         self._backend_changed_handler = None
+        self._advanced_general_views = ()
         # Streaming toggle (Deepgram)
         self._streaming_label = None
         self._streaming_checkbox = None
@@ -1887,7 +1888,7 @@ class WelcomeController:
         current_y = card_y + card_height - 96
 
         # Preset (applies values, not persisted)
-        self._add_setting_label(base_x, current_y, "Preset:", parent_view)
+        preset_label = self._add_setting_label(base_x, current_y, "Preset:", parent_view)
         preset_popup = NSPopUpButton.alloc().initWithFrame_(
             NSMakeRect(control_x, current_y, control_width, 22)
         )
@@ -1908,7 +1909,7 @@ class WelcomeController:
         current_y -= row_height
 
         # Device (openai-whisper)
-        self._add_setting_label(base_x, current_y, "Device:", parent_view)
+        device_label = self._add_setting_label(base_x, current_y, "Device:", parent_view)
         device_popup = NSPopUpButton.alloc().initWithFrame_(
             NSMakeRect(control_x, current_y, control_width, 22)
         )
@@ -1928,7 +1929,7 @@ class WelcomeController:
         current_y -= row_height
 
         # Warmup
-        self._add_setting_label(base_x, current_y, "Warmup:", parent_view)
+        warmup_label = self._add_setting_label(base_x, current_y, "Warmup:", parent_view)
         warmup_popup = NSPopUpButton.alloc().initWithFrame_(
             NSMakeRect(control_x, current_y, control_width, 22)
         )
@@ -1945,7 +1946,7 @@ class WelcomeController:
         current_y -= row_height
 
         # Fast mode
-        self._add_setting_label(base_x, current_y, "Fast:", parent_view)
+        fast_label = self._add_setting_label(base_x, current_y, "Fast:", parent_view)
         fast_popup = NSPopUpButton.alloc().initWithFrame_(
             NSMakeRect(control_x, current_y, control_width, 22)
         )
@@ -1960,7 +1961,7 @@ class WelcomeController:
         current_y -= row_height
 
         # FP16 (openai-whisper; also used by MLX)
-        self._add_setting_label(base_x, current_y, "FP16:", parent_view)
+        fp16_label = self._add_setting_label(base_x, current_y, "FP16:", parent_view)
         fp16_popup = NSPopUpButton.alloc().initWithFrame_(
             NSMakeRect(control_x, current_y, control_width, 22)
         )
@@ -1975,7 +1976,7 @@ class WelcomeController:
         current_y -= row_height
 
         # Beam size
-        self._add_setting_label(base_x, current_y, "Beam size:", parent_view)
+        beam_label = self._add_setting_label(base_x, current_y, "Beam size:", parent_view)
         beam_field = NSTextField.alloc().initWithFrame_(
             NSMakeRect(control_x, current_y, control_width, 22)
         )
@@ -1989,7 +1990,7 @@ class WelcomeController:
         current_y -= row_height
 
         # Best of
-        self._add_setting_label(base_x, current_y, "Best of:", parent_view)
+        best_label = self._add_setting_label(base_x, current_y, "Best of:", parent_view)
         best_field = NSTextField.alloc().initWithFrame_(
             NSMakeRect(control_x, current_y, control_width, 22)
         )
@@ -2003,7 +2004,7 @@ class WelcomeController:
         current_y -= row_height
 
         # Temperature
-        self._add_setting_label(base_x, current_y, "Temperature:", parent_view)
+        temp_label = self._add_setting_label(base_x, current_y, "Temperature:", parent_view)
         temp_field = NSTextField.alloc().initWithFrame_(
             NSMakeRect(control_x, current_y, control_width, 22)
         )
@@ -2015,6 +2016,24 @@ class WelcomeController:
         self._temperature_field = temp_field
         parent_view.addSubview_(temp_field)
         current_y -= row_height
+        self._advanced_general_views = (
+            preset_label,
+            preset_popup,
+            device_label,
+            device_popup,
+            warmup_label,
+            warmup_popup,
+            fast_label,
+            fast_popup,
+            fp16_label,
+            fp16_popup,
+            beam_label,
+            beam_field,
+            best_label,
+            best_field,
+            temp_label,
+            temp_field,
+        )
 
         # faster-whisper compute type
         self._compute_type_label = self._add_setting_label(
@@ -4776,6 +4795,9 @@ class WelcomeController:
             self._local_model_popup,
         ):
             _set_hidden_if_changed(view, not is_local)
+
+        for view in getattr(self, "_advanced_general_views", ()):
+            _set_hidden_if_changed(view, not state.show_general)
 
         _set_string_value_if_changed(
             getattr(self, "_advanced_local_status_label", None),

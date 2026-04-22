@@ -70,3 +70,18 @@ def test_prompt_editor_feedback_warns_about_invalid_app_mapping_lines() -> None:
     assert "Only 'App = context' lines are saved." in feedback.text
     assert feedback.color == "warning"
     assert feedback.save_enabled is True
+
+
+def test_prompt_editor_feedback_treats_comment_only_app_mapping_edits_as_noop() -> None:
+    saved_text = "# App → Context Mappings (one per line: AppName = context)\nMail = email"
+    feedback = build_prompt_editor_state_feedback(
+        "app_mappings",
+        f"{saved_text}\n# personal note",
+        saved_text=saved_text,
+        default_text=saved_text,
+    )
+
+    assert feedback.text == "Using the built-in App Mappings."
+    assert feedback.color == "text_secondary"
+    assert feedback.save_enabled is False
+    assert feedback.reset_enabled is False

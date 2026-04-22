@@ -66,6 +66,61 @@ def _contains_any(text: str, keywords: tuple[str, ...]) -> bool:
     return any(keyword in text for keyword in keywords)
 
 
+def _contains_provider_config_error(text: str) -> bool:
+    return _contains_any(
+        text,
+        (
+            "unknown provider",
+            "unbekannter provider",
+            "invalid provider",
+            "unsupported provider",
+            "unknown refine-provider",
+            "unknown refine provider",
+            "unbekannter refine-provider",
+            "unbekannter refine provider",
+            "invalid refine provider",
+            "unsupported refine provider",
+            "unsupported refine-provider",
+        ),
+    )
+
+
+def _contains_connection_error(text: str) -> bool:
+    return _contains_any(
+        text,
+        (
+            "connection",
+            "connect",
+            "network",
+            "socket",
+            "websocket",
+            "streaming",
+            "could not reach",
+            "failed to reach",
+            "service unavailable",
+            "provider status",
+            "provider unavailable",
+            "transcription service",
+        ),
+    )
+
+
+def _contains_dependency_error(text: str) -> bool:
+    return _contains_any(
+        text,
+        (
+            "no module named",
+            "modulenotfounderror",
+            "importerror",
+            "cannot import name",
+            "missing dependency",
+            "dependency",
+            "pip install",
+            "install package",
+        ),
+    )
+
+
 def _build_loading_label(detail: str, *, prefer_detail: bool) -> str:
     if not detail:
         return DEFAULT_DAEMON_STATUS_LABELS[AppState.LOADING]
@@ -133,6 +188,8 @@ def _build_error_label(detail: str) -> str:
         return "PulseScribe is busy"
     if _contains_any(detail_lower, ("timeout", "timed out", "watchdog", "no final response")):
         return "Transcription timed out"
+    if _contains_provider_config_error(detail_lower):
+        return "Invalid provider setting"
     if _contains_any(detail_lower, ("input monitoring",)):
         return "Input monitoring needed"
     if _contains_any(detail_lower, ("accessibility", "assistive access", "access permission")):
@@ -154,21 +211,9 @@ def _build_error_label(detail: str) -> str:
         ),
     ):
         return "Microphone unavailable"
-    if _contains_any(
-        detail_lower,
-        (
-            "connection",
-            "connect",
-            "network",
-            "socket",
-            "provider",
-            "websocket",
-            "service",
-            "streaming",
-        ),
-    ):
+    if _contains_connection_error(detail_lower):
         return "Could not reach the transcription service"
-    if _contains_any(detail_lower, ("import", "dependency", "module", "install")):
+    if _contains_dependency_error(detail_lower):
         return "Missing dependency"
     return detail
 
@@ -273,6 +318,8 @@ def build_daemon_status_hint(
                 "PulseScribe will return to ready automatically. Export diagnostics "
                 "or open Setup if it repeats."
             )
+        elif _contains_provider_config_error(detail_lower):
+            hint = "Open Setup & Settings, choose a supported provider, then try again."
         elif _contains_any(detail_lower, ("input monitoring", "accessibility", "assistive access", "access permission")):
             hint = "Open Setup & Settings, grant the missing permission, then try again."
         elif _contains_any(detail_lower, ("microphone", "mic")) and _contains_any(
@@ -292,21 +339,9 @@ def build_daemon_status_hint(
             ),
         ):
             hint = "Check microphone access and the selected input device, then try again."
-        elif _contains_any(
-            detail_lower,
-            (
-                "connection",
-                "connect",
-                "network",
-                "socket",
-                "provider",
-                "websocket",
-                "service",
-                "streaming",
-            ),
-        ):
+        elif _contains_connection_error(detail_lower):
             hint = "Check your internet connection or provider status, then try again."
-        elif _contains_any(detail_lower, ("import", "dependency", "module", "install")):
+        elif _contains_dependency_error(detail_lower):
             hint = "Install the missing dependency or switch providers in Setup & Settings."
         else:
             hint = DEFAULT_DAEMON_HINTS[AppState.ERROR]
