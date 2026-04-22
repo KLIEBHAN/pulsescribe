@@ -606,7 +606,7 @@ def test_on_state_changed_formats_no_speech_feedback_text(monkeypatch):
 
     PySide6OverlayWidget._on_state_changed(widget, "NO_SPEECH", "")
 
-    assert seen_calls[-1] == ("NO_SPEECH", "No speech detected — try again", False)
+    assert seen_calls[-1] == ("NO_SPEECH", "No speech detected", False)
 
 
 def test_animate_frame_skips_repaint_for_subpixel_height_changes(monkeypatch):

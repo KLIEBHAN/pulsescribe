@@ -25,7 +25,7 @@ OVERLAY_FEEDBACK_DEFAULTS = {
     "REFINING": "Polishing wording and punctuation…",
     "LOADING": "Preparing transcription…",
     "DONE": "Transcript pasted",
-    "NO_SPEECH": "No speech detected — try again",
+    "NO_SPEECH": "No speech detected",
     "ERROR": "Something went wrong",
 }
 

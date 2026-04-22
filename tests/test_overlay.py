@@ -617,5 +617,5 @@ def test_overlay_controller_no_speech_state_uses_retry_copy():
 
     OverlayController.update_state(controller, AppState.NO_SPEECH)
 
-    assert seen_presentations[-1]["text"] == "No speech detected — try again"
+    assert seen_presentations[-1]["text"] == "No speech detected"
     assert seen_presentations[-1]["color_key"] == "warning"

@@ -277,7 +277,7 @@ def test_handle_state_change_uses_feedback_color_for_done_no_speech_and_error():
     assert controller._label.last_config["fg"] == STATE_COLORS["DONE"]
 
     controller._handle_state_change("NO_SPEECH", None)
-    assert controller._label.last_config["text"] == "No speech detected — try again"
+    assert controller._label.last_config["text"] == "No speech detected"
     assert controller._label.last_config["fg"] == STATE_COLORS["NO_SPEECH"]
 
     controller._handle_state_change("ERROR", "Boom")
