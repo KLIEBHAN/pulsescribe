@@ -4,8 +4,12 @@ from ui.overlay_feedback import (
 )
 
 
-def test_format_overlay_status_text_uses_clear_recording_fallback() -> None:
+def test_format_overlay_status_text_uses_compact_state_fallbacks() -> None:
+    assert format_overlay_status_text("LISTENING") == "Listening…"
     assert format_overlay_status_text("RECORDING") == "Recording — keep speaking"
+    assert format_overlay_status_text("TRANSCRIBING") == "Transcribing…"
+    assert format_overlay_status_text("REFINING") == "Refining…"
+    assert format_overlay_status_text("LOADING") == "Preparing…"
 
 
 def test_build_overlay_feedback_text_explains_loading_warmup() -> None:
@@ -28,10 +32,7 @@ def test_build_overlay_feedback_text_classifies_common_errors() -> None:
 
 
 def test_build_overlay_feedback_text_makes_rtf_done_copy_human_readable() -> None:
-    assert (
-        build_overlay_feedback_text("DONE", "✓ (0.3x)")
-        == "Transcript pasted • 0.3x realtime"
-    )
+    assert build_overlay_feedback_text("DONE", "✓ (0.3x)") == "Pasted • 0.3x"
 
 
 def test_build_overlay_feedback_text_covers_no_speech_defaults() -> None:

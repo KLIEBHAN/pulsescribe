@@ -7,27 +7,23 @@ import re
 from ui.daemon_status_feedback import build_daemon_status_label
 from utils.state import AppState
 
-DEFAULT_OVERLAY_STATE_TEXTS = {
+_COMPACT_OVERLAY_COPY = {
     "LISTENING": "Listening…",
     "RECORDING": "Recording — keep speaking",
     "TRANSCRIBING": "Transcribing…",
     "REFINING": "Refining…",
-    "LOADING": "Preparing transcription…",
-    "DONE": "Transcript pasted",
-    "NO_SPEECH": "No speech detected",
-    "ERROR": "Error",
-}
-
-OVERLAY_FEEDBACK_DEFAULTS = {
-    "LISTENING": "Listening — start speaking",
-    "RECORDING": "Recording — keep speaking",
-    "TRANSCRIBING": "Transcribing your dictation…",
-    "REFINING": "Polishing wording and punctuation…",
-    "LOADING": "Preparing transcription…",
+    "LOADING": "Preparing…",
     "DONE": "Transcript pasted",
     "NO_SPEECH": "No speech detected",
     "ERROR": "Something went wrong",
 }
+
+DEFAULT_OVERLAY_STATE_TEXTS = {
+    **_COMPACT_OVERLAY_COPY,
+    "ERROR": "Error",
+}
+
+OVERLAY_FEEDBACK_DEFAULTS = dict(_COMPACT_OVERLAY_COPY)
 
 _DONE_RTF_PATTERN = re.compile(r"^[✓✔]\s*\(([^()]+)\)\s*$")
 _FRIENDLY_ERROR_LABELS = {
@@ -81,10 +77,7 @@ def _build_done_feedback_text(detail: str, *, max_chars: int) -> str:
     if match:
         speed = _normalize_overlay_text(match.group(1))
         if speed:
-            return _truncate_overlay_text(
-                f"Transcript pasted • {speed} realtime",
-                max_chars,
-            )
+            return _truncate_overlay_text(f"Pasted • {speed}", max_chars)
     return format_overlay_status_text("DONE", detail, max_chars=max_chars)
 
 

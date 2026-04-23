@@ -292,7 +292,7 @@ def test_handle_state_change_uses_loading_default_text():
 
     controller._handle_state_change("LOADING", None)
 
-    assert controller._label.last_config["text"] == "Preparing transcription…"
+    assert controller._label.last_config["text"] == "Preparing…"
     assert "LOADING" in STATE_COLORS
 
 

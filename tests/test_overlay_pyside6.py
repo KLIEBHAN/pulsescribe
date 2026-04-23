@@ -560,7 +560,7 @@ def test_on_state_changed_uses_clear_loading_copy(monkeypatch):
 
     PySide6OverlayWidget._on_state_changed(widget, "LOADING", "")
 
-    assert seen_calls[-1] == ("LOADING", "Preparing transcription…", False)
+    assert seen_calls[-1] == ("LOADING", "Preparing…", False)
 
 
 def test_on_state_changed_formats_error_feedback_text(monkeypatch):
