@@ -903,6 +903,30 @@ async def _graceful_shutdown(
     logger.info(f"[{session_id}] Listener beendet")
 
 
+async def _finish_warm_forwarder(
+    audio_result: AudioSourceResult,
+    session_id: str,
+) -> None:
+    """Stop the warm-stream forwarder and flush thread-scheduled queue puts."""
+    if audio_result.forwarder_thread is None:
+        return
+
+    # Warm-Stream: Forwarder-Thread beenden (hat eigenen Pre-Drain)
+    audio_result.forwarder_thread.join(timeout=FORWARDER_THREAD_JOIN_TIMEOUT)
+    if audio_result.forwarder_thread.is_alive():
+        logger.warning(
+            f"[{session_id}] Forwarder-Thread Timeout - "
+            "letzte Audio-Chunks könnten verloren gehen"
+        )
+    else:
+        logger.debug(f"[{session_id}] Forwarder-Thread beendet")
+
+    # The forwarder uses loop.call_soon_threadsafe(audio_queue.put_nowait, chunk).
+    # Yield once so those callbacks run before _graceful_shutdown adds the
+    # None sentinel; otherwise the sender can stop before the final chunks.
+    await asyncio.sleep(0)
+
+
 def _validate_model(model: str) -> None:
     """Validiert Model-Parameter."""
     if not model or not model.strip():
@@ -1115,15 +1139,7 @@ async def deepgram_stream_core(
             # beendet werden, damit alle Rest-Chunks in der Queue landen.
 
             if audio_result.forwarder_thread is not None:
-                # Warm-Stream: Forwarder-Thread beenden (hat eigenen Pre-Drain)
-                audio_result.forwarder_thread.join(timeout=FORWARDER_THREAD_JOIN_TIMEOUT)
-                if audio_result.forwarder_thread.is_alive():
-                    logger.warning(
-                        f"[{session_id}] Forwarder-Thread Timeout - "
-                        "letzte Audio-Chunks könnten verloren gehen"
-                    )
-                else:
-                    logger.debug(f"[{session_id}] Forwarder-Thread beendet")
+                await _finish_warm_forwarder(audio_result, session_id)
 
             elif audio_result.mic_stream is not None:
                 # CLI/Daemon-Mode: Mikrofon stoppen mit Pre-Drain

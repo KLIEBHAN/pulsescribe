@@ -238,6 +238,43 @@ def test_graceful_shutdown_returns_quickly_after_connection_close(monkeypatch) -
     assert elapsed < 0.2
 
 
+def test_finish_warm_forwarder_flushes_threadsafe_audio_before_sentinel() -> None:
+    class _ForwarderThread:
+        def __init__(self) -> None:
+            self.join_timeout = None
+
+        def join(self, timeout=None) -> None:
+            self.join_timeout = timeout
+
+        def is_alive(self) -> bool:
+            return False
+
+    async def _run() -> tuple[list[bytes | None], float | None]:
+        loop = asyncio.get_running_loop()
+        audio_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+        forwarder = _ForwarderThread()
+        audio_result = deepgram_stream.AudioSourceResult(
+            sample_rate=16000,
+            mic_stream=None,
+            buffer_state=None,
+            forwarder_thread=cast(Any, forwarder),
+        )
+
+        loop.call_soon_threadsafe(audio_queue.put_nowait, b"last-audio")
+        await deepgram_stream._finish_warm_forwarder(audio_result, "sess")
+        await audio_queue.put(None)
+
+        items: list[bytes | None] = []
+        while not audio_queue.empty():
+            items.append(await audio_queue.get())
+        return items, forwarder.join_timeout
+
+    items, join_timeout = asyncio.run(_run())
+
+    assert items == [b"last-audio", None]
+    assert join_timeout == deepgram_stream.FORWARDER_THREAD_JOIN_TIMEOUT
+
+
 def test_write_interim_text_replaces_file_atomically(tmp_path) -> None:
     interim_file = tmp_path / "interim.txt"
     interim_file.write_text("old interim", encoding="utf-8")

@@ -145,6 +145,54 @@ def test_stop_recording_from_hotkey_allows_loading_state():
     assert stop_calls == 1
 
 
+def test_warm_stream_is_armed_before_ready_feedback(monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr(
+        asyncio,
+        "WindowsSelectorEventLoopPolicy",
+        asyncio.DefaultEventLoopPolicy,
+        raising=False,
+    )
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="deepgram",
+        streaming=True,
+        overlay=False,
+    )
+    daemon._warm_stream = object()
+    daemon._warm_stream_queue.put_nowait(b"stale-audio")
+
+    events = []
+
+    class _FakeThread:
+        def __init__(self, *args, **kwargs):
+            self.target = kwargs.get("target")
+            events.append(("thread_init", daemon._warm_stream_armed.is_set()))
+
+        def start(self):
+            events.append(("thread_start", daemon._warm_stream_armed.is_set()))
+
+    def fake_play_sound(name):
+        events.append(
+            (
+                "sound",
+                name,
+                daemon._warm_stream_armed.is_set(),
+                daemon._warm_stream_queue.empty(),
+            )
+        )
+
+    monkeypatch.setattr(windows_module.threading, "Thread", _FakeThread)
+    daemon._play_sound = fake_play_sound
+
+    assert daemon._start_recording() is True
+
+    assert ("sound", "ready", True, True) in events
+    assert ("thread_init", True) in events
+    assert daemon._warm_stream_armed.is_set()
+
+
 def test_provider_cache_reload_and_get_provider_are_thread_safe(monkeypatch):
     windows_module = _load_windows_module()
 

@@ -713,6 +713,16 @@ class PulseScribeWindows:
                 logger.debug(f"Warm-Stream Stop-Fehler: {e}")
             self._warm_stream = None
 
+    def _prepare_warm_stream_for_recording(self) -> None:
+        """Drop stale warm-stream chunks and arm capture before user feedback."""
+        self._warm_stream_draining.clear()
+        while not self._warm_stream_queue.empty():
+            try:
+                self._warm_stream_queue.get_nowait()
+            except queue.Empty:
+                break
+        self._warm_stream_armed.set()
+
     def _on_hotkey_press(self):
         """Callback wenn Hotkey gedrückt wird (Toggle-Mode)."""
         if self.state in (AppState.IDLE, AppState.NO_SPEECH):
@@ -783,12 +793,9 @@ class PulseScribeWindows:
                     # ═══════════════════════════════════════════════════════════════
                     logger.info("Warm-Stream Mode: instant-start")
 
-                    # Queue leeren (alte Samples verwerfen)
-                    while not self._warm_stream_queue.empty():
-                        try:
-                            self._warm_stream_queue.get_nowait()
-                        except queue.Empty:
-                            break
+                    # Vor Ready-Sound scharf schalten, damit das erste Wort nicht
+                    # im Zeitfenster zwischen Feedback und Worker-Start verloren geht.
+                    self._prepare_warm_stream_for_recording()
 
                     # Sofort LISTENING setzen und Sound spielen
                     self._set_state(AppState.LISTENING)
@@ -817,12 +824,9 @@ class PulseScribeWindows:
                 if self._warm_stream is not None:
                     logger.info("REST-Mode mit Warm-Stream: instant-start")
 
-                    # Queue leeren (alte Samples verwerfen)
-                    while not self._warm_stream_queue.empty():
-                        try:
-                            self._warm_stream_queue.get_nowait()
-                        except queue.Empty:
-                            break
+                    # Vor Ready-Sound scharf schalten, damit das erste Wort nicht
+                    # im Zeitfenster zwischen Feedback und Worker-Start verloren geht.
+                    self._prepare_warm_stream_for_recording()
 
                     # Sofort LISTENING setzen und Sound spielen
                     self._set_state(AppState.LISTENING)
