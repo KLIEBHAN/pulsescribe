@@ -140,6 +140,17 @@ def test_message_handler_keeps_final_transcripts_out_of_interim_file(monkeypatch
     assert write_calls == []
 
 
+def test_message_handler_tracks_empty_finalize_ack_without_transcript() -> None:
+    state = deepgram_stream.StreamState()
+    handler = deepgram_stream._create_message_handler(state, "sess")
+
+    handler(_response("", from_finalize=True))
+
+    assert state.finalize_empty_ack_received is True
+    assert state.finalize_transcript_received is False
+    assert state.finalize_done.is_set()
+
+
 def test_message_handler_logs_redacted_final_transcript(caplog) -> None:
     state = deepgram_stream.StreamState()
     handler = deepgram_stream._create_message_handler(state, "sess")
@@ -230,12 +241,71 @@ def test_graceful_shutdown_returns_quickly_after_connection_close(monkeypatch) -
             send_task=send_task,
             listen_task=listen_task,
             session_id="sess",
+            sample_rate=16000,
         )
         return time.perf_counter() - start
 
     elapsed = asyncio.run(_run())
 
     assert elapsed < 0.2
+
+
+def test_graceful_shutdown_sends_tail_padding_before_sentinel(monkeypatch) -> None:
+    class _FakeControlMessage:
+        def __init__(self, type: str) -> None:
+            self.type = type
+
+    monkeypatch.setitem(
+        sys.modules,
+        "deepgram.extensions.types.sockets",
+        SimpleNamespace(ListenV1ControlMessage=_FakeControlMessage),
+    )
+    monkeypatch.setattr(deepgram_stream, "DEEPGRAM_TAIL_PADDING_SECONDS", 0.1)
+    monkeypatch.setattr(deepgram_stream, "DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS", 0.0)
+
+    async def _run() -> list[bytes | None]:
+        state = deepgram_stream.StreamState()
+        audio_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+        sent_items: list[bytes | None] = []
+
+        async def _send_worker() -> None:
+            while True:
+                item = await audio_queue.get()
+                sent_items.append(item)
+                if item is None:
+                    return
+
+        async def _listen_worker() -> None:
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                return
+
+        send_task = asyncio.create_task(_send_worker())
+        listen_task = asyncio.create_task(_listen_worker())
+        asyncio.get_running_loop().call_soon_threadsafe(
+            audio_queue.put_nowait, b"last-audio"
+        )
+
+        class _FakeConnection:
+            async def send_control(self, message) -> None:
+                if getattr(message, "type", "") == "Finalize":
+                    state.finalize_done.set()
+
+        await deepgram_stream._graceful_shutdown(
+            connection=cast(Any, _FakeConnection()),
+            state=state,
+            audio_queue=audio_queue,
+            send_task=send_task,
+            listen_task=listen_task,
+            session_id="sess",
+            sample_rate=10,
+        )
+        return sent_items
+
+    sent_items = asyncio.run(_run())
+
+    assert sent_items == [b"last-audio", b"\x00\x00", None]
 
 
 def test_finish_warm_forwarder_flushes_threadsafe_audio_before_sentinel() -> None:

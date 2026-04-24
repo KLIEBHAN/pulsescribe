@@ -193,6 +193,36 @@ def test_warm_stream_is_armed_before_ready_feedback(monkeypatch):
     assert daemon._warm_stream_armed.is_set()
 
 
+def test_warm_stream_prepare_moves_preroll_after_stale_queue(monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr(
+        asyncio,
+        "WindowsSelectorEventLoopPolicy",
+        asyncio.DefaultEventLoopPolicy,
+        raising=False,
+    )
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="deepgram",
+        streaming=True,
+        overlay=False,
+    )
+    daemon._warm_stream_queue.put_nowait(b"stale-audio")
+    with daemon._warm_stream_preroll_lock:
+        daemon._warm_stream_preroll.append(b"pre-a")
+        daemon._warm_stream_preroll.append(b"pre-b")
+
+    daemon._prepare_warm_stream_for_recording()
+
+    queued = []
+    while not daemon._warm_stream_queue.empty():
+        queued.append(daemon._warm_stream_queue.get_nowait())
+
+    assert queued == [b"pre-a", b"pre-b"]
+    assert daemon._warm_stream_armed.is_set()
+
+
 def test_provider_cache_reload_and_get_provider_are_thread_safe(monkeypatch):
     windows_module = _load_windows_module()
 

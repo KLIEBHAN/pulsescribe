@@ -38,6 +38,7 @@ import queue
 import signal
 import threading
 import time
+from collections import deque
 from pathlib import Path
 
 # Projekt-Root zum Path hinzufügen
@@ -153,6 +154,10 @@ _VAD_THRESHOLD_RMS = 0.003  # Für Streaming-Modus (RMS/INT16_MAX)
 
 # Tail-Padding: Stille am Ende des Audio (verhindert abgeschnittene Wörter bei Whisper)
 _TAIL_PADDING_SEC = 0.2
+
+# Pre-Roll: kurze Audio-Historie vor dem Hotkey-Start, damit sofortiges Sprechen
+# nicht im ersten Warm-Stream-Callback-Fenster verloren geht.
+_WARM_STREAM_PREROLL_SEC = 0.25
 
 # Provider die gecached werden sollen (stateful, z.B. Model-Caching)
 _STATEFUL_PROVIDERS = {"local"}
@@ -305,6 +310,8 @@ class PulseScribeWindows:
         self._warm_stream = None  # sd.InputStream (läuft dauerhaft)
         self._warm_stream_armed = threading.Event()  # Wenn gesetzt: Samples sammeln
         self._warm_stream_draining = threading.Event()  # Erlaubt Sammeln während Drain-Phase
+        self._warm_stream_preroll_lock = threading.Lock()
+        self._warm_stream_preroll: deque[bytes] = deque(maxlen=4)
         # Queue mit maxsize: via PULSESCRIBE_WARM_STREAM_QUEUE_SIZE (default: 300)
         # Verhindert Memory Leak wenn Forwarder nicht läuft
         self._warm_stream_queue: queue.Queue[bytes] = queue.Queue(
@@ -652,6 +659,12 @@ class PulseScribeWindows:
 
         # Blocksize: ~64ms Chunks (wie in deepgram_stream)
         blocksize = int(sample_rate * 0.064)
+        preroll_chunk_count = max(
+            1,
+            int((_WARM_STREAM_PREROLL_SEC * sample_rate + blocksize - 1) // blocksize),
+        )
+        with self._warm_stream_preroll_lock:
+            self._warm_stream_preroll = deque(maxlen=preroll_chunk_count)
 
         def audio_callback(indata, frames, time_info, status):
             """Audio-Callback: Samples sammeln wenn armed, sonst verwerfen."""
@@ -671,18 +684,28 @@ class PulseScribeWindows:
                     logger.debug(f"VAD triggered: level={rms:.4f}")
                     self._set_state(AppState.RECORDING)
 
-            # Audio sammeln wenn armed ODER draining (für Drain-Phase)
-            if self._warm_stream_armed.is_set() or self._warm_stream_draining.is_set():
-                audio_bytes = indata.tobytes()
-                try:
-                    self._warm_stream_queue.put_nowait(audio_bytes)
-                except queue.Full:
-                    # Queue voll - Audio-Chunk verworfen (z.B. bei langer REST-Transkription)
-                    if not hasattr(self, "_warm_stream_overflow_logged"):
-                        self._warm_stream_overflow_logged = True
-                        logger.warning(
-                            "Warm-Stream Queue voll, Audio-Chunks werden verworfen"
-                        )
+            audio_bytes = indata.tobytes()
+
+            # Audio sammeln wenn armed ODER draining (für Drain-Phase).
+            # Vor dem Hotkey halten wir nur eine kurze Pre-Roll-Historie.
+            with self._warm_stream_preroll_lock:
+                should_queue_audio = (
+                    self._warm_stream_armed.is_set()
+                    or self._warm_stream_draining.is_set()
+                )
+                if not should_queue_audio:
+                    self._warm_stream_preroll.append(audio_bytes)
+                    return
+
+            try:
+                self._warm_stream_queue.put_nowait(audio_bytes)
+            except queue.Full:
+                # Queue voll - Audio-Chunk verworfen (z.B. bei langer REST-Transkription)
+                if not hasattr(self, "_warm_stream_overflow_logged"):
+                    self._warm_stream_overflow_logged = True
+                    logger.warning(
+                        "Warm-Stream Queue voll, Audio-Chunks werden verworfen"
+                    )
 
         try:
             self._warm_stream = sd.InputStream(
@@ -721,7 +744,24 @@ class PulseScribeWindows:
                 self._warm_stream_queue.get_nowait()
             except queue.Empty:
                 break
-        self._warm_stream_armed.set()
+
+        with self._warm_stream_preroll_lock:
+            preroll_chunks = list(self._warm_stream_preroll)
+            self._warm_stream_preroll.clear()
+            for chunk in preroll_chunks:
+                try:
+                    self._warm_stream_queue.put_nowait(chunk)
+                except queue.Full:
+                    logger.warning(
+                        "Warm-Stream Queue voll, Pre-Roll-Audio wurde verworfen"
+                    )
+                    break
+            self._warm_stream_armed.set()
+
+        if preroll_chunks:
+            logger.debug(
+                f"Warm-Stream Pre-Roll: {len(preroll_chunks)} Chunks übernommen"
+            )
 
     def _on_hotkey_press(self):
         """Callback wenn Hotkey gedrückt wird (Toggle-Mode)."""

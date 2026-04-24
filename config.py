@@ -348,6 +348,12 @@ def _get_float_env(name: str, default: float) -> float:
 DEEPGRAM_CLOSE_TIMEOUT = _get_float_env(
     "PULSESCRIBE_DEEPGRAM_CLOSE_TIMEOUT", 0.5
 )  # Schneller WebSocket-Shutdown (SDK Default: 10s)
+DEEPGRAM_TAIL_PADDING_SECONDS = _get_float_env(
+    "PULSESCRIBE_DEEPGRAM_TAIL_PADDING_SECONDS", 0.25
+)  # Kurze End-Stille vor Finalize, damit Wortausklang nicht abgeschnitten wird
+DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS = _get_float_env(
+    "PULSESCRIBE_DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS", 0.25
+)  # Zusatzfenster, falls Deepgram nur einen leeren from_finalize-Ack sendet
 
 # Keep-Alive Interval für lokale Modelle (Sekunden)
 # Verhindert Metal Shader Cache Eviction bei Inaktivität
@@ -476,6 +482,8 @@ __all__ = [
     "FINALIZE_TIMEOUT",
     "DEEPGRAM_WS_URL",
     "DEEPGRAM_CLOSE_TIMEOUT",
+    "DEEPGRAM_TAIL_PADDING_SECONDS",
+    "DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS",
     "TRANSCRIBING_TIMEOUT",
     "LLM_REFINE_TIMEOUT",
     "AUDIO_QUEUE_POLL_INTERVAL",

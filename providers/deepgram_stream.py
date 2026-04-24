@@ -33,7 +33,9 @@ from typing import TYPE_CHECKING, Any, AsyncIterator, Callable
 from config import (
     AUDIO_QUEUE_POLL_INTERVAL,
     CLI_BUFFER_LIMIT,
+    DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS,
     DEEPGRAM_CLOSE_TIMEOUT,
+    DEEPGRAM_TAIL_PADDING_SECONDS,
     DEEPGRAM_WS_URL,
     DEFAULT_DEEPGRAM_MODEL,
     DRAIN_EMPTY_THRESHOLD,
@@ -128,6 +130,8 @@ class StreamState:
     stream_error: Exception | None = None
     stop_event: asyncio.Event = field(default_factory=asyncio.Event)
     finalize_done: asyncio.Event = field(default_factory=asyncio.Event)
+    finalize_empty_ack_received: bool = False
+    finalize_transcript_received: bool = False
     # Flag für einmalige Buffer-Warnung
     buffer_overflow_logged: bool = False
 
@@ -655,11 +659,13 @@ def _create_message_handler(
     def on_message(result: LiveResultResponse | Any) -> None:
         """Sammelt Transkripte aus Deepgram-Responses."""
         # from_finalize=True signalisiert: Server hat Rest-Audio verarbeitet
-        if getattr(result, "from_finalize", False):
-            state.finalize_done.set()
+        from_finalize = bool(getattr(result, "from_finalize", False))
 
         transcript = _extract_transcript(result)
         if not transcript:
+            if from_finalize:
+                state.finalize_empty_ack_received = True
+                state.finalize_done.set()
             return
 
         is_final = getattr(result, "is_final", False)
@@ -689,6 +695,10 @@ def _create_message_handler(
                     )
                 except OSError as e:
                     logger.warning(f"[{session_id}] Interim-Write fehlgeschlagen: {e}")
+
+        if from_finalize:
+            state.finalize_transcript_received = True
+            state.finalize_done.set()
 
     return on_message
 
@@ -840,6 +850,7 @@ async def _graceful_shutdown(
     send_task: asyncio.Task[None],
     listen_task: asyncio.Task[None],
     session_id: str,
+    sample_rate: int = WHISPER_SAMPLE_RATE,
 ) -> None:
     """Sauberes Beenden der Streaming-Session.
 
@@ -861,6 +872,16 @@ async def _graceful_shutdown(
     from deepgram.extensions.types.sockets import ListenV1ControlMessage
 
     # 1. Audio-Sender beenden (einziger Ort für das None-Sentinel)
+    # Audio-Callbacks nutzen loop.call_soon_threadsafe(); einmal yielden, damit
+    # bereits geplante letzte Chunks vor Tail-Padding und Sentinel in der Queue landen.
+    await asyncio.sleep(0)
+    tail_padding = _build_tail_padding_chunk(sample_rate)
+    if tail_padding:
+        await audio_queue.put(tail_padding)
+        logger.debug(
+            f"[{session_id}] Deepgram Tail-Padding: "
+            f"{DEEPGRAM_TAIL_PADDING_SECONDS:.2f}s"
+        )
     await audio_queue.put(None)
     await send_task
 
@@ -879,6 +900,12 @@ async def _graceful_shutdown(
         )
         t_finalize = (time.perf_counter() - t_finalize_start) * 1000
         logger.info(f"[{session_id}] Finalize abgeschlossen ({t_finalize:.0f}ms)")
+        if (
+            state.finalize_empty_ack_received
+            and not state.finalize_transcript_received
+            and DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS > 0
+        ):
+            await asyncio.sleep(DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS)
     except asyncio.TimeoutError:
         t_finalize = (time.perf_counter() - t_finalize_start) * 1000
         logger.warning(
@@ -901,6 +928,19 @@ async def _graceful_shutdown(
         listen_task.cancel()
         await asyncio.gather(listen_task, return_exceptions=True)
     logger.info(f"[{session_id}] Listener beendet")
+
+
+def _build_tail_padding_chunk(sample_rate: int) -> bytes:
+    """Return linear16 silence for Deepgram's final decoder context."""
+    if DEEPGRAM_TAIL_PADDING_SECONDS <= 0:
+        return b""
+    if sample_rate <= 0:
+        return b""
+
+    sample_count = int(sample_rate * WHISPER_CHANNELS * DEEPGRAM_TAIL_PADDING_SECONDS)
+    if sample_count <= 0:
+        return b""
+    return b"\x00\x00" * sample_count
 
 
 async def _finish_warm_forwarder(
@@ -1160,6 +1200,7 @@ async def deepgram_stream_core(
                 send_task=send_task,
                 listen_task=listen_task,
                 session_id=session_id,
+                sample_rate=audio_result.sample_rate,
             )
 
     finally:
