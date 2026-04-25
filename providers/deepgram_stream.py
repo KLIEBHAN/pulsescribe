@@ -668,6 +668,10 @@ def _create_message_handler(
                 state.finalize_done.set()
             return
 
+        if from_finalize:
+            state.finalize_transcript_received = True
+            state.finalize_done.set()
+
         is_final = getattr(result, "is_final", False)
 
         if is_final:
@@ -695,10 +699,6 @@ def _create_message_handler(
                     )
                 except OSError as e:
                     logger.warning(f"[{session_id}] Interim-Write fehlgeschlagen: {e}")
-
-        if from_finalize:
-            state.finalize_transcript_received = True
-            state.finalize_done.set()
 
     return on_message
 

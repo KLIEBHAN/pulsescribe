@@ -65,6 +65,26 @@ def test_message_handler_skips_duplicate_interim_writes(monkeypatch) -> None:
     assert write_calls == [("same interim", "utf-8")]
 
 
+def test_message_handler_marks_finalize_for_duplicate_interim(monkeypatch) -> None:
+    state = deepgram_stream.StreamState()
+    handler = deepgram_stream._create_message_handler(state, "sess")
+    write_calls: list[tuple[str, str]] = []
+
+    class _FakeInterimFile:
+        def write_text(self, text: str, *, encoding: str) -> None:
+            write_calls.append((text, encoding))
+
+    monkeypatch.setattr(deepgram_stream, "INTERIM_FILE", _FakeInterimFile())
+    monkeypatch.setattr(deepgram_stream.time, "perf_counter", lambda: 1.0)
+
+    handler(_response("same interim"))
+    handler(_response("same interim", from_finalize=True))
+
+    assert write_calls == [("same interim", "utf-8")]
+    assert state.finalize_transcript_received is True
+    assert state.finalize_done.is_set()
+
+
 def test_message_handler_keeps_latest_interim_for_fallback_when_write_is_throttled(
     monkeypatch,
 ) -> None:
