@@ -233,7 +233,11 @@ def test_streaming_worker_warm_passes_windows_stop_grace(monkeypatch):
         raising=False,
     )
     windows_module = _load_windows_module()
-    monkeypatch.setattr(windows_module, "WINDOWS_STOP_GRACE_SECONDS", 0.42)
+    monkeypatch.setattr(
+        windows_module,
+        "get_windows_stop_grace_seconds",
+        lambda: 0.42,
+    )
 
     daemon = windows_module.PulseScribeWindows(
         mode="deepgram",
@@ -245,9 +249,12 @@ def test_streaming_worker_warm_passes_windows_stop_grace(monkeypatch):
     daemon._handle_no_speech_result = lambda *_args, **_kwargs: None
 
     captured_kwargs: dict[str, object] = {}
+    events: list[str] = []
+    daemon._play_sound = lambda name: events.append(f"sound:{name}")
 
     async def fake_deepgram_stream_core(*_args, **kwargs):
         captured_kwargs.update(kwargs)
+        events.append("core_return")
         return ""
 
     import providers.deepgram_stream as deepgram_stream
@@ -261,13 +268,18 @@ def test_streaming_worker_warm_passes_windows_stop_grace(monkeypatch):
     daemon._streaming_worker_warm()
 
     assert captured_kwargs["stop_grace_seconds"] == 0.42
+    assert events == ["core_return", "sound:stop"]
 
 
 def test_recording_loop_warm_collects_audio_during_stop_grace(monkeypatch):
     import numpy as np
 
     windows_module = _load_windows_module()
-    monkeypatch.setattr(windows_module, "WINDOWS_STOP_GRACE_SECONDS", 0.05)
+    monkeypatch.setattr(
+        windows_module,
+        "get_windows_stop_grace_seconds",
+        lambda: 0.05,
+    )
 
     daemon = windows_module.PulseScribeWindows(
         mode="openai",
@@ -294,6 +306,66 @@ def test_recording_loop_warm_collects_audio_during_stop_grace(monkeypatch):
 
     assert audio_data.shape[0] >= 2
     assert np.isclose(audio_data[-1], 2000 / 32767)
+
+
+def test_windows_stop_grace_reads_current_environment(monkeypatch):
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai",
+        streaming=False,
+        overlay=False,
+    )
+
+    monkeypatch.setenv("PULSESCRIBE_WINDOWS_STOP_GRACE_SECONDS", "0.47")
+
+    assert daemon._windows_stop_grace_seconds() == 0.47
+
+
+def test_stop_recording_plays_stop_sound_after_rest_capture_finishes(monkeypatch):
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai",
+        streaming=False,
+        overlay=False,
+    )
+    daemon._set_state(AppState.RECORDING)
+    daemon._run_streaming = False
+    daemon._windows_stop_grace_seconds = lambda: 0.3
+    daemon._start_transcribing_watchdog = lambda: None
+
+    events: list[str] = []
+    daemon._play_sound = lambda name: events.append(f"sound:{name}")
+
+    class _RecordingThread:
+        def __init__(self):
+            self.alive = True
+
+        def is_alive(self):
+            return self.alive
+
+        def join(self, timeout=None):
+            events.append(f"join:{timeout}")
+            self.alive = False
+            events.append("capture_finished")
+
+    class _TranscribeThread:
+        def __init__(self, *args, **kwargs):
+            self.target = kwargs.get("target")
+
+        def start(self):
+            events.append("transcribe_thread_start")
+
+    daemon._recording_thread = _RecordingThread()
+    monkeypatch.setattr(windows_module.threading, "Thread", _TranscribeThread)
+
+    daemon._stop_recording()
+
+    assert events == [
+        "join:2.3",
+        "capture_finished",
+        "sound:stop",
+        "transcribe_thread_start",
+    ]
 
 
 def test_provider_cache_reload_and_get_provider_are_thread_safe(monkeypatch):

@@ -74,9 +74,9 @@ from utils.subprocess_io import start_stream_drain_thread
 from whisper_platform import get_clipboard, get_sound_player
 from config import (
     INTERIM_FILE,
-    WINDOWS_STOP_GRACE_SECONDS,
     WARM_STREAM_QUEUE_SIZE,
     get_input_device,
+    get_windows_stop_grace_seconds,
 )
 from providers import get_provider
 from ui.daemon_status_feedback import (
@@ -646,7 +646,7 @@ class PulseScribeWindows:
 
     def _windows_stop_grace_seconds(self) -> float:
         """Return configured Windows capture tail after hotkey release."""
-        return max(0.0, WINDOWS_STOP_GRACE_SECONDS)
+        return get_windows_stop_grace_seconds()
 
     def _wait_for_windows_stop_grace(self, phase: str) -> None:
         """Keep a non-warm input stream open briefly after stop."""
@@ -928,7 +928,6 @@ class PulseScribeWindows:
                 return
 
             logger.info("Stoppe Aufnahme...")
-            self._play_sound("stop")
 
             # Hold-Flag zurücksetzen - egal wie Recording gestoppt wurde
             self._hold_state.reset()
@@ -951,11 +950,22 @@ class PulseScribeWindows:
             recording_thread = self._recording_thread
             should_transcribe_rest = True
 
-        # REST: Auf Recording-Thread warten, dann transcribieren
+        # REST: Auf Recording-Thread warten, Stop-Sound erst nach Ende der
+        # Capture-/Grace-Phase abspielen, dann transcribieren.
         if should_transcribe_rest:
+            capture_finished = True
             if recording_thread and recording_thread.is_alive():
                 join_timeout = 2.0 + self._windows_stop_grace_seconds()
                 recording_thread.join(timeout=join_timeout)
+                capture_finished = not recording_thread.is_alive()
+
+            if capture_finished:
+                self._play_sound("stop")
+            else:
+                logger.warning(
+                    "Stop-Sound übersprungen, weil die Aufnahme noch läuft"
+                )
+
             threading.Thread(target=self._transcribe_rest, daemon=True).start()
 
     def _recording_loop(self):
@@ -1177,6 +1187,7 @@ class PulseScribeWindows:
                         stop_grace_seconds=self._windows_stop_grace_seconds(),
                     )
                 )
+                self._play_sound("stop")
                 logger.debug(f"Streaming abgeschlossen: {len(transcript)} Zeichen")
 
                 if transcript:
@@ -1238,6 +1249,7 @@ class PulseScribeWindows:
                         stop_grace_seconds=self._windows_stop_grace_seconds(),
                     )
                 )
+                self._play_sound("stop")
                 logger.debug(f"Streaming abgeschlossen: {len(transcript)} Zeichen")
 
                 if transcript:

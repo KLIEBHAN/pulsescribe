@@ -376,12 +376,19 @@ DEEPGRAM_TAIL_PADDING_SECONDS = _get_float_env(
 DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS = _get_float_env(
     "PULSESCRIBE_DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS", 0.25
 )  # Zusatzfenster, falls Deepgram nur einen leeren from_finalize-Ack sendet
-WINDOWS_STOP_GRACE_SECONDS = _get_bounded_float_env(
-    "PULSESCRIBE_WINDOWS_STOP_GRACE_SECONDS",
-    0.30,
-    min_value=0.0,
-    max_value=2.0,
-)  # Windows: Nachlaufzeit nach Hotkey-Release, um letzte Silben mitzunehmen
+
+
+def get_windows_stop_grace_seconds() -> float:
+    """Return Windows tail capture duration from the current environment."""
+    return _get_bounded_float_env(
+        "PULSESCRIBE_WINDOWS_STOP_GRACE_SECONDS",
+        0.30,
+        min_value=0.0,
+        max_value=2.0,
+    )
+
+
+WINDOWS_STOP_GRACE_SECONDS = get_windows_stop_grace_seconds()
 
 # Keep-Alive Interval für lokale Modelle (Sekunden)
 # Verhindert Metal Shader Cache Eviction bei Inaktivität
@@ -513,6 +520,7 @@ __all__ = [
     "DEEPGRAM_TAIL_PADDING_SECONDS",
     "DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS",
     "WINDOWS_STOP_GRACE_SECONDS",
+    "get_windows_stop_grace_seconds",
     "TRANSCRIBING_TIMEOUT",
     "LLM_REFINE_TIMEOUT",
     "AUDIO_QUEUE_POLL_INTERVAL",
