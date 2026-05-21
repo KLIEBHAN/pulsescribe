@@ -61,6 +61,19 @@ def test_config_preload_preserves_existing_process_env(tmp_path, monkeypatch) ->
             sys.modules["config"] = original_config
 
 
+def test_windows_latency_preset_selects_snappy_defaults(monkeypatch) -> None:
+    import config as config_module
+
+    monkeypatch.setattr(config_module.os, "name", "nt", raising=False)
+    monkeypatch.delenv("PULSESCRIBE_WINDOWS_LATENCY_PRESET", raising=False)
+
+    assert config_module._windows_latency_default(0.30, 0.20) == 0.20
+
+    monkeypatch.setenv("PULSESCRIBE_WINDOWS_LATENCY_PRESET", "safe")
+
+    assert config_module._windows_latency_default(0.30, 0.20) == 0.30
+
+
 def test_get_input_device_retries_after_initial_probe_failure(monkeypatch) -> None:
     import config as config_module
 

@@ -145,6 +145,106 @@ def test_stop_recording_from_hotkey_allows_loading_state():
     assert stop_calls == 1
 
 
+def test_streaming_stop_switches_to_transcribing_immediately(monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr(
+        asyncio,
+        "WindowsSelectorEventLoopPolicy",
+        asyncio.DefaultEventLoopPolicy,
+        raising=False,
+    )
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="deepgram",
+        streaming=True,
+        overlay=False,
+    )
+    daemon._set_state(AppState.RECORDING)
+    daemon._run_streaming = True
+    daemon._start_transcribing_watchdog = lambda: None
+
+    daemon._stop_recording()
+
+    assert daemon._recording_stop_event.is_set()
+    assert daemon.state == AppState.TRANSCRIBING
+
+
+def test_audio_callback_recording_state_skips_tray_hotpath(monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr(
+        asyncio,
+        "WindowsSelectorEventLoopPolicy",
+        asyncio.DefaultEventLoopPolicy,
+        raising=False,
+    )
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="deepgram",
+        streaming=True,
+        overlay=False,
+    )
+    daemon._set_state(AppState.LISTENING)
+
+    events: list[tuple[str, object, object | None]] = []
+    daemon._overlay_update_state = lambda state, text=None: events.append(
+        ("overlay", state, text)
+    )
+    daemon._update_tray_icon = lambda text=None: events.append(("tray", text, None))
+
+    daemon._enter_recording_from_audio_callback()
+
+    assert daemon.state == AppState.RECORDING
+    assert events == [("overlay", "RECORDING", None)]
+
+
+def test_mic_ready_unblocks_startup_before_optional_prewarm():
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="local",
+        streaming=False,
+        overlay=False,
+    )
+    daemon._is_prewarm_loading = True
+    daemon._set_state(AppState.LOADING, "Starting up...")
+    played: list[str] = []
+    daemon._play_sound = lambda name: played.append(name)
+
+    daemon._mark_mic_ready()
+
+    assert daemon._mic_ready.is_set()
+    assert daemon._is_prewarm_loading is False
+    assert daemon.state == AppState.IDLE
+    assert played == ["ready"]
+
+
+def test_rest_cold_fallback_does_not_sleep_before_recording(monkeypatch):
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai",
+        streaming=False,
+        overlay=False,
+    )
+    daemon._warm_stream = None
+    daemon._play_sound = lambda _name: None
+
+    class _FakeThread:
+        def __init__(self, *args, **kwargs):
+            self.target = kwargs.get("target")
+
+        def start(self):
+            return None
+
+    def fail_on_sleep(seconds):
+        raise AssertionError(f"unexpected sleep before recording: {seconds}")
+
+    monkeypatch.setattr(windows_module.threading, "Thread", _FakeThread)
+    monkeypatch.setattr(windows_module.time, "sleep", fail_on_sleep)
+
+    assert daemon._start_recording() is True
+
+
 def test_warm_stream_is_armed_before_ready_feedback(monkeypatch):
     import asyncio
 

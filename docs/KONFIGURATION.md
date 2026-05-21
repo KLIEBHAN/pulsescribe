@@ -151,9 +151,10 @@ Beide Hotkeys können gleichzeitig aktiv sein.
 
 ### Windows-Aufnahme-Nachlauf
 
-| Variable                                 | Werte             | Default | Beschreibung                                      |
-| ---------------------------------------- | ----------------- | ------- | ------------------------------------------------- |
-| `PULSESCRIBE_WINDOWS_STOP_GRACE_SECONDS` | `0`-`2.0` Sekunden | `0.30`  | Nimmt unter Windows nach Hotkey-Release kurz weiter auf, damit letzte Wörter nicht abgeschnitten werden. |
+| Variable                                  | Werte                               | Default          | Beschreibung                                      |
+| ----------------------------------------- | ----------------------------------- | ---------------- | ------------------------------------------------- |
+| `PULSESCRIBE_WINDOWS_LATENCY_PRESET`      | `snappy`, `safe`, `compat`, `conservative` | `snappy` | Nutzt kürzere Windows-Aufnahme-/Finalize-Puffer für Responsiveness oder konservative Puffer für maximale Endwort-Sicherheit. |
+| `PULSESCRIBE_WINDOWS_STOP_GRACE_SECONDS`  | `0`-`2.0` Sekunden                  | `0.20` (`snappy`), `0.30` (`safe`) | Nimmt unter Windows nach Hotkey-Release kurz weiter auf, damit letzte Wörter nicht abgeschnitten werden. |
 
 Mit `0` lässt sich der zusätzliche Nachlauf deaktivieren.
 

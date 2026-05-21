@@ -273,6 +273,13 @@ def _create_input_stream(sd: Any, **kwargs: Any) -> Any:
         return sd.InputStream(**kwargs)
 
 
+def _stream_blocksize(sample_rate: int) -> int:
+    """Return capture blocksize; Windows prefers small chunks for VAD/overlay."""
+    if sys.platform == "win32":
+        return max(1, int(sample_rate * 0.02))
+    return int(WHISPER_BLOCKSIZE * sample_rate / WHISPER_SAMPLE_RATE)
+
+
 def _create_mic_stream(
     callback: Callable[[np.ndarray, int, Any, Any], None],
     session_id: str,
@@ -294,7 +301,7 @@ def _create_mic_stream(
     import sounddevice as sd
 
     input_device, sample_rate = get_input_device()
-    blocksize = int(WHISPER_BLOCKSIZE * sample_rate / WHISPER_SAMPLE_RATE)
+    blocksize = _stream_blocksize(sample_rate)
 
     mic_stream = _create_input_stream(
         sd,
@@ -666,6 +673,7 @@ def _write_interim_text(path: Path, transcript: str) -> None:
 def _create_message_handler(
     state: StreamState,
     session_id: str,
+    interim_text_callback: Callable[[str], None] | None = None,
 ) -> Callable[[LiveResultResponse | Any], None]:
     """Erstellt Handler für Deepgram-Nachrichten."""
 
@@ -703,6 +711,11 @@ def _create_message_handler(
             if transcript != state.last_interim_written_text and (
                 (now - state.last_interim_write) * 1000 >= INTERIM_THROTTLE_MS
             ):
+                if interim_text_callback is not None:
+                    try:
+                        interim_text_callback(transcript)
+                    except Exception as e:
+                        logger.debug(f"[{session_id}] Interim-Callback fehlgeschlagen: {e}")
                 try:
                     _write_interim_text(INTERIM_FILE, transcript)
                     state.last_interim_write = now
@@ -1011,6 +1024,7 @@ async def deepgram_stream_core(
     play_ready: bool = True,
     external_stop_event: threading.Event | None = None,
     audio_level_callback: Callable[[float], None] | None = None,
+    interim_text_callback: Callable[[str], None] | None = None,
     warm_stream_source: WarmStreamSource | None = None,
     stop_grace_seconds: float = 0.0,
 ) -> str:
@@ -1023,6 +1037,7 @@ async def deepgram_stream_core(
         play_ready: Ready-Sound nach Mikrofon-Init spielen (für CLI)
         external_stop_event: threading.Event zum externen Stoppen (statt SIGUSR1)
         audio_level_callback: Callback für Audio-Level Updates
+        interim_text_callback: Optionaler direkter Callback für Interim-Text
         warm_stream_source: Externes WarmStreamSource für instant-start (Windows)
         stop_grace_seconds: Zusätzliche Aufnahmezeit nach externem Stop-Signal
 
@@ -1121,7 +1136,8 @@ async def deepgram_stream_core(
         ) as connection:
             # Event-Handler registrieren
             connection.on(
-                EventType.MESSAGE, _create_message_handler(state, session_id)
+                EventType.MESSAGE,
+                _create_message_handler(state, session_id, interim_text_callback),
             )
             connection.on(EventType.ERROR, _create_error_handler(state, session_id))
             connection.on(EventType.CLOSE, _create_close_handler(state, session_id))

@@ -158,11 +158,12 @@ Both hotkeys can be active simultaneously.
 
 ### Windows Recording Tail
 
-| Variable                                 | Values              | Default | Description                                         |
-| ---------------------------------------- | ------------------- | ------- | --------------------------------------------------- |
-| `PULSESCRIBE_WINDOWS_STOP_GRACE_SECONDS` | `0`-`2.0` seconds   | `0.30`  | Keep recording briefly after hotkey release on Windows to avoid clipped final words. |
+| Variable                                  | Values                              | Default          | Description                                         |
+| ----------------------------------------- | ----------------------------------- | ---------------- | --------------------------------------------------- |
+| `PULSESCRIBE_WINDOWS_LATENCY_PRESET`      | `snappy`, `safe`, `compat`, `conservative` | `snappy` | Chooses shorter Windows capture/finalize buffers for responsiveness, or conservative buffers for maximum final-word safety. |
+| `PULSESCRIBE_WINDOWS_STOP_GRACE_SECONDS`  | `0`-`2.0` seconds                   | `0.20` (`snappy`), `0.30` (`safe`) | Keep recording briefly after hotkey release on Windows to avoid clipped final words. |
 
-Set to `0` to disable the extra tail capture.
+Set stop grace to `0` to disable the extra tail capture.
 
 ### RTF (Real-Time Factor)
 

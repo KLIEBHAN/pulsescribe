@@ -350,6 +350,8 @@ class PySide6OverlayWidget(QWidget):
         self._last_painted_state = "IDLE"
         self._animation_start = time.perf_counter()
         self._mica_enabled = False
+        self._mica_attempted = False
+        self._active_screen_center_pending = False
         self._fade_out_timer: QTimer | None = None
 
         # Setup
@@ -401,6 +403,22 @@ class PySide6OverlayWidget(QWidget):
             x = geometry.x() + (geometry.width() - WINDOW_WIDTH) // 2
             y = geometry.y() + geometry.height() - WINDOW_HEIGHT - WINDOW_MARGIN_BOTTOM
             self.move(x, y)
+
+    def _schedule_center_on_active_screen(self):
+        """Defer active-monitor lookup so first overlay feedback paints fast."""
+        if getattr(self, "_active_screen_center_pending", False):
+            return
+        if QApplication.instance() is None:
+            self._center_on_screen(use_active_screen=True)
+            return
+        self._active_screen_center_pending = True
+        QTimer.singleShot(1, self._center_on_active_screen_if_visible)
+
+    @Slot()
+    def _center_on_active_screen_if_visible(self):
+        self._active_screen_center_pending = False
+        if self._state != "IDLE":
+            self._center_on_screen(use_active_screen=True)
 
     def _setup_label(self):
         """Erstellt das Text-Label."""
@@ -522,11 +540,28 @@ class PySide6OverlayWidget(QWidget):
             self._fade_animation.stop()
 
     def showEvent(self, event):
-        """Aktiviert Mica-Effekt beim ersten Anzeigen (Windows 11 22H2+)."""
+        """Aktiviert Mica-Effekt nach dem ersten Paint.
+
+        Registry-/DWM-Aufrufe können auf Windows den ersten sichtbaren Hotkey-
+        Feedback-Frame verzögern. Deshalb wird Mica deferred aktiviert.
+        """
         super().showEvent(event)
-        if not self._mica_enabled:
+        if not getattr(self, "_mica_attempted", False):
+            self._mica_attempted = True
+            QTimer.singleShot(1, self._try_enable_mica)
+
+    @Slot()
+    def _try_enable_mica(self):
+        """Aktiviert Mica best-effort außerhalb des first-show Hotpaths."""
+        if self._mica_enabled:
+            return
+        try:
             hwnd = int(self.winId())
             self._mica_enabled = _enable_mica_effect(hwnd)
+            if self._mica_enabled:
+                self.update()
+        except Exception as e:
+            logger.debug(f"Mica deferred activation failed: {e}")
 
     # =========================================================================
     # Public API (Thread-Safe via Signals)
@@ -575,9 +610,10 @@ class PySide6OverlayWidget(QWidget):
             if state_changed:
                 self._fade_out()
         else:
-            # Bei Übergang von IDLE: Auf aktivem Monitor positionieren
+            # Bei Übergang von IDLE nicht vor dem ersten Paint per WinAPI blockieren.
+            # Erst schnell anzeigen, dann auf den aktiven Monitor korrigieren.
             if prev_state == "IDLE":
-                self._center_on_screen(use_active_screen=True)
+                self._schedule_center_on_active_screen()
 
             # Label aktualisieren
             display_text = build_overlay_feedback_text(state, text)

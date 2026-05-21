@@ -367,14 +367,28 @@ def _get_bounded_float_env(
     return value
 
 
+def _windows_latency_preset_is_snappy() -> bool:
+    """Return whether Windows should prefer responsiveness over conservative tails."""
+    if os.name != "nt":
+        return False
+    preset = os.getenv("PULSESCRIBE_WINDOWS_LATENCY_PRESET", "snappy").strip().lower()
+    return preset not in {"safe", "compat", "conservative"}
+
+
+def _windows_latency_default(safe_default: float, snappy_default: float) -> float:
+    return snappy_default if _windows_latency_preset_is_snappy() else safe_default
+
+
 DEEPGRAM_CLOSE_TIMEOUT = _get_float_env(
     "PULSESCRIBE_DEEPGRAM_CLOSE_TIMEOUT", 0.5
 )  # Schneller WebSocket-Shutdown (SDK Default: 10s)
 DEEPGRAM_TAIL_PADDING_SECONDS = _get_float_env(
-    "PULSESCRIBE_DEEPGRAM_TAIL_PADDING_SECONDS", 0.25
+    "PULSESCRIBE_DEEPGRAM_TAIL_PADDING_SECONDS",
+    _windows_latency_default(0.25, 0.15),
 )  # Kurze End-Stille vor Finalize, damit Wortausklang nicht abgeschnitten wird
 DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS = _get_float_env(
-    "PULSESCRIBE_DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS", 0.25
+    "PULSESCRIBE_DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS",
+    _windows_latency_default(0.25, 0.10),
 )  # Zusatzfenster, falls Deepgram nur einen leeren from_finalize-Ack sendet
 
 
@@ -382,7 +396,7 @@ def get_windows_stop_grace_seconds() -> float:
     """Return Windows tail capture duration from the current environment."""
     return _get_bounded_float_env(
         "PULSESCRIBE_WINDOWS_STOP_GRACE_SECONDS",
-        0.30,
+        _windows_latency_default(0.30, 0.20),
         min_value=0.0,
         max_value=2.0,
     )
@@ -425,15 +439,21 @@ WARM_STREAM_QUEUE_SIZE = _get_bounded_int_env(
 TRANSCRIBING_TIMEOUT = 45.0  # Sekunden (Deepgram + Refine sollten < 30s dauern)
 
 # Deepgram Streaming Timeouts
-AUDIO_QUEUE_POLL_INTERVAL = 0.1  # Sekunden zwischen Queue-Polls
+AUDIO_QUEUE_POLL_INTERVAL = _windows_latency_default(
+    0.1, 0.02
+)  # Sekunden zwischen Queue-Polls
 SEND_MEDIA_TIMEOUT = 5.0  # Max. Wartezeit für WebSocket send_media()
 FORWARDER_THREAD_JOIN_TIMEOUT = 0.5  # Timeout beim Beenden des Forwarder-Threads
 
 # Drain-Konfiguration: Leeren der Audio-Queue nach Aufnahme-Stop
 # Pre-Drain: Callback läuft noch, gibt sounddevice Zeit Buffer zu leeren
-PRE_DRAIN_DURATION = 0.1  # Pre-Drain Phase bevor Callback gestoppt wird (100ms)
+PRE_DRAIN_DURATION = _windows_latency_default(
+    0.1, 0.05
+)  # Pre-Drain Phase bevor Callback gestoppt wird
 DRAIN_POLL_INTERVAL = 0.01  # Timeout pro Queue.get() während Drain (10ms)
-DRAIN_MAX_DURATION = 0.2  # Maximale Drain-Dauer als Safety-Limit (200ms)
+DRAIN_MAX_DURATION = _windows_latency_default(
+    0.2, 0.10
+)  # Maximale Drain-Dauer als Safety-Limit
 DRAIN_EMPTY_THRESHOLD = 2  # Anzahl leerer Polls bevor Drain beendet wird
 
 # LLM-Refine Timeout: Maximale Wartezeit für API-Calls

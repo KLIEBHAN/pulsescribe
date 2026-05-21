@@ -42,6 +42,25 @@ def test_message_handler_writes_interim_text_as_utf8(tmp_path, monkeypatch) -> N
     assert state.last_interim_text == "Grüße 你好"
 
 
+def test_message_handler_calls_direct_interim_callback(tmp_path, monkeypatch) -> None:
+    interim_file = tmp_path / "interim.txt"
+    state = deepgram_stream.StreamState()
+    callbacks: list[str] = []
+    handler = deepgram_stream._create_message_handler(
+        state,
+        "sess",
+        interim_text_callback=callbacks.append,
+    )
+
+    monkeypatch.setattr(deepgram_stream, "INTERIM_FILE", interim_file)
+    monkeypatch.setattr(deepgram_stream.time, "perf_counter", lambda: 1.0)
+
+    handler(_response("direct interim"))
+
+    assert callbacks == ["direct interim"]
+    assert interim_file.read_text(encoding="utf-8") == "direct interim"
+
+
 def test_message_handler_skips_duplicate_interim_writes(monkeypatch) -> None:
     state = deepgram_stream.StreamState()
     handler = deepgram_stream._create_message_handler(state, "sess")

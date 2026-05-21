@@ -314,6 +314,7 @@ class PulseScribeWindows:
         self._stop_event = threading.Event()  # App beenden
         self._recording_stop_event = threading.Event()  # Recording stoppen
         self._prewarm_complete = threading.Event()  # Pre-Warm abgeschlossen
+        self._mic_ready = threading.Event()  # Warm-Stream bereit für instant Recording
         self._overlay = None
         self._settings_process = None  # Subprocess für Settings-Fenster
         self._onboarding_process = None  # Subprocess für Onboarding-Wizard
@@ -400,6 +401,12 @@ class PulseScribeWindows:
 
         state_changed = old_state != state
         text_changed = old_text != text
+        if state_changed or text_changed:
+            # Perceived latency matters most on hotkey/VAD transitions: update the
+            # overlay before logging/pystray, because file IO and tray title/icon
+            # updates can be noticeably slower on Windows.
+            self._overlay_update_state(state.name, text)
+
         if state_changed:
             logger.info(f"State: {old_state.value} → {state.value}")
 
@@ -410,10 +417,6 @@ class PulseScribeWindows:
                 self._stop_transcribing_watchdog()
 
         if state_changed or text_changed:
-            # Perceived latency matters most on hotkey/VAD transitions: update the
-            # overlay before pystray, because tray icon/title updates can be
-            # noticeably slower on Windows and otherwise delay visual feedback.
-            self._overlay_update_state(state.name, text)
             self._update_tray_icon(text)
 
     def _overlay_update_state(self, state: str, text: str | None = None) -> None:
@@ -435,6 +438,16 @@ class PulseScribeWindows:
             overlay.update_audio_level(level)
         except Exception as e:
             logger.debug(f"Overlay level update failed: {e}")
+
+    def _overlay_update_interim_text(self, text: str) -> None:
+        """Best-effort direct interim update; avoids file-polling latency."""
+        overlay = self._overlay
+        if overlay is None or not hasattr(overlay, "update_interim_text"):
+            return
+        try:
+            overlay.update_interim_text(text)
+        except Exception as e:
+            logger.debug(f"Overlay interim update failed: {e}")
 
     def _stop_overlay(self) -> None:
         """Stoppt Overlay atomar gegenüber parallelen Worker-Updates."""
@@ -690,6 +703,47 @@ class PulseScribeWindows:
                 break
             time.sleep(min(0.02, remaining))
 
+    def _mark_mic_ready(self) -> None:
+        """Mark warm mic capture ready, independently from optional prewarm work."""
+        if self._mic_ready.is_set():
+            return
+
+        self._mic_ready.set()
+        if not self._is_prewarm_loading:
+            return
+
+        self._is_prewarm_loading = False
+        if self.state == AppState.LOADING:
+            self._set_state(AppState.IDLE)
+            self._play_sound("ready")
+
+    def _promote_prewarm_ready_if_possible(self) -> bool:
+        """Allow hotkeys as soon as the warm microphone stream is ready."""
+        if not (self._is_prewarm_loading and self._mic_ready.is_set()):
+            return False
+
+        self._is_prewarm_loading = False
+        if self.state == AppState.LOADING:
+            self._set_state(AppState.IDLE)
+        return True
+
+    def _enter_recording_from_audio_callback(self) -> None:
+        """Switch LISTENING → RECORDING from the audio callback with minimal work.
+
+        The sounddevice callback must stay lean.  Avoid synchronous tray updates
+        and info-level file logging here; the overlay wave is the feedback that
+        needs to be immediate.
+        """
+        with self._state_lock:
+            if self._state != AppState.LISTENING:
+                return
+            self._state = AppState.RECORDING
+            self._last_status_text = None
+            self._state_generation += 1
+
+        self._overlay_update_state(AppState.RECORDING.name, None)
+        logger.debug("State: listening → recording (audio callback)")
+
     # ═══════════════════════════════════════════════════════════════════════════
     # WARM-STREAM: Mikrofon läuft immer, instant-start beim Hotkey
     # ═══════════════════════════════════════════════════════════════════════════
@@ -733,7 +787,7 @@ class PulseScribeWindows:
                 current_state = self.state
                 if current_state == AppState.LISTENING and rms > _VAD_THRESHOLD_RMS:
                     logger.debug(f"VAD triggered: level={rms:.4f}")
-                    self._set_state(AppState.RECORDING)
+                    self._enter_recording_from_audio_callback()
 
             audio_bytes = indata.tobytes()
 
@@ -773,6 +827,7 @@ class PulseScribeWindows:
                 f"Warm-Stream gestartet: Device={input_device}, "
                 f"{sample_rate}Hz, blocksize={blocksize}"
             )
+            self._mark_mic_ready()
         except Exception as e:
             logger.error(f"Warm-Stream konnte nicht gestartet werden: {e}")
             self._warm_stream = None
@@ -817,7 +872,9 @@ class PulseScribeWindows:
 
     def _on_hotkey_press(self):
         """Callback wenn Hotkey gedrückt wird (Toggle-Mode)."""
-        if self.state in (AppState.IDLE, AppState.NO_SPEECH):
+        if self.state == AppState.LOADING and self._promote_prewarm_ready_if_possible():
+            self._start_recording()
+        elif self.state in (AppState.IDLE, AppState.NO_SPEECH):
             self._start_recording()
         elif self.state == AppState.LOADING and self._is_prewarm_loading:
             # Pre-Warm LOADING: Ignorieren, System noch nicht bereit
@@ -831,6 +888,9 @@ class PulseScribeWindows:
         if not self._hold_state.is_active(source_id):
             logger.debug(f"Hold abgebrochen (Race): {source_id} nicht mehr aktiv")
             return
+
+        if self.state == AppState.LOADING:
+            self._promote_prewarm_ready_if_possible()
 
         # Bereits am Aufnehmen / noch nicht wieder startklar
         if self.state not in (AppState.IDLE, AppState.NO_SPEECH):
@@ -859,6 +919,9 @@ class PulseScribeWindows:
             if self._stop_event.is_set():
                 logger.debug("Start ignoriert: App wird beendet")
                 return False
+
+            if self.state == AppState.LOADING:
+                self._promote_prewarm_ready_if_possible()
 
             # Idempotenz: nur aus Ready-/Retry-Zuständen starten
             if self.state not in (AppState.IDLE, AppState.NO_SPEECH):
@@ -933,7 +996,6 @@ class PulseScribeWindows:
                     logger.warning("Kein Warm-Stream - Fallback auf Cold-Start")
                     self._set_state(AppState.LISTENING)
                     self._play_sound("ready")
-                    time.sleep(0.1)  # Sound abspielen lassen vor Audio-Stream
                     self._recording_thread = threading.Thread(
                         target=self._recording_loop, daemon=True
                     )
@@ -970,8 +1032,11 @@ class PulseScribeWindows:
                 else self.streaming
             )
             if run_streaming:
-                # Streaming: Worker beendet sich selbst via stop_event
-                # Ergebnis kommt automatisch (kein separater Transcribe-Thread nötig)
+                # Streaming: Worker beendet sich selbst via stop_event.  Die UI
+                # wechselt sofort in TRANSCRIBING, während Stop-Grace/Drain/Finalize
+                # im Worker weiterlaufen. Das spiegelt macOS wider und vermeidet
+                # den Eindruck, die Aufnahme hinge nach Hotkey-Release noch fest.
+                self._set_state(AppState.TRANSCRIBING)
                 return
 
             # REST: State früh umschalten, damit parallele Stop-Aufrufe idempotent sind
@@ -1027,7 +1092,7 @@ class PulseScribeWindows:
                 if self.state == AppState.LISTENING:
                     # Einfache VAD: Prüfe ob Audio über Threshold (Peak für REST)
                     if np.abs(indata).max() > _VAD_THRESHOLD_PEAK:
-                        self._set_state(AppState.RECORDING)
+                        self._enter_recording_from_audio_callback()
 
             with _create_low_latency_input_stream(
                 sd,
@@ -1214,6 +1279,7 @@ class PulseScribeWindows:
                         play_ready=True,  # Sound nach Mic-Init (wie macOS)
                         external_stop_event=self._recording_stop_event,
                         audio_level_callback=on_audio_level,  # Immer übergeben für State-Transitions
+                        interim_text_callback=self._overlay_update_interim_text,
                         stop_grace_seconds=self._windows_stop_grace_seconds(),
                     )
                 )
@@ -1275,6 +1341,7 @@ class PulseScribeWindows:
                         language=os.getenv("PULSESCRIBE_LANGUAGE", "auto"),
                         play_ready=False,  # Sound haben wir schon gespielt!
                         external_stop_event=self._recording_stop_event,
+                        interim_text_callback=self._overlay_update_interim_text,
                         warm_stream_source=warm_source,
                         stop_grace_seconds=self._windows_stop_grace_seconds(),
                     )
@@ -2155,6 +2222,14 @@ class PulseScribeWindows:
             # Overlay mit INTERIM_FILE für Interim-Text Polling
             self._overlay = WindowsOverlayController(interim_file=INTERIM_FILE)
             threading.Thread(target=self._overlay.run, daemon=True).start()
+
+            # PySide6 exposes a ready event. Wait briefly so the first hotkey/
+            # LOADING state is not stuck in a pending queue, but never block
+            # startup indefinitely.
+            ready_event = getattr(self._overlay, "_ready_event", None)
+            if ready_event is not None:
+                ready_event.wait(timeout=0.15)
+
             logger.info("Overlay gestartet")
         except Exception as e:
             logger.warning(f"Overlay konnte nicht gestartet werden: {e}")
@@ -2173,7 +2248,7 @@ class PulseScribeWindows:
             import numpy  # noqa: F401 - ~300ms
             import sounddevice  # noqa: F401 - ~100ms
 
-            # Phase 2: Streaming-Dependencies (nur wenn Streaming aktiv)
+            # Phase 2: Provider-Dependencies vorwärmen
             if self.streaming:
                 from providers.deepgram_stream import deepgram_stream_core  # noqa: F401
                 import httpx  # noqa: F401
@@ -2186,6 +2261,13 @@ class PulseScribeWindows:
                 import asyncio
 
                 self._event_loop = asyncio.new_event_loop()
+            else:
+                # REST-Modi zahlen sonst beim ersten Stop lazy Import-/Client-Kosten.
+                try:
+                    import soundfile  # noqa: F401
+                    self._get_provider(self.mode)
+                except Exception as e:
+                    logger.debug(f"REST-Provider Pre-Warm übersprungen: {e}")
 
             # Phase 2b: UI-Imports (optional, beschleunigt _setup_overlay/tray)
             try:
@@ -2230,7 +2312,9 @@ class PulseScribeWindows:
                     preload_start = time.perf_counter()
                     provider = self._get_provider("local")
                     model, _language = self._get_transcription_config()
-                    self._set_state(AppState.LOADING, f"Loading {model}...")
+                    show_local_loading = not self._mic_ready.is_set()
+                    if show_local_loading:
+                        self._set_state(AppState.LOADING, f"Loading {model}...")
                     if hasattr(provider, "preload"):
                         provider.preload(model=model)
                     preload_ms = (time.perf_counter() - preload_start) * 1000
@@ -2521,11 +2605,14 @@ class PulseScribeWindows:
         # Pre-Warm: Teure Imports + Warm-Stream starten
         def _prewarm_and_ready():
             self._prewarm_imports()
-            # Nach Pre-Warm: Zurück zu IDLE (Ready)
-            self._is_prewarm_loading = False
-            if self.state == AppState.LOADING:
-                self._set_state(AppState.IDLE)
-                self._play_sound("ready")  # Signal: System bereit
+            # Falls kein Warm-Stream bereit wurde, erst nach vollständigem Pre-Warm
+            # auf Ready gehen. Bei erfolgreichem Warm-Stream erledigt _mark_mic_ready()
+            # das deutlich früher.
+            if self._is_prewarm_loading:
+                self._is_prewarm_loading = False
+                if self.state == AppState.LOADING:
+                    self._set_state(AppState.IDLE)
+                    self._play_sound("ready")  # Signal: System bereit
 
         threading.Thread(target=_prewarm_and_ready, daemon=True, name="PreWarm").start()
 
