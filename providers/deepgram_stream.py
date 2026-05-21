@@ -774,6 +774,8 @@ def _setup_stop_mechanism(
     loop: asyncio.AbstractEventLoop,
     external_stop_event: threading.Event | None,
     session_id: str,
+    *,
+    stop_grace_seconds: float = 0.0,
 ) -> None:
     """Richtet den Stop-Mechanismus ein.
 
@@ -787,11 +789,17 @@ def _setup_stop_mechanism(
         loop: Event-Loop für thread-safe Aufrufe
         external_stop_event: Externes threading.Event zum Stoppen
         session_id: Session-ID für Logging
+        stop_grace_seconds: Zusätzliche Aufnahmezeit nach externem Stop-Signal
     """
     if external_stop_event is not None:
         # Unified-Daemon-Mode: Externes threading.Event überwachen
         def _watch_external_stop() -> None:
             external_stop_event.wait()
+            if stop_grace_seconds > 0:
+                logger.debug(
+                    f"[{session_id}] Stop-Grace: {stop_grace_seconds:.2f}s"
+                )
+                time.sleep(stop_grace_seconds)
             try:
                 loop.call_soon_threadsafe(state.stop_event.set)
             except RuntimeError as e:
@@ -991,6 +999,7 @@ async def deepgram_stream_core(
     external_stop_event: threading.Event | None = None,
     audio_level_callback: Callable[[float], None] | None = None,
     warm_stream_source: WarmStreamSource | None = None,
+    stop_grace_seconds: float = 0.0,
 ) -> str:
     """Gemeinsamer Streaming-Core für Deepgram (SDK v5.3).
 
@@ -1002,6 +1011,7 @@ async def deepgram_stream_core(
         external_stop_event: threading.Event zum externen Stoppen (statt SIGUSR1)
         audio_level_callback: Callback für Audio-Level Updates
         warm_stream_source: Externes WarmStreamSource für instant-start (Windows)
+        stop_grace_seconds: Zusätzliche Aufnahmezeit nach externem Stop-Signal
 
     Drei Modi:
     - CLI (early_buffer=None): Buffering während WebSocket-Connect
@@ -1046,7 +1056,13 @@ async def deepgram_stream_core(
     audio_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
 
     # Stop-Mechanismus einrichten
-    _setup_stop_mechanism(state, loop, external_stop_event, session_id)
+    _setup_stop_mechanism(
+        state,
+        loop,
+        external_stop_event,
+        session_id,
+        stop_grace_seconds=max(0.0, stop_grace_seconds),
+    )
 
     # Audio-Source initialisieren (modus-spezifisch)
     if mode == AudioSourceMode.WARM_STREAM:

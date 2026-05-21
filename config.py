@@ -345,6 +345,28 @@ def _get_float_env(name: str, default: float) -> float:
         return default
 
 
+def _get_bounded_float_env(
+    name: str,
+    default: float,
+    *,
+    min_value: float,
+    max_value: float,
+) -> float:
+    """Liest Float-ENV und begrenzt auf einen sinnvollen Bereich."""
+    value = _get_float_env(name, default)
+    if value < min_value:
+        logger.warning(
+            f"Wert für {name}={value} zu klein, verwende Minimum {min_value}"
+        )
+        return min_value
+    if value > max_value:
+        logger.warning(
+            f"Wert für {name}={value} zu groß, verwende Maximum {max_value}"
+        )
+        return max_value
+    return value
+
+
 DEEPGRAM_CLOSE_TIMEOUT = _get_float_env(
     "PULSESCRIBE_DEEPGRAM_CLOSE_TIMEOUT", 0.5
 )  # Schneller WebSocket-Shutdown (SDK Default: 10s)
@@ -354,6 +376,12 @@ DEEPGRAM_TAIL_PADDING_SECONDS = _get_float_env(
 DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS = _get_float_env(
     "PULSESCRIBE_DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS", 0.25
 )  # Zusatzfenster, falls Deepgram nur einen leeren from_finalize-Ack sendet
+WINDOWS_STOP_GRACE_SECONDS = _get_bounded_float_env(
+    "PULSESCRIBE_WINDOWS_STOP_GRACE_SECONDS",
+    0.30,
+    min_value=0.0,
+    max_value=2.0,
+)  # Windows: Nachlaufzeit nach Hotkey-Release, um letzte Silben mitzunehmen
 
 # Keep-Alive Interval für lokale Modelle (Sekunden)
 # Verhindert Metal Shader Cache Eviction bei Inaktivität
@@ -484,6 +512,7 @@ __all__ = [
     "DEEPGRAM_CLOSE_TIMEOUT",
     "DEEPGRAM_TAIL_PADDING_SECONDS",
     "DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS",
+    "WINDOWS_STOP_GRACE_SECONDS",
     "TRANSCRIBING_TIMEOUT",
     "LLM_REFINE_TIMEOUT",
     "AUDIO_QUEUE_POLL_INTERVAL",

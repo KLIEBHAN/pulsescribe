@@ -72,7 +72,12 @@ from utils.timing import redacted_text_summary
 from utils.hotkey_windows import hotkeys_conflict, parse_windows_hotkey_for_pynput
 from utils.subprocess_io import start_stream_drain_thread
 from whisper_platform import get_clipboard, get_sound_player
-from config import INTERIM_FILE, get_input_device, WARM_STREAM_QUEUE_SIZE
+from config import (
+    INTERIM_FILE,
+    WINDOWS_STOP_GRACE_SECONDS,
+    WARM_STREAM_QUEUE_SIZE,
+    get_input_device,
+)
 from providers import get_provider
 from ui.daemon_status_feedback import (
     build_daemon_status_label,
@@ -639,6 +644,24 @@ class PulseScribeWindows:
             model = os.getenv("PULSESCRIBE_MODEL")
         return model, language
 
+    def _windows_stop_grace_seconds(self) -> float:
+        """Return configured Windows capture tail after hotkey release."""
+        return max(0.0, WINDOWS_STOP_GRACE_SECONDS)
+
+    def _wait_for_windows_stop_grace(self, phase: str) -> None:
+        """Keep a non-warm input stream open briefly after stop."""
+        grace_seconds = self._windows_stop_grace_seconds()
+        if grace_seconds <= 0:
+            return
+
+        logger.debug(f"Windows Stop-Grace ({phase}): {grace_seconds:.2f}s")
+        deadline = time.monotonic() + grace_seconds
+        while not self._stop_event.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(0.02, remaining))
+
     # ═══════════════════════════════════════════════════════════════════════════
     # WARM-STREAM: Mikrofon läuft immer, instant-start beim Hotkey
     # ═══════════════════════════════════════════════════════════════════════════
@@ -931,7 +954,8 @@ class PulseScribeWindows:
         # REST: Auf Recording-Thread warten, dann transcribieren
         if should_transcribe_rest:
             if recording_thread and recording_thread.is_alive():
-                recording_thread.join(timeout=2.0)
+                join_timeout = 2.0 + self._windows_stop_grace_seconds()
+                recording_thread.join(timeout=join_timeout)
             threading.Thread(target=self._transcribe_rest, daemon=True).start()
 
     def _recording_loop(self):
@@ -976,6 +1000,7 @@ class PulseScribeWindows:
             ):
                 while not self._recording_stop_event.is_set():
                     time.sleep(0.05)
+                self._wait_for_windows_stop_grace("REST cold")
 
         except ImportError:
             logger.error("sounddevice nicht installiert")
@@ -1011,12 +1036,24 @@ class PulseScribeWindows:
             self._warm_stream_armed.set()
             logger.debug("Warm-Stream armed für REST-Recording")
 
-            # Audio sammeln bis Stop-Signal
-            # VAD wird im audio_callback des Warm-Streams gehandhabt (nicht hier)
-            while not self._recording_stop_event.is_set():
+            # Audio sammeln bis Stop-Signal plus kurze Windows-Stop-Grace.
+            # VAD wird im audio_callback des Warm-Streams gehandhabt (nicht hier).
+            stop_seen_at: float | None = None
+            grace_seconds = self._windows_stop_grace_seconds()
+            while True:
+                if self._recording_stop_event.is_set():
+                    if stop_seen_at is None:
+                        stop_seen_at = time.monotonic()
+                        if grace_seconds > 0:
+                            logger.debug(
+                                f"Windows Stop-Grace (REST warm): {grace_seconds:.2f}s"
+                            )
+                    elif time.monotonic() - stop_seen_at >= grace_seconds:
+                        break
+
                 try:
                     # Audio-Chunk aus Queue holen (mit Timeout für Stop-Check)
-                    chunk = self._warm_stream_queue.get(timeout=0.1)
+                    chunk = self._warm_stream_queue.get(timeout=0.02)
 
                     # Chunk zu Buffer hinzufügen (int16 -> float32 für Kompatibilität)
                     audio_int16 = np.frombuffer(chunk, dtype=np.int16)
@@ -1026,6 +1063,8 @@ class PulseScribeWindows:
                         self._audio_buffer.append(audio_float32)
 
                 except queue.Empty:
+                    if stop_seen_at is not None and grace_seconds <= 0:
+                        break
                     continue
 
             # === IMMEDIATE-DRAIN ===
@@ -1135,6 +1174,7 @@ class PulseScribeWindows:
                         play_ready=True,  # Sound nach Mic-Init (wie macOS)
                         external_stop_event=self._recording_stop_event,
                         audio_level_callback=on_audio_level,  # Immer übergeben für State-Transitions
+                        stop_grace_seconds=self._windows_stop_grace_seconds(),
                     )
                 )
                 logger.debug(f"Streaming abgeschlossen: {len(transcript)} Zeichen")
@@ -1195,6 +1235,7 @@ class PulseScribeWindows:
                         play_ready=False,  # Sound haben wir schon gespielt!
                         external_stop_event=self._recording_stop_event,
                         warm_stream_source=warm_source,
+                        stop_grace_seconds=self._windows_stop_grace_seconds(),
                     )
                 )
                 logger.debug(f"Streaming abgeschlossen: {len(transcript)} Zeichen")

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+import threading
 import time
 from types import SimpleNamespace
 from typing import Any, cast
@@ -326,6 +327,33 @@ def test_graceful_shutdown_sends_tail_padding_before_sentinel(monkeypatch) -> No
     sent_items = asyncio.run(_run())
 
     assert sent_items == [b"last-audio", b"\x00\x00", None]
+
+
+def test_stop_mechanism_applies_configured_grace_before_stop(monkeypatch) -> None:
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(
+        deepgram_stream.time,
+        "sleep",
+        lambda seconds: sleep_calls.append(seconds),
+    )
+
+    async def _run() -> None:
+        state = deepgram_stream.StreamState()
+        external_stop = threading.Event()
+        deepgram_stream._setup_stop_mechanism(
+            state,
+            asyncio.get_running_loop(),
+            external_stop,
+            "sess",
+            stop_grace_seconds=0.3,
+        )
+
+        external_stop.set()
+        await asyncio.wait_for(state.stop_event.wait(), timeout=1.0)
+
+    asyncio.run(_run())
+
+    assert sleep_calls == [0.3]
 
 
 def test_finish_warm_forwarder_flushes_threadsafe_audio_before_sentinel() -> None:

@@ -156,6 +156,14 @@ Both hotkeys can be active simultaneously.
 | `PULSESCRIBE_SHOW_RTF`          | `true`, `false` | `false` | Show Real-Time Factor after transcription |
 | `PULSESCRIBE_CLIPBOARD_RESTORE` | `true`, `false` | `false` | Restore previous clipboard after paste    |
 
+### Windows Recording Tail
+
+| Variable                                 | Values              | Default | Description                                         |
+| ---------------------------------------- | ------------------- | ------- | --------------------------------------------------- |
+| `PULSESCRIBE_WINDOWS_STOP_GRACE_SECONDS` | `0`-`2.0` seconds   | `0.30`  | Keep recording briefly after hotkey release on Windows to avoid clipped final words. |
+
+Set to `0` to disable the extra tail capture.
+
 ### RTF (Real-Time Factor)
 
 Performance indicator shown in overlay when `PULSESCRIBE_SHOW_RTF=true`:

@@ -223,6 +223,79 @@ def test_warm_stream_prepare_moves_preroll_after_stale_queue(monkeypatch):
     assert daemon._warm_stream_armed.is_set()
 
 
+def test_streaming_worker_warm_passes_windows_stop_grace(monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr(
+        asyncio,
+        "WindowsSelectorEventLoopPolicy",
+        asyncio.DefaultEventLoopPolicy,
+        raising=False,
+    )
+    windows_module = _load_windows_module()
+    monkeypatch.setattr(windows_module, "WINDOWS_STOP_GRACE_SECONDS", 0.42)
+
+    daemon = windows_module.PulseScribeWindows(
+        mode="deepgram",
+        streaming=True,
+        overlay=False,
+    )
+    daemon._warm_stream = object()
+    daemon._warm_stream_sample_rate = 16000
+    daemon._handle_no_speech_result = lambda *_args, **_kwargs: None
+
+    captured_kwargs: dict[str, object] = {}
+
+    async def fake_deepgram_stream_core(*_args, **kwargs):
+        captured_kwargs.update(kwargs)
+        return ""
+
+    import providers.deepgram_stream as deepgram_stream
+
+    monkeypatch.setattr(
+        deepgram_stream,
+        "deepgram_stream_core",
+        fake_deepgram_stream_core,
+    )
+
+    daemon._streaming_worker_warm()
+
+    assert captured_kwargs["stop_grace_seconds"] == 0.42
+
+
+def test_recording_loop_warm_collects_audio_during_stop_grace(monkeypatch):
+    import numpy as np
+
+    windows_module = _load_windows_module()
+    monkeypatch.setattr(windows_module, "WINDOWS_STOP_GRACE_SECONDS", 0.05)
+
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai",
+        streaming=False,
+        overlay=False,
+    )
+    daemon._warm_stream_sample_rate = 16000
+
+    worker = threading.Thread(target=daemon._recording_loop_warm)
+    worker.start()
+    assert daemon._warm_stream_armed.wait(timeout=1.0)
+
+    daemon._warm_stream_queue.put(np.array([1000], dtype=np.int16).tobytes())
+    time.sleep(0.01)
+    daemon._recording_stop_event.set()
+    time.sleep(0.01)
+    daemon._warm_stream_queue.put(np.array([2000], dtype=np.int16).tobytes())
+
+    worker.join(timeout=1.0)
+
+    assert not worker.is_alive()
+    with daemon._audio_lock:
+        audio_data = np.concatenate(daemon._audio_buffer)
+
+    assert audio_data.shape[0] >= 2
+    assert np.isclose(audio_data[-1], 2000 / 32767)
+
+
 def test_provider_cache_reload_and_get_provider_are_thread_safe(monkeypatch):
     windows_module = _load_windows_module()
 

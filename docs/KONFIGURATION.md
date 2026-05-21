@@ -149,6 +149,14 @@ Beide Hotkeys können gleichzeitig aktiv sein.
 | `PULSESCRIBE_SHOW_RTF`          | `true`, `false` | `false` | Real-Time Factor nach Transkription anzeigen         |
 | `PULSESCRIBE_CLIPBOARD_RESTORE` | `true`, `false` | `false` | Vorherige Zwischenablage nach Paste wiederherstellen |
 
+### Windows-Aufnahme-Nachlauf
+
+| Variable                                 | Werte             | Default | Beschreibung                                      |
+| ---------------------------------------- | ----------------- | ------- | ------------------------------------------------- |
+| `PULSESCRIBE_WINDOWS_STOP_GRACE_SECONDS` | `0`-`2.0` Sekunden | `0.30`  | Nimmt unter Windows nach Hotkey-Release kurz weiter auf, damit letzte Wörter nicht abgeschnitten werden. |
+
+Mit `0` lässt sich der zusätzliche Nachlauf deaktivieren.
+
 ---
 
 ## Lokaler Modus
