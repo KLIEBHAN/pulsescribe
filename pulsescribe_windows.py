@@ -160,6 +160,12 @@ _VAD_THRESHOLD_RMS = 0.003  # Für Streaming-Modus (RMS/INT16_MAX)
 # Tail-Padding: Stille am Ende des Audio (verhindert abgeschnittene Wörter bei Whisper)
 _TAIL_PADDING_SEC = 0.2
 
+# Windows braucht kleine Input-Blöcke + Low-Latency-WASAPI, damit Hotkey → VAD →
+# Overlay nicht spürbar hinterherhinkt. 20ms ist ein guter Kompromiss aus
+# Responsiveness und Callback-Overhead.
+_WINDOWS_AUDIO_BLOCK_MS = 20
+_WINDOWS_INPUT_LATENCY = "low"
+
 # Pre-Roll: kurze Audio-Historie vor dem Hotkey-Start, damit sofortiges Sprechen
 # nicht im ersten Warm-Stream-Callback-Fenster verloren geht.
 _WARM_STREAM_PREROLL_SEC = 0.25
@@ -225,6 +231,25 @@ def _load_tray_dependencies():
     except ImportError as e:
         logger.warning(f"Tray-Icon nicht verfügbar: {e}")
         return False
+
+
+def _windows_audio_blocksize(sample_rate: int) -> int:
+    """Return a small blocksize for snappy Windows VAD/overlay feedback."""
+    return max(1, int(sample_rate * _WINDOWS_AUDIO_BLOCK_MS / 1000))
+
+
+def _create_low_latency_input_stream(sd, **kwargs):
+    """Create a Windows InputStream with low latency, with safe fallback.
+
+    Some Windows audio drivers reject PortAudio's ``latency='low'`` hint. In
+    that case we fall back to the previous default behavior instead of failing
+    microphone startup.
+    """
+    try:
+        return sd.InputStream(**kwargs, latency=_WINDOWS_INPUT_LATENCY)
+    except Exception as e:
+        logger.debug(f"Low-Latency InputStream nicht verfügbar, fallback: {e}")
+        return sd.InputStream(**kwargs)
 
 
 class PulseScribeWindows:
@@ -385,8 +410,11 @@ class PulseScribeWindows:
                 self._stop_transcribing_watchdog()
 
         if state_changed or text_changed:
-            self._update_tray_icon(text)
+            # Perceived latency matters most on hotkey/VAD transitions: update the
+            # overlay before pystray, because tray icon/title updates can be
+            # noticeably slower on Windows and otherwise delay visual feedback.
             self._overlay_update_state(state.name, text)
+            self._update_tray_icon(text)
 
     def _overlay_update_state(self, state: str, text: str | None = None) -> None:
         """Best-effort Overlay-State-Update ohne check-then-use Race."""
@@ -680,8 +708,8 @@ class PulseScribeWindows:
         input_device, sample_rate = get_input_device()
         self._warm_stream_sample_rate = sample_rate
 
-        # Blocksize: ~64ms Chunks (wie in deepgram_stream)
-        blocksize = int(sample_rate * 0.064)
+        # Kleine Chunks: schnellere VAD-/Overlay-Reaktion als die alten ~64ms.
+        blocksize = _windows_audio_blocksize(sample_rate)
         preroll_chunk_count = max(
             1,
             int((_WARM_STREAM_PREROLL_SEC * sample_rate + blocksize - 1) // blocksize),
@@ -731,7 +759,8 @@ class PulseScribeWindows:
                     )
 
         try:
-            self._warm_stream = sd.InputStream(
+            self._warm_stream = _create_low_latency_input_stream(
+                sd,
                 device=input_device,
                 samplerate=sample_rate,
                 channels=1,
@@ -975,7 +1004,7 @@ class PulseScribeWindows:
             import numpy as np
 
             channels = 1
-            chunk_duration = 0.1  # 100ms chunks
+            chunk_duration = _WINDOWS_AUDIO_BLOCK_MS / 1000
 
             # Device und native Sample Rate ermitteln
             input_device, actual_sample_rate = get_input_device()
@@ -1000,7 +1029,8 @@ class PulseScribeWindows:
                     if np.abs(indata).max() > _VAD_THRESHOLD_PEAK:
                         self._set_state(AppState.RECORDING)
 
-            with sd.InputStream(
+            with _create_low_latency_input_stream(
+                sd,
                 device=input_device,
                 samplerate=actual_sample_rate,
                 channels=channels,

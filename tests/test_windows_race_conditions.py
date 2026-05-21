@@ -642,6 +642,55 @@ def test_set_state_uses_overlay_snapshot_to_avoid_none_race():
     assert overlay.update_calls == 1
 
 
+def test_set_state_updates_overlay_before_tray_for_snappy_feedback():
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai",
+        streaming=False,
+        overlay=False,
+    )
+
+    events: list[tuple[str, object, object | None]] = []
+    daemon._overlay_update_state = lambda state, text=None: events.append(
+        ("overlay", state, text)
+    )
+    daemon._update_tray_icon = lambda text=None: events.append(("tray", text, None))
+
+    daemon._set_state(AppState.LISTENING)
+
+    assert events == [("overlay", "LISTENING", None), ("tray", None, None)]
+
+
+def test_low_latency_input_stream_falls_back_when_driver_rejects_latency():
+    windows_module = _load_windows_module()
+    calls: list[dict[str, object]] = []
+
+    class _FakeSoundDevice:
+        def InputStream(self, **kwargs):
+            calls.append(kwargs)
+            if kwargs.get("latency") == "low":
+                raise RuntimeError("latency unsupported")
+            return "stream"
+
+    stream = windows_module._create_low_latency_input_stream(
+        _FakeSoundDevice(),
+        device=1,
+        samplerate=48_000,
+        channels=1,
+    )
+
+    assert stream == "stream"
+    assert calls[0]["latency"] == "low"
+    assert "latency" not in calls[1]
+
+
+def test_windows_audio_blocksize_targets_20ms_chunks():
+    windows_module = _load_windows_module()
+
+    assert windows_module._windows_audio_blocksize(48_000) == 960
+    assert windows_module._windows_audio_blocksize(16_000) == 320
+
+
 def test_stale_hotkey_listener_callbacks_are_ignored_after_restart(monkeypatch):
     windows_module = _load_windows_module()
     daemon = windows_module.PulseScribeWindows(

@@ -468,7 +468,8 @@ class PySide6OverlayWidget(QWidget):
     def _setup_fade_animation(self):
         """Konfiguriert Fade-In/Out Animation."""
         self._fade_animation = QPropertyAnimation(self, b"windowOpacity")
-        self._fade_animation.setDuration(150)  # 150ms
+        # Keep feedback crisp: 150ms felt sluggish on Windows hotkey/VAD transitions.
+        self._fade_animation.setDuration(90)
         # Einmalig verbinden (nicht in _fade_out, um multiple connections zu vermeiden)
         self._fade_animation.finished.connect(self._on_fade_out_finished)
         # Reuse a single timer to avoid accumulating QObject children over long sessions.
