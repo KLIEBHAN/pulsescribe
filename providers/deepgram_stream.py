@@ -54,6 +54,7 @@ from config import (
     get_input_device,
 )
 from providers._language import normalize_auto_language
+from utils.audio_latency import create_low_latency_input_stream, platform_audio_blocksize
 from utils.logging import get_session_id
 from utils.timing import redacted_text_summary
 
@@ -261,23 +262,10 @@ async def _create_deepgram_connection(
 # =============================================================================
 
 
-def _create_input_stream(sd: Any, **kwargs: Any) -> Any:
-    """Create a low-latency input stream on Windows, falling back safely."""
-    if sys.platform != "win32":
-        return sd.InputStream(**kwargs)
-
-    try:
-        return sd.InputStream(**kwargs, latency="low")
-    except Exception as e:
-        logger.debug(f"Low-Latency InputStream nicht verfügbar, fallback: {e}")
-        return sd.InputStream(**kwargs)
-
-
 def _stream_blocksize(sample_rate: int) -> int:
     """Return capture blocksize; Windows prefers small chunks for VAD/overlay."""
-    if sys.platform == "win32":
-        return max(1, int(sample_rate * 0.02))
-    return int(WHISPER_BLOCKSIZE * sample_rate / WHISPER_SAMPLE_RATE)
+    default_blocksize = int(WHISPER_BLOCKSIZE * sample_rate / WHISPER_SAMPLE_RATE)
+    return platform_audio_blocksize(sample_rate, default_blocksize)
 
 
 def _create_mic_stream(
@@ -303,8 +291,9 @@ def _create_mic_stream(
     input_device, sample_rate = get_input_device()
     blocksize = _stream_blocksize(sample_rate)
 
-    mic_stream = _create_input_stream(
+    mic_stream = create_low_latency_input_stream(
         sd,
+        logger=logger,
         device=input_device,
         samplerate=sample_rate,
         channels=WHISPER_CHANNELS,

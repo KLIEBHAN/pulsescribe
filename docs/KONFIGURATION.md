@@ -153,10 +153,10 @@ Beide Hotkeys können gleichzeitig aktiv sein.
 
 | Variable                                  | Werte                               | Default          | Beschreibung                                      |
 | ----------------------------------------- | ----------------------------------- | ---------------- | ------------------------------------------------- |
-| `PULSESCRIBE_WINDOWS_LATENCY_PRESET`      | `snappy`, `safe`, `compat`, `conservative` | `snappy` | Nutzt kürzere Windows-Aufnahme-/Finalize-Puffer für Responsiveness oder konservative Puffer für maximale Endwort-Sicherheit. |
-| `PULSESCRIBE_WINDOWS_STOP_GRACE_SECONDS`  | `0`-`2.0` Sekunden                  | `0.20` (`snappy`), `0.30` (`safe`) | Nimmt unter Windows nach Hotkey-Release kurz weiter auf, damit letzte Wörter nicht abgeschnitten werden. |
+| `PULSESCRIBE_WINDOWS_LATENCY_PRESET`      | `safe`, `snappy`, `compat`, `conservative` | `safe` | Nutzt standardmäßig konservative Windows-Aufnahme-/Finalize-Puffer. `snappy` nutzt kürzere Puffer, wenn dein Mikrofon keine letzten Wörter abschneidet. |
+| `PULSESCRIBE_WINDOWS_STOP_GRACE_SECONDS`  | `0`-`2.0` Sekunden                  | `0.30` (`safe`), `0.20` (`snappy`) | Nimmt unter Windows nach Hotkey-Release kurz weiter auf, damit letzte Wörter nicht abgeschnitten werden. |
 
-Mit `0` lässt sich der zusätzliche Nachlauf deaktivieren.
+Mit `0` lässt sich der zusätzliche Nachlauf deaktivieren. Änderungen an `PULSESCRIBE_WINDOWS_LATENCY_PRESET` benötigen einen Neustart, damit alle Deepgram-Drain-/Tail-Defaults neu geladen werden; `PULSESCRIBE_WINDOWS_STOP_GRACE_SECONDS` wird zur Laufzeit gelesen.
 
 ---
 

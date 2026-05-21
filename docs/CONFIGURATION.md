@@ -160,10 +160,10 @@ Both hotkeys can be active simultaneously.
 
 | Variable                                  | Values                              | Default          | Description                                         |
 | ----------------------------------------- | ----------------------------------- | ---------------- | --------------------------------------------------- |
-| `PULSESCRIBE_WINDOWS_LATENCY_PRESET`      | `snappy`, `safe`, `compat`, `conservative` | `snappy` | Chooses shorter Windows capture/finalize buffers for responsiveness, or conservative buffers for maximum final-word safety. |
-| `PULSESCRIBE_WINDOWS_STOP_GRACE_SECONDS`  | `0`-`2.0` seconds                   | `0.20` (`snappy`), `0.30` (`safe`) | Keep recording briefly after hotkey release on Windows to avoid clipped final words. |
+| `PULSESCRIBE_WINDOWS_LATENCY_PRESET`      | `safe`, `snappy`, `compat`, `conservative` | `safe` | Chooses conservative Windows capture/finalize buffers by default. Use `snappy` for shorter buffers after confirming your microphone does not clip final words. |
+| `PULSESCRIBE_WINDOWS_STOP_GRACE_SECONDS`  | `0`-`2.0` seconds                   | `0.30` (`safe`), `0.20` (`snappy`) | Keep recording briefly after hotkey release on Windows to avoid clipped final words. |
 
-Set stop grace to `0` to disable the extra tail capture.
+Set stop grace to `0` to disable the extra tail capture. Changing `PULSESCRIBE_WINDOWS_LATENCY_PRESET` requires restarting PulseScribe for all Deepgram drain/tail defaults to refresh; `PULSESCRIBE_WINDOWS_STOP_GRACE_SECONDS` is read at runtime.
 
 ### RTF (Real-Time Factor)
 

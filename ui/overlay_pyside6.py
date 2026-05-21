@@ -918,6 +918,10 @@ class PySide6OverlayController:
             # Thread-safe: quit() im Qt-Event-Loop ausführen
             QMetaObject.invokeMethod(self._app, "quit", Qt.QueuedConnection)
 
+    def wait_until_ready(self, timeout: float | None = None) -> bool:
+        """Wait briefly until the Qt widget is ready for first state updates."""
+        return self._ready_event.wait(timeout=timeout)
+
     def update_state(self, state: str, text: str | None = None):
         """Thread-safe State-Update."""
         normalized_text = text or ""

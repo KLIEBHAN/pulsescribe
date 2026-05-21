@@ -61,16 +61,28 @@ def test_config_preload_preserves_existing_process_env(tmp_path, monkeypatch) ->
             sys.modules["config"] = original_config
 
 
-def test_windows_latency_preset_selects_snappy_defaults(monkeypatch) -> None:
+def test_windows_latency_preset_defaults_to_safe_and_snappy_is_opt_in(monkeypatch) -> None:
     import config as config_module
 
     monkeypatch.setattr(config_module.os, "name", "nt", raising=False)
     monkeypatch.delenv("PULSESCRIBE_WINDOWS_LATENCY_PRESET", raising=False)
 
+    assert config_module.get_windows_latency_preset() == "safe"
+    assert config_module._windows_latency_default(0.30, 0.20) == 0.30
+
+    monkeypatch.setenv("PULSESCRIBE_WINDOWS_LATENCY_PRESET", "snappy")
+
+    assert config_module.get_windows_latency_preset() == "snappy"
     assert config_module._windows_latency_default(0.30, 0.20) == 0.20
 
-    monkeypatch.setenv("PULSESCRIBE_WINDOWS_LATENCY_PRESET", "safe")
 
+def test_windows_latency_preset_invalid_value_falls_back_to_safe(monkeypatch) -> None:
+    import config as config_module
+
+    monkeypatch.setattr(config_module.os, "name", "nt", raising=False)
+    monkeypatch.setenv("PULSESCRIBE_WINDOWS_LATENCY_PRESET", "safee")
+
+    assert config_module.get_windows_latency_preset() == "safe"
     assert config_module._windows_latency_default(0.30, 0.20) == 0.30
 
 

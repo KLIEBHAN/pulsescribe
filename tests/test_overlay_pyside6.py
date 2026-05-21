@@ -518,6 +518,17 @@ def test_update_label_only_mutates_changed_parts():
     assert widget._label.text_calls == 2
 
 
+def test_controller_wait_until_ready_uses_ready_event():
+    controller = PySide6OverlayController.__new__(PySide6OverlayController)
+    calls: list[float | None] = []
+    controller._ready_event = types.SimpleNamespace(
+        wait=lambda timeout=None: calls.append(timeout) or True
+    )
+
+    assert PySide6OverlayController.wait_until_ready(controller, timeout=0.15) is True
+    assert calls == [0.15]
+
+
 def test_on_state_changed_skips_duplicate_transition_work(monkeypatch):
     widget = PySide6OverlayWidget.__new__(PySide6OverlayWidget)
     widget._state = "IDLE"

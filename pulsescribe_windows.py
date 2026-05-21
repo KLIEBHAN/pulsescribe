@@ -71,6 +71,11 @@ from utils.hotkey import paste_transcript
 from utils.timing import redacted_text_summary
 from utils.hotkey_windows import hotkeys_conflict, parse_windows_hotkey_for_pynput
 from utils.subprocess_io import start_stream_drain_thread
+from utils.audio_latency import (
+    WINDOWS_AUDIO_BLOCK_MS,
+    create_low_latency_input_stream,
+    windows_audio_blocksize,
+)
 from whisper_platform import get_clipboard, get_sound_player
 from config import (
     INTERIM_FILE,
@@ -160,12 +165,6 @@ _VAD_THRESHOLD_RMS = 0.003  # Für Streaming-Modus (RMS/INT16_MAX)
 # Tail-Padding: Stille am Ende des Audio (verhindert abgeschnittene Wörter bei Whisper)
 _TAIL_PADDING_SEC = 0.2
 
-# Windows braucht kleine Input-Blöcke + Low-Latency-WASAPI, damit Hotkey → VAD →
-# Overlay nicht spürbar hinterherhinkt. 20ms ist ein guter Kompromiss aus
-# Responsiveness und Callback-Overhead.
-_WINDOWS_AUDIO_BLOCK_MS = 20
-_WINDOWS_INPUT_LATENCY = "low"
-
 # Pre-Roll: kurze Audio-Historie vor dem Hotkey-Start, damit sofortiges Sprechen
 # nicht im ersten Warm-Stream-Callback-Fenster verloren geht.
 _WARM_STREAM_PREROLL_SEC = 0.25
@@ -231,25 +230,6 @@ def _load_tray_dependencies():
     except ImportError as e:
         logger.warning(f"Tray-Icon nicht verfügbar: {e}")
         return False
-
-
-def _windows_audio_blocksize(sample_rate: int) -> int:
-    """Return a small blocksize for snappy Windows VAD/overlay feedback."""
-    return max(1, int(sample_rate * _WINDOWS_AUDIO_BLOCK_MS / 1000))
-
-
-def _create_low_latency_input_stream(sd, **kwargs):
-    """Create a Windows InputStream with low latency, with safe fallback.
-
-    Some Windows audio drivers reject PortAudio's ``latency='low'`` hint. In
-    that case we fall back to the previous default behavior instead of failing
-    microphone startup.
-    """
-    try:
-        return sd.InputStream(**kwargs, latency=_WINDOWS_INPUT_LATENCY)
-    except Exception as e:
-        logger.debug(f"Low-Latency InputStream nicht verfügbar, fallback: {e}")
-        return sd.InputStream(**kwargs)
 
 
 class PulseScribeWindows:
@@ -390,7 +370,13 @@ class PulseScribeWindows:
         with self._state_lock:
             return self._state
 
-    def _set_state(self, state: AppState, text: str | None = None):
+    def _set_state(
+        self,
+        state: AppState,
+        text: str | None = None,
+        *,
+        watch_transcribing: bool = True,
+    ):
         """Setzt State und aktualisiert Tray-Icon + Overlay."""
         with self._state_lock:
             old_state = self._state
@@ -411,10 +397,14 @@ class PulseScribeWindows:
             logger.info(f"State: {old_state.value} → {state.value}")
 
             # Watchdog-Management (wie macOS)
-            if state == AppState.TRANSCRIBING:
+            if state == AppState.TRANSCRIBING and watch_transcribing:
                 self._start_transcribing_watchdog()
             elif state in (AppState.DONE, AppState.NO_SPEECH, AppState.ERROR, AppState.IDLE):
                 self._stop_transcribing_watchdog()
+        elif state == AppState.TRANSCRIBING and text_changed and watch_transcribing:
+            # Streaming stop shows TRANSCRIBING immediately without starting the
+            # watchdog. When Deepgram actually returns and text changes, start it.
+            self._start_transcribing_watchdog()
 
         if state_changed or text_changed:
             self._update_tray_icon(text)
@@ -712,19 +702,26 @@ class PulseScribeWindows:
         if not self._is_prewarm_loading:
             return
 
-        self._is_prewarm_loading = False
+        should_play_ready = False
         if self.state == AppState.LOADING:
             self._set_state(AppState.IDLE)
+            should_play_ready = True
+
+        # Flip the startup flag only after the visible state is no longer
+        # LOADING. This avoids a tiny race where a hotkey sees LOADING but can no
+        # longer promote it to ready.
+        self._is_prewarm_loading = False
+        if should_play_ready:
             self._play_sound("ready")
 
     def _promote_prewarm_ready_if_possible(self) -> bool:
         """Allow hotkeys as soon as the warm microphone stream is ready."""
-        if not (self._is_prewarm_loading and self._mic_ready.is_set()):
+        if not self._mic_ready.is_set():
             return False
 
-        self._is_prewarm_loading = False
         if self.state == AppState.LOADING:
             self._set_state(AppState.IDLE)
+        self._is_prewarm_loading = False
         return True
 
     def _enter_recording_from_audio_callback(self) -> None:
@@ -763,7 +760,7 @@ class PulseScribeWindows:
         self._warm_stream_sample_rate = sample_rate
 
         # Kleine Chunks: schnellere VAD-/Overlay-Reaktion als die alten ~64ms.
-        blocksize = _windows_audio_blocksize(sample_rate)
+        blocksize = windows_audio_blocksize(sample_rate)
         preroll_chunk_count = max(
             1,
             int((_WARM_STREAM_PREROLL_SEC * sample_rate + blocksize - 1) // blocksize),
@@ -813,8 +810,9 @@ class PulseScribeWindows:
                     )
 
         try:
-            self._warm_stream = _create_low_latency_input_stream(
+            self._warm_stream = create_low_latency_input_stream(
                 sd,
+                logger=logger,
                 device=input_device,
                 samplerate=sample_rate,
                 channels=1,
@@ -1036,7 +1034,12 @@ class PulseScribeWindows:
                 # wechselt sofort in TRANSCRIBING, während Stop-Grace/Drain/Finalize
                 # im Worker weiterlaufen. Das spiegelt macOS wider und vermeidet
                 # den Eindruck, die Aufnahme hinge nach Hotkey-Release noch fest.
-                self._set_state(AppState.TRANSCRIBING)
+                # Der Watchdog startet erst, wenn Deepgram wirklich zurück ist.
+                self._set_state(
+                    AppState.TRANSCRIBING,
+                    "Finishing...",
+                    watch_transcribing=False,
+                )
                 return
 
             # REST: State früh umschalten, damit parallele Stop-Aufrufe idempotent sind
@@ -1069,7 +1072,7 @@ class PulseScribeWindows:
             import numpy as np
 
             channels = 1
-            chunk_duration = _WINDOWS_AUDIO_BLOCK_MS / 1000
+            chunk_duration = WINDOWS_AUDIO_BLOCK_MS / 1000
 
             # Device und native Sample Rate ermitteln
             input_device, actual_sample_rate = get_input_device()
@@ -1094,8 +1097,9 @@ class PulseScribeWindows:
                     if np.abs(indata).max() > _VAD_THRESHOLD_PEAK:
                         self._enter_recording_from_audio_callback()
 
-            with _create_low_latency_input_stream(
+            with create_low_latency_input_stream(
                 sd,
+                logger=logger,
                 device=input_device,
                 samplerate=actual_sample_rate,
                 channels=channels,
@@ -2226,9 +2230,9 @@ class PulseScribeWindows:
             # PySide6 exposes a ready event. Wait briefly so the first hotkey/
             # LOADING state is not stuck in a pending queue, but never block
             # startup indefinitely.
-            ready_event = getattr(self._overlay, "_ready_event", None)
-            if ready_event is not None:
-                ready_event.wait(timeout=0.15)
+            wait_until_ready = getattr(self._overlay, "wait_until_ready", None)
+            if callable(wait_until_ready):
+                wait_until_ready(timeout=0.15)
 
             logger.info("Overlay gestartet")
         except Exception as e:

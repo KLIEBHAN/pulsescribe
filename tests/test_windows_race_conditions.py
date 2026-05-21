@@ -162,12 +162,19 @@ def test_streaming_stop_switches_to_transcribing_immediately(monkeypatch):
     )
     daemon._set_state(AppState.RECORDING)
     daemon._run_streaming = True
-    daemon._start_transcribing_watchdog = lambda: None
+    watchdog_calls: list[str] = []
+    daemon._start_transcribing_watchdog = lambda: watchdog_calls.append("start")
 
     daemon._stop_recording()
 
     assert daemon._recording_stop_event.is_set()
     assert daemon.state == AppState.TRANSCRIBING
+    assert daemon._last_status_text == "Finishing..."
+    assert watchdog_calls == []
+
+    daemon._set_state(AppState.TRANSCRIBING)
+
+    assert watchdog_calls == ["start"]
 
 
 def test_audio_callback_recording_state_skips_tray_hotpath(monkeypatch):
@@ -217,6 +224,21 @@ def test_mic_ready_unblocks_startup_before_optional_prewarm():
     assert daemon._is_prewarm_loading is False
     assert daemon.state == AppState.IDLE
     assert played == ["ready"]
+
+
+def test_prewarm_promotion_allows_loading_state_even_if_flag_was_cleared():
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai",
+        streaming=False,
+        overlay=False,
+    )
+    daemon._mic_ready.set()
+    daemon._is_prewarm_loading = False
+    daemon._set_state(AppState.LOADING, "Starting up...")
+
+    assert daemon._promote_prewarm_ready_if_possible() is True
+    assert daemon.state == AppState.IDLE
 
 
 def test_rest_cold_fallback_does_not_sleep_before_recording(monkeypatch):
@@ -761,8 +783,10 @@ def test_set_state_updates_overlay_before_tray_for_snappy_feedback():
     assert events == [("overlay", "LISTENING", None), ("tray", None, None)]
 
 
-def test_low_latency_input_stream_falls_back_when_driver_rejects_latency():
-    windows_module = _load_windows_module()
+def test_low_latency_input_stream_falls_back_when_driver_rejects_latency(monkeypatch):
+    import utils.audio_latency as audio_latency
+
+    monkeypatch.setattr(audio_latency.sys, "platform", "win32")
     calls: list[dict[str, object]] = []
 
     class _FakeSoundDevice:
@@ -772,7 +796,7 @@ def test_low_latency_input_stream_falls_back_when_driver_rejects_latency():
                 raise RuntimeError("latency unsupported")
             return "stream"
 
-    stream = windows_module._create_low_latency_input_stream(
+    stream = audio_latency.create_low_latency_input_stream(
         _FakeSoundDevice(),
         device=1,
         samplerate=48_000,
@@ -785,10 +809,10 @@ def test_low_latency_input_stream_falls_back_when_driver_rejects_latency():
 
 
 def test_windows_audio_blocksize_targets_20ms_chunks():
-    windows_module = _load_windows_module()
+    import utils.audio_latency as audio_latency
 
-    assert windows_module._windows_audio_blocksize(48_000) == 960
-    assert windows_module._windows_audio_blocksize(16_000) == 320
+    assert audio_latency.windows_audio_blocksize(48_000) == 960
+    assert audio_latency.windows_audio_blocksize(16_000) == 320
 
 
 def test_stale_hotkey_listener_callbacks_are_ignored_after_restart(monkeypatch):

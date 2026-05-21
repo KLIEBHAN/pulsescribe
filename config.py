@@ -367,12 +367,38 @@ def _get_bounded_float_env(
     return value
 
 
+_WINDOWS_LATENCY_PRESET_SAFE = {"safe", "compat", "conservative"}
+_WINDOWS_LATENCY_PRESET_SNAPPY = {"snappy"}
+
+
+def get_windows_latency_preset() -> str:
+    """Return normalized Windows latency preset (safe by default).
+
+    ``snappy`` is intentionally opt-in: it shortens several capture/finalize
+    buffers and should be enabled after confirming the user's Windows audio
+    device does not clip final syllables.
+    """
+    if os.name != "nt":
+        return "safe"
+
+    raw_preset = os.getenv("PULSESCRIBE_WINDOWS_LATENCY_PRESET", "safe")
+    preset = raw_preset.strip().lower()
+    if preset in _WINDOWS_LATENCY_PRESET_SNAPPY:
+        return "snappy"
+    if preset in _WINDOWS_LATENCY_PRESET_SAFE:
+        return "safe"
+
+    logger.warning(
+        "Ungültiger Wert für PULSESCRIBE_WINDOWS_LATENCY_PRESET='%s', "
+        "verwende 'safe'. Unterstützt: snappy, safe",
+        raw_preset,
+    )
+    return "safe"
+
+
 def _windows_latency_preset_is_snappy() -> bool:
     """Return whether Windows should prefer responsiveness over conservative tails."""
-    if os.name != "nt":
-        return False
-    preset = os.getenv("PULSESCRIBE_WINDOWS_LATENCY_PRESET", "snappy").strip().lower()
-    return preset not in {"safe", "compat", "conservative"}
+    return get_windows_latency_preset() == "snappy"
 
 
 def _windows_latency_default(safe_default: float, snappy_default: float) -> float:
@@ -540,6 +566,7 @@ __all__ = [
     "DEEPGRAM_TAIL_PADDING_SECONDS",
     "DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS",
     "WINDOWS_STOP_GRACE_SECONDS",
+    "get_windows_latency_preset",
     "get_windows_stop_grace_seconds",
     "TRANSCRIBING_TIMEOUT",
     "LLM_REFINE_TIMEOUT",
