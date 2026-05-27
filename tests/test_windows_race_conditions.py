@@ -430,6 +430,76 @@ def test_recording_loop_warm_collects_audio_during_stop_grace(monkeypatch):
     assert np.isclose(audio_data[-1], 2000 / 32767)
 
 
+def test_rest_cold_capture_error_finishes_latency_run(monkeypatch):
+    import builtins
+
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai",
+        streaming=False,
+        overlay=False,
+    )
+    finishes = []
+    original_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "sounddevice":
+            raise ImportError("sounddevice missing")
+        return original_import(name, *args, **kwargs)
+
+    daemon._latency_finish = lambda outcome, **fields: finishes.append((outcome, fields))
+    daemon._play_sound = lambda _name: None
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    monkeypatch.setattr(windows_module.time, "sleep", lambda _seconds: None)
+
+    daemon._recording_loop()
+
+    assert finishes == [
+        (
+            "error",
+            {
+                "error_type": "ImportError",
+                "phase": "rest_capture",
+                "capture_mode": "cold",
+            },
+        )
+    ]
+    assert daemon.state == AppState.IDLE
+
+
+def test_rest_warm_capture_error_finishes_latency_run(monkeypatch):
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai",
+        streaming=False,
+        overlay=False,
+    )
+    finishes = []
+
+    daemon._latency_finish = lambda outcome, **fields: finishes.append((outcome, fields))
+    daemon._play_sound = lambda _name: None
+    daemon._prepare_warm_rest_audio_buffer = lambda: (_ for _ in ()).throw(
+        RuntimeError("warm capture failed")
+    )
+    monkeypatch.setattr(windows_module.time, "sleep", lambda _seconds: None)
+
+    daemon._recording_loop_warm()
+
+    assert finishes == [
+        (
+            "error",
+            {
+                "error_type": "RuntimeError",
+                "phase": "rest_capture",
+                "capture_mode": "warm",
+            },
+        )
+    ]
+    assert daemon.state == AppState.IDLE
+    assert not daemon._warm_stream_armed.is_set()
+    assert not daemon._warm_stream_draining.is_set()
+
+
 def test_windows_stop_grace_reads_current_environment(monkeypatch):
     windows_module = _load_windows_module()
     daemon = windows_module.PulseScribeWindows(

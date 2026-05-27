@@ -1129,6 +1129,24 @@ class PulseScribeWindows:
 
             threading.Thread(target=self._transcribe_rest, daemon=True).start()
 
+    def _handle_rest_capture_error(
+        self,
+        error: Exception,
+        status_text: str,
+        *,
+        capture_mode: str,
+    ) -> None:
+        self._set_state(AppState.ERROR, status_text)
+        self._latency_finish(
+            "error",
+            error_type=type(error).__name__,
+            phase="rest_capture",
+            capture_mode=capture_mode,
+        )
+        self._play_sound("error")
+        time.sleep(1.0)
+        self._set_state(AppState.IDLE)
+
     def _recording_loop(self):
         """Audio-Aufnahme Loop (läuft in separatem Thread)."""
         try:
@@ -1176,18 +1194,20 @@ class PulseScribeWindows:
                     time.sleep(0.05)
                 self._wait_for_windows_stop_grace("REST cold")
 
-        except ImportError:
+        except ImportError as e:
             logger.error("sounddevice nicht installiert")
-            self._set_state(AppState.ERROR, "Microphone dependency missing")
-            self._play_sound("error")
-            time.sleep(1.0)
-            self._set_state(AppState.IDLE)
+            self._handle_rest_capture_error(
+                e,
+                "Microphone dependency missing",
+                capture_mode="cold",
+            )
         except Exception as e:
             logger.error(f"Recording-Fehler: {e}")
-            self._set_state(AppState.ERROR, _friendly_error_status_text(e))
-            self._play_sound("error")
-            time.sleep(1.0)
-            self._set_state(AppState.IDLE)
+            self._handle_rest_capture_error(
+                e,
+                _friendly_error_status_text(e),
+                capture_mode="cold",
+            )
 
     def _recording_loop_warm(self):
         """Audio-Aufnahme Loop mit Warm-Stream (instant-start für REST-Modi).
@@ -1223,10 +1243,11 @@ class PulseScribeWindows:
 
         except Exception as e:
             logger.error(f"Recording-Fehler (Warm): {e}")
-            self._set_state(AppState.ERROR, _friendly_error_status_text(e))
-            self._play_sound("error")
-            time.sleep(1.0)
-            self._set_state(AppState.IDLE)
+            self._handle_rest_capture_error(
+                e,
+                _friendly_error_status_text(e),
+                capture_mode="warm",
+            )
         finally:
             # === DRAIN-PHASE ===
             # Wichtig: sounddevice hat noch ~23ms Audio im Buffer.
@@ -1952,9 +1973,13 @@ class PulseScribeWindows:
             self._open_env_in_editor()
 
     def _start_settings_subprocess(self):
-        if getattr(sys, "frozen", False):
-            return self._start_frozen_settings_subprocess(), "--settings"
-        return self._start_dev_settings_subprocess(), "separater Prozess"
+        return self._start_qt_subprocess(
+            frozen_arg="--settings",
+            script_path=PROJECT_ROOT / "ui" / "settings_windows.py",
+            missing_script_label="Settings-Script",
+            missing_pyside_message="PySide6 nicht installiert - öffne .env im Editor",
+            fallback=self._open_env_in_editor,
+        )
 
     @staticmethod
     def _subprocess_creationflags(subprocess) -> int:
@@ -1964,17 +1989,53 @@ class PulseScribeWindows:
             else 0
         )
 
-    def _start_frozen_settings_subprocess(self):
+    def _start_qt_subprocess(
+        self,
+        *,
+        frozen_arg: str,
+        script_path: Path,
+        missing_script_label: str,
+        missing_pyside_message: str,
+        fallback,
+    ):
         import subprocess
 
-        return subprocess.Popen(
-            [sys.executable, "--settings"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            creationflags=self._subprocess_creationflags(subprocess),
+        if getattr(sys, "frozen", False):
+            return (
+                subprocess.Popen(
+                    [sys.executable, frozen_arg],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    creationflags=self._subprocess_creationflags(subprocess),
+                ),
+                frozen_arg,
+            )
+
+        python_exe = self._resolve_qt_python_executable(
+            missing_pyside_message=missing_pyside_message,
+            fallback=fallback,
+        )
+        if python_exe is None:
+            return None, "separater Prozess"
+
+        if not script_path.exists():
+            logger.error(f"{missing_script_label} nicht gefunden: {script_path}")
+            fallback()
+            return None, "separater Prozess"
+
+        return (
+            subprocess.Popen(
+                [python_exe, str(script_path)],
+                cwd=str(PROJECT_ROOT),
+                env=self._qt_subprocess_env(),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                creationflags=self._subprocess_creationflags(subprocess),
+            ),
+            "separater Prozess",
         )
 
-    def _resolve_settings_python_executable(self) -> str | None:
+    def _resolve_qt_python_executable(self, *, missing_pyside_message: str, fallback) -> str | None:
         venv_python = PROJECT_ROOT / "venv" / "Scripts" / "python.exe"
         dotvenv_python = PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
         if venv_python.exists():
@@ -1985,13 +2046,13 @@ class PulseScribeWindows:
         import importlib.util
 
         if importlib.util.find_spec("PySide6") is None:
-            logger.warning("PySide6 nicht installiert - öffne .env im Editor")
-            self._open_env_in_editor()
+            logger.warning(missing_pyside_message)
+            fallback()
             return None
         return sys.executable
 
     @staticmethod
-    def _settings_subprocess_env() -> dict[str, str]:
+    def _qt_subprocess_env() -> dict[str, str]:
         env = os.environ.copy()
         project_root = str(PROJECT_ROOT)
         existing_pythonpath = env.get("PYTHONPATH")
@@ -2001,28 +2062,6 @@ class PulseScribeWindows:
             else project_root
         )
         return env
-
-    def _start_dev_settings_subprocess(self):
-        python_exe = self._resolve_settings_python_executable()
-        if python_exe is None:
-            return None
-
-        settings_script = PROJECT_ROOT / "ui" / "settings_windows.py"
-        if not settings_script.exists():
-            logger.error(f"Settings-Script nicht gefunden: {settings_script}")
-            self._open_env_in_editor()
-            return None
-
-        import subprocess
-
-        return subprocess.Popen(
-            [python_exe, str(settings_script)],
-            cwd=str(PROJECT_ROOT),
-            env=self._settings_subprocess_env(),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            creationflags=self._subprocess_creationflags(subprocess),
-        )
 
     @staticmethod
     def _subprocess_failed_immediately(process, label: str, fallback) -> bool:
@@ -2573,56 +2612,12 @@ class PulseScribeWindows:
             self._show_settings()
 
     def _start_onboarding_subprocess(self):
-        if getattr(sys, "frozen", False):
-            return self._start_frozen_onboarding_subprocess(), "--onboarding"
-        return self._start_dev_onboarding_subprocess(), "separater Prozess"
-
-    def _start_frozen_onboarding_subprocess(self):
-        import subprocess
-
-        return subprocess.Popen(
-            [sys.executable, "--onboarding"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            creationflags=self._subprocess_creationflags(subprocess),
-        )
-
-    def _resolve_onboarding_python_executable(self) -> str | None:
-        venv_python = PROJECT_ROOT / "venv" / "Scripts" / "python.exe"
-        dotvenv_python = PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
-        if venv_python.exists():
-            return str(venv_python)
-        if dotvenv_python.exists():
-            return str(dotvenv_python)
-
-        import importlib.util
-
-        if importlib.util.find_spec("PySide6") is None:
-            logger.warning("PySide6 nicht installiert - öffne Settings stattdessen")
-            self._show_settings()
-            return None
-        return sys.executable
-
-    def _start_dev_onboarding_subprocess(self):
-        python_exe = self._resolve_onboarding_python_executable()
-        if python_exe is None:
-            return None
-
-        wizard_script = PROJECT_ROOT / "ui" / "onboarding_wizard_windows.py"
-        if not wizard_script.exists():
-            logger.error(f"Wizard-Script nicht gefunden: {wizard_script}")
-            self._show_settings()
-            return None
-
-        import subprocess
-
-        return subprocess.Popen(
-            [python_exe, str(wizard_script)],
-            cwd=str(PROJECT_ROOT),
-            env=self._settings_subprocess_env(),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            creationflags=self._subprocess_creationflags(subprocess),
+        return self._start_qt_subprocess(
+            frozen_arg="--onboarding",
+            script_path=PROJECT_ROOT / "ui" / "onboarding_wizard_windows.py",
+            missing_script_label="Wizard-Script",
+            missing_pyside_message="PySide6 nicht installiert - öffne Settings stattdessen",
+            fallback=self._show_settings,
         )
 
     # =========================================================================

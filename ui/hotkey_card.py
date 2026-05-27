@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable
 
+from ui.hotkey_format import format_hotkey_for_display as _format_shared_hotkey
+
 if TYPE_CHECKING:
     from utils.hotkey_recording import HotkeyRecorder
 
@@ -123,22 +125,11 @@ def _build_failed_save_status(kind: str) -> str:
 
 
 def _format_hotkey_for_display(value: str | None) -> str:
-    hotkey = (value or "").strip().lower()
-    if not hotkey:
-        return ""
-
-    display_parts: list[str] = []
-    for part in hotkey.split("+"):
-        display = HOTKEY_TOKEN_LABELS.get(part)
-        if display is None:
-            if part.startswith("f") and part[1:].isdigit():
-                display = part.upper()
-            elif len(part) == 1:
-                display = part.upper()
-            else:
-                display = part.capitalize()
-        display_parts.append(display)
-    return "+".join(display_parts)
+    return _format_shared_hotkey(
+        value,
+        HOTKEY_TOKEN_LABELS,
+        omit_empty_parts=False,
+    )
 
 
 @dataclass

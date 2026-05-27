@@ -4239,7 +4239,7 @@ class SettingsWindow(QDialog):
                 fp16_combo.currentText(),
                 remove_when={"default"},
             )
-            builder.updates[LEGACY_LOCAL_FP16_ENV_KEY] = None
+            builder.remove_key(LEGACY_LOCAL_FP16_ENV_KEY)
 
         lightning_batch_slider = getattr(self, "_lightning_batch_slider", None)
         if lightning_batch_slider:

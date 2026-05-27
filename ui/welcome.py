@@ -5694,7 +5694,7 @@ class WelcomeController:
                 remove_when={"default"},
                 lower=True,
             )
-            builder.updates[LEGACY_LOCAL_FP16_ENV_KEY] = None
+            builder.remove_key(LEGACY_LOCAL_FP16_ENV_KEY)
 
     def _add_popup_optional_env_update(
         self,
@@ -5748,6 +5748,14 @@ class WelcomeController:
             lower=True,
         )
 
+    @staticmethod
+    def _lightning_quant_value_from_index(index: int) -> str:
+        if index == 1:
+            return "8bit"
+        if index >= 2:
+            return "4bit"
+        return "none"
+
     def _add_lightning_env_updates(
         self,
         builder: SettingsEnvUpdateBuilder,
@@ -5759,9 +5767,12 @@ class WelcomeController:
             )
 
         if self._lightning_quant_popup:
-            builder.set_lightning_quant_from_index(
+            builder.set_optional(
                 "PULSESCRIBE_LIGHTNING_QUANT",
-                int(self._lightning_quant_popup.indexOfSelectedItem()),
+                self._lightning_quant_value_from_index(
+                    int(self._lightning_quant_popup.indexOfSelectedItem())
+                ),
+                remove_when={"none"},
             )
 
     def _add_streaming_env_updates(

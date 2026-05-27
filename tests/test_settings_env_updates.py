@@ -52,9 +52,22 @@ def test_builder_normalizes_lightning_values() -> None:
     builder = SettingsEnvUpdateBuilder()
 
     builder.set_lightning_batch("PULSESCRIBE_LIGHTNING_BATCH_SIZE", 12)
-    builder.set_lightning_quant_from_index("PULSESCRIBE_LIGHTNING_QUANT", 1)
+    builder.set_optional(
+        "PULSESCRIBE_LIGHTNING_QUANT",
+        "8bit",
+        remove_when={"none"},
+    )
 
     assert builder.build() == {
         "PULSESCRIBE_LIGHTNING_BATCH_SIZE": None,
         "PULSESCRIBE_LIGHTNING_QUANT": "8bit",
     }
+
+
+def test_builder_removes_keys_without_exposing_internal_updates() -> None:
+    builder = SettingsEnvUpdateBuilder()
+
+    builder.remove_key("PULSESCRIBE_LOCAL_FP16")
+
+    assert builder.build() == {"PULSESCRIBE_LOCAL_FP16": None}
+    assert not hasattr(builder, "updates")
