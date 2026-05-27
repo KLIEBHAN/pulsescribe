@@ -28,8 +28,9 @@ import tempfile
 import threading
 import time
 import weakref
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 
@@ -106,7 +107,51 @@ RESULT_POLL_INTERVAL_ACTIVE = 0.03
 RESULT_POLL_INTERVAL_BUSY = 0.06
 RESULT_POLL_INTERVAL_IDLE = 0.12
 RESULT_POLL_MAX_MESSAGES_PER_TICK = 250
+RELOAD_ENV_SYNC_KEYS = (
+    "PULSESCRIBE_HOTKEY",
+    "PULSESCRIBE_HOTKEY_MODE",
+    "PULSESCRIBE_TOGGLE_HOTKEY",
+    "PULSESCRIBE_HOLD_HOTKEY",
+    "PULSESCRIBE_LOCAL_BACKEND",
+    "PULSESCRIBE_LOCAL_MODEL",
+    "PULSESCRIBE_LANGUAGE",
+    "PULSESCRIBE_DEVICE",
+    "PULSESCRIBE_FP16",
+    "PULSESCRIBE_LOCAL_FAST",
+    "PULSESCRIBE_LOCAL_BEAM_SIZE",
+    "PULSESCRIBE_LOCAL_BEST_OF",
+    "PULSESCRIBE_LOCAL_TEMPERATURE",
+    "PULSESCRIBE_LOCAL_COMPUTE_TYPE",
+    "PULSESCRIBE_LOCAL_CPU_THREADS",
+    "PULSESCRIBE_LOCAL_NUM_WORKERS",
+    "PULSESCRIBE_LOCAL_WITHOUT_TIMESTAMPS",
+    "PULSESCRIBE_LOCAL_VAD_FILTER",
+    "PULSESCRIBE_LOCAL_WARMUP",
+    "PULSESCRIBE_REFINE_MODEL",
+)
 logger = logging.getLogger("pulsescribe")
+
+
+@dataclass
+class ResultQueueBatchState:
+    latest_audio_level: float | None = None
+    saw_vad_trigger: bool = False
+
+    def reset_audio_level(self) -> None:
+        self.latest_audio_level = None
+        self.saw_vad_trigger = False
+
+
+@dataclass
+class EffectiveDaemonOptions:
+    hotkey: str
+    language: str | None
+    model: str | None
+    refine: bool
+    mode: str
+    hotkey_mode: str
+    toggle_hotkey: str | None
+    hold_hotkey: str | None
 
 # =============================================================================
 # PulseScribeDaemon: Hauptklasse
@@ -362,45 +407,20 @@ class PulseScribeDaemon:
             return False
 
         def callback(_proxy, event_type, event, _refcon):
-            try:
-                if event_type != kCGEventFlagsChanged:
-                    return event
-                event_keycode = int(
-                    CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode)
-                )
-                if event_keycode != keycode:
-                    return event
-
-                flags = int(CGEventGetFlags(event))
-                is_down = bool(flags & flag_mask)
-                is_active = bool(getattr(self, active_attr))
-
-                # Always keep state in sync
-                setattr(self, active_attr, is_down)
-
-                if hotkey_mode == "hold":
-                    source_id = f"modifier:{name}"
-                    if is_down and not is_active:
-                        logger.debug(f"Hotkey {name} down")
-                        if self._hold_state.should_start(source_id):
-                            self._call_on_main(
-                                lambda: self._start_recording_from_hold(source_id)
-                            )
-                    elif not is_down and is_active:
-                        logger.debug(f"Hotkey {name} up")
-                        if self._hold_state.should_stop(source_id):
-                            self._call_on_main(self._stop_recording_from_hotkey)
-                else:
-                    if toggle_on_down_only:
-                        if is_down and not is_active:
-                            logger.debug(f"Hotkey {name} down")
-                            self._call_on_main(self._on_hotkey)
-                    else:
-                        logger.debug(f"Hotkey {name} pressed")
-                        self._call_on_main(self._on_hotkey)
-            except Exception as e:
-                logger.debug(f"{name} tap error: {e}")
-            return event
+            return self._handle_modifier_hotkey_tap_event(
+                event_type=event_type,
+                event=event,
+                keycode=keycode,
+                flag_mask=flag_mask,
+                active_attr=active_attr,
+                name=name,
+                hotkey_mode=hotkey_mode,
+                toggle_on_down_only=toggle_on_down_only,
+                flags_changed_event=kCGEventFlagsChanged,
+                keycode_field=kCGKeyboardEventKeycode,
+                get_flags=CGEventGetFlags,
+                get_integer_value=CGEventGetIntegerValueField,
+            )
 
         tap = CGEventTapCreate(
             kCGHIDEventTap,
@@ -422,6 +442,119 @@ class PulseScribeDaemon:
 
         self._modifier_taps.append((tap, source, callback))
         return True
+
+    def _handle_modifier_hotkey_tap_event(
+        self,
+        *,
+        event_type,
+        event,
+        keycode: int,
+        flag_mask: int,
+        active_attr: str,
+        name: str,
+        hotkey_mode: str,
+        toggle_on_down_only: bool,
+        flags_changed_event,
+        keycode_field,
+        get_flags,
+        get_integer_value,
+    ):
+        try:
+            if not self._modifier_hotkey_event_matches(
+                event_type=event_type,
+                event=event,
+                keycode=keycode,
+                flags_changed_event=flags_changed_event,
+                keycode_field=keycode_field,
+                get_integer_value=get_integer_value,
+            ):
+                return event
+
+            flags = int(get_flags(event))
+            is_down = bool(flags & flag_mask)
+            was_active = bool(getattr(self, active_attr))
+            setattr(self, active_attr, is_down)
+            self._dispatch_modifier_hotkey_event(
+                name=name,
+                hotkey_mode=hotkey_mode,
+                toggle_on_down_only=toggle_on_down_only,
+                is_down=is_down,
+                was_active=was_active,
+            )
+        except Exception as e:
+            logger.debug(f"{name} tap error: {e}")
+        return event
+
+    @staticmethod
+    def _modifier_hotkey_event_matches(
+        *,
+        event_type,
+        event,
+        keycode: int,
+        flags_changed_event,
+        keycode_field,
+        get_integer_value,
+    ) -> bool:
+        if event_type != flags_changed_event:
+            return False
+        event_keycode = int(get_integer_value(event, keycode_field))
+        return event_keycode == keycode
+
+    def _dispatch_modifier_hotkey_event(
+        self,
+        *,
+        name: str,
+        hotkey_mode: str,
+        toggle_on_down_only: bool,
+        is_down: bool,
+        was_active: bool,
+    ) -> None:
+        if hotkey_mode == "hold":
+            self._handle_hold_modifier_hotkey_event(
+                name=name,
+                is_down=is_down,
+                was_active=was_active,
+            )
+            return
+        self._handle_toggle_modifier_hotkey_event(
+            name=name,
+            toggle_on_down_only=toggle_on_down_only,
+            is_down=is_down,
+            was_active=was_active,
+        )
+
+    def _handle_hold_modifier_hotkey_event(
+        self,
+        *,
+        name: str,
+        is_down: bool,
+        was_active: bool,
+    ) -> None:
+        source_id = f"modifier:{name}"
+        if is_down and not was_active:
+            logger.debug(f"Hotkey {name} down")
+            if self._hold_state.should_start(source_id):
+                self._call_on_main(lambda: self._start_recording_from_hold(source_id))
+        elif not is_down and was_active:
+            logger.debug(f"Hotkey {name} up")
+            if self._hold_state.should_stop(source_id):
+                self._call_on_main(self._stop_recording_from_hotkey)
+
+    def _handle_toggle_modifier_hotkey_event(
+        self,
+        *,
+        name: str,
+        toggle_on_down_only: bool,
+        is_down: bool,
+        was_active: bool,
+    ) -> None:
+        if toggle_on_down_only:
+            if is_down and not was_active:
+                logger.debug(f"Hotkey {name} down")
+                self._call_on_main(self._on_hotkey)
+            return
+        logger.debug(f"Hotkey {name} pressed")
+        self._call_on_main(self._on_hotkey)
 
     def _start_fn_hotkey_monitor(self, hotkey_mode: str) -> bool:
         """Erfasst Fn/Globe als Hotkey über Quartz Flags Tap."""
@@ -1110,6 +1243,58 @@ class PulseScribeDaemon:
 
         return int(KEY_CODE_MAP[key]), int(required_flags)
 
+    def _handle_quartz_flags_changed(
+        self,
+        *,
+        mode: str,
+        active: bool,
+        pressed: bool,
+        mods_ok: bool,
+        source_id: str,
+    ) -> tuple[bool, bool]:
+        if mode == "hold" and active and not mods_ok:
+            # Modifier released while active: stop hold.
+            active = False
+            if self._hold_state.should_stop(source_id):
+                self._call_on_main(self._stop_recording_from_hotkey)
+        elif mode == "toggle" and not mods_ok:
+            pressed = False
+        return active, pressed
+
+    def _handle_quartz_hold_key_event(
+        self,
+        *,
+        is_key_down: bool,
+        is_key_up: bool,
+        active: bool,
+        mods_ok: bool,
+        source_id: str,
+    ) -> bool:
+        if is_key_down and mods_ok and not active:
+            active = True
+            if self._hold_state.should_start(source_id):
+                self._call_on_main(lambda: self._start_recording_from_hold(source_id))
+        elif is_key_up and active:
+            active = False
+            if self._hold_state.should_stop(source_id):
+                self._call_on_main(self._stop_recording_from_hotkey)
+        return active
+
+    def _handle_quartz_toggle_key_event(
+        self,
+        *,
+        is_key_down: bool,
+        is_key_up: bool,
+        pressed: bool,
+        mods_ok: bool,
+    ) -> bool:
+        if is_key_down and mods_ok and not pressed:
+            pressed = True
+            self._call_on_main(self._on_hotkey)
+        elif is_key_up:
+            pressed = False
+        return pressed
+
     def _start_quartz_hotkey_listener(self, hotkey_str: str, *, mode: str) -> bool:
         """Starts a Quartz event-tap based hotkey listener (macOS only)."""
         if sys.platform != "darwin":
@@ -1154,52 +1339,22 @@ class PulseScribeDaemon:
 
         def callback(_proxy, event_type, event, _refcon):
             nonlocal active, pressed
-            try:
-                if event_type not in (
-                    kCGEventKeyDown,
-                    kCGEventKeyUp,
-                    kCGEventFlagsChanged,
-                ):
-                    return event
-
-                flags = int(CGEventGetFlags(event))
-                mods_ok = (flags & required_flags) == required_flags
-
-                if event_type == kCGEventFlagsChanged:
-                    if mode == "hold" and active and not mods_ok:
-                        # Modifier released while active: stop hold.
-                        active = False
-                        if self._hold_state.should_stop(source_id):
-                            self._call_on_main(self._stop_recording_from_hotkey)
-                    elif mode == "toggle" and not mods_ok:
-                        pressed = False
-                    return event
-
-                event_keycode = int(
-                    CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode)
-                )
-                if event_keycode != keycode:
-                    return event
-
-                if mode == "hold":
-                    if event_type == kCGEventKeyDown and mods_ok and not active:
-                        active = True
-                        if self._hold_state.should_start(source_id):
-                            self._call_on_main(
-                                lambda: self._start_recording_from_hold(source_id)
-                            )
-                    elif event_type == kCGEventKeyUp and active:
-                        active = False
-                        if self._hold_state.should_stop(source_id):
-                            self._call_on_main(self._stop_recording_from_hotkey)
-                else:
-                    if event_type == kCGEventKeyDown and mods_ok and not pressed:
-                        pressed = True
-                        self._call_on_main(self._on_hotkey)
-                    elif event_type == kCGEventKeyUp:
-                        pressed = False
-            except Exception as e:
-                logger.debug(f"Quartz hotkey tap error: {e}")
+            event, active, pressed = self._handle_quartz_hotkey_tap_event(
+                event_type=event_type,
+                event=event,
+                mode=mode,
+                keycode=keycode,
+                required_flags=required_flags,
+                active=active,
+                pressed=pressed,
+                source_id=source_id,
+                key_down_event=kCGEventKeyDown,
+                key_up_event=kCGEventKeyUp,
+                flags_changed_event=kCGEventFlagsChanged,
+                keycode_field=kCGKeyboardEventKeycode,
+                get_flags=CGEventGetFlags,
+                get_integer_value=CGEventGetIntegerValueField,
+            )
             return event
 
         tap = CGEventTapCreate(
@@ -1226,6 +1381,137 @@ class PulseScribeDaemon:
         self._modifier_taps.append((tap, source, callback))
         return True
 
+    def _handle_quartz_hotkey_tap_event(
+        self,
+        *,
+        event_type,
+        event,
+        mode: str,
+        keycode: int,
+        required_flags: int,
+        active: bool,
+        pressed: bool,
+        source_id: str,
+        key_down_event,
+        key_up_event,
+        flags_changed_event,
+        keycode_field,
+        get_flags,
+        get_integer_value,
+    ):
+        try:
+            if event_type not in (key_down_event, key_up_event, flags_changed_event):
+                return event, active, pressed
+
+            flags = int(get_flags(event))
+            mods_ok = (flags & required_flags) == required_flags
+            if event_type == flags_changed_event:
+                active, pressed = self._handle_quartz_flags_changed(
+                    mode=mode,
+                    active=active,
+                    pressed=pressed,
+                    mods_ok=mods_ok,
+                    source_id=source_id,
+                )
+                return event, active, pressed
+
+            if not self._quartz_hotkey_key_matches(
+                event=event,
+                keycode=keycode,
+                keycode_field=keycode_field,
+                get_integer_value=get_integer_value,
+            ):
+                return event, active, pressed
+
+            is_key_down = event_type == key_down_event
+            is_key_up = event_type == key_up_event
+            if mode == "hold":
+                active = self._handle_quartz_hold_key_event(
+                    is_key_down=is_key_down,
+                    is_key_up=is_key_up,
+                    active=active,
+                    mods_ok=mods_ok,
+                    source_id=source_id,
+                )
+            else:
+                pressed = self._handle_quartz_toggle_key_event(
+                    is_key_down=is_key_down,
+                    is_key_up=is_key_up,
+                    pressed=pressed,
+                    mods_ok=mods_ok,
+                )
+        except Exception as e:
+            logger.debug(f"Quartz hotkey tap error: {e}")
+        return event, active, pressed
+
+    @staticmethod
+    def _quartz_hotkey_key_matches(
+        *,
+        event,
+        keycode: int,
+        keycode_field,
+        get_integer_value,
+    ) -> bool:
+        event_keycode = int(get_integer_value(event, keycode_field))
+        return event_keycode == keycode
+
+    @staticmethod
+    def _pynput_modifier_key(part: str, keyboard):
+        if part in ("ctrl", "control"):
+            return keyboard.Key.ctrl
+        if part in ("alt", "option"):
+            return keyboard.Key.alt
+        if part == "shift":
+            return keyboard.Key.shift
+        if part in ("cmd", "command", "win"):
+            return keyboard.Key.cmd
+        return None
+
+    @staticmethod
+    def _pynput_named_key(part: str, keyboard):
+        special_map = {
+            "space": keyboard.Key.space,
+            "tab": keyboard.Key.tab,
+            "enter": keyboard.Key.enter,
+            "return": keyboard.Key.enter,
+            "esc": keyboard.Key.esc,
+            "escape": keyboard.Key.esc,
+            "fn": keyboard.KeyCode.from_vk(63),
+            "capslock": keyboard.Key.caps_lock,
+            "caps_lock": keyboard.Key.caps_lock,
+            "caps": keyboard.Key.caps_lock,
+        }
+        return special_map.get(part)
+
+    @staticmethod
+    def _pynput_function_key(part: str, keyboard):
+        if not (part.startswith("f") and part[1:].isdigit()):
+            return None
+        f_key = getattr(keyboard.Key, part, None)
+        if f_key:
+            return f_key
+        raise ValueError(f"Unbekannte Funktionstaste: {part}")
+
+    @staticmethod
+    def _pynput_regular_key(part: str, keyboard, key_code_map: dict[str, int]):
+        if part in key_code_map:
+            return keyboard.KeyCode.from_vk(int(key_code_map[part]))
+        if len(part) == 1:
+            return keyboard.KeyCode.from_char(part)
+        raise ValueError(f"Unbekannte Taste: {part}")
+
+    @staticmethod
+    def _pynput_key_for_part(part: str, keyboard, key_code_map: dict[str, int]):
+        for resolver in (
+            PulseScribeDaemon._pynput_modifier_key,
+            PulseScribeDaemon._pynput_named_key,
+            PulseScribeDaemon._pynput_function_key,
+        ):
+            key = resolver(part, keyboard)
+            if key is not None:
+                return key
+        return PulseScribeDaemon._pynput_regular_key(part, keyboard, key_code_map)
+
     @staticmethod
     def _parse_pynput_hotkey(hotkey_str: str):
         """Parst Hotkey-String in pynput-Key-Set."""
@@ -1235,46 +1521,10 @@ class PulseScribeDaemon:
         parts = [p.strip().lower() for p in hotkey_str.split("+")]
         keys: set = set()
 
-        special_map = {
-            "space": keyboard.Key.space,
-            "tab": keyboard.Key.tab,
-            "enter": keyboard.Key.enter,
-            "return": keyboard.Key.enter,
-            "esc": keyboard.Key.esc,
-            "escape": keyboard.Key.esc,
-        }
-
         for part in parts:
-            if part in ("ctrl", "control"):
-                keys.add(keyboard.Key.ctrl)
-            elif part in ("alt", "option"):
-                keys.add(keyboard.Key.alt)
-            elif part == "shift":
-                keys.add(keyboard.Key.shift)
-            elif part in ("cmd", "command", "win"):
-                keys.add(keyboard.Key.cmd)
-            elif part in special_map:
-                keys.add(special_map[part])
-            elif part.startswith("f") and part[1:].isdigit():
-                f_key = getattr(keyboard.Key, part, None)
-                if f_key:
-                    keys.add(f_key)
-                else:
-                    raise ValueError(f"Unbekannte Funktionstaste: {part}")
-            elif part == "fn":
-                # Fn/Globe key: pynput has no Key.fn, use virtual keycode
-                keys.add(keyboard.KeyCode.from_vk(63))
-            elif part in ("capslock", "caps_lock", "caps"):
-                keys.add(keyboard.Key.caps_lock)
-            else:
-                # Normale Taste: prefer virtual key codes so modified characters
-                # (e.g. Option+L) still match the underlying physical key.
-                if part in KEY_CODE_MAP:
-                    keys.add(keyboard.KeyCode.from_vk(int(KEY_CODE_MAP[part])))
-                elif len(part) == 1:
-                    keys.add(keyboard.KeyCode.from_char(part))
-                else:
-                    raise ValueError(f"Unbekannte Taste: {part}")
+            keys.add(
+                PulseScribeDaemon._pynput_key_for_part(part, keyboard, KEY_CODE_MAP)
+            )
 
         return keys
 
@@ -1628,7 +1878,7 @@ class PulseScribeDaemon:
         stream,
         *,
         finished_event: threading.Event,
-        run_id: int,
+        run_id: int | None,
     ) -> None:
         """Beendet einen Input-Stream bevorzugt callback-gesteuert und ohne stop()-Blockade.
 
@@ -1759,6 +2009,273 @@ class PulseScribeDaemon:
             emergency_log(f"StreamingWorker Exception: {type(e).__name__}: {e}")
             result_queue_ref.put(e)
 
+    @staticmethod
+    def _put_empty_transcript_result(
+        result_queue_ref: queue.Queue[DaemonMessage | Exception],
+    ) -> None:
+        result_queue_ref.put(
+            DaemonMessage(type=MessageType.TRANSCRIPT_RESULT, payload="")
+        )
+
+    def _capture_recording_audio(
+        self,
+        *,
+        run_id: int | None,
+        result_queue_ref: queue.Queue[DaemonMessage | Exception],
+        stop_event: threading.Event | None,
+    ) -> tuple[list[Any], float, bool]:
+        import numpy as np
+        import sounddevice as sd
+
+        recorded_chunks: list[Any] = []
+        max_rms = 0.0
+        had_speech = False
+        player = get_sound_player()
+        finished_event = threading.Event()
+        callback_abort_exc = getattr(sd, "CallbackAbort", None)
+
+        self._set_worker_phase("recording:ready-sound", run_id=run_id)
+        player.play("ready")
+
+        def callback(indata, _frames, _time, _status):
+            nonlocal max_rms, had_speech
+            recorded_chunks.append(indata.copy())
+            rms = float(np.sqrt(np.mean(indata**2)))
+            max_rms = max(max_rms, rms)
+            had_speech = had_speech or rms > VAD_THRESHOLD
+            try:
+                result_queue_ref.put_nowait(
+                    DaemonMessage(type=MessageType.AUDIO_LEVEL, payload=rms)
+                )
+            except queue.Full:
+                pass
+
+            if stop_event is not None and stop_event.is_set() and (
+                isinstance(callback_abort_exc, type)
+                and issubclass(callback_abort_exc, BaseException)
+            ):
+                raise callback_abort_exc
+
+        # Explizites Stream-Management statt Context-Manager:
+        # vermeidet PortAudio-Deadlocks beim Schließen des Streams.
+        stream = sd.InputStream(
+            samplerate=WHISPER_SAMPLE_RATE,
+            channels=1,
+            dtype="float32",
+            callback=callback,
+            finished_callback=finished_event.set,
+        )
+        self._set_worker_phase("recording:start-stream", run_id=run_id)
+        stream.start()
+        logger.debug("Audio-Stream gestartet")
+
+        try:
+            self._set_worker_phase("recording:capture", run_id=run_id)
+            while stop_event is not None and not stop_event.is_set():
+                sd.sleep(50)
+        finally:
+            self._shutdown_input_stream(
+                stream,
+                finished_event=finished_event,
+                run_id=run_id,
+            )
+
+        self._set_worker_phase("recording:stop-sound", run_id=run_id)
+        player.play("stop")
+        return recorded_chunks, max_rms, had_speech
+
+    def _prepare_recorded_audio(
+        self,
+        *,
+        recorded_chunks: list[Any],
+        max_rms: float,
+        had_speech: bool,
+        result_queue_ref: queue.Queue[DaemonMessage | Exception],
+        run_id: int | None,
+    ) -> tuple[Any, float] | None:
+        import numpy as np
+
+        self._set_worker_phase("recording:finalize-audio", run_id=run_id)
+        if not recorded_chunks:
+            logger.warning("Keine Audiodaten aufgenommen")
+            # Leeres Ergebnis signalisieren, damit Result-Polling sauber endet.
+            self._put_empty_transcript_result(result_queue_ref)
+            return None
+        if not had_speech:
+            logger.info(
+                f"Keine Sprache erkannt (max_rms={max_rms:.4f}) – Transkription übersprungen"
+            )
+            self._put_empty_transcript_result(result_queue_ref)
+            return None
+
+        audio_data = np.concatenate(recorded_chunks)
+        audio_duration = 0.0
+        if not hasattr(audio_data, "shape"):
+            return audio_data, audio_duration
+
+        raw_duration = float(audio_data.shape[0]) / WHISPER_SAMPLE_RATE
+        # VAD_THRESHOLD ist fürs Triggern optimiert und kann am Ende zu aggressiv
+        # sein. Für Trimming nutzen wir einen konservativeren dynamischen Wert.
+        trim_threshold = VAD_THRESHOLD * 0.5
+        if max_rms > 0:
+            trim_threshold = min(trim_threshold, max_rms * 0.03)
+        trimmed_audio = self._trim_silence(
+            audio_data,
+            trim_threshold,
+            WHISPER_SAMPLE_RATE,
+            pad_s=0.25,
+        )
+        trimmed_duration = float(trimmed_audio.shape[0]) / WHISPER_SAMPLE_RATE
+        if trimmed_duration < raw_duration - 0.05:
+            logger.info(
+                f"Trimmed silence: raw={raw_duration:.2f}s -> "
+                f"trimmed={trimmed_duration:.2f}s"
+            )
+
+        audio_data = trimmed_audio
+        audio_duration = trimmed_duration
+
+        # Lokales Whisper profitiert oft von etwas künstlicher End-Silence, damit
+        # letzte Wörter stabiler dekodiert werden.
+        mode_for_run = self._run_mode or self.mode
+        if mode_for_run == "local":
+            tail_s = 0.2
+            tail_samples = int(WHISPER_SAMPLE_RATE * tail_s)
+            if tail_samples > 0:
+                audio_data = np.concatenate(
+                    [audio_data, np.zeros(tail_samples, dtype=np.float32)]
+                )
+                audio_duration += tail_s
+
+        return audio_data, audio_duration
+
+    def _log_local_preload_status(
+        self,
+        *,
+        mode_for_run: str,
+        result_queue_ref: queue.Queue[DaemonMessage | Exception],
+    ) -> None:
+        if mode_for_run != "local":
+            return
+
+        preload_ready = self._local_preload_complete.is_set()
+        logger.debug(f"Local transcribe start: preload_ready={preload_ready}")
+        if preload_ready:
+            return
+
+        logger.warning(
+            "Transkription startet BEVOR Preload fertig ist - "
+            "dies kann zu erhöhter Latenz führen!"
+        )
+        model_name = self.model or "turbo"
+        result_queue_ref.put(
+            DaemonMessage(
+                type=MessageType.STATUS_UPDATE,
+                payload=(AppState.LOADING, f"Loading {model_name}..."),
+            )
+        )
+
+    def _transcribe_recorded_audio(
+        self,
+        *,
+        audio_data: Any,
+        audio_duration: float,
+        result_queue_ref: queue.Queue[DaemonMessage | Exception],
+        run_id: int | None,
+    ) -> str:
+        import soundfile as sf
+
+        fd, temp_path = tempfile.mkstemp(suffix=".wav")
+        os.close(fd)
+
+        try:
+            mode_for_run = (
+                self._run_mode
+                or self.mode
+                or os.getenv("PULSESCRIBE_MODE", "deepgram")
+            )
+            provider = self._get_provider(mode_for_run)
+            self._log_local_preload_status(
+                mode_for_run=mode_for_run,
+                result_queue_ref=result_queue_ref,
+            )
+
+            t0 = time.perf_counter()
+            try:
+                self._set_worker_phase("recording:transcribing", run_id=run_id)
+                model_for_provider = self.model if mode_for_run == "local" else None
+
+                if mode_for_run == "local" and hasattr(provider, "transcribe_audio"):
+                    transcript = provider.transcribe_audio(  # type: ignore[attr-defined]
+                        audio_data, model=model_for_provider, language=self.language
+                    )
+                else:
+                    sf.write(temp_path, audio_data, WHISPER_SAMPLE_RATE)
+                    transcript = provider.transcribe(
+                        Path(temp_path),
+                        model=model_for_provider,
+                        language=self.language,
+                    )
+            except Exception as e:
+                if mode_for_run == "local":
+                    raise
+
+                logger.warning(
+                    f"Provider '{mode_for_run}' fehlgeschlagen ({e}). "
+                    "Fallback auf local..."
+                )
+                provider = self._get_provider("local")
+                if not hasattr(provider, "transcribe_audio"):
+                    raise
+                transcript = provider.transcribe_audio(  # type: ignore[attr-defined]
+                    audio_data,
+                    # Don't pass provider-specific model names (e.g. 'nova-3').
+                    model=None,
+                    language=self.language,
+                )
+                mode_for_run = "local"
+
+            self._log_transcription_performance(
+                provider=provider,
+                mode_for_run=mode_for_run,
+                audio_duration=audio_duration,
+                t_transcribe=time.perf_counter() - t0,
+            )
+            return transcript
+        finally:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+
+    def _log_transcription_performance(
+        self,
+        *,
+        provider,
+        mode_for_run: str,
+        audio_duration: float,
+        t_transcribe: float,
+    ) -> None:
+        if audio_duration <= 0:
+            self._last_rtf = None
+            logger.info(
+                f"Transcription performance: mode={mode_for_run}, "
+                f"time={t_transcribe:.2f}s (audio duration unknown)"
+            )
+            return
+
+        rtf = t_transcribe / audio_duration
+        self._last_rtf = rtf
+        model_name = self._model_name_for_logging(provider, mode_override=mode_for_run)
+        backend_name = self._local_backend_for_logging(
+            provider,
+            mode_override=mode_for_run,
+        )
+        backend_info = f", backend={backend_name}" if backend_name else ""
+        logger.info(
+            f"Transcription performance: mode={mode_for_run}{backend_info}, "
+            f"model={model_name}, "
+            f"audio={audio_duration:.2f}s, time={t_transcribe:.2f}s, rtf={rtf:.2f}x"
+        )
+
     def _recording_worker(
         self,
         run_id: int | None = None,
@@ -1773,257 +2290,50 @@ class PulseScribeDaemon:
 
         Garantiert: Sendet IMMER entweder TRANSCRIPT_RESULT oder Exception.
         """
-        import numpy as np
-        import sounddevice as sd
-        import soundfile as sf
-
         run_id = self._active_run_id if run_id is None else run_id
         result_queue_ref = result_queue_ref or self._result_queue
         stop_event = stop_event or self._stop_event
 
         self._set_worker_phase("recording:boot", run_id=run_id)
         logger.debug(f"RecordingWorker gestartet (run={run_id})")
-        recorded_chunks = []
-        max_rms = 0.0
-        had_speech = False
-        player = get_sound_player()
-        finished_event = threading.Event()
-        callback_abort_exc = getattr(sd, "CallbackAbort", None)
 
         try:
-            # Ready-Sound
-            self._set_worker_phase("recording:ready-sound", run_id=run_id)
-            player.play("ready")
-
-            # Aufnahme-Loop
-            def callback(indata, frames, time, status):
-                nonlocal max_rms, had_speech
-                recorded_chunks.append(indata.copy())
-                # RMS Berechnung und Queueing
-                rms = float(np.sqrt(np.mean(indata**2)))
-                if rms > max_rms:
-                    max_rms = rms
-                if rms > VAD_THRESHOLD:
-                    had_speech = True
-                try:
-                    result_queue_ref.put_nowait(
-                        DaemonMessage(type=MessageType.AUDIO_LEVEL, payload=rms)
-                    )
-                except queue.Full:
-                    pass
-
-                if stop_event is not None and stop_event.is_set():
-                    if (
-                        isinstance(callback_abort_exc, type)
-                        and issubclass(callback_abort_exc, BaseException)
-                    ):
-                        raise callback_abort_exc
-
-            # Explizites Stream-Management statt Context-Manager
-            # Vermeidet PortAudio-Deadlock beim Schließen des Streams
-            stream = sd.InputStream(
-                samplerate=WHISPER_SAMPLE_RATE,
-                channels=1,
-                dtype="float32",
-                callback=callback,
-                finished_callback=finished_event.set,
+            recorded_chunks, max_rms, had_speech = self._capture_recording_audio(
+                run_id=run_id,
+                result_queue_ref=result_queue_ref,
+                stop_event=stop_event,
             )
-            self._set_worker_phase("recording:start-stream", run_id=run_id)
-            stream.start()
-            logger.debug("Audio-Stream gestartet")
-
-            try:
-                self._set_worker_phase("recording:capture", run_id=run_id)
-                while stop_event is not None and not stop_event.is_set():
-                    sd.sleep(50)
-            finally:
-                self._shutdown_input_stream(
-                    stream,
-                    finished_event=finished_event,
-                    run_id=run_id,
-                )
-
-            # Stop-Sound
-            self._set_worker_phase("recording:stop-sound", run_id=run_id)
-            player.play("stop")
-
-            # Speichern
-            self._set_worker_phase("recording:finalize-audio", run_id=run_id)
-            if not recorded_chunks:
-                logger.warning("Keine Audiodaten aufgenommen")
-                # Leeres Ergebnis signalisieren, damit Result-Polling sauber endet.
-                result_queue_ref.put(
-                    DaemonMessage(type=MessageType.TRANSCRIPT_RESULT, payload="")
-                )
-                return
-            if not had_speech:
-                logger.info(
-                    f"Keine Sprache erkannt (max_rms={max_rms:.4f}) – Transkription übersprungen"
-                )
-                result_queue_ref.put(
-                    DaemonMessage(type=MessageType.TRANSCRIPT_RESULT, payload="")
-                )
+            prepared_audio = self._prepare_recorded_audio(
+                recorded_chunks=recorded_chunks,
+                max_rms=max_rms,
+                had_speech=had_speech,
+                result_queue_ref=result_queue_ref,
+                run_id=run_id,
+            )
+            if prepared_audio is None:
                 return
 
-            audio_data = np.concatenate(recorded_chunks)
+            audio_data, audio_duration = prepared_audio
+            transcript = self._transcribe_recorded_audio(
+                audio_data=audio_data,
+                audio_duration=audio_duration,
+                result_queue_ref=result_queue_ref,
+                run_id=run_id,
+            )
 
-            # Silence-Trimming (reduziert Zeit/Kosten bei allen Providern)
-            raw_duration = 0.0
-            audio_duration = 0.0
-            if hasattr(audio_data, "shape"):
-                raw_duration = float(audio_data.shape[0]) / WHISPER_SAMPLE_RATE
-                # Wichtig: VAD_THRESHOLD ist fürs Triggern optimiert und kann am Ende
-                # zu aggressiv sein (leise Ausklinger). Für Trimming nehmen wir
-                # einen konservativeren, dynamischen Threshold basierend auf max_rms.
-                trim_threshold = VAD_THRESHOLD * 0.5
-                if max_rms > 0:
-                    trim_threshold = min(trim_threshold, max_rms * 0.03)
-                trimmed_audio = self._trim_silence(
-                    audio_data,
-                    trim_threshold,
-                    WHISPER_SAMPLE_RATE,
-                    pad_s=0.25,
-                )
-                trimmed_duration = float(trimmed_audio.shape[0]) / WHISPER_SAMPLE_RATE
-                if trimmed_duration < raw_duration - 0.05:
-                    logger.info(
-                        f"Trimmed silence: raw={raw_duration:.2f}s -> trimmed={trimmed_duration:.2f}s"
-                    )
+            transcript = self._maybe_refine(
+                transcript,
+                phase_prefix="recording",
+                run_id=run_id,
+                result_queue=result_queue_ref,
+            )
 
-                audio_duration = trimmed_duration
-                audio_data = trimmed_audio
-
-                # Lokales Whisper profitiert oft von etwas künstlicher "End-Silence",
-                # damit letzte Wörter stabiler dekodiert werden.
-                mode_for_run = self._run_mode or self.mode
-                if mode_for_run == "local":
-                    tail_s = 0.2
-                    tail_samples = int(WHISPER_SAMPLE_RATE * tail_s)
-                    if tail_samples > 0:
-                        audio_data = np.concatenate(
-                            [audio_data, np.zeros(tail_samples, dtype=np.float32)]
-                        )
-                        audio_duration += tail_s
-
-            # Temp-File erstellen
-            fd, temp_path = tempfile.mkstemp(suffix=".wav")
-            os.close(fd)
-
-            try:
-                # Update State: Transcribing
-                # (via Queue nicht direkt möglich, aber _stop_recording setzt es im Main-Thread)
-
-                # Transkribieren via Provider
-                mode_for_run = (
-                    self._run_mode
-                    or self.mode
-                    or os.getenv("PULSESCRIBE_MODE", "deepgram")
-                )
-                provider = self._get_provider(mode_for_run)
-
-                # Preload-Status für local mode loggen (Performance-Debugging)
-                if mode_for_run == "local":
-                    preload_ready = self._local_preload_complete.is_set()
-                    logger.debug(
-                        f"Local transcribe start: preload_ready={preload_ready}"
-                    )
-                    if not preload_ready:
-                        logger.warning(
-                            "Transkription startet BEVOR Preload fertig ist - "
-                            "dies kann zu erhöhter Latenz führen!"
-                        )
-                        # On-demand Loading: Zeige LOADING statt TRANSCRIBING
-                        model_name = self.model or "turbo"
-                        result_queue_ref.put(
-                            DaemonMessage(
-                                type=MessageType.STATUS_UPDATE,
-                                payload=(AppState.LOADING, f"Loading {model_name}..."),
-                            )
-                        )
-
-                t0 = time.perf_counter()
-                try:
-                    self._set_worker_phase("recording:transcribing", run_id=run_id)
-                    # self.model ist für lokale Modelle (turbo, large-v3, etc.)
-                    # Andere Provider haben eigene Defaults und sollten None bekommen
-                    model_for_provider = self.model if mode_for_run == "local" else None
-
-                    if mode_for_run == "local" and hasattr(
-                        provider, "transcribe_audio"
-                    ):
-                        transcript = provider.transcribe_audio(  # type: ignore[attr-defined]
-                            audio_data, model=model_for_provider, language=self.language
-                        )
-                    else:
-                        sf.write(temp_path, audio_data, WHISPER_SAMPLE_RATE)
-                        transcript = provider.transcribe(
-                            Path(temp_path),
-                            model=model_for_provider,
-                            language=self.language,
-                        )
-                except Exception as e:
-                    # Best-effort fallback to local transcription for non-streaming modes
-                    # (e.g. missing API keys, provider downtime).
-                    if mode_for_run != "local":
-                        logger.warning(
-                            f"Provider '{mode_for_run}' fehlgeschlagen ({e}). Fallback auf local..."
-                        )
-                        provider = self._get_provider("local")
-                        if hasattr(provider, "transcribe_audio"):
-                            transcript = provider.transcribe_audio(  # type: ignore[attr-defined]
-                                audio_data,
-                                # Don't pass provider-specific model names (e.g. 'nova-3').
-                                model=None,
-                                language=self.language,
-                            )
-                            mode_for_run = "local"
-                        else:
-                            raise
-                    else:
-                        raise
-                t_transcribe = time.perf_counter() - t0
-                if audio_duration > 0:
-                    rtf = t_transcribe / audio_duration
-                    self._last_rtf = rtf  # Speichern für Overlay-Anzeige
-                    model_name = self._model_name_for_logging(
-                        provider, mode_override=mode_for_run
-                    )
-                    backend_name = self._local_backend_for_logging(
-                        provider, mode_override=mode_for_run
-                    )
-                    backend_info = f", backend={backend_name}" if backend_name else ""
-                    logger.info(
-                        f"Transcription performance: mode={mode_for_run}{backend_info}, "
-                        f"model={model_name}, "
-                        f"audio={audio_duration:.2f}s, time={t_transcribe:.2f}s, rtf={rtf:.2f}x"
-                    )
-                else:
-                    self._last_rtf = None  # Kein RTF berechnet
-                    logger.info(
-                        f"Transcription performance: mode={mode_for_run}, "
-                        f"time={t_transcribe:.2f}s (audio duration unknown)"
-                    )
-
-                # LLM-Nachbearbeitung (optional)
-                transcript = self._maybe_refine(
-                    transcript,
-                    phase_prefix="recording",
-                    run_id=run_id,
-                    result_queue=result_queue_ref,
-                )
-
-                logger.debug("Sende TRANSCRIPT_RESULT")
-                self._set_worker_phase("recording:publishing-result", run_id=run_id)
-                result_queue_ref.put(
-                    DaemonMessage(
-                        type=MessageType.TRANSCRIPT_RESULT, payload=transcript
-                    )
-                )
-                self._set_worker_phase("recording:finished", run_id=run_id)
-
-            finally:
-                if os.path.exists(temp_path):
-                    os.unlink(temp_path)
+            logger.debug("Sende TRANSCRIPT_RESULT")
+            self._set_worker_phase("recording:publishing-result", run_id=run_id)
+            result_queue_ref.put(
+                DaemonMessage(type=MessageType.TRANSCRIPT_RESULT, payload=transcript)
+            )
+            self._set_worker_phase("recording:finished", run_id=run_id)
 
         except Exception as e:
             logger.exception(f"Recording-Worker Fehler: {e}")
@@ -2145,10 +2455,73 @@ class PulseScribeDaemon:
         ):
             self._overlay.update_audio_level(latest_level)
 
+    def _flush_result_batch_audio_state(self, state: ResultQueueBatchState) -> None:
+        self._flush_pending_audio_level(
+            latest_level=state.latest_audio_level,
+            saw_vad_trigger=state.saw_vad_trigger,
+        )
+
+    def _handle_status_update_message(
+        self,
+        result: DaemonMessage,
+        batch_state: ResultQueueBatchState,
+    ) -> None:
+        self._flush_result_batch_audio_state(batch_state)
+        batch_state.reset_audio_level()
+
+        # Support both simple state and (state, text) tuple
+        if isinstance(result.payload, tuple):
+            state, text = result.payload
+            self._update_state(state, text)
+        else:
+            self._update_state(result.payload)
+
+    def _handle_audio_level_message(
+        self,
+        result: DaemonMessage,
+        batch_state: ResultQueueBatchState,
+    ) -> None:
+        try:
+            level = float(result.payload)
+        except (TypeError, ValueError):
+            return
+
+        batch_state.latest_audio_level = level
+        if self._current_state == AppState.LISTENING and level > VAD_THRESHOLD:
+            batch_state.saw_vad_trigger = True
+
+    def _handle_result_queue_item(
+        self,
+        result: DaemonMessage | Exception,
+        batch_state: ResultQueueBatchState,
+    ) -> bool:
+        if isinstance(result, Exception):
+            self._stop_result_polling()
+            self._handle_worker_error(result)
+            return True
+
+        if not isinstance(result, DaemonMessage):
+            return False
+
+        if result.type == MessageType.STATUS_UPDATE:
+            self._handle_status_update_message(result, batch_state)
+            return False
+
+        if result.type == MessageType.AUDIO_LEVEL:
+            self._handle_audio_level_message(result, batch_state)
+            return False
+
+        if result.type == MessageType.TRANSCRIPT_RESULT:
+            self._stop_result_polling()
+            transcript = str(result.payload or "")
+            self._handle_transcript_result(transcript)
+            return True
+
+        return False
+
     def _process_result_queue_batch(self) -> bool:
         """Drain one result-queue burst while coalescing hot audio-level traffic."""
-        latest_audio_level: float | None = None
-        saw_vad_trigger = False
+        batch_state = ResultQueueBatchState()
         processed_count = 0
 
         while processed_count < RESULT_POLL_MAX_MESSAGES_PER_TICK:
@@ -2159,49 +2532,10 @@ class PulseScribeDaemon:
 
             processed_count += 1
 
-            if isinstance(result, Exception):
-                self._stop_result_polling()
-                self._handle_worker_error(result)
+            if self._handle_result_queue_item(result, batch_state):
                 return True
 
-            if not isinstance(result, DaemonMessage):
-                continue
-
-            if result.type == MessageType.STATUS_UPDATE:
-                self._flush_pending_audio_level(
-                    latest_level=latest_audio_level,
-                    saw_vad_trigger=saw_vad_trigger,
-                )
-                latest_audio_level = None
-                saw_vad_trigger = False
-
-                # Support both simple state and (state, text) tuple
-                if isinstance(result.payload, tuple):
-                    state, text = result.payload
-                    self._update_state(state, text)
-                else:
-                    self._update_state(result.payload)
-                continue
-
-            if result.type == MessageType.AUDIO_LEVEL:
-                latest_audio_level = result.payload
-                if (
-                    self._current_state == AppState.LISTENING
-                    and latest_audio_level > VAD_THRESHOLD
-                ):
-                    saw_vad_trigger = True
-                continue
-
-            if result.type == MessageType.TRANSCRIPT_RESULT:
-                self._stop_result_polling()
-                transcript = str(result.payload or "")
-                self._handle_transcript_result(transcript)
-                return True
-
-        self._flush_pending_audio_level(
-            latest_level=latest_audio_level,
-            saw_vad_trigger=saw_vad_trigger,
-        )
+        self._flush_result_batch_audio_state(batch_state)
         return False
 
     def _schedule_result_timer(self, interval: float) -> None:
@@ -2516,53 +2850,35 @@ class PulseScribeDaemon:
 
     def _reload_settings(self) -> None:
         """Lädt Settings aus .env neu und wendet sie an."""
-        from config import DEFAULT_REFINE_MODEL
         from utils.preferences import read_env_file
 
-        # .env neu laden (override=True um Änderungen zu übernehmen)
         load_environment(override_existing=True)
         env_values = read_env_file()
-
         old_hotkey_signature = self._hotkey_bindings_signature(
             self._resolve_hotkey_bindings()
         )
 
-        # WICHTIG: python-dotenv setzt Variablen, entfernt sie aber nicht wenn ein Key
-        # aus der Datei gelöscht wurde. Das ist relevant, weil die Settings-UI einige
-        # Defaults über "Key entfernen" abbildet (z.B. local backend = whisper).
-        # Daher synchronisieren wir ausgewählte Keys explizit mit der .env Datei.
-        for key in (
-            # Hotkeys
-            "PULSESCRIBE_HOTKEY",
-            "PULSESCRIBE_HOTKEY_MODE",
-            "PULSESCRIBE_TOGGLE_HOTKEY",
-            "PULSESCRIBE_HOLD_HOTKEY",
-            # Local options
-            "PULSESCRIBE_LOCAL_BACKEND",
-            "PULSESCRIBE_LOCAL_MODEL",
-            "PULSESCRIBE_LANGUAGE",
-            "PULSESCRIBE_DEVICE",
-            "PULSESCRIBE_FP16",
-            "PULSESCRIBE_LOCAL_FAST",
-            "PULSESCRIBE_LOCAL_BEAM_SIZE",
-            "PULSESCRIBE_LOCAL_BEST_OF",
-            "PULSESCRIBE_LOCAL_TEMPERATURE",
-            "PULSESCRIBE_LOCAL_COMPUTE_TYPE",
-            "PULSESCRIBE_LOCAL_CPU_THREADS",
-            "PULSESCRIBE_LOCAL_NUM_WORKERS",
-            "PULSESCRIBE_LOCAL_WITHOUT_TIMESTAMPS",
-            "PULSESCRIBE_LOCAL_VAD_FILTER",
-            "PULSESCRIBE_LOCAL_WARMUP",
-            # Optional keys that can be removed in UI to reset to default.
-            "PULSESCRIBE_REFINE_MODEL",
-        ):
+        self._sync_reload_env_values(env_values)
+        self._apply_reloaded_hotkey_settings(env_values)
+        self._apply_reloaded_runtime_settings(env_values)
+        self._invalidate_local_provider_runtime_config()
+        self._log_reloaded_settings()
+        self._reconfigure_hotkeys_after_reload(old_hotkey_signature)
+        self._preload_local_model_async()
+
+    @staticmethod
+    def _sync_reload_env_values(env_values: dict[str, str]) -> None:
+        # python-dotenv setzt Variablen, entfernt sie aber nicht wenn ein Key
+        # aus der Datei gelöscht wurde. Deshalb synchronisieren wir die Keys,
+        # deren Abwesenheit in der Settings-UI Defaults bedeutet.
+        for key in RELOAD_ENV_SYNC_KEYS:
             value = env_values.get(key)
             if value is None:
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
 
-        # Hotkeys übernehmen (apply immediately; legacy values kept unless explicitly set)
+    def _apply_reloaded_hotkey_settings(self, env_values: dict[str, str]) -> None:
         self.toggle_hotkey = (
             env_values.get("PULSESCRIBE_TOGGLE_HOTKEY") or ""
         ).strip() or None
@@ -2576,19 +2892,19 @@ class PulseScribeDaemon:
                 env_values.get("PULSESCRIBE_HOTKEY_MODE") or ""
             ).strip() or self.hotkey_mode
 
-        # Settings aktualisieren
+    def _apply_reloaded_runtime_settings(self, env_values: dict[str, str]) -> None:
+        from config import DEFAULT_REFINE_MODEL
+
         new_mode = env_values.get("PULSESCRIBE_MODE")
         if new_mode:
             self.mode = new_mode
 
-        # Modell aktualisieren (LOCAL_MODEL hat Priorität über generisches MODEL)
         new_model = env_values.get("PULSESCRIBE_LOCAL_MODEL") or env_values.get(
             "PULSESCRIBE_MODEL"
         )
-        self.model = new_model  # None ist valid für Provider-Default
-
+        self.model = new_model
         new_language = env_values.get("PULSESCRIBE_LANGUAGE")
-        self.language = new_language  # None ist valid für "auto"
+        self.language = new_language
 
         refine_flag = parse_bool(env_values.get("PULSESCRIBE_REFINE"))
         if refine_flag is not None:
@@ -2601,8 +2917,7 @@ class PulseScribeDaemon:
         new_refine_model = env_values.get("PULSESCRIBE_REFINE_MODEL")
         self.refine_model = new_refine_model or DEFAULT_REFINE_MODEL
 
-        # Lokalen Provider nicht wegwerfen (Modell-Load ist teuer).
-        # Stattdessen Runtime-Konfig invalidieren, damit ENV-Änderungen greifen.
+    def _invalidate_local_provider_runtime_config(self) -> None:
         with self._provider_cache_lock:
             local_provider = self._provider_cache.get("local")
         if local_provider is not None:
@@ -2619,30 +2934,32 @@ class PulseScribeDaemon:
                 with self._provider_cache_lock:
                     self._provider_cache.pop("local", None)
 
+    def _log_reloaded_settings(self) -> None:
         logger.info(
             f"Settings reloaded: mode={self.mode}, language={self.language}, "
             f"refine={self.refine}, refine_provider={self.refine_provider}, "
             f"refine_model={self.refine_model}"
         )
 
-        # Hotkeys ggf. neu registrieren (ohne Neustart)
+    def _reconfigure_hotkeys_after_reload(
+        self,
+        old_hotkey_signature: tuple[tuple[str, str], ...],
+    ) -> None:
         new_hotkey_signature = self._hotkey_bindings_signature(
             self._resolve_hotkey_bindings()
         )
-        if new_hotkey_signature != old_hotkey_signature:
-            if self._is_hotkey_reconfigure_busy():
-                logger.info(
-                    f"Hotkeys geändert ({old_hotkey_signature} → {new_hotkey_signature}) – apply after current run…"
-                )
-                self._pending_hotkey_reconfigure = True
-            else:
-                logger.info(
-                    f"Hotkeys geändert ({old_hotkey_signature} → {new_hotkey_signature}) – re-register…"
-                )
-                self._reconfigure_hotkeys(show_alerts=True)
-
-        # Falls lokal aktiviert, Modell im Hintergrund vorladen
-        self._preload_local_model_async()
+        if new_hotkey_signature == old_hotkey_signature:
+            return
+        if self._is_hotkey_reconfigure_busy():
+            logger.info(
+                f"Hotkeys geändert ({old_hotkey_signature} → {new_hotkey_signature}) – apply after current run…"
+            )
+            self._pending_hotkey_reconfigure = True
+            return
+        logger.info(
+            f"Hotkeys geändert ({old_hotkey_signature} → {new_hotkey_signature}) – re-register…"
+        )
+        self._reconfigure_hotkeys(show_alerts=True)
 
     def _is_hotkey_reconfigure_busy(self) -> bool:
         """True if it's unsafe to unregister/re-register hotkeys right now."""
@@ -2756,201 +3073,271 @@ class PulseScribeDaemon:
             )
         return filtered_bindings, invalid_msgs
 
-    def _unregister_all_hotkeys(self) -> None:
-        """Stoppt alle registrierten Hotkeys/Listener (best-effort)."""
-        # Toggle hotkeys (Carbon / best-effort)
-        for handler in list(self._toggle_hotkey_handlers):
-            unregister = getattr(handler, "unregister", None)
-            if callable(unregister):
-                try:
-                    unregister()
-                except Exception:
-                    pass
-        self._toggle_hotkey_handlers.clear()
-
-        # pynput listeners (hold + toggle fallback)
-        for listener in list(self._pynput_listeners):
-            stop = getattr(listener, "stop", None)
-            if callable(stop):
-                try:
-                    stop()
-                except Exception:
-                    pass
-        self._pynput_listeners.clear()
-
-        # Modifier taps (Quartz)
-        if self._modifier_taps:
-            try:
-                from Quartz import (  # type: ignore[import-not-found,attr-defined]
-                    CGEventTapEnable,
-                    CFMachPortInvalidate,
-                    CFRunLoopGetCurrent,
-                    CFRunLoopRemoveSource,
-                    kCFRunLoopCommonModes,
-                )
-
-                run_loop = CFRunLoopGetCurrent()
-                for tap, source, _callback in list(self._modifier_taps):
-                    try:
-                        CGEventTapEnable(tap, False)
-                    except Exception:
-                        pass
-                    try:
-                        CFRunLoopRemoveSource(run_loop, source, kCFRunLoopCommonModes)
-                    except Exception:
-                        pass
-                    try:
-                        CFMachPortInvalidate(tap)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-
-        self._modifier_taps.clear()
-        self._fn_active = False
-        self._caps_active = False
-        self._hold_state.clear()
-
-    def _register_hotkeys_from_current_settings(self, *, show_alerts: bool) -> None:
-        """Registriert Hotkeys anhand der aktuellen Settings (toggle/hold + legacy)."""
-        bindings = self._resolve_hotkey_bindings()
-        if not bindings:
-            logger.warning("Kein Hotkey konfiguriert – Hotkeys deaktiviert")
-            if show_alerts:
-                try:
-                    show_error_alert(
-                        "Kein Hotkey konfiguriert",
-                        "Es ist kein Hotkey gesetzt. PulseScribe läuft ohne Hotkey.\n\n"
-                        "Öffne Settings, um einen Hotkey zu wählen.",
-                    )
-                except Exception:
-                    pass
-            return
-
+    def _prepare_hotkey_bindings(
+        self,
+        bindings: list[tuple[str, str]],
+    ) -> tuple[list[tuple[str, str]], list[str]]:
         normalized: list[tuple[str, str]] = []
         for mode, hk in bindings:
             normalized_mode = self._normalize_hotkey_mode(mode)
             if normalized_mode != (mode or "toggle").strip().lower():
                 logger.warning(
-                    f"Unbekannter Hotkey-Modus '{(mode or '').strip().lower()}', fallback auf toggle"
+                    f"Unbekannter Hotkey-Modus '{(mode or '').strip().lower()}', "
+                    "fallback auf toggle"
                 )
             normalized.append((normalized_mode, hk))
 
-        # Doppelte Hotkeys entfernen (z.B. gleicher Key für Toggle und Hold)
         deduped, duplicate_msgs = self._dedupe_hotkey_bindings(normalized)
         for msg in duplicate_msgs:
             logger.warning(msg)
-
-        invalid_hotkeys: list[str] = []
-        invalid_hotkeys.extend(duplicate_msgs)
 
         filtered_bindings, overlapping_msgs = self._filter_overlapping_hotkey_bindings(
             deduped
         )
         for msg in overlapping_msgs:
             logger.warning(msg)
-        invalid_hotkeys.extend(overlapping_msgs)
+
+        return filtered_bindings, [*duplicate_msgs, *overlapping_msgs]
+
+    def _register_special_hotkey_binding(
+        self,
+        mode: str,
+        hk: str,
+        *,
+        is_fn: bool,
+        is_capslock: bool,
+    ) -> bool:
+        if is_fn:
+            logger.info(
+                f"Hotkey aktiviert: fn (Globe), mode={mode} (Quartz FlagsChanged Tap)"
+            )
+            if not self._start_fn_hotkey_monitor(mode):
+                logger.error("Fn Hotkey Monitor konnte nicht gestartet werden.")
+            return True
+
+        if is_capslock:
+            logger.info(
+                f"Hotkey aktiviert: capslock, mode={mode} (Quartz FlagsChanged Tap)"
+            )
+            if not self._start_capslock_hotkey_monitor(mode):
+                logger.error("CapsLock Hotkey Monitor konnte nicht gestartet werden.")
+            return True
+
+        return False
+
+    def _register_toggle_hotkey_binding(
+        self,
+        hk: str,
+        *,
+        input_monitoring_granted: bool,
+    ) -> str | None:
+        def _handler() -> None:
+            self._on_hotkey()
+
+        try:
+            virtual_key, modifier_mask = parse_hotkey(hk)
+        except ValueError as e:
+            msg = f"Hotkey '{hk}' ungültig: {e}"
+            logger.error(msg)
+            return msg
+
+        from utils.carbon_hotkey import CarbonHotKeyRegistration
+
+        reg = CarbonHotKeyRegistration(
+            virtual_key=virtual_key,
+            modifier_mask=modifier_mask,
+            callback=_handler,
+        )
+        ok, err = reg.register()
+        if ok:
+            logger.info(f"Hotkey aktiviert: {hk} (toggle, carbon)")
+            self._toggle_hotkey_handlers.append(reg)
+            return None
+
+        if input_monitoring_granted and self._start_toggle_hotkey_listener(hk):
+            listener_kind = "quartz" if sys.platform == "darwin" else "pynput"
+            logger.info(f"Hotkey aktiviert: {hk} (toggle, {listener_kind})")
+            return None
+
+        msg = f"Hotkey '{hk}' konnte nicht registriert werden: {err}"
+        logger.error(msg)
+        return msg
+
+    def _register_hold_hotkey_binding(self, hk: str) -> str | None:
+        listener_kind = "quartz" if sys.platform == "darwin" else "pynput"
+        logger.info(f"Hotkey aktiviert: {hk} (hold, {listener_kind})")
+        if self._start_hold_hotkey_listener(hk):
+            return None
+
+        msg = (
+            f"Hold Hotkey Listener für '{hk}' konnte nicht gestartet werden "
+            "und wurde deaktiviert."
+        )
+        logger.error(msg)
+        return msg
+
+    def _register_hotkey_binding(
+        self,
+        mode: str,
+        hk: str,
+        *,
+        input_monitoring_granted: bool,
+    ) -> str | None:
+        hk_str = hk.strip().lower()
+        hk_is_fn = hk_str == "fn"
+        hk_is_capslock = hk_str in ("capslock", "caps_lock")
+
+        if not input_monitoring_granted and (mode == "hold" or hk_is_fn or hk_is_capslock):
+            msg = f"Hotkey '{hk}' benötigt Eingabemonitoring‑Zugriff – deaktiviert."
+            logger.warning(msg)
+            return msg
+
+        if self._register_special_hotkey_binding(
+            mode,
+            hk,
+            is_fn=hk_is_fn,
+            is_capslock=hk_is_capslock,
+        ):
+            return None
+
+        if mode == "toggle":
+            return self._register_toggle_hotkey_binding(
+                hk,
+                input_monitoring_granted=input_monitoring_granted,
+            )
+
+        return self._register_hold_hotkey_binding(hk)
+
+    def _show_no_hotkey_configured_alert(self, *, show_alerts: bool) -> None:
+        logger.warning("Kein Hotkey konfiguriert – Hotkeys deaktiviert")
+        if not show_alerts:
+            return
+        try:
+            show_error_alert(
+                "Kein Hotkey konfiguriert",
+                "Es ist kein Hotkey gesetzt. PulseScribe läuft ohne Hotkey.\n\n"
+                "Öffne Settings, um einen Hotkey zu wählen.",
+            )
+        except Exception:
+            pass
+
+    def _show_invalid_hotkey_alert(
+        self,
+        *,
+        show_alerts: bool,
+        invalid_hotkeys: list[str],
+    ) -> None:
+        if not show_alerts or not invalid_hotkeys:
+            return
+
+        non_permission_msgs = [
+            m for m in invalid_hotkeys if not is_permission_related_message(m)
+        ]
+        if not non_permission_msgs:
+            return
+
+        try:
+            show_error_alert(
+                "Ungültige Hotkey‑Konfiguration",
+                "Ein oder mehrere Hotkeys konnten nicht aktiviert werden:\n\n"
+                + "\n".join(f"- {m}" for m in non_permission_msgs)
+                + "\n\nÖffne Settings, um das zu korrigieren.",
+            )
+        except Exception:
+            pass
+
+    def _unregister_toggle_hotkey_handlers(self) -> None:
+        for handler in list(self._toggle_hotkey_handlers):
+            unregister = getattr(handler, "unregister", None)
+            if callable(unregister):
+                self._safe_call(unregister)
+        self._toggle_hotkey_handlers.clear()
+
+    def _stop_pynput_listeners(self) -> None:
+        for listener in list(self._pynput_listeners):
+            stop = getattr(listener, "stop", None)
+            if callable(stop):
+                self._safe_call(stop)
+        self._pynput_listeners.clear()
+
+    def _disable_modifier_tap(
+        self,
+        tap,
+        source,
+        *,
+        run_loop,
+        event_tap_enable,
+        run_loop_remove_source,
+        mach_port_invalidate,
+        common_modes,
+    ) -> None:
+        self._safe_call(event_tap_enable, tap, False)
+        self._safe_call(run_loop_remove_source, run_loop, source, common_modes)
+        self._safe_call(mach_port_invalidate, tap)
+
+    def _unregister_modifier_taps(self) -> None:
+        if not self._modifier_taps:
+            return
+
+        try:
+            from Quartz import (  # type: ignore[import-not-found,attr-defined]
+                CGEventTapEnable,
+                CFMachPortInvalidate,
+                CFRunLoopGetCurrent,
+                CFRunLoopRemoveSource,
+                kCFRunLoopCommonModes,
+            )
+
+            run_loop = CFRunLoopGetCurrent()
+            for tap, source, _callback in list(self._modifier_taps):
+                self._disable_modifier_tap(
+                    tap,
+                    source,
+                    run_loop=run_loop,
+                    event_tap_enable=CGEventTapEnable,
+                    run_loop_remove_source=CFRunLoopRemoveSource,
+                    mach_port_invalidate=CFMachPortInvalidate,
+                    common_modes=kCFRunLoopCommonModes,
+                )
+        except Exception:
+            pass
+        finally:
+            self._modifier_taps.clear()
+            self._fn_active = False
+            self._caps_active = False
+
+    def _unregister_all_hotkeys(self) -> None:
+        """Stoppt alle registrierten Hotkeys/Listener (best-effort)."""
+        self._unregister_toggle_hotkey_handlers()
+        self._stop_pynput_listeners()
+        self._unregister_modifier_taps()
+        self._hold_state.clear()
+
+    def _register_hotkeys_from_current_settings(self, *, show_alerts: bool) -> None:
+        """Registriert Hotkeys anhand der aktuellen Settings (toggle/hold + legacy)."""
+        bindings = self._resolve_hotkey_bindings()
+        if not bindings:
+            self._show_no_hotkey_configured_alert(show_alerts=show_alerts)
+            return
+
+        filtered_bindings, invalid_hotkeys = self._prepare_hotkey_bindings(bindings)
 
         # Berechtigungen prüfen (ohne modale Alerts während Settings-Änderungen)
         input_monitoring_granted = check_input_monitoring_permission(show_alert=False)
 
         for mode, hk in filtered_bindings:
-            hk_str = hk.strip().lower()
-            hk_is_fn = hk_str == "fn"
-            hk_is_capslock = hk_str in ("capslock", "caps_lock")
+            error_msg = self._register_hotkey_binding(
+                mode,
+                hk,
+                input_monitoring_granted=input_monitoring_granted,
+            )
+            if error_msg:
+                invalid_hotkeys.append(error_msg)
 
-            if not input_monitoring_granted and (
-                mode == "hold" or hk_is_fn or hk_is_capslock
-            ):
-                msg = f"Hotkey '{hk}' benötigt Eingabemonitoring‑Zugriff – deaktiviert."
-                logger.warning(msg)
-                invalid_hotkeys.append(msg)
-                continue
-
-            if hk_is_fn:
-                logger.info(
-                    f"Hotkey aktiviert: fn (Globe), mode={mode} (Quartz FlagsChanged Tap)"
-                )
-                if not self._start_fn_hotkey_monitor(mode):
-                    logger.error("Fn Hotkey Monitor konnte nicht gestartet werden.")
-                continue
-
-            if hk_is_capslock:
-                logger.info(
-                    f"Hotkey aktiviert: capslock, mode={mode} (Quartz FlagsChanged Tap)"
-                )
-                if not self._start_capslock_hotkey_monitor(mode):
-                    logger.error(
-                        "CapsLock Hotkey Monitor konnte nicht gestartet werden."
-                    )
-                continue
-
-            if mode == "toggle":
-
-                def _handler() -> None:
-                    self._on_hotkey()
-
-                try:
-                    virtual_key, modifier_mask = parse_hotkey(hk)
-                except ValueError as e:
-                    msg = f"Hotkey '{hk}' ungültig: {e}"
-                    logger.error(msg)
-                    invalid_hotkeys.append(msg)
-                    continue
-
-                from utils.carbon_hotkey import CarbonHotKeyRegistration
-
-                reg = CarbonHotKeyRegistration(
-                    virtual_key=virtual_key,
-                    modifier_mask=modifier_mask,
-                    callback=_handler,
-                )
-                ok, err = reg.register()
-                if not ok:
-                    # Fallback: Quartz event tap (requires Input Monitoring).
-                    if input_monitoring_granted and self._start_toggle_hotkey_listener(
-                        hk
-                    ):
-                        listener_kind = (
-                            "quartz" if sys.platform == "darwin" else "pynput"
-                        )
-                        logger.info(f"Hotkey aktiviert: {hk} (toggle, {listener_kind})")
-                        continue
-
-                    msg = f"Hotkey '{hk}' konnte nicht registriert werden: {err}"
-                    logger.error(msg)
-                    invalid_hotkeys.append(msg)
-                    continue
-
-                logger.info(f"Hotkey aktiviert: {hk} (toggle, carbon)")
-                self._toggle_hotkey_handlers.append(reg)
-            else:
-                listener_kind = "quartz" if sys.platform == "darwin" else "pynput"
-                logger.info(f"Hotkey aktiviert: {hk} (hold, {listener_kind})")
-                if not self._start_hold_hotkey_listener(hk):
-                    msg = (
-                        f"Hold Hotkey Listener für '{hk}' konnte nicht gestartet werden "
-                        "und wurde deaktiviert."
-                    )
-                    logger.error(msg)
-                    invalid_hotkeys.append(msg)
-                    # No fallback: keep semantics predictable.
-
-        if show_alerts and invalid_hotkeys:
-            non_permission_msgs = [
-                m for m in invalid_hotkeys if not is_permission_related_message(m)
-            ]
-            if not non_permission_msgs:
-                return
-            try:
-                show_error_alert(
-                    "Ungültige Hotkey‑Konfiguration",
-                    "Ein oder mehrere Hotkeys konnten nicht aktiviert werden:\n\n"
-                    + "\n".join(f"- {m}" for m in non_permission_msgs)
-                    + "\n\nÖffne Settings, um das zu korrigieren.",
-                )
-            except Exception:
-                pass
+        self._show_invalid_hotkey_alert(
+            show_alerts=show_alerts,
+            invalid_hotkeys=invalid_hotkeys,
+        )
 
     def _reconfigure_hotkeys(self, *, show_alerts: bool) -> None:
         """Re-register hotkeys at runtime."""
@@ -2972,36 +3359,43 @@ class PulseScribeDaemon:
 
     def run(self) -> None:
         """Startet Daemon (blockiert)."""
-        from AppKit import NSApplication  # type: ignore[import-not-found]
         from Foundation import NSTimer  # type: ignore[import-not-found]
         import signal
 
-        # NSApplication initialisieren
-        app = NSApplication.sharedApplication()
+        app, show_dock = self._configure_ns_application()
+        self._initialize_ui_controllers()
+        self._validate_vocabulary_on_startup()
+        self._show_welcome_if_needed()
+        bindings_for_info = self._resolve_hotkey_bindings()
+        self._log_startup_permission_status()
+        self._print_startup_info(show_dock=show_dock, bindings_for_info=bindings_for_info)
+        self._preload_local_model_async()
+        self._reconfigure_hotkeys(show_alerts=True)
+        self._install_runloop_shutdown_handlers(app=app, timer_cls=NSTimer, signal_mod=signal)
+        app.run()
 
-        # Dock-Icon: Konfigurierbar via ENV (default: an)
-        # 0 = Regular (Dock-Icon), 1 = Accessory (kein Dock-Icon)
+    def _configure_ns_application(self):
+        from AppKit import NSApplication  # type: ignore[import-not-found]
+
+        app = NSApplication.sharedApplication()
         show_dock = get_env_bool_default("PULSESCRIBE_DOCK_ICON", True)
         app.setActivationPolicy_(0 if show_dock else 1)
-
-        # Application Menu erstellen (für CMD+Q Support wenn Dock-Icon aktiv)
         if show_dock:
             self._setup_app_menu(app)
+        return app, show_dock
 
-        # UI-Controller initialisieren
+    def _initialize_ui_controllers(self) -> None:
         logger.info("Initialisiere UI-Controller...")
         self._menubar = MenuBarController()
-
-        # Overlay nur wenn aktiviert (Default: True)
-        show_overlay = get_env_bool_default("PULSESCRIBE_OVERLAY", True)
-        if show_overlay:
+        if get_env_bool_default("PULSESCRIBE_OVERLAY", True):
             self._overlay = OverlayController()
         else:
             self._overlay = None
             logger.info("Overlay deaktiviert via PULSESCRIBE_OVERLAY=false")
         logger.info("UI-Controller bereit")
 
-        # Vocabulary beim Start validieren und ggf. warnen
+    @staticmethod
+    def _validate_vocabulary_on_startup() -> None:
         try:
             from utils.vocabulary import validate_vocabulary
 
@@ -3018,22 +3412,20 @@ class PulseScribeDaemon:
         except Exception:
             pass
 
-        # Welcome Window (beim ersten Start oder wenn aktiviert)
-        self._show_welcome_if_needed()
-
-        # Hotkeys ermitteln (für Start-Info im Terminal)
-        bindings_for_info = self._resolve_hotkey_bindings()
-
-        # Berechtigungen prüfen (keine modalen Popups; UI handled via Permissions page)
+    @staticmethod
+    def _log_startup_permission_status() -> None:
         if not check_microphone_permission(show_alert=False):
             logger.warning(
                 "Mikrofon-Berechtigung fehlt – PulseScribe läuft, aber Aufnahmen funktionieren nicht."
             )
-
-        # Accessibility prüfen (nur Logging; Auto-Paste kann ohne Permission nicht funktionieren)
         check_accessibility_permission(show_alert=False)
 
-        # Logging + Start-Info
+    def _print_startup_info(
+        self,
+        *,
+        show_dock: bool,
+        bindings_for_info: list[tuple[str, str]],
+    ) -> None:
         print("🎤 pulsescribe_daemon läuft", file=sys.stderr)
         if self.toggle_hotkey or self.hold_hotkey:
             if self.toggle_hotkey:
@@ -3050,27 +3442,15 @@ class PulseScribeDaemon:
         else:
             print("   Beenden: Menubar-Icon → Quit oder Ctrl+C", file=sys.stderr)
 
-        # Lokales Modell vorab laden (falls aktiv)
-        self._preload_local_model_async()
+    def _install_runloop_shutdown_handlers(self, *, app, timer_cls, signal_mod) -> None:
+        timer_cls.scheduledTimerWithTimeInterval_repeats_block_(0.1, True, lambda _: None)
 
-        # Hotkeys registrieren (zentral, auch für Runtime-Reconfigure)
-        self._reconfigure_hotkeys(show_alerts=True)
-
-        # FIX: Ctrl+C Support
-        # 1. Dummy-Timer, damit der Python-Interpreter regelmäßig läuft und Signale prüft
-        NSTimer.scheduledTimerWithTimeInterval_repeats_block_(0.1, True, lambda _: None)
-
-        # 2. Signal-Handler, der die App sauber beendet
         def signal_handler(sig, frame):
             self.cleanup()
             app.terminate_(None)
 
-        signal.signal(signal.SIGINT, signal_handler)
-
-        # 3. atexit Handler für CMD+Q (ruft terminate: direkt auf, ohne Python-Handler)
+        signal_mod.signal(signal_mod.SIGINT, signal_handler)
         atexit.register(self.cleanup)
-
-        app.run()
 
 
 # =============================================================================
@@ -3082,6 +3462,169 @@ app = typer.Typer(
     help="pulsescribe_daemon – Unified Daemon fuer PulseScribe",
     add_completion=False,
 )
+
+
+def _install_global_exception_handler() -> None:
+    def handle_exception(exc_type, exc_value, exc_traceback):
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc_value, exc_traceback)
+            return
+        msg = f"Uncaught exception: {exc_type.__name__}: {exc_value}"
+        logger.critical(msg, exc_info=(exc_type, exc_value, exc_traceback))
+        emergency_log(msg)
+
+    sys.excepthook = handle_exception
+
+
+def _resolve_effective_refine(*, refine: bool, no_refine: bool) -> bool:
+    if no_refine:
+        return False
+    if refine:
+        return True
+    return get_env_bool_default("PULSESCRIBE_REFINE", False)
+
+
+def _resolve_effective_daemon_options(
+    *,
+    hotkey: str | None,
+    toggle_hotkey: str | None,
+    hold_hotkey: str | None,
+    hotkey_mode: HotkeyMode | None,
+    language: str | None,
+    mode: TranscriptionMode | None,
+    model: str | None,
+    refine: bool,
+) -> EffectiveDaemonOptions:
+    env_hotkey = os.getenv("PULSESCRIBE_HOTKEY")
+    effective_hotkey = hotkey or env_hotkey or "fn"
+    effective_toggle_hotkey = toggle_hotkey or os.getenv("PULSESCRIBE_TOGGLE_HOTKEY")
+    effective_hold_hotkey = hold_hotkey or os.getenv("PULSESCRIBE_HOLD_HOTKEY")
+
+    if _should_default_to_fn_hold(
+        hotkey=hotkey,
+        env_hotkey=env_hotkey,
+        toggle_hotkey=effective_toggle_hotkey,
+        hold_hotkey=effective_hold_hotkey,
+    ):
+        effective_hold_hotkey = "fn"
+
+    mode_env = os.getenv("PULSESCRIBE_MODE")
+    effective_mode = mode.value if mode else (mode_env or "deepgram")
+    effective_model = model or os.getenv("PULSESCRIBE_MODEL")
+    effective_mode, effective_model = _apply_first_run_local_default(
+        mode=mode,
+        mode_env=mode_env,
+        model=model,
+        effective_mode=effective_mode,
+        effective_model=effective_model,
+    )
+
+    return EffectiveDaemonOptions(
+        hotkey=effective_hotkey,
+        language=language or os.getenv("PULSESCRIBE_LANGUAGE"),
+        model=effective_model,
+        refine=refine,
+        mode=effective_mode,
+        hotkey_mode=_effective_hotkey_mode(hotkey_mode),
+        toggle_hotkey=effective_toggle_hotkey,
+        hold_hotkey=effective_hold_hotkey,
+    )
+
+
+def _should_default_to_fn_hold(
+    *,
+    hotkey: str | None,
+    env_hotkey: str | None,
+    toggle_hotkey: str | None,
+    hold_hotkey: str | None,
+) -> bool:
+    return (
+        toggle_hotkey is None
+        and hold_hotkey is None
+        and hotkey is None
+        and env_hotkey is None
+    )
+
+
+def _effective_hotkey_mode(hotkey_mode: HotkeyMode | None) -> str:
+    if hotkey_mode:
+        return hotkey_mode.value
+    return os.getenv("PULSESCRIBE_HOTKEY_MODE", "toggle")
+
+
+def _apply_first_run_local_default(
+    *,
+    mode: TranscriptionMode | None,
+    mode_env: str | None,
+    model: str | None,
+    effective_mode: str,
+    effective_model: str | None,
+) -> tuple[str, str | None]:
+    if mode is not None or mode_env is not None or _has_remote_api_key():
+        return effective_mode, effective_model
+
+    os.environ.setdefault("PULSESCRIBE_LOCAL_MODEL", DEFAULT_LOCAL_MODEL)
+    _configure_default_local_backend()
+    if model is None:
+        effective_model = None
+    return "local", effective_model
+
+
+def _has_remote_api_key() -> bool:
+    return bool(
+        os.getenv("DEEPGRAM_API_KEY")
+        or os.getenv("OPENAI_API_KEY")
+        or os.getenv("GROQ_API_KEY")
+    )
+
+
+def _configure_default_local_backend() -> None:
+    if os.getenv("PULSESCRIBE_LOCAL_BACKEND") is not None:
+        return
+    try:
+        import importlib.util
+        import platform
+
+        is_arm = platform.machine() in ("arm64", "aarch64")
+        has_mlx = importlib.util.find_spec("mlx_whisper") is not None
+        os.environ["PULSESCRIBE_LOCAL_BACKEND"] = "mlx" if is_arm and has_mlx else "whisper"
+        if is_arm and has_mlx:
+            os.environ.setdefault("PULSESCRIBE_LOCAL_FAST", "true")
+    except Exception:
+        os.environ["PULSESCRIBE_LOCAL_BACKEND"] = "whisper"
+
+
+def _run_daemon_from_options(
+    *,
+    options: EffectiveDaemonOptions,
+    refine_model: str | None,
+    refine_provider: RefineProvider | None,
+    context: Context | None,
+) -> None:
+    try:
+        daemon = PulseScribeDaemon(
+            hotkey=options.hotkey,
+            language=options.language,
+            model=options.model,
+            refine=options.refine,
+            refine_model=refine_model,
+            refine_provider=refine_provider.value if refine_provider else None,
+            context=context.value if context else None,
+            mode=options.mode,
+            hotkey_mode=options.hotkey_mode,
+            toggle_hotkey=options.toggle_hotkey,
+            hold_hotkey=options.hold_hotkey,
+        )
+        daemon.run()
+    except ValueError as e:
+        print(f"Konfigurationsfehler: {e}", file=sys.stderr)
+        raise typer.Exit(1)
+    except KeyboardInterrupt:
+        print("\n👋 Daemon beendet", file=sys.stderr)
+    except Exception as e:
+        logger.exception(f"Unerwarteter Fehler: {e}")
+        print(f"Fehler: {e}", file=sys.stderr)
+        raise typer.Exit(1)
 
 
 @app.command()
@@ -3147,112 +3690,26 @@ def main(
         pulsescribe_daemon.py --hotkey cmd+shift+r # Tastenkombination
         pulsescribe_daemon.py --refine             # Mit LLM-Nachbearbeitung
     """
-
-    # Globaler Exception Handler für Crashes
-    def handle_exception(exc_type, exc_value, exc_traceback):
-        if issubclass(exc_type, KeyboardInterrupt):
-            sys.__excepthook__(exc_type, exc_value, exc_traceback)
-            return
-        msg = f"Uncaught exception: {exc_type.__name__}: {exc_value}"
-        logger.critical(msg, exc_info=(exc_type, exc_value, exc_traceback))
-        emergency_log(msg)  # Backup
-
-    sys.excepthook = handle_exception
-
+    _install_global_exception_handler()
     emergency_log("=== PulseScribe Daemon gestartet ===")
-
-    # Environment laden
     load_environment()
-
     setup_logging(debug=debug or get_env_bool_default("PULSESCRIBE_DEBUG", False))
-
-    # Refine: CLI (--refine/--no-refine) > ENV > Default
-    # --no-refine hat höchste Priorität um ENV zu überschreiben
-    if no_refine:
-        effective_refine = False
-    elif refine:
-        effective_refine = True
-    else:
-        effective_refine = get_env_bool_default("PULSESCRIBE_REFINE", False)
-
-    # Konfiguration: CLI > ENV > Default
-    env_hotkey = os.getenv("PULSESCRIBE_HOTKEY")
-    effective_hotkey = hotkey or env_hotkey or "fn"
-    effective_hotkey_mode = (
-        hotkey_mode.value
-        if hotkey_mode
-        else os.getenv("PULSESCRIBE_HOTKEY_MODE", "toggle")
+    options = _resolve_effective_daemon_options(
+        hotkey=hotkey,
+        toggle_hotkey=toggle_hotkey,
+        hold_hotkey=hold_hotkey,
+        hotkey_mode=hotkey_mode,
+        language=language,
+        mode=mode,
+        model=model,
+        refine=_resolve_effective_refine(refine=refine, no_refine=no_refine),
     )
-    effective_toggle_hotkey = toggle_hotkey or os.getenv("PULSESCRIBE_TOGGLE_HOTKEY")
-    effective_hold_hotkey = hold_hotkey or os.getenv("PULSESCRIBE_HOLD_HOTKEY")
-
-    # New default for fresh installs: Fn/Globe as hold hotkey
-    if (
-        effective_toggle_hotkey is None
-        and effective_hold_hotkey is None
-        and hotkey is None
-        and env_hotkey is None
-    ):
-        effective_hold_hotkey = "fn"
-    effective_language = language or os.getenv("PULSESCRIBE_LANGUAGE")
-    effective_model = model or os.getenv("PULSESCRIBE_MODEL")
-    mode_env = os.getenv("PULSESCRIBE_MODE")
-    effective_mode = mode.value if mode else (mode_env or "deepgram")
-
-    # Demo/first-success default: if no mode is configured and no API keys are present,
-    # start in local mode so the app works immediately without setup.
-    if mode is None and mode_env is None:
-        has_any_api_key = bool(
-            os.getenv("DEEPGRAM_API_KEY")
-            or os.getenv("OPENAI_API_KEY")
-            or os.getenv("GROQ_API_KEY")
-        )
-        if not has_any_api_key:
-            effective_mode = "local"
-            # Avoid passing provider-specific model names (e.g. Deepgram model) into local mode.
-            if model is None:
-                effective_model = None
-            os.environ.setdefault("PULSESCRIBE_LOCAL_MODEL", DEFAULT_LOCAL_MODEL)
-            if os.getenv("PULSESCRIBE_LOCAL_BACKEND") is None:
-                try:
-                    import importlib.util
-                    import platform
-
-                    is_arm = platform.machine() in ("arm64", "aarch64")
-                    has_mlx = importlib.util.find_spec("mlx_whisper") is not None
-                    if is_arm and has_mlx:
-                        os.environ["PULSESCRIBE_LOCAL_BACKEND"] = "mlx"
-                        os.environ.setdefault("PULSESCRIBE_LOCAL_FAST", "true")
-                    else:
-                        os.environ["PULSESCRIBE_LOCAL_BACKEND"] = "whisper"
-                except Exception:
-                    os.environ["PULSESCRIBE_LOCAL_BACKEND"] = "whisper"
-
-    # Daemon starten
-    try:
-        daemon = PulseScribeDaemon(
-            hotkey=effective_hotkey,
-            language=effective_language,
-            model=effective_model,
-            refine=effective_refine,
-            refine_model=refine_model,
-            refine_provider=refine_provider.value if refine_provider else None,
-            context=context.value if context else None,
-            mode=effective_mode,
-            hotkey_mode=effective_hotkey_mode,
-            toggle_hotkey=effective_toggle_hotkey,
-            hold_hotkey=effective_hold_hotkey,
-        )
-        daemon.run()
-    except ValueError as e:
-        print(f"Konfigurationsfehler: {e}", file=sys.stderr)
-        raise typer.Exit(1)
-    except KeyboardInterrupt:
-        print("\n👋 Daemon beendet", file=sys.stderr)
-    except Exception as e:
-        logger.exception(f"Unerwarteter Fehler: {e}")
-        print(f"Fehler: {e}", file=sys.stderr)
-        raise typer.Exit(1)
+    _run_daemon_from_options(
+        options=options,
+        refine_model=refine_model,
+        refine_provider=refine_provider,
+        context=context,
+    )
 
 
 if __name__ == "__main__":

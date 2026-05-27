@@ -138,42 +138,46 @@ def _extract_message_content(content, *, _strip_outer: bool = True) -> str:
     if content is None:
         return ""
     if isinstance(content, str):
-        return content.strip() if _strip_outer else content
-    if isinstance(content, Mapping):
-        text = content.get("text")
-        if isinstance(text, str):
-            return text.strip() if _strip_outer else text
-
-        nested_parts = content.get("parts")
-        if isinstance(nested_parts, list):
-            return _extract_message_content(nested_parts, _strip_outer=_strip_outer)
-
-        nested_content = content.get("content")
-        if nested_content is not None:
-            return _extract_message_content(nested_content, _strip_outer=_strip_outer)
-
-        return ""
+        return _format_message_text(content, strip_outer=_strip_outer)
     if isinstance(content, list):
-        parts = [
-            _extract_message_content(part, _strip_outer=False)
-            for part in content
-        ]
-        joined = "".join(parts)
-        return joined.strip() if _strip_outer else joined
+        return _extract_message_content_list(content, strip_outer=_strip_outer)
 
-    text = getattr(content, "text", None)
-    if isinstance(text, str):
-        return text.strip() if _strip_outer else text
-
-    nested_parts = getattr(content, "parts", None)
-    if isinstance(nested_parts, list):
-        return _extract_message_content(nested_parts, _strip_outer=_strip_outer)
-
-    nested_content = getattr(content, "content", None)
-    if nested_content is not None:
-        return _extract_message_content(nested_content, _strip_outer=_strip_outer)
+    extracted = _extract_message_content_fields(content, strip_outer=_strip_outer)
+    if extracted is not None:
+        return extracted
 
     raise TypeError(f"Unerwarteter Message-Content-Typ: {type(content)}")
+
+
+def _format_message_text(text: str, *, strip_outer: bool) -> str:
+    return text.strip() if strip_outer else text
+
+
+def _extract_message_content_list(content: list, *, strip_outer: bool) -> str:
+    parts = [_extract_message_content(part, _strip_outer=False) for part in content]
+    return _format_message_text("".join(parts), strip_outer=strip_outer)
+
+
+def _extract_message_content_fields(content, *, strip_outer: bool) -> str | None:
+    text = _get_message_content_field(content, "text")
+    if isinstance(text, str):
+        return _format_message_text(text, strip_outer=strip_outer)
+
+    nested_parts = _get_message_content_field(content, "parts")
+    if isinstance(nested_parts, list):
+        return _extract_message_content(nested_parts, _strip_outer=strip_outer)
+
+    nested_content = _get_message_content_field(content, "content")
+    if nested_content is not None:
+        return _extract_message_content(nested_content, _strip_outer=strip_outer)
+
+    return "" if isinstance(content, Mapping) else None
+
+
+def _get_message_content_field(content, field_name: str):
+    if isinstance(content, Mapping):
+        return content.get(field_name)
+    return getattr(content, field_name, None)
 
 
 def _log_detected_context(

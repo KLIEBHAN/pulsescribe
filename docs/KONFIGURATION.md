@@ -158,6 +158,15 @@ Beide Hotkeys können gleichzeitig aktiv sein.
 
 Mit `0` lässt sich der zusätzliche Nachlauf deaktivieren. Änderungen an `PULSESCRIBE_WINDOWS_LATENCY_PRESET` benötigen einen Neustart, damit alle Deepgram-Drain-/Tail-Defaults neu geladen werden; `PULSESCRIBE_WINDOWS_STOP_GRACE_SECONDS` wird zur Laufzeit gelesen.
 
+### Windows-Latenzdiagnose
+
+| Variable                                      | Werte           | Default | Beschreibung                              |
+| --------------------------------------------- | --------------- | ------- | ----------------------------------------- |
+| `PULSESCRIBE_WINDOWS_LATENCY_DIAGNOSTICS`     | `true`, `false` | `false` | Schreibt privacy-sichere Timing-Events für Windows-Aufnahmen ins Log. |
+| `PULSESCRIBE_WINDOWS_LATENCY_DIAGNOSTICS_FILE` | `true`, `false` | `true`, wenn Diagnose aktiv ist | Schreibt zusätzlich strukturierte JSONL-Daten nach `~/.pulsescribe/logs/windows_latency.jsonl`. |
+
+Die Diagnose enthält nur Event-Namen, Dauern, Modus und Erfolgsflags – kein Audio und keinen Transkripttext.
+
 ---
 
 ## Lokaler Modus

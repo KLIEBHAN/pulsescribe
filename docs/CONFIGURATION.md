@@ -165,6 +165,15 @@ Both hotkeys can be active simultaneously.
 
 Set stop grace to `0` to disable the extra tail capture. Changing `PULSESCRIBE_WINDOWS_LATENCY_PRESET` requires restarting PulseScribe for all Deepgram drain/tail defaults to refresh; `PULSESCRIBE_WINDOWS_STOP_GRACE_SECONDS` is read at runtime.
 
+### Windows Latency Diagnostics
+
+| Variable                                      | Values          | Default | Description                               |
+| --------------------------------------------- | --------------- | ------- | ----------------------------------------- |
+| `PULSESCRIBE_WINDOWS_LATENCY_DIAGNOSTICS`     | `true`, `false` | `false` | Log privacy-safe timing events for Windows recording runs. |
+| `PULSESCRIBE_WINDOWS_LATENCY_DIAGNOSTICS_FILE` | `true`, `false` | `true` when diagnostics are enabled | Also append structured JSONL to `~/.pulsescribe/logs/windows_latency.jsonl`. |
+
+The diagnostics record event names, durations, mode, and success flags only — no audio and no transcript text.
+
 ### RTF (Real-Time Factor)
 
 Performance indicator shown in overlay when `PULSESCRIBE_SHOW_RTF=true`:

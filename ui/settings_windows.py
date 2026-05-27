@@ -34,6 +34,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ui.hotkey_format import (
+    format_hotkey_for_display,
+    normalize_hotkey_text,
+)
 from ui.logs_panel_feedback import (
     build_logs_empty_state_text,
     build_logs_load_error_text,
@@ -45,6 +49,17 @@ from ui.logs_panel_feedback import (
     build_transcripts_hint_text,
     build_transcripts_load_error_text,
     build_transcripts_load_feedback,
+)
+from ui.provider_settings import build_provider_api_key_status
+from ui.qt_widget_state import (
+    get_widget_enabled,
+    get_widget_stylesheet,
+    get_widget_text,
+    get_widget_visible,
+    set_widget_enabled_if_changed,
+    set_widget_stylesheet_if_changed,
+    set_widget_text_if_changed,
+    set_widget_visible_if_changed,
 )
 from ui.secondary_settings_feedback import (
     build_display_settings_feedback,
@@ -87,8 +102,8 @@ from utils.local_backend import (
     get_cpu_threads_limit,
     get_local_advanced_ui_state,
     normalize_local_backend,
-    should_remove_local_backend_env,
 )
+from utils.settings_env_updates import SettingsEnvUpdateBuilder
 from utils.hotkey_windows import hotkeys_conflict, normalize_windows_hotkey
 from utils.log_tail import (
     clamp_scroll_value,
@@ -238,26 +253,15 @@ def _env_bool_default(value: str | None, default: bool) -> bool:
 
 
 def _normalize_hotkey_text(value: str | None) -> str:
-    return (value or "").strip()
+    return normalize_hotkey_text(value)
 
 
 def _format_hotkey_for_display(value: str | None) -> str:
-    hotkey = _normalize_hotkey_text(value).lower()
-    if not hotkey:
-        return ""
-
-    display_parts: list[str] = []
-    for part in hotkey.split("+"):
-        display = HOTKEY_TOKEN_LABELS.get(part)
-        if display is None:
-            if part.startswith("f") and part[1:].isdigit():
-                display = part.upper()
-            elif len(part) == 1:
-                display = part.upper()
-            else:
-                display = part.capitalize()
-        display_parts.append(display)
-    return "+".join(display_parts)
+    return format_hotkey_for_display(
+        value,
+        HOTKEY_TOKEN_LABELS,
+        omit_empty_parts=False,
+    )
 
 
 def _build_provider_guidance_text(
@@ -292,17 +296,12 @@ def _build_api_key_status(
     mode: str | None,
     configured: bool,
 ) -> tuple[str, str]:
-    if configured:
-        return "Configured", "success"
-
-    current_mode = (mode or "deepgram").strip().lower() or "deepgram"
-    if current_mode == "local":
-        return "Not needed", "text_secondary"
-
-    if env_key == MODE_API_KEY_MAP.get(current_mode):
-        return "Required", "warning"
-
-    return "Optional", "text_secondary"
+    return build_provider_api_key_status(
+        env_key,
+        mode=mode,
+        configured=configured,
+        required_provider_by_mode=MODE_API_KEY_MAP,
+    )
 
 
 def _build_api_key_tooltip(env_key: str, *, mode: str | None) -> str:
@@ -606,55 +605,19 @@ def _set_scrolling_plain_text_if_changed(
 
 
 def _get_widget_text(widget) -> str | None:
-    if widget is None:
-        return None
-
-    getter = getattr(widget, "text", None)
-    if callable(getter):
-        try:
-            return str(getter())
-        except TypeError:
-            pass
-
-    value = getattr(widget, "text", None)
-    if isinstance(value, str):
-        return value
-    return None
+    return get_widget_text(widget)
 
 
 def _set_widget_text_if_changed(widget, text: str) -> bool:
-    if widget is None:
-        return False
-    if _get_widget_text(widget) == text:
-        return False
-    widget.setText(text)
-    return True
+    return set_widget_text_if_changed(widget, text)
 
 
 def _get_widget_stylesheet(widget) -> str | None:
-    if widget is None:
-        return None
-
-    getter = getattr(widget, "styleSheet", None)
-    if callable(getter):
-        try:
-            return str(getter())
-        except TypeError:
-            pass
-
-    value = getattr(widget, "style", None)
-    if isinstance(value, str):
-        return value
-    return None
+    return get_widget_stylesheet(widget)
 
 
 def _set_widget_stylesheet_if_changed(widget, style: str) -> bool:
-    if widget is None:
-        return False
-    if _get_widget_stylesheet(widget) == style:
-        return False
-    widget.setStyleSheet(style)
-    return True
+    return set_widget_stylesheet_if_changed(widget, style)
 
 
 def _get_widget_tooltip(widget) -> str | None:
@@ -687,63 +650,24 @@ def _set_widget_tooltip_if_changed(widget, text: str) -> bool:
 
 
 def _get_widget_visible(widget) -> bool | None:
-    if widget is None:
-        return None
-
-    hidden_getter = getattr(widget, "isHidden", None)
-    if callable(hidden_getter):
-        try:
-            return not bool(hidden_getter())
-        except TypeError:
-            pass
-
-    getter = getattr(widget, "isVisible", None)
-    if callable(getter):
-        try:
-            return bool(getter())
-        except TypeError:
-            pass
-
-    value = getattr(widget, "visible", None)
-    if isinstance(value, bool):
-        return value
-    return None
+    return get_widget_visible(widget, prefer_hidden_state=True)
 
 
 def _set_widget_visible_if_changed(widget, visible: bool) -> bool:
-    if widget is None:
-        return False
-    if _get_widget_visible(widget) == visible:
-        return False
-    widget.setVisible(visible)
-    return True
+    return set_widget_visible_if_changed(
+        widget,
+        visible,
+        prefer_hidden_state=True,
+    )
 
 
 def _get_widget_enabled(widget) -> bool | None:
-    if widget is None:
-        return None
-
-    getter = getattr(widget, "isEnabled", None)
-    if callable(getter):
-        try:
-            return bool(getter())
-        except TypeError:
-            pass
-
-    value = getattr(widget, "enabled", None)
-    if isinstance(value, bool):
-        return value
-    return None
+    return get_widget_enabled(widget)
 
 
 
 def _set_widget_enabled_if_changed(widget, enabled: bool) -> bool:
-    if widget is None:
-        return False
-    if _get_widget_enabled(widget) == enabled:
-        return False
-    widget.setEnabled(enabled)
-    return True
+    return set_widget_enabled_if_changed(widget, enabled)
 
 
 
@@ -2789,29 +2713,54 @@ class SettingsWindow(QDialog):
         )
         self._refresh_setup_overview()
 
-    def _start_hotkey_recording(self, kind: str):
-        """Startet Hotkey-Recording für toggle oder hold."""
+    def _ensure_hotkey_recording_previous(self) -> None:
         if not hasattr(self, "_hotkey_recording_previous"):
             self._hotkey_recording_previous = {"toggle": "", "hold": ""}
+
+    def _hotkey_field_for_kind(self, kind: str):
+        if kind == "toggle":
+            return getattr(self, "_toggle_hotkey_field", None)
+        if kind == "hold":
+            return getattr(self, "_hold_hotkey_field", None)
+        return None
+
+    def _record_button_for_kind(self, kind: str):
+        if kind == "toggle":
+            return getattr(self, "_toggle_record_btn", None)
+        if kind == "hold":
+            return getattr(self, "_hold_record_btn", None)
+        return None
+
+    def _restore_recording_field(self, kind: str | None) -> None:
+        if not kind:
+            return
+        field = self._hotkey_field_for_kind(kind)
+        if field is not None:
+            previous_value = self._hotkey_recording_previous.get(kind, "")
+            field.setText(previous_value)
+
+    def _reset_hotkey_record_buttons(self) -> None:
+        for kind in ("toggle", "hold"):
+            button = self._record_button_for_kind(kind)
+            if button is not None:
+                button.setText("Record")
+                button.setStyleSheet("")
+
+    def _mark_hotkey_record_button_active(self, kind: str) -> None:
+        button = self._record_button_for_kind(kind)
+        if button is None:
+            return
+        button.setText("Press key...")
+        button.setStyleSheet(f"background-color: {COLORS['accent']};")
+
+    def _start_hotkey_recording(self, kind: str):
+        """Startet Hotkey-Recording für toggle oder hold."""
+        self._ensure_hotkey_recording_previous()
 
         # Bei laufender Aufnahme vorherigen Feldwert wiederherstellen, damit
         # ein Wechsel zwischen Toggle/Hold nicht versehentlich den alten
         # Hotkey löscht.
-        previous_kind = getattr(self, "_recording_hotkey_for", None)
-        if previous_kind:
-            previous_value = self._hotkey_recording_previous.get(previous_kind, "")
-            if (
-                previous_kind == "toggle"
-                and hasattr(self, "_toggle_hotkey_field")
-                and self._toggle_hotkey_field is not None
-            ):
-                self._toggle_hotkey_field.setText(previous_value)
-            elif (
-                previous_kind == "hold"
-                and hasattr(self, "_hold_hotkey_field")
-                and self._hold_hotkey_field is not None
-            ):
-                self._hold_hotkey_field.setText(previous_value)
+        self._restore_recording_field(getattr(self, "_recording_hotkey_for", None))
 
         # Defensive cleanup: ensure previous low-level capture is fully stopped
         # before starting a new recording session.
@@ -2820,35 +2769,17 @@ class SettingsWindow(QDialog):
         with self._pressed_keys_lock:
             self._pressed_keys.clear()
 
-        active_field = None
-        if kind == "toggle" and hasattr(self, "_toggle_hotkey_field"):
-            active_field = self._toggle_hotkey_field
-        elif kind == "hold" and hasattr(self, "_hold_hotkey_field"):
-            active_field = self._hold_hotkey_field
+        active_field = self._hotkey_field_for_kind(kind)
         if active_field is not None:
             self._hotkey_recording_previous[kind] = active_field.text().strip()
             active_field.setText("")
 
         # Beide Buttons zunächst zurücksetzen (wichtig beim Wechsel zwischen
         # Toggle/Hold ohne vorherige Bestätigung).
-        if hasattr(self, "_toggle_record_btn"):
-            self._toggle_record_btn.setText("Record")
-            self._toggle_record_btn.setStyleSheet("")
-        if hasattr(self, "_hold_record_btn"):
-            self._hold_record_btn.setText("Record")
-            self._hold_record_btn.setStyleSheet("")
+        self._reset_hotkey_record_buttons()
 
         # Button-Text ändern
-        if kind == "toggle" and hasattr(self, "_toggle_record_btn"):
-            self._toggle_record_btn.setText("Press key...")
-            self._toggle_record_btn.setStyleSheet(
-                f"background-color: {COLORS['accent']};"
-            )
-        elif kind == "hold" and hasattr(self, "_hold_record_btn"):
-            self._hold_record_btn.setText("Press key...")
-            self._hold_record_btn.setStyleSheet(
-                f"background-color: {COLORS['accent']};"
-            )
+        self._mark_hotkey_record_button_active(kind)
 
         self._set_hotkey_status(
             "Press the desired key combination, then press Enter to confirm or Esc to cancel.",
@@ -3048,58 +2979,51 @@ class SettingsWindow(QDialog):
             self._refresh_setup_overview()
             return
 
+    def _current_recording_hotkey_text(self) -> str | None:
+        field = self._hotkey_field_for_kind(self._recording_hotkey_for)
+        return field.text() if field is not None else None
+
+    def _qt_fallback_hotkey_from_event(self, event) -> str:
+        parts = []
+        modifiers = event.modifiers()
+        if modifiers & Qt.KeyboardModifier.ControlModifier:
+            parts.append("ctrl")
+        if modifiers & Qt.KeyboardModifier.AltModifier:
+            parts.append("alt")
+        if modifiers & Qt.KeyboardModifier.ShiftModifier:
+            parts.append("shift")
+        if modifiers & Qt.KeyboardModifier.MetaModifier:
+            parts.append("win")
+
+        key_name = self._qt_key_to_string(event.key())
+        if key_name and key_name not in ("ctrl", "alt", "shift", "win", "meta"):
+            parts.append(key_name)
+
+        return "+".join(parts) if parts else ""
+
+    def _handle_recording_keypress(self, event) -> None:
+        if event.key() == Qt.Key.Key_Escape:
+            self._stop_hotkey_recording(None)
+            event.accept()
+            return
+
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self._stop_hotkey_recording(self._current_recording_hotkey_text())
+            event.accept()
+            return
+
+        if self._using_qt_grab:
+            is_auto_repeat = getattr(event, "isAutoRepeat", lambda: False)()
+            if not is_auto_repeat:
+                hotkey_str = self._qt_fallback_hotkey_from_event(event)
+                self._set_hotkey_field_text(self._recording_hotkey_for, hotkey_str)
+
+        event.accept()
+
     def keyPressEvent(self, event):
         """Fängt Tastendruck für Hotkey-Recording ab."""
         if self._recording_hotkey_for:
-            # Escape = Abbrechen
-            if event.key() == Qt.Key.Key_Escape:
-                self._stop_hotkey_recording(None)
-                event.accept()
-                return
-
-            # Enter = Bestätigen
-            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-                # Aktuelles Feld auslesen
-                if self._recording_hotkey_for == "toggle" and self._toggle_hotkey_field:
-                    hotkey = self._toggle_hotkey_field.text()
-                elif self._recording_hotkey_for == "hold" and self._hold_hotkey_field:
-                    hotkey = self._hold_hotkey_field.text()
-                else:
-                    hotkey = None
-                self._stop_hotkey_recording(hotkey)
-                event.accept()
-                return
-
-            # Qt-Fallback: Hotkey aus Qt-Events bauen (wenn pynput nicht verfügbar)
-            if self._using_qt_grab:
-                is_auto_repeat = getattr(event, "isAutoRepeat", lambda: False)()
-                if is_auto_repeat:
-                    event.accept()
-                    return
-
-                parts = []
-                modifiers = event.modifiers()
-                if modifiers & Qt.KeyboardModifier.ControlModifier:
-                    parts.append("ctrl")
-                if modifiers & Qt.KeyboardModifier.AltModifier:
-                    parts.append("alt")
-                if modifiers & Qt.KeyboardModifier.ShiftModifier:
-                    parts.append("shift")
-                if modifiers & Qt.KeyboardModifier.MetaModifier:
-                    parts.append("win")
-
-                key = event.key()
-                key_name = self._qt_key_to_string(key)
-                if key_name and key_name not in ("ctrl", "alt", "shift", "win", "meta"):
-                    parts.append(key_name)
-
-                hotkey_str = "+".join(parts) if parts else ""
-                if self._recording_hotkey_for == "toggle" and self._toggle_hotkey_field:
-                    self._toggle_hotkey_field.setText(hotkey_str)
-                elif self._recording_hotkey_for == "hold" and self._hold_hotkey_field:
-                    self._hold_hotkey_field.setText(hotkey_str)
-
-            event.accept()
+            self._handle_recording_keypress(event)
             return
 
         super().keyPressEvent(event)
@@ -4213,6 +4137,171 @@ class SettingsWindow(QDialog):
         self._on_mode_changed(applied_mode)
         self._refresh_footer_settings_hint()
 
+    def _build_env_updates_from_controls(
+        self,
+        *,
+        toggle_hotkey: str,
+        hold_hotkey: str,
+    ) -> dict[str, str | None]:
+        """Read current settings controls and build normalized `.env` updates."""
+        builder = SettingsEnvUpdateBuilder(logger)
+        self._add_core_env_updates(builder)
+        self._add_local_decode_env_updates(builder)
+        self._add_refine_display_env_updates(builder)
+        self._add_hotkey_api_env_updates(
+            builder,
+            toggle_hotkey=toggle_hotkey,
+            hold_hotkey=hold_hotkey,
+        )
+        return builder.build()
+
+    def _add_core_env_updates(self, builder: SettingsEnvUpdateBuilder) -> None:
+        if self._mode_combo:
+            builder.set_present(
+                "PULSESCRIBE_MODE",
+                self._mode_combo.currentText(),
+            )
+
+        if self._local_backend_combo:
+            builder.set_local_backend(
+                "PULSESCRIBE_LOCAL_BACKEND",
+                self._local_backend_combo.currentText(),
+            )
+
+        if self._streaming_checkbox:
+            builder.set_enabled_default_true(
+                "PULSESCRIBE_STREAMING",
+                self._streaming_checkbox.isChecked(),
+            )
+
+        optional_combos = (
+            ("PULSESCRIBE_LANGUAGE", self._lang_combo, {"auto"}),
+            ("PULSESCRIBE_LOCAL_MODEL", self._local_model_combo, {"default"}),
+            ("PULSESCRIBE_DEVICE", getattr(self, "_device_combo", None), {"auto"}),
+        )
+        for key, combo, remove_when in optional_combos:
+            if combo:
+                builder.set_optional(
+                    key,
+                    combo.currentText(),
+                    remove_when=remove_when,
+                )
+
+    def _add_local_decode_env_updates(
+        self,
+        builder: SettingsEnvUpdateBuilder,
+    ) -> None:
+        text_fields = (
+            ("PULSESCRIBE_LOCAL_BEAM_SIZE", getattr(self, "_beam_size_field", None)),
+            ("PULSESCRIBE_LOCAL_TEMPERATURE", getattr(self, "_temperature_field", None)),
+            ("PULSESCRIBE_LOCAL_BEST_OF", getattr(self, "_best_of_field", None)),
+            ("PULSESCRIBE_LOCAL_CPU_THREADS", getattr(self, "_cpu_threads_field", None)),
+            ("PULSESCRIBE_LOCAL_NUM_WORKERS", getattr(self, "_num_workers_field", None)),
+        )
+        for key, field in text_fields:
+            if field:
+                builder.set_optional(key, field.text())
+
+        optional_combos = (
+            (
+                "PULSESCRIBE_LOCAL_COMPUTE_TYPE",
+                getattr(self, "_compute_type_combo", None),
+                {"default"},
+            ),
+            (
+                "PULSESCRIBE_LOCAL_WITHOUT_TIMESTAMPS",
+                getattr(self, "_without_timestamps_combo", None),
+                {"default"},
+            ),
+            (
+                "PULSESCRIBE_LOCAL_VAD_FILTER",
+                getattr(self, "_vad_filter_combo", None),
+                {"default"},
+            ),
+            (
+                "PULSESCRIBE_LIGHTNING_QUANT",
+                getattr(self, "_lightning_quant_combo", None),
+                {"none"},
+            ),
+        )
+        for key, combo, remove_when in optional_combos:
+            if combo:
+                builder.set_optional(
+                    key,
+                    combo.currentText(),
+                    remove_when=remove_when,
+                )
+
+        fp16_combo = getattr(self, "_fp16_combo", None)
+        if fp16_combo:
+            builder.set_optional(
+                LOCAL_FP16_ENV_KEY,
+                fp16_combo.currentText(),
+                remove_when={"default"},
+            )
+            builder.updates[LEGACY_LOCAL_FP16_ENV_KEY] = None
+
+        lightning_batch_slider = getattr(self, "_lightning_batch_slider", None)
+        if lightning_batch_slider:
+            builder.set_lightning_batch(
+                "PULSESCRIBE_LIGHTNING_BATCH_SIZE",
+                lightning_batch_slider.value(),
+            )
+
+    def _add_refine_display_env_updates(
+        self,
+        builder: SettingsEnvUpdateBuilder,
+    ) -> None:
+        if self._refine_checkbox:
+            builder.set_bool_string(
+                "PULSESCRIBE_REFINE",
+                self._refine_checkbox.isChecked(),
+            )
+
+        if self._overlay_checkbox:
+            builder.set_enabled_default_true(
+                "PULSESCRIBE_OVERLAY",
+                self._overlay_checkbox.isChecked(),
+            )
+
+        if self._rtf_checkbox:
+            builder.set_enabled_default_false(
+                "PULSESCRIBE_SHOW_RTF",
+                self._rtf_checkbox.isChecked(),
+            )
+
+        if self._clipboard_restore_checkbox:
+            builder.set_enabled_default_false(
+                "PULSESCRIBE_CLIPBOARD_RESTORE",
+                self._clipboard_restore_checkbox.isChecked(),
+            )
+
+        if self._refine_provider_combo:
+            builder.set_optional(
+                "PULSESCRIBE_REFINE_PROVIDER",
+                self._refine_provider_combo.currentText(),
+                remove_when={"groq"},
+            )
+
+        if self._refine_model_field:
+            builder.set_optional(
+                "PULSESCRIBE_REFINE_MODEL",
+                self._refine_model_field.text(),
+            )
+
+    def _add_hotkey_api_env_updates(
+        self,
+        builder: SettingsEnvUpdateBuilder,
+        *,
+        toggle_hotkey: str,
+        hold_hotkey: str,
+    ) -> None:
+        builder.set_optional("PULSESCRIBE_TOGGLE_HOTKEY", toggle_hotkey)
+        builder.set_optional("PULSESCRIBE_HOLD_HOTKEY", hold_hotkey)
+
+        for env_key, field in self._api_fields.items():
+            builder.set_optional(env_key, field.text())
+
     def _save_settings(self):
         """Speichert alle Settings."""
         try:
@@ -4224,183 +4313,10 @@ class SettingsWindow(QDialog):
                 )
                 return
             toggle_hotkey, hold_hotkey = validated_hotkeys
-            env_updates: dict[str, str | None] = {}
-
-            def _set_optional_env(
-                key: str,
-                raw_value: str | None,
-                *,
-                remove_when: set[str] | None = None,
-            ) -> None:
-                normalized = (raw_value or "").strip()
-                if not normalized or (remove_when and normalized in remove_when):
-                    env_updates[key] = None
-                    return
-                env_updates[key] = normalized
-
-            # Mode
-            if self._mode_combo:
-                env_updates["PULSESCRIBE_MODE"] = self._mode_combo.currentText()
-
-            # Language
-            if self._lang_combo:
-                lang = self._lang_combo.currentText()
-                env_updates["PULSESCRIBE_LANGUAGE"] = None if lang == "auto" else lang
-
-            # Local Backend
-            if self._local_backend_combo:
-                backend = normalize_local_backend(self._local_backend_combo.currentText())
-                env_updates["PULSESCRIBE_LOCAL_BACKEND"] = (
-                    None if should_remove_local_backend_env(backend) else backend
-                )
-
-            # Local Model
-            if self._local_model_combo:
-                model = self._local_model_combo.currentText()
-                env_updates["PULSESCRIBE_LOCAL_MODEL"] = (
-                    None if model == "default" else model
-                )
-
-            # Streaming
-            if self._streaming_checkbox:
-                env_updates["PULSESCRIBE_STREAMING"] = (
-                    None if self._streaming_checkbox.isChecked() else "false"
-                )
-
-            # Advanced: Device
-            if hasattr(self, "_device_combo") and self._device_combo:
-                device = self._device_combo.currentText()
-                env_updates["PULSESCRIBE_DEVICE"] = None if device == "auto" else device
-
-            # Advanced: Beam Size
-            if hasattr(self, "_beam_size_field") and self._beam_size_field:
-                _set_optional_env(
-                    "PULSESCRIBE_LOCAL_BEAM_SIZE",
-                    self._beam_size_field.text(),
-                )
-
-            # Advanced: Temperature
-            if hasattr(self, "_temperature_field") and self._temperature_field:
-                _set_optional_env(
-                    "PULSESCRIBE_LOCAL_TEMPERATURE",
-                    self._temperature_field.text(),
-                )
-
-            # Advanced: Best Of
-            if hasattr(self, "_best_of_field") and self._best_of_field:
-                _set_optional_env(
-                    "PULSESCRIBE_LOCAL_BEST_OF",
-                    self._best_of_field.text(),
-                )
-
-            # Faster-Whisper: Compute Type
-            if hasattr(self, "_compute_type_combo") and self._compute_type_combo:
-                compute_type = self._compute_type_combo.currentText()
-                env_updates["PULSESCRIBE_LOCAL_COMPUTE_TYPE"] = (
-                    None if compute_type == "default" else compute_type
-                )
-
-            # Faster-Whisper: CPU Threads
-            if hasattr(self, "_cpu_threads_field") and self._cpu_threads_field:
-                _set_optional_env(
-                    "PULSESCRIBE_LOCAL_CPU_THREADS",
-                    self._cpu_threads_field.text(),
-                )
-
-            # Faster-Whisper: Num Workers
-            if hasattr(self, "_num_workers_field") and self._num_workers_field:
-                _set_optional_env(
-                    "PULSESCRIBE_LOCAL_NUM_WORKERS",
-                    self._num_workers_field.text(),
-                )
-
-            # Faster-Whisper: Without Timestamps
-            if (
-                hasattr(self, "_without_timestamps_combo")
-                and self._without_timestamps_combo
-            ):
-                without_ts = self._without_timestamps_combo.currentText()
-                env_updates["PULSESCRIBE_LOCAL_WITHOUT_TIMESTAMPS"] = (
-                    None if without_ts == "default" else without_ts
-                )
-
-            # Faster-Whisper: VAD Filter
-            if hasattr(self, "_vad_filter_combo") and self._vad_filter_combo:
-                vad = self._vad_filter_combo.currentText()
-                env_updates["PULSESCRIBE_LOCAL_VAD_FILTER"] = (
-                    None if vad == "default" else vad
-                )
-
-            # Faster-Whisper: FP16
-            if hasattr(self, "_fp16_combo") and self._fp16_combo:
-                fp16 = self._fp16_combo.currentText()
-                env_updates[LOCAL_FP16_ENV_KEY] = None if fp16 == "default" else fp16
-                env_updates[LEGACY_LOCAL_FP16_ENV_KEY] = None
-
-            # Advanced: Lightning Batch Size
-            if (
-                hasattr(self, "_lightning_batch_slider")
-                and self._lightning_batch_slider
-            ):
-                batch_size = self._lightning_batch_slider.value()
-                env_updates["PULSESCRIBE_LIGHTNING_BATCH_SIZE"] = (
-                    None if batch_size == 12 else str(batch_size)
-                )
-
-            # Advanced: Lightning Quantization
-            if hasattr(self, "_lightning_quant_combo") and self._lightning_quant_combo:
-                quant = self._lightning_quant_combo.currentText()
-                env_updates["PULSESCRIBE_LIGHTNING_QUANT"] = (
-                    None if quant == "none" else quant
-                )
-
-            # Refine
-            if self._refine_checkbox:
-                env_updates["PULSESCRIBE_REFINE"] = (
-                    "true" if self._refine_checkbox.isChecked() else "false"
-                )
-
-            # Refine Provider
-            if self._refine_provider_combo:
-                provider = self._refine_provider_combo.currentText()
-                env_updates["PULSESCRIBE_REFINE_PROVIDER"] = (
-                    None if provider == "groq" else provider
-                )
-
-            # Refine Model
-            if self._refine_model_field:
-                _set_optional_env(
-                    "PULSESCRIBE_REFINE_MODEL",
-                    self._refine_model_field.text(),
-                )
-
-            # Overlay
-            if self._overlay_checkbox:
-                env_updates["PULSESCRIBE_OVERLAY"] = (
-                    None if self._overlay_checkbox.isChecked() else "false"
-                )
-
-            # RTF Display
-            if self._rtf_checkbox:
-                env_updates["PULSESCRIBE_SHOW_RTF"] = (
-                    "true" if self._rtf_checkbox.isChecked() else None
-                )
-
-            # Clipboard Restore
-            if self._clipboard_restore_checkbox:
-                env_updates["PULSESCRIBE_CLIPBOARD_RESTORE"] = (
-                    "true" if self._clipboard_restore_checkbox.isChecked() else None
-                )
-
-            # Hotkeys
-            env_updates["PULSESCRIBE_TOGGLE_HOTKEY"] = toggle_hotkey or None
-            env_updates["PULSESCRIBE_HOLD_HOTKEY"] = hold_hotkey or None
-
-            # API Keys
-            for env_key, field in self._api_fields.items():
-                value = field.text().strip()
-                env_updates[env_key] = value or None
-
+            env_updates = self._build_env_updates_from_controls(
+                toggle_hotkey=toggle_hotkey,
+                hold_hotkey=hold_hotkey,
+            )
             update_env_settings(env_updates)
             self._last_provider_key_status_snapshot = None
             self._refresh_provider_key_statuses()

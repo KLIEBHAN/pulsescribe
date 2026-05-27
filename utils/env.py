@@ -79,42 +79,77 @@ def _first_normalized_dotenv_item(
 
 def parse_env_line(raw_line: str) -> tuple[str | None, str | None]:
     """Parse one ``.env`` line with minimal quote/comment handling."""
-    line = raw_line.strip()
-    if not line or line.startswith("#"):
+    assignment = _split_env_assignment(_normalize_env_line(raw_line))
+    if assignment is None:
         return None, None
 
+    key, value = assignment
+    return key, _parse_env_value(value)
+
+
+def _normalize_env_line(raw_line: str) -> str:
+    line = raw_line.strip()
     if line.startswith("export "):
-        line = line[7:].lstrip()
+        return line[7:].lstrip()
+    return line
+
+
+def _split_env_assignment(line: str) -> tuple[str, str] | None:
+    if not line or line.startswith("#"):
+        return None
     if "=" not in line:
-        return None, None
+        return None
 
     key, value = line.split("=", 1)
     key = key.strip()
     if not key:
-        return None, None
+        return None
 
-    value = value.strip()
+    return key, value.strip()
+
+
+def _parse_env_value(value: str) -> str:
     if not value:
-        return key, ""
+        return ""
 
     parsed: list[str] = []
     in_single = False
     in_double = False
 
     for index, char in enumerate(value):
-        if char == "'" and not in_double:
-            in_single = not in_single
+        quote_state = _next_env_quote_state(char, in_single, in_double)
+        if quote_state is not None:
+            in_single, in_double = quote_state
             continue
-        if char == '"' and not in_single:
-            in_double = not in_double
-            continue
-        if char == "#" and not in_single and not in_double:
-            prev = value[index - 1] if index > 0 else ""
-            if not prev or prev.isspace():
-                break
+        if _is_env_inline_comment_start(value, index, in_single, in_double):
+            break
         parsed.append(char)
 
-    return key, "".join(parsed).strip()
+    return "".join(parsed).strip()
+
+
+def _next_env_quote_state(
+    char: str,
+    in_single: bool,
+    in_double: bool,
+) -> tuple[bool, bool] | None:
+    if char == "'" and not in_double:
+        return not in_single, in_double
+    if char == '"' and not in_single:
+        return in_single, not in_double
+    return None
+
+
+def _is_env_inline_comment_start(
+    value: str,
+    index: int,
+    in_single: bool,
+    in_double: bool,
+) -> bool:
+    if value[index] != "#" or in_single or in_double:
+        return False
+    prev = value[index - 1] if index > 0 else ""
+    return not prev or prev.isspace()
 
 
 def parse_env_line_with_dotenv(raw_line: str) -> tuple[str | None, str | None]:

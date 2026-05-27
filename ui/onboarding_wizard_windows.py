@@ -28,6 +28,17 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ui.hotkey_format import format_hotkey_for_display
+from ui.qt_widget_state import (
+    get_widget_enabled,
+    get_widget_stylesheet,
+    get_widget_text,
+    get_widget_visible,
+    set_widget_enabled_if_changed,
+    set_widget_stylesheet_if_changed,
+    set_widget_text_if_changed,
+    set_widget_visible_if_changed,
+)
 from ui.styles_windows import (
     CARD_PADDING,
     COLORS,
@@ -200,107 +211,35 @@ def _create_description(text: str) -> QLabel:
 
 
 def _get_widget_text(widget) -> str | None:
-    if widget is None:
-        return None
-
-    getter = getattr(widget, "text", None)
-    if callable(getter):
-        try:
-            return str(getter())
-        except TypeError:
-            pass
-
-    value = getattr(widget, "text", None)
-    if isinstance(value, str):
-        return value
-    return None
+    return get_widget_text(widget)
 
 
 def _set_widget_text_if_changed(widget, text: str) -> bool:
-    if widget is None:
-        return False
-    if _get_widget_text(widget) == text:
-        return False
-    widget.setText(text)
-    return True
+    return set_widget_text_if_changed(widget, text)
 
 
 def _get_widget_stylesheet(widget) -> str | None:
-    if widget is None:
-        return None
-
-    getter = getattr(widget, "styleSheet", None)
-    if callable(getter):
-        try:
-            return str(getter())
-        except TypeError:
-            pass
-
-    value = getattr(widget, "style", None)
-    if isinstance(value, str):
-        return value
-    return None
+    return get_widget_stylesheet(widget)
 
 
 def _set_widget_stylesheet_if_changed(widget, style: str) -> bool:
-    if widget is None:
-        return False
-    if _get_widget_stylesheet(widget) == style:
-        return False
-    widget.setStyleSheet(style)
-    return True
+    return set_widget_stylesheet_if_changed(widget, style)
 
 
 def _get_widget_visible(widget) -> bool | None:
-    if widget is None:
-        return None
-
-    getter = getattr(widget, "isVisible", None)
-    if callable(getter):
-        try:
-            return bool(getter())
-        except TypeError:
-            pass
-
-    value = getattr(widget, "visible", None)
-    if isinstance(value, bool):
-        return value
-    return None
+    return get_widget_visible(widget)
 
 
 def _set_widget_visible_if_changed(widget, visible: bool) -> bool:
-    if widget is None:
-        return False
-    if _get_widget_visible(widget) == visible:
-        return False
-    widget.setVisible(visible)
-    return True
+    return set_widget_visible_if_changed(widget, visible)
 
 
 def _get_widget_enabled(widget) -> bool | None:
-    if widget is None:
-        return None
-
-    getter = getattr(widget, "isEnabled", None)
-    if callable(getter):
-        try:
-            return bool(getter())
-        except TypeError:
-            pass
-
-    value = getattr(widget, "enabled", None)
-    if isinstance(value, bool):
-        return value
-    return None
+    return get_widget_enabled(widget)
 
 
 def _set_widget_enabled_if_changed(widget, enabled: bool) -> bool:
-    if widget is None:
-        return False
-    if _get_widget_enabled(widget) == enabled:
-        return False
-    widget.setEnabled(enabled)
-    return True
+    return set_widget_enabled_if_changed(widget, enabled)
 
 
 def _set_timer_interval_if_supported(timer, interval_ms: int) -> bool:
@@ -359,23 +298,11 @@ def _format_language_label(language: str | None) -> str:
 
 
 def _format_hotkey_for_display(hotkey: str | None) -> str:
-    normalized = (hotkey or "").strip().lower()
-    if not normalized:
-        return ""
-
-    parts = [part for part in normalized.split("+") if part]
-    display_parts: list[str] = []
-    for part in parts:
-        display = HOTKEY_TOKEN_LABELS.get(part)
-        if display is None:
-            if part.startswith("f") and part[1:].isdigit():
-                display = part.upper()
-            elif len(part) == 1:
-                display = part.upper()
-            else:
-                display = part.capitalize()
-        display_parts.append(display)
-    return "+".join(display_parts)
+    return format_hotkey_for_display(
+        hotkey,
+        HOTKEY_TOKEN_LABELS,
+        omit_empty_parts=True,
+    )
 
 
 def _format_hotkey_summary_text(
@@ -438,66 +365,96 @@ def _build_test_notice_feedback(
     error: str | None = None,
 ) -> tuple[str, str]:
     normalized = (state or "pending").strip().lower()
-    if normalized == "connecting":
-        return (
-            "PulseScribe wird im Hintergrund kontaktiert. Beim ersten Test kann das ein paar Sekunden dauern.",
-            "text_secondary",
-        )
-    if normalized == "recording":
-        return (
-            "Sprich jetzt einen kurzen Satz. Der Text wird nur hier im Assistenten angezeigt.",
-            "accent",
-        )
-    if normalized == "processing":
-        return (
-            "Die Aufnahme wird gerade ausgewertet. Warte kurz auf das Ergebnis hier im Assistenten.",
-            "text_secondary",
-        )
-    if normalized == "passed":
-        return (
-            "Alles gut: Nichts wurde eingefügt. Mit „Weiter“ kommst du zur Zusammenfassung.",
-            "success",
-        )
-    if normalized == "no_speech":
-        return (
-            "Tipp: Prüfe Mikrofonabstand und Eingabegerät und versuche es danach erneut.",
-            "warning",
-        )
-    if normalized == "cancelled":
-        return (
-            "Kein Problem — starte den Test erneut, sobald PulseScribe bereit ist.",
-            "text_secondary",
-        )
     if normalized == "error":
-        detail_lower = " ".join((error or "").split()).lower()
-        if "keine verbindung" in detail_lower:
-            return (
-                "Prüfe, ob PulseScribe im Hintergrund läuft, und starte den Test danach erneut.",
-                "warning",
-            )
-        if "bereits in aufnahme" in detail_lower or "busy" in detail_lower:
-            return (
-                "Warte kurz, bis die aktuelle Aufnahme beendet ist, und versuche es dann erneut.",
-                "warning",
-            )
-        if "mikro" in detail_lower:
-            return (
-                "Prüfe den Mikrofonzugriff und das richtige Eingabegerät in Windows und versuche es dann erneut.",
-                "warning",
-            )
+        return _build_test_error_notice_feedback(error)
+    return _TEST_NOTICE_FEEDBACK.get(normalized, _DEFAULT_TEST_NOTICE_FEEDBACK)
+
+
+_TEST_NOTICE_FEEDBACK = {
+    "connecting": (
+        "PulseScribe wird im Hintergrund kontaktiert. Beim ersten Test kann das ein paar Sekunden dauern.",
+        "text_secondary",
+    ),
+    "recording": (
+        "Sprich jetzt einen kurzen Satz. Der Text wird nur hier im Assistenten angezeigt.",
+        "accent",
+    ),
+    "processing": (
+        "Die Aufnahme wird gerade ausgewertet. Warte kurz auf das Ergebnis hier im Assistenten.",
+        "text_secondary",
+    ),
+    "passed": (
+        "Alles gut: Nichts wurde eingefügt. Mit „Weiter“ kommst du zur Zusammenfassung.",
+        "success",
+    ),
+    "no_speech": (
+        "Tipp: Prüfe Mikrofonabstand und Eingabegerät und versuche es danach erneut.",
+        "warning",
+    ),
+    "cancelled": (
+        "Kein Problem — starte den Test erneut, sobald PulseScribe bereit ist.",
+        "text_secondary",
+    ),
+    "skipped": (
+        "Du kannst den Test später jederzeit erneut im Setup durchführen.",
+        "text_secondary",
+    ),
+}
+
+_DEFAULT_TEST_NOTICE_FEEDBACK = (
+    "Ablauf: Test starten, einen kurzen Satz sprechen und die Aufnahme danach wieder stoppen.",
+    "text_secondary",
+)
+
+
+def _build_test_error_notice_feedback(error: str | None) -> tuple[str, str]:
+    detail_lower = " ".join((error or "").split()).lower()
+    if "keine verbindung" in detail_lower:
         return (
-            "Prüfe, ob PulseScribe läuft und dein Mikrofon verfügbar ist, und versuche es dann erneut.",
+            "Prüfe, ob PulseScribe im Hintergrund läuft, und starte den Test danach erneut.",
             "warning",
         )
-    if normalized == "skipped":
+    if "bereits in aufnahme" in detail_lower or "busy" in detail_lower:
         return (
-            "Du kannst den Test später jederzeit erneut im Setup durchführen.",
-            "text_secondary",
+            "Warte kurz, bis die aktuelle Aufnahme beendet ist, und versuche es dann erneut.",
+            "warning",
+        )
+    if "mikro" in detail_lower:
+        return (
+            "Prüfe den Mikrofonzugriff und das richtige Eingabegerät in Windows und versuche es dann erneut.",
+            "warning",
         )
     return (
-        "Ablauf: Test starten, einen kurzen Satz sprechen und die Aufnahme danach wieder stoppen.",
-        "text_secondary",
+        "Prüfe, ob PulseScribe läuft und dein Mikrofon verfügbar ist, und versuche es dann erneut.",
+        "warning",
     )
+
+
+def _normalize_env_updates(
+    updates: dict[str, str | None],
+) -> dict[str, str | None]:
+    return {
+        key: None if value is None else str(value)
+        for key, value in updates.items()
+    }
+
+
+def _env_updates_changed(
+    cache: dict[str, str],
+    updates: dict[str, str | None],
+) -> bool:
+    return any(_env_update_changed(cache, key, value) for key, value in updates.items())
+
+
+def _env_update_changed(
+    cache: dict[str, str],
+    key: str,
+    value: str | None,
+) -> bool:
+    current = cache.get(key)
+    if value is None:
+        return current is not None
+    return current != value
 
 
 def _build_test_transcript_text(state: str | None) -> str:
@@ -659,40 +616,24 @@ class OnboardingWizardWindows(QDialog):
         return cache.get(key_name)
 
     def _apply_env_updates(self, updates: dict[str, str | None]) -> bool:
-        normalized_updates: dict[str, str | None] = {}
-        for key, value in updates.items():
-            if value is None:
-                normalized_updates[key] = None
-            else:
-                normalized_updates[key] = str(value)
-
+        normalized_updates = _normalize_env_updates(updates)
         cache = getattr(self, "_env_settings_cache", None)
-        if cache is not None:
-            changed = False
-            for key, value in normalized_updates.items():
-                current = cache.get(key)
-                if value is None:
-                    if current is not None:
-                        changed = True
-                        break
-                elif current != value:
-                    changed = True
-                    break
-            if not changed:
-                return False
+        if cache is not None and not _env_updates_changed(cache, normalized_updates):
+            return False
 
         update_env_settings(normalized_updates)
+        self._apply_updates_to_env_cache(normalized_updates)
+        return True
 
+    def _apply_updates_to_env_cache(self, updates: dict[str, str | None]) -> None:
         cache = getattr(self, "_env_settings_cache", None)
         if cache is None:
-            return True
-
-        for key, value in normalized_updates.items():
+            return
+        for key, value in updates.items():
             if value is None:
                 cache.pop(key, None)
             else:
                 cache[key] = value
-        return True
 
     def _cache_api_key(self, key_name: str, value: str | None) -> None:
         cache = getattr(self, "_env_settings_cache", None)
@@ -1308,30 +1249,32 @@ class OnboardingWizardWindows(QDialog):
 
     def _show_step(self, step: OnboardingStep) -> None:
         """Show the specified step."""
-        # Stop mic timer when leaving PERMISSIONS step
-        if (
-            self._step == OnboardingStep.PERMISSIONS
-            and step != OnboardingStep.PERMISSIONS
-        ):
-            if self._mic_timer:
-                self._mic_timer.stop()
+        self._run_step_leave_actions(step)
+        self._step = step
+        self._show_step_widget(step)
+        self._update_progress_label(step)
+        self._run_step_enter_actions(step)
+        self._update_navigation()
+        self._persist_step_progress(step)
 
-        # Stop IPC polling when leaving TEST_DICTATION step
-        if (
-            self._step == OnboardingStep.TEST_DICTATION
-            and step != OnboardingStep.TEST_DICTATION
-        ):
+    def _run_step_leave_actions(self, next_step_value: OnboardingStep) -> None:
+        if self._step == OnboardingStep.PERMISSIONS and next_step_value != self._step:
+            self._stop_mic_timer()
+        if self._step == OnboardingStep.TEST_DICTATION and next_step_value != self._step:
             self._cancel_ipc_test_if_running()
             self._stop_ipc_polling()
             self._reset_test_ui()
 
-        self._step = step
+    def _stop_mic_timer(self) -> None:
+        if self._mic_timer:
+            self._mic_timer.stop()
 
+    def _show_step_widget(self, step: OnboardingStep) -> None:
         current_widget = self._ensure_step_widget(step)
         if self._stack is not None and current_widget is not None:
             self._stack.setCurrentWidget(current_widget)
 
-        # Update progress label
+    def _update_progress_label(self, step: OnboardingStep) -> None:
         if self._progress_label:
             idx = step_index(step)
             total = total_steps()
@@ -1339,7 +1282,7 @@ class OnboardingWizardWindows(QDialog):
                 self._progress_label, f"Schritt {idx} von {total}"
             )
 
-        # Step-specific actions
+    def _run_step_enter_actions(self, step: OnboardingStep) -> None:
         if step == OnboardingStep.PERMISSIONS:
             self._start_mic_check()
         elif step == OnboardingStep.HOTKEY:
@@ -1350,9 +1293,7 @@ class OnboardingWizardWindows(QDialog):
         elif step == OnboardingStep.CHEAT_SHEET:
             self._update_summary()
 
-        self._update_navigation()
-
-        # Persist progress
+    def _persist_step_progress(self, step: OnboardingStep) -> None:
         if self._persist_progress:
             set_onboarding_step(step)
 
@@ -1543,6 +1484,45 @@ class OnboardingWizardWindows(QDialog):
 
     def _poll_ipc_response(self) -> None:
         """Poll for IPC response from daemon."""
+        if not self._ipc_client or not self._ipc_test_cmd_id:
+            return
+
+        response = self._ipc_client.poll_response(self._ipc_test_cmd_id)
+        if not response:
+            self._handle_missing_ipc_response()
+            return
+
+        self._handle_ipc_response(response)
+
+    def _handle_missing_ipc_response(self) -> None:
+        if self._ipc_seen_recording and not self._ipc_stop_requested:
+            _set_timer_interval_if_supported(
+                self._ipc_poll_timer, IPC_RECORDING_IDLE_POLL_INTERVAL_MS
+            )
+        self._ipc_poll_count += 1
+        if self._ipc_poll_count >= self._ipc_timeout_limit():
+            self._handle_ipc_poll_timeout()
+
+    def _ipc_timeout_limit(self) -> int:
+        if self._ipc_seen_recording:
+            return IPC_MAX_POLLS_BEFORE_TIMEOUT
+        return IPC_CONNECT_MAX_POLLS_BEFORE_TIMEOUT
+
+    def _handle_ipc_poll_timeout(self) -> None:
+        saw_recording = self._ipc_seen_recording
+        stop_requested = self._ipc_stop_requested
+        self._stop_ipc_polling()
+        if stop_requested and saw_recording:
+            self._on_ipc_test_complete("", None)
+        elif saw_recording:
+            self._on_ipc_test_complete(
+                "",
+                "Keine finale Antwort von PulseScribe. Bitte erneut versuchen.",
+            )
+        else:
+            self._on_ipc_test_complete("", "Keine Verbindung zu PulseScribe")
+
+    def _handle_ipc_response(self, response: dict[str, object]) -> None:
         from utils.ipc import (
             STATUS_DONE,
             STATUS_ERROR,
@@ -1550,87 +1530,62 @@ class OnboardingWizardWindows(QDialog):
             STATUS_STOPPED,
         )
 
-        if not self._ipc_client or not self._ipc_test_cmd_id:
-            return
-
-        response = self._ipc_client.poll_response(self._ipc_test_cmd_id)
-        if not response:
-            if self._ipc_seen_recording and not self._ipc_stop_requested:
-                _set_timer_interval_if_supported(
-                    self._ipc_poll_timer, IPC_RECORDING_IDLE_POLL_INTERVAL_MS
-                )
-            self._ipc_poll_count += 1
-            timeout_limit = (
-                IPC_MAX_POLLS_BEFORE_TIMEOUT
-                if self._ipc_seen_recording
-                else IPC_CONNECT_MAX_POLLS_BEFORE_TIMEOUT
-            )
-            if self._ipc_poll_count >= timeout_limit:
-                saw_recording = self._ipc_seen_recording
-                stop_requested = self._ipc_stop_requested
-                self._stop_ipc_polling()
-                if stop_requested and saw_recording:
-                    # After explicit stop, a timeout should not look like a
-                    # connection failure; map to "no speech / no final result".
-                    self._on_ipc_test_complete("", None)
-                elif saw_recording:
-                    self._on_ipc_test_complete(
-                        "",
-                        "Keine finale Antwort von PulseScribe. Bitte erneut versuchen.",
-                    )
-                else:
-                    self._on_ipc_test_complete("", "Keine Verbindung zu PulseScribe")
-            return
-
         status = response.get("status")
         logger.debug(f"IPC response: {status}")
         self._ipc_poll_count = 0
 
         if status == STATUS_RECORDING:
-            self._ipc_seen_recording = True
-            stop_btn = getattr(self, "_test_stop_btn", None)
-            _set_widget_enabled_if_changed(stop_btn, True)
-            if not self._ipc_stop_requested:
-                _set_timer_interval_if_supported(
-                    self._ipc_poll_timer, IPC_RECORDING_IDLE_POLL_INTERVAL_MS
-                )
-
-            if status != self._ipc_last_status:
-                self._test_outcome = "recording"
-                self._set_test_status(_build_test_status_text("recording"), "accent")
-                self._set_test_transcript_text(_build_test_transcript_text("recording"))
-                self._set_test_notice(*_build_test_notice_feedback("recording"))
-                _set_widget_text_if_changed(stop_btn, "Aufnahme stoppen")
-                self._ipc_last_status = status
-
-            if self._ipc_stop_requested:
-                self._ipc_recording_polls_after_stop += 1
-                if (
-                    self._ipc_recording_polls_after_stop
-                    >= IPC_RECORDING_STALE_POLLS_AFTER_STOP
-                ):
-                    self._stop_ipc_polling()
-                    self._on_ipc_test_complete("", None)
-
+            self._handle_ipc_recording_status(status)
         elif status == STATUS_DONE:
             self._stop_ipc_polling()
             transcript = response.get("transcript", "")
             self._on_ipc_test_complete(transcript, None)
-
         elif status == STATUS_ERROR:
             self._stop_ipc_polling()
             error = response.get("error", "Unbekannter Fehler")
             self._on_ipc_test_complete("", error)
-
         elif status == STATUS_STOPPED:
-            self._stop_ipc_polling()
-            self._reset_test_ui()
-            self._test_successful = False
-            self._test_outcome = "cancelled"
-            self._set_test_status(_build_test_status_text("cancelled"), "text_secondary")
-            self._set_test_transcript_text(_build_test_transcript_text("cancelled"))
-            self._set_test_notice(*_build_test_notice_feedback("cancelled"))
-            self._update_navigation()
+            self._handle_ipc_stopped_status()
+
+    def _handle_ipc_recording_status(self, status: object) -> None:
+        self._ipc_seen_recording = True
+        stop_btn = getattr(self, "_test_stop_btn", None)
+        _set_widget_enabled_if_changed(stop_btn, True)
+        if not self._ipc_stop_requested:
+            _set_timer_interval_if_supported(
+                self._ipc_poll_timer, IPC_RECORDING_IDLE_POLL_INTERVAL_MS
+            )
+
+        if status != self._ipc_last_status:
+            self._show_ipc_recording_state(stop_btn)
+            self._ipc_last_status = str(status)
+
+        if self._ipc_stop_requested:
+            self._handle_recording_status_after_stop()
+
+    def _show_ipc_recording_state(self, stop_btn) -> None:
+        self._test_outcome = "recording"
+        self._set_test_status(_build_test_status_text("recording"), "accent")
+        self._set_test_transcript_text(_build_test_transcript_text("recording"))
+        self._set_test_notice(*_build_test_notice_feedback("recording"))
+        _set_widget_text_if_changed(stop_btn, "Aufnahme stoppen")
+
+    def _handle_recording_status_after_stop(self) -> None:
+        self._ipc_recording_polls_after_stop += 1
+        if self._ipc_recording_polls_after_stop < IPC_RECORDING_STALE_POLLS_AFTER_STOP:
+            return
+        self._stop_ipc_polling()
+        self._on_ipc_test_complete("", None)
+
+    def _handle_ipc_stopped_status(self) -> None:
+        self._stop_ipc_polling()
+        self._reset_test_ui()
+        self._test_successful = False
+        self._test_outcome = "cancelled"
+        self._set_test_status(_build_test_status_text("cancelled"), "text_secondary")
+        self._set_test_transcript_text(_build_test_transcript_text("cancelled"))
+        self._set_test_notice(*_build_test_notice_feedback("cancelled"))
+        self._update_navigation()
 
     def _stop_ipc_polling(self) -> None:
         """Stop polling and clean up IPC state."""
@@ -1786,77 +1741,85 @@ class OnboardingWizardWindows(QDialog):
 
     def _apply_choice_preset(self, choice: OnboardingChoice) -> bool:
         """Apply the preset for the selected choice."""
+        if choice == OnboardingChoice.FAST:
+            return self._apply_fast_choice_preset()
+        if choice == OnboardingChoice.PRIVATE:
+            return self._apply_private_choice_preset()
+        return False
+
+    def _apply_fast_choice_preset(self) -> bool:
+        pending_updates = self._collect_fast_choice_api_key_update()
+        if self._has_deepgram_fast_key(pending_updates):
+            return self._apply_deepgram_fast_choice(pending_updates)
+        if self._has_groq_fast_key():
+            return self._apply_groq_fast_choice()
+        self._show_fast_api_key_required()
+        return False
+
+    def _collect_fast_choice_api_key_update(self) -> dict[str, str | None]:
+        if not self._api_key_field:
+            return {}
+        entered_key = self._api_key_field.text().strip()
+        if not entered_key:
+            return {}
+        if self._get_cached_api_key("DEEPGRAM_API_KEY") == entered_key:
+            return {}
+        return {"DEEPGRAM_API_KEY": entered_key}
+
+    def _has_deepgram_fast_key(self, pending_updates: dict[str, str | None]) -> bool:
         import os
 
-        from utils.presets import (
-            apply_local_preset_to_env,
-            default_local_preset_private,
+        return bool(
+            pending_updates.get("DEEPGRAM_API_KEY")
+            or self._get_cached_api_key("DEEPGRAM_API_KEY")
+            or os.getenv("DEEPGRAM_API_KEY")
         )
 
-        if choice == OnboardingChoice.FAST:
-            pending_updates: dict[str, str | None] = {}
-            # Save entered API key if present
-            if self._api_key_field:
-                entered_key = self._api_key_field.text().strip()
-                if entered_key:
-                    cached_key = self._get_cached_api_key("DEEPGRAM_API_KEY")
-                    if cached_key != entered_key:
-                        pending_updates["DEEPGRAM_API_KEY"] = entered_key
+    def _has_groq_fast_key(self) -> bool:
+        import os
 
-            # Check for API keys
-            has_deepgram = bool(
-                pending_updates.get("DEEPGRAM_API_KEY")
-                or self._get_cached_api_key("DEEPGRAM_API_KEY")
-                or os.getenv("DEEPGRAM_API_KEY")
+        return bool(self._get_cached_api_key("GROQ_API_KEY") or os.getenv("GROQ_API_KEY"))
+
+    def _apply_deepgram_fast_choice(self, updates: dict[str, str | None]) -> bool:
+        pending_updates = dict(updates)
+        if self._get_cached_env_setting("PULSESCRIBE_MODE") != "deepgram":
+            pending_updates["PULSESCRIBE_MODE"] = "deepgram"
+        changed = self._apply_env_updates(pending_updates) if pending_updates else False
+        if "DEEPGRAM_API_KEY" in pending_updates:
+            self._cache_api_key("DEEPGRAM_API_KEY", pending_updates["DEEPGRAM_API_KEY"])
+        self._hide_fast_api_key_prompt()
+        return changed
+
+    def _apply_groq_fast_choice(self) -> bool:
+        changed = (
+            self._apply_env_updates({"PULSESCRIBE_MODE": "groq"})
+            if self._get_cached_env_setting("PULSESCRIBE_MODE") != "groq"
+            else False
+        )
+        self._hide_fast_api_key_prompt()
+        return changed
+
+    def _hide_fast_api_key_prompt(self) -> None:
+        if self._api_key_container:
+            _set_widget_visible_if_changed(self._api_key_container, False)
+        self._fast_choice_requires_reapply = False
+
+    def _show_fast_api_key_required(self) -> None:
+        if not self._api_key_container:
+            return
+        _set_widget_visible_if_changed(self._api_key_container, True)
+        if self._api_key_status:
+            _set_widget_text_if_changed(
+                self._api_key_status,
+                "Erforderlich für Fast-Modus: Deepgram-Key einfügen. Ein vorhandener Groq-Key wird automatisch erkannt.",
             )
-            has_groq = bool(
-                self._get_cached_api_key("GROQ_API_KEY")
-                or os.getenv("GROQ_API_KEY")
-            )
 
-            if has_deepgram:
-                if self._get_cached_env_setting("PULSESCRIBE_MODE") != "deepgram":
-                    pending_updates["PULSESCRIBE_MODE"] = "deepgram"
-                changed = (
-                    self._apply_env_updates(pending_updates)
-                    if pending_updates
-                    else False
-                )
-                if "DEEPGRAM_API_KEY" in pending_updates:
-                    self._cache_api_key(
-                        "DEEPGRAM_API_KEY", pending_updates["DEEPGRAM_API_KEY"]
-                    )
-                if self._api_key_container:
-                    _set_widget_visible_if_changed(self._api_key_container, False)
-                self._fast_choice_requires_reapply = False
-            elif has_groq:
-                changed = (
-                    self._apply_env_updates({"PULSESCRIBE_MODE": "groq"})
-                    if self._get_cached_env_setting("PULSESCRIBE_MODE") != "groq"
-                    else False
-                )
-                if self._api_key_container:
-                    _set_widget_visible_if_changed(self._api_key_container, False)
-                self._fast_choice_requires_reapply = False
-            else:
-                # Show API key input, don't apply preset yet
-                if self._api_key_container:
-                    _set_widget_visible_if_changed(self._api_key_container, True)
-                    if self._api_key_status:
-                        _set_widget_text_if_changed(
-                            self._api_key_status,
-                            "Erforderlich für Fast-Modus: Deepgram-Key einfügen. Ein vorhandener Groq-Key wird automatisch erkannt.",
-                        )
-                return False
+    def _apply_private_choice_preset(self) -> bool:
+        from utils.presets import apply_local_preset_to_env, default_local_preset_private
 
-            return changed
-
-        elif choice == OnboardingChoice.PRIVATE:
-            changed = apply_local_preset_to_env(default_local_preset_private())
-            self._refresh_env_settings_cache()
-            return changed
-        # ADVANCED: No automatic configuration
-        return False
+        changed = apply_local_preset_to_env(default_local_preset_private())
+        self._refresh_env_settings_cache()
+        return changed
 
     def _focus_api_key_field(self) -> None:
         field = self._api_key_field
@@ -2031,24 +1994,8 @@ class OnboardingWizardWindows(QDialog):
     def _start_hotkey_recording(self, field: str) -> None:
         """Start recording a hotkey."""
         self._stop_hotkey_recording()
-        self._recording_field = field
-        self._hotkey_recorded = False
-        self._using_qt_grab = False
-        last_hotkey_preview_by_field = getattr(
-            self, "_last_hotkey_preview_by_field", None
-        )
-        if last_hotkey_preview_by_field is None:
-            last_hotkey_preview_by_field = {}
-            self._last_hotkey_preview_by_field = last_hotkey_preview_by_field
-        last_hotkey_preview_by_field.pop(field, None)
-
-        input_field = self._toggle_input if field == "toggle" else self._hold_input
-        if input_field:
-            _set_widget_text_if_changed(input_field, "Tastenkombination drücken…")
-            input_field.setStyleSheet(f"border-color: {COLORS['accent']};")
-
-        with self._pressed_keys_lock:
-            self._pressed_keys.clear()
+        self._begin_hotkey_recording_state(field)
+        self._prepare_hotkey_recording_input(field)
 
         self._set_hotkey_status(
             "Drücke die gewünschte Tastenkombination und bestätige mit Enter oder „Speichern“. Esc bricht ab.",
@@ -2065,37 +2012,73 @@ class OnboardingWizardWindows(QDialog):
             return
 
         try:
-            from pynput import keyboard
-
-            def on_press(key):
-                if self._is_closed:
-                    return
-                key_name = self._pynput_key_to_string(key, key_map)
-                if key_name and key_name not in ("enter", "return", "esc", "escape"):
-                    with self._pressed_keys_lock:
-                        self._pressed_keys.add(key_name)
-                    self._hotkey_recorded = True
-                    self._update_hotkey_field_from_pressed_keys()
-
-            def on_release(key):
-                if self._is_closed:
-                    return
-                key_name = self._pynput_key_to_string(key, key_map)
-                if key_name:
-                    with self._pressed_keys_lock:
-                        self._pressed_keys.discard(key_name)
-
-            self._hotkey_listener = keyboard.Listener(
-                on_press=on_press, on_release=on_release
-            )
-            self._hotkey_listener.start()
-            self.setFocus()
+            self._start_pynput_hotkey_listener(key_map)
         except Exception as e:
             logger.warning(f"pynput Listener fehlgeschlagen: {e}, nutze Qt-Fallback")
             self._hotkey_listener = None
             self._activate_qt_hotkey_fallback(
                 "pynput Listener fehlgeschlagen: Win-Taste evtl. nicht erkennbar."
             )
+
+    def _begin_hotkey_recording_state(self, field: str) -> None:
+        self._recording_field = field
+        self._hotkey_recorded = False
+        self._using_qt_grab = False
+        self._clear_hotkey_preview(field)
+
+    def _clear_hotkey_preview(self, field: str) -> None:
+        last_hotkey_preview_by_field = getattr(
+            self, "_last_hotkey_preview_by_field", None
+        )
+        if last_hotkey_preview_by_field is None:
+            last_hotkey_preview_by_field = {}
+            self._last_hotkey_preview_by_field = last_hotkey_preview_by_field
+        last_hotkey_preview_by_field.pop(field, None)
+
+    def _prepare_hotkey_recording_input(self, field: str) -> None:
+        input_field = self._hotkey_input_for_field(field)
+        if input_field:
+            _set_widget_text_if_changed(input_field, "Tastenkombination drücken…")
+            input_field.setStyleSheet(f"border-color: {COLORS['accent']};")
+
+        with self._pressed_keys_lock:
+            self._pressed_keys.clear()
+
+    def _hotkey_input_for_field(self, field: str | None):
+        if field == "toggle":
+            return self._toggle_input
+        if field == "hold":
+            return self._hold_input
+        return None
+
+    def _start_pynput_hotkey_listener(self, key_map: dict) -> None:
+        from pynput import keyboard
+
+        self._hotkey_listener = keyboard.Listener(
+            on_press=lambda key: self._on_pynput_hotkey_press(key, key_map),
+            on_release=lambda key: self._on_pynput_hotkey_release(key, key_map),
+        )
+        self._hotkey_listener.start()
+        self.setFocus()
+
+    def _on_pynput_hotkey_press(self, key, key_map: dict) -> None:
+        if self._is_closed:
+            return
+        key_name = self._pynput_key_to_string(key, key_map)
+        if not key_name or key_name in ("enter", "return", "esc", "escape"):
+            return
+        with self._pressed_keys_lock:
+            self._pressed_keys.add(key_name)
+        self._hotkey_recorded = True
+        self._update_hotkey_field_from_pressed_keys()
+
+    def _on_pynput_hotkey_release(self, key, key_map: dict) -> None:
+        if self._is_closed:
+            return
+        key_name = self._pynput_key_to_string(key, key_map)
+        if key_name:
+            with self._pressed_keys_lock:
+                self._pressed_keys.discard(key_name)
 
     def _activate_qt_hotkey_fallback(self, message_prefix: str) -> None:
         """Aktiviert Qt-Keyboard-Capture als Fallback."""
@@ -2177,6 +2160,16 @@ class OnboardingWizardWindows(QDialog):
 
     def _stop_hotkey_recording(self, save: bool = False) -> None:
         """Stop hotkey recording."""
+        self._stop_active_hotkey_listener()
+        field = self._recording_field
+        if field:
+            self._clear_hotkey_preview(field)
+        self._persist_or_restore_hotkey_field(field, save=save)
+        self._reset_hotkey_recording_state()
+        self._reset_hotkey_input_styles()
+        self._update_hotkey_capture_ui()
+
+    def _stop_active_hotkey_listener(self) -> None:
         if self._hotkey_listener:
             self._hotkey_listener.stop()
             self._hotkey_listener = None
@@ -2184,52 +2177,49 @@ class OnboardingWizardWindows(QDialog):
             self.releaseKeyboard()
             self._using_qt_grab = False
 
-        field = self._recording_field
-        if field:
-            last_hotkey_preview_by_field = getattr(
-                self, "_last_hotkey_preview_by_field", None
-            )
-            if last_hotkey_preview_by_field is not None:
-                last_hotkey_preview_by_field.pop(field, None)
-        input_field = (
-            self._toggle_input if field == "toggle" else self._hold_input
-        ) if field else None
+    def _persist_or_restore_hotkey_field(
+        self,
+        field: str | None,
+        *,
+        save: bool,
+    ) -> None:
+        input_field = self._hotkey_input_for_field(field)
+        if field is None or input_field is None:
+            return
+        if save and self._hotkey_recorded:
+            self._save_recorded_hotkey_or_restore(field, input_field)
+            return
+        self._restore_hotkey_field_from_cache(field, input_field)
 
-        # Save or restore field value
-        if save and field and self._hotkey_recorded and input_field:
-            hotkey = input_field.text().strip()
-            if hotkey:
-                saved = self._save_hotkey(field, hotkey)
-                if not saved:
-                    env_key = (
-                        "PULSESCRIBE_TOGGLE_HOTKEY"
-                        if field == "toggle"
-                        else "PULSESCRIBE_HOLD_HOTKEY"
-                    )
-                    _set_widget_text_if_changed(
-                        input_field, self._get_cached_env_setting(env_key) or ""
-                    )
-        elif field and input_field:
-            # Restore previous value (cancel or no input)
-            env_key = (
-                "PULSESCRIBE_TOGGLE_HOTKEY"
-                if field == "toggle"
-                else "PULSESCRIBE_HOLD_HOTKEY"
-            )
-            _set_widget_text_if_changed(
-                input_field, self._get_cached_env_setting(env_key) or ""
-            )
+    def _save_recorded_hotkey_or_restore(self, field: str, input_field) -> None:
+        hotkey = input_field.text().strip()
+        if not hotkey:
+            return
+        if not self._save_hotkey(field, hotkey):
+            self._restore_hotkey_field_from_cache(field, input_field)
 
+    def _restore_hotkey_field_from_cache(self, field: str, input_field) -> None:
+        env_key = self._hotkey_env_key(field)
+        _set_widget_text_if_changed(
+            input_field, self._get_cached_env_setting(env_key) or ""
+        )
+
+    @staticmethod
+    def _hotkey_env_key(field: str) -> str:
+        if field == "toggle":
+            return "PULSESCRIBE_TOGGLE_HOTKEY"
+        return "PULSESCRIBE_HOLD_HOTKEY"
+
+    def _reset_hotkey_recording_state(self) -> None:
         self._recording_field = None
         self._hotkey_recorded = False
         with self._pressed_keys_lock:
             self._pressed_keys.clear()
 
-        # Reset input styles
+    def _reset_hotkey_input_styles(self) -> None:
         for inp in (self._toggle_input, self._hold_input):
             if inp:
                 inp.setStyleSheet("")
-        self._update_hotkey_capture_ui()
 
     def _save_hotkey(self, field: str, hotkey: str) -> bool:
         """Save a hotkey to settings. Called by _stop_hotkey_recording."""
@@ -2427,54 +2417,78 @@ class OnboardingWizardWindows(QDialog):
             return False
 
         next_text = text or ""
-        previous_text = getattr(self, "_last_test_transcript_text", None)
-        if previous_text is None:
-            current_text = getattr(editor, "toPlainText", None)
-            if callable(current_text):
-                try:
-                    previous_text = str(current_text())
-                except TypeError:
-                    previous_text = ""
-            else:
-                previous_text = str(getattr(editor, "value", "") or "")
+        previous_text = self._previous_test_transcript_text(editor)
         if next_text == previous_text:
             return False
 
-        appended = False
-        if previous_text and next_text.startswith(previous_text):
-            delta = next_text[len(previous_text):]
-            move_cursor = getattr(editor, "moveCursor", None)
-            insert_plain_text = getattr(editor, "insertPlainText", None)
-            if delta and callable(move_cursor) and callable(insert_plain_text):
-                try:
-                    from PySide6.QtGui import QTextCursor
-
-                    move_cursor(QTextCursor.MoveOperation.End)
-                    insert_plain_text(delta)
-                    appended = True
-                except Exception:
-                    appended = False
-
-        if not appended:
-            if next_text:
-                _set_plain_text_if_changed(editor, next_text)
-            else:
-                clear = getattr(editor, "clear", None)
-                if callable(clear):
-                    current_text = getattr(editor, "toPlainText", None)
-                    if callable(current_text):
-                        try:
-                            if current_text():
-                                clear()
-                        except TypeError:
-                            clear()
-                    elif getattr(editor, "value", ""):
-                        clear()
-                else:
-                    _set_plain_text_if_changed(editor, "")
+        if not self._try_append_test_transcript_delta(
+            editor,
+            previous_text,
+            next_text,
+        ):
+            self._replace_test_transcript_text(editor, next_text)
 
         self._last_test_transcript_text = next_text
         return True
+
+    def _previous_test_transcript_text(self, editor) -> str:
+        previous_text = getattr(self, "_last_test_transcript_text", None)
+        if previous_text is not None:
+            return previous_text
+        current_text = getattr(editor, "toPlainText", None)
+        if callable(current_text):
+            try:
+                return str(current_text())
+            except TypeError:
+                return ""
+        return str(getattr(editor, "value", "") or "")
+
+    @staticmethod
+    def _try_append_test_transcript_delta(
+        editor,
+        previous_text: str,
+        next_text: str,
+    ) -> bool:
+        if not previous_text or not next_text.startswith(previous_text):
+            return False
+
+        delta = next_text[len(previous_text):]
+        move_cursor = getattr(editor, "moveCursor", None)
+        insert_plain_text = getattr(editor, "insertPlainText", None)
+        if not delta or not callable(move_cursor) or not callable(insert_plain_text):
+            return False
+
+        try:
+            from PySide6.QtGui import QTextCursor
+
+            move_cursor(QTextCursor.MoveOperation.End)
+            insert_plain_text(delta)
+            return True
+        except Exception:
+            return False
+
+    def _replace_test_transcript_text(self, editor, next_text: str) -> None:
+        if next_text:
+            _set_plain_text_if_changed(editor, next_text)
+            return
+        self._clear_test_transcript_text(editor)
+
+    @staticmethod
+    def _clear_test_transcript_text(editor) -> None:
+        clear = getattr(editor, "clear", None)
+        if not callable(clear):
+            _set_plain_text_if_changed(editor, "")
+            return
+
+        current_text = getattr(editor, "toPlainText", None)
+        if callable(current_text):
+            try:
+                if current_text():
+                    clear()
+            except TypeError:
+                clear()
+        elif getattr(editor, "value", ""):
+            clear()
 
     # -------------------------------------------------------------------------
     # Keyboard Events
@@ -2483,54 +2497,64 @@ class OnboardingWizardWindows(QDialog):
     def keyPressEvent(self, event) -> None:
         """Handle key press for hotkey recording confirmation."""
         if self._recording_field:
-            # Escape = Cancel (restores previous value in _stop_hotkey_recording)
-            if event.key() == Qt.Key.Key_Escape:
-                self._stop_hotkey_recording(save=False)
-                event.accept()
-                return
-
-            # Enter = Confirm
-            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-                if not self._hotkey_recorded:
-                    self._set_hotkey_status(
-                        "Drücke zuerst die gewünschte Tastenkombination.",
-                        "warning",
-                    )
-                self._stop_hotkey_recording(save=True)
-                event.accept()
-                return
-
-            if self._using_qt_grab:
-                is_auto_repeat = getattr(event, "isAutoRepeat", lambda: False)()
-                if is_auto_repeat:
-                    event.accept()
-                    return
-
-                parts = []
-                modifiers = event.modifiers()
-                if modifiers & Qt.KeyboardModifier.ControlModifier:
-                    parts.append("ctrl")
-                if modifiers & Qt.KeyboardModifier.AltModifier:
-                    parts.append("alt")
-                if modifiers & Qt.KeyboardModifier.ShiftModifier:
-                    parts.append("shift")
-                if modifiers & Qt.KeyboardModifier.MetaModifier:
-                    parts.append("win")
-
-                key_name = self._qt_key_to_string(event.key())
-                if key_name and key_name not in ("ctrl", "alt", "shift", "win"):
-                    parts.append(key_name)
-
-                hotkey_str = "+".join(parts) if parts else ""
-                if hotkey_str:
-                    self._hotkey_recorded = True
-                if self._recording_field:
-                    self._set_hotkey_field_text(self._recording_field, hotkey_str)
-
-            event.accept()
+            self._handle_hotkey_recording_key_event(event)
             return
 
         super().keyPressEvent(event)
+
+    def _handle_hotkey_recording_key_event(self, event) -> None:
+        if event.key() == Qt.Key.Key_Escape:
+            self._stop_hotkey_recording(save=False)
+            event.accept()
+            return
+
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self._confirm_hotkey_recording(event)
+            return
+
+        if self._using_qt_grab:
+            self._capture_qt_hotkey_event(event)
+        event.accept()
+
+    def _confirm_hotkey_recording(self, event) -> None:
+        if not self._hotkey_recorded:
+            self._set_hotkey_status(
+                "Drücke zuerst die gewünschte Tastenkombination.",
+                "warning",
+            )
+        self._stop_hotkey_recording(save=True)
+        event.accept()
+
+    def _capture_qt_hotkey_event(self, event) -> None:
+        is_auto_repeat = getattr(event, "isAutoRepeat", lambda: False)()
+        if is_auto_repeat:
+            return
+
+        hotkey_str = "+".join(self._qt_hotkey_parts(event))
+        if hotkey_str:
+            self._hotkey_recorded = True
+        if self._recording_field:
+            self._set_hotkey_field_text(self._recording_field, hotkey_str)
+
+    def _qt_hotkey_parts(self, event) -> list[str]:
+        parts = self._qt_modifier_parts(event.modifiers())
+        key_name = self._qt_key_to_string(event.key())
+        if key_name and key_name not in ("ctrl", "alt", "shift", "win"):
+            parts.append(key_name)
+        return parts
+
+    @staticmethod
+    def _qt_modifier_parts(modifiers) -> list[str]:
+        parts = []
+        if modifiers & Qt.KeyboardModifier.ControlModifier:
+            parts.append("ctrl")
+        if modifiers & Qt.KeyboardModifier.AltModifier:
+            parts.append("alt")
+        if modifiers & Qt.KeyboardModifier.ShiftModifier:
+            parts.append("shift")
+        if modifiers & Qt.KeyboardModifier.MetaModifier:
+            parts.append("win")
+        return parts
 
     def _qt_key_to_string(self, key: int) -> str:
         """Convert Qt key code into normalized hotkey token."""

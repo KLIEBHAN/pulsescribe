@@ -434,6 +434,156 @@ def _log_init_complete(
     logger.info(f"[{session_id}] {mode_name} nach {mic_init_ms:.0f}ms")
 
 
+def _forward_warm_chunk(
+    *,
+    loop: asyncio.AbstractEventLoop,
+    audio_queue: asyncio.Queue[bytes | None],
+    chunk: bytes,
+) -> None:
+    loop.call_soon_threadsafe(audio_queue.put_nowait, chunk)
+
+
+def _forward_warm_stream_until_stop(
+    *,
+    warm_source: WarmStreamSource,
+    state: StreamState,
+    loop: asyncio.AbstractEventLoop,
+    audio_queue: asyncio.Queue[bytes | None],
+    session_id: str,
+) -> None:
+    while not state.stop_event.is_set():
+        try:
+            chunk = warm_source.audio_queue.get(timeout=AUDIO_QUEUE_POLL_INTERVAL)
+            _forward_warm_chunk(loop=loop, audio_queue=audio_queue, chunk=chunk)
+        except queue.Empty:
+            continue
+        except Exception as e:
+            if not state.stop_event.is_set():
+                logger.warning(f"[{session_id}] Warm-Stream Forwarder Error: {e}")
+            break
+
+
+def _drain_available_warm_chunks(
+    *,
+    warm_source: WarmStreamSource,
+    loop: asyncio.AbstractEventLoop,
+    audio_queue: asyncio.Queue[bytes | None],
+) -> int:
+    drained = 0
+    while True:
+        try:
+            chunk = warm_source.audio_queue.get_nowait()
+            _forward_warm_chunk(loop=loop, audio_queue=audio_queue, chunk=chunk)
+            drained += 1
+        except (queue.Empty, RuntimeError):
+            return drained
+
+
+def _pre_drain_warm_stream(
+    *,
+    warm_source: WarmStreamSource,
+    loop: asyncio.AbstractEventLoop,
+    audio_queue: asyncio.Queue[bytes | None],
+) -> int:
+    drained = 0
+    deadline = time.monotonic() + PRE_DRAIN_DURATION
+    while time.monotonic() < deadline:
+        try:
+            chunk = warm_source.audio_queue.get(timeout=DRAIN_POLL_INTERVAL)
+            _forward_warm_chunk(loop=loop, audio_queue=audio_queue, chunk=chunk)
+            drained += 1
+        except queue.Empty:
+            continue
+        except RuntimeError:
+            break
+    return drained
+
+
+def _post_drain_warm_stream(
+    *,
+    warm_source: WarmStreamSource,
+    loop: asyncio.AbstractEventLoop,
+    audio_queue: asyncio.Queue[bytes | None],
+    session_id: str,
+) -> None:
+    if warm_source.drain_event is not None:
+        warm_source.drain_event.set()
+    warm_source.arm_event.clear()
+    time.sleep(DRAIN_POLL_INTERVAL)
+
+    try:
+        drained = 0
+        empty_count = 0
+        drain_deadline = time.monotonic() + DRAIN_MAX_DURATION
+        while empty_count < DRAIN_EMPTY_THRESHOLD:
+            if time.monotonic() >= drain_deadline:
+                logger.warning(
+                    f"[{session_id}] Drain-Timeout nach {DRAIN_MAX_DURATION}s "
+                    f"({drained} Chunks)"
+                )
+                break
+            try:
+                chunk = warm_source.audio_queue.get(timeout=DRAIN_POLL_INTERVAL)
+                _forward_warm_chunk(loop=loop, audio_queue=audio_queue, chunk=chunk)
+                drained += 1
+                empty_count = 0
+            except queue.Empty:
+                empty_count += 1
+            except RuntimeError:
+                logger.debug(f"[{session_id}] Event-Loop geschlossen, Drain abgebrochen")
+                break
+
+        if drained > 0:
+            logger.debug(f"[{session_id}] Warm-Stream: {drained} Rest-Chunks geleert")
+    finally:
+        # drain_event muss gelöscht werden, sonst sammelt der Callback dauerhaft.
+        if warm_source.drain_event is not None:
+            warm_source.drain_event.clear()
+
+
+def _run_warm_stream_forwarder(
+    *,
+    warm_source: WarmStreamSource,
+    state: StreamState,
+    loop: asyncio.AbstractEventLoop,
+    audio_queue: asyncio.Queue[bytes | None],
+    session_id: str,
+) -> None:
+    """Leitet Audio von sync Queue an async Queue weiter und drained Rest-Chunks."""
+    _forward_warm_stream_until_stop(
+        warm_source=warm_source,
+        state=state,
+        loop=loop,
+        audio_queue=audio_queue,
+        session_id=session_id,
+    )
+
+    # Zwischen queue.get(timeout) und stop_event Check können Chunks eintreffen.
+    immediate_drained = _drain_available_warm_chunks(
+        warm_source=warm_source,
+        loop=loop,
+        audio_queue=audio_queue,
+    )
+    if immediate_drained > 0:
+        logger.debug(f"[{session_id}] Immediate-Drain: {immediate_drained} Chunks")
+
+    # Callback läuft noch: kurze Pre-Drain-Phase leert Sounddevice-Buffer.
+    pre_drained = _pre_drain_warm_stream(
+        warm_source=warm_source,
+        loop=loop,
+        audio_queue=audio_queue,
+    )
+    if pre_drained > 0:
+        logger.debug(f"[{session_id}] Pre-Drain: {pre_drained} Chunks geleert")
+
+    _post_drain_warm_stream(
+        warm_source=warm_source,
+        loop=loop,
+        audio_queue=audio_queue,
+        session_id=session_id,
+    )
+
+
 def _init_warm_stream(
     warm_source: WarmStreamSource,
     state: StreamState,
@@ -455,99 +605,17 @@ def _init_warm_stream(
     # Arm the stream - ab jetzt werden Samples gesammelt
     warm_source.arm_event.set()
 
-    def _warm_stream_forwarder() -> None:
-        """Leitet Audio von sync Queue an async Queue weiter."""
-        while not state.stop_event.is_set():
-            try:
-                chunk = warm_source.audio_queue.get(timeout=AUDIO_QUEUE_POLL_INTERVAL)
-                loop.call_soon_threadsafe(audio_queue.put_nowait, chunk)
-            except queue.Empty:
-                continue
-            except Exception as e:
-                if not state.stop_event.is_set():
-                    logger.warning(f"[{session_id}] Warm-Stream Forwarder Error: {e}")
-                break
-
-        # === IMMEDIATE-DRAIN ===
-        # Race Condition Fix: Zwischen queue.get(timeout) und stop_event Check
-        # könnten neue Chunks eingefügt worden sein.
-        immediate_drained = 0
-        while True:
-            try:
-                chunk = warm_source.audio_queue.get_nowait()
-                loop.call_soon_threadsafe(audio_queue.put_nowait, chunk)
-                immediate_drained += 1
-            except (queue.Empty, RuntimeError):
-                break
-
-        if immediate_drained > 0:
-            logger.debug(f"[{session_id}] Immediate-Drain: {immediate_drained} Chunks")
-
-        # === PRE-DRAIN PHASE ===
-        # Callback läuft noch - gibt sounddevice Zeit, Buffer zu leeren (~23ms).
-        # Ohne diese Phase gehen die letzten Chunks vor arm_event.clear() verloren.
-        pre_drained = 0
-        pre_drain_deadline = time.monotonic() + PRE_DRAIN_DURATION
-        while time.monotonic() < pre_drain_deadline:
-            try:
-                chunk = warm_source.audio_queue.get(timeout=DRAIN_POLL_INTERVAL)
-                loop.call_soon_threadsafe(audio_queue.put_nowait, chunk)
-                pre_drained += 1
-            except queue.Empty:
-                continue
-            except RuntimeError:
-                break
-
-        if pre_drained > 0:
-            logger.debug(f"[{session_id}] Pre-Drain: {pre_drained} Chunks geleert")
-
-        # === POST-DRAIN PHASE ===
-        # 1. drain_event.set() erlaubt dem Callback weiter Audio zu sammeln
-        # 2. arm_event.clear() signalisiert dem Callback, keine neuen Chunks zu schreiben
-        #    (außer drain_event ist gesetzt - für die Drain-Phase)
-        # 3. Kurze Pause (DRAIN_POLL_INTERVAL) gibt dem Callback Zeit, seinen aktuellen
-        #    Schreibvorgang abzuschließen (TOCTOU: Callback hat is_set() bereits geprüft)
-        # 4. Queue leeren bis DRAIN_EMPTY_THRESHOLD aufeinanderfolgende leere Polls
-        # 5. Safety: DRAIN_MAX_DURATION als absolute Obergrenze gegen Endlosschleifen
-        # 6. drain_event.clear() beendet die Drain-Phase
-        if warm_source.drain_event is not None:
-            warm_source.drain_event.set()
-        warm_source.arm_event.clear()
-        time.sleep(DRAIN_POLL_INTERVAL)
-
-        try:
-            drained = 0
-            empty_count = 0
-            drain_deadline = time.monotonic() + DRAIN_MAX_DURATION
-            while empty_count < DRAIN_EMPTY_THRESHOLD:
-                # Safety-Limit: Verhindert Endlosschleife bei sporadischen Chunks
-                if time.monotonic() >= drain_deadline:
-                    logger.warning(
-                        f"[{session_id}] Drain-Timeout nach {DRAIN_MAX_DURATION}s "
-                        f"({drained} Chunks)"
-                    )
-                    break
-                try:
-                    chunk = warm_source.audio_queue.get(timeout=DRAIN_POLL_INTERVAL)
-                    loop.call_soon_threadsafe(audio_queue.put_nowait, chunk)
-                    drained += 1
-                    empty_count = 0  # Reset bei erfolgreichem Chunk
-                except queue.Empty:
-                    empty_count += 1
-                except RuntimeError:
-                    # Event-Loop bereits geschlossen
-                    logger.debug(f"[{session_id}] Event-Loop geschlossen, Drain abgebrochen")
-                    break
-
-            if drained > 0:
-                logger.debug(f"[{session_id}] Warm-Stream: {drained} Rest-Chunks geleert")
-        finally:
-            # KRITISCH: drain_event MUSS gelöscht werden, sonst sammelt Callback ewig
-            if warm_source.drain_event is not None:
-                warm_source.drain_event.clear()
-
     forwarder_thread = threading.Thread(
-        target=_warm_stream_forwarder, daemon=True, name="WarmStreamForwarder"
+        target=_run_warm_stream_forwarder,
+        kwargs={
+            "warm_source": warm_source,
+            "state": state,
+            "loop": loop,
+            "audio_queue": audio_queue,
+            "session_id": session_id,
+        },
+        daemon=True,
+        name="WarmStreamForwarder",
     )
     forwarder_thread.start()
 
@@ -641,6 +709,20 @@ def _init_cli_stream(
 # =============================================================================
 
 
+def _emit_latency_event(
+    callback: Callable[[str, dict[str, Any] | None], None] | None,
+    name: str,
+    **fields: Any,
+) -> None:
+    """Emit optional latency diagnostics without affecting streaming."""
+    if callback is None:
+        return
+    try:
+        callback(name, fields or None)
+    except Exception as exc:
+        logger.debug("Latency diagnostics callback failed: %s", exc)
+
+
 def _write_interim_text(path: Path, transcript: str) -> None:
     """Write interim text atomically so readers never see partial payloads."""
     if not hasattr(path, "with_name") or not hasattr(path, "replace"):
@@ -659,6 +741,60 @@ def _write_interim_text(path: Path, transcript: str) -> None:
         raise
 
 
+def _mark_finalize_response(
+    state: StreamState,
+    *,
+    has_transcript: bool,
+) -> None:
+    if has_transcript:
+        state.finalize_transcript_received = True
+    else:
+        state.finalize_empty_ack_received = True
+    state.finalize_done.set()
+
+
+def _handle_final_transcript(
+    state: StreamState,
+    *,
+    session_id: str,
+    transcript: str,
+) -> None:
+    state.final_transcripts.append(transcript)
+    logger.info(f"[{session_id}] Final: {redacted_text_summary(transcript)}")
+
+
+def _handle_interim_transcript(
+    state: StreamState,
+    *,
+    session_id: str,
+    transcript: str,
+    interim_text_callback: Callable[[str], None] | None,
+) -> None:
+    previous_interim = state.last_interim_text
+    state.last_interim_text = transcript
+    if transcript == previous_interim and transcript == state.last_interim_written_text:
+        return
+
+    now = time.perf_counter()
+    if transcript == state.last_interim_written_text:
+        return
+    if (now - state.last_interim_write) * 1000 < INTERIM_THROTTLE_MS:
+        return
+
+    if interim_text_callback is not None:
+        try:
+            interim_text_callback(transcript)
+        except Exception as e:
+            logger.debug(f"[{session_id}] Interim-Callback fehlgeschlagen: {e}")
+    try:
+        _write_interim_text(INTERIM_FILE, transcript)
+        state.last_interim_write = now
+        state.last_interim_written_text = transcript
+        logger.debug(f"[{session_id}] Interim: {redacted_text_summary(transcript)}")
+    except OSError as e:
+        logger.warning(f"[{session_id}] Interim-Write fehlgeschlagen: {e}")
+
+
 def _create_message_handler(
     state: StreamState,
     session_id: str,
@@ -674,46 +810,26 @@ def _create_message_handler(
         transcript = _extract_transcript(result)
         if not transcript:
             if from_finalize:
-                state.finalize_empty_ack_received = True
-                state.finalize_done.set()
+                _mark_finalize_response(state, has_transcript=False)
             return
 
         if from_finalize:
-            state.finalize_transcript_received = True
-            state.finalize_done.set()
+            _mark_finalize_response(state, has_transcript=True)
 
         is_final = getattr(result, "is_final", False)
-
         if is_final:
-            state.final_transcripts.append(transcript)
-            logger.info(f"[{session_id}] Final: {redacted_text_summary(transcript)}")
+            _handle_final_transcript(
+                state,
+                session_id=session_id,
+                transcript=transcript,
+            )
         else:
-            previous_interim = state.last_interim_text
-            state.last_interim_text = transcript
-            if (
-                transcript == previous_interim
-                and transcript == state.last_interim_written_text
-            ):
-                return
-            # Throttling: Max alle INTERIM_THROTTLE_MS schreiben
-            now = time.perf_counter()
-            if transcript != state.last_interim_written_text and (
-                (now - state.last_interim_write) * 1000 >= INTERIM_THROTTLE_MS
-            ):
-                if interim_text_callback is not None:
-                    try:
-                        interim_text_callback(transcript)
-                    except Exception as e:
-                        logger.debug(f"[{session_id}] Interim-Callback fehlgeschlagen: {e}")
-                try:
-                    _write_interim_text(INTERIM_FILE, transcript)
-                    state.last_interim_write = now
-                    state.last_interim_written_text = transcript
-                    logger.debug(
-                        f"[{session_id}] Interim: {redacted_text_summary(transcript)}"
-                    )
-                except OSError as e:
-                    logger.warning(f"[{session_id}] Interim-Write fehlgeschlagen: {e}")
+            _handle_interim_transcript(
+                state,
+                session_id=session_id,
+                transcript=transcript,
+                interim_text_callback=interim_text_callback,
+            )
 
     return on_message
 
@@ -874,6 +990,7 @@ async def _graceful_shutdown(
     listen_task: asyncio.Task[None],
     session_id: str,
     sample_rate: int = WHISPER_SAMPLE_RATE,
+    latency_event_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
 ) -> None:
     """Sauberes Beenden der Streaming-Session.
 
@@ -901,6 +1018,11 @@ async def _graceful_shutdown(
     tail_padding = _build_tail_padding_chunk(sample_rate)
     if tail_padding:
         await audio_queue.put(tail_padding)
+        _emit_latency_event(
+            latency_event_callback,
+            "deepgram_tail_padding",
+            seconds=DEEPGRAM_TAIL_PADDING_SECONDS,
+        )
         logger.debug(
             f"[{session_id}] Deepgram Tail-Padding: "
             f"{DEEPGRAM_TAIL_PADDING_SECONDS:.2f}s"
@@ -910,6 +1032,7 @@ async def _graceful_shutdown(
 
     # 2. Finalize senden
     logger.info(f"[{session_id}] Sende Finalize...")
+    _emit_latency_event(latency_event_callback, "deepgram_finalize_send")
     t_finalize_start = time.perf_counter()
     try:
         await connection.send_control(ListenV1ControlMessage(type="Finalize"))
@@ -923,6 +1046,11 @@ async def _graceful_shutdown(
         )
         t_finalize = (time.perf_counter() - t_finalize_start) * 1000
         logger.info(f"[{session_id}] Finalize abgeschlossen ({t_finalize:.0f}ms)")
+        _emit_latency_event(
+            latency_event_callback,
+            "deepgram_finalize_done",
+            elapsed_ms=round(t_finalize, 3),
+        )
         if (
             state.finalize_empty_ack_received
             and not state.finalize_transcript_received
@@ -935,9 +1063,16 @@ async def _graceful_shutdown(
             f"[{session_id}] Finalize-Timeout nach {t_finalize:.0f}ms "
             f"(max: {FINALIZE_TIMEOUT}s)"
         )
+        _emit_latency_event(
+            latency_event_callback,
+            "deepgram_finalize_timeout",
+            elapsed_ms=round(t_finalize, 3),
+            timeout_s=FINALIZE_TIMEOUT,
+        )
 
     # 4. CloseStream senden
     logger.info(f"[{session_id}] Sende CloseStream...")
+    _emit_latency_event(latency_event_callback, "deepgram_close_send")
     try:
         await connection.send_control(ListenV1ControlMessage(type="CloseStream"))
         logger.info(f"[{session_id}] CloseStream gesendet")
@@ -1005,6 +1140,209 @@ def _validate_api_key(api_key: str | None) -> str:
     return api_key
 
 
+def _select_audio_source_mode(
+    *,
+    early_buffer: list[bytes] | None,
+    warm_stream_source: WarmStreamSource | None,
+) -> tuple[AudioSourceMode, str]:
+    if warm_stream_source is not None:
+        return AudioSourceMode.WARM_STREAM, "Warm-Stream"
+    if early_buffer:
+        return AudioSourceMode.DAEMON, f"Daemon, {len(early_buffer)} early chunks"
+    return AudioSourceMode.CLI, "CLI (Buffering)"
+
+
+def _init_audio_source(
+    *,
+    mode: AudioSourceMode,
+    early_buffer: list[bytes] | None,
+    warm_stream_source: WarmStreamSource | None,
+    state: StreamState,
+    loop: asyncio.AbstractEventLoop,
+    audio_queue: asyncio.Queue[bytes | None],
+    session_id: str,
+    play_ready: bool,
+    stream_start: float,
+    audio_level_callback: Callable[[float], None] | None,
+) -> AudioSourceResult:
+    if mode == AudioSourceMode.WARM_STREAM:
+        assert warm_stream_source is not None
+        return _init_warm_stream(
+            warm_source=warm_stream_source,
+            state=state,
+            loop=loop,
+            audio_queue=audio_queue,
+            session_id=session_id,
+            play_ready=play_ready,
+            stream_start=stream_start,
+        )
+    if mode == AudioSourceMode.DAEMON:
+        assert early_buffer is not None
+        return _init_daemon_stream(
+            early_buffer=early_buffer,
+            state=state,
+            loop=loop,
+            audio_queue=audio_queue,
+            session_id=session_id,
+            play_ready=play_ready,
+            stream_start=stream_start,
+        )
+
+    return _init_cli_stream(
+        state=state,
+        loop=loop,
+        audio_queue=audio_queue,
+        session_id=session_id,
+        play_ready=play_ready,
+        stream_start=stream_start,
+        audio_level_callback=audio_level_callback,
+    )
+
+
+def _register_deepgram_handlers(
+    connection: AsyncV1SocketClient,
+    *,
+    state: StreamState,
+    session_id: str,
+    interim_text_callback: Callable[[str], None] | None,
+) -> None:
+    from deepgram.core.events import EventType
+
+    connection.on(
+        EventType.MESSAGE,
+        _create_message_handler(state, session_id, interim_text_callback),
+    )
+    connection.on(EventType.ERROR, _create_error_handler(state, session_id))
+    connection.on(EventType.CLOSE, _create_close_handler(state, session_id))
+
+
+def _flush_buffered_audio_after_connect(
+    *,
+    audio_result: AudioSourceResult,
+    audio_queue: asyncio.Queue[bytes | None],
+    session_id: str,
+    stream_start: float,
+) -> float:
+    ws_time = (time.perf_counter() - stream_start) * 1000
+    if audio_result.buffer_state is None:
+        logger.info(f"[{session_id}] WebSocket verbunden nach {ws_time:.0f}ms")
+        return ws_time
+
+    with audio_result.buffer_state.lock:
+        audio_result.buffer_state.active = False
+        buffered_count = len(audio_result.buffer_state.buffer)
+        for chunk in audio_result.buffer_state.buffer:
+            audio_queue.put_nowait(chunk)
+        audio_result.buffer_state.buffer.clear()
+    logger.info(
+        f"[{session_id}] WebSocket verbunden nach {ws_time:.0f}ms, "
+        f"{buffered_count} gepufferte Chunks"
+    )
+    return ws_time
+
+
+async def _send_audio_to_deepgram(
+    *,
+    connection: AsyncV1SocketClient,
+    state: StreamState,
+    audio_queue: asyncio.Queue[bytes | None],
+    session_id: str,
+) -> None:
+    """Sendet Audio-Chunks an Deepgram bis Sentinel."""
+    last_chunk_at = time.monotonic()
+    try:
+        while True:
+            try:
+                chunk = await asyncio.wait_for(
+                    audio_queue.get(), timeout=AUDIO_QUEUE_POLL_INTERVAL
+                )
+                if chunk is None:
+                    break
+                last_chunk_at = time.monotonic()
+                await asyncio.wait_for(
+                    connection.send_media(chunk), timeout=SEND_MEDIA_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                if (
+                    state.stop_event.is_set()
+                    and time.monotonic() - last_chunk_at >= FINALIZE_TIMEOUT
+                ):
+                    logger.warning(
+                        f"[{session_id}] Audio-Send Abbruch ohne Sentinel "
+                        f"(idle >= {FINALIZE_TIMEOUT:.1f}s)"
+                    )
+                    break
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        logger.error(f"[{session_id}] Audio-Send Fehler: {e}")
+        state.stream_error = e
+        state.stop_event.set()
+
+
+async def _listen_for_deepgram_messages(
+    *,
+    connection: AsyncV1SocketClient,
+    session_id: str,
+) -> None:
+    """Empfängt Transkripte von Deepgram."""
+    try:
+        await connection.start_listening()
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        logger.debug(f"[{session_id}] Listener beendet: {e}")
+
+
+async def _stop_audio_source_before_shutdown(
+    *,
+    audio_result: AudioSourceResult,
+    session_id: str,
+) -> None:
+    if audio_result.forwarder_thread is not None:
+        await _finish_warm_forwarder(audio_result, session_id)
+        return
+
+    if audio_result.mic_stream is None:
+        return
+
+    await asyncio.sleep(PRE_DRAIN_DURATION)
+    try:
+        audio_result.mic_stream.stop()
+        logger.debug(f"[{session_id}] Mikrofon gestoppt (vor Graceful Shutdown)")
+    except Exception as e:
+        logger.debug(f"[{session_id}] Mikrofon-Stop fehlgeschlagen: {e}")
+
+
+def _cleanup_deepgram_audio_source(
+    *,
+    audio_result: AudioSourceResult,
+    warm_stream_source: WarmStreamSource | None,
+) -> None:
+    if audio_result.mic_stream is not None:
+        try:
+            if audio_result.mic_stream.active:
+                audio_result.mic_stream.stop()
+            audio_result.mic_stream.close()
+        except Exception as e:
+            logger.debug(f"Mikrofon-Cleanup fehlgeschlagen: {e}")
+
+    if warm_stream_source is None:
+        return
+
+    if warm_stream_source.arm_event.is_set():
+        logger.warning(
+            "Warm-Stream arm_event noch gesetzt im finally-Block - "
+            "Forwarder-Thread wurde vermutlich vorzeitig beendet"
+        )
+    drain_event = warm_stream_source.drain_event
+    if drain_event is not None:
+        drain_event.set()
+    warm_stream_source.arm_event.clear()
+    if drain_event is not None:
+        drain_event.clear()
+
+
 async def deepgram_stream_core(
     model: str,
     language: str | None,
@@ -1014,6 +1352,7 @@ async def deepgram_stream_core(
     external_stop_event: threading.Event | None = None,
     audio_level_callback: Callable[[float], None] | None = None,
     interim_text_callback: Callable[[str], None] | None = None,
+    latency_event_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
     warm_stream_source: WarmStreamSource | None = None,
     stop_grace_seconds: float = 0.0,
 ) -> str:
@@ -1027,6 +1366,7 @@ async def deepgram_stream_core(
         external_stop_event: threading.Event zum externen Stoppen (statt SIGUSR1)
         audio_level_callback: Callback für Audio-Level Updates
         interim_text_callback: Optionaler direkter Callback für Interim-Text
+        latency_event_callback: Optionaler Callback für strukturierte Latenz-Events
         warm_stream_source: Externes WarmStreamSource für instant-start (Windows)
         stop_grace_seconds: Zusätzliche Aufnahmezeit nach externem Stop-Signal
 
@@ -1041,8 +1381,6 @@ async def deepgram_stream_core(
     Raises:
         ValueError: Bei ungültigen Parametern oder fehlendem API-Key
     """
-    from deepgram.core.events import EventType
-
     # Validierung
     _validate_model(model)
     api_key = _validate_api_key(os.getenv("DEEPGRAM_API_KEY"))
@@ -1052,16 +1390,10 @@ async def deepgram_stream_core(
     language = normalize_auto_language(language)
 
     # Modus bestimmen
-    if warm_stream_source is not None:
-        mode = AudioSourceMode.WARM_STREAM
-        mode_str = "Warm-Stream"
-    elif early_buffer:  # Nicht-leere Liste
-        mode = AudioSourceMode.DAEMON
-        mode_str = f"Daemon, {len(early_buffer)} early chunks"
-    else:
-        mode = AudioSourceMode.CLI
-        mode_str = "CLI (Buffering)"
-
+    mode, mode_str = _select_audio_source_mode(
+        early_buffer=early_buffer,
+        warm_stream_source=warm_stream_source,
+    )
     logger.info(
         f"[{session_id}] Deepgram-Stream ({mode_str}): {model}, "
         f"lang={language or 'auto'}"
@@ -1082,38 +1414,18 @@ async def deepgram_stream_core(
     )
 
     # Audio-Source initialisieren (modus-spezifisch)
-    if mode == AudioSourceMode.WARM_STREAM:
-        assert warm_stream_source is not None
-        audio_result = _init_warm_stream(
-            warm_source=warm_stream_source,
-            state=state,
-            loop=loop,
-            audio_queue=audio_queue,
-            session_id=session_id,
-            play_ready=play_ready,
-            stream_start=stream_start,
-        )
-    elif mode == AudioSourceMode.DAEMON:
-        assert early_buffer is not None
-        audio_result = _init_daemon_stream(
-            early_buffer=early_buffer,
-            state=state,
-            loop=loop,
-            audio_queue=audio_queue,
-            session_id=session_id,
-            play_ready=play_ready,
-            stream_start=stream_start,
-        )
-    else:  # CLI Mode
-        audio_result = _init_cli_stream(
-            state=state,
-            loop=loop,
-            audio_queue=audio_queue,
-            session_id=session_id,
-            play_ready=play_ready,
-            stream_start=stream_start,
-            audio_level_callback=audio_level_callback,
-        )
+    audio_result = _init_audio_source(
+        mode=mode,
+        early_buffer=early_buffer,
+        warm_stream_source=warm_stream_source,
+        state=state,
+        loop=loop,
+        audio_queue=audio_queue,
+        session_id=session_id,
+        play_ready=play_ready,
+        stream_start=stream_start,
+        audio_level_callback=audio_level_callback,
+    )
 
     try:
         async with _create_deepgram_connection(
@@ -1124,86 +1436,45 @@ async def deepgram_stream_core(
             channels=WHISPER_CHANNELS,
         ) as connection:
             # Event-Handler registrieren
-            connection.on(
-                EventType.MESSAGE,
-                _create_message_handler(state, session_id, interim_text_callback),
+            _register_deepgram_handlers(
+                connection,
+                state=state,
+                session_id=session_id,
+                interim_text_callback=interim_text_callback,
             )
-            connection.on(EventType.ERROR, _create_error_handler(state, session_id))
-            connection.on(EventType.CLOSE, _create_close_handler(state, session_id))
 
-            ws_time = (time.perf_counter() - stream_start) * 1000
-
-            # CLI-Mode: Gepuffertes Audio an Queue senden und auf Direct-Mode umschalten
-            # Während des WebSocket-Handshakes (~500ms) wurde Audio im Buffer gesammelt.
-            # Jetzt: (1) Buffer leeren, (2) active=False → neue Chunks gehen direkt an Queue
-            if audio_result.buffer_state is not None:
-                with audio_result.buffer_state.lock:
-                    # Umschalten: Buffering → Direct Mode
-                    audio_result.buffer_state.active = False
-                    buffered_count = len(audio_result.buffer_state.buffer)
-                    for chunk in audio_result.buffer_state.buffer:
-                        audio_queue.put_nowait(chunk)
-                    audio_result.buffer_state.buffer.clear()
-                logger.info(
-                    f"[{session_id}] WebSocket verbunden nach {ws_time:.0f}ms, "
-                    f"{buffered_count} gepufferte Chunks"
-                )
-            else:
-                logger.info(f"[{session_id}] WebSocket verbunden nach {ws_time:.0f}ms")
+            ws_time = _flush_buffered_audio_after_connect(
+                audio_result=audio_result,
+                audio_queue=audio_queue,
+                session_id=session_id,
+                stream_start=stream_start,
+            )
+            _emit_latency_event(
+                latency_event_callback,
+                "deepgram_ws_connected",
+                elapsed_ms=round(ws_time, 3),
+            )
 
             # Async Tasks für bidirektionale Kommunikation
-            async def send_audio() -> None:
-                """Sendet Audio-Chunks an Deepgram bis Sentinel."""
-                last_chunk_at = time.monotonic()
-                try:
-                    # Auch nach Stop-Signal weiter senden, bis das None-Sentinel kommt.
-                    # So werden bereits gepufferte Chunks nicht abgeschnitten.
-                    while True:
-                        try:
-                            chunk = await asyncio.wait_for(
-                                audio_queue.get(), timeout=AUDIO_QUEUE_POLL_INTERVAL
-                            )
-                            if chunk is None:
-                                break
-                            last_chunk_at = time.monotonic()
-                            # Timeout für send_media um Hänger zu vermeiden
-                            await asyncio.wait_for(
-                                connection.send_media(chunk), timeout=SEND_MEDIA_TIMEOUT
-                            )
-                        except asyncio.TimeoutError:
-                            # Fallback: Wenn kein Sentinel kommt, nach kurzer Leerlaufzeit beenden.
-                            if (
-                                state.stop_event.is_set()
-                                and time.monotonic() - last_chunk_at >= FINALIZE_TIMEOUT
-                            ):
-                                logger.warning(
-                                    f"[{session_id}] Audio-Send Abbruch ohne Sentinel "
-                                    f"(idle >= {FINALIZE_TIMEOUT:.1f}s)"
-                                )
-                                break
-                            continue
-                except asyncio.CancelledError:
-                    pass
-                except Exception as e:
-                    logger.error(f"[{session_id}] Audio-Send Fehler: {e}")
-                    state.stream_error = e
-                    state.stop_event.set()
-
-            async def listen_for_messages() -> None:
-                """Empfängt Transkripte von Deepgram."""
-                try:
-                    await connection.start_listening()
-                except asyncio.CancelledError:
-                    pass
-                except Exception as e:
-                    logger.debug(f"[{session_id}] Listener beendet: {e}")
-
-            send_task = asyncio.create_task(send_audio())
-            listen_task = asyncio.create_task(listen_for_messages())
+            send_task = asyncio.create_task(
+                _send_audio_to_deepgram(
+                    connection=connection,
+                    state=state,
+                    audio_queue=audio_queue,
+                    session_id=session_id,
+                )
+            )
+            listen_task = asyncio.create_task(
+                _listen_for_deepgram_messages(
+                    connection=connection,
+                    session_id=session_id,
+                )
+            )
 
             # Warten auf Stop
             await state.stop_event.wait()
             logger.info(f"[{session_id}] Stop-Signal empfangen")
+            _emit_latency_event(latency_event_callback, "deepgram_stop_signal")
 
             # Interim-Datei sofort löschen
             INTERIM_FILE.unlink(missing_ok=True)
@@ -1212,19 +1483,10 @@ async def deepgram_stream_core(
             # Wichtig: Audio-Quellen müssen BEVOR das None-Sentinel gesendet wird
             # beendet werden, damit alle Rest-Chunks in der Queue landen.
 
-            if audio_result.forwarder_thread is not None:
-                await _finish_warm_forwarder(audio_result, session_id)
-
-            elif audio_result.mic_stream is not None:
-                # CLI/Daemon-Mode: Mikrofon stoppen mit Pre-Drain
-                # Pre-Drain: Kurz warten damit sounddevice seine Buffer leeren kann
-                # (sounddevice hat ~23ms Audio im Buffer bei blocksize=1024 @ 44100Hz)
-                await asyncio.sleep(PRE_DRAIN_DURATION)
-                try:
-                    audio_result.mic_stream.stop()
-                    logger.debug(f"[{session_id}] Mikrofon gestoppt (vor Graceful Shutdown)")
-                except Exception as e:
-                    logger.debug(f"[{session_id}] Mikrofon-Stop fehlgeschlagen: {e}")
+            await _stop_audio_source_before_shutdown(
+                audio_result=audio_result,
+                session_id=session_id,
+            )
 
             # Graceful Shutdown durchführen
             await _graceful_shutdown(
@@ -1235,37 +1497,14 @@ async def deepgram_stream_core(
                 listen_task=listen_task,
                 session_id=session_id,
                 sample_rate=audio_result.sample_rate,
+                latency_event_callback=latency_event_callback,
             )
 
     finally:
-        # Cleanup: Mikrofon-Ressourcen freigeben
-        # (mic_stream.stop() wurde bereits vor Graceful Shutdown aufgerufen)
-        if audio_result.mic_stream is not None:
-            try:
-                # Safety: Falls stop() nicht aufgerufen wurde (z.B. bei Exception)
-                if audio_result.mic_stream.active:
-                    audio_result.mic_stream.stop()
-                audio_result.mic_stream.close()
-            except Exception as e:
-                logger.debug(f"Mikrofon-Cleanup fehlgeschlagen: {e}")
-
-        # Warm-Stream: Safety-Net Disarm
-        # Normalerweise hat der Forwarder-Thread bereits arm_event.clear() aufgerufen.
-        # Dieser Aufruf ist ein Safety-Net für den Fall, dass der Daemon-Thread
-        # vorzeitig beendet wurde (z.B. bei Prozess-Shutdown).
-        if warm_stream_source is not None:
-            if warm_stream_source.arm_event.is_set():
-                logger.warning(
-                    "Warm-Stream arm_event noch gesetzt im finally-Block - "
-                    "Forwarder-Thread wurde vermutlich vorzeitig beendet"
-                )
-            # Safety-Drain: drain_event kurz setzen um Race-Condition zu vermeiden
-            drain_event = warm_stream_source.drain_event
-            if drain_event is not None:
-                drain_event.set()
-            warm_stream_source.arm_event.clear()
-            if drain_event is not None:
-                drain_event.clear()
+        _cleanup_deepgram_audio_source(
+            audio_result=audio_result,
+            warm_stream_source=warm_stream_source,
+        )
 
         # Signal-Handler entfernen
         _cleanup_stop_mechanism(loop, external_stop_event)

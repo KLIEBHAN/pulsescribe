@@ -33,37 +33,62 @@ def nsevent_to_hotkey_string(event) -> str | None:
 
     keycode = int(event.keyCode())
 
-    # Ignore pure modifier flag changes (except Fn/CapsLock which we support).
-    if event.type() == NSEventTypeFlagsChanged and keycode not in (63, 57):
+    if _is_ignored_modifier_event(event, keycode, NSEventTypeFlagsChanged):
         return None
 
-    if keycode == 63:
-        key = "fn"
-    elif keycode == 57:
-        key = "capslock"
-    else:
-        key = _REVERSE_KEY_CODE_MAP.get(keycode)
-
-    if not key:
-        chars = event.charactersIgnoringModifiers()
-        if chars:
-            key = chars.lower()
-
+    key = _nsevent_key_name(event, keycode)
     if not key:
         return None
 
     flags = int(event.modifierFlags())
-    modifiers: list[str] = []
-    if flags & NSEventModifierFlagControl:
-        modifiers.append("ctrl")
-    if flags & NSEventModifierFlagOption:
-        modifiers.append("option")
-    if flags & NSEventModifierFlagShift:
-        modifiers.append("shift")
-    if flags & NSEventModifierFlagCommand:
-        modifiers.append("cmd")
+    modifiers = _nsevent_modifier_names(
+        flags,
+        control=NSEventModifierFlagControl,
+        option=NSEventModifierFlagOption,
+        shift=NSEventModifierFlagShift,
+        command=NSEventModifierFlagCommand,
+    )
 
     return "+".join(modifiers + [key]) if modifiers else key
+
+
+def _is_ignored_modifier_event(event, keycode: int, flags_changed_type: int) -> bool:
+    # Ignore pure modifier flag changes (except Fn/CapsLock which we support).
+    return event.type() == flags_changed_type and keycode not in (63, 57)
+
+
+def _nsevent_key_name(event, keycode: int) -> str | None:
+    if keycode == 63:
+        return "fn"
+    if keycode == 57:
+        return "capslock"
+
+    key = _REVERSE_KEY_CODE_MAP.get(keycode)
+    if key:
+        return key
+
+    chars = event.charactersIgnoringModifiers()
+    return chars.lower() if chars else None
+
+
+def _nsevent_modifier_names(
+    flags: int,
+    *,
+    control: int,
+    option: int,
+    shift: int,
+    command: int,
+) -> list[str]:
+    modifiers: list[str] = []
+    for mask, name in (
+        (control, "ctrl"),
+        (option, "option"),
+        (shift, "shift"),
+        (command, "cmd"),
+    ):
+        if flags & mask:
+            modifiers.append(name)
+    return modifiers
 
 
 def add_local_hotkey_monitor(
@@ -132,52 +157,59 @@ class HotkeyRecorder:
         if field is None or button is None:
             return
 
-        # Cancel any existing recording session.
         if self._recording:
             self.stop(cancelled=True)
 
+        self._prepare_recording_session(
+            field=field,
+            button=button,
+            buttons_to_reset=buttons_to_reset,
+            placeholder=placeholder,
+        )
+        self._start_hotkey_monitor(on_hotkey)
+
+    def _prepare_recording_session(
+        self,
+        *,
+        field,
+        button,
+        buttons_to_reset: list[object],
+        placeholder: str,
+    ) -> None:
         self._recording = True
         self._target_field = field
         self._prev_value = str(field.stringValue() or "")
         self._buttons_to_reset = [b for b in buttons_to_reset if b is not None]
 
+        self._reset_record_buttons(button)
+        self._clear_recording_field(placeholder)
+
+    def _reset_record_buttons(self, active_button) -> None:
         for b in self._buttons_to_reset:
             try:
                 b.setTitle_("Record")
             except Exception:
                 pass
         try:
-            button.setTitle_("Press…")
+            active_button.setTitle_("Press…")
         except Exception:
             pass
 
+    def _clear_recording_field(self, placeholder: str) -> None:
+        if self._target_field is None:
+            return
         try:
-            field.setStringValue_("")
-            field.setPlaceholderString_(placeholder)
+            self._target_field.setStringValue_("")
+            self._target_field.setPlaceholderString_(placeholder)
         except Exception:
             pass
 
+    def _start_hotkey_monitor(
+        self,
+        on_hotkey: Callable[[str], object] | Callable[[str], None],
+    ) -> None:
         def _on_hotkey(hotkey_str: str) -> None:
-            if not self._recording:
-                return
-            accepted = True
-            try:
-                result = on_hotkey(hotkey_str)
-                if result is False:
-                    accepted = False
-            except Exception:
-                accepted = False
-
-            if not accepted:
-                self.stop(cancelled=True)
-                return
-
-            if self._target_field is not None:
-                try:
-                    self._target_field.setStringValue_(hotkey_str.upper())
-                except Exception:
-                    pass
-            self.stop(cancelled=False)
+            self._accept_recorded_hotkey(hotkey_str, on_hotkey)
 
         def _on_cancel() -> None:
             self.stop(cancelled=True)
@@ -190,6 +222,37 @@ class HotkeyRecorder:
         except Exception as exc:
             logger.warning("Hotkey-Aufnahme konnte nicht gestartet werden: %s", exc)
             self.stop(cancelled=True)
+
+    def _accept_recorded_hotkey(
+        self,
+        hotkey_str: str,
+        on_hotkey: Callable[[str], object] | Callable[[str], None],
+    ) -> None:
+        if not self._recording:
+            return
+        if not self._recorded_hotkey_is_accepted(hotkey_str, on_hotkey):
+            self.stop(cancelled=True)
+            return
+        self._set_recorded_hotkey_value(hotkey_str)
+        self.stop(cancelled=False)
+
+    @staticmethod
+    def _recorded_hotkey_is_accepted(
+        hotkey_str: str,
+        on_hotkey: Callable[[str], object] | Callable[[str], None],
+    ) -> bool:
+        try:
+            return on_hotkey(hotkey_str) is not False
+        except Exception:
+            return False
+
+    def _set_recorded_hotkey_value(self, hotkey_str: str) -> None:
+        if self._target_field is None:
+            return
+        try:
+            self._target_field.setStringValue_(hotkey_str.upper())
+        except Exception:
+            pass
 
     def stop(self, *, cancelled: bool = False) -> None:
         if cancelled and self._target_field is not None and self._prev_value is not None:

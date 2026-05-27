@@ -8,6 +8,10 @@ import weakref
 from config import VISUAL_GAIN, VISUAL_NOISE_GATE
 from ui.animation import AnimationLogic
 from ui.overlay_feedback import build_overlay_feedback_text, format_overlay_status_text
+from ui.overlay_text import (
+    DEFAULT_RECORDING_INTERIM_MAX_CHARS,
+    format_recording_interim_text as _format_recording_interim_text,
+)
 from utils.state import AppState
 
 # =============================================================================
@@ -23,7 +27,7 @@ OVERLAY_ALPHA = 0.95  # Leicht transparent für Kontext
 OVERLAY_FONT_SIZE = 15  # SF Pro Standard-Größe
 OVERLAY_TEXT_FIELD_HEIGHT = 24  # Einzeilige Textanzeige
 OVERLAY_WINDOW_LEVEL = 25  # Über allen Fenstern, kCGFloatingWindowLevel
-OVERLAY_INTERIM_MAX_CHARS = 45  # Zeige die letzten Worte statt den Satzanfang
+OVERLAY_INTERIM_MAX_CHARS = DEFAULT_RECORDING_INTERIM_MAX_CHARS
 
 # =============================================================================
 # Schallwellen-Visualisierung
@@ -175,52 +179,6 @@ def _get_overlay_color(r: int, g: int, b: int, a: float = 1.0):
     return NSColor.colorWithSRGBRed_green_blue_alpha_(
         r / 255.0, g / 255.0, b / 255.0, a
     )
-
-
-def _format_recording_interim_text(text: str, max_chars: int = OVERLAY_INTERIM_MAX_CHARS) -> str:
-    """Formatiert Interim-Text für das Recording-Overlay.
-
-    Bei langen Diktaten werden die letzten Zeichen gezeigt, weil diese für
-    Nutzer:innen während des Sprechens relevanter sind als der Satzanfang.
-    """
-    if not text:
-        return ""
-
-    normalized_tail_reversed: list[str] = []
-    normalized_length = 0
-    pending_space = False
-    truncated = False
-
-    for char in reversed(text):
-        if char.isspace():
-            if normalized_length > 0:
-                pending_space = True
-            continue
-
-        if pending_space:
-            normalized_tail_reversed.append(" ")
-            normalized_length += 1
-            pending_space = False
-
-        normalized_tail_reversed.append(char)
-        normalized_length += 1
-        if max_chars > 0 and normalized_length > max_chars:
-            truncated = True
-            break
-
-    if not normalized_tail_reversed:
-        return ""
-
-    cleaned_tail = "".join(reversed(normalized_tail_reversed))
-    if not truncated:
-        return cleaned_tail
-    if max_chars <= 0:
-        return cleaned_tail
-
-    tail_chars = max_chars - 3
-    if tail_chars <= 0:
-        return "..."
-    return "..." + cleaned_tail[-tail_chars:]
 
 
 class SoundWaveView:
@@ -1165,111 +1123,144 @@ class OverlayController:
             self._feedback_timer.invalidate()
             self._feedback_timer = None
 
-        if state == AppState.LISTENING:
-            if state_changed:
-                self._wave_view.start_listening_animation()
+        handler = {
+            AppState.LISTENING: self._show_listening_state,
+            AppState.RECORDING: self._show_recording_state,
+            AppState.TRANSCRIBING: self._show_transcribing_state,
+            AppState.REFINING: self._show_refining_state,
+            AppState.LOADING: self._show_loading_state,
+            AppState.DONE: self._show_done_state,
+            AppState.NO_SPEECH: self._show_no_speech_state,
+            AppState.ERROR: self._show_error_state,
+        }.get(state, self._show_idle_state)
+        handler(text, state_changed)
+
+    def _show_listening_state(self, text: str | None, state_changed: bool) -> None:
+        self._show_status_state(
+            state_changed,
+            self._wave_view.start_listening_animation,
+            "LISTENING",
+            font_key="medium",
+            color_key="muted",
+        )
+
+    def _show_recording_state(self, text: str | None, state_changed: bool) -> None:
+        if state_changed:
+            self._wave_view.start_recording_animation()
+        if text:
             self._apply_text_presentation(
-                text=build_overlay_feedback_text("LISTENING"),
+                text=_format_recording_interim_text(text),
+                font_key="ghost",
+                color_key="ghost",
+            )
+        else:
+            self._apply_text_presentation(
+                text=format_overlay_status_text("RECORDING"),
                 font_key="medium",
-                color_key="muted",
+                color_key="recording",
             )
-            if state_changed:
-                self._fade_in()
+        self._fade_in_if_changed(state_changed)
 
-        elif state == AppState.RECORDING:
-            if state_changed:
-                self._wave_view.start_recording_animation()
-            if text:
-                display_text = _format_recording_interim_text(text)
-                self._apply_text_presentation(
-                    text=display_text,
-                    font_key="ghost",
-                    color_key="ghost",
-                )
-            else:
-                # Fallback falls Recording ohne Text (sollte eigentlich Visualisierung haben)
-                self._apply_text_presentation(
-                    text=format_overlay_status_text("RECORDING"),
-                    font_key="medium",
-                    color_key="recording",
-                )
-            if state_changed:
-                self._fade_in()
+    def _show_transcribing_state(self, text: str | None, state_changed: bool) -> None:
+        self._show_status_state(
+            state_changed,
+            self._wave_view.start_transcribing_animation,
+            "TRANSCRIBING",
+            color_key="muted",
+        )
 
-        elif state == AppState.TRANSCRIBING:
-            if state_changed:
-                self._wave_view.start_transcribing_animation()
-            self._apply_text_presentation(
-                text=build_overlay_feedback_text("TRANSCRIBING"),
-                color_key="muted",
-            )
-            if state_changed:
-                self._fade_in()
+    def _show_refining_state(self, text: str | None, state_changed: bool) -> None:
+        self._show_status_state(
+            state_changed,
+            self._wave_view.start_refining_animation,
+            "REFINING",
+            color_key="muted",
+        )
 
-        elif state == AppState.REFINING:
-            if state_changed:
-                self._wave_view.start_refining_animation()
-            self._apply_text_presentation(
-                text=build_overlay_feedback_text("REFINING"),
-                color_key="muted",
-            )
-            if state_changed:
-                self._fade_in()
+    def _show_loading_state(self, text: str | None, state_changed: bool) -> None:
+        self._show_status_state(
+            state_changed,
+            self._wave_view.start_loading_animation,
+            "LOADING",
+            text=text,
+            color_key="muted",
+        )
 
-        elif state == AppState.LOADING:
-            if state_changed:
-                self._wave_view.start_loading_animation()
-            loading_text = build_overlay_feedback_text("LOADING", text)
-            self._apply_text_presentation(
-                text=loading_text,
-                color_key="muted",
-            )
-            if state_changed:
-                self._fade_in()
+    def _show_done_state(self, text: str | None, state_changed: bool) -> None:
+        self._show_feedback_state(
+            state_changed,
+            self._wave_view.start_success_animation,
+            "DONE",
+            text,
+            color_key="default",
+        )
 
-        elif state == AppState.DONE:
-            if state_changed:
-                self._wave_view.start_success_animation()
+    def _show_no_speech_state(self, text: str | None, state_changed: bool) -> None:
+        self._show_feedback_state(
+            state_changed,
+            self._wave_view.start_no_speech_animation,
+            "NO_SPEECH",
+            text,
+            color_key="warning",
+        )
 
-            display_text = build_overlay_feedback_text("DONE", text)
+    def _show_error_state(self, text: str | None, state_changed: bool) -> None:
+        self._show_feedback_state(
+            state_changed,
+            self._wave_view.start_error_animation,
+            "ERROR",
+            text,
+            color_key="error",
+        )
 
-            self._apply_text_presentation(
-                text=display_text,
-                font_key="default",
-                color_key="default",
-            )
-            if state_changed:
-                self._fade_in()
-                self._start_fade_out_timer()
+    def _show_idle_state(self, text: str | None, state_changed: bool) -> None:
+        if not state_changed:
+            return
+        self._wave_view.stop_animating()
+        self._fade_out()
 
-        elif state == AppState.NO_SPEECH:
-            if state_changed:
-                self._wave_view.start_no_speech_animation()
-            self._apply_text_presentation(
-                text=build_overlay_feedback_text("NO_SPEECH", text),
-                font_key="default",
-                color_key="warning",
-            )
-            if state_changed:
-                self._fade_in()
-                self._start_fade_out_timer()
+    def _show_status_state(
+        self,
+        state_changed: bool,
+        start_animation,
+        feedback_key: str,
+        *,
+        text: str | None = None,
+        font_key: str | None = None,
+        color_key: str | None = None,
+    ) -> None:
+        if state_changed:
+            start_animation()
+        self._apply_text_presentation(
+            text=build_overlay_feedback_text(feedback_key, text),
+            font_key=font_key,
+            color_key=color_key,
+        )
+        self._fade_in_if_changed(state_changed)
 
-        elif state == AppState.ERROR:
-            if state_changed:
-                self._wave_view.start_error_animation()
-            self._apply_text_presentation(
-                text=build_overlay_feedback_text("ERROR", text),
-                font_key="default",
-                color_key="error",
-            )
-            if state_changed:
-                self._fade_in()
-                self._start_fade_out_timer()
+    def _show_feedback_state(
+        self,
+        state_changed: bool,
+        start_animation,
+        feedback_key: str,
+        text: str | None,
+        *,
+        color_key: str,
+    ) -> None:
+        if state_changed:
+            start_animation()
+        self._apply_text_presentation(
+            text=build_overlay_feedback_text(feedback_key, text),
+            font_key="default",
+            color_key=color_key,
+        )
+        if state_changed:
+            self._fade_in()
+            self._start_fade_out_timer()
 
-        else:  # idle
-            if state_changed:
-                self._wave_view.stop_animating()
-                self._fade_out()
+    def _fade_in_if_changed(self, state_changed: bool) -> None:
+        if state_changed:
+            self._fade_in()
 
     def _fade_in(self) -> None:
         """Blendet Overlay ein."""

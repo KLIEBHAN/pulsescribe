@@ -39,6 +39,9 @@ from ui.overlay_feedback import (
     build_overlay_feedback_text,
     format_overlay_status_text,
 )
+from ui.overlay_text import (
+    format_recording_interim_text as _format_recording_interim_text,
+)
 from utils.log_tail import read_file_tail_text
 from utils.log_tail import get_file_signature
 
@@ -97,48 +100,6 @@ STATE_TEXTS = DEFAULT_OVERLAY_STATE_TEXTS
 # =============================================================================
 # Overlay Controller
 # =============================================================================
-
-
-def _format_recording_interim_text(text: str, max_chars: int = 45) -> str:
-    """Normalize and tail-truncate recording interim text for compact overlays."""
-    if not text:
-        return ""
-
-    normalized_tail_reversed: list[str] = []
-    normalized_length = 0
-    pending_space = False
-    truncated = False
-
-    for char in reversed(text):
-        if char.isspace():
-            if normalized_length > 0:
-                pending_space = True
-            continue
-
-        if pending_space:
-            normalized_tail_reversed.append(" ")
-            normalized_length += 1
-            pending_space = False
-
-        normalized_tail_reversed.append(char)
-        normalized_length += 1
-        if max_chars > 0 and normalized_length > max_chars:
-            truncated = True
-            break
-
-    if not normalized_tail_reversed:
-        return ""
-
-    cleaned_tail = "".join(reversed(normalized_tail_reversed))
-    if not truncated:
-        return cleaned_tail
-    if max_chars <= 0:
-        return cleaned_tail
-
-    tail_chars = max_chars - 3
-    if tail_chars <= 0:
-        return "..."
-    return "..." + cleaned_tail[-tail_chars:]
 
 
 class WindowsOverlayController:
@@ -428,9 +389,7 @@ class WindowsOverlayController:
 
     def _poll_interim_file(self) -> None:
         self._interim_poll_after_id = None
-        if not self._running or not self._root or not self._interim_file:
-            return
-        if not self._interim_polling_active:
+        if not self._can_poll_interim_file():
             return
         if self._state != "RECORDING":
             self._last_interim_text = ""
@@ -438,59 +397,70 @@ class WindowsOverlayController:
             self._direct_interim_until = 0.0
             return
 
-        poll_interval_ms = self._current_interim_poll_interval_ms()
-        if time.monotonic() < getattr(self, "_direct_interim_until", 0.0):
-            poll_interval_ms = INTERIM_POLL_DIRECT_INTERVAL_MS
-            if self._running and self._interim_polling_active:
-                self._interim_poll_after_id = self._root.after(
-                    poll_interval_ms, self._poll_interim_file
-                )
+        if self._direct_interim_update_active():
+            self._schedule_interim_poll(INTERIM_POLL_DIRECT_INTERVAL_MS)
             return
 
-        signature = (
-            get_file_signature(self._interim_file)
-            if self._state == "RECORDING"
-            else None
+        self._poll_recording_interim_file()
+        self._schedule_interim_poll()
+
+    def _can_poll_interim_file(self) -> bool:
+        return bool(
+            self._running
+            and self._root
+            and self._interim_file
+            and self._interim_polling_active
         )
-        if self._state == "RECORDING" and signature is None:
-            if self._last_interim_text:
-                self._last_interim_text = ""
-                self._last_interim_signature = None
-                self._stable_interim_polls = 0
-                self._handle_interim_text("")
-            else:
-                self._stable_interim_polls += 1
-        elif self._state == "RECORDING":
-            try:
-                if signature == self._last_interim_signature:
-                    self._stable_interim_polls += 1
-                    if self._running and self._interim_polling_active:
-                        self._interim_poll_after_id = self._root.after(
-                            self._current_interim_poll_interval_ms(),
-                            self._poll_interim_file,
-                        )
-                    return
 
-                text = read_file_tail_text(
-                    self._interim_file,
-                    max_chars=INTERIM_POLL_MAX_CHARS,
-                    errors="replace",
-                ).strip()
-                self._last_interim_signature = signature
-                if text != self._last_interim_text:
-                    self._last_interim_text = text
-                    self._stable_interim_polls = 0
-                    self._handle_interim_text(text)
-                else:
-                    self._stable_interim_polls += 1
-            except Exception:
-                pass
+    def _direct_interim_update_active(self) -> bool:
+        return time.monotonic() < getattr(self, "_direct_interim_until", 0.0)
 
-        if self._running and self._interim_polling_active:
-            self._interim_poll_after_id = self._root.after(
-                self._current_interim_poll_interval_ms(),
-                self._poll_interim_file,
-            )
+    def _schedule_interim_poll(self, interval_ms: int | None = None) -> None:
+        if not self._running or not self._interim_polling_active or not self._root:
+            return
+        poll_interval_ms = interval_ms or self._current_interim_poll_interval_ms()
+        self._interim_poll_after_id = self._root.after(
+            poll_interval_ms,
+            self._poll_interim_file,
+        )
+
+    def _poll_recording_interim_file(self) -> None:
+        signature = get_file_signature(self._interim_file)
+        if signature is None:
+            self._handle_missing_interim_file()
+            return
+        if signature == self._last_interim_signature:
+            self._stable_interim_polls += 1
+            return
+        self._read_changed_interim_file(signature)
+
+    def _handle_missing_interim_file(self) -> None:
+        if not self._last_interim_text:
+            self._stable_interim_polls += 1
+            return
+        self._last_interim_text = ""
+        self._last_interim_signature = None
+        self._stable_interim_polls = 0
+        self._handle_interim_text("")
+
+    def _read_changed_interim_file(self, signature: tuple[int, int]) -> None:
+        try:
+            text = read_file_tail_text(
+                self._interim_file,
+                max_chars=INTERIM_POLL_MAX_CHARS,
+                errors="replace",
+            ).strip()
+        except Exception:
+            return
+
+        self._last_interim_signature = signature
+        if text == self._last_interim_text:
+            self._stable_interim_polls += 1
+            return
+
+        self._last_interim_text = text
+        self._stable_interim_polls = 0
+        self._handle_interim_text(text)
 
     def _set_interim_polling_active(self, active: bool) -> None:
         if not self._root or not self._interim_file:
@@ -577,7 +547,7 @@ class WindowsOverlayController:
             self._animation_start = time.perf_counter()
 
     def _handle_interim_text(self, text: str) -> None:
-        if self._state != "RECORDING" or not self._label:
+        if self._state != "RECORDING" or not getattr(self, "_label", None):
             return
 
         formatted = _format_recording_interim_text(text)
@@ -598,7 +568,7 @@ class WindowsOverlayController:
     def _set_label_config(
         self, *, text: str, font: tuple[object, ...], fg: str
     ) -> None:
-        if not self._label:
+        if not getattr(self, "_label", None):
             return
 
         config = (text, font, fg)

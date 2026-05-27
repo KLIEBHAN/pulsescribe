@@ -211,6 +211,7 @@ def _iter_archive_entries(
     prefs: dict,
     log_tail: str,
     startup_tail: str,
+    latency_tail: str = "",
 ):
     """Yield archive members while skipping empty optional payloads."""
     yield "report.json", _dump_json(report)
@@ -222,6 +223,8 @@ def _iter_archive_entries(
         yield "logs/pulsescribe.log.tail.txt", log_tail
     if startup_tail:
         yield "logs/startup.log.tail.txt", startup_tail
+    if latency_tail:
+        yield "logs/windows_latency.jsonl.tail.txt", latency_tail
 
 
 def export_diagnostics_report() -> Path:
@@ -238,6 +241,7 @@ def export_diagnostics_report() -> Path:
     prefs_path = cfg / "preferences.json"
     log_path = cfg / "logs" / "pulsescribe.log"
     startup_log_path = cfg / "startup.log"
+    latency_log_path = cfg / "logs" / "windows_latency.jsonl"
 
     env_values = _sanitize_env(_read_env_file(env_path)) if env_path.exists() else {}
     prefs = _load_preferences_payload(prefs_path)
@@ -250,6 +254,7 @@ def export_diagnostics_report() -> Path:
 
     log_tail = _read_redacted_log_tail(log_path, max_lines=800)
     startup_tail = _read_redacted_log_tail(startup_log_path, max_lines=200)
+    latency_tail = _read_redacted_log_tail(latency_log_path, max_lines=200)
 
     try:
         with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -259,6 +264,7 @@ def export_diagnostics_report() -> Path:
                 prefs=prefs,
                 log_tail=log_tail,
                 startup_tail=startup_tail,
+                latency_tail=latency_tail,
             ):
                 zf.writestr(archive_path, content)
     except OSError:

@@ -246,6 +246,32 @@ def test_export_diagnostics_report_redacts_startup_log_tail(
     assert "still secret" not in startup_tail
 
 
+def test_export_diagnostics_report_includes_windows_latency_tail(
+    tmp_path, monkeypatch
+) -> None:
+    cfg = tmp_path / ".pulsescribe"
+    logs_dir = cfg / "logs"
+    logs_dir.mkdir(parents=True)
+    (logs_dir / "windows_latency.jsonl").write_text(
+        '{"run_id":"abc123","durations_ms":{"start_to_listening":12.3}}\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(diagnostics, "_user_config_dir", lambda: cfg)
+    monkeypatch.setattr(diagnostics.platform, "platform", lambda: "Windows-11")
+    monkeypatch.setattr(diagnostics.platform, "mac_ver", lambda: ("", ("", "", ""), ""))
+    monkeypatch.setattr(diagnostics.platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(diagnostics.subprocess, "Popen", lambda *_args, **_kwargs: None)
+
+    zip_path = diagnostics.export_diagnostics_report()
+
+    with zipfile.ZipFile(zip_path) as zf:
+        latency_tail = zf.read("logs/windows_latency.jsonl.tail.txt").decode("utf-8")
+
+    assert "abc123" in latency_tail
+    assert "start_to_listening" in latency_tail
+
+
 def test_export_diagnostics_report_includes_sanitized_env_preferences_and_main_log(
     tmp_path, monkeypatch
 ) -> None:

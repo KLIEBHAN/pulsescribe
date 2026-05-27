@@ -290,6 +290,66 @@ def test_graceful_shutdown_returns_quickly_after_connection_close(monkeypatch) -
     assert elapsed < 0.2
 
 
+def test_graceful_shutdown_emits_latency_events(monkeypatch) -> None:
+    class _FakeControlMessage:
+        def __init__(self, type: str) -> None:
+            self.type = type
+
+    monkeypatch.setitem(
+        sys.modules,
+        "deepgram.extensions.types.sockets",
+        SimpleNamespace(ListenV1ControlMessage=_FakeControlMessage),
+    )
+    monkeypatch.setattr(deepgram_stream, "DEEPGRAM_TAIL_PADDING_SECONDS", 0.1)
+    monkeypatch.setattr(deepgram_stream, "DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS", 0.0)
+
+    async def _run() -> list[str]:
+        state = deepgram_stream.StreamState()
+        audio_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+        latency_events: list[str] = []
+
+        async def _send_worker() -> None:
+            while True:
+                item = await audio_queue.get()
+                if item is None:
+                    return
+
+        async def _listen_worker() -> None:
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                return
+
+        send_task = asyncio.create_task(_send_worker())
+        listen_task = asyncio.create_task(_listen_worker())
+
+        class _FakeConnection:
+            async def send_control(self, message) -> None:
+                if getattr(message, "type", "") == "Finalize":
+                    state.finalize_done.set()
+
+        await deepgram_stream._graceful_shutdown(
+            connection=cast(Any, _FakeConnection()),
+            state=state,
+            audio_queue=audio_queue,
+            send_task=send_task,
+            listen_task=listen_task,
+            session_id="sess",
+            sample_rate=10,
+            latency_event_callback=lambda name, _fields=None: latency_events.append(name),
+        )
+        return latency_events
+
+    events = asyncio.run(_run())
+
+    assert events == [
+        "deepgram_tail_padding",
+        "deepgram_finalize_send",
+        "deepgram_finalize_done",
+        "deepgram_close_send",
+    ]
+
+
 def test_graceful_shutdown_sends_tail_padding_before_sentinel(monkeypatch) -> None:
     class _FakeControlMessage:
         def __init__(self, type: str) -> None:

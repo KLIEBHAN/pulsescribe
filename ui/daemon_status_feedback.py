@@ -162,6 +162,85 @@ def _contains_dependency_error(text: str) -> bool:
 
 
 
+def _contains_api_key_error(text: str) -> bool:
+    return _contains_any(
+        text,
+        (
+            "api key",
+            "_api_key",
+            "deepgram_api_key",
+            "openai_api_key",
+            "groq_api_key",
+            "openrouter_api_key",
+            "gemini_api_key",
+        ),
+    )
+
+
+def _contains_busy_error(text: str) -> bool:
+    return _contains_any(text, ("busy", "already recording", "still running"))
+
+
+def _contains_timeout_error(text: str) -> bool:
+    return _contains_any(
+        text,
+        ("timeout", "timed out", "watchdog", "no final response"),
+    )
+
+
+def _contains_input_monitoring_error(text: str) -> bool:
+    return _contains_any(text, ("input monitoring",))
+
+
+def _contains_accessibility_error(text: str) -> bool:
+    return _contains_any(
+        text,
+        ("accessibility", "assistive access", "access permission"),
+    )
+
+
+def _contains_microphone_permission_error(text: str) -> bool:
+    return _contains_any(text, ("microphone", "mic")) and _contains_any(
+        text,
+        ("permission", "denied", "not permitted", "not allowed", "access"),
+    )
+
+
+def _contains_microphone_unavailable_error(text: str) -> bool:
+    return _contains_any(
+        text,
+        (
+            "microphone",
+            "mic",
+            "input device",
+            "audio",
+            "sounddevice",
+            "wasapi",
+        ),
+    )
+
+
+ERROR_INFERENCE_RULES = (
+    (DaemonErrorCode.MISSING_API_KEY, _contains_api_key_error),
+    (DaemonErrorCode.BUSY, _contains_busy_error),
+    (DaemonErrorCode.TIMEOUT, _contains_timeout_error),
+    (DaemonErrorCode.INVALID_PROVIDER, _contains_provider_config_error),
+    (DaemonErrorCode.INPUT_MONITORING, _contains_input_monitoring_error),
+    (DaemonErrorCode.ACCESSIBILITY_PERMISSION, _contains_accessibility_error),
+    (DaemonErrorCode.MICROPHONE_PERMISSION, _contains_microphone_permission_error),
+    (DaemonErrorCode.MICROPHONE_UNAVAILABLE, _contains_microphone_unavailable_error),
+    (DaemonErrorCode.CONNECTION, _contains_connection_error),
+    (DaemonErrorCode.MISSING_DEPENDENCY, _contains_dependency_error),
+)
+
+
+def _infer_daemon_error_code(detail_lower: str) -> DaemonErrorCode:
+    for code, matches in ERROR_INFERENCE_RULES:
+        if matches(detail_lower):
+            return code
+    return DaemonErrorCode.UNKNOWN
+
+
 def infer_daemon_status_error(
     value: DaemonStatusError | Exception | str | None,
 ) -> DaemonStatusError | None:
@@ -174,51 +253,7 @@ def infer_daemon_status_error(
         return None
 
     detail_lower = detail.lower()
-    if _contains_any(
-        detail_lower,
-        (
-            "api key",
-            "_api_key",
-            "deepgram_api_key",
-            "openai_api_key",
-            "groq_api_key",
-            "openrouter_api_key",
-            "gemini_api_key",
-        ),
-    ):
-        return DaemonStatusError(DaemonErrorCode.MISSING_API_KEY, detail)
-    if _contains_any(detail_lower, ("busy", "already recording", "still running")):
-        return DaemonStatusError(DaemonErrorCode.BUSY, detail)
-    if _contains_any(detail_lower, ("timeout", "timed out", "watchdog", "no final response")):
-        return DaemonStatusError(DaemonErrorCode.TIMEOUT, detail)
-    if _contains_provider_config_error(detail_lower):
-        return DaemonStatusError(DaemonErrorCode.INVALID_PROVIDER, detail)
-    if _contains_any(detail_lower, ("input monitoring",)):
-        return DaemonStatusError(DaemonErrorCode.INPUT_MONITORING, detail)
-    if _contains_any(detail_lower, ("accessibility", "assistive access", "access permission")):
-        return DaemonStatusError(DaemonErrorCode.ACCESSIBILITY_PERMISSION, detail)
-    if _contains_any(detail_lower, ("microphone", "mic")) and _contains_any(
-        detail_lower,
-        ("permission", "denied", "not permitted", "not allowed", "access"),
-    ):
-        return DaemonStatusError(DaemonErrorCode.MICROPHONE_PERMISSION, detail)
-    if _contains_any(
-        detail_lower,
-        (
-            "microphone",
-            "mic",
-            "input device",
-            "audio",
-            "sounddevice",
-            "wasapi",
-        ),
-    ):
-        return DaemonStatusError(DaemonErrorCode.MICROPHONE_UNAVAILABLE, detail)
-    if _contains_connection_error(detail_lower):
-        return DaemonStatusError(DaemonErrorCode.CONNECTION, detail)
-    if _contains_dependency_error(detail_lower):
-        return DaemonStatusError(DaemonErrorCode.MISSING_DEPENDENCY, detail)
-    return DaemonStatusError(DaemonErrorCode.UNKNOWN, detail)
+    return DaemonStatusError(_infer_daemon_error_code(detail_lower), detail)
 
 
 
@@ -317,6 +352,48 @@ def build_daemon_status_label(
     return _truncate_status_text(label, max_chars)
 
 
+def _build_loading_hint(detail: str, detail_lower: str) -> str:
+    if _contains_any(detail_lower, ("starting up", "startup", "initializing", "prewarm")):
+        return (
+            "PulseScribe is starting in the background. "
+            "Hotkeys and audio are still getting ready."
+        )
+    if "warming up" in detail_lower:
+        return "Offline dictation is warming up after a model or settings change."
+    if detail_lower.startswith("loading "):
+        return (
+            "Offline dictation is loading your selected local model. "
+            "The first run can take a moment."
+        )
+    if _contains_any(
+        detail_lower,
+        ("connection", "connect", "network", "socket", "websocket", "service"),
+    ):
+        return (
+            "PulseScribe is reconnecting to the transcription service. "
+            "Try again once it returns to ready."
+        )
+    if detail:
+        return "PulseScribe is preparing the current provider or model."
+    return DEFAULT_DAEMON_HINTS[AppState.LOADING]
+
+
+def _build_no_speech_hint(detail_lower: str) -> str:
+    if _contains_any(
+        detail_lower,
+        ("no audio", "empty transcript", "silent", "silence", "too short"),
+    ):
+        return "Try again and speak a little earlier, louder, or closer to the microphone."
+    return DEFAULT_DAEMON_HINTS[AppState.NO_SPEECH]
+
+
+def _build_error_hint(text: DaemonStatusError | Exception | str | None) -> str:
+    error_info = infer_daemon_status_error(text)
+    if error_info is not None and error_info.code in ERROR_CODE_HINTS:
+        return ERROR_CODE_HINTS[error_info.code]
+    return DEFAULT_DAEMON_HINTS[AppState.ERROR]
+
+
 def build_daemon_status_hint(
     state: AppState | str | None,
     text: DaemonStatusError | Exception | str | None = None,
@@ -329,42 +406,13 @@ def build_daemon_status_hint(
     detail_lower = detail.lower()
 
     if normalized_state == AppState.LOADING:
-        if _contains_any(detail_lower, ("starting up", "startup", "initializing", "prewarm")):
-            hint = "PulseScribe is starting in the background. Hotkeys and audio are still getting ready."
-        elif "warming up" in detail_lower:
-            hint = (
-                "Offline dictation is warming up after a model or settings change."
-            )
-        elif detail_lower.startswith("loading "):
-            hint = "Offline dictation is loading your selected local model. The first run can take a moment."
-        elif _contains_any(
-            detail_lower,
-            ("connection", "connect", "network", "socket", "websocket", "service"),
-        ):
-            hint = "PulseScribe is reconnecting to the transcription service. Try again once it returns to ready."
-        elif detail:
-            hint = "PulseScribe is preparing the current provider or model."
-        else:
-            hint = DEFAULT_DAEMON_HINTS[AppState.LOADING]
-        return _truncate_status_text(hint, max_chars)
+        return _truncate_status_text(_build_loading_hint(detail, detail_lower), max_chars)
 
     if normalized_state == AppState.NO_SPEECH:
-        if _contains_any(
-            detail_lower,
-            ("no audio", "empty transcript", "silent", "silence", "too short"),
-        ):
-            hint = "Try again and speak a little earlier, louder, or closer to the microphone."
-        else:
-            hint = DEFAULT_DAEMON_HINTS[AppState.NO_SPEECH]
-        return _truncate_status_text(hint, max_chars)
+        return _truncate_status_text(_build_no_speech_hint(detail_lower), max_chars)
 
     if normalized_state == AppState.ERROR:
-        error_info = infer_daemon_status_error(text)
-        if error_info is not None and error_info.code in ERROR_CODE_HINTS:
-            hint = ERROR_CODE_HINTS[error_info.code]
-        else:
-            hint = DEFAULT_DAEMON_HINTS[AppState.ERROR]
-        return _truncate_status_text(hint, max_chars)
+        return _truncate_status_text(_build_error_hint(text), max_chars)
 
     hint = DEFAULT_DAEMON_HINTS.get(
         normalized_state,

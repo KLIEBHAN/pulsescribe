@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from typing import Callable
 
+from ui.hotkey_format import format_hotkey_for_display
 from utils.onboarding import (
     OnboardingChoice,
     OnboardingStep,
@@ -139,23 +140,13 @@ def _language_code_from_title(title: str | None) -> str:
 
 
 def _format_hotkey_for_display(hotkey: str | None) -> str:
-    normalized = (hotkey or "").strip()
-    if not normalized:
-        return ""
-
-    display_parts: list[str] = []
-    for raw_part in normalized.split("+"):
-        part = raw_part.strip().lower()
-        if not part:
-            continue
-        display = HOTKEY_TOKEN_LABELS.get(part)
-        if display is None:
-            if len(part) == 1 or (part.startswith("f") and part[1:].isdigit()):
-                display = part.upper()
-            else:
-                display = part.replace("_", " ").title()
-        display_parts.append(display)
-    return "+".join(display_parts)
+    return format_hotkey_for_display(
+        hotkey,
+        HOTKEY_TOKEN_LABELS,
+        strip_parts=True,
+        omit_empty_parts=True,
+        title_unknown_parts=True,
+    )
 
 
 
@@ -252,60 +243,63 @@ def _build_test_notice_feedback(
     error: str | None = None,
 ) -> tuple[str, str]:
     normalized = (outcome or "pending").strip().lower()
-    if normalized == "starting":
+    if normalized == "error":
+        return _build_test_error_notice_feedback(error)
+    return _TEST_NOTICE_FEEDBACK.get(normalized, _DEFAULT_TEST_NOTICE_FEEDBACK)
+
+
+_TEST_NOTICE_FEEDBACK = {
+    "starting": (
+        "PulseScribe is starting a safe practice run. Nothing will be pasted during this step.",
+        "neutral",
+    ),
+    "recording": (
+        "Speak a short sentence, then stop with your hotkey or the Stop button.",
+        "accent",
+    ),
+    "processing": (
+        "The recording has stopped. Wait a moment while PulseScribe prepares the result here.",
+        "neutral",
+    ),
+    "passed": (
+        "Nothing was pasted. Continue when you're ready, or run one more quick check.",
+        "success",
+    ),
+    "empty": (
+        "Try again with a slightly longer sentence or speak a little closer to the microphone.",
+        "warn",
+    ),
+    "cancelled": (
+        "No problem — start another safe practice run whenever you're ready.",
+        "neutral",
+    ),
+    "skipped": (
+        "You can always return to Setup & Settings and run the practice test later.",
+        "neutral",
+    ),
+}
+
+_DEFAULT_TEST_NOTICE_FEEDBACK = (
+    "You can press your hotkey or use the buttons below. The transcript only appears here.",
+    "neutral",
+)
+
+
+def _build_test_error_notice_feedback(error: str | None) -> tuple[str, str]:
+    detail_lower = " ".join((error or "").split()).lower()
+    if "already recording" in detail_lower or "busy" in detail_lower:
         return (
-            "PulseScribe is starting a safe practice run. Nothing will be pasted during this step.",
-            "neutral",
-        )
-    if normalized == "recording":
-        return (
-            "Speak a short sentence, then stop with your hotkey or the Stop button.",
-            "accent",
-        )
-    if normalized == "processing":
-        return (
-            "The recording has stopped. Wait a moment while PulseScribe prepares the result here.",
-            "neutral",
-        )
-    if normalized == "passed":
-        return (
-            "Nothing was pasted. Continue when you're ready, or run one more quick check.",
-            "success",
-        )
-    if normalized == "empty":
-        return (
-            "Try again with a slightly longer sentence or speak a little closer to the microphone.",
+            "Wait for the current dictation to finish, then try the practice test again.",
             "warn",
         )
-    if normalized == "cancelled":
+    if "microphone" in detail_lower or "permission" in detail_lower:
         return (
-            "No problem — start another safe practice run whenever you're ready.",
-            "neutral",
-        )
-    if normalized == "skipped":
-        return (
-            "You can always return to Setup & Settings and run the practice test later.",
-            "neutral",
-        )
-    if normalized == "error":
-        detail_lower = " ".join((error or "").split()).lower()
-        if "already recording" in detail_lower or "busy" in detail_lower:
-            return (
-                "Wait for the current dictation to finish, then try the practice test again.",
-                "warn",
-            )
-        if "microphone" in detail_lower or "permission" in detail_lower:
-            return (
-                "Check microphone access in the Permissions step, then try the practice test again.",
-                "warn",
-            )
-        return (
-            "Check the message above, then try the practice test again.",
+            "Check microphone access in the Permissions step, then try the practice test again.",
             "warn",
         )
     return (
-        "You can press your hotkey or use the buttons below. The transcript only appears here.",
-        "neutral",
+        "Check the message above, then try the practice test again.",
+        "warn",
     )
 
 
@@ -1382,58 +1376,55 @@ class OnboardingWizardController:
         """Aktualisiert die Summary-Labels mit aktuellen Werten."""
         ok_color = _get_color(120, 255, 150)
         warn_color = _get_color(255, 200, 90)
+        self._update_summary_provider()
+        self._update_summary_hotkeys(ok_color, warn_color)
+        self._update_summary_permissions(ok_color, warn_color)
+        self._update_summary_test(ok_color, warn_color)
 
-        # Provider
+    def _update_summary_provider(self) -> None:
         mode = (self._get_cached_env_setting("PULSESCRIBE_MODE") or "deepgram").strip()
         mode_display = MODE_LABELS.get(mode, mode.title())
+        self._set_cached_summary_label_text(
+            self._summary_provider_label,
+            "_last_summary_provider_text",
+            mode_display,
+        )
 
-        if self._summary_provider_label:
-            try:
-                if self._last_summary_provider_text != mode_display:
-                    self._summary_provider_label.setStringValue_(mode_display)
-                    self._last_summary_provider_text = mode_display
-            except Exception:
-                pass
-
-        # Hotkeys
+    def _update_summary_hotkeys(self, ok_color, warn_color) -> None:
         toggle_hk, hold_hk = self._get_cached_hotkeys()
         hotkey_display, has_hotkeys = _build_hotkey_summary_text(toggle_hk, hold_hk)
+        self._set_cached_summary_label_text(
+            self._summary_hotkey_label,
+            "_last_summary_hotkey_text",
+            hotkey_display,
+        )
+        self._set_cached_summary_label_color(
+            self._summary_hotkey_label,
+            "_last_summary_hotkey_has_value",
+            has_hotkeys,
+            ok_color if has_hotkeys else warn_color,
+        )
 
-        if self._summary_hotkey_label:
-            try:
-                if self._last_summary_hotkey_text != hotkey_display:
-                    self._summary_hotkey_label.setStringValue_(hotkey_display)
-                    self._last_summary_hotkey_text = hotkey_display
-                if self._last_summary_hotkey_has_value != has_hotkeys:
-                    self._summary_hotkey_label.setTextColor_(
-                        ok_color if has_hotkeys else warn_color
-                    )
-                    self._last_summary_hotkey_has_value = has_hotkeys
-            except Exception:
-                pass
-
-        # Permissions
+    def _update_summary_permissions(self, ok_color, warn_color) -> None:
         mic_state, access_ok, input_ok = self._read_permission_signature()
         perm_display, mic_ok = _build_permission_summary_text(
             mic_state,
             access_ok,
             input_ok,
         )
+        self._set_cached_summary_label_text(
+            self._summary_perm_label,
+            "_last_summary_perm_text",
+            perm_display,
+        )
+        self._set_cached_summary_label_color(
+            self._summary_perm_label,
+            "_last_summary_perm_mic_ok",
+            mic_ok,
+            ok_color if mic_ok else warn_color,
+        )
 
-        if self._summary_perm_label:
-            try:
-                if self._last_summary_perm_text != perm_display:
-                    self._summary_perm_label.setStringValue_(perm_display)
-                    self._last_summary_perm_text = perm_display
-                if self._last_summary_perm_mic_ok != mic_ok:
-                    self._summary_perm_label.setTextColor_(
-                        ok_color if mic_ok else warn_color
-                    )
-                    self._last_summary_perm_mic_ok = mic_ok
-            except Exception:
-                pass
-
-        # Practice test
+    def _update_summary_test(self, ok_color, warn_color) -> None:
         test_display, test_tone = _build_test_summary_text(
             getattr(self, "_test_outcome", "pending")
         )
@@ -1443,16 +1434,43 @@ class OnboardingWizardController:
             "neutral": _get_color(255, 255, 255, 0.65),
         }.get(test_tone, warn_color)
         summary_test_label = getattr(self, "_summary_test_label", None)
-        if summary_test_label:
-            try:
-                if getattr(self, "_last_summary_test_text", None) != test_display:
-                    summary_test_label.setStringValue_(test_display)
-                    self._last_summary_test_text = test_display
-                if getattr(self, "_last_summary_test_passed", None) != test_tone:
-                    summary_test_label.setTextColor_(tone_color)
-                    self._last_summary_test_passed = test_tone
-            except Exception:
-                pass
+        self._set_cached_summary_label_text(
+            summary_test_label,
+            "_last_summary_test_text",
+            test_display,
+        )
+        self._set_cached_summary_label_color(
+            summary_test_label,
+            "_last_summary_test_passed",
+            test_tone,
+            tone_color,
+        )
+
+    def _set_cached_summary_label_text(self, label, cache_attr: str, text: str) -> None:
+        if not label:
+            return
+        try:
+            if getattr(self, cache_attr, None) != text:
+                label.setStringValue_(text)
+                setattr(self, cache_attr, text)
+        except Exception:
+            pass
+
+    def _set_cached_summary_label_color(
+        self,
+        label,
+        cache_attr: str,
+        cache_value,
+        color,
+    ) -> None:
+        if not label:
+            return
+        try:
+            if getattr(self, cache_attr, None) != cache_value:
+                label.setTextColor_(color)
+                setattr(self, cache_attr, cache_value)
+        except Exception:
+            pass
 
     # ---------------------------------------------------------------------
     # Actions + State
@@ -1473,45 +1491,43 @@ class OnboardingWizardController:
             set_onboarding_step(step)
 
     def _set_step(self, step: OnboardingStep) -> None:
-        if self._step == OnboardingStep.HOTKEY and step != OnboardingStep.HOTKEY:
-            self._stop_hotkey_recording(cancelled=True)
-        if (
-            self._step == OnboardingStep.PERMISSIONS
-            and step != OnboardingStep.PERMISSIONS
-        ):
-            self._stop_permission_auto_refresh()
-        if (
-            self._step == OnboardingStep.TEST_DICTATION
-            and step != OnboardingStep.TEST_DICTATION
-        ):
-            # Cancel any active test dictation run and disable hotkey routing.
-            # Use cancel (not stop) to discard pending results.
-            if callable(self._on_test_dictation_cancel):
-                try:
-                    self._on_test_dictation_cancel()
-                except Exception:
-                    pass
-            if callable(self._on_disable_test_hotkey_mode):
-                try:
-                    self._on_disable_test_hotkey_mode()
-                except Exception:
-                    pass
+        self._run_step_leave_actions(step)
         self._step = step
         self._persist_step(step)
         self._render()
+        self._run_step_enter_actions(step)
+        self._ensure_window_focus()
+
+    def _run_step_leave_actions(self, next_step_value: OnboardingStep) -> None:
+        if self._step == OnboardingStep.HOTKEY and next_step_value != self._step:
+            self._stop_hotkey_recording(cancelled=True)
+        if self._step == OnboardingStep.PERMISSIONS and next_step_value != self._step:
+            self._stop_permission_auto_refresh()
+        if self._step == OnboardingStep.TEST_DICTATION and next_step_value != self._step:
+            self._leave_test_dictation_step()
+
+    def _leave_test_dictation_step(self) -> None:
+        # Cancel any active test dictation run and disable hotkey routing.
+        # Use cancel (not stop) to discard pending results.
+        self._call_optional_step_hook(self._on_test_dictation_cancel)
+        self._call_optional_step_hook(self._on_disable_test_hotkey_mode)
+
+    @staticmethod
+    def _call_optional_step_hook(callback) -> None:
+        if not callable(callback):
+            return
+        try:
+            callback()
+        except Exception:
+            pass
+
+    def _run_step_enter_actions(self, step: OnboardingStep) -> None:
         if step == OnboardingStep.PERMISSIONS:
             self._refresh_permissions()
         if step == OnboardingStep.CHEAT_SHEET:
             self._update_summary()
-        if step == OnboardingStep.TEST_DICTATION and callable(
-            self._on_enable_test_hotkey_mode
-        ):
-            try:
-                self._on_enable_test_hotkey_mode()
-            except Exception:
-                pass
-        # Ensure wizard window has focus after step change.
-        self._ensure_window_focus()
+        if step == OnboardingStep.TEST_DICTATION:
+            self._call_optional_step_hook(self._on_enable_test_hotkey_mode)
 
     def _focus_api_key_field(self) -> None:
         """Move keyboard focus into the Fast-mode API key field."""
@@ -1560,55 +1576,69 @@ class OnboardingWizardController:
             return False
 
         if choice == OnboardingChoice.FAST:
-            entered_key = ""
-            if self._api_key_field:
-                entered_key = self._api_key_field.stringValue().strip()
-
-            resolution = resolve_fast_choice_updates(
-                entered_deepgram_key=entered_key,
-                cached_deepgram_key=self._get_cached_api_key("DEEPGRAM_API_KEY"),
-                env_deepgram_key=os.getenv("DEEPGRAM_API_KEY"),
-                cached_groq_key=self._get_cached_api_key("GROQ_API_KEY"),
-                env_groq_key=os.getenv("GROQ_API_KEY"),
-                current_mode=self._get_cached_env_setting("PULSESCRIBE_MODE"),
-            )
-            if resolution.should_prompt_for_api_key:
-                self._show_fast_api_key_prompt()
+            if not self._apply_fast_goal_choice():
                 return False
-
-            self._apply_env_updates(resolution.pending_updates)
-            if self._api_key_container is not None:
-                try:
-                    if getattr(self, "_last_api_key_prompt_visible", None) is not False:
-                        self._api_key_container.setHidden_(True)
-                        self._last_api_key_prompt_visible = False
-                except Exception:
-                    pass
         elif choice == OnboardingChoice.PRIVATE:
-            apply_local_preset_to_env(default_local_preset_private())
+            self._apply_private_goal_choice()
 
         set_onboarding_choice(choice)
-
-        # Save selected language
-        if self._lang_popup:
-            selected_title = self._lang_popup.titleOfSelectedItem()
-            lang = _language_code_from_title(selected_title)
-            self._apply_env_updates(
-                {
-                    "PULSESCRIBE_LANGUAGE": (
-                        lang if lang and lang != "auto" else None
-                    )
-                }
-            )
-
-        if self._on_settings_changed:
-            try:
-                self._on_settings_changed()
-            except Exception:
-                pass
-
+        self._persist_selected_language()
+        self._notify_settings_changed()
         self._set_step(OnboardingStep.PERMISSIONS)
         return True
+
+    def _apply_fast_goal_choice(self) -> bool:
+        resolution = resolve_fast_choice_updates(
+            entered_deepgram_key=self._entered_deepgram_api_key(),
+            cached_deepgram_key=self._get_cached_api_key("DEEPGRAM_API_KEY"),
+            env_deepgram_key=os.getenv("DEEPGRAM_API_KEY"),
+            cached_groq_key=self._get_cached_api_key("GROQ_API_KEY"),
+            env_groq_key=os.getenv("GROQ_API_KEY"),
+            current_mode=self._get_cached_env_setting("PULSESCRIBE_MODE"),
+        )
+        if resolution.should_prompt_for_api_key:
+            self._show_fast_api_key_prompt()
+            return False
+
+        self._apply_env_updates(resolution.pending_updates)
+        self._hide_fast_api_key_prompt()
+        return True
+
+    def _entered_deepgram_api_key(self) -> str:
+        if self._api_key_field:
+            return self._api_key_field.stringValue().strip()
+        return ""
+
+    def _hide_fast_api_key_prompt(self) -> None:
+        if self._api_key_container is None:
+            return
+        try:
+            if getattr(self, "_last_api_key_prompt_visible", None) is not False:
+                self._api_key_container.setHidden_(True)
+                self._last_api_key_prompt_visible = False
+        except Exception:
+            pass
+
+    @staticmethod
+    def _apply_private_goal_choice() -> None:
+        apply_local_preset_to_env(default_local_preset_private())
+
+    def _persist_selected_language(self) -> None:
+        if not self._lang_popup:
+            return
+        selected_title = self._lang_popup.titleOfSelectedItem()
+        lang = _language_code_from_title(selected_title)
+        self._apply_env_updates(
+            {"PULSESCRIBE_LANGUAGE": lang if lang and lang != "auto" else None}
+        )
+
+    def _notify_settings_changed(self) -> None:
+        if not self._on_settings_changed:
+            return
+        try:
+            self._on_settings_changed()
+        except Exception:
+            pass
 
     def _can_advance(self) -> bool:
         if self._step == OnboardingStep.CHOOSE_GOAL:
@@ -1624,11 +1654,20 @@ class OnboardingWizardController:
         return True
 
     def _render(self) -> None:
-        step = self._step
-        if step == OnboardingStep.DONE:
-            step = OnboardingStep.CHEAT_SHEET
+        step = self._render_step()
         self._ensure_step_built(step)
+        self._sync_visible_step(step)
+        self._update_render_title(step)
+        self._update_render_progress(step)
+        self._update_render_navigation(step)
+        self._run_render_step_updates(step)
 
+    def _render_step(self) -> OnboardingStep:
+        if self._step == OnboardingStep.DONE:
+            return OnboardingStep.CHEAT_SHEET
+        return self._step
+
+    def _sync_visible_step(self, step: OnboardingStep) -> None:
         previous_visible_step = getattr(self, "_visible_step", None)
         if previous_visible_step is None:
             for s, view in self._step_views.items():
@@ -1651,6 +1690,7 @@ class OnboardingWizardController:
                     pass
         self._visible_step = step
 
+    def _update_render_title(self, step: OnboardingStep) -> None:
         if self._step_label is not None:
             title_text = self._wizard_title(step)
             try:
@@ -1659,6 +1699,8 @@ class OnboardingWizardController:
                     self._last_title_text = title_text
             except Exception:
                 pass
+
+    def _update_render_progress(self, step: OnboardingStep) -> None:
         if self._progress_label is not None:
             idx = step_index(step)
             progress_text = f"Step {idx}/{total_steps()}"
@@ -1669,6 +1711,7 @@ class OnboardingWizardController:
             except Exception:
                 pass
 
+    def _update_render_navigation(self, step: OnboardingStep) -> None:
         if self._back_btn is not None:
             back_hidden = step == OnboardingStep.CHOOSE_GOAL
             try:
@@ -1691,6 +1734,7 @@ class OnboardingWizardController:
             except Exception:
                 pass
 
+    def _run_render_step_updates(self, step: OnboardingStep) -> None:
         if step == OnboardingStep.HOTKEY:
             self._sync_hotkey_fields_from_env()
         if step == OnboardingStep.TEST_DICTATION:
@@ -1726,94 +1770,94 @@ class OnboardingWizardController:
             pass
 
     def _handle_action(self, action: str) -> None:
-        if action == "back":
-            if self._step != OnboardingStep.CHOOSE_GOAL:
-                self._set_step(prev_step(self._step))
+        simple_handler = self._simple_action_handlers().get(action)
+        if simple_handler is not None:
+            simple_handler()
             return
-
-        if action == "next":
-            if not self._can_advance():
-                return
-            if self._step == OnboardingStep.CHEAT_SHEET:
-                self._complete(open_settings=False)
-                return
-            if self._step == OnboardingStep.CHOOSE_GOAL:
-                self._apply_selected_goal_choice()
-                return
-            self._set_step(next_step(self._step))
+        if self._handle_goal_action(action):
             return
-
-        if action == "cancel":
-            self._complete(open_settings=True)
+        if self._handle_permission_action(action):
             return
+        self._handle_hotkey_action(action)
 
-        if action == "start_test":
-            self._start_test_dictation()
+    def _simple_action_handlers(self) -> dict[str, Callable[[], None]]:
+        return {
+            "back": self._handle_back_action,
+            "next": self._handle_next_action,
+            "cancel": lambda: self._complete(open_settings=True),
+            "start_test": self._start_test_dictation,
+            "stop_test": self._stop_test_dictation,
+            "skip_test": self._handle_skip_test_action,
+            "open_settings": lambda: self._complete(open_settings=True),
+        }
+
+    def _handle_back_action(self) -> None:
+        if self._step != OnboardingStep.CHOOSE_GOAL:
+            self._set_step(prev_step(self._step))
+
+    def _handle_next_action(self) -> None:
+        if not self._can_advance():
             return
-
-        if action == "stop_test":
-            self._stop_test_dictation()
-            return
-
-        if action == "skip_test":
-            # Skip the test dictation and go to next step
-            if getattr(self, "_test_outcome", "pending") != "passed":
-                self._test_outcome = "skipped"
-            self._set_step(next_step(self._step))
-            return
-
-        if action == "open_settings":
-            self._complete(open_settings=True)
-            return
-
-        # Choose goal
-        if action in ("choose_fast", "choose_private", "choose_advanced"):
-            if action == "choose_fast":
-                self._choice = OnboardingChoice.FAST
-            elif action == "choose_private":
-                self._choice = OnboardingChoice.PRIVATE
-            else:
-                self._choice = OnboardingChoice.ADVANCED
+        if self._step == OnboardingStep.CHEAT_SHEET:
+            self._complete(open_settings=False)
+        elif self._step == OnboardingStep.CHOOSE_GOAL:
             self._apply_selected_goal_choice()
-            return
+        else:
+            self._set_step(next_step(self._step))
 
-        # Permissions actions
+    def _handle_skip_test_action(self) -> None:
+        if getattr(self, "_test_outcome", "pending") != "passed":
+            self._test_outcome = "skipped"
+        self._set_step(next_step(self._step))
+
+    def _handle_goal_action(self, action: str) -> bool:
+        choice_by_action = {
+            "choose_fast": OnboardingChoice.FAST,
+            "choose_private": OnboardingChoice.PRIVATE,
+            "choose_advanced": OnboardingChoice.ADVANCED,
+        }
+        choice = choice_by_action.get(action)
+        if choice is None:
+            return False
+        self._choice = choice
+        self._apply_selected_goal_choice()
+        return True
+
+    def _handle_permission_action(self, action: str) -> bool:
         if action == "perm_mic":
-            mic_state = get_microphone_permission_state()
-            if mic_state == "not_determined":
-                check_microphone_permission(show_alert=False, request=True)
-            else:
-                self._open_privacy_settings("Privacy_Microphone")
-            self._kick_permission_auto_refresh()
-            return
-        if action == "perm_access":
+            self._handle_microphone_permission_action()
+        elif action == "perm_access":
             check_accessibility_permission(show_alert=False, request=True)
             self._open_privacy_settings("Privacy_Accessibility")
-            self._kick_permission_auto_refresh()
-            return
-        if action == "perm_input":
+        elif action == "perm_input":
             check_input_monitoring_permission(show_alert=False, request=True)
             self._open_privacy_settings("Privacy_ListenEvent")
-            self._kick_permission_auto_refresh()
-            return
+        else:
+            return False
+        self._kick_permission_auto_refresh()
+        return True
 
-        # Hotkey presets (delegated to HotkeyCard)
+    def _handle_microphone_permission_action(self) -> None:
+        mic_state = get_microphone_permission_state()
+        if mic_state == "not_determined":
+            check_microphone_permission(show_alert=False, request=True)
+        else:
+            self._open_privacy_settings("Privacy_Microphone")
+
+    def _handle_hotkey_action(self, action: str) -> None:
         if action in ("hotkey_f19_toggle", "hotkey_fn_hold", "hotkey_opt_space"):
             self._ensure_step_built(OnboardingStep.HOTKEY)
             preset = action.replace("hotkey_", "")  # f19_toggle, fn_hold, opt_space
             self._apply_hotkey_preset(preset)
             return
-
         if action.startswith("record_hotkey:"):
             self._ensure_step_built(OnboardingStep.HOTKEY)
             kind = action.split(":", 1)[1].strip().lower()
             if kind in ("toggle", "hold"):
                 self._toggle_hotkey_recording(kind)
             return
-
         if action == "goto_hotkey":
             self._set_step(OnboardingStep.HOTKEY)
-            return
 
     def _open_privacy_settings(self, anchor: str) -> None:
         from utils.permissions import open_privacy_settings

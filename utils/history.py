@@ -9,6 +9,7 @@ import logging
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from types import EllipsisType
 
 from config import USER_CONFIG_DIR
 from utils.log_tail import (
@@ -197,15 +198,16 @@ def _load_recent_transcript_entries(
 def get_recent_transcripts_with_signature(
     count: int = 10,
     *,
-    signature: tuple[int, int] | None | object = Ellipsis,
+    signature: tuple[int, int] | None | EllipsisType = Ellipsis,
 ) -> tuple[list[dict[str, object]], tuple[int, int] | None]:
     """Return recent entries together with one matching file signature."""
     if count <= 0:
         return [], None
 
-    current_signature = (
-        get_file_signature(HISTORY_FILE) if signature is Ellipsis else signature
-    )
+    if signature is Ellipsis:
+        current_signature = get_file_signature(HISTORY_FILE)
+    else:
+        current_signature = signature if isinstance(signature, tuple) else None
     if current_signature is None:
         return [], None
 

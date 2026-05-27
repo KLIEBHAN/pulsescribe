@@ -12,6 +12,39 @@ from __future__ import annotations
 from typing import Callable
 
 
+def _carbon_hotkeys_unsupported_reason() -> str | None:
+    try:
+        import sys
+
+        if sys.platform != "darwin":
+            return "Carbon hotkeys are only supported on macOS"
+    except Exception:
+        return None
+    return None
+
+
+def _load_registration_dependencies():
+    import quickmachotkey
+    from quickmachotkey._MinimalHIToolbox import (  # type: ignore[attr-defined]
+        GetEventDispatcherTarget,
+        RegisterEventHotKey,
+    )
+    from struct import unpack
+
+    return quickmachotkey, GetEventDispatcherTarget, RegisterEventHotKey, unpack
+
+
+def _quickmachotkey_signature(quickmachotkey, unpack) -> int:
+    qmhk = getattr(quickmachotkey, "_QMHK", None)
+    if qmhk is not None:
+        return qmhk
+    try:
+        (qmhk,) = unpack("@I", b"QMHK")
+        return qmhk
+    except Exception:  # pragma: no cover
+        return 0
+
+
 class CarbonHotKeyRegistration:
     """Register/unregister a single Carbon hotkey via quickmachotkey."""
 
@@ -61,67 +94,8 @@ class CarbonHotKeyRegistration:
 
     def register(self) -> tuple[bool, str | None]:
         """Registers the hotkey. Returns (ok, error_message)."""
-        def _impl() -> tuple[bool, str | None]:
-            try:
-                import sys
-
-                if sys.platform != "darwin":
-                    return False, "Carbon hotkeys are only supported on macOS"
-            except Exception:
-                pass
-
-            try:
-                import quickmachotkey
-                from quickmachotkey._MinimalHIToolbox import (  # type: ignore[attr-defined]
-                    GetEventDispatcherTarget,
-                    RegisterEventHotKey,
-                )
-                from struct import unpack
-            except Exception as e:  # pragma: no cover
-                return False, f"quickmachotkey unavailable: {e}"
-
-            qmhk = getattr(quickmachotkey, "_QMHK", None)
-            if qmhk is None:
-                try:
-                    (qmhk,) = unpack("@I", b"QMHK")
-                except Exception:  # pragma: no cover
-                    qmhk = 0
-
-            hkid = None
-            try:
-                quickmachotkey.registrationCounter += 1
-                hkid = quickmachotkey.registrationCounter
-                quickmachotkey.hotKeyHandlers[hkid] = self._callback
-                hotkey_id = (qmhk, hkid)
-                result, ref = RegisterEventHotKey(
-                    self._virtual_key,
-                    self._modifier_mask,
-                    hotkey_id,
-                    GetEventDispatcherTarget(),
-                    0,
-                    None,
-                )
-            except Exception as e:
-                if hkid is not None:
-                    try:
-                        quickmachotkey.hotKeyHandlers.pop(hkid, None)
-                    except Exception:
-                        pass
-                return False, str(e)
-
-            if int(result) != 0 or ref is None:
-                try:
-                    quickmachotkey.hotKeyHandlers.pop(hkid, None)
-                except Exception:
-                    pass
-                return False, f"RegisterEventHotKey failed (OSStatus={int(result)})"
-
-            self._hotkey_id = int(hkid)
-            self._ref = ref
-            return True, None
-
         try:
-            ok, out = self._call_on_main_sync(_impl)
+            ok, out = self._call_on_main_sync(self._register_impl)
         except Exception as e:  # pragma: no cover
             return False, str(e)
 
@@ -130,6 +104,78 @@ class CarbonHotKeyRegistration:
         if isinstance(out, tuple):
             return out  # type: ignore[return-value]
         return False, "Hotkey registration failed"
+
+    def _register_impl(self) -> tuple[bool, str | None]:
+        unsupported_reason = _carbon_hotkeys_unsupported_reason()
+        if unsupported_reason is not None:
+            return False, unsupported_reason
+
+        try:
+            quickmachotkey, get_target, register_hotkey, unpack = (
+                _load_registration_dependencies()
+            )
+        except Exception as e:  # pragma: no cover
+            return False, f"quickmachotkey unavailable: {e}"
+
+        qmhk = _quickmachotkey_signature(quickmachotkey, unpack)
+        return self._register_with_quickmachotkey(
+            quickmachotkey,
+            get_target,
+            register_hotkey,
+            qmhk,
+        )
+
+    def _register_with_quickmachotkey(
+        self,
+        quickmachotkey,
+        get_target,
+        register_hotkey,
+        qmhk: int,
+    ) -> tuple[bool, str | None]:
+        hkid = None
+        try:
+            quickmachotkey.registrationCounter += 1
+            hkid = quickmachotkey.registrationCounter
+            quickmachotkey.hotKeyHandlers[hkid] = self._callback
+            result, ref = register_hotkey(
+                self._virtual_key,
+                self._modifier_mask,
+                (qmhk, hkid),
+                get_target(),
+                0,
+                None,
+            )
+        except Exception as e:
+            self._remove_quickmachotkey_handler(quickmachotkey, hkid)
+            return False, str(e)
+
+        return self._finalize_registration_result(quickmachotkey, hkid, result, ref)
+
+    def _finalize_registration_result(
+        self,
+        quickmachotkey,
+        hkid: int | None,
+        result,
+        ref,
+    ) -> tuple[bool, str | None]:
+        if int(result) != 0 or ref is None:
+            self._remove_quickmachotkey_handler(quickmachotkey, hkid)
+            return False, f"RegisterEventHotKey failed (OSStatus={int(result)})"
+        if hkid is None:
+            return False, "RegisterEventHotKey failed (missing hotkey id)"
+
+        self._hotkey_id = int(hkid)
+        self._ref = ref
+        return True, None
+
+    @staticmethod
+    def _remove_quickmachotkey_handler(quickmachotkey, hkid: int | None) -> None:
+        if hkid is None:
+            return
+        try:
+            quickmachotkey.hotKeyHandlers.pop(hkid, None)
+        except Exception:
+            pass
 
     def unregister(self) -> None:
         """Unregisters the hotkey (best-effort)."""

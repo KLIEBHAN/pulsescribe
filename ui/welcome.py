@@ -7,6 +7,10 @@ Erscheint beim ersten Start und kann über Menubar aufgerufen werden.
 import os
 
 from config import LOG_FILE
+from ui.hotkey_format import (
+    format_hotkey_for_display,
+    normalize_hotkey_text,
+)
 from ui.hotkey_card import HotkeyCard
 from ui.logs_panel_feedback import (
     build_logs_empty_state_text,
@@ -20,6 +24,7 @@ from ui.logs_panel_feedback import (
     build_transcripts_load_error_text,
 )
 from ui.prompt_editor_feedback import build_prompt_editor_state_feedback
+from ui.provider_settings import build_provider_api_key_status
 from ui.secondary_settings_feedback import (
     build_display_settings_feedback,
     build_refine_model_guidance,
@@ -43,7 +48,6 @@ from utils.hotkey_recording import HotkeyRecorder
 from utils.local_backend import (
     get_local_advanced_ui_state,
     normalize_local_backend,
-    should_remove_local_backend_env,
 )
 from utils.log_tail import (
     get_file_signature,
@@ -52,6 +56,7 @@ from utils.log_tail import (
     should_auto_refresh_logs,
 )
 from utils.presets import LOCAL_PRESET_BASE, LOCAL_PRESETS, LOCAL_PRESET_OPTIONS
+from utils.settings_env_updates import SettingsEnvUpdateBuilder
 from utils.transcript_view_logic import (
     build_transcript_payload,
     should_append_transcript_delta_in_place,
@@ -286,27 +291,16 @@ def _set_text_view_string_if_changed(text_view, value: str) -> bool:
 
 
 def _normalize_hotkey_text(value: str | None) -> str:
-    return (value or "").strip()
+    return normalize_hotkey_text(value)
 
 
 
 def _format_hotkey_for_display(value: str | None) -> str:
-    hotkey = _normalize_hotkey_text(value).lower()
-    if not hotkey:
-        return ""
-
-    display_parts: list[str] = []
-    for part in hotkey.split("+"):
-        display = HOTKEY_TOKEN_LABELS.get(part)
-        if display is None:
-            if part.startswith("f") and part[1:].isdigit():
-                display = part.upper()
-            elif len(part) == 1:
-                display = part.upper()
-            else:
-                display = part.capitalize()
-        display_parts.append(display)
-    return "+".join(display_parts)
+    return format_hotkey_for_display(
+        value,
+        HOTKEY_TOKEN_LABELS,
+        omit_empty_parts=False,
+    )
 
 
 
@@ -377,17 +371,12 @@ def _build_welcome_api_key_status(
     mode: str | None,
     configured: bool,
 ) -> tuple[str, str]:
-    if configured:
-        return "Configured", "success"
-
-    current_mode = (mode or "deepgram").strip().lower() or "deepgram"
-    if current_mode == "local":
-        return "Not needed", "text_secondary"
-
-    if provider == MODE_API_KEY_PROVIDERS.get(current_mode):
-        return "Required", "warning"
-
-    return "Optional", "text_secondary"
+    return build_provider_api_key_status(
+        provider,
+        mode=mode,
+        configured=configured,
+        required_provider_by_mode=MODE_API_KEY_PROVIDERS,
+    )
 
 
 
@@ -986,21 +975,20 @@ class WelcomeController:
 
         open_privacy_settings(anchor, window=self._window)
 
-    def _handle_setup_action(self, action: str) -> None:
+    def _open_onboarding_wizard(self) -> None:
+        if callable(self._onboarding_wizard_callback):
+            try:
+                self._onboarding_wizard_callback()
+            except Exception:
+                pass
+
+    def _handle_setup_permission_action(self, action: str) -> bool:
         from utils.permissions import (
             check_accessibility_permission,
             check_input_monitoring_permission,
             check_microphone_permission,
             get_microphone_permission_state,
         )
-
-        if action == "open_onboarding_wizard":
-            if callable(self._onboarding_wizard_callback):
-                try:
-                    self._onboarding_wizard_callback()
-                except Exception:
-                    pass
-            return
 
         if action == "perm_mic":
             mic_state = get_microphone_permission_state()
@@ -1009,52 +997,69 @@ class WelcomeController:
             else:
                 self._open_privacy_settings("Privacy_Microphone")
             self._kick_setup_permission_auto_refresh()
-            return
+            return True
 
         if action == "perm_access":
             check_accessibility_permission(show_alert=False, request=True)
             self._open_privacy_settings("Privacy_Accessibility")
             self._kick_setup_permission_auto_refresh()
-            return
+            return True
 
         if action == "perm_input":
             check_input_monitoring_permission(show_alert=False, request=True)
             self._open_privacy_settings("Privacy_ListenEvent")
             self._kick_setup_permission_auto_refresh()
+            return True
+
+        return False
+
+    def _handle_setup_preset_action(self, action: str) -> bool:
+        preset_actions = {
+            "apply_mlx_large_preset": (
+                "macOS: MLX Balanced (large)",
+                "MLX Large",
+            ),
+            "apply_mlx_turbo_preset": (
+                "macOS: MLX Fast (turbo)",
+                "MLX Turbo",
+            ),
+            "apply_lightning_preset": (
+                "macOS: Lightning Fast (large-v3)",
+                "Lightning",
+            ),
+        }
+        preset = preset_actions.get(action)
+        if preset is None:
+            return False
+
+        preset_name, label = preset
+        self._apply_local_preset(preset_name)
+        _apply_status_text(
+            self._setup_preset_status_label,
+            f"{label} selected. {build_save_apply_change_hint()}",
+            "success",
+        )
+        return True
+
+    def _goto_hotkeys_tab(self) -> None:
+        # Tab index 1 = Hotkeys (Setup=0, Hotkeys=1, Providers=2, ...)
+        if self._tab_view is not None:
+            self._tab_view.selectTabViewItemAtIndex_(1)
+            self._ensure_selected_tab_built()
+
+    def _handle_setup_action(self, action: str) -> None:
+        if action == "open_onboarding_wizard":
+            self._open_onboarding_wizard()
             return
 
-        if action == "apply_mlx_large_preset":
-            self._apply_local_preset("macOS: MLX Balanced (large)")
-            _apply_status_text(
-                self._setup_preset_status_label,
-                f"MLX Large selected. {build_save_apply_change_hint()}",
-                "success",
-            )
+        if self._handle_setup_permission_action(action):
             return
 
-        if action == "apply_mlx_turbo_preset":
-            self._apply_local_preset("macOS: MLX Fast (turbo)")
-            _apply_status_text(
-                self._setup_preset_status_label,
-                f"MLX Turbo selected. {build_save_apply_change_hint()}",
-                "success",
-            )
-            return
-
-        if action == "apply_lightning_preset":
-            self._apply_local_preset("macOS: Lightning Fast (large-v3)")
-            _apply_status_text(
-                self._setup_preset_status_label,
-                f"Lightning selected. {build_save_apply_change_hint()}",
-                "success",
-            )
+        if self._handle_setup_preset_action(action):
             return
 
         if action == "goto_hotkeys_tab":
-            # Tab index 1 = Hotkeys (Setup=0, Hotkeys=1, Providers=2, ...)
-            if self._tab_view is not None:
-                self._tab_view.selectTabViewItemAtIndex_(1)
-                self._ensure_selected_tab_built()
+            self._goto_hotkeys_tab()
             return
 
     def _refresh_setup_permissions(self) -> None:
@@ -1634,19 +1639,207 @@ class WelcomeController:
         _set_tooltip_if_supported(field, _build_welcome_api_key_tooltip(provider, mode=None))
         _set_tooltip_if_supported(status, _build_welcome_api_key_tooltip(provider, mode=None))
 
-    def _build_settings_card(self, y: int, parent_view=None) -> int:
-        """Erstellt Provider-Einstellungen (Mode/Local/Language)."""
+    def _bind_control_simple_handler(
+        self,
+        control,
+        method_name: str,
+        handler_attr: str,
+    ) -> None:
+        if _SimpleHandler is None:
+            return
+
+        import objc  # type: ignore[import-not-found]
+
+        handler = _SimpleHandler.alloc().initWithController_method_(self, method_name)
+        control.setTarget_(handler)
+        control.setAction_(objc.selector(handler.performAction_, signature=b"v@:@"))
+        setattr(self, handler_attr, handler)
+
+    def _create_settings_popup(
+        self,
+        x: int,
+        y: int,
+        width: int,
+        options,
+        *,
+        selected_title: str | None = None,
+        include_custom_selection: bool = False,
+    ):
+        from AppKit import NSFont, NSMakeRect, NSPopUpButton  # type: ignore[import-not-found]
+
+        popup = NSPopUpButton.alloc().initWithFrame_(NSMakeRect(x, y, width, 22))
+        popup.setFont_(NSFont.systemFontOfSize_(11))
+        known_options = tuple(options)
+        for option in known_options:
+            popup.addItemWithTitle_(option)
+        if include_custom_selection and selected_title and selected_title not in known_options:
+            popup.addItemWithTitle_(selected_title)
+        if selected_title in known_options or (include_custom_selection and selected_title):
+            popup.selectItemWithTitle_(selected_title)
+        return popup
+
+    def _build_mode_setting_row(
+        self,
+        base_x: int,
+        y: int,
+        control_x: int,
+        control_width: int,
+        parent_view,
+    ) -> None:
+        self._add_setting_label(base_x, y, "Mode:", parent_view)
+        current_mode = (
+            self._get_cached_env_setting("PULSESCRIBE_MODE")
+            or self.config.get("mode")
+            or "deepgram"
+        )
+        mode_popup = self._create_settings_popup(
+            control_x,
+            y,
+            control_width,
+            MODE_OPTIONS,
+            selected_title=current_mode if current_mode in MODE_OPTIONS else None,
+        )
+        self._bind_control_simple_handler(
+            mode_popup,
+            "_update_all_visibility",
+            "_mode_changed_handler",
+        )
+        self._mode_popup = mode_popup
+        parent_view.addSubview_(mode_popup)
+
+    def _build_local_backend_setting_row(
+        self,
+        base_x: int,
+        y: int,
+        control_x: int,
+        control_width: int,
+        parent_view,
+    ) -> None:
+        self._local_backend_label = self._add_setting_label(
+            base_x, y, "Local Backend:", parent_view
+        )
+        current_backend = normalize_local_backend(
+            self._get_cached_env_setting("PULSESCRIBE_LOCAL_BACKEND")
+        )
+        if current_backend not in LOCAL_BACKEND_OPTIONS:
+            current_backend = "auto"
+        local_backend_popup = self._create_settings_popup(
+            control_x,
+            y,
+            control_width,
+            LOCAL_BACKEND_OPTIONS,
+            selected_title=current_backend,
+        )
+        self._local_backend_popup = local_backend_popup
+        parent_view.addSubview_(local_backend_popup)
+        self._bind_control_simple_handler(
+            local_backend_popup,
+            "_update_local_settings_visibility",
+            "_backend_changed_handler",
+        )
+
+    def _build_local_model_setting_row(
+        self,
+        base_x: int,
+        y: int,
+        control_x: int,
+        control_width: int,
+        parent_view,
+    ) -> None:
+        self._local_model_label = self._add_setting_label(
+            base_x, y, "Local Model:", parent_view
+        )
+        current_local_model = (
+            self._get_cached_env_setting("PULSESCRIBE_LOCAL_MODEL") or "default"
+        )
+        local_model_popup = self._create_settings_popup(
+            control_x,
+            y,
+            control_width,
+            LOCAL_MODEL_OPTIONS,
+            selected_title=current_local_model,
+            include_custom_selection=True,
+        )
+        self._bind_control_simple_handler(
+            local_model_popup,
+            "_refresh_footer_settings_hint",
+            "_local_model_changed_handler",
+        )
+        self._local_model_popup = local_model_popup
+        parent_view.addSubview_(local_model_popup)
+
+    def _build_language_setting_row(
+        self,
+        base_x: int,
+        y: int,
+        control_x: int,
+        control_width: int,
+        parent_view,
+    ) -> None:
+        self._add_setting_label(base_x, y, "Language:", parent_view)
+        current_lang = (
+            self._get_cached_env_setting("PULSESCRIBE_LANGUAGE")
+            or self.config.get("language")
+            or "auto"
+        )
+        lang_popup = self._create_settings_popup(
+            control_x,
+            y,
+            control_width,
+            LANGUAGE_OPTIONS,
+            selected_title=current_lang if current_lang in LANGUAGE_OPTIONS else None,
+        )
+        self._bind_control_simple_handler(
+            lang_popup,
+            "_refresh_footer_settings_hint",
+            "_lang_changed_handler",
+        )
+        self._lang_popup = lang_popup
+        parent_view.addSubview_(lang_popup)
+
+    def _build_streaming_setting_row(
+        self,
+        base_x: int,
+        y: int,
+        control_x: int,
+        control_width: int,
+        parent_view,
+    ) -> None:
         from AppKit import (  # type: ignore[import-not-found]
             NSButton,
             NSButtonTypeSwitch,
+            NSFont,
+            NSMakeRect,
+        )
+
+        self._streaming_label = self._add_setting_label(
+            base_x, y, "Streaming:", parent_view
+        )
+        streaming_checkbox = NSButton.alloc().initWithFrame_(
+            NSMakeRect(control_x, y, control_width, 22)
+        )
+        streaming_checkbox.setButtonType_(NSButtonTypeSwitch)
+        streaming_checkbox.setTitle_("WebSocket (low latency)")
+        streaming_checkbox.setFont_(NSFont.systemFontOfSize_(11))
+        streaming_enabled = _is_env_enabled_default_true("PULSESCRIBE_STREAMING")
+        streaming_checkbox.setState_(1 if streaming_enabled else 0)
+        self._bind_control_simple_handler(
+            streaming_checkbox,
+            "_refresh_footer_settings_hint",
+            "_streaming_changed_handler",
+        )
+        self._streaming_checkbox = streaming_checkbox
+        parent_view.addSubview_(streaming_checkbox)
+
+    def _build_settings_card(self, y: int, parent_view=None) -> int:
+        """Erstellt Provider-Einstellungen (Mode/Local/Language)."""
+        from AppKit import (  # type: ignore[import-not-found]
             NSColor,
             NSFont,
             NSFontWeightSemibold,
             NSMakeRect,
-            NSPopUpButton,
             NSTextField,
         )
-        import objc  # type: ignore[import-not-found]
 
         parent_view = parent_view or self._content_view
 
@@ -1678,176 +1871,50 @@ class WelcomeController:
         row_height = 28
         current_y = card_y + card_height - 58
 
-        # --- Mode Dropdown ---
-        self._add_setting_label(base_x, current_y, "Mode:", parent_view)
-        mode_popup = NSPopUpButton.alloc().initWithFrame_(
-            NSMakeRect(control_x, current_y, control_width, 22)
+        self._build_mode_setting_row(
+            base_x, current_y, control_x, control_width, parent_view
         )
-        mode_popup.setFont_(NSFont.systemFontOfSize_(11))
-        for mode in MODE_OPTIONS:
-            mode_popup.addItemWithTitle_(mode)
-        current_mode = (
-            self._get_cached_env_setting("PULSESCRIBE_MODE")
-            or self.config.get("mode")
-            or "deepgram"
-        )
-        if current_mode in MODE_OPTIONS:
-            mode_popup.selectItemWithTitle_(current_mode)
-        # Update visibility when mode changes
-        mode_changed_handler = _SimpleHandler.alloc().initWithController_method_(
-            self, "_update_all_visibility"
-        )
-        mode_popup.setTarget_(mode_changed_handler)
-        mode_popup.setAction_(
-            objc.selector(mode_changed_handler.performAction_, signature=b"v@:@")
-        )
-        self._mode_changed_handler = mode_changed_handler
-        self._mode_popup = mode_popup
-        parent_view.addSubview_(mode_popup)
         current_y -= row_height
 
-        # --- Local Backend Dropdown ---
-        self._local_backend_label = self._add_setting_label(
-            base_x, current_y, "Local Backend:", parent_view
+        self._build_local_backend_setting_row(
+            base_x, current_y, control_x, control_width, parent_view
         )
-        local_backend_popup = NSPopUpButton.alloc().initWithFrame_(
-            NSMakeRect(control_x, current_y, control_width, 22)
-        )
-        local_backend_popup.setFont_(NSFont.systemFontOfSize_(11))
-        for backend in LOCAL_BACKEND_OPTIONS:
-            local_backend_popup.addItemWithTitle_(backend)
-        current_backend = normalize_local_backend(
-            self._get_cached_env_setting("PULSESCRIBE_LOCAL_BACKEND")
-        )
-        if current_backend not in LOCAL_BACKEND_OPTIONS:
-            current_backend = "auto"
-        local_backend_popup.selectItemWithTitle_(current_backend)
-        self._local_backend_popup = local_backend_popup
-        parent_view.addSubview_(local_backend_popup)
-
-        # Update Lightning visibility when backend changes
-        backend_handler = _SimpleHandler.alloc().initWithController_method_(
-            self, "_update_local_settings_visibility"
-        )
-        local_backend_popup.setTarget_(backend_handler)
-        local_backend_popup.setAction_(
-            objc.selector(backend_handler.performAction_, signature=b"v@:@")
-        )
-        self._backend_changed_handler = backend_handler
         current_y -= row_height
 
-        # --- Local Model Dropdown ---
-        self._local_model_label = self._add_setting_label(
-            base_x, current_y, "Local Model:", parent_view
+        self._build_local_model_setting_row(
+            base_x, current_y, control_x, control_width, parent_view
         )
-        local_model_popup = NSPopUpButton.alloc().initWithFrame_(
-            NSMakeRect(control_x, current_y, control_width, 22)
-        )
-        local_model_popup.setFont_(NSFont.systemFontOfSize_(11))
-        for m in LOCAL_MODEL_OPTIONS:
-            local_model_popup.addItemWithTitle_(m)
-        current_local_model = (
-            self._get_cached_env_setting("PULSESCRIBE_LOCAL_MODEL") or "default"
-        )
-        if current_local_model not in LOCAL_MODEL_OPTIONS and current_local_model:
-            local_model_popup.addItemWithTitle_(current_local_model)
-        local_model_popup.selectItemWithTitle_(current_local_model)
-        if _SimpleHandler is not None:
-            local_model_handler = _SimpleHandler.alloc().initWithController_method_(
-                self, "_refresh_footer_settings_hint"
-            )
-            local_model_popup.setTarget_(local_model_handler)
-            local_model_popup.setAction_(
-                objc.selector(local_model_handler.performAction_, signature=b"v@:@")
-            )
-            self._local_model_changed_handler = local_model_handler
-        self._local_model_popup = local_model_popup
-        parent_view.addSubview_(local_model_popup)
         current_y -= row_height
 
-        # --- Language Dropdown ---
-        self._add_setting_label(base_x, current_y, "Language:", parent_view)
-        lang_popup = NSPopUpButton.alloc().initWithFrame_(
-            NSMakeRect(control_x, current_y, control_width, 22)
+        self._build_language_setting_row(
+            base_x, current_y, control_x, control_width, parent_view
         )
-        lang_popup.setFont_(NSFont.systemFontOfSize_(11))
-        for lang in LANGUAGE_OPTIONS:
-            lang_popup.addItemWithTitle_(lang)
-        current_lang = (
-            self._get_cached_env_setting("PULSESCRIBE_LANGUAGE")
-            or self.config.get("language")
-            or "auto"
-        )
-        if current_lang in LANGUAGE_OPTIONS:
-            lang_popup.selectItemWithTitle_(current_lang)
-        if _SimpleHandler is not None:
-            lang_handler = _SimpleHandler.alloc().initWithController_method_(
-                self, "_refresh_footer_settings_hint"
-            )
-            lang_popup.setTarget_(lang_handler)
-            lang_popup.setAction_(
-                objc.selector(lang_handler.performAction_, signature=b"v@:@")
-            )
-            self._lang_changed_handler = lang_handler
-        self._lang_popup = lang_popup
-        parent_view.addSubview_(lang_popup)
         current_y -= row_height
 
-        # --- Streaming Toggle (Deepgram only) ---
-        self._streaming_label = self._add_setting_label(
-            base_x, current_y, "Streaming:", parent_view
+        self._build_streaming_setting_row(
+            base_x, current_y, control_x, control_width, parent_view
         )
-        streaming_checkbox = NSButton.alloc().initWithFrame_(
-            NSMakeRect(control_x, current_y, control_width, 22)
-        )
-        streaming_checkbox.setButtonType_(NSButtonTypeSwitch)
-        streaming_checkbox.setTitle_("WebSocket (low latency)")
-        streaming_checkbox.setFont_(NSFont.systemFontOfSize_(11))
-        streaming_enabled = _is_env_enabled_default_true("PULSESCRIBE_STREAMING")
-        streaming_checkbox.setState_(1 if streaming_enabled else 0)
-        if _SimpleHandler is not None:
-            streaming_handler = _SimpleHandler.alloc().initWithController_method_(
-                self, "_refresh_footer_settings_hint"
-            )
-            streaming_checkbox.setTarget_(streaming_handler)
-            streaming_checkbox.setAction_(
-                objc.selector(streaming_handler.performAction_, signature=b"v@:@")
-            )
-            self._streaming_changed_handler = streaming_handler
-        self._streaming_checkbox = streaming_checkbox
-        parent_view.addSubview_(streaming_checkbox)
 
         self._update_all_visibility()
 
         return card_y - CARD_SPACING
 
-    def _build_advanced_local_card(self, y: int, parent_view=None) -> int:
-        """Erweiterte Local-Performance Settings (macOS-tuned)."""
+    def _build_advanced_local_header(
+        self,
+        base_x: int,
+        card_y: int,
+        card_height: int,
+        control_width: int,
+        parent_view,
+    ) -> None:
         from AppKit import (  # type: ignore[import-not-found]
             NSColor,
             NSFont,
             NSFontWeightMedium,
             NSFontWeightSemibold,
             NSMakeRect,
-            NSPopUpButton,
-            NSSlider,
             NSTextField,
         )
-        import objc  # type: ignore[import-not-found]
-
-        parent_view = parent_view or self._content_view
-
-        card_height = 550  # Increased for Lightning settings
-        card_width = WELCOME_WIDTH - 2 * WELCOME_PADDING
-        card_y = y - card_height
-
-        card = _create_card(WELCOME_PADDING, card_y, card_width, card_height)
-        parent_view.addSubview_(card)
-
-        base_x = WELCOME_PADDING + CARD_PADDING
-        label_width = 110
-        control_x = base_x + label_width + 8
-        control_width = card_width - 2 * CARD_PADDING - label_width - 8
 
         title = NSTextField.alloc().initWithFrame_(
             NSMakeRect(base_x, card_y + card_height - 28, 320, 18)
@@ -1886,240 +1953,311 @@ class WelcomeController:
         parent_view.addSubview_(status)
         self._advanced_local_status_label = status
 
-        row_height = 28
-        current_y = card_y + card_height - 96
+    def _advanced_popup_value_from_env(
+        self,
+        env_key: str,
+        options,
+        *,
+        default: str = "auto",
+    ) -> str:
+        value = (self._get_cached_env_setting(env_key) or default).strip().lower()
+        return value if value in options else default
 
-        # Preset (applies values, not persisted)
-        preset_label = self._add_setting_label(base_x, current_y, "Preset:", parent_view)
-        preset_popup = NSPopUpButton.alloc().initWithFrame_(
-            NSMakeRect(control_x, current_y, control_width, 22)
+    def _build_popup_setting_row(
+        self,
+        base_x: int,
+        y: int,
+        control_x: int,
+        control_width: int,
+        parent_view,
+        *,
+        label_text: str,
+        options,
+        selected_title: str,
+        popup_attr: str,
+    ):
+        label = self._add_setting_label(base_x, y, label_text, parent_view)
+        popup = self._create_settings_popup(
+            control_x,
+            y,
+            control_width,
+            options,
+            selected_title=selected_title,
         )
-        preset_popup.setFont_(NSFont.systemFontOfSize_(11))
-        for preset in LOCAL_PRESET_OPTIONS:
-            preset_popup.addItemWithTitle_(preset)
-        preset_popup.selectItemWithTitle_("(none)")
-        preset_handler = _SimpleHandler.alloc().initWithController_method_(
-            self, "_apply_selected_local_preset"
-        )
-        preset_popup.setTarget_(preset_handler)
-        preset_popup.setAction_(
-            objc.selector(preset_handler.performAction_, signature=b"v@:@")
-        )
-        self._local_preset_changed_handler = preset_handler
-        self._local_preset_popup = preset_popup
-        parent_view.addSubview_(preset_popup)
-        current_y -= row_height
+        setattr(self, popup_attr, popup)
+        parent_view.addSubview_(popup)
+        return label, popup
 
-        # Device (openai-whisper)
-        device_label = self._add_setting_label(base_x, current_y, "Device:", parent_view)
-        device_popup = NSPopUpButton.alloc().initWithFrame_(
-            NSMakeRect(control_x, current_y, control_width, 22)
-        )
-        device_popup.setFont_(NSFont.systemFontOfSize_(11))
-        for d in DEVICE_OPTIONS:
-            device_popup.addItemWithTitle_(d)
-        current_device = (
-            (self._get_cached_env_setting("PULSESCRIBE_DEVICE") or "auto")
-            .strip()
-            .lower()
-        )
-        if current_device not in DEVICE_OPTIONS:
-            current_device = "auto"
-        device_popup.selectItemWithTitle_(current_device)
-        self._device_popup = device_popup
-        parent_view.addSubview_(device_popup)
-        current_y -= row_height
+    def _build_text_setting_row(
+        self,
+        base_x: int,
+        y: int,
+        control_x: int,
+        control_width: int,
+        parent_view,
+        *,
+        label_text: str,
+        placeholder: str,
+        env_key: str,
+        field_attr: str,
+    ):
+        from AppKit import NSFont, NSMakeRect, NSTextField  # type: ignore[import-not-found]
 
-        # Warmup
-        warmup_label = self._add_setting_label(base_x, current_y, "Warmup:", parent_view)
-        warmup_popup = NSPopUpButton.alloc().initWithFrame_(
-            NSMakeRect(control_x, current_y, control_width, 22)
+        label = self._add_setting_label(base_x, y, label_text, parent_view)
+        field = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(control_x, y, control_width, 22)
         )
-        warmup_popup.setFont_(NSFont.systemFontOfSize_(11))
-        for v in WARMUP_OPTIONS:
-            warmup_popup.addItemWithTitle_(v)
-        warmup_env = self._get_cached_env_setting("PULSESCRIBE_LOCAL_WARMUP")
-        warmup_value = (warmup_env or "auto").strip().lower()
-        if warmup_value not in WARMUP_OPTIONS:
-            warmup_value = "auto"
-        warmup_popup.selectItemWithTitle_(warmup_value)
-        self._warmup_popup = warmup_popup
-        parent_view.addSubview_(warmup_popup)
-        current_y -= row_height
+        field.setFont_(NSFont.systemFontOfSize_(11))
+        field.setPlaceholderString_(placeholder)
+        field.setStringValue_(self._get_cached_env_setting(env_key) or "")
+        setattr(self, field_attr, field)
+        parent_view.addSubview_(field)
+        return label, field
 
-        # Fast mode
-        fast_label = self._add_setting_label(base_x, current_y, "Fast:", parent_view)
-        fast_popup = NSPopUpButton.alloc().initWithFrame_(
-            NSMakeRect(control_x, current_y, control_width, 22)
+    def _build_preset_setting_row(
+        self,
+        base_x: int,
+        y: int,
+        control_x: int,
+        control_width: int,
+        parent_view,
+    ):
+        label, popup = self._build_popup_setting_row(
+            base_x,
+            y,
+            control_x,
+            control_width,
+            parent_view,
+            label_text="Preset:",
+            options=LOCAL_PRESET_OPTIONS,
+            selected_title="(none)",
+            popup_attr="_local_preset_popup",
         )
-        fast_popup.setFont_(NSFont.systemFontOfSize_(11))
-        for v in BOOL_OVERRIDE_OPTIONS:
-            fast_popup.addItemWithTitle_(v)
-        fast_popup.selectItemWithTitle_(
-            _bool_override_from_env("PULSESCRIBE_LOCAL_FAST")
+        self._bind_control_simple_handler(
+            popup,
+            "_apply_selected_local_preset",
+            "_local_preset_changed_handler",
         )
-        self._local_fast_popup = fast_popup
-        parent_view.addSubview_(fast_popup)
-        current_y -= row_height
+        return label, popup
 
-        # FP16 (openai-whisper; also used by MLX)
-        fp16_label = self._add_setting_label(base_x, current_y, "FP16:", parent_view)
-        fp16_popup = NSPopUpButton.alloc().initWithFrame_(
-            NSMakeRect(control_x, current_y, control_width, 22)
-        )
-        fp16_popup.setFont_(NSFont.systemFontOfSize_(11))
-        for v in BOOL_OVERRIDE_OPTIONS:
-            fp16_popup.addItemWithTitle_(v)
-        fp16_popup.selectItemWithTitle_(
-            _bool_override_from_env(LOCAL_FP16_ENV_KEY, LEGACY_LOCAL_FP16_ENV_KEY)
-        )
-        self._fp16_popup = fp16_popup
-        parent_view.addSubview_(fp16_popup)
-        current_y -= row_height
-
-        # Beam size
-        beam_label = self._add_setting_label(base_x, current_y, "Beam size:", parent_view)
-        beam_field = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(control_x, current_y, control_width, 22)
-        )
-        beam_field.setFont_(NSFont.systemFontOfSize_(11))
-        beam_field.setPlaceholderString_("default")
-        beam_field.setStringValue_(
-            self._get_cached_env_setting("PULSESCRIBE_LOCAL_BEAM_SIZE") or ""
-        )
-        self._beam_size_field = beam_field
-        parent_view.addSubview_(beam_field)
-        current_y -= row_height
-
-        # Best of
-        best_label = self._add_setting_label(base_x, current_y, "Best of:", parent_view)
-        best_field = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(control_x, current_y, control_width, 22)
-        )
-        best_field.setFont_(NSFont.systemFontOfSize_(11))
-        best_field.setPlaceholderString_("default")
-        best_field.setStringValue_(
-            self._get_cached_env_setting("PULSESCRIBE_LOCAL_BEST_OF") or ""
-        )
-        self._best_of_field = best_field
-        parent_view.addSubview_(best_field)
-        current_y -= row_height
-
-        # Temperature
-        temp_label = self._add_setting_label(base_x, current_y, "Temperature:", parent_view)
-        temp_field = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(control_x, current_y, control_width, 22)
-        )
-        temp_field.setFont_(NSFont.systemFontOfSize_(11))
-        temp_field.setPlaceholderString_("e.g. 0.0 or 0.0,0.2,0.4")
-        temp_field.setStringValue_(
-            self._get_cached_env_setting("PULSESCRIBE_LOCAL_TEMPERATURE") or ""
-        )
-        self._temperature_field = temp_field
-        parent_view.addSubview_(temp_field)
-        current_y -= row_height
-        self._advanced_general_views = (
-            preset_label,
-            preset_popup,
-            device_label,
-            device_popup,
-            warmup_label,
-            warmup_popup,
-            fast_label,
-            fast_popup,
-            fp16_label,
-            fp16_popup,
-            beam_label,
-            beam_field,
-            best_label,
-            best_field,
-            temp_label,
-            temp_field,
+    def _build_bool_override_setting_row(
+        self,
+        base_x: int,
+        y: int,
+        control_x: int,
+        control_width: int,
+        parent_view,
+        *,
+        label_text: str,
+        popup_attr: str,
+        env_key: str,
+        legacy_env_key: str | None = None,
+    ):
+        selected_title = _bool_override_from_env(env_key, legacy_env_key)
+        return self._build_popup_setting_row(
+            base_x,
+            y,
+            control_x,
+            control_width,
+            parent_view,
+            label_text=label_text,
+            options=BOOL_OVERRIDE_OPTIONS,
+            selected_title=selected_title,
+            popup_attr=popup_attr,
         )
 
-        # faster-whisper compute type
-        self._compute_type_label = self._add_setting_label(
-            base_x, current_y, "Compute type:", parent_view
+    def _build_advanced_general_rows(
+        self,
+        base_x: int,
+        current_y: int,
+        control_x: int,
+        control_width: int,
+        parent_view,
+        row_height: int,
+    ) -> tuple[tuple, int]:
+        views = []
+        row_builders = (
+            lambda y: self._build_preset_setting_row(
+                base_x, y, control_x, control_width, parent_view
+            ),
+            lambda y: self._build_popup_setting_row(
+                base_x,
+                y,
+                control_x,
+                control_width,
+                parent_view,
+                label_text="Device:",
+                options=DEVICE_OPTIONS,
+                selected_title=self._advanced_popup_value_from_env(
+                    "PULSESCRIBE_DEVICE", DEVICE_OPTIONS
+                ),
+                popup_attr="_device_popup",
+            ),
+            lambda y: self._build_popup_setting_row(
+                base_x,
+                y,
+                control_x,
+                control_width,
+                parent_view,
+                label_text="Warmup:",
+                options=WARMUP_OPTIONS,
+                selected_title=self._advanced_popup_value_from_env(
+                    "PULSESCRIBE_LOCAL_WARMUP", WARMUP_OPTIONS
+                ),
+                popup_attr="_warmup_popup",
+            ),
+            lambda y: self._build_bool_override_setting_row(
+                base_x,
+                y,
+                control_x,
+                control_width,
+                parent_view,
+                label_text="Fast:",
+                popup_attr="_local_fast_popup",
+                env_key="PULSESCRIBE_LOCAL_FAST",
+            ),
+            lambda y: self._build_bool_override_setting_row(
+                base_x,
+                y,
+                control_x,
+                control_width,
+                parent_view,
+                label_text="FP16:",
+                popup_attr="_fp16_popup",
+                env_key=LOCAL_FP16_ENV_KEY,
+                legacy_env_key=LEGACY_LOCAL_FP16_ENV_KEY,
+            ),
+            lambda y: self._build_text_setting_row(
+                base_x,
+                y,
+                control_x,
+                control_width,
+                parent_view,
+                label_text="Beam size:",
+                placeholder="default",
+                env_key="PULSESCRIBE_LOCAL_BEAM_SIZE",
+                field_attr="_beam_size_field",
+            ),
+            lambda y: self._build_text_setting_row(
+                base_x,
+                y,
+                control_x,
+                control_width,
+                parent_view,
+                label_text="Best of:",
+                placeholder="default",
+                env_key="PULSESCRIBE_LOCAL_BEST_OF",
+                field_attr="_best_of_field",
+            ),
+            lambda y: self._build_text_setting_row(
+                base_x,
+                y,
+                control_x,
+                control_width,
+                parent_view,
+                label_text="Temperature:",
+                placeholder="e.g. 0.0 or 0.0,0.2,0.4",
+                env_key="PULSESCRIBE_LOCAL_TEMPERATURE",
+                field_attr="_temperature_field",
+            ),
         )
-        compute_field = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(control_x, current_y, control_width, 22)
-        )
-        compute_field.setFont_(NSFont.systemFontOfSize_(11))
-        compute_field.setPlaceholderString_("default (e.g. int8, int8_float16)")
-        compute_field.setStringValue_(
-            self._get_cached_env_setting("PULSESCRIBE_LOCAL_COMPUTE_TYPE") or ""
-        )
-        self._compute_type_field = compute_field
-        parent_view.addSubview_(compute_field)
-        current_y -= row_height
+        for build_row in row_builders:
+            views.extend(build_row(current_y))
+            current_y -= row_height
+        return tuple(views), current_y
 
-        # CPU threads
-        self._cpu_threads_label = self._add_setting_label(
-            base_x, current_y, "CPU threads:", parent_view
+    def _build_faster_whisper_rows(
+        self,
+        base_x: int,
+        current_y: int,
+        control_x: int,
+        control_width: int,
+        parent_view,
+        row_height: int,
+    ) -> int:
+        field_rows = (
+            (
+                "_compute_type_label",
+                "Compute type:",
+                "default (e.g. int8, int8_float16)",
+                "PULSESCRIBE_LOCAL_COMPUTE_TYPE",
+                "_compute_type_field",
+            ),
+            (
+                "_cpu_threads_label",
+                "CPU threads:",
+                "0 = auto",
+                "PULSESCRIBE_LOCAL_CPU_THREADS",
+                "_cpu_threads_field",
+            ),
+            (
+                "_num_workers_label",
+                "Workers:",
+                "1",
+                "PULSESCRIBE_LOCAL_NUM_WORKERS",
+                "_num_workers_field",
+            ),
         )
-        threads_field = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(control_x, current_y, control_width, 22)
-        )
-        threads_field.setFont_(NSFont.systemFontOfSize_(11))
-        threads_field.setPlaceholderString_("0 = auto")
-        threads_field.setStringValue_(
-            self._get_cached_env_setting("PULSESCRIBE_LOCAL_CPU_THREADS") or ""
-        )
-        self._cpu_threads_field = threads_field
-        parent_view.addSubview_(threads_field)
-        current_y -= row_height
+        for label_attr, label_text, placeholder, env_key, field_attr in field_rows:
+            label, _field = self._build_text_setting_row(
+                base_x,
+                current_y,
+                control_x,
+                control_width,
+                parent_view,
+                label_text=label_text,
+                placeholder=placeholder,
+                env_key=env_key,
+                field_attr=field_attr,
+            )
+            setattr(self, label_attr, label)
+            current_y -= row_height
 
-        # Workers
-        self._num_workers_label = self._add_setting_label(
-            base_x, current_y, "Workers:", parent_view
+        popup_rows = (
+            (
+                "_without_timestamps_label",
+                "No timestamps:",
+                "_without_timestamps_popup",
+                "PULSESCRIBE_LOCAL_WITHOUT_TIMESTAMPS",
+            ),
+            (
+                "_vad_filter_label",
+                "VAD filter:",
+                "_vad_filter_popup",
+                "PULSESCRIBE_LOCAL_VAD_FILTER",
+            ),
         )
-        workers_field = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(control_x, current_y, control_width, 22)
-        )
-        workers_field.setFont_(NSFont.systemFontOfSize_(11))
-        workers_field.setPlaceholderString_("1")
-        workers_field.setStringValue_(
-            self._get_cached_env_setting("PULSESCRIBE_LOCAL_NUM_WORKERS") or ""
-        )
-        self._num_workers_field = workers_field
-        parent_view.addSubview_(workers_field)
-        current_y -= row_height
+        for label_attr, label_text, popup_attr, env_key in popup_rows:
+            label, _popup = self._build_bool_override_setting_row(
+                base_x,
+                current_y,
+                control_x,
+                control_width,
+                parent_view,
+                label_text=label_text,
+                popup_attr=popup_attr,
+                env_key=env_key,
+            )
+            setattr(self, label_attr, label)
+            current_y -= row_height
+        return current_y
 
-        # without_timestamps (faster-whisper)
-        self._without_timestamps_label = self._add_setting_label(
-            base_x, current_y, "No timestamps:", parent_view
+    def _build_lightning_header(
+        self,
+        base_x: int,
+        current_y: int,
+        control_width: int,
+        label_width: int,
+        parent_view,
+    ) -> None:
+        from AppKit import (  # type: ignore[import-not-found]
+            NSColor,
+            NSFont,
+            NSFontWeightMedium,
+            NSMakeRect,
+            NSTextField,
         )
-        wt_popup = NSPopUpButton.alloc().initWithFrame_(
-            NSMakeRect(control_x, current_y, control_width, 22)
-        )
-        wt_popup.setFont_(NSFont.systemFontOfSize_(11))
-        for v in BOOL_OVERRIDE_OPTIONS:
-            wt_popup.addItemWithTitle_(v)
-        wt_popup.selectItemWithTitle_(
-            _bool_override_from_env("PULSESCRIBE_LOCAL_WITHOUT_TIMESTAMPS")
-        )
-        self._without_timestamps_popup = wt_popup
-        parent_view.addSubview_(wt_popup)
-        current_y -= row_height
 
-        # VAD filter (faster-whisper)
-        self._vad_filter_label = self._add_setting_label(
-            base_x, current_y, "VAD filter:", parent_view
-        )
-        vad_popup = NSPopUpButton.alloc().initWithFrame_(
-            NSMakeRect(control_x, current_y, control_width, 22)
-        )
-        vad_popup.setFont_(NSFont.systemFontOfSize_(11))
-        for v in BOOL_OVERRIDE_OPTIONS:
-            vad_popup.addItemWithTitle_(v)
-        vad_popup.selectItemWithTitle_(
-            _bool_override_from_env("PULSESCRIBE_LOCAL_VAD_FILTER")
-        )
-        self._vad_filter_popup = vad_popup
-        parent_view.addSubview_(vad_popup)
-        current_y -= row_height
-
-        # --- Lightning Whisper MLX Settings ---
         lightning_header = NSTextField.alloc().initWithFrame_(
             NSMakeRect(base_x, current_y, control_width + label_width, 14)
         )
@@ -2136,9 +2274,31 @@ class WelcomeController:
         )
         self._lightning_header = lightning_header
         parent_view.addSubview_(lightning_header)
-        current_y -= row_height
 
-        # Batch Size Slider (4-24, default 12)
+    def _lightning_batch_value_from_env(self) -> int:
+        current_batch = self._get_cached_env_setting("PULSESCRIBE_LIGHTNING_BATCH_SIZE")
+        try:
+            return int(current_batch) if current_batch else 12
+        except ValueError:
+            return 12
+
+    def _build_lightning_batch_row(
+        self,
+        base_x: int,
+        current_y: int,
+        control_x: int,
+        control_width: int,
+        parent_view,
+    ) -> None:
+        from AppKit import (  # type: ignore[import-not-found]
+            NSColor,
+            NSFont,
+            NSMakeRect,
+            NSSlider,
+            NSTextField,
+        )
+        import objc  # type: ignore[import-not-found]
+
         self._lightning_batch_label = self._add_setting_label(
             base_x, current_y, "Batch size:", parent_view
         )
@@ -2147,18 +2307,12 @@ class WelcomeController:
         )
         batch_slider.setMinValue_(4)
         batch_slider.setMaxValue_(24)
-        current_batch = self._get_cached_env_setting("PULSESCRIBE_LIGHTNING_BATCH_SIZE")
-        try:
-            batch_val = int(current_batch) if current_batch else 12
-        except ValueError:
-            batch_val = 12  # Fallback to default if invalid
-        batch_slider.setIntValue_(batch_val)
-        batch_slider.setNumberOfTickMarks_(6)  # 4, 8, 12, 16, 20, 24
+        batch_slider.setIntValue_(self._lightning_batch_value_from_env())
+        batch_slider.setNumberOfTickMarks_(6)
         batch_slider.setAllowsTickMarkValuesOnly_(True)
         self._lightning_batch_slider = batch_slider
         parent_view.addSubview_(batch_slider)
 
-        # Value label next to slider
         batch_value_label = NSTextField.alloc().initWithFrame_(
             NSMakeRect(control_x + control_width - 35, current_y, 35, 22)
         )
@@ -2172,39 +2326,118 @@ class WelcomeController:
         self._lightning_batch_value_label = batch_value_label
         parent_view.addSubview_(batch_value_label)
 
-        # Slider change handler
         batch_handler = _SliderHandler.alloc().initWithLabel_(batch_value_label)
         batch_slider.setTarget_(batch_handler)
         batch_slider.setAction_(
             objc.selector(batch_handler.sliderChanged_, signature=b"v@:@")
         )
         self._lightning_batch_handler = batch_handler
-        current_y -= row_height
 
-        # Quantization Dropdown
-        self._lightning_quant_label = self._add_setting_label(
-            base_x, current_y, "Quantization:", parent_view
-        )
-        quant_popup = NSPopUpButton.alloc().initWithFrame_(
-            NSMakeRect(control_x, current_y, control_width, 22)
-        )
-        quant_popup.setFont_(NSFont.systemFontOfSize_(11))
-        quant_popup.addItemWithTitle_("none (best quality)")
-        quant_popup.addItemWithTitle_("8bit")
-        quant_popup.addItemWithTitle_("4bit (smallest memory)")
+    def _lightning_quant_index_from_env(self) -> int:
         current_quant = (
             (self._get_cached_env_setting("PULSESCRIBE_LIGHTNING_QUANT") or "")
             .strip()
             .lower()
         )
         if current_quant == "4bit":
-            quant_popup.selectItemAtIndex_(2)
-        elif current_quant == "8bit":
-            quant_popup.selectItemAtIndex_(1)
-        else:
-            quant_popup.selectItemAtIndex_(0)
+            return 2
+        if current_quant == "8bit":
+            return 1
+        return 0
+
+    def _build_lightning_quant_row(
+        self,
+        base_x: int,
+        current_y: int,
+        control_x: int,
+        control_width: int,
+        parent_view,
+    ) -> None:
+        self._lightning_quant_label = self._add_setting_label(
+            base_x, current_y, "Quantization:", parent_view
+        )
+        quant_popup = self._create_settings_popup(
+            control_x,
+            current_y,
+            control_width,
+            ("none (best quality)", "8bit", "4bit (smallest memory)"),
+        )
+        quant_popup.selectItemAtIndex_(self._lightning_quant_index_from_env())
         self._lightning_quant_popup = quant_popup
         parent_view.addSubview_(quant_popup)
+
+    def _build_lightning_rows(
+        self,
+        base_x: int,
+        current_y: int,
+        control_x: int,
+        control_width: int,
+        label_width: int,
+        parent_view,
+        row_height: int,
+    ) -> int:
+        self._build_lightning_header(
+            base_x, current_y, control_width, label_width, parent_view
+        )
+        current_y -= row_height
+        self._build_lightning_batch_row(
+            base_x, current_y, control_x, control_width, parent_view
+        )
+        current_y -= row_height
+        self._build_lightning_quant_row(
+            base_x, current_y, control_x, control_width, parent_view
+        )
+        return current_y
+
+    def _build_advanced_local_card(self, y: int, parent_view=None) -> int:
+        """Erweiterte Local-Performance Settings (macOS-tuned)."""
+        parent_view = parent_view or self._content_view
+
+        card_height = 550  # Increased for Lightning settings
+        card_width = WELCOME_WIDTH - 2 * WELCOME_PADDING
+        card_y = y - card_height
+
+        card = _create_card(WELCOME_PADDING, card_y, card_width, card_height)
+        parent_view.addSubview_(card)
+
+        base_x = WELCOME_PADDING + CARD_PADDING
+        label_width = 110
+        control_x = base_x + label_width + 8
+        control_width = card_width - 2 * CARD_PADDING - label_width - 8
+
+        self._build_advanced_local_header(
+            base_x, card_y, card_height, control_width, parent_view
+        )
+
+        row_height = 28
+        current_y = card_y + card_height - 96
+
+        self._advanced_general_views, current_y = self._build_advanced_general_rows(
+            base_x,
+            current_y,
+            control_x,
+            control_width,
+            parent_view,
+            row_height,
+        )
+
+        current_y = self._build_faster_whisper_rows(
+            base_x,
+            current_y,
+            control_x,
+            control_width,
+            parent_view,
+            row_height,
+        )
+        self._build_lightning_rows(
+            base_x,
+            current_y,
+            control_x,
+            control_width,
+            label_width,
+            parent_view,
+            row_height,
+        )
 
         # Set initial visibility based on current mode/backend
         self._update_all_visibility()
@@ -2452,38 +2685,22 @@ class WelcomeController:
         self._refresh_display_settings_feedback()
         self._refresh_footer_settings_hint()
 
-    def _build_refine_card(
-        self, y: int, parent_view=None, tab_height: int | None = None
-    ) -> int:
-        """Erstellt Refine-Einstellungen."""
+    def _build_refine_card_header(
+        self,
+        base_x: int,
+        card_y: int,
+        card_height: int,
+        content_width: int,
+        parent_view,
+    ) -> None:
         from AppKit import (  # type: ignore[import-not-found]
-            NSButton,
-            NSButtonTypeSwitch,
             NSColor,
             NSFont,
             NSFontWeightMedium,
             NSFontWeightSemibold,
             NSMakeRect,
-            NSPopUpButton,
             NSTextField,
         )
-        import objc  # type: ignore[import-not-found]
-
-        parent_view = parent_view or self._content_view
-
-        max_height = (tab_height - 2 * WELCOME_PADDING) if tab_height else 360
-        card_height = min(352, max_height)
-        card_width = WELCOME_WIDTH - 2 * WELCOME_PADDING
-        card_y = y - card_height
-
-        card = _create_card(WELCOME_PADDING, card_y, card_width, card_height)
-        parent_view.addSubview_(card)
-
-        base_x = WELCOME_PADDING + CARD_PADDING
-        label_width = 110
-        control_x = base_x + label_width + 8
-        control_width = card_width - 2 * CARD_PADDING - label_width - 8
-        content_width = card_width - 2 * CARD_PADDING
 
         title = NSTextField.alloc().initWithFrame_(
             NSMakeRect(base_x, card_y + card_height - 28, 220, 18)
@@ -2516,244 +2733,345 @@ class WelcomeController:
             pass
         parent_view.addSubview_(desc)
 
-        def _add_section_label(text: str, y_pos: int):
-            label = NSTextField.alloc().initWithFrame_(
-                NSMakeRect(base_x, y_pos, content_width, 14)
-            )
-            label.setStringValue_(text)
-            label.setBezeled_(False)
-            label.setDrawsBackground_(False)
-            label.setEditable_(False)
-            label.setSelectable_(False)
-            label.setFont_(NSFont.systemFontOfSize_weight_(10, NSFontWeightSemibold))
-            label.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.55))
-            parent_view.addSubview_(label)
-            return label
-
-        row_height = 28
-        current_y = card_y + card_height - 88
-
-        _add_section_label("Transcript cleanup", current_y)
-        current_y -= 20
-
-        # Refine Checkbox
-        self._add_setting_label(base_x, current_y, "Refine:", parent_view)
-        refine_checkbox = NSButton.alloc().initWithFrame_(
-            NSMakeRect(control_x, current_y, control_width, 22)
+    def _add_refine_section_label(
+        self,
+        text: str,
+        base_x: int,
+        y_pos: int,
+        content_width: int,
+        parent_view,
+    ):
+        from AppKit import (  # type: ignore[import-not-found]
+            NSColor,
+            NSFont,
+            NSFontWeightSemibold,
+            NSMakeRect,
+            NSTextField,
         )
-        refine_checkbox.setButtonType_(NSButtonTypeSwitch)
-        refine_checkbox.setTitle_("Clean up transcript text with an LLM")
-        refine_checkbox.setFont_(NSFont.systemFontOfSize_(11))
+
+        label = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(base_x, y_pos, content_width, 14)
+        )
+        label.setStringValue_(text)
+        label.setBezeled_(False)
+        label.setDrawsBackground_(False)
+        label.setEditable_(False)
+        label.setSelectable_(False)
+        label.setFont_(NSFont.systemFontOfSize_weight_(10, NSFontWeightSemibold))
+        label.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.55))
+        parent_view.addSubview_(label)
+        return label
+
+    def _build_switch_setting_row(
+        self,
+        base_x: int,
+        y: int,
+        control_x: int,
+        control_width: int,
+        parent_view,
+        *,
+        label_text: str,
+        title: str,
+        enabled: bool,
+        tooltip: str,
+        attr_name: str,
+    ):
+        from AppKit import (  # type: ignore[import-not-found]
+            NSButton,
+            NSButtonTypeSwitch,
+            NSFont,
+            NSMakeRect,
+        )
+
+        self._add_setting_label(base_x, y, label_text, parent_view)
+        checkbox = NSButton.alloc().initWithFrame_(
+            NSMakeRect(control_x, y, control_width, 22)
+        )
+        checkbox.setButtonType_(NSButtonTypeSwitch)
+        checkbox.setTitle_(title)
+        checkbox.setFont_(NSFont.systemFontOfSize_(11))
+        checkbox.setState_(1 if enabled else 0)
+        _set_tooltip_if_supported(checkbox, tooltip)
+        setattr(self, attr_name, checkbox)
+        parent_view.addSubview_(checkbox)
+        return checkbox
+
+    def _refine_enabled_from_settings(self) -> bool:
         refine_enabled = self._get_cached_env_setting("PULSESCRIBE_REFINE")
         if refine_enabled is None:
-            refine_enabled = self.config.get("refine", False)
-        else:
-            refine_enabled = bool(parse_bool(refine_enabled))
-        refine_checkbox.setState_(1 if refine_enabled else 0)
-        _set_tooltip_if_supported(
-            refine_checkbox,
-            "Use an LLM to improve punctuation, formatting, and spoken commands after transcription.",
-        )
-        self._refine_checkbox = refine_checkbox
-        parent_view.addSubview_(refine_checkbox)
-        current_y -= row_height
+            return bool(self.config.get("refine", False))
+        return bool(parse_bool(refine_enabled))
 
-        # Refine Provider
-        self._add_setting_label(base_x, current_y, "Provider:", parent_view)
-        provider_popup = NSPopUpButton.alloc().initWithFrame_(
-            NSMakeRect(control_x, current_y, control_width, 22)
-        )
-        provider_popup.setFont_(NSFont.systemFontOfSize_(11))
-        for provider in REFINE_PROVIDER_OPTIONS:
-            provider_popup.addItemWithTitle_(provider)
+    def _current_refine_provider_selection(self) -> str | None:
         current_provider = (
             self._get_cached_env_setting("PULSESCRIBE_REFINE_PROVIDER")
             or self.config.get("refine_provider")
             or "groq"
         )
         current_provider = normalize_refine_provider(current_provider)
-        if current_provider in REFINE_PROVIDER_OPTIONS:
-            provider_popup.selectItemWithTitle_(current_provider)
+        return current_provider if current_provider in REFINE_PROVIDER_OPTIONS else None
+
+    def _current_refine_model_text(self) -> str:
+        return (
+            self._get_cached_env_setting("PULSESCRIBE_REFINE_MODEL")
+            or self.config.get("refine_model")
+            or "openai/gpt-oss-120b"
+        )
+
+    def _build_wrapping_status_label(
+        self,
+        base_x: int,
+        y: int,
+        width: int,
+        height: int,
+        parent_view,
+    ):
+        from AppKit import NSFont, NSMakeRect, NSTextField  # type: ignore[import-not-found]
+
+        label = NSTextField.alloc().initWithFrame_(NSMakeRect(base_x, y, width, height))
+        label.setBezeled_(False)
+        label.setDrawsBackground_(False)
+        label.setEditable_(False)
+        label.setSelectable_(False)
+        label.setFont_(NSFont.systemFontOfSize_(10))
+        try:
+            label.setLineBreakMode_(0)
+            label.setUsesSingleLineMode_(False)
+        except Exception:
+            pass
+        parent_view.addSubview_(label)
+        return label
+
+    def _build_refine_cleanup_controls(
+        self,
+        base_x: int,
+        current_y: int,
+        control_x: int,
+        control_width: int,
+        content_width: int,
+        parent_view,
+        row_height: int,
+    ) -> tuple[list, int]:
+        from AppKit import NSFont, NSMakeRect, NSTextField  # type: ignore[import-not-found]
+
+        self._add_refine_section_label(
+            "Transcript cleanup", base_x, current_y, content_width, parent_view
+        )
+        current_y -= 20
+
+        refine_checkbox = self._build_switch_setting_row(
+            base_x,
+            current_y,
+            control_x,
+            control_width,
+            parent_view,
+            label_text="Refine:",
+            title="Clean up transcript text with an LLM",
+            enabled=self._refine_enabled_from_settings(),
+            tooltip="Use an LLM to improve punctuation, formatting, and spoken commands after transcription.",
+            attr_name="_refine_checkbox",
+        )
+        current_y -= row_height
+
+        self._add_setting_label(base_x, current_y, "Provider:", parent_view)
+        provider_popup = self._create_settings_popup(
+            control_x,
+            current_y,
+            control_width,
+            REFINE_PROVIDER_OPTIONS,
+            selected_title=self._current_refine_provider_selection(),
+        )
         self._provider_popup = provider_popup
         parent_view.addSubview_(provider_popup)
         current_y -= row_height
 
-        # Refine Model
         self._add_setting_label(base_x, current_y, "Model:", parent_view)
         model_field = NSTextField.alloc().initWithFrame_(
             NSMakeRect(control_x, current_y, control_width, 22)
         )
         model_field.setFont_(NSFont.systemFontOfSize_(11))
-        current_model = (
-            self._get_cached_env_setting("PULSESCRIBE_REFINE_MODEL")
-            or self.config.get("refine_model")
-            or "openai/gpt-oss-120b"
-        )
-        model_field.setStringValue_(current_model)
+        model_field.setStringValue_(self._current_refine_model_text())
         self._model_field = model_field
         parent_view.addSubview_(model_field)
         current_y -= 24
 
-        refine_model_help = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(base_x, current_y, content_width, 28)
+        self._refine_model_help_label = self._build_wrapping_status_label(
+            base_x, current_y, content_width, 28, parent_view
         )
-        refine_model_help.setBezeled_(False)
-        refine_model_help.setDrawsBackground_(False)
-        refine_model_help.setEditable_(False)
-        refine_model_help.setSelectable_(False)
-        refine_model_help.setFont_(NSFont.systemFontOfSize_(10))
-        try:
-            refine_model_help.setLineBreakMode_(0)
-            refine_model_help.setUsesSingleLineMode_(False)
-        except Exception:
-            pass
-        parent_view.addSubview_(refine_model_help)
-        self._refine_model_help_label = refine_model_help
         current_y -= 34
 
-        refine_status = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(base_x, current_y, content_width, 30)
+        self._refine_status_label = self._build_wrapping_status_label(
+            base_x, current_y, content_width, 30, parent_view
         )
-        refine_status.setBezeled_(False)
-        refine_status.setDrawsBackground_(False)
-        refine_status.setEditable_(False)
-        refine_status.setSelectable_(False)
-        refine_status.setFont_(NSFont.systemFontOfSize_(10))
-        try:
-            refine_status.setLineBreakMode_(0)
-            refine_status.setUsesSingleLineMode_(False)
-        except Exception:
-            pass
-        parent_view.addSubview_(refine_status)
-        self._refine_status_label = refine_status
         current_y -= 38
+        return [refine_checkbox, provider_popup, model_field], current_y
 
-        _add_section_label("Visual & paste behavior", current_y)
+    def _env_enabled_default_false(self, env_key: str) -> bool:
+        value = self._get_cached_env_setting(env_key)
+        return bool(parse_bool(value)) if value else False
+
+    def _rtf_enabled_from_settings(self) -> bool:
+        value = self._get_cached_env_setting("PULSESCRIBE_SHOW_RTF")
+        return value is not None and value.lower() in ("true", "1", "yes", "on")
+
+    def _build_visual_output_controls(
+        self,
+        base_x: int,
+        current_y: int,
+        control_x: int,
+        control_width: int,
+        content_width: int,
+        parent_view,
+        row_height: int,
+    ) -> tuple[list, int]:
+        self._add_refine_section_label(
+            "Visual & paste behavior", base_x, current_y, content_width, parent_view
+        )
         current_y -= 20
 
-        # Overlay Toggle
-        self._add_setting_label(base_x, current_y, "Overlay:", parent_view)
-        overlay_checkbox = NSButton.alloc().initWithFrame_(
-            NSMakeRect(control_x, current_y, control_width, 22)
-        )
-        overlay_checkbox.setButtonType_(NSButtonTypeSwitch)
-        overlay_checkbox.setTitle_("Show recording overlay")
-        overlay_checkbox.setFont_(NSFont.systemFontOfSize_(11))
-        overlay_enabled = _is_env_enabled_default_true("PULSESCRIBE_OVERLAY")
-        overlay_checkbox.setState_(1 if overlay_enabled else 0)
-        _set_tooltip_if_supported(
-            overlay_checkbox,
-            "Show a floating overlay while recording so you can see dictation status.",
-        )
-        self._overlay_checkbox = overlay_checkbox
-        parent_view.addSubview_(overlay_checkbox)
+        controls = [
+            self._build_switch_setting_row(
+                base_x,
+                current_y,
+                control_x,
+                control_width,
+                parent_view,
+                label_text="Overlay:",
+                title="Show recording overlay",
+                enabled=_is_env_enabled_default_true("PULSESCRIBE_OVERLAY"),
+                tooltip="Show a floating overlay while recording so you can see dictation status.",
+                attr_name="_overlay_checkbox",
+            )
+        ]
         current_y -= row_height
 
-        # Clipboard Restore Checkbox
-        self._add_setting_label(base_x, current_y, "Clipboard:", parent_view)
-        clipboard_checkbox = NSButton.alloc().initWithFrame_(
-            NSMakeRect(control_x, current_y, control_width, 22)
+        controls.append(
+            self._build_switch_setting_row(
+                base_x,
+                current_y,
+                control_x,
+                control_width,
+                parent_view,
+                label_text="Clipboard:",
+                title="Restore clipboard after paste",
+                enabled=self._env_enabled_default_false(
+                    "PULSESCRIBE_CLIPBOARD_RESTORE"
+                ),
+                tooltip="Put your previous clipboard text back after auto-paste. Helpful if you frequently reuse clipboard contents.",
+                attr_name="_clipboard_restore_checkbox",
+            )
         )
-        clipboard_checkbox.setButtonType_(NSButtonTypeSwitch)
-        clipboard_checkbox.setTitle_("Restore clipboard after paste")
-        clipboard_checkbox.setFont_(NSFont.systemFontOfSize_(11))
-        clipboard_restore = self._get_cached_env_setting("PULSESCRIBE_CLIPBOARD_RESTORE")
-        clipboard_restore = (
-            bool(parse_bool(clipboard_restore)) if clipboard_restore else False
-        )
-        clipboard_checkbox.setState_(1 if clipboard_restore else 0)
-        _set_tooltip_if_supported(
-            clipboard_checkbox,
-            "Put your previous clipboard text back after auto-paste. Helpful if you frequently reuse clipboard contents.",
-        )
-        self._clipboard_restore_checkbox = clipboard_checkbox
-        parent_view.addSubview_(clipboard_checkbox)
         current_y -= row_height
 
-        # Dock Icon Toggle
-        self._add_setting_label(base_x, current_y, "Dock Icon:", parent_view)
-        dock_checkbox = NSButton.alloc().initWithFrame_(
-            NSMakeRect(control_x, current_y, control_width, 22)
+        controls.append(
+            self._build_switch_setting_row(
+                base_x,
+                current_y,
+                control_x,
+                control_width,
+                parent_view,
+                label_text="Dock Icon:",
+                title="Show in the Dock",
+                enabled=_is_env_enabled_default_true("PULSESCRIBE_DOCK_ICON"),
+                tooltip="Show or hide the Dock icon. This change only appears after you relaunch PulseScribe.",
+                attr_name="_dock_icon_checkbox",
+            )
         )
-        dock_checkbox.setButtonType_(NSButtonTypeSwitch)
-        dock_checkbox.setTitle_("Show in the Dock")
-        dock_checkbox.setFont_(NSFont.systemFontOfSize_(11))
-        dock_enabled = _is_env_enabled_default_true("PULSESCRIBE_DOCK_ICON")
-        dock_checkbox.setState_(1 if dock_enabled else 0)
-        _set_tooltip_if_supported(
-            dock_checkbox,
-            "Show or hide the Dock icon. This change only appears after you relaunch PulseScribe.",
-        )
-        self._dock_icon_checkbox = dock_checkbox
-        parent_view.addSubview_(dock_checkbox)
         current_y -= row_height
 
-        # RTF Display Toggle
-        self._add_setting_label(base_x, current_y, "Performance:", parent_view)
-        rtf_checkbox = NSButton.alloc().initWithFrame_(
-            NSMakeRect(control_x, current_y, control_width, 22)
+        controls.append(
+            self._build_switch_setting_row(
+                base_x,
+                current_y,
+                control_x,
+                control_width,
+                parent_view,
+                label_text="Performance:",
+                title="Show transcription speed after each result",
+                enabled=self._rtf_enabled_from_settings(),
+                tooltip="Display the Real-Time Factor after each transcription. Useful for performance tuning; most people can leave this off.",
+                attr_name="_rtf_checkbox",
+            )
         )
-        rtf_checkbox.setButtonType_(NSButtonTypeSwitch)
-        rtf_checkbox.setTitle_("Show transcription speed after each result")
-        rtf_checkbox.setFont_(NSFont.systemFontOfSize_(11))
-        rtf_setting = self._get_cached_env_setting("PULSESCRIBE_SHOW_RTF")
-        rtf_enabled = rtf_setting is not None and rtf_setting.lower() in (
-            "true",
-            "1",
-            "yes",
-            "on",
-        )
-        rtf_checkbox.setState_(1 if rtf_enabled else 0)
-        _set_tooltip_if_supported(
-            rtf_checkbox,
-            "Display the Real-Time Factor after each transcription. Useful for performance tuning; most people can leave this off.",
-        )
-        self._rtf_checkbox = rtf_checkbox
-        parent_view.addSubview_(rtf_checkbox)
         current_y -= 30
 
-        display_status = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(base_x, current_y, content_width, 34)
+        self._display_status_label = self._build_wrapping_status_label(
+            base_x, current_y, content_width, 34, parent_view
         )
-        display_status.setBezeled_(False)
-        display_status.setDrawsBackground_(False)
-        display_status.setEditable_(False)
-        display_status.setSelectable_(False)
-        display_status.setFont_(NSFont.systemFontOfSize_(10))
+        return controls, current_y
+
+    def _wire_secondary_settings_controls(self, controls: tuple) -> None:
+        if _SimpleHandler is None:
+            self._secondary_settings_change_handler = None
+            return
+
+        import objc  # type: ignore[import-not-found]
+
+        change_handler = _SimpleHandler.alloc().initWithController_method_(
+            self, "_refresh_secondary_settings_feedback"
+        )
+        action = objc.selector(change_handler.performAction_, signature=b"v@:@")
+        for control in controls:
+            try:
+                control.setTarget_(change_handler)
+                control.setAction_(action)
+            except Exception:
+                continue
+        model_field = getattr(self, "_model_field", None)
         try:
-            display_status.setLineBreakMode_(0)
-            display_status.setUsesSingleLineMode_(False)
+            model_field.setSendsActionOnEndEditing_(True)
         except Exception:
             pass
-        parent_view.addSubview_(display_status)
-        self._display_status_label = display_status
+        self._secondary_settings_change_handler = change_handler
 
-        if _SimpleHandler is not None:
-            change_handler = _SimpleHandler.alloc().initWithController_method_(
-                self, "_refresh_secondary_settings_feedback"
-            )
-            action = objc.selector(change_handler.performAction_, signature=b"v@:@")
-            for control in (
-                refine_checkbox,
-                provider_popup,
-                model_field,
-                overlay_checkbox,
-                clipboard_checkbox,
-                dock_checkbox,
-                rtf_checkbox,
-            ):
-                try:
-                    control.setTarget_(change_handler)
-                    control.setAction_(action)
-                except Exception:
-                    continue
-            try:
-                model_field.setSendsActionOnEndEditing_(True)
-            except Exception:
-                pass
-            self._secondary_settings_change_handler = change_handler
-        else:
-            self._secondary_settings_change_handler = None
+    def _build_refine_card(
+        self, y: int, parent_view=None, tab_height: int | None = None
+    ) -> int:
+        """Erstellt Refine-Einstellungen."""
+        parent_view = parent_view or self._content_view
+
+        max_height = (tab_height - 2 * WELCOME_PADDING) if tab_height else 360
+        card_height = min(352, max_height)
+        card_width = WELCOME_WIDTH - 2 * WELCOME_PADDING
+        card_y = y - card_height
+
+        card = _create_card(WELCOME_PADDING, card_y, card_width, card_height)
+        parent_view.addSubview_(card)
+
+        base_x = WELCOME_PADDING + CARD_PADDING
+        label_width = 110
+        control_x = base_x + label_width + 8
+        control_width = card_width - 2 * CARD_PADDING - label_width - 8
+        content_width = card_width - 2 * CARD_PADDING
+
+        self._build_refine_card_header(
+            base_x, card_y, card_height, content_width, parent_view
+        )
+
+        row_height = 28
+        current_y = card_y + card_height - 88
+
+        refine_controls, current_y = self._build_refine_cleanup_controls(
+            base_x,
+            current_y,
+            control_x,
+            control_width,
+            content_width,
+            parent_view,
+            row_height,
+        )
+        display_controls, _current_y = self._build_visual_output_controls(
+            base_x,
+            current_y,
+            control_x,
+            control_width,
+            content_width,
+            parent_view,
+            row_height,
+        )
+        self._wire_secondary_settings_controls(
+            tuple(refine_controls + display_controls)
+        )
 
         self._saved_refine_settings_state = self._get_current_refine_settings_state()
         self._saved_display_settings_state = self._get_current_display_settings_state()
@@ -2761,40 +3079,23 @@ class WelcomeController:
 
         return card_y - CARD_SPACING
 
-    def _build_prompts_card(
-        self, y: int, parent_view=None, tab_height: int | None = None
-    ) -> int:
-        """Erstellt Custom Prompts Editor."""
+    def _build_prompts_card_header(
+        self,
+        base_x: int,
+        card_y: int,
+        card_height: int,
+        content_width: int,
+        parent_view,
+    ) -> None:
         from AppKit import (  # type: ignore[import-not-found]
-            NSBezelBorder,
-            NSBezelStyleRounded,
-            NSButton,
             NSColor,
             NSFont,
             NSFontWeightMedium,
             NSFontWeightSemibold,
             NSMakeRect,
-            NSPopUpButton,
-            NSScrollView,
             NSTextField,
-            NSTextView,
         )
-        import objc  # type: ignore[import-not-found]
 
-        parent_view = parent_view or self._content_view
-
-        card_width = WELCOME_WIDTH - 2 * WELCOME_PADDING
-        max_height = (tab_height - 2 * WELCOME_PADDING) if tab_height else 500
-        card_height = min(500, max_height)
-        card_y = y - card_height
-
-        card = _create_card(WELCOME_PADDING, card_y, card_width, card_height)
-        parent_view.addSubview_(card)
-
-        base_x = WELCOME_PADDING + CARD_PADDING
-        content_width = card_width - 2 * CARD_PADDING
-
-        # Titel
         title = NSTextField.alloc().initWithFrame_(
             NSMakeRect(base_x, card_y + card_height - 28, 260, 18)
         )
@@ -2807,7 +3108,6 @@ class WelcomeController:
         title.setTextColor_(NSColor.whiteColor())
         parent_view.addSubview_(title)
 
-        # Beschreibung
         desc = NSTextField.alloc().initWithFrame_(
             NSMakeRect(base_x, card_y + card_height - 46, content_width, 14)
         )
@@ -2822,8 +3122,22 @@ class WelcomeController:
         desc.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6))
         parent_view.addSubview_(desc)
 
-        # Context-Auswahl + Reset-Button Zeile
-        row_y = card_y + card_height - 76
+    def _build_prompts_context_controls(
+        self,
+        base_x: int,
+        row_y: int,
+        parent_view,
+    ) -> tuple:
+        from AppKit import (  # type: ignore[import-not-found]
+            NSBezelStyleRounded,
+            NSButton,
+            NSColor,
+            NSFont,
+            NSMakeRect,
+            NSPopUpButton,
+            NSTextField,
+        )
+
         context_label = NSTextField.alloc().initWithFrame_(
             NSMakeRect(base_x, row_y, 60, 22)
         )
@@ -2845,7 +3159,6 @@ class WelcomeController:
         parent_view.addSubview_(context_popup)
         self._prompts_context_popup = context_popup
 
-        # Reset-Button (rechts vom Dropdown mit Abstand)
         reset_btn = NSButton.alloc().initWithFrame_(
             NSMakeRect(base_x + 215, row_y, 100, 22)
         )
@@ -2858,10 +3171,25 @@ class WelcomeController:
         )
         parent_view.addSubview_(reset_btn)
         self._prompts_reset_btn = reset_btn
+        return context_popup, reset_btn
 
-        # Prompt-Editor (NSTextView in NSScrollView)
-        scroll_y = card_y + 80
-        scroll_height = card_height - 170
+    def _build_prompts_editor(
+        self,
+        base_x: int,
+        scroll_y: int,
+        content_width: int,
+        scroll_height: int,
+        parent_view,
+    ):
+        from AppKit import (  # type: ignore[import-not-found]
+            NSBezelBorder,
+            NSColor,
+            NSFont,
+            NSMakeRect,
+            NSScrollView,
+            NSTextView,
+        )
+
         scroll = NSScrollView.alloc().initWithFrame_(
             NSMakeRect(base_x, scroll_y, content_width, scroll_height)
         )
@@ -2884,7 +3212,7 @@ class WelcomeController:
             pass
         text_view.setVerticallyResizable_(True)
         text_view.setHorizontallyResizable_(False)
-        text_view.setAllowsUndo_(True)  # CMD+Z / CMD+Shift+Z
+        text_view.setAllowsUndo_(True)
         _set_tooltip_if_supported(
             text_view,
             "Edit the selected prompt context here. Draft changes stay in this window until you click Save & Apply.",
@@ -2893,130 +3221,126 @@ class WelcomeController:
         if tc is not None:
             tc.setWidthTracksTextView_(True)
 
-        # Initial laden
-        current_prompt = self._get_prompt_editor_text_for_context("default")
-        text_view.setString_(current_prompt)
+        text_view.setString_(self._get_prompt_editor_text_for_context("default"))
         scroll.setDocumentView_(text_view)
         parent_view.addSubview_(scroll)
         self._prompts_text_view = text_view
+        return text_view
 
-        # Hinweis-Label
-        hint_label = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(base_x, card_y + 54, content_width, 14)
+    def _build_prompt_footer_label(
+        self,
+        base_x: int,
+        y: int,
+        content_width: int,
+        parent_view,
+        *,
+        text: str = "",
+        font_weight: float | None = None,
+        color=None,
+        height: int = 14,
+    ):
+        from AppKit import (  # type: ignore[import-not-found]
+            NSColor,
+            NSFont,
+            NSMakeRect,
+            NSTextField,
         )
-        hint_label.setStringValue_(
-            get_prompt_editor_context_description("default")
+
+        label = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(base_x, y, content_width, height)
         )
-        hint_label.setBezeled_(False)
-        hint_label.setDrawsBackground_(False)
-        hint_label.setEditable_(False)
-        hint_label.setSelectable_(False)
-        hint_label.setFont_(NSFont.systemFontOfSize_weight_(10, NSFontWeightMedium))
-        hint_label.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.5))
-        parent_view.addSubview_(hint_label)
-        self._prompts_hint_label = hint_label
+        label.setStringValue_(text)
+        label.setBezeled_(False)
+        label.setDrawsBackground_(False)
+        label.setEditable_(False)
+        label.setSelectable_(False)
+        if font_weight is None:
+            label.setFont_(NSFont.systemFontOfSize_(10))
+        else:
+            label.setFont_(NSFont.systemFontOfSize_weight_(10, font_weight))
+        label.setTextColor_(color or NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6))
+        parent_view.addSubview_(label)
+        return label
 
-        state_label = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(base_x, card_y + 34, content_width, 14)
+    def _build_prompts_footer_labels(
+        self,
+        base_x: int,
+        card_y: int,
+        content_width: int,
+        parent_view,
+    ) -> None:
+        from AppKit import NSColor, NSFontWeightMedium  # type: ignore[import-not-found]
+
+        self._prompts_hint_label = self._build_prompt_footer_label(
+            base_x,
+            card_y + 54,
+            content_width,
+            parent_view,
+            text=get_prompt_editor_context_description("default"),
+            font_weight=NSFontWeightMedium,
+            color=NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.5),
         )
-        state_label.setStringValue_("")
-        state_label.setBezeled_(False)
-        state_label.setDrawsBackground_(False)
-        state_label.setEditable_(False)
-        state_label.setSelectable_(False)
-        state_label.setFont_(NSFont.systemFontOfSize_(10))
-        state_label.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6))
-        parent_view.addSubview_(state_label)
-        self._prompts_state_label = state_label
-
-        # Status-Label
-        status_label = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(base_x, card_y + 16, content_width, 16)
+        self._prompts_state_label = self._build_prompt_footer_label(
+            base_x,
+            card_y + 34,
+            content_width,
+            parent_view,
+            color=NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6),
         )
-        status_label.setStringValue_("")
-        status_label.setBezeled_(False)
-        status_label.setDrawsBackground_(False)
-        status_label.setEditable_(False)
-        status_label.setSelectable_(False)
-        status_label.setFont_(NSFont.systemFontOfSize_(10))
-        status_label.setTextColor_(_get_color(76, 175, 80, 0.9))
-        parent_view.addSubview_(status_label)
-        self._prompts_status_label = status_label
-
-        # Cache für unsaved changes
-        self._prompts_cache: dict[str, str] = {}
-        self._prompts_current_context = "default"
-
-        # Action Handlers
-        def on_context_change(_sender) -> None:
-            old_ctx = self._prompts_current_context
-            self._prompts_cache[old_ctx] = str(self._prompts_text_view.string())
-
-            new_ctx = normalize_prompt_editor_context(
-                str(self._prompts_context_popup.titleOfSelectedItem())
-            )
-            self._prompts_current_context = new_ctx
-            _set_string_value_if_changed(
-                self._prompts_hint_label,
-                get_prompt_editor_context_description(new_ctx),
-            )
-            _set_string_value_if_changed(self._prompts_status_label, "")
-
-            if new_ctx in self._prompts_cache:
-                _set_text_view_string_if_changed(
-                    self._prompts_text_view,
-                    self._prompts_cache[new_ctx],
-                )
-                self._refresh_prompt_editor_feedback()
-                return
-
-            _set_text_view_string_if_changed(
-                self._prompts_text_view,
-                self._get_prompt_editor_text_for_context(new_ctx),
-            )
-            self._refresh_prompt_editor_feedback()
-
-        def on_reset(_sender) -> None:
-            ctx = normalize_prompt_editor_context(
-                str(self._prompts_context_popup.titleOfSelectedItem())
-            )
-
-            text = self._get_prompt_editor_text_for_context(ctx, defaults=True)
-            _set_text_view_string_if_changed(self._prompts_text_view, text)
-            self._prompts_cache[ctx] = text
-            _set_string_value_if_changed(
-                self._prompts_status_label,
-                f"Restored default {get_prompt_editor_context_label(ctx)}. {build_save_apply_change_hint()}",
-            )
-            self._refresh_prompt_editor_feedback()
-
-        # Handler-Klasse für ObjC
-        class _PromptsActionHandler(objc.lookUpClass("NSObject")):
-            def initWithCallback_(self, callback):
-                self = objc.super(_PromptsActionHandler, self).init()
-                if self is None:
-                    return None
-                self._callback = callback
-                return self
-
-            def performAction_(self, sender):
-                self._callback(sender)
-
-        context_handler = _PromptsActionHandler.alloc().initWithCallback_(
-            on_context_change
+        self._prompts_status_label = self._build_prompt_footer_label(
+            base_x,
+            card_y + 16,
+            content_width,
+            parent_view,
+            color=_get_color(76, 175, 80, 0.9),
+            height=16,
         )
-        context_popup.setTarget_(context_handler)
-        context_popup.setAction_(
-            objc.selector(context_handler.performAction_, signature=b"v@:@")
-        )
-        self._prompts_context_handler = context_handler
 
-        reset_handler = _PromptsActionHandler.alloc().initWithCallback_(on_reset)
-        reset_btn.setTarget_(reset_handler)
-        reset_btn.setAction_(
-            objc.selector(reset_handler.performAction_, signature=b"v@:@")
+    def _handle_prompt_context_change(self) -> None:
+        old_ctx = self._prompts_current_context
+        self._prompts_cache[old_ctx] = str(self._prompts_text_view.string())
+
+        new_ctx = normalize_prompt_editor_context(
+            str(self._prompts_context_popup.titleOfSelectedItem())
         )
-        self._prompts_reset_handler = reset_handler
+        self._prompts_current_context = new_ctx
+        _set_string_value_if_changed(
+            self._prompts_hint_label,
+            get_prompt_editor_context_description(new_ctx),
+        )
+        _set_string_value_if_changed(self._prompts_status_label, "")
+
+        if new_ctx in self._prompts_cache:
+            text = self._prompts_cache[new_ctx]
+        else:
+            text = self._get_prompt_editor_text_for_context(new_ctx)
+        _set_text_view_string_if_changed(self._prompts_text_view, text)
+        self._refresh_prompt_editor_feedback()
+
+    def _handle_prompt_reset_to_default(self) -> None:
+        ctx = normalize_prompt_editor_context(
+            str(self._prompts_context_popup.titleOfSelectedItem())
+        )
+        text = self._get_prompt_editor_text_for_context(ctx, defaults=True)
+        _set_text_view_string_if_changed(self._prompts_text_view, text)
+        self._prompts_cache[ctx] = text
+        _set_string_value_if_changed(
+            self._prompts_status_label,
+            f"Restored default {get_prompt_editor_context_label(ctx)}. {build_save_apply_change_hint()}",
+        )
+        self._refresh_prompt_editor_feedback()
+
+    def _wire_prompt_editor_handlers(self, context_popup, reset_btn, text_view) -> None:
+        self._bind_control_simple_handler(
+            context_popup,
+            "_handle_prompt_context_change",
+            "_prompts_context_handler",
+        )
+        self._bind_control_simple_handler(
+            reset_btn,
+            "_handle_prompt_reset_to_default",
+            "_prompts_reset_handler",
+        )
 
         if _TextChangeHandler is not None:
             prompts_change_handler = _TextChangeHandler.alloc().initWithController_method_(
@@ -3029,6 +3353,46 @@ class WelcomeController:
             self._prompts_text_change_handler = prompts_change_handler
         else:
             self._prompts_text_change_handler = None
+
+    def _build_prompts_card(
+        self, y: int, parent_view=None, tab_height: int | None = None
+    ) -> int:
+        """Erstellt Custom Prompts Editor."""
+        parent_view = parent_view or self._content_view
+
+        card_width = WELCOME_WIDTH - 2 * WELCOME_PADDING
+        max_height = (tab_height - 2 * WELCOME_PADDING) if tab_height else 500
+        card_height = min(500, max_height)
+        card_y = y - card_height
+
+        card = _create_card(WELCOME_PADDING, card_y, card_width, card_height)
+        parent_view.addSubview_(card)
+
+        base_x = WELCOME_PADDING + CARD_PADDING
+        content_width = card_width - 2 * CARD_PADDING
+
+        self._build_prompts_card_header(
+            base_x, card_y, card_height, content_width, parent_view
+        )
+        context_popup, reset_btn = self._build_prompts_context_controls(
+            base_x, card_y + card_height - 76, parent_view
+        )
+        text_view = self._build_prompts_editor(
+            base_x,
+            card_y + 80,
+            content_width,
+            card_height - 170,
+            parent_view,
+        )
+        self._build_prompts_footer_labels(
+            base_x, card_y, content_width, parent_view
+        )
+
+        # Cache für unsaved changes
+        self._prompts_cache: dict[str, str] = {}
+        self._prompts_current_context = "default"
+
+        self._wire_prompt_editor_handlers(context_popup, reset_btn, text_view)
 
         self._refresh_prompt_editor_feedback()
         return card_y - CARD_SPACING
@@ -3789,35 +4153,35 @@ class WelcomeController:
                 return False
         return False
 
-    def _try_append_transcripts_delta(
+    def _transcript_delta_size_window(
         self,
         signature,
-        *,
-        scroll_to_bottom: bool = False,
-    ) -> bool:
-        """Refresh transcript history from an append-only delta when possible."""
-        previous_entries = getattr(self, "_last_transcripts_entries", None)
+        previous_entries,
+    ) -> tuple[int, int] | None:
         if (
             self._transcripts_text_view is None
             or signature is None
             or previous_entries is None
         ):
-            return False
+            return None
 
         previous_signature = self._last_transcripts_signature
         if previous_signature is None:
-            return False
+            return None
 
         previous_size = int(previous_signature[1])
         current_size = int(signature[1])
-        if current_size <= previous_size:
-            return False
+        growth = current_size - previous_size
+        if growth <= 0 or growth > INCREMENTAL_TRANSCRIPT_APPEND_MAX_BYTES:
+            return None
+        return previous_size, current_size
 
-        if current_size - previous_size > INCREMENTAL_TRANSCRIPT_APPEND_MAX_BYTES:
-            return False
-
+    def _read_merged_transcript_delta(
+        self,
+        previous_entries,
+        previous_size: int,
+    ):
         from utils.history import (
-            format_transcript_entries_for_welcome,
             merge_recent_transcript_entries,
             read_transcripts_from_offset,
         )
@@ -3827,7 +4191,7 @@ class WelcomeController:
             max_bytes=INCREMENTAL_TRANSCRIPT_APPEND_MAX_BYTES,
         )
         if not appended_entries:
-            return False
+            return None
 
         merged_entries = merge_recent_transcript_entries(
             previous_entries,
@@ -3835,25 +4199,27 @@ class WelcomeController:
             max_entries=TRANSCRIPTS_VIEW_MAX_ENTRIES,
         )
         if not merged_entries:
-            return False
+            return None
 
         entries_trimmed = len(merged_entries) < (
             len(previous_entries) + len(appended_entries)
         )
-        can_append_in_place = should_append_transcript_delta_in_place(
-            previous_entries,
-            entries_trimmed=entries_trimmed,
-            last_text=self._last_transcripts_text,
-            scroll_to_bottom=scroll_to_bottom,
-            is_near_bottom=self._is_transcripts_near_bottom(),
-        )
+        return appended_entries, merged_entries, entries_trimmed
+
+    def _build_transcript_delta_blocks(
+        self,
+        *,
+        appended_entries,
+        merged_entries,
+    ) -> tuple[list[str], list[str]] | None:
+        from utils.history import format_transcript_entries_for_welcome
 
         appended_blocks = format_transcript_entries_for_welcome(
             appended_entries,
             newest_first=False,
         )
         if not appended_blocks:
-            return False
+            return None
 
         previous_blocks = getattr(self, "_last_transcripts_blocks", None)
         if isinstance(previous_blocks, list):
@@ -3866,37 +4232,89 @@ class WelcomeController:
                 newest_first=False,
             )
         if not merged_blocks:
+            return None
+        return appended_blocks, merged_blocks
+
+    def _append_transcript_delta_in_place(
+        self,
+        appended_blocks: list[str],
+        *,
+        signature,
+        merged_entries,
+        merged_blocks: list[str],
+    ) -> bool:
+        appended_text = "\n\n".join(appended_blocks)
+        if not appended_text:
             return False
 
-        if can_append_in_place:
-            appended_text = "\n\n".join(appended_blocks)
-            if not appended_text:
+        separator = "\n\n" if self._last_transcripts_text else ""
+        try:
+            text_storage = self._transcripts_text_view.textStorage()
+            if text_storage is None:
                 return False
-
-            separator = "\n\n" if self._last_transcripts_text else ""
+            text_storage.beginEditing()
             try:
-                text_storage = self._transcripts_text_view.textStorage()
-                if text_storage is None:
-                    return False
-                text_storage.beginEditing()
-                try:
-                    text_storage.mutableString().appendString_(
-                        f"{separator}{appended_text}"
-                    )
-                finally:
-                    text_storage.endEditing()
-            except Exception:
-                return False
+                text_storage.mutableString().appendString_(
+                    f"{separator}{appended_text}"
+                )
+            finally:
+                text_storage.endEditing()
+        except Exception:
+            return False
 
-            self._last_transcripts_text = (
-                f"{self._last_transcripts_text or ''}{separator}{appended_text}"
+        self._last_transcripts_text = (
+            f"{self._last_transcripts_text or ''}{separator}{appended_text}"
+        )
+        self._last_transcripts_entries = merged_entries
+        self._last_transcripts_blocks = merged_blocks
+        self._last_transcripts_signature = signature
+        self._update_transcripts_meta_state(len(merged_entries))
+        self._scroll_transcripts_to_bottom()
+        return True
+
+    def _try_append_transcripts_delta(
+        self,
+        signature,
+        *,
+        scroll_to_bottom: bool = False,
+    ) -> bool:
+        """Refresh transcript history from an append-only delta when possible."""
+        previous_entries = getattr(self, "_last_transcripts_entries", None)
+        size_window = self._transcript_delta_size_window(signature, previous_entries)
+        if size_window is None:
+            return False
+
+        previous_size, _current_size = size_window
+        delta = self._read_merged_transcript_delta(
+            previous_entries,
+            previous_size,
+        )
+        if delta is None:
+            return False
+        appended_entries, merged_entries, entries_trimmed = delta
+        can_append_in_place = should_append_transcript_delta_in_place(
+            previous_entries,
+            entries_trimmed=entries_trimmed,
+            last_text=self._last_transcripts_text,
+            scroll_to_bottom=scroll_to_bottom,
+            is_near_bottom=self._is_transcripts_near_bottom(),
+        )
+
+        blocks = self._build_transcript_delta_blocks(
+            appended_entries=appended_entries,
+            merged_entries=merged_entries,
+        )
+        if blocks is None:
+            return False
+        appended_blocks, merged_blocks = blocks
+
+        if can_append_in_place:
+            return self._append_transcript_delta_in_place(
+                appended_blocks,
+                signature=signature,
+                merged_entries=merged_entries,
+                merged_blocks=merged_blocks,
             )
-            self._last_transcripts_entries = merged_entries
-            self._last_transcripts_blocks = merged_blocks
-            self._last_transcripts_signature = signature
-            self._update_transcripts_meta_state(len(merged_entries))
-            self._scroll_transcripts_to_bottom()
-            return True
 
         self._apply_transcripts_payload(
             "\n\n".join(merged_blocks),
@@ -4006,48 +4424,67 @@ class WelcomeController:
         *,
         has_load_error: bool = False,
     ) -> bool:
-        changed = False
+        count_changed = self._update_transcripts_count_label(entry_count)
+        hint_changed = self._update_transcripts_hint_label(entry_count)
+        clear_changed = self._update_transcripts_clear_button(
+            entry_count,
+            has_load_error=has_load_error,
+        )
+        return count_changed or hint_changed or clear_changed
+
+    def _update_transcripts_count_label(self, entry_count: int) -> bool:
         count_label = getattr(self, "_transcripts_count_label", None)
-        if count_label:
-            try:
-                label_text = build_transcripts_count_text(entry_count)
-                if getattr(self, "_last_transcripts_count_text", None) != label_text:
-                    if _set_string_value_if_changed(count_label, label_text):
-                        self._last_transcripts_count_text = label_text
-                        changed = True
-            except Exception:
-                pass
+        if not count_label:
+            return False
 
+        try:
+            label_text = build_transcripts_count_text(entry_count)
+            if getattr(self, "_last_transcripts_count_text", None) == label_text:
+                return False
+            if not _set_string_value_if_changed(count_label, label_text):
+                return False
+            self._last_transcripts_count_text = label_text
+            return True
+        except Exception:
+            return False
+
+    def _update_transcripts_hint_label(self, entry_count: int) -> bool:
         hint_label = getattr(self, "_transcripts_hint_label", None)
-        if hint_label is not None:
-            try:
-                changed = (
-                    _set_string_value_if_changed(
-                        hint_label,
-                        build_transcripts_hint_text(entry_count),
-                    )
-                    or changed
-                )
-            except Exception:
-                pass
+        if hint_label is None:
+            return False
 
+        try:
+            return _set_string_value_if_changed(
+                hint_label,
+                build_transcripts_hint_text(entry_count),
+            )
+        except Exception:
+            return False
+
+    def _update_transcripts_clear_button(
+        self,
+        entry_count: int,
+        *,
+        has_load_error: bool = False,
+    ) -> bool:
         clear_btn = getattr(self, "_transcripts_clear_btn", None)
-        if clear_btn is not None:
-            should_enable = bool(has_load_error or entry_count > 0)
-            try:
-                current_enabled = None
-                enabled_getter = getattr(clear_btn, "isEnabled", None)
-                if callable(enabled_getter):
-                    current_enabled = bool(enabled_getter())
-                else:
-                    current_enabled = getattr(clear_btn, "enabled", None)
-                if current_enabled != should_enable:
-                    clear_btn.setEnabled_(should_enable)
-                    changed = True
-            except Exception:
-                pass
+        if clear_btn is None:
+            return False
 
-        return changed
+        should_enable = bool(has_load_error or entry_count > 0)
+        try:
+            current_enabled = None
+            enabled_getter = getattr(clear_btn, "isEnabled", None)
+            if callable(enabled_getter):
+                current_enabled = bool(enabled_getter())
+            else:
+                current_enabled = getattr(clear_btn, "enabled", None)
+            if current_enabled == should_enable:
+                return False
+            clear_btn.setEnabled_(should_enable)
+            return True
+        except Exception:
+            return False
 
     def _refresh_logs_on_demand(self) -> bool:
         changed = bool(self._refresh_logs(scroll_to_bottom=True))
@@ -4444,40 +4881,31 @@ class WelcomeController:
         self._restore_logs_scroll_position(previous_y)
         return True
 
-    def _try_append_logs_delta(
-        self,
-        signature,
-        *,
-        scroll_to_bottom: bool,
-    ) -> bool:
-        """Refresh logs from an append-only delta when the file only grows."""
-        if self._logs_text_view is None or signature is None or self._last_logs_text is None:
-            return False
+    def _log_delta_size_window(self, signature) -> tuple[int, int] | None:
+        if (
+            self._logs_text_view is None
+            or signature is None
+            or self._last_logs_text is None
+        ):
+            return None
 
         previous_signature = getattr(self, "_last_logs_signature", None)
         if previous_signature is None:
-            return False
+            return None
 
         previous_size = int(previous_signature[1])
         current_size = int(signature[1])
-        if current_size <= previous_size:
-            return False
+        growth = current_size - previous_size
+        if growth <= 0 or growth > INCREMENTAL_LOG_APPEND_MAX_BYTES:
+            return None
+        return previous_size, current_size
 
-        if current_size - previous_size > INCREMENTAL_LOG_APPEND_MAX_BYTES:
-            return False
-
-        appended_text = read_file_text_from_offset(
-            LOG_FILE,
-            start_offset=previous_size,
-            errors="ignore",
-            max_bytes=INCREMENTAL_LOG_APPEND_MAX_BYTES,
-        )
-        if not appended_text:
-            return False
-
+    def _merge_log_delta_chunks(
+        self,
+        appended_text: str,
+    ) -> tuple[str, list[str], bool, bool]:
         previous_chunks, was_truncated = self._get_cached_logs_chunks()
-        merged_chunks = list(previous_chunks)
-        merged_chunks.append(appended_text)
+        merged_chunks = [*previous_chunks, appended_text]
 
         visible_budget = WELCOME_LOG_MAX_CHARS
         prefix = LOG_TRUNCATED_PREFIX
@@ -4504,6 +4932,60 @@ class WelcomeController:
             merged_chunks,
             truncated=merged_truncated,
         )
+        return merged_text, merged_chunks, merged_truncated, trimmed_existing
+
+    def _append_log_delta_in_place(
+        self,
+        appended_text: str,
+        *,
+        signature,
+        merged_text: str,
+        merged_chunks: list[str],
+        merged_truncated: bool,
+    ) -> bool:
+        try:
+            text_storage = self._logs_text_view.textStorage()
+            if text_storage is None:
+                return False
+            text_storage.beginEditing()
+            try:
+                text_storage.mutableString().appendString_(appended_text)
+            finally:
+                text_storage.endEditing()
+        except Exception:
+            return False
+
+        self._last_logs_text = merged_text
+        self._last_logs_chunks = merged_chunks
+        self._last_logs_truncated = merged_truncated
+        self._last_logs_signature = signature
+        self._scroll_logs_to_bottom()
+        return True
+
+    def _try_append_logs_delta(
+        self,
+        signature,
+        *,
+        scroll_to_bottom: bool,
+    ) -> bool:
+        """Refresh logs from an append-only delta when the file only grows."""
+        size_window = self._log_delta_size_window(signature)
+        if size_window is None:
+            return False
+
+        previous_size, _current_size = size_window
+        appended_text = read_file_text_from_offset(
+            LOG_FILE,
+            start_offset=previous_size,
+            errors="ignore",
+            max_bytes=INCREMENTAL_LOG_APPEND_MAX_BYTES,
+        )
+        if not appended_text:
+            return False
+
+        merged_text, merged_chunks, merged_truncated, trimmed_existing = (
+            self._merge_log_delta_chunks(appended_text)
+        )
         previous_text = self._last_logs_text
         if merged_text == previous_text:
             self._last_logs_signature = signature
@@ -4519,24 +5001,13 @@ class WelcomeController:
         )
 
         if can_append_in_place:
-            try:
-                text_storage = self._logs_text_view.textStorage()
-                if text_storage is None:
-                    return False
-                text_storage.beginEditing()
-                try:
-                    text_storage.mutableString().appendString_(appended_text)
-                finally:
-                    text_storage.endEditing()
-            except Exception:
-                return False
-
-            self._last_logs_text = merged_text
-            self._last_logs_chunks = merged_chunks
-            self._last_logs_truncated = merged_truncated
-            self._last_logs_signature = signature
-            self._scroll_logs_to_bottom()
-            return True
+            return self._append_log_delta_in_place(
+                appended_text,
+                signature=signature,
+                merged_text=merged_text,
+                merged_chunks=merged_chunks,
+                merged_truncated=merged_truncated,
+            )
 
         self._apply_logs_payload(
             merged_text,
@@ -4861,97 +5332,120 @@ class WelcomeController:
             return
         self._apply_local_preset(preset)
 
+    def _select_popup_title(self, popup, title: str) -> None:
+        if popup is None or not title:
+            return
+        try:
+            popup.selectItemWithTitle_(title)
+        except Exception:
+            # Falls Custom Value fehlt, als Item hinzufügen.
+            try:
+                popup.addItemWithTitle_(title)
+                popup.selectItemWithTitle_(title)
+            except Exception:
+                pass
+
+    def _set_preset_field_value(self, field, value: str) -> None:
+        if field is None:
+            return
+        try:
+            field.setStringValue_(value)
+        except Exception:
+            pass
+
+    def _set_preset_slider_value(self, slider, label, value: str) -> None:
+        if slider is None:
+            return
+        try:
+            slider.setIntValue_(int(value))
+        except Exception:
+            return
+        if label is None:
+            return
+        try:
+            label.setStringValue_(str(int(slider.intValue())))
+        except Exception:
+            pass
+
+    def _set_lightning_quant_popup(self, popup, value: str) -> None:
+        if popup is None:
+            return
+        normalized = (value or "none").strip().lower()
+        try:
+            if normalized == "4bit":
+                popup.selectItemAtIndex_(2)
+            elif normalized == "8bit":
+                popup.selectItemAtIndex_(1)
+            else:
+                popup.selectItemAtIndex_(0)
+        except Exception:
+            pass
+
+    def _local_preset_values(self, preset: str) -> dict[str, str] | None:
+        preset_values = LOCAL_PRESETS.get(preset)
+        if not preset_values:
+            return None
+
+        values = dict(LOCAL_PRESET_BASE)
+        values.update(preset_values)
+        return values
+
+    def _apply_local_preset_values(self, values: dict[str, str]) -> None:
+        self._select_popup_title(
+            self._local_backend_popup, values.get("local_backend", "")
+        )
+        self._select_popup_title(self._local_model_popup, values.get("local_model", ""))
+        self._select_popup_title(self._device_popup, values.get("device", "auto"))
+        self._select_popup_title(self._warmup_popup, values.get("warmup", "auto"))
+        self._select_popup_title(
+            self._local_fast_popup, values.get("local_fast", "default")
+        )
+        self._select_popup_title(self._fp16_popup, values.get("fp16", "default"))
+        self._set_preset_field_value(self._beam_size_field, values.get("beam_size", ""))
+        self._set_preset_field_value(self._best_of_field, values.get("best_of", ""))
+        self._set_preset_field_value(
+            self._temperature_field, values.get("temperature", "")
+        )
+        self._set_preset_field_value(
+            self._compute_type_field, values.get("compute_type", "")
+        )
+        self._set_preset_field_value(
+            self._cpu_threads_field, values.get("cpu_threads", "")
+        )
+        self._set_preset_field_value(
+            self._num_workers_field, values.get("num_workers", "")
+        )
+        self._select_popup_title(
+            self._without_timestamps_popup,
+            values.get("without_timestamps", "default"),
+        )
+        self._select_popup_title(
+            self._vad_filter_popup, values.get("vad_filter", "default")
+        )
+        self._set_preset_slider_value(
+            self._lightning_batch_slider,
+            self._lightning_batch_value_label,
+            values.get("lightning_batch_size", "12"),
+        )
+        self._set_lightning_quant_popup(
+            self._lightning_quant_popup,
+            values.get("lightning_quant", "none"),
+        )
+
     def _apply_local_preset(self, preset: str) -> None:
         """Setzt empfohlene Settings (UI-only; Speichern via 'Save & Apply')."""
         self._ensure_tab_built("Providers")
         self._ensure_tab_built("Advanced")
 
-        def set_popup(popup, title: str) -> None:
-            if popup is None or not title:
-                return
-            try:
-                popup.selectItemWithTitle_(title)
-            except Exception:
-                # Falls Custom Value fehlt, als Item hinzufügen
-                try:
-                    popup.addItemWithTitle_(title)
-                    popup.selectItemWithTitle_(title)
-                except Exception:
-                    pass
-
-        def set_field(field, value: str) -> None:
-            if field is None:
-                return
-            try:
-                field.setStringValue_(value)
-            except Exception:
-                pass
-
-        def set_slider(slider, label, value: str) -> None:
-            if slider is None:
-                return
-            try:
-                slider.setIntValue_(int(value))
-            except Exception:
-                return
-            if label is None:
-                return
-            try:
-                label.setStringValue_(str(int(slider.intValue())))
-            except Exception:
-                pass
-
-        def set_lightning_quant_popup(popup, value: str) -> None:
-            if popup is None:
-                return
-            normalized = (value or "none").strip().lower()
-            try:
-                if normalized == "4bit":
-                    popup.selectItemAtIndex_(2)
-                elif normalized == "8bit":
-                    popup.selectItemAtIndex_(1)
-                else:
-                    popup.selectItemAtIndex_(0)
-            except Exception:
-                pass
-
         # Immer Local Mode aktivieren (sonst sind Backend/Model hidden)
-        set_popup(self._mode_popup, "local")
+        self._select_popup_title(self._mode_popup, "local")
         self._update_all_visibility()
 
-        preset_values = LOCAL_PRESETS.get(preset)
-        if not preset_values:
+        values = self._local_preset_values(preset)
+        if values is None:
             return
 
-        values = dict(LOCAL_PRESET_BASE)
-        values.update(preset_values)
-
-        set_popup(self._local_backend_popup, values.get("local_backend", ""))
-        set_popup(self._local_model_popup, values.get("local_model", ""))
-        set_popup(self._device_popup, values.get("device", "auto"))
-        set_popup(self._warmup_popup, values.get("warmup", "auto"))
-        set_popup(self._local_fast_popup, values.get("local_fast", "default"))
-        set_popup(self._fp16_popup, values.get("fp16", "default"))
-        set_field(self._beam_size_field, values.get("beam_size", ""))
-        set_field(self._best_of_field, values.get("best_of", ""))
-        set_field(self._temperature_field, values.get("temperature", ""))
-        set_field(self._compute_type_field, values.get("compute_type", ""))
-        set_field(self._cpu_threads_field, values.get("cpu_threads", ""))
-        set_field(self._num_workers_field, values.get("num_workers", ""))
-        set_popup(
-            self._without_timestamps_popup,
-            values.get("without_timestamps", "default"),
-        )
-        set_popup(self._vad_filter_popup, values.get("vad_filter", "default"))
-        set_slider(
-            self._lightning_batch_slider,
-            self._lightning_batch_value_label,
-            values.get("lightning_batch_size", "12"),
-        )
-        set_lightning_quant_popup(
-            self._lightning_quant_popup,
-            values.get("lightning_quant", "none"),
-        )
+        self._apply_local_preset_values(values)
         self._update_all_visibility()
         self._refresh_footer_settings_hint()
         return
@@ -5118,6 +5612,216 @@ class WelcomeController:
             self._on_start_callback()
         self.close()
 
+    def _build_env_updates_from_controls(self, log) -> dict[str, str | None]:
+        """Read current settings controls and build normalized `.env` updates."""
+        builder = SettingsEnvUpdateBuilder(log)
+        self._add_api_key_env_updates(builder)
+        self._add_general_env_updates(builder)
+        self._add_local_option_env_updates(builder)
+        self._add_decode_env_updates(builder)
+        self._add_lightning_env_updates(builder)
+        self._add_streaming_env_updates(builder)
+        self._add_refine_display_env_updates(builder)
+        return builder.build()
+
+    def _add_api_key_env_updates(self, builder: SettingsEnvUpdateBuilder) -> None:
+        for provider, _label, env_key in API_KEY_PROVIDERS:
+            field = getattr(self, f"_{provider}_field", None)
+            if field is not None:
+                builder.set_optional(env_key, field.stringValue())
+
+    def _add_general_env_updates(self, builder: SettingsEnvUpdateBuilder) -> None:
+        if self._mode_popup:
+            builder.set_present(
+                "PULSESCRIBE_MODE",
+                self._mode_popup.titleOfSelectedItem(),
+            )
+
+        if self._local_backend_popup:
+            builder.set_local_backend(
+                "PULSESCRIBE_LOCAL_BACKEND",
+                self._local_backend_popup.titleOfSelectedItem(),
+            )
+
+        if self._local_model_popup:
+            builder.set_optional(
+                "PULSESCRIBE_LOCAL_MODEL",
+                self._local_model_popup.titleOfSelectedItem(),
+                remove_when={"default"},
+            )
+
+        if self._lang_popup:
+            builder.set_optional(
+                "PULSESCRIBE_LANGUAGE",
+                self._lang_popup.titleOfSelectedItem(),
+                remove_when={"auto"},
+            )
+
+    def _add_local_option_env_updates(
+        self,
+        builder: SettingsEnvUpdateBuilder,
+    ) -> None:
+        if self._device_popup:
+            self._add_popup_optional_env_update(
+                builder,
+                "PULSESCRIBE_DEVICE",
+                self._device_popup,
+                remove_when={"auto"},
+                lower=True,
+            )
+
+        if self._warmup_popup:
+            self._add_popup_optional_env_update(
+                builder,
+                "PULSESCRIBE_LOCAL_WARMUP",
+                self._warmup_popup,
+                remove_when={"auto"},
+                lower=True,
+            )
+
+        self._add_popup_optional_env_update(
+            builder,
+            "PULSESCRIBE_LOCAL_FAST",
+            self._local_fast_popup,
+            remove_when={"default"},
+            lower=True,
+        )
+        if self._fp16_popup:
+            self._add_popup_optional_env_update(
+                builder,
+                LOCAL_FP16_ENV_KEY,
+                self._fp16_popup,
+                remove_when={"default"},
+                lower=True,
+            )
+            builder.updates[LEGACY_LOCAL_FP16_ENV_KEY] = None
+
+    def _add_popup_optional_env_update(
+        self,
+        builder: SettingsEnvUpdateBuilder,
+        key: str,
+        popup,
+        *,
+        remove_when: set[str],
+        lower: bool = False,
+    ) -> None:
+        if popup is None:
+            return
+        builder.set_optional(
+            key,
+            popup.titleOfSelectedItem(),
+            remove_when=remove_when,
+            lower=lower,
+        )
+
+    def _add_decode_env_updates(self, builder: SettingsEnvUpdateBuilder) -> None:
+        int_fields = (
+            ("PULSESCRIBE_LOCAL_BEAM_SIZE", self._beam_size_field),
+            ("PULSESCRIBE_LOCAL_BEST_OF", self._best_of_field),
+            ("PULSESCRIBE_LOCAL_CPU_THREADS", self._cpu_threads_field),
+            ("PULSESCRIBE_LOCAL_NUM_WORKERS", self._num_workers_field),
+        )
+        for key, field in int_fields:
+            if field is not None:
+                builder.set_optional_int(key, field.stringValue())
+
+        str_fields = (
+            ("PULSESCRIBE_LOCAL_TEMPERATURE", self._temperature_field),
+            ("PULSESCRIBE_LOCAL_COMPUTE_TYPE", self._compute_type_field),
+        )
+        for key, field in str_fields:
+            if field is not None:
+                builder.set_optional(key, field.stringValue())
+
+        self._add_popup_optional_env_update(
+            builder,
+            "PULSESCRIBE_LOCAL_WITHOUT_TIMESTAMPS",
+            self._without_timestamps_popup,
+            remove_when={"default"},
+            lower=True,
+        )
+        self._add_popup_optional_env_update(
+            builder,
+            "PULSESCRIBE_LOCAL_VAD_FILTER",
+            self._vad_filter_popup,
+            remove_when={"default"},
+            lower=True,
+        )
+
+    def _add_lightning_env_updates(
+        self,
+        builder: SettingsEnvUpdateBuilder,
+    ) -> None:
+        if self._lightning_batch_slider:
+            builder.set_lightning_batch(
+                "PULSESCRIBE_LIGHTNING_BATCH_SIZE",
+                int(self._lightning_batch_slider.intValue()),
+            )
+
+        if self._lightning_quant_popup:
+            builder.set_lightning_quant_from_index(
+                "PULSESCRIBE_LIGHTNING_QUANT",
+                int(self._lightning_quant_popup.indexOfSelectedItem()),
+            )
+
+    def _add_streaming_env_updates(
+        self,
+        builder: SettingsEnvUpdateBuilder,
+    ) -> None:
+        if self._streaming_checkbox and self._mode_popup:
+            is_deepgram = self._mode_popup.titleOfSelectedItem() == "deepgram"
+            if is_deepgram:
+                builder.set_enabled_default_true(
+                    "PULSESCRIBE_STREAMING",
+                    self._streaming_checkbox.state() == 1,
+                )
+
+    def _add_refine_display_env_updates(
+        self,
+        builder: SettingsEnvUpdateBuilder,
+    ) -> None:
+        if self._refine_checkbox:
+            builder.set_bool_string(
+                "PULSESCRIBE_REFINE",
+                self._refine_checkbox.state() == 1,
+            )
+
+        if self._clipboard_restore_checkbox:
+            builder.set_enabled_default_false(
+                "PULSESCRIBE_CLIPBOARD_RESTORE",
+                self._clipboard_restore_checkbox.state() == 1,
+            )
+
+        if self._overlay_checkbox:
+            builder.set_enabled_default_true(
+                "PULSESCRIBE_OVERLAY",
+                self._overlay_checkbox.state() == 1,
+            )
+
+        if self._dock_icon_checkbox:
+            builder.set_enabled_default_true(
+                "PULSESCRIBE_DOCK_ICON",
+                self._dock_icon_checkbox.state() == 1,
+            )
+
+        if self._rtf_checkbox:
+            builder.set_enabled_default_false(
+                "PULSESCRIBE_SHOW_RTF",
+                self._rtf_checkbox.state() == 1,
+            )
+
+        if self._provider_popup:
+            builder.set_present(
+                "PULSESCRIBE_REFINE_PROVIDER",
+                self._provider_popup.titleOfSelectedItem(),
+            )
+
+        if self._model_field:
+            builder.set_optional(
+                "PULSESCRIBE_REFINE_MODEL",
+                self._model_field.stringValue(),
+            )
+
     def _save_all_settings(self) -> None:
         """Speichert alle Einstellungen in die .env Datei.
 
@@ -5127,196 +5831,8 @@ class WelcomeController:
 
         log = logging.getLogger(__name__)
 
-        env_updates: dict[str, str | None] = {}
-
-        for provider, _label, env_key in API_KEY_PROVIDERS:
-            field = getattr(self, f"_{provider}_field", None)
-            if field is not None:
-                normalized_key = field.stringValue().strip()
-                env_updates[env_key] = normalized_key or None
-
-        # Mode
-        if self._mode_popup:
-            mode = self._mode_popup.titleOfSelectedItem()
-            if mode:
-                env_updates["PULSESCRIBE_MODE"] = mode
-
-        # Local Backend
-        if self._local_backend_popup:
-            backend = normalize_local_backend(
-                self._local_backend_popup.titleOfSelectedItem()
-            )
-            if should_remove_local_backend_env(backend):
-                env_updates["PULSESCRIBE_LOCAL_BACKEND"] = None
-            elif backend:
-                env_updates["PULSESCRIBE_LOCAL_BACKEND"] = backend
-
-        # Local Model
-        if self._local_model_popup:
-            local_model = self._local_model_popup.titleOfSelectedItem()
-            if local_model == "default":
-                env_updates["PULSESCRIBE_LOCAL_MODEL"] = None
-            elif local_model:
-                env_updates["PULSESCRIBE_LOCAL_MODEL"] = local_model
-
-        # Language
-        if self._lang_popup:
-            lang = self._lang_popup.titleOfSelectedItem()
-            if lang == "auto":
-                env_updates["PULSESCRIBE_LANGUAGE"] = None
-            elif lang:
-                env_updates["PULSESCRIBE_LANGUAGE"] = lang
-
-        # Local Device (openai-whisper)
-        if self._device_popup:
-            device = (self._device_popup.titleOfSelectedItem() or "").strip().lower()
-            if not device or device == "auto":
-                env_updates["PULSESCRIBE_DEVICE"] = None
-            else:
-                env_updates["PULSESCRIBE_DEVICE"] = device
-
-        # Local Warmup (auto/true/false)
-        if self._warmup_popup:
-            warmup = (self._warmup_popup.titleOfSelectedItem() or "").strip().lower()
-            if not warmup or warmup == "auto":
-                env_updates["PULSESCRIBE_LOCAL_WARMUP"] = None
-            else:
-                env_updates["PULSESCRIBE_LOCAL_WARMUP"] = warmup
-
-        def _save_bool_override(key: str, popup) -> None:
-            if popup is None:
-                return
-            sel = (popup.titleOfSelectedItem() or "").strip().lower()
-            if not sel or sel == "default":
-                env_updates[key] = None
-            else:
-                env_updates[key] = sel
-
-        # Local Fast (default/true/false)
-        _save_bool_override("PULSESCRIBE_LOCAL_FAST", self._local_fast_popup)
-
-        # FP16 (default/true/false)
-        if self._fp16_popup:
-            _save_bool_override(LOCAL_FP16_ENV_KEY, self._fp16_popup)
-            env_updates[LEGACY_LOCAL_FP16_ENV_KEY] = None
-
-        def _save_optional_int(key: str, field) -> None:
-            if field is None:
-                return
-            raw = field.stringValue().strip()
-            if not raw:
-                env_updates[key] = None
-                return
-            try:
-                int(raw)
-            except ValueError:
-                log.warning(f"Invalid {key}={raw!r}, not saved")
-                return
-            env_updates[key] = raw
-
-        def _save_optional_str(key: str, field) -> None:
-            if field is None:
-                return
-            raw = field.stringValue().strip()
-            if not raw:
-                env_updates[key] = None
-                return
-            env_updates[key] = raw
-
-        # Decode overrides
-        _save_optional_int("PULSESCRIBE_LOCAL_BEAM_SIZE", self._beam_size_field)
-        _save_optional_int("PULSESCRIBE_LOCAL_BEST_OF", self._best_of_field)
-        _save_optional_str("PULSESCRIBE_LOCAL_TEMPERATURE", self._temperature_field)
-
-        # faster-whisper overrides
-        _save_optional_str("PULSESCRIBE_LOCAL_COMPUTE_TYPE", self._compute_type_field)
-        _save_optional_int("PULSESCRIBE_LOCAL_CPU_THREADS", self._cpu_threads_field)
-        _save_optional_int("PULSESCRIBE_LOCAL_NUM_WORKERS", self._num_workers_field)
-        _save_bool_override(
-            "PULSESCRIBE_LOCAL_WITHOUT_TIMESTAMPS", self._without_timestamps_popup
-        )
-        _save_bool_override("PULSESCRIBE_LOCAL_VAD_FILTER", self._vad_filter_popup)
-
-        # Lightning Batch Size
-        if self._lightning_batch_slider:
-            batch_val = int(self._lightning_batch_slider.intValue())
-            if batch_val == 12:  # Default
-                env_updates["PULSESCRIBE_LIGHTNING_BATCH_SIZE"] = None
-            else:
-                env_updates["PULSESCRIBE_LIGHTNING_BATCH_SIZE"] = str(batch_val)
-
-        # Lightning Quantization
-        if self._lightning_quant_popup:
-            quant_idx = self._lightning_quant_popup.indexOfSelectedItem()
-            if quant_idx == 0:  # none (default)
-                env_updates["PULSESCRIBE_LIGHTNING_QUANT"] = None
-            elif quant_idx == 1:
-                env_updates["PULSESCRIBE_LIGHTNING_QUANT"] = "8bit"
-            else:
-                env_updates["PULSESCRIBE_LIGHTNING_QUANT"] = "4bit"
-
-        # Streaming (only relevant for Deepgram mode)
-        if self._streaming_checkbox and self._mode_popup:
-            is_deepgram = self._mode_popup.titleOfSelectedItem() == "deepgram"
-            if is_deepgram:
-                enabled = self._streaming_checkbox.state() == 1
-                if enabled:  # Default is true
-                    env_updates["PULSESCRIBE_STREAMING"] = None
-                else:
-                    env_updates["PULSESCRIBE_STREAMING"] = "false"
-
-        # Refine
-        if self._refine_checkbox:
-            enabled = self._refine_checkbox.state() == 1
-            env_updates["PULSESCRIBE_REFINE"] = "true" if enabled else "false"
-
-        # Clipboard Restore
-        if self._clipboard_restore_checkbox:
-            enabled = self._clipboard_restore_checkbox.state() == 1
-            if enabled:
-                env_updates["PULSESCRIBE_CLIPBOARD_RESTORE"] = "true"
-            else:
-                env_updates["PULSESCRIBE_CLIPBOARD_RESTORE"] = None
-
-        # Overlay
-        if self._overlay_checkbox:
-            enabled = self._overlay_checkbox.state() == 1
-            if enabled:  # Default is true
-                env_updates["PULSESCRIBE_OVERLAY"] = None
-            else:
-                env_updates["PULSESCRIBE_OVERLAY"] = "false"
-
-        # Dock Icon
-        if self._dock_icon_checkbox:
-            enabled = self._dock_icon_checkbox.state() == 1
-            if enabled:  # Default is true
-                env_updates["PULSESCRIBE_DOCK_ICON"] = None
-            else:
-                env_updates["PULSESCRIBE_DOCK_ICON"] = "false"
-
-        # RTF Display (Performance-Anzeige) - default: false
-        if self._rtf_checkbox:
-            enabled = self._rtf_checkbox.state() == 1
-            if enabled:
-                env_updates["PULSESCRIBE_SHOW_RTF"] = "true"
-            else:  # Default is false
-                env_updates["PULSESCRIBE_SHOW_RTF"] = None
-
-        # Refine Provider
-        if self._provider_popup:
-            provider = self._provider_popup.titleOfSelectedItem()
-            if provider:
-                env_updates["PULSESCRIBE_REFINE_PROVIDER"] = provider
-
-        # Refine Model
-        if self._model_field:
-            model = self._model_field.stringValue().strip()
-            if model:
-                env_updates["PULSESCRIBE_REFINE_MODEL"] = model
-            else:
-                env_updates["PULSESCRIBE_REFINE_MODEL"] = None
-
         previous_dock_state = getattr(self, "_saved_dock_icon_enabled", None)
+        env_updates = self._build_env_updates_from_controls(log)
         self._apply_env_updates(env_updates)
         self._refresh_provider_key_statuses()
 
@@ -5399,64 +5915,87 @@ class WelcomeController:
         """Persist prompt-editor drafts while preserving untouched saved overrides."""
         import logging
 
-        from utils.custom_prompts import (
-            filter_overrides_for_storage,
-            reset_to_defaults,
-            save_custom_prompts_state,
-        )
-
         log = logging.getLogger(__name__)
 
-        if not hasattr(self, "_prompts_text_view") or not self._prompts_text_view:
+        if not self._cache_current_prompt_editor_draft():
             return
 
-        current_ctx = getattr(self, "_prompts_current_context", "default")
-        current_text = str(self._prompts_text_view.string())
+        existing_overrides, data_to_save = self._build_custom_prompt_save_payloads()
+        if data_to_save == existing_overrides:
+            self._handle_custom_prompts_unchanged(log)
+            return
+
+        if data_to_save:
+            self._persist_custom_prompt_overrides(data_to_save, log)
+            return
+
+        self._reset_custom_prompts_to_defaults(log)
+
+    def _cache_current_prompt_editor_draft(self) -> bool:
+        text_view = getattr(self, "_prompts_text_view", None)
+        if not text_view:
+            return False
+
         if not hasattr(self, "_prompts_cache"):
             self._prompts_cache = {}
+
+        current_ctx = getattr(self, "_prompts_current_context", "default")
+        current_text = str(text_view.string())
         self._prompts_cache[current_ctx] = current_text
+        return True
+
+    def _build_custom_prompt_save_payloads(self) -> tuple[dict, dict]:
+        from utils.custom_prompts import filter_overrides_for_storage
 
         defaults = self._get_prompt_defaults_data()
         existing = self._get_loaded_prompts_data()
         existing_overrides = filter_overrides_for_storage(existing, defaults=defaults)
+        drafts = getattr(self, "_prompts_cache", {})
         data_to_save = build_prompt_overrides_from_editor_state(
             existing=existing,
-            drafts=getattr(self, "_prompts_cache", {}),
-            contexts=set(getattr(self, "_prompts_cache", {}).keys()),
+            drafts=drafts,
+            contexts=set(drafts.keys()),
             defaults=defaults,
         )
+        return existing_overrides, data_to_save
 
-        if data_to_save == existing_overrides:
-            log.info("Custom prompts unchanged, skipped prompts.toml rewrite")
-            if hasattr(self, "_prompts_status_label") and self._prompts_status_label:
-                self._prompts_status_label.setStringValue_("✓ Prompts unchanged")
-            self._refresh_prompt_editor_feedback()
-            return
+    def _set_prompts_status_text(self, text: str) -> None:
+        label = getattr(self, "_prompts_status_label", None)
+        if label:
+            label.setStringValue_(text)
 
-        if data_to_save:
-            try:
-                self._prompts_loaded_data = save_custom_prompts_state(data_to_save)
-                saved_items = sorted(data_to_save.get("prompts", {}).keys())
-                if "voice_commands" in data_to_save:
-                    saved_items.append("Voice Commands")
-                if "app_contexts" in data_to_save:
-                    saved_items.append("App Mappings")
-                log.info(f"Saved custom prompts for: {saved_items}")
-                if hasattr(self, "_prompts_status_label") and self._prompts_status_label:
-                    self._prompts_status_label.setStringValue_("✓ Prompts saved")
-                self._refresh_prompt_editor_feedback()
-            except Exception as e:
-                log.warning(f"Could not save custom prompts: {e}")
-                if hasattr(self, "_prompts_status_label") and self._prompts_status_label:
-                    self._prompts_status_label.setStringValue_(f"Error: {e}")
-                self._refresh_prompt_editor_feedback()
-            return
+    def _handle_custom_prompts_unchanged(self, log) -> None:
+        log.info("Custom prompts unchanged, skipped prompts.toml rewrite")
+        self._set_prompts_status_text("✓ Prompts unchanged")
+        self._refresh_prompt_editor_feedback()
+
+    def _persist_custom_prompt_overrides(self, data_to_save: dict, log) -> None:
+        from utils.custom_prompts import save_custom_prompts_state
+
+        try:
+            self._prompts_loaded_data = save_custom_prompts_state(data_to_save)
+            log.info(f"Saved custom prompts for: {self._custom_prompt_saved_items(data_to_save)}")
+            self._set_prompts_status_text("✓ Prompts saved")
+        except Exception as e:
+            log.warning(f"Could not save custom prompts: {e}")
+            self._set_prompts_status_text(f"Error: {e}")
+        self._refresh_prompt_editor_feedback()
+
+    def _custom_prompt_saved_items(self, data_to_save: dict) -> list[str]:
+        saved_items = sorted(data_to_save.get("prompts", {}).keys())
+        if "voice_commands" in data_to_save:
+            saved_items.append("Voice Commands")
+        if "app_contexts" in data_to_save:
+            saved_items.append("App Mappings")
+        return saved_items
+
+    def _reset_custom_prompts_to_defaults(self, log) -> None:
+        from utils.custom_prompts import reset_to_defaults
 
         reset_to_defaults()
         self._get_loaded_prompts_data(force=True)
         log.info("All prompts reset to defaults, removed prompts.toml")
-        if hasattr(self, "_prompts_status_label") and self._prompts_status_label:
-            self._prompts_status_label.setStringValue_("✓ Reset to defaults")
+        self._set_prompts_status_text("✓ Reset to defaults")
         self._refresh_prompt_editor_feedback()
 
     def _restart_application(self) -> None:

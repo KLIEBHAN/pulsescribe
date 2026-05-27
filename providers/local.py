@@ -91,9 +91,13 @@ def _register_nvidia_dll_directories() -> None:
     if sys.platform != "win32":
         return
 
+    for dll_path in _iter_nvidia_dll_directories():
+        _register_nvidia_dll_directory(dll_path)
+
+
+def _site_package_paths() -> list[str]:
     import site
 
-    # Collect all possible site-packages locations
     site_packages: list[str] = []
     try:
         site_packages.extend(site.getsitepackages())
@@ -106,31 +110,39 @@ def _register_nvidia_dll_directories() -> None:
     except AttributeError:
         pass  # May not exist in some environments
 
-    for sp in site_packages:
+    return site_packages
+
+
+def _iter_nvidia_dll_directories() -> Generator[Path, None, None]:
+    for sp in _site_package_paths():
         nvidia_dir = Path(sp) / "nvidia"
         if not nvidia_dir.is_dir():
             continue
-        # Register all nvidia/*/bin directories (cudnn, cublas, cuda_runtime, etc.)
-        try:
-            subdirs = list(nvidia_dir.iterdir())
-        except OSError as e:
-            logger.debug(f"Cannot iterate {nvidia_dir}: {e}")
-            continue
-        for subdir in subdirs:
-            if not subdir.is_dir():
-                continue
+        for subdir in _safe_iter_nvidia_subdirs(nvidia_dir):
             dll_path = subdir / "bin"
             if dll_path.is_dir():
-                dll_path_str = str(dll_path)
-                if dll_path_str in _NVIDIA_DLL_DIRECTORY_HANDLES:
-                    continue
-                try:
-                    _NVIDIA_DLL_DIRECTORY_HANDLES[dll_path_str] = os.add_dll_directory(
-                        dll_path_str
-                    )
-                    logger.debug(f"NVIDIA DLL directory registered: {dll_path}")
-                except OSError as e:
-                    logger.warning(f"Failed to register NVIDIA DLL directory {dll_path}: {e}")
+                yield dll_path
+
+
+def _safe_iter_nvidia_subdirs(nvidia_dir: Path) -> list[Path]:
+    try:
+        return [subdir for subdir in nvidia_dir.iterdir() if subdir.is_dir()]
+    except OSError as e:
+        logger.debug(f"Cannot iterate {nvidia_dir}: {e}")
+        return []
+
+
+def _register_nvidia_dll_directory(dll_path: Path) -> None:
+    dll_path_str = str(dll_path)
+    if dll_path_str in _NVIDIA_DLL_DIRECTORY_HANDLES:
+        return
+    try:
+        _NVIDIA_DLL_DIRECTORY_HANDLES[dll_path_str] = os.add_dll_directory(
+            dll_path_str
+        )
+        logger.debug(f"NVIDIA DLL directory registered: {dll_path}")
+    except OSError as e:
+        logger.warning(f"Failed to register NVIDIA DLL directory {dll_path}: {e}")
 
 
 # Register NVIDIA DLLs early (before faster_whisper import)
@@ -473,62 +485,77 @@ class LocalProvider:
                 return self._model_cache[cache_key]
 
             log(f"Lade Modell '{model_name}' ({self._device})...")
-            try:
-                if self._device == "mps":
-                    # MPS kann sparse alignment_heads nicht bewegen → CPU load,
-                    # sparse Buffer temporär entfernen, dann Model auf MPS schieben.
-                    cpu_model = whisper.load_model(model_name, device="cpu")
-                    heads = None
-                    if getattr(
-                        cpu_model, "alignment_heads", None
-                    ) is not None and getattr(
-                        cpu_model.alignment_heads, "is_sparse", False
-                    ):
-                        heads = cpu_model.alignment_heads
-                        cpu_model._buffers["alignment_heads"] = None
-                    try:
-                        cpu_model = cpu_model.to("mps")
-                    finally:
-                        if heads is not None:
-                            # Restore original tensor (pyright can't infer this is always Tensor)
-                            cpu_model._buffers["alignment_heads"] = heads  # type: ignore[arg-type]
-                    self._model_cache[cache_key] = cpu_model
-                elif self._device == "cuda":
-                    executor = ThreadPoolExecutor(max_workers=1)
-                    future = executor.submit(
-                        whisper.load_model, model_name, device=self._device
-                    )
-                    try:
-                        self._model_cache[cache_key] = future.result(
-                            timeout=CUDA_MODEL_LOAD_TIMEOUT
-                        )
-                    except FuturesTimeoutError:
-                        logger.warning(
-                            f"CUDA Whisper Model-Loading Timeout ({CUDA_MODEL_LOAD_TIMEOUT}s) - "
-                            "CPU-Fallback wird versucht."
-                        )
-                        raise RuntimeError("CUDA whisper model loading timeout")
-                    finally:
-                        executor.shutdown(wait=False, cancel_futures=True)
-                else:
-                    self._model_cache[cache_key] = whisper.load_model(
-                        model_name, device=self._device
-                    )
-            except Exception as e:
-                if self._device != "cpu":
-                    logger.warning(
-                        f"Whisper Load auf {self._device} fehlgeschlagen, fallback CPU: {e}"
-                    )
-                    self._device = "cpu"
-                    cache_key = f"whisper:{model_name}:cpu"
-                    if cache_key not in self._model_cache:
-                        self._model_cache[cache_key] = whisper.load_model(
-                            model_name, device="cpu"
-                        )
-                else:
-                    raise
+            cache_key = self._load_whisper_model_with_fallback(
+                whisper,
+                model_name,
+                cache_key,
+            )
 
             return self._model_cache[cache_key]
+
+    def _load_whisper_model_with_fallback(
+        self,
+        whisper,
+        model_name: str,
+        cache_key: str,
+    ) -> str:
+        try:
+            self._model_cache[cache_key] = self._load_whisper_for_current_device(
+                whisper,
+                model_name,
+            )
+            return cache_key
+        except Exception as e:
+            return self._load_whisper_cpu_fallback(whisper, model_name, e)
+
+    def _load_whisper_for_current_device(self, whisper, model_name: str):
+        if self._device == "mps":
+            return self._load_mps_whisper_model(whisper, model_name)
+        if self._device == "cuda":
+            return self._load_cuda_whisper_model(whisper, model_name)
+        return whisper.load_model(model_name, device=self._device)
+
+    def _load_mps_whisper_model(self, whisper, model_name: str):
+        # MPS kann sparse alignment_heads nicht bewegen: CPU load,
+        # sparse Buffer temporär entfernen, dann Model auf MPS schieben.
+        cpu_model = whisper.load_model(model_name, device="cpu")
+        heads = None
+        if getattr(cpu_model, "alignment_heads", None) is not None and getattr(
+            cpu_model.alignment_heads, "is_sparse", False
+        ):
+            heads = cpu_model.alignment_heads
+            cpu_model._buffers["alignment_heads"] = None
+        try:
+            return cpu_model.to("mps")
+        finally:
+            if heads is not None:
+                cpu_model._buffers["alignment_heads"] = heads  # type: ignore[arg-type]
+
+    def _load_cuda_whisper_model(self, whisper, model_name: str):
+        executor = ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(whisper.load_model, model_name, device=self._device)
+        try:
+            return future.result(timeout=CUDA_MODEL_LOAD_TIMEOUT)
+        except FuturesTimeoutError:
+            logger.warning(
+                f"CUDA Whisper Model-Loading Timeout ({CUDA_MODEL_LOAD_TIMEOUT}s) - "
+                "CPU-Fallback wird versucht."
+            )
+            raise RuntimeError("CUDA whisper model loading timeout")
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+
+    def _load_whisper_cpu_fallback(self, whisper, model_name: str, error: Exception) -> str:
+        if self._device == "cpu":
+            raise error
+        logger.warning(
+            f"Whisper Load auf {self._device} fehlgeschlagen, fallback CPU: {error}"
+        )
+        self._device = "cpu"
+        cache_key = f"whisper:{model_name}:cpu"
+        if cache_key not in self._model_cache:
+            self._model_cache[cache_key] = whisper.load_model(model_name, device="cpu")
+        return cache_key
 
     def _get_faster_model(self, model_name: str):
         """Lädt faster-whisper Modell (CTranslate2) mit Caching."""

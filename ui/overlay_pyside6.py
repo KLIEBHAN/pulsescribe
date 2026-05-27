@@ -58,6 +58,9 @@ from ui.overlay_feedback import (
     build_overlay_feedback_text,
     format_overlay_status_text,
 )
+from ui.overlay_text import (
+    format_recording_interim_text as _format_recording_interim_text,
+)
 from utils.log_tail import read_file_tail_text
 
 logger = logging.getLogger("pulsescribe.overlay")
@@ -137,48 +140,6 @@ DWMWCP_ROUNDSMALL = 3
 # =============================================================================
 # Multi-Monitor Helper
 # =============================================================================
-
-
-def _format_recording_interim_text(text: str, max_chars: int = 45) -> str:
-    """Normalize and tail-truncate recording interim text for compact overlays."""
-    if not text:
-        return ""
-
-    normalized_tail_reversed: list[str] = []
-    normalized_length = 0
-    pending_space = False
-    truncated = False
-
-    for char in reversed(text):
-        if char.isspace():
-            if normalized_length > 0:
-                pending_space = True
-            continue
-
-        if pending_space:
-            normalized_tail_reversed.append(" ")
-            normalized_length += 1
-            pending_space = False
-
-        normalized_tail_reversed.append(char)
-        normalized_length += 1
-        if max_chars > 0 and normalized_length > max_chars:
-            truncated = True
-            break
-
-    if not normalized_tail_reversed:
-        return ""
-
-    cleaned_tail = "".join(reversed(normalized_tail_reversed))
-    if not truncated:
-        return cleaned_tail
-    if max_chars <= 0:
-        return cleaned_tail
-
-    tail_chars = max_chars - 3
-    if tail_chars <= 0:
-        return "..."
-    return "..." + cleaned_tail[-tail_chars:]
 
 
 def _get_active_screen() -> "QScreen | None":

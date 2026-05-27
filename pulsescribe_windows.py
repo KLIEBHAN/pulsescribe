@@ -76,6 +76,10 @@ from utils.audio_latency import (
     create_low_latency_input_stream,
     windows_audio_blocksize,
 )
+from utils.windows_latency_diagnostics import (
+    WindowsLatencyRun,
+    start_windows_latency_run,
+)
 from whisper_platform import get_clipboard, get_sound_player
 from config import (
     INTERIM_FILE,
@@ -141,6 +145,19 @@ def _load_overlay():
     except ImportError as e:
         logger.debug(f"Overlay nicht verfügbar: {e}")
         return False
+
+
+def _is_reload_event_path(src_path: str) -> bool:
+    return src_path.endswith(".env") or src_path.endswith(".reload")
+
+
+def _unlink_reload_signal_file(signal_file: Path) -> None:
+    if not signal_file.exists():
+        return
+    try:
+        signal_file.unlink()
+    except Exception:
+        pass
 
 
 # =============================================================================
@@ -301,6 +318,7 @@ class PulseScribeWindows:
         self._ipc_server = None  # IPC-Server für Wizard-Kommunikation
         self._ipc_test_cmd_id: str | None = None  # Aktiver IPC-Test-Command
         self._event_loop = None  # Wird in _prewarm_imports() erstellt
+        self._latency_run: WindowsLatencyRun | None = None
         self._run_mode: str | None = None  # Snapshot: Modus pro Recording-Run
         self._run_streaming: bool | None = None  # Snapshot: Streaming pro Run
 
@@ -439,6 +457,36 @@ class PulseScribeWindows:
         except Exception as e:
             logger.debug(f"Overlay interim update failed: {e}")
 
+    def _start_latency_run(self, *, mode: str, streaming: bool) -> None:
+        self._latency_run = start_windows_latency_run(
+            mode=mode,
+            streaming=streaming,
+            logger=logger,
+        )
+        self._latency_mark("start_recording")
+
+    def _latency_mark(self, name: str, **fields) -> None:
+        run = self._latency_run
+        if run is not None:
+            run.mark(name, **fields)
+
+    def _latency_mark_once(self, name: str, **fields) -> None:
+        run = self._latency_run
+        if run is not None:
+            run.mark_once(name, **fields)
+
+    def _latency_event(self, name: str, fields: dict | None = None) -> None:
+        run = self._latency_run
+        if run is not None:
+            run.event(name, fields)
+
+    def _latency_finish(self, outcome: str, **fields) -> None:
+        run = self._latency_run
+        if run is None:
+            return
+        run.finish(outcome, **fields)
+        self._latency_run = None
+
     def _stop_overlay(self) -> None:
         """Stoppt Overlay atomar gegenüber parallelen Worker-Updates."""
         overlay = self._overlay
@@ -476,8 +524,10 @@ class PulseScribeWindows:
         if self._ipc_test_cmd_id and self._ipc_server:
             # Preserve the existing onboarding / IPC empty-result behavior.
             self._set_state(AppState.IDLE)
+            self._latency_finish("no_speech", ipc=True)
             return
         self._enter_no_speech_state()
+        self._latency_finish("no_speech")
 
     def _start_transcribing_watchdog(self):
         """Startet Watchdog-Timer für hängende Transcription."""
@@ -738,6 +788,7 @@ class PulseScribeWindows:
             self._last_status_text = None
             self._state_generation += 1
 
+        self._latency_mark("recording_state")
         self._overlay_update_state(AppState.RECORDING.name, None)
         logger.debug("State: listening → recording (audio callback)")
 
@@ -778,6 +829,9 @@ class PulseScribeWindows:
 
             # Audio-Level für Overlay (optional)
             self._overlay_update_audio_level(rms)
+
+            if self._warm_stream_armed.is_set():
+                self._latency_mark_once("first_audio_callback")
 
             # VAD: State-Transition LISTENING → RECORDING (nur wenn armed)
             if self._warm_stream_armed.is_set():
@@ -930,6 +984,7 @@ class PulseScribeWindows:
             run_streaming = self.streaming
             self._run_mode = run_mode
             self._run_streaming = run_streaming
+            self._start_latency_run(mode=run_mode, streaming=run_streaming)
 
             logger.info(
                 f"Starte Aufnahme ({'Streaming' if run_streaming else 'REST'})..."
@@ -949,9 +1004,11 @@ class PulseScribeWindows:
                     # Vor Ready-Sound scharf schalten, damit das erste Wort nicht
                     # im Zeitfenster zwischen Feedback und Worker-Start verloren geht.
                     self._prepare_warm_stream_for_recording()
+                    self._latency_mark("warm_stream_armed")
 
                     # Sofort LISTENING setzen und Sound spielen
                     self._set_state(AppState.LISTENING)
+                    self._latency_mark("listening_state")
                     self._play_sound("ready")
 
                     # Worker mit Warm-Stream starten
@@ -980,9 +1037,11 @@ class PulseScribeWindows:
                     # Vor Ready-Sound scharf schalten, damit das erste Wort nicht
                     # im Zeitfenster zwischen Feedback und Worker-Start verloren geht.
                     self._prepare_warm_stream_for_recording()
+                    self._latency_mark("warm_stream_armed")
 
                     # Sofort LISTENING setzen und Sound spielen
                     self._set_state(AppState.LISTENING)
+                    self._latency_mark("listening_state")
                     self._play_sound("ready")
 
                     # Recording-Loop mit Warm-Stream
@@ -993,12 +1052,14 @@ class PulseScribeWindows:
                     # Fallback: Kein Warm-Stream, Cold-Start
                     logger.warning("Kein Warm-Stream - Fallback auf Cold-Start")
                     self._set_state(AppState.LISTENING)
+                    self._latency_mark("listening_state")
                     self._play_sound("ready")
                     self._recording_thread = threading.Thread(
                         target=self._recording_loop, daemon=True
                     )
 
             self._recording_thread.start()
+            self._latency_mark("worker_thread_started")
             return True
 
     def _stop_recording(self):
@@ -1017,6 +1078,7 @@ class PulseScribeWindows:
                 return
 
             logger.info("Stoppe Aufnahme...")
+            self._latency_mark("stop_requested")
 
             # Hold-Flag zurücksetzen - egal wie Recording gestoppt wurde
             self._hold_state.reset()
@@ -1040,10 +1102,12 @@ class PulseScribeWindows:
                     "Finishing...",
                     watch_transcribing=False,
                 )
+                self._latency_mark("transcribing_state")
                 return
 
             # REST: State früh umschalten, damit parallele Stop-Aufrufe idempotent sind
             self._set_state(AppState.TRANSCRIBING)
+            self._latency_mark("transcribing_state")
             recording_thread = self._recording_thread
             should_transcribe_rest = True
 
@@ -1090,6 +1154,7 @@ class PulseScribeWindows:
                 # Audio-Level für Overlay (AGC im Overlay normalisiert automatisch)
                 rms = float(np.sqrt(np.mean(indata**2)))
                 self._overlay_update_audio_level(rms)
+                self._latency_mark_once("first_audio_callback")
 
                 # State auf RECORDING setzen wenn Audio erkannt
                 if self.state == AppState.LISTENING:
@@ -1137,9 +1202,7 @@ class PulseScribeWindows:
 
         try:
             # Buffer vorbereiten
-            with self._audio_lock:
-                self._audio_buffer = []
-                self._audio_sample_rate = self._warm_stream_sample_rate
+            self._prepare_warm_rest_audio_buffer()
 
             # Warm-Stream armen
             self._warm_stream_armed.set()
@@ -1147,50 +1210,12 @@ class PulseScribeWindows:
 
             # Audio sammeln bis Stop-Signal plus kurze Windows-Stop-Grace.
             # VAD wird im audio_callback des Warm-Streams gehandhabt (nicht hier).
-            stop_seen_at: float | None = None
-            grace_seconds = self._windows_stop_grace_seconds()
-            while True:
-                if self._recording_stop_event.is_set():
-                    if stop_seen_at is None:
-                        stop_seen_at = time.monotonic()
-                        if grace_seconds > 0:
-                            logger.debug(
-                                f"Windows Stop-Grace (REST warm): {grace_seconds:.2f}s"
-                            )
-                    elif time.monotonic() - stop_seen_at >= grace_seconds:
-                        break
-
-                try:
-                    # Audio-Chunk aus Queue holen (mit Timeout für Stop-Check)
-                    chunk = self._warm_stream_queue.get(timeout=0.02)
-
-                    # Chunk zu Buffer hinzufügen (int16 -> float32 für Kompatibilität)
-                    audio_int16 = np.frombuffer(chunk, dtype=np.int16)
-                    audio_float32 = audio_int16.astype(np.float32) / INT16_MAX
-
-                    with self._audio_lock:
-                        self._audio_buffer.append(audio_float32)
-
-                except queue.Empty:
-                    if stop_seen_at is not None and grace_seconds <= 0:
-                        break
-                    continue
+            self._collect_warm_stream_until_stop(np, INT16_MAX)
 
             # === IMMEDIATE-DRAIN ===
             # Race Condition Fix: Zwischen queue.get(timeout) und stop_event Check
             # könnten neue Chunks eingefügt worden sein.
-            immediate_drained = 0
-            while True:
-                try:
-                    chunk = self._warm_stream_queue.get_nowait()
-                    audio_int16 = np.frombuffer(chunk, dtype=np.int16)
-                    audio_float32 = audio_int16.astype(np.float32) / INT16_MAX
-                    with self._audio_lock:
-                        self._audio_buffer.append(audio_float32)
-                    immediate_drained += 1
-                except queue.Empty:
-                    break
-
+            immediate_drained = self._drain_warm_stream_nowait(np, INT16_MAX)
             if immediate_drained > 0:
                 logger.debug(f"REST-Mode Immediate-Drain: {immediate_drained} Chunks")
 
@@ -1212,26 +1237,90 @@ class PulseScribeWindows:
 
             try:
                 # Queue leeren (max 200ms, 2 leere Polls = fertig)
-                drain_deadline = time.monotonic() + 0.2
-                empty_count = 0
-                drained = 0
-                while empty_count < 2 and time.monotonic() < drain_deadline:
-                    try:
-                        chunk = self._warm_stream_queue.get(timeout=0.01)
-                        audio_int16 = np.frombuffer(chunk, dtype=np.int16)
-                        audio_float32 = audio_int16.astype(np.float32) / INT16_MAX
-                        with self._audio_lock:
-                            self._audio_buffer.append(audio_float32)
-                        drained += 1
-                        empty_count = 0
-                    except queue.Empty:
-                        empty_count += 1
-
+                drained = self._drain_warm_stream_until_quiet(np, INT16_MAX)
                 if drained > 0:
                     logger.debug(f"REST-Mode Drain: {drained} Rest-Chunks gesammelt")
             finally:
                 # KRITISCH: drain_event MUSS gelöscht werden, sonst sammelt Callback ewig
                 self._warm_stream_draining.clear()
+
+    def _prepare_warm_rest_audio_buffer(self) -> None:
+        with self._audio_lock:
+            self._audio_buffer = []
+            self._audio_sample_rate = self._warm_stream_sample_rate
+
+    def _append_warm_stream_chunk(self, chunk: bytes, np, int16_max: int) -> None:
+        audio_int16 = np.frombuffer(chunk, dtype=np.int16)
+        audio_float32 = audio_int16.astype(np.float32) / int16_max
+        with self._audio_lock:
+            self._audio_buffer.append(audio_float32)
+
+    def _maybe_mark_warm_stop_seen(
+        self,
+        stop_seen_at: float | None,
+        grace_seconds: float,
+    ) -> float | None:
+        if stop_seen_at is not None or not self._recording_stop_event.is_set():
+            return stop_seen_at
+        stop_seen_at = time.monotonic()
+        if grace_seconds > 0:
+            logger.debug(f"Windows Stop-Grace (REST warm): {grace_seconds:.2f}s")
+        return stop_seen_at
+
+    @staticmethod
+    def _warm_stop_grace_elapsed(
+        stop_seen_at: float | None,
+        grace_seconds: float,
+    ) -> bool:
+        return (
+            stop_seen_at is not None
+            and time.monotonic() - stop_seen_at >= grace_seconds
+        )
+
+    def _try_collect_warm_stream_chunk(self, np, int16_max: int, *, timeout: float) -> bool:
+        try:
+            chunk = self._warm_stream_queue.get(timeout=timeout)
+        except queue.Empty:
+            return False
+        self._append_warm_stream_chunk(chunk, np, int16_max)
+        return True
+
+    def _collect_warm_stream_until_stop(self, np, int16_max: int) -> None:
+        stop_seen_at: float | None = None
+        grace_seconds = self._windows_stop_grace_seconds()
+        while True:
+            stop_seen_at = self._maybe_mark_warm_stop_seen(
+                stop_seen_at,
+                grace_seconds,
+            )
+            if self._warm_stop_grace_elapsed(stop_seen_at, grace_seconds):
+                return
+            if self._try_collect_warm_stream_chunk(np, int16_max, timeout=0.02):
+                continue
+            if stop_seen_at is not None and grace_seconds <= 0:
+                return
+
+    def _drain_warm_stream_nowait(self, np, int16_max: int) -> int:
+        drained = 0
+        while True:
+            try:
+                chunk = self._warm_stream_queue.get_nowait()
+            except queue.Empty:
+                return drained
+            self._append_warm_stream_chunk(chunk, np, int16_max)
+            drained += 1
+
+    def _drain_warm_stream_until_quiet(self, np, int16_max: int) -> int:
+        drain_deadline = time.monotonic() + 0.2
+        empty_count = 0
+        drained = 0
+        while empty_count < 2 and time.monotonic() < drain_deadline:
+            if self._try_collect_warm_stream_chunk(np, int16_max, timeout=0.01):
+                drained += 1
+                empty_count = 0
+            else:
+                empty_count += 1
+        return drained
 
     def _streaming_worker(self):
         """Streaming-Worker: Recording + Transcription via WebSocket."""
@@ -1259,6 +1348,7 @@ class PulseScribeWindows:
                 # Wird alle ~64ms aufgerufen (1024 samples @ 16kHz)
                 def on_audio_level(level: float):
                     self._overlay_update_audio_level(level)
+                    self._latency_mark_once("first_audio_callback")
 
                     # State-Machine: LOADING → LISTENING → RECORDING
                     current_state = self.state
@@ -1266,6 +1356,7 @@ class PulseScribeWindows:
                         # Erster Audio-Callback = Mikrofon ist bereit
                         logger.debug("Mikrofon bereit → LISTENING")
                         self._set_state(AppState.LISTENING)
+                        self._latency_mark("listening_state")
                     elif (
                         current_state == AppState.LISTENING
                         and level > _VAD_THRESHOLD_RMS
@@ -1275,7 +1366,9 @@ class PulseScribeWindows:
                             f"VAD triggered: level={level:.4f} > threshold={_VAD_THRESHOLD_RMS}"
                         )
                         self._set_state(AppState.RECORDING)
+                        self._latency_mark("recording_state")
 
+                self._latency_mark("deepgram_core_start")
                 transcript = loop.run_until_complete(
                     deepgram_stream_core(
                         model="nova-3",
@@ -1284,9 +1377,11 @@ class PulseScribeWindows:
                         external_stop_event=self._recording_stop_event,
                         audio_level_callback=on_audio_level,  # Immer übergeben für State-Transitions
                         interim_text_callback=self._overlay_update_interim_text,
+                        latency_event_callback=self._latency_event,
                         stop_grace_seconds=self._windows_stop_grace_seconds(),
                     )
                 )
+                self._latency_mark("deepgram_core_return", chars=len(transcript))
                 self._play_sound("stop")
                 logger.debug(f"Streaming abgeschlossen: {len(transcript)} Zeichen")
 
@@ -1305,6 +1400,7 @@ class PulseScribeWindows:
             error_type = "Import-Fehler" if isinstance(e, ImportError) else "Streaming-Fehler"
             logger.error(f"{error_type}: {e}")
             self._set_state(AppState.ERROR, _friendly_error_status_text(e))
+            self._latency_finish("error", error_type=type(e).__name__)
             self._play_sound("error")
             time.sleep(1.0)
             self._set_state(AppState.IDLE)
@@ -1339,6 +1435,7 @@ class PulseScribeWindows:
             try:
                 logger.debug("Starte deepgram_stream_core mit Warm-Stream")
 
+                self._latency_mark("deepgram_core_start")
                 transcript = loop.run_until_complete(
                     deepgram_stream_core(
                         model="nova-3",
@@ -1346,10 +1443,12 @@ class PulseScribeWindows:
                         play_ready=False,  # Sound haben wir schon gespielt!
                         external_stop_event=self._recording_stop_event,
                         interim_text_callback=self._overlay_update_interim_text,
+                        latency_event_callback=self._latency_event,
                         warm_stream_source=warm_source,
                         stop_grace_seconds=self._windows_stop_grace_seconds(),
                     )
                 )
+                self._latency_mark("deepgram_core_return", chars=len(transcript))
                 self._play_sound("stop")
                 logger.debug(f"Streaming abgeschlossen: {len(transcript)} Zeichen")
 
@@ -1373,6 +1472,7 @@ class PulseScribeWindows:
             self._warm_stream_armed.clear()
             self._warm_stream_draining.clear()
             self._set_state(AppState.ERROR, _friendly_error_status_text(e))
+            self._latency_finish("error", error_type=type(e).__name__)
             self._play_sound("error")
             time.sleep(1.0)
             self._set_state(AppState.IDLE)
@@ -1394,6 +1494,7 @@ class PulseScribeWindows:
 
             duration = len(audio_data) / sample_rate
             logger.info(f"Transkribiere {duration:.1f}s Audio ({sample_rate}Hz)...")
+            self._latency_mark("rest_transcribe_start", duration_s=round(duration, 3))
 
             # Konfiguration holen (zentralisiert für alle Modi)
             mode_for_run = mode_override or self._run_mode or self.mode
@@ -1440,6 +1541,8 @@ class PulseScribeWindows:
                     if temp_path.exists():
                         temp_path.unlink()
 
+            self._latency_mark("rest_transcribe_done", chars=len(transcript or ""))
+
             if transcript:
                 transcript = self._maybe_refine(transcript)
 
@@ -1450,12 +1553,14 @@ class PulseScribeWindows:
         except ImportError as e:
             logger.error(f"Import-Fehler: {e}")
             self._set_state(AppState.ERROR, _friendly_error_status_text(e))
+            self._latency_finish("error", error_type=type(e).__name__)
             self._play_sound("error")
             time.sleep(1.0)
             self._set_state(AppState.IDLE)
         except Exception as e:
             logger.error(f"Transkriptions-Fehler: {e}")
             self._set_state(AppState.ERROR, _friendly_error_status_text(e))
+            self._latency_finish("error", error_type=type(e).__name__)
             self._play_sound("error")
             time.sleep(1.0)
             self._set_state(AppState.IDLE)
@@ -1466,6 +1571,7 @@ class PulseScribeWindows:
         if not (self.refine and transcript):
             return transcript
         self._set_state(AppState.REFINING)
+        self._latency_mark("refine_start")
         from refine.llm import maybe_refine_transcript
 
         refined = maybe_refine_transcript(
@@ -1476,6 +1582,7 @@ class PulseScribeWindows:
             context=self.context,
         )
         self._last_was_refined = refined != transcript
+        self._latency_mark("refine_done", changed=self._last_was_refined)
         return refined
 
     def _save_to_history(self, transcript: str) -> None:
@@ -1495,6 +1602,7 @@ class PulseScribeWindows:
     def _handle_result(self, transcript: str):
         """Verarbeitet Transkriptions-Ergebnis."""
         logger.info(f"Transkript: {redacted_text_summary(transcript)}")
+        self._latency_mark("result_ready", chars=len(transcript or ""))
         self._set_state(AppState.DONE)
         self._play_sound("done")
 
@@ -1507,6 +1615,7 @@ class PulseScribeWindows:
             )
             logger.info(f"IPC-Test Ergebnis gesendet (id={self._ipc_test_cmd_id})")
             self._ipc_test_cmd_id = None  # Reset for next test
+            self._latency_finish("ipc_done", chars=len(transcript or ""))
 
             # Nach kurzer Pause zurück zu IDLE
             self._schedule_idle_if_state_unchanged(1.0)
@@ -1514,9 +1623,11 @@ class PulseScribeWindows:
 
         self._save_to_history(transcript)
 
+        self._latency_mark("paste_start", auto_paste=self.auto_paste)
+        paste_success = True
         if self.auto_paste:
-            success = paste_transcript(transcript)
-            if not success:
+            paste_success = paste_transcript(transcript)
+            if not paste_success:
                 # Fallback: Nur in Clipboard kopieren
                 get_clipboard().copy(transcript)
                 logger.info(
@@ -1525,6 +1636,8 @@ class PulseScribeWindows:
         else:
             get_clipboard().copy(transcript)
             logger.info("Text in Zwischenablage kopiert")
+        self._latency_mark("paste_done", success=paste_success)
+        self._latency_finish("done", chars=len(transcript or ""), paste_success=paste_success)
 
         # Nach kurzer Pause zurück zu IDLE (Timer statt sleep, blockiert Thread nicht)
         self._schedule_idle_if_state_unchanged(1.0)
@@ -1534,162 +1647,172 @@ class PulseScribeWindows:
         try:
             from pynput import keyboard
 
-            # Bindings sammeln: (hotkey_str, mode)
-            bindings: list[tuple[str, str]] = []
-            if self.toggle_hotkey:
-                bindings.append((self.toggle_hotkey, "toggle"))
-            if self.hold_hotkey:
-                if self.toggle_hotkey and hotkeys_conflict(
-                    self.toggle_hotkey, self.hold_hotkey
-                ):
-                    logger.error(
-                        "Hotkey-Konflikt: Hold-Hotkey überlappt mit Toggle-Hotkey "
-                        f"({self.hold_hotkey} vs {self.toggle_hotkey}). "
-                        "Hold wird ignoriert."
-                    )
-                else:
-                    bindings.append((self.hold_hotkey, "hold"))
-
+            bindings = self._resolve_windows_hotkey_bindings()
             if not bindings:
                 logger.warning("Keine Hotkeys konfiguriert")
                 return
 
-            # Alle Hotkeys parsen
-            parsed_hotkeys: list[tuple[set, str, str]] = []  # (keys, mode, source_id)
-            for hotkey_str, mode in bindings:
-                hotkey_keys = self._parse_hotkey_string(hotkey_str, keyboard)
-                if not hotkey_keys:
-                    logger.error(f"Ungültiger Hotkey: {hotkey_str}")
-                    continue
-                source_id = f"pynput:{mode}:{hotkey_str}"
-                parsed_hotkeys.append((hotkey_keys, mode, source_id))
-
+            parsed_hotkeys = self._parse_windows_hotkey_bindings(bindings, keyboard)
             if not parsed_hotkeys:
                 logger.error("Keine gültigen Hotkeys konfiguriert")
                 return
 
-            # Snapshot der aktuellen Listener-Generation.
-            # Wenn zwischenzeitlich ein Restart/Shutdown passiert, ignoriert
-            # dieser Listener alle nachlaufenden Events.
-            listener_generation = self._hotkey_listener_generation
-
-            # Aktuell gedrückte Tasten mit Zeitstempel (für Stale-Detection)
-            # Format: {normalized_key: timestamp}
-            current_keys: dict = {}
-
-            # Hold-Mode State wird über self._hold_state verwaltet
-
-            def normalize_key(key):
-                """Normalisiert Key zu vergleichbarer Form."""
-                # Modifier: ctrl_l/ctrl_r -> ctrl, etc.
-                if hasattr(key, "name"):
-                    name = key.name
-                    if name in ("ctrl_l", "ctrl_r"):
-                        return keyboard.Key.ctrl
-                    if name in ("alt_l", "alt_r", "alt_gr"):
-                        return keyboard.Key.alt
-                    if name in ("shift_l", "shift_r"):
-                        return keyboard.Key.shift
-                    if name in ("cmd_l", "cmd_r"):
-                        return keyboard.Key.cmd
-
-                # Buchstaben: VK-Code oder char -> lowercase KeyCode
-                if hasattr(key, "vk") and key.vk in _VK_TO_CHAR:
-                    return keyboard.KeyCode.from_char(_VK_TO_CHAR[key.vk])
-                if hasattr(key, "char") and key.char:
-                    return keyboard.KeyCode.from_char(key.char.lower())
-
-                return key
-
-            def cleanup_stale_keys(now: float):
-                """Entfernt Keys die länger als Timeout gedrückt sind (missed releases)."""
-                stale = [
-                    k
-                    for k, t in current_keys.items()
-                    if now - t > _KEY_STALE_TIMEOUT_SEC
-                ]
-                for k in stale:
-                    del current_keys[k]
-                    logger.debug(f"Stale Key entfernt: {k}")
-
-            def on_press(key):
-                if listener_generation != self._hotkey_listener_generation:
-                    return
-                now = time.monotonic()
-                normalized = normalize_key(key)
-
-                # Stale Keys aufräumen
-                cleanup_stale_keys(now)
-
-                # Key mit Zeitstempel speichern
-                current_keys[normalized] = now
-
-                # Aktive Keys
-                active_keys = set(current_keys.keys())
-
-                # Jeden Hotkey prüfen
-                for hotkey_keys, mode, source_id in parsed_hotkeys:
-                    if hotkey_keys.issubset(active_keys):
-                        # Zusätzliche Prüfung: Der gerade gedrückte Key muss Teil des Hotkeys sein
-                        if normalized in hotkey_keys:
-                            # Debouncing: Verhindere Doppel-Trigger
-                            if now - self._last_hotkey_time >= _HOTKEY_DEBOUNCE_SEC:
-                                self._last_hotkey_time = now
-                                logger.debug(
-                                    f"Hotkey ausgelöst: {hotkey_keys} (mode: {mode})"
-                                )
-
-                                if mode == "hold":
-                                    # Hold-Mode: Recording starten, bleibt aktiv bis Release
-                                    if (
-                                        self.state == AppState.LOADING
-                                        and self._is_prewarm_loading
-                                    ):
-                                        logger.debug(
-                                            "Hold-Hotkey ignoriert: Pre-Warm noch nicht abgeschlossen"
-                                        )
-                                    elif self._hold_state.should_start(source_id):
-                                        self._start_recording_from_hold(source_id)
-                                else:
-                                    # Toggle-Mode: Keys leeren und Toggle-Action
-                                    current_keys.clear()
-                                    self._on_hotkey_press()
-
-            def on_release(key):
-                if listener_generation != self._hotkey_listener_generation:
-                    return
-                normalized = normalize_key(key)
-                current_keys.pop(normalized, None)
-
-                # Aktive Keys nach Release
-                active_keys = set(current_keys.keys())
-
-                # Jeden Hold-Hotkey prüfen
-                for hotkey_keys, mode, source_id in parsed_hotkeys:
-                    if mode == "hold" and self._hold_state.is_active(source_id):
-                        if not hotkey_keys.issubset(active_keys):
-                            # Mindestens eine Hotkey-Taste wurde losgelassen
-                            logger.debug(f"Hotkey losgelassen: {normalized}")
-                            if self._hold_state.should_stop(source_id):
-                                self._stop_recording_from_hotkey()
-
-            # pynput.Listener ist standardmäßig ein Daemon-Thread (daemon=True)
-            # Das ist wichtig für die Shutdown-Logik: Daemon-Threads werden beim
-            # Prozessende automatisch beendet, auch wenn stop() blockiert
-            listener = keyboard.Listener(on_press=on_press, on_release=on_release)
-            listener.start()
-            self._hotkey_listeners.append(listener)
-
-            # Logging
-            for hotkey_str, mode in bindings:
-                logger.info(
-                    f"Hotkey registriert: {hotkey_str} ({mode.capitalize()}-Mode)"
-                )
+            self._start_windows_hotkey_listener(keyboard, parsed_hotkeys)
+            self._log_registered_windows_hotkeys(bindings)
 
         except ImportError:
             logger.error("pynput nicht installiert")
         except Exception as e:
             logger.error(f"Hotkey-Fehler: {e}")
+
+    def _resolve_windows_hotkey_bindings(self) -> list[tuple[str, str]]:
+        bindings: list[tuple[str, str]] = []
+        if self.toggle_hotkey:
+            bindings.append((self.toggle_hotkey, "toggle"))
+        if not self.hold_hotkey:
+            return bindings
+        if self.toggle_hotkey and hotkeys_conflict(self.toggle_hotkey, self.hold_hotkey):
+            logger.error(
+                "Hotkey-Konflikt: Hold-Hotkey überlappt mit Toggle-Hotkey "
+                f"({self.hold_hotkey} vs {self.toggle_hotkey}). Hold wird ignoriert."
+            )
+            return bindings
+        bindings.append((self.hold_hotkey, "hold"))
+        return bindings
+
+    def _parse_windows_hotkey_bindings(self, bindings, keyboard) -> list[tuple[set, str, str]]:
+        parsed_hotkeys: list[tuple[set, str, str]] = []
+        for hotkey_str, mode in bindings:
+            hotkey_keys = self._parse_hotkey_string(hotkey_str, keyboard)
+            if not hotkey_keys:
+                logger.error(f"Ungültiger Hotkey: {hotkey_str}")
+                continue
+            parsed_hotkeys.append((hotkey_keys, mode, f"pynput:{mode}:{hotkey_str}"))
+        return parsed_hotkeys
+
+    def _start_windows_hotkey_listener(self, keyboard, parsed_hotkeys) -> None:
+        # Snapshot der aktuellen Listener-Generation. Wenn zwischenzeitlich ein
+        # Restart/Shutdown passiert, ignoriert dieser Listener nachlaufende Events.
+        listener_generation = self._hotkey_listener_generation
+        current_keys: dict = {}
+
+        def on_press(key):
+            if listener_generation != self._hotkey_listener_generation:
+                return
+            self._handle_windows_hotkey_press(
+                key,
+                keyboard,
+                parsed_hotkeys,
+                current_keys,
+            )
+
+        def on_release(key):
+            if listener_generation != self._hotkey_listener_generation:
+                return
+            self._handle_windows_hotkey_release(
+                key,
+                keyboard,
+                parsed_hotkeys,
+                current_keys,
+            )
+
+        listener = keyboard.Listener(on_press=on_press, on_release=on_release)
+        listener.start()
+        self._hotkey_listeners.append(listener)
+
+    def _normalize_windows_pynput_key(self, key, keyboard):
+        if hasattr(key, "name"):
+            name = key.name
+            if name in ("ctrl_l", "ctrl_r"):
+                return keyboard.Key.ctrl
+            if name in ("alt_l", "alt_r", "alt_gr"):
+                return keyboard.Key.alt
+            if name in ("shift_l", "shift_r"):
+                return keyboard.Key.shift
+            if name in ("cmd_l", "cmd_r"):
+                return keyboard.Key.cmd
+
+        if hasattr(key, "vk") and key.vk in _VK_TO_CHAR:
+            return keyboard.KeyCode.from_char(_VK_TO_CHAR[key.vk])
+        if hasattr(key, "char") and key.char:
+            return keyboard.KeyCode.from_char(key.char.lower())
+        return key
+
+    @staticmethod
+    def _cleanup_stale_hotkey_keys(current_keys: dict, now: float) -> None:
+        stale = [
+            key for key, timestamp in current_keys.items()
+            if now - timestamp > _KEY_STALE_TIMEOUT_SEC
+        ]
+        for key in stale:
+            del current_keys[key]
+            logger.debug(f"Stale Key entfernt: {key}")
+
+    def _handle_windows_hotkey_press(
+        self,
+        key,
+        keyboard,
+        parsed_hotkeys,
+        current_keys: dict,
+    ) -> None:
+        now = time.monotonic()
+        normalized = self._normalize_windows_pynput_key(key, keyboard)
+        self._cleanup_stale_hotkey_keys(current_keys, now)
+        current_keys[normalized] = now
+
+        active_keys = set(current_keys.keys())
+        for hotkey_keys, mode, source_id in parsed_hotkeys:
+            if not hotkey_keys.issubset(active_keys) or normalized not in hotkey_keys:
+                continue
+            if now - self._last_hotkey_time < _HOTKEY_DEBOUNCE_SEC:
+                continue
+            self._last_hotkey_time = now
+            logger.debug(f"Hotkey ausgelöst: {hotkey_keys} (mode: {mode})")
+            self._dispatch_windows_hotkey_match(mode, source_id, current_keys)
+
+    def _dispatch_windows_hotkey_match(
+        self,
+        mode: str,
+        source_id: str,
+        current_keys: dict,
+    ) -> None:
+        if mode == "hold":
+            self._maybe_start_hold_hotkey(source_id)
+            return
+        current_keys.clear()
+        self._on_hotkey_press()
+
+    def _maybe_start_hold_hotkey(self, source_id: str) -> None:
+        if self.state == AppState.LOADING and self._is_prewarm_loading:
+            logger.debug("Hold-Hotkey ignoriert: Pre-Warm noch nicht abgeschlossen")
+            return
+        if self._hold_state.should_start(source_id):
+            self._start_recording_from_hold(source_id)
+
+    def _handle_windows_hotkey_release(
+        self,
+        key,
+        keyboard,
+        parsed_hotkeys,
+        current_keys: dict,
+    ) -> None:
+        normalized = self._normalize_windows_pynput_key(key, keyboard)
+        current_keys.pop(normalized, None)
+        active_keys = set(current_keys.keys())
+
+        for hotkey_keys, mode, source_id in parsed_hotkeys:
+            if mode != "hold" or not self._hold_state.is_active(source_id):
+                continue
+            if hotkey_keys.issubset(active_keys):
+                continue
+            logger.debug(f"Hotkey losgelassen: {normalized}")
+            if self._hold_state.should_stop(source_id):
+                self._stop_recording_from_hotkey()
+
+    @staticmethod
+    def _log_registered_windows_hotkeys(bindings: list[tuple[str, str]]) -> None:
+        for hotkey_str, mode in bindings:
+            logger.info(f"Hotkey registriert: {hotkey_str} ({mode.capitalize()}-Mode)")
 
     @staticmethod
     def _parse_hotkey_string(hotkey_str: str, keyboard) -> set:
@@ -1810,103 +1933,109 @@ class PulseScribeWindows:
             logger.debug("Settings-Fenster bereits offen")
             return
 
-        import subprocess
-
         try:
-            # PyInstaller Bundle: sich selbst mit --settings aufrufen
-            if getattr(sys, "frozen", False):
-                process = subprocess.Popen(
-                    [sys.executable, "--settings"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.PIPE,
-                    creationflags=(
-                        subprocess.CREATE_NO_WINDOW
-                        if hasattr(subprocess, "CREATE_NO_WINDOW")
-                        else 0
-                    ),
-                )
-
-                # Kurz warten und prüfen ob Prozess sofort stirbt
-                import time
-
-                time.sleep(0.5)
-                if process.poll() is not None:
-                    _, stderr = process.communicate(timeout=1)
-                    error_msg = stderr.decode("utf-8", errors="replace").strip()
-                    logger.error(f"Settings-Fenster fehlgeschlagen: {error_msg[:200]}")
-                    self._open_env_in_editor()
-                    return
-
-                self._start_subprocess_stderr_drain(process, "settings")
-                self._settings_process = process
-                logger.info("Settings-Fenster gestartet (--settings)")
+            process, start_label = self._start_settings_subprocess()
+            if process is None:
                 return
-
-            # Entwicklung: Python-Interpreter mit settings_windows.py starten
-            # Bevorzuge venv-Python (dort ist PySide6 installiert)
-            venv_python = PROJECT_ROOT / "venv" / "Scripts" / "python.exe"
-            dotvenv_python = PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
-            if venv_python.exists():
-                python_exe = str(venv_python)
-            elif dotvenv_python.exists():
-                python_exe = str(dotvenv_python)
-            else:
-                # Kein venv - prüfe ob PySide6 im aktuellen Python verfügbar ist
-                import importlib.util
-
-                if importlib.util.find_spec("PySide6") is None:
-                    logger.warning("PySide6 nicht installiert - öffne .env im Editor")
-                    self._open_env_in_editor()
-                    return
-                python_exe = sys.executable
-
-            settings_script = PROJECT_ROOT / "ui" / "settings_windows.py"
-
-            if not settings_script.exists():
-                logger.error(f"Settings-Script nicht gefunden: {settings_script}")
-                self._open_env_in_editor()
+            if self._subprocess_failed_immediately(
+                process,
+                "Settings-Fenster",
+                self._open_env_in_editor,
+            ):
                 return
-
-            # PYTHONPATH erweitern damit utils.* imports funktionieren
-            env = os.environ.copy()
-            project_root = str(PROJECT_ROOT)
-            existing_pythonpath = env.get("PYTHONPATH")
-            if existing_pythonpath:
-                env["PYTHONPATH"] = project_root + os.pathsep + existing_pythonpath
-            else:
-                env["PYTHONPATH"] = project_root
-
-            process = subprocess.Popen(
-                [python_exe, str(settings_script)],
-                cwd=str(PROJECT_ROOT),
-                env=env,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                creationflags=(
-                    subprocess.CREATE_NO_WINDOW
-                    if hasattr(subprocess, "CREATE_NO_WINDOW")
-                    else 0
-                ),
-            )
-
-            # Kurz warten und prüfen ob Prozess sofort stirbt (Import-Fehler etc.)
-            import time
-
-            time.sleep(0.5)
-            if process.poll() is not None:
-                _, stderr = process.communicate(timeout=1)
-                error_msg = stderr.decode("utf-8", errors="replace").strip()
-                logger.error(f"Settings-Fenster fehlgeschlagen: {error_msg[:200]}")
-                self._open_env_in_editor()
-                return
-
             self._start_subprocess_stderr_drain(process, "settings")
             self._settings_process = process
-            logger.info("Settings-Fenster gestartet (separater Prozess)")
+            logger.info(f"Settings-Fenster gestartet ({start_label})")
 
         except Exception as e:
             logger.error(f"Settings-Fenster konnte nicht geöffnet werden: {e}")
             self._open_env_in_editor()
+
+    def _start_settings_subprocess(self):
+        if getattr(sys, "frozen", False):
+            return self._start_frozen_settings_subprocess(), "--settings"
+        return self._start_dev_settings_subprocess(), "separater Prozess"
+
+    @staticmethod
+    def _subprocess_creationflags(subprocess) -> int:
+        return (
+            subprocess.CREATE_NO_WINDOW
+            if hasattr(subprocess, "CREATE_NO_WINDOW")
+            else 0
+        )
+
+    def _start_frozen_settings_subprocess(self):
+        import subprocess
+
+        return subprocess.Popen(
+            [sys.executable, "--settings"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            creationflags=self._subprocess_creationflags(subprocess),
+        )
+
+    def _resolve_settings_python_executable(self) -> str | None:
+        venv_python = PROJECT_ROOT / "venv" / "Scripts" / "python.exe"
+        dotvenv_python = PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
+        if venv_python.exists():
+            return str(venv_python)
+        if dotvenv_python.exists():
+            return str(dotvenv_python)
+
+        import importlib.util
+
+        if importlib.util.find_spec("PySide6") is None:
+            logger.warning("PySide6 nicht installiert - öffne .env im Editor")
+            self._open_env_in_editor()
+            return None
+        return sys.executable
+
+    @staticmethod
+    def _settings_subprocess_env() -> dict[str, str]:
+        env = os.environ.copy()
+        project_root = str(PROJECT_ROOT)
+        existing_pythonpath = env.get("PYTHONPATH")
+        env["PYTHONPATH"] = (
+            project_root + os.pathsep + existing_pythonpath
+            if existing_pythonpath
+            else project_root
+        )
+        return env
+
+    def _start_dev_settings_subprocess(self):
+        python_exe = self._resolve_settings_python_executable()
+        if python_exe is None:
+            return None
+
+        settings_script = PROJECT_ROOT / "ui" / "settings_windows.py"
+        if not settings_script.exists():
+            logger.error(f"Settings-Script nicht gefunden: {settings_script}")
+            self._open_env_in_editor()
+            return None
+
+        import subprocess
+
+        return subprocess.Popen(
+            [python_exe, str(settings_script)],
+            cwd=str(PROJECT_ROOT),
+            env=self._settings_subprocess_env(),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            creationflags=self._subprocess_creationflags(subprocess),
+        )
+
+    @staticmethod
+    def _subprocess_failed_immediately(process, label: str, fallback) -> bool:
+        import time
+
+        time.sleep(0.5)
+        if process.poll() is None:
+            return False
+        _, stderr = process.communicate(timeout=1)
+        error_msg = stderr.decode("utf-8", errors="replace").strip()
+        logger.error(f"{label} fehlgeschlagen: {error_msg[:200]}")
+        fallback()
+        return True
 
     def _start_subprocess_stderr_drain(self, process, process_name: str) -> None:
         """Entleert stderr-Pipes im Hintergrund, um Subprocess-Hänger zu vermeiden."""
@@ -1959,104 +2088,108 @@ class PulseScribeWindows:
 
             logger.info("Settings neu laden...")
 
-            # WICHTIG: os.environ aktualisieren, damit alle Module die neuen Werte sehen
-            # (z.B. refine/llm.py verwendet os.getenv() direkt)
-            load_environment(override_existing=True)
-
-            # .env auch als Dict lesen für explizite Instanzvariablen
-            from utils.preferences import read_env_file
-
-            env_values = read_env_file()
+            env_values = self._read_reloaded_env_values()
             if self._stop_event.is_set():
                 logger.debug("Settings-Reload abgebrochen: App wird beendet")
                 return
 
-            # Mode aktualisieren
-            new_mode = env_values.get("PULSESCRIBE_MODE", "deepgram")
-            mode_changed = new_mode != self.mode
-            if mode_changed:
-                old_mode = self.mode
-                self.mode = new_mode
-
-                # GESAMTEN Provider-Cache leeren (nicht nur alten Mode)
-                # Wichtig weil auch LocalProvider.invalidate_runtime_config() nötig ist
-                with self._provider_cache_lock:
-                    providers_to_invalidate = list(self._provider_cache.values())
-                    self._provider_cache.clear()
-                for provider in providers_to_invalidate:
-                    if hasattr(provider, "invalidate_runtime_config"):
-                        provider.invalidate_runtime_config()
-                logger.info(f"Mode geändert: {old_mode} → {new_mode}")
-
-            # Bei local Mode: Runtime-Config invalidieren (auch ohne Mode-Wechsel)
-            # Wichtig damit Fallback auf CPU bei Modellwechsel zurückgesetzt wird
-            if new_mode == "local" and not mode_changed:
-                with self._provider_cache_lock:
-                    local_provider = self._provider_cache.get("local")
-                if local_provider and hasattr(
-                    local_provider, "invalidate_runtime_config"
-                ):
-                    local_provider.invalidate_runtime_config()
-
-            # Bei local Mode: Model preloaden (bei Mode-Wechsel oder Settings-Reload)
-            if new_mode == "local":
-                threading.Thread(target=self._preload_local_model, daemon=True).start()
-
-            # Refine aktualisieren
-            self.refine = _env_flag(
-                env_values.get("PULSESCRIBE_REFINE"),
-                default=False,
-            )
-            self.refine_model = env_values.get("PULSESCRIBE_REFINE_MODEL")
-            self.refine_provider = env_values.get("PULSESCRIBE_REFINE_PROVIDER")
-
-            # Context aktualisieren
-            self.context = env_values.get("PULSESCRIBE_CONTEXT")
-
-            # Streaming aktualisieren (nur Deepgram unterstützt Streaming)
-            streaming_enabled = _env_flag(
-                env_values.get("PULSESCRIBE_STREAMING"),
-                default=True,
-            )
-            self.streaming = streaming_enabled and self.mode == "deepgram"
-
-            # Overlay aktualisieren (mit Start/Stop wenn nötig)
-            new_overlay_enabled = _env_flag(
-                env_values.get("PULSESCRIBE_OVERLAY"),
-                default=True,
-            )
-
-            if new_overlay_enabled != self.overlay_enabled:
-                self.overlay_enabled = new_overlay_enabled
-                if new_overlay_enabled and self._overlay is None:
-                    # Overlay aktivieren
-                    logger.info("Overlay aktiviert")
-                    self._setup_overlay()
-                elif not new_overlay_enabled and self._overlay is not None:
-                    # Overlay deaktivieren
-                    logger.info("Overlay deaktiviert")
-                    self._stop_overlay()
-
-            # Hotkeys aktualisieren (erfordert Listener-Neustart)
-            new_toggle = env_values.get("PULSESCRIBE_TOGGLE_HOTKEY")
-            new_hold = env_values.get("PULSESCRIBE_HOLD_HOTKEY")
-
-            # Fallback: Wenn nichts konfiguriert, beide Defaults setzen (wie beim Startup)
-            if not new_toggle and not new_hold:
-                new_toggle = _DEFAULT_TOGGLE_HOTKEY
-                new_hold = _DEFAULT_HOLD_HOTKEY
-
-            if new_toggle != self.toggle_hotkey or new_hold != self.hold_hotkey:
-                if self._stop_event.is_set():
-                    logger.debug("Hotkey-Reload übersprungen: App wird beendet")
-                    return
-                self.toggle_hotkey = new_toggle
-                self.hold_hotkey = new_hold
-                logger.info(f"Hotkeys geändert: toggle={new_toggle}, hold={new_hold}")
-                # Listener neu starten
-                self._restart_hotkey_listeners()
+            self._apply_mode_reload_settings(env_values)
+            self._apply_refine_reload_settings(env_values)
+            self._apply_streaming_reload_settings(env_values)
+            self._apply_overlay_reload_settings(env_values)
+            if not self._apply_hotkey_reload_settings(env_values):
+                return
 
             logger.info("Settings erfolgreich neu geladen")
+
+    @staticmethod
+    def _read_reloaded_env_values() -> dict[str, str]:
+        # WICHTIG: os.environ aktualisieren, damit alle Module die neuen Werte sehen
+        # (z.B. refine/llm.py verwendet os.getenv() direkt)
+        load_environment(override_existing=True)
+        from utils.preferences import read_env_file
+
+        return read_env_file()
+
+    def _apply_mode_reload_settings(self, env_values: dict[str, str]) -> None:
+        new_mode = env_values.get("PULSESCRIBE_MODE", "deepgram")
+        mode_changed = new_mode != self.mode
+        if mode_changed:
+            old_mode = self.mode
+            self.mode = new_mode
+            self._invalidate_all_provider_runtime_configs()
+            logger.info(f"Mode geändert: {old_mode} → {new_mode}")
+        elif new_mode == "local":
+            self._invalidate_local_provider_runtime_config()
+
+        if new_mode == "local":
+            threading.Thread(target=self._preload_local_model, daemon=True).start()
+
+    def _invalidate_all_provider_runtime_configs(self) -> None:
+        with self._provider_cache_lock:
+            providers_to_invalidate = list(self._provider_cache.values())
+            self._provider_cache.clear()
+        for provider in providers_to_invalidate:
+            if hasattr(provider, "invalidate_runtime_config"):
+                provider.invalidate_runtime_config()
+
+    def _invalidate_local_provider_runtime_config(self) -> None:
+        with self._provider_cache_lock:
+            local_provider = self._provider_cache.get("local")
+        if local_provider and hasattr(local_provider, "invalidate_runtime_config"):
+            local_provider.invalidate_runtime_config()
+
+    def _apply_refine_reload_settings(self, env_values: dict[str, str]) -> None:
+        self.refine = _env_flag(
+            env_values.get("PULSESCRIBE_REFINE"),
+            default=False,
+        )
+        self.refine_model = env_values.get("PULSESCRIBE_REFINE_MODEL")
+        self.refine_provider = env_values.get("PULSESCRIBE_REFINE_PROVIDER")
+        self.context = env_values.get("PULSESCRIBE_CONTEXT")
+
+    def _apply_streaming_reload_settings(self, env_values: dict[str, str]) -> None:
+        streaming_enabled = _env_flag(
+            env_values.get("PULSESCRIBE_STREAMING"),
+            default=True,
+        )
+        self.streaming = streaming_enabled and self.mode == "deepgram"
+
+    def _apply_overlay_reload_settings(self, env_values: dict[str, str]) -> None:
+        new_overlay_enabled = _env_flag(
+            env_values.get("PULSESCRIBE_OVERLAY"),
+            default=True,
+        )
+        if new_overlay_enabled == self.overlay_enabled:
+            return
+        self.overlay_enabled = new_overlay_enabled
+        if new_overlay_enabled and self._overlay is None:
+            logger.info("Overlay aktiviert")
+            self._setup_overlay()
+        elif not new_overlay_enabled and self._overlay is not None:
+            logger.info("Overlay deaktiviert")
+            self._stop_overlay()
+
+    @staticmethod
+    def _resolve_reloaded_hotkeys(env_values: dict[str, str]) -> tuple[str | None, str | None]:
+        new_toggle = env_values.get("PULSESCRIBE_TOGGLE_HOTKEY")
+        new_hold = env_values.get("PULSESCRIBE_HOLD_HOTKEY")
+        if not new_toggle and not new_hold:
+            return _DEFAULT_TOGGLE_HOTKEY, _DEFAULT_HOLD_HOTKEY
+        return new_toggle, new_hold
+
+    def _apply_hotkey_reload_settings(self, env_values: dict[str, str]) -> bool:
+        new_toggle, new_hold = self._resolve_reloaded_hotkeys(env_values)
+        if new_toggle == self.toggle_hotkey and new_hold == self.hold_hotkey:
+            return True
+        if self._stop_event.is_set():
+            logger.debug("Hotkey-Reload übersprungen: App wird beendet")
+            return False
+        self.toggle_hotkey = new_toggle
+        self.hold_hotkey = new_hold
+        logger.info(f"Hotkeys geändert: toggle={new_toggle}, hold={new_hold}")
+        self._restart_hotkey_listeners()
+        return True
 
     def _preload_local_model(self):
         """Lädt Local-Model vor nach Settings-Änderung."""
@@ -2085,8 +2218,11 @@ class PulseScribeWindows:
         from utils.preferences import ENV_FILE
 
         self._reload_signal_file = ENV_FILE.parent / ".reload"
-        watchdog_started = False
 
+        if not self._start_watchdog_env_observer(ENV_FILE):
+            self._start_reload_polling()
+
+    def _start_watchdog_env_observer(self, env_file: Path) -> bool:
         try:
             from watchdog.observers import Observer
             from watchdog.events import FileSystemEventHandler
@@ -2099,10 +2235,7 @@ class PulseScribeWindows:
 
                 def on_modified(handler_self, event):
                     # .env oder .reload Datei beachten
-                    if not (
-                        event.src_path.endswith(".env")
-                        or event.src_path.endswith(".reload")
-                    ):
+                    if not _is_reload_event_path(event.src_path):
                         return
                     # Debounce: Ignoriere Events < 1s nach letztem
                     now = time.time()
@@ -2111,11 +2244,7 @@ class PulseScribeWindows:
                         logger.debug(f"Settings-Änderung erkannt: {event.src_path}")
                         handler_self.callback()
                         # Signal-Datei löschen nach Verarbeitung
-                        if handler_self.signal_file.exists():
-                            try:
-                                handler_self.signal_file.unlink()
-                            except Exception:
-                                pass
+                        _unlink_reload_signal_file(handler_self.signal_file)
 
                 def on_created(handler_self, event):
                     # Auch neue .reload Dateien beachten
@@ -2124,10 +2253,10 @@ class PulseScribeWindows:
 
             handler = EnvFileHandler(self._reload_settings, self._reload_signal_file)
             self._env_observer = Observer()
-            self._env_observer.schedule(handler, str(ENV_FILE.parent), recursive=False)
+            self._env_observer.schedule(handler, str(env_file.parent), recursive=False)
             self._env_observer.start()
-            logger.info(f"FileWatcher gestartet für {ENV_FILE.parent}")
-            watchdog_started = True
+            logger.info(f"FileWatcher gestartet für {env_file.parent}")
+            return True
 
         except ImportError:
             logger.debug("watchdog nicht installiert - verwende Polling-Fallback")
@@ -2136,9 +2265,7 @@ class PulseScribeWindows:
             logger.warning(f"FileWatcher konnte nicht gestartet werden: {e}")
             self._env_observer = None
 
-        # Polling-Fallback wenn watchdog nicht funktioniert
-        if not watchdog_started:
-            self._start_reload_polling()
+        return False
 
     def _stop_env_watcher(self):
         """Stoppt den FileWatcher und Polling."""
@@ -2248,111 +2375,150 @@ class PulseScribeWindows:
         start = time.perf_counter()
 
         try:
-            # Phase 1: Core-Libraries (für Streaming und REST)
-            import numpy  # noqa: F401 - ~300ms
-            import sounddevice  # noqa: F401 - ~100ms
-
-            # Phase 2: Provider-Dependencies vorwärmen
-            if self.streaming:
-                from providers.deepgram_stream import deepgram_stream_core  # noqa: F401
-                import httpx  # noqa: F401
-                import websockets  # noqa: F401
-
-                # Deepgram SDK-Klassen (werden in deepgram_stream_core benötigt)
-                from deepgram.core.events import EventType  # noqa: F401
-
-                # Event-Loop vorab erstellen (spart ~50-100ms beim ersten Recording)
-                import asyncio
-
-                self._event_loop = asyncio.new_event_loop()
-            else:
-                # REST-Modi zahlen sonst beim ersten Stop lazy Import-/Client-Kosten.
-                try:
-                    import soundfile  # noqa: F401
-                    self._get_provider(self.mode)
-                except Exception as e:
-                    logger.debug(f"REST-Provider Pre-Warm übersprungen: {e}")
-
-            # Phase 2b: UI-Imports (optional, beschleunigt _setup_overlay/tray)
-            try:
-                import pystray  # noqa: F401
-                from PIL import Image  # noqa: F401
-
-                if self.overlay_enabled:
-                    from ui.overlay_windows import (
-                        WindowsOverlayController as _WOC,  # noqa: F401
-                    )
-            except ImportError:
-                pass  # Optional, nicht kritisch
-
-            imports_ms = (time.perf_counter() - start) * 1000
-
-            # Phase 3: Audio-Device erkennen (~250-500ms auf Windows)
-            # get_input_device() cached das Ergebnis in config._cached_input_device
-            device_start = time.perf_counter()
-            device_idx, sample_rate = get_input_device()
-
-            # Phase 4: Warm-Stream starten (für alle Modi!)
-            # Der Warm-Stream bleibt offen und ermöglicht instant-start Recording
-            # Auch REST-Modi (Groq, OpenAI, Local) profitieren vom Warm-Stream
-            self._start_warm_stream()
-
-            device_ms = (time.perf_counter() - device_start) * 1000
-
-            # Phase 5: DNS-Prefetch für Deepgram WebSocket (spart ~50-200ms)
-            if self.streaming:
-                try:
-                    import socket
-
-                    socket.getaddrinfo("api.deepgram.com", 443)
-                except Exception:
-                    pass  # Ignorieren wenn es fehlschlägt
-
-            # Phase 6: Local-Model Preload (nur im local mode)
-            # Lädt faster-whisper Modell vorab → erste Transkription ohne Delay
-            preload_ms = 0.0
-            if self.mode == "local":
-                try:
-                    preload_start = time.perf_counter()
-                    provider = self._get_provider("local")
-                    model, _language = self._get_transcription_config()
-                    show_local_loading = not self._mic_ready.is_set()
-                    if show_local_loading:
-                        self._set_state(AppState.LOADING, f"Loading {model}...")
-                    if hasattr(provider, "preload"):
-                        provider.preload(model=model)
-                    preload_ms = (time.perf_counter() - preload_start) * 1000
-                    # Runtime-Info für Logging (Device, Compute-Type)
-                    runtime_info = ""
-                    if hasattr(provider, "get_runtime_info"):
-                        info = provider.get_runtime_info()
-                        device = (info.get("device") or "unknown").upper()
-                        compute = info.get("compute_type")
-                        runtime_info = f", Device: {device}"
-                        if compute:
-                            runtime_info += f", Compute: {compute}"
-                    logger.info(
-                        f"Local-Modell '{model}' vorab geladen ({preload_ms:.0f}ms{runtime_info})"
-                    )
-                    # Auditive Rückmeldung: User kann jetzt mit minimaler Latenz aufnehmen
-                    get_sound_player().play("warmup")
-                except Exception as e:
-                    logger.warning(f"Local-Modell Preload fehlgeschlagen: {e}")
-
+            imports_ms = self._prewarm_dependencies(start)
+            device_idx, sample_rate, device_ms = self._prewarm_audio_device()
+            self._prefetch_streaming_dns()
+            preload_ms = self._preload_local_model_for_prewarm()
             total_ms = (time.perf_counter() - start) * 1000
-            mode_desc = f"{self.mode} ({'Streaming' if self.streaming else 'REST'})"
-            preload_info = (
-                f", Preload={preload_ms:.0f}ms" if self.mode == "local" else ""
-            )
-            logger.info(
-                f"Pre-Warm abgeschlossen ({total_ms:.0f}ms, {mode_desc}, Warm-Stream): "
-                f"Imports={imports_ms:.0f}ms, Device={device_ms:.0f}ms{preload_info} "
-                f"(idx={device_idx}, {sample_rate}Hz)"
+            self._log_prewarm_complete(
+                total_ms,
+                imports_ms,
+                device_ms,
+                preload_ms,
+                device_idx,
+                sample_rate,
             )
         except Exception as e:
             logger.debug(f"Pre-Warm fehlgeschlagen: {e}", exc_info=True)
         finally:
             self._prewarm_complete.set()
+
+    def _prewarm_dependencies(self, start: float) -> float:
+        # Phase 1: Core-Libraries (für Streaming und REST)
+        import numpy  # noqa: F401 - ~300ms
+        import sounddevice  # noqa: F401 - ~100ms
+
+        # Phase 2: Provider-Dependencies vorwärmen
+        if self.streaming:
+            self._prewarm_streaming_dependencies()
+        else:
+            self._prewarm_rest_dependencies()
+
+        # Phase 2b: UI-Imports (optional, beschleunigt _setup_overlay/tray)
+        self._prewarm_ui_dependencies()
+        return (time.perf_counter() - start) * 1000
+
+    def _prewarm_streaming_dependencies(self) -> None:
+        from providers.deepgram_stream import deepgram_stream_core  # noqa: F401
+        import httpx  # noqa: F401
+        import websockets  # noqa: F401
+
+        # Deepgram SDK-Klassen (werden in deepgram_stream_core benötigt)
+        from deepgram.core.events import EventType  # noqa: F401
+
+        # Event-Loop vorab erstellen (spart ~50-100ms beim ersten Recording)
+        import asyncio
+
+        self._event_loop = asyncio.new_event_loop()
+
+    def _prewarm_rest_dependencies(self) -> None:
+        # REST-Modi zahlen sonst beim ersten Stop lazy Import-/Client-Kosten.
+        try:
+            import soundfile  # noqa: F401
+
+            self._get_provider(self.mode)
+        except Exception as e:
+            logger.debug(f"REST-Provider Pre-Warm übersprungen: {e}")
+
+    def _prewarm_ui_dependencies(self) -> None:
+        try:
+            import pystray  # noqa: F401
+            from PIL import Image  # noqa: F401
+
+            if self.overlay_enabled:
+                from ui.overlay_windows import (
+                    WindowsOverlayController as _WOC,  # noqa: F401
+                )
+        except ImportError:
+            pass  # Optional, nicht kritisch
+
+    def _prewarm_audio_device(self) -> tuple[int | None, int, float]:
+        # Phase 3: Audio-Device erkennen (~250-500ms auf Windows)
+        # get_input_device() cached das Ergebnis in config._cached_input_device
+        device_start = time.perf_counter()
+        device_idx, sample_rate = get_input_device()
+
+        # Phase 4: Warm-Stream starten (für alle Modi!)
+        # Der Warm-Stream bleibt offen und ermöglicht instant-start Recording
+        # Auch REST-Modi (Groq, OpenAI, Local) profitieren vom Warm-Stream
+        self._start_warm_stream()
+        device_ms = (time.perf_counter() - device_start) * 1000
+        return device_idx, sample_rate, device_ms
+
+    def _prefetch_streaming_dns(self) -> None:
+        if not self.streaming:
+            return
+        try:
+            import socket
+
+            socket.getaddrinfo("api.deepgram.com", 443)
+        except Exception:
+            pass  # Ignorieren wenn es fehlschlägt
+
+    def _preload_local_model_for_prewarm(self) -> float:
+        if self.mode != "local":
+            return 0.0
+        try:
+            return self._run_local_model_prewarm()
+        except Exception as e:
+            logger.warning(f"Local-Modell Preload fehlgeschlagen: {e}")
+            return 0.0
+
+    def _run_local_model_prewarm(self) -> float:
+        preload_start = time.perf_counter()
+        provider = self._get_provider("local")
+        model, _language = self._get_transcription_config()
+        if not self._mic_ready.is_set():
+            self._set_state(AppState.LOADING, f"Loading {model}...")
+        if hasattr(provider, "preload"):
+            provider.preload(model=model)
+        preload_ms = (time.perf_counter() - preload_start) * 1000
+        runtime_info = self._format_local_provider_runtime_info(provider)
+        logger.info(
+            f"Local-Modell '{model}' vorab geladen ({preload_ms:.0f}ms{runtime_info})"
+        )
+        # Auditive Rückmeldung: User kann jetzt mit minimaler Latenz aufnehmen
+        get_sound_player().play("warmup")
+        return preload_ms
+
+    @staticmethod
+    def _format_local_provider_runtime_info(provider) -> str:
+        if not hasattr(provider, "get_runtime_info"):
+            return ""
+        info = provider.get_runtime_info()
+        device = (info.get("device") or "unknown").upper()
+        compute = info.get("compute_type")
+        runtime_info = f", Device: {device}"
+        if compute:
+            runtime_info += f", Compute: {compute}"
+        return runtime_info
+
+    def _log_prewarm_complete(
+        self,
+        total_ms: float,
+        imports_ms: float,
+        device_ms: float,
+        preload_ms: float,
+        device_idx: int | None,
+        sample_rate: int,
+    ) -> None:
+        mode_desc = f"{self.mode} ({'Streaming' if self.streaming else 'REST'})"
+        preload_info = f", Preload={preload_ms:.0f}ms" if self.mode == "local" else ""
+        logger.info(
+            f"Pre-Warm abgeschlossen ({total_ms:.0f}ms, {mode_desc}, Warm-Stream): "
+            f"Imports={imports_ms:.0f}ms, Device={device_ms:.0f}ms{preload_info} "
+            f"(idx={device_idx}, {sample_rate}Hz)"
+        )
 
     def _show_settings_if_needed(self):
         """Zeigt Wizard beim ersten Start oder Settings wenn aktiviert.
@@ -2386,107 +2552,78 @@ class PulseScribeWindows:
             logger.debug("Onboarding-Wizard bereits offen")
             return
 
-        import subprocess
-
         try:
-            # PyInstaller Bundle: sich selbst mit --onboarding aufrufen
-            if getattr(sys, "frozen", False):
-                process = subprocess.Popen(
-                    [sys.executable, "--onboarding"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.PIPE,
-                    creationflags=(
-                        subprocess.CREATE_NO_WINDOW
-                        if hasattr(subprocess, "CREATE_NO_WINDOW")
-                        else 0
-                    ),
-                )
-
-                import time
-
-                time.sleep(0.5)
-                if process.poll() is not None:
-                    _, stderr = process.communicate(timeout=1)
-                    error_msg = stderr.decode("utf-8", errors="replace").strip()
-                    logger.error(f"Onboarding-Wizard fehlgeschlagen: {error_msg[:200]}")
-                    self._show_settings()
-                    return
-
-                self._start_subprocess_stderr_drain(process, "onboarding")
-                self._onboarding_process = process
-                logger.info("Onboarding-Wizard gestartet (--onboarding)")
-
-                # Start IPC server for wizard communication
-                self._start_ipc_server()
+            process, start_label = self._start_onboarding_subprocess()
+            if process is None:
                 return
-
-            # Entwicklung: Python-Interpreter mit onboarding_wizard_windows.py starten
-            venv_python = PROJECT_ROOT / "venv" / "Scripts" / "python.exe"
-            dotvenv_python = PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
-            if venv_python.exists():
-                python_exe = str(venv_python)
-            elif dotvenv_python.exists():
-                python_exe = str(dotvenv_python)
-            else:
-                import importlib.util
-
-                if importlib.util.find_spec("PySide6") is None:
-                    logger.warning(
-                        "PySide6 nicht installiert - öffne Settings stattdessen"
-                    )
-                    self._show_settings()
-                    return
-                python_exe = sys.executable
-
-            wizard_script = PROJECT_ROOT / "ui" / "onboarding_wizard_windows.py"
-
-            if not wizard_script.exists():
-                logger.error(f"Wizard-Script nicht gefunden: {wizard_script}")
-                self._show_settings()
+            if self._subprocess_failed_immediately(
+                process,
+                "Onboarding-Wizard",
+                self._show_settings,
+            ):
                 return
-
-            # PYTHONPATH erweitern damit utils.* imports funktionieren
-            env = os.environ.copy()
-            project_root = str(PROJECT_ROOT)
-            existing_pythonpath = env.get("PYTHONPATH")
-            if existing_pythonpath:
-                env["PYTHONPATH"] = project_root + os.pathsep + existing_pythonpath
-            else:
-                env["PYTHONPATH"] = project_root
-
-            process = subprocess.Popen(
-                [python_exe, str(wizard_script)],
-                cwd=str(PROJECT_ROOT),
-                env=env,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                creationflags=(
-                    subprocess.CREATE_NO_WINDOW
-                    if hasattr(subprocess, "CREATE_NO_WINDOW")
-                    else 0
-                ),
-            )
-
-            import time
-
-            time.sleep(0.5)
-            if process.poll() is not None:
-                _, stderr = process.communicate(timeout=1)
-                error_msg = stderr.decode("utf-8", errors="replace").strip()
-                logger.error(f"Onboarding-Wizard fehlgeschlagen: {error_msg[:200]}")
-                self._show_settings()
-                return
-
             self._start_subprocess_stderr_drain(process, "onboarding")
             self._onboarding_process = process
-            logger.info("Onboarding-Wizard gestartet")
+            logger.info(f"Onboarding-Wizard gestartet ({start_label})")
 
-            # Start IPC server for wizard communication
             self._start_ipc_server()
 
         except Exception as e:
             logger.error(f"Onboarding-Wizard konnte nicht geöffnet werden: {e}")
             self._show_settings()
+
+    def _start_onboarding_subprocess(self):
+        if getattr(sys, "frozen", False):
+            return self._start_frozen_onboarding_subprocess(), "--onboarding"
+        return self._start_dev_onboarding_subprocess(), "separater Prozess"
+
+    def _start_frozen_onboarding_subprocess(self):
+        import subprocess
+
+        return subprocess.Popen(
+            [sys.executable, "--onboarding"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            creationflags=self._subprocess_creationflags(subprocess),
+        )
+
+    def _resolve_onboarding_python_executable(self) -> str | None:
+        venv_python = PROJECT_ROOT / "venv" / "Scripts" / "python.exe"
+        dotvenv_python = PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
+        if venv_python.exists():
+            return str(venv_python)
+        if dotvenv_python.exists():
+            return str(dotvenv_python)
+
+        import importlib.util
+
+        if importlib.util.find_spec("PySide6") is None:
+            logger.warning("PySide6 nicht installiert - öffne Settings stattdessen")
+            self._show_settings()
+            return None
+        return sys.executable
+
+    def _start_dev_onboarding_subprocess(self):
+        python_exe = self._resolve_onboarding_python_executable()
+        if python_exe is None:
+            return None
+
+        wizard_script = PROJECT_ROOT / "ui" / "onboarding_wizard_windows.py"
+        if not wizard_script.exists():
+            logger.error(f"Wizard-Script nicht gefunden: {wizard_script}")
+            self._show_settings()
+            return None
+
+        import subprocess
+
+        return subprocess.Popen(
+            [python_exe, str(wizard_script)],
+            cwd=str(PROJECT_ROOT),
+            env=self._settings_subprocess_env(),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            creationflags=self._subprocess_creationflags(subprocess),
+        )
 
     # =========================================================================
     # IPC for Wizard Communication
@@ -2583,70 +2720,79 @@ class PulseScribeWindows:
             if self._ipc_server:
                 self._ipc_server.send_response(cmd_id, STATUS_STOPPED)
 
-    def run(self):
-        """Startet den Daemon."""
+    def _format_hotkey_summary(self) -> str:
         hotkey_info = []
         if self.toggle_hotkey:
             hotkey_info.append(f"Toggle: {self.toggle_hotkey}")
         if self.hold_hotkey:
             hotkey_info.append(f"Hold: {self.hold_hotkey}")
-        hotkey_text = ", ".join(hotkey_info) if hotkey_info else "Keiner"
-        print(f"PulseScribe Windows gestartet (Hotkeys: {hotkey_text})")
+        return ", ".join(hotkey_info) if hotkey_info else "Keiner"
+
+    def _print_startup_banner(self) -> None:
+        print(f"PulseScribe Windows gestartet (Hotkeys: {self._format_hotkey_summary()})")
         print("Drücke Ctrl+C oder nutze Tray-Menü zum Beenden")
 
+    def _setup_startup_hotkeys(self) -> None:
         # Hotkey ZUERST registrieren - User kann sofort starten
         # (Device-Erkennung läuft parallel im Pre-Warm)
         with self._hotkey_listener_lock:
             self._setup_hotkey()
 
-        # Overlay FRÜH starten, damit LOADING angezeigt werden kann
-        self._setup_overlay()
-
+    def _start_prewarm_thread(self) -> None:
         # LOADING-State während Pre-Warm anzeigen (für alle Modi mit Warm-Stream)
         self._is_prewarm_loading = True
         self._set_state(AppState.LOADING, "Starting up...")
+        threading.Thread(
+            target=self._finish_prewarm_startup,
+            daemon=True,
+            name="PreWarm",
+        ).start()
 
-        # Pre-Warm: Teure Imports + Warm-Stream starten
-        def _prewarm_and_ready():
-            self._prewarm_imports()
-            # Falls kein Warm-Stream bereit wurde, erst nach vollständigem Pre-Warm
-            # auf Ready gehen. Bei erfolgreichem Warm-Stream erledigt _mark_mic_ready()
-            # das deutlich früher.
-            if self._is_prewarm_loading:
-                self._is_prewarm_loading = False
-                if self.state == AppState.LOADING:
-                    self._set_state(AppState.IDLE)
-                    self._play_sound("ready")  # Signal: System bereit
+    def _finish_prewarm_startup(self) -> None:
+        self._prewarm_imports()
+        # Falls kein Warm-Stream bereit wurde, erst nach vollständigem Pre-Warm
+        # auf Ready gehen. Bei erfolgreichem Warm-Stream erledigt _mark_mic_ready()
+        # das deutlich früher.
+        if not self._is_prewarm_loading:
+            return
+        self._is_prewarm_loading = False
+        if self.state == AppState.LOADING:
+            self._set_state(AppState.IDLE)
+            self._play_sound("ready")  # Signal: System bereit
 
-        threading.Thread(target=_prewarm_and_ready, daemon=True, name="PreWarm").start()
+    def _install_signal_handlers(self) -> None:
+        signal.signal(signal.SIGINT, self._handle_sigint)
 
-        self._setup_tray()
+    def _handle_sigint(self, sig, frame) -> None:
+        if self._stop_event.is_set():
+            return
+        print("\nCtrl+C erkannt, beende...")
+        self._quit()
 
-        # FileWatcher für Auto-Reload bei .env Änderungen
-        self._start_env_watcher()
-
-        # Settings-Fenster beim ersten Start oder wenn aktiviert öffnen (wie macOS)
-        self._show_settings_if_needed()
-
-        # Ctrl+C Handler: Signal wird an _quit weitergeleitet (nur einmal)
-        def signal_handler(sig, frame):
-            if not self._stop_event.is_set():
-                print("\nCtrl+C erkannt, beende...")
-                self._quit()
-
-        signal.signal(signal.SIGINT, signal_handler)
-
+    def _run_tray_if_available(self) -> None:
         if self._tray:
             # Tray-Icon in Hintergrund-Thread, damit Hauptthread Ctrl+C empfängt
             self._tray.run_detached()
 
-        # Hauptthread wartet auf Stop-Signal oder Ctrl+C
+    def _wait_until_stopped(self) -> None:
         try:
             while not self._stop_event.is_set():
                 time.sleep(0.5)
         except KeyboardInterrupt:
             self._quit()
 
+    def run(self):
+        """Startet den Daemon."""
+        self._print_startup_banner()
+        self._setup_startup_hotkeys()
+        self._setup_overlay()
+        self._start_prewarm_thread()
+        self._setup_tray()
+        self._start_env_watcher()
+        self._show_settings_if_needed()
+        self._install_signal_handlers()
+        self._run_tray_if_available()
+        self._wait_until_stopped()
         print("Beendet.")
 
 
