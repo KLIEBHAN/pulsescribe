@@ -106,7 +106,9 @@ STATE_COLORS = {
 STATE_TEXTS = DEFAULT_OVERLAY_STATE_TEXTS
 
 # Auto-Hide Timer für kurze Ergebnis- / Fehler-Feedbacks
-FEEDBACK_DISPLAY_MS = 800  # Millisekunden
+# Auf den DONE-Hold des Daemons (_DONE_DISPLAY_HOLD_SEC) abgestimmt, damit der
+# Übergang DONE -> ausgeblendet snappy wirkt statt nachzuhängen.
+FEEDBACK_DISPLAY_MS = 600  # Millisekunden
 INTERIM_POLL_MAX_CHARS = 512  # Begrenztes Tail-Read für niedrige Polling-Last
 INTERIM_POLL_INTERVAL_MS = 200  # Polling nur während RECORDING
 INTERIM_POLL_STABLE_INTERVAL_MS = 500

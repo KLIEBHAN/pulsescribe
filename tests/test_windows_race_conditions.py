@@ -164,12 +164,17 @@ def test_streaming_stop_switches_to_transcribing_immediately(monkeypatch):
     daemon._run_streaming = True
     watchdog_calls: list[str] = []
     daemon._start_transcribing_watchdog = lambda: watchdog_calls.append("start")
+    sound_calls: list[str] = []
+    daemon._play_sound = lambda name: sound_calls.append(name)
 
     daemon._stop_recording()
 
     assert daemon._recording_stop_event.is_set()
     assert daemon.state == AppState.TRANSCRIBING
     assert daemon._last_status_text == "Finishing..."
+    # Stop-Sound wird sofort bei Release gespielt (snappy feedback),
+    # nicht erst nach der Deepgram-Finalize-Kette.
+    assert sound_calls == ["stop"]
     assert watchdog_calls == []
 
     daemon._set_state(AppState.TRANSCRIBING)
@@ -390,7 +395,10 @@ def test_streaming_worker_warm_passes_windows_stop_grace(monkeypatch):
     daemon._streaming_worker_warm()
 
     assert captured_kwargs["stop_grace_seconds"] == 0.42
-    assert events == ["core_return", "sound:stop"]
+    # Der Worker spielt den Stop-Sound nicht mehr; das passiert jetzt sofort bei
+    # Release in _stop_recording (siehe test_streaming_stop_switches_to_
+    # transcribing_immediately).
+    assert events == ["core_return"]
 
 
 def test_recording_loop_warm_collects_audio_during_stop_grace(monkeypatch):

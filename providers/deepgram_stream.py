@@ -47,6 +47,7 @@ from config import (
     INTERIM_FILE,
     INTERIM_THROTTLE_MS,
     PRE_DRAIN_DURATION,
+    PRE_DRAIN_MIN_DURATION,
     SEND_MEDIA_TIMEOUT,
     WHISPER_BLOCKSIZE,
     WHISPER_CHANNELS,
@@ -485,15 +486,33 @@ def _pre_drain_warm_stream(
     loop: asyncio.AbstractEventLoop,
     audio_queue: asyncio.Queue[bytes | None],
 ) -> int:
+    """Drain in-flight warm-stream chunks before the callback is disarmed.
+
+    The warm callback is still armed here, so its last block may arrive a few
+    milliseconds late. We therefore always wait at least ``PRE_DRAIN_MIN_DURATION``
+    (~1 blocksize) to catch that block, but exit early once the queue stays empty
+    instead of always burning the full ``PRE_DRAIN_DURATION``. The adaptive
+    post-drain still runs afterwards, so this cannot lose tail audio while saving
+    perceived stop->text latency.
+    """
     drained = 0
-    deadline = time.monotonic() + PRE_DRAIN_DURATION
-    while time.monotonic() < deadline:
+    now = time.monotonic()
+    floor_deadline = now + PRE_DRAIN_MIN_DURATION
+    hard_deadline = now + PRE_DRAIN_DURATION
+    empty_count = 0
+    while time.monotonic() < hard_deadline:
         try:
             chunk = warm_source.audio_queue.get(timeout=DRAIN_POLL_INTERVAL)
             _forward_warm_chunk(loop=loop, audio_queue=audio_queue, chunk=chunk)
             drained += 1
+            empty_count = 0
         except queue.Empty:
-            continue
+            empty_count += 1
+            if (
+                empty_count >= DRAIN_EMPTY_THRESHOLD
+                and time.monotonic() >= floor_deadline
+            ):
+                break
         except RuntimeError:
             break
     return drained

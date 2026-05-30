@@ -197,6 +197,12 @@ _DEFAULT_HOLD_HOTKEY = "ctrl+win"
 # Kurz gehalten für schnelles Beenden - Daemon-Threads werden automatisch beendet
 _SHUTDOWN_TIMEOUT_SEC = 0.1
 
+# Wie lange der DONE-State (grünes Feedback) sichtbar bleibt, bevor zurück zu
+# IDLE gewechselt wird. Kurz genug, damit der Übergang snappy wirkt, aber lang
+# genug als Erfolgs-Bestätigung. Sollte zum Overlay-Hold (FEEDBACK_DISPLAY_MS)
+# passen.
+_DONE_DISPLAY_HOLD_SEC = 0.6
+
 
 def _resample_audio(audio, from_rate: int, to_rate: int):
     """Resampled Audio-Array von from_rate auf to_rate.
@@ -1103,6 +1109,10 @@ class PulseScribeWindows:
                     watch_transcribing=False,
                 )
                 self._latency_mark("transcribing_state")
+                # Stop-Sound sofort bei Release spielen (async/non-blocking),
+                # statt erst nach der Deepgram-Finalize-Kette. Das gibt direktes
+                # Feedback und lässt den Übergang snappier wirken.
+                self._play_sound("stop")
                 return
 
             # REST: State früh umschalten, damit parallele Stop-Aufrufe idempotent sind
@@ -1403,7 +1413,7 @@ class PulseScribeWindows:
                     )
                 )
                 self._latency_mark("deepgram_core_return", chars=len(transcript))
-                self._play_sound("stop")
+                # Stop-Sound wurde bereits bei Release gespielt (siehe _stop_recording).
                 logger.debug(f"Streaming abgeschlossen: {len(transcript)} Zeichen")
 
                 if transcript:
@@ -1470,7 +1480,7 @@ class PulseScribeWindows:
                     )
                 )
                 self._latency_mark("deepgram_core_return", chars=len(transcript))
-                self._play_sound("stop")
+                # Stop-Sound wurde bereits bei Release gespielt (siehe _stop_recording).
                 logger.debug(f"Streaming abgeschlossen: {len(transcript)} Zeichen")
 
                 if transcript:
@@ -1639,7 +1649,7 @@ class PulseScribeWindows:
             self._latency_finish("ipc_done", chars=len(transcript or ""))
 
             # Nach kurzer Pause zurück zu IDLE
-            self._schedule_idle_if_state_unchanged(1.0)
+            self._schedule_idle_if_state_unchanged(_DONE_DISPLAY_HOLD_SEC)
             return
 
         self._save_to_history(transcript)
@@ -1661,7 +1671,7 @@ class PulseScribeWindows:
         self._latency_finish("done", chars=len(transcript or ""), paste_success=paste_success)
 
         # Nach kurzer Pause zurück zu IDLE (Timer statt sleep, blockiert Thread nicht)
-        self._schedule_idle_if_state_unchanged(1.0)
+        self._schedule_idle_if_state_unchanged(_DONE_DISPLAY_HOLD_SEC)
 
     def _setup_hotkey(self):
         """Richtet globale Hotkeys ein (Toggle und/oder Hold-Mode)."""

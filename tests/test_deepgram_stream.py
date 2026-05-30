@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import queue
 import sys
 import threading
 import time
@@ -504,3 +505,67 @@ def test_write_interim_text_preserves_existing_file_on_temp_write_error(
 
     assert interim_file.read_text(encoding="utf-8") == "stable interim"
     assert not tmp_file.exists()
+
+
+# =============================================================================
+# Adaptive Pre-Drain (snappier Stop->Text Latenz)
+# =============================================================================
+
+
+class _ImmediateLoop:
+    """Loop-Stub: führt call_soon_threadsafe synchron aus (für Pre-Drain-Tests)."""
+
+    def call_soon_threadsafe(self, fn, *args) -> None:
+        fn(*args)
+
+
+def _make_warm_source(chunks: list[bytes]) -> deepgram_stream.WarmStreamSource:
+    src_queue: queue.Queue[bytes] = queue.Queue()
+    for chunk in chunks:
+        src_queue.put_nowait(chunk)
+    return deepgram_stream.WarmStreamSource(
+        audio_queue=src_queue,
+        sample_rate=16000,
+        arm_event=threading.Event(),
+        stream=cast(Any, object()),
+        drain_event=threading.Event(),
+    )
+
+
+def test_pre_drain_exits_early_when_queue_empty_but_respects_floor() -> None:
+    """Empty queue: stop after the minimum floor instead of the full duration."""
+    warm_source = _make_warm_source([])
+    out_queue: queue.Queue[bytes | None] = queue.Queue()
+
+    start = time.monotonic()
+    drained = deepgram_stream._pre_drain_warm_stream(
+        warm_source=warm_source,
+        loop=cast(Any, _ImmediateLoop()),
+        audio_queue=cast(Any, out_queue),
+    )
+    elapsed = time.monotonic() - start
+
+    assert drained == 0
+    # Floor honoured so a late callback block can still arrive ...
+    assert elapsed >= deepgram_stream.PRE_DRAIN_MIN_DURATION - 0.005
+    # ... but it must not burn the full (safe) PRE_DRAIN_DURATION anymore.
+    assert elapsed < deepgram_stream.PRE_DRAIN_DURATION
+
+
+def test_pre_drain_forwards_all_pending_chunks() -> None:
+    """Pending warm chunks are forwarded to the async queue before disarming."""
+    warm_source = _make_warm_source([b"a", b"b", b"c"])
+    out_queue: queue.Queue[bytes | None] = queue.Queue()
+
+    drained = deepgram_stream._pre_drain_warm_stream(
+        warm_source=warm_source,
+        loop=cast(Any, _ImmediateLoop()),
+        audio_queue=cast(Any, out_queue),
+    )
+
+    forwarded: list[bytes] = []
+    while not out_queue.empty():
+        forwarded.append(out_queue.get_nowait())
+
+    assert drained == 3
+    assert forwarded == [b"a", b"b", b"c"]

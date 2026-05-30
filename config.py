@@ -475,7 +475,11 @@ FORWARDER_THREAD_JOIN_TIMEOUT = 0.5  # Timeout beim Beenden des Forwarder-Thread
 # Pre-Drain: Callback läuft noch, gibt sounddevice Zeit Buffer zu leeren
 PRE_DRAIN_DURATION = _windows_latency_default(
     0.1, 0.05
-)  # Pre-Drain Phase bevor Callback gestoppt wird
+)  # Pre-Drain Phase (Obergrenze) bevor Callback gestoppt wird
+PRE_DRAIN_MIN_DURATION = _windows_latency_default(
+    0.03, 0.02
+)  # Mindest-Pre-Drain (~1 Blocksize), damit der letzte Callback-Block sicher
+# ankommt; danach darf der Pre-Drain bei leerer Queue früher abbrechen.
 DRAIN_POLL_INTERVAL = 0.01  # Timeout pro Queue.get() während Drain (10ms)
 DRAIN_MAX_DURATION = _windows_latency_default(
     0.2, 0.10
@@ -574,6 +578,7 @@ __all__ = [
     "SEND_MEDIA_TIMEOUT",
     "FORWARDER_THREAD_JOIN_TIMEOUT",
     "PRE_DRAIN_DURATION",
+    "PRE_DRAIN_MIN_DURATION",
     "DRAIN_POLL_INTERVAL",
     "DRAIN_MAX_DURATION",
     "DRAIN_EMPTY_THRESHOLD",
