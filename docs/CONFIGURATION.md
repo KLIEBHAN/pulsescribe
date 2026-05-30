@@ -162,8 +162,9 @@ Both hotkeys can be active simultaneously.
 | ----------------------------------------- | ----------------------------------- | ---------------- | --------------------------------------------------- |
 | `PULSESCRIBE_WINDOWS_LATENCY_PRESET`      | `safe`, `snappy`, `compat`, `conservative` | `safe` | Chooses conservative Windows capture/finalize buffers by default. Use `snappy` for shorter buffers after confirming your microphone does not clip final words. |
 | `PULSESCRIBE_WINDOWS_STOP_GRACE_SECONDS`  | `0`-`2.0` seconds                   | `0.30` (`safe`), `0.20` (`snappy`) | Keep recording briefly after hotkey release on Windows to avoid clipped final words. |
+| `PULSESCRIBE_WINDOWS_PASTE_SYNC_MS`        | `0`-`500` milliseconds              | `50` | Delay between writing the clipboard and sending Ctrl+V on Windows. Lower it (e.g. `0`-`20`) for snappier paste once you confirm no stale/empty content is pasted in your clipboard environment. |
 
-Set stop grace to `0` to disable the extra tail capture. Changing `PULSESCRIBE_WINDOWS_LATENCY_PRESET` requires restarting PulseScribe for all Deepgram drain/tail defaults to refresh; `PULSESCRIBE_WINDOWS_STOP_GRACE_SECONDS` is read at runtime.
+Set stop grace to `0` to disable the extra tail capture. Changing `PULSESCRIBE_WINDOWS_LATENCY_PRESET` requires restarting PulseScribe for all Deepgram drain/tail defaults to refresh; `PULSESCRIBE_WINDOWS_STOP_GRACE_SECONDS` and `PULSESCRIBE_WINDOWS_PASTE_SYNC_MS` are read at runtime.
 
 ### Windows Latency Diagnostics
 

@@ -430,6 +430,30 @@ def get_windows_stop_grace_seconds() -> float:
 
 WINDOWS_STOP_GRACE_SECONDS = get_windows_stop_grace_seconds()
 
+
+# Default-Wartezeit (ms) zwischen Clipboard-Copy und Ctrl+V auf Windows.
+# Gibt Clipboard-Hooks (Manager/Sync-Tools/RDP) Zeit, das Update zu verarbeiten,
+# bevor eingefügt wird. Konservativer Default; per Env tunebar (0 = sofort).
+_WINDOWS_PASTE_SYNC_DEFAULT_MS = 50.0
+
+
+def get_windows_paste_sync_seconds() -> float:
+    """Return the Windows clipboard->paste sync delay (seconds) from the env.
+
+    Power users can shorten this for snappier paste once they confirm their
+    clipboard environment does not paste stale content. The conservative default
+    (50ms) stays robust against clipboard-manager/RDP timing races.
+    """
+    return (
+        _get_bounded_float_env(
+            "PULSESCRIBE_WINDOWS_PASTE_SYNC_MS",
+            _WINDOWS_PASTE_SYNC_DEFAULT_MS,
+            min_value=0.0,
+            max_value=500.0,
+        )
+        / 1000.0
+    )
+
 # Keep-Alive Interval für lokale Modelle (Sekunden)
 # Verhindert Metal Shader Cache Eviction bei Inaktivität
 # 0 = deaktiviert, empfohlen: 45-90s
@@ -570,6 +594,7 @@ __all__ = [
     "DEEPGRAM_TAIL_PADDING_SECONDS",
     "DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS",
     "WINDOWS_STOP_GRACE_SECONDS",
+    "get_windows_paste_sync_seconds",
     "get_windows_latency_preset",
     "get_windows_stop_grace_seconds",
     "TRANSCRIBING_TIMEOUT",

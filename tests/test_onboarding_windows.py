@@ -447,6 +447,33 @@ def test_on_language_changed_skips_noop_persistence_and_emit(monkeypatch):
     assert emitted == []
 
 
+def test_on_snappy_toggled_persists_and_clears_latency_preset(monkeypatch):
+    import ui.onboarding_wizard_windows as wizard_mod
+
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+    wizard._env_settings_cache = {}
+
+    persisted: list[dict[str, str | None]] = []
+    monkeypatch.setattr(
+        wizard_mod,
+        "update_env_settings",
+        lambda updates: persisted.append(dict(updates)),
+    )
+
+    # Enable: writes snappy and updates the cache.
+    wizard._on_snappy_toggled(True)
+    assert persisted[-1] == {"PULSESCRIBE_WINDOWS_LATENCY_PRESET": "snappy"}
+    assert (
+        wizard._env_settings_cache.get("PULSESCRIBE_WINDOWS_LATENCY_PRESET")
+        == "snappy"
+    )
+
+    # Disable: removes the override so the conservative default applies again.
+    wizard._on_snappy_toggled(False)
+    assert persisted[-1] == {"PULSESCRIBE_WINDOWS_LATENCY_PRESET": None}
+    assert "PULSESCRIBE_WINDOWS_LATENCY_PRESET" not in wizard._env_settings_cache
+
+
 def test_can_advance_fast_with_existing_groq_api_key(monkeypatch):
     import ui.onboarding_wizard_windows as wizard_mod
 

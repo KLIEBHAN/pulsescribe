@@ -520,8 +520,13 @@ def _paste_transcript_windows(text: str) -> bool:
     if not _copy_windows_clipboard_text(text, clipboard=clipboard):
         return False
 
-    # Kurze Pause damit Zielanwendung das Clipboard-Update sieht
-    time.sleep(0.05)
+    # Kurze Pause, damit Clipboard-Hooks/Zielanwendung das Update sehen, bevor
+    # Ctrl+V abgeht. Per PULSESCRIBE_WINDOWS_PASTE_SYNC_MS tunebar (0 = sofort).
+    from config import get_windows_paste_sync_seconds
+
+    sync_delay = get_windows_paste_sync_seconds()
+    if sync_delay > 0:
+        time.sleep(sync_delay)
 
     if not _paste_via_pynput_windows():
         if previous_text is not None:

@@ -15,6 +15,7 @@ from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QDialog,
     QFrame,
@@ -1137,6 +1138,10 @@ class OnboardingWizardWindows(QDialog):
 
         layout.addWidget(card)
 
+        # Optionaler Snappy-Toggle direkt nach dem Test, damit man erst die
+        # Erkennungsqualität prüfen und nur dann kürzere Puffer aktivieren kann.
+        layout.addWidget(self._build_snappy_option())
+
         # Test buttons (IPC-based when daemon is running)
         btn_row = QHBoxLayout()
 
@@ -1173,6 +1178,57 @@ class OnboardingWizardWindows(QDialog):
         layout.addStretch()
 
         return widget
+
+    def _build_snappy_option(self) -> QWidget:
+        """Optionaler Toggle für das snappier Windows-Latenz-Preset.
+
+        Bewusst im Test-Schritt platziert: Nutzer prüfen erst die Diktat-
+        qualität und aktivieren kürzere Aufnahme-/Finalize-Puffer nur, wenn das
+        letzte Wort vollständig erkannt wird.
+        """
+        card, card_layout = _create_card()
+
+        title = QLabel("Schnellere Übergänge (Windows, optional)")
+        title.setFont(QFont(DEFAULT_FONT_FAMILY, 10, QFont.Weight.Bold))
+        title.setStyleSheet(f"color: {COLORS['text']};")
+        title.setWordWrap(True)
+        card_layout.addWidget(title)
+
+        is_snappy = (
+            (self._get_cached_env_setting("PULSESCRIBE_WINDOWS_LATENCY_PRESET") or "safe")
+            .strip()
+            .lower()
+            == "snappy"
+        )
+        self._snappy_checkbox = QCheckBox(
+            "Übergänge snappier machen (kürzere Puffer)"
+        )
+        self._snappy_checkbox.setChecked(is_snappy)
+        self._snappy_checkbox.toggled.connect(self._on_snappy_toggled)
+        card_layout.addWidget(self._snappy_checkbox)
+
+        hint = QLabel(
+            "Verkürzt Aufnahme-/Finalize-Puffer für reaktionsschnellere Übergänge. "
+            "Aktiviere dies nur, wenn beim Test oben das letzte Wort vollständig "
+            "erkannt wird – sonst kann das Wortende abgeschnitten werden. "
+            "Wirkt vollständig nach einem Neustart des Dienstes."
+        )
+        hint.setFont(QFont(DEFAULT_FONT_FAMILY, 9))
+        hint.setStyleSheet(f"color: {COLORS['text_secondary']};")
+        hint.setWordWrap(True)
+        card_layout.addWidget(hint)
+
+        return card
+
+    def _on_snappy_toggled(self, checked: bool) -> None:
+        """Persist the Windows latency preset choice from the onboarding toggle.
+
+        Unchecking removes the override so the conservative ``safe`` default
+        applies again.
+        """
+        self._apply_env_updates(
+            {"PULSESCRIBE_WINDOWS_LATENCY_PRESET": "snappy" if checked else None}
+        )
 
     def _build_cheat_sheet_step(self) -> QWidget:
         """Build the summary/cheat sheet step."""

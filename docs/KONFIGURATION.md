@@ -155,8 +155,9 @@ Beide Hotkeys können gleichzeitig aktiv sein.
 | ----------------------------------------- | ----------------------------------- | ---------------- | ------------------------------------------------- |
 | `PULSESCRIBE_WINDOWS_LATENCY_PRESET`      | `safe`, `snappy`, `compat`, `conservative` | `safe` | Nutzt standardmäßig konservative Windows-Aufnahme-/Finalize-Puffer. `snappy` nutzt kürzere Puffer, wenn dein Mikrofon keine letzten Wörter abschneidet. |
 | `PULSESCRIBE_WINDOWS_STOP_GRACE_SECONDS`  | `0`-`2.0` Sekunden                  | `0.30` (`safe`), `0.20` (`snappy`) | Nimmt unter Windows nach Hotkey-Release kurz weiter auf, damit letzte Wörter nicht abgeschnitten werden. |
+| `PULSESCRIBE_WINDOWS_PASTE_SYNC_MS`        | `0`-`500` Millisekunden             | `50` | Wartezeit zwischen Clipboard-Schreiben und Ctrl+V unter Windows. Für snappier Paste verringern (z.B. `0`-`20`), sobald sichergestellt ist, dass kein veralteter/leerer Inhalt eingefügt wird. |
 
-Mit `0` lässt sich der zusätzliche Nachlauf deaktivieren. Änderungen an `PULSESCRIBE_WINDOWS_LATENCY_PRESET` benötigen einen Neustart, damit alle Deepgram-Drain-/Tail-Defaults neu geladen werden; `PULSESCRIBE_WINDOWS_STOP_GRACE_SECONDS` wird zur Laufzeit gelesen.
+Mit `0` lässt sich der zusätzliche Nachlauf deaktivieren. Änderungen an `PULSESCRIBE_WINDOWS_LATENCY_PRESET` benötigen einen Neustart, damit alle Deepgram-Drain-/Tail-Defaults neu geladen werden; `PULSESCRIBE_WINDOWS_STOP_GRACE_SECONDS` und `PULSESCRIBE_WINDOWS_PASTE_SYNC_MS` werden zur Laufzeit gelesen.
 
 ### Windows-Latenzdiagnose
 

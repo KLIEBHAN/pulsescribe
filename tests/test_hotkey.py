@@ -655,6 +655,54 @@ def test_paste_transcript_windows_prefers_native_clipboard_handler(monkeypatch):
     assert clipboard.paste_calls == 2
 
 
+class _SyncDelayFakeClipboard:
+    def copy(self, text):
+        return True
+
+    def paste(self):
+        return None
+
+
+def test_paste_transcript_windows_uses_configured_paste_sync_delay(monkeypatch):
+    """The Windows clipboard->paste sync delay is configurable via env (ms)."""
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.delenv("PULSESCRIBE_CLIPBOARD_RESTORE", raising=False)
+    monkeypatch.setenv("PULSESCRIBE_WINDOWS_PASTE_SYNC_MS", "30")
+    monkeypatch.setattr(
+        utils.hotkey,
+        "_get_windows_clipboard_handler",
+        lambda: _SyncDelayFakeClipboard(),
+    )
+    monkeypatch.setattr(utils.hotkey, "_paste_via_pynput_windows", lambda: True)
+    monkeypatch.setattr(
+        utils.hotkey.time, "sleep", lambda delay: sleep_calls.append(delay)
+    )
+
+    assert utils.hotkey.paste_transcript("hello") is True
+    assert sleep_calls == [0.03]
+
+
+def test_paste_transcript_windows_skips_sleep_when_sync_delay_zero(monkeypatch):
+    """Setting the paste sync delay to 0 removes the pre-paste sleep entirely."""
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.delenv("PULSESCRIBE_CLIPBOARD_RESTORE", raising=False)
+    monkeypatch.setenv("PULSESCRIBE_WINDOWS_PASTE_SYNC_MS", "0")
+    monkeypatch.setattr(
+        utils.hotkey,
+        "_get_windows_clipboard_handler",
+        lambda: _SyncDelayFakeClipboard(),
+    )
+    monkeypatch.setattr(utils.hotkey, "_paste_via_pynput_windows", lambda: True)
+    monkeypatch.setattr(
+        utils.hotkey.time, "sleep", lambda delay: sleep_calls.append(delay)
+    )
+
+    assert utils.hotkey.paste_transcript("hello") is True
+    assert sleep_calls == []
+
+
 def test_paste_transcript_clipboard_restore_accepts_truthy_alias_on_macos(
     monkeypatch,
 ):
