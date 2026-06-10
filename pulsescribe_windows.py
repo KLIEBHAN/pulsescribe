@@ -171,6 +171,10 @@ _VK_TO_CHAR = {vk: chr(vk + 32) for vk in range(65, 91)}  # 65='A' -> 'a', etc.
 # Debounce-Zeit in Sekunden (verhindert Doppel-Trigger)
 _HOTKEY_DEBOUNCE_SEC = 0.3
 
+# Ab dieser Queue-Wartezeit (ms) wird eine verzögerte Hotkey-Aktion geloggt.
+# Hilft bei der Diagnose, falls Übergänge trotz Dispatch träge wirken.
+_HOTKEY_DISPATCH_SLOW_MS = 100.0
+
 # Timeout für "stale" Keys (Sekunden) - Keys älter als dies werden entfernt
 _KEY_STALE_TIMEOUT_SEC = 2.0
 
@@ -308,6 +312,19 @@ class PulseScribeWindows:
         # Hold-Mode State (wie macOS)
         self._hold_state = HoldHotkeyState()
 
+        # Hotkey-Aktionen laufen NIE im pynput-Callback: pynput ruft Callbacks
+        # auf Windows synchron aus dem Low-Level-Keyboard-Hook auf. Blockierende
+        # Arbeit dort (Tray, Sounds, Thread-Joins) verzögert die Event-
+        # Verarbeitung und kann systemweite Eingabe-Lags verursachen.
+        self._hotkey_action_queue: queue.Queue = queue.Queue()
+        self._hotkey_action_thread: threading.Thread | None = None
+        self._hotkey_action_thread_lock = threading.Lock()
+
+        # Tray-Updates (Shell_NotifyIcon) sind gelegentlich langsam und laufen
+        # deshalb coalesced (latest-wins) in einem eigenen Worker-Thread.
+        self._tray_update_signal = threading.Event()
+        self._tray_update_thread: threading.Thread | None = None
+
         # Components
         self._tray = None
         self._last_status_text: str | None = None
@@ -431,7 +448,7 @@ class PulseScribeWindows:
             self._start_transcribing_watchdog()
 
         if state_changed or text_changed:
-            self._update_tray_icon(text)
+            self._request_tray_update()
 
     def _overlay_update_state(self, state: str, text: str | None = None) -> None:
         """Best-effort Overlay-State-Update ohne check-then-use Race."""
@@ -575,15 +592,55 @@ class PulseScribeWindows:
         if timer is not None:
             timer.cancel()
 
-    def _update_tray_icon(self, text: str | None = None):
+    def _request_tray_update(self) -> None:
+        """Plant ein coalesced Tray-Update (latest-wins, nie im Caller-Thread).
+
+        pystray-Updates (Shell_NotifyIcon) können auf Windows sporadisch
+        blockieren. Damit State-Übergänge davon nie ausgebremst werden, setzt
+        der Caller nur ein Event; der Tray-Worker liest den aktuellsten State.
+        """
+        self._tray_update_signal.set()
+
+    def _start_tray_update_worker(self) -> None:
+        if (
+            self._tray_update_thread is not None
+            and self._tray_update_thread.is_alive()
+        ):
+            return
+        self._tray_update_thread = threading.Thread(
+            target=self._tray_update_worker,
+            daemon=True,
+            name="TrayUpdateWorker",
+        )
+        self._tray_update_thread.start()
+
+    def _tray_update_worker(self) -> None:
+        while not self._stop_event.is_set():
+            self._tray_update_signal.wait()
+            if self._stop_event.is_set():
+                return
+            self._tray_update_signal.clear()
+            self._apply_tray_update_from_state()
+
+    def _apply_tray_update_from_state(self) -> None:
+        """Wendet den aktuellsten State/Text auf das Tray an (latest-wins)."""
+        with self._state_lock:
+            state = self._state
+            text = self._last_status_text
+        try:
+            self._update_tray_icon(state, text)
+        except Exception as e:
+            logger.debug(f"Tray-Update fehlgeschlagen: {e}")
+
+    def _update_tray_icon(self, state: AppState, text: str | None = None):
         """Aktualisiert Tray-Icon basierend auf State + Status-Text."""
         if self._tray is None or PIL_Image is None or PIL_ImageDraw is None:
             return
 
-        color = self.COLORS.get(self.state, (128, 128, 128))
+        color = self.COLORS.get(state, (128, 128, 128))
         icon = self._create_icon(color)
         self._tray.icon = icon
-        self._tray.title = build_daemon_tray_title(self.state, text)
+        self._tray.title = build_daemon_tray_title(state, text)
 
     def _create_icon(self, color: tuple[int, int, int]) -> "PIL_Image.Image":
         """Erstellt ein Mikrofon-Icon wie bei macOS (mit Caching)."""
@@ -796,6 +853,9 @@ class PulseScribeWindows:
 
         self._latency_mark("recording_state")
         self._overlay_update_state(AppState.RECORDING.name, None)
+        # Tray darf hier nur signalisiert werden (Event.set ist O(1));
+        # das eigentliche Shell_NotifyIcon-Update macht der Tray-Worker.
+        self._request_tray_update()
         logger.debug("State: listening → recording (audio callback)")
 
     # ═══════════════════════════════════════════════════════════════════════════
@@ -1652,8 +1712,6 @@ class PulseScribeWindows:
             self._schedule_idle_if_state_unchanged(_DONE_DISPLAY_HOLD_SEC)
             return
 
-        self._save_to_history(transcript)
-
         self._latency_mark("paste_start", auto_paste=self.auto_paste)
         paste_success = True
         if self.auto_paste:
@@ -1668,6 +1726,10 @@ class PulseScribeWindows:
             get_clipboard().copy(transcript)
             logger.info("Text in Zwischenablage kopiert")
         self._latency_mark("paste_done", success=paste_success)
+
+        # History-IO (inkl. möglicher Datei-Rotation) erst NACH dem Paste:
+        # Der sichtbare "Text erscheint"-Moment darf nicht auf Disk-IO warten.
+        self._save_to_history(transcript)
         self._latency_finish("done", chars=len(transcript or ""), paste_success=paste_success)
 
         # Nach kurzer Pause zurück zu IDLE (Timer statt sleep, blockiert Thread nicht)
@@ -1811,14 +1873,63 @@ class PulseScribeWindows:
             self._maybe_start_hold_hotkey(source_id)
             return
         current_keys.clear()
-        self._on_hotkey_press()
+        self._dispatch_hotkey_action(self._on_hotkey_press, "toggle")
 
     def _maybe_start_hold_hotkey(self, source_id: str) -> None:
         if self.state == AppState.LOADING and self._is_prewarm_loading:
             logger.debug("Hold-Hotkey ignoriert: Pre-Warm noch nicht abgeschlossen")
             return
         if self._hold_state.should_start(source_id):
-            self._start_recording_from_hold(source_id)
+            # Nur die billige Hold-Buchhaltung läuft im Hook-Callback; der
+            # eigentliche Start (Sounds/Tray/Worker) geht in den Dispatcher.
+            # _start_recording_from_hold prüft is_active() erneut und fängt
+            # damit ultraschnelle Tap-Releases sauber ab.
+            self._dispatch_hotkey_action(
+                lambda: self._start_recording_from_hold(source_id),
+                "hold-start",
+            )
+
+    def _dispatch_hotkey_action(self, action, description: str) -> None:
+        """Führt Hotkey-Aktionen außerhalb des pynput-Hook-Threads aus.
+
+        pynput ruft Callbacks auf Windows synchron aus dem Low-Level-Keyboard-
+        Hook auf. Blockierende Arbeit dort verzögert die nächsten Key-Events
+        (z.B. das Hold-Release) und bremst systemweit die Tastatur. Der
+        FIFO-Worker erhält die Reihenfolge Start-vor-Stop.
+        """
+        self._ensure_hotkey_action_worker()
+        self._hotkey_action_queue.put((action, description, time.monotonic()))
+
+    def _ensure_hotkey_action_worker(self) -> None:
+        thread = self._hotkey_action_thread
+        if thread is not None and thread.is_alive():
+            return
+        with self._hotkey_action_thread_lock:
+            thread = self._hotkey_action_thread
+            if thread is not None and thread.is_alive():
+                return
+            self._hotkey_action_thread = threading.Thread(
+                target=self._hotkey_action_worker,
+                daemon=True,
+                name="HotkeyActionWorker",
+            )
+            self._hotkey_action_thread.start()
+
+    def _hotkey_action_worker(self) -> None:
+        while True:
+            item = self._hotkey_action_queue.get()
+            if item is None:
+                return
+            action, description, enqueued_at = item
+            queued_ms = (time.monotonic() - enqueued_at) * 1000
+            if queued_ms >= _HOTKEY_DISPATCH_SLOW_MS:
+                logger.debug(
+                    f"Hotkey-Aktion '{description}' wartete {queued_ms:.0f}ms in der Queue"
+                )
+            try:
+                action()
+            except Exception as e:
+                logger.error(f"Hotkey-Aktion '{description}' fehlgeschlagen: {e}")
 
     def _handle_windows_hotkey_release(
         self,
@@ -1838,7 +1949,11 @@ class PulseScribeWindows:
                 continue
             logger.debug(f"Hotkey losgelassen: {normalized}")
             if self._hold_state.should_stop(source_id):
-                self._stop_recording_from_hotkey()
+                # Stop kann im REST-Modus auf den Recording-Thread warten -
+                # niemals im Hook-Callback blockieren.
+                self._dispatch_hotkey_action(
+                    self._stop_recording_from_hotkey, "hold-stop"
+                )
 
     @staticmethod
     def _log_registered_windows_hotkeys(bindings: list[tuple[str, str]]) -> None:
@@ -1886,6 +2001,10 @@ class PulseScribeWindows:
             menu,
         )
 
+        # Tray-Worker erst starten, wenn das Tray existiert. Ein evtl. schon
+        # gesetztes Update-Signal (Startup-LOADING) wird sofort nachgezogen.
+        self._start_tray_update_worker()
+
     def _quit(self):
         """Beendet den Daemon.
 
@@ -1898,6 +2017,10 @@ class PulseScribeWindows:
 
         # Stop-Signal für Hauptschleife
         self._stop_event.set()
+
+        # Worker-Threads aufwecken/beenden (Daemon-Threads, kein Join nötig)
+        self._hotkey_action_queue.put(None)
+        self._tray_update_signal.set()
 
         # Hotkey-Listener: stop() aufrufen, aber NICHT warten
         # pynput-Listener blockieren bis zum nächsten Tastendruck - das umgehen wir

@@ -203,12 +203,16 @@ def test_audio_callback_recording_state_skips_tray_hotpath(monkeypatch):
     daemon._overlay_update_state = lambda state, text=None: events.append(
         ("overlay", state, text)
     )
-    daemon._update_tray_icon = lambda text=None: events.append(("tray", text, None))
+    daemon._update_tray_icon = lambda state, text=None: events.append(
+        ("tray", state, text)
+    )
 
     daemon._enter_recording_from_audio_callback()
 
     assert daemon.state == AppState.RECORDING
+    # Nur Overlay synchron; das Tray wird lediglich signalisiert (Event.set).
     assert events == [("overlay", "RECORDING", None)]
+    assert daemon._tray_update_signal.is_set()
 
 
 def test_mic_ready_unblocks_startup_before_optional_prewarm():
@@ -854,11 +858,15 @@ def test_set_state_updates_overlay_before_tray_for_snappy_feedback():
     daemon._overlay_update_state = lambda state, text=None: events.append(
         ("overlay", state, text)
     )
-    daemon._update_tray_icon = lambda text=None: events.append(("tray", text, None))
+    daemon._update_tray_icon = lambda state, text=None: events.append(
+        ("tray", state, text)
+    )
 
     daemon._set_state(AppState.LISTENING)
 
-    assert events == [("overlay", "LISTENING", None), ("tray", None, None)]
+    # Overlay synchron; Tray-Update läuft entkoppelt im Worker (nur Signal).
+    assert events == [("overlay", "LISTENING", None)]
+    assert daemon._tray_update_signal.is_set()
 
 
 def test_low_latency_input_stream_falls_back_when_driver_rejects_latency(monkeypatch):
@@ -955,6 +963,9 @@ def test_stale_hotkey_listener_callbacks_are_ignored_after_restart(monkeypatch):
         press_count += 1
 
     daemon._on_hotkey_press = fake_on_hotkey_press
+    # Dispatch synchron ausführen: Testgegenstand ist das Stale-Listener-
+    # Filtering, nicht der asynchrone Hotkey-Action-Worker.
+    daemon._dispatch_hotkey_action = lambda action, _description: action()
 
     class _Key:
         def __init__(self, char):
@@ -1053,9 +1064,12 @@ def test_set_state_updates_tray_title_when_same_state_text_changes(monkeypatch):
     monkeypatch.setattr(windows_module, "PIL_ImageDraw", object(), raising=False)
 
     daemon._set_state(AppState.LOADING, "Loading large-v3...")
+    assert daemon._tray_update_signal.is_set()
+    daemon._apply_tray_update_from_state()
     first_title = daemon._tray.title
 
     daemon._set_state(AppState.LOADING, "Warming up...")
+    daemon._apply_tray_update_from_state()
     second_title = daemon._tray.title
 
     assert first_title != second_title

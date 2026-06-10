@@ -5,6 +5,23 @@ All notable changes to PulseScribe are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Windows: snappier transitions** – hotkey press/release actions no longer run
+  inside the pynput low-level keyboard hook callback. Heavy work (recording
+  start/stop, REST capture join, sounds) is dispatched to a dedicated FIFO
+  worker, eliminating sporadic system-wide input lag and delayed hold-release
+  handling.
+- **Windows: decoupled tray updates** – `Shell_NotifyIcon` icon/title updates
+  now run coalesced (latest-wins) in a background worker so state transitions
+  never wait on a slow Explorer. The tray icon now also reflects the
+  LISTENING → RECORDING transition.
+- **Windows: paste before history I/O** – transcripts are pasted before the
+  history file is written (incl. potential rotation), so the visible
+  "text appears" moment no longer waits on disk I/O.
+
 ## [1.2.0] - 2025-12-27
 
 ### Added
