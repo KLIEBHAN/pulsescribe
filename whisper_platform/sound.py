@@ -2,13 +2,19 @@
 
 Plattformspezifische Sound-Playback mit einheitlichem Interface.
 macOS: CoreAudio via AudioToolbox mit afplay Fallback
-Windows: winsound mit System-Sounds
+Windows: winsound mit System-Sounds; der "ready"-Cue wird als kurzer Tick mit
+sofortigem Onset synthetisiert, damit das Startsignal nicht träge wirkt.
 """
 
 import logging
+import math
+import os
+import struct
 import subprocess
 import sys
+import tempfile
 import threading
+import wave
 
 logger = logging.getLogger("pulsescribe.platform.sound")
 
@@ -29,6 +35,51 @@ WINDOWS_SYSTEM_SOUNDS = {
     "error": "SystemHand",  # Fehler (kritischer Ton)
     "warmup": "SystemAsterisk",  # Preload/Warmup fertig
 }
+
+# Windows "ready"-Cue: kurzer synthetischer Tick mit sofortigem Onset.
+# System-Aliase wie DeviceConnect schwingen langsam ein und lassen das
+# Startsignal träge wirken; ein knapper Tick ist sofort als "go" hörbar.
+READY_CUE_SAMPLE_RATE = 44100
+READY_CUE_FREQ_HZ = 2600.0  # crisp, gut hörbar, nicht schrill
+READY_CUE_DURATION_SEC = 0.012  # ~12ms: kurz genug für "instant", lang genug hörbar
+READY_CUE_ATTACK_SEC = 0.0005  # ~0.5ms Anstieg: praktisch sofort, ohne DC-Klick
+READY_CUE_DECAY_TAU_SEC = 0.003  # exponentieller Abfall
+READY_CUE_AMPLITUDE = 0.5  # Anteil von Full-Scale int16
+READY_CUE_FILENAME = "pulsescribe_ready_cue.wav"
+
+
+def _ready_cue_samples() -> list[int]:
+    """Erzeugt die int16-Samples für den sofort-einsetzenden Ready-Tick.
+
+    Near-instant attack (kein DC-Klick) gefolgt von exponentiellem Decay.
+    """
+    sample_rate = READY_CUE_SAMPLE_RATE
+    total = int(sample_rate * READY_CUE_DURATION_SEC)
+    attack = max(1, int(sample_rate * READY_CUE_ATTACK_SEC))
+    two_pi_f = 2.0 * math.pi * READY_CUE_FREQ_HZ
+    peak = READY_CUE_AMPLITUDE * 32767
+
+    samples: list[int] = []
+    for n in range(total):
+        t = n / sample_rate
+        if n < attack:
+            envelope = n / attack  # linearer Anstieg
+        else:
+            envelope = math.exp(-(t - READY_CUE_ATTACK_SEC) / READY_CUE_DECAY_TAU_SEC)
+        value = peak * envelope * math.sin(two_pi_f * t)
+        samples.append(max(-32768, min(32767, int(value))))
+    return samples
+
+
+def _write_ready_cue_wav(path: str) -> None:
+    """Schreibt den Ready-Cue als 16-bit Mono-WAV an den angegebenen Pfad."""
+    samples = _ready_cue_samples()
+    frames = struct.pack("<%dh" % len(samples), *samples)
+    with wave.open(path, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(READY_CUE_SAMPLE_RATE)
+        wav.writeframes(frames)
 
 
 class MacOSSoundPlayer:
@@ -199,21 +250,63 @@ class MacOSSoundPlayer:
 class WindowsSoundPlayer:
     """Windows Sound-Playback via winsound.
 
-    Nutzt Windows System-Sounds für konsistente UX.
+    Nutzt Windows System-Sounds für konsistente UX. Der "ready"-Cue wird als
+    kurzer, sofort einsetzender Tick synthetisiert (statt eines langsam
+    einschwingenden System-Alias), damit das Startsignal nicht träge wirkt.
     """
 
     def __init__(self) -> None:
         self._winsound = None
+        self._ready_cue_path: str | None = None
         try:
             import winsound
 
             self._winsound = winsound
         except ImportError:
             logger.warning("winsound nicht verfügbar")
+            return
+
+        self._ready_cue_path = self._ensure_ready_cue()
+
+    def _ensure_ready_cue(self) -> str | None:
+        """Synthetisiert den Ready-Cue einmalig in den Temp-Ordner.
+
+        Gibt den Pfad zurück oder None, falls die Synthese fehlschlägt (dann
+        fällt play("ready") auf den System-Alias zurück).
+        """
+        path = os.path.join(tempfile.gettempdir(), READY_CUE_FILENAME)
+        try:
+            if not os.path.exists(path) or os.path.getsize(path) == 0:
+                _write_ready_cue_wav(path)
+            return path
+        except Exception as e:
+            logger.debug(f"Ready-Cue konnte nicht erzeugt werden: {e}")
+            return None
+
+    def _play_ready_cue(self) -> bool:
+        """Spielt den synthetischen Ready-Tick. True bei Erfolg."""
+        if not self._ready_cue_path:
+            return False
+        try:
+            # SND_FILENAME | SND_ASYNC: non-blocking; SND_NODEFAULT unterdrückt
+            # den System-Beep, falls die Datei nicht abgespielt werden kann.
+            self._winsound.PlaySound(
+                self._ready_cue_path,
+                self._winsound.SND_FILENAME
+                | self._winsound.SND_ASYNC
+                | self._winsound.SND_NODEFAULT,
+            )
+            return True
+        except Exception as e:
+            logger.debug(f"Ready-Cue-Playback fehlgeschlagen: {e}")
+            return False
 
     def play(self, name: str) -> None:
         """Spielt benannten System-Sound ab."""
         if self._winsound is None:
+            return
+
+        if name == "ready" and self._play_ready_cue():
             return
 
         sound_alias = WINDOWS_SYSTEM_SOUNDS.get(name)

@@ -1,9 +1,16 @@
 """Tests für whisper_platform.sound – Zombie-Vermeidung und Failure-Cache."""
 
 import threading
+import wave
 from unittest.mock import MagicMock, patch
 
-from whisper_platform.sound import MacOSSoundPlayer
+from whisper_platform.sound import (
+    READY_CUE_SAMPLE_RATE,
+    MacOSSoundPlayer,
+    WindowsSoundPlayer,
+    _ready_cue_samples,
+    _write_ready_cue_wav,
+)
 
 
 def _make_fallback_player() -> MacOSSoundPlayer:
@@ -115,3 +122,92 @@ class TestFailureCache:
         assert "ready" in player._failed_sounds
         assert "ready" not in player._sound_ids
         assert player._audio_toolbox.AudioServicesPlaySystemSound.call_count == 1
+
+
+def _make_windows_player(cue_path: str | None) -> tuple[WindowsSoundPlayer, MagicMock]:
+    """Construct a WindowsSoundPlayer without importing real winsound."""
+    player = WindowsSoundPlayer.__new__(WindowsSoundPlayer)
+    fake = MagicMock()
+    fake.SND_FILENAME = 0x00020000
+    fake.SND_ASYNC = 0x0001
+    fake.SND_NODEFAULT = 0x0002
+    fake.SND_ALIAS = 0x00010000
+    player._winsound = fake
+    player._ready_cue_path = cue_path
+    return player, fake
+
+
+class TestReadyCueSynthesis:
+    """The Windows ready cue must have instant onset and valid WAV framing."""
+
+    def test_samples_have_instant_onset(self) -> None:
+        samples = _ready_cue_samples()
+
+        assert len(samples) == int(READY_CUE_SAMPLE_RATE * 0.012)
+        assert samples[0] == 0  # no DC click at the boundary
+
+        first_ms = samples[: int(READY_CUE_SAMPLE_RATE * 0.001)]
+        assert max(abs(sample) for sample in first_ms) >= 8000
+
+    def test_write_ready_cue_wav_is_valid_pcm16_mono(self, tmp_path) -> None:
+        out = tmp_path / "cue.wav"
+        _write_ready_cue_wav(str(out))
+
+        with wave.open(str(out), "rb") as wav:
+            assert wav.getnchannels() == 1
+            assert wav.getsampwidth() == 2
+            assert wav.getframerate() == READY_CUE_SAMPLE_RATE
+            assert wav.getnframes() == len(_ready_cue_samples())
+
+
+class TestWindowsReadyRouting:
+    """play('ready') uses the synthesized cue; other sounds use aliases."""
+
+    def test_ready_uses_synthesized_cue_file(self) -> None:
+        player, fake = _make_windows_player(r"C:\tmp\cue.wav")
+
+        player.play("ready")
+
+        fake.PlaySound.assert_called_once()
+        target, flags = fake.PlaySound.call_args[0]
+        assert target == r"C:\tmp\cue.wav"
+        assert flags & fake.SND_FILENAME
+        assert flags & fake.SND_ASYNC
+        assert flags & fake.SND_NODEFAULT
+
+    def test_ready_falls_back_to_alias_without_cue(self) -> None:
+        player, fake = _make_windows_player(None)
+
+        player.play("ready")
+
+        target, flags = fake.PlaySound.call_args[0]
+        assert target == "DeviceConnect"
+        assert flags & fake.SND_ALIAS
+        assert flags & fake.SND_ASYNC
+
+    def test_ready_falls_back_to_alias_when_cue_playback_raises(self) -> None:
+        cue_path = r"C:\tmp\cue.wav"
+        player, fake = _make_windows_player(cue_path)
+
+        def _side_effect(target, _flags):
+            if target == cue_path:
+                raise RuntimeError("cue playback failed")
+            return 0
+
+        fake.PlaySound.side_effect = _side_effect
+
+        player.play("ready")
+
+        calls = fake.PlaySound.call_args_list
+        assert calls[0][0][0] == cue_path
+        assert calls[1][0][0] == "DeviceConnect"
+
+    def test_non_ready_sound_uses_alias(self) -> None:
+        player, fake = _make_windows_player(r"C:\tmp\cue.wav")
+
+        player.play("stop")
+
+        target, flags = fake.PlaySound.call_args[0]
+        assert target == "DeviceDisconnect"
+        assert flags & fake.SND_ALIAS
+        assert flags & fake.SND_ASYNC
