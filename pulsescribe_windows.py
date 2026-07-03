@@ -192,6 +192,18 @@ _WARM_STREAM_PREROLL_SEC = 0.25
 
 # Provider die gecached werden sollen (stateful, z.B. Model-Caching)
 _STATEFUL_PROVIDERS = {"local"}
+_LOCAL_PROVIDER_RELOAD_ENV_KEYS = (
+    "PULSESCRIBE_LOCAL_BACKEND",
+    "PULSESCRIBE_LOCAL_MODEL",
+    "PULSESCRIBE_MODEL",
+    "PULSESCRIBE_DEVICE",
+    "PULSESCRIBE_FP16",
+    "PULSESCRIBE_LOCAL_COMPUTE_TYPE",
+    "PULSESCRIBE_LOCAL_CPU_THREADS",
+    "PULSESCRIBE_LOCAL_NUM_WORKERS",
+    "PULSESCRIBE_LIGHTNING_BATCH_SIZE",
+    "PULSESCRIBE_LIGHTNING_QUANT",
+)
 
 # Default-Hotkeys (verwendet bei Startup und Reload wenn nichts konfiguriert)
 _DEFAULT_TOGGLE_HOTKEY = "ctrl+alt+r"
@@ -2260,12 +2272,17 @@ class PulseScribeWindows:
 
             logger.info("Settings neu laden...")
 
+            old_local_signature = self._local_provider_memory_signature()
             env_values = self._read_reloaded_env_values()
+            self._sync_local_provider_reload_env_values(env_values)
             if self._stop_event.is_set():
                 logger.debug("Settings-Reload abgebrochen: App wird beendet")
                 return
 
-            self._apply_mode_reload_settings(env_values)
+            self._apply_mode_reload_settings(
+                env_values,
+                old_local_signature=old_local_signature,
+            )
             self._apply_refine_reload_settings(env_values)
             self._apply_streaming_reload_settings(env_values)
             self._apply_overlay_reload_settings(env_values)
@@ -2283,7 +2300,78 @@ class PulseScribeWindows:
 
         return read_env_file()
 
-    def _apply_mode_reload_settings(self, env_values: dict[str, str]) -> None:
+    @staticmethod
+    def _normalize_local_signature_value(value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
+
+    @staticmethod
+    def _sync_local_provider_reload_env_values(env_values: dict[str, str]) -> None:
+        for key in _LOCAL_PROVIDER_RELOAD_ENV_KEYS:
+            value = env_values.get(key)
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    def _local_provider_memory_signature(self) -> tuple[str | None, ...]:
+        local_model = os.getenv("PULSESCRIBE_LOCAL_MODEL") or os.getenv(
+            "PULSESCRIBE_MODEL"
+        )
+        return (
+            self._normalize_local_signature_value(self.mode),
+            self._normalize_local_signature_value(
+                os.getenv("PULSESCRIBE_LOCAL_BACKEND")
+            ),
+            self._normalize_local_signature_value(local_model),
+            self._normalize_local_signature_value(os.getenv("PULSESCRIBE_DEVICE")),
+            self._normalize_local_signature_value(os.getenv("PULSESCRIBE_FP16")),
+            self._normalize_local_signature_value(
+                os.getenv("PULSESCRIBE_LOCAL_COMPUTE_TYPE")
+            ),
+            self._normalize_local_signature_value(
+                os.getenv("PULSESCRIBE_LOCAL_CPU_THREADS")
+            ),
+            self._normalize_local_signature_value(
+                os.getenv("PULSESCRIBE_LOCAL_NUM_WORKERS")
+            ),
+            self._normalize_local_signature_value(
+                os.getenv("PULSESCRIBE_LIGHTNING_BATCH_SIZE")
+            ),
+            self._normalize_local_signature_value(
+                os.getenv("PULSESCRIBE_LIGHTNING_QUANT")
+            ),
+        )
+
+    @staticmethod
+    def _release_provider_resources(provider) -> None:
+        clear_model_cache = getattr(provider, "clear_model_cache", None)
+        if callable(clear_model_cache):
+            clear_model_cache()
+            return
+
+        cleanup = getattr(provider, "cleanup", None)
+        if callable(cleanup):
+            cleanup()
+
+    def _release_local_provider_model_cache(self) -> None:
+        with self._provider_cache_lock:
+            local_provider = self._provider_cache.get("local")
+        if local_provider is None:
+            return
+        try:
+            self._release_provider_resources(local_provider)
+        except Exception as e:
+            logger.warning(f"LocalProvider cleanup fehlgeschlagen: {e}")
+
+    def _apply_mode_reload_settings(
+        self,
+        env_values: dict[str, str],
+        *,
+        old_local_signature: tuple[str | None, ...],
+    ) -> None:
         new_mode = env_values.get("PULSESCRIBE_MODE", "deepgram")
         mode_changed = new_mode != self.mode
         if mode_changed:
@@ -2292,6 +2380,8 @@ class PulseScribeWindows:
             self._invalidate_all_provider_runtime_configs()
             logger.info(f"Mode geändert: {old_mode} → {new_mode}")
         elif new_mode == "local":
+            if self._local_provider_memory_signature() != old_local_signature:
+                self._release_local_provider_model_cache()
             self._invalidate_local_provider_runtime_config()
 
         if new_mode == "local":
@@ -2302,6 +2392,10 @@ class PulseScribeWindows:
             providers_to_invalidate = list(self._provider_cache.values())
             self._provider_cache.clear()
         for provider in providers_to_invalidate:
+            try:
+                self._release_provider_resources(provider)
+            except Exception as e:
+                logger.warning(f"Provider cleanup fehlgeschlagen: {e}")
             if hasattr(provider, "invalidate_runtime_config"):
                 provider.invalidate_runtime_config()
 

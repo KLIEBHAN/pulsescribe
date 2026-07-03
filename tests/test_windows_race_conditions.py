@@ -1,12 +1,13 @@
 import contextlib
 import importlib.util
 import io
+import os
 import sys
 import threading
 import time
 import types
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from utils.state import AppState
 import utils.preferences as preferences
@@ -696,6 +697,90 @@ def test_reload_settings_serializes_parallel_calls(monkeypatch):
     t2.join()
 
     assert restart_calls == 1
+
+
+def test_reload_settings_releases_local_provider_on_mode_change(monkeypatch):
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="local",
+        streaming=False,
+        overlay=False,
+    )
+    daemon.toggle_hotkey = windows_module._DEFAULT_TOGGLE_HOTKEY
+    daemon.hold_hotkey = windows_module._DEFAULT_HOLD_HOTKEY
+    daemon._restart_hotkey_listeners = lambda: None
+
+    local_provider = types.SimpleNamespace(
+        clear_model_cache=MagicMock(),
+        invalidate_runtime_config=MagicMock(),
+    )
+    daemon._provider_cache["local"] = local_provider
+
+    monkeypatch.setattr(
+        windows_module,
+        "load_environment",
+        lambda override_existing=True: None,
+    )
+    monkeypatch.setattr(
+        preferences,
+        "read_env_file",
+        lambda: {
+            "PULSESCRIBE_MODE": "openai",
+            "PULSESCRIBE_TOGGLE_HOTKEY": daemon.toggle_hotkey,
+            "PULSESCRIBE_HOLD_HOTKEY": daemon.hold_hotkey,
+            "PULSESCRIBE_STREAMING": "false",
+            "PULSESCRIBE_OVERLAY": "false",
+        },
+    )
+
+    daemon._reload_settings()
+
+    local_provider.clear_model_cache.assert_called_once_with()
+    local_provider.invalidate_runtime_config.assert_called_once_with()
+    assert "local" not in daemon._provider_cache
+
+
+def test_reload_settings_releases_local_provider_on_memory_setting_change(monkeypatch):
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="local",
+        streaming=False,
+        overlay=False,
+    )
+    daemon.toggle_hotkey = windows_module._DEFAULT_TOGGLE_HOTKEY
+    daemon.hold_hotkey = windows_module._DEFAULT_HOLD_HOTKEY
+    daemon._restart_hotkey_listeners = lambda: None
+
+    local_provider = types.SimpleNamespace(
+        clear_model_cache=MagicMock(),
+        invalidate_runtime_config=MagicMock(),
+    )
+    daemon._provider_cache["local"] = local_provider
+
+    monkeypatch.setattr(
+        windows_module,
+        "load_environment",
+        lambda override_existing=True: None,
+    )
+    monkeypatch.setattr(
+        preferences,
+        "read_env_file",
+        lambda: {
+            "PULSESCRIBE_MODE": "local",
+            "PULSESCRIBE_LOCAL_COMPUTE_TYPE": "float16",
+            "PULSESCRIBE_TOGGLE_HOTKEY": daemon.toggle_hotkey,
+            "PULSESCRIBE_HOLD_HOTKEY": daemon.hold_hotkey,
+            "PULSESCRIBE_STREAMING": "false",
+            "PULSESCRIBE_OVERLAY": "false",
+        },
+    )
+
+    with patch.dict(os.environ, {"PULSESCRIBE_LOCAL_COMPUTE_TYPE": "int8"}, clear=False):
+        daemon._reload_settings()
+        assert os.environ["PULSESCRIBE_LOCAL_COMPUTE_TYPE"] == "float16"
+
+    local_provider.clear_model_cache.assert_called_once_with()
+    local_provider.invalidate_runtime_config.assert_called_once_with()
 
 
 def test_maybe_refine_skips_empty_transcript_without_state_change(monkeypatch):

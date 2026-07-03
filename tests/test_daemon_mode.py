@@ -167,6 +167,31 @@ class TestDaemonMode(unittest.TestCase):
             self.assertIn("local", daemon._provider_cache)
             local_provider.invalidate_runtime_config.assert_called_once()
 
+    def test_reload_settings_releases_local_model_cache_when_memory_env_removed(self):
+        daemon = PulseScribeDaemon(mode="local")
+        local_provider = MagicMock()
+        daemon._provider_cache["local"] = local_provider
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "PULSESCRIBE_LOCAL_COMPUTE_TYPE": "float16",
+                    "PULSESCRIBE_LIGHTNING_BATCH_SIZE": "8",
+                },
+                clear=False,
+            ),
+            patch("pulsescribe_daemon.load_environment"),
+            patch("utils.preferences.read_env_file", return_value={}),
+            patch.object(daemon, "_preload_local_model_async"),
+        ):
+            daemon._reload_settings()
+
+        self.assertNotIn("PULSESCRIBE_LOCAL_COMPUTE_TYPE", os.environ)
+        self.assertNotIn("PULSESCRIBE_LIGHTNING_BATCH_SIZE", os.environ)
+        local_provider.clear_model_cache.assert_called_once_with()
+        local_provider.invalidate_runtime_config.assert_called_once_with()
+
     def test_provider_cache_is_thread_safe_during_reload(self):
         daemon = PulseScribeDaemon(mode="local")
 

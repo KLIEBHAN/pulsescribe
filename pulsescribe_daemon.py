@@ -127,7 +127,19 @@ RELOAD_ENV_SYNC_KEYS = (
     "PULSESCRIBE_LOCAL_WITHOUT_TIMESTAMPS",
     "PULSESCRIBE_LOCAL_VAD_FILTER",
     "PULSESCRIBE_LOCAL_WARMUP",
+    "PULSESCRIBE_LIGHTNING_BATCH_SIZE",
+    "PULSESCRIBE_LIGHTNING_QUANT",
     "PULSESCRIBE_REFINE_MODEL",
+)
+LOCAL_PROVIDER_MEMORY_ENV_KEYS = (
+    "PULSESCRIBE_LOCAL_BACKEND",
+    "PULSESCRIBE_DEVICE",
+    "PULSESCRIBE_FP16",
+    "PULSESCRIBE_LOCAL_COMPUTE_TYPE",
+    "PULSESCRIBE_LOCAL_CPU_THREADS",
+    "PULSESCRIBE_LOCAL_NUM_WORKERS",
+    "PULSESCRIBE_LIGHTNING_BATCH_SIZE",
+    "PULSESCRIBE_LIGHTNING_QUANT",
 )
 logger = logging.getLogger("pulsescribe")
 
@@ -2852,6 +2864,7 @@ class PulseScribeDaemon:
         """Lädt Settings aus .env neu und wendet sie an."""
         from utils.preferences import read_env_file
 
+        old_local_signature = self._local_provider_memory_signature()
         load_environment(override_existing=True)
         env_values = read_env_file()
         old_hotkey_signature = self._hotkey_bindings_signature(
@@ -2861,6 +2874,9 @@ class PulseScribeDaemon:
         self._sync_reload_env_values(env_values)
         self._apply_reloaded_hotkey_settings(env_values)
         self._apply_reloaded_runtime_settings(env_values)
+        new_local_signature = self._local_provider_memory_signature()
+        if new_local_signature != old_local_signature:
+            self._release_local_provider_model_cache()
         self._invalidate_local_provider_runtime_config()
         self._log_reloaded_settings()
         self._reconfigure_hotkeys_after_reload(old_hotkey_signature)
@@ -2916,6 +2932,47 @@ class PulseScribeDaemon:
 
         new_refine_model = env_values.get("PULSESCRIBE_REFINE_MODEL")
         self.refine_model = new_refine_model or DEFAULT_REFINE_MODEL
+
+    @staticmethod
+    def _normalize_local_signature_value(value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
+
+    def _local_provider_memory_signature(self) -> tuple[str | None, ...]:
+        return (
+            self._normalize_local_signature_value(self.mode),
+            self._normalize_local_signature_value(
+                os.getenv("PULSESCRIBE_LOCAL_BACKEND")
+            ),
+            self._normalize_local_signature_value(self.model),
+            *(
+                self._normalize_local_signature_value(os.getenv(key))
+                for key in LOCAL_PROVIDER_MEMORY_ENV_KEYS[1:]
+            ),
+        )
+
+    def _release_local_provider_model_cache(self) -> None:
+        with self._provider_cache_lock:
+            local_provider = self._provider_cache.get("local")
+        if local_provider is None:
+            return
+
+        clear_model_cache = getattr(local_provider, "clear_model_cache", None)
+        if callable(clear_model_cache):
+            try:
+                clear_model_cache()
+            except Exception as e:
+                logger.warning(f"LocalProvider clear_model_cache fehlgeschlagen: {e}")
+            return
+
+        cleanup = getattr(local_provider, "cleanup", None)
+        if callable(cleanup):
+            try:
+                cleanup()
+            except Exception as e:
+                logger.warning(f"LocalProvider cleanup fehlgeschlagen: {e}")
 
     def _invalidate_local_provider_runtime_config(self) -> None:
         with self._provider_cache_lock:

@@ -3,6 +3,7 @@
 Testet insbesondere das Lightning-Backend und dessen Integration.
 """
 
+import sys
 import numpy as np
 import pytest
 import threading
@@ -1130,3 +1131,43 @@ class TestLightningFallback:
         provider._ensure_runtime_config()
 
         assert provider.get_runtime_info()["backend"] == "lightning"
+
+    def test_clear_model_cache_releases_cached_models_without_importing_backends(
+        self, monkeypatch
+    ):
+        from providers.local import LocalProvider
+
+        monkeypatch.delitem(sys.modules, "torch", raising=False)
+        monkeypatch.delitem(sys.modules, "mlx.core", raising=False)
+
+        provider = LocalProvider()
+        provider._model_cache = {"a": object(), "b": object()}
+
+        cleared = provider.clear_model_cache()
+
+        assert cleared == 2
+        assert provider._model_cache == {}
+        assert "torch" not in sys.modules
+        assert "mlx.core" not in sys.modules
+
+    def test_cleanup_clears_cache_and_runtime_config(self):
+        from providers.local import LocalProvider
+
+        provider = LocalProvider()
+        provider._model_cache = {"cached": object()}
+        provider._backend = "lightning"
+        provider._device = "mps"
+        provider._fp16_override = True
+        provider._fast_mode = True
+        provider._lightning_fallback_active = True
+        provider._compute_type = "float16"
+
+        provider.cleanup()
+
+        assert provider._model_cache == {}
+        assert provider._backend is None
+        assert provider._device is None
+        assert provider._fp16_override is None
+        assert provider._fast_mode is None
+        assert provider._lightning_fallback_active is False
+        assert provider._compute_type is None

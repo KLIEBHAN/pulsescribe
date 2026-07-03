@@ -7,6 +7,7 @@ Standardmäßig nutzt er openai-whisper (PyTorch). Optional kann über
 `PULSESCRIBE_LOCAL_BACKEND=lightning` (lightning-whisper-mlx, ~4x schneller) genutzt werden.
 """
 
+import gc
 import logging
 import os
 import platform
@@ -368,6 +369,62 @@ class LocalProvider:
         self._fast_mode = None
         self._lightning_fallback_active = False
         self._compute_type = None
+
+    @staticmethod
+    def _release_backend_allocator_caches() -> None:
+        """Best-effort allocator cleanup without importing heavy backends."""
+        gc.collect()
+
+        torch_module = sys.modules.get("torch")
+        if torch_module is not None:
+            cuda_module = getattr(torch_module, "cuda", None)
+            if cuda_module is not None:
+                empty_cuda_cache = getattr(cuda_module, "empty_cache", None)
+                if callable(empty_cuda_cache):
+                    try:
+                        empty_cuda_cache()
+                    except Exception:
+                        logger.debug(
+                            "torch.cuda.empty_cache() fehlgeschlagen", exc_info=True
+                        )
+
+            mps_module = getattr(torch_module, "mps", None)
+            if mps_module is not None:
+                empty_mps_cache = getattr(mps_module, "empty_cache", None)
+                if callable(empty_mps_cache):
+                    try:
+                        empty_mps_cache()
+                    except Exception:
+                        logger.debug(
+                            "torch.mps.empty_cache() fehlgeschlagen", exc_info=True
+                        )
+
+        mlx_core_module = sys.modules.get("mlx.core")
+        if mlx_core_module is not None:
+            metal_module = getattr(mlx_core_module, "metal", None)
+            clear_cache = getattr(metal_module, "clear_cache", None)
+            if callable(clear_cache):
+                try:
+                    clear_cache()
+                except Exception:
+                    logger.debug(
+                        "mlx.core.metal.clear_cache() fehlgeschlagen", exc_info=True
+                    )
+
+    def clear_model_cache(self) -> int:
+        """Release cached local model objects and best-effort allocator state."""
+        with self._transcribe_lock:
+            with self._load_lock:
+                cleared_entries = len(self._model_cache)
+                self._model_cache.clear()
+
+        self._release_backend_allocator_caches()
+        return cleared_entries
+
+    def cleanup(self) -> None:
+        """Release cached models and reset ENV-derived runtime configuration."""
+        self.clear_model_cache()
+        self.invalidate_runtime_config()
 
     def _effective_backend(self) -> str | None:
         """Returns the backend that should handle the next local request."""
