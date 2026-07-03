@@ -532,10 +532,26 @@ def _make_warm_source(chunks: list[bytes]) -> deepgram_stream.WarmStreamSource:
     )
 
 
-def test_pre_drain_exits_early_when_queue_empty_but_respects_floor() -> None:
+class _TimeoutQueue:
+    """Queue stub that advances fake monotonic time instead of sleeping."""
+
+    def __init__(self, clock: list[float]):
+        self._clock = clock
+
+    def get(self, timeout: float):
+        self._clock[0] += timeout
+        raise queue.Empty
+
+
+def test_pre_drain_exits_early_when_queue_empty_but_respects_floor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Empty queue: stop after the minimum floor instead of the full duration."""
     warm_source = _make_warm_source([])
+    fake_time = [1000.0]
+    warm_source.audio_queue = cast(Any, _TimeoutQueue(fake_time))
     out_queue: queue.Queue[bytes | None] = queue.Queue()
+    monkeypatch.setattr(deepgram_stream.time, "monotonic", lambda: fake_time[0])
 
     start = time.monotonic()
     drained = deepgram_stream._pre_drain_warm_stream(
