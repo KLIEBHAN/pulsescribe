@@ -79,6 +79,7 @@ from utils.windows_latency_diagnostics import (
     WindowsLatencyRun,
     start_windows_latency_run,
 )
+from utils.windows_responsiveness import apply_windows_responsiveness_boost
 from whisper_platform import get_clipboard, get_sound_player
 from config import (
     INTERIM_FILE,
@@ -3109,6 +3110,7 @@ class PulseScribeWindows:
 
     def run(self):
         """Startet den Daemon."""
+        apply_windows_responsiveness_boost(logger)
         self._print_startup_banner()
         self._setup_startup_hotkeys()
         self._setup_overlay()
