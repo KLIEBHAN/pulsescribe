@@ -163,7 +163,9 @@ def test_message_handler_writes_pending_interim_once_throttle_window_passes(
     assert state.last_interim_written_text == "hello world"
 
 
-def test_message_handler_keeps_final_transcripts_out_of_interim_file(monkeypatch) -> None:
+def test_message_handler_keeps_final_transcripts_out_of_interim_file(
+    monkeypatch,
+) -> None:
     state = deepgram_stream.StreamState()
     handler = deepgram_stream._create_message_handler(state, "sess")
     write_calls: list[tuple[str, str]] = []
@@ -337,7 +339,9 @@ def test_graceful_shutdown_emits_latency_events(monkeypatch) -> None:
             listen_task=listen_task,
             session_id="sess",
             sample_rate=10,
-            latency_event_callback=lambda name, _fields=None: latency_events.append(name),
+            latency_event_callback=lambda name, _fields=None: latency_events.append(
+                name
+            ),
         )
         return latency_events
 
@@ -585,3 +589,447 @@ def test_pre_drain_forwards_all_pending_chunks() -> None:
 
     assert drained == 3
     assert forwarded == [b"a", b"b", b"c"]
+
+
+# =============================================================================
+# Deepgram Warm-WebSocket
+# =============================================================================
+
+
+class _FakeWebSocket:
+    def __init__(self) -> None:
+        self.closed = False
+
+
+class _FakeWarmConnection:
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self._websocket = _FakeWebSocket()
+        self.controls: list[str] = []
+        self.enter_thread: int | None = None
+        self.used_thread: int | None = None
+
+    async def send_control(self, message) -> None:
+        self.controls.append(message.type)
+
+
+class _FakeConnectionContext:
+    def __init__(
+        self, connection: _FakeWarmConnection, *, fail_enter: bool = False
+    ) -> None:
+        self.connection = connection
+        self.fail_enter = fail_enter
+        self.exit_calls = 0
+
+    async def __aenter__(self):
+        if self.fail_enter:
+            raise OSError("connect failed")
+        self.connection.enter_thread = threading.get_ident()
+        return self.connection
+
+    async def __aexit__(self, _exc_type, _exc, _tb):
+        self.exit_calls += 1
+        self.connection._websocket.closed = True
+        return False
+
+
+def _install_fake_connection_factory(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    fail_enters: set[int] | None = None,
+) -> list[_FakeConnectionContext]:
+    contexts: list[_FakeConnectionContext] = []
+    failures = fail_enters or set()
+
+    def fake_create(_api_key: str, **_kwargs):
+        index = len(contexts)
+        context = _FakeConnectionContext(
+            _FakeWarmConnection(f"connection-{index}"),
+            fail_enter=index in failures,
+        )
+        contexts.append(context)
+        return context
+
+    monkeypatch.setattr(deepgram_stream, "_create_deepgram_connection", fake_create)
+    return contexts
+
+
+def _install_fake_stream_core(
+    monkeypatch: pytest.MonkeyPatch,
+    used_connections: list[_FakeWarmConnection],
+    *,
+    entered: threading.Event | None = None,
+    release: threading.Event | None = None,
+) -> None:
+    async def fake_core(model: str, language: str | None, **kwargs) -> str:
+        connection_factory = kwargs["connection_factory"]
+        async with connection_factory(
+            "test-key",
+            model=model,
+            language=language,
+            sample_rate=16000,
+            channels=1,
+        ) as connection:
+            connection.used_thread = threading.get_ident()
+            used_connections.append(connection)
+            if entered is not None:
+                entered.set()
+            while release is not None and not release.is_set():
+                await asyncio.sleep(0.005)
+        return "warm result"
+
+    monkeypatch.setattr(deepgram_stream, "deepgram_stream_core", fake_core)
+
+
+def test_deepgram_stream_core_uses_injected_connection_factory(monkeypatch) -> None:
+    monkeypatch.setenv("DEEPGRAM_API_KEY", "test-key")
+    connection = _FakeWarmConnection("injected")
+    context = _FakeConnectionContext(connection)
+    factory_calls: list[dict[str, object]] = []
+    shutdown_connections: list[object] = []
+
+    @deepgram_stream.asynccontextmanager
+    async def connection_factory(api_key: str, **kwargs):
+        factory_calls.append({"api_key": api_key, **kwargs})
+        async with context as client:
+            yield client
+
+    def fake_setup_stop(state, *_args, **_kwargs):
+        state.stop_event.set()
+
+    monkeypatch.setattr(deepgram_stream, "_setup_stop_mechanism", fake_setup_stop)
+    monkeypatch.setattr(
+        deepgram_stream,
+        "_init_audio_source",
+        lambda **_kwargs: deepgram_stream.AudioSourceResult(
+            sample_rate=16000,
+            mic_stream=None,
+            buffer_state=None,
+        ),
+    )
+    monkeypatch.setattr(
+        deepgram_stream, "_register_deepgram_handlers", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        deepgram_stream,
+        "_stop_audio_source_before_shutdown",
+        lambda **_kwargs: asyncio.sleep(0),
+    )
+
+    async def fake_shutdown(*, connection, send_task, listen_task, **_kwargs):
+        shutdown_connections.append(connection)
+        send_task.cancel()
+        listen_task.cancel()
+        await asyncio.gather(send_task, listen_task, return_exceptions=True)
+
+    monkeypatch.setattr(deepgram_stream, "_graceful_shutdown", fake_shutdown)
+
+    result = asyncio.run(
+        deepgram_stream.deepgram_stream_core(
+            "nova-3",
+            "de",
+            connection_factory=connection_factory,
+        )
+    )
+
+    assert result == ""
+    assert factory_calls == [
+        {
+            "api_key": "test-key",
+            "model": "nova-3",
+            "language": "de",
+            "sample_rate": 16000,
+            "channels": 1,
+        }
+    ]
+    assert shutdown_connections == [connection]
+    assert context.exit_calls == 1
+
+
+def _wait_until(predicate, *, timeout: float = 1.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.005)
+    return bool(predicate())
+
+
+def test_warm_connection_manager_claims_once_and_replenishes(monkeypatch) -> None:
+    monkeypatch.setenv("DEEPGRAM_API_KEY", "test-key")
+    contexts = _install_fake_connection_factory(monkeypatch)
+    used_connections: list[_FakeWarmConnection] = []
+    _install_fake_stream_core(monkeypatch, used_connections)
+    latency_events: list[str] = []
+    manager = deepgram_stream.DeepgramWarmConnectionManager()
+
+    try:
+        assert manager.prewarm(model="nova-3", language="de", sample_rate=16000)
+        assert manager.wait_until_ready(timeout=1.0)
+
+        result = manager.transcribe(
+            "nova-3",
+            "de",
+            latency_event_callback=lambda name, _fields=None: latency_events.append(
+                name
+            ),
+        )
+
+        assert result == "warm result"
+        assert used_connections == [contexts[0].connection]
+        assert contexts[0].connection.enter_thread == contexts[0].connection.used_thread
+        assert contexts[0].exit_calls == 1
+        assert "deepgram_warm_ws_claimed" in latency_events
+        assert manager.wait_until_ready(timeout=1.0)
+        assert len(contexts) == 2
+    finally:
+        manager.shutdown(timeout=1.0)
+
+
+def test_warm_connection_manager_falls_back_after_prewarm_failure(monkeypatch) -> None:
+    monkeypatch.setenv("DEEPGRAM_API_KEY", "test-key")
+    contexts = _install_fake_connection_factory(monkeypatch, fail_enters={0})
+    used_connections: list[_FakeWarmConnection] = []
+    _install_fake_stream_core(monkeypatch, used_connections)
+    latency_events: list[str] = []
+    manager = deepgram_stream.DeepgramWarmConnectionManager()
+
+    try:
+        assert manager.prewarm(model="nova-3", language="de", sample_rate=16000)
+        assert not manager.wait_until_ready(timeout=1.0)
+
+        result = manager.transcribe(
+            "nova-3",
+            "de",
+            latency_event_callback=lambda name, _fields=None: latency_events.append(
+                name
+            ),
+        )
+
+        assert result == "warm result"
+        assert used_connections == [contexts[1].connection]
+        assert "deepgram_warm_ws_fallback" in latency_events
+        assert manager.wait_until_ready(timeout=1.0)
+        assert len(contexts) == 3
+    finally:
+        manager.shutdown(timeout=1.0)
+
+
+def test_warm_connection_manager_discards_stale_socket_before_claim(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("DEEPGRAM_API_KEY", "test-key")
+    contexts = _install_fake_connection_factory(monkeypatch)
+    used_connections: list[_FakeWarmConnection] = []
+    _install_fake_stream_core(monkeypatch, used_connections)
+    manager = deepgram_stream.DeepgramWarmConnectionManager()
+
+    try:
+        assert manager.prewarm(model="nova-3", language="de", sample_rate=16000)
+        assert manager.wait_until_ready(timeout=1.0)
+        contexts[0].connection._websocket.closed = True
+
+        assert manager.transcribe("nova-3", "de") == "warm result"
+
+        assert contexts[0].exit_calls == 1
+        assert used_connections == [contexts[1].connection]
+    finally:
+        manager.shutdown(timeout=1.0)
+
+
+def test_warm_connection_manager_replaces_socket_when_config_changes(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("DEEPGRAM_API_KEY", "test-key")
+    contexts = _install_fake_connection_factory(monkeypatch)
+    manager = deepgram_stream.DeepgramWarmConnectionManager()
+
+    try:
+        assert manager.prewarm(model="nova-3", language="de", sample_rate=16000)
+        assert manager.wait_until_ready(timeout=1.0)
+        assert manager.prewarm(model="nova-2", language="en", sample_rate=16000)
+        assert manager.wait_until_ready(timeout=1.0)
+
+        assert contexts[0].exit_calls == 1
+        assert len(contexts) == 2
+    finally:
+        manager.shutdown(timeout=1.0)
+
+
+def test_cancelled_prewarm_still_closes_previous_socket(monkeypatch) -> None:
+    monkeypatch.setenv("DEEPGRAM_API_KEY", "test-key")
+    exit_started = threading.Event()
+    release_exit = threading.Event()
+    exit_completed = threading.Event()
+    contexts: list[_FakeConnectionContext] = []
+
+    class _BlockingExitContext(_FakeConnectionContext):
+        async def __aexit__(self, _exc_type, _exc, _tb):
+            self.exit_calls += 1
+            exit_started.set()
+            while not release_exit.is_set():
+                await asyncio.sleep(0.005)
+            self.connection._websocket.closed = True
+            exit_completed.set()
+            return False
+
+    def fake_create(_api_key: str, **_kwargs):
+        index = len(contexts)
+        context_cls = _BlockingExitContext if index == 0 else _FakeConnectionContext
+        context = context_cls(_FakeWarmConnection(f"connection-{index}"))
+        contexts.append(context)
+        return context
+
+    monkeypatch.setattr(deepgram_stream, "_create_deepgram_connection", fake_create)
+    manager = deepgram_stream.DeepgramWarmConnectionManager()
+
+    try:
+        assert manager.prewarm(model="nova-3", language="de", sample_rate=16000)
+        assert manager.wait_until_ready(timeout=1.0)
+        assert manager.prewarm(model="nova-2", language="de", sample_rate=16000)
+        assert exit_started.wait(timeout=1.0)
+        assert manager.prewarm(model="nova-1", language="de", sample_rate=16000)
+        release_exit.set()
+
+        assert manager.wait_until_ready(timeout=1.0)
+        assert exit_completed.is_set()
+        assert contexts[0].exit_calls == 1
+    finally:
+        release_exit.set()
+        manager.shutdown(timeout=1.0)
+
+
+def test_warm_connection_manager_invalidate_disables_replenishment(monkeypatch) -> None:
+    monkeypatch.setenv("DEEPGRAM_API_KEY", "test-key")
+    contexts = _install_fake_connection_factory(monkeypatch)
+    used_connections: list[_FakeWarmConnection] = []
+    _install_fake_stream_core(monkeypatch, used_connections)
+    latency_events: list[str] = []
+    manager = deepgram_stream.DeepgramWarmConnectionManager()
+
+    try:
+        assert manager.prewarm(model="nova-3", language="de", sample_rate=16000)
+        assert manager.wait_until_ready(timeout=1.0)
+        manager.invalidate()
+        assert not manager.wait_until_ready(timeout=1.0)
+
+        assert (
+            manager.transcribe(
+                "nova-3",
+                "de",
+                latency_event_callback=lambda name, _fields=None: latency_events.append(
+                    name
+                ),
+            )
+            == "warm result"
+        )
+
+        assert used_connections == [contexts[1].connection]
+        assert "deepgram_warm_ws_fallback" in latency_events
+        time.sleep(0.02)
+        assert len(contexts) == 2
+        assert not manager.wait_until_ready(timeout=0.05)
+    finally:
+        manager.shutdown(timeout=1.0)
+
+
+def test_warm_connection_manager_sends_keepalive_while_idle(monkeypatch) -> None:
+    monkeypatch.setenv("DEEPGRAM_API_KEY", "test-key")
+    contexts = _install_fake_connection_factory(monkeypatch)
+    manager = deepgram_stream.DeepgramWarmConnectionManager(keepalive_interval=0.01)
+
+    try:
+        assert manager.prewarm(model="nova-3", language="de", sample_rate=16000)
+        assert manager.wait_until_ready(timeout=1.0)
+        assert _wait_until(lambda: "KeepAlive" in contexts[0].connection.controls)
+    finally:
+        manager.shutdown(timeout=1.0)
+
+
+def test_warm_connection_manager_rejects_parallel_transcriptions(monkeypatch) -> None:
+    monkeypatch.setenv("DEEPGRAM_API_KEY", "test-key")
+    _install_fake_connection_factory(monkeypatch)
+    entered = threading.Event()
+    release = threading.Event()
+    _install_fake_stream_core(
+        monkeypatch,
+        [],
+        entered=entered,
+        release=release,
+    )
+    manager = deepgram_stream.DeepgramWarmConnectionManager()
+    errors: list[BaseException] = []
+
+    def run_first_transcription() -> None:
+        try:
+            manager.transcribe("nova-3", "de")
+        except BaseException as exc:  # pragma: no cover - assertion below surfaces it
+            errors.append(exc)
+
+    thread = threading.Thread(target=run_first_transcription)
+    try:
+        thread.start()
+        assert entered.wait(timeout=1.0)
+        with pytest.raises(RuntimeError, match="already in use"):
+            manager.transcribe("nova-3", "de")
+    finally:
+        release.set()
+        thread.join(timeout=1.0)
+        manager.shutdown(timeout=1.0)
+
+    assert not thread.is_alive()
+    assert errors == []
+
+
+def test_warm_connection_manager_shutdown_stops_active_core_gracefully(monkeypatch) -> None:
+    monkeypatch.setenv("DEEPGRAM_API_KEY", "test-key")
+    _install_fake_connection_factory(monkeypatch)
+    started = threading.Event()
+    finalized = threading.Event()
+    external_stop = threading.Event()
+    errors: list[BaseException] = []
+
+    async def fake_core(model: str, language: str | None, **kwargs) -> str:
+        connection_factory = kwargs["connection_factory"]
+        async with connection_factory(
+            "test-key",
+            model=model,
+            language=language,
+            sample_rate=16000,
+            channels=1,
+        ):
+            started.set()
+            while not kwargs["external_stop_event"].is_set():
+                await asyncio.sleep(0.005)
+            finalized.set()
+        return "done"
+
+    monkeypatch.setattr(deepgram_stream, "deepgram_stream_core", fake_core)
+    manager = deepgram_stream.DeepgramWarmConnectionManager()
+
+    def run_transcription() -> None:
+        try:
+            manager.transcribe(
+                "nova-3",
+                "de",
+                external_stop_event=external_stop,
+            )
+        except BaseException as exc:  # pragma: no cover - assertion below surfaces it
+            errors.append(exc)
+
+    thread = threading.Thread(target=run_transcription)
+    try:
+        assert manager.prewarm(model="nova-3", language="de", sample_rate=16000)
+        assert manager.wait_until_ready(timeout=1.0)
+        thread.start()
+        assert started.wait(timeout=1.0)
+
+        manager.shutdown(timeout=1.0)
+    finally:
+        thread.join(timeout=1.0)
+        manager.shutdown(timeout=1.0)
+
+    assert external_stop.is_set()
+    assert finalized.is_set()
+    assert not thread.is_alive()
+    assert errors == []

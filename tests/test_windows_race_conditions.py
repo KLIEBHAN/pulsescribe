@@ -406,6 +406,136 @@ def test_streaming_worker_warm_passes_windows_stop_grace(monkeypatch):
     assert events == ["core_return"]
 
 
+def test_refresh_deepgram_websocket_prewarm_uses_current_stream_config(monkeypatch):
+    import asyncio
+    import providers.deepgram_stream as deepgram_stream
+
+    monkeypatch.setattr(
+        asyncio,
+        "WindowsSelectorEventLoopPolicy",
+        asyncio.DefaultEventLoopPolicy,
+        raising=False,
+    )
+    monkeypatch.setenv("DEEPGRAM_API_KEY", "test-key")
+    monkeypatch.setenv("PULSESCRIBE_MODEL", "nova-2")
+    monkeypatch.setenv("PULSESCRIBE_LANGUAGE", "de")
+    windows_module = _load_windows_module()
+    calls: list[dict[str, object]] = []
+
+    class _FakeManager:
+        def prewarm(self, **kwargs):
+            calls.append(kwargs)
+            return True
+
+        def invalidate(self):
+            raise AssertionError("unexpected invalidate")
+
+    monkeypatch.setattr(
+        deepgram_stream,
+        "DeepgramWarmConnectionManager",
+        _FakeManager,
+    )
+    daemon = windows_module.PulseScribeWindows(
+        mode="deepgram",
+        streaming=True,
+        overlay=False,
+    )
+
+    daemon._refresh_deepgram_websocket_prewarm(sample_rate=48000)
+
+    assert calls == [{"model": "nova-2", "language": "de", "sample_rate": 48000}]
+    assert isinstance(daemon._deepgram_connection_manager, _FakeManager)
+
+
+def test_refresh_deepgram_websocket_prewarm_invalidates_when_disabled(monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr(
+        asyncio,
+        "WindowsSelectorEventLoopPolicy",
+        asyncio.DefaultEventLoopPolicy,
+        raising=False,
+    )
+    monkeypatch.setenv("DEEPGRAM_API_KEY", "test-key")
+    monkeypatch.setenv("PULSESCRIBE_DEEPGRAM_WARM_WEBSOCKET", "false")
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="deepgram",
+        streaming=True,
+        overlay=False,
+    )
+    invalidated: list[bool] = []
+
+    class _FakeManager:
+        def invalidate(self):
+            invalidated.append(True)
+
+    daemon._deepgram_connection_manager = _FakeManager()
+
+    daemon._refresh_deepgram_websocket_prewarm(sample_rate=16000)
+
+    assert invalidated == [True]
+
+
+def test_streaming_worker_warm_prefers_prewarmed_websocket_manager(monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr(
+        asyncio,
+        "WindowsSelectorEventLoopPolicy",
+        asyncio.DefaultEventLoopPolicy,
+        raising=False,
+    )
+    monkeypatch.setenv("PULSESCRIBE_LANGUAGE", "auto")
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="deepgram",
+        streaming=True,
+        overlay=False,
+    )
+    daemon._warm_stream = object()
+    daemon._warm_stream_sample_rate = 16000
+    daemon._handle_no_speech_result = lambda *_args, **_kwargs: None
+    calls: list[tuple[str, str | None, dict[str, object]]] = []
+
+    class _FakeManager:
+        def transcribe(self, model, language, **kwargs):
+            calls.append((model, language, kwargs))
+            return ""
+
+    daemon._deepgram_connection_manager = _FakeManager()
+
+    daemon._streaming_worker_warm()
+
+    assert len(calls) == 1
+    model, language, kwargs = calls[0]
+    assert model == "nova-3"
+    assert language == "auto"
+    assert kwargs["warm_stream_source"].sample_rate == 16000
+    assert kwargs["external_stop_event"] is daemon._recording_stop_event
+
+
+def test_shutdown_deepgram_websocket_is_bounded_and_clears_manager():
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai",
+        streaming=False,
+        overlay=False,
+    )
+    calls: list[float] = []
+
+    class _FakeManager:
+        def shutdown(self, *, timeout):
+            calls.append(timeout)
+
+    daemon._deepgram_connection_manager = _FakeManager()
+
+    daemon._shutdown_deepgram_websocket()
+
+    assert calls == [1.5]
+    assert daemon._deepgram_connection_manager is None
+
+
 def test_recording_loop_warm_collects_audio_during_stop_grace(monkeypatch):
     import numpy as np
 
@@ -460,7 +590,9 @@ def test_rest_cold_capture_error_finishes_latency_run(monkeypatch):
             raise ImportError("sounddevice missing")
         return original_import(name, *args, **kwargs)
 
-    daemon._latency_finish = lambda outcome, **fields: finishes.append((outcome, fields))
+    daemon._latency_finish = lambda outcome, **fields: finishes.append(
+        (outcome, fields)
+    )
     daemon._play_sound = lambda _name: None
     monkeypatch.setattr(builtins, "__import__", fake_import)
     monkeypatch.setattr(windows_module.time, "sleep", lambda _seconds: None)
@@ -489,7 +621,9 @@ def test_rest_warm_capture_error_finishes_latency_run(monkeypatch):
     )
     finishes = []
 
-    daemon._latency_finish = lambda outcome, **fields: finishes.append((outcome, fields))
+    daemon._latency_finish = lambda outcome, **fields: finishes.append(
+        (outcome, fields)
+    )
     daemon._play_sound = lambda _name: None
     daemon._prepare_warm_rest_audio_buffer = lambda: (_ for _ in ()).throw(
         RuntimeError("warm capture failed")
@@ -775,7 +909,9 @@ def test_reload_settings_releases_local_provider_on_memory_setting_change(monkey
         },
     )
 
-    with patch.dict(os.environ, {"PULSESCRIBE_LOCAL_COMPUTE_TYPE": "int8"}, clear=False):
+    with patch.dict(
+        os.environ, {"PULSESCRIBE_LOCAL_COMPUTE_TYPE": "int8"}, clear=False
+    ):
         daemon._reload_settings()
         assert os.environ["PULSESCRIBE_LOCAL_COMPUTE_TYPE"] == "float16"
 
@@ -1075,7 +1211,6 @@ def test_stale_hotkey_listener_callbacks_are_ignored_after_restart(monkeypatch):
     assert press_count == 2
 
 
-
 def test_windows_env_flag_parses_common_bool_variants():
     windows_module = _load_windows_module()
 
@@ -1084,7 +1219,6 @@ def test_windows_env_flag_parses_common_bool_variants():
     assert windows_module._env_flag("0", default=True) is False
     assert windows_module._env_flag("invalid", default=True) is True
     assert windows_module._env_flag(None, default=False) is False
-
 
 
 def test_reload_settings_uses_shared_bool_parsing(monkeypatch):
@@ -1131,7 +1265,6 @@ def test_reload_settings_uses_shared_bool_parsing(monkeypatch):
     assert daemon.streaming is False
     assert daemon.overlay_enabled is False
     assert stop_overlay_calls == 1
-
 
 
 def test_set_state_updates_tray_title_when_same_state_text_changes(monkeypatch):

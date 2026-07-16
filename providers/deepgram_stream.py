@@ -25,16 +25,23 @@ import queue
 import sys
 import threading
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import TYPE_CHECKING, Any, AsyncIterator, Callable
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    AsyncContextManager,
+    AsyncIterator,
+    Callable,
+)
 
 from config import (
     AUDIO_QUEUE_POLL_INTERVAL,
     CLI_BUFFER_LIMIT,
     DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS,
     DEEPGRAM_CLOSE_TIMEOUT,
+    DEEPGRAM_KEEPALIVE_INTERVAL_SECONDS,
     DEEPGRAM_TAIL_PADDING_SECONDS,
     DEEPGRAM_WS_URL,
     DEFAULT_DEEPGRAM_MODEL,
@@ -55,7 +62,10 @@ from config import (
     get_input_device,
 )
 from providers._language import normalize_auto_language
-from utils.audio_latency import create_low_latency_input_stream, platform_audio_blocksize
+from utils.audio_latency import (
+    create_low_latency_input_stream,
+    platform_audio_blocksize,
+)
 from utils.logging import get_session_id
 from utils.timing import redacted_text_summary
 
@@ -114,7 +124,9 @@ class WarmStreamSource:
     def __post_init__(self) -> None:
         """Validiert Sample Rate."""
         if not (8000 <= self.sample_rate <= 48000):
-            raise ValueError(f"sample_rate muss zwischen 8000-48000 liegen: {self.sample_rate}")
+            raise ValueError(
+                f"sample_rate muss zwischen 8000-48000 liegen: {self.sample_rate}"
+            )
 
 
 @dataclass
@@ -155,6 +167,30 @@ class BufferState:
     buffer: list[bytes] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock)
     active: bool = True
+
+
+@dataclass(frozen=True)
+class DeepgramConnectionConfig:
+    """Parameters that make a prewarmed Deepgram socket session-specific."""
+
+    api_key: str = field(repr=False)
+    model: str
+    language: str | None
+    sample_rate: int
+    channels: int = WHISPER_CHANNELS
+
+
+@dataclass
+class _PreparedDeepgramConnection:
+    """One unused websocket plus the context manager that owns it."""
+
+    config: DeepgramConnectionConfig
+    context: AsyncContextManager[AsyncV1SocketClient]
+    connection: AsyncV1SocketClient
+    keepalive_task: asyncio.Task[None] | None = None
+
+
+DeepgramConnectionFactory = Callable[..., AsyncContextManager[Any]]
 
 
 # =============================================================================
@@ -256,6 +292,493 @@ async def _create_deepgram_connection(
         close_timeout=DEEPGRAM_CLOSE_TIMEOUT,
     ) as protocol:
         yield AsyncV1SocketClient(websocket=protocol)
+
+
+class DeepgramWarmConnectionManager:
+    """Preconnect one Deepgram websocket for the next transcription.
+
+    Deepgram's ``CloseStream`` ends a streaming session, so a socket is claimed
+    exactly once and replaced after every dictation. All websocket operations run
+    on one dedicated asyncio loop to preserve loop affinity.
+    """
+
+    def __init__(
+        self,
+        *,
+        keepalive_interval: float = DEEPGRAM_KEEPALIVE_INTERVAL_SECONDS,
+    ) -> None:
+        self._keepalive_interval = max(0.01, keepalive_interval)
+        self._state_lock = threading.Lock()
+        self._session_lock = threading.Lock()
+        self._loop_started = threading.Event()
+        self._prewarm_complete = threading.Event()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread: threading.Thread | None = None
+        self._closing = False
+        self._enabled = False
+        self._desired_config: DeepgramConnectionConfig | None = None
+
+        # The following fields are accessed only on the manager event loop.
+        self._prepared: _PreparedDeepgramConnection | None = None
+        self._prewarm_task: asyncio.Task[None] | None = None
+        self._prewarm_config: DeepgramConnectionConfig | None = None
+        self._active_task: asyncio.Task[Any] | None = None
+        self._active_stop_event: threading.Event | None = None
+
+    @staticmethod
+    def _build_config(
+        *,
+        api_key: str | None,
+        model: str,
+        language: str | None,
+        sample_rate: int,
+        channels: int,
+    ) -> DeepgramConnectionConfig:
+        return DeepgramConnectionConfig(
+            api_key=_validate_api_key(api_key),
+            model=model.strip(),
+            language=normalize_auto_language(language),
+            sample_rate=sample_rate,
+            channels=channels,
+        )
+
+    def _ensure_loop(self) -> asyncio.AbstractEventLoop:
+        with self._state_lock:
+            if self._closing:
+                raise RuntimeError("Deepgram warm connection manager is closed")
+            loop = self._loop
+            thread = self._thread
+            if loop is not None and thread is not None and thread.is_alive():
+                return loop
+
+            self._loop_started.clear()
+            thread = threading.Thread(
+                target=self._run_event_loop,
+                daemon=True,
+                name="DeepgramWarmWebSocket",
+            )
+            self._thread = thread
+            thread.start()
+
+        if not self._loop_started.wait(timeout=2.0):
+            raise RuntimeError("Deepgram warm websocket event loop did not start")
+        loop = self._loop
+        if loop is None:
+            raise RuntimeError("Deepgram warm websocket event loop unavailable")
+        return loop
+
+    def _run_event_loop(self) -> None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        self._loop = loop
+        self._loop_started.set()
+        try:
+            loop.run_forever()
+        finally:
+            pending = asyncio.all_tasks(loop)
+            for task in pending:
+                task.cancel()
+            if pending:
+                loop.run_until_complete(
+                    asyncio.gather(*pending, return_exceptions=True)
+                )
+            loop.close()
+            self._loop = None
+
+    def prewarm(
+        self,
+        *,
+        model: str,
+        language: str | None,
+        sample_rate: int,
+        channels: int = WHISPER_CHANNELS,
+        api_key: str | None = None,
+    ) -> bool:
+        """Start connecting in the background; never wait for the handshake."""
+        try:
+            config = self._build_config(
+                api_key=api_key
+                if api_key is not None
+                else os.getenv("DEEPGRAM_API_KEY"),
+                model=model,
+                language=language,
+                sample_rate=sample_rate,
+                channels=channels,
+            )
+            _validate_model(config.model)
+            loop = self._ensure_loop()
+        except (RuntimeError, ValueError) as exc:
+            logger.debug("Deepgram WebSocket Pre-Warm übersprungen: %s", exc)
+            return False
+
+        coroutine = self._request_prewarm(config)
+        with self._state_lock:
+            if self._closing:
+                coroutine.close()
+                return False
+            self._enabled = True
+            self._desired_config = config
+            self._prewarm_complete.clear()
+            try:
+                asyncio.run_coroutine_threadsafe(coroutine, loop)
+            except RuntimeError as exc:
+                coroutine.close()
+                logger.debug("Deepgram WebSocket Pre-Warm Scheduling fehlgeschlagen: %s", exc)
+                return False
+        return True
+
+    def wait_until_ready(self, timeout: float | None = None) -> bool:
+        """Wait until the latest prewarm attempt completed and a socket is ready."""
+        if not self._prewarm_complete.wait(timeout=timeout):
+            return False
+        loop = self._loop
+        if loop is None:
+            return False
+        coroutine = self._has_ready_connection()
+        try:
+            future = asyncio.run_coroutine_threadsafe(coroutine, loop)
+        except RuntimeError:
+            coroutine.close()
+            return False
+        try:
+            return bool(future.result(timeout=timeout))
+        except Exception:
+            return False
+
+    def transcribe(self, model: str, language: str | None, **kwargs: Any) -> str:
+        """Run one transcription on the manager loop and replenish afterwards."""
+        if not self._session_lock.acquire(blocking=False):
+            raise RuntimeError("Deepgram warm websocket is already in use")
+        try:
+            loop = self._ensure_loop()
+            coroutine = self._run_transcription(model, language, kwargs)
+            with self._state_lock:
+                if self._closing:
+                    coroutine.close()
+                    raise RuntimeError("Deepgram warm connection manager is closed")
+                try:
+                    future = asyncio.run_coroutine_threadsafe(coroutine, loop)
+                except RuntimeError:
+                    coroutine.close()
+                    raise
+            return future.result()
+        finally:
+            self._session_lock.release()
+
+    def invalidate(self) -> None:
+        """Discard an unused warm socket without stopping an active session."""
+        with self._state_lock:
+            self._enabled = False
+            self._desired_config = None
+            self._prewarm_complete.clear()
+            if self._closing:
+                return
+            loop = self._loop
+            if loop is None:
+                return
+            coroutine = self._invalidate_async()
+            try:
+                asyncio.run_coroutine_threadsafe(coroutine, loop)
+            except RuntimeError:
+                coroutine.close()
+
+    def shutdown(self, *, timeout: float = 0.5) -> None:
+        """Bounded, idempotent shutdown for app exit."""
+        with self._state_lock:
+            if self._closing:
+                return
+            self._closing = True
+            self._enabled = False
+            self._desired_config = None
+            loop = self._loop
+            thread = self._thread
+
+        if loop is None or thread is None:
+            return
+
+        future = asyncio.run_coroutine_threadsafe(
+            self._shutdown_async(grace_timeout=max(0.0, timeout * 0.6)),
+            loop,
+        )
+        with suppress(Exception):
+            future.result(timeout=max(0.0, timeout))
+        with suppress(RuntimeError):
+            loop.call_soon_threadsafe(loop.stop)
+        if thread is not threading.current_thread():
+            thread.join(timeout=max(0.0, timeout))
+
+    async def _run_transcription(
+        self,
+        model: str,
+        language: str | None,
+        kwargs: dict[str, Any],
+    ) -> str:
+        current_task = asyncio.current_task()
+        self._active_task = current_task
+        self._active_stop_event = kwargs.get("external_stop_event")
+        latency_callback = kwargs.get("latency_event_callback")
+
+        @asynccontextmanager
+        async def connection_factory(api_key: str, **connection_kwargs: Any):
+            async with self._acquire_connection(
+                api_key,
+                **connection_kwargs,
+            ) as lease:
+                connection, was_prewarmed = lease
+                _emit_latency_event(
+                    latency_callback,
+                    "deepgram_warm_ws_claimed"
+                    if was_prewarmed
+                    else "deepgram_warm_ws_fallback",
+                )
+                yield connection
+
+        try:
+            return await deepgram_stream_core(
+                model,
+                language,
+                connection_factory=connection_factory,
+                **kwargs,
+            )
+        finally:
+            if self._active_task is current_task:
+                self._active_task = None
+                self._active_stop_event = None
+            with self._state_lock:
+                desired = self._desired_config
+                should_replenish = self._enabled and not self._closing
+            if desired is not None and should_replenish:
+                await self._request_prewarm(desired)
+
+    async def _request_prewarm(self, config: DeepgramConnectionConfig) -> None:
+        with self._state_lock:
+            if self._closing or not self._enabled or self._desired_config != config:
+                return
+
+        prepared = self._prepared
+        if (
+            prepared is not None
+            and prepared.config == config
+            and self._connection_is_open(prepared.connection)
+        ):
+            self._prewarm_complete.set()
+            return
+
+        task = self._prewarm_task
+        if task is not None and not task.done():
+            if self._prewarm_config == config:
+                return
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+        self._prewarm_complete.clear()
+        self._prewarm_config = config
+        self._prewarm_task = asyncio.create_task(
+            self._prewarm_connection(config),
+            name="DeepgramWebSocketPrewarm",
+        )
+
+    async def _prewarm_connection(self, config: DeepgramConnectionConfig) -> None:
+        current_task = asyncio.current_task()
+        try:
+            if self._prepared is not None:
+                prepared, self._prepared = self._prepared, None
+                await self._close_prepared(prepared)
+
+            prepared = await self._open_prepared(config)
+            with self._state_lock:
+                still_desired = (
+                    self._enabled
+                    and not self._closing
+                    and self._desired_config == config
+                )
+            if not still_desired:
+                await self._close_prepared(prepared)
+                return
+
+            self._prepared = prepared
+            prepared.keepalive_task = asyncio.create_task(
+                self._keepalive(prepared),
+                name="DeepgramWebSocketKeepAlive",
+            )
+            logger.info(
+                "Deepgram WebSocket vorgewärmt: model=%s, lang=%s, %sHz",
+                config.model,
+                config.language or "auto",
+                config.sample_rate,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.debug("Deepgram WebSocket Pre-Warm fehlgeschlagen: %s", exc)
+        finally:
+            if self._prewarm_task is current_task:
+                self._prewarm_task = None
+                self._prewarm_config = None
+            with self._state_lock:
+                should_signal = self._enabled and self._desired_config == config
+            if should_signal:
+                self._prewarm_complete.set()
+
+    async def _open_prepared(
+        self,
+        config: DeepgramConnectionConfig,
+    ) -> _PreparedDeepgramConnection:
+        context = _create_deepgram_connection(
+            config.api_key,
+            model=config.model,
+            language=config.language,
+            sample_rate=config.sample_rate,
+            channels=config.channels,
+        )
+        connection = await context.__aenter__()
+        return _PreparedDeepgramConnection(
+            config=config,
+            context=context,
+            connection=connection,
+        )
+
+    async def _keepalive(self, prepared: _PreparedDeepgramConnection) -> None:
+        from deepgram.extensions.types.sockets import ListenV1ControlMessage
+
+        try:
+            while True:
+                await asyncio.sleep(self._keepalive_interval)
+                await prepared.connection.send_control(
+                    ListenV1ControlMessage(type="KeepAlive")
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.debug("Deepgram Warm-WebSocket KeepAlive fehlgeschlagen: %s", exc)
+            if self._prepared is prepared:
+                self._prepared = None
+            prepared.keepalive_task = None
+            await self._close_prepared(prepared, cancel_keepalive=False)
+            with self._state_lock:
+                desired = self._desired_config
+                should_reconnect = self._enabled and not self._closing
+            if desired is not None and should_reconnect:
+                await self._request_prewarm(desired)
+
+    @asynccontextmanager
+    async def _acquire_connection(
+        self,
+        api_key: str,
+        *,
+        model: str,
+        language: str | None = None,
+        sample_rate: int = WHISPER_SAMPLE_RATE,
+        channels: int = WHISPER_CHANNELS,
+        **connection_kwargs: Any,
+    ) -> AsyncIterator[tuple[AsyncV1SocketClient, bool]]:
+        config = self._build_config(
+            api_key=api_key,
+            model=model,
+            language=language,
+            sample_rate=sample_rate,
+            channels=channels,
+        )
+        with self._state_lock:
+            warm_enabled = self._enabled and not self._closing
+            if warm_enabled:
+                self._desired_config = config
+
+        if warm_enabled:
+            task = self._prewarm_task
+            if task is not None and not task.done() and self._prewarm_config == config:
+                await asyncio.gather(task, return_exceptions=True)
+
+            prepared, self._prepared = self._prepared, None
+            if prepared is not None:
+                await self._stop_keepalive(prepared)
+                if prepared.config == config and self._connection_is_open(
+                    prepared.connection
+                ):
+                    logger.info("Deepgram Warm-WebSocket übernommen")
+                    try:
+                        yield prepared.connection, True
+                    finally:
+                        await self._close_prepared(prepared)
+                    return
+                await self._close_prepared(prepared)
+
+        logger.debug("Kein nutzbarer Warm-WebSocket; öffne frische Verbindung")
+        async with _create_deepgram_connection(
+            api_key,
+            model=model,
+            language=language,
+            sample_rate=sample_rate,
+            channels=channels,
+            **connection_kwargs,
+        ) as connection:
+            yield connection, False
+
+    async def _stop_keepalive(self, prepared: _PreparedDeepgramConnection) -> None:
+        task, prepared.keepalive_task = prepared.keepalive_task, None
+        if task is None or task is asyncio.current_task():
+            return
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    async def _close_prepared(
+        self,
+        prepared: _PreparedDeepgramConnection,
+        *,
+        cancel_keepalive: bool = True,
+    ) -> None:
+        async def cleanup() -> None:
+            if cancel_keepalive:
+                await self._stop_keepalive(prepared)
+            with suppress(Exception):
+                await prepared.context.__aexit__(None, None, None)
+
+        cleanup_task = asyncio.create_task(cleanup())
+        try:
+            await asyncio.shield(cleanup_task)
+        except asyncio.CancelledError:
+            # A cancelled prewarm/reload must not leak its already-open socket.
+            with suppress(asyncio.CancelledError, Exception):
+                await asyncio.shield(cleanup_task)
+            raise
+
+    @staticmethod
+    def _connection_is_open(connection: AsyncV1SocketClient) -> bool:
+        websocket = getattr(connection, "_websocket", None)
+        if websocket is None:
+            return True
+        if bool(getattr(websocket, "closed", False)):
+            return False
+        state = getattr(websocket, "state", None)
+        return getattr(state, "name", None) != "CLOSED"
+
+    async def _has_ready_connection(self) -> bool:
+        prepared = self._prepared
+        return prepared is not None and self._connection_is_open(prepared.connection)
+
+    async def _invalidate_async(self) -> None:
+        task, self._prewarm_task = self._prewarm_task, None
+        self._prewarm_config = None
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        if self._prepared is not None:
+            prepared, self._prepared = self._prepared, None
+            await self._close_prepared(prepared)
+        self._prewarm_complete.set()
+
+    async def _shutdown_async(self, *, grace_timeout: float) -> None:
+        active = self._active_task
+        stop_event = self._active_stop_event
+        if stop_event is not None:
+            stop_event.set()
+
+        if active is not None and active is not asyncio.current_task():
+            done, _pending = await asyncio.wait({active}, timeout=grace_timeout)
+            if active not in done:
+                active.cancel()
+                await asyncio.gather(active, return_exceptions=True)
+        await self._invalidate_async()
 
 
 # =============================================================================
@@ -549,7 +1072,9 @@ def _post_drain_warm_stream(
             except queue.Empty:
                 empty_count += 1
             except RuntimeError:
-                logger.debug(f"[{session_id}] Event-Loop geschlossen, Drain abgebrochen")
+                logger.debug(
+                    f"[{session_id}] Event-Loop geschlossen, Drain abgebrochen"
+                )
                 break
 
         if drained > 0:
@@ -678,7 +1203,9 @@ def _init_daemon_stream(
 
     mic_stream, sample_rate = _create_mic_stream(callback, session_id, stream_start)
 
-    _log_init_complete(session_id, stream_start, "Daemon-Mode Mikrofon bereit", play_ready)
+    _log_init_complete(
+        session_id, stream_start, "Daemon-Mode Mikrofon bereit", play_ready
+    )
 
     return AudioSourceResult(
         sample_rate=sample_rate,
@@ -946,9 +1473,7 @@ def _setup_stop_mechanism(
         def _watch_external_stop() -> None:
             external_stop_event.wait()
             if stop_grace_seconds > 0:
-                logger.debug(
-                    f"[{session_id}] Stop-Grace: {stop_grace_seconds:.2f}s"
-                )
+                logger.debug(f"[{session_id}] Stop-Grace: {stop_grace_seconds:.2f}s")
                 time.sleep(stop_grace_seconds)
             try:
                 loop.call_soon_threadsafe(state.stop_event.set)
@@ -963,7 +1488,10 @@ def _setup_stop_mechanism(
         stop_watcher.start()
         logger.debug(f"[{session_id}] External stop event watcher gestartet")
 
-    elif sys.platform != "win32" and threading.current_thread() is threading.main_thread():
+    elif (
+        sys.platform != "win32"
+        and threading.current_thread() is threading.main_thread()
+    ):
         # Unix only: SIGUSR1 Signal-Handler
         import signal
 
@@ -1060,9 +1588,7 @@ async def _graceful_shutdown(
 
     # 3. Warten auf finale Transkripte
     try:
-        await asyncio.wait_for(
-            state.finalize_done.wait(), timeout=FINALIZE_TIMEOUT
-        )
+        await asyncio.wait_for(state.finalize_done.wait(), timeout=FINALIZE_TIMEOUT)
         t_finalize = (time.perf_counter() - t_finalize_start) * 1000
         logger.info(f"[{session_id}] Finalize abgeschlossen ({t_finalize:.0f}ms)")
         _emit_latency_event(
@@ -1374,6 +1900,7 @@ async def deepgram_stream_core(
     latency_event_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
     warm_stream_source: WarmStreamSource | None = None,
     stop_grace_seconds: float = 0.0,
+    connection_factory: DeepgramConnectionFactory | None = None,
 ) -> str:
     """Gemeinsamer Streaming-Core für Deepgram (SDK v5.3).
 
@@ -1388,6 +1915,7 @@ async def deepgram_stream_core(
         latency_event_callback: Optionaler Callback für strukturierte Latenz-Events
         warm_stream_source: Externes WarmStreamSource für instant-start (Windows)
         stop_grace_seconds: Zusätzliche Aufnahmezeit nach externem Stop-Signal
+        connection_factory: Optionaler Connection-Provider für einen vorgewärmten Socket
 
     Drei Modi:
     - CLI (early_buffer=None): Buffering während WebSocket-Connect
@@ -1446,8 +1974,10 @@ async def deepgram_stream_core(
         audio_level_callback=audio_level_callback,
     )
 
+    create_connection = connection_factory or _create_deepgram_connection
+
     try:
-        async with _create_deepgram_connection(
+        async with create_connection(
             api_key,
             model=model,
             language=language,
@@ -1635,6 +2165,7 @@ _deepgram_stream_core = deepgram_stream_core
 __all__ = [
     # Public API
     "DeepgramStreamProvider",
+    "DeepgramWarmConnectionManager",
     "WarmStreamSource",
     "deepgram_stream_core",
     "transcribe_with_deepgram_stream",
@@ -1647,4 +2178,5 @@ __all__ = [
     "AudioSourceMode",
     "AudioSourceResult",
     "BufferState",
+    "DeepgramConnectionConfig",
 ]

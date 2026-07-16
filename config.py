@@ -416,6 +416,12 @@ DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS = _get_float_env(
     "PULSESCRIBE_DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS",
     _windows_latency_default(0.25, 0.10),
 )  # Zusatzfenster, falls Deepgram nur einen leeren from_finalize-Ack sendet
+DEEPGRAM_KEEPALIVE_INTERVAL_SECONDS = _get_bounded_float_env(
+    "PULSESCRIBE_DEEPGRAM_KEEPALIVE_INTERVAL_SECONDS",
+    3.0,
+    min_value=1.0,
+    max_value=8.0,
+)  # Deepgram beendet Streams nach ~10s ohne Audio/KeepAlive.
 
 
 def get_windows_stop_grace_seconds() -> float:
@@ -593,6 +599,7 @@ __all__ = [
     "DEEPGRAM_CLOSE_TIMEOUT",
     "DEEPGRAM_TAIL_PADDING_SECONDS",
     "DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS",
+    "DEEPGRAM_KEEPALIVE_INTERVAL_SECONDS",
     "WINDOWS_STOP_GRACE_SECONDS",
     "get_windows_paste_sync_seconds",
     "get_windows_latency_preset",

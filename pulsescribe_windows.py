@@ -49,7 +49,6 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from utils.env import load_environment, parse_bool
 
 
-
 def _env_flag(raw_value: str | None, *, default: bool) -> bool:
     """Parse common bool env variants while preserving an explicit default."""
     parsed = parse_bool(raw_value)
@@ -319,7 +318,9 @@ class PulseScribeWindows:
         self._state_lock = threading.Lock()
         self._state_generation = 0  # Inkrementiert bei jedem State-Update
         self._last_hotkey_time = 0.0  # Für Debouncing
-        self._last_was_refined: bool = False  # Ob Refinement den Text tatsächlich verändert hat
+        self._last_was_refined: bool = (
+            False  # Ob Refinement den Text tatsächlich verändert hat
+        )
 
         # Hold-Mode State (wie macOS)
         self._hold_state = HoldHotkeyState()
@@ -352,7 +353,8 @@ class PulseScribeWindows:
         self._onboarding_process = None  # Subprocess für Onboarding-Wizard
         self._ipc_server = None  # IPC-Server für Wizard-Kommunikation
         self._ipc_test_cmd_id: str | None = None  # Aktiver IPC-Test-Command
-        self._event_loop = None  # Wird in _prewarm_imports() erstellt
+        self._event_loop = None  # Fallback wenn Warm-WebSocket deaktiviert ist
+        self._deepgram_connection_manager = None
         self._latency_run: WindowsLatencyRun | None = None
         self._run_mode: str | None = None  # Snapshot: Modus pro Recording-Run
         self._run_streaming: bool | None = None  # Snapshot: Streaming pro Run
@@ -373,7 +375,9 @@ class PulseScribeWindows:
         # ═══════════════════════════════════════════════════════════════════
         self._warm_stream = None  # sd.InputStream (läuft dauerhaft)
         self._warm_stream_armed = threading.Event()  # Wenn gesetzt: Samples sammeln
-        self._warm_stream_draining = threading.Event()  # Erlaubt Sammeln während Drain-Phase
+        self._warm_stream_draining = (
+            threading.Event()
+        )  # Erlaubt Sammeln während Drain-Phase
         self._warm_stream_preroll_lock = threading.Lock()
         self._warm_stream_preroll: deque[bytes] = deque(maxlen=4)
         # Queue mit maxsize: via PULSESCRIBE_WARM_STREAM_QUEUE_SIZE (default: 300)
@@ -452,7 +456,12 @@ class PulseScribeWindows:
             # Watchdog-Management (wie macOS)
             if state == AppState.TRANSCRIBING and watch_transcribing:
                 self._start_transcribing_watchdog()
-            elif state in (AppState.DONE, AppState.NO_SPEECH, AppState.ERROR, AppState.IDLE):
+            elif state in (
+                AppState.DONE,
+                AppState.NO_SPEECH,
+                AppState.ERROR,
+                AppState.IDLE,
+            ):
                 self._stop_transcribing_watchdog()
         elif state == AppState.TRANSCRIBING and text_changed and watch_transcribing:
             # Streaming stop shows TRANSCRIBING immediately without starting the
@@ -566,6 +575,7 @@ class PulseScribeWindows:
 
     def _start_transcribing_watchdog(self):
         """Startet Watchdog-Timer für hängende Transcription."""
+
         def timeout_handler():
             with self._watchdog_lock:
                 # Ignore stale timer callbacks from previous runs.
@@ -614,10 +624,7 @@ class PulseScribeWindows:
         self._tray_update_signal.set()
 
     def _start_tray_update_worker(self) -> None:
-        if (
-            self._tray_update_thread is not None
-            and self._tray_update_thread.is_alive()
-        ):
+        if self._tray_update_thread is not None and self._tray_update_thread.is_alive():
             return
         self._tray_update_thread = threading.Thread(
             target=self._tray_update_worker,
@@ -799,6 +806,17 @@ class PulseScribeWindows:
             # None = Provider-Default (z.B. nova-3 für Deepgram)
             model = os.getenv("PULSESCRIBE_MODEL")
         return model, language
+
+    def _get_deepgram_streaming_config(self) -> tuple[str, str]:
+        model, language = self._get_transcription_config("deepgram")
+        return model or "nova-3", language
+
+    @staticmethod
+    def _deepgram_warm_websocket_enabled() -> bool:
+        return _env_flag(
+            os.getenv("PULSESCRIBE_DEEPGRAM_WARM_WEBSOCKET"),
+            default=True,
+        )
 
     def _windows_stop_grace_seconds(self) -> float:
         """Return configured Windows capture tail after hotkey release."""
@@ -1205,9 +1223,7 @@ class PulseScribeWindows:
             if capture_finished:
                 self._play_sound("stop")
             else:
-                logger.warning(
-                    "Stop-Sound übersprungen, weil die Aufnahme noch läuft"
-                )
+                logger.warning("Stop-Sound übersprungen, weil die Aufnahme noch läuft")
 
             threading.Thread(target=self._transcribe_rest, daemon=True).start()
 
@@ -1380,7 +1396,9 @@ class PulseScribeWindows:
             and time.monotonic() - stop_seen_at >= grace_seconds
         )
 
-    def _try_collect_warm_stream_chunk(self, np, int16_max: int, *, timeout: float) -> bool:
+    def _try_collect_warm_stream_chunk(
+        self, np, int16_max: int, *, timeout: float
+    ) -> bool:
         try:
             chunk = self._warm_stream_queue.get(timeout=timeout)
         except queue.Empty:
@@ -1425,104 +1443,79 @@ class PulseScribeWindows:
                 empty_count += 1
         return drained
 
+    def _run_deepgram_stream(
+        self,
+        *,
+        use_cached_event_loop: bool,
+        **kwargs,
+    ) -> str:
+        """Run Deepgram on the warm-socket loop or the existing cold fallback."""
+        model, language = self._get_deepgram_streaming_config()
+        manager = self._deepgram_connection_manager
+        if manager is not None:
+            return manager.transcribe(model, language, **kwargs)
+
+        import asyncio
+
+        from providers.deepgram_stream import deepgram_stream_core
+
+        if use_cached_event_loop and self._event_loop is not None:
+            loop = self._event_loop
+            self._event_loop = None
+        else:
+            loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(
+                deepgram_stream_core(model, language, **kwargs)
+            )
+        finally:
+            loop.close()
+
     def _streaming_worker(self):
         """Streaming-Worker: Recording + Transcription via WebSocket."""
-        import asyncio
-
         logger.debug("Streaming-Worker gestartet")
-        transcript = ""
 
         try:
-            from providers.deepgram_stream import deepgram_stream_core
+            logger.debug("Starte deepgram_stream_core")
 
-            # Event-Loop: Gecachten aus Pre-Warm verwenden oder neu erstellen
-            # Policy wurde bereits im __init__ gesetzt
-            if self._event_loop is not None:
-                loop = self._event_loop
-                self._event_loop = None  # Nur einmal verwenden, danach neu erstellen
-            else:
-                loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
+            def on_audio_level(level: float):
+                self._overlay_update_audio_level(level)
+                self._latency_mark_once("first_audio_callback")
 
-            try:
-                logger.debug("Starte deepgram_stream_core")
-
-                # Audio-Level Callback für Overlay + State-Transitions
-                # Wird alle ~64ms aufgerufen (1024 samples @ 16kHz)
-                def on_audio_level(level: float):
-                    self._overlay_update_audio_level(level)
-                    self._latency_mark_once("first_audio_callback")
-
-                    # State-Machine: LOADING → LISTENING → RECORDING
-                    current_state = self.state
-                    if current_state == AppState.LOADING:
-                        # Erster Audio-Callback = Mikrofon ist bereit
-                        logger.debug("Mikrofon bereit → LISTENING")
-                        self._set_state(AppState.LISTENING)
-                        self._latency_mark("listening_state")
-                    elif (
-                        current_state == AppState.LISTENING
-                        and level > _VAD_THRESHOLD_RMS
-                    ):
-                        # VAD: Sprache erkannt
-                        logger.debug(
-                            f"VAD triggered: level={level:.4f} > threshold={_VAD_THRESHOLD_RMS}"
-                        )
-                        self._set_state(AppState.RECORDING)
-                        self._latency_mark("recording_state")
-
-                self._latency_mark("deepgram_core_start")
-                transcript = loop.run_until_complete(
-                    deepgram_stream_core(
-                        model="nova-3",
-                        language=os.getenv("PULSESCRIBE_LANGUAGE", "auto"),
-                        play_ready=True,  # Sound nach Mic-Init (wie macOS)
-                        external_stop_event=self._recording_stop_event,
-                        audio_level_callback=on_audio_level,  # Immer übergeben für State-Transitions
-                        interim_text_callback=self._overlay_update_interim_text,
-                        latency_event_callback=self._latency_event,
-                        stop_grace_seconds=self._windows_stop_grace_seconds(),
+                current_state = self.state
+                if current_state == AppState.LOADING:
+                    logger.debug("Mikrofon bereit → LISTENING")
+                    self._set_state(AppState.LISTENING)
+                    self._latency_mark("listening_state")
+                elif current_state == AppState.LISTENING and level > _VAD_THRESHOLD_RMS:
+                    logger.debug(
+                        f"VAD triggered: level={level:.4f} > threshold={_VAD_THRESHOLD_RMS}"
                     )
-                )
-                self._latency_mark("deepgram_core_return", chars=len(transcript))
-                # Stop-Sound wurde bereits bei Release gespielt (siehe _stop_recording).
-                logger.debug(f"Streaming abgeschlossen: {len(transcript)} Zeichen")
+                    self._set_state(AppState.RECORDING)
+                    self._latency_mark("recording_state")
 
-                if transcript:
-                    self._set_state(AppState.TRANSCRIBING)
-                    transcript = self._maybe_refine(transcript)
-
-                    self._handle_result(transcript)
-                else:
-                    self._handle_no_speech_result()
-
-            finally:
-                loop.close()
-
+            self._latency_mark("deepgram_core_start")
+            transcript = self._run_deepgram_stream(
+                use_cached_event_loop=True,
+                play_ready=True,
+                external_stop_event=self._recording_stop_event,
+                audio_level_callback=on_audio_level,
+                interim_text_callback=self._overlay_update_interim_text,
+                latency_event_callback=self._latency_event,
+                stop_grace_seconds=self._windows_stop_grace_seconds(),
+            )
+            self._finish_streaming_result(transcript)
         except Exception as e:
-            error_type = "Import-Fehler" if isinstance(e, ImportError) else "Streaming-Fehler"
-            logger.error(f"{error_type}: {e}")
-            self._set_state(AppState.ERROR, _friendly_error_status_text(e))
-            self._latency_finish("error", error_type=type(e).__name__)
-            self._play_sound("error")
-            time.sleep(1.0)
-            self._set_state(AppState.IDLE)
+            self._handle_streaming_error(e, "Streaming-Fehler")
 
     def _streaming_worker_warm(self):
-        """Streaming-Worker mit Warm-Stream (instant-start).
-
-        Nutzt den bereits laufenden Warm-Stream statt einen neuen zu öffnen.
-        Reduziert Start-Latenz von ~2-3s auf ~ms.
-        """
-        import asyncio
-
+        """Streaming-Worker using both the warm mic and warm websocket."""
         logger.debug("Streaming-Worker (Warm) gestartet")
-        transcript = ""
 
         try:
-            from providers.deepgram_stream import deepgram_stream_core, WarmStreamSource
+            from providers.deepgram_stream import WarmStreamSource
 
-            # WarmStreamSource erstellen mit Referenzen auf unseren Warm-Stream
             warm_source = WarmStreamSource(
                 audio_queue=self._warm_stream_queue,
                 sample_rate=self._warm_stream_sample_rate,
@@ -1530,55 +1523,41 @@ class PulseScribeWindows:
                 stream=self._warm_stream,
                 drain_event=self._warm_stream_draining,
             )
-
-            # Event-Loop erstellen
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-            try:
-                logger.debug("Starte deepgram_stream_core mit Warm-Stream")
-
-                self._latency_mark("deepgram_core_start")
-                transcript = loop.run_until_complete(
-                    deepgram_stream_core(
-                        model="nova-3",
-                        language=os.getenv("PULSESCRIBE_LANGUAGE", "auto"),
-                        play_ready=False,  # Sound haben wir schon gespielt!
-                        external_stop_event=self._recording_stop_event,
-                        interim_text_callback=self._overlay_update_interim_text,
-                        latency_event_callback=self._latency_event,
-                        warm_stream_source=warm_source,
-                        stop_grace_seconds=self._windows_stop_grace_seconds(),
-                    )
-                )
-                self._latency_mark("deepgram_core_return", chars=len(transcript))
-                # Stop-Sound wurde bereits bei Release gespielt (siehe _stop_recording).
-                logger.debug(f"Streaming abgeschlossen: {len(transcript)} Zeichen")
-
-                if transcript:
-                    self._set_state(AppState.TRANSCRIBING)
-                    transcript = self._maybe_refine(transcript)
-
-                    self._handle_result(transcript)
-                else:
-                    self._handle_no_speech_result()
-
-            finally:
-                loop.close()
-                # Disarm wird automatisch in deepgram_stream_core finally gemacht
-
+            logger.debug("Starte deepgram_stream_core mit Warm-Stream")
+            self._latency_mark("deepgram_core_start")
+            transcript = self._run_deepgram_stream(
+                use_cached_event_loop=False,
+                play_ready=False,
+                external_stop_event=self._recording_stop_event,
+                interim_text_callback=self._overlay_update_interim_text,
+                latency_event_callback=self._latency_event,
+                warm_stream_source=warm_source,
+                stop_grace_seconds=self._windows_stop_grace_seconds(),
+            )
+            self._finish_streaming_result(transcript)
         except Exception as e:
-            error_type = "Import-Fehler" if isinstance(e, ImportError) else "Streaming-Fehler (Warm)"
-            logger.error(f"{error_type}: {e}")
-            # Safety-Drain: drain_event kurz setzen um Race-Condition zu vermeiden
             self._warm_stream_draining.set()
             self._warm_stream_armed.clear()
             self._warm_stream_draining.clear()
-            self._set_state(AppState.ERROR, _friendly_error_status_text(e))
-            self._latency_finish("error", error_type=type(e).__name__)
-            self._play_sound("error")
-            time.sleep(1.0)
-            self._set_state(AppState.IDLE)
+            self._handle_streaming_error(e, "Streaming-Fehler (Warm)")
+
+    def _finish_streaming_result(self, transcript: str) -> None:
+        self._latency_mark("deepgram_core_return", chars=len(transcript))
+        logger.debug(f"Streaming abgeschlossen: {len(transcript)} Zeichen")
+        if not transcript:
+            self._handle_no_speech_result()
+            return
+        self._set_state(AppState.TRANSCRIBING)
+        self._handle_result(self._maybe_refine(transcript))
+
+    def _handle_streaming_error(self, error: Exception, label: str) -> None:
+        error_type = "Import-Fehler" if isinstance(error, ImportError) else label
+        logger.error(f"{error_type}: {error}")
+        self._set_state(AppState.ERROR, _friendly_error_status_text(error))
+        self._latency_finish("error", error_type=type(error).__name__)
+        self._play_sound("error")
+        time.sleep(1.0)
+        self._set_state(AppState.IDLE)
 
     def _transcribe_rest(self, mode_override: str | None = None):
         """Transkribiert aufgenommenes Audio via REST API."""
@@ -1742,7 +1721,9 @@ class PulseScribeWindows:
         # History-IO (inkl. möglicher Datei-Rotation) erst NACH dem Paste:
         # Der sichtbare "Text erscheint"-Moment darf nicht auf Disk-IO warten.
         self._save_to_history(transcript)
-        self._latency_finish("done", chars=len(transcript or ""), paste_success=paste_success)
+        self._latency_finish(
+            "done", chars=len(transcript or ""), paste_success=paste_success
+        )
 
         # Nach kurzer Pause zurück zu IDLE (Timer statt sleep, blockiert Thread nicht)
         self._schedule_idle_if_state_unchanged(_DONE_DISPLAY_HOLD_SEC)
@@ -1776,7 +1757,9 @@ class PulseScribeWindows:
             bindings.append((self.toggle_hotkey, "toggle"))
         if not self.hold_hotkey:
             return bindings
-        if self.toggle_hotkey and hotkeys_conflict(self.toggle_hotkey, self.hold_hotkey):
+        if self.toggle_hotkey and hotkeys_conflict(
+            self.toggle_hotkey, self.hold_hotkey
+        ):
             logger.error(
                 "Hotkey-Konflikt: Hold-Hotkey überlappt mit Toggle-Hotkey "
                 f"({self.hold_hotkey} vs {self.toggle_hotkey}). Hold wird ignoriert."
@@ -1785,7 +1768,9 @@ class PulseScribeWindows:
         bindings.append((self.hold_hotkey, "hold"))
         return bindings
 
-    def _parse_windows_hotkey_bindings(self, bindings, keyboard) -> list[tuple[set, str, str]]:
+    def _parse_windows_hotkey_bindings(
+        self, bindings, keyboard
+    ) -> list[tuple[set, str, str]]:
         parsed_hotkeys: list[tuple[set, str, str]] = []
         for hotkey_str, mode in bindings:
             hotkey_keys = self._parse_hotkey_string(hotkey_str, keyboard)
@@ -1846,7 +1831,8 @@ class PulseScribeWindows:
     @staticmethod
     def _cleanup_stale_hotkey_keys(current_keys: dict, now: float) -> None:
         stale = [
-            key for key, timestamp in current_keys.items()
+            key
+            for key, timestamp in current_keys.items()
             if now - timestamp > _KEY_STALE_TIMEOUT_SEC
         ]
         for key in stale:
@@ -1985,7 +1971,9 @@ class PulseScribeWindows:
 
         current_state = self.state
         current_text = self._last_status_text
-        icon = self._create_icon(self.COLORS.get(current_state, self.COLORS[AppState.IDLE]))
+        icon = self._create_icon(
+            self.COLORS.get(current_state, self.COLORS[AppState.IDLE])
+        )
 
         # Hotkey-Info für Menü
         hotkey_items = []
@@ -2027,8 +2015,9 @@ class PulseScribeWindows:
         """
         logger.info("Beende PulseScribe...")
 
-        # Stop-Signal für Hauptschleife
+        # Stop-Signale für Hauptschleife und eine evtl. aktive Transkription.
         self._stop_event.set()
+        self._recording_stop_event.set()
 
         # Worker-Threads aufwecken/beenden (Daemon-Threads, kein Join nötig)
         self._hotkey_action_queue.put(None)
@@ -2049,6 +2038,10 @@ class PulseScribeWindows:
 
         # FileWatcher stoppen (kurzer Timeout)
         self._stop_env_watcher()
+
+        # WebSocket-Loop vor dem Audio-Stream begrenzt stoppen, damit dessen
+        # Session-Cleanup noch auf die WarmStreamSource zugreifen kann.
+        self._shutdown_deepgram_websocket()
 
         # Warm-Stream stoppen
         self._stop_warm_stream()
@@ -2180,7 +2173,9 @@ class PulseScribeWindows:
             "separater Prozess",
         )
 
-    def _resolve_qt_python_executable(self, *, missing_pyside_message: str, fallback) -> str | None:
+    def _resolve_qt_python_executable(
+        self, *, missing_pyside_message: str, fallback
+    ) -> str | None:
         venv_python = PROJECT_ROOT / "venv" / "Scripts" / "python.exe"
         dotvenv_python = PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
         if venv_python.exists():
@@ -2250,6 +2245,8 @@ class PulseScribeWindows:
                     "# PulseScribe Konfiguration\n"
                     "# Siehe CLAUDE.md für alle Optionen\n\n"
                     "PULSESCRIBE_MODE=deepgram\n"
+                    "PULSESCRIBE_DEEPGRAM_WARM_WEBSOCKET=true\n"
+                    "PULSESCRIBE_DEEPGRAM_KEEPALIVE_INTERVAL_SECONDS=3\n"
                     "# DEEPGRAM_API_KEY=\n"
                     "# OPENAI_API_KEY=\n"
                 )
@@ -2285,6 +2282,7 @@ class PulseScribeWindows:
             )
             self._apply_refine_reload_settings(env_values)
             self._apply_streaming_reload_settings(env_values)
+            self._refresh_deepgram_websocket_prewarm()
             self._apply_overlay_reload_settings(env_values)
             if not self._apply_hotkey_reload_settings(env_values):
                 return
@@ -2437,7 +2435,9 @@ class PulseScribeWindows:
             self._stop_overlay()
 
     @staticmethod
-    def _resolve_reloaded_hotkeys(env_values: dict[str, str]) -> tuple[str | None, str | None]:
+    def _resolve_reloaded_hotkeys(
+        env_values: dict[str, str],
+    ) -> tuple[str | None, str | None]:
         new_toggle = env_values.get("PULSESCRIBE_TOGGLE_HOTKEY")
         new_hold = env_values.get("PULSESCRIBE_HOLD_HOTKEY")
         if not new_toggle and not new_hold:
@@ -2675,17 +2675,21 @@ class PulseScribeWindows:
         return (time.perf_counter() - start) * 1000
 
     def _prewarm_streaming_dependencies(self) -> None:
-        from providers.deepgram_stream import deepgram_stream_core  # noqa: F401
+        from providers.deepgram_stream import (  # noqa: F401
+            DeepgramWarmConnectionManager,
+            deepgram_stream_core,
+        )
         import httpx  # noqa: F401
         import websockets  # noqa: F401
 
         # Deepgram SDK-Klassen (werden in deepgram_stream_core benötigt)
         from deepgram.core.events import EventType  # noqa: F401
 
-        # Event-Loop vorab erstellen (spart ~50-100ms beim ersten Recording)
-        import asyncio
+        # Ohne Warm-WebSocket bleibt der bisherige Event-Loop-Prewarm als Fallback.
+        if not self._deepgram_warm_websocket_enabled():
+            import asyncio
 
-        self._event_loop = asyncio.new_event_loop()
+            self._event_loop = asyncio.new_event_loop()
 
     def _prewarm_rest_dependencies(self) -> None:
         # REST-Modi zahlen sonst beim ersten Stop lazy Import-/Client-Kosten.
@@ -2714,12 +2718,55 @@ class PulseScribeWindows:
         device_start = time.perf_counter()
         device_idx, sample_rate = get_input_device()
 
+        # Deepgram parallel zum Mikrofonstart verbinden. Der Aufruf wartet nicht
+        # auf TLS/WebSocket und blockiert daher die Mic-Ready-Rückmeldung nicht.
+        self._refresh_deepgram_websocket_prewarm(sample_rate=sample_rate)
+
         # Phase 4: Warm-Stream starten (für alle Modi!)
         # Der Warm-Stream bleibt offen und ermöglicht instant-start Recording
         # Auch REST-Modi (Groq, OpenAI, Local) profitieren vom Warm-Stream
         self._start_warm_stream()
         device_ms = (time.perf_counter() - device_start) * 1000
         return device_idx, sample_rate, device_ms
+
+    def _refresh_deepgram_websocket_prewarm(
+        self,
+        *,
+        sample_rate: int | None = None,
+    ) -> None:
+        """Prepare the next Deepgram session without blocking startup/reload."""
+        should_prewarm = (
+            self.mode == "deepgram"
+            and self.streaming
+            and self._deepgram_warm_websocket_enabled()
+            and bool(os.getenv("DEEPGRAM_API_KEY", "").strip())
+        )
+        manager = self._deepgram_connection_manager
+        if not should_prewarm:
+            if manager is not None:
+                manager.invalidate()
+            return
+
+        if manager is None:
+            from providers.deepgram_stream import DeepgramWarmConnectionManager
+
+            manager = DeepgramWarmConnectionManager()
+            self._deepgram_connection_manager = manager
+
+        model, language = self._get_deepgram_streaming_config()
+        manager.prewarm(
+            model=model,
+            language=language,
+            sample_rate=sample_rate or self._warm_stream_sample_rate,
+        )
+
+    def _shutdown_deepgram_websocket(self) -> None:
+        manager, self._deepgram_connection_manager = (
+            self._deepgram_connection_manager,
+            None,
+        )
+        if manager is not None:
+            manager.shutdown(timeout=1.5)
 
     def _prefetch_streaming_dns(self) -> None:
         if not self.streaming:
@@ -2951,7 +2998,9 @@ class PulseScribeWindows:
         return ", ".join(hotkey_info) if hotkey_info else "Keiner"
 
     def _print_startup_banner(self) -> None:
-        print(f"PulseScribe Windows gestartet (Hotkeys: {self._format_hotkey_summary()})")
+        print(
+            f"PulseScribe Windows gestartet (Hotkeys: {self._format_hotkey_summary()})"
+        )
         print("Drücke Ctrl+C oder nutze Tray-Menü zum Beenden")
 
     def _setup_startup_hotkeys(self) -> None:
@@ -3138,9 +3187,8 @@ def main():
     effective_mode = args.mode
 
     # Streaming: Default True, kann via --no-streaming oder ENV deaktiviert werden
-    effective_streaming = (
-        not args.no_streaming
-        and _env_flag(os.getenv("PULSESCRIBE_STREAMING"), default=True)
+    effective_streaming = not args.no_streaming and _env_flag(
+        os.getenv("PULSESCRIBE_STREAMING"), default=True
     )
 
     # Nur Deepgram unterstützt aktuell Streaming im Daemon
@@ -3151,9 +3199,8 @@ def main():
         effective_streaming = False
 
     # Overlay: Default True, kann via --no-overlay oder ENV deaktiviert werden
-    effective_overlay = (
-        not args.no_overlay
-        and _env_flag(os.getenv("PULSESCRIBE_OVERLAY"), default=True)
+    effective_overlay = not args.no_overlay and _env_flag(
+        os.getenv("PULSESCRIBE_OVERLAY"), default=True
     )
 
     # Hotkeys: CLI > ENV > Default
