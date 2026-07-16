@@ -428,28 +428,54 @@ class PulseScribeWindows:
         with self._state_lock:
             return self._state
 
-    def _set_state(
+    def _commit_state(
         self,
         state: AppState,
         text: str | None = None,
         *,
-        watch_transcribing: bool = True,
-    ) -> int:
-        """Setzt State und aktualisiert Tray-Icon + Overlay.
+        expected_state: AppState | None = None,
+        expected_generation: int | None = None,
+    ) -> tuple[AppState, str | None, int] | None:
+        """Atomarer (bedingter) State-Commit unter _state_lock.
+
+        Check und Commit laufen in EINEM kritischen Abschnitt – nur so können
+        verzögerte Callbacks (IDLE-Timer, Watchdog) nicht zwischen ihrem Guard
+        und dem Schreiben von einer parallel gestarteten neuen Aufnahme
+        überholt werden. Side-Effects publiziert der Caller anschließend über
+        _publish_state_change() außerhalb des Locks.
 
         Returns:
-            Die neue State-Generation. Caller, die einen verzögerten
-            IDLE-Rückfall planen, müssen DIESE Generation übergeben – ein
-            späterer Snapshot könnte bereits zu einer neuen Aufnahme gehören.
+            (old_state, old_text, neue Generation) bei Erfolg, sonst None.
         """
         with self._state_lock:
+            if expected_state is not None and self._state != expected_state:
+                return None
+            if (
+                expected_generation is not None
+                and self._state_generation != expected_generation
+            ):
+                return None
             old_state = self._state
             old_text = self._last_status_text
             self._state = state
             self._last_status_text = text
             self._state_generation += 1
-            new_generation = self._state_generation
+            return old_state, old_text, self._state_generation
 
+    def _publish_state_change(
+        self,
+        old_state: AppState,
+        old_text: str | None,
+        state: AppState,
+        text: str | None,
+        *,
+        watch_transcribing: bool = True,
+    ) -> None:
+        """Publiziert Overlay/Log/Watchdog/Tray für einen committeten Wechsel.
+
+        Darf NICHT unter _state_lock oder _watchdog_lock laufen (Watchdog-
+        Management nimmt _watchdog_lock, Tray/Overlay sind potenziell langsam).
+        """
         state_changed = old_state != state
         text_changed = old_text != text
         if state_changed or text_changed:
@@ -479,6 +505,30 @@ class PulseScribeWindows:
         if state_changed or text_changed:
             self._request_tray_update()
 
+    def _set_state(
+        self,
+        state: AppState,
+        text: str | None = None,
+        *,
+        watch_transcribing: bool = True,
+    ) -> int:
+        """Setzt State und aktualisiert Tray-Icon + Overlay.
+
+        Returns:
+            Die neue State-Generation. Caller, die einen verzögerten
+            IDLE-Rückfall planen, müssen DIESE Generation übergeben – ein
+            späterer Snapshot könnte bereits zu einer neuen Aufnahme gehören.
+        """
+        committed = self._commit_state(state, text)
+        assert committed is not None  # unconditional commit
+        old_state, old_text, new_generation = committed
+        self._publish_state_change(
+            old_state,
+            old_text,
+            state,
+            text,
+            watch_transcribing=watch_transcribing,
+        )
         return new_generation
 
     def _overlay_update_state(self, state: str, text: str | None = None) -> None:
@@ -573,10 +623,17 @@ class PulseScribeWindows:
                 expected_generation = self._state_generation
 
         def _set_idle_if_unchanged() -> None:
-            with self._state_lock:
-                if self._state_generation != expected_generation:
-                    return
-            self._set_state(AppState.IDLE)
+            # Guard und Commit atomar: Zwischen einem separaten Generationstest
+            # und _set_state() könnte sonst eine neue Aufnahme starten und vom
+            # stale Timer auf IDLE zurückgesetzt werden.
+            committed = self._commit_state(
+                AppState.IDLE,
+                expected_generation=expected_generation,
+            )
+            if committed is None:
+                return
+            old_state, old_text, _generation = committed
+            self._publish_state_change(old_state, old_text, AppState.IDLE, None)
 
         timer = threading.Timer(delay_seconds, _set_idle_if_unchanged)
         timer.daemon = True
@@ -604,16 +661,30 @@ class PulseScribeWindows:
         """Startet Watchdog-Timer für hängende Transcription."""
 
         def timeout_handler():
+            # Token-Check und ERROR-Commit atomar koppeln (watchdog → state
+            # Lock-Ordnung): Ein stale Timer darf eine Aufnahme, die nach dem
+            # Token-Check DONE erreicht und neu gestartet wurde, nicht mehr
+            # auf ERROR setzen. Nur TRANSCRIBING darf zu ERROR werden.
             with self._watchdog_lock:
                 # Ignore stale timer callbacks from previous runs.
                 if timer_token != self._watchdog_token:
                     return
+                committed = self._commit_state(
+                    AppState.ERROR,
+                    "Transcription timed out",
+                    expected_state=AppState.TRANSCRIBING,
+                )
 
-            if self.state == AppState.TRANSCRIBING:
+            if committed is not None:
+                old_state, old_text, generation = committed
                 logger.error(
                     f"Transcription-Timeout nach {self._transcribing_timeout}s"
                 )
-                generation = self._set_state(AppState.ERROR, "Transcription timed out")
+                # Side-Effects außerhalb beider Locks publizieren
+                # (_stop_transcribing_watchdog nimmt _watchdog_lock erneut).
+                self._publish_state_change(
+                    old_state, old_text, AppState.ERROR, "Transcription timed out"
+                )
                 self._play_sound("error")
                 self._schedule_idle_if_state_unchanged(2.0, generation)
 
@@ -901,12 +972,11 @@ class PulseScribeWindows:
         and info-level file logging here; the overlay wave is the feedback that
         needs to be immediate.
         """
-        with self._state_lock:
-            if self._state != AppState.LISTENING:
-                return
-            self._state = AppState.RECORDING
-            self._last_status_text = None
-            self._state_generation += 1
+        if (
+            self._commit_state(AppState.RECORDING, expected_state=AppState.LISTENING)
+            is None
+        ):
+            return
 
         self._latency_mark("recording_state")
         self._overlay_update_state(AppState.RECORDING.name, None)

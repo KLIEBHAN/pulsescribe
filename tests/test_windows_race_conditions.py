@@ -1695,3 +1695,152 @@ def test_no_speech_finishes_latency_run_before_startable_state():
     assert finish_states == [AppState.TRANSCRIBING]
     assert daemon.state == AppState.NO_SPEECH
     assert daemon._latency_run is None
+
+
+# =============================================================================
+# Review-Fixes Runde 2: Atomare State-Commits (CAS) für Timer & Watchdog
+# =============================================================================
+
+
+def test_commit_state_rejects_stale_generation():
+    """CAS: Ein Commit mit veralteter Generation wird atomar abgelehnt."""
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai",
+        streaming=False,
+        overlay=False,
+    )
+    generation = daemon._set_state(AppState.DONE)
+
+    # Neue Aufnahme startet dazwischen -> Generation veraltet
+    daemon._set_state(AppState.LISTENING)
+
+    assert daemon._commit_state(AppState.IDLE, expected_generation=generation) is None
+    assert daemon.state == AppState.LISTENING
+
+
+def test_commit_state_rejects_unexpected_state():
+    """CAS: expected_state verhindert ERROR-Commit auf Nicht-TRANSCRIBING."""
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai",
+        streaming=False,
+        overlay=False,
+    )
+    daemon._set_state(AppState.LISTENING)
+
+    assert (
+        daemon._commit_state(
+            AppState.ERROR,
+            "Transcription timed out",
+            expected_state=AppState.TRANSCRIBING,
+        )
+        is None
+    )
+    assert daemon.state == AppState.LISTENING
+
+
+def test_idle_fallback_commit_is_atomic_with_generation_check(monkeypatch):
+    """Der IDLE-Timer nutzt den atomaren CAS-Pfad statt check-then-set.
+
+    Simuliert das Reviewer-Interleaving: Die neue Aufnahme committed LISTENING
+    exakt zwischen Guard und IDLE-Schreibzugriff. Mit CAS ist dieses Fenster
+    strukturell geschlossen - der Publish-Schritt darf nie für einen
+    verworfenen Commit laufen.
+    """
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai",
+        streaming=False,
+        overlay=False,
+    )
+    _CapturedTimer.instances = []
+    monkeypatch.setattr(windows_module.threading, "Timer", _CapturedTimer)
+
+    generation = daemon._set_state(AppState.DONE)
+    daemon._schedule_idle_if_state_unchanged(0.6, generation)
+
+    published = []
+    original_publish = daemon._publish_state_change
+
+    def tracking_publish(old_state, old_text, state, text, **kwargs):
+        published.append(state)
+        original_publish(old_state, old_text, state, text, **kwargs)
+
+    daemon._publish_state_change = tracking_publish
+
+    # Neue Aufnahme committed VOR dem Timer-Callback
+    daemon._set_state(AppState.LISTENING)
+    for timer in _CapturedTimer.instances:
+        timer.function()
+
+    assert daemon.state == AppState.LISTENING
+    # Der verworfene IDLE-Commit darf keinerlei Side-Effects publizieren
+    assert AppState.IDLE not in published
+
+
+def test_stale_watchdog_cannot_error_non_transcribing_state(monkeypatch):
+    """Ein Watchdog-Timeout darf nur TRANSCRIBING -> ERROR committen.
+
+    Selbst mit gültigem Token (Interleaving zwischen Token-Check und Commit)
+    schützt der expected_state-CAS eine neue Aufnahme vor stale ERROR.
+    """
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai",
+        streaming=False,
+        overlay=False,
+    )
+    daemon._play_sound = lambda _name: None
+    _CapturedTimer.instances = []
+    monkeypatch.setattr(windows_module.threading, "Timer", _CapturedTimer)
+
+    with daemon._state_lock:
+        daemon._state = AppState.TRANSCRIBING
+    daemon._start_transcribing_watchdog()
+    watchdog_timer = _CapturedTimer.instances[-1]
+
+    # State wechselt via Commit OHNE Publish: Der Watchdog-Token bleibt damit
+    # gültig (kein _stop_transcribing_watchdog). Genau dieses Interleaving
+    # konnte vor dem CAS-Fix eine neue Aufnahme auf ERROR setzen.
+    daemon._commit_state(AppState.LISTENING)
+
+    # Stale Watchdog feuert mit GÜLTIGEM Token: expected_state-CAS muss greifen
+    watchdog_timer.function()
+
+    assert daemon.state == AppState.LISTENING
+
+    # Zweiter Fall: Token invalidiert (regulärer DONE-Pfad) -> ebenfalls no-op
+    with daemon._state_lock:
+        daemon._state = AppState.TRANSCRIBING
+    daemon._start_transcribing_watchdog()
+    stale_timer = _CapturedTimer.instances[-1]
+    daemon._set_state(AppState.DONE)
+    daemon._set_state(AppState.LISTENING)
+    stale_timer.function()
+
+    assert daemon.state == AppState.LISTENING
+
+
+def test_watchdog_timeout_still_errors_hanging_transcription(monkeypatch):
+    """Der reguläre Timeout-Pfad (TRANSCRIBING hängt) funktioniert weiterhin."""
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai",
+        streaming=False,
+        overlay=False,
+    )
+    sounds = []
+    daemon._play_sound = sounds.append
+    _CapturedTimer.instances = []
+    monkeypatch.setattr(windows_module.threading, "Timer", _CapturedTimer)
+
+    with daemon._state_lock:
+        daemon._state = AppState.TRANSCRIBING
+    daemon._start_transcribing_watchdog()
+    watchdog_timer = _CapturedTimer.instances[-1]
+
+    watchdog_timer.function()
+
+    assert daemon.state == AppState.ERROR
+    assert sounds == ["error"]
