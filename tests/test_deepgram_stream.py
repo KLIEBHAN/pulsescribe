@@ -1033,3 +1033,144 @@ def test_warm_connection_manager_shutdown_stops_active_core_gracefully(monkeypat
     assert finalized.is_set()
     assert not thread.is_alive()
     assert errors == []
+
+
+def test_message_handler_sets_final_transcript_event_on_final(monkeypatch) -> None:
+    state = deepgram_stream.StreamState()
+    handler = deepgram_stream._create_message_handler(state, "sess")
+    monkeypatch.setattr(deepgram_stream.time, "perf_counter", lambda: 1.0)
+
+    assert state.final_transcript_event.is_set() is False
+    handler(_response("final transcript", is_final=True))
+
+    assert state.final_transcript_event.is_set() is True
+
+
+def _graceful_shutdown_tasks(audio_queue):
+    async def _send_worker() -> None:
+        while True:
+            item = await audio_queue.get()
+            if item is None:
+                return
+
+    async def _listen_worker() -> None:
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            return
+
+    return _send_worker, _listen_worker
+
+
+def test_empty_finalize_grace_exits_early_on_late_final(monkeypatch) -> None:
+    """Ein spätes Final-Transkript beendet die Empty-Finalize-Grace sofort."""
+
+    class _FakeControlMessage:
+        def __init__(self, type: str) -> None:
+            self.type = type
+
+    monkeypatch.setitem(
+        sys.modules,
+        "deepgram.extensions.types.sockets",
+        SimpleNamespace(ListenV1ControlMessage=_FakeControlMessage),
+    )
+    monkeypatch.setattr(deepgram_stream, "DEEPGRAM_TAIL_PADDING_SECONDS", 0.0)
+    monkeypatch.setattr(
+        deepgram_stream, "DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS", 5.0
+    )
+
+    async def _run() -> float:
+        state = deepgram_stream.StreamState()
+        audio_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+        send_worker, listen_worker = _graceful_shutdown_tasks(audio_queue)
+        send_task = asyncio.create_task(send_worker())
+        listen_task = asyncio.create_task(listen_worker())
+
+        class _FakeConnection:
+            async def send_control(self, message) -> None:
+                if getattr(message, "type", "") == "Finalize":
+                    # Deepgram sendet nur einen leeren Finalize-Ack ...
+                    deepgram_stream._mark_finalize_response(
+                        state, has_transcript=False
+                    )
+
+                    async def _late_final() -> None:
+                        await asyncio.sleep(0.05)
+                        deepgram_stream._handle_final_transcript(
+                            state, session_id="sess", transcript="late final"
+                        )
+
+                    # ... und das echte Final-Transkript kommt kurz danach.
+                    asyncio.ensure_future(_late_final())
+
+        started = time.perf_counter()
+        await deepgram_stream._graceful_shutdown(
+            connection=cast(Any, _FakeConnection()),
+            state=state,
+            audio_queue=audio_queue,
+            send_task=send_task,
+            listen_task=listen_task,
+            session_id="sess",
+            sample_rate=16000,
+        )
+        return time.perf_counter() - started
+
+    elapsed = asyncio.run(_run())
+
+    # Deutlich schneller als die konfigurierte 5s-Grace.
+    assert elapsed < 2.0
+
+
+def test_empty_finalize_grace_ignores_finals_from_before_finalize(
+    monkeypatch,
+) -> None:
+    """Finals aus der Aufnahmephase dürfen die Grace nicht vorzeitig beenden."""
+
+    class _FakeControlMessage:
+        def __init__(self, type: str) -> None:
+            self.type = type
+
+    monkeypatch.setitem(
+        sys.modules,
+        "deepgram.extensions.types.sockets",
+        SimpleNamespace(ListenV1ControlMessage=_FakeControlMessage),
+    )
+    monkeypatch.setattr(deepgram_stream, "DEEPGRAM_TAIL_PADDING_SECONDS", 0.0)
+    monkeypatch.setattr(
+        deepgram_stream, "DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS", 0.2
+    )
+
+    async def _run() -> float:
+        state = deepgram_stream.StreamState()
+        # Final-Transkript aus der Aufnahmephase (vor Finalize).
+        deepgram_stream._handle_final_transcript(
+            state, session_id="sess", transcript="early final"
+        )
+        audio_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+        send_worker, listen_worker = _graceful_shutdown_tasks(audio_queue)
+        send_task = asyncio.create_task(send_worker())
+        listen_task = asyncio.create_task(listen_worker())
+
+        class _FakeConnection:
+            async def send_control(self, message) -> None:
+                if getattr(message, "type", "") == "Finalize":
+                    deepgram_stream._mark_finalize_response(
+                        state, has_transcript=False
+                    )
+
+        started = time.perf_counter()
+        await deepgram_stream._graceful_shutdown(
+            connection=cast(Any, _FakeConnection()),
+            state=state,
+            audio_queue=audio_queue,
+            send_task=send_task,
+            listen_task=listen_task,
+            session_id="sess",
+            sample_rate=16000,
+        )
+        return time.perf_counter() - started
+
+    elapsed = asyncio.run(_run())
+
+    # Volle Grace wurde gewartet, weil kein NEUES Final eintraf.
+    assert elapsed >= 0.18

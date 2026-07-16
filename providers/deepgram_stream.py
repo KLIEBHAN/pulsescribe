@@ -146,6 +146,10 @@ class StreamState:
     finalize_done: asyncio.Event = field(default_factory=asyncio.Event)
     finalize_empty_ack_received: bool = False
     finalize_transcript_received: bool = False
+    # Wird bei jedem Final-Transkript gesetzt; vor dem Finalize-Send geleert.
+    # Erlaubt frühen Ausstieg aus der Empty-Finalize-Grace, sobald ein spätes
+    # Final-Transkript eintrifft (statt immer die volle Grace-Zeit zu warten).
+    final_transcript_event: asyncio.Event = field(default_factory=asyncio.Event)
     # Flag für einmalige Buffer-Warnung
     buffer_overflow_logged: bool = False
 
@@ -1294,6 +1298,7 @@ def _mark_finalize_response(
 ) -> None:
     if has_transcript:
         state.finalize_transcript_received = True
+        state.final_transcript_event.set()
     else:
         state.finalize_empty_ack_received = True
     state.finalize_done.set()
@@ -1306,6 +1311,7 @@ def _handle_final_transcript(
     transcript: str,
 ) -> None:
     state.final_transcripts.append(transcript)
+    state.final_transcript_event.set()
     logger.info(f"[{session_id}] Final: {redacted_text_summary(transcript)}")
 
 
@@ -1577,7 +1583,9 @@ async def _graceful_shutdown(
     await audio_queue.put(None)
     await send_task
 
-    # 2. Finalize senden
+    # 2. Finalize senden. Event vorher zurücksetzen: Für den Grace-Early-Exit
+    # zählen nur Final-Transkripte, die NACH dem Finalize eintreffen.
+    state.final_transcript_event.clear()
     logger.info(f"[{session_id}] Sende Finalize...")
     _emit_latency_event(latency_event_callback, "deepgram_finalize_send")
     t_finalize_start = time.perf_counter()
@@ -1601,7 +1609,19 @@ async def _graceful_shutdown(
             and not state.finalize_transcript_received
             and DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS > 0
         ):
-            await asyncio.sleep(DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS)
+            # Nicht stur die volle Grace-Zeit warten: Sobald ein spätes
+            # Final-Transkript eintrifft, geht es sofort weiter.
+            try:
+                await asyncio.wait_for(
+                    state.final_transcript_event.wait(),
+                    timeout=DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS,
+                )
+                logger.debug(
+                    f"[{session_id}] Empty-Finalize-Grace: spätes Transkript "
+                    "eingetroffen, Grace vorzeitig beendet"
+                )
+            except asyncio.TimeoutError:
+                pass
     except asyncio.TimeoutError:
         t_finalize = (time.perf_counter() - t_finalize_start) * 1000
         logger.warning(
