@@ -967,7 +967,9 @@ def test_save_to_history_uses_actual_refinement_status(monkeypatch):
         lambda transcript, **_kwargs: transcript,
     )
     unchanged = daemon._maybe_refine("raw transcript")
-    daemon._save_to_history(unchanged)
+    daemon._save_to_history(
+        unchanged, mode=daemon.mode, refined=daemon._last_was_refined
+    )
 
     monkeypatch.setattr(
         refine_llm,
@@ -975,7 +977,7 @@ def test_save_to_history_uses_actual_refinement_status(monkeypatch):
         lambda transcript, **_kwargs: f"{transcript} refined",
     )
     changed = daemon._maybe_refine("raw transcript")
-    daemon._save_to_history(changed)
+    daemon._save_to_history(changed, mode=daemon.mode, refined=daemon._last_was_refined)
 
     assert saved_entries[0]["refined"] is False
     assert saved_entries[1]["refined"] is True
@@ -1421,3 +1423,275 @@ def test_main_reconfigures_logging_and_parses_bool_env_variants(monkeypatch):
     assert daemon_kwargs[0]["refine"] is True
     assert daemon_kwargs[0]["streaming"] is False
     assert daemon_kwargs[0]["overlay"] is False
+
+
+# =============================================================================
+# DONE-State ist startfähig (schnelle aufeinanderfolgende Diktate)
+# =============================================================================
+
+
+class _NoopThread:
+    def __init__(self, *args, **kwargs):
+        self.target = kwargs.get("target")
+
+    def start(self):
+        return None
+
+
+def test_start_recording_allowed_from_done_state(monkeypatch):
+    """Nach einem Diktat (DONE) darf sofort eine neue Aufnahme starten."""
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai",
+        streaming=False,
+        overlay=False,
+    )
+    daemon._warm_stream = None
+    daemon._play_sound = lambda _name: None
+    monkeypatch.setattr(windows_module.threading, "Thread", _NoopThread)
+
+    daemon._set_state(AppState.DONE)
+
+    assert daemon._start_recording() is True
+    assert daemon.state == AppState.LISTENING
+
+
+def test_toggle_hotkey_starts_recording_during_done_feedback():
+    """Der Toggle-Hotkey wird während des DONE-Feedbacks nicht verschluckt."""
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai",
+        streaming=False,
+        overlay=False,
+    )
+    started = []
+    daemon._start_recording = lambda: started.append(True) or True
+    daemon._set_state(AppState.DONE)
+
+    daemon._on_hotkey_press()
+
+    assert started == [True]
+
+
+def test_hold_hotkey_starts_recording_during_done_feedback():
+    """Der Hold-Hotkey wird während des DONE-Feedbacks nicht verschluckt."""
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai",
+        streaming=False,
+        overlay=False,
+    )
+    started = []
+    daemon._start_recording = lambda: started.append(True) or True
+    daemon._set_state(AppState.DONE)
+
+    source_id = "pynput:hold:ctrl+win"
+    assert daemon._hold_state.should_start(source_id) is True
+    daemon._start_recording_from_hold(source_id)
+
+    assert started == [True]
+
+
+def test_handle_result_detaches_latency_run_before_done_state(monkeypatch):
+    """Paste-/History-Marks eines alten Runs dürfen keinen neuen Run beenden."""
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai",
+        streaming=False,
+        overlay=False,
+        auto_paste=False,
+    )
+    daemon._play_sound = lambda _name: None
+    daemon._save_to_history = lambda _transcript, **_kwargs: None
+    monkeypatch.setattr(windows_module, "get_clipboard", lambda: MagicMock())
+
+    class _FakeRun:
+        def __init__(self):
+            self.marks = []
+            self.finished = []
+
+        def mark(self, name, **fields):
+            self.marks.append(name)
+
+        def finish(self, outcome, **fields):
+            self.finished.append(outcome)
+
+    old_run = _FakeRun()
+    daemon._latency_run = old_run
+
+    new_run = _FakeRun()
+    original_set_state = daemon._set_state
+
+    def set_state_and_simulate_new_recording(state, *args, **kwargs):
+        original_set_state(state, *args, **kwargs)
+        # Simuliert: Hotkey startet direkt bei DONE einen neuen Latency-Run.
+        if state == AppState.DONE and daemon._latency_run is None:
+            daemon._latency_run = new_run
+
+    daemon._set_state = set_state_and_simulate_new_recording
+
+    daemon._handle_result("hello world")
+
+    assert old_run.finished == ["done"]
+    assert new_run.finished == []  # Neuer Run bleibt unangetastet
+    assert daemon._latency_run is new_run
+
+
+# =============================================================================
+# Review-Fixes: Races zwischen altem Result-Worker und neuem DONE-Start
+# =============================================================================
+
+
+class _CapturedTimer:
+    """Ersetzt threading.Timer: sammelt Callbacks statt sie zeitverzögert zu starten."""
+
+    instances: list["_CapturedTimer"] = []
+
+    def __init__(self, interval, function):
+        self.interval = interval
+        self.function = function
+        self.daemon = False
+        _CapturedTimer.instances.append(self)
+
+    def start(self):
+        return None
+
+    def cancel(self):
+        return None
+
+
+def test_old_done_timer_does_not_reset_new_recording(monkeypatch):
+    """Der DONE→IDLE-Timer des alten Runs darf eine neue Aufnahme nicht killen."""
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai",
+        streaming=False,
+        overlay=False,
+        auto_paste=False,
+    )
+    daemon._play_sound = lambda _name: None
+    daemon._save_to_history = lambda _transcript, **_kwargs: None
+
+    _CapturedTimer.instances = []
+    monkeypatch.setattr(windows_module.threading, "Timer", _CapturedTimer)
+
+    clipboard = MagicMock()
+
+    def copy_and_start_new_recording(_text):
+        # Simuliert: Während Clipboard/Paste des alten Ergebnisses startet
+        # bereits die nächste Aufnahme (DONE ist startfähig).
+        daemon._set_state(AppState.LISTENING)
+
+    clipboard.copy.side_effect = copy_and_start_new_recording
+    monkeypatch.setattr(windows_module, "get_clipboard", lambda: clipboard)
+
+    daemon._handle_result("hello")
+    assert daemon.state == AppState.LISTENING
+
+    # Alten DONE-Timer feuern lassen: darf die neue Aufnahme NICHT zurücksetzen.
+    for timer in _CapturedTimer.instances:
+        timer.function()
+
+    assert daemon.state == AppState.LISTENING
+
+
+def test_old_ipc_result_keeps_new_ipc_cmd_id_and_routes_to_old_id(monkeypatch):
+    """Ein alter IPC-Result-Worker darf die ID eines neuen IPC-Runs nicht löschen."""
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai",
+        streaming=False,
+        overlay=False,
+    )
+    daemon._play_sound = lambda _name: None
+    monkeypatch.setattr(windows_module.threading, "Timer", _CapturedTimer)
+
+    responses: list[tuple[str, str]] = []
+
+    class _FakeIpcServer:
+        def send_response(self, cmd_id, status, **kwargs):
+            responses.append((cmd_id, status))
+            # Simuliert: Während send_response startet bereits der nächste
+            # IPC-Test und setzt seine eigene Command-ID.
+            daemon._ipc_test_cmd_id = "new-cmd"
+
+    daemon._ipc_server = _FakeIpcServer()
+    daemon._ipc_test_cmd_id = "old-cmd"
+
+    daemon._handle_result("hello")
+
+    # Ergebnis ging an die ALTE ID, die NEUE ID bleibt erhalten.
+    assert responses and responses[0][0] == "old-cmd"
+    assert daemon._ipc_test_cmd_id == "new-cmd"
+
+
+def test_history_uses_metadata_snapshot_of_finished_run(monkeypatch):
+    """History speichert Mode/Refined des alten Runs, nicht des neuen."""
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai",
+        streaming=False,
+        overlay=False,
+        auto_paste=False,
+    )
+    daemon._play_sound = lambda _name: None
+    monkeypatch.setattr(windows_module.threading, "Timer", _CapturedTimer)
+
+    history_calls: list[dict] = []
+
+    import utils.history
+
+    def fake_save_transcript(transcript, *, mode, language, refined):
+        history_calls.append(
+            {"transcript": transcript, "mode": mode, "refined": refined}
+        )
+
+    monkeypatch.setattr(utils.history, "save_transcript", fake_save_transcript)
+
+    daemon._run_mode = "openai"
+    daemon._last_was_refined = True
+
+    clipboard = MagicMock()
+
+    def copy_and_overwrite_run_metadata(_text):
+        # Simuliert: Der neue Run überschreibt die Metadaten während der alte
+        # Worker noch Clipboard/History abarbeitet.
+        daemon._run_mode = "deepgram"
+        daemon._last_was_refined = False
+
+    clipboard.copy.side_effect = copy_and_overwrite_run_metadata
+    monkeypatch.setattr(windows_module, "get_clipboard", lambda: clipboard)
+
+    daemon._handle_result("hello")
+
+    assert history_calls == [{"transcript": "hello", "mode": "openai", "refined": True}]
+
+
+def test_no_speech_finishes_latency_run_before_startable_state():
+    """Der Latency-Run endet, bevor NO_SPEECH (startfähig) sichtbar wird."""
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai",
+        streaming=False,
+        overlay=False,
+    )
+    daemon._play_sound = lambda _name: None
+
+    finish_states: list[AppState] = []
+
+    class _FakeRun:
+        def mark(self, name, **fields):
+            return None
+
+        def finish(self, outcome, **fields):
+            finish_states.append(daemon.state)
+
+    daemon._latency_run = _FakeRun()
+    with daemon._state_lock:
+        daemon._state = AppState.TRANSCRIBING
+
+    daemon._handle_no_speech_result()
+
+    assert finish_states == [AppState.TRANSCRIBING]
+    assert daemon.state == AppState.NO_SPEECH
+    assert daemon._latency_run is None

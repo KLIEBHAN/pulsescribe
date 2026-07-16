@@ -189,7 +189,7 @@ def test_handle_result_pastes_before_history_io(monkeypatch):
         "paste_transcript",
         lambda _text: order.append("paste") or True,
     )
-    daemon._save_to_history = lambda _text: order.append("history")
+    daemon._save_to_history = lambda _text, **_kwargs: order.append("history")
 
     daemon._handle_result("hello world")
 

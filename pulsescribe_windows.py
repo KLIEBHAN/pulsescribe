@@ -433,14 +433,21 @@ class PulseScribeWindows:
         text: str | None = None,
         *,
         watch_transcribing: bool = True,
-    ):
-        """Setzt State und aktualisiert Tray-Icon + Overlay."""
+    ) -> int:
+        """Setzt State und aktualisiert Tray-Icon + Overlay.
+
+        Returns:
+            Die neue State-Generation. Caller, die einen verzögerten
+            IDLE-Rückfall planen, müssen DIESE Generation übergeben – ein
+            späterer Snapshot könnte bereits zu einer neuen Aufnahme gehören.
+        """
         with self._state_lock:
             old_state = self._state
             old_text = self._last_status_text
             self._state = state
             self._last_status_text = text
             self._state_generation += 1
+            new_generation = self._state_generation
 
         state_changed = old_state != state
         text_changed = old_text != text
@@ -470,6 +477,8 @@ class PulseScribeWindows:
 
         if state_changed or text_changed:
             self._request_tray_update()
+
+        return new_generation
 
     def _overlay_update_state(self, state: str, text: str | None = None) -> None:
         """Best-effort Overlay-State-Update ohne check-then-use Race."""
@@ -542,10 +551,25 @@ class PulseScribeWindows:
         except Exception as e:
             logger.debug(f"Overlay stop failed: {e}")
 
-    def _schedule_idle_if_state_unchanged(self, delay_seconds: float) -> None:
-        """Setzt State nach Delay nur auf IDLE, wenn es keinen Zwischenwechsel gab."""
-        with self._state_lock:
-            expected_generation = self._state_generation
+    def _schedule_idle_if_state_unchanged(
+        self,
+        delay_seconds: float,
+        expected_generation: int | None = None,
+    ) -> None:
+        """Setzt State nach Delay nur auf IDLE, wenn es keinen Zwischenwechsel gab.
+
+        Args:
+            delay_seconds: Wartezeit bis zum IDLE-Rückfall.
+            expected_generation: Generation des States, der zurückfallen soll.
+                MUSS übergeben werden, wenn zwischen dem State-Wechsel und diesem
+                Aufruf Arbeit liegt (z.B. Paste/History nach DONE): DONE ist
+                startfähig, ein Snapshot zur Aufrufzeit könnte sonst die
+                Generation einer bereits neu gestarteten Aufnahme erfassen und
+                diese fälschlich auf IDLE zurücksetzen.
+        """
+        if expected_generation is None:
+            with self._state_lock:
+                expected_generation = self._state_generation
 
         def _set_idle_if_unchanged() -> None:
             with self._state_lock:
@@ -559,19 +583,21 @@ class PulseScribeWindows:
 
     def _enter_no_speech_state(self, *, delay_seconds: float = 1.2) -> None:
         """Show a brief neutral no-speech result before returning to ready."""
-        self._set_state(AppState.NO_SPEECH)
-        self._schedule_idle_if_state_unchanged(delay_seconds)
+        generation = self._set_state(AppState.NO_SPEECH)
+        self._schedule_idle_if_state_unchanged(delay_seconds, generation)
 
     def _handle_no_speech_result(self, log_message: str = "Leeres Transkript") -> None:
         """Surface a short no-speech retry hint without changing core behavior."""
         logger.warning(log_message)
+        # Latency-Run VOR dem Wechsel in einen startfähigen State beenden,
+        # damit ein sofortiger neuer Hotkey-Start nicht mit diesem Run kollidiert.
         if self._ipc_test_cmd_id and self._ipc_server:
             # Preserve the existing onboarding / IPC empty-result behavior.
-            self._set_state(AppState.IDLE)
             self._latency_finish("no_speech", ipc=True)
+            self._set_state(AppState.IDLE)
             return
-        self._enter_no_speech_state()
         self._latency_finish("no_speech")
+        self._enter_no_speech_state()
 
     def _start_transcribing_watchdog(self):
         """Startet Watchdog-Timer für hängende Transcription."""
@@ -586,9 +612,9 @@ class PulseScribeWindows:
                 logger.error(
                     f"Transcription-Timeout nach {self._transcribing_timeout}s"
                 )
-                self._set_state(AppState.ERROR, "Transcription timed out")
+                generation = self._set_state(AppState.ERROR, "Transcription timed out")
                 self._play_sound("error")
-                self._schedule_idle_if_state_unchanged(2.0)
+                self._schedule_idle_if_state_unchanged(2.0, generation)
 
         with self._watchdog_lock:
             if self._transcribing_watchdog is not None:
@@ -1022,7 +1048,7 @@ class PulseScribeWindows:
         """Callback wenn Hotkey gedrückt wird (Toggle-Mode)."""
         if self.state == AppState.LOADING and self._promote_prewarm_ready_if_possible():
             self._start_recording()
-        elif self.state in (AppState.IDLE, AppState.NO_SPEECH):
+        elif self.state in (AppState.IDLE, AppState.NO_SPEECH, AppState.DONE):
             self._start_recording()
         elif self.state == AppState.LOADING and self._is_prewarm_loading:
             # Pre-Warm LOADING: Ignorieren, System noch nicht bereit
@@ -1041,7 +1067,7 @@ class PulseScribeWindows:
             self._promote_prewarm_ready_if_possible()
 
         # Bereits am Aufnehmen / noch nicht wieder startklar
-        if self.state not in (AppState.IDLE, AppState.NO_SPEECH):
+        if self.state not in (AppState.IDLE, AppState.NO_SPEECH, AppState.DONE):
             logger.debug(f"Hold-Recording ignoriert: State={self.state}")
             return
 
@@ -1071,8 +1097,11 @@ class PulseScribeWindows:
             if self.state == AppState.LOADING:
                 self._promote_prewarm_ready_if_possible()
 
-            # Idempotenz: nur aus Ready-/Retry-Zuständen starten
-            if self.state not in (AppState.IDLE, AppState.NO_SPEECH):
+            # Idempotenz: nur aus Ready-/Retry-/Erfolgs-Zuständen starten.
+            # DONE ist startfähig, damit direkt nach einem Diktat ohne Warten
+            # auf das grüne Feedback (_DONE_DISPLAY_HOLD_SEC) neu diktiert
+            # werden kann.
+            if self.state not in (AppState.IDLE, AppState.NO_SPEECH, AppState.DONE):
                 logger.debug(f"Start ignoriert: State={self.state}")
                 return False
 
@@ -1667,16 +1696,21 @@ class PulseScribeWindows:
         self._latency_mark("refine_done", changed=self._last_was_refined)
         return refined
 
-    def _save_to_history(self, transcript: str) -> None:
-        """Speichert Transkript in der Historie."""
+    def _save_to_history(self, transcript: str, *, mode: str, refined: bool) -> None:
+        """Speichert Transkript in der Historie.
+
+        Mode/Refined kommen als Snapshots vom Caller: `self._run_mode` und
+        `self._last_was_refined` können zum Speicherzeitpunkt bereits von einer
+        neu gestarteten Aufnahme überschrieben worden sein (DONE ist startfähig).
+        """
         from utils.history import save_transcript
 
         try:
             save_transcript(
                 transcript,
-                mode=self._run_mode or self.mode,
+                mode=mode,
                 language=os.getenv("PULSESCRIBE_LANGUAGE", "auto"),
-                refined=self._last_was_refined,
+                refined=refined,
             )
         except Exception as e:
             logger.warning(f"History save failed: {e}")
@@ -1684,26 +1718,44 @@ class PulseScribeWindows:
     def _handle_result(self, transcript: str):
         """Verarbeitet Transkriptions-Ergebnis."""
         logger.info(f"Transkript: {redacted_text_summary(transcript)}")
-        self._latency_mark("result_ready", chars=len(transcript or ""))
-        self._set_state(AppState.DONE)
+        # Run-Metadaten und Latency-Run VOR dem DONE-State snapshotten/abkoppeln:
+        # DONE ist startfähig, ein sofortiger Hotkey- oder IPC-Start darf
+        # `_run_mode`, `_last_was_refined`, `_ipc_test_cmd_id` und
+        # `_latency_run` überschreiben, ohne dieses Ergebnis zu verfälschen.
+        # Vor DONE ist der State TRANSCRIBING/REFINING (nicht startfähig),
+        # daher sind diese Snapshots race-frei.
+        run = self._latency_run
+        self._latency_run = None
+        run_mode = self._run_mode or self.mode
+        was_refined = self._last_was_refined
+        ipc_cmd_id = self._ipc_test_cmd_id
+        ipc_server = self._ipc_server
+        if run is not None:
+            run.mark("result_ready", chars=len(transcript or ""))
+        done_generation = self._set_state(AppState.DONE)
         self._play_sound("done")
 
         # IPC-Test Mode: Route result to wizard instead of clipboard
-        if self._ipc_test_cmd_id and self._ipc_server:
+        if ipc_cmd_id and ipc_server:
             from utils.ipc import STATUS_DONE
 
-            self._ipc_server.send_response(
-                self._ipc_test_cmd_id, STATUS_DONE, transcript=transcript
-            )
-            logger.info(f"IPC-Test Ergebnis gesendet (id={self._ipc_test_cmd_id})")
-            self._ipc_test_cmd_id = None  # Reset for next test
-            self._latency_finish("ipc_done", chars=len(transcript or ""))
+            ipc_server.send_response(ipc_cmd_id, STATUS_DONE, transcript=transcript)
+            logger.info(f"IPC-Test Ergebnis gesendet (id={ipc_cmd_id})")
+            # Nur die eigene ID zurücksetzen: Ein während send_response neu
+            # gestarteter IPC-Test hat evtl. schon eine neue ID gesetzt.
+            if self._ipc_test_cmd_id == ipc_cmd_id:
+                self._ipc_test_cmd_id = None  # Reset for next test
+            if run is not None:
+                run.finish("ipc_done", chars=len(transcript or ""))
 
             # Nach kurzer Pause zurück zu IDLE
-            self._schedule_idle_if_state_unchanged(_DONE_DISPLAY_HOLD_SEC)
+            self._schedule_idle_if_state_unchanged(
+                _DONE_DISPLAY_HOLD_SEC, done_generation
+            )
             return
 
-        self._latency_mark("paste_start", auto_paste=self.auto_paste)
+        if run is not None:
+            run.mark("paste_start", auto_paste=self.auto_paste)
         paste_success = True
         if self.auto_paste:
             paste_success = paste_transcript(transcript)
@@ -1716,17 +1768,20 @@ class PulseScribeWindows:
         else:
             get_clipboard().copy(transcript)
             logger.info("Text in Zwischenablage kopiert")
-        self._latency_mark("paste_done", success=paste_success)
+        if run is not None:
+            run.mark("paste_done", success=paste_success)
 
         # History-IO (inkl. möglicher Datei-Rotation) erst NACH dem Paste:
         # Der sichtbare "Text erscheint"-Moment darf nicht auf Disk-IO warten.
-        self._save_to_history(transcript)
-        self._latency_finish(
-            "done", chars=len(transcript or ""), paste_success=paste_success
-        )
+        self._save_to_history(transcript, mode=run_mode, refined=was_refined)
+        if run is not None:
+            run.finish("done", chars=len(transcript or ""), paste_success=paste_success)
 
-        # Nach kurzer Pause zurück zu IDLE (Timer statt sleep, blockiert Thread nicht)
-        self._schedule_idle_if_state_unchanged(_DONE_DISPLAY_HOLD_SEC)
+        # Nach kurzer Pause zurück zu IDLE (Timer statt sleep, blockiert Thread
+        # nicht). WICHTIG: mit der DONE-Generation planen – zum jetzigen
+        # Zeitpunkt kann bereits eine neue Aufnahme laufen, deren Generation
+        # nicht fälschlich auf IDLE zurückgesetzt werden darf.
+        self._schedule_idle_if_state_unchanged(_DONE_DISPLAY_HOLD_SEC, done_generation)
 
     def _setup_hotkey(self):
         """Richtet globale Hotkeys ein (Toggle und/oder Hold-Mode)."""
