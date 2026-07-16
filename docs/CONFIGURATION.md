@@ -164,10 +164,11 @@ Both hotkeys can be active simultaneously.
 | `PULSESCRIBE_WINDOWS_STOP_GRACE_SECONDS`  | `0`-`2.0` seconds                   | `0.30` (`safe`), `0.20` (`snappy`) | Keep recording briefly after hotkey release on Windows to avoid clipped final words. |
 | `PULSESCRIBE_WINDOWS_PASTE_SYNC_MS`        | `0`-`500` milliseconds              | `50` | Upper bound for the clipboard sync check before sending Ctrl+V on Windows. PulseScribe pastes as soon as the clipboard read-back confirms the new content (typically <5 ms); this cap only applies when confirmation fails (e.g. clipboard managers/RDP). `0` skips the check entirely. |
 | `PULSESCRIBE_WINDOWS_RESPONSIVENESS_BOOST` | `true`, `false`                     | `true` | Applies best-effort process tweaks at daemon startup: 1 ms system timer resolution (`timeBeginPeriod`) for tighter internal polling and `ABOVE_NORMAL` process priority for reliable hotkey/audio handling under load. Requires restart. |
+| `PULSESCRIBE_DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS` | `0`-e.g. `1.0` seconds     | `0.25` (`safe`), `0.10` (`snappy`) | Extra wait after Deepgram acknowledges Finalize without a transcript, in case the final transcript arrives late. Ends early as soon as a late final transcript arrives. Applies to Deepgram streaming on all platforms; requires restart. |
 | `PULSESCRIBE_DEEPGRAM_WARM_WEBSOCKET`      | `true`, `false`                     | `true` | Preconnect the next Deepgram streaming session on Windows. Each socket is consumed once and replaced after `CloseStream`. |
 | `PULSESCRIBE_DEEPGRAM_KEEPALIVE_INTERVAL_SECONDS` | `1`-`8` seconds              | `3` | KeepAlive interval for an unused preconnected Deepgram socket. |
 
-Set stop grace to `0` to disable the extra tail capture. Changing `PULSESCRIBE_WINDOWS_LATENCY_PRESET` or the KeepAlive interval requires restarting PulseScribe; the other Windows values above are read when settings reload.
+Set stop grace to `0` to disable the extra tail capture. Changing `PULSESCRIBE_WINDOWS_LATENCY_PRESET`, `PULSESCRIBE_WINDOWS_RESPONSIVENESS_BOOST`, `PULSESCRIBE_DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS`, or the KeepAlive interval requires restarting PulseScribe; the other Windows values above are read when settings reload.
 
 ### Windows Latency Diagnostics
 

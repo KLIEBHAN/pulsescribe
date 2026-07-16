@@ -16,9 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   verify loop: paste happens as soon as the clipboard read-back confirms the
   new content (typically <5ms). `PULSESCRIBE_WINDOWS_PASTE_SYNC_MS` remains
   the upper bound for slow clipboard environments (managers/RDP).
-- **Windows: earlier finalize exit** – the empty-finalize grace window
+- **Deepgram: earlier finalize exit** – the empty-finalize grace window
   (`PULSESCRIBE_DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS`) now ends as soon as a
-  late final transcript arrives instead of always sleeping the full duration.
+  late final transcript arrives instead of always sleeping the full duration
+  (all platforms using Deepgram streaming).
 - **Windows: responsiveness boost** – the daemon now requests 1ms system timer
   resolution (`timeBeginPeriod`) and `ABOVE_NORMAL` process priority at
   startup (best-effort, disable via

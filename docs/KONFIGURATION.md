@@ -157,10 +157,11 @@ Beide Hotkeys können gleichzeitig aktiv sein.
 | `PULSESCRIBE_WINDOWS_STOP_GRACE_SECONDS`  | `0`-`2.0` Sekunden                  | `0.30` (`safe`), `0.20` (`snappy`) | Nimmt unter Windows nach Hotkey-Release kurz weiter auf, damit letzte Wörter nicht abgeschnitten werden. |
 | `PULSESCRIBE_WINDOWS_PASTE_SYNC_MS`        | `0`-`500` Millisekunden             | `50` | Obergrenze für den Clipboard-Sync-Check vor Ctrl+V unter Windows. PulseScribe fügt ein, sobald das Clipboard-Zurücklesen den neuen Inhalt bestätigt (typisch <5 ms); die Obergrenze greift nur, wenn die Bestätigung ausbleibt (z.B. Clipboard-Manager/RDP). `0` überspringt den Check komplett. |
 | `PULSESCRIBE_WINDOWS_RESPONSIVENESS_BOOST` | `true`, `false`                     | `true` | Aktiviert beim Daemon-Start best-effort Prozess-Tweaks: 1-ms-Systemtimer-Auflösung (`timeBeginPeriod`) für präzisere interne Polls und `ABOVE_NORMAL`-Prozesspriorität für zuverlässige Hotkey-/Audio-Verarbeitung unter Last. Benötigt Neustart. |
+| `PULSESCRIBE_DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS` | `0`-z.B. `1.0` Sekunden    | `0.25` (`safe`), `0.10` (`snappy`) | Zusatzfenster, wenn Deepgram Finalize ohne Transkript quittiert und das finale Transkript später eintreffen könnte. Endet vorzeitig, sobald ein spätes Final-Transkript ankommt. Gilt für Deepgram-Streaming auf allen Plattformen; benötigt Neustart. |
 | `PULSESCRIBE_DEEPGRAM_WARM_WEBSOCKET`      | `true`, `false`                     | `true` | Verbindet unter Windows die nächste Deepgram-Streaming-Session vorab. Jeder Socket wird einmal genutzt und nach `CloseStream` ersetzt. |
 | `PULSESCRIBE_DEEPGRAM_KEEPALIVE_INTERVAL_SECONDS` | `1`-`8` Sekunden             | `3` | KeepAlive-Intervall für einen ungenutzten vorgewärmten Deepgram-Socket. |
 
-Mit `0` lässt sich der zusätzliche Nachlauf deaktivieren. Änderungen an `PULSESCRIBE_WINDOWS_LATENCY_PRESET` oder dem KeepAlive-Intervall benötigen einen Neustart; die übrigen Windows-Werte oben werden beim Settings-Reload gelesen.
+Mit `0` lässt sich der zusätzliche Nachlauf deaktivieren. Änderungen an `PULSESCRIBE_WINDOWS_LATENCY_PRESET`, `PULSESCRIBE_WINDOWS_RESPONSIVENESS_BOOST`, `PULSESCRIBE_DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS` oder dem KeepAlive-Intervall benötigen einen Neustart; die übrigen Windows-Werte oben werden beim Settings-Reload gelesen.
 
 ### Windows-Latenzdiagnose
 
