@@ -6,6 +6,7 @@ Jede Zeile ist ein JSON-Objekt mit Timestamp und Text.
 
 import json
 import logging
+import threading
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -27,6 +28,12 @@ _RECENT_SCAN_BYTES_MAX = 4_000_000
 _RECENT_LINES_FACTOR = 3
 
 logger = logging.getLogger(__name__)
+
+# Serialisiert Rotation+Append prozessintern: Seit DONE startfähig ist, kann
+# der Save eines alten Runs mit dem Save eines schnellen Folge-Diktats
+# überlappen. Ohne Lock kann eine stale Rotation (read → atomic replace) einen
+# bereits geschriebenen neuen Eintrag verwerfen.
+_history_write_lock = threading.Lock()
 
 
 def _build_transcript_entry(
@@ -75,28 +82,33 @@ def save_transcript(
         return False
 
     try:
-        HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        # Gesamten Save (Rotation → Append → Rotation) serialisieren, damit
+        # parallele Saves keine Einträge über eine stale Rotation verlieren.
+        with _history_write_lock:
+            HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-        # Check file size and rotate if needed
-        _rotate_if_needed()
+            # Check file size and rotate if needed
+            _rotate_if_needed()
 
-        entry = _build_transcript_entry(
-            clean_text,
-            mode=mode,
-            language=language,
-            refined=refined,
-            app_context=app_context,
+            entry = _build_transcript_entry(
+                clean_text,
+                mode=mode,
+                language=language,
+                refined=refined,
+                app_context=app_context,
+            )
+
+            with HISTORY_FILE.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+            # Ein großer neuer Eintrag kann die Datei erst nach dem Append über
+            # das Limit schieben. Direkt danach rotieren, damit die History
+            # nicht bis zum nächsten Save unnötig groß bleibt.
+            _rotate_if_needed()
+
+        logger.debug(
+            "Transcript saved to history: %s", redacted_text_summary(clean_text)
         )
-
-        with HISTORY_FILE.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-
-        # Ein großer neuer Eintrag kann die Datei erst nach dem Append über das
-        # Limit schieben. Direkt danach rotieren, damit die History nicht bis
-        # zum nächsten Save unnötig groß bleibt.
-        _rotate_if_needed()
-
-        logger.debug("Transcript saved to history: %s", redacted_text_summary(clean_text))
         return True
 
     except Exception as e:
@@ -117,9 +129,7 @@ def _rotate_if_needed() -> None:
         lines = HISTORY_FILE.read_text(encoding="utf-8").splitlines()
         kept_lines = _select_recent_lines_within_bytes(lines, max_size_bytes)
         if kept_lines:
-            _write_text_atomic(
-                HISTORY_FILE, "\n".join(kept_lines) + "\n"
-            )
+            _write_text_atomic(HISTORY_FILE, "\n".join(kept_lines) + "\n")
             logger.info(
                 f"History rotated: kept {len(kept_lines)} of {len(lines)} entries"
             )
@@ -353,9 +363,7 @@ def merge_recent_transcript_entries(
     previous_valid = list(_iter_valid_transcript_entries(previous_entries))
     appended_valid = list(_iter_valid_transcript_entries(appended_entries))
     visible_entries = (
-        previous_valid
-        if not appended_valid
-        else [*previous_valid, *appended_valid]
+        previous_valid if not appended_valid else [*previous_valid, *appended_valid]
     )
     return _limit_ordered_transcript_entries(
         visible_entries,
@@ -434,7 +442,6 @@ WELCOME_TRANSCRIPTS_EMPTY_MESSAGE = (
     "No transcriptions yet.\n\n"
     "Your recent dictations will appear here after the first transcription."
 )
-
 
 
 def _join_transcript_blocks(blocks: Sequence[str], *, empty_message: str) -> str:
@@ -609,8 +616,9 @@ def clear_history() -> bool:
         True bei Erfolg, False bei Fehler
     """
     try:
-        if HISTORY_FILE.exists():
-            HISTORY_FILE.unlink()
+        with _history_write_lock:
+            if HISTORY_FILE.exists():
+                HISTORY_FILE.unlink()
         logger.info("History cleared")
         return True
     except Exception as e:

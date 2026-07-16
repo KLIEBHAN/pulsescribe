@@ -92,7 +92,10 @@ class TestSaveTranscript:
         """Leere Metadaten sollen nicht als Keys in der History landen."""
         from utils.history import save_transcript
 
-        assert save_transcript("  Hello World  ", mode="", language=None, app_context="") is True
+        assert (
+            save_transcript("  Hello World  ", mode="", language=None, app_context="")
+            is True
+        )
 
         entry = json.loads(history_file.read_text(encoding="utf-8").strip())
 
@@ -148,7 +151,9 @@ class TestGetRecentTranscripts:
         assert get_recent_transcripts(count=0) == []
         assert get_recent_transcripts(count=-5) == []
 
-    def test_get_recent_with_signature_reuses_provided_signature(self, history_file, monkeypatch):
+    def test_get_recent_with_signature_reuses_provided_signature(
+        self, history_file, monkeypatch
+    ):
         """Bekannte Dateisignaturen sollen ohne erneuten get_file_signature-Call nutzbar sein."""
         from utils.history import get_recent_transcripts_with_signature, save_transcript
 
@@ -171,7 +176,9 @@ class TestGetRecentTranscripts:
         assert [entry["text"] for entry in entries] == ["Second", "First"]
         assert signature == provided_signature
 
-    def test_get_recent_prefers_tail_read_over_full_read(self, history_file, monkeypatch):
+    def test_get_recent_prefers_tail_read_over_full_read(
+        self, history_file, monkeypatch
+    ):
         """Normale Reads sollen ohne Full-File read_text auskommen."""
         from utils.history import get_recent_transcripts, save_transcript
 
@@ -180,7 +187,9 @@ class TestGetRecentTranscripts:
         save_transcript("Third")
 
         def fail_read_text(self, *args, **kwargs):
-            raise AssertionError("full read_text should not be used for small tail reads")
+            raise AssertionError(
+                "full read_text should not be used for small tail reads"
+            )
 
         monkeypatch.setattr("pathlib.Path.read_text", fail_read_text)
         result = get_recent_transcripts(count=2)
@@ -207,7 +216,7 @@ class TestGetRecentTranscripts:
         from utils.history import get_recent_transcripts
 
         history_file.write_text(
-            '\n'.join(
+            "\n".join(
                 [
                     '{"timestamp":"2026-03-03T10:00:00","text":"First"}',
                     '"legacy-string-entry"',
@@ -387,10 +396,7 @@ class TestFormatTranscriptsForDisplay:
             }
         )
 
-        assert formatted == (
-            "[2026-03-03 10:01:30] First line\n"
-            "    Second line"
-        )
+        assert formatted == ("[2026-03-03 10:01:30] First line\n    Second line")
 
     def test_format_transcript_entries_for_display_returns_oldest_first_blocks(self):
         from utils.history import format_transcript_entries_for_display
@@ -518,7 +524,9 @@ class TestFormatTranscriptsForWelcome:
             newest_first=False,
         )
 
-        assert formatted == "[2026-03-03 10:00:00]\nFirst\n\n[2026-03-03 10:01:30]\nSecond"
+        assert (
+            formatted == "[2026-03-03 10:00:00]\nFirst\n\n[2026-03-03 10:01:30]\nSecond"
+        )
         assert "legacy-string-entry" not in formatted
 
 
@@ -601,7 +609,9 @@ class TestRotation:
         _rotate_if_needed()
 
         remaining_lines = history_file.read_text(encoding="utf-8").splitlines()
-        remaining_prefixes = [json.loads(line)["text"].split(":", 1)[0] for line in remaining_lines]
+        remaining_prefixes = [
+            json.loads(line)["text"].split(":", 1)[0] for line in remaining_lines
+        ]
 
         assert history_file.stat().st_size <= limit_bytes
         assert remaining_prefixes == ["4", "5"]
@@ -627,9 +637,7 @@ class TestRotation:
         assert texts[-1] == "new-" + ("b" * 500)
         assert len(texts) == 1
 
-    def test_rotation_preserves_data_on_write_failure(
-        self, history_file, monkeypatch
-    ):
+    def test_rotation_preserves_data_on_write_failure(self, history_file, monkeypatch):
         """History bleibt intakt wenn atomarer Write während Rotation fehlschlägt."""
         from unittest.mock import patch
 
@@ -646,8 +654,79 @@ class TestRotation:
         history_file.write_text(original_content, encoding="utf-8")
 
         # Simuliere einen Fehler beim atomaren Write (z.B. Disk voll)
-        with patch("utils.history._write_text_atomic", side_effect=OSError("disk full")):
+        with patch(
+            "utils.history._write_text_atomic", side_effect=OSError("disk full")
+        ):
             _rotate_if_needed()
 
         # History muss INTAKT sein (keine Truncation, kein Datenverlust)
         assert history_file.read_text(encoding="utf-8") == original_content
+
+
+class TestConcurrentSaves:
+    """Regression: Parallele Saves dürfen keine Einträge verlieren (stale Rotation)."""
+
+    def test_concurrent_save_does_not_lose_entry_via_stale_rotation(
+        self, history_file, monkeypatch
+    ):
+        """Ein Save, der mitten in der Rotation pausiert, darf einen parallel
+        geschriebenen Eintrag nicht durch seinen stale Snapshot verwerfen.
+
+        Vor dem _history_write_lock lief Thread B während Thread As Rotation
+        (read -> atomic replace) durch; As Replace verwarf Bs Eintrag.
+        """
+        import threading
+
+        import utils.history as history_mod
+
+        # Rotation bei jeder Dateigröße erzwingen (max(1, 0) = 1 Byte)
+        monkeypatch.setattr(history_mod, "MAX_HISTORY_SIZE_MB", 0)
+
+        history_file.write_text(
+            json.dumps({"timestamp": "t0", "text": "seed"}) + "\n",
+            encoding="utf-8",
+        )
+
+        in_rotation = threading.Event()
+        proceed = threading.Event()
+        call_count = {"n": 0}
+
+        def blocking_select(lines, max_size_bytes):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                # Thread A hat den stale Datei-Snapshot gelesen; hier pausieren.
+                in_rotation.set()
+                proceed.wait(timeout=5)
+            return lines  # Nichts verwerfen - wir testen Nebenläufigkeit
+
+        monkeypatch.setattr(
+            history_mod, "_select_recent_lines_within_bytes", blocking_select
+        )
+
+        thread_a = threading.Thread(
+            target=history_mod.save_transcript, args=("entry-a",), daemon=True
+        )
+        thread_b = threading.Thread(
+            target=history_mod.save_transcript, args=("entry-b",), daemon=True
+        )
+
+        thread_a.start()
+        assert in_rotation.wait(timeout=5)
+
+        # B startet, während A mitten in der Rotation hängt. Mit Lock muss B
+        # warten; ohne Lock würde B jetzt schreiben und von A überschrieben.
+        thread_b.start()
+        thread_b.join(timeout=0.2)
+        assert thread_b.is_alive(), "Save B hätte auf den History-Lock warten müssen"
+
+        proceed.set()
+        thread_a.join(timeout=5)
+        thread_b.join(timeout=5)
+        assert not thread_a.is_alive() and not thread_b.is_alive()
+
+        texts = [
+            json.loads(line)["text"]
+            for line in history_file.read_text(encoding="utf-8").splitlines()
+        ]
+        assert "entry-a" in texts
+        assert "entry-b" in texts
