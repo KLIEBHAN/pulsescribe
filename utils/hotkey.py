@@ -18,6 +18,7 @@ logger = get_logger()
 
 _MACOS_CLIPBOARD_RESTORE_DELAY_SEC = 1.0
 _WINDOWS_CLIPBOARD_RESTORE_DELAY_SEC = 0.5
+_WINDOWS_CLIPBOARD_SYNC_POLL_SEC = 0.005
 
 # =============================================================================
 # Hotkey-Parsing (QuickMacHotKey)
@@ -507,6 +508,37 @@ def _schedule_clipboard_restore(
     return thread
 
 
+def _wait_for_windows_clipboard_sync(
+    expected_text: str,
+    *,
+    clipboard,
+    timeout_sec: float,
+) -> bool:
+    """Wait until the clipboard visibly contains our text (capped at timeout).
+
+    Statt fix die volle Sync-Zeit zu schlafen, wird das Clipboard zurückgelesen
+    und sofort gepastet, sobald der Inhalt bestätigt ist (typisch <5ms). Die
+    konfigurierte Sync-Zeit (PULSESCRIBE_WINDOWS_PASTE_SYNC_MS) bleibt als
+    Obergrenze für langsame Clipboard-Umgebungen (Manager/RDP) erhalten.
+
+    Returns:
+        True wenn der Inhalt bestätigt wurde, False bei Timeout (dann wurde
+        effektiv die alte fixe Wartezeit eingehalten).
+    """
+    deadline = time.monotonic() + timeout_sec
+    while True:
+        if _get_windows_clipboard_text(clipboard=clipboard) == expected_text:
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            logger.debug(
+                "Clipboard-Sync nicht bestätigt, paste nach "
+                f"{timeout_sec * 1000:.0f}ms Obergrenze"
+            )
+            return False
+        time.sleep(min(_WINDOWS_CLIPBOARD_SYNC_POLL_SEC, remaining))
+
+
 def _paste_transcript_windows(text: str) -> bool:
     """Paste text on Windows while preserving the current restore semantics."""
     clipboard = _get_windows_clipboard_handler()
@@ -520,13 +552,18 @@ def _paste_transcript_windows(text: str) -> bool:
     if not _copy_windows_clipboard_text(text, clipboard=clipboard):
         return False
 
-    # Kurze Pause, damit Clipboard-Hooks/Zielanwendung das Update sehen, bevor
-    # Ctrl+V abgeht. Per PULSESCRIBE_WINDOWS_PASTE_SYNC_MS tunebar (0 = sofort).
+    # Vor Ctrl+V bestätigen, dass das Clipboard-Update sichtbar ist. Früher
+    # fixe Wartezeit, jetzt Verify-Loop mit der konfigurierten Sync-Zeit als
+    # Obergrenze. Per PULSESCRIBE_WINDOWS_PASTE_SYNC_MS tunebar (0 = sofort).
     from config import get_windows_paste_sync_seconds
 
     sync_delay = get_windows_paste_sync_seconds()
     if sync_delay > 0:
-        time.sleep(sync_delay)
+        _wait_for_windows_clipboard_sync(
+            text,
+            clipboard=clipboard,
+            timeout_sec=sync_delay,
+        )
 
     if not _paste_via_pynput_windows():
         if previous_text is not None:

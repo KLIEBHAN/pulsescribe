@@ -180,7 +180,9 @@ class TestParseHotkeyWithModifiers:
 # =============================================================================
 
 
-@pytest.mark.skipif(sys.platform != "darwin", reason="macOS-only: requires pulsescribe_daemon")
+@pytest.mark.skipif(
+    sys.platform != "darwin", reason="macOS-only: requires pulsescribe_daemon"
+)
 class TestParsePynputHotkey:
     """Tests für Hold-Mode Hotkey-Parsing via pynput."""
 
@@ -212,7 +214,9 @@ class TestParsePynputHotkey:
             PulseScribeDaemon._parse_pynput_hotkey("f99")
 
 
-@pytest.mark.skipif(sys.platform != "darwin", reason="macOS-only: tests Quartz hotkey listener")
+@pytest.mark.skipif(
+    sys.platform != "darwin", reason="macOS-only: tests Quartz hotkey listener"
+)
 class TestMacOSHotkeyListenerSelection:
     def test_toggle_uses_quartz_on_macos(self, monkeypatch):
         from pulsescribe_daemon import PulseScribeDaemon
@@ -267,7 +271,9 @@ class TestMacOSHotkeyListenerSelection:
 
 def test_paste_transcript_logs_redacted_text(caplog, monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
-    monkeypatch.setattr(utils.hotkey, "_get_windows_clipboard_handler", lambda: object())
+    monkeypatch.setattr(
+        utils.hotkey, "_get_windows_clipboard_handler", lambda: object()
+    )
     monkeypatch.setattr(
         utils.hotkey,
         "_copy_windows_clipboard_text",
@@ -288,7 +294,9 @@ def test_paste_transcript_logs_redacted_text(caplog, monkeypatch):
 # =============================================================================
 
 
-@pytest.mark.skipif(sys.platform != "darwin", reason="macOS-only: tests macOS paste logic")
+@pytest.mark.skipif(
+    sys.platform != "darwin", reason="macOS-only: tests macOS paste logic"
+)
 class TestPasteTranscript:
     """Tests für paste_transcript() – Clipboard und Auto-Paste."""
 
@@ -652,7 +660,8 @@ def test_paste_transcript_windows_prefers_native_clipboard_handler(monkeypatch):
 
     assert result is True
     assert clipboard.copy_calls == ["test text", "previous text"]
-    assert clipboard.paste_calls == 2
+    # 3 reads: restore-snapshot, clipboard-sync verify, restore check
+    assert clipboard.paste_calls == 3
 
 
 class _SyncDelayFakeClipboard:
@@ -660,12 +669,20 @@ class _SyncDelayFakeClipboard:
         return True
 
     def paste(self):
-        return None
+        # Nie None zurückgeben: None würde in _get_windows_clipboard_text auf
+        # das echte pyperclip (Host-Clipboard) zurückfallen.
+        return "stale clipboard content"
 
 
-def test_paste_transcript_windows_uses_configured_paste_sync_delay(monkeypatch):
-    """The Windows clipboard->paste sync delay is configurable via env (ms)."""
+def test_paste_transcript_windows_sync_delay_caps_stale_clipboard(monkeypatch):
+    """With unconfirmed clipboard content, paste waits at most the sync cap."""
+    clock = {"now": 0.0}
     sleep_calls: list[float] = []
+
+    def fake_sleep(delay):
+        sleep_calls.append(delay)
+        clock["now"] += delay
+
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.delenv("PULSESCRIBE_CLIPBOARD_RESTORE", raising=False)
     monkeypatch.setenv("PULSESCRIBE_WINDOWS_PASTE_SYNC_MS", "30")
@@ -675,12 +692,45 @@ def test_paste_transcript_windows_uses_configured_paste_sync_delay(monkeypatch):
         lambda: _SyncDelayFakeClipboard(),
     )
     monkeypatch.setattr(utils.hotkey, "_paste_via_pynput_windows", lambda: True)
+    monkeypatch.setattr(utils.hotkey.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(utils.hotkey.time, "sleep", fake_sleep)
+
+    assert utils.hotkey.paste_transcript("hello") is True
+    # Verify-Loop schläft in kleinen Schritten bis maximal zur Sync-Obergrenze.
+    assert sleep_calls
+    assert all(delay <= 0.005 for delay in sleep_calls)
+    assert abs(sum(sleep_calls) - 0.03) < 1e-9
+
+
+def test_paste_transcript_windows_pastes_immediately_when_clipboard_confirmed(
+    monkeypatch,
+):
+    """When the clipboard read-back confirms our text, no sync sleep happens."""
+
+    class _ConfirmingClipboard:
+        def copy(self, text):
+            self._text = text
+            return True
+
+        def paste(self):
+            return self._text
+
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.delenv("PULSESCRIBE_CLIPBOARD_RESTORE", raising=False)
+    monkeypatch.setenv("PULSESCRIBE_WINDOWS_PASTE_SYNC_MS", "50")
+    monkeypatch.setattr(
+        utils.hotkey,
+        "_get_windows_clipboard_handler",
+        lambda: _ConfirmingClipboard(),
+    )
+    monkeypatch.setattr(utils.hotkey, "_paste_via_pynput_windows", lambda: True)
     monkeypatch.setattr(
         utils.hotkey.time, "sleep", lambda delay: sleep_calls.append(delay)
     )
 
     assert utils.hotkey.paste_transcript("hello") is True
-    assert sleep_calls == [0.03]
+    assert sleep_calls == []
 
 
 def test_paste_transcript_windows_skips_sleep_when_sync_delay_zero(monkeypatch):
@@ -775,7 +825,8 @@ def test_paste_transcript_clipboard_restore_accepts_truthy_alias_on_windows(
 
     assert result is True
     assert clipboard.copy_calls == ["test text", "previous text"]
-    assert clipboard.paste_calls == 2
+    # 3 reads: restore-snapshot, clipboard-sync verify, restore check
+    assert clipboard.paste_calls == 3
 
 
 def test_paste_transcript_restores_clipboard_when_paste_fails_on_macos(monkeypatch):
@@ -874,7 +925,8 @@ def test_paste_transcript_restores_clipboard_when_paste_fails_on_windows(
 
     assert result is False
     assert clipboard.copy_calls == ["test text", "previous text"]
-    assert clipboard.paste_calls == 2
+    # 3 reads: restore-snapshot, clipboard-sync verify, restore check
+    assert clipboard.paste_calls == 3
 
 
 # =============================================================================
@@ -882,7 +934,9 @@ def test_paste_transcript_restores_clipboard_when_paste_fails_on_windows(
 # =============================================================================
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only: tests Windows paste logic")
+@pytest.mark.skipif(
+    sys.platform != "win32", reason="Windows-only: tests Windows paste logic"
+)
 class TestPasteTranscriptWindows:
     """Tests für paste_transcript() auf Windows – pyperclip + pynput."""
 
@@ -900,14 +954,19 @@ class TestPasteTranscriptWindows:
 
         # Ensure clipboard restore is disabled
         monkeypatch.delenv("PULSESCRIBE_CLIPBOARD_RESTORE", raising=False)
-        monkeypatch.setattr(utils.hotkey, "_get_windows_clipboard_handler", lambda: None)
+        monkeypatch.setattr(
+            utils.hotkey, "_get_windows_clipboard_handler", lambda: None
+        )
 
         # Mock pyperclip
         import pyperclip
+
         monkeypatch.setattr(pyperclip, "copy", mock_copy)
 
         # Mock _paste_via_pynput_windows
-        monkeypatch.setattr(utils.hotkey, "_paste_via_pynput_windows", mock_paste_windows)
+        monkeypatch.setattr(
+            utils.hotkey, "_paste_via_pynput_windows", mock_paste_windows
+        )
 
         result = utils.hotkey.paste_transcript("test text")
 
@@ -923,9 +982,12 @@ class TestPasteTranscriptWindows:
 
         # Ensure clipboard restore is disabled
         monkeypatch.delenv("PULSESCRIBE_CLIPBOARD_RESTORE", raising=False)
-        monkeypatch.setattr(utils.hotkey, "_get_windows_clipboard_handler", lambda: None)
+        monkeypatch.setattr(
+            utils.hotkey, "_get_windows_clipboard_handler", lambda: None
+        )
 
         import pyperclip
+
         monkeypatch.setattr(pyperclip, "copy", mock_copy)
 
         result = utils.hotkey.paste_transcript("test text")
@@ -944,11 +1006,16 @@ class TestPasteTranscriptWindows:
 
         # Ensure clipboard restore is disabled
         monkeypatch.delenv("PULSESCRIBE_CLIPBOARD_RESTORE", raising=False)
-        monkeypatch.setattr(utils.hotkey, "_get_windows_clipboard_handler", lambda: None)
+        monkeypatch.setattr(
+            utils.hotkey, "_get_windows_clipboard_handler", lambda: None
+        )
 
         import pyperclip
+
         monkeypatch.setattr(pyperclip, "copy", mock_copy)
-        monkeypatch.setattr(utils.hotkey, "_paste_via_pynput_windows", mock_paste_windows)
+        monkeypatch.setattr(
+            utils.hotkey, "_paste_via_pynput_windows", mock_paste_windows
+        )
 
         result = utils.hotkey.paste_transcript("test text")
 
@@ -968,11 +1035,16 @@ class TestPasteTranscriptWindows:
 
         # Ensure clipboard restore is disabled
         monkeypatch.delenv("PULSESCRIBE_CLIPBOARD_RESTORE", raising=False)
-        monkeypatch.setattr(utils.hotkey, "_get_windows_clipboard_handler", lambda: None)
+        monkeypatch.setattr(
+            utils.hotkey, "_get_windows_clipboard_handler", lambda: None
+        )
 
         import pyperclip
+
         monkeypatch.setattr(pyperclip, "copy", mock_copy)
-        monkeypatch.setattr(utils.hotkey, "_paste_via_pynput_windows", mock_paste_windows)
+        monkeypatch.setattr(
+            utils.hotkey, "_paste_via_pynput_windows", mock_paste_windows
+        )
 
         result = utils.hotkey.paste_transcript("")
 
@@ -1000,6 +1072,7 @@ class TestPasteViaPynputWindows:
 
         # Mock pynput.keyboard
         import pynput.keyboard
+
         monkeypatch.setattr(pynput.keyboard, "Controller", MockController)
         monkeypatch.setattr(pynput.keyboard, "Key", MockKey)
 
@@ -1025,6 +1098,7 @@ class TestPasteViaPynputWindows:
             ctrl = "ctrl"
 
         import pynput.keyboard
+
         monkeypatch.setattr(pynput.keyboard, "Controller", MockController)
         monkeypatch.setattr(pynput.keyboard, "Key", MockKey)
 

@@ -71,7 +71,6 @@ class _InputDeviceInfo:
     samplerate: int
 
 
-
 def _return_input_device_result(
     result: tuple[int | None, int], *, cache: bool = True
 ) -> tuple[int | None, int]:
@@ -82,13 +81,11 @@ def _return_input_device_result(
     return result
 
 
-
 def _get_default_input_index(sd: Any) -> int:
     """Liest den konfigurierten sounddevice-Default-Input robust aus."""
     default_devices = cast(tuple[object, object], sd.default.device)
     default_input = default_devices[0]
     return default_input if isinstance(default_input, int) else -1
-
 
 
 def _build_input_device_info(index: int, raw_device: object) -> _InputDeviceInfo:
@@ -99,7 +96,6 @@ def _build_input_device_info(index: int, raw_device: object) -> _InputDeviceInfo
         name=str(device.get("name", "")),
         samplerate=int(device.get("default_samplerate", WHISPER_SAMPLE_RATE)),
     )
-
 
 
 def _list_input_devices(sd: Any) -> list[_InputDeviceInfo]:
@@ -113,12 +109,10 @@ def _list_input_devices(sd: Any) -> list[_InputDeviceInfo]:
     return input_devices
 
 
-
 def _device_name_matches(name: str, keywords: tuple[str, ...]) -> bool:
     """Prüft Keywords case-insensitiv gegen einen Gerätenamen."""
     lower_name = name.lower()
     return any(keyword in lower_name for keyword in keywords)
-
 
 
 def _should_skip_windows_device(name: str) -> bool:
@@ -126,17 +120,14 @@ def _should_skip_windows_device(name: str) -> bool:
     return _device_name_matches(name, ("lautsprecher", "speaker", "output", "monitor"))
 
 
-
 def _is_named_microphone_device(device: _InputDeviceInfo) -> bool:
     """Erkennt klassische Mikrofon-Bezeichnungen plattformübergreifend."""
     return _device_name_matches(device.name, ("mikrofon", "mic", "microphone"))
 
 
-
 def _is_windows_mic_array_device(device: _InputDeviceInfo) -> bool:
     """Bevorzugt Windows-Mikrofonarrays, die meist stabil funktionieren."""
     return _device_name_matches(device.name, ("mikrofonarray", "mic array"))
-
 
 
 def _is_windows_microphone_device(device: _InputDeviceInfo) -> bool:
@@ -146,17 +137,14 @@ def _is_windows_microphone_device(device: _InputDeviceInfo) -> bool:
     )
 
 
-
 def _is_windows_capture_device(device: _InputDeviceInfo) -> bool:
     """Dritte Priorität: irgendein nicht als Output erkennbares Capture-Gerät."""
     return not _should_skip_windows_device(device.name)
 
 
-
 def _log_selected_input_device(device: _InputDeviceInfo) -> None:
     """Protokolliert ein ausgewähltes Eingabegerät konsistent."""
     logger.info("Verwende: %s (%sHz)", device.name, device.samplerate)
-
 
 
 def _probe_windows_input_device(sd: Any, device: _InputDeviceInfo) -> bool:
@@ -185,13 +173,11 @@ def _probe_windows_input_device(sd: Any, device: _InputDeviceInfo) -> bool:
         return False
 
 
-
 def _build_input_device_result(
     device: _InputDeviceInfo, *, cache: bool = True
 ) -> tuple[int | None, int]:
     """Konvertiert normalisierte Gerätedaten in das gecachte Rückgabeformat."""
     return _return_input_device_result((device.idx, device.samplerate), cache=cache)
-
 
 
 def _select_matching_input_device(
@@ -211,7 +197,6 @@ def _select_matching_input_device(
     return None
 
 
-
 def _select_fallback_input_device(
     input_devices: list[_InputDeviceInfo],
     *,
@@ -225,7 +210,6 @@ def _select_fallback_input_device(
     else:
         _log_selected_input_device(device)
     return _build_input_device_result(device, cache=cache)
-
 
 
 def _select_windows_input_device(
@@ -255,7 +239,6 @@ def _select_windows_input_device(
     )
 
 
-
 def _select_non_windows_input_device(
     input_devices: list[_InputDeviceInfo],
 ) -> tuple[int | None, int]:
@@ -267,7 +250,6 @@ def _select_non_windows_input_device(
     if selected is not None:
         return selected
     return _select_fallback_input_device(input_devices)
-
 
 
 def get_input_device() -> tuple[int | None, int]:
@@ -316,11 +298,11 @@ def get_input_device() -> tuple[int | None, int]:
         return _return_input_device_result((None, WHISPER_SAMPLE_RATE), cache=False)
 
 
-
 def reset_input_device_cache() -> None:
     """Verwirft die gecachte Input-Device-Erkennung."""
     global _cached_input_device
     _cached_input_device = None
+
 
 # =============================================================================
 # Streaming-Konfiguration
@@ -341,7 +323,9 @@ def _get_float_env(name: str, default: float) -> float:
     try:
         return float(raw)
     except (TypeError, ValueError):
-        logger.warning(f"Ungültiger Wert für {name}='{raw}', verwende Default {default}")
+        logger.warning(
+            f"Ungültiger Wert für {name}='{raw}', verwende Default {default}"
+        )
         return default
 
 
@@ -360,9 +344,7 @@ def _get_bounded_float_env(
         )
         return min_value
     if value > max_value:
-        logger.warning(
-            f"Wert für {name}={value} zu groß, verwende Maximum {max_value}"
-        )
+        logger.warning(f"Wert für {name}={value} zu groß, verwende Maximum {max_value}")
         return max_value
     return value
 
@@ -437,18 +419,19 @@ def get_windows_stop_grace_seconds() -> float:
 WINDOWS_STOP_GRACE_SECONDS = get_windows_stop_grace_seconds()
 
 
-# Default-Wartezeit (ms) zwischen Clipboard-Copy und Ctrl+V auf Windows.
-# Gibt Clipboard-Hooks (Manager/Sync-Tools/RDP) Zeit, das Update zu verarbeiten,
-# bevor eingefügt wird. Konservativer Default; per Env tunebar (0 = sofort).
+# Obergrenze (ms) für den Clipboard-Sync-Check vor Ctrl+V auf Windows.
+# Gepastet wird, sobald das Clipboard-Zurücklesen den neuen Inhalt bestätigt
+# (typisch <5ms); die Obergrenze greift nur, wenn die Bestätigung ausbleibt
+# (Clipboard-Manager/RDP). Per Env tunebar (0 = Check überspringen).
 _WINDOWS_PASTE_SYNC_DEFAULT_MS = 50.0
 
 
 def get_windows_paste_sync_seconds() -> float:
-    """Return the Windows clipboard->paste sync delay (seconds) from the env.
+    """Return the Windows clipboard->paste sync cap (seconds) from the env.
 
-    Power users can shorten this for snappier paste once they confirm their
-    clipboard environment does not paste stale content. The conservative default
-    (50ms) stays robust against clipboard-manager/RDP timing races.
+    Paste happens as soon as the clipboard read-back confirms the new content;
+    this value only caps how long that verification may take when confirmation
+    fails (clipboard managers/RDP). ``0`` skips the check entirely.
     """
     return (
         _get_bounded_float_env(
@@ -460,10 +443,12 @@ def get_windows_paste_sync_seconds() -> float:
         / 1000.0
     )
 
+
 # Keep-Alive Interval für lokale Modelle (Sekunden)
 # Verhindert Metal Shader Cache Eviction bei Inaktivität
 # 0 = deaktiviert, empfohlen: 45-90s
 LOCAL_KEEPALIVE_INTERVAL = _get_float_env("PULSESCRIBE_LOCAL_KEEPALIVE_INTERVAL", 60.0)
+
 
 # Buffer-Konfiguration für Streaming
 def _get_bounded_int_env(
@@ -547,7 +532,9 @@ VISUAL_GAIN = 2.0  # Visual scaling factor (post-AGC, boosts quiet speech)
 # Temporäre Dateien/IPC
 # Plattformunabhängig: Windows nutzt %TEMP%, Unix nutzt /tmp
 TEMP_RECORDING_FILENAME = "pulsescribe_recording.wav"
-INTERIM_FILE = Path(tempfile.gettempdir()) / "pulsescribe.interim"  # Live-Transkript während Aufnahme
+INTERIM_FILE = (
+    Path(tempfile.gettempdir()) / "pulsescribe.interim"
+)  # Live-Transkript während Aufnahme
 
 # =============================================================================
 # API-Endpunkte
