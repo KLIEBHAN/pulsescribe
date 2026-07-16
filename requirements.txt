@@ -5,7 +5,9 @@
 # Core dependencies (cross-platform)
 openai>=1.0.0
 openai-whisper
-deepgram-sdk>=3.0.0
+# Streaming-Code nutzt 5.x-APIs (deepgram.extensions.types.sockets,
+# listen.v1.socket_client); 7.x hat diese Pfade entfernt/verschoben.
+deepgram-sdk>=5.0.0,<6
 groq>=0.4.0
 google-genai>=1.0.0
 sounddevice

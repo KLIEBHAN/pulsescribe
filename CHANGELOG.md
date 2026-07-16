@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Deepgram SDK pinned to 5.x** – `deepgram-sdk` 7.x removed the 5.x module
+  paths the streaming provider relies on (`deepgram.extensions.types.sockets`
+  for `ListenV1ControlMessage`), silently breaking KeepAlive/Finalize/
+  CloseStream control messages. Requirements now pin `deepgram-sdk>=5,<6`.
+
 ### Changed
 
 - **Windows: hotkey works during DONE feedback** – a new recording can start

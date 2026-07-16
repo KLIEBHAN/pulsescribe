@@ -34,7 +34,7 @@ jobs:
       - name: Install minimal Windows test dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest pytest-mock numpy sounddevice deepgram-sdk pynput pyperclip python-dotenv
+          pip install pytest pytest-mock numpy sounddevice "deepgram-sdk>=5.0.0,<6" pynput pyperclip python-dotenv
 
       - name: Run Windows-focused tests
         run: pytest tests/test_windows_responsiveness.py tests/test_hotkey.py tests/test_windows_hotkey_dispatch.py tests/test_windows_race_conditions.py tests/test_deepgram_stream.py -q -p no:cacheprovider
