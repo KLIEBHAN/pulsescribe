@@ -11,6 +11,34 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Schlanker Windows-Job: führt die Windows-fokussierten Tests auf echtem
+  # Windows aus (WinAPI/ctypes, pynput/pyperclip, Daemon-State-Machine).
+  # Bewusst minimale Dependencies: schwere Pakete (torch/whisper, PySide6)
+  # werden von diesen Testdateien nur lazy importiert und sind nicht nötig.
+  test-windows:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+            pyproject.toml
+
+      - name: Install minimal Windows test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-mock numpy sounddevice deepgram-sdk pynput pyperclip python-dotenv
+
+      - name: Run Windows-focused tests
+        run: pytest tests/test_windows_responsiveness.py tests/test_hotkey.py tests/test_windows_hotkey_dispatch.py tests/test_windows_race_conditions.py tests/test_deepgram_stream.py -q -p no:cacheprovider
+
   test:
     runs-on: macos-latest
 
