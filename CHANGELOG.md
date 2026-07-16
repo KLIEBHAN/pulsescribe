@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Windows: hotkey works during DONE feedback** – a new recording can start
+  immediately after a dictation finishes; the hotkey is no longer swallowed
+  during the short green success feedback (~0.6s).
+- **Windows: faster paste** – the fixed 50ms clipboard→Ctrl+V delay is now a
+  verify loop: paste happens as soon as the clipboard read-back confirms the
+  new content (typically <5ms). `PULSESCRIBE_WINDOWS_PASTE_SYNC_MS` remains
+  the upper bound for slow clipboard environments (managers/RDP).
+- **Windows: earlier finalize exit** – the empty-finalize grace window
+  (`PULSESCRIBE_DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS`) now ends as soon as a
+  late final transcript arrives instead of always sleeping the full duration.
+- **Windows: responsiveness boost** – the daemon now requests 1ms system timer
+  resolution (`timeBeginPeriod`) and `ABOVE_NORMAL` process priority at
+  startup (best-effort, disable via
+  `PULSESCRIBE_WINDOWS_RESPONSIVENESS_BOOST=false`). Tightens internal 10-20ms
+  polls and keeps hotkey/audio handling snappy under system load.
+
 - **Windows: snappier transitions** – hotkey press/release actions no longer run
   inside the pynput low-level keyboard hook callback. Heavy work (recording
   start/stop, REST capture join, sounds) is dispatched to a dedicated FIFO
