@@ -1105,3 +1105,56 @@ class TestPasteViaPynputWindows:
         result = utils.hotkey._paste_via_pynput_windows()
 
         assert result is False
+
+
+def test_clipboard_sync_uses_single_attempt_native_reads(monkeypatch):
+    """Der Verify-Loop liest nativ OHNE Open-Retries (kein 200ms-Worst-Case),
+    damit die konfigurierte Sync-Obergrenze eine harte Grenze bleibt."""
+    paste_kwargs: list[dict] = []
+
+    class _KwargRecordingClipboard:
+        def copy(self, text):
+            self._text = text
+            return True
+
+        def paste(self, **kwargs):
+            paste_kwargs.append(kwargs)
+            return self._text
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.delenv("PULSESCRIBE_CLIPBOARD_RESTORE", raising=False)
+    monkeypatch.setenv("PULSESCRIBE_WINDOWS_PASTE_SYNC_MS", "50")
+    monkeypatch.setattr(
+        utils.hotkey,
+        "_get_windows_clipboard_handler",
+        lambda: _KwargRecordingClipboard(),
+    )
+    monkeypatch.setattr(utils.hotkey, "_paste_via_pynput_windows", lambda: True)
+
+    assert utils.hotkey.paste_transcript("hello") is True
+    # Genau ein Verify-Read, und der lief ohne Open-Retries
+    assert paste_kwargs == [{"retry_open": False}]
+
+
+def test_clipboard_sync_falls_back_for_handlers_without_retry_kwarg(monkeypatch):
+    """Fakes/ältere Handler ohne retry_open-Parameter funktionieren weiter."""
+
+    class _PlainClipboard:
+        def copy(self, text):
+            self._text = text
+            return True
+
+        def paste(self):
+            return self._text
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.delenv("PULSESCRIBE_CLIPBOARD_RESTORE", raising=False)
+    monkeypatch.setenv("PULSESCRIBE_WINDOWS_PASTE_SYNC_MS", "50")
+    monkeypatch.setattr(
+        utils.hotkey,
+        "_get_windows_clipboard_handler",
+        lambda: _PlainClipboard(),
+    )
+    monkeypatch.setattr(utils.hotkey, "_paste_via_pynput_windows", lambda: True)
+
+    assert utils.hotkey.paste_transcript("hello") is True

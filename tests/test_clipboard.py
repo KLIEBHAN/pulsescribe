@@ -323,8 +323,52 @@ def test_windows_clipboard_paste_configures_pointer_sized_signatures(monkeypatch
         SimpleNamespace(user32=user32, kernel32=kernel32),
         raising=False,
     )
-    monkeypatch.setattr(ctypes, "wstring_at", lambda ptr: "clipboard text" if ptr == high_pointer else "")
+    monkeypatch.setattr(
+        ctypes,
+        "wstring_at",
+        lambda ptr: "clipboard text" if ptr == high_pointer else "",
+    )
 
     assert WindowsClipboard().paste() == "clipboard text"
     assert user32.GetClipboardData.restype is not None
     assert kernel32.GlobalLock.restype is not None
+
+
+def test_windows_clipboard_paste_single_attempt_does_not_retry_or_sleep(monkeypatch):
+    """paste(retry_open=False) versucht OpenClipboard genau einmal ohne Sleep.
+
+    Latenzkritische Poll-Loops (Paste-Verify) verwalten ihr Zeitbudget selbst;
+    die eingebauten ~200ms Open-Retries würden die dokumentierte Obergrenze
+    sprengen.
+    """
+    from whisper_platform.clipboard import WindowsClipboard
+    import whisper_platform.clipboard as clipboard
+
+    open_calls = {"count": 0}
+
+    def open_clipboard(_handle) -> int:
+        open_calls["count"] += 1
+        return 0  # Clipboard dauerhaft gelockt
+
+    user32 = SimpleNamespace(
+        OpenClipboard=open_clipboard,
+        GetClipboardData=lambda _fmt: 123,
+        CloseClipboard=Mock(return_value=1),
+    )
+    kernel32 = SimpleNamespace(
+        GlobalLock=lambda _handle: 456,
+        GlobalUnlock=lambda _handle: 1,
+    )
+
+    monkeypatch.setattr(
+        ctypes,
+        "windll",
+        SimpleNamespace(user32=user32, kernel32=kernel32),
+        raising=False,
+    )
+    sleep_mock = Mock()
+    monkeypatch.setattr(clipboard.time, "sleep", sleep_mock)
+
+    assert WindowsClipboard().paste(retry_open=False) is None
+    assert open_calls["count"] == 1
+    assert sleep_mock.call_count == 0

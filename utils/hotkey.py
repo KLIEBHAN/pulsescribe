@@ -432,11 +432,25 @@ def _copy_windows_clipboard_text(text: str, *, clipboard=None) -> bool:
         return False
 
 
-def _get_windows_clipboard_text(*, clipboard=None) -> str | None:
-    """Read current Windows clipboard text with native clipboard first."""
+def _get_windows_clipboard_text(
+    *, clipboard=None, single_attempt: bool = False
+) -> str | None:
+    """Read current Windows clipboard text with native clipboard first.
+
+    Args:
+        single_attempt: Nativer Read ohne Open-Retries (kein 200ms-Worst-Case).
+            Für den Paste-Verify-Loop, der sein Zeitbudget selbst verwaltet.
+    """
     if clipboard is not None:
         try:
-            text = clipboard.paste()
+            if single_attempt:
+                try:
+                    text = clipboard.paste(retry_open=False)
+                except TypeError:
+                    # Handler ohne retry_open-Parameter (z.B. Test-Fakes)
+                    text = clipboard.paste()
+            else:
+                text = clipboard.paste()
             if text is not None:
                 return text
         except Exception as e:
@@ -527,7 +541,13 @@ def _wait_for_windows_clipboard_sync(
     """
     deadline = time.monotonic() + timeout_sec
     while True:
-        if _get_windows_clipboard_text(clipboard=clipboard) == expected_text:
+        # single_attempt: Der native Read darf keine eigenen Open-Retries mit
+        # Sleeps machen (~200ms Worst-Case), sonst wäre die konfigurierte
+        # Obergrenze keine harte Grenze mehr.
+        if (
+            _get_windows_clipboard_text(clipboard=clipboard, single_attempt=True)
+            == expected_text
+        ):
             return True
         remaining = deadline - time.monotonic()
         if remaining <= 0:

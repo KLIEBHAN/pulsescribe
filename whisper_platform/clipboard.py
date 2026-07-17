@@ -32,7 +32,9 @@ def _set_ctypes_signature(func, *, restype=None, argtypes=None) -> None:
         pass
 
 
-def _set_optional_ctypes_signature(namespace, name: str, *, restype=None, argtypes=None) -> None:
+def _set_optional_ctypes_signature(
+    namespace, name: str, *, restype=None, argtypes=None
+) -> None:
     func = getattr(namespace, name, None)
     if func is None:
         return
@@ -169,12 +171,19 @@ def _paste_text_via_pbpaste(*, timeout: float = 2) -> str | None:
         return None
 
 
-def _open_clipboard_with_retry(user32) -> bool:
-    """Oeffnet das Windows-Clipboard mit kurzem Retry bei Lock-Contention."""
-    for attempt in range(_CLIPBOARD_OPEN_RETRIES):
+def _open_clipboard_with_retry(
+    user32, *, attempts: int = _CLIPBOARD_OPEN_RETRIES
+) -> bool:
+    """Oeffnet das Windows-Clipboard mit kurzem Retry bei Lock-Contention.
+
+    ``attempts=1`` versucht genau einmal ohne Sleep - für latenzkritische
+    Poll-Loops (Paste-Verify), die ihr Zeitbudget selbst verwalten.
+    """
+    attempts = max(1, attempts)
+    for attempt in range(attempts):
         if user32.OpenClipboard(None):
             return True
-        if attempt < _CLIPBOARD_OPEN_RETRIES - 1:
+        if attempt < attempts - 1:
             time.sleep(_CLIPBOARD_OPEN_RETRY_DELAY_SEC)
     return False
 
@@ -260,8 +269,14 @@ class WindowsClipboard:
             if h_mem and not ownership_transferred:
                 kernel32.GlobalFree(h_mem)
 
-    def paste(self) -> str | None:
-        """Liest Text aus der Zwischenablage via Windows API."""
+    def paste(self, *, retry_open: bool = True) -> str | None:
+        """Liest Text aus der Zwischenablage via Windows API.
+
+        Args:
+            retry_open: Bei ``False`` genau ein OpenClipboard-Versuch ohne
+                Retry-Sleeps (~200ms Worst-Case entfällt). Für Poll-Loops,
+                die ihr Zeitbudget selbst verwalten (Paste-Verify).
+        """
         import ctypes
 
         CF_UNICODETEXT = 13
@@ -275,7 +290,10 @@ class WindowsClipboard:
         _configure_windows_clipboard_api(ctypes, user32, kernel32)
 
         try:
-            if not _open_clipboard_with_retry(user32):
+            if not _open_clipboard_with_retry(
+                user32,
+                attempts=_CLIPBOARD_OPEN_RETRIES if retry_open else 1,
+            ):
                 return None
 
             try:
@@ -305,7 +323,9 @@ def get_clipboard():
         return MacOSClipboard()
     elif sys.platform == "win32":
         return WindowsClipboard()
-    raise NotImplementedError(f"Clipboard nicht unterstützt für Plattform: {sys.platform}")
+    raise NotImplementedError(
+        f"Clipboard nicht unterstützt für Plattform: {sys.platform}"
+    )
 
 
 __all__ = ["MacOSClipboard", "WindowsClipboard", "get_clipboard"]
