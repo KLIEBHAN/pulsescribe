@@ -38,6 +38,45 @@ def _load_windows_module():
     return module
 
 
+class _ModuleProxy:
+    """Delegierender Proxy für stdlib-Module in Daemon-Tests.
+
+    `windows_module.threading` bzw. `.time` referenzieren die global geteilten
+    stdlib-Module. Attribute DORT zu monkeypatchen würde während des Tests
+    auch fremde Threads/Module die Fakes sehen lassen. Der Proxy ersetzt nur
+    die Modul-Referenz im geladenen Daemon-Modul und überschreibt gezielt
+    einzelne Attribute; alles andere delegiert an das echte Modul.
+    """
+
+    def __init__(self, real_module, **overrides):
+        self._real_module = real_module
+        self._overrides = overrides
+
+    def __getattr__(self, name):
+        try:
+            return self._overrides[name]
+        except KeyError:
+            return getattr(self._real_module, name)
+
+
+def _patch_daemon_stdlib(monkeypatch, windows_module, module_name, **overrides):
+    """Ersetzt z.B. `windows_module.threading` durch einen Override-Proxy.
+
+    Mehrfachaufrufe im selben Test mergen ihre Overrides.
+    """
+    import importlib
+
+    current = getattr(windows_module, module_name)
+    if isinstance(current, _ModuleProxy):
+        real_module = current._real_module
+        overrides = {**current._overrides, **overrides}
+    else:
+        real_module = importlib.import_module(module_name)
+    monkeypatch.setattr(
+        windows_module, module_name, _ModuleProxy(real_module, **overrides)
+    )
+
+
 def test_start_recording_is_atomic_for_concurrent_triggers(monkeypatch):
     windows_module = _load_windows_module()
     daemon = windows_module.PulseScribeWindows(
@@ -56,7 +95,9 @@ def test_start_recording_is_atomic_for_concurrent_triggers(monkeypatch):
             start_count += 1
 
     daemon._recording_loop = fake_recording_loop
-    monkeypatch.setattr(windows_module.time, "sleep", lambda _seconds: None)
+    _patch_daemon_stdlib(
+        monkeypatch, windows_module, "time", sleep=lambda _seconds: None
+    )
 
     barrier = threading.Barrier(3)
     results: list[bool] = []
@@ -271,8 +312,8 @@ def test_rest_cold_fallback_does_not_sleep_before_recording(monkeypatch):
     def fail_on_sleep(seconds):
         raise AssertionError(f"unexpected sleep before recording: {seconds}")
 
-    monkeypatch.setattr(windows_module.threading, "Thread", _FakeThread)
-    monkeypatch.setattr(windows_module.time, "sleep", fail_on_sleep)
+    _patch_daemon_stdlib(monkeypatch, windows_module, "threading", Thread=_FakeThread)
+    _patch_daemon_stdlib(monkeypatch, windows_module, "time", sleep=fail_on_sleep)
 
     assert daemon._start_recording() is True
 
@@ -315,7 +356,7 @@ def test_warm_stream_is_armed_before_ready_feedback(monkeypatch):
             )
         )
 
-    monkeypatch.setattr(windows_module.threading, "Thread", _FakeThread)
+    _patch_daemon_stdlib(monkeypatch, windows_module, "threading", Thread=_FakeThread)
     daemon._play_sound = fake_play_sound
 
     assert daemon._start_recording() is True
@@ -605,7 +646,9 @@ def test_rest_cold_capture_error_finishes_latency_run(monkeypatch):
     )
     daemon._play_sound = lambda _name: None
     monkeypatch.setattr(builtins, "__import__", fake_import)
-    monkeypatch.setattr(windows_module.time, "sleep", lambda _seconds: None)
+    _patch_daemon_stdlib(
+        monkeypatch, windows_module, "time", sleep=lambda _seconds: None
+    )
 
     daemon._recording_loop()
 
@@ -638,7 +681,9 @@ def test_rest_warm_capture_error_finishes_latency_run(monkeypatch):
     daemon._prepare_warm_rest_audio_buffer = lambda: (_ for _ in ()).throw(
         RuntimeError("warm capture failed")
     )
-    monkeypatch.setattr(windows_module.time, "sleep", lambda _seconds: None)
+    _patch_daemon_stdlib(
+        monkeypatch, windows_module, "time", sleep=lambda _seconds: None
+    )
 
     daemon._recording_loop_warm()
 
@@ -705,7 +750,9 @@ def test_stop_recording_plays_stop_sound_after_rest_capture_finishes(monkeypatch
             events.append("transcribe_thread_start")
 
     daemon._recording_thread = _RecordingThread()
-    monkeypatch.setattr(windows_module.threading, "Thread", _TranscribeThread)
+    _patch_daemon_stdlib(
+        monkeypatch, windows_module, "threading", Thread=_TranscribeThread
+    )
 
     daemon._stop_recording()
 
@@ -1187,7 +1234,7 @@ def test_stale_hotkey_listener_callbacks_are_ignored_after_restart(monkeypatch):
         monotonic_time[0] += 1.0
         return monotonic_time[0]
 
-    monkeypatch.setattr(windows_module.time, "monotonic", fake_monotonic)
+    _patch_daemon_stdlib(monkeypatch, windows_module, "time", monotonic=fake_monotonic)
 
     press_count = 0
 
@@ -1369,7 +1416,9 @@ def test_start_recording_allows_retry_from_no_speech_state(monkeypatch):
         thread_calls.append(kwargs)
         return fake_thread
 
-    monkeypatch.setattr(windows_module.threading, "Thread", _fake_thread_factory)
+    _patch_daemon_stdlib(
+        monkeypatch, windows_module, "threading", Thread=_fake_thread_factory
+    )
 
     assert daemon._start_recording() is True
     assert daemon.state == AppState.LISTENING
@@ -1458,7 +1507,7 @@ def test_start_recording_allowed_from_done_state(monkeypatch):
     )
     daemon._warm_stream = None
     daemon._play_sound = lambda _name: None
-    monkeypatch.setattr(windows_module.threading, "Thread", _NoopThread)
+    _patch_daemon_stdlib(monkeypatch, windows_module, "threading", Thread=_NoopThread)
 
     daemon._set_state(AppState.DONE)
 
@@ -1583,7 +1632,7 @@ def test_old_done_timer_does_not_reset_new_recording(monkeypatch):
     daemon._save_to_history = lambda _transcript, **_kwargs: None
 
     _CapturedTimer.instances = []
-    monkeypatch.setattr(windows_module.threading, "Timer", _CapturedTimer)
+    _patch_daemon_stdlib(monkeypatch, windows_module, "threading", Timer=_CapturedTimer)
 
     clipboard = MagicMock()
 
@@ -1614,7 +1663,7 @@ def test_old_ipc_result_keeps_new_ipc_cmd_id_and_routes_to_old_id(monkeypatch):
         overlay=False,
     )
     daemon._play_sound = lambda _name: None
-    monkeypatch.setattr(windows_module.threading, "Timer", _CapturedTimer)
+    _patch_daemon_stdlib(monkeypatch, windows_module, "threading", Timer=_CapturedTimer)
 
     responses: list[tuple[str, str]] = []
 
@@ -1645,7 +1694,7 @@ def test_history_uses_metadata_snapshot_of_finished_run(monkeypatch):
         auto_paste=False,
     )
     daemon._play_sound = lambda _name: None
-    monkeypatch.setattr(windows_module.threading, "Timer", _CapturedTimer)
+    _patch_daemon_stdlib(monkeypatch, windows_module, "threading", Timer=_CapturedTimer)
 
     history_calls: list[dict] = []
 
@@ -1765,7 +1814,7 @@ def test_idle_fallback_commit_is_atomic_with_generation_check(monkeypatch):
         overlay=False,
     )
     _CapturedTimer.instances = []
-    monkeypatch.setattr(windows_module.threading, "Timer", _CapturedTimer)
+    _patch_daemon_stdlib(monkeypatch, windows_module, "threading", Timer=_CapturedTimer)
 
     generation = daemon._set_state(AppState.DONE)
     daemon._schedule_idle_if_state_unchanged(0.6, generation)
@@ -1803,7 +1852,7 @@ def test_stale_watchdog_cannot_error_non_transcribing_state(monkeypatch):
     )
     daemon._play_sound = lambda _name: None
     _CapturedTimer.instances = []
-    monkeypatch.setattr(windows_module.threading, "Timer", _CapturedTimer)
+    _patch_daemon_stdlib(monkeypatch, windows_module, "threading", Timer=_CapturedTimer)
 
     with daemon._state_lock:
         daemon._state = AppState.TRANSCRIBING
@@ -1843,7 +1892,7 @@ def test_watchdog_timeout_still_errors_hanging_transcription(monkeypatch):
     sounds = []
     daemon._play_sound = sounds.append
     _CapturedTimer.instances = []
-    monkeypatch.setattr(windows_module.threading, "Timer", _CapturedTimer)
+    _patch_daemon_stdlib(monkeypatch, windows_module, "threading", Timer=_CapturedTimer)
 
     with daemon._state_lock:
         daemon._state = AppState.TRANSCRIBING
@@ -1939,7 +1988,7 @@ def test_adaptive_stop_tail_resets_voice_tracking_on_start(monkeypatch):
     windows_module, daemon = _make_stop_tail_daemon(monkeypatch)
     daemon._warm_stream = None
     daemon._play_sound = lambda _name: None
-    monkeypatch.setattr(windows_module.threading, "Thread", _NoopThread)
+    _patch_daemon_stdlib(monkeypatch, windows_module, "threading", Thread=_NoopThread)
 
     daemon._last_voice_monotonic = time.monotonic()  # Rest vom letzten Run
     assert daemon._start_recording() is True

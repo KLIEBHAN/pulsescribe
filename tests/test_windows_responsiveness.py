@@ -189,3 +189,47 @@ def test_raise_priority_class_failure_result_returns_false(monkeypatch):
     _install_fake_windll(monkeypatch, {"kernel32": kernel32})
 
     assert responsiveness._raise_priority_class(logger) is False
+
+
+def test_daemon_run_applies_boost_once_before_startup(monkeypatch):
+    """run() wendet den Responsiveness-Boost genau einmal an - VOR Hotkey-,
+    Overlay- und Prewarm-Setup (Startup-Wiring, Review V12)."""
+    from tests.test_windows_race_conditions import _load_windows_module
+
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai",
+        streaming=False,
+        overlay=False,
+    )
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        windows_module,
+        "apply_windows_responsiveness_boost",
+        lambda _logger: calls.append("boost")
+        or {"timer_resolution": True, "priority_class": True},
+    )
+
+    lifecycle_methods = (
+        "_print_startup_banner",
+        "_setup_startup_hotkeys",
+        "_setup_overlay",
+        "_start_prewarm_thread",
+        "_setup_tray",
+        "_start_env_watcher",
+        "_show_settings_if_needed",
+        "_install_signal_handlers",
+        "_run_tray_if_available",
+        "_wait_until_stopped",
+    )
+    for method in lifecycle_methods:
+        monkeypatch.setattr(daemon, method, lambda m=method: calls.append(m))
+
+    daemon.run()
+
+    assert calls.count("boost") == 1
+    assert calls[0] == "boost"
+    # Boost greift vor allen latenzrelevanten Startup-Schritten
+    assert calls.index("boost") < calls.index("_setup_startup_hotkeys")
+    assert calls.index("boost") < calls.index("_start_prewarm_thread")

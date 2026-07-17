@@ -1065,7 +1065,14 @@ def _graceful_shutdown_tasks(audio_queue):
 
 
 def test_empty_finalize_grace_exits_early_on_late_final(monkeypatch) -> None:
-    """Ein spätes Final-Transkript beendet die Empty-Finalize-Grace sofort."""
+    """Ein spätes Final-Transkript beendet die Empty-Finalize-Grace sofort.
+
+    Kausal statt Wall-Clock: Die Grace ist auf 30s konfiguriert, das späte
+    Final kommt rein event-getrieben (Loop-Yields statt Sleep). Nur wenn der
+    Early-Exit greift, terminiert der Shutdown innerhalb des großzügigen
+    äußeren Hänge-Timeouts - ohne enge elapsed-Assertion, die auf langsamen
+    CI-Runnern flaken könnte.
+    """
 
     class _FakeControlMessage:
         def __init__(self, type: str) -> None:
@@ -1077,9 +1084,9 @@ def test_empty_finalize_grace_exits_early_on_late_final(monkeypatch) -> None:
         SimpleNamespace(ListenV1ControlMessage=_FakeControlMessage),
     )
     monkeypatch.setattr(deepgram_stream, "DEEPGRAM_TAIL_PADDING_SECONDS", 0.0)
-    monkeypatch.setattr(deepgram_stream, "DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS", 5.0)
+    monkeypatch.setattr(deepgram_stream, "DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS", 30.0)
 
-    async def _run() -> float:
+    async def _run() -> None:
         state = deepgram_stream.StreamState()
         audio_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
         send_worker, listen_worker = _graceful_shutdown_tasks(audio_queue)
@@ -1093,7 +1100,9 @@ def test_empty_finalize_grace_exits_early_on_late_final(monkeypatch) -> None:
                     deepgram_stream._mark_finalize_response(state, has_transcript=False)
 
                     async def _late_final() -> None:
-                        await asyncio.sleep(0.05)
+                        # Rein kausal: ein paar Loop-Yields, dann das Final.
+                        for _ in range(5):
+                            await asyncio.sleep(0)
                         deepgram_stream._handle_final_transcript(
                             state, session_id="sess", transcript="late final"
                         )
@@ -1101,22 +1110,23 @@ def test_empty_finalize_grace_exits_early_on_late_final(monkeypatch) -> None:
                     # ... und das echte Final-Transkript kommt kurz danach.
                     asyncio.ensure_future(_late_final())
 
-        started = time.perf_counter()
-        await deepgram_stream._graceful_shutdown(
-            connection=cast(Any, _FakeConnection()),
-            state=state,
-            audio_queue=audio_queue,
-            send_task=send_task,
-            listen_task=listen_task,
-            session_id="sess",
-            sample_rate=16000,
+        # Äußerer Hänge-Guard: Ohne Early-Exit würde die 30s-Grace hier in
+        # einen TimeoutError laufen und den Test fehlschlagen lassen.
+        await asyncio.wait_for(
+            deepgram_stream._graceful_shutdown(
+                connection=cast(Any, _FakeConnection()),
+                state=state,
+                audio_queue=audio_queue,
+                send_task=send_task,
+                listen_task=listen_task,
+                session_id="sess",
+                sample_rate=16000,
+            ),
+            timeout=5.0,
         )
-        return time.perf_counter() - started
+        assert state.final_transcripts == ["late final"]
 
-    elapsed = asyncio.run(_run())
-
-    # Deutlich schneller als die konfigurierte 5s-Grace.
-    assert elapsed < 2.0
+    asyncio.run(_run())
 
 
 def test_empty_finalize_grace_ignores_finals_from_before_finalize(
