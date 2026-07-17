@@ -169,8 +169,10 @@ def _unlink_reload_signal_file(signal_file: Path) -> None:
 # Mit Ctrl+Alt gedrückt wird 'r' als <82> erkannt, nicht als 'r'
 _VK_TO_CHAR = {vk: chr(vk + 32) for vk in range(65, 91)}  # 65='A' -> 'a', etc.
 
-# Debounce-Zeit in Sekunden (verhindert Doppel-Trigger)
-_HOTKEY_DEBOUNCE_SEC = 0.3
+# Doppel-Trigger-Schutz: Statt eines globalen Zeit-Debounce wird pro
+# Hotkey-Kombo ein Press-Zyklus getrackt - Auto-Repeat der gehaltenen Tasten
+# triggert nicht erneut, aber nach echtem Release ist die Kombo SOFORT wieder
+# auslösbar (wichtig für schnelle Folge-Diktate aus dem DONE-Feedback).
 
 # Ab dieser Queue-Wartezeit (ms) wird eine verzögerte Hotkey-Aktion geloggt.
 # Hilft bei der Diagnose, falls Übergänge trotz Dispatch träge wirken.
@@ -332,13 +334,23 @@ class PulseScribeWindows:
         self._state = AppState.IDLE
         self._state_lock = threading.Lock()
         self._state_generation = 0  # Inkrementiert bei jedem State-Update
-        self._last_hotkey_time = 0.0  # Für Debouncing
         self._last_was_refined: bool = (
             False  # Ob Refinement den Text tatsächlich verändert hat
         )
 
         # Hold-Mode State (wie macOS)
         self._hold_state = HoldHotkeyState()
+
+        # IPC-Test-State (cmd_id/Server) atomar halten: Der Result-Worker eines
+        # alten Runs und ein neuer IPC-Start können seit startfähigem DONE
+        # überlappen (Snapshot + Compare-and-clear laufen unter diesem Lock).
+        self._ipc_state_lock = threading.Lock()
+
+        # Overlay-Publikation monoton halten: Ein langsamer alter Thread darf
+        # keinen neueren Overlay-State (z.B. LISTENING der nächsten Aufnahme)
+        # mit einer stale Publikation (DONE) überschreiben.
+        self._overlay_publish_lock = threading.Lock()
+        self._overlay_state_generation = 0
 
         # Hotkey-Aktionen laufen NIE im pynput-Callback: pynput ruft Callbacks
         # auf Windows synchron aus dem Low-Level-Keyboard-Hook auf. Blockierende
@@ -487,6 +499,7 @@ class PulseScribeWindows:
         state: AppState,
         text: str | None,
         *,
+        generation: int,
         watch_transcribing: bool = True,
     ) -> None:
         """Publiziert Overlay/Log/Watchdog/Tray für einen committeten Wechsel.
@@ -500,7 +513,7 @@ class PulseScribeWindows:
             # Perceived latency matters most on hotkey/VAD transitions: update the
             # overlay before logging/pystray, because file IO and tray title/icon
             # updates can be noticeably slower on Windows.
-            self._overlay_update_state(state.name, text)
+            self._publish_overlay_state(generation, state.name, text)
 
         if state_changed:
             logger.info(f"State: {old_state.value} → {state.value}")
@@ -545,9 +558,35 @@ class PulseScribeWindows:
             old_text,
             state,
             text,
+            generation=new_generation,
             watch_transcribing=watch_transcribing,
         )
         return new_generation
+
+    def _publish_overlay_state(
+        self,
+        generation: int,
+        state_name: str,
+        text: str | None,
+    ) -> None:
+        """Publiziert den Overlay-State monoton (stale Generationen verwerfen).
+
+        Der State-Commit läuft unter _state_lock, die Overlay-Publikation
+        danach außerhalb. Ohne Guard könnte ein langsamer alter Thread (z.B.
+        DONE des Result-Workers) eine bereits neuere Publikation (LISTENING
+        der nächsten Aufnahme) im Overlay überschreiben. Der Update-Aufruf
+        bleibt bewusst IM Lock: sonst könnte ein Thread nach gewonnenem Check
+        pausieren und später doch stale publizieren.
+        """
+        with self._overlay_publish_lock:
+            if generation <= self._overlay_state_generation:
+                logger.debug(
+                    f"Overlay-Update verworfen (stale gen {generation} "
+                    f"<= {self._overlay_state_generation}): {state_name}"
+                )
+                return
+            self._overlay_state_generation = generation
+            self._overlay_update_state(state_name, text)
 
     def _overlay_update_state(self, state: str, text: str | None = None) -> None:
         """Best-effort Overlay-State-Update ohne check-then-use Race."""
@@ -650,8 +689,10 @@ class PulseScribeWindows:
             )
             if committed is None:
                 return
-            old_state, old_text, _generation = committed
-            self._publish_state_change(old_state, old_text, AppState.IDLE, None)
+            old_state, old_text, generation = committed
+            self._publish_state_change(
+                old_state, old_text, AppState.IDLE, None, generation=generation
+            )
 
         timer = threading.Timer(delay_seconds, _set_idle_if_unchanged)
         timer.daemon = True
@@ -667,7 +708,9 @@ class PulseScribeWindows:
         logger.warning(log_message)
         # Latency-Run VOR dem Wechsel in einen startfähigen State beenden,
         # damit ein sofortiger neuer Hotkey-Start nicht mit diesem Run kollidiert.
-        if self._ipc_test_cmd_id and self._ipc_server:
+        with self._ipc_state_lock:
+            ipc_active = bool(self._ipc_test_cmd_id and self._ipc_server)
+        if ipc_active:
             # Preserve the existing onboarding / IPC empty-result behavior.
             self._latency_finish("no_speech", ipc=True)
             self._set_state(AppState.IDLE)
@@ -701,7 +744,11 @@ class PulseScribeWindows:
                 # Side-Effects außerhalb beider Locks publizieren
                 # (_stop_transcribing_watchdog nimmt _watchdog_lock erneut).
                 self._publish_state_change(
-                    old_state, old_text, AppState.ERROR, "Transcription timed out"
+                    old_state,
+                    old_text,
+                    AppState.ERROR,
+                    "Transcription timed out",
+                    generation=generation,
                 )
                 self._play_sound("error")
                 self._schedule_idle_if_state_unchanged(2.0, generation)
@@ -1040,14 +1087,15 @@ class PulseScribeWindows:
         and info-level file logging here; the overlay wave is the feedback that
         needs to be immediate.
         """
-        if (
-            self._commit_state(AppState.RECORDING, expected_state=AppState.LISTENING)
-            is None
-        ):
+        committed = self._commit_state(
+            AppState.RECORDING, expected_state=AppState.LISTENING
+        )
+        if committed is None:
             return
+        _old_state, _old_text, generation = committed
 
         self._latency_mark("recording_state")
-        self._overlay_update_state(AppState.RECORDING.name, None)
+        self._publish_overlay_state(generation, AppState.RECORDING.name, None)
         # Tray darf hier nur signalisiert werden (Event.set ist O(1));
         # das eigentliche Shell_NotifyIcon-Update macht der Tray-Worker.
         self._request_tray_update()
@@ -1888,8 +1936,9 @@ class PulseScribeWindows:
         self._latency_run = None
         run_mode = self._run_mode or self.mode
         was_refined = self._last_was_refined
-        ipc_cmd_id = self._ipc_test_cmd_id
-        ipc_server = self._ipc_server
+        with self._ipc_state_lock:
+            ipc_cmd_id = self._ipc_test_cmd_id
+            ipc_server = self._ipc_server
         if run is not None:
             run.mark("result_ready", chars=len(transcript or ""))
         done_generation = self._set_state(AppState.DONE)
@@ -1901,10 +1950,12 @@ class PulseScribeWindows:
 
             ipc_server.send_response(ipc_cmd_id, STATUS_DONE, transcript=transcript)
             logger.info(f"IPC-Test Ergebnis gesendet (id={ipc_cmd_id})")
-            # Nur die eigene ID zurücksetzen: Ein während send_response neu
-            # gestarteter IPC-Test hat evtl. schon eine neue ID gesetzt.
-            if self._ipc_test_cmd_id == ipc_cmd_id:
-                self._ipc_test_cmd_id = None  # Reset for next test
+            # Nur die eigene ID zurücksetzen (Compare-and-clear unter Lock):
+            # Ein während send_response neu gestarteter IPC-Test hat evtl.
+            # schon eine neue ID gesetzt.
+            with self._ipc_state_lock:
+                if self._ipc_test_cmd_id == ipc_cmd_id:
+                    self._ipc_test_cmd_id = None  # Reset for next test
             if run is not None:
                 run.finish("ipc_done", chars=len(transcript or ""))
 
@@ -2000,6 +2051,9 @@ class PulseScribeWindows:
         # Restart/Shutdown passiert, ignoriert dieser Listener nachlaufende Events.
         listener_generation = self._hotkey_listener_generation
         current_keys: dict = {}
+        # Kombos, die in diesem Press-Zyklus bereits getriggert haben.
+        # Unterdrückt Auto-Repeat; Release einer Kombo-Taste beendet den Zyklus.
+        triggered_cycles: set[str] = set()
 
         def on_press(key):
             if listener_generation != self._hotkey_listener_generation:
@@ -2009,6 +2063,7 @@ class PulseScribeWindows:
                 keyboard,
                 parsed_hotkeys,
                 current_keys,
+                triggered_cycles,
             )
 
         def on_release(key):
@@ -2019,6 +2074,7 @@ class PulseScribeWindows:
                 keyboard,
                 parsed_hotkeys,
                 current_keys,
+                triggered_cycles,
             )
 
         listener = keyboard.Listener(on_press=on_press, on_release=on_release)
@@ -2044,7 +2100,8 @@ class PulseScribeWindows:
         return key
 
     @staticmethod
-    def _cleanup_stale_hotkey_keys(current_keys: dict, now: float) -> None:
+    def _cleanup_stale_hotkey_keys(current_keys: dict, now: float) -> bool:
+        """Entfernt veraltete Keys; True wenn welche entfernt wurden."""
         stale = [
             key
             for key, timestamp in current_keys.items()
@@ -2053,6 +2110,7 @@ class PulseScribeWindows:
         for key in stale:
             del current_keys[key]
             logger.debug(f"Stale Key entfernt: {key}")
+        return bool(stale)
 
     def _handle_windows_hotkey_press(
         self,
@@ -2060,32 +2118,32 @@ class PulseScribeWindows:
         keyboard,
         parsed_hotkeys,
         current_keys: dict,
+        triggered_cycles: set,
     ) -> None:
         now = time.monotonic()
         normalized = self._normalize_windows_pynput_key(key, keyboard)
-        self._cleanup_stale_hotkey_keys(current_keys, now)
+        if self._cleanup_stale_hotkey_keys(current_keys, now):
+            # Verlorene Release-Events (Fokuswechsel etc.): Zyklen freigeben,
+            # sonst bliebe ein Hotkey dauerhaft unterdrückt.
+            triggered_cycles.clear()
         current_keys[normalized] = now
 
         active_keys = set(current_keys.keys())
         for hotkey_keys, mode, source_id in parsed_hotkeys:
             if not hotkey_keys.issubset(active_keys) or normalized not in hotkey_keys:
                 continue
-            if now - self._last_hotkey_time < _HOTKEY_DEBOUNCE_SEC:
+            if source_id in triggered_cycles:
+                # Auto-Repeat der noch gehaltenen Kombo: kein Re-Trigger, bis
+                # mindestens eine Kombo-Taste losgelassen wurde.
                 continue
-            self._last_hotkey_time = now
+            triggered_cycles.add(source_id)
             logger.debug(f"Hotkey ausgelöst: {hotkey_keys} (mode: {mode})")
-            self._dispatch_windows_hotkey_match(mode, source_id, current_keys)
+            self._dispatch_windows_hotkey_match(mode, source_id)
 
-    def _dispatch_windows_hotkey_match(
-        self,
-        mode: str,
-        source_id: str,
-        current_keys: dict,
-    ) -> None:
+    def _dispatch_windows_hotkey_match(self, mode: str, source_id: str) -> None:
         if mode == "hold":
             self._maybe_start_hold_hotkey(source_id)
             return
-        current_keys.clear()
         self._dispatch_hotkey_action(self._on_hotkey_press, "toggle")
 
     def _maybe_start_hold_hotkey(self, source_id: str) -> None:
@@ -2150,10 +2208,17 @@ class PulseScribeWindows:
         keyboard,
         parsed_hotkeys,
         current_keys: dict,
+        triggered_cycles: set,
     ) -> None:
         normalized = self._normalize_windows_pynput_key(key, keyboard)
         current_keys.pop(normalized, None)
         active_keys = set(current_keys.keys())
+
+        # Press-Zyklus beenden: Release einer Kombo-Taste macht die Kombo
+        # sofort wieder auslösbar (kein Zeit-Debounce mehr).
+        for hotkey_keys, _mode, source_id in parsed_hotkeys:
+            if normalized in hotkey_keys:
+                triggered_cycles.discard(source_id)
 
         for hotkey_keys, mode, source_id in parsed_hotkeys:
             if mode != "hold" or not self._hold_state.is_active(source_id):
@@ -3138,8 +3203,9 @@ class PulseScribeWindows:
         except Exception as e:
             logger.warning(f"IPC-Server Stop Fehler: {e}")
         finally:
-            self._ipc_server = None
-            self._ipc_test_cmd_id = None
+            with self._ipc_state_lock:
+                self._ipc_server = None
+                self._ipc_test_cmd_id = None
 
     def _handle_ipc_command(self, cmd_id: str, command: str) -> None:
         """Handle IPC commands from the wizard."""
@@ -3185,7 +3251,8 @@ class PulseScribeWindows:
 
         # Erst nach erfolgreichem Start setzen, um falsches Routing bei Race-Interleavings
         # mit einem parallel abschließenden vorherigen Testlauf zu vermeiden.
-        self._ipc_test_cmd_id = cmd_id
+        with self._ipc_state_lock:
+            self._ipc_test_cmd_id = cmd_id
 
         # Send "recording" status erst nach erfolgreichem Start
         if self._ipc_server:

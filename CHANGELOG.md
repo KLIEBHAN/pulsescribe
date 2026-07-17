@@ -25,6 +25,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Windows: hotkeys retrigger instantly after release** – the global 300 ms
+  hotkey debounce was replaced with per-combo press-cycle tracking: key
+  auto-repeat still cannot double-trigger, but after actually releasing the
+  key the combo fires again immediately (important for back-to-back
+  dictation).
+- **Windows: hard paste sync cap** – the clipboard verify loop now uses a
+  single-attempt native read (no built-in open-retry sleeps), so
+  `PULSESCRIBE_WINDOWS_PASTE_SYNC_MS` is a hard upper bound even when another
+  process holds the clipboard lock.
+- **Windows: monotonic overlay updates** – overlay state publications carry
+  the state generation; a slow old worker can no longer overwrite a newer
+  overlay state (e.g. stale DONE after a new recording's LISTENING).
+- **Windows: IPC test state under lock** – wizard command id and server are
+  snapshotted and cleared under a dedicated lock, hardening overlapping
+  IPC test runs.
 - **Windows: hotkey works during DONE feedback** – a new recording can start
   immediately after a dictation finishes; the hotkey is no longer swallowed
   during the short green success feedback (~0.6s).

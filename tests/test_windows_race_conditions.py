@@ -1964,3 +1964,140 @@ def test_rest_warm_stop_resolves_grace_at_stop_time(monkeypatch):
     stop_seen_at, grace = daemon._maybe_mark_warm_stop_seen(None)
     assert stop_seen_at is not None
     assert resolve_calls == [0.0]
+
+
+# =============================================================================
+# Overlay-Publikation monoton (V3): stale DONE darf LISTENING nicht überschreiben
+# =============================================================================
+
+
+class _RecordingOverlay:
+    def __init__(self):
+        self.states: list[str] = []
+
+    def update_state(self, state, text=None):
+        self.states.append(state)
+
+    def update_audio_level(self, level):
+        pass
+
+    def stop(self):
+        pass
+
+
+def test_stale_overlay_publication_is_dropped():
+    """Publiziert ein langsamer alter Thread nach der neuen Generation, wird
+    seine Overlay-Publikation verworfen (latest-wins nach Generation)."""
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai",
+        streaming=False,
+        overlay=False,
+    )
+    overlay = _RecordingOverlay()
+    daemon._overlay = overlay
+
+    # Zwei Commits: DONE (alt) und LISTENING (neu)
+    done_committed = daemon._commit_state(AppState.DONE)
+    listening_committed = daemon._commit_state(AppState.LISTENING)
+    assert done_committed is not None and listening_committed is not None
+    _, _, done_gen = done_committed
+    _, _, listening_gen = listening_committed
+
+    # Der NEUE Thread publiziert zuerst (überholt den alten) ...
+    daemon._publish_overlay_state(listening_gen, AppState.LISTENING.name, None)
+    # ... der ALTE Thread publiziert danach seine stale Generation
+    daemon._publish_overlay_state(done_gen, AppState.DONE.name, None)
+
+    assert overlay.states == ["LISTENING"]
+
+
+def test_overlay_publications_in_order_are_all_applied():
+    """Reguläre, aufsteigende Publikationen erreichen das Overlay vollständig."""
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai",
+        streaming=False,
+        overlay=False,
+    )
+    overlay = _RecordingOverlay()
+    daemon._overlay = overlay
+
+    daemon._set_state(AppState.LISTENING)
+    daemon._set_state(AppState.RECORDING)
+    daemon._set_state(AppState.TRANSCRIBING, "Finishing...", watch_transcribing=False)
+
+    assert overlay.states == ["LISTENING", "RECORDING", "TRANSCRIBING"]
+
+
+def test_vad_recording_transition_publishes_with_generation_guard():
+    """Der Audio-Callback-Übergang LISTENING->RECORDING nutzt den Guard."""
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai",
+        streaming=False,
+        overlay=False,
+    )
+    overlay = _RecordingOverlay()
+    daemon._overlay = overlay
+
+    daemon._set_state(AppState.LISTENING)
+    daemon._enter_recording_from_audio_callback()
+
+    assert overlay.states == ["LISTENING", "RECORDING"]
+    # Eine danach eintreffende stale Publikation (ältere Generation) ist wirkungslos
+    daemon._publish_overlay_state(1, AppState.DONE.name, None)
+    assert overlay.states == ["LISTENING", "RECORDING"]
+
+
+# =============================================================================
+# IPC-State unter Lock (V5)
+# =============================================================================
+
+
+def test_ipc_snapshot_waits_for_ipc_state_lock():
+    """Der Result-Worker snapshottet den IPC-State unter _ipc_state_lock:
+    Ein Writer, der das Lock hält (z.B. _start_ipc_test), serialisiert sich
+    mit Snapshot und Compare-and-clear statt dazwischenzufunken."""
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai",
+        streaming=False,
+        overlay=False,
+    )
+    daemon._play_sound = lambda _name: None
+
+    responses: list[tuple[str, str]] = []
+
+    class _FakeIpcServer:
+        def send_response(self, cmd_id, status, **kwargs):
+            responses.append((cmd_id, status))
+
+    daemon._ipc_server = _FakeIpcServer()
+    daemon._ipc_test_cmd_id = "old-cmd"
+
+    lock_acquired = threading.Event()
+    proceed = threading.Event()
+
+    def hold_ipc_lock():
+        with daemon._ipc_state_lock:
+            lock_acquired.set()
+            proceed.wait(timeout=5)
+
+    holder = threading.Thread(target=hold_ipc_lock, daemon=True)
+    holder.start()
+    assert lock_acquired.wait(timeout=5)
+
+    worker = threading.Thread(target=lambda: daemon._handle_result("hi"), daemon=True)
+    worker.start()
+    # Solange das Lock gehalten wird, darf der Worker keinen IPC-Response senden
+    time.sleep(0.05)
+    assert responses == []
+
+    proceed.set()
+    holder.join(timeout=5)
+    worker.join(timeout=5)
+    assert not worker.is_alive()
+
+    assert responses == [("old-cmd", "done")]
+    assert daemon._ipc_test_cmd_id is None

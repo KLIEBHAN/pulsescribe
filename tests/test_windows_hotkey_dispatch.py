@@ -40,14 +40,12 @@ def test_toggle_dispatch_returns_fast_even_when_action_blocks():
 
     daemon._on_hotkey_press = blocking_press
 
-    current_keys = {"dummy": time.monotonic()}
     start = time.monotonic()
-    daemon._dispatch_windows_hotkey_match("toggle", "pynput:toggle:x", current_keys)
+    daemon._dispatch_windows_hotkey_match("toggle", "pynput:toggle:x")
     elapsed = time.monotonic() - start
 
     # Hook-Callback darf nicht auf die Aktion warten
     assert elapsed < 0.1
-    assert current_keys == {}
     assert action_started.wait(timeout=1.0)
 
     action_release.set()
@@ -102,7 +100,7 @@ def test_hold_release_dispatches_stop_off_hook_thread():
 
     start = time.monotonic()
     daemon._handle_windows_hotkey_release(
-        "ctrl", _FakeKeyboard, parsed_hotkeys, current_keys
+        "ctrl", _FakeKeyboard, parsed_hotkeys, current_keys, set()
     )
     elapsed = time.monotonic() - start
 
@@ -195,3 +193,100 @@ def test_handle_result_pastes_before_history_io(monkeypatch):
 
     assert order == ["paste", "history"]
     assert daemon.state == AppState.DONE
+
+
+# =============================================================================
+# Press-Zyklus-Tracking statt Zeit-Debounce (V7)
+# =============================================================================
+
+
+class _FakeKeyboardForCycles:
+    class Key:
+        ctrl = "ctrl"
+        alt = "alt"
+        shift = "shift"
+        cmd = "cmd"
+
+
+def _press(daemon, key, parsed_hotkeys, current_keys, triggered_cycles):
+    daemon._handle_windows_hotkey_press(
+        key, _FakeKeyboardForCycles, parsed_hotkeys, current_keys, triggered_cycles
+    )
+
+
+def _release(daemon, key, parsed_hotkeys, current_keys, triggered_cycles):
+    daemon._handle_windows_hotkey_release(
+        key, _FakeKeyboardForCycles, parsed_hotkeys, current_keys, triggered_cycles
+    )
+
+
+def test_auto_repeat_of_held_hotkey_does_not_retrigger():
+    """Auto-Repeat der gehaltenen Kombo löst den Toggle nur einmal aus."""
+    _, daemon = _make_daemon()
+    dispatched: list[str] = []
+    daemon._dispatch_hotkey_action = lambda _action, desc: dispatched.append(desc)
+
+    source_id = "pynput:toggle:ctrl+alt+r"
+    parsed_hotkeys = [({"ctrl", "alt", "r"}, "toggle", source_id)]
+    current_keys: dict = {}
+    triggered_cycles: set = set()
+
+    for key in ("ctrl", "alt", "r"):
+        _press(daemon, key, parsed_hotkeys, current_keys, triggered_cycles)
+    # Auto-Repeat: Windows liefert wiederholte Press-Events der gehaltenen Tasten
+    for _ in range(3):
+        _press(daemon, "r", parsed_hotkeys, current_keys, triggered_cycles)
+        _press(daemon, "ctrl", parsed_hotkeys, current_keys, triggered_cycles)
+
+    assert dispatched == ["toggle"]
+
+
+def test_hotkey_retriggers_immediately_after_release_without_debounce():
+    """Nach echtem Release ist die Kombo SOFORT wieder auslösbar (kein 300ms-Debounce).
+
+    Regressionstest für V7: Vorher verschluckte das globale Zeit-Debounce einen
+    legitimen zweiten Toggle-Press innerhalb von 300ms (z.B. Back-to-back-Diktat).
+    """
+    _, daemon = _make_daemon()
+    dispatched: list[str] = []
+    daemon._dispatch_hotkey_action = lambda _action, desc: dispatched.append(desc)
+
+    source_id = "pynput:toggle:ctrl+alt+r"
+    parsed_hotkeys = [({"ctrl", "alt", "r"}, "toggle", source_id)]
+    current_keys: dict = {}
+    triggered_cycles: set = set()
+
+    # Erster Zyklus: Ctrl+Alt gehalten, R gedrückt
+    for key in ("ctrl", "alt", "r"):
+        _press(daemon, key, parsed_hotkeys, current_keys, triggered_cycles)
+    # R loslassen (Modifier bleiben gehalten), sofort erneut drücken
+    _release(daemon, "r", parsed_hotkeys, current_keys, triggered_cycles)
+    _press(daemon, "r", parsed_hotkeys, current_keys, triggered_cycles)
+
+    assert dispatched == ["toggle", "toggle"]
+
+
+def test_stale_keys_release_stuck_trigger_cycles():
+    """Verlorene Release-Events (Fokuswechsel) blockieren die Kombo nicht dauerhaft."""
+    windows_module, daemon = _make_daemon()
+    dispatched: list[str] = []
+    daemon._dispatch_hotkey_action = lambda _action, desc: dispatched.append(desc)
+
+    source_id = "pynput:toggle:ctrl+alt+r"
+    parsed_hotkeys = [({"ctrl", "alt", "r"}, "toggle", source_id)]
+    current_keys: dict = {}
+    triggered_cycles: set = set()
+
+    for key in ("ctrl", "alt", "r"):
+        _press(daemon, key, parsed_hotkeys, current_keys, triggered_cycles)
+    assert dispatched == ["toggle"]
+
+    # Release-Events gingen verloren; Keys altern über das Stale-Timeout hinaus
+    stale_age = windows_module._KEY_STALE_TIMEOUT_SEC + 0.1
+    for key in list(current_keys):
+        current_keys[key] -= stale_age
+
+    for key in ("ctrl", "alt", "r"):
+        _press(daemon, key, parsed_hotkeys, current_keys, triggered_cycles)
+
+    assert dispatched == ["toggle", "toggle"]
