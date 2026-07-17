@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Windows: adaptive stop tail** – when the audio tail was already silent for
+  ~200 ms at hotkey release (the speaker finished talking – the common case),
+  the stop grace shrinks to ~50 ms instead of the configured 0.20–0.30 s, so
+  text appears noticeably faster. Releasing mid-word keeps the full
+  conservative tail, so final words are never clipped. Applies to streaming
+  and REST capture; disable via `PULSESCRIBE_WINDOWS_ADAPTIVE_STOP_TAIL=false`.
+
 ### Fixed
 
 - **Deepgram SDK pinned to 5.x** – `deepgram-sdk` 7.x removed the 5.x module

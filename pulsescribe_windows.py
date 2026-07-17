@@ -85,6 +85,7 @@ from config import (
     INTERIM_FILE,
     WARM_STREAM_QUEUE_SIZE,
     get_input_device,
+    get_windows_adaptive_stop_tail_enabled,
     get_windows_stop_grace_seconds,
 )
 from providers import get_provider
@@ -182,6 +183,19 @@ _KEY_STALE_TIMEOUT_SEC = 2.0
 # REST-Modus verwendet Peak (max), Streaming verwendet RMS (niedriger)
 _VAD_THRESHOLD_PEAK = 0.01  # Für REST-Modus (float32 peak)
 _VAD_THRESHOLD_RMS = 0.003  # Für Streaming-Modus (RMS/INT16_MAX)
+
+# Adaptiver Stop-Tail: War das Audio vor dem Hotkey-Release bereits so lange
+# still, hat der Sprecher fertig gesprochen - der konservative Stop-Grace
+# (Capture-Nachlauf) wird dann auf ein Minimum verkürzt, ohne Wörter
+# abzuschneiden. Bei Release mitten im Wort (kürzliche Sprache) bleibt der
+# volle konfigurierte Nachlauf erhalten. Abschaltbar via
+# PULSESCRIBE_WINDOWS_ADAPTIVE_STOP_TAIL=false.
+_ADAPTIVE_STOP_SILENCE_SEC = 0.20  # so viel Tail-Stille gilt als "fertig"
+_ADAPTIVE_STOP_GRACE_MIN_SEC = 0.05  # Rest-Grace für In-Flight-Audio/Jitter
+# Empfindlichere Schwellen als die Start-VAD: leises Ausklingen zählt weiter
+# als Sprache (im Zweifel voller Grace - err on the safe side).
+_ADAPTIVE_TAIL_VOICE_RMS = _VAD_THRESHOLD_RMS / 2
+_ADAPTIVE_TAIL_VOICE_PEAK = _VAD_THRESHOLD_PEAK / 2
 
 # Tail-Padding: Stille am Ende des Audio (verhindert abgeschnittene Wörter bei Whisper)
 _TAIL_PADDING_SEC = 0.2
@@ -359,6 +373,10 @@ class PulseScribeWindows:
         self._latency_run: WindowsLatencyRun | None = None
         self._run_mode: str | None = None  # Snapshot: Modus pro Recording-Run
         self._run_streaming: bool | None = None  # Snapshot: Streaming pro Run
+        # Zeitpunkt der letzten Sprach-Aktivität (monotonic) im aktuellen Run.
+        # Wird von den Audio-Callbacks aktualisiert und beim Recording-Start
+        # zurückgesetzt; Basis für den adaptiven Stop-Tail.
+        self._last_voice_monotonic: float | None = None
 
         # Watchdog für hängende Transcription (wie macOS)
         self._transcribing_timeout = 30.0  # Sekunden
@@ -920,9 +938,59 @@ class PulseScribeWindows:
         """Return configured Windows capture tail after hotkey release."""
         return get_windows_stop_grace_seconds()
 
+    def _note_voice_activity(self) -> None:
+        """Merkt sich die letzte Sprach-Aktivität (für adaptiven Stop-Tail)."""
+        self._last_voice_monotonic = time.monotonic()
+
+    def _resolve_stop_grace_seconds(self) -> float:
+        """Return the stop grace for THIS stop, shortened after a silent tail.
+
+        Wird zum Stop-Zeitpunkt aufgerufen (Streaming: im StopWatcher-Thread,
+        REST: in der Capture-Schleife). War das Audio vor dem Release bereits
+        >= _ADAPTIVE_STOP_SILENCE_SEC still (oder gab es nie Sprache), reicht
+        ein minimaler Nachlauf für In-Flight-Puffer. Bei kürzlicher Sprache
+        (Release mitten im Wort) bleibt der volle konfigurierte Grace.
+        """
+        full_grace = self._windows_stop_grace_seconds()
+        try:
+            if not get_windows_adaptive_stop_tail_enabled():
+                return full_grace
+
+            last_voice = self._last_voice_monotonic
+            silence_seconds = (
+                None if last_voice is None else time.monotonic() - last_voice
+            )
+            if (
+                silence_seconds is not None
+                and silence_seconds < _ADAPTIVE_STOP_SILENCE_SEC
+            ):
+                return full_grace
+
+            adaptive_grace = min(full_grace, _ADAPTIVE_STOP_GRACE_MIN_SEC)
+            silence_ms = (
+                None if silence_seconds is None else round(silence_seconds * 1000)
+            )
+            logger.debug(
+                f"Adaptiver Stop-Tail: Tail still "
+                f"({'nie Sprache' if silence_ms is None else f'{silence_ms}ms'}), "
+                f"Grace {full_grace:.2f}s -> {adaptive_grace:.2f}s"
+            )
+            self._latency_event(
+                "adaptive_stop_tail",
+                {
+                    "silence_ms": silence_ms,
+                    "full_grace_s": full_grace,
+                    "grace_s": adaptive_grace,
+                },
+            )
+            return adaptive_grace
+        except Exception as e:
+            logger.debug(f"Adaptiver Stop-Tail fehlgeschlagen: {e}")
+            return full_grace
+
     def _wait_for_windows_stop_grace(self, phase: str) -> None:
         """Keep a non-warm input stream open briefly after stop."""
-        grace_seconds = self._windows_stop_grace_seconds()
+        grace_seconds = self._resolve_stop_grace_seconds()
         if grace_seconds <= 0:
             return
 
@@ -1019,6 +1087,11 @@ class PulseScribeWindows:
 
             # RMS immer berechnen (für VAD, unabhängig von Overlay)
             rms = float(np.sqrt(np.mean(indata.astype(np.float32) ** 2)) / INT16_MAX)
+
+            # Sprach-Aktivität für adaptiven Stop-Tail tracken (empfindlichere
+            # Schwelle als die Start-VAD, damit leises Ausklingen zählt)
+            if rms > _ADAPTIVE_TAIL_VOICE_RMS:
+                self._last_voice_monotonic = time.monotonic()
 
             # Audio-Level für Overlay (optional)
             self._overlay_update_audio_level(rms)
@@ -1188,6 +1261,8 @@ class PulseScribeWindows:
 
             # Recording-Stop-Event zurücksetzen
             self._recording_stop_event.clear()
+            # Sprach-Tracking pro Run zurücksetzen (adaptiver Stop-Tail)
+            self._last_voice_monotonic = None
 
             if run_streaming:
                 # Prüfe ob Warm-Stream verfügbar (instant-start)
@@ -1372,10 +1447,15 @@ class PulseScribeWindows:
                 self._overlay_update_audio_level(rms)
                 self._latency_mark_once("first_audio_callback")
 
+                peak = float(np.abs(indata).max())
+                # Sprach-Aktivität für adaptiven Stop-Tail tracken
+                if peak > _ADAPTIVE_TAIL_VOICE_PEAK:
+                    self._last_voice_monotonic = time.monotonic()
+
                 # State auf RECORDING setzen wenn Audio erkannt
                 if self.state == AppState.LISTENING:
                     # Einfache VAD: Prüfe ob Audio über Threshold (Peak für REST)
-                    if np.abs(indata).max() > _VAD_THRESHOLD_PEAK:
+                    if peak > _VAD_THRESHOLD_PEAK:
                         self._enter_recording_from_audio_callback()
 
             with create_low_latency_input_stream(
@@ -1477,14 +1557,19 @@ class PulseScribeWindows:
     def _maybe_mark_warm_stop_seen(
         self,
         stop_seen_at: float | None,
-        grace_seconds: float,
-    ) -> float | None:
+    ) -> tuple[float | None, float]:
+        """Markiert den Stop-Zeitpunkt und löst die Grace GENAU DANN auf.
+
+        Die Grace darf erst beim Stop bestimmt werden: Der adaptive Stop-Tail
+        hängt von der Sprach-Aktivität unmittelbar vor dem Release ab.
+        """
         if stop_seen_at is not None or not self._recording_stop_event.is_set():
-            return stop_seen_at
+            return stop_seen_at, 0.0
         stop_seen_at = time.monotonic()
+        grace_seconds = self._resolve_stop_grace_seconds()
         if grace_seconds > 0:
             logger.debug(f"Windows Stop-Grace (REST warm): {grace_seconds:.2f}s")
-        return stop_seen_at
+        return stop_seen_at, grace_seconds
 
     @staticmethod
     def _warm_stop_grace_elapsed(
@@ -1508,12 +1593,12 @@ class PulseScribeWindows:
 
     def _collect_warm_stream_until_stop(self, np, int16_max: int) -> None:
         stop_seen_at: float | None = None
-        grace_seconds = self._windows_stop_grace_seconds()
+        grace_seconds = 0.0
         while True:
-            stop_seen_at = self._maybe_mark_warm_stop_seen(
-                stop_seen_at,
-                grace_seconds,
-            )
+            if stop_seen_at is None:
+                stop_seen_at, grace_seconds = self._maybe_mark_warm_stop_seen(
+                    stop_seen_at
+                )
             if self._warm_stop_grace_elapsed(stop_seen_at, grace_seconds):
                 return
             if self._try_collect_warm_stream_chunk(np, int16_max, timeout=0.02):
@@ -1580,6 +1665,8 @@ class PulseScribeWindows:
             logger.debug("Starte deepgram_stream_core")
 
             def on_audio_level(level: float):
+                if level > _ADAPTIVE_TAIL_VOICE_RMS:
+                    self._last_voice_monotonic = time.monotonic()
                 self._overlay_update_audio_level(level)
                 self._latency_mark_once("first_audio_callback")
 
@@ -1603,7 +1690,8 @@ class PulseScribeWindows:
                 audio_level_callback=on_audio_level,
                 interim_text_callback=self._overlay_update_interim_text,
                 latency_event_callback=self._latency_event,
-                stop_grace_seconds=self._windows_stop_grace_seconds(),
+                # Callable: wird erst beim Stop aufgelöst (adaptiver Stop-Tail)
+                stop_grace_seconds=self._resolve_stop_grace_seconds,
             )
             self._finish_streaming_result(transcript)
         except Exception as e:
@@ -1632,7 +1720,8 @@ class PulseScribeWindows:
                 interim_text_callback=self._overlay_update_interim_text,
                 latency_event_callback=self._latency_event,
                 warm_stream_source=warm_source,
-                stop_grace_seconds=self._windows_stop_grace_seconds(),
+                # Callable: wird erst beim Stop aufgelöst (adaptiver Stop-Tail)
+                stop_grace_seconds=self._resolve_stop_grace_seconds,
             )
             self._finish_streaming_result(transcript)
         except Exception as e:

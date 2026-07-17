@@ -397,9 +397,16 @@ def test_streaming_worker_warm_passes_windows_stop_grace(monkeypatch):
         fake_deepgram_stream_core,
     )
 
+    # Kürzliche Sprache -> Resolver muss den vollen Grace liefern
+    daemon._last_voice_monotonic = time.monotonic()
+
     daemon._streaming_worker_warm()
 
-    assert captured_kwargs["stop_grace_seconds"] == 0.42
+    # Seit dem adaptiven Stop-Tail wird ein Callable übergeben, das erst beim
+    # Stop aufgelöst wird.
+    stop_grace = captured_kwargs["stop_grace_seconds"]
+    assert callable(stop_grace)
+    assert stop_grace() == 0.42
     # Der Worker spielt den Stop-Sound nicht mehr; das passiert jetzt sofort bei
     # Release in _stop_recording (siehe test_streaming_stop_switches_to_
     # transcribing_immediately).
@@ -559,6 +566,9 @@ def test_recording_loop_warm_collects_audio_during_stop_grace(monkeypatch):
 
     daemon._warm_stream_queue.put(np.array([1000], dtype=np.int16).tobytes())
     time.sleep(0.01)
+    # Kürzliche Sprache -> voller Stop-Grace (deterministisch, unabhängig vom
+    # adaptiven Stop-Tail)
+    daemon._last_voice_monotonic = time.monotonic()
     daemon._recording_stop_event.set()
     time.sleep(0.01)
     daemon._warm_stream_queue.put(np.array([2000], dtype=np.int16).tobytes())
@@ -1844,3 +1854,113 @@ def test_watchdog_timeout_still_errors_hanging_transcription(monkeypatch):
 
     assert daemon.state == AppState.ERROR
     assert sounds == ["error"]
+
+
+# =============================================================================
+# Adaptiver Stop-Tail: kurzer Nachlauf bei stillem Release, voller bei Sprache
+# =============================================================================
+
+
+def _make_stop_tail_daemon(monkeypatch, *, full_grace=0.3):
+    windows_module = _load_windows_module()
+    monkeypatch.setattr(
+        windows_module,
+        "get_windows_stop_grace_seconds",
+        lambda: full_grace,
+    )
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai",
+        streaming=False,
+        overlay=False,
+    )
+    return windows_module, daemon
+
+
+def test_adaptive_stop_tail_uses_full_grace_after_recent_voice(monkeypatch):
+    """Release mitten im Wort (kürzliche Sprache) -> voller Nachlauf."""
+    monkeypatch.delenv("PULSESCRIBE_WINDOWS_ADAPTIVE_STOP_TAIL", raising=False)
+    _windows_module, daemon = _make_stop_tail_daemon(monkeypatch)
+
+    daemon._last_voice_monotonic = time.monotonic()
+
+    assert daemon._resolve_stop_grace_seconds() == 0.3
+
+
+def test_adaptive_stop_tail_shortens_grace_after_silent_tail(monkeypatch):
+    """Tail war bereits still -> minimaler Nachlauf statt vollem Grace."""
+    monkeypatch.delenv("PULSESCRIBE_WINDOWS_ADAPTIVE_STOP_TAIL", raising=False)
+    windows_module, daemon = _make_stop_tail_daemon(monkeypatch)
+
+    daemon._last_voice_monotonic = (
+        time.monotonic() - windows_module._ADAPTIVE_STOP_SILENCE_SEC - 0.05
+    )
+
+    assert (
+        daemon._resolve_stop_grace_seconds()
+        == windows_module._ADAPTIVE_STOP_GRACE_MIN_SEC
+    )
+
+
+def test_adaptive_stop_tail_shortens_grace_when_no_voice_was_seen(monkeypatch):
+    """Nie Sprache erkannt (z.B. LISTENING ohne Sprechen) -> minimaler Nachlauf."""
+    monkeypatch.delenv("PULSESCRIBE_WINDOWS_ADAPTIVE_STOP_TAIL", raising=False)
+    windows_module, daemon = _make_stop_tail_daemon(monkeypatch)
+
+    daemon._last_voice_monotonic = None
+
+    assert (
+        daemon._resolve_stop_grace_seconds()
+        == windows_module._ADAPTIVE_STOP_GRACE_MIN_SEC
+    )
+
+
+def test_adaptive_stop_tail_never_exceeds_configured_grace(monkeypatch):
+    """Ist der konfigurierte Grace kleiner als das Minimum, gilt der kleinere."""
+    monkeypatch.delenv("PULSESCRIBE_WINDOWS_ADAPTIVE_STOP_TAIL", raising=False)
+    _windows_module, daemon = _make_stop_tail_daemon(monkeypatch, full_grace=0.02)
+
+    daemon._last_voice_monotonic = None
+
+    assert daemon._resolve_stop_grace_seconds() == 0.02
+
+
+def test_adaptive_stop_tail_can_be_disabled_via_env(monkeypatch):
+    """PULSESCRIBE_WINDOWS_ADAPTIVE_STOP_TAIL=false -> immer voller Grace."""
+    monkeypatch.setenv("PULSESCRIBE_WINDOWS_ADAPTIVE_STOP_TAIL", "false")
+    _windows_module, daemon = _make_stop_tail_daemon(monkeypatch)
+
+    daemon._last_voice_monotonic = None  # stiller Tail
+
+    assert daemon._resolve_stop_grace_seconds() == 0.3
+
+
+def test_adaptive_stop_tail_resets_voice_tracking_on_start(monkeypatch):
+    """Recording-Start setzt das Sprach-Tracking des vorherigen Runs zurück."""
+    windows_module, daemon = _make_stop_tail_daemon(monkeypatch)
+    daemon._warm_stream = None
+    daemon._play_sound = lambda _name: None
+    monkeypatch.setattr(windows_module.threading, "Thread", _NoopThread)
+
+    daemon._last_voice_monotonic = time.monotonic()  # Rest vom letzten Run
+    assert daemon._start_recording() is True
+
+    assert daemon._last_voice_monotonic is None
+
+
+def test_rest_warm_stop_resolves_grace_at_stop_time(monkeypatch):
+    """Die REST-Warm-Schleife löst die Grace erst beim Stop-Signal auf."""
+    _windows_module, daemon = _make_stop_tail_daemon(monkeypatch)
+
+    resolve_calls: list[float] = []
+    daemon._resolve_stop_grace_seconds = lambda: resolve_calls.append(0.0) or 0.0
+
+    # Ohne Stop-Signal: kein Resolve
+    stop_seen_at, grace = daemon._maybe_mark_warm_stop_seen(None)
+    assert stop_seen_at is None and grace == 0.0
+    assert resolve_calls == []
+
+    # Mit Stop-Signal: genau ein Resolve zum Stop-Zeitpunkt
+    daemon._recording_stop_event.set()
+    stop_seen_at, grace = daemon._maybe_mark_warm_stop_seen(None)
+    assert stop_seen_at is not None
+    assert resolve_calls == [0.0]

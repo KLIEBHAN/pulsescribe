@@ -427,7 +427,9 @@ class DeepgramWarmConnectionManager:
                 asyncio.run_coroutine_threadsafe(coroutine, loop)
             except RuntimeError as exc:
                 coroutine.close()
-                logger.debug("Deepgram WebSocket Pre-Warm Scheduling fehlgeschlagen: %s", exc)
+                logger.debug(
+                    "Deepgram WebSocket Pre-Warm Scheduling fehlgeschlagen: %s", exc
+                )
                 return False
         return True
 
@@ -1452,13 +1454,32 @@ def _resolve_stream_result(state: StreamState, session_id: str) -> str:
 # =============================================================================
 
 
+def _resolve_stop_grace_seconds(
+    stop_grace_seconds: "float | Callable[[], float]",
+    session_id: str,
+) -> float:
+    """Resolve the stop grace at stop time.
+
+    Callables ermöglichen adaptive Tails: Der Daemon entscheidet erst beim
+    Hotkey-Release (z.B. anhand der jüngsten Sprach-Aktivität), wie viel
+    Capture-Nachlauf nötig ist. Resolver-Fehler dürfen den Stop nie blockieren.
+    """
+    if not callable(stop_grace_seconds):
+        return max(0.0, stop_grace_seconds)
+    try:
+        return max(0.0, float(stop_grace_seconds()))
+    except Exception as e:
+        logger.debug(f"[{session_id}] Stop-Grace-Resolver fehlgeschlagen: {e}")
+        return 0.0
+
+
 def _setup_stop_mechanism(
     state: StreamState,
     loop: asyncio.AbstractEventLoop,
     external_stop_event: threading.Event | None,
     session_id: str,
     *,
-    stop_grace_seconds: float = 0.0,
+    stop_grace_seconds: "float | Callable[[], float]" = 0.0,
 ) -> None:
     """Richtet den Stop-Mechanismus ein.
 
@@ -1472,15 +1493,18 @@ def _setup_stop_mechanism(
         loop: Event-Loop für thread-safe Aufrufe
         external_stop_event: Externes threading.Event zum Stoppen
         session_id: Session-ID für Logging
-        stop_grace_seconds: Zusätzliche Aufnahmezeit nach externem Stop-Signal
+        stop_grace_seconds: Zusätzliche Aufnahmezeit nach externem Stop-Signal.
+            Ein Callable wird erst NACH dem Stop-Signal ausgewertet (adaptiver
+            Stop-Tail: kurzer Nachlauf bei stillem Release, voller bei Sprache).
     """
     if external_stop_event is not None:
         # Unified-Daemon-Mode: Externes threading.Event überwachen
         def _watch_external_stop() -> None:
             external_stop_event.wait()
-            if stop_grace_seconds > 0:
-                logger.debug(f"[{session_id}] Stop-Grace: {stop_grace_seconds:.2f}s")
-                time.sleep(stop_grace_seconds)
+            grace_seconds = _resolve_stop_grace_seconds(stop_grace_seconds, session_id)
+            if grace_seconds > 0:
+                logger.debug(f"[{session_id}] Stop-Grace: {grace_seconds:.2f}s")
+                time.sleep(grace_seconds)
             try:
                 loop.call_soon_threadsafe(state.stop_event.set)
             except RuntimeError as e:
@@ -1919,7 +1943,7 @@ async def deepgram_stream_core(
     interim_text_callback: Callable[[str], None] | None = None,
     latency_event_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
     warm_stream_source: WarmStreamSource | None = None,
-    stop_grace_seconds: float = 0.0,
+    stop_grace_seconds: "float | Callable[[], float]" = 0.0,
     connection_factory: DeepgramConnectionFactory | None = None,
 ) -> str:
     """Gemeinsamer Streaming-Core für Deepgram (SDK v5.3).
@@ -1935,6 +1959,7 @@ async def deepgram_stream_core(
         latency_event_callback: Optionaler Callback für strukturierte Latenz-Events
         warm_stream_source: Externes WarmStreamSource für instant-start (Windows)
         stop_grace_seconds: Zusätzliche Aufnahmezeit nach externem Stop-Signal
+            (float oder Callable; Callables werden erst beim Stop ausgewertet)
         connection_factory: Optionaler Connection-Provider für einen vorgewärmten Socket
 
     Drei Modi:
@@ -1977,7 +2002,11 @@ async def deepgram_stream_core(
         loop,
         external_stop_event,
         session_id,
-        stop_grace_seconds=max(0.0, stop_grace_seconds),
+        stop_grace_seconds=(
+            stop_grace_seconds
+            if callable(stop_grace_seconds)
+            else max(0.0, stop_grace_seconds)
+        ),
     )
 
     # Audio-Source initialisieren (modus-spezifisch)

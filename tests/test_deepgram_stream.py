@@ -981,7 +981,9 @@ def test_warm_connection_manager_rejects_parallel_transcriptions(monkeypatch) ->
     assert errors == []
 
 
-def test_warm_connection_manager_shutdown_stops_active_core_gracefully(monkeypatch) -> None:
+def test_warm_connection_manager_shutdown_stops_active_core_gracefully(
+    monkeypatch,
+) -> None:
     monkeypatch.setenv("DEEPGRAM_API_KEY", "test-key")
     _install_fake_connection_factory(monkeypatch)
     started = threading.Event()
@@ -1075,9 +1077,7 @@ def test_empty_finalize_grace_exits_early_on_late_final(monkeypatch) -> None:
         SimpleNamespace(ListenV1ControlMessage=_FakeControlMessage),
     )
     monkeypatch.setattr(deepgram_stream, "DEEPGRAM_TAIL_PADDING_SECONDS", 0.0)
-    monkeypatch.setattr(
-        deepgram_stream, "DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS", 5.0
-    )
+    monkeypatch.setattr(deepgram_stream, "DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS", 5.0)
 
     async def _run() -> float:
         state = deepgram_stream.StreamState()
@@ -1090,9 +1090,7 @@ def test_empty_finalize_grace_exits_early_on_late_final(monkeypatch) -> None:
             async def send_control(self, message) -> None:
                 if getattr(message, "type", "") == "Finalize":
                     # Deepgram sendet nur einen leeren Finalize-Ack ...
-                    deepgram_stream._mark_finalize_response(
-                        state, has_transcript=False
-                    )
+                    deepgram_stream._mark_finalize_response(state, has_transcript=False)
 
                     async def _late_final() -> None:
                         await asyncio.sleep(0.05)
@@ -1136,9 +1134,7 @@ def test_empty_finalize_grace_ignores_finals_from_before_finalize(
         SimpleNamespace(ListenV1ControlMessage=_FakeControlMessage),
     )
     monkeypatch.setattr(deepgram_stream, "DEEPGRAM_TAIL_PADDING_SECONDS", 0.0)
-    monkeypatch.setattr(
-        deepgram_stream, "DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS", 0.2
-    )
+    monkeypatch.setattr(deepgram_stream, "DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS", 0.2)
 
     async def _run() -> float:
         state = deepgram_stream.StreamState()
@@ -1154,9 +1150,7 @@ def test_empty_finalize_grace_ignores_finals_from_before_finalize(
         class _FakeConnection:
             async def send_control(self, message) -> None:
                 if getattr(message, "type", "") == "Finalize":
-                    deepgram_stream._mark_finalize_response(
-                        state, has_transcript=False
-                    )
+                    deepgram_stream._mark_finalize_response(state, has_transcript=False)
 
         started = time.perf_counter()
         await deepgram_stream._graceful_shutdown(
@@ -1174,3 +1168,74 @@ def test_empty_finalize_grace_ignores_finals_from_before_finalize(
 
     # Volle Grace wurde gewartet, weil kein NEUES Final eintraf.
     assert elapsed >= 0.18
+
+
+def test_stop_mechanism_resolves_callable_grace_at_stop_time(monkeypatch) -> None:
+    """Ein Grace-Callable (adaptiver Stop-Tail) wird erst NACH dem Stop-Signal
+    ausgewertet - nicht beim Setup der Session."""
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(
+        deepgram_stream.time,
+        "sleep",
+        lambda seconds: sleep_calls.append(seconds),
+    )
+
+    external_stop = threading.Event()
+    resolver_calls: list[bool] = []
+
+    def adaptive_grace() -> float:
+        # Beim Aufruf MUSS das Stop-Signal bereits gesetzt sein
+        resolver_calls.append(external_stop.is_set())
+        return 0.05
+
+    async def _run() -> None:
+        state = deepgram_stream.StreamState()
+        deepgram_stream._setup_stop_mechanism(
+            state,
+            asyncio.get_running_loop(),
+            external_stop,
+            "sess",
+            stop_grace_seconds=adaptive_grace,
+        )
+        # Setup abgeschlossen: Resolver darf noch nicht gelaufen sein
+        assert resolver_calls == []
+
+        external_stop.set()
+        await asyncio.wait_for(state.stop_event.wait(), timeout=1.0)
+
+    asyncio.run(_run())
+
+    assert resolver_calls == [True]
+    assert sleep_calls == [0.05]
+
+
+def test_stop_mechanism_failing_grace_resolver_does_not_block_stop(
+    monkeypatch,
+) -> None:
+    """Ein fehlschlagender Resolver darf den Stop nie verhindern (Grace 0)."""
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(
+        deepgram_stream.time,
+        "sleep",
+        lambda seconds: sleep_calls.append(seconds),
+    )
+
+    def broken_resolver() -> float:
+        raise RuntimeError("resolver kaputt")
+
+    async def _run() -> None:
+        state = deepgram_stream.StreamState()
+        external_stop = threading.Event()
+        deepgram_stream._setup_stop_mechanism(
+            state,
+            asyncio.get_running_loop(),
+            external_stop,
+            "sess",
+            stop_grace_seconds=broken_resolver,
+        )
+        external_stop.set()
+        await asyncio.wait_for(state.stop_event.wait(), timeout=1.0)
+
+    asyncio.run(_run())
+
+    assert sleep_calls == []

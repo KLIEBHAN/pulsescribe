@@ -419,6 +419,21 @@ def get_windows_stop_grace_seconds() -> float:
 WINDOWS_STOP_GRACE_SECONDS = get_windows_stop_grace_seconds()
 
 
+def get_windows_adaptive_stop_tail_enabled() -> bool:
+    """Return whether Windows may shorten the stop tail after a silent release.
+
+    Waren die letzten ~200ms vor dem Hotkey-Release bereits still, hat der
+    Sprecher fertig gesprochen: Der Stop-Grace (Capture-Nachlauf) wird dann
+    auf ein Minimum verkürzt, ohne Wortabschneide-Risiko. Bei Release mitten
+    im Wort (kürzliche Sprache) bleibt der volle konfigurierte Nachlauf.
+    Wird zum Stop-Zeitpunkt gelesen und ist damit reload-fähig.
+    """
+    from utils.env import parse_bool
+
+    parsed = parse_bool(os.getenv("PULSESCRIBE_WINDOWS_ADAPTIVE_STOP_TAIL"))
+    return True if parsed is None else parsed
+
+
 # Obergrenze (ms) für den Clipboard-Sync-Check vor Ctrl+V auf Windows.
 # Gepastet wird, sobald das Clipboard-Zurücklesen den neuen Inhalt bestätigt
 # (typisch <5ms); die Obergrenze greift nur, wenn die Bestätigung ausbleibt
@@ -588,6 +603,7 @@ __all__ = [
     "DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS",
     "DEEPGRAM_KEEPALIVE_INTERVAL_SECONDS",
     "WINDOWS_STOP_GRACE_SECONDS",
+    "get_windows_adaptive_stop_tail_enabled",
     "get_windows_paste_sync_seconds",
     "get_windows_latency_preset",
     "get_windows_stop_grace_seconds",
