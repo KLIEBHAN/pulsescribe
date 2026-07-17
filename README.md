@@ -124,6 +124,24 @@ python pulsescribe_windows.py
 - **macOS:** Hold `Fn` (Globe key) → speak → release
 - **Windows:** Hold `Ctrl+Win` → speak → release
 
+### Windows Performance
+
+On Windows, PulseScribe uses the **`snappy` latency preset by default**
+(short capture/finalize buffers for fast transitions). Final words are
+protected automatically by the **adaptive stop tail**: releasing the hotkey
+mid-word keeps a longer conservative recording tail, while releasing after a
+silent pause finishes almost immediately.
+
+If final words still get clipped on your microphone, switch to conservative
+buffers in your `.env`:
+
+```bash
+PULSESCRIBE_WINDOWS_LATENCY_PRESET=safe
+```
+
+All tuning knobs are documented in
+[docs/CONFIGURATION.md](docs/CONFIGURATION.md).
+
 ---
 
 ## Hotkey Configuration

@@ -25,6 +25,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Windows: `snappy` latency preset is now the default** – the adaptive stop
+  tail protects final words independently of the preset (releasing mid-word
+  keeps the full conservative tail), so the shorter capture/finalize buffers
+  no longer carry a clipping risk. `safe` remains available as an explicit
+  opt-out via `PULSESCRIBE_WINDOWS_LATENCY_PRESET=safe`; invalid values still
+  fall back to `safe`. The onboarding toggle now reflects the new default
+  (checked = snappy/default, unchecked = safe).
 - **Windows: hotkeys retrigger instantly after release** – the global 300 ms
   hotkey debounce was replaced with per-combo press-cycle tracking: key
   auto-repeat still cannot double-trigger, but after actually releasing the

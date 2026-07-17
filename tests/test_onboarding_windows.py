@@ -460,16 +460,16 @@ def test_on_snappy_toggled_persists_and_clears_latency_preset(monkeypatch):
         lambda updates: persisted.append(dict(updates)),
     )
 
-    # Enable: writes snappy and updates the cache.
-    wizard._on_snappy_toggled(True)
-    assert persisted[-1] == {"PULSESCRIBE_WINDOWS_LATENCY_PRESET": "snappy"}
+    # Disable: writes the explicit safe opt-out and updates the cache.
+    wizard._on_snappy_toggled(False)
+    assert persisted[-1] == {"PULSESCRIBE_WINDOWS_LATENCY_PRESET": "safe"}
     assert (
         wizard._env_settings_cache.get("PULSESCRIBE_WINDOWS_LATENCY_PRESET")
-        == "snappy"
+        == "safe"
     )
 
-    # Disable: removes the override so the conservative default applies again.
-    wizard._on_snappy_toggled(False)
+    # Enable: removes the override so the snappy default applies again.
+    wizard._on_snappy_toggled(True)
     assert persisted[-1] == {"PULSESCRIBE_WINDOWS_LATENCY_PRESET": None}
     assert "PULSESCRIBE_WINDOWS_LATENCY_PRESET" not in wizard._env_settings_cache
 

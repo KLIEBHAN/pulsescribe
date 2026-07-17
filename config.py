@@ -354,16 +354,21 @@ _WINDOWS_LATENCY_PRESET_SNAPPY = {"snappy"}
 
 
 def get_windows_latency_preset() -> str:
-    """Return normalized Windows latency preset (safe by default).
+    """Return normalized Windows latency preset (snappy by default).
 
-    ``snappy`` is intentionally opt-in: it shortens several capture/finalize
-    buffers and should be enabled after confirming the user's Windows audio
-    device does not clip final syllables.
+    ``snappy`` ist seit Einführung des adaptiven Stop-Tails der Default:
+    Der adaptive Tail schützt Wortenden unabhängig vom Preset (Release mitten
+    im Wort behält den vollen Nachlauf), sodass die kürzeren Puffer kein
+    Abschneide-Risiko mehr bedeuten. ``safe`` bleibt als expliziter Opt-out
+    für konservativere Capture-/Finalize-Puffer erhalten.
+
+    Ungültige Werte fallen bewusst auf ``safe`` zurück (nicht auf den
+    Default): Bei unklarer Nutzerabsicht keine Qualität riskieren.
     """
     if os.name != "nt":
         return "safe"
 
-    raw_preset = os.getenv("PULSESCRIBE_WINDOWS_LATENCY_PRESET", "safe")
+    raw_preset = os.getenv("PULSESCRIBE_WINDOWS_LATENCY_PRESET", "snappy")
     preset = raw_preset.strip().lower()
     if preset in _WINDOWS_LATENCY_PRESET_SNAPPY:
         return "snappy"
@@ -372,7 +377,7 @@ def get_windows_latency_preset() -> str:
 
     logger.warning(
         "Ungültiger Wert für PULSESCRIBE_WINDOWS_LATENCY_PRESET='%s', "
-        "verwende 'safe'. Unterstützt: snappy, safe",
+        "verwende konservatives 'safe'. Unterstützt: snappy (Default), safe",
         raw_preset,
     )
     return "safe"

@@ -124,6 +124,24 @@ python pulsescribe_windows.py
 - **macOS:** `Fn` (Globe-Taste) halten → sprechen → loslassen
 - **Windows:** `Ctrl+Win` halten → sprechen → loslassen
 
+### Windows-Performance
+
+Unter Windows nutzt PulseScribe standardmäßig das **`snappy`-Latenz-Preset**
+(kurze Aufnahme-/Finalize-Puffer für schnelle Übergänge). Wortenden schützt
+der **adaptive Stop-Nachlauf** automatisch: Wer den Hotkey mitten im Wort
+loslässt, bekommt einen längeren konservativen Aufnahme-Nachlauf – nach einer
+Sprechpause endet die Aufnahme dagegen fast sofort.
+
+Falls auf deinem Mikrofon trotzdem letzte Wörter abgeschnitten werden,
+wechsle in der `.env` auf konservative Puffer:
+
+```bash
+PULSESCRIBE_WINDOWS_LATENCY_PRESET=safe
+```
+
+Alle Tuning-Optionen sind in
+[docs/KONFIGURATION.md](docs/KONFIGURATION.md) dokumentiert.
+
 ---
 
 ## Hotkey-Konfiguration
