@@ -61,6 +61,22 @@ def test_config_preload_preserves_existing_process_env(tmp_path, monkeypatch) ->
             sys.modules["config"] = original_config
 
 
+def test_bounded_float_env_rejects_nan(monkeypatch) -> None:
+    import config as config_module
+
+    monkeypatch.setenv("PULSESCRIBE_TEST_TIMEOUT", "NaN")
+
+    assert (
+        config_module._get_bounded_float_env(
+            "PULSESCRIBE_TEST_TIMEOUT",
+            1.25,
+            min_value=0.05,
+            max_value=10.0,
+        )
+        == 1.25
+    )
+
+
 def test_windows_latency_preset_defaults_to_snappy_and_safe_is_opt_out(
     monkeypatch,
 ) -> None:
@@ -113,7 +129,10 @@ def test_get_input_device_retries_after_initial_probe_failure(monkeypatch) -> No
     monkeypatch.setitem(sys.modules, "sounddevice", fake_sounddevice)
 
     try:
-        assert config_module.get_input_device() == (None, config_module.WHISPER_SAMPLE_RATE)
+        assert config_module.get_input_device() == (
+            None,
+            config_module.WHISPER_SAMPLE_RATE,
+        )
         assert config_module.get_input_device() == (None, 48_000)
         assert query_calls == 2
     finally:
@@ -147,7 +166,6 @@ def test_get_input_device_keeps_caching_successful_probe(monkeypatch) -> None:
         _restore_input_device_cache(config_module, original_cache)
 
 
-
 def test_get_input_device_non_windows_prefers_named_microphone(monkeypatch) -> None:
     import config as config_module
 
@@ -176,7 +194,6 @@ def test_get_input_device_non_windows_prefers_named_microphone(monkeypatch) -> N
         assert config_module.get_input_device() == (1, 48_000)
     finally:
         _restore_input_device_cache(config_module, original_cache)
-
 
 
 def test_get_input_device_windows_prefers_working_mic_array(monkeypatch) -> None:
@@ -233,7 +250,6 @@ def test_get_input_device_windows_prefers_working_mic_array(monkeypatch) -> None
         assert attempts == [(1, 48_000)]
     finally:
         _restore_input_device_cache(config_module, original_cache)
-
 
 
 def test_get_input_device_windows_falls_back_to_working_microphone(monkeypatch) -> None:
@@ -296,7 +312,6 @@ def test_get_input_device_windows_falls_back_to_working_microphone(monkeypatch) 
         _restore_input_device_cache(config_module, original_cache)
 
 
-
 def test_get_input_device_windows_uses_non_output_capture_before_final_fallback(
     monkeypatch,
 ) -> None:
@@ -354,7 +369,6 @@ def test_get_input_device_windows_uses_non_output_capture_before_final_fallback(
         assert attempts == [(2, 16_000)]
     finally:
         _restore_input_device_cache(config_module, original_cache)
-
 
 
 def test_get_input_device_windows_fallback_result_is_not_cached(monkeypatch) -> None:

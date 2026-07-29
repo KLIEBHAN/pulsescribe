@@ -5,6 +5,7 @@ Vermeidet Duplikation zwischen Modulen.
 """
 
 import logging
+import math
 import os
 import tempfile
 from collections.abc import Callable
@@ -338,6 +339,9 @@ def _get_bounded_float_env(
 ) -> float:
     """Liest Float-ENV und begrenzt auf einen sinnvollen Bereich."""
     value = _get_float_env(name, default)
+    if math.isnan(value):
+        logger.warning(f"Wert für {name}=NaN ungültig, verwende Default {default}")
+        return default
     if value < min_value:
         logger.warning(
             f"Wert für {name}={value} zu klein, verwende Minimum {min_value}"
@@ -409,6 +413,24 @@ DEEPGRAM_KEEPALIVE_INTERVAL_SECONDS = _get_bounded_float_env(
     min_value=1.0,
     max_value=8.0,
 )  # Deepgram beendet Streams nach ~10s ohne Audio/KeepAlive.
+DEEPGRAM_FINALIZE_SEND_TIMEOUT = _get_bounded_float_env(
+    "PULSESCRIBE_DEEPGRAM_FINALIZE_SEND_TIMEOUT",
+    1.0,
+    min_value=0.05,
+    max_value=10.0,
+)
+DEEPGRAM_CLOSE_STREAM_SEND_TIMEOUT = _get_bounded_float_env(
+    "PULSESCRIBE_DEEPGRAM_CLOSE_STREAM_SEND_TIMEOUT",
+    0.5,
+    min_value=0.05,
+    max_value=10.0,
+)
+DEEPGRAM_KEEPALIVE_SEND_TIMEOUT = _get_bounded_float_env(
+    "PULSESCRIBE_DEEPGRAM_KEEPALIVE_SEND_TIMEOUT",
+    1.0,
+    min_value=0.05,
+    max_value=10.0,
+)
 
 
 def get_windows_stop_grace_seconds() -> float:
@@ -607,6 +629,9 @@ __all__ = [
     "DEEPGRAM_TAIL_PADDING_SECONDS",
     "DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS",
     "DEEPGRAM_KEEPALIVE_INTERVAL_SECONDS",
+    "DEEPGRAM_FINALIZE_SEND_TIMEOUT",
+    "DEEPGRAM_CLOSE_STREAM_SEND_TIMEOUT",
+    "DEEPGRAM_KEEPALIVE_SEND_TIMEOUT",
     "WINDOWS_STOP_GRACE_SECONDS",
     "get_windows_adaptive_stop_tail_enabled",
     "get_windows_paste_sync_seconds",

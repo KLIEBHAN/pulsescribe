@@ -1064,6 +1064,201 @@ def _graceful_shutdown_tasks(audio_queue):
     return _send_worker, _listen_worker
 
 
+def test_finalize_send_timeout_skips_ack_wait_and_close_stream(monkeypatch) -> None:
+    class _FakeControlMessage:
+        def __init__(self, type: str) -> None:
+            self.type = type
+
+    monkeypatch.setitem(
+        sys.modules,
+        "deepgram.extensions.types.sockets",
+        SimpleNamespace(ListenV1ControlMessage=_FakeControlMessage),
+    )
+    monkeypatch.setattr(deepgram_stream, "DEEPGRAM_TAIL_PADDING_SECONDS", 0.0)
+    monkeypatch.setattr(deepgram_stream, "DEEPGRAM_FINALIZE_SEND_TIMEOUT", 0.01)
+    monkeypatch.setattr(deepgram_stream, "DEEPGRAM_CLOSE_STREAM_SEND_TIMEOUT", 0.01)
+
+    async def _run() -> tuple[list[str], list[str], bool]:
+        state = deepgram_stream.StreamState()
+        audio_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+        send_worker, listen_worker = _graceful_shutdown_tasks(audio_queue)
+        send_task = asyncio.create_task(send_worker())
+        listen_task = asyncio.create_task(listen_worker())
+        controls: list[str] = []
+        events: list[str] = []
+
+        class _Connection:
+            async def send_control(self, message) -> None:
+                controls.append(message.type)
+                if message.type == "Finalize":
+                    await asyncio.Event().wait()
+
+        await asyncio.wait_for(
+            deepgram_stream._graceful_shutdown(
+                connection=cast(Any, _Connection()),
+                state=state,
+                audio_queue=audio_queue,
+                send_task=send_task,
+                listen_task=listen_task,
+                session_id="sess",
+                latency_event_callback=lambda name, _fields=None: events.append(name),
+            ),
+            timeout=0.5,
+        )
+        return controls, events, listen_task.done()
+
+    controls, events, listener_done = asyncio.run(_run())
+    assert controls == ["Finalize"]
+    assert "deepgram_finalize_send_timeout" in events
+    assert "deepgram_finalize_timeout" not in events
+    assert "deepgram_close_send_skipped" in events
+    assert listener_done
+
+
+def test_close_stream_send_timeout_still_cancels_listener(monkeypatch) -> None:
+    class _FakeControlMessage:
+        def __init__(self, type: str) -> None:
+            self.type = type
+
+    monkeypatch.setitem(
+        sys.modules,
+        "deepgram.extensions.types.sockets",
+        SimpleNamespace(ListenV1ControlMessage=_FakeControlMessage),
+    )
+    monkeypatch.setattr(deepgram_stream, "DEEPGRAM_TAIL_PADDING_SECONDS", 0.0)
+    monkeypatch.setattr(deepgram_stream, "DEEPGRAM_FINALIZE_SEND_TIMEOUT", 0.01)
+    monkeypatch.setattr(deepgram_stream, "DEEPGRAM_CLOSE_STREAM_SEND_TIMEOUT", 0.01)
+
+    async def _run() -> tuple[list[str], bool]:
+        state = deepgram_stream.StreamState()
+        audio_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+        send_worker, listen_worker = _graceful_shutdown_tasks(audio_queue)
+        send_task = asyncio.create_task(send_worker())
+        listen_task = asyncio.create_task(listen_worker())
+        events: list[str] = []
+
+        class _Connection:
+            async def send_control(self, message) -> None:
+                if message.type == "Finalize":
+                    state.finalize_done.set()
+                    return
+                await asyncio.Event().wait()
+
+        await asyncio.wait_for(
+            deepgram_stream._graceful_shutdown(
+                connection=cast(Any, _Connection()),
+                state=state,
+                audio_queue=audio_queue,
+                send_task=send_task,
+                listen_task=listen_task,
+                session_id="sess",
+                latency_event_callback=lambda name, _fields=None: events.append(name),
+            ),
+            timeout=0.5,
+        )
+        return events, listen_task.done()
+
+    events, listener_done = asyncio.run(_run())
+    assert "deepgram_close_send_timeout" in events
+    assert listener_done
+
+
+def test_graceful_shutdown_cancellation_reaps_stream_tasks(monkeypatch) -> None:
+    class _FakeControlMessage:
+        def __init__(self, type: str) -> None:
+            self.type = type
+
+    monkeypatch.setitem(
+        sys.modules,
+        "deepgram.extensions.types.sockets",
+        SimpleNamespace(ListenV1ControlMessage=_FakeControlMessage),
+    )
+    monkeypatch.setattr(deepgram_stream, "DEEPGRAM_TAIL_PADDING_SECONDS", 0.0)
+    monkeypatch.setattr(deepgram_stream, "DEEPGRAM_FINALIZE_SEND_TIMEOUT", 10.0)
+
+    async def _run() -> tuple[bool, bool]:
+        state = deepgram_stream.StreamState()
+        audio_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+        send_worker, listen_worker = _graceful_shutdown_tasks(audio_queue)
+        send_task = asyncio.create_task(send_worker())
+        listen_task = asyncio.create_task(listen_worker())
+        finalize_started = asyncio.Event()
+
+        class _Connection:
+            async def send_control(self, message) -> None:
+                if message.type == "Finalize":
+                    finalize_started.set()
+                    await asyncio.Event().wait()
+
+        shutdown_task = asyncio.create_task(
+            deepgram_stream._graceful_shutdown(
+                connection=cast(Any, _Connection()),
+                state=state,
+                audio_queue=audio_queue,
+                send_task=send_task,
+                listen_task=listen_task,
+                session_id="sess",
+            )
+        )
+        await asyncio.wait_for(finalize_started.wait(), timeout=0.5)
+        shutdown_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await shutdown_task
+        return send_task.done(), listen_task.done()
+
+    assert asyncio.run(_run()) == (True, True)
+
+
+def test_warm_keepalive_timeout_discards_and_reconnects(
+    monkeypatch,
+    caplog,
+) -> None:
+    caplog.set_level(logging.DEBUG, logger=deepgram_stream.logger.name)
+    monkeypatch.setattr(deepgram_stream, "DEEPGRAM_KEEPALIVE_SEND_TIMEOUT", 0.01)
+
+    async def _run() -> tuple[int, int]:
+        manager = deepgram_stream.DeepgramWarmConnectionManager(keepalive_interval=0.01)
+        config = deepgram_stream.DeepgramConnectionConfig(
+            api_key="test",
+            model="nova-3",
+            language="de",
+            sample_rate=16000,
+        )
+        exit_calls = 0
+        reconnect_calls = 0
+
+        class _Connection:
+            async def send_control(self, _message) -> None:
+                await asyncio.Event().wait()
+
+        class _Context:
+            async def __aexit__(self, *_args) -> None:
+                nonlocal exit_calls
+                exit_calls += 1
+
+        prepared = deepgram_stream._PreparedDeepgramConnection(
+            config=config,
+            context=cast(Any, _Context()),
+            connection=cast(Any, _Connection()),
+        )
+        manager._prepared = prepared
+        manager._enabled = True
+        manager._desired_config = config
+
+        async def _request_prewarm(requested_config) -> None:
+            nonlocal reconnect_calls
+            assert requested_config == config
+            reconnect_calls += 1
+
+        monkeypatch.setattr(manager, "_request_prewarm", _request_prewarm)
+        await asyncio.wait_for(manager._keepalive(prepared), timeout=0.5)
+        assert manager._prepared is None
+        return exit_calls, reconnect_calls
+
+    assert asyncio.run(_run()) == (1, 1)
+    assert "KeepAlive Timeout" in caplog.text
+
+
 def test_empty_finalize_grace_exits_early_on_late_final(monkeypatch) -> None:
     """Ein spätes Final-Transkript beendet die Empty-Finalize-Grace sofort.
 

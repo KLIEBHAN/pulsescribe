@@ -34,14 +34,18 @@ from typing import (
     AsyncContextManager,
     AsyncIterator,
     Callable,
+    Literal,
 )
 
 from config import (
     AUDIO_QUEUE_POLL_INTERVAL,
     CLI_BUFFER_LIMIT,
     DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS,
+    DEEPGRAM_CLOSE_STREAM_SEND_TIMEOUT,
     DEEPGRAM_CLOSE_TIMEOUT,
+    DEEPGRAM_FINALIZE_SEND_TIMEOUT,
     DEEPGRAM_KEEPALIVE_INTERVAL_SECONDS,
+    DEEPGRAM_KEEPALIVE_SEND_TIMEOUT,
     DEEPGRAM_TAIL_PADDING_SECONDS,
     DEEPGRAM_WS_URL,
     DEFAULT_DEEPGRAM_MODEL,
@@ -645,18 +649,26 @@ class DeepgramWarmConnectionManager:
         )
 
     async def _keepalive(self, prepared: _PreparedDeepgramConnection) -> None:
-        from deepgram.extensions.types.sockets import ListenV1ControlMessage
-
         try:
             while True:
                 await asyncio.sleep(self._keepalive_interval)
-                await prepared.connection.send_control(
-                    ListenV1ControlMessage(type="KeepAlive")
+                await _send_control_with_timeout(
+                    prepared.connection,
+                    "KeepAlive",
+                    timeout=DEEPGRAM_KEEPALIVE_SEND_TIMEOUT,
                 )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.debug("Deepgram Warm-WebSocket KeepAlive fehlgeschlagen: %s", exc)
+            if isinstance(exc, TimeoutError):
+                logger.debug(
+                    "Deepgram Warm-WebSocket KeepAlive Timeout nach %.2fs",
+                    DEEPGRAM_KEEPALIVE_SEND_TIMEOUT,
+                )
+            else:
+                logger.debug(
+                    "Deepgram Warm-WebSocket KeepAlive fehlgeschlagen: %s", exc
+                )
             if self._prepared is prepared:
                 self._prepared = None
             prepared.keepalive_task = None
@@ -1275,6 +1287,21 @@ def _emit_latency_event(
         logger.debug("Latency diagnostics callback failed: %s", exc)
 
 
+async def _send_control_with_timeout(
+    connection: AsyncV1SocketClient,
+    control_type: Literal["Finalize", "CloseStream", "KeepAlive"],
+    *,
+    timeout: float,
+) -> None:
+    """Send one Deepgram control frame with a hard coroutine deadline."""
+    from deepgram.extensions.types.sockets import ListenV1ControlMessage
+
+    await asyncio.wait_for(
+        connection.send_control(ListenV1ControlMessage(type=control_type)),
+        timeout=timeout,
+    )
+
+
 def _write_interim_text(path: Path, transcript: str) -> None:
     """Write interim text atomically so readers never see partial payloads."""
     if not hasattr(path, "with_name") or not hasattr(path, "replace"):
@@ -1569,6 +1596,41 @@ async def _graceful_shutdown(
     sample_rate: int = WHISPER_SAMPLE_RATE,
     latency_event_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
 ) -> None:
+    """Run bounded shutdown and always reap sender/listener tasks."""
+    try:
+        await _graceful_shutdown_sequence(
+            connection=connection,
+            state=state,
+            audio_queue=audio_queue,
+            send_task=send_task,
+            listen_task=listen_task,
+            session_id=session_id,
+            sample_rate=sample_rate,
+            latency_event_callback=latency_event_callback,
+        )
+    finally:
+        current_task = asyncio.current_task()
+        cleanup_tasks = [
+            task
+            for task in (send_task, listen_task)
+            if task is not current_task and not task.done()
+        ]
+        for task in cleanup_tasks:
+            task.cancel()
+        if cleanup_tasks:
+            await asyncio.gather(*cleanup_tasks, return_exceptions=True)
+
+
+async def _graceful_shutdown_sequence(
+    connection: AsyncV1SocketClient,
+    state: StreamState,
+    audio_queue: asyncio.Queue[bytes | None],
+    send_task: asyncio.Task[None],
+    listen_task: asyncio.Task[None],
+    session_id: str,
+    sample_rate: int = WHISPER_SAMPLE_RATE,
+    latency_event_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
+) -> None:
     """Sauberes Beenden der Streaming-Session.
 
     Führt die Shutdown-Sequenz in der richtigen Reihenfolge aus:
@@ -1586,8 +1648,6 @@ async def _graceful_shutdown(
         listen_task: Message-Listener Task
         session_id: Session-ID für Logging
     """
-    from deepgram.extensions.types.sockets import ListenV1ControlMessage
-
     # 1. Audio-Sender beenden (einziger Ort für das None-Sentinel)
     # Audio-Callbacks nutzen loop.call_soon_threadsafe(); einmal yielden, damit
     # bereits geplante letzte Chunks vor Tail-Padding und Sentinel in der Queue landen.
@@ -1613,60 +1673,112 @@ async def _graceful_shutdown(
     logger.info(f"[{session_id}] Sende Finalize...")
     _emit_latency_event(latency_event_callback, "deepgram_finalize_send")
     t_finalize_start = time.perf_counter()
+    finalize_sent = False
+    control_connection_usable = True
     try:
-        await connection.send_control(ListenV1ControlMessage(type="Finalize"))
-    except Exception as e:
-        logger.warning(f"[{session_id}] Finalize fehlgeschlagen: {e}")
-
-    # 3. Warten auf finale Transkripte
-    try:
-        await asyncio.wait_for(state.finalize_done.wait(), timeout=FINALIZE_TIMEOUT)
-        t_finalize = (time.perf_counter() - t_finalize_start) * 1000
-        logger.info(f"[{session_id}] Finalize abgeschlossen ({t_finalize:.0f}ms)")
-        _emit_latency_event(
-            latency_event_callback,
-            "deepgram_finalize_done",
-            elapsed_ms=round(t_finalize, 3),
+        await _send_control_with_timeout(
+            connection,
+            "Finalize",
+            timeout=DEEPGRAM_FINALIZE_SEND_TIMEOUT,
         )
-        if (
-            state.finalize_empty_ack_received
-            and not state.finalize_transcript_received
-            and DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS > 0
-        ):
-            # Nicht stur die volle Grace-Zeit warten: Sobald ein spätes
-            # Final-Transkript eintrifft, geht es sofort weiter.
-            try:
-                await asyncio.wait_for(
-                    state.final_transcript_event.wait(),
-                    timeout=DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS,
-                )
-                logger.debug(
-                    f"[{session_id}] Empty-Finalize-Grace: spätes Transkript "
-                    "eingetroffen, Grace vorzeitig beendet"
-                )
-            except asyncio.TimeoutError:
-                pass
+        finalize_sent = True
     except asyncio.TimeoutError:
-        t_finalize = (time.perf_counter() - t_finalize_start) * 1000
+        # asyncio.wait_for cancels send_control. WebSocket writes aren't safe to
+        # reuse after cancellation, so leave closure to the connection context.
+        control_connection_usable = False
         logger.warning(
-            f"[{session_id}] Finalize-Timeout nach {t_finalize:.0f}ms "
-            f"(max: {FINALIZE_TIMEOUT}s)"
+            f"[{session_id}] Finalize-Send Timeout nach "
+            f"{DEEPGRAM_FINALIZE_SEND_TIMEOUT:.2f}s"
         )
         _emit_latency_event(
             latency_event_callback,
-            "deepgram_finalize_timeout",
-            elapsed_ms=round(t_finalize, 3),
-            timeout_s=FINALIZE_TIMEOUT,
+            "deepgram_finalize_send_timeout",
+            timeout_s=DEEPGRAM_FINALIZE_SEND_TIMEOUT,
+        )
+    except Exception as exc:
+        logger.warning(f"[{session_id}] Finalize fehlgeschlagen: {exc}")
+        _emit_latency_event(
+            latency_event_callback,
+            "deepgram_finalize_send_failed",
         )
 
-    # 4. CloseStream senden
-    logger.info(f"[{session_id}] Sende CloseStream...")
-    _emit_latency_event(latency_event_callback, "deepgram_close_send")
-    try:
-        await connection.send_control(ListenV1ControlMessage(type="CloseStream"))
-        logger.info(f"[{session_id}] CloseStream gesendet")
-    except Exception as e:
-        logger.warning(f"[{session_id}] CloseStream fehlgeschlagen: {e}")
+    # 3. Nur nach erfolgreich gesendetem Finalize auf den Ack warten.
+    if finalize_sent:
+        try:
+            await asyncio.wait_for(state.finalize_done.wait(), timeout=FINALIZE_TIMEOUT)
+            t_finalize = (time.perf_counter() - t_finalize_start) * 1000
+            logger.info(f"[{session_id}] Finalize abgeschlossen ({t_finalize:.0f}ms)")
+            _emit_latency_event(
+                latency_event_callback,
+                "deepgram_finalize_done",
+                elapsed_ms=round(t_finalize, 3),
+            )
+            if (
+                state.finalize_empty_ack_received
+                and not state.finalize_transcript_received
+                and DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS > 0
+            ):
+                # Nicht stur die volle Grace-Zeit warten: Sobald ein spätes
+                # Final-Transkript eintrifft, geht es sofort weiter.
+                try:
+                    await asyncio.wait_for(
+                        state.final_transcript_event.wait(),
+                        timeout=DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS,
+                    )
+                    logger.debug(
+                        f"[{session_id}] Empty-Finalize-Grace: spätes Transkript "
+                        "eingetroffen, Grace vorzeitig beendet"
+                    )
+                except asyncio.TimeoutError:
+                    pass
+        except asyncio.TimeoutError:
+            t_finalize = (time.perf_counter() - t_finalize_start) * 1000
+            logger.warning(
+                f"[{session_id}] Finalize-Timeout nach {t_finalize:.0f}ms "
+                f"(max: {FINALIZE_TIMEOUT}s)"
+            )
+            _emit_latency_event(
+                latency_event_callback,
+                "deepgram_finalize_timeout",
+                elapsed_ms=round(t_finalize, 3),
+                timeout_s=FINALIZE_TIMEOUT,
+            )
+
+    # 4. CloseStream nur auf einer weiterhin nutzbaren Verbindung senden.
+    if control_connection_usable:
+        logger.info(f"[{session_id}] Sende CloseStream...")
+        _emit_latency_event(latency_event_callback, "deepgram_close_send")
+        try:
+            await _send_control_with_timeout(
+                connection,
+                "CloseStream",
+                timeout=DEEPGRAM_CLOSE_STREAM_SEND_TIMEOUT,
+            )
+            logger.info(f"[{session_id}] CloseStream gesendet")
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"[{session_id}] CloseStream-Send Timeout nach "
+                f"{DEEPGRAM_CLOSE_STREAM_SEND_TIMEOUT:.2f}s"
+            )
+            _emit_latency_event(
+                latency_event_callback,
+                "deepgram_close_send_timeout",
+                timeout_s=DEEPGRAM_CLOSE_STREAM_SEND_TIMEOUT,
+            )
+        except Exception as exc:
+            logger.warning(f"[{session_id}] CloseStream fehlgeschlagen: {exc}")
+            _emit_latency_event(
+                latency_event_callback,
+                "deepgram_close_send_failed",
+            )
+    else:
+        logger.info(
+            f"[{session_id}] Überspringe CloseStream nach abgebrochenem Finalize-Send"
+        )
+        _emit_latency_event(
+            latency_event_callback,
+            "deepgram_close_send_skipped",
+        )
 
     # 5. Listener beenden (Guard: nicht den eigenen Task canceln)
     logger.info(f"[{session_id}] Beende Listener...")
@@ -2021,6 +2133,11 @@ async def deepgram_stream_core(
         play_ready=play_ready,
         stream_start=stream_start,
         audio_level_callback=audio_level_callback,
+    )
+    _emit_latency_event(
+        latency_event_callback,
+        "audio_stream_started",
+        elapsed_ms=round((time.perf_counter() - stream_start) * 1000, 3),
     )
 
     create_connection = connection_factory or _create_deepgram_connection
