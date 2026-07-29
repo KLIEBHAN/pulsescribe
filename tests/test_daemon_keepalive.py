@@ -67,15 +67,16 @@ def test_keepalive_stops_after_local_generation_is_cancelled():
             model="large",
         )
         assert called.wait(timeout=1.0)
+        calls_before_cancel = provider.keepalive.call_count
         daemon.mode = "openai"
         keepalive_thread = daemon._keepalive_thread
         daemon._cancel_local_warm_lifecycle()
         assert keepalive_thread is not None
         keepalive_thread.join(timeout=1.0)
+        assert not keepalive_thread.is_alive()
 
-    calls_after_stop = provider.keepalive.call_count
     assert daemon._keepalive_thread is None
-    assert provider.keepalive.call_count == calls_after_stop
+    assert provider.keepalive.call_count == calls_before_cancel
 
 
 def test_blocked_old_keepalive_starts_pending_generation_after_exit():
@@ -101,7 +102,8 @@ def test_blocked_old_keepalive_starts_pending_generation_after_exit():
         )
         assert old_started.wait(timeout=1.0)
 
-        new_signature = ("local", "mlx", "turbo")
+        daemon.model = "turbo"
+        new_signature = daemon._local_provider_memory_signature()
         with daemon._local_warm_lock:
             daemon._local_warm_generation = 2
             daemon._local_preload_signature = new_signature
@@ -158,7 +160,8 @@ def test_stale_keepalive_start_cannot_overwrite_current_pending_request():
         stale_thread.start()
         assert stale_prepare_started.wait(timeout=1.0)
 
-        current_signature = ("local", "mlx", "turbo")
+        daemon.model = "turbo"
+        current_signature = daemon._local_provider_memory_signature()
         with daemon._local_warm_lock:
             daemon._local_warm_generation = 2
             daemon._local_preload_signature = current_signature

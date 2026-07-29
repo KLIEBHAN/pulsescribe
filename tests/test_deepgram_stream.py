@@ -1064,7 +1064,7 @@ def _graceful_shutdown_tasks(audio_queue):
     return _send_worker, _listen_worker
 
 
-def test_finalize_send_timeout_skips_ack_wait_and_still_closes(monkeypatch) -> None:
+def test_finalize_send_timeout_skips_ack_wait_and_close_stream(monkeypatch) -> None:
     class _FakeControlMessage:
         def __init__(self, type: str) -> None:
             self.type = type
@@ -1108,9 +1108,10 @@ def test_finalize_send_timeout_skips_ack_wait_and_still_closes(monkeypatch) -> N
         return controls, events, listen_task.done()
 
     controls, events, listener_done = asyncio.run(_run())
-    assert controls == ["Finalize", "CloseStream"]
+    assert controls == ["Finalize"]
     assert "deepgram_finalize_send_timeout" in events
     assert "deepgram_finalize_timeout" not in events
+    assert "deepgram_close_send_skipped" in events
     assert listener_done
 
 
@@ -1208,7 +1209,11 @@ def test_graceful_shutdown_cancellation_reaps_stream_tasks(monkeypatch) -> None:
     assert asyncio.run(_run()) == (True, True)
 
 
-def test_warm_keepalive_timeout_discards_and_reconnects(monkeypatch) -> None:
+def test_warm_keepalive_timeout_discards_and_reconnects(
+    monkeypatch,
+    caplog,
+) -> None:
+    caplog.set_level(logging.DEBUG, logger=deepgram_stream.logger.name)
     monkeypatch.setattr(deepgram_stream, "DEEPGRAM_KEEPALIVE_SEND_TIMEOUT", 0.01)
 
     async def _run() -> tuple[int, int]:
@@ -1251,6 +1256,7 @@ def test_warm_keepalive_timeout_discards_and_reconnects(monkeypatch) -> None:
         return exit_calls, reconnect_calls
 
     assert asyncio.run(_run()) == (1, 1)
+    assert "KeepAlive Timeout" in caplog.text
 
 
 def test_empty_finalize_grace_exits_early_on_late_final(monkeypatch) -> None:

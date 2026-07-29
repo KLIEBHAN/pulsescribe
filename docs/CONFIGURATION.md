@@ -168,9 +168,9 @@ Both hotkeys can be active simultaneously.
 | `PULSESCRIBE_DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS` | `0`-e.g. `1.0` seconds     | `0.10` (`snappy`, default), `0.25` (`safe`) | Extra wait after Deepgram acknowledges Finalize without a transcript, in case the final transcript arrives late. Ends early as soon as a late final transcript arrives. Applies to Deepgram streaming on all platforms; requires restart. |
 | `PULSESCRIBE_DEEPGRAM_WARM_WEBSOCKET`      | `true`, `false`                     | `true` | Preconnect the next Deepgram streaming session on Windows. Each socket is consumed once and replaced after `CloseStream`. |
 | `PULSESCRIBE_DEEPGRAM_KEEPALIVE_INTERVAL_SECONDS` | `1`-`8` seconds              | `3` | KeepAlive interval for an unused preconnected Deepgram socket. |
-| `PULSESCRIBE_DEEPGRAM_FINALIZE_SEND_TIMEOUT` | `0.05`-`10` seconds | `1.0` | Hard deadline for sending Deepgram `Finalize`. A timeout skips the response wait and continues with bounded close. |
-| `PULSESCRIBE_DEEPGRAM_CLOSE_STREAM_SEND_TIMEOUT` | `0.05`-`10` seconds | `0.5` | Hard deadline for sending `CloseStream`; listener cleanup still runs after a timeout. |
-| `PULSESCRIBE_DEEPGRAM_KEEPALIVE_SEND_TIMEOUT` | `0.05`-`10` seconds | `1.0` | Hard deadline for a warm-socket KeepAlive; timed-out sockets are discarded and replenished. |
+| `PULSESCRIBE_DEEPGRAM_FINALIZE_SEND_TIMEOUT` | `0.05`-`10` seconds | `1.0` | Hard deadline for sending Deepgram `Finalize`. A timeout skips the response wait and closes the connection without another control send. Applies to Deepgram streaming on all platforms. |
+| `PULSESCRIBE_DEEPGRAM_CLOSE_STREAM_SEND_TIMEOUT` | `0.05`-`10` seconds | `0.5` | Hard deadline for sending `CloseStream`; listener cleanup still runs after a timeout. Applies to Deepgram streaming on all platforms. |
+| `PULSESCRIBE_DEEPGRAM_KEEPALIVE_SEND_TIMEOUT` | `0.05`-`10` seconds | `1.0` | Hard deadline for a warm-socket KeepAlive; timed-out sockets are discarded and replenished. Applies wherever warm Deepgram sockets are enabled. |
 
 Set stop grace to `0` to disable the extra tail capture. Changing `PULSESCRIBE_WINDOWS_LATENCY_PRESET`, `PULSESCRIBE_WINDOWS_RESPONSIVENESS_BOOST`, `PULSESCRIBE_DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS`, the KeepAlive interval, or a Deepgram control-send timeout requires restarting PulseScribe; the other Windows values above are read when settings reload.
 

@@ -25,6 +25,8 @@ _ENABLE_ENV = "PULSESCRIBE_MACOS_LATENCY_DIAGNOSTICS"
 _FILE_ENV = "PULSESCRIBE_MACOS_LATENCY_DIAGNOSTICS_FILE"
 _PATH_ENV = "PULSESCRIBE_MACOS_LATENCY_DIAGNOSTICS_PATH"
 _DEFAULT_LOG_FILENAME = "macos_latency.jsonl"
+_MAX_LOG_BYTES = 1_000_000
+_FILE_WRITE_LOCK = threading.Lock()
 
 _SUMMARY_PAIRS = {
     "hotkey_to_audio_ready": ("hotkey_accepted", "audio_stream_started"),
@@ -117,11 +119,14 @@ class MacOSLatencyRun:
         if not self.enabled:
             return
 
-        now = time.perf_counter()
         with self._lock:
             if self._finished:
                 return
-            self._append_event_locked(name, now=now, fields=fields)
+            self._append_event_locked(
+                name,
+                now=time.perf_counter(),
+                fields=fields,
+            )
 
     def mark_once(self, name: str, **fields: Any) -> None:
         """Record an event only once."""
@@ -150,11 +155,14 @@ class MacOSLatencyRun:
         if not self.enabled:
             return None
 
-        now = time.perf_counter()
         with self._lock:
             if self._finished:
                 return None
-            self._append_event_locked("finish", now=now, fields={})
+            self._append_event_locked(
+                "finish",
+                now=time.perf_counter(),
+                fields={},
+            )
             self._finished = True
             summary = self._build_summary(outcome=outcome, error_type=error_type)
         self._log_summary(summary)
@@ -215,11 +223,23 @@ class MacOSLatencyRun:
         )
 
     def _append_jsonl(self, summary: dict[str, Any]) -> None:
+        encoded = json.dumps(summary, ensure_ascii=False, sort_keys=True) + "\n"
         try:
-            self._log_path.parent.mkdir(parents=True, exist_ok=True)
-            with self._log_path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(summary, ensure_ascii=False, sort_keys=True))
-                handle.write("\n")
+            with _FILE_WRITE_LOCK:
+                self._log_path.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    current_size = self._log_path.stat().st_size
+                except FileNotFoundError:
+                    current_size = 0
+                if (
+                    current_size > 0
+                    and current_size + len(encoded.encode("utf-8")) > _MAX_LOG_BYTES
+                ):
+                    rotated_path = self._log_path.with_name(f"{self._log_path.name}.1")
+                    rotated_path.unlink(missing_ok=True)
+                    self._log_path.replace(rotated_path)
+                with self._log_path.open("a", encoding="utf-8") as handle:
+                    handle.write(encoded)
         except OSError as exc:
             self._logger.debug("macOS latency diagnostics write failed: %s", exc)
 

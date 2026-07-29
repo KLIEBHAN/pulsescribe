@@ -180,6 +180,69 @@ def test_worker_terminal_is_dispatched_and_claimed_once_on_main():
     assert daemon._latency_run is None
 
 
+def test_worker_error_terminal_finishes_latency_run_on_main():
+    daemon = PulseScribeDaemon(mode="local")
+    result_queue = queue.Queue()
+    daemon._active_run_id = 8
+    daemon._result_queue = result_queue
+    daemon._worker_abandoned = False
+    run = MagicMock()
+    daemon._latency_run = run
+    terminal = RuntimeError("boom")
+    scheduled: list[object] = []
+    fake_queue = MagicMock()
+    fake_queue.addOperationWithBlock_.side_effect = scheduled.append
+    foundation = SimpleNamespace(
+        NSOperationQueue=SimpleNamespace(mainQueue=lambda: fake_queue)
+    )
+
+    with (
+        patch.dict(sys.modules, {"Foundation": foundation}),
+        patch.object(daemon, "_enter_error_state") as enter_error,
+        patch.object(daemon, "_stop_result_polling"),
+        patch("pulsescribe_daemon.emergency_log"),
+    ):
+        worker = threading.Thread(
+            target=lambda: daemon._publish_worker_terminal(
+                run_id=8,
+                result_queue_ref=result_queue,
+                terminal=terminal,
+                latency_run=run,
+            )
+        )
+        worker.start()
+        worker.join(timeout=1.0)
+        assert not worker.is_alive()
+        assert len(scheduled) == 1
+        scheduled[0]()
+
+    run.finish.assert_called_once_with("error", error_type="RuntimeError")
+    enter_error.assert_called_once()
+
+
+def test_publish_worker_terminal_falls_back_to_polling_without_foundation():
+    daemon = PulseScribeDaemon(mode="local")
+    result_queue = queue.Queue()
+    run = MagicMock()
+    terminal = DaemonMessage(type=MessageType.TRANSCRIPT_RESULT, payload="fallback")
+    foundation = SimpleNamespace()
+
+    with patch.dict(sys.modules, {"Foundation": foundation}):
+        worker = threading.Thread(
+            target=lambda: daemon._publish_worker_terminal(
+                run_id=1,
+                result_queue_ref=result_queue,
+                terminal=terminal,
+                latency_run=run,
+            )
+        )
+        worker.start()
+        worker.join(timeout=1.0)
+
+    assert not worker.is_alive()
+    assert result_queue.get_nowait() is terminal
+
+
 def test_stale_worker_terminal_cannot_update_current_run():
     daemon = PulseScribeDaemon(mode="local")
     old_queue = queue.Queue()

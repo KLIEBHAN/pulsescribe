@@ -2674,6 +2674,8 @@ class PulseScribeDaemon:
                 )
                 mode_for_run = "local"
 
+            # Mark provider completion before performance-log bookkeeping; the
+            # finally marker below only fills this event when transcription raises.
             latency_run.mark_once("transcribe_done")
             self._log_transcription_performance(
                 provider=provider,

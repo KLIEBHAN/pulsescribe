@@ -161,9 +161,9 @@ Beide Hotkeys können gleichzeitig aktiv sein.
 | `PULSESCRIBE_DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS` | `0`-z.B. `1.0` Sekunden    | `0.10` (`snappy`, Default), `0.25` (`safe`) | Zusatzfenster, wenn Deepgram Finalize ohne Transkript quittiert und das finale Transkript später eintreffen könnte. Endet vorzeitig, sobald ein spätes Final-Transkript ankommt. Gilt für Deepgram-Streaming auf allen Plattformen; benötigt Neustart. |
 | `PULSESCRIBE_DEEPGRAM_WARM_WEBSOCKET`      | `true`, `false`                     | `true` | Verbindet unter Windows die nächste Deepgram-Streaming-Session vorab. Jeder Socket wird einmal genutzt und nach `CloseStream` ersetzt. |
 | `PULSESCRIBE_DEEPGRAM_KEEPALIVE_INTERVAL_SECONDS` | `1`-`8` Sekunden             | `3` | KeepAlive-Intervall für einen ungenutzten vorgewärmten Deepgram-Socket. |
-| `PULSESCRIBE_DEEPGRAM_FINALIZE_SEND_TIMEOUT` | `0.05`-`10` Sekunden | `1.0` | Harte Grenze für das Senden von `Finalize`. Bei Timeout wird der Ack-Wait übersprungen und mit dem begrenzten Close fortgefahren. |
-| `PULSESCRIBE_DEEPGRAM_CLOSE_STREAM_SEND_TIMEOUT` | `0.05`-`10` Sekunden | `0.5` | Harte Grenze für `CloseStream`; der Listener-Cleanup läuft auch nach einem Timeout. |
-| `PULSESCRIBE_DEEPGRAM_KEEPALIVE_SEND_TIMEOUT` | `0.05`-`10` Sekunden | `1.0` | Harte Grenze für Warm-Socket-KeepAlive; betroffene Sockets werden verworfen und ersetzt. |
+| `PULSESCRIBE_DEEPGRAM_FINALIZE_SEND_TIMEOUT` | `0.05`-`10` Sekunden | `1.0` | Harte Grenze für das Senden von `Finalize`. Bei Timeout wird der Ack-Wait übersprungen und die Verbindung ohne weiteren Control-Send geschlossen. Gilt für Deepgram-Streaming auf allen Plattformen. |
+| `PULSESCRIBE_DEEPGRAM_CLOSE_STREAM_SEND_TIMEOUT` | `0.05`-`10` Sekunden | `0.5` | Harte Grenze für `CloseStream`; der Listener-Cleanup läuft auch nach einem Timeout. Gilt für Deepgram-Streaming auf allen Plattformen. |
+| `PULSESCRIBE_DEEPGRAM_KEEPALIVE_SEND_TIMEOUT` | `0.05`-`10` Sekunden | `1.0` | Harte Grenze für Warm-Socket-KeepAlive; betroffene Sockets werden verworfen und ersetzt. Gilt überall, wo vorgewärmte Deepgram-Sockets aktiviert sind. |
 
 Mit `0` lässt sich der zusätzliche Nachlauf deaktivieren. Änderungen an `PULSESCRIBE_WINDOWS_LATENCY_PRESET`, `PULSESCRIBE_WINDOWS_RESPONSIVENESS_BOOST`, `PULSESCRIBE_DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS`, dem KeepAlive-Intervall oder einem Deepgram-Control-Send-Timeout benötigen einen Neustart; die übrigen Windows-Werte oben werden beim Settings-Reload gelesen.
 

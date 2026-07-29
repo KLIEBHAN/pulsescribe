@@ -1674,6 +1674,7 @@ async def _graceful_shutdown_sequence(
     _emit_latency_event(latency_event_callback, "deepgram_finalize_send")
     t_finalize_start = time.perf_counter()
     finalize_sent = False
+    control_connection_usable = True
     try:
         await _send_control_with_timeout(
             connection,
@@ -1682,6 +1683,9 @@ async def _graceful_shutdown_sequence(
         )
         finalize_sent = True
     except asyncio.TimeoutError:
+        # asyncio.wait_for cancels send_control. WebSocket writes aren't safe to
+        # reuse after cancellation, so leave closure to the connection context.
+        control_connection_usable = False
         logger.warning(
             f"[{session_id}] Finalize-Send Timeout nach "
             f"{DEEPGRAM_FINALIZE_SEND_TIMEOUT:.2f}s"
@@ -1740,31 +1744,40 @@ async def _graceful_shutdown_sequence(
                 timeout_s=FINALIZE_TIMEOUT,
             )
 
-    # 4. CloseStream senden
-    logger.info(f"[{session_id}] Sende CloseStream...")
-    _emit_latency_event(latency_event_callback, "deepgram_close_send")
-    try:
-        await _send_control_with_timeout(
-            connection,
-            "CloseStream",
-            timeout=DEEPGRAM_CLOSE_STREAM_SEND_TIMEOUT,
-        )
-        logger.info(f"[{session_id}] CloseStream gesendet")
-    except asyncio.TimeoutError:
-        logger.warning(
-            f"[{session_id}] CloseStream-Send Timeout nach "
-            f"{DEEPGRAM_CLOSE_STREAM_SEND_TIMEOUT:.2f}s"
+    # 4. CloseStream nur auf einer weiterhin nutzbaren Verbindung senden.
+    if control_connection_usable:
+        logger.info(f"[{session_id}] Sende CloseStream...")
+        _emit_latency_event(latency_event_callback, "deepgram_close_send")
+        try:
+            await _send_control_with_timeout(
+                connection,
+                "CloseStream",
+                timeout=DEEPGRAM_CLOSE_STREAM_SEND_TIMEOUT,
+            )
+            logger.info(f"[{session_id}] CloseStream gesendet")
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"[{session_id}] CloseStream-Send Timeout nach "
+                f"{DEEPGRAM_CLOSE_STREAM_SEND_TIMEOUT:.2f}s"
+            )
+            _emit_latency_event(
+                latency_event_callback,
+                "deepgram_close_send_timeout",
+                timeout_s=DEEPGRAM_CLOSE_STREAM_SEND_TIMEOUT,
+            )
+        except Exception as exc:
+            logger.warning(f"[{session_id}] CloseStream fehlgeschlagen: {exc}")
+            _emit_latency_event(
+                latency_event_callback,
+                "deepgram_close_send_failed",
+            )
+    else:
+        logger.info(
+            f"[{session_id}] Überspringe CloseStream nach abgebrochenem Finalize-Send"
         )
         _emit_latency_event(
             latency_event_callback,
-            "deepgram_close_send_timeout",
-            timeout_s=DEEPGRAM_CLOSE_STREAM_SEND_TIMEOUT,
-        )
-    except Exception as exc:
-        logger.warning(f"[{session_id}] CloseStream fehlgeschlagen: {exc}")
-        _emit_latency_event(
-            latency_event_callback,
-            "deepgram_close_send_failed",
+            "deepgram_close_send_skipped",
         )
 
     # 5. Listener beenden (Guard: nicht den eigenen Task canceln)
