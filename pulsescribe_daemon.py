@@ -54,7 +54,11 @@ emergency_log("=== Booting PulseScribe Daemon ===")
 
 try:
     from config import INTERIM_FILE, VAD_THRESHOLD, WHISPER_SAMPLE_RATE
-    from config import TRANSCRIBING_TIMEOUT, PRELOAD_WARMUP_DURATION, LOCAL_KEEPALIVE_INTERVAL
+    from config import (
+        TRANSCRIBING_TIMEOUT,
+        PRELOAD_WARMUP_DURATION,
+        LOCAL_KEEPALIVE_INTERVAL,
+    )
     from utils import setup_logging, show_error_alert
     from config import DEFAULT_DEEPGRAM_MODEL, DEFAULT_LOCAL_MODEL
     from utils.env import (
@@ -77,9 +81,16 @@ try:
         is_permission_related_message,
     )
     from utils.log_tail import read_file_tail_text
+    from utils.macos_latency_diagnostics import (
+        MacOSLatencyRun,
+        start_macos_latency_run,
+    )
     from utils.timing import redacted_text_summary
     from ui import MenuBarController, OverlayController
-    from ui.daemon_status_feedback import build_daemon_status_label, infer_daemon_status_error
+    from ui.daemon_status_feedback import (
+        build_daemon_status_label,
+        infer_daemon_status_error,
+    )
     from ui.menubar import build_menubar_title
 except Exception as e:
     emergency_log(f"CRITICAL IMPORT ERROR: {e}")
@@ -165,6 +176,15 @@ class EffectiveDaemonOptions:
     toggle_hotkey: str | None
     hold_hotkey: str | None
 
+
+@dataclass(frozen=True)
+class LocalKeepaliveRequest:
+    provider: object
+    generation: int
+    signature: tuple[str | None, ...]
+    model: str | None
+
+
 # =============================================================================
 # PulseScribeDaemon: Hauptklasse
 # =============================================================================
@@ -224,7 +244,9 @@ class PulseScribeDaemon:
         self._last_rtf: float | None = (
             None  # Real-Time Factor der letzten Transkription
         )
-        self._last_was_refined: bool = False  # Ob Refinement den Text tatsächlich verändert hat
+        self._last_was_refined: bool = (
+            False  # Ob Refinement den Text tatsächlich verändert hat
+        )
 
         # Stop-Event für _deepgram_stream_core
         self._stop_event: threading.Event | None = None
@@ -285,9 +307,23 @@ class PulseScribeDaemon:
         self._pending_hotkey_reconfigure = False
         # Preload-Status für lokales Modell (für Performance-Debugging)
         self._local_preload_complete = threading.Event()
-        # Keep-Alive Timer für Metal-Shader (verhindert Cache-Eviction bei Inaktivität)
-        self._keepalive_stop_event = threading.Event()
+        # Generation-bound local preload/keepalive lifecycle.
+        self._local_warm_lock = threading.Lock()
+        self._local_cache_reconcile_lock = threading.Lock()
+        self._local_warm_generation = 0
+        self._local_preload_signature: tuple[str | None, ...] | None = None
+        self._local_preload_thread: threading.Thread | None = None
+        self._keepalive_stop_event: threading.Event | None = None
         self._keepalive_thread: threading.Thread | None = None
+        self._keepalive_request: LocalKeepaliveRequest | None = None
+        self._pending_keepalive_request: LocalKeepaliveRequest | None = None
+        # Per-run terminal delivery bypasses timer polling for results/errors.
+        self._terminal_claimed_run_id: int | None = None
+        self._latency_run: MacOSLatencyRun | None = None
+        # Import-only audio prewarm; never opens or probes the microphone.
+        self._audio_prewarm_lock = threading.Lock()
+        self._audio_prewarm_started = False
+        self._audio_prewarm_complete = threading.Event()
 
     # =============================================================================
     # Thread-safe State Properties
@@ -346,6 +382,115 @@ class PulseScribeDaemon:
             fn(*args, **kwargs)
         except Exception:
             pass
+
+    def _prewarm_audio_dependencies_async(self) -> bool:
+        """Import the lazy recording stack without touching microphone hardware."""
+        with self._audio_prewarm_lock:
+            if self._audio_prewarm_started:
+                return False
+            self._audio_prewarm_started = True
+            self._audio_prewarm_complete.clear()
+
+        def _prewarm() -> None:
+            import importlib
+
+            try:
+                for module_name in ("numpy", "sounddevice", "soundfile"):
+                    importlib.import_module(module_name)
+                logger.debug("Audio-Abhängigkeiten vorab geladen")
+            except Exception as exc:
+                logger.debug("Audio-Prewarm fehlgeschlagen: %s", exc)
+            finally:
+                self._audio_prewarm_complete.set()
+
+        try:
+            threading.Thread(
+                target=_prewarm,
+                daemon=True,
+                name="AudioDependencyPrewarm",
+            ).start()
+        except Exception:
+            with self._audio_prewarm_lock:
+                self._audio_prewarm_started = False
+            self._audio_prewarm_complete.set()
+            return False
+        return True
+
+    def _publish_worker_terminal(
+        self,
+        *,
+        run_id: int,
+        result_queue_ref: queue.Queue[DaemonMessage | Exception],
+        terminal: DaemonMessage | Exception,
+        latency_run: MacOSLatencyRun,
+    ) -> None:
+        """Deliver a terminal worker outcome promptly on the AppKit main thread."""
+        event_name = (
+            "error_published" if isinstance(terminal, Exception) else "result_published"
+        )
+        latency_run.mark(event_name)
+
+        # Worker methods are called synchronously by a few tests and CLI helpers.
+        # Keep the legacy polling fallback in that unsupported production shape.
+        if threading.current_thread() is threading.main_thread():
+            result_queue_ref.put(terminal)
+            return
+
+        def _deliver() -> None:
+            self._claim_and_handle_worker_terminal(
+                run_id=run_id,
+                result_queue_ref=result_queue_ref,
+                terminal=terminal,
+                latency_run=latency_run,
+            )
+
+        try:
+            from Foundation import NSOperationQueue  # type: ignore[import-not-found]
+
+            NSOperationQueue.mainQueue().addOperationWithBlock_(_deliver)
+        except Exception as exc:
+            logger.debug(
+                "Terminal-Main-Dispatch fehlgeschlagen, nutze Polling: %s", exc
+            )
+            result_queue_ref.put(terminal)
+
+    def _claim_and_handle_worker_terminal(
+        self,
+        *,
+        run_id: int,
+        result_queue_ref: queue.Queue[DaemonMessage | Exception],
+        terminal: DaemonMessage | Exception,
+        latency_run: MacOSLatencyRun,
+    ) -> bool:
+        """Handle the first terminal outcome for the current, non-abandoned run."""
+        with self._state_lock:
+            is_current = (
+                run_id == self._active_run_id
+                and result_queue_ref is self._result_queue
+                and not self._worker_abandoned
+            )
+            if not is_current or self._terminal_claimed_run_id == run_id:
+                claimed = False
+            else:
+                self._terminal_claimed_run_id = run_id
+                if self._latency_run is latency_run:
+                    self._latency_run = None
+                claimed = True
+
+        if not claimed:
+            latency_run.finish("stale")
+            return False
+
+        latency_run.mark("result_received_main")
+        self._stop_result_polling()
+        if isinstance(terminal, Exception):
+            self._handle_worker_error(terminal, latency_run=latency_run)
+        else:
+            self._handle_transcript_result(
+                str(terminal.payload or ""),
+                latency_run=latency_run,
+            )
+        return True
 
     def _set_worker_phase(
         self, phase: str, *, run_id: int | None = None, force: bool = False
@@ -687,128 +832,300 @@ class PulseScribeDaemon:
         end = min(mono.shape[0], last * hop + window + int(pad_s * sample_rate))
         return mono[start:end].astype(np.float32, copy=False)
 
-    def _preload_local_model_async(self) -> None:
-        """Lädt lokales Modell im Hintergrund vor (reduziert erste Latenz)."""
+    def _is_local_warm_generation_current(
+        self,
+        generation: int,
+        signature: tuple[str | None, ...],
+    ) -> bool:
+        with self._local_warm_lock:
+            return (
+                self.mode == "local"
+                and generation == self._local_warm_generation
+                and signature == self._local_preload_signature
+            )
+
+    def _cancel_local_warm_lifecycle(self, *, wait: bool = False) -> None:
+        """Invalidate stale preload completions and stop the current keepalive."""
+        with self._local_warm_lock:
+            self._local_warm_generation += 1
+            self._local_preload_signature = None
+            self._local_preload_complete.clear()
+            self._pending_keepalive_request = None
+        self._stop_keepalive_timer(wait=wait)
+
+    def _preload_local_model_async(self) -> bool:
+        """Preload one local model generation without spawning duplicate workers."""
         if self.mode != "local":
-            return
+            self._cancel_local_warm_lifecycle()
+            return False
+
         provider = self._get_provider("local")
         if not hasattr(provider, "preload"):
-            return
+            return False
 
-        # Event zurücksetzen falls ein vorheriger Preload lief (z.B. nach Settings-Reload)
-        self._local_preload_complete.clear()
+        signature = self._local_provider_memory_signature()
+        model_snapshot = self.model
+        language_snapshot = self.language or "en"
 
-        def _preload():
-            t0 = time.perf_counter()
-            model_name = self.model or "turbo"
-            # Phase 1: Loading
-            self._update_state(AppState.LOADING, f"Loading {model_name}...")
-            try:
-                provider.preload(self.model)  # type: ignore[attr-defined]
-                t_preload = time.perf_counter() - t0
-                # Runtime-Info für Logging (Device, Compute-Type)
-                runtime_info = ""
-                if hasattr(provider, "get_runtime_info"):
-                    info = provider.get_runtime_info()
-                    device_str = (info.get("device") or "unknown").upper()
-                    compute = info.get("compute_type")
-                    runtime_info = f", Device: {device_str}"
-                    if compute:
-                        runtime_info += f", Compute: {compute}"
-                logger.info(f"Lokales Modell vorab geladen ({t_preload:.2f}s{runtime_info})")
-                warmup_flag = get_env_bool("PULSESCRIBE_LOCAL_WARMUP")
-                backend = getattr(provider, "backend", None) or getattr(
-                    provider, "_backend", None
-                )
-                # Daemon-Warmup nur fuer whisper/faster (MLX/Lightning haben eigenes Warmup)
-                should_warmup = (
-                    warmup_flag
-                    if warmup_flag is not None
-                    else backend in ("whisper", "faster")
-                )
-                if should_warmup and hasattr(provider, "transcribe_audio"):
-                    import numpy as np
+        with self._local_warm_lock:
+            if (
+                self._local_preload_signature == signature
+                and self._local_preload_thread is not None
+            ):
+                return False
+            if (
+                self._local_preload_signature == signature
+                and self._local_preload_complete.is_set()
+            ):
+                return False
 
-                    self._update_state(AppState.LOADING, "Warming up...")
-                    warmup_samples = int(WHISPER_SAMPLE_RATE * PRELOAD_WARMUP_DURATION)
-                    warmup_audio = np.zeros(warmup_samples, dtype=np.float32)
-                    try:
-                        provider.transcribe_audio(  # type: ignore[attr-defined]
-                            warmup_audio,
-                            model=self.model,
-                            language=self.language or "en",
+            self._local_warm_generation += 1
+            generation = self._local_warm_generation
+            self._local_preload_signature = signature
+            self._local_preload_complete.clear()
+
+            def _preload() -> None:
+                t0 = time.perf_counter()
+                model_name = model_snapshot or "turbo"
+                try:
+                    if self._is_local_warm_generation_current(generation, signature):
+                        if self._current_state in (AppState.IDLE, AppState.LOADING):
+                            self._update_state(
+                                AppState.LOADING,
+                                f"Loading {model_name}...",
+                            )
+                    provider.preload(model_snapshot)  # type: ignore[attr-defined]
+                    t_preload = time.perf_counter() - t0
+                    if not self._is_local_warm_generation_current(
+                        generation, signature
+                    ):
+                        return
+
+                    runtime_info = ""
+                    if hasattr(provider, "get_runtime_info"):
+                        info = provider.get_runtime_info()
+                        device_str = (info.get("device") or "unknown").upper()
+                        compute = info.get("compute_type")
+                        runtime_info = f", Device: {device_str}"
+                        if compute:
+                            runtime_info += f", Compute: {compute}"
+                    logger.info(
+                        f"Lokales Modell vorab geladen ({t_preload:.2f}s{runtime_info})"
+                    )
+
+                    warmup_flag = get_env_bool("PULSESCRIBE_LOCAL_WARMUP")
+                    backend = getattr(provider, "backend", None) or getattr(
+                        provider, "_backend", None
+                    )
+                    should_warmup = (
+                        warmup_flag
+                        if warmup_flag is not None
+                        else backend in ("whisper", "faster")
+                    )
+                    if should_warmup and hasattr(provider, "transcribe_audio"):
+                        import numpy as np
+
+                        if self._current_state == AppState.LOADING:
+                            self._update_state(AppState.LOADING, "Warming up...")
+                        warmup_samples = int(
+                            WHISPER_SAMPLE_RATE * PRELOAD_WARMUP_DURATION
                         )
-                        logger.debug("Lokales Modell warmup abgeschlossen")
-                    except Exception as e:
-                        logger.debug(f"Lokales Modell warmup fehlgeschlagen: {e}")
-                self._local_preload_complete.set()
-                # Zurück zu IDLE nach erfolgreichem Preload
-                self._update_state(AppState.IDLE)
-                # Auditive Rückmeldung: User kann jetzt mit minimaler Latenz aufnehmen
-                get_sound_player().play("warmup")
-                # Keep-Alive Timer starten (hält Metal-Shader warm)
-                self._start_keepalive_timer()
-            except Exception as e:
-                logger.warning(f"Preload lokales Modell fehlgeschlagen: {e}")
-                self._local_preload_complete.set()  # Setze trotzdem um Deadlock zu vermeiden
-                # Zurück zu IDLE auch bei Fehler (Fallback auf On-Demand-Loading)
-                self._update_state(AppState.IDLE)
+                        warmup_audio = np.zeros(warmup_samples, dtype=np.float32)
+                        try:
+                            provider.transcribe_audio(  # type: ignore[attr-defined]
+                                warmup_audio,
+                                model=model_snapshot,
+                                language=language_snapshot,
+                            )
+                            logger.debug("Lokales Modell warmup abgeschlossen")
+                        except Exception as exc:
+                            logger.debug(
+                                "Lokales Modell warmup fehlgeschlagen: %s", exc
+                            )
 
-        threading.Thread(target=_preload, daemon=True, name="LocalPreload").start()
+                    if not self._is_local_warm_generation_current(
+                        generation, signature
+                    ):
+                        return
+                    self._local_preload_complete.set()
+                    notify_ready = self._current_state == AppState.LOADING
+                    if notify_ready:
+                        self._update_state(AppState.IDLE)
+                        get_sound_player().play("warmup")
+                    self._start_keepalive_timer(
+                        provider=provider,
+                        generation=generation,
+                        signature=signature,
+                        model=model_snapshot,
+                    )
+                except Exception as exc:
+                    if self._is_local_warm_generation_current(generation, signature):
+                        logger.warning("Preload lokales Modell fehlgeschlagen: %s", exc)
+                        with self._local_warm_lock:
+                            if generation == self._local_warm_generation:
+                                self._local_preload_signature = None
+                        self._local_preload_complete.set()
+                        if self._current_state == AppState.LOADING:
+                            self._update_state(AppState.IDLE)
+                finally:
+                    current = threading.current_thread()
+                    with self._local_warm_lock:
+                        if self._local_preload_thread is current:
+                            self._local_preload_thread = None
 
-    def _start_keepalive_timer(self) -> None:
-        """Startet Keep-Alive Timer für Metal-Shader (nur für lokale Metal-Backends).
+            preload_thread = threading.Thread(
+                target=_preload,
+                daemon=True,
+                name="LocalPreload",
+            )
+            self._local_preload_thread = preload_thread
 
-        Der Timer ruft periodisch provider.keepalive() auf, um Metal-Shader
-        im GPU-Cache zu halten und Cache-Eviction bei Inaktivität zu verhindern.
-        """
-        if self.mode != "local":
-            return
+        self._stop_keepalive_timer()
+        try:
+            preload_thread.start()
+        except Exception:
+            with self._local_warm_lock:
+                if self._local_preload_thread is preload_thread:
+                    self._local_preload_thread = None
+                    self._local_preload_signature = None
+            self._local_preload_complete.set()
+            return False
+        return True
 
+    def _start_keepalive_timer(
+        self,
+        *,
+        provider: object,
+        generation: int,
+        signature: tuple[str | None, ...],
+        model: str | None,
+    ) -> bool:
+        """Start exactly one keepalive worker for the current local generation."""
+        if not self._is_local_warm_generation_current(generation, signature):
+            return False
         if LOCAL_KEEPALIVE_INTERVAL <= 0:
             logger.debug("Keep-Alive Timer deaktiviert (Interval <= 0)")
-            return
-
-        provider = self._get_provider("local")
+            return False
         if not hasattr(provider, "keepalive"):
-            return
+            return False
 
-        # Backend prüfen - nur MLX/Lightning brauchen Keep-Alive
         if hasattr(provider, "_ensure_runtime_config"):
             provider._ensure_runtime_config()  # type: ignore[attr-defined]
         backend = getattr(provider, "_backend", None)
         if backend not in ("mlx", "lightning"):
-            logger.debug(f"Keep-Alive nicht nötig für Backend '{backend}'")
-            return
+            logger.debug("Keep-Alive nicht nötig für Backend '%s'", backend)
+            return False
 
-        self._keepalive_stop_event.clear()
-
-        def _keepalive_loop():
-            logger.info(
-                f"Keep-Alive Timer gestartet (Interval: {LOCAL_KEEPALIVE_INTERVAL}s, Backend: {backend})"
-            )
-            while not self._keepalive_stop_event.wait(LOCAL_KEEPALIVE_INTERVAL):
-                # Nur Keep-Alive wenn IDLE (nicht während Recording/Transcribing)
-                if self._current_state != AppState.IDLE:
-                    logger.debug("Keep-Alive übersprungen (nicht IDLE)")
-                    continue
-                try:
-                    provider.keepalive(self.model)  # type: ignore[attr-defined]
-                except Exception as e:
-                    logger.debug(f"Keep-Alive fehlgeschlagen: {e}")
-            logger.debug("Keep-Alive Timer gestoppt")
-
-        self._keepalive_thread = threading.Thread(
-            target=_keepalive_loop, daemon=True, name="LocalKeepalive"
+        request = LocalKeepaliveRequest(
+            provider=provider,
+            generation=generation,
+            signature=signature,
+            model=model,
         )
-        self._keepalive_thread.start()
+        stop_event = threading.Event()
 
-    def _stop_keepalive_timer(self) -> None:
-        """Stoppt den Keep-Alive Timer."""
-        self._keepalive_stop_event.set()
-        if self._keepalive_thread is not None:
-            self._keepalive_thread.join(timeout=1.0)
-            self._keepalive_thread = None
+        def _keepalive_loop() -> None:
+            logger.info(
+                "Keep-Alive Timer gestartet (Interval: %ss, Backend: %s)",
+                LOCAL_KEEPALIVE_INTERVAL,
+                backend,
+            )
+            try:
+                while not stop_event.wait(LOCAL_KEEPALIVE_INTERVAL):
+                    if not self._is_local_warm_generation_current(
+                        generation, signature
+                    ):
+                        break
+                    if self._current_state != AppState.IDLE:
+                        logger.debug("Keep-Alive übersprungen (nicht IDLE)")
+                        continue
+                    try:
+                        provider.keepalive(model)  # type: ignore[attr-defined]
+                    except Exception as exc:
+                        logger.debug("Keep-Alive fehlgeschlagen: %s", exc)
+            finally:
+                current = threading.current_thread()
+                pending_request = None
+                with self._local_warm_lock:
+                    if self._keepalive_thread is current:
+                        self._keepalive_thread = None
+                        self._keepalive_stop_event = None
+                        self._keepalive_request = None
+                        pending_request = self._pending_keepalive_request
+                        self._pending_keepalive_request = None
+                logger.debug("Keep-Alive Timer gestoppt")
+                if pending_request is not None:
+                    self._start_keepalive_timer(
+                        provider=pending_request.provider,
+                        generation=pending_request.generation,
+                        signature=pending_request.signature,
+                        model=pending_request.model,
+                    )
+
+        thread = threading.Thread(
+            target=_keepalive_loop,
+            daemon=True,
+            name="LocalKeepalive",
+        )
+        with self._local_warm_lock:
+            if not (
+                self.mode == "local"
+                and generation == self._local_warm_generation
+                and signature == self._local_preload_signature
+            ):
+                return False
+            existing = self._keepalive_thread
+            if existing is not None and existing.is_alive():
+                active_request = self._keepalive_request
+                same_request = (
+                    active_request is not None
+                    and active_request.provider is request.provider
+                    and active_request.generation == request.generation
+                    and active_request.signature == request.signature
+                    and active_request.model == request.model
+                )
+                if not same_request:
+                    self._pending_keepalive_request = request
+                    logger.debug(
+                        "Keep-Alive läuft noch; Ersatz für aktuelle Generation vorgemerkt"
+                    )
+                return False
+            self._pending_keepalive_request = None
+            self._keepalive_stop_event = stop_event
+            self._keepalive_thread = thread
+            self._keepalive_request = request
+        try:
+            thread.start()
+        except Exception:
+            with self._local_warm_lock:
+                if self._keepalive_thread is thread:
+                    self._keepalive_thread = None
+                    self._keepalive_stop_event = None
+                    self._keepalive_request = None
+            return False
+        return True
+
+    def _stop_keepalive_timer(self, *, wait: bool = False) -> bool:
+        """Signal the tracked keepalive; optionally wait during app cleanup."""
+        with self._local_warm_lock:
+            stop_event = self._keepalive_stop_event
+            thread = self._keepalive_thread
+        if stop_event is not None:
+            stop_event.set()
+        if thread is None:
+            return True
+        if wait and thread is not threading.current_thread() and thread.is_alive():
+            thread.join(timeout=1.0)
+        stopped = not thread.is_alive()
+        if stopped:
+            with self._local_warm_lock:
+                if self._keepalive_thread is thread:
+                    self._keepalive_thread = None
+                    self._keepalive_stop_event = None
+                    self._keepalive_request = None
+        else:
+            logger.debug("Keep-Alive Worker beendet sich noch im Hintergrund")
+        return stopped
 
     def _update_state(self, state: AppState, text: str | None = None) -> None:
         """Aktualisiert State und benachrichtigt UI-Controller.
@@ -838,7 +1155,12 @@ class PulseScribeDaemon:
         if state == AppState.TRANSCRIBING:
             # Starte Watchdog wenn TRANSCRIBING beginnt
             self._start_transcribing_watchdog()
-        elif state in (AppState.DONE, AppState.NO_SPEECH, AppState.ERROR, AppState.IDLE):
+        elif state in (
+            AppState.DONE,
+            AppState.NO_SPEECH,
+            AppState.ERROR,
+            AppState.IDLE,
+        ):
             # Stoppe Watchdog bei Abschluss
             self._stop_transcribing_watchdog()
 
@@ -1022,8 +1344,16 @@ class PulseScribeDaemon:
         if cb:
             self._safe_call(cb, transcript, error)
 
-    def _handle_worker_error(self, err: Exception) -> None:
+    def _handle_worker_error(
+        self,
+        err: Exception,
+        *,
+        latency_run: MacOSLatencyRun | None = None,
+    ) -> None:
         self._last_rtf = None  # RTF bei Fehler zurücksetzen
+        run = latency_run or self._latency_run
+        if run is not None:
+            run.finish("error", error_type=type(err).__name__)
         error_info = infer_daemon_status_error(err)
         error_text = build_daemon_status_label(
             AppState.ERROR,
@@ -1080,10 +1410,8 @@ class PulseScribeDaemon:
                 daemon._update_state(AppState.IDLE)
                 daemon._apply_pending_hotkey_reconfigure_if_safe()
 
-        self._error_reset_timer = (
-            NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
-                0.8, False, reset_to_idle
-            )
+        self._error_reset_timer = NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+            0.8, False, reset_to_idle
         )
 
     def _stop_error_reset_timer(self) -> None:
@@ -1092,8 +1420,15 @@ class PulseScribeDaemon:
             self._error_reset_timer.invalidate()
             self._error_reset_timer = None
 
-    def _enter_no_speech_state(self, *, delay_seconds: float = 1.2) -> None:
+    def _enter_no_speech_state(
+        self,
+        *,
+        delay_seconds: float = 1.2,
+        latency_run: MacOSLatencyRun | None = None,
+    ) -> None:
         """Show a brief neutral no-speech result before returning to ready."""
+        if latency_run is not None:
+            latency_run.finish("no_speech")
         self._last_rtf = None
         self._recording = False
         self._hold_state.reset()
@@ -1108,8 +1443,17 @@ class PulseScribeDaemon:
         timer.daemon = True
         timer.start()
 
-    def _handle_transcript_result(self, transcript: str) -> None:
+    def _handle_transcript_result(
+        self,
+        transcript: str,
+        *,
+        latency_run: MacOSLatencyRun | None = None,
+    ) -> None:
         """Verarbeitet das fertige Transkript: UI-Update, History, Auto-Paste."""
+        run = latency_run or self._latency_run
+        if run is not None:
+            run.mark_once("result_received_main")
+
         # Test-Modus: Callback ausführen, kein Auto-Paste
         if self._test_run_active:
             self._last_rtf = None  # RTF im Test-Modus nicht relevant
@@ -1117,13 +1461,15 @@ class PulseScribeDaemon:
             self._update_state(
                 AppState.DONE if transcript else AppState.IDLE, transcript
             )
+            if run is not None:
+                run.finish("test_success" if transcript else "test_no_speech")
             self._apply_pending_hotkey_reconfigure_if_safe()
             return
 
         # Leeres Transkript: kurzes, neutrales Feedback statt stillem Reset
         if not transcript:
             logger.warning("Leeres Transkript")
-            self._enter_no_speech_state()
+            self._enter_no_speech_state(latency_run=run)
             return
 
         # Erfolgreiche Transkription: State → Sound → UI-Flush → History → Paste
@@ -1132,9 +1478,11 @@ class PulseScribeDaemon:
         self._update_state(AppState.DONE, overlay_text)
         get_sound_player().play("done")  # Sofortiges auditives Feedback
         self._flush_ui_and_wait()  # ✅ muss sichtbar sein BEVOR Text eingefügt wird
-        self._save_to_history(transcript)
-        self._paste_result(transcript)
+        self._save_to_history(transcript, latency_run=run)
+        self._paste_result(transcript, latency_run=run)
         self._update_state(AppState.IDLE)  # Reset nach erfolgreichem Paste
+        if run is not None:
+            run.finish("success")
         self._apply_pending_hotkey_reconfigure_if_safe()
 
     def _maybe_refine(
@@ -1144,6 +1492,7 @@ class PulseScribeDaemon:
         phase_prefix: str,
         run_id: int,
         result_queue: queue.Queue[DaemonMessage | Exception],
+        latency_run: MacOSLatencyRun | None = None,
     ) -> str:
         """Wendet optionales LLM-Refinement auf das Transkript an.
 
@@ -1156,27 +1505,38 @@ class PulseScribeDaemon:
 
         self._set_worker_phase(f"{phase_prefix}:refining", run_id=run_id)
         result_queue.put(
-            DaemonMessage(
-                type=MessageType.STATUS_UPDATE, payload=AppState.REFINING
-            )
+            DaemonMessage(type=MessageType.STATUS_UPDATE, payload=AppState.REFINING)
         )
         from refine.llm import maybe_refine_transcript
 
+        if latency_run is not None:
+            latency_run.mark("refine_start")
         original = transcript
-        transcript = maybe_refine_transcript(
-            transcript,
-            refine=True,
-            refine_model=self.refine_model,
-            refine_provider=self.refine_provider,
-            context=self.context,
-        )
+        try:
+            transcript = maybe_refine_transcript(
+                transcript,
+                refine=True,
+                refine_model=self.refine_model,
+                refine_provider=self.refine_provider,
+                context=self.context,
+            )
+        finally:
+            if latency_run is not None:
+                latency_run.mark("refine_done")
         self._last_was_refined = transcript != original
         return transcript
 
-    def _save_to_history(self, transcript: str) -> None:
+    def _save_to_history(
+        self,
+        transcript: str,
+        *,
+        latency_run: MacOSLatencyRun | None = None,
+    ) -> None:
         """Speichert Transkript in der Historie."""
         from utils.history import save_transcript
 
+        if latency_run is not None:
+            latency_run.mark("history_start")
         try:
             save_transcript(
                 transcript,
@@ -1186,6 +1546,9 @@ class PulseScribeDaemon:
             )
         except Exception as e:
             logger.warning(f"History save failed: {e}")
+        finally:
+            if latency_run is not None:
+                latency_run.mark("history_done")
 
     def _format_done_text(self, transcript: str) -> str:
         """Formatiert den Overlay-Text für DONE-State mit optionalem RTF."""
@@ -1727,10 +2090,27 @@ class PulseScribeDaemon:
                 f"(phase={self._worker_phase})"
             )
 
+        # Modus-Entscheidung: Streaming vs. Recording
+        use_streaming = effective_mode == "deepgram" and get_env_bool_default(
+            "PULSESCRIBE_STREAMING", True
+        )
+
         self._run_counter += 1
         run_id = self._run_counter
+        previous_latency_run = self._latency_run
+        if previous_latency_run is not None:
+            previous_latency_run.finish("superseded")
+        latency_run = start_macos_latency_run(
+            mode=effective_mode,
+            streaming=use_streaming,
+            logger=logger,
+        )
+        latency_run.mark("hotkey_accepted")
+
         self._active_run_id = run_id
         self._worker_abandoned = False
+        self._terminal_claimed_run_id = None
+        self._latency_run = latency_run
         self._set_worker_phase(f"starting:{effective_mode}", run_id=run_id)
 
         self._recording = True
@@ -1745,11 +2125,6 @@ class PulseScribeDaemon:
         self._result_queue = run_result_queue
         run_stop_event = threading.Event()
         self._stop_event = run_stop_event
-
-        # Modus-Entscheidung: Streaming vs. Recording
-        use_streaming = effective_mode == "deepgram" and get_env_bool_default(
-            "PULSESCRIBE_STREAMING", True
-        )
         self._run_mode = effective_mode
 
         if use_streaming:
@@ -1764,7 +2139,7 @@ class PulseScribeDaemon:
         # Worker-Thread starten
         self._worker_thread = threading.Thread(
             target=target,
-            args=(run_id, run_result_queue, run_stop_event),
+            args=(run_id, run_result_queue, run_stop_event, latency_run),
             daemon=True,
             name=name,
         )
@@ -1945,6 +2320,7 @@ class PulseScribeDaemon:
         run_id: int | None = None,
         result_queue_ref: queue.Queue[DaemonMessage | Exception] | None = None,
         stop_event: threading.Event | None = None,
+        latency_run: MacOSLatencyRun | None = None,
     ) -> None:
         """
         Hintergrund-Thread für Deepgram-Streaming.
@@ -1961,6 +2337,9 @@ class PulseScribeDaemon:
         run_id = self._active_run_id if run_id is None else run_id
         result_queue_ref = result_queue_ref or self._result_queue
         stop_event = stop_event or self._stop_event
+        latency_run = (
+            latency_run or self._latency_run or start_macos_latency_run(enabled=False)
+        )
 
         self._set_worker_phase("streaming:boot", run_id=run_id)
         logger.debug(f"StreamingWorker gestartet (run={run_id})")
@@ -1978,19 +2357,27 @@ class PulseScribeDaemon:
             try:
                 logger.debug(f"Starte deepgram_stream_core (model={model})")
                 self._set_worker_phase("streaming:capture", run_id=run_id)
+
+                def _on_stream_audio_level(level: float) -> None:
+                    latency_run.mark_once("first_audio_callback")
+                    self._on_audio_level(
+                        level,
+                        run_id=run_id,
+                        result_queue_ref=result_queue_ref,
+                    )
+
+                latency_run.mark("streaming_core_start")
                 transcript = loop.run_until_complete(
                     deepgram_stream_core(
                         model=model,
                         language=self.language,
                         play_ready=True,
                         external_stop_event=stop_event,
-                        audio_level_callback=lambda level: self._on_audio_level(
-                            level,
-                            run_id=run_id,
-                            result_queue_ref=result_queue_ref,
-                        ),
+                        audio_level_callback=_on_stream_audio_level,
+                        latency_event_callback=latency_run.event,
                     )
                 )
+                latency_run.mark("streaming_core_done")
                 logger.debug(
                     f"deepgram_stream_core abgeschlossen: {len(transcript)} Zeichen"
                 )
@@ -2001,14 +2388,18 @@ class PulseScribeDaemon:
                     phase_prefix="streaming",
                     run_id=run_id,
                     result_queue=result_queue_ref,
+                    latency_run=latency_run,
                 )
 
                 logger.debug("Sende TRANSCRIPT_RESULT")
                 self._set_worker_phase("streaming:publishing-result", run_id=run_id)
-                result_queue_ref.put(
-                    DaemonMessage(
+                self._publish_worker_terminal(
+                    run_id=run_id,
+                    result_queue_ref=result_queue_ref,
+                    terminal=DaemonMessage(
                         type=MessageType.TRANSCRIPT_RESULT, payload=transcript
-                    )
+                    ),
+                    latency_run=latency_run,
                 )
                 self._set_worker_phase("streaming:finished", run_id=run_id)
 
@@ -2019,14 +2410,25 @@ class PulseScribeDaemon:
         except Exception as e:
             logger.exception(f"Streaming-Worker Fehler: {e}")
             emergency_log(f"StreamingWorker Exception: {type(e).__name__}: {e}")
-            result_queue_ref.put(e)
+            self._publish_worker_terminal(
+                run_id=run_id,
+                result_queue_ref=result_queue_ref,
+                terminal=e,
+                latency_run=latency_run,
+            )
 
-    @staticmethod
     def _put_empty_transcript_result(
+        self,
+        *,
+        run_id: int,
         result_queue_ref: queue.Queue[DaemonMessage | Exception],
+        latency_run: MacOSLatencyRun,
     ) -> None:
-        result_queue_ref.put(
-            DaemonMessage(type=MessageType.TRANSCRIPT_RESULT, payload="")
+        self._publish_worker_terminal(
+            run_id=run_id,
+            result_queue_ref=result_queue_ref,
+            terminal=DaemonMessage(type=MessageType.TRANSCRIPT_RESULT, payload=""),
+            latency_run=latency_run,
         )
 
     def _capture_recording_audio(
@@ -2035,6 +2437,7 @@ class PulseScribeDaemon:
         run_id: int | None,
         result_queue_ref: queue.Queue[DaemonMessage | Exception],
         stop_event: threading.Event | None,
+        latency_run: MacOSLatencyRun,
     ) -> tuple[list[Any], float, bool]:
         import numpy as np
         import sounddevice as sd
@@ -2046,11 +2449,9 @@ class PulseScribeDaemon:
         finished_event = threading.Event()
         callback_abort_exc = getattr(sd, "CallbackAbort", None)
 
-        self._set_worker_phase("recording:ready-sound", run_id=run_id)
-        player.play("ready")
-
         def callback(indata, _frames, _time, _status):
             nonlocal max_rms, had_speech
+            latency_run.mark_once("first_audio_callback")
             recorded_chunks.append(indata.copy())
             rms = float(np.sqrt(np.mean(indata**2)))
             max_rms = max(max_rms, rms)
@@ -2062,26 +2463,43 @@ class PulseScribeDaemon:
             except queue.Full:
                 pass
 
-            if stop_event is not None and stop_event.is_set() and (
-                isinstance(callback_abort_exc, type)
-                and issubclass(callback_abort_exc, BaseException)
+            if (
+                stop_event is not None
+                and stop_event.is_set()
+                and (
+                    isinstance(callback_abort_exc, type)
+                    and issubclass(callback_abort_exc, BaseException)
+                )
             ):
                 raise callback_abort_exc
 
         # Explizites Stream-Management statt Context-Manager:
         # vermeidet PortAudio-Deadlocks beim Schließen des Streams.
-        stream = sd.InputStream(
-            samplerate=WHISPER_SAMPLE_RATE,
-            channels=1,
-            dtype="float32",
-            callback=callback,
-            finished_callback=finished_event.set,
-        )
-        self._set_worker_phase("recording:start-stream", run_id=run_id)
-        stream.start()
-        logger.debug("Audio-Stream gestartet")
+        stream = None
+        try:
+            stream = sd.InputStream(
+                samplerate=WHISPER_SAMPLE_RATE,
+                channels=1,
+                dtype="float32",
+                callback=callback,
+                finished_callback=finished_event.set,
+            )
+            self._set_worker_phase("recording:start-stream", run_id=run_id)
+            stream.start()
+        except Exception:
+            if stream is not None:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+            raise
 
         try:
+            latency_run.mark("audio_stream_started")
+            self._set_worker_phase("recording:ready-sound", run_id=run_id)
+            player.play("ready")
+            logger.debug("Audio-Stream gestartet")
+
             self._set_worker_phase("recording:capture", run_id=run_id)
             while stop_event is not None and not stop_event.is_set():
                 sd.sleep(50)
@@ -2091,6 +2509,7 @@ class PulseScribeDaemon:
                 finished_event=finished_event,
                 run_id=run_id,
             )
+            latency_run.mark("audio_stream_closed")
 
         self._set_worker_phase("recording:stop-sound", run_id=run_id)
         player.play("stop")
@@ -2103,21 +2522,29 @@ class PulseScribeDaemon:
         max_rms: float,
         had_speech: bool,
         result_queue_ref: queue.Queue[DaemonMessage | Exception],
-        run_id: int | None,
+        run_id: int,
+        latency_run: MacOSLatencyRun,
     ) -> tuple[Any, float] | None:
         import numpy as np
 
         self._set_worker_phase("recording:finalize-audio", run_id=run_id)
         if not recorded_chunks:
             logger.warning("Keine Audiodaten aufgenommen")
-            # Leeres Ergebnis signalisieren, damit Result-Polling sauber endet.
-            self._put_empty_transcript_result(result_queue_ref)
+            self._put_empty_transcript_result(
+                run_id=run_id,
+                result_queue_ref=result_queue_ref,
+                latency_run=latency_run,
+            )
             return None
         if not had_speech:
             logger.info(
                 f"Keine Sprache erkannt (max_rms={max_rms:.4f}) – Transkription übersprungen"
             )
-            self._put_empty_transcript_result(result_queue_ref)
+            self._put_empty_transcript_result(
+                run_id=run_id,
+                result_queue_ref=result_queue_ref,
+                latency_run=latency_run,
+            )
             return None
 
         audio_data = np.concatenate(recorded_chunks)
@@ -2194,6 +2621,7 @@ class PulseScribeDaemon:
         audio_duration: float,
         result_queue_ref: queue.Queue[DaemonMessage | Exception],
         run_id: int | None,
+        latency_run: MacOSLatencyRun,
     ) -> str:
         import soundfile as sf
 
@@ -2202,9 +2630,7 @@ class PulseScribeDaemon:
 
         try:
             mode_for_run = (
-                self._run_mode
-                or self.mode
-                or os.getenv("PULSESCRIBE_MODE", "deepgram")
+                self._run_mode or self.mode or os.getenv("PULSESCRIBE_MODE", "deepgram")
             )
             provider = self._get_provider(mode_for_run)
             self._log_local_preload_status(
@@ -2213,6 +2639,7 @@ class PulseScribeDaemon:
             )
 
             t0 = time.perf_counter()
+            latency_run.mark("transcribe_start")
             try:
                 self._set_worker_phase("recording:transcribing", run_id=run_id)
                 model_for_provider = self.model if mode_for_run == "local" else None
@@ -2247,6 +2674,7 @@ class PulseScribeDaemon:
                 )
                 mode_for_run = "local"
 
+            latency_run.mark_once("transcribe_done")
             self._log_transcription_performance(
                 provider=provider,
                 mode_for_run=mode_for_run,
@@ -2255,6 +2683,7 @@ class PulseScribeDaemon:
             )
             return transcript
         finally:
+            latency_run.mark_once("transcribe_done")
             if os.path.exists(temp_path):
                 os.unlink(temp_path)
 
@@ -2293,6 +2722,7 @@ class PulseScribeDaemon:
         run_id: int | None = None,
         result_queue_ref: queue.Queue[DaemonMessage | Exception] | None = None,
         stop_event: threading.Event | None = None,
+        latency_run: MacOSLatencyRun | None = None,
     ) -> None:
         """
         Standard-Aufnahme für OpenAI, Groq, Local.
@@ -2305,6 +2735,9 @@ class PulseScribeDaemon:
         run_id = self._active_run_id if run_id is None else run_id
         result_queue_ref = result_queue_ref or self._result_queue
         stop_event = stop_event or self._stop_event
+        latency_run = (
+            latency_run or self._latency_run or start_macos_latency_run(enabled=False)
+        )
 
         self._set_worker_phase("recording:boot", run_id=run_id)
         logger.debug(f"RecordingWorker gestartet (run={run_id})")
@@ -2314,6 +2747,7 @@ class PulseScribeDaemon:
                 run_id=run_id,
                 result_queue_ref=result_queue_ref,
                 stop_event=stop_event,
+                latency_run=latency_run,
             )
             prepared_audio = self._prepare_recorded_audio(
                 recorded_chunks=recorded_chunks,
@@ -2321,6 +2755,7 @@ class PulseScribeDaemon:
                 had_speech=had_speech,
                 result_queue_ref=result_queue_ref,
                 run_id=run_id,
+                latency_run=latency_run,
             )
             if prepared_audio is None:
                 return
@@ -2331,6 +2766,7 @@ class PulseScribeDaemon:
                 audio_duration=audio_duration,
                 result_queue_ref=result_queue_ref,
                 run_id=run_id,
+                latency_run=latency_run,
             )
 
             transcript = self._maybe_refine(
@@ -2338,19 +2774,31 @@ class PulseScribeDaemon:
                 phase_prefix="recording",
                 run_id=run_id,
                 result_queue=result_queue_ref,
+                latency_run=latency_run,
             )
 
             logger.debug("Sende TRANSCRIPT_RESULT")
             self._set_worker_phase("recording:publishing-result", run_id=run_id)
-            result_queue_ref.put(
-                DaemonMessage(type=MessageType.TRANSCRIPT_RESULT, payload=transcript)
+            self._publish_worker_terminal(
+                run_id=run_id,
+                result_queue_ref=result_queue_ref,
+                terminal=DaemonMessage(
+                    type=MessageType.TRANSCRIPT_RESULT,
+                    payload=transcript,
+                ),
+                latency_run=latency_run,
             )
             self._set_worker_phase("recording:finished", run_id=run_id)
 
         except Exception as e:
             logger.exception(f"Recording-Worker Fehler: {e}")
             emergency_log(f"RecordingWorker Exception: {type(e).__name__}: {e}")
-            result_queue_ref.put(e)
+            self._publish_worker_terminal(
+                run_id=run_id,
+                result_queue_ref=result_queue_ref,
+                terminal=e,
+                latency_run=latency_run,
+            )
 
     def _stop_recording(self) -> None:
         """Stoppt Aufnahme (non-blocking) und lässt Worker im Hintergrund auslaufen."""
@@ -2358,6 +2806,9 @@ class PulseScribeDaemon:
             return
 
         logger.info("Stop-Event setzen...")
+        latency_run = self._latency_run
+        if latency_run is not None:
+            latency_run.mark_once("stop_requested")
 
         self._stop_interim_polling()
 
@@ -2509,7 +2960,12 @@ class PulseScribeDaemon:
     ) -> bool:
         if isinstance(result, Exception):
             self._stop_result_polling()
-            self._handle_worker_error(result)
+            latency_run = self._latency_run
+            self._latency_run = None
+            self._terminal_claimed_run_id = self._active_run_id
+            if latency_run is not None:
+                latency_run.mark_once("result_received_main")
+            self._handle_worker_error(result, latency_run=latency_run)
             return True
 
         if not isinstance(result, DaemonMessage):
@@ -2525,8 +2981,13 @@ class PulseScribeDaemon:
 
         if result.type == MessageType.TRANSCRIPT_RESULT:
             self._stop_result_polling()
+            latency_run = self._latency_run
+            self._latency_run = None
+            self._terminal_claimed_run_id = self._active_run_id
+            if latency_run is not None:
+                latency_run.mark_once("result_received_main")
             transcript = str(result.payload or "")
-            self._handle_transcript_result(transcript)
+            self._handle_transcript_result(transcript, latency_run=latency_run)
             return True
 
         return False
@@ -2656,6 +3117,11 @@ class PulseScribeDaemon:
             # Worker stoppen falls noch aktiv
             if daemon._stop_event:
                 daemon._stop_event.set()
+            latency_run = daemon._latency_run
+            daemon._latency_run = None
+            daemon._terminal_claimed_run_id = daemon._active_run_id
+            if latency_run is not None:
+                latency_run.finish("watchdog_timeout", error_type="TimeoutError")
             daemon._mark_current_worker_abandoned("watchdog timeout")
 
             daemon._enter_error_state("Transcription timed out")
@@ -2696,11 +3162,15 @@ class PulseScribeDaemon:
         Verhindert Memory-Leaks bei Local Whisper (~500MB RAM).
         """
         # Timer stoppen
+        latency_run = self._latency_run
+        self._latency_run = None
+        if latency_run is not None:
+            latency_run.finish("shutdown")
         self._stop_interim_polling()
         self._stop_result_polling()
         self._stop_transcribing_watchdog()
         self._stop_error_reset_timer()
-        self._stop_keepalive_timer()
+        self._cancel_local_warm_lifecycle(wait=True)
 
         # Provider-Cache leeren (Local Whisper kann ~500MB RAM halten)
         with self._provider_cache_lock:
@@ -2715,13 +3185,24 @@ class PulseScribeDaemon:
                     pass
         logger.debug("Provider-Cache geleert")
 
-    def _paste_result(self, transcript: str) -> None:
+    def _paste_result(
+        self,
+        transcript: str,
+        *,
+        latency_run: MacOSLatencyRun | None = None,
+    ) -> None:
         """Fügt Transkript via Auto-Paste ein."""
-        success = paste_transcript(transcript)
-        if success:
-            logger.info(f"✓ Text eingefügt: {redacted_text_summary(transcript)}")
-        else:
-            logger.error("Auto-Paste fehlgeschlagen")
+        if latency_run is not None:
+            latency_run.mark("paste_start")
+        try:
+            success = paste_transcript(transcript)
+            if success:
+                logger.info(f"✓ Text eingefügt: {redacted_text_summary(transcript)}")
+            else:
+                logger.error("Auto-Paste fehlgeschlagen")
+        finally:
+            if latency_run is not None:
+                latency_run.mark("paste_done")
 
     def _setup_app_menu(self, app) -> None:
         """Erstellt Application Menu für CMD+Q Support."""
@@ -2864,6 +3345,7 @@ class PulseScribeDaemon:
         """Lädt Settings aus .env neu und wendet sie an."""
         from utils.preferences import read_env_file
 
+        old_mode = self.mode
         old_local_signature = self._local_provider_memory_signature()
         load_environment(override_existing=True)
         env_values = read_env_file()
@@ -2875,12 +3357,31 @@ class PulseScribeDaemon:
         self._apply_reloaded_hotkey_settings(env_values)
         self._apply_reloaded_runtime_settings(env_values)
         new_local_signature = self._local_provider_memory_signature()
-        if new_local_signature != old_local_signature:
-            self._release_local_provider_model_cache()
+        memory_changed = new_local_signature != old_local_signature
+        local_transition = old_mode != self.mode and (
+            old_mode == "local" or self.mode == "local"
+        )
+        if local_transition or (
+            memory_changed and (old_mode == "local" or self.mode == "local")
+        ):
+            self._cancel_local_warm_lifecycle()
         self._invalidate_local_provider_runtime_config()
         self._log_reloaded_settings()
         self._reconfigure_hotkeys_after_reload(old_hotkey_signature)
-        self._preload_local_model_async()
+
+        with self._local_warm_lock:
+            desired_preload_ready = (
+                self._local_preload_signature == new_local_signature
+                and self._local_preload_complete.is_set()
+            )
+            warm_generation = self._local_warm_generation
+        if memory_changed:
+            self._release_local_provider_model_cache_async(
+                generation=warm_generation,
+                preload_after=self.mode == "local",
+            )
+        elif self.mode == "local" and not desired_preload_ready:
+            self._preload_local_model_async()
 
     @staticmethod
     def _sync_reload_env_values(env_values: dict[str, str]) -> None:
@@ -2973,6 +3474,37 @@ class PulseScribeDaemon:
                 cleanup()
             except Exception as e:
                 logger.warning(f"LocalProvider cleanup fehlgeschlagen: {e}")
+
+    def _release_local_provider_model_cache_async(
+        self,
+        *,
+        generation: int,
+        preload_after: bool,
+    ) -> threading.Thread | None:
+        """Release a local model off the AppKit thread and optionally preload next."""
+
+        def _reconcile() -> None:
+            with self._local_cache_reconcile_lock:
+                with self._local_warm_lock:
+                    if generation != self._local_warm_generation:
+                        return
+                self._release_local_provider_model_cache()
+                with self._local_warm_lock:
+                    still_current = generation == self._local_warm_generation
+                if still_current and preload_after and self.mode == "local":
+                    self._preload_local_model_async()
+
+        thread = threading.Thread(
+            target=_reconcile,
+            daemon=True,
+            name="LocalModelReconcile",
+        )
+        try:
+            thread.start()
+        except Exception as exc:
+            logger.warning("Local model reconcile konnte nicht starten: %s", exc)
+            return None
+        return thread
 
     def _invalidate_local_provider_runtime_config(self) -> None:
         with self._provider_cache_lock:
@@ -3244,7 +3776,9 @@ class PulseScribeDaemon:
         hk_is_fn = hk_str == "fn"
         hk_is_capslock = hk_str in ("capslock", "caps_lock")
 
-        if not input_monitoring_granted and (mode == "hold" or hk_is_fn or hk_is_capslock):
+        if not input_monitoring_granted and (
+            mode == "hold" or hk_is_fn or hk_is_capslock
+        ):
             msg = f"Hotkey '{hk}' benötigt Eingabemonitoring‑Zugriff – deaktiviert."
             logger.warning(msg)
             return msg
@@ -3421,14 +3955,19 @@ class PulseScribeDaemon:
 
         app, show_dock = self._configure_ns_application()
         self._initialize_ui_controllers()
+        self._prewarm_audio_dependencies_async()
         self._validate_vocabulary_on_startup()
         self._show_welcome_if_needed()
         bindings_for_info = self._resolve_hotkey_bindings()
         self._log_startup_permission_status()
-        self._print_startup_info(show_dock=show_dock, bindings_for_info=bindings_for_info)
+        self._print_startup_info(
+            show_dock=show_dock, bindings_for_info=bindings_for_info
+        )
         self._preload_local_model_async()
         self._reconfigure_hotkeys(show_alerts=True)
-        self._install_runloop_shutdown_handlers(app=app, timer_cls=NSTimer, signal_mod=signal)
+        self._install_runloop_shutdown_handlers(
+            app=app, timer_cls=NSTimer, signal_mod=signal
+        )
         app.run()
 
     def _configure_ns_application(self):
@@ -3500,7 +4039,9 @@ class PulseScribeDaemon:
             print("   Beenden: Menubar-Icon → Quit oder Ctrl+C", file=sys.stderr)
 
     def _install_runloop_shutdown_handlers(self, *, app, timer_cls, signal_mod) -> None:
-        timer_cls.scheduledTimerWithTimeInterval_repeats_block_(0.1, True, lambda _: None)
+        timer_cls.scheduledTimerWithTimeInterval_repeats_block_(
+            0.1, True, lambda _: None
+        )
 
         def signal_handler(sig, frame):
             self.cleanup()
@@ -3644,7 +4185,9 @@ def _configure_default_local_backend() -> None:
 
         is_arm = platform.machine() in ("arm64", "aarch64")
         has_mlx = importlib.util.find_spec("mlx_whisper") is not None
-        os.environ["PULSESCRIBE_LOCAL_BACKEND"] = "mlx" if is_arm and has_mlx else "whisper"
+        os.environ["PULSESCRIBE_LOCAL_BACKEND"] = (
+            "mlx" if is_arm and has_mlx else "whisper"
+        )
         if is_arm and has_mlx:
             os.environ.setdefault("PULSESCRIBE_LOCAL_FAST", "true")
     except Exception:

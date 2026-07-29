@@ -167,7 +167,7 @@ class TestDaemonMode(unittest.TestCase):
             self.assertIn("local", daemon._provider_cache)
             local_provider.invalidate_runtime_config.assert_called_once()
 
-    def test_reload_settings_releases_local_model_cache_when_memory_env_removed(self):
+    def test_reload_settings_schedules_model_release_when_memory_env_removed(self):
         daemon = PulseScribeDaemon(mode="local")
         local_provider = MagicMock()
         daemon._provider_cache["local"] = local_provider
@@ -184,12 +184,16 @@ class TestDaemonMode(unittest.TestCase):
             patch("pulsescribe_daemon.load_environment"),
             patch("utils.preferences.read_env_file", return_value={}),
             patch.object(daemon, "_preload_local_model_async"),
+            patch.object(
+                daemon,
+                "_release_local_provider_model_cache_async",
+            ) as release_async,
         ):
             daemon._reload_settings()
 
         self.assertNotIn("PULSESCRIBE_LOCAL_COMPUTE_TYPE", os.environ)
         self.assertNotIn("PULSESCRIBE_LIGHTNING_BATCH_SIZE", os.environ)
-        local_provider.clear_model_cache.assert_called_once_with()
+        release_async.assert_called_once_with(generation=1, preload_after=True)
         local_provider.invalidate_runtime_config.assert_called_once_with()
 
     def test_provider_cache_is_thread_safe_during_reload(self):
@@ -413,7 +417,9 @@ class TestDaemonMode(unittest.TestCase):
         self.assertIsNotNone(result_msg)
         self.assertEqual(result_msg.payload, "")
 
-    def test_handle_transcript_result_uses_no_speech_feedback_for_empty_transcript(self):
+    def test_handle_transcript_result_uses_no_speech_feedback_for_empty_transcript(
+        self,
+    ):
         daemon = PulseScribeDaemon(mode="openai")
 
         with (
@@ -425,7 +431,7 @@ class TestDaemonMode(unittest.TestCase):
         ):
             daemon._handle_transcript_result("")
 
-        mock_no_speech.assert_called_once_with()
+        mock_no_speech.assert_called_once_with(latency_run=None)
         mock_apply_pending.assert_not_called()
 
     def test_recording_worker_local_keeps_trailing_audio_and_pads_tail(self):
@@ -748,11 +754,9 @@ class TestWatchdogTimer(unittest.TestCase):
             patch("pulsescribe_daemon.get_sound_player") as mock_get_sound_player,
         ):
             daemon._start_transcribing_watchdog()
-            watchdog_cb = (
-                mock_timer_cls.scheduledTimerWithTimeInterval_repeats_block_.call_args_list[
-                    0
-                ][0][2]
-            )
+            watchdog_cb = mock_timer_cls.scheduledTimerWithTimeInterval_repeats_block_.call_args_list[
+                0
+            ][0][2]
             watchdog_cb(None)
 
         self.assertTrue(daemon._worker_abandoned)

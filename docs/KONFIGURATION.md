@@ -161,8 +161,11 @@ Beide Hotkeys können gleichzeitig aktiv sein.
 | `PULSESCRIBE_DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS` | `0`-z.B. `1.0` Sekunden    | `0.10` (`snappy`, Default), `0.25` (`safe`) | Zusatzfenster, wenn Deepgram Finalize ohne Transkript quittiert und das finale Transkript später eintreffen könnte. Endet vorzeitig, sobald ein spätes Final-Transkript ankommt. Gilt für Deepgram-Streaming auf allen Plattformen; benötigt Neustart. |
 | `PULSESCRIBE_DEEPGRAM_WARM_WEBSOCKET`      | `true`, `false`                     | `true` | Verbindet unter Windows die nächste Deepgram-Streaming-Session vorab. Jeder Socket wird einmal genutzt und nach `CloseStream` ersetzt. |
 | `PULSESCRIBE_DEEPGRAM_KEEPALIVE_INTERVAL_SECONDS` | `1`-`8` Sekunden             | `3` | KeepAlive-Intervall für einen ungenutzten vorgewärmten Deepgram-Socket. |
+| `PULSESCRIBE_DEEPGRAM_FINALIZE_SEND_TIMEOUT` | `0.05`-`10` Sekunden | `1.0` | Harte Grenze für das Senden von `Finalize`. Bei Timeout wird der Ack-Wait übersprungen und mit dem begrenzten Close fortgefahren. |
+| `PULSESCRIBE_DEEPGRAM_CLOSE_STREAM_SEND_TIMEOUT` | `0.05`-`10` Sekunden | `0.5` | Harte Grenze für `CloseStream`; der Listener-Cleanup läuft auch nach einem Timeout. |
+| `PULSESCRIBE_DEEPGRAM_KEEPALIVE_SEND_TIMEOUT` | `0.05`-`10` Sekunden | `1.0` | Harte Grenze für Warm-Socket-KeepAlive; betroffene Sockets werden verworfen und ersetzt. |
 
-Mit `0` lässt sich der zusätzliche Nachlauf deaktivieren. Änderungen an `PULSESCRIBE_WINDOWS_LATENCY_PRESET`, `PULSESCRIBE_WINDOWS_RESPONSIVENESS_BOOST`, `PULSESCRIBE_DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS` oder dem KeepAlive-Intervall benötigen einen Neustart; die übrigen Windows-Werte oben werden beim Settings-Reload gelesen.
+Mit `0` lässt sich der zusätzliche Nachlauf deaktivieren. Änderungen an `PULSESCRIBE_WINDOWS_LATENCY_PRESET`, `PULSESCRIBE_WINDOWS_RESPONSIVENESS_BOOST`, `PULSESCRIBE_DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS`, dem KeepAlive-Intervall oder einem Deepgram-Control-Send-Timeout benötigen einen Neustart; die übrigen Windows-Werte oben werden beim Settings-Reload gelesen.
 
 ### Windows-Latenzdiagnose
 
@@ -172,6 +175,16 @@ Mit `0` lässt sich der zusätzliche Nachlauf deaktivieren. Änderungen an `PULS
 | `PULSESCRIBE_WINDOWS_LATENCY_DIAGNOSTICS_FILE` | `true`, `false` | `true`, wenn Diagnose aktiv ist | Schreibt zusätzlich strukturierte JSONL-Daten nach `~/.pulsescribe/logs/windows_latency.jsonl`. |
 
 Die Diagnose enthält nur Event-Namen, Dauern, Modus und Erfolgsflags – kein Audio und keinen Transkripttext.
+
+### macOS-Latenzdiagnose
+
+| Variable                                      | Werte           | Default | Beschreibung                              |
+| --------------------------------------------- | --------------- | ------- | ----------------------------------------- |
+| `PULSESCRIBE_MACOS_LATENCY_DIAGNOSTICS`       | `true`, `false` | `false` | Schreibt privacy-sichere End-to-End-Timings für akzeptierte macOS-Aufnahmen. |
+| `PULSESCRIBE_MACOS_LATENCY_DIAGNOSTICS_FILE`  | `true`, `false` | `true`, wenn Diagnose aktiv ist | Schreibt strukturierte JSONL-Daten nach `~/.pulsescribe/logs/macos_latency.jsonl`. |
+| `PULSESCRIBE_MACOS_LATENCY_DIAGNOSTICS_PATH`  | Dateipfad       | Standard-JSONL-Pfad | Überschreibt das JSONL-Ziel. |
+
+Der macOS-Trace enthält monotone relative Zeiten, Modus, Streaming-Flag, Ergebnis und numerische/Bool-Provider-Metadaten. Audio, Transkript- und Clipboard-Text, Prompts, Hotkeys, App-Namen, Pfade und Zugangsdaten werden ausgeschlossen. Die stabilen `durations_ms`-Felder lassen sich direkt zu P50/P95 aggregieren.
 
 ---
 
