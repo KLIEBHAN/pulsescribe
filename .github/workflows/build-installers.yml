@@ -69,13 +69,13 @@ jobs:
 
     steps:
       - name: Check out requested ref
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ env.REQUESTED_REF }}
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -160,12 +160,12 @@ jobs:
 
     steps:
       - name: Check out validated release commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.metadata.outputs.commit }}
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -255,7 +255,7 @@ jobs:
           } > dist/build-metadata-macos.txt
 
       - name: Upload macOS build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: PulseScribe-macOS-${{ needs.metadata.outputs.version }}
           path: |
@@ -278,12 +278,12 @@ jobs:
 
     steps:
       - name: Check out validated release commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.metadata.outputs.commit }}
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -337,8 +337,9 @@ jobs:
             throw "Installer is empty: $installer"
           }
           $expectedFileVersion = "$env:VERSION.0"
-          if ($file.VersionInfo.FileVersion -ne $expectedFileVersion) {
-            throw "Installer file version '$($file.VersionInfo.FileVersion)' does not match '$expectedFileVersion'"
+          $actualFileVersion = $file.VersionInfo.FileVersion.Trim()
+          if ($actualFileVersion -ne $expectedFileVersion) {
+            throw "Installer file version '$actualFileVersion' does not match '$expectedFileVersion'"
           }
 
           $hash = (Get-FileHash -Path $installer -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -359,7 +360,7 @@ jobs:
           ) | Set-Content -Path dist\build-metadata-windows.txt -Encoding utf8
 
       - name: Upload Windows build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: PulseScribe-Windows-${{ needs.metadata.outputs.version }}
           path: |
@@ -385,7 +386,7 @@ jobs:
 
     steps:
       - name: Download installer artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: PulseScribe-*
           path: release-assets
