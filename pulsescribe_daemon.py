@@ -118,6 +118,8 @@ RESULT_POLL_INTERVAL_ACTIVE = 0.03
 RESULT_POLL_INTERVAL_BUSY = 0.06
 RESULT_POLL_INTERVAL_IDLE = 0.12
 RESULT_POLL_MAX_MESSAGES_PER_TICK = 250
+AUDIO_FINISHED_CALLBACK_TIMEOUT = 0.35
+AUDIO_CLOSE_TIMEOUT = 2.0
 RELOAD_ENV_SYNC_KEYS = (
     "PULSESCRIBE_HOTKEY",
     "PULSESCRIBE_HOTKEY_MODE",
@@ -324,6 +326,13 @@ class PulseScribeDaemon:
         self._audio_prewarm_lock = threading.Lock()
         self._audio_prewarm_started = False
         self._audio_prewarm_complete = threading.Event()
+        # Native PortAudio close() cannot be force-cancelled. Keep the helper
+        # tracked and block new capture while it is stuck, preventing one leaked
+        # native stream/thread per retry.
+        self._audio_close_lock = threading.Lock()
+        self._audio_close_thread: threading.Thread | None = None
+        self._audio_close_error: Exception | None = None
+        self._audio_close_failed = threading.Event()
 
     # =============================================================================
     # Thread-safe State Properties
@@ -502,7 +511,7 @@ class PulseScribeDaemon:
             self._worker_phase = phase
 
     def _mark_current_worker_abandoned(self, reason: str) -> None:
-        """Markiert den aktiven Worker als verloren, damit neue Runs wieder starten dürfen."""
+        """Markiert den aktiven Worker als verloren und verhindert stale Ergebnisse."""
         worker = self._worker_thread
         if worker is None or not worker.is_alive():
             return
@@ -2077,18 +2086,27 @@ class PulseScribeDaemon:
         effective_mode = run_mode_override or self.mode
 
         if self._worker_thread is not None and self._worker_thread.is_alive():
-            if not self._worker_abandoned:
+            if self._stop_event is not None:
+                self._stop_event.set()
+            if self._worker_abandoned:
+                logger.error(
+                    "Vorheriger Worker hängt weiterhin – neuer Run wird verhindert, "
+                    "damit sich keine Worker und Audiopuffer ansammeln "
+                    f"(phase={self._worker_phase}). Bitte PulseScribe neu starten."
+                )
+            else:
                 logger.warning(
                     "Worker-Thread läuft noch – Recording wird nicht neu gestartet "
                     f"(phase={self._worker_phase})"
                 )
-                if self._stop_event is not None:
-                    self._stop_event.set()
-                return
-            logger.warning(
-                "Vorheriger Worker hängt noch – starte neue Aufnahme mit frischem Run-Kontext "
-                f"(phase={self._worker_phase})"
+            return
+
+        if self._has_stuck_audio_close():
+            logger.error(
+                "PortAudio-Cleanup hängt weiterhin – neue Aufnahme wird verhindert. "
+                "Bitte PulseScribe neu starten."
             )
+            return
 
         # Modus-Entscheidung: Streaming vs. Recording
         use_streaming = effective_mode == "deepgram" and get_env_bool_default(
@@ -2260,22 +2278,28 @@ class PulseScribeDaemon:
         except queue.Full:
             pass
 
+    def _has_stuck_audio_close(self) -> bool:
+        """Return whether a tracked native close is still stuck."""
+        with self._audio_close_lock:
+            close_thread = self._audio_close_thread
+            if close_thread is not None and not close_thread.is_alive():
+                self._audio_close_thread = None
+                if self._audio_close_error is None:
+                    self._audio_close_failed.clear()
+            return self._audio_close_failed.is_set()
+
     def _shutdown_input_stream(
         self,
         stream,
         *,
         finished_event: threading.Event,
         run_id: int | None,
-    ) -> None:
-        """Beendet einen Input-Stream bevorzugt callback-gesteuert und ohne stop()-Blockade.
-
-        Für reine Aufnahme brauchen wir kein geordnetes Drain wie bei Playback.
-        Wenn der Callback nach gesetztem Stop-Event sauber mit CallbackAbort endet,
-        warten wir kurz auf finished_callback und schließen dann den inaktiven Stream.
-        Falls das nicht passiert, erzwingen wir abort()+close() in einem Helper-Thread.
-        """
+    ) -> bool:
+        """Close an input stream while containing unkillable PortAudio deadlocks."""
         self._set_worker_phase("recording:await-finished-callback", run_id=run_id)
-        finished_in_time = finished_event.wait(timeout=0.35)
+        finished_in_time = finished_event.wait(
+            timeout=AUDIO_FINISHED_CALLBACK_TIMEOUT
+        )
 
         def _close_stream() -> None:
             if not finished_in_time:
@@ -2294,8 +2318,9 @@ class PulseScribeDaemon:
                             pass
             try:
                 stream.close()
-            except Exception:
-                pass
+            except Exception as error:
+                with self._audio_close_lock:
+                    self._audio_close_error = error
 
         if not finished_in_time:
             logger.warning(
@@ -2303,17 +2328,53 @@ class PulseScribeDaemon:
             )
 
         self._set_worker_phase("recording:close-stream", run_id=run_id)
-        close_thread = threading.Thread(target=_close_stream, daemon=True)
-        close_thread.start()
-        close_thread.join(timeout=2.0)
+        with self._audio_close_lock:
+            existing = self._audio_close_thread
+            if existing is not None and existing.is_alive():
+                self._audio_close_failed.set()
+                logger.error("Bereits ein PortAudio-Close-Thread blockiert")
+                return False
+            close_thread = threading.Thread(
+                target=_close_stream,
+                daemon=True,
+                name="PortAudioClose",
+            )
+            self._audio_close_error = None
+            self._audio_close_thread = close_thread
+
+        try:
+            close_thread.start()
+        except Exception as error:
+            with self._audio_close_lock:
+                if self._audio_close_thread is close_thread:
+                    self._audio_close_thread = None
+                self._audio_close_error = error
+                self._audio_close_failed.set()
+            logger.error(f"PortAudio-Close-Thread konnte nicht starten: {error}")
+            return False
+        close_thread.join(timeout=AUDIO_CLOSE_TIMEOUT)
 
         if close_thread.is_alive():
+            self._audio_close_failed.set()
             logger.warning(
-                "Audio-Stream Timeout beim Schließen (2s) – "
-                "PortAudio-Deadlock vermutet, fahre fort ohne sauberes Schließen"
+                f"Audio-Stream Timeout beim Schließen ({AUDIO_CLOSE_TIMEOUT:g}s) – "
+                "PortAudio-Deadlock vermutet; weitere Aufnahmen werden verhindert"
             )
-        else:
-            logger.debug("Audio-Stream sauber geschlossen")
+            return False
+
+        with self._audio_close_lock:
+            if self._audio_close_thread is close_thread:
+                self._audio_close_thread = None
+            close_error = self._audio_close_error
+            if close_error is None:
+                self._audio_close_failed.clear()
+            else:
+                self._audio_close_failed.set()
+        if close_error is not None:
+            logger.error(f"Audio-Stream Close fehlgeschlagen: {close_error}")
+            return False
+        logger.debug("Audio-Stream sauber geschlossen")
+        return True
 
     def _streaming_worker(
         self,
@@ -2488,10 +2549,11 @@ class PulseScribeDaemon:
             stream.start()
         except Exception:
             if stream is not None:
-                try:
-                    stream.close()
-                except Exception:
-                    pass
+                self._shutdown_input_stream(
+                    stream,
+                    finished_event=finished_event,
+                    run_id=run_id,
+                )
             raise
 
         try:
@@ -3173,6 +3235,13 @@ class PulseScribeDaemon:
         self._stop_transcribing_watchdog()
         self._stop_error_reset_timer()
         self._cancel_local_warm_lifecycle(wait=True)
+
+        with self._audio_close_lock:
+            close_thread = self._audio_close_thread
+        if close_thread is not None and close_thread.is_alive():
+            close_thread.join(timeout=AUDIO_CLOSE_TIMEOUT)
+            if close_thread.is_alive():
+                logger.warning("PortAudio-Close-Thread hängt beim Shutdown weiterhin")
 
         # Provider-Cache leeren (Local Whisper kann ~500MB RAM halten)
         with self._provider_cache_lock:

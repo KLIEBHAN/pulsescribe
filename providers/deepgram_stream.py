@@ -83,6 +83,10 @@ if TYPE_CHECKING:
     AsyncV1SocketClient = Any
 
 logger = logging.getLogger("pulsescribe")
+MIC_STREAM_CLOSE_TIMEOUT = 2.0
+_MIC_STREAM_CLOSE_LOCK = threading.Lock()
+_MIC_STREAM_CLOSE_THREAD: threading.Thread | None = None
+_MIC_STREAM_CLOSE_ERROR: Exception | None = None
 
 
 # =============================================================================
@@ -156,6 +160,14 @@ class StreamState:
     final_transcript_event: asyncio.Event = field(default_factory=asyncio.Event)
     # Flag für einmalige Buffer-Warnung
     buffer_overflow_logged: bool = False
+
+
+@dataclass
+class StopMechanism:
+    """Resources owned by the external stop-event bridge."""
+
+    shutdown_event: threading.Event = field(default_factory=threading.Event)
+    watcher_thread: threading.Thread | None = None
 
 
 @dataclass
@@ -810,6 +822,74 @@ def _stream_blocksize(sample_rate: int) -> int:
     return platform_audio_blocksize(sample_rate, default_blocksize)
 
 
+def _mic_stream_cleanup_is_stuck() -> bool:
+    global _MIC_STREAM_CLOSE_THREAD
+    with _MIC_STREAM_CLOSE_LOCK:
+        close_thread = _MIC_STREAM_CLOSE_THREAD
+        if close_thread is not None and not close_thread.is_alive():
+            _MIC_STREAM_CLOSE_THREAD = None
+            return _MIC_STREAM_CLOSE_ERROR is not None
+        return close_thread is not None or _MIC_STREAM_CLOSE_ERROR is not None
+
+
+def _close_mic_stream_bounded(stream: Any, session_id: str) -> bool:
+    """Close PortAudio without letting native deadlocks accumulate per retry."""
+    global _MIC_STREAM_CLOSE_ERROR, _MIC_STREAM_CLOSE_THREAD
+    with _MIC_STREAM_CLOSE_LOCK:
+        if _MIC_STREAM_CLOSE_ERROR is not None:
+            logger.error(f"[{session_id}] Vorheriger Mikrofon-Close ist fehlgeschlagen")
+            return False
+
+        existing = _MIC_STREAM_CLOSE_THREAD
+        if existing is not None:
+            if existing.is_alive():
+                logger.error(
+                    f"[{session_id}] Vorheriger Mikrofon-Cleanup hängt weiterhin"
+                )
+                return False
+            _MIC_STREAM_CLOSE_THREAD = None
+
+        def _close() -> None:
+            global _MIC_STREAM_CLOSE_ERROR
+            try:
+                stream.close()
+            except Exception as error:
+                with _MIC_STREAM_CLOSE_LOCK:
+                    _MIC_STREAM_CLOSE_ERROR = error
+                logger.debug(f"[{session_id}] Mikrofon-Close fehlgeschlagen: {error}")
+
+        close_thread = threading.Thread(
+            target=_close,
+            daemon=True,
+            name="DeepgramMicClose",
+        )
+        _MIC_STREAM_CLOSE_THREAD = close_thread
+        try:
+            # Publish and start atomically relative to cleanup-state readers.
+            close_thread.start()
+        except Exception as error:
+            if _MIC_STREAM_CLOSE_THREAD is close_thread:
+                _MIC_STREAM_CLOSE_THREAD = None
+            _MIC_STREAM_CLOSE_ERROR = error
+            logger.error(
+                f"[{session_id}] Mikrofon-Close-Thread konnte nicht starten: {error}"
+            )
+            return False
+    close_thread.join(timeout=MIC_STREAM_CLOSE_TIMEOUT)
+    if close_thread.is_alive():
+        logger.error(
+            f"[{session_id}] Mikrofon-Close hängt länger als "
+            f"{MIC_STREAM_CLOSE_TIMEOUT:g}s; weitere Streams werden verhindert"
+        )
+        return False
+
+    with _MIC_STREAM_CLOSE_LOCK:
+        if _MIC_STREAM_CLOSE_THREAD is close_thread:
+            _MIC_STREAM_CLOSE_THREAD = None
+        close_error = _MIC_STREAM_CLOSE_ERROR
+    return close_error is None
+
+
 def _create_mic_stream(
     callback: Callable[[np.ndarray, int, Any, Any], None],
     session_id: str,
@@ -830,6 +910,11 @@ def _create_mic_stream(
     import numpy as np
     import sounddevice as sd
 
+    if _mic_stream_cleanup_is_stuck():
+        raise RuntimeError(
+            "Vorheriger Mikrofon-Cleanup hängt; PulseScribe muss neu gestartet werden"
+        )
+
     input_device, sample_rate = get_input_device()
     blocksize = _stream_blocksize(sample_rate)
 
@@ -843,7 +928,13 @@ def _create_mic_stream(
         dtype=np.int16,
         callback=callback,
     )
-    mic_stream.start()
+    try:
+        mic_stream.start()
+    except Exception:
+        # InputStream has no reliable destructor for native PortAudio handles.
+        # Keep a potentially deadlocked close tracked and reject later streams.
+        _close_mic_stream_bounded(mic_stream, session_id)
+        raise
 
     logger.debug(f"[{session_id}] Audio-Device: {input_device}, {sample_rate}Hz")
 
@@ -1179,7 +1270,13 @@ def _init_warm_stream(
         daemon=True,
         name="WarmStreamForwarder",
     )
-    forwarder_thread.start()
+    try:
+        forwarder_thread.start()
+    except Exception:
+        warm_source.arm_event.clear()
+        if warm_source.drain_event is not None:
+            warm_source.drain_event.clear()
+        raise
 
     _log_init_complete(session_id, stream_start, "Warm-Stream armed", play_ready)
 
@@ -1507,31 +1604,26 @@ def _setup_stop_mechanism(
     session_id: str,
     *,
     stop_grace_seconds: "float | Callable[[], float]" = 0.0,
-) -> None:
-    """Richtet den Stop-Mechanismus ein.
+) -> StopMechanism:
+    """Richtet den Stop-Mechanismus ein und gibt dessen Ressourcen zurück.
 
     Unterstützte Modi:
     1. external_stop_event gesetzt: Thread überwacht das Event (alle Plattformen)
     2. Unix + Main-Thread: SIGUSR1 Signal-Handler
     3. Windows ohne external_stop_event: Warnung, da kein Stop-Mechanismus verfügbar
-
-    Args:
-        state: StreamState mit stop_event
-        loop: Event-Loop für thread-safe Aufrufe
-        external_stop_event: Externes threading.Event zum Stoppen
-        session_id: Session-ID für Logging
-        stop_grace_seconds: Zusätzliche Aufnahmezeit nach externem Stop-Signal.
-            Ein Callable wird erst NACH dem Stop-Signal ausgewertet (adaptiver
-            Stop-Tail: kurzer Nachlauf bei stillem Release, voller bei Sprache).
     """
+    mechanism = StopMechanism()
     if external_stop_event is not None:
-        # Unified-Daemon-Mode: Externes threading.Event überwachen
         def _watch_external_stop() -> None:
             external_stop_event.wait()
+            if mechanism.shutdown_event.is_set():
+                return
+
             grace_seconds = _resolve_stop_grace_seconds(stop_grace_seconds, session_id)
             if grace_seconds > 0:
                 logger.debug(f"[{session_id}] Stop-Grace: {grace_seconds:.2f}s")
-                time.sleep(grace_seconds)
+                if mechanism.shutdown_event.wait(timeout=grace_seconds):
+                    return
             try:
                 loop.call_soon_threadsafe(state.stop_event.set)
             except RuntimeError as e:
@@ -1539,38 +1631,48 @@ def _setup_stop_mechanism(
                     f"[{session_id}] Event-Loop geschlossen, Stop-Event nicht gesetzt: {e}"
                 )
 
-        stop_watcher = threading.Thread(
+        mechanism.watcher_thread = threading.Thread(
             target=_watch_external_stop, daemon=True, name="StopWatcher"
         )
-        stop_watcher.start()
+        mechanism.watcher_thread.start()
         logger.debug(f"[{session_id}] External stop event watcher gestartet")
 
     elif (
         sys.platform != "win32"
         and threading.current_thread() is threading.main_thread()
     ):
-        # Unix only: SIGUSR1 Signal-Handler
         import signal
 
         loop.add_signal_handler(signal.SIGUSR1, state.stop_event.set)
         logger.debug(f"[{session_id}] SIGUSR1 handler registriert")
 
     else:
-        # Windows ohne external_stop_event oder non-main thread
-        # In diesem Fall muss der Caller selbst für das Stoppen sorgen
-        # (z.B. durch direktes Setzen von state.stop_event)
         logger.warning(
             f"[{session_id}] Kein Stop-Mechanismus verfügbar. "
             f"Auf Windows muss external_stop_event gesetzt werden, "
             f"oder state.stop_event manuell gesetzt werden."
         )
+    return mechanism
 
 
 def _cleanup_stop_mechanism(
     loop: asyncio.AbstractEventLoop,
     external_stop_event: threading.Event | None,
+    mechanism: StopMechanism | None = None,
 ) -> None:
-    """Entfernt Signal-Handler (nur Unix)."""
+    """Stoppt den Event-Watcher und entfernt Unix-Signal-Handler."""
+    if mechanism is not None:
+        mechanism.shutdown_event.set()
+        if external_stop_event is not None:
+            # The supplied Event belongs to this session in both daemons. Setting
+            # it wakes the watcher immediately on internal/initialization errors.
+            external_stop_event.set()
+        watcher = mechanism.watcher_thread
+        if watcher is not None and watcher is not threading.current_thread():
+            watcher.join(timeout=1.0)
+            if watcher.is_alive():
+                logger.warning("StopWatcher reagiert nicht auf Session-Cleanup")
+
     if external_stop_event is None and sys.platform != "win32":
         if threading.current_thread() is threading.main_thread():
             import signal
@@ -1984,15 +2086,18 @@ async def _send_audio_to_deepgram(
 async def _listen_for_deepgram_messages(
     *,
     connection: AsyncV1SocketClient,
+    state: StreamState,
     session_id: str,
 ) -> None:
-    """Empfängt Transkripte von Deepgram."""
+    """Empfängt Transkripte von Deepgram und beendet die Session bei Fehlern."""
     try:
         await connection.start_listening()
     except asyncio.CancelledError:
         pass
     except Exception as e:
         logger.debug(f"[{session_id}] Listener beendet: {e}")
+        state.stream_error = e
+        state.stop_event.set()
 
 
 async def _stop_audio_source_before_shutdown(
@@ -2019,14 +2124,21 @@ def _cleanup_deepgram_audio_source(
     *,
     audio_result: AudioSourceResult,
     warm_stream_source: WarmStreamSource | None,
+    session_id: str,
 ) -> None:
     if audio_result.mic_stream is not None:
         try:
             if audio_result.mic_stream.active:
                 audio_result.mic_stream.stop()
-            audio_result.mic_stream.close()
         except Exception as e:
-            logger.debug(f"Mikrofon-Cleanup fehlgeschlagen: {e}")
+            logger.debug(f"Mikrofon-Stop beim Cleanup fehlgeschlagen: {e}")
+        _close_mic_stream_bounded(audio_result.mic_stream, session_id)
+
+    forwarder = audio_result.forwarder_thread
+    if forwarder is not None and forwarder is not threading.current_thread():
+        forwarder.join(timeout=FORWARDER_THREAD_JOIN_TIMEOUT)
+        if forwarder.is_alive():
+            logger.warning(f"[{session_id}] Forwarder-Thread reagiert nicht auf Cleanup")
 
     if warm_stream_source is None:
         return
@@ -2108,8 +2220,7 @@ async def deepgram_stream_core(
     loop = asyncio.get_running_loop()
     audio_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
 
-    # Stop-Mechanismus einrichten
-    _setup_stop_mechanism(
+    stop_mechanism = _setup_stop_mechanism(
         state,
         loop,
         external_stop_event,
@@ -2121,28 +2232,31 @@ async def deepgram_stream_core(
         ),
     )
 
-    # Audio-Source initialisieren (modus-spezifisch)
-    audio_result = _init_audio_source(
-        mode=mode,
-        early_buffer=early_buffer,
-        warm_stream_source=warm_stream_source,
-        state=state,
-        loop=loop,
-        audio_queue=audio_queue,
-        session_id=session_id,
-        play_ready=play_ready,
-        stream_start=stream_start,
-        audio_level_callback=audio_level_callback,
-    )
-    _emit_latency_event(
-        latency_event_callback,
-        "audio_stream_started",
-        elapsed_ms=round((time.perf_counter() - stream_start) * 1000, 3),
-    )
-
+    audio_result: AudioSourceResult | None = None
+    send_task: asyncio.Task[None] | None = None
+    listen_task: asyncio.Task[None] | None = None
     create_connection = connection_factory or _create_deepgram_connection
 
     try:
+        # Initialization belongs to the same lifecycle guard as the socket.
+        audio_result = _init_audio_source(
+            mode=mode,
+            early_buffer=early_buffer,
+            warm_stream_source=warm_stream_source,
+            state=state,
+            loop=loop,
+            audio_queue=audio_queue,
+            session_id=session_id,
+            play_ready=play_ready,
+            stream_start=stream_start,
+            audio_level_callback=audio_level_callback,
+        )
+        _emit_latency_event(
+            latency_event_callback,
+            "audio_stream_started",
+            elapsed_ms=round((time.perf_counter() - stream_start) * 1000, 3),
+        )
+
         async with create_connection(
             api_key,
             model=model,
@@ -2182,6 +2296,7 @@ async def deepgram_stream_core(
             listen_task = asyncio.create_task(
                 _listen_for_deepgram_messages(
                     connection=connection,
+                    state=state,
                     session_id=session_id,
                 )
             )
@@ -2216,13 +2331,26 @@ async def deepgram_stream_core(
             )
 
     finally:
-        _cleanup_deepgram_audio_source(
-            audio_result=audio_result,
-            warm_stream_source=warm_stream_source,
-        )
+        # Every exit path must wake the warm forwarder before its event loop closes.
+        state.stop_event.set()
 
-        # Signal-Handler entfernen
-        _cleanup_stop_mechanism(loop, external_stop_event)
+        pending_tasks = [
+            task
+            for task in (send_task, listen_task)
+            if task is not None and not task.done()
+        ]
+        for task in pending_tasks:
+            task.cancel()
+        if pending_tasks:
+            await asyncio.gather(*pending_tasks, return_exceptions=True)
+
+        _cleanup_stop_mechanism(loop, external_stop_event, stop_mechanism)
+        if audio_result is not None:
+            _cleanup_deepgram_audio_source(
+                audio_result=audio_result,
+                warm_stream_source=warm_stream_source,
+                session_id=session_id,
+            )
 
     if state.stream_error:
         raise state.stream_error
