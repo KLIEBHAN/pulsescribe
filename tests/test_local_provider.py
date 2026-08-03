@@ -91,6 +91,89 @@ class TestImportHelpers:
             local_mod._NVIDIA_DLL_DIRECTORY_HANDLES.update(original_handles)
 
 
+class TestCudaLoadLifecycle:
+    def test_thread_start_failure_does_not_deadlock_cuda_registry(self, monkeypatch):
+        import providers.local as local_mod
+
+        class _FailingThread:
+            def __init__(self, *_args, **_kwargs) -> None:
+                pass
+
+            def start(self) -> None:
+                raise RuntimeError("thread unavailable")
+
+        with monkeypatch.context() as scoped:
+            scoped.setattr(
+                local_mod,
+                "threading",
+                SimpleNamespace(Thread=_FailingThread),
+            )
+            with pytest.raises(RuntimeError, match="thread unavailable"):
+                local_mod._run_cuda_load_with_timeout(
+                    key=("whisper", "start-failure", "cuda"),
+                    loader=object,
+                )
+
+        assert ("whisper", "start-failure", "cuda") not in local_mod._CUDA_LOAD_FUTURES
+        assert local_mod._CUDA_LOADS_LOCK.acquire(timeout=0.1)
+        local_mod._CUDA_LOADS_LOCK.release()
+
+    def test_timeout_reuses_one_daemon_loader_and_releases_completed_result(
+        self, monkeypatch
+    ):
+        import providers.local as local_mod
+
+        release = threading.Event()
+        finished = threading.Event()
+        load_calls = 0
+        load_calls_lock = threading.Lock()
+        baseline_thread_ids = {id(thread) for thread in threading.enumerate()}
+
+        class _BlockingWhisper:
+            @staticmethod
+            def load_model(_model_name, *, device):
+                nonlocal load_calls
+                assert device == "cuda"
+                with load_calls_lock:
+                    load_calls += 1
+                try:
+                    release.wait(timeout=2.0)
+                    return object()
+                finally:
+                    finished.set()
+
+        first_provider = local_mod.LocalProvider()
+        first_provider._device = "cuda"
+        second_provider = local_mod.LocalProvider()
+        second_provider._device = "cuda"
+        monkeypatch.setattr(local_mod, "CUDA_MODEL_LOAD_TIMEOUT", 0.01)
+
+        try:
+            with pytest.raises(RuntimeError, match="CUDA whisper model loading timeout"):
+                first_provider._load_cuda_whisper_model(_BlockingWhisper, "tiny")
+            with pytest.raises(RuntimeError, match="CUDA whisper model loading timeout"):
+                second_provider._load_cuda_whisper_model(_BlockingWhisper, "tiny")
+
+            active_loaders = [
+                thread
+                for thread in threading.enumerate()
+                if id(thread) not in baseline_thread_ids
+                and thread.name == "CudaModelLoader"
+                and thread.is_alive()
+            ]
+            assert load_calls == 1
+            assert len(active_loaders) == 1
+            assert active_loaders[0].daemon is True
+        finally:
+            release.set()
+            assert finished.wait(timeout=1.0)
+            for thread in threading.enumerate():
+                if id(thread) not in baseline_thread_ids:
+                    thread.join(timeout=1.0)
+
+        assert ("whisper", "tiny", "cuda") not in local_mod._CUDA_LOAD_FUTURES
+
+
 class TestLightningModelMapping:
     """Tests für Lightning Model-Name Mapping."""
 

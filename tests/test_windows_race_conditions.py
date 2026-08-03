@@ -931,6 +931,107 @@ def test_reload_settings_releases_local_provider_on_mode_change(monkeypatch):
     assert "local" not in daemon._provider_cache
 
 
+def test_local_reload_coalesces_preload_threads_for_unchanged_settings():
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="local",
+        streaming=False,
+        overlay=False,
+    )
+    release = threading.Event()
+    started = threading.Event()
+    preload_calls = 0
+    preload_calls_lock = threading.Lock()
+
+    def blocked_preload() -> None:
+        nonlocal preload_calls
+        with preload_calls_lock:
+            preload_calls += 1
+        started.set()
+        release.wait(timeout=2.0)
+
+    daemon._preload_local_model = blocked_preload
+    signature = daemon._local_provider_memory_signature()
+    baseline_thread_ids = {id(thread) for thread in threading.enumerate()}
+
+    try:
+        for _ in range(5):
+            daemon._apply_mode_reload_settings(
+                {"PULSESCRIBE_MODE": "local"},
+                old_local_signature=signature,
+            )
+
+        assert started.wait(timeout=1.0)
+        active_preloads = [
+            thread
+            for thread in threading.enumerate()
+            if id(thread) not in baseline_thread_ids
+            and thread.name == "LocalModelPreload"
+            and thread.is_alive()
+        ]
+        assert preload_calls == 1
+        assert len(active_preloads) == 1
+    finally:
+        release.set()
+        worker = daemon._local_preload_thread
+        if worker is not None:
+            worker.join(timeout=1.0)
+
+    assert daemon._local_preload_thread is None
+
+
+def test_startup_prewarm_and_reload_share_one_preload_owner(monkeypatch):
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="local",
+        streaming=False,
+        overlay=False,
+    )
+    startup_started = threading.Event()
+    release_startup = threading.Event()
+    signatures = [("local", "model-a")]
+    reload_preload_calls = 0
+
+    def startup_prewarm() -> float:
+        startup_started.set()
+        release_startup.wait(timeout=2.0)
+        return 25.0
+
+    def reload_preload() -> None:
+        nonlocal reload_preload_calls
+        reload_preload_calls += 1
+
+    monkeypatch.setattr(
+        daemon,
+        "_local_provider_memory_signature",
+        lambda: signatures[0],
+    )
+    daemon._run_local_model_prewarm = startup_prewarm
+    daemon._preload_local_model = reload_preload
+    startup_thread = threading.Thread(
+        target=daemon._preload_local_model_for_prewarm,
+        name="StartupPrewarm",
+    )
+
+    try:
+        startup_thread.start()
+        assert startup_started.wait(timeout=1.0)
+        signatures[0] = ("local", "model-b")
+
+        assert daemon._request_local_model_preload() is False
+        assert daemon._local_preload_thread is startup_thread
+        assert not any(
+            thread.name == "LocalModelPreload" and thread.is_alive()
+            for thread in threading.enumerate()
+        )
+    finally:
+        release_startup.set()
+        startup_thread.join(timeout=1.0)
+
+    assert reload_preload_calls == 1
+    assert daemon._local_preload_thread is None
+
+
 def test_reload_settings_releases_local_provider_on_memory_setting_change(monkeypatch):
     windows_module = _load_windows_module()
     daemon = windows_module.PulseScribeWindows(

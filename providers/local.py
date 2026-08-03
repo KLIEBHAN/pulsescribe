@@ -14,10 +14,10 @@ import platform
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from concurrent.futures import Future, TimeoutError as FuturesTimeoutError
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Generator
+from typing import Any, Callable, Generator, Hashable
 
 from config import (
     DEFAULT_LOCAL_MODEL,
@@ -53,6 +53,65 @@ _LOCAL_VOCAB_KEYWORDS_MAX = 50
 _BACKENDS_WITHOUT_BEAM_SEARCH = ("mlx", "lightning")
 _LIGHTNING_WORKDIR_LOCK = threading.RLock()
 _NVIDIA_DLL_DIRECTORY_HANDLES: dict[str, object] = {}
+_CUDA_LOADS_LOCK = threading.Lock()
+_CUDA_LOAD_FUTURES: dict[Hashable, Future[Any]] = {}
+
+
+def _remove_completed_cuda_load(key: Hashable, future: Future[Any]) -> None:
+    with _CUDA_LOADS_LOCK:
+        if _CUDA_LOAD_FUTURES.get(key) is future:
+            _CUDA_LOAD_FUTURES.pop(key, None)
+
+
+def _run_cuda_load_with_timeout(
+    *,
+    key: Hashable,
+    loader: Callable[[], Any],
+) -> Any:
+    """Run one shared CUDA load per config in a process-exit-safe daemon thread.
+
+    Native CUDA calls cannot be cancelled safely. Sharing an in-flight Future
+    prevents retries from accumulating more stuck loaders, while a daemon thread
+    avoids the interpreter shutdown join imposed by ThreadPoolExecutor workers.
+    Completed results are removed immediately so abandoned loads do not retain a
+    model object after they eventually return.
+    """
+    with _CUDA_LOADS_LOCK:
+        future = _CUDA_LOAD_FUTURES.get(key)
+        if future is None:
+            future = Future()
+            _CUDA_LOAD_FUTURES[key] = future
+            future.add_done_callback(
+                lambda completed, load_key=key: _remove_completed_cuda_load(
+                    load_key, completed
+                )
+            )
+
+            def _load() -> None:
+                if not future.set_running_or_notify_cancel():
+                    return
+                try:
+                    result = loader()
+                except BaseException as error:
+                    future.set_exception(error)
+                else:
+                    future.set_result(result)
+
+            thread = threading.Thread(
+                target=_load,
+                daemon=True,
+                name="CudaModelLoader",
+            )
+            try:
+                thread.start()
+            except Exception:
+                # No worker owns this Future. Removing the registry reference is
+                # sufficient; cancelling here would execute the done callback
+                # synchronously while _CUDA_LOADS_LOCK is still held.
+                _CUDA_LOAD_FUTURES.pop(key, None)
+                raise
+
+    return future.result(timeout=CUDA_MODEL_LOAD_TIMEOUT)
 
 
 def _get_warmup_language() -> str:
@@ -589,18 +648,18 @@ class LocalProvider:
                 cpu_model._buffers["alignment_heads"] = heads  # type: ignore[arg-type]
 
     def _load_cuda_whisper_model(self, whisper, model_name: str):
-        executor = ThreadPoolExecutor(max_workers=1)
-        future = executor.submit(whisper.load_model, model_name, device=self._device)
+        device = self._device
         try:
-            return future.result(timeout=CUDA_MODEL_LOAD_TIMEOUT)
+            return _run_cuda_load_with_timeout(
+                key=("whisper", model_name, device),
+                loader=lambda: whisper.load_model(model_name, device=device),
+            )
         except FuturesTimeoutError:
             logger.warning(
                 f"CUDA Whisper Model-Loading Timeout ({CUDA_MODEL_LOAD_TIMEOUT}s) - "
                 "CPU-Fallback wird versucht."
             )
             raise RuntimeError("CUDA whisper model loading timeout")
-        finally:
-            executor.shutdown(wait=False, cancel_futures=True)
 
     def _load_whisper_cpu_fallback(self, whisper, model_name: str, error: Exception) -> str:
         if self._device == "cpu":
@@ -658,12 +717,17 @@ class LocalProvider:
 
             try:
                 if device == "cuda":
-                    # CUDA-Loading mit Timeout (kann bei cuDNN-Problemen hängen)
-                    executor = ThreadPoolExecutor(max_workers=1)
-                    future = executor.submit(_load_model, device, compute_type)
                     try:
-                        self._model_cache[cache_key] = future.result(
-                            timeout=CUDA_MODEL_LOAD_TIMEOUT
+                        self._model_cache[cache_key] = _run_cuda_load_with_timeout(
+                            key=(
+                                "faster",
+                                faster_name,
+                                device,
+                                compute_type,
+                                cpu_threads,
+                                num_workers,
+                            ),
+                            loader=lambda: _load_model(device, compute_type),
                         )
                     except FuturesTimeoutError:
                         logger.warning(
@@ -671,8 +735,6 @@ class LocalProvider:
                             "cuDNN hängt vermutlich. Fallback auf CPU."
                         )
                         raise RuntimeError("CUDA model loading timeout")
-                    finally:
-                        executor.shutdown(wait=False, cancel_futures=True)
                 else:
                     self._model_cache[cache_key] = _load_model(device, compute_type)
                 logger.info(f"Modell '{faster_name}' geladen ({device.upper()})")

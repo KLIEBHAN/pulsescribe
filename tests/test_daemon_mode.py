@@ -732,7 +732,7 @@ class TestWatchdogTimer(unittest.TestCase):
         self.assertTrue(daemon._result_queue.empty())
 
     def test_watchdog_marks_alive_worker_abandoned(self):
-        """Ein Watchdog-Timeout muss festhängende Worker freigeben."""
+        """Ein Watchdog-Timeout muss späte Ergebnisse des Workers verwerfen."""
         daemon = PulseScribeDaemon(mode="local")
         daemon._current_state = AppState.TRANSCRIBING
         daemon._worker_phase = "recording:close-stream"
@@ -765,29 +765,25 @@ class TestWatchdogTimer(unittest.TestCase):
         daemon._stop_interim_polling.assert_called_once()
         daemon._stop_result_polling.assert_called_once()
 
-    def test_start_recording_recovers_from_abandoned_worker(self):
-        """Ein aufgegebener Alt-Worker darf neue Aufnahmen nicht dauerhaft blockieren."""
+    def test_start_recording_does_not_accumulate_abandoned_workers(self):
+        """Ein lebender Alt-Worker muss weitere Worker und Audiopuffer blockieren."""
         daemon = PulseScribeDaemon(mode="local")
         old_queue = daemon._result_queue
         daemon._worker_phase = "recording:close-stream"
         daemon._worker_abandoned = True
         daemon._worker_thread = MagicMock()
         daemon._worker_thread.is_alive.return_value = True
+        daemon._stop_event = threading.Event()
 
-        with (
-            patch("pulsescribe_daemon.threading.Thread") as mock_thread_cls,
-            patch("pulsescribe_daemon.INTERIM_FILE"),
-        ):
+        with patch("pulsescribe_daemon.threading.Thread") as mock_thread_cls:
             daemon._start_recording()
 
-        self.assertFalse(daemon._worker_abandoned)
-        self.assertTrue(daemon._recording)
-        self.assertIsNot(daemon._result_queue, old_queue)
-        self.assertEqual(daemon._current_state, AppState.LISTENING)
-        kwargs = mock_thread_cls.call_args.kwargs
-        self.assertEqual(kwargs["target"], daemon._recording_worker)
-        self.assertEqual(kwargs["name"], "RecordingWorker")
-        self.assertEqual(kwargs["args"][0], daemon._active_run_id)
+        self.assertTrue(daemon._worker_abandoned)
+        self.assertFalse(daemon._recording)
+        self.assertIs(daemon._result_queue, old_queue)
+        self.assertEqual(daemon._current_state, AppState.IDLE)
+        self.assertTrue(daemon._stop_event.is_set())
+        mock_thread_cls.assert_not_called()
 
 
 class TestAudioShutdown(unittest.TestCase):
@@ -817,6 +813,63 @@ class TestAudioShutdown(unittest.TestCase):
         daemon._shutdown_input_stream(stream, finished_event=finished_event, run_id=1)
 
         self.assertEqual(calls, ["abort", "close"])
+
+    def test_close_exception_blocks_additional_recordings(self):
+        daemon = PulseScribeDaemon(mode="local")
+        finished_event = threading.Event()
+        finished_event.set()
+        stream = MagicMock()
+        stream.close.side_effect = OSError("close failed")
+
+        closed = daemon._shutdown_input_stream(
+            stream,
+            finished_event=finished_event,
+            run_id=1,
+        )
+
+        self.assertFalse(closed)
+        self.assertTrue(daemon._has_stuck_audio_close())
+        with patch("pulsescribe_daemon.threading.Thread") as mock_thread_cls:
+            daemon._start_recording()
+        mock_thread_cls.assert_not_called()
+        self.assertFalse(daemon._recording)
+
+    def test_stuck_close_is_tracked_and_blocks_additional_recordings(self):
+        daemon = PulseScribeDaemon(mode="local")
+        finished_event = threading.Event()
+        finished_event.set()
+        release = threading.Event()
+
+        class _BlockingStream:
+            def close(self):
+                release.wait(timeout=1.0)
+
+        try:
+            with patch("pulsescribe_daemon.AUDIO_CLOSE_TIMEOUT", 0.01):
+                closed = daemon._shutdown_input_stream(
+                    _BlockingStream(),
+                    finished_event=finished_event,
+                    run_id=1,
+                )
+
+            self.assertFalse(closed)
+            self.assertTrue(daemon._has_stuck_audio_close())
+            close_thread = daemon._audio_close_thread
+            self.assertIsNotNone(close_thread)
+            self.assertTrue(close_thread.is_alive())
+
+            with patch("pulsescribe_daemon.threading.Thread") as mock_thread_cls:
+                daemon._start_recording()
+            mock_thread_cls.assert_not_called()
+            self.assertFalse(daemon._recording)
+        finally:
+            release.set()
+            close_thread = daemon._audio_close_thread
+            if close_thread is not None:
+                close_thread.join(timeout=1.0)
+
+        self.assertFalse(daemon._has_stuck_audio_close())
+        self.assertIsNone(daemon._audio_close_thread)
 
     def test_error_reset_timer_stored_on_enter_error(self):
         """_enter_error_state() speichert Timer-Referenz."""

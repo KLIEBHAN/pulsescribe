@@ -422,6 +422,13 @@ class PulseScribeWindows:
         # Provider-Cache (wichtig für LocalProvider - cached Modelle intern)
         self._provider_cache: dict[str, object] = {}
         self._provider_cache_lock = threading.Lock()
+        # Settings-Reloads dürfen höchstens einen Local-Preload-Worker besitzen.
+        # Bei Konfigurationsänderungen während eines laufenden Loads wird nur
+        # die jüngste Signatur für einen Folge-Durchlauf vorgemerkt.
+        self._local_preload_lock = threading.Lock()
+        self._local_preload_thread: threading.Thread | None = None
+        self._local_preload_active_signature: tuple[str | None, ...] | None = None
+        self._local_preload_pending_signature: tuple[str | None, ...] | None = None
 
         # Settings-Reload (FileWatcher + Polling-Fallback)
         self._env_observer = None
@@ -2663,7 +2670,7 @@ class PulseScribeWindows:
             self._invalidate_local_provider_runtime_config()
 
         if new_mode == "local":
-            threading.Thread(target=self._preload_local_model, daemon=True).start()
+            self._request_local_model_preload()
 
     def _invalidate_all_provider_runtime_configs(self) -> None:
         with self._provider_cache_lock:
@@ -2736,6 +2743,65 @@ class PulseScribeWindows:
         logger.info(f"Hotkeys geändert: toggle={new_toggle}, hold={new_hold}")
         self._restart_hotkey_listeners()
         return True
+
+    def _request_local_model_preload(self) -> bool:
+        """Start one coalescing preload worker for the latest local config."""
+        signature = self._local_provider_memory_signature()
+        with self._local_preload_lock:
+            if self._local_preload_thread is not None:
+                if signature != self._local_preload_active_signature:
+                    self._local_preload_pending_signature = signature
+                return False
+
+            self._local_preload_active_signature = signature
+            worker = threading.Thread(
+                target=self._run_local_model_preload_requests,
+                daemon=True,
+                name="LocalModelPreload",
+            )
+            self._local_preload_thread = worker
+
+        try:
+            worker.start()
+        except Exception:
+            with self._local_preload_lock:
+                if self._local_preload_thread is worker:
+                    self._local_preload_thread = None
+                    self._local_preload_active_signature = None
+            raise
+        return True
+
+    def _advance_local_model_preload(self, owner: threading.Thread) -> bool:
+        """Advance an owning preload thread to the latest queued signature."""
+        with self._local_preload_lock:
+            if self._local_preload_thread is not owner:
+                return False
+            pending = self._local_preload_pending_signature
+            self._local_preload_pending_signature = None
+            if pending is None or self._stop_event.is_set() or self.mode != "local":
+                self._local_preload_active_signature = None
+                self._local_preload_thread = None
+                return False
+            self._local_preload_active_signature = pending
+            return True
+
+    def _release_local_model_preload_owner(self, owner: threading.Thread) -> None:
+        with self._local_preload_lock:
+            if self._local_preload_thread is owner:
+                self._local_preload_active_signature = None
+                self._local_preload_pending_signature = None
+                self._local_preload_thread = None
+
+    def _run_local_model_preload_requests(self) -> None:
+        """Run the active preload and at most the latest changed request next."""
+        owner = threading.current_thread()
+        try:
+            while True:
+                self._preload_local_model()
+                if not self._advance_local_model_preload(owner):
+                    return
+        finally:
+            self._release_local_model_preload_owner(owner)
 
     def _preload_local_model(self):
         """Lädt Local-Model vor nach Settings-Änderung."""
@@ -3061,11 +3127,29 @@ class PulseScribeWindows:
     def _preload_local_model_for_prewarm(self) -> float:
         if self.mode != "local":
             return 0.0
+
+        signature = self._local_provider_memory_signature()
+        owner = threading.current_thread()
+        with self._local_preload_lock:
+            if self._local_preload_thread is not None:
+                if signature != self._local_preload_active_signature:
+                    self._local_preload_pending_signature = signature
+                return 0.0
+            self._local_preload_thread = owner
+            self._local_preload_active_signature = signature
+
+        preload_ms = 0.0
         try:
-            return self._run_local_model_prewarm()
-        except Exception as e:
-            logger.warning(f"Local-Modell Preload fehlgeschlagen: {e}")
-            return 0.0
+            try:
+                preload_ms = self._run_local_model_prewarm()
+            except Exception as e:
+                logger.warning(f"Local-Modell Preload fehlgeschlagen: {e}")
+
+            while self._advance_local_model_preload(owner):
+                self._preload_local_model()
+            return preload_ms
+        finally:
+            self._release_local_model_preload_owner(owner)
 
     def _run_local_model_prewarm(self) -> float:
         preload_start = time.perf_counter()

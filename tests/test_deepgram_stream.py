@@ -413,31 +413,47 @@ def test_graceful_shutdown_sends_tail_padding_before_sentinel(monkeypatch) -> No
     assert sent_items == [b"last-audio", b"\x00\x00", None]
 
 
-def test_stop_mechanism_applies_configured_grace_before_stop(monkeypatch) -> None:
-    sleep_calls: list[float] = []
-    monkeypatch.setattr(
-        deepgram_stream.time,
-        "sleep",
-        lambda seconds: sleep_calls.append(seconds),
-    )
-
-    async def _run() -> None:
+def test_stop_mechanism_applies_configured_grace_before_stop() -> None:
+    async def _run() -> float:
         state = deepgram_stream.StreamState()
         external_stop = threading.Event()
-        deepgram_stream._setup_stop_mechanism(
+        loop = asyncio.get_running_loop()
+        mechanism = deepgram_stream._setup_stop_mechanism(
             state,
-            asyncio.get_running_loop(),
+            loop,
             external_stop,
             "sess",
-            stop_grace_seconds=0.3,
+            stop_grace_seconds=0.05,
         )
 
+        started = time.monotonic()
         external_stop.set()
         await asyncio.wait_for(state.stop_event.wait(), timeout=1.0)
+        elapsed = time.monotonic() - started
+        deepgram_stream._cleanup_stop_mechanism(loop, external_stop, mechanism)
+        return elapsed
 
-    asyncio.run(_run())
+    assert asyncio.run(_run()) >= 0.045
 
-    assert sleep_calls == [0.3]
+
+def test_stop_mechanism_cleanup_wakes_watcher_without_external_stop() -> None:
+    async def _run() -> bool:
+        state = deepgram_stream.StreamState()
+        external_stop = threading.Event()
+        loop = asyncio.get_running_loop()
+        mechanism = deepgram_stream._setup_stop_mechanism(
+            state,
+            loop,
+            external_stop,
+            "sess",
+        )
+        watcher = mechanism.watcher_thread
+        assert watcher is not None and watcher.is_alive()
+
+        deepgram_stream._cleanup_stop_mechanism(loop, external_stop, mechanism)
+        return watcher.is_alive()
+
+    assert asyncio.run(_run()) is False
 
 
 def test_finish_warm_forwarder_flushes_threadsafe_audio_before_sentinel() -> None:
@@ -475,6 +491,234 @@ def test_finish_warm_forwarder_flushes_threadsafe_audio_before_sentinel() -> Non
 
     assert items == [b"last-audio", None]
     assert join_timeout == deepgram_stream.FORWARDER_THREAD_JOIN_TIMEOUT
+
+
+def test_create_mic_stream_closes_native_stream_when_start_fails(monkeypatch) -> None:
+    class _FailingStream:
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        def start(self) -> None:
+            raise RuntimeError("start failed")
+
+        def close(self) -> None:
+            self.close_calls += 1
+
+    stream = _FailingStream()
+    monkeypatch.setattr(deepgram_stream, "get_input_device", lambda: (0, 16000))
+    monkeypatch.setattr(
+        deepgram_stream,
+        "create_low_latency_input_stream",
+        lambda *_args, **_kwargs: stream,
+    )
+
+    with pytest.raises(RuntimeError, match="start failed"):
+        deepgram_stream._create_mic_stream(lambda *_args: None, "sess", 0.0)
+
+    assert stream.close_calls == 1
+
+
+def test_start_failure_with_stuck_close_blocks_additional_mic_streams(
+    monkeypatch,
+) -> None:
+    release = threading.Event()
+    close_started = threading.Event()
+    created_streams = 0
+
+    class _BlockingCloseStream:
+        def start(self) -> None:
+            raise RuntimeError("start failed")
+
+        def close(self) -> None:
+            close_started.set()
+            release.wait(timeout=1.0)
+
+    def create_stream(*_args, **_kwargs):
+        nonlocal created_streams
+        created_streams += 1
+        return _BlockingCloseStream()
+
+    monkeypatch.setattr(deepgram_stream, "get_input_device", lambda: (0, 16000))
+    monkeypatch.setattr(
+        deepgram_stream,
+        "create_low_latency_input_stream",
+        create_stream,
+    )
+    monkeypatch.setattr(deepgram_stream, "MIC_STREAM_CLOSE_TIMEOUT", 0.01)
+
+    try:
+        with pytest.raises(RuntimeError, match="start failed"):
+            deepgram_stream._create_mic_stream(lambda *_args: None, "sess", 0.0)
+        assert close_started.wait(timeout=1.0)
+        with pytest.raises(RuntimeError, match="Mikrofon-Cleanup hängt"):
+            deepgram_stream._create_mic_stream(lambda *_args: None, "sess", 0.0)
+        assert created_streams == 1
+    finally:
+        release.set()
+        close_thread = deepgram_stream._MIC_STREAM_CLOSE_THREAD
+        if close_thread is not None:
+            close_thread.join(timeout=1.0)
+        assert deepgram_stream._mic_stream_cleanup_is_stuck() is False
+
+
+def test_close_exception_blocks_additional_mic_streams(monkeypatch) -> None:
+    created_streams = 0
+
+    class _CloseFailingStream:
+        def start(self) -> None:
+            raise RuntimeError("start failed")
+
+        def close(self) -> None:
+            raise OSError("close failed")
+
+    def create_stream(*_args, **_kwargs):
+        nonlocal created_streams
+        created_streams += 1
+        return _CloseFailingStream()
+
+    monkeypatch.setattr(deepgram_stream, "get_input_device", lambda: (0, 16000))
+    monkeypatch.setattr(
+        deepgram_stream,
+        "create_low_latency_input_stream",
+        create_stream,
+    )
+
+    try:
+        with pytest.raises(RuntimeError, match="start failed"):
+            deepgram_stream._create_mic_stream(lambda *_args: None, "sess", 0.0)
+        assert deepgram_stream._mic_stream_cleanup_is_stuck() is True
+        with pytest.raises(RuntimeError, match="Mikrofon-Cleanup hängt"):
+            deepgram_stream._create_mic_stream(lambda *_args: None, "sess", 0.0)
+        assert created_streams == 1
+    finally:
+        with deepgram_stream._MIC_STREAM_CLOSE_LOCK:
+            deepgram_stream._MIC_STREAM_CLOSE_THREAD = None
+            deepgram_stream._MIC_STREAM_CLOSE_ERROR = None
+
+
+def test_mic_close_thread_is_started_before_tracker_becomes_observable(
+    monkeypatch,
+) -> None:
+    start_entered = threading.Event()
+    allow_start = threading.Event()
+
+    class _DelayedStartThread:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self._alive = False
+
+        def start(self) -> None:
+            start_entered.set()
+            allow_start.wait(timeout=1.0)
+            self._alive = True
+
+        def join(self, timeout=None) -> None:
+            self._alive = False
+
+        def is_alive(self) -> bool:
+            return self._alive
+
+    monkeypatch.setattr(
+        deepgram_stream,
+        "threading",
+        SimpleNamespace(Thread=_DelayedStartThread),
+    )
+    owner = threading.Thread(
+        target=lambda: deepgram_stream._close_mic_stream_bounded(object(), "sess")
+    )
+
+    try:
+        owner.start()
+        assert start_entered.wait(timeout=1.0)
+        # Readers cannot observe the published-but-not-started Thread object.
+        assert not deepgram_stream._MIC_STREAM_CLOSE_LOCK.acquire(timeout=0.02)
+    finally:
+        allow_start.set()
+        owner.join(timeout=1.0)
+        with deepgram_stream._MIC_STREAM_CLOSE_LOCK:
+            deepgram_stream._MIC_STREAM_CLOSE_THREAD = None
+            deepgram_stream._MIC_STREAM_CLOSE_ERROR = None
+
+
+def test_warm_stream_thread_start_failure_disarms_source(monkeypatch) -> None:
+    warm_source = _make_warm_source([])
+
+    class _FailingThread:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def start(self) -> None:
+            raise RuntimeError("thread start failed")
+
+    monkeypatch.setattr(
+        deepgram_stream,
+        "threading",
+        SimpleNamespace(Thread=_FailingThread),
+    )
+
+    async def _run() -> None:
+        with pytest.raises(RuntimeError, match="thread start failed"):
+            deepgram_stream._init_warm_stream(
+                warm_source,
+                deepgram_stream.StreamState(),
+                asyncio.get_running_loop(),
+                asyncio.Queue(),
+                "sess",
+                False,
+                time.perf_counter(),
+            )
+
+    asyncio.run(_run())
+
+    assert warm_source.arm_event.is_set() is False
+    assert warm_source.drain_event is not None
+    assert warm_source.drain_event.is_set() is False
+
+
+def test_audio_cleanup_closes_stream_even_when_stop_fails() -> None:
+    class _StopFailingStream:
+        active = True
+
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        def stop(self) -> None:
+            raise RuntimeError("stop failed")
+
+        def close(self) -> None:
+            self.close_calls += 1
+
+    stream = _StopFailingStream()
+    deepgram_stream._cleanup_deepgram_audio_source(
+        audio_result=deepgram_stream.AudioSourceResult(
+            sample_rate=16000,
+            mic_stream=cast(Any, stream),
+            buffer_state=None,
+        ),
+        warm_stream_source=None,
+        session_id="sess",
+    )
+
+    assert stream.close_calls == 1
+
+
+def test_listener_failure_stops_session() -> None:
+    class _FailingConnection:
+        async def start_listening(self) -> None:
+            raise OSError("listener failed")
+
+    async def _run() -> deepgram_stream.StreamState:
+        state = deepgram_stream.StreamState()
+        await deepgram_stream._listen_for_deepgram_messages(
+            connection=cast(Any, _FailingConnection()),
+            state=state,
+            session_id="sess",
+        )
+        return state
+
+    state = asyncio.run(_run())
+
+    assert isinstance(state.stream_error, OSError)
+    assert state.stop_event.is_set()
 
 
 def test_write_interim_text_replaces_file_atomically(tmp_path) -> None:
@@ -612,6 +856,9 @@ class _FakeWarmConnection:
     async def send_control(self, message) -> None:
         self.controls.append(message.type)
 
+    async def start_listening(self) -> None:
+        await asyncio.Future()
+
 
 class _FakeConnectionContext:
     def __init__(
@@ -679,6 +926,41 @@ def _install_fake_stream_core(
         return "warm result"
 
     monkeypatch.setattr(deepgram_stream, "deepgram_stream_core", fake_core)
+
+
+def test_core_connection_failure_reaps_stop_and_warm_forwarder_threads(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("DEEPGRAM_API_KEY", "test-key")
+    warm_source = _make_warm_source([])
+    external_stop = threading.Event()
+    baseline_thread_ids = {id(thread) for thread in threading.enumerate()}
+
+    @deepgram_stream.asynccontextmanager
+    async def failing_connection_factory(_api_key: str, **_kwargs):
+        raise OSError("connect failed")
+        yield  # pragma: no cover
+
+    with pytest.raises(OSError, match="connect failed"):
+        asyncio.run(
+            deepgram_stream.deepgram_stream_core(
+                "nova-3",
+                "de",
+                play_ready=False,
+                external_stop_event=external_stop,
+                warm_stream_source=warm_source,
+                connection_factory=failing_connection_factory,
+            )
+        )
+
+    leaked_lifecycle_threads = [
+        thread
+        for thread in threading.enumerate()
+        if id(thread) not in baseline_thread_ids
+        and thread.name in {"StopWatcher", "WarmStreamForwarder"}
+        and thread.is_alive()
+    ]
+    assert leaked_lifecycle_threads == []
 
 
 def test_deepgram_stream_core_uses_injected_connection_factory(monkeypatch) -> None:
@@ -1375,16 +1657,9 @@ def test_empty_finalize_grace_ignores_finals_from_before_finalize(
     assert elapsed >= 0.18
 
 
-def test_stop_mechanism_resolves_callable_grace_at_stop_time(monkeypatch) -> None:
+def test_stop_mechanism_resolves_callable_grace_at_stop_time() -> None:
     """Ein Grace-Callable (adaptiver Stop-Tail) wird erst NACH dem Stop-Signal
     ausgewertet - nicht beim Setup der Session."""
-    sleep_calls: list[float] = []
-    monkeypatch.setattr(
-        deepgram_stream.time,
-        "sleep",
-        lambda seconds: sleep_calls.append(seconds),
-    )
-
     external_stop = threading.Event()
     resolver_calls: list[bool] = []
 
@@ -1395,9 +1670,10 @@ def test_stop_mechanism_resolves_callable_grace_at_stop_time(monkeypatch) -> Non
 
     async def _run() -> None:
         state = deepgram_stream.StreamState()
-        deepgram_stream._setup_stop_mechanism(
+        loop = asyncio.get_running_loop()
+        mechanism = deepgram_stream._setup_stop_mechanism(
             state,
-            asyncio.get_running_loop(),
+            loop,
             external_stop,
             "sess",
             stop_grace_seconds=adaptive_grace,
@@ -1407,23 +1683,15 @@ def test_stop_mechanism_resolves_callable_grace_at_stop_time(monkeypatch) -> Non
 
         external_stop.set()
         await asyncio.wait_for(state.stop_event.wait(), timeout=1.0)
+        deepgram_stream._cleanup_stop_mechanism(loop, external_stop, mechanism)
 
     asyncio.run(_run())
 
     assert resolver_calls == [True]
-    assert sleep_calls == [0.05]
 
 
-def test_stop_mechanism_failing_grace_resolver_does_not_block_stop(
-    monkeypatch,
-) -> None:
+def test_stop_mechanism_failing_grace_resolver_does_not_block_stop() -> None:
     """Ein fehlschlagender Resolver darf den Stop nie verhindern (Grace 0)."""
-    sleep_calls: list[float] = []
-    monkeypatch.setattr(
-        deepgram_stream.time,
-        "sleep",
-        lambda seconds: sleep_calls.append(seconds),
-    )
 
     def broken_resolver() -> float:
         raise RuntimeError("resolver kaputt")
@@ -1431,16 +1699,16 @@ def test_stop_mechanism_failing_grace_resolver_does_not_block_stop(
     async def _run() -> None:
         state = deepgram_stream.StreamState()
         external_stop = threading.Event()
-        deepgram_stream._setup_stop_mechanism(
+        loop = asyncio.get_running_loop()
+        mechanism = deepgram_stream._setup_stop_mechanism(
             state,
-            asyncio.get_running_loop(),
+            loop,
             external_stop,
             "sess",
             stop_grace_seconds=broken_resolver,
         )
         external_stop.set()
         await asyncio.wait_for(state.stop_event.wait(), timeout=1.0)
+        deepgram_stream._cleanup_stop_mechanism(loop, external_stop, mechanism)
 
     asyncio.run(_run())
-
-    assert sleep_calls == []
