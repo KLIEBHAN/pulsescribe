@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-08-04
+
 ### Added
 
 - **Windows: adaptive stop tail** – when the audio tail was already silent for
@@ -18,6 +20,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Audio and streaming lifecycle leaks** – Deepgram stop watchers, warm-stream
+  forwarders, sender/listener tasks, and native microphone streams are now
+  terminated or closed on initialization, connection, listener, stop, and
+  cancellation failures. PortAudio close deadlocks remain tracked and block
+  unsafe retry accumulation until the app is restarted.
+- **Abandoned worker accumulation on macOS** – watchdog-abandoned recording
+  workers can no longer be replaced while still alive, preventing retained
+  audio buffers, provider calls, and native resources from growing per retry.
+- **CUDA and local preload worker accumulation** – timed-out CUDA loads are
+  deduplicated in process-exit-safe daemon workers, while Windows startup and
+  settings reloads share one coalescing local-model preload owner.
 - **Deepgram SDK pinned to 5.x** – `deepgram-sdk` 7.x removed the 5.x module
   paths the streaming provider relies on (`deepgram.extensions.types.sockets`
   for `ListenV1ControlMessage`), silently breaking KeepAlive/Finalize/
