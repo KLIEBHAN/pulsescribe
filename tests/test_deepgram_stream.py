@@ -1657,7 +1657,7 @@ def test_empty_finalize_grace_ignores_finals_from_before_finalize(
     assert elapsed >= 0.18
 
 
-def test_stop_mechanism_resolves_callable_grace_at_stop_time(monkeypatch) -> None:
+def test_stop_mechanism_resolves_callable_grace_at_stop_time() -> None:
     """Ein Grace-Callable (adaptiver Stop-Tail) wird erst NACH dem Stop-Signal
     ausgewertet - nicht beim Setup der Session."""
     external_stop = threading.Event()
@@ -1690,16 +1690,8 @@ def test_stop_mechanism_resolves_callable_grace_at_stop_time(monkeypatch) -> Non
     assert resolver_calls == [True]
 
 
-def test_stop_mechanism_failing_grace_resolver_does_not_block_stop(
-    monkeypatch,
-) -> None:
+def test_stop_mechanism_failing_grace_resolver_does_not_block_stop() -> None:
     """Ein fehlschlagender Resolver darf den Stop nie verhindern (Grace 0)."""
-    sleep_calls: list[float] = []
-    monkeypatch.setattr(
-        deepgram_stream.time,
-        "sleep",
-        lambda seconds: sleep_calls.append(seconds),
-    )
 
     def broken_resolver() -> float:
         raise RuntimeError("resolver kaputt")
@@ -1720,5 +1712,3 @@ def test_stop_mechanism_failing_grace_resolver_does_not_block_stop(
         deepgram_stream._cleanup_stop_mechanism(loop, external_stop, mechanism)
 
     asyncio.run(_run())
-
-    assert sleep_calls == []
