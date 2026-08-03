@@ -54,6 +54,31 @@ Creates a drag‑and‑drop DMG with optional notarization.
 
 Output: `dist/PulseScribe-<version>.dmg`
 
+## CI Build
+
+The [`Build Installers`](../.github/workflows/build-installers.yml) workflow
+builds the full Apple Silicon app on `macos-14`, verifies the bundle version and
+architecture, mounts and validates the DMG, and stores both the DMG and its
+SHA-256 checksum as a workflow artifact for 14 days.
+
+Publishing a GitHub release starts the workflow automatically and attaches the
+DMG after both platform builds succeed. An existing release can be rebuilt
+manually:
+
+```bash
+gh workflow run build-installers.yml \
+  -f tag=v1.3.0 \
+  -f upload_to_release=true
+```
+
+Existing assets are not overwritten by default. For an intentional replacement,
+add `-f replace_existing_assets=true`.
+
+The CI build is currently ad-hoc signed and not notarized because the repository
+does not have Apple signing credentials configured. It therefore has the same
+Gatekeeper limitations as a local development build. Use the notarized release
+process below when Developer ID credentials are available.
+
 ## Release Build (Notarized)
 
 ### 1) Store notary credentials (once)
