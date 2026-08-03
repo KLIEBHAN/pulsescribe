@@ -1,0 +1,433 @@
+name: Build Installers
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/build-installers.yml
+      - assets/**
+      - audio/**
+      - build_app.sh
+      - build_app.spec
+      - build_dmg.sh
+      - build_windows.ps1
+      - build_windows.spec
+      - cli/**
+      - config.py
+      - installer_windows.iss
+      - macos/**
+      - providers/**
+      - pulsescribe_daemon.py
+      - pulsescribe_windows.py
+      - pyproject.toml
+      - refine/**
+      - requirements.txt
+      - transcribe.py
+      - ui/**
+      - utils/**
+      - whisper_platform/**
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build (for example v1.3.0)
+        required: true
+        type: string
+      upload_to_release:
+        description: Upload the built installers to the existing GitHub release
+        required: true
+        default: false
+        type: boolean
+      replace_existing_assets:
+        description: Replace same-named release assets (manual runs only)
+        required: true
+        default: false
+        type: boolean
+
+concurrency:
+  group: installers-${{ github.event.release.tag_name || inputs.tag || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  metadata:
+    name: Resolve build metadata
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+      commit: ${{ steps.release.outputs.commit }}
+      publish: ${{ steps.release.outputs.publish }}
+      clobber: ${{ steps.release.outputs.clobber }}
+    env:
+      REQUESTED_REF: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag || github.event.pull_request.head.sha }}
+      PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number }}
+      UPLOAD_TO_RELEASE: ${{ inputs.upload_to_release || 'false' }}
+      REPLACE_EXISTING_ASSETS: ${{ inputs.replace_existing_assets || 'false' }}
+
+    steps:
+      - name: Check out requested ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.REQUESTED_REF }}
+          fetch-depth: 0
+
+      - name: Validate ref, version, and commit
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="$(python - <<'PY'
+          import pathlib
+          import tomllib
+
+          data = tomllib.loads(pathlib.Path("pyproject.toml").read_text(encoding="utf-8"))
+          print(data["project"]["version"])
+          PY
+          )"
+          head_commit="$(git rev-parse HEAD)"
+
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            tag="pr-${PULL_REQUEST_NUMBER}"
+            if [[ "$REQUESTED_REF" != "$head_commit" ]]; then
+              echo "Checked-out commit $head_commit does not match PR head $REQUESTED_REF" >&2
+              exit 1
+            fi
+          else
+            tag="$REQUESTED_REF"
+            if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "Expected a stable release tag in the form vX.Y.Z, got: $tag" >&2
+              exit 1
+            fi
+            if [[ "$tag" != "v$version" ]]; then
+              echo "Tag $tag does not match pyproject.toml version $version" >&2
+              exit 1
+            fi
+
+            tag_commit="$(git rev-parse --verify "refs/tags/${tag}^{commit}")" || {
+              echo "No Git tag named $tag exists" >&2
+              exit 1
+            }
+            if [[ "$tag_commit" != "$head_commit" ]]; then
+              echo "Checked-out commit $head_commit does not match $tag ($tag_commit)" >&2
+              exit 1
+            fi
+          fi
+
+          publish=false
+          clobber=false
+          if [[ "$GITHUB_EVENT_NAME" == "release" ]]; then
+            publish=true
+          elif [[ "$UPLOAD_TO_RELEASE" == "true" ]]; then
+            publish=true
+            clobber="$REPLACE_EXISTING_ASSETS"
+          fi
+
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "commit=$head_commit"
+            echo "publish=$publish"
+            echo "clobber=$clobber"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Installer build"
+            echo
+            echo "- Tag: \`$tag\`"
+            echo "- Version: \`$version\`"
+            echo "- Commit: \`$head_commit\`"
+            echo "- Upload to release: \`$publish\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build-macos:
+    name: Build macOS DMG (arm64)
+    needs: metadata
+    runs-on: macos-14
+    timeout-minutes: 60
+    env:
+      VERSION: ${{ needs.metadata.outputs.version }}
+      RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+      RELEASE_COMMIT: ${{ needs.metadata.outputs.commit }}
+
+    steps:
+      - name: Check out validated release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.metadata.outputs.commit }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Verify Apple Silicon runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(uname -m)" == "arm64" ]] || {
+            echo "build_app.spec targets arm64, but runner is $(uname -m)" >&2
+            exit 1
+          }
+          python - <<'PY'
+          import platform
+          import sys
+
+          if platform.machine() != "arm64":
+              raise SystemExit(f"Expected arm64 Python, got {platform.machine()}")
+          print(sys.version)
+          PY
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt "pyinstaller>=6,<7"
+
+      - name: Build app and DMG
+        shell: bash
+        run: ./build_app.sh --clean --dmg
+
+      - name: Validate DMG
+        shell: bash
+        run: |
+          set -euo pipefail
+          dmg="dist/PulseScribe-${VERSION}.dmg"
+          app_binary="PulseScribe.app/Contents/MacOS/pulsescribe"
+
+          [[ -s "$dmg" ]] || {
+            echo "Missing or empty DMG: $dmg" >&2
+            exit 1
+          }
+          hdiutil verify "$dmg"
+
+          mount_point="$(mktemp -d)"
+          cleanup() {
+            hdiutil detach "$mount_point" >/dev/null 2>&1 || true
+            rmdir "$mount_point" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          hdiutil attach -readonly -nobrowse -mountpoint "$mount_point" "$dmg"
+
+          [[ -d "$mount_point/PulseScribe.app" ]]
+          codesign --verify --deep --strict "$mount_point/PulseScribe.app"
+          bundle_version="$(plutil -extract CFBundleShortVersionString raw -o - "$mount_point/PulseScribe.app/Contents/Info.plist")"
+          [[ "$bundle_version" == "$VERSION" ]] || {
+            echo "Bundle version $bundle_version does not match $VERSION" >&2
+            exit 1
+          }
+          file "$mount_point/$app_binary" | grep -q 'arm64'
+
+          hdiutil detach "$mount_point"
+          trap - EXIT
+          rmdir "$mount_point"
+
+          (
+            cd dist
+            shasum -a 256 "PulseScribe-${VERSION}.dmg" > "PulseScribe-${VERSION}.dmg.sha256"
+          )
+
+      - name: Record build environment
+        shell: bash
+        run: |
+          {
+            echo "tag=$RELEASE_TAG"
+            echo "commit=$RELEASE_COMMIT"
+            echo "version=$VERSION"
+            echo "runner=$(sw_vers -productVersion) $(uname -m)"
+            echo "python=$(python --version 2>&1)"
+            echo "pyinstaller=$(pyinstaller --version)"
+            echo
+            python -m pip freeze
+          } > dist/build-metadata-macos.txt
+
+      - name: Upload macOS build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PulseScribe-macOS-${{ needs.metadata.outputs.version }}
+          path: |
+            dist/PulseScribe-${{ needs.metadata.outputs.version }}.dmg
+            dist/PulseScribe-${{ needs.metadata.outputs.version }}.dmg.sha256
+            dist/build-metadata-macos.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  build-windows:
+    name: Build Windows installer (API-only)
+    needs: metadata
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      VERSION: ${{ needs.metadata.outputs.version }}
+      RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+      RELEASE_COMMIT: ${{ needs.metadata.outputs.commit }}
+
+    steps:
+      - name: Check out validated release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.metadata.outputs.commit }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install API-only build dependencies
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          python -m pip install --upgrade pip
+
+          # The recommended cloud build excludes local Whisper backends. Avoid
+          # downloading their multi-gigabyte build dependencies on this runner.
+          $cloudRequirements = Join-Path $env:RUNNER_TEMP "requirements-windows-cloud.txt"
+          Get-Content requirements.txt |
+            Where-Object { $_ -notmatch '^(openai-whisper|faster-whisper|lightning-whisper-mlx)([<>=; ]|$)' } |
+            Set-Content -Path $cloudRequirements -Encoding utf8
+
+          python -m pip install -r $cloudRequirements "pyinstaller>=6,<7" "PySide6>=6,<7"
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          $knownPaths = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "${env:ProgramFiles}\Inno Setup 6\ISCC.exe"
+          )
+          if (-not (Get-Command iscc -ErrorAction SilentlyContinue) -and
+              -not ($knownPaths | Where-Object { Test-Path $_ })) {
+            choco install innosetup --no-progress --yes
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to install Inno Setup"
+            }
+          }
+
+      - name: Build Windows installer
+        shell: pwsh
+        run: ./build_windows.ps1 -Clean -Installer
+
+      - name: Validate Windows installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $installer = "dist\PulseScribe-Setup-$env:VERSION.exe"
+          if (-not (Test-Path $installer -PathType Leaf)) {
+            throw "Missing installer: $installer"
+          }
+
+          $file = Get-Item $installer
+          if ($file.Length -le 0) {
+            throw "Installer is empty: $installer"
+          }
+          if ($file.VersionInfo.FileVersion -notlike "$env:VERSION*") {
+            throw "Installer file version '$($file.VersionInfo.FileVersion)' does not match '$env:VERSION'"
+          }
+
+          $hash = (Get-FileHash -Path $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content -Path "$installer.sha256" -Value "$hash  $($file.Name)" -Encoding utf8
+
+      - name: Record build environment
+        shell: pwsh
+        run: |
+          @(
+            "tag=$env:RELEASE_TAG"
+            "commit=$env:RELEASE_COMMIT"
+            "version=$env:VERSION"
+            "runner=$([System.Environment]::OSVersion.VersionString)"
+            "python=$(python --version 2>&1)"
+            "pyinstaller=$(python -m PyInstaller --version)"
+            ""
+            $(python -m pip freeze)
+          ) | Set-Content -Path dist\build-metadata-windows.txt -Encoding utf8
+
+      - name: Upload Windows build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PulseScribe-Windows-${{ needs.metadata.outputs.version }}
+          path: |
+            dist/PulseScribe-Setup-${{ needs.metadata.outputs.version }}.exe
+            dist/PulseScribe-Setup-${{ needs.metadata.outputs.version }}.exe.sha256
+            dist/build-metadata-windows.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  publish-release:
+    name: Attach installers to GitHub release
+    needs: [metadata, build-macos, build-windows]
+    if: needs.metadata.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+      VERSION: ${{ needs.metadata.outputs.version }}
+      CLOBBER: ${{ needs.metadata.outputs.clobber }}
+
+    steps:
+      - name: Download installer artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: PulseScribe-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Verify and checksum release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          dmg="release-assets/PulseScribe-${VERSION}.dmg"
+          installer="release-assets/PulseScribe-Setup-${VERSION}.exe"
+          [[ -s "$dmg" ]]
+          [[ -s "$installer" ]]
+
+          (
+            cd release-assets
+            sha256sum \
+              "PulseScribe-${VERSION}.dmg" \
+              "PulseScribe-Setup-${VERSION}.exe" \
+              > SHA256SUMS.txt
+          )
+
+      - name: Upload assets to existing release
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
+
+          files=(
+            "release-assets/PulseScribe-${VERSION}.dmg"
+            "release-assets/PulseScribe-Setup-${VERSION}.exe"
+            "release-assets/SHA256SUMS.txt"
+          )
+
+          if [[ "$CLOBBER" != "true" ]]; then
+            existing="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+            for file in "${files[@]}"; do
+              name="$(basename "$file")"
+              if grep -Fxq "$name" <<< "$existing"; then
+                echo "Release asset already exists: $name" >&2
+                echo "Use a manual run with replace_existing_assets=true to replace it." >&2
+                exit 1
+              fi
+            done
+          fi
+
+          args=(release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY")
+          if [[ "$CLOBBER" == "true" ]]; then
+            args+=(--clobber)
+          fi
+          gh "${args[@]}" "${files[@]}"

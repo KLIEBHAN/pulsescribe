@@ -44,6 +44,31 @@ iscc installer_windows.iss
 # Output: dist/PulseScribe-Setup-{version}.exe
 ```
 
+## CI Build
+
+The [`Build Installers`](../.github/workflows/build-installers.yml) workflow
+builds the recommended API-only installer on `windows-2022`. It validates the
+installer version, creates a SHA-256 checksum, and stores the installer and build
+environment metadata as a workflow artifact for 14 days.
+
+Publishing a GitHub release starts the workflow automatically and attaches the
+installer after both platform builds succeed. An existing release can be rebuilt
+manually:
+
+```powershell
+gh workflow run build-installers.yml `
+  -f tag=v1.3.0 `
+  -f upload_to_release=true
+```
+
+Existing assets are not overwritten by default. Add
+`-f replace_existing_assets=true` only when an existing release asset should be
+replaced deliberately.
+
+The CI installer is currently unsigned and may trigger a Windows SmartScreen
+warning. The multi-gigabyte Local variant remains a manual, opt-in build; normal
+release CI publishes the recommended API-only installer.
+
 ## Build Output
 
 The build produces a **onedir** bundle and optionally an installer:
