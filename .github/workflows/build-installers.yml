@@ -74,6 +74,11 @@ jobs:
           ref: ${{ env.REQUESTED_REF }}
           fetch-depth: 0
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Validate ref, version, and commit
         id: release
         shell: bash
@@ -331,8 +336,9 @@ jobs:
           if ($file.Length -le 0) {
             throw "Installer is empty: $installer"
           }
-          if ($file.VersionInfo.FileVersion -notlike "$env:VERSION*") {
-            throw "Installer file version '$($file.VersionInfo.FileVersion)' does not match '$env:VERSION'"
+          $expectedFileVersion = "$env:VERSION.0"
+          if ($file.VersionInfo.FileVersion -ne $expectedFileVersion) {
+            throw "Installer file version '$($file.VersionInfo.FileVersion)' does not match '$expectedFileVersion'"
           }
 
           $hash = (Get-FileHash -Path $installer -Algorithm SHA256).Hash.ToLowerInvariant()
