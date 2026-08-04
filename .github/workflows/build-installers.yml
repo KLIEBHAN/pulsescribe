@@ -476,7 +476,6 @@ jobs:
           Compress-Archive -Path $installer -DestinationPath $archivePath -CompressionLevel NoCompression
 
           $archive = Get-Item $archivePath
-          $maximumReleaseAssetBytes = 1900MB
           if ($archive.Length -gt $maximumReleaseAssetBytes) {
             throw "Local installer archive is $($archive.Length) bytes and exceeds the $maximumReleaseAssetBytes-byte release budget"
           }
