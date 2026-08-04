@@ -66,8 +66,26 @@ Existing assets are not overwritten by default. Add
 replaced deliberately.
 
 The CI installer is currently unsigned and may trigger a Windows SmartScreen
-warning. The multi-gigabyte Local variant remains a manual, opt-in build; normal
-release CI publishes the recommended API-only installer.
+warning. The multi-gigabyte Local variant is an explicit opt-in manual build so
+normal PRs and releases do not spend CI time and storage on it.
+
+To build and publish the Local Whisper variant for an existing release, run:
+
+```powershell
+gh workflow run build-installers.yml `
+  -f tag=v1.3.0 `
+  -f upload_to_release=true `
+  -f replace_existing_assets=true `
+  -f build_windows_local=true
+```
+
+This refreshes the standard installers and `SHA256SUMS.txt`, then uploads the
+Local installer as `PulseScribe-Setup-{version}-Local.zip` alongside them. GitHub
+release assets are limited to 2 GiB, so the workflow verifies the uploaded ZIP
+stays within the release budget. The temporary workflow artifact also contains
+the unpacked EXE hash for verification after extraction. Without
+`upload_to_release=true`, the Local installer is kept only as that temporary
+workflow artifact.
 
 ## Build Output
 
@@ -102,7 +120,7 @@ dist/
 | Variant | Command | Size | Description |
 |---------|---------|------|-------------|
 | **API-only** (default) | `.\build_windows.ps1 -Installer` | ~30 MB | Cloud APIs only (Deepgram, OpenAI, Groq) |
-| **Local** | `.\build_windows.ps1 -Installer -Local` | ~4 GB | Includes faster-whisper for offline use |
+| **Local** | `.\build_windows.ps1 -Installer -Local` | >1.5 GB | Includes faster-whisper for offline use |
 
 > **Note:** The `-Local` variant includes `faster-whisper`, `torch`, and `ctranslate2` for local transcription.
 
