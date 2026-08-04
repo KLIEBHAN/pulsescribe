@@ -66,7 +66,7 @@ Existing assets are not overwritten by default. Add
 replaced deliberately.
 
 The CI installer is currently unsigned and may trigger a Windows SmartScreen
-warning. The multi-gigabyte Local variant is an explicit opt-in manual build so
+warning. The much larger Local variant is an explicit opt-in manual build so
 normal PRs and releases do not spend CI time and storage on it.
 
 To build and publish the Local Whisper variant for an existing release, run:
@@ -120,9 +120,9 @@ dist/
 | Variant | Command | Size | Description |
 |---------|---------|------|-------------|
 | **API-only** (default) | `.\build_windows.ps1 -Installer` | ~30 MB | Cloud APIs only (Deepgram, OpenAI, Groq) |
-| **Local** | `.\build_windows.ps1 -Installer -Local` | >1.5 GB | Includes faster-whisper for offline use |
+| **Local** | `.\build_windows.ps1 -Installer -Local` | ~220 MB | Includes faster-whisper for offline use |
 
-> **Note:** The `-Local` variant includes `faster-whisper`, `torch`, and `ctranslate2` for local transcription.
+> **Note:** The `-Local` variant includes `faster-whisper`, `torch`, and `ctranslate2` for local transcription. The published installer bundles the CPU build of `torch`; earlier CUDA-bundled builds were several gigabytes.
 
 ### Local Variant: Important Notes
 
