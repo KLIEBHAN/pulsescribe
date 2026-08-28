@@ -43,3 +43,6 @@ logs/
 coverage.xml
 htmlcov/
 mlx_models/
+
+# Lokale Notizen
+notes.txt
