@@ -99,3 +99,74 @@ def test_release_provider_resources_propagates_errors():
 
     with pytest.raises(RuntimeError, match="boom"):
         release_provider_resources(provider)
+
+
+def test_daemon_signature_uses_instance_model(monkeypatch):
+    from pulsescribe_daemon import PulseScribeDaemon
+
+    monkeypatch.setenv("PULSESCRIBE_LOCAL_BACKEND", "mlx")
+    daemon = PulseScribeDaemon(mode="local", model="large")
+
+    assert daemon._local_provider_memory_signature() == (
+        "local",
+        "mlx",
+        "large",
+        *(None,) * len(LOCAL_MEMORY_ENV_KEYS),
+    )
+
+    daemon.model = "turbo"
+    assert daemon._local_provider_memory_signature()[2] == "turbo"
+
+
+def _load_windows_module():
+    """Lädt pulsescribe_windows.py trotz des sys.platform-Guards (wie in
+    test_windows_race_conditions._load_windows_module)."""
+    import contextlib
+    import importlib.util
+    import io
+    import sys
+    from pathlib import Path
+
+    module_name = "_pulsescribe_windows_local_memory_test"
+    if module_name in sys.modules:
+        return sys.modules[module_name]
+
+    module_path = Path(__file__).resolve().parents[1] / "pulsescribe_windows.py"
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    original_exit = sys.exit
+    try:
+        sys.exit = lambda _code=0: None
+        with contextlib.redirect_stderr(io.StringIO()):
+            spec.loader.exec_module(module)
+    finally:
+        sys.exit = original_exit
+    sys.modules[module_name] = module
+    return module
+
+
+def test_windows_signature_reads_model_from_env(monkeypatch):
+    import asyncio
+
+    # PulseScribeWindows.__init__ setzt eine Windows-Event-Loop-Policy,
+    # die auf macOS nicht existiert (gleicher Workaround wie in
+    # test_windows_race_conditions).
+    monkeypatch.setattr(
+        asyncio,
+        "WindowsSelectorEventLoopPolicy",
+        asyncio.DefaultEventLoopPolicy,
+        raising=False,
+    )
+    monkeypatch.delenv("PULSESCRIBE_MODEL", raising=False)
+    monkeypatch.setenv("PULSESCRIBE_LOCAL_MODEL", "large")
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(mode="deepgram", overlay=False)
+    daemon.mode = "local"
+
+    assert daemon._local_provider_memory_signature()[2] == "large"
+
+    # Fallback: ohne LOCAL_MODEL greift PULSESCRIBE_MODEL.
+    monkeypatch.delenv("PULSESCRIBE_LOCAL_MODEL", raising=False)
+    monkeypatch.setenv("PULSESCRIBE_MODEL", "turbo")
+    assert daemon._local_provider_memory_signature()[2] == "turbo"
