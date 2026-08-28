@@ -89,6 +89,11 @@ from config import (
     get_windows_stop_grace_seconds,
 )
 from providers import get_provider
+from providers.local_memory import (
+    build_memory_signature,
+    release_provider_resources,
+    sync_env_values,
+)
 from ui.daemon_status_feedback import (
     build_daemon_status_label,
     build_daemon_tray_title,
@@ -2586,60 +2591,14 @@ class PulseScribeWindows:
         return read_env_file()
 
     @staticmethod
-    def _normalize_local_signature_value(value: str | None) -> str | None:
-        if value is None:
-            return None
-        cleaned = value.strip()
-        return cleaned or None
-
-    @staticmethod
     def _sync_local_provider_reload_env_values(env_values: dict[str, str]) -> None:
-        for key in _LOCAL_PROVIDER_RELOAD_ENV_KEYS:
-            value = env_values.get(key)
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
+        sync_env_values(env_values, _LOCAL_PROVIDER_RELOAD_ENV_KEYS)
 
     def _local_provider_memory_signature(self) -> tuple[str | None, ...]:
         local_model = os.getenv("PULSESCRIBE_LOCAL_MODEL") or os.getenv(
             "PULSESCRIBE_MODEL"
         )
-        return (
-            self._normalize_local_signature_value(self.mode),
-            self._normalize_local_signature_value(
-                os.getenv("PULSESCRIBE_LOCAL_BACKEND")
-            ),
-            self._normalize_local_signature_value(local_model),
-            self._normalize_local_signature_value(os.getenv("PULSESCRIBE_DEVICE")),
-            self._normalize_local_signature_value(os.getenv("PULSESCRIBE_FP16")),
-            self._normalize_local_signature_value(
-                os.getenv("PULSESCRIBE_LOCAL_COMPUTE_TYPE")
-            ),
-            self._normalize_local_signature_value(
-                os.getenv("PULSESCRIBE_LOCAL_CPU_THREADS")
-            ),
-            self._normalize_local_signature_value(
-                os.getenv("PULSESCRIBE_LOCAL_NUM_WORKERS")
-            ),
-            self._normalize_local_signature_value(
-                os.getenv("PULSESCRIBE_LIGHTNING_BATCH_SIZE")
-            ),
-            self._normalize_local_signature_value(
-                os.getenv("PULSESCRIBE_LIGHTNING_QUANT")
-            ),
-        )
-
-    @staticmethod
-    def _release_provider_resources(provider) -> None:
-        clear_model_cache = getattr(provider, "clear_model_cache", None)
-        if callable(clear_model_cache):
-            clear_model_cache()
-            return
-
-        cleanup = getattr(provider, "cleanup", None)
-        if callable(cleanup):
-            cleanup()
+        return build_memory_signature(mode=self.mode, model=local_model)
 
     def _release_local_provider_model_cache(self) -> None:
         with self._provider_cache_lock:
@@ -2647,7 +2606,7 @@ class PulseScribeWindows:
         if local_provider is None:
             return
         try:
-            self._release_provider_resources(local_provider)
+            release_provider_resources(local_provider)
         except Exception as e:
             logger.warning(f"LocalProvider cleanup fehlgeschlagen: {e}")
 
@@ -2678,7 +2637,7 @@ class PulseScribeWindows:
             self._provider_cache.clear()
         for provider in providers_to_invalidate:
             try:
-                self._release_provider_resources(provider)
+                release_provider_resources(provider)
             except Exception as e:
                 logger.warning(f"Provider cleanup fehlgeschlagen: {e}")
             if hasattr(provider, "invalidate_runtime_config"):

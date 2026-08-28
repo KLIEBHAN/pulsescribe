@@ -69,6 +69,11 @@ try:
     )
     from providers.deepgram_stream import deepgram_stream_core
     from providers import get_provider
+    from providers.local_memory import (
+        build_memory_signature,
+        release_provider_resources,
+        sync_env_values,
+    )
     from whisper_platform import get_sound_player
     from utils.state import AppState, DaemonMessage, MessageType
     from utils.hold_state import HoldHotkeyState
@@ -143,16 +148,6 @@ RELOAD_ENV_SYNC_KEYS = (
     "PULSESCRIBE_LIGHTNING_BATCH_SIZE",
     "PULSESCRIBE_LIGHTNING_QUANT",
     "PULSESCRIBE_REFINE_MODEL",
-)
-LOCAL_PROVIDER_MEMORY_ENV_KEYS = (
-    "PULSESCRIBE_LOCAL_BACKEND",
-    "PULSESCRIBE_DEVICE",
-    "PULSESCRIBE_FP16",
-    "PULSESCRIBE_LOCAL_COMPUTE_TYPE",
-    "PULSESCRIBE_LOCAL_CPU_THREADS",
-    "PULSESCRIBE_LOCAL_NUM_WORKERS",
-    "PULSESCRIBE_LIGHTNING_BATCH_SIZE",
-    "PULSESCRIBE_LIGHTNING_QUANT",
 )
 logger = logging.getLogger("pulsescribe")
 
@@ -3456,15 +3451,7 @@ class PulseScribeDaemon:
 
     @staticmethod
     def _sync_reload_env_values(env_values: dict[str, str]) -> None:
-        # python-dotenv setzt Variablen, entfernt sie aber nicht wenn ein Key
-        # aus der Datei gelöscht wurde. Deshalb synchronisieren wir die Keys,
-        # deren Abwesenheit in der Settings-UI Defaults bedeutet.
-        for key in RELOAD_ENV_SYNC_KEYS:
-            value = env_values.get(key)
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
+        sync_env_values(env_values, RELOAD_ENV_SYNC_KEYS)
 
     def _apply_reloaded_hotkey_settings(self, env_values: dict[str, str]) -> None:
         self.toggle_hotkey = (
@@ -3505,25 +3492,8 @@ class PulseScribeDaemon:
         new_refine_model = env_values.get("PULSESCRIBE_REFINE_MODEL")
         self.refine_model = new_refine_model or DEFAULT_REFINE_MODEL
 
-    @staticmethod
-    def _normalize_local_signature_value(value: str | None) -> str | None:
-        if value is None:
-            return None
-        cleaned = value.strip()
-        return cleaned or None
-
     def _local_provider_memory_signature(self) -> tuple[str | None, ...]:
-        return (
-            self._normalize_local_signature_value(self.mode),
-            self._normalize_local_signature_value(
-                os.getenv("PULSESCRIBE_LOCAL_BACKEND")
-            ),
-            self._normalize_local_signature_value(self.model),
-            *(
-                self._normalize_local_signature_value(os.getenv(key))
-                for key in LOCAL_PROVIDER_MEMORY_ENV_KEYS[1:]
-            ),
-        )
+        return build_memory_signature(mode=self.mode, model=self.model)
 
     def _release_local_provider_model_cache(self) -> None:
         with self._provider_cache_lock:
@@ -3531,20 +3501,10 @@ class PulseScribeDaemon:
         if local_provider is None:
             return
 
-        clear_model_cache = getattr(local_provider, "clear_model_cache", None)
-        if callable(clear_model_cache):
-            try:
-                clear_model_cache()
-            except Exception as e:
-                logger.warning(f"LocalProvider clear_model_cache fehlgeschlagen: {e}")
-            return
-
-        cleanup = getattr(local_provider, "cleanup", None)
-        if callable(cleanup):
-            try:
-                cleanup()
-            except Exception as e:
-                logger.warning(f"LocalProvider cleanup fehlgeschlagen: {e}")
+        try:
+            release_provider_resources(local_provider)
+        except Exception as e:
+            logger.warning(f"LocalProvider cache release fehlgeschlagen: {e}")
 
     def _release_local_provider_model_cache_async(
         self,
