@@ -7,15 +7,14 @@ Output: dist/PulseScribe.app
 
 WICHTIG: Accessibility-Berechtigungen und Code-Signing
 =======================================================
-macOS identifiziert Apps anhand ihrer Signatur. Bei unsignierten Builds:
-- Nach JEDEM Neubuild muss die App in Bedienungshilfen NEU hinzugefügt werden
-- macOS merkt sich den Hash der Binary, der sich bei jedem Build ändert
+macOS identifiziert Apps anhand ihrer Signatur. Bei unsignierten oder ad-hoc
+signierten Builds (build_app.sh) merkt sich macOS den Hash der Binary, der sich
+bei jedem Build ändert: Mikrofon, Bedienungshilfen und Eingabeüberwachung
+müssen nach jedem Neubuild neu freigegeben werden.
 
-Für stabilen Betrieb die App signieren:
-    codesign --force --deep --sign - dist/PulseScribe.app
-
-Oder mit Developer ID für Distribution:
-    codesign --force --deep --sign "Developer ID Application: Name" dist/PulseScribe.app
+Stabil bleiben die Freigaben nur, wenn jeder Build mit demselben Zertifikat
+signiert ist (Release-CI: CODESIGN_IDENTITY, siehe docs/BUILDING_MACOS.md):
+    CODESIGN_IDENTITY=<SHA-1 oder Name> ./build_dmg.sh
 """
 
 block_cipher = None

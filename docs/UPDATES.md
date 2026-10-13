@@ -63,10 +63,12 @@ actions cannot launch a second helper. Shutdown cancels and joins the update
 worker before removing temporary files; native preparation children are stopped
 by their known PID, and a mount is detached even when attachment times out.
 
-User configuration in `~/.pulsescribe` is preserved. Packages remain ad-hoc signed
-on macOS and unsigned on Windows. The initial installation uses the existing
-Gatekeeper/SmartScreen steps. macOS may require accessibility permission again
-after a rebuilt app is installed.
+User configuration in `~/.pulsescribe` is preserved. macOS packages are signed
+with the stable PulseScribe certificate (not notarized), Windows packages are
+unsigned. The initial installation uses the existing Gatekeeper/SmartScreen
+steps. macOS keeps Microphone, Accessibility and Input Monitoring permissions
+across updates; the first update from an ad-hoc signed release (1.6.0 and
+earlier) asks for them once more.
 
 Version 1.3.0 and earlier have no updater. Install version 1.4.0 once from the
 release page; subsequent releases can be installed from its menu.

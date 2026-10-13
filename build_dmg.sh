@@ -7,8 +7,14 @@
 # Dev/Debug:
 #   - ad-hoc Signatur (kein Notarization) für schnelle lokale Tests.
 #
-# Release:
-#   - Developer ID Signing + Notarization + Stapling für "Install → läuft".
+# Release (CI):
+#   - Signatur mit dem festen PulseScribe-Zertifikat (CODESIGN_IDENTITY).
+#     macOS behält Mikrofon-, Bedienungshilfen- und Eingabeüberwachungs-
+#     Freigaben nur, wenn jedes Update mit demselben Zertifikat signiert ist;
+#     ad-hoc signierte Updates verlieren sie.
+#
+# Release (Apple):
+#   - Developer ID Signing + Hardened Runtime + Notarization + Stapling.
 #
 # Voraussetzungen:
 #   - PyInstaller Build existiert: dist/PulseScribe.app
@@ -59,7 +65,7 @@ Usage:
 Options:
   --version VERSION        Version für DMG-Dateiname (Default: aus pyproject.toml)
   --notarize               Notarize + staple (erfordert Developer ID Signing + NOTARY_PROFILE)
-  --identity IDENTITY      Codesign Identity (Default: $CODESIGN_IDENTITY, '-' = ad-hoc)
+  --identity IDENTITY      Codesign Identity, Name oder SHA-1 (Default: $CODESIGN_IDENTITY, '-' = ad-hoc)
   --profile PROFILE        notarytool Keychain Profile (Default: $NOTARY_PROFILE)
   --entitlements PATH      Entitlements file (Default: macos/entitlements.plist)
   -h, --help               Hilfe anzeigen
@@ -110,10 +116,17 @@ sign_app() {
         return
     fi
 
-    echo -e "${YELLOW}🔐 Signiere App (Developer ID, hardened runtime)...${NC}"
-    local args=(--force --deep --options runtime --sign "$identity")
-    if [ -f "$ENTITLEMENTS_PATH" ]; then
-        args+=(--entitlements "$ENTITLEMENTS_PATH")
+    local args=(--force --deep --sign "$identity")
+    # Notarization requires the hardened runtime; other builds keep the
+    # unrestricted runtime of ad-hoc builds.
+    if [ "$NOTARIZE" = "true" ]; then
+        echo -e "${YELLOW}🔐 Signiere App (${identity}, hardened runtime)...${NC}"
+        args+=(--options runtime)
+        if [ -f "$ENTITLEMENTS_PATH" ]; then
+            args+=(--entitlements "$ENTITLEMENTS_PATH")
+        fi
+    else
+        echo -e "${YELLOW}🔐 Signiere App (${identity})...${NC}"
     fi
     codesign "${args[@]}" "$APP_PATH"
 }
@@ -148,7 +161,7 @@ sign_dmg() {
     if [ "$identity" = "-" ]; then
         return
     fi
-    echo -e "${YELLOW}🔐 Signiere DMG (Developer ID)...${NC}"
+    echo -e "${YELLOW}🔐 Signiere DMG (${identity})...${NC}"
     codesign --force --sign "$identity" "$DMG_PATH"
     echo -e "${GREEN}   ✓ DMG signiert${NC}"
 }

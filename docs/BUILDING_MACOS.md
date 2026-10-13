@@ -80,13 +80,42 @@ gh workflow run build-installers.yml \
 Existing assets are not overwritten by default. For an intentional replacement,
 add `-f replace_existing_assets=true`.
 
-The CI build is currently ad-hoc signed and not notarized because the repository
-does not have Apple signing credentials configured. It therefore has the same
-Gatekeeper limitations as a local development build. Use the notarized release
-process below when Developer ID credentials are available.
+### Stable signing certificate
 
-For the current ad-hoc signed release, copy the app to Applications and, if
-macOS blocks it, remove its quarantine flag before opening it:
+macOS stores Microphone, Accessibility and Input Monitoring permissions
+per code signature. For an ad-hoc signed app, that is the hash of one build, so
+every update would lose the permissions. CI therefore signs releases with the
+self-signed "PulseScribe Code Signing" certificate. macOS then identifies the
+app by bundle ID and certificate, and permissions survive updates.
+
+The secrets are stored in the GitHub environment `macos-signing`, not as
+repository secrets. Anyone holding the key can sign other code that inherits
+the users' permissions, so the environment only admits `master` and `v*` tags,
+and the workflow uses it only for published builds.
+
+| Environment secret | Content |
+|--------------------|---------|
+| `MACOS_CERTIFICATE_P12` | Base64 of the `.p12` with certificate and private key |
+| `MACOS_CERTIFICATE_PASSWORD` | Password of the `.p12` |
+
+The certificate's SHA-1 is pinned as `MACOS_SIGNING_CERT_SHA1` in
+`.github/workflows/build-installers.yml`. Published releases fail without the
+secret, and the DMG check rejects apps that are not signed with the pinned
+certificate. Pull request and other unpublished builds are ad-hoc signed.
+
+Keep a backup of the `.p12` and its password. Signing a release with a new
+certificate, including after losing the old one, makes every user grant the
+permissions once more. To replace it, update both secrets and the pinned SHA-1
+together.
+
+The certificate is not trusted by Gatekeeper and the build is not notarized, so
+the first installation has the same Gatekeeper limitations as a local build. Use
+the notarized release process below when Developer ID credentials are available.
+
+For the first installation, copy the app to Applications. If macOS blocks it,
+check that the DMG comes from the official GitHub release and matches its entry
+in `SHA256SUMS.txt` (`shasum -a 256 PulseScribe-<version>.dmg`). Only then remove
+the quarantine flag; this skips Gatekeeper's check for the app:
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/PulseScribe.app
@@ -117,7 +146,10 @@ Output: `dist/PulseScribe-1.0.0.dmg` (notarized, Gatekeeper‑friendly)
 
 ## Notes
 
-- `build_app.sh` signs the app ad-hoc by default (fine for local testing)
+- `build_app.sh` signs the app ad-hoc by default (fine for local testing, but
+  macOS asks for permissions again after each rebuild)
+- `build_dmg.sh` signs with `CODESIGN_IDENTITY` when set; it enables the
+  hardened runtime only with `--notarize`
 - `build_dmg.sh --notarize` signs with Developer ID and notarizes both `.app` and `.dmg`
 - Entitlements are read from `macos/entitlements.plist` (override via `ENTITLEMENTS_PATH`)
 - Ad-hoc signed builds may trigger Gatekeeper warnings on other machines
