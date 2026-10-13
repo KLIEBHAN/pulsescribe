@@ -9,6 +9,9 @@ The window object needs ``show(view, *, activate)``, ``render(view)`` (no-op
 while hidden) and ``hide()``. A window that can fail (the Windows process)
 also exposes ``failed``; while it is true, actionable states go to the
 ``on_window_error`` fallback instead.
+
+Lock order: the Windows window may call into this controller while holding
+its lock, so this controller never touches the window under ``self._lock``.
 """
 
 from __future__ import annotations
@@ -50,6 +53,7 @@ class UpdateUI:
 
     def publish(self, state: UpdateState) -> None:
         """Render a new flow state; may run on any thread the platform allows."""
+        window_failed = self._window_failed()  # Never under self._lock
         with self._lock:
             status_changed = state.status != self._last_status
             if status_changed:
@@ -61,7 +65,7 @@ class UpdateUI:
                 announce = not state.manual and state.status in AUTO_OPEN_STATUSES
             view = build_update_view(state, self._notice)
             report_fallback = (
-                self._window_failed()
+                window_failed
                 and status_changed
                 and self._on_window_error is not None
                 and (

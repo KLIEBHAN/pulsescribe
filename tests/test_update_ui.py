@@ -306,3 +306,24 @@ def test_install_errors_reach_the_fallback_when_the_window_failed():
 
     fallback.assert_called_once()
     assert "no helper" in fallback.call_args.args[0].notice
+
+
+def test_controller_never_reads_the_window_under_its_own_lock():
+    flow = Mock(state=UpdateState("1.3.0"))
+    ui = None
+
+    class LockCheckingWindow(FakeWindow):
+        @property
+        def failed(self):
+            assert not ui._lock.locked(), "window lock order would invert"
+            return False
+
+        @failed.setter
+        def failed(self, _value):
+            pass
+
+    ui = updates.UpdateUI(flow, LockCheckingWindow(), lambda: True, Mock(), on_window_error=Mock())
+
+    ui.publish(UpdateState("1.3.0", status="downloading", offer=OFFER))
+    ui.publish(ready_state())
+    ui.handle("install")
