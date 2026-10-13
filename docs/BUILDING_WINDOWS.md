@@ -55,27 +55,12 @@ Pushing an annotated `vX.Y.Z` tag builds both platforms, including the Windows
 Local Whisper package, and publishes the release only after all installers are
 uploaded. See [Updates and releases](UPDATES.md). Publishing a release manually
 still attaches the same installers through the workflow.
-An existing release can be rebuilt manually. Manual runs build the Local package
-only with `-f build_windows_local=true`; add it whenever the release must stay
-installable for Local Whisper updates:
-
-```powershell
-gh workflow run build-installers.yml `
-  -f tag=v1.3.0 `
-  -f upload_to_release=true `
-  -f build_windows_local=true
-```
-
-Existing assets are not overwritten by default. Add
-`-f replace_existing_assets=true` only when an existing release asset should be
-replaced deliberately.
-
-The CI installer is currently unsigned and may trigger a Windows SmartScreen
-warning. Releases always include the much larger Local variant because installed
-Local Whisper apps only accept that package from the updater. Pull requests skip
-it, and manual runs build it only on request.
-
-To add the Local Whisper variant to an existing release that lacks it, run:
+An existing release can be rebuilt manually. Uploads never overwrite existing
+assets unless `-f replace_existing_assets=true` is set, and a rebuild uploads all
+installers, so a release that already has assets needs that flag (the replaced
+files get new checksums). Manual runs build the Local package only with
+`-f build_windows_local=true`; add it whenever the release must stay installable
+for Local Whisper updates:
 
 ```powershell
 gh workflow run build-installers.yml `
@@ -85,13 +70,22 @@ gh workflow run build-installers.yml `
   -f build_windows_local=true
 ```
 
-This refreshes the standard installers and `SHA256SUMS.txt`, then uploads the
-Local installer as `PulseScribe-Setup-{version}-Local.zip` alongside them. GitHub
-release assets are limited to 2 GiB, so the workflow verifies the uploaded ZIP
-stays within the release budget. The temporary workflow artifact also contains
-the unpacked EXE hash for verification after extraction. Without
-`upload_to_release=true`, the Local installer is kept only as that temporary
-workflow artifact.
+The CI installer is currently unsigned and may trigger a Windows SmartScreen
+warning. Releases always include the much larger Local variant because installed
+Local Whisper apps only accept that package from the updater. Pull requests skip
+it, and manual runs build it only on request.
+
+The rebuild command above also adds the Local Whisper variant to a release that
+lacks it: it refreshes the standard installers and `SHA256SUMS.txt`, then uploads
+the Local installer as `PulseScribe-Setup-{version}-Local.zip`. GitHub release
+assets are limited to 2 GiB, so the workflow verifies the uploaded ZIP stays
+within the release budget.
+
+To add only the Local package and keep the published installers unchanged, run
+the workflow with `-f upload_to_release=false -f build_windows_local=true`. The
+temporary workflow artifact then contains the ZIP, its SHA-256, and the unpacked
+EXE hash. Verify the ZIP hash, upload it with `gh release upload`, and append its
+line to the release's `SHA256SUMS.txt` (upload that file with `--clobber`).
 
 ## Build Output
 
