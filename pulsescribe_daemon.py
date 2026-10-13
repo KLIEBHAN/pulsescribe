@@ -1476,13 +1476,23 @@ class PulseScribeDaemon:
             self._enter_no_speech_state(latency_run=run)
             return
 
+        history_mode = self._run_mode or self.mode
+        history_language = self.language
+        history_refined = self._last_was_refined
+
         # Erfolgreiche Transkription: State → Sound → UI-Flush → History → Paste
         # RTF-Anzeige im Overlay (wenn aktiviert)
         overlay_text = self._format_done_text(transcript)
         self._update_state(AppState.DONE, overlay_text)
         get_sound_player().play("done")  # Sofortiges auditives Feedback
         self._flush_ui_and_wait()  # ✅ muss sichtbar sein BEVOR Text eingefügt wird
-        self._save_to_history(transcript, latency_run=run)
+        self._save_to_history(
+            transcript,
+            mode=history_mode,
+            language=history_language,
+            refined=history_refined,
+            latency_run=run,
+        )
         self._paste_result(transcript, latency_run=run)
         self._update_state(AppState.IDLE)  # Reset nach erfolgreichem Paste
         if run is not None:
@@ -1534,19 +1544,22 @@ class PulseScribeDaemon:
         self,
         transcript: str,
         *,
+        mode: str | None,
+        language: str | None,
+        refined: bool,
         latency_run: MacOSLatencyRun | None = None,
     ) -> None:
-        """Speichert Transkript in der Historie."""
-        from utils.history import save_transcript
-
+        """Speichert das Transkript mit den vor dem UI-Flush gesicherten Metadaten."""
         if latency_run is not None:
             latency_run.mark("history_start")
         try:
+            from utils.history import save_transcript
+
             save_transcript(
                 transcript,
-                mode=self._run_mode or self.mode,
-                language=self.language,
-                refined=self._last_was_refined,
+                mode=mode,
+                language=language,
+                refined=refined,
             )
         except Exception as e:
             logger.warning(f"History save failed: {e}")

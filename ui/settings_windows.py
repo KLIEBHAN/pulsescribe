@@ -126,7 +126,7 @@ from utils.custom_prompts import (
     get_prompt_editor_semantic_state,
     normalize_prompt_editor_context,
 )
-from utils.vocabulary import analyze_vocabulary_text
+from utils.vocabulary import VocabularyInputAnalysis, analyze_vocabulary_text
 
 logger = logging.getLogger("pulsescribe.settings")
 
@@ -482,7 +482,11 @@ def _build_vocabulary_status(
 
 def _transcript_blocks_to_text(blocks: list[str]) -> str:
     """Join transcript blocks using the viewer's empty-state message."""
-    return "\n\n".join(blocks) if blocks else "No transcripts yet."
+    if blocks:
+        return "\n\n".join(blocks)
+    from utils.history import DISPLAY_TRANSCRIPTS_EMPTY_MESSAGE
+
+    return DISPLAY_TRANSCRIPTS_EMPTY_MESSAGE
 
 
 def _merge_recent_transcript_blocks(
@@ -3499,7 +3503,6 @@ class SettingsWindow(QDialog):
             from utils.history import (
                 HISTORY_FILE,
                 format_transcript_entries_for_display,
-                format_transcripts_for_display,
                 get_recent_transcripts,
             )
 
@@ -3516,7 +3519,7 @@ class SettingsWindow(QDialog):
             entries = get_recent_transcripts(TRANSCRIPTS_VIEW_MAX_ENTRIES)
             ordered_entries = list(reversed(entries))
             transcript_blocks = format_transcript_entries_for_display(entries)
-            self._set_transcripts_text_if_changed(format_transcripts_for_display(entries))
+            self._set_transcripts_text_if_changed(_transcript_blocks_to_text(transcript_blocks))
             self._last_transcripts_entries = ordered_entries
             self._last_transcripts_blocks = transcript_blocks
             self._last_transcripts_signature = signature
@@ -3708,15 +3711,19 @@ class SettingsWindow(QDialog):
             return ""
 
     def _refresh_vocabulary_editor_feedback(self) -> None:
+        analysis = analyze_vocabulary_text(self._current_vocabulary_raw_text())
         text, color = build_vocabulary_editor_feedback(
-            self._current_vocabulary_raw_text(),
+            analysis,
             saved_keywords=self._get_saved_vocabulary_keywords(),
         )
         _set_status_label_if_changed(getattr(self, "_vocab_status", None), text, color)
-        self._refresh_vocabulary_action_buttons()
+        self._refresh_vocabulary_action_buttons(analysis)
 
-    def _refresh_vocabulary_action_buttons(self) -> None:
-        analysis = analyze_vocabulary_text(self._current_vocabulary_raw_text())
+    def _refresh_vocabulary_action_buttons(
+        self, analysis: VocabularyInputAnalysis | None = None
+    ) -> None:
+        if analysis is None:
+            analysis = analyze_vocabulary_text(self._current_vocabulary_raw_text())
         saved_keywords = self._get_saved_vocabulary_keywords()
         loaded = bool(getattr(self, "_vocabulary_loaded", False))
         can_save = bool(

@@ -9,6 +9,7 @@ without changing daemon behavior.
 from __future__ import annotations
 
 from utils.state import AppState, DaemonErrorCode, DaemonStatusError
+from utils.text_preview import normalized_text_prefix
 
 DEFAULT_DAEMON_STATUS_LABELS = {
     AppState.IDLE: "Ready to dictate",
@@ -321,28 +322,39 @@ def build_daemon_status_label(
     prefer_detail: bool = True,
     max_chars: int = 80,
 ) -> str:
-    """Return a concise, user-facing status label for non-overlay surfaces."""
-    normalized_state = _normalize_state(state)
-    detail = normalize_daemon_status_text(str(text or ""))
+    """Return a concise, user-facing status label for non-overlay surfaces.
 
-    if normalized_state == AppState.RECORDING and prefer_detail and detail:
-        return _truncate_status_text(f"Recording: {detail}", max_chars)
+    A nonpositive ``max_chars`` preserves the full normalized label.
+    """
+    normalized_state = _normalize_state(state)
+
+    if normalized_state in (AppState.RECORDING, AppState.DONE) and prefer_detail:
+        raw_detail = str(text or "")
+        detail = (
+            normalized_text_prefix(raw_detail, max_chars=max_chars + 1)
+            if max_chars > 0
+            else normalize_daemon_status_text(raw_detail)
+        )
+        if detail:
+            label = f"Recording: {detail}" if normalized_state == AppState.RECORDING else detail
+            return _truncate_status_text(label, max_chars)
 
     if normalized_state == AppState.LOADING:
+        detail = normalize_daemon_status_text(str(text or ""))
         return _truncate_status_text(
             _build_loading_label(detail, prefer_detail=prefer_detail),
             max_chars,
         )
 
     if normalized_state == AppState.DONE:
-        if prefer_detail and detail:
-            return _truncate_status_text(detail, max_chars)
         return _truncate_status_text(DEFAULT_DAEMON_STATUS_LABELS[AppState.DONE], max_chars)
 
     if normalized_state == AppState.NO_SPEECH:
+        detail = normalize_daemon_status_text(str(text or ""))
         return _truncate_status_text(_build_no_speech_label(detail), max_chars)
 
     if normalized_state == AppState.ERROR:
+        detail = normalize_daemon_status_text(str(text or ""))
         return _truncate_status_text(_build_error_label(detail), max_chars)
 
     label = DEFAULT_DAEMON_STATUS_LABELS.get(
@@ -402,13 +414,14 @@ def build_daemon_status_hint(
 ) -> str:
     """Return contextual guidance or recovery help for a daemon state."""
     normalized_state = _normalize_state(state)
-    detail = normalize_daemon_status_text(str(text or ""))
-    detail_lower = detail.lower()
 
     if normalized_state == AppState.LOADING:
+        detail = normalize_daemon_status_text(str(text or ""))
+        detail_lower = detail.lower()
         return _truncate_status_text(_build_loading_hint(detail, detail_lower), max_chars)
 
     if normalized_state == AppState.NO_SPEECH:
+        detail_lower = normalize_daemon_status_text(str(text or "")).lower()
         return _truncate_status_text(_build_no_speech_hint(detail_lower), max_chars)
 
     if normalized_state == AppState.ERROR:

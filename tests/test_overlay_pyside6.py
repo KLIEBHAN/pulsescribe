@@ -1,4 +1,6 @@
 import pytest
+import subprocess
+import sys
 import types
 
 pytest.importorskip("PySide6")
@@ -218,8 +220,56 @@ def test_poll_interim_file_reads_tail_text_only(tmp_path, monkeypatch):
     assert controller._widget.seen_interim == ["tail-only"]
 
 
-def test_update_interim_text_slows_file_polling_after_direct_update():
+def test_direct_update_from_worker_preserves_native_qt_timer():
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+import threading
+import time
+from pathlib import Path
+from PySide6.QtCore import QCoreApplication, QTimer, qInstallMessageHandler
+from ui.overlay_pyside6 import PySide6OverlayController, INTERIM_POLL_DIRECT_INTERVAL_MS
+
+app = QCoreApplication([])
+warnings = []
+qInstallMessageHandler(lambda _kind, _context, message: warnings.append(message))
+timer = QTimer()
+timer.start(200)
+controller = PySide6OverlayController()
+controller._interim_timer = timer
+controller._running = True
+controller._interim_file = Path("unused-during-direct-updates")
+controller._widget = type("Widget", (), {
+    "current_state": "RECORDING",
+    "update_interim_text": lambda self, text: None,
+})()
+worker = threading.Thread(target=lambda: controller.update_interim_text("alpha"))
+worker.start()
+worker.join(timeout=1)
+assert not worker.is_alive()
+assert timer.isActive(), warnings
+assert timer.interval() == 200
+controller._direct_interim_until = time.monotonic() + 60
+controller._poll_interim_file()
+assert timer.isActive(), warnings
+assert timer.interval() == INTERIM_POLL_DIRECT_INTERVAL_MS
+timer.stop()
+assert not warnings, warnings
+""",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_update_interim_text_leaves_timer_changes_to_polling_thread(tmp_path):
     controller = PySide6OverlayController.__new__(PySide6OverlayController)
+    controller._running = True
+    controller._interim_file = tmp_path / "interim.txt"
     controller._interim_timer = _FakeInterimTimer(
         active=True,
         interval_ms=INTERIM_POLL_INTERVAL_MS,
@@ -230,10 +280,14 @@ def test_update_interim_text_slows_file_polling_after_direct_update():
     PySide6OverlayController.update_interim_text(controller, "alpha")
 
     assert controller._widget.seen_interim == ["alpha"]
+    assert controller._interim_timer.set_interval_calls == []
+    assert controller._direct_interim_until > 0
+
+    PySide6OverlayController._poll_interim_file(controller)
+
     assert controller._interim_timer.set_interval_calls == [
         INTERIM_POLL_DIRECT_INTERVAL_MS
     ]
-    assert controller._direct_interim_until > 0
 
 
 def test_update_state_skips_duplicate_payloads() -> None:
@@ -269,9 +323,7 @@ def test_update_interim_text_skips_duplicate_widget_updates(monkeypatch):
     PySide6OverlayController.update_interim_text(controller, "alpha")
 
     assert controller._widget.seen_interim == ["alpha"]
-    assert controller._interim_timer.set_interval_calls == [
-        INTERIM_POLL_DIRECT_INTERVAL_MS
-    ]
+    assert controller._interim_timer.set_interval_calls == []
     assert controller._direct_interim_until == 10.4 + INTERIM_DIRECT_UPDATE_GRACE_S
 
 
@@ -296,7 +348,7 @@ def test_poll_interim_file_skips_file_reads_while_direct_updates_are_recent(
     controller._widget = _FakeWidget()
     controller._interim_timer = _FakeInterimTimer(
         active=True,
-        interval_ms=INTERIM_POLL_DIRECT_INTERVAL_MS,
+        interval_ms=INTERIM_POLL_INTERVAL_MS,
     )
     controller._direct_interim_until = 10.0 + INTERIM_DIRECT_UPDATE_GRACE_S
     controller._last_interim_text = ""
@@ -305,7 +357,7 @@ def test_poll_interim_file_skips_file_reads_while_direct_updates_are_recent(
     PySide6OverlayController._poll_interim_file(controller)
 
     assert controller._widget.seen_interim == []
-    assert controller._interim_timer.set_interval_calls == []
+    assert controller._interim_timer.set_interval_calls == [INTERIM_POLL_DIRECT_INTERVAL_MS]
 
 
 def test_poll_interim_file_restores_fast_interval_after_direct_update_grace(

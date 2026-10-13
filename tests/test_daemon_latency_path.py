@@ -8,11 +8,154 @@ import pytest
 
 from pulsescribe_daemon import PulseScribeDaemon
 from utils.macos_latency_diagnostics import start_macos_latency_run
-from utils.state import DaemonMessage, MessageType
+from utils.state import AppState, DaemonMessage, MessageType
 
 
 def _disabled_latency_run():
     return start_macos_latency_run(enabled=False)
+
+
+@pytest.mark.parametrize("paste_raises", [False, True])
+def test_history_follows_ui_flush_and_precedes_paste(monkeypatch, paste_raises):
+    daemon = PulseScribeDaemon(mode="deepgram", language="de")
+    daemon._run_mode = "local"
+    daemon._last_was_refined = True
+    calls = []
+    saved = []
+    run = MagicMock()
+
+    def flush():
+        calls.append("flush")
+        daemon._run_mode = "groq"
+        daemon.language = "en"
+        daemon._last_was_refined = False
+
+    def paste(_transcript, **_kwargs):
+        calls.append("paste")
+        if paste_raises:
+            raise RuntimeError("paste failed")
+
+    def save(transcript, **kwargs):
+        assert calls[-1] == "flush"
+        calls.append("history")
+        saved.append((transcript, kwargs))
+        return True
+
+    monkeypatch.setattr(daemon, "_format_done_text", lambda text: text)
+    monkeypatch.setattr(daemon, "_update_state", lambda state, *_args: calls.append(state))
+    monkeypatch.setattr(daemon, "_flush_ui_and_wait", flush)
+    monkeypatch.setattr(daemon, "_paste_result", paste)
+    monkeypatch.setattr(daemon, "_apply_pending_hotkey_reconfigure_if_safe", lambda: None)
+    monkeypatch.setattr("pulsescribe_daemon.get_sound_player", lambda: MagicMock())
+    monkeypatch.setattr("utils.history.save_transcript", save)
+
+    if paste_raises:
+        with pytest.raises(RuntimeError, match="paste failed"):
+            daemon._handle_transcript_result("hello", latency_run=run)
+    else:
+        daemon._handle_transcript_result("hello", latency_run=run)
+
+    expected = [AppState.DONE, "flush", "history", "paste"]
+    if not paste_raises:
+        expected.append(AppState.IDLE)
+        run.finish.assert_called_once_with("success")
+    assert calls == expected
+    assert saved == [("hello", {"mode": "local", "language": "de", "refined": True})]
+    run.mark.assert_any_call("history_start")
+    run.mark.assert_any_call("history_done")
+
+
+def test_history_import_failure_still_finishes_pasted_result(monkeypatch):
+    import builtins
+
+    daemon = PulseScribeDaemon(mode="local")
+    run = MagicMock()
+    paste = MagicMock()
+    states = []
+    reconfigure = MagicMock()
+    original_import = builtins.__import__
+
+    def fail_history_import(name, *args, **kwargs):
+        if name == "utils.history":
+            raise ImportError("history unavailable")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(daemon, "_format_done_text", lambda text: text)
+    monkeypatch.setattr(daemon, "_update_state", lambda state, *_args: states.append(state))
+    monkeypatch.setattr(daemon, "_flush_ui_and_wait", lambda: None)
+    monkeypatch.setattr(daemon, "_paste_result", paste)
+    monkeypatch.setattr(daemon, "_apply_pending_hotkey_reconfigure_if_safe", reconfigure)
+    monkeypatch.setattr("pulsescribe_daemon.get_sound_player", lambda: MagicMock())
+    monkeypatch.setattr(builtins, "__import__", fail_history_import)
+
+    daemon._handle_transcript_result("hello", latency_run=run)
+
+    paste.assert_called_once_with("hello", latency_run=run)
+    assert states == [AppState.DONE, AppState.IDLE]
+    run.mark.assert_any_call("history_start")
+    run.mark.assert_any_call("history_done")
+    run.finish.assert_called_once_with("success")
+    reconfigure.assert_called_once_with()
+
+
+def test_reentrant_results_keep_history_and_paste_in_the_same_order(monkeypatch):
+    from utils.history import _build_transcript_entry
+
+    daemon = PulseScribeDaemon(mode="local", language="de")
+    daemon._last_was_refined = True
+    entries = []
+    pasted = []
+
+    def save(text, **kwargs):
+        entries.append(_build_transcript_entry(text, **kwargs))
+        return True
+
+    def flush():
+        monkeypatch.setattr(daemon, "_flush_ui_and_wait", lambda: None)
+        daemon._run_mode = "groq"
+        daemon.language = "en"
+        daemon._last_was_refined = False
+        daemon._handle_transcript_result("second")
+
+    monkeypatch.setattr(daemon, "_format_done_text", lambda text: text)
+    monkeypatch.setattr(daemon, "_update_state", lambda *_args: None)
+    monkeypatch.setattr(daemon, "_flush_ui_and_wait", flush)
+    monkeypatch.setattr(daemon, "_paste_result", lambda text, **_kwargs: pasted.append(text))
+    monkeypatch.setattr(daemon, "_apply_pending_hotkey_reconfigure_if_safe", lambda: None)
+    monkeypatch.setattr("pulsescribe_daemon.get_sound_player", lambda: MagicMock())
+    monkeypatch.setattr("utils.history.save_transcript", save)
+
+    daemon._handle_transcript_result("first")
+
+    assert pasted == ["second", "first"]
+    assert [entry["text"] for entry in entries] == pasted
+    assert entries[0]["timestamp"] <= entries[1]["timestamp"]
+    assert entries[0]["mode"] == "groq"
+    assert entries[0]["language"] == "en"
+    assert "refined" not in entries[0]
+    assert entries[1]["mode"] == "local"
+    assert entries[1]["language"] == "de"
+    assert entries[1]["refined"] is True
+
+
+@pytest.mark.parametrize("transcript", ["", "hello"])
+def test_onboarding_transcript_does_not_paste_or_save_history(monkeypatch, transcript):
+    daemon = PulseScribeDaemon(mode="local")
+    daemon._test_run_active = True
+    callback = MagicMock()
+    daemon._test_run_callback = callback
+    monkeypatch.setattr(daemon, "_update_state", MagicMock())
+    monkeypatch.setattr(daemon, "_apply_pending_hotkey_reconfigure_if_safe", lambda: None)
+    paste = MagicMock()
+    save = MagicMock()
+    monkeypatch.setattr(daemon, "_paste_result", paste)
+    monkeypatch.setattr("utils.history.save_transcript", save)
+
+    daemon._handle_transcript_result(transcript, latency_run=_disabled_latency_run())
+
+    callback.assert_called_once_with(transcript, None)
+    paste.assert_not_called()
+    save.assert_not_called()
 
 
 def test_audio_dependency_prewarm_is_idempotent_and_import_only():
