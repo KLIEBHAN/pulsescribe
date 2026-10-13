@@ -25,6 +25,7 @@ from ui.logs_panel_feedback import (
 )
 from ui.prompt_editor_feedback import build_prompt_editor_state_feedback
 from ui.provider_settings import build_provider_api_key_status
+from ui.setup_try_it import build_setup_hotkey_info, build_setup_try_it_content
 from ui.secondary_settings_feedback import (
     build_display_settings_feedback,
     build_refine_model_guidance,
@@ -161,6 +162,10 @@ HOTKEY_TOKEN_LABELS = {
     "left": "←",
     "right": "→",
 }
+SETUP_TRY_IT_HINT = (
+    "Need permissions? Accessibility enables pasting; Input Monitoring enables "
+    "global hotkeys."
+)
 API_KEY_CARD_TOP_INSET = 92
 API_KEY_CARD_BOTTOM_INSET = 54
 API_KEY_ROW_SPACING = 54
@@ -406,25 +411,27 @@ def _build_setup_hotkey_info(
     fallback_hotkey: str | None = None,
 ) -> str:
     """Return a concise setup summary for the active hotkey configuration."""
+    return build_setup_hotkey_info(
+        *_format_setup_hotkeys(toggle_hotkey, hold_hotkey, fallback_hotkey)
+    )
 
-    toggle = _format_hotkey_for_display(toggle_hotkey)
-    hold = _format_hotkey_for_display(hold_hotkey)
-    fallback_raw = _normalize_hotkey_text(fallback_hotkey)
+
+def _format_setup_hotkeys(
+    toggle_hotkey: str | None,
+    hold_hotkey: str | None,
+    fallback_hotkey: str | None,
+) -> tuple[str, str, str]:
     fallback = _format_hotkey_for_display(fallback_hotkey)
-
-    hotkey_parts = []
-    if toggle:
-        hotkey_parts.append(f"Toggle: {toggle}")
-    if hold:
-        hotkey_parts.append(f"Hold: {hold}")
-    if hotkey_parts:
-        return " • ".join(hotkey_parts)
-
-    if fallback and fallback_raw.lower() not in {"(nicht konfiguriert)", "(not configured)"}:
-        return f"Hotkey: {fallback}"
-
-    return "No hotkey configured"
-
+    if _normalize_hotkey_text(fallback_hotkey).lower() in {
+        "(nicht konfiguriert)",
+        "(not configured)",
+    }:
+        fallback = ""
+    return (
+        _format_hotkey_for_display(toggle_hotkey),
+        _format_hotkey_for_display(hold_hotkey),
+        fallback,
+    )
 
 
 def _build_setup_try_it_content(
@@ -432,45 +439,9 @@ def _build_setup_try_it_content(
     hold_hotkey: str | None,
     fallback_hotkey: str | None = None,
 ) -> tuple[str, str, str, str]:
-    hotkey_info = _build_setup_hotkey_info(toggle_hotkey, hold_hotkey, fallback_hotkey)
-    toggle = _format_hotkey_for_display(toggle_hotkey)
-    hold = _format_hotkey_for_display(hold_hotkey)
-    fallback = _format_hotkey_for_display(fallback_hotkey)
-    active_key = toggle or fallback
-    hint = (
-        "Need permissions? Accessibility enables pasting; Input Monitoring enables "
-        "global hotkeys."
-    )
-
-    if hold and toggle:
-        return (
-            hotkey_info,
-            f"Hold {hold} for push-to-talk, or press {toggle} once to start and again to stop.",
-            hint,
-            "Change Hotkeys…",
-        )
-
-    if hold:
-        return (
-            hotkey_info,
-            f"Hold {hold} while speaking, then release it to transcribe into the frontmost app.",
-            hint,
-            "Change Hotkeys…",
-        )
-
-    if active_key:
-        return (
-            hotkey_info,
-            f"Press {active_key} to start dictation, then use it again to stop and paste the result.",
-            hint,
-            "Change Hotkeys…",
-        )
-
-    return (
-        hotkey_info,
-        "No hotkey yet. Open Hotkeys to record one before you test dictation.",
-        hint,
-        "Set up Hotkeys…",
+    return build_setup_try_it_content(
+        *_format_setup_hotkeys(toggle_hotkey, hold_hotkey, fallback_hotkey),
+        hint=SETUP_TRY_IT_HINT,
     )
 
 
