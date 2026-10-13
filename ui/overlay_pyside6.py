@@ -70,9 +70,14 @@ logger = logging.getLogger("pulsescribe.overlay")
 # =============================================================================
 
 WINDOW_WIDTH = 280
-WINDOW_HEIGHT = 90
-WINDOW_CORNER_RADIUS = 16
+WINDOW_HEIGHT = 100  # macOS OVERLAY_HEIGHT
+WINDOW_CORNER_RADIUS = 22  # macOS radius; Windows 11 Mica uses DWM rounding instead
 WINDOW_MARGIN_BOTTOM = 60
+LABEL_PADDING_H = 12  # Fixed-width window: keep the full text width (macOS grows instead)
+LABEL_TOP = 60  # Text row below the bars, positioned like the macOS overlay
+LABEL_HEIGHT = 24
+LABEL_PIXEL_SIZE = 15  # macOS OVERLAY_FONT_SIZE (semibold)
+BAR_CENTER_Y = 36  # macOS wave area: 12 px top inset + 48 px max bar height / 2
 
 # =============================================================================
 # Animation-Konstanten
@@ -98,7 +103,7 @@ STATE_COLORS = {
     "TRANSCRIBING": QColor(255, 177, 66),  # Orange
     "REFINING": QColor(156, 39, 176),  # Lila
     "LOADING": QColor(66, 165, 245),  # Material Blue 400
-    "DONE": QColor(76, 175, 80),  # Grün
+    "DONE": QColor(51, 217, 178),  # Teal (wie macOS)
     "NO_SPEECH": QColor(255, 177, 66),  # Amber
     "ERROR": QColor(255, 71, 87),  # Rot
 }
@@ -334,7 +339,7 @@ class PySide6OverlayWidget(QWidget):
         self._bar_x_positions = [
             start_x + i * (BAR_WIDTH + BAR_GAP) for i in range(BAR_COUNT)
         ]
-        self._bar_center_y = 35
+        self._bar_center_y = BAR_CENTER_Y
 
     def _setup_window(self):
         """Konfiguriert das Fenster."""
@@ -391,7 +396,9 @@ class PySide6OverlayWidget(QWidget):
         )
         self._label = QLabel(self)
         self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._label.setGeometry(10, 55, WINDOW_WIDTH - 20, 30)
+        self._label.setGeometry(
+            LABEL_PADDING_H, LABEL_TOP, WINDOW_WIDTH - 2 * LABEL_PADDING_H, LABEL_HEIGHT
+        )
         self._label.setStyleSheet(self._get_label_styles()["default"])
         self._label.setFont(self._get_label_font(False))
         self._label.setAccessibleName("Overlay status")
@@ -404,7 +411,9 @@ class PySide6OverlayWidget(QWidget):
         attr_name = "_italic_label_font" if italic else "_default_label_font"
         font = getattr(self, attr_name, None)
         if font is None:
-            font = QFont("Segoe UI", 10 if italic else 11)
+            font = QFont("Segoe UI")
+            font.setPixelSize(LABEL_PIXEL_SIZE - 1 if italic else LABEL_PIXEL_SIZE)
+            font.setWeight(QFont.Weight.Normal if italic else QFont.Weight.DemiBold)
             font.setItalic(italic)
             setattr(self, attr_name, font)
         return font
@@ -621,12 +630,24 @@ class PySide6OverlayWidget(QWidget):
             self._label_style_key = style_key
 
         if getattr(self, "_label_text_value", None) != text:
-            self._label.setText(text)
+            self._label.setText(self._elide_label_text(text, italic=italic))
             try:
                 self._label.setAccessibleDescription(text)
             except Exception:
                 pass
             self._label_text_value = text
+
+    def _elide_label_text(self, text: str, *, italic: bool) -> str:
+        """Fit text into the fixed-width label instead of clipping both ends.
+
+        Live (italic) transcripts keep their newest words; status text keeps
+        its beginning. The macOS overlay widens instead, Windows stays fixed.
+        """
+        try:
+            mode = Qt.TextElideMode.ElideLeft if italic else Qt.TextElideMode.ElideRight
+            return self._label.fontMetrics().elidedText(text, mode, self._label.width())
+        except Exception:
+            return text
 
     def _reset_levels(self):
         """Setzt Audio-Level zurück."""
