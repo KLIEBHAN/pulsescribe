@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-10-13
+
+### Fixed
+
+- **Packaged macOS update checks** – the updater loads the app's existing CA
+  bundle in addition to host trust, allowing verified HTTPS requests without
+  a separate Python certificate installation.
+
 ## [1.4.0] - 2026-10-13
 
 ### Added
