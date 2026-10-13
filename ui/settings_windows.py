@@ -14,7 +14,7 @@ import time
 from typing import Callable, Iterator, TypeAlias
 
 from PySide6.QtCore import QEvent, Qt, Signal
-from PySide6.QtGui import QDoubleValidator, QFont, QIntValidator, QTextCursor
+from PySide6.QtGui import QDoubleValidator, QIntValidator, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -91,6 +91,7 @@ from ui.styles_windows import (
     LANGUAGE_OPTIONS,
     get_pynput_key_map,
     get_settings_stylesheet,
+    ui_font,
 )
 from utils.preferences import (
     get_show_welcome_on_startup,
@@ -138,7 +139,10 @@ logger = logging.getLogger("pulsescribe.settings")
 # =============================================================================
 
 SETTINGS_WIDTH = 600
-SETTINGS_HEIGHT = 700
+SETTINGS_HEIGHT = 825  # Same as the macOS settings window
+SETTINGS_MIN_HEIGHT = 560  # Content scrolls, so small laptop screens still fit
+SETTINGS_SCREEN_MARGIN = 48
+FOOTER_BUTTON_MIN_WIDTH = 120
 LAZY_SETTINGS_TAB_LABELS = frozenset({"Prompts", "Vocabulary", "Logs"})
 LOG_VIEW_MAX_LINES = 100
 TRANSCRIPTS_VIEW_MAX_ENTRIES = 50
@@ -524,12 +528,12 @@ def create_card(
 
     if title:
         title_label = QLabel(title)
-        title_label.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+        title_label.setFont(ui_font("card_title"))
         layout.addWidget(title_label)
 
     if description:
         desc_label = QLabel(description)
-        desc_label.setFont(QFont("Segoe UI", 10))
+        desc_label.setFont(ui_font("body"))
         desc_label.setStyleSheet(f"color: {COLORS['text_secondary']};")
         desc_label.setWordWrap(True)
         layout.addWidget(desc_label)
@@ -545,7 +549,7 @@ def create_label_row(
     row.setSpacing(12)
 
     label = QLabel(label_text)
-    label.setFont(QFont("Segoe UI", 10))
+    label.setFont(ui_font("body"))
     label.setMinimumWidth(120)
     row.addWidget(label)
 
@@ -553,7 +557,7 @@ def create_label_row(
 
     if hint:
         hint_label = QLabel(hint)
-        hint_label.setFont(QFont("Segoe UI", 9))
+        hint_label.setFont(ui_font("caption"))
         hint_label.setStyleSheet(f"color: {COLORS['text_hint']};")
         hint_label.setWordWrap(True)
         row.addWidget(hint_label)
@@ -564,7 +568,7 @@ def create_label_row(
 def create_status_label(text: str = "", color: str = "text") -> QLabel:
     """Erstellt ein Status-Label."""
     label = QLabel(text)
-    label.setFont(QFont("Segoe UI", 10))
+    label.setFont(ui_font("body"))
     label.setWordWrap(True)
     label.setStyleSheet(f"color: {COLORS.get(color, color)};")
     return label
@@ -927,12 +931,21 @@ class SettingsWindow(QDialog):
     def _setup_window(self):
         """Konfiguriert das Fenster."""
         self.setWindowTitle("PulseScribe Settings")
-        self.resize(SETTINGS_WIDTH, SETTINGS_HEIGHT)
-        self.setMinimumSize(SETTINGS_WIDTH, SETTINGS_HEIGHT)
+        self.setMinimumSize(SETTINGS_WIDTH, SETTINGS_MIN_HEIGHT)
+        self.resize(SETTINGS_WIDTH, self._initial_window_height())
         self.setStyleSheet(get_settings_stylesheet())
 
         # Window Flags
         self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.WindowCloseButtonHint)
+
+    @staticmethod
+    def _initial_window_height() -> int:
+        """Use the macOS height unless the available screen area is smaller."""
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            return SETTINGS_HEIGHT
+        available = screen.availableGeometry().height() - SETTINGS_SCREEN_MARGIN
+        return max(SETTINGS_MIN_HEIGHT, min(SETTINGS_HEIGHT, available))
 
     def _build_ui(self):
         """Erstellt das UI."""
@@ -944,10 +957,17 @@ class SettingsWindow(QDialog):
         header = self._build_header()
         layout.addWidget(header)
 
-        # Tab Widget
+        # Tab Widget: centered segmented tabs inside a framed pane (macOS look)
         self._tabs = QTabWidget()
-        self._tabs.setDocumentMode(True)
-        layout.addWidget(self._tabs, 1)
+        tab_bar = self._tabs.tabBar()
+        tab_bar.setExpanding(False)
+        tab_bar.setDrawBase(False)
+        tab_bar.setElideMode(Qt.TextElideMode.ElideNone)
+        tabs_container = QWidget()
+        tabs_layout = QVBoxLayout(tabs_container)
+        tabs_layout.setContentsMargins(10, 0, 10, 0)
+        tabs_layout.addWidget(self._tabs)
+        layout.addWidget(tabs_container, 1)
 
         self._tab_builders = {}
         self._lazy_tab_layouts = {}
@@ -1021,17 +1041,18 @@ class SettingsWindow(QDialog):
         header = QWidget()
         # Dynamic height to accommodate scaling and long text
         layout = QVBoxLayout(header)
-        layout.setContentsMargins(20, 20, 20, 10)
+        layout.setContentsMargins(20, 18, 20, 12)
+        layout.setSpacing(2)
 
         # Titel
         title = QLabel("🎤 PulseScribe")
-        title.setFont(QFont("Segoe UI", 24, QFont.Weight.Bold))
+        title.setFont(ui_font("window_title"))
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
 
         # Untertitel
         subtitle = QLabel("Voice-to-text for Windows")
-        subtitle.setFont(QFont("Segoe UI", 11))
+        subtitle.setFont(ui_font("window_subtitle"))
         subtitle.setStyleSheet(f"color: {COLORS['text_secondary']};")
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(subtitle)
@@ -1039,12 +1060,21 @@ class SettingsWindow(QDialog):
         return header
 
     def _build_footer(self) -> QWidget:
-        """Erstellt den Footer mit Checkbox links, Buttons rechts (wie macOS)."""
+        """Erstellt den Footer wie macOS: Statuszeile oben, darunter Checkbox und Buttons."""
         footer = QWidget()
-        footer.setMinimumHeight(60)
-        layout = QHBoxLayout(footer)
-        layout.setContentsMargins(20, 10, 20, 20)
+        outer = QVBoxLayout(footer)
+        outer.setContentsMargins(22, 6, 20, 18)
+        outer.setSpacing(10)
+
+        self._footer_status_label = create_status_label("", "text_secondary")
+        self._footer_status_label.setFont(ui_font("caption"))
+        self._footer_status_label.setMinimumWidth(0)
+        self._footer_status_label.setAccessibleName("Settings status")
+        outer.addWidget(self._footer_status_label)
+
+        layout = QHBoxLayout()
         layout.setSpacing(12)
+        outer.addLayout(layout)
 
         # Checkbox links (wie macOS Welcome Window)
         self._show_at_startup_checkbox = QCheckBox("Show at startup")
@@ -1053,23 +1083,20 @@ class SettingsWindow(QDialog):
             self._on_show_at_startup_changed
         )
         layout.addWidget(self._show_at_startup_checkbox)
-
-        self._footer_status_label = create_status_label("", "text_secondary")
-        self._footer_status_label.setFont(QFont("Segoe UI", 9))
-        self._footer_status_label.setMinimumWidth(0)
-        self._footer_status_label.setAccessibleName("Settings status")
-        layout.addWidget(self._footer_status_label, 1)
+        layout.addStretch(1)
 
         self._save_btn = QPushButton("Save && Apply")
         self._save_btn.setObjectName("primary")
         self._save_btn.setAccessibleName("Save and apply settings")
         self._save_btn.clicked.connect(self._save_settings)
+        self._save_btn.setMinimumWidth(FOOTER_BUTTON_MIN_WIDTH)
         layout.addWidget(self._save_btn)
 
         # Close-Button (rechts vom Save-Button, wie macOS)
         self._close_btn = QPushButton("Close")
         self._close_btn.setAccessibleName("Close settings")
         self._close_btn.clicked.connect(self.reject)  # QDialog-konform
+        self._close_btn.setMinimumWidth(FOOTER_BUTTON_MIN_WIDTH)
         layout.addWidget(self._close_btn)
 
         return footer
@@ -1096,11 +1123,11 @@ class SettingsWindow(QDialog):
         )
 
         self._setup_status_label = QLabel("Checking current setup…")
-        self._setup_status_label.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+        self._setup_status_label.setFont(ui_font("section"))
         card_layout.addWidget(self._setup_status_label)
 
         self._setup_status_detail_label = QLabel("")
-        self._setup_status_detail_label.setFont(QFont("Segoe UI", 10))
+        self._setup_status_detail_label.setFont(ui_font("body"))
         self._setup_status_detail_label.setStyleSheet(
             f"color: {COLORS['text_secondary']};"
         )
@@ -1120,7 +1147,7 @@ class SettingsWindow(QDialog):
             "2. Add the required API key if you use a cloud mode.\n"
             "3. Set up at least one hotkey in Hotkeys."
         )
-        self._setup_howto_label.setFont(QFont("Segoe UI", 10))
+        self._setup_howto_label.setFont(ui_font("body"))
         self._setup_howto_label.setWordWrap(True)
         card_layout.addWidget(self._setup_howto_label)
 
@@ -1158,7 +1185,7 @@ class SettingsWindow(QDialog):
 
         # Status Label
         self._preset_status = QLabel("")
-        self._preset_status.setFont(QFont("Segoe UI", 9))
+        self._preset_status.setFont(ui_font("caption"))
         card_layout.addWidget(self._preset_status)
 
         layout.addWidget(card)
@@ -1248,13 +1275,13 @@ class SettingsWindow(QDialog):
 
         # Status Label für Recording
         self._hotkey_status = QLabel("")
-        self._hotkey_status.setFont(QFont("Segoe UI", 9))
+        self._hotkey_status.setFont(ui_font("caption"))
         self._hotkey_status.setWordWrap(True)
         card_layout.addWidget(self._hotkey_status)
 
         # Presets
         presets_label = QLabel("Presets:")
-        presets_label.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        presets_label.setFont(ui_font("section"))
         card_layout.addWidget(presets_label)
 
         presets_layout = QHBoxLayout()
@@ -1284,7 +1311,7 @@ class SettingsWindow(QDialog):
             "Click 'Record', then press Enter to confirm or Esc to cancel.\n"
             "Toggle and Hold must not overlap (e.g. ctrl+win and ctrl+win+r)."
         )
-        hint.setFont(QFont("Segoe UI", 9))
+        hint.setFont(ui_font("caption"))
         hint.setStyleSheet(f"color: {COLORS['text_hint']};")
         hint.setWordWrap(True)
         card_layout.addWidget(hint)
@@ -1378,7 +1405,7 @@ class SettingsWindow(QDialog):
         card_layout.addWidget(self._streaming_container)
 
         self._provider_guidance_label = create_status_label("", "text_secondary")
-        self._provider_guidance_label.setFont(QFont("Segoe UI", 9))
+        self._provider_guidance_label.setFont(ui_font("caption"))
         card_layout.addWidget(self._provider_guidance_label)
 
         layout.addWidget(card)
@@ -1457,7 +1484,7 @@ class SettingsWindow(QDialog):
             "These expert controls are only relevant for offline dictation.",
         )
         self._advanced_empty_state_label = create_status_label("", "text_secondary")
-        self._advanced_empty_state_label.setFont(QFont("Segoe UI", 9))
+        self._advanced_empty_state_label.setFont(ui_font("caption"))
         card_layout.addWidget(self._advanced_empty_state_label)
         self._advanced_empty_state_card = card
         layout.addWidget(card)
@@ -1468,7 +1495,7 @@ class SettingsWindow(QDialog):
             "Optional expert overrides for offline dictation. Leave fields empty or on 'default' to keep PulseScribe's recommended values.",
         )
         self._advanced_guidance_label = create_status_label("", "text_secondary")
-        self._advanced_guidance_label.setFont(QFont("Segoe UI", 9))
+        self._advanced_guidance_label.setFont(ui_font("caption"))
         card_layout.addWidget(self._advanced_guidance_label)
 
         self._device_combo = QComboBox()
@@ -1666,11 +1693,11 @@ class SettingsWindow(QDialog):
         card_layout.addLayout(create_label_row("Model:", self._refine_model_field))
 
         self._refine_model_help_label = create_status_label("", "text_secondary")
-        self._refine_model_help_label.setFont(QFont("Segoe UI", 9))
+        self._refine_model_help_label.setFont(ui_font("caption"))
         card_layout.addWidget(self._refine_model_help_label)
 
         self._refine_settings_status_label = create_status_label("", "text_secondary")
-        self._refine_settings_status_label.setFont(QFont("Segoe UI", 9))
+        self._refine_settings_status_label.setFont(ui_font("caption"))
         self._refine_settings_status_label.setAccessibleName(
             "Transcript cleanup section status"
         )
@@ -1719,7 +1746,7 @@ class SettingsWindow(QDialog):
         self._display_settings_status_label = create_status_label(
             "", "text_secondary"
         )
-        self._display_settings_status_label.setFont(QFont("Segoe UI", 9))
+        self._display_settings_status_label.setFont(ui_font("caption"))
         self._display_settings_status_label.setAccessibleName(
             "Output and clipboard section status"
         )
@@ -1757,12 +1784,12 @@ class SettingsWindow(QDialog):
         card_layout.addLayout(create_label_row("Context:", self._prompt_context_combo))
 
         self._prompt_context_help_label = create_status_label("", "text_secondary")
-        self._prompt_context_help_label.setFont(QFont("Segoe UI", 9))
+        self._prompt_context_help_label.setFont(ui_font("caption"))
         self._prompt_context_help_label.setAccessibleName("Prompt context help")
         card_layout.addWidget(self._prompt_context_help_label)
 
         self._prompt_context_state_label = create_status_label("", "text_secondary")
-        self._prompt_context_state_label.setFont(QFont("Segoe UI", 9))
+        self._prompt_context_state_label.setFont(ui_font("caption"))
         self._prompt_context_state_label.setAccessibleName("Prompt editor state")
         card_layout.addWidget(self._prompt_context_state_label)
 
@@ -1773,7 +1800,7 @@ class SettingsWindow(QDialog):
         card_layout.addWidget(self._prompt_editor)
 
         self._prompt_status = QLabel("")
-        self._prompt_status.setFont(QFont("Segoe UI", 9))
+        self._prompt_status.setFont(ui_font("caption"))
         self._prompt_status.setWordWrap(True)
         self._prompt_status.setAccessibleName("Prompt save feedback")
         card_layout.addWidget(self._prompt_status)
@@ -1826,7 +1853,7 @@ class SettingsWindow(QDialog):
         vocab_hint = QLabel(
             "Use one keyword or phrase per line; commas also work. Duplicate entries are merged automatically on save, and this list stays local to this device."
         )
-        vocab_hint.setFont(QFont("Segoe UI", 9))
+        vocab_hint.setFont(ui_font("caption"))
         vocab_hint.setStyleSheet(f"color: {COLORS['text_hint']};")
         vocab_hint.setWordWrap(True)
         card_layout.addWidget(vocab_hint)
@@ -1846,7 +1873,7 @@ class SettingsWindow(QDialog):
 
         # Status Label
         self._vocab_status = QLabel("")
-        self._vocab_status.setFont(QFont("Segoe UI", 9))
+        self._vocab_status.setFont(ui_font("caption"))
         self._vocab_status.setWordWrap(True)
         card_layout.addWidget(self._vocab_status)
 
@@ -1992,21 +2019,21 @@ class SettingsWindow(QDialog):
         transcripts_layout.addWidget(self._transcripts_viewer)
 
         self._transcripts_count_label = QLabel(build_transcripts_count_text(0))
-        self._transcripts_count_label.setFont(QFont("Segoe UI", 9))
+        self._transcripts_count_label.setFont(ui_font("caption"))
         self._transcripts_count_label.setStyleSheet(
             f"color: {COLORS['text_secondary']};"
         )
         transcripts_layout.addWidget(self._transcripts_count_label)
 
         self._transcripts_hint_label = QLabel(build_transcripts_hint_text(0))
-        self._transcripts_hint_label.setFont(QFont("Segoe UI", 9))
+        self._transcripts_hint_label.setFont(ui_font("caption"))
         self._transcripts_hint_label.setStyleSheet(f"color: {COLORS['text_hint']};")
         self._transcripts_hint_label.setWordWrap(True)
         transcripts_layout.addWidget(self._transcripts_hint_label)
 
         # Transcripts Status
         self._transcripts_status = QLabel("")
-        self._transcripts_status.setFont(QFont("Segoe UI", 9))
+        self._transcripts_status.setFont(ui_font("caption"))
         self._transcripts_status.setStyleSheet(f"color: {COLORS['text_secondary']};")
         transcripts_layout.addWidget(self._transcripts_status)
 
@@ -2053,14 +2080,14 @@ class SettingsWindow(QDialog):
 
         # Logo/Title
         title = QLabel("🎤 PulseScribe")
-        title.setFont(QFont("Segoe UI", 20, QFont.Weight.Bold))
+        title.setFont(ui_font("window_title"))
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         card_layout.addWidget(title)
 
         # Version (dynamisch laden)
         version_str = self._get_version()
         version = QLabel(f"Version {version_str}")
-        version.setFont(QFont("Segoe UI", 12))
+        version.setFont(ui_font("window_subtitle"))
         version.setStyleSheet(f"color: {COLORS['text_secondary']};")
         version.setAlignment(Qt.AlignmentFlag.AlignCenter)
         card_layout.addWidget(version)
@@ -2071,7 +2098,7 @@ class SettingsWindow(QDialog):
         desc = QLabel(
             "Minimalistic voice-to-text for Windows.\nInspired by Wispr Flow."
         )
-        desc.setFont(QFont("Segoe UI", 10))
+        desc.setFont(ui_font("body"))
         desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
         desc.setWordWrap(True)
         card_layout.addWidget(desc)
@@ -2083,7 +2110,7 @@ class SettingsWindow(QDialog):
             '<a href="https://github.com/KLIEBHAN/pulsescribe" style="color: #007AFF;">GitHub</a> · '
             '<a href="https://github.com/KLIEBHAN/pulsescribe/tree/master/docs" style="color: #007AFF;">Documentation</a>'
         )
-        links.setFont(QFont("Segoe UI", 10))
+        links.setFont(ui_font("body"))
         links.setAlignment(Qt.AlignmentFlag.AlignCenter)
         links.setOpenExternalLinks(True)
         card_layout.addWidget(links)
