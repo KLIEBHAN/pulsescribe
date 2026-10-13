@@ -86,7 +86,7 @@ class UpdateUI:
             self._show(build_update_view(replace(state, status="checking")), activate=True)
             self._flow.check(manual=True)
             return
-        self._show(self._current_view(), activate=True)
+        self._show(self.current_view(), activate=True)
         if state.status == "available":
             self._flow.download()
 
@@ -109,7 +109,7 @@ class UpdateUI:
             # Runs under the Windows window lock: never call the window here.
             self._window_failed = True
             if self._on_window_error is not None:
-                self._on_window_error(self._current_view())
+                self._on_window_error(self.current_view())
 
     def _install(self) -> None:
         if not self._is_idle():
@@ -127,13 +127,14 @@ class UpdateUI:
     def _set_notice(self, notice: str) -> None:
         with self._lock:
             self._notice = notice
-        view = self._current_view()
+        view = self.current_view()
         if self._window_failed and self._on_window_error is not None:
             self._on_window_error(view)  # The window is gone; explain natively
         else:
             self._render(view)
 
-    def _current_view(self) -> UpdateView:
+    def current_view(self) -> UpdateView:
+        """The view for the flow's current state (fallbacks revalidate with it)."""
         with self._lock:
             return build_update_view(self._flow.state, self._notice)
 

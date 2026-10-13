@@ -395,6 +395,8 @@ class PulseScribeWindows:
         )
         # Feedback from a menu action, kept until the status row changes.
         self._tray_action_hint: str | None = None
+        # Only one native update prompt at a time (window fallback).
+        self._update_prompt_lock = threading.Lock()
         self._last_status_text: str | None = None
         self._hotkey_listeners: list = []  # Mehrere Listener (toggle + hold)
         self._recording_thread = None
@@ -3580,7 +3582,8 @@ class PulseScribeWindows:
         ).start()
 
     def _run_update_fallback(self, view) -> None:
-        if view.primary_action and view.primary_enabled:
+        # Windows downloads right after "available", so "download" is only status.
+        if view.primary_action in ("install", "retry") and view.primary_enabled:
             self._confirm_update_action(view)
         elif self._tray:
             self._tray.notify(view.notice or view.detail or view.headline, view.headline)
@@ -3589,14 +3592,23 @@ class PulseScribeWindows:
         """Yes/No message box for the window's primary action (no long notes)."""
         from ui.updates import BUSY_NOTICE
 
-        if view.primary_action == "install" and not self._can_install_update():
-            _show_message_box(BUSY_NOTICE, view.headline, MB_ICONINFORMATION)
-            return
-        text = "\n\n".join(
-            part for part in (view.detail, view.notice, f"{view.primary_label}?") if part
-        )
-        if _show_message_box(text, view.headline, MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES:
-            self._update_ui.handle(view.primary_action)
+        if not self._update_prompt_lock.acquire(blocking=False):
+            return  # One prompt at a time; the open one is revalidated on answer
+        try:
+            if view.primary_action == "install" and not self._can_install_update():
+                _show_message_box(BUSY_NOTICE, view.headline, MB_ICONINFORMATION)
+                return
+            text = "\n\n".join(
+                part for part in (view.detail, view.notice, f"{view.primary_label}?") if part
+            )
+            flags = MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2
+            if _show_message_box(text, view.headline, flags) != IDYES:
+                return
+            current = self._update_ui.current_view()
+            if current.primary_action == view.primary_action and current.primary_enabled:
+                self._update_ui.handle(view.primary_action)
+        finally:
+            self._update_prompt_lock.release()
 
     def _activate_update(self) -> None:
         update_ui = getattr(self, "_update_ui", None)

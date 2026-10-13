@@ -151,7 +151,6 @@ def test_windows_fallback_keeps_an_install_path(monkeypatch, idle, answer, insta
         module, "_show_message_box", lambda text, title, flags: shown.append(text) or answer
     )
     daemon._can_install_update = lambda: idle
-    daemon._update_ui = types.SimpleNamespace(handle=Mock())
     from ui.update_window_model import UpdateView
 
     view = UpdateView(
@@ -161,6 +160,7 @@ def test_windows_fallback_keeps_an_install_path(monkeypatch, idle, answer, insta
         primary_label="Restart and Install",
         primary_action="install",
     )
+    daemon._update_ui = types.SimpleNamespace(handle=Mock(), current_view=lambda: view)
 
     daemon._confirm_update_action(view)
 
@@ -201,3 +201,46 @@ def test_windows_fallback_never_runs_on_the_callers_thread(monkeypatch):
     daemon._notify_update_fallback(UpdateView("Up to date"))
 
     assert started == [daemon._run_update_fallback]
+
+
+def test_windows_fallback_treats_automatic_download_as_status():
+    module = _load_windows_module()
+    daemon = module.PulseScribeWindows(mode="openai", streaming=False, overlay=False)
+    daemon._tray = types.SimpleNamespace(notify=Mock())
+    daemon._confirm_update_action = Mock()
+    from ui.update_window_model import UpdateView
+
+    daemon._run_update_fallback(
+        UpdateView("PulseScribe 9.0.0 is available", primary_label="Download", primary_action="download")
+    )
+
+    daemon._confirm_update_action.assert_not_called()
+    daemon._tray.notify.assert_called_once()
+
+
+def test_windows_fallback_revalidates_before_acting(monkeypatch):
+    module = _load_windows_module()
+    daemon = module.PulseScribeWindows(mode="openai", streaming=False, overlay=False)
+    monkeypatch.setattr(module, "_show_message_box", lambda *_args: module.IDYES)
+    from ui.update_window_model import UpdateView
+
+    retry = UpdateView("Update failed", primary_label="Retry", primary_action="retry")
+    now_downloading = UpdateView("Downloading…", primary_action="install", primary_enabled=False)
+    daemon._update_ui = types.SimpleNamespace(handle=Mock(), current_view=lambda: now_downloading)
+
+    daemon._confirm_update_action(retry)
+
+    daemon._update_ui.handle.assert_not_called()
+
+
+def test_windows_fallback_shows_one_prompt_at_a_time(monkeypatch):
+    module = _load_windows_module()
+    daemon = module.PulseScribeWindows(mode="openai", streaming=False, overlay=False)
+    boxes = []
+    monkeypatch.setattr(module, "_show_message_box", lambda *args: boxes.append(args) or 7)
+    from ui.update_window_model import UpdateView
+
+    daemon._update_prompt_lock.acquire()  # Another prompt is open
+    daemon._confirm_update_action(UpdateView("Update failed", primary_label="Retry", primary_action="retry"))
+
+    assert boxes == []
