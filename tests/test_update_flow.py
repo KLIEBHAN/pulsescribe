@@ -238,3 +238,24 @@ def test_timer_uses_hourly_events_and_stops(flow, monkeypatch):
 def test_install_requires_verified_ready_state(flow):
     with pytest.raises(ValueError, match="verified"):
         flow[0].install()
+
+
+def test_incomparable_build_version_reports_error_instead_of_up_to_date(
+    flow, monkeypatch
+):
+    from utils.updates import parse_release
+
+    instance, states = flow
+    instance.state = replace(instance.state, current="1.3.0-beta")
+    monkeypatch.setattr(
+        update_flow,
+        "check_release",
+        lambda current, platform, **_kwargs: parse_release(
+            {"tag_name": "v1.4.0", "assets": []}, current, platform
+        ),
+    )
+    instance.check(manual=True)
+    wait_for_worker(instance)
+    assert states[-1].status == "error"
+    assert states[-1].manual
+    assert "1.3.0-beta" in states[-1].error

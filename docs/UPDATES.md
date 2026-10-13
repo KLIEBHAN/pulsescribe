@@ -3,6 +3,8 @@
 Packaged PulseScribe installations check the public GitHub repository for a newer
 stable release 15 seconds after startup and then hourly. Source runs have no
 updater. No token or additional dependency is required.
+Packaged versions must use `X.Y.Z`; manual prerelease or unknown version strings
+are not compared to stable releases, and an explicit check reports that error.
 
 Use **Check for Updates…** in the macOS menu bar or Windows tray for an explicit
 check. Automatic failures stay quiet; manual checks report errors or the current
