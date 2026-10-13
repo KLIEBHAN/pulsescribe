@@ -152,12 +152,13 @@ def test_redirect_cannot_downgrade_tls():
         )
 
 
-def test_https_trust_available_without_host_certificates(monkeypatch, tmp_path):
+def test_https_trust_available_without_host_certificates(monkeypatch):
     import ssl
     from urllib.request import HTTPSHandler, build_opener
 
-    monkeypatch.setenv("SSL_CERT_FILE", str(tmp_path / "missing.pem"))
-    monkeypatch.setenv("SSL_CERT_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        ssl.SSLContext, "load_default_certs", lambda _context, _purpose: None
+    )
     assert ssl.create_default_context().cert_store_stats()["x509_ca"] == 0
 
     def verified_opener(*handlers):
