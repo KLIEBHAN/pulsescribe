@@ -284,3 +284,19 @@ def test_manual_check_result_reaches_fallback_after_window_failure():
     assert [call.args[0].headline for call in fallback.call_args_list] == [
         "PulseScribe 1.3.0 is up to date"
     ]
+
+
+def test_install_errors_reach_the_fallback_when_the_window_failed():
+    flow = Mock(state=ready_state())
+    fallback = Mock()
+    ui = updates.UpdateUI(
+        flow, FakeWindow(), lambda: True, Mock(side_effect=OSError("no helper")),
+        on_window_error=fallback,
+    )
+    ui.handle("unavailable")
+    fallback.reset_mock()
+
+    ui.handle("install")  # Confirmed in the native fallback
+
+    fallback.assert_called_once()
+    assert "no helper" in fallback.call_args.args[0].notice

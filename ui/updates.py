@@ -126,7 +126,11 @@ class UpdateUI:
     def _set_notice(self, notice: str) -> None:
         with self._lock:
             self._notice = notice
-        self._render(self._current_view())
+        view = self._current_view()
+        if self._window_failed and self._on_window_error is not None:
+            self._on_window_error(view)  # The window is gone; explain natively
+        else:
+            self._render(view)
 
     def _current_view(self) -> UpdateView:
         with self._lock:
