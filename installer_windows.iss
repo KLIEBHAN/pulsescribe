@@ -80,6 +80,12 @@ Name: "german"; MessagesFile: "compiler:Languages\German.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 Name: "autostart"; Description: "Start PulseScribe automatically when Windows starts"; GroupDescription: "Startup:"
 
+[InstallDelete]
+; Replace the previous bundle completely. Otherwise switching from the Local to
+; the API-only variant leaves _internal\faster_whisper behind, and the updater
+; keeps treating the installation as Local Whisper.
+Type: filesandordirs; Name: "{app}\_internal"
+
 [Files]
 ; Main application (entire onedir bundle)
 Source: "dist\PulseScribe\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
