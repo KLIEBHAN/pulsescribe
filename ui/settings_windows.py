@@ -69,7 +69,10 @@ from ui.secondary_settings_feedback import (
     get_refine_provider_label,
     normalize_refine_provider,
 )
-from ui.prompt_editor_feedback import build_prompt_editor_state_feedback
+from ui.prompt_editor_feedback import (
+    PromptEditorStateFeedback,
+    build_prompt_editor_state_feedback,
+)
 from ui.settings_apply_feedback import (
     build_save_apply_change_hint,
     build_settings_loaded_feedback,
@@ -2289,6 +2292,7 @@ class SettingsWindow(QDialog):
             return ""
 
     def _get_saved_prompt_text_for_context(self, context: str) -> str:
+        """Use clean cached drafts for display; compare dirty drafts with loaded prompts."""
         context_key = normalize_prompt_editor_context(context)
         cached_text = getattr(self, "_prompts_cache", {}).get(context_key)
         if isinstance(cached_text, str) and context_key not in getattr(
@@ -2305,6 +2309,11 @@ class SettingsWindow(QDialog):
             saved_text=self._get_saved_prompt_text_for_context(context),
             default_text=self._get_prompt_default_text_for_context(context),
         )
+        self._apply_prompt_editor_feedback(context, feedback)
+
+    def _apply_prompt_editor_feedback(
+        self, context: str, feedback: PromptEditorStateFeedback
+    ) -> None:
         _set_status_label_if_changed(
             getattr(self, "_prompt_context_state_label", None),
             feedback.text,
@@ -2328,12 +2337,25 @@ class SettingsWindow(QDialog):
                 pass
 
     def _on_prompt_editor_text_changed(self) -> None:
+        """Compare edits with loaded prompts before updating cache and dirty state."""
         context = getattr(self, "_current_prompt_context", None)
         if not context:
             return
-        self._cache_prompt_text(context, self._current_prompt_editor_text())
+        context = normalize_prompt_editor_context(context)
+        text = self._current_prompt_editor_text()
+        feedback = build_prompt_editor_state_feedback(
+            context,
+            text,
+            saved_text=self._get_prompt_text_for_context(context),
+            default_text=self._get_prompt_default_text_for_context(context),
+        )
+        self._prompts_cache[context] = text
+        if feedback.save_enabled:
+            self._dirty_prompt_contexts.add(context)
+        else:
+            self._dirty_prompt_contexts.discard(context)
         self._set_prompt_status("", "text_secondary")
-        self._refresh_prompt_editor_feedback()
+        self._apply_prompt_editor_feedback(context, feedback)
 
     def _update_prompt_context_ui(self, context: str) -> None:
         context_key = normalize_prompt_editor_context(context)

@@ -270,6 +270,201 @@ def test_cache_prompt_text_treats_comment_only_app_mapping_edits_as_clean() -> N
     assert window._dirty_prompt_contexts == set()
 
 
+@pytest.mark.parametrize(
+    "draft, saved, default, dirty, reset, expected_text",
+    [
+        (
+            "Mail = email\n# note", "Mail = email", "Mail = email", False, False,
+            "Using the built-in App Mappings.",
+        ),
+        (
+            "Mail = chat", "Mail = email", "Mail = email", True, True,
+            "Unsaved custom App Mappings. Save to keep this override.",
+        ),
+        (
+            "Mail = email", "Mail = chat", "Mail = email", True, False,
+            "Built-in App Mappings restored here. Save to remove the custom version.",
+        ),
+        (
+            "Mail = chat", "Mail = chat", "Mail = email", False, True,
+            "Using a saved custom App Mappings.",
+        ),
+        (
+            "Mail = code", "Mail = chat", "Mail = email", True, True,
+            "Unsaved changes to App Mappings.",
+        ),
+        (
+            "Broken Line", "# saved", "# default", False, False,
+            "Using the built-in App Mappings. Only 'App = context' lines are saved.",
+        ),
+    ],
+)
+def test_mapping_edit_shares_one_analysis_for_cache_and_ui(
+    monkeypatch, draft, saved, default, dirty, reset, expected_text
+):
+    import ui.prompt_editor_feedback as feedback_mod
+    from utils import custom_prompts
+
+    class CountingEditor(_FakeEditor):
+        reads = 0
+
+        def toPlainText(self):
+            self.reads += 1
+            return super().toPlainText()
+
+    window = _make_window()
+    window._current_prompt_context = "app_mappings"
+    window._prompt_editor = CountingEditor(draft)
+    window._prompt_context_state_label = _FakeLabel()
+    window._prompt_save_btn = _FakeButton()
+    window._prompt_reset_btn = _FakeButton()
+    window._get_prompt_text_for_context = lambda _context: saved
+    window._get_prompt_default_text_for_context = lambda _context: default
+    window._dirty_prompt_contexts.add("app_mappings")
+    parsed = []
+    original_parse = custom_prompts.parse_app_mappings
+
+    def parse(text):
+        parsed.append(text)
+        return original_parse(text)
+
+    monkeypatch.setattr(custom_prompts, "parse_app_mappings", parse)
+    monkeypatch.setattr(feedback_mod, "parse_app_mappings", parse)
+
+    window._on_prompt_editor_text_changed()
+
+    assert window._prompt_editor.reads == 1
+    assert len(parsed) == len(set([draft, saved, default]))
+    assert set(parsed) == {draft, saved, default}
+    assert window._prompts_cache == {"app_mappings": draft}
+    assert ("app_mappings" in window._dirty_prompt_contexts) is dirty
+    assert window._prompt_save_btn.enabled is dirty
+    assert window._prompt_reset_btn.enabled is reset
+    assert window._prompt_context_state_label.text() == expected_text
+    assert expected_text in window._prompt_editor.accessible_description
+
+
+def test_comment_only_mapping_edit_does_not_persist(monkeypatch):
+    from utils import custom_prompts
+
+    window = _make_window()
+    window._current_prompt_context = "app_mappings"
+    window._prompts_loaded_data = {"app_contexts": {"Mail": "email"}}
+    baseline = window._get_prompt_text_for_context("app_mappings")
+    window._prompt_editor.setPlainText(baseline + "\n# note")
+    monkeypatch.setattr(
+        custom_prompts,
+        "save_custom_prompts_state",
+        lambda _data: pytest.fail("A semantic no-op must not rewrite prompts.toml"),
+    )
+
+    window._on_prompt_editor_text_changed()
+    window._save_current_prompt()
+
+    assert window._dirty_prompt_contexts == set()
+    assert window._prompts_cache["app_mappings"] == baseline + "\n# note"
+
+
+@pytest.mark.parametrize("initially_dirty", [False, True])
+@pytest.mark.parametrize(
+    "context, draft, saved, default, dirty, reset",
+    [
+        ("email", "saved email", "saved email", "default email", False, True),
+        ("email", "default email", "saved email", "default email", True, False),
+        ("voice_commands", "new commands", "old commands", "built-in", True, True),
+        ("default", "", "custom prompt", "built-in", True, True),
+    ],
+)
+def test_prompt_edit_keeps_dirty_state_and_buttons_consistent(
+    context, draft, saved, default, dirty, reset, initially_dirty
+):
+    window = _make_window()
+    window._current_prompt_context = context
+    window._prompt_editor.setPlainText(draft)
+    window._prompt_save_btn = _FakeButton()
+    window._prompt_reset_btn = _FakeButton()
+    window._get_prompt_text_for_context = lambda _context: saved
+    window._get_prompt_default_text_for_context = lambda _context: default
+    if initially_dirty:
+        window._dirty_prompt_contexts.add(context)
+
+    window._on_prompt_editor_text_changed()
+
+    assert window._prompts_cache[context] == draft
+    assert (context in window._dirty_prompt_contexts) is dirty
+    assert window._prompt_save_btn.enabled is dirty
+    assert window._prompt_reset_btn.enabled is reset
+
+
+
+@pytest.mark.parametrize(
+    "context, draft, dirty, reset, expected_text",
+    [
+        (
+            "email", "saved email", False, True,
+            "Using a saved custom Email prompt.",
+        ),
+        (
+            "email", "built-in email", True, False,
+            "Built-in Email prompt restored here. Save to remove the custom version.",
+        ),
+        (
+            "email", "another email", True, True,
+            "Unsaved changes to Email prompt.",
+        ),
+        (
+            "app_mappings", '"Mail" = email # note', False, True,
+            "Using a saved custom App Mappings.",
+        ),
+        (
+            "app_mappings", "Mail = chat\n# note", True, False,
+            "Built-in App Mappings restored here. Save to remove the custom version.",
+        ),
+        (
+            "app_mappings", "Slack = chat", True, True,
+            "Unsaved changes to App Mappings.",
+        ),
+    ],
+)
+def test_edit_and_refresh_agree_when_clean_cache_differs_from_loaded_prompts(
+    context, draft, dirty, reset, expected_text
+):
+    window = _make_window()
+    window._current_prompt_context = context
+    window._prompts_loaded_data = {
+        "prompts": {"email": {"prompt": "saved email"}},
+        "app_contexts": {"Mail": "email"},
+    }
+    window._prompts_defaults_data = {
+        "prompts": {"email": {"prompt": "built-in email"}},
+        "app_contexts": {"Mail": "chat"},
+    }
+    window._prompts_cache[context] = window._get_prompt_default_text_for_context(context)
+    window._prompt_editor.setPlainText(draft)
+    window._prompt_context_state_label = _FakeLabel()
+    window._prompt_save_btn = _FakeButton()
+    window._prompt_reset_btn = _FakeButton()
+    assert window._get_saved_prompt_text_for_context(context) != (
+        window._get_prompt_text_for_context(context)
+    )
+
+    window._on_prompt_editor_text_changed()
+
+    assert window._prompts_cache[context] == draft
+    assert (context in window._dirty_prompt_contexts) is dirty
+    assert window._prompt_context_state_label.text() == expected_text
+    assert window._prompt_save_btn.enabled is dirty
+    assert window._prompt_reset_btn.enabled is reset
+    guidance = window._prompt_editor.accessible_description
+
+    window._refresh_prompt_editor_feedback()
+
+    assert (context in window._dirty_prompt_contexts) is dirty
+    assert window._prompt_context_state_label.text() == expected_text
+    assert window._prompt_save_btn.enabled is dirty
+    assert window._prompt_reset_btn.enabled is reset
+    assert window._prompt_editor.accessible_description == guidance
+
 
 def test_refresh_vocabulary_action_buttons_disables_save_when_editor_is_unchanged():
     window = _make_window()

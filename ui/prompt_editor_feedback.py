@@ -6,7 +6,6 @@ from dataclasses import dataclass
 
 from utils.custom_prompts import (
     get_prompt_editor_context_label,
-    get_prompt_editor_semantic_state,
     normalize_prompt_editor_context,
     parse_app_mappings,
 )
@@ -34,15 +33,13 @@ def _context_subject(context: str) -> str:
     return f"{label} prompt"
 
 
-def _has_invalid_app_mapping_lines(text: str) -> bool:
-    relevant_lines = [
-        line.strip()
-        for line in _normalize_text(text).splitlines()
-        if line.strip() and not line.strip().startswith("#")
-    ]
-    if not relevant_lines:
-        return False
-    return len(parse_app_mappings(text)) < len(relevant_lines)
+def _has_invalid_app_mapping_lines(text: str, mapping_count: int) -> bool:
+    relevant_lines = sum(
+        1
+        for line in text.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    )
+    return mapping_count < relevant_lines
 
 
 def build_prompt_editor_state_feedback(
@@ -58,9 +55,19 @@ def build_prompt_editor_state_feedback(
     draft = _normalize_text(draft_text)
     saved = _normalize_text(saved_text)
     default = _normalize_text(default_text)
-    draft_state = get_prompt_editor_semantic_state(context_key, draft)
-    saved_state = get_prompt_editor_semantic_state(context_key, saved)
-    default_state = get_prompt_editor_semantic_state(context_key, default)
+    invalid_mappings = False
+    if context_key == "app_mappings":
+        draft_state = parse_app_mappings(draft)
+        saved_state = draft_state if saved == draft else parse_app_mappings(saved)
+        if default == draft:
+            default_state = draft_state
+        elif default == saved:
+            default_state = saved_state
+        else:
+            default_state = parse_app_mappings(default)
+        invalid_mappings = _has_invalid_app_mapping_lines(draft, len(draft_state))
+    else:
+        draft_state, saved_state, default_state = draft, saved, default
 
     save_enabled = draft_state != saved_state
     reset_enabled = draft_state != default_state
@@ -84,7 +91,7 @@ def build_prompt_editor_state_feedback(
         text = f"Unsaved changes to {subject}."
         color = "warning"
 
-    if context_key == "app_mappings" and _has_invalid_app_mapping_lines(draft):
+    if invalid_mappings:
         text = f"{text} Only 'App = context' lines are saved."
         color = "warning"
 
