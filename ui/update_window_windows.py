@@ -172,9 +172,12 @@ class WindowsUpdateWindow:
         with self._lock:
             # A newer window may already run; its own reader reports its fate.
             superseded = self._process is not None and self._process is not process
-        if not closed_by_user and not superseded and process not in self._closed:
-            logger.warning("Update window process ended unexpectedly")
-            self._on_action("unavailable")
+            if not closed_by_user and not superseded and process not in self._closed:
+                logger.warning("Update window process ended unexpectedly")
+                # Delivered under the lock so show() cannot start a window that
+                # this stale report would then mark as failed. The handler must
+                # not call back into this window (UpdateUI only uses its fallback).
+                self._on_action("unavailable")
 
 
 def _close_stdin(process) -> None:

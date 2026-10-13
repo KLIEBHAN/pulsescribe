@@ -3568,14 +3568,20 @@ class PulseScribeWindows:
         return process
 
     def _notify_update_fallback(self, view) -> None:
-        """Without the update window: confirm the next step natively, else notify."""
+        """Without the update window: confirm the next step natively, else notify.
+
+        Runs on its own thread because callers may hold the update window lock.
+        """
+        threading.Thread(
+            target=self._run_update_fallback,
+            args=(view,),
+            name="UpdateFallback",
+            daemon=True,
+        ).start()
+
+    def _run_update_fallback(self, view) -> None:
         if view.primary_action and view.primary_enabled:
-            threading.Thread(
-                target=self._confirm_update_action,
-                args=(view,),
-                name="UpdateFallback",
-                daemon=True,
-            ).start()
+            self._confirm_update_action(view)
         elif self._tray:
             self._tray.notify(view.notice or view.detail or view.headline, view.headline)
 

@@ -172,17 +172,32 @@ def test_windows_fallback_keeps_an_install_path(monkeypatch, idle, answer, insta
         daemon._update_ui.handle.assert_not_called()
 
 
-def test_windows_fallback_without_action_only_notifies(monkeypatch):
+def test_windows_fallback_without_action_only_notifies():
     module = _load_windows_module()
     daemon = module.PulseScribeWindows(mode="openai", streaming=False, overlay=False)
     daemon._tray = types.SimpleNamespace(notify=Mock())
-    started = []
-    monkeypatch.setattr(module.threading, "Thread", lambda **kwargs: started.append(kwargs))
+    daemon._confirm_update_action = Mock()
     from ui.update_window_model import UpdateView
 
-    daemon._notify_update_fallback(
+    daemon._run_update_fallback(
         UpdateView("Downloading PulseScribe 9.0.0… 5%", primary_action="install", primary_enabled=False)
     )
 
     daemon._tray.notify.assert_called_once()
-    assert started == []
+    daemon._confirm_update_action.assert_not_called()
+
+
+def test_windows_fallback_never_runs_on_the_callers_thread(monkeypatch):
+    module = _load_windows_module()
+    daemon = module.PulseScribeWindows(mode="openai", streaming=False, overlay=False)
+    started = []
+    monkeypatch.setattr(
+        module.threading,
+        "Thread",
+        lambda **kwargs: types.SimpleNamespace(start=lambda: started.append(kwargs["target"])),
+    )
+    from ui.update_window_model import UpdateView
+
+    daemon._notify_update_fallback(UpdateView("Up to date"))
+
+    assert started == [daemon._run_update_fallback]

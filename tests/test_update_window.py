@@ -175,6 +175,19 @@ def test_window_that_crashes_after_ready_is_reported_unavailable():
     assert wait_for(lambda: actions == ["unavailable"])
 
 
+def test_unavailable_is_reported_atomically_with_respect_to_show():
+    locked_during_report = []
+    window = None
+
+    def on_action(action):
+        locked_during_report.append(window._lock.locked())
+
+    window = WindowsUpdateWindow(lambda _activate: FakeProcess(), on_action)
+    window.show(UpdateView("downloading"), activate=False)
+
+    assert wait_for(lambda: locked_during_report == [True])
+
+
 def test_window_that_hangs_before_ready_is_stopped_and_reported():
     class HungProcess(FakeProcess):
         def __init__(self):

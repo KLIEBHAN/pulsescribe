@@ -106,6 +106,7 @@ class UpdateUI:
         elif action == "close":
             self._window.hide()
         elif action == "unavailable":
+            # Runs under the Windows window lock: never call the window here.
             self._window_failed = True
             if self._on_window_error is not None:
                 self._on_window_error(self._current_view())
