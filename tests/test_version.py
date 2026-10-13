@@ -69,6 +69,23 @@ def test_get_app_version_uses_bundle_root_for_frozen_windows(tmp_path, monkeypat
     assert version_mod.get_app_version(default="unknown") == "2.3.4"
 
 
+def test_get_app_version_reads_pyinstaller_internal_data(tmp_path, monkeypatch):
+    import utils.version as version_mod
+
+    for key in ("PULSESCRIBE_VERSION", "WHISPERGO_VERSION", "VERSION"):
+        monkeypatch.delenv(key, raising=False)
+    internal = tmp_path / "PulseScribe/_internal"
+    internal.mkdir(parents=True)
+    (internal / "pyproject.toml").write_text('[project]\nversion = "1.4.0"\n')
+    monkeypatch.setattr(version_mod.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(version_mod.sys, "_MEIPASS", str(internal), raising=False)
+    monkeypatch.setattr(version_mod.sys, "executable", str(internal.parent / "PulseScribe.exe"))
+    monkeypatch.setattr(version_mod, "_version_from_bundle", lambda: None)
+    monkeypatch.setattr(version_mod, "_version_from_windows_executable", lambda: None)
+    monkeypatch.setattr(version_mod, "_version_from_importlib_metadata", lambda: None)
+    assert version_mod.get_app_version() == "1.4.0"
+
+
 def test_get_app_version_uses_importlib_metadata_when_repo_files_missing(
     tmp_path, monkeypatch
 ):

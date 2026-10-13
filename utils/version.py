@@ -47,6 +47,9 @@ def _version_from_bundle() -> str | None:
 
 def _default_project_root() -> Path:
     if getattr(sys, "frozen", False):
+        bundle_root = getattr(sys, "_MEIPASS", "")
+        if bundle_root:
+            return Path(bundle_root)
         executable = getattr(sys, "executable", "")
         if executable:
             return Path(executable).resolve().parent

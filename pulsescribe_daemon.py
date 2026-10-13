@@ -237,6 +237,8 @@ class PulseScribeDaemon:
         self.__current_state = AppState.IDLE
         self._state_lock = threading.RLock()  # Schützt _recording und _current_state
         self._toggle_lock = threading.Lock()
+        self._recording_action_lock = threading.RLock()
+        self._update_shutdown = False
         self._last_hotkey_time = 0.0
         self._last_rtf: float | None = (
             None  # Real-Time Factor der letzten Transkription
@@ -2085,6 +2087,11 @@ class PulseScribeDaemon:
         return True
 
     def _start_recording(self, *, run_mode_override: str | None = None) -> None:
+        with self._recording_action_lock:
+            if not self._update_shutdown:
+                self._start_recording_locked(run_mode_override=run_mode_override)
+
+    def _start_recording_locked(self, *, run_mode_override: str | None = None) -> None:
         """Startet Streaming-Aufnahme im Worker-Thread."""
         # Sicherstellen, dass kein alter Worker noch läuft.
         #
@@ -3233,6 +3240,10 @@ class PulseScribeDaemon:
         Sollte vor app.terminate_() aufgerufen werden.
         Verhindert Memory-Leaks bei Local Whisper (~500MB RAM).
         """
+        updater = getattr(self, "_updater", None)
+        if updater:
+            updater.stop()
+
         # Timer stoppen
         latency_run = self._latency_run
         self._latency_run = None
@@ -4012,6 +4023,8 @@ class PulseScribeDaemon:
         self._install_runloop_shutdown_handlers(
             app=app, timer_cls=NSTimer, signal_mod=signal
         )
+        if getattr(self, "_updater", None):
+            self._updater.start()
         app.run()
 
     def _configure_ns_application(self):
@@ -4033,6 +4046,58 @@ class PulseScribeDaemon:
             self._overlay = None
             logger.info("Overlay deaktiviert via PULSESCRIBE_OVERLAY=false")
         logger.info("UI-Controller bereit")
+        self._setup_updates()
+
+    def _setup_updates(self) -> None:
+        from utils.update_install import installed_target
+
+        target = installed_target()
+        if target is None:
+            return
+        from ui.updates import activate_update, update_feedback
+        from utils.update_flow import UpdateFlow
+
+        def publish(state):
+            def apply():
+                self._menubar.update_update_state(state)
+                if state.status == "ready" and state.offer:
+                    try:
+                        import rumps
+
+                        rumps.notification("PulseScribe Update", f"Version {state.offer.version} is ready", "Use the menu bar to open the update.")
+                    except Exception:
+                        logger.info("Update notification unavailable", exc_info=True)
+                update_feedback(state)
+
+            self._call_on_main(apply)
+
+        self._updater = UpdateFlow(target, publish)
+
+        self._menubar.set_update_callback(
+            lambda: activate_update(
+                self._updater,
+                self._can_install_update,
+                self._install_update_if_idle,
+            ),
+            self._updater.state.current,
+        )
+
+    def _can_install_update(self) -> bool:
+        return not self._update_shutdown and not self._recording and self._current_state in (
+            AppState.IDLE, AppState.DONE, AppState.NO_SPEECH, AppState.ERROR
+        )
+
+    def _install_update_if_idle(self) -> bool:
+        from AppKit import NSApplication
+
+        with self._recording_action_lock:
+            if not self._can_install_update():
+                return False
+            self._updater.install()
+            self._update_shutdown = True
+        self.cleanup()
+        NSApplication.sharedApplication().terminate_(None)
+        return True
 
     @staticmethod
     def _validate_vocabulary_on_startup() -> None:

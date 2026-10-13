@@ -51,9 +51,10 @@ builds the recommended API-only installer on `windows-2022`. It validates the
 installer version, creates a SHA-256 checksum, and stores the installer and build
 environment metadata as a workflow artifact for 14 days.
 
-Publishing a GitHub release starts the workflow automatically and attaches the
-installer after both platform builds succeed. An existing release can be rebuilt
-manually:
+Pushing an annotated `vX.Y.Z` tag builds both platforms and publishes the release
+only after the installers are uploaded. See [Updates and releases](UPDATES.md).
+Publishing a release manually still attaches installers through the same workflow.
+An existing release can be rebuilt manually:
 
 ```powershell
 gh workflow run build-installers.yml `

@@ -37,7 +37,7 @@ jobs:
           pip install pytest pytest-mock numpy sounddevice "deepgram-sdk>=5.0.0,<6" pynput pyperclip python-dotenv
 
       - name: Run Windows-focused tests
-        run: pytest tests/test_windows_responsiveness.py tests/test_hotkey.py tests/test_windows_hotkey_dispatch.py tests/test_windows_race_conditions.py tests/test_deepgram_stream.py -q -p no:cacheprovider
+        run: pytest tests/test_windows_responsiveness.py tests/test_hotkey.py tests/test_windows_hotkey_dispatch.py tests/test_windows_race_conditions.py tests/test_deepgram_stream.py tests/test_updates.py tests/test_update_flow.py tests/test_update_install.py tests/test_update_ui.py tests/test_update_daemon.py tests/test_version.py -q -p no:cacheprovider
 
   test:
     runs-on: macos-latest

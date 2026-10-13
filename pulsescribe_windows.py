@@ -2275,6 +2275,19 @@ class PulseScribeWindows:
             hotkey_items.append(f"Hold: {self.hold_hotkey}")
         hotkey_text = ", ".join(hotkey_items) if hotkey_items else "Keiner"
 
+        updater = getattr(self, "_updater", None)
+        update_items = (
+            (
+                pystray.MenuItem(
+                    lambda _item: updater.state.label,
+                    self._activate_update,
+                    enabled=lambda _item: updater.state.status not in ("checking", "downloading"),
+                ),
+            )
+            if updater
+            else ()
+        )
+
         menu = pystray.Menu(
             pystray.MenuItem("PulseScribe", None, enabled=False),
             pystray.Menu.SEPARATOR,
@@ -2282,6 +2295,7 @@ class PulseScribeWindows:
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Open Setup & Settings…", self._show_settings),
             pystray.MenuItem("Reload Settings & Retry", self._reload_settings),
+            *update_items,
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Quit PulseScribe", self._quit),
         )
@@ -2306,6 +2320,9 @@ class PulseScribeWindows:
         - Alle Komponenten signalisieren Stop, ohne lange zu warten
         """
         logger.info("Beende PulseScribe...")
+        updater = getattr(self, "_updater", None)
+        if updater:
+            updater.stop()
 
         # Stop-Signale für Hauptschleife und eine evtl. aktive Transkription.
         self._stop_event.set()
@@ -3384,13 +3401,61 @@ class PulseScribeWindows:
         self._setup_startup_hotkeys()
         self._setup_overlay()
         self._start_prewarm_thread()
+        self._setup_updates()
         self._setup_tray()
         self._start_env_watcher()
         self._show_settings_if_needed()
         self._install_signal_handlers()
         self._run_tray_if_available()
+        if getattr(self, "_updater", None):
+            self._updater.start()
         self._wait_until_stopped()
         print("Beendet.")
+
+    def _setup_updates(self) -> None:
+        from utils.update_install import installed_target
+
+        target = installed_target()
+        if target is None:
+            return
+        from utils.update_flow import UpdateFlow
+
+        def publish(state):
+            if self._tray:
+                self._tray.update_menu()
+                if state.status == "ready" and state.offer:
+                    self._tray.notify(f"PulseScribe {state.offer.version} is ready. Restart from the tray menu to install.", "PulseScribe Update")
+                elif state.manual and state.status == "idle":
+                    self._tray.notify(f"PulseScribe {state.current} is up to date.", "PulseScribe Updates")
+                elif state.manual and state.status == "error":
+                    self._tray.notify(state.error, "PulseScribe Update Failed")
+
+        self._updater = UpdateFlow(target, publish)
+
+    def _activate_update(self) -> None:
+        from ui.updates import activate_update
+
+        updater = getattr(self, "_updater", None)
+        if updater:
+            activate_update(
+                updater,
+                self._can_install_update,
+                self._install_update_if_idle,
+            )
+
+    def _can_install_update(self) -> bool:
+        return not self._stop_event.is_set() and self.state in (
+            AppState.IDLE, AppState.DONE, AppState.NO_SPEECH, AppState.ERROR
+        )
+
+    def _install_update_if_idle(self) -> bool:
+        with self._recording_action_lock:
+            if not self._can_install_update():
+                return False
+            self._updater.install()
+            self._stop_event.set()
+        self._quit()
+        return True
 
 
 def main():
