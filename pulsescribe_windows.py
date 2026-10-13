@@ -3605,10 +3605,12 @@ class PulseScribeWindows:
             if _show_message_box(text, view.headline, flags) != IDYES:
                 return
             current = self._update_ui.current_view()
-            if current.primary_action == view.primary_action and current.primary_enabled:
-                self._update_ui.handle(view.primary_action)
+            if not (current.primary_action == view.primary_action and current.primary_enabled):
+                return
         finally:
             self._update_prompt_lock.release()
+        # Outside the lock: the action may need a new prompt (busy notice, error).
+        self._update_ui.handle(view.primary_action)
 
     def _activate_update(self) -> None:
         update_ui = getattr(self, "_update_ui", None)

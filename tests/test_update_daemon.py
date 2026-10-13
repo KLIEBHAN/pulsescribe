@@ -244,3 +244,23 @@ def test_windows_fallback_shows_one_prompt_at_a_time(monkeypatch):
     daemon._confirm_update_action(UpdateView("Update failed", primary_label="Retry", primary_action="retry"))
 
     assert boxes == []
+
+
+def test_windows_fallback_action_can_open_the_next_prompt(monkeypatch):
+    module = _load_windows_module()
+    daemon = module.PulseScribeWindows(mode="openai", streaming=False, overlay=False)
+    monkeypatch.setattr(module, "_show_message_box", lambda *_args: module.IDYES)
+    from ui.update_window_model import UpdateView
+
+    retry = UpdateView("Update failed", primary_label="Retry", primary_action="retry")
+    lock_free_during_action = []
+    daemon._update_ui = types.SimpleNamespace(
+        current_view=lambda: retry,
+        handle=lambda _action: lock_free_during_action.append(
+            not daemon._update_prompt_lock.locked()
+        ),
+    )
+
+    daemon._confirm_update_action(retry)
+
+    assert lock_free_during_action == [True]
