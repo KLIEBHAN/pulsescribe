@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-10-13
+
+### Added
+
+- **Update window on macOS and Windows** – shows checking, download progress,
+  scrollable release notes and the install button. Automatic updates open it
+  once per version without taking focus; the menu entry reopens it at any time.
+
+### Fixed
+
+- **Local Whisper updates on Windows** – every release includes the
+  `-Local.zip` package again, which Local Whisper installations require.
+- **Switching to the API-only installer** – after a successful installation
+  it removes Local Whisper leftovers, so future updates use the API-only package.
+- **Unreachable install button on macOS** – long release notes no longer push
+  the confirmation buttons off screen.
+
 ## [1.5.0] - 2026-10-13
 
 ### Added
