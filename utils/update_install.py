@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import ntpath
+import logging
 import plistlib
 import shutil
 import subprocess
@@ -17,6 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from utils.updates import MAX_PACKAGE_BYTES, UpdateOffer
+
+logger = logging.getLogger("pulsescribe.updates")
 
 
 MAC_SWAP_SCRIPT = """pid="$1"; new="$2"; target="$3"; work="$4"; opener="$5"
@@ -249,6 +252,7 @@ def prepare_update(
             tempfile.mkdtemp(prefix=".PulseScribe-update-", dir=target.parent)
         )
         try:
+            preparation_succeeded = False
             try:
                 _run_native(
                     [
@@ -278,12 +282,20 @@ def prepare_update(
                     timeout=300,
                     stopped=stopped,
                 )
+                preparation_succeeded = True
             finally:
                 # attach can mount before timing out, so every exit path detaches.
-                _run_native(
-                    ["/usr/bin/hdiutil", "detach", str(mount)],
-                    timeout=60,
-                )
+                try:
+                    _run_native(
+                        ["/usr/bin/hdiutil", "detach", str(mount)],
+                        timeout=60,
+                    )
+                except (OSError, subprocess.SubprocessError):
+                    if preparation_succeeded:
+                        raise
+                    logger.warning(
+                        "Could not detach failed update image", exc_info=True
+                    )
         except Exception:
             shutil.rmtree(staged)
             raise

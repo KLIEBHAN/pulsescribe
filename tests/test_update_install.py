@@ -298,6 +298,48 @@ def test_dmg_attach_timeout_always_attempts_detach(tmp_path, monkeypatch):
     assert not list(tmp_path.glob(".PulseScribe-update-*"))
 
 
+@pytest.mark.parametrize("preparation", ["invalid", "cancelled", "success"])
+def test_dmg_detach_error_preserves_preparation_failure(
+    tmp_path, monkeypatch, preparation
+):
+    target = tmp_path / "PulseScribe.app"
+    target.mkdir()
+
+    def run(command, **_kwargs):
+        if "attach" in command:
+            bundle = (
+                Path(command[command.index("-mountpoint") + 1])
+                / "PulseScribe.app/Contents"
+            )
+            bundle.mkdir(parents=True)
+            with (bundle / "Info.plist").open("wb") as file:
+                plistlib.dump(
+                    {
+                        "CFBundleIdentifier": "invalid"
+                        if preparation == "invalid"
+                        else "com.kliebhan.pulsescribe",
+                        "CFBundleShortVersionString": "1.4.0",
+                    },
+                    file,
+                )
+        elif command[0] == "/usr/bin/ditto" and preparation == "cancelled":
+            raise InterruptedError("preparation cancelled")
+        elif "detach" in command:
+            raise subprocess.CalledProcessError(1, command)
+
+    monkeypatch.setattr(update_install, "_run_native", run)
+    expected = {
+        "invalid": ValueError,
+        "cancelled": InterruptedError,
+        "success": subprocess.CalledProcessError,
+    }[preparation]
+    with pytest.raises(expected):
+        update_install.prepare_update(
+            offer(), tmp_path / "installer.dmg", target, "darwin"
+        )
+    assert not list(tmp_path.glob(".PulseScribe-update-*"))
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows PowerShell helper")
 @pytest.mark.parametrize("installer_exit", [0, 1])
 @pytest.mark.parametrize("machine", [False, True])
