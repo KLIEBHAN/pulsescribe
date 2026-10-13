@@ -6,6 +6,12 @@ settings_windows.py and onboarding_wizard_windows.py.
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from PySide6.QtGui import QFont
+
 # =============================================================================
 # Window Constants
 # =============================================================================
@@ -14,11 +20,52 @@ CARD_PADDING = 16
 CARD_CORNER_RADIUS = 12
 CARD_SPACING = 12
 
+# The ui package is bundled as data in the Windows builds, so these files ship
+# next to the modules both from source and from the PyInstaller bundle.
+_ASSET_DIR = Path(__file__).resolve().parent / "assets"
+CHECK_ICON = (_ASSET_DIR / "check.svg").as_posix()
+CHEVRON_DOWN_ICON = (_ASSET_DIR / "chevron-down.svg").as_posix()
+
 # =============================================================================
 # Typography
 # =============================================================================
 
 DEFAULT_FONT_FAMILY = "Segoe UI"
+MONOSPACE_FONT_FAMILIES = ["Cascadia Mono", "Consolas", "Menlo", "Courier New"]
+
+# Type scale in logical pixels, mirroring the macOS settings hierarchy
+# (title 28, subtitle 13, card title 13 semibold, body 11-12). Windows keeps
+# its 12 px system body size so text stays as readable as native dialogs.
+FONT_ROLES: dict[str, tuple[int, str]] = {
+    "window_title": (28, "bold"),
+    "window_subtitle": (13, "normal"),
+    "card_title": (14, "semibold"),
+    "section": (12, "semibold"),
+    "body": (12, "normal"),
+    "caption": (11, "normal"),
+    "mono": (12, "normal"),
+}
+
+
+def ui_font(role: str) -> "QFont":
+    """Return the font for a type-scale role, e.g. ``label.setFont(ui_font("caption"))``.
+
+    Sizes are logical pixels so Windows display scaling applies once via the
+    device pixel ratio and the hierarchy matches the macOS window.
+    """
+    from PySide6.QtGui import QFont
+
+    pixel_size, weight = FONT_ROLES[role]
+    font = QFont(DEFAULT_FONT_FAMILY)
+    if role == "mono":
+        font.setFamilies(MONOSPACE_FONT_FAMILIES)
+        font.setStyleHint(QFont.StyleHint.Monospace)
+    font.setPixelSize(pixel_size)
+    if weight == "bold":
+        font.setWeight(QFont.Weight.Bold)
+    elif weight == "semibold":
+        font.setWeight(QFont.Weight.DemiBold)
+    return font
 
 # =============================================================================
 # Dropdown Options (shared across UI components)
@@ -63,7 +110,7 @@ QLineEdit {{
     background-color: {COLORS["bg_input"]};
     border: 1px solid {COLORS["border"]};
     border-radius: 6px;
-    padding: 8px 12px;
+    padding: 5px 10px;
     color: {COLORS["text"]};
     selection-background-color: {COLORS["accent"]};
     placeholder-text-color: {COLORS["text_hint"]};
@@ -81,7 +128,7 @@ QComboBox {{
     background-color: {COLORS["bg_input"]};
     border: 1px solid {COLORS["border"]};
     border-radius: 6px;
-    padding: 8px 12px;
+    padding: 5px 28px 5px 10px;
     color: {COLORS["text"]};
     min-width: 120px;
 }}
@@ -91,16 +138,16 @@ QComboBox:focus {{
 }}
 
 QComboBox::drop-down {{
+    subcontrol-origin: padding;
+    subcontrol-position: center right;
     border: none;
     width: 24px;
 }}
 
 QComboBox::down-arrow {{
-    image: none;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-top: 6px solid {COLORS["text_secondary"]};
-    margin-right: 8px;
+    image: url("{CHEVRON_DOWN_ICON}");
+    width: 10px;
+    height: 6px;
 }}
 
 QComboBox QAbstractItemView {{
@@ -116,8 +163,8 @@ QCheckBox {{
 }}
 
 QCheckBox::indicator {{
-    width: 18px;
-    height: 18px;
+    width: 16px;
+    height: 16px;
     border-radius: 4px;
     border: 1px solid {COLORS["border"]};
     background-color: {COLORS["bg_input"]};
@@ -126,13 +173,18 @@ QCheckBox::indicator {{
 QCheckBox::indicator:checked {{
     background-color: {COLORS["accent"]};
     border-color: {COLORS["accent"]};
+    image: url("{CHECK_ICON}");
+}}
+
+QCheckBox::indicator:disabled {{
+    background-color: rgba(255, 255, 255, 0.03);
 }}
 
 QPushButton {{
     background-color: {COLORS["bg_input"]};
     border: 1px solid {COLORS["border"]};
     border-radius: 6px;
-    padding: 8px 16px;
+    padding: 5px 14px;
     color: {COLORS["text"]};
     min-width: 80px;
 }}
@@ -232,31 +284,59 @@ QFrame#card {{
 }}
 """
 
-# Settings-specific additions (tabs)
+# Settings-specific additions: a centered, compact segmented tab bar like the
+# macOS NSTabView so all tabs fit without scroll arrows, plus segmented buttons.
 SETTINGS_STYLESHEET_ADDITIONS = f"""
+QTabWidget::tab-bar {{
+    alignment: center;
+}}
+
 QTabWidget::pane {{
-    border: 1px solid {COLORS["border"]};
-    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 10px;
     background-color: transparent;
-    padding: 8px;
+    top: -1px;
 }}
 
 QTabBar::tab {{
     background-color: transparent;
     color: {COLORS["text_secondary"]};
-    padding: 8px 16px;
-    margin-right: 4px;
-    border-top-left-radius: 6px;
-    border-top-right-radius: 6px;
+    font-size: 12px;
+    padding: 4px 8px;
+    margin: 0 1px 6px 1px;
+    border-radius: 5px;
 }}
 
 QTabBar::tab:selected {{
-    background-color: {COLORS["bg_card"]};
+    background-color: rgba(255, 255, 255, 0.16);
     color: {COLORS["text"]};
 }}
 
 QTabBar::tab:hover:!selected {{
-    background-color: rgba(255, 255, 255, 0.03);
+    background-color: rgba(255, 255, 255, 0.06);
+}}
+
+QFrame#segmentGroup {{
+    background-color: rgba(255, 255, 255, 0.06);
+    border-radius: 7px;
+}}
+
+QPushButton#segment {{
+    background-color: transparent;
+    border: none;
+    border-radius: 5px;
+    padding: 4px 16px;
+    min-width: 0;
+    color: {COLORS["text_secondary"]};
+}}
+
+QPushButton#segment:hover:!checked {{
+    background-color: rgba(255, 255, 255, 0.06);
+}}
+
+QPushButton#segment:checked {{
+    background-color: rgba(255, 255, 255, 0.16);
+    color: {COLORS["text"]};
 }}
 """
 
