@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-10-13
+
+### Added
+
+- **Windows tray menu like the macOS menu bar** – shows the version, live status
+  and hint, and adds Open Log File and Export Redacted Diagnostics.
+
+### Changed
+
+- **Windows settings match macOS** – a centered tab bar shows all tabs, dropdown
+  arrows and checkmarks are drawn, and window height, type scale, footer and
+  every tab follow the macOS layout, including the Setup “Try it” card.
+- **Windows overlay matches macOS** – same height, corner radius, 15 px
+  semibold label and teal success color.
+
+### Fixed
+
+- **Vocabulary edits on Windows** – Save & Apply also saves pending vocabulary
+  edits, as on macOS, and warns if they cannot be written.
+- **Long overlay text on Windows** – labels end in an ellipsis instead of being
+  clipped on both sides; live transcripts keep their newest words.
+- **macOS “Try it” card** – no longer shows “(nicht konfiguriert)” as a hotkey.
+
 ## [1.4.2] - 2026-10-13
 
 ### Fixed
