@@ -55,12 +55,15 @@ Pushing an annotated `vX.Y.Z` tag builds both platforms, including the Windows
 Local Whisper package, and publishes the release only after all installers are
 uploaded. See [Updates and releases](UPDATES.md). Publishing a release manually
 still attaches the same installers through the workflow.
-An existing release can be rebuilt manually:
+An existing release can be rebuilt manually. Manual runs build the Local package
+only with `-f build_windows_local=true`; add it whenever the release must stay
+installable for Local Whisper updates:
 
 ```powershell
 gh workflow run build-installers.yml `
   -f tag=v1.3.0 `
-  -f upload_to_release=true
+  -f upload_to_release=true `
+  -f build_windows_local=true
 ```
 
 Existing assets are not overwritten by default. Add
