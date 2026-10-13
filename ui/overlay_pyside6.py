@@ -911,12 +911,6 @@ class PySide6OverlayController:
         normalized_text = text or ""
         self._direct_interim_until = time.monotonic() + INTERIM_DIRECT_UPDATE_GRACE_S
         self._stable_interim_polls = 0
-        if (
-            self._interim_timer
-            and self._interim_timer.isActive()
-            and self._interim_timer.interval() != INTERIM_POLL_DIRECT_INTERVAL_MS
-        ):
-            self._interim_timer.setInterval(INTERIM_POLL_DIRECT_INTERVAL_MS)
         if normalized_text == getattr(self, "_last_requested_interim_text", ""):
             return
         self._last_requested_interim_text = normalized_text
@@ -937,6 +931,7 @@ class PySide6OverlayController:
             return
 
         if time.monotonic() < getattr(self, "_direct_interim_until", 0.0):
+            self._apply_interim_poll_interval()
             return
 
         if not self._interim_file.exists():
@@ -997,14 +992,16 @@ class PySide6OverlayController:
         self._last_requested_interim_text = ""
 
     def _apply_interim_poll_interval(self) -> None:
+        """Apply polling backoff from the timer's owning Qt thread."""
         interim_timer = getattr(self, "_interim_timer", None)
         if not interim_timer or not interim_timer.isActive():
             return
-        target_interval = (
-            INTERIM_POLL_STABLE_INTERVAL_MS
-            if self._stable_interim_polls >= INTERIM_POLL_STABLE_THRESHOLD
-            else INTERIM_POLL_INTERVAL_MS
-        )
+        if time.monotonic() < getattr(self, "_direct_interim_until", 0.0):
+            target_interval = INTERIM_POLL_DIRECT_INTERVAL_MS
+        elif self._stable_interim_polls >= INTERIM_POLL_STABLE_THRESHOLD:
+            target_interval = INTERIM_POLL_STABLE_INTERVAL_MS
+        else:
+            target_interval = INTERIM_POLL_INTERVAL_MS
         if interim_timer.interval() != target_interval:
             interim_timer.setInterval(target_interval)
 
