@@ -3499,7 +3499,6 @@ class SettingsWindow(QDialog):
             from utils.history import (
                 HISTORY_FILE,
                 format_transcript_entries_for_display,
-                format_transcripts_for_display,
                 get_recent_transcripts,
             )
 
@@ -3516,7 +3515,7 @@ class SettingsWindow(QDialog):
             entries = get_recent_transcripts(TRANSCRIPTS_VIEW_MAX_ENTRIES)
             ordered_entries = list(reversed(entries))
             transcript_blocks = format_transcript_entries_for_display(entries)
-            self._set_transcripts_text_if_changed(format_transcripts_for_display(entries))
+            self._set_transcripts_text_if_changed(_transcript_blocks_to_text(transcript_blocks))
             self._last_transcripts_entries = ordered_entries
             self._last_transcripts_blocks = transcript_blocks
             self._last_transcripts_signature = signature

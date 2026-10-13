@@ -302,8 +302,8 @@ def test_refresh_transcripts_updates_when_signature_changes(tmp_path, monkeypatc
     )
     monkeypatch.setattr(
         history_mod,
-        "format_transcripts_for_display",
-        lambda _entries: "formatted-transcripts",
+        "format_transcript_entries_for_display",
+        lambda _entries: ["formatted-transcripts"],
     )
 
     captured_text: list[str] = []
@@ -318,6 +318,7 @@ def test_refresh_transcripts_updates_when_signature_changes(tmp_path, monkeypatc
     window._refresh_transcripts()
 
     assert captured_text == ["formatted-transcripts"]
+    assert window._last_transcripts_blocks == ["formatted-transcripts"]
     assert window._last_transcripts_signature == (99, 42)
     assert window._transcripts_count_label.text == "1 recent transcription"
     assert window._transcripts_clear_btn.enabled is True
@@ -354,6 +355,16 @@ def test_refresh_transcripts_caches_oldest_first_blocks_on_full_reload(
     ]
     monkeypatch.setattr(history_mod, "get_recent_transcripts", lambda _count: entries)
 
+    expected_text = history_mod.format_transcripts_for_display(entries)
+    format_entries = history_mod.format_transcript_entries_for_display
+    formatted_entries = []
+
+    def format_once(items):
+        formatted_entries.append(items)
+        return format_entries(items)
+
+    monkeypatch.setattr(history_mod, "format_transcript_entries_for_display", format_once)
+
     captured_text: list[str] = []
     window = SettingsWindow.__new__(SettingsWindow)
     window._last_transcripts_signature = None
@@ -364,7 +375,8 @@ def test_refresh_transcripts_caches_oldest_first_blocks_on_full_reload(
 
     window._refresh_transcripts()
 
-    assert captured_text == [history_mod.format_transcripts_for_display(entries)]
+    assert captured_text == [expected_text]
+    assert formatted_entries == [entries]
     assert [entry["text"] for entry in window._last_transcripts_entries] == [
         "hello",
         "world",
