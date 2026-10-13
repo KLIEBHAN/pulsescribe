@@ -212,6 +212,26 @@ def test_window_that_hangs_before_ready_is_stopped_and_reported():
     assert process.terminated
 
 
+def test_ready_handshake_is_atomic_with_the_startup_watchdog():
+    locked_when_set = []
+
+    class RecordingEvent(threading.Event):
+        def set(self):
+            locked_when_set.append(window._lock.locked())
+            super().set()
+
+    process = FakeProcess([b'PULSESCRIBE-UPDATE {"action": "ready"}\n'])
+    window, _launches, _actions = make_window([process])
+    window._process = process
+    ready = RecordingEvent()
+
+    window._read_actions(process, ready)
+    window._stop_if_not_started(process, ready)
+
+    assert locked_when_set == [True]
+    assert not process.terminated
+
+
 def test_ready_window_is_not_stopped_by_the_startup_watchdog():
     class RunningStdout:
         def __iter__(self):

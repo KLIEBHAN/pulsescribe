@@ -133,12 +133,14 @@ class WindowsUpdateWindow:
         _close_stdin(process)
 
     def _stop_if_not_started(self, process, ready: threading.Event) -> None:
-        """End a window that hangs before "ready"; its reader then reports it."""
-        if ready.is_set():
-            return
+        """End a window that hangs before "ready"; its reader then reports it.
+
+        The reader sets ``ready`` under the same lock, so a handshake at the
+        deadline can never get a healthy window terminated.
+        """
         with self._lock:
-            hung = self._process is process and process not in self._closed
-        if hung:
+            if ready.is_set() or self._process is not process or process in self._closed:
+                return
             logger.warning("Update window did not start in time")
             process.terminate()
 
@@ -153,7 +155,8 @@ class WindowsUpdateWindow:
                 except (ValueError, AttributeError):
                     continue
                 if action == "ready":
-                    ready.set()  # Startup handshake (also checked in CI)
+                    with self._lock:  # Atomic with the startup watchdog
+                        ready.set()  # Startup handshake (also checked in CI)
                     continue
                 if not isinstance(action, str):
                     continue
