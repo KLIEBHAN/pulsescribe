@@ -61,9 +61,10 @@ builds the full Apple Silicon app on `macos-14`, verifies the bundle version and
 architecture, mounts and validates the DMG, and stores both the DMG and its
 SHA-256 checksum as a workflow artifact for 14 days.
 
-Publishing a GitHub release starts the workflow automatically and attaches the
-DMG after both platform builds succeed. An existing release can be rebuilt
-manually:
+Pushing an annotated `vX.Y.Z` tag builds both platforms and publishes the release
+only after the installers are uploaded. See [Updates and releases](UPDATES.md).
+Publishing a release manually still attaches installers through the same workflow.
+An existing release can be rebuilt manually:
 
 ```bash
 gh workflow run build-installers.yml \

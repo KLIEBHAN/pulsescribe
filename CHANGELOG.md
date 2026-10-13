@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **In-app updates for macOS and Windows** – packaged apps check GitHub releases
+  in the background, download the matching installer, verify its SHA-256, and
+  show release notes before a confirmed restart. Updates wait for dictation to
+  finish. Mac updates restore the previous bundle if the replacement move fails;
+  Windows Local Whisper installations keep their installer variant.
+- **Tag-triggered releases** – annotated version tags build both standard
+  installers and publish the release only after its assets are uploaded.
+
 ## [1.3.0] - 2026-08-04
 
 ### Added

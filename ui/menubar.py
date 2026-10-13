@@ -180,6 +180,7 @@ class _MenuActionHandler(NSObjectBase):
 
     welcome_callback = None  # Callback für Settings-Fenster
     feedback_callback = None
+    update_callback = None
 
     def initWithLogPath_(self, log_path: str):
         if objc is None:
@@ -227,6 +228,12 @@ class _MenuActionHandler(NSObjectBase):
             self.feedback_callback("Opening Setup & Settings…")
         if self.welcome_callback:
             self.welcome_callback()
+
+    @_objc_signature(b"v@:@")
+    def checkUpdates_(self, _sender) -> None:
+        """Run the current update menu action."""
+        if self.update_callback:
+            self.update_callback()
 
     @_objc_signature(b"v@:@")
     def exportDiagnostics_(self, _sender) -> None:
@@ -353,3 +360,19 @@ class MenuBarController:
     def set_welcome_callback(self, callback) -> None:
         """Setzt Callback für Settings-Menü-Item."""
         self._action_handler.welcome_callback = callback
+
+    def set_update_callback(self, callback, version: str) -> None:
+        """Add updates only for packaged installations."""
+        from AppKit import NSMenuItem
+
+        self._action_handler.update_callback = callback
+        self._update_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Check for Updates…", "checkUpdates:", ""
+        )
+        self._update_item.setTarget_(self._action_handler)
+        self._status_item.menu().insertItem_atIndex_(self._update_item, 5)
+        self._menu_title_item.setTitle_(f"PulseScribe {version}")
+
+    def update_update_state(self, state) -> None:
+        _set_menu_item_title_if_changed(self._update_item, state.label)
+        self._update_item.setEnabled_(state.status not in ("checking", "downloading"))

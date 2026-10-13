@@ -3233,6 +3233,10 @@ class PulseScribeDaemon:
         Sollte vor app.terminate_() aufgerufen werden.
         Verhindert Memory-Leaks bei Local Whisper (~500MB RAM).
         """
+        updater = getattr(self, "_updater", None)
+        if updater:
+            updater.stop()
+
         # Timer stoppen
         latency_run = self._latency_run
         self._latency_run = None
@@ -4012,6 +4016,8 @@ class PulseScribeDaemon:
         self._install_runloop_shutdown_handlers(
             app=app, timer_cls=NSTimer, signal_mod=signal
         )
+        if getattr(self, "_updater", None):
+            self._updater.start()
         app.run()
 
     def _configure_ns_application(self):
@@ -4033,6 +4039,46 @@ class PulseScribeDaemon:
             self._overlay = None
             logger.info("Overlay deaktiviert via PULSESCRIBE_OVERLAY=false")
         logger.info("UI-Controller bereit")
+        self._setup_updates()
+
+    def _setup_updates(self) -> None:
+        from utils.update_install import installed_target
+
+        target = installed_target()
+        if target is None:
+            return
+        from ui.updates import activate_update, update_feedback
+        from utils.update_flow import UpdateFlow
+        from AppKit import NSApplication
+
+        def publish(state):
+            def apply():
+                self._menubar.update_update_state(state)
+                if state.status == "ready" and state.offer:
+                    try:
+                        import rumps
+
+                        rumps.notification("PulseScribe Update", f"Version {state.offer.version} is ready", "Use the menu bar to open the update.")
+                    except Exception:
+                        logger.info("Update notification unavailable", exc_info=True)
+                update_feedback(state)
+
+            self._call_on_main(apply)
+
+        self._updater = UpdateFlow(target, publish)
+
+        def quit_app():
+            self.cleanup()
+            NSApplication.sharedApplication().terminate_(None)
+
+        self._menubar.set_update_callback(
+            lambda: activate_update(
+                self._updater,
+                lambda: self._current_state in (AppState.IDLE, AppState.DONE, AppState.NO_SPEECH, AppState.ERROR),
+                quit_app,
+            ),
+            self._updater.state.current,
+        )
 
     @staticmethod
     def _validate_vocabulary_on_startup() -> None:

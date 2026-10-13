@@ -2282,6 +2282,12 @@ class PulseScribeWindows:
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Open Setup & Settings…", self._show_settings),
             pystray.MenuItem("Reload Settings & Retry", self._reload_settings),
+            pystray.MenuItem(
+                lambda _item: self._updater.state.label if getattr(self, "_updater", None) else "Check for Updates…",
+                self._activate_update,
+                visible=lambda _item: bool(getattr(self, "_updater", None)),
+                enabled=lambda _item: bool(getattr(self, "_updater", None)) and self._updater.state.status not in ("checking", "downloading"),
+            ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Quit PulseScribe", self._quit),
         )
@@ -2306,6 +2312,9 @@ class PulseScribeWindows:
         - Alle Komponenten signalisieren Stop, ohne lange zu warten
         """
         logger.info("Beende PulseScribe...")
+        updater = getattr(self, "_updater", None)
+        if updater:
+            updater.stop()
 
         # Stop-Signale für Hauptschleife und eine evtl. aktive Transkription.
         self._stop_event.set()
@@ -3384,13 +3393,45 @@ class PulseScribeWindows:
         self._setup_startup_hotkeys()
         self._setup_overlay()
         self._start_prewarm_thread()
+        self._setup_updates()
         self._setup_tray()
         self._start_env_watcher()
         self._show_settings_if_needed()
         self._install_signal_handlers()
         self._run_tray_if_available()
+        if getattr(self, "_updater", None):
+            self._updater.start()
         self._wait_until_stopped()
         print("Beendet.")
+
+    def _setup_updates(self) -> None:
+        from utils.update_install import installed_target
+
+        target = installed_target()
+        if target is None:
+            return
+        from ui.updates import update_feedback
+        from utils.update_flow import UpdateFlow
+
+        def publish(state):
+            if self._tray:
+                self._tray.update_menu()
+                if state.status == "ready" and state.offer:
+                    self._tray.notify(f"PulseScribe {state.offer.version} is ready. Restart from the tray menu to install.", "PulseScribe Update")
+            update_feedback(state)
+
+        self._updater = UpdateFlow(target, publish)
+
+    def _activate_update(self) -> None:
+        from ui.updates import activate_update
+
+        updater = getattr(self, "_updater", None)
+        if updater:
+            activate_update(
+                updater,
+                lambda: self.state in (AppState.IDLE, AppState.DONE, AppState.NO_SPEECH, AppState.ERROR),
+                self._quit,
+            )
 
 
 def main():

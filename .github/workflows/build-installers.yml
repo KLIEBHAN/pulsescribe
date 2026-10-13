@@ -1,6 +1,8 @@
 name: Build Installers
 
 on:
+  push:
+    tags: ["v*"]
   pull_request:
     paths:
       - .github/workflows/build-installers.yml
@@ -68,7 +70,7 @@ jobs:
       clobber: ${{ steps.release.outputs.clobber }}
       build_windows_local: ${{ steps.release.outputs.build_windows_local }}
     env:
-      REQUESTED_REF: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag || github.event.pull_request.head.sha }}
+      REQUESTED_REF: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag || github.event.pull_request.head.sha || github.ref_name }}
       PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number }}
       UPLOAD_TO_RELEASE: ${{ inputs.upload_to_release || 'false' }}
       REPLACE_EXISTING_ASSETS: ${{ inputs.replace_existing_assets || 'false' }}
@@ -132,7 +134,7 @@ jobs:
           publish=false
           clobber=false
           build_windows_local=false
-          if [[ "$GITHUB_EVENT_NAME" == "release" ]]; then
+          if [[ "$GITHUB_EVENT_NAME" == "release" || "$GITHUB_EVENT_NAME" == "push" ]]; then
             publish=true
           elif [[ "$UPLOAD_TO_RELEASE" == "true" ]]; then
             publish=true
@@ -533,6 +535,14 @@ jobs:
           path: release-assets
           merge-multiple: true
 
+      - name: Check out release tag for annotated update notes
+        if: github.event_name == 'push'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.metadata.outputs.tag }}
+          path: release-source
+          fetch-depth: 0
+
       - name: Verify and checksum release assets
         shell: bash
         run: |
@@ -556,11 +566,25 @@ jobs:
             sha256sum "${assets[@]}" > SHA256SUMS.txt
           )
 
-      - name: Upload assets to existing release
+      - name: Upload assets and publish the complete release
         shell: bash
         run: |
           set -euo pipefail
-          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              draft="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft')"
+              [[ "$draft" == "true" ]] || {
+                echo "Release $RELEASE_TAG is already published" >&2
+                exit 1
+              }
+            else
+              git -C release-source for-each-ref --format='%(contents)' "refs/tags/$RELEASE_TAG" > release-notes.txt
+              gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
+                --draft --title "PulseScribe $RELEASE_TAG" --notes-file release-notes.txt
+            fi
+          else
+            gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
+          fi
 
           files=(
             "release-assets/PulseScribe-${VERSION}.dmg"
@@ -588,3 +612,6 @@ jobs:
             args+=(--clobber)
           fi
           gh "${args[@]}" "${files[@]}"
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+          fi

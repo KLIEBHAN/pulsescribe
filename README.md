@@ -81,6 +81,10 @@ Download from [Releases](https://github.com/KLIEBHAN/pulsescribe/releases):
 - **macOS:** `PulseScribe-{version}.dmg`
 - **Windows:** `PulseScribe-Setup-{version}.exe`
 
+From version 1.4.0, installed apps check for updates in the background. Use
+**Check for Updates…** in the menu bar or tray to check manually, view release
+notes, and restart to install a verified update. See [Updates and releases](docs/UPDATES.md).
+
 ---
 
 ## Quick Start
