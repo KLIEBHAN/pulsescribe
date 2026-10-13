@@ -36,6 +36,16 @@ import typer
 
 from cli.types import TranscriptionMode, Context, RefineProvider, HotkeyMode
 
+if __name__ == "__main__" and sys.argv[1:] == ["--check-mlx-backend"]:
+    from utils.macos_bundle_check import check_mlx_backend
+
+    try:
+        check_mlx_backend()
+    except Exception as error:
+        print(f"MLX backend check failed: {error}", file=sys.stderr)
+        raise SystemExit(1) from error
+    raise SystemExit(0)
+
 
 # --- Emergency Logging (Before everything else) ---
 def emergency_log(msg: str):
