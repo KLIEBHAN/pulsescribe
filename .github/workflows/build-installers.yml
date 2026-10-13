@@ -623,12 +623,19 @@ jobs:
           fi
           gh "${args[@]}" "${files[@]}"
           if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
-            latest_tag="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq '.tag_name')"
+            if ! latest_tag="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq '.tag_name' 2>latest-error.txt)"; then
+              if grep -Fq '(HTTP 404)' latest-error.txt; then
+                latest_tag=""
+              else
+                cat latest-error.txt >&2
+                exit 1
+              fi
+            fi
             make_latest="$(PYTHONPATH=release-source python - "$VERSION" "$latest_tag" <<'PY'
           import sys
           from utils.updates import version_tuple
 
-          print(str(version_tuple(sys.argv[1]) > version_tuple(sys.argv[2].removeprefix("v"))).lower())
+          print(str(not sys.argv[2] or version_tuple(sys.argv[1]) > version_tuple(sys.argv[2].removeprefix("v"))).lower())
           PY
             )"
             gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest="$make_latest"

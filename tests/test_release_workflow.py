@@ -29,7 +29,15 @@ def run_block(name):
 
 @pytest.mark.skipif(sys.platform == "win32", reason="release job uses bash")
 @pytest.mark.parametrize(
-    "latest,expected", [("v1.3.0", "true"), ("v1.5.0", "false"), ("v1.10.0", "false")]
+    "latest,expected",
+    [
+        ("v1.3.0", "true"),
+        ("v1.5.0", "false"),
+        ("v1.10.0", "false"),
+        ("HTTP404", "true"),
+        ("HTTP401", None),
+        ("HTTP500", None),
+    ],
 )
 def test_partial_draft_is_reuploaded_and_latest_never_moves_backwards(
     tmp_path, latest, expected
@@ -46,7 +54,12 @@ with open(os.environ["CALL_LOG"], "a") as file:
 if sys.argv[1:3] == ["release", "view"]:
     if "isDraft" in sys.argv: print("true")
     elif "assets" in sys.argv: print("PulseScribe-1.4.0.dmg")
-elif sys.argv[1] == "api": print(os.environ["LATEST_TAG"])
+elif sys.argv[1] == "api":
+    latest = os.environ["LATEST_TAG"]
+    if latest.startswith("HTTP"):
+        print(f"gh: API failed (HTTP {latest[4:]})", file=sys.stderr)
+        sys.exit(1)
+    print(latest)
 """
     )
     gh.chmod(0o700)
@@ -67,11 +80,10 @@ elif sys.argv[1] == "api": print(os.environ["LATEST_TAG"])
         "GITHUB_REPOSITORY": "KLIEBHAN/pulsescribe",
         "LOCAL_INSTALLER": "false",
     }
-    subprocess.run(
+    result = subprocess.run(
         ["bash", "-c", run_block("Upload assets and publish the complete release")],
         cwd=tmp_path,
         env=environment,
-        check=True,
         capture_output=True,
         timeout=10,
     )
@@ -81,6 +93,12 @@ elif sys.argv[1] == "api": print(os.environ["LATEST_TAG"])
     assert "release-assets/PulseScribe-1.4.0.dmg" in upload
     assert "release-assets/PulseScribe-Setup-1.4.0.exe" in upload
     assert "release-assets/SHA256SUMS.txt" in upload
+    if expected is None:
+        assert result.returncode != 0
+        assert not any(call[:2] == ["release", "edit"] for call in calls)
+        assert f"HTTP {latest[4:]}".encode() in result.stderr
+        return
+    assert result.returncode == 0, result.stderr
     publication = next(call for call in calls if call[:2] == ["release", "edit"])
     assert f"--latest={expected}" in publication
     assert calls.index(upload) < calls.index(publication)
