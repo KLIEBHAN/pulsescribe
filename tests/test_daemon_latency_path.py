@@ -16,7 +16,7 @@ def _disabled_latency_run():
 
 
 @pytest.mark.parametrize("paste_raises", [False, True])
-def test_transcript_history_precedes_flush_and_paste(monkeypatch, paste_raises):
+def test_history_follows_ui_flush_and_precedes_paste(monkeypatch, paste_raises):
     daemon = PulseScribeDaemon(mode="deepgram", language="de")
     daemon._run_mode = "local"
     daemon._last_was_refined = True
@@ -36,6 +36,7 @@ def test_transcript_history_precedes_flush_and_paste(monkeypatch, paste_raises):
             raise RuntimeError("paste failed")
 
     def save(transcript, **kwargs):
+        assert calls[-1] == "flush"
         calls.append("history")
         saved.append((transcript, kwargs))
         return True
@@ -54,7 +55,7 @@ def test_transcript_history_precedes_flush_and_paste(monkeypatch, paste_raises):
     else:
         daemon._handle_transcript_result("hello", latency_run=run)
 
-    expected = [AppState.DONE, "history", "flush", "paste"]
+    expected = [AppState.DONE, "flush", "history", "paste"]
     if not paste_raises:
         expected.append(AppState.IDLE)
         run.finish.assert_called_once_with("success")
@@ -97,11 +98,13 @@ def test_history_import_failure_still_finishes_pasted_result(monkeypatch):
     reconfigure.assert_called_once_with()
 
 
-def test_reentrant_results_keep_history_order(monkeypatch):
+def test_reentrant_results_keep_history_and_paste_in_the_same_order(monkeypatch):
     from utils.history import _build_transcript_entry
 
     daemon = PulseScribeDaemon(mode="local", language="de")
+    daemon._last_was_refined = True
     entries = []
+    pasted = []
 
     def save(text, **kwargs):
         entries.append(_build_transcript_entry(text, **kwargs))
@@ -109,20 +112,30 @@ def test_reentrant_results_keep_history_order(monkeypatch):
 
     def flush():
         monkeypatch.setattr(daemon, "_flush_ui_and_wait", lambda: None)
+        daemon._run_mode = "groq"
+        daemon.language = "en"
+        daemon._last_was_refined = False
         daemon._handle_transcript_result("second")
 
     monkeypatch.setattr(daemon, "_format_done_text", lambda text: text)
     monkeypatch.setattr(daemon, "_update_state", lambda *_args: None)
     monkeypatch.setattr(daemon, "_flush_ui_and_wait", flush)
-    monkeypatch.setattr(daemon, "_paste_result", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(daemon, "_paste_result", lambda text, **_kwargs: pasted.append(text))
     monkeypatch.setattr(daemon, "_apply_pending_hotkey_reconfigure_if_safe", lambda: None)
     monkeypatch.setattr("pulsescribe_daemon.get_sound_player", lambda: MagicMock())
     monkeypatch.setattr("utils.history.save_transcript", save)
 
     daemon._handle_transcript_result("first")
 
-    assert [entry["text"] for entry in entries] == ["first", "second"]
+    assert pasted == ["second", "first"]
+    assert [entry["text"] for entry in entries] == pasted
     assert entries[0]["timestamp"] <= entries[1]["timestamp"]
+    assert entries[0]["mode"] == "groq"
+    assert entries[0]["language"] == "en"
+    assert "refined" not in entries[0]
+    assert entries[1]["mode"] == "local"
+    assert entries[1]["language"] == "de"
+    assert entries[1]["refined"] is True
 
 
 @pytest.mark.parametrize("transcript", ["", "hello"])
