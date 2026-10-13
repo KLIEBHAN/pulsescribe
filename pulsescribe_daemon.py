@@ -4064,32 +4064,26 @@ class PulseScribeDaemon:
         target = installed_target()
         if target is None:
             return
-        from ui.updates import activate_update, update_feedback
+        from ui.update_window_mac import MacUpdateWindow
+        from ui.updates import UpdateUI
         from utils.update_flow import UpdateFlow
 
         def publish(state):
             def apply():
                 self._menubar.update_update_state(state)
-                if state.status == "ready" and state.offer:
-                    try:
-                        import rumps
-
-                        rumps.notification("PulseScribe Update", f"Version {state.offer.version} is ready", "Use the menu bar to open the update.")
-                    except Exception:
-                        logger.info("Update notification unavailable", exc_info=True)
-                update_feedback(state)
+                self._update_ui.publish(state)
 
             self._call_on_main(apply)
 
         self._updater = UpdateFlow(target, publish)
-
+        self._update_ui = UpdateUI(
+            self._updater,
+            MacUpdateWindow(lambda action: self._update_ui.handle(action)),
+            self._can_install_update,
+            self._install_update_if_idle,
+        )
         self._menubar.set_update_callback(
-            lambda: activate_update(
-                self._updater,
-                self._can_install_update,
-                self._install_update_if_idle,
-            ),
-            self._updater.state.current,
+            self._update_ui.open, self._updater.state.current
         )
 
     def _can_install_update(self) -> bool:

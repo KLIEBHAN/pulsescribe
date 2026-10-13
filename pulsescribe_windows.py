@@ -2439,6 +2439,11 @@ class PulseScribeWindows:
                 pass
             self._settings_process = None
 
+        # Update-Fenster beenden (der Installer ersetzt sonst gesperrte Dateien)
+        update_window = getattr(self, "_update_window", None)
+        if update_window is not None:
+            update_window.close()
+
         # Onboarding-Wizard beenden (falls offen)
         if self._onboarding_process and self._onboarding_process.poll() is None:
             try:
@@ -3493,30 +3498,73 @@ class PulseScribeWindows:
         target = installed_target()
         if target is None:
             return
+        from ui.update_window_windows import WindowsUpdateWindow
+        from ui.updates import UpdateUI
         from utils.update_flow import UpdateFlow
 
         def publish(state):
             if self._tray:
                 self._tray.update_menu()
-                if state.status == "ready" and state.offer:
-                    self._tray.notify(f"PulseScribe {state.offer.version} is ready. Restart from the tray menu to install.", "PulseScribe Update")
-                elif state.manual and state.status == "idle":
-                    self._tray.notify(f"PulseScribe {state.current} is up to date.", "PulseScribe Updates")
-                elif state.manual and state.status == "error":
-                    self._tray.notify(state.error, "PulseScribe Update Failed")
+            self._update_ui.publish(state)
 
         self._updater = UpdateFlow(target, publish)
+        self._update_window = WindowsUpdateWindow(
+            self._launch_update_window,
+            lambda action: self._update_ui.handle(action),
+        )
+        self._update_ui = UpdateUI(
+            self._updater,
+            self._update_window,
+            self._can_install_update,
+            self._install_update_if_idle,
+            on_window_error=self._notify_update_fallback,
+        )
+
+    def _launch_update_window(self, activate: bool):
+        """Start the Qt update window process (see ui/update_window_qt.py)."""
+        import subprocess
+
+        if getattr(sys, "frozen", False):
+            command = [sys.executable, "--update-window"]
+            env = None
+        else:
+            python_exe = self._resolve_qt_python_executable(
+                missing_pyside_message="PySide6 nicht installiert - Update-Fenster nicht verfügbar",
+                fallback=lambda: None,
+            )
+            if python_exe is None:
+                raise RuntimeError("PySide6 is not available for the update window.")
+            command = [python_exe, str(PROJECT_ROOT / "ui" / "update_window_qt.py")]
+            env = self._qt_subprocess_env()
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=str(PROJECT_ROOT),
+            env=env,
+            creationflags=self._subprocess_creationflags(subprocess),
+        )
+        self._start_subprocess_stderr_drain(process, "update-window")
+        if activate:
+            # The tray click grants foreground rights; pass them to the window.
+            try:
+                import ctypes
+
+                ctypes.windll.user32.AllowSetForegroundWindow(process.pid)
+            except Exception:
+                pass
+        return process
+
+    def _notify_update_fallback(self, view) -> None:
+        """Tray notification when the update window cannot be shown."""
+        if self._tray:
+            self._tray.notify(view.notice or view.detail or view.headline, view.headline)
 
     def _activate_update(self) -> None:
-        from ui.updates import activate_update
-
-        updater = getattr(self, "_updater", None)
-        if updater:
-            activate_update(
-                updater,
-                self._can_install_update,
-                self._install_update_if_idle,
-            )
+        update_ui = getattr(self, "_update_ui", None)
+        if update_ui:
+            update_ui.open()
 
     def _can_install_update(self) -> bool:
         return not self._stop_event.is_set() and self.state in (
@@ -3603,6 +3651,11 @@ def main():
         action="store_true",
         help="Onboarding-Wizard öffnen (statt Daemon starten)",
     )
+    parser.add_argument(
+        "--update-window",
+        action="store_true",
+        help=argparse.SUPPRESS,  # Started by the daemon with stdin/stdout pipes
+    )
 
     args = parser.parse_args()
 
@@ -3619,6 +3672,12 @@ def main():
         except ImportError as e:
             print(f"Settings-Fenster nicht verfügbar: {e}", file=sys.stderr)
             sys.exit(1)
+
+    # --update-window: Update-Fenster für den laufenden Daemon (kein Daemon)
+    if args.update_window:
+        from ui.update_window_qt import main as update_window_main
+
+        sys.exit(update_window_main())
 
     # --onboarding: Onboarding-Wizard öffnen und beenden (kein Daemon)
     if args.onboarding:
