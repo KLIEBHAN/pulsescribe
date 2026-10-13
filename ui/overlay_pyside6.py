@@ -614,7 +614,8 @@ class PySide6OverlayWidget(QWidget):
     def _update_label(self, state: str, text: str, italic: bool = False):
         """Aktualisiert das Label mit State-spezifischem Styling."""
         font_key = "italic" if italic else "default"
-        if getattr(self, "_label_font_key", None) != font_key:
+        font_changed = getattr(self, "_label_font_key", None) != font_key
+        if font_changed:
             self._label.setFont(self._get_label_font(italic))
             self._label_font_key = font_key
 
@@ -629,7 +630,8 @@ class PySide6OverlayWidget(QWidget):
             self._label.setStyleSheet(self._get_label_styles()[style_key])
             self._label_style_key = style_key
 
-        if getattr(self, "_label_text_value", None) != text:
+        # Font mode changes the elision direction and width, so re-elide then too.
+        if font_changed or getattr(self, "_label_text_value", None) != text:
             self._label.setText(self._elide_label_text(text, italic=italic))
             try:
                 self._label.setAccessibleDescription(text)

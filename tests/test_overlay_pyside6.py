@@ -570,6 +570,16 @@ def test_update_label_only_mutates_changed_parts():
     assert widget._label.text_calls == 2
 
 
+def test_update_label_re_elides_same_text_when_font_mode_changes():
+    widget = PySide6OverlayWidget.__new__(PySide6OverlayWidget)
+    widget._label = _FakeQtLabel()
+
+    PySide6OverlayWidget._update_label(widget, "RECORDING", "same text")
+    PySide6OverlayWidget._update_label(widget, "RECORDING", "same text", italic=True)
+
+    assert widget._label.text_calls == 2
+
+
 @pytest.mark.parametrize(
     ("italic", "expected_mode"),
     [(True, "ElideLeft"), (False, "ElideRight")],
