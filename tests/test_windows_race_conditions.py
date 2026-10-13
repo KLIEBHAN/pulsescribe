@@ -9,6 +9,8 @@ import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from utils.state import AppState
 import utils.preferences as preferences
 
@@ -1455,7 +1457,8 @@ def test_set_state_updates_tray_title_when_same_state_text_changes(monkeypatch):
     assert "Warming up local model" in second_title
 
 
-def test_setup_tray_uses_current_loading_state_and_clear_recovery_labels(monkeypatch):
+@pytest.mark.parametrize("packaged", [False, True])
+def test_setup_tray_uses_current_loading_state_and_clear_recovery_labels(monkeypatch, packaged):
     windows_module = _load_windows_module()
     daemon = windows_module.PulseScribeWindows(
         mode="openai",
@@ -1465,6 +1468,11 @@ def test_setup_tray_uses_current_loading_state_and_clear_recovery_labels(monkeyp
     daemon._state = AppState.LOADING
     daemon._last_status_text = "Starting up..."
     daemon._create_icon = lambda _color: object()
+
+    if packaged:
+        from utils.update_flow import UpdateState
+
+        daemon._updater = types.SimpleNamespace(state=UpdateState("1.3.0"))
 
     class _FakeMenuItem:
         def __init__(self, text, action, enabled=True):
@@ -1498,6 +1506,18 @@ def test_setup_tray_uses_current_loading_state_and_clear_recovery_labels(monkeyp
     assert "Open Setup & Settings…" in menu_labels
     assert "Reload Settings & Retry" in menu_labels
     assert "Quit PulseScribe" in menu_labels
+    update_items = [item for item in daemon._tray.menu if callable(getattr(item, "text", None))]
+    assert len(update_items) == int(packaged)
+    if packaged:
+        from dataclasses import replace
+
+        item = update_items[0]
+        assert item.text(item) == "Check for Updates…"
+        assert item.enabled(item)
+        assert item.action == daemon._activate_update
+        daemon._updater.state = replace(daemon._updater.state, status="downloading", percent=50)
+        assert item.text(item) == "Downloading Update… 50%"
+        assert not item.enabled(item)
 
 
 def test_start_recording_allows_retry_from_no_speech_state(monkeypatch):

@@ -2275,6 +2275,19 @@ class PulseScribeWindows:
             hotkey_items.append(f"Hold: {self.hold_hotkey}")
         hotkey_text = ", ".join(hotkey_items) if hotkey_items else "Keiner"
 
+        updater = getattr(self, "_updater", None)
+        update_items = (
+            (
+                pystray.MenuItem(
+                    lambda _item: updater.state.label,
+                    self._activate_update,
+                    enabled=lambda _item: updater.state.status not in ("checking", "downloading"),
+                ),
+            )
+            if updater
+            else ()
+        )
+
         menu = pystray.Menu(
             pystray.MenuItem("PulseScribe", None, enabled=False),
             pystray.Menu.SEPARATOR,
@@ -2282,12 +2295,7 @@ class PulseScribeWindows:
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Open Setup & Settings…", self._show_settings),
             pystray.MenuItem("Reload Settings & Retry", self._reload_settings),
-            pystray.MenuItem(
-                lambda _item: self._updater.state.label if getattr(self, "_updater", None) else "Check for Updates…",
-                self._activate_update,
-                visible=lambda _item: bool(getattr(self, "_updater", None)),
-                enabled=lambda _item: bool(getattr(self, "_updater", None)) and self._updater.state.status not in ("checking", "downloading"),
-            ),
+            *update_items,
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Quit PulseScribe", self._quit),
         )
