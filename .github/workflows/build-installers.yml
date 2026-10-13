@@ -144,7 +144,11 @@ jobs:
             publish=true
             clobber="$REPLACE_EXISTING_ASSETS"
           fi
-          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && "$BUILD_WINDOWS_LOCAL" == "true" ]]; then
+          # Published releases always include the Local package: installed Local
+          # Whisper apps only accept that variant from the updater.
+          if [[ "$GITHUB_EVENT_NAME" == "release" || "$GITHUB_EVENT_NAME" == "push" ]]; then
+            build_windows_local=true
+          elif [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && "$BUILD_WINDOWS_LOCAL" == "true" ]]; then
             build_windows_local=true
           fi
 

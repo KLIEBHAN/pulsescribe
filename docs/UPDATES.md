@@ -41,8 +41,10 @@ checks and downloads; network operations time out after 30 seconds of inactivity
   an existing administrative installation ([Inno Setup install modes](https://jrsoftware.org/ishelp/topic_setup_usepreviousprivileges.htm)). A failed install restarts the app
   and keeps the installer and `setup.log` for diagnosis. It does not close other
   applications. Local Whisper installations require the `-Local.zip` asset and never
-  receive the API-only installer. If the newer release lacks that optional asset,
-  a manual check reports it; automatic checks retry hourly.
+  receive the API-only installer, so every release publishes it. The installer
+  replaces the previous `_internal` folder; switching to the API-only variant
+  therefore also switches future updates. If a release lacks the Local asset, a
+  manual check reports it; automatic checks retry hourly.
 
 Installation and recording starts share a lock in each daemon. After reserving
 the update, new recording starts are rejected until exit. Concurrent install
@@ -72,8 +74,8 @@ release page; subsequent releases can be installed from its menu.
    ```
 
 The **Build Installers** workflow validates the tag, version, and exact commit,
-builds and validates the macOS DMG and API-only Windows installer, and creates
-`SHA256SUMS.txt`. It creates a draft release, uploads the assets, and publishes it
+builds and validates the macOS DMG and both Windows installers (API-only and
+Local Whisper), and creates `SHA256SUMS.txt`. It creates a draft release, uploads the assets, and publishes it
 as latest only after successful uploads and only if its version is newer than
 the current latest release. Publication jobs are serialized so concurrently
 completed builds cannot move latest backwards. The tag text becomes the update notes.
@@ -82,7 +84,7 @@ draft, replacing partial draft uploads to keep installers and checksums consiste
 Published assets are overwritten only when explicitly requested through the
 manual workflow. Lightweight tags are rejected. Published tags must not be moved.
 
-The larger Windows Local Whisper package remains an opt-in build; see
+Pull requests skip the larger Windows Local Whisper package; see
 [Building Windows](BUILDING_WINDOWS.md#ci-build). Existing `release: published`
 and manual build triggers remain supported. Automatic publication through the
 workflow's `GITHUB_TOKEN` does not trigger a second installer build.

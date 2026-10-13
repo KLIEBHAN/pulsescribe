@@ -104,9 +104,8 @@ elif sys.argv[1] == "api":
     assert calls.index(upload) < calls.index(publication)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="release metadata uses bash")
-@pytest.mark.parametrize("annotated", [False, True])
-def test_tag_publication_requires_annotated_update_notes(tmp_path, annotated):
+def _release_metadata(tmp_path, *, event, annotated=True, build_local="false"):
+    """Run the metadata step against a temporary repository with tag v1.4.0."""
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     (tmp_path / "pyproject.toml").write_text('[project]\nversion = "1.4.0"\n')
     subprocess.run(["git", "add", "pyproject.toml"], cwd=tmp_path, check=True)
@@ -125,11 +124,11 @@ def test_tag_publication_requires_annotated_update_notes(tmp_path, annotated):
     output = tmp_path / "output"
     environment = {
         **os.environ,
-        "GITHUB_EVENT_NAME": "push",
+        "GITHUB_EVENT_NAME": event,
         "REQUESTED_REF": "v1.4.0",
         "UPLOAD_TO_RELEASE": "false",
         "REPLACE_EXISTING_ASSETS": "false",
-        "BUILD_WINDOWS_LOCAL": "false",
+        "BUILD_WINDOWS_LOCAL": build_local,
         "GITHUB_OUTPUT": str(output),
         "GITHUB_STEP_SUMMARY": str(tmp_path / "summary"),
     }
@@ -140,6 +139,13 @@ def test_tag_publication_requires_annotated_update_notes(tmp_path, annotated):
         capture_output=True,
         timeout=10,
     )
+    return result, output
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="release metadata uses bash")
+@pytest.mark.parametrize("annotated", [False, True])
+def test_tag_publication_requires_annotated_update_notes(tmp_path, annotated):
+    result, output = _release_metadata(tmp_path, event="push", annotated=annotated)
     if annotated:
         assert result.returncode == 0, result.stderr
         assert "publish=true" in output.read_text()
@@ -147,3 +153,22 @@ def test_tag_publication_requires_annotated_update_notes(tmp_path, annotated):
         assert result.returncode != 0
         assert b"Release tags must be annotated" in result.stderr
         assert not output.exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="release metadata uses bash")
+@pytest.mark.parametrize(
+    ("event", "build_local", "expected"),
+    [
+        ("push", "false", "true"),  # Local installs only accept the Local package
+        ("release", "false", "true"),
+        ("workflow_dispatch", "false", "false"),
+        ("workflow_dispatch", "true", "true"),
+    ],
+)
+def test_published_releases_always_include_local_package(
+    tmp_path, event, build_local, expected
+):
+    result, output = _release_metadata(tmp_path, event=event, build_local=build_local)
+
+    assert result.returncode == 0, result.stderr
+    assert f"build_windows_local={expected}" in output.read_text().splitlines()

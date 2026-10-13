@@ -51,9 +51,10 @@ builds the recommended API-only installer on `windows-2022`. It validates the
 installer version, creates a SHA-256 checksum, and stores the installer and build
 environment metadata as a workflow artifact for 14 days.
 
-Pushing an annotated `vX.Y.Z` tag builds both platforms and publishes the release
-only after the installers are uploaded. See [Updates and releases](UPDATES.md).
-Publishing a release manually still attaches installers through the same workflow.
+Pushing an annotated `vX.Y.Z` tag builds both platforms, including the Windows
+Local Whisper package, and publishes the release only after all installers are
+uploaded. See [Updates and releases](UPDATES.md). Publishing a release manually
+still attaches the same installers through the workflow.
 An existing release can be rebuilt manually:
 
 ```powershell
@@ -67,10 +68,11 @@ Existing assets are not overwritten by default. Add
 replaced deliberately.
 
 The CI installer is currently unsigned and may trigger a Windows SmartScreen
-warning. The much larger Local variant is an explicit opt-in manual build so
-normal PRs and releases do not spend CI time and storage on it.
+warning. Releases always include the much larger Local variant because installed
+Local Whisper apps only accept that package from the updater. Pull requests skip
+it, and manual runs build it only on request.
 
-To build and publish the Local Whisper variant for an existing release, run:
+To add the Local Whisper variant to an existing release that lacks it, run:
 
 ```powershell
 gh workflow run build-installers.yml `
