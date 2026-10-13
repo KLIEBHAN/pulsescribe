@@ -8,11 +8,80 @@ import pytest
 
 from pulsescribe_daemon import PulseScribeDaemon
 from utils.macos_latency_diagnostics import start_macos_latency_run
-from utils.state import DaemonMessage, MessageType
+from utils.state import AppState, DaemonMessage, MessageType
 
 
 def _disabled_latency_run():
     return start_macos_latency_run(enabled=False)
+
+
+@pytest.mark.parametrize("paste_raises", [False, True])
+def test_transcript_is_pasted_before_history_with_original_metadata(monkeypatch, paste_raises):
+    daemon = PulseScribeDaemon(mode="deepgram", language="de")
+    daemon._run_mode = "local"
+    daemon._last_was_refined = True
+    calls = []
+    saved = []
+    run = MagicMock()
+
+    def flush():
+        calls.append("flush")
+        daemon._run_mode = "groq"
+        daemon.language = "en"
+        daemon._last_was_refined = False
+
+    def paste(_transcript, **_kwargs):
+        calls.append("paste")
+        if paste_raises:
+            raise RuntimeError("paste failed")
+
+    def save(transcript, **kwargs):
+        calls.append("history")
+        saved.append((transcript, kwargs))
+        return True
+
+    monkeypatch.setattr(daemon, "_format_done_text", lambda text: text)
+    monkeypatch.setattr(daemon, "_update_state", lambda state, *_args: calls.append(state))
+    monkeypatch.setattr(daemon, "_flush_ui_and_wait", flush)
+    monkeypatch.setattr(daemon, "_paste_result", paste)
+    monkeypatch.setattr(daemon, "_apply_pending_hotkey_reconfigure_if_safe", lambda: None)
+    monkeypatch.setattr("pulsescribe_daemon.get_sound_player", lambda: MagicMock())
+    monkeypatch.setattr("utils.history.save_transcript", save)
+
+    if paste_raises:
+        with pytest.raises(RuntimeError, match="paste failed"):
+            daemon._handle_transcript_result("hello", latency_run=run)
+    else:
+        daemon._handle_transcript_result("hello", latency_run=run)
+
+    expected = [AppState.DONE, "flush", "paste", "history"]
+    if not paste_raises:
+        expected.append(AppState.IDLE)
+        run.finish.assert_called_once_with("success")
+    assert calls == expected
+    assert saved == [("hello", {"mode": "local", "language": "de", "refined": True})]
+    run.mark.assert_any_call("history_start")
+    run.mark.assert_any_call("history_done")
+
+
+@pytest.mark.parametrize("transcript", ["", "hello"])
+def test_onboarding_transcript_does_not_paste_or_save_history(monkeypatch, transcript):
+    daemon = PulseScribeDaemon(mode="local")
+    daemon._test_run_active = True
+    callback = MagicMock()
+    daemon._test_run_callback = callback
+    monkeypatch.setattr(daemon, "_update_state", MagicMock())
+    monkeypatch.setattr(daemon, "_apply_pending_hotkey_reconfigure_if_safe", lambda: None)
+    paste = MagicMock()
+    save = MagicMock()
+    monkeypatch.setattr(daemon, "_paste_result", paste)
+    monkeypatch.setattr("utils.history.save_transcript", save)
+
+    daemon._handle_transcript_result(transcript, latency_run=_disabled_latency_run())
+
+    callback.assert_called_once_with(transcript, None)
+    paste.assert_not_called()
+    save.assert_not_called()
 
 
 def test_audio_dependency_prewarm_is_idempotent_and_import_only():
