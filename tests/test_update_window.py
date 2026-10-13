@@ -175,6 +175,43 @@ def test_window_that_crashes_after_ready_is_reported_unavailable():
     assert wait_for(lambda: actions == ["unavailable"])
 
 
+def test_failed_is_owned_by_the_window_and_cleared_by_a_new_launch():
+    dead, healthy = FakeProcess(), FakeProcess()
+    healthy.stdout = None  # Set below: keeps running
+    stop = threading.Event()
+
+    class RunningStdout:
+        def __iter__(self):
+            yield b'PULSESCRIBE-UPDATE {"action": "ready"}\n'
+            stop.wait(2)
+
+    healthy.stdout = RunningStdout()
+    window, _launches, actions = make_window([dead, healthy])
+
+    window.show(UpdateView("one"), activate=False)
+    assert wait_for(lambda: actions == ["unavailable"])
+    assert window.failed is True
+    dead.returncode = 1
+
+    window.show(UpdateView("again"), activate=True)
+
+    assert window.failed is False
+    window.close()
+    stop.set()
+
+
+def test_failed_launch_marks_the_window_failed():
+    def launch(_activate):
+        raise OSError("no exe")
+
+    window = WindowsUpdateWindow(launch, lambda _action: None)
+
+    with pytest.raises(OSError):
+        window.show(UpdateView("ready"), activate=True)
+
+    assert window.failed is True
+
+
 def test_unavailable_is_reported_atomically_with_respect_to_show():
     locked_during_report = []
     window = None

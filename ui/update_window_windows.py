@@ -10,6 +10,8 @@ never block on a starting or hung window.
 (handled here), and receives ``unavailable`` when the current window process
 ends without the user closing it (start failure, hang or crash). All methods
 are thread-safe; ``close()`` ends the process on purpose (shutdown, installs).
+``failed`` is true from such an ``unavailable`` report or a failed launch until
+the next ``show()`` starts a new process; both changes happen under one lock.
 """
 
 from __future__ import annotations
@@ -39,12 +41,24 @@ class WindowsUpdateWindow:
         self._sent: dict | None = None  # Last view sent to the current process
         self._outbox: queue.SimpleQueue | None = None
         self._closed = weakref.WeakSet()  # Processes this side ended on purpose
+        self._failed = False
+
+    @property
+    def failed(self) -> bool:
+        """True after the window failed, until the next show() launches anew."""
+        with self._lock:
+            return self._failed
 
     def show(self, view: UpdateView, *, activate: bool) -> None:
         with self._lock:
             process = self._process
             if process is None or process.poll() is not None:
-                process = self._launch(activate)
+                try:
+                    process = self._launch(activate)
+                except Exception:
+                    self._failed = True
+                    raise
+                self._failed = False
                 self._process = process
                 self._sent = None
                 self._outbox = queue.SimpleQueue()
@@ -176,6 +190,7 @@ class WindowsUpdateWindow:
             # A newer window may already run; its own reader reports its fate.
             superseded = self._process is not None and self._process is not process
             if not closed_by_user and not superseded and process not in self._closed:
+                self._failed = True
                 logger.warning("Update window process ended unexpectedly")
                 # Delivered under the lock so show() cannot start a window that
                 # this stale report would then mark as failed. The handler must

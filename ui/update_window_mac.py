@@ -51,6 +51,8 @@ def _handler_class():
 
 
 class MacUpdateWindow:
+    failed = False  # In-process AppKit panel: no separate process to fail
+
     def __init__(self, on_action):
         self._on_action = on_action
         self._panel = None
