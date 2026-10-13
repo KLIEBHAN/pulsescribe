@@ -99,6 +99,8 @@ from ui.daemon_status_feedback import (
     build_daemon_tray_title,
     infer_daemon_status_error,
 )
+from ui.menubar import build_menubar_hint_text, build_menubar_status_text
+from utils.version import get_app_version
 
 # Lazy imports für optionale Features
 pystray = None
@@ -372,6 +374,11 @@ class PulseScribeWindows:
 
         # Components
         self._tray = None
+        # (status, hint) rows of the tray menu, mirroring the macOS menu bar.
+        self._tray_menu_texts: tuple[str, str] = (
+            build_menubar_status_text(AppState.IDLE),
+            build_menubar_hint_text(AppState.IDLE),
+        )
         self._last_status_text: str | None = None
         self._hotkey_listeners: list = []  # Mehrere Listener (toggle + hold)
         self._recording_thread = None
@@ -835,6 +842,60 @@ class PulseScribeWindows:
         icon = self._create_icon(color)
         self._tray.icon = icon
         self._tray.title = build_daemon_tray_title(state, text)
+        self._set_tray_menu_texts(
+            build_menubar_status_text(state, text),
+            build_menubar_hint_text(state, text),
+        )
+
+    def _set_tray_menu_texts(self, status: str, hint: str) -> None:
+        """Update the status/hint menu rows; rebuilds the menu only on change.
+
+        pystray reads menu texts only when the menu is rebuilt, so this runs on
+        the tray worker (or a menu callback), never on the hotkey path.
+        """
+        if self._tray_menu_texts == (status, hint):
+            return
+        self._tray_menu_texts = (status, hint)
+        tray = self._tray
+        if tray is not None and hasattr(tray, "update_menu"):
+            tray.update_menu()
+
+    def _set_tray_menu_hint(self, hint: str) -> None:
+        """Show menu-action feedback in the hint row, like the macOS menu bar."""
+        self._set_tray_menu_texts(self._tray_menu_texts[0], hint)
+
+    def _open_log_file(self) -> None:
+        """Open the log file in the default viewer (tray menu action)."""
+        from config import LOG_FILE
+
+        created_file = False
+        try:
+            if not LOG_FILE.exists():
+                LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+                LOG_FILE.touch()
+                created_file = True
+            os.startfile(str(LOG_FILE))
+        except Exception:
+            logger.warning("Opening log file failed", exc_info=True)
+            self._set_tray_menu_hint("Could not open the log file.")
+            return
+        self._set_tray_menu_hint(
+            "Created and opened a new log file." if created_file else "Opened the log file."
+        )
+
+    def _export_diagnostics(self) -> None:
+        """Export a redacted diagnostics report and reveal it in Explorer."""
+        try:
+            from utils.diagnostics import export_diagnostics_report
+
+            zip_path = export_diagnostics_report()
+        except Exception:
+            logger.warning("Diagnostics export failed", exc_info=True)
+            self._set_tray_menu_hint(
+                "Diagnostics export failed \u2014 check the log file and try again."
+            )
+            return
+        self._set_tray_menu_hint(f"Diagnostics exported: {zip_path.name}")
 
     def _create_icon(self, color: tuple[int, int, int]) -> "PIL_Image.Image":
         """Erstellt ein Mikrofon-Icon wie bei macOS (mit Caching)."""
@@ -2267,13 +2328,12 @@ class PulseScribeWindows:
             self.COLORS.get(current_state, self.COLORS[AppState.IDLE])
         )
 
-        # Hotkey-Info für Menü
-        hotkey_items = []
-        if self.toggle_hotkey:
-            hotkey_items.append(f"Toggle: {self.toggle_hotkey}")
-        if self.hold_hotkey:
-            hotkey_items.append(f"Hold: {self.hold_hotkey}")
-        hotkey_text = ", ".join(hotkey_items) if hotkey_items else "Keiner"
+        self._tray_menu_texts = (
+            build_menubar_status_text(current_state, current_text),
+            build_menubar_hint_text(current_state, current_text),
+        )
+        version = get_app_version(default="")
+        menu_title = f"PulseScribe {version}" if version else "PulseScribe"
 
         updater = getattr(self, "_updater", None)
         update_items = (
@@ -2288,14 +2348,21 @@ class PulseScribeWindows:
             else ()
         )
 
+        # Same structure as the macOS menu bar, plus the Windows-only reload.
         menu = pystray.Menu(
-            pystray.MenuItem("PulseScribe", None, enabled=False),
-            pystray.Menu.SEPARATOR,
-            pystray.MenuItem(f"Hotkeys: {hotkey_text}", None, enabled=False),
+            pystray.MenuItem(menu_title, None, enabled=False),
+            pystray.MenuItem(
+                lambda _item: self._tray_menu_texts[0], None, enabled=False
+            ),
+            pystray.MenuItem(
+                lambda _item: self._tray_menu_texts[1], None, enabled=False
+            ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Open Setup & Settings…", self._show_settings),
-            pystray.MenuItem("Reload Settings & Retry", self._reload_settings),
             *update_items,
+            pystray.MenuItem("Open Log File", self._open_log_file),
+            pystray.MenuItem("Export Redacted Diagnostics…", self._export_diagnostics),
+            pystray.MenuItem("Reload Settings & Retry", self._reload_settings),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Quit PulseScribe", self._quit),
         )
