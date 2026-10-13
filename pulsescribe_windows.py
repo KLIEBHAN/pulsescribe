@@ -379,6 +379,8 @@ class PulseScribeWindows:
             build_menubar_status_text(AppState.IDLE),
             build_menubar_hint_text(AppState.IDLE),
         )
+        # Feedback from a menu action, kept until the status row changes.
+        self._tray_action_hint: str | None = None
         self._last_status_text: str | None = None
         self._hotkey_listeners: list = []  # Mehrere Listener (toggle + hold)
         self._recording_thread = None
@@ -842,10 +844,15 @@ class PulseScribeWindows:
         icon = self._create_icon(color)
         self._tray.icon = icon
         self._tray.title = build_daemon_tray_title(state, text)
-        self._set_tray_menu_texts(
-            build_menubar_status_text(state, text),
-            build_menubar_hint_text(state, text),
-        )
+        status = build_menubar_status_text(state, text)
+        hint = build_menubar_hint_text(state, text)
+        action_hint = self._tray_action_hint
+        if action_hint is not None:
+            if status == self._tray_menu_texts[0]:
+                hint = action_hint
+            else:
+                self._tray_action_hint = None
+        self._set_tray_menu_texts(status, hint)
 
     def _set_tray_menu_texts(self, status: str, hint: str) -> None:
         """Update the status/hint menu rows; rebuilds the menu only on change.
@@ -861,7 +868,8 @@ class PulseScribeWindows:
             tray.update_menu()
 
     def _set_tray_menu_hint(self, hint: str) -> None:
-        """Show menu-action feedback in the hint row, like the macOS menu bar."""
+        """Show menu-action feedback in the hint row until the status changes."""
+        self._tray_action_hint = hint
         self._set_tray_menu_texts(self._tray_menu_texts[0], hint)
 
     def _open_log_file(self) -> None:

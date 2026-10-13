@@ -1490,6 +1490,36 @@ def test_tray_menu_rows_rebuild_only_when_status_text_changes(monkeypatch):
     ]
 
 
+def test_tray_action_hint_survives_refresh_until_status_changes(monkeypatch):
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="local",
+        streaming=False,
+        overlay=False,
+    )
+    daemon._tray = types.SimpleNamespace(icon=None, title="", update_menu=lambda: None)
+    daemon._create_icon = lambda _color: object()
+    monkeypatch.setattr(windows_module, "PIL_Image", object(), raising=False)
+    monkeypatch.setattr(windows_module, "PIL_ImageDraw", object(), raising=False)
+
+    daemon._update_tray_icon(AppState.IDLE)
+    daemon._set_tray_menu_hint("Opened the log file.")
+    daemon._update_tray_icon(AppState.IDLE)
+
+    assert daemon._tray_menu_texts[1] == "Opened the log file."
+
+    daemon._update_tray_icon(AppState.RECORDING)
+
+    assert daemon._tray_menu_texts == (
+        windows_module.build_menubar_status_text(AppState.RECORDING),
+        windows_module.build_menubar_hint_text(AppState.RECORDING),
+    )
+    daemon._update_tray_icon(AppState.IDLE)
+    assert daemon._tray_menu_texts[1] == windows_module.build_menubar_hint_text(
+        AppState.IDLE
+    )
+
+
 def test_tray_log_and_diagnostics_actions_report_in_hint_row(monkeypatch, tmp_path):
     windows_module = _load_windows_module()
     daemon = windows_module.PulseScribeWindows(
