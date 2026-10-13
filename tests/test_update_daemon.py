@@ -137,3 +137,52 @@ def test_mac_menu_opens_update_window_and_states_reach_it(monkeypatch, tmp_path)
     assert shown[0][0].headline == "Checking for updates…"
     daemon._updater.check.assert_called_once_with(manual=True)
     menu.update_update_state.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("idle", "answer", "installs", "boxes"),
+    [(True, 6, True, 1), (True, 7, False, 1), (False, 6, False, 1)],
+)
+def test_windows_fallback_keeps_an_install_path(monkeypatch, idle, answer, installs, boxes):
+    module = _load_windows_module()
+    daemon = module.PulseScribeWindows(mode="openai", streaming=False, overlay=False)
+    shown = []
+    monkeypatch.setattr(
+        module, "_show_message_box", lambda text, title, flags: shown.append(text) or answer
+    )
+    daemon._can_install_update = lambda: idle
+    daemon._update_ui = types.SimpleNamespace(handle=Mock())
+    from ui.update_window_model import UpdateView
+
+    view = UpdateView(
+        "PulseScribe 9.0.0 is ready to install",
+        detail="PulseScribe will quit, install the update, and restart.",
+        notes="Long notes " * 500,
+        primary_label="Restart and Install",
+        primary_action="install",
+    )
+
+    daemon._confirm_update_action(view)
+
+    assert len(shown) == boxes
+    assert "Long notes" not in shown[0]  # Notes would overflow a message box
+    if installs:
+        daemon._update_ui.handle.assert_called_once_with("install")
+    else:
+        daemon._update_ui.handle.assert_not_called()
+
+
+def test_windows_fallback_without_action_only_notifies(monkeypatch):
+    module = _load_windows_module()
+    daemon = module.PulseScribeWindows(mode="openai", streaming=False, overlay=False)
+    daemon._tray = types.SimpleNamespace(notify=Mock())
+    started = []
+    monkeypatch.setattr(module.threading, "Thread", lambda **kwargs: started.append(kwargs))
+    from ui.update_window_model import UpdateView
+
+    daemon._notify_update_fallback(
+        UpdateView("Downloading PulseScribe 9.0.0… 5%", primary_action="install", primary_enabled=False)
+    )
+
+    daemon._tray.notify.assert_called_once()
+    assert started == []

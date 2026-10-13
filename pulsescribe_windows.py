@@ -102,6 +102,20 @@ from ui.daemon_status_feedback import (
 from ui.menubar import build_menubar_hint_text, build_menubar_status_text
 from utils.version import get_app_version
 
+MB_YESNO = 0x00000004
+MB_ICONQUESTION = 0x00000020
+MB_ICONINFORMATION = 0x00000040
+MB_DEFBUTTON2 = 0x00000100
+IDYES = 6
+
+
+def _show_message_box(text: str, title: str, flags: int) -> int:
+    """Native Windows message box; returns the pressed button ID."""
+    import ctypes
+
+    return ctypes.windll.user32.MessageBoxW(None, text, title, flags)
+
+
 # Lazy imports für optionale Features
 pystray = None
 PIL_Image = None
@@ -3557,9 +3571,29 @@ class PulseScribeWindows:
         return process
 
     def _notify_update_fallback(self, view) -> None:
-        """Tray notification when the update window cannot be shown."""
-        if self._tray:
+        """Without the update window: confirm the next step natively, else notify."""
+        if view.primary_action and view.primary_enabled:
+            threading.Thread(
+                target=self._confirm_update_action,
+                args=(view,),
+                name="UpdateFallback",
+                daemon=True,
+            ).start()
+        elif self._tray:
             self._tray.notify(view.notice or view.detail or view.headline, view.headline)
+
+    def _confirm_update_action(self, view) -> None:
+        """Yes/No message box for the window's primary action (no long notes)."""
+        from ui.updates import BUSY_NOTICE
+
+        if view.primary_action == "install" and not self._can_install_update():
+            _show_message_box(BUSY_NOTICE, view.headline, MB_ICONINFORMATION)
+            return
+        text = "\n\n".join(
+            part for part in (view.detail, view.notice, f"{view.primary_label}?") if part
+        )
+        if _show_message_box(text, view.headline, MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES:
+            self._update_ui.handle(view.primary_action)
 
     def _activate_update(self) -> None:
         update_ui = getattr(self, "_update_ui", None)
