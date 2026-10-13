@@ -154,7 +154,8 @@ def test_button_actions_are_forwarded_and_noise_is_ignored():
 
     window.show(UpdateView("ready"), activate=True)
 
-    assert wait_for(lambda: actions == ["install", "close"])
+    assert wait_for(lambda: actions == ["install"])
+    assert wait_for(lambda: process.stdin.was_closed)  # close is handled here
 
 
 def test_window_that_exits_before_ready_is_reported_unavailable():
@@ -273,6 +274,7 @@ def test_buffered_close_of_a_replaced_window_does_not_close_the_new_one():
     time.sleep(0.1)
 
     assert actions == []
+    assert not new.stdin.was_closed  # The stale close only targets its own process
     window.close()
     stop.set()
 

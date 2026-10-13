@@ -2,13 +2,14 @@
 
 ``WindowsUpdateWindow(launch, on_action)`` starts the window process on the
 first ``show`` and forwards views over its stdin. ``launch(activate)`` must
-return a ``subprocess.Popen`` with ``stdin`` and ``stdout`` pipes;
-Writes go through a per-process writer thread, so callers (tray menu, update
-worker) never block on a starting or hung window. ``on_action`` runs on a
-reader thread for every button press, and receives
-``unavailable`` when the current window process ends without the user closing
-it (start failure or crash). All methods are thread-safe; ``close()`` ends the
-process on purpose (shutdown, installs).
+return a ``subprocess.Popen`` with ``stdin`` and ``stdout`` pipes. Writes go
+through a per-process writer thread, so callers (tray menu, update worker)
+never block on a starting or hung window.
+
+``on_action`` runs on a reader thread for every button press except ``close``
+(handled here), and receives ``unavailable`` when the current window process
+ends without the user closing it (start failure, hang or crash). All methods
+are thread-safe; ``close()`` ends the process on purpose (shutdown, installs).
 """
 
 from __future__ import annotations
@@ -78,11 +79,16 @@ class WindowsUpdateWindow:
 
     def close(self, timeout: float = 2.0) -> None:
         """Close stdin so the window process exits; terminate it if it hangs."""
+        self._close(None, timeout)
+
+    def _close(self, expected, timeout: float) -> None:
+        """Close the current process, or only ``expected`` if that is current."""
         with self._lock:
-            process, self._process = self._process, None
-            outbox, self._outbox = self._outbox, None
-            if process is None:
+            process = self._process
+            if process is None or (expected is not None and process is not expected):
                 return
+            self._process = None
+            outbox, self._outbox = self._outbox, None
             self._closed.add(process)  # Before any reader can see it gone
         if outbox is not None:
             outbox.put(None)  # The writer closes stdin; the window then exits
@@ -151,7 +157,12 @@ class WindowsUpdateWindow:
                     continue
                 if not isinstance(action, str):
                     continue
-                closed_by_user = closed_by_user or action == "close"
+                if action == "close":
+                    # Handled here, atomically for this process: a stale close
+                    # must never end a newer window.
+                    closed_by_user = True
+                    self._close(process, timeout=2.0)
+                    continue
                 with self._lock:
                     current = self._process is process
                 if current:  # Buffered actions of a replaced window are stale
