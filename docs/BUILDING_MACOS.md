@@ -88,15 +88,20 @@ every update would lose the permissions. CI therefore signs releases with the
 self-signed "PulseScribe Code Signing" certificate. macOS then identifies the
 app by bundle ID and certificate, and permissions survive updates.
 
-| Secret | Content |
-|--------|---------|
+The secrets are stored in the GitHub environment `macos-signing`, not as
+repository secrets. Anyone holding the key can sign other code that inherits
+the users' permissions, so the environment only admits `master` and `v*` tags,
+and the workflow uses it only for published builds.
+
+| Environment secret | Content |
+|--------------------|---------|
 | `MACOS_CERTIFICATE_P12` | Base64 of the `.p12` with certificate and private key |
 | `MACOS_CERTIFICATE_PASSWORD` | Password of the `.p12` |
 
 The certificate's SHA-1 is pinned as `MACOS_SIGNING_CERT_SHA1` in
 `.github/workflows/build-installers.yml`. Published releases fail without the
 secret, and the DMG check rejects apps that are not signed with the pinned
-certificate. Pull request builds without the secret fall back to ad-hoc signing.
+certificate. Pull request and other unpublished builds are ad-hoc signed.
 
 Keep a backup of the `.p12` and its password. Signing a release with a new
 certificate, including after losing the old one, makes every user grant the
@@ -107,8 +112,10 @@ The certificate is not trusted by Gatekeeper and the build is not notarized, so
 the first installation has the same Gatekeeper limitations as a local build. Use
 the notarized release process below when Developer ID credentials are available.
 
-For the first installation, copy the app to Applications and, if macOS blocks
-it, remove its quarantine flag before opening it:
+For the first installation, copy the app to Applications. If macOS blocks it,
+check that the DMG comes from the official GitHub release and matches its entry
+in `SHA256SUMS.txt` (`shasum -a 256 PulseScribe-<version>.dmg`). Only then remove
+the quarantine flag; this skips Gatekeeper's check for the app:
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/PulseScribe.app
