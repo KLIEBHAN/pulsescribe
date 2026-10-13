@@ -51,9 +51,10 @@ checks and downloads; network operations time out after 30 seconds of inactivity
   an existing administrative installation ([Inno Setup install modes](https://jrsoftware.org/ishelp/topic_setup_usepreviousprivileges.htm)). A failed install restarts the app
   and keeps the installer and `setup.log` for diagnosis. It does not close other
   applications. Local Whisper installations require the `-Local.zip` asset and never
-  receive the API-only installer, so every release publishes it. The installer
-  replaces the previous `_internal` folder; switching to the API-only variant
-  therefore also switches future updates. If a release lacks the Local asset, a
+  receive the API-only installer, so every release publishes it. After a
+  successful API-only installation, the installer removes Local Whisper packages
+  left by a previous Local installation, so switching variants also switches
+  future updates. If a release lacks the Local asset, a
   manual check reports it; automatic checks retry hourly.
 
 Installation and recording starts share a lock in each daemon. After reserving

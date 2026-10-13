@@ -80,12 +80,6 @@ Name: "german"; MessagesFile: "compiler:Languages\German.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 Name: "autostart"; Description: "Start PulseScribe automatically when Windows starts"; GroupDescription: "Startup:"
 
-[InstallDelete]
-; Replace the previous bundle completely. Otherwise switching from the Local to
-; the API-only variant leaves _internal\faster_whisper behind, and the updater
-; keeps treating the installation as Local Whisper.
-Type: filesandordirs; Name: "{app}\_internal"
-
 [Files]
 ; Main application (entire onedir bundle)
 Source: "dist\PulseScribe\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -119,11 +113,33 @@ begin
   Result := True;
 end;
 
+procedure RemoveLocalWhisperLeftovers();
+var
+  Internal: String;
+begin
+  // Packages that only the Local Whisper variant ships. A previous Local
+  // install leaves them behind, and the updater would keep treating this
+  // installation as Local because _internal\faster_whisper exists.
+  Internal := ExpandConstant('{app}\_internal\');
+  DelTree(Internal + 'faster_whisper', True, True, True);
+  DelTree(Internal + 'ctranslate2', True, True, True);
+  DelTree(Internal + 'whisper', True, True, True);
+  DelTree(Internal + 'torch', True, True, True);
+  DelTree(Internal + 'transformers', True, True, True);
+  DelTree(Internal + 'tokenizers', True, True, True);
+  DelTree(Internal + 'huggingface_hub', True, True, True);
+  DelTree(Internal + 'safetensors', True, True, True);
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
+  // ssPostInstall runs only after all files were installed, so a failed
+  // installation never loses the previous bundle.
   if CurStep = ssPostInstall then
   begin
-    // Post-install actions (if needed)
+#if MyVersionSuffix == ""
+    RemoveLocalWhisperLeftovers();
+#endif
   end;
 end;
 
