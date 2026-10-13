@@ -116,6 +116,28 @@ def test_window_that_exits_before_ready_is_reported_unavailable():
     assert wait_for(lambda: actions == ["unavailable"])
 
 
+def test_failure_of_a_replaced_window_process_is_ignored():
+    release = threading.Event()
+
+    class DyingStdout:
+        def __iter__(self):
+            release.wait(2)
+            return iter([b"Traceback ...\n"])
+
+    old, new = FakeProcess(), FakeProcess([b'PULSESCRIBE-UPDATE {"action": "ready"}\n'])
+    old.stdout = DyingStdout()
+    window, launches, actions = make_window([old, new])
+    window.show(UpdateView("one"), activate=False)
+    old.returncode = 1  # poll() sees the exit before the reader reaches EOF
+
+    window.show(UpdateView("again"), activate=True)
+    release.set()
+    time.sleep(0.1)
+
+    assert launches == [False, True]
+    assert actions == []
+
+
 def test_closing_a_starting_window_is_not_a_failure():
     started = threading.Event()
 

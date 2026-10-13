@@ -94,7 +94,10 @@ class WindowsUpdateWindow:
                     self._on_action(action)
         except (OSError, ValueError):
             pass
-        if not ready and process not in self._closed:
+        with self._lock:
+            # A newer window may already run; its own reader reports its fate.
+            superseded = self._process is not None and self._process is not process
+        if not ready and not superseded and process not in self._closed:
             logger.warning("Update window process exited before it was ready")
             self._on_action("unavailable")
 
