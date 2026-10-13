@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.2] - 2026-10-13
+
+### Fixed
+
+- **Local MLX transcription on macOS** – include the missing `mlx-whisper`
+  package so the local model can preload in the released app.
+- **Incomplete macOS packages** – full builds reject missing local backend
+  dependencies and validate MLX operations and mel-filter assets in the app
+  inside the DMG before publication.
+
 ## [1.4.1] - 2026-10-13
 
 ### Fixed
