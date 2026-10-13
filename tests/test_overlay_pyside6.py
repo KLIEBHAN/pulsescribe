@@ -570,6 +570,42 @@ def test_update_label_only_mutates_changed_parts():
     assert widget._label.text_calls == 2
 
 
+def test_update_label_re_elides_same_text_when_font_mode_changes():
+    widget = PySide6OverlayWidget.__new__(PySide6OverlayWidget)
+    widget._label = _FakeQtLabel()
+
+    PySide6OverlayWidget._update_label(widget, "RECORDING", "same text")
+    PySide6OverlayWidget._update_label(widget, "RECORDING", "same text", italic=True)
+
+    assert widget._label.text_calls == 2
+
+
+@pytest.mark.parametrize(
+    ("italic", "expected_mode"),
+    [(True, "ElideLeft"), (False, "ElideRight")],
+)
+def test_elide_label_text_keeps_newest_interim_words(italic, expected_mode):
+    calls: list[tuple[str, str, int]] = []
+
+    class _Metrics:
+        def elidedText(self, text, mode, width):
+            calls.append((text, mode.name, width))
+            return "\u2026tail"
+
+    widget = PySide6OverlayWidget.__new__(PySide6OverlayWidget)
+    widget._label = types.SimpleNamespace(
+        fontMetrics=lambda: _Metrics(),
+        width=lambda: 256,
+    )
+
+    shown = PySide6OverlayWidget._elide_label_text(
+        widget, "a long live transcript", italic=italic
+    )
+
+    assert shown == "\u2026tail"
+    assert calls == [("a long live transcript", expected_mode, 256)]
+
+
 def test_controller_wait_until_ready_uses_ready_event():
     controller = PySide6OverlayController.__new__(PySide6OverlayController)
     calls: list[float | None] = []

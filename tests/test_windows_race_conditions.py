@@ -1457,6 +1457,104 @@ def test_set_state_updates_tray_title_when_same_state_text_changes(monkeypatch):
     assert "Warming up local model" in second_title
 
 
+def test_tray_menu_rows_rebuild_only_when_status_text_changes(monkeypatch):
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="local",
+        streaming=False,
+        overlay=False,
+    )
+    rebuilds: list[tuple[str, str]] = []
+    daemon._tray = types.SimpleNamespace(
+        icon=None,
+        title="",
+        update_menu=lambda: rebuilds.append(daemon._tray_menu_texts),
+    )
+    daemon._create_icon = lambda _color: object()
+    monkeypatch.setattr(windows_module, "PIL_Image", object(), raising=False)
+    monkeypatch.setattr(windows_module, "PIL_ImageDraw", object(), raising=False)
+
+    daemon._update_tray_icon(AppState.RECORDING)
+    daemon._update_tray_icon(AppState.RECORDING)
+    daemon._update_tray_icon(AppState.IDLE)
+
+    assert rebuilds == [
+        (
+            windows_module.build_menubar_status_text(AppState.RECORDING),
+            windows_module.build_menubar_hint_text(AppState.RECORDING),
+        ),
+        (
+            windows_module.build_menubar_status_text(AppState.IDLE),
+            windows_module.build_menubar_hint_text(AppState.IDLE),
+        ),
+    ]
+
+
+def test_tray_action_hint_survives_refresh_until_status_changes(monkeypatch):
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="local",
+        streaming=False,
+        overlay=False,
+    )
+    daemon._tray = types.SimpleNamespace(icon=None, title="", update_menu=lambda: None)
+    daemon._create_icon = lambda _color: object()
+    monkeypatch.setattr(windows_module, "PIL_Image", object(), raising=False)
+    monkeypatch.setattr(windows_module, "PIL_ImageDraw", object(), raising=False)
+
+    daemon._update_tray_icon(AppState.IDLE)
+    daemon._set_tray_menu_hint("Opened the log file.")
+    daemon._update_tray_icon(AppState.IDLE)
+
+    assert daemon._tray_menu_texts[1] == "Opened the log file."
+
+    daemon._update_tray_icon(AppState.RECORDING)
+
+    assert daemon._tray_menu_texts == (
+        windows_module.build_menubar_status_text(AppState.RECORDING),
+        windows_module.build_menubar_hint_text(AppState.RECORDING),
+    )
+    daemon._update_tray_icon(AppState.IDLE)
+    assert daemon._tray_menu_texts[1] == windows_module.build_menubar_hint_text(
+        AppState.IDLE
+    )
+
+
+def test_tray_log_and_diagnostics_actions_report_in_hint_row(monkeypatch, tmp_path):
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="local",
+        streaming=False,
+        overlay=False,
+    )
+    daemon._tray = types.SimpleNamespace(update_menu=lambda: None)
+    log_file = tmp_path / "logs" / "pulsescribe.log"
+    opened: list[str] = []
+    monkeypatch.setattr("config.LOG_FILE", log_file)
+    monkeypatch.setattr(windows_module.os, "startfile", opened.append, raising=False)
+
+    daemon._open_log_file()
+
+    assert log_file.exists()
+    assert opened == [str(log_file)]
+    assert daemon._tray_menu_texts[1] == "Created and opened a new log file."
+
+    import utils.diagnostics as diagnostics
+
+    monkeypatch.setattr(
+        diagnostics, "export_diagnostics_report", lambda: tmp_path / "report.zip"
+    )
+    daemon._export_diagnostics()
+    assert daemon._tray_menu_texts[1] == "Diagnostics exported: report.zip"
+
+    def fail():
+        raise OSError("disk full")
+
+    monkeypatch.setattr(diagnostics, "export_diagnostics_report", fail)
+    daemon._export_diagnostics()
+    assert daemon._tray_menu_texts[1].startswith("Diagnostics export failed")
+
+
 @pytest.mark.parametrize("packaged", [False, True])
 def test_setup_tray_uses_current_loading_state_and_clear_recovery_labels(monkeypatch, packaged):
     windows_module = _load_windows_module()
@@ -1501,12 +1599,27 @@ def test_setup_tray_uses_current_loading_state_and_clear_recovery_labels(monkeyp
 
     daemon._setup_tray()
 
-    menu_labels = [item.text for item in daemon._tray.menu if hasattr(item, "text")]
+    items = [item for item in daemon._tray.menu if hasattr(item, "text")]
+    menu_labels = [
+        item.text(item) if callable(item.text) else item.text for item in items
+    ]
     assert daemon._tray.title.startswith("PulseScribe — Starting up PulseScribe")
+    # Same order as the macOS menu bar: title, status, hint, then actions.
+    assert menu_labels[0].startswith("PulseScribe")
+    assert menu_labels[1] == windows_module.build_menubar_status_text(
+        AppState.LOADING, "Starting up..."
+    )
+    assert menu_labels[2] == windows_module.build_menubar_hint_text(
+        AppState.LOADING, "Starting up..."
+    )
+    assert not any(item.enabled for item in items[:3])
     assert "Open Setup & Settings…" in menu_labels
+    assert "Open Log File" in menu_labels
+    assert "Export Redacted Diagnostics…" in menu_labels
     assert "Reload Settings & Retry" in menu_labels
     assert "Quit PulseScribe" in menu_labels
-    update_items = [item for item in daemon._tray.menu if callable(getattr(item, "text", None))]
+    assert not any(label.startswith("Hotkeys:") for label in menu_labels)
+    update_items = [item for item in items if item.action == daemon._activate_update]
     assert len(update_items) == int(packaged)
     if packaged:
         from dataclasses import replace

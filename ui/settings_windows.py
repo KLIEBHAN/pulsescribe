@@ -14,7 +14,7 @@ import time
 from typing import Callable, Iterator, TypeAlias
 
 from PySide6.QtCore import QEvent, Qt, Signal
-from PySide6.QtGui import QDoubleValidator, QFont, QIntValidator, QTextCursor
+from PySide6.QtGui import QDoubleValidator, QIntValidator, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -51,6 +51,7 @@ from ui.logs_panel_feedback import (
     build_transcripts_load_feedback,
 )
 from ui.provider_settings import build_provider_api_key_status
+from ui.setup_try_it import build_setup_try_it_content
 from ui.qt_widget_state import (
     get_widget_enabled,
     get_widget_stylesheet,
@@ -91,6 +92,7 @@ from ui.styles_windows import (
     LANGUAGE_OPTIONS,
     get_pynput_key_map,
     get_settings_stylesheet,
+    ui_font,
 )
 from utils.preferences import (
     get_show_welcome_on_startup,
@@ -138,7 +140,12 @@ logger = logging.getLogger("pulsescribe.settings")
 # =============================================================================
 
 SETTINGS_WIDTH = 600
-SETTINGS_HEIGHT = 700
+SETTINGS_HEIGHT = 825  # Same as the macOS settings window
+SETTINGS_MIN_HEIGHT = 560  # Content scrolls, so small laptop screens still fit
+SETTINGS_SCREEN_MARGIN = 48
+FOOTER_BUTTON_MIN_WIDTH = 120
+CARD_BUTTON_WIDTH = 110
+SETUP_TRY_IT_HINT = "The result is pasted into the active window as soon as it is ready."
 LAZY_SETTINGS_TAB_LABELS = frozenset({"Prompts", "Vocabulary", "Logs"})
 LOG_VIEW_MAX_LINES = 100
 TRANSCRIPTS_VIEW_MAX_ENTRIES = 50
@@ -372,38 +379,14 @@ def _build_setup_status(
     )
 
 
-def _build_setup_how_to_text(toggle_hotkey: str | None, hold_hotkey: str | None) -> str:
-    """Erstellt How-to-Text basierend auf den aktuell konfigurierten Hotkeys."""
-    toggle = _normalize_hotkey_text(toggle_hotkey)
-    hold = _normalize_hotkey_text(hold_hotkey)
-
-    if hold and toggle:
-        hold_display = _format_hotkey_for_display(hold)
-        toggle_display = _format_hotkey_for_display(toggle)
-        return (
-            f"1. Hold {hold_display} to use push-to-talk.\n"
-            "2. Speak while holding the keys.\n"
-            "3. Release the keys to stop and transcribe.\n"
-            f"Alternative: press {toggle_display} once to start and again to stop."
-        )
-    if hold:
-        hold_display = _format_hotkey_for_display(hold)
-        return (
-            f"1. Hold {hold_display} to start recording.\n"
-            "2. Speak while holding the keys.\n"
-            "3. Release the keys to stop and transcribe."
-        )
-    if toggle:
-        toggle_display = _format_hotkey_for_display(toggle)
-        return (
-            f"1. Press {toggle_display} to start recording.\n"
-            "2. Speak clearly.\n"
-            f"3. Press {toggle_display} again to stop and transcribe."
-        )
-    return (
-        "1. Configure a Toggle or Hold hotkey in the Hotkeys tab.\n"
-        "2. Add the required provider API key if you use a cloud mode.\n"
-        "3. Return here to verify the setup status."
+def _build_setup_try_it_content(
+    toggle_hotkey: str | None, hold_hotkey: str | None
+) -> tuple[str, str, str, str]:
+    """Return ``(hotkey_info, body, hint, button_title)`` for the Setup "Try it" card."""
+    return build_setup_try_it_content(
+        _format_hotkey_for_display(_normalize_hotkey_text(toggle_hotkey)),
+        _format_hotkey_for_display(_normalize_hotkey_text(hold_hotkey)),
+        hint=SETUP_TRY_IT_HINT,
     )
 
 
@@ -524,12 +507,12 @@ def create_card(
 
     if title:
         title_label = QLabel(title)
-        title_label.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+        title_label.setFont(ui_font("card_title"))
         layout.addWidget(title_label)
 
     if description:
         desc_label = QLabel(description)
-        desc_label.setFont(QFont("Segoe UI", 10))
+        desc_label.setFont(ui_font("body"))
         desc_label.setStyleSheet(f"color: {COLORS['text_secondary']};")
         desc_label.setWordWrap(True)
         layout.addWidget(desc_label)
@@ -545,7 +528,7 @@ def create_label_row(
     row.setSpacing(12)
 
     label = QLabel(label_text)
-    label.setFont(QFont("Segoe UI", 10))
+    label.setFont(ui_font("body"))
     label.setMinimumWidth(120)
     row.addWidget(label)
 
@@ -553,7 +536,7 @@ def create_label_row(
 
     if hint:
         hint_label = QLabel(hint)
-        hint_label.setFont(QFont("Segoe UI", 9))
+        hint_label.setFont(ui_font("caption"))
         hint_label.setStyleSheet(f"color: {COLORS['text_hint']};")
         hint_label.setWordWrap(True)
         row.addWidget(hint_label)
@@ -564,7 +547,7 @@ def create_label_row(
 def create_status_label(text: str = "", color: str = "text") -> QLabel:
     """Erstellt ein Status-Label."""
     label = QLabel(text)
-    label.setFont(QFont("Segoe UI", 10))
+    label.setFont(ui_font("body"))
     label.setWordWrap(True)
     label.setStyleSheet(f"color: {COLORS.get(color, color)};")
     return label
@@ -880,7 +863,9 @@ class SettingsWindow(QDialog):
         self._last_transcripts_blocks: list[str] | None = None
         self._setup_status_label: QLabel | None = None
         self._setup_status_detail_label: QLabel | None = None
-        self._setup_howto_label: QLabel | None = None
+        self._setup_try_hotkey_label: QLabel | None = None
+        self._setup_try_body_label: QLabel | None = None
+        self._setup_try_change_button: QPushButton | None = None
         self._setup_overview_refresh_suspend_count = 0
         self._last_setup_overview_snapshot: _SetupOverviewSnapshot | None = None
         self._process_env_api_keys: dict[str, str] | None = None
@@ -927,12 +912,21 @@ class SettingsWindow(QDialog):
     def _setup_window(self):
         """Konfiguriert das Fenster."""
         self.setWindowTitle("PulseScribe Settings")
-        self.resize(SETTINGS_WIDTH, SETTINGS_HEIGHT)
-        self.setMinimumSize(SETTINGS_WIDTH, SETTINGS_HEIGHT)
+        self.setMinimumSize(SETTINGS_WIDTH, SETTINGS_MIN_HEIGHT)
+        self.resize(SETTINGS_WIDTH, self._initial_window_height())
         self.setStyleSheet(get_settings_stylesheet())
 
         # Window Flags
         self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.WindowCloseButtonHint)
+
+    @staticmethod
+    def _initial_window_height() -> int:
+        """Use the macOS height unless the available screen area is smaller."""
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            return SETTINGS_HEIGHT
+        available = screen.availableGeometry().height() - SETTINGS_SCREEN_MARGIN
+        return max(SETTINGS_MIN_HEIGHT, min(SETTINGS_HEIGHT, available))
 
     def _build_ui(self):
         """Erstellt das UI."""
@@ -944,10 +938,17 @@ class SettingsWindow(QDialog):
         header = self._build_header()
         layout.addWidget(header)
 
-        # Tab Widget
+        # Tab Widget: centered segmented tabs inside a framed pane (macOS look)
         self._tabs = QTabWidget()
-        self._tabs.setDocumentMode(True)
-        layout.addWidget(self._tabs, 1)
+        tab_bar = self._tabs.tabBar()
+        tab_bar.setExpanding(False)
+        tab_bar.setDrawBase(False)
+        tab_bar.setElideMode(Qt.TextElideMode.ElideNone)
+        tabs_container = QWidget()
+        tabs_layout = QVBoxLayout(tabs_container)
+        tabs_layout.setContentsMargins(10, 0, 10, 0)
+        tabs_layout.addWidget(self._tabs)
+        layout.addWidget(tabs_container, 1)
 
         self._tab_builders = {}
         self._lazy_tab_layouts = {}
@@ -1021,17 +1022,18 @@ class SettingsWindow(QDialog):
         header = QWidget()
         # Dynamic height to accommodate scaling and long text
         layout = QVBoxLayout(header)
-        layout.setContentsMargins(20, 20, 20, 10)
+        layout.setContentsMargins(20, 18, 20, 12)
+        layout.setSpacing(2)
 
         # Titel
         title = QLabel("🎤 PulseScribe")
-        title.setFont(QFont("Segoe UI", 24, QFont.Weight.Bold))
+        title.setFont(ui_font("window_title"))
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
 
         # Untertitel
         subtitle = QLabel("Voice-to-text for Windows")
-        subtitle.setFont(QFont("Segoe UI", 11))
+        subtitle.setFont(ui_font("window_subtitle"))
         subtitle.setStyleSheet(f"color: {COLORS['text_secondary']};")
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(subtitle)
@@ -1039,12 +1041,21 @@ class SettingsWindow(QDialog):
         return header
 
     def _build_footer(self) -> QWidget:
-        """Erstellt den Footer mit Checkbox links, Buttons rechts (wie macOS)."""
+        """Erstellt den Footer wie macOS: Statuszeile oben, darunter Checkbox und Buttons."""
         footer = QWidget()
-        footer.setMinimumHeight(60)
-        layout = QHBoxLayout(footer)
-        layout.setContentsMargins(20, 10, 20, 20)
+        outer = QVBoxLayout(footer)
+        outer.setContentsMargins(22, 6, 20, 18)
+        outer.setSpacing(10)
+
+        self._footer_status_label = create_status_label("", "text_secondary")
+        self._footer_status_label.setFont(ui_font("caption"))
+        self._footer_status_label.setMinimumWidth(0)
+        self._footer_status_label.setAccessibleName("Settings status")
+        outer.addWidget(self._footer_status_label)
+
+        layout = QHBoxLayout()
         layout.setSpacing(12)
+        outer.addLayout(layout)
 
         # Checkbox links (wie macOS Welcome Window)
         self._show_at_startup_checkbox = QCheckBox("Show at startup")
@@ -1053,23 +1064,20 @@ class SettingsWindow(QDialog):
             self._on_show_at_startup_changed
         )
         layout.addWidget(self._show_at_startup_checkbox)
-
-        self._footer_status_label = create_status_label("", "text_secondary")
-        self._footer_status_label.setFont(QFont("Segoe UI", 9))
-        self._footer_status_label.setMinimumWidth(0)
-        self._footer_status_label.setAccessibleName("Settings status")
-        layout.addWidget(self._footer_status_label, 1)
+        layout.addStretch(1)
 
         self._save_btn = QPushButton("Save && Apply")
         self._save_btn.setObjectName("primary")
         self._save_btn.setAccessibleName("Save and apply settings")
         self._save_btn.clicked.connect(self._save_settings)
+        self._save_btn.setMinimumWidth(FOOTER_BUTTON_MIN_WIDTH)
         layout.addWidget(self._save_btn)
 
         # Close-Button (rechts vom Save-Button, wie macOS)
         self._close_btn = QPushButton("Close")
         self._close_btn.setAccessibleName("Close settings")
         self._close_btn.clicked.connect(self.reject)  # QDialog-konform
+        self._close_btn.setMinimumWidth(FOOTER_BUTTON_MIN_WIDTH)
         layout.addWidget(self._close_btn)
 
         return footer
@@ -1096,11 +1104,11 @@ class SettingsWindow(QDialog):
         )
 
         self._setup_status_label = QLabel("Checking current setup…")
-        self._setup_status_label.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+        self._setup_status_label.setFont(ui_font("section"))
         card_layout.addWidget(self._setup_status_label)
 
         self._setup_status_detail_label = QLabel("")
-        self._setup_status_detail_label.setFont(QFont("Segoe UI", 10))
+        self._setup_status_detail_label.setFont(ui_font("body"))
         self._setup_status_detail_label.setStyleSheet(
             f"color: {COLORS['text_secondary']};"
         )
@@ -1109,57 +1117,73 @@ class SettingsWindow(QDialog):
 
         layout.addWidget(card)
 
-        # How-To Card
+        # Recommended presets card (macOS: "Recommended (Apple Silicon)")
         card, card_layout = create_card(
-            "📖 How to Use",
-            "This guide updates automatically based on your current mode and hotkeys.",
-        )
-
-        self._setup_howto_label = QLabel(
-            "1. Choose a transcription mode in Providers.\n"
-            "2. Add the required API key if you use a cloud mode.\n"
-            "3. Set up at least one hotkey in Hotkeys."
-        )
-        self._setup_howto_label.setFont(QFont("Segoe UI", 10))
-        self._setup_howto_label.setWordWrap(True)
-        card_layout.addWidget(self._setup_howto_label)
-
-        layout.addWidget(card)
-
-        # Local Mode Presets Card
-        card, card_layout = create_card(
-            "⚡ Local Mode Presets",
-            "Quick-apply optimized settings for local transcription.",
+            "⚡ Recommended (Local)",
+            "One click presets for fast local dictation (faster-whisper).",
         )
 
         presets_layout = QHBoxLayout()
         presets_layout.setSpacing(8)
 
         # Windows-optimized presets
-        preset_btn_cuda = QPushButton("CUDA Fast")
-        preset_btn_cuda.setToolTip("faster-whisper with CUDA (requires NVIDIA GPU)")
-        preset_btn_cuda.clicked.connect(lambda: self._apply_local_preset("cuda_fast"))
-        presets_layout.addWidget(preset_btn_cuda)
-
-        preset_btn_cpu = QPushButton("CPU Fast")
-        preset_btn_cpu.setToolTip("faster-whisper with CPU int8 optimization")
-        preset_btn_cpu.clicked.connect(lambda: self._apply_local_preset("cpu_fast"))
-        presets_layout.addWidget(preset_btn_cpu)
-
-        preset_btn_quality = QPushButton("CPU Quality")
-        preset_btn_quality.setToolTip("Higher quality transcription (slower)")
-        preset_btn_quality.clicked.connect(
-            lambda: self._apply_local_preset("cpu_quality")
-        )
-        presets_layout.addWidget(preset_btn_quality)
+        for label, preset, tooltip in (
+            ("CUDA Fast", "cuda_fast", "faster-whisper with CUDA (requires NVIDIA GPU)"),
+            ("CPU Fast", "cpu_fast", "faster-whisper with CPU int8 optimization"),
+            ("CPU Quality", "cpu_quality", "Higher quality transcription (slower)"),
+        ):
+            preset_btn = QPushButton(label)
+            preset_btn.setToolTip(tooltip)
+            preset_btn.setFixedWidth(CARD_BUTTON_WIDTH)
+            preset_btn.clicked.connect(
+                lambda _checked=False, p=preset: self._apply_local_preset(p)
+            )
+            presets_layout.addWidget(preset_btn)
 
         presets_layout.addStretch()
         card_layout.addLayout(presets_layout)
 
         # Status Label
-        self._preset_status = QLabel("")
-        self._preset_status.setFont(QFont("Segoe UI", 9))
+        save_hint = build_save_apply_change_hint()
+        self._preset_status = create_status_label(
+            f"Choose a preset, then {save_hint[:1].lower()}{save_hint[1:]}",
+            "text_secondary",
+        )
+        self._preset_status.setFont(ui_font("caption"))
         card_layout.addWidget(self._preset_status)
+
+        layout.addWidget(card)
+
+        # Try it card: live hotkey summary plus a shortcut to the Hotkeys tab
+        hotkey_info, body_text, hint_text, button_title = _build_setup_try_it_content(
+            None, None
+        )
+        card, card_layout = create_card()
+
+        title_row = QHBoxLayout()
+        title_row.setSpacing(10)
+        try_title = QLabel("🎤 Try it")
+        try_title.setFont(ui_font("card_title"))
+        title_row.addWidget(try_title)
+        self._setup_try_hotkey_label = create_status_label(hotkey_info, "text_secondary")
+        self._setup_try_hotkey_label.setFont(ui_font("caption"))
+        self._setup_try_hotkey_label.setWordWrap(False)
+        title_row.addWidget(self._setup_try_hotkey_label, 1)
+        card_layout.addLayout(title_row)
+
+        self._setup_try_body_label = create_status_label(body_text, "text_secondary")
+        card_layout.addWidget(self._setup_try_body_label)
+
+        action_row = QHBoxLayout()
+        action_row.setSpacing(10)
+        self._setup_try_change_button = QPushButton(button_title)
+        self._setup_try_change_button.setToolTip("Open the Hotkeys tab")
+        self._setup_try_change_button.clicked.connect(self._goto_hotkeys_tab)
+        action_row.addWidget(self._setup_try_change_button)
+        try_hint = create_status_label(hint_text, "text_hint")
+        try_hint.setFont(ui_font("caption"))
+        action_row.addWidget(try_hint, 1)
+        card_layout.addLayout(action_row)
 
         layout.addWidget(card)
         layout.addStretch()
@@ -1167,8 +1191,18 @@ class SettingsWindow(QDialog):
         scroll.setWidget(content)
         return scroll
 
+    def _goto_hotkeys_tab(self) -> None:
+        """Select the Hotkeys tab (used by the Setup "Try it" card)."""
+        tabs = getattr(self, "_tabs", None)
+        if tabs is None:
+            return
+        for index in range(tabs.count()):
+            if tabs.tabText(index) == "Hotkeys":
+                tabs.setCurrentIndex(index)
+                return
+
     def _build_hotkeys_tab(self) -> QWidget:
-        """Hotkeys-Tab: Hotkey-Konfiguration."""
+        """Hotkeys-Tab: Presets oben, darunter eigene Hotkeys (Layout wie macOS)."""
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -1184,107 +1218,95 @@ class SettingsWindow(QDialog):
             "Set one or two shortcuts. Toggle is ideal for longer dictation, Hold for push-to-talk.",
         )
 
-        # Toggle Hotkey Row
-        toggle_row = QHBoxLayout()
-        toggle_row.setSpacing(8)
-        toggle_label = QLabel("Toggle Hotkey:")
-        toggle_label.setMinimumWidth(120)
-        toggle_row.addWidget(toggle_label)
-
-        self._toggle_hotkey_field = QLineEdit()
-        self._toggle_hotkey_field.setPlaceholderText("e.g., ctrl+alt+r")
-        self._toggle_hotkey_field.setReadOnly(True)
-        self._toggle_hotkey_field.setToolTip("Toggle: press once to start, press again to stop")
-        self._toggle_hotkey_field.textChanged.connect(self._refresh_footer_settings_hint)
-        toggle_row.addWidget(self._toggle_hotkey_field, 1)
-
-        self._toggle_record_btn = QPushButton("Record")
-        self._toggle_record_btn.setToolTip("Start recording a Toggle hotkey")
-        self._toggle_record_btn.setFixedWidth(80)
-        self._toggle_record_btn.clicked.connect(
-            lambda: self._start_hotkey_recording("toggle")
-        )
-        toggle_row.addWidget(self._toggle_record_btn)
-
-        self._toggle_clear_btn = QPushButton("Clear")
-        self._toggle_clear_btn.setToolTip("Remove the saved Toggle hotkey")
-        self._toggle_clear_btn.setFixedWidth(70)
-        self._toggle_clear_btn.clicked.connect(
-            lambda: self._clear_hotkey_field("toggle")
-        )
-        toggle_row.addWidget(self._toggle_clear_btn)
-
-        card_layout.addLayout(toggle_row)
-
-        # Hold Hotkey Row
-        hold_row = QHBoxLayout()
-        hold_row.setSpacing(8)
-        hold_label = QLabel("Hold Hotkey:")
-        hold_label.setMinimumWidth(120)
-        hold_row.addWidget(hold_label)
-
-        self._hold_hotkey_field = QLineEdit()
-        self._hold_hotkey_field.setPlaceholderText("e.g., ctrl+alt+space")
-        self._hold_hotkey_field.setReadOnly(True)
-        self._hold_hotkey_field.setToolTip("Hold: keep pressed while speaking, release to stop")
-        self._hold_hotkey_field.textChanged.connect(self._refresh_footer_settings_hint)
-        hold_row.addWidget(self._hold_hotkey_field, 1)
-
-        self._hold_record_btn = QPushButton("Record")
-        self._hold_record_btn.setToolTip("Start recording a Hold hotkey")
-        self._hold_record_btn.setFixedWidth(80)
-        self._hold_record_btn.clicked.connect(
-            lambda: self._start_hotkey_recording("hold")
-        )
-        hold_row.addWidget(self._hold_record_btn)
-
-        self._hold_clear_btn = QPushButton("Clear")
-        self._hold_clear_btn.setToolTip("Remove the saved Hold hotkey")
-        self._hold_clear_btn.setFixedWidth(70)
-        self._hold_clear_btn.clicked.connect(lambda: self._clear_hotkey_field("hold"))
-        hold_row.addWidget(self._hold_clear_btn)
-
-        card_layout.addLayout(hold_row)
-
-        # Status Label für Recording
-        self._hotkey_status = QLabel("")
-        self._hotkey_status.setFont(QFont("Segoe UI", 9))
-        self._hotkey_status.setWordWrap(True)
-        card_layout.addWidget(self._hotkey_status)
-
-        # Presets
-        presets_label = QLabel("Presets:")
-        presets_label.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
-        card_layout.addWidget(presets_label)
-
+        # Presets (equal-width row above the custom hotkeys, like macOS)
         presets_layout = QHBoxLayout()
         presets_layout.setSpacing(8)
-
-        for preset_name, toggle_val, hold_val in [
-            ("F19 Toggle", "f19", ""),
-            ("Ctrl+Alt+R / Ctrl+Alt+Space", "ctrl+alt+r", "ctrl+alt+space"),
-            ("F13 Toggle", "f13", ""),
+        for preset_name, toggle_val, hold_val, tooltip in [
+            ("F19 (Toggle)", "f19", "", "Use F19 as the Toggle hotkey and clear Hold."),
+            (
+                "Ctrl+Alt+R / Space",
+                "ctrl+alt+r",
+                "ctrl+alt+space",
+                "Toggle with Ctrl+Alt+R and hold Ctrl+Alt+Space for push-to-talk.",
+            ),
+            ("F13 (Toggle)", "f13", "", "Use F13 as the Toggle hotkey and clear Hold."),
         ]:
             btn = QPushButton(preset_name)
+            btn.setToolTip(tooltip)
             btn.clicked.connect(
                 lambda checked,
                 t=toggle_val,
                 h=hold_val: self._apply_hotkey_preset_pair(t, h)
             )
-            presets_layout.addWidget(btn)
-
-        presets_layout.addStretch()
+            presets_layout.addWidget(btn, 1)
         card_layout.addLayout(presets_layout)
+        card_layout.addSpacing(4)
+
+        # Custom hotkey rows: label, field, Record, Clear
+        def add_hotkey_row(kind: str, label_text: str, placeholder: str, tooltip: str):
+            row = QHBoxLayout()
+            row.setSpacing(8)
+            label = QLabel(label_text)
+            label.setMinimumWidth(64)
+            row.addWidget(label)
+
+            field = QLineEdit()
+            field.setPlaceholderText(placeholder)
+            field.setReadOnly(True)
+            field.setToolTip(tooltip)
+            field.textChanged.connect(self._refresh_footer_settings_hint)
+            row.addWidget(field, 1)
+
+            record_btn = QPushButton("Record")
+            record_btn.setToolTip(f"Start recording a {kind.capitalize()} hotkey")
+            record_btn.setFixedWidth(80)
+            record_btn.clicked.connect(lambda: self._start_hotkey_recording(kind))
+            row.addWidget(record_btn)
+
+            clear_btn = QPushButton("Clear")
+            clear_btn.setToolTip(f"Remove the saved {kind.capitalize()} hotkey")
+            clear_btn.setFixedWidth(70)
+            clear_btn.clicked.connect(lambda: self._clear_hotkey_field(kind))
+            row.addWidget(clear_btn)
+
+            card_layout.addLayout(row)
+            return field, record_btn, clear_btn
+
+        (
+            self._toggle_hotkey_field,
+            self._toggle_record_btn,
+            self._toggle_clear_btn,
+        ) = add_hotkey_row(
+            "toggle",
+            "Toggle:",
+            "e.g., ctrl+alt+r",
+            "Toggle: press once to start, press again to stop",
+        )
+        (
+            self._hold_hotkey_field,
+            self._hold_record_btn,
+            self._hold_clear_btn,
+        ) = add_hotkey_row(
+            "hold",
+            "Hold:",
+            "e.g., ctrl+alt+space",
+            "Hold: keep pressed while speaking, release to stop",
+        )
+
+        # Status Label für Recording
+        self._hotkey_status = QLabel("")
+        self._hotkey_status.setFont(ui_font("caption"))
+        self._hotkey_status.setWordWrap(True)
+        card_layout.addWidget(self._hotkey_status)
 
         # Hint
         hint = QLabel(
-            "💡 Toggle: press once to start and once again to stop.\n"
-            "Hold: keep the keys pressed while speaking and release to stop.\n"
-            "Hold may use modifier-only combos (e.g. ctrl+win).\n"
-            "Click 'Record', then press Enter to confirm or Esc to cancel.\n"
-            "Toggle and Hold must not overlap (e.g. ctrl+win and ctrl+win+r)."
+            "Toggle starts and stops with one press. Hold is push-to-talk and may use "
+            "modifier-only combos like Ctrl+Win.\n"
+            "Choose a preset or click Record, then press Enter to confirm or Esc to cancel. "
+            "Toggle and Hold must not overlap."
         )
-        hint.setFont(QFont("Segoe UI", 9))
+        hint.setFont(ui_font("caption"))
         hint.setStyleSheet(f"color: {COLORS['text_hint']};")
         hint.setWordWrap(True)
         card_layout.addWidget(hint)
@@ -1309,7 +1331,7 @@ class SettingsWindow(QDialog):
 
         # Settings Card
         card, card_layout = create_card(
-            "⚙️ Transcription Settings",
+            "🧩 Providers",
             "Choose how PulseScribe should transcribe audio. Use Local Whisper for offline dictation.",
         )
 
@@ -1370,7 +1392,11 @@ class SettingsWindow(QDialog):
         self._streaming_container = QWidget()
         streaming_layout = QHBoxLayout(self._streaming_container)
         streaming_layout.setContentsMargins(0, 0, 0, 0)
-        self._streaming_checkbox = QCheckBox("Enable WebSocket Streaming")
+        streaming_label = QLabel("Streaming:")
+        streaming_label.setMinimumWidth(120)
+        streaming_layout.addWidget(streaming_label)
+        self._streaming_checkbox = QCheckBox("WebSocket (low latency)")
+        self._streaming_checkbox.setAccessibleName("Enable WebSocket streaming")
         self._streaming_checkbox.setToolTip("Deepgram only: enables lower-latency streaming transcription")
         self._streaming_checkbox.toggled.connect(self._refresh_footer_settings_hint)
         streaming_layout.addWidget(self._streaming_checkbox)
@@ -1378,7 +1404,7 @@ class SettingsWindow(QDialog):
         card_layout.addWidget(self._streaming_container)
 
         self._provider_guidance_label = create_status_label("", "text_secondary")
-        self._provider_guidance_label.setFont(QFont("Segoe UI", 9))
+        self._provider_guidance_label.setFont(ui_font("caption"))
         card_layout.addWidget(self._provider_guidance_label)
 
         layout.addWidget(card)
@@ -1391,8 +1417,8 @@ class SettingsWindow(QDialog):
 
         for provider, env_key in [
             ("Deepgram", "DEEPGRAM_API_KEY"),
-            ("OpenAI", "OPENAI_API_KEY"),
             ("Groq", "GROQ_API_KEY"),
+            ("OpenAI", "OPENAI_API_KEY"),
             ("OpenRouter", "OPENROUTER_API_KEY"),
             ("Gemini", "GEMINI_API_KEY"),
         ]:
@@ -1457,7 +1483,7 @@ class SettingsWindow(QDialog):
             "These expert controls are only relevant for offline dictation.",
         )
         self._advanced_empty_state_label = create_status_label("", "text_secondary")
-        self._advanced_empty_state_label.setFont(QFont("Segoe UI", 9))
+        self._advanced_empty_state_label.setFont(ui_font("caption"))
         card_layout.addWidget(self._advanced_empty_state_label)
         self._advanced_empty_state_card = card
         layout.addWidget(card)
@@ -1468,7 +1494,7 @@ class SettingsWindow(QDialog):
             "Optional expert overrides for offline dictation. Leave fields empty or on 'default' to keep PulseScribe's recommended values.",
         )
         self._advanced_guidance_label = create_status_label("", "text_secondary")
-        self._advanced_guidance_label.setFont(QFont("Segoe UI", 9))
+        self._advanced_guidance_label.setFont(ui_font("caption"))
         card_layout.addWidget(self._advanced_guidance_label)
 
         self._device_combo = QComboBox()
@@ -1624,7 +1650,7 @@ class SettingsWindow(QDialog):
         return scroll
 
     def _build_refine_tab(self) -> QWidget:
-        """Refine-Tab: LLM-Nachbearbeitung."""
+        """Refine-Tab: LLM-Nachbearbeitung und Ausgabe (eine Karte wie macOS)."""
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -1634,11 +1660,30 @@ class SettingsWindow(QDialog):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(CARD_SPACING)
 
-        # Refine Card
         card, card_layout = create_card(
-            "✨ Transcript Cleanup",
-            "Optional post-processing after transcription. The selected provider uses its API key from the Providers tab.",
+            "✨ Refine & Output",
+            "Choose whether PulseScribe cleans up transcript text after dictation, what it "
+            "shows on screen, and whether your clipboard gets restored after pasting.",
         )
+
+        def add_section_label(text: str) -> None:
+            card_layout.addSpacing(4)
+            label = QLabel(text)
+            label.setFont(ui_font("section"))
+            label.setStyleSheet(f"color: {COLORS['text_secondary']};")
+            card_layout.addWidget(label)
+
+        def add_checkbox_row(label_text: str, checkbox: QCheckBox) -> None:
+            row = QHBoxLayout()
+            row.setSpacing(12)
+            label = QLabel(label_text)
+            label.setMinimumWidth(120)
+            row.addWidget(label)
+            row.addWidget(checkbox, 1)
+            card_layout.addLayout(row)
+
+        # --- Transcript cleanup ---
+        add_section_label("Transcript cleanup")
 
         self._refine_checkbox = QCheckBox("Clean up transcript text with an LLM")
         self._refine_checkbox.setAccessibleName("Enable transcript cleanup")
@@ -1646,7 +1691,7 @@ class SettingsWindow(QDialog):
             "Use an LLM to improve punctuation, formatting, and spoken commands after transcription."
         )
         self._refine_checkbox.toggled.connect(self._refresh_secondary_settings_feedback)
-        card_layout.addWidget(self._refine_checkbox)
+        add_checkbox_row("Refine:", self._refine_checkbox)
 
         # Provider
         self._refine_provider_combo = QComboBox()
@@ -1666,23 +1711,18 @@ class SettingsWindow(QDialog):
         card_layout.addLayout(create_label_row("Model:", self._refine_model_field))
 
         self._refine_model_help_label = create_status_label("", "text_secondary")
-        self._refine_model_help_label.setFont(QFont("Segoe UI", 9))
+        self._refine_model_help_label.setFont(ui_font("caption"))
         card_layout.addWidget(self._refine_model_help_label)
 
         self._refine_settings_status_label = create_status_label("", "text_secondary")
-        self._refine_settings_status_label.setFont(QFont("Segoe UI", 9))
+        self._refine_settings_status_label.setFont(ui_font("caption"))
         self._refine_settings_status_label.setAccessibleName(
             "Transcript cleanup section status"
         )
         card_layout.addWidget(self._refine_settings_status_label)
 
-        layout.addWidget(card)
-
-        # Display Card
-        card, card_layout = create_card(
-            "🖥️ Output & Clipboard",
-            "Control what PulseScribe shows while you dictate and what happens to the clipboard after pasting.",
-        )
+        # --- Visual & paste behavior ---
+        add_section_label("Visual & paste behavior")
 
         self._overlay_checkbox = QCheckBox("Show recording overlay")
         self._overlay_checkbox.setAccessibleName("Show recording overlay")
@@ -1690,21 +1730,9 @@ class SettingsWindow(QDialog):
             "Show a floating overlay while recording so you can see live dictation status."
         )
         self._overlay_checkbox.toggled.connect(self._refresh_secondary_settings_feedback)
-        card_layout.addWidget(self._overlay_checkbox)
+        add_checkbox_row("Overlay:", self._overlay_checkbox)
 
-        self._rtf_checkbox = QCheckBox(
-            "Show transcription speed after each result"
-        )
-        self._rtf_checkbox.setAccessibleName("Show transcription speed details")
-        self._rtf_checkbox.setToolTip(
-            "Display the Real-Time Factor after each transcription. Useful for performance tuning; most people can leave this off."
-        )
-        self._rtf_checkbox.toggled.connect(self._refresh_secondary_settings_feedback)
-        card_layout.addWidget(self._rtf_checkbox)
-
-        self._clipboard_restore_checkbox = QCheckBox(
-            "Restore previous clipboard text after paste"
-        )
+        self._clipboard_restore_checkbox = QCheckBox("Restore clipboard after paste")
         self._clipboard_restore_checkbox.setAccessibleName(
             "Restore previous clipboard text after paste"
         )
@@ -1714,12 +1742,20 @@ class SettingsWindow(QDialog):
         self._clipboard_restore_checkbox.toggled.connect(
             self._refresh_secondary_settings_feedback
         )
-        card_layout.addWidget(self._clipboard_restore_checkbox)
+        add_checkbox_row("Clipboard:", self._clipboard_restore_checkbox)
+
+        self._rtf_checkbox = QCheckBox("Show transcription speed after each result")
+        self._rtf_checkbox.setAccessibleName("Show transcription speed details")
+        self._rtf_checkbox.setToolTip(
+            "Display the Real-Time Factor after each transcription. Useful for performance tuning; most people can leave this off."
+        )
+        self._rtf_checkbox.toggled.connect(self._refresh_secondary_settings_feedback)
+        add_checkbox_row("Performance:", self._rtf_checkbox)
 
         self._display_settings_status_label = create_status_label(
             "", "text_secondary"
         )
-        self._display_settings_status_label.setFont(QFont("Segoe UI", 9))
+        self._display_settings_status_label.setFont(ui_font("caption"))
         self._display_settings_status_label.setAccessibleName(
             "Output and clipboard section status"
         )
@@ -1745,51 +1781,59 @@ class SettingsWindow(QDialog):
 
         card, card_layout = create_card(
             "📝 Custom Prompts",
-            "Fine-tune Refine prompts for each context. Switch contexts freely, then save only the visible prompt when you're ready.",
+            "Fine-tune Refine prompts by context. Switch contexts freely, then use Save & Apply when you're ready.",
         )
 
+        # Context row with Reset inline, like macOS
+        context_row = QHBoxLayout()
+        context_row.setSpacing(8)
+        context_label = QLabel("Context:")
+        context_label.setMinimumWidth(64)
+        context_row.addWidget(context_label)
+
         self._prompt_context_combo = QComboBox()
+        self._prompt_context_combo.setMinimumWidth(180)
         for context_key, label in PROMPT_EDITOR_CONTEXT_OPTIONS:
             self._prompt_context_combo.addItem(label, context_key)
         self._prompt_context_combo.currentTextChanged.connect(
             self._on_prompt_context_changed
         )
-        card_layout.addLayout(create_label_row("Context:", self._prompt_context_combo))
-
-        self._prompt_context_help_label = create_status_label("", "text_secondary")
-        self._prompt_context_help_label.setFont(QFont("Segoe UI", 9))
-        self._prompt_context_help_label.setAccessibleName("Prompt context help")
-        card_layout.addWidget(self._prompt_context_help_label)
-
-        self._prompt_context_state_label = create_status_label("", "text_secondary")
-        self._prompt_context_state_label.setFont(QFont("Segoe UI", 9))
-        self._prompt_context_state_label.setAccessibleName("Prompt editor state")
-        card_layout.addWidget(self._prompt_context_state_label)
-
-        self._prompt_editor = QPlainTextEdit()
-        self._prompt_editor.setMinimumHeight(200)
-        self._prompt_editor.setAccessibleName("Custom prompt editor")
-        self._prompt_editor.textChanged.connect(self._on_prompt_editor_text_changed)
-        card_layout.addWidget(self._prompt_editor)
-
-        self._prompt_status = QLabel("")
-        self._prompt_status.setFont(QFont("Segoe UI", 9))
-        self._prompt_status.setWordWrap(True)
-        self._prompt_status.setAccessibleName("Prompt save feedback")
-        card_layout.addWidget(self._prompt_status)
-
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
+        context_row.addWidget(self._prompt_context_combo)
 
         reset_btn = QPushButton("Reset to Default")
         reset_btn.setAccessibleName("Reset current prompt to default")
         reset_btn.setToolTip("Load the built-in text for the selected context. Save it if you want to keep that change.")
         reset_btn.clicked.connect(self._reset_prompt_to_default)
         self._prompt_reset_btn = reset_btn
-        btn_layout.addWidget(reset_btn)
+        context_row.addWidget(reset_btn)
+        context_row.addStretch()
+        card_layout.addLayout(context_row)
+
+        self._prompt_editor = QPlainTextEdit()
+        self._prompt_editor.setMinimumHeight(260)
+        self._prompt_editor.setFont(ui_font("mono"))
+        self._prompt_editor.setAccessibleName("Custom prompt editor")
+        self._prompt_editor.textChanged.connect(self._on_prompt_editor_text_changed)
+        card_layout.addWidget(self._prompt_editor, 1)
+
+        self._prompt_context_help_label = create_status_label("", "text_secondary")
+        self._prompt_context_help_label.setFont(ui_font("caption"))
+        self._prompt_context_help_label.setAccessibleName("Prompt context help")
+        card_layout.addWidget(self._prompt_context_help_label)
+
+        self._prompt_context_state_label = create_status_label("", "text_secondary")
+        self._prompt_context_state_label.setFont(ui_font("caption"))
+        self._prompt_context_state_label.setAccessibleName("Prompt editor state")
+        card_layout.addWidget(self._prompt_context_state_label)
+
+        btn_layout = QHBoxLayout()
+        self._prompt_status = QLabel("")
+        self._prompt_status.setFont(ui_font("caption"))
+        self._prompt_status.setWordWrap(True)
+        self._prompt_status.setAccessibleName("Prompt save feedback")
+        btn_layout.addWidget(self._prompt_status, 1)
 
         save_prompt_btn = QPushButton("Save Prompt")
-        save_prompt_btn.setObjectName("primary")
         save_prompt_btn.setAccessibleName("Save current prompt context")
         save_prompt_btn.setToolTip("Save only the currently visible prompt context.")
         save_prompt_btn.clicked.connect(self._save_current_prompt)
@@ -1798,8 +1842,7 @@ class SettingsWindow(QDialog):
 
         card_layout.addLayout(btn_layout)
 
-        layout.addWidget(card)
-        layout.addStretch()
+        layout.addWidget(card, 1)
 
         scroll.setWidget(content)
         self._update_prompt_context_ui(self._current_prompt_context)
@@ -1819,14 +1862,14 @@ class SettingsWindow(QDialog):
 
         # Vocabulary Card
         card, card_layout = create_card(
-            "📚 Custom Vocabulary",
-            "Add names, product terms, and jargon that PulseScribe should recognize more reliably.",
+            "📚 Vocabulary / Keywords",
+            "Add names, product terms, and jargon that PulseScribe should recognize more reliably. Changes are saved with Save & Apply and stay local to this device.",
         )
 
         vocab_hint = QLabel(
-            "Use one keyword or phrase per line; commas also work. Duplicate entries are merged automatically on save, and this list stays local to this device."
+            "Use one keyword or phrase per line; commas also work. Duplicate entries are merged automatically on save."
         )
-        vocab_hint.setFont(QFont("Segoe UI", 9))
+        vocab_hint.setFont(ui_font("caption"))
         vocab_hint.setStyleSheet(f"color: {COLORS['text_hint']};")
         vocab_hint.setWordWrap(True)
         card_layout.addWidget(vocab_hint)
@@ -1846,7 +1889,7 @@ class SettingsWindow(QDialog):
 
         # Status Label
         self._vocab_status = QLabel("")
-        self._vocab_status.setFont(QFont("Segoe UI", 9))
+        self._vocab_status.setFont(ui_font("caption"))
         self._vocab_status.setWordWrap(True)
         card_layout.addWidget(self._vocab_status)
 
@@ -1864,7 +1907,6 @@ class SettingsWindow(QDialog):
         btn_layout.addWidget(load_btn)
 
         save_btn = QPushButton("Save Vocabulary")
-        save_btn.setObjectName("primary")
         save_btn.setAccessibleName("Save custom vocabulary")
         save_btn.setToolTip("Save the normalized custom vocabulary shown in this editor.")
         save_btn.clicked.connect(self._save_vocabulary)
@@ -1881,76 +1923,56 @@ class SettingsWindow(QDialog):
         return scroll
 
     def _build_logs_tab(self) -> QWidget:
-        """Logs-Tab: Log-Viewer mit Transcripts."""
+        """Logs-Tab: Log-Viewer mit Transcripts (Karte mit Segment-Umschalter wie macOS)."""
         from PySide6.QtCore import QTimer
         from PySide6.QtWidgets import QStackedWidget, QButtonGroup
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         content = QWidget()
         layout = QVBoxLayout(content)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(CARD_SPACING)
 
-        # Segment Control (Logs | Transcripts)
-        segment_layout = QHBoxLayout()
-        segment_layout.setSpacing(0)
+        card, card_layout = create_card()
 
-        self._logs_btn = QPushButton("🪵 Logs")
+        # Segment Control (Logs | Transcripts)
+        segment_group = QFrame()
+        segment_group.setObjectName("segmentGroup")
+        segment_layout = QHBoxLayout(segment_group)
+        segment_layout.setContentsMargins(2, 2, 2, 2)
+        segment_layout.setSpacing(2)
+
+        self._logs_btn = QPushButton("Logs")
+        self._logs_btn.setObjectName("segment")
         self._logs_btn.setCheckable(True)
         self._logs_btn.setChecked(True)
-        self._logs_btn.setStyleSheet(
-            f"""
-            QPushButton {{ border-radius: 6px 0 0 6px; }}
-            QPushButton:checked {{ background-color: {COLORS["accent"]}; }}
-        """
-        )
         self._logs_btn.clicked.connect(lambda: self._switch_logs_view(0))
 
-        self._transcripts_btn = QPushButton("📝 Transcripts")
+        self._transcripts_btn = QPushButton("Transcripts")
+        self._transcripts_btn.setObjectName("segment")
         self._transcripts_btn.setCheckable(True)
-        self._transcripts_btn.setStyleSheet(
-            f"""
-            QPushButton {{ border-radius: 0 6px 6px 0; }}
-            QPushButton:checked {{ background-color: {COLORS["accent"]}; }}
-        """
-        )
         self._transcripts_btn.clicked.connect(lambda: self._switch_logs_view(1))
 
         # Button Group für exklusive Auswahl
-        self._logs_btn_group = QButtonGroup()
+        self._logs_btn_group = QButtonGroup(self)
         self._logs_btn_group.addButton(self._logs_btn, 0)
         self._logs_btn_group.addButton(self._transcripts_btn, 1)
 
         segment_layout.addWidget(self._logs_btn)
         segment_layout.addWidget(self._transcripts_btn)
-        segment_layout.addStretch()
-        layout.addLayout(segment_layout)
+        segment_row = QHBoxLayout()
+        segment_row.addWidget(segment_group)
+        segment_row.addStretch()
+        card_layout.addLayout(segment_row)
 
         # Stacked Widget für Logs/Transcripts
         self._logs_stack = QStackedWidget()
 
-        # === Logs Page ===
+        # === Logs Page: toolbar above the viewer, like macOS ===
         logs_page = QWidget()
         logs_layout = QVBoxLayout(logs_page)
-        logs_layout.setContentsMargins(0, 8, 0, 0)
+        logs_layout.setContentsMargins(0, 4, 0, 0)
+        logs_layout.setSpacing(8)
 
-        self._logs_viewer = QPlainTextEdit()
-        self._logs_viewer.setReadOnly(True)
-        self._logs_viewer.setMinimumHeight(300)
-        self._logs_viewer.setPlaceholderText("The newest PulseScribe logs will appear here.")
-        self._logs_viewer.setToolTip(
-            "Shows the newest PulseScribe log output. Manual refresh keeps your current scroll position when possible."
-        )
-        try:
-            self._logs_viewer.document().setMaximumBlockCount(LOG_VIEW_MAX_LINES)
-        except Exception:
-            pass
-        logs_layout.addWidget(self._logs_viewer)
-
-        # Logs Buttons
         logs_btn_layout = QHBoxLayout()
         self._auto_refresh_checkbox = QCheckBox("Auto-refresh")
         self._auto_refresh_checkbox.setToolTip(
@@ -1960,11 +1982,6 @@ class SettingsWindow(QDialog):
         logs_btn_layout.addWidget(self._auto_refresh_checkbox)
         logs_btn_layout.addStretch()
 
-        refresh_btn = QPushButton("Refresh")
-        refresh_btn.setToolTip("Refresh the visible log output now.")
-        refresh_btn.clicked.connect(self._refresh_logs_on_demand)
-        logs_btn_layout.addWidget(refresh_btn)
-
         open_btn = QPushButton("Open Logs")
         open_btn.setToolTip(
             "Reveal the current log file in Explorer, or open the logs folder if no log exists yet."
@@ -1972,52 +1989,41 @@ class SettingsWindow(QDialog):
         open_btn.clicked.connect(self._open_logs_folder)
         logs_btn_layout.addWidget(open_btn)
 
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.setToolTip("Refresh the visible log output now.")
+        refresh_btn.clicked.connect(self._refresh_logs_on_demand)
+        logs_btn_layout.addWidget(refresh_btn)
         logs_layout.addLayout(logs_btn_layout)
+
+        self._logs_viewer = QPlainTextEdit()
+        self._logs_viewer.setReadOnly(True)
+        self._logs_viewer.setFont(ui_font("mono"))
+        self._logs_viewer.setMinimumHeight(180)
+        self._logs_viewer.setPlaceholderText("The newest PulseScribe logs will appear here.")
+        self._logs_viewer.setToolTip(
+            "Shows the newest PulseScribe log output. Manual refresh keeps your current scroll position when possible."
+        )
+        try:
+            self._logs_viewer.document().setMaximumBlockCount(LOG_VIEW_MAX_LINES)
+        except Exception:
+            pass
+        logs_layout.addWidget(self._logs_viewer, 1)
         self._logs_stack.addWidget(logs_page)
 
         # === Transcripts Page ===
         transcripts_page = QWidget()
         transcripts_layout = QVBoxLayout(transcripts_page)
-        transcripts_layout.setContentsMargins(0, 8, 0, 0)
+        transcripts_layout.setContentsMargins(0, 4, 0, 0)
+        transcripts_layout.setSpacing(8)
 
-        self._transcripts_viewer = QPlainTextEdit()
-        self._transcripts_viewer.setReadOnly(True)
-        self._transcripts_viewer.setMinimumHeight(300)
-        self._transcripts_viewer.setPlaceholderText(
-            "Your recent transcript history will appear here."
-        )
-        self._transcripts_viewer.setToolTip(
-            "Shows the newest local transcript history. Refresh reloads the history without changing any dictation settings."
-        )
-        transcripts_layout.addWidget(self._transcripts_viewer)
-
+        transcripts_btn_layout = QHBoxLayout()
         self._transcripts_count_label = QLabel(build_transcripts_count_text(0))
-        self._transcripts_count_label.setFont(QFont("Segoe UI", 9))
+        self._transcripts_count_label.setFont(ui_font("caption"))
         self._transcripts_count_label.setStyleSheet(
             f"color: {COLORS['text_secondary']};"
         )
-        transcripts_layout.addWidget(self._transcripts_count_label)
-
-        self._transcripts_hint_label = QLabel(build_transcripts_hint_text(0))
-        self._transcripts_hint_label.setFont(QFont("Segoe UI", 9))
-        self._transcripts_hint_label.setStyleSheet(f"color: {COLORS['text_hint']};")
-        self._transcripts_hint_label.setWordWrap(True)
-        transcripts_layout.addWidget(self._transcripts_hint_label)
-
-        # Transcripts Status
-        self._transcripts_status = QLabel("")
-        self._transcripts_status.setFont(QFont("Segoe UI", 9))
-        self._transcripts_status.setStyleSheet(f"color: {COLORS['text_secondary']};")
-        transcripts_layout.addWidget(self._transcripts_status)
-
-        # Transcripts Buttons
-        transcripts_btn_layout = QHBoxLayout()
+        transcripts_btn_layout.addWidget(self._transcripts_count_label)
         transcripts_btn_layout.addStretch()
-
-        refresh_t_btn = QPushButton("Refresh")
-        refresh_t_btn.setToolTip("Refresh transcript history now.")
-        refresh_t_btn.clicked.connect(self._refresh_transcripts_on_demand)
-        transcripts_btn_layout.addWidget(refresh_t_btn)
 
         clear_t_btn = QPushButton("Clear History…")
         clear_t_btn.setToolTip(
@@ -2028,70 +2034,115 @@ class SettingsWindow(QDialog):
         self._transcripts_clear_btn = clear_t_btn
         transcripts_btn_layout.addWidget(clear_t_btn)
 
+        refresh_t_btn = QPushButton("Refresh")
+        refresh_t_btn.setToolTip("Refresh transcript history now.")
+        refresh_t_btn.clicked.connect(self._refresh_transcripts_on_demand)
+        transcripts_btn_layout.addWidget(refresh_t_btn)
         transcripts_layout.addLayout(transcripts_btn_layout)
+
+        self._transcripts_viewer = QPlainTextEdit()
+        self._transcripts_viewer.setReadOnly(True)
+        self._transcripts_viewer.setMinimumHeight(180)
+        self._transcripts_viewer.setPlaceholderText(
+            "Your recent transcript history will appear here."
+        )
+        self._transcripts_viewer.setToolTip(
+            "Shows the newest local transcript history. Refresh reloads the history without changing any dictation settings."
+        )
+        transcripts_layout.addWidget(self._transcripts_viewer, 1)
+
+        self._transcripts_hint_label = QLabel(build_transcripts_hint_text(0))
+        self._transcripts_hint_label.setFont(ui_font("caption"))
+        self._transcripts_hint_label.setStyleSheet(f"color: {COLORS['text_hint']};")
+        self._transcripts_hint_label.setWordWrap(True)
+        transcripts_layout.addWidget(self._transcripts_hint_label)
+
+        # Transcripts Status
+        self._transcripts_status = QLabel("")
+        self._transcripts_status.setFont(ui_font("caption"))
+        self._transcripts_status.setStyleSheet(f"color: {COLORS['text_secondary']};")
+        transcripts_layout.addWidget(self._transcripts_status)
+
         self._logs_stack.addWidget(transcripts_page)
 
-        layout.addWidget(self._logs_stack)
-
-        scroll.setWidget(content)
+        card_layout.addWidget(self._logs_stack, 1)
+        layout.addWidget(card, 1)
 
         # Auto-Refresh Timer
         self._logs_refresh_timer = QTimer(self)
         self._logs_refresh_timer.timeout.connect(self._refresh_active_logs_view)
 
-        return scroll
+        return content
 
     def _build_about_tab(self) -> QWidget:
-        """About-Tab: Version und Credits."""
+        """About-Tab: App-Beschreibung, Features, Provider und Links (Inhalt wie macOS)."""
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
         content = QWidget()
         layout = QVBoxLayout(content)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(CARD_SPACING)
 
-        # About Card
         card, card_layout = create_card()
 
-        # Logo/Title
-        title = QLabel("🎤 PulseScribe")
-        title.setFont(QFont("Segoe UI", 20, QFont.Weight.Bold))
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        card_layout.addWidget(title)
+        title_row = QHBoxLayout()
+        title_row.setSpacing(10)
+        title = QLabel("PulseScribe")
+        title.setFont(ui_font("card_title"))
+        title_row.addWidget(title)
+        version = create_status_label(f"Version {self._get_version()}", "text_secondary")
+        version.setFont(ui_font("caption"))
+        title_row.addWidget(version, 1)
+        card_layout.addLayout(title_row)
 
-        # Version (dynamisch laden)
-        version_str = self._get_version()
-        version = QLabel(f"Version {version_str}")
-        version.setFont(QFont("Segoe UI", 12))
-        version.setStyleSheet(f"color: {COLORS['text_secondary']};")
-        version.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        card_layout.addWidget(version)
+        def add_section(heading: str | None, text: str) -> None:
+            if heading:
+                card_layout.addSpacing(6)
+                heading_label = QLabel(heading)
+                heading_label.setFont(ui_font("section"))
+                card_layout.addWidget(heading_label)
+            body = create_status_label(text, "text_secondary")
+            card_layout.addWidget(body)
 
-        card_layout.addSpacing(20)
-
-        # Description
-        desc = QLabel(
-            "Minimalistic voice-to-text for Windows.\nInspired by Wispr Flow."
+        add_section(
+            None,
+            "Ultra-fast voice input for Windows. Transcribes audio using multiple "
+            "providers or local Whisper with ultra-low latency.",
         )
-        desc.setFont(QFont("Segoe UI", 10))
-        desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        desc.setWordWrap(True)
-        card_layout.addWidget(desc)
+        add_section(
+            "✨ Features",
+            "• Real-time Streaming (Deepgram, ~300ms latency)\n"
+            "• Multiple Providers: Deepgram, OpenAI, Groq, Local Whisper\n"
+            "• LLM Post-processing: Grammar, punctuation, voice commands\n"
+            "• Context Awareness: Adapts style to active app (email/chat/code)\n"
+            "• Custom Vocabulary for names and technical terms\n"
+            "• Visual Feedback: Tray status + animated overlay",
+        )
+        add_section(
+            "🚀 Providers",
+            "• Deepgram: ~300ms ⚡ WebSocket streaming (recommended)\n"
+            "• Groq: ~1s, Whisper on LPU hardware\n"
+            "• OpenAI: ~2-3s, GPT-4o Transcribe, highest quality\n"
+            "• Local: Offline via Whisper/Faster-Whisper",
+        )
+        add_section("📁 Resources", "Config: %USERPROFILE%\\.pulsescribe\\")
 
-        card_layout.addSpacing(20)
-
-        # Links
         links = QLabel(
-            '<a href="https://github.com/KLIEBHAN/pulsescribe" style="color: #007AFF;">GitHub</a> · '
-            '<a href="https://github.com/KLIEBHAN/pulsescribe/tree/master/docs" style="color: #007AFF;">Documentation</a>'
+            f'<a href="https://github.com/KLIEBHAN/pulsescribe" style="color: {COLORS["accent"]};">GitHub</a> · '
+            f'<a href="https://github.com/KLIEBHAN/pulsescribe/tree/master/docs" style="color: {COLORS["accent"]};">Documentation</a>'
         )
-        links.setFont(QFont("Segoe UI", 10))
-        links.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        links.setFont(ui_font("body"))
         links.setOpenExternalLinks(True)
         card_layout.addWidget(links)
 
         layout.addWidget(card)
         layout.addStretch()
 
-        return content
+        scroll.setWidget(content)
+        return scroll
+
 
     @contextmanager
     def _suspend_setup_overview_refresh(self):
@@ -2657,14 +2708,14 @@ class SettingsWindow(QDialog):
             _set_widget_tooltip_if_changed(self._api_status.get(env_key), tooltip)
 
     def _refresh_setup_overview(self) -> None:
-        """Aktualisiert Status- und How-to-Text im Setup-Tab."""
+        """Aktualisiert Status- und Try-it-Karte im Setup-Tab."""
         if getattr(self, "_setup_overview_refresh_suspend_count", 0) > 0:
             return
 
         status_label = getattr(self, "_setup_status_label", None)
         status_detail_label = getattr(self, "_setup_status_detail_label", None)
-        howto_label = getattr(self, "_setup_howto_label", None)
-        if not (status_label and status_detail_label and howto_label):
+        try_body_label = getattr(self, "_setup_try_body_label", None)
+        if not (status_label and status_detail_label and try_body_label):
             return
 
         mode_combo = getattr(self, "_mode_combo", None)
@@ -2702,7 +2753,17 @@ class SettingsWindow(QDialog):
             status_label, f"color: {COLORS[color_key]};"
         )
         _set_widget_text_if_changed(status_detail_label, detail)
-        _set_widget_text_if_changed(howto_label, _build_setup_how_to_text(toggle, hold))
+
+        hotkey_info, body_text, _hint, button_title = _build_setup_try_it_content(
+            toggle, hold
+        )
+        _set_widget_text_if_changed(try_body_label, body_text)
+        for widget, text in (
+            (getattr(self, "_setup_try_hotkey_label", None), hotkey_info),
+            (getattr(self, "_setup_try_change_button", None), button_title),
+        ):
+            if widget is not None:
+                _set_widget_text_if_changed(widget, text)
 
     def _on_batch_size_changed(self, value: int):
         """Handler für Batch-Size Slider."""
@@ -3798,13 +3859,29 @@ class SettingsWindow(QDialog):
             )
             self._refresh_vocabulary_action_buttons()
 
-    def _save_vocabulary(self):
-        """Speichert Vocabulary in Datei."""
+    def _save_vocabulary_if_changed(self) -> bool:
+        """Keep pending vocabulary edits on Save & Apply, matching macOS.
+
+        Skips when the vocabulary was never loaded (tab not opened or the file
+        could not be read) so an unread file is never overwritten. Returns
+        False only when a pending edit could not be written.
+        """
+        if not getattr(self, "_vocabulary_loaded", False):
+            return True
+        if getattr(self, "_vocab_editor", None) is None:
+            return True
+        analysis = analyze_vocabulary_text(self._current_vocabulary_raw_text())
+        if analysis.keywords == self._get_saved_vocabulary_keywords():
+            return True
+        return self._save_vocabulary()
+
+    def _save_vocabulary(self) -> bool:
+        """Speichert Vocabulary in Datei; False, wenn das Schreiben scheitert."""
         try:
             from utils.vocabulary import save_vocabulary_state
 
             if not self._vocab_editor:
-                return
+                return True
 
             raw_text = self._current_vocabulary_raw_text()
             analysis = analyze_vocabulary_text(raw_text)
@@ -3822,7 +3899,7 @@ class SettingsWindow(QDialog):
                     status_color,
                 )
                 self._refresh_vocabulary_action_buttons()
-                return
+                return True
 
             vocab, _warnings, new_signature = save_vocabulary_state(analysis.keywords)
             normalized_keywords = list(vocab.get("keywords", []))
@@ -3844,6 +3921,7 @@ class SettingsWindow(QDialog):
                 status_color,
             )
             self._refresh_vocabulary_action_buttons()
+            return True
         except Exception as e:
             logger.error(f"Vocabulary speichern fehlgeschlagen: {e}")
             _set_status_label_if_changed(
@@ -3851,6 +3929,7 @@ class SettingsWindow(QDialog):
                 f"Could not save the vocabulary: {e}",
                 "error",
             )
+            return False
             self._refresh_vocabulary_action_buttons()
 
     def _refresh_logs(self) -> bool:
@@ -4353,6 +4432,9 @@ class SettingsWindow(QDialog):
             # Prompts speichern (aus Cache + aktuellem Editor)
             self._save_all_prompts()
 
+            # Vocabulary wie auf macOS ebenfalls mit Save & Apply übernehmen
+            vocabulary_saved = self._save_vocabulary_if_changed()
+
             # Onboarding als abgeschlossen markieren (beim ersten Speichern)
             # Dies verhindert, dass Settings bei jedem Start erneut öffnet
             if not is_onboarding_complete():
@@ -4371,8 +4453,15 @@ class SettingsWindow(QDialog):
             self._saved_display_settings_state = self._get_current_display_settings_state()
             self._refresh_secondary_settings_feedback()
 
-            # Visual Save Feedback
-            self._show_save_feedback()
+            # Visual Save Feedback (a failed vocabulary write must stay visible)
+            if vocabulary_saved:
+                self._show_save_feedback()
+            else:
+                self._set_footer_status(
+                    "Settings saved, but the vocabulary could not be saved. "
+                    "Check the Vocabulary tab and try again.",
+                    "warning",
+                )
             self._refresh_setup_overview()
 
             # Callback aufrufen (für Daemon-Reload, falls im gleichen Prozess)

@@ -14,6 +14,9 @@ license = "MIT"
 packages = ["audio", "cli", "providers", "refine", "ui", "utils", "whisper_platform"]
 py-modules = ["config", "transcribe", "pulsescribe_daemon", "pulsescribe_windows", "build_windows"]
 
+[tool.setuptools.package-data]
+ui = ["assets/*.svg"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]

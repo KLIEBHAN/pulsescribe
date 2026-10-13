@@ -396,7 +396,8 @@ def test_refresh_setup_overview_uses_process_env_api_keys(monkeypatch):
     window = SettingsWindow.__new__(SettingsWindow)
     window._setup_status_label = _FakeLabel()
     window._setup_status_detail_label = _FakeLabel()
-    window._setup_howto_label = _FakeLabel()
+    window._setup_try_body_label = _FakeLabel()
+    window._setup_try_hotkey_label = _FakeLabel()
     window._mode_combo = _FakeCombo(["deepgram"], current="deepgram")
     window._toggle_hotkey_field = _FakeField()
     window._toggle_hotkey_field.setText("ctrl+alt+r")
@@ -408,6 +409,8 @@ def test_refresh_setup_overview_uses_process_env_api_keys(monkeypatch):
 
     assert window._setup_status_label.text == "Ready to Dictate"
     assert "Deepgram" in window._setup_status_detail_label.text
+    assert window._setup_try_hotkey_label.text == "Toggle: Ctrl+Alt+R"
+    assert window._setup_try_body_label.text.startswith("Press Ctrl+Alt+R")
 
 
 def test_refresh_provider_key_statuses_marks_current_mode_key_as_required():
@@ -690,6 +693,26 @@ def test_save_settings_invalid_hotkeys_show_footer_hint(monkeypatch):
     assert "hotkey issues" in window._footer_status_label.text.lower()
 
 
+@pytest.mark.parametrize("vocabulary_saved", [True, False])
+def test_save_settings_reports_vocabulary_write_failures(monkeypatch, vocabulary_saved):
+    monkeypatch.setattr(settings_mod, "update_env_settings", lambda _updates: None)
+    monkeypatch.setattr(settings_mod, "is_onboarding_complete", lambda: True)
+
+    window = _make_save_window("default")
+    window._footer_status_label = _FakeLabel()
+    window._save_vocabulary_if_changed = lambda: vocabulary_saved
+    success_feedback: list[bool] = []
+    window._show_save_feedback = lambda: success_feedback.append(True)
+
+    window._save_settings()
+
+    assert success_feedback == ([True] if vocabulary_saved else [])
+    if not vocabulary_saved:
+        assert window._footer_status_label.text.startswith(
+            "Settings saved, but the vocabulary could not be saved"
+        )
+
+
 def test_save_settings_batches_api_key_updates(monkeypatch):
     recorded_updates: dict[str, str | None] = {}
 
@@ -863,11 +886,26 @@ def test_build_setup_status_allows_local_mode_without_api_key():
     assert color == "success"
 
 
-def test_build_setup_how_to_text_prefers_hold_flow_when_available():
-    text = settings_mod._build_setup_how_to_text("ctrl+alt+r", "ctrl+win")
+def test_build_setup_try_it_content_prefers_hold_flow_when_available():
+    hotkey_info, body, hint, button = settings_mod._build_setup_try_it_content(
+        "ctrl+alt+r", "ctrl+win"
+    )
 
-    assert "Hold Ctrl+Win" in text
-    assert "Alternative: press Ctrl+Alt+R" in text
+    assert hotkey_info == "Toggle: Ctrl+Alt+R • Hold: Ctrl+Win"
+    assert body.startswith("Hold Ctrl+Win for push-to-talk")
+    assert "Ctrl+Alt+R" in body
+    assert "pasted" in hint
+    assert button == "Change Hotkeys…"
+
+
+def test_build_setup_try_it_content_points_to_hotkeys_when_empty():
+    hotkey_info, body, _hint, button = settings_mod._build_setup_try_it_content(
+        "", None
+    )
+
+    assert hotkey_info == "No hotkey configured"
+    assert body.startswith("No hotkey yet")
+    assert button == "Set up Hotkeys…"
 
 
 def test_refresh_footer_settings_hint_switches_between_loaded_and_unsaved_states() -> None:
