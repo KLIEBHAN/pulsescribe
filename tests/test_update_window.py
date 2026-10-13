@@ -70,6 +70,21 @@ def test_show_launches_once_and_forwards_views():
     assert [m["activate"] for m in messages] == [False, None, True]
 
 
+def test_progress_updates_send_only_changed_fields():
+    process = FakeProcess()
+    window, _launches, _actions = make_window([process])
+    notes = "Long release notes " * 500
+
+    window.show(UpdateView("1%", notes=notes, progress=1), activate=False)
+    window.render(UpdateView("2%", notes=notes, progress=2))
+    window.render(UpdateView("2%", notes=notes, progress=2))  # unchanged: nothing sent
+
+    first, second = process.messages()
+    assert first["view"]["notes"] == notes
+    assert second["view"] == {"headline": "2%", "progress": 2}
+    assert len(process.messages()) == 2
+
+
 def test_render_without_window_starts_nothing():
     window, launches, _actions = make_window([])
 
@@ -150,6 +165,35 @@ def test_failure_of_a_replaced_window_process_is_ignored():
     time.sleep(0.1)
 
     assert launches == [False, True]
+    assert actions == []
+    window.close()
+    stop.set()
+
+
+def test_buffered_close_of_a_replaced_window_does_not_close_the_new_one():
+    release = threading.Event()
+
+    class LateClose:
+        def __iter__(self):
+            release.wait(2)
+            return iter([b'PULSESCRIBE-UPDATE {"action": "close"}\n'])
+
+    class RunningStdout:
+        def __iter__(self):
+            stop.wait(2)
+            return iter([])
+
+    stop = threading.Event()
+    old, new = FakeProcess(), FakeProcess()
+    old.stdout, new.stdout = LateClose(), RunningStdout()
+    window, _launches, actions = make_window([old, new])
+    window.show(UpdateView("one"), activate=False)
+    old.returncode = 0
+
+    window.show(UpdateView("again"), activate=True)
+    release.set()
+    time.sleep(0.1)
+
     assert actions == []
     window.close()
     stop.set()

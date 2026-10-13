@@ -29,6 +29,7 @@ class WindowsUpdateWindow:
         self._on_action = on_action
         self._lock = threading.Lock()
         self._process = None
+        self._sent: dict | None = None  # Last view sent to the current process
         self._closed = weakref.WeakSet()  # Processes this side ended on purpose
 
     def show(self, view: UpdateView, *, activate: bool) -> None:
@@ -37,19 +38,20 @@ class WindowsUpdateWindow:
             if process is None or process.poll() is not None:
                 process = self._launch(activate)
                 self._process = process
+                self._sent = None
                 threading.Thread(
                     target=self._read_actions,
                     args=(process,),
                     name="UpdateWindowActions",
                     daemon=True,
                 ).start()
-            self._send(process, {"view": view.to_dict(), "activate": activate})
+            self._send_view(process, view, activate)
 
     def render(self, view: UpdateView) -> None:
         with self._lock:
             process = self._process
             if process is not None and process.poll() is None:
-                self._send(process, {"view": view.to_dict(), "activate": None})
+                self._send_view(process, view, None)
 
     def hide(self) -> None:
         self.close()
@@ -58,9 +60,9 @@ class WindowsUpdateWindow:
         """Close stdin so the window process exits; terminate it if it hangs."""
         with self._lock:
             process, self._process = self._process, None
-        if process is None:
-            return
-        self._closed.add(process)
+            if process is None:
+                return
+            self._closed.add(process)  # Before any reader can see it gone
         try:
             process.stdin.close()
         except OSError:
@@ -70,10 +72,20 @@ class WindowsUpdateWindow:
         except Exception:
             process.terminate()
 
-    def _send(self, process, message: dict) -> None:
+    def _send_view(self, process, view: UpdateView, activate: bool | None) -> None:
+        """Send only changed fields; download progress must not resend the notes."""
+        full = view.to_dict()
+        sent = self._sent
+        changes = full if sent is None else {
+            key: value for key, value in full.items() if sent.get(key) != value
+        }
+        if not changes and activate is None:
+            return
         try:
+            message = {"view": changes, "activate": activate}
             process.stdin.write((json.dumps(message) + "\n").encode("utf-8"))
             process.stdin.flush()
+            self._sent = full
         except (OSError, ValueError):
             logger.debug("Update window process is gone", exc_info=True)
             if self._process is process:
@@ -92,7 +104,10 @@ class WindowsUpdateWindow:
                 if action == "ready" or not isinstance(action, str):
                     continue  # "ready" is the startup handshake checked in CI
                 closed_by_user = closed_by_user or action == "close"
-                self._on_action(action)
+                with self._lock:
+                    current = self._process is process
+                if current:  # Buffered actions of a replaced window are stale
+                    self._on_action(action)
         except (OSError, ValueError):
             pass
         with self._lock:

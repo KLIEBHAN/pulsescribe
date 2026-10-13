@@ -2,8 +2,9 @@
 
 The Windows daemon starts this module (``PulseScribe.exe --update-window``)
 with stdin/stdout pipes. It reads one JSON message per line from stdin:
-``{"view": {...}, "activate": true|false|null}``. ``activate`` shows the
-window (with or without focus); ``null`` only re-renders. Button presses are
+``{"view": {...}, "activate": true|false|null}``. The first view is complete,
+later ones carry only changed fields. ``activate`` shows the window (with or
+without focus); ``null`` only re-renders. Button presses are
 written to stdout as ``PULSESCRIBE-UPDATE {"action": ...}`` lines; the first
 line is ``ready`` once the window exists. The process exits when the window
 closes or stdin reaches EOF (daemon gone).
@@ -256,14 +257,19 @@ def main() -> int:
     write_action = _action_writer(stdout)
     window.action.connect(write_action)
 
+    fields: dict = {}
+
     def on_message(data: dict) -> None:
-        view = data.get("view")
-        if isinstance(view, dict):
-            activate = data.get("activate")
-            window.present(
-                UpdateView.from_dict(view),
-                activate if isinstance(activate, bool) else None,
-            )
+        changes = data.get("view")
+        if not isinstance(changes, dict):
+            return
+        fields.update(changes)
+        try:
+            view = UpdateView.from_dict(fields)
+        except TypeError:
+            return  # Incomplete first message
+        activate = data.get("activate")
+        window.present(view, activate if isinstance(activate, bool) else None)
 
     reader = _StdinReader()
     reader.message.connect(on_message)
