@@ -47,7 +47,7 @@ class FakeProcess:
         return [json.loads(line) for line in self.stdin.getvalue().splitlines()]
 
 
-def make_window(processes, actions=None):
+def make_window(processes, actions=None, **kwargs):
     launches = []
 
     def launch(activate):
@@ -55,7 +55,7 @@ def make_window(processes, actions=None):
         return processes[len(launches) - 1]
 
     actions = [] if actions is None else actions
-    return WindowsUpdateWindow(launch, actions.append), launches, actions
+    return WindowsUpdateWindow(launch, actions.append, **kwargs), launches, actions
 
 
 def wait_for(predicate, timeout=2.0):
@@ -172,6 +172,50 @@ def test_window_that_crashes_after_ready_is_reported_unavailable():
     window.show(UpdateView("downloading"), activate=False)
 
     assert wait_for(lambda: actions == ["unavailable"])
+
+
+def test_window_that_hangs_before_ready_is_stopped_and_reported():
+    class HungProcess(FakeProcess):
+        def __init__(self):
+            super().__init__()
+            self.ended = threading.Event()
+            self.stdout = self  # Iterating blocks until terminate()
+
+        def __iter__(self):
+            self.ended.wait(2)
+            return iter([])
+
+        def terminate(self):
+            self.terminated = True
+            self.ended.set()
+
+    process = HungProcess()
+    window, _launches, actions = make_window([process], startup_timeout=0.05)
+
+    window.show(UpdateView("downloading"), activate=False)
+
+    assert wait_for(lambda: actions == ["unavailable"])
+    assert process.terminated
+
+
+def test_ready_window_is_not_stopped_by_the_startup_watchdog():
+    class RunningStdout:
+        def __iter__(self):
+            yield b'PULSESCRIBE-UPDATE {"action": "ready"}\n'
+            stop.wait(2)
+
+    stop = threading.Event()
+    process = FakeProcess()
+    process.stdout = RunningStdout()
+    window, _launches, actions = make_window([process], startup_timeout=0.05)
+
+    window.show(UpdateView("downloading"), activate=False)
+    time.sleep(0.2)
+
+    assert not process.terminated
+    assert actions == []
+    window.close()
+    stop.set()
 
 
 def test_failure_of_a_replaced_window_process_is_ignored():

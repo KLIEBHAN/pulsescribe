@@ -24,12 +24,15 @@ from ui.update_window_model import UpdateView
 logger = logging.getLogger("pulsescribe.updates")
 
 ACTION_PREFIX = b"PULSESCRIBE-UPDATE "
+# A window that has not reported "ready" by then is treated as hung.
+STARTUP_TIMEOUT_S = 30.0
 
 
 class WindowsUpdateWindow:
-    def __init__(self, launch, on_action):
+    def __init__(self, launch, on_action, *, startup_timeout: float = STARTUP_TIMEOUT_S):
         self._launch = launch
         self._on_action = on_action
+        self._startup_timeout = startup_timeout
         self._lock = threading.Lock()
         self._process = None
         self._sent: dict | None = None  # Last view sent to the current process
@@ -44,12 +47,18 @@ class WindowsUpdateWindow:
                 self._process = process
                 self._sent = None
                 self._outbox = queue.SimpleQueue()
+                ready = threading.Event()
                 threading.Thread(
                     target=self._read_actions,
-                    args=(process,),
+                    args=(process, ready),
                     name="UpdateWindowActions",
                     daemon=True,
                 ).start()
+                watchdog = threading.Timer(
+                    self._startup_timeout, self._stop_if_not_started, (process, ready)
+                )
+                watchdog.daemon = True
+                watchdog.start()
                 threading.Thread(
                     target=self._write_messages,
                     args=(process, self._outbox),
@@ -117,7 +126,17 @@ class WindowsUpdateWindow:
                 return
         _close_stdin(process)
 
-    def _read_actions(self, process) -> None:
+    def _stop_if_not_started(self, process, ready: threading.Event) -> None:
+        """End a window that hangs before "ready"; its reader then reports it."""
+        if ready.is_set():
+            return
+        with self._lock:
+            hung = self._process is process and process not in self._closed
+        if hung:
+            logger.warning("Update window did not start in time")
+            process.terminate()
+
+    def _read_actions(self, process, ready: threading.Event) -> None:
         closed_by_user = False
         try:
             for line in process.stdout:
@@ -127,8 +146,11 @@ class WindowsUpdateWindow:
                     action = json.loads(line[len(ACTION_PREFIX):]).get("action")
                 except (ValueError, AttributeError):
                     continue
-                if action == "ready" or not isinstance(action, str):
-                    continue  # "ready" is the startup handshake checked in CI
+                if action == "ready":
+                    ready.set()  # Startup handshake (also checked in CI)
+                    continue
+                if not isinstance(action, str):
+                    continue
                 closed_by_user = closed_by_user or action == "close"
                 with self._lock:
                     current = self._process is process
