@@ -102,6 +102,20 @@ from ui.daemon_status_feedback import (
 from ui.menubar import build_menubar_hint_text, build_menubar_status_text
 from utils.version import get_app_version
 
+MB_YESNO = 0x00000004
+MB_ICONQUESTION = 0x00000020
+MB_ICONINFORMATION = 0x00000040
+MB_DEFBUTTON2 = 0x00000100
+IDYES = 6
+
+
+def _show_message_box(text: str, title: str, flags: int) -> int:
+    """Native Windows message box; returns the pressed button ID."""
+    import ctypes
+
+    return ctypes.windll.user32.MessageBoxW(None, text, title, flags)
+
+
 # Lazy imports für optionale Features
 pystray = None
 PIL_Image = None
@@ -381,6 +395,10 @@ class PulseScribeWindows:
         )
         # Feedback from a menu action, kept until the status row changes.
         self._tray_action_hint: str | None = None
+        # Native update prompts (window fallback): one drain thread at a time.
+        self._update_prompt_lock = threading.Lock()
+        self._update_prompt_pending = False
+        self._update_prompt_running = False
         self._last_status_text: str | None = None
         self._hotkey_listeners: list = []  # Mehrere Listener (toggle + hold)
         self._recording_thread = None
@@ -2346,11 +2364,8 @@ class PulseScribeWindows:
         updater = getattr(self, "_updater", None)
         update_items = (
             (
-                pystray.MenuItem(
-                    lambda _item: updater.state.label,
-                    self._activate_update,
-                    enabled=lambda _item: updater.state.status not in ("checking", "downloading"),
-                ),
+                # Always enabled: it (re)opens the update window, also mid-download.
+                pystray.MenuItem(lambda _item: updater.state.label, self._activate_update),
             )
             if updater
             else ()
@@ -2438,6 +2453,11 @@ class PulseScribeWindows:
             except Exception:
                 pass
             self._settings_process = None
+
+        # Update-Fenster beenden (der Installer ersetzt sonst gesperrte Dateien)
+        update_window = getattr(self, "_update_window", None)
+        if update_window is not None:
+            update_window.close()
 
         # Onboarding-Wizard beenden (falls offen)
         if self._onboarding_process and self._onboarding_process.poll() is None:
@@ -3493,30 +3513,126 @@ class PulseScribeWindows:
         target = installed_target()
         if target is None:
             return
+        from ui.update_window_windows import WindowsUpdateWindow
+        from ui.updates import UpdateUI
         from utils.update_flow import UpdateFlow
 
         def publish(state):
             if self._tray:
                 self._tray.update_menu()
-                if state.status == "ready" and state.offer:
-                    self._tray.notify(f"PulseScribe {state.offer.version} is ready. Restart from the tray menu to install.", "PulseScribe Update")
-                elif state.manual and state.status == "idle":
-                    self._tray.notify(f"PulseScribe {state.current} is up to date.", "PulseScribe Updates")
-                elif state.manual and state.status == "error":
-                    self._tray.notify(state.error, "PulseScribe Update Failed")
+            self._update_ui.publish(state)
 
         self._updater = UpdateFlow(target, publish)
+        self._update_window = WindowsUpdateWindow(
+            self._launch_update_window,
+            lambda action: self._update_ui.handle(action),
+        )
+        self._update_ui = UpdateUI(
+            self._updater,
+            self._update_window,
+            self._can_install_update,
+            self._install_update_if_idle,
+            on_window_error=self._notify_update_fallback,
+        )
+
+    def _launch_update_window(self, activate: bool):
+        """Start the Qt update window process (see ui/update_window_qt.py)."""
+        import subprocess
+
+        if getattr(sys, "frozen", False):
+            command = [sys.executable, "--update-window"]
+            env = None
+        else:
+            python_exe = self._resolve_qt_python_executable(
+                missing_pyside_message="PySide6 nicht installiert - Update-Fenster nicht verfügbar",
+                fallback=lambda: None,
+            )
+            if python_exe is None:
+                raise RuntimeError("PySide6 is not available for the update window.")
+            command = [python_exe, str(PROJECT_ROOT / "ui" / "update_window_qt.py")]
+            env = self._qt_subprocess_env()
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=str(PROJECT_ROOT),
+            env=env,
+            creationflags=self._subprocess_creationflags(subprocess),
+        )
+        self._start_subprocess_stderr_drain(process, "update-window")
+        if activate:
+            # The tray click grants foreground rights; pass them to the window.
+            try:
+                import ctypes
+
+                ctypes.windll.user32.AllowSetForegroundWindow(process.pid)
+            except Exception:
+                pass
+        return process
+
+    def _notify_update_fallback(self, view) -> None:
+        """Without the update window: prompt for install/retry, else notify.
+
+        Never blocks the caller (it may hold the update window lock). Prompts
+        run on one thread, one at a time, always for the latest update state.
+        """
+        # Windows downloads right after "available", so "download" is only status.
+        if view.primary_action in ("install", "retry") and view.primary_enabled:
+            with self._update_prompt_lock:
+                self._update_prompt_pending = True
+                start = not self._update_prompt_running
+                self._update_prompt_running = True
+            if start:
+                threading.Thread(
+                    target=self._drain_update_prompts, name="UpdatePrompt", daemon=True
+                ).start()
+            return
+        threading.Thread(
+            target=self._notify_update_status, args=(view,), name="UpdateNotice", daemon=True
+        ).start()
+
+    def _notify_update_status(self, view) -> None:
+        if self._tray:
+            self._tray.notify(view.notice or view.detail or view.headline, view.headline)
+
+    def _drain_update_prompts(self) -> None:
+        """Show pending prompts until none is left; requests during a prompt wait."""
+        while True:
+            with self._update_prompt_lock:
+                if not self._update_prompt_pending:
+                    self._update_prompt_running = False
+                    return
+                self._update_prompt_pending = False
+            window = getattr(self, "_update_window", None)
+            if window is not None and not window.failed:
+                continue  # The window recovered and shows this step itself
+            view = self._update_ui.current_view()
+            if view.primary_action in ("install", "retry") and view.primary_enabled:
+                self._confirm_update_action(view)
+
+    def _confirm_update_action(self, view) -> None:
+        """Yes/No message box for the window's primary action (no long notes)."""
+        from ui.updates import BUSY_NOTICE
+
+        if view.primary_action == "install" and not self._can_install_update():
+            _show_message_box(BUSY_NOTICE, view.headline, MB_ICONINFORMATION)
+            return
+        text = "\n\n".join(
+            part for part in (view.detail, view.notice, f"{view.primary_label}?") if part
+        )
+        flags = MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2
+        if _show_message_box(text, view.headline, flags) != IDYES:
+            return
+        current = self._update_ui.current_view()
+        if current.primary_action == view.primary_action and current.primary_enabled:
+            # May request the next prompt (busy notice, error); it runs afterwards.
+            self._update_ui.handle(view.primary_action)
 
     def _activate_update(self) -> None:
-        from ui.updates import activate_update
-
-        updater = getattr(self, "_updater", None)
-        if updater:
-            activate_update(
-                updater,
-                self._can_install_update,
-                self._install_update_if_idle,
-            )
+        update_ui = getattr(self, "_update_ui", None)
+        if update_ui:
+            update_ui.open()
 
     def _can_install_update(self) -> bool:
         return not self._stop_event.is_set() and self.state in (
@@ -3603,6 +3719,11 @@ def main():
         action="store_true",
         help="Onboarding-Wizard öffnen (statt Daemon starten)",
     )
+    parser.add_argument(
+        "--update-window",
+        action="store_true",
+        help=argparse.SUPPRESS,  # Started by the daemon with stdin/stdout pipes
+    )
 
     args = parser.parse_args()
 
@@ -3619,6 +3740,12 @@ def main():
         except ImportError as e:
             print(f"Settings-Fenster nicht verfügbar: {e}", file=sys.stderr)
             sys.exit(1)
+
+    # --update-window: Update-Fenster für den laufenden Daemon (kein Daemon)
+    if args.update_window:
+        from ui.update_window_qt import main as update_window_main
+
+        sys.exit(update_window_main())
 
     # --onboarding: Onboarding-Wizard öffnen und beenden (kein Daemon)
     if args.onboarding:

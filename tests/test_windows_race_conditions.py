@@ -1626,11 +1626,11 @@ def test_setup_tray_uses_current_loading_state_and_clear_recovery_labels(monkeyp
 
         item = update_items[0]
         assert item.text(item) == "Check for Updates…"
-        assert item.enabled(item)
+        assert item.enabled is True
         assert item.action == daemon._activate_update
         daemon._updater.state = replace(daemon._updater.state, status="downloading", percent=50)
         assert item.text(item) == "Downloading Update… 50%"
-        assert not item.enabled(item)
+        assert item.enabled is True  # Reopens the hidden update window
 
 
 def test_start_recording_allows_retry_from_no_speech_state(monkeypatch):

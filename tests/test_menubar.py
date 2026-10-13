@@ -209,3 +209,23 @@ def test_menu_action_handler_export_diagnostics_reports_failure(monkeypatch) -> 
     handler.exportDiagnostics_(None)
 
     assert feedback == ["Diagnostics export failed — check the log file and try again."]
+
+
+def test_update_item_stays_enabled_to_reopen_the_update_window():
+    from types import SimpleNamespace
+
+    from ui.menubar import MenuBarController
+    from utils.update_flow import UpdateState
+
+    titles, enabled = [], []
+    controller = MenuBarController.__new__(MenuBarController)
+    controller._update_item = SimpleNamespace(
+        title=lambda: titles[-1] if titles else "",
+        setTitle_=titles.append,
+        setEnabled_=enabled.append,
+    )
+
+    controller.update_update_state(UpdateState("1.0.0", status="downloading", percent=5))
+
+    assert titles == ["Downloading Update… 5%"]
+    assert enabled == []  # Never disabled while checking or downloading

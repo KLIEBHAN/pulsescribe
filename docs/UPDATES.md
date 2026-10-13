@@ -6,14 +6,24 @@ updater. No token or additional dependency is required.
 Packaged versions must use `X.Y.Z`; manual prerelease or unknown version strings
 are not compared to stable releases, and an explicit check reports that error.
 
-Use **Check for Updates…** in the macOS menu bar or Windows tray for an explicit
-check. Automatic failures stay quiet; manual checks report errors or the current
-version. A new update is downloaded in the background where PulseScribe can
-install it itself. The menu shows download progress, then **Restart to Update to
-X.Y.Z…**. The confirmation dialog shows the installed version, release notes, and
-installation steps. Choose **Later** to keep working. Updates never install just
-because the app was closed; the update action requires confirmation and an idle
-dictation state.
+The **PulseScribe Update** window shows each step: checking, download progress,
+and the ready update with its scrollable release notes and a **Restart and
+Install** button. When an automatic check finds a new version, the window opens
+once for that version without taking focus, so dictation keeps pasting into the
+current app; on macOS the Dock icon bounces once, on Windows the taskbar button
+flashes. **Hide** or **Later** closes it while the download continues; the menu
+entry shows the progress and reopens the window.
+
+Use **Check for Updates…** in the macOS menu bar or Windows tray to open the
+window and check immediately. Automatic failures stay quiet; manual checks show
+errors with **Retry** or report the current version. Updates never install just
+because the app was closed; installing requires the button and an idle dictation
+state, otherwise the window asks to finish the dictation first.
+
+On macOS the window is a non-activating panel in the app. On Windows it is a
+small Qt process (`PulseScribe.exe --update-window`) that receives states over
+its stdin and reports buttons over stdout; it exits with the app and before an
+installation starts.
 
 Downloads use HTTPS, bounded chunks, and the exact release asset for the platform.
 Size and SHA-256 are checked before preparing an installer. The checksum comes
@@ -41,8 +51,11 @@ checks and downloads; network operations time out after 30 seconds of inactivity
   an existing administrative installation ([Inno Setup install modes](https://jrsoftware.org/ishelp/topic_setup_usepreviousprivileges.htm)). A failed install restarts the app
   and keeps the installer and `setup.log` for diagnosis. It does not close other
   applications. Local Whisper installations require the `-Local.zip` asset and never
-  receive the API-only installer. If the newer release lacks that optional asset,
-  a manual check reports it; automatic checks retry hourly.
+  receive the API-only installer, so every release publishes it. After a
+  successful API-only installation, the installer removes Local Whisper packages
+  left by a previous Local installation, so switching variants also switches
+  future updates. If a release lacks the Local asset, a
+  manual check reports it; automatic checks retry hourly.
 
 Installation and recording starts share a lock in each daemon. After reserving
 the update, new recording starts are rejected until exit. Concurrent install
@@ -72,8 +85,8 @@ release page; subsequent releases can be installed from its menu.
    ```
 
 The **Build Installers** workflow validates the tag, version, and exact commit,
-builds and validates the macOS DMG and API-only Windows installer, and creates
-`SHA256SUMS.txt`. It creates a draft release, uploads the assets, and publishes it
+builds and validates the macOS DMG and both Windows installers (API-only and
+Local Whisper), and creates `SHA256SUMS.txt`. It creates a draft release, uploads the assets, and publishes it
 as latest only after successful uploads and only if its version is newer than
 the current latest release. Publication jobs are serialized so concurrently
 completed builds cannot move latest backwards. The tag text becomes the update notes.
@@ -82,7 +95,7 @@ draft, replacing partial draft uploads to keep installers and checksums consiste
 Published assets are overwritten only when explicitly requested through the
 manual workflow. Lightweight tags are rejected. Published tags must not be moved.
 
-The larger Windows Local Whisper package remains an opt-in build; see
+Pull requests skip the larger Windows Local Whisper package; see
 [Building Windows](BUILDING_WINDOWS.md#ci-build). Existing `release: published`
 and manual build triggers remain supported. Automatic publication through the
 workflow's `GITHUB_TOKEN` does not trigger a second installer build.
@@ -91,7 +104,8 @@ workflow's `GITHUB_TOKEN` does not trigger a second installer build.
 
 ```bash
 python -m pytest tests/test_updates.py tests/test_update_flow.py \
-  tests/test_update_install.py tests/test_update_ui.py tests/test_menubar.py -q
+  tests/test_update_install.py tests/test_update_ui.py tests/test_update_window.py \
+  tests/test_update_daemon.py tests/test_menubar.py -q
 actionlint .github/workflows/build-installers.yml .github/workflows/test.yml
 ```
 
