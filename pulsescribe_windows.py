@@ -395,8 +395,10 @@ class PulseScribeWindows:
         )
         # Feedback from a menu action, kept until the status row changes.
         self._tray_action_hint: str | None = None
-        # Only one native update prompt at a time (window fallback).
+        # Native update prompts (window fallback): one drain thread at a time.
         self._update_prompt_lock = threading.Lock()
+        self._update_prompt_pending = False
+        self._update_prompt_running = False
         self._last_status_text: str | None = None
         self._hotkey_listeners: list = []  # Mehrere Listener (toggle + hold)
         self._recording_thread = None
@@ -3570,47 +3572,59 @@ class PulseScribeWindows:
         return process
 
     def _notify_update_fallback(self, view) -> None:
-        """Without the update window: confirm the next step natively, else notify.
+        """Without the update window: prompt for install/retry, else notify.
 
-        Runs on its own thread because callers may hold the update window lock.
+        Never blocks the caller (it may hold the update window lock). Prompts
+        run on one thread, one at a time, always for the latest update state.
         """
-        threading.Thread(
-            target=self._run_update_fallback,
-            args=(view,),
-            name="UpdateFallback",
-            daemon=True,
-        ).start()
-
-    def _run_update_fallback(self, view) -> None:
         # Windows downloads right after "available", so "download" is only status.
         if view.primary_action in ("install", "retry") and view.primary_enabled:
-            self._confirm_update_action(view)
-        elif self._tray:
+            with self._update_prompt_lock:
+                self._update_prompt_pending = True
+                start = not self._update_prompt_running
+                self._update_prompt_running = True
+            if start:
+                threading.Thread(
+                    target=self._drain_update_prompts, name="UpdatePrompt", daemon=True
+                ).start()
+            return
+        threading.Thread(
+            target=self._notify_update_status, args=(view,), name="UpdateNotice", daemon=True
+        ).start()
+
+    def _notify_update_status(self, view) -> None:
+        if self._tray:
             self._tray.notify(view.notice or view.detail or view.headline, view.headline)
+
+    def _drain_update_prompts(self) -> None:
+        """Show pending prompts until none is left; requests during a prompt wait."""
+        while True:
+            with self._update_prompt_lock:
+                if not self._update_prompt_pending:
+                    self._update_prompt_running = False
+                    return
+                self._update_prompt_pending = False
+            view = self._update_ui.current_view()
+            if view.primary_action in ("install", "retry") and view.primary_enabled:
+                self._confirm_update_action(view)
 
     def _confirm_update_action(self, view) -> None:
         """Yes/No message box for the window's primary action (no long notes)."""
         from ui.updates import BUSY_NOTICE
 
-        if not self._update_prompt_lock.acquire(blocking=False):
-            return  # One prompt at a time; the open one is revalidated on answer
-        try:
-            if view.primary_action == "install" and not self._can_install_update():
-                _show_message_box(BUSY_NOTICE, view.headline, MB_ICONINFORMATION)
-                return
-            text = "\n\n".join(
-                part for part in (view.detail, view.notice, f"{view.primary_label}?") if part
-            )
-            flags = MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2
-            if _show_message_box(text, view.headline, flags) != IDYES:
-                return
-            current = self._update_ui.current_view()
-            if not (current.primary_action == view.primary_action and current.primary_enabled):
-                return
-        finally:
-            self._update_prompt_lock.release()
-        # Outside the lock: the action may need a new prompt (busy notice, error).
-        self._update_ui.handle(view.primary_action)
+        if view.primary_action == "install" and not self._can_install_update():
+            _show_message_box(BUSY_NOTICE, view.headline, MB_ICONINFORMATION)
+            return
+        text = "\n\n".join(
+            part for part in (view.detail, view.notice, f"{view.primary_label}?") if part
+        )
+        flags = MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2
+        if _show_message_box(text, view.headline, flags) != IDYES:
+            return
+        current = self._update_ui.current_view()
+        if current.primary_action == view.primary_action and current.primary_enabled:
+            # May request the next prompt (busy notice, error); it runs afterwards.
+            self._update_ui.handle(view.primary_action)
 
     def _activate_update(self) -> None:
         update_ui = getattr(self, "_update_ui", None)
