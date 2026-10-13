@@ -73,7 +73,9 @@ class UpdateUI:
                     or (state.manual and state.status in ("idle", "error"))
                 )
             )
-        if report_fallback:
+        # Re-read outside the lock: a concurrent show() may have relaunched the
+        # window meanwhile (its prompt would revalidate the action anyway).
+        if report_fallback and self._window_failed():
             self._on_window_error(view)
         elif announce:
             self._show(view, activate=False)

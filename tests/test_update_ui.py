@@ -327,3 +327,26 @@ def test_controller_never_reads_the_window_under_its_own_lock():
     ui.publish(UpdateState("1.3.0", status="downloading", offer=OFFER))
     ui.publish(ready_state())
     ui.handle("install")
+
+
+def test_fallback_is_skipped_when_the_window_recovered_meanwhile():
+    flow = Mock(state=UpdateState("1.3.0"))
+    fallback = Mock()
+    reads = iter([True, False])  # failed at the snapshot, relaunched before acting
+
+    class RecoveringWindow(FakeWindow):
+        @property
+        def failed(self):
+            return next(reads)
+
+        @failed.setter
+        def failed(self, _value):
+            pass
+
+    window = RecoveringWindow()
+    ui = updates.UpdateUI(flow, window, lambda: True, Mock(), on_window_error=fallback)
+
+    ui.publish(ready_state())
+
+    fallback.assert_not_called()
+    assert window.calls[-1][0] in ("render", "show")
