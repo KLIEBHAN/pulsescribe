@@ -492,6 +492,29 @@ def test_refresh_vocabulary_action_buttons_enables_save_for_unsaved_changes():
     assert window._vocab_save_btn.enabled is True
 
 
+@pytest.mark.parametrize(
+    ("loaded", "raw_text", "expected_saves"),
+    [
+        (False, "Alpha\nGamma", 0),  # never overwrite a file that was not read
+        (True, "Alpha\nBeta", 0),
+        (True, "Alpha\nGamma", 1),
+    ],
+)
+def test_save_vocabulary_if_changed_matches_macos_save_and_apply(
+    loaded, raw_text, expected_saves
+):
+    window = _make_window()
+    window._vocab_editor = _FakeEditor(raw_text)
+    window._saved_vocabulary_keywords = ["Alpha", "Beta"]
+    window._vocabulary_loaded = loaded
+    saves: list[bool] = []
+    window._save_vocabulary = lambda: saves.append(True)
+
+    window._save_vocabulary_if_changed()
+
+    assert len(saves) == expected_saves
+
+
 @pytest.mark.parametrize("raw_text", ["", "Alpha\nBeta", "Alpha\nalpha\nGamma"])
 def test_vocabulary_edit_reads_and_analyzes_input_once(monkeypatch, raw_text):
     import ui.settings_windows as settings_mod
