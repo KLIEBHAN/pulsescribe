@@ -1,3 +1,5 @@
+import pytest
+
 from utils.state import AppState, DaemonErrorCode, DaemonStatusError
 
 from ui.daemon_status_feedback import (
@@ -11,6 +13,52 @@ from ui.daemon_status_feedback import (
 
 def test_normalize_daemon_status_text_collapses_whitespace() -> None:
     assert normalize_daemon_status_text("alpha\n  beta\t gamma") == "alpha beta gamma"
+
+
+@pytest.mark.parametrize("state", [AppState.RECORDING, AppState.DONE])
+@pytest.mark.parametrize("budget", [-1, 0, 1, 10, 11, 12, 44, 80])
+@pytest.mark.parametrize("text", [" \n\t ", "  ä\u2003beta\n", "alpha   beta\n" * 1000])
+def test_detail_preview_preserves_normalized_label(state, budget, text):
+    normalized = normalize_daemon_status_text(text)
+    if normalized:
+        expected = (
+            f"Recording: {normalized}" if state == AppState.RECORDING else normalized
+        )
+    else:
+        expected = (
+            "Recording — speak now"
+            if state == AppState.RECORDING
+            else "Transcript pasted"
+        )
+    if 0 < budget < len(expected):
+        expected = (
+            expected[:budget] if budget == 1 else expected[: budget - 1].rstrip() + "…"
+        )
+
+    assert build_daemon_status_label(state, text, max_chars=budget) == expected
+
+
+def test_recording_surfaces_do_not_normalize_ignored_transcript(monkeypatch):
+    def unexpected_normalization(_text):
+        raise AssertionError("A constant label or hint must not process its transcript")
+
+    monkeypatch.setattr(
+        "ui.daemon_status_feedback.normalize_daemon_status_text",
+        unexpected_normalization,
+    )
+    text = "alpha " * 10_000
+
+    assert (
+        build_daemon_status_label(AppState.RECORDING, text, prefer_detail=False)
+        == "Recording — speak now"
+    )
+    assert build_daemon_status_hint(AppState.RECORDING, text).startswith(
+        "Release the hold hotkey"
+    )
+    assert (
+        build_daemon_tray_title(AppState.RECORDING, text)
+        == "PulseScribe — Recording — speak now"
+    )
 
 
 def test_build_daemon_status_label_prefers_loading_detail_when_helpful() -> None:
@@ -28,7 +76,9 @@ def test_build_daemon_status_label_prefers_loading_detail_when_helpful() -> None
     )
 
 
-def test_build_daemon_status_hint_explains_startup_loading_and_permission_recovery() -> None:
+def test_build_daemon_status_hint_explains_startup_loading_and_permission_recovery() -> (
+    None
+):
     startup_hint = build_daemon_status_hint(AppState.LOADING, "Starting up...")
     permission_hint = build_daemon_status_hint(
         AppState.ERROR,
@@ -41,8 +91,14 @@ def test_build_daemon_status_hint_explains_startup_loading_and_permission_recove
 
 
 def test_build_daemon_status_label_classifies_common_error_types() -> None:
-    assert build_daemon_status_label(AppState.ERROR, "OPENAI_API_KEY not set") == "Missing API key"
-    assert build_daemon_status_label(AppState.ERROR, "Already recording") == "PulseScribe is busy"
+    assert (
+        build_daemon_status_label(AppState.ERROR, "OPENAI_API_KEY not set")
+        == "Missing API key"
+    )
+    assert (
+        build_daemon_status_label(AppState.ERROR, "Already recording")
+        == "PulseScribe is busy"
+    )
     assert (
         build_daemon_status_label(AppState.ERROR, "Watchdog timeout while transcribing")
         == "Transcription timed out"
@@ -58,14 +114,20 @@ def test_build_daemon_status_hint_returns_targeted_recovery_guidance() -> None:
         build_daemon_status_hint(AppState.ERROR, "OPENAI_API_KEY not set")
         == "Add the required key in Setup & Settings, then try again."
     )
-    assert "wait a moment" in build_daemon_status_hint(
-        AppState.ERROR,
-        "PulseScribe is busy",
-    ).lower()
-    assert "microphone access" in build_daemon_status_hint(
-        AppState.ERROR,
-        "Microphone unavailable",
-    ).lower()
+    assert (
+        "wait a moment"
+        in build_daemon_status_hint(
+            AppState.ERROR,
+            "PulseScribe is busy",
+        ).lower()
+    )
+    assert (
+        "microphone access"
+        in build_daemon_status_hint(
+            AppState.ERROR,
+            "Microphone unavailable",
+        ).lower()
+    )
 
 
 def test_build_daemon_status_helpers_classify_invalid_provider_configuration() -> None:
@@ -82,11 +144,14 @@ def test_build_daemon_status_helpers_classify_invalid_provider_configuration() -
     )
 
 
-
 def test_build_daemon_status_helpers_accept_structured_error_codes() -> None:
-    error = DaemonStatusError(DaemonErrorCode.INVALID_PROVIDER, "Unbekannter Provider: foo")
+    error = DaemonStatusError(
+        DaemonErrorCode.INVALID_PROVIDER, "Unbekannter Provider: foo"
+    )
 
-    assert build_daemon_status_label(AppState.ERROR, error) == "Invalid provider setting"
+    assert (
+        build_daemon_status_label(AppState.ERROR, error) == "Invalid provider setting"
+    )
     assert (
         build_daemon_status_hint(AppState.ERROR, error)
         == "Open Setup & Settings, choose a supported provider, then try again."
@@ -94,8 +159,9 @@ def test_build_daemon_status_helpers_accept_structured_error_codes() -> None:
     assert infer_daemon_status_error(error) == error
 
 
-
-def test_build_daemon_status_helpers_keep_unclassified_module_attribute_errors_verbatim() -> None:
+def test_build_daemon_status_helpers_keep_unclassified_module_attribute_errors_verbatim() -> (
+    None
+):
     detail = "module 'x' has no attribute 'y'"
 
     assert build_daemon_status_label(AppState.ERROR, detail) == detail

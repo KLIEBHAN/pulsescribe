@@ -11,6 +11,7 @@ from ui.daemon_status_feedback import (
     normalize_daemon_status_text,
 )
 from utils.state import AppState
+from utils.text_preview import normalized_text_prefix
 
 logger = logging.getLogger("pulsescribe.ui.menubar")
 
@@ -73,29 +74,8 @@ def _build_normalized_preview_prefix(
     if max_chars <= 0:
         return "", False
 
-    visible_limit = max_chars + 1
-    preview_chars: list[str] = []
-    saw_content = False
-    pending_space = False
-
-    for ch in text:
-        if ch.isspace():
-            if saw_content:
-                pending_space = True
-            continue
-
-        if pending_space and preview_chars:
-            preview_chars.append(" ")
-            if len(preview_chars) >= visible_limit:
-                return "".join(preview_chars), True
-            pending_space = False
-
-        saw_content = True
-        preview_chars.append(ch)
-        if len(preview_chars) >= visible_limit:
-            return "".join(preview_chars), True
-
-    return "".join(preview_chars), False
+    prefix = normalized_text_prefix(text, max_chars=max_chars + 1)
+    return prefix, len(prefix) > max_chars
 
 
 def _truncate_menubar_text(text: str | None, *, max_chars: int) -> str:
