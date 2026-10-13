@@ -249,3 +249,38 @@ def test_unavailable_window_process_falls_back_to_notification():
 
     fallback.assert_called_once()
     assert fallback.call_args.args[0].primary_action == "install"
+
+
+def test_after_window_failure_later_actionable_states_use_the_fallback():
+    flow = Mock(state=UpdateState("1.3.0"))
+    fallback = Mock()
+    window = FakeWindow()
+    ui = updates.UpdateUI(flow, window, lambda: True, Mock(), on_window_error=fallback)
+    downloading = UpdateState("1.3.0", status="downloading", offer=OFFER, percent=1)
+    ui.publish(downloading)  # Auto-opens the window process ...
+    ui.handle("unavailable")  # ... which dies before it is ready
+    fallback.reset_mock()
+
+    ui.publish(replace(downloading, percent=60))  # progress: no fallback spam
+    ui.publish(ready_state())
+    ui.publish(UpdateState("1.3.0", status="error", error="offline"))  # automatic: quiet
+
+    assert [call.args[0].headline for call in fallback.call_args_list] == [
+        "PulseScribe 1.4.0 is ready to install"
+    ]
+
+
+def test_manual_check_result_reaches_fallback_after_window_failure():
+    flow = Mock(state=UpdateState("1.3.0"))
+    fallback = Mock()
+    ui = updates.UpdateUI(flow, FakeWindow(), lambda: True, Mock(), on_window_error=fallback)
+    ui.open()
+    ui.handle("unavailable")
+    fallback.reset_mock()
+
+    ui.publish(UpdateState("1.3.0", status="checking", manual=True))
+    ui.publish(UpdateState("1.3.0", status="idle", manual=True))
+
+    assert [call.args[0].headline for call in fallback.call_args_list] == [
+        "PulseScribe 1.3.0 is up to date"
+    ]

@@ -45,11 +45,14 @@ class UpdateUI:
         self._announced: set[str] = set()
         self._notice = ""
         self._last_status = flow.state.status
+        # Set when the window failed; later actionable states use the fallback.
+        self._window_failed = False
 
     def publish(self, state: UpdateState) -> None:
         """Render a new flow state; may run on any thread the platform allows."""
         with self._lock:
-            if state.status != self._last_status:
+            status_changed = state.status != self._last_status
+            if status_changed:
                 self._notice = ""
                 self._last_status = state.status
             announce = False
@@ -57,7 +60,18 @@ class UpdateUI:
                 self._announced.add(state.offer.version)
                 announce = not state.manual and state.status in AUTO_OPEN_STATUSES
             view = build_update_view(state, self._notice)
-        if announce:
+            report_fallback = (
+                self._window_failed
+                and status_changed
+                and self._on_window_error is not None
+                and (
+                    state.status in ("available", "ready")
+                    or (state.manual and state.status in ("idle", "error"))
+                )
+            )
+        if report_fallback:
+            self._on_window_error(view)
+        elif announce:
             self._show(view, activate=False)
         else:
             self._render(view)
@@ -91,8 +105,10 @@ class UpdateUI:
                 self._flow.check(manual=True)
         elif action == "close":
             self._window.hide()
-        elif action == "unavailable" and self._on_window_error is not None:
-            self._on_window_error(self._current_view())
+        elif action == "unavailable":
+            self._window_failed = True
+            if self._on_window_error is not None:
+                self._on_window_error(self._current_view())
 
     def _install(self) -> None:
         if not self._is_idle():
@@ -117,10 +133,12 @@ class UpdateUI:
             return build_update_view(self._flow.state, self._notice)
 
     def _show(self, view: UpdateView, *, activate: bool) -> None:
+        self._window_failed = False  # Each show tries the window again
         try:
             self._window.show(view, activate=activate)
         except Exception:
             logger.warning("Update window unavailable", exc_info=True)
+            self._window_failed = True
             if self._on_window_error is not None:
                 self._on_window_error(view)
 
