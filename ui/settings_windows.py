@@ -2292,6 +2292,7 @@ class SettingsWindow(QDialog):
             return ""
 
     def _get_saved_prompt_text_for_context(self, context: str) -> str:
+        """Use clean cached drafts for display; compare dirty drafts with loaded prompts."""
         context_key = normalize_prompt_editor_context(context)
         cached_text = getattr(self, "_prompts_cache", {}).get(context_key)
         if isinstance(cached_text, str) and context_key not in getattr(
@@ -2336,6 +2337,7 @@ class SettingsWindow(QDialog):
                 pass
 
     def _on_prompt_editor_text_changed(self) -> None:
+        """Compare edits with loaded prompts before updating cache and dirty state."""
         context = getattr(self, "_current_prompt_context", None)
         if not context:
             return

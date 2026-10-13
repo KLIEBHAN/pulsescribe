@@ -397,6 +397,75 @@ def test_prompt_edit_keeps_dirty_state_and_buttons_consistent(
 
 
 
+@pytest.mark.parametrize(
+    "context, draft, dirty, reset, expected_text",
+    [
+        (
+            "email", "saved email", False, True,
+            "Using a saved custom Email prompt.",
+        ),
+        (
+            "email", "built-in email", True, False,
+            "Built-in Email prompt restored here. Save to remove the custom version.",
+        ),
+        (
+            "email", "another email", True, True,
+            "Unsaved changes to Email prompt.",
+        ),
+        (
+            "app_mappings", '"Mail" = email # note', False, True,
+            "Using a saved custom App Mappings.",
+        ),
+        (
+            "app_mappings", "Mail = chat\n# note", True, False,
+            "Built-in App Mappings restored here. Save to remove the custom version.",
+        ),
+        (
+            "app_mappings", "Slack = chat", True, True,
+            "Unsaved changes to App Mappings.",
+        ),
+    ],
+)
+def test_edit_and_refresh_agree_when_clean_cache_differs_from_loaded_prompts(
+    context, draft, dirty, reset, expected_text
+):
+    window = _make_window()
+    window._current_prompt_context = context
+    window._prompts_loaded_data = {
+        "prompts": {"email": {"prompt": "saved email"}},
+        "app_contexts": {"Mail": "email"},
+    }
+    window._prompts_defaults_data = {
+        "prompts": {"email": {"prompt": "built-in email"}},
+        "app_contexts": {"Mail": "chat"},
+    }
+    window._prompts_cache[context] = window._get_prompt_default_text_for_context(context)
+    window._prompt_editor.setPlainText(draft)
+    window._prompt_context_state_label = _FakeLabel()
+    window._prompt_save_btn = _FakeButton()
+    window._prompt_reset_btn = _FakeButton()
+    assert window._get_saved_prompt_text_for_context(context) != (
+        window._get_prompt_text_for_context(context)
+    )
+
+    window._on_prompt_editor_text_changed()
+
+    assert window._prompts_cache[context] == draft
+    assert (context in window._dirty_prompt_contexts) is dirty
+    assert window._prompt_context_state_label.text() == expected_text
+    assert window._prompt_save_btn.enabled is dirty
+    assert window._prompt_reset_btn.enabled is reset
+    guidance = window._prompt_editor.accessible_description
+
+    window._refresh_prompt_editor_feedback()
+
+    assert (context in window._dirty_prompt_contexts) is dirty
+    assert window._prompt_context_state_label.text() == expected_text
+    assert window._prompt_save_btn.enabled is dirty
+    assert window._prompt_reset_btn.enabled is reset
+    assert window._prompt_editor.accessible_description == guidance
+
+
 def test_refresh_vocabulary_action_buttons_disables_save_when_editor_is_unchanged():
     window = _make_window()
     window._vocab_editor = _FakeEditor("Alpha\nBeta")
