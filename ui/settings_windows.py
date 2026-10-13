@@ -482,7 +482,11 @@ def _build_vocabulary_status(
 
 def _transcript_blocks_to_text(blocks: list[str]) -> str:
     """Join transcript blocks using the viewer's empty-state message."""
-    return "\n\n".join(blocks) if blocks else "No transcripts yet."
+    if blocks:
+        return "\n\n".join(blocks)
+    from utils.history import DISPLAY_TRANSCRIPTS_EMPTY_MESSAGE
+
+    return DISPLAY_TRANSCRIPTS_EMPTY_MESSAGE
 
 
 def _merge_recent_transcript_blocks(

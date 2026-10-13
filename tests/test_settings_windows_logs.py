@@ -325,6 +325,30 @@ def test_refresh_transcripts_updates_when_signature_changes(tmp_path, monkeypatc
     assert window._transcripts_status.text == ""
 
 
+@pytest.mark.parametrize("file_text", ["", "not-json\n[]\n"])
+def test_refresh_empty_history_preserves_shared_guidance(tmp_path, monkeypatch, file_text):
+    import utils.history as history_mod
+
+    history_file = tmp_path / "history.jsonl"
+    history_file.write_text(file_text, encoding="utf-8")
+    monkeypatch.setattr(history_mod, "HISTORY_FILE", history_file)
+
+    captured_text = []
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._last_transcripts_signature = None
+    window._transcripts_count_label = _FakeLabel()
+    window._transcripts_hint_label = _FakeLabel()
+    window._transcripts_status = _FakeLabel()
+    window._transcripts_clear_btn = _FakeButton()
+    window._set_transcripts_text_if_changed = lambda text: captured_text.append(text)
+
+    assert window._refresh_transcripts() is True
+    assert captured_text == [history_mod.DISPLAY_TRANSCRIPTS_EMPTY_MESSAGE]
+    assert window._last_transcripts_blocks == []
+    assert window._last_transcripts_entries == []
+    assert window._transcripts_clear_btn.enabled is False
+
+
 def test_refresh_transcripts_caches_oldest_first_blocks_on_full_reload(
     tmp_path, monkeypatch
 ):
