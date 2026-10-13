@@ -297,6 +297,39 @@ def test_refresh_vocabulary_action_buttons_enables_save_for_unsaved_changes():
     assert window._vocab_save_btn.enabled is True
 
 
+@pytest.mark.parametrize("raw_text", ["", "Alpha\nBeta", "Alpha\nalpha\nGamma"])
+def test_vocabulary_edit_reads_and_analyzes_input_once(monkeypatch, raw_text):
+    import ui.settings_windows as settings_mod
+    from utils.vocabulary import analyze_vocabulary_text
+
+    class CountingEditor(_FakeEditor):
+        reads = 0
+
+        def toPlainText(self):
+            self.reads += 1
+            return super().toPlainText()
+
+    window = _make_window()
+    window._vocab_editor = CountingEditor(raw_text)
+    window._vocab_status = _FakeLabel()
+    window._saved_vocabulary_keywords = ["Alpha", "Beta"]
+    window._vocabulary_loaded = True
+    window._vocab_save_btn = _FakeButton()
+    analyzed = []
+
+    def analyze(text):
+        analyzed.append(text)
+        return analyze_vocabulary_text(text)
+
+    monkeypatch.setattr(settings_mod, "analyze_vocabulary_text", analyze)
+
+    window._refresh_vocabulary_editor_feedback()
+
+    assert window._vocab_editor.reads == 1
+    assert analyzed == [raw_text]
+    assert window._vocab_save_btn.enabled == (raw_text != "Alpha\nBeta")
+
+
 def test_save_all_prompts_saves_only_dirty_contexts_and_keeps_existing_overrides(
     monkeypatch,
 ):

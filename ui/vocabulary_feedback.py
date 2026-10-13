@@ -38,12 +38,16 @@ def _limit_message(analysis: VocabularyInputAnalysis) -> str | None:
 
 
 def build_vocabulary_editor_feedback(
-    raw_text: str | None,
+    raw_text: str | VocabularyInputAnalysis | None,
     *,
     saved_keywords: list[str] | None = None,
 ) -> tuple[str, str]:
-    """Return live feedback for the editable vocabulary text area."""
-    analysis = analyze_vocabulary_text(raw_text)
+    """Return live feedback from editor text or an already analyzed input."""
+    analysis = (
+        raw_text
+        if isinstance(raw_text, VocabularyInputAnalysis)
+        else analyze_vocabulary_text(raw_text)
+    )
     saved = list(saved_keywords or [])
     changed = analysis.keywords != saved
 

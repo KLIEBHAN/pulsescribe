@@ -25,6 +25,21 @@ def test_build_vocabulary_editor_feedback_explains_duplicates_and_limits() -> No
     assert color == "warning"
 
 
+def test_build_vocabulary_editor_feedback_reuses_analysis(monkeypatch) -> None:
+    from utils.vocabulary import analyze_vocabulary_text
+
+    raw_text = "API\napi\n" + "\n".join(f"kw{i}" for i in range(101))
+    analysis = analyze_vocabulary_text(raw_text)
+    expected = build_vocabulary_editor_feedback(raw_text, saved_keywords=["API"])
+
+    def unexpected_analysis(_raw_text):
+        raise AssertionError("Already analyzed input must not be analyzed again")
+
+    monkeypatch.setattr("ui.vocabulary_feedback.analyze_vocabulary_text", unexpected_analysis)
+
+    assert build_vocabulary_editor_feedback(analysis, saved_keywords=["API"]) == expected
+
+
 def test_build_vocabulary_load_feedback_reports_empty_and_cleaned_states() -> None:
     empty_text, empty_color = build_vocabulary_load_feedback(keywords=[], issues=[])
     fixed_text, fixed_color = build_vocabulary_load_feedback(

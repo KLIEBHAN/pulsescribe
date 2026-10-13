@@ -126,7 +126,7 @@ from utils.custom_prompts import (
     get_prompt_editor_semantic_state,
     normalize_prompt_editor_context,
 )
-from utils.vocabulary import analyze_vocabulary_text
+from utils.vocabulary import VocabularyInputAnalysis, analyze_vocabulary_text
 
 logger = logging.getLogger("pulsescribe.settings")
 
@@ -3708,15 +3708,19 @@ class SettingsWindow(QDialog):
             return ""
 
     def _refresh_vocabulary_editor_feedback(self) -> None:
+        analysis = analyze_vocabulary_text(self._current_vocabulary_raw_text())
         text, color = build_vocabulary_editor_feedback(
-            self._current_vocabulary_raw_text(),
+            analysis,
             saved_keywords=self._get_saved_vocabulary_keywords(),
         )
         _set_status_label_if_changed(getattr(self, "_vocab_status", None), text, color)
-        self._refresh_vocabulary_action_buttons()
+        self._refresh_vocabulary_action_buttons(analysis)
 
-    def _refresh_vocabulary_action_buttons(self) -> None:
-        analysis = analyze_vocabulary_text(self._current_vocabulary_raw_text())
+    def _refresh_vocabulary_action_buttons(
+        self, analysis: VocabularyInputAnalysis | None = None
+    ) -> None:
+        if analysis is None:
+            analysis = analyze_vocabulary_text(self._current_vocabulary_raw_text())
         saved_keywords = self._get_saved_vocabulary_keywords()
         loaded = bool(getattr(self, "_vocabulary_loaded", False))
         can_save = bool(
