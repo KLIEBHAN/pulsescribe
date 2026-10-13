@@ -150,3 +150,31 @@ def test_redirect_cannot_downgrade_tls():
         updates._HTTPSRedirects().redirect_request(
             None, None, 302, "", {}, "http://example.com/package"
         )
+
+
+def test_https_trust_available_without_host_certificates(monkeypatch):
+    import ssl
+    from urllib.request import HTTPSHandler, build_opener
+
+    monkeypatch.setattr(
+        ssl.SSLContext, "load_default_certs", lambda _context, _purpose: None
+    )
+    assert ssl.create_default_context().cert_store_stats()["x509_ca"] == 0
+
+    def verified_opener(*handlers):
+        opener = build_opener(*handlers)
+        https = next(item for item in opener.handlers if isinstance(item, HTTPSHandler))
+        context = https._context
+        assert context is not None
+        assert context.verify_mode == ssl.CERT_REQUIRED
+        assert context.check_hostname
+        assert context.cert_store_stats()["x509_ca"] > 0
+
+        class OfflineOpener:
+            def open(self, request, timeout):
+                return io.BytesIO(b"verified TLS context")
+
+        return OfflineOpener()
+
+    monkeypatch.setattr(updates, "build_opener", verified_opener)
+    assert updates._open("https://api.github.com").read() == b"verified TLS context"

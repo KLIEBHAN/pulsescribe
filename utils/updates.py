@@ -5,10 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import ssl
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 
 REPOSITORY = "KLIEBHAN/pulsescribe"
 RELEASES_URL = f"https://github.com/{REPOSITORY}/releases"
@@ -42,6 +43,11 @@ class _HTTPSRedirects(HTTPRedirectHandler):
 
 
 def _open(url: str):
+    """Add bundled CA roots because packaged OpenSSL may have no host CA path."""
+    import certifi
+
+    context = ssl.create_default_context()
+    context.load_verify_locations(cafile=certifi.where())
     request = Request(
         url,
         headers={
@@ -49,7 +55,9 @@ def _open(url: str):
             "Accept": "application/vnd.github+json",
         },
     )
-    return build_opener(_HTTPSRedirects()).open(request, timeout=30)
+    return build_opener(_HTTPSRedirects(), HTTPSHandler(context=context)).open(
+        request, timeout=30
+    )
 
 
 def _read_small(url: str) -> bytes:
