@@ -303,3 +303,17 @@ def test_windows_fallback_action_can_open_the_next_prompt(monkeypatch):
     daemon._notify_update_fallback(ready)
 
     assert boxes == ["Ready", "Ready"]
+
+
+def test_windows_fallback_drops_queued_prompts_after_window_recovery(monkeypatch):
+    from ui.update_window_model import UpdateView
+
+    ready = UpdateView("Ready", primary_label="Restart and Install", primary_action="install")
+    boxes = []
+    _module, daemon = _fallback_daemon(monkeypatch, boxes, [7])
+    daemon._update_ui = types.SimpleNamespace(handle=Mock(), current_view=lambda: ready)
+    daemon._update_window = types.SimpleNamespace(failed=False)  # Reopened meanwhile
+
+    daemon._notify_update_fallback(ready)
+
+    assert boxes == []

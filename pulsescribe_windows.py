@@ -3604,6 +3604,9 @@ class PulseScribeWindows:
                     self._update_prompt_running = False
                     return
                 self._update_prompt_pending = False
+            window = getattr(self, "_update_window", None)
+            if window is not None and not window.failed:
+                continue  # The window recovered and shows this step itself
             view = self._update_ui.current_view()
             if view.primary_action in ("install", "retry") and view.primary_enabled:
                 self._confirm_update_action(view)
