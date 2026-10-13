@@ -238,3 +238,14 @@ def test_window_failure_falls_back_to_notification():
 
     fallback.assert_called_once()
     assert fallback.call_args.args[0].headline.startswith("Downloading")
+
+
+def test_unavailable_window_process_falls_back_to_notification():
+    flow = Mock(state=ready_state())
+    fallback = Mock()
+    ui = updates.UpdateUI(flow, FakeWindow(), lambda: True, Mock(), on_window_error=fallback)
+
+    ui.handle("unavailable")
+
+    fallback.assert_called_once()
+    assert fallback.call_args.args[0].primary_action == "install"

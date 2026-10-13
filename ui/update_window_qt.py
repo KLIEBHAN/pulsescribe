@@ -4,13 +4,19 @@ The Windows daemon starts this module (``PulseScribe.exe --update-window``)
 with stdin/stdout pipes. It reads one JSON message per line from stdin:
 ``{"view": {...}, "activate": true|false|null}``. ``activate`` shows the
 window (with or without focus); ``null`` only re-renders. Button presses are
-written to stdout as ``PULSESCRIBE-UPDATE {"action": ...}`` lines. The
-process exits when the window closes or stdin reaches EOF (daemon gone).
+written to stdout as ``PULSESCRIBE-UPDATE {"action": ...}`` lines; the first
+line is ``ready`` once the window exists. The process exits when the window
+closes or stdin reaches EOF (daemon gone).
+
+The shipped EXE is a windowed (``console=False``) build, where Python may leave
+``sys.stdin``/``sys.stdout`` at ``None``; the pipes are then opened from the
+process's standard handles instead.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import sys
 import threading
 
@@ -209,23 +215,46 @@ class _StdinReader(QObject):
         self.finished.emit()
 
 
-def _write_action(action: str) -> None:
-    line = ACTION_PREFIX + json.dumps({"action": action}) + "\n"
-    try:
-        sys.stdout.buffer.write(line.encode("utf-8"))
-        sys.stdout.buffer.flush()
-    except (AttributeError, OSError, ValueError):
-        QApplication.quit()  # Daemon gone
+def _pipe(stream, std_handle: int, flags: int, mode: str):
+    """Binary pipe from ``stream`` or, if Python has none, the OS std handle."""
+    if stream is not None:
+        return stream.buffer
+    if sys.platform != "win32":
+        return None
+    import ctypes
+    import msvcrt
+
+    get_std_handle = ctypes.windll.kernel32.GetStdHandle
+    get_std_handle.restype = ctypes.c_void_p
+    get_std_handle.argtypes = [ctypes.c_ulong]
+    handle = get_std_handle(std_handle & 0xFFFFFFFF)
+    if not handle or handle == ctypes.c_void_p(-1).value:
+        return None
+    return os.fdopen(msvcrt.open_osfhandle(handle, flags), mode, buffering=0)
+
+
+def _action_writer(output):
+    def write(action: str) -> None:
+        line = ACTION_PREFIX + json.dumps({"action": action}) + "\n"
+        try:
+            output.write(line.encode("utf-8"))
+            output.flush()
+        except (OSError, ValueError):
+            QApplication.quit()  # Daemon gone
+
+    return write
 
 
 def main() -> int:
-    if sys.stdin is None or sys.stdout is None:
-        print("The update window needs pipes from PulseScribe.", file=sys.stderr)
-        return 2
+    stdin = _pipe(sys.stdin, -10, os.O_RDONLY, "rb")  # STD_INPUT_HANDLE
+    stdout = _pipe(sys.stdout, -11, os.O_WRONLY, "wb")  # STD_OUTPUT_HANDLE
+    if stdin is None or stdout is None:
+        return 2  # The daemon reports the missing "ready" and falls back
     app = QApplication.instance() or QApplication(sys.argv[:1])
     app.setQuitOnLastWindowClosed(False)  # closeEvent decides when to quit
     window = UpdateWindow()
-    window.action.connect(_write_action)
+    write_action = _action_writer(stdout)
+    window.action.connect(write_action)
 
     def on_message(data: dict) -> None:
         view = data.get("view")
@@ -239,7 +268,8 @@ def main() -> int:
     reader = _StdinReader()
     reader.message.connect(on_message)
     reader.finished.connect(app.quit)
-    reader.start(sys.stdin.buffer)
+    reader.start(stdin)
+    write_action("ready")
     return app.exec()
 
 

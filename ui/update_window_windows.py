@@ -3,8 +3,9 @@
 ``WindowsUpdateWindow(launch, on_action)`` starts the window process on the
 first ``show`` and forwards views over its stdin. ``launch(activate)`` must
 return a ``subprocess.Popen`` with ``stdin`` and ``stdout`` pipes;
-``on_action`` runs on a reader thread for every button press. All methods
-are thread-safe; ``close()`` ends the process (daemon shutdown, installs).
+``on_action`` runs on a reader thread for every button press, and receives
+``unavailable`` when a window process exits before reporting ``ready``. All
+methods are thread-safe; ``close()`` ends the process (shutdown, installs).
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import weakref
 
 from ui.update_window_model import UpdateView
 
@@ -26,6 +28,7 @@ class WindowsUpdateWindow:
         self._on_action = on_action
         self._lock = threading.Lock()
         self._process = None
+        self._closed = weakref.WeakSet()  # Processes this side ended on purpose
 
     def show(self, view: UpdateView, *, activate: bool) -> None:
         with self._lock:
@@ -56,6 +59,7 @@ class WindowsUpdateWindow:
             process, self._process = self._process, None
         if process is None:
             return
+        self._closed.add(process)
         try:
             process.stdin.close()
         except OSError:
@@ -75,6 +79,7 @@ class WindowsUpdateWindow:
                 self._process = None
 
     def _read_actions(self, process) -> None:
+        ready = False
         try:
             for line in process.stdout:
                 if not line.startswith(ACTION_PREFIX):
@@ -83,10 +88,15 @@ class WindowsUpdateWindow:
                     action = json.loads(line[len(ACTION_PREFIX):]).get("action")
                 except (ValueError, AttributeError):
                     continue
-                if isinstance(action, str):
+                if action == "ready":
+                    ready = True
+                elif isinstance(action, str):
                     self._on_action(action)
         except (OSError, ValueError):
             pass
+        if not ready and process not in self._closed:
+            logger.warning("Update window process exited before it was ready")
+            self._on_action("unavailable")
 
 
 __all__ = ["WindowsUpdateWindow"]

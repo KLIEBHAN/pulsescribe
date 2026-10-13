@@ -347,6 +347,42 @@ jobs:
         shell: pwsh
         run: ./build_windows.ps1 -Clean -Installer
 
+      - name: Check the packaged update window process
+        shell: python
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          # The windowed (console=False) EXE must talk to the daemon over its
+          # stdin/stdout pipes: it reports "ready" and exits when stdin closes.
+          import json, queue, subprocess, threading
+
+          process = subprocess.Popen(
+              [r"dist\PulseScribe\PulseScribe.exe", "--update-window"],
+              stdin=subprocess.PIPE,
+              stdout=subprocess.PIPE,
+              stderr=subprocess.PIPE,
+          )
+          lines = queue.Queue()
+          threading.Thread(
+              target=lambda: [lines.put(line) for line in process.stdout], daemon=True
+          ).start()
+          view = {"headline": "CI", "notes": "Notes", "progress": 50, "primary_label": "Install"}
+          process.stdin.write((json.dumps({"view": view, "activate": False}) + "\n").encode())
+          process.stdin.flush()
+          try:
+              while True:
+                  line = lines.get(timeout=90)
+                  if line.startswith(b"PULSESCRIBE-UPDATE ") and b'"ready"' in line:
+                      break
+          except queue.Empty:
+              process.kill()
+              raise SystemExit(f"No ready message: {process.stderr.read()[-2000:]!r}")
+          assert process.poll() is None, "update window exited after ready"
+          process.stdin.close()
+          code = process.wait(timeout=30)
+          assert code == 0, f"update window exit code {code}"
+          print("Packaged update window: ready over stdout, exits on stdin EOF")
+
       - name: Validate Windows installer
         shell: pwsh
         run: |

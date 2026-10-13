@@ -95,6 +95,7 @@ def test_button_actions_are_forwarded_and_noise_is_ignored():
     process = FakeProcess(
         [
             b"qt.qpa: some warning\n",
+            b'PULSESCRIBE-UPDATE {"action": "ready"}\n',
             b'PULSESCRIBE-UPDATE {"action": "install"}\n',
             b"PULSESCRIBE-UPDATE not-json\n",
             b'PULSESCRIBE-UPDATE {"action": "close"}\n',
@@ -105,6 +106,34 @@ def test_button_actions_are_forwarded_and_noise_is_ignored():
     window.show(UpdateView("ready"), activate=True)
 
     assert wait_for(lambda: actions == ["install", "close"])
+
+
+def test_window_that_exits_before_ready_is_reported_unavailable():
+    window, _launches, actions = make_window([FakeProcess([b"Traceback ...\n"])])
+
+    window.show(UpdateView("ready"), activate=True)
+
+    assert wait_for(lambda: actions == ["unavailable"])
+
+
+def test_closing_a_starting_window_is_not_a_failure():
+    started = threading.Event()
+
+    class SlowStdout:
+        def __iter__(self):
+            started.wait(2)
+            return iter([])
+
+    process = FakeProcess()
+    process.stdout = SlowStdout()
+    window, _launches, actions = make_window([process])
+    window.show(UpdateView("ready"), activate=False)
+
+    window.close()
+    started.set()
+    time.sleep(0.1)
+
+    assert actions == []
 
 
 def test_close_ends_the_process_for_the_installer():
@@ -130,7 +159,8 @@ def test_qt_window_process_renders_views_and_exits_with_the_daemon():
         cwd=str(ROOT),
         env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
     )
-    window = WindowsUpdateWindow(lambda _activate: process, lambda _action: None)
+    actions = []
+    window = WindowsUpdateWindow(lambda _activate: process, actions.append)
     try:
         window.show(
             UpdateView("Downloading", notes="Notes", progress=PROGRESS_INDETERMINATE),
@@ -145,6 +175,8 @@ def test_qt_window_process_renders_views_and_exits_with_the_daemon():
         closer.start()
         closer.join(timeout=20)
         assert process.wait(timeout=5) == 0
+        time.sleep(0.2)
+        assert "unavailable" not in actions  # "ready" arrived over stdout
     finally:
         if process.poll() is None:
             process.kill()

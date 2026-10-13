@@ -77,7 +77,7 @@ class UpdateUI:
             self._flow.download()
 
     def handle(self, action: str) -> None:
-        """Window button: install, download, retry or close."""
+        """Window button (install, download, retry, close) or ``unavailable``."""
         if action == "install":
             self._install()
         elif action == "download":
@@ -91,6 +91,8 @@ class UpdateUI:
                 self._flow.check(manual=True)
         elif action == "close":
             self._window.hide()
+        elif action == "unavailable" and self._on_window_error is not None:
+            self._on_window_error(self._current_view())
 
     def _install(self) -> None:
         if not self._is_idle():
