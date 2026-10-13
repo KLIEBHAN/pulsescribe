@@ -15,9 +15,18 @@ from ui.update_window_windows import WindowsUpdateWindow
 ROOT = Path(__file__).resolve().parents[1]
 
 
+class FakePipe(io.BytesIO):
+    """stdin that keeps its content readable after close()."""
+
+    was_closed = False
+
+    def close(self):
+        self.was_closed = True
+
+
 class FakeProcess:
     def __init__(self, stdout_lines=()):
-        self.stdin = io.BytesIO()
+        self.stdin = FakePipe()
         self.stdout = list(stdout_lines)
         self.returncode = None
         self.waited = False
@@ -65,6 +74,7 @@ def test_show_launches_once_and_forwards_views():
     window.show(UpdateView("three"), activate=True)
 
     assert launches == [False]
+    assert wait_for(lambda: len(process.messages()) == 3)
     messages = process.messages()
     assert [m["view"]["headline"] for m in messages] == ["one", "two", "three"]
     assert [m["activate"] for m in messages] == [False, None, True]
@@ -79,10 +89,33 @@ def test_progress_updates_send_only_changed_fields():
     window.render(UpdateView("2%", notes=notes, progress=2))
     window.render(UpdateView("2%", notes=notes, progress=2))  # unchanged: nothing sent
 
+    assert wait_for(lambda: len(process.messages()) == 2)
+    time.sleep(0.05)
     first, second = process.messages()
     assert first["view"]["notes"] == notes
     assert second["view"] == {"headline": "2%", "progress": 2}
     assert len(process.messages()) == 2
+
+
+def test_a_hung_window_never_blocks_the_caller():
+    class BlockingPipe(FakePipe):
+        def write(self, data):
+            release.wait(2)
+            return super().write(data)
+
+    release = threading.Event()
+    process = FakeProcess()
+    process.stdin = BlockingPipe()
+    window, _launches, _actions = make_window([process])
+
+    started = time.monotonic()
+    window.show(UpdateView("ready", notes="n" * 20_000), activate=True)
+    for percent in range(10):
+        window.render(UpdateView(f"{percent}%", notes="n" * 20_000, progress=percent))
+    elapsed = time.monotonic() - started
+    release.set()
+
+    assert elapsed < 0.5
 
 
 def test_render_without_window_starts_nothing():
@@ -103,7 +136,8 @@ def test_closed_window_process_is_relaunched_on_show():
     window.show(UpdateView("again"), activate=True)
 
     assert launches == [False, True]
-    assert [m["view"]["headline"] for m in second.messages()] == ["again"]
+    assert wait_for(lambda: len(second.messages()) == 1)
+    assert second.messages()[0]["view"]["headline"] == "again"
 
 
 def test_button_actions_are_forwarded_and_noise_is_ignored():
@@ -226,9 +260,36 @@ def test_close_ends_the_process_for_the_installer():
 
     window.close()
 
-    assert process.stdin.closed
+    assert wait_for(lambda: process.stdin.was_closed)
     assert process.waited
     window.render(UpdateView("after close"))  # No process left to write to
+    time.sleep(0.05)
+    assert len(process.messages()) == 1
+
+
+def test_close_waits_for_a_terminated_hanging_window():
+    class HangingProcess(FakeProcess):
+        def __init__(self):
+            super().__init__()
+            self.events = []
+
+        def wait(self, timeout=None):
+            self.events.append("wait")
+            if "terminate" not in self.events:
+                raise subprocess.TimeoutExpired("window", timeout)
+            self.returncode = 1
+            return 1
+
+        def terminate(self):
+            self.events.append("terminate")
+
+    process = HangingProcess()
+    window, _launches, _actions = make_window([process])
+    window.show(UpdateView("ready"), activate=False)
+
+    window.close(timeout=0.01)
+
+    assert process.events == ["wait", "terminate", "wait"]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="offscreen Qt check runs on CI macOS")
