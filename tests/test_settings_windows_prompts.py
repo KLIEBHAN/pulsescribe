@@ -493,26 +493,46 @@ def test_refresh_vocabulary_action_buttons_enables_save_for_unsaved_changes():
 
 
 @pytest.mark.parametrize(
-    ("loaded", "raw_text", "expected_saves"),
+    ("loaded", "raw_text", "write_ok", "expected_saves", "expected_result"),
     [
-        (False, "Alpha\nGamma", 0),  # never overwrite a file that was not read
-        (True, "Alpha\nBeta", 0),
-        (True, "Alpha\nGamma", 1),
+        (False, "Alpha\nGamma", True, 0, True),  # never overwrite an unread file
+        (True, "Alpha\nBeta", True, 0, True),
+        (True, "Alpha\nGamma", True, 1, True),
+        (True, "Alpha\nGamma", False, 1, False),  # failed write is reported
     ],
 )
 def test_save_vocabulary_if_changed_matches_macos_save_and_apply(
-    loaded, raw_text, expected_saves
+    loaded, raw_text, write_ok, expected_saves, expected_result
 ):
     window = _make_window()
     window._vocab_editor = _FakeEditor(raw_text)
     window._saved_vocabulary_keywords = ["Alpha", "Beta"]
     window._vocabulary_loaded = loaded
     saves: list[bool] = []
-    window._save_vocabulary = lambda: saves.append(True)
+    window._save_vocabulary = lambda: saves.append(True) or write_ok
 
-    window._save_vocabulary_if_changed()
+    result = window._save_vocabulary_if_changed()
 
     assert len(saves) == expected_saves
+    assert result is expected_result
+
+
+def test_save_vocabulary_returns_false_when_write_fails(monkeypatch):
+    import utils.vocabulary as vocabulary
+
+    def fail(_keywords):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(vocabulary, "save_vocabulary_state", fail)
+    window = _make_window()
+    window._vocab_editor = _FakeEditor("Alpha\nGamma")
+    window._vocab_status = _FakeLabel()
+    window._saved_vocabulary_keywords = ["Alpha", "Beta"]
+    window._vocabulary_loaded = True
+    window._last_vocabulary_signature = (1, 2)
+
+    assert window._save_vocabulary() is False
+    assert "Could not save the vocabulary" in window._vocab_status.text()
 
 
 @pytest.mark.parametrize("raw_text", ["", "Alpha\nBeta", "Alpha\nalpha\nGamma"])

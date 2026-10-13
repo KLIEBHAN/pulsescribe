@@ -3859,27 +3859,29 @@ class SettingsWindow(QDialog):
             )
             self._refresh_vocabulary_action_buttons()
 
-    def _save_vocabulary_if_changed(self) -> None:
+    def _save_vocabulary_if_changed(self) -> bool:
         """Keep pending vocabulary edits on Save & Apply, matching macOS.
 
         Skips when the vocabulary was never loaded (tab not opened or the file
-        could not be read) so an unread file is never overwritten.
+        could not be read) so an unread file is never overwritten. Returns
+        False only when a pending edit could not be written.
         """
         if not getattr(self, "_vocabulary_loaded", False):
-            return
+            return True
         if getattr(self, "_vocab_editor", None) is None:
-            return
+            return True
         analysis = analyze_vocabulary_text(self._current_vocabulary_raw_text())
-        if analysis.keywords != self._get_saved_vocabulary_keywords():
-            self._save_vocabulary()
+        if analysis.keywords == self._get_saved_vocabulary_keywords():
+            return True
+        return self._save_vocabulary()
 
-    def _save_vocabulary(self):
-        """Speichert Vocabulary in Datei."""
+    def _save_vocabulary(self) -> bool:
+        """Speichert Vocabulary in Datei; False, wenn das Schreiben scheitert."""
         try:
             from utils.vocabulary import save_vocabulary_state
 
             if not self._vocab_editor:
-                return
+                return True
 
             raw_text = self._current_vocabulary_raw_text()
             analysis = analyze_vocabulary_text(raw_text)
@@ -3897,7 +3899,7 @@ class SettingsWindow(QDialog):
                     status_color,
                 )
                 self._refresh_vocabulary_action_buttons()
-                return
+                return True
 
             vocab, _warnings, new_signature = save_vocabulary_state(analysis.keywords)
             normalized_keywords = list(vocab.get("keywords", []))
@@ -3919,6 +3921,7 @@ class SettingsWindow(QDialog):
                 status_color,
             )
             self._refresh_vocabulary_action_buttons()
+            return True
         except Exception as e:
             logger.error(f"Vocabulary speichern fehlgeschlagen: {e}")
             _set_status_label_if_changed(
@@ -3926,6 +3929,7 @@ class SettingsWindow(QDialog):
                 f"Could not save the vocabulary: {e}",
                 "error",
             )
+            return False
             self._refresh_vocabulary_action_buttons()
 
     def _refresh_logs(self) -> bool:
@@ -4429,7 +4433,7 @@ class SettingsWindow(QDialog):
             self._save_all_prompts()
 
             # Vocabulary wie auf macOS ebenfalls mit Save & Apply übernehmen
-            self._save_vocabulary_if_changed()
+            vocabulary_saved = self._save_vocabulary_if_changed()
 
             # Onboarding als abgeschlossen markieren (beim ersten Speichern)
             # Dies verhindert, dass Settings bei jedem Start erneut öffnet
@@ -4449,8 +4453,15 @@ class SettingsWindow(QDialog):
             self._saved_display_settings_state = self._get_current_display_settings_state()
             self._refresh_secondary_settings_feedback()
 
-            # Visual Save Feedback
-            self._show_save_feedback()
+            # Visual Save Feedback (a failed vocabulary write must stay visible)
+            if vocabulary_saved:
+                self._show_save_feedback()
+            else:
+                self._set_footer_status(
+                    "Settings saved, but the vocabulary could not be saved. "
+                    "Check the Vocabulary tab and try again.",
+                    "warning",
+                )
             self._refresh_setup_overview()
 
             # Callback aufrufen (für Daemon-Reload, falls im gleichen Prozess)
