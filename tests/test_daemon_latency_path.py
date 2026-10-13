@@ -16,7 +16,7 @@ def _disabled_latency_run():
 
 
 @pytest.mark.parametrize("paste_raises", [False, True])
-def test_transcript_is_pasted_before_history_with_original_metadata(monkeypatch, paste_raises):
+def test_transcript_history_precedes_flush_and_paste(monkeypatch, paste_raises):
     daemon = PulseScribeDaemon(mode="deepgram", language="de")
     daemon._run_mode = "local"
     daemon._last_was_refined = True
@@ -54,7 +54,7 @@ def test_transcript_is_pasted_before_history_with_original_metadata(monkeypatch,
     else:
         daemon._handle_transcript_result("hello", latency_run=run)
 
-    expected = [AppState.DONE, "flush", "paste", "history"]
+    expected = [AppState.DONE, "history", "flush", "paste"]
     if not paste_raises:
         expected.append(AppState.IDLE)
         run.finish.assert_called_once_with("success")
@@ -62,6 +62,67 @@ def test_transcript_is_pasted_before_history_with_original_metadata(monkeypatch,
     assert saved == [("hello", {"mode": "local", "language": "de", "refined": True})]
     run.mark.assert_any_call("history_start")
     run.mark.assert_any_call("history_done")
+
+
+def test_history_import_failure_still_finishes_pasted_result(monkeypatch):
+    import builtins
+
+    daemon = PulseScribeDaemon(mode="local")
+    run = MagicMock()
+    paste = MagicMock()
+    states = []
+    reconfigure = MagicMock()
+    original_import = builtins.__import__
+
+    def fail_history_import(name, *args, **kwargs):
+        if name == "utils.history":
+            raise ImportError("history unavailable")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(daemon, "_format_done_text", lambda text: text)
+    monkeypatch.setattr(daemon, "_update_state", lambda state, *_args: states.append(state))
+    monkeypatch.setattr(daemon, "_flush_ui_and_wait", lambda: None)
+    monkeypatch.setattr(daemon, "_paste_result", paste)
+    monkeypatch.setattr(daemon, "_apply_pending_hotkey_reconfigure_if_safe", reconfigure)
+    monkeypatch.setattr("pulsescribe_daemon.get_sound_player", lambda: MagicMock())
+    monkeypatch.setattr(builtins, "__import__", fail_history_import)
+
+    daemon._handle_transcript_result("hello", latency_run=run)
+
+    paste.assert_called_once_with("hello", latency_run=run)
+    assert states == [AppState.DONE, AppState.IDLE]
+    run.mark.assert_any_call("history_start")
+    run.mark.assert_any_call("history_done")
+    run.finish.assert_called_once_with("success")
+    reconfigure.assert_called_once_with()
+
+
+def test_reentrant_results_keep_history_order(monkeypatch):
+    from utils.history import _build_transcript_entry
+
+    daemon = PulseScribeDaemon(mode="local", language="de")
+    entries = []
+
+    def save(text, **kwargs):
+        entries.append(_build_transcript_entry(text, **kwargs))
+        return True
+
+    def flush():
+        monkeypatch.setattr(daemon, "_flush_ui_and_wait", lambda: None)
+        daemon._handle_transcript_result("second")
+
+    monkeypatch.setattr(daemon, "_format_done_text", lambda text: text)
+    monkeypatch.setattr(daemon, "_update_state", lambda *_args: None)
+    monkeypatch.setattr(daemon, "_flush_ui_and_wait", flush)
+    monkeypatch.setattr(daemon, "_paste_result", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(daemon, "_apply_pending_hotkey_reconfigure_if_safe", lambda: None)
+    monkeypatch.setattr("pulsescribe_daemon.get_sound_player", lambda: MagicMock())
+    monkeypatch.setattr("utils.history.save_transcript", save)
+
+    daemon._handle_transcript_result("first")
+
+    assert [entry["text"] for entry in entries] == ["first", "second"]
+    assert entries[0]["timestamp"] <= entries[1]["timestamp"]
 
 
 @pytest.mark.parametrize("transcript", ["", "hello"])
