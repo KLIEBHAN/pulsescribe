@@ -60,6 +60,7 @@ WizardSizePercent=100
 ; Privileges (no admin required for per-user install)
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
+UsePreviousPrivileges=yes
 
 ; Version info (must be 4-part: X.Y.Z.0)
 VersionInfoVersion={#MyAppVersion}.0

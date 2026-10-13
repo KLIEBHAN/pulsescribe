@@ -60,6 +60,8 @@ class UpdateFlow:
         self._timer: threading.Timer | None = None
         self._work: Path | None = None
         self._installing = False
+        self._lifecycle_lock = threading.Lock()
+        self._worker: threading.Thread | None = None
 
     def _set(self, **changes) -> None:
         if self._stopped.is_set():
@@ -74,21 +76,26 @@ class UpdateFlow:
         self._schedule(15)
 
     def _schedule(self, seconds: int) -> None:
-        if self._stopped.is_set():
-            return
-        self._timer = threading.Timer(seconds, self._automatic_check)
-        self._timer.daemon = True
-        self._timer.start()
+        with self._lifecycle_lock:
+            if self._stopped.is_set():
+                return
+            self._timer = threading.Timer(seconds, self._automatic_check)
+            self._timer.daemon = True
+            self._timer.start()
 
     def _automatic_check(self) -> None:
         self.check()
         self._schedule(3600)
 
     def stop(self) -> None:
-        self._stopped.set()
-        if self._timer:
-            self._timer.cancel()
-        if not self._installing and self._lock.acquire(blocking=False):
+        with self._lifecycle_lock:
+            self._stopped.set()
+            if self._timer:
+                self._timer.cancel()
+            worker = self._worker
+        if worker and worker is not threading.current_thread():
+            worker.join()
+        if not self._retains_work() and self._lock.acquire(blocking=False):
             try:
                 self._discard_work()
             finally:
@@ -99,10 +106,12 @@ class UpdateFlow:
             shutil.rmtree(self._work, ignore_errors=True)
             self._work = None
 
-    def _run(self, action) -> None:
-        if self._stopped.is_set() or not self._lock.acquire(blocking=False):
-            return
+    def _retains_work(self) -> bool:
+        return (
+            self._installing and self.prepared is not None and self.prepared.automatic
+        )
 
+    def _run(self, action) -> None:
         def worker():
             try:
                 action()
@@ -110,11 +119,21 @@ class UpdateFlow:
                 logger.warning("Update failed: %s", error)
                 self._set(status="error", error=str(error))
             finally:
-                if self._stopped.is_set() and not self._installing:
+                if self._stopped.is_set() and not self._retains_work():
                     self._discard_work()
                 self._lock.release()
 
-        threading.Thread(target=worker, name="PulseScribe-Update", daemon=True).start()
+        with self._lifecycle_lock:
+            if self._stopped.is_set() or not self._lock.acquire(blocking=False):
+                return
+            self._worker = threading.Thread(
+                target=worker, name="PulseScribe-Update", daemon=True
+            )
+            try:
+                self._worker.start()
+            except Exception:
+                self._lock.release()
+                raise
 
     def check(self, *, manual: bool = False) -> None:
         if self.state.status in ("downloading", "ready"):
@@ -163,7 +182,9 @@ class UpdateFlow:
         if self._stopped.is_set():
             shutil.rmtree(self._work, ignore_errors=True)
             return
-        self.prepared = prepare_update(offer, package, self.target, sys.platform)
+        self.prepared = prepare_update(
+            offer, package, self.target, sys.platform, stopped=self._stopped
+        )
         if self.prepared.automatic and sys.platform == "darwin":
             shutil.rmtree(self._work)
             self._work = self.prepared.work
@@ -175,7 +196,18 @@ class UpdateFlow:
         )
 
     def install(self) -> None:
-        if self.state.status != "ready" or self.prepared is None:
-            raise ValueError("No verified update is ready.")
-        self.prepared.launch()
-        self._installing = True
+        with self._lifecycle_lock:
+            if self._installing:
+                raise ValueError("Update installation is already starting.")
+            if (
+                self._stopped.is_set()
+                or self.state.status != "ready"
+                or self.prepared is None
+            ):
+                raise ValueError("No verified update is ready.")
+            self._installing = True
+            try:
+                self.prepared.launch()
+            except Exception:
+                self._installing = False
+                raise

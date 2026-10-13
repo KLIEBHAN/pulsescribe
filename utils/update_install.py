@@ -8,6 +8,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
+import uuid
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,18 +23,23 @@ i=0
 while kill -0 "$pid" 2>/dev/null; do
     i=$((i + 1))
     [ "$i" -gt 600 ] && exit 1
-    sleep 0.1
+    /bin/sleep 0.1
 done
 backup="$work/previous.app"
-if mv "$target" "$backup"; then
-    if mv "$new" "$target"; then
-        rm -rf "$backup"
-    else
-        mv "$backup" "$target" || exit 1
-    fi
+failed() {
+    printf '%s\n' "$1" > "$work/error.txt"
+    "$opener" "$target"
+    "$opener" "$work/error.txt"
+    exit 1
+}
+/bin/mv "$target" "$backup" || failed "PulseScribe could not move the installed app. The update remains in $work."
+if ! /bin/mv "$new" "$target"; then
+    /bin/mv "$backup" "$target" || failed "PulseScribe could not restore the app. The previous app remains in $backup."
+    failed "PulseScribe could not install the update. The previous app was restored."
 fi
+/bin/rm -rf "$backup"
 "$opener" "$target"
-rm -rf "$work"
+/bin/rm -rf "$work"
 """
 
 WINDOWS_INSTALL_SCRIPT = r"""param([int]$AppPid, [string]$Installer, [string]$Target)
@@ -41,6 +49,12 @@ if (Get-Process -Id $AppPid -ErrorAction SilentlyContinue) {
 }
 $directory = Split-Path -Parent $Target
 $arguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/NOCLOSEAPPLICATIONS', '/NORESTARTAPPLICATIONS', '/SP-', ('/DIR="' + $directory + '"'), ('/LOG="' + (Join-Path (Split-Path -Parent $Installer) 'setup.log') + '"'))
+$machine = Get-ItemProperty -LiteralPath 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{9A961D4A-17CB-4B01-A331-17C773E14149}_is1' -ErrorAction SilentlyContinue
+if ($machine -and $machine.InstallLocation -and $machine.InstallLocation.TrimEnd('\') -eq $directory.TrimEnd('\')) {
+    $arguments += '/ALLUSERS'
+} else {
+    $arguments += '/CURRENTUSER'
+}
 try {
     $process = Start-Process -FilePath $Installer -ArgumentList $arguments -Wait -PassThru
     if ($process.ExitCode -ne 0) { throw "Installer failed: $($process.ExitCode)" }
@@ -99,8 +113,16 @@ class PreparedUpdate:
     def launch(self) -> None:
         """Spawn before requesting an orderly quit; helpers abort after 60 seconds."""
         if not self.automatic:
+            downloads = Path.home() / "Downloads"
+            downloads.mkdir(exist_ok=True)
+            destination = downloads / self.package.name
+            if destination.exists():
+                destination = (
+                    downloads / f"{self.package.stem}-{uuid.uuid4().hex[:8]}.dmg"
+                )
+            shutil.move(str(self.package), destination)
             subprocess.Popen(
-                ["/usr/bin/open", str(self.package)], start_new_session=True
+                ["/usr/bin/open", str(destination)], start_new_session=True
             )
         elif self.platform == "darwin":
             subprocess.Popen(
@@ -122,10 +144,7 @@ class PreparedUpdate:
         else:
             helper = self.work / "install.ps1"
             helper.write_text(WINDOWS_INSTALL_SCRIPT, encoding="utf-8")
-            powershell = (
-                Path(os.environ["SystemRoot"])
-                / "System32/WindowsPowerShell/v1.0/powershell.exe"
-            )
+            powershell = windows_powershell()
             subprocess.Popen(
                 [
                     str(powershell),
@@ -148,8 +167,56 @@ class PreparedUpdate:
             )
 
 
+def windows_powershell() -> Path:
+    """Resolve the OS executable directory without trusting environment paths."""
+    import ctypes
+
+    directory = ctypes.create_unicode_buffer(32768)
+    size = ctypes.windll.kernel32.GetSystemDirectoryW(directory, len(directory))
+    if not 0 < size < len(directory):
+        raise OSError("Could not resolve the Windows system directory.")
+    return Path(directory.value) / "WindowsPowerShell/v1.0/powershell.exe"
+
+
+def _run_native(
+    command: list[str], *, timeout: int, stopped: threading.Event | None = None
+) -> None:
+    """Wait for a known child process; cancellation never targets other processes."""
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            if stopped is not None and stopped.is_set():
+                raise InterruptedError("Update preparation cancelled.")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(command, timeout)
+            try:
+                stdout, stderr = process.communicate(timeout=min(0.25, remaining))
+                break
+            except subprocess.TimeoutExpired:
+                continue
+        if process.returncode:
+            raise subprocess.CalledProcessError(
+                process.returncode, command, stdout, stderr
+            )
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate(timeout=5)
+
+
 def prepare_update(
-    offer: UpdateOffer, package: Path, target: Path, platform: str
+    offer: UpdateOffer,
+    package: Path,
+    target: Path,
+    platform: str,
+    *,
+    stopped: threading.Event | None = None,
 ) -> PreparedUpdate:
     """Validate the Mac bundle, or unpack only the expected Local Whisper installer."""
     work = package.parent
@@ -162,21 +229,20 @@ def prepare_update(
             tempfile.mkdtemp(prefix=".PulseScribe-update-", dir=target.parent)
         )
         try:
-            subprocess.run(
-                [
-                    "/usr/bin/hdiutil",
-                    "attach",
-                    "-readonly",
-                    "-nobrowse",
-                    "-mountpoint",
-                    str(mount),
-                    str(package),
-                ],
-                check=True,
-                capture_output=True,
-                timeout=120,
-            )
             try:
+                _run_native(
+                    [
+                        "/usr/bin/hdiutil",
+                        "attach",
+                        "-readonly",
+                        "-nobrowse",
+                        "-mountpoint",
+                        str(mount),
+                        str(package),
+                    ],
+                    timeout=120,
+                    stopped=stopped,
+                )
                 bundle = mount / "PulseScribe.app"
                 with (bundle / "Contents/Info.plist").open("rb") as file:
                     info = plistlib.load(file)
@@ -187,17 +253,15 @@ def prepare_update(
                     raise ValueError(
                         "The update contains an unexpected app or version."
                     )
-                subprocess.run(
+                _run_native(
                     ["/usr/bin/ditto", str(bundle), str(staged / "PulseScribe.app")],
-                    check=True,
-                    capture_output=True,
                     timeout=300,
+                    stopped=stopped,
                 )
             finally:
-                subprocess.run(
+                # attach can mount before timing out, so every exit path detaches.
+                _run_native(
                     ["/usr/bin/hdiutil", "detach", str(mount)],
-                    check=True,
-                    capture_output=True,
                     timeout=60,
                 )
         except Exception:

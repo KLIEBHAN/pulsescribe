@@ -1,4 +1,3 @@
-import os
 import plistlib
 import shutil
 import subprocess
@@ -114,9 +113,11 @@ def test_mac_swap_waits_for_known_process_and_rolls_back(tmp_path, missing_new):
         assert (target / "version").read_text() == "old"
         child.communicate("exit\n", timeout=5)
         helper.communicate(timeout=5)
-        assert helper.returncode == 0
+        assert helper.returncode == (1 if missing_new else 0)
         assert (target / "version").read_text() == ("old" if missing_new else "new")
-        assert not work.exists()
+        assert work.exists() == missing_new
+        if missing_new:
+            assert "previous app was restored" in (work / "error.txt").read_text()
     finally:
         if child.poll() is None:
             child.terminate()
@@ -179,9 +180,85 @@ def test_real_dmg_preparation_validates_bundle_and_detaches(tmp_path, valid_bund
     assert not (downloads / "mount/PulseScribe.app").exists()
 
 
+def test_manual_dmg_moves_to_downloads_before_opening(tmp_path, monkeypatch):
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    existing = downloads / "PulseScribe-1.4.0.dmg"
+    existing.write_bytes(b"keep existing")
+    work = tmp_path / "work"
+    work.mkdir()
+    package = work / existing.name
+    package.write_bytes(b"verified dmg")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    calls = []
+    monkeypatch.setattr(
+        update_install.subprocess, "Popen", lambda args, **_kwargs: calls.append(args)
+    )
+    update_install.PreparedUpdate(
+        package, tmp_path / "PulseScribe.app", work, "darwin", False
+    ).launch()
+    opened = Path(calls[0][1])
+    assert opened.parent == downloads
+    assert opened.read_bytes() == b"verified dmg"
+    assert existing.read_bytes() == b"keep existing"
+    assert not package.exists()
+
+
+def test_native_preparation_cancellation_terminates_only_its_child(
+    tmp_path, monkeypatch
+):
+    import threading
+
+    stopped = threading.Event()
+    original_popen = subprocess.Popen
+    processes = []
+
+    def start(command, **kwargs):
+        process = original_popen(command, **kwargs)
+        processes.append(process)
+        assert process.stdout.readline().strip() == b"ready"
+        stopped.set()
+        return process
+
+    monkeypatch.setattr(update_install.subprocess, "Popen", start)
+    with pytest.raises(InterruptedError):
+        update_install._run_native(
+            [
+                sys.executable,
+                "-c",
+                "import threading; print('ready', flush=True); threading.Event().wait(30)",
+            ],
+            timeout=30,
+            stopped=stopped,
+        )
+    assert len(processes) == 1
+    assert processes[0].poll() is not None
+
+
+def test_dmg_attach_timeout_always_attempts_detach(tmp_path, monkeypatch):
+    target = tmp_path / "PulseScribe.app"
+    target.mkdir()
+    package = tmp_path / "installer.dmg"
+    calls = []
+
+    def run(command, **_kwargs):
+        calls.append(command)
+        if "attach" in command:
+            raise subprocess.TimeoutExpired(command, 120)
+
+    monkeypatch.setattr(update_install, "_run_native", run)
+    with pytest.raises(subprocess.TimeoutExpired):
+        update_install.prepare_update(offer(), package, target, "darwin")
+    assert [command[1] for command in calls] == ["attach", "detach"]
+    assert not list(tmp_path.glob(".PulseScribe-update-*"))
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows PowerShell helper")
 @pytest.mark.parametrize("installer_exit", [0, 1])
-def test_windows_helper_parses_and_installs_before_restarting(tmp_path, installer_exit):
+@pytest.mark.parametrize("machine", [False, True])
+def test_windows_helper_parses_and_installs_before_restarting(
+    tmp_path, installer_exit, machine
+):
     helper = tmp_path / "install.ps1"
     helper.write_text(update_install.WINDOWS_INSTALL_SCRIPT, encoding="utf-8")
     work = tmp_path / "download"
@@ -193,8 +270,12 @@ def test_windows_helper_parses_and_installs_before_restarting(tmp_path, installe
     # Execute the real script; only installer launch and app launch are replaced.
     harness = tmp_path / "test.ps1"
     harness.write_text(
-        r"""param($Helper, $Installer, $Target, $Output, [int]$InstallerExit)
+        r"""param($Helper, $Installer, $Target, $Output, [int]$InstallerExit, [int]$Machine)
 $calls = [System.Collections.Generic.List[object]]::new()
+function Get-ItemProperty {
+    param($LiteralPath, $ErrorAction)
+    if ($Machine) { return @{InstallLocation=(Split-Path -Parent $Target)} }
+}
 function Start-Process {
     param($FilePath, $ArgumentList, [switch]$Wait, [switch]$PassThru)
     $calls.Add(@{file=$FilePath; arguments=$ArgumentList; wait=$Wait.IsPresent})
@@ -205,10 +286,7 @@ $calls | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $Output
 """,
         encoding="utf-8",
     )
-    powershell = (
-        Path(os.environ["SystemRoot"])
-        / "System32/WindowsPowerShell/v1.0/powershell.exe"
-    )
+    powershell = update_install.windows_powershell()
     subprocess.run(
         [
             str(powershell),
@@ -222,6 +300,7 @@ $calls | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $Output
             str(target),
             str(output),
             str(installer_exit),
+            str(int(machine)),
         ],
         check=True,
         capture_output=True,
@@ -235,4 +314,5 @@ $calls | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $Output
     assert f'/DIR="{target.parent}"' in calls[0]["arguments"]
     assert calls[1]["file"] == str(target)
     assert "/NOCLOSEAPPLICATIONS" in calls[0]["arguments"]
+    assert ("/ALLUSERS" if machine else "/CURRENTUSER") in calls[0]["arguments"]
     assert work.exists() == (installer_exit != 0)

@@ -41,18 +41,28 @@ def test_restart_requires_confirmation_and_orderly_quit(monkeypatch, confirmed):
     monkeypatch.setattr(updates, "show_update_message", Mock(return_value=confirmed))
     flow, quit_app = ready_flow(), Mock()
     calls = []
-    flow.install.side_effect = lambda: calls.append("install")
-    quit_app.side_effect = lambda: calls.append("quit")
+    quit_app.side_effect = lambda: calls.append("install and quit") or True
     updates.activate_update(flow, lambda: True, quit_app)
-    assert calls == (["install", "quit"] if confirmed else [])
+    assert calls == (["install and quit"] if confirmed else [])
 
 
 def test_failed_helper_launch_keeps_app_running(monkeypatch):
     monkeypatch.setattr(updates, "show_update_message", Mock(return_value=True))
     flow, quit_app = ready_flow(), Mock()
-    flow.install.side_effect = OSError("no helper")
+    quit_app.side_effect = OSError("no helper")
     updates.activate_update(flow, lambda: True, quit_app)
-    quit_app.assert_not_called()
+    quit_app.assert_called_once()
+    flow.install.assert_not_called()
+
+
+def test_atomic_reservation_rejects_new_dictation(monkeypatch):
+    dialog = Mock(return_value=True)
+    monkeypatch.setattr(updates, "show_update_message", dialog)
+    flow = ready_flow()
+    install_if_idle = Mock(return_value=False)
+    updates.activate_update(flow, lambda: True, install_if_idle)
+    install_if_idle.assert_called_once()
+    assert "Finish the current dictation" in dialog.call_args.args[1]
 
 
 def test_automatic_feedback_stays_quiet(monkeypatch):

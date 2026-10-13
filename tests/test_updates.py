@@ -37,6 +37,13 @@ def test_exact_platform_and_variant_package(platform, local):
         release(platform=platform, local=local), "1.3.0", platform, local=local
     )
     assert offer.version == "1.4.0"
+    assert offer.name == (
+        "PulseScribe-1.4.0.dmg"
+        if platform == "darwin"
+        else "PulseScribe-Setup-1.4.0-Local.zip"
+        if local
+        else "PulseScribe-Setup-1.4.0.exe"
+    )
     assert offer.notes == "New dictation features"
     assert offer.url.startswith(
         "https://github.com/KLIEBHAN/pulsescribe/releases/download/v1.4.0/"

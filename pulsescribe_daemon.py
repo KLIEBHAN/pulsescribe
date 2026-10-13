@@ -237,6 +237,8 @@ class PulseScribeDaemon:
         self.__current_state = AppState.IDLE
         self._state_lock = threading.RLock()  # Schützt _recording und _current_state
         self._toggle_lock = threading.Lock()
+        self._recording_action_lock = threading.RLock()
+        self._update_shutdown = False
         self._last_hotkey_time = 0.0
         self._last_rtf: float | None = (
             None  # Real-Time Factor der letzten Transkription
@@ -2085,6 +2087,11 @@ class PulseScribeDaemon:
         return True
 
     def _start_recording(self, *, run_mode_override: str | None = None) -> None:
+        with self._recording_action_lock:
+            if not self._update_shutdown:
+                self._start_recording_locked(run_mode_override=run_mode_override)
+
+    def _start_recording_locked(self, *, run_mode_override: str | None = None) -> None:
         """Startet Streaming-Aufnahme im Worker-Thread."""
         # Sicherstellen, dass kein alter Worker noch läuft.
         #
@@ -4049,7 +4056,6 @@ class PulseScribeDaemon:
             return
         from ui.updates import activate_update, update_feedback
         from utils.update_flow import UpdateFlow
-        from AppKit import NSApplication
 
         def publish(state):
             def apply():
@@ -4067,18 +4073,31 @@ class PulseScribeDaemon:
 
         self._updater = UpdateFlow(target, publish)
 
-        def quit_app():
-            self.cleanup()
-            NSApplication.sharedApplication().terminate_(None)
-
         self._menubar.set_update_callback(
             lambda: activate_update(
                 self._updater,
-                lambda: self._current_state in (AppState.IDLE, AppState.DONE, AppState.NO_SPEECH, AppState.ERROR),
-                quit_app,
+                self._can_install_update,
+                self._install_update_if_idle,
             ),
             self._updater.state.current,
         )
+
+    def _can_install_update(self) -> bool:
+        return not self._update_shutdown and not self._recording and self._current_state in (
+            AppState.IDLE, AppState.DONE, AppState.NO_SPEECH, AppState.ERROR
+        )
+
+    def _install_update_if_idle(self) -> bool:
+        from AppKit import NSApplication
+
+        with self._recording_action_lock:
+            if not self._can_install_update():
+                return False
+            self._updater.install()
+            self._update_shutdown = True
+        self.cleanup()
+        NSApplication.sharedApplication().terminate_(None)
+        return True
 
     @staticmethod
     def _validate_vocabulary_on_startup() -> None:

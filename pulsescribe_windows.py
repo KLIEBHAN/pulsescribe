@@ -3418,7 +3418,6 @@ class PulseScribeWindows:
         target = installed_target()
         if target is None:
             return
-        from ui.updates import update_feedback
         from utils.update_flow import UpdateFlow
 
         def publish(state):
@@ -3426,7 +3425,10 @@ class PulseScribeWindows:
                 self._tray.update_menu()
                 if state.status == "ready" and state.offer:
                     self._tray.notify(f"PulseScribe {state.offer.version} is ready. Restart from the tray menu to install.", "PulseScribe Update")
-            update_feedback(state)
+                elif state.manual and state.status == "idle":
+                    self._tray.notify(f"PulseScribe {state.current} is up to date.", "PulseScribe Updates")
+                elif state.manual and state.status == "error":
+                    self._tray.notify(state.error, "PulseScribe Update Failed")
 
         self._updater = UpdateFlow(target, publish)
 
@@ -3437,9 +3439,23 @@ class PulseScribeWindows:
         if updater:
             activate_update(
                 updater,
-                lambda: self.state in (AppState.IDLE, AppState.DONE, AppState.NO_SPEECH, AppState.ERROR),
-                self._quit,
+                self._can_install_update,
+                self._install_update_if_idle,
             )
+
+    def _can_install_update(self) -> bool:
+        return not self._stop_event.is_set() and self.state in (
+            AppState.IDLE, AppState.DONE, AppState.NO_SPEECH, AppState.ERROR
+        )
+
+    def _install_update_if_idle(self) -> bool:
+        with self._recording_action_lock:
+            if not self._can_install_update():
+                return False
+            self._updater.install()
+            self._stop_event.set()
+        self._quit()
+        return True
 
 
 def main():

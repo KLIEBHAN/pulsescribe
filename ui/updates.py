@@ -44,7 +44,7 @@ def update_feedback(state: UpdateState) -> None:
         show_update_message("PulseScribe Update Failed", state.error)
 
 
-def activate_update(flow: UpdateFlow, is_idle, quit_app) -> None:
+def activate_update(flow: UpdateFlow, is_idle, install_if_idle) -> None:
     """The menu action checks, retries, or confirms a prepared update."""
     state = flow.state
     if state.status == "ready" and state.offer:
@@ -69,11 +69,14 @@ def activate_update(flow: UpdateFlow, is_idle, quit_app) -> None:
             )
             return
         try:
-            flow.install()
+            if not install_if_idle():
+                show_update_message(
+                    "PulseScribe Updates",
+                    "Finish the current dictation before installing the update.",
+                )
         except Exception as error:
             show_update_message("PulseScribe Update Failed", str(error))
             return
-        quit_app()
     elif state.status == "available" or (
         state.status == "error" and state.error_context == "download"
     ):

@@ -66,7 +66,9 @@ def test_automatic_download_ready_survives_further_checks(flow, monkeypatch, tmp
     prepared = PreparedUpdate(
         staged / "PulseScribe.app", instance.target, staged, "darwin", True
     )
-    monkeypatch.setattr(update_flow, "prepare_update", lambda *_args: prepared)
+    monkeypatch.setattr(
+        update_flow, "prepare_update", lambda *_args, **_kwargs: prepared
+    )
     instance.check()
     wait_for_worker(instance)
     assert instance.state.status == "ready"
@@ -116,7 +118,7 @@ def test_background_failure_can_be_retried_explicitly(flow, monkeypatch):
 
 def test_shutdown_cancels_download_and_never_prepares(flow, monkeypatch):
     instance, states = flow
-    started, release = threading.Event(), threading.Event()
+    started = threading.Event()
     monkeypatch.setattr(
         update_flow,
         "check_release",
@@ -125,7 +127,7 @@ def test_shutdown_cancels_download_and_never_prepares(flow, monkeypatch):
 
     def download(_offer, _path, _progress, cancelled):
         started.set()
-        assert release.wait(2)
+        assert instance._stopped.wait(2)
         assert cancelled()
 
     prepare = Mock()
@@ -134,8 +136,9 @@ def test_shutdown_cancels_download_and_never_prepares(flow, monkeypatch):
     instance.check()
     assert started.wait(2)
     instance.stop()
-    release.set()
     wait_for_worker(instance)
+    assert not instance._worker.is_alive()
+    assert instance._work is None
     prepare.assert_not_called()
     assert all(state.status != "ready" for state in states)
 
@@ -152,6 +155,63 @@ def test_install_retains_helper_files_until_process_exit(flow, monkeypatch, tmp_
     instance.stop()
     prepared.launch.assert_called_once()
     assert work.exists()
+
+
+def test_install_is_reserved_once_and_failed_launch_can_retry(flow):
+    instance, _states = flow
+    instance.state = replace(instance.state, status="ready")
+    instance.prepared = Mock(automatic=True)
+    instance.prepared.launch.side_effect = [OSError("no helper"), None]
+    with pytest.raises(OSError):
+        instance.install()
+    instance.install()
+    with pytest.raises(ValueError, match="already starting"):
+        instance.install()
+    assert instance.prepared.launch.call_count == 2
+
+
+def test_manual_installer_does_not_retain_temporary_work(flow, tmp_path):
+    instance, _states = flow
+    work = tmp_path / "manual"
+    work.mkdir()
+    instance._work = work
+    instance.state = replace(instance.state, status="ready")
+    instance.prepared = Mock(automatic=False)
+    instance.install()
+    instance.stop()
+    assert not work.exists()
+
+
+def test_concurrent_installs_launch_exactly_one_helper(flow):
+    instance, _states = flow
+    started, release = threading.Event(), threading.Event()
+    errors = []
+    instance.state = replace(instance.state, status="ready")
+    instance.prepared = Mock(automatic=True)
+
+    def launch():
+        started.set()
+        assert release.wait(2)
+
+    instance.prepared.launch.side_effect = launch
+
+    def install():
+        try:
+            instance.install()
+        except ValueError as error:
+            errors.append(str(error))
+
+    first = threading.Thread(target=install)
+    second = threading.Thread(target=install)
+    first.start()
+    assert started.wait(2)
+    second.start()
+    release.set()
+    first.join(timeout=2)
+    second.join(timeout=2)
+    assert not first.is_alive() and not second.is_alive()
+    instance.prepared.launch.assert_called_once()
+    assert errors == ["Update installation is already starting."]
 
 
 def test_timer_uses_hourly_events_and_stops(flow, monkeypatch):
