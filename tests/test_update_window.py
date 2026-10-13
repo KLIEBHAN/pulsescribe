@@ -116,6 +116,15 @@ def test_window_that_exits_before_ready_is_reported_unavailable():
     assert wait_for(lambda: actions == ["unavailable"])
 
 
+def test_window_that_crashes_after_ready_is_reported_unavailable():
+    process = FakeProcess([b'PULSESCRIBE-UPDATE {"action": "ready"}\n'])
+    window, _launches, actions = make_window([process])
+
+    window.show(UpdateView("downloading"), activate=False)
+
+    assert wait_for(lambda: actions == ["unavailable"])
+
+
 def test_failure_of_a_replaced_window_process_is_ignored():
     release = threading.Event()
 
@@ -124,8 +133,14 @@ def test_failure_of_a_replaced_window_process_is_ignored():
             release.wait(2)
             return iter([b"Traceback ...\n"])
 
-    old, new = FakeProcess(), FakeProcess([b'PULSESCRIBE-UPDATE {"action": "ready"}\n'])
-    old.stdout = DyingStdout()
+    class RunningStdout:
+        def __iter__(self):
+            yield b'PULSESCRIBE-UPDATE {"action": "ready"}\n'
+            stop.wait(2)
+
+    stop = threading.Event()
+    old, new = FakeProcess(), FakeProcess()
+    old.stdout, new.stdout = DyingStdout(), RunningStdout()
     window, launches, actions = make_window([old, new])
     window.show(UpdateView("one"), activate=False)
     old.returncode = 1  # poll() sees the exit before the reader reaches EOF
@@ -136,6 +151,8 @@ def test_failure_of_a_replaced_window_process_is_ignored():
 
     assert launches == [False, True]
     assert actions == []
+    window.close()
+    stop.set()
 
 
 def test_closing_a_starting_window_is_not_a_failure():

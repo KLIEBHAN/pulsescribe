@@ -4,8 +4,9 @@
 first ``show`` and forwards views over its stdin. ``launch(activate)`` must
 return a ``subprocess.Popen`` with ``stdin`` and ``stdout`` pipes;
 ``on_action`` runs on a reader thread for every button press, and receives
-``unavailable`` when a window process exits before reporting ``ready``. All
-methods are thread-safe; ``close()`` ends the process (shutdown, installs).
+``unavailable`` when the current window process ends without the user closing
+it (start failure or crash). All methods are thread-safe; ``close()`` ends the
+process on purpose (shutdown, installs).
 """
 
 from __future__ import annotations
@@ -79,7 +80,7 @@ class WindowsUpdateWindow:
                 self._process = None
 
     def _read_actions(self, process) -> None:
-        ready = False
+        closed_by_user = False
         try:
             for line in process.stdout:
                 if not line.startswith(ACTION_PREFIX):
@@ -88,17 +89,17 @@ class WindowsUpdateWindow:
                     action = json.loads(line[len(ACTION_PREFIX):]).get("action")
                 except (ValueError, AttributeError):
                     continue
-                if action == "ready":
-                    ready = True
-                elif isinstance(action, str):
-                    self._on_action(action)
+                if action == "ready" or not isinstance(action, str):
+                    continue  # "ready" is the startup handshake checked in CI
+                closed_by_user = closed_by_user or action == "close"
+                self._on_action(action)
         except (OSError, ValueError):
             pass
         with self._lock:
             # A newer window may already run; its own reader reports its fate.
             superseded = self._process is not None and self._process is not process
-        if not ready and not superseded and process not in self._closed:
-            logger.warning("Update window process exited before it was ready")
+        if not closed_by_user and not superseded and process not in self._closed:
+            logger.warning("Update window process ended unexpectedly")
             self._on_action("unavailable")
 
 
