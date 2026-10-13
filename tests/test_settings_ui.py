@@ -784,6 +784,49 @@ class TestWelcomeSaveSettings:
         assert ctrl._prompts_reset_btn.enabled is True
 
 
+@pytest.mark.parametrize(
+    "context, draft, expected_reset",
+    [
+        ("default", "custom prompt", True),
+        ("default", "", True),
+        ("app_mappings", "Mail = email\n# note", False),
+        ("app_mappings", "Mail = email\nSlack = chat", True),
+    ],
+)
+def test_mac_prompt_edit_reads_once_and_uses_the_same_draft_for_feedback(
+    monkeypatch, context, draft, expected_reset
+):
+    class CountingTextView:
+        reads = 0
+
+        def string(self):
+            self.reads += 1
+            if self.reads > 1:
+                pytest.fail("Prompt feedback must reuse the cached editor read")
+            return draft
+
+    ctrl = _make_minimal_welcome_controller()
+    ctrl._prompts_current_context = context
+    ctrl._prompts_text_view = CountingTextView()
+    ctrl._prompts_state_label = _FakeStatus("")
+    ctrl._prompts_status_label = _FakeField("Saved")
+    ctrl._prompts_reset_btn = _FakeAppKitButton(enabled=not expected_reset)
+    baseline = "Mail = email" if context == "app_mappings" else "default prompt"
+    ctrl._get_saved_prompt_editor_text_for_context = lambda _context: baseline
+    ctrl._get_prompt_editor_text_for_context = lambda _context, **kwargs: baseline
+    monkeypatch.setattr("ui.welcome._status_color", lambda color: color)
+
+    ctrl._on_prompt_editor_text_changed()
+
+    assert ctrl._prompts_text_view.reads == 1
+    assert ctrl._prompts_cache[context] == draft
+    assert ctrl._prompts_status_label.value == ""
+    assert ctrl._prompts_reset_btn.enabled is expected_reset
+    assert ctrl._prompts_state_label.color == (
+        "warning" if expected_reset else "text_secondary"
+    )
+
+
 class TestWelcomeEditorCaches:
     def test_get_prompt_editor_text_for_context_reuses_cached_app_mappings_formatting(
         self, monkeypatch

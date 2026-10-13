@@ -3598,11 +3598,11 @@ class WelcomeController:
             self._prompt_editor_context_key(context)
         )
 
-    def _refresh_prompt_editor_feedback(self) -> None:
+    def _refresh_prompt_editor_feedback(self, *, draft_text: str | None = None) -> None:
         context = getattr(self, "_prompts_current_context", "default")
         feedback = build_prompt_editor_state_feedback(
             context,
-            self._current_prompt_editor_text(),
+            self._current_prompt_editor_text() if draft_text is None else draft_text,
             saved_text=self._get_saved_prompt_editor_text_for_context(context),
             default_text=self._get_prompt_editor_text_for_context(context, defaults=True),
         )
@@ -3629,9 +3629,10 @@ class WelcomeController:
             return
         if not hasattr(self, "_prompts_cache"):
             self._prompts_cache = {}
-        self._prompts_cache[context] = self._current_prompt_editor_text()
+        text = self._current_prompt_editor_text()
+        self._prompts_cache[context] = text
         _set_string_value_if_changed(getattr(self, "_prompts_status_label", None), "")
-        self._refresh_prompt_editor_feedback()
+        self._refresh_prompt_editor_feedback(draft_text=text)
 
     def _get_loaded_vocabulary_keywords(self, *, force: bool = False) -> list[str]:
         cached = getattr(self, "_loaded_vocabulary_keywords", None)
