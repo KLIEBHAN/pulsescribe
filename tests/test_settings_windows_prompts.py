@@ -365,6 +365,7 @@ def test_comment_only_mapping_edit_does_not_persist(monkeypatch):
     assert window._prompts_cache["app_mappings"] == baseline + "\n# note"
 
 
+@pytest.mark.parametrize("initially_dirty", [False, True])
 @pytest.mark.parametrize(
     "context, draft, saved, default, dirty, reset",
     [
@@ -375,7 +376,7 @@ def test_comment_only_mapping_edit_does_not_persist(monkeypatch):
     ],
 )
 def test_prompt_edit_keeps_dirty_state_and_buttons_consistent(
-    context, draft, saved, default, dirty, reset
+    context, draft, saved, default, dirty, reset, initially_dirty
 ):
     window = _make_window()
     window._current_prompt_context = context
@@ -384,6 +385,8 @@ def test_prompt_edit_keeps_dirty_state_and_buttons_consistent(
     window._prompt_reset_btn = _FakeButton()
     window._get_prompt_text_for_context = lambda _context: saved
     window._get_prompt_default_text_for_context = lambda _context: default
+    if initially_dirty:
+        window._dirty_prompt_contexts.add(context)
 
     window._on_prompt_editor_text_changed()
 
