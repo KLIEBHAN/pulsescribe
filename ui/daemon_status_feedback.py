@@ -322,7 +322,10 @@ def build_daemon_status_label(
     prefer_detail: bool = True,
     max_chars: int = 80,
 ) -> str:
-    """Return a concise, user-facing status label for non-overlay surfaces."""
+    """Return a concise, user-facing status label for non-overlay surfaces.
+
+    A nonpositive ``max_chars`` preserves the full normalized label.
+    """
     normalized_state = _normalize_state(state)
 
     if normalized_state in (AppState.RECORDING, AppState.DONE) and prefer_detail:
