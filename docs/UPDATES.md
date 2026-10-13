@@ -34,7 +34,8 @@ checks and downloads; network operations time out after 30 seconds of inactivity
   process to exit, runs the Inno Setup installer silently into the current
   installation directory, and restarts PulseScribe after a successful installer
   exit. The helper selects the machine-wide mode from the installed application's
-  uninstall registration, or the current-user mode otherwise. Inno Setup requests elevation for
+  uninstall registration in either the 32-bit or 64-bit registry view, or the
+  current-user mode otherwise. Inno Setup requests elevation for
   an existing administrative installation ([Inno Setup install modes](https://jrsoftware.org/ishelp/topic_setup_usepreviousprivileges.htm)). A failed install restarts the app
   and keeps the installer and `setup.log` for diagnosis. It does not close other
   applications. Local Whisper installations require the `-Local.zip` asset and never

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import ntpath
 import plistlib
 import shutil
 import subprocess
@@ -42,19 +43,15 @@ fi
 /bin/rm -rf "$work"
 """
 
-WINDOWS_INSTALL_SCRIPT = r"""param([int]$AppPid, [string]$Installer, [string]$Target)
+WINDOWS_INSTALL_SCRIPT = r"""param([int]$AppPid, [string]$Installer, [string]$Target,
+    [Parameter(Mandatory=$true)][ValidateSet('ALLUSERS', 'CURRENTUSER')][string]$InstallMode)
 $ErrorActionPreference = "Stop"
 if (Get-Process -Id $AppPid -ErrorAction SilentlyContinue) {
     Wait-Process -Id $AppPid -Timeout 60
 }
 $directory = Split-Path -Parent $Target
 $arguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/NOCLOSEAPPLICATIONS', '/NORESTARTAPPLICATIONS', '/SP-', ('/DIR="' + $directory + '"'), ('/LOG="' + (Join-Path (Split-Path -Parent $Installer) 'setup.log') + '"'))
-$machine = Get-ItemProperty -LiteralPath 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{9A961D4A-17CB-4B01-A331-17C773E14149}_is1' -ErrorAction SilentlyContinue
-if ($machine -and $machine.InstallLocation -and $machine.InstallLocation.TrimEnd('\') -eq $directory.TrimEnd('\')) {
-    $arguments += '/ALLUSERS'
-} else {
-    $arguments += '/CURRENTUSER'
-}
+$arguments += "/$InstallMode"
 try {
     $process = Start-Process -FilePath $Installer -ArgumentList $arguments -Wait -PassThru
     if ($process.ExitCode -ne 0) { throw "Installer failed: $($process.ExitCode)" }
@@ -160,6 +157,8 @@ class PreparedUpdate:
                     str(self.package),
                     "-Target",
                     str(self.target),
+                    "-InstallMode",
+                    windows_install_mode(self.target),
                 ],
                 creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS,
                 stdout=subprocess.DEVNULL,
@@ -176,6 +175,27 @@ def windows_powershell() -> Path:
     if not 0 < size < len(directory):
         raise OSError("Could not resolve the Windows system directory.")
     return Path(directory.value) / "WindowsPowerShell/v1.0/powershell.exe"
+
+
+def windows_install_mode(target: Path) -> str:
+    """Match Inno's uninstall registration independently of the process bitness."""
+    import winreg
+
+    key_path = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{9A961D4A-17CB-4B01-A331-17C773E14149}_is1"
+    directory = ntpath.normcase(ntpath.normpath(str(target.parent)))
+    for view in (winreg.KEY_WOW64_32KEY, winreg.KEY_WOW64_64KEY):
+        try:
+            with winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE, key_path, 0, winreg.KEY_READ | view
+            ) as key:
+                location, _kind = winreg.QueryValueEx(key, "InstallLocation")
+        except FileNotFoundError:
+            continue
+        if not isinstance(location, str) or not location:
+            raise ValueError("The machine installation has no valid directory.")
+        if ntpath.normcase(ntpath.normpath(location)) == directory:
+            return "ALLUSERS"
+    return "CURRENTUSER"
 
 
 def _run_native(

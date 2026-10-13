@@ -2,6 +2,7 @@ import plistlib
 import shutil
 import subprocess
 import sys
+import types
 import zipfile
 from pathlib import Path
 
@@ -39,6 +40,50 @@ def test_windows_local_variant_detected_from_bundle(tmp_path):
     assert not update_install.is_local_windows(target)
     (tmp_path / "_internal/faster_whisper").mkdir(parents=True)
     assert update_install.is_local_windows(target)
+
+
+@pytest.mark.parametrize("view", ["32", "64", "missing", "other"])
+def test_windows_install_mode_reads_both_registry_views(monkeypatch, view):
+    import contextlib
+
+    calls = []
+    registry = types.SimpleNamespace(
+        HKEY_LOCAL_MACHINE=object(),
+        KEY_READ=0x20019,
+        KEY_WOW64_32KEY=0x0200,
+        KEY_WOW64_64KEY=0x0100,
+    )
+    target = Path("C:/Program Files/PulseScribe/PulseScribe.exe")
+
+    @contextlib.contextmanager
+    def open_key(hive, path, reserved, access):
+        assert hive is registry.HKEY_LOCAL_MACHINE
+        assert path.endswith("{9A961D4A-17CB-4B01-A331-17C773E14149}_is1")
+        assert reserved == 0
+        calls.append(access)
+        wanted = (
+            registry.KEY_WOW64_32KEY
+            if view in ("32", "other")
+            else registry.KEY_WOW64_64KEY
+        )
+        if view == "missing" or access != registry.KEY_READ | wanted:
+            raise FileNotFoundError
+        yield object()
+
+    registry.OpenKey = open_key
+    registry.QueryValueEx = lambda _key, name: (
+        "C:\\Program Files\\Other"
+        if view == "other"
+        else "c:\\PROGRAM FILES\\PulseScribe\\",
+        1,
+    )
+    monkeypatch.setitem(sys.modules, "winreg", registry)
+    assert update_install.windows_install_mode(target) == (
+        "ALLUSERS" if view in ("32", "64") else "CURRENTUSER"
+    )
+    assert calls[0] == registry.KEY_READ | registry.KEY_WOW64_32KEY
+    if view != "32":
+        assert calls[1] == registry.KEY_READ | registry.KEY_WOW64_64KEY
 
 
 def test_local_zip_only_extracts_expected_installer(tmp_path):
@@ -272,16 +317,13 @@ def test_windows_helper_parses_and_installs_before_restarting(
     harness.write_text(
         r"""param($Helper, $Installer, $Target, $Output, [int]$InstallerExit, [int]$Machine)
 $calls = [System.Collections.Generic.List[object]]::new()
-function Get-ItemProperty {
-    param($LiteralPath, $ErrorAction)
-    if ($Machine) { return @{InstallLocation=(Split-Path -Parent $Target)} }
-}
 function Start-Process {
     param($FilePath, $ArgumentList, [switch]$Wait, [switch]$PassThru)
     $calls.Add(@{file=$FilePath; arguments=$ArgumentList; wait=$Wait.IsPresent})
     return @{ExitCode=$InstallerExit}
 }
-try { & $Helper -AppPid 2147483647 -Installer $Installer -Target $Target } catch { }
+$mode = if ($Machine) { 'ALLUSERS' } else { 'CURRENTUSER' }
+try { & $Helper -AppPid 2147483647 -Installer $Installer -Target $Target -InstallMode $mode } catch { }
 $calls | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $Output
 """,
         encoding="utf-8",
