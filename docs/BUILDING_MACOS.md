@@ -7,6 +7,8 @@ PulseScribe ships as a `.app` bundle and a drag‑and‑drop `.dmg`. For a good 
 - macOS with **Xcode Command Line Tools** (`xcrun`, `notarytool`, `stapler`)
   - Install: `xcode-select --install`
 - Python + `pyinstaller`
+- Install `requirements.txt` before a full build. Both `mlx-whisper` and
+  `lightning-whisper-mlx` are required; Lightning does not install `mlx-whisper`.
 - (For notarization) an Apple Developer Program membership with a **Developer ID Application** certificate installed in your keychain
 
 ## Quick Start
@@ -60,6 +62,9 @@ The [`Build Installers`](../.github/workflows/build-installers.yml) workflow
 builds the full Apple Silicon app on `macos-14`, verifies the bundle version and
 architecture, mounts and validates the DMG, and stores both the DMG and its
 SHA-256 checksum as a workflow artifact for 14 days.
+The full build fails if a local backend dependency is missing. CI also runs
+`--check-mlx-backend` from the app inside the DMG, checking MLX imports, native
+operations and the 80/128 mel-filter assets without downloading a model.
 
 Pushing an annotated `vX.Y.Z` tag builds both platforms and publishes the release
 only after the installers are uploaded. See [Updates and releases](UPDATES.md).
@@ -79,6 +84,13 @@ The CI build is currently ad-hoc signed and not notarized because the repository
 does not have Apple signing credentials configured. It therefore has the same
 Gatekeeper limitations as a local development build. Use the notarized release
 process below when Developer ID credentials are available.
+
+For the current ad-hoc signed release, copy the app to Applications and, if
+macOS blocks it, remove its quarantine flag before opening it:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/PulseScribe.app
+```
 
 ## Release Build (Notarized)
 

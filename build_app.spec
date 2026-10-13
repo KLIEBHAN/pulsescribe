@@ -22,6 +22,7 @@ block_cipher = None
 
 # PyInstaller Hook helpers for native libs/data
 from PyInstaller.utils.hooks import collect_all  # type: ignore
+import importlib.util
 import os
 import pathlib
 import re
@@ -115,6 +116,17 @@ hiddenimports = [
 # Slim-Build: ~300 MB (nur Cloud-Provider: Deepgram, OpenAI, Groq)
 # Full-Build: ~1 GB (mit lokalen Whisper-Backends: faster-whisper, mlx, lightning)
 if not SLIM_BUILD:
+    required_modules = (
+        "faster_whisper", "ctranslate2", "tokenizers", "mlx_whisper", "mlx",
+        "scipy", "lightning_whisper_mlx",
+    )
+    missing_modules = [name for name in required_modules if importlib.util.find_spec(name) is None]
+    if missing_modules:
+        raise SystemExit(
+            f"Full macOS build missing dependencies: {', '.join(missing_modules)}. "
+            "Install requirements.txt before building."
+        )
+
     # faster-whisper / CTranslate2
     fw_datas, fw_binaries, fw_hidden = collect_all("faster_whisper")
     ct_datas, ct_binaries, ct_hidden = collect_all("ctranslate2")
@@ -125,25 +137,17 @@ if not SLIM_BUILD:
     hiddenimports += fw_hidden + ct_hidden + tok_hidden
 
     # mlx-whisper / MLX (Apple Silicon only)
-    try:
-        mlxw_datas, mlxw_binaries, mlxw_hidden = collect_all("mlx_whisper")
-        mlx_datas, mlx_binaries, mlx_hidden = collect_all("mlx")
-        # mlx-whisper depends on SciPy (e.g. for word-timestamp helpers)
-        scipy_datas, scipy_binaries, scipy_hidden = collect_all("scipy")
-    except Exception:
-        mlxw_datas, mlxw_binaries, mlxw_hidden = [], [], []
-        mlx_datas, mlx_binaries, mlx_hidden = [], [], []
-        scipy_datas, scipy_binaries, scipy_hidden = [], [], []
+    mlxw_datas, mlxw_binaries, mlxw_hidden = collect_all("mlx_whisper")
+    mlx_datas, mlx_binaries, mlx_hidden = collect_all("mlx")
+    # mlx-whisper depends on SciPy (e.g. for word-timestamp helpers)
+    scipy_datas, scipy_binaries, scipy_hidden = collect_all("scipy")
 
     datas += mlxw_datas + mlx_datas + scipy_datas
     binaries += mlxw_binaries + mlx_binaries + scipy_binaries
     hiddenimports += mlxw_hidden + mlx_hidden + scipy_hidden
 
     # lightning-whisper-mlx (~4x faster via batched decoding, Apple Silicon only)
-    try:
-        lw_datas, lw_binaries, lw_hidden = collect_all("lightning_whisper_mlx")
-    except Exception:
-        lw_datas, lw_binaries, lw_hidden = [], [], []
+    lw_datas, lw_binaries, lw_hidden = collect_all("lightning_whisper_mlx")
 
     datas += lw_datas
     binaries += lw_binaries

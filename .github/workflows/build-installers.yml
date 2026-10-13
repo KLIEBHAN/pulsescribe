@@ -249,6 +249,7 @@ jobs:
             exit 1
           }
           file "$mount_point/$app_binary" | grep -q 'arm64'
+          "$mount_point/$app_binary" --check-mlx-backend
 
           hdiutil detach "$mount_point"
           trap - EXIT

@@ -28,7 +28,9 @@ quickmachotkey>=2023.11.17; sys_platform == 'darwin'
 pyobjc-framework-Cocoa; sys_platform == 'darwin'
 pyobjc-framework-AVFoundation; sys_platform == 'darwin'
 
-# macOS only: fastest local backend on Apple Silicon (~4x faster)
+# macOS only: local MLX backends on Apple Silicon
+mlx-whisper; sys_platform == 'darwin'
+# Fastest local backend (~4x faster)
 # Note: Install with `pip install --no-deps lightning-whisper-mlx` to avoid tiktoken version conflict
 lightning-whisper-mlx; sys_platform == 'darwin'
 
