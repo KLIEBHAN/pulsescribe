@@ -2360,11 +2360,8 @@ class PulseScribeWindows:
         updater = getattr(self, "_updater", None)
         update_items = (
             (
-                pystray.MenuItem(
-                    lambda _item: updater.state.label,
-                    self._activate_update,
-                    enabled=lambda _item: updater.state.status not in ("checking", "downloading"),
-                ),
+                # Always enabled: it (re)opens the update window, also mid-download.
+                pystray.MenuItem(lambda _item: updater.state.label, self._activate_update),
             )
             if updater
             else ()

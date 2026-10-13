@@ -374,5 +374,5 @@ class MenuBarController:
         self._menu_title_item.setTitle_(f"PulseScribe {version}")
 
     def update_update_state(self, state) -> None:
+        """Mirror the update label; the item stays enabled to reopen the window."""
         _set_menu_item_title_if_changed(self._update_item, state.label)
-        self._update_item.setEnabled_(state.status not in ("checking", "downloading"))
