@@ -38,22 +38,26 @@ def test_detail_preview_preserves_normalized_label(state, budget, text):
     assert build_daemon_status_label(state, text, max_chars=budget) == expected
 
 
-def test_recording_surfaces_do_not_normalize_ignored_transcript(monkeypatch):
-    def unexpected_normalization(_text):
-        raise AssertionError("A constant label or hint must not process its transcript")
+def test_recording_surfaces_do_not_read_ignored_transcript():
+    class UnreadableTranscript(str):
+        def fail_on_access(self, *_args, **_kwargs):
+            raise AssertionError("A constant label or hint must not read its transcript")
 
-    monkeypatch.setattr(
-        "ui.daemon_status_feedback.normalize_daemon_status_text",
-        unexpected_normalization,
-    )
-    text = "alpha " * 10_000
+        __str__ = fail_on_access
+        __iter__ = fail_on_access
+        __getitem__ = fail_on_access
+        split = fail_on_access
+        replace = fail_on_access
+        strip = fail_on_access
+
+    text = UnreadableTranscript("alpha " * 10_000)
 
     assert (
         build_daemon_status_label(AppState.RECORDING, text, prefer_detail=False)
         == "Recording — speak now"
     )
-    assert build_daemon_status_hint(AppState.RECORDING, text).startswith(
-        "Release the hold hotkey"
+    assert build_daemon_status_hint(AppState.RECORDING, text) == (
+        "Release the hold hotkey or stop the toggle hotkey to finish."
     )
     assert (
         build_daemon_tray_title(AppState.RECORDING, text)
