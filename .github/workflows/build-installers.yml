@@ -180,6 +180,11 @@ jobs:
       VERSION: ${{ needs.metadata.outputs.version }}
       RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
       RELEASE_COMMIT: ${{ needs.metadata.outputs.commit }}
+      PUBLISH: ${{ needs.metadata.outputs.publish }}
+      # SHA-1 of the "PulseScribe Code Signing" certificate. macOS keeps
+      # privacy permissions across updates only while every release is signed
+      # with this certificate; changing it makes users grant them again.
+      MACOS_SIGNING_CERT_SHA1: 7241EB994E2F876853BEEE24D56EF802F9AE2AB0
 
     steps:
       - name: Check out validated release commit
@@ -195,6 +200,47 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             requirements-dev.txt
+
+      - name: Import stable signing certificate
+        shell: bash
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$MACOS_CERTIFICATE_P12" ]]; then
+            if [[ "$PUBLISH" == "true" ]]; then
+              echo "::error::MACOS_CERTIFICATE_P12 is required: ad-hoc releases make users grant permissions again"
+              exit 1
+            fi
+            echo "::warning::No signing certificate available; this build is ad-hoc signed"
+            exit 0
+          fi
+
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          keychain_password="$(openssl rand -hex 24)"
+          certificate="$RUNNER_TEMP/signing.p12"
+          trap 'rm -f "$certificate"' EXIT
+
+          security create-keychain -p "$keychain_password" "$keychain"
+          echo "SIGNING_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          printf '%s' "$MACOS_CERTIFICATE_P12" | base64 --decode > "$certificate"
+          security import "$certificate" -k "$keychain" -f pkcs12 \
+            -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s \
+            -k "$keychain_password" "$keychain" >/dev/null
+          read -r -a search_list <<< "$(security list-keychains -d user | tr -d '"' | xargs)"
+          security list-keychains -d user -s "$keychain" "${search_list[@]}"
+
+          # The certificate is self-signed, so it is listed as untrusted; codesign
+          # still signs with it when addressed by its SHA-1.
+          if ! security find-identity -p codesigning "$keychain" | grep -Fq "$MACOS_SIGNING_CERT_SHA1"; then
+            echo "::error::MACOS_CERTIFICATE_P12 does not contain the pinned certificate $MACOS_SIGNING_CERT_SHA1"
+            exit 1
+          fi
+          echo "CODESIGN_IDENTITY=$MACOS_SIGNING_CERT_SHA1" >> "$GITHUB_ENV"
 
       - name: Verify Apple Silicon runner
         shell: bash
@@ -247,6 +293,18 @@ jobs:
 
           [[ -d "$mount_point/PulseScribe.app" ]]
           codesign --verify --deep --strict "$mount_point/PulseScribe.app"
+          if [[ -n "${CODESIGN_IDENTITY:-}" || "$PUBLISH" == "true" ]]; then
+            # Permissions survive updates only when macOS identifies the app by
+            # the pinned certificate instead of this build's hash.
+            requirement="$(codesign -d -r- "$mount_point/PulseScribe.app" 2>&1)"
+            certificate_hash="$(tr '[:upper:]' '[:lower:]' <<< "$MACOS_SIGNING_CERT_SHA1")"
+            expected="designated => identifier \"com.kliebhan.pulsescribe\" and certificate leaf = H\"$certificate_hash\""
+            if ! grep -Fxq "$expected" <<< "$requirement"; then
+              echo "App is not signed with the pinned certificate:" >&2
+              echo "$requirement" >&2
+              exit 1
+            fi
+          fi
           bundle_version="$(plutil -extract CFBundleShortVersionString raw -o - "$mount_point/PulseScribe.app/Contents/Info.plist")"
           [[ "$bundle_version" == "$VERSION" ]] || {
             echo "Bundle version $bundle_version does not match $VERSION" >&2
@@ -277,6 +335,11 @@ jobs:
             echo
             python -m pip freeze
           } > dist/build-metadata-macos.txt
+
+      - name: Remove signing keychain
+        if: always() && env.SIGNING_KEYCHAIN != ''
+        shell: bash
+        run: security delete-keychain "$SIGNING_KEYCHAIN"
 
       - name: Upload macOS build artifact
         uses: actions/upload-artifact@v7

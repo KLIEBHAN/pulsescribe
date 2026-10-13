@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **macOS permissions after updates** – releases are signed with a stable
+  certificate, so Microphone, Accessibility and Input Monitoring stay granted
+  after an update. The first update from 1.6.0 or earlier asks for them once more.
+
 ## [1.6.0] - 2026-10-13
 
 ### Added
