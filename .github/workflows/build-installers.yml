@@ -23,6 +23,7 @@ on:
       - pyproject.toml
       - refine/**
       - requirements.txt
+      - requirements-build-windows.txt
       - transcribe.py
       - ui/**
       - utils/**
@@ -372,27 +373,37 @@ jobs:
         with:
           ref: ${{ needs.metadata.outputs.commit }}
 
+      - name: Prepare API-only build requirements
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          # Hash the actual install input so the cloud and Local jobs cannot
+          # reuse an immutable pip cache populated by the other variant.
+          Get-Content requirements.txt |
+            Where-Object { $_ -notmatch '^(openai-whisper|faster-whisper|lightning-whisper-mlx)([<>=; ]|$)' } |
+            Set-Content -Path requirements-windows-build.txt -Encoding utf8
+          if (Test-Path requirements-build-windows.txt) {
+            Get-Content requirements-build-windows.txt |
+              Add-Content -Path requirements-windows-build.txt -Encoding utf8
+          } else {
+            # Older release tags lack the Essentials-compatible spec.
+            'pyinstaller>=6,<7', 'PySide6>=6,<7' |
+              Add-Content -Path requirements-windows-build.txt -Encoding utf8
+          }
+
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: requirements.txt
+          cache-dependency-path: requirements-windows-build.txt
 
       - name: Install API-only build dependencies
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           python -m pip install --upgrade pip
-
-          # The recommended cloud build excludes local Whisper backends. Avoid
-          # downloading their multi-gigabyte build dependencies on this runner.
-          $cloudRequirements = Join-Path $env:RUNNER_TEMP "requirements-windows-cloud.txt"
-          Get-Content requirements.txt |
-            Where-Object { $_ -notmatch '^(openai-whisper|faster-whisper|lightning-whisper-mlx)([<>=; ]|$)' } |
-            Set-Content -Path $cloudRequirements -Encoding utf8
-
-          python -m pip install -r $cloudRequirements "pyinstaller>=6,<7" "PySide6>=6,<7"
+          python -m pip install -r requirements-windows-build.txt
 
       - name: Install Inno Setup
         shell: pwsh
@@ -514,19 +525,34 @@ jobs:
         with:
           ref: ${{ needs.metadata.outputs.commit }}
 
+      - name: Prepare Local Whisper build requirements
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Get-Content requirements.txt |
+            Set-Content -Path requirements-windows-build.txt -Encoding utf8
+          if (Test-Path requirements-build-windows.txt) {
+            Get-Content requirements-build-windows.txt |
+              Add-Content -Path requirements-windows-build.txt -Encoding utf8
+          } else {
+            # Keep manual rebuilds of older releases working.
+            'pyinstaller>=6,<7', 'PySide6>=6,<7' |
+              Add-Content -Path requirements-windows-build.txt -Encoding utf8
+          }
+
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: requirements.txt
+          cache-dependency-path: requirements-windows-build.txt
 
       - name: Install Local Whisper build dependencies
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt "pyinstaller>=6,<7" "PySide6>=6,<7"
+          python -m pip install -r requirements-windows-build.txt
 
       - name: Install Inno Setup
         shell: pwsh

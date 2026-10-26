@@ -7,7 +7,7 @@ Output: dist/PulseScribe/PulseScribe.exe
 
 Requirements:
     pip install -r requirements.txt
-    pip install pyinstaller PySide6
+    pip install -r requirements-build-windows.txt
 
 Core: pystray pillow pynput sounddevice soundfile numpy deepgram-sdk groq openai pyperclip python-dotenv
 Windows: pywin32 psutil
@@ -173,6 +173,9 @@ hiddenimports = [
     'PySide6.QtCore',
     'PySide6.QtGui',
     'PySide6.QtWidgets',
+    # PyInstaller's Qt hook checks the PySide6 metapackage version, which is
+    # absent with Essentials-only installs. Keep Qt enum operators working.
+    'PySide6.support.deprecated',
     'shiboken6',
     'tkinter',
 ]

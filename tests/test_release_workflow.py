@@ -172,3 +172,60 @@ def test_published_releases_always_include_local_package(
 
     assert result.returncode == 0, result.stderr
     assert f"build_windows_local={expected}" in output.read_text().splitlines()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="build preparation uses PowerShell")
+@pytest.mark.parametrize("legacy_tag", [False, True])
+def test_windows_cache_inputs_match_installed_requirements_and_differ_by_variant(
+    tmp_path, legacy_tag
+):
+    root = WORKFLOW.parents[2]
+    runtime = (root / "requirements.txt").read_text()
+    (tmp_path / "requirements.txt").write_text(runtime, encoding="utf-8")
+    if legacy_tag:
+        tools = "pyinstaller>=6,<7\nPySide6>=6,<7\n"
+    else:
+        tools = (root / "requirements-build-windows.txt").read_text()
+        (tmp_path / "requirements-build-windows.txt").write_text(tools, encoding="utf-8")
+
+    def prepare(variant):
+        subprocess.run(
+            [
+                "pwsh",
+                "-NoProfile",
+                "-Command",
+                run_block(f"Prepare {variant} build requirements"),
+            ],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+            timeout=15,
+        )
+        return (tmp_path / "requirements-windows-build.txt").read_text(encoding="utf-8-sig")
+
+    local = prepare("Local Whisper")
+    cloud = prepare("API-only")
+    assert local.splitlines() == (runtime + tools).splitlines()
+    excluded = ("openai-whisper", "faster-whisper", "lightning-whisper-mlx")
+    assert cloud.splitlines() == [
+        line for line in local.splitlines() if not line.startswith(excluded)
+    ]
+    assert cloud != local
+    assert prepare("API-only") == cloud  # Reruns overwrite, rather than append.
+
+
+@pytest.mark.parametrize(
+    "job,variant",
+    [("build-windows", "API-only"), ("build-windows-local", "Local Whisper")],
+)
+def test_windows_cache_hashes_the_prepared_install_input(job, variant):
+    workflow = WORKFLOW.read_text()
+    section = workflow.split(f"\n  {job}:\n", 1)[1]
+    section = section.split("\n  build-windows-local:", 1)[0]
+    section = section.split("\n  publish-release:", 1)[0]
+    assert section.index(f"Prepare {variant} build requirements") < section.index(
+        "name: Set up Python"
+    )
+    assert "cache-dependency-path: requirements-windows-build.txt" in section
+    assert "python -m pip install -r requirements-windows-build.txt" in section
+    assert "      - requirements-build-windows.txt\n" in workflow
