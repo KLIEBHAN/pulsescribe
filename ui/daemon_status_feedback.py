@@ -347,7 +347,12 @@ def build_daemon_status_label(
         )
 
     if normalized_state == AppState.DONE:
-        return _truncate_status_text(DEFAULT_DAEMON_STATUS_LABELS[AppState.DONE], max_chars)
+        label = (
+            str(text)
+            if text in ("Copied to clipboard", "Test complete")
+            else DEFAULT_DAEMON_STATUS_LABELS[AppState.DONE]
+        )
+        return _truncate_status_text(label, max_chars)
 
     if normalized_state == AppState.NO_SPEECH:
         detail = normalize_daemon_status_text(str(text or ""))
@@ -400,6 +405,10 @@ def _build_no_speech_hint(detail_lower: str) -> str:
 
 
 def _build_error_hint(text: DaemonStatusError | Exception | str | None) -> str:
+    from utils.transcript_delivery import DELIVERY_HINTS
+
+    if isinstance(text, str) and text in DELIVERY_HINTS:
+        return DELIVERY_HINTS[text]
     error_info = infer_daemon_status_error(text)
     if error_info is not None and error_info.code in ERROR_CODE_HINTS:
         return ERROR_CODE_HINTS[error_info.code]

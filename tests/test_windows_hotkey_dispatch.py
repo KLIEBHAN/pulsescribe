@@ -181,18 +181,42 @@ def test_handle_result_pastes_before_history_io(monkeypatch):
     daemon.auto_paste = True
 
     order: list[str] = []
+    daemon._play_sound = lambda name: order.append(name)
+    daemon._schedule_idle_if_state_unchanged = lambda *_args: None
 
     monkeypatch.setattr(
-        windows_module,
-        "paste_transcript",
+        "utils.hotkey.paste_transcript",
         lambda _text: order.append("paste") or True,
     )
     daemon._save_to_history = lambda _text, **_kwargs: order.append("history")
 
     daemon._handle_result("hello world")
 
-    assert order == ["paste", "history"]
+    assert order == ["paste", "done", "history"]
     assert daemon.state == AppState.DONE
+
+
+def test_failed_delivery_reports_error_and_menu_recovers_without_history(monkeypatch):
+    from unittest.mock import Mock
+
+    _, daemon = _make_daemon()
+    sound = Mock()
+    daemon._play_sound = sound
+    daemon._schedule_idle_if_state_unchanged = lambda *_args: None
+    daemon._set_state(AppState.TRANSCRIBING, watch_transcribing=False)
+    monkeypatch.setattr("utils.history.save_transcript", Mock(side_effect=OSError()))
+    monkeypatch.setattr("utils.hotkey.paste_transcript", lambda _text: False)
+    copy = Mock(side_effect=[False, True])
+    monkeypatch.setattr("whisper_platform.get_clipboard", lambda: Mock(copy=copy))
+
+    daemon._handle_result("recover me")
+
+    assert daemon.state == AppState.ERROR
+    assert "Copy Last Transcript" in daemon._last_status_text
+    sound.assert_called_once_with("error")
+    daemon._copy_last_transcript()
+    assert daemon._tray_menu_texts[1] == "Last transcript copied."
+    assert [call.args for call in copy.call_args_list] == [("recover me",), ("recover me",)]
 
 
 # =============================================================================

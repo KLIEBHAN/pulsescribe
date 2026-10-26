@@ -87,7 +87,8 @@ try:
     from whisper_platform import get_sound_player
     from utils.state import AppState, DaemonMessage, MessageType
     from utils.hold_state import HoldHotkeyState
-    from utils import parse_hotkey, paste_transcript
+    from utils import parse_hotkey
+    from utils.transcript_delivery import TranscriptDelivery
     from utils.hotkey import hotkeys_conflict
     from utils.permissions import (
         check_microphone_permission,
@@ -287,6 +288,7 @@ class PulseScribeDaemon:
 
         # UI-Controller (werden in run() initialisiert)
         self._menubar: MenuBarController | None = None
+        self._transcript_delivery = TranscriptDelivery()
         self._overlay: OverlayController | None = None
         self._welcome = None
         self._onboarding_wizard = None
@@ -1492,12 +1494,7 @@ class PulseScribeDaemon:
         history_language = self.language
         history_refined = self._last_was_refined
 
-        # Erfolgreiche Transkription: State → Sound → UI-Flush → History → Paste
-        # RTF-Anzeige im Overlay (wenn aktiviert)
         overlay_text = self._format_done_text(transcript)
-        self._update_state(AppState.DONE, overlay_text)
-        get_sound_player().play("done")  # Sofortiges auditives Feedback
-        self._flush_ui_and_wait()  # ✅ muss sichtbar sein BEVOR Text eingefügt wird
         self._save_to_history(
             transcript,
             mode=history_mode,
@@ -1505,10 +1502,17 @@ class PulseScribeDaemon:
             refined=history_refined,
             latency_run=run,
         )
-        self._paste_result(transcript, latency_run=run)
-        self._update_state(AppState.IDLE)  # Reset nach erfolgreichem Paste
+        success, feedback = self._paste_result(transcript, latency_run=run)
         if run is not None:
-            run.finish("success")
+            run.finish("success" if success else "paste_failed")
+        if success:
+            self._update_state(AppState.DONE, overlay_text)
+            get_sound_player().play("done")
+            self._flush_ui_and_wait()
+            if self._current_state == AppState.DONE:
+                self._update_state(AppState.IDLE)
+        else:
+            self._enter_error_state(feedback)
         self._apply_pending_hotkey_reconfigure_if_safe()
 
     def _maybe_refine(
@@ -3290,16 +3294,12 @@ class PulseScribeDaemon:
         transcript: str,
         *,
         latency_run: MacOSLatencyRun | None = None,
-    ) -> None:
-        """Fügt Transkript via Auto-Paste ein."""
+    ) -> tuple[bool, str]:
+        """Deliver the transcript and retain it for explicit menu recovery."""
         if latency_run is not None:
             latency_run.mark("paste_start")
         try:
-            success = paste_transcript(transcript)
-            if success:
-                logger.info(f"✓ Text eingefügt: {redacted_text_summary(transcript)}")
-            else:
-                logger.error("Auto-Paste fehlgeschlagen")
+            return self._transcript_delivery.deliver(transcript)
         finally:
             if latency_run is not None:
                 latency_run.mark("paste_done")
@@ -4049,7 +4049,7 @@ class PulseScribeDaemon:
 
     def _initialize_ui_controllers(self) -> None:
         logger.info("Initialisiere UI-Controller...")
-        self._menubar = MenuBarController()
+        self._menubar = MenuBarController(self._transcript_delivery)
         if get_env_bool_default("PULSESCRIBE_OVERLAY", True):
             self._overlay = OverlayController()
         else:

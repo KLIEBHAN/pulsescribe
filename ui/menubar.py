@@ -181,6 +181,7 @@ class _MenuActionHandler(NSObjectBase):
     welcome_callback = None  # Callback für Settings-Fenster
     feedback_callback = None
     update_callback = None
+    transcript_delivery = None
 
     def initWithLogPath_(self, log_path: str):
         if objc is None:
@@ -193,6 +194,19 @@ class _MenuActionHandler(NSObjectBase):
         self.log_path = log_path
         self.feedback_callback = None
         return self
+
+    @_objc_signature(b"Z@:@")
+    def validateMenuItem_(self, item) -> bool:
+        """Enable recovery only after a normal dictation has produced text."""
+        if item.action() == "copyLastTranscript:":
+            return bool(self.transcript_delivery and self.transcript_delivery.text)
+        return True
+
+    @_objc_signature(b"v@:@")
+    def copyLastTranscript_(self, _sender) -> None:
+        """Copy the last dictation and report clipboard failures in the menu."""
+        if self.transcript_delivery and callable(self.feedback_callback):
+            self.feedback_callback(self.transcript_delivery.copy_last())
 
     @_objc_signature(b"v@:@")
     def openLogs_(self, _sender) -> None:
@@ -264,7 +278,7 @@ class MenuBarController:
     Kein Polling - wird direkt via Callback aktualisiert.
     """
 
-    def __init__(self):
+    def __init__(self, transcript_delivery):
         from AppKit import (  # type: ignore[import-not-found]
             NSStatusBar,
             NSVariableStatusItemLength,
@@ -277,6 +291,7 @@ class MenuBarController:
             str(LOG_FILE)
         )
 
+        self._action_handler.transcript_delivery = transcript_delivery
         self._status_bar = NSStatusBar.systemStatusBar()
         self._status_item = self._status_bar.statusItemWithLength_(
             NSVariableStatusItemLength
@@ -309,6 +324,12 @@ class MenuBarController:
         self._menu_hint_item = hint_item
 
         menu.addItem_(NSMenuItem.separatorItem())
+
+        copy_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Copy Last Transcript", "copyLastTranscript:", ""
+        )
+        copy_item.setTarget_(self._action_handler)
+        menu.addItem_(copy_item)
 
         setup_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
             "Open Setup & Settings…", "showSetup:", ""
@@ -370,7 +391,7 @@ class MenuBarController:
             "Check for Updates…", "checkUpdates:", ""
         )
         self._update_item.setTarget_(self._action_handler)
-        self._status_item.menu().insertItem_atIndex_(self._update_item, 5)
+        self._status_item.menu().insertItem_atIndex_(self._update_item, 6)
         self._menu_title_item.setTitle_(f"PulseScribe {version}")
 
     def update_update_state(self, state) -> None:

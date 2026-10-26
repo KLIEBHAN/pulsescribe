@@ -19,7 +19,8 @@ Press a hotkey, speak, release – your text appears. That's it.
 - **Multiple Providers** – Deepgram, OpenAI, Groq, or local Whisper
 - **LLM Post-processing** – Clean up transcriptions with GPT/Llama
 - **Context Awareness** – Adjusts style based on active app (email, chat, code)
-- **Visual Feedback** – Animated overlay shows recording status
+- **Visual Feedback** – Animated overlay shows recording status and reports paste or clipboard failures
+- **Recover Your Last Dictation** – Choose **Copy Last Transcript** in the menu bar or tray menu to copy the last dictation from this session, even if auto-paste failed. Earlier sessions remain available in Settings → Logs → Transcripts.
 
 ## Table of Contents
 

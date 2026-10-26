@@ -19,6 +19,8 @@ logger = get_logger()
 _MACOS_CLIPBOARD_RESTORE_DELAY_SEC = 1.0
 _WINDOWS_CLIPBOARD_RESTORE_DELAY_SEC = 0.5
 _WINDOWS_CLIPBOARD_SYNC_POLL_SEC = 0.005
+_clipboard_restore_lock = threading.Lock()
+_clipboard_restore_generation = 0
 
 # =============================================================================
 # Hotkey-Parsing (QuickMacHotKey)
@@ -494,6 +496,16 @@ def _should_restore_clipboard() -> bool:
     return parse_bool(os.getenv("PULSESCRIBE_CLIPBOARD_RESTORE")) is True
 
 
+def copy_transcript(text: str) -> bool:
+    """Copy explicitly, invalidating pending restores even for identical text."""
+    from whisper_platform import get_clipboard
+
+    global _clipboard_restore_generation
+    with _clipboard_restore_lock:
+        _clipboard_restore_generation += 1
+        return get_clipboard().copy(text)
+
+
 def _schedule_clipboard_restore(
     *,
     delay_sec: float,
@@ -506,10 +518,15 @@ def _schedule_clipboard_restore(
     without blocking the user-visible transcription flow.
     """
 
+    with _clipboard_restore_lock:
+        generation = _clipboard_restore_generation
+
     def _worker() -> None:
         try:
             time.sleep(max(0.0, delay_sec))
-            restore_callback()
+            with _clipboard_restore_lock:
+                if generation == _clipboard_restore_generation:
+                    restore_callback()
         except Exception as e:
             logger.warning(f"Asynchrones Clipboard-Restore fehlgeschlagen: {e}")
 
