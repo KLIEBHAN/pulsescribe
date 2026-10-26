@@ -63,6 +63,18 @@ def test_essentials_only_build_collects_qt_enum_support():
         )
     )
     assert "PySide6.support.deprecated" in hiddenimports
+    analysis = next(
+        node for node in ast.walk(spec)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "Analysis"
+    )
+    assert any(
+        keyword.arg == "hiddenimports"
+        and isinstance(keyword.value, ast.Name)
+        and keyword.value.id == "hiddenimports"
+        for keyword in analysis.keywords
+    )
     requirements = (root / "requirements-build-windows.txt").read_text().splitlines()
     assert "PySide6-Essentials>=6,<7" in requirements
     assert not any(line.startswith("PySide6>=") for line in requirements)
