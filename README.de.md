@@ -19,7 +19,8 @@ Hotkey drücken, sprechen, loslassen – Text erscheint. Das war's.
 - **Mehrere Provider** – Deepgram, OpenAI, Groq oder lokales Whisper
 - **LLM-Nachbearbeitung** – Transkriptionen bereinigen mit GPT/Llama
 - **Kontext-Awareness** – Passt Stil an aktive App an (E-Mail, Chat, Code)
-- **Visuelles Feedback** – Animiertes Overlay zeigt Aufnahmestatus
+- **Visuelles Feedback** – Animiertes Overlay zeigt den Aufnahmestatus und meldet Fehler beim Einfügen oder Kopieren
+- **Letztes Diktat retten** – **Copy Last Transcript** im Menüleisten- oder Tray-Menü kopiert das letzte Diktat der laufenden Sitzung, auch wenn das automatische Einfügen scheitert. Frühere Sitzungen sind weiterhin unter Settings → Logs → Transcripts verfügbar.
 
 ## Inhaltsverzeichnis
 

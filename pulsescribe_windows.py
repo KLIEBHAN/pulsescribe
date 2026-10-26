@@ -66,7 +66,7 @@ logger = get_logger()
 # Imports nach Logging-Setup
 from utils.state import AppState
 from utils.hold_state import HoldHotkeyState
-from utils.hotkey import paste_transcript
+from utils.transcript_delivery import TranscriptDelivery
 from utils.timing import redacted_text_summary
 from utils.hotkey_windows import hotkeys_conflict, parse_windows_hotkey_for_pynput
 from utils.subprocess_io import start_stream_drain_thread
@@ -80,7 +80,7 @@ from utils.windows_latency_diagnostics import (
     start_windows_latency_run,
 )
 from utils.windows_responsiveness import apply_windows_responsiveness_boost
-from whisper_platform import get_clipboard, get_sound_player
+from whisper_platform import get_sound_player
 from config import (
     INTERIM_FILE,
     WARM_STREAM_QUEUE_SIZE,
@@ -353,6 +353,7 @@ class PulseScribeWindows:
 
         # State
         self._state = AppState.IDLE
+        self._transcript_delivery = TranscriptDelivery()
         self._state_lock = threading.Lock()
         self._state_generation = 0  # Inkrementiert bei jedem State-Update
         self._last_was_refined: bool = (
@@ -2024,6 +2025,9 @@ class PulseScribeWindows:
 
     def _handle_result(self, transcript: str):
         """Verarbeitet Transkriptions-Ergebnis."""
+        if not transcript:
+            self._handle_no_speech_result()
+            return
         logger.info(f"Transkript: {redacted_text_summary(transcript)}")
         # Run-Metadaten und Latency-Run VOR dem DONE-State snapshotten/abkoppeln:
         # DONE ist startfähig, ein sofortiger Hotkey- oder IPC-Start darf
@@ -2040,12 +2044,12 @@ class PulseScribeWindows:
             ipc_server = self._ipc_server
         if run is not None:
             run.mark("result_ready", chars=len(transcript or ""))
-        done_generation = self._set_state(AppState.DONE)
-        self._play_sound("done")
-
         # IPC-Test Mode: Route result to wizard instead of clipboard
         if ipc_cmd_id and ipc_server:
             from utils.ipc import STATUS_DONE
+
+            done_generation = self._set_state(AppState.DONE, "Test complete")
+            self._play_sound("done")
 
             ipc_server.send_response(ipc_cmd_id, STATUS_DONE, transcript=transcript)
             logger.info(f"IPC-Test Ergebnis gesendet (id={ipc_cmd_id})")
@@ -2066,32 +2070,32 @@ class PulseScribeWindows:
 
         if run is not None:
             run.mark("paste_start", auto_paste=self.auto_paste)
-        paste_success = True
-        if self.auto_paste:
-            paste_success = paste_transcript(transcript)
-            if not paste_success:
-                # Fallback: Nur in Clipboard kopieren
-                get_clipboard().copy(transcript)
-                logger.info(
-                    "Text in Zwischenablage kopiert (Auto-Paste fehlgeschlagen)"
-                )
-        else:
-            get_clipboard().copy(transcript)
-            logger.info("Text in Zwischenablage kopiert")
+        paste_success, feedback = self._transcript_delivery.deliver(
+            transcript, auto_paste=self.auto_paste
+        )
         if run is not None:
             run.mark("paste_done", success=paste_success)
+        done_generation = self._set_state(
+            AppState.DONE if paste_success else AppState.ERROR, feedback
+        )
+        self._play_sound("done" if paste_success else "error")
 
         # History-IO (inkl. möglicher Datei-Rotation) erst NACH dem Paste:
         # Der sichtbare "Text erscheint"-Moment darf nicht auf Disk-IO warten.
         self._save_to_history(transcript, mode=run_mode, refined=was_refined)
         if run is not None:
-            run.finish("done", chars=len(transcript or ""), paste_success=paste_success)
+            run.finish(
+                "done" if paste_success else "paste_failed",
+                chars=len(transcript or ""), paste_success=paste_success,
+            )
 
         # Nach kurzer Pause zurück zu IDLE (Timer statt sleep, blockiert Thread
         # nicht). WICHTIG: mit der DONE-Generation planen – zum jetzigen
         # Zeitpunkt kann bereits eine neue Aufnahme laufen, deren Generation
         # nicht fälschlich auf IDLE zurückgesetzt werden darf.
-        self._schedule_idle_if_state_unchanged(_DONE_DISPLAY_HOLD_SEC, done_generation)
+        self._schedule_idle_if_state_unchanged(
+            _DONE_DISPLAY_HOLD_SEC if paste_success else 2.5, done_generation
+        )
 
     def _setup_hotkey(self):
         """Richtet globale Hotkeys ein (Toggle und/oder Hold-Mode)."""
@@ -2381,6 +2385,10 @@ class PulseScribeWindows:
                 lambda _item: self._tray_menu_texts[1], None, enabled=False
             ),
             pystray.Menu.SEPARATOR,
+            pystray.MenuItem(
+                "Copy Last Transcript", self._copy_last_transcript,
+                enabled=lambda _item: bool(self._transcript_delivery.text),
+            ),
             pystray.MenuItem("Open Setup & Settings…", self._show_settings),
             *update_items,
             pystray.MenuItem("Open Log File", self._open_log_file),
@@ -2400,6 +2408,10 @@ class PulseScribeWindows:
         # Tray-Worker erst starten, wenn das Tray existiert. Ein evtl. schon
         # gesetztes Update-Signal (Startup-LOADING) wird sofort nachgezogen.
         self._start_tray_update_worker()
+
+    def _copy_last_transcript(self) -> None:
+        """Recover the last normal dictation without sending paste keystrokes."""
+        self._set_tray_menu_hint(self._transcript_delivery.copy_last())
 
     def _quit(self):
         """Beendet den Daemon.

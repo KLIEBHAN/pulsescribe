@@ -19,6 +19,8 @@ logger = get_logger()
 _MACOS_CLIPBOARD_RESTORE_DELAY_SEC = 1.0
 _WINDOWS_CLIPBOARD_RESTORE_DELAY_SEC = 0.5
 _WINDOWS_CLIPBOARD_SYNC_POLL_SEC = 0.005
+_clipboard_restore_lock = threading.Lock()
+_clipboard_restore_generation = 0
 
 # =============================================================================
 # Hotkey-Parsing (QuickMacHotKey)
@@ -494,10 +496,23 @@ def _should_restore_clipboard() -> bool:
     return parse_bool(os.getenv("PULSESCRIBE_CLIPBOARD_RESTORE")) is True
 
 
+def copy_transcript(text: str) -> bool:
+    """Copy explicitly, invalidating pending restores even for identical text."""
+    from whisper_platform import get_clipboard
+
+    global _clipboard_restore_generation
+    with _clipboard_restore_lock:
+        copied = get_clipboard().copy(text)
+        if copied:
+            _clipboard_restore_generation += 1
+        return copied
+
+
 def _schedule_clipboard_restore(
     *,
     delay_sec: float,
     restore_callback: Callable[[], object],
+    generation: int,
 ) -> threading.Thread:
     """Run clipboard restoration asynchronously after a short grace period.
 
@@ -509,7 +524,9 @@ def _schedule_clipboard_restore(
     def _worker() -> None:
         try:
             time.sleep(max(0.0, delay_sec))
-            restore_callback()
+            with _clipboard_restore_lock:
+                if generation == _clipboard_restore_generation:
+                    restore_callback()
         except Exception as e:
             logger.warning(f"Asynchrones Clipboard-Restore fehlgeschlagen: {e}")
 
@@ -559,7 +576,7 @@ def _wait_for_windows_clipboard_sync(
         time.sleep(min(_WINDOWS_CLIPBOARD_SYNC_POLL_SEC, remaining))
 
 
-def _paste_transcript_windows(text: str) -> bool:
+def _paste_transcript_windows(text: str, restore_generation: int) -> bool:
     """Paste text on Windows while preserving the current restore semantics."""
     clipboard = _get_windows_clipboard_handler()
     previous_text = None
@@ -601,6 +618,7 @@ def _paste_transcript_windows(text: str) -> bool:
     if previous_text is not None:
         _schedule_clipboard_restore(
             delay_sec=_WINDOWS_CLIPBOARD_RESTORE_DELAY_SEC,
+            generation=restore_generation,
             restore_callback=lambda: _restore_windows_clipboard_text(
                 previous_text,
                 expected_current=text,
@@ -611,7 +629,7 @@ def _paste_transcript_windows(text: str) -> bool:
     return True
 
 
-def _paste_transcript_macos(text: str) -> bool:
+def _paste_transcript_macos(text: str, restore_generation: int) -> bool:
     """Paste text on macOS while preserving the current fallback chain."""
     previous_text = _get_clipboard_text() if _should_restore_clipboard() else None
 
@@ -639,6 +657,7 @@ def _paste_transcript_macos(text: str) -> bool:
     if previous_text is not None:
         _schedule_clipboard_restore(
             delay_sec=_MACOS_CLIPBOARD_RESTORE_DELAY_SEC,
+            generation=restore_generation,
             restore_callback=lambda: _restore_macos_clipboard_text(
                 previous_text,
                 expected_current=text,
@@ -667,7 +686,9 @@ def paste_transcript(text: str) -> bool:
     """
     import sys
 
+    with _clipboard_restore_lock:
+        restore_generation = _clipboard_restore_generation
     logger.info("Auto-Paste: %s", redacted_text_summary(text))
     if sys.platform == "win32":
-        return _paste_transcript_windows(text)
-    return _paste_transcript_macos(text)
+        return _paste_transcript_windows(text, restore_generation)
+    return _paste_transcript_macos(text, restore_generation)

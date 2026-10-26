@@ -15,8 +15,8 @@ def _disabled_latency_run():
     return start_macos_latency_run(enabled=False)
 
 
-@pytest.mark.parametrize("paste_raises", [False, True])
-def test_history_follows_ui_flush_and_precedes_paste(monkeypatch, paste_raises):
+@pytest.mark.parametrize("paste_success", [False, True])
+def test_feedback_follows_paste_and_history_survives_failure(monkeypatch, paste_success):
     daemon = PulseScribeDaemon(mode="deepgram", language="de")
     daemon._run_mode = "local"
     daemon._last_was_refined = True
@@ -32,33 +32,34 @@ def test_history_follows_ui_flush_and_precedes_paste(monkeypatch, paste_raises):
 
     def paste(_transcript, **_kwargs):
         calls.append("paste")
-        if paste_raises:
-            raise RuntimeError("paste failed")
+        return paste_success, "Paste failed — transcript copied"
 
     def save(transcript, **kwargs):
-        assert calls[-1] == "flush"
         calls.append("history")
         saved.append((transcript, kwargs))
         return True
 
     monkeypatch.setattr(daemon, "_format_done_text", lambda text: text)
-    monkeypatch.setattr(daemon, "_update_state", lambda state, *_args: calls.append(state))
+    def update_state(state, *_args):
+        daemon._current_state = state
+        calls.append(state)
+
+    monkeypatch.setattr(daemon, "_update_state", update_state)
+    monkeypatch.setattr(daemon, "_enter_error_state", lambda _text: calls.append(AppState.ERROR))
     monkeypatch.setattr(daemon, "_flush_ui_and_wait", flush)
     monkeypatch.setattr(daemon, "_paste_result", paste)
     monkeypatch.setattr(daemon, "_apply_pending_hotkey_reconfigure_if_safe", lambda: None)
     monkeypatch.setattr("pulsescribe_daemon.get_sound_player", lambda: MagicMock())
     monkeypatch.setattr("utils.history.save_transcript", save)
 
-    if paste_raises:
-        with pytest.raises(RuntimeError, match="paste failed"):
-            daemon._handle_transcript_result("hello", latency_run=run)
-    else:
-        daemon._handle_transcript_result("hello", latency_run=run)
+    daemon._handle_transcript_result("hello", latency_run=run)
 
-    expected = [AppState.DONE, "flush", "history", "paste"]
-    if not paste_raises:
-        expected.append(AppState.IDLE)
-        run.finish.assert_called_once_with("success")
+    expected = ["paste"]
+    if paste_success:
+        expected.extend([AppState.DONE, "history", "flush", AppState.IDLE])
+    else:
+        expected.extend([AppState.ERROR, "history"])
+    run.finish.assert_called_once_with("success" if paste_success else "paste_failed")
     assert calls == expected
     assert saved == [("hello", {"mode": "local", "language": "de", "refined": True})]
     run.mark.assert_any_call("history_start")
@@ -70,7 +71,7 @@ def test_history_import_failure_still_finishes_pasted_result(monkeypatch):
 
     daemon = PulseScribeDaemon(mode="local")
     run = MagicMock()
-    paste = MagicMock()
+    paste = MagicMock(return_value=(True, "Transcript pasted"))
     states = []
     reconfigure = MagicMock()
     original_import = builtins.__import__
@@ -81,7 +82,11 @@ def test_history_import_failure_still_finishes_pasted_result(monkeypatch):
         return original_import(name, *args, **kwargs)
 
     monkeypatch.setattr(daemon, "_format_done_text", lambda text: text)
-    monkeypatch.setattr(daemon, "_update_state", lambda state, *_args: states.append(state))
+    def update_state(state, *_args):
+        daemon._current_state = state
+        states.append(state)
+
+    monkeypatch.setattr(daemon, "_update_state", update_state)
     monkeypatch.setattr(daemon, "_flush_ui_and_wait", lambda: None)
     monkeypatch.setattr(daemon, "_paste_result", paste)
     monkeypatch.setattr(daemon, "_apply_pending_hotkey_reconfigure_if_safe", reconfigure)
@@ -120,28 +125,33 @@ def test_reentrant_results_keep_history_and_paste_in_the_same_order(monkeypatch)
     monkeypatch.setattr(daemon, "_format_done_text", lambda text: text)
     monkeypatch.setattr(daemon, "_update_state", lambda *_args: None)
     monkeypatch.setattr(daemon, "_flush_ui_and_wait", flush)
-    monkeypatch.setattr(daemon, "_paste_result", lambda text, **_kwargs: pasted.append(text))
+    def paste(text, **_kwargs):
+        pasted.append(text)
+        return True, "Transcript pasted"
+
+    monkeypatch.setattr(daemon, "_paste_result", paste)
     monkeypatch.setattr(daemon, "_apply_pending_hotkey_reconfigure_if_safe", lambda: None)
     monkeypatch.setattr("pulsescribe_daemon.get_sound_player", lambda: MagicMock())
     monkeypatch.setattr("utils.history.save_transcript", save)
 
     daemon._handle_transcript_result("first")
 
-    assert pasted == ["second", "first"]
+    assert pasted == ["first", "second"]
     assert [entry["text"] for entry in entries] == pasted
     assert entries[0]["timestamp"] <= entries[1]["timestamp"]
-    assert entries[0]["mode"] == "groq"
-    assert entries[0]["language"] == "en"
-    assert "refined" not in entries[0]
-    assert entries[1]["mode"] == "local"
-    assert entries[1]["language"] == "de"
-    assert entries[1]["refined"] is True
+    assert entries[0]["mode"] == "local"
+    assert entries[0]["language"] == "de"
+    assert entries[0]["refined"] is True
+    assert entries[1]["mode"] == "groq"
+    assert entries[1]["language"] == "en"
+    assert "refined" not in entries[1]
 
 
 @pytest.mark.parametrize("transcript", ["", "hello"])
 def test_onboarding_transcript_does_not_paste_or_save_history(monkeypatch, transcript):
     daemon = PulseScribeDaemon(mode="local")
     daemon._test_run_active = True
+    daemon._transcript_delivery.text = "previous normal dictation"
     callback = MagicMock()
     daemon._test_run_callback = callback
     monkeypatch.setattr(daemon, "_update_state", MagicMock())
@@ -156,6 +166,7 @@ def test_onboarding_transcript_does_not_paste_or_save_history(monkeypatch, trans
     callback.assert_called_once_with(transcript, None)
     paste.assert_not_called()
     save.assert_not_called()
+    assert daemon._transcript_delivery.text == "previous normal dictation"
 
 
 def test_audio_dependency_prewarm_is_idempotent_and_import_only():

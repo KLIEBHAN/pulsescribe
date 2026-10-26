@@ -137,6 +137,27 @@ def test_build_menubar_hint_text_explains_loading_warmup() -> None:
     assert "settings change" in hint.lower()
 
 
+def test_copy_action_validates_availability_and_reports_result(monkeypatch) -> None:
+    from utils.transcript_delivery import TranscriptDelivery
+
+    handler = _MenuActionHandler().initWithLogPath_("ignored.log")
+    handler.transcript_delivery = TranscriptDelivery()
+    item = types.SimpleNamespace(action=lambda: "copyLastTranscript:")
+    assert handler.validateMenuItem_(item) is False
+    handler.transcript_delivery.text = "last dictation"
+    assert handler.validateMenuItem_(item) is True
+    copied = []
+    feedback = []
+    handler.feedback_callback = feedback.append
+    monkeypatch.setattr(
+        "whisper_platform.get_clipboard",
+        lambda: types.SimpleNamespace(copy=lambda text: copied.append(text) is None),
+    )
+    handler.copyLastTranscript_(None)
+    assert copied == ["last dictation"]
+    assert feedback == ["Last transcript copied."]
+
+
 def test_set_menu_hint_updates_disabled_hint_item() -> None:
     controller = MenuBarController.__new__(MenuBarController)
     controller._menu_hint_item = _FakeStatusItem()

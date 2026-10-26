@@ -1613,6 +1613,11 @@ def test_setup_tray_uses_current_loading_state_and_clear_recovery_labels(monkeyp
         AppState.LOADING, "Starting up..."
     )
     assert not any(item.enabled for item in items[:3])
+    copy_item = next(item for item in items if item.text == "Copy Last Transcript")
+    assert copy_item.enabled(copy_item) is False
+    daemon._transcript_delivery.text = "normal dictation"
+    assert copy_item.enabled(copy_item) is True
+    assert copy_item.action == daemon._copy_last_transcript
     assert "Open Setup & Settings…" in menu_labels
     assert "Open Log File" in menu_labels
     assert "Export Redacted Diagnostics…" in menu_labels
@@ -1796,7 +1801,7 @@ def test_handle_result_detaches_latency_run_before_done_state(monkeypatch):
     )
     daemon._play_sound = lambda _name: None
     daemon._save_to_history = lambda _transcript, **_kwargs: None
-    monkeypatch.setattr(windows_module, "get_clipboard", lambda: MagicMock())
+    monkeypatch.setattr("whisper_platform.get_clipboard", lambda: MagicMock())
 
     class _FakeRun:
         def __init__(self):
@@ -1870,13 +1875,12 @@ def test_old_done_timer_does_not_reset_new_recording(monkeypatch):
 
     clipboard = MagicMock()
 
-    def copy_and_start_new_recording(_text):
-        # Simuliert: Während Clipboard/Paste des alten Ergebnisses startet
-        # bereits die nächste Aufnahme (DONE ist startfähig).
+    def save_and_start_new_recording(_text, **_kwargs):
+        # DONE permits the next recording while history IO is still running.
         daemon._set_state(AppState.LISTENING)
 
-    clipboard.copy.side_effect = copy_and_start_new_recording
-    monkeypatch.setattr(windows_module, "get_clipboard", lambda: clipboard)
+    daemon._save_to_history = save_and_start_new_recording
+    monkeypatch.setattr("whisper_platform.get_clipboard", lambda: clipboard)
 
     daemon._handle_result("hello")
     assert daemon.state == AppState.LISTENING
@@ -1916,6 +1920,7 @@ def test_old_ipc_result_keeps_new_ipc_cmd_id_and_routes_to_old_id(monkeypatch):
     # Ergebnis ging an die ALTE ID, die NEUE ID bleibt erhalten.
     assert responses and responses[0][0] == "old-cmd"
     assert daemon._ipc_test_cmd_id == "new-cmd"
+    assert daemon._transcript_delivery.text == ""
 
 
 def test_history_uses_metadata_snapshot_of_finished_run(monkeypatch):
@@ -1953,7 +1958,7 @@ def test_history_uses_metadata_snapshot_of_finished_run(monkeypatch):
         daemon._last_was_refined = False
 
     clipboard.copy.side_effect = copy_and_overwrite_run_metadata
-    monkeypatch.setattr(windows_module, "get_clipboard", lambda: clipboard)
+    monkeypatch.setattr("whisper_platform.get_clipboard", lambda: clipboard)
 
     daemon._handle_result("hello")
 
