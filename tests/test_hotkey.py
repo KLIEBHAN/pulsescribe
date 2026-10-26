@@ -11,8 +11,8 @@ import subprocess
 import utils.hotkey
 
 
-def _run_clipboard_restore_immediately(*, delay_sec: float, restore_callback):
-    del delay_sec
+def _run_clipboard_restore_immediately(*, delay_sec: float, restore_callback, generation):
+    del delay_sec, generation
     restore_callback()
     return None
 

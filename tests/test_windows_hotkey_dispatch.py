@@ -201,6 +201,8 @@ def test_failed_delivery_reports_error_and_menu_recovers_without_history(monkeyp
 
     _, daemon = _make_daemon()
     sound = Mock()
+    run = Mock()
+    daemon._latency_run = run
     daemon._play_sound = sound
     daemon._schedule_idle_if_state_unchanged = lambda *_args: None
     daemon._set_state(AppState.TRANSCRIBING, watch_transcribing=False)
@@ -214,6 +216,7 @@ def test_failed_delivery_reports_error_and_menu_recovers_without_history(monkeyp
     assert daemon.state == AppState.ERROR
     assert "Copy Last Transcript" in daemon._last_status_text
     sound.assert_called_once_with("error")
+    run.finish.assert_called_once_with("paste_failed", chars=10, paste_success=False)
     daemon._copy_last_transcript()
     assert daemon._tray_menu_texts[1] == "Last transcript copied."
     assert [call.args for call in copy.call_args_list] == [("recover me",), ("recover me",)]

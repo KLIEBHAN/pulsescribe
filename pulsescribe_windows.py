@@ -2084,7 +2084,10 @@ class PulseScribeWindows:
         # Der sichtbare "Text erscheint"-Moment darf nicht auf Disk-IO warten.
         self._save_to_history(transcript, mode=run_mode, refined=was_refined)
         if run is not None:
-            run.finish("done", chars=len(transcript or ""), paste_success=paste_success)
+            run.finish(
+                "done" if paste_success else "paste_failed",
+                chars=len(transcript or ""), paste_success=paste_success,
+            )
 
         # Nach kurzer Pause zurück zu IDLE (Timer statt sleep, blockiert Thread
         # nicht). WICHTIG: mit der DONE-Generation planen – zum jetzigen

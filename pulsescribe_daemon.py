@@ -1495,6 +1495,12 @@ class PulseScribeDaemon:
         history_refined = self._last_was_refined
 
         overlay_text = self._format_done_text(transcript)
+        success, feedback = self._paste_result(transcript, latency_run=run)
+        if success:
+            self._update_state(AppState.DONE, overlay_text)
+            get_sound_player().play("done")
+        else:
+            self._enter_error_state(feedback)
         self._save_to_history(
             transcript,
             mode=history_mode,
@@ -1502,17 +1508,12 @@ class PulseScribeDaemon:
             refined=history_refined,
             latency_run=run,
         )
-        success, feedback = self._paste_result(transcript, latency_run=run)
         if run is not None:
             run.finish("success" if success else "paste_failed")
         if success:
-            self._update_state(AppState.DONE, overlay_text)
-            get_sound_player().play("done")
             self._flush_ui_and_wait()
             if self._current_state == AppState.DONE:
                 self._update_state(AppState.IDLE)
-        else:
-            self._enter_error_state(feedback)
         self._apply_pending_hotkey_reconfigure_if_safe()
 
     def _maybe_refine(

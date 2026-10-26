@@ -46,7 +46,8 @@ def test_delivery_reports_actual_outcome_and_keeps_text(
         assert "Copy Last Transcript" in build_daemon_status_hint(state, expected[1])
 
 
-def test_explicit_copy_invalidates_pending_clipboard_restore(monkeypatch):
+@pytest.mark.parametrize("copy_success", [False, True])
+def test_explicit_copy_invalidates_pending_clipboard_restore(monkeypatch, copy_success):
     import types
     import utils.hotkey as hotkey
 
@@ -56,16 +57,46 @@ def test_explicit_copy_invalidates_pending_clipboard_restore(monkeypatch):
 
     monkeypatch.setattr(hotkey, "threading", types.SimpleNamespace(Thread=thread))
     monkeypatch.setattr(hotkey, "time", types.SimpleNamespace(sleep=lambda _delay: None))
-    copy = Mock(return_value=True)
+    copy = Mock(return_value=copy_success)
     monkeypatch.setattr("whisper_platform.get_clipboard", lambda: Mock(copy=copy))
     restore = Mock()
-    hotkey._schedule_clipboard_restore(delay_sec=1, restore_callback=restore)
-    assert hotkey.copy_transcript("same text") is True
+    generation = hotkey._clipboard_restore_generation
+    hotkey._schedule_clipboard_restore(delay_sec=1, restore_callback=restore, generation=generation)
+    assert hotkey.copy_transcript("same text") is copy_success
     workers[0]()
-    restore.assert_not_called()
-    hotkey._schedule_clipboard_restore(delay_sec=1, restore_callback=restore)
+    assert restore.call_count == int(not copy_success)
+    restore.reset_mock()
+    hotkey._schedule_clipboard_restore(
+        delay_sec=1, restore_callback=restore, generation=hotkey._clipboard_restore_generation
+    )
     workers[1]()
     restore.assert_called_once_with()
+
+
+@pytest.mark.parametrize("platform", ["win32", "darwin"])
+def test_copy_during_paste_invalidates_restore_before_scheduling(monkeypatch, platform):
+    import sys
+    import utils.hotkey as hotkey
+
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr(hotkey, "_should_restore_clipboard", lambda: True)
+    monkeypatch.setattr("config.get_windows_paste_sync_seconds", lambda: 0)
+    monkeypatch.setattr(hotkey, "_get_windows_clipboard_handler", lambda: None)
+    monkeypatch.setattr(hotkey, "_get_windows_clipboard_text", lambda **_kwargs: "old")
+    monkeypatch.setattr(hotkey, "_get_clipboard_text", lambda: "old")
+    monkeypatch.setattr(hotkey, "_copy_windows_clipboard_text", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(hotkey, "_copy_macos_clipboard_text", lambda _text: True)
+    monkeypatch.setattr("whisper_platform.get_clipboard", lambda: Mock(copy=Mock(return_value=True)))
+    generation = hotkey._clipboard_restore_generation
+    paste = lambda: hotkey.copy_transcript("new")
+    monkeypatch.setattr(hotkey, "_paste_via_pynput", paste)
+    monkeypatch.setattr(hotkey, "_paste_via_pynput_windows", paste)
+    schedule = Mock()
+    monkeypatch.setattr(hotkey, "_schedule_clipboard_restore", schedule)
+
+    assert hotkey.paste_transcript("new") is True
+    assert schedule.call_args.kwargs["generation"] == generation
+    assert hotkey._clipboard_restore_generation == generation + 1
 
 
 def test_explicit_copy_uses_latest_text_and_can_retry(monkeypatch):

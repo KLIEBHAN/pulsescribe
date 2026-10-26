@@ -54,11 +54,11 @@ def test_feedback_follows_paste_and_history_survives_failure(monkeypatch, paste_
 
     daemon._handle_transcript_result("hello", latency_run=run)
 
-    expected = ["history", "paste"]
+    expected = ["paste"]
     if paste_success:
-        expected.extend([AppState.DONE, "flush", AppState.IDLE])
+        expected.extend([AppState.DONE, "history", "flush", AppState.IDLE])
     else:
-        expected.append(AppState.ERROR)
+        expected.extend([AppState.ERROR, "history"])
     run.finish.assert_called_once_with("success" if paste_success else "paste_failed")
     assert calls == expected
     assert saved == [("hello", {"mode": "local", "language": "de", "refined": True})]
