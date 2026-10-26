@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+from pathlib import Path
 from unittest.mock import Mock
 
 import build_windows
@@ -45,3 +47,34 @@ def test_build_variant_clears_local_flag_for_light_build(monkeypatch, tmp_path):
     _, kwargs = mock_run.call_args
     assert kwargs["cwd"] == str(tmp_path)
     assert kwargs["env"]["PULSESCRIBE_BUILD_LOCAL"] == "0"
+
+
+def test_essentials_only_build_collects_qt_enum_support():
+    root = Path(__file__).resolve().parents[1]
+    spec = ast.parse((root / "build_windows.spec").read_text(encoding="utf-8"))
+    hiddenimports = next(
+        ast.literal_eval(node.value)
+        for node in spec.body
+        if isinstance(node, ast.Assign)
+        and isinstance(node.value, ast.List)
+        and any(
+            isinstance(target, ast.Name) and target.id == "hiddenimports"
+            for target in node.targets
+        )
+    )
+    assert "PySide6.support.deprecated" in hiddenimports
+    analysis = next(
+        node for node in ast.walk(spec)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "Analysis"
+    )
+    assert any(
+        keyword.arg == "hiddenimports"
+        and isinstance(keyword.value, ast.Name)
+        and keyword.value.id == "hiddenimports"
+        for keyword in analysis.keywords
+    )
+    requirements = (root / "requirements-build-windows.txt").read_text().splitlines()
+    assert "PySide6-Essentials>=6,<7" in requirements
+    assert not any(line.startswith("PySide6>=") for line in requirements)

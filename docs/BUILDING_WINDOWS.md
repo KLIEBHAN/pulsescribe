@@ -6,7 +6,7 @@ PulseScribe ships as a standalone `.exe` (onedir mode) or as an installer. For d
 
 - **Python 3.10+** with pip
 - **PyInstaller** (`pip install pyinstaller`)
-- **PySide6** (optional, recommended for GPU-accelerated overlay)
+- **PySide6-Essentials** (the existing PySide6 Core, Gui and Widgets modules; no Addons or WebEngine needed)
 - **Inno Setup 6** (optional, for installer - [download](https://jrsoftware.org/isinfo.php))
 
 ## Quick Start
@@ -27,11 +27,8 @@ PulseScribe ships as a standalone `.exe` (onedir mode) or as an installer. For d
 ### Manual Build
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Optional: GPU-accelerated overlay (recommended)
-pip install PySide6
+# Install runtime and build dependencies, including the Qt UI
+pip install -r requirements.txt -r requirements-build-windows.txt
 
 # Build the EXE
 pyinstaller build_windows.spec --clean
@@ -50,6 +47,19 @@ The [`Build Installers`](../.github/workflows/build-installers.yml) workflow
 builds the recommended API-only installer on `windows-2022`. It validates the
 installer version, creates a SHA-256 checksum, and stores the installer and build
 environment metadata as a workflow artifact for 14 days.
+
+Both Windows variants install `requirements-build-windows.txt`. It selects only
+PySide6-Essentials, an existing dependency of the full PySide6 package, instead
+of downloading the unused Addons, PDF and WebEngine components. The packaged
+Qt UI and installer compression are unchanged.
+
+Before restoring the pip cache, each job generates its complete install input
+in `requirements-windows-build.txt`. That file is used for both the cache key
+and installation: Cloud and Local caches stay separate, and changes to either
+runtime or build requirements invalidate the corresponding cache. This caches
+downloads, not installed environments or PyInstaller output. Rebuilding an older
+tag without the build-requirements file keeps using the full PySide6 package
+because that tag's spec may rely on its metadata.
 
 Pushing an annotated `vX.Y.Z` tag builds both platforms, including the Windows
 Local Whisper package, and publishes the release only after all installers are
@@ -170,7 +180,7 @@ CPU transcription with faster-whisper is well-optimized:
 
 | Variant | Command | Overlay |
 |---------|---------|---------|
-| **Full** (recommended) | `pip install PySide6 && pyinstaller build_windows.spec` | GPU-accelerated (PySide6) |
+| **Full** (recommended) | `pip install -r requirements-build-windows.txt && pyinstaller build_windows.spec` | GPU-accelerated (PySide6) |
 | **Minimal** | `pyinstaller build_windows.spec` | CPU-only (Tkinter) |
 
 > **Note:** Without PySide6, the overlay falls back to Tkinter automatically. PySide6 provides smoother animations.
