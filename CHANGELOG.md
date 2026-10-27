@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Windows error paths allow a new dictation before the message disappears; warm
   capture waits for cleanup. Old reset timers cannot interrupt a new recording.
 
+### Changed
+
+- **macOS history saves** – write accepted transcripts and their timing diagnostics
+  on an ordered background worker instead of the UI thread. Clear History respects
+  pending saves, and normal quit/update paths drain accepted entries before exit.
+
 ## [1.7.0] - 2026-10-27
 
 ### Added

@@ -251,6 +251,7 @@ class PulseScribeDaemon:
         self._toggle_lock = threading.Lock()
         self._recording_action_lock = threading.RLock()
         self._update_shutdown = False
+        self._termination_observer: object | None = None
         self._last_hotkey_time = 0.0
         self._last_rtf: float | None = (
             None  # Real-Time Factor der letzten Transkription
@@ -487,6 +488,7 @@ class PulseScribeDaemon:
                 run_id == self._active_run_id
                 and result_queue_ref is self._result_queue
                 and not self._worker_abandoned
+                and not self._update_shutdown
             )
             if not is_current or self._terminal_claimed_run_id == run_id:
                 claimed = False
@@ -1466,6 +1468,10 @@ class PulseScribeDaemon:
     ) -> None:
         """Verarbeitet das fertige Transkript: UI-Update, History, Auto-Paste."""
         run = latency_run or self._latency_run
+        if self._update_shutdown:
+            if run is not None:
+                run.finish("shutdown")
+            return
         if run is not None:
             run.mark_once("result_received_main")
 
@@ -1504,9 +1510,8 @@ class PulseScribeDaemon:
             language=history_language,
             refined=history_refined,
             latency_run=run,
+            outcome="success" if success else "paste_failed",
         )
-        if run is not None:
-            run.finish("success" if success else "paste_failed")
         if success:
             self._flush_ui_and_wait()
             if self._current_state == AppState.DONE:
@@ -1561,25 +1566,39 @@ class PulseScribeDaemon:
         mode: str | None,
         language: str | None,
         refined: bool,
+        outcome: str,
         latency_run: MacOSLatencyRun | None = None,
     ) -> None:
-        """Speichert das Transkript mit den vor dem UI-Flush gesicherten Metadaten."""
-        if latency_run is not None:
-            latency_run.mark("history_start")
-        try:
-            from utils.history import save_transcript
+        """Queue captured metadata; finish this run's diagnostics on the writer."""
 
-            save_transcript(
+        def started() -> None:
+            if latency_run is not None:
+                latency_run.mark("history_start")
+
+        def finished(saved: bool) -> None:
+            if not saved:
+                logger.warning("History save did not succeed")
+            if latency_run is not None:
+                latency_run.mark("history_done", saved=saved)
+                latency_run.finish(outcome)
+
+        try:
+            from utils.history import enqueue_transcript
+
+            if latency_run is not None:
+                latency_run.mark("history_queued")
+            enqueue_transcript(
                 transcript,
                 mode=mode,
                 language=language,
                 refined=refined,
+                on_start=started,
+                on_done=finished,
             )
-        except Exception as e:
-            logger.warning(f"History save failed: {e}")
-        finally:
-            if latency_run is not None:
-                latency_run.mark("history_done")
+        except Exception:
+            logger.warning("Could not queue history save", exc_info=True)
+            started()
+            finished(False)
 
     def _format_done_text(self, transcript: str) -> str:
         """Formatiert den Overlay-Text für DONE-State mit optionalem RTF."""
@@ -3246,12 +3265,21 @@ class PulseScribeDaemon:
             self._transcribing_watchdog = None
             logger.debug("Watchdog gestoppt")
 
+    def _shutdown_history_before_exit(self) -> None:
+        """Gate new recordings and drain accepted writes before any native exit."""
+        with self._recording_action_lock:
+            self._update_shutdown = True
+        from utils.history import shutdown_history_writer
+
+        shutdown_history_writer()
+
     def cleanup(self) -> None:
         """Cleanup bei Shutdown – gibt Ressourcen frei.
 
         Sollte vor app.terminate_() aufgerufen werden.
         Verhindert Memory-Leaks bei Local Whisper (~500MB RAM).
         """
+        self._shutdown_history_before_exit()
         updater = getattr(self, "_updater", None)
         if updater:
             updater.stop()
@@ -4150,14 +4178,35 @@ class PulseScribeDaemon:
             print("   Beenden: Menubar-Icon → Quit oder Ctrl+C", file=sys.stderr)
 
     def _install_runloop_shutdown_handlers(self, *, app, timer_cls, signal_mod) -> None:
-        timer_cls.scheduledTimerWithTimeInterval_repeats_block_(
-            0.1, True, lambda _: None
-        )
+        from AppKit import NSApplicationWillTerminateNotification
+        from Foundation import NSNotificationCenter
+
+        if self._termination_observer is None:
+            self._termination_observer = NSNotificationCenter.defaultCenter().addObserverForName_object_queue_usingBlock_(
+                NSApplicationWillTerminateNotification,
+                None,
+                None,
+                lambda _notification: self._shutdown_history_before_exit(),
+            )
+        shutdown_requested = False
 
         def signal_handler(sig, frame):
+            nonlocal shutdown_requested
+            shutdown_requested = True
+
+        def process_shutdown_request(_timer):
+            nonlocal shutdown_requested
+            if not shutdown_requested:
+                return
+            shutdown_requested = False
             self.cleanup()
             app.terminate_(None)
 
+        # A signal can interrupt enqueue while its admission lock is held.
+        # Drain on the existing run-loop tick, after interrupted code resumes.
+        timer_cls.scheduledTimerWithTimeInterval_repeats_block_(
+            0.1, True, process_shutdown_request
+        )
         signal_mod.signal(signal_mod.SIGINT, signal_handler)
         atexit.register(self.cleanup)
 

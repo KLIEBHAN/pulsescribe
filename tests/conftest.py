@@ -118,6 +118,18 @@ def reset_caches(monkeypatch):
     monkeypatch.setattr(utils.env, "_loaded_env_values", {})
 
 
+@pytest.fixture(autouse=True)
+def isolated_history(monkeypatch, tmp_path):
+    """Keep queued writes and process-owned writer lifetimes inside each test."""
+    import utils.history as history
+
+    writer = history._HistoryWriter()
+    monkeypatch.setattr(history, "_history_writer", writer)
+    monkeypatch.setattr(history, "HISTORY_FILE", tmp_path / "history.jsonl")
+    yield writer
+    writer.shutdown()
+
+
 @pytest.fixture
 def clean_env(monkeypatch):
     """Entfernt alle PULSESCRIBE_* Umgebungsvariablen für saubere Tests.

@@ -34,9 +34,11 @@ def test_feedback_follows_paste_and_history_survives_failure(monkeypatch, paste_
         calls.append("paste")
         return paste_success, "Paste failed — transcript copied"
 
-    def save(transcript, **kwargs):
+    def save(transcript, *, on_start, on_done, **kwargs):
+        on_start()
         calls.append("history")
         saved.append((transcript, kwargs))
+        on_done(True)
         return True
 
     monkeypatch.setattr(daemon, "_format_done_text", lambda text: text)
@@ -50,7 +52,7 @@ def test_feedback_follows_paste_and_history_survives_failure(monkeypatch, paste_
     monkeypatch.setattr(daemon, "_paste_result", paste)
     monkeypatch.setattr(daemon, "_apply_pending_hotkey_reconfigure_if_safe", lambda: None)
     monkeypatch.setattr("pulsescribe_daemon.get_sound_player", lambda: MagicMock())
-    monkeypatch.setattr("utils.history.save_transcript", save)
+    monkeypatch.setattr("utils.history.enqueue_transcript", save)
 
     daemon._handle_transcript_result("hello", latency_run=run)
 
@@ -63,7 +65,7 @@ def test_feedback_follows_paste_and_history_survives_failure(monkeypatch, paste_
     assert calls == expected
     assert saved == [("hello", {"mode": "local", "language": "de", "refined": True})]
     run.mark.assert_any_call("history_start")
-    run.mark.assert_any_call("history_done")
+    run.mark.assert_any_call("history_done", saved=True)
 
 
 def test_history_import_failure_still_finishes_pasted_result(monkeypatch):
@@ -98,7 +100,7 @@ def test_history_import_failure_still_finishes_pasted_result(monkeypatch):
     paste.assert_called_once_with("hello", latency_run=run)
     assert states == [AppState.DONE, AppState.IDLE]
     run.mark.assert_any_call("history_start")
-    run.mark.assert_any_call("history_done")
+    run.mark.assert_any_call("history_done", saved=False)
     run.finish.assert_called_once_with("success")
     reconfigure.assert_called_once_with()
 
@@ -111,8 +113,10 @@ def test_reentrant_results_keep_history_and_paste_in_the_same_order(monkeypatch)
     entries = []
     pasted = []
 
-    def save(text, **kwargs):
+    def save(text, *, on_start, on_done, **kwargs):
+        on_start()
         entries.append(_build_transcript_entry(text, **kwargs))
+        on_done(True)
         return True
 
     def flush():
@@ -132,7 +136,7 @@ def test_reentrant_results_keep_history_and_paste_in_the_same_order(monkeypatch)
     monkeypatch.setattr(daemon, "_paste_result", paste)
     monkeypatch.setattr(daemon, "_apply_pending_hotkey_reconfigure_if_safe", lambda: None)
     monkeypatch.setattr("pulsescribe_daemon.get_sound_player", lambda: MagicMock())
-    monkeypatch.setattr("utils.history.save_transcript", save)
+    monkeypatch.setattr("utils.history.enqueue_transcript", save)
 
     daemon._handle_transcript_result("first")
 
@@ -159,7 +163,7 @@ def test_onboarding_transcript_does_not_paste_or_save_history(monkeypatch, trans
     paste = MagicMock()
     save = MagicMock()
     monkeypatch.setattr(daemon, "_paste_result", paste)
-    monkeypatch.setattr("utils.history.save_transcript", save)
+    monkeypatch.setattr("utils.history.enqueue_transcript", save)
 
     daemon._handle_transcript_result(transcript, latency_run=_disabled_latency_run())
 
