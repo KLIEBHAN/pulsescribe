@@ -1,3 +1,5 @@
+import pytest
+
 import utils.presets as presets
 
 
@@ -148,7 +150,7 @@ def test_apply_local_preset_to_env_migrates_legacy_fp16_key(monkeypatch) -> None
     assert updates[presets.LEGACY_LOCAL_FP16_ENV_KEY] is None
 
 
-def test_build_local_preset_env_updates_merges_base_defaults_before_normalizing() -> None:
+def test_build_local_preset_env_updates_merges_defaults_before_normalizing() -> None:
     updates = presets._build_local_preset_env_updates(
         {
             "local_backend": "mlx",
@@ -178,3 +180,98 @@ def test_apply_local_preset_to_env_returns_false_without_writing_for_unknown_pre
     )
 
     assert presets.apply_local_preset_to_env("missing preset") is False
+
+
+@pytest.mark.parametrize(
+    ("preset_key", "env_key", "raw_value"),
+    [
+        ("local_backend", "PULSESCRIBE_LOCAL_BACKEND", " AUTO "),
+        ("local_backend", "PULSESCRIBE_LOCAL_BACKEND", "unknown"),
+        ("local_model", "PULSESCRIBE_LOCAL_MODEL", " DEFAULT "),
+        ("device", "PULSESCRIBE_DEVICE", " AUTO "),
+        ("warmup", "PULSESCRIBE_LOCAL_WARMUP", " AUTO "),
+        ("local_fast", "PULSESCRIBE_LOCAL_FAST", " DEFAULT "),
+        ("fp16", "PULSESCRIBE_FP16", " DEFAULT "),
+        ("without_timestamps", "PULSESCRIBE_LOCAL_WITHOUT_TIMESTAMPS", " DEFAULT "),
+        ("vad_filter", "PULSESCRIBE_LOCAL_VAD_FILTER", " DEFAULT "),
+        ("lightning_batch_size", "PULSESCRIBE_LIGHTNING_BATCH_SIZE", " 12 "),
+        ("lightning_quant", "PULSESCRIBE_LIGHTNING_QUANT", " NONE "),
+    ],
+)
+def test_build_local_preset_env_updates_removes_default_like_values(
+    preset_key, env_key, raw_value
+) -> None:
+    for value in (raw_value, "", " \t "):
+        updates = presets._build_local_preset_env_updates({preset_key: value})
+        assert env_key in updates
+        assert updates[env_key] is None
+
+
+def test_build_local_preset_env_updates_preserves_text_order_and_inputs() -> None:
+    values = {
+        "local_backend": " FASTER-WHISPER ",
+        "local_model": " TURBO ",
+        "device": " CPU ",
+        "warmup": " FALSE ",
+        "local_fast": " TRUE ",
+        "fp16": " FALSE ",
+        "beam_size": " 003 ",
+        "best_of": " not-an-integer ",
+        "temperature": " 0.0 ",
+        "compute_type": " INT8 ",
+        "cpu_threads": " 0 ",
+        "num_workers": " 02 ",
+        "without_timestamps": " FALSE ",
+        "vad_filter": " TRUE ",
+        "lightning_batch_size": " 012 ",
+        "lightning_quant": " 8BIT ",
+        "unknown_option": "ignored",
+    }
+    original_values = dict(values)
+    original_base = dict(presets.LOCAL_PRESET_BASE)
+    expected = {
+        "PULSESCRIBE_MODE": "local",
+        "PULSESCRIBE_LOCAL_FP16": None,
+        "PULSESCRIBE_LOCAL_BACKEND": "faster",
+        "PULSESCRIBE_LOCAL_MODEL": "turbo",
+        "PULSESCRIBE_DEVICE": "cpu",
+        "PULSESCRIBE_LOCAL_WARMUP": "false",
+        "PULSESCRIBE_LOCAL_FAST": "true",
+        "PULSESCRIBE_FP16": "false",
+        "PULSESCRIBE_LOCAL_BEAM_SIZE": "003",
+        "PULSESCRIBE_LOCAL_BEST_OF": "not-an-integer",
+        "PULSESCRIBE_LOCAL_TEMPERATURE": "0.0",
+        "PULSESCRIBE_LOCAL_COMPUTE_TYPE": "INT8",
+        "PULSESCRIBE_LOCAL_CPU_THREADS": "0",
+        "PULSESCRIBE_LOCAL_NUM_WORKERS": "02",
+        "PULSESCRIBE_LOCAL_WITHOUT_TIMESTAMPS": "false",
+        "PULSESCRIBE_LOCAL_VAD_FILTER": "true",
+        "PULSESCRIBE_LIGHTNING_BATCH_SIZE": "012",
+        "PULSESCRIBE_LIGHTNING_QUANT": "8bit",
+    }
+
+    updates = presets._build_local_preset_env_updates(values)
+
+    assert list(updates.items()) == list(expected.items())
+    assert values == original_values
+    assert presets.LOCAL_PRESET_BASE == original_base
+
+
+@pytest.mark.parametrize("preset_name", presets.LOCAL_PRESETS)
+def test_apply_builtin_preset_writes_one_batch(monkeypatch, preset_name) -> None:
+    calls = []
+    monkeypatch.setattr(presets, "update_env_settings", calls.append)
+    original_preset = dict(presets.LOCAL_PRESETS[preset_name])
+
+    assert presets.apply_local_preset_to_env(preset_name) is True
+
+    assert len(calls) == 1
+    updates = calls[0]
+    assert len(updates) == 18
+    assert updates["PULSESCRIBE_MODE"] == "local"
+    assert updates["PULSESCRIBE_LOCAL_FP16"] is None
+    assert updates["PULSESCRIBE_LOCAL_BACKEND"] == original_preset["local_backend"]
+    assert updates["PULSESCRIBE_LOCAL_MODEL"] == original_preset["local_model"]
+    assert updates["PULSESCRIBE_LIGHTNING_BATCH_SIZE"] is None
+    assert updates["PULSESCRIBE_LIGHTNING_QUANT"] is None
+    assert presets.LOCAL_PRESETS[preset_name] == original_preset
