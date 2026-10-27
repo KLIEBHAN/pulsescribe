@@ -100,6 +100,7 @@ from ui.daemon_status_feedback import (
     infer_daemon_status_error,
 )
 from ui.menubar import build_menubar_hint_text, build_menubar_status_text
+from ui.overlay_feedback import ERROR_FEEDBACK_SECONDS
 from utils.version import get_app_version
 
 MB_YESNO = 0x00000004
@@ -356,6 +357,7 @@ class PulseScribeWindows:
         self._transcript_delivery = TranscriptDelivery()
         self._state_lock = threading.Lock()
         self._state_generation = 0  # Inkrementiert bei jedem State-Update
+        self._retryable_error = False
         self._last_was_refined: bool = (
             False  # Ob Refinement den Text tatsächlich verändert hat
         )
@@ -498,6 +500,21 @@ class PulseScribeWindows:
         with self._state_lock:
             return self._state
 
+    def _state_allows_recording(self) -> bool:
+        """Allow completed errors to stay visible without blocking a safe retry."""
+        with self._state_lock:
+            return self._state in (
+                AppState.IDLE,
+                AppState.NO_SPEECH,
+                AppState.DONE,
+            ) or (self._state == AppState.ERROR and self._retryable_error)
+
+    def _mark_error_retry_ready(self, generation: int) -> None:
+        """Release retry admission after cleanup only for the same error episode."""
+        with self._state_lock:
+            if self._state == AppState.ERROR and self._state_generation == generation:
+                self._retryable_error = True
+
     def _commit_state(
         self,
         state: AppState,
@@ -505,6 +522,7 @@ class PulseScribeWindows:
         *,
         expected_state: AppState | None = None,
         expected_generation: int | None = None,
+        retryable_error: bool = False,
     ) -> tuple[AppState, str | None, int] | None:
         """Atomarer (bedingter) State-Commit unter _state_lock.
 
@@ -528,6 +546,7 @@ class PulseScribeWindows:
             old_state = self._state
             old_text = self._last_status_text
             self._state = state
+            self._retryable_error = state == AppState.ERROR and retryable_error
             self._last_status_text = text
             self._state_generation += 1
             return old_state, old_text, self._state_generation
@@ -582,15 +601,19 @@ class PulseScribeWindows:
         text: str | None = None,
         *,
         watch_transcribing: bool = True,
+        retryable_error: bool = False,
     ) -> int:
         """Setzt State und aktualisiert Tray-Icon + Overlay.
+
+        Set retryable_error only when no old capture/provider cleanup remains.
+        Watchdog timeouts do not grant this eager retry admission.
 
         Returns:
             Die neue State-Generation. Caller, die einen verzögerten
             IDLE-Rückfall planen, müssen DIESE Generation übergeben – ein
             späterer Snapshot könnte bereits zu einer neuen Aufnahme gehören.
         """
-        committed = self._commit_state(state, text)
+        committed = self._commit_state(state, text, retryable_error=retryable_error)
         assert committed is not None  # unconditional commit
         old_state, old_text, new_generation = committed
         self._publish_state_change(
@@ -791,7 +814,9 @@ class PulseScribeWindows:
                     generation=generation,
                 )
                 self._play_sound("error")
-                self._schedule_idle_if_state_unchanged(2.0, generation)
+                self._schedule_idle_if_state_unchanged(
+                    ERROR_FEEDBACK_SECONDS, generation
+                )
 
         with self._watchdog_lock:
             if self._transcribing_watchdog is not None:
@@ -1340,7 +1365,7 @@ class PulseScribeWindows:
         """Callback wenn Hotkey gedrückt wird (Toggle-Mode)."""
         if self.state == AppState.LOADING and self._promote_prewarm_ready_if_possible():
             self._start_recording()
-        elif self.state in (AppState.IDLE, AppState.NO_SPEECH, AppState.DONE):
+        elif self._state_allows_recording():
             self._start_recording()
         elif self.state == AppState.LOADING and self._is_prewarm_loading:
             # Pre-Warm LOADING: Ignorieren, System noch nicht bereit
@@ -1359,7 +1384,7 @@ class PulseScribeWindows:
             self._promote_prewarm_ready_if_possible()
 
         # Bereits am Aufnehmen / noch nicht wieder startklar
-        if self.state not in (AppState.IDLE, AppState.NO_SPEECH, AppState.DONE):
+        if not self._state_allows_recording():
             logger.debug(f"Hold-Recording ignoriert: State={self.state}")
             return
 
@@ -1393,7 +1418,7 @@ class PulseScribeWindows:
             # DONE ist startfähig, damit direkt nach einem Diktat ohne Warten
             # auf das grüne Feedback (_DONE_DISPLAY_HOLD_SEC) neu diktiert
             # werden kann.
-            if self.state not in (AppState.IDLE, AppState.NO_SPEECH, AppState.DONE):
+            if not self._state_allows_recording():
                 logger.debug(f"Start ignoriert: State={self.state}")
                 return False
 
@@ -1556,17 +1581,20 @@ class PulseScribeWindows:
         status_text: str,
         *,
         capture_mode: str,
-    ) -> None:
-        self._set_state(AppState.ERROR, status_text)
+    ) -> int:
+        """Report capture failure; warm retry waits for its final drain to finish."""
         self._latency_finish(
             "error",
             error_type=type(error).__name__,
             phase="rest_capture",
             capture_mode=capture_mode,
         )
+        generation = self._set_state(
+            AppState.ERROR, status_text, retryable_error=capture_mode == "cold"
+        )
         self._play_sound("error")
-        time.sleep(1.0)
-        self._set_state(AppState.IDLE)
+        self._schedule_idle_if_state_unchanged(ERROR_FEEDBACK_SECONDS, generation)
+        return generation
 
     def _recording_loop(self):
         """Audio-Aufnahme Loop (läuft in separatem Thread)."""
@@ -1645,6 +1673,7 @@ class PulseScribeWindows:
         from config import INT16_MAX
 
         logger.debug("Recording-Loop (Warm) gestartet")
+        error_generation = None
 
         try:
             # Buffer vorbereiten
@@ -1669,7 +1698,7 @@ class PulseScribeWindows:
 
         except Exception as e:
             logger.error(f"Recording-Fehler (Warm): {e}")
-            self._handle_rest_capture_error(
+            error_generation = self._handle_rest_capture_error(
                 e,
                 _friendly_error_status_text(e),
                 capture_mode="warm",
@@ -1690,6 +1719,8 @@ class PulseScribeWindows:
             finally:
                 # KRITISCH: drain_event MUSS gelöscht werden, sonst sammelt Callback ewig
                 self._warm_stream_draining.clear()
+                if error_generation is not None:
+                    self._mark_error_retry_ready(error_generation)
 
     def _prepare_warm_rest_audio_buffer(self) -> None:
         with self._audio_lock:
@@ -1843,7 +1874,7 @@ class PulseScribeWindows:
             )
             self._finish_streaming_result(transcript)
         except Exception as e:
-            self._handle_streaming_error(e, "Streaming-Fehler")
+            self._handle_transcription_error(e, "Streaming-Fehler")
 
     def _streaming_worker_warm(self):
         """Streaming-Worker using both the warm mic and warm websocket."""
@@ -1876,7 +1907,7 @@ class PulseScribeWindows:
             self._warm_stream_draining.set()
             self._warm_stream_armed.clear()
             self._warm_stream_draining.clear()
-            self._handle_streaming_error(e, "Streaming-Fehler (Warm)")
+            self._handle_transcription_error(e, "Streaming-Fehler (Warm)")
 
     def _finish_streaming_result(self, transcript: str) -> None:
         self._latency_mark("deepgram_core_return", chars=len(transcript))
@@ -1887,14 +1918,16 @@ class PulseScribeWindows:
         self._set_state(AppState.TRANSCRIBING)
         self._handle_result(self._maybe_refine(transcript))
 
-    def _handle_streaming_error(self, error: Exception, label: str) -> None:
+    def _handle_transcription_error(self, error: Exception, label: str) -> None:
+        """Finish the failed run before publishing a retryable, readable error."""
         error_type = "Import-Fehler" if isinstance(error, ImportError) else label
         logger.error(f"{error_type}: {error}")
-        self._set_state(AppState.ERROR, _friendly_error_status_text(error))
         self._latency_finish("error", error_type=type(error).__name__)
+        generation = self._set_state(
+            AppState.ERROR, _friendly_error_status_text(error), retryable_error=True
+        )
         self._play_sound("error")
-        time.sleep(1.0)
-        self._set_state(AppState.IDLE)
+        self._schedule_idle_if_state_unchanged(ERROR_FEEDBACK_SECONDS, generation)
 
     def _transcribe_rest(self, mode_override: str | None = None):
         """Transkribiert aufgenommenes Audio via REST API."""
@@ -1969,20 +2002,8 @@ class PulseScribeWindows:
             else:
                 self._handle_no_speech_result()
 
-        except ImportError as e:
-            logger.error(f"Import-Fehler: {e}")
-            self._set_state(AppState.ERROR, _friendly_error_status_text(e))
-            self._latency_finish("error", error_type=type(e).__name__)
-            self._play_sound("error")
-            time.sleep(1.0)
-            self._set_state(AppState.IDLE)
         except Exception as e:
-            logger.error(f"Transkriptions-Fehler: {e}")
-            self._set_state(AppState.ERROR, _friendly_error_status_text(e))
-            self._latency_finish("error", error_type=type(e).__name__)
-            self._play_sound("error")
-            time.sleep(1.0)
-            self._set_state(AppState.IDLE)
+            self._handle_transcription_error(e, "Transkriptions-Fehler")
 
     def _maybe_refine(self, transcript: str) -> str:
         """Wendet LLM-Refinement an (falls aktiviert) und trackt ob Text verändert wurde."""
@@ -2004,7 +2025,9 @@ class PulseScribeWindows:
         self._latency_mark("refine_done", changed=self._last_was_refined)
         return refined
 
-    def _save_to_history(self, transcript: str, *, mode: str, refined: bool) -> None:
+    def _save_to_history(
+        self, transcript: str, *, mode: str, refined: bool, language: str | None = None
+    ) -> None:
         """Speichert Transkript in der Historie.
 
         Mode/Refined kommen als Snapshots vom Caller: `self._run_mode` und
@@ -2017,7 +2040,11 @@ class PulseScribeWindows:
             save_transcript(
                 transcript,
                 mode=mode,
-                language=os.getenv("PULSESCRIBE_LANGUAGE", "auto"),
+                language=(
+                    os.getenv("PULSESCRIBE_LANGUAGE", "auto")
+                    if language is None
+                    else language
+                ),
                 refined=refined,
             )
         except Exception as e:
@@ -2038,6 +2065,7 @@ class PulseScribeWindows:
         run = self._latency_run
         self._latency_run = None
         run_mode = self._run_mode or self.mode
+        run_language = os.getenv("PULSESCRIBE_LANGUAGE", "auto")
         was_refined = self._last_was_refined
         with self._ipc_state_lock:
             ipc_cmd_id = self._ipc_test_cmd_id
@@ -2076,13 +2104,17 @@ class PulseScribeWindows:
         if run is not None:
             run.mark("paste_done", success=paste_success)
         done_generation = self._set_state(
-            AppState.DONE if paste_success else AppState.ERROR, feedback
+            AppState.DONE if paste_success else AppState.ERROR,
+            feedback,
+            retryable_error=not paste_success,
         )
         self._play_sound("done" if paste_success else "error")
 
         # History-IO (inkl. möglicher Datei-Rotation) erst NACH dem Paste:
         # Der sichtbare "Text erscheint"-Moment darf nicht auf Disk-IO warten.
-        self._save_to_history(transcript, mode=run_mode, refined=was_refined)
+        self._save_to_history(
+            transcript, mode=run_mode, language=run_language, refined=was_refined
+        )
         if run is not None:
             run.finish(
                 "done" if paste_success else "paste_failed",
@@ -2094,7 +2126,8 @@ class PulseScribeWindows:
         # Zeitpunkt kann bereits eine neue Aufnahme laufen, deren Generation
         # nicht fälschlich auf IDLE zurückgesetzt werden darf.
         self._schedule_idle_if_state_unchanged(
-            _DONE_DISPLAY_HOLD_SEC if paste_success else 2.5, done_generation
+            _DONE_DISPLAY_HOLD_SEC if paste_success else ERROR_FEEDBACK_SECONDS,
+            done_generation,
         )
 
     def _setup_hotkey(self):

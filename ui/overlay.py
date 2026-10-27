@@ -7,7 +7,11 @@ import weakref
 
 from config import VISUAL_GAIN, VISUAL_NOISE_GATE
 from ui.animation import AnimationLogic
-from ui.overlay_feedback import build_overlay_feedback_text, format_overlay_status_text
+from ui.overlay_feedback import (
+    ERROR_FEEDBACK_SECONDS,
+    build_overlay_feedback_text,
+    format_overlay_status_text,
+)
 from ui.overlay_text import (
     DEFAULT_RECORDING_INTERIM_MAX_CHARS,
     format_recording_interim_text as _format_recording_interim_text,
@@ -107,7 +111,7 @@ WAVE_ENVELOPE_GAUSSIAN_SCALE = (
 )
 
 # Feedback-Anzeigedauer
-FEEDBACK_DISPLAY_DURATION = 0.8  # Sekunden für Done/Error-Anzeige
+FEEDBACK_DISPLAY_DURATION = 0.8  # Sekunden für Done/No-Speech-Anzeige
 WAVE_HEIGHT_UPDATE_EPSILON = 0.25  # Spare Layer-Updates für subpixel-kleine Änderungen
 
 # =============================================================================
@@ -1290,8 +1294,13 @@ class OverlayController:
             self._fade_out()
             self._feedback_timer = None
 
+        duration = (
+            ERROR_FEEDBACK_SECONDS
+            if self._current_state == AppState.ERROR
+            else FEEDBACK_DISPLAY_DURATION
+        )
         self._feedback_timer = NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
-            FEEDBACK_DISPLAY_DURATION, False, fade_out_callback
+            duration, False, fade_out_callback
         )
 
     def update_audio_level(self, level: float) -> None:

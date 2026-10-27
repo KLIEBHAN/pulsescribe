@@ -54,6 +54,7 @@ from ui.animation import (
     BAR_MIN_HEIGHT,
 )
 from ui.overlay_feedback import (
+    ERROR_FEEDBACK_SECONDS,
     DEFAULT_OVERLAY_STATE_TEXTS,
     build_overlay_feedback_text,
     format_overlay_status_text,
@@ -495,7 +496,12 @@ class PySide6OverlayWidget(QWidget):
         """Startet Timer für automatisches Ausblenden nach DONE/ERROR."""
         self._cancel_fade_out_timer()
         if self._fade_out_timer:
-            self._fade_out_timer.start(FEEDBACK_DISPLAY_MS)
+            duration_ms = (
+                round(ERROR_FEEDBACK_SECONDS * 1000)
+                if self._state == "ERROR"
+                else FEEDBACK_DISPLAY_MS
+            )
+            self._fade_out_timer.start(duration_ms)
 
     def _cancel_fade_out_timer(self):
         """Bricht den Fade-Out Timer ab."""

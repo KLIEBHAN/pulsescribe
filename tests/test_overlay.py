@@ -586,6 +586,24 @@ def test_overlay_controller_error_state_uses_friendly_error_detail():
     assert seen_presentations[-1]["text"] == "Microphone unavailable"
 
 
+def test_error_feedback_uses_readable_duration(monkeypatch):
+    import sys
+
+    controller = OverlayController.__new__(OverlayController)
+    controller._current_state = AppState.ERROR
+    controller._feedback_timer = None
+    controller._fade_out = lambda: None
+    timers = []
+    timer = types.SimpleNamespace(
+        scheduledTimerWithTimeInterval_repeats_block_=lambda *args: timers.append(args)
+    )
+    monkeypatch.setitem(sys.modules, "Foundation", types.SimpleNamespace(NSTimer=timer))
+
+    controller._start_fade_out_timer()
+
+    assert timers[0][0] == 4.0
+
+
 def test_overlay_controller_done_state_uses_clear_success_copy():
     controller = OverlayController.__new__(OverlayController)
     controller.window = object()
