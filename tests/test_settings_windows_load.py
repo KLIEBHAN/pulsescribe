@@ -719,6 +719,32 @@ def test_save_settings_reports_partial_write_failures(
             assert "Prompts" in window._footer_status_label.text
 
 
+@pytest.mark.parametrize("vocabulary_saved", [True, False])
+@pytest.mark.parametrize("prompts_saved", [True, False])
+def test_reload_callback_failure_preserves_file_save_result(
+    monkeypatch, vocabulary_saved, prompts_saved
+):
+    monkeypatch.setattr(settings_mod, "update_env_settings", lambda _updates: None)
+    monkeypatch.setattr(settings_mod, "is_onboarding_complete", lambda: True)
+    window = _make_save_window("default")
+    window._footer_status_label = _FakeLabel()
+    window._save_vocabulary_if_changed = lambda: vocabulary_saved
+    window._save_all_prompts = lambda: prompts_saved
+
+    def fail_reload():
+        raise RuntimeError("reload failed")
+
+    window._on_settings_changed_callback = fail_reload
+    assert window._save_settings() is (vocabulary_saved and prompts_saved)
+    text = window._footer_status_label.text
+    assert "reload failed" in text
+    assert "Saving failed" not in text
+    if not vocabulary_saved:
+        assert "Vocabulary" in text
+    if not prompts_saved:
+        assert "Prompts" in text
+
+
 def test_save_settings_batches_api_key_updates(monkeypatch):
     recorded_updates: dict[str, str | None] = {}
 

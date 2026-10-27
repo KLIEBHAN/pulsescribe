@@ -4477,7 +4477,15 @@ class SettingsWindow(QDialog):
 
             # Callback aufrufen (für Daemon-Reload, falls im gleichen Prozess)
             if self._on_settings_changed_callback:
-                self._on_settings_changed_callback()
+                try:
+                    self._on_settings_changed_callback()
+                except Exception as e:
+                    logger.warning("Settings reload failed: %s", e, exc_info=True)
+                    text, color = build_settings_saved_feedback(
+                        auto_reload_worked=False,
+                        failed_sections=failed_sections,
+                    )
+                    self._set_footer_status(text, color)
             return not failed_sections
 
         except Exception as e:
