@@ -48,6 +48,14 @@ builds the recommended API-only installer on `windows-2022`. It validates the
 installer version, creates a SHA-256 checksum, and stores the installer and build
 environment metadata as a workflow artifact for 14 days.
 
+PR builds cancel superseded runs and skip Windows when the whole PR changes only
+macOS build files (plus documentation/tests). Shared code, dependencies, unknown
+paths, or an unavailable diff keep both platforms enabled. See the
+[platform selection rules](../.github/scripts/installer_platforms.py).
+Releases and manual rebuilds always build both platforms; their runs are not
+cancelled when a newer PR build starts. PR heads without the selector also build
+both. Documentation/test-only PRs run only metadata.
+
 Both Windows variants install `requirements-build-windows.txt`. It selects only
 PySide6-Essentials, an existing dependency of the full PySide6 package, instead
 of downloading the unused Addons, PDF and WebEngine components. The packaged

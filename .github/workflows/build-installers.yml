@@ -3,31 +3,8 @@ name: Build Installers
 on:
   push:
     tags: ["v*"]
-  pull_request:
-    paths:
-      - .github/workflows/build-installers.yml
-      - assets/**
-      - audio/**
-      - build_app.sh
-      - build_app.spec
-      - build_dmg.sh
-      - build_windows.ps1
-      - build_windows.spec
-      - cli/**
-      - config.py
-      - installer_windows.iss
-      - macos/**
-      - providers/**
-      - pulsescribe_daemon.py
-      - pulsescribe_windows.py
-      - pyproject.toml
-      - refine/**
-      - requirements.txt
-      - requirements-build-windows.txt
-      - transcribe.py
-      - ui/**
-      - utils/**
-      - whisper_platform/**
+  # Selection happens in metadata so new/unknown inputs cannot bypass builds.
+  pull_request: {}
   release:
     types: [published]
   workflow_dispatch:
@@ -53,8 +30,9 @@ on:
         type: boolean
 
 concurrency:
-  group: installers-${{ github.event.release.tag_name || inputs.tag || github.event.pull_request.number || github.ref }}
-  cancel-in-progress: false
+  group: installers-${{ github.event_name == 'pull_request' && 'pr' || 'release' }}-${{ github.event.release.tag_name || inputs.tag || github.event.pull_request.number || github.ref }}
+  # Superseded PR builds have no consumers; release uploads must finish.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -70,6 +48,8 @@ jobs:
       publish: ${{ steps.release.outputs.publish }}
       clobber: ${{ steps.release.outputs.clobber }}
       build_windows_local: ${{ steps.release.outputs.build_windows_local }}
+      build_macos: ${{ steps.platforms.outputs.build_macos }}
+      build_windows: ${{ steps.platforms.outputs.build_windows }}
     env:
       REQUESTED_REF: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag || github.event.pull_request.head.sha || github.ref_name }}
       PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number }}
@@ -172,9 +152,26 @@ jobs:
             echo "- Local Whisper installer: \`$build_windows_local\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Select PR installer platforms
+        if: github.event_name == 'pull_request'
+        id: platforms
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          if [[ -f .github/scripts/installer_platforms.py ]]; then
+            python .github/scripts/installer_platforms.py
+          else
+            # Older PR heads may not contain the helper from the merge workflow.
+            echo "::warning::No platform selector in PR head; building both installers"
+            printf 'build_macos=true\nbuild_windows=true\n' >> "$GITHUB_OUTPUT"
+          fi
+
   build-macos:
     name: Build macOS DMG (arm64)
     needs: metadata
+    if: github.event_name != 'pull_request' || needs.metadata.outputs.build_macos != 'false'
     runs-on: macos-14
     timeout-minutes: 60
     # The signing secrets live only in this environment, which admits master and
@@ -360,6 +357,7 @@ jobs:
   build-windows:
     name: Build Windows installer (API-only)
     needs: metadata
+    if: github.event_name != 'pull_request' || needs.metadata.outputs.build_windows != 'false'
     runs-on: windows-2022
     timeout-minutes: 60
     env:

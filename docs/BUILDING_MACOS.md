@@ -66,6 +66,14 @@ The full build fails if a local backend dependency is missing. CI also runs
 `--check-mlx-backend` from the app inside the DMG, checking MLX imports, native
 operations and the 80/128 mel-filter assets without downloading a model.
 
+PR builds cancel superseded runs and skip macOS when the whole PR changes only
+Windows build files (plus documentation/tests). Shared code, dependencies, unknown
+paths, or an unavailable diff keep both platforms enabled. The selection lives in
+[installer_platforms.py](../.github/scripts/installer_platforms.py); it uses the
+merge-base diff and considers both paths of renames. Releases and manual rebuilds
+always build both platforms and are never cancelled by newer PR runs. PR heads
+without the selector also build both. Documentation/test-only PRs run only metadata.
+
 Pushing an annotated `vX.Y.Z` tag builds both platforms and publishes the release
 only after the installers are uploaded. See [Updates and releases](UPDATES.md).
 Publishing a release manually still attaches installers through the same workflow.
