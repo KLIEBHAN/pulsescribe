@@ -4191,14 +4191,25 @@ class PulseScribeDaemon:
                 None,
                 lambda _notification: self._shutdown_history_before_exit(),
             )
-        timer_cls.scheduledTimerWithTimeInterval_repeats_block_(
-            0.1, True, lambda _: None
-        )
+        shutdown_requested = False
 
         def signal_handler(sig, frame):
+            nonlocal shutdown_requested
+            shutdown_requested = True
+
+        def process_shutdown_request(_timer):
+            nonlocal shutdown_requested
+            if not shutdown_requested:
+                return
+            shutdown_requested = False
             self.cleanup()
             app.terminate_(None)
 
+        # A signal can interrupt enqueue while its admission lock is held.
+        # Drain on the existing run-loop tick, after interrupted code resumes.
+        timer_cls.scheduledTimerWithTimeInterval_repeats_block_(
+            0.1, True, process_shutdown_request
+        )
         signal_mod.signal(signal_mod.SIGINT, signal_handler)
         atexit.register(self.cleanup)
 

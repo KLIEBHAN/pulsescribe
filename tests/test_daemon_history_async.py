@@ -150,6 +150,7 @@ def test_exit_drains_history_and_diagnostics_before_termination(
     finished = []
     registration = []
     signals = []
+    timers = []
     exit_handlers = []
     center = SimpleNamespace(
         addObserverForName_object_queue_usingBlock_=lambda *args: (
@@ -176,7 +177,9 @@ def test_exit_drains_history_and_diagnostics_before_termination(
     daemon._install_runloop_shutdown_handlers(
         app=app,
         timer_cls=SimpleNamespace(
-            scheduledTimerWithTimeInterval_repeats_block_=lambda *_args: None
+            scheduledTimerWithTimeInterval_repeats_block_=lambda *args: timers.append(
+                args
+            )
         ),
         signal_mod=SimpleNamespace(
             SIGINT=2, signal=lambda _sig, fn: signals.append(fn)
@@ -208,9 +211,14 @@ def test_exit_drains_history_and_diagnostics_before_termination(
     daemon._updater = SimpleNamespace(
         install=lambda: finished.append("install"), stop=lambda: None
     )
+
+    def signal_exit():
+        signals[0](2, None)
+        timers[0][2](None)
+
     paths = {
         "native": lambda: registration[0][3](None),
-        "signal": lambda: signals[0](2, None),
+        "signal": signal_exit,
         "atexit": exit_handlers[0],
         "update": daemon._install_update_if_idle,
     }
@@ -261,6 +269,51 @@ def test_native_notification_observer_runs_synchronously_once(daemon, monkeypatc
     finally:
         if daemon._termination_observer is not None:
             center.removeObserver_(daemon._termination_observer)
+
+
+def test_sigint_inside_enqueue_defers_drain_until_admission_unlocks(
+    daemon, monkeypatch
+):
+    signals, timers = [], []
+    daemon._termination_observer = object()
+    monkeypatch.setattr("pulsescribe_daemon.atexit.register", lambda _callback: None)
+    terminate = Mock()
+    daemon._install_runloop_shutdown_handlers(
+        app=SimpleNamespace(terminate_=terminate),
+        timer_cls=SimpleNamespace(
+            scheduledTimerWithTimeInterval_repeats_block_=lambda *args: timers.append(
+                args
+            )
+        ),
+        signal_mod=SimpleNamespace(
+            SIGINT=2, signal=lambda _sig, fn: signals.append(fn)
+        ),
+    )
+    shutdown = daemon._shutdown_history_before_exit
+    build_entry = history._build_transcript_entry
+
+    def drain_without_self_deadlock():
+        assert not history._history_writer._admission_lock.locked()
+        shutdown()
+
+    def interrupt_admission(*args, **kwargs):
+        assert history._history_writer._admission_lock.locked()
+        signals[0](2, None)
+        terminate.assert_not_called()
+        return build_entry(*args, **kwargs)
+
+    monkeypatch.setattr(
+        daemon, "_shutdown_history_before_exit", drain_without_self_deadlock
+    )
+    monkeypatch.setattr(history, "_build_transcript_entry", interrupt_admission)
+    future = history.enqueue_transcript("accepted")
+    assert len(timers) == 1 and timers[0][:2] == (0.1, True)
+    timers[0][2](None)
+    timers[0][2](None)
+
+    assert future.result(timeout=5) is True
+    terminate.assert_called_once()
+    assert daemon._update_shutdown
 
 
 def test_shutdown_rejects_unclaimed_results_without_pasting(daemon):
