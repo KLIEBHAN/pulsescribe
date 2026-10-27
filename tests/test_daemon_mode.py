@@ -889,6 +889,12 @@ class TestAudioShutdown(unittest.TestCase):
             daemon._enter_error_state()
 
         self.assertIs(daemon._error_reset_timer, mock_timer)
+        self.assertEqual(
+            mock_timer_cls.scheduledTimerWithTimeInterval_repeats_block_.call_args.args[
+                0
+            ],
+            4.0,
+        )
 
     def test_error_reset_timer_invalidated_on_reentry(self):
         """Bei erneutem _enter_error_state() wird der alte Timer invalidiert."""

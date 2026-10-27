@@ -103,6 +103,7 @@ try:
     )
     from utils.timing import redacted_text_summary
     from ui import MenuBarController, OverlayController
+    from ui.overlay_feedback import ERROR_FEEDBACK_SECONDS
     from ui.daemon_status_feedback import (
         build_daemon_status_label,
         infer_daemon_status_error,
@@ -1396,12 +1397,8 @@ class PulseScribeDaemon:
     def _enter_error_state(self, text: str | None = None) -> None:
         """Wechselt in ERROR-State mit verzögertem IDLE-Reset.
 
-        Setzt den State auf ERROR, spielt den Fehler-Sound und startet
-        einen 0.8s Timer für den IDLE-Reset. Ohne Verzögerung wird ERROR
-        sofort von IDLE überschrieben und ist im Overlay nie sichtbar.
-
-        Bei erneutem Aufruf wird der vorherige Timer invalidiert, damit
-        die volle 0.8s ab dem letzten Fehler gelten.
+        Die Meldung bleibt für das gemeinsame Fehler-Anzeigeintervall lesbar.
+        Bei erneutem Fehler wird der vorherige Reset-Timer invalidiert.
 
         Setzt _recording=False, damit der Hotkey-Toggle nach dem Error
         sofort eine neue Aufnahme starten kann (statt erst die
@@ -1429,7 +1426,7 @@ class PulseScribeDaemon:
                 daemon._apply_pending_hotkey_reconfigure_if_safe()
 
         self._error_reset_timer = NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
-            0.8, False, reset_to_idle
+            ERROR_FEEDBACK_SECONDS, False, reset_to_idle
         )
 
     def _stop_error_reset_timer(self) -> None:

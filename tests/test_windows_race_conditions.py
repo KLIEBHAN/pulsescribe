@@ -648,9 +648,8 @@ def test_rest_cold_capture_error_finishes_latency_run(monkeypatch):
     )
     daemon._play_sound = lambda _name: None
     monkeypatch.setattr(builtins, "__import__", fake_import)
-    _patch_daemon_stdlib(
-        monkeypatch, windows_module, "time", sleep=lambda _seconds: None
-    )
+    monkeypatch.setattr(_CapturedTimer, "instances", [])
+    _patch_daemon_stdlib(monkeypatch, windows_module, "threading", Timer=_CapturedTimer)
 
     daemon._recording_loop()
 
@@ -664,6 +663,10 @@ def test_rest_cold_capture_error_finishes_latency_run(monkeypatch):
             },
         )
     ]
+    assert daemon.state == AppState.ERROR
+    assert daemon._state_allows_recording()
+    assert _CapturedTimer.instances[-1].interval == 4.0
+    _CapturedTimer.instances[-1].function()
     assert daemon.state == AppState.IDLE
 
 
@@ -683,9 +686,8 @@ def test_rest_warm_capture_error_finishes_latency_run(monkeypatch):
     daemon._prepare_warm_rest_audio_buffer = lambda: (_ for _ in ()).throw(
         RuntimeError("warm capture failed")
     )
-    _patch_daemon_stdlib(
-        monkeypatch, windows_module, "time", sleep=lambda _seconds: None
-    )
+    monkeypatch.setattr(_CapturedTimer, "instances", [])
+    _patch_daemon_stdlib(monkeypatch, windows_module, "threading", Timer=_CapturedTimer)
 
     daemon._recording_loop_warm()
 
@@ -699,6 +701,10 @@ def test_rest_warm_capture_error_finishes_latency_run(monkeypatch):
             },
         )
     ]
+    assert daemon.state == AppState.ERROR
+    assert daemon._state_allows_recording()
+    assert _CapturedTimer.instances[-1].interval == 4.0
+    _CapturedTimer.instances[-1].function()
     assert daemon.state == AppState.IDLE
     assert not daemon._warm_stream_armed.is_set()
     assert not daemon._warm_stream_draining.is_set()
@@ -1856,6 +1862,194 @@ class _CapturedTimer:
 
     def cancel(self):
         return None
+
+
+@pytest.mark.parametrize("hold", [True, False])
+def test_retryable_error_accepts_both_hotkey_modes(monkeypatch, hold):
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai", streaming=False, overlay=False
+    )
+    daemon._play_sound = lambda _name: None
+    daemon._set_state(AppState.ERROR, "Paste failed", retryable_error=True)
+    started = []
+    daemon._recording_loop = lambda: started.append(True)
+
+    if hold:
+        assert daemon._hold_state.should_start("hold")
+        daemon._start_recording_from_hold("hold")
+    else:
+        daemon._on_hotkey_press()
+    daemon._recording_thread.join(timeout=1)
+
+    assert started == [True]
+    assert daemon.state == AppState.LISTENING
+    assert daemon._retryable_error is False
+
+
+def test_watchdog_error_is_not_marked_ready_for_an_eager_retry(monkeypatch):
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai", streaming=False, overlay=False
+    )
+    daemon._play_sound = lambda _name: None
+    monkeypatch.setattr(_CapturedTimer, "instances", [])
+    _patch_daemon_stdlib(monkeypatch, windows_module, "threading", Timer=_CapturedTimer)
+    daemon._set_state(AppState.TRANSCRIBING)
+
+    _CapturedTimer.instances[0].function()
+
+    assert daemon.state == AppState.ERROR
+    assert daemon._state_allows_recording() is False
+
+
+def test_transcription_error_detaches_run_before_retry_and_timer_is_stale_safe(
+    monkeypatch,
+):
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai", streaming=False, overlay=False
+    )
+    daemon._play_sound = lambda _name: None
+    calls = []
+    daemon._latency_finish = lambda *_args, **_kwargs: calls.append("finished")
+    monkeypatch.setattr(_CapturedTimer, "instances", [])
+    _patch_daemon_stdlib(monkeypatch, windows_module, "threading", Timer=_CapturedTimer)
+
+    def publish(_old_state, _old_text, state, _text, **_kwargs):
+        if state == AppState.ERROR:
+            assert calls == ["finished"]
+            assert daemon._state_allows_recording()
+            daemon._set_state(AppState.LISTENING)
+
+    daemon._publish_state_change = publish
+    daemon._handle_transcription_error(RuntimeError("connection lost"), "Transcription")
+    assert len(_CapturedTimer.instances) == 1
+    _CapturedTimer.instances[0].function()
+    assert daemon.state == AppState.LISTENING
+
+
+def test_warm_capture_error_becomes_retryable_only_after_drain(monkeypatch):
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai", streaming=False, overlay=False
+    )
+    daemon._play_sound = lambda _name: None
+    daemon._prepare_warm_rest_audio_buffer = lambda: (_ for _ in ()).throw(
+        OSError("capture")
+    )
+    monkeypatch.setattr(_CapturedTimer, "instances", [])
+    _patch_daemon_stdlib(monkeypatch, windows_module, "threading", Timer=_CapturedTimer)
+    checked = []
+
+    def drain(*_args):
+        assert daemon._state_allows_recording() is False
+        checked.append(True)
+        return 0
+
+    daemon._drain_warm_stream_until_quiet = drain
+    daemon._recording_loop_warm()
+
+    assert checked == [True]
+    assert not daemon._warm_stream_armed.is_set()
+    assert not daemon._warm_stream_draining.is_set()
+    assert daemon._state_allows_recording() is True
+
+
+@pytest.mark.parametrize(
+    "retry_state", [None, AppState.LISTENING, AppState.TRANSCRIBING]
+)
+def test_rest_stop_does_not_transcribe_after_capture_fails_during_join(
+    monkeypatch, retry_state
+):
+    module = _load_windows_module()
+    daemon = module.PulseScribeWindows(mode="openai", streaming=False, overlay=False)
+    daemon._play_sound = lambda _name: None
+    daemon._schedule_idle_if_state_unchanged = lambda *_args: None
+    daemon._start_transcribing_watchdog = lambda: None
+    daemon._set_state(AppState.RECORDING)
+    transcriptions = []
+    daemon._transcribe_rest = lambda: transcriptions.append(list(daemon._audio_buffer))
+    daemon._recording_loop = lambda: None
+    new_audio = object()
+
+    class Capture:
+        done = False
+
+        def is_alive(self):
+            return not self.done
+
+        def join(self, timeout):
+            daemon._handle_rest_capture_error(
+                OSError("device shutdown failed"),
+                "Microphone unavailable",
+                capture_mode="cold",
+            )
+            self.done = True
+            if retry_state is not None:
+                assert daemon._start_recording()
+                daemon._audio_buffer = [new_audio]
+                daemon._set_state(retry_state)
+
+    class ImmediateThread:
+        def __init__(self, *, target, daemon):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    daemon._recording_thread = Capture()
+    _patch_daemon_stdlib(monkeypatch, module, "threading", Thread=ImmediateThread)
+    daemon._stop_recording()
+
+    assert transcriptions == []
+    assert daemon.state == (retry_state or AppState.ERROR)
+    if retry_state is not None:
+        assert daemon._audio_buffer == [new_audio]
+
+
+def test_old_cleanup_cannot_make_a_later_error_retryable():
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai", streaming=False, overlay=False
+    )
+    old = daemon._set_state(AppState.ERROR)
+    daemon._set_state(AppState.ERROR)
+
+    daemon._mark_error_retry_ready(old)
+
+    assert daemon._state_allows_recording() is False
+
+
+@pytest.mark.parametrize("paste_success", [True, False])
+def test_retry_keeps_captured_history_metadata(monkeypatch, paste_success):
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai", streaming=False, overlay=False
+    )
+    daemon._run_mode = "groq"
+    daemon._last_was_refined = True
+    daemon._play_sound = lambda _name: None
+    monkeypatch.setenv("PULSESCRIBE_LANGUAGE", "de")
+    monkeypatch.setattr(_CapturedTimer, "instances", [])
+    _patch_daemon_stdlib(monkeypatch, windows_module, "threading", Timer=_CapturedTimer)
+    saved = []
+    monkeypatch.setattr(
+        "utils.history.save_transcript",
+        lambda text, **metadata: saved.append((text, metadata)),
+    )
+
+    def deliver(_text, **_kwargs):
+        daemon._run_mode = "deepgram"
+        daemon._last_was_refined = False
+        monkeypatch.setenv("PULSESCRIBE_LANGUAGE", "en")
+        return paste_success, "Delivery result"
+
+    daemon._transcript_delivery.deliver = deliver
+    daemon._handle_result("text")
+
+    assert saved == [("text", {"mode": "groq", "language": "de", "refined": True})]
+    assert daemon._state_allows_recording()
 
 
 def test_old_done_timer_does_not_reset_new_recording(monkeypatch):

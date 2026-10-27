@@ -214,6 +214,7 @@ def test_failed_delivery_reports_error_and_menu_recovers_without_history(monkeyp
     daemon._handle_result("recover me")
 
     assert daemon.state == AppState.ERROR
+    assert daemon._state_allows_recording()
     assert "Copy Last Transcript" in daemon._last_status_text
     sound.assert_called_once_with("error")
     run.finish.assert_called_once_with("paste_failed", chars=10, paste_success=False)
