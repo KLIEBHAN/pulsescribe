@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Save & Apply feedback** – macOS and Windows report prompt and vocabulary
   write failures as partial saves, retain unsaved drafts, and avoid a misleading
   success confirmation. A failed save also prevents a macOS relaunch.
+- **Unsaved Windows settings** – closing the window, pressing Escape, or using
+  Close asks to save, discard, or cancel only when drafts have changed. A failed
+  or incomplete save keeps the window and its drafts open.
 
 ## [1.7.0] - 2026-10-27
 
