@@ -53,7 +53,8 @@ macOS build files (plus documentation/tests). Shared code, dependencies, unknown
 paths, or an unavailable diff keep both platforms enabled. See the
 [platform selection rules](../.github/scripts/installer_platforms.py).
 Releases and manual rebuilds always build both platforms; their runs are not
-cancelled when a newer PR build starts.
+cancelled when a newer PR build starts. PR heads without the selector also build
+both. Documentation/test-only PRs run only metadata.
 
 Both Windows variants install `requirements-build-windows.txt`. It selects only
 PySide6-Essentials, an existing dependency of the full PySide6 package, instead

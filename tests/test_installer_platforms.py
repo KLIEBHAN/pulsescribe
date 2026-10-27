@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.test_release_workflow import run_block
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / ".github/scripts/installer_platforms.py"
@@ -176,7 +178,7 @@ def test_workflow_only_filters_and_cancels_pull_requests():
     metadata = workflow.split("  metadata:\n", 1)[1].split("\n  build-macos:", 1)[0]
     assert "fetch-depth: 0" in metadata
     assert "if: github.event_name == 'pull_request'\n        id: platforms" in metadata
-    assert "run: python .github/scripts/installer_platforms.py" in metadata
+    assert "python .github/scripts/installer_platforms.py" in metadata
     assert "PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}" in metadata
     assert "PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}" in metadata
     for platform in ("macos", "windows"):
@@ -191,5 +193,42 @@ def test_workflow_only_filters_and_cancels_pull_requests():
             f"if: github.event_name != 'pull_request' || needs.metadata.outputs.build_{platform} != 'false'"
             in job
         )
-    assert "      - .github/scripts/installer_platforms.py\n" in workflow
-    assert "      - tests/test_installer_platforms.py\n" in workflow
+    assert "  pull_request: {}\n" in workflow  # Unknown paths reach the selector.
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="metadata uses bash")
+@pytest.mark.parametrize("has_helper", [False, True])
+def test_selector_step_handles_older_pr_heads(repository, has_helper):
+    directory, git, base = repository
+    if has_helper:
+        helper = directory / ".github/scripts/installer_platforms.py"
+        helper.parent.mkdir(parents=True)
+        helper.write_text(SCRIPT.read_text())
+    (directory / "build_app.spec").write_text("macOS change\n")
+    git("commit", "-qam", "macOS change")
+    output = directory / "output"
+    subprocess.run(
+        [
+            "bash",
+            "-eu",
+            "-o",
+            "pipefail",
+            "-c",
+            run_block("Select PR installer platforms"),
+        ],
+        cwd=directory,
+        env={
+            **os.environ,
+            "PR_BASE_SHA": base,
+            "PR_HEAD_SHA": "HEAD",
+            "GITHUB_OUTPUT": str(output),
+            "GITHUB_STEP_SUMMARY": str(directory / "summary"),
+        },
+        check=True,
+        capture_output=True,
+        timeout=10,
+    )
+    assert output.read_text().splitlines() == [
+        "build_macos=true",
+        f"build_windows={str(not has_helper).lower()}",
+    ]

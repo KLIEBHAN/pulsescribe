@@ -3,35 +3,8 @@ name: Build Installers
 on:
   push:
     tags: ["v*"]
-  pull_request:
-    paths:
-      - .github/workflows/build-installers.yml
-      - .github/scripts/installer_platforms.py
-      - tests/test_installer_platforms.py
-      - assets/**
-      - audio/**
-      - build_app.sh
-      - build_app.spec
-      - build_dmg.sh
-      - build_windows.ps1
-      - build_windows.py
-      - build_windows.spec
-      - build_windows_light.spec
-      - cli/**
-      - config.py
-      - installer_windows.iss
-      - macos/**
-      - providers/**
-      - pulsescribe_daemon.py
-      - pulsescribe_windows.py
-      - pyproject.toml
-      - refine/**
-      - requirements.txt
-      - requirements-build-windows.txt
-      - transcribe.py
-      - ui/**
-      - utils/**
-      - whisper_platform/**
+  # Selection happens in metadata so new/unknown inputs cannot bypass builds.
+  pull_request: {}
   release:
     types: [published]
   workflow_dispatch:
@@ -185,7 +158,15 @@ jobs:
         env:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: python .github/scripts/installer_platforms.py
+        shell: bash
+        run: |
+          if [[ -f .github/scripts/installer_platforms.py ]]; then
+            python .github/scripts/installer_platforms.py
+          else
+            # Older PR heads may not contain the helper from the merge workflow.
+            echo "::warning::No platform selector in PR head; building both installers"
+            printf 'build_macos=true\nbuild_windows=true\n' >> "$GITHUB_OUTPUT"
+          fi
 
   build-macos:
     name: Build macOS DMG (arm64)

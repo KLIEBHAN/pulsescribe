@@ -228,4 +228,4 @@ def test_windows_cache_hashes_the_prepared_install_input(job, variant):
     )
     assert "cache-dependency-path: requirements-windows-build.txt" in section
     assert "python -m pip install -r requirements-windows-build.txt" in section
-    assert "      - requirements-build-windows.txt\n" in workflow
+    assert "  pull_request: {}\n" in workflow  # Build requirements trigger PR validation.
