@@ -1887,13 +1887,19 @@ def test_retryable_error_accepts_both_hotkey_modes(monkeypatch, hold):
     assert daemon._retryable_error is False
 
 
-def test_watchdog_error_is_not_marked_ready_for_an_eager_retry():
+def test_watchdog_error_is_not_marked_ready_for_an_eager_retry(monkeypatch):
     windows_module = _load_windows_module()
     daemon = windows_module.PulseScribeWindows(
         mode="openai", streaming=False, overlay=False
     )
-    daemon._set_state(AppState.ERROR, "Transcription timed out")
+    daemon._play_sound = lambda _name: None
+    monkeypatch.setattr(_CapturedTimer, "instances", [])
+    _patch_daemon_stdlib(monkeypatch, windows_module, "threading", Timer=_CapturedTimer)
+    daemon._set_state(AppState.TRANSCRIBING)
 
+    _CapturedTimer.instances[0].function()
+
+    assert daemon.state == AppState.ERROR
     assert daemon._state_allows_recording() is False
 
 
