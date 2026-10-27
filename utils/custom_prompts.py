@@ -674,16 +674,18 @@ def _escape_toml_multiline(text: str) -> str:
 # =============================================================================
 
 
-def reset_to_defaults(path: Path | None = None) -> None:
-    """Löscht die User-Config und kehrt zu Defaults zurück."""
+def reset_to_defaults(path: Path | None = None) -> bool:
+    """Remove user overrides; return False if the saved file could not be deleted."""
     prompts_file = path or PROMPTS_FILE
 
     try:
         prompts_file.unlink(missing_ok=True)
     except OSError as e:
         logger.warning(f"Prompts-Datei nicht löschbar: {e}")
+        return False
 
     _invalidate_cache(prompts_file)
+    return True
 
 
 # =============================================================================

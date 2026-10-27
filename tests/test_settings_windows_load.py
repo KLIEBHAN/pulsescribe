@@ -209,7 +209,7 @@ def _make_save_window(fp16_value: str) -> SettingsWindow:
     window._api_status = {}
     window._fp16_combo = _FakeCombo(["default", "true", "false"], current=fp16_value)
     window._validate_hotkeys_for_save = lambda: ("ctrl+alt+r", "")
-    window._save_all_prompts = lambda: None
+    window._save_all_prompts = lambda: True
     window._write_reload_signal = lambda: None
     window._show_save_feedback = lambda: None
     window._on_settings_changed_callback = None
@@ -694,23 +694,29 @@ def test_save_settings_invalid_hotkeys_show_footer_hint(monkeypatch):
 
 
 @pytest.mark.parametrize("vocabulary_saved", [True, False])
-def test_save_settings_reports_vocabulary_write_failures(monkeypatch, vocabulary_saved):
+@pytest.mark.parametrize("prompts_saved", [True, False])
+def test_save_settings_reports_partial_write_failures(
+    monkeypatch, vocabulary_saved, prompts_saved
+):
     monkeypatch.setattr(settings_mod, "update_env_settings", lambda _updates: None)
     monkeypatch.setattr(settings_mod, "is_onboarding_complete", lambda: True)
 
     window = _make_save_window("default")
     window._footer_status_label = _FakeLabel()
     window._save_vocabulary_if_changed = lambda: vocabulary_saved
+    window._save_all_prompts = lambda: prompts_saved
     success_feedback: list[bool] = []
     window._show_save_feedback = lambda: success_feedback.append(True)
 
-    window._save_settings()
+    assert window._save_settings() is (vocabulary_saved and prompts_saved)
 
-    assert success_feedback == ([True] if vocabulary_saved else [])
-    if not vocabulary_saved:
-        assert window._footer_status_label.text.startswith(
-            "Settings saved, but the vocabulary could not be saved"
-        )
+    assert success_feedback == ([True] if vocabulary_saved and prompts_saved else [])
+    if not vocabulary_saved or not prompts_saved:
+        assert "could not be saved" in window._footer_status_label.text
+        if not vocabulary_saved:
+            assert "Vocabulary" in window._footer_status_label.text
+        if not prompts_saved:
+            assert "Prompts" in window._footer_status_label.text
 
 
 def test_save_settings_batches_api_key_updates(monkeypatch):

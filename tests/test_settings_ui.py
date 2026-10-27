@@ -344,7 +344,7 @@ def _make_minimal_welcome_controller():
     ctrl._vocab_text_view = None
     ctrl._prompts_state_label = None
     ctrl._prompts_reset_btn = None
-    ctrl._save_custom_prompts = lambda: None
+    ctrl._save_custom_prompts = lambda: True
     ctrl._on_settings_changed_callback = None
     ctrl._save_btn = None
     ctrl._footer_status_label = None
@@ -519,6 +519,104 @@ class TestWelcomeLazyTabs:
 
 
 class TestWelcomeSaveSettings:
+    @pytest.mark.parametrize("vocabulary_saved", [True, False])
+    @pytest.mark.parametrize("prompts_saved", [True, False])
+    def test_save_settings_reports_partial_failures(
+        self, monkeypatch, vocabulary_saved, prompts_saved
+    ):
+        monkeypatch.setattr("ui.welcome._get_color", lambda *args: args)
+        ctrl = _make_minimal_welcome_controller()
+        ctrl._env_settings_cache = {}
+        ctrl._footer_status_label = _FakeStatus()
+        ctrl._vocab_warning_label = _FakeStatus()
+        ctrl._vocab_text_view = _FakeTranscriptsTextView("Audit", doc_height=120)
+        ctrl._get_loaded_vocabulary_keywords = list
+        ctrl._save_custom_prompts = lambda: prompts_saved
+
+        def save_vocabulary(_keywords):
+            if not vocabulary_saved:
+                raise OSError("write failed")
+            return {"keywords": ["Audit"]}, [], None
+
+        monkeypatch.setattr("ui.welcome.save_vocabulary_state", save_vocabulary)
+
+        assert ctrl._save_all_settings() is (vocabulary_saved and prompts_saved)
+        if vocabulary_saved and prompts_saved:
+            assert ctrl._footer_status_label.value == "Settings saved."
+        else:
+            assert "could not be saved" in ctrl._footer_status_label.value
+            assert ctrl._footer_status_label.color == (255, 177, 66, 0.95)
+            if not vocabulary_saved:
+                assert "Vocabulary" in ctrl._footer_status_label.value
+                assert ctrl._vocab_text_view.string() == "Audit"
+            if not prompts_saved:
+                assert "Prompts" in ctrl._footer_status_label.value
+
+    def test_env_write_failure_stops_save_without_marking_drafts_saved(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr("ui.welcome._get_color", lambda *args: args)
+        ctrl = _make_minimal_welcome_controller()
+        ctrl._footer_status_label = _FakeStatus()
+        ctrl._saved_settings_signature = ("before",)
+
+        def fail(_updates):
+            raise OSError("write failed")
+
+        ctrl._apply_env_updates = fail
+        ctrl._save_custom_prompts = lambda: pytest.fail("must not continue saving")
+        assert ctrl._save_all_settings() is False
+        assert "Saving failed" in ctrl._footer_status_label.value
+        assert ctrl._saved_settings_signature == ("before",)
+
+    def test_restart_stays_open_after_save_failure(self, monkeypatch):
+        from types import SimpleNamespace
+
+        pytest.importorskip("AppKit")
+        scheduled = []
+        timer = SimpleNamespace(
+            scheduledTimerWithTimeInterval_repeats_block_=lambda *args: (
+                scheduled.append(args)
+            )
+        )
+        monkeypatch.setattr("Foundation.NSTimer", timer)
+        ctrl = _make_minimal_welcome_controller()
+        ctrl._save_all_settings = lambda: False
+
+        ctrl._restart_application()
+
+        assert scheduled == []
+
+    def test_prompt_write_failure_is_returned_and_draft_is_kept(self, monkeypatch):
+        ctrl = _make_minimal_welcome_controller()
+        ctrl._prompts_cache = {"default": "unsaved"}
+        ctrl._prompts_status_label = _FakeField("")
+        ctrl._refresh_prompt_editor_feedback = lambda: None
+        ctrl._cache_current_prompt_editor_draft = lambda: True
+        ctrl._build_custom_prompt_save_payloads = lambda: (
+            {},
+            {"prompts": {"default": {"prompt": "unsaved"}}},
+        )
+
+        def fail(_data):
+            raise OSError("write failed")
+
+        monkeypatch.setattr("utils.custom_prompts.save_custom_prompts_state", fail)
+        assert WelcomeController._save_custom_prompts(ctrl) is False
+        assert "write failed" in ctrl._prompts_status_label.value
+        assert ctrl._prompts_cache == {"default": "unsaved"}
+
+    def test_prompt_reset_failure_is_not_reported_as_saved(self, monkeypatch):
+        ctrl = _make_minimal_welcome_controller()
+        ctrl._prompts_status_label = _FakeField("")
+        ctrl._refresh_prompt_editor_feedback = lambda: None
+        ctrl._cache_current_prompt_editor_draft = lambda: True
+        ctrl._build_custom_prompt_save_payloads = lambda: ({"prompts": {}}, {})
+        monkeypatch.setattr("utils.custom_prompts.reset_to_defaults", lambda: False)
+
+        assert WelcomeController._save_custom_prompts(ctrl) is False
+        assert "Could not reset" in ctrl._prompts_status_label.value
+
     def test_save_settings_batches_env_updates_and_removes_legacy_fp16(
         self, monkeypatch
     ):

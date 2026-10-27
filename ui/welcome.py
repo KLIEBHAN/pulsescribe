@@ -5805,10 +5805,10 @@ class WelcomeController:
                 self._model_field.stringValue(),
             )
 
-    def _save_all_settings(self) -> None:
-        """Speichert alle Einstellungen in die .env Datei.
+    def _save_all_settings(self) -> bool:
+        """Save settings and return whether all files were persisted.
 
-        Note: Hotkeys werden direkt via HotkeyCard gespeichert (nicht hier).
+        Hotkeys are saved directly by HotkeyCard, not by this action.
         """
         import logging
 
@@ -5816,8 +5816,16 @@ class WelcomeController:
 
         previous_dock_state = getattr(self, "_saved_dock_icon_enabled", None)
         env_updates = self._build_env_updates_from_controls(log)
-        self._apply_env_updates(env_updates)
+        if getattr(self, "_save_btn", None):
+            self._save_btn.setTitle_("Save & Apply")
+        try:
+            self._apply_env_updates(env_updates)
+        except OSError as e:
+            log.warning("Could not save settings: %s", e)
+            self._set_footer_status(f"Saving failed: {e}", "error")
+            return False
         self._refresh_provider_key_statuses()
+        failed_sections: list[str] = []
 
         # Vocabulary / Keywords
         if self._vocab_text_view:
@@ -5850,6 +5858,7 @@ class WelcomeController:
                     _apply_status_text(self._vocab_warning_label, text, color)
             except Exception as e:
                 log.warning(f"Could not save vocabulary: {e}")
+                failed_sections.append("vocabulary")
                 _apply_status_text(
                     self._vocab_warning_label,
                     f"Could not save the custom vocabulary: {e}",
@@ -5857,9 +5866,10 @@ class WelcomeController:
                 )
 
         # Custom Prompts speichern
-        self._save_custom_prompts()
+        if not self._save_custom_prompts():
+            failed_sections.insert(0, "prompts")
 
-        log.info("All settings saved to .env file")
+        log.info("Settings saved to .env file")
 
         current_dock_state = self._get_current_dock_icon_enabled()
         dock_changed = (
@@ -5872,13 +5882,22 @@ class WelcomeController:
         self._refresh_secondary_settings_feedback()
 
         # Callback aufrufen damit Daemon Settings neu lädt
+        reload_worked = None
         if self._on_settings_changed_callback:
-            self._on_settings_changed_callback()
+            try:
+                self._on_settings_changed_callback()
+            except Exception as e:
+                log.warning("Settings reload failed: %s", e, exc_info=True)
+                reload_worked = False
 
         text, color = build_settings_saved_feedback(
             relaunch_required=dock_changed,
+            auto_reload_worked=reload_worked,
+            failed_sections=failed_sections,
         )
         self._set_footer_status(text, color)
+        if failed_sections:
+            return False
 
         # Visuelles Feedback: Button-Text kurz ändern
         if hasattr(self, "_save_btn") and self._save_btn:
@@ -5893,26 +5912,26 @@ class WelcomeController:
             NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
                 1.5, False, lambda _: reset_title()
             )
+        return True
 
-    def _save_custom_prompts(self) -> None:
+    def _save_custom_prompts(self) -> bool:
         """Persist prompt-editor drafts while preserving untouched saved overrides."""
         import logging
 
         log = logging.getLogger(__name__)
 
         if not self._cache_current_prompt_editor_draft():
-            return
+            return True
 
         existing_overrides, data_to_save = self._build_custom_prompt_save_payloads()
         if data_to_save == existing_overrides:
             self._handle_custom_prompts_unchanged(log)
-            return
+            return True
 
         if data_to_save:
-            self._persist_custom_prompt_overrides(data_to_save, log)
-            return
+            return self._persist_custom_prompt_overrides(data_to_save, log)
 
-        self._reset_custom_prompts_to_defaults(log)
+        return self._reset_custom_prompts_to_defaults(log)
 
     def _cache_current_prompt_editor_draft(self) -> bool:
         text_view = getattr(self, "_prompts_text_view", None)
@@ -5952,9 +5971,10 @@ class WelcomeController:
         self._set_prompts_status_text("✓ Prompts unchanged")
         self._refresh_prompt_editor_feedback()
 
-    def _persist_custom_prompt_overrides(self, data_to_save: dict, log) -> None:
+    def _persist_custom_prompt_overrides(self, data_to_save: dict, log) -> bool:
         from utils.custom_prompts import save_custom_prompts_state
 
+        saved = True
         try:
             self._prompts_loaded_data = save_custom_prompts_state(data_to_save)
             log.info(f"Saved custom prompts for: {self._custom_prompt_saved_items(data_to_save)}")
@@ -5962,7 +5982,9 @@ class WelcomeController:
         except Exception as e:
             log.warning(f"Could not save custom prompts: {e}")
             self._set_prompts_status_text(f"Error: {e}")
+            saved = False
         self._refresh_prompt_editor_feedback()
+        return saved
 
     def _custom_prompt_saved_items(self, data_to_save: dict) -> list[str]:
         saved_items = sorted(data_to_save.get("prompts", {}).keys())
@@ -5972,14 +5994,18 @@ class WelcomeController:
             saved_items.append("App Mappings")
         return saved_items
 
-    def _reset_custom_prompts_to_defaults(self, log) -> None:
+    def _reset_custom_prompts_to_defaults(self, log) -> bool:
         from utils.custom_prompts import reset_to_defaults
 
-        reset_to_defaults()
+        if not reset_to_defaults():
+            self._set_prompts_status_text("Could not reset prompts. Try saving again.")
+            self._refresh_prompt_editor_feedback()
+            return False
         self._get_loaded_prompts_data(force=True)
         log.info("All prompts reset to defaults, removed prompts.toml")
         self._set_prompts_status_text("✓ Reset to defaults")
         self._refresh_prompt_editor_feedback()
+        return True
 
     def _restart_application(self) -> None:
         """Speichert Settings und startet die Applikation neu."""
@@ -5992,7 +6018,8 @@ class WelcomeController:
         log = logging.getLogger(__name__)
 
         # Erst alle Settings speichern
-        self._save_all_settings()
+        if not self._save_all_settings():
+            return
         log.info("Restarting application...")
 
         # Kurze Verzögerung für UI-Feedback, dann Neustart
