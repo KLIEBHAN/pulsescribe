@@ -189,6 +189,7 @@ def test_workflow_only_filters_and_cancels_pull_requests():
         job = workflow.split(f"\n  build-{platform}:\n", 1)[1].split("\n    steps:", 1)[
             0
         ]
+        assert "    needs: metadata\n" in job
         assert (
             f"if: github.event_name != 'pull_request' || needs.metadata.outputs.build_{platform} != 'false'"
             in job
