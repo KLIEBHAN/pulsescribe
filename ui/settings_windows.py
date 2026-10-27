@@ -4743,6 +4743,45 @@ class SettingsWindow(QDialog):
         if event.type() == QEvent.Type.WindowStateChange:
             self._update_logs_auto_refresh_state()
 
+    def _has_unsaved_changes(self) -> bool:
+        """Compare editor drafts with loaded baselines without loading unopened tabs."""
+        self._cache_current_prompt_editor_text()
+        if getattr(self, "_dirty_prompt_contexts", set()):
+            return True
+        if getattr(self, "_vocab_editor", None) is not None:
+            keywords = analyze_vocabulary_text(
+                self._current_vocabulary_raw_text()
+            ).keywords
+            if keywords != self._get_saved_vocabulary_keywords():
+                return True
+        saved = getattr(self, "_saved_settings_signature", None)
+        return saved is not None and self._get_current_settings_signature() != saved
+
+    def _confirm_close_if_needed(self) -> bool:
+        """Keep drafts and resources alive unless closing is explicitly approved."""
+        if getattr(self, "_is_closed", False) or not self._has_unsaved_changes():
+            return True
+        choice = QMessageBox.warning(
+            self,
+            "Unsaved changes",
+            "Save your changes before closing? Discard leaves the saved settings unchanged.",
+            QMessageBox.StandardButton.Save
+            | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if choice == QMessageBox.StandardButton.Save:
+            if not self._save_settings():
+                return False
+            if self._has_unsaved_changes():
+                self._set_footer_status(
+                    "Some changes are still unsaved. Review them before closing.",
+                    "warning",
+                )
+                return False
+            return True
+        return choice == QMessageBox.StandardButton.Discard
+
     def _cleanup_before_close(self) -> bool:
         """Führt einmaliges Cleanup für alle Schließpfade aus."""
         if getattr(self, "_is_closed", False):
@@ -4758,13 +4797,18 @@ class SettingsWindow(QDialog):
         return True
 
     def closeEvent(self, event):
-        """Handler für Fenster schließen."""
+        """Handle native window close without discarding unconfirmed drafts."""
+        if not self._confirm_close_if_needed():
+            event.ignore()
+            return
         if self._cleanup_before_close():
             self.closed.emit()
         super().closeEvent(event)
 
     def reject(self):
-        """ESC/Close-Button behandeln wie ein echtes Window-Close."""
+        """Apply the same draft protection to Escape and the Close button."""
+        if not self._confirm_close_if_needed():
+            return
         if self._cleanup_before_close():
             self.closed.emit()
         super().reject()
