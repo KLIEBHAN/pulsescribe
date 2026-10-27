@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Close asks to save, discard, or cancel only when drafts have changed. A failed
   or incomplete save keeps the window and its drafts open.
 
+### Changed
+
+- **macOS history saves** – write accepted transcripts and their timing diagnostics
+  on an ordered background worker instead of the UI thread. Clear History respects
+  pending saves, and normal quit/update paths drain accepted entries before exit.
+
 ## [1.7.0] - 2026-10-27
 
 ### Added
