@@ -141,6 +141,22 @@ def test_get_prompt_text_for_app_mappings_reuses_cached_formatting(monkeypatch):
     assert len(format_calls) == 1
 
 
+def test_save_all_prompts_reports_failure_and_keeps_dirty_drafts(monkeypatch):
+    window = _make_window()
+    window._prompt_editor.setPlainText("unsaved")
+    window._prompt_status = _FakeLabel()
+    window._prompts_loaded_data = {"prompts": {"default": {"prompt": "saved"}}}
+
+    def fail(_data):
+        raise OSError("write failed")
+
+    monkeypatch.setattr("utils.custom_prompts.save_custom_prompts_state", fail)
+    assert window._save_all_prompts() is False
+    assert "write failed" in window._prompt_status.text()
+    assert window._dirty_prompt_contexts == {"default"}
+    assert window._prompts_cache["default"] == "unsaved"
+
+
 def test_save_all_prompts_skips_unloaded_editor(monkeypatch):
     from utils import custom_prompts
 
@@ -153,7 +169,7 @@ def test_save_all_prompts_skips_unloaded_editor(monkeypatch):
         lambda: (_ for _ in ()).throw(AssertionError("disk load should not happen")),
     )
 
-    window._save_all_prompts()
+    assert window._save_all_prompts() is True
 
     assert window._prompts_cache == {}
 

@@ -597,8 +597,27 @@ class TestResetToDefaults:
         assert prompts_file.exists()
 
         # Reset
-        reset_to_defaults(path=prompts_file)
+        assert reset_to_defaults(path=prompts_file) is True
         assert not prompts_file.exists()
+
+    def test_reset_reports_failure_without_removing_saved_prompts(
+        self, prompts_file, monkeypatch
+    ):
+        from pathlib import Path
+
+        from utils.custom_prompts import reset_to_defaults, save_custom_prompts
+
+        save_custom_prompts(
+            {"prompts": {"default": {"prompt": "saved"}}}, path=prompts_file
+        )
+        original = prompts_file.read_text()
+
+        def fail(_path, **_kwargs):
+            raise OSError("permission denied")
+
+        monkeypatch.setattr(Path, "unlink", fail)
+        assert reset_to_defaults(path=prompts_file) is False
+        assert prompts_file.read_text() == original
 
     def test_reset_clears_cache(self, prompts_file):
         """Reset leert auch den Cache."""

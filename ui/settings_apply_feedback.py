@@ -7,6 +7,8 @@ Keeps Windows Settings and macOS Welcome aligned for:
 - small action hints that point back to Save & Apply
 """
 
+from collections.abc import Sequence
+
 
 def build_settings_loaded_feedback() -> tuple[str, str]:
     return (
@@ -26,7 +28,9 @@ def build_settings_saved_feedback(
     *,
     auto_reload_worked: bool | None = None,
     relaunch_required: bool = False,
+    failed_sections: Sequence[str] = (),
 ) -> tuple[str, str]:
+    """Report partial file saves together with any reload or relaunch caveat."""
     normalized_reload_state = auto_reload_worked
     if auto_reload_worked in (0, 1):
         normalized_reload_state = bool(auto_reload_worked)
@@ -36,6 +40,22 @@ def build_settings_saved_feedback(
             normalized_reload_state = True
         elif normalized_text in {"false", "0", "no", "off"}:
             normalized_reload_state = False
+
+    if failed_sections:
+        names = " and ".join(failed_sections)
+        tabs = " and ".join(section.title() for section in failed_sections)
+        tab_word = "tab" if len(failed_sections) == 1 else "tabs"
+        text = (
+            f"Settings saved, but the {names} could not be saved. "
+            f"Check the {tabs} {tab_word} and try again."
+        )
+        if normalized_reload_state is False:
+            text += (
+                " Automatic reload failed. Restart PulseScribe to apply saved settings."
+            )
+        if relaunch_required:
+            text += " Relaunch PulseScribe to apply the Dock icon change."
+        return text, "warning"
 
     if normalized_reload_state is True:
         if relaunch_required:

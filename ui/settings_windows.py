@@ -3347,8 +3347,8 @@ class SettingsWindow(QDialog):
                 f"color: {color_value};",
             )
 
-    def _save_all_prompts(self):
-        """Speichert alle geänderten Prompts aus dem Cache."""
+    def _save_all_prompts(self) -> bool:
+        """Save dirty prompt drafts; retain them and return False on failure."""
         try:
             # Aktuellen Editor-Inhalt zum Cache hinzufügen
             self._cache_current_prompt_editor_text()
@@ -3357,7 +3357,7 @@ class SettingsWindow(QDialog):
             if not dirty_contexts:
                 if getattr(self, "_prompts_loaded", False):
                     self._refresh_prompt_editor_feedback()
-                return
+                return True
 
             from utils.custom_prompts import (
                 filter_overrides_for_storage,
@@ -3375,16 +3375,19 @@ class SettingsWindow(QDialog):
                 self._dirty_prompt_contexts.difference_update(dirty_contexts)
                 logger.info("Prompts unverändert, prompts.toml rewrite übersprungen")
                 self._refresh_prompt_editor_feedback()
-                return
+                return True
 
             self._prompts_loaded_data = save_custom_prompts_state(next_overrides)
             self._dirty_prompt_contexts.difference_update(dirty_contexts)
             logger.info(f"Prompts gespeichert: {sorted(dirty_contexts)}")
             self._refresh_prompt_editor_feedback()
+            return True
 
         except Exception as e:
             logger.error(f"Prompts speichern fehlgeschlagen: {e}")
             self._refresh_prompt_editor_feedback()
+            self._set_prompt_status(f"Could not save prompts: {e}", "error")
+            return False
 
     def _toggle_logs_auto_refresh(self, state: int):
         """Schaltet Auto-Refresh für Logs ein/aus."""
@@ -4410,16 +4413,17 @@ class SettingsWindow(QDialog):
         for env_key, field in self._api_fields.items():
             builder.set_optional(env_key, field.text())
 
-    def _save_settings(self):
-        """Speichert alle Settings."""
+    def _save_settings(self) -> bool:
+        """Save settings and return whether all files were persisted."""
         try:
+            self._reset_save_button()
             validated_hotkeys = self._validate_hotkeys_for_save()
             if validated_hotkeys is None:
                 self._set_footer_status(
                     "Fix the highlighted hotkey issues before saving.",
                     "warning",
                 )
-                return
+                return False
             toggle_hotkey, hold_hotkey = validated_hotkeys
             env_updates = self._build_env_updates_from_controls(
                 toggle_hotkey=toggle_hotkey,
@@ -4430,7 +4434,7 @@ class SettingsWindow(QDialog):
             self._refresh_provider_key_statuses()
 
             # Prompts speichern (aus Cache + aktuellem Editor)
-            self._save_all_prompts()
+            prompts_saved = self._save_all_prompts()
 
             # Vocabulary wie auf macOS ebenfalls mit Save & Apply übernehmen
             vocabulary_saved = self._save_vocabulary_if_changed()
@@ -4453,20 +4457,36 @@ class SettingsWindow(QDialog):
             self._saved_display_settings_state = self._get_current_display_settings_state()
             self._refresh_secondary_settings_feedback()
 
-            # Visual Save Feedback (a failed vocabulary write must stay visible)
-            if vocabulary_saved:
+            failed_sections = [
+                section
+                for section, saved in (
+                    ("prompts", prompts_saved),
+                    ("vocabulary", vocabulary_saved),
+                )
+                if not saved
+            ]
+            if not failed_sections:
                 self._show_save_feedback()
             else:
-                self._set_footer_status(
-                    "Settings saved, but the vocabulary could not be saved. "
-                    "Check the Vocabulary tab and try again.",
-                    "warning",
+                text, color = build_settings_saved_feedback(
+                    auto_reload_worked=self._last_reload_signal_written,
+                    failed_sections=failed_sections,
                 )
+                self._set_footer_status(text, color)
             self._refresh_setup_overview()
 
             # Callback aufrufen (für Daemon-Reload, falls im gleichen Prozess)
             if self._on_settings_changed_callback:
-                self._on_settings_changed_callback()
+                try:
+                    self._on_settings_changed_callback()
+                except Exception as e:
+                    logger.warning("Settings reload failed: %s", e, exc_info=True)
+                    text, color = build_settings_saved_feedback(
+                        auto_reload_worked=False,
+                        failed_sections=failed_sections,
+                    )
+                    self._set_footer_status(text, color)
+            return not failed_sections
 
         except Exception as e:
             logger.error(f"Settings speichern fehlgeschlagen: {e}")
@@ -4480,6 +4500,7 @@ class SettingsWindow(QDialog):
                 from PySide6.QtCore import QTimer
 
                 QTimer.singleShot(1500, self._reset_save_button)
+            return False
 
     def _apply_local_preset(self, preset: str):
         """Wendet ein Local Mode Preset an (UI-only, ohne zu speichern)."""

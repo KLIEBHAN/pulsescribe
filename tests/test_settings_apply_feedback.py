@@ -1,9 +1,31 @@
+import pytest
+
 from ui.settings_apply_feedback import (
     build_save_apply_change_hint,
     build_settings_loaded_feedback,
     build_settings_saved_feedback,
     build_unsaved_settings_feedback,
 )
+
+
+@pytest.mark.parametrize(
+    "failed_sections",
+    [("vocabulary",), ("prompts",), ("prompts", "vocabulary")],
+)
+@pytest.mark.parametrize("reload_worked", [True, False])
+def test_partial_save_never_reports_full_success(failed_sections, reload_worked):
+    text, color = build_settings_saved_feedback(
+        failed_sections=failed_sections,
+        auto_reload_worked=reload_worked,
+        relaunch_required=True,
+    )
+
+    assert color == "warning"
+    assert "could not be saved" in text
+    assert all(section.title() in text for section in failed_sections)
+    assert "Dock icon" in text
+    if not reload_worked:
+        assert "reload failed" in text
 
 
 def test_build_settings_loaded_feedback_explains_saved_values() -> None:
