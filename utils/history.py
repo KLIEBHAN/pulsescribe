@@ -8,6 +8,7 @@ import json
 import logging
 import threading
 from collections.abc import Callable, Iterator, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime
 from itertools import chain
 from types import EllipsisType
@@ -81,6 +82,20 @@ def save_transcript(
     if not clean_text:
         return False
 
+    return _save_transcript_entry(
+        _build_transcript_entry(
+            clean_text,
+            mode=mode,
+            language=language,
+            refined=refined,
+            app_context=app_context,
+        )
+    )
+
+
+def _save_transcript_entry(entry: dict[str, object]) -> bool:
+    if not entry["text"]:
+        return False
     try:
         # Gesamten Save (Rotation → Append → Rotation) serialisieren, damit
         # parallele Saves keine Einträge über eine stale Rotation verlieren.
@@ -89,14 +104,6 @@ def save_transcript(
 
             # Check file size and rotate if needed
             _rotate_if_needed()
-
-            entry = _build_transcript_entry(
-                clean_text,
-                mode=mode,
-                language=language,
-                refined=refined,
-                app_context=app_context,
-            )
 
             with HISTORY_FILE.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -107,13 +114,146 @@ def save_transcript(
             _rotate_if_needed()
 
         logger.debug(
-            "Transcript saved to history: %s", redacted_text_summary(clean_text)
+            "Transcript saved to history: %s", redacted_text_summary(str(entry["text"]))
         )
         return True
 
     except Exception as e:
         logger.warning(f"Failed to save transcript to history: {e}")
         return False
+
+
+class _HistoryWriter:
+    def __init__(self) -> None:
+        self._admission_lock = threading.Lock()
+        self._executor: ThreadPoolExecutor | None = None
+        self._closed = False
+        self._worker_thread: threading.Thread | None = None
+
+    def _submit(self, operation: Callable[[], bool]) -> Future[bool]:
+        """Submit under the admission lock; accepted operations cannot be cancelled."""
+        if self._closed:
+            raise RuntimeError("History writer is shut down")
+        if self._executor is None:
+            self._executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="history"
+            )
+        result = Future[bool]()
+        result.set_running_or_notify_cancel()
+
+        def run() -> None:
+            self._worker_thread = threading.current_thread()
+            try:
+                result.set_result(operation())
+            except BaseException as exc:
+                result.set_exception(exc)
+
+        self._executor.submit(run)
+        return result
+
+    def enqueue(
+        self,
+        text: str,
+        *,
+        mode: str | None = None,
+        language: str | None = None,
+        refined: bool = False,
+        app_context: str | None = None,
+        on_start: Callable[[], None] | None = None,
+        on_done: Callable[[bool], None] | None = None,
+    ) -> Future[bool]:
+        with self._admission_lock:
+            entry = _build_transcript_entry(
+                (text or "").strip(),
+                mode=mode,
+                language=language,
+                refined=refined,
+                app_context=app_context,
+            )
+            return self._submit(lambda: self._save(entry, on_start, on_done))
+
+    @staticmethod
+    def _save(
+        entry: dict[str, object],
+        on_start: Callable[[], None] | None,
+        on_done: Callable[[bool], None] | None,
+    ) -> bool:
+        saved = False
+        try:
+            if on_start is not None:
+                try:
+                    on_start()
+                except Exception:
+                    logger.exception("History on_start callback failed")
+            saved = _save_transcript_entry(entry)
+            return saved
+        finally:
+            if on_done is not None:
+                try:
+                    on_done(saved)
+                except Exception:
+                    logger.exception("History on_done callback failed")
+
+    def _check_wait_boundary(self) -> None:
+        if threading.current_thread() is self._worker_thread:
+            raise RuntimeError("Cannot clear or shut down history from its worker")
+
+    def clear(self) -> bool:
+        self._check_wait_boundary()
+        with self._admission_lock:
+            result = self._submit(_clear_history)
+        return result.result()
+
+    def shutdown(self) -> None:
+        self._check_wait_boundary()
+        with self._admission_lock:
+            self._closed = True
+            executor = self._executor
+        if executor is not None:
+            executor.shutdown(wait=True)
+
+
+_history_writer = _HistoryWriter()
+
+
+def enqueue_transcript(
+    text: str,
+    *,
+    mode: str | None = None,
+    language: str | None = None,
+    refined: bool = False,
+    app_context: str | None = None,
+    on_start: Callable[[], None] | None = None,
+    on_done: Callable[[bool], None] | None = None,
+) -> Future[bool]:
+    """Capture a transcript now and persist it FIFO on a lazy process-owned worker.
+
+    The non-cancellable future reports persistence success (or an unexpected
+    exception). Callbacks run on the worker, outside locks, before it completes;
+    on_done receives False on failure. Callback exceptions are logged and isolated.
+    Callbacks may enqueue, but must not wait for queued work, clear or shut down.
+    Enqueue/clear after shutdown raises RuntimeError; the writer never restarts.
+    Synchronous save_transcript remains independent of this queue's ordering.
+    """
+    return _history_writer.enqueue(
+        text,
+        mode=mode,
+        language=language,
+        refined=refined,
+        app_context=app_context,
+        on_start=on_start,
+        on_done=on_done,
+    )
+
+
+def shutdown_history_writer() -> None:
+    """Seal admission and drain accepted jobs, including callbacks; idempotent.
+
+    Call from the owning process's lifecycle thread, never from a worker callback
+    or while holding a resource needed by callbacks. Concurrent callers all wait
+    for the drain. This is best-effort disk persistence, not crash durability.
+    """
+    _history_writer.shutdown()
 
 
 def _rotate_if_needed() -> None:
@@ -463,11 +603,16 @@ def _format_display_text(text: object) -> str:
 
 
 def clear_history() -> bool:
-    """Löscht die gesamte Historie.
+    """Clear FIFO after previously accepted queued saves, waiting for completion.
 
-    Returns:
-        True bei Erfolg, False bei Fehler
+    Returns False on disk failure. Raises RuntimeError on the history worker or
+    after shutdown. Later queued saves may create a new history; synchronous
+    save_transcript calls only share the disk lock, not this FIFO ordering.
     """
+    return _history_writer.clear()
+
+
+def _clear_history() -> bool:
     try:
         with _history_write_lock:
             if HISTORY_FILE.exists():

@@ -10,8 +10,13 @@ import pytest
 def history_file(tmp_path, monkeypatch):
     """Temporäre History-Datei für Tests."""
     history_path = tmp_path / "history.jsonl"
-    monkeypatch.setattr("utils.history.HISTORY_FILE", history_path)
-    return history_path
+    import utils.history as history
+
+    writer = history._HistoryWriter()
+    monkeypatch.setattr(history, "HISTORY_FILE", history_path)
+    monkeypatch.setattr(history, "_history_writer", writer)
+    yield history_path
+    writer.shutdown()
 
 
 class TestSaveTranscript:
