@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-10-27
+
 ### Added
 
 - **Copy Last Transcript** in the macOS menu bar and Windows tray menu recovers
@@ -18,6 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or copy failures, and no longer plays a success sound on failure.
 - Explicitly copying a transcript is no longer undone by a pending automatic
   clipboard restore, even when the text is identical.
+
+### Changed
+
+- **Leaner Windows installers** – exclude unused Qt modules while retaining the
+  API-only and Local Whisper packages.
+- **Shared settings and history handling** – remove duplicated normalization and
+  unnecessary formatting layers without changing saved settings or transcript output.
 
 ## [1.6.1] - 2026-10-13
 
