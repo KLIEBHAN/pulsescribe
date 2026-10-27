@@ -6,13 +6,10 @@ configuration quickly.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass
-from functools import partial
 import platform
 
-from utils.local_backend import normalize_local_backend, should_remove_local_backend_env
 from utils.preferences import update_env_settings
+from utils.settings_env_updates import SettingsEnvUpdateBuilder
 
 LOCAL_FP16_ENV_KEY = "PULSESCRIBE_FP16"
 LEGACY_LOCAL_FP16_ENV_KEY = "PULSESCRIBE_LOCAL_FP16"
@@ -79,165 +76,58 @@ LOCAL_PRESETS: dict[str, dict[str, str]] = {
 
 LOCAL_PRESET_OPTIONS = ["(none)", *LOCAL_PRESETS.keys()]
 
-EnvOverrideNormalizer = Callable[[str | None], str | None]
-
-
-@dataclass(frozen=True)
-class EnvOverrideSpec:
-    env_key: str
-    preset_key: str
-    normalizer: EnvOverrideNormalizer
-
-    def apply(self, values: dict[str, str]) -> tuple[str, str | None]:
-        return self.env_key, self.normalizer(values.get(self.preset_key))
-
-
-def _normalize_lower_value(value: str | None) -> str | None:
-    if value is None:
-        return None
-    normalized = str(value).strip().lower()
-    return normalized or None
-
-
-def _normalize_lower_override(
-    value: str | None,
-    *,
-    remove_when: set[str] | None = None,
-) -> str | None:
-    normalized = _normalize_lower_value(value)
-    if normalized is None:
-        return None
-    if remove_when and normalized in remove_when:
-        return None
-    return normalized
-
-
-def _normalize_optional_str(value: str | None) -> str | None:
-    normalized = (value or "").strip()
-    return normalized or None
-
-
-def _normalize_local_backend_override(value: str | None) -> str | None:
-    backend = normalize_local_backend(value)
-    if should_remove_local_backend_env(backend):
-        return None
-    return backend
-
-
-def _normalize_lightning_batch_size(value: str | None) -> str | None:
-    normalized = _normalize_optional_str(value)
-    if not normalized or normalized == "12":
-        return None
-    return normalized
-
-
-def _normalize_lightning_quant(value: str | None) -> str | None:
-    return _normalize_lower_override(value, remove_when={"none"})
-
-
-_ENV_OVERRIDE_SPECS: tuple[EnvOverrideSpec, ...] = (
-    EnvOverrideSpec(
-        "PULSESCRIBE_LOCAL_BACKEND",
-        "local_backend",
-        _normalize_local_backend_override,
-    ),
-    EnvOverrideSpec(
-        "PULSESCRIBE_LOCAL_MODEL",
-        "local_model",
-        partial(_normalize_lower_override, remove_when={"default"}),
-    ),
-    EnvOverrideSpec(
-        "PULSESCRIBE_DEVICE",
-        "device",
-        partial(_normalize_lower_override, remove_when={"auto"}),
-    ),
-    EnvOverrideSpec(
-        "PULSESCRIBE_LOCAL_WARMUP",
-        "warmup",
-        partial(_normalize_lower_override, remove_when={"auto"}),
-    ),
-    EnvOverrideSpec(
-        "PULSESCRIBE_LOCAL_FAST",
-        "local_fast",
-        partial(_normalize_lower_override, remove_when={"default"}),
-    ),
-    EnvOverrideSpec(
-        LOCAL_FP16_ENV_KEY,
-        "fp16",
-        partial(_normalize_lower_override, remove_when={"default"}),
-    ),
-    EnvOverrideSpec(
-        "PULSESCRIBE_LOCAL_BEAM_SIZE",
-        "beam_size",
-        _normalize_optional_str,
-    ),
-    EnvOverrideSpec(
-        "PULSESCRIBE_LOCAL_BEST_OF",
-        "best_of",
-        _normalize_optional_str,
-    ),
-    EnvOverrideSpec(
-        "PULSESCRIBE_LOCAL_TEMPERATURE",
-        "temperature",
-        _normalize_optional_str,
-    ),
-    EnvOverrideSpec(
-        "PULSESCRIBE_LOCAL_COMPUTE_TYPE",
-        "compute_type",
-        _normalize_optional_str,
-    ),
-    EnvOverrideSpec(
-        "PULSESCRIBE_LOCAL_CPU_THREADS",
-        "cpu_threads",
-        _normalize_optional_str,
-    ),
-    EnvOverrideSpec(
-        "PULSESCRIBE_LOCAL_NUM_WORKERS",
-        "num_workers",
-        _normalize_optional_str,
-    ),
-    EnvOverrideSpec(
-        "PULSESCRIBE_LOCAL_WITHOUT_TIMESTAMPS",
-        "without_timestamps",
-        partial(_normalize_lower_override, remove_when={"default"}),
-    ),
-    EnvOverrideSpec(
-        "PULSESCRIBE_LOCAL_VAD_FILTER",
-        "vad_filter",
-        partial(_normalize_lower_override, remove_when={"default"}),
-    ),
-    EnvOverrideSpec(
-        "PULSESCRIBE_LIGHTNING_BATCH_SIZE",
-        "lightning_batch_size",
-        _normalize_lightning_batch_size,
-    ),
-    EnvOverrideSpec(
-        "PULSESCRIBE_LIGHTNING_QUANT",
-        "lightning_quant",
-        _normalize_lightning_quant,
-    ),
-)
-
-
-def _apply_env_override_specs(
-    env_updates: dict[str, str | None],
-    values: dict[str, str],
-) -> None:
-    for spec in _ENV_OVERRIDE_SPECS:
-        env_key, normalized_value = spec.apply(values)
-        env_updates[env_key] = normalized_value
-
 
 def _build_local_preset_env_updates(
     preset_values: dict[str, str],
 ) -> dict[str, str | None]:
-    values = _merge_local_preset_values(preset_values)
-    env_updates: dict[str, str | None] = {
-        "PULSESCRIBE_MODE": "local",
-        LEGACY_LOCAL_FP16_ENV_KEY: None,
-    }
-    _apply_env_override_specs(env_updates, values)
-    return env_updates
+    """Normalize preset strings like settings, without validating numeric text."""
+    values = {**LOCAL_PRESET_BASE, **preset_values}
+    builder = SettingsEnvUpdateBuilder()
+    builder.set_present("PULSESCRIBE_MODE", "local")
+    builder.remove_key(LEGACY_LOCAL_FP16_ENV_KEY)
+    builder.set_local_backend("PULSESCRIBE_LOCAL_BACKEND", values.get("local_backend"))
+
+    for env_key, preset_key, default in (
+        ("PULSESCRIBE_LOCAL_MODEL", "local_model", "default"),
+        ("PULSESCRIBE_DEVICE", "device", "auto"),
+        ("PULSESCRIBE_LOCAL_WARMUP", "warmup", "auto"),
+        ("PULSESCRIBE_LOCAL_FAST", "local_fast", "default"),
+        (LOCAL_FP16_ENV_KEY, "fp16", "default"),
+    ):
+        builder.set_optional(
+            env_key, values.get(preset_key), remove_when={default}, lower=True
+        )
+
+    for env_key, preset_key in (
+        ("PULSESCRIBE_LOCAL_BEAM_SIZE", "beam_size"),
+        ("PULSESCRIBE_LOCAL_BEST_OF", "best_of"),
+        ("PULSESCRIBE_LOCAL_TEMPERATURE", "temperature"),
+        ("PULSESCRIBE_LOCAL_COMPUTE_TYPE", "compute_type"),
+        ("PULSESCRIBE_LOCAL_CPU_THREADS", "cpu_threads"),
+        ("PULSESCRIBE_LOCAL_NUM_WORKERS", "num_workers"),
+    ):
+        builder.set_optional(env_key, values.get(preset_key))
+
+    for env_key, preset_key in (
+        ("PULSESCRIBE_LOCAL_WITHOUT_TIMESTAMPS", "without_timestamps"),
+        ("PULSESCRIBE_LOCAL_VAD_FILTER", "vad_filter"),
+    ):
+        builder.set_optional(
+            env_key, values.get(preset_key), remove_when={"default"}, lower=True
+        )
+
+    builder.set_optional(
+        "PULSESCRIBE_LIGHTNING_BATCH_SIZE",
+        values.get("lightning_batch_size"),
+        remove_when={"12"},
+    )
+    builder.set_optional(
+        "PULSESCRIBE_LIGHTNING_QUANT",
+        values.get("lightning_quant"),
+        remove_when={"none"},
+        lower=True,
+    )
+    return builder.build()
 
 
 def is_apple_silicon() -> bool:
@@ -262,13 +152,6 @@ def default_local_preset_fast() -> str:
 
 def default_local_preset_private() -> str:
     return _default_local_preset_for_platform(APPLE_SILICON_PRIVATE_LOCAL_PRESET_NAME)
-
-
-def _merge_local_preset_values(preset_values: dict[str, str]) -> dict[str, str]:
-    """Overlay one preset on top of the shared local preset defaults."""
-    values = dict(LOCAL_PRESET_BASE)
-    values.update(preset_values)
-    return values
 
 
 def apply_local_preset_to_env(preset_name: str) -> bool:
