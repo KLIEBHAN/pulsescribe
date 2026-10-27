@@ -110,6 +110,7 @@ def _apply_env_updates_to_lines(
     """
     handled_keys: set[str] = set()
     new_lines: list[str] = []
+    changed = False
 
     for line in lines:
         key, existing_value = parse_env_line_with_dotenv(line)
@@ -121,18 +122,22 @@ def _apply_env_updates_to_lines(
         is_duplicate = key in handled_keys
         handled_keys.add(key)
         if value is None or (is_duplicate and not preserve_following_duplicates):
+            changed = True
             continue
 
         if preserve_following_duplicates and (is_duplicate or existing_value == value):
             new_lines.append(line)
         else:
-            new_lines.append(f"{key}={value}")
+            canonical_line = f"{key}={value}"
+            changed = changed or line != canonical_line
+            new_lines.append(canonical_line)
 
     for key, value in updates.items():
         if key not in handled_keys and value is not None:
             new_lines.append(f"{key}={value}")
+            changed = True
 
-    return new_lines, new_lines != lines
+    return new_lines, changed
 
 
 def _invalidate_env_cache() -> None:

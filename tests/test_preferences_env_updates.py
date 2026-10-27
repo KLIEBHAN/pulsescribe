@@ -93,3 +93,16 @@ def test_env_update_contract(
     expected = batch_result if batch else single_result
     assert env_path.read_text(encoding="utf-8") == expected
     assert writes == ([] if expected == original else [expected])
+
+
+def test_batch_update_writes_when_appending_key_recreates_removed_line(
+    tmp_path, monkeypatch
+):
+    env_path = tmp_path / ".env"
+    env_path.write_text("export MODE=local", encoding="utf-8")
+    monkeypatch.setattr(prefs, "ENV_FILE", env_path)
+    monkeypatch.setattr(prefs, "_env_cache", None)
+
+    prefs.update_env_settings({"MODE": None, "export MODE": "local"})
+
+    assert env_path.read_text(encoding="utf-8") == "export MODE=local\n"
