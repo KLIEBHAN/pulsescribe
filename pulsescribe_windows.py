@@ -1554,7 +1554,7 @@ class PulseScribeWindows:
                 return
 
             # REST: State früh umschalten, damit parallele Stop-Aufrufe idempotent sind
-            self._set_state(AppState.TRANSCRIBING)
+            stop_generation = self._set_state(AppState.TRANSCRIBING)
             self._latency_mark("transcribing_state")
             recording_thread = self._recording_thread
             should_transcribe_rest = True
@@ -1568,12 +1568,20 @@ class PulseScribeWindows:
                 recording_thread.join(timeout=join_timeout)
                 capture_finished = not recording_thread.is_alive()
 
-            if capture_finished:
-                self._play_sound("stop")
-            else:
-                logger.warning("Stop-Sound übersprungen, weil die Aufnahme noch läuft")
+            with self._recording_action_lock:
+                with self._state_lock:
+                    owns_run = (
+                        self._state == AppState.TRANSCRIBING
+                        and self._state_generation == stop_generation
+                    )
+                if not owns_run:
+                    return
+                if capture_finished:
+                    self._play_sound("stop")
+                else:
+                    logger.warning("Stop-Sound übersprungen, weil die Aufnahme noch läuft")
 
-            threading.Thread(target=self._transcribe_rest, daemon=True).start()
+                threading.Thread(target=self._transcribe_rest, daemon=True).start()
 
     def _handle_rest_capture_error(
         self,

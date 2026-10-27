@@ -1956,6 +1956,58 @@ def test_warm_capture_error_becomes_retryable_only_after_drain(monkeypatch):
     assert daemon._state_allows_recording() is True
 
 
+@pytest.mark.parametrize(
+    "retry_state", [None, AppState.LISTENING, AppState.TRANSCRIBING]
+)
+def test_rest_stop_does_not_transcribe_after_capture_fails_during_join(
+    monkeypatch, retry_state
+):
+    module = _load_windows_module()
+    daemon = module.PulseScribeWindows(mode="openai", streaming=False, overlay=False)
+    daemon._play_sound = lambda _name: None
+    daemon._schedule_idle_if_state_unchanged = lambda *_args: None
+    daemon._start_transcribing_watchdog = lambda: None
+    daemon._set_state(AppState.RECORDING)
+    transcriptions = []
+    daemon._transcribe_rest = lambda: transcriptions.append(list(daemon._audio_buffer))
+    daemon._recording_loop = lambda: None
+    new_audio = object()
+
+    class Capture:
+        done = False
+
+        def is_alive(self):
+            return not self.done
+
+        def join(self, timeout):
+            daemon._handle_rest_capture_error(
+                OSError("device shutdown failed"),
+                "Microphone unavailable",
+                capture_mode="cold",
+            )
+            self.done = True
+            if retry_state is not None:
+                assert daemon._start_recording()
+                daemon._audio_buffer = [new_audio]
+                daemon._set_state(retry_state)
+
+    class ImmediateThread:
+        def __init__(self, *, target, daemon):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    daemon._recording_thread = Capture()
+    _patch_daemon_stdlib(monkeypatch, module, "threading", Thread=ImmediateThread)
+    daemon._stop_recording()
+
+    assert transcriptions == []
+    assert daemon.state == (retry_state or AppState.ERROR)
+    if retry_state is not None:
+        assert daemon._audio_buffer == [new_audio]
+
+
 def test_old_cleanup_cannot_make_a_later_error_retryable():
     windows_module = _load_windows_module()
     daemon = windows_module.PulseScribeWindows(
