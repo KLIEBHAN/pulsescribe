@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Unsaved Windows settings** – closing the window, pressing Escape, or using
   Close asks to save, discard, or cancel only when drafts have changed. A failed
   or incomplete save keeps the window and its drafts open.
+- **Error feedback and retry** – errors stay readable for four seconds. Completed
+  Windows error paths allow a new dictation before the message disappears; warm
+  capture waits for cleanup. Old reset timers cannot interrupt a new recording.
 
 ### Changed
 

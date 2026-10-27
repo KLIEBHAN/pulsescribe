@@ -129,6 +129,7 @@ class _FakeQtLabel:
 def test_fade_out_timer_is_reused(monkeypatch):
     widget = PySide6OverlayWidget.__new__(PySide6OverlayWidget)
     widget._fade_out_timer = _FakeTimer()
+    widget._state = "DONE"
 
     monkeypatch.setattr(
         "ui.overlay_pyside6.QTimer",
@@ -145,6 +146,17 @@ def test_fade_out_timer_is_reused(monkeypatch):
         FEEDBACK_DISPLAY_MS,
         FEEDBACK_DISPLAY_MS,
     ]
+
+
+@pytest.mark.parametrize("state,expected_ms", [("DONE", 600), ("ERROR", 4000)])
+def test_feedback_duration_keeps_errors_readable(state, expected_ms):
+    widget = PySide6OverlayWidget.__new__(PySide6OverlayWidget)
+    widget._fade_out_timer = _FakeTimer()
+    widget._state = state
+
+    widget._start_fade_out_timer()
+
+    assert widget._fade_out_timer.start_calls == [expected_ms]
 
 
 def test_poll_interim_file_uses_mtime_cache(tmp_path):

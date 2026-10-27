@@ -7,6 +7,8 @@ import re
 from ui.daemon_status_feedback import build_daemon_status_label
 from utils.state import AppState
 
+ERROR_FEEDBACK_SECONDS = 4.0
+
 _COMPACT_OVERLAY_COPY = {
     "LISTENING": "Listening…",
     "RECORDING": "Recording — keep speaking",
