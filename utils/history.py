@@ -8,8 +8,8 @@ import json
 import logging
 import threading
 from collections.abc import Callable, Iterator, Sequence
-from dataclasses import dataclass
 from datetime import datetime
+from itertools import chain
 from types import EllipsisType
 
 from config import USER_CONFIG_DIR
@@ -304,52 +304,6 @@ def read_transcripts_from_offset(
     return list(_iter_parsed_transcript_lines(appended_text.splitlines()))
 
 
-def _iter_valid_transcript_entries(
-    entries: Sequence[object],
-) -> Iterator[dict[str, object]]:
-    """Yield only dictionary-backed transcript entries."""
-    for entry in entries:
-        coerced_entry = _coerce_transcript_entry(entry)
-        if coerced_entry is not None:
-            yield coerced_entry
-
-
-def _limit_ordered_transcript_entries(
-    ordered_entries: Sequence[dict[str, object]],
-    *,
-    newest_first: bool,
-    max_entries: int | None = None,
-) -> list[dict[str, object]]:
-    """Trim already ordered transcript entries without re-validating them."""
-    entries = list(ordered_entries)
-    if max_entries is None:
-        return entries
-    if max_entries <= 0:
-        return []
-    if newest_first:
-        return entries[:max_entries]
-    return entries[-max_entries:]
-
-
-def _collect_valid_transcript_entries(
-    entries: Sequence[object], *, newest_first: bool, max_entries: int | None = None
-) -> list[dict[str, object]]:
-    """Filter invalid entries and return them in the requested display order."""
-    ordered_entries = list(_iter_valid_transcript_entries(entries))
-    if newest_first:
-        ordered_entries.reverse()
-    return _limit_ordered_transcript_entries(
-        ordered_entries,
-        newest_first=newest_first,
-        max_entries=max_entries,
-    )
-
-
-def _format_timestamp(timestamp: object) -> str:
-    """Normalize transcript timestamps for UI display."""
-    return str(timestamp or "")[:19].replace("T", " ")
-
-
 def merge_recent_transcript_entries(
     previous_entries: Sequence[object],
     appended_entries: Sequence[object],
@@ -360,49 +314,30 @@ def merge_recent_transcript_entries(
     if max_entries <= 0:
         return []
 
-    previous_valid = list(_iter_valid_transcript_entries(previous_entries))
-    appended_valid = list(_iter_valid_transcript_entries(appended_entries))
-    visible_entries = (
-        previous_valid if not appended_valid else [*previous_valid, *appended_valid]
-    )
-    return _limit_ordered_transcript_entries(
-        visible_entries,
-        newest_first=False,
-        max_entries=max_entries,
-    )
-
-
-def _collect_entry_metadata(
-    entry: dict[str, object],
-    metadata_keys: Sequence[str],
-    *,
-    strip_values: bool,
-) -> list[str]:
-    """Collect non-empty stringified metadata values for transcript headers."""
-    values: list[str] = []
-    for key in metadata_keys:
-        value = str(entry.get(key, ""))
-        if strip_values:
-            value = value.strip()
-        if value:
-            values.append(value)
-    return values
+    visible_entries = [
+        entry
+        for entry in chain(previous_entries, appended_entries)
+        if isinstance(entry, dict)
+    ]
+    return visible_entries[-max_entries:]
 
 
 def _format_entry_header(
     entry: dict[str, object],
     *,
-    metadata_keys: Sequence[str] = (),
+    metadata_keys: Sequence[str],
     strip_metadata: bool,
 ) -> str:
     """Build a normalized transcript header for display and welcome views."""
-    ts = _format_timestamp(entry.get("timestamp", ""))
+    ts = str(entry.get("timestamp", "") or "")[:19].replace("T", " ")
     header = f"[{ts}]"
-    metadata_values = _collect_entry_metadata(
-        entry,
-        metadata_keys,
-        strip_values=strip_metadata,
-    )
+    metadata_values: list[str] = []
+    for key in metadata_keys:
+        value = str(entry.get(key, ""))
+        if strip_metadata:
+            value = value.strip()
+        if value:
+            metadata_values.append(value)
     if metadata_values:
         header += f" ({' '.join(metadata_values)})"
     return header
@@ -412,26 +347,11 @@ def _format_transcript_blocks(
     entries: Sequence[object],
     *,
     newest_first: bool,
-    formatter: Callable[[dict[str, object]], str],
+    formatter: Callable[[object], str],
 ) -> list[str]:
-    """Format ordered transcript entries into non-empty blocks."""
-    ordered_entries = _collect_valid_transcript_entries(
-        entries,
-        newest_first=newest_first,
-    )
-    return [block for block in (formatter(entry) for entry in ordered_entries) if block]
-
-
-@dataclass(frozen=True)
-class _TranscriptFormatSpec:
-    """Formatting rules for one transcript presentation variant."""
-
-    metadata_keys: tuple[str, ...]
-    strip_metadata: bool
-    body_renderer: Callable[[dict[str, object]], str]
-    separator: str
-    keep_header_when_body_empty: bool = False
-    include_separator_when_body_empty: bool = False
+    """Return oldest-first blocks; ``newest_first`` describes the input order."""
+    source = reversed(entries) if newest_first else entries
+    return [block for block in (formatter(entry) for entry in source) if block]
 
 
 DISPLAY_TRANSCRIPTS_EMPTY_MESSAGE = (
@@ -444,91 +364,20 @@ WELCOME_TRANSCRIPTS_EMPTY_MESSAGE = (
 )
 
 
-def _join_transcript_blocks(blocks: Sequence[str], *, empty_message: str) -> str:
-    """Join preformatted transcript blocks or return a caller-specific empty state."""
-    rendered_blocks = [block for block in blocks if block and block.strip()]
-    if not rendered_blocks:
-        return empty_message
-    return "\n\n".join(rendered_blocks)
-
-
-def _prepare_formatted_transcript_entry(
-    entry: object,
-    *,
-    metadata_keys: Sequence[str],
-    strip_metadata: bool,
-) -> tuple[dict[str, object], str] | None:
-    """Coerce one entry and compute its header for view-specific formatters."""
+def format_transcript_entry_for_display(entry: object) -> str:
+    """Format a single transcript entry for the Windows transcripts viewer."""
     transcript_entry = _coerce_transcript_entry(entry)
     if transcript_entry is None:
-        return None
+        return ""
 
     header = _format_entry_header(
         transcript_entry,
-        metadata_keys=metadata_keys,
-        strip_metadata=strip_metadata,
+        metadata_keys=("mode",),
+        strip_metadata=False,
     )
-    return transcript_entry, header
-
-
-def _render_display_body(entry: dict[str, object]) -> str:
-    """Render the display-view body, including the refine marker when present."""
-    text = _format_display_text(entry.get("text", ""))
-    refined = "✨" if entry.get("refined") else ""
-    return f"{refined}{text}"
-
-
-_DISPLAY_TRANSCRIPT_FORMAT = _TranscriptFormatSpec(
-    metadata_keys=("mode",),
-    strip_metadata=False,
-    body_renderer=_render_display_body,
-    separator=" ",
-    include_separator_when_body_empty=True,
-)
-
-
-def _render_welcome_body(entry: dict[str, object]) -> str:
-    """Render the welcome-view body while collapsing whitespace-only text."""
-    return str(entry.get("text", "")).strip()
-
-
-_WELCOME_TRANSCRIPT_FORMAT = _TranscriptFormatSpec(
-    metadata_keys=("mode", "language"),
-    strip_metadata=True,
-    body_renderer=_render_welcome_body,
-    separator="\n",
-    keep_header_when_body_empty=True,
-)
-
-
-def _format_transcript_entry(
-    entry: object,
-    *,
-    spec: _TranscriptFormatSpec,
-) -> str:
-    """Format one transcript entry using a reusable view-specific specification."""
-    prepared = _prepare_formatted_transcript_entry(
-        entry,
-        metadata_keys=spec.metadata_keys,
-        strip_metadata=spec.strip_metadata,
-    )
-    if prepared is None:
-        return ""
-
-    transcript_entry, header = prepared
-    body = spec.body_renderer(transcript_entry)
-    if body:
-        return f"{header}{spec.separator}{body}"
-    if spec.keep_header_when_body_empty:
-        return header
-    if spec.include_separator_when_body_empty:
-        return f"{header}{spec.separator}"
-    return header
-
-
-def format_transcript_entry_for_display(entry: object) -> str:
-    """Format a single transcript entry for the Windows transcripts viewer."""
-    return _format_transcript_entry(entry, spec=_DISPLAY_TRANSCRIPT_FORMAT)
+    text = _format_display_text(transcript_entry.get("text", ""))
+    refined = "✨" if transcript_entry.get("refined") else ""
+    return f"{header} {refined}{text}"
 
 
 def format_transcript_entries_for_display(
@@ -550,15 +399,22 @@ def format_transcripts_for_display(
         entries,
         newest_first=newest_first,
     )
-    return _join_transcript_blocks(
-        blocks,
-        empty_message=DISPLAY_TRANSCRIPTS_EMPTY_MESSAGE,
-    )
+    return "\n\n".join(blocks) or DISPLAY_TRANSCRIPTS_EMPTY_MESSAGE
 
 
 def format_transcript_entry_for_welcome(entry: object) -> str:
     """Format a single transcript entry for the macOS welcome/history view."""
-    return _format_transcript_entry(entry, spec=_WELCOME_TRANSCRIPT_FORMAT)
+    transcript_entry = _coerce_transcript_entry(entry)
+    if transcript_entry is None:
+        return ""
+
+    header = _format_entry_header(
+        transcript_entry,
+        metadata_keys=("mode", "language"),
+        strip_metadata=True,
+    )
+    text = str(transcript_entry.get("text", "")).strip()
+    return f"{header}\n{text}" if text else header
 
 
 def format_transcript_entries_for_welcome(
@@ -580,10 +436,7 @@ def format_transcripts_for_welcome(
         entries,
         newest_first=newest_first,
     )
-    return _join_transcript_blocks(
-        blocks,
-        empty_message=WELCOME_TRANSCRIPTS_EMPTY_MESSAGE,
-    )
+    return "\n\n".join(blocks) or WELCOME_TRANSCRIPTS_EMPTY_MESSAGE
 
 
 def _format_display_text(text: object) -> str:
