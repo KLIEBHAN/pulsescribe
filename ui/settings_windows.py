@@ -1899,7 +1899,9 @@ class SettingsWindow(QDialog):
 
         load_btn = QPushButton("Reload from File")
         load_btn.setAccessibleName("Reload custom vocabulary from file")
-        load_btn.setToolTip("Discard unsaved edits in this editor and reload the saved vocabulary file.")
+        load_btn.setToolTip(
+            "Reload the saved vocabulary file. You will be asked before unsaved edits are discarded."
+        )
         load_btn.clicked.connect(
             lambda _checked=False: self._load_vocabulary(force=True)
         )
@@ -3323,7 +3325,7 @@ class SettingsWindow(QDialog):
 
             if self._prompt_editor:
                 set_plain_text_if_changed(self._prompt_editor, text)
-                self._cache_prompt_text(context, text, baseline_text=text)
+                self._cache_prompt_text(context, text)
                 self._prompts_loaded = True
                 self._set_prompt_status(
                     f"Restored the default {label}. Save it to keep this change.",
@@ -3822,7 +3824,7 @@ class SettingsWindow(QDialog):
         )
 
     def _load_vocabulary(self, *, force: bool = False):
-        """Lädt Vocabulary aus Datei."""
+        """Refresh clean vocabulary drafts; explicit reload confirms discarding edits."""
         try:
             from config import VOCABULARY_FILE
             from utils.vocabulary import load_vocabulary_state
@@ -3834,6 +3836,22 @@ class SettingsWindow(QDialog):
                 and signature == getattr(self, "_last_vocabulary_signature", None)
             ):
                 return
+
+            if getattr(self, "_vocab_editor", None) is not None:
+                draft = analyze_vocabulary_text(self._current_vocabulary_raw_text())
+                if draft.keywords != self._get_saved_vocabulary_keywords():
+                    if not force:
+                        return
+                    choice = QMessageBox.question(
+                        self,
+                        "Discard vocabulary changes?",
+                        "Reloading replaces your unsaved vocabulary edits with the saved file.",
+                        QMessageBox.StandardButton.Discard
+                        | QMessageBox.StandardButton.Cancel,
+                        QMessageBox.StandardButton.Cancel,
+                    )
+                    if choice != QMessageBox.StandardButton.Discard:
+                        return
 
             vocab, warnings, _state_signature = load_vocabulary_state()
             keywords = list(vocab.get("keywords", []))
