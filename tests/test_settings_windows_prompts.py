@@ -253,6 +253,70 @@ def test_save_current_prompt_reuses_returned_saved_state(monkeypatch):
     assert window._dirty_prompt_contexts == set()
 
 
+@pytest.mark.parametrize(
+    "context,saved,default",
+    [
+        ("default", "saved prompt", "built-in prompt"),
+        ("email", "saved email", "built-in email"),
+        ("voice_commands", "saved commands", "built-in commands"),
+        ("app_mappings", "Mail = chat", "Mail = email"),
+    ],
+)
+def test_reset_saved_prompt_keeps_reset_dirty_and_save_enabled(context, saved, default):
+    window = _make_window()
+    window._current_prompt_context = context
+    window._prompt_context_combo = None
+    window._prompt_editor = _FakeEditor(saved)
+    window._prompt_status = _FakeLabel()
+    window._prompt_context_state_label = _FakeLabel()
+    window._prompt_save_btn = _FakeButton(enabled=False)
+    window._prompt_reset_btn = _FakeButton()
+    window._get_prompt_text_for_context = lambda _context: saved
+    window._get_prompt_default_text_for_context = lambda _context: default
+
+    window._reset_prompt_to_default()
+
+    assert window._prompt_editor.toPlainText() == default
+    assert window._prompts_cache[context] == default
+    assert window._get_saved_prompt_text_for_context(context) == saved
+    assert context in window._dirty_prompt_contexts
+    assert window._prompt_save_btn.enabled
+    assert not window._prompt_reset_btn.enabled
+    assert (
+        "Save to remove the custom version" in window._prompt_context_state_label.text()
+    )
+    assert window._has_unsaved_changes()
+
+
+def test_reset_prompt_can_be_saved_with_its_local_save_action(monkeypatch):
+    from utils import custom_prompts
+
+    window = _make_window()
+    defaults = custom_prompts.get_defaults()
+    window._prompt_context_combo = None
+    window._prompts_loaded_data = {"prompts": {"default": {"prompt": "custom"}}}
+    window._prompts_defaults_data = defaults
+    window._prompt_editor = _FakeEditor("custom")
+    window._prompt_status = _FakeLabel()
+    window._prompt_save_btn = _FakeButton(enabled=False)
+    saves = []
+    monkeypatch.setattr(
+        custom_prompts,
+        "save_custom_prompts_state",
+        lambda overrides: saves.append(overrides) or defaults,
+    )
+
+    window._reset_prompt_to_default()
+    assert window._prompt_save_btn.enabled
+    assert saves == []
+    window._save_current_prompt()
+
+    assert saves == [{}]
+    assert window._dirty_prompt_contexts == set()
+    assert not window._prompt_save_btn.enabled
+    assert window._prompts_loaded_data is defaults
+
+
 def test_refresh_prompt_editor_feedback_updates_state_label_buttons_and_accessibility():
     window = _make_window()
     window._prompt_editor = _FakeEditor("edited email")
