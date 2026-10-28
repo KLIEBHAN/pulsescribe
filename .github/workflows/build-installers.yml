@@ -285,9 +285,32 @@ jobs:
           hdiutil verify "$dmg"
 
           mount_point="$(mktemp -d)"
+          detach_attempted=false
+          detach_dmg() {
+            detach_attempted=true
+            local attempt status
+            for attempt in 1 2 3; do
+              if hdiutil detach "$mount_point"; then
+                return 0
+              else
+                status=$?
+              fi
+              # Mount holders can briefly linger after validation; never force detach.
+              if [[ "$status" -ne 16 || "$attempt" -eq 3 ]]; then
+                return "$status"
+              fi
+              echo "DMG is busy; retrying detach in 2 seconds (attempt $attempt/3)" >&2
+              sleep 2
+            done
+          }
           cleanup() {
-            hdiutil detach "$mount_point" >/dev/null 2>&1 || true
+            local status=$?
+            # A failed explicit detach has already used its retry budget.
+            if [[ "$detach_attempted" == false ]]; then
+              detach_dmg >/dev/null 2>&1 || true
+            fi
             rmdir "$mount_point" >/dev/null 2>&1 || true
+            return "$status"
           }
           trap cleanup EXIT
           hdiutil attach -readonly -nobrowse -mountpoint "$mount_point" "$dmg"
@@ -314,7 +337,7 @@ jobs:
           file "$mount_point/$app_binary" | grep -q 'arm64'
           "$mount_point/$app_binary" --check-mlx-backend
 
-          hdiutil detach "$mount_point"
+          detach_dmg
           trap - EXIT
           rmdir "$mount_point"
 
