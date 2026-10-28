@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.2] - 2026-10-28
+
 ### Fixed
 
 - **Manual macOS update retry** – if opening the downloaded installer fails, the
@@ -18,6 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **macOS success feedback** – returning to ready no longer hides the brief
   success confirmation immediately. New dictation replaces it without waiting;
   feedback animations stop when the overlay hides.
+- **macOS package validation** – transient busy-volume errors use a bounded
+  graceful detach retry instead of immediately failing an otherwise valid build.
+
+### Changed
+
+- **Quieter macOS overlay** – pause the recording-level animation timer once
+  silent levels and bars have settled; new audio resumes rendering as before.
 
 ## [1.7.1] - 2026-10-27
 
