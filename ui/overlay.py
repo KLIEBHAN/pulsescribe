@@ -385,9 +385,10 @@ class SoundWaveView:
 
         self._target_level = self._compute_target_level(level)
 
-        # Timer-basiertes Rendering starten (smooth wandering unabhängig von Audio callback rate)
+        # Resume rendering only when a new level or geometry needs a frame.
         if self._level_timer is None:
-            self._start_level_timer()
+            if not self._level_frame_is_settled(self._wave_center_y()):
+                self._start_level_timer()
         else:
             self._update_level_timer_interval()
 
@@ -823,6 +824,15 @@ class SoundWaveView:
         heights = self._state_frame_heights(t, "TRANSCRIBING")
         self._apply_bar_heights(heights, center_y=center_y)
 
+    def _level_frame_is_settled(self, center_y: float) -> bool:
+        """A quiet, fully settled frame needs no timer until the next level update."""
+        return (
+            self._target_level <= WAVE_LEVEL_SETTLED_EPSILON
+            and self._smoothed_level <= WAVE_LEVEL_SETTLED_EPSILON
+            and self._last_center_y == center_y
+            and _wave_heights_are_settled(self._last_heights)
+        )
+
     def _render_level_frame(self) -> None:
         """Rendert einen Frame der Level-Visualisierung (läuft im Main-Thread via NSTimer)."""
         # Ziel-Level sanft verfolgen (reduziert Zittern durch RMS-Fluktuationen).
@@ -835,16 +845,12 @@ class SoundWaveView:
         )
         level = prev_level + alpha_level * (target_level - prev_level)
         self._smoothed_level = level
-        self._update_level_timer_interval()
 
         center_y = self._wave_center_y()
-        if (
-            target_level <= WAVE_LEVEL_SETTLED_EPSILON
-            and level <= WAVE_LEVEL_SETTLED_EPSILON
-            and self._last_center_y == center_y
-            and _wave_heights_are_settled(self._last_heights)
-        ):
+        if self._level_frame_is_settled(center_y):
+            self._stop_level_timer()
             return
+        self._update_level_timer_interval()
 
         now = time.perf_counter()
         primary_tau = math.tau * WAVE_WANDER_HZ_PRIMARY
