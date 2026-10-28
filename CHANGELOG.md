@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Manual macOS update retry** – if opening the downloaded installer fails, the
   verified package is restored for another attempt instead of leaving a missing
   staging file. Existing downloads are preserved.
+- **macOS success feedback** – returning to ready no longer hides the brief
+  success confirmation immediately. New dictation replaces it without waiting;
+  feedback animations stop when the overlay hides.
 
 ## [1.7.1] - 2026-10-27
 

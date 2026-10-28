@@ -1115,7 +1115,7 @@ class OverlayController:
         self._set_text_value(text)
 
     def update_state(self, state: AppState, text: str | None = None) -> None:
-        """Aktualisiert Overlay basierend auf State."""
+        """Update state; retain brief success feedback while already ready to record."""
         if not self.window:
             return
 
@@ -1125,6 +1125,13 @@ class OverlayController:
         self._last_state_payload = (state, text)
         self._current_state = state
         state_changed = state != previous_state
+
+        if (
+            state == AppState.IDLE
+            and previous_state == AppState.DONE
+            and self._feedback_timer is not None
+        ):
+            return
 
         # Cancel stale feedback timer from previous DONE/ERROR state.
         # Without this, a quick re-recording within FEEDBACK_DISPLAY_DURATION
@@ -1296,9 +1303,12 @@ class OverlayController:
         if self._feedback_timer:
             self._feedback_timer.invalidate()
 
-        def fade_out_callback(_timer):
-            self._fade_out()
+        def fade_out_callback(timer):
+            if timer is not self._feedback_timer:
+                return
             self._feedback_timer = None
+            self._wave_view.stop_animating()
+            self._fade_out()
 
         duration = (
             ERROR_FEEDBACK_SECONDS
