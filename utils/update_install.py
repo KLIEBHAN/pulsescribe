@@ -121,9 +121,21 @@ class PreparedUpdate:
                     downloads / f"{self.package.stem}-{uuid.uuid4().hex[:8]}.dmg"
                 )
             shutil.move(str(self.package), destination)
-            subprocess.Popen(
-                ["/usr/bin/open", str(destination)], start_new_session=True
-            )
+            try:
+                subprocess.Popen(
+                    ["/usr/bin/open", str(destination)], start_new_session=True
+                )
+            except OSError:
+                try:
+                    if self.package.exists():
+                        raise FileExistsError("The staging path is already occupied.")
+                    shutil.move(str(destination), self.package)
+                except OSError as restore_error:
+                    raise OSError(
+                        "Could not open the installer or restore it for retry. "
+                        f"Open the verified installer manually at {destination}."
+                    ) from restore_error
+                raise
         elif self.platform == "darwin":
             subprocess.Popen(
                 [

@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Manual macOS update retry** – if opening the downloaded installer fails, the
+  verified package is restored for another attempt instead of leaving a missing
+  staging file. Existing downloads are preserved.
 - **Windows editor drafts** – returning to Vocabulary preserves unsaved edits even
   if its file changed. Explicit reload asks before discarding drafts. Restoring a
   saved custom prompt to its default keeps the Save button enabled until saved.
