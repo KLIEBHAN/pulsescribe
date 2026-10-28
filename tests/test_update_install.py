@@ -249,6 +249,43 @@ def test_manual_dmg_moves_to_downloads_before_opening(tmp_path, monkeypatch):
     assert not package.exists()
 
 
+@pytest.mark.parametrize("occupied_staging", [False, True])
+def test_manual_dmg_failed_restore_keeps_download_and_reports_its_location(
+    tmp_path, monkeypatch, occupied_staging
+):
+    work = tmp_path / "work"
+    work.mkdir()
+    package = work / "installer.dmg"
+    package.write_bytes(b"verified package")
+    destination = tmp_path / "Downloads" / package.name
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    move = update_install.shutil.move
+
+    def move_or_fail(source, target):
+        if Path(source) == destination:
+            raise PermissionError("restore denied")
+        return move(source, target)
+
+    def fail_launch(*_args, **_kwargs):
+        if occupied_staging:
+            package.write_bytes(b"unrelated staging file")
+        raise OSError("open failed")
+
+    monkeypatch.setattr(update_install.shutil, "move", move_or_fail)
+    monkeypatch.setattr(update_install.subprocess, "Popen", fail_launch)
+    prepared = update_install.PreparedUpdate(
+        package, tmp_path / "PulseScribe.app", work, "darwin", False
+    )
+
+    with pytest.raises(OSError, match="Open the verified installer manually") as raised:
+        prepared.launch()
+
+    assert str(destination) in str(raised.value)
+    assert destination.read_bytes() == b"verified package"
+    if occupied_staging:
+        assert package.read_bytes() == b"unrelated staging file"
+
+
 def test_native_preparation_cancellation_terminates_only_its_child(
     tmp_path, monkeypatch
 ):

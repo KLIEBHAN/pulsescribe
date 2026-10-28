@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Manual macOS update retry** – if opening the downloaded installer fails, the
+  verified package is restored for another attempt instead of leaving a missing
+  staging file. Existing downloads are preserved.
+
 ## [1.7.1] - 2026-10-27
 
 ### Fixed

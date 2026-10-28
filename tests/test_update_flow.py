@@ -170,6 +170,56 @@ def test_install_is_reserved_once_and_failed_launch_can_retry(flow):
     assert instance.prepared.launch.call_count == 2
 
 
+@pytest.mark.parametrize("existing_download", [False, True])
+def test_manual_installer_spawn_failure_preserves_package_for_retry(
+    flow, tmp_path, monkeypatch, existing_download
+):
+    from pathlib import Path
+    from utils import update_install
+
+    instance, _states = flow
+    work = tmp_path / "staged"
+    work.mkdir()
+    package = work / "PulseScribe-1.7.1.dmg"
+    package.write_bytes(b"verified package")
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    existing = downloads / package.name
+    if existing_download:
+        existing.write_bytes(b"unrelated download")
+    instance._work = work
+    instance.state = replace(instance.state, status="ready")
+    instance.prepared = PreparedUpdate(package, instance.target, work, "darwin", False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    calls = []
+    launch_error = OSError("open could not spawn")
+
+    def launch(args, **_kwargs):
+        calls.append(args)
+        assert args[0] == "/usr/bin/open"
+        assert Path(args[1]).read_bytes() == b"verified package"
+        if len(calls) == 1:
+            raise launch_error
+
+    monkeypatch.setattr(update_install.subprocess, "Popen", launch)
+    with pytest.raises(OSError) as raised:
+        instance.install()
+    assert raised.value is launch_error
+    assert package.read_bytes() == b"verified package"
+    assert not instance._installing
+    assert instance.state.status == "ready"
+
+    instance.install()
+    instance.stop()
+
+    assert len(calls) == 2
+    assert Path(calls[1][1]).read_bytes() == b"verified package"
+    assert not work.exists()
+    if existing_download:
+        assert existing.read_bytes() == b"unrelated download"
+        assert not Path(calls[0][1]).exists()
+
+
 def test_manual_installer_does_not_retain_temporary_work(flow, tmp_path):
     instance, _states = flow
     work = tmp_path / "manual"
