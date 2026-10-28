@@ -8,6 +8,7 @@ from ui.overlay import (
     WAVE_ANIMATION_FPS_ACTIVE,
     WAVE_ANIMATION_FPS_FEEDBACK,
     WAVE_ANIMATION_FPS_IDLE,
+    WAVE_AGC_MIN_PEAK,
     WAVE_BAR_COUNT,
     WAVE_BAR_MIN_HEIGHT,
     WAVE_HEIGHT_UPDATE_EPSILON,
@@ -417,10 +418,113 @@ def test_sound_wave_view_level_timer_reschedules_when_activity_mode_changes(
     assert view._level_timer is created_timers[1]
 
 
+def _quiet_recording_view():
+    view = _build_active_recording_view()
+    del view._update_level_timer_interval
+    view._target_level = view._smoothed_level = 0.0
+    view._agc_peak = WAVE_AGC_MIN_PEAK
+    view._level_timer = None
+    view._level_timer_interval_seconds = None
+    view._level_timer_activity_mode = "idle"
+    view.current_animation = "recording"
+    view.animations_running = False
+    return view
+
+
+def test_quiet_level_updates_do_not_create_animation_timers(monkeypatch):
+    scheduled, _timers = _install_fake_foundation(monkeypatch)
+    view = _quiet_recording_view()
+
+    for _ in range(100):
+        view.update_levels(0.0)
+
+    assert scheduled == []
+    assert view._level_timer is None
+
+
+def test_settled_level_frame_stops_timer_and_new_audio_restarts_it(monkeypatch):
+    scheduled, timers = _install_fake_foundation(monkeypatch)
+    view = _quiet_recording_view()
+    frames = []
+    view._apply_bar_heights = lambda heights, **_kwargs: frames.append(heights)
+    view._start_level_timer()
+    view._render_level_frame()
+
+    assert timers[0].invalidated == 1
+    assert view._level_timer is None
+    assert frames == []
+    view.update_levels(0.1)
+    assert len(scheduled) == 2
+    assert timers[-1].interval == 1.0 / WAVE_ANIMATION_FPS
+    timers[-1].block(timers[-1])
+    assert max(frames[-1]) > WAVE_BAR_MIN_HEIGHT
+    assert view._level_timer is timers[-1]
+
+
+def test_quiet_bars_finish_settling_before_timer_stops(monkeypatch):
+    _scheduled, timers = _install_fake_foundation(monkeypatch)
+    view = _quiet_recording_view()
+    view._last_heights[0] += 3.0
+    frames = []
+
+    def apply(heights, *, center_y):
+        frames.append(list(heights))
+        view._last_heights[:] = heights
+        view._last_center_y = center_y
+
+    view._apply_bar_heights = apply
+    view.update_levels(0.0)
+    assert view._level_timer is not None
+    for _ in range(200):
+        if view._level_timer is None:
+            break
+        view._render_level_frame()
+
+    assert frames
+    assert view._level_timer is None
+    assert timers[-1].invalidated == 1
+    assert all(
+        abs(height - WAVE_BAR_MIN_HEIGHT) < WAVE_HEIGHT_UPDATE_EPSILON
+        for height in view._last_heights
+    )
+
+
+def test_quiet_geometry_change_still_gets_rendered(monkeypatch):
+    _install_fake_foundation(monkeypatch)
+    view = _quiet_recording_view()
+    view._center_y = 30.0
+    centers = []
+    view._apply_bar_heights = lambda _heights, *, center_y: centers.append(center_y)
+
+    view.update_levels(0.0)
+    assert view._level_timer is not None
+    view._render_level_frame()
+
+    assert centers == [30.0]
+
+
+def test_quiet_audio_stops_fallback_animation_without_starting_level_timer(monkeypatch):
+    scheduled, _timers = _install_fake_foundation(monkeypatch)
+    view = _quiet_recording_view()
+    view.animations_running = True
+    stopped = []
+
+    def stop():
+        stopped.append(True)
+        view.animations_running = False
+
+    view.stop_animating = stop
+    view.update_levels(0.0)
+
+    assert stopped == [True]
+    assert scheduled == []
+
+
 def test_sound_wave_view_level_frame_skips_settled_noop_work(monkeypatch):
     view = SoundWaveView.__new__(SoundWaveView)
     view._smoothed_level = 0.0
     view._target_level = 0.0
+    view._level_timer = None
     view._view = _FakeOverlayView(48.0)
     view._last_center_y = 24.0
     view._last_heights = [float(WAVE_BAR_MIN_HEIGHT)] * 10
