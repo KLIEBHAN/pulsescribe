@@ -498,6 +498,121 @@ def test_load_vocabulary_skips_reload_when_signature_unchanged(monkeypatch):
     assert window._vocab_editor.set_calls == []
 
 
+@pytest.mark.parametrize("draft", ["unsaved keyword", ""])
+def test_automatic_vocabulary_reload_preserves_drafts_after_external_change(
+    monkeypatch, draft
+):
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._vocab_editor = _FakeEditor(draft)
+    window._vocabulary_loaded = True
+    window._last_vocabulary_signature = (7, 9)
+    window._saved_vocabulary_keywords = ["saved keyword"]
+    window._vocab_status = _FakeLabel()
+    monkeypatch.setattr(settings_mod, "get_file_signature", lambda _path: (8, 10))
+    reads = []
+    monkeypatch.setattr(
+        "utils.vocabulary.load_vocabulary_state",
+        lambda: (
+            reads.append(True) or ({"keywords": ["external keyword"]}, [], (8, 10, 11))
+        ),
+    )
+    monkeypatch.setattr(
+        settings_mod.QMessageBox,
+        "question",
+        lambda *_args: pytest.fail("automatic reload must not prompt"),
+    )
+
+    window._load_vocabulary()
+
+    assert reads == []
+    assert window._vocab_editor.value == draft
+    assert window._saved_vocabulary_keywords == ["saved keyword"]
+    assert window._last_vocabulary_signature == (7, 9)
+    assert window._has_unsaved_changes()
+
+
+def test_automatic_vocabulary_reload_refreshes_clean_editor(monkeypatch):
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._vocab_editor = _FakeEditor(" saved keyword \n")
+    window._vocab_status = _FakeLabel()
+    window._vocabulary_loaded = True
+    window._saved_vocabulary_keywords = ["saved keyword"]
+    window._last_vocabulary_signature = (7, 9)
+    monkeypatch.setattr(settings_mod, "get_file_signature", lambda _path: (8, 10))
+    monkeypatch.setattr(
+        "utils.vocabulary.load_vocabulary_state",
+        lambda: ({"keywords": ["external keyword"]}, [], (8, 10, 11)),
+    )
+    monkeypatch.setattr(
+        settings_mod.QMessageBox,
+        "question",
+        lambda *_args: pytest.fail("clean editor must not prompt"),
+    )
+
+    window._load_vocabulary()
+
+    assert window._vocab_editor.value == "external keyword"
+    assert window._saved_vocabulary_keywords == ["external keyword"]
+    assert not window._has_unsaved_changes()
+
+
+@pytest.mark.parametrize("loaded", [True, False])
+def test_cancel_vocabulary_reload_keeps_drafts_and_baseline(monkeypatch, loaded):
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._vocab_editor = _FakeEditor("unsaved")
+    window._vocabulary_loaded = loaded
+    monkeypatch.setattr(settings_mod, "get_file_signature", lambda _path: (8, 10))
+    window._saved_vocabulary_keywords = ["saved"]
+    window._last_vocabulary_signature = (7, 9)
+    window._vocab_status = _FakeLabel()
+    dialogs = []
+    monkeypatch.setattr(
+        settings_mod.QMessageBox,
+        "question",
+        lambda *args: (
+            dialogs.append(args) or settings_mod.QMessageBox.StandardButton.Cancel
+        ),
+    )
+    monkeypatch.setattr(
+        "utils.vocabulary.load_vocabulary_state",
+        lambda: pytest.fail("cancel must not read"),
+    )
+
+    window._load_vocabulary(force=True)
+
+    assert dialogs[0][-1] == settings_mod.QMessageBox.StandardButton.Cancel
+    assert window._vocab_editor.value == "unsaved"
+    assert window._saved_vocabulary_keywords == ["saved"]
+    assert window._last_vocabulary_signature == (7, 9)
+    assert window._vocabulary_loaded is loaded
+
+
+def test_failed_confirmed_vocabulary_reload_keeps_drafts(monkeypatch):
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._vocab_editor = _FakeEditor("unsaved")
+    window._vocabulary_loaded = True
+    window._saved_vocabulary_keywords = ["saved"]
+    window._last_vocabulary_signature = (7, 9)
+    window._vocab_status = _FakeLabel()
+    monkeypatch.setattr(
+        settings_mod.QMessageBox,
+        "question",
+        lambda *_args: settings_mod.QMessageBox.StandardButton.Discard,
+    )
+    monkeypatch.setattr(settings_mod, "get_file_signature", lambda _path: (8, 10))
+
+    def fail():
+        raise OSError("read failed")
+
+    monkeypatch.setattr("utils.vocabulary.load_vocabulary_state", fail)
+    window._load_vocabulary(force=True)
+
+    assert window._vocab_editor.value == "unsaved"
+    assert window._saved_vocabulary_keywords == ["saved"]
+    assert window._last_vocabulary_signature == (7, 9)
+    assert "read failed" in window._vocab_status.text
+
+
 def test_load_vocabulary_force_reloads_even_when_signature_unchanged(monkeypatch):
     from utils import vocabulary as vocabulary_mod
 
@@ -514,6 +629,11 @@ def test_load_vocabulary_force_reloads_even_when_signature_unchanged(monkeypatch
         lambda: ({"keywords": ["alpha"]}, [], (1, 2, 3)),
     )
 
+    monkeypatch.setattr(
+        settings_mod.QMessageBox,
+        "question",
+        lambda *_args: settings_mod.QMessageBox.StandardButton.Discard,
+    )
     window._load_vocabulary(force=True)
 
     assert window._vocab_editor.set_calls == ["alpha"]
