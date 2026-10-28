@@ -2,6 +2,8 @@ import math
 import sys
 import types
 
+import pytest
+
 from ui.overlay import (
     OVERLAY_INTERIM_MAX_CHARS,
     WAVE_ANIMATION_FPS,
@@ -706,6 +708,98 @@ def test_error_feedback_uses_readable_duration(monkeypatch):
     controller._start_fade_out_timer()
 
     assert timers[0][0] == 4.0
+
+
+def _feedback_controller():
+    controller = OverlayController.__new__(OverlayController)
+    controller.window = object()
+    controller._current_state = AppState.IDLE
+    controller._last_state_payload = None
+    controller._feedback_timer = None
+    events = []
+    controller._wave_view = types.SimpleNamespace(
+        start_success_animation=lambda: events.append("success"),
+        start_listening_animation=lambda: events.append("listening"),
+        start_error_animation=lambda: events.append("error"),
+        stop_animating=lambda: events.append("stop"),
+    )
+    controller._apply_text_presentation = lambda **_kwargs: None
+    controller._fade_in = lambda: events.append("show")
+    controller._fade_out = lambda: events.append("hide")
+    return controller, events
+
+
+def test_success_confirmation_survives_immediate_ready_state(monkeypatch):
+    scheduled, timers = _install_fake_foundation(monkeypatch)
+    controller, events = _feedback_controller()
+
+    controller.update_state(AppState.DONE, "Transcript pasted")
+    controller.update_state(AppState.IDLE)
+
+    assert controller._current_state == AppState.IDLE
+    assert events == ["success", "show"]
+    assert timers[0].invalidated == 0
+    assert scheduled[0][0] == 0.8
+    timers[0].block(timers[0])
+    assert events == ["success", "show", "stop", "hide"]
+    assert controller._feedback_timer is None
+
+
+def test_native_success_timer_cleans_up_after_ready():
+    pytest.importorskip("Foundation")
+    controller, events = _feedback_controller()
+    controller.update_state(AppState.DONE)
+    timer = controller._feedback_timer
+    try:
+        controller.update_state(AppState.IDLE)
+        assert events == ["success", "show"]
+        timer.fire()
+        assert events == ["success", "show", "stop", "hide"]
+        assert controller._feedback_timer is None
+    finally:
+        timer.invalidate()
+
+
+def test_new_recording_replaces_held_confirmation_and_rejects_stale_fade(monkeypatch):
+    _scheduled, timers = _install_fake_foundation(monkeypatch)
+    controller, events = _feedback_controller()
+    controller.update_state(AppState.DONE)
+    controller.update_state(AppState.IDLE)
+
+    controller.update_state(AppState.LISTENING)
+    timers[0].block(timers[0])
+
+    assert controller._current_state == AppState.LISTENING
+    assert timers[0].invalidated == 1
+    assert "listening" in events
+    assert "hide" not in events
+
+
+def test_older_confirmation_cannot_hide_a_newer_success(monkeypatch):
+    _scheduled, timers = _install_fake_foundation(monkeypatch)
+    controller, events = _feedback_controller()
+    controller.update_state(AppState.DONE, "first")
+    controller.update_state(AppState.IDLE)
+    controller.update_state(AppState.LISTENING)
+    controller.update_state(AppState.DONE, "second")
+    controller.update_state(AppState.IDLE)
+
+    timers[0].block(timers[0])
+    assert "hide" not in events
+    assert controller._feedback_timer is timers[1]
+    timers[1].block(timers[1])
+    assert events.count("hide") == 1
+    assert events[-2:] == ["stop", "hide"]
+
+
+def test_error_can_still_be_cleared_explicitly_before_timeout(monkeypatch):
+    _scheduled, timers = _install_fake_foundation(monkeypatch)
+    controller, events = _feedback_controller()
+    controller.update_state(AppState.ERROR)
+    controller.update_state(AppState.IDLE)
+
+    assert events[-2:] == ["stop", "hide"]
+    assert timers[0].invalidated == 1
 
 
 def test_overlay_controller_done_state_uses_clear_success_copy():
