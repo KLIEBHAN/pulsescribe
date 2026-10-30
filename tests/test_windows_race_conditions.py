@@ -79,6 +79,61 @@ def _patch_daemon_stdlib(monkeypatch, windows_module, module_name, **overrides):
     )
 
 
+@pytest.mark.parametrize("selected", ["USB Mic", ""])
+def test_microphone_change_restarts_warm_stream_only_before_next_run(monkeypatch, selected):
+    windows_module = _load_windows_module()
+    monkeypatch.setenv("PULSESCRIBE_INPUT_DEVICE", "Previous Mic")
+    daemon = windows_module.PulseScribeWindows(mode="openai", streaming=False, overlay=False)
+    daemon._play_sound = lambda _name: None
+    daemon._recording_loop = lambda: None
+    switched = []
+    daemon._stop_warm_stream = lambda: switched.append("stop")
+
+    def start_stream():
+        switched.append("start")
+        daemon._warm_stream_device_name = os.getenv("PULSESCRIBE_INPUT_DEVICE", "")
+
+    daemon._start_warm_stream = start_stream
+    monkeypatch.setenv("PULSESCRIBE_INPUT_DEVICE", selected)
+    daemon._state = AppState.RECORDING
+    assert daemon._start_recording() is False
+    assert switched == []
+    daemon._state = AppState.IDLE
+    assert daemon._start_recording() is True
+    daemon._recording_thread.join(timeout=1)
+    assert switched == ["stop", "start"]
+    daemon._state = AppState.IDLE
+    assert daemon._start_recording() is True
+    daemon._recording_thread.join(timeout=1)
+    assert switched == ["stop", "start"]  # Unchanged settings retain instant start.
+
+
+def test_reconnected_microphone_replaces_fallback_without_reopening_unchanged_stream(monkeypatch):
+    windows_module = _load_windows_module()
+    monkeypatch.setenv("PULSESCRIBE_INPUT_DEVICE", "Headset")
+    resolved = [None, 44100]
+    monkeypatch.setattr(windows_module, "get_input_device", lambda: tuple(resolved))
+    daemon = windows_module.PulseScribeWindows(mode="openai", streaming=False, overlay=False)
+    daemon._warm_stream = object()
+    daemon._warm_stream_config = (None, 44100)
+    daemon._play_sound = lambda _name: None
+    daemon._recording_loop_warm = lambda: None
+    switched = []
+    daemon._stop_warm_stream = lambda: switched.append("stop")
+
+    def start_stream():
+        switched.append("start")
+        daemon._warm_stream_config = tuple(resolved)
+
+    daemon._start_warm_stream = start_stream
+    for device_index, expected in [(None, []), (2, ["stop", "start"]), (2, ["stop", "start"])]:
+        resolved[0] = device_index
+        daemon._state = AppState.IDLE
+        assert daemon._start_recording() is True
+        daemon._recording_thread.join(timeout=1)
+        assert switched == expected
+
+
 def test_start_recording_is_atomic_for_concurrent_triggers(monkeypatch):
     windows_module = _load_windows_module()
     daemon = windows_module.PulseScribeWindows(

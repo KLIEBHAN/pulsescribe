@@ -96,6 +96,15 @@ def read_env_file(path: Path | None = None) -> dict[str, str]:
     return values
 
 
+def _format_env_assignment(key: str, value: str) -> str:
+    """Keep each setting on one line and quote names containing dotenv syntax."""
+    if "\n" in value or "\r" in value:
+        raise ValueError("Settings values must not contain line breaks")
+    if any(char in value for char in "'\"#\\"):
+        value = "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+    return f"{key}={value}"
+
+
 def _apply_env_updates_to_lines(
     lines: list[str],
     updates: dict[str, str | None],
@@ -128,13 +137,13 @@ def _apply_env_updates_to_lines(
         if preserve_following_duplicates and (is_duplicate or existing_value == value):
             new_lines.append(line)
         else:
-            canonical_line = f"{key}={value}"
+            canonical_line = _format_env_assignment(key, value)
             changed = changed or line != canonical_line
             new_lines.append(canonical_line)
 
     for key, value in updates.items():
         if key not in handled_keys and value is not None:
-            new_lines.append(f"{key}={value}")
+            new_lines.append(_format_env_assignment(key, value))
             changed = True
 
     return new_lines, changed

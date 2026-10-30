@@ -440,6 +440,8 @@ class PulseScribeWindows:
         # WARM-STREAM: Mikrofon läuft immer, instant-start beim Hotkey
         # ═══════════════════════════════════════════════════════════════════
         self._warm_stream = None  # sd.InputStream (läuft dauerhaft)
+        self._warm_stream_device_name = os.getenv("PULSESCRIBE_INPUT_DEVICE", "").strip()
+        self._warm_stream_config: tuple[int | None, int] | None = None
         self._warm_stream_armed = threading.Event()  # Wenn gesetzt: Samples sammeln
         self._warm_stream_draining = (
             threading.Event()
@@ -1241,7 +1243,9 @@ class PulseScribeWindows:
 
         from config import INT16_MAX
 
+        self._warm_stream_device_name = os.getenv("PULSESCRIBE_INPUT_DEVICE", "").strip()
         input_device, sample_rate = get_input_device()
+        self._warm_stream_config = (input_device, sample_rate)
         self._warm_stream_sample_rate = sample_rate
 
         # Kleine Chunks: schnellere VAD-/Overlay-Reaktion als die alten ~64ms.
@@ -1421,6 +1425,17 @@ class PulseScribeWindows:
             if not self._state_allows_recording():
                 logger.debug(f"Start ignoriert: State={self.state}")
                 return False
+
+            # Recheck missing preferences between runs; resolved choices stay cached.
+            # Do not reopen an unchanged fallback stream while a device is absent.
+            preferred_microphone = os.getenv("PULSESCRIBE_INPUT_DEVICE", "").strip()
+            if self._warm_stream_device_name != preferred_microphone or (
+                preferred_microphone
+                and self._warm_stream is not None
+                and self._warm_stream_config != get_input_device()
+            ):
+                self._stop_warm_stream()
+                self._start_warm_stream()
 
             run_mode = self.mode
             run_streaming = self.streaming
@@ -2753,7 +2768,9 @@ class PulseScribeWindows:
         load_environment(override_existing=True)
         from utils.preferences import read_env_file
 
-        return read_env_file()
+        env_values = read_env_file()
+        sync_env_values(env_values, ("PULSESCRIBE_INPUT_DEVICE",))
+        return env_values
 
     @staticmethod
     def _sync_local_provider_reload_env_values(env_values: dict[str, str]) -> None:

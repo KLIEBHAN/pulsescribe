@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from collections.abc import Iterator, Mapping
 from io import StringIO
 from pathlib import Path
@@ -111,6 +112,11 @@ def _split_env_assignment(line: str) -> tuple[str, str] | None:
 def _parse_env_value(value: str) -> str:
     if not value:
         return ""
+
+    if value.startswith("'"):
+        quoted = re.fullmatch(r"'((?:\\.|[^'\\])*)'(?:\s*#.*)?", value)
+        if quoted:
+            return re.sub(r"\\([\\'])", r"\1", quoted.group(1)).strip()
 
     parsed: list[str] = []
     in_single = False
@@ -233,6 +239,12 @@ def _read_dotenv_values(path: Path) -> dict[str, str]:
     normalized_raw_values = {
         str(key or ""): value for key, value in raw_values.items()
     }
+    # Device names are literal identifiers, never dotenv interpolation templates.
+    # Use the same literal reader as Settings without changing other keys' expansion.
+    if "PULSESCRIBE_INPUT_DEVICE" in normalized_raw_values:
+        normalized_raw_values["PULSESCRIBE_INPUT_DEVICE"] = read_env_file_values(path).get(
+            "PULSESCRIBE_INPUT_DEVICE"
+        )
     return dict(_iter_normalized_dotenv_items(normalized_raw_values))
 
 

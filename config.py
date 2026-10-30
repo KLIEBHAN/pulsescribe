@@ -8,6 +8,7 @@ import logging
 import math
 import os
 import tempfile
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
@@ -61,6 +62,8 @@ INT16_MAX = 32767
 
 # Cache für erkanntes Audio-Gerät (vermeidet wiederholte Tests)
 _cached_input_device: tuple[int | None, int] | None = None
+_cached_input_device_preference = ""
+_input_device_lock = threading.RLock()
 
 
 @dataclass(frozen=True)
@@ -262,9 +265,11 @@ def get_input_device() -> tuple[int | None, int]:
     Windows WDM-KS Treiber sind strikt bei Sample Rates - wir müssen die native
     Rate des Geräts verwenden (kein Resampling im Treiber).
 
-    Das Ergebnis wird gecacht um wiederholte Device-Tests zu vermeiden.
+    PULSESCRIBE_INPUT_DEVICE wählt einen exakten Gerätenamen vor dem System-Default.
+    Fehlt das gespeicherte Gerät, wird vorübergehend automatisch gewählt.
+    Das Ergebnis wird pro Einstellung gecacht, außer bei fehlendem Wunschgerät.
 
-    Priorität:
+    Priorität bei fehlendem System-Default:
     1. Mikrofonarray-Geräte (funktionieren meist gut auf Windows)
     2. Mikrofon-Geräte (außer Lautsprecher)
     3. Beliebiges funktionierendes Gerät
@@ -274,27 +279,51 @@ def get_input_device() -> tuple[int | None, int]:
         - device_index: int oder None für sounddevice-Default
         - sample_rate: Native Sample Rate des Geräts (oder WHISPER_SAMPLE_RATE als Default)
     """
-    if _cached_input_device is not None:
+    with _input_device_lock:
+        return _get_input_device_for_preference(
+            os.getenv("PULSESCRIBE_INPUT_DEVICE", "").strip()
+        )
+
+
+def _get_input_device_for_preference(preferred_name: str) -> tuple[int | None, int]:
+    global _cached_input_device, _cached_input_device_preference
+    if (
+        _cached_input_device is not None
+        and preferred_name == _cached_input_device_preference
+    ):
         return _cached_input_device
+    _cached_input_device = None
+    _cached_input_device_preference = preferred_name
 
     import sys
 
     try:
         import sounddevice as sd  # type: ignore[import-not-found]
 
+        if preferred_name:
+            for device_info in _list_input_devices(sd):
+                if device_info.name == preferred_name:
+                    _log_selected_input_device(device_info)
+                    return _build_input_device_result(device_info)
+            logger.warning("Mikrofon %r nicht verfügbar, verwende Standardgerät", preferred_name)
+
         default_input = _get_default_input_index(sd)
         if default_input >= 0:
             device = cast(dict[str, Any], sd.query_devices(default_input))
             samplerate = int(device.get("default_samplerate", WHISPER_SAMPLE_RATE))
-            return _return_input_device_result((None, samplerate))
+            return _return_input_device_result((None, samplerate), cache=not preferred_name)
 
         input_devices = _list_input_devices(sd)
         if not input_devices:
             return _return_input_device_result((None, WHISPER_SAMPLE_RATE), cache=False)
 
         if sys.platform == "win32":
-            return _select_windows_input_device(sd, input_devices)
-        return _select_non_windows_input_device(input_devices)
+            result = _select_windows_input_device(sd, input_devices)
+        else:
+            result = _select_non_windows_input_device(input_devices)
+        if preferred_name:
+            reset_input_device_cache()  # Retry the saved microphone on the next recording.
+        return result
     except Exception:
         return _return_input_device_result((None, WHISPER_SAMPLE_RATE), cache=False)
 
@@ -302,7 +331,8 @@ def get_input_device() -> tuple[int | None, int]:
 def reset_input_device_cache() -> None:
     """Verwirft die gecachte Input-Device-Erkennung."""
     global _cached_input_device
-    _cached_input_device = None
+    with _input_device_lock:
+        _cached_input_device = None
 
 
 # =============================================================================

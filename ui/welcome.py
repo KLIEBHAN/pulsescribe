@@ -7,6 +7,7 @@ Erscheint beim ersten Start und kann über Menubar aufgerufen werden.
 import os
 
 from config import LOG_FILE
+from ui.microphone import MICROPHONE_TOOLTIP, get_microphone_options
 from ui.hotkey_format import (
     format_hotkey_for_display,
     normalize_hotkey_text,
@@ -460,6 +461,7 @@ class WelcomeController:
         self._startup_checkbox = None
         self._mode_popup = None
         self._lang_popup = None
+        self._microphone_popup = None
         self._refine_checkbox = None
         self._clipboard_restore_checkbox = None
         self._provider_popup = None
@@ -1768,6 +1770,43 @@ class WelcomeController:
         self._lang_popup = lang_popup
         parent_view.addSubview_(lang_popup)
 
+    def _refresh_microphone_options(self) -> None:
+        popup = self._microphone_popup
+        selected = (
+            popup.selectedItem().representedObject() if popup.numberOfItems()
+            else self._get_cached_env_setting("PULSESCRIBE_INPUT_DEVICE") or ""
+        )
+        popup.removeAllItems()
+        for label, name in get_microphone_options(selected):
+            popup.addItemWithTitle_(label)
+            popup.lastItem().setRepresentedObject_(name)
+            if name == selected:
+                popup.selectItem_(popup.lastItem())
+
+    def _build_microphone_setting_row(
+        self, base_x, y, control_x, control_width, parent_view
+    ) -> None:
+        from AppKit import NSButton, NSMakeRect
+
+        self._add_setting_label(base_x, y, "Microphone:", parent_view)
+        self._microphone_popup = self._create_settings_popup(
+            control_x, y, control_width - 76, ()
+        )
+        self._microphone_popup.setToolTip_(MICROPHONE_TOOLTIP)
+        self._refresh_microphone_options()
+        self._bind_control_simple_handler(
+            self._microphone_popup, "_refresh_footer_settings_hint", "_microphone_handler"
+        )
+        parent_view.addSubview_(self._microphone_popup)
+        refresh = NSButton.alloc().initWithFrame_(
+            NSMakeRect(control_x + control_width - 72, y, 72, 22)
+        )
+        refresh.setTitle_("Refresh")
+        self._bind_control_simple_handler(
+            refresh, "_refresh_microphone_options", "_microphone_refresh_handler"
+        )
+        parent_view.addSubview_(refresh)
+
     def _build_streaming_setting_row(
         self,
         base_x: int,
@@ -1814,7 +1853,7 @@ class WelcomeController:
 
         parent_view = parent_view or self._content_view
 
-        card_height = 200  # Increased for Streaming toggle
+        card_height = 204
         card_width = WELCOME_WIDTH - 2 * WELCOME_PADDING
         card_y = y - card_height
 
@@ -1839,7 +1878,7 @@ class WelcomeController:
         title.setTextColor_(NSColor.whiteColor())
         parent_view.addSubview_(title)
 
-        row_height = 28
+        row_height = 24
         current_y = card_y + card_height - 58
 
         self._build_mode_setting_row(
@@ -1863,6 +1902,10 @@ class WelcomeController:
         current_y -= row_height
 
         self._build_streaming_setting_row(
+            base_x, current_y, control_x, control_width, parent_view
+        )
+        current_y -= row_height
+        self._build_microphone_setting_row(
             base_x, current_y, control_x, control_width, parent_view
         )
 
@@ -2583,6 +2626,9 @@ class WelcomeController:
             clipboard_enabled,
             dock_enabled,
             api_keys,
+            self._microphone_popup.selectedItem().representedObject()
+            if getattr(self, "_microphone_popup", None) is not None
+            else cache.get("PULSESCRIBE_INPUT_DEVICE", ""),
         )
 
     def _refresh_footer_settings_hint(self) -> None:
@@ -5603,6 +5649,12 @@ class WelcomeController:
                 builder.set_optional(env_key, field.stringValue())
 
     def _add_general_env_updates(self, builder: SettingsEnvUpdateBuilder) -> None:
+        microphone = getattr(self, "_microphone_popup", None)
+        if microphone is not None:
+            builder.set_optional(
+                "PULSESCRIBE_INPUT_DEVICE", microphone.selectedItem().representedObject()
+            )
+
         if self._mode_popup:
             builder.set_present(
                 "PULSESCRIBE_MODE",

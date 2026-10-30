@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Microphone selection** – choose an input device in Settings → Providers on
+  macOS and Windows. Save & Apply uses it from the next recording, preserves
+  device names across restarts, and falls back automatically if it is unavailable.
+  Refresh detects newly connected devices without opening an audio stream.
+
 ### Changed
 
 - **macOS CI** – build and test on the supported, pinned macOS 15 runner instead
