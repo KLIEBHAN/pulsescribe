@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   device names across restarts, and falls back automatically if it is unavailable.
   Refresh detects newly connected devices without opening an audio stream.
 
+### Changed
+
+- **macOS CI** – build and test on the supported, pinned macOS 15 runner instead
+  of the retiring macOS 14 image or the moving latest image. Local-provider
+  cleanup tests use fake GPU allocators rather than touching hosted hardware.
+
 ## [1.7.2] - 2026-10-28
 
 ### Fixed

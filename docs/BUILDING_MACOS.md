@@ -59,9 +59,13 @@ Output: `dist/PulseScribe-<version>.dmg`
 ## CI Build
 
 The [`Build Installers`](../.github/workflows/build-installers.yml) workflow
-builds the full Apple Silicon app on `macos-14`, verifies the bundle version and
-architecture, mounts and validates the DMG, and stores both the DMG and its
-SHA-256 checksum as a workflow artifact for 14 days.
+builds the full Apple Silicon app on the pinned `macos-15` runner, verifies the
+bundle version and architecture, mounts and validates the DMG, and stores both the DMG and its
+SHA-256 checksum as a workflow artifact for 14 days. The test workflow uses the
+same pinned image. `macos-14` is retired by GitHub on November 2, 2026; avoid
+`macos-latest` so future image changes do not silently move the build environment.
+Local-provider unit tests replace GPU allocator modules with fakes; they must not
+call a hosted runner's real CUDA, MPS, or MLX allocator while testing cleanup.
 The full build fails if a local backend dependency is missing. CI also runs
 `--check-mlx-backend` from the app inside the DMG, checking MLX imports, native
 operations and the 80/128 mel-filter assets without downloading a model.

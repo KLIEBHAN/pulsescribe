@@ -13,6 +13,15 @@ WORKFLOW = (
 )
 
 
+def test_macos_ci_uses_the_same_supported_pinned_image():
+    build_workflow = WORKFLOW.read_text()
+    test_workflow = WORKFLOW.with_name("test.yml").read_text()
+    assert "    runs-on: macos-15\n" in build_workflow
+    assert "    runs-on: macos-15\n" in test_workflow
+    assert "runs-on: macos-14" not in build_workflow
+    assert "runs-on: macos-latest" not in test_workflow
+
+
 def run_block(name):
     lines = WORKFLOW.read_text().splitlines()
     index = next(i for i, line in enumerate(lines) if line.strip() == f"- name: {name}")
