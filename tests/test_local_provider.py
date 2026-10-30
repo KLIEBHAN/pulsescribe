@@ -1233,8 +1233,19 @@ class TestLightningFallback:
         assert "torch" not in sys.modules
         assert "mlx.core" not in sys.modules
 
-    def test_cleanup_clears_cache_and_runtime_config(self):
+    def test_cleanup_clears_cache_and_runtime_config(self, monkeypatch):
         from providers.local import LocalProvider
+
+        empty_cuda_cache = MagicMock()
+        empty_mps_cache = MagicMock()
+        clear_mlx_cache = MagicMock()
+        monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(
+            cuda=SimpleNamespace(empty_cache=empty_cuda_cache),
+            mps=SimpleNamespace(empty_cache=empty_mps_cache),
+        ))
+        monkeypatch.setitem(sys.modules, "mlx.core", SimpleNamespace(
+            metal=SimpleNamespace(clear_cache=clear_mlx_cache),
+        ))
 
         provider = LocalProvider()
         provider._model_cache = {"cached": object()}
@@ -1254,3 +1265,6 @@ class TestLightningFallback:
         assert provider._fast_mode is None
         assert provider._lightning_fallback_active is False
         assert provider._compute_type is None
+        empty_cuda_cache.assert_called_once_with()
+        empty_mps_cache.assert_called_once_with()
+        clear_mlx_cache.assert_called_once_with()
