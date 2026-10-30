@@ -172,7 +172,7 @@ jobs:
     name: Build macOS DMG (arm64)
     needs: metadata
     if: github.event_name != 'pull_request' || needs.metadata.outputs.build_macos != 'false'
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 60
     # The signing secrets live only in this environment, which admits master and
     # v* tags. Pull request builds never receive them and are ad-hoc signed.
