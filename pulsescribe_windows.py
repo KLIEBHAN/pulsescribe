@@ -441,6 +441,7 @@ class PulseScribeWindows:
         # ═══════════════════════════════════════════════════════════════════
         self._warm_stream = None  # sd.InputStream (läuft dauerhaft)
         self._warm_stream_device_name = os.getenv("PULSESCRIBE_INPUT_DEVICE", "").strip()
+        self._warm_stream_config: tuple[int | None, int] | None = None
         self._warm_stream_armed = threading.Event()  # Wenn gesetzt: Samples sammeln
         self._warm_stream_draining = (
             threading.Event()
@@ -1244,6 +1245,7 @@ class PulseScribeWindows:
 
         self._warm_stream_device_name = os.getenv("PULSESCRIBE_INPUT_DEVICE", "").strip()
         input_device, sample_rate = get_input_device()
+        self._warm_stream_config = (input_device, sample_rate)
         self._warm_stream_sample_rate = sample_rate
 
         # Kleine Chunks: schnellere VAD-/Overlay-Reaktion als die alten ~64ms.
@@ -1424,8 +1426,14 @@ class PulseScribeWindows:
                 logger.debug(f"Start ignoriert: State={self.state}")
                 return False
 
-            # Switch only between runs: never interrupt capture or its drain phase.
-            if self._warm_stream_device_name != os.getenv("PULSESCRIBE_INPUT_DEVICE", "").strip():
+            # Recheck missing preferences between runs; resolved choices stay cached.
+            # Do not reopen an unchanged fallback stream while a device is absent.
+            preferred_microphone = os.getenv("PULSESCRIBE_INPUT_DEVICE", "").strip()
+            if self._warm_stream_device_name != preferred_microphone or (
+                preferred_microphone
+                and self._warm_stream is not None
+                and self._warm_stream_config != get_input_device()
+            ):
                 self._stop_warm_stream()
                 self._start_warm_stream()
 
