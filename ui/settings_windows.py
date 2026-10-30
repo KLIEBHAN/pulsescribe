@@ -51,6 +51,7 @@ from ui.logs_panel_feedback import (
     build_transcripts_load_feedback,
 )
 from ui.provider_settings import build_provider_api_key_status
+from ui.microphone import MICROPHONE_TOOLTIP, get_microphone_options
 from ui.setup_try_it import build_setup_try_it_content
 from ui.qt_widget_state import (
     get_widget_enabled,
@@ -835,6 +836,7 @@ class SettingsWindow(QDialog):
         # UI-Referenzen
         self._mode_combo: QComboBox | None = None
         self._lang_combo: QComboBox | None = None
+        self._microphone_combo: QComboBox | None = None
         self._local_backend_combo: QComboBox | None = None
         self._local_model_combo: QComboBox | None = None
         self._streaming_checkbox: QCheckBox | None = None
@@ -1352,6 +1354,17 @@ class SettingsWindow(QDialog):
         self._lang_combo.currentTextChanged.connect(self._refresh_footer_settings_hint)
         card_layout.addLayout(create_label_row("Language:", self._lang_combo))
 
+        self._microphone_combo = QComboBox()
+        self._microphone_combo.setAccessibleName("Recording microphone")
+        self._microphone_combo.setToolTip(MICROPHONE_TOOLTIP)
+        self._microphone_combo.currentIndexChanged.connect(self._refresh_footer_settings_hint)
+        microphone_row = create_label_row("Microphone:", self._microphone_combo)
+        refresh_microphones = QPushButton("Refresh")
+        refresh_microphones.setAccessibleName("Refresh microphones")
+        refresh_microphones.clicked.connect(lambda: self._refresh_microphone_options())
+        microphone_row.addWidget(refresh_microphones)
+        card_layout.addLayout(microphone_row)
+
         # Local Backend Container (nur für local mode)
         self._local_backend_container = QWidget()
         backend_layout = QHBoxLayout(self._local_backend_container)
@@ -1465,6 +1478,18 @@ class SettingsWindow(QDialog):
 
         scroll.setWidget(content)
         return scroll
+
+    def _refresh_microphone_options(self, selected: str | None = None) -> None:
+        combo = getattr(self, "_microphone_combo", None)
+        if combo is None:
+            return
+        if selected is None:
+            selected = combo.currentData() or ""
+        with _block_widget_signals(combo):
+            combo.clear()
+            for label, name in get_microphone_options(selected):
+                combo.addItem(label, name)
+            combo.setCurrentIndex(combo.findData(selected))
 
     def _build_advanced_tab(self) -> QWidget:
         """Advanced-Tab: Lokale Modell-Parameter."""
@@ -2526,6 +2551,8 @@ class SettingsWindow(QDialog):
             toggle_hotkey_field.text() if toggle_hotkey_field else "",
             hold_hotkey_field.text() if hold_hotkey_field else "",
             api_keys,
+            self._microphone_combo.currentData()
+            if getattr(self, "_microphone_combo", None) is not None else "",
         )
 
     def _refresh_footer_settings_hint(self) -> None:
@@ -4101,6 +4128,7 @@ class SettingsWindow(QDialog):
         """Lädt aktuelle Settings in die UI."""
         env_values = read_env_file()
         env_get = env_values.get
+        self._refresh_microphone_options(env_get("PULSESCRIBE_INPUT_DEVICE") or "")
         self._process_env_api_keys = None
         self._last_provider_key_status_snapshot = None
         self._last_setup_overview_snapshot = None
@@ -4285,6 +4313,10 @@ class SettingsWindow(QDialog):
         return builder.build()
 
     def _add_core_env_updates(self, builder: SettingsEnvUpdateBuilder) -> None:
+        microphone = getattr(self, "_microphone_combo", None)
+        if microphone is not None:
+            builder.set_optional("PULSESCRIBE_INPUT_DEVICE", microphone.currentData())
+
         if self._mode_combo:
             builder.set_present(
                 "PULSESCRIBE_MODE",

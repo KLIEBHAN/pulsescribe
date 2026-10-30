@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from collections.abc import Iterator, Mapping
 from io import StringIO
 from pathlib import Path
@@ -111,6 +112,11 @@ def _split_env_assignment(line: str) -> tuple[str, str] | None:
 def _parse_env_value(value: str) -> str:
     if not value:
         return ""
+
+    if value.startswith("'"):
+        quoted = re.fullmatch(r"'((?:\\.|[^'\\])*)'(?:\s*#.*)?", value)
+        if quoted:
+            return re.sub(r"\\([\\'])", r"\1", quoted.group(1)).strip()
 
     parsed: list[str] = []
     in_single = False

@@ -116,6 +116,11 @@ DEEPGRAM_API_KEY=dein_key_hier
 PULSESCRIBE_MODE=deepgram
 ```
 
+Das Mikrofon wählst du unter **Settings → Providers → Microphone** und übernimmst
+es mit **Save & Apply** ab der nächsten Aufnahme. **System default** folgt dem
+Standardgerät des Betriebssystems. **Refresh** lädt die Geräteliste neu. Fehlt ein
+gespeichertes Mikrofon, wird vorübergehend automatisch ein Eingabegerät gewählt.
+
 ### 3. Starten & Nutzen
 
 ```bash

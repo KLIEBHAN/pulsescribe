@@ -115,6 +115,11 @@ DEEPGRAM_API_KEY=your_key_here
 PULSESCRIBE_MODE=deepgram
 ```
 
+Choose a microphone in **Settings → Providers → Microphone**, then **Save & Apply**
+to use it from the next recording. **System default** follows your OS input device.
+**Refresh** reloads the device list. If a saved microphone is unavailable,
+PulseScribe temporarily selects an input device automatically.
+
 ### 3. Start & Use
 
 ```bash
