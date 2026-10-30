@@ -97,7 +97,9 @@ def read_env_file(path: Path | None = None) -> dict[str, str]:
 
 
 def _format_env_assignment(key: str, value: str) -> str:
-    """Quote names containing dotenv syntax, e.g. apostrophes in device names."""
+    """Keep each setting on one line and quote names containing dotenv syntax."""
+    if "\n" in value or "\r" in value:
+        raise ValueError("Settings values must not contain line breaks")
     if any(char in value for char in "'\"#\\"):
         value = "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
     return f"{key}={value}"

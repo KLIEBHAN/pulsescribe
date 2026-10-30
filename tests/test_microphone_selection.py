@@ -84,6 +84,41 @@ def test_device_names_roundtrip_through_both_env_readers(tmp_path, name):
         assert dotenv_values(path)[key] == name
 
 
+@pytest.mark.parametrize("newline", ["\n", "\r", "\r\n"])
+def test_saving_device_name_cannot_inject_extra_settings(tmp_path, monkeypatch, newline):
+    from utils import preferences
+
+    path = tmp_path / ".env"
+    before = "PULSESCRIBE_MODE=deepgram\n"
+    path.write_text(before, encoding="utf-8")
+    monkeypatch.setattr(preferences, "ENV_FILE", path)
+    with pytest.raises(ValueError, match="line breaks"):
+        preferences.update_env_settings({
+            "PULSESCRIBE_INPUT_DEVICE": f"Mic{newline}PULSESCRIBE_MODE=local"
+        })
+    assert path.read_text(encoding="utf-8") == before
+
+
+def test_runtime_load_does_not_expand_device_name_variables(tmp_path, monkeypatch, devices, caplog):
+    from utils.env import _read_dotenv_values
+
+    monkeypatch.setenv("PULSESCRIBE_TEST_DEVICE_VALUE", "private-value")
+    name = "USB ${PULSESCRIBE_TEST_DEVICE_VALUE}"
+    path = tmp_path / ".env"
+    path.write_text(
+        f"PULSESCRIBE_INPUT_DEVICE={name}\nOTHER=${{PULSESCRIBE_TEST_DEVICE_VALUE}}\n",
+        encoding="utf-8",
+    )
+    values = _read_dotenv_values(path)
+    assert values["PULSESCRIBE_INPUT_DEVICE"] == name
+    assert values["OTHER"] == "private-value"  # Other dotenv expansion is unchanged.
+    assert read_env_file(path)["PULSESCRIBE_INPUT_DEVICE"] == name
+    monkeypatch.setenv("PULSESCRIBE_INPUT_DEVICE", values["PULSESCRIBE_INPUT_DEVICE"])
+    assert config.get_input_device() == (None, 44100)
+    assert name in caplog.text
+    assert "private-value" not in caplog.text
+
+
 @pytest.mark.parametrize("selected", ["", "USB Mic", "Disconnected Mic"])
 def test_mac_popup_refresh_and_save_preserve_selection(devices, selected):
     appkit = pytest.importorskip("AppKit")

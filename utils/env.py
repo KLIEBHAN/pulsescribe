@@ -239,6 +239,12 @@ def _read_dotenv_values(path: Path) -> dict[str, str]:
     normalized_raw_values = {
         str(key or ""): value for key, value in raw_values.items()
     }
+    # Device names are literal identifiers, never dotenv interpolation templates.
+    # Use the same literal reader as Settings without changing other keys' expansion.
+    if "PULSESCRIBE_INPUT_DEVICE" in normalized_raw_values:
+        normalized_raw_values["PULSESCRIBE_INPUT_DEVICE"] = read_env_file_values(path).get(
+            "PULSESCRIBE_INPUT_DEVICE"
+        )
     return dict(_iter_normalized_dotenv_items(normalized_raw_values))
 
 
