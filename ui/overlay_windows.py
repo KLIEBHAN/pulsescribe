@@ -47,6 +47,7 @@ from ui.overlay_style import (
     DISMISS_GLYPH,
     INTERIM_TEXT_COLOR,
     LINE_HEIGHT,
+    LINK_TEXT_COLOR,
     PHASE_STEP_COLORS,
     PHASE_STEP_GAP,
     PHASE_STEP_WIDTH,
@@ -107,6 +108,7 @@ BG_COLOR = BACKGROUND_COLOR
 TEXT_FONT = ("Segoe UI", 10)
 BADGE_FONT = ("Segoe UI", 9, "bold")
 META_FONT = ("Segoe UI", 9)  # Segoe UI digits are tabular by default
+LINK_FONT = ("Segoe UI", 9, "underline")
 TEXT_X = OVERLAY_PADDING_H + STATUS_SLOT_WIDTH + OVERLAY_GAP
 
 # =============================================================================
@@ -125,7 +127,10 @@ class WindowsOverlayController:
     - Thread-safe via Queue
     """
 
-    def __init__(self, interim_file: Path | None = None):
+    def __init__(self, interim_file: Path | None = None, on_open_settings=None):
+        """``on_open_settings`` runs (in the Tk thread) for a "Settings" link click."""
+        self._on_open_settings = on_open_settings
+        self._meta_action = ""
         self._root: tk.Tk | None = None
         self._canvas: tk.Canvas | None = None
         self._label: tk.Label | None = None
@@ -288,6 +293,8 @@ class WindowsOverlayController:
         self._meta_label = tk.Label(
             self._root, text="", fg=META_TEXT_COLOR, bg=BG_COLOR, font=META_FONT
         )
+        # Runs before the toplevel binding below, which then dismisses.
+        self._meta_label.bind("<Button-1>", lambda _event: self._on_meta_click())
         # Toplevel-Bindings gelten auch für alle Kind-Widgets (bindtags).
         self._root.bind("<Button-1>", lambda _event: self._dismiss())
 
@@ -624,6 +631,7 @@ class WindowsOverlayController:
         self._text_x = text_x
         self._dismiss_shown = content.dismissible
         self._content_meta = content.meta
+        self._meta_action = content.action
         self._place_trailing()
         if getattr(self, "_label", None) is not None:
             self._set_label_anchor("w")
@@ -648,7 +656,12 @@ class WindowsOverlayController:
         meta_text = self._meta_text or getattr(self, "_content_meta", "")
         if meta is not None:
             if meta_text:
-                meta.config(text=meta_text)
+                link = bool(getattr(self, "_meta_action", "")) and not self._meta_text
+                meta.config(
+                    text=meta_text,
+                    fg=LINK_TEXT_COLOR if link else META_TEXT_COLOR,
+                    font=LINK_FONT if link else META_FONT,
+                )
                 meta.place(x=text_end, rely=0.5, anchor="e")
                 text_end -= meta.winfo_reqwidth() + OVERLAY_GAP
             else:
@@ -687,6 +700,12 @@ class WindowsOverlayController:
                 self._root.after_cancel(after_id)
             except Exception:
                 pass
+
+    def _on_meta_click(self) -> None:
+        """Open Settings from the meta link; the toplevel click then dismisses."""
+        callback = getattr(self, "_on_open_settings", None)
+        if self._persistent and getattr(self, "_meta_action", "") and callback:
+            callback()
 
     def _dismiss(self) -> None:
         """Hide a persistent message after a click on the overlay."""

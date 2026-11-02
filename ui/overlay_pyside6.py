@@ -70,6 +70,8 @@ from ui.overlay_style import (
     DISMISS_GLYPH,
     INTERIM_TEXT_COLOR,
     LINE_HEIGHT,
+    LINK_HIT_SLOP,
+    LINK_TEXT_COLOR,
     PHASE_STEP_COLORS,
     PHASE_STEP_GAP,
     PHASE_STEP_WIDTH,
@@ -232,6 +234,12 @@ class PySide6OverlayWidget(QWidget):
             _system_font(META_FONT_SIZE, QFont.Weight.Normal)
         )
         self._meta_color = QColor(META_TEXT_COLOR)
+        self._link_color = QColor(LINK_TEXT_COLOR)
+        self._link_font = QFont(self._meta_font)
+        self._link_font.setUnderline(True)
+        self._link_span: tuple[float, float] | None = None
+        # Set by PySide6OverlayController; runs when the "Settings" link is clicked.
+        self.on_open_settings = None
         self._meta_text = ""
         self._meta_shown = ""
         self._clock_start = 0.0
@@ -517,8 +525,14 @@ class PySide6OverlayWidget(QWidget):
 
     def mousePressEvent(self, event):
         if self._persistent:
+            span = self._link_span
+            x = event.position().x() if hasattr(event, "position") else None
+            on_link = span is not None and x is not None and span[0] <= x <= span[1]
+            # Every click dismisses; a click on the "Settings" link also opens it.
             self._dismiss()
             event.accept()
+            if on_link and self.on_open_settings is not None:
+                self.on_open_settings()
             return
         super().mousePressEvent(event)
 
@@ -590,6 +604,13 @@ class PySide6OverlayWidget(QWidget):
             max_width=self._max_width(),
         )
         self._layout = layout
+        self._link_span = None
+        if content.action and layout.meta_x is not None:
+            meta_width = QFontMetricsF(self._meta_font).horizontalAdvance(meta)
+            self._link_span = (
+                layout.meta_x - LINK_HIT_SLOP,
+                layout.meta_x + meta_width + LINK_HIT_SLOP,
+            )
         self._badge_rect = None
         if content.badge:
             badge_height = QFontMetricsF(self._badge_font).height() + 2 * BADGE_PADDING_V
@@ -716,8 +737,9 @@ class PySide6OverlayWidget(QWidget):
         self._draw_badge(painter)
         self._draw_text(painter)
         if self._layout.meta_x is not None and self._meta_shown:
-            painter.setPen(self._meta_color)
-            painter.setFont(self._meta_font)
+            link = bool(self._content.action) and not self._meta_text
+            painter.setPen(self._link_color if link else self._meta_color)
+            painter.setFont(self._link_font if link else self._meta_font)
             painter.drawText(
                 QRectF(self._layout.meta_x, 0, self.width(), OVERLAY_HEIGHT),
                 Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
@@ -835,9 +857,13 @@ class PySide6OverlayController:
         controller.update_state("RECORDING")
     """
 
-    def __init__(self, interim_file: Path | None = None):
+    def __init__(
+        self, interim_file: Path | None = None, on_open_settings=None
+    ):
+        """``on_open_settings`` runs (in the Qt thread) for a "Settings" link click."""
         import threading
 
+        self._on_open_settings = on_open_settings
         self._app: QApplication | None = None
         self._widget: PySide6OverlayWidget | None = None
         self._interim_file = interim_file
@@ -873,6 +899,7 @@ class PySide6OverlayController:
             self._app = QApplication([])
 
         self._widget = PySide6OverlayWidget()
+        self._widget.on_open_settings = self._on_open_settings
         self._running = True
 
         # Pending State anwenden (falls update_state vor ready aufgerufen wurde)

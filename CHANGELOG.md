@@ -25,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ("into Mail"; on Windows the program name). With "Show transcription time"
   turned on (formerly transcription speed), it shows how long transcription
   took, e.g. "1.2 s", instead of the real-time factor. Windows now shows it too.
+- **Helpful errors** – when a paste fails, the overlay says "Copied — press ⌘V"
+  (Windows: "Copied — press Ctrl+V"). "Missing API key" and "Microphone
+  unavailable" show a "Settings" link that opens Settings on Transcription
+  (Windows: if the settings window is already open, it stays on its section).
 
 ## [1.9.0] - 2026-11-02
 

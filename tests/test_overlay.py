@@ -19,6 +19,7 @@ from ui.overlay import (
 )
 from ui.overlay_feedback import OverlayContent
 from utils.state import AppState
+from utils.transcript_delivery import PASTE_FAILED
 
 
 class _FakeBar:
@@ -625,7 +626,12 @@ def test_states_map_to_bars_badges_and_copy(monkeypatch):
             AppState.ERROR,
             " microphone\nmissing ",
             OverlayContent(
-                text="Microphone unavailable", badge="Error", tone="error", dismissible=True
+                text="Microphone unavailable",
+                badge="Error",
+                tone="error",
+                dismissible=True,
+                meta="Settings",
+                action="settings",
             ),
         ),
     ]
@@ -711,8 +717,11 @@ def test_render_skips_identical_presentations():
     controller._dismiss_field = types.SimpleNamespace(setHidden_=lambda _hidden: None)
     metas = []
     controller._meta_field = types.SimpleNamespace(
-        setStringValue_=metas.append, setHidden_=lambda _hidden: None
+        setStringValue_=metas.append,
+        setHidden_=lambda _hidden: None,
+        setTextColor_=lambda _color: None,
     )
+    controller._colors = {"muted": "muted"}
     controller._meta_text = "0:00"
     controller._attributed_text = lambda parts: parts
     layouts = []
@@ -767,7 +776,7 @@ def test_recording_clock_ticks_at_1hz_only_while_listening_or_recording(monkeypa
 
 
 @pytest.mark.parametrize(
-    "message", ["Transcription timed out", "Paste failed — transcript copied"]
+    "message", ["Transcription timed out", PASTE_FAILED]
 )
 def test_errors_stay_visible_through_idle_until_clicked(monkeypatch, message):
     scheduled, _timers = _install_fake_foundation(monkeypatch)
@@ -828,12 +837,12 @@ def test_native_overlay_view_routes_every_click_to_dismiss():
     label.setFrame_(appkit.NSMakeRect(10, 10, 60, 20))
     view.addSubview_(label)
     clicks = []
-    view.pulsescribe_on_click = lambda: clicks.append(True)
+    view.pulsescribe_on_click = clicks.append
 
     assert view.hitTest_(appkit.NSMakePoint(20, 20)) is view
     assert view.hitTest_(appkit.NSMakePoint(500, 20)) is None
     view.mouseDown_(None)
-    assert clicks == [True]
+    assert clicks == [None]  # no event, no position
 
 
 def test_same_state_payload_can_switch_to_the_refine_steps():
@@ -848,3 +857,23 @@ def test_same_state_payload_can_switch_to_the_refine_steps():
         "bars:phase1",
     ]
     assert controller.rendered[-1][0].meta == "1 of 2"
+
+
+
+@pytest.mark.parametrize(("x", "opened"), [(300.0, True), (100.0, False), (None, False)])
+def test_click_on_settings_link_opens_settings_and_any_click_dismisses(
+    monkeypatch, x, opened
+):
+    _install_fake_foundation(monkeypatch)
+    events: list[str] = []
+    controller = _controller(events)
+    opens = []
+    controller._on_open_settings = lambda: opens.append(True)
+    controller.update_state(AppState.ERROR, "OPENAI_API_KEY not set")
+    controller._link_span = (290.0, 340.0)
+
+    controller._on_click(x)
+
+    assert opens == ([True] if opened else [])
+    assert events[-1] == "hide"
+    assert controller.window.ignores_mouse is True

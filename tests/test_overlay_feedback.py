@@ -108,8 +108,6 @@ def test_delivery_failures_use_not_pasted_badge(message) -> None:
 @pytest.mark.parametrize(
     ("detail", "text"),
     [
-        ("OPENAI_API_KEY not set", "Missing API key"),
-        (" microphone\nmissing ", "Microphone unavailable"),
         ("Transcription timed out", "Transcription timed out"),
         ("boom", "boom"),
         ("Error: boom", "boom"),
@@ -142,3 +140,29 @@ def test_split_recording_interim_text_keeps_tail_truncation() -> None:
     )
     assert earlier + newest == "...delta epsilon"
     assert newest == "epsilon"
+
+
+
+@pytest.mark.parametrize(
+    ("detail", "text"),
+    [
+        ("OPENAI_API_KEY not set", "Missing API key"),
+        (" microphone\nmissing ", "Microphone unavailable"),
+    ],
+)
+def test_errors_fixed_in_settings_offer_a_settings_link(detail, text) -> None:
+    assert describe_overlay_content("ERROR", detail) == OverlayContent(
+        text=text,
+        badge="Error",
+        tone="error",
+        dismissible=True,
+        meta="Settings",
+        action="settings",
+    )
+
+
+def test_paste_failure_says_how_to_paste_on_this_platform() -> None:
+    import sys
+
+    shortcut = "\u2318V" if sys.platform == "darwin" else "Ctrl+V"
+    assert PASTE_FAILED == f"Copied \u2014 press {shortcut}"

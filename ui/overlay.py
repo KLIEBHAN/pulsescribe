@@ -33,6 +33,8 @@ from ui.overlay_style import (
     DISMISS_GLYPH,
     INTERIM_TEXT_COLOR,
     LINE_HEIGHT,
+    LINK_HIT_SLOP,
+    LINK_TEXT_COLOR,
     PHASE_STEP_COLORS,
     PHASE_STEP_GAP,
     PHASE_STEP_WIDTH,
@@ -747,10 +749,13 @@ def _click_view_class():
                 hit = objc.super(PulseScribeOverlayContentView, self).hitTest_(point)
                 return self if hit is not None else None
 
-            def mouseDown_(self, _event):
+            def mouseDown_(self, event):
                 handler = getattr(self, "pulsescribe_on_click", None)
                 if handler is not None:
-                    handler()
+                    x = None
+                    if event is not None:
+                        x = self.convertPoint_fromView_(event.locationInWindow(), None).x
+                    handler(x)
 
         _CLICK_VIEW_CLASS = PulseScribeOverlayContentView
     return _CLICK_VIEW_CLASS
@@ -782,7 +787,8 @@ class OverlayController:
     hindurch.
     """
 
-    def __init__(self):
+    def __init__(self, on_open_settings=None):
+        """``on_open_settings`` runs when the user clicks a "Settings" link."""
         from AppKit import (  # type: ignore[import-not-found]
             NSBackingStoreBuffered,
             NSColor,
@@ -833,10 +839,10 @@ class OverlayController:
         )
         self_ref = weakref.ref(self)
 
-        def on_click() -> None:
+        def on_click(x: float | None) -> None:
             controller = self_ref()
             if controller is not None:
-                controller._dismiss()
+                controller._on_click(x)
 
         content.pulsescribe_on_click = on_click
         content.setWantsLayer_(True)
@@ -881,11 +887,10 @@ class OverlayController:
         self._text_clip.addSubview_(self._text_fade)
         content.addSubview_(self._text_clip)
 
-        self._meta_field = _make_label(
-            NSFont.monospacedDigitSystemFontOfSize_weight_(
-                META_FONT_SIZE, NSFontWeightRegular
-            )
+        self._meta_font = NSFont.monospacedDigitSystemFontOfSize_weight_(
+            META_FONT_SIZE, NSFontWeightRegular
         )
+        self._meta_field = _make_label(self._meta_font)
         self._meta_field.setTextColor_(_ns_color(META_TEXT_COLOR))
         self._meta_field.setAlignment_(NSTextAlignmentRight)
         self._meta_field.setHidden_(True)
@@ -921,6 +926,7 @@ class OverlayController:
             "text": _ns_color(TEXT_COLOR),
             "muted": _ns_color(MUTED_TEXT_COLOR),
             "interim": _ns_color(INTERIM_TEXT_COLOR),
+            "link": _ns_color(LINK_TEXT_COLOR),
         }
         self._badge_colors = {
             tone: (_ns_color(background), _ns_color(foreground))
@@ -939,6 +945,8 @@ class OverlayController:
         self._clock_timer = None
         self._clock_start = 0.0
         self._has_text = False
+        self._on_open_settings = on_open_settings
+        self._link_span: tuple[float, float] | None = None
 
     def _window_x(self, width: float) -> float:
         frame = self._screen_frame
@@ -1054,6 +1062,20 @@ class OverlayController:
         self._persistent = persistent
         self.window.setIgnoresMouseEvents_(not persistent)
 
+    def _on_click(self, x: float | None) -> None:
+        """Every click dismisses; a click on the "Settings" link also opens it."""
+        span = getattr(self, "_link_span", None)
+        on_link = (
+            getattr(self, "_persistent", False)
+            and span is not None
+            and x is not None
+            and span[0] <= x <= span[1]
+        )
+        self._dismiss()
+        callback = getattr(self, "_on_open_settings", None)
+        if on_link and callback is not None:
+            callback()
+
     def _dismiss(self) -> None:
         """Hide a persistent message after a click on the overlay."""
         if not getattr(self, "_persistent", False):
@@ -1093,10 +1115,32 @@ class OverlayController:
                 self._badge_label.setStringValue_(content.badge)
             self._badge_view.setHidden_(not content.badge)
             self._dismiss_field.setHidden_(not content.dismissible)
-        if previous is None or previous[2] != meta:
-            self._meta_field.setStringValue_(meta)
+        if previous is None or (previous[2], previous[0].action) != (meta, content.action):
+            if content.action:
+                self._meta_field.setAttributedStringValue_(self._link_text(meta))
+            else:
+                self._meta_field.setTextColor_(self._colors["muted"])
+                self._meta_field.setStringValue_(meta)
             self._meta_field.setHidden_(not meta)
         self._layout(content, self._has_text, bool(earlier or newest), meta)
+
+    def _link_text(self, text: str):
+        """White, underlined meta link (e.g. "Settings")."""
+        from AppKit import (  # type: ignore[import-not-found]
+            NSAttributedString,
+            NSFontAttributeName,
+            NSForegroundColorAttributeName,
+            NSUnderlineStyleAttributeName,
+        )
+
+        return NSAttributedString.alloc().initWithString_attributes_(
+            text,
+            {
+                NSFontAttributeName: self._meta_font,
+                NSForegroundColorAttributeName: self._colors["link"],
+                NSUnderlineStyleAttributeName: 1,
+            },
+        )
 
     def _attributed_text(self, parts):
         from AppKit import (  # type: ignore[import-not-found]
@@ -1170,6 +1214,14 @@ class OverlayController:
                     dismiss_height,
                 )
             )
+        self._link_span = (
+            (
+                layout.meta_x - LINK_HIT_SLOP,
+                layout.meta_x + meta_width + LINK_HIT_SLOP,
+            )
+            if content.action and meta_width
+            else None
+        )
         if meta_width:
             self._meta_field.setFrame_(
                 rect(

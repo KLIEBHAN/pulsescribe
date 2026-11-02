@@ -52,6 +52,8 @@ _FRIENDLY_ERROR_LABELS = {
     "missing dependency",
     "something went wrong",
 }
+# Errors the user fixes in Settings: the meta zone offers a "Settings" link.
+_SETTINGS_ERROR_LABELS = {"missing api key", "microphone unavailable"}
 _ERROR_PREFIX = re.compile(r"^error\s*[:\-–—]?\s*", re.IGNORECASE)
 
 
@@ -63,7 +65,8 @@ class OverlayContent:
     (flat processing line), ``phase1``/``phase2`` (two-step line with the
     first/second step active, when Refine follows transcription) or
     ``none``. ``meta`` is the short right-aligned detail (step counter,
-    transcription time). ``tone`` picks the badge colors and is
+    transcription time). ``action`` turns the meta into a link; ``settings``
+    opens Settings on the Transcription section. ``tone`` picks the badge colors and is
     empty when there is no badge. ``emphasized`` text uses the primary color,
     everything else is muted. ``dismissible`` content stays visible (with a
     "×") until the user clicks it or the next recording replaces it.
@@ -76,6 +79,7 @@ class OverlayContent:
     tone: str = ""
     dismissible: bool = False
     meta: str = ""
+    action: str = ""
 
 
 def transcribing_status(detail: str | None = None, *, refine: bool) -> str | None:
@@ -188,10 +192,14 @@ def describe_overlay_content(
             return OverlayContent(
                 text=detail, badge="Not pasted", tone="warn", dismissible=True
             )
+        text = _error_text(detail, max_chars=max_chars)
+        settings = text.lower() in _SETTINGS_ERROR_LABELS
         return OverlayContent(
-            text=_error_text(detail, max_chars=max_chars),
+            text=text,
             badge="Error",
             tone="error",
             dismissible=True,
+            meta="Settings" if settings else "",
+            action="settings" if settings else "",
         )
     return OverlayContent()

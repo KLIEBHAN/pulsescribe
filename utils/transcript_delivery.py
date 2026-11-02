@@ -1,13 +1,17 @@
 """Best-effort paste with a session-only copy of the last normal dictation."""
 
 import logging
+import sys
 
 logger = logging.getLogger(__name__)
 
 PASTED = "Transcript pasted"
 COPIED = "Copied to clipboard"
 TEST_COMPLETE = "Test complete"  # DONE payload of onboarding test runs (nothing pasted)
-PASTE_FAILED = "Paste failed — transcript copied"
+# The transcript is on the clipboard; say how to paste it on this platform.
+PASTE_FAILED = (
+    "Copied — press ⌘V" if sys.platform == "darwin" else "Copied — press Ctrl+V"
+)
 COPY_FAILED = "Copy failed — use Copy Last Transcript"
 DELIVERY_HINTS = {
     PASTE_FAILED: "Paste manually, or choose Copy Last Transcript to copy it again.",

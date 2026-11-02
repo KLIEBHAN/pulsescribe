@@ -3468,6 +3468,13 @@ class PulseScribeDaemon:
             )
         self._welcome.show()
 
+    def _show_settings_section(self, section: str) -> None:
+        """Open Settings on ``section`` (the overlay's "Settings" link)."""
+        self._show_welcome_window()
+        # During onboarding the wizard opens instead; the section waits for later.
+        if self._welcome is not None:
+            self._welcome.select_section(section)
+
     def _reload_settings(self) -> None:
         """Lädt Settings aus .env neu und wendet sie an."""
         from utils.preferences import read_env_file
@@ -4078,7 +4085,9 @@ class PulseScribeDaemon:
         logger.info("Initialisiere UI-Controller...")
         self._menubar = MenuBarController(self._transcript_delivery)
         if get_env_bool_default("PULSESCRIBE_OVERLAY", True):
-            self._overlay = OverlayController()
+            self._overlay = OverlayController(
+                on_open_settings=lambda: self._show_settings_section("Transcription")
+            )
         else:
             self._overlay = None
             logger.info("Overlay deaktiviert via PULSESCRIBE_OVERLAY=false")
