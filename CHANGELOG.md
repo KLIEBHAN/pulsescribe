@@ -7,8 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-11-02
+
 ### Changed
 
+- **Settings redesign** – the settings window is easier to scan on macOS and
+  Windows. Nine tabs become six sections in a left sidebar (General,
+  Transcription, Refine, Vocabulary, History, About) in a wider, shorter window.
+  Behavior options (overlay, clipboard restore, Dock icon, speed display, show at
+  startup) live under General, local presets next to the local model, prompts
+  next to Refine. History opens on Transcripts.
+- **Only relevant settings** – Transcription shows the API key of the selected
+  provider, streaming only for Deepgram, and local model options only for Local,
+  with advanced backend options collapsed. Refine shows the key of its own
+  provider and greys out its options while Refine is off.
+- **Flat dark style** – sections sit directly on a dark background with thin
+  dividers; permissions and API keys show small status badges. The save bar
+  appears only with unsaved changes, and a short toast confirms saving. Windows
+  can discard unsaved changes and stays dark regardless of the system theme.
 - **Recording overlay redesign** – a compact, solid 44 px overlay in monochrome
   on macOS and Windows. Only recording animates (bars follow the microphone);
   listening shows static low bars and preparing/transcribing/refining a flat
