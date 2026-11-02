@@ -6132,6 +6132,8 @@ class WelcomeController:
         # Custom Prompts speichern
         if not self._save_custom_prompts():
             failed_sections.insert(0, "prompts")
+        else:
+            self._sync_prompt_drafts_with_saved()
 
         log.info("Settings saved to .env file")
 
@@ -6186,6 +6188,20 @@ class WelcomeController:
             return self._persist_custom_prompt_overrides(data_to_save, log)
 
         return self._reset_custom_prompts_to_defaults(log)
+
+    def _sync_prompt_drafts_with_saved(self) -> None:
+        """After a save, show what was stored, e.g. the default for a cleared draft."""
+        drafts = getattr(self, "_prompts_cache", None)
+        if not drafts:
+            return
+        current = getattr(self, "_prompts_current_context", None)
+        for context in drafts:
+            drafts[context] = self._get_saved_prompt_editor_text_for_context(context)
+        if current in drafts:
+            _set_text_view_string_if_changed(
+                getattr(self, "_prompts_text_view", None), drafts[current]
+            )
+            self._refresh_prompt_editor_feedback()
 
     def _cache_current_prompt_editor_draft(self) -> bool:
         text_view = getattr(self, "_prompts_text_view", None)

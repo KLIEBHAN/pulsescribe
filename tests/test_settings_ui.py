@@ -462,6 +462,26 @@ class TestWelcomeSecondarySettingsFeedback:
         assert ctrl._count_unsaved_changes() == 1
 
 
+    def test_saved_prompt_drafts_take_the_stored_text(self):
+        ctrl = _make_minimal_welcome_controller()
+        ctrl._prompts_cache = {"default": "", "email": "custom"}
+        ctrl._prompts_current_context = "default"
+        ctrl._prompts_text_view = _FakeTranscriptsTextView("", doc_height=10)
+        saved = {"default": "built-in", "email": "custom"}
+        ctrl._get_saved_prompt_editor_text_for_context = saved.__getitem__
+        ctrl._get_prompt_editor_text_for_context = lambda context, defaults=False: (
+            "built-in" if context == "default" else ""
+        )
+        ctrl._refresh_prompt_editor_feedback = lambda: None
+
+        ctrl._sync_prompt_drafts_with_saved()
+
+        assert ctrl._prompts_cache == saved
+        assert ctrl._prompts_text_view.string() == "built-in"
+        ctrl._saved_env_values = ctrl._build_env_updates_from_controls(None)
+        assert ctrl._count_unsaved_changes() == 0
+
+
 class TestApiKeyProviderMetadata:
     def test_api_card_height_grows_with_provider_count(self, monkeypatch):
         import ui.welcome as welcome_mod
