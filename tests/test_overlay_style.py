@@ -37,6 +37,14 @@ def test_long_text_is_capped_and_gets_remaining_width() -> None:
     assert layout.text_x + layout.text_width == 500 - OVERLAY_PADDING_H
 
 
+def test_dismiss_glyph_sits_at_right_edge_and_reserves_space() -> None:
+    layout = compute_overlay_layout(
+        bars=False, badge_width=50, text_width=2000, max_width=600, dismiss_width=8
+    )
+    assert layout.dismiss_x == 600 - OVERLAY_PADDING_H - 8
+    assert layout.text_x + layout.text_width == layout.dismiss_x - OVERLAY_GAP
+
+
 def test_static_listening_bars_stay_low() -> None:
     assert max(LISTENING_BAR_HEIGHTS) < BAR_MAX_HEIGHT / 2
     assert hex_to_rgb("#1b1b1b") == (27, 27, 27)

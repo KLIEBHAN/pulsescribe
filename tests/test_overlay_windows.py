@@ -666,3 +666,42 @@ def test_static_bar_modes_draw_once_with_mode_color():
     controller._show_bar_mode("line")
     assert {"state": "normal"} in controller._canvas.item_configs[-2:]
     assert controller._canvas.item_configs[-1] == {"state": "hidden"}
+
+
+def test_errors_persist_through_idle_until_clicked():
+    controller = _content_controller()
+    controller._dismiss_label = _FakeLabel()
+    withdrawn = []
+    controller._root.withdraw = lambda: withdrawn.append(True)
+
+    controller._handle_state_change("ERROR", "boom")
+    assert controller._dismiss_label.placed is not None
+    controller._handle_state_change("IDLE", None)
+    assert withdrawn == []
+
+    controller._dismiss()
+    assert withdrawn == [True]
+    controller._dismiss()
+    assert withdrawn == [True]
+
+    controller._handle_state_change("LISTENING", None)
+    assert controller._dismiss_label.placed is None
+    controller._handle_state_change("IDLE", None)
+    assert withdrawn == [True, True]
+
+
+def test_new_error_after_dismissal_is_shown_again_and_text_avoids_dismiss_mark():
+    controller = _content_controller()
+    controller._dismiss_label = _FakeLabel()
+    shown = []
+    controller._root.deiconify = lambda: shown.append(True)
+    controller._handle_state_change("ERROR", "first")
+    controller._dismiss()
+
+    controller._handle_state_change("ERROR", "second")
+
+    assert len(shown) == 2
+    placed = controller._label.placed
+    assert placed["x"] + placed["width"] == (
+        WINDOW_WIDTH - OVERLAY_PADDING_H - 70 - OVERLAY_GAP
+    )

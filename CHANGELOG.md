@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   line, so idle states no longer redraw. Outcomes use small colored badges:
   "Pasted" (with the speed value when enabled), "No speech", "Not pasted" for
   paste/copy failures and "Error". The overlay grows with long live text.
+- **Errors stay readable** – errors and paste/copy failures remain on screen
+  with a "×" until you click the overlay or start the next recording, instead
+  of disappearing after 4 seconds. Hotkeys work immediately as before. The
+  overlay only accepts clicks while such a message is shown (Windows: the
+  overlay is now click-through otherwise; the Tkinter fallback stays clickable).
 
 ## [1.8.0] - 2026-10-30
 

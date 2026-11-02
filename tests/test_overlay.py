@@ -446,22 +446,6 @@ def test_sound_wave_view_level_frame_uses_cached_trig_tables(monkeypatch):
     assert cos_calls == 2
 
 
-def test_error_feedback_uses_readable_duration(monkeypatch):
-    import sys
-
-    controller = OverlayController.__new__(OverlayController)
-    controller._current_state = AppState.ERROR
-    controller._feedback_timer = None
-    controller._fade_out = lambda: None
-    timers = []
-    timer = types.SimpleNamespace(
-        scheduledTimerWithTimeInterval_repeats_block_=lambda *args: timers.append(args)
-    )
-    monkeypatch.setitem(sys.modules, "Foundation", types.SimpleNamespace(NSTimer=timer))
-
-    controller._start_fade_out_timer()
-
-    assert timers[0][0] == 4.0
 
 
 class _FakeLayer:
@@ -535,14 +519,23 @@ class _FakeWaveModes:
         self.events.append("stop")
 
 
+class _FakeWindow:
+    def __init__(self) -> None:
+        self.ignores_mouse = True
+
+    def setIgnoresMouseEvents_(self, ignores: bool) -> None:
+        self.ignores_mouse = ignores
+
+
 def _controller(events: list[str] | None = None) -> OverlayController:
     events = [] if events is None else events
     controller = OverlayController.__new__(OverlayController)
-    controller.window = object()
+    controller.window = _FakeWindow()
     controller._current_state = AppState.IDLE
     controller._last_state_payload = None
     controller._feedback_timer = None
     controller._previous_interim = ""
+    controller._persistent = False
     controller._wave_view = _FakeWaveModes(events)
     controller.rendered = []
     controller._render = lambda content, interim: controller.rendered.append(
@@ -588,7 +581,9 @@ def test_states_map_to_bars_badges_and_copy(monkeypatch):
         (
             AppState.ERROR,
             " microphone\nmissing ",
-            OverlayContent(text="Microphone unavailable", badge="Error", tone="error"),
+            OverlayContent(
+                text="Microphone unavailable", badge="Error", tone="error", dismissible=True
+            ),
         ),
     ]
     for state, text, expected in cases:
@@ -660,15 +655,6 @@ def test_older_confirmation_cannot_hide_a_newer_success(monkeypatch):
     assert events[-2:] == ["stop", "hide"]
 
 
-def test_error_can_still_be_cleared_explicitly_before_timeout(monkeypatch):
-    _scheduled, timers = _install_fake_foundation(monkeypatch)
-    events: list[str] = []
-    controller = _controller(events)
-    controller.update_state(AppState.ERROR)
-    controller.update_state(AppState.IDLE)
-
-    assert events[-2:] == ["stop", "hide"]
-    assert timers[0].invalidated == 1
 
 
 def test_render_skips_identical_presentations():
@@ -679,6 +665,7 @@ def test_render_skips_identical_presentations():
         setAttributedStringValue_=calls.append, setHidden_=lambda _hidden: None
     )
     controller._badge_view = types.SimpleNamespace(setHidden_=lambda _hidden: None)
+    controller._dismiss_field = types.SimpleNamespace(setHidden_=lambda _hidden: None)
     controller._attributed_text = lambda parts: parts
     controller._layout = lambda *_args: None
     content = OverlayContent("low", "Listening…")
@@ -691,3 +678,73 @@ def test_render_skips_identical_presentations():
         (("Listening…", "muted"),),
         (("", "interim"), ("new words", "text")),
     ]
+
+
+@pytest.mark.parametrize(
+    "message", ["Transcription timed out", "Paste failed — transcript copied"]
+)
+def test_errors_stay_visible_through_idle_until_clicked(monkeypatch, message):
+    scheduled, _timers = _install_fake_foundation(monkeypatch)
+    events: list[str] = []
+    controller = _controller(events)
+
+    controller.update_state(AppState.ERROR, message)
+    error_content = controller.rendered[-1][0]
+    assert error_content.dismissible is True
+    assert controller.window.ignores_mouse is False
+    controller.update_state(AppState.IDLE)
+
+    assert scheduled == []
+    assert "hide" not in events
+    assert controller.rendered[-1][0] == error_content
+    controller._dismiss()
+    assert events[-2:] == ["stop", "hide"]
+    assert controller.window.ignores_mouse is True
+    controller._dismiss()
+    assert events.count("hide") == 1
+
+
+def test_next_recording_replaces_persistent_error_and_restores_click_through(monkeypatch):
+    _install_fake_foundation(monkeypatch)
+    events: list[str] = []
+    controller = _controller(events)
+    controller.update_state(AppState.ERROR, "boom")
+    controller.update_state(AppState.IDLE)
+
+    controller.update_state(AppState.LISTENING)
+
+    assert controller.window.ignores_mouse is True
+    assert events[-2:] == ["bars:low", "show"]
+    assert controller.rendered[-1][0] == OverlayContent("low", "Listening…")
+    controller.update_state(AppState.IDLE)
+    assert events[-2:] == ["stop", "hide"]
+
+
+def test_new_error_after_dismissal_is_shown_again(monkeypatch):
+    _install_fake_foundation(monkeypatch)
+    events: list[str] = []
+    controller = _controller(events)
+    controller.update_state(AppState.ERROR, "first")
+    controller._dismiss()
+
+    controller.update_state(AppState.ERROR, "second")
+
+    assert events[-1] == "show"
+    assert controller.window.ignores_mouse is False
+
+
+def test_native_overlay_view_routes_every_click_to_dismiss():
+    appkit = pytest.importorskip("AppKit")
+    from ui.overlay import _click_view_class
+
+    view = _click_view_class().alloc().initWithFrame_(appkit.NSMakeRect(0, 0, 200, 44))
+    label = appkit.NSTextField.labelWithString_("Error")
+    label.setFrame_(appkit.NSMakeRect(10, 10, 60, 20))
+    view.addSubview_(label)
+    clicks = []
+    view.pulsescribe_on_click = lambda: clicks.append(True)
+
+    assert view.hitTest_(appkit.NSMakePoint(20, 20)) is view
+    assert view.hitTest_(appkit.NSMakePoint(500, 20)) is None
+    view.mouseDown_(None)
+    assert clicks == [True]

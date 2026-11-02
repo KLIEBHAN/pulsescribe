@@ -198,8 +198,10 @@ The overlay is monochrome; color only marks outcomes.
 | Preparing / Transcribing / Refining | Flat line, status text | Model loading, processing, LLM post-processing |
 | Done | Green "Pasted" badge | Text pasted |
 | No speech | Amber "No speech" badge | Nothing was pasted |
-| Paste/copy failed | Amber "Not pasted" badge | Transcript copied or available via Copy Last Transcript |
-| Error | Red "Error" badge | Error occurred |
+| Paste/copy failed | Amber "Not pasted" badge, × | Transcript copied or available via Copy Last Transcript |
+| Error | Red "Error" badge, × | Error occurred |
+
+Errors and paste/copy failures stay visible until you click the overlay or start the next recording; otherwise clicks pass through the overlay.
 
 ---
 
