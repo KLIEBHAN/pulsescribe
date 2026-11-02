@@ -34,11 +34,13 @@ DEFAULT_FONT_FAMILY = "Segoe UI"
 MONOSPACE_FONT_FAMILIES = ["Cascadia Mono", "Consolas", "Menlo", "Courier New"]
 
 # Type scale in logical pixels, mirroring the macOS settings hierarchy
-# (title 28, subtitle 13, card title 13 semibold, body 11-12). Windows keeps
+# (page title 24, sidebar 14-15, card title 13 semibold, body 11-12). Windows keeps
 # its 12 px system body size so text stays as readable as native dialogs.
 FONT_ROLES: dict[str, tuple[int, str]] = {
-    "window_title": (28, "bold"),
-    "window_subtitle": (13, "normal"),
+    "page_title": (24, "bold"),
+    "sidebar_title": (15, "bold"),
+    "sidebar_caption": (13, "normal"),
+    "sidebar_item": (14, "normal"),
     "card_title": (14, "semibold"),
     "section": (12, "semibold"),
     "body": (12, "normal"),
@@ -284,36 +286,35 @@ QFrame#card {{
 }}
 """
 
-# Settings-specific additions: a centered, compact segmented tab bar like the
-# macOS NSTabView so all tabs fit without scroll arrows, plus segmented buttons.
+# Settings-specific additions: the left sidebar navigation (like the macOS
+# window), a borderless page area, plus segmented buttons.
 SETTINGS_STYLESHEET_ADDITIONS = f"""
-QTabWidget::tab-bar {{
-    alignment: center;
+QWidget#sidebar {{
+    background-color: #121212;
 }}
 
-QTabWidget::pane {{
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 10px;
-    background-color: transparent;
-    top: -1px;
+QListWidget#sidebarNav {{
+    background: transparent;
+    border: none;
+    outline: none;
 }}
 
-QTabBar::tab {{
-    background-color: transparent;
-    color: {COLORS["text_secondary"]};
-    font-size: 12px;
-    padding: 4px 8px;
-    margin: 0 1px 6px 1px;
-    border-radius: 5px;
+QListWidget#sidebarNav::item {{
+    color: #adadad;
+    padding: 9px 10px;
+    margin-bottom: 2px;
+    border: none;
+    border-radius: 3px;
 }}
 
-QTabBar::tab:selected {{
-    background-color: rgba(255, 255, 255, 0.16);
+QListWidget#sidebarNav::item:selected {{
+    background-color: #2a2a2a;
     color: {COLORS["text"]};
 }}
 
-QTabBar::tab:hover:!selected {{
-    background-color: rgba(255, 255, 255, 0.06);
+QTabWidget::pane {{
+    border: none;
+    background-color: transparent;
 }}
 
 QFrame#segmentGroup {{

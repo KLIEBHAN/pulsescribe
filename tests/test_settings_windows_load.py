@@ -1169,3 +1169,42 @@ def test_on_mode_changed_uses_hidden_state_before_first_show():
     assert window._advanced_faster_settings_card.hidden is True
     assert window._advanced_lightning_settings_card.hidden is True
     assert window._streaming_container.hidden is False
+
+
+def test_sidebar_row_syncs_page_title_and_active_font():
+    from PySide6.QtGui import QFont
+    from PySide6.QtWidgets import QApplication, QLabel
+
+    app = QApplication.instance() or QApplication([])
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._get_version = lambda: "1.2.3"
+    sidebar = window._build_sidebar()
+    window._page_title = QLabel()
+
+    window._sync_sidebar_selection(2)
+
+    nav = window._sidebar_nav
+    assert [nav.item(row).text() for row in range(nav.count())] == list(
+        settings_mod.SETTINGS_SECTIONS
+    )
+    assert nav.currentRow() == 2
+    assert window._page_title.text() == "Refine"
+    assert nav.item(2).font().weight() == QFont.Weight.DemiBold
+    assert nav.item(0).font().weight() == QFont.Weight.Normal
+    assert sidebar.width() == settings_mod.SIDEBAR_WIDTH
+    assert app is not None
+
+
+@pytest.mark.parametrize(
+    ("available", "expected"),
+    [((1920, 1040), (760, 620)), ((683, 720), (635, 620)), ((700, 500), (652, 560))],
+)
+def test_initial_window_size_fits_available_screen(monkeypatch, available, expected):
+    from PySide6.QtCore import QRect
+
+    class _Screen:
+        def availableGeometry(self):
+            return QRect(0, 0, *available)
+
+    monkeypatch.setattr(settings_mod.QApplication, "primaryScreen", lambda: _Screen())
+    assert SettingsWindow._initial_window_size() == expected

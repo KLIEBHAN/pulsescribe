@@ -14,7 +14,7 @@ import time
 from typing import Callable, Iterator, TypeAlias
 
 from PySide6.QtCore import QEvent, Qt, Signal
-from PySide6.QtGui import QDoubleValidator, QIntValidator, QTextCursor
+from PySide6.QtGui import QDoubleValidator, QFont, QIntValidator, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
@@ -52,6 +53,7 @@ from ui.logs_panel_feedback import (
 )
 from ui.provider_settings import build_provider_api_key_status
 from ui.microphone import MICROPHONE_TOOLTIP, get_microphone_options
+from ui.settings_sections import SETTINGS_SECTIONS
 from ui.setup_try_it import build_setup_try_it_content
 from ui.qt_widget_state import (
     get_widget_enabled,
@@ -140,8 +142,9 @@ logger = logging.getLogger("pulsescribe.settings")
 # Window-Konstanten (settings-spezifisch)
 # =============================================================================
 
-SETTINGS_WIDTH = 600
-SETTINGS_HEIGHT = 825  # Same as the macOS settings window
+SETTINGS_WIDTH = 760
+SETTINGS_HEIGHT = 620  # Same as the macOS settings window
+SIDEBAR_WIDTH = 150
 SETTINGS_MIN_HEIGHT = 560  # Content scrolls, so small laptop screens still fit
 SETTINGS_SCREEN_MARGIN = 48
 FOOTER_BUTTON_MIN_WIDTH = 120
@@ -939,69 +942,74 @@ class SettingsWindow(QDialog):
     def _setup_window(self):
         """Konfiguriert das Fenster."""
         self.setWindowTitle("PulseScribe Settings")
-        self.setMinimumSize(SETTINGS_WIDTH, SETTINGS_MIN_HEIGHT)
-        self.resize(SETTINGS_WIDTH, self._initial_window_height())
+        width, height = self._initial_window_size()
+        self.setMinimumSize(width, SETTINGS_MIN_HEIGHT)
+        self.resize(width, height)
         self.setStyleSheet(get_settings_stylesheet())
 
         # Window Flags
         self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.WindowCloseButtonHint)
 
     @staticmethod
-    def _initial_window_height() -> int:
-        """Use the macOS height unless the available screen area is smaller."""
+    def _initial_window_size() -> tuple[int, int]:
+        """Use the macOS size unless the available screen area is smaller."""
         screen = QApplication.primaryScreen()
         if screen is None:
-            return SETTINGS_HEIGHT
-        available = screen.availableGeometry().height() - SETTINGS_SCREEN_MARGIN
-        return max(SETTINGS_MIN_HEIGHT, min(SETTINGS_HEIGHT, available))
+            return SETTINGS_WIDTH, SETTINGS_HEIGHT
+        available = screen.availableGeometry()
+        width = min(SETTINGS_WIDTH, available.width() - SETTINGS_SCREEN_MARGIN)
+        height = available.height() - SETTINGS_SCREEN_MARGIN
+        return width, max(SETTINGS_MIN_HEIGHT, min(SETTINGS_HEIGHT, height))
 
     def _build_ui(self):
-        """Erstellt das UI."""
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        """Erstellt das UI: Sidebar links, rechts Seitentitel, Seiten und Footer."""
+        root = QHBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        root.addWidget(self._build_sidebar())
 
-        # Header
-        header = self._build_header()
-        layout.addWidget(header)
+        column = QVBoxLayout()
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(0)
+        root.addLayout(column, 1)
 
-        # Tab Widget: centered segmented tabs inside a framed pane (macOS look)
+        self._page_title = QLabel(SETTINGS_SECTIONS[0])
+        self._page_title.setFont(ui_font("page_title"))
+        self._page_title.setContentsMargins(16, 18, 16, 4)
+        column.addWidget(self._page_title)
+
+        # Tabless pages: the sidebar drives the hidden tab bar.
         self._tabs = QTabWidget()
-        tab_bar = self._tabs.tabBar()
-        tab_bar.setExpanding(False)
-        tab_bar.setDrawBase(False)
-        tab_bar.setElideMode(Qt.TextElideMode.ElideNone)
-        tabs_container = QWidget()
-        tabs_layout = QVBoxLayout(tabs_container)
-        tabs_layout.setContentsMargins(10, 0, 10, 0)
-        tabs_layout.addWidget(self._tabs)
-        layout.addWidget(tabs_container, 1)
+        self._tabs.tabBar().hide()
+        column.addWidget(self._tabs, 1)
 
         self._tab_builders = {}
         self._lazy_tab_layouts = {}
         self._built_tabs = set()
 
-        tab_specs: list[tuple[str, Callable[[], QWidget]]] = [
-            ("General", self._build_general_tab),
-            ("Transcription", self._build_transcription_tab),
-            ("Refine", self._build_refine_tab),
-            ("Vocabulary", self._build_vocabulary_tab),
-            ("History", self._build_history_tab),
-            ("About", self._build_about_tab),
-        ]
-        for label, builder in tab_specs:
+        builders: dict[str, Callable[[], QWidget]] = {
+            "General": self._build_general_tab,
+            "Transcription": self._build_transcription_tab,
+            "Refine": self._build_refine_tab,
+            "Vocabulary": self._build_vocabulary_tab,
+            "History": self._build_history_tab,
+            "About": self._build_about_tab,
+        }
+        for label in SETTINGS_SECTIONS:
             self._add_tab(
                 label,
-                builder,
+                builders[label],
                 lazy=label in LAZY_SETTINGS_TAB_LABELS,
             )
 
         # Tab-Wechsel Handler für Auto-Load
         self._tabs.currentChanged.connect(self._on_tab_changed)
+        self._sidebar_nav.currentRowChanged.connect(self._tabs.setCurrentIndex)
+        self._sync_sidebar_selection(0)
 
         # Footer
         footer = self._build_footer()
-        layout.addWidget(footer)
+        column.addWidget(footer)
 
     def _add_tab(
         self,
@@ -1041,28 +1049,50 @@ class SettingsWindow(QDialog):
         self._built_tabs.add(label)
         return True
 
-    def _build_header(self) -> QWidget:
-        """Erstellt den Header."""
-        header = QWidget()
-        # Dynamic height to accommodate scaling and long text
-        layout = QVBoxLayout(header)
-        layout.setContentsMargins(20, 18, 20, 12)
-        layout.setSpacing(2)
+    def _build_sidebar(self) -> QWidget:
+        """Left navigation: app name, version and one entry per settings section."""
+        sidebar = QWidget()
+        sidebar.setObjectName("sidebar")
+        sidebar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        sidebar.setFixedWidth(SIDEBAR_WIDTH)
+        layout = QVBoxLayout(sidebar)
+        layout.setContentsMargins(10, 20, 10, 20)
+        layout.setSpacing(0)
 
-        # Titel
-        title = QLabel("🎤 PulseScribe")
-        title.setFont(ui_font("window_title"))
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(title)
+        name = QLabel("PulseScribe")
+        name.setFont(ui_font("sidebar_title"))
+        name.setContentsMargins(13, 0, 10, 0)  # aligns with the item text margin
+        layout.addWidget(name)
+        version = QLabel(f"Version {self._get_version()}")
+        version.setFont(ui_font("sidebar_caption"))
+        version.setStyleSheet(f"color: {COLORS['text_secondary']};")
+        version.setContentsMargins(13, 2, 10, 0)
+        layout.addWidget(version)
+        layout.addSpacing(26)
 
-        # Untertitel
-        subtitle = QLabel("Voice-to-text for Windows")
-        subtitle.setFont(ui_font("window_subtitle"))
-        subtitle.setStyleSheet(f"color: {COLORS['text_secondary']};")
-        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(subtitle)
+        self._sidebar_nav = QListWidget()
+        self._sidebar_nav.setObjectName("sidebarNav")
+        self._sidebar_nav.setFont(ui_font("sidebar_item"))
+        self._sidebar_nav.setAccessibleName("Settings sections")
+        self._sidebar_nav.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._sidebar_nav.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._sidebar_nav.addItems(list(SETTINGS_SECTIONS))
+        layout.addWidget(self._sidebar_nav, 1)
+        return sidebar
 
-        return header
+    def _sync_sidebar_selection(self, index: int) -> None:
+        """Highlights the sidebar entry and page title for the tab at ``index``."""
+        nav = getattr(self, "_sidebar_nav", None)
+        if nav is None:
+            return
+        nav.setCurrentRow(index)
+        for row in range(nav.count()):
+            item = nav.item(row)
+            font = ui_font("sidebar_item")
+            if row == index:
+                font.setWeight(QFont.Weight.DemiBold)
+                self._page_title.setText(item.text())
+            item.setFont(font)
 
     def _build_footer(self) -> QWidget:
         """Erstellt den Footer wie macOS: Statuszeile oben, darunter Checkbox und Buttons."""
@@ -2637,6 +2667,7 @@ class SettingsWindow(QDialog):
     def _on_tab_changed(self, index: int):
         """Handler für Tab-Wechsel."""
         tab_name = self._tabs.tabText(index) if self._tabs else ""
+        self._sync_sidebar_selection(index)
         self._ensure_tab_built(tab_name)
 
         if tab_name == "Refine":

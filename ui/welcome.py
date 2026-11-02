@@ -12,6 +12,7 @@ from ui.hotkey_format import (
     format_hotkey_for_display,
     normalize_hotkey_text,
 )
+from ui.settings_sections import SETTINGS_SECTIONS
 from ui.hotkey_card import HotkeyCard
 from ui.logs_panel_feedback import (
     build_logs_empty_state_text,
@@ -46,6 +47,7 @@ from ui.vocabulary_feedback import (
     build_vocabulary_save_feedback,
 )
 from utils.env import parse_bool
+from utils.version import get_app_version
 from utils.hotkey_recording import HotkeyRecorder
 from utils.local_backend import (
     get_local_advanced_ui_state,
@@ -87,8 +89,12 @@ from utils.custom_prompts import (
 )
 
 # Window-Konfiguration
-WELCOME_WIDTH = 600
-WELCOME_HEIGHT = 825  # Höhe für Tabbed Setup
+WELCOME_WIDTH = 760
+WELCOME_HEIGHT = 620  # Fits small screens; long sections scroll
+SIDEBAR_WIDTH = 150
+# Pages, cards and footer are laid out in the area right of the sidebar.
+CONTENT_WIDTH = WELCOME_WIDTH - SIDEBAR_WIDTH
+PAGE_TITLE_HEIGHT = 30
 WELCOME_PADDING = 20
 FOOTER_HEIGHT = 60
 CARD_PADDING = 16
@@ -211,16 +217,44 @@ def _get_color(r: int, g: int, b: int, a: float = 1.0):
 
 def _create_card(x: int, y: int, width: int, height: int):
     """Erstellt eine Karten-Box mit abgerundetem Hintergrund."""
-    from AppKit import NSBox, NSColor  # type: ignore[import-not-found]
+    from AppKit import NSColor  # type: ignore[import-not-found]
+
+    return _create_fill_box(
+        x,
+        y,
+        width,
+        height,
+        NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.06),
+        CARD_CORNER_RADIUS,
+    )
+
+
+def _create_fill_box(x: int, y: int, width: int, height: int, fill, radius: float):
+    """Returns a borderless NSBox filled with ``fill``; recolor via ``setFillColor_``."""
+    from AppKit import NSBox  # type: ignore[import-not-found]
     from Foundation import NSMakeRect  # type: ignore[import-not-found]
 
-    card = NSBox.alloc().initWithFrame_(NSMakeRect(x, y, width, height))
-    card.setBoxType_(4)  # Custom
-    card.setBorderType_(0)  # None
-    card.setFillColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.06))
-    card.setCornerRadius_(CARD_CORNER_RADIUS)
-    card.setContentViewMargins_((0, 0))
-    return card
+    box = NSBox.alloc().initWithFrame_(NSMakeRect(x, y, width, height))
+    box.setBoxType_(4)  # Custom
+    box.setBorderType_(0)  # None
+    box.setFillColor_(fill)
+    box.setCornerRadius_(radius)
+    box.setContentViewMargins_((0, 0))
+    return box
+
+
+def _create_label(text: str, frame):
+    """Returns a static white label; callers set font and color as needed."""
+    from AppKit import NSColor, NSTextField  # type: ignore[import-not-found]
+
+    label = NSTextField.alloc().initWithFrame_(frame)
+    label.setStringValue_(text)
+    label.setBezeled_(False)
+    label.setDrawsBackground_(False)
+    label.setEditable_(False)
+    label.setSelectable_(False)
+    label.setTextColor_(NSColor.whiteColor())
+    return label
 
 
 def _is_env_enabled_default_true(key: str) -> bool:
@@ -511,6 +545,9 @@ class WelcomeController:
         self._tab_builders: dict[str, tuple[object, object, int]] = {}
         self._built_tabs: set[str] = set()
         self._tab_delegate = None
+        self._sidebar_handler = None
+        self._sidebar_buttons: dict[str, tuple[object, object]] = {}
+        self._page_title_label = None
         self._saved_settings_signature: tuple | None = None
         self._saved_dock_icon_enabled: bool | None = None
         self._saved_refine_settings_state: tuple[bool, str, str] | None = None
@@ -739,9 +776,9 @@ class WelcomeController:
         self._window.setContentView_(visual_effect)
         self._content_view = visual_effect
 
-        # Header + Tabs
-        y_pos = WELCOME_HEIGHT - WELCOME_PADDING
-        header_bottom = self._build_header(y_pos)
+        # Sidebar + page title + tabless pages
+        self._build_sidebar()
+        header_bottom = self._build_page_title(WELCOME_HEIGHT - WELCOME_PADDING)
         self._build_tabs(header_bottom)
         self._build_footer()
         self._saved_settings_signature = self._get_current_settings_signature()
@@ -749,47 +786,128 @@ class WelcomeController:
         text, color = build_settings_loaded_feedback()
         self._set_footer_status(text, color)
 
-    def _build_header(self, y: int) -> int:
-        """Erstellt zentrierten Header."""
+    def _build_sidebar(self) -> None:
+        """Left navigation: app name, version and one entry per settings section."""
         from AppKit import (  # type: ignore[import-not-found]
-            NSColor,
+            NSButton,
             NSFont,
             NSFontWeightBold,
-            NSFontWeightLight,
-            NSMakeRect,
-            NSTextAlignmentCenter,
-            NSTextField,
+            NSView,
         )
+        from Foundation import NSMakeRect  # type: ignore[import-not-found]
+        import objc  # type: ignore[import-not-found]
 
-        # App-Titel groß
-        title = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(0, y - 36, WELCOME_WIDTH, 36)
+        sidebar = NSView.alloc().initWithFrame_(
+            NSMakeRect(0, 0, SIDEBAR_WIDTH, WELCOME_HEIGHT)
         )
-        title.setStringValue_("🎤 PulseScribe")
-        title.setBezeled_(False)
-        title.setDrawsBackground_(False)
-        title.setEditable_(False)
-        title.setSelectable_(False)
-        title.setAlignment_(NSTextAlignmentCenter)
-        title.setFont_(NSFont.systemFontOfSize_weight_(28, NSFontWeightBold))
-        title.setTextColor_(NSColor.whiteColor())
+        sidebar.addSubview_(
+            _create_fill_box(0, 0, SIDEBAR_WIDTH, WELCOME_HEIGHT, _get_color(18, 18, 18), 0)
+        )
+        self._content_view.addSubview_(sidebar)
+
+        inset = 10  # entry inset from the sidebar edge; text adds the same again
+        text_x = 2 * inset
+        text_w = SIDEBAR_WIDTH - 2 * text_x
+        top = WELCOME_HEIGHT - WELCOME_PADDING
+        name = _create_label("PulseScribe", NSMakeRect(text_x, top - 20, text_w, 20))
+        name.setFont_(NSFont.systemFontOfSize_weight_(15, NSFontWeightBold))
+        sidebar.addSubview_(name)
+        version = get_app_version(default="")
+        if version:
+            version_label = _create_label(
+                f"Version {version}", NSMakeRect(text_x, top - 38, text_w, 17)
+            )
+            version_label.setFont_(NSFont.systemFontOfSize_(12.5))
+            version_label.setTextColor_(_get_color(255, 255, 255, 0.5))
+            sidebar.addSubview_(version_label)
+
+        handler = (
+            _SidebarHandler.alloc().initWithController_(self)
+            if _SidebarHandler is not None
+            else None
+        )
+        self._sidebar_handler = handler
+        self._sidebar_buttons = {}
+        entry_h = 35  # 14 px text + 2 × 9 px padding
+        entry_y = top - 70
+        for label in SETTINGS_SECTIONS:
+            entry_y -= entry_h
+            entry_w = SIDEBAR_WIDTH - 2 * inset
+            background = _create_fill_box(
+                inset, entry_y, entry_w, entry_h, _get_color(0, 0, 0, 0), 3
+            )
+            sidebar.addSubview_(background)
+            button = NSButton.alloc().initWithFrame_(
+                NSMakeRect(inset, entry_y, entry_w, entry_h)
+            )
+            button.setBordered_(False)
+            button.setIdentifier_(label)
+            if handler is not None:
+                button.setTarget_(handler)
+                button.setAction_(
+                    objc.selector(handler.selectSection_, signature=b"v@:@")
+                )
+            sidebar.addSubview_(button)
+            self._sidebar_buttons[label] = (background, button)
+            entry_y -= 2
+
+    def _build_page_title(self, y: int) -> int:
+        """Adds the page title above the pages; returns the y below it."""
+        from AppKit import NSFont, NSFontWeightBold  # type: ignore[import-not-found]
+        from Foundation import NSMakeRect  # type: ignore[import-not-found]
+
+        title = _create_label(
+            "",
+            NSMakeRect(
+                SIDEBAR_WIDTH + WELCOME_PADDING,
+                y - PAGE_TITLE_HEIGHT,
+                CONTENT_WIDTH - 2 * WELCOME_PADDING,
+                PAGE_TITLE_HEIGHT,
+            ),
+        )
+        title.setFont_(NSFont.systemFontOfSize_weight_(24, NSFontWeightBold))
         self._content_view.addSubview_(title)
+        self._page_title_label = title
+        return y - PAGE_TITLE_HEIGHT - 4
 
-        # Untertitel
-        subtitle = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(0, y - 58, WELCOME_WIDTH, 18)
+    def _sync_sidebar_selection(self, label: str | None) -> None:
+        """Highlights the sidebar entry and page title for the selected section."""
+        from AppKit import (  # type: ignore[import-not-found]
+            NSAttributedString,
+            NSFont,
+            NSFontAttributeName,
+            NSFontWeightRegular,
+            NSFontWeightSemibold,
+            NSForegroundColorAttributeName,
+            NSMutableParagraphStyle,
+            NSParagraphStyleAttributeName,
         )
-        subtitle.setStringValue_("Voice-to-text for macOS")
-        subtitle.setBezeled_(False)
-        subtitle.setDrawsBackground_(False)
-        subtitle.setEditable_(False)
-        subtitle.setSelectable_(False)
-        subtitle.setAlignment_(NSTextAlignmentCenter)
-        subtitle.setFont_(NSFont.systemFontOfSize_weight_(13, NSFontWeightLight))
-        subtitle.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6))
-        self._content_view.addSubview_(subtitle)
 
-        return y - 72
+        title_label = getattr(self, "_page_title_label", None)
+        if title_label is not None and label:
+            title_label.setStringValue_(label)
+        for entry_label, (background, button) in getattr(
+            self, "_sidebar_buttons", {}
+        ).items():
+            active = entry_label == label
+            style = NSMutableParagraphStyle.alloc().init()
+            style.setFirstLineHeadIndent_(10)
+            style.setHeadIndent_(10)
+            weight = NSFontWeightSemibold if active else NSFontWeightRegular
+            color = _get_color(255, 255, 255) if active else _get_color(173, 173, 173)
+            button.setAttributedTitle_(
+                NSAttributedString.alloc().initWithString_attributes_(
+                    entry_label,
+                    {
+                        NSFontAttributeName: NSFont.systemFontOfSize_weight_(14, weight),
+                        NSForegroundColorAttributeName: color,
+                        NSParagraphStyleAttributeName: style,
+                    },
+                )
+            )
+            background.setFillColor_(
+                _get_color(42, 42, 42) if active else _get_color(0, 0, 0, 0)
+            )
 
     # =============================================================================
     # Tabs
@@ -798,22 +916,24 @@ class WelcomeController:
     def _build_tabs(self, header_bottom: int) -> None:
         """Erstellt die Tab-View und lädt Inhalte nur bei Bedarf."""
         from AppKit import (  # type: ignore[import-not-found]
-            NSFont,
+            NSNoTabsNoBorder,
             NSTabView,
         )
         from Foundation import NSMakeRect  # type: ignore[import-not-found]
 
-        tab_y = WELCOME_PADDING + FOOTER_HEIGHT
-        tab_height = max(200, header_bottom - tab_y - CARD_SPACING)
+        # Pages end above the footer status line (footer_y + 36 .. + 68).
+        tab_y = WELCOME_PADDING + FOOTER_HEIGHT + CARD_SPACING
+        tab_height = max(200, header_bottom - tab_y)
 
+        # Tabless: the sidebar selects pages via _select_tab.
         tab_view = NSTabView.alloc().initWithFrame_(
-            NSMakeRect(0, tab_y, WELCOME_WIDTH, tab_height)
+            NSMakeRect(SIDEBAR_WIDTH, tab_y, CONTENT_WIDTH, tab_height)
         )
+        tab_view.setTabViewType_(NSNoTabsNoBorder)
         try:
             tab_view.setDrawsBackground_(False)
         except Exception:
             pass
-        tab_view.setFont_(NSFont.systemFontOfSize_(12))
         self._content_view.addSubview_(tab_view)
         self._tab_view = tab_view
         # Content-Rect berücksichtigt die Tab-Bar Höhe/Insets
@@ -835,25 +955,26 @@ class WelcomeController:
                 lazy_tabs_supported = False
                 self._tab_delegate = None
 
-        tab_specs = [
-            ("General", self._build_general_tab),
-            ("Transcription", self._build_transcription_tab),
-            ("Refine", self._build_refine_tab),
-            ("Vocabulary", self._build_vocabulary_tab),
-            ("History", self._build_history_tab),
-            ("About", self._build_about_tab),
-        ]
-        for label, builder in tab_specs:
+        builders = {
+            "General": self._build_general_tab,
+            "Transcription": self._build_transcription_tab,
+            "Refine": self._build_refine_tab,
+            "Vocabulary": self._build_vocabulary_tab,
+            "History": self._build_history_tab,
+            "About": self._build_about_tab,
+        }
+        for label in SETTINGS_SECTIONS:
             self._add_tab(
                 tab_view,
                 label,
-                builder,
+                builders[label],
                 content_height,
                 build_immediately=not lazy_tabs_supported,
             )
 
         if lazy_tabs_supported:
             self._ensure_selected_tab_built()
+        self._sync_sidebar_selection(SETTINGS_SECTIONS[0])
 
     def _add_tab(
         self,
@@ -870,7 +991,7 @@ class WelcomeController:
         item = NSTabViewItem.alloc().initWithIdentifier_(label)
         item.setLabel_(label)
         content = NSView.alloc().initWithFrame_(
-            NSMakeRect(0, 0, WELCOME_WIDTH, tab_height)
+            NSMakeRect(0, 0, CONTENT_WIDTH, tab_height)
         )
         item.setView_(content)
         tab_view.addTabViewItem_(item)
@@ -926,7 +1047,7 @@ class WelcomeController:
 
         draft_height = 4000
         document = NSView.alloc().initWithFrame_(
-            NSMakeRect(0, 0, WELCOME_WIDTH, draft_height)
+            NSMakeRect(0, 0, CONTENT_WIDTH, draft_height)
         )
         next_y = build_content(document, draft_height)
         content_height = draft_height - next_y - CARD_SPACING + WELCOME_PADDING
@@ -935,10 +1056,10 @@ class WelcomeController:
         for subview in list(document.subviews()):
             origin = subview.frame().origin
             subview.setFrameOrigin_(NSMakePoint(origin.x, origin.y - shift))
-        document.setFrameSize_(NSMakeSize(WELCOME_WIDTH, document_height))
+        document.setFrameSize_(NSMakeSize(CONTENT_WIDTH, document_height))
 
         scroll = NSScrollView.alloc().initWithFrame_(
-            NSMakeRect(0, 0, WELCOME_WIDTH, tab_height)
+            NSMakeRect(0, 0, CONTENT_WIDTH, tab_height)
         )
         scroll.setHasVerticalScroller_(True)
         scroll.setHasHorizontalScroller_(False)
@@ -989,7 +1110,7 @@ class WelcomeController:
 
         # "Run Setup Wizard" shortcut
         wizard_btn = NSButton.alloc().initWithFrame_(
-            NSMakeRect(WELCOME_WIDTH - WELCOME_PADDING - 180, tab_height - 36, 180, 26)
+            NSMakeRect(CONTENT_WIDTH - WELCOME_PADDING - 180, tab_height - 36, 180, 26)
         )
         wizard_btn.setTitle_("Run Setup Wizard…")
         wizard_btn.setBezelStyle_(NSBezelStyleRounded)
@@ -1092,7 +1213,7 @@ class WelcomeController:
 
         document, bottom, height = anchor
         try:
-            document.scrollRectToVisible_(NSMakeRect(0, bottom, WELCOME_WIDTH, height))
+            document.scrollRectToVisible_(NSMakeRect(0, bottom, CONTENT_WIDTH, height))
         except Exception:
             pass
 
@@ -1233,6 +1354,7 @@ class WelcomeController:
             return
         try:
             self._tab_view.selectTabViewItemWithIdentifier_(label)
+            self._sync_sidebar_selection(label)
             self._ensure_tab_built(label)
         except Exception:
             pass
@@ -1256,7 +1378,7 @@ class WelcomeController:
 
         self._setup_permissions_card = PermissionsCard.build(
             parent_view=parent_view,
-            window_width=WELCOME_WIDTH,
+            window_width=CONTENT_WIDTH,
             card_y=card_y,
             card_height=card_height,
             outer_padding=WELCOME_PADDING,
@@ -1284,7 +1406,7 @@ class WelcomeController:
         parent_view = parent_view or self._content_view
 
         card_height = 140
-        card_width = WELCOME_WIDTH - 2 * WELCOME_PADDING
+        card_width = CONTENT_WIDTH - 2 * WELCOME_PADDING
         card_y = y - card_height - CARD_SPACING
         card = _create_card(WELCOME_PADDING, card_y, card_width, card_height)
         parent_view.addSubview_(card)
@@ -1404,7 +1526,7 @@ class WelcomeController:
         )
 
         card_height = 105
-        card_width = WELCOME_WIDTH - 2 * WELCOME_PADDING
+        card_width = CONTENT_WIDTH - 2 * WELCOME_PADDING
         card_y = y - card_height - CARD_SPACING
         card = _create_card(WELCOME_PADDING, card_y, card_width, card_height)
         parent_view.addSubview_(card)
@@ -1524,7 +1646,7 @@ class WelcomeController:
 
         self._hotkey_card = HotkeyCard.build(
             parent_view=parent_view,
-            window_width=WELCOME_WIDTH,
+            window_width=CONTENT_WIDTH,
             card_y=card_y,
             card_height=card_height,
             outer_padding=WELCOME_PADDING,
@@ -1555,7 +1677,7 @@ class WelcomeController:
         parent_view = parent_view or self._content_view
 
         card_height = _get_api_card_height()
-        card_width = WELCOME_WIDTH - 2 * WELCOME_PADDING
+        card_width = CONTENT_WIDTH - 2 * WELCOME_PADDING
         card_y = y - card_height
 
         card = _create_card(WELCOME_PADDING, card_y, card_width, card_height)
@@ -1632,7 +1754,7 @@ class WelcomeController:
         parent_view.addSubview_(label)
 
         field_width = (
-            WELCOME_WIDTH - 2 * WELCOME_PADDING - 2 * CARD_PADDING - status_width - 8
+            CONTENT_WIDTH - 2 * WELCOME_PADDING - 2 * CARD_PADDING - status_width - 8
         )
         field = NSTextField.alloc().initWithFrame_(
             NSMakeRect(base_x, y, field_width, 22)
@@ -1916,7 +2038,7 @@ class WelcomeController:
         parent_view = parent_view or self._content_view
 
         card_height = 204
-        card_width = WELCOME_WIDTH - 2 * WELCOME_PADDING
+        card_width = CONTENT_WIDTH - 2 * WELCOME_PADDING
         card_y = y - card_height
 
         card = _create_card(WELCOME_PADDING, card_y, card_width, card_height)
@@ -2470,7 +2592,7 @@ class WelcomeController:
         parent_view = parent_view or self._content_view
 
         card_height = 550  # Increased for Lightning settings
-        card_width = WELCOME_WIDTH - 2 * WELCOME_PADDING
+        card_width = CONTENT_WIDTH - 2 * WELCOME_PADDING
         card_y = y - card_height
 
         card = _create_card(WELCOME_PADDING, card_y, card_width, card_height)
@@ -3109,7 +3231,7 @@ class WelcomeController:
     def _build_behavior_card(self, y: int, parent_view) -> int:
         """General-tab card for the overlay, clipboard, Dock and speed toggles."""
         card_height = 180
-        card_width = WELCOME_WIDTH - 2 * WELCOME_PADDING
+        card_width = CONTENT_WIDTH - 2 * WELCOME_PADDING
         card_y = y - card_height
         parent_view.addSubview_(
             _create_card(WELCOME_PADDING, card_y, card_width, card_height)
@@ -3138,7 +3260,7 @@ class WelcomeController:
         parent_view = parent_view or self._content_view
 
         card_height = 236
-        card_width = WELCOME_WIDTH - 2 * WELCOME_PADDING
+        card_width = CONTENT_WIDTH - 2 * WELCOME_PADDING
         card_y = y - card_height
 
         card = _create_card(WELCOME_PADDING, card_y, card_width, card_height)
@@ -3454,7 +3576,7 @@ class WelcomeController:
         """Erstellt Custom Prompts Editor."""
         parent_view = parent_view or self._content_view
 
-        card_width = WELCOME_WIDTH - 2 * WELCOME_PADDING
+        card_width = CONTENT_WIDTH - 2 * WELCOME_PADDING
         max_height = (tab_height - 2 * WELCOME_PADDING) if tab_height else 500
         card_height = min(500, max_height)
         card_y = y - card_height
@@ -3509,7 +3631,7 @@ class WelcomeController:
 
         parent_view = parent_view or self._content_view
 
-        card_width = WELCOME_WIDTH - 2 * WELCOME_PADDING
+        card_width = CONTENT_WIDTH - 2 * WELCOME_PADDING
         max_height = (tab_height - 2 * WELCOME_PADDING) if tab_height else 420
         card_height = min(420, max_height)
         card_y = y - card_height
@@ -3758,7 +3880,7 @@ class WelcomeController:
 
         parent_view = parent_view or self._content_view
 
-        card_width = WELCOME_WIDTH - 2 * WELCOME_PADDING
+        card_width = CONTENT_WIDTH - 2 * WELCOME_PADDING
         max_height = (tab_height - 2 * WELCOME_PADDING) if tab_height else 420
         card_height = min(420, max_height)
         card_y = y - card_height
@@ -5184,7 +5306,7 @@ class WelcomeController:
         parent_view = parent_view or self._content_view
 
         card_height = 380
-        card_width = WELCOME_WIDTH - 2 * WELCOME_PADDING
+        card_width = CONTENT_WIDTH - 2 * WELCOME_PADDING
         card_y = y - card_height
 
         card = _create_card(WELCOME_PADDING, card_y, card_width, card_height)
@@ -5570,8 +5692,9 @@ class WelcomeController:
         btn_font_size = 13
 
         # Checkbox (links unten)
+        content_x = SIDEBAR_WIDTH + WELCOME_PADDING
         checkbox = NSButton.alloc().initWithFrame_(
-            NSMakeRect(WELCOME_PADDING, footer_y + 6, 130, 18)
+            NSMakeRect(content_x, footer_y + 6, 130, 18)
         )
         checkbox.setButtonType_(NSButtonTypeSwitch)
         checkbox.setTitle_("Show at startup")
@@ -5593,7 +5716,7 @@ class WelcomeController:
         save_x = close_x - btn_spacing - btn_w
 
         status_label = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(WELCOME_PADDING, footer_y + 36, WELCOME_WIDTH - 2 * WELCOME_PADDING, 32)
+            NSMakeRect(content_x, footer_y + 36, CONTENT_WIDTH - 2 * WELCOME_PADDING, 32)
         )
         status_label.setStringValue_("")
         status_label.setBezeled_(False)
@@ -6464,6 +6587,32 @@ try:
     _TextChangeHandler = _create_text_change_handler_class()
 except Exception:
     _TextChangeHandler = None
+
+
+def _create_sidebar_handler_class():
+    """NSObject target for sidebar entries; selects the section in ``sender.identifier()``."""
+    from Foundation import NSObject  # type: ignore[import-not-found]
+    import objc  # type: ignore[import-not-found]
+
+    class SidebarHandler(NSObject):
+        def initWithController_(self, controller):
+            self = objc.super(SidebarHandler, self).init()
+            if self is None:
+                return None
+            self._controller = controller
+            return self
+
+        @objc.signature(b"v@:@")
+        def selectSection_(self, sender) -> None:
+            self._controller._select_tab(str(sender.identifier()))
+
+    return SidebarHandler
+
+
+try:
+    _SidebarHandler = _create_sidebar_handler_class()
+except Exception:
+    _SidebarHandler = None
 
 
 def _create_tab_selection_handler_class():
