@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.1] - 2026-11-02
+
 ### Changed
 
 - **Processing feedback** – a soft light sweeps across the line while
