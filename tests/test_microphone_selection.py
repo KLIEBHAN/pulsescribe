@@ -141,28 +141,25 @@ def test_mac_popup_refresh_and_save_preserve_selection(devices, selected):
     assert ctrl._get_current_settings_signature() != before
 
 
-def test_mac_microphone_row_leaves_room_for_api_card(devices):
+def test_mac_microphone_row_fits_visible_transcription_page(devices):
     appkit = pytest.importorskip("AppKit")
     from ui.welcome import (
-        WelcomeController, CARD_SPACING, FOOTER_HEIGHT, WELCOME_HEIGHT,
-        WELCOME_PADDING, WELCOME_WIDTH, _get_api_card_height,
+        WelcomeController, CARD_SPACING, CONTENT_WIDTH, FOOTER_HEIGHT,
+        PAGE_TITLE_HEIGHT, WELCOME_HEIGHT, WELCOME_PADDING,
     )
 
     appkit.NSApplication.sharedApplication()
-    tab_y = WELCOME_PADDING + FOOTER_HEIGHT
-    tab_height = WELCOME_HEIGHT - WELCOME_PADDING - 72 - tab_y - CARD_SPACING
-    tab = appkit.NSTabView.alloc().initWithFrame_(
-        appkit.NSMakeRect(0, tab_y, WELCOME_WIDTH, tab_height)
-    )
-    height = tab.contentRect().size.height
+    # Mirrors _build_page_title + _build_tabs: the tabless page height.
+    tab_y = WELCOME_PADDING + FOOTER_HEIGHT + CARD_SPACING
+    height = WELCOME_HEIGHT - WELCOME_PADDING - PAGE_TITLE_HEIGHT - 4 - tab_y
     ctrl = WelcomeController.__new__(WelcomeController)
     ctrl.config = ctrl._env_settings_cache = {}
     ctrl._content_view = appkit.NSView.alloc().initWithFrame_(
-        appkit.NSMakeRect(0, 0, WELCOME_WIDTH, height)
+        appkit.NSMakeRect(0, 0, CONTENT_WIDTH, height)
     )
     ctrl._update_all_visibility = lambda: None
-    bottom = ctrl._build_settings_card(height - CARD_SPACING)
-    assert bottom >= _get_api_card_height()
+    bottom = ctrl._build_settings_card(height - WELCOME_PADDING)
+    assert bottom >= 0
 
 
 @pytest.mark.parametrize("selected", ["", "USB Mic", "Disconnected Mic"])
