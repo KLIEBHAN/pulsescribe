@@ -14,11 +14,7 @@ from ui.animation import (
     BAR_WIDTH,
     LISTENING_BAR_HEIGHTS,
 )
-from ui.overlay_feedback import (
-    ERROR_FEEDBACK_SECONDS,
-    OverlayContent,
-    describe_overlay_content,
-)
+from ui.overlay_feedback import OverlayContent, describe_overlay_content
 from ui.overlay_style import (
     BACKGROUND_COLOR,
     BADGE_CORNER_RADIUS,
@@ -29,6 +25,8 @@ from ui.overlay_style import (
     BAR_AREA_WIDTH,
     BAR_COLORS,
     BORDER_COLOR,
+    DISMISS_FONT_SIZE,
+    DISMISS_GLYPH,
     INTERIM_TEXT_COLOR,
     LINE_HEIGHT,
     MUTED_TEXT_COLOR,
@@ -686,8 +684,35 @@ class SoundWaveView:
         self._apply_bar_heights(heights, center_y=center_y)
 
 
-_FEEDBACK_STATES = (AppState.DONE, AppState.NO_SPEECH, AppState.ERROR)
+_AUTO_HIDE_STATES = (AppState.DONE, AppState.NO_SPEECH)
 _LABEL_INSET = 2  # NSTextField-Labels zeichnen Text 2 px innerhalb ihres Frames
+_NONACTIVATING_PANEL_MASK = 1 << 7  # NSWindowStyleMaskNonactivatingPanel
+_CLICK_VIEW_CLASS = None
+
+
+def _click_view_class():
+    """NSView subclass that reports every click on the overlay (lazy: PyObjC)."""
+    global _CLICK_VIEW_CLASS
+    if _CLICK_VIEW_CLASS is None:
+        import objc  # type: ignore[import-not-found]
+        from AppKit import NSView  # type: ignore[import-not-found]
+
+        class PulseScribeOverlayContentView(NSView):
+            def acceptsFirstMouse_(self, _event):
+                return True
+
+            def hitTest_(self, point):
+                # Badge/Text-Labels sollen Klicks nicht abfangen.
+                hit = objc.super(PulseScribeOverlayContentView, self).hitTest_(point)
+                return self if hit is not None else None
+
+            def mouseDown_(self, _event):
+                handler = getattr(self, "pulsescribe_on_click", None)
+                if handler is not None:
+                    handler()
+
+        _CLICK_VIEW_CLASS = PulseScribeOverlayContentView
+    return _CLICK_VIEW_CLASS
 
 
 def _make_label(font):
@@ -708,8 +733,12 @@ class OverlayController:
     """
     Overlay-Fenster für Status, Ergebnis-Badges und Interim-Text.
 
-    Layout ``[Balken] [Badge] [Text]`` (ui/overlay_style.py); das Fenster wächst
-    mit dem Text. Kein Polling - wird direkt via Callback aktualisiert.
+    Layout ``[Balken] [Badge] [Text] … [×]`` (ui/overlay_style.py); das Fenster
+    wächst mit dem Text. Kein Polling - wird direkt via Callback aktualisiert.
+
+    Fehler bleiben sichtbar, bis der Nutzer klickt oder ein neuer State sie
+    ersetzt; nur dann nimmt das Fenster Mausereignisse an, sonst klickt man
+    hindurch.
     """
 
     def __init__(self):
@@ -720,9 +749,9 @@ class OverlayController:
             NSFontWeightRegular,
             NSFontWeightSemibold,
             NSMakeRect,
+            NSPanel,
             NSScreen,
             NSView,
-            NSWindow,
             NSWindowStyleMaskBorderless,
         )
         import Quartz  # noqa: F401  # registriert CGColorRef für .CGColor()
@@ -739,12 +768,15 @@ class OverlayController:
         height = OVERLAY_HEIGHT
         y = self._screen_frame.origin.y + OVERLAY_MARGIN_BOTTOM
 
-        self.window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+        # Non-activating panel: a click on a persistent message must not take
+        # focus away from the app the user dictates into.
+        self.window = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(self._window_x(width), y, width, height),
-            NSWindowStyleMaskBorderless,
+            NSWindowStyleMaskBorderless | _NONACTIVATING_PANEL_MASK,
             NSBackingStoreBuffered,
             False,
         )
+        self.window.setHidesOnDeactivate_(False)
         self.window.setLevel_(OVERLAY_WINDOW_LEVEL)
         self.window.setIgnoresMouseEvents_(True)
         # Nicht-opak nur für die 3-px-Ecken; der Inhalt selbst ist solide.
@@ -753,7 +785,17 @@ class OverlayController:
         self.window.setAlphaValue_(0.0)
         self.window.setHasShadow_(False)
 
-        content = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, width, height))
+        content = _click_view_class().alloc().initWithFrame_(
+            NSMakeRect(0, 0, width, height)
+        )
+        self_ref = weakref.ref(self)
+
+        def on_click() -> None:
+            controller = self_ref()
+            if controller is not None:
+                controller._dismiss()
+
+        content.pulsescribe_on_click = on_click
         content.setWantsLayer_(True)
         layer = content.layer()
         layer.setBackgroundColor_(_ns_color(BACKGROUND_COLOR).CGColor())
@@ -776,6 +818,15 @@ class OverlayController:
         )
         self._text_field = _make_label(self._text_font)
         content.addSubview_(self._text_field)
+
+        self._dismiss_field = _make_label(
+            NSFont.systemFontOfSize_weight_(DISMISS_FONT_SIZE, NSFontWeightRegular)
+        )
+        self._dismiss_field.setStringValue_(DISMISS_GLYPH)
+        self._dismiss_field.setTextColor_(_ns_color(MUTED_TEXT_COLOR))
+        self._dismiss_field.setHidden_(True)
+        content.addSubview_(self._dismiss_field)
+        self._dismiss_size = self._dismiss_field.cell().cellSize()
 
         self._badge_view = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 0, 0))
         self._badge_view.setWantsLayer_(True)
@@ -809,6 +860,7 @@ class OverlayController:
         self._previous_interim = ""
         self._presentation = None
         self._window_width = float(width)
+        self._persistent = False
 
     def _window_x(self, width: float) -> float:
         frame = self._screen_frame
@@ -841,12 +893,16 @@ class OverlayController:
             self._feedback_timer = None
 
         if state == AppState.IDLE:
-            if state_changed:
+            # Daemon returns to IDLE so hotkeys work; a persistent message stays.
+            if state_changed and not self._persistent:
                 self._wave_view.stop_animating()
                 self._fade_out()
             return
 
         content = describe_overlay_content(state.name, text)
+        # A new error after a dismissed one must show even within ERROR.
+        reshow = content.dismissible and not getattr(self, "_persistent", False)
+        self._set_persistent(content.dismissible)
         interim = ("", "")
         if state == AppState.RECORDING:
             if state_changed:
@@ -858,10 +914,26 @@ class OverlayController:
         if state_changed:
             self._wave_view.show_mode(content.bars)
         self._render(content, interim)
-        if state_changed:
+        if state_changed or reshow:
             self._fade_in()
-            if state in _FEEDBACK_STATES:
+        if state_changed:
+            if state in _AUTO_HIDE_STATES:
                 self._start_fade_out_timer()
+
+    def _set_persistent(self, persistent: bool) -> None:
+        """Accept clicks only while a dismissible message is shown."""
+        if getattr(self, "_persistent", False) == persistent:
+            return
+        self._persistent = persistent
+        self.window.setIgnoresMouseEvents_(not persistent)
+
+    def _dismiss(self) -> None:
+        """Hide a persistent message after a click on the overlay."""
+        if not getattr(self, "_persistent", False):
+            return
+        self._set_persistent(False)
+        self._wave_view.stop_animating()
+        self._fade_out()
 
     def _render(self, content: OverlayContent, interim: tuple[str, str]) -> None:
         """Apply badge, text and layout; skips identical presentations."""
@@ -885,6 +957,7 @@ class OverlayController:
             self._badge_label.setTextColor_(foreground)
             self._badge_label.setStringValue_(content.badge)
         self._badge_view.setHidden_(not content.badge)
+        self._dismiss_field.setHidden_(not content.dismissible)
         self._layout(content, has_text)
 
     def _attributed_text(self, parts):
@@ -930,12 +1003,27 @@ class OverlayController:
                 - 2 * _LABEL_INSET
                 + 2 * BADGE_PADDING_H
             )
+        dismiss_size = self._dismiss_size
+        dismiss_width = (
+            math.ceil(dismiss_size.width) - 2 * _LABEL_INSET if content.dismissible else 0
+        )
         layout = compute_overlay_layout(
             bars=content.bars != "none",
             badge_width=badge_width,
             text_width=text_width,
             max_width=self._max_width,
+            dismiss_width=dismiss_width,
         )
+        if layout.dismiss_x is not None:
+            dismiss_height = math.ceil(dismiss_size.height)
+            self._dismiss_field.setFrame_(
+                rect(
+                    layout.dismiss_x - _LABEL_INSET,
+                    round((height - dismiss_height) / 2),
+                    dismiss_width + 2 * _LABEL_INSET,
+                    dismiss_height,
+                )
+            )
         if layout.bars_x is not None:
             self._wave_view.view.setFrameOrigin_(
                 (layout.bars_x, (height - WAVE_BAR_MAX_HEIGHT) / 2)
@@ -995,7 +1083,7 @@ class OverlayController:
         window.animator().setAlphaValue_(0.0)
 
     def _start_fade_out_timer(self) -> None:
-        """Startet Timer für automatisches Ausblenden nach Done/Error."""
+        """Startet Timer für automatisches Ausblenden nach Done/No-Speech."""
         from Foundation import NSTimer  # type: ignore[import-not-found]
 
         if self._feedback_timer:
@@ -1008,13 +1096,8 @@ class OverlayController:
             self._wave_view.stop_animating()
             self._fade_out()
 
-        duration = (
-            ERROR_FEEDBACK_SECONDS
-            if self._current_state == AppState.ERROR
-            else FEEDBACK_DISPLAY_DURATION
-        )
         self._feedback_timer = NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
-            duration, False, fade_out_callback
+            FEEDBACK_DISPLAY_DURATION, False, fade_out_callback
         )
 
     def update_audio_level(self, level: float) -> None:

@@ -199,8 +199,10 @@ Das Overlay ist monochrom; Farbe markiert nur Ergebnisse.
 | Preparing / Transcribing / Refining | Flache Linie, Statustext | Modell lädt, Text wird verarbeitet, LLM-Nachbearbeitung |
 | Done | Grünes Badge „Pasted“ | Text eingefügt |
 | No speech | Gelbes Badge „No speech“ | Nichts eingefügt |
-| Paste/Copy fehlgeschlagen | Gelbes Badge „Not pasted“ | Transkript kopiert bzw. über „Copy Last Transcript“ verfügbar |
-| Error | Rotes Badge „Error“ | Fehler aufgetreten |
+| Paste/Copy fehlgeschlagen | Gelbes Badge „Not pasted“, × | Transkript kopiert bzw. über „Copy Last Transcript“ verfügbar |
+| Error | Rotes Badge „Error“, × | Fehler aufgetreten |
+
+Fehler und fehlgeschlagenes Einfügen/Kopieren bleiben sichtbar, bis du auf das Overlay klickst oder die nächste Aufnahme startest; sonst gehen Klicks durch das Overlay hindurch.
 
 ---
 

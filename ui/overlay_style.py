@@ -28,6 +28,8 @@ BADGE_FONT_SIZE = 12.5
 BADGE_CORNER_RADIUS = 3
 BADGE_PADDING_H = 8
 BADGE_PADDING_V = 3
+DISMISS_GLYPH = "×"
+DISMISS_FONT_SIZE = 15
 
 # Bars: "level" follows the microphone, "low" is the static listening row,
 # "line" collapses the bars into one flat processing line.
@@ -62,6 +64,7 @@ class OverlayLayout:
     badge_x: float | None
     text_x: float
     text_width: float
+    dismiss_x: float | None = None
 
 
 def compute_overlay_layout(
@@ -70,12 +73,13 @@ def compute_overlay_layout(
     badge_width: float,
     text_width: float,
     max_width: float,
+    dismiss_width: float = 0,
 ) -> OverlayLayout:
-    """Lay out ``[bars] [badge] [text]`` left to right with fixed gaps.
+    """Lay out ``[bars] [badge] [text] … [×]`` with fixed gaps.
 
     The overlay grows with its content between ``OVERLAY_MIN_WIDTH`` and
     ``max_width``; text that still does not fit gets the remaining width so
-    the caller can elide it.
+    the caller can elide it. The dismiss glyph sits at the right edge.
     """
     x = float(OVERLAY_PADDING_H)
     bars_x = badge_x = None
@@ -87,13 +91,15 @@ def compute_overlay_layout(
         x += badge_width + OVERLAY_GAP
     if text_width <= 0:
         x -= OVERLAY_GAP if (bars or badge_width > 0) else 0
-    natural = x + max(text_width, 0.0) + OVERLAY_PADDING_H
+    trailing = OVERLAY_GAP + dismiss_width if dismiss_width > 0 else 0.0
+    natural = x + max(text_width, 0.0) + trailing + OVERLAY_PADDING_H
     width = max(float(OVERLAY_MIN_WIDTH), min(natural, max(max_width, OVERLAY_MIN_WIDTH)))
-    available = max(width - OVERLAY_PADDING_H - x, 0.0)
+    available = max(width - OVERLAY_PADDING_H - trailing - x, 0.0)
     return OverlayLayout(
         width=width,
         bars_x=bars_x,
         badge_x=badge_x,
         text_x=x,
         text_width=min(max(text_width, 0.0), available),
+        dismiss_x=width - OVERLAY_PADDING_H - dismiss_width if dismiss_width > 0 else None,
     )

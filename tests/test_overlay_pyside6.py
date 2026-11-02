@@ -125,15 +125,6 @@ def test_fade_out_timer_is_reused(monkeypatch):
     ]
 
 
-@pytest.mark.parametrize("state,expected_ms", [("DONE", 600), ("ERROR", 4000)])
-def test_feedback_duration_keeps_errors_readable(state, expected_ms):
-    widget = PySide6OverlayWidget.__new__(PySide6OverlayWidget)
-    widget._fade_out_timer = _FakeTimer()
-    widget._state = state
-
-    widget._start_fade_out_timer()
-
-    assert widget._fade_out_timer.start_calls == [expected_ms]
 
 
 def test_poll_interim_file_uses_mtime_cache(tmp_path):
@@ -489,6 +480,13 @@ def _state_widget(monkeypatch):
     widget._start_fade_out_timer = lambda: widget.events.append("auto-hide")
     widget._relayout = lambda: widget.events.append("layout")
     widget.setAccessibleDescription = lambda _text: None
+    widget._persistent = False
+    widget.click_through = True
+    widget._dismiss_font = None
+    widget.windowHandle = lambda: types.SimpleNamespace(
+        setFlag=lambda _flag, on: setattr(widget, "click_through", on)
+    )
+    widget._cancel_fade_out_timer = lambda: None
     widget.recording_state_changed = types.SimpleNamespace(emit=lambda *_args: None)
     monkeypatch.setattr("ui.overlay_pyside6.time.perf_counter", lambda: 123.0)
     return widget
@@ -525,7 +523,9 @@ def test_on_state_changed_skips_duplicate_transition_work(monkeypatch):
         (
             "ERROR",
             " microphone\nmissing ",
-            OverlayContent(text="Microphone unavailable", badge="Error", tone="error"),
+            OverlayContent(
+                text="Microphone unavailable", badge="Error", tone="error", dismissible=True
+            ),
         ),
         (
             "NO_SPEECH",
@@ -541,7 +541,7 @@ def test_on_state_changed_uses_shared_content(monkeypatch, state, text, expected
     widget._on_state_changed(state, text)
 
     assert widget._content == expected
-    assert ("auto-hide" in widget.events) == (state in ("ERROR", "NO_SPEECH", "DONE"))
+    assert ("auto-hide" in widget.events) == (state in ("NO_SPEECH", "DONE"))
 
 
 def test_on_interim_changed_marks_newest_words(monkeypatch):
@@ -632,3 +632,41 @@ def test_animate_frame_stops_timer_outside_recording():
 
     assert widget._animation_timer.active is False
     assert widget.repaints == []
+
+
+def test_errors_persist_through_idle_and_accept_clicks_until_dismissed(monkeypatch):
+    widget = _state_widget(monkeypatch)
+
+    widget._on_state_changed("ERROR", "Paste failed — transcript copied")
+    assert widget.click_through is False
+    widget._on_state_changed("IDLE", "")
+    assert "hide" not in widget.events and "auto-hide" not in widget.events
+
+    widget.mousePressEvent(types.SimpleNamespace(accept=lambda: None))
+    assert widget.events[-1] == "hide"
+    assert widget.click_through is True
+    assert widget._persistent is False
+
+
+def test_next_recording_replaces_persistent_error(monkeypatch):
+    widget = _state_widget(monkeypatch)
+    widget._on_state_changed("ERROR", "boom")
+    widget._on_state_changed("IDLE", "")
+
+    widget._on_state_changed("LISTENING", "")
+
+    assert widget.click_through is True
+    assert widget._content.dismissible is False
+    widget._on_state_changed("IDLE", "")
+    assert widget.events[-1] == "hide"
+
+
+def test_new_error_after_dismissal_is_shown_again(monkeypatch):
+    widget = _state_widget(monkeypatch)
+    widget._on_state_changed("ERROR", "first")
+    widget._dismiss()
+
+    widget._on_state_changed("ERROR", "second")
+
+    assert widget.events[-1] == "show"
+    assert widget.click_through is False
