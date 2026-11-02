@@ -23,12 +23,14 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QLineEdit,
     QListWidget,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSlider,
     QTabWidget,
     QVBoxLayout,
@@ -91,8 +93,9 @@ from ui.vocabulary_feedback import (
 from ui.styles_windows import (
     CARD_PADDING,
     CARD_SPACING,
-    COLORS,
     LANGUAGE_OPTIONS,
+    SETTINGS_COLORS as COLORS,
+    badge_stylesheet,
     get_pynput_key_map,
     get_settings_stylesheet,
     ui_font,
@@ -499,14 +502,39 @@ def _merge_recent_transcript_blocks(
     return merged_blocks[-TRANSCRIPTS_VIEW_MAX_ENTRIES:]
 
 
+class _SectionLayout(QVBoxLayout):
+    """Section layout whose ``add_row`` separates setting rows with a 1 px line."""
+
+    def __init__(self, parent: QWidget):
+        super().__init__(parent)
+        self._row_count = 0
+
+    def add_row(self, row: QLayout | QWidget) -> None:
+        """Adds a label/control row (layout or container widget) below the previous one."""
+        self._row_count += 1
+        if self._row_count == 1:
+            if isinstance(row, QWidget):
+                self.addWidget(row)
+            else:
+                self.addLayout(row)
+            return
+        container = row if isinstance(row, QWidget) else QWidget()
+        if container is not row:
+            container.setLayout(row)
+        container.setObjectName("settingsRow")
+        container.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        container.layout().setContentsMargins(0, 8, 0, 0)
+        self.addWidget(container)
+
+
 def create_card(
     title: str | None = None, description: str | None = None
-) -> tuple[QFrame, QVBoxLayout]:
-    """Erstellt eine Card mit optionalem Titel und Beschreibung."""
+) -> tuple[QFrame, _SectionLayout]:
+    """Creates a flat section: top rule, optional title and description."""
     card = QFrame()
     card.setObjectName("card")
-    layout = QVBoxLayout(card)
-    layout.setContentsMargins(CARD_PADDING, CARD_PADDING, CARD_PADDING, CARD_PADDING)
+    layout = _SectionLayout(card)
+    layout.setContentsMargins(0, CARD_PADDING, 0, CARD_PADDING)
     layout.setSpacing(8)
 
     if title:
@@ -543,7 +571,7 @@ def _add_card_checkbox_row(
     label.setMinimumWidth(120)
     row.addWidget(label)
     row.addWidget(checkbox, 1)
-    card_layout.addLayout(row)
+    card_layout.add_row(row)
 
 
 def create_label_row(
@@ -576,6 +604,14 @@ def create_status_label(text: str = "", color: str = "text") -> QLabel:
     label.setFont(ui_font("body"))
     label.setWordWrap(True)
     label.setStyleSheet(f"color: {COLORS.get(color, color)};")
+    return label
+
+
+def create_badge_label() -> QLabel:
+    """Creates a status label that ``_set_badge_if_changed`` renders as a tinted badge."""
+    label = QLabel()
+    label.setFont(ui_font("badge"))
+    label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
     return label
 
 
@@ -692,6 +728,14 @@ def _set_status_label_if_changed(widget, text: str, color: str) -> None:
         return
     _set_widget_text_if_changed(widget, text)
     _set_widget_stylesheet_if_changed(widget, f"color: {COLORS[color]};")
+
+
+def _set_badge_if_changed(widget, text: str, color: str) -> None:
+    """Shows a status text as a badge tinted for ``color`` ("success", "warning", ...)."""
+    if widget is None:
+        return
+    _set_widget_text_if_changed(widget, text)
+    _set_widget_stylesheet_if_changed(widget, badge_stylesheet(color))
 
 
 def _set_checkbox_if_changed(widget, checked: bool) -> bool:
@@ -1149,6 +1193,8 @@ class SettingsWindow(QDialog):
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         content = QWidget()
+        content.setObjectName("settingsPage")
+        content.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         layout = QVBoxLayout(content)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(CARD_SPACING)
@@ -1183,9 +1229,9 @@ class SettingsWindow(QDialog):
             "Quick overview of what is still missing before dictation can start.",
         )
 
-        self._setup_status_label = QLabel("Checking current setup…")
-        self._setup_status_label.setFont(ui_font("section"))
-        card_layout.addWidget(self._setup_status_label)
+        self._setup_status_label = create_badge_label()
+        self._setup_status_label.setText("Checking current setup…")
+        card_layout.addWidget(self._setup_status_label, 0, Qt.AlignmentFlag.AlignLeft)
 
         self._setup_status_detail_label = QLabel("")
         self._setup_status_detail_label.setFont(ui_font("body"))
@@ -1205,7 +1251,7 @@ class SettingsWindow(QDialog):
 
         title_row = QHBoxLayout()
         title_row.setSpacing(10)
-        try_title = QLabel("🎤 Try it")
+        try_title = QLabel("Try it")
         try_title.setFont(ui_font("card_title"))
         title_row.addWidget(try_title)
         self._setup_try_hotkey_label = create_status_label(hotkey_info, "text_secondary")
@@ -1233,7 +1279,7 @@ class SettingsWindow(QDialog):
     def _add_local_presets_card(self, layout: QVBoxLayout) -> None:
         """Recommended local presets (macOS: "Recommended (Apple Silicon)")."""
         card, card_layout = create_card(
-            "⚡ Recommended (Local)",
+            "Recommended (Local)",
             "One click presets for fast local dictation (faster-whisper).",
         )
 
@@ -1286,7 +1332,7 @@ class SettingsWindow(QDialog):
         """Hotkeys-Karte: Presets oben, darunter eigene Hotkeys (Layout wie macOS)."""
         # Hotkey Card
         card, card_layout = create_card(
-            "⌨️ Hotkeys",
+            "Hotkeys",
             "Set one or two shortcuts. Toggle is ideal for longer dictation, Hold for push-to-talk.",
         )
 
@@ -1341,7 +1387,7 @@ class SettingsWindow(QDialog):
             clear_btn.clicked.connect(lambda: self._clear_hotkey_field(kind))
             row.addWidget(clear_btn)
 
-            card_layout.addLayout(row)
+            card_layout.add_row(row)
             return field, record_btn, clear_btn
 
         (
@@ -1390,7 +1436,7 @@ class SettingsWindow(QDialog):
         """Provider-Karten: Mode und API-Keys."""
         # Settings Card
         card, card_layout = create_card(
-            "🧩 Providers",
+            "Providers",
             "Choose how PulseScribe should transcribe audio. Use Local Whisper for offline dictation.",
         )
 
@@ -1401,7 +1447,7 @@ class SettingsWindow(QDialog):
         self._mode_combo.setToolTip("Choose the transcription provider PulseScribe uses for speech-to-text")
         self._mode_combo.currentTextChanged.connect(self._on_mode_changed)
         self._mode_combo.currentTextChanged.connect(self._refresh_footer_settings_hint)
-        card_layout.addLayout(create_label_row("Mode:", self._mode_combo))
+        card_layout.add_row(create_label_row("Mode:", self._mode_combo))
 
         # Language
         self._lang_combo = QComboBox()
@@ -1409,7 +1455,7 @@ class SettingsWindow(QDialog):
         self._lang_combo.setAccessibleName("Recognition language")
         self._lang_combo.setToolTip("Use auto for automatic language detection")
         self._lang_combo.currentTextChanged.connect(self._refresh_footer_settings_hint)
-        card_layout.addLayout(create_label_row("Language:", self._lang_combo))
+        card_layout.add_row(create_label_row("Language:", self._lang_combo))
 
         self._microphone_combo = QComboBox()
         self._microphone_combo.setAccessibleName("Recording microphone")
@@ -1420,7 +1466,7 @@ class SettingsWindow(QDialog):
         refresh_microphones.setAccessibleName("Refresh microphones")
         refresh_microphones.clicked.connect(lambda: self._refresh_microphone_options())
         microphone_row.addWidget(refresh_microphones)
-        card_layout.addLayout(microphone_row)
+        card_layout.add_row(microphone_row)
 
         # Local Backend Container (nur für local mode)
         self._local_backend_container = QWidget()
@@ -1441,7 +1487,7 @@ class SettingsWindow(QDialog):
         backend_label.setMinimumWidth(120)
         backend_layout.addWidget(backend_label)
         backend_layout.addWidget(self._local_backend_combo, 1)
-        card_layout.addWidget(self._local_backend_container)
+        card_layout.add_row(self._local_backend_container)
 
         # Local Model Container (nur für local mode)
         self._local_model_container = QWidget()
@@ -1456,7 +1502,7 @@ class SettingsWindow(QDialog):
         model_label.setMinimumWidth(120)
         model_layout.addWidget(model_label)
         model_layout.addWidget(self._local_model_combo, 1)
-        card_layout.addWidget(self._local_model_container)
+        card_layout.add_row(self._local_model_container)
 
         # Streaming Container (nur für deepgram)
         self._streaming_container = QWidget()
@@ -1471,7 +1517,7 @@ class SettingsWindow(QDialog):
         self._streaming_checkbox.toggled.connect(self._refresh_footer_settings_hint)
         streaming_layout.addWidget(self._streaming_checkbox)
         streaming_layout.addStretch()
-        card_layout.addWidget(self._streaming_container)
+        card_layout.add_row(self._streaming_container)
 
         self._provider_guidance_label = create_status_label("", "text_secondary")
         self._provider_guidance_label.setFont(ui_font("caption"))
@@ -1481,7 +1527,7 @@ class SettingsWindow(QDialog):
 
         # API Keys Card
         card, card_layout = create_card(
-            "🔑 API Keys",
+            "API Keys",
             "Only the key for the active cloud transcription mode is required. Unused keys can stay empty.",
         )
 
@@ -1519,16 +1565,18 @@ class SettingsWindow(QDialog):
             self._api_fields[env_key] = field
             row.addWidget(field, 1)
 
-            status = create_status_label()
+            status = create_badge_label()
             status.setAccessibleName(f"{provider} API key status")
-            status.setMinimumWidth(82)
-            status.setAlignment(
-                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-            )
             self._api_status[env_key] = status
-            row.addWidget(status)
+            # Fixed slot so the field width does not jump with the badge text.
+            status_slot = QWidget()
+            status_slot.setFixedWidth(96)
+            slot_layout = QHBoxLayout(status_slot)
+            slot_layout.setContentsMargins(0, 0, 0, 0)
+            slot_layout.addWidget(status, 0, Qt.AlignmentFlag.AlignRight)
+            row.addWidget(status_slot)
 
-            card_layout.addLayout(row)
+            card_layout.add_row(row)
 
         layout.addWidget(card)
 
@@ -1559,7 +1607,7 @@ class SettingsWindow(QDialog):
 
         # General local overrides
         card, card_layout = create_card(
-            "🔧 Local Model Settings",
+            "Local Model Settings",
             "Optional expert overrides for offline dictation. Leave fields empty or on 'default' to keep PulseScribe's recommended values.",
         )
         self._advanced_guidance_label = create_status_label("", "text_secondary")
@@ -1570,14 +1618,14 @@ class SettingsWindow(QDialog):
         _add_combo_items(self._device_combo, DEVICE_OPTIONS)
         self._device_combo.setToolTip("Auto is recommended unless you explicitly want CPU or GPU inference.")
         self._device_combo.currentTextChanged.connect(self._refresh_footer_settings_hint)
-        card_layout.addLayout(create_label_row("Device:", self._device_combo, "auto recommended"))
+        card_layout.add_row(create_label_row("Device:", self._device_combo, "auto recommended"))
 
         self._beam_size_field = QLineEdit()
         self._beam_size_field.setPlaceholderText("Leave empty = default")
         self._beam_size_field.setToolTip("Optional decoding override. Leave empty to keep PulseScribe's default.")
         self._beam_size_field.textChanged.connect(self._refresh_footer_settings_hint)
         self._beam_size_field.setValidator(QIntValidator(1, 20))
-        card_layout.addLayout(
+        card_layout.add_row(
             create_label_row("Beam Size:", self._beam_size_field, "optional override")
         )
 
@@ -1586,7 +1634,7 @@ class SettingsWindow(QDialog):
         self._temperature_field.setToolTip("Optional decoding temperature. Leave empty to keep the backend default.")
         self._temperature_field.textChanged.connect(self._refresh_footer_settings_hint)
         self._temperature_field.setValidator(QDoubleValidator(0.0, 1.0, 2))
-        card_layout.addLayout(
+        card_layout.add_row(
             create_label_row("Temperature:", self._temperature_field, "0.0-1.0")
         )
 
@@ -1595,7 +1643,7 @@ class SettingsWindow(QDialog):
         self._best_of_field.setToolTip("Optional sampling override. Leave empty to keep the backend default.")
         self._best_of_field.textChanged.connect(self._refresh_footer_settings_hint)
         self._best_of_field.setValidator(QIntValidator(1, 10))
-        card_layout.addLayout(
+        card_layout.add_row(
             create_label_row("Best Of:", self._best_of_field, "optional override")
         )
 
@@ -1605,14 +1653,14 @@ class SettingsWindow(QDialog):
             "Use default unless you explicitly want to force half-precision on or off."
         )
         self._fp16_combo.currentTextChanged.connect(self._refresh_footer_settings_hint)
-        card_layout.addLayout(create_label_row("FP16:", self._fp16_combo, "default keeps auto"))
+        card_layout.add_row(create_label_row("FP16:", self._fp16_combo, "default keeps auto"))
 
         self._advanced_local_settings_card = card
         layout.addWidget(card)
 
         # Faster-Whisper-specific controls
         card, card_layout = create_card(
-            "🚀 Faster-Whisper Settings",
+            "Faster-Whisper Settings",
             "Shown only when Local Backend is set to faster-whisper.",
         )
 
@@ -1623,7 +1671,7 @@ class SettingsWindow(QDialog):
         )
         self._compute_type_combo.setToolTip("Default is recommended unless you need a specific precision or quantization mode.")
         self._compute_type_combo.currentTextChanged.connect(self._refresh_footer_settings_hint)
-        card_layout.addLayout(
+        card_layout.add_row(
             create_label_row("Compute Type:", self._compute_type_combo, "default recommended")
         )
 
@@ -1633,7 +1681,7 @@ class SettingsWindow(QDialog):
         self._cpu_threads_field.setToolTip("Set 0 or leave the default to let Faster-Whisper choose automatically.")
         self._cpu_threads_field.textChanged.connect(self._refresh_footer_settings_hint)
         self._cpu_threads_field.setValidator(QIntValidator(0, cpu_threads_max))
-        card_layout.addLayout(
+        card_layout.add_row(
             create_label_row(
                 "CPU Threads:",
                 self._cpu_threads_field,
@@ -1646,7 +1694,7 @@ class SettingsWindow(QDialog):
         self._num_workers_field.setToolTip("Increase only if you know your system benefits from extra decoding workers.")
         self._num_workers_field.textChanged.connect(self._refresh_footer_settings_hint)
         self._num_workers_field.setValidator(QIntValidator(1, 8))
-        card_layout.addLayout(
+        card_layout.add_row(
             create_label_row("Num Workers:", self._num_workers_field, "advanced only")
         )
 
@@ -1656,7 +1704,7 @@ class SettingsWindow(QDialog):
         self._without_timestamps_combo.currentTextChanged.connect(
             self._refresh_footer_settings_hint
         )
-        card_layout.addLayout(
+        card_layout.add_row(
             create_label_row("Without Timestamps:", self._without_timestamps_combo, "default keeps auto")
         )
 
@@ -1664,7 +1712,7 @@ class SettingsWindow(QDialog):
         _add_combo_items(self._vad_filter_combo, BOOL_OVERRIDE_OPTIONS)
         self._vad_filter_combo.setToolTip("Default keeps Faster-Whisper's normal voice activity detection behavior.")
         self._vad_filter_combo.currentTextChanged.connect(self._refresh_footer_settings_hint)
-        card_layout.addLayout(
+        card_layout.add_row(
             create_label_row("VAD Filter:", self._vad_filter_combo, "default keeps auto")
         )
 
@@ -1673,7 +1721,7 @@ class SettingsWindow(QDialog):
 
         # Lightning-specific controls
         card, card_layout = create_card(
-            "⚡ Lightning Settings",
+            "Lightning Settings",
             "Shown only when Local Backend is set to Lightning.",
         )
 
@@ -1696,7 +1744,7 @@ class SettingsWindow(QDialog):
         self._lightning_batch_value.setMinimumWidth(30)
         batch_layout.addWidget(self._lightning_batch_value)
 
-        card_layout.addLayout(batch_layout)
+        card_layout.add_row(batch_layout)
 
         self._lightning_quant_combo = QComboBox()
         _add_combo_items(self._lightning_quant_combo, LIGHTNING_QUANT_OPTIONS)
@@ -1706,7 +1754,7 @@ class SettingsWindow(QDialog):
         self._lightning_quant_combo.currentTextChanged.connect(
             self._refresh_footer_settings_hint
         )
-        card_layout.addLayout(
+        card_layout.add_row(
             create_label_row("Quantization:", self._lightning_quant_combo, "none = best quality")
         )
 
@@ -1723,7 +1771,7 @@ class SettingsWindow(QDialog):
     def _add_refine_card(self, layout: QVBoxLayout) -> None:
         """Refine-Karte: LLM-Nachbearbeitung (wie macOS)."""
         card, card_layout = create_card(
-            "✨ Refine",
+            "Refine",
             "Choose whether PulseScribe cleans up transcript text after dictation, and "
             "which provider and model it uses.",
         )
@@ -1745,7 +1793,7 @@ class SettingsWindow(QDialog):
         self._refine_provider_combo.currentTextChanged.connect(
             self._refresh_secondary_settings_feedback
         )
-        card_layout.addLayout(
+        card_layout.add_row(
             create_label_row("Provider:", self._refine_provider_combo)
         )
 
@@ -1754,7 +1802,7 @@ class SettingsWindow(QDialog):
         self._refine_model_field.textChanged.connect(
             self._refresh_secondary_settings_feedback
         )
-        card_layout.addLayout(create_label_row("Model:", self._refine_model_field))
+        card_layout.add_row(create_label_row("Model:", self._refine_model_field))
 
         self._refine_model_help_label = create_status_label("", "text_secondary")
         self._refine_model_help_label.setFont(ui_font("caption"))
@@ -1771,10 +1819,7 @@ class SettingsWindow(QDialog):
 
     def _add_behavior_card(self, layout: QVBoxLayout) -> None:
         """General-tab card for the overlay, clipboard and speed toggles."""
-        card, card_layout = create_card()
-
-        # --- Visual & paste behavior ---
-        _add_card_section_label(card_layout, "Visual & paste behavior")
+        card, card_layout = create_card("Behavior")
 
         self._overlay_checkbox = QCheckBox("Show recording overlay")
         self._overlay_checkbox.setAccessibleName("Show recording overlay")
@@ -1832,7 +1877,7 @@ class SettingsWindow(QDialog):
     def _build_prompts_card(self) -> QWidget:
         """Prompts-Karte: Custom Prompts (lazy im Refine-Tab)."""
         card, card_layout = create_card(
-            "📝 Custom Prompts",
+            "Custom Prompts",
             "Fine-tune Refine prompts by context. Switch contexts freely, then use Save & Apply when you're ready.",
         )
 
@@ -1905,13 +1950,15 @@ class SettingsWindow(QDialog):
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         content = QWidget()
+        content.setObjectName("settingsPage")
+        content.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         layout = QVBoxLayout(content)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(CARD_SPACING)
 
         # Vocabulary Card
         card, card_layout = create_card(
-            "📚 Vocabulary / Keywords",
+            "Vocabulary / Keywords",
             "Add names, product terms, and jargon that PulseScribe should recognize more reliably. Changes are saved with Save & Apply and stay local to this device.",
         )
 
@@ -1979,6 +2026,8 @@ class SettingsWindow(QDialog):
         from PySide6.QtWidgets import QStackedWidget, QButtonGroup
 
         content = QWidget()
+        content.setObjectName("settingsPage")
+        content.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         layout = QVBoxLayout(content)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(CARD_SPACING)
@@ -2135,6 +2184,8 @@ class SettingsWindow(QDialog):
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         content = QWidget()
+        content.setObjectName("settingsPage")
+        content.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         layout = QVBoxLayout(content)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(CARD_SPACING)
@@ -2166,7 +2217,7 @@ class SettingsWindow(QDialog):
             "providers or local Whisper with ultra-low latency.",
         )
         add_section(
-            "✨ Features",
+            "Features",
             "• Real-time Streaming (Deepgram, ~300ms latency)\n"
             "• Multiple Providers: Deepgram, OpenAI, Groq, Local Whisper\n"
             "• LLM Post-processing: Grammar, punctuation, voice commands\n"
@@ -2175,13 +2226,13 @@ class SettingsWindow(QDialog):
             "• Visual Feedback: Tray status + animated overlay",
         )
         add_section(
-            "🚀 Providers",
+            "Providers",
             "• Deepgram: ~300ms ⚡ WebSocket streaming (recommended)\n"
             "• Groq: ~1s, Whisper on LPU hardware\n"
             "• OpenAI: ~2-3s, GPT-4o Transcribe, highest quality\n"
             "• Local: Offline via Whisper/Faster-Whisper",
         )
-        add_section("📁 Resources", "Config: %USERPROFILE%\\.pulsescribe\\")
+        add_section("Resources", "Config: %USERPROFILE%\\.pulsescribe\\")
 
         links = QLabel(
             f'<a href="https://github.com/KLIEBHAN/pulsescribe" style="color: {COLORS["accent"]};">GitHub</a> · '
@@ -2760,7 +2811,7 @@ class SettingsWindow(QDialog):
                 mode=mode,
                 configured=configured,
             )
-            _set_status_label_if_changed(self._api_status.get(env_key), status_text, status_color)
+            _set_badge_if_changed(self._api_status.get(env_key), status_text, status_color)
             tooltip = _build_api_key_tooltip(env_key, mode=mode)
             _set_widget_tooltip_if_changed(field, tooltip)
             _set_widget_tooltip_if_changed(self._api_status.get(env_key), tooltip)
@@ -2806,10 +2857,7 @@ class SettingsWindow(QDialog):
             hold_hotkey=hold,
             api_keys=api_keys,
         )
-        _set_widget_text_if_changed(status_label, headline)
-        _set_widget_stylesheet_if_changed(
-            status_label, f"color: {COLORS[color_key]};"
-        )
+        _set_badge_if_changed(status_label, headline, color_key)
         _set_widget_text_if_changed(status_detail_label, detail)
 
         hotkey_info, body_text, _hint, button_title = _build_setup_try_it_content(
