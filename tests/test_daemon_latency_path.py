@@ -9,6 +9,7 @@ import pytest
 from pulsescribe_daemon import PulseScribeDaemon
 from utils.macos_latency_diagnostics import start_macos_latency_run
 from utils.state import AppState, DaemonMessage, MessageType
+from utils.transcript_delivery import TEST_COMPLETE
 
 
 def _disabled_latency_run():
@@ -171,6 +172,10 @@ def test_onboarding_transcript_does_not_paste_or_save_history(monkeypatch, trans
     paste.assert_not_called()
     save.assert_not_called()
     assert daemon._transcript_delivery.text == "previous normal dictation"
+    if transcript:
+        daemon._update_state.assert_called_once_with(AppState.DONE, TEST_COMPLETE)
+    else:
+        daemon._update_state.assert_called_once_with(AppState.IDLE)
 
 
 def test_audio_dependency_prewarm_is_idempotent_and_import_only():

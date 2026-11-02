@@ -17,6 +17,31 @@ def format_recording_interim_text(
     return _ellipsis_tail(cleaned_tail, max_chars)
 
 
+def split_recording_interim_text(
+    text: str,
+    previous_text: str = "",
+    max_chars: int = DEFAULT_RECORDING_INTERIM_MAX_CHARS,
+) -> tuple[str, str]:
+    """Split formatted interim text into ``(earlier, newest)`` display parts.
+
+    ``newest`` holds the words added since ``previous_text`` so overlays can
+    emphasize them. A revised transcript (no common prefix) emphasizes only
+    its last word.
+    """
+    formatted = format_recording_interim_text(text, max_chars)
+    if not formatted:
+        return "", ""
+    if previous_text and text.startswith(previous_text):
+        added = " ".join(text[len(previous_text) :].split())
+        if not added:
+            return formatted, ""
+        split_at = max(len(formatted) - len(added), 0)
+    else:
+        split_at = len(formatted) if previous_text else 0
+    split_at = formatted.rfind(" ", 0, split_at) + 1 if split_at else 0
+    return formatted[:split_at], formatted[split_at:]
+
+
 def _normalized_tail(text: str, max_chars: int) -> tuple[str, bool]:
     normalized_tail_reversed: list[str] = []
     normalized_length = 0

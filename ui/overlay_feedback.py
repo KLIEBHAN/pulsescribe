@@ -1,32 +1,32 @@
-"""Shared text helpers for overlay status feedback."""
+"""What the overlay shows per state, independent of the UI toolkit."""
 
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 from ui.daemon_status_feedback import build_daemon_status_label
 from utils.state import AppState
+from utils.transcript_delivery import COPIED, COPY_FAILED, PASTE_FAILED, TEST_COMPLETE
 
 ERROR_FEEDBACK_SECONDS = 4.0
 
-_COMPACT_OVERLAY_COPY = {
+OVERLAY_STATE_TEXTS = {
     "LISTENING": "Listening…",
-    "RECORDING": "Recording — keep speaking",
+    "RECORDING": "Recording",
     "TRANSCRIBING": "Transcribing…",
     "REFINING": "Refining…",
     "LOADING": "Preparing…",
-    "DONE": "Transcript pasted",
-    "NO_SPEECH": "No speech detected",
-    "ERROR": "Something went wrong",
 }
+NO_SPEECH_TEXT = "Nothing was pasted"
 
-DEFAULT_OVERLAY_STATE_TEXTS = {
-    **_COMPACT_OVERLAY_COPY,
-    "ERROR": "Error",
+_BARS_BY_STATE = {
+    "LISTENING": "low",
+    "RECORDING": "level",
+    "LOADING": "line",
+    "TRANSCRIBING": "line",
+    "REFINING": "line",
 }
-
-OVERLAY_FEEDBACK_DEFAULTS = dict(_COMPACT_OVERLAY_COPY)
-
 _DONE_RTF_PATTERN = re.compile(r"^[✓✔]\s*\(([^()]+)\)\s*$")
 _FRIENDLY_ERROR_LABELS = {
     "missing api key",
@@ -37,6 +37,24 @@ _FRIENDLY_ERROR_LABELS = {
     "missing dependency",
     "something went wrong",
 }
+_ERROR_PREFIX = re.compile(r"^error\s*[:\-–—]?\s*", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class OverlayContent:
+    """One overlay frame: bar mode, optional outcome badge and a text line.
+
+    ``bars`` is ``level`` (audio driven), ``low`` (static row), ``line``
+    (flat processing line) or ``none``. ``tone`` picks the badge colors and is
+    empty when there is no badge. ``emphasized`` text uses the primary color,
+    everything else is muted.
+    """
+
+    bars: str = "none"
+    text: str = ""
+    emphasized: bool = False
+    badge: str = ""
+    tone: str = ""
 
 
 def _normalize_overlay_text(text: str | None) -> str:
@@ -62,96 +80,70 @@ def _ensure_progress_ellipsis(text: str) -> str:
     return cleaned.rstrip(".!? ") + "…"
 
 
-def _build_loading_feedback_text(detail: str, *, max_chars: int) -> str:
+def _loading_text(detail: str, *, max_chars: int) -> str:
+    if not detail:
+        return OVERLAY_STATE_TEXTS["LOADING"]
     label = build_daemon_status_label(
         AppState.LOADING,
         detail,
         prefer_detail=True,
         max_chars=max_chars,
     )
-    if not label:
-        label = OVERLAY_FEEDBACK_DEFAULTS["LOADING"]
+    label = label or OVERLAY_STATE_TEXTS["LOADING"]
     return _truncate_overlay_text(_ensure_progress_ellipsis(label), max_chars)
 
 
-def _build_done_feedback_text(detail: str, *, max_chars: int) -> str:
+def _error_text(detail: str, *, max_chars: int) -> str:
+    """Friendly error detail without an "Error:" prefix (the badge says it)."""
+    if not detail:
+        return "Something went wrong"
+    label = _normalize_overlay_text(
+        build_daemon_status_label(AppState.ERROR, detail, max_chars=max_chars)
+    )
+    if not (label and (label != detail or label.lower() in _FRIENDLY_ERROR_LABELS)):
+        label = detail
+    return _truncate_overlay_text(_ERROR_PREFIX.sub("", label) or label, max_chars)
+
+
+def _done_content(detail: str) -> OverlayContent:
+    if detail == TEST_COMPLETE:
+        return OverlayContent(text=TEST_COMPLETE, badge="Done", tone="success")
     match = _DONE_RTF_PATTERN.match(detail)
-    if match:
-        speed = _normalize_overlay_text(match.group(1))
-        if speed:
-            return _truncate_overlay_text(f"Pasted • {speed}", max_chars)
-    return format_overlay_status_text("DONE", detail, max_chars=max_chars)
+    speed = _normalize_overlay_text(match.group(1)) if match else ""
+    badge = "Copied" if detail == COPIED else "Pasted"
+    return OverlayContent(text=speed, badge=badge, tone="success")
 
 
-def _build_no_speech_feedback_text(detail: str, *, max_chars: int) -> str:
-    label = _normalize_overlay_text(
-        build_daemon_status_label(
-            AppState.NO_SPEECH,
-            detail,
-            max_chars=max_chars,
-        )
-    )
-    if label:
-        return _truncate_overlay_text(label, max_chars)
-    return _truncate_overlay_text(OVERLAY_FEEDBACK_DEFAULTS["NO_SPEECH"], max_chars)
-
-
-def _build_error_feedback_text(detail: str, *, max_chars: int) -> str:
-    label = _normalize_overlay_text(
-        build_daemon_status_label(
-            AppState.ERROR,
-            detail,
-            max_chars=max_chars,
-        )
-    )
-    if label and (label != detail or label.lower() in _FRIENDLY_ERROR_LABELS):
-        return _truncate_overlay_text(label, max_chars)
-    return format_overlay_status_text("ERROR", detail, max_chars=max_chars)
-
-
-def format_overlay_status_text(
+def describe_overlay_content(
     state: str | None,
     text: str | None = None,
     *,
     max_chars: int = 72,
-) -> str:
+) -> OverlayContent:
+    """Map a daemon state payload to what the overlay draws.
+
+    Recording interim text is handled by the platforms on top of the plain
+    ``RECORDING`` content because it updates far more often.
+    """
     normalized_state = str(state or "").strip().upper()
-    normalized_text = _normalize_overlay_text(text)
+    detail = _normalize_overlay_text(text)
 
-    if normalized_text:
-        if normalized_state == "ERROR" and not normalized_text.lower().startswith("error"):
-            normalized_text = f"Error: {normalized_text}"
-        return _truncate_overlay_text(normalized_text, max_chars)
-
-    return DEFAULT_OVERLAY_STATE_TEXTS.get(normalized_state, "")
-
-
-def build_overlay_feedback_text(
-    state: str | None,
-    text: str | None = None,
-    *,
-    max_chars: int = 72,
-) -> str:
-    normalized_state = str(state or "").strip().upper()
-    normalized_text = _normalize_overlay_text(text)
-
-    if normalized_text:
-        if normalized_state == "LOADING":
-            return _build_loading_feedback_text(normalized_text, max_chars=max_chars)
-        if normalized_state == "DONE":
-            return _build_done_feedback_text(normalized_text, max_chars=max_chars)
-        if normalized_state == "NO_SPEECH":
-            return _build_no_speech_feedback_text(normalized_text, max_chars=max_chars)
-        if normalized_state == "ERROR":
-            return _build_error_feedback_text(normalized_text, max_chars=max_chars)
-        return format_overlay_status_text(
-            normalized_state,
-            normalized_text,
-            max_chars=max_chars,
+    if normalized_state == "RECORDING":
+        return OverlayContent("level", OVERLAY_STATE_TEXTS["RECORDING"], emphasized=True)
+    if normalized_state == "LOADING":
+        return OverlayContent("line", _loading_text(detail, max_chars=max_chars))
+    if normalized_state in _BARS_BY_STATE:
+        return OverlayContent(
+            _BARS_BY_STATE[normalized_state], OVERLAY_STATE_TEXTS[normalized_state]
         )
-
-    fallback = OVERLAY_FEEDBACK_DEFAULTS.get(
-        normalized_state,
-        DEFAULT_OVERLAY_STATE_TEXTS.get(normalized_state, ""),
-    )
-    return _truncate_overlay_text(fallback, max_chars)
+    if normalized_state == "DONE":
+        return _done_content(detail)
+    if normalized_state == "NO_SPEECH":
+        return OverlayContent(text=NO_SPEECH_TEXT, badge="No speech", tone="warn")
+    if normalized_state == "ERROR":
+        if detail in (PASTE_FAILED, COPY_FAILED):
+            return OverlayContent(text=detail, badge="Not pasted", tone="warn")
+        return OverlayContent(
+            text=_error_text(detail, max_chars=max_chars), badge="Error", tone="error"
+        )
+    return OverlayContent()

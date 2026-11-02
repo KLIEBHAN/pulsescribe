@@ -12,8 +12,6 @@ from ui.overlay_pyside6 import (
     FEEDBACK_DISPLAY_MS,
     INTERIM_DIRECT_UPDATE_GRACE_S,
     FRAME_MS,
-    FRAME_MS_ACTIVE,
-    FRAME_MS_FEEDBACK,
     INTERIM_POLL_DIRECT_INTERVAL_MS,
     INTERIM_POLL_INTERVAL_MS,
     INTERIM_POLL_MAX_CHARS,
@@ -23,6 +21,7 @@ from ui.overlay_pyside6 import (
     PySide6OverlayWidget,
     _format_recording_interim_text,
 )
+from ui.overlay_feedback import OverlayContent
 
 
 class _FakeTimer:
@@ -102,28 +101,6 @@ class _FakeInterimTimer:
     def setInterval(self, interval_ms: int) -> None:
         self.interval_ms = interval_ms
         self.set_interval_calls.append(interval_ms)
-
-
-class _FakeQtLabel:
-    def __init__(self):
-        self.font_calls = 0
-        self.style_calls = 0
-        self.text_calls = 0
-        self.text = ""
-        self.style = ""
-        self.font = None
-
-    def setFont(self, font) -> None:
-        self.font = font
-        self.font_calls += 1
-
-    def setStyleSheet(self, style: str) -> None:
-        self.style = style
-        self.style_calls += 1
-
-    def setText(self, text: str) -> None:
-        self.text = text
-        self.text_calls += 1
 
 
 def test_fade_out_timer_is_reused(monkeypatch):
@@ -475,147 +452,15 @@ def test_set_interim_polling_active_avoids_restarting_active_timer():
     assert controller._interim_timer.set_interval_calls == []
 
 
-def test_on_interim_changed_restores_default_recording_label_when_empty():
-    widget = PySide6OverlayWidget.__new__(PySide6OverlayWidget)
-    widget._state = "RECORDING"
-    seen_calls: list[tuple[str, str, bool]] = []
-    widget._update_label = lambda state, text, italic=False: seen_calls.append(
-        (state, text, italic)
-    )
-
-    PySide6OverlayWidget._on_interim_changed(widget, "")
-
-    assert seen_calls == [("RECORDING", "Recording — keep speaking", False)]
-
-
 def test_format_recording_interim_text_compacts_whitespace():
     text = "  hello   world \n\n from   pulse  "
     assert _format_recording_interim_text(text) == "hello world from pulse"
-
-
-def test_on_interim_changed_uses_compacted_tail_text():
-    widget = PySide6OverlayWidget.__new__(PySide6OverlayWidget)
-    widget._state = "RECORDING"
-    seen_calls: list[tuple[str, str, bool]] = []
-    widget._update_label = lambda state, text, italic=False: seen_calls.append(
-        (state, text, italic)
-    )
-    text = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu"
-    cleaned = " ".join(text.split())
-
-    PySide6OverlayWidget._on_interim_changed(widget, text)
-
-    assert seen_calls == [("RECORDING", "..." + cleaned[-42:], True)]
 
 
 def test_format_recording_interim_text_handles_long_whitespace_heavy_text():
     text = ("alpha   beta   " * 80) + "  final   words  here "
 
     assert _format_recording_interim_text(text, max_chars=20) == "... final words here"
-
-
-def test_frame_interval_ms_is_state_aware():
-    widget = PySide6OverlayWidget.__new__(PySide6OverlayWidget)
-
-    widget._state = "RECORDING"
-    assert widget._frame_interval_ms() == FRAME_MS
-
-    widget._state = "TRANSCRIBING"
-    assert widget._frame_interval_ms() == FRAME_MS_ACTIVE
-
-    widget._state = "DONE"
-    assert widget._frame_interval_ms() == FRAME_MS_FEEDBACK
-
-    widget._state = "NO_SPEECH"
-    assert widget._frame_interval_ms() == FRAME_MS_FEEDBACK
-
-
-def test_start_animation_uses_state_dependent_interval(monkeypatch):
-    widget = PySide6OverlayWidget.__new__(PySide6OverlayWidget)
-    widget._state = "TRANSCRIBING"
-    widget._animation_timer = _FakeAnimationTimer(active=False, interval_ms=0)
-
-    monkeypatch.setattr("ui.overlay_pyside6.time.perf_counter", lambda: 123.0)
-
-    PySide6OverlayWidget._start_animation(widget)
-
-    assert widget._animation_timer.start_calls == [FRAME_MS_ACTIVE]
-    assert widget._animation_timer.interval_ms == FRAME_MS_ACTIVE
-    assert widget._animation_start == 123.0
-
-
-def test_update_animation_timer_interval_updates_active_timer():
-    widget = PySide6OverlayWidget.__new__(PySide6OverlayWidget)
-    widget._state = "DONE"
-    widget._animation_timer = _FakeAnimationTimer(
-        active=True,
-        interval_ms=FRAME_MS,
-    )
-
-    PySide6OverlayWidget._update_animation_timer_interval(widget)
-
-    assert widget._animation_timer.set_interval_calls == [FRAME_MS_FEEDBACK]
-    assert widget._animation_timer.interval_ms == FRAME_MS_FEEDBACK
-
-
-def test_update_label_skips_duplicate_font_style_and_text_updates():
-    widget = PySide6OverlayWidget.__new__(PySide6OverlayWidget)
-    widget._label = _FakeQtLabel()
-
-    PySide6OverlayWidget._update_label(widget, "RECORDING", "Recording...")
-    PySide6OverlayWidget._update_label(widget, "RECORDING", "Recording...")
-
-    assert widget._label.font_calls == 1
-    assert widget._label.style_calls == 1
-    assert widget._label.text_calls == 1
-
-
-def test_update_label_only_mutates_changed_parts():
-    widget = PySide6OverlayWidget.__new__(PySide6OverlayWidget)
-    widget._label = _FakeQtLabel()
-
-    PySide6OverlayWidget._update_label(widget, "RECORDING", "Recording...")
-    PySide6OverlayWidget._update_label(widget, "RECORDING", "Interim...", italic=True)
-
-    assert widget._label.font_calls == 2
-    assert widget._label.style_calls == 2
-    assert widget._label.text_calls == 2
-
-
-def test_update_label_re_elides_same_text_when_font_mode_changes():
-    widget = PySide6OverlayWidget.__new__(PySide6OverlayWidget)
-    widget._label = _FakeQtLabel()
-
-    PySide6OverlayWidget._update_label(widget, "RECORDING", "same text")
-    PySide6OverlayWidget._update_label(widget, "RECORDING", "same text", italic=True)
-
-    assert widget._label.text_calls == 2
-
-
-@pytest.mark.parametrize(
-    ("italic", "expected_mode"),
-    [(True, "ElideLeft"), (False, "ElideRight")],
-)
-def test_elide_label_text_keeps_newest_interim_words(italic, expected_mode):
-    calls: list[tuple[str, str, int]] = []
-
-    class _Metrics:
-        def elidedText(self, text, mode, width):
-            calls.append((text, mode.name, width))
-            return "\u2026tail"
-
-    widget = PySide6OverlayWidget.__new__(PySide6OverlayWidget)
-    widget._label = types.SimpleNamespace(
-        fontMetrics=lambda: _Metrics(),
-        width=lambda: 256,
-    )
-
-    shown = PySide6OverlayWidget._elide_label_text(
-        widget, "a long live transcript", italic=italic
-    )
-
-    assert shown == "\u2026tail"
-    assert calls == [("a long live transcript", expected_mode, 256)]
 
 
 def test_controller_wait_until_ready_uses_ready_event():
@@ -629,145 +474,161 @@ def test_controller_wait_until_ready_uses_ready_event():
     assert calls == [0.15]
 
 
+def _state_widget(monkeypatch):
+    widget = PySide6OverlayWidget.__new__(PySide6OverlayWidget)
+    widget._state = "IDLE"
+    widget._last_state_payload = None
+    widget._content = OverlayContent()
+    widget._interim = ("", "")
+    widget._previous_interim = ""
+    widget._animation_timer = _FakeAnimationTimer()
+    widget.events = []
+    widget._schedule_center_on_active_screen = lambda: None
+    widget._fade_in = lambda: widget.events.append("show")
+    widget._fade_out = lambda: widget.events.append("hide")
+    widget._start_fade_out_timer = lambda: widget.events.append("auto-hide")
+    widget._relayout = lambda: widget.events.append("layout")
+    widget.setAccessibleDescription = lambda _text: None
+    widget.recording_state_changed = types.SimpleNamespace(emit=lambda *_args: None)
+    monkeypatch.setattr("ui.overlay_pyside6.time.perf_counter", lambda: 123.0)
+    return widget
+
+
+def test_only_recording_runs_the_animation_timer(monkeypatch):
+    widget = _state_widget(monkeypatch)
+
+    widget._on_state_changed("LISTENING", "")
+    assert widget._animation_timer.start_calls == []
+
+    widget._on_state_changed("RECORDING", "")
+    assert widget._animation_timer.start_calls == [FRAME_MS]
+
+    for state in ("TRANSCRIBING", "REFINING", "LOADING", "DONE"):
+        widget._on_state_changed(state, "")
+        assert widget._animation_timer.active is False
+    assert widget._animation_timer.start_calls == [FRAME_MS]
+
+
 def test_on_state_changed_skips_duplicate_transition_work(monkeypatch):
+    widget = _state_widget(monkeypatch)
+
+    widget._on_state_changed("TRANSCRIBING", "")
+    widget._on_state_changed("TRANSCRIBING", "")
+
+    assert widget.events == ["layout", "show"]
+
+
+@pytest.mark.parametrize(
+    ("state", "text", "expected"),
+    [
+        ("LOADING", "", OverlayContent("line", "Preparing…")),
+        (
+            "ERROR",
+            " microphone\nmissing ",
+            OverlayContent(text="Microphone unavailable", badge="Error", tone="error"),
+        ),
+        (
+            "NO_SPEECH",
+            "",
+            OverlayContent(text="Nothing was pasted", badge="No speech", tone="warn"),
+        ),
+        ("DONE", "Copied to clipboard", OverlayContent(badge="Copied", tone="success")),
+    ],
+)
+def test_on_state_changed_uses_shared_content(monkeypatch, state, text, expected):
+    widget = _state_widget(monkeypatch)
+
+    widget._on_state_changed(state, text)
+
+    assert widget._content == expected
+    assert ("auto-hide" in widget.events) == (state in ("ERROR", "NO_SPEECH", "DONE"))
+
+
+def test_on_interim_changed_marks_newest_words(monkeypatch):
+    widget = _state_widget(monkeypatch)
+    widget._on_state_changed("RECORDING", "")
+
+    widget._on_interim_changed("hello")
+    widget._on_interim_changed("hello world")
+    assert widget._interim == ("hello ", "world")
+
+    widget._on_interim_changed("")
+    assert widget._interim == ("", "")
+
+
+def test_interim_runs_keep_newest_words_when_elided():
+    class _Metrics:
+        def elidedText(self, text, mode, width):
+            assert mode.name == "ElideLeft"
+            return "\u2026" + text[-12:]
+
+        def horizontalAdvance(self, text):
+            return 7.0 * len(text)
+
     widget = PySide6OverlayWidget.__new__(PySide6OverlayWidget)
-    widget._state = "IDLE"
-    widget._text = ""
-    widget._last_state_payload = None
-    widget._update_label = lambda *_args, **_kwargs: None
-    widget._center_on_screen = lambda **_kwargs: None
-    widget._fade_in = lambda: None
-    widget._fade_out = lambda: None
-    widget._start_fade_out_timer = lambda: None
-    start_calls: list[str] = []
-    widget._start_animation = lambda: start_calls.append("start")
-    widget.recording_state_changed = types.SimpleNamespace(emit=lambda *_args: None)
+    widget._content = OverlayContent("level", "Recording", emphasized=True)
+    widget._colors = {"text": "bright", "muted": "muted", "interim": "dim"}
+    layout = types.SimpleNamespace(text_x=85.0, text_width=90.0)
 
-    monkeypatch.setattr("ui.overlay_pyside6.time.perf_counter", lambda: 123.0)
-
-    PySide6OverlayWidget._on_state_changed(widget, "TRANSCRIBING", "")
-    PySide6OverlayWidget._on_state_changed(widget, "TRANSCRIBING", "")
-
-    assert start_calls == ["start"]
-
-
-def test_on_state_changed_uses_clear_loading_copy(monkeypatch):
-    widget = PySide6OverlayWidget.__new__(PySide6OverlayWidget)
-    widget._state = "IDLE"
-    widget._text = ""
-    widget._last_state_payload = None
-    seen_calls: list[tuple[str, str, bool]] = []
-    widget._update_label = lambda state, text, italic=False: seen_calls.append(
-        (state, text, italic)
+    runs = PySide6OverlayWidget._build_text_runs(
+        widget, layout, _Metrics(), "alpha beta gamma delta", "delta"
     )
-    widget._center_on_screen = lambda **_kwargs: None
-    widget._fade_in = lambda: None
-    widget._fade_out = lambda: None
-    widget._start_fade_out_timer = lambda: None
-    widget._start_animation = lambda: None
-    widget.recording_state_changed = types.SimpleNamespace(emit=lambda *_args: None)
 
-    monkeypatch.setattr("ui.overlay_pyside6.time.perf_counter", lambda: 123.0)
-
-    PySide6OverlayWidget._on_state_changed(widget, "LOADING", "")
-
-    assert seen_calls[-1] == ("LOADING", "Preparing…", False)
+    assert runs == [(85.0, "\u2026 gamma ", "dim"), (85.0 + 7.0 * 8, "delta", "bright")]
 
 
-def test_on_state_changed_formats_error_feedback_text(monkeypatch):
+def _recording_widget(anim):
     widget = PySide6OverlayWidget.__new__(PySide6OverlayWidget)
-    widget._state = "IDLE"
-    widget._text = ""
-    widget._last_state_payload = None
-    seen_calls: list[tuple[str, str, bool]] = []
-    widget._update_label = lambda state, text, italic=False: seen_calls.append(
-        (state, text, italic)
-    )
-    widget._center_on_screen = lambda **_kwargs: None
-    widget._fade_in = lambda: None
-    widget._fade_out = lambda: None
-    widget._start_fade_out_timer = lambda: None
-    widget._start_animation = lambda: None
-    widget.recording_state_changed = types.SimpleNamespace(emit=lambda *_args: None)
-
-    monkeypatch.setattr("ui.overlay_pyside6.time.perf_counter", lambda: 123.0)
-
-    PySide6OverlayWidget._on_state_changed(widget, "ERROR", " microphone\nmissing ")
-
-    assert seen_calls[-1] == ("ERROR", "Microphone unavailable", False)
-
-
-def test_on_state_changed_formats_no_speech_feedback_text(monkeypatch):
-    widget = PySide6OverlayWidget.__new__(PySide6OverlayWidget)
-    widget._state = "IDLE"
-    widget._text = ""
-    widget._last_state_payload = None
-    seen_calls: list[tuple[str, str, bool]] = []
-    widget._update_label = lambda state, text, italic=False: seen_calls.append(
-        (state, text, italic)
-    )
-    widget._center_on_screen = lambda **_kwargs: None
-    widget._fade_in = lambda: None
-    widget._fade_out = lambda: None
-    widget._start_fade_out_timer = lambda: None
-    widget._start_animation = lambda: None
-    widget.recording_state_changed = types.SimpleNamespace(emit=lambda *_args: None)
-
-    monkeypatch.setattr("ui.overlay_pyside6.time.perf_counter", lambda: 123.0)
-
-    PySide6OverlayWidget._on_state_changed(widget, "NO_SPEECH", "")
-
-    assert seen_calls[-1] == ("NO_SPEECH", "No speech detected", False)
+    widget._state = "RECORDING"
+    widget._animation_start = 0.0
+    widget._audio_level = 0.0
+    widget._bar_heights = [float(BAR_MIN_HEIGHT)] * BAR_COUNT
+    widget._painted_bar_heights = [float(BAR_MIN_HEIGHT)] * BAR_COUNT
+    widget._anim = anim
+    widget.repaints = []
+    widget.update = lambda: widget.repaints.append("update")
+    return widget
 
 
 def test_animate_frame_skips_repaint_for_subpixel_height_changes(monkeypatch):
-    widget = PySide6OverlayWidget.__new__(PySide6OverlayWidget)
-    widget._state = "RECORDING"
-    widget._animation_start = 0.0
-    widget._audio_level = 0.0
-    widget._bar_heights = [float(BAR_MIN_HEIGHT)] * BAR_COUNT
-    widget._painted_bar_heights = [float(BAR_MIN_HEIGHT)] * BAR_COUNT
-    widget._last_painted_state = "RECORDING"
-    widget._anim = types.SimpleNamespace(
-        update_level=lambda _level: None,
-        update_agc=lambda: None,
-        calculate_bar_height=lambda *_args: BAR_MIN_HEIGHT
-        + (BAR_HEIGHT_UPDATE_EPSILON / 2),
-    )
-    repaint_calls: list[str] = []
-    widget.update = lambda: repaint_calls.append("update")
-
-    monkeypatch.setattr("ui.overlay_pyside6.time.perf_counter", lambda: 1.0)
-
-    PySide6OverlayWidget._animate_frame(widget)
-
-    assert repaint_calls == []
-
-
-def test_animate_frame_prefers_batch_height_api(monkeypatch):
-    widget = PySide6OverlayWidget.__new__(PySide6OverlayWidget)
-    widget._state = "RECORDING"
-    widget._animation_start = 0.0
-    widget._audio_level = 0.0
-    widget._bar_heights = [float(BAR_MIN_HEIGHT)] * BAR_COUNT
-    widget._painted_bar_heights = [float(BAR_MIN_HEIGHT)] * BAR_COUNT
-    widget._last_painted_state = "IDLE"
-    widget._anim = types.SimpleNamespace(
-        update_level=lambda _level: None,
-        update_agc=lambda: None,
-        calculate_frame_heights=lambda *_args, **_kwargs: (
-            BAR_MIN_HEIGHT + 4,
+    widget = _recording_widget(
+        types.SimpleNamespace(
+            update_level=lambda _level: None,
+            update_agc=lambda: None,
+            calculate_frame_heights=lambda *_args: (
+                BAR_MIN_HEIGHT + BAR_HEIGHT_UPDATE_EPSILON / 2,
+            )
+            * BAR_COUNT,
         )
-        * BAR_COUNT,
-        calculate_bar_height=lambda *_args: (_ for _ in ()).throw(
-            AssertionError("batch frame API should be used")
-        ),
     )
-    repaint_calls: list[str] = []
-    widget.update = lambda: repaint_calls.append("update")
-
     monkeypatch.setattr("ui.overlay_pyside6.time.perf_counter", lambda: 1.0)
 
     PySide6OverlayWidget._animate_frame(widget)
 
-    assert repaint_calls == ["update"]
+    assert widget.repaints == []
+
+
+def test_animate_frame_repaints_when_bars_move(monkeypatch):
+    widget = _recording_widget(
+        types.SimpleNamespace(
+            update_level=lambda _level: None,
+            update_agc=lambda: None,
+            calculate_frame_heights=lambda *_args: (BAR_MIN_HEIGHT + 4,) * BAR_COUNT,
+        )
+    )
+    monkeypatch.setattr("ui.overlay_pyside6.time.perf_counter", lambda: 1.0)
+
+    PySide6OverlayWidget._animate_frame(widget)
+
+    assert widget.repaints == ["update"]
+
+
+def test_animate_frame_stops_timer_outside_recording():
+    widget = _recording_widget(None)
+    widget._state = "TRANSCRIBING"
+    widget._animation_timer = _FakeAnimationTimer(active=True, interval_ms=FRAME_MS)
+
+    PySide6OverlayWidget._animate_frame(widget)
+
+    assert widget._animation_timer.active is False
+    assert widget.repaints == []

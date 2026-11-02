@@ -1,15 +1,11 @@
 from pathlib import Path
 import queue
-import time
 import types
 
 from ui.overlay_windows import (
     BAR_COUNT,
     BAR_HEIGHT_UPDATE_EPSILON,
     BAR_MIN_HEIGHT,
-    FRAME_MS,
-    FRAME_MS_ACTIVE,
-    FRAME_MS_FEEDBACK,
     INTERIM_DIRECT_UPDATE_GRACE_S,
     INTERIM_POLL_DIRECT_INTERVAL_MS,
     INTERIM_POLL_INTERVAL_MS,
@@ -21,12 +17,22 @@ from ui.overlay_windows import (
     QUEUE_POLL_ACTIVE_MS,
     QUEUE_POLL_ACTIVE_IDLE_MS,
     QUEUE_POLL_IDLE_MS,
-    STATE_COLORS,
     WINDOW_HEIGHT,
     WINDOW_MARGIN_BOTTOM,
     WINDOW_WIDTH,
+    TEXT_X_AFTER_BARS,
     WindowsOverlayController,
     _format_recording_interim_text,
+)
+from ui.animation import LISTENING_BAR_HEIGHTS
+from ui.overlay_style import (
+    BADGE_TONES,
+    BAR_COLORS,
+    INTERIM_TEXT_COLOR,
+    MUTED_TEXT_COLOR,
+    OVERLAY_GAP,
+    OVERLAY_PADDING_H,
+    TEXT_COLOR,
 )
 
 
@@ -67,10 +73,20 @@ class _FakeLabel:
     def __init__(self):
         self.last_config: dict[str, object] = {}
         self.config_calls = 0
+        self.placed: dict[str, object] | None = None
 
     def config(self, **kwargs) -> None:
         self.config_calls += 1
         self.last_config.update(kwargs)
+
+    def place(self, **kwargs) -> None:
+        self.placed = kwargs
+
+    def place_forget(self) -> None:
+        self.placed = None
+
+    def winfo_reqwidth(self) -> int:
+        return 70
 
 
 class _FakeCanvas:
@@ -95,7 +111,7 @@ class _FakeCanvas:
     def coords(self, *_args, **_kwargs) -> None:
         self.coords_calls += 1
 
-    def itemconfig(self, _item_id: int, **kwargs) -> None:
+    def itemconfig(self, _item_id, **kwargs) -> None:
         self.item_configs.append(kwargs)
 
     def delete(self, tag_or_id) -> None:
@@ -267,46 +283,6 @@ def test_update_interim_text_skips_duplicate_queue_messages(monkeypatch) -> None
     assert controller._direct_interim_until == 10.4 + INTERIM_DIRECT_UPDATE_GRACE_S
 
 
-def test_handle_state_change_uses_feedback_color_for_done_no_speech_and_error():
-    controller = WindowsOverlayController()
-    controller._root = _FakeRoot()
-    controller._label = _FakeLabel()
-
-    controller._handle_state_change("DONE", None)
-    assert controller._label.last_config["text"] == "Transcript pasted"
-    assert controller._label.last_config["fg"] == STATE_COLORS["DONE"]
-
-    controller._handle_state_change("NO_SPEECH", None)
-    assert controller._label.last_config["text"] == "No speech detected"
-    assert controller._label.last_config["fg"] == STATE_COLORS["NO_SPEECH"]
-
-    controller._handle_state_change("ERROR", "Boom")
-    assert controller._label.last_config["text"] == "Error: Boom"
-    assert controller._label.last_config["fg"] == STATE_COLORS["ERROR"]
-
-
-def test_handle_state_change_uses_loading_default_text():
-    controller = WindowsOverlayController()
-    controller._root = _FakeRoot()
-    controller._label = _FakeLabel()
-
-    controller._handle_state_change("LOADING", None)
-
-    assert controller._label.last_config["text"] == "Preparing…"
-    assert "LOADING" in STATE_COLORS
-
-
-def test_handle_interim_text_updates_label_for_short_text():
-    controller = WindowsOverlayController()
-    controller._state = "RECORDING"
-    controller._label = _FakeLabel()
-
-    controller._handle_interim_text("short text")
-
-    assert controller._label.last_config["text"] == "short text"
-    assert controller._label.last_config["fg"] == "#909090"
-
-
 def test_handle_interim_text_skips_duplicate_label_configurations():
     controller = WindowsOverlayController()
     controller._state = "RECORDING"
@@ -336,17 +312,6 @@ def test_format_recording_interim_text_handles_long_whitespace_heavy_text():
     assert _format_recording_interim_text(text, max_chars=20) == "... final words here"
 
 
-def test_handle_interim_text_restores_default_recording_label_when_empty():
-    controller = WindowsOverlayController()
-    controller._state = "RECORDING"
-    controller._label = _FakeLabel()
-
-    controller._handle_interim_text("")
-
-    assert controller._label.last_config["text"] == "Recording — keep speaking"
-    assert controller._label.last_config["fg"] == "white"
-
-
 def test_handle_state_change_repositions_on_active_monitor_when_leaving_idle():
     controller = WindowsOverlayController()
     controller._root = _FakeRoot()
@@ -360,17 +325,6 @@ def test_handle_state_change_repositions_on_active_monitor_when_leaving_idle():
     controller._handle_state_change("RECORDING", None)
 
     assert calls == [True]
-
-
-def test_handle_state_change_formats_error_feedback_text():
-    controller = WindowsOverlayController()
-    controller._root = _FakeRoot()
-    controller._label = _FakeLabel()
-
-    controller._handle_state_change("ERROR", " microphone\nmissing ")
-
-    assert controller._label.last_config["text"] == "Microphone unavailable"
-    assert controller._label.last_config["fg"] == STATE_COLORS["ERROR"]
 
 
 def test_position_window_uses_active_monitor_work_area():
@@ -545,40 +499,6 @@ def test_handle_state_change_restarts_animation_loop_when_overlay_becomes_active
     assert starts == [True]
 
 
-def test_frame_interval_ms_is_state_aware():
-    controller = WindowsOverlayController.__new__(WindowsOverlayController)
-
-    controller._state = "RECORDING"
-    assert controller._frame_interval_ms() == FRAME_MS
-
-    controller._state = "TRANSCRIBING"
-    assert controller._frame_interval_ms() == FRAME_MS_ACTIVE
-
-    controller._state = "DONE"
-    assert controller._frame_interval_ms() == FRAME_MS_FEEDBACK
-
-    controller._state = "NO_SPEECH"
-    assert controller._frame_interval_ms() == FRAME_MS_FEEDBACK
-
-
-def test_animate_uses_reduced_fps_for_non_recording_states():
-    controller = WindowsOverlayController.__new__(WindowsOverlayController)
-    controller._running = True
-    controller._root = _FakeRoot()
-    controller._state = "TRANSCRIBING"
-    controller._animation_start = time.perf_counter()
-    controller._audio_level = 0.0
-    controller._anim = types.SimpleNamespace(
-        update_level=lambda _level: None,
-        update_agc=lambda: None,
-    )
-    controller._render_bars = lambda _t: None
-
-    controller._animate()
-
-    assert controller._root.after_calls[-1] == FRAME_MS_ACTIVE
-
-
 def test_poll_interim_file_uses_configured_interval(tmp_path):
     interim_file = tmp_path / "interim.txt"
     interim_file.write_text("hello", encoding="utf-8")
@@ -630,22 +550,6 @@ def test_render_bars_reuses_canvas_items_between_frames():
     assert controller._canvas.delete_calls == []
 
 
-def test_render_bars_updates_existing_items_with_state_color():
-    controller = WindowsOverlayController.__new__(WindowsOverlayController)
-    controller._canvas = _FakeCanvas()
-    controller._state = "DONE"
-    controller._bar_heights = [BAR_MIN_HEIGHT] * BAR_COUNT
-    controller._bar_item_ids = []
-    controller._bar_color = None
-    controller._anim = types.SimpleNamespace(
-        calculate_bar_height=lambda *_args: BAR_MIN_HEIGHT
-    )
-
-    controller._render_bars(0.1)
-
-    assert controller._canvas.item_configs[-1]["fill"] == STATE_COLORS["DONE"]
-
-
 def test_render_bars_prefers_batch_height_api():
     controller = WindowsOverlayController.__new__(WindowsOverlayController)
     controller._canvas = _FakeCanvas()
@@ -694,26 +598,71 @@ def test_draw_pill_bar_skips_subpixel_canvas_updates():
     assert controller._canvas.coords_calls == 3
 
 
-def test_render_bars_reuses_existing_fill_color_until_state_changes():
+def _content_controller() -> WindowsOverlayController:
+    controller = WindowsOverlayController()
+    controller._root = _FakeRoot()
+    controller._label = _FakeLabel()
+    controller._badge_label = _FakeLabel()
+    return controller
+
+
+def test_handle_state_change_shows_outcome_badges_next_to_muted_text():
+    controller = _content_controller()
+
+    controller._handle_state_change("DONE", "✓ (0.4x)")
+    assert controller._badge_label.last_config["text"] == "Pasted"
+    assert controller._badge_label.last_config["bg"] == BADGE_TONES["success"][0]
+    assert controller._label.last_config["text"] == "0.4x"
+    assert controller._label.placed["x"] == OVERLAY_PADDING_H + 70 + OVERLAY_GAP
+
+    controller._handle_state_change("ERROR", "Boom")
+    assert controller._badge_label.last_config["text"] == "Error"
+    assert controller._label.last_config["text"] == "Boom"
+    assert controller._label.last_config["fg"] == MUTED_TEXT_COLOR
+
+    controller._handle_state_change("LOADING", None)
+    assert controller._badge_label.placed is None
+    assert controller._label.last_config["text"] == "Preparing…"
+    assert controller._label.placed["x"] == TEXT_X_AFTER_BARS
+
+
+def test_handle_interim_text_uses_muted_interim_color_and_restores_status():
+    controller = _content_controller()
+    controller._state = "RECORDING"
+
+    controller._handle_interim_text("short text")
+    assert controller._label.last_config["text"] == "short text"
+    assert controller._label.last_config["fg"] == INTERIM_TEXT_COLOR
+
+    controller._handle_interim_text("")
+    assert controller._label.last_config["text"] == "Recording"
+    assert controller._label.last_config["fg"] == TEXT_COLOR
+
+
+def test_animate_runs_only_while_recording():
+    controller = WindowsOverlayController.__new__(WindowsOverlayController)
+    controller._running = True
+    controller._root = _FakeRoot()
+    controller._state = "TRANSCRIBING"
+    controller._animation_running = True
+
+    controller._animate()
+
+    assert controller._animation_running is False
+    assert controller._root.after_calls == []
+
+
+def test_static_bar_modes_draw_once_with_mode_color():
     controller = WindowsOverlayController.__new__(WindowsOverlayController)
     controller._canvas = _FakeCanvas()
-    controller._state = "DONE"
-    controller._bar_heights = [BAR_MIN_HEIGHT] * BAR_COUNT
     controller._bar_item_ids = []
     controller._bar_color = None
-    controller._anim = types.SimpleNamespace(
-        calculate_bar_height=lambda *_args: BAR_MIN_HEIGHT
-    )
+    controller._line_item_id = None
 
-    controller._render_bars(0.1)
-    color_updates_first_pass = len(controller._canvas.item_configs)
+    controller._show_bar_mode("low")
+    assert {"fill": BAR_COLORS["low"], "outline": ""} in controller._canvas.item_configs
+    assert controller._bar_heights == [float(h) for h in LISTENING_BAR_HEIGHTS]
 
-    controller._render_bars(0.2)
-
-    assert len(controller._canvas.item_configs) == color_updates_first_pass
-
-    controller._state = "ERROR"
-    controller._render_bars(0.3)
-
-    assert len(controller._canvas.item_configs) == color_updates_first_pass * 2
-    assert controller._canvas.item_configs[-1]["fill"] == STATE_COLORS["ERROR"]
+    controller._show_bar_mode("line")
+    assert {"state": "normal"} in controller._canvas.item_configs[-2:]
+    assert controller._canvas.item_configs[-1] == {"state": "hidden"}

@@ -1,7 +1,8 @@
 """Shared Animation Logic for PulseScribe Overlays.
 
-Centralizes the mathematical logic for calculating bar heights, AGC (Adaptive Gain Control),
-and various animation states (Traveling Wave, Gaussian Envelope, etc.).
+Centralizes the mathematical logic for calculating bar heights, AGC (Adaptive Gain Control)
+and the recording animation (Traveling Wave, Gaussian Envelope). Recording is the only
+animated state; every other state renders static bars (see ``LISTENING_BAR_HEIGHTS``).
 
 This ensures consistent visual behavior across different UI backends (PySide6, Tkinter, Cocoa).
 """
@@ -20,10 +21,10 @@ FRAME_MS = 1000 // FPS  # ~16ms
 
 # Bar Configuration
 BAR_COUNT = 10
-BAR_WIDTH = 4
-BAR_GAP = 5
-BAR_MIN_HEIGHT = 6
-BAR_MAX_HEIGHT = 42
+BAR_WIDTH = 3
+BAR_GAP = 3
+BAR_MIN_HEIGHT = 3
+BAR_MAX_HEIGHT = 24
 
 # Smoothing (tuned to match macOS feel)
 SMOOTHING_ALPHA_RISE = 0.65  # Faster attack for responsive feel
@@ -85,6 +86,8 @@ def _build_height_factors() -> list[float]:
 
 
 _HEIGHT_FACTORS = _build_height_factors()
+# Static, low listening row: center bars slightly taller than the edges.
+LISTENING_BAR_HEIGHTS = tuple(float(round(BAR_MIN_HEIGHT + 5 * f)) for f in _HEIGHT_FACTORS)
 _BAR_INDEXES = tuple(range(BAR_COUNT))
 _CENTER_INDEX = (BAR_COUNT - 1) / 2
 
@@ -218,18 +221,6 @@ class AnimationLogic:
     def _build_frame_values(self, t: float, state: str) -> tuple[float, ...]:
         if state == "RECORDING":
             return self._build_recording_frame_values(t)
-        if state == "LISTENING":
-            return tuple(self._calc_listening_normalized(i, t) for i in _BAR_INDEXES)
-        if state in ("TRANSCRIBING", "REFINING"):
-            value = self._calc_processing_normalized(t)
-            return (value,) * BAR_COUNT
-        if state == "LOADING":
-            return tuple(self._calc_loading_normalized(i, t) for i in _BAR_INDEXES)
-        if state in ("DONE", "NO_SPEECH"):
-            return tuple(self._calc_done_normalized(i, t) for i in _BAR_INDEXES)
-        if state == "ERROR":
-            value = self._calc_error_normalized(t)
-            return (value,) * BAR_COUNT
         return (0.0,) * BAR_COUNT
 
     def _build_recording_frame_values(self, t: float) -> tuple[float, ...]:
@@ -269,59 +260,6 @@ class AnimationLogic:
 
         return tuple(values)
 
-    def _calc_listening_normalized(self, i: int, t: float) -> float:
-        """Listening: Dual sine waves for organic waiting animation. Returns 0-1."""
-        # Primary wave (faster, provides the main rhythm)
-        phase1 = t * 3.0 + i * 0.5
-        # Secondary wave (slower, opposite direction, adds complexity)
-        phase2 = t * 1.8 - i * 0.3
-
-        # Combine sine waves: 70% primary, 30% secondary
-        mixed = math.sin(phase1) * 0.7 + math.sin(phase2) * 0.3
-
-        # Normalize to 0..1
-        wave = (mixed + 1) / 2
-
-        # Apply height factors (center higher), scale to ~40% of range
-        return 0.4 * wave * _HEIGHT_FACTORS[i]
-
-    def _calc_processing_normalized(self, t: float) -> float:
-        """Transcribing/Refining: Synchronized pulsing (original macOS style). Returns 0-1."""
-        # All bars pulse together to same height with ~1s period
-        phase = t * math.pi  # ~1s full cycle (up and down)
-        pulse = (math.sin(phase) + 1) / 2  # 0..1
-
-        # All bars same height (no height factors)
-        return 0.7 * pulse
-
-    def _calc_loading_normalized(self, i: int, t: float) -> float:
-        """Loading: Slow synchronous pulse. Returns 0-1."""
-        phase = t * 0.8
-        pulse = (math.sin(phase * math.pi) + 1) / 2
-        return 0.5 * pulse * _HEIGHT_FACTORS[i]
-
-    def _calc_done_normalized(self, i: int, t: float) -> float:
-        """Done: Multi-phase bounce animation. Returns 0-1.
-
-        Phase 1 (0-0.3s): Rise to max
-        Phase 2 (0.3-0.5s): Bouncy oscillation
-        Phase 3 (0.5s+): Settle at 70%
-        """
-        if t < 0.3:
-            progress = t / 0.3
-            return progress * _HEIGHT_FACTORS[i]
-        elif t < 0.5:
-            progress = (t - 0.3) / 0.2
-            bounce = 1 - abs(math.sin(progress * math.pi * 2)) * 0.3
-            return bounce * _HEIGHT_FACTORS[i]
-        else:
-            return 0.7 * _HEIGHT_FACTORS[i]
-
-    def _calc_error_normalized(self, t: float) -> float:
-        """Error: Flash animation. Returns 0-1."""
-        flash = (math.sin(t * 8) + 1) / 2
-        return 0.5 * flash
-
     @staticmethod
     def get_height_factors() -> list[float]:
         """Returns the pre-computed height factors for bar positioning."""
@@ -339,6 +277,7 @@ __all__ = [
     "BAR_GAP",
     "BAR_MIN_HEIGHT",
     "BAR_MAX_HEIGHT",
+    "LISTENING_BAR_HEIGHTS",
     "FPS",
     "FRAME_MS",
 ]

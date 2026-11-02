@@ -84,3 +84,13 @@ def test_calculate_frame_heights_reuses_frame_cache_and_matches_per_bar() -> Non
     assert len(custom_heights) == 10
     assert min(custom_heights) >= BAR_MIN_HEIGHT + 2
     assert max(custom_heights) <= BAR_MAX_HEIGHT + 4
+
+
+def test_only_recording_produces_animated_frames() -> None:
+    anim = AnimationLogic()
+    anim.update_level(0.8)
+    anim.update_agc()
+
+    for state in ("LISTENING", "TRANSCRIBING", "REFINING", "LOADING", "DONE", "ERROR"):
+        assert anim.calculate_frame_normalized(1.0, state) == (0.0,) * 10
+    assert max(anim.calculate_frame_normalized(1.0, "RECORDING")) > 0.0

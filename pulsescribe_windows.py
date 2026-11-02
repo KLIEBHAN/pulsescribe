@@ -66,7 +66,7 @@ logger = get_logger()
 # Imports nach Logging-Setup
 from utils.state import AppState
 from utils.hold_state import HoldHotkeyState
-from utils.transcript_delivery import TranscriptDelivery
+from utils.transcript_delivery import TEST_COMPLETE, TranscriptDelivery
 from utils.timing import redacted_text_summary
 from utils.hotkey_windows import hotkeys_conflict, parse_windows_hotkey_for_pynput
 from utils.subprocess_io import start_stream_drain_thread
@@ -2099,7 +2099,7 @@ class PulseScribeWindows:
         if ipc_cmd_id and ipc_server:
             from utils.ipc import STATUS_DONE
 
-            done_generation = self._set_state(AppState.DONE, "Test complete")
+            done_generation = self._set_state(AppState.DONE, TEST_COMPLETE)
             self._play_sound("done")
 
             ipc_server.send_response(ipc_cmd_id, STATUS_DONE, transcript=transcript)

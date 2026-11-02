@@ -88,7 +88,7 @@ try:
     from utils.state import AppState, DaemonMessage, MessageType
     from utils.hold_state import HoldHotkeyState
     from utils import parse_hotkey
-    from utils.transcript_delivery import TranscriptDelivery
+    from utils.transcript_delivery import TEST_COMPLETE, TranscriptDelivery
     from utils.hotkey import hotkeys_conflict
     from utils.permissions import (
         check_microphone_permission,
@@ -1480,9 +1480,10 @@ class PulseScribeDaemon:
         if self._test_run_active:
             self._last_rtf = None  # RTF im Test-Modus nicht relevant
             self._finish_test_run(transcript, None)
-            self._update_state(
-                AppState.DONE if transcript else AppState.IDLE, transcript
-            )
+            if transcript:
+                self._update_state(AppState.DONE, TEST_COMPLETE)
+            else:
+                self._update_state(AppState.IDLE)
             if run is not None:
                 run.finish("test_success" if transcript else "test_no_speech")
             self._apply_pending_hotkey_reconfigure_if_safe()
