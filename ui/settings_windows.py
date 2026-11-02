@@ -1980,9 +1980,17 @@ class SettingsWindow(QDialog):
 
         segment_layout.addWidget(self._transcripts_btn)
         segment_layout.addWidget(self._logs_btn)
+        # Auto-refresh applies to both views, so it sits next to the segment control
+        self._auto_refresh_checkbox = QCheckBox("Auto-refresh")
+        self._auto_refresh_checkbox.setToolTip(
+            "Automatically refresh logs or transcript history while this tab is visible."
+        )
+        self._auto_refresh_checkbox.stateChanged.connect(self._toggle_logs_auto_refresh)
+
         segment_row = QHBoxLayout()
         segment_row.addWidget(segment_group)
         segment_row.addStretch()
+        segment_row.addWidget(self._auto_refresh_checkbox)
         card_layout.addLayout(segment_row)
 
         # Stacked Widget für Logs/Transcripts
@@ -1995,12 +2003,6 @@ class SettingsWindow(QDialog):
         logs_layout.setSpacing(8)
 
         logs_btn_layout = QHBoxLayout()
-        self._auto_refresh_checkbox = QCheckBox("Auto-refresh")
-        self._auto_refresh_checkbox.setToolTip(
-            "Automatically refresh logs or transcript history while this tab is visible."
-        )
-        self._auto_refresh_checkbox.stateChanged.connect(self._toggle_logs_auto_refresh)
-        logs_btn_layout.addWidget(self._auto_refresh_checkbox)
         logs_btn_layout.addStretch()
 
         open_btn = QPushButton("Open Logs")
