@@ -195,7 +195,7 @@ The overlay is monochrome; color only marks outcomes.
 |--------|---------|---------|
 | Listening | Static low bars, "Listening…" | Hotkey pressed, waiting for speech |
 | Recording | Bars follow your voice, live text | Speech detected, recording |
-| Preparing / Transcribing / Refining | Flat line, status text | Model loading, processing, LLM post-processing |
+| Preparing / Transcribing / Refining | Line with a soft light sweeping across, status text | Model loading, processing, LLM post-processing |
 | Done | Green "Pasted" badge | Text pasted |
 | No speech | Amber "No speech" badge | Nothing was pasted |
 | Paste/copy failed | Amber "Not pasted" badge, × | Transcript copied or available via Copy Last Transcript |

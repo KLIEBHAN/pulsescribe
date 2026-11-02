@@ -22,7 +22,13 @@ from ui.overlay_pyside6 import (
     PySide6OverlayWidget,
     _format_recording_interim_text,
 )
-from ui.overlay_feedback import OverlayContent
+from ui.overlay_feedback import OverlayContent, transcribing_status
+from ui.overlay_style import (
+    BAR_AREA_WIDTH,
+    PHASE_STEP_WIDTH,
+    compute_overlay_layout,
+    shimmer_track,
+)
 
 
 class _FakeTimer:
@@ -467,6 +473,21 @@ def test_controller_wait_until_ready_uses_ready_event():
     assert calls == [0.15]
 
 
+class _FakeShimmerAnimation:
+    def __init__(self):
+        self.running = False
+        self.end_values: list[float] = []
+
+    def setEndValue(self, value: float) -> None:
+        self.end_values.append(value)
+
+    def start(self) -> None:
+        self.running = True
+
+    def stop(self) -> None:
+        self.running = False
+
+
 def _state_widget(monkeypatch):
     widget = PySide6OverlayWidget.__new__(PySide6OverlayWidget)
     widget._state = "IDLE"
@@ -476,6 +497,11 @@ def _state_widget(monkeypatch):
     widget._previous_interim = ""
     widget._animation_timer = _FakeAnimationTimer()
     widget._clock_timer = _FakeAnimationTimer()
+    widget._shimmer_animation = _FakeShimmerAnimation()
+    widget._shimmer_track = None
+    widget._shimmer_x = None
+    widget._shimmer_due = 0.0
+    widget.update = lambda *_args: None
     widget._meta_text = ""
     widget._clock_start = 0.0
     widget._link_span = None
@@ -512,6 +538,57 @@ def test_only_recording_runs_the_animation_timer(monkeypatch):
         widget._on_state_changed(state, "")
         assert widget._animation_timer.active is False
     assert widget._animation_timer.start_calls == [FRAME_MS]
+
+
+def test_shimmer_runs_only_on_processing_lines(monkeypatch):
+    widget = _state_widget(monkeypatch)
+    monkeypatch.setattr("ui.overlay_pyside6._reduce_motion", lambda: False)
+    animation = widget._shimmer_animation
+
+    widget._on_state_changed("RECORDING", "")
+    assert animation.running is False
+
+    widget._on_state_changed("LOADING", "")
+    widget._on_state_changed("TRANSCRIBING", "")
+    # Same track: the running sweep continues instead of restarting.
+    assert animation.running is True and animation.end_values == [BAR_AREA_WIDTH]
+
+    widget._on_state_changed("TRANSCRIBING", transcribing_status(None, refine=True))
+    widget._on_state_changed("REFINING", "")
+    assert widget._shimmer_track == shimmer_track("phase2")
+    assert animation.end_values[-1] == PHASE_STEP_WIDTH
+
+    for state in ("DONE", "IDLE"):
+        widget._on_state_changed("REFINING", "again")
+        widget._on_state_changed(state, "Pasted")
+        assert animation.running is False and widget._shimmer_track is None
+
+
+def test_reduce_motion_keeps_the_static_line(monkeypatch):
+    widget = _state_widget(monkeypatch)
+    monkeypatch.setattr("ui.overlay_pyside6._reduce_motion", lambda: True)
+
+    widget._on_state_changed("TRANSCRIBING", "")
+
+    assert widget._shimmer_animation.running is False
+    assert widget._shimmer_track is None
+
+
+def test_shimmer_repaints_only_the_track_at_most_30_fps(monkeypatch):
+    widget = _state_widget(monkeypatch)
+    widget._layout = compute_overlay_layout(text_width=0)
+    widget._shimmer_track = shimmer_track("line")
+    repaints = []
+    widget.update = lambda *args: repaints.append(args)
+    clock = iter([10.0, 10.016, 10.033, 10.049])
+    monkeypatch.setattr("ui.overlay_pyside6.time.perf_counter", lambda: next(clock))
+
+    for value in (1.0, 2.0, 3.0, 4.0):
+        widget._on_shimmer_value(value)
+
+    assert len(repaints) == 2 and widget._shimmer_x == 3.0
+    rect = repaints[0][0]
+    assert rect.width() <= BAR_AREA_WIDTH + 3 and rect.height() <= 6
 
 
 def test_on_state_changed_skips_duplicate_transition_work(monkeypatch):

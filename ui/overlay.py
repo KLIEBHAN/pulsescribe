@@ -45,11 +45,17 @@ from ui.overlay_style import (
     OVERLAY_HEIGHT,
     OVERLAY_MAX_WIDTH_RATIO,
     OVERLAY_WIDTH,
+    PHASE_ACTIVE_STEP,
+    SHIMMER_ACTIVE_STEP_COLOR,
+    SHIMMER_BAND_WIDTH,
+    SHIMMER_HIGHLIGHT_COLOR,
+    SHIMMER_PERIOD_SECONDS,
     TEXT_COLOR,
     TEXT_FADE_WIDTH,
     TEXT_FONT_SIZE,
     compute_overlay_layout,
     hex_to_rgb,
+    shimmer_track,
 )
 from ui.overlay_text import (
     DEFAULT_RECORDING_INTERIM_MAX_CHARS,
@@ -101,8 +107,9 @@ WAVE_AGC_DECAY = 0.97  # Peak-Falloff pro Level-Update (~1s Zeitkonstante bei ~1
 WAVE_AGC_MIN_PEAK = 0.01  # Untergrenze gegen Überverstärkung von Stille
 WAVE_AGC_HEADROOM = 2.0  # Mehr Headroom = weniger Sensitivität/Clipping
 
-# Rendering: Nur Recording animiert (audiogetrieben). Der Timer läuft nur,
-# solange sich Balken bewegen; alle anderen States sind statisch.
+# Rendering: Recording animiert audiogetrieben; der Timer läuft nur, solange
+# sich Balken bewegen. Der Shimmer der Verarbeitungslinie läuft per Core
+# Animation ohne Timer (siehe SoundWaveView._start_shimmer).
 WAVE_ANIMATION_FPS = 60.0
 WAVE_ANIMATION_FPS_IDLE = 24.0
 WAVE_LEVEL_ACTIVE_THRESHOLD = 0.035
@@ -194,6 +201,16 @@ def _ns_color(hex_color: str):
     return NSColor.colorWithSRGBRed_green_blue_alpha_(r / 255.0, g / 255.0, b / 255.0, 1.0)
 
 
+def _reduce_motion() -> bool:
+    """True when the user turned on "Reduce motion" (Accessibility > Display)."""
+    try:
+        from AppKit import NSWorkspace  # type: ignore[import-not-found]
+
+        return bool(NSWorkspace.sharedWorkspace().accessibilityDisplayShouldReduceMotion())
+    except Exception:
+        return False
+
+
 def _disabled_layer_actions():
     """Return a begun CATransaction without implicit layer animations."""
     from Quartz import CATransaction  # type: ignore[import-not-found]
@@ -210,13 +227,18 @@ class SoundWaveView:
     Modi (siehe ``OverlayContent.bars``):
     - level: audiogetriebene Wellenanimation (einziger animierter Modus)
     - low: statische, niedrige Balken (Listening)
-    - line: statische 3-px-Linie (Preparing/Transcribing/Refining)
+    - line/phase1/phase2: 3-px-Linie (Preparing/Transcribing/Refining) mit
+      Shimmer per Core Animation (kein Python pro Frame)
     - none: ausgeblendet (Ergebnis-Badges)
     """
 
+    # Class defaults keep stop_animating safe on partially built views.
+    _shimmer_track = None
+    _shimmer_band = None
+
     def __init__(self, frame):
         from AppKit import NSView  # type: ignore[import-not-found]
-        from Quartz import CALayer  # type: ignore[import-not-found]
+        from Quartz import CAGradientLayer, CALayer  # type: ignore[import-not-found]
 
         self._view = NSView.alloc().initWithFrame_(frame)
         self._view.setWantsLayer_(True)
@@ -319,6 +341,25 @@ class SoundWaveView:
             self._view.layer().addSublayer_(step)
             self._steps.append(step)
 
+        # Shimmer: a gradient band inside a clipping track layer; one repeating
+        # CABasicAnimation moves it on the render server (see _start_shimmer).
+        self._shimmer_track = CALayer.alloc().init()
+        self._shimmer_track.setMasksToBounds_(True)
+        self._shimmer_track.setCornerRadius_(LINE_HEIGHT / 2)
+        self._shimmer_track.setHidden_(True)
+        band = CAGradientLayer.layer()
+        highlight = _ns_color(SHIMMER_HIGHLIGHT_COLOR)
+        clear = highlight.colorWithAlphaComponent_(0.0).CGColor()
+        band.setColors_([clear, highlight.CGColor(), clear])
+        band.setStartPoint_((0.0, 0.5))
+        band.setEndPoint_((1.0, 0.5))
+        # Parked left of the track; only the animation brings it into view.
+        band.setFrame_(((-SHIMMER_BAND_WIDTH, 0), (SHIMMER_BAND_WIDTH, LINE_HEIGHT)))
+        self._shimmer_track.addSublayer_(band)
+        self._shimmer_band = band
+        self._shimmer_active_color = _ns_color(SHIMMER_ACTIVE_STEP_COLOR).CGColor()
+        self._view.layer().addSublayer_(self._shimmer_track)
+
     @property
     def view(self):
         return self._view
@@ -326,7 +367,8 @@ class SoundWaveView:
     def show_mode(self, mode: str) -> None:
         """Switch to ``level``/``low``/``line``/``phase1``/``phase2``/``none``.
 
-        Only ``level`` animates; every other mode is drawn once.
+        ``level`` is driven by audio; the processing lines get the shimmer
+        unless the user prefers reduced motion; every other mode is static.
         """
         if self.current_animation == mode:
             return
@@ -348,20 +390,62 @@ class SoundWaveView:
             if mode == "low":
                 for index, height in enumerate(LISTENING_BAR_HEIGHTS):
                     self._set_bar_height(index, height, force=True)
+            self._start_shimmer(mode)
         finally:
             transaction.commit()
+
+    def _start_shimmer(self, mode: str) -> None:
+        """Sweep the highlight over the line or active step of ``mode``.
+
+        No-op for modes without a track and with reduced motion (the static
+        line stays). Call inside a transaction without implicit actions.
+        """
+        track = shimmer_track(mode)
+        if track is None or self._shimmer_band is None or _reduce_motion():
+            return
+        from Quartz import (  # type: ignore[import-not-found]
+            CABasicAnimation,
+            CAMediaTimingFunction,
+            kCAMediaTimingFunctionEaseInEaseOut,
+        )
+
+        x, width = track
+        self._shimmer_track.setFrame_(
+            ((x, self._wave_center_y() - LINE_HEIGHT / 2), (width, LINE_HEIGHT))
+        )
+        step = PHASE_ACTIVE_STEP.get(mode)
+        if step is not None:
+            self._steps[step].setBackgroundColor_(self._shimmer_active_color)
+        animation = CABasicAnimation.animationWithKeyPath_("position.x")
+        animation.setFromValue_(-SHIMMER_BAND_WIDTH / 2)
+        animation.setToValue_(width + SHIMMER_BAND_WIDTH / 2)
+        animation.setDuration_(SHIMMER_PERIOD_SECONDS)
+        animation.setRepeatCount_(float("inf"))
+        animation.setTimingFunction_(
+            CAMediaTimingFunction.functionWithName_(kCAMediaTimingFunctionEaseInEaseOut)
+        )
+        self._shimmer_band.addAnimation_forKey_(animation, "shimmer")
+        self._shimmer_track.setHidden_(False)
+
+    def _stop_shimmer(self) -> None:
+        """Remove the shimmer animation and hide its track."""
+        if self._shimmer_band is None:
+            return
+        self._shimmer_band.removeAnimationForKey_("shimmer")
+        self._shimmer_track.setHidden_(True)
 
     def _ensure_recording_mode(self) -> None:
         if self.current_animation != "level":
             self.show_mode("level")
 
     def stop_animating(self) -> None:
-        """Stoppt den Level-Timer und setzt die Balken auf Ruhehöhe."""
+        """Stoppt Level-Timer und Shimmer und setzt die Balken auf Ruhehöhe."""
         self._stop_level_timer()
         self.current_animation = None
         center_y = self._wave_center_y()
         transaction = _disabled_layer_actions()
         try:
+            self._stop_shimmer()
             self._ensure_bar_positions(center_y)
             for i in range(len(self.bars)):
                 self._set_bar_height(i, WAVE_BAR_MIN_HEIGHT, force=True)

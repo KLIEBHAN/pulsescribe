@@ -4,9 +4,12 @@ from ui.overlay_style import (
     OVERLAY_GAP,
     OVERLAY_PADDING_H,
     OVERLAY_WIDTH,
+    PHASE_STEP_GAP,
+    PHASE_STEP_WIDTH,
     STATUS_SLOT_WIDTH,
     compute_overlay_layout,
     hex_to_rgb,
+    shimmer_track,
 )
 
 TEXT_X = OVERLAY_PADDING_H + STATUS_SLOT_WIDTH + OVERLAY_GAP
@@ -56,3 +59,11 @@ def test_badge_wider_than_the_slot_pushes_the_text() -> None:
 def test_static_listening_bars_stay_low() -> None:
     assert max(LISTENING_BAR_HEIGHTS) < BAR_MAX_HEIGHT / 2
     assert hex_to_rgb("#1b1b1b") == (27, 27, 27)
+
+
+def test_shimmer_track_covers_the_line_or_the_active_step() -> None:
+    assert shimmer_track("line") == (0.0, BAR_AREA_WIDTH)
+    assert shimmer_track("phase1") == (0, PHASE_STEP_WIDTH)
+    assert shimmer_track("phase2") == (PHASE_STEP_WIDTH + PHASE_STEP_GAP, PHASE_STEP_WIDTH)
+    for mode in ("level", "low", "none"):
+        assert shimmer_track(mode) is None

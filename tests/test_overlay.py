@@ -18,6 +18,7 @@ from ui.overlay import (
     _format_recording_interim_text,
 )
 from ui.overlay_feedback import OverlayContent
+from ui.overlay_style import BAR_AREA_WIDTH, SHIMMER_PERIOD_SECONDS, shimmer_track
 from utils.state import AppState
 from utils.transcript_delivery import PASTE_FAILED
 
@@ -536,6 +537,96 @@ def test_static_modes_start_no_timer_and_toggle_visibility(monkeypatch):
 
     view.show_mode("none")
     assert view._view.hidden is True
+
+
+class _FakeShimmerLayer(_FakeLayer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.frame = None
+        self.animations: dict[str, object] = {}
+
+    def setFrame_(self, frame) -> None:
+        self.frame = frame
+
+    def addAnimation_forKey_(self, animation, key: str) -> None:
+        self.animations[key] = animation
+
+    def removeAnimationForKey_(self, key: str) -> None:
+        self.animations.pop(key, None)
+
+
+class _FakeBasicAnimation:
+    @classmethod
+    def animationWithKeyPath_(cls, key_path: str):
+        animation = cls()
+        animation.key_path = key_path
+        return animation
+
+    def __getattr__(self, name: str):
+        # setFromValue_, setDuration_, ... record their value as from_value, duration, ...
+        if not name.startswith("set"):
+            raise AttributeError(name)
+        field = name[3:].rstrip("_")
+        return lambda value: setattr(self, field[0].lower() + field[1:], value)
+
+
+def _shimmer_view(monkeypatch, *, reduce_motion: bool = False):
+    view, _colors, _heights = _mode_view(monkeypatch)
+    monkeypatch.setitem(
+        sys.modules,
+        "Quartz",
+        types.SimpleNamespace(
+            CATransaction=_FakeCATransaction,
+            CABasicAnimation=_FakeBasicAnimation,
+            CAMediaTimingFunction=types.SimpleNamespace(functionWithName_=lambda name: name),
+            kCAMediaTimingFunctionEaseInEaseOut="easeInEaseOut",
+        ),
+    )
+    monkeypatch.setattr("ui.overlay._reduce_motion", lambda: reduce_motion)
+    view._shimmer_track = _FakeShimmerLayer()
+    view._shimmer_band = _FakeShimmerLayer()
+    view._shimmer_active_color = "shimmer-base"
+    return view
+
+
+def test_processing_lines_shimmer_only_while_shown(monkeypatch):
+    view = _shimmer_view(monkeypatch)
+
+    y = view._wave_center_y() - 1.5
+    view.show_mode("line")
+    animation = view._shimmer_band.animations["shimmer"]
+    assert animation.key_path == "position.x"
+    assert animation.duration == SHIMMER_PERIOD_SECONDS
+    assert animation.repeatCount == float("inf")
+    assert animation.timingFunction == "easeInEaseOut"
+    assert view._shimmer_track.hidden is False
+    assert view._shimmer_track.frame == ((0.0, y), (float(BAR_AREA_WIDTH), 3))
+
+    view.show_mode("phase2")
+    x, width = shimmer_track("phase2")
+    assert view._shimmer_track.frame == ((x, y), (width, 3))
+    assert [step.color for step in view._steps] == ["done", "shimmer-base"]
+    assert view._shimmer_band.animations["shimmer"].toValue == width + 11
+
+    for mode in ("level", "none"):
+        view.show_mode(mode)
+        assert view._shimmer_band.animations == {}
+        assert view._shimmer_track.hidden is True
+
+    view.show_mode("line")
+    view.stop_animating()
+    assert view._shimmer_band.animations == {}
+    assert view._shimmer_track.hidden is True
+
+
+def test_reduce_motion_keeps_the_static_line(monkeypatch):
+    view = _shimmer_view(monkeypatch, reduce_motion=True)
+
+    view.show_mode("phase1")
+
+    assert view._shimmer_band.animations == {}
+    assert view._shimmer_track.hidden is True
+    assert [step.color for step in view._steps] == ["on", "pending"]
 
 
 def test_audio_level_switches_to_level_mode(monkeypatch):

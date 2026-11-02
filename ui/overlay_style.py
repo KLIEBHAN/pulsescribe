@@ -56,6 +56,17 @@ PHASE_STEP_COLORS = {
 PHASE_STEP_GAP = 3
 PHASE_STEP_WIDTH = (BAR_AREA_WIDTH - PHASE_STEP_GAP) / 2
 
+# Shimmer while processing: a soft highlight band sweeps left to right across
+# the line (or the active phase step), ease-in-out, repeating. Platforms that
+# animate draw the active step in SHIMMER_ACTIVE_STEP_COLOR; with reduced
+# motion (and on the Tk fallback) the static colors above stay.
+SHIMMER_BAND_WIDTH = 22
+SHIMMER_PERIOD_SECONDS = 1.4
+SHIMMER_HIGHLIGHT_COLOR = "#f4f4f4"
+SHIMMER_ACTIVE_STEP_COLOR = "#8a8a8a"
+SHIMMER_MAX_FPS = 30  # repaint cap where Python draws the frames (Qt)
+PHASE_ACTIVE_STEP = {"phase1": 0, "phase2": 1}
+
 # Badge tones: (background, text). Color is reserved for outcomes.
 BADGE_TONES = {
     "success": ("#173326", "#6fd39b"),
@@ -68,6 +79,21 @@ def hex_to_rgb(color: str) -> tuple[int, int, int]:
     """Convert ``#rrggbb`` into an RGB tuple for toolkit color constructors."""
     value = color.lstrip("#")
     return int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16)
+
+
+def shimmer_track(mode: str) -> tuple[float, float] | None:
+    """``(x, width)`` of the shimmering part of the status slot, else ``None``.
+
+    ``x`` is relative to the slot start. The band travels from
+    ``-SHIMMER_BAND_WIDTH`` (fully left of the track) to ``width`` (fully
+    right of it), clipped to the track.
+    """
+    if mode == "line":
+        return 0.0, float(BAR_AREA_WIDTH)
+    step = PHASE_ACTIVE_STEP.get(mode)
+    if step is None:
+        return None
+    return step * (PHASE_STEP_WIDTH + PHASE_STEP_GAP), PHASE_STEP_WIDTH
 
 
 @dataclass(frozen=True)

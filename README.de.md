@@ -196,7 +196,7 @@ Das Overlay ist monochrom; Farbe markiert nur Ergebnisse.
 |--------|---------|-----------|
 | Listening | Ruhende niedrige Balken, „Listening…“ | Hotkey gedrückt, wartet auf Sprache |
 | Recording | Balken folgen der Stimme, Live-Text | Sprache erkannt, Aufnahme läuft |
-| Preparing / Transcribing / Refining | Flache Linie, Statustext | Modell lädt, Text wird verarbeitet, LLM-Nachbearbeitung |
+| Preparing / Transcribing / Refining | Linie mit wanderndem Lichtschimmer, Statustext | Modell lädt, Text wird verarbeitet, LLM-Nachbearbeitung |
 | Done | Grünes Badge „Pasted“ | Text eingefügt |
 | No speech | Gelbes Badge „No speech“ | Nichts eingefügt |
 | Paste/Copy fehlgeschlagen | Gelbes Badge „Not pasted“, × | Transkript kopiert bzw. über „Copy Last Transcript“ verfügbar |
