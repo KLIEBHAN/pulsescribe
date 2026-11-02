@@ -47,6 +47,9 @@ from ui.overlay_style import (
     DISMISS_GLYPH,
     INTERIM_TEXT_COLOR,
     LINE_HEIGHT,
+    PHASE_STEP_COLORS,
+    PHASE_STEP_GAP,
+    PHASE_STEP_WIDTH,
     META_TEXT_COLOR,
     MUTED_TEXT_COLOR,
     OVERLAY_CORNER_RADIUS,
@@ -147,6 +150,7 @@ class WindowsOverlayController:
         self._dismiss_label: tk.Label | None = None
         self._meta_label: tk.Label | None = None
         self._meta_text = ""
+        self._content_meta = ""
         self._clock_start = 0.0
         self._clock_after_id: str | None = None
         self._text_x = float(TEXT_X)
@@ -155,6 +159,7 @@ class WindowsOverlayController:
         self._persistent = False
         self._bar_mode = "none"
         self._line_item_id: int | None = None
+        self._step_item_ids: list[int] = []
         self._bar_item_ids: list[tuple[int, int, int]] = []
         self._bar_color: str | None = None
         self._last_label_config: tuple[str, tuple[object, ...], str] | None = None
@@ -564,7 +569,7 @@ class WindowsOverlayController:
             # A new error after a dismissed one must show even within ERROR.
             reshow = content.dismissible and not self._persistent
             self._persistent = content.dismissible
-            if state_changed:
+            if state_changed or content.bars != self._bar_mode:
                 self._show_bar_mode(content.bars)
                 self._start_animation_loop()
             if state_changed or reshow:
@@ -618,6 +623,7 @@ class WindowsOverlayController:
                 badge.place_forget()
         self._text_x = text_x
         self._dismiss_shown = content.dismissible
+        self._content_meta = content.meta
         self._place_trailing()
         if getattr(self, "_label", None) is not None:
             self._set_label_anchor("w")
@@ -638,9 +644,11 @@ class WindowsOverlayController:
             else:
                 dismiss.place_forget()
         meta = getattr(self, "_meta_label", None)
+        # The recording clock wins while it runs; otherwise the content's meta.
+        meta_text = self._meta_text or getattr(self, "_content_meta", "")
         if meta is not None:
-            if self._meta_text:
-                meta.config(text=self._meta_text)
+            if meta_text:
+                meta.config(text=meta_text)
                 meta.place(x=text_end, rely=0.5, anchor="e")
                 text_end -= meta.winfo_reqwidth() + OVERLAY_GAP
             else:
@@ -847,6 +855,7 @@ class WindowsOverlayController:
                 outline="",
             )
         canvas.itemconfig(self._line_item_id, state="normal" if mode == "line" else "hidden")
+        self._show_phase_steps(mode, x=bar_x_positions[0], center_y=center_y)
         canvas.itemconfig("bars", state="normal" if mode in ("level", "low") else "hidden")
         if mode not in ("level", "low"):
             return
@@ -855,6 +864,31 @@ class WindowsOverlayController:
         self._bar_heights = [float(height) for height in heights]
         for i, height in enumerate(heights):
             self._draw_pill_bar(i, bar_x_positions[i], center_y, BAR_WIDTH, height)
+
+    def _show_phase_steps(self, mode: str, *, x: float, center_y: float) -> None:
+        """Two-step line while Refine follows transcription (``phase1``/``phase2``)."""
+        canvas = self._canvas
+        colors = PHASE_STEP_COLORS.get(mode)
+        step_ids = getattr(self, "_step_item_ids", None)
+        if not step_ids:
+            if colors is None:
+                return
+            step_ids = [
+                canvas.create_rectangle(
+                    x + index * (PHASE_STEP_WIDTH + PHASE_STEP_GAP),
+                    center_y - LINE_HEIGHT / 2,
+                    x + index * (PHASE_STEP_WIDTH + PHASE_STEP_GAP) + PHASE_STEP_WIDTH,
+                    center_y + LINE_HEIGHT / 2,
+                    outline="",
+                )
+                for index in range(2)
+            ]
+            self._step_item_ids = step_ids
+        for item_id, color in zip(step_ids, colors or (None, None)):
+            if color is None:
+                canvas.itemconfig(item_id, state="hidden")
+            else:
+                canvas.itemconfig(item_id, state="normal", fill=color)
 
     def _bar_positions(self) -> tuple[list[float], float]:
         positions = getattr(self, "_bar_x_positions", None)

@@ -1945,10 +1945,10 @@ class SettingsWindow(QDialog):
         )
         _add_card_checkbox_row(card_layout, "Clipboard:", self._clipboard_restore_checkbox)
 
-        self._rtf_checkbox = QCheckBox("Show transcription speed after each result")
-        self._rtf_checkbox.setAccessibleName("Show transcription speed details")
+        self._rtf_checkbox = QCheckBox("Show transcription time after each result")
+        self._rtf_checkbox.setAccessibleName("Show transcription time")
         self._rtf_checkbox.setToolTip(
-            "Display the Real-Time Factor after each transcription. Useful for performance tuning; most people can leave this off."
+            "Show how long transcription took after each result. Useful for performance tuning; most people can leave this off."
         )
         self._rtf_checkbox.toggled.connect(self._refresh_secondary_settings_feedback)
         _add_card_checkbox_row(card_layout, "Performance:", self._rtf_checkbox)

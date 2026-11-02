@@ -114,9 +114,9 @@ def build_display_settings_feedback(
         "Overlay is on during recording"
         if overlay_enabled
         else "Overlay stays hidden during recording",
-        "transcription speed details are shown after each result"
+        "transcription time is shown after each result"
         if rtf_enabled
-        else "transcription speed details stay hidden",
+        else "transcription time stays hidden",
         "previous clipboard text is restored after paste"
         if clipboard_restore_enabled
         else "previous clipboard text is not restored after paste",

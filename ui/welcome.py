@@ -3225,9 +3225,9 @@ class WelcomeController:
                 control_width,
                 parent_view,
                 label_text="Performance:",
-                title="Show transcription speed after each result",
+                title="Show transcription time after each result",
                 enabled=self._rtf_enabled_from_settings(),
-                tooltip="Display the Real-Time Factor after each transcription. Useful for performance tuning; most people can leave this off.",
+                tooltip="Show how long transcription took after each result. Useful for performance tuning; most people can leave this off.",
                 attr_name="_rtf_checkbox",
             )
         )

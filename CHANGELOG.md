@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (Windows Tkinter fallback: shortened from the left, without fade).
 - **Recording time** – the overlay shows how long you have been recording
   (`m:ss`), updated once per second.
+- **Two steps when Refine is on** – while Refine follows transcription, the
+  overlay shows a two-part line with "1 of 2" (transcribing) and "2 of 2"
+  (refining). Without Refine it keeps the single line.
+- **Clearer result** – after a paste the overlay names the target app
+  ("into Mail"; on Windows the program name). With "Show transcription time"
+  turned on (formerly transcription speed), it shows how long transcription
+  took, e.g. "1.2 s", instead of the real-time factor. Windows now shows it too.
 
 ## [1.9.0] - 2026-11-02
 

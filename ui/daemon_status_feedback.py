@@ -347,10 +347,14 @@ def build_daemon_status_label(
         )
 
     if normalized_state == AppState.DONE:
-        label = (
-            str(text)
-            if text in ("Copied to clipboard", "Test complete")
-            else DEFAULT_DAEMON_STATUS_LABELS[AppState.DONE]
+        # DONE payloads may carry " into <App>" / " · 1.2 s" (done_status).
+        label = next(
+            (
+                known
+                for known in ("Copied to clipboard", "Test complete")
+                if str(text or "").startswith(known)
+            ),
+            DEFAULT_DAEMON_STATUS_LABELS[AppState.DONE],
         )
         return _truncate_status_text(label, max_chars)
 

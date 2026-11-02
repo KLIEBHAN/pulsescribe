@@ -33,6 +33,9 @@ from ui.overlay_style import (
     DISMISS_GLYPH,
     INTERIM_TEXT_COLOR,
     LINE_HEIGHT,
+    PHASE_STEP_COLORS,
+    PHASE_STEP_GAP,
+    PHASE_STEP_WIDTH,
     META_FONT_SIZE,
     META_TEXT_COLOR,
     MUTED_TEXT_COLOR,
@@ -295,12 +298,34 @@ class SoundWaveView:
         self._line.setHidden_(True)
         self._view.layer().addSublayer_(self._line)
 
+        # Two-step line (Refine follows): colors per mode from PHASE_STEP_COLORS.
+        self._step_colors = {
+            mode: tuple(_ns_color(color).CGColor() for color in colors)
+            for mode, colors in PHASE_STEP_COLORS.items()
+        }
+        self._steps = []
+        for index in range(2):
+            step = CALayer.alloc().init()
+            step.setCornerRadius_(LINE_HEIGHT / 2)
+            step.setFrame_(
+                (
+                    (index * (PHASE_STEP_WIDTH + PHASE_STEP_GAP), center_y - LINE_HEIGHT / 2),
+                    (PHASE_STEP_WIDTH, LINE_HEIGHT),
+                )
+            )
+            step.setHidden_(True)
+            self._view.layer().addSublayer_(step)
+            self._steps.append(step)
+
     @property
     def view(self):
         return self._view
 
     def show_mode(self, mode: str) -> None:
-        """Switch to ``level``/``low``/``line``/``none``; only ``level`` animates."""
+        """Switch to ``level``/``low``/``line``/``phase1``/``phase2``/``none``.
+
+        Only ``level`` animates; every other mode is drawn once.
+        """
         if self.current_animation == mode:
             return
         self.stop_animating()
@@ -309,6 +334,11 @@ class SoundWaveView:
         try:
             self._view.setHidden_(mode == "none")
             self._line.setHidden_(mode != "line")
+            step_colors = self._step_colors.get(mode)
+            for step, color in zip(self._steps, step_colors or (None, None)):
+                step.setHidden_(color is None)
+                if color is not None:
+                    step.setBackgroundColor_(color)
             for bar in self.bars:
                 bar.setHidden_(mode not in ("level", "low"))
             if mode in ("level", "low"):
@@ -969,8 +999,9 @@ class OverlayController:
                 )
                 self._previous_interim = text
 
-        if state_changed:
-            self._wave_view.show_mode(content.bars)
+        # Same state, new payload can change the mode (TRANSCRIBING + Refine);
+        # show_mode is a no-op when the mode is unchanged.
+        self._wave_view.show_mode(content.bars)
         self._render(content, interim)
         if state_changed or reshow:
             self._fade_in()
@@ -1034,10 +1065,11 @@ class OverlayController:
     def _render(self, content: OverlayContent, interim: tuple[str, str]) -> None:
         """Apply badge, text, meta and layout; skips identical presentations.
 
-        A clock tick only changes the meta text, so the text and badge are
-        left alone and just the layout is refreshed.
+        Meta is the recording clock while it runs, else the content's meta. A
+        clock tick only changes the meta text, so the text and badge are left
+        alone and just the layout is refreshed.
         """
-        meta = getattr(self, "_meta_text", "")
+        meta = getattr(self, "_meta_text", "") or content.meta
         presentation = (content, interim, meta)
         previous = self._presentation
         if previous == presentation:
@@ -1064,7 +1096,7 @@ class OverlayController:
         if previous is None or previous[2] != meta:
             self._meta_field.setStringValue_(meta)
             self._meta_field.setHidden_(not meta)
-        self._layout(content, self._has_text, bool(earlier or newest))
+        self._layout(content, self._has_text, bool(earlier or newest), meta)
 
     def _attributed_text(self, parts):
         from AppKit import (  # type: ignore[import-not-found]
@@ -1094,7 +1126,9 @@ class OverlayController:
             )
         return result
 
-    def _layout(self, content: OverlayContent, has_text: bool, interim: bool) -> None:
+    def _layout(
+        self, content: OverlayContent, has_text: bool, interim: bool, meta: str
+    ) -> None:
         rect = self._rect
         height = OVERLAY_HEIGHT
         text_width = (
@@ -1102,7 +1136,6 @@ class OverlayController:
             if has_text
             else 0
         )
-        meta = getattr(self, "_meta_text", "")
         meta_width = (
             math.ceil(self._meta_field.cell().cellSize().width) - 2 * _LABEL_INSET
             if meta

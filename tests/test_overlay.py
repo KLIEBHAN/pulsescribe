@@ -476,9 +476,13 @@ def test_sound_wave_view_level_frame_uses_cached_trig_tables(monkeypatch):
 class _FakeLayer:
     def __init__(self) -> None:
         self.hidden = False
+        self.color = None
 
     def setHidden_(self, hidden: bool) -> None:
         self.hidden = hidden
+
+    def setBackgroundColor_(self, color) -> None:
+        self.color = color
 
 
 class _FakeModeView(_FakeLayer):
@@ -495,6 +499,8 @@ def _mode_view(monkeypatch):
     view._view = _FakeModeView()
     view._view.frame = lambda: _FakeOverlayFrame(24.0)
     view._line = _FakeLayer()
+    view._steps = [_FakeLayer(), _FakeLayer()]
+    view._step_colors = {"phase1": ("on", "pending"), "phase2": ("done", "on")}
     view.bars = [_FakeLayer() for _ in range(WAVE_BAR_COUNT)]
     view._bar_colors = {"level": "white", "low": "grey", "line": "dim"}
     view.current_animation = None
@@ -516,6 +522,15 @@ def test_static_modes_start_no_timer_and_toggle_visibility(monkeypatch):
 
     view.show_mode("line")
     assert view._line.hidden is False and view.bars[0].hidden
+    assert all(step.hidden for step in view._steps)
+    assert view._level_timer is None
+
+    view.show_mode("phase2")
+    assert view._line.hidden is True
+    assert [(step.hidden, step.color) for step in view._steps] == [
+        (False, "done"),
+        (False, "on"),
+    ]
     assert view._level_timer is None
 
     view.show_mode("none")
@@ -819,3 +834,17 @@ def test_native_overlay_view_routes_every_click_to_dismiss():
     assert view.hitTest_(appkit.NSMakePoint(500, 20)) is None
     view.mouseDown_(None)
     assert clicks == [True]
+
+
+def test_same_state_payload_can_switch_to_the_refine_steps():
+    events: list[str] = []
+    controller = _controller(events)
+
+    controller.update_state(AppState.TRANSCRIBING, "Finishing...")
+    controller.update_state(AppState.TRANSCRIBING, "Transcribing, then refining")
+
+    assert [event for event in events if event.startswith("bars:")] == [
+        "bars:line",
+        "bars:phase1",
+    ]
+    assert controller.rendered[-1][0].meta == "1 of 2"

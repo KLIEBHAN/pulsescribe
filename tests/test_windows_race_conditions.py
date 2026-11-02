@@ -281,6 +281,61 @@ def test_streaming_stop_switches_to_transcribing_immediately(monkeypatch):
     assert watchdog_calls == ["start"]
 
 
+def test_streaming_stop_with_refine_marks_both_transcribing_payloads(monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr(
+        asyncio,
+        "WindowsSelectorEventLoopPolicy",
+        asyncio.DefaultEventLoopPolicy,
+        raising=False,
+    )
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="deepgram",
+        streaming=True,
+        overlay=False,
+    )
+    daemon.refine = True
+    daemon._set_state(AppState.RECORDING)
+    daemon._run_streaming = True
+    watchdog_calls: list[str] = []
+    daemon._start_transcribing_watchdog = lambda: watchdog_calls.append("start")
+    daemon._play_sound = lambda _name: None
+    daemon._maybe_refine = lambda transcript: transcript
+    daemon._handle_result = lambda _transcript: None
+
+    daemon._stop_recording()
+    assert daemon._last_status_text == "Finishing, then refining"
+    assert watchdog_calls == []
+
+    daemon._finish_streaming_result("hello")
+    assert daemon._last_status_text == "Transcribing, then refining"
+    assert watchdog_calls == ["start"]
+
+
+def test_done_status_names_paste_target_and_time_only_when_enabled(monkeypatch):
+    from types import SimpleNamespace
+
+    windows_module = _load_windows_module()
+    enabled = [True]
+    monkeypatch.setattr(
+        "whisper_platform.get_app_detector",
+        lambda: SimpleNamespace(get_frontmost_app=lambda: "WINWORD"),
+    )
+    monkeypatch.setattr(
+        "utils.transcript_delivery.transcription_time_enabled", lambda: enabled[0]
+    )
+    done_status = windows_module.PulseScribeWindows._done_status
+
+    assert done_status("Transcript pasted", 1.24) == (
+        "Transcript pasted into WINWORD · 1.2 s"
+    )
+    assert done_status("Copied to clipboard", 0.5) == "Copied to clipboard · 0.5 s"
+    enabled[0] = False
+    assert done_status("Transcript pasted", 1.24) == "Transcript pasted into WINWORD"
+
+
 def test_audio_callback_recording_state_skips_tray_hotpath(monkeypatch):
     import asyncio
 

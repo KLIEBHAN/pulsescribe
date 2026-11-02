@@ -60,7 +60,7 @@ def test_build_display_settings_feedback_mentions_dock_restart_and_unsaved_state
 
     assert text.startswith("Unsaved changes here")
     assert "Overlay stays hidden during recording" in text
-    assert "transcription speed details are shown after each result" in text
+    assert "transcription time is shown after each result" in text
     assert "previous clipboard text is restored after paste" in text
     assert "Dock icon changes still require a relaunch" in text
     assert color == "warning"

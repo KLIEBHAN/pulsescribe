@@ -70,6 +70,9 @@ from ui.overlay_style import (
     DISMISS_GLYPH,
     INTERIM_TEXT_COLOR,
     LINE_HEIGHT,
+    PHASE_STEP_COLORS,
+    PHASE_STEP_GAP,
+    PHASE_STEP_WIDTH,
     META_FONT_SIZE,
     META_TEXT_COLOR,
     MUTED_TEXT_COLOR,
@@ -230,6 +233,7 @@ class PySide6OverlayWidget(QWidget):
         )
         self._meta_color = QColor(META_TEXT_COLOR)
         self._meta_text = ""
+        self._meta_shown = ""
         self._clock_start = 0.0
         self._persistent = False
         self._text_runs: list[tuple[float, str, QColor]] = []
@@ -238,6 +242,10 @@ class PySide6OverlayWidget(QWidget):
         self._layout = compute_overlay_layout(text_width=0)
         self._colors = {key: QColor(value) for key, value in _TEXT_COLORS.items()}
         self._bar_colors = {key: QColor(value) for key, value in BAR_COLORS.items()}
+        self._step_colors = {
+            mode: tuple(QColor(color) for color in colors)
+            for mode, colors in PHASE_STEP_COLORS.items()
+        }
         self._badge_colors = {
             tone: (QColor(background), QColor(foreground))
             for tone, (background, foreground) in BADGE_TONES.items()
@@ -568,7 +576,9 @@ class PySide6OverlayWidget(QWidget):
             if content.dismissible
             else 0
         )
-        meta = self._meta_text
+        # The recording clock wins while it runs; otherwise the content's meta.
+        meta = self._meta_text or content.meta
+        self._meta_shown = meta
         layout = compute_overlay_layout(
             text_width=text_metrics.horizontalAdvance(full_text) if full_text else 0,
             meta_width=(
@@ -705,13 +715,13 @@ class PySide6OverlayWidget(QWidget):
         self._draw_bars(painter)
         self._draw_badge(painter)
         self._draw_text(painter)
-        if self._layout.meta_x is not None and self._meta_text:
+        if self._layout.meta_x is not None and self._meta_shown:
             painter.setPen(self._meta_color)
             painter.setFont(self._meta_font)
             painter.drawText(
                 QRectF(self._layout.meta_x, 0, self.width(), OVERLAY_HEIGHT),
                 Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-                self._meta_text,
+                self._meta_shown,
             )
         if self._layout.dismiss_x is not None:
             painter.setPen(self._colors["muted"])
@@ -754,6 +764,18 @@ class PySide6OverlayWidget(QWidget):
     def _draw_bars(self, painter: QPainter):
         mode = self._content.bars
         bars_x = self._layout.status_x
+        steps = self._step_colors.get(mode)
+        if steps is not None:
+            painter.setPen(Qt.PenStyle.NoPen)
+            for index, color in enumerate(steps):
+                painter.setBrush(color)
+                x = bars_x + index * (PHASE_STEP_WIDTH + PHASE_STEP_GAP)
+                painter.drawRoundedRect(
+                    QRectF(x, BAR_CENTER_Y - LINE_HEIGHT / 2, PHASE_STEP_WIDTH, LINE_HEIGHT),
+                    LINE_HEIGHT / 2,
+                    LINE_HEIGHT / 2,
+                )
+            return
         if mode not in self._bar_colors:
             return
         painter.setPen(Qt.PenStyle.NoPen)

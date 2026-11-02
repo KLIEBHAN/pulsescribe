@@ -1,8 +1,19 @@
 import pytest
 
-from ui.overlay_feedback import OverlayContent, describe_overlay_content
+from ui.overlay_feedback import (
+    OverlayContent,
+    describe_overlay_content,
+    transcribing_status,
+)
 from ui.overlay_text import split_recording_interim_text
-from utils.transcript_delivery import COPIED, COPY_FAILED, PASTE_FAILED, TEST_COMPLETE
+from utils.transcript_delivery import (
+    COPIED,
+    COPY_FAILED,
+    PASTE_FAILED,
+    PASTED,
+    TEST_COMPLETE,
+    done_status,
+)
 
 
 @pytest.mark.parametrize(
@@ -11,7 +22,6 @@ from utils.transcript_delivery import COPIED, COPY_FAILED, PASTE_FAILED, TEST_CO
         ("LISTENING", "low", "Listening…"),
         ("LOADING", "line", "Preparing…"),
         ("TRANSCRIBING", "line", "Transcribing…"),
-        ("REFINING", "line", "Refining…"),
     ],
 )
 def test_progress_states_use_static_bars_and_muted_copy(state, bars, text) -> None:
@@ -30,14 +40,44 @@ def test_loading_explains_warmup() -> None:
     )
 
 
-def test_done_shows_badge_and_speed_only_when_reported() -> None:
+@pytest.mark.parametrize("detail", [None, "Finishing..."])
+def test_transcribing_shows_two_steps_only_when_refine_follows(detail) -> None:
+    refine = transcribing_status(detail, refine=True)
+
+    assert transcribing_status(detail, refine=False) == detail
+    assert describe_overlay_content("TRANSCRIBING", detail) == OverlayContent(
+        "line", "Transcribing…"
+    )
+    assert describe_overlay_content("TRANSCRIBING", refine) == OverlayContent(
+        "phase1", "Transcribing…", meta="1 of 2"
+    )
+    assert describe_overlay_content("REFINING") == OverlayContent(
+        "phase2", "Refining…", meta="2 of 2"
+    )
+
+
+def test_streaming_refine_payloads_stay_distinct_for_the_windows_watchdog() -> None:
+    assert transcribing_status("Finishing...", refine=True) != transcribing_status(
+        refine=True
+    )
+
+
+def test_done_shows_badge_target_app_and_time_only_when_reported() -> None:
     assert describe_overlay_content("DONE", "some transcript") == OverlayContent(
         badge="Pasted", tone="success"
     )
-    assert describe_overlay_content("DONE", "✓ (0.3x)") == OverlayContent(
-        text="0.3x", badge="Pasted", tone="success"
+    assert describe_overlay_content(
+        "DONE", done_status(PASTED, app="Visual Studio Code", seconds=1.26)
+    ) == OverlayContent(
+        text="into Visual Studio Code", badge="Pasted", tone="success", meta="1.3 s"
     )
-    assert describe_overlay_content("DONE", COPIED).badge == "Copied"
+    assert describe_overlay_content("DONE", done_status(PASTED)) == OverlayContent(
+        badge="Pasted", tone="success"
+    )
+    # A copy has no target app; the time still shows when reported.
+    assert describe_overlay_content(
+        "DONE", done_status(COPIED, app="Mail", seconds=0.4)
+    ) == OverlayContent(badge="Copied", tone="success", meta="0.4 s")
 
 
 def test_test_runs_do_not_claim_a_paste() -> None:

@@ -254,9 +254,8 @@ class PulseScribeDaemon:
         self._update_shutdown = False
         self._termination_observer: object | None = None
         self._last_hotkey_time = 0.0
-        self._last_rtf: float | None = (
-            None  # Real-Time Factor der letzten Transkription
-        )
+        # Dauer der letzten Transkription (Overlay-Meta bei PULSESCRIBE_SHOW_RTF)
+        self._last_transcribe_seconds: float | None = None
         self._last_was_refined: bool = (
             False  # Ob Refinement den Text tatsächlich verändert hat
         )
@@ -1372,7 +1371,7 @@ class PulseScribeDaemon:
         *,
         latency_run: MacOSLatencyRun | None = None,
     ) -> None:
-        self._last_rtf = None  # RTF bei Fehler zurücksetzen
+        self._last_transcribe_seconds = None
         run = latency_run or self._latency_run
         if run is not None:
             run.finish("error", error_type=type(err).__name__)
@@ -1447,7 +1446,7 @@ class PulseScribeDaemon:
         """Show a brief neutral no-speech result before returning to ready."""
         if latency_run is not None:
             latency_run.finish("no_speech")
-        self._last_rtf = None
+        self._last_transcribe_seconds = None
         self._recording = False
         self._hold_state.reset()
         self._update_state(AppState.NO_SPEECH)
@@ -1478,7 +1477,7 @@ class PulseScribeDaemon:
 
         # Test-Modus: Callback ausführen, kein Auto-Paste
         if self._test_run_active:
-            self._last_rtf = None  # RTF im Test-Modus nicht relevant
+            self._last_transcribe_seconds = None  # im Test-Modus nicht relevant
             self._finish_test_run(transcript, None)
             if transcript:
                 self._update_state(AppState.DONE, TEST_COMPLETE)
@@ -1499,12 +1498,12 @@ class PulseScribeDaemon:
         history_language = self.language
         history_refined = self._last_was_refined
 
-        overlay_text = self._format_done_text(transcript)
         success, feedback = self._paste_result(transcript, latency_run=run)
         if success:
-            self._update_state(AppState.DONE, overlay_text)
+            self._update_state(AppState.DONE, self._format_done_text(feedback))
             get_sound_player().play("done")
         else:
+            self._last_transcribe_seconds = None
             self._enter_error_state(feedback)
         self._save_to_history(
             transcript,
@@ -1602,27 +1601,24 @@ class PulseScribeDaemon:
             started()
             finished(False)
 
-    def _format_done_text(self, transcript: str) -> str:
-        """Formatiert den Overlay-Text für DONE-State mit optionalem RTF."""
-        from utils.preferences import get_env_setting
-
-        # Prüfe ob RTF-Anzeige aktiviert ist (default: false)
-        rtf_setting = get_env_setting("PULSESCRIBE_SHOW_RTF")
-        show_rtf = rtf_setting is not None and rtf_setting.lower() in (
-            "true",
-            "1",
-            "yes",
-            "on",
+    def _format_done_text(self, feedback: str) -> str:
+        """DONE payload: delivery, target app and (if enabled) transcription time."""
+        from utils.transcript_delivery import (
+            PASTED,
+            done_status,
+            transcription_time_enabled,
         )
 
-        if show_rtf and self._last_rtf is not None:
-            # Kurze RTF-Anzeige: "✓ (0.3x)" statt Text
-            rtf_text = f"✓ ({self._last_rtf:.1f}x)"
-            self._last_rtf = None  # Reset nach Verwendung
-            return rtf_text
+        seconds, self._last_transcribe_seconds = self._last_transcribe_seconds, None
+        app = None
+        if feedback == PASTED:
+            # Nach dem Einfügen ist die Ziel-App weiterhin vorn (Overlay aktiviert nie).
+            from whisper_platform import get_app_detector
 
-        self._last_rtf = None  # Reset auch wenn nicht angezeigt
-        return transcript
+            app = get_app_detector().get_frontmost_app()
+        if not transcription_time_enabled():
+            seconds = None
+        return done_status(feedback, app=app, seconds=seconds)
 
     # =============================================================================
     # Hold-to-record Hotkey (Push-to-talk)
@@ -2807,8 +2803,8 @@ class PulseScribeDaemon:
         audio_duration: float,
         t_transcribe: float,
     ) -> None:
+        self._last_transcribe_seconds = t_transcribe
         if audio_duration <= 0:
-            self._last_rtf = None
             logger.info(
                 f"Transcription performance: mode={mode_for_run}, "
                 f"time={t_transcribe:.2f}s (audio duration unknown)"
@@ -2816,7 +2812,6 @@ class PulseScribeDaemon:
             return
 
         rtf = t_transcribe / audio_duration
-        self._last_rtf = rtf
         model_name = self._model_name_for_logging(provider, mode_override=mode_for_run)
         backend_name = self._local_backend_for_logging(
             provider,
@@ -2938,7 +2933,11 @@ class PulseScribeDaemon:
         # Bei sehr kurzen Hold-Taps kann der Worker bereits ein leeres Ergebnis geliefert
         # und den State auf IDLE gesetzt haben.
         if self._current_state in (AppState.LISTENING, AppState.RECORDING):
-            self._update_state(AppState.TRANSCRIBING)
+            from ui.overlay_feedback import transcribing_status
+
+            self._update_state(
+                AppState.TRANSCRIBING, transcribing_status(refine=bool(self.refine))
+            )
 
         # Polling läuft bereits seit Start
 

@@ -100,7 +100,7 @@ from ui.daemon_status_feedback import (
     infer_daemon_status_error,
 )
 from ui.menubar import build_menubar_hint_text, build_menubar_status_text
-from ui.overlay_feedback import ERROR_FEEDBACK_SECONDS
+from ui.overlay_feedback import ERROR_FEEDBACK_SECONDS, transcribing_status
 from utils.version import get_app_version
 
 MB_YESNO = 0x00000004
@@ -403,6 +403,8 @@ class PulseScribeWindows:
         self._update_prompt_pending = False
         self._update_prompt_running = False
         self._last_status_text: str | None = None
+        # Dauer der letzten REST-Transkription (Overlay-Meta bei PULSESCRIBE_SHOW_RTF)
+        self._last_transcribe_seconds: float | None = None
         self._hotkey_listeners: list = []  # Mehrere Listener (toggle + hold)
         self._recording_thread = None
         self._recording_action_lock = threading.RLock()  # Start/Stop atomar halten
@@ -1558,7 +1560,7 @@ class PulseScribeWindows:
                 # Der Watchdog startet erst, wenn Deepgram wirklich zurück ist.
                 self._set_state(
                     AppState.TRANSCRIBING,
-                    "Finishing...",
+                    transcribing_status("Finishing...", refine=bool(self.refine)),
                     watch_transcribing=False,
                 )
                 self._latency_mark("transcribing_state")
@@ -1569,7 +1571,9 @@ class PulseScribeWindows:
                 return
 
             # REST: State früh umschalten, damit parallele Stop-Aufrufe idempotent sind
-            stop_generation = self._set_state(AppState.TRANSCRIBING)
+            stop_generation = self._set_state(
+                AppState.TRANSCRIBING, transcribing_status(refine=bool(self.refine))
+            )
             self._latency_mark("transcribing_state")
             recording_thread = self._recording_thread
             should_transcribe_rest = True
@@ -1938,13 +1942,17 @@ class PulseScribeWindows:
         if not transcript:
             self._handle_no_speech_result()
             return
-        self._set_state(AppState.TRANSCRIBING)
+        # Differs from the "Finishing..." payload, so the watchdog starts now.
+        self._set_state(
+            AppState.TRANSCRIBING, transcribing_status(refine=bool(self.refine))
+        )
         self._handle_result(self._maybe_refine(transcript))
 
     def _handle_transcription_error(self, error: Exception, label: str) -> None:
         """Finish the failed run before publishing a retryable, readable error."""
         error_type = "Import-Fehler" if isinstance(error, ImportError) else label
         logger.error(f"{error_type}: {error}")
+        self._last_transcribe_seconds = None
         self._latency_finish("error", error_type=type(error).__name__)
         generation = self._set_state(
             AppState.ERROR, _friendly_error_status_text(error), retryable_error=True
@@ -1976,6 +1984,7 @@ class PulseScribeWindows:
             model, language = self._get_transcription_config(mode_for_run)
             provider = self._get_provider(mode_for_run)
 
+            t0 = time.perf_counter()
             # Local-Mode: In-Memory Transkription (kein WAV schreiben)
             if mode_for_run == "local" and hasattr(provider, "transcribe_audio"):
                 from config import WHISPER_SAMPLE_RATE
@@ -2016,6 +2025,7 @@ class PulseScribeWindows:
                     if temp_path.exists():
                         temp_path.unlink()
 
+            self._last_transcribe_seconds = time.perf_counter() - t0
             self._latency_mark("rest_transcribe_done", chars=len(transcript or ""))
 
             if transcript:
@@ -2079,6 +2089,10 @@ class PulseScribeWindows:
             self._handle_no_speech_result()
             return
         logger.info(f"Transkript: {redacted_text_summary(transcript)}")
+        transcribe_seconds, self._last_transcribe_seconds = (
+            self._last_transcribe_seconds,
+            None,
+        )
         # Run-Metadaten und Latency-Run VOR dem DONE-State snapshotten/abkoppeln:
         # DONE ist startfähig, ein sofortiger Hotkey- oder IPC-Start darf
         # `_run_mode`, `_last_was_refined`, `_ipc_test_cmd_id` und
@@ -2128,7 +2142,11 @@ class PulseScribeWindows:
             run.mark("paste_done", success=paste_success)
         done_generation = self._set_state(
             AppState.DONE if paste_success else AppState.ERROR,
-            feedback,
+            (
+                self._done_status(feedback, transcribe_seconds)
+                if paste_success
+                else feedback
+            ),
             retryable_error=not paste_success,
         )
         self._play_sound("done" if paste_success else "error")
@@ -2152,6 +2170,25 @@ class PulseScribeWindows:
             _DONE_DISPLAY_HOLD_SEC if paste_success else ERROR_FEEDBACK_SECONDS,
             done_generation,
         )
+
+    @staticmethod
+    def _done_status(feedback: str, transcribe_seconds: float | None) -> str:
+        """DONE payload: delivery, target app and (if enabled) transcription time."""
+        from utils.transcript_delivery import (
+            PASTED,
+            done_status,
+            transcription_time_enabled,
+        )
+
+        app = None
+        if feedback == PASTED:
+            # Process name of the foreground window: the paste target.
+            from whisper_platform import get_app_detector
+
+            app = get_app_detector().get_frontmost_app()
+        if not transcription_time_enabled():
+            transcribe_seconds = None
+        return done_status(feedback, app=app, seconds=transcribe_seconds)
 
     def _setup_hotkey(self):
         """Richtet globale Hotkeys ein (Toggle und/oder Hold-Mode)."""
