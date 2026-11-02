@@ -59,9 +59,10 @@ class _FakeAnimationTimer:
     def isActive(self) -> bool:
         return self.active
 
-    def start(self, interval_ms: int) -> None:
+    def start(self, interval_ms: int | None = None) -> None:
         self.active = True
-        self.interval_ms = interval_ms
+        if interval_ms is not None:
+            self.interval_ms = interval_ms
         self.start_calls.append(interval_ms)
 
     def stop(self) -> None:
@@ -473,6 +474,9 @@ def _state_widget(monkeypatch):
     widget._interim = ("", "")
     widget._previous_interim = ""
     widget._animation_timer = _FakeAnimationTimer()
+    widget._clock_timer = _FakeAnimationTimer()
+    widget._meta_text = ""
+    widget._clock_start = 0.0
     widget.events = []
     widget._schedule_center_on_active_screen = lambda: None
     widget._fade_in = lambda: widget.events.append("show")
@@ -556,25 +560,65 @@ def test_on_interim_changed_marks_newest_words(monkeypatch):
     assert widget._interim == ("", "")
 
 
-def test_interim_runs_keep_newest_words_when_elided():
-    class _Metrics:
-        def elidedText(self, text, mode, width):
-            assert mode.name == "ElideLeft"
-            return "\u2026" + text[-12:]
+class _Metrics:
+    def horizontalAdvance(self, text):
+        return 7.0 * len(text)
 
-        def horizontalAdvance(self, text):
-            return 7.0 * len(text)
 
+def _runs_widget():
     widget = PySide6OverlayWidget.__new__(PySide6OverlayWidget)
     widget._content = OverlayContent("level", "Recording", emphasized=True)
     widget._colors = {"text": "bright", "muted": "muted", "interim": "dim"}
-    layout = types.SimpleNamespace(text_x=85.0, text_width=90.0)
+    return widget
+
+
+def test_overflowing_interim_text_ends_at_the_zone_edge_and_is_faded():
+    widget = _runs_widget()
+    layout = types.SimpleNamespace(text_x=112.0, text_width=90.0)
+    text = "alpha beta gamma delta"  # 22 chars = 154 px
 
     runs = PySide6OverlayWidget._build_text_runs(
-        widget, layout, _Metrics(), "alpha beta gamma delta", "delta"
+        widget, layout, _Metrics(), text, "delta"
     )
 
-    assert runs == [(85.0, "\u2026 gamma ", "dim"), (85.0 + 7.0 * 8, "delta", "bright")]
+    start = 112.0 + 90.0 - 7.0 * len(text)
+    assert runs == [
+        (start, "alpha beta gamma ", "dim"),
+        (start + 7.0 * 17, "delta", "bright"),
+    ]
+    assert widget._text_clipped is True
+
+
+def test_fitting_interim_text_starts_at_the_zone_edge_without_fade():
+    widget = _runs_widget()
+    layout = types.SimpleNamespace(text_x=112.0, text_width=200.0)
+
+    runs = PySide6OverlayWidget._build_text_runs(
+        widget, layout, _Metrics(), "hello world", "world"
+    )
+
+    assert runs == [(112.0, "hello ", "dim"), (112.0 + 7.0 * 6, "world", "bright")]
+    assert widget._text_clipped is False
+
+
+def test_recording_clock_runs_only_while_listening_or_recording(monkeypatch):
+    widget = _state_widget(monkeypatch)
+    now = [100.0]
+    monkeypatch.setattr("ui.overlay_pyside6.time.monotonic", lambda: now[0])
+
+    widget._on_state_changed("LISTENING", "")
+    assert widget._clock_timer.active is True
+    assert widget._meta_text == "0:00"
+    now[0] = 103.0
+    widget._on_state_changed("RECORDING", "")
+    assert widget._clock_timer.start_calls == [None]  # not restarted
+    now[0] = 164.97  # an early coarse tick still shows the full second
+    widget._tick_clock()
+    assert widget._meta_text == "1:05"
+
+    widget._on_state_changed("TRANSCRIBING", "")
+    assert widget._clock_timer.active is False
+    assert widget._meta_text == ""
 
 
 def _recording_widget(anim):

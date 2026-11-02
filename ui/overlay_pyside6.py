@@ -31,6 +31,7 @@ from PySide6.QtGui import (
     QFont,
     QFontDatabase,
     QFontMetricsF,
+    QLinearGradient,
     QPainter,
     QPen,
 )
@@ -50,7 +51,11 @@ from ui.animation import (
     BAR_MIN_HEIGHT,
     LISTENING_BAR_HEIGHTS,
 )
-from ui.overlay_feedback import OverlayContent, describe_overlay_content
+from ui.overlay_feedback import (
+    RECORDING_CLOCK_STATES,
+    OverlayContent,
+    describe_overlay_content,
+)
 from ui.overlay_style import (
     BACKGROUND_COLOR,
     BADGE_CORNER_RADIUS,
@@ -65,17 +70,22 @@ from ui.overlay_style import (
     DISMISS_GLYPH,
     INTERIM_TEXT_COLOR,
     LINE_HEIGHT,
+    META_FONT_SIZE,
+    META_TEXT_COLOR,
     MUTED_TEXT_COLOR,
     OVERLAY_CORNER_RADIUS,
     OVERLAY_HEIGHT,
     OVERLAY_MAX_WIDTH_RATIO,
-    OVERLAY_MIN_WIDTH,
+    OVERLAY_WIDTH,
     TEXT_COLOR,
+    TEXT_FADE_WIDTH,
     TEXT_FONT_SIZE,
     OverlayLayout,
     compute_overlay_layout,
 )
 from ui.overlay_text import (
+    FADED_RECORDING_INTERIM_MAX_CHARS,
+    format_recording_duration,
     format_recording_interim_text as _format_recording_interim_text,  # noqa: F401
     split_recording_interim_text,
 )
@@ -98,6 +108,7 @@ PX_TO_PT = 0.75  # Qt-Logik: 96 DPI → 1 px = 0.75 pt
 # Auf den DONE-Hold des Daemons (_DONE_DISPLAY_HOLD_SEC) abgestimmt, damit der
 # Übergang DONE -> ausgeblendet snappy wirkt statt nachzuhängen.
 FEEDBACK_DISPLAY_MS = 600  # Millisekunden
+CLOCK_INTERVAL_MS = 1000  # Aufnahmedauer m:ss, nur LISTENING/RECORDING
 INTERIM_POLL_MAX_CHARS = 512  # Begrenztes Tail-Read für niedrige Polling-Last
 INTERIM_POLL_INTERVAL_MS = 200  # Polling nur während RECORDING
 INTERIM_POLL_STABLE_INTERVAL_MS = 500
@@ -169,6 +180,14 @@ def _system_font(size_px: float, weight: QFont.Weight) -> QFont:
     return font
 
 
+def _tabular_figures(font: QFont) -> QFont:
+    """Request tabular digits (Qt 6.7+); older Qt keeps the font's default."""
+    tag = getattr(QFont, "Tag", None)
+    if tag is not None and hasattr(font, "setFeature"):
+        font.setFeature(tag("tnum"), 1)
+    return font
+
+
 # =============================================================================
 # PySide6 Overlay Widget
 # =============================================================================
@@ -202,12 +221,17 @@ class PySide6OverlayWidget(QWidget):
         self._text_font = _system_font(TEXT_FONT_SIZE, QFont.Weight.Normal)
         self._badge_font = _system_font(BADGE_FONT_SIZE, QFont.Weight.DemiBold)
         self._dismiss_font = _system_font(DISMISS_FONT_SIZE, QFont.Weight.Normal)
+        self._meta_font = _tabular_figures(
+            _system_font(META_FONT_SIZE, QFont.Weight.Normal)
+        )
+        self._meta_color = QColor(META_TEXT_COLOR)
+        self._meta_text = ""
+        self._clock_start = 0.0
         self._persistent = False
         self._text_runs: list[tuple[float, str, QColor]] = []
+        self._text_clipped = False
         self._badge_rect: QRectF | None = None
-        self._layout = compute_overlay_layout(
-            bars=False, badge_width=0, text_width=0, max_width=OVERLAY_MIN_WIDTH
-        )
+        self._layout = compute_overlay_layout(text_width=0)
         self._colors = {key: QColor(value) for key, value in _TEXT_COLORS.items()}
         self._bar_colors = {key: QColor(value) for key, value in BAR_COLORS.items()}
         self._badge_colors = {
@@ -219,6 +243,7 @@ class PySide6OverlayWidget(QWidget):
         self._setup_window()
         self._setup_animation()
         self._setup_fade_animation()
+        self._setup_clock()
 
         # Connect signals to slots (thread-safe)
         self.state_changed.connect(self._on_state_changed)
@@ -237,7 +262,7 @@ class PySide6OverlayWidget(QWidget):
         # Transparent nur außerhalb der 3-px-Ecken; der Inhalt ist solide.
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
-        self.setFixedSize(OVERLAY_MIN_WIDTH, OVERLAY_HEIGHT)
+        self.setFixedSize(OVERLAY_WIDTH, OVERLAY_HEIGHT)
         self.setAccessibleName("PulseScribe overlay")
         self.setAccessibleDescription(
             "Shows current recording and transcription feedback."
@@ -270,7 +295,7 @@ class PySide6OverlayWidget(QWidget):
     def _max_width(self) -> float:
         geometry = self._screen_geometry
         if geometry is None:
-            return OVERLAY_MIN_WIDTH
+            return OVERLAY_WIDTH
         return geometry.width() * OVERLAY_MAX_WIDTH_RATIO
 
     def _schedule_center_on_active_screen(self):
@@ -307,6 +332,32 @@ class PySide6OverlayWidget(QWidget):
         self._fade_out_timer = QTimer(self)
         self._fade_out_timer.setSingleShot(True)
         self._fade_out_timer.timeout.connect(self._fade_out)
+
+    def _setup_clock(self):
+        """One coarse 1 Hz timer for the recording duration (LISTENING/RECORDING)."""
+        self._clock_timer = QTimer(self)
+        self._clock_timer.setTimerType(Qt.TimerType.CoarseTimer)
+        self._clock_timer.setInterval(CLOCK_INTERVAL_MS)
+        self._clock_timer.timeout.connect(self._tick_clock)
+
+    def _start_clock(self) -> None:
+        if self._clock_timer.isActive():
+            return
+        self._clock_start = time.monotonic()
+        self._meta_text = format_recording_duration(0)
+        self._clock_timer.start()
+
+    def _stop_clock(self) -> None:
+        self._clock_timer.stop()
+        self._meta_text = ""
+
+    @Slot()
+    def _tick_clock(self) -> None:
+        # round(): coarse timers may fire a little early; still show the full second.
+        text = format_recording_duration(round(time.monotonic() - self._clock_start))
+        if text != self._meta_text:
+            self._meta_text = text
+            self._relayout()
 
     def _fade_in(self):
         """Blendet Overlay ein."""
@@ -349,6 +400,8 @@ class PySide6OverlayWidget(QWidget):
         self._cancel_fade_out_timer()
         if hasattr(self, "_animation_timer") and self._animation_timer:
             self._animation_timer.stop()
+        if hasattr(self, "_clock_timer") and self._clock_timer:
+            self._clock_timer.stop()
         if hasattr(self, "_fade_animation") and self._fade_animation:
             self._fade_animation.stop()
 
@@ -393,6 +446,7 @@ class PySide6OverlayWidget(QWidget):
             self.recording_state_changed.emit(state == "RECORDING")
 
         if state == "IDLE":
+            self._stop_clock()
             # Daemon returns to IDLE so hotkeys work; a persistent message stays.
             if state_changed and not self._persistent:
                 self._fade_out()
@@ -410,6 +464,10 @@ class PySide6OverlayWidget(QWidget):
                 self._start_animation()
             else:
                 self._stop_animation()
+            if state in RECORDING_CLOCK_STATES:
+                self._start_clock()
+            else:
+                self._stop_clock()
         content = describe_overlay_content(state, text)
         # A new error after a dismissed one must show even within ERROR.
         reshow = content.dismissible and not self._persistent
@@ -460,7 +518,12 @@ class PySide6OverlayWidget(QWidget):
     def _on_interim_changed(self, text: str):
         if self._state != "RECORDING":
             return
-        interim = split_recording_interim_text(text, self._previous_interim)
+        interim = split_recording_interim_text(
+            text,
+            self._previous_interim,
+            FADED_RECORDING_INTERIM_MAX_CHARS,
+            ellipsis=False,
+        )
         self._previous_interim = text
         if interim == self._interim:
             return
@@ -469,6 +532,8 @@ class PySide6OverlayWidget(QWidget):
 
     def _set_content(self, content: OverlayContent) -> None:
         if content == self._content:
+            # The clock may have been reset (new recording, same content).
+            self._relayout()
             return
         self._content = content
         try:
@@ -499,19 +564,23 @@ class PySide6OverlayWidget(QWidget):
             if content.dismissible
             else 0
         )
+        meta = self._meta_text
         layout = compute_overlay_layout(
-            bars=content.bars != "none",
-            badge_width=badge_width,
             text_width=text_metrics.horizontalAdvance(full_text) if full_text else 0,
-            max_width=self._max_width(),
+            meta_width=(
+                QFontMetricsF(self._meta_font).horizontalAdvance(meta) if meta else 0
+            ),
             dismiss_width=dismiss_width,
+            status_width=badge_width,
+            grow=content.dismissible,
+            max_width=self._max_width(),
         )
         self._layout = layout
         self._badge_rect = None
-        if layout.badge_x is not None:
+        if content.badge:
             badge_height = QFontMetricsF(self._badge_font).height() + 2 * BADGE_PADDING_V
             self._badge_rect = QRectF(
-                layout.badge_x,
+                layout.status_x,
                 round((OVERLAY_HEIGHT - badge_height) / 2),
                 badge_width,
                 badge_height,
@@ -533,7 +602,13 @@ class PySide6OverlayWidget(QWidget):
         full_text: str,
         newest: str | None,
     ) -> list[tuple[float, str, QColor]]:
-        """Elide text to the layout width; interim keeps its newest words."""
+        """Place text runs in the text zone.
+
+        Status text is elided at the end. Live text keeps its newest words:
+        when it overflows, its tail ends at the zone edge and the start is cut
+        off (painted under the left fade, see ``_text_clipped``).
+        """
+        self._text_clipped = False
         if not full_text:
             return []
         if newest is None:
@@ -543,15 +618,18 @@ class PySide6OverlayWidget(QWidget):
             )
             return [(layout.text_x, shown, self._colors[color_key])]
 
-        shown = metrics.elidedText(full_text, Qt.TextElideMode.ElideLeft, layout.text_width)
-        newest_shown = shown[-len(newest) :] if newest else ""
-        earlier_shown = shown[: len(shown) - len(newest_shown)]
+        x = layout.text_x
+        full_width = metrics.horizontalAdvance(full_text)
+        if full_width > layout.text_width:
+            x += layout.text_width - full_width
+            self._text_clipped = True
+        earlier = full_text[: len(full_text) - len(newest)]
         runs = []
-        if earlier_shown:
-            runs.append((layout.text_x, earlier_shown, self._colors["interim"]))
-        if newest_shown:
-            offset = metrics.horizontalAdvance(earlier_shown)
-            runs.append((layout.text_x + offset, newest_shown, self._colors["text"]))
+        if earlier:
+            runs.append((x, earlier, self._colors["interim"]))
+        if newest:
+            offset = metrics.horizontalAdvance(earlier)
+            runs.append((x + offset, newest, self._colors["text"]))
         return runs
 
     def _reset_levels(self):
@@ -622,13 +700,14 @@ class PySide6OverlayWidget(QWidget):
 
         self._draw_bars(painter)
         self._draw_badge(painter)
-        painter.setFont(self._text_font)
-        for x, text, color in self._text_runs:
-            painter.setPen(color)
+        self._draw_text(painter)
+        if self._layout.meta_x is not None and self._meta_text:
+            painter.setPen(self._meta_color)
+            painter.setFont(self._meta_font)
             painter.drawText(
-                QRectF(x, 0, self.width() - x, OVERLAY_HEIGHT),
+                QRectF(self._layout.meta_x, 0, self.width(), OVERLAY_HEIGHT),
                 Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-                text,
+                self._meta_text,
             )
         if self._layout.dismiss_x is not None:
             painter.setPen(self._colors["muted"])
@@ -640,10 +719,38 @@ class PySide6OverlayWidget(QWidget):
             )
         painter.end()
 
+    def _draw_text(self, painter: QPainter):
+        if not self._text_runs:
+            return
+        layout = self._layout
+        zone = QRectF(layout.text_x, 0, layout.text_width, OVERLAY_HEIGHT)
+        painter.save()
+        painter.setClipRect(zone)
+        painter.setFont(self._text_font)
+        for x, text, color in self._text_runs:
+            painter.setPen(color)
+            painter.drawText(
+                QRectF(x, 0, layout.text_x + layout.text_width - x, OVERLAY_HEIGHT),
+                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                text,
+            )
+        if self._text_clipped:
+            # Static fade over the cut; the background is solid, so a gradient
+            # to transparent looks like an opacity mask without an offscreen pass.
+            # Inset by the 1 px border so the frame stays intact.
+            fade = QRectF(layout.text_x, 1, TEXT_FADE_WIDTH, OVERLAY_HEIGHT - 2)
+            gradient = QLinearGradient(fade.left(), 0, fade.right(), 0)
+            background = QColor(BACKGROUND_COLOR)
+            gradient.setColorAt(0.0, background)
+            background.setAlpha(0)
+            gradient.setColorAt(1.0, background)
+            painter.fillRect(fade, gradient)
+        painter.restore()
+
     def _draw_bars(self, painter: QPainter):
         mode = self._content.bars
-        bars_x = self._layout.bars_x
-        if bars_x is None or mode not in self._bar_colors:
+        bars_x = self._layout.status_x
+        if mode not in self._bar_colors:
             return
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(self._bar_colors[mode])

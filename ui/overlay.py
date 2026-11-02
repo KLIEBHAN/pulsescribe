@@ -14,7 +14,11 @@ from ui.animation import (
     BAR_WIDTH,
     LISTENING_BAR_HEIGHTS,
 )
-from ui.overlay_feedback import OverlayContent, describe_overlay_content
+from ui.overlay_feedback import (
+    RECORDING_CLOCK_STATES,
+    OverlayContent,
+    describe_overlay_content,
+)
 from ui.overlay_style import (
     BACKGROUND_COLOR,
     BADGE_CORNER_RADIUS,
@@ -29,18 +33,23 @@ from ui.overlay_style import (
     DISMISS_GLYPH,
     INTERIM_TEXT_COLOR,
     LINE_HEIGHT,
+    META_FONT_SIZE,
+    META_TEXT_COLOR,
     MUTED_TEXT_COLOR,
     OVERLAY_CORNER_RADIUS,
     OVERLAY_HEIGHT,
     OVERLAY_MAX_WIDTH_RATIO,
-    OVERLAY_MIN_WIDTH,
+    OVERLAY_WIDTH,
     TEXT_COLOR,
+    TEXT_FADE_WIDTH,
     TEXT_FONT_SIZE,
     compute_overlay_layout,
     hex_to_rgb,
 )
 from ui.overlay_text import (
     DEFAULT_RECORDING_INTERIM_MAX_CHARS,
+    FADED_RECORDING_INTERIM_MAX_CHARS,
+    format_recording_duration,
     format_recording_interim_text as _format_recording_interim_text,  # noqa: F401
     split_recording_interim_text,
 )
@@ -129,6 +138,8 @@ WAVE_ENVELOPE_GAUSSIAN_SCALE = (
 
 # Feedback-Anzeigedauer
 FEEDBACK_DISPLAY_DURATION = 0.8  # Sekunden für Done/No-Speech-Anzeige
+CLOCK_INTERVAL_SECONDS = 1.0  # Aufnahmedauer m:ss, nur LISTENING/RECORDING
+CLOCK_TOLERANCE_SECONDS = 0.1  # erlaubt macOS, Wakeups zu bündeln
 WAVE_HEIGHT_UPDATE_EPSILON = 0.25  # Spare Layer-Updates für subpixel-kleine Änderungen
 
 # =============================================================================
@@ -734,7 +745,7 @@ class OverlayController:
     Overlay-Fenster für Status, Ergebnis-Badges und Interim-Text.
 
     Layout ``[Balken] [Badge] [Text] … [×]`` (ui/overlay_style.py); das Fenster
-    wächst mit dem Text. Kein Polling - wird direkt via Callback aktualisiert.
+    hat eine feste Breite; nur bleibende Meldungen wachsen. Kein Polling - wird direkt via Callback aktualisiert.
 
     Fehler bleiben sichtbar, bis der Nutzer klickt oder ein neuer State sie
     ersetzt; nur dann nimmt das Fenster Mausereignisse an, sonst klickt man
@@ -751,10 +762,12 @@ class OverlayController:
             NSMakeRect,
             NSPanel,
             NSScreen,
+            NSTextAlignmentRight,
             NSView,
             NSWindowStyleMaskBorderless,
         )
         import Quartz  # noqa: F401  # registriert CGColorRef für .CGColor()
+        from Quartz import CAGradientLayer  # type: ignore[import-not-found]
 
         screen = NSScreen.mainScreen()
         if not screen:
@@ -764,7 +777,7 @@ class OverlayController:
         self._rect = NSMakeRect
         self._screen_frame = screen.frame()
         self._max_width = self._screen_frame.size.width * OVERLAY_MAX_WIDTH_RATIO
-        width = OVERLAY_MIN_WIDTH
+        width = OVERLAY_WIDTH
         height = OVERLAY_HEIGHT
         y = self._screen_frame.origin.y + OVERLAY_MARGIN_BOTTOM
 
@@ -817,7 +830,36 @@ class OverlayController:
             TEXT_FONT_SIZE, NSFontWeightRegular
         )
         self._text_field = _make_label(self._text_font)
-        content.addSubview_(self._text_field)
+        # Text zone: clips live text on the left; the fade view covers the cut
+        # with a static background-colored gradient (solid background, so it
+        # looks like a mask without an offscreen mask pass).
+        self._text_clip = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 0, 0))
+        self._text_clip.setWantsLayer_(True)
+        self._text_clip.layer().setMasksToBounds_(True)
+        self._text_clip.addSubview_(self._text_field)
+        fade = CAGradientLayer.layer()
+        background = _ns_color(BACKGROUND_COLOR)
+        fade.setColors_(
+            [background.CGColor(), background.colorWithAlphaComponent_(0.0).CGColor()]
+        )
+        fade.setStartPoint_((0.0, 0.5))
+        fade.setEndPoint_((1.0, 0.5))
+        self._text_fade = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 0, 0))
+        self._text_fade.setLayer_(fade)
+        self._text_fade.setWantsLayer_(True)
+        self._text_fade.setHidden_(True)
+        self._text_clip.addSubview_(self._text_fade)
+        content.addSubview_(self._text_clip)
+
+        self._meta_field = _make_label(
+            NSFont.monospacedDigitSystemFontOfSize_weight_(
+                META_FONT_SIZE, NSFontWeightRegular
+            )
+        )
+        self._meta_field.setTextColor_(_ns_color(META_TEXT_COLOR))
+        self._meta_field.setAlignment_(NSTextAlignmentRight)
+        self._meta_field.setHidden_(True)
+        content.addSubview_(self._meta_field)
 
         self._dismiss_field = _make_label(
             NSFont.systemFontOfSize_weight_(DISMISS_FONT_SIZE, NSFontWeightRegular)
@@ -842,6 +884,8 @@ class OverlayController:
         self._badge_label_height = math.ceil(self._badge_label.cell().cellSize().height)
         self._text_field.setStringValue_("Ag")
         self._text_height = math.ceil(self._text_field.cell().cellSize().height)
+        self._meta_field.setStringValue_("0:00")
+        self._meta_height = math.ceil(self._meta_field.cell().cellSize().height)
 
         self._colors = {
             "text": _ns_color(TEXT_COLOR),
@@ -861,6 +905,10 @@ class OverlayController:
         self._presentation = None
         self._window_width = float(width)
         self._persistent = False
+        self._meta_text = ""
+        self._clock_timer = None
+        self._clock_start = 0.0
+        self._has_text = False
 
     def _window_x(self, width: float) -> float:
         frame = self._screen_frame
@@ -893,12 +941,17 @@ class OverlayController:
             self._feedback_timer = None
 
         if state == AppState.IDLE:
+            self._stop_clock()
             # Daemon returns to IDLE so hotkeys work; a persistent message stays.
             if state_changed and not self._persistent:
                 self._wave_view.stop_animating()
                 self._fade_out()
             return
 
+        if state.name in RECORDING_CLOCK_STATES:
+            self._start_clock()
+        else:
+            self._stop_clock()
         content = describe_overlay_content(state.name, text)
         # A new error after a dismissed one must show even within ERROR.
         reshow = content.dismissible and not getattr(self, "_persistent", False)
@@ -908,7 +961,12 @@ class OverlayController:
             if state_changed:
                 self._previous_interim = ""
             if text:
-                interim = split_recording_interim_text(text, self._previous_interim)
+                interim = split_recording_interim_text(
+                    text,
+                    self._previous_interim,
+                    FADED_RECORDING_INTERIM_MAX_CHARS,
+                    ellipsis=False,
+                )
                 self._previous_interim = text
 
         if state_changed:
@@ -919,6 +977,44 @@ class OverlayController:
         if state_changed:
             if state in _AUTO_HIDE_STATES:
                 self._start_fade_out_timer()
+
+    def _start_clock(self) -> None:
+        """Show ``0:00`` and tick once per second until ``_stop_clock``."""
+        if getattr(self, "_clock_timer", None) is not None:
+            return
+        from Foundation import NSTimer  # type: ignore[import-not-found]
+
+        self._clock_start = time.monotonic()
+        self._meta_text = format_recording_duration(0)
+        self_ref = weakref.ref(self)
+
+        def tick(timer) -> None:
+            controller = self_ref()
+            if controller is None or timer is not controller._clock_timer:
+                timer.invalidate()
+                return
+            controller._tick_clock()
+
+        timer = NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+            CLOCK_INTERVAL_SECONDS, True, tick
+        )
+        timer.setTolerance_(CLOCK_TOLERANCE_SECONDS)
+        self._clock_timer = timer
+
+    def _tick_clock(self) -> None:
+        # round(): a tick that fires a little early still shows the full second.
+        elapsed = round(time.monotonic() - self._clock_start)
+        self._meta_text = format_recording_duration(elapsed)
+        if self._presentation is not None:
+            content, interim, _meta = self._presentation
+            self._render(content, interim)
+
+    def _stop_clock(self) -> None:
+        timer = getattr(self, "_clock_timer", None)
+        self._clock_timer = None
+        self._meta_text = ""
+        if timer is not None:
+            timer.invalidate()
 
     def _set_persistent(self, persistent: bool) -> None:
         """Accept clicks only while a dismissible message is shown."""
@@ -936,29 +1032,39 @@ class OverlayController:
         self._fade_out()
 
     def _render(self, content: OverlayContent, interim: tuple[str, str]) -> None:
-        """Apply badge, text and layout; skips identical presentations."""
-        presentation = (content, interim)
-        if self._presentation == presentation:
+        """Apply badge, text, meta and layout; skips identical presentations.
+
+        A clock tick only changes the meta text, so the text and badge are
+        left alone and just the layout is refreshed.
+        """
+        meta = getattr(self, "_meta_text", "")
+        presentation = (content, interim, meta)
+        previous = self._presentation
+        if previous == presentation:
             return
         self._presentation = presentation
 
         earlier, newest = interim
-        if earlier or newest:
-            parts = ((earlier, "interim"), (newest, "text"))
-        else:
-            parts = ((content.text, "text" if content.emphasized else "muted"),)
-        has_text = any(part for part, _color in parts)
-        self._text_field.setAttributedStringValue_(self._attributed_text(parts))
-        self._text_field.setHidden_(not has_text)
+        if previous is None or previous[:2] != (content, interim):
+            if earlier or newest:
+                parts = ((earlier, "interim"), (newest, "text"))
+            else:
+                parts = ((content.text, "text" if content.emphasized else "muted"),)
+            self._has_text = any(part for part, _color in parts)
+            self._text_field.setAttributedStringValue_(self._attributed_text(parts))
+            self._text_field.setHidden_(not self._has_text)
 
-        if content.badge:
-            background, foreground = self._badge_colors[content.tone]
-            self._badge_view.layer().setBackgroundColor_(background.CGColor())
-            self._badge_label.setTextColor_(foreground)
-            self._badge_label.setStringValue_(content.badge)
-        self._badge_view.setHidden_(not content.badge)
-        self._dismiss_field.setHidden_(not content.dismissible)
-        self._layout(content, has_text)
+            if content.badge:
+                background, foreground = self._badge_colors[content.tone]
+                self._badge_view.layer().setBackgroundColor_(background.CGColor())
+                self._badge_label.setTextColor_(foreground)
+                self._badge_label.setStringValue_(content.badge)
+            self._badge_view.setHidden_(not content.badge)
+            self._dismiss_field.setHidden_(not content.dismissible)
+        if previous is None or previous[2] != meta:
+            self._meta_field.setStringValue_(meta)
+            self._meta_field.setHidden_(not meta)
+        self._layout(content, self._has_text, bool(earlier or newest))
 
     def _attributed_text(self, parts):
         from AppKit import (  # type: ignore[import-not-found]
@@ -988,12 +1094,18 @@ class OverlayController:
             )
         return result
 
-    def _layout(self, content: OverlayContent, has_text: bool) -> None:
+    def _layout(self, content: OverlayContent, has_text: bool, interim: bool) -> None:
         rect = self._rect
         height = OVERLAY_HEIGHT
         text_width = (
             math.ceil(self._text_field.cell().cellSize().width) - 2 * _LABEL_INSET
             if has_text
+            else 0
+        )
+        meta = getattr(self, "_meta_text", "")
+        meta_width = (
+            math.ceil(self._meta_field.cell().cellSize().width) - 2 * _LABEL_INSET
+            if meta
             else 0
         )
         badge_width = 0
@@ -1008,11 +1120,12 @@ class OverlayController:
             math.ceil(dismiss_size.width) - 2 * _LABEL_INSET if content.dismissible else 0
         )
         layout = compute_overlay_layout(
-            bars=content.bars != "none",
-            badge_width=badge_width,
             text_width=text_width,
-            max_width=self._max_width,
+            meta_width=meta_width,
             dismiss_width=dismiss_width,
+            status_width=badge_width,
+            grow=content.dismissible,
+            max_width=self._max_width,
         )
         if layout.dismiss_x is not None:
             dismiss_height = math.ceil(dismiss_size.height)
@@ -1024,15 +1137,24 @@ class OverlayController:
                     dismiss_height,
                 )
             )
-        if layout.bars_x is not None:
-            self._wave_view.view.setFrameOrigin_(
-                (layout.bars_x, (height - WAVE_BAR_MAX_HEIGHT) / 2)
+        if meta_width:
+            self._meta_field.setFrame_(
+                rect(
+                    layout.meta_x - _LABEL_INSET,
+                    round((height - self._meta_height) / 2),
+                    meta_width + 2 * _LABEL_INSET,
+                    self._meta_height,
+                )
             )
-        if layout.badge_x is not None:
+        if content.bars != "none":
+            self._wave_view.view.setFrameOrigin_(
+                (layout.status_x, (height - WAVE_BAR_MAX_HEIGHT) / 2)
+            )
+        if content.badge:
             badge_height = self._badge_label_height + 2 * BADGE_PADDING_V
             self._badge_view.setFrame_(
                 rect(
-                    layout.badge_x,
+                    layout.status_x,
                     round((height - badge_height) / 2),
                     badge_width,
                     badge_height,
@@ -1046,14 +1168,31 @@ class OverlayController:
                     self._badge_label_height,
                 )
             )
-        self._text_field.setFrame_(
+        zone = layout.text_width
+        self._text_clip.setFrame_(
             rect(
-                layout.text_x - _LABEL_INSET,
+                layout.text_x,
                 round((height - self._text_height) / 2),
-                layout.text_width + 2 * _LABEL_INSET,
+                zone,
                 self._text_height,
             )
         )
+        # Live text that overflows shows its tail, cut and faded on the left;
+        # everything else starts at the zone edge and is elided at the end.
+        clipped = interim and text_width > zone
+        field_x = zone - text_width if clipped else 0
+        field_width = text_width if clipped else zone
+        self._text_field.setFrame_(
+            rect(
+                field_x - _LABEL_INSET,
+                0,
+                field_width + 2 * _LABEL_INSET,
+                self._text_height,
+            )
+        )
+        self._text_fade.setHidden_(not clipped)
+        if clipped:
+            self._text_fade.setFrame_(rect(0, 0, TEXT_FADE_WIDTH, self._text_height))
         self._resize_window(layout.width)
 
     def _resize_window(self, width: float) -> None:
