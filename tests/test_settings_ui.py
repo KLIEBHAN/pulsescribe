@@ -447,6 +447,21 @@ class TestWelcomeSecondarySettingsFeedback:
         assert ctrl._count_unsaved_changes() == 3
 
 
+    def test_save_keeps_baseline_for_skipped_invalid_numbers(self, monkeypatch):
+        monkeypatch.setattr("ui.welcome.update_env_settings", lambda _updates: None)
+        ctrl = _make_minimal_welcome_controller()
+        ctrl._env_settings_cache = {}
+        ctrl._beam_size_field = _FakeField("abc")
+        ctrl._saved_env_values = {"PULSESCRIBE_LOCAL_BEAM_SIZE": "5"}
+
+        ctrl._save_all_settings()
+        assert ctrl._saved_env_values["PULSESCRIBE_LOCAL_BEAM_SIZE"] == "5"
+        assert ctrl._count_unsaved_changes() == 1  # invalid value still unsaved
+
+        ctrl._beam_size_field.setStringValue_("3")
+        assert ctrl._count_unsaved_changes() == 1
+
+
 class TestApiKeyProviderMetadata:
     def test_api_card_height_grows_with_provider_count(self, monkeypatch):
         import ui.welcome as welcome_mod

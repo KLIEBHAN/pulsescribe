@@ -6137,7 +6137,11 @@ class WelcomeController:
         dock_changed = (
             previous_dock_state is not None and previous_dock_state != current_dock_state
         )
-        self._saved_env_values = dict(env_updates)
+        # Skipped keys (invalid numbers) were not written; keep their saved value.
+        self._saved_env_values = {
+            **(getattr(self, "_saved_env_values", None) or {}),
+            **env_updates,
+        }
         self._saved_dock_icon_enabled = current_dock_state
         self._saved_refine_settings_state = self._get_current_refine_settings_state()
         self._saved_display_settings_state = self._get_current_display_settings_state()
