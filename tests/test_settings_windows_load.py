@@ -1274,3 +1274,16 @@ def test_discard_restores_saved_settings_and_stops_recording():
     window._discard_changes()
 
     assert calls == [("stop", None), "load"]
+
+
+def test_successful_save_hides_the_save_bar(monkeypatch):
+    monkeypatch.setattr(settings_mod, "update_env_settings", lambda _updates: None)
+    monkeypatch.setattr(settings_mod, "is_onboarding_complete", lambda: True)
+    window = _make_save_window("true")
+    window._save_bar = _FakeVisibleWidget()
+    window._save_bar.visible = True
+    window._unsaved_label = _FakeLabel()
+    window._saved_settings_signature = ("before",)
+
+    assert window._save_settings() is True
+    assert window._save_bar.visible is False

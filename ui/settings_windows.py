@@ -4673,6 +4673,7 @@ class SettingsWindow(QDialog):
             self._saved_refine_settings_state = self._get_current_refine_settings_state()
             self._saved_display_settings_state = self._get_current_display_settings_state()
             self._refresh_secondary_settings_feedback()
+            self._refresh_footer_settings_hint()
 
             failed_sections = [
                 section
