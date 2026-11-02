@@ -3,6 +3,7 @@
 Monochromes Overlay im Stil von ui/overlay_style.py:
 - QWidget + QPainter, Inhalt aus ``describe_overlay_content`` (wie macOS)
 - Nur RECORDING animiert (audiogetrieben); alle anderen States sind statisch
+- Klick-durchlässig, außer während ein Fehler sichtbar ist (Klick blendet ihn aus)
 - Signals/Slots für Thread-Safety
 - High-DPI Awareness, Multi-Monitor Support (Overlay auf aktivem Monitor)
 """
@@ -49,11 +50,7 @@ from ui.animation import (
     BAR_MIN_HEIGHT,
     LISTENING_BAR_HEIGHTS,
 )
-from ui.overlay_feedback import (
-    ERROR_FEEDBACK_SECONDS,
-    OverlayContent,
-    describe_overlay_content,
-)
+from ui.overlay_feedback import OverlayContent, describe_overlay_content
 from ui.overlay_style import (
     BACKGROUND_COLOR,
     BADGE_CORNER_RADIUS,
@@ -64,6 +61,8 @@ from ui.overlay_style import (
     BAR_AREA_WIDTH,
     BAR_COLORS,
     BORDER_COLOR,
+    DISMISS_FONT_SIZE,
+    DISMISS_GLYPH,
     INTERIM_TEXT_COLOR,
     LINE_HEIGHT,
     MUTED_TEXT_COLOR,
@@ -106,7 +105,7 @@ INTERIM_POLL_STABLE_THRESHOLD = 3
 INTERIM_POLL_DIRECT_INTERVAL_MS = 1000  # Weniger Wakeups bei direkten Interim-Updates
 INTERIM_DIRECT_UPDATE_GRACE_S = 1.5
 
-_FEEDBACK_STATES = ("DONE", "NO_SPEECH", "ERROR")
+_AUTO_HIDE_STATES = ("DONE", "NO_SPEECH")
 _TEXT_COLORS = {
     "text": TEXT_COLOR,
     "muted": MUTED_TEXT_COLOR,
@@ -202,6 +201,8 @@ class PySide6OverlayWidget(QWidget):
         self._screen_geometry = None
         self._text_font = _system_font(TEXT_FONT_SIZE, QFont.Weight.Normal)
         self._badge_font = _system_font(BADGE_FONT_SIZE, QFont.Weight.DemiBold)
+        self._dismiss_font = _system_font(DISMISS_FONT_SIZE, QFont.Weight.Normal)
+        self._persistent = False
         self._text_runs: list[tuple[float, str, QColor]] = []
         self._badge_rect: QRectF | None = None
         self._layout = compute_overlay_layout(
@@ -231,6 +232,7 @@ class PySide6OverlayWidget(QWidget):
             | Qt.WindowType.WindowStaysOnTopHint
             | Qt.WindowType.Tool
             | Qt.WindowType.WindowDoesNotAcceptFocus
+            | Qt.WindowType.WindowTransparentForInput
         )
         # Transparent nur außerhalb der 3-px-Ecken; der Inhalt ist solide.
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -331,15 +333,10 @@ class PySide6OverlayWidget(QWidget):
             self._reset_levels()
 
     def _start_fade_out_timer(self):
-        """Startet Timer für automatisches Ausblenden nach DONE/ERROR."""
+        """Startet Timer für automatisches Ausblenden nach DONE/NO_SPEECH."""
         self._cancel_fade_out_timer()
         if self._fade_out_timer:
-            duration_ms = (
-                round(ERROR_FEEDBACK_SECONDS * 1000)
-                if self._state == "ERROR"
-                else FEEDBACK_DISPLAY_MS
-            )
-            self._fade_out_timer.start(duration_ms)
+            self._fade_out_timer.start(FEEDBACK_DISPLAY_MS)
 
     def _cancel_fade_out_timer(self):
         """Bricht den Fade-Out Timer ab."""
@@ -396,7 +393,8 @@ class PySide6OverlayWidget(QWidget):
             self.recording_state_changed.emit(state == "RECORDING")
 
         if state == "IDLE":
-            if state_changed:
+            # Daemon returns to IDLE so hotkeys work; a persistent message stays.
+            if state_changed and not self._persistent:
                 self._fade_out()
             return
 
@@ -412,12 +410,44 @@ class PySide6OverlayWidget(QWidget):
                 self._start_animation()
             else:
                 self._stop_animation()
-        self._set_content(describe_overlay_content(state, text))
+        content = describe_overlay_content(state, text)
+        self._set_persistent(content.dismissible)
+        self._set_content(content)
         if state_changed:
             self._fade_in()
-            # Auto-Hide für kurze Ergebnis- / Fehler-Feedbacks
-            if state in _FEEDBACK_STATES:
+            # Auto-Hide für kurze Ergebnisse; Fehler bleiben bis zum Klick
+            if state in _AUTO_HIDE_STATES:
                 self._start_fade_out_timer()
+
+    def _set_persistent(self, persistent: bool) -> None:
+        """Accept clicks only while a dismissible message is shown.
+
+        Toggles ``WindowTransparentForInput`` on the native window so the
+        overlay is not re-created or hidden (QWidget.setWindowFlags would).
+        """
+        if self._persistent == persistent:
+            return
+        self._persistent = persistent
+        handle = self.windowHandle()
+        if handle is None:
+            self.setWindowFlag(Qt.WindowType.WindowTransparentForInput, not persistent)
+        else:
+            handle.setFlag(Qt.WindowType.WindowTransparentForInput, not persistent)
+
+    def _dismiss(self) -> None:
+        """Hide a persistent message after a click on the overlay."""
+        if not self._persistent:
+            return
+        self._set_persistent(False)
+        self._cancel_fade_out_timer()
+        self._fade_out()
+
+    def mousePressEvent(self, event):
+        if self._persistent:
+            self._dismiss()
+            event.accept()
+            return
+        super().mousePressEvent(event)
 
     @Slot(float)
     def _on_level_changed(self, level: float):
@@ -461,11 +491,17 @@ class PySide6OverlayWidget(QWidget):
         if content.badge:
             badge_metrics = QFontMetricsF(self._badge_font)
             badge_width = badge_metrics.horizontalAdvance(content.badge) + 2 * BADGE_PADDING_H
+        dismiss_width = (
+            QFontMetricsF(self._dismiss_font).horizontalAdvance(DISMISS_GLYPH)
+            if content.dismissible
+            else 0
+        )
         layout = compute_overlay_layout(
             bars=content.bars != "none",
             badge_width=badge_width,
             text_width=text_metrics.horizontalAdvance(full_text) if full_text else 0,
             max_width=self._max_width(),
+            dismiss_width=dismiss_width,
         )
         self._layout = layout
         self._badge_rect = None
@@ -590,6 +626,14 @@ class PySide6OverlayWidget(QWidget):
                 QRectF(x, 0, self.width() - x, OVERLAY_HEIGHT),
                 Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
                 text,
+            )
+        if self._layout.dismiss_x is not None:
+            painter.setPen(self._colors["muted"])
+            painter.setFont(self._dismiss_font)
+            painter.drawText(
+                QRectF(self._layout.dismiss_x, 0, self.width(), OVERLAY_HEIGHT),
+                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                DISMISS_GLYPH,
             )
         painter.end()
 

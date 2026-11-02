@@ -666,3 +666,25 @@ def test_static_bar_modes_draw_once_with_mode_color():
     controller._show_bar_mode("line")
     assert {"state": "normal"} in controller._canvas.item_configs[-2:]
     assert controller._canvas.item_configs[-1] == {"state": "hidden"}
+
+
+def test_errors_persist_through_idle_until_clicked():
+    controller = _content_controller()
+    controller._dismiss_label = _FakeLabel()
+    withdrawn = []
+    controller._root.withdraw = lambda: withdrawn.append(True)
+
+    controller._handle_state_change("ERROR", "boom")
+    assert controller._dismiss_label.placed is not None
+    controller._handle_state_change("IDLE", None)
+    assert withdrawn == []
+
+    controller._dismiss()
+    assert withdrawn == [True]
+    controller._dismiss()
+    assert withdrawn == [True]
+
+    controller._handle_state_change("LISTENING", None)
+    assert controller._dismiss_label.placed is None
+    controller._handle_state_change("IDLE", None)
+    assert withdrawn == [True, True]

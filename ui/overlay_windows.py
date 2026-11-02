@@ -3,6 +3,8 @@
 Nutzt dieselben Farben und Inhalte wie macOS/PySide6 (ui/overlay_style.py,
 ``describe_overlay_content``), aber vereinfacht: feste Breite, Interim-Text
 einfarbig gedämpft. Nur RECORDING animiert; alle anderen States sind statisch.
+Fehler bleiben bis zum Klick sichtbar; das Tk-Fenster ist (wie bisher) nie
+klick-durchlässig, weil Tk das nicht pro State umschalten kann.
 """
 
 from __future__ import annotations
@@ -37,6 +39,7 @@ from ui.overlay_style import (
     BADGE_TONES,
     BAR_AREA_WIDTH,
     BAR_COLORS,
+    DISMISS_GLYPH,
     INTERIM_TEXT_COLOR,
     LINE_HEIGHT,
     MUTED_TEXT_COLOR,
@@ -130,6 +133,8 @@ class WindowsOverlayController:
         ]
         self._bar_center_y = WINDOW_HEIGHT / 2
         self._badge_label: tk.Label | None = None
+        self._dismiss_label: tk.Label | None = None
+        self._persistent = False
         self._bar_mode = "none"
         self._line_item_id: int | None = None
         self._bar_item_ids: list[tuple[int, int, int]] = []
@@ -253,6 +258,11 @@ class WindowsOverlayController:
             font=TEXT_FONT,
         )
         self._label.place(x=TEXT_X_AFTER_BARS, rely=0.5, anchor="w")
+        self._dismiss_label = tk.Label(
+            self._root, text=DISMISS_GLYPH, fg=MUTED_TEXT_COLOR, bg=BG_COLOR, font=TEXT_FONT
+        )
+        # Toplevel-Bindings gelten auch für alle Kind-Widgets (bindtags).
+        self._root.bind("<Button-1>", lambda _event: self._dismiss())
 
         self._root.withdraw()
         logger.debug("Overlay window initialized")
@@ -507,7 +517,8 @@ class WindowsOverlayController:
             return
 
         if state == "IDLE":
-            if state_changed:
+            # Daemon returns to IDLE so hotkeys work; a persistent message stays.
+            if state_changed and not self._persistent:
                 self._root.withdraw()
                 self._last_interim_text = ""
                 self._last_interim_signature = None
@@ -522,6 +533,7 @@ class WindowsOverlayController:
                 # Bei Start auf Monitor des aktiven Fensters zentrieren.
                 self._position_window(use_active_monitor=True)
             content = describe_overlay_content(state, normalized_text)
+            self._persistent = content.dismissible
             if state_changed:
                 self._show_bar_mode(content.bars)
                 self._start_animation_loop()
@@ -562,6 +574,12 @@ class WindowsOverlayController:
                 text_x = OVERLAY_PADDING_H + badge.winfo_reqwidth() + OVERLAY_GAP
             else:
                 badge.place_forget()
+        dismiss = getattr(self, "_dismiss_label", None)
+        if dismiss is not None:
+            if content.dismissible:
+                dismiss.place(x=WINDOW_WIDTH - OVERLAY_PADDING_H, rely=0.5, anchor="e")
+            else:
+                dismiss.place_forget()
         if getattr(self, "_label", None) is not None and hasattr(self._label, "place"):
             self._label.place(x=text_x, rely=0.5, anchor="w")
         self._set_label_config(
@@ -569,6 +587,13 @@ class WindowsOverlayController:
             font=TEXT_FONT,
             fg=TEXT_COLOR if content.emphasized else MUTED_TEXT_COLOR,
         )
+
+    def _dismiss(self) -> None:
+        """Hide a persistent message after a click on the overlay."""
+        if not self._persistent or not self._root:
+            return
+        self._persistent = False
+        self._root.withdraw()
 
     def _set_label_config(
         self, *, text: str, font: tuple[object, ...], fg: str
