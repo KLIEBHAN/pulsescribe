@@ -208,6 +208,12 @@ PROVIDER_API_KEY_LABELS = {
     "OPENROUTER_API_KEY": "OpenRouter",
     "GEMINI_API_KEY": "Gemini",
 }
+REFINE_PROVIDER_API_KEYS = {
+    "groq": "GROQ_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+}
 PROVIDER_API_KEY_PLACEHOLDERS = {
     "DEEPGRAM_API_KEY": "dg-...",
     "OPENAI_API_KEY": "sk-...",
@@ -293,21 +299,12 @@ def _build_provider_guidance_text(
     provider = MODE_LABELS.get(current_mode, current_mode.capitalize())
 
     if current_mode == "local":
-        return (
-            "Local Whisper works without a cloud API key. Keep cloud keys empty unless "
-            "you want to switch providers later or use a cloud Refine provider."
-        )
+        return "Local Whisper works without a cloud API key; audio stays on this device."
 
     if required_key_present:
-        return (
-            f"{provider} is ready for transcription. Other provider keys can stay empty "
-            "until you switch modes or use them for refinement."
-        )
+        return f"{provider} is ready for transcription."
 
-    return (
-        f"{provider} is selected for transcription. Add its API key below to start dictation; "
-        "other provider keys are optional for now."
-    )
+    return f"{provider} is selected for transcription. Add its API key below to start dictation."
 
 
 def _build_api_key_status(
@@ -512,15 +509,18 @@ class _SectionLayout(QVBoxLayout):
         super().__init__(parent)
         self._row_count = 0
 
-    def add_row(self, row: QLayout | QWidget) -> None:
-        """Adds a label/control row (layout or container widget) below the previous one."""
+    def add_row(self, row: QLayout | QWidget) -> QWidget | None:
+        """Adds a label/control row below the previous one; returns its container.
+
+        The first row of a layout is added as-is and returns ``None`` for layouts.
+        """
         self._row_count += 1
         if self._row_count == 1:
             if isinstance(row, QWidget):
                 self.addWidget(row)
-            else:
-                self.addLayout(row)
-            return
+                return row
+            self.addLayout(row)
+            return None
         container = row if isinstance(row, QWidget) else QWidget()
         if container is not row:
             container.setLayout(row)
@@ -528,6 +528,7 @@ class _SectionLayout(QVBoxLayout):
         container.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         container.layout().setContentsMargins(0, 8, 0, 0)
         self.addWidget(container)
+        return container
 
 
 def create_card(
@@ -731,6 +732,16 @@ def _set_status_label_if_changed(widget, text: str, color: str) -> None:
         return
     _set_widget_text_if_changed(widget, text)
     _set_widget_stylesheet_if_changed(widget, f"color: {COLORS[color]};")
+
+
+def _badge_slot(badge: QLabel) -> QWidget:
+    """Fixed-width, right-aligned slot so a field does not jump with the badge text."""
+    slot = QWidget()
+    slot.setFixedWidth(96)
+    layout = QHBoxLayout(slot)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.addWidget(badge, 0, Qt.AlignmentFlag.AlignRight)
+    return slot
 
 
 def _set_badge_if_changed(widget, text: str, color: str) -> None:
@@ -1348,6 +1359,7 @@ class SettingsWindow(QDialog):
             "Recommended (Local)",
             "One click presets for fast local dictation (faster-whisper).",
         )
+        self._local_presets_card = card
 
         presets_layout = QHBoxLayout()
         presets_layout.setSpacing(8)
@@ -1538,6 +1550,7 @@ class SettingsWindow(QDialog):
         self._local_backend_container = QWidget()
         backend_layout = QHBoxLayout(self._local_backend_container)
         backend_layout.setContentsMargins(0, 0, 0, 0)
+        backend_layout.setSpacing(12)  # same label column as create_label_row
         self._local_backend_combo = QComboBox()
         _add_combo_items(self._local_backend_combo, LOCAL_BACKEND_OPTIONS)
         self._local_backend_combo.setToolTip(
@@ -1559,6 +1572,7 @@ class SettingsWindow(QDialog):
         self._local_model_container = QWidget()
         model_layout = QHBoxLayout(self._local_model_container)
         model_layout.setContentsMargins(0, 0, 0, 0)
+        model_layout.setSpacing(12)
         self._local_model_combo = QComboBox()
         _add_combo_items(self._local_model_combo, LOCAL_MODEL_OPTIONS)
         self._local_model_combo.currentTextChanged.connect(
@@ -1574,6 +1588,7 @@ class SettingsWindow(QDialog):
         self._streaming_container = QWidget()
         streaming_layout = QHBoxLayout(self._streaming_container)
         streaming_layout.setContentsMargins(0, 0, 0, 0)
+        streaming_layout.setSpacing(12)
         streaming_label = QLabel("Streaming:")
         streaming_label.setMinimumWidth(120)
         streaming_layout.addWidget(streaming_label)
@@ -1591,11 +1606,10 @@ class SettingsWindow(QDialog):
 
         layout.addWidget(card)
 
-        # API Keys Card
-        card, card_layout = create_card(
-            "API Keys",
-            "Only the key for the active cloud transcription mode is required. Unused keys can stay empty.",
-        )
+        # API key of the selected transcription provider (rows toggled per mode)
+        card, card_layout = create_card("API Key")
+        self._api_keys_card = card
+        self._api_rows: dict[str, QWidget] = {}
 
         for provider, env_key in [
             ("Deepgram", "DEEPGRAM_API_KEY"),
@@ -1628,21 +1642,20 @@ class SettingsWindow(QDialog):
             field.textChanged.connect(self._refresh_setup_overview)
             field.textChanged.connect(self._refresh_provider_key_statuses)
             field.textChanged.connect(self._refresh_footer_settings_hint)
+            field.textChanged.connect(self._sync_refine_key_field)
             self._api_fields[env_key] = field
             row.addWidget(field, 1)
 
             status = create_badge_label()
             status.setAccessibleName(f"{provider} API key status")
             self._api_status[env_key] = status
-            # Fixed slot so the field width does not jump with the badge text.
-            status_slot = QWidget()
-            status_slot.setFixedWidth(96)
-            slot_layout = QHBoxLayout(status_slot)
-            slot_layout.setContentsMargins(0, 0, 0, 0)
-            slot_layout.addWidget(status, 0, Qt.AlignmentFlag.AlignRight)
-            row.addWidget(status_slot)
+            row.addWidget(_badge_slot(status))
 
-            card_layout.add_row(row)
+            row_widget = QWidget()
+            row_widget.setLayout(row)
+            row.setContentsMargins(0, 0, 0, 0)
+            self._api_rows[env_key] = row_widget
+            card_layout.addWidget(row_widget)
 
         layout.addWidget(card)
 
@@ -1659,7 +1672,14 @@ class SettingsWindow(QDialog):
             combo.setCurrentIndex(combo.findData(selected))
 
     def _add_advanced_cards(self, layout: QVBoxLayout) -> None:
-        """Advanced-Karten: Lokale Modell-Parameter."""
+        """Advanced local backend cards behind a collapsed disclosure row (Local only)."""
+        self._advanced_disclosure = QPushButton()
+        self._advanced_disclosure.setObjectName("disclosure")
+        self._advanced_disclosure.setFont(ui_font("card_title"))
+        self._advanced_disclosure.setCheckable(True)
+        self._advanced_disclosure.setAccessibleName("Advanced backend options")
+        self._advanced_disclosure.toggled.connect(self._refresh_local_advanced_ui)
+        layout.addWidget(self._advanced_disclosure)
         # Empty / non-local state
         card, card_layout = create_card(
             "Local Whisper only",
@@ -1859,20 +1879,38 @@ class SettingsWindow(QDialog):
         self._refine_provider_combo.currentTextChanged.connect(
             self._refresh_secondary_settings_feedback
         )
-        card_layout.add_row(
+        provider_row = card_layout.add_row(
             create_label_row("Provider:", self._refine_provider_combo)
         )
+
+        # API key of the selected refine provider; mirrors its Transcription key field.
+        self._refine_key_field = QLineEdit()
+        self._refine_key_field.setAccessibleName("Refine provider API key")
+        self._refine_key_field.setEchoMode(QLineEdit.EchoMode.Password)
+        self._refine_key_field.setClearButtonEnabled(True)
+        self._refine_key_field.textChanged.connect(self._on_refine_key_edited)
+        self._refine_key_badge = create_badge_label()
+        key_row = create_label_row("API key:", self._refine_key_field)
+        key_row.addWidget(_badge_slot(self._refine_key_badge))
+        key_row_widget = card_layout.add_row(key_row)
 
         # Model
         self._refine_model_field = QLineEdit()
         self._refine_model_field.textChanged.connect(
             self._refresh_secondary_settings_feedback
         )
-        card_layout.add_row(create_label_row("Model:", self._refine_model_field))
+        model_row = card_layout.add_row(create_label_row("Model:", self._refine_model_field))
 
         self._refine_model_help_label = create_status_label("", "text_secondary")
         self._refine_model_help_label.setFont(ui_font("caption"))
         card_layout.addWidget(self._refine_model_help_label)
+        # Greyed out, not hidden, while Refine is off.
+        self._refine_detail_widgets = [
+            provider_row,
+            key_row_widget,
+            model_row,
+            self._refine_model_help_label,
+        ]
 
         self._refine_settings_status_label = create_status_label("", "text_secondary")
         self._refine_settings_status_label.setFont(ui_font("caption"))
@@ -1946,7 +1984,9 @@ class SettingsWindow(QDialog):
         slot_layout = getattr(self, "_prompts_slot_layout", None)
         if slot_layout is None or slot_layout.count():
             return
-        slot_layout.addWidget(self._build_prompts_card())
+        self._prompts_card = self._build_prompts_card()
+        slot_layout.addWidget(self._prompts_card)
+        self._sync_refine_key_field()
 
     def _build_prompts_card(self) -> QWidget:
         """Prompts-Karte: Custom Prompts (lazy im Refine-Tab)."""
@@ -2460,22 +2500,29 @@ class SettingsWindow(QDialog):
         if current_mode is None:
             current_mode = mode_combo.currentText() if mode_combo else "deepgram"
         state = get_local_advanced_ui_state(current_mode, self._current_local_backend())
+        disclosure = getattr(self, "_advanced_disclosure", None)
+        is_local = current_mode == "local"
+        expanded = is_local and (disclosure is None or disclosure.isChecked())
+        if disclosure is not None:
+            _set_widget_visible_if_changed(disclosure, is_local)
+            arrow = "\u25be" if disclosure.isChecked() else "\u25b8"
+            _set_widget_text_if_changed(disclosure, f"{arrow}  Advanced backend options")
 
         _set_widget_visible_if_changed(
             getattr(self, "_advanced_empty_state_card", None),
-            not state.show_general,
+            expanded and not state.show_general,
         )
         _set_widget_visible_if_changed(
             getattr(self, "_advanced_local_settings_card", None),
-            state.show_general,
+            expanded and state.show_general,
         )
         _set_widget_visible_if_changed(
             getattr(self, "_advanced_faster_settings_card", None),
-            state.show_faster,
+            expanded and state.show_faster,
         )
         _set_widget_visible_if_changed(
             getattr(self, "_advanced_lightning_settings_card", None),
-            state.show_lightning,
+            expanded and state.show_lightning,
         )
 
         _set_status_label_if_changed(
@@ -2737,7 +2784,7 @@ class SettingsWindow(QDialog):
         if combo is not None:
             _set_widget_tooltip_if_changed(
                 combo,
-                "Choose which provider should clean up transcript text after transcription. The matching API key is managed on the Transcription tab.",
+                "Choose which provider should clean up transcript text after transcription.",
             )
             try:
                 combo.setAccessibleName("Refine provider")
@@ -2796,7 +2843,46 @@ class SettingsWindow(QDialog):
     def _refresh_secondary_settings_feedback(self) -> None:
         self._refresh_refine_settings_feedback()
         self._refresh_display_settings_feedback()
+        self._sync_refine_key_field()
         self._refresh_footer_settings_hint()
+
+    def _refine_key_env(self) -> str:
+        combo = getattr(self, "_refine_provider_combo", None)
+        return REFINE_PROVIDER_API_KEYS.get(combo.currentText() if combo else "", "")
+
+    def _refine_key_source_field(self) -> QLineEdit | None:
+        """Transcription key field of the selected refine provider (the saved value)."""
+        return getattr(self, "_api_fields", {}).get(self._refine_key_env())
+
+    def _sync_refine_key_field(self, *_args) -> None:
+        """Shows the selected refine provider's key, its badge and the enabled state."""
+        refine_box = getattr(self, "_refine_checkbox", None)
+        enabled = bool(refine_box is not None and refine_box.isChecked())
+        for widget in getattr(self, "_refine_detail_widgets", ()):
+            _set_widget_enabled_if_changed(widget, enabled)
+        _set_widget_enabled_if_changed(getattr(self, "_prompts_card", None), enabled)
+        field = getattr(self, "_refine_key_field", None)
+        source = self._refine_key_source_field()
+        if field is None or source is None:
+            return
+        _set_widget_text_if_changed(field, source.text())
+        if field.placeholderText() != source.placeholderText():
+            field.setPlaceholderText(source.placeholderText())
+        configured = bool(
+            source.text().strip()
+            or self._get_process_env_api_keys().get(self._refine_key_env(), "")
+        )
+        if configured:
+            text, color = "Configured", "success"
+        else:
+            text, color = ("Required", "warning") if enabled else ("Not set", "text_secondary")
+        _set_badge_if_changed(getattr(self, "_refine_key_badge", None), text, color)
+
+    def _on_refine_key_edited(self, text: str) -> None:
+        """Writes Refine key edits into the shared field that Save & Apply stores."""
+        source = self._refine_key_source_field()
+        if source is not None:
+            _set_widget_text_if_changed(source, text)
 
     # =========================================================================
     # Event Handlers
@@ -2841,6 +2927,13 @@ class SettingsWindow(QDialog):
             _set_widget_visible_if_changed(self._local_model_container, is_local)
         if hasattr(self, "_streaming_container"):
             _set_widget_visible_if_changed(self._streaming_container, is_deepgram)
+        required_key = MODE_API_KEY_MAP.get(mode)
+        for env_key, row in getattr(self, "_api_rows", {}).items():
+            _set_widget_visible_if_changed(row, env_key == required_key)
+        _set_widget_visible_if_changed(
+            getattr(self, "_api_keys_card", None), required_key is not None
+        )
+        _set_widget_visible_if_changed(getattr(self, "_local_presets_card", None), is_local)
 
         self._refresh_local_advanced_ui(mode)
         self._refresh_provider_key_statuses()

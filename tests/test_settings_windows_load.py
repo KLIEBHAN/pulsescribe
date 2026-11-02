@@ -1126,7 +1126,7 @@ def test_on_mode_changed_hides_local_advanced_cards_for_cloud_modes():
     assert window._local_backend_container.visible is False
     assert window._local_model_container.visible is False
     assert window._streaming_container.visible is True
-    assert window._advanced_empty_state_card.visible is True
+    assert window._advanced_empty_state_card.visible is False  # cloud modes hide all local options
     assert window._advanced_local_settings_card.visible is False
     assert window._advanced_faster_settings_card.visible is False
     assert window._advanced_lightning_settings_card.visible is False
@@ -1162,7 +1162,7 @@ def test_on_mode_changed_uses_hidden_state_before_first_show():
 
     assert window._local_backend_container.hidden is True
     assert window._local_model_container.hidden is True
-    assert window._advanced_empty_state_card.hidden is False
+    assert window._advanced_empty_state_card.hidden is True
     assert window._advanced_local_settings_card.hidden is True
     assert window._advanced_faster_settings_card.hidden is True
     assert window._advanced_lightning_settings_card.hidden is True
@@ -1287,3 +1287,89 @@ def test_successful_save_hides_the_save_bar(monkeypatch):
 
     assert window._save_settings() is True
     assert window._save_bar.visible is False
+
+
+def test_transcription_shows_only_the_selected_provider_key_and_local_options():
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._api_rows = {
+        "DEEPGRAM_API_KEY": _FakeVisibleWidget(),
+        "GROQ_API_KEY": _FakeVisibleWidget(),
+    }
+    window._api_keys_card = _FakeVisibleWidget()
+    window._local_presets_card = _FakeVisibleWidget()
+    window._refresh_local_advanced_ui = lambda _mode: None
+    window._refresh_provider_key_statuses = lambda: None
+    window._refresh_setup_overview = lambda: None
+
+    window._on_mode_changed("groq")
+    assert window._api_rows["GROQ_API_KEY"].visible is True
+    assert window._api_rows["DEEPGRAM_API_KEY"].visible is False
+    assert window._api_keys_card.visible is True
+    assert window._local_presets_card.visible is False
+
+    window._on_mode_changed("local")
+    assert window._api_keys_card.visible is False
+    assert window._local_presets_card.visible is True
+
+
+def test_advanced_backend_options_stay_collapsed_until_opened():
+    from PySide6.QtWidgets import QApplication, QPushButton
+
+    app = QApplication.instance() or QApplication([])
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._mode_combo = None
+    window._local_backend_combo = _FakeCombo(settings_mod.LOCAL_BACKEND_OPTIONS, current="faster")
+    window._advanced_disclosure = QPushButton()
+    window._advanced_disclosure.setCheckable(True)
+    window._advanced_local_settings_card = _FakeVisibleWidget()
+    window._advanced_faster_settings_card = _FakeVisibleWidget()
+
+    window._refresh_local_advanced_ui("local")
+    assert not window._advanced_disclosure.isHidden()
+    assert window._advanced_disclosure.text().endswith("Advanced backend options")
+    assert window._advanced_local_settings_card.visible is False
+
+    window._advanced_disclosure.setChecked(True)
+    window._refresh_local_advanced_ui("local")
+    assert window._advanced_local_settings_card.visible is True
+    assert window._advanced_faster_settings_card.visible is True
+
+    window._refresh_local_advanced_ui("deepgram")
+    assert window._advanced_disclosure.isHidden()
+    assert window._advanced_local_settings_card.visible is False
+    assert app is not None
+
+
+def test_refine_key_row_mirrors_the_provider_key_and_greys_out_when_off():
+    from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QLabel, QLineEdit
+
+    app = QApplication.instance() or QApplication([])
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._process_env_api_keys = {}
+    window._refine_checkbox = QCheckBox()
+    window._refine_provider_combo = QComboBox()
+    window._refine_provider_combo.addItems(["groq", "gemini"])
+    groq, gemini = QLineEdit("gsk-saved"), QLineEdit("")
+    window._api_fields = {"GROQ_API_KEY": groq, "GEMINI_API_KEY": gemini}
+    window._refine_key_field = QLineEdit()
+    window._refine_key_field.textChanged.connect(window._on_refine_key_edited)
+    window._refine_key_badge = QLabel()
+    detail = QLabel("Provider:")
+    window._refine_detail_widgets = [detail]
+
+    window._sync_refine_key_field()
+    assert window._refine_key_field.text() == "gsk-saved"
+    assert window._refine_key_badge.text() == "Configured"
+    assert not detail.isEnabled()
+
+    window._refine_checkbox.setChecked(True)
+    window._refine_provider_combo.setCurrentText("gemini")
+    window._sync_refine_key_field()
+    assert window._refine_key_field.text() == ""
+    assert window._refine_key_badge.text() == "Required"
+    assert detail.isEnabled()
+
+    window._refine_key_field.setText("AIza-new")
+    assert gemini.text() == "AIza-new"
+    assert groq.text() == "gsk-saved"
+    assert app is not None

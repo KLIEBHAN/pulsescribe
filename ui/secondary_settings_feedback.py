@@ -72,7 +72,7 @@ def build_refine_settings_feedback(
                 f"Transcript cleanup is on. {provider_label} will use its default "
                 f"model ({default_model}) unless you add an override."
             )
-        guidance = "The matching API key is managed on the Transcription tab."
+        guidance = ""
     else:
         detail = (
             "Transcript cleanup is off, so PulseScribe will keep the raw "
@@ -83,14 +83,14 @@ def build_refine_settings_feedback(
             "cleanup after transcription."
         )
 
+    summary = f"{detail} {guidance}".strip()
     if dirty:
         return (
-            f"Unsaved changes here. {detail} {guidance} Click Save & Apply to keep "
-            "this behavior.",
+            f"Unsaved changes here. {summary} Click Save & Apply to keep this behavior.",
             "warning",
         )
 
-    return (f"No changes to apply here. {detail} {guidance}", "text_secondary")
+    return (f"No changes to apply here. {summary}", "text_secondary")
 
 
 def build_display_settings_feedback(
