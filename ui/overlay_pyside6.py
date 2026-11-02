@@ -1,14 +1,10 @@
 """PySide6 Overlay für PulseScribe (Windows).
 
-GPU-beschleunigtes Overlay mit:
-- QWidget + QPainter für Hardware-Rendering
-- QTimer mit PreciseTimer für echte 60 FPS
+Monochromes Overlay im Stil von ui/overlay_style.py:
+- QWidget + QPainter, Inhalt aus ``describe_overlay_content`` (wie macOS)
+- Nur RECORDING animiert (audiogetrieben); alle anderen States sind statisch
 - Signals/Slots für Thread-Safety
-- Windows 11 Mica-Effekt mit nativen runden Ecken (22H2+)
-- Graceful Fallback auf Solid-Background (Win10/ältere Builds)
-- Traveling Wave + Gaussian Envelope Animation
-- High-DPI Awareness (scharfe Darstellung auf 4K)
-- Multi-Monitor Support (Overlay auf aktivem Monitor)
+- High-DPI Awareness, Multi-Monitor Support (Overlay auf aktivem Monitor)
 """
 
 import ctypes
@@ -29,17 +25,16 @@ from PySide6.QtCore import (
     Slot,
 )
 from PySide6.QtGui import (
-    QBrush,
     QColor,
     QCursor,
     QFont,
+    QFontDatabase,
+    QFontMetricsF,
     QPainter,
-    QPainterPath,
     QPen,
 )
 from PySide6.QtWidgets import (
     QApplication,
-    QLabel,
     QWidget,
 )
 
@@ -52,64 +47,53 @@ from ui.animation import (
     BAR_WIDTH,
     BAR_GAP,
     BAR_MIN_HEIGHT,
+    LISTENING_BAR_HEIGHTS,
 )
 from ui.overlay_feedback import (
     ERROR_FEEDBACK_SECONDS,
-    DEFAULT_OVERLAY_STATE_TEXTS,
-    build_overlay_feedback_text,
-    format_overlay_status_text,
+    OverlayContent,
+    describe_overlay_content,
+)
+from ui.overlay_style import (
+    BACKGROUND_COLOR,
+    BADGE_CORNER_RADIUS,
+    BADGE_FONT_SIZE,
+    BADGE_PADDING_H,
+    BADGE_PADDING_V,
+    BADGE_TONES,
+    BAR_AREA_WIDTH,
+    BAR_COLORS,
+    BORDER_COLOR,
+    INTERIM_TEXT_COLOR,
+    LINE_HEIGHT,
+    MUTED_TEXT_COLOR,
+    OVERLAY_CORNER_RADIUS,
+    OVERLAY_HEIGHT,
+    OVERLAY_MAX_WIDTH_RATIO,
+    OVERLAY_MIN_WIDTH,
+    TEXT_COLOR,
+    TEXT_FONT_SIZE,
+    OverlayLayout,
+    compute_overlay_layout,
 )
 from ui.overlay_text import (
-    format_recording_interim_text as _format_recording_interim_text,
+    format_recording_interim_text as _format_recording_interim_text,  # noqa: F401
+    split_recording_interim_text,
 )
 from utils.log_tail import read_file_tail_text
 
 logger = logging.getLogger("pulsescribe.overlay")
 
 # =============================================================================
-# Window-Konstanten
+# Window-/Animation-Konstanten (Maße/Farben: ui/overlay_style.py)
 # =============================================================================
 
-WINDOW_WIDTH = 280
-WINDOW_HEIGHT = 100  # macOS OVERLAY_HEIGHT
-WINDOW_CORNER_RADIUS = 22  # macOS radius; Windows 11 Mica uses DWM rounding instead
 WINDOW_MARGIN_BOTTOM = 60
-LABEL_PADDING_H = 12  # Fixed-width window: keep the full text width (macOS grows instead)
-LABEL_TOP = 60  # Text row below the bars, positioned like the macOS overlay
-LABEL_HEIGHT = 24
-LABEL_PIXEL_SIZE = 15  # macOS OVERLAY_FONT_SIZE (semibold)
-BAR_CENTER_Y = 36  # macOS wave area: 12 px top inset + 48 px max bar height / 2
-
-# =============================================================================
-# Animation-Konstanten
-# =============================================================================
-
 FPS = 60
-FRAME_MS = 1000 // FPS  # ~16ms
-FRAME_MS_ACTIVE = 1000 // 30  # 30 FPS für nicht-kritische Animationen
-FRAME_MS_FEEDBACK = 1000 // 20  # 20 FPS für kurze DONE/ERROR-Phase
+FRAME_MS = 1000 // FPS  # ~16ms, nur während RECORDING
 BAR_HEIGHT_UPDATE_EPSILON = 0.25  # Spare Repaints für subpixel-kleine Änderungen
-
-# =============================================================================
-# Farben
-# =============================================================================
-
-BG_COLOR = QColor(26, 26, 26, 200)  # #1A1A1A mit ~78% Alpha (transparenter)
-BORDER_COLOR = QColor(255, 255, 255, 38)  # Subtle border
-
-STATE_COLORS = {
-    "IDLE": QColor(255, 255, 255, 230),
-    "LISTENING": QColor(255, 182, 193),  # Pink
-    "RECORDING": QColor(255, 82, 82),  # Rot
-    "TRANSCRIBING": QColor(255, 177, 66),  # Orange
-    "REFINING": QColor(156, 39, 176),  # Lila
-    "LOADING": QColor(66, 165, 245),  # Material Blue 400
-    "DONE": QColor(51, 217, 178),  # Teal (wie macOS)
-    "NO_SPEECH": QColor(255, 177, 66),  # Amber
-    "ERROR": QColor(255, 71, 87),  # Rot
-}
-
-STATE_TEXTS = DEFAULT_OVERLAY_STATE_TEXTS
+BAR_CENTER_Y = OVERLAY_HEIGHT / 2
+PX_TO_PT = 0.75  # Qt-Logik: 96 DPI → 1 px = 0.75 pt
 
 # Auto-Hide Timer für kurze Ergebnis- / Fehler-Feedbacks
 # Auf den DONE-Hold des Daemons (_DONE_DISPLAY_HOLD_SEC) abgestimmt, damit der
@@ -122,27 +106,12 @@ INTERIM_POLL_STABLE_THRESHOLD = 3
 INTERIM_POLL_DIRECT_INTERVAL_MS = 1000  # Weniger Wakeups bei direkten Interim-Updates
 INTERIM_DIRECT_UPDATE_GRACE_S = 1.5
 
-# =============================================================================
-# Windows 11 DWM-Konstanten (Mica Effect)
-# =============================================================================
-
-# DwmSetWindowAttribute Attribute IDs
-DWMWA_USE_IMMERSIVE_DARK_MODE = 20
-DWMWA_WINDOW_CORNER_PREFERENCE = 33
-DWMWA_SYSTEMBACKDROP_TYPE = 38
-
-# DWM_SYSTEMBACKDROP_TYPE Values (Windows 11 22H2+)
-DWMSBT_AUTO = 0
-DWMSBT_DISABLE = 1
-DWMSBT_MAINWINDOW = 2       # Mica
-DWMSBT_TRANSIENTWINDOW = 3  # Acrylic
-DWMSBT_TABBEDWINDOW = 4     # Tabbed (Mica Alt)
-
-# DWM_WINDOW_CORNER_PREFERENCE Values
-DWMWCP_DEFAULT = 0
-DWMWCP_DONOTROUND = 1
-DWMWCP_ROUND = 2
-DWMWCP_ROUNDSMALL = 3
+_FEEDBACK_STATES = ("DONE", "NO_SPEECH", "ERROR")
+_TEXT_COLORS = {
+    "text": TEXT_COLOR,
+    "muted": MUTED_TEXT_COLOR,
+    "interim": INTERIM_TEXT_COLOR,
+}
 
 
 # =============================================================================
@@ -193,103 +162,12 @@ def _get_active_screen() -> "QScreen | None":
     return app.primaryScreen()
 
 
-# =============================================================================
-# Windows 11 Mica Effect Helper
-# =============================================================================
-
-
-def _get_windows_build() -> int:
-    """Ermittelt die Windows Build-Nummer."""
-    if sys.platform != "win32":
-        return 0
-
-    try:
-        import winreg
-        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion") as key:
-            build = winreg.QueryValueEx(key, "CurrentBuildNumber")[0]
-            return int(build)
-    except Exception:
-        return 0
-
-
-def _enable_mica_effect(hwnd: int) -> bool:
-    """Aktiviert Windows 11 Mica-Effekt mit nativen runden Ecken.
-
-    Erfordert Windows 11 22H2 (Build 22621+) für DWMWA_SYSTEMBACKDROP_TYPE.
-    Auf älteren Systemen wird False zurückgegeben und der Solid-Background verwendet.
-
-    Hinweis: DwmExtendFrameIntoClientArea wird NICHT aufgerufen, da es laut
-    Avalonia Issue #7403 den Mica-Effekt auf Qt-ähnlichen Frameworks bricht.
-    Qt's FramelessWindowHint + WA_TranslucentBackground reicht aus.
-    """
-    if sys.platform != "win32":
-        return False
-
-    # Mindestens Windows 11 22H2 (Build 22621) erforderlich
-    build = _get_windows_build()
-    if build < 22621:
-        logger.debug(f"Mica nicht verfügbar (Build {build} < 22621)")
-        return False
-
-    try:
-        from ctypes import wintypes
-
-        dwmapi = ctypes.windll.dwmapi
-
-        # Funktions-Signaturen definieren für korrektes 64-bit Handling
-        # HRESULT DwmSetWindowAttribute(HWND, DWORD, LPCVOID, DWORD)
-        dwmapi.DwmSetWindowAttribute.argtypes = [
-            wintypes.HWND,
-            wintypes.DWORD,
-            ctypes.c_void_p,
-            wintypes.DWORD,
-        ]
-        dwmapi.DwmSetWindowAttribute.restype = wintypes.LONG  # HRESULT
-
-        # 1. Dark Mode aktivieren (für dunkles Mica)
-        # Nicht kritisch - bei Fehler wird Light-Theme verwendet
-        dark_mode = ctypes.c_int(1)
-        result = dwmapi.DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_USE_IMMERSIVE_DARK_MODE,
-            ctypes.byref(dark_mode),
-            ctypes.sizeof(dark_mode),
-        )
-        if result != 0:
-            logger.debug(f"Dark Mode fehlgeschlagen (HRESULT {result}), fahre fort...")
-
-        # 2. Runde Ecken via DWM (native, nicht QPainter)
-        # Nicht kritisch - bei Fehler werden Default-Ecken verwendet
-        corners = ctypes.c_int(DWMWCP_ROUND)
-        result = dwmapi.DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_WINDOW_CORNER_PREFERENCE,
-            ctypes.byref(corners),
-            ctypes.sizeof(corners),
-        )
-        if result != 0:
-            logger.debug(f"Rounded Corners fehlgeschlagen (HRESULT {result}), fahre fort...")
-
-        # 3. Mica Backdrop aktivieren - KRITISCH
-        # Bei Fehler hier → Fallback auf Solid-Background
-        backdrop = ctypes.c_int(DWMSBT_MAINWINDOW)
-        result = dwmapi.DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_SYSTEMBACKDROP_TYPE,
-            ctypes.byref(backdrop),
-            ctypes.sizeof(backdrop),
-        )
-
-        if result == 0:  # S_OK
-            logger.debug(f"Windows 11 Mica-Effekt aktiviert (Build {build})")
-            return True
-        else:
-            logger.debug(f"Mica Backdrop fehlgeschlagen (HRESULT {result}) → Fallback")
-            return False
-
-    except Exception as e:
-        logger.debug(f"Mica nicht verfügbar: {e}")
-        return False
+def _system_font(size_px: float, weight: QFont.Weight) -> QFont:
+    """System UI font (Segoe UI on Windows) at a pixel-equivalent size."""
+    font = QFontDatabase.systemFont(QFontDatabase.SystemFont.GeneralFont)
+    font.setPointSizeF(size_px * PX_TO_PT)
+    font.setWeight(weight)
+    return font
 
 
 # =============================================================================
@@ -298,7 +176,7 @@ def _enable_mica_effect(hwnd: int) -> bool:
 
 
 class PySide6OverlayWidget(QWidget):
-    """GPU-beschleunigtes Overlay Widget."""
+    """Overlay Widget: ``[Balken] [Badge] [Text]``, wächst mit dem Text."""
 
     # Signals für Thread-Safety
     state_changed = Signal(str, str)
@@ -311,21 +189,33 @@ class PySide6OverlayWidget(QWidget):
 
         # State
         self._state = "IDLE"
-        self._text = ""
+        self._content = OverlayContent()
+        self._interim = ("", "")
+        self._previous_interim = ""
         self._audio_level = 0.0
         self._anim = AnimationLogic()
         self._bar_heights = [float(BAR_MIN_HEIGHT)] * BAR_COUNT
         self._painted_bar_heights = [float(BAR_MIN_HEIGHT)] * BAR_COUNT
-        self._last_painted_state = "IDLE"
         self._animation_start = time.perf_counter()
-        self._mica_enabled = False
-        self._mica_attempted = False
         self._active_screen_center_pending = False
         self._fade_out_timer: QTimer | None = None
+        self._screen_geometry = None
+        self._text_font = _system_font(TEXT_FONT_SIZE, QFont.Weight.Normal)
+        self._badge_font = _system_font(BADGE_FONT_SIZE, QFont.Weight.DemiBold)
+        self._text_runs: list[tuple[float, str, QColor]] = []
+        self._badge_rect: QRectF | None = None
+        self._layout = compute_overlay_layout(
+            bars=False, badge_width=0, text_width=0, max_width=OVERLAY_MIN_WIDTH
+        )
+        self._colors = {key: QColor(value) for key, value in _TEXT_COLORS.items()}
+        self._bar_colors = {key: QColor(value) for key, value in BAR_COLORS.items()}
+        self._badge_colors = {
+            tone: (QColor(background), QColor(foreground))
+            for tone, (background, foreground) in BADGE_TONES.items()
+        }
 
         # Setup
         self._setup_window()
-        self._setup_label()
         self._setup_animation()
         self._setup_fade_animation()
 
@@ -333,14 +223,6 @@ class PySide6OverlayWidget(QWidget):
         self.state_changed.connect(self._on_state_changed)
         self.level_changed.connect(self._on_level_changed)
         self.interim_changed.connect(self._on_interim_changed)
-
-        # Precompute bar positions
-        total_width = BAR_COUNT * BAR_WIDTH + (BAR_COUNT - 1) * BAR_GAP
-        start_x = (WINDOW_WIDTH - total_width) // 2
-        self._bar_x_positions = [
-            start_x + i * (BAR_WIDTH + BAR_GAP) for i in range(BAR_COUNT)
-        ]
-        self._bar_center_y = BAR_CENTER_Y
 
     def _setup_window(self):
         """Konfiguriert das Fenster."""
@@ -350,9 +232,14 @@ class PySide6OverlayWidget(QWidget):
             | Qt.WindowType.Tool
             | Qt.WindowType.WindowDoesNotAcceptFocus
         )
+        # Transparent nur außerhalb der 3-px-Ecken; der Inhalt ist solide.
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
-        self.setFixedSize(WINDOW_WIDTH, WINDOW_HEIGHT)
+        self.setFixedSize(OVERLAY_MIN_WIDTH, OVERLAY_HEIGHT)
+        self.setAccessibleName("PulseScribe overlay")
+        self.setAccessibleDescription(
+            "Shows current recording and transcription feedback."
+        )
         self._center_on_screen()
 
     def _center_on_screen(self, use_active_screen: bool = False):
@@ -367,11 +254,22 @@ class PySide6OverlayWidget(QWidget):
             screen = QApplication.primaryScreen()
 
         if screen:
-            geometry = screen.availableGeometry()
-            # Position relativ zum Screen berechnen
-            x = geometry.x() + (geometry.width() - WINDOW_WIDTH) // 2
-            y = geometry.y() + geometry.height() - WINDOW_HEIGHT - WINDOW_MARGIN_BOTTOM
-            self.move(x, y)
+            self._screen_geometry = screen.availableGeometry()
+            self._move_to_bottom_center()
+
+    def _move_to_bottom_center(self) -> None:
+        geometry = self._screen_geometry
+        if geometry is None:
+            return
+        x = geometry.x() + (geometry.width() - self.width()) // 2
+        y = geometry.y() + geometry.height() - OVERLAY_HEIGHT - WINDOW_MARGIN_BOTTOM
+        self.move(x, y)
+
+    def _max_width(self) -> float:
+        geometry = self._screen_geometry
+        if geometry is None:
+            return OVERLAY_MIN_WIDTH
+        return geometry.width() * OVERLAY_MAX_WIDTH_RATIO
 
     def _schedule_center_on_active_screen(self):
         """Defer active-monitor lookup so first overlay feedback paints fast."""
@@ -388,70 +286,10 @@ class PySide6OverlayWidget(QWidget):
         self._active_screen_center_pending = False
         if self._state != "IDLE":
             self._center_on_screen(use_active_screen=True)
-
-    def _setup_label(self):
-        """Erstellt das Text-Label."""
-        self.setAccessibleName("PulseScribe overlay")
-        self.setAccessibleDescription(
-            "Shows current recording and transcription feedback."
-        )
-        self._label = QLabel(self)
-        self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._label.setGeometry(
-            LABEL_PADDING_H, LABEL_TOP, WINDOW_WIDTH - 2 * LABEL_PADDING_H, LABEL_HEIGHT
-        )
-        self._label.setStyleSheet(self._get_label_styles()["default"])
-        self._label.setFont(self._get_label_font(False))
-        self._label.setAccessibleName("Overlay status")
-        self._label.setAccessibleDescription("Current PulseScribe status")
-        self._label_font_key = "default"
-        self._label_style_key = "default"
-        self._label_text_value = ""
-
-    def _get_label_font(self, italic: bool) -> QFont:
-        attr_name = "_italic_label_font" if italic else "_default_label_font"
-        font = getattr(self, attr_name, None)
-        if font is None:
-            font = QFont("Segoe UI")
-            font.setPixelSize(LABEL_PIXEL_SIZE - 1 if italic else LABEL_PIXEL_SIZE)
-            font.setWeight(QFont.Weight.Normal if italic else QFont.Weight.DemiBold)
-            font.setItalic(italic)
-            setattr(self, attr_name, font)
-        return font
-
-    def _get_label_styles(self) -> dict[str, str]:
-        styles = getattr(self, "_label_styles", None)
-        if styles is None:
-            done = STATE_COLORS["DONE"]
-            no_speech = STATE_COLORS["NO_SPEECH"]
-            error = STATE_COLORS["ERROR"]
-            styles = {
-                "default": "QLabel { color: white; background: transparent; }",
-                "italic": (
-                    "QLabel { color: rgba(255, 255, 255, 0.6); "
-                    "background: transparent; }"
-                ),
-                "DONE": (
-                    "QLabel { color: "
-                    f"rgb({done.red()}, {done.green()}, {done.blue()}); "
-                    "background: transparent; }"
-                ),
-                "NO_SPEECH": (
-                    "QLabel { color: "
-                    f"rgb({no_speech.red()}, {no_speech.green()}, {no_speech.blue()}); "
-                    "background: transparent; }"
-                ),
-                "ERROR": (
-                    "QLabel { color: "
-                    f"rgb({error.red()}, {error.green()}, {error.blue()}); "
-                    "background: transparent; }"
-                ),
-            }
-            self._label_styles = styles
-        return styles
+            self._relayout()
 
     def _setup_animation(self):
-        """Konfiguriert den Animation-Timer."""
+        """Konfiguriert den Animation-Timer (läuft nur während RECORDING)."""
         self._animation_timer = QTimer(self)
         self._animation_timer.timeout.connect(self._animate_frame)
         self._animation_timer.setTimerType(Qt.TimerType.PreciseTimer)
@@ -517,30 +355,6 @@ class PySide6OverlayWidget(QWidget):
         if hasattr(self, "_fade_animation") and self._fade_animation:
             self._fade_animation.stop()
 
-    def showEvent(self, event):
-        """Aktiviert Mica-Effekt nach dem ersten Paint.
-
-        Registry-/DWM-Aufrufe können auf Windows den ersten sichtbaren Hotkey-
-        Feedback-Frame verzögern. Deshalb wird Mica deferred aktiviert.
-        """
-        super().showEvent(event)
-        if not getattr(self, "_mica_attempted", False):
-            self._mica_attempted = True
-            QTimer.singleShot(1, self._try_enable_mica)
-
-    @Slot()
-    def _try_enable_mica(self):
-        """Aktiviert Mica best-effort außerhalb des first-show Hotpaths."""
-        if self._mica_enabled:
-            return
-        try:
-            hwnd = int(self.winId())
-            self._mica_enabled = _enable_mica_effect(hwnd)
-            if self._mica_enabled:
-                self.update()
-        except Exception as e:
-            logger.debug(f"Mica deferred activation failed: {e}")
-
     # =========================================================================
     # Public API (Thread-Safe via Signals)
     # =========================================================================
@@ -576,32 +390,33 @@ class PySide6OverlayWidget(QWidget):
         if getattr(self, "_last_state_payload", None) == (state, text):
             return
         self._state = state
-        self._text = text
         state_changed = state != prev_state
         self._last_state_payload = (state, text)
-        if state_changed:
-            self._animation_start = time.perf_counter()
         if state_changed and (prev_state == "RECORDING") != (state == "RECORDING"):
             self.recording_state_changed.emit(state == "RECORDING")
 
         if state == "IDLE":
             if state_changed:
                 self._fade_out()
-        else:
-            # Bei Übergang von IDLE nicht vor dem ersten Paint per WinAPI blockieren.
-            # Erst schnell anzeigen, dann auf den aktiven Monitor korrigieren.
-            if prev_state == "IDLE":
-                self._schedule_center_on_active_screen()
+            return
 
-            # Label aktualisieren
-            display_text = build_overlay_feedback_text(state, text)
-            self._update_label(state, display_text)
-            if state_changed:
-                self._fade_in()
+        # Bei Übergang von IDLE nicht vor dem ersten Paint per WinAPI blockieren.
+        # Erst schnell anzeigen, dann auf den aktiven Monitor korrigieren.
+        if prev_state == "IDLE":
+            self._schedule_center_on_active_screen()
+
+        if state_changed:
+            self._interim = ("", "")
+            self._previous_interim = ""
+            if state == "RECORDING":
                 self._start_animation()
-
+            else:
+                self._stop_animation()
+        self._set_content(describe_overlay_content(state, text))
+        if state_changed:
+            self._fade_in()
             # Auto-Hide für kurze Ergebnis- / Fehler-Feedbacks
-            if state in ("DONE", "NO_SPEECH", "ERROR") and state_changed:
+            if state in _FEEDBACK_STATES:
                 self._start_fade_out_timer()
 
     @Slot(float)
@@ -610,52 +425,95 @@ class PySide6OverlayWidget(QWidget):
 
     @Slot(str)
     def _on_interim_changed(self, text: str):
-        if self._state == "RECORDING":
-            formatted = _format_recording_interim_text(text)
-            if not formatted:
-                self._update_label("RECORDING", format_overlay_status_text("RECORDING"))
-                return
-            self._update_label("RECORDING", formatted, italic=True)
+        if self._state != "RECORDING":
+            return
+        interim = split_recording_interim_text(text, self._previous_interim)
+        self._previous_interim = text
+        if interim == self._interim:
+            return
+        self._interim = interim
+        self._relayout()
 
-    def _update_label(self, state: str, text: str, italic: bool = False):
-        """Aktualisiert das Label mit State-spezifischem Styling."""
-        font_key = "italic" if italic else "default"
-        font_changed = getattr(self, "_label_font_key", None) != font_key
-        if font_changed:
-            self._label.setFont(self._get_label_font(italic))
-            self._label_font_key = font_key
-
-        if italic:
-            style_key = "italic"
-        elif state in ("DONE", "NO_SPEECH", "ERROR"):
-            style_key = state
-        else:
-            style_key = "default"
-
-        if getattr(self, "_label_style_key", None) != style_key:
-            self._label.setStyleSheet(self._get_label_styles()[style_key])
-            self._label_style_key = style_key
-
-        # Font mode changes the elision direction and width, so re-elide then too.
-        if font_changed or getattr(self, "_label_text_value", None) != text:
-            self._label.setText(self._elide_label_text(text, italic=italic))
-            try:
-                self._label.setAccessibleDescription(text)
-            except Exception:
-                pass
-            self._label_text_value = text
-
-    def _elide_label_text(self, text: str, *, italic: bool) -> str:
-        """Fit text into the fixed-width label instead of clipping both ends.
-
-        Live (italic) transcripts keep their newest words; status text keeps
-        its beginning. The macOS overlay widens instead, Windows stays fixed.
-        """
+    def _set_content(self, content: OverlayContent) -> None:
+        if content == self._content:
+            return
+        self._content = content
         try:
-            mode = Qt.TextElideMode.ElideLeft if italic else Qt.TextElideMode.ElideRight
-            return self._label.fontMetrics().elidedText(text, mode, self._label.width())
+            self.setAccessibleDescription(
+                " ".join(part for part in (content.badge, content.text) if part)
+            )
         except Exception:
-            return text
+            pass
+        self._relayout()
+
+    # =========================================================================
+    # Layout (einmal pro Inhaltsänderung, nicht pro Frame)
+    # =========================================================================
+
+    def _relayout(self) -> None:
+        """Measure badge and text, resize the window and cache paint runs."""
+        content = self._content
+        text_metrics = QFontMetricsF(self._text_font)
+        earlier, newest = self._interim
+        interim = bool(earlier or newest)
+        full_text = earlier + newest if interim else content.text
+        badge_width = 0.0
+        if content.badge:
+            badge_metrics = QFontMetricsF(self._badge_font)
+            badge_width = badge_metrics.horizontalAdvance(content.badge) + 2 * BADGE_PADDING_H
+        layout = compute_overlay_layout(
+            bars=content.bars != "none",
+            badge_width=badge_width,
+            text_width=text_metrics.horizontalAdvance(full_text) if full_text else 0,
+            max_width=self._max_width(),
+        )
+        self._layout = layout
+        self._badge_rect = None
+        if layout.badge_x is not None:
+            badge_height = QFontMetricsF(self._badge_font).height() + 2 * BADGE_PADDING_V
+            self._badge_rect = QRectF(
+                layout.badge_x,
+                round((OVERLAY_HEIGHT - badge_height) / 2),
+                badge_width,
+                badge_height,
+            )
+        self._text_runs = self._build_text_runs(
+            layout, text_metrics, full_text, newest if interim else None
+        )
+
+        width = int(round(layout.width))
+        if width != self.width():
+            self.setFixedSize(width, OVERLAY_HEIGHT)
+            self._move_to_bottom_center()
+        self.update()
+
+    def _build_text_runs(
+        self,
+        layout: OverlayLayout,
+        metrics: QFontMetricsF,
+        full_text: str,
+        newest: str | None,
+    ) -> list[tuple[float, str, QColor]]:
+        """Elide text to the layout width; interim keeps its newest words."""
+        if not full_text:
+            return []
+        if newest is None:
+            color_key = "text" if self._content.emphasized else "muted"
+            shown = metrics.elidedText(
+                full_text, Qt.TextElideMode.ElideRight, layout.text_width
+            )
+            return [(layout.text_x, shown, self._colors[color_key])]
+
+        shown = metrics.elidedText(full_text, Qt.TextElideMode.ElideLeft, layout.text_width)
+        newest_shown = shown[-len(newest) :] if newest else ""
+        earlier_shown = shown[: len(shown) - len(newest_shown)]
+        runs = []
+        if earlier_shown:
+            runs.append((layout.text_x, earlier_shown, self._colors["interim"]))
+        if newest_shown:
+            offset = metrics.horizontalAdvance(earlier_shown)
+            runs.append((layout.text_x + offset, newest_shown, self._colors["text"]))
+        return runs
 
     def _reset_levels(self):
         """Setzt Audio-Level zurück."""
@@ -663,69 +521,38 @@ class PySide6OverlayWidget(QWidget):
         self._anim = AnimationLogic()
         self._bar_heights = [float(BAR_MIN_HEIGHT)] * BAR_COUNT
         self._painted_bar_heights = [float(BAR_MIN_HEIGHT)] * BAR_COUNT
-        self._last_painted_state = self._state
 
     # =========================================================================
-    # Animation
+    # Animation (nur RECORDING)
     # =========================================================================
 
     def _start_animation(self):
-        self._update_animation_timer_interval()
         if not self._animation_timer.isActive():
             self._animation_start = time.perf_counter()
-            self._animation_timer.start(self._frame_interval_ms())
+            self._animation_timer.start(FRAME_MS)
 
     def _stop_animation(self):
         self._animation_timer.stop()
 
-    def _frame_interval_ms(self) -> int:
-        """Gibt ein state-abhängiges Frame-Intervall zurück."""
-        if self._state == "RECORDING":
-            return FRAME_MS
-        if self._state in ("DONE", "NO_SPEECH", "ERROR"):
-            return FRAME_MS_FEEDBACK
-        return FRAME_MS_ACTIVE
-
-    def _update_animation_timer_interval(self) -> None:
-        """Passt die Animation-FPS an den aktuellen Overlay-State an."""
-        target_interval = self._frame_interval_ms()
-        if self._animation_timer.interval() != target_interval:
-            self._animation_timer.setInterval(target_interval)
-
     def _target_bar_heights(self, t: float) -> tuple[float, ...]:
-        calculate_frame_heights = getattr(self._anim, "calculate_frame_heights", None)
-        if callable(calculate_frame_heights):
-            return tuple(calculate_frame_heights(t, self._state))
-        return tuple(
-            self._anim.calculate_bar_height(i, t, self._state) for i in range(BAR_COUNT)
-        )
+        return tuple(self._anim.calculate_frame_heights(t, "RECORDING"))
 
     @Slot()
     def _animate_frame(self):
-        if self._state == "IDLE":
+        if self._state != "RECORDING":
+            self._stop_animation()
             return
 
         t = time.perf_counter() - self._animation_start
-        painted_bar_heights = getattr(self, "_painted_bar_heights", None)
-        if painted_bar_heights is None or len(painted_bar_heights) != BAR_COUNT:
-            painted_bar_heights = [float(BAR_MIN_HEIGHT)] * BAR_COUNT
-            self._painted_bar_heights = painted_bar_heights
+        painted_bar_heights = self._painted_bar_heights
 
-        # Audio-Level an Animation-Logik übergeben
         self._anim.update_level(self._audio_level)
+        self._anim.update_agc()
 
-        # AGC für Recording
-        if self._state == "RECORDING":
-            self._anim.update_agc()
-
-        # Bar-Höhen berechnen
-        needs_repaint = getattr(self, "_last_painted_state", None) != self._state
+        needs_repaint = False
         for i, target_height in enumerate(self._target_bar_heights(t)):
             # Per-Bar Smoothing
-            if target_height > self._bar_heights[i]:
-                bar_alpha = 0.4
-            else:
-                bar_alpha = 0.15
+            bar_alpha = 0.4 if target_height > self._bar_heights[i] else 0.15
             self._bar_heights[i] += bar_alpha * (target_height - self._bar_heights[i])
             if (
                 not needs_repaint
@@ -738,7 +565,6 @@ class PySide6OverlayWidget(QWidget):
             return
 
         self._painted_bar_heights = list(self._bar_heights)
-        self._last_painted_state = self._state
         self.update()
 
     # =========================================================================
@@ -746,61 +572,62 @@ class PySide6OverlayWidget(QWidget):
     # =========================================================================
 
     def paintEvent(self, event):
-        """Zeichnet Background und Bars."""
+        """Zeichnet Hintergrund, Balken, Badge und Text."""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        self._draw_background(painter)
-        self._draw_bars(painter)
+        rect = QRectF(0.5, 0.5, self.width() - 1, self.height() - 1)
+        painter.setPen(QPen(QColor(BORDER_COLOR), 1))
+        painter.setBrush(QColor(BACKGROUND_COLOR))
+        painter.drawRoundedRect(rect, OVERLAY_CORNER_RADIUS, OVERLAY_CORNER_RADIUS)
 
+        self._draw_bars(painter)
+        self._draw_badge(painter)
+        painter.setFont(self._text_font)
+        for x, text, color in self._text_runs:
+            painter.setPen(color)
+            painter.drawText(
+                QRectF(x, 0, self.width() - x, OVERLAY_HEIGHT),
+                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                text,
+            )
         painter.end()
 
-    def _draw_background(self, painter: QPainter):
-        """Zeichnet abgerundeten Hintergrund.
-
-        Bei aktivem Mica-Effekt wird nichts gezeichnet, da DWM das
-        komplette Fenster mit Blur und nativen runden Ecken rendert.
-        """
-        # Bei Mica: DWM übernimmt Hintergrund UND Ecken - nichts zeichnen
-        if self._mica_enabled:
-            return
-
-        # Fallback: Solid-Background mit QPainter (Win10/ältere Builds)
-        path = QPainterPath()
-        rect = QRectF(0.5, 0.5, self.width() - 1, self.height() - 1)
-        path.addRoundedRect(rect, WINDOW_CORNER_RADIUS, WINDOW_CORNER_RADIUS)
-
-        painter.fillPath(path, QBrush(BG_COLOR))
-        painter.setPen(QPen(BORDER_COLOR, 1))
-        painter.drawPath(path)
-
     def _draw_bars(self, painter: QPainter):
-        """Zeichnet alle Bars."""
-        color = STATE_COLORS.get(self._state, QColor(255, 255, 255))
-        painter.setBrush(QBrush(color))
+        mode = self._content.bars
+        bars_x = self._layout.bars_x
+        if bars_x is None or mode not in self._bar_colors:
+            return
         painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(self._bar_colors[mode])
+        if mode == "line":
+            painter.drawRoundedRect(
+                QRectF(bars_x, BAR_CENTER_Y - LINE_HEIGHT / 2, BAR_AREA_WIDTH, LINE_HEIGHT),
+                LINE_HEIGHT / 2,
+                LINE_HEIGHT / 2,
+            )
+            return
+        heights = self._bar_heights if mode == "level" else LISTENING_BAR_HEIGHTS
+        radius = BAR_WIDTH / 2
+        for i, height in enumerate(heights):
+            height = max(BAR_MIN_HEIGHT, height)
+            x = bars_x + i * (BAR_WIDTH + BAR_GAP)
+            painter.drawRoundedRect(
+                QRectF(x, BAR_CENTER_Y - height / 2, BAR_WIDTH, height), radius, radius
+            )
 
-        for i in range(BAR_COUNT):
-            height = max(BAR_MIN_HEIGHT, self._bar_heights[i])
-            x = self._bar_x_positions[i]
-            self._draw_pill(painter, x, self._bar_center_y, BAR_WIDTH, height)
-
-    def _draw_pill(self, painter: QPainter, x: float, center_y: float, width: float, height: float):
-        """Zeichnet eine Pill-förmige Bar."""
-        y1 = center_y - height / 2
-        y2 = center_y + height / 2
-
-        path = QPainterPath()
-
-        if height <= width:
-            # Sehr klein: Oval
-            path.addEllipse(QRectF(x, y1, width, height))
-        else:
-            # Pill: Rechteck mit abgerundeten Enden
-            radius = width / 2
-            path.addRoundedRect(QRectF(x, y1, width, y2 - y1), radius, radius)
-
-        painter.drawPath(path)
+    def _draw_badge(self, painter: QPainter):
+        rect = self._badge_rect
+        content = self._content
+        if rect is None or not content.badge:
+            return
+        background, foreground = self._badge_colors[content.tone]
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(background)
+        painter.drawRoundedRect(rect, BADGE_CORNER_RADIUS, BADGE_CORNER_RADIUS)
+        painter.setPen(foreground)
+        painter.setFont(self._badge_font)
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, content.badge)
 
 
 # =============================================================================
