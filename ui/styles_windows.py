@@ -9,6 +9,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ui import settings_theme as theme
+
 if TYPE_CHECKING:
     from PySide6.QtGui import QFont
 
@@ -41,7 +43,8 @@ FONT_ROLES: dict[str, tuple[int, str]] = {
     "sidebar_title": (15, "bold"),
     "sidebar_caption": (13, "normal"),
     "sidebar_item": (14, "normal"),
-    "card_title": (14, "semibold"),
+    "card_title": (theme.SECTION_TITLE_SIZE, "semibold"),
+    "badge": (12, "semibold"),  # Qt pixel sizes are integers; macOS uses 12.5
     "section": (12, "semibold"),
     "body": (12, "normal"),
     "caption": (11, "normal"),
@@ -286,11 +289,135 @@ QFrame#card {{
 }}
 """
 
-# Settings-specific additions: the left sidebar navigation (like the macOS
-# window), a borderless page area, plus segmented buttons.
+# Settings window colors: the shared keys mapped to the settings design tokens.
+SETTINGS_COLORS = {
+    **COLORS,
+    "bg_window": theme.BG,
+    "text": theme.TEXT,
+    "text_secondary": theme.MUTED,
+    "text_hint": theme.PLACEHOLDER,
+    "accent": theme.TEXT,
+    "success": theme.BADGE_TONES["ok"][1],
+    "warning": theme.BADGE_TONES["warn"][1],
+    "error": theme.BADGE_TONES["err"][1],
+}
+
+# Settings-specific additions: flat dark sections on the window background, the
+# left sidebar navigation (like the macOS window), and segmented buttons.
 SETTINGS_STYLESHEET_ADDITIONS = f"""
+QDialog,
+QScrollArea > QWidget#qt_scrollarea_viewport,
+QWidget#settingsPage {{
+    background-color: {theme.BG};
+}}
+
+QLabel, QCheckBox {{
+    color: {theme.TEXT};
+}}
+
+QLineEdit, QComboBox, QPlainTextEdit {{
+    background-color: {theme.INPUT_BG};
+    border: 1px solid {theme.INPUT_BORDER};
+    border-radius: {theme.RADIUS}px;
+    color: {theme.TEXT};
+    selection-background-color: {theme.SECONDARY_BORDER};
+    placeholder-text-color: {theme.PLACEHOLDER};
+}}
+
+QLineEdit:focus, QComboBox:focus, QPlainTextEdit:focus {{
+    border-color: {theme.MUTED};
+}}
+
+QLineEdit:disabled, QComboBox:disabled, QPlainTextEdit:disabled {{
+    color: {theme.PLACEHOLDER};
+}}
+
+QComboBox QAbstractItemView {{
+    background-color: {theme.INPUT_BG};
+    border: 1px solid {theme.INPUT_BORDER};
+    selection-background-color: {theme.ACTIVE_BG};
+    color: {theme.TEXT};
+}}
+
+QCheckBox:disabled {{
+    color: {theme.PLACEHOLDER};
+}}
+
+QCheckBox::indicator {{
+    border-radius: {theme.RADIUS}px;
+    border: 1px solid {theme.INPUT_BORDER};
+    background-color: {theme.INPUT_BG};
+}}
+
+QCheckBox::indicator:checked {{
+    background-color: {theme.SECONDARY_BORDER};
+    border-color: {theme.MUTED};
+}}
+
+QPushButton {{
+    background-color: transparent;
+    border: 1px solid {theme.SECONDARY_BORDER};
+    border-radius: {theme.RADIUS}px;
+    color: {theme.TEXT};
+}}
+
+QPushButton:hover {{
+    background-color: {theme.ACTIVE_BG};
+}}
+
+QPushButton:focus {{
+    border-color: {theme.MUTED};
+    background-color: transparent;
+}}
+
+QPushButton:pressed {{
+    background-color: {theme.BORDER};
+}}
+
+QPushButton:disabled {{
+    color: {theme.PLACEHOLDER};
+    background-color: transparent;
+}}
+
+QPushButton#primary {{
+    background-color: {theme.PRIMARY_BG};
+    border-color: {theme.PRIMARY_BG};
+    color: {theme.PRIMARY_TEXT};
+}}
+
+QPushButton#primary:hover, QPushButton#primary:focus {{
+    background-color: {theme.ACTIVE_TEXT};
+    border-color: {theme.ACTIVE_TEXT};
+}}
+
+QPushButton#primary:disabled {{
+    background-color: {theme.SECONDARY_BORDER};
+    border-color: {theme.SECONDARY_BORDER};
+    color: {theme.MUTED};
+}}
+
+QSlider::groove:horizontal {{
+    background-color: {theme.INPUT_BORDER};
+}}
+
+QSlider::handle:horizontal, QSlider::handle:horizontal:hover {{
+    background-color: {theme.TEXT};
+}}
+
+QFrame#card {{
+    background-color: transparent;
+    border: none;
+    border-top: 1px solid {theme.LINE};
+    border-radius: 0;
+}}
+
+QWidget#settingsRow {{
+    border-top: 1px solid {theme.LINE};
+}}
+
 QWidget#sidebar {{
-    background-color: #121212;
+    background-color: {theme.SIDEBAR_BG};
+    border-right: 1px solid {theme.BORDER};
 }}
 
 QListWidget#sidebarNav {{
@@ -300,16 +427,16 @@ QListWidget#sidebarNav {{
 }}
 
 QListWidget#sidebarNav::item {{
-    color: #adadad;
+    color: {theme.NAV};
     padding: 9px 10px;
     margin-bottom: 2px;
     border: none;
-    border-radius: 3px;
+    border-radius: {theme.RADIUS}px;
 }}
 
 QListWidget#sidebarNav::item:selected {{
-    background-color: #2a2a2a;
-    color: {COLORS["text"]};
+    background-color: {theme.ACTIVE_BG};
+    color: {theme.ACTIVE_TEXT};
 }}
 
 QTabWidget::pane {{
@@ -318,28 +445,40 @@ QTabWidget::pane {{
 }}
 
 QFrame#segmentGroup {{
-    background-color: rgba(255, 255, 255, 0.06);
-    border-radius: 7px;
+    background-color: {theme.INPUT_BG};
+    border: 1px solid {theme.BORDER};
+    border-radius: {theme.RADIUS}px;
 }}
 
 QPushButton#segment {{
     background-color: transparent;
     border: none;
-    border-radius: 5px;
+    border-radius: {theme.RADIUS}px;
     padding: 4px 16px;
     min-width: 0;
-    color: {COLORS["text_secondary"]};
+    color: {theme.MUTED};
 }}
 
 QPushButton#segment:hover:!checked {{
-    background-color: rgba(255, 255, 255, 0.06);
+    background-color: {theme.BORDER};
 }}
 
 QPushButton#segment:checked {{
-    background-color: rgba(255, 255, 255, 0.16);
-    color: {COLORS["text"]};
+    background-color: {theme.ACTIVE_BG};
+    color: {theme.ACTIVE_TEXT};
 }}
 """
+
+
+def badge_stylesheet(status_color: str) -> str:
+    """Stylesheet for a status label shown as a tinted badge, e.g. ``badge_stylesheet("success")``."""
+    background, text = theme.BADGE_TONES[theme.badge_tone(status_color)]
+    return (
+        f"background-color: {background}; color: {text}; "
+        f"border-radius: {theme.RADIUS}px; "
+        f"padding: {theme.BADGE_PADDING_V}px {theme.BADGE_PADDING_H}px;"
+    )
+
 
 # Wizard-specific additions (choice buttons)
 WIZARD_STYLESHEET_ADDITIONS = f"""

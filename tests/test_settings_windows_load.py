@@ -313,7 +313,7 @@ def test_load_settings_skips_no_op_widget_mutations(monkeypatch):
     window._api_fields = {"DEEPGRAM_API_KEY": _FakeField("dg-live-key")}
     window._api_status = {"DEEPGRAM_API_KEY": _FakeLabel()}
     window._api_status["DEEPGRAM_API_KEY"].text = "Configured"
-    window._api_status["DEEPGRAM_API_KEY"].style = f"color: {settings_mod.COLORS['success']};"
+    window._api_status["DEEPGRAM_API_KEY"].style = settings_mod.badge_stylesheet("success")
     window._on_mode_changed = lambda mode: mode_changes.append(mode)
 
     window._load_settings()
@@ -1208,3 +1208,36 @@ def test_initial_window_size_fits_available_screen(monkeypatch, available, expec
 
     monkeypatch.setattr(settings_mod.QApplication, "primaryScreen", lambda: _Screen())
     assert SettingsWindow._initial_window_size() == expected
+
+
+def test_flat_section_separates_rows_after_the_first_with_a_line():
+    from PySide6.QtWidgets import QApplication, QHBoxLayout, QLabel, QWidget
+
+    app = QApplication.instance() or QApplication([])
+    card, layout = settings_mod.create_card("Providers")
+    first = settings_mod.create_label_row("Mode:", QLabel())
+    layout.add_row(first)
+    layout.add_row(settings_mod.create_label_row("Language:", QLabel()))
+    container = QWidget()
+    QHBoxLayout(container)
+    layout.add_row(container)
+
+    rows = [w for w in card.findChildren(QWidget) if w.objectName() == "settingsRow"]
+    assert card.objectName() == "card"
+    assert len(rows) == 2 and container in rows
+    assert container.layout().contentsMargins().top() == 8
+    assert app is not None
+
+
+@pytest.mark.parametrize(
+    ("color", "tone"),
+    [("success", "ok"), ("warning", "warn"), ("error", "err"), ("text_secondary", "muted")],
+)
+def test_badge_stylesheet_uses_tone_tokens(color, tone):
+    from ui.settings_theme import BADGE_TONES
+
+    background, text = BADGE_TONES[tone]
+    style = settings_mod.badge_stylesheet(color)
+    assert f"background-color: {background}" in style
+    assert f"color: {text}" in style
+    assert "border-radius: 3px" in style
