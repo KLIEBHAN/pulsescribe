@@ -2,7 +2,7 @@ import pytest
 
 from ui.overlay_feedback import OverlayContent, describe_overlay_content
 from ui.overlay_text import split_recording_interim_text
-from utils.transcript_delivery import COPIED, COPY_FAILED, PASTE_FAILED
+from utils.transcript_delivery import COPIED, COPY_FAILED, PASTE_FAILED, TEST_COMPLETE
 
 
 @pytest.mark.parametrize(
@@ -38,6 +38,12 @@ def test_done_shows_badge_and_speed_only_when_reported() -> None:
         text="0.3x", badge="Pasted", tone="success"
     )
     assert describe_overlay_content("DONE", COPIED).badge == "Copied"
+
+
+def test_test_runs_do_not_claim_a_paste() -> None:
+    assert describe_overlay_content("DONE", TEST_COMPLETE) == OverlayContent(
+        text="Test complete", badge="Done", tone="success"
+    )
 
 
 def test_no_speech_uses_warn_badge() -> None:

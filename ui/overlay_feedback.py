@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from ui.daemon_status_feedback import build_daemon_status_label
 from utils.state import AppState
-from utils.transcript_delivery import COPIED, COPY_FAILED, PASTE_FAILED
+from utils.transcript_delivery import COPIED, COPY_FAILED, PASTE_FAILED, TEST_COMPLETE
 
 ERROR_FEEDBACK_SECONDS = 4.0
 
@@ -106,6 +106,8 @@ def _error_text(detail: str, *, max_chars: int) -> str:
 
 
 def _done_content(detail: str) -> OverlayContent:
+    if detail == TEST_COMPLETE:
+        return OverlayContent(text=TEST_COMPLETE, badge="Done", tone="success")
     match = _DONE_RTF_PATTERN.match(detail)
     speed = _normalize_overlay_text(match.group(1)) if match else ""
     badge = "Copied" if detail == COPIED else "Pasted"

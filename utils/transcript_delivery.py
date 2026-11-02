@@ -5,6 +5,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 COPIED = "Copied to clipboard"
+TEST_COMPLETE = "Test complete"  # DONE payload of onboarding test runs (nothing pasted)
 PASTE_FAILED = "Paste failed — transcript copied"
 COPY_FAILED = "Copy failed — use Copy Last Transcript"
 DELIVERY_HINTS = {
