@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable
 
+from ui import settings_theme as theme
 from ui.hotkey_format import format_hotkey_for_display as _format_shared_hotkey
 
 if TYPE_CHECKING:
@@ -180,7 +181,9 @@ class HotkeyCard:
         get_current_hotkeys: Callable[[], tuple[str, str]] | None = None,
         show_presets: bool = True,
         show_hint: bool = True,
+        flat: bool = False,
     ) -> "HotkeyCard":
+        """Builds the card; ``flat`` draws a settings section (top rule, 14 px title)."""
         from AppKit import (  # type: ignore[import-not-found]
             NSBezelStyleRounded,
             NSButton,
@@ -195,7 +198,11 @@ class HotkeyCard:
 
         card_x = outer_padding
         card_w = window_width - 2 * outer_padding
-        card = _create_card(card_x, card_y, card_w, card_height)
+        card = (
+            theme.ns_rule(card_x, card_y + card_height - 1, card_w)
+            if flat
+            else _create_card(card_x, card_y, card_w, card_height)
+        )
         parent_view.addSubview_(card)
 
         base_x = outer_padding + inner_padding
@@ -211,7 +218,11 @@ class HotkeyCard:
         title_field.setDrawsBackground_(False)
         title_field.setEditable_(False)
         title_field.setSelectable_(False)
-        title_field.setFont_(NSFont.systemFontOfSize_weight_(13, NSFontWeightSemibold))
+        title_field.setFont_(
+            NSFont.systemFontOfSize_weight_(
+                theme.SECTION_TITLE_SIZE if flat else 13, NSFontWeightSemibold
+            )
+        )
         title_field.setTextColor_(NSColor.whiteColor())
         parent_view.addSubview_(title_field)
 

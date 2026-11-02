@@ -546,7 +546,7 @@ class TestWelcomeSaveSettings:
             assert ctrl._footer_status_label.value == "Settings saved."
         else:
             assert "could not be saved" in ctrl._footer_status_label.value
-            assert ctrl._footer_status_label.color == (255, 177, 66, 0.95)
+            assert ctrl._footer_status_label.color == (240, 185, 85)
             if not vocabulary_saved:
                 assert "Vocabulary" in ctrl._footer_status_label.value
                 assert ctrl._vocab_text_view.string() == "Audit"
@@ -645,6 +645,7 @@ class TestWelcomeSaveSettings:
             lambda updates: env_updates.append(dict(updates)),
         )
         monkeypatch.setattr("ui.welcome._get_color", lambda *args: args)
+        monkeypatch.setattr("ui.welcome.theme.set_ns_badge", _record_badge)
 
         ctrl = _make_minimal_welcome_controller()
         ctrl._env_settings_cache = {}
@@ -663,7 +664,7 @@ class TestWelcomeSaveSettings:
         for provider, _label, _env_key in welcome_mod.API_KEY_PROVIDERS:
             status = getattr(ctrl, f"_{provider}_status")
             assert status.value == "Configured"
-            assert status.color == (51, 217, 178)
+            assert status.color == "ok"
 
     def test_refresh_provider_key_statuses_updates_guidance_and_inline_states(
         self, monkeypatch
@@ -671,6 +672,7 @@ class TestWelcomeSaveSettings:
         import ui.welcome as welcome_mod
 
         monkeypatch.setattr("ui.welcome._get_color", lambda *args: args)
+        monkeypatch.setattr("ui.welcome.theme.set_ns_badge", _record_badge)
 
         ctrl = _make_minimal_welcome_controller()
         ctrl._mode_popup = _FakePopup(
@@ -690,7 +692,7 @@ class TestWelcomeSaveSettings:
 
         assert ctrl._provider_guidance_label.value.startswith("Deepgram is selected")
         assert ctrl._deepgram_status.value == "Required"
-        assert ctrl._deepgram_status.color == (255, 177, 66, 0.95)
+        assert ctrl._deepgram_status.color == "warn"
         assert ctrl._groq_status.value == "Configured"
         assert ctrl._openai_status.value == "Optional"
 
@@ -704,7 +706,7 @@ class TestWelcomeSaveSettings:
         ctrl._save_all_settings()
 
         assert ctrl._footer_status_label.value == "Settings saved."
-        assert ctrl._footer_status_label.color == (51, 217, 178)
+        assert ctrl._footer_status_label.color == (111, 211, 155)
 
     def test_save_settings_mentions_relaunch_when_dock_icon_changed(self, monkeypatch):
         monkeypatch.setattr("ui.welcome._get_color", lambda *args: args)
@@ -727,7 +729,7 @@ class TestWelcomeSaveSettings:
         assert ctrl._footer_status_label.value == (
             "Settings saved. Relaunch PulseScribe to apply the Dock icon change."
         )
-        assert ctrl._footer_status_label.color == (51, 217, 178)
+        assert ctrl._footer_status_label.color == (111, 211, 155)
 
     def test_save_custom_prompts_skips_rewrite_when_overrides_are_unchanged(
         self, monkeypatch
@@ -1155,6 +1157,12 @@ class _FakeField:
 
     def stringValue(self):
         return self.value
+
+
+def _record_badge(field, text, tone, **_kwargs):
+    """Stands in for ``settings_theme.set_ns_badge``: keeps text and tone."""
+    field.setStringValue_(text)
+    field.color = tone
 
 
 class _FakeStatus(_FakeField):
@@ -2527,3 +2535,22 @@ class TestWelcomeSidebarNavigation:
         assert ctrl._is_logs_tab_active() is True
         assert ctrl._page_title_label.stringValue() == "History"
         assert button.attributedTitle().string() == "History"
+
+
+def test_ns_badge_sizes_to_text_and_keeps_right_edge():
+    appkit = pytest.importorskip("AppKit")
+    from ui import settings_theme as theme
+
+    field = appkit.NSTextField.alloc().initWithFrame_(appkit.NSMakeRect(10, 20, 84, 18))
+    theme.set_ns_badge(field, "Configured", "ok", right_edge=200)
+    frame = field.frame()
+
+    assert frame.origin.x + frame.size.width == 200
+    assert frame.size.height == 21  # 12.5 px text line + 2 x 3 px padding
+    assert frame.origin.y + frame.size.height / 2 == pytest.approx(29, abs=0.5)
+    assert field.stringValue() == "Configured"
+    assert field.backgroundColor().isEqual_(theme.ns_color(theme.BADGE_TONES["ok"][0]))
+
+    theme.set_ns_badge(field, "Optional", "muted", right_edge=200)
+    assert field.frame().size.width < frame.size.width
+    assert field.frame().origin.x + field.frame().size.width == 200

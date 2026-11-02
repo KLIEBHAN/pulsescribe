@@ -500,3 +500,35 @@ def test_kick_auto_refresh_resets_backoff_after_permission_change(monkeypatch) -
     states["access"] = True
     callbacks.pop(0)(None)
     assert intervals == [0.5, 1.0, 0.5]
+
+
+def test_settings_card_shows_row_statuses_as_badges(monkeypatch) -> None:
+    import ui.permissions_card as card_mod
+    import utils.permissions as permissions_mod
+
+    _install_fake_appkit(monkeypatch)
+    monkeypatch.setattr(card_mod, "_get_status_palette", lambda: {
+        "ok": "ok-color", "warn": "warn-color", "err": "err-color", "neutral": "muted-color",
+    })
+    badges: dict[object, tuple[str, str]] = {}
+    monkeypatch.setattr(
+        card_mod.theme,
+        "set_ns_badge",
+        lambda field, text, tone: badges.__setitem__(field, (text, tone)),
+    )
+    monkeypatch.setattr(
+        permissions_mod, "get_microphone_permission_state", lambda: "not_determined"
+    )
+    monkeypatch.setattr(permissions_mod, "has_accessibility_permission", lambda: False)
+    monkeypatch.setattr(permissions_mod, "has_input_monitoring_permission", lambda: True)
+
+    card = _build_card()
+    card._badges = True
+    card.refresh()
+
+    widgets = card._widgets
+    assert badges[widgets.mic_status] == ("Required • allow access", "err")
+    assert badges[widgets.access_status] == ("Recommended • auto-paste", "warn")
+    assert badges[widgets.input_status] == ("Enabled • Hold hotkeys ready", "ok")
+    assert widgets.summary_status not in badges
+    assert widgets.summary_status.color == "warn-color"
