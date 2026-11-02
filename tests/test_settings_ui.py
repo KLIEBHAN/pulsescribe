@@ -2486,3 +2486,44 @@ class TestWelcomeLogsRefreshBehavior:
         assert ctrl._last_logs_truncated is True
         ctrl._scroll_logs_to_bottom.assert_not_called()
         ctrl._restore_logs_scroll_position.assert_called_once_with(120)
+
+
+class TestWelcomeSidebarNavigation:
+    def test_sidebar_entry_selects_lazy_page_and_title(self):
+        appkit = pytest.importorskip("AppKit")
+        from ui.welcome import (
+            SETTINGS_SECTIONS,
+            WELCOME_HEIGHT,
+            WELCOME_WIDTH,
+            _SidebarHandler,
+        )
+
+        appkit.NSApplication.sharedApplication()
+        ctrl = WelcomeController.__new__(WelcomeController)
+        ctrl._content_view = appkit.NSView.alloc().initWithFrame_(
+            appkit.NSMakeRect(0, 0, WELCOME_WIDTH, WELCOME_HEIGHT)
+        )
+        built: list[str] = []
+        for label in SETTINGS_SECTIONS:
+            setattr(
+                ctrl,
+                f"_build_{label.lower()}_tab",
+                lambda _parent, _height, label=label: built.append(label),
+            )
+        ctrl._update_logs_auto_refresh_state = lambda **_kwargs: None
+
+        ctrl._build_sidebar()
+        ctrl._build_tabs(ctrl._build_page_title(WELCOME_HEIGHT))
+
+        assert built == ["General"]
+        assert ctrl._page_title_label.stringValue() == "General"
+        assert ctrl._tab_view.tabViewType() == appkit.NSNoTabsNoBorder
+
+        _background, button = ctrl._sidebar_buttons["History"]
+        handler = _SidebarHandler.alloc().initWithController_(ctrl)
+        handler.selectSection_(button)
+
+        assert built == ["General", "History"]
+        assert ctrl._is_logs_tab_active() is True
+        assert ctrl._page_title_label.stringValue() == "History"
+        assert button.attributedTitle().string() == "History"
