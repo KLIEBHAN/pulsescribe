@@ -1,13 +1,8 @@
-"""Windows Overlay für PulseScribe.
+"""Windows Overlay für PulseScribe (Tkinter-Fallback ohne PySide6).
 
-Tkinter-basiertes Overlay mit animierten Waveform-Bars.
-Zeigt Status und Interim-Text während der Aufnahme.
-
-Inspiriert vom macOS-Overlay mit:
-- Traveling Wave Animation
-- Gaussian Envelope (wanderndes Energie-Paket)
-- Pill-förmige Bars mit abgerundeten Enden
-- Unterschiedliches Smoothing für Rise/Fall
+Nutzt dieselben Farben und Inhalte wie macOS/PySide6 (ui/overlay_style.py,
+``describe_overlay_content``), aber vereinfacht: feste Breite, Interim-Text
+einfarbig gedämpft. Nur RECORDING animiert; alle anderen States sind statisch.
 """
 
 from __future__ import annotations
@@ -33,11 +28,23 @@ from ui.animation import (
     BAR_GAP,
     BAR_MIN_HEIGHT,
     FPS,
+    LISTENING_BAR_HEIGHTS,
 )
-from ui.overlay_feedback import (
-    DEFAULT_OVERLAY_STATE_TEXTS,
-    build_overlay_feedback_text,
-    format_overlay_status_text,
+from ui.overlay_feedback import OverlayContent, describe_overlay_content
+from ui.overlay_style import (
+    BACKGROUND_COLOR,
+    BADGE_PADDING_H,
+    BADGE_TONES,
+    BAR_AREA_WIDTH,
+    BAR_COLORS,
+    INTERIM_TEXT_COLOR,
+    LINE_HEIGHT,
+    MUTED_TEXT_COLOR,
+    OVERLAY_CORNER_RADIUS,
+    OVERLAY_GAP,
+    OVERLAY_HEIGHT,
+    OVERLAY_PADDING_H,
+    TEXT_COLOR,
 )
 from ui.overlay_text import (
     format_recording_interim_text as _format_recording_interim_text,
@@ -53,18 +60,16 @@ TK_AVAILABLE = tk is not None
 # Window-Konstanten
 # =============================================================================
 
-WINDOW_WIDTH = 280
-WINDOW_HEIGHT = 90
-WINDOW_CORNER_RADIUS = 16
+WINDOW_WIDTH = 400  # Fest: passt für die längste Meldung inkl. Badge
+WINDOW_HEIGHT = OVERLAY_HEIGHT
+WINDOW_CORNER_RADIUS = OVERLAY_CORNER_RADIUS
 WINDOW_MARGIN_BOTTOM = 60  # Abstand vom unteren Bildschirmrand
 
 # =============================================================================
 # Animation-Konstanten
 # =============================================================================
 
-FRAME_MS = 1000 // FPS  # ~16ms
-FRAME_MS_ACTIVE = 1000 // 30  # 30 FPS für nicht-kritische Animationen
-FRAME_MS_FEEDBACK = 1000 // 20  # 20 FPS für kurze DONE/ERROR-Phase
+FRAME_MS = 1000 // FPS  # ~16ms, nur während RECORDING
 BAR_HEIGHT_UPDATE_EPSILON = 0.25  # Spare Canvas-Updates für subpixel-kleine Änderungen
 QUEUE_POLL_ACTIVE_MS = 16  # 60Hz während Overlay sichtbar/aktiv
 QUEUE_POLL_ACTIVE_IDLE_MS = 33  # Weniger Wakeups wenn die UI aktiv, die Queue aber leer ist
@@ -79,23 +84,13 @@ INTERIM_POLL_DIRECT_INTERVAL_MS = 1000
 INTERIM_DIRECT_UPDATE_GRACE_S = 1.5
 
 # =============================================================================
-# Farben
+# Farben / Schrift (Werte aus ui/overlay_style.py)
 # =============================================================================
 
-BG_COLOR = "#1A1A1A"  # Etwas dunkler als vorher
-
-STATE_COLORS = {
-    "LISTENING": "#FFB6C1",  # Pink
-    "RECORDING": "#FF5252",  # Rot
-    "TRANSCRIBING": "#FFB142",  # Orange
-    "REFINING": "#9C27B0",  # Lila
-    "LOADING": "#42A5F5",  # Blau
-    "DONE": "#4CAF50",  # Grün (satter)
-    "NO_SPEECH": "#FFB142",  # Amber
-    "ERROR": "#FF4757",  # Rot
-}
-
-STATE_TEXTS = DEFAULT_OVERLAY_STATE_TEXTS
+BG_COLOR = BACKGROUND_COLOR
+TEXT_FONT = ("Segoe UI", 10)
+BADGE_FONT = ("Segoe UI", 9, "bold")
+TEXT_X_AFTER_BARS = OVERLAY_PADDING_H + BAR_AREA_WIDTH + OVERLAY_GAP
 
 # =============================================================================
 # Overlay Controller
@@ -130,12 +125,13 @@ class WindowsOverlayController:
 
         self._queue: queue.Queue = queue.Queue()
         self._running = False
-        total_width = BAR_COUNT * BAR_WIDTH + (BAR_COUNT - 1) * BAR_GAP
-        start_x = (WINDOW_WIDTH - total_width) // 2
         self._bar_x_positions = [
-            start_x + i * (BAR_WIDTH + BAR_GAP) for i in range(BAR_COUNT)
+            OVERLAY_PADDING_H + i * (BAR_WIDTH + BAR_GAP) for i in range(BAR_COUNT)
         ]
-        self._bar_center_y = 35
+        self._bar_center_y = WINDOW_HEIGHT / 2
+        self._badge_label: tk.Label | None = None
+        self._bar_mode = "none"
+        self._line_item_id: int | None = None
         self._bar_item_ids: list[tuple[int, int, int]] = []
         self._bar_color: str | None = None
         self._last_label_config: tuple[str, tuple[object, ...], str] | None = None
@@ -226,7 +222,7 @@ class WindowsOverlayController:
         self._root.title("PulseScribe")
         self._root.overrideredirect(True)
         self._root.attributes("-topmost", True)
-        self._root.attributes("-alpha", 0.95)
+        self._root.attributes("-alpha", 1.0)
         self._root.configure(bg=BG_COLOR)
 
         # Position: bottom-center (primär)
@@ -245,16 +241,18 @@ class WindowsOverlayController:
         # Abgerundeter Hintergrund
         self._draw_rounded_background()
 
-        # Label für Text (über Canvas platziert)
+        # Badge (Ergebnis) und Text, links neben/nach den Balken platziert
+        self._badge_label = tk.Label(
+            self._root, text="", font=BADGE_FONT, padx=BADGE_PADDING_H, pady=1
+        )
         self._label = tk.Label(
             self._root,
             text="",
-            fg="white",
+            fg=MUTED_TEXT_COLOR,
             bg=BG_COLOR,
-            font=("Segoe UI", 11),
+            font=TEXT_FONT,
         )
-        # Platzieren am unteren Rand des Canvas
-        self._label.place(relx=0.5, rely=0.85, anchor="center")
+        self._label.place(x=TEXT_X_AFTER_BARS, rely=0.5, anchor="w")
 
         self._root.withdraw()
         logger.debug("Overlay window initialized")
@@ -523,20 +521,12 @@ class WindowsOverlayController:
             if prev_state == "IDLE":
                 # Bei Start auf Monitor des aktiven Fensters zentrieren.
                 self._position_window(use_active_monitor=True)
+            content = describe_overlay_content(state, normalized_text)
             if state_changed:
+                self._show_bar_mode(content.bars)
                 self._start_animation_loop()
                 self._root.deiconify()
-            display_text = build_overlay_feedback_text(state, normalized_text)
-            label_color = (
-                STATE_COLORS.get(state, "white")
-                if state in ("DONE", "NO_SPEECH", "ERROR")
-                else "white"
-            )
-            self._set_label_config(
-                text=display_text,
-                font=("Segoe UI", 11),
-                fg=label_color,
-            )
+            self._apply_content(content)
             if state != "RECORDING":
                 self._direct_interim_until = 0.0
 
@@ -552,17 +542,32 @@ class WindowsOverlayController:
 
         formatted = _format_recording_interim_text(text)
         if not formatted:
-            self._set_label_config(
-                text=format_overlay_status_text("RECORDING"),
-                font=("Segoe UI", 11),
-                fg="white",
-            )
+            self._apply_content(describe_overlay_content("RECORDING"))
             return
-
         self._set_label_config(
             text=formatted,
-            font=("Segoe UI", 10, "italic"),
-            fg="#909090",
+            font=TEXT_FONT,
+            fg=INTERIM_TEXT_COLOR,
+        )
+
+    def _apply_content(self, content: OverlayContent) -> None:
+        """Place badge and text left to right after the (optional) bars."""
+        text_x = TEXT_X_AFTER_BARS if content.bars != "none" else OVERLAY_PADDING_H
+        badge = getattr(self, "_badge_label", None)
+        if badge is not None:
+            if content.badge:
+                background, foreground = BADGE_TONES[content.tone]
+                badge.config(text=content.badge, bg=background, fg=foreground)
+                badge.place(x=OVERLAY_PADDING_H, rely=0.5, anchor="w")
+                text_x = OVERLAY_PADDING_H + badge.winfo_reqwidth() + OVERLAY_GAP
+            else:
+                badge.place_forget()
+        if getattr(self, "_label", None) is not None and hasattr(self._label, "place"):
+            self._label.place(x=text_x, rely=0.5, anchor="w")
+        self._set_label_config(
+            text=content.text,
+            font=TEXT_FONT,
+            fg=TEXT_COLOR if content.emphasized else MUTED_TEXT_COLOR,
         )
 
     def _set_label_config(
@@ -690,7 +695,7 @@ class WindowsOverlayController:
             self._animation_running = False
             return
 
-        if self._state == "IDLE":
+        if self._state != "RECORDING":
             self._animation_running = False
             return
 
@@ -701,32 +706,47 @@ class WindowsOverlayController:
         self._anim.update_level(self._audio_level)
 
         # AGC: Einmal pro Frame berechnen (nicht pro Bar)
-        if self._state == "RECORDING":
-            self._anim.update_agc()
+        self._anim.update_agc()
 
         self._render_bars(t)
-        self._root.after(self._frame_interval_ms(), self._animate)
+        self._root.after(FRAME_MS, self._animate)
 
-    def _frame_interval_ms(self) -> int:
-        """Gibt ein state-abhängiges Frame-Intervall zurück.
-
-        RECORDING bleibt bei 60 FPS für maximale Responsiveness.
-        Andere States laufen mit reduzierter Framerate, um CPU-Last zu senken.
-        """
-        if self._state == "RECORDING":
-            return FRAME_MS
-        if self._state in ("DONE", "NO_SPEECH", "ERROR"):
-            return FRAME_MS_FEEDBACK
-        return FRAME_MS_ACTIVE
+    def _show_bar_mode(self, mode: str) -> None:
+        """Render static bar modes once; ``level`` is drawn by the loop."""
+        self._bar_mode = mode
+        canvas = self._canvas
+        if not canvas:
+            return
+        bar_x_positions, center_y = self._bar_positions()
+        self._ensure_pill_bar_items(bar_x_positions, center_y)
+        if getattr(self, "_line_item_id", None) is None:
+            x = bar_x_positions[0]
+            self._line_item_id = canvas.create_rectangle(
+                x,
+                center_y - LINE_HEIGHT / 2,
+                x + BAR_AREA_WIDTH,
+                center_y + LINE_HEIGHT / 2,
+                fill=BAR_COLORS["line"],
+                outline="",
+            )
+        canvas.itemconfig(self._line_item_id, state="normal" if mode == "line" else "hidden")
+        canvas.itemconfig("bars", state="normal" if mode in ("level", "low") else "hidden")
+        if mode not in ("level", "low"):
+            return
+        self._set_bar_color(BAR_COLORS[mode])
+        heights = LISTENING_BAR_HEIGHTS if mode == "low" else (BAR_MIN_HEIGHT,) * BAR_COUNT
+        self._bar_heights = [float(height) for height in heights]
+        for i, height in enumerate(heights):
+            self._draw_pill_bar(i, bar_x_positions[i], center_y, BAR_WIDTH, height)
 
     def _bar_positions(self) -> tuple[list[float], float]:
         positions = getattr(self, "_bar_x_positions", None)
         if positions is None or len(positions) != BAR_COUNT:
-            total_width = BAR_COUNT * BAR_WIDTH + (BAR_COUNT - 1) * BAR_GAP
-            start_x = (WINDOW_WIDTH - total_width) // 2
-            positions = [start_x + i * (BAR_WIDTH + BAR_GAP) for i in range(BAR_COUNT)]
+            positions = [
+                OVERLAY_PADDING_H + i * (BAR_WIDTH + BAR_GAP) for i in range(BAR_COUNT)
+            ]
             self._bar_x_positions = positions
-        center_y = getattr(self, "_bar_center_y", 35)
+        center_y = getattr(self, "_bar_center_y", WINDOW_HEIGHT / 2)
         return positions, center_y
 
     def _target_bar_heights(self, t: float) -> tuple[float, ...]:
@@ -741,10 +761,9 @@ class WindowsOverlayController:
         if not self._canvas:
             return
 
-        color = STATE_COLORS.get(self._state, "#FFFFFF")
         bar_x_positions, center_y = self._bar_positions()
         self._ensure_pill_bar_items(bar_x_positions, center_y)
-        self._set_bar_color(color)
+        self._set_bar_color(BAR_COLORS["level"])
 
         for i, target in enumerate(self._target_bar_heights(t)):
             # Smoothing pro Bar

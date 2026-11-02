@@ -481,7 +481,7 @@ class PySide6OverlayWidget(QWidget):
             layout, text_metrics, full_text, newest if interim else None
         )
 
-        width = int(round(layout.width))
+        width = round(layout.width)
         if width != self.width():
             self.setFixedSize(width, OVERLAY_HEIGHT)
             self._move_to_bottom_center()

@@ -189,14 +189,17 @@ PULSESCRIBE_TOGGLE_HOTKEY=ctrl+alt+r # Windows default
 
 ### Visual Feedback
 
-| Status | Color | Meaning |
-|--------|-------|---------|
-| Listening | 🌸 Pink | Hotkey pressed, waiting for speech |
-| Recording | 🔴 Red | Speech detected, recording |
-| Transcribing | 🟠 Orange | Processing text |
-| Refining | 💜 Violet | LLM post-processing |
-| Done | ✅ Green | Text pasted |
-| Error | ❌ Red | Error occurred |
+The overlay is monochrome; color only marks outcomes.
+
+| Status | Overlay | Meaning |
+|--------|---------|---------|
+| Listening | Static low bars, "Listening…" | Hotkey pressed, waiting for speech |
+| Recording | Bars follow your voice, live text | Speech detected, recording |
+| Preparing / Transcribing / Refining | Flat line, status text | Model loading, processing, LLM post-processing |
+| Done | Green "Pasted" badge | Text pasted |
+| No speech | Amber "No speech" badge | Nothing was pasted |
+| Paste/copy failed | Amber "Not pasted" badge | Transcript copied or available via Copy Last Transcript |
+| Error | Red "Error" badge | Error occurred |
 
 ---
 

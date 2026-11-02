@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Recording overlay redesign** – a compact, solid 44 px overlay in monochrome
+  on macOS and Windows. Only recording animates (bars follow the microphone);
+  listening shows static low bars and preparing/transcribing/refining a flat
+  line, so idle states no longer redraw. Outcomes use small colored badges:
+  "Pasted" (with the speed value when enabled), "No speech", "Not pasted" for
+  paste/copy failures and "Error". The overlay grows with long live text.
+
 ## [1.8.0] - 2026-10-30
 
 ### Added

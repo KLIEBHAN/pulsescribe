@@ -190,14 +190,17 @@ PULSESCRIBE_TOGGLE_HOTKEY=ctrl+alt+r # Windows Standard
 
 ### Visuelles Feedback
 
-| Status | Farbe | Bedeutung |
-|--------|-------|-----------|
-| Listening | 🌸 Rosa | Hotkey gedrückt, wartet auf Sprache |
-| Recording | 🔴 Rot | Sprache erkannt, Aufnahme läuft |
-| Transcribing | 🟠 Orange | Text wird verarbeitet |
-| Refining | 💜 Violett | LLM-Nachbearbeitung läuft |
-| Done | ✅ Grün | Text eingefügt |
-| Error | ❌ Rot | Fehler aufgetreten |
+Das Overlay ist monochrom; Farbe markiert nur Ergebnisse.
+
+| Status | Overlay | Bedeutung |
+|--------|---------|-----------|
+| Listening | Ruhende niedrige Balken, „Listening…“ | Hotkey gedrückt, wartet auf Sprache |
+| Recording | Balken folgen der Stimme, Live-Text | Sprache erkannt, Aufnahme läuft |
+| Preparing / Transcribing / Refining | Flache Linie, Statustext | Modell lädt, Text wird verarbeitet, LLM-Nachbearbeitung |
+| Done | Grünes Badge „Pasted“ | Text eingefügt |
+| No speech | Gelbes Badge „No speech“ | Nichts eingefügt |
+| Paste/Copy fehlgeschlagen | Gelbes Badge „Not pasted“ | Transkript kopiert bzw. über „Copy Last Transcript“ verfügbar |
+| Error | Rotes Badge „Error“ | Fehler aufgetreten |
 
 ---
 
