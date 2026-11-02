@@ -7,7 +7,13 @@ from dataclasses import dataclass
 
 from ui.daemon_status_feedback import build_daemon_status_label
 from utils.state import AppState
-from utils.transcript_delivery import COPIED, COPY_FAILED, PASTE_FAILED, TEST_COMPLETE
+from utils.transcript_delivery import (
+    COPIED,
+    COPY_FAILED,
+    PASTE_FAILED,
+    PASTED,
+    TEST_COMPLETE,
+)
 
 # How long the daemons keep ERROR before returning to IDLE (hotkeys stay usable).
 # The overlay itself keeps showing errors until dismissed.
@@ -23,6 +29,8 @@ OVERLAY_STATE_TEXTS = {
 NO_SPEECH_TEXT = "Nothing was pasted"
 # States whose meta zone shows the local recording clock (1 Hz, m:ss).
 RECORDING_CLOCK_STATES = frozenset({"LISTENING", "RECORDING"})
+# Ends a TRANSCRIBING payload when a Refine phase follows (see transcribing_status).
+THEN_REFINING = ", then refining"
 
 _BARS_BY_STATE = {
     "LISTENING": "low",
@@ -31,7 +39,10 @@ _BARS_BY_STATE = {
     "TRANSCRIBING": "line",
     "REFINING": "line",
 }
-_DONE_RTF_PATTERN = re.compile(r"^[✓✔]\s*\(([^()]+)\)\s*$")
+_DONE_STATUS_PATTERN = re.compile(
+    rf"^(?P<feedback>{re.escape(PASTED)}|{re.escape(COPIED)})"
+    r"(?: into (?P<app>.+?))?(?: · (?P<seconds>\d+\.\d) s)?$"
+)
 _FRIENDLY_ERROR_LABELS = {
     "missing api key",
     "pulsescribe is busy",
@@ -46,10 +57,13 @@ _ERROR_PREFIX = re.compile(r"^error\s*[:\-–—]?\s*", re.IGNORECASE)
 
 @dataclass(frozen=True)
 class OverlayContent:
-    """One overlay frame: bar mode, optional outcome badge and a text line.
+    """One overlay frame: bar mode, optional outcome badge, text and meta.
 
     ``bars`` is ``level`` (audio driven), ``low`` (static row), ``line``
-    (flat processing line) or ``none``. ``tone`` picks the badge colors and is
+    (flat processing line), ``phase1``/``phase2`` (two-step line with the
+    first/second step active, when Refine follows transcription) or
+    ``none``. ``meta`` is the short right-aligned detail (step counter,
+    transcription time). ``tone`` picks the badge colors and is
     empty when there is no badge. ``emphasized`` text uses the primary color,
     everything else is muted. ``dismissible`` content stays visible (with a
     "×") until the user clicks it or the next recording replaces it.
@@ -61,7 +75,19 @@ class OverlayContent:
     badge: str = ""
     tone: str = ""
     dismissible: bool = False
+    meta: str = ""
 
+
+def transcribing_status(detail: str | None = None, *, refine: bool) -> str | None:
+    """TRANSCRIBING payload that tells the overlay whether Refine follows.
+
+    Menu bar and tray ignore TRANSCRIBING text, so only the overlay reads
+    the marker. Different details stay different payloads (Windows starts
+    its watchdog when the text changes).
+    """
+    if not refine:
+        return detail
+    return (detail or "Transcribing").rstrip(" .…") + THEN_REFINING
 
 def _normalize_overlay_text(text: str | None) -> str:
     return " ".join((text or "").replace("\n", " ").split())
@@ -112,12 +138,19 @@ def _error_text(detail: str, *, max_chars: int) -> str:
 
 
 def _done_content(detail: str) -> OverlayContent:
+    """Badge per delivery, "into <App>" and the transcription time (done_status)."""
     if detail == TEST_COMPLETE:
         return OverlayContent(text=TEST_COMPLETE, badge="Done", tone="success")
-    match = _DONE_RTF_PATTERN.match(detail)
-    speed = _normalize_overlay_text(match.group(1)) if match else ""
-    badge = "Copied" if detail == COPIED else "Pasted"
-    return OverlayContent(text=speed, badge=badge, tone="success")
+    match = _DONE_STATUS_PATTERN.match(detail)
+    if match is None:
+        return OverlayContent(badge="Pasted", tone="success")
+    app, seconds = match.group("app"), match.group("seconds")
+    return OverlayContent(
+        text=f"into {app}" if app else "",
+        badge="Copied" if match.group("feedback") == COPIED else "Pasted",
+        tone="success",
+        meta=f"{seconds} s" if seconds else "",
+    )
 
 
 def describe_overlay_content(
@@ -138,6 +171,10 @@ def describe_overlay_content(
         return OverlayContent("level", OVERLAY_STATE_TEXTS["RECORDING"], emphasized=True)
     if normalized_state == "LOADING":
         return OverlayContent("line", _loading_text(detail, max_chars=max_chars))
+    if normalized_state == "TRANSCRIBING" and detail.endswith(THEN_REFINING):
+        return OverlayContent("phase1", OVERLAY_STATE_TEXTS["TRANSCRIBING"], meta="1 of 2")
+    if normalized_state == "REFINING":
+        return OverlayContent("phase2", OVERLAY_STATE_TEXTS["REFINING"], meta="2 of 2")
     if normalized_state in _BARS_BY_STATE:
         return OverlayContent(
             _BARS_BY_STATE[normalized_state], OVERLAY_STATE_TEXTS[normalized_state]

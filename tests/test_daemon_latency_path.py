@@ -9,11 +9,44 @@ import pytest
 from pulsescribe_daemon import PulseScribeDaemon
 from utils.macos_latency_diagnostics import start_macos_latency_run
 from utils.state import AppState, DaemonMessage, MessageType
-from utils.transcript_delivery import TEST_COMPLETE
+from utils.transcript_delivery import COPIED, PASTED, TEST_COMPLETE
 
 
 def _disabled_latency_run():
     return start_macos_latency_run(enabled=False)
+
+
+def test_done_text_names_paste_target_and_time_only_when_enabled(monkeypatch):
+    daemon = PulseScribeDaemon(mode="deepgram", language="de")
+    enabled = [True]
+    monkeypatch.setattr(
+        "whisper_platform.get_app_detector",
+        lambda: SimpleNamespace(get_frontmost_app=lambda: "Mail"),
+    )
+    monkeypatch.setattr(
+        "utils.transcript_delivery.transcription_time_enabled", lambda: enabled[0]
+    )
+
+    daemon._last_transcribe_seconds = 1.24
+    assert daemon._format_done_text(PASTED) == "Transcript pasted into Mail · 1.2 s"
+    assert daemon._last_transcribe_seconds is None  # consumed once
+    daemon._last_transcribe_seconds = 0.5
+    enabled[0] = False
+    assert daemon._format_done_text(COPIED) == COPIED
+
+
+@pytest.mark.parametrize("refine", [False, True])
+def test_stop_tells_the_overlay_whether_refine_follows(refine):
+    daemon = PulseScribeDaemon(mode="openai", language="de", refine=refine)
+    daemon._update_state(AppState.RECORDING)
+    daemon._recording = True
+    updates = []
+    daemon._update_state = lambda state, text=None: updates.append((state, text))
+
+    daemon._stop_recording()
+
+    expected = "Transcribing, then refining" if refine else None
+    assert updates == [(AppState.TRANSCRIBING, expected)]
 
 
 @pytest.mark.parametrize("paste_success", [False, True])

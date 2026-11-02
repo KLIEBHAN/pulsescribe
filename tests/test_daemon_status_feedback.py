@@ -194,3 +194,16 @@ def test_build_daemon_tray_title_includes_no_speech_hint() -> None:
 
     assert title.startswith("PulseScribe — No speech detected")
     assert "try again" in title.lower()
+
+
+def test_done_label_keeps_copied_when_the_payload_carries_details():
+    label = build_daemon_status_label(
+        AppState.DONE, "Copied to clipboard · 0.4 s", prefer_detail=False
+    )
+    assert label == "Copied to clipboard"
+    assert (
+        build_daemon_status_label(
+            AppState.DONE, "Transcript pasted into Mail", prefer_detail=False
+        )
+        == "Transcript pasted"
+    )

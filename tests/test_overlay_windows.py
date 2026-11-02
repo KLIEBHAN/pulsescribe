@@ -648,11 +648,13 @@ def _content_controller() -> WindowsOverlayController:
 
 def test_handle_state_change_shows_outcome_badges_next_to_muted_text():
     controller = _content_controller()
+    controller._meta_label = _FakeLabel()
 
-    controller._handle_state_change("DONE", "✓ (0.4x)")
+    controller._handle_state_change("DONE", "Transcript pasted into Mail · 0.4 s")
     assert controller._badge_label.last_config["text"] == "Pasted"
     assert controller._badge_label.last_config["bg"] == BADGE_TONES["success"][0]
-    assert controller._label.last_config["text"] == "0.4x"
+    assert controller._label.last_config["text"] == "into Mail"
+    assert controller._meta_label.last_config["text"] == "0.4 s"
     assert controller._label.placed["x"] == TEXT_X  # badge fits the status slot
 
     controller._handle_state_change("ERROR", "Boom")

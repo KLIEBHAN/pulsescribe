@@ -46,6 +46,14 @@ BAR_COLORS = {
 BAR_AREA_WIDTH = BAR_COUNT * BAR_WIDTH + (BAR_COUNT - 1) * BAR_GAP
 LINE_HEIGHT = 3
 
+# Two-step line while Refine follows transcription: (step 1, step 2) colors.
+PHASE_STEP_COLORS = {
+    "phase1": ("#ececec", "#333333"),  # transcribing active, refining pending
+    "phase2": ("#6f6f6f", "#ececec"),  # transcribing done, refining active
+}
+PHASE_STEP_GAP = 3
+PHASE_STEP_WIDTH = (BAR_AREA_WIDTH - PHASE_STEP_GAP) / 2
+
 # Badge tones: (background, text). Color is reserved for outcomes.
 BADGE_TONES = {
     "success": ("#173326", "#6fd39b"),

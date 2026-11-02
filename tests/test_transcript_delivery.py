@@ -99,6 +99,26 @@ def test_copy_during_paste_invalidates_restore_before_scheduling(monkeypatch, pl
     assert hotkey._clipboard_restore_generation == generation + 1
 
 
+def test_done_status_reads_as_a_sentence_and_names_only_paste_targets():
+    from utils.transcript_delivery import COPIED, PASTED, done_status
+
+    assert done_status(PASTED) == PASTED
+    assert done_status(PASTED, app="Mail", seconds=0.04) == (
+        "Transcript pasted into Mail · 0.0 s"
+    )
+    assert done_status(COPIED, app="Mail") == COPIED
+
+
+@pytest.mark.parametrize(
+    ("value", "enabled"), [("true", True), ("On", True), ("0", False), (None, False)]
+)
+def test_transcription_time_follows_the_show_rtf_setting(monkeypatch, value, enabled):
+    from utils.transcript_delivery import transcription_time_enabled
+
+    monkeypatch.setattr("utils.preferences.get_env_setting", lambda _key: value)
+    assert transcription_time_enabled() is enabled
+
+
 def test_explicit_copy_uses_latest_text_and_can_retry(monkeypatch):
     paste = Mock(return_value=True)
     copy = Mock(side_effect=[False, True])
