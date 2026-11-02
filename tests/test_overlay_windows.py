@@ -20,7 +20,7 @@ from ui.overlay_windows import (
     WINDOW_HEIGHT,
     WINDOW_MARGIN_BOTTOM,
     WINDOW_WIDTH,
-    TEXT_X_AFTER_BARS,
+    TEXT_X,
     WindowsOverlayController,
     _format_recording_interim_text,
 )
@@ -287,11 +287,51 @@ def test_handle_interim_text_skips_duplicate_label_configurations():
     controller = WindowsOverlayController()
     controller._state = "RECORDING"
     controller._label = _FakeLabel()
+    controller._text_width = 300
 
     controller._handle_interim_text("short text")
     controller._handle_interim_text("short text")
 
     assert controller._label.config_calls == 1
+
+
+def test_overflowing_interim_text_is_right_anchored_to_keep_newest_words():
+    controller = WindowsOverlayController()
+    controller._state = "RECORDING"
+    controller._label = _FakeLabel()  # requests 70 px
+    controller._text_width = 50
+
+    controller._handle_interim_text("long text")
+    assert controller._label.last_config["anchor"] == "e"
+
+    controller._text_width = 300
+    controller._handle_interim_text("short")
+    assert controller._label.last_config["anchor"] == "w"
+
+
+def test_recording_clock_shows_duration_in_meta_only_while_recording(monkeypatch):
+    controller = _content_controller()
+    controller._running = True
+    controller._meta_label = _FakeLabel()
+    now = [10.0]
+    monkeypatch.setattr("ui.overlay_windows.time.monotonic", lambda: now[0])
+
+    controller._handle_state_change("LISTENING", None)
+    assert controller._meta_label.last_config["text"] == "0:00"
+    assert controller._root.after_calls[-1] == 1000
+    controller._handle_state_change("RECORDING", None)
+    now[0] = 75.2
+    controller._tick_clock()
+    assert controller._meta_label.last_config["text"] == "1:05"
+    assert controller._root.after_calls[-1] == 800  # aligned to the next second
+    assert controller._label.placed["width"] == (
+        WINDOW_WIDTH - OVERLAY_PADDING_H - 70 - OVERLAY_GAP - TEXT_X
+    )
+
+    controller._handle_state_change("TRANSCRIBING", None)
+    assert controller._clock_after_id is None
+    assert controller._root.after_cancel_calls
+    assert controller._meta_label.placed is None
 
 
 def test_format_recording_interim_text_compacts_whitespace():
@@ -613,7 +653,7 @@ def test_handle_state_change_shows_outcome_badges_next_to_muted_text():
     assert controller._badge_label.last_config["text"] == "Pasted"
     assert controller._badge_label.last_config["bg"] == BADGE_TONES["success"][0]
     assert controller._label.last_config["text"] == "0.4x"
-    assert controller._label.placed["x"] == OVERLAY_PADDING_H + 70 + OVERLAY_GAP
+    assert controller._label.placed["x"] == TEXT_X  # badge fits the status slot
 
     controller._handle_state_change("ERROR", "Boom")
     assert controller._badge_label.last_config["text"] == "Error"
@@ -623,7 +663,7 @@ def test_handle_state_change_shows_outcome_badges_next_to_muted_text():
     controller._handle_state_change("LOADING", None)
     assert controller._badge_label.placed is None
     assert controller._label.last_config["text"] == "Preparing…"
-    assert controller._label.placed["x"] == TEXT_X_AFTER_BARS
+    assert controller._label.placed["x"] == TEXT_X
 
 
 def test_handle_interim_text_uses_muted_interim_color_and_restores_status():

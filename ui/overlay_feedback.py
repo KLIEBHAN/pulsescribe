@@ -21,6 +21,8 @@ OVERLAY_STATE_TEXTS = {
     "LOADING": "Preparing…",
 }
 NO_SPEECH_TEXT = "Nothing was pasted"
+# States whose meta zone shows the local recording clock (1 Hz, m:ss).
+RECORDING_CLOCK_STATES = frozenset({"LISTENING", "RECORDING"})
 
 _BARS_BY_STATE = {
     "LISTENING": "low",

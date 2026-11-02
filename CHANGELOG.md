@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Steadier overlay** – the recording overlay keeps one width (400 px)
+  from listening to the result, so its text no longer jumps between states.
+  Status (bars or badge), text and a right-aligned detail each have a fixed
+  place; only error messages that stay on screen grow wider.
+- **Live text fades out** – while you speak, the newest words stay visible
+  and older words fade out on the left instead of widening the overlay
+  (Windows Tkinter fallback: shortened from the left, without fade).
+- **Recording time** – the overlay shows how long you have been recording
+  (`m:ss`), updated once per second.
+
 ## [1.9.0] - 2026-11-02
 
 ### Changed

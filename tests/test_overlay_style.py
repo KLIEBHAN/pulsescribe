@@ -2,47 +2,55 @@ from ui.animation import LISTENING_BAR_HEIGHTS, BAR_MAX_HEIGHT
 from ui.overlay_style import (
     BAR_AREA_WIDTH,
     OVERLAY_GAP,
-    OVERLAY_MIN_WIDTH,
     OVERLAY_PADDING_H,
+    OVERLAY_WIDTH,
+    STATUS_SLOT_WIDTH,
     compute_overlay_layout,
     hex_to_rgb,
 )
 
+TEXT_X = OVERLAY_PADDING_H + STATUS_SLOT_WIDTH + OVERLAY_GAP
 
-def test_short_content_keeps_min_width_and_left_aligns() -> None:
-    layout = compute_overlay_layout(
-        bars=True, badge_width=0, text_width=60, max_width=1000
+
+def test_text_zone_starts_after_the_status_slot_at_fixed_width() -> None:
+    short = compute_overlay_layout(text_width=60)
+    long = compute_overlay_layout(text_width=2000, max_width=1500)
+
+    for layout in (short, long):
+        assert layout.width == OVERLAY_WIDTH
+        assert layout.status_x == OVERLAY_PADDING_H
+        assert layout.text_x == TEXT_X
+        assert layout.text_width == OVERLAY_WIDTH - OVERLAY_PADDING_H - TEXT_X
+    assert BAR_AREA_WIDTH <= STATUS_SLOT_WIDTH
+
+
+def test_meta_and_dismiss_are_right_aligned_and_shrink_the_text_zone() -> None:
+    layout = compute_overlay_layout(text_width=50, meta_width=30, dismiss_width=8)
+
+    right = OVERLAY_WIDTH - OVERLAY_PADDING_H
+    assert layout.dismiss_x == right - 8
+    assert layout.meta_x == layout.dismiss_x - OVERLAY_GAP - 30
+    assert layout.text_x + layout.text_width == layout.meta_x - OVERLAY_GAP
+
+
+def test_only_persistent_content_grows_capped_and_never_below_fixed_width() -> None:
+    fitting = compute_overlay_layout(text_width=50, grow=True, max_width=1000)
+    capped = compute_overlay_layout(
+        text_width=2000, dismiss_width=8, grow=True, max_width=600
     )
-    assert layout.width == OVERLAY_MIN_WIDTH
-    assert layout.bars_x == OVERLAY_PADDING_H
-    assert layout.text_x == OVERLAY_PADDING_H + BAR_AREA_WIDTH + OVERLAY_GAP
-    assert layout.text_width == 60
+    natural = compute_overlay_layout(text_width=500, grow=True, max_width=1000)
+
+    assert fitting.width == OVERLAY_WIDTH
+    assert capped.width == 600
+    assert capped.dismiss_x == 600 - OVERLAY_PADDING_H - 8
+    assert natural.width == TEXT_X + 500 + OVERLAY_PADDING_H
+    assert natural.text_width == 500
 
 
-def test_badge_layout_without_bars() -> None:
-    layout = compute_overlay_layout(
-        bars=False, badge_width=70, text_width=200, max_width=1000
-    )
-    assert layout.bars_x is None
-    assert layout.badge_x == OVERLAY_PADDING_H
-    assert layout.text_x == OVERLAY_PADDING_H + 70 + OVERLAY_GAP
-    assert layout.width == layout.text_x + 200 + OVERLAY_PADDING_H
+def test_badge_wider_than_the_slot_pushes_the_text() -> None:
+    layout = compute_overlay_layout(text_width=50, status_width=STATUS_SLOT_WIDTH + 6)
 
-
-def test_long_text_is_capped_and_gets_remaining_width() -> None:
-    layout = compute_overlay_layout(
-        bars=True, badge_width=0, text_width=2000, max_width=500
-    )
-    assert layout.width == 500
-    assert layout.text_x + layout.text_width == 500 - OVERLAY_PADDING_H
-
-
-def test_dismiss_glyph_sits_at_right_edge_and_reserves_space() -> None:
-    layout = compute_overlay_layout(
-        bars=False, badge_width=50, text_width=2000, max_width=600, dismiss_width=8
-    )
-    assert layout.dismiss_x == 600 - OVERLAY_PADDING_H - 8
-    assert layout.text_x + layout.text_width == layout.dismiss_x - OVERLAY_GAP
+    assert layout.text_x == TEXT_X + 6
 
 
 def test_static_listening_bars_stay_low() -> None:

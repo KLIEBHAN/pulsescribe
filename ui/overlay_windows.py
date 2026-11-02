@@ -1,7 +1,8 @@
 """Windows Overlay für PulseScribe (Tkinter-Fallback ohne PySide6).
 
 Nutzt dieselben Farben und Inhalte wie macOS/PySide6 (ui/overlay_style.py,
-``describe_overlay_content``), aber vereinfacht: feste Breite, Interim-Text
+``describe_overlay_content``), aber vereinfacht: feste Breite (auch bleibende
+Meldungen wachsen nicht), Interim-Text per Tail-Kürzung statt Fade und
 einfarbig gedämpft. Nur RECORDING animiert; alle anderen States sind statisch.
 Fehler bleiben bis zum Klick sichtbar; das Tk-Fenster ist (wie bisher) nie
 klick-durchlässig, weil Tk das nicht pro State umschalten kann.
@@ -32,7 +33,11 @@ from ui.animation import (
     FPS,
     LISTENING_BAR_HEIGHTS,
 )
-from ui.overlay_feedback import OverlayContent, describe_overlay_content
+from ui.overlay_feedback import (
+    RECORDING_CLOCK_STATES,
+    OverlayContent,
+    describe_overlay_content,
+)
 from ui.overlay_style import (
     BACKGROUND_COLOR,
     BADGE_PADDING_H,
@@ -42,14 +47,18 @@ from ui.overlay_style import (
     DISMISS_GLYPH,
     INTERIM_TEXT_COLOR,
     LINE_HEIGHT,
+    META_TEXT_COLOR,
     MUTED_TEXT_COLOR,
     OVERLAY_CORNER_RADIUS,
     OVERLAY_GAP,
     OVERLAY_HEIGHT,
     OVERLAY_PADDING_H,
+    OVERLAY_WIDTH,
+    STATUS_SLOT_WIDTH,
     TEXT_COLOR,
 )
 from ui.overlay_text import (
+    format_recording_duration,
     format_recording_interim_text as _format_recording_interim_text,
 )
 from utils.log_tail import read_file_tail_text
@@ -63,7 +72,7 @@ TK_AVAILABLE = tk is not None
 # Window-Konstanten
 # =============================================================================
 
-WINDOW_WIDTH = 400  # Fest: passt für die längste Meldung inkl. Badge
+WINDOW_WIDTH = OVERLAY_WIDTH  # Fest: passt für die längste Meldung inkl. Badge
 WINDOW_HEIGHT = OVERLAY_HEIGHT
 WINDOW_CORNER_RADIUS = OVERLAY_CORNER_RADIUS
 WINDOW_MARGIN_BOTTOM = 60  # Abstand vom unteren Bildschirmrand
@@ -85,6 +94,7 @@ INTERIM_POLL_STABLE_INTERVAL_MS = 500
 INTERIM_POLL_STABLE_THRESHOLD = 3
 INTERIM_POLL_DIRECT_INTERVAL_MS = 1000
 INTERIM_DIRECT_UPDATE_GRACE_S = 1.5
+CLOCK_INTERVAL_MS = 1000  # Aufnahmedauer m:ss, nur LISTENING/RECORDING
 
 # =============================================================================
 # Farben / Schrift (Werte aus ui/overlay_style.py)
@@ -93,7 +103,8 @@ INTERIM_DIRECT_UPDATE_GRACE_S = 1.5
 BG_COLOR = BACKGROUND_COLOR
 TEXT_FONT = ("Segoe UI", 10)
 BADGE_FONT = ("Segoe UI", 9, "bold")
-TEXT_X_AFTER_BARS = OVERLAY_PADDING_H + BAR_AREA_WIDTH + OVERLAY_GAP
+META_FONT = ("Segoe UI", 9)  # Segoe UI digits are tabular by default
+TEXT_X = OVERLAY_PADDING_H + STATUS_SLOT_WIDTH + OVERLAY_GAP
 
 # =============================================================================
 # Overlay Controller
@@ -134,6 +145,13 @@ class WindowsOverlayController:
         self._bar_center_y = WINDOW_HEIGHT / 2
         self._badge_label: tk.Label | None = None
         self._dismiss_label: tk.Label | None = None
+        self._meta_label: tk.Label | None = None
+        self._meta_text = ""
+        self._clock_start = 0.0
+        self._clock_after_id: str | None = None
+        self._text_x = float(TEXT_X)
+        self._text_width = 0.0
+        self._dismiss_shown = False
         self._persistent = False
         self._bar_mode = "none"
         self._line_item_id: int | None = None
@@ -258,9 +276,12 @@ class WindowsOverlayController:
             font=TEXT_FONT,
             anchor="w",
         )
-        self._label.place(x=TEXT_X_AFTER_BARS, rely=0.5, anchor="w")
+        self._label.place(x=TEXT_X, rely=0.5, anchor="w")
         self._dismiss_label = tk.Label(
             self._root, text=DISMISS_GLYPH, fg=MUTED_TEXT_COLOR, bg=BG_COLOR, font=TEXT_FONT
+        )
+        self._meta_label = tk.Label(
+            self._root, text="", fg=META_TEXT_COLOR, bg=BG_COLOR, font=META_FONT
         )
         # Toplevel-Bindings gelten auch für alle Kind-Widgets (bindtags).
         self._root.bind("<Button-1>", lambda _event: self._dismiss())
@@ -517,6 +538,12 @@ class WindowsOverlayController:
         if not self._root or not self._label:
             return
 
+        if state_changed:
+            if state in RECORDING_CLOCK_STATES:
+                self._start_clock()
+            else:
+                self._stop_clock()
+
         if state == "IDLE":
             # Daemon returns to IDLE so hotkeys work; a persistent message stays.
             if state_changed and not self._persistent:
@@ -565,37 +592,93 @@ class WindowsOverlayController:
             font=TEXT_FONT,
             fg=INTERIM_TEXT_COLOR,
         )
+        # Tk cannot fade: right-anchor overflowing text so the newest words stay.
+        overflow = self._label.winfo_reqwidth() > self._text_width
+        self._set_label_anchor("e" if overflow else "w")
+
+    def _set_label_anchor(self, anchor: str) -> None:
+        if getattr(self, "_label_anchor", "w") != anchor:
+            self._label_anchor = anchor
+            self._label.config(anchor=anchor)
 
     def _apply_content(self, content: OverlayContent) -> None:
-        """Place badge and text left to right after the (optional) bars."""
-        text_x = TEXT_X_AFTER_BARS if content.bars != "none" else OVERLAY_PADDING_H
+        """Place the badge in the status slot and the text after it."""
+        text_x = TEXT_X
         badge = getattr(self, "_badge_label", None)
         if badge is not None:
             if content.badge:
                 background, foreground = BADGE_TONES[content.tone]
                 badge.config(text=content.badge, bg=background, fg=foreground)
                 badge.place(x=OVERLAY_PADDING_H, rely=0.5, anchor="w")
-                text_x = OVERLAY_PADDING_H + badge.winfo_reqwidth() + OVERLAY_GAP
+                # A badge wider than the slot pushes the text instead of overlapping.
+                text_x = max(
+                    TEXT_X, OVERLAY_PADDING_H + badge.winfo_reqwidth() + OVERLAY_GAP
+                )
             else:
                 badge.place_forget()
-        text_end = WINDOW_WIDTH - OVERLAY_PADDING_H
-        dismiss = getattr(self, "_dismiss_label", None)
-        if dismiss is not None:
-            if content.dismissible:
-                dismiss.place(x=text_end, rely=0.5, anchor="e")
-                text_end -= dismiss.winfo_reqwidth() + OVERLAY_GAP
-            else:
-                dismiss.place_forget()
-        if getattr(self, "_label", None) is not None and hasattr(self._label, "place"):
-            # Fixed width clips long text instead of running under the "×".
-            self._label.place(
-                x=text_x, rely=0.5, anchor="w", width=max(text_end - text_x, 0)
-            )
+        self._text_x = text_x
+        self._dismiss_shown = content.dismissible
+        self._place_trailing()
+        if getattr(self, "_label", None) is not None:
+            self._set_label_anchor("w")
         self._set_label_config(
             text=content.text,
             font=TEXT_FONT,
             fg=TEXT_COLOR if content.emphasized else MUTED_TEXT_COLOR,
         )
+
+    def _place_trailing(self) -> None:
+        """Right-align "×" and meta, then give the text label the rest."""
+        text_end = WINDOW_WIDTH - OVERLAY_PADDING_H
+        dismiss = getattr(self, "_dismiss_label", None)
+        if dismiss is not None:
+            if self._dismiss_shown:
+                dismiss.place(x=text_end, rely=0.5, anchor="e")
+                text_end -= dismiss.winfo_reqwidth() + OVERLAY_GAP
+            else:
+                dismiss.place_forget()
+        meta = getattr(self, "_meta_label", None)
+        if meta is not None:
+            if self._meta_text:
+                meta.config(text=self._meta_text)
+                meta.place(x=text_end, rely=0.5, anchor="e")
+                text_end -= meta.winfo_reqwidth() + OVERLAY_GAP
+            else:
+                meta.place_forget()
+        self._text_width = max(text_end - self._text_x, 0)
+        if getattr(self, "_label", None) is not None and hasattr(self._label, "place"):
+            # Fixed width clips long text instead of running under meta or "×".
+            self._label.place(x=self._text_x, rely=0.5, anchor="w", width=self._text_width)
+
+    def _start_clock(self) -> None:
+        """Show ``0:00`` and tick once per second until ``_stop_clock``."""
+        if getattr(self, "_clock_after_id", None) is not None or not self._root:
+            return
+        self._clock_start = time.monotonic()
+        self._meta_text = format_recording_duration(0)
+        self._clock_after_id = self._root.after(CLOCK_INTERVAL_MS, self._tick_clock)
+
+    def _tick_clock(self) -> None:
+        self._clock_after_id = None
+        if not self._running or not self._root:
+            return
+        elapsed = time.monotonic() - self._clock_start
+        shown = round(elapsed)
+        self._meta_text = format_recording_duration(shown)
+        self._place_trailing()
+        # after() drifts; aim at the next whole second instead of +1000 ms.
+        delay_ms = max(round((shown + 1 - elapsed) * 1000), 50)
+        self._clock_after_id = self._root.after(delay_ms, self._tick_clock)
+
+    def _stop_clock(self) -> None:
+        self._meta_text = ""
+        after_id = getattr(self, "_clock_after_id", None)
+        self._clock_after_id = None
+        if after_id is not None and self._root:
+            try:
+                self._root.after_cancel(after_id)
+            except Exception:
+                pass
 
     def _dismiss(self) -> None:
         """Hide a persistent message after a click on the overlay."""

@@ -117,9 +117,13 @@ def _install_fake_foundation(monkeypatch):
             self.repeats = repeats
             self.block = block
             self.invalidated = 0
+            self.tolerance = 0.0
 
         def invalidate(self) -> None:
             self.invalidated += 1
+
+        def setTolerance_(self, tolerance: float) -> None:
+            self.tolerance = tolerance
 
     class _FakeNSTimer:
         @staticmethod
@@ -137,6 +141,27 @@ def _install_fake_foundation(monkeypatch):
         types.SimpleNamespace(NSTimer=_FakeNSTimer),
     )
     return scheduled_calls, created_timers
+
+
+def test_format_recording_duration_uses_minutes_and_padded_seconds():
+    from ui.overlay_text import format_recording_duration
+
+    assert format_recording_duration(0) == "0:00"
+    assert format_recording_duration(65.4) == "1:05"
+    assert format_recording_duration(600) == "10:00"
+    assert format_recording_duration(-3) == "0:00"
+
+
+def test_faded_interim_tail_has_no_ellipsis():
+    from ui.overlay_text import split_recording_interim_text
+
+    text = "alpha beta gamma delta"
+    earlier, newest = split_recording_interim_text(
+        text + " omega", text, max_chars=12, ellipsis=False
+    )
+
+    assert earlier + newest == "gamma delta omega"[-12:]
+    assert newest == "omega"
 
 
 def test_format_recording_interim_text_compacts_whitespace():
@@ -537,6 +562,9 @@ def _controller(events: list[str] | None = None) -> OverlayController:
     controller._previous_interim = ""
     controller._persistent = False
     controller._wave_view = _FakeWaveModes(events)
+    # The recording clock has its own test; keep timer lists about feedback.
+    controller._start_clock = lambda: None
+    controller._stop_clock = lambda: None
     controller.rendered = []
     controller._render = lambda content, interim: controller.rendered.append(
         (content, interim)
@@ -666,11 +694,19 @@ def test_render_skips_identical_presentations():
     )
     controller._badge_view = types.SimpleNamespace(setHidden_=lambda _hidden: None)
     controller._dismiss_field = types.SimpleNamespace(setHidden_=lambda _hidden: None)
+    metas = []
+    controller._meta_field = types.SimpleNamespace(
+        setStringValue_=metas.append, setHidden_=lambda _hidden: None
+    )
+    controller._meta_text = "0:00"
     controller._attributed_text = lambda parts: parts
-    controller._layout = lambda *_args: None
+    layouts = []
+    controller._layout = lambda *args: layouts.append(args)
     content = OverlayContent("low", "Listening…")
 
     controller._render(content, ("", ""))
+    controller._render(content, ("", ""))
+    controller._meta_text = "0:01"  # clock tick: meta only, text untouched
     controller._render(content, ("", ""))
     controller._render(content, ("", "new words"))
 
@@ -678,6 +714,41 @@ def test_render_skips_identical_presentations():
         (("Listening…", "muted"),),
         (("", "interim"), ("new words", "text")),
     ]
+    assert metas == ["0:00", "0:01"]
+    assert [args[2] for args in layouts] == [False, False, True]
+
+
+def test_recording_clock_ticks_at_1hz_only_while_listening_or_recording(monkeypatch):
+    scheduled, timers = _install_fake_foundation(monkeypatch)
+    now = [50.0]
+    monkeypatch.setattr("ui.overlay.time.monotonic", lambda: now[0])
+    controller = _controller()
+    del controller._start_clock, controller._stop_clock
+    controller._clock_timer = None
+    controller._meta_text = ""
+    controller._presentation = None
+    metas = []
+
+    def render(content, interim):
+        metas.append(controller._meta_text)
+        controller._presentation = (content, interim, controller._meta_text)
+
+    controller._render = render
+
+    controller.update_state(AppState.LISTENING)
+    controller.update_state(AppState.RECORDING)
+    assert [(interval, repeats) for interval, repeats, _ in scheduled] == [(1.0, True)]
+    assert timers[0].tolerance > 0
+    now[0] = 121.0
+    timers[0].block(timers[0])
+    assert metas == ["0:00", "0:00", "1:11"]
+
+    controller.update_state(AppState.TRANSCRIBING)
+    assert timers[0].invalidated == 1
+    assert metas[-1] == ""
+    timers[0].block(timers[0])  # a stale tick after stop is ignored
+    assert metas[-1] == ""
+    assert timers[0].invalidated == 2
 
 
 @pytest.mark.parametrize(

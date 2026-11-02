@@ -1,11 +1,22 @@
 """Shared text formatting helpers for overlay implementations."""
 
 DEFAULT_RECORDING_INTERIM_MAX_CHARS = 45
+# Overlays that fade clipped text on the left need a tail longer than the
+# text zone; the zone clips it, so no "..." is added.
+FADED_RECORDING_INTERIM_MAX_CHARS = 120
+
+
+def format_recording_duration(seconds: float) -> str:
+    """Format a recording duration as ``m:ss`` (minutes are not capped)."""
+    minutes, secs = divmod(max(int(seconds), 0), 60)
+    return f"{minutes}:{secs:02d}"
 
 
 def format_recording_interim_text(
     text: str,
     max_chars: int = DEFAULT_RECORDING_INTERIM_MAX_CHARS,
+    *,
+    ellipsis: bool = True,
 ) -> str:
     """Normalize whitespace and tail-truncate recording interim text."""
     if not text:
@@ -14,6 +25,8 @@ def format_recording_interim_text(
     cleaned_tail, truncated = _normalized_tail(text, max_chars)
     if not cleaned_tail or not truncated:
         return cleaned_tail
+    if not ellipsis:
+        return cleaned_tail[-max_chars:]
     return _ellipsis_tail(cleaned_tail, max_chars)
 
 
@@ -21,6 +34,8 @@ def split_recording_interim_text(
     text: str,
     previous_text: str = "",
     max_chars: int = DEFAULT_RECORDING_INTERIM_MAX_CHARS,
+    *,
+    ellipsis: bool = True,
 ) -> tuple[str, str]:
     """Split formatted interim text into ``(earlier, newest)`` display parts.
 
@@ -28,7 +43,7 @@ def split_recording_interim_text(
     emphasize them. A revised transcript (no common prefix) emphasizes only
     its last word.
     """
-    formatted = format_recording_interim_text(text, max_chars)
+    formatted = format_recording_interim_text(text, max_chars, ellipsis=ellipsis)
     if not formatted:
         return "", ""
     if previous_text and text.startswith(previous_text):
