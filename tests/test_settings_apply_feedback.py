@@ -143,3 +143,18 @@ def test_build_save_apply_change_hint_switches_between_singular_and_plural() -> 
         build_save_apply_change_hint(plural=True)
         == "Click Save & Apply to keep these changes."
     )
+
+
+def test_count_settings_changes_counts_nested_api_keys_per_entry():
+    from ui.settings_apply_feedback import (
+        build_unsaved_changes_text,
+        count_settings_changes,
+    )
+
+    saved = ("deepgram", True, (("A_KEY", ""), ("B_KEY", "x")))
+    current = ("local", True, (("A_KEY", "new"), ("B_KEY", "y")))
+
+    assert count_settings_changes(saved, saved) == 0
+    assert count_settings_changes(saved, current) == 3
+    assert build_unsaved_changes_text(1) == "1 unsaved change"
+    assert build_unsaved_changes_text(3) == "3 unsaved changes"
