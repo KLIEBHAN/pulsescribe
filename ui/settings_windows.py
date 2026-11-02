@@ -55,6 +55,7 @@ from ui.logs_panel_feedback import (
 )
 from ui.provider_settings import build_provider_api_key_status
 from ui.microphone import MICROPHONE_TOOLTIP, get_microphone_options
+from ui import settings_theme as theme
 from ui.settings_sections import SETTINGS_SECTIONS
 from ui.setup_try_it import build_setup_try_it_content
 from ui.qt_widget_state import (
@@ -2944,7 +2945,11 @@ class SettingsWindow(QDialog):
         if button is None:
             return
         button.setText("Press key...")
-        button.setStyleSheet(f"background-color: {COLORS['accent']};")
+        # Primary look so the prompt stays readable on the light fill.
+        button.setStyleSheet(
+            f"background-color: {theme.PRIMARY_BG}; border-color: {theme.PRIMARY_BG}; "
+            f"color: {theme.PRIMARY_TEXT};"
+        )
 
     def _start_hotkey_recording(self, kind: str):
         """Startet Hotkey-Recording für toggle oder hold."""
