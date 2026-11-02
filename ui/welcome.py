@@ -12,6 +12,7 @@ from ui.hotkey_format import (
     format_hotkey_for_display,
     normalize_hotkey_text,
 )
+from ui import settings_theme as theme
 from ui.settings_sections import SETTINGS_SECTIONS
 from ui.hotkey_card import HotkeyCard
 from ui.logs_panel_feedback import (
@@ -97,8 +98,7 @@ CONTENT_WIDTH = WELCOME_WIDTH - SIDEBAR_WIDTH
 PAGE_TITLE_HEIGHT = 30
 WELCOME_PADDING = 20
 FOOTER_HEIGHT = 60
-CARD_PADDING = 16
-CARD_CORNER_RADIUS = 12
+CARD_PADDING = 0  # Flat sections: content aligns with the page title
 CARD_SPACING = 12
 # History tab segments, in display order (Transcripts is the default view)
 HISTORY_TRANSCRIPTS_SEGMENT = 0
@@ -176,7 +176,8 @@ SETUP_TRY_IT_HINT = (
     "Need permissions? Accessibility enables pasting; Input Monitoring enables "
     "global hotkeys."
 )
-API_KEY_CARD_TOP_INSET = 92
+API_KEY_CARD_TOP_INSET = 106  # title + two-line guidance
+API_KEY_STATUS_WIDTH = 96  # widest badge ("Configured")
 API_KEY_CARD_BOTTOM_INSET = 54
 API_KEY_ROW_SPACING = 54
 WELCOME_LOG_MAX_CHARS = 15_000
@@ -216,17 +217,8 @@ def _get_color(r: int, g: int, b: int, a: float = 1.0):
 
 
 def _create_card(x: int, y: int, width: int, height: int):
-    """Erstellt eine Karten-Box mit abgerundetem Hintergrund."""
-    from AppKit import NSColor  # type: ignore[import-not-found]
-
-    return _create_fill_box(
-        x,
-        y,
-        width,
-        height,
-        NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.06),
-        CARD_CORNER_RADIUS,
-    )
+    """Returns the 1 px rule that tops a flat section spanning this frame."""
+    return theme.ns_rule(x, y + height - 1, width)
 
 
 def _create_fill_box(x: int, y: int, width: int, height: int, fill, radius: float):
@@ -348,13 +340,9 @@ def _format_hotkey_for_display(value: str | None) -> str:
 
 
 def _status_color(level: str):
-    if level == "success":
-        return _get_color(51, 217, 178)
-    if level == "warning":
-        return _get_color(255, 177, 66, 0.95)
-    if level == "error":
-        return _get_color(255, 82, 82, 0.9)
-    return _get_color(255, 255, 255, 0.6)
+    tone = theme.badge_tone(level)
+    token = theme.MUTED if tone == "muted" else theme.BADGE_TONES[tone][1]
+    return _get_color(*theme.hex_rgb(token))
 
 
 
@@ -742,8 +730,10 @@ class WelcomeController:
             NSClosableWindowMask,
             NSMakeRect,
             NSScreen,
+            NSAppearance,
+            NSAppearanceNameDarkAqua,
             NSTitledWindowMask,
-            NSVisualEffectView,
+            NSView,
             NSWindow,
         )
 
@@ -767,14 +757,21 @@ class WelcomeController:
         # Edit-Menü für CMD+V/C/X/A in TextViews
         self._setup_edit_menu()
 
-        # Visual Effect View (HUD-Material)
-        content_frame = NSMakeRect(0, 0, WELCOME_WIDTH, WELCOME_HEIGHT)
-        visual_effect = NSVisualEffectView.alloc().initWithFrame_(content_frame)
-        visual_effect.setMaterial_(13)  # HUD Window
-        visual_effect.setBlendingMode_(0)
-        visual_effect.setState_(1)
-        self._window.setContentView_(visual_effect)
-        self._content_view = visual_effect
+        # Dark only: solid background, and native controls drawn dark even
+        # when the system uses the light appearance.
+        self._window.setAppearance_(
+            NSAppearance.appearanceNamed_(NSAppearanceNameDarkAqua)
+        )
+        content_view = NSView.alloc().initWithFrame_(
+            NSMakeRect(0, 0, WELCOME_WIDTH, WELCOME_HEIGHT)
+        )
+        content_view.addSubview_(
+            _create_fill_box(
+                0, 0, WELCOME_WIDTH, WELCOME_HEIGHT, theme.ns_color(theme.BG), 0
+            )
+        )
+        self._window.setContentView_(content_view)
+        self._content_view = content_view
 
         # Sidebar + page title + tabless pages
         self._build_sidebar()
@@ -800,9 +797,13 @@ class WelcomeController:
         sidebar = NSView.alloc().initWithFrame_(
             NSMakeRect(0, 0, SIDEBAR_WIDTH, WELCOME_HEIGHT)
         )
-        sidebar.addSubview_(
-            _create_fill_box(0, 0, SIDEBAR_WIDTH, WELCOME_HEIGHT, _get_color(18, 18, 18), 0)
-        )
+        for x, width, color in (
+            (0, SIDEBAR_WIDTH - 1, theme.SIDEBAR_BG),
+            (SIDEBAR_WIDTH - 1, 1, theme.BORDER),
+        ):
+            sidebar.addSubview_(
+                _create_fill_box(x, 0, width, WELCOME_HEIGHT, theme.ns_color(color), 0)
+            )
         self._content_view.addSubview_(sidebar)
 
         inset = 10  # entry inset from the sidebar edge; text adds the same again
@@ -894,7 +895,7 @@ class WelcomeController:
             style.setFirstLineHeadIndent_(10)
             style.setHeadIndent_(10)
             weight = NSFontWeightSemibold if active else NSFontWeightRegular
-            color = _get_color(255, 255, 255) if active else _get_color(173, 173, 173)
+            color = theme.ns_color(theme.ACTIVE_TEXT if active else theme.NAV)
             button.setAttributedTitle_(
                 NSAttributedString.alloc().initWithString_attributes_(
                     entry_label,
@@ -906,7 +907,7 @@ class WelcomeController:
                 )
             )
             background.setFillColor_(
-                _get_color(42, 42, 42) if active else _get_color(0, 0, 0, 0)
+                theme.ns_color(theme.ACTIVE_BG) if active else _get_color(0, 0, 0, 0)
             )
 
     # =============================================================================
@@ -1316,7 +1317,12 @@ class WelcomeController:
                 mode=mode,
                 configured=api_key_states.get(provider, False),
             )
-            _apply_status_text(status, status_text, color)
+            theme.set_ns_badge(
+                status,
+                status_text,
+                theme.badge_tone(color),
+                right_edge=CONTENT_WIDTH - WELCOME_PADDING - CARD_PADDING,
+            )
             tooltip = _build_welcome_api_key_tooltip(provider, mode=mode)
             _set_tooltip_if_supported(getattr(self, f"_{provider}_field", None), tooltip)
             _set_tooltip_if_supported(status, tooltip)
@@ -1386,6 +1392,7 @@ class WelcomeController:
             title="Permissions",
             description=PERMISSIONS_DESCRIPTION,
             bind_action=bind_action,
+            flat=True,
         )
 
         return card_y - CARD_SPACING
@@ -1416,12 +1423,14 @@ class WelcomeController:
         title = NSTextField.alloc().initWithFrame_(
             NSMakeRect(base_x, card_y + card_height - 28, 320, 18)
         )
-        title.setStringValue_("⚡ Recommended (Apple Silicon)")
+        title.setStringValue_("Recommended (Apple Silicon)")
         title.setBezeled_(False)
         title.setDrawsBackground_(False)
         title.setEditable_(False)
         title.setSelectable_(False)
-        title.setFont_(NSFont.systemFontOfSize_weight_(13, NSFontWeightSemibold))
+        title.setFont_(
+            NSFont.systemFontOfSize_weight_(theme.SECTION_TITLE_SIZE, NSFontWeightSemibold)
+        )
         title.setTextColor_(NSColor.whiteColor())
         parent_view.addSubview_(title)
 
@@ -1538,12 +1547,14 @@ class WelcomeController:
         title = NSTextField.alloc().initWithFrame_(
             NSMakeRect(base_x, card_y + card_height - 28, 80, 18)
         )
-        title.setStringValue_("🎤 Try it")
+        title.setStringValue_("Try it")
         title.setBezeled_(False)
         title.setDrawsBackground_(False)
         title.setEditable_(False)
         title.setSelectable_(False)
-        title.setFont_(NSFont.systemFontOfSize_weight_(13, NSFontWeightSemibold))
+        title.setFont_(
+            NSFont.systemFontOfSize_weight_(theme.SECTION_TITLE_SIZE, NSFontWeightSemibold)
+        )
         title.setTextColor_(NSColor.whiteColor())
         parent_view.addSubview_(title)
 
@@ -1594,13 +1605,15 @@ class WelcomeController:
         self._setup_try_change_button = change_btn
 
         hint = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(base_x + 140, footer_y + 5, content_w - 140, 14)
+            NSMakeRect(base_x + 140, footer_y - 1, content_w - 140, 26)
         )
         hint.setStringValue_(hint_text)
         hint.setBezeled_(False)
         hint.setDrawsBackground_(False)
         hint.setEditable_(False)
         hint.setSelectable_(False)
+        hint.setUsesSingleLineMode_(False)
+        hint.cell().setWraps_(True)
         hint.setFont_(NSFont.systemFontOfSize_(10))
         hint.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.45))
         parent_view.addSubview_(hint)
@@ -1651,7 +1664,7 @@ class WelcomeController:
             card_height=card_height,
             outer_padding=WELCOME_PADDING,
             inner_padding=CARD_PADDING,
-            title="⌨️ Hotkeys",
+            title="Hotkeys",
             description="Press to start/stop recording.\nChanges apply immediately.",
             bind_action=bind_action,
             hotkey_recorder=self._hotkey_recorder,
@@ -1660,6 +1673,7 @@ class WelcomeController:
             get_current_hotkeys=self._get_cached_hotkeys,
             show_presets=True,
             show_hint=True,
+            flat=True,
         )
 
         return card_y - CARD_SPACING
@@ -1689,17 +1703,19 @@ class WelcomeController:
         title = NSTextField.alloc().initWithFrame_(
             NSMakeRect(base_x, card_y + card_height - 30, 200, 18)
         )
-        title.setStringValue_("🔑 API Keys")
+        title.setStringValue_("API Keys")
         title.setBezeled_(False)
         title.setDrawsBackground_(False)
         title.setEditable_(False)
         title.setSelectable_(False)
-        title.setFont_(NSFont.systemFontOfSize_weight_(13, NSFontWeightSemibold))
+        title.setFont_(
+            NSFont.systemFontOfSize_weight_(theme.SECTION_TITLE_SIZE, NSFontWeightSemibold)
+        )
         title.setTextColor_(NSColor.whiteColor())
         parent_view.addSubview_(title)
 
         guidance = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(base_x, card_y + card_height - 50, content_width, 16)
+            NSMakeRect(base_x, card_y + card_height - 66, content_width, 30)
         )
         guidance.setStringValue_("")
         guidance.setBezeled_(False)
@@ -1708,11 +1724,15 @@ class WelcomeController:
         guidance.setSelectable_(False)
         guidance.setFont_(NSFont.systemFontOfSize_(11))
         guidance.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6))
+        guidance.setUsesSingleLineMode_(False)
+        guidance.cell().setWraps_(True)
         parent_view.addSubview_(guidance)
         self._provider_guidance_label = guidance
 
         row_y = card_y + card_height - API_KEY_CARD_TOP_INSET
-        for provider, label_text, key_name in API_KEY_PROVIDERS:
+        for index, (provider, label_text, key_name) in enumerate(API_KEY_PROVIDERS):
+            if index:  # rule centered in the gap below the previous row's field
+                parent_view.addSubview_(theme.ns_rule(base_x, row_y + 45, content_width))
             self._build_api_row_compact(
                 row_y,
                 label_text,
@@ -1741,7 +1761,7 @@ class WelcomeController:
         parent_view = parent_view or self._content_view
 
         base_x = WELCOME_PADDING + CARD_PADDING
-        status_width = 84
+        status_width = API_KEY_STATUS_WIDTH
 
         label = NSTextField.alloc().initWithFrame_(NSMakeRect(base_x, y + 22, 120, 14))
         label.setStringValue_(label_text)
@@ -1788,7 +1808,6 @@ class WelcomeController:
         status.setDrawsBackground_(False)
         status.setEditable_(False)
         status.setSelectable_(False)
-        status.setFont_(NSFont.systemFontOfSize_(11))
         parent_view.addSubview_(status)
 
         setattr(self, f"_{provider}_field", field)
@@ -2053,12 +2072,14 @@ class WelcomeController:
         title = NSTextField.alloc().initWithFrame_(
             NSMakeRect(base_x, card_y + card_height - 28, 200, 18)
         )
-        title.setStringValue_("🧩 Providers")
+        title.setStringValue_("Providers")
         title.setBezeled_(False)
         title.setDrawsBackground_(False)
         title.setEditable_(False)
         title.setSelectable_(False)
-        title.setFont_(NSFont.systemFontOfSize_weight_(13, NSFontWeightSemibold))
+        title.setFont_(
+            NSFont.systemFontOfSize_weight_(theme.SECTION_TITLE_SIZE, NSFontWeightSemibold)
+        )
         title.setTextColor_(NSColor.whiteColor())
         parent_view.addSubview_(title)
 
@@ -2117,12 +2138,14 @@ class WelcomeController:
         title = NSTextField.alloc().initWithFrame_(
             NSMakeRect(base_x, card_y + card_height - 28, 320, 18)
         )
-        title.setStringValue_("⚙️ Advanced (Local)")
+        title.setStringValue_("Advanced (Local)")
         title.setBezeled_(False)
         title.setDrawsBackground_(False)
         title.setEditable_(False)
         title.setSelectable_(False)
-        title.setFont_(NSFont.systemFontOfSize_weight_(13, NSFontWeightSemibold))
+        title.setFont_(
+            NSFont.systemFontOfSize_weight_(theme.SECTION_TITLE_SIZE, NSFontWeightSemibold)
+        )
         title.setTextColor_(NSColor.whiteColor())
         parent_view.addSubview_(title)
 
@@ -2138,14 +2161,22 @@ class WelcomeController:
         desc.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6))
         parent_view.addSubview_(desc)
 
+        # Full content width, two lines: the guidance texts are long.
         status = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(base_x, card_y + card_height - 64, control_width, 14)
+            NSMakeRect(
+                base_x,
+                card_y + card_height - 78,
+                CONTENT_WIDTH - 2 * WELCOME_PADDING - 2 * CARD_PADDING,
+                28,
+            )
         )
         status.setStringValue_("")
         status.setBezeled_(False)
         status.setDrawsBackground_(False)
         status.setEditable_(False)
         status.setSelectable_(False)
+        status.setUsesSingleLineMode_(False)
+        status.cell().setWraps_(True)
         status.setFont_(NSFont.systemFontOfSize_(10))
         status.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.55))
         parent_view.addSubview_(status)
@@ -2459,7 +2490,7 @@ class WelcomeController:
         lightning_header = NSTextField.alloc().initWithFrame_(
             NSMakeRect(base_x, current_y, control_width + label_width, 14)
         )
-        lightning_header.setStringValue_("⚡ Lightning Whisper MLX")
+        lightning_header.setStringValue_("Lightning Whisper MLX")
         lightning_header.setBezeled_(False)
         lightning_header.setDrawsBackground_(False)
         lightning_header.setEditable_(False)
@@ -2591,7 +2622,7 @@ class WelcomeController:
         """Erweiterte Local-Performance Settings (macOS-tuned)."""
         parent_view = parent_view or self._content_view
 
-        card_height = 550  # Increased for Lightning settings
+        card_height = 558  # Increased for Lightning settings
         card_width = CONTENT_WIDTH - 2 * WELCOME_PADDING
         card_y = y - card_height
 
@@ -2608,7 +2639,7 @@ class WelcomeController:
         )
 
         row_height = 28
-        current_y = card_y + card_height - 96
+        current_y = card_y + card_height - 104
 
         self._advanced_general_views, current_y = self._build_advanced_general_rows(
             base_x,
@@ -2906,12 +2937,14 @@ class WelcomeController:
         title = NSTextField.alloc().initWithFrame_(
             NSMakeRect(base_x, card_y + card_height - 28, 220, 18)
         )
-        title.setStringValue_("✨ Refine")
+        title.setStringValue_("Refine")
         title.setBezeled_(False)
         title.setDrawsBackground_(False)
         title.setEditable_(False)
         title.setSelectable_(False)
-        title.setFont_(NSFont.systemFontOfSize_weight_(13, NSFontWeightSemibold))
+        title.setFont_(
+            NSFont.systemFontOfSize_weight_(theme.SECTION_TITLE_SIZE, NSFontWeightSemibold)
+        )
         title.setTextColor_(NSColor.whiteColor())
         parent_view.addSubview_(title)
 
@@ -3125,10 +3158,15 @@ class WelcomeController:
         parent_view,
         row_height: int,
     ) -> tuple[list, int]:
-        self._add_refine_section_label(
-            "Visual & paste behavior", base_x, current_y, content_width, parent_view
+        from AppKit import NSFont, NSFontWeightSemibold  # type: ignore[import-not-found]
+        from Foundation import NSMakeRect  # type: ignore[import-not-found]
+
+        title = _create_label("Behavior", NSMakeRect(base_x, current_y + 2, content_width, 18))
+        title.setFont_(
+            NSFont.systemFontOfSize_weight_(theme.SECTION_TITLE_SIZE, NSFontWeightSemibold)
         )
-        current_y -= 20
+        parent_view.addSubview_(title)
+        current_y -= 28
 
         controls = [
             self._build_switch_setting_row(
@@ -3230,7 +3268,7 @@ class WelcomeController:
 
     def _build_behavior_card(self, y: int, parent_view) -> int:
         """General-tab card for the overlay, clipboard, Dock and speed toggles."""
-        card_height = 180
+        card_height = 188
         card_width = CONTENT_WIDTH - 2 * WELCOME_PADDING
         card_y = y - card_height
         parent_view.addSubview_(
@@ -3315,12 +3353,14 @@ class WelcomeController:
         title = NSTextField.alloc().initWithFrame_(
             NSMakeRect(base_x, card_y + card_height - 28, 260, 18)
         )
-        title.setStringValue_("📝 Custom Prompts")
+        title.setStringValue_("Custom Prompts")
         title.setBezeled_(False)
         title.setDrawsBackground_(False)
         title.setEditable_(False)
         title.setSelectable_(False)
-        title.setFont_(NSFont.systemFontOfSize_weight_(13, NSFontWeightSemibold))
+        title.setFont_(
+            NSFont.systemFontOfSize_weight_(theme.SECTION_TITLE_SIZE, NSFontWeightSemibold)
+        )
         title.setTextColor_(NSColor.whiteColor())
         parent_view.addSubview_(title)
 
@@ -3376,7 +3416,7 @@ class WelcomeController:
         self._prompts_context_popup = context_popup
 
         reset_btn = NSButton.alloc().initWithFrame_(
-            NSMakeRect(base_x + 215, row_y, 100, 22)
+            NSMakeRect(base_x + 215, row_y, 120, 22)
         )
         reset_btn.setTitle_("Reset to Default")
         reset_btn.setBezelStyle_(NSBezelStyleRounded)
@@ -3645,21 +3685,25 @@ class WelcomeController:
         title = NSTextField.alloc().initWithFrame_(
             NSMakeRect(base_x, card_y + card_height - 28, 260, 18)
         )
-        title.setStringValue_("📚 Vocabulary / Keywords")
+        title.setStringValue_("Vocabulary / Keywords")
         title.setBezeled_(False)
         title.setDrawsBackground_(False)
         title.setEditable_(False)
         title.setSelectable_(False)
-        title.setFont_(NSFont.systemFontOfSize_weight_(13, NSFontWeightSemibold))
+        title.setFont_(
+            NSFont.systemFontOfSize_weight_(theme.SECTION_TITLE_SIZE, NSFontWeightSemibold)
+        )
         title.setTextColor_(NSColor.whiteColor())
         parent_view.addSubview_(title)
 
         desc = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(base_x, card_y + card_height - 46, content_width, 14)
+            NSMakeRect(base_x, card_y + card_height - 62, content_width, 30)
         )
         desc.setStringValue_(
             "Add names, product terms, and jargon that PulseScribe should recognize more reliably. Changes are saved with Save & Apply and stay local to this device."
         )
+        desc.setUsesSingleLineMode_(False)
+        desc.cell().setWraps_(True)
         desc.setBezeled_(False)
         desc.setDrawsBackground_(False)
         desc.setEditable_(False)
@@ -3669,7 +3713,7 @@ class WelcomeController:
         parent_view.addSubview_(desc)
 
         scroll_y = card_y + 48
-        scroll_height = card_height - 96
+        scroll_height = card_height - 114  # below the two-line description
         scroll = NSScrollView.alloc().initWithFrame_(
             NSMakeRect(base_x, scroll_y, content_width, scroll_height)
         )
@@ -5363,7 +5407,7 @@ class WelcomeController:
         current_y -= 8
 
         # Features Section
-        current_y = add_title("✨ Features", current_y, 12)
+        current_y = add_title("Features", current_y, 12)
         current_y = add_text(
             "• Real-time Streaming (Deepgram, ~300ms latency)\n"
             "• Multiple Providers: Deepgram, OpenAI, Groq, Local Whisper\n"
@@ -5378,7 +5422,7 @@ class WelcomeController:
         current_y -= 8
 
         # Providers Section
-        current_y = add_title("🚀 Providers", current_y, 12)
+        current_y = add_title("Providers", current_y, 12)
         current_y = add_text(
             "• Deepgram: ~300ms ⚡ WebSocket streaming (recommended)\n"
             "• Groq: ~1s, Whisper on LPU hardware\n"
@@ -5391,7 +5435,7 @@ class WelcomeController:
         current_y -= 8
 
         # Links Section
-        current_y = add_title("📁 Resources", current_y, 12)
+        current_y = add_title("Resources", current_y, 12)
         hint = NSTextField.alloc().initWithFrame_(
             NSMakeRect(base_x, current_y - 32, content_width, 32)
         )

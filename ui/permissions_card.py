@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
+from ui import settings_theme as theme
+
 # Shared description text for permissions card (used in Wizard + Settings)
 PERMISSIONS_DESCRIPTION = (
     "Required: Microphone.\n"
@@ -41,14 +43,11 @@ def _create_card(x: int, y: int, width: int, height: int, *, corner_radius: int 
 def _get_status_palette() -> dict[str, object]:
     palette = getattr(_get_status_palette, "_cache", None)
     if palette is None:
-        from AppKit import NSColor  # type: ignore[import-not-found]
-
         palette = {
-            "ok": _get_color(120, 255, 150),
-            "warn": _get_color(255, 200, 90),
-            "err": _get_color(255, 120, 120),
-            "neutral": NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6),
+            tone: theme.ns_color(theme.BADGE_TONES[tone][1])
+            for tone in ("ok", "warn", "err")
         }
+        palette["neutral"] = theme.ns_color(theme.MUTED)
         _get_status_palette._cache = palette
     return palette
 
@@ -153,9 +152,11 @@ class PermissionsCard:
         *,
         widgets: PermissionCardWidgets,
         after_refresh: Callable[[], None] | None = None,
+        badges: bool = False,
     ) -> None:
         self._widgets = widgets
         self._after_refresh = after_refresh
+        self._badges = badges  # row statuses as tinted badges instead of colored text
         self._refresh_timer = None
         self._refresh_ticks = 0
         self._refresh_interval_index = 0
@@ -194,7 +195,9 @@ class PermissionsCard:
         description: str,
         bind_action: Callable[[object, str], None],
         after_refresh: Callable[[], None] | None = None,
+        flat: bool = False,
     ) -> "PermissionsCard":
+        """Builds the card; ``flat`` draws a settings section with status badges."""
         from AppKit import (  # type: ignore[import-not-found]
             NSBezelStyleRounded,
             NSButton,
@@ -208,7 +211,11 @@ class PermissionsCard:
 
         card_x = outer_padding
         card_w = window_width - 2 * outer_padding
-        card = _create_card(card_x, card_y, card_w, card_height)
+        card = (
+            theme.ns_rule(card_x, card_y + card_height - 1, card_w)
+            if flat
+            else _create_card(card_x, card_y, card_w, card_height)
+        )
         parent_view.addSubview_(card)
 
         base_x = outer_padding + inner_padding
@@ -223,7 +230,11 @@ class PermissionsCard:
         title_field.setDrawsBackground_(False)
         title_field.setEditable_(False)
         title_field.setSelectable_(False)
-        title_field.setFont_(NSFont.systemFontOfSize_weight_(13, NSFontWeightSemibold))
+        title_field.setFont_(
+            NSFont.systemFontOfSize_weight_(
+                theme.SECTION_TITLE_SIZE if flat else 13, NSFontWeightSemibold
+            )
+        )
         title_field.setTextColor_(NSColor.whiteColor())
         parent_view.addSubview_(title_field)
 
@@ -314,6 +325,11 @@ class PermissionsCard:
             "perm_access",
             "Open Accessibility so PulseScribe can auto-paste.",
         )
+        if flat:  # rules centered in the 10 px gaps between the rows
+            for rule_y in (row_y - 5, row_y - 37):
+                parent_view.addSubview_(
+                    theme.ns_rule(base_x, rule_y, card_w - 2 * inner_padding)
+                )
 
         summary = NSTextField.alloc().initWithFrame_(
             NSMakeRect(base_x, card_y + 12, card_w - 2 * inner_padding, 34)
@@ -342,7 +358,7 @@ class PermissionsCard:
             summary_status=summary,
         )
 
-        return cls(widgets=widgets, after_refresh=after_refresh)
+        return cls(widgets=widgets, after_refresh=after_refresh, badges=flat)
 
     def _set_status_if_changed(
         self,
@@ -352,7 +368,9 @@ class PermissionsCard:
         color,
         *,
         cache_value: object | None = None,
+        badge: str | None = None,
     ) -> bool:
+        """Shows ``text`` in ``color``, or as a ``badge`` tone when badges are on."""
         if field is None:
             return False
 
@@ -361,8 +379,11 @@ class PermissionsCard:
             return False
 
         try:
-            field.setStringValue_(text)
-            field.setTextColor_(color)
+            if self._badges and badge:
+                theme.set_ns_badge(field, text, badge)
+            else:
+                field.setStringValue_(text)
+                field.setTextColor_(color)
             self._status_cache[key] = next_state
             return True
         except Exception:
@@ -409,6 +430,7 @@ class PermissionsCard:
                 "Required • ready",
                 palette["ok"],
                 cache_value="ok",
+                badge="ok",
             )
             changed |= self._set_action_if_changed(
                 "mic_action",
@@ -429,6 +451,7 @@ class PermissionsCard:
                 ),
                 palette["warn"],
                 cache_value="warn_waiting" if checking else "warn",
+                badge="err",
             )
             changed |= self._set_action_if_changed(
                 "mic_action",
@@ -445,6 +468,7 @@ class PermissionsCard:
                 "Required • blocked",
                 palette["err"],
                 cache_value="err",
+                badge="err",
             )
             changed |= self._set_action_if_changed(
                 "mic_action",
@@ -461,6 +485,7 @@ class PermissionsCard:
                 "Required • check access",
                 palette["warn"],
                 cache_value="warn",
+                badge="err",
             )
             changed |= self._set_action_if_changed(
                 "mic_action",
@@ -480,6 +505,7 @@ class PermissionsCard:
             access_status,
             palette["ok"] if acc_ok else palette["neutral"],
             cache_value="ok" if acc_ok else ("neutral_checking" if checking else "neutral"),
+            badge="ok" if acc_ok else "warn",
         )
         changed |= self._set_action_if_changed(
             "access_action",
@@ -499,6 +525,7 @@ class PermissionsCard:
             input_status,
             palette["ok"] if input_ok else palette["neutral"],
             cache_value="ok" if input_ok else ("neutral_checking" if checking else "neutral"),
+            badge="ok" if input_ok else "muted",
         )
         changed |= self._set_action_if_changed(
             "input_action",
