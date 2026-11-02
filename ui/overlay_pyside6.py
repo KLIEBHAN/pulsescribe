@@ -181,10 +181,14 @@ def _system_font(size_px: float, weight: QFont.Weight) -> QFont:
 
 
 def _tabular_figures(font: QFont) -> QFont:
-    """Request tabular digits (Qt 6.7+); older Qt keeps the font's default."""
+    """Request tabular digits; PySide6 without ``QFont.Tag(str)`` keeps the default."""
     tag = getattr(QFont, "Tag", None)
-    if tag is not None and hasattr(font, "setFeature"):
+    if tag is None or not hasattr(font, "setFeature"):
+        return font
+    try:
         font.setFeature(tag("tnum"), 1)
+    except TypeError:  # PySide6 6.7.0-6.8.2: no string constructor
+        pass
     return font
 
 

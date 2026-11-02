@@ -601,6 +601,19 @@ def test_fitting_interim_text_starts_at_the_zone_edge_without_fade():
     assert widget._text_clipped is False
 
 
+def test_tabular_figures_keeps_font_when_tag_from_string_is_unsupported(monkeypatch):
+    from ui import overlay_pyside6
+
+    class _OldTag:
+        def __init__(self, *_args):
+            raise TypeError("no string constructor")
+
+    monkeypatch.setattr(overlay_pyside6.QFont, "Tag", _OldTag, raising=False)
+    font = overlay_pyside6.QFont()
+
+    assert overlay_pyside6._tabular_figures(font) is font
+
+
 def test_recording_clock_runs_only_while_listening_or_recording(monkeypatch):
     widget = _state_widget(monkeypatch)
     now = [100.0]
