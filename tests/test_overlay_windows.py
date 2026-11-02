@@ -747,3 +747,21 @@ def test_new_error_after_dismissal_is_shown_again_and_text_avoids_dismiss_mark()
     assert placed["x"] + placed["width"] == (
         WINDOW_WIDTH - OVERLAY_PADDING_H - 70 - OVERLAY_GAP
     )
+
+
+
+def test_meta_link_opens_settings_only_for_persistent_settings_errors():
+    controller = _content_controller()
+    controller._meta_label = _FakeLabel()
+    opens = []
+    controller._on_open_settings = lambda: opens.append(True)
+
+    controller._handle_state_change("ERROR", "boom")
+    controller._on_meta_click()
+    assert opens == []
+
+    controller._handle_state_change("ERROR", "OPENAI_API_KEY not set")
+    assert controller._meta_label.last_config["text"] == "Settings"
+    assert controller._meta_label.last_config["font"][-1] == "underline"
+    controller._on_meta_click()
+    assert opens == [True]

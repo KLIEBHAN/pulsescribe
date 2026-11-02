@@ -2583,8 +2583,12 @@ class PulseScribeWindows:
         if self._tray:
             self._tray.stop()
 
-    def _show_settings(self):
+    def _show_settings(self, *, section: str | None = None):
         """Öffnet das Settings-Fenster in einem separaten Prozess.
+
+        ``section`` (keyword-only, pystray zählt nur Positionsargumente) öffnet
+        einen Sidebar-Bereich. Ein bereits offenes Fenster läuft in einem
+        eigenen Prozess und wechselt den Bereich nicht.
 
         Qt-Widgets müssen im Main-Thread laufen. Da pystray-Callbacks in einem
         Thread-Pool ausgeführt werden, starten wir das Settings-Fenster als
@@ -2602,7 +2606,7 @@ class PulseScribeWindows:
             return
 
         try:
-            process, start_label = self._start_settings_subprocess()
+            process, start_label = self._start_settings_subprocess(section)
             if process is None:
                 return
             if self._subprocess_failed_immediately(
@@ -2619,9 +2623,10 @@ class PulseScribeWindows:
             logger.error(f"Settings-Fenster konnte nicht geöffnet werden: {e}")
             self._open_env_in_editor()
 
-    def _start_settings_subprocess(self):
+    def _start_settings_subprocess(self, section: str | None = None):
         return self._start_qt_subprocess(
             frozen_arg="--settings",
+            extra_args=("--section", section) if section else (),
             script_path=PROJECT_ROOT / "ui" / "settings_windows.py",
             missing_script_label="Settings-Script",
             missing_pyside_message="PySide6 nicht installiert - öffne .env im Editor",
@@ -2640,6 +2645,7 @@ class PulseScribeWindows:
         self,
         *,
         frozen_arg: str,
+        extra_args: tuple[str, ...] = (),
         script_path: Path,
         missing_script_label: str,
         missing_pyside_message: str,
@@ -2650,7 +2656,7 @@ class PulseScribeWindows:
         if getattr(sys, "frozen", False):
             return (
                 subprocess.Popen(
-                    [sys.executable, frozen_arg],
+                    [sys.executable, frozen_arg, *extra_args],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.PIPE,
                     creationflags=self._subprocess_creationflags(subprocess),
@@ -2672,7 +2678,7 @@ class PulseScribeWindows:
 
         return (
             subprocess.Popen(
-                [python_exe, str(script_path)],
+                [python_exe, str(script_path), *extra_args],
                 cwd=str(PROJECT_ROOT),
                 env=self._qt_subprocess_env(),
                 stdout=subprocess.DEVNULL,
@@ -3141,7 +3147,10 @@ class PulseScribeWindows:
 
         try:
             # Overlay mit INTERIM_FILE für Interim-Text Polling
-            self._overlay = WindowsOverlayController(interim_file=INTERIM_FILE)
+            self._overlay = WindowsOverlayController(
+                interim_file=INTERIM_FILE,
+                on_open_settings=lambda: self._show_settings(section="Transcription"),
+            )
             threading.Thread(target=self._overlay.run, daemon=True).start()
 
             # PySide6 exposes a ready event. Wait briefly so the first hotkey/
@@ -3822,6 +3831,10 @@ def main():
         help="Settings-Fenster öffnen (statt Daemon starten)",
     )
     parser.add_argument(
+        "--section",
+        help=argparse.SUPPRESS,  # With --settings: open this sidebar section
+    )
+    parser.add_argument(
         "--onboarding",
         action="store_true",
         help="Onboarding-Wizard öffnen (statt Daemon starten)",
@@ -3842,6 +3855,8 @@ def main():
 
             app = QApplication(sys.argv)
             window = SettingsWindow()
+            if args.section:
+                window.select_section(args.section)
             window.show()
             sys.exit(app.exec())
         except ImportError as e:

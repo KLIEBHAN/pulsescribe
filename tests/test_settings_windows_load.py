@@ -1373,3 +1373,17 @@ def test_refine_key_row_mirrors_the_provider_key_and_greys_out_when_off():
     assert gemini.text() == "AIza-new"
     assert groq.text() == "gsk-saved"
     assert app is not None
+
+
+def test_select_section_opens_the_named_sidebar_section():
+    from types import SimpleNamespace
+
+    from ui.settings_windows import SETTINGS_SECTIONS, SettingsWindow
+
+    indexes = []
+    window = SimpleNamespace(_tabs=SimpleNamespace(setCurrentIndex=indexes.append))
+
+    SettingsWindow.select_section(window, "Transcription")
+    SettingsWindow.select_section(window, "Unknown")
+
+    assert indexes == [list(SETTINGS_SECTIONS).index("Transcription")]

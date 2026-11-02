@@ -1139,6 +1139,12 @@ class SettingsWindow(QDialog):
         layout.addWidget(self._sidebar_nav, 1)
         return sidebar
 
+    def select_section(self, label: str) -> None:
+        """Show a sidebar section, e.g. ``--section Transcription`` from the overlay."""
+        sections = list(SETTINGS_SECTIONS)
+        if label in sections:
+            self._tabs.setCurrentIndex(sections.index(label))
+
     def _sync_sidebar_selection(self, index: int) -> None:
         """Highlights the sidebar entry and page title for the tab at ``index``."""
         nav = getattr(self, "_sidebar_nav", None)
@@ -5104,5 +5110,7 @@ class SettingsWindow(QDialog):
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = SettingsWindow()
+    if "--section" in sys.argv[1:-1]:  # started by the daemon's Settings link
+        window.select_section(sys.argv[sys.argv.index("--section") + 1])
     window.show()
     sys.exit(app.exec())

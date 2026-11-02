@@ -1514,6 +1514,10 @@ class WelcomeController:
             except Exception:
                 pass
 
+    def select_section(self, label: str) -> None:
+        """Show a sidebar section, e.g. from the overlay's "Settings" link."""
+        self._select_tab(label)
+
     def _select_tab(self, label: str) -> None:
         if self._tab_view is None:
             return

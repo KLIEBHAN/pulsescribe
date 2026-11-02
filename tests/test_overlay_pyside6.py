@@ -5,6 +5,7 @@ import types
 
 pytest.importorskip("PySide6")
 
+from utils.transcript_delivery import PASTE_FAILED
 from ui.overlay_pyside6 import (
     BAR_COUNT,
     BAR_HEIGHT_UPDATE_EPSILON,
@@ -477,6 +478,8 @@ def _state_widget(monkeypatch):
     widget._clock_timer = _FakeAnimationTimer()
     widget._meta_text = ""
     widget._clock_start = 0.0
+    widget._link_span = None
+    widget.on_open_settings = None
     widget.events = []
     widget._schedule_center_on_active_screen = lambda: None
     widget._fade_in = lambda: widget.events.append("show")
@@ -528,7 +531,12 @@ def test_on_state_changed_skips_duplicate_transition_work(monkeypatch):
             "ERROR",
             " microphone\nmissing ",
             OverlayContent(
-                text="Microphone unavailable", badge="Error", tone="error", dismissible=True
+                text="Microphone unavailable",
+                badge="Error",
+                tone="error",
+                dismissible=True,
+                meta="Settings",
+                action="settings",
             ),
         ),
         (
@@ -694,7 +702,7 @@ def test_animate_frame_stops_timer_outside_recording():
 def test_errors_persist_through_idle_and_accept_clicks_until_dismissed(monkeypatch):
     widget = _state_widget(monkeypatch)
 
-    widget._on_state_changed("ERROR", "Paste failed — transcript copied")
+    widget._on_state_changed("ERROR", PASTE_FAILED)
     assert widget.click_through is False
     widget._on_state_changed("IDLE", "")
     assert "hide" not in widget.events and "auto-hide" not in widget.events
@@ -727,3 +735,22 @@ def test_new_error_after_dismissal_is_shown_again(monkeypatch):
 
     assert widget.events[-1] == "show"
     assert widget.click_through is False
+
+
+
+@pytest.mark.parametrize(("x", "opened"), [(300.0, True), (120.0, False)])
+def test_settings_link_click_opens_settings_then_dismisses(monkeypatch, x, opened):
+    widget = _state_widget(monkeypatch)
+    opens = []
+    widget.on_open_settings = lambda: opens.append(True)
+    widget._on_state_changed("ERROR", "OPENAI_API_KEY not set")
+    widget._link_span = (290.0, 340.0)
+    event = types.SimpleNamespace(
+        accept=lambda: None, position=lambda: types.SimpleNamespace(x=lambda: x)
+    )
+
+    widget.mousePressEvent(event)
+
+    assert opens == ([True] if opened else [])
+    assert widget.events[-1] == "hide"
+    assert widget._persistent is False

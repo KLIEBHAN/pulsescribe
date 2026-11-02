@@ -2693,3 +2693,28 @@ def test_ipc_snapshot_waits_for_ipc_state_lock():
 
     assert responses == [("old-cmd", "done")]
     assert daemon._ipc_test_cmd_id is None
+
+
+
+def test_settings_link_opens_settings_on_a_section_and_tray_signature_stays_safe(
+    monkeypatch,
+):
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(
+        mode="openai",
+        streaming=False,
+        overlay=False,
+    )
+    # pystray passes (icon, item) to actions with positional parameters.
+    assert windows_module.PulseScribeWindows._show_settings.__code__.co_argcount == 1
+    calls = []
+    monkeypatch.setattr(
+        daemon,
+        "_start_qt_subprocess",
+        lambda **kwargs: calls.append(kwargs) or (None, "test"),
+    )
+
+    daemon._show_settings(section="Transcription")
+    daemon._show_settings()
+
+    assert [call["extra_args"] for call in calls] == [("--section", "Transcription"), ()]
