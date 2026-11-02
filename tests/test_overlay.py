@@ -7,40 +7,18 @@ import pytest
 from ui.overlay import (
     OVERLAY_INTERIM_MAX_CHARS,
     WAVE_ANIMATION_FPS,
-    WAVE_ANIMATION_FPS_ACTIVE,
-    WAVE_ANIMATION_FPS_FEEDBACK,
     WAVE_ANIMATION_FPS_IDLE,
     WAVE_AGC_MIN_PEAK,
     WAVE_BAR_COUNT,
     WAVE_BAR_MIN_HEIGHT,
     WAVE_HEIGHT_UPDATE_EPSILON,
+    LISTENING_BAR_HEIGHTS,
     OverlayController,
     SoundWaveView,
     _format_recording_interim_text,
 )
+from ui.overlay_feedback import OverlayContent
 from utils.state import AppState
-
-
-class _FakeTextField:
-    def __init__(self) -> None:
-        self.font_calls = 0
-        self.color_calls = 0
-        self.text_calls = 0
-        self.font = None
-        self.color = None
-        self.text = ""
-
-    def setFont_(self, font) -> None:
-        self.font = font
-        self.font_calls += 1
-
-    def setTextColor_(self, color) -> None:
-        self.color = color
-        self.color_calls += 1
-
-    def setStringValue_(self, text: str) -> None:
-        self.text = text
-        self.text_calls += 1
 
 
 class _FakeBar:
@@ -57,14 +35,6 @@ class _FakeBar:
     def setPosition_(self, position) -> None:
         self.last_position = position
         self.position_calls += 1
-
-
-class _FakeWaveView:
-    def __init__(self) -> None:
-        self.recording_calls = 0
-
-    def start_recording_animation(self) -> None:
-        self.recording_calls += 1
 
 
 class _FakeCATransaction:
@@ -102,25 +72,6 @@ class _FakeOverlayView:
 
     def frame(self):
         return self._frame
-
-
-class _FakeAnimationLogic:
-    def __init__(self, normalized: float) -> None:
-        self.normalized = normalized
-
-    def calculate_bar_normalized(self, _index: int, _time_value: float, _state: str) -> float:
-        return self.normalized
-
-
-class _FakeBatchAnimationLogic:
-    def __init__(self, height: float) -> None:
-        self.height = height
-
-    def calculate_frame_heights(self, _time_value: float, _state: str, **_kwargs):
-        return (self.height, self.height)
-
-    def calculate_bar_normalized(self, *_args, **_kwargs):
-        raise AssertionError("batch frame API should be used")
 
 
 def _build_active_recording_view() -> SoundWaveView:
@@ -260,90 +211,6 @@ def test_sound_wave_view_only_repositions_when_center_changes():
     assert view.bars[1].last_position == (15.0, 22.0)
 
 
-def test_sound_wave_view_done_frame_skips_transaction_when_nothing_changes(
-    monkeypatch,
-):
-    _FakeCATransaction.reset()
-    monkeypatch.setitem(
-        sys.modules,
-        "Quartz",
-        types.SimpleNamespace(CATransaction=_FakeCATransaction),
-    )
-
-    view = SoundWaveView.__new__(SoundWaveView)
-    view._done_start_time = 1.0
-    view._view = _FakeOverlayView(48.0)
-    view.bars = [_FakeBar(), _FakeBar()]
-    view._bar_positions = [5.0, 15.0]
-    view._last_center_y = 24.0
-    view._last_heights = [WAVE_BAR_MIN_HEIGHT, WAVE_BAR_MIN_HEIGHT]
-    view._anim = _FakeAnimationLogic(0.0)
-
-    monkeypatch.setattr("ui.overlay.time.perf_counter", lambda: 1.5)
-
-    SoundWaveView._render_done_frame(view)
-
-    assert _FakeCATransaction.begin_calls == 0
-    assert _FakeCATransaction.commit_calls == 0
-    assert [bar.bounds_calls for bar in view.bars] == [0, 0]
-    assert [bar.position_calls for bar in view.bars] == [0, 0]
-
-
-def test_sound_wave_view_done_frame_keeps_transaction_for_reposition_only(
-    monkeypatch,
-):
-    _FakeCATransaction.reset()
-    monkeypatch.setitem(
-        sys.modules,
-        "Quartz",
-        types.SimpleNamespace(CATransaction=_FakeCATransaction),
-    )
-
-    view = SoundWaveView.__new__(SoundWaveView)
-    view._done_start_time = 1.0
-    view._view = _FakeOverlayView(52.0)
-    view.bars = [_FakeBar(), _FakeBar()]
-    view._bar_positions = [5.0, 15.0]
-    view._last_center_y = 24.0
-    view._last_heights = [WAVE_BAR_MIN_HEIGHT, WAVE_BAR_MIN_HEIGHT]
-    view._anim = _FakeAnimationLogic(0.0)
-
-    monkeypatch.setattr("ui.overlay.time.perf_counter", lambda: 1.5)
-
-    SoundWaveView._render_done_frame(view)
-
-    assert _FakeCATransaction.begin_calls == 1
-    assert _FakeCATransaction.commit_calls == 1
-    assert [bar.bounds_calls for bar in view.bars] == [0, 0]
-    assert [bar.position_calls for bar in view.bars] == [1, 1]
-
-
-def test_sound_wave_view_done_frame_prefers_batch_height_api(monkeypatch):
-    _FakeCATransaction.reset()
-    monkeypatch.setitem(
-        sys.modules,
-        "Quartz",
-        types.SimpleNamespace(CATransaction=_FakeCATransaction),
-    )
-
-    view = SoundWaveView.__new__(SoundWaveView)
-    view._done_start_time = 1.0
-    view._view = _FakeOverlayView(48.0)
-    view.bars = [_FakeBar(), _FakeBar()]
-    view._bar_positions = [5.0, 15.0]
-    view._last_center_y = 24.0
-    view._last_heights = [WAVE_BAR_MIN_HEIGHT, WAVE_BAR_MIN_HEIGHT]
-    view._anim = _FakeBatchAnimationLogic(WAVE_BAR_MIN_HEIGHT + 4)
-
-    monkeypatch.setattr("ui.overlay.time.perf_counter", lambda: 1.5)
-
-    SoundWaveView._render_done_frame(view)
-
-    assert _FakeCATransaction.begin_calls == 1
-    assert _FakeCATransaction.commit_calls == 1
-    assert [bar.bounds_calls for bar in view.bars] == [1, 1]
-
-
 def test_sound_wave_view_start_level_timer_uses_recording_interval(monkeypatch):
     scheduled_calls, _created_timers = _install_fake_foundation(monkeypatch)
     view = SoundWaveView.__new__(SoundWaveView)
@@ -355,28 +222,6 @@ def test_sound_wave_view_start_level_timer_uses_recording_interval(monkeypatch):
     SoundWaveView._start_level_timer(view)
 
     assert scheduled_calls[0][0] == 1.0 / WAVE_ANIMATION_FPS
-    assert scheduled_calls[0][1] is True
-
-
-def test_sound_wave_view_start_processing_timer_uses_active_interval(monkeypatch):
-    scheduled_calls, _created_timers = _install_fake_foundation(monkeypatch)
-    view = SoundWaveView.__new__(SoundWaveView)
-    view._processing_timer = None
-
-    SoundWaveView._start_processing_timer(view)
-
-    assert scheduled_calls[0][0] == 1.0 / WAVE_ANIMATION_FPS_ACTIVE
-    assert scheduled_calls[0][1] is True
-
-
-def test_sound_wave_view_start_done_timer_uses_feedback_interval(monkeypatch):
-    scheduled_calls, _created_timers = _install_fake_foundation(monkeypatch)
-    view = SoundWaveView.__new__(SoundWaveView)
-    view._done_timer = None
-
-    SoundWaveView._start_done_timer(view)
-
-    assert scheduled_calls[0][0] == 1.0 / WAVE_ANIMATION_FPS_FEEDBACK
     assert scheduled_calls[0][1] is True
 
 
@@ -428,8 +273,7 @@ def _quiet_recording_view():
     view._level_timer = None
     view._level_timer_interval_seconds = None
     view._level_timer_activity_mode = "idle"
-    view.current_animation = "recording"
-    view.animations_running = False
+    view.current_animation = "level"
     return view
 
 
@@ -503,23 +347,6 @@ def test_quiet_geometry_change_still_gets_rendered(monkeypatch):
     view._render_level_frame()
 
     assert centers == [30.0]
-
-
-def test_quiet_audio_stops_fallback_animation_without_starting_level_timer(monkeypatch):
-    scheduled, _timers = _install_fake_foundation(monkeypatch)
-    view = _quiet_recording_view()
-    view.animations_running = True
-    stopped = []
-
-    def stop():
-        stopped.append(True)
-        view.animations_running = False
-
-    view.stop_animating = stop
-    view.update_levels(0.0)
-
-    assert stopped == [True]
-    assert scheduled == []
 
 
 def test_sound_wave_view_level_frame_skips_settled_noop_work(monkeypatch):
@@ -619,79 +446,6 @@ def test_sound_wave_view_level_frame_uses_cached_trig_tables(monkeypatch):
     assert cos_calls == 2
 
 
-def test_overlay_controller_text_presentation_skips_duplicate_widget_updates():
-    controller = OverlayController.__new__(OverlayController)
-    controller._text_field = _FakeTextField()
-    controller._text_fonts = {
-        "default": "font-default",
-        "ghost": "font-ghost",
-    }
-    controller._text_colors = {
-        "muted": "color-muted",
-    }
-    controller._text_font_key = None
-    controller._text_color_key = None
-    controller._text_value = None
-
-    OverlayController._apply_text_presentation(
-        controller,
-        text="Listening ...",
-        font_key="default",
-        color_key="muted",
-    )
-    OverlayController._apply_text_presentation(
-        controller,
-        text="Listening ...",
-        font_key="default",
-        color_key="muted",
-    )
-    OverlayController._apply_text_presentation(
-        controller,
-        text="Listening again",
-        font_key="default",
-        color_key="muted",
-    )
-
-    assert controller._text_field.font_calls == 1
-    assert controller._text_field.color_calls == 1
-    assert controller._text_field.text_calls == 2
-
-
-def test_overlay_controller_update_state_skips_duplicate_transition_work():
-    controller = OverlayController.__new__(OverlayController)
-    controller.window = object()
-    controller._wave_view = _FakeWaveView()
-    controller._current_state = AppState.IDLE
-    controller._last_state_payload = None
-    controller._feedback_timer = None
-    controller._apply_text_presentation = lambda **_kwargs: None
-    fade_calls: list[str] = []
-    controller._fade_in = lambda: fade_calls.append("in")
-
-    OverlayController.update_state(controller, AppState.RECORDING, "alpha")
-    OverlayController.update_state(controller, AppState.RECORDING, "alpha")
-
-    assert controller._wave_view.recording_calls == 1
-    assert fade_calls == ["in"]
-
-
-def test_overlay_controller_error_state_uses_friendly_error_detail():
-    controller = OverlayController.__new__(OverlayController)
-    controller.window = object()
-    controller._current_state = AppState.IDLE
-    controller._last_state_payload = None
-    controller._feedback_timer = None
-    controller._wave_view = types.SimpleNamespace(start_error_animation=lambda: None)
-    seen_presentations: list[dict[str, object]] = []
-    controller._apply_text_presentation = lambda **kwargs: seen_presentations.append(kwargs)
-    controller._fade_in = lambda: None
-    controller._start_fade_out_timer = lambda: None
-
-    OverlayController.update_state(controller, AppState.ERROR, " microphone\nmissing ")
-
-    assert seen_presentations[-1]["text"] == "Microphone unavailable"
-
-
 def test_error_feedback_uses_readable_duration(monkeypatch):
     import sys
 
@@ -710,51 +464,163 @@ def test_error_feedback_uses_readable_duration(monkeypatch):
     assert timers[0][0] == 4.0
 
 
-def _feedback_controller():
+class _FakeLayer:
+    def __init__(self) -> None:
+        self.hidden = False
+
+    def setHidden_(self, hidden: bool) -> None:
+        self.hidden = hidden
+
+
+class _FakeModeView(_FakeLayer):
+    pass
+
+
+def _mode_view(monkeypatch):
+    _FakeCATransaction.reset()
+    monkeypatch.setitem(
+        sys.modules, "Quartz", types.SimpleNamespace(CATransaction=_FakeCATransaction)
+    )
+    _install_fake_foundation(monkeypatch)
+    view = _quiet_recording_view()
+    view._view = _FakeModeView()
+    view._view.frame = lambda: _FakeOverlayFrame(24.0)
+    view._line = _FakeLayer()
+    view.bars = [_FakeLayer() for _ in range(WAVE_BAR_COUNT)]
+    view._bar_colors = {"level": "white", "low": "grey", "line": "dim"}
+    view.current_animation = None
+    colors = []
+    heights = []
+    view.set_bar_color = colors.append
+    view._set_bar_height = lambda index, height, **_kwargs: heights.append(height)
+    return view, colors, heights
+
+
+def test_static_modes_start_no_timer_and_toggle_visibility(monkeypatch):
+    view, colors, heights = _mode_view(monkeypatch)
+
+    view.show_mode("low")
+    assert view._level_timer is None
+    assert colors == ["grey"]
+    assert heights[-WAVE_BAR_COUNT:] == list(LISTENING_BAR_HEIGHTS)
+    assert view._line.hidden is True and not view.bars[0].hidden
+
+    view.show_mode("line")
+    assert view._line.hidden is False and view.bars[0].hidden
+    assert view._level_timer is None
+
+    view.show_mode("none")
+    assert view._view.hidden is True
+
+
+def test_audio_level_switches_to_level_mode(monkeypatch):
+    view, colors, _heights = _mode_view(monkeypatch)
+    view.show_mode("low")
+
+    view.update_levels(0.5)
+
+    assert view.current_animation == "level"
+    assert colors[-1] == "white"
+    assert view._level_timer is not None
+
+
+class _FakeWaveModes:
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+
+    def show_mode(self, mode: str) -> None:
+        self.events.append(f"bars:{mode}")
+
+    def stop_animating(self) -> None:
+        self.events.append("stop")
+
+
+def _controller(events: list[str] | None = None) -> OverlayController:
+    events = [] if events is None else events
     controller = OverlayController.__new__(OverlayController)
     controller.window = object()
     controller._current_state = AppState.IDLE
     controller._last_state_payload = None
     controller._feedback_timer = None
-    events = []
-    controller._wave_view = types.SimpleNamespace(
-        start_success_animation=lambda: events.append("success"),
-        start_listening_animation=lambda: events.append("listening"),
-        start_error_animation=lambda: events.append("error"),
-        stop_animating=lambda: events.append("stop"),
+    controller._previous_interim = ""
+    controller._wave_view = _FakeWaveModes(events)
+    controller.rendered = []
+    controller._render = lambda content, interim: controller.rendered.append(
+        (content, interim)
     )
-    controller._apply_text_presentation = lambda **_kwargs: None
     controller._fade_in = lambda: events.append("show")
     controller._fade_out = lambda: events.append("hide")
-    return controller, events
+    return controller
+
+
+def test_update_state_skips_duplicate_transition_work(monkeypatch):
+    events: list[str] = []
+    controller = _controller(events)
+
+    controller.update_state(AppState.RECORDING, "alpha")
+    controller.update_state(AppState.RECORDING, "alpha")
+
+    assert events == ["bars:level", "show"]
+    assert len(controller.rendered) == 1
+
+
+def test_recording_interim_emphasizes_newest_words():
+    controller = _controller()
+
+    controller.update_state(AppState.RECORDING, "hello")
+    controller.update_state(AppState.RECORDING, "hello world")
+
+    assert controller.rendered[-1][1] == ("hello ", "world")
+
+
+def test_states_map_to_bars_badges_and_copy(monkeypatch):
+    _install_fake_foundation(monkeypatch)
+    controller = _controller()
+    cases = [
+        (AppState.LISTENING, None, OverlayContent("low", "Listening…")),
+        (AppState.TRANSCRIBING, None, OverlayContent("line", "Transcribing…")),
+        (AppState.DONE, "Transcript pasted", OverlayContent(badge="Pasted", tone="success")),
+        (
+            AppState.NO_SPEECH,
+            None,
+            OverlayContent(text="Nothing was pasted", badge="No speech", tone="warn"),
+        ),
+        (
+            AppState.ERROR,
+            " microphone\nmissing ",
+            OverlayContent(text="Microphone unavailable", badge="Error", tone="error"),
+        ),
+    ]
+    for state, text, expected in cases:
+        controller.update_state(state, text)
+        assert controller.rendered[-1][0] == expected
 
 
 def test_success_confirmation_survives_immediate_ready_state(monkeypatch):
     scheduled, timers = _install_fake_foundation(monkeypatch)
-    controller, events = _feedback_controller()
+    events: list[str] = []
+    controller = _controller(events)
 
     controller.update_state(AppState.DONE, "Transcript pasted")
     controller.update_state(AppState.IDLE)
 
-    assert controller._current_state == AppState.IDLE
-    assert events == ["success", "show"]
-    assert timers[0].invalidated == 0
+    assert events == ["bars:none", "show"]
     assert scheduled[0][0] == 0.8
     timers[0].block(timers[0])
-    assert events == ["success", "show", "stop", "hide"]
+    assert events == ["bars:none", "show", "stop", "hide"]
     assert controller._feedback_timer is None
 
 
 def test_native_success_timer_cleans_up_after_ready():
     pytest.importorskip("Foundation")
-    controller, events = _feedback_controller()
+    events: list[str] = []
+    controller = _controller(events)
     controller.update_state(AppState.DONE)
     timer = controller._feedback_timer
     try:
         controller.update_state(AppState.IDLE)
-        assert events == ["success", "show"]
         timer.fire()
-        assert events == ["success", "show", "stop", "hide"]
+        assert events == ["bars:none", "show", "stop", "hide"]
         assert controller._feedback_timer is None
     finally:
         timer.invalidate()
@@ -762,7 +628,8 @@ def test_native_success_timer_cleans_up_after_ready():
 
 def test_new_recording_replaces_held_confirmation_and_rejects_stale_fade(monkeypatch):
     _scheduled, timers = _install_fake_foundation(monkeypatch)
-    controller, events = _feedback_controller()
+    events: list[str] = []
+    controller = _controller(events)
     controller.update_state(AppState.DONE)
     controller.update_state(AppState.IDLE)
 
@@ -771,13 +638,14 @@ def test_new_recording_replaces_held_confirmation_and_rejects_stale_fade(monkeyp
 
     assert controller._current_state == AppState.LISTENING
     assert timers[0].invalidated == 1
-    assert "listening" in events
+    assert "bars:low" in events
     assert "hide" not in events
 
 
 def test_older_confirmation_cannot_hide_a_newer_success(monkeypatch):
     _scheduled, timers = _install_fake_foundation(monkeypatch)
-    controller, events = _feedback_controller()
+    events: list[str] = []
+    controller = _controller(events)
     controller.update_state(AppState.DONE, "first")
     controller.update_state(AppState.IDLE)
     controller.update_state(AppState.LISTENING)
@@ -794,7 +662,8 @@ def test_older_confirmation_cannot_hide_a_newer_success(monkeypatch):
 
 def test_error_can_still_be_cleared_explicitly_before_timeout(monkeypatch):
     _scheduled, timers = _install_fake_foundation(monkeypatch)
-    controller, events = _feedback_controller()
+    events: list[str] = []
+    controller = _controller(events)
     controller.update_state(AppState.ERROR)
     controller.update_state(AppState.IDLE)
 
@@ -802,36 +671,23 @@ def test_error_can_still_be_cleared_explicitly_before_timeout(monkeypatch):
     assert timers[0].invalidated == 1
 
 
-def test_overlay_controller_done_state_uses_clear_success_copy():
+def test_render_skips_identical_presentations():
     controller = OverlayController.__new__(OverlayController)
-    controller.window = object()
-    controller._current_state = AppState.IDLE
-    controller._last_state_payload = None
-    controller._feedback_timer = None
-    controller._wave_view = types.SimpleNamespace(start_success_animation=lambda: None)
-    seen_presentations: list[dict[str, object]] = []
-    controller._apply_text_presentation = lambda **kwargs: seen_presentations.append(kwargs)
-    controller._fade_in = lambda: None
-    controller._start_fade_out_timer = lambda: None
+    controller._presentation = None
+    calls = []
+    controller._text_field = types.SimpleNamespace(
+        setAttributedStringValue_=calls.append, setHidden_=lambda _hidden: None
+    )
+    controller._badge_view = types.SimpleNamespace(setHidden_=lambda _hidden: None)
+    controller._attributed_text = lambda parts: parts
+    controller._layout = lambda *_args: None
+    content = OverlayContent("low", "Listening…")
 
-    OverlayController.update_state(controller, AppState.DONE)
+    controller._render(content, ("", ""))
+    controller._render(content, ("", ""))
+    controller._render(content, ("", "new words"))
 
-    assert seen_presentations[-1]["text"] == "Transcript pasted"
-
-
-def test_overlay_controller_no_speech_state_uses_retry_copy():
-    controller = OverlayController.__new__(OverlayController)
-    controller.window = object()
-    controller._current_state = AppState.IDLE
-    controller._last_state_payload = None
-    controller._feedback_timer = None
-    controller._wave_view = types.SimpleNamespace(start_no_speech_animation=lambda: None)
-    seen_presentations: list[dict[str, object]] = []
-    controller._apply_text_presentation = lambda **kwargs: seen_presentations.append(kwargs)
-    controller._fade_in = lambda: None
-    controller._start_fade_out_timer = lambda: None
-
-    OverlayController.update_state(controller, AppState.NO_SPEECH)
-
-    assert seen_presentations[-1]["text"] == "No speech detected"
-    assert seen_presentations[-1]["color_key"] == "warning"
+    assert calls == [
+        (("Listening…", "muted"),),
+        (("", "interim"), ("new words", "text")),
+    ]

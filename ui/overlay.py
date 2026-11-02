@@ -6,42 +6,65 @@ import time
 import weakref
 
 from config import VISUAL_GAIN, VISUAL_NOISE_GATE
-from ui.animation import AnimationLogic
+from ui.animation import (
+    BAR_COUNT,
+    BAR_GAP,
+    BAR_MAX_HEIGHT,
+    BAR_MIN_HEIGHT,
+    BAR_WIDTH,
+    LISTENING_BAR_HEIGHTS,
+)
 from ui.overlay_feedback import (
     ERROR_FEEDBACK_SECONDS,
-    build_overlay_feedback_text,
-    format_overlay_status_text,
+    OverlayContent,
+    describe_overlay_content,
+)
+from ui.overlay_style import (
+    BACKGROUND_COLOR,
+    BADGE_CORNER_RADIUS,
+    BADGE_FONT_SIZE,
+    BADGE_PADDING_H,
+    BADGE_PADDING_V,
+    BADGE_TONES,
+    BAR_AREA_WIDTH,
+    BAR_COLORS,
+    BORDER_COLOR,
+    INTERIM_TEXT_COLOR,
+    LINE_HEIGHT,
+    MUTED_TEXT_COLOR,
+    OVERLAY_CORNER_RADIUS,
+    OVERLAY_HEIGHT,
+    OVERLAY_MAX_WIDTH_RATIO,
+    OVERLAY_MIN_WIDTH,
+    TEXT_COLOR,
+    TEXT_FONT_SIZE,
+    compute_overlay_layout,
+    hex_to_rgb,
 )
 from ui.overlay_text import (
     DEFAULT_RECORDING_INTERIM_MAX_CHARS,
-    format_recording_interim_text as _format_recording_interim_text,
+    format_recording_interim_text as _format_recording_interim_text,  # noqa: F401
+    split_recording_interim_text,
 )
 from utils.state import AppState
 
 # =============================================================================
-# Overlay-Fenster Konfiguration
+# Overlay-Fenster Konfiguration (Maße/Farben: ui/overlay_style.py)
 # =============================================================================
-OVERLAY_MIN_WIDTH = 260  # Mindestbreite für kurze Texte
-OVERLAY_MAX_WIDTH_RATIO = 0.75  # Max. 75% der Bildschirmbreite für lange Interim-Texte
-OVERLAY_HEIGHT = 100  # Feste Höhe für konsistentes Erscheinungsbild
 OVERLAY_MARGIN_BOTTOM = 110  # Abstand vom unteren Rand (über Dock)
-OVERLAY_CORNER_RADIUS = 22  # Abgerundete Ecken (Apple HIG)
-OVERLAY_PADDING_H = 24  # Horizontaler Innenabstand für Text
-OVERLAY_ALPHA = 0.95  # Leicht transparent für Kontext
-OVERLAY_FONT_SIZE = 15  # SF Pro Standard-Größe
-OVERLAY_TEXT_FIELD_HEIGHT = 24  # Einzeilige Textanzeige
+OVERLAY_ALPHA = 1.0  # Solider Hintergrund, keine Transparenz
 OVERLAY_WINDOW_LEVEL = 25  # Über allen Fenstern, kCGFloatingWindowLevel
 OVERLAY_INTERIM_MAX_CHARS = DEFAULT_RECORDING_INTERIM_MAX_CHARS
 
 # =============================================================================
 # Schallwellen-Visualisierung
 # =============================================================================
-WAVE_BAR_COUNT = 10  # Anzahl der animierten Balken
-WAVE_BAR_WIDTH = 3  # Schlankere Balkenbreite in Pixel
-WAVE_BAR_GAP = 4  # Etwas mehr Abstand zwischen Balken
-WAVE_BAR_MIN_HEIGHT = 8  # Ruhezustand-Höhe
-WAVE_BAR_MAX_HEIGHT = 48  # Maximale Höhe bei voller Animation
-WAVE_AREA_WIDTH = WAVE_BAR_COUNT * WAVE_BAR_WIDTH + (WAVE_BAR_COUNT - 1) * WAVE_BAR_GAP
+WAVE_BAR_COUNT = BAR_COUNT
+WAVE_BAR_WIDTH = BAR_WIDTH
+WAVE_BAR_GAP = BAR_GAP
+WAVE_BAR_MIN_HEIGHT = BAR_MIN_HEIGHT
+WAVE_BAR_MAX_HEIGHT = BAR_MAX_HEIGHT
+WAVE_AREA_WIDTH = BAR_AREA_WIDTH
 
 # Glättung für direkte Level-Updates:
 # Schneller Anstieg (spricht direkter auf leise Sprache an),
@@ -66,13 +89,9 @@ WAVE_AGC_DECAY = 0.97  # Peak-Falloff pro Level-Update (~1s Zeitkonstante bei ~1
 WAVE_AGC_MIN_PEAK = 0.01  # Untergrenze gegen Überverstärkung von Stille
 WAVE_AGC_HEADROOM = 2.0  # Mehr Headroom = weniger Sensitivität/Clipping
 
-# Rendering/Animation:
-# Wir rendern Recording weiter mit 60 FPS für direkte Audio-Rückmeldung.
-# Nicht-audiogetriebene Waiting/Processing-Animationen laufen mit reduzierter
-# Framerate, damit der Overlay-Hotpath im Leerlauf/Busy-Wait weniger CPU kostet.
+# Rendering: Nur Recording animiert (audiogetrieben). Der Timer läuft nur,
+# solange sich Balken bewegen; alle anderen States sind statisch.
 WAVE_ANIMATION_FPS = 60.0
-WAVE_ANIMATION_FPS_ACTIVE = 30.0
-WAVE_ANIMATION_FPS_FEEDBACK = 20.0
 WAVE_ANIMATION_FPS_IDLE = 24.0
 WAVE_LEVEL_ACTIVE_THRESHOLD = 0.035
 WAVE_LEVEL_IDLE_THRESHOLD = 0.02
@@ -127,10 +146,6 @@ def _clamp01(value: float) -> float:
     return _clamp(value, 0.0, 1.0)
 
 
-def _lerp(a: float, b: float, t: float) -> float:
-    return a + (b - a) * t
-
-
 def _fps_to_interval_seconds(fps: float) -> float:
     return 1.0 / max(float(fps), 1.0)
 
@@ -141,13 +156,6 @@ def _wave_heights_are_settled(heights: list[float]) -> bool:
         abs(height - WAVE_BAR_MIN_HEIGHT) < WAVE_HEIGHT_UPDATE_EPSILON
         for height in heights
     )
-
-
-def _gaussian(distance: float, sigma: float) -> float:
-    if sigma <= 0:
-        return 0.0
-    x = distance / sigma
-    return math.exp(-0.5 * x * x)
 
 
 def _build_height_factors() -> list[float]:
@@ -164,62 +172,45 @@ def _build_height_factors() -> list[float]:
     return factors
 
 
-def _build_recording_durations() -> list[float]:
-    """Gibt leicht variierende Dauerwerte für die Aufnahme-Animation zurück."""
-    if WAVE_BAR_COUNT <= 1:
-        return [0.4]
-
-    durations: list[float] = []
-    for i in range(WAVE_BAR_COUNT):
-        phase = i / (WAVE_BAR_COUNT - 1)
-        durations.append(0.36 + 0.08 * math.sin(phase * math.pi))
-    return durations
-
-
-def _get_overlay_color(r: int, g: int, b: int, a: float = 1.0):
-    """Erstellt NSColor aus RGB-Werten."""
+def _ns_color(hex_color: str):
+    """Erstellt NSColor aus einem ``#rrggbb``-Wert."""
     from AppKit import NSColor  # type: ignore[import-not-found]
 
-    return NSColor.colorWithSRGBRed_green_blue_alpha_(
-        r / 255.0, g / 255.0, b / 255.0, a
-    )
+    r, g, b = hex_to_rgb(hex_color)
+    return NSColor.colorWithSRGBRed_green_blue_alpha_(r / 255.0, g / 255.0, b / 255.0, 1.0)
+
+
+def _disabled_layer_actions():
+    """Return a begun CATransaction without implicit layer animations."""
+    from Quartz import CATransaction  # type: ignore[import-not-found]
+
+    CATransaction.begin()
+    CATransaction.setDisableActions_(True)
+    return CATransaction
 
 
 class SoundWaveView:
     """
-    Animierte Schallwellen-Visualisierung (aus overlay.py).
+    Balken-Visualisierung des Overlays.
 
-    Zeigt verschiedene Animationen je nach State:
-    - Recording: Organische Wellenanimation
-    - Transcribing: Sequentielle Ladeanimation
-    - Done: Einmaliges Hüpfen in Grün
-    - Error: Rotes Aufblinken
+    Modi (siehe ``OverlayContent.bars``):
+    - level: audiogetriebene Wellenanimation (einziger animierter Modus)
+    - low: statische, niedrige Balken (Listening)
+    - line: statische 3-px-Linie (Preparing/Transcribing/Refining)
+    - none: ausgeblendet (Ergebnis-Badges)
     """
 
     def __init__(self, frame):
-        from AppKit import NSColor, NSView  # type: ignore[import-not-found]
+        from AppKit import NSView  # type: ignore[import-not-found]
         from Quartz import CALayer  # type: ignore[import-not-found]
 
-        # NSView erstellen
         self._view = NSView.alloc().initWithFrame_(frame)
         self._view.setWantsLayer_(True)
         self.bars = []
-        self.animations_running = False
         self.current_animation = None
-
-        # Farben
-        self._color_idle = NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.9)
-        self._color_listening = _get_overlay_color(255, 182, 193)
-        self._color_recording = _get_overlay_color(255, 82, 82)
-        self._color_transcribing = _get_overlay_color(255, 177, 66)
-        self._color_refining = _get_overlay_color(156, 39, 176)
-        self._color_success = _get_overlay_color(51, 217, 178)
-        self._color_no_speech = _get_overlay_color(255, 177, 66)
-        self._color_error = _get_overlay_color(255, 71, 87)
-        self._color_loading = _get_overlay_color(66, 165, 245)  # Material Blue 400
+        self._bar_colors = {mode: _ns_color(color) for mode, color in BAR_COLORS.items()}
 
         self._height_factors = _build_height_factors()
-        self._recording_durations = _build_recording_durations()
         self._last_heights = [float(WAVE_BAR_MIN_HEIGHT) for _ in range(WAVE_BAR_COUNT)]
         self._bar_positions = [
             i * (WAVE_BAR_WIDTH + WAVE_BAR_GAP) + WAVE_BAR_WIDTH / 2
@@ -228,7 +219,6 @@ class SoundWaveView:
         self._center_y = frame.size.height / 2
         self._height_range = WAVE_BAR_MAX_HEIGHT - WAVE_BAR_MIN_HEIGHT
         self._last_center_y = self._center_y
-        self._anim = AnimationLogic()  # Shared animation logic
 
         self._bar_center = (WAVE_BAR_COUNT - 1) / 2
         self._envelope_max_shift_base = max(
@@ -241,12 +231,6 @@ class SoundWaveView:
         self._level_timer = None
         self._level_timer_interval_seconds = None
         self._level_timer_activity_mode = "idle"
-        self._processing_timer = None
-        self._processing_start_time = None
-        self._listening_timer = None
-        self._listening_start_time = None
-        self._done_timer = None
-        self._done_start_time = None
         self._envelope_phase_primary = random.uniform(0.0, 2 * math.pi)
         self._envelope_phase_secondary = random.uniform(0.0, 2 * math.pi)
 
@@ -278,12 +262,11 @@ class SoundWaveView:
         ]
         self._envelope_gaussian_scale = WAVE_ENVELOPE_GAUSSIAN_SCALE
         self._rect_factory = None
-        # Balken erstellen
+
         center_y = self._center_y
         for i in range(WAVE_BAR_COUNT):
             x = i * (WAVE_BAR_WIDTH + WAVE_BAR_GAP)
             bar = CALayer.alloc().init()
-            bar.setBackgroundColor_(self._color_idle.CGColor())
             bar.setCornerRadius_(WAVE_BAR_WIDTH / 2)
             bar.setFrame_(
                 (
@@ -294,9 +277,60 @@ class SoundWaveView:
             self._view.layer().addSublayer_(bar)
             self.bars.append(bar)
 
+        self._line = CALayer.alloc().init()
+        self._line.setBackgroundColor_(self._bar_colors["line"].CGColor())
+        self._line.setCornerRadius_(LINE_HEIGHT / 2)
+        self._line.setFrame_(
+            ((0, center_y - LINE_HEIGHT / 2), (WAVE_AREA_WIDTH, LINE_HEIGHT))
+        )
+        self._line.setHidden_(True)
+        self._view.layer().addSublayer_(self._line)
+
     @property
     def view(self):
         return self._view
+
+    def show_mode(self, mode: str) -> None:
+        """Switch to ``level``/``low``/``line``/``none``; only ``level`` animates."""
+        if self.current_animation == mode:
+            return
+        self.stop_animating()
+        self.current_animation = mode
+        transaction = _disabled_layer_actions()
+        try:
+            self._view.setHidden_(mode == "none")
+            self._line.setHidden_(mode != "line")
+            for bar in self.bars:
+                bar.setHidden_(mode not in ("level", "low"))
+            if mode in ("level", "low"):
+                self.set_bar_color(self._bar_colors[mode])
+            if mode == "low":
+                for index, height in enumerate(LISTENING_BAR_HEIGHTS):
+                    self._set_bar_height(index, height, force=True)
+        finally:
+            transaction.commit()
+
+    def _ensure_recording_mode(self) -> None:
+        if self.current_animation != "level":
+            self.show_mode("level")
+
+    def stop_animating(self) -> None:
+        """Stoppt den Level-Timer und setzt die Balken auf Ruhehöhe."""
+        self._stop_level_timer()
+        self.current_animation = None
+        center_y = self._wave_center_y()
+        transaction = _disabled_layer_actions()
+        try:
+            self._ensure_bar_positions(center_y)
+            for i in range(len(self.bars)):
+                self._set_bar_height(i, WAVE_BAR_MIN_HEIGHT, force=True)
+        finally:
+            transaction.commit()
+        self._last_heights = [float(WAVE_BAR_MIN_HEIGHT) for _ in range(WAVE_BAR_COUNT)]
+        self._agc_peak = WAVE_AGC_MIN_PEAK
+        self._smoothed_level = 0.0
+        self._target_level = 0.0
+
 
     def _ensure_bar_positions(self, center_y: float) -> None:
         if self._last_center_y == center_y:
@@ -338,37 +372,6 @@ class SoundWaveView:
         for bar in self.bars:
             bar.setBackgroundColor_(cg_color)
 
-    def _create_height_animation(
-        self, to_height, duration, delay=0, repeat=float("inf")
-    ):
-        """Erstellt Höhen-Animation für Balken."""
-        from Quartz import (  # type: ignore[import-not-found]
-            CABasicAnimation,
-            CAMediaTimingFunction,
-            kCAMediaTimingFunctionEaseInEaseOut,
-        )
-
-        anim = CABasicAnimation.animationWithKeyPath_("bounds.size.height")
-        anim.setFromValue_(WAVE_BAR_MIN_HEIGHT)
-        anim.setToValue_(to_height)
-        anim.setDuration_(duration)
-        anim.setAutoreverses_(True)
-        anim.setRepeatCount_(repeat)
-        anim.setTimingFunction_(
-            CAMediaTimingFunction.functionWithName_(kCAMediaTimingFunctionEaseInEaseOut)
-        )
-        return anim
-
-    def start_listening_animation(self) -> None:
-        """Startet organische Listening-Animation (duale Sinuswellen wie Windows)."""
-        if self.current_animation == "listening":
-            return
-        self.stop_animating()
-        self.current_animation = "listening"
-        self.animations_running = True
-        self.set_bar_color(self._color_listening)
-        self._start_listening_timer()
-
     def update_levels(self, level: float) -> None:
         """
         Aktualisiert die Ziel-Amplitude basierend auf Audio-RMS (0.0 - 1.0).
@@ -376,11 +379,6 @@ class SoundWaveView:
         Rendering passiert timer-basiert (smooth, unabhängig von Callback-Rate),
         update_levels() setzt nur den Zielwert und startet den Timer.
         """
-        # Falls noch Animationen laufen (z.B. Fallback-Welle), stoppen wir sie,
-        # damit wir die Höhe manuell setzen können.
-        if self.animations_running:
-            self.stop_animating()
-
         self._ensure_recording_mode()
 
         self._target_level = self._compute_target_level(level)
@@ -391,11 +389,6 @@ class SoundWaveView:
                 self._start_level_timer()
         else:
             self._update_level_timer_interval()
-
-    def _ensure_recording_mode(self) -> None:
-        if self.current_animation != "recording":
-            self.current_animation = "recording"
-            self.set_bar_color(self._color_recording)
 
     def _compute_target_level(self, rms: float) -> float:
         if not isinstance(rms, (int, float)) or not math.isfinite(rms):
@@ -417,99 +410,6 @@ class SoundWaveView:
         # Visuelle Kurve + optionaler Gain.
         shaped = normalized**WAVE_VISUAL_EXPONENT
         return _clamp01(shaped * VISUAL_GAIN)
-
-    def start_recording_animation(self) -> None:
-        """Startet organische Schallwellen-Animation (Fallback wenn keine Levels)."""
-        if self.current_animation == "recording":
-            return
-        self.stop_animating()
-        self.current_animation = "recording"
-        self.animations_running = True
-        self.set_bar_color(self._color_recording)
-
-        for i, bar in enumerate(self.bars):
-            anim = self._create_height_animation(
-                WAVE_BAR_MAX_HEIGHT, self._recording_durations[i]
-            )
-            bar.addAnimation_forKey_(anim, f"heightAnim{i}")
-
-    def start_transcribing_animation(self) -> None:
-        """Startet Wanderpuls-Animation (wie Windows)."""
-        if self.current_animation == "transcribing":
-            return
-        self.stop_animating()
-        self.current_animation = "transcribing"
-        self.animations_running = True
-        self.set_bar_color(self._color_transcribing)
-        self._start_processing_timer()
-
-    def start_refining_animation(self) -> None:
-        """Startet Wanderpuls-Animation (wie Windows)."""
-        if self.current_animation == "refining":
-            return
-        self.stop_animating()
-        self.current_animation = "refining"
-        self.animations_running = True
-        self.set_bar_color(self._color_refining)
-        self._start_processing_timer()
-
-    def start_loading_animation(self) -> None:
-        """Startet Loading-Animation (langsames Pulsieren in Blau)."""
-        if self.current_animation == "loading":
-            return
-        self.stop_animating()
-        self.current_animation = "loading"
-        self.animations_running = True
-        self.set_bar_color(self._color_loading)
-
-        # Langsames, synchrones Pulsieren (Download-Gefühl)
-        for i, bar in enumerate(self.bars):
-            anim = self._create_height_animation(WAVE_BAR_MAX_HEIGHT * 0.5, 1.5)
-            bar.addAnimation_forKey_(anim, f"loadingAnim{i}")
-
-    def start_success_animation(self) -> None:
-        """Multi-Phase Bounce Animation (wie Windows)."""
-        self.stop_animating()
-        self.current_animation = "success"
-        self.set_bar_color(self._color_success)
-        self._start_done_timer()
-
-    def start_no_speech_animation(self) -> None:
-        """Kurze Hinweis-Animation für leere / stille Ergebnisse."""
-        self.stop_animating()
-        self.current_animation = "no_speech"
-        self.set_bar_color(self._color_no_speech)
-        self._start_done_timer()
-
-    def start_error_animation(self) -> None:
-        """Kurzes rotes Aufblinken."""
-        self.stop_animating()
-        self.current_animation = "error"
-        self.set_bar_color(self._color_error)
-
-        for i, bar in enumerate(self.bars):
-            anim = self._create_height_animation(WAVE_BAR_MAX_HEIGHT, 0.15, repeat=2)
-            bar.addAnimation_forKey_(anim, f"errorAnim{i}")
-
-    def stop_animating(self) -> None:
-        """Stoppt alle Animationen."""
-        # Alle Timer stoppen
-        self._stop_level_timer()
-        self._stop_processing_timer()
-        self._stop_listening_timer()
-        self._stop_done_timer()
-        self.animations_running = False
-        self.current_animation = None
-        center_y = self._wave_center_y()
-        self._ensure_bar_positions(center_y)
-
-        for i, bar in enumerate(self.bars):
-            bar.removeAllAnimations()
-            self._set_bar_height(i, WAVE_BAR_MIN_HEIGHT, force=True)
-        self._last_heights = [float(WAVE_BAR_MIN_HEIGHT) for _ in range(WAVE_BAR_COUNT)]
-        self._agc_peak = WAVE_AGC_MIN_PEAK
-        self._smoothed_level = 0.0
-        self._target_level = 0.0
 
     def _start_level_timer(self) -> None:
         if self._level_timer is not None:
@@ -575,125 +475,6 @@ class SoundWaveView:
         self._level_timer_interval_seconds = None
         self._level_timer_activity_mode = "idle"
 
-    def _start_processing_timer(self) -> None:
-        """Startet Timer für Wanderpuls-Animation (Transcribing/Refining)."""
-        if self._processing_timer is not None:
-            return
-
-        from Foundation import NSTimer  # type: ignore[import-not-found]
-
-        self._processing_start_time = time.perf_counter()
-        self_ref = weakref.ref(self)
-
-        def tick(_timer) -> None:
-            self_obj = self_ref()
-            if self_obj is None:
-                try:
-                    _timer.invalidate()
-                except Exception:
-                    pass
-                return
-            self_obj._render_processing_frame()
-
-        interval = self._active_timer_interval()
-        self._processing_timer = NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
-            interval, True, tick
-        )
-
-    def _stop_processing_timer(self) -> None:
-        """Stoppt den Processing-Timer."""
-        if self._processing_timer is None:
-            return
-        try:
-            self._processing_timer.invalidate()
-        except Exception:
-            pass
-        self._processing_timer = None
-        self._processing_start_time = None
-
-    def _start_listening_timer(self) -> None:
-        """Startet Timer für Listening-Animation (duale Sinuswellen)."""
-        if self._listening_timer is not None:
-            return
-
-        from Foundation import NSTimer  # type: ignore[import-not-found]
-
-        self._listening_start_time = time.perf_counter()
-        self_ref = weakref.ref(self)
-
-        def tick(_timer) -> None:
-            self_obj = self_ref()
-            if self_obj is None:
-                try:
-                    _timer.invalidate()
-                except Exception:
-                    pass
-                return
-            self_obj._render_listening_frame()
-
-        interval = self._active_timer_interval()
-        self._listening_timer = NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
-            interval, True, tick
-        )
-
-    def _stop_listening_timer(self) -> None:
-        """Stoppt den Listening-Timer."""
-        if self._listening_timer is None:
-            return
-        try:
-            self._listening_timer.invalidate()
-        except Exception:
-            pass
-        self._listening_timer = None
-        self._listening_start_time = None
-
-    def _start_done_timer(self) -> None:
-        """Startet Timer für Done-Animation (Multi-Phase Bounce)."""
-        if self._done_timer is not None:
-            return
-
-        from Foundation import NSTimer  # type: ignore[import-not-found]
-
-        self._done_start_time = time.perf_counter()
-        self_ref = weakref.ref(self)
-
-        def tick(_timer) -> None:
-            self_obj = self_ref()
-            if self_obj is None:
-                try:
-                    _timer.invalidate()
-                except Exception:
-                    pass
-                return
-            self_obj._render_done_frame()
-
-        interval = self._feedback_timer_interval()
-        self._done_timer = NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
-            interval, True, tick
-        )
-
-    def _stop_done_timer(self) -> None:
-        """Stoppt den Done-Timer."""
-        if self._done_timer is None:
-            return
-        try:
-            self._done_timer.invalidate()
-        except Exception:
-            pass
-        self._done_timer = None
-        self._done_start_time = None
-
-    def _render_done_frame(self) -> None:
-        """Rendert einen Frame der Done-Animation (via AnimationLogic)."""
-        if self._done_start_time is None:
-            return
-
-        t = time.perf_counter() - self._done_start_time
-
-        center_y = self._wave_center_y()
-        heights = self._state_frame_heights(t, "DONE")
-        self._apply_bar_heights(heights, center_y=center_y)
-
     def _level_timer_interval(self) -> float:
         activity_mode = self._recording_level_activity_mode()
         fps = (
@@ -703,12 +484,6 @@ class SoundWaveView:
         )
         return _fps_to_interval_seconds(fps)
 
-    def _active_timer_interval(self) -> float:
-        return _fps_to_interval_seconds(WAVE_ANIMATION_FPS_ACTIVE)
-
-    def _feedback_timer_interval(self) -> float:
-        return _fps_to_interval_seconds(WAVE_ANIMATION_FPS_FEEDBACK)
-
     def _wave_center_y(self) -> float:
         center_y = getattr(self, "_center_y", None)
         if center_y is not None:
@@ -717,25 +492,6 @@ class SoundWaveView:
 
     def _wave_height_range(self) -> float:
         return getattr(self, "_height_range", WAVE_BAR_MAX_HEIGHT - WAVE_BAR_MIN_HEIGHT)
-
-    def _state_frame_heights(self, t: float, state: str) -> list[float]:
-        calculate_frame_heights = getattr(self._anim, "calculate_frame_heights", None)
-        if callable(calculate_frame_heights):
-            return list(
-                calculate_frame_heights(
-                    t,
-                    state,
-                    min_height=WAVE_BAR_MIN_HEIGHT,
-                    max_height=WAVE_BAR_MAX_HEIGHT,
-                )
-            )
-
-        height_range = self._wave_height_range()
-        return [
-            WAVE_BAR_MIN_HEIGHT
-            + height_range * self._anim.calculate_bar_normalized(i, t, state)
-            for i, _bar in enumerate(self.bars)
-        ]
 
     def _recording_frame_buffer(self) -> list[float]:
         heights = getattr(self, "_recording_frame_heights", None)
@@ -801,28 +557,6 @@ class SoundWaveView:
 
         transaction.commit()
         return True
-
-    def _render_listening_frame(self) -> None:
-        """Rendert einen Frame der Listening-Animation (via AnimationLogic)."""
-        if self._listening_start_time is None:
-            return
-
-        t = time.perf_counter() - self._listening_start_time
-
-        center_y = self._wave_center_y()
-        heights = self._state_frame_heights(t, "LISTENING")
-        self._apply_bar_heights(heights, center_y=center_y)
-
-    def _render_processing_frame(self) -> None:
-        """Rendert einen Frame der Wanderpuls-Animation (via AnimationLogic)."""
-        if self._processing_start_time is None:
-            return
-
-        t = time.perf_counter() - self._processing_start_time
-
-        center_y = self._wave_center_y()
-        heights = self._state_frame_heights(t, "TRANSCRIBING")
-        self._apply_bar_heights(heights, center_y=center_y)
 
     def _level_frame_is_settled(self, center_y: float) -> bool:
         """A quiet, fully settled frame needs no timer until the next level update."""
@@ -952,12 +686,30 @@ class SoundWaveView:
         self._apply_bar_heights(heights, center_y=center_y)
 
 
+_FEEDBACK_STATES = (AppState.DONE, AppState.NO_SPEECH, AppState.ERROR)
+_LABEL_INSET = 2  # NSTextField-Labels zeichnen Text 2 px innerhalb ihres Frames
+
+
+def _make_label(font):
+    from AppKit import NSTextField  # type: ignore[import-not-found]
+
+    field = NSTextField.labelWithString_("")
+    field.setFont_(font)
+    field.setEditable_(False)
+    field.setSelectable_(False)
+    field.setBezeled_(False)
+    field.setDrawsBackground_(False)
+    field.cell().setLineBreakMode_(4)  # Truncate Tail
+    field.cell().setUsesSingleLineMode_(True)
+    return field
+
+
 class OverlayController:
     """
-    Overlay-Fenster für Status und Interim-Text (aus overlay.py).
+    Overlay-Fenster für Status, Ergebnis-Badges und Interim-Text.
 
-    Zeigt animiertes Overlay am unteren Bildschirmrand.
-    Kein Polling - wird direkt via Callback aktualisiert.
+    Layout ``[Balken] [Badge] [Text]`` (ui/overlay_style.py); das Fenster wächst
+    mit dem Text. Kein Polling - wird direkt via Callback aktualisiert.
     """
 
     def __init__(self):
@@ -965,154 +717,102 @@ class OverlayController:
             NSBackingStoreBuffered,
             NSColor,
             NSFont,
-            NSFontItalicTrait,
-            NSFontManager,
+            NSFontWeightRegular,
             NSFontWeightSemibold,
-            NSFontWeightLight,
-            NSFontWeightMedium,
             NSMakeRect,
             NSScreen,
-            NSTextField,
-            NSTextAlignmentCenter,
-            NSVisualEffectView,
+            NSView,
             NSWindow,
             NSWindowStyleMaskBorderless,
         )
+        import Quartz  # noqa: F401  # registriert CGColorRef für .CGColor()
 
         screen = NSScreen.mainScreen()
         if not screen:
             self.window = None
             return
 
-        screen_frame = screen.frame()
+        self._rect = NSMakeRect
+        self._screen_frame = screen.frame()
+        self._max_width = self._screen_frame.size.width * OVERLAY_MAX_WIDTH_RATIO
         width = OVERLAY_MIN_WIDTH
         height = OVERLAY_HEIGHT
-        x = (screen_frame.size.width - width) / 2
-        y = OVERLAY_MARGIN_BOTTOM
+        y = self._screen_frame.origin.y + OVERLAY_MARGIN_BOTTOM
 
-        # Fenster erstellen
         self.window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-            NSMakeRect(x, y, width, height),
+            NSMakeRect(self._window_x(width), y, width, height),
             NSWindowStyleMaskBorderless,
             NSBackingStoreBuffered,
             False,
         )
         self.window.setLevel_(OVERLAY_WINDOW_LEVEL)
         self.window.setIgnoresMouseEvents_(True)
+        # Nicht-opak nur für die 3-px-Ecken; der Inhalt selbst ist solide.
         self.window.setOpaque_(False)
         self.window.setBackgroundColor_(NSColor.clearColor())
         self.window.setAlphaValue_(0.0)
-        self.window.setHasShadow_(True)
+        self.window.setHasShadow_(False)
 
-        # Visual Effect View (Blur)
-        self._visual_effect_view = NSVisualEffectView.alloc().initWithFrame_(
-            NSMakeRect(0, 0, width, height)
-        )
-        self._visual_effect_view.setMaterial_(13)  # HUD Window
-        self._visual_effect_view.setBlendingMode_(0)  # Behind Window
-        self._visual_effect_view.setState_(1)  # Active
-        self._visual_effect_view.setWantsLayer_(True)
-        self._visual_effect_view.layer().setCornerRadius_(OVERLAY_CORNER_RADIUS)
-        self._visual_effect_view.layer().setMasksToBounds_(True)
-        self._visual_effect_view.layer().setBorderWidth_(1.0)
-        self._visual_effect_view.layer().setBorderColor_(
-            NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.15).CGColor()
-        )
-        self.window.setContentView_(self._visual_effect_view)
+        content = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, width, height))
+        content.setWantsLayer_(True)
+        layer = content.layer()
+        layer.setBackgroundColor_(_ns_color(BACKGROUND_COLOR).CGColor())
+        layer.setBorderColor_(_ns_color(BORDER_COLOR).CGColor())
+        layer.setBorderWidth_(1.0)
+        layer.setCornerRadius_(OVERLAY_CORNER_RADIUS)
+        layer.setMasksToBounds_(True)
+        self.window.setContentView_(content)
+        self._content_view = content
 
-        # Schallwellen-View
-        wave_y = height - (WAVE_BAR_MAX_HEIGHT + 12)
-        wave_x = (width - WAVE_AREA_WIDTH) / 2
         self._wave_view = SoundWaveView(
-            NSMakeRect(wave_x, wave_y, WAVE_AREA_WIDTH, WAVE_BAR_MAX_HEIGHT)
-        )
-        self._visual_effect_view.addSubview_(self._wave_view.view)
-
-        # Text-Feld
-        self._text_field = NSTextField.alloc().initWithFrame_(
             NSMakeRect(
-                OVERLAY_PADDING_H,
-                16,
-                width - 2 * OVERLAY_PADDING_H,
-                OVERLAY_TEXT_FIELD_HEIGHT,
+                0, (height - WAVE_BAR_MAX_HEIGHT) / 2, WAVE_AREA_WIDTH, WAVE_BAR_MAX_HEIGHT
             )
         )
-        self._text_field.setStringValue_("")
-        self._text_field.setBezeled_(False)
-        self._text_field.setDrawsBackground_(False)
-        self._text_field.setEditable_(False)
-        self._text_field.setSelectable_(False)
-        self._text_field.setAlignment_(NSTextAlignmentCenter)
-        self._text_field.cell().setLineBreakMode_(4)  # Truncate Tail
-        self._text_field.setTextColor_(
-            NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.95)
-        )
-        self._text_field.setFont_(
-            NSFont.systemFontOfSize_weight_(OVERLAY_FONT_SIZE, NSFontWeightSemibold)
-        )
-        self._visual_effect_view.addSubview_(self._text_field)
+        content.addSubview_(self._wave_view.view)
 
-        # State
+        self._text_font = NSFont.systemFontOfSize_weight_(
+            TEXT_FONT_SIZE, NSFontWeightRegular
+        )
+        self._text_field = _make_label(self._text_font)
+        content.addSubview_(self._text_field)
+
+        self._badge_view = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 0, 0))
+        self._badge_view.setWantsLayer_(True)
+        self._badge_view.layer().setCornerRadius_(BADGE_CORNER_RADIUS)
+        self._badge_view.setHidden_(True)
+        self._badge_label = _make_label(
+            NSFont.systemFontOfSize_weight_(BADGE_FONT_SIZE, NSFontWeightSemibold)
+        )
+        self._badge_view.addSubview_(self._badge_label)
+        content.addSubview_(self._badge_view)
+
+        self._badge_label.setStringValue_("Ag")
+        self._badge_label_height = math.ceil(self._badge_label.cell().cellSize().height)
+        self._text_field.setStringValue_("Ag")
+        self._text_height = math.ceil(self._text_field.cell().cellSize().height)
+
+        self._colors = {
+            "text": _ns_color(TEXT_COLOR),
+            "muted": _ns_color(MUTED_TEXT_COLOR),
+            "interim": _ns_color(INTERIM_TEXT_COLOR),
+        }
+        self._badge_colors = {
+            tone: (_ns_color(background), _ns_color(foreground))
+            for tone, (background, foreground) in BADGE_TONES.items()
+        }
+
         self._target_alpha = 0.0
         self._current_state = AppState.IDLE
-        self._state_timestamp = 0.0
         self._feedback_timer = None
         self._last_state_payload: tuple[AppState, str | None] | None = None
-        ghost_font = NSFont.systemFontOfSize_weight_(OVERLAY_FONT_SIZE, NSFontWeightLight)
-        ghost_italic_font = NSFontManager.sharedFontManager().convertFont_toHaveTrait_(
-            ghost_font, NSFontItalicTrait
-        )
-        self._text_fonts = {
-            "default": NSFont.systemFontOfSize_weight_(
-                OVERLAY_FONT_SIZE, NSFontWeightSemibold
-            ),
-            "medium": NSFont.systemFontOfSize_weight_(
-                OVERLAY_FONT_SIZE, NSFontWeightMedium
-            ),
-            "ghost": ghost_italic_font or ghost_font,
-        }
-        self._text_colors = {
-            "default": NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.95),
-            "muted": NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6),
-            "recording": NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.9),
-            "ghost": NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.5),
-            "warning": _get_overlay_color(255, 177, 66),
-            "error": _get_overlay_color(255, 71, 87),
-        }
-        self._text_font_key = "default"
-        self._text_color_key = "default"
-        self._text_value = ""
+        self._previous_interim = ""
+        self._presentation = None
+        self._window_width = float(width)
 
-    def _set_text_font(self, font_key: str) -> None:
-        if self._text_font_key == font_key:
-            return
-        self._text_field.setFont_(self._text_fonts[font_key])
-        self._text_font_key = font_key
-
-    def _set_text_color(self, color_key: str) -> None:
-        if self._text_color_key == color_key:
-            return
-        self._text_field.setTextColor_(self._text_colors[color_key])
-        self._text_color_key = color_key
-
-    def _set_text_value(self, text: str) -> None:
-        if self._text_value == text:
-            return
-        self._text_field.setStringValue_(text)
-        self._text_value = text
-
-    def _apply_text_presentation(
-        self,
-        *,
-        text: str,
-        font_key: str | None = None,
-        color_key: str | None = None,
-    ) -> None:
-        if font_key is not None:
-            self._set_text_font(font_key)
-        if color_key is not None:
-            self._set_text_color(color_key)
-        self._set_text_value(text)
+    def _window_x(self, width: float) -> float:
+        frame = self._screen_frame
+        return frame.origin.x + (frame.size.width - width) / 2
 
     def update_state(self, state: AppState, text: str | None = None) -> None:
         """Update state; retain brief success feedback while already ready to record."""
@@ -1140,144 +840,142 @@ class OverlayController:
             self._feedback_timer.invalidate()
             self._feedback_timer = None
 
-        handler = {
-            AppState.LISTENING: self._show_listening_state,
-            AppState.RECORDING: self._show_recording_state,
-            AppState.TRANSCRIBING: self._show_transcribing_state,
-            AppState.REFINING: self._show_refining_state,
-            AppState.LOADING: self._show_loading_state,
-            AppState.DONE: self._show_done_state,
-            AppState.NO_SPEECH: self._show_no_speech_state,
-            AppState.ERROR: self._show_error_state,
-        }.get(state, self._show_idle_state)
-        handler(text, state_changed)
-
-    def _show_listening_state(self, text: str | None, state_changed: bool) -> None:
-        self._show_status_state(
-            state_changed,
-            self._wave_view.start_listening_animation,
-            "LISTENING",
-            font_key="medium",
-            color_key="muted",
-        )
-
-    def _show_recording_state(self, text: str | None, state_changed: bool) -> None:
-        if state_changed:
-            self._wave_view.start_recording_animation()
-        if text:
-            self._apply_text_presentation(
-                text=_format_recording_interim_text(text),
-                font_key="ghost",
-                color_key="ghost",
-            )
-        else:
-            self._apply_text_presentation(
-                text=format_overlay_status_text("RECORDING"),
-                font_key="medium",
-                color_key="recording",
-            )
-        self._fade_in_if_changed(state_changed)
-
-    def _show_transcribing_state(self, text: str | None, state_changed: bool) -> None:
-        self._show_status_state(
-            state_changed,
-            self._wave_view.start_transcribing_animation,
-            "TRANSCRIBING",
-            color_key="muted",
-        )
-
-    def _show_refining_state(self, text: str | None, state_changed: bool) -> None:
-        self._show_status_state(
-            state_changed,
-            self._wave_view.start_refining_animation,
-            "REFINING",
-            color_key="muted",
-        )
-
-    def _show_loading_state(self, text: str | None, state_changed: bool) -> None:
-        self._show_status_state(
-            state_changed,
-            self._wave_view.start_loading_animation,
-            "LOADING",
-            text=text,
-            color_key="muted",
-        )
-
-    def _show_done_state(self, text: str | None, state_changed: bool) -> None:
-        self._show_feedback_state(
-            state_changed,
-            self._wave_view.start_success_animation,
-            "DONE",
-            text,
-            color_key="default",
-        )
-
-    def _show_no_speech_state(self, text: str | None, state_changed: bool) -> None:
-        self._show_feedback_state(
-            state_changed,
-            self._wave_view.start_no_speech_animation,
-            "NO_SPEECH",
-            text,
-            color_key="warning",
-        )
-
-    def _show_error_state(self, text: str | None, state_changed: bool) -> None:
-        self._show_feedback_state(
-            state_changed,
-            self._wave_view.start_error_animation,
-            "ERROR",
-            text,
-            color_key="error",
-        )
-
-    def _show_idle_state(self, text: str | None, state_changed: bool) -> None:
-        if not state_changed:
+        if state == AppState.IDLE:
+            if state_changed:
+                self._wave_view.stop_animating()
+                self._fade_out()
             return
-        self._wave_view.stop_animating()
-        self._fade_out()
 
-    def _show_status_state(
-        self,
-        state_changed: bool,
-        start_animation,
-        feedback_key: str,
-        *,
-        text: str | None = None,
-        font_key: str | None = None,
-        color_key: str | None = None,
-    ) -> None:
-        if state_changed:
-            start_animation()
-        self._apply_text_presentation(
-            text=build_overlay_feedback_text(feedback_key, text),
-            font_key=font_key,
-            color_key=color_key,
-        )
-        self._fade_in_if_changed(state_changed)
+        content = describe_overlay_content(state.name, text)
+        interim = ("", "")
+        if state == AppState.RECORDING:
+            if state_changed:
+                self._previous_interim = ""
+            if text:
+                interim = split_recording_interim_text(text, self._previous_interim)
+                self._previous_interim = text
 
-    def _show_feedback_state(
-        self,
-        state_changed: bool,
-        start_animation,
-        feedback_key: str,
-        text: str | None,
-        *,
-        color_key: str,
-    ) -> None:
         if state_changed:
-            start_animation()
-        self._apply_text_presentation(
-            text=build_overlay_feedback_text(feedback_key, text),
-            font_key="default",
-            color_key=color_key,
-        )
+            self._wave_view.show_mode(content.bars)
+        self._render(content, interim)
         if state_changed:
             self._fade_in()
-            self._start_fade_out_timer()
+            if state in _FEEDBACK_STATES:
+                self._start_fade_out_timer()
 
-    def _fade_in_if_changed(self, state_changed: bool) -> None:
-        if state_changed:
-            self._fade_in()
+    def _render(self, content: OverlayContent, interim: tuple[str, str]) -> None:
+        """Apply badge, text and layout; skips identical presentations."""
+        presentation = (content, interim)
+        if self._presentation == presentation:
+            return
+        self._presentation = presentation
+
+        earlier, newest = interim
+        if earlier or newest:
+            parts = ((earlier, "interim"), (newest, "text"))
+        else:
+            parts = ((content.text, "text" if content.emphasized else "muted"),)
+        has_text = any(part for part, _color in parts)
+        self._text_field.setAttributedStringValue_(self._attributed_text(parts))
+        self._text_field.setHidden_(not has_text)
+
+        if content.badge:
+            background, foreground = self._badge_colors[content.tone]
+            self._badge_view.layer().setBackgroundColor_(background.CGColor())
+            self._badge_label.setTextColor_(foreground)
+            self._badge_label.setStringValue_(content.badge)
+        self._badge_view.setHidden_(not content.badge)
+        self._layout(content, has_text)
+
+    def _attributed_text(self, parts):
+        from AppKit import (  # type: ignore[import-not-found]
+            NSAttributedString,
+            NSFontAttributeName,
+            NSForegroundColorAttributeName,
+            NSMutableAttributedString,
+            NSMutableParagraphStyle,
+            NSParagraphStyleAttributeName,
+        )
+
+        paragraph = NSMutableParagraphStyle.alloc().init()
+        paragraph.setLineBreakMode_(4)  # Truncate Tail
+        result = NSMutableAttributedString.alloc().init()
+        for part, color_key in parts:
+            if not part:
+                continue
+            result.appendAttributedString_(
+                NSAttributedString.alloc().initWithString_attributes_(
+                    part,
+                    {
+                        NSFontAttributeName: self._text_font,
+                        NSForegroundColorAttributeName: self._colors[color_key],
+                        NSParagraphStyleAttributeName: paragraph,
+                    },
+                )
+            )
+        return result
+
+    def _layout(self, content: OverlayContent, has_text: bool) -> None:
+        rect = self._rect
+        height = OVERLAY_HEIGHT
+        text_width = (
+            math.ceil(self._text_field.cell().cellSize().width) - 2 * _LABEL_INSET
+            if has_text
+            else 0
+        )
+        badge_width = 0
+        if content.badge:
+            badge_width = (
+                math.ceil(self._badge_label.cell().cellSize().width)
+                - 2 * _LABEL_INSET
+                + 2 * BADGE_PADDING_H
+            )
+        layout = compute_overlay_layout(
+            bars=content.bars != "none",
+            badge_width=badge_width,
+            text_width=text_width,
+            max_width=self._max_width,
+        )
+        if layout.bars_x is not None:
+            self._wave_view.view.setFrameOrigin_(
+                (layout.bars_x, (height - WAVE_BAR_MAX_HEIGHT) / 2)
+            )
+        if layout.badge_x is not None:
+            badge_height = self._badge_label_height + 2 * BADGE_PADDING_V
+            self._badge_view.setFrame_(
+                rect(
+                    layout.badge_x,
+                    round((height - badge_height) / 2),
+                    badge_width,
+                    badge_height,
+                )
+            )
+            self._badge_label.setFrame_(
+                rect(
+                    BADGE_PADDING_H - _LABEL_INSET,
+                    BADGE_PADDING_V,
+                    badge_width - 2 * BADGE_PADDING_H + 2 * _LABEL_INSET,
+                    self._badge_label_height,
+                )
+            )
+        self._text_field.setFrame_(
+            rect(
+                layout.text_x - _LABEL_INSET,
+                round((height - self._text_height) / 2),
+                layout.text_width + 2 * _LABEL_INSET,
+                self._text_height,
+            )
+        )
+        self._resize_window(layout.width)
+
+    def _resize_window(self, width: float) -> None:
+        if width == self._window_width:
+            return
+        self._window_width = width
+        origin_y = self.window.frame().origin.y
+        self.window.setFrame_display_(
+            self._rect(self._window_x(width), origin_y, width, OVERLAY_HEIGHT), True
+        )
 
     def _fade_in(self) -> None:
         """Blendet Overlay ein."""
