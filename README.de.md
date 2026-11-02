@@ -20,7 +20,7 @@ Hotkey drücken, sprechen, loslassen – Text erscheint. Das war's.
 - **LLM-Nachbearbeitung** – Transkriptionen bereinigen mit GPT/Llama
 - **Kontext-Awareness** – Passt Stil an aktive App an (E-Mail, Chat, Code)
 - **Visuelles Feedback** – Animiertes Overlay zeigt den Aufnahmestatus und meldet Fehler beim Einfügen oder Kopieren
-- **Letztes Diktat retten** – **Copy Last Transcript** im Menüleisten- oder Tray-Menü kopiert das letzte Diktat der laufenden Sitzung, auch wenn das automatische Einfügen scheitert. Frühere Sitzungen sind weiterhin unter Settings → Logs → Transcripts verfügbar.
+- **Letztes Diktat retten** – **Copy Last Transcript** im Menüleisten- oder Tray-Menü kopiert das letzte Diktat der laufenden Sitzung, auch wenn das automatische Einfügen scheitert. Frühere Sitzungen sind weiterhin unter Settings → History → Transcripts verfügbar.
 
 ## Inhaltsverzeichnis
 
@@ -116,7 +116,7 @@ DEEPGRAM_API_KEY=dein_key_hier
 PULSESCRIBE_MODE=deepgram
 ```
 
-Das Mikrofon wählst du unter **Settings → Providers → Microphone** und übernimmst
+Das Mikrofon wählst du unter **Settings → Transcription → Microphone** und übernimmst
 es mit **Save & Apply** ab der nächsten Aufnahme. **System default** folgt dem
 Standardgerät des Betriebssystems. **Refresh** lädt die Geräteliste neu. Fehlt ein
 gespeichertes Mikrofon, wird vorübergehend automatisch ein Eingabegerät gewählt.

@@ -24,6 +24,10 @@ def build_unsaved_settings_feedback(*, relaunch_required: bool = False) -> tuple
     return text, "warning"
 
 
+# Settings tab that hosts each draft section saved by Save & Apply.
+_SECTION_TAB_LABELS = {"prompts": "Refine", "vocabulary": "Vocabulary"}
+
+
 def build_settings_saved_feedback(
     *,
     auto_reload_worked: bool | None = None,
@@ -43,8 +47,14 @@ def build_settings_saved_feedback(
 
     if failed_sections:
         names = " and ".join(failed_sections)
-        tabs = " and ".join(section.title() for section in failed_sections)
-        tab_word = "tab" if len(failed_sections) == 1 else "tabs"
+        tab_labels = list(
+            dict.fromkeys(
+                _SECTION_TAB_LABELS.get(section, section.title())
+                for section in failed_sections
+            )
+        )
+        tabs = " and ".join(tab_labels)
+        tab_word = "tab" if len(tab_labels) == 1 else "tabs"
         text = (
             f"Settings saved, but the {names} could not be saved. "
             f"Check the {tabs} {tab_word} and try again."

@@ -1,4 +1,4 @@
-"""Shared copy for the Setup tab's "Try it" card on macOS and Windows.
+"""Shared copy for the General tab's "Try it" card on macOS and Windows.
 
 Callers pass hotkeys already formatted for their platform (e.g. "Option+Space"
 or "Ctrl+Alt+R") plus a platform-specific hint, so both settings windows show

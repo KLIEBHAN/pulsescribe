@@ -147,7 +147,7 @@ SETTINGS_SCREEN_MARGIN = 48
 FOOTER_BUTTON_MIN_WIDTH = 120
 CARD_BUTTON_WIDTH = 110
 SETUP_TRY_IT_HINT = "The result is pasted into the active window as soon as it is ready."
-LAZY_SETTINGS_TAB_LABELS = frozenset({"Prompts", "Vocabulary", "Logs"})
+LAZY_SETTINGS_TAB_LABELS = frozenset({"Vocabulary", "History"})
 LOG_VIEW_MAX_LINES = 100
 TRANSCRIPTS_VIEW_MAX_ENTRIES = 50
 INCREMENTAL_LOG_APPEND_MAX_BYTES = 64_000
@@ -350,7 +350,7 @@ def _build_setup_status(
     if not (toggle or hold):
         return (
             "Action Required",
-            "Add at least one Toggle or Hold hotkey in the Hotkeys tab before dictation can start.",
+            "Add at least one Toggle or Hold hotkey on the General tab before dictation can start.",
             "warning",
         )
 
@@ -519,6 +519,28 @@ def create_card(
         layout.addWidget(desc_label)
 
     return card, layout
+
+
+def _add_card_section_label(card_layout: QVBoxLayout, text: str) -> None:
+    """Adds a small secondary heading that groups rows inside a card."""
+    card_layout.addSpacing(4)
+    label = QLabel(text)
+    label.setFont(ui_font("section"))
+    label.setStyleSheet(f"color: {COLORS['text_secondary']};")
+    card_layout.addWidget(label)
+
+
+def _add_card_checkbox_row(
+    card_layout: QVBoxLayout, label_text: str, checkbox: QCheckBox
+) -> None:
+    """Adds a label column plus checkbox row aligned with create_label_row."""
+    row = QHBoxLayout()
+    row.setSpacing(12)
+    label = QLabel(label_text)
+    label.setMinimumWidth(120)
+    row.addWidget(label)
+    row.addWidget(checkbox, 1)
+    card_layout.addLayout(row)
 
 
 def create_label_row(
@@ -849,6 +871,9 @@ class SettingsWindow(QDialog):
         self._refine_model_help_label: QLabel | None = None
         self._refine_settings_status_label: QLabel | None = None
         self._display_settings_status_label: QLabel | None = None
+        self._general_scroll: QScrollArea | None = None
+        self._hotkey_card_widget: QWidget | None = None
+        self._prompts_slot_layout: QVBoxLayout | None = None
         self._api_fields: dict[str, QLineEdit] = {}
         self._api_status: dict[str, QLabel] = {}
         self._provider_guidance_label: QLabel | None = None
@@ -957,14 +982,11 @@ class SettingsWindow(QDialog):
         self._built_tabs = set()
 
         tab_specs: list[tuple[str, Callable[[], QWidget]]] = [
-            ("Setup", self._build_setup_tab),
-            ("Hotkeys", self._build_hotkeys_tab),
-            ("Providers", self._build_providers_tab),
-            ("Advanced", self._build_advanced_tab),
+            ("General", self._build_general_tab),
+            ("Transcription", self._build_transcription_tab),
             ("Refine", self._build_refine_tab),
-            ("Prompts", self._build_prompts_tab),
             ("Vocabulary", self._build_vocabulary_tab),
-            ("Logs", self._build_logs_tab),
+            ("History", self._build_history_tab),
             ("About", self._build_about_tab),
         ]
         for label, builder in tab_specs:
@@ -1088,8 +1110,10 @@ class SettingsWindow(QDialog):
     # Tab Builders
     # =========================================================================
 
-    def _build_setup_tab(self) -> QWidget:
-        """Setup-Tab: Übersicht und Quick-Start."""
+    def _build_scroll_tab(
+        self, *add_sections: Callable[[QVBoxLayout], None]
+    ) -> QScrollArea:
+        """Stacks card sections top-down in one vertically scrolling tab page."""
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -1099,6 +1123,30 @@ class SettingsWindow(QDialog):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(CARD_SPACING)
 
+        for add_section in add_sections:
+            add_section(layout)
+        layout.addStretch()
+
+        scroll.setWidget(content)
+        return scroll
+
+    def _build_general_tab(self) -> QWidget:
+        """General-Tab: Setup-Übersicht, Hotkeys und Verhalten."""
+        self._general_scroll = self._build_scroll_tab(
+            self._add_setup_cards, self._add_hotkey_card, self._add_behavior_card
+        )
+        return self._general_scroll
+
+    def _build_transcription_tab(self) -> QWidget:
+        """Transcription-Tab: Provider, API-Keys, Presets und lokale Parameter."""
+        return self._build_scroll_tab(
+            self._add_provider_cards,
+            self._add_local_presets_card,
+            self._add_advanced_cards,
+        )
+
+    def _add_setup_cards(self, layout: QVBoxLayout) -> None:
+        """Setup overview: status summary and the Try it card."""
         # Status Card
         card, card_layout = create_card(
             "Status",
@@ -1119,7 +1167,41 @@ class SettingsWindow(QDialog):
 
         layout.addWidget(card)
 
-        # Recommended presets card (macOS: "Recommended (Apple Silicon)")
+        # Try it card: live hotkey summary plus a shortcut to the Hotkeys card
+        hotkey_info, body_text, hint_text, button_title = _build_setup_try_it_content(
+            None, None
+        )
+        card, card_layout = create_card()
+
+        title_row = QHBoxLayout()
+        title_row.setSpacing(10)
+        try_title = QLabel("🎤 Try it")
+        try_title.setFont(ui_font("card_title"))
+        title_row.addWidget(try_title)
+        self._setup_try_hotkey_label = create_status_label(hotkey_info, "text_secondary")
+        self._setup_try_hotkey_label.setFont(ui_font("caption"))
+        self._setup_try_hotkey_label.setWordWrap(False)
+        title_row.addWidget(self._setup_try_hotkey_label, 1)
+        card_layout.addLayout(title_row)
+
+        self._setup_try_body_label = create_status_label(body_text, "text_secondary")
+        card_layout.addWidget(self._setup_try_body_label)
+
+        action_row = QHBoxLayout()
+        action_row.setSpacing(10)
+        self._setup_try_change_button = QPushButton(button_title)
+        self._setup_try_change_button.setToolTip("Show the Hotkeys settings")
+        self._setup_try_change_button.clicked.connect(self._goto_hotkeys_tab)
+        action_row.addWidget(self._setup_try_change_button)
+        try_hint = create_status_label(hint_text, "text_hint")
+        try_hint.setFont(ui_font("caption"))
+        action_row.addWidget(try_hint, 1)
+        card_layout.addLayout(action_row)
+
+        layout.addWidget(card)
+
+    def _add_local_presets_card(self, layout: QVBoxLayout) -> None:
+        """Recommended local presets (macOS: "Recommended (Apple Silicon)")."""
         card, card_layout = create_card(
             "⚡ Recommended (Local)",
             "One click presets for fast local dictation (faster-whisper).",
@@ -1156,64 +1238,22 @@ class SettingsWindow(QDialog):
 
         layout.addWidget(card)
 
-        # Try it card: live hotkey summary plus a shortcut to the Hotkeys tab
-        hotkey_info, body_text, hint_text, button_title = _build_setup_try_it_content(
-            None, None
-        )
-        card, card_layout = create_card()
-
-        title_row = QHBoxLayout()
-        title_row.setSpacing(10)
-        try_title = QLabel("🎤 Try it")
-        try_title.setFont(ui_font("card_title"))
-        title_row.addWidget(try_title)
-        self._setup_try_hotkey_label = create_status_label(hotkey_info, "text_secondary")
-        self._setup_try_hotkey_label.setFont(ui_font("caption"))
-        self._setup_try_hotkey_label.setWordWrap(False)
-        title_row.addWidget(self._setup_try_hotkey_label, 1)
-        card_layout.addLayout(title_row)
-
-        self._setup_try_body_label = create_status_label(body_text, "text_secondary")
-        card_layout.addWidget(self._setup_try_body_label)
-
-        action_row = QHBoxLayout()
-        action_row.setSpacing(10)
-        self._setup_try_change_button = QPushButton(button_title)
-        self._setup_try_change_button.setToolTip("Open the Hotkeys tab")
-        self._setup_try_change_button.clicked.connect(self._goto_hotkeys_tab)
-        action_row.addWidget(self._setup_try_change_button)
-        try_hint = create_status_label(hint_text, "text_hint")
-        try_hint.setFont(ui_font("caption"))
-        action_row.addWidget(try_hint, 1)
-        card_layout.addLayout(action_row)
-
-        layout.addWidget(card)
-        layout.addStretch()
-
-        scroll.setWidget(content)
-        return scroll
-
     def _goto_hotkeys_tab(self) -> None:
-        """Select the Hotkeys tab (used by the Setup "Try it" card)."""
+        """Show the Hotkeys card on the General tab (used by the "Try it" card)."""
         tabs = getattr(self, "_tabs", None)
         if tabs is None:
             return
         for index in range(tabs.count()):
-            if tabs.tabText(index) == "Hotkeys":
+            if tabs.tabText(index) == "General":
                 tabs.setCurrentIndex(index)
-                return
+                break
+        scroll = getattr(self, "_general_scroll", None)
+        card = getattr(self, "_hotkey_card_widget", None)
+        if scroll is not None and card is not None:
+            scroll.ensureWidgetVisible(card)
 
-    def _build_hotkeys_tab(self) -> QWidget:
-        """Hotkeys-Tab: Presets oben, darunter eigene Hotkeys (Layout wie macOS)."""
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-
-        content = QWidget()
-        layout = QVBoxLayout(content)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(CARD_SPACING)
-
+    def _add_hotkey_card(self, layout: QVBoxLayout) -> None:
+        """Hotkeys-Karte: Presets oben, darunter eigene Hotkeys (Layout wie macOS)."""
         # Hotkey Card
         card, card_layout = create_card(
             "⌨️ Hotkeys",
@@ -1313,24 +1353,11 @@ class SettingsWindow(QDialog):
         hint.setWordWrap(True)
         card_layout.addWidget(hint)
 
+        self._hotkey_card_widget = card
         layout.addWidget(card)
-        layout.addStretch()
 
-        scroll.setWidget(content)
-
-        return scroll
-
-    def _build_providers_tab(self) -> QWidget:
-        """Providers-Tab: Mode und API-Keys."""
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-
-        content = QWidget()
-        layout = QVBoxLayout(content)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(CARD_SPACING)
-
+    def _add_provider_cards(self, layout: QVBoxLayout) -> None:
+        """Provider-Karten: Mode und API-Keys."""
         # Settings Card
         card, card_layout = create_card(
             "🧩 Providers",
@@ -1474,10 +1501,6 @@ class SettingsWindow(QDialog):
             card_layout.addLayout(row)
 
         layout.addWidget(card)
-        layout.addStretch()
-
-        scroll.setWidget(content)
-        return scroll
 
     def _refresh_microphone_options(self, selected: str | None = None) -> None:
         combo = getattr(self, "_microphone_combo", None)
@@ -1491,17 +1514,8 @@ class SettingsWindow(QDialog):
                 combo.addItem(label, name)
             combo.setCurrentIndex(combo.findData(selected))
 
-    def _build_advanced_tab(self) -> QWidget:
-        """Advanced-Tab: Lokale Modell-Parameter."""
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-
-        content = QWidget()
-        layout = QVBoxLayout(content)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(CARD_SPACING)
-
+    def _add_advanced_cards(self, layout: QVBoxLayout) -> None:
+        """Advanced-Karten: Lokale Modell-Parameter."""
         # Empty / non-local state
         card, card_layout = create_card(
             "Local Whisper only",
@@ -1668,47 +1682,24 @@ class SettingsWindow(QDialog):
 
         self._advanced_lightning_settings_card = card
         layout.addWidget(card)
-        layout.addStretch()
-
-        scroll.setWidget(content)
         self._refresh_local_advanced_ui()
-        return scroll
 
     def _build_refine_tab(self) -> QWidget:
-        """Refine-Tab: LLM-Nachbearbeitung und Ausgabe (eine Karte wie macOS)."""
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        """Refine-Tab: Refine-Karte sofort, Prompts-Karte beim ersten Öffnen."""
+        scroll = self._build_scroll_tab(self._add_refine_card, self._add_prompts_slot)
+        self._refresh_secondary_settings_feedback()
+        return scroll
 
-        content = QWidget()
-        layout = QVBoxLayout(content)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(CARD_SPACING)
-
+    def _add_refine_card(self, layout: QVBoxLayout) -> None:
+        """Refine-Karte: LLM-Nachbearbeitung (wie macOS)."""
         card, card_layout = create_card(
-            "✨ Refine & Output",
-            "Choose whether PulseScribe cleans up transcript text after dictation, what it "
-            "shows on screen, and whether your clipboard gets restored after pasting.",
+            "✨ Refine",
+            "Choose whether PulseScribe cleans up transcript text after dictation, and "
+            "which provider and model it uses.",
         )
 
-        def add_section_label(text: str) -> None:
-            card_layout.addSpacing(4)
-            label = QLabel(text)
-            label.setFont(ui_font("section"))
-            label.setStyleSheet(f"color: {COLORS['text_secondary']};")
-            card_layout.addWidget(label)
-
-        def add_checkbox_row(label_text: str, checkbox: QCheckBox) -> None:
-            row = QHBoxLayout()
-            row.setSpacing(12)
-            label = QLabel(label_text)
-            label.setMinimumWidth(120)
-            row.addWidget(label)
-            row.addWidget(checkbox, 1)
-            card_layout.addLayout(row)
-
         # --- Transcript cleanup ---
-        add_section_label("Transcript cleanup")
+        _add_card_section_label(card_layout, "Transcript cleanup")
 
         self._refine_checkbox = QCheckBox("Clean up transcript text with an LLM")
         self._refine_checkbox.setAccessibleName("Enable transcript cleanup")
@@ -1716,7 +1707,7 @@ class SettingsWindow(QDialog):
             "Use an LLM to improve punctuation, formatting, and spoken commands after transcription."
         )
         self._refine_checkbox.toggled.connect(self._refresh_secondary_settings_feedback)
-        add_checkbox_row("Refine:", self._refine_checkbox)
+        _add_card_checkbox_row(card_layout, "Refine:", self._refine_checkbox)
 
         # Provider
         self._refine_provider_combo = QComboBox()
@@ -1746,8 +1737,14 @@ class SettingsWindow(QDialog):
         )
         card_layout.addWidget(self._refine_settings_status_label)
 
+        layout.addWidget(card)
+
+    def _add_behavior_card(self, layout: QVBoxLayout) -> None:
+        """General-tab card for the overlay, clipboard and speed toggles."""
+        card, card_layout = create_card()
+
         # --- Visual & paste behavior ---
-        add_section_label("Visual & paste behavior")
+        _add_card_section_label(card_layout, "Visual & paste behavior")
 
         self._overlay_checkbox = QCheckBox("Show recording overlay")
         self._overlay_checkbox.setAccessibleName("Show recording overlay")
@@ -1755,7 +1752,7 @@ class SettingsWindow(QDialog):
             "Show a floating overlay while recording so you can see live dictation status."
         )
         self._overlay_checkbox.toggled.connect(self._refresh_secondary_settings_feedback)
-        add_checkbox_row("Overlay:", self._overlay_checkbox)
+        _add_card_checkbox_row(card_layout, "Overlay:", self._overlay_checkbox)
 
         self._clipboard_restore_checkbox = QCheckBox("Restore clipboard after paste")
         self._clipboard_restore_checkbox.setAccessibleName(
@@ -1767,7 +1764,7 @@ class SettingsWindow(QDialog):
         self._clipboard_restore_checkbox.toggled.connect(
             self._refresh_secondary_settings_feedback
         )
-        add_checkbox_row("Clipboard:", self._clipboard_restore_checkbox)
+        _add_card_checkbox_row(card_layout, "Clipboard:", self._clipboard_restore_checkbox)
 
         self._rtf_checkbox = QCheckBox("Show transcription speed after each result")
         self._rtf_checkbox.setAccessibleName("Show transcription speed details")
@@ -1775,7 +1772,7 @@ class SettingsWindow(QDialog):
             "Display the Real-Time Factor after each transcription. Useful for performance tuning; most people can leave this off."
         )
         self._rtf_checkbox.toggled.connect(self._refresh_secondary_settings_feedback)
-        add_checkbox_row("Performance:", self._rtf_checkbox)
+        _add_card_checkbox_row(card_layout, "Performance:", self._rtf_checkbox)
 
         self._display_settings_status_label = create_status_label(
             "", "text_secondary"
@@ -1787,23 +1784,23 @@ class SettingsWindow(QDialog):
         card_layout.addWidget(self._display_settings_status_label)
 
         layout.addWidget(card)
-        layout.addStretch()
 
-        scroll.setWidget(content)
-        self._refresh_secondary_settings_feedback()
-        return scroll
+    def _add_prompts_slot(self, layout: QVBoxLayout) -> None:
+        """Reserves the Refine-tab space that the lazy Prompts card fills."""
+        slot = QWidget()
+        self._prompts_slot_layout = QVBoxLayout(slot)
+        self._prompts_slot_layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(slot, 1)
 
-    def _build_prompts_tab(self) -> QWidget:
-        """Prompts-Tab: Custom Prompts."""
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    def _ensure_prompts_card_built(self) -> None:
+        """Builds the Prompts card the first time the Refine tab is shown."""
+        slot_layout = getattr(self, "_prompts_slot_layout", None)
+        if slot_layout is None or slot_layout.count():
+            return
+        slot_layout.addWidget(self._build_prompts_card())
 
-        content = QWidget()
-        layout = QVBoxLayout(content)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(CARD_SPACING)
-
+    def _build_prompts_card(self) -> QWidget:
+        """Prompts-Karte: Custom Prompts (lazy im Refine-Tab)."""
         card, card_layout = create_card(
             "📝 Custom Prompts",
             "Fine-tune Refine prompts by context. Switch contexts freely, then use Save & Apply when you're ready.",
@@ -1867,12 +1864,9 @@ class SettingsWindow(QDialog):
 
         card_layout.addLayout(btn_layout)
 
-        layout.addWidget(card, 1)
-
-        scroll.setWidget(content)
         self._update_prompt_context_ui(self._current_prompt_context)
         self._refresh_prompt_editor_feedback()
-        return scroll
+        return card
 
     def _build_vocabulary_tab(self) -> QWidget:
         """Vocabulary-Tab: Custom Vocabulary."""
@@ -1949,8 +1943,8 @@ class SettingsWindow(QDialog):
         self._refresh_vocabulary_editor_feedback()
         return scroll
 
-    def _build_logs_tab(self) -> QWidget:
-        """Logs-Tab: Log-Viewer mit Transcripts (Karte mit Segment-Umschalter wie macOS)."""
+    def _build_history_tab(self) -> QWidget:
+        """History-Tab: Transcripts und Log-Viewer (Karte mit Segment-Umschalter wie macOS)."""
         from PySide6.QtCore import QTimer
         from PySide6.QtWidgets import QStackedWidget, QButtonGroup
 
@@ -1961,7 +1955,7 @@ class SettingsWindow(QDialog):
 
         card, card_layout = create_card()
 
-        # Segment Control (Logs | Transcripts)
+        # Segment Control (Transcripts | Logs); stack pages stay 0=Logs, 1=Transcripts
         segment_group = QFrame()
         segment_group.setObjectName("segmentGroup")
         segment_layout = QHBoxLayout(segment_group)
@@ -1971,12 +1965,12 @@ class SettingsWindow(QDialog):
         self._logs_btn = QPushButton("Logs")
         self._logs_btn.setObjectName("segment")
         self._logs_btn.setCheckable(True)
-        self._logs_btn.setChecked(True)
         self._logs_btn.clicked.connect(lambda: self._switch_logs_view(0))
 
         self._transcripts_btn = QPushButton("Transcripts")
         self._transcripts_btn.setObjectName("segment")
         self._transcripts_btn.setCheckable(True)
+        self._transcripts_btn.setChecked(True)
         self._transcripts_btn.clicked.connect(lambda: self._switch_logs_view(1))
 
         # Button Group für exklusive Auswahl
@@ -1984,8 +1978,8 @@ class SettingsWindow(QDialog):
         self._logs_btn_group.addButton(self._logs_btn, 0)
         self._logs_btn_group.addButton(self._transcripts_btn, 1)
 
-        segment_layout.addWidget(self._logs_btn)
         segment_layout.addWidget(self._transcripts_btn)
+        segment_layout.addWidget(self._logs_btn)
         segment_row = QHBoxLayout()
         segment_row.addWidget(segment_group)
         segment_row.addStretch()
@@ -2091,6 +2085,7 @@ class SettingsWindow(QDialog):
         transcripts_layout.addWidget(self._transcripts_status)
 
         self._logs_stack.addWidget(transcripts_page)
+        self._logs_stack.setCurrentIndex(1)
 
         card_layout.addWidget(self._logs_stack, 1)
         layout.addWidget(card, 1)
@@ -2197,7 +2192,7 @@ class SettingsWindow(QDialog):
         return cached
 
     def _ensure_prompts_loaded(self) -> None:
-        """Defers prompt disk I/O until the Prompts tab is actually used."""
+        """Defers prompt disk I/O until the Prompts card is actually used."""
         if getattr(self, "_prompts_loaded", False):
             return
         self._load_prompt_for_context(self._current_prompt_context or "default")
@@ -2572,7 +2567,7 @@ class SettingsWindow(QDialog):
         if combo is not None:
             _set_widget_tooltip_if_changed(
                 combo,
-                "Choose which provider should clean up transcript text after transcription. The matching API key is managed on the Providers tab.",
+                "Choose which provider should clean up transcript text after transcription. The matching API key is managed on the Transcription tab.",
             )
             try:
                 combo.setAccessibleName("Refine provider")
@@ -2642,15 +2637,16 @@ class SettingsWindow(QDialog):
         tab_name = self._tabs.tabText(index) if self._tabs else ""
         self._ensure_tab_built(tab_name)
 
-        if tab_name == "Prompts":
+        if tab_name == "Refine":
+            self._ensure_prompts_card_built()
             self._ensure_prompts_loaded()
 
         # Vocabulary automatisch laden
         if tab_name == "Vocabulary":
             self._load_vocabulary()
 
-        # Logs automatisch laden
-        if tab_name == "Logs":
+        # History (Transcripts/Logs) automatisch laden
+        if tab_name == "History":
             self._reset_logs_auto_refresh_cadence()
             if (
                 hasattr(self, "_logs_stack")
@@ -3461,13 +3457,13 @@ class SettingsWindow(QDialog):
         self._update_logs_auto_refresh_state()
 
     def _is_logs_tab_active(self) -> bool:
-        """Prüft, ob der Logs-Tab aktuell sichtbar ist."""
+        """Prüft, ob der History-Tab aktuell sichtbar ist."""
         if not hasattr(self, "_tabs") or not self._tabs:
             return False
         current_index = self._tabs.currentIndex()
         if current_index < 0:
             return False
-        return self._tabs.tabText(current_index) == "Logs"
+        return self._tabs.tabText(current_index) == "History"
 
     def _update_logs_auto_refresh_state(self) -> None:
         """Aktiviert Auto-Refresh nur wenn Logs tatsächlich sichtbar sind."""

@@ -450,13 +450,14 @@ def test_ensure_tab_built_builds_lazy_tab_only_once():
     assert layout.widgets == ["logs-widget"]
 
 
-def test_on_tab_changed_builds_lazy_prompts_tab_before_loading():
+def test_on_tab_changed_builds_lazy_prompts_card_before_loading():
     window = SettingsWindow.__new__(SettingsWindow)
     built: list[str] = []
     prompt_calls: list[str] = []
 
-    window._tabs = _FakeTabs("Prompts")
+    window._tabs = _FakeTabs("Refine")
     window._ensure_tab_built = lambda label: built.append(label) or True
+    window._ensure_prompts_card_built = lambda: prompt_calls.append("card")
     window._ensure_prompts_loaded = lambda: prompt_calls.append("prompts")
     window._load_vocabulary = lambda **_kwargs: (_ for _ in ()).throw(
         AssertionError("vocabulary should not load")
@@ -472,8 +473,8 @@ def test_on_tab_changed_builds_lazy_prompts_tab_before_loading():
 
     window._on_tab_changed(0)
 
-    assert built == ["Prompts"]
-    assert prompt_calls == ["prompts"]
+    assert built == ["Refine"]
+    assert prompt_calls == ["card", "prompts"]
 
 
 def test_load_vocabulary_skips_reload_when_signature_unchanged(monkeypatch):
@@ -836,7 +837,7 @@ def test_save_settings_reports_partial_write_failures(
         if not vocabulary_saved:
             assert "Vocabulary" in window._footer_status_label.text
         if not prompts_saved:
-            assert "Prompts" in window._footer_status_label.text
+            assert "Refine" in window._footer_status_label.text
 
 
 @pytest.mark.parametrize("vocabulary_saved", [True, False])
@@ -862,7 +863,7 @@ def test_reload_callback_failure_preserves_file_save_result(
     if not vocabulary_saved:
         assert "Vocabulary" in text
     if not prompts_saved:
-        assert "Prompts" in text
+        assert "Refine" in text
 
 
 def test_save_settings_batches_api_key_updates(monkeypatch):
