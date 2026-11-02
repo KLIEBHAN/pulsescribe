@@ -2837,11 +2837,13 @@ class WelcomeController:
         """Shows the selected refine provider's key and badge; greys details while Refine is off."""
         checkbox = getattr(self, "_refine_checkbox", None)
         enabled = bool(checkbox is not None and checkbox.state() == 1)
-        label_color = theme.ns_color(theme.TEXT if enabled else theme.PLACEHOLDER)
-        for label, control in getattr(self, "_refine_detail_views", ()):
-            label.setTextColor_(label_color)
-            if bool(control.isEnabled()) != enabled:
-                control.setEnabled_(enabled)
+        detail_views = getattr(self, "_refine_detail_views", ())
+        if detail_views:  # resolve AppKit colors only once Refine is built
+            label_color = theme.ns_color(theme.TEXT if enabled else theme.PLACEHOLDER)
+            for label, control in detail_views:
+                label.setTextColor_(label_color)
+                if bool(control.isEnabled()) != enabled:
+                    control.setEnabled_(enabled)
         for control in (
             getattr(self, "_prompts_context_popup", None),
             getattr(self, "_prompts_reset_btn", None),
