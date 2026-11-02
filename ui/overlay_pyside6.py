@@ -2,7 +2,8 @@
 
 Monochromes Overlay im Stil von ui/overlay_style.py:
 - QWidget + QPainter, Inhalt aus ``describe_overlay_content`` (wie macOS)
-- Nur RECORDING animiert (audiogetrieben); alle anderen States sind statisch
+- RECORDING animiert audiogetrieben; Preparing/Transcribing/Refining zeigen den
+  Shimmer (QVariantAnimation, ≤ 30 FPS, repaint nur der Linie); sonst statisch
 - Klick-durchlässig, außer während ein Fehler sichtbar ist (Klick blendet ihn aus)
 - Signals/Slots für Thread-Safety
 - High-DPI Awareness, Multi-Monitor Support (Overlay auf aktivem Monitor)
@@ -16,11 +17,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import (
+    QEasingCurve,
     QMetaObject,
     QPoint,
     QPropertyAnimation,
+    QRect,
     QRectF,
     QTimer,
+    QVariantAnimation,
     Qt,
     Signal,
     Slot,
@@ -82,11 +86,18 @@ from ui.overlay_style import (
     OVERLAY_HEIGHT,
     OVERLAY_MAX_WIDTH_RATIO,
     OVERLAY_WIDTH,
+    PHASE_ACTIVE_STEP,
+    SHIMMER_ACTIVE_STEP_COLOR,
+    SHIMMER_BAND_WIDTH,
+    SHIMMER_HIGHLIGHT_COLOR,
+    SHIMMER_MAX_FPS,
+    SHIMMER_PERIOD_SECONDS,
     TEXT_COLOR,
     TEXT_FADE_WIDTH,
     TEXT_FONT_SIZE,
     OverlayLayout,
     compute_overlay_layout,
+    shimmer_track,
 )
 from ui.overlay_text import (
     FADED_RECORDING_INTERIM_MAX_CHARS,
@@ -120,6 +131,8 @@ INTERIM_POLL_STABLE_INTERVAL_MS = 500
 INTERIM_POLL_STABLE_THRESHOLD = 3
 INTERIM_POLL_DIRECT_INTERVAL_MS = 1000  # Weniger Wakeups bei direkten Interim-Updates
 INTERIM_DIRECT_UPDATE_GRACE_S = 1.5
+SHIMMER_FRAME_S = 1 / SHIMMER_MAX_FPS
+SPI_GETCLIENTAREAANIMATION = 0x1042
 
 _AUTO_HIDE_STATES = ("DONE", "NO_SPEECH")
 _TEXT_COLORS = {
@@ -127,6 +140,20 @@ _TEXT_COLORS = {
     "muted": MUTED_TEXT_COLOR,
     "interim": INTERIM_TEXT_COLOR,
 }
+
+
+def _reduce_motion() -> bool:
+    """True when Windows animation effects (client area animations) are off."""
+    if sys.platform != "win32":
+        return False
+    try:
+        enabled = ctypes.c_int(1)
+        ok = ctypes.windll.user32.SystemParametersInfoW(
+            SPI_GETCLIENTAREAANIMATION, 0, ctypes.byref(enabled), 0
+        )
+        return bool(ok) and not enabled.value
+    except Exception:
+        return False
 
 
 # =============================================================================
@@ -258,10 +285,17 @@ class PySide6OverlayWidget(QWidget):
             tone: (QColor(background), QColor(foreground))
             for tone, (background, foreground) in BADGE_TONES.items()
         }
+        # Shimmer: track (x, width) while it runs, band left edge in the track.
+        self._shimmer_track: tuple[float, float] | None = None
+        self._shimmer_x: float | None = None
+        self._shimmer_due = 0.0  # earliest time of the next sweep repaint
+        self._shimmer_active_color = QColor(SHIMMER_ACTIVE_STEP_COLOR)
+        self._shimmer_highlight = QColor(SHIMMER_HIGHLIGHT_COLOR)
 
         # Setup
         self._setup_window()
         self._setup_animation()
+        self._setup_shimmer()
         self._setup_fade_animation()
         self._setup_clock()
 
@@ -341,6 +375,17 @@ class PySide6OverlayWidget(QWidget):
         self._animation_timer.timeout.connect(self._animate_frame)
         self._animation_timer.setTimerType(Qt.TimerType.PreciseTimer)
 
+    def _setup_shimmer(self):
+        """One endless sweep animation, started per processing line (_sync_shimmer)."""
+        animation = QVariantAnimation(self)
+        animation.setStartValue(float(-SHIMMER_BAND_WIDTH))
+        animation.setEndValue(float(BAR_AREA_WIDTH))
+        animation.setDuration(round(SHIMMER_PERIOD_SECONDS * 1000))
+        animation.setLoopCount(-1)
+        animation.setEasingCurve(QEasingCurve.Type.InOutSine)
+        animation.valueChanged.connect(self._on_shimmer_value)
+        self._shimmer_animation = animation
+
     def _setup_fade_animation(self):
         """Konfiguriert Fade-In/Out Animation."""
         self._fade_animation = QPropertyAnimation(self, b"windowOpacity")
@@ -401,6 +446,7 @@ class PySide6OverlayWidget(QWidget):
         if self._fade_animation.endValue() == 0.0 and self.windowOpacity() < 0.1:
             self.hide()
             self._stop_animation()
+            self._stop_shimmer()
             self._reset_levels()
 
     def _start_fade_out_timer(self):
@@ -422,6 +468,8 @@ class PySide6OverlayWidget(QWidget):
             self._animation_timer.stop()
         if hasattr(self, "_clock_timer") and self._clock_timer:
             self._clock_timer.stop()
+        if hasattr(self, "_shimmer_animation") and self._shimmer_animation:
+            self._shimmer_animation.stop()
         if hasattr(self, "_fade_animation") and self._fade_animation:
             self._fade_animation.stop()
 
@@ -467,6 +515,7 @@ class PySide6OverlayWidget(QWidget):
 
         if state == "IDLE":
             self._stop_clock()
+            self._stop_shimmer()
             # Daemon returns to IDLE so hotkeys work; a persistent message stays.
             if state_changed and not self._persistent:
                 self._fade_out()
@@ -493,6 +542,7 @@ class PySide6OverlayWidget(QWidget):
         reshow = content.dismissible and not self._persistent
         self._set_persistent(content.dismissible)
         self._set_content(content)
+        self._sync_shimmer(content.bars)
         if state_changed or reshow:
             self._fade_in()
         if state_changed:
@@ -689,6 +739,51 @@ class PySide6OverlayWidget(QWidget):
     def _target_bar_heights(self, t: float) -> tuple[float, ...]:
         return tuple(self._anim.calculate_frame_heights(t, "RECORDING"))
 
+    def _sync_shimmer(self, mode: str) -> None:
+        """Run the shimmer on a processing line, stop it for every other mode.
+
+        Keeps a running sweep when the track is unchanged (LOADING to
+        TRANSCRIBING); reduced motion leaves the static line.
+        """
+        track = shimmer_track(mode)
+        if track == self._shimmer_track:
+            return
+        self._stop_shimmer()
+        if track is None or _reduce_motion():
+            return
+        self._shimmer_track = track
+        self._shimmer_animation.setEndValue(float(track[1]))
+        self._shimmer_animation.start()
+
+    def _stop_shimmer(self) -> None:
+        if self._shimmer_track is None:
+            return
+        self._shimmer_animation.stop()
+        self._shimmer_track = None
+        self._shimmer_x = None
+        self.update()
+
+    def _shimmer_rect(self) -> QRect:
+        """Device rect of the shimmering track, the only area a sweep repaints."""
+        x, width = self._shimmer_track or (0.0, 0.0)
+        left = int(self._layout.status_x + x) - 1
+        top = int(BAR_CENTER_Y - LINE_HEIGHT / 2) - 1
+        return QRect(left, top, int(width) + 3, LINE_HEIGHT + 3)
+
+    @Slot(object)
+    def _on_shimmer_value(self, value) -> None:
+        """Repaint the track at most SHIMMER_MAX_FPS times per second.
+
+        Qt's animation driver ticks every ~16 ms; deadlines advance by one
+        frame, so timer jitter cannot raise the average rate.
+        """
+        now = time.perf_counter()
+        if self._shimmer_track is None or now < self._shimmer_due:
+            return
+        self._shimmer_due = max(self._shimmer_due + SHIMMER_FRAME_S, now + SHIMMER_FRAME_S / 2)
+        self._shimmer_x = float(value)
+        self.update(self._shimmer_rect())
+
     @Slot()
     def _animate_frame(self):
         if self._state != "RECORDING":
@@ -734,6 +829,10 @@ class PySide6OverlayWidget(QWidget):
         painter.drawRoundedRect(rect, OVERLAY_CORNER_RADIUS, OVERLAY_CORNER_RADIUS)
 
         self._draw_bars(painter)
+        if self._shimmer_track is not None and self._shimmer_rect().contains(event.rect()):
+            # Sweep frame: only the line changed, skip badge and text.
+            painter.end()
+            return
         self._draw_badge(painter)
         self._draw_text(painter)
         if self._layout.meta_x is not None and self._meta_shown:
@@ -789,14 +888,16 @@ class PySide6OverlayWidget(QWidget):
         steps = self._step_colors.get(mode)
         if steps is not None:
             painter.setPen(Qt.PenStyle.NoPen)
+            active = PHASE_ACTIVE_STEP[mode] if self._shimmer_track is not None else None
             for index, color in enumerate(steps):
-                painter.setBrush(color)
+                painter.setBrush(self._shimmer_active_color if index == active else color)
                 x = bars_x + index * (PHASE_STEP_WIDTH + PHASE_STEP_GAP)
                 painter.drawRoundedRect(
                     QRectF(x, BAR_CENTER_Y - LINE_HEIGHT / 2, PHASE_STEP_WIDTH, LINE_HEIGHT),
                     LINE_HEIGHT / 2,
                     LINE_HEIGHT / 2,
                 )
+            self._draw_shimmer(painter)
             return
         if mode not in self._bar_colors:
             return
@@ -808,6 +909,7 @@ class PySide6OverlayWidget(QWidget):
                 LINE_HEIGHT / 2,
                 LINE_HEIGHT / 2,
             )
+            self._draw_shimmer(painter)
             return
         heights = self._bar_heights if mode == "level" else LISTENING_BAR_HEIGHTS
         radius = BAR_WIDTH / 2
@@ -817,6 +919,26 @@ class PySide6OverlayWidget(QWidget):
             painter.drawRoundedRect(
                 QRectF(x, BAR_CENTER_Y - height / 2, BAR_WIDTH, height), radius, radius
             )
+
+    def _draw_shimmer(self, painter: QPainter) -> None:
+        """Highlight band over the track; the padded gradient is clear outside it."""
+        if self._shimmer_track is None or self._shimmer_x is None:
+            return
+        x, width = self._shimmer_track
+        left = self._layout.status_x + x
+        band_left = left + self._shimmer_x
+        gradient = QLinearGradient(band_left, 0, band_left + SHIMMER_BAND_WIDTH, 0)
+        clear = QColor(self._shimmer_highlight)
+        clear.setAlpha(0)
+        gradient.setColorAt(0.0, clear)
+        gradient.setColorAt(0.5, self._shimmer_highlight)
+        gradient.setColorAt(1.0, clear)
+        painter.setBrush(gradient)
+        painter.drawRoundedRect(
+            QRectF(left, BAR_CENTER_Y - LINE_HEIGHT / 2, width, LINE_HEIGHT),
+            LINE_HEIGHT / 2,
+            LINE_HEIGHT / 2,
+        )
 
     def _draw_badge(self, painter: QPainter):
         rect = self._badge_rect
