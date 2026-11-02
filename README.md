@@ -20,7 +20,7 @@ Press a hotkey, speak, release – your text appears. That's it.
 - **LLM Post-processing** – Clean up transcriptions with GPT/Llama
 - **Context Awareness** – Adjusts style based on active app (email, chat, code)
 - **Visual Feedback** – Animated overlay shows recording status and reports paste or clipboard failures
-- **Recover Your Last Dictation** – Choose **Copy Last Transcript** in the menu bar or tray menu to copy the last dictation from this session, even if auto-paste failed. Earlier sessions remain available in Settings → Logs → Transcripts.
+- **Recover Your Last Dictation** – Choose **Copy Last Transcript** in the menu bar or tray menu to copy the last dictation from this session, even if auto-paste failed. Earlier sessions remain available in Settings → History → Transcripts.
 
 ## Table of Contents
 
@@ -115,7 +115,7 @@ DEEPGRAM_API_KEY=your_key_here
 PULSESCRIBE_MODE=deepgram
 ```
 
-Choose a microphone in **Settings → Providers → Microphone**, then **Save & Apply**
+Choose a microphone in **Settings → Transcription → Microphone**, then **Save & Apply**
 to use it from the next recording. **System default** follows your OS input device.
 **Refresh** reloads the device list. If a saved microphone is unavailable,
 PulseScribe temporarily selects an input device automatically.

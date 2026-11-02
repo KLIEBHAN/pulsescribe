@@ -4,6 +4,8 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from ui.welcome import (
+    HISTORY_LOGS_SEGMENT,
+    HISTORY_TRANSCRIPTS_SEGMENT,
     LEGACY_LOCAL_FP16_ENV_KEY,
     LOGS_AUTO_REFRESH_ACTIVE_INTERVAL_S,
     LOGS_AUTO_REFRESH_BACKOFF_INTERVAL_S,
@@ -460,7 +462,7 @@ class TestWelcomeLazyTabs:
 
         def ensure_tab_built(label: str) -> bool:
             built.append(label)
-            if label == "Providers":
+            if label == "Transcription":
                 ctrl._mode_popup = _FakePopup(["deepgram", "local"], selected="deepgram")
                 ctrl._local_backend_popup = _FakePopup(
                     ["auto", "whisper", "faster", "mlx", "lightning"],
@@ -470,7 +472,6 @@ class TestWelcomeLazyTabs:
                     ["default", "turbo", "large", "large-v3"],
                     selected="default",
                 )
-            elif label == "Advanced":
                 ctrl._device_popup = _FakePopup(
                     ["auto", "mps", "cpu", "cuda"], selected="cuda"
                 )
@@ -511,7 +512,7 @@ class TestWelcomeLazyTabs:
 
         ctrl._apply_local_preset("macOS: MLX Balanced (large)")
 
-        assert built == ["Providers", "Advanced"]
+        assert built == ["Transcription"]
         assert ctrl._mode_popup.titleOfSelectedItem() == "local"
         assert ctrl._local_backend_popup.titleOfSelectedItem() == "mlx"
         assert ctrl._local_model_popup.titleOfSelectedItem() == "large"
@@ -550,7 +551,7 @@ class TestWelcomeSaveSettings:
                 assert "Vocabulary" in ctrl._footer_status_label.value
                 assert ctrl._vocab_text_view.string() == "Audit"
             if not prompts_saved:
-                assert "Prompts" in ctrl._footer_status_label.value
+                assert "Refine" in ctrl._footer_status_label.value
 
     def test_env_write_failure_stops_save_without_marking_drafts_saved(
         self, monkeypatch
@@ -1187,7 +1188,7 @@ class TestWelcomeLogsSegmentSwitch:
         ctrl._refresh_transcripts = MagicMock()
         ctrl._active_logs_segment = None
 
-        ctrl._switch_logs_segment(0)
+        ctrl._switch_logs_segment(HISTORY_LOGS_SEGMENT)
 
         assert ctrl._logs_container.hidden is False
         assert ctrl._transcripts_container.hidden is True
@@ -1203,7 +1204,7 @@ class TestWelcomeLogsSegmentSwitch:
         ctrl._transcripts_view_seen = False
         ctrl._active_logs_segment = None
 
-        ctrl._switch_logs_segment(1)
+        ctrl._switch_logs_segment(HISTORY_TRANSCRIPTS_SEGMENT)
 
         assert ctrl._logs_container.hidden is True
         assert ctrl._transcripts_container.hidden is False
@@ -1221,7 +1222,7 @@ class TestWelcomeLogsSegmentSwitch:
         ctrl._transcripts_view_seen = True
         ctrl._active_logs_segment = None
 
-        ctrl._switch_logs_segment(1)
+        ctrl._switch_logs_segment(HISTORY_TRANSCRIPTS_SEGMENT)
 
         ctrl._ensure_transcripts_view_built.assert_called_once_with()
         ctrl._refresh_transcripts.assert_called_once_with(scroll_to_bottom=False)
@@ -1236,7 +1237,7 @@ class TestWelcomeLogsSegmentSwitch:
         ctrl._transcripts_view_seen = False
         ctrl._active_logs_segment = None
 
-        ctrl._switch_logs_segment(1)
+        ctrl._switch_logs_segment(HISTORY_TRANSCRIPTS_SEGMENT)
 
         ctrl._ensure_transcripts_view_built.assert_called_once_with()
         ctrl._refresh_transcripts.assert_called_once_with(scroll_to_bottom=True)
@@ -1247,9 +1248,9 @@ class TestWelcomeLogsSegmentSwitch:
         ctrl._transcripts_container = _FakeContainer()
         ctrl._refresh_logs = MagicMock()
         ctrl._refresh_transcripts = MagicMock()
-        ctrl._active_logs_segment = 0
+        ctrl._active_logs_segment = HISTORY_LOGS_SEGMENT
 
-        ctrl._switch_logs_segment(0)
+        ctrl._switch_logs_segment(HISTORY_LOGS_SEGMENT)
 
         ctrl._refresh_logs.assert_not_called()
         ctrl._refresh_transcripts.assert_not_called()
@@ -1261,7 +1262,7 @@ class TestWelcomeLogsSegmentSwitch:
         ctrl._logs_segment_control = type(
             "_Segment",
             (),
-            {"selectedSegment": lambda self: 0},
+            {"selectedSegment": lambda self: HISTORY_LOGS_SEGMENT},
         )()
         assert ctrl._is_logs_view_active() is True
 
@@ -1270,7 +1271,7 @@ class TestWelcomeLogsSegmentSwitch:
         ctrl._logs_segment_control = type(
             "_Segment",
             (),
-            {"selectedSegment": lambda self: 1},
+            {"selectedSegment": lambda self: HISTORY_TRANSCRIPTS_SEGMENT},
         )()
         assert ctrl._is_logs_view_active() is False
 
@@ -1306,12 +1307,12 @@ class _FakeWindow:
 class TestWelcomeLogsAutoRefreshGuards:
     def test_logs_tab_active_detection(self):
         ctrl = WelcomeController.__new__(WelcomeController)
-        ctrl._tab_view = _FakeTabView("Logs")
+        ctrl._tab_view = _FakeTabView("History")
         assert ctrl._is_logs_tab_active() is True
 
     def test_logs_tab_inactive_detection(self):
         ctrl = WelcomeController.__new__(WelcomeController)
-        ctrl._tab_view = _FakeTabView("Setup")
+        ctrl._tab_view = _FakeTabView("General")
         assert ctrl._is_logs_tab_active() is False
 
     def test_window_visibility_detection(self):
@@ -1550,7 +1551,7 @@ class TestWelcomeLogsAutoRefreshGuards:
         ctrl._logs_auto_refresh_timer = fake_timer
         ctrl._logs_auto_refresh_interval_seconds = LOGS_AUTO_REFRESH_ACTIVE_INTERVAL_S
         ctrl._logs_auto_checkbox = type("_Check", (), {"state": lambda self: 0})()
-        ctrl._is_tab_built = lambda label: label == "Logs"
+        ctrl._is_tab_built = lambda label: label == "History"
 
         ctrl._update_logs_auto_refresh_state(reset_cadence=True)
 

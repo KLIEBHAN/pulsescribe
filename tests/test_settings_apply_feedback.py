@@ -22,7 +22,9 @@ def test_partial_save_never_reports_full_success(failed_sections, reload_worked)
 
     assert color == "warning"
     assert "could not be saved" in text
-    assert all(section.title() in text for section in failed_sections)
+    assert all(section in text for section in failed_sections)
+    if "prompts" in failed_sections:
+        assert "Refine" in text
     assert "Dock icon" in text
     if not reload_worked:
         assert "reload failed" in text

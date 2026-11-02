@@ -94,6 +94,9 @@ FOOTER_HEIGHT = 60
 CARD_PADDING = 16
 CARD_CORNER_RADIUS = 12
 CARD_SPACING = 12
+# History tab segments, in display order (Transcripts is the default view)
+HISTORY_TRANSCRIPTS_SEGMENT = 0
+HISTORY_LOGS_SEGMENT = 1
 
 # Verfügbare Optionen für Dropdowns
 MODE_OPTIONS = ["deepgram", "openai", "groq", "local"]
@@ -541,7 +544,7 @@ class WelcomeController:
         self._logs_segment_handler = None
         self._logs_container = None
         self._transcripts_container = None
-        self._active_logs_segment = 0
+        self._active_logs_segment = HISTORY_TRANSCRIPTS_SEGMENT
         self._transcripts_text_view = None
         self._transcripts_scroll_view = None
         self._transcripts_count_label = None
@@ -568,6 +571,7 @@ class WelcomeController:
         self._setup_action_handlers = []
         self._setup_permissions_card = None
         self._setup_preset_status_label = None
+        self._hotkey_card_anchor = None
         self._setup_try_hotkey_label = None
         self._setup_try_body_label = None
         self._setup_try_hint_label = None
@@ -832,14 +836,11 @@ class WelcomeController:
                 self._tab_delegate = None
 
         tab_specs = [
-            ("Setup", self._build_setup_tab),
-            ("Hotkeys", self._build_hotkeys_tab),
-            ("Providers", self._build_providers_tab),
-            ("Advanced", self._build_advanced_tab),
+            ("General", self._build_general_tab),
+            ("Transcription", self._build_transcription_tab),
             ("Refine", self._build_refine_tab),
-            ("Prompts", self._build_prompts_tab),
             ("Vocabulary", self._build_vocabulary_tab),
-            ("Logs", self._build_logs_tab),
+            ("History", self._build_history_tab),
             ("About", self._build_about_tab),
         ]
         for label, builder in tab_specs:
@@ -908,7 +909,74 @@ class WelcomeController:
             return False
         return self._ensure_tab_built(label)
 
-    def _build_setup_tab(self, parent_view, tab_height: int) -> None:
+    def _build_scrollable_tab(self, parent_view, tab_height: int, build_content) -> int:
+        """Hosts a top-down card layout that may exceed the tab in a scroll view.
+
+        ``build_content(document, top_y)`` adds cards below ``top_y`` and returns
+        the next free y, like the card builders. The document is then trimmed
+        to its content, so it only scrolls when the cards do not fit. Returns
+        the offset subtracted from every subview's y during trimming.
+        """
+        from AppKit import NSScrollView, NSView  # type: ignore[import-not-found]
+        from Foundation import (  # type: ignore[import-not-found]
+            NSMakePoint,
+            NSMakeRect,
+            NSMakeSize,
+        )
+
+        draft_height = 4000
+        document = NSView.alloc().initWithFrame_(
+            NSMakeRect(0, 0, WELCOME_WIDTH, draft_height)
+        )
+        next_y = build_content(document, draft_height)
+        content_height = draft_height - next_y - CARD_SPACING + WELCOME_PADDING
+        document_height = max(tab_height, content_height)
+        shift = draft_height - document_height
+        for subview in list(document.subviews()):
+            origin = subview.frame().origin
+            subview.setFrameOrigin_(NSMakePoint(origin.x, origin.y - shift))
+        document.setFrameSize_(NSMakeSize(WELCOME_WIDTH, document_height))
+
+        scroll = NSScrollView.alloc().initWithFrame_(
+            NSMakeRect(0, 0, WELCOME_WIDTH, tab_height)
+        )
+        scroll.setHasVerticalScroller_(True)
+        scroll.setHasHorizontalScroller_(False)
+        scroll.setAutohidesScrollers_(True)
+        try:
+            scroll.setDrawsBackground_(False)
+        except Exception:
+            pass
+        scroll.setDocumentView_(document)
+        parent_view.addSubview_(scroll)
+        # Non-flipped documents start at the bottom; show the first card instead.
+        document.scrollPoint_(NSMakePoint(0, document_height - tab_height))
+        return shift
+
+    def _build_general_tab(self, parent_view, tab_height: int) -> None:
+        hotkeys_span: list = []
+
+        def build(document, top_y: int) -> int:
+            y_pos = self._build_setup_content(document, top_y)
+            hotkeys_top = y_pos
+            y_pos = self._build_hotkey_card(y_pos, document)
+            hotkeys_span.extend((document, y_pos, hotkeys_top - y_pos))
+            return self._build_behavior_card(y_pos, document)
+
+        shift = self._build_scrollable_tab(parent_view, tab_height, build)
+        document, bottom, height = hotkeys_span
+        self._hotkey_card_anchor = (document, bottom - shift, height)
+
+    def _build_transcription_tab(self, parent_view, tab_height: int) -> None:
+        def build(document, top_y: int) -> int:
+            y_pos = self._build_settings_card(top_y - WELCOME_PADDING, document)
+            y_pos = self._build_api_card(y_pos, document)
+            y_pos = self._build_setup_recommended_card(y_pos, document)
+            return self._build_advanced_local_card(y_pos, document)
+
+        self._build_scrollable_tab(parent_view, tab_height, build)
+
+    def _build_setup_content(self, parent_view, tab_height: int) -> int:
         """Setup overview + shortcuts (wizard lives in a separate window)."""
         from AppKit import (  # type: ignore[import-not-found]
             NSBezelStyleRounded,
@@ -938,9 +1006,9 @@ class WelcomeController:
 
         y_pos = tab_height - 52
         y_pos = self._build_setup_permissions_card(y_pos, parent_view)
-        y_pos = self._build_setup_recommended_card(y_pos, parent_view)
-        self._build_setup_howto_card(y_pos, parent_view)
+        y_pos = self._build_setup_howto_card(y_pos, parent_view)
         self._refresh_setup_permissions()
+        return y_pos
 
     def _open_privacy_settings(self, anchor: str) -> None:
         """Öffnet System Settings → Privacy & Security (best effort)."""
@@ -1015,10 +1083,18 @@ class WelcomeController:
         return True
 
     def _goto_hotkeys_tab(self) -> None:
-        # Tab index 1 = Hotkeys (Setup=0, Hotkeys=1, Providers=2, ...)
-        if self._tab_view is not None:
-            self._tab_view.selectTabViewItemAtIndex_(1)
-            self._ensure_selected_tab_built()
+        """Scrolls the Hotkeys card on the General tab into view (Try it card)."""
+        self._select_tab("General")
+        anchor = getattr(self, "_hotkey_card_anchor", None)
+        if anchor is None:
+            return
+        from Foundation import NSMakeRect  # type: ignore[import-not-found]
+
+        document, bottom, height = anchor
+        try:
+            document.scrollRectToVisible_(NSMakeRect(0, bottom, WELCOME_WIDTH, height))
+        except Exception:
+            pass
 
     def _handle_setup_action(self, action: str) -> None:
         if action == "open_onboarding_wizard":
@@ -1410,32 +1486,18 @@ class WelcomeController:
 
         return card_y - CARD_SPACING
 
-    def _build_hotkeys_tab(self, parent_view, tab_height: int) -> None:
-        y_pos = tab_height - WELCOME_PADDING
-        self._build_hotkey_card(y_pos, parent_view)
-
-    def _build_providers_tab(self, parent_view, tab_height: int) -> None:
-        y_pos = tab_height - WELCOME_PADDING
-        y_pos = self._build_settings_card(y_pos, parent_view)
-        self._build_api_card(y_pos, parent_view)
-
-    def _build_advanced_tab(self, parent_view, tab_height: int) -> None:
-        y_pos = tab_height - WELCOME_PADDING
-        self._build_advanced_local_card(y_pos, parent_view)
-
     def _build_refine_tab(self, parent_view, tab_height: int) -> None:
-        y_pos = tab_height - WELCOME_PADDING
-        self._build_refine_card(y_pos, parent_view, tab_height)
+        def build(document, top_y: int) -> int:
+            y_pos = self._build_refine_card(top_y - WELCOME_PADDING, document)
+            return self._build_prompts_card(y_pos, document, top_y)
 
-    def _build_prompts_tab(self, parent_view, tab_height: int) -> None:
-        y_pos = tab_height - WELCOME_PADDING
-        self._build_prompts_card(y_pos, parent_view, tab_height)
+        self._build_scrollable_tab(parent_view, tab_height, build)
 
     def _build_vocabulary_tab(self, parent_view, tab_height: int) -> None:
         y_pos = tab_height - WELCOME_PADDING
         self._build_vocabulary_card(y_pos, parent_view, tab_height)
 
-    def _build_logs_tab(self, parent_view, tab_height: int) -> None:
+    def _build_history_tab(self, parent_view, tab_height: int) -> None:
         y_pos = tab_height - WELCOME_PADDING
         self._build_logs_card(y_pos, parent_view, tab_height)
 
@@ -2656,7 +2718,7 @@ class WelcomeController:
         if popup is not None:
             _set_tooltip_if_supported(
                 popup,
-                "Choose which provider should clean up transcript text after transcription. The matching API key is managed on the Providers tab.",
+                "Choose which provider should clean up transcript text after transcription. The matching API key is managed on the Transcription tab.",
             )
         if field is not None:
             try:
@@ -2722,7 +2784,7 @@ class WelcomeController:
         title = NSTextField.alloc().initWithFrame_(
             NSMakeRect(base_x, card_y + card_height - 28, 220, 18)
         )
-        title.setStringValue_("✨ Refine & Output")
+        title.setStringValue_("✨ Refine")
         title.setBezeled_(False)
         title.setDrawsBackground_(False)
         title.setEditable_(False)
@@ -2735,7 +2797,7 @@ class WelcomeController:
             NSMakeRect(base_x, card_y + card_height - 56, content_width, 28)
         )
         desc.setStringValue_(
-            "Choose whether PulseScribe cleans up transcript text after dictation, what it shows on screen, and whether your clipboard gets restored after pasting."
+            "Choose whether PulseScribe cleans up transcript text after dictation, and which provider and model it uses."
         )
         desc.setBezeled_(False)
         desc.setDrawsBackground_(False)
@@ -3024,9 +3086,12 @@ class WelcomeController:
 
         import objc  # type: ignore[import-not-found]
 
-        change_handler = _SimpleHandler.alloc().initWithController_method_(
-            self, "_refresh_secondary_settings_feedback"
-        )
+        # Refine and Behavior cards share one handler; controls keep weak targets.
+        change_handler = getattr(self, "_secondary_settings_change_handler", None)
+        if change_handler is None:
+            change_handler = _SimpleHandler.alloc().initWithController_method_(
+                self, "_refresh_secondary_settings_feedback"
+            )
         action = objc.selector(change_handler.performAction_, signature=b"v@:@")
         for control in controls:
             try:
@@ -3041,14 +3106,38 @@ class WelcomeController:
             pass
         self._secondary_settings_change_handler = change_handler
 
-    def _build_refine_card(
-        self, y: int, parent_view=None, tab_height: int | None = None
-    ) -> int:
+    def _build_behavior_card(self, y: int, parent_view) -> int:
+        """General-tab card for the overlay, clipboard, Dock and speed toggles."""
+        card_height = 180
+        card_width = WELCOME_WIDTH - 2 * WELCOME_PADDING
+        card_y = y - card_height
+        parent_view.addSubview_(
+            _create_card(WELCOME_PADDING, card_y, card_width, card_height)
+        )
+
+        base_x = WELCOME_PADDING + CARD_PADDING
+        label_width = 110
+        content_width = card_width - 2 * CARD_PADDING
+        controls, _current_y = self._build_visual_output_controls(
+            base_x,
+            card_y + card_height - 30,
+            base_x + label_width + 8,
+            content_width - label_width - 8,
+            content_width,
+            parent_view,
+            28,
+        )
+        self._wire_secondary_settings_controls(tuple(controls))
+
+        self._saved_display_settings_state = self._get_current_display_settings_state()
+        self._refresh_secondary_settings_feedback()
+        return card_y - CARD_SPACING
+
+    def _build_refine_card(self, y: int, parent_view=None) -> int:
         """Erstellt Refine-Einstellungen."""
         parent_view = parent_view or self._content_view
 
-        max_height = (tab_height - 2 * WELCOME_PADDING) if tab_height else 360
-        card_height = min(352, max_height)
+        card_height = 236
         card_width = WELCOME_WIDTH - 2 * WELCOME_PADDING
         card_y = y - card_height
 
@@ -3068,7 +3157,7 @@ class WelcomeController:
         row_height = 28
         current_y = card_y + card_height - 88
 
-        refine_controls, current_y = self._build_refine_cleanup_controls(
+        refine_controls, _current_y = self._build_refine_cleanup_controls(
             base_x,
             current_y,
             control_x,
@@ -3077,21 +3166,9 @@ class WelcomeController:
             parent_view,
             row_height,
         )
-        display_controls, _current_y = self._build_visual_output_controls(
-            base_x,
-            current_y,
-            control_x,
-            control_width,
-            content_width,
-            parent_view,
-            row_height,
-        )
-        self._wire_secondary_settings_controls(
-            tuple(refine_controls + display_controls)
-        )
+        self._wire_secondary_settings_controls(tuple(refine_controls))
 
         self._saved_refine_settings_state = self._get_current_refine_settings_state()
-        self._saved_display_settings_state = self._get_current_display_settings_state()
         self._refresh_secondary_settings_feedback()
 
         return card_y - CARD_SPACING
@@ -3692,17 +3769,17 @@ class WelcomeController:
         base_x = WELCOME_PADDING + CARD_PADDING
         content_width = card_width - 2 * CARD_PADDING
 
-        # Segmented Control: Logs | Transcripts
+        # Segmented Control: Transcripts | Logs
         segment_y = card_y + card_height - 30
         segment = NSSegmentedControl.alloc().initWithFrame_(
             NSMakeRect(base_x, segment_y, 170, 22)
         )
         segment.setSegmentCount_(2)
-        segment.setLabel_forSegment_("Logs", 0)
-        segment.setLabel_forSegment_("Transcripts", 1)
-        segment.setWidth_forSegment_(72, 0)
-        segment.setWidth_forSegment_(98, 1)
-        segment.setSelectedSegment_(0)
+        segment.setLabel_forSegment_("Transcripts", HISTORY_TRANSCRIPTS_SEGMENT)
+        segment.setLabel_forSegment_("Logs", HISTORY_LOGS_SEGMENT)
+        segment.setWidth_forSegment_(98, HISTORY_TRANSCRIPTS_SEGMENT)
+        segment.setWidth_forSegment_(72, HISTORY_LOGS_SEGMENT)
+        segment.setSelectedSegment_(HISTORY_TRANSCRIPTS_SEGMENT)
         try:
             segment.setSegmentStyle_(NSSegmentStyleTexturedRounded)
         except Exception:
@@ -3714,7 +3791,7 @@ class WelcomeController:
         )
         self._logs_segment_control = segment
         self._logs_segment_handler = segment_handler
-        self._active_logs_segment = 0
+        self._active_logs_segment = None
         _set_tooltip_if_supported(
             segment,
             "Switch between the live log view and local transcript history.",
@@ -3879,9 +3956,8 @@ class WelcomeController:
         }
         parent_view.addSubview_(transcripts_container)
 
-        # Initial scroll and auto-refresh
-        self._scroll_logs_to_bottom()
-        self._start_logs_auto_refresh()
+        # Open on transcripts; this also starts the adaptive auto-refresh.
+        self._switch_logs_segment(HISTORY_TRANSCRIPTS_SEGMENT)
 
         return card_y - CARD_SPACING
 
@@ -4560,7 +4636,7 @@ class WelcomeController:
             if getattr(self, "_active_logs_segment", None) == segment_index:
                 return
             self._active_logs_segment = segment_index
-            if segment_index == 0:  # Logs
+            if segment_index == HISTORY_LOGS_SEGMENT:
                 _set_hidden_if_changed(self._logs_container, False)
                 _set_hidden_if_changed(self._transcripts_container, True)
                 self._refresh_logs(scroll_to_bottom=True)
@@ -4579,13 +4655,16 @@ class WelcomeController:
         """True, wenn das Logs-Segment aktiv ist."""
         if self._logs_segment_control:
             try:
-                return int(self._logs_segment_control.selectedSegment()) == 0
+                return (
+                    int(self._logs_segment_control.selectedSegment())
+                    == HISTORY_LOGS_SEGMENT
+                )
             except Exception:
                 return True
         return True
 
     def _is_logs_tab_active(self) -> bool:
-        """True, wenn der Haupttab 'Logs' ausgewählt ist."""
+        """True, wenn der Haupttab 'History' ausgewählt ist."""
         if not self._tab_view:
             return False
         try:
@@ -4593,7 +4672,7 @@ class WelcomeController:
             if selected_item is None:
                 return False
             identifier = selected_item.identifier()
-            return str(identifier) == "Logs"
+            return str(identifier) == "History"
         except Exception:
             return False
 
@@ -4717,7 +4796,7 @@ class WelcomeController:
     def _update_logs_auto_refresh_state(self, *, reset_cadence: bool = False) -> None:
         """Synchronize the logs auto-refresh timer with current UI state."""
         logs_auto_checkbox = getattr(self, "_logs_auto_checkbox", None)
-        if not logs_auto_checkbox and not self._is_tab_built("Logs"):
+        if not logs_auto_checkbox and not self._is_tab_built("History"):
             return
         if reset_cadence:
             self._reset_logs_auto_refresh_cadence()
@@ -5452,8 +5531,7 @@ class WelcomeController:
 
     def _apply_local_preset(self, preset: str) -> None:
         """Setzt empfohlene Settings (UI-only; Speichern via 'Save & Apply')."""
-        self._ensure_tab_built("Providers")
-        self._ensure_tab_built("Advanced")
+        self._ensure_tab_built("Transcription")
 
         # Immer Local Mode aktivieren (sonst sind Backend/Model hidden)
         self._select_popup_title(self._mode_popup, "local")
@@ -6409,7 +6487,7 @@ def _create_tab_selection_handler_class():
                 label = None
             self._controller._ensure_tab_built(label)
             self._controller._update_logs_auto_refresh_state(
-                reset_cadence=(label == "Logs")
+                reset_cadence=(label == "History")
             )
 
     return TabSelectionHandler

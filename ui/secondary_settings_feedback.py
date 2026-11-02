@@ -72,7 +72,7 @@ def build_refine_settings_feedback(
                 f"Transcript cleanup is on. {provider_label} will use its default "
                 f"model ({default_model}) unless you add an override."
             )
-        guidance = "The matching API key is managed on the Providers tab."
+        guidance = "The matching API key is managed on the Transcription tab."
     else:
         detail = (
             "Transcript cleanup is off, so PulseScribe will keep the raw "
