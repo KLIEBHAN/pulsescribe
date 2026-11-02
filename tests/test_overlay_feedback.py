@@ -46,6 +46,12 @@ def test_test_runs_do_not_claim_a_paste() -> None:
     )
 
 
+def test_only_errors_are_dismissible() -> None:
+    for state in ("LISTENING", "RECORDING", "TRANSCRIBING", "DONE", "NO_SPEECH"):
+        assert describe_overlay_content(state).dismissible is False
+    assert describe_overlay_content("ERROR", "boom").dismissible is True
+
+
 def test_no_speech_uses_warn_badge() -> None:
     assert describe_overlay_content("NO_SPEECH", "empty transcript") == OverlayContent(
         text="Nothing was pasted", badge="No speech", tone="warn"
@@ -55,7 +61,7 @@ def test_no_speech_uses_warn_badge() -> None:
 @pytest.mark.parametrize("message", [PASTE_FAILED, COPY_FAILED])
 def test_delivery_failures_use_not_pasted_badge(message) -> None:
     assert describe_overlay_content("ERROR", message) == OverlayContent(
-        text=message, badge="Not pasted", tone="warn"
+        text=message, badge="Not pasted", tone="warn", dismissible=True
     )
 
 
@@ -72,7 +78,7 @@ def test_delivery_failures_use_not_pasted_badge(message) -> None:
 )
 def test_errors_show_friendly_detail_next_to_error_badge(detail, text) -> None:
     assert describe_overlay_content("ERROR", detail) == OverlayContent(
-        text=text, badge="Error", tone="error"
+        text=text, badge="Error", tone="error", dismissible=True
     )
 
 

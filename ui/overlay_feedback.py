@@ -9,6 +9,8 @@ from ui.daemon_status_feedback import build_daemon_status_label
 from utils.state import AppState
 from utils.transcript_delivery import COPIED, COPY_FAILED, PASTE_FAILED, TEST_COMPLETE
 
+# How long the daemons keep ERROR before returning to IDLE (hotkeys stay usable).
+# The overlay itself keeps showing errors until dismissed.
 ERROR_FEEDBACK_SECONDS = 4.0
 
 OVERLAY_STATE_TEXTS = {
@@ -47,7 +49,8 @@ class OverlayContent:
     ``bars`` is ``level`` (audio driven), ``low`` (static row), ``line``
     (flat processing line) or ``none``. ``tone`` picks the badge colors and is
     empty when there is no badge. ``emphasized`` text uses the primary color,
-    everything else is muted.
+    everything else is muted. ``dismissible`` content stays visible (with a
+    "×") until the user clicks it or the next recording replaces it.
     """
 
     bars: str = "none"
@@ -55,6 +58,7 @@ class OverlayContent:
     emphasized: bool = False
     badge: str = ""
     tone: str = ""
+    dismissible: bool = False
 
 
 def _normalize_overlay_text(text: str | None) -> str:
@@ -142,8 +146,13 @@ def describe_overlay_content(
         return OverlayContent(text=NO_SPEECH_TEXT, badge="No speech", tone="warn")
     if normalized_state == "ERROR":
         if detail in (PASTE_FAILED, COPY_FAILED):
-            return OverlayContent(text=detail, badge="Not pasted", tone="warn")
+            return OverlayContent(
+                text=detail, badge="Not pasted", tone="warn", dismissible=True
+            )
         return OverlayContent(
-            text=_error_text(detail, max_chars=max_chars), badge="Error", tone="error"
+            text=_error_text(detail, max_chars=max_chars),
+            badge="Error",
+            tone="error",
+            dismissible=True,
         )
     return OverlayContent()
