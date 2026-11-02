@@ -2,9 +2,7 @@ import pytest
 
 from ui.settings_apply_feedback import (
     build_save_apply_change_hint,
-    build_settings_loaded_feedback,
     build_settings_saved_feedback,
-    build_unsaved_settings_feedback,
 )
 
 
@@ -28,22 +26,6 @@ def test_partial_save_never_reports_full_success(failed_sections, reload_worked)
     assert "Dock icon" in text
     if not reload_worked:
         assert "reload failed" in text
-
-
-def test_build_settings_loaded_feedback_explains_saved_values() -> None:
-    text, color = build_settings_loaded_feedback()
-
-    assert text.startswith("Showing the current saved settings")
-    assert "Save & Apply" in text
-    assert color == "text_secondary"
-
-
-def test_build_unsaved_settings_feedback_can_include_relaunch_hint() -> None:
-    text, color = build_unsaved_settings_feedback(relaunch_required=True)
-
-    assert text.startswith("You have local changes")
-    assert "Dock icon changes still need a relaunch" in text
-    assert color == "warning"
 
 
 def test_build_settings_saved_feedback_handles_reload_and_relaunch_cases() -> None:

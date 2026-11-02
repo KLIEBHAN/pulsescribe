@@ -144,13 +144,13 @@ def test_mac_popup_refresh_and_save_preserve_selection(devices, selected):
 def test_mac_microphone_row_fits_visible_transcription_page(devices):
     appkit = pytest.importorskip("AppKit")
     from ui.welcome import (
-        WelcomeController, CARD_SPACING, CONTENT_WIDTH, FOOTER_HEIGHT,
-        PAGE_TITLE_HEIGHT, WELCOME_HEIGHT, WELCOME_PADDING,
+        WelcomeController, CONTENT_WIDTH, PAGE_TITLE_HEIGHT, SAVE_BAR_HEIGHT,
+        WELCOME_HEIGHT, WELCOME_PADDING,
     )
 
     appkit.NSApplication.sharedApplication()
     # Mirrors _build_page_title + _build_tabs: the tabless page height.
-    tab_y = WELCOME_PADDING + FOOTER_HEIGHT + CARD_SPACING
+    tab_y = SAVE_BAR_HEIGHT
     height = WELCOME_HEIGHT - WELCOME_PADDING - PAGE_TITLE_HEIGHT - 4 - tab_y
     ctrl = WelcomeController.__new__(WelcomeController)
     ctrl.config = ctrl._env_settings_cache = {}

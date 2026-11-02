@@ -1,27 +1,13 @@
 """Shared UX copy for Save & Apply / local settings state.
 
 Keeps Windows Settings and macOS Welcome aligned for:
-- loaded/saved state communication
-- local unsaved changes
+- saved state communication
+- the unsaved change count in the save bar
 - relaunch-required caveats
 - small action hints that point back to Save & Apply
 """
 
 from collections.abc import Sequence
-
-
-def build_settings_loaded_feedback() -> tuple[str, str]:
-    return (
-        "Showing the current saved settings. Changes stay local until you click Save & Apply.",
-        "text_secondary",
-    )
-
-
-def build_unsaved_settings_feedback(*, relaunch_required: bool = False) -> tuple[str, str]:
-    text = "You have local changes. Click Save & Apply to keep them."
-    if relaunch_required:
-        text = f"{text} Dock icon changes still need a relaunch."
-    return text, "warning"
 
 
 # Settings tab that hosts each draft section saved by Save & Apply.
@@ -136,7 +122,5 @@ __all__ = [
     "build_save_apply_change_hint",
     "build_unsaved_changes_text",
     "count_settings_changes",
-    "build_settings_loaded_feedback",
     "build_settings_saved_feedback",
-    "build_unsaved_settings_feedback",
 ]

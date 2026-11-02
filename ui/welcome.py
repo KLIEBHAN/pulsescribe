@@ -39,9 +39,9 @@ from ui.secondary_settings_feedback import (
 )
 from ui.settings_apply_feedback import (
     build_save_apply_change_hint,
-    build_settings_loaded_feedback,
     build_settings_saved_feedback,
-    build_unsaved_settings_feedback,
+    build_unsaved_changes_text,
+    count_settings_changes,
 )
 from ui.vocabulary_feedback import (
     build_vocabulary_editor_feedback,
@@ -97,7 +97,9 @@ SIDEBAR_WIDTH = 150
 CONTENT_WIDTH = WELCOME_WIDTH - SIDEBAR_WIDTH
 PAGE_TITLE_HEIGHT = 30
 WELCOME_PADDING = 20
-FOOTER_HEIGHT = 60
+SAVE_BAR_HEIGHT = 56  # Strip below the pages; the bar shows only with unsaved changes
+TOAST_SECONDS = 2.5
+TOAST_MAX_TEXT_WIDTH = 320
 CARD_PADDING = 0  # Flat sections: content aligns with the page title
 CARD_SPACING = 12
 # History tab segments, in display order (Transcripts is the default view)
@@ -342,6 +344,8 @@ def _format_hotkey_for_display(value: str | None) -> str:
 def _status_color(level: str):
     tone = theme.badge_tone(level)
     token = theme.MUTED if tone == "muted" else theme.BADGE_TONES[tone][1]
+    if level == "text":
+        token = theme.TEXT
     return _get_color(*theme.hex_rgb(token))
 
 
@@ -604,7 +608,8 @@ class WelcomeController:
         self._onboarding_wizard_callback = None
         self._env_settings_cache: dict[str, str] = read_env_file()
         self._provider_guidance_label = None
-        self._footer_status_label = None
+        self._save_bar = None
+        self._toast = None
         # API-Key-Felder werden dynamisch via setattr gesetzt:
         # _{provider}_field, _{provider}_status für alle Einträge aus API_KEY_PROVIDERS
 
@@ -780,8 +785,6 @@ class WelcomeController:
         self._build_footer()
         self._saved_settings_signature = self._get_current_settings_signature()
         self._saved_dock_icon_enabled = self._get_current_dock_icon_enabled()
-        text, color = build_settings_loaded_feedback()
-        self._set_footer_status(text, color)
 
     def _build_sidebar(self) -> None:
         """Left navigation: app name, version and one entry per settings section."""
@@ -922,8 +925,8 @@ class WelcomeController:
         )
         from Foundation import NSMakeRect  # type: ignore[import-not-found]
 
-        # Pages end above the footer status line (footer_y + 36 .. + 68).
-        tab_y = WELCOME_PADDING + FOOTER_HEIGHT + CARD_SPACING
+        # Pages end at the save bar strip.
+        tab_y = SAVE_BAR_HEIGHT
         tab_height = max(200, header_bottom - tab_y)
 
         # Tabless: the sidebar selects pages via _select_tab.
@@ -2854,13 +2857,24 @@ class WelcomeController:
             and self._get_current_dock_icon_enabled()
             != getattr(self, "_saved_dock_icon_enabled", None)
         )
-        if saved_signature is None or self._get_current_settings_signature() == saved_signature:
-            text, color = build_settings_loaded_feedback()
-        else:
-            text, color = build_unsaved_settings_feedback(
-                relaunch_required=relaunch_required
+        count = (
+            0
+            if saved_signature is None
+            else count_settings_changes(
+                saved_signature, self._get_current_settings_signature()
             )
-        self._set_footer_status(text, color)
+        )
+        bar = getattr(self, "_save_bar", None)
+        if bar is None:
+            return
+        if count:
+            text = build_unsaved_changes_text(count)
+            if relaunch_required:
+                text += " · Dock icon needs a relaunch"
+            _set_string_value_if_changed(self._unsaved_label, text)
+        if bool(bar.isHidden()) != (count == 0):
+            _set_hidden_if_changed(bar, count == 0)
+            self._position_toast()
 
     def _update_refine_model_affordances(self) -> None:
         _enabled, provider_key, model_text = self._get_current_refine_settings_state()
@@ -3232,6 +3246,29 @@ class WelcomeController:
                 attr_name="_rtf_checkbox",
             )
         )
+        current_y -= row_height
+
+        # Applies immediately, outside Save & Apply, like the old footer checkbox.
+        startup = self._build_switch_setting_row(
+            base_x,
+            current_y,
+            control_x,
+            control_width,
+            parent_view,
+            label_text="Startup:",
+            title="Show settings at startup",
+            enabled=get_show_welcome_on_startup(),
+            tooltip="Open this window when PulseScribe starts.",
+            attr_name="_startup_checkbox",
+        )
+        if _CheckboxHandler is not None:
+            import objc  # type: ignore[import-not-found]
+
+            self._checkbox_handler = _CheckboxHandler.alloc().init()
+            startup.setTarget_(self._checkbox_handler)
+            startup.setAction_(
+                objc.selector(self._checkbox_handler.toggleStartup_, signature=b"v@:@")
+            )
         current_y -= 30
 
         self._display_status_label = self._build_wrapping_status_label(
@@ -3267,8 +3304,8 @@ class WelcomeController:
         self._secondary_settings_change_handler = change_handler
 
     def _build_behavior_card(self, y: int, parent_view) -> int:
-        """General-tab card for the overlay, clipboard, Dock and speed toggles."""
-        card_height = 188
+        """General-tab card for the overlay, clipboard, Dock, speed and startup toggles."""
+        card_height = 216
         card_width = CONTENT_WIDTH - 2 * WELCOME_PADDING
         card_y = y - card_height
         parent_view.addSubview_(
@@ -5713,115 +5750,143 @@ class WelcomeController:
         return
 
     def _build_footer(self) -> None:
-        """Erstellt Footer mit Checkbox, Save-Button und Start-Button."""
+        """Save bar below the pages, shown only while settings are unsaved."""
         from AppKit import (  # type: ignore[import-not-found]
-            NSBezelStyleRounded,
+            NSAttributedString,
             NSButton,
-            NSButtonTypeSwitch,
-            NSColor,
             NSFont,
+            NSFontAttributeName,
             NSFontWeightMedium,
-            NSFontWeightSemibold,
+            NSForegroundColorAttributeName,
             NSMakeRect,
-            NSTextField,
+            NSView,
         )
         import objc  # type: ignore[import-not-found]
 
-        footer_y = WELCOME_PADDING
-
-        # Button layout (right-aligned)
-        btn_w = 132
-        btn_h = 32
-        btn_spacing = 10
-        btn_font_size = 13
-
-        # Checkbox (links unten)
-        content_x = SIDEBAR_WIDTH + WELCOME_PADDING
-        checkbox = NSButton.alloc().initWithFrame_(
-            NSMakeRect(content_x, footer_y + 6, 130, 18)
+        bar = NSView.alloc().initWithFrame_(
+            NSMakeRect(SIDEBAR_WIDTH, 0, CONTENT_WIDTH, SAVE_BAR_HEIGHT)
         )
-        checkbox.setButtonType_(NSButtonTypeSwitch)
-        checkbox.setTitle_("Show at startup")
-        checkbox.setFont_(NSFont.systemFontOfSize_(11))
-        checkbox.setState_(1 if get_show_welcome_on_startup() else 0)
-
-        checkbox_handler = _CheckboxHandler.alloc().init()
-        checkbox.setTarget_(checkbox_handler)
-        checkbox.setAction_(
-            objc.selector(checkbox_handler.toggleStartup_, signature=b"v@:@")
+        bar.addSubview_(theme.ns_rule(0, SAVE_BAR_HEIGHT - 1, CONTENT_WIDTH))
+        btn_w, btn_h = 120, 28
+        btn_x = CONTENT_WIDTH - WELCOME_PADDING - btn_w
+        btn_y = (SAVE_BAR_HEIGHT - btn_h) // 2
+        label = _create_label(
+            "", NSMakeRect(WELCOME_PADDING, btn_y + 5, btn_x - WELCOME_PADDING - 12, 17)
         )
-        self._checkbox_handler = checkbox_handler
-        self._content_view.addSubview_(checkbox)
-        self._startup_checkbox = checkbox
+        label.setFont_(NSFont.systemFontOfSize_(12))
+        label.setTextColor_(theme.ns_color(theme.MUTED))
+        bar.addSubview_(label)
+        self._unsaved_label = label
 
-        # Save & Apply Button (rechts, links vom Close-Button)
-        right_edge = WELCOME_WIDTH - WELCOME_PADDING
-        close_x = right_edge - btn_w
-        save_x = close_x - btn_spacing - btn_w
-
-        status_label = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(content_x, footer_y + 36, CONTENT_WIDTH - 2 * WELCOME_PADDING, 32)
+        # Light primary button: token fill box under a borderless button.
+        bar.addSubview_(
+            _create_fill_box(
+                btn_x, btn_y, btn_w, btn_h, theme.ns_color(theme.PRIMARY_BG), theme.RADIUS
+            )
         )
-        status_label.setStringValue_("")
-        status_label.setBezeled_(False)
-        status_label.setDrawsBackground_(False)
-        status_label.setEditable_(False)
-        status_label.setSelectable_(False)
-        status_label.setFont_(NSFont.systemFontOfSize_(10))
-        status_label.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6))
-        try:
-            status_label.setLineBreakMode_(0)
-            status_label.setUsesSingleLineMode_(False)
-        except Exception:
-            pass
-        self._content_view.addSubview_(status_label)
-        self._footer_status_label = status_label
-
-        save_btn = NSButton.alloc().initWithFrame_(
-            NSMakeRect(save_x, footer_y, btn_w, btn_h)
+        save_btn = NSButton.alloc().initWithFrame_(NSMakeRect(btn_x, btn_y, btn_w, btn_h))
+        save_btn.setBordered_(False)
+        save_btn.setAttributedTitle_(
+            NSAttributedString.alloc().initWithString_attributes_(
+                "Save & Apply",
+                {
+                    NSFontAttributeName: NSFont.systemFontOfSize_weight_(
+                        13, NSFontWeightMedium
+                    ),
+                    NSForegroundColorAttributeName: theme.ns_color(theme.PRIMARY_TEXT),
+                },
+            )
         )
-        save_btn.setTitle_("Save & Apply")
-        save_btn.setBezelStyle_(NSBezelStyleRounded)
-        save_btn.setFont_(
-            NSFont.systemFontOfSize_weight_(btn_font_size, NSFontWeightMedium)
-        )
-
         save_handler = _SimpleHandler.alloc().initWithController_method_(
             self, "_save_all_settings"
         )
         save_btn.setTarget_(save_handler)
-        save_btn.setAction_(
-            objc.selector(save_handler.performAction_, signature=b"v@:@")
-        )
+        save_btn.setAction_(objc.selector(save_handler.performAction_, signature=b"v@:@"))
         self._save_all_handler = save_handler
         self._save_btn = save_btn
         _set_tooltip_if_supported(save_btn, "Save the current settings shown in this window.")
-        self._content_view.addSubview_(save_btn)
+        bar.addSubview_(save_btn)
 
-        # Start-Button (prominent, rechts)
-        start_btn = NSButton.alloc().initWithFrame_(
-            NSMakeRect(close_x, footer_y, btn_w, btn_h)
-        )
-        start_btn.setTitle_("Close")
-        start_btn.setBezelStyle_(NSBezelStyleRounded)
-        start_btn.setFont_(
-            NSFont.systemFontOfSize_weight_(btn_font_size, NSFontWeightSemibold)
-        )
+        bar.setHidden_(True)
+        self._content_view.addSubview_(bar)
+        self._save_bar = bar
+        self._build_toast()
 
-        start_handler = _SimpleHandler.alloc().initWithController_method_(
-            self, "_handle_start"
-        )
-        start_btn.setTarget_(start_handler)
-        start_btn.setAction_(
-            objc.selector(start_handler.performAction_, signature=b"v@:@")
-        )
-        self._start_handler = start_handler
-        _set_tooltip_if_supported(start_btn, "Close this settings window.")
+    def _build_toast(self) -> None:
+        """Bottom-right toast floating over the pages, so it never shifts the layout."""
+        from AppKit import NSButton, NSFont, NSMakeRect  # type: ignore[import-not-found]
+        import objc  # type: ignore[import-not-found]
 
-        self._content_view.addSubview_(start_btn)
+        toast = _create_fill_box(0, 0, 200, 34, theme.ns_color(theme.TOAST_BG), theme.RADIUS)
+        toast.setBorderColor_(theme.ns_color(theme.TOAST_BORDER))
+        toast.setBorderWidth_(1)
+        label = _create_label("", NSMakeRect(12, 8, 100, 18))
+        label.setFont_(NSFont.systemFontOfSize_(12))
+        label.setUsesSingleLineMode_(False)
+        label.cell().setWraps_(True)
+        toast.addSubview_(label)
+        dismiss = NSButton.alloc().initWithFrame_(NSMakeRect(0, 6, 64, 22))
+        dismiss.setBordered_(False)
+        dismiss.setTitle_("Dismiss")
+        dismiss.setFont_(NSFont.systemFontOfSize_(12))
+        handler = _SimpleHandler.alloc().initWithController_method_(self, "_hide_toast")
+        dismiss.setTarget_(handler)
+        dismiss.setAction_(objc.selector(handler.performAction_, signature=b"v@:@"))
+        self._toast_dismiss_handler = handler
+        toast.addSubview_(dismiss)
+        toast.setHidden_(True)
+        self._content_view.addSubview_(toast)
+        self._toast = toast
+        self._toast_label = label
+        self._toast_dismiss_btn = dismiss
+        self._toast_generation = 0
+
+    def _show_toast(self, text: str, color: str = "success") -> None:
+        """Shows a status toast; errors and warnings stay until dismissed or replaced."""
+        persistent = color in ("error", "warning")
+        label = getattr(self, "_toast_label", None)
+        _apply_status_text(label, text, color if persistent else "text")
+        toast = getattr(self, "_toast", None)
+        if toast is None:
+            return
+        from Foundation import NSMakeRect, NSTimer  # type: ignore[import-not-found]
+
+        width = min(TOAST_MAX_TEXT_WIDTH, int(label.cell().cellSize().width) + 2)
+        height = int(
+            label.cell().cellSizeForBounds_(NSMakeRect(0, 0, width, 1000)).height
+        )
+        dismiss_w = 72 if persistent else 0
+        label.setFrame_(NSMakeRect(12, 8, width, height))
+        self._toast_dismiss_btn.setHidden_(not persistent)
+        self._toast_dismiss_btn.setFrameOrigin_((12 + width + 4, 8 + (height - 22) / 2))
+        toast.setFrameSize_((width + 24 + dismiss_w, height + 16))
+        self._position_toast()
+        toast.setHidden_(False)
+        self._toast_generation += 1
+        if not persistent:
+            generation = self._toast_generation
+            NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+                TOAST_SECONDS, False, lambda _timer: self._hide_toast(generation)
+            )
+
+    def _hide_toast(self, generation: int | None = None) -> None:
+        """Hides the toast unless a newer one replaced it since ``generation``."""
+        toast = getattr(self, "_toast", None)
+        if toast is not None and generation in (None, self._toast_generation):
+            toast.setHidden_(True)
+
+    def _position_toast(self) -> None:
+        """Keeps the toast in the bottom-right corner, above a visible save bar."""
+        toast = getattr(self, "_toast", None)
+        if toast is None:
+            return
+        bar = getattr(self, "_save_bar", None)
+        bottom = SAVE_BAR_HEIGHT + 8 if bar is not None and not bar.isHidden() else 16
+        width = toast.frame().size.width
+        toast.setFrameOrigin_((WELCOME_WIDTH - WELCOME_PADDING - width, bottom))
 
     def _set_footer_status(self, text: str, color: str = "text_secondary") -> None:
-        _apply_status_text(getattr(self, "_footer_status_label", None), text, color)
+        self._show_toast(text, color)
 
     def set_on_start_callback(self, callback) -> None:
         """Setzt Callback für Start-Button."""
@@ -6113,8 +6178,6 @@ class WelcomeController:
 
         previous_dock_state = getattr(self, "_saved_dock_icon_enabled", None)
         env_updates = self._build_env_updates_from_controls(log)
-        if getattr(self, "_save_btn", None):
-            self._save_btn.setTitle_("Save & Apply")
         try:
             self._apply_env_updates(env_updates)
         except OSError as e:
@@ -6177,6 +6240,7 @@ class WelcomeController:
         self._saved_refine_settings_state = self._get_current_refine_settings_state()
         self._saved_display_settings_state = self._get_current_display_settings_state()
         self._refresh_secondary_settings_feedback()
+        self._refresh_footer_settings_hint()
 
         # Callback aufrufen damit Daemon Settings neu lädt
         reload_worked = None
@@ -6192,24 +6256,9 @@ class WelcomeController:
             auto_reload_worked=reload_worked,
             failed_sections=failed_sections,
         )
-        self._set_footer_status(text, color)
-        if failed_sections:
-            return False
-
-        # Visuelles Feedback: Button-Text kurz ändern
-        if hasattr(self, "_save_btn") and self._save_btn:
-            self._save_btn.setTitle_("✓ Saved!")
-            # Nach 1.5 Sekunden zurücksetzen
-            from Foundation import NSTimer  # type: ignore[import-not-found]
-
-            def reset_title():
-                if hasattr(self, "_save_btn") and self._save_btn:
-                    self._save_btn.setTitle_("Save & Apply")
-
-            NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
-                1.5, False, lambda _: reset_title()
-            )
-        return True
+        plain_success = color == "success" and not dock_changed
+        self._set_footer_status("Settings saved" if plain_success else text, color)
+        return not failed_sections
 
     def _save_custom_prompts(self) -> bool:
         """Persist prompt-editor drafts while preserving untouched saved overrides."""

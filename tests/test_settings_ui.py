@@ -349,7 +349,7 @@ def _make_minimal_welcome_controller():
     ctrl._save_custom_prompts = lambda: True
     ctrl._on_settings_changed_callback = None
     ctrl._save_btn = None
-    ctrl._footer_status_label = None
+    ctrl._toast_label = None
     return ctrl
 
 
@@ -405,26 +405,26 @@ class TestWelcomeSecondarySettingsFeedback:
             def state(self):
                 return self._state
 
-        ctrl._footer_status_label = _FakeStatus()
+        ctrl._toast_label = _FakeStatus()
         ctrl._env_settings_cache = {"PULSESCRIBE_DOCK_ICON": "true"}
         ctrl._saved_settings_signature = ctrl._get_current_settings_signature()
         ctrl._saved_dock_icon_enabled = True
 
         monkeypatch.setattr("ui.welcome._status_color", lambda color: color)
 
+        ctrl._save_bar = _FakeHiddenView()
+        ctrl._unsaved_label = _FakeField("")
+        ctrl._position_toast = lambda: None
+
         ctrl._refresh_footer_settings_hint()
-        assert ctrl._footer_status_label.value.startswith(
-            "Showing the current saved settings"
-        )
-        assert ctrl._footer_status_label.color == "text_secondary"
+        assert ctrl._save_bar.hidden is True
 
         ctrl._dock_icon_checkbox = _FakeToggle(False)
         ctrl._refresh_footer_settings_hint()
-        assert ctrl._footer_status_label.value == (
-            "You have local changes. Click Save & Apply to keep them. "
-            "Dock icon changes still need a relaunch."
+        assert ctrl._save_bar.hidden is False
+        assert ctrl._unsaved_label.value == (
+            "1 unsaved change · Dock icon needs a relaunch"
         )
-        assert ctrl._footer_status_label.color == "warning"
 
 
 class TestApiKeyProviderMetadata:
@@ -528,7 +528,7 @@ class TestWelcomeSaveSettings:
         monkeypatch.setattr("ui.welcome._get_color", lambda *args: args)
         ctrl = _make_minimal_welcome_controller()
         ctrl._env_settings_cache = {}
-        ctrl._footer_status_label = _FakeStatus()
+        ctrl._toast_label = _FakeStatus()
         ctrl._vocab_warning_label = _FakeStatus()
         ctrl._vocab_text_view = _FakeTranscriptsTextView("Audit", doc_height=120)
         ctrl._get_loaded_vocabulary_keywords = list
@@ -543,22 +543,22 @@ class TestWelcomeSaveSettings:
 
         assert ctrl._save_all_settings() is (vocabulary_saved and prompts_saved)
         if vocabulary_saved and prompts_saved:
-            assert ctrl._footer_status_label.value == "Settings saved."
+            assert ctrl._toast_label.value == "Settings saved"
         else:
-            assert "could not be saved" in ctrl._footer_status_label.value
-            assert ctrl._footer_status_label.color == (240, 185, 85)
+            assert "could not be saved" in ctrl._toast_label.value
+            assert ctrl._toast_label.color == (240, 185, 85)
             if not vocabulary_saved:
-                assert "Vocabulary" in ctrl._footer_status_label.value
+                assert "Vocabulary" in ctrl._toast_label.value
                 assert ctrl._vocab_text_view.string() == "Audit"
             if not prompts_saved:
-                assert "Refine" in ctrl._footer_status_label.value
+                assert "Refine" in ctrl._toast_label.value
 
     def test_env_write_failure_stops_save_without_marking_drafts_saved(
         self, monkeypatch
     ):
         monkeypatch.setattr("ui.welcome._get_color", lambda *args: args)
         ctrl = _make_minimal_welcome_controller()
-        ctrl._footer_status_label = _FakeStatus()
+        ctrl._toast_label = _FakeStatus()
         ctrl._saved_settings_signature = ("before",)
 
         def fail(_updates):
@@ -567,7 +567,7 @@ class TestWelcomeSaveSettings:
         ctrl._apply_env_updates = fail
         ctrl._save_custom_prompts = lambda: pytest.fail("must not continue saving")
         assert ctrl._save_all_settings() is False
-        assert "Saving failed" in ctrl._footer_status_label.value
+        assert "Saving failed" in ctrl._toast_label.value
         assert ctrl._saved_settings_signature == ("before",)
 
     def test_restart_stays_open_after_save_failure(self, monkeypatch):
@@ -701,12 +701,12 @@ class TestWelcomeSaveSettings:
 
         ctrl = _make_minimal_welcome_controller()
         ctrl._env_settings_cache = {}
-        ctrl._footer_status_label = _FakeStatus()
+        ctrl._toast_label = _FakeStatus()
 
         ctrl._save_all_settings()
 
-        assert ctrl._footer_status_label.value == "Settings saved."
-        assert ctrl._footer_status_label.color == (111, 211, 155)
+        assert ctrl._toast_label.value == "Settings saved"
+        assert ctrl._toast_label.color == (236, 236, 236)
 
     def test_save_settings_mentions_relaunch_when_dock_icon_changed(self, monkeypatch):
         monkeypatch.setattr("ui.welcome._get_color", lambda *args: args)
@@ -720,16 +720,16 @@ class TestWelcomeSaveSettings:
 
         ctrl = _make_minimal_welcome_controller()
         ctrl._env_settings_cache = {}
-        ctrl._footer_status_label = _FakeStatus()
+        ctrl._toast_label = _FakeStatus()
         ctrl._saved_dock_icon_enabled = True
         ctrl._dock_icon_checkbox = _FakeToggle(False)
 
         ctrl._save_all_settings()
 
-        assert ctrl._footer_status_label.value == (
+        assert ctrl._toast_label.value == (
             "Settings saved. Relaunch PulseScribe to apply the Dock icon change."
         )
-        assert ctrl._footer_status_label.color == (111, 211, 155)
+        assert ctrl._toast_label.color == (236, 236, 236)
 
     def test_save_custom_prompts_skips_rewrite_when_overrides_are_unchanged(
         self, monkeypatch
@@ -1157,6 +1157,17 @@ class _FakeField:
 
     def stringValue(self):
         return self.value
+
+
+class _FakeHiddenView:
+    def __init__(self):
+        self.hidden = True
+
+    def isHidden(self):
+        return self.hidden
+
+    def setHidden_(self, hidden):
+        self.hidden = hidden
 
 
 def _record_badge(field, text, tone, **_kwargs):
@@ -2554,3 +2565,32 @@ def test_ns_badge_sizes_to_text_and_keeps_right_edge():
     theme.set_ns_badge(field, "Optional", "muted", right_edge=200)
     assert field.frame().size.width < frame.size.width
     assert field.frame().origin.x + field.frame().size.width == 200
+
+
+def test_toast_hides_success_after_timer_but_keeps_errors():
+    appkit = pytest.importorskip("AppKit")
+    from ui.welcome import WELCOME_HEIGHT, WELCOME_WIDTH
+
+    appkit.NSApplication.sharedApplication()
+    ctrl = WelcomeController.__new__(WelcomeController)
+    ctrl._content_view = appkit.NSView.alloc().initWithFrame_(
+        appkit.NSMakeRect(0, 0, WELCOME_WIDTH, WELCOME_HEIGHT)
+    )
+    ctrl._save_bar = None
+    ctrl._build_toast()
+
+    ctrl._show_toast("Settings saved", "success")
+    success_generation = ctrl._toast_generation
+    assert not ctrl._toast.isHidden()
+    assert ctrl._toast_dismiss_btn.isHidden()
+    assert ctrl._toast_label.stringValue() == "Settings saved"
+
+    ctrl._show_toast("Saving failed: disk full", "error")
+    ctrl._hide_toast(success_generation)  # stale success timer fires
+    assert not ctrl._toast.isHidden()
+    assert not ctrl._toast_dismiss_btn.isHidden()
+    frame = ctrl._toast.frame()
+    assert frame.origin.x + frame.size.width == WELCOME_WIDTH - 20
+
+    ctrl._hide_toast()  # Dismiss
+    assert ctrl._toast.isHidden()
