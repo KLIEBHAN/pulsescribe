@@ -689,12 +689,14 @@ def test_errors_stay_visible_through_idle_until_clicked(monkeypatch, message):
     controller = _controller(events)
 
     controller.update_state(AppState.ERROR, message)
-    assert controller.rendered[-1][0].dismissible is True
+    error_content = controller.rendered[-1][0]
+    assert error_content.dismissible is True
     assert controller.window.ignores_mouse is False
     controller.update_state(AppState.IDLE)
 
     assert scheduled == []
     assert "hide" not in events
+    assert controller.rendered[-1][0] == error_content
     controller._dismiss()
     assert events[-2:] == ["stop", "hide"]
     assert controller.window.ignores_mouse is True
@@ -713,5 +715,36 @@ def test_next_recording_replaces_persistent_error_and_restores_click_through(mon
 
     assert controller.window.ignores_mouse is True
     assert events[-2:] == ["bars:low", "show"]
+    assert controller.rendered[-1][0] == OverlayContent("low", "Listening…")
     controller.update_state(AppState.IDLE)
     assert events[-2:] == ["stop", "hide"]
+
+
+def test_new_error_after_dismissal_is_shown_again(monkeypatch):
+    _install_fake_foundation(monkeypatch)
+    events: list[str] = []
+    controller = _controller(events)
+    controller.update_state(AppState.ERROR, "first")
+    controller._dismiss()
+
+    controller.update_state(AppState.ERROR, "second")
+
+    assert events[-1] == "show"
+    assert controller.window.ignores_mouse is False
+
+
+def test_native_overlay_view_routes_every_click_to_dismiss():
+    appkit = pytest.importorskip("AppKit")
+    from ui.overlay import _click_view_class
+
+    view = _click_view_class().alloc().initWithFrame_(appkit.NSMakeRect(0, 0, 200, 44))
+    label = appkit.NSTextField.labelWithString_("Error")
+    label.setFrame_(appkit.NSMakeRect(10, 10, 60, 20))
+    view.addSubview_(label)
+    clicks = []
+    view.pulsescribe_on_click = lambda: clicks.append(True)
+
+    assert view.hitTest_(appkit.NSMakePoint(20, 20)) is view
+    assert view.hitTest_(appkit.NSMakePoint(500, 20)) is None
+    view.mouseDown_(None)
+    assert clicks == [True]

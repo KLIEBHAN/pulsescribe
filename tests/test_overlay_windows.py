@@ -688,3 +688,20 @@ def test_errors_persist_through_idle_until_clicked():
     assert controller._dismiss_label.placed is None
     controller._handle_state_change("IDLE", None)
     assert withdrawn == [True, True]
+
+
+def test_new_error_after_dismissal_is_shown_again_and_text_avoids_dismiss_mark():
+    controller = _content_controller()
+    controller._dismiss_label = _FakeLabel()
+    shown = []
+    controller._root.deiconify = lambda: shown.append(True)
+    controller._handle_state_change("ERROR", "first")
+    controller._dismiss()
+
+    controller._handle_state_change("ERROR", "second")
+
+    assert len(shown) == 2
+    placed = controller._label.placed
+    assert placed["x"] + placed["width"] == (
+        WINDOW_WIDTH - OVERLAY_PADDING_H - 70 - OVERLAY_GAP
+    )

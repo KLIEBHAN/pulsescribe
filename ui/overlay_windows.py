@@ -256,6 +256,7 @@ class WindowsOverlayController:
             fg=MUTED_TEXT_COLOR,
             bg=BG_COLOR,
             font=TEXT_FONT,
+            anchor="w",
         )
         self._label.place(x=TEXT_X_AFTER_BARS, rely=0.5, anchor="w")
         self._dismiss_label = tk.Label(
@@ -533,10 +534,13 @@ class WindowsOverlayController:
                 # Bei Start auf Monitor des aktiven Fensters zentrieren.
                 self._position_window(use_active_monitor=True)
             content = describe_overlay_content(state, normalized_text)
+            # A new error after a dismissed one must show even within ERROR.
+            reshow = content.dismissible and not self._persistent
             self._persistent = content.dismissible
             if state_changed:
                 self._show_bar_mode(content.bars)
                 self._start_animation_loop()
+            if state_changed or reshow:
                 self._root.deiconify()
             self._apply_content(content)
             if state != "RECORDING":
@@ -574,14 +578,19 @@ class WindowsOverlayController:
                 text_x = OVERLAY_PADDING_H + badge.winfo_reqwidth() + OVERLAY_GAP
             else:
                 badge.place_forget()
+        text_end = WINDOW_WIDTH - OVERLAY_PADDING_H
         dismiss = getattr(self, "_dismiss_label", None)
         if dismiss is not None:
             if content.dismissible:
-                dismiss.place(x=WINDOW_WIDTH - OVERLAY_PADDING_H, rely=0.5, anchor="e")
+                dismiss.place(x=text_end, rely=0.5, anchor="e")
+                text_end -= dismiss.winfo_reqwidth() + OVERLAY_GAP
             else:
                 dismiss.place_forget()
         if getattr(self, "_label", None) is not None and hasattr(self._label, "place"):
-            self._label.place(x=text_x, rely=0.5, anchor="w")
+            # Fixed width clips long text instead of running under the "×".
+            self._label.place(
+                x=text_x, rely=0.5, anchor="w", width=max(text_end - text_x, 0)
+            )
         self._set_label_config(
             text=content.text,
             font=TEXT_FONT,

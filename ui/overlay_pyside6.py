@@ -411,10 +411,13 @@ class PySide6OverlayWidget(QWidget):
             else:
                 self._stop_animation()
         content = describe_overlay_content(state, text)
+        # A new error after a dismissed one must show even within ERROR.
+        reshow = content.dismissible and not self._persistent
         self._set_persistent(content.dismissible)
         self._set_content(content)
-        if state_changed:
+        if state_changed or reshow:
             self._fade_in()
+        if state_changed:
             # Auto-Hide für kurze Ergebnisse; Fehler bleiben bis zum Klick
             if state in _AUTO_HIDE_STATES:
                 self._start_fade_out_timer()

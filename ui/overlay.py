@@ -900,6 +900,8 @@ class OverlayController:
             return
 
         content = describe_overlay_content(state.name, text)
+        # A new error after a dismissed one must show even within ERROR.
+        reshow = content.dismissible and not getattr(self, "_persistent", False)
         self._set_persistent(content.dismissible)
         interim = ("", "")
         if state == AppState.RECORDING:
@@ -912,8 +914,9 @@ class OverlayController:
         if state_changed:
             self._wave_view.show_mode(content.bars)
         self._render(content, interim)
-        if state_changed:
+        if state_changed or reshow:
             self._fade_in()
+        if state_changed:
             if state in _AUTO_HIDE_STATES:
                 self._start_fade_out_timer()
 

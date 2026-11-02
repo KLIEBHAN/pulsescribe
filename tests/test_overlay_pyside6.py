@@ -659,3 +659,14 @@ def test_next_recording_replaces_persistent_error(monkeypatch):
     assert widget._content.dismissible is False
     widget._on_state_changed("IDLE", "")
     assert widget.events[-1] == "hide"
+
+
+def test_new_error_after_dismissal_is_shown_again(monkeypatch):
+    widget = _state_widget(monkeypatch)
+    widget._on_state_changed("ERROR", "first")
+    widget._dismiss()
+
+    widget._on_state_changed("ERROR", "second")
+
+    assert widget.events[-1] == "show"
+    assert widget.click_through is False
