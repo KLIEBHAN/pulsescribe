@@ -339,8 +339,22 @@ QComboBox QAbstractItemView {{
     color: {theme.TEXT};
 }}
 
-QCheckBox:disabled {{
+QCheckBox:disabled, QLabel:disabled {{
     color: {theme.PLACEHOLDER};
+}}
+
+QPushButton#disclosure {{
+    background-color: transparent;
+    border: none;
+    border-top: 1px solid {theme.LINE};
+    border-radius: 0;
+    padding: 16px 0 4px 0;
+    text-align: left;
+    color: {theme.TEXT};
+}}
+
+QPushButton#disclosure:hover, QPushButton#disclosure:focus {{
+    color: {theme.ACTIVE_TEXT};
 }}
 
 QCheckBox::indicator {{
