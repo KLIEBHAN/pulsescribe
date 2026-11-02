@@ -407,7 +407,8 @@ class TestWelcomeSecondarySettingsFeedback:
 
         ctrl._toast_label = _FakeStatus()
         ctrl._env_settings_cache = {"PULSESCRIBE_DOCK_ICON": "true"}
-        ctrl._saved_settings_signature = ctrl._get_current_settings_signature()
+        ctrl._dock_icon_checkbox = _FakeToggle(True)
+        ctrl._saved_env_values = ctrl._build_env_updates_from_controls(None)
         ctrl._saved_dock_icon_enabled = True
 
         monkeypatch.setattr("ui.welcome._status_color", lambda color: color)
@@ -425,6 +426,25 @@ class TestWelcomeSecondarySettingsFeedback:
         assert ctrl._unsaved_label.value == (
             "1 unsaved change · Dock icon needs a relaunch"
         )
+
+
+    def test_unsaved_count_covers_advanced_fields_prompts_and_vocabulary(
+        self, monkeypatch
+    ):
+        ctrl = _make_minimal_welcome_controller()
+        ctrl._saved_env_values = {}
+        ctrl._beam_size_field = _FakeField("")
+        ctrl._adopt_saved_env_values()  # tab built: its controls count as saved
+        assert ctrl._count_unsaved_changes() == 0
+
+        ctrl._beam_size_field.setStringValue_("5")
+        assert ctrl._count_unsaved_changes() == 1
+
+        ctrl._vocab_dirty = True
+        ctrl._prompts_cache = {"default": "edited prompt"}
+        ctrl._get_saved_prompt_editor_text_for_context = lambda _context: "saved"
+        ctrl._get_prompt_editor_text_for_context = lambda _context, defaults=False: "default"
+        assert ctrl._count_unsaved_changes() == 3
 
 
 class TestApiKeyProviderMetadata:
@@ -559,7 +579,7 @@ class TestWelcomeSaveSettings:
         monkeypatch.setattr("ui.welcome._get_color", lambda *args: args)
         ctrl = _make_minimal_welcome_controller()
         ctrl._toast_label = _FakeStatus()
-        ctrl._saved_settings_signature = ("before",)
+        ctrl._saved_env_values = {"PULSESCRIBE_MODE": "deepgram"}
 
         def fail(_updates):
             raise OSError("write failed")
@@ -568,7 +588,7 @@ class TestWelcomeSaveSettings:
         ctrl._save_custom_prompts = lambda: pytest.fail("must not continue saving")
         assert ctrl._save_all_settings() is False
         assert "Saving failed" in ctrl._toast_label.value
-        assert ctrl._saved_settings_signature == ("before",)
+        assert ctrl._saved_env_values == {"PULSESCRIBE_MODE": "deepgram"}
 
     def test_restart_stays_open_after_save_failure(self, monkeypatch):
         from types import SimpleNamespace

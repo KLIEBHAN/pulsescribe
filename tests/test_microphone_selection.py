@@ -136,9 +136,10 @@ def test_mac_popup_refresh_and_save_preserve_selection(devices, selected):
     builder = SettingsEnvUpdateBuilder()
     ctrl._add_general_env_updates(builder)
     assert builder.build()["PULSESCRIBE_INPUT_DEVICE"] == (selected or None)
-    before = ctrl._get_current_settings_signature()
     ctrl._microphone_popup.selectItemAtIndex_(1 if not selected else 0)
-    assert ctrl._get_current_settings_signature() != before
+    builder = SettingsEnvUpdateBuilder()
+    ctrl._add_general_env_updates(builder)
+    assert builder.build()["PULSESCRIBE_INPUT_DEVICE"] != (selected or None)
 
 
 def test_mac_microphone_row_fits_visible_transcription_page(devices):
