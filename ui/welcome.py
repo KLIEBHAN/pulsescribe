@@ -1914,7 +1914,7 @@ class WelcomeController:
         parent_view.addSubview_(local_backend_popup)
         self._bind_control_simple_handler(
             local_backend_popup,
-            "_update_local_settings_visibility",
+            "_update_all_visibility",  # also refreshes the save bar
             "_backend_changed_handler",
         )
 
@@ -2744,8 +2744,9 @@ class WelcomeController:
         if saved is None:
             return 0
         current = self._build_env_updates_from_controls(None)
+        # Keys missing from ``current`` are not written (inactive streaming,
+        # invalid numbers), so they are no pending change either.
         count = sum(current.get(key, saved[key]) != saved[key] for key in saved)
-        count += sum(key not in current for key in saved)  # e.g. invalid numbers
         for context, text in getattr(self, "_prompts_cache", {}).items():
             count += build_prompt_editor_state_feedback(
                 context,
@@ -3519,6 +3520,7 @@ class WelcomeController:
             f"Restored default {get_prompt_editor_context_label(ctx)}. {build_save_apply_change_hint()}",
         )
         self._refresh_prompt_editor_feedback()
+        self._refresh_footer_settings_hint()
 
     def _wire_prompt_editor_handlers(self, context_popup, reset_btn, text_view) -> None:
         self._bind_control_simple_handler(

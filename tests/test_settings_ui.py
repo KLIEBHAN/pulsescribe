@@ -456,7 +456,7 @@ class TestWelcomeSecondarySettingsFeedback:
 
         ctrl._save_all_settings()
         assert ctrl._saved_env_values["PULSESCRIBE_LOCAL_BEAM_SIZE"] == "5"
-        assert ctrl._count_unsaved_changes() == 1  # invalid value still unsaved
+        assert ctrl._count_unsaved_changes() == 0  # nothing valid to write
 
         ctrl._beam_size_field.setStringValue_("3")
         assert ctrl._count_unsaved_changes() == 1
