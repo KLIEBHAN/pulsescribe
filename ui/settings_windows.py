@@ -53,6 +53,7 @@ from ui.logs_panel_feedback import (
 )
 from ui.provider_settings import build_provider_api_key_status
 from ui.microphone import MICROPHONE_TOOLTIP, get_microphone_options
+from ui.settings_sections import SETTINGS_SECTIONS
 from ui.setup_try_it import build_setup_try_it_content
 from ui.qt_widget_state import (
     get_widget_enabled,
@@ -144,14 +145,6 @@ logger = logging.getLogger("pulsescribe.settings")
 SETTINGS_WIDTH = 760
 SETTINGS_HEIGHT = 620  # Same as the macOS settings window
 SIDEBAR_WIDTH = 150
-SETTINGS_SECTIONS = (
-    "General",
-    "Transcription",
-    "Refine",
-    "Vocabulary",
-    "History",
-    "About",
-)
 SETTINGS_MIN_HEIGHT = 560  # Content scrolls, so small laptop screens still fit
 SETTINGS_SCREEN_MARGIN = 48
 FOOTER_BUTTON_MIN_WIDTH = 120
@@ -949,21 +942,24 @@ class SettingsWindow(QDialog):
     def _setup_window(self):
         """Konfiguriert das Fenster."""
         self.setWindowTitle("PulseScribe Settings")
-        self.setMinimumSize(SETTINGS_WIDTH, SETTINGS_MIN_HEIGHT)
-        self.resize(SETTINGS_WIDTH, self._initial_window_height())
+        width, height = self._initial_window_size()
+        self.setMinimumSize(width, SETTINGS_MIN_HEIGHT)
+        self.resize(width, height)
         self.setStyleSheet(get_settings_stylesheet())
 
         # Window Flags
         self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.WindowCloseButtonHint)
 
     @staticmethod
-    def _initial_window_height() -> int:
-        """Use the macOS height unless the available screen area is smaller."""
+    def _initial_window_size() -> tuple[int, int]:
+        """Use the macOS size unless the available screen area is smaller."""
         screen = QApplication.primaryScreen()
         if screen is None:
-            return SETTINGS_HEIGHT
-        available = screen.availableGeometry().height() - SETTINGS_SCREEN_MARGIN
-        return max(SETTINGS_MIN_HEIGHT, min(SETTINGS_HEIGHT, available))
+            return SETTINGS_WIDTH, SETTINGS_HEIGHT
+        available = screen.availableGeometry()
+        width = min(SETTINGS_WIDTH, available.width() - SETTINGS_SCREEN_MARGIN)
+        height = available.height() - SETTINGS_SCREEN_MARGIN
+        return width, max(SETTINGS_MIN_HEIGHT, min(SETTINGS_HEIGHT, height))
 
     def _build_ui(self):
         """Erstellt das UI: Sidebar links, rechts Seitentitel, Seiten und Footer."""

@@ -12,6 +12,7 @@ from ui.hotkey_format import (
     format_hotkey_for_display,
     normalize_hotkey_text,
 )
+from ui.settings_sections import SETTINGS_SECTIONS
 from ui.hotkey_card import HotkeyCard
 from ui.logs_panel_feedback import (
     build_logs_empty_state_text,
@@ -93,14 +94,6 @@ WELCOME_HEIGHT = 620  # Fits small screens; long sections scroll
 SIDEBAR_WIDTH = 150
 # Pages, cards and footer are laid out in the area right of the sidebar.
 CONTENT_WIDTH = WELCOME_WIDTH - SIDEBAR_WIDTH
-SETTINGS_SECTIONS = (
-    "General",
-    "Transcription",
-    "Refine",
-    "Vocabulary",
-    "History",
-    "About",
-)
 PAGE_TITLE_HEIGHT = 30
 WELCOME_PADDING = 20
 FOOTER_HEIGHT = 60
@@ -1361,8 +1354,8 @@ class WelcomeController:
             return
         try:
             self._tab_view.selectTabViewItemWithIdentifier_(label)
-            self._ensure_tab_built(label)
             self._sync_sidebar_selection(label)
+            self._ensure_tab_built(label)
         except Exception:
             pass
 

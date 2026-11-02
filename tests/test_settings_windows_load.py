@@ -1193,3 +1193,18 @@ def test_sidebar_row_syncs_page_title_and_active_font():
     assert nav.item(0).font().weight() == QFont.Weight.Normal
     assert sidebar.width() == settings_mod.SIDEBAR_WIDTH
     assert app is not None
+
+
+@pytest.mark.parametrize(
+    ("available", "expected"),
+    [((1920, 1040), (760, 620)), ((683, 720), (635, 620)), ((700, 500), (652, 560))],
+)
+def test_initial_window_size_fits_available_screen(monkeypatch, available, expected):
+    from PySide6.QtCore import QRect
+
+    class _Screen:
+        def availableGeometry(self):
+            return QRect(0, 0, *available)
+
+    monkeypatch.setattr(settings_mod.QApplication, "primaryScreen", lambda: _Screen())
+    assert SettingsWindow._initial_window_size() == expected
