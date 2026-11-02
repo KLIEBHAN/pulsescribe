@@ -142,25 +142,28 @@ def test_mac_popup_refresh_and_save_preserve_selection(devices, selected):
     assert builder.build()["PULSESCRIBE_INPUT_DEVICE"] != (selected or None)
 
 
-def test_mac_microphone_row_fits_visible_transcription_page(devices):
+def test_mac_microphone_row_fits_visible_transcription_page(devices, monkeypatch):
     appkit = pytest.importorskip("AppKit")
+    import ui.welcome as welcome_mod
     from ui.welcome import (
         WelcomeController, CONTENT_WIDTH, PAGE_TITLE_HEIGHT, SAVE_BAR_HEIGHT,
         WELCOME_HEIGHT, WELCOME_PADDING,
     )
 
     appkit.NSApplication.sharedApplication()
+    monkeypatch.setattr(welcome_mod, "read_env_file", lambda: {})
+    monkeypatch.setattr(WelcomeController, "_build_window", lambda self: None)
     # Mirrors _build_page_title + _build_tabs: the tabless page height.
-    tab_y = SAVE_BAR_HEIGHT
-    height = WELCOME_HEIGHT - WELCOME_PADDING - PAGE_TITLE_HEIGHT - 4 - tab_y
-    ctrl = WelcomeController.__new__(WelcomeController)
-    ctrl.config = ctrl._env_settings_cache = {}
-    ctrl._content_view = appkit.NSView.alloc().initWithFrame_(
+    height = WELCOME_HEIGHT - WELCOME_PADDING - PAGE_TITLE_HEIGHT - 4 - SAVE_BAR_HEIGHT
+    ctrl = WelcomeController("f19", {})
+    page = appkit.NSView.alloc().initWithFrame_(
         appkit.NSMakeRect(0, 0, CONTENT_WIDTH, height)
     )
-    ctrl._update_all_visibility = lambda: None
-    bottom = ctrl._build_settings_card(height - WELCOME_PADDING)
-    assert bottom >= 0
+    ctrl._build_transcription_tab(page, height)
+    _scroll, document, _height, _blocks = ctrl._transcription_page
+    popup = ctrl._microphone_popup
+    bottom = popup.convertRect_toView_(popup.bounds(), document).origin.y
+    assert bottom >= document.frame().size.height - height  # visible without scrolling
 
 
 @pytest.mark.parametrize("selected", ["", "USB Mic", "Disconnected Mic"])

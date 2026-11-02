@@ -482,18 +482,44 @@ class TestWelcomeSecondarySettingsFeedback:
         assert ctrl._count_unsaved_changes() == 0
 
 
-class TestApiKeyProviderMetadata:
-    def test_api_card_height_grows_with_provider_count(self, monkeypatch):
+class TestWelcomeTranscriptionPage:
+    def test_page_shows_only_rows_for_the_selected_mode_without_gaps(self, monkeypatch):
+        appkit = pytest.importorskip("AppKit")
         import ui.welcome as welcome_mod
 
-        base_height = welcome_mod._get_api_card_height()
-        monkeypatch.setattr(
-            welcome_mod,
-            "API_KEY_PROVIDERS",
-            welcome_mod.API_KEY_PROVIDERS + [("test", "Test", "TEST_API_KEY")],
-        )
+        appkit.NSApplication.sharedApplication()
+        monkeypatch.setattr(welcome_mod, "read_env_file", lambda: {})
+        monkeypatch.setattr(WelcomeController, "_build_window", lambda self: None)
+        ctrl = WelcomeController("f19", {"mode": "deepgram"})
+        ctrl._env_settings_cache = {"PULSESCRIBE_MODE": "deepgram"}
+        page = appkit.NSView.alloc().initWithFrame_(appkit.NSMakeRect(0, 0, 610, 500))
+        ctrl._build_transcription_tab(page, 500)
+        _scroll, _document, _height, blocks = ctrl._transcription_page
 
-        assert welcome_mod._get_api_card_height() == base_height + welcome_mod.API_KEY_ROW_SPACING
+        def visible_blocks():
+            return [block for block, _visible in blocks if not block.isHidden()]
+
+        def packed(views):
+            tops = [(v.frame().origin.y, v.frame().size.height) for v in views]
+            return all(
+                abs((y + h) - prev_y) < 0.5 for (y, h), (prev_y, _) in zip(tops[1:], tops)
+            )
+
+        assert ctrl._deepgram_field.superview() in visible_blocks()
+        assert ctrl._groq_field.superview() not in visible_blocks()
+        assert ctrl._local_backend_popup.superview() not in visible_blocks()
+        assert packed(visible_blocks())
+
+        ctrl._mode_popup.selectItemWithTitle_("local")
+        ctrl._update_all_visibility()
+        assert ctrl._local_backend_popup.superview() in visible_blocks()
+        assert ctrl._deepgram_field.superview() not in visible_blocks()
+        assert ctrl._advanced_disclosure.superview() in visible_blocks()
+        assert ctrl._device_popup.superview() not in visible_blocks()
+        assert packed(visible_blocks())
+
+        ctrl._toggle_advanced_options()
+        assert ctrl._device_popup.superview() in visible_blocks()
 
 
 class TestWelcomeLazyTabs:
@@ -2649,3 +2675,62 @@ def test_toast_hides_success_after_timer_but_keeps_errors():
 
     ctrl._hide_toast()  # Dismiss
     assert ctrl._toast.isHidden()
+
+
+class _FakeControl(_FakeStatus):
+    def __init__(self, value=""):
+        super().__init__(value)
+        self.enabled = True
+
+    def isEnabled(self):
+        return self.enabled
+
+    def setEnabled_(self, enabled):
+        self.enabled = enabled
+
+    def setPlaceholderString_(self, _text):
+        pass
+
+
+def test_refine_key_row_mirrors_provider_key_and_greys_out_when_off(monkeypatch):
+    monkeypatch.setattr("ui.welcome.theme.set_ns_badge", _record_badge)
+    monkeypatch.setattr("ui.welcome.theme.ns_color", lambda token: token)
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    ctrl = _make_minimal_welcome_controller()
+    ctrl._refine_checkbox = _FakeToggleState(0)
+    ctrl._provider_popup = _FakePopup(["groq", "gemini"], selected="groq")
+    ctrl._groq_field = _FakeField("gsk-saved")
+    ctrl._gemini_field = _FakeField("")
+    ctrl._refine_key_field = _FakeControl()
+    ctrl._refine_key_badge = _FakeStatus()
+    ctrl._refine_key_badge_right = 500
+    provider_label = _FakeStatus()
+    ctrl._refine_detail_views = ((provider_label, ctrl._refine_key_field),)
+    ctrl._refresh_provider_key_statuses = lambda: None
+
+    ctrl._sync_refine_key_field()
+    assert ctrl._refine_key_field.value == "gsk-saved"
+    assert ctrl._refine_key_badge.color == "ok"
+    assert ctrl._refine_key_field.enabled is False
+    assert provider_label.color == "#6f6f6f"
+
+    ctrl._refine_checkbox = _FakeToggleState(1)
+    ctrl._provider_popup = _FakePopup(["groq", "gemini"], selected="gemini")
+    ctrl._sync_refine_key_field()
+    assert ctrl._refine_key_field.value == ""
+    assert ctrl._refine_key_badge.value == "Required"
+    assert ctrl._refine_key_field.enabled is True
+
+    ctrl._refine_key_field.setStringValue_("AIza-new")
+    ctrl._on_refine_key_edited()
+    assert ctrl._gemini_field.value == "AIza-new"
+    assert ctrl._groq_field.value == "gsk-saved"
+
+
+class _FakeToggleState:
+    def __init__(self, state):
+        self._state = state
+
+    def state(self):
+        return self._state

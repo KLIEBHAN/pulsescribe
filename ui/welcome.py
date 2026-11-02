@@ -178,10 +178,7 @@ SETUP_TRY_IT_HINT = (
     "Need permissions? Accessibility enables pasting; Input Monitoring enables "
     "global hotkeys."
 )
-API_KEY_CARD_TOP_INSET = 106  # title + two-line guidance
 API_KEY_STATUS_WIDTH = 96  # widest badge ("Configured")
-API_KEY_CARD_BOTTOM_INSET = 54
-API_KEY_ROW_SPACING = 54
 WELCOME_LOG_MAX_CHARS = 15_000
 TRANSCRIPTS_VIEW_MAX_ENTRIES = 50
 INCREMENTAL_LOG_APPEND_MAX_BYTES = 64_000
@@ -259,18 +256,6 @@ def _is_env_enabled_default_true(key: str) -> bool:
     if value is None:
         return True
     return value.lower() not in ("false", "0", "no", "off")
-
-
-def _get_api_card_height() -> int:
-    """Return a card height that fits all configured API key rows."""
-    row_count = len(API_KEY_PROVIDERS)
-    if row_count == 0:
-        return API_KEY_CARD_TOP_INSET + API_KEY_CARD_BOTTOM_INSET
-    return (
-        API_KEY_CARD_TOP_INSET
-        + API_KEY_CARD_BOTTOM_INSET
-        + API_KEY_ROW_SPACING * (row_count - 1)
-    )
 
 
 def _set_hidden_if_changed(view, hidden: bool) -> None:
@@ -382,21 +367,12 @@ def _build_welcome_provider_guidance_text(
     provider = PROVIDER_LABELS.get(current_mode, current_mode.capitalize())
 
     if current_mode == "local":
-        return (
-            "Local dictation works without a cloud API key. Keep cloud keys empty unless "
-            "you want a cloud provider for transcription or refinement later."
-        )
+        return "Local dictation works without a cloud API key; audio stays on this Mac."
 
     if required_key_present:
-        return (
-            f"{provider} is ready for transcription. Other provider keys can stay empty "
-            "until you switch modes or use them for refinement."
-        )
+        return f"{provider} is ready for transcription."
 
-    return (
-        f"{provider} is selected for transcription. Add its API key below before you start "
-        "dictation; the other keys are optional for now."
-    )
+    return f"{provider} is selected for transcription. Add its API key below to start dictation."
 
 
 
@@ -1094,13 +1070,191 @@ class WelcomeController:
         self._hotkey_card_anchor = (document, bottom - shift, height)
 
     def _build_transcription_tab(self, parent_view, tab_height: int) -> None:
-        def build(document, top_y: int) -> int:
-            y_pos = self._build_settings_card(top_y - WELCOME_PADDING, document)
-            y_pos = self._build_api_card(y_pos, document)
-            y_pos = self._build_setup_recommended_card(y_pos, document)
-            return self._build_advanced_local_card(y_pos, document)
+        """Transcription page as blocks; only those relevant to the mode are shown.
 
-        self._build_scrollable_tab(parent_view, tab_height, build)
+        ``_reflow_transcription_page`` packs the visible blocks top-down, so
+        hidden rows leave no gaps.
+        """
+        from AppKit import NSScrollView, NSView  # type: ignore[import-not-found]
+        from Foundation import NSMakeRect  # type: ignore[import-not-found]
+
+        document = NSView.alloc().initWithFrame_(
+            NSMakeRect(0, 0, CONTENT_WIDTH, tab_height)
+        )
+        scroll = NSScrollView.alloc().initWithFrame_(
+            NSMakeRect(0, 0, CONTENT_WIDTH, tab_height)
+        )
+        scroll.setHasVerticalScroller_(True)
+        scroll.setHasHorizontalScroller_(False)
+        scroll.setAutohidesScrollers_(True)
+        scroll.setDrawsBackground_(False)
+        scroll.setDocumentView_(document)
+        parent_view.addSubview_(scroll)
+
+        base_x = WELCOME_PADDING + CARD_PADDING
+        control_x = base_x + 118
+        control_width = CONTENT_WIDTH - 2 * WELCOME_PADDING - 2 * CARD_PADDING - 118
+        blocks: list = []
+
+        def add(build, visible=None) -> None:
+            """``build(view, top)`` adds views below ``top`` and returns the next free y."""
+            draft = 2000
+            block = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, CONTENT_WIDTH, draft))
+            bottom = build(block, draft)
+            for subview in list(block.subviews()):
+                origin = subview.frame().origin
+                subview.setFrameOrigin_((origin.x, origin.y - bottom))
+            block.setFrameSize_((CONTENT_WIDTH, draft - bottom))
+            document.addSubview_(block)
+            blocks.append((block, visible or (lambda: True)))
+
+        def row(builder, gap: int = 0):
+            def build(view, top: int) -> int:
+                builder(base_x, top - 23, control_x, control_width, view)
+                return top - 24 - gap
+            return build
+
+        def is_local() -> bool:
+            return self._current_mode() == "local"
+
+        def cloud_key(provider: str):
+            return lambda: MODE_API_KEY_PROVIDERS.get(self._current_mode()) == provider
+
+        add(lambda view, top: self._add_section_title(view, top, "Providers"))
+        add(row(self._build_mode_setting_row))
+        add(row(self._build_local_backend_setting_row), is_local)
+        add(row(self._build_local_model_setting_row), is_local)
+        add(row(self._build_language_setting_row))
+        add(
+            row(self._build_streaming_setting_row),
+            lambda: self._current_mode() == "deepgram",
+        )
+        add(row(self._build_microphone_setting_row, gap=26))
+        add(self._build_api_key_header, lambda: not is_local())
+        for provider, label_text, env_key in API_KEY_PROVIDERS:
+            add(
+                lambda view, top, p=provider, l=label_text, k=env_key: (
+                    self._build_api_row_compact(top - 40, l, k, p, view) or top - 54
+                ),
+                cloud_key(provider),
+            )
+        add(lambda _view, top: top - 26, lambda: not is_local())
+        add(lambda view, top: self._build_setup_recommended_card(top + CARD_SPACING, view), is_local)
+        add(self._build_advanced_disclosure, is_local)
+        add(
+            lambda view, top: self._build_advanced_local_card(top, view),
+            lambda: is_local() and getattr(self, "_advanced_expanded", False),
+        )
+        self._transcription_page = (scroll, document, tab_height, blocks)
+        self._refresh_provider_key_statuses()
+        self._update_all_visibility()
+
+    def _reflow_transcription_page(self) -> None:
+        """Stacks the visible Transcription blocks top-down and keeps the scroll offset."""
+        page = getattr(self, "_transcription_page", None)
+        if page is None:
+            return
+        scroll, document, tab_height, blocks = page
+        shown = [(block, bool(visible())) for block, visible in blocks]
+        content = WELCOME_PADDING + sum(
+            block.frame().size.height for block, visible in shown if visible
+        )
+        old_height = document.frame().size.height
+        clip = scroll.contentView().bounds()
+        from_top = old_height - (clip.origin.y + clip.size.height)
+        height = max(tab_height, content)
+        document.setFrameSize_((CONTENT_WIDTH, height))
+        y = height - WELCOME_PADDING
+        for block, visible in shown:
+            _set_hidden_if_changed(block, not visible)
+            if visible:
+                y -= block.frame().size.height
+                block.setFrameOrigin_((0, y))
+        from_top = max(0, min(from_top, height - tab_height))
+        document.scrollPoint_((0, height - tab_height - from_top))
+
+    def _add_section_title(self, view, top: int, text: str) -> int:
+        """Adds a flat section header (top rule + 14 px title); returns the y below it."""
+        from AppKit import NSFont, NSFontWeightSemibold  # type: ignore[import-not-found]
+        from Foundation import NSMakeRect  # type: ignore[import-not-found]
+
+        width = CONTENT_WIDTH - 2 * WELCOME_PADDING
+        view.addSubview_(theme.ns_rule(WELCOME_PADDING, top - 1, width))
+        title = _create_label(
+            text, NSMakeRect(WELCOME_PADDING + CARD_PADDING, top - 28, width, 18)
+        )
+        title.setFont_(
+            NSFont.systemFontOfSize_weight_(theme.SECTION_TITLE_SIZE, NSFontWeightSemibold)
+        )
+        view.addSubview_(title)
+        return top - 36
+
+    def _build_api_key_header(self, view, top: int) -> int:
+        """API Key section header with the provider guidance below the title."""
+        from AppKit import NSFont, NSMakeRect  # type: ignore[import-not-found]
+
+        y = self._add_section_title(view, top, "API Key")
+        guidance = _create_label(
+            "",
+            NSMakeRect(
+                WELCOME_PADDING + CARD_PADDING,
+                y - 16,
+                CONTENT_WIDTH - 2 * WELCOME_PADDING - 2 * CARD_PADDING,
+                20,
+            ),
+        )
+        guidance.setFont_(NSFont.systemFontOfSize_(11))
+        guidance.setTextColor_(theme.ns_color(theme.MUTED))
+        view.addSubview_(guidance)
+        self._provider_guidance_label = guidance
+        return y - 20
+
+    def _build_advanced_disclosure(self, view, top: int) -> int:
+        """Collapsed-by-default row that reveals the advanced local backend options."""
+        from AppKit import NSButton, NSMakeRect  # type: ignore[import-not-found]
+
+        width = CONTENT_WIDTH - 2 * WELCOME_PADDING
+        view.addSubview_(theme.ns_rule(WELCOME_PADDING, top - 1, width))
+        button = NSButton.alloc().initWithFrame_(
+            NSMakeRect(WELCOME_PADDING + CARD_PADDING - 2, top - 32, width, 22)
+        )
+        button.setBordered_(False)
+        button.setAlignment_(0)  # left
+        self._bind_control_simple_handler(
+            button, "_toggle_advanced_options", "_advanced_disclosure_handler"
+        )
+        view.addSubview_(button)
+        self._advanced_disclosure = button
+        self._advanced_expanded = False
+        self._update_advanced_disclosure_title()
+        return top - 40
+
+    def _update_advanced_disclosure_title(self) -> None:
+        from AppKit import (  # type: ignore[import-not-found]
+            NSAttributedString,
+            NSFont,
+            NSFontAttributeName,
+            NSFontWeightSemibold,
+            NSForegroundColorAttributeName,
+        )
+
+        arrow = "\u25be" if self._advanced_expanded else "\u25b8"
+        self._advanced_disclosure.setAttributedTitle_(
+            NSAttributedString.alloc().initWithString_attributes_(
+                f"{arrow}  Advanced backend options",
+                {
+                    NSFontAttributeName: NSFont.systemFontOfSize_weight_(
+                        theme.SECTION_TITLE_SIZE, NSFontWeightSemibold
+                    ),
+                    NSForegroundColorAttributeName: theme.ns_color(theme.TEXT),
+                },
+            )
+        )
+
+    def _toggle_advanced_options(self) -> None:
+        self._advanced_expanded = not getattr(self, "_advanced_expanded", False)
+        self._update_advanced_disclosure_title()
+        self._reflow_transcription_page()
 
     def _build_setup_content(self, parent_view, tab_height: int) -> int:
         """Setup overview + shortcuts (wizard lives in a separate window)."""
@@ -1331,6 +1485,7 @@ class WelcomeController:
             _set_tooltip_if_supported(getattr(self, f"_{provider}_field", None), tooltip)
             _set_tooltip_if_supported(status, tooltip)
 
+        self._sync_refine_key_field()
         self._refresh_footer_settings_hint()
 
     def _refresh_setup_try_card(self) -> None:
@@ -1631,6 +1786,7 @@ class WelcomeController:
             return self._build_prompts_card(y_pos, document, top_y)
 
         self._build_scrollable_tab(parent_view, tab_height, build)
+        self._sync_refine_key_field()  # prompts exist now; apply the Refine on/off state
 
     def _build_vocabulary_tab(self, parent_view, tab_height: int) -> None:
         y_pos = tab_height - WELCOME_PADDING
@@ -1680,73 +1836,6 @@ class WelcomeController:
             flat=True,
         )
 
-        return card_y - CARD_SPACING
-
-    def _build_api_card(self, y: int, parent_view=None) -> int:
-        """Erstellt API-Konfigurationskarte."""
-        from AppKit import (  # type: ignore[import-not-found]
-            NSColor,
-            NSFont,
-            NSFontWeightSemibold,
-            NSMakeRect,
-            NSTextField,
-        )
-
-        parent_view = parent_view or self._content_view
-
-        card_height = _get_api_card_height()
-        card_width = CONTENT_WIDTH - 2 * WELCOME_PADDING
-        card_y = y - card_height
-
-        card = _create_card(WELCOME_PADDING, card_y, card_width, card_height)
-        parent_view.addSubview_(card)
-
-        base_x = WELCOME_PADDING + CARD_PADDING
-        content_width = card_width - 2 * CARD_PADDING
-
-        title = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(base_x, card_y + card_height - 30, 200, 18)
-        )
-        title.setStringValue_("API Keys")
-        title.setBezeled_(False)
-        title.setDrawsBackground_(False)
-        title.setEditable_(False)
-        title.setSelectable_(False)
-        title.setFont_(
-            NSFont.systemFontOfSize_weight_(theme.SECTION_TITLE_SIZE, NSFontWeightSemibold)
-        )
-        title.setTextColor_(NSColor.whiteColor())
-        parent_view.addSubview_(title)
-
-        guidance = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(base_x, card_y + card_height - 66, content_width, 30)
-        )
-        guidance.setStringValue_("")
-        guidance.setBezeled_(False)
-        guidance.setDrawsBackground_(False)
-        guidance.setEditable_(False)
-        guidance.setSelectable_(False)
-        guidance.setFont_(NSFont.systemFontOfSize_(11))
-        guidance.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6))
-        guidance.setUsesSingleLineMode_(False)
-        guidance.cell().setWraps_(True)
-        parent_view.addSubview_(guidance)
-        self._provider_guidance_label = guidance
-
-        row_y = card_y + card_height - API_KEY_CARD_TOP_INSET
-        for index, (provider, label_text, key_name) in enumerate(API_KEY_PROVIDERS):
-            if index:  # rule centered in the gap below the previous row's field
-                parent_view.addSubview_(theme.ns_rule(base_x, row_y + 45, content_width))
-            self._build_api_row_compact(
-                row_y,
-                label_text,
-                key_name,
-                provider,
-                parent_view,
-            )
-            row_y -= API_KEY_ROW_SPACING
-
-        self._refresh_provider_key_statuses()
         return card_y - CARD_SPACING
 
     def _build_api_row_compact(
@@ -2048,80 +2137,6 @@ class WelcomeController:
         self._streaming_checkbox = streaming_checkbox
         parent_view.addSubview_(streaming_checkbox)
 
-    def _build_settings_card(self, y: int, parent_view=None) -> int:
-        """Erstellt Provider-Einstellungen (Mode/Local/Language)."""
-        from AppKit import (  # type: ignore[import-not-found]
-            NSColor,
-            NSFont,
-            NSFontWeightSemibold,
-            NSMakeRect,
-            NSTextField,
-        )
-
-        parent_view = parent_view or self._content_view
-
-        card_height = 204
-        card_width = CONTENT_WIDTH - 2 * WELCOME_PADDING
-        card_y = y - card_height
-
-        card = _create_card(WELCOME_PADDING, card_y, card_width, card_height)
-        parent_view.addSubview_(card)
-
-        base_x = WELCOME_PADDING + CARD_PADDING
-        label_width = 110
-        control_x = base_x + label_width + 8
-        control_width = card_width - 2 * CARD_PADDING - label_width - 8
-
-        # Section-Titel
-        title = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(base_x, card_y + card_height - 28, 200, 18)
-        )
-        title.setStringValue_("Providers")
-        title.setBezeled_(False)
-        title.setDrawsBackground_(False)
-        title.setEditable_(False)
-        title.setSelectable_(False)
-        title.setFont_(
-            NSFont.systemFontOfSize_weight_(theme.SECTION_TITLE_SIZE, NSFontWeightSemibold)
-        )
-        title.setTextColor_(NSColor.whiteColor())
-        parent_view.addSubview_(title)
-
-        row_height = 24
-        current_y = card_y + card_height - 58
-
-        self._build_mode_setting_row(
-            base_x, current_y, control_x, control_width, parent_view
-        )
-        current_y -= row_height
-
-        self._build_local_backend_setting_row(
-            base_x, current_y, control_x, control_width, parent_view
-        )
-        current_y -= row_height
-
-        self._build_local_model_setting_row(
-            base_x, current_y, control_x, control_width, parent_view
-        )
-        current_y -= row_height
-
-        self._build_language_setting_row(
-            base_x, current_y, control_x, control_width, parent_view
-        )
-        current_y -= row_height
-
-        self._build_streaming_setting_row(
-            base_x, current_y, control_x, control_width, parent_view
-        )
-        current_y -= row_height
-        self._build_microphone_setting_row(
-            base_x, current_y, control_x, control_width, parent_view
-        )
-
-        self._update_all_visibility()
-
-        return card_y - CARD_SPACING
-
     def _build_advanced_local_header(
         self,
         base_x: int,
@@ -2134,27 +2149,12 @@ class WelcomeController:
             NSColor,
             NSFont,
             NSFontWeightMedium,
-            NSFontWeightSemibold,
             NSMakeRect,
             NSTextField,
         )
 
-        title = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(base_x, card_y + card_height - 28, 320, 18)
-        )
-        title.setStringValue_("Advanced (Local)")
-        title.setBezeled_(False)
-        title.setDrawsBackground_(False)
-        title.setEditable_(False)
-        title.setSelectable_(False)
-        title.setFont_(
-            NSFont.systemFontOfSize_weight_(theme.SECTION_TITLE_SIZE, NSFontWeightSemibold)
-        )
-        title.setTextColor_(NSColor.whiteColor())
-        parent_view.addSubview_(title)
-
         desc = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(base_x, card_y + card_height - 46, control_width, 14)
+            NSMakeRect(base_x, card_y + card_height - 18, control_width, 14)
         )
         desc.setStringValue_("Optional expert overrides for local dictation.")
         desc.setBezeled_(False)
@@ -2169,7 +2169,7 @@ class WelcomeController:
         status = NSTextField.alloc().initWithFrame_(
             NSMakeRect(
                 base_x,
-                card_y + card_height - 78,
+                card_y + card_height - 50,
                 CONTENT_WIDTH - 2 * WELCOME_PADDING - 2 * CARD_PADDING,
                 28,
             )
@@ -2639,12 +2639,10 @@ class WelcomeController:
         """Erweiterte Local-Performance Settings (macOS-tuned)."""
         parent_view = parent_view or self._content_view
 
-        card_height = 558  # Increased for Lightning settings
+        # The "Advanced backend options" disclosure row above is the header.
+        card_height = 530  # Fits the Lightning rows
         card_width = CONTENT_WIDTH - 2 * WELCOME_PADDING
         card_y = y - card_height
-
-        card = _create_card(WELCOME_PADDING, card_y, card_width, card_height)
-        parent_view.addSubview_(card)
 
         base_x = WELCOME_PADDING + CARD_PADDING
         label_width = 110
@@ -2656,7 +2654,7 @@ class WelcomeController:
         )
 
         row_height = 28
-        current_y = card_y + card_height - 104
+        current_y = card_y + card_height - 76
 
         self._advanced_general_views, current_y = self._build_advanced_general_rows(
             base_x,
@@ -2783,7 +2781,7 @@ class WelcomeController:
         if popup is not None:
             _set_tooltip_if_supported(
                 popup,
-                "Choose which provider should clean up transcript text after transcription. The matching API key is managed on the Transcription tab.",
+                "Choose which provider should clean up transcript text after transcription.",
             )
         if field is not None:
             try:
@@ -2827,7 +2825,67 @@ class WelcomeController:
     def _refresh_secondary_settings_feedback(self) -> None:
         self._refresh_refine_settings_feedback()
         self._refresh_display_settings_feedback()
+        self._sync_refine_key_field()
         self._refresh_footer_settings_hint()
+
+    def _refine_key_provider(self) -> str:
+        popup = getattr(self, "_provider_popup", None)
+        provider = normalize_refine_provider(popup.titleOfSelectedItem() if popup else None)
+        return provider if provider in PROVIDER_ENV_KEYS else ""
+
+    def _sync_refine_key_field(self) -> None:
+        """Shows the selected refine provider's key and badge; greys details while Refine is off."""
+        checkbox = getattr(self, "_refine_checkbox", None)
+        enabled = bool(checkbox is not None and checkbox.state() == 1)
+        label_color = theme.ns_color(theme.TEXT if enabled else theme.PLACEHOLDER)
+        for label, control in getattr(self, "_refine_detail_views", ()):
+            label.setTextColor_(label_color)
+            if bool(control.isEnabled()) != enabled:
+                control.setEnabled_(enabled)
+        for control in (
+            getattr(self, "_prompts_context_popup", None),
+            getattr(self, "_prompts_reset_btn", None),
+        ):
+            if control is not None and bool(control.isEnabled()) != enabled:
+                control.setEnabled_(enabled)
+        text_view = getattr(self, "_prompts_text_view", None)
+        if text_view is not None and bool(text_view.isEditable()) != enabled:
+            text_view.setEditable_(enabled)
+            text_view.enclosingScrollView().setAlphaValue_(1.0 if enabled else 0.5)
+
+        field = getattr(self, "_refine_key_field", None)
+        provider = self._refine_key_provider()
+        if field is None or not provider:
+            return
+        env_key = PROVIDER_ENV_KEYS[provider]
+        source = getattr(self, f"_{provider}_field", None)
+        value = (
+            str(source.stringValue())
+            if source is not None
+            else self._get_cached_env_setting(env_key) or ""
+        )
+        _set_string_value_if_changed(field, value)
+        field.setPlaceholderString_(API_KEY_PLACEHOLDERS.get(provider, ""))
+        if value.strip() or os.getenv(env_key):
+            text, tone = "Configured", "ok"
+        else:
+            text, tone = ("Required", "warn") if enabled else ("Not set", "muted")
+        theme.set_ns_badge(
+            self._refine_key_badge, text, tone, right_edge=self._refine_key_badge_right
+        )
+
+    def _on_refine_key_edited(self) -> None:
+        """Writes Refine key edits into the Transcription field that Save & Apply stores."""
+        provider = self._refine_key_provider()
+        if not provider:
+            return
+        text = str(self._refine_key_field.stringValue())  # before a tab build re-syncs it
+        if getattr(self, f"_{provider}_field", None) is None:
+            self._ensure_tab_built("Transcription")  # its key fields hold the saved values
+        source = getattr(self, f"_{provider}_field", None)
+        if source is not None:
+            _set_string_value_if_changed(source, text)
+        self._refresh_provider_key_statuses()
 
     def _build_refine_card_header(
         self,
@@ -3019,7 +3077,7 @@ class WelcomeController:
         )
         current_y -= row_height
 
-        self._add_setting_label(base_x, current_y, "Provider:", parent_view)
+        provider_label = self._add_setting_label(base_x, current_y, "Provider:", parent_view)
         provider_popup = self._create_settings_popup(
             control_x,
             current_y,
@@ -3031,7 +3089,28 @@ class WelcomeController:
         parent_view.addSubview_(provider_popup)
         current_y -= row_height
 
-        self._add_setting_label(base_x, current_y, "Model:", parent_view)
+        # API key of the selected refine provider; mirrors its Transcription key field.
+        key_label = self._add_setting_label(base_x, current_y, "API key:", parent_view)
+        key_field = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(control_x, current_y, control_width - API_KEY_STATUS_WIDTH - 8, 22)
+        )
+        key_field.setFont_(NSFont.systemFontOfSize_(11))
+        if _TextChangeHandler is not None:
+            self._refine_key_handler = _TextChangeHandler.alloc().initWithController_method_(
+                self, "_on_refine_key_edited"
+            )
+            key_field.setDelegate_(self._refine_key_handler)
+        parent_view.addSubview_(key_field)
+        self._refine_key_field = key_field
+        badge = _create_label(
+            "", NSMakeRect(control_x + control_width - API_KEY_STATUS_WIDTH, current_y + 2, 84, 18)
+        )
+        parent_view.addSubview_(badge)
+        self._refine_key_badge = badge
+        self._refine_key_badge_right = control_x + control_width
+        current_y -= row_height
+
+        model_label = self._add_setting_label(base_x, current_y, "Model:", parent_view)
         model_field = NSTextField.alloc().initWithFrame_(
             NSMakeRect(control_x, current_y, control_width, 22)
         )
@@ -3050,6 +3129,12 @@ class WelcomeController:
             base_x, current_y, content_width, 30, parent_view
         )
         current_y -= 38
+        # Greyed out, not hidden, while Refine is off.
+        self._refine_detail_views = (
+            (provider_label, provider_popup),
+            (key_label, key_field),
+            (model_label, model_field),
+        )
         return [refine_checkbox, provider_popup, model_field], current_y
 
     def _env_enabled_default_false(self, env_key: str) -> bool:
@@ -3232,7 +3317,7 @@ class WelcomeController:
         """Erstellt Refine-Einstellungen."""
         parent_view = parent_view or self._content_view
 
-        card_height = 236
+        card_height = 264
         card_width = CONTENT_WIDTH - 2 * WELCOME_PADDING
         card_y = y - card_height
 
@@ -5521,6 +5606,7 @@ class WelcomeController:
         """Update all mode-dependent visibility settings."""
         self._update_local_settings_visibility()
         self._update_streaming_visibility()
+        self._reflow_transcription_page()
         self._refresh_provider_key_statuses()
         self._refresh_setup_try_card()
         self._refresh_footer_settings_hint()
