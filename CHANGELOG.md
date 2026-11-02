@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-11-02
+
 ### Changed
 
 - **Steadier overlay** – the recording overlay keeps one width (400 px)
@@ -29,6 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (Windows: "Copied — press Ctrl+V"). "Missing API key" and "Microphone
   unavailable" show a "Settings" link that opens Settings on Transcription
   (Windows: if the settings window is already open, it stays on its section).
+
+### Fixed
+
+- **macOS result badge** – the overlay said "Pasted" even when the transcript
+  was only copied to the clipboard; it now says "Copied" in that case.
 
 ## [1.9.0] - 2026-11-02
 
