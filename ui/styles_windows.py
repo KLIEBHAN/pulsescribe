@@ -411,8 +411,26 @@ QFrame#card {{
     border-radius: 0;
 }}
 
-QWidget#settingsRow {{
+QWidget#settingsRow, QWidget#saveBar {{
     border-top: 1px solid {theme.LINE};
+}}
+
+QFrame#toast {{
+    background-color: {theme.TOAST_BG};
+    border: 1px solid {theme.TOAST_BORDER};
+    border-radius: {theme.RADIUS}px;
+}}
+
+QPushButton#textButton {{
+    background-color: transparent;
+    border: none;
+    min-width: 0;
+    padding: 5px 10px;
+    color: {theme.MUTED};
+}}
+
+QPushButton#textButton:hover, QPushButton#textButton:focus {{
+    color: {theme.TEXT};
 }}
 
 QWidget#sidebar {{

@@ -82,9 +82,9 @@ from ui.prompt_editor_feedback import (
 )
 from ui.settings_apply_feedback import (
     build_save_apply_change_hint,
-    build_settings_loaded_feedback,
     build_settings_saved_feedback,
-    build_unsaved_settings_feedback,
+    build_unsaved_changes_text,
+    count_settings_changes,
 )
 from ui.vocabulary_feedback import (
     build_vocabulary_editor_feedback,
@@ -152,6 +152,8 @@ SIDEBAR_WIDTH = 150
 SETTINGS_MIN_HEIGHT = 560  # Content scrolls, so small laptop screens still fit
 SETTINGS_SCREEN_MARGIN = 48
 FOOTER_BUTTON_MIN_WIDTH = 120
+TOAST_DURATION_MS = 2500
+TOAST_MARGIN = 16
 CARD_BUTTON_WIDTH = 110
 SETUP_TRY_IT_HINT = "The result is pasted into the active window as soon as it is ready."
 LAZY_SETTINGS_TAB_LABELS = frozenset({"Vocabulary", "History"})
@@ -925,7 +927,8 @@ class SettingsWindow(QDialog):
         self._api_fields: dict[str, QLineEdit] = {}
         self._api_status: dict[str, QLabel] = {}
         self._provider_guidance_label: QLabel | None = None
-        self._footer_status_label: QLabel | None = None
+        self._save_bar: QWidget | None = None
+        self._toast: QFrame | None = None
         self._last_provider_key_status_snapshot: tuple[
             str,
             tuple[tuple[str, bool], ...],
@@ -1140,30 +1143,24 @@ class SettingsWindow(QDialog):
             item.setFont(font)
 
     def _build_footer(self) -> QWidget:
-        """Erstellt den Footer wie macOS: Statuszeile oben, darunter Checkbox und Buttons."""
+        """Save bar: shown only while the settings differ from the saved ones."""
         footer = QWidget()
-        outer = QVBoxLayout(footer)
-        outer.setContentsMargins(22, 6, 20, 18)
-        outer.setSpacing(10)
+        footer.setObjectName("saveBar")
+        footer.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        layout = QHBoxLayout(footer)
+        layout.setContentsMargins(16, 10, 16, 12)
+        layout.setSpacing(8)
 
-        self._footer_status_label = create_status_label("", "text_secondary")
-        self._footer_status_label.setFont(ui_font("caption"))
-        self._footer_status_label.setMinimumWidth(0)
-        self._footer_status_label.setAccessibleName("Settings status")
-        outer.addWidget(self._footer_status_label)
+        self._unsaved_label = create_status_label("", "text_secondary")
+        self._unsaved_label.setWordWrap(False)
+        self._unsaved_label.setAccessibleName("Unsaved changes")
+        layout.addWidget(self._unsaved_label, 1)
 
-        layout = QHBoxLayout()
-        layout.setSpacing(12)
-        outer.addLayout(layout)
-
-        # Checkbox links (wie macOS Welcome Window)
-        self._show_at_startup_checkbox = QCheckBox("Show at startup")
-        self._show_at_startup_checkbox.setChecked(get_show_welcome_on_startup())
-        self._show_at_startup_checkbox.stateChanged.connect(
-            self._on_show_at_startup_changed
-        )
-        layout.addWidget(self._show_at_startup_checkbox)
-        layout.addStretch(1)
+        self._discard_btn = QPushButton("Discard")
+        self._discard_btn.setObjectName("textButton")
+        self._discard_btn.setToolTip("Restore the saved settings")
+        self._discard_btn.clicked.connect(self._discard_changes)
+        layout.addWidget(self._discard_btn)
 
         self._save_btn = QPushButton("Save && Apply")
         self._save_btn.setObjectName("primary")
@@ -1172,14 +1169,82 @@ class SettingsWindow(QDialog):
         self._save_btn.setMinimumWidth(FOOTER_BUTTON_MIN_WIDTH)
         layout.addWidget(self._save_btn)
 
-        # Close-Button (rechts vom Save-Button, wie macOS)
-        self._close_btn = QPushButton("Close")
-        self._close_btn.setAccessibleName("Close settings")
-        self._close_btn.clicked.connect(self.reject)  # QDialog-konform
-        self._close_btn.setMinimumWidth(FOOTER_BUTTON_MIN_WIDTH)
-        layout.addWidget(self._close_btn)
-
+        footer.setVisible(False)
+        self._save_bar = footer
+        self._build_toast()
         return footer
+
+    def _build_toast(self) -> None:
+        """Bottom-right toast floating over the pages, so it never shifts the layout."""
+        from PySide6.QtCore import QTimer
+
+        toast = QFrame(self)
+        toast.setObjectName("toast")
+        layout = QHBoxLayout(toast)
+        layout.setContentsMargins(12, 8, 8, 8)
+        layout.setSpacing(8)
+        self._toast_label = create_status_label()
+        self._toast_label.setMaximumWidth(320)
+        self._toast_label.setAccessibleName("Settings status")
+        layout.addWidget(self._toast_label, 1)
+        self._toast_dismiss_btn = QPushButton("Dismiss")
+        self._toast_dismiss_btn.setObjectName("textButton")
+        self._toast_dismiss_btn.clicked.connect(toast.hide)
+        layout.addWidget(self._toast_dismiss_btn)
+        toast.hide()
+        self._toast = toast
+        self._toast_timer = QTimer(self)
+        self._toast_timer.setSingleShot(True)
+        self._toast_timer.timeout.connect(toast.hide)
+
+    def _show_toast(self, text: str, color: str = "success") -> None:
+        """Shows a status toast; errors and warnings stay until dismissed or replaced."""
+        persistent = color in ("error", "warning")
+        _set_status_label_if_changed(
+            getattr(self, "_toast_label", None), text, color if persistent else "text"
+        )
+        toast = getattr(self, "_toast", None)
+        if toast is None:
+            return
+        self._toast_dismiss_btn.setVisible(persistent)
+        # Wrapped labels shrink to their narrowest layout; size to the text instead.
+        label = self._toast_label
+        label.setMinimumWidth(
+            min(label.maximumWidth(), label.fontMetrics().horizontalAdvance(text) + 4)
+        )
+        self._toast_timer.stop()
+        if not persistent:
+            self._toast_timer.start(TOAST_DURATION_MS)
+        toast.adjustSize()
+        self._position_toast()
+        toast.show()
+        toast.raise_()
+
+    def _position_toast(self) -> None:
+        """Keeps the toast in the bottom-right corner, above a visible save bar."""
+        toast = getattr(self, "_toast", None)
+        if toast is None:
+            return
+        bottom = self.height() - TOAST_MARGIN
+        bar = getattr(self, "_save_bar", None)
+        if bar is not None and bar.isVisible():
+            bottom = bar.mapTo(self, bar.rect().topLeft()).y() - 8
+        toast.move(
+            self.width() - toast.width() - TOAST_MARGIN, bottom - toast.height()
+        )
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._position_toast()
+
+    def _discard_changes(self) -> None:
+        """Restores the setting widgets from the saved env file.
+
+        Prompt and vocabulary drafts keep their own Save buttons and stay as they are.
+        """
+        if self._recording_hotkey_for:
+            self._stop_hotkey_recording(None)
+        self._load_settings()
 
     # =========================================================================
     # Tab Builders
@@ -1849,6 +1914,14 @@ class SettingsWindow(QDialog):
         )
         self._rtf_checkbox.toggled.connect(self._refresh_secondary_settings_feedback)
         _add_card_checkbox_row(card_layout, "Performance:", self._rtf_checkbox)
+
+        # Applies immediately, like before when it lived in the footer.
+        self._show_at_startup_checkbox = QCheckBox("Show settings at startup")
+        self._show_at_startup_checkbox.setChecked(get_show_welcome_on_startup())
+        self._show_at_startup_checkbox.stateChanged.connect(
+            self._on_show_at_startup_changed
+        )
+        _add_card_checkbox_row(card_layout, "Startup:", self._show_at_startup_checkbox)
 
         self._display_settings_status_label = create_status_label(
             "", "text_secondary"
@@ -2634,13 +2707,26 @@ class SettingsWindow(QDialog):
             if getattr(self, "_microphone_combo", None) is not None else "",
         )
 
-    def _refresh_footer_settings_hint(self) -> None:
+    def _count_unsaved_settings(self) -> int:
         saved_signature = getattr(self, "_saved_settings_signature", None)
-        if saved_signature is None or self._get_current_settings_signature() == saved_signature:
-            text, color = build_settings_loaded_feedback()
-        else:
-            text, color = build_unsaved_settings_feedback()
-        self._set_footer_status(text, color)
+        if saved_signature is None:
+            return 0
+        return count_settings_changes(
+            saved_signature, self._get_current_settings_signature()
+        )
+
+    def _refresh_footer_settings_hint(self) -> None:
+        """Shows the save bar with the change count while settings are unsaved."""
+        count = self._count_unsaved_settings()
+        bar = getattr(self, "_save_bar", None)
+        if bar is None:
+            return
+        if count:
+            _set_widget_text_if_changed(
+                self._unsaved_label, build_unsaved_changes_text(count)
+            )
+        if _set_widget_visible_if_changed(bar, count > 0):
+            self._position_toast()
 
     def _update_refine_model_affordances(self) -> None:
         _enabled, provider_key, model_text = self._get_current_refine_settings_state()
@@ -2878,7 +2964,7 @@ class SettingsWindow(QDialog):
             self._lightning_batch_value.setText(str(value))
 
     def _set_footer_status(self, text: str, color: str = "text_secondary") -> None:
-        _set_status_label_if_changed(getattr(self, "_footer_status_label", None), text, color)
+        self._show_toast(text, color)
 
     def _on_show_at_startup_changed(self, state: int):
         """Handler für Show at startup Checkbox."""
@@ -4548,7 +4634,6 @@ class SettingsWindow(QDialog):
     def _save_settings(self) -> bool:
         """Save settings and return whether all files were persisted."""
         try:
-            self._reset_save_button()
             validated_hotkeys = self._validate_hotkeys_for_save()
             if validated_hotkeys is None:
                 self._set_footer_status(
@@ -4626,12 +4711,6 @@ class SettingsWindow(QDialog):
                 f"Saving failed: {e}",
                 "error",
             )
-            # Error Feedback
-            if hasattr(self, "_save_btn") and self._save_btn:
-                self._save_btn.setText("❌ Error!")
-                from PySide6.QtCore import QTimer
-
-                QTimer.singleShot(1500, self._reset_save_button)
             return False
 
     def _apply_local_preset(self, preset: str):
@@ -4826,33 +4905,11 @@ class SettingsWindow(QDialog):
             return False
 
     def _show_save_feedback(self):
-        """Zeigt visuelles Feedback nach erfolgreichem Speichern."""
+        """Confirms a successful save with a short toast."""
         text, color = build_settings_saved_feedback(
             auto_reload_worked=getattr(self, "_last_reload_signal_written", True)
         )
-        self._set_footer_status(text, color)
-
-        if hasattr(self, "_save_btn") and self._save_btn:
-            self._save_btn.setText("✓ Saved!")
-            self._save_btn.setStyleSheet(
-                f"""
-                QPushButton#primary {{
-                    background-color: {COLORS["success"]};
-                    border-color: {COLORS["success"]};
-                }}
-            """
-            )
-            from PySide6.QtCore import QTimer
-
-            QTimer.singleShot(1500, self._reset_save_button)
-
-    def _reset_save_button(self):
-        """Setzt Save-Button auf Originalzustand zurück."""
-        if getattr(self, "_is_closed", False):
-            return
-        if hasattr(self, "_save_btn") and self._save_btn:
-            self._save_btn.setText("Save && Apply")
-            self._save_btn.setStyleSheet("")  # Reset to default stylesheet
+        self._set_footer_status("Settings saved" if color == "success" else text, color)
 
     # =========================================================================
     # Public API

@@ -152,11 +152,11 @@ def test_open_logs_folder_selects_log_file_when_present(tmp_path, monkeypatch):
     )
 
     window = SettingsWindow.__new__(SettingsWindow)
-    window._footer_status_label = _FakeLabel()
+    window._toast_label = _FakeLabel()
     window._open_logs_folder()
 
     assert calls == [["explorer", "/select,", str(log_file)]]
-    assert window._footer_status_label.text == "Opened log file in Explorer."
+    assert window._toast_label.text == "Opened log file in Explorer."
 
 
 def test_open_logs_folder_falls_back_to_parent_folder_when_log_missing(
@@ -177,11 +177,11 @@ def test_open_logs_folder_falls_back_to_parent_folder_when_log_missing(
     )
 
     window = SettingsWindow.__new__(SettingsWindow)
-    window._footer_status_label = _FakeLabel()
+    window._toast_label = _FakeLabel()
     window._open_logs_folder()
 
     assert calls == [["explorer", str(log_file.parent)]]
-    assert window._footer_status_label.text == "Opened logs folder in Explorer."
+    assert window._toast_label.text == "Opened logs folder in Explorer."
 
 
 def test_open_logs_folder_reports_error_when_explorer_fails(tmp_path, monkeypatch):
@@ -200,10 +200,10 @@ def test_open_logs_folder_reports_error_when_explorer_fails(tmp_path, monkeypatc
     )
 
     window = SettingsWindow.__new__(SettingsWindow)
-    window._footer_status_label = _FakeLabel()
+    window._toast_label = _FakeLabel()
     window._open_logs_folder()
 
-    assert window._footer_status_label.text == "Could not open logs in Explorer. Try again."
+    assert window._toast_label.text == "Could not open logs in Explorer. Try again."
 
 
 def test_refresh_transcripts_resets_cached_state_when_history_file_is_missing(
@@ -870,22 +870,22 @@ def test_refresh_active_logs_view_backs_off_auto_refresh_when_idle():
 
 def test_refresh_logs_on_demand_sets_footer_feedback() -> None:
     window = SettingsWindow.__new__(SettingsWindow)
-    window._footer_status_label = _FakeLabel()
+    window._toast_label = _FakeLabel()
     window._refresh_logs = lambda: True
     window._reset_logs_auto_refresh_cadence = lambda: None
 
     assert window._refresh_logs_on_demand() is True
-    assert window._footer_status_label.text == "Logs refreshed."
+    assert window._toast_label.text == "Logs refreshed."
 
 
 def test_refresh_transcripts_on_demand_sets_idle_footer_feedback() -> None:
     window = SettingsWindow.__new__(SettingsWindow)
-    window._footer_status_label = _FakeLabel()
+    window._toast_label = _FakeLabel()
     window._refresh_transcripts = lambda: False
     window._reset_logs_auto_refresh_cadence = lambda: None
 
     assert window._refresh_transcripts_on_demand() is False
-    assert window._footer_status_label.text == "Transcript history is already up to date."
+    assert window._toast_label.text == "Transcript history is already up to date."
 
 
 def test_refresh_transcripts_missing_file_reports_idle_once_placeholder_is_current(

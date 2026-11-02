@@ -101,6 +101,29 @@ def build_settings_saved_feedback(
     return text, color
 
 
+def count_settings_changes(saved: Sequence[object], current: Sequence[object]) -> int:
+    """Count changed entries between two settings signatures.
+
+    Nested tuples (such as the API key pairs) count once per changed entry.
+    """
+    changes = 0
+    for before, after in zip(saved, current):
+        if (
+            isinstance(before, tuple)
+            and isinstance(after, tuple)
+            and len(before) == len(after)
+        ):
+            changes += sum(old != new for old, new in zip(before, after))
+        else:
+            changes += before != after
+    return changes
+
+
+def build_unsaved_changes_text(count: int) -> str:
+    """Save bar label, e.g. ``"2 unsaved changes"``."""
+    return f"{count} unsaved change{'' if count == 1 else 's'}"
+
+
 def build_save_apply_change_hint(*, plural: bool = False) -> str:
     return (
         "Click Save & Apply to keep these changes."
@@ -111,6 +134,8 @@ def build_save_apply_change_hint(*, plural: bool = False) -> str:
 
 __all__ = [
     "build_save_apply_change_hint",
+    "build_unsaved_changes_text",
+    "count_settings_changes",
     "build_settings_loaded_feedback",
     "build_settings_saved_feedback",
     "build_unsaved_settings_feedback",

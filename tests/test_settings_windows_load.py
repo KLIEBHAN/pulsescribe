@@ -807,11 +807,11 @@ def test_save_settings_invalid_hotkeys_show_footer_hint(monkeypatch):
 
     window = _make_save_window("default")
     window._validate_hotkeys_for_save = lambda: None
-    window._footer_status_label = _FakeLabel()
+    window._toast_label = _FakeLabel()
 
     window._save_settings()
 
-    assert "hotkey issues" in window._footer_status_label.text.lower()
+    assert "hotkey issues" in window._toast_label.text.lower()
 
 
 @pytest.mark.parametrize("vocabulary_saved", [True, False])
@@ -823,7 +823,7 @@ def test_save_settings_reports_partial_write_failures(
     monkeypatch.setattr(settings_mod, "is_onboarding_complete", lambda: True)
 
     window = _make_save_window("default")
-    window._footer_status_label = _FakeLabel()
+    window._toast_label = _FakeLabel()
     window._save_vocabulary_if_changed = lambda: vocabulary_saved
     window._save_all_prompts = lambda: prompts_saved
     success_feedback: list[bool] = []
@@ -833,11 +833,11 @@ def test_save_settings_reports_partial_write_failures(
 
     assert success_feedback == ([True] if vocabulary_saved and prompts_saved else [])
     if not vocabulary_saved or not prompts_saved:
-        assert "could not be saved" in window._footer_status_label.text
+        assert "could not be saved" in window._toast_label.text
         if not vocabulary_saved:
-            assert "Vocabulary" in window._footer_status_label.text
+            assert "Vocabulary" in window._toast_label.text
         if not prompts_saved:
-            assert "Refine" in window._footer_status_label.text
+            assert "Refine" in window._toast_label.text
 
 
 @pytest.mark.parametrize("vocabulary_saved", [True, False])
@@ -848,7 +848,7 @@ def test_reload_callback_failure_preserves_file_save_result(
     monkeypatch.setattr(settings_mod, "update_env_settings", lambda _updates: None)
     monkeypatch.setattr(settings_mod, "is_onboarding_complete", lambda: True)
     window = _make_save_window("default")
-    window._footer_status_label = _FakeLabel()
+    window._toast_label = _FakeLabel()
     window._save_vocabulary_if_changed = lambda: vocabulary_saved
     window._save_all_prompts = lambda: prompts_saved
 
@@ -857,7 +857,7 @@ def test_reload_callback_failure_preserves_file_save_result(
 
     window._on_settings_changed_callback = fail_reload
     assert window._save_settings() is (vocabulary_saved and prompts_saved)
-    text = window._footer_status_label.text
+    text = window._toast_label.text
     assert "reload failed" in text
     assert "Saving failed" not in text
     if not vocabulary_saved:
@@ -1061,23 +1061,21 @@ def test_build_setup_try_it_content_points_to_hotkeys_when_empty():
     assert button == "Set up Hotkeys…"
 
 
-def test_refresh_footer_settings_hint_switches_between_loaded_and_unsaved_states() -> None:
+def test_save_bar_shows_change_count_only_while_settings_are_unsaved() -> None:
     window = _make_window()
-    window._footer_status_label = _FakeLabel()
+    window._save_bar = _FakeVisibleWidget()
+    window._unsaved_label = _FakeLabel()
     window._saved_settings_signature = window._get_current_settings_signature()
 
     window._refresh_footer_settings_hint()
-
-    assert window._footer_status_label.text.startswith(
-        "Showing the current saved settings"
-    )
+    assert window._save_bar.visible is False
 
     window._refine_checkbox.setChecked(True)
+    window._overlay_checkbox.setChecked(not window._overlay_checkbox.isChecked())
     window._refresh_footer_settings_hint()
 
-    assert window._footer_status_label.text == (
-        "You have local changes. Click Save & Apply to keep them."
-    )
+    assert window._save_bar.visible is True
+    assert window._unsaved_label.text == "2 unsaved changes"
 
 
 def test_build_provider_guidance_text_for_missing_required_key():
@@ -1241,3 +1239,38 @@ def test_badge_stylesheet_uses_tone_tokens(color, tone):
     assert f"background-color: {background}" in style
     assert f"color: {text}" in style
     assert "border-radius: 3px" in style
+
+
+def test_toast_auto_hides_success_but_keeps_errors_until_dismissed():
+    from PySide6.QtWidgets import QApplication, QDialog
+
+    app = QApplication.instance() or QApplication([])
+    window = SettingsWindow.__new__(SettingsWindow)
+    QDialog.__init__(window)
+    window._save_bar = None
+    window._build_toast()
+
+    window._show_toast("Settings saved", "success")
+    assert window._toast_label.text() == "Settings saved"
+    assert window._toast_timer.isActive()
+    assert window._toast_dismiss_btn.isHidden()
+
+    window._show_toast("Saving failed: disk full", "error")
+    assert not window._toast_timer.isActive()
+    assert not window._toast_dismiss_btn.isHidden()
+    assert not window._toast.isHidden()
+    window._toast_dismiss_btn.click()
+    assert window._toast.isHidden()
+    assert app is not None
+
+
+def test_discard_restores_saved_settings_and_stops_recording():
+    window = SettingsWindow.__new__(SettingsWindow)
+    calls: list[object] = []
+    window._recording_hotkey_for = "toggle"
+    window._stop_hotkey_recording = lambda value: calls.append(("stop", value))
+    window._load_settings = lambda: calls.append("load")
+
+    window._discard_changes()
+
+    assert calls == [("stop", None), "load"]
