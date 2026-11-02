@@ -725,7 +725,7 @@ class PySide6OverlayWidget(QWidget):
         self._painted_bar_heights = [float(BAR_MIN_HEIGHT)] * BAR_COUNT
 
     # =========================================================================
-    # Animation (nur RECORDING)
+    # Animation (Balken nur RECORDING; Shimmer der Verarbeitungslinie)
     # =========================================================================
 
     def _start_animation(self):

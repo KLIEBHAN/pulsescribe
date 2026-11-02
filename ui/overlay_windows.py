@@ -3,7 +3,9 @@
 Nutzt dieselben Farben und Inhalte wie macOS/PySide6 (ui/overlay_style.py,
 ``describe_overlay_content``), aber vereinfacht: feste Breite (auch bleibende
 Meldungen wachsen nicht), Interim-Text per Tail-Kürzung statt Fade und
-einfarbig gedämpft. Nur RECORDING animiert; alle anderen States sind statisch.
+einfarbig gedämpft. Nur RECORDING animiert; alle anderen States sind
+statisch, auch die Verarbeitungslinie (Tk kann keine Verläufe; den Shimmer
+zeigen nur macOS und PySide6).
 Fehler bleiben bis zum Klick sichtbar; das Tk-Fenster ist (wie bisher) nie
 klick-durchlässig, weil Tk das nicht pro State umschalten kann.
 """

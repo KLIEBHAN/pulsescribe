@@ -107,8 +107,9 @@ WAVE_AGC_DECAY = 0.97  # Peak-Falloff pro Level-Update (~1s Zeitkonstante bei ~1
 WAVE_AGC_MIN_PEAK = 0.01  # Untergrenze gegen Überverstärkung von Stille
 WAVE_AGC_HEADROOM = 2.0  # Mehr Headroom = weniger Sensitivität/Clipping
 
-# Rendering: Nur Recording animiert (audiogetrieben). Der Timer läuft nur,
-# solange sich Balken bewegen; alle anderen States sind statisch.
+# Rendering: Recording animiert audiogetrieben; der Timer läuft nur, solange
+# sich Balken bewegen. Der Shimmer der Verarbeitungslinie läuft per Core
+# Animation ohne Timer (siehe SoundWaveView._start_shimmer).
 WAVE_ANIMATION_FPS = 60.0
 WAVE_ANIMATION_FPS_IDLE = 24.0
 WAVE_LEVEL_ACTIVE_THRESHOLD = 0.035

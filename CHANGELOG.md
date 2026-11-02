@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Processing feedback** – a soft light sweeps across the line while
+  preparing, transcribing and refining; with Refine on it runs over the
+  active step. It stops as soon as the result appears. With "Reduce motion"
+  (macOS) or animation effects turned off (Windows) the line stays static.
+  The Windows Tkinter fallback keeps the static line.
+
 ## [1.10.0] - 2026-11-02
 
 ### Changed
