@@ -112,7 +112,7 @@ MODE_OPTIONS = ["deepgram", "openai", "groq", "local", "openai_compatible"]
 SERVER_URL_ENV_KEY = "OPENAI_COMPATIBLE_BASE_URL"
 SERVER_URL_PLACEHOLDER = "http://server.local:8000/v1"
 SERVER_MODEL_ENV_KEY = "OPENAI_COMPATIBLE_MODEL"
-SERVER_MODEL_PLACEHOLDER = "whisper-1 (server default)"
+SERVER_MODEL_PLACEHOLDER = "Empty sends whisper-1"
 REFINE_PROVIDER_OPTIONS = ["groq", "openai", "openrouter", "gemini"]
 LANGUAGE_OPTIONS = ["auto", "de", "en", "es", "fr", "it", "pt", "nl", "pl", "ru", "zh"]
 LOCAL_BACKEND_OPTIONS = ["auto", "whisper", "faster", "mlx", "lightning"]
@@ -2041,8 +2041,8 @@ class WelcomeController:
         )
         _set_tooltip_if_supported(
             field,
-            "Model name your server expects, for example large-v3. Leave empty for whisper-1, "
-            "which compatible servers map to their default model.",
+            "Model name your server expects, for example large-v3. Empty sends whisper-1, "
+            "OpenAI's name; check which model names your server accepts.",
         )
 
     def _build_local_backend_setting_row(

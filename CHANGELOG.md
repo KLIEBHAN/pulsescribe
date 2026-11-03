@@ -12,7 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Server model in Settings** – in the own server mode, Settings → Providers
   on macOS and Windows has a Server Model field (saved as
   `OPENAI_COMPATIBLE_MODEL`), for example `large-v3` for the slower, more
-  accurate model. Empty keeps `whisper-1`, the server's default.
+  accurate model. Empty sends `whisper-1` as
+  before.
 
 ## [1.12.0] - 2026-11-03
 
