@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Server model in Settings** – in the own server mode, Settings → Providers
+  on macOS and Windows has a Server Model field (saved as
+  `OPENAI_COMPATIBLE_MODEL`), for example `large-v3` for the slower, more
+  accurate model. Empty sends `whisper-1` as before.
+
 ### Fixed
 
 - **Microphone changes on macOS** – plugging in or removing a microphone, for

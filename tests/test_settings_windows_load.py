@@ -1074,21 +1074,29 @@ def test_server_url_round_trips_between_env_and_settings(monkeypatch):
         lambda: {
             "PULSESCRIBE_MODE": "openai_compatible",
             "OPENAI_COMPATIBLE_BASE_URL": "http://mac-mini:7860/v1",
+            "OPENAI_COMPATIBLE_MODEL": "large-v3",
         },
     )
     window = _make_window()
     window._server_url_field = _FakeField()
+    window._server_model_field = _FakeField()
     window._load_settings()
     assert window._server_url_field.text() == "http://mac-mini:7860/v1"
+    assert window._server_model_field.text() == "large-v3"
 
     builder = settings_mod.SettingsEnvUpdateBuilder(None)
     window._add_core_env_updates(builder)
-    assert builder.build()["OPENAI_COMPATIBLE_BASE_URL"] == "http://mac-mini:7860/v1"
+    updates = builder.build()
+    assert updates["OPENAI_COMPATIBLE_BASE_URL"] == "http://mac-mini:7860/v1"
+    assert updates["OPENAI_COMPATIBLE_MODEL"] == "large-v3"
 
     window._server_url_field.setText(" ")
+    window._server_model_field.setText("")
     builder = settings_mod.SettingsEnvUpdateBuilder(None)
     window._add_core_env_updates(builder)
-    assert builder.build()["OPENAI_COMPATIBLE_BASE_URL"] is None
+    updates = builder.build()
+    assert updates["OPENAI_COMPATIBLE_BASE_URL"] is None
+    assert updates["OPENAI_COMPATIBLE_MODEL"] is None
 
 
 def test_build_setup_try_it_content_prefers_hold_flow_when_available():
@@ -1141,6 +1149,19 @@ def test_save_bar_shows_server_url_only_edits() -> None:
     window._refresh_footer_settings_hint()
 
     assert window._save_bar.visible is True
+    assert window._unsaved_label.text == "1 unsaved change"
+
+
+def test_save_bar_shows_server_model_only_edits() -> None:
+    window = _make_window()
+    window._server_model_field = _FakeField("")
+    window._save_bar = _FakeVisibleWidget()
+    window._unsaved_label = _FakeLabel()
+    window._saved_settings_signature = window._get_current_settings_signature()
+
+    window._server_model_field.setText("large-v3")
+    window._refresh_footer_settings_hint()
+
     assert window._unsaved_label.text == "1 unsaved change"
 
 
@@ -1383,6 +1404,7 @@ def test_server_url_row_shows_only_for_own_server_mode():
     window._api_rows = {"DEEPGRAM_API_KEY": _FakeVisibleWidget()}
     window._api_keys_card = _FakeVisibleWidget()
     window._server_url_container = _FakeVisibleWidget()
+    window._server_model_container = _FakeVisibleWidget()
     window._local_presets_card = _FakeVisibleWidget()
     window._refresh_local_advanced_ui = lambda _mode: None
     window._refresh_provider_key_statuses = lambda: None
@@ -1390,11 +1412,13 @@ def test_server_url_row_shows_only_for_own_server_mode():
 
     window._on_mode_changed("openai_compatible")
     assert window._server_url_container.visible is True
+    assert window._server_model_container.visible is True
     assert window._api_keys_card.visible is False
     assert window._local_presets_card.visible is False
 
     window._on_mode_changed("deepgram")
     assert window._server_url_container.visible is False
+    assert window._server_model_container.visible is False
     assert window._api_keys_card.visible is True
 
 
