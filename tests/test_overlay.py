@@ -685,6 +685,26 @@ def test_listening_level_meter_rises_settles_and_returns_to_rest(monkeypatch):
     )
 
 
+def test_listening_meter_settles_despite_float_rounding(monkeypatch):
+    from ui.animation import LISTENING_LEVEL_SPAN, AnimationLogic
+
+    view, _timers = _listening_view(monkeypatch)
+    bar = 3  # rest 7 px
+    # Crossing 8.0 rounds: prev + 0.25 - prev == 0.2499999999999991.
+    prev = 7.909246677275182
+    assert (prev + WAVE_HEIGHT_UPDATE_EPSILON) - prev < WAVE_HEIGHT_UPDATE_EPSILON
+    factor = AnimationLogic.get_height_factors()[bar]
+    level = (prev + 0.3 - LISTENING_BAR_HEIGHTS[bar]) / (LISTENING_LEVEL_SPAN * factor)
+    assert level < 1.0
+    view._last_heights = list(listening_bar_heights(level))
+    view._last_heights[bar] = prev
+    view._smoothed_level = view._target_level = level
+
+    view._start_level_timer()
+
+    assert _run_level_frames(view) < 400
+
+
 def test_listening_room_noise_below_the_gate_starts_no_timer(monkeypatch):
     view, timers = _listening_view(monkeypatch)
 

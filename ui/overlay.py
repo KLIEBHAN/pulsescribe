@@ -183,9 +183,13 @@ def _wave_heights_are_settled(heights: list[float]) -> bool:
 
 
 def _heights_match(heights, goals) -> bool:
-    """Return True when every bar is within a subpixel of its goal height."""
+    """Return True when every listening bar is close enough to settle.
+
+    Twice the commit epsilon: a final step of up to one epsilon may be dropped
+    by ``_apply_bar_heights`` after float rounding (see _render_listening_frame).
+    """
     return all(
-        abs(height - goal) < WAVE_HEIGHT_UPDATE_EPSILON
+        abs(height - goal) < 2 * WAVE_HEIGHT_UPDATE_EPSILON
         for height, goal in zip(heights, goals)
     )
 
@@ -867,20 +871,21 @@ class SoundWaveView:
     def _render_listening_frame(self, level: float, center_y: float) -> None:
         """Ease the low row toward the listening heights for ``level`` (no wave).
 
-        Steps never drop below the layer-update epsilon, so the tail reaches
-        the goal and the timer can settle instead of stalling a pixel short.
+        Steps are at least 1.5x the layer-update epsilon (clearly committed
+        despite float rounding) or land on the goal, so the tail never stalls
+        short of the settle tolerance and the timer can stop.
         """
         heights = self._recording_frame_buffer()
         last_heights = self._last_heights
-        epsilon = WAVE_HEIGHT_UPDATE_EPSILON
+        min_step = 1.5 * WAVE_HEIGHT_UPDATE_EPSILON
         for i, goal in enumerate(listening_bar_heights(level)):
             prev_height = last_heights[i]
             gap = goal - prev_height
             step = gap * (
                 WAVE_SMOOTHING_ALPHA_RISE if gap > 0 else WAVE_SMOOTHING_ALPHA_FALL
             )
-            if -epsilon < step < epsilon:
-                step = max(-epsilon, min(epsilon, gap))
+            if -min_step < step < min_step:
+                step = max(-min_step, min(min_step, gap))
             heights[i] = prev_height + step
         self._apply_bar_heights(heights, center_y=center_y)
 
