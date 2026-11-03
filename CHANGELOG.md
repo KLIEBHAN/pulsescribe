@@ -29,6 +29,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   preselected and both stay until you pick a row; Settings → General keeps
   managing two hotkeys. Permission and Record buttons use the quiet outline
   style.
+- **Setup wizard Practice (macOS)** – "Try it" shows one prompt with your
+  hotkey as a keycap ("Hold Fn and say a short sentence."), a Start practice
+  / Stop / Try again button and a transcript box with a Listening,
+  Processing, Worked, No speech or Error badge. The repeated hint lines and
+  the in-step skip link are gone; Skip sits in the footer. The test stays
+  safe: nothing is pasted, and leaving the step cancels a running test.
 
 ### Fixed
 

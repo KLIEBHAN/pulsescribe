@@ -354,7 +354,7 @@ def test_render_skips_duplicate_ui_mutations_for_same_step(monkeypatch):
     wizard._back_btn = _FakeButton()
     wizard._next_btn = _FakeButton()
     wizard._skip_test_btn = _FakeButton()
-    wizard._test_hotkey_label = _FakeTextField()
+    wizard._test_hotkey_label = None
     wizard._ensure_step_built = lambda _step: None
     wizard._wizard_title = lambda _step: ("Try it", "A safe test.")
     wizard._can_advance = lambda: True
@@ -380,7 +380,6 @@ def test_render_skips_duplicate_ui_mutations_for_same_step(monkeypatch):
     assert wizard._skip_test_btn.hidden_calls == [False]
     assert wizard._next_btn.title_calls == 1
     assert wizard._next_btn.enabled_calls == [True]
-    assert wizard._test_hotkey_label.set_calls == 1
 
 
 def test_update_summary_skips_duplicate_widget_updates():
@@ -513,143 +512,84 @@ def test_update_summary_reuses_cached_permission_signature(monkeypatch):
     assert wizard._summary_test_label.value == "Your speech was transcribed"
 
 
-def test_update_test_dictation_hotkeys_uses_friendly_labels() -> None:
-    wizard = OnboardingWizardController.__new__(OnboardingWizardController)
-    wizard._test_hotkey_label = _FakeTextField()
-    wizard._last_test_hotkey_text = None
-    wizard._get_cached_hotkeys = lambda: ("option+space", "fn")
+def test_practice_prompt_shows_the_configured_hotkey() -> None:
+    from ui.onboarding_wizard import _build_test_prompt
 
-    wizard._update_test_dictation_hotkeys()
-
-    assert wizard._test_hotkey_label.value == (
-        "Toggle: Option+Space — press once to start and again to stop.\n"
-        "Hold: Fn — hold while speaking, then release."
+    assert _build_test_prompt("option+space", "fn") == (
+        "Hold",
+        "Fn",
+        "and say a short sentence.",
+    )
+    assert _build_test_prompt("option+space", "") == (
+        "Press",
+        "Option+Space",
+        "and say a short sentence, then press it again.",
+    )
+    assert _build_test_prompt("", "") == (
+        "",
+        "",
+        "Click Start practice and say a short sentence.",
     )
 
 
-def test_start_test_dictation_sets_starting_feedback_and_shows_stop_button(monkeypatch):
-    import ui.onboarding_wizard as wizard_mod
-
+def _make_practice_wizard(state: str = "idle", outcome: str = "pending"):
     wizard = OnboardingWizardController.__new__(OnboardingWizardController)
     wizard._step = OnboardingStep.TEST_DICTATION
-    wizard._test_state = "idle"
-    wizard._test_outcome = "pending"
+    wizard._test_state = state
+    wizard._test_outcome = outcome
     wizard._test_successful = False
-    wizard._test_status_label = _FakeTextField()
-    wizard._test_notice_label = _FakeTextField()
+    wizard._test_status_label = None
     wizard._test_text_view = _FakeTextView()
     wizard._test_start_btn = _FakeButton()
     wizard._test_stop_btn = _FakeButton()
-    wizard._last_test_status_text = None
-    wizard._last_test_status_level = None
-    wizard._last_test_notice_text = None
-    wizard._last_test_notice_level = None
     wizard._last_test_preview_text = None
-
-    start_calls: list[bool] = []
-    wizard._on_test_dictation_start = lambda: start_calls.append(True)
+    wizard._on_test_dictation_start = None
     wizard._on_test_dictation_stop = None
     wizard._on_test_dictation_cancel = None
-    wizard._render = lambda: None
+    render_calls: list[bool] = []
+    wizard._render = lambda: render_calls.append(True)
+    return wizard, render_calls
 
-    monkeypatch.setattr(wizard_mod, "_get_color", lambda *args, **kwargs: args)
+
+def test_start_test_dictation_sets_starting_feedback_and_shows_stop_button():
+    wizard, _ = _make_practice_wizard()
+    start_calls: list[bool] = []
+    wizard._on_test_dictation_start = lambda: start_calls.append(True)
 
     wizard._start_test_dictation()
 
     assert start_calls == [True]
     assert wizard._test_state == "starting"
     assert wizard._test_outcome == "starting"
-    assert wizard._test_status_label.value == "Starting your practice dictation…"
-    assert wizard._test_notice_label.value == (
-        "PulseScribe is starting a safe practice run. Nothing will be pasted during this step."
-    )
-    assert wizard._test_text_view.value == (
-        "Starting a safe practice dictation…\n"
-        "PulseScribe is getting ready to listen only inside this window."
-    )
+    assert wizard._test_text_view.value == "Getting ready…"
     assert wizard._test_start_btn.hidden is True
     assert wizard._test_stop_btn.hidden is False
     assert wizard._test_stop_btn.title == "Cancel"
 
 
-
-def test_stop_test_dictation_uses_cancel_path_while_starting(monkeypatch):
-    import ui.onboarding_wizard as wizard_mod
-
-    wizard = OnboardingWizardController.__new__(OnboardingWizardController)
-    wizard._step = OnboardingStep.TEST_DICTATION
-    wizard._test_state = "starting"
-    wizard._test_outcome = "starting"
-    wizard._test_successful = False
-    wizard._test_status_label = _FakeTextField()
-    wizard._test_notice_label = _FakeTextField()
-    wizard._test_text_view = _FakeTextView()
-    wizard._test_start_btn = _FakeButton()
-    wizard._test_stop_btn = _FakeButton()
-    wizard._last_test_status_text = None
-    wizard._last_test_status_level = None
-    wizard._last_test_notice_text = None
-    wizard._last_test_notice_level = None
-    wizard._last_test_preview_text = None
-
+def test_stop_test_dictation_uses_cancel_path_while_starting():
+    wizard, _ = _make_practice_wizard("starting", "starting")
     cancel_calls: list[bool] = []
-    wizard._on_test_dictation_start = None
-    wizard._on_test_dictation_stop = None
     wizard._on_test_dictation_cancel = lambda: cancel_calls.append(True)
-    wizard._render = lambda: None
-
-    monkeypatch.setattr(wizard_mod, "_get_color", lambda *args, **kwargs: args)
 
     wizard._stop_test_dictation()
 
     assert cancel_calls == [True]
     assert wizard._test_state == "idle"
     assert wizard._test_outcome == "cancelled"
-    assert wizard._test_status_label.value == "Practice dictation cancelled."
-    assert wizard._test_notice_label.value == (
-        "No problem — start another safe practice run whenever you're ready."
-    )
-    assert wizard._test_text_view.value == (
-        "The practice run was cancelled.\n"
-        "You can start another safe test whenever you're ready."
-    )
+    assert wizard._test_text_view.value == "Cancelled. Start again whenever you're ready."
     assert wizard._test_start_btn.hidden is False
     assert wizard._test_start_btn.title == "Try again"
     assert wizard._test_stop_btn.hidden is True
 
 
-
-def test_on_test_dictation_hotkey_state_updates_preview_and_processing_buttons(monkeypatch):
-    import ui.onboarding_wizard as wizard_mod
-
-    wizard = OnboardingWizardController.__new__(OnboardingWizardController)
-    wizard._step = OnboardingStep.TEST_DICTATION
-    wizard._test_state = "idle"
-    wizard._test_outcome = "pending"
-    wizard._test_successful = False
-    wizard._test_status_label = _FakeTextField()
-    wizard._test_notice_label = _FakeTextField()
-    wizard._test_text_view = _FakeTextView()
-    wizard._test_start_btn = _FakeButton()
-    wizard._test_stop_btn = _FakeButton()
-    wizard._last_test_status_text = None
-    wizard._last_test_status_level = None
-    wizard._last_test_notice_text = None
-    wizard._last_test_notice_level = None
-    wizard._last_test_preview_text = None
-
-    render_calls: list[bool] = []
-    wizard._render = lambda: render_calls.append(True)
-
-    monkeypatch.setattr(wizard_mod, "_get_color", lambda *args, **kwargs: args)
+def test_on_test_dictation_hotkey_state_updates_preview_and_processing_buttons():
+    wizard, render_calls = _make_practice_wizard()
 
     wizard.on_test_dictation_hotkey_state("recording")
 
     assert wizard._test_outcome == "recording"
-    assert wizard._test_text_view.value == (
-        "Practice dictation is listening…\n"
-        "Say a short sentence, then stop with your hotkey or the Stop button."
-    )
+    assert wizard._test_text_view.value == "Listening… say a short sentence."
     assert wizard._test_start_btn.hidden is True
     assert wizard._test_stop_btn.hidden is False
     assert wizard._test_stop_btn.title == "Stop"
@@ -657,11 +597,7 @@ def test_on_test_dictation_hotkey_state_updates_preview_and_processing_buttons(m
     wizard.on_test_dictation_hotkey_state("processing")
 
     assert wizard._test_outcome == "processing"
-    assert wizard._test_status_label.value == "Transcribing your practice dictation…"
-    assert wizard._test_text_view.value == (
-        "Practice dictation is finishing up…\n"
-        "The result will appear here in a moment."
-    )
+    assert wizard._test_text_view.value == "Transcribing…"
     assert wizard._test_start_btn.hidden is False
     assert wizard._test_start_btn.title == "Working…"
     assert wizard._test_start_btn.enabled is False
@@ -669,48 +605,37 @@ def test_on_test_dictation_hotkey_state_updates_preview_and_processing_buttons(m
     assert render_calls == [True, True]
 
 
-
-def test_on_test_dictation_result_shows_actionable_feedback(monkeypatch):
-    import ui.onboarding_wizard as wizard_mod
-
-    wizard = OnboardingWizardController.__new__(OnboardingWizardController)
-    wizard._step = OnboardingStep.TEST_DICTATION
-    wizard._test_state = "recording"
-    wizard._test_successful = False
-    wizard._test_outcome = "pending"
-    wizard._test_status_label = _FakeTextField()
-    wizard._test_notice_label = _FakeTextField()
-    wizard._test_text_view = _FakeTextView()
-    wizard._test_start_btn = _FakeButton()
-    wizard._test_stop_btn = _FakeButton()
-    wizard._last_test_status_text = None
-    wizard._last_test_status_level = None
-    wizard._last_test_notice_text = None
-    wizard._last_test_notice_level = None
-    wizard._last_test_preview_text = None
-
-    render_calls: list[bool] = []
-    wizard._render = lambda: render_calls.append(True)
-
-    monkeypatch.setattr(wizard_mod, "_get_color", lambda *args, **kwargs: args)
+def test_on_test_dictation_result_shows_error_and_try_again():
+    wizard, render_calls = _make_practice_wizard("recording")
 
     wizard.on_test_dictation_result("", error="microphone missing")
 
     assert wizard._test_outcome == "error"
-    assert wizard._test_status_label.value == (
-        "Couldn’t finish the practice test: Microphone access is unavailable for the practice test."
-    )
-    assert wizard._test_notice_label.value == (
-        "Check microphone access in the Permissions step, then try the practice test again."
-    )
     assert wizard._test_text_view.value == (
-        "The practice run could not be completed.\n"
-        "Check the message above and try again."
+        "Microphone access is unavailable for the practice test. Try again."
     )
     assert wizard._test_start_btn.hidden is False
     assert wizard._test_start_btn.title == "Try again"
     assert wizard._test_stop_btn.hidden is True
     assert render_calls == [True]
+
+    wizard.on_test_dictation_result("Hello there")
+
+    assert wizard._test_outcome == "passed"
+    assert wizard._test_successful is True
+    assert wizard._test_text_view.value == "Hello there"
+    assert wizard._test_start_btn.title == "Try again"
+
+
+def test_practice_badges_follow_test_states() -> None:
+    from ui.onboarding_wizard import TEST_BADGES
+
+    assert TEST_BADGES["recording"] == ("Listening", "muted")
+    assert TEST_BADGES["processing"] == ("Processing", "muted")
+    assert TEST_BADGES["passed"] == ("Worked", "ok")
+    assert TEST_BADGES["empty"] == ("No speech", "warn")
+    assert TEST_BADGES["error"] == ("Error", "err")
+    assert "pending" not in TEST_BADGES  # idle: badge hidden
 
 
 def test_skip_test_marks_outcome_before_advancing() -> None:
