@@ -1534,7 +1534,7 @@ class WelcomeController:
 
         parent_view = parent_view or self._content_view
 
-        card_height = 236  # Fits 3-line description, 3 rows, and summary
+        card_height = 206  # 3-line description, 3 rows, one-line summary
         card_y = y - card_height - CARD_SPACING
 
         def bind_action(btn, action: str) -> None:
@@ -1645,7 +1645,7 @@ class WelcomeController:
         btn3 = NSButton.alloc().initWithFrame_(
             NSMakeRect(base_x + 2 * (btn_w + 8), btn_y, btn_w, btn_h)
         )
-        btn3.setTitle_("⚡ Lightning")
+        btn3.setTitle_("Lightning")
         btn3.setBezelStyle_(NSBezelStyleRounded)
         btn3.setFont_(NSFont.systemFontOfSize_(12))
         h3 = _SetupActionHandler.alloc().initWithController_action_(
@@ -3124,7 +3124,7 @@ class WelcomeController:
         model_field.setStringValue_(self._current_refine_model_text())
         self._model_field = model_field
         parent_view.addSubview_(model_field)
-        current_y -= 24
+        current_y -= 38  # field height plus the 10 px hint gap used by HotkeyCard
 
         self._refine_model_help_label = self._build_wrapping_status_label(
             base_x, current_y, content_width, 28, parent_view
@@ -3323,7 +3323,7 @@ class WelcomeController:
         """Erstellt Refine-Einstellungen."""
         parent_view = parent_view or self._content_view
 
-        card_height = 264
+        card_height = 278
         card_width = CONTENT_WIDTH - 2 * WELCOME_PADDING
         card_y = y - card_height
 
@@ -5452,7 +5452,7 @@ class WelcomeController:
         # Providers Section
         current_y = add_title("Providers", current_y, 12)
         current_y = add_text(
-            "• Deepgram: ~300ms ⚡ WebSocket streaming (recommended)\n"
+            "• Deepgram: ~300ms WebSocket streaming (recommended)\n"
             "• Groq: ~1s, Whisper on LPU hardware\n"
             "• OpenAI: ~2-3s, GPT-4o Transcribe, highest quality\n"
             "• Local: Offline via Whisper/MLX/Faster-Whisper",

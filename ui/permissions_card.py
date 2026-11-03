@@ -331,8 +331,12 @@ class PermissionsCard:
                     theme.ns_rule(base_x, rule_y, card_w - 2 * inner_padding)
                 )
 
+        # Flat sections follow the rows (a rare second line uses the section
+        # gap); boxed cards keep the summary at the box bottom.
+        summary_h = 34
+        summary_y = row_y - 64 - 10 - summary_h if flat else card_y + 12
         summary = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(base_x, card_y + 12, card_w - 2 * inner_padding, 34)
+            NSMakeRect(base_x, summary_y, card_w - 2 * inner_padding, summary_h)
         )
         summary.setStringValue_(PERMISSION_SUMMARY_CHECKING_TEXT)
         summary.setBezeled_(False)

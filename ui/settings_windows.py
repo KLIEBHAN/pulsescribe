@@ -2347,7 +2347,7 @@ class SettingsWindow(QDialog):
         )
         add_section(
             "Providers",
-            "• Deepgram: ~300ms ⚡ WebSocket streaming (recommended)\n"
+            "• Deepgram: ~300ms WebSocket streaming (recommended)\n"
             "• Groq: ~1s, Whisper on LPU hardware\n"
             "• OpenAI: ~2-3s, GPT-4o Transcribe, highest quality\n"
             "• Local: Offline via Whisper/Faster-Whisper",

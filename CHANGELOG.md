@@ -19,6 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as "into Microsoft Word" or "into Google Chrome" instead of the process
   name (`WINWORD`, `chrome`).
 
+### Fixed
+
+- **Settings polish** – the Lightning preset and the Deepgram mode help no
+  longer show an emoji. On macOS, the Refine model help no longer touches
+  the model field, and the Permissions section has no empty space at its
+  bottom.
+
 ## [1.10.1] - 2026-11-02
 
 ### Changed
