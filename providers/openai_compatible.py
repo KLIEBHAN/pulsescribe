@@ -4,7 +4,7 @@ Sendet die Aufnahme an ``{OPENAI_COMPATIBLE_BASE_URL}/audio/transcriptions`` im
 Format der OpenAI-API, etwa an einen Whisper-Server im eigenen Netz
 (``http://mac-mini:7860/v1``). ``OPENAI_COMPATIBLE_API_KEY`` ist optional, weil
 viele eigene Server keinen Key prüfen; der echte ``OPENAI_API_KEY`` wird hier nie
-verwendet.
+verwendet. ``OPENAI_COMPATIBLE_MODEL`` wählt das Modell des Servers.
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ logger = logging.getLogger("pulsescribe.providers.openai_compatible")
 
 BASE_URL_ENV_VAR = "OPENAI_COMPATIBLE_BASE_URL"
 API_KEY_ENV_VAR = "OPENAI_COMPATIBLE_API_KEY"
+MODEL_ENV_VAR = "OPENAI_COMPATIBLE_MODEL"
 # Das OpenAI-SDK verlangt einen Key; Server ohne Authentifizierung ignorieren ihn.
 _PLACEHOLDER_API_KEY = "not-needed"
 _MISSING_BASE_URL_MESSAGE = (
@@ -97,7 +98,11 @@ class OpenAICompatibleProvider:
     """Transkription über einen eigenen Server mit OpenAI-kompatibler API."""
 
     name = "openai_compatible"
-    default_model = DEFAULT_OPENAI_COMPATIBLE_MODEL
+
+    @property
+    def default_model(self) -> str:
+        """Model used when the caller passes none: OPENAI_COMPATIBLE_MODEL, else whisper-1."""
+        return os.getenv(MODEL_ENV_VAR, "").strip() or DEFAULT_OPENAI_COMPATIBLE_MODEL
 
     def supports_streaming(self) -> bool:
         return False

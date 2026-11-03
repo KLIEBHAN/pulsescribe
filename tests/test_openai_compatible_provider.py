@@ -16,7 +16,11 @@ from providers.openai_compatible import OpenAICompatibleProvider
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
-    for name in ("OPENAI_COMPATIBLE_BASE_URL", "OPENAI_COMPATIBLE_API_KEY"):
+    for name in (
+        "OPENAI_COMPATIBLE_BASE_URL",
+        "OPENAI_COMPATIBLE_API_KEY",
+        "OPENAI_COMPATIBLE_MODEL",
+    ):
         monkeypatch.delenv(name, raising=False)
     compat._reset_client()
     yield
@@ -86,6 +90,20 @@ def test_explicit_model_language_and_api_key(monkeypatch, audio_file, fake_opena
     assert fake_openai.created == [{"base_url": "http://host/v1", "api_key": "secret"}]
     assert fake_openai.requests[0]["model"] == "large-v3"
     assert fake_openai.requests[0]["language"] == "de"
+
+
+def test_configured_server_model_is_default_and_explicit_model_wins(
+    monkeypatch, audio_file, fake_openai
+):
+    monkeypatch.setenv("OPENAI_COMPATIBLE_BASE_URL", "http://host/v1")
+    monkeypatch.setenv("OPENAI_COMPATIBLE_MODEL", " large-v3 ")
+    provider = OpenAICompatibleProvider()
+
+    assert provider.default_model == "large-v3"
+    provider.transcribe(audio_file)
+    provider.transcribe(audio_file, model="large-v3-turbo")
+
+    assert [r["model"] for r in fake_openai.requests] == ["large-v3", "large-v3-turbo"]
 
 
 def test_client_is_reused_and_recreated_when_settings_change(

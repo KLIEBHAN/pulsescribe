@@ -111,6 +111,8 @@ MODE_OPTIONS = ["deepgram", "openai", "groq", "local", "openai_compatible"]
 # Own server mode: recordings go to this OpenAI-compatible base URL.
 SERVER_URL_ENV_KEY = "OPENAI_COMPATIBLE_BASE_URL"
 SERVER_URL_PLACEHOLDER = "http://server.local:8000/v1"
+SERVER_MODEL_ENV_KEY = "OPENAI_COMPATIBLE_MODEL"
+SERVER_MODEL_PLACEHOLDER = "whisper-1 (server default)"
 REFINE_PROVIDER_OPTIONS = ["groq", "openai", "openrouter", "gemini"]
 LANGUAGE_OPTIONS = ["auto", "de", "en", "es", "fr", "it", "pt", "nl", "pl", "ru", "zh"]
 LOCAL_BACKEND_OPTIONS = ["auto", "whisper", "faster", "mlx", "lightning"]
@@ -1129,6 +1131,10 @@ class WelcomeController:
             row(self._build_server_url_setting_row),
             lambda: self._current_mode() == "openai_compatible",
         )
+        add(
+            row(self._build_server_model_setting_row),
+            lambda: self._current_mode() == "openai_compatible",
+        )
         add(row(self._build_local_backend_setting_row), is_local)
         add(row(self._build_local_model_setting_row), is_local)
         add(row(self._build_language_setting_row))
@@ -2012,6 +2018,31 @@ class WelcomeController:
         _set_tooltip_if_supported(
             field,
             "Base URL of your own server with OpenAI's transcription API, including /v1.",
+        )
+
+    def _build_server_model_setting_row(
+        self,
+        base_x: int,
+        y: int,
+        control_x: int,
+        control_width: int,
+        parent_view,
+    ) -> None:
+        _label, field = self._build_text_setting_row(
+            base_x,
+            y,
+            control_x,
+            control_width,
+            parent_view,
+            label_text="Server Model:",
+            placeholder=SERVER_MODEL_PLACEHOLDER,
+            env_key=SERVER_MODEL_ENV_KEY,
+            field_attr="_server_model_field",
+        )
+        _set_tooltip_if_supported(
+            field,
+            "Model name your server expects, for example large-v3. Leave empty for whisper-1, "
+            "which compatible servers map to their default model.",
         )
 
     def _build_local_backend_setting_row(
@@ -6002,6 +6033,10 @@ class WelcomeController:
         server_url_field = getattr(self, "_server_url_field", None)
         if server_url_field is not None:
             builder.set_optional(SERVER_URL_ENV_KEY, server_url_field.stringValue())
+
+        server_model_field = getattr(self, "_server_model_field", None)
+        if server_model_field is not None:
+            builder.set_optional(SERVER_MODEL_ENV_KEY, server_model_field.stringValue())
 
         if self._local_backend_popup:
             builder.set_local_backend(

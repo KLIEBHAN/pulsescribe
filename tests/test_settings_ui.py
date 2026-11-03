@@ -532,6 +532,7 @@ class TestWelcomeTranscriptionPage:
         ctrl._env_settings_cache = {
             "PULSESCRIBE_MODE": "openai_compatible",
             "OPENAI_COMPATIBLE_BASE_URL": "http://mac-mini:7860/v1",
+            "OPENAI_COMPATIBLE_MODEL": "large-v3",
         }
         page = appkit.NSView.alloc().initWithFrame_(appkit.NSMakeRect(0, 0, 610, 500))
         ctrl._build_transcription_tab(page, 500)
@@ -541,6 +542,8 @@ class TestWelcomeTranscriptionPage:
         assert ctrl._mode_popup.titleOfSelectedItem() == "openai_compatible"
         assert ctrl._server_url_field.superview() in visible
         assert ctrl._server_url_field.stringValue() == "http://mac-mini:7860/v1"
+        assert ctrl._server_model_field.superview() in visible
+        assert ctrl._server_model_field.stringValue() == "large-v3"
         assert ctrl._provider_guidance_label.superview() not in visible
         assert all(
             getattr(ctrl, f"_{provider}_field").superview() not in visible
@@ -549,10 +552,14 @@ class TestWelcomeTranscriptionPage:
         updates = ctrl._build_env_updates_from_controls(None)
         assert updates["PULSESCRIBE_MODE"] == "openai_compatible"
         assert updates["OPENAI_COMPATIBLE_BASE_URL"] == "http://mac-mini:7860/v1"
+        assert updates["OPENAI_COMPATIBLE_MODEL"] == "large-v3"
 
         ctrl._saved_env_values = updates
         ctrl._server_url_field.setStringValue_("http://other:8000/v1")
         assert ctrl._count_unsaved_changes() == 1
+        ctrl._server_model_field.setStringValue_("")
+        assert ctrl._count_unsaved_changes() == 2
+        assert ctrl._build_env_updates_from_controls(None)["OPENAI_COMPATIBLE_MODEL"] is None
 
         ctrl._server_url_field.setStringValue_("  ")
         assert ctrl._build_env_updates_from_controls(None)["OPENAI_COMPATIBLE_BASE_URL"] is None
@@ -561,6 +568,7 @@ class TestWelcomeTranscriptionPage:
         ctrl._update_all_visibility()
         visible = [block for block, _visible in blocks if not block.isHidden()]
         assert ctrl._server_url_field.superview() not in visible
+        assert ctrl._server_model_field.superview() not in visible
         assert ctrl._provider_guidance_label.superview() in visible
 
 

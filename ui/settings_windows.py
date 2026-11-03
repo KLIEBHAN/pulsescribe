@@ -171,6 +171,8 @@ MODE_OPTIONS = ["deepgram", "openai", "groq", "local", "openai_compatible"]
 # Own server mode: recordings go to this OpenAI-compatible base URL.
 SERVER_URL_ENV_KEY = "OPENAI_COMPATIBLE_BASE_URL"
 SERVER_URL_PLACEHOLDER = "http://server.local:8000/v1"
+SERVER_MODEL_ENV_KEY = "OPENAI_COMPATIBLE_MODEL"
+SERVER_MODEL_PLACEHOLDER = "whisper-1 (server default)"
 REFINE_PROVIDER_OPTIONS = ["groq", "openai", "openrouter", "gemini"]
 LOCAL_BACKEND_OPTIONS = ["auto", "whisper", "faster", "mlx", "lightning"]
 LOCAL_MODEL_OPTIONS = [
@@ -941,6 +943,8 @@ class SettingsWindow(QDialog):
         self._mode_combo: QComboBox | None = None
         self._server_url_field: QLineEdit | None = None
         self._server_url_container: QWidget | None = None
+        self._server_model_field: QLineEdit | None = None
+        self._server_model_container: QWidget | None = None
         self._lang_combo: QComboBox | None = None
         self._microphone_combo: QComboBox | None = None
         self._local_backend_combo: QComboBox | None = None
@@ -1571,6 +1575,21 @@ class SettingsWindow(QDialog):
         server_url_row.setContentsMargins(0, 0, 0, 0)
         self._server_url_container.setLayout(server_url_row)
         card_layout.add_row(self._server_url_container)
+
+        # Server Model (nur für openai_compatible)
+        self._server_model_field = QLineEdit()
+        self._server_model_field.setPlaceholderText(SERVER_MODEL_PLACEHOLDER)
+        self._server_model_field.setAccessibleName("Server model")
+        self._server_model_field.setToolTip(
+            "Model name your server expects, for example large-v3. Leave empty for whisper-1, "
+            "which compatible servers map to their default model"
+        )
+        self._server_model_field.textChanged.connect(self._refresh_footer_settings_hint)
+        self._server_model_container = QWidget()
+        server_model_row = create_label_row("Server Model:", self._server_model_field)
+        server_model_row.setContentsMargins(0, 0, 0, 0)
+        self._server_model_container.setLayout(server_model_row)
+        card_layout.add_row(self._server_model_container)
 
         # Language
         self._lang_combo = QComboBox()
@@ -2798,6 +2817,9 @@ class SettingsWindow(QDialog):
             self._microphone_combo.currentData()
             if getattr(self, "_microphone_combo", None) is not None else "",
             self._current_server_url(),
+            self._server_model_field.text().strip()
+            if getattr(self, "_server_model_field", None) is not None
+            else "",
         )
 
     def _count_unsaved_settings(self) -> int:
@@ -2973,9 +2995,10 @@ class SettingsWindow(QDialog):
             _set_widget_visible_if_changed(self._local_model_container, is_local)
         if hasattr(self, "_streaming_container"):
             _set_widget_visible_if_changed(self._streaming_container, is_deepgram)
-        _set_widget_visible_if_changed(
-            getattr(self, "_server_url_container", None), mode == "openai_compatible"
-        )
+        for container in ("_server_url_container", "_server_model_container"):
+            _set_widget_visible_if_changed(
+                getattr(self, container, None), mode == "openai_compatible"
+            )
         required_key = MODE_API_KEY_MAP.get(mode)
         for env_key, row in getattr(self, "_api_rows", {}).items():
             _set_widget_visible_if_changed(row, env_key == required_key)
@@ -4456,6 +4479,7 @@ class SettingsWindow(QDialog):
         process_api_keys = self._get_process_env_api_keys()
         mode = env_get("PULSESCRIBE_MODE") or "deepgram"
         server_url = env_get(SERVER_URL_ENV_KEY) or ""
+        server_model = env_get(SERVER_MODEL_ENV_KEY) or ""
         lang = env_get("PULSESCRIBE_LANGUAGE") or "auto"
         backend = normalize_local_backend(env_get("PULSESCRIBE_LOCAL_BACKEND"))
         model = env_get("PULSESCRIBE_LOCAL_MODEL") or "default"
@@ -4485,6 +4509,7 @@ class SettingsWindow(QDialog):
             with _block_widget_signals(
                 self._mode_combo,
                 getattr(self, "_server_url_field", None),
+                getattr(self, "_server_model_field", None),
                 self._lang_combo,
                 self._local_backend_combo,
                 self._local_model_combo,
@@ -4514,6 +4539,9 @@ class SettingsWindow(QDialog):
                 _set_combo_text_if_changed(self._mode_combo, mode)
                 _set_widget_text_if_changed(
                     getattr(self, "_server_url_field", None), server_url
+                )
+                _set_widget_text_if_changed(
+                    getattr(self, "_server_model_field", None), server_model
                 )
                 _set_combo_text_if_changed(self._lang_combo, lang)
                 _set_combo_text_if_changed(self._local_backend_combo, backend)
@@ -4652,6 +4680,10 @@ class SettingsWindow(QDialog):
         server_url_field = getattr(self, "_server_url_field", None)
         if server_url_field is not None:
             builder.set_optional(SERVER_URL_ENV_KEY, server_url_field.text())
+
+        server_model_field = getattr(self, "_server_model_field", None)
+        if server_model_field is not None:
+            builder.set_optional(SERVER_MODEL_ENV_KEY, server_model_field.text())
 
         if self._local_backend_combo:
             builder.set_local_backend(

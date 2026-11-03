@@ -55,14 +55,15 @@ Mindestens ein API-Key für Cloud-Transkription erforderlich:
 
 ### Eigener Server (OpenAI-kompatibel)
 
-`PULSESCRIBE_MODE=openai_compatible` lädt jede Aufnahme zu einem eigenen Server hoch, der die Transkriptions-API von OpenAI anbietet (`POST /audio/transcriptions`), etwa ein Whisper-Server auf einem anderen Rechner im Netzwerk. Die Transkription beginnt nach dem Ende der Aufnahme; Live-Text gibt es in diesem Modus nicht. In den Einstellungen unter Providers den Modus `openai_compatible` wählen und die Server-URL eintragen, oder die Variablen unten in der `.env` setzen.
+`PULSESCRIBE_MODE=openai_compatible` lädt jede Aufnahme zu einem eigenen Server hoch, der die Transkriptions-API von OpenAI anbietet (`POST /audio/transcriptions`), etwa ein Whisper-Server auf einem anderen Rechner im Netzwerk. Die Transkription beginnt nach dem Ende der Aufnahme; Live-Text gibt es in diesem Modus nicht. In den Einstellungen unter Providers den Modus `openai_compatible` wählen und die Server-URL sowie optional das Server-Modell eintragen, oder die Variablen unten in der `.env` setzen.
 
 | Variable                     | Beispiel                   | Beschreibung                                                       |
 | ---------------------------- | -------------------------- | ------------------------------------------------------------------ |
 | `OPENAI_COMPATIBLE_BASE_URL` | `http://mac-mini:7860/v1`  | Pflicht. Basis-URL der API einschließlich `/v1`. Mit `http://` gehen Audio und Key unverschlüsselt übers Netz: nur im vertrauenswürdigen LAN, sonst HTTPS |
 | `OPENAI_COMPATIBLE_API_KEY`  | –                     | Optional. Nur nötig, wenn der Server einen Key prüft; `OPENAI_API_KEY` wird nie dorthin gesendet |
+| `OPENAI_COMPATIBLE_MODEL`    | `large-v3`            | Optional. Modellname, den der Server erwartet; Standard `whisper-1`, den kompatible Server auf ihr Standardmodell abbilden |
 
-`PULSESCRIBE_MODEL` wählt das Modell des Servers (Standard `whisper-1`; kompatible Server bilden das auf ihr Standardmodell ab). PulseScribe fordert JSON an (`response_format=json`) und übernimmt nur das Feld `text` der Antwort; Untertitelformate wie SRT gibt es in diesem Modus nicht.
+Auf der Kommandozeile überschreibt `--model` die Variable `OPENAI_COMPATIBLE_MODEL`. PulseScribe fordert JSON an (`response_format=json`) und übernimmt nur das Feld `text` der Antwort; Untertitelformate wie SRT gibt es in diesem Modus nicht.
 
 ---
 
@@ -313,5 +314,5 @@ PULSESCRIBE_REFINE_PROVIDER=openai
 PULSESCRIBE_MODE=openai_compatible
 OPENAI_COMPATIBLE_BASE_URL=http://mac-mini:7860/v1
 PULSESCRIBE_LANGUAGE=de
-# Optional: PULSESCRIBE_MODEL=large-v3 für das langsamere, genauere Modell
+# Optional: OPENAI_COMPATIBLE_MODEL=large-v3 für das langsamere, genauere Modell
 ```
