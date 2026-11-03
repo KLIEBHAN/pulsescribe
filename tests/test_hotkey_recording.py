@@ -90,3 +90,28 @@ def test_stop_resets_state_when_monitor_removal_fails(monkeypatch) -> None:
     assert field.placeholder is None
     assert primary_button.title == "Record"
     assert secondary_button.title == "Record"
+
+
+def test_accepted_hotkey_is_shown_with_format_value(monkeypatch) -> None:
+    recorder = hotkey_recording.HotkeyRecorder()
+    field = _FakeField()
+    button = _FakeButton()
+    callbacks: dict[str, object] = {}
+
+    def _fake_monitor(*, on_hotkey, on_cancel):
+        callbacks["on_hotkey"] = on_hotkey
+        return None
+
+    monkeypatch.setattr(hotkey_recording, "add_local_hotkey_monitor", _fake_monitor)
+
+    recorder.start(
+        field=field,
+        button=button,
+        buttons_to_reset=[button],
+        on_hotkey=lambda _hotkey: True,
+        format_value=lambda hotkey: f"<{hotkey}>",
+    )
+    callbacks["on_hotkey"]("ctrl+d")
+
+    assert field.stringValue() == "<ctrl+d>"
+    assert recorder.recording is False

@@ -397,7 +397,6 @@ class PermissionsCard:
     ) -> "PermissionsCard":
         """Builds the setup wizard's rows (name, purpose, badge, Allow…) below ``top``."""
         from AppKit import (  # type: ignore[import-not-found]
-            NSBezelStyleRounded,
             NSButton,
             NSFont,
             NSFontWeightMedium,
@@ -441,8 +440,8 @@ class PermissionsCard:
                 NSMakeRect(btn_x, y + (row_height - 26) / 2, btn_w, 26)
             )
             button.setTitle_(PERMISSION_ALLOW_TITLE)
-            button.setBezelStyle_(NSBezelStyleRounded)
             button.setFont_(NSFont.systemFontOfSize_(13))
+            theme.style_ns_outline_button(button)
             button.setHidden_(True)
             bind_action(button, action)
             parent_view.addSubview_(button)

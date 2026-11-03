@@ -218,41 +218,53 @@ def test_set_show_welcome_on_startup_preserves_existing_preferences(
     }
 
 
-def test_hotkey_preset_updates_toggle_without_clearing_hold(tmp_path, monkeypatch):
+def test_hotkey_preset_replaces_both_hotkeys_with_one_toggle(tmp_path, monkeypatch):
     _isolate_prefs(tmp_path, monkeypatch)
     prefs.save_env_setting("PULSESCRIBE_TOGGLE_HOTKEY", "option+space")
     prefs.save_env_setting("PULSESCRIBE_HOLD_HOTKEY", "fn")
 
     wizard = OnboardingWizardController(persist_progress=False)
-    monkeypatch.setattr(wizard, "_stop_hotkey_recording", lambda *a, **k: None)
     wizard._handle_action("hotkey_f19_toggle")
 
     env = prefs.read_env_file()
     assert env.get("PULSESCRIBE_TOGGLE_HOTKEY") == "f19"
-    assert env.get("PULSESCRIBE_HOLD_HOTKEY") == "fn"
+    assert "PULSESCRIBE_HOLD_HOTKEY" not in env
 
 
-def test_hotkey_preset_updates_hold_without_clearing_toggle(tmp_path, monkeypatch):
+def test_hotkey_preset_saves_hold_and_clears_toggle_and_legacy_keys(tmp_path, monkeypatch):
     _isolate_prefs(tmp_path, monkeypatch)
     monkeypatch.setattr(
         permissions,
         "check_input_monitoring_permission",
         lambda show_alert=False, request=False: True,
     )
-    prefs.save_env_setting("PULSESCRIBE_TOGGLE_HOTKEY", "f19")
+    prefs.save_env_setting("PULSESCRIBE_TOGGLE_HOTKEY", "fn")
     prefs.save_env_setting("PULSESCRIBE_HOLD_HOTKEY", "capslock")
     prefs.save_env_setting("PULSESCRIBE_HOTKEY", "f13")
     prefs.save_env_setting("PULSESCRIBE_HOTKEY_MODE", "toggle")
 
     wizard = OnboardingWizardController(persist_progress=False)
-    monkeypatch.setattr(wizard, "_stop_hotkey_recording", lambda *a, **k: None)
     wizard._handle_action("hotkey_fn_hold")
 
     env = prefs.read_env_file()
-    assert env.get("PULSESCRIBE_TOGGLE_HOTKEY") == "f19"
     assert env.get("PULSESCRIBE_HOLD_HOTKEY") == "fn"
+    # Toggle "fn" would conflict, but the wizard clears that slot in the same update.
+    assert "PULSESCRIBE_TOGGLE_HOTKEY" not in env
     assert "PULSESCRIBE_HOTKEY" not in env
     assert "PULSESCRIBE_HOTKEY_MODE" not in env
+
+
+def test_selected_hotkey_choice_maps_config_to_rows() -> None:
+    from ui.onboarding_wizard import _selected_hotkey_choice
+
+    assert _selected_hotkey_choice("", "fn") == "hold_fn"
+    assert _selected_hotkey_choice("option+space", "") == "toggle_opt_space"
+    assert _selected_hotkey_choice("f19", "") == "toggle_f19"
+    assert _selected_hotkey_choice("ctrl+shift+d", "") == "custom"
+    assert _selected_hotkey_choice("", "capslock") == "custom"
+    # Two hotkeys or none: nothing preselected, config stays as it is.
+    assert _selected_hotkey_choice("option+space", "fn") is None
+    assert _selected_hotkey_choice("", "") is None
 
 
 def test_set_api_key_saves_non_empty_value(tmp_path, monkeypatch):
@@ -715,32 +727,28 @@ def test_skip_test_marks_outcome_before_advancing() -> None:
     assert advanced_to == [OnboardingStep.CHEAT_SHEET]
 
 
-def test_apply_hotkey_change_success_relies_on_hotkey_card_follow_up(monkeypatch):
+def test_apply_hotkey_change_saves_one_slot_and_clears_the_other(monkeypatch):
     import utils.hotkey_validation as hotkey_validation_mod
 
     wizard = OnboardingWizardController.__new__(OnboardingWizardController)
-    wizard._on_settings_changed = lambda: on_settings_changed.append(True)
-    wizard._get_cached_hotkeys = lambda: ("option+space", "")
-    wizard._apply_env_updates = lambda updates: applied_updates.append(updates) or True
-    wizard._set_hotkey_status = lambda level, message: statuses.append((level, message))
-    wizard._sync_hotkey_fields_from_env = lambda: (_ for _ in ()).throw(
-        AssertionError("follow-up sync should come from HotkeyCard")
-    )
-    wizard._render = lambda: (_ for _ in ()).throw(
-        AssertionError("follow-up render should come from HotkeyCard")
-    )
-
     applied_updates: list[dict[str, str | None]] = []
     on_settings_changed: list[bool] = []
     statuses: list[tuple[str, str | None]] = []
+    render_calls: list[bool] = []
+    validations: list[tuple[str, str, bool]] = []
+    wizard._on_settings_changed = lambda: on_settings_changed.append(True)
+    wizard._apply_env_updates = lambda updates: applied_updates.append(updates) or True
+    wizard._set_hotkey_status = lambda level, message: statuses.append((level, message))
+    wizard._render = lambda: render_calls.append(True)
 
-    monkeypatch.setattr(
-        hotkey_validation_mod,
-        "validate_hotkey_change",
-        lambda kind, hotkey: ("f19", "ok", "Saved"),
-    )
+    def fake_validate(kind, hotkey, *, replace_other=False):
+        validations.append((kind, hotkey, replace_other))
+        return "f19", "ok", None
+
+    monkeypatch.setattr(hotkey_validation_mod, "validate_hotkey_change", fake_validate)
 
     assert wizard._apply_hotkey_change("toggle", "f19") is True
+    assert validations == [("toggle", "f19", True)]
     assert applied_updates == [
         {
             "PULSESCRIBE_TOGGLE_HOTKEY": "f19",
@@ -750,7 +758,8 @@ def test_apply_hotkey_change_success_relies_on_hotkey_card_follow_up(monkeypatch
         }
     ]
     assert on_settings_changed == [True]
-    assert statuses == [("ok", "✓ Saved")]
+    assert statuses == [("ok", "Saved.")]
+    assert render_calls == [True]
 
 
 def test_show_fast_api_key_prompt_skips_duplicate_widget_updates():

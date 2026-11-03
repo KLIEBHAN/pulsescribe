@@ -73,6 +73,18 @@ def ns_rule(x: float, y: float, width: float):
     return rule
 
 
+def style_ns_outline_button(button) -> None:
+    """Draw an AppKit button as a quiet outline button: 1 px border, RADIUS corners (macOS only)."""
+    import Quartz  # noqa: F401  # registers CGColorRef for .CGColor()
+
+    button.setBordered_(False)
+    button.setWantsLayer_(True)
+    layer = button.layer()
+    layer.setBorderWidth_(1)
+    layer.setBorderColor_(ns_color(SECONDARY_BORDER).CGColor())
+    layer.setCornerRadius_(RADIUS)
+
+
 def set_ns_badge(field, text: str, tone: str, *, right_edge: float | None = None) -> None:
     """Render an AppKit text field as a tinted badge sized to ``text`` (macOS only).
 

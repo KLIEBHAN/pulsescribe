@@ -105,8 +105,13 @@ def _validate_toggle_registration(
     )
 
 
-def validate_hotkey_change(kind: str, hotkey_str: str) -> ValidationResult:
+def validate_hotkey_change(
+    kind: str, hotkey_str: str, *, replace_other: bool = False
+) -> ValidationResult:
     """Validate a hotkey change.
+
+    ``replace_other`` skips the conflict check against the other slot, for
+    callers that clear it in the same update (the setup wizard keeps one hotkey).
 
     Returns:
         (normalized_hotkey, level, message)
@@ -121,6 +126,11 @@ def validate_hotkey_change(kind: str, hotkey_str: str) -> ValidationResult:
         return "", "error", "Hotkey ist leer."
 
     toggle_current, hold_current = _get_current_hotkeys()
+    if replace_other:
+        if kind == "toggle":
+            hold_current = ""
+        else:
+            toggle_current = ""
     existing_result = _validate_against_current_hotkeys(
         kind,
         normalized,
