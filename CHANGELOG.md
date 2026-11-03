@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Setup wizard in the Settings style (macOS)** – the wizard uses the flat
+  dark look of Settings: a solid 640 × 520 window, a sidebar that lists the
+  five steps with a check for finished steps (click one to go back), a page
+  title with one short subtitle, and a footer with "Open Settings…", Back
+  and a light Next/Finish button. Setup shows Fast, Private and Advanced as
+  selectable rows; Next applies the choice, and Fast asks for a Deepgram key
+  right away when none is stored. The "Step n/5" label is gone.
+
+### Fixed
+
+- **Setup wizard review after Private (macOS)** – Review showed the previous
+  provider after choosing Private; it now shows Local.
+
 ## [1.10.2] - 2026-11-02
 
 ### Changed

@@ -1,3 +1,7 @@
+import sys
+
+import pytest
+
 import utils.preferences as prefs
 import utils.permissions as permissions
 from utils.onboarding import (
@@ -59,6 +63,10 @@ class _FakeButton:
 
     def setTitle_(self, value) -> None:
         self.title = value
+        self.title_calls += 1
+
+    def setAttributedTitle_(self, value) -> None:
+        self.title = str(value.string())
         self.title_calls += 1
 
     def setEnabled_(self, value) -> None:
@@ -296,7 +304,7 @@ def test_render_builds_selected_step_on_demand():
     wizard._step_content_height = 280
     wizard._step_frame = object()
     wizard._step_label = None
-    wizard._progress_label = None
+    wizard._subtitle_label = None
     wizard._back_btn = None
     wizard._next_btn = None
     wizard._create_step_container = lambda: _FakeView()
@@ -319,6 +327,7 @@ def test_render_builds_selected_step_on_demand():
     assert wizard._content_view.subviews[0].hidden is False
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="sets AppKit button titles")
 def test_render_skips_duplicate_ui_mutations_for_same_step(monkeypatch):
     import ui.onboarding_wizard as wizard_mod
 
@@ -329,12 +338,13 @@ def test_render_skips_duplicate_ui_mutations_for_same_step(monkeypatch):
         OnboardingStep.HOTKEY: _FakeView(),
     }
     wizard._step_label = _FakeTextField()
-    wizard._progress_label = _FakeTextField()
+    wizard._subtitle_label = _FakeTextField()
     wizard._back_btn = _FakeButton()
     wizard._next_btn = _FakeButton()
+    wizard._skip_test_btn = _FakeButton()
     wizard._test_hotkey_label = _FakeTextField()
     wizard._ensure_step_built = lambda _step: None
-    wizard._wizard_title = lambda _step: "Test Dictation"
+    wizard._wizard_title = lambda _step: ("Try it", "A safe test.")
     wizard._can_advance = lambda: True
     wizard._sync_hotkey_fields_from_env = lambda: None
 
@@ -353,8 +363,9 @@ def test_render_skips_duplicate_ui_mutations_for_same_step(monkeypatch):
     assert current_view.hidden_calls == [False]
     assert other_view.hidden_calls == [True]
     assert wizard._step_label.set_calls == 1
-    assert wizard._progress_label.set_calls == 1
+    assert wizard._subtitle_label.set_calls == 1
     assert wizard._back_btn.hidden_calls == [False]
+    assert wizard._skip_test_btn.hidden_calls == [False]
     assert wizard._next_btn.title_calls == 1
     assert wizard._next_btn.enabled_calls == [True]
     assert wizard._test_hotkey_label.set_calls == 1

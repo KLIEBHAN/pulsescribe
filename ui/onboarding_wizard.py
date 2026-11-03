@@ -5,14 +5,15 @@ from __future__ import annotations
 import os
 from typing import Callable
 
+from ui import settings_theme as theme
 from ui.hotkey_format import format_hotkey_for_display
 from utils.onboarding import (
+    ONBOARDING_ORDER,
     OnboardingChoice,
     OnboardingStep,
+    coerce_onboarding_step,
     next_step,
     prev_step,
-    step_index,
-    total_steps,
 )
 from ui.hotkey_card import HotkeyCard
 from utils.hotkey_recording import HotkeyRecorder
@@ -38,13 +39,71 @@ from utils.presets import (
     default_local_preset_private,
 )
 
-WIZARD_WIDTH = 500
-WIZARD_HEIGHT = 640
-PADDING = 20
-FOOTER_HEIGHT = 54
-CARD_PADDING = 16
-CARD_CORNER_RADIUS = 12
+WIZARD_WIDTH = 640
+WIZARD_HEIGHT = 520
+SIDEBAR_WIDTH = 150
+# Header, steps and footer are laid out in the area right of the sidebar.
+CONTENT_WIDTH = WIZARD_WIDTH - SIDEBAR_WIDTH
+PADDING = 24
+HEADER_HEIGHT = 94  # page title + subtitle
+FOOTER_HEIGHT = 56
+CARD_PADDING = 0  # flat sections: content aligns with the page title
+STEP_MARKER_SIZE = 18
 
+# Sidebar entries, page titles and subtitles per step.
+WIZARD_STEPS = ONBOARDING_ORDER[:-1]
+STEP_NAV_LABELS = {
+    OnboardingStep.CHOOSE_GOAL: "Setup",
+    OnboardingStep.PERMISSIONS: "Permissions",
+    OnboardingStep.HOTKEY: "Hotkey",
+    OnboardingStep.TEST_DICTATION: "Practice",
+    OnboardingStep.CHEAT_SHEET: "Review",
+}
+STEP_TITLES = {
+    OnboardingStep.CHOOSE_GOAL: (
+        "Welcome to PulseScribe",
+        "Choose how speech is transcribed. You can change it in Settings.",
+    ),
+    OnboardingStep.PERMISSIONS: (
+        "Permissions",
+        "PulseScribe needs the microphone. The other permissions are optional.",
+    ),
+    OnboardingStep.HOTKEY: ("Hotkey", "Choose how you start and stop dictation."),
+    OnboardingStep.TEST_DICTATION: (
+        "Try it",
+        "A safe test: nothing is pasted, the text only appears here.",
+    ),
+    OnboardingStep.CHEAT_SHEET: (
+        "You're ready",
+        "Your setup at a glance. You can change it anytime in Settings.",
+    ),
+}
+# (choice, action, title, description, recommended)
+GOAL_CHOICES = (
+    (
+        OnboardingChoice.FAST,
+        "choose_fast",
+        "Fast",
+        "Lowest latency. Uses Deepgram streaming when available.",
+        True,
+    ),
+    (
+        OnboardingChoice.PRIVATE,
+        "choose_private",
+        "Private",
+        "Transcribes locally on your Mac. Best for privacy.",
+        False,
+    ),
+    (
+        OnboardingChoice.ADVANCED,
+        "choose_advanced",
+        "Advanced",
+        "Keeps your current providers. Fine-tune them in Settings.",
+        False,
+    ),
+)
+GOAL_ROW_HEIGHT = 62
+FAST_API_KEY_PROMPT = "Fast mode needs a Deepgram API key. Paste one to continue."
 LANGUAGE_OPTIONS = ["auto", "de", "en", "es", "fr", "it", "pt", "nl", "pl", "ru", "zh"]
 LANGUAGE_LABELS = {
     "auto": "Automatic",
@@ -342,16 +401,100 @@ def _get_color(r: int, g: int, b: int, a: float = 1.0):
 
 
 def _create_card(x: int, y: int, width: int, height: int):
+    """Returns the 1 px rule that tops a flat section spanning this frame."""
+    return theme.ns_rule(x, y + height - 1, width)
+
+
+def _create_box(
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+    fill: str | None,
+    *,
+    radius: float = 0,
+    border: str | None = None,
+):
+    """Returns an NSBox filled with the ``fill`` token, optionally with a 1 px border."""
     from AppKit import NSBox, NSColor  # type: ignore[import-not-found]
     from Foundation import NSMakeRect  # type: ignore[import-not-found]
 
-    card = NSBox.alloc().initWithFrame_(NSMakeRect(x, y, width, height))
-    card.setBoxType_(4)  # Custom
-    card.setBorderType_(0)  # None
-    card.setFillColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.06))
-    card.setCornerRadius_(CARD_CORNER_RADIUS)
-    card.setContentViewMargins_((0, 0))
-    return card
+    box = NSBox.alloc().initWithFrame_(NSMakeRect(x, y, width, height))
+    box.setBoxType_(4)  # Custom
+    box.setBorderType_(1 if border else 0)  # Line / None
+    box.setFillColor_(theme.ns_color(fill) if fill else NSColor.clearColor())
+    if border:
+        box.setBorderColor_(theme.ns_color(border))
+        box.setBorderWidth_(1)
+    box.setCornerRadius_(radius)
+    box.setContentViewMargins_((0, 0))
+    return box
+
+
+def _create_label(
+    text: str,
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+    *,
+    size: float = 13,
+    weight: float | None = None,
+    color: str = theme.TEXT,
+):
+    """Returns a static label in the system font, colored with a theme token."""
+    from AppKit import NSFont, NSTextField  # type: ignore[import-not-found]
+    from Foundation import NSMakeRect  # type: ignore[import-not-found]
+
+    label = NSTextField.alloc().initWithFrame_(NSMakeRect(x, y, width, height))
+    label.setStringValue_(text)
+    label.setBezeled_(False)
+    label.setDrawsBackground_(False)
+    label.setEditable_(False)
+    label.setSelectable_(False)
+    label.setFont_(
+        NSFont.systemFontOfSize_(size)
+        if weight is None
+        else NSFont.systemFontOfSize_weight_(size, weight)
+    )
+    label.setTextColor_(theme.ns_color(color))
+    return label
+
+
+def _set_button_text(
+    button,
+    title: str,
+    color: str,
+    *,
+    size: float = 13,
+    weight: float | None = None,
+    indent: float = 0,
+) -> None:
+    """Gives a borderless button a colored title; ``indent`` left-aligns it."""
+    from AppKit import (  # type: ignore[import-not-found]
+        NSAttributedString,
+        NSFont,
+        NSFontAttributeName,
+        NSFontWeightRegular,
+        NSForegroundColorAttributeName,
+        NSMutableParagraphStyle,
+        NSParagraphStyleAttributeName,
+    )
+
+    attributes = {
+        NSFontAttributeName: NSFont.systemFontOfSize_weight_(
+            size, NSFontWeightRegular if weight is None else weight
+        ),
+        NSForegroundColorAttributeName: theme.ns_color(color),
+    }
+    if indent:
+        style = NSMutableParagraphStyle.alloc().init()
+        style.setFirstLineHeadIndent_(indent)
+        style.setHeadIndent_(indent)
+        attributes[NSParagraphStyleAttributeName] = style
+    button.setAttributedTitle_(
+        NSAttributedString.alloc().initWithString_attributes_(title, attributes)
+    )
 
 
 class OnboardingWizardController:
@@ -392,18 +535,27 @@ class OnboardingWizardController:
             self._choice = None
 
         self._step_label = None
-        self._progress_label = None
+        self._subtitle_label = None
         self._back_btn = None
         self._next_btn = None
+        self._next_fill = None
         self._skip_btn = None
+        self._skip_test_btn = None
+        # step -> (row background, marker box, marker label, name label)
+        self._sidebar_entries: dict[OnboardingStep, tuple] = {}
+        self._last_sidebar_step: OnboardingStep | None = None
+        # choice -> (row background, left edge, radio ring, radio dot)
+        self._goal_rows: dict[OnboardingChoice, tuple] = {}
+        self._last_goal_choice: OnboardingChoice | None = None
         self._step_views: dict[OnboardingStep, object] = {}
         self._step_builders: dict[OnboardingStep, Callable[[object, int], None]] = {}
         self._step_content_height = 0
         self._step_frame = None
         self._visible_step: OnboardingStep | None = None
         self._last_title_text: str | None = None
-        self._last_progress_text: str | None = None
+        self._last_subtitle_text: str | None = None
         self._last_back_hidden: bool | None = None
+        self._last_skip_test_hidden: bool | None = None
         self._last_next_title: str | None = None
         self._last_next_enabled: bool | None = None
         self._last_test_hotkey_text: str | None = None
@@ -446,6 +598,7 @@ class OnboardingWizardController:
         self._summary_hotkey_label = None
         self._summary_perm_label = None
         self._summary_test_label = None
+
 
         # Language selector
         self._lang_popup = None
@@ -593,13 +746,15 @@ class OnboardingWizardController:
     def _build_window(self) -> None:
         try:
             from AppKit import (  # type: ignore[import-not-found]
+                NSAppearance,
+                NSAppearanceNameDarkAqua,
                 NSBackingStoreBuffered,
                 NSClosableWindowMask,
                 NSFloatingWindowLevel,
                 NSMakeRect,
                 NSScreen,
                 NSTitledWindowMask,
-                NSVisualEffectView,
+                NSView,
                 NSWindow,
             )
         except Exception:
@@ -620,19 +775,25 @@ class OnboardingWizardController:
             NSBackingStoreBuffered,
             False,
         )
-        self._window.setTitle_("PulseScribe Setup Wizard")
+        self._window.setTitle_("PulseScribe Setup")
         self._window.setReleasedWhenClosed_(False)
         # Wizard always stays on top during setup
         self._window.setLevel_(NSFloatingWindowLevel)
+        # Dark only, like Settings: solid background and dark native controls.
+        self._window.setAppearance_(
+            NSAppearance.appearanceNamed_(NSAppearanceNameDarkAqua)
+        )
 
-        content_frame = NSMakeRect(0, 0, WIZARD_WIDTH, WIZARD_HEIGHT)
-        visual_effect = NSVisualEffectView.alloc().initWithFrame_(content_frame)
-        visual_effect.setMaterial_(13)  # HUD Window
-        visual_effect.setBlendingMode_(0)
-        visual_effect.setState_(1)
-        self._window.setContentView_(visual_effect)
-        self._content_view = visual_effect
+        content_view = NSView.alloc().initWithFrame_(
+            NSMakeRect(0, 0, WIZARD_WIDTH, WIZARD_HEIGHT)
+        )
+        content_view.addSubview_(
+            _create_box(0, 0, WIZARD_WIDTH, WIZARD_HEIGHT, theme.BG)
+        )
+        self._window.setContentView_(content_view)
+        self._content_view = content_view
 
+        self._build_sidebar()
         self._build_header()
         self._build_steps()
         self._build_footer()
@@ -640,51 +801,118 @@ class OnboardingWizardController:
         if self._step == OnboardingStep.PERMISSIONS:
             self._refresh_permissions()
 
-    def _build_header(self) -> None:
+    def _bind_action(self, control, action: str) -> None:
+        """Routes the control's action to ``_handle_action(action)``."""
+        import objc  # type: ignore[import-not-found]
+
+        handler = _WizardActionHandler.alloc().initWithController_action_(self, action)
+        control.setTarget_(handler)
+        control.setAction_(objc.selector(handler.performAction_, signature=b"v@:@"))
+        self._handler_refs.append(handler)
+
+    def _build_sidebar(self) -> None:
+        """Left column: app name and one entry per step with a progress marker."""
         from AppKit import (  # type: ignore[import-not-found]
-            NSColor,
-            NSFont,
+            NSButton,
+            NSFontWeightBold,
             NSFontWeightSemibold,
-            NSMakeRect,
-            NSTextAlignmentLeft,
-            NSTextField,
+            NSTextAlignmentCenter,
+        )
+        from Foundation import NSMakeRect  # type: ignore[import-not-found]
+
+        view = self._content_view
+        view.addSubview_(
+            _create_box(0, 0, SIDEBAR_WIDTH - 1, WIZARD_HEIGHT, theme.SIDEBAR_BG)
+        )
+        view.addSubview_(_create_box(SIDEBAR_WIDTH - 1, 0, 1, WIZARD_HEIGHT, theme.BORDER))
+
+        inset = 10  # entry inset from the sidebar edge; text adds the same again
+        text_x = 2 * inset
+        text_w = SIDEBAR_WIDTH - 2 * text_x
+        top = WIZARD_HEIGHT - 20
+        view.addSubview_(
+            _create_label(
+                "PulseScribe", text_x, top - 20, text_w, 20, size=15, weight=NSFontWeightBold
+            )
+        )
+        view.addSubview_(
+            _create_label("Setup", text_x, top - 38, text_w, 17, size=12.5, color=theme.MUTED)
         )
 
-        title = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(PADDING, WIZARD_HEIGHT - 54, WIZARD_WIDTH - 2 * PADDING, 22)
-        )
-        title.setStringValue_("")
-        title.setBezeled_(False)
-        title.setDrawsBackground_(False)
-        title.setEditable_(False)
-        title.setSelectable_(False)
-        title.setAlignment_(NSTextAlignmentLeft)
-        title.setFont_(NSFont.systemFontOfSize_weight_(16, NSFontWeightSemibold))
-        title.setTextColor_(NSColor.whiteColor())
+        entry_h = 35
+        entry_w = SIDEBAR_WIDTH - 2 * inset
+        entry_y = top - 70
+        marker_x = inset + 10
+        for index, step in enumerate(WIZARD_STEPS, start=1):
+            entry_y -= entry_h
+            background = _create_box(inset, entry_y, entry_w, entry_h, None, radius=theme.RADIUS)
+            view.addSubview_(background)
+            marker_y = entry_y + (entry_h - STEP_MARKER_SIZE) / 2
+            marker = _create_box(
+                marker_x,
+                marker_y,
+                STEP_MARKER_SIZE,
+                STEP_MARKER_SIZE,
+                None,
+                radius=theme.RADIUS,
+                border=theme.SECONDARY_BORDER,
+            )
+            view.addSubview_(marker)
+            marker_label = _create_label(
+                str(index),
+                marker_x,
+                marker_y + 2,
+                STEP_MARKER_SIZE,
+                14,
+                size=11,
+                weight=NSFontWeightSemibold,
+                color=theme.MUTED,
+            )
+            marker_label.setAlignment_(NSTextAlignmentCenter)
+            view.addSubview_(marker_label)
+            name_x = marker_x + STEP_MARKER_SIZE + 10
+            name = _create_label(
+                STEP_NAV_LABELS[step],
+                name_x,
+                entry_y + 9,
+                inset + entry_w - name_x - 4,
+                18,
+                size=14,
+                color=theme.NAV,
+            )
+            view.addSubview_(name)
+            # Transparent click target: visited steps can be reopened.
+            button = NSButton.alloc().initWithFrame_(
+                NSMakeRect(inset, entry_y, entry_w, entry_h)
+            )
+            button.setBordered_(False)
+            button.setTitle_("")
+            button.setAccessibilityLabel_(STEP_NAV_LABELS[step])
+            self._bind_action(button, f"goto:{step.value}")
+            view.addSubview_(button)
+            self._sidebar_entries[step] = (background, marker, marker_label, name)
+            entry_y -= 2
+
+    def _build_header(self) -> None:
+        from AppKit import NSFontWeightBold  # type: ignore[import-not-found]
+
+        x = SIDEBAR_WIDTH + PADDING
+        width = CONTENT_WIDTH - 2 * PADDING
+        title_y = WIZARD_HEIGHT - 20 - 30
+        title = _create_label("", x, title_y, width, 30, size=24, weight=NSFontWeightBold)
         self._content_view.addSubview_(title)
         self._step_label = title
 
-        progress = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(PADDING, WIZARD_HEIGHT - 74, WIZARD_WIDTH - 2 * PADDING, 18)
-        )
-        progress.setStringValue_("")
-        progress.setBezeled_(False)
-        progress.setDrawsBackground_(False)
-        progress.setEditable_(False)
-        progress.setSelectable_(False)
-        progress.setFont_(NSFont.systemFontOfSize_(11))
-        progress.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6))
-        self._content_view.addSubview_(progress)
-        self._progress_label = progress
+        subtitle = _create_label("", x, title_y - 22, width, 18, color=theme.MUTED)
+        self._content_view.addSubview_(subtitle)
+        self._subtitle_label = subtitle
 
     def _build_steps(self) -> None:
         from Foundation import NSMakeRect  # type: ignore[import-not-found]
 
-        content_top = WIZARD_HEIGHT - 90
-        content_bottom = FOOTER_HEIGHT + 10
-        content_h = max(200, content_top - content_bottom)
+        content_h = WIZARD_HEIGHT - HEADER_HEIGHT - FOOTER_HEIGHT
         self._step_content_height = content_h
-        self._step_frame = NSMakeRect(0, content_bottom, WIZARD_WIDTH, content_h)
+        self._step_frame = NSMakeRect(SIDEBAR_WIDTH, FOOTER_HEIGHT, CONTENT_WIDTH, content_h)
         self._step_builders = {
             OnboardingStep.CHOOSE_GOAL: self._build_step_choose_goal,
             OnboardingStep.PERMISSIONS: self._build_step_permissions,
@@ -727,60 +955,64 @@ class OnboardingWizardController:
         builder(view, self._step_content_height)
         return True
 
+    def _add_text_button(
+        self, parent, x: float, y: float, width: float, height: float, title: str, action: str
+    ):
+        """Adds a borderless text button in the navigation color."""
+        from AppKit import NSButton  # type: ignore[import-not-found]
+        from Foundation import NSMakeRect  # type: ignore[import-not-found]
+
+        button = NSButton.alloc().initWithFrame_(NSMakeRect(x, y, width, height))
+        button.setBordered_(False)
+        _set_button_text(button, title, theme.NAV)
+        self._bind_action(button, action)
+        parent.addSubview_(button)
+        return button
+
     def _build_footer(self) -> None:
         from AppKit import (  # type: ignore[import-not-found]
-            NSBezelStyleRounded,
             NSButton,
-            NSFont,
-            NSMakeRect,
+            NSFontWeightMedium,
+            NSView,
         )
-        import objc  # type: ignore[import-not-found]
+        from Foundation import NSMakeRect  # type: ignore[import-not-found]
 
-        y = 14
+        footer = NSView.alloc().initWithFrame_(
+            NSMakeRect(SIDEBAR_WIDTH, 0, CONTENT_WIDTH, FOOTER_HEIGHT)
+        )
+        footer.addSubview_(theme.ns_rule(0, FOOTER_HEIGHT - 1, CONTENT_WIDTH))
+        self._content_view.addSubview_(footer)
+
         btn_h = 28
-        btn_w = 90
-        spacing = 10
+        y = (FOOTER_HEIGHT - btn_h) // 2
+        next_w = 96
+        next_x = CONTENT_WIDTH - PADDING - next_w
 
-        right = WIZARD_WIDTH - PADDING
-
-        next_btn = NSButton.alloc().initWithFrame_(
-            NSMakeRect(right - btn_w, y, btn_w, btn_h)
+        # Light primary button: token fill box under a borderless button.
+        next_fill = _create_box(
+            next_x, y, next_w, btn_h, theme.PRIMARY_BG, radius=theme.RADIUS
         )
-        next_btn.setTitle_("Next")
-        next_btn.setBezelStyle_(NSBezelStyleRounded)
-        next_btn.setFont_(NSFont.systemFontOfSize_(12))
-        h_next = _WizardActionHandler.alloc().initWithController_action_(self, "next")
-        next_btn.setTarget_(h_next)
-        next_btn.setAction_(objc.selector(h_next.performAction_, signature=b"v@:@"))
-        self._handler_refs.append(h_next)
-        self._content_view.addSubview_(next_btn)
+        footer.addSubview_(next_fill)
+        next_btn = NSButton.alloc().initWithFrame_(NSMakeRect(next_x, y, next_w, btn_h))
+        next_btn.setBordered_(False)
+        _set_button_text(next_btn, "Next", theme.PRIMARY_TEXT, weight=NSFontWeightMedium)
+        self._bind_action(next_btn, "next")
+        footer.addSubview_(next_btn)
+        self._next_fill = next_fill
         self._next_btn = next_btn
 
-        back_btn = NSButton.alloc().initWithFrame_(
-            NSMakeRect(right - btn_w * 2 - spacing, y, btn_w, btn_h)
+        back_w = 64
+        back_x = next_x - 8 - back_w
+        self._back_btn = self._add_text_button(footer, back_x, y, back_w, btn_h, "Back", "back")
+        skip_w = 56
+        self._skip_test_btn = self._add_text_button(
+            footer, back_x - skip_w, y, skip_w, btn_h, "Skip", "skip_test"
         )
-        back_btn.setTitle_("Back")
-        back_btn.setBezelStyle_(NSBezelStyleRounded)
-        back_btn.setFont_(NSFont.systemFontOfSize_(12))
-        h_back = _WizardActionHandler.alloc().initWithController_action_(self, "back")
-        back_btn.setTarget_(h_back)
-        back_btn.setAction_(objc.selector(h_back.performAction_, signature=b"v@:@"))
-        self._handler_refs.append(h_back)
-        self._content_view.addSubview_(back_btn)
-        self._back_btn = back_btn
-
-        skip_btn = NSButton.alloc().initWithFrame_(
-            NSMakeRect(PADDING, y, 122, btn_h)
+        self._skip_btn = self._add_text_button(
+            footer, PADDING - 6, y, 116, btn_h, "Open Settings…", "cancel"
         )
-        skip_btn.setTitle_("Open Settings…")
-        skip_btn.setBezelStyle_(NSBezelStyleRounded)
-        skip_btn.setFont_(NSFont.systemFontOfSize_(12))
-        h_skip = _WizardActionHandler.alloc().initWithController_action_(self, "cancel")
-        skip_btn.setTarget_(h_skip)
-        skip_btn.setAction_(objc.selector(h_skip.performAction_, signature=b"v@:@"))
-        self._handler_refs.append(h_skip)
-        self._content_view.addSubview_(skip_btn)
-        self._skip_btn = skip_btn
+        _set_button_text(self._skip_btn, "Open Settings…", theme.MUTED)
+        self._skip_btn.setAlignment_(0)  # NSTextAlignmentLeft
 
     # ---------------------------------------------------------------------
     # Steps
@@ -788,118 +1020,87 @@ class OnboardingWizardController:
 
     def _build_step_choose_goal(self, parent_view, content_h: int) -> None:
         from AppKit import (  # type: ignore[import-not-found]
-            NSBezelStyleRounded,
             NSButton,
-            NSColor,
             NSFont,
-            NSFontWeightMedium,
             NSFontWeightSemibold,
             NSMakeRect,
             NSPopUpButton,
-            NSTextField,
+            NSSecureTextField,
+            NSTextAlignmentCenter,
+            NSView,
         )
-        import objc  # type: ignore[import-not-found]
 
-        card_w = WIZARD_WIDTH - 2 * PADDING
-        card_h = 310
-        card_y = content_h - card_h - 10
-        card = _create_card(PADDING, card_y, card_w, card_h)
-        parent_view.addSubview_(card)
-
-        base_x = PADDING + CARD_PADDING
-
-        title = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(base_x, card_y + card_h - 28, 320, 18)
-        )
-        title.setStringValue_("Choose your setup")
-        title.setBezeled_(False)
-        title.setDrawsBackground_(False)
-        title.setEditable_(False)
-        title.setSelectable_(False)
-        title.setFont_(NSFont.systemFontOfSize_weight_(13, NSFontWeightSemibold))
-        title.setTextColor_(NSColor.whiteColor())
-        parent_view.addSubview_(title)
-
-        desc = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(base_x, card_y + card_h - 72, card_w - 2 * CARD_PADDING, 34)
-        )
-        desc.setStringValue_(
-            "Start with a recommended default. You can adjust providers, prompts and hotkeys later in Settings."
-        )
-        desc.setBezeled_(False)
-        desc.setDrawsBackground_(False)
-        desc.setEditable_(False)
-        desc.setSelectable_(False)
-        desc.setFont_(NSFont.systemFontOfSize_weight_(11, NSFontWeightMedium))
-        desc.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6))
-        parent_view.addSubview_(desc)
-
-        btn_w = card_w - 2 * CARD_PADDING
-        btn_h = 42
-        start_y = card_y + card_h - 98
-
-        def add_choice(label: str, subtitle: str, action: str, y_pos: int) -> None:
-            btn = NSButton.alloc().initWithFrame_(
-                NSMakeRect(base_x, y_pos, btn_w, btn_h)
+        width = CONTENT_WIDTH - 2 * PADDING
+        row_h = GOAL_ROW_HEIGHT
+        top = content_h
+        parent_view.addSubview_(theme.ns_rule(PADDING, top - 1, width))
+        for index, (choice, action, title, description, recommended) in enumerate(
+            GOAL_CHOICES
+        ):
+            y = top - (index + 1) * row_h
+            background = _create_box(PADDING, y, width, row_h - 1, theme.SELECTED_ROW_BG)
+            edge = _create_box(PADDING, y, 2, row_h - 1, theme.TEXT)
+            ring_size = 14
+            ring_x = PADDING + 16
+            ring_y = y + (row_h - ring_size) / 2
+            ring = _create_box(
+                ring_x,
+                ring_y,
+                ring_size,
+                ring_size,
+                None,
+                radius=ring_size / 2,
+                border=theme.SECONDARY_BORDER,
             )
-            btn.setTitle_(label)
-            btn.setBezelStyle_(NSBezelStyleRounded)
-            btn.setFont_(NSFont.systemFontOfSize_(13))
-            h = _WizardActionHandler.alloc().initWithController_action_(self, action)
-            btn.setTarget_(h)
-            btn.setAction_(objc.selector(h.performAction_, signature=b"v@:@"))
-            self._handler_refs.append(h)
-            parent_view.addSubview_(btn)
-
-            sub = NSTextField.alloc().initWithFrame_(
-                NSMakeRect(base_x + 12, y_pos - 16, btn_w - 24, 14)
+            dot = _create_box(
+                ring_x + 4, ring_y + 4, ring_size - 8, ring_size - 8, theme.TEXT, radius=3
             )
-            sub.setStringValue_(subtitle)
-            sub.setBezeled_(False)
-            sub.setDrawsBackground_(False)
-            sub.setEditable_(False)
-            sub.setSelectable_(False)
-            sub.setFont_(NSFont.systemFontOfSize_weight_(10, NSFontWeightMedium))
-            sub.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.55))
-            parent_view.addSubview_(sub)
+            text_x = ring_x + ring_size + 14
+            title_label = _create_label(
+                title, text_x, y + 32, 200, 20, size=15, weight=NSFontWeightSemibold
+            )
+            title_label.sizeToFit()
+            desc_label = _create_label(
+                description, text_x, y + 12, width - (text_x - PADDING) - 8, 17,
+                size=12.5, color=theme.MUTED,
+            )
+            for view in (background, edge, dot):
+                view.setHidden_(True)  # shown by _sync_goal_rows when selected
+            for view in (background, edge, ring, dot, title_label, desc_label):
+                parent_view.addSubview_(view)
+            if recommended:
+                tag_x = text_x + title_label.frame().size.width + 8
+                parent_view.addSubview_(
+                    _create_box(
+                        tag_x, y + 34, 92, 18, None,
+                        radius=theme.RADIUS, border=theme.SECONDARY_BORDER,
+                    )
+                )
+                tag = _create_label(
+                    "Recommended", tag_x, y + 36, 92, 14, size=11, color=theme.MUTED
+                )
+                tag.setAlignment_(NSTextAlignmentCenter)
+                parent_view.addSubview_(tag)
+            parent_view.addSubview_(theme.ns_rule(PADDING, y - 1, width))
+            button = NSButton.alloc().initWithFrame_(NSMakeRect(PADDING, y, width, row_h))
+            button.setBordered_(False)
+            button.setTitle_("")
+            button.setAccessibilityLabel_(f"{title}: {description}")
+            self._bind_action(button, action)
+            parent_view.addSubview_(button)
+            self._goal_rows[choice] = (background, edge, ring, dot)
+        self._last_goal_choice = None
+        self._sync_goal_rows()
 
-        add_choice(
-            "Fast",
-            "Best latency. Uses Deepgram streaming when available.",
-            "choose_fast",
-            start_y,
+        # Language: label above the popup, hint to the right.
+        lang_top = top - len(GOAL_CHOICES) * row_h - 20
+        parent_view.addSubview_(
+            _create_label("Language", PADDING, lang_top - 16, 200, 16, size=12, color=theme.NAV)
         )
-        add_choice(
-            "Private",
-            "Runs locally on your Mac. Best for privacy.",
-            "choose_private",
-            start_y - 70,
-        )
-        add_choice(
-            "Advanced",
-            "Pick providers, models and refinement yourself.",
-            "choose_advanced",
-            start_y - 140,
-        )
-
-        # Language selector
-        lang_y = card_y + 16
-        lang_label = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(base_x, lang_y + 2, 70, 18)
-        )
-        lang_label.setStringValue_("Language:")
-        lang_label.setBezeled_(False)
-        lang_label.setDrawsBackground_(False)
-        lang_label.setEditable_(False)
-        lang_label.setSelectable_(False)
-        lang_label.setFont_(NSFont.systemFontOfSize_weight_(11, NSFontWeightMedium))
-        lang_label.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.7))
-        parent_view.addSubview_(lang_label)
-
         lang_popup = NSPopUpButton.alloc().initWithFrame_(
-            NSMakeRect(base_x + 74, lang_y, 148, 22)
+            NSMakeRect(PADDING - 3, lang_top - 46, 186, 26)
         )
-        lang_popup.setFont_(NSFont.systemFontOfSize_(11))
+        lang_popup.setFont_(NSFont.systemFontOfSize_(13))
         for lang in LANGUAGE_OPTIONS:
             lang_popup.addItemWithTitle_(_format_language_label(lang))
         current_lang = self._get_cached_env_setting("PULSESCRIBE_LANGUAGE") or "auto"
@@ -907,108 +1108,83 @@ class OnboardingWizardController:
             lang_popup.selectItemWithTitle_(_format_language_label(current_lang))
         self._lang_popup = lang_popup
         parent_view.addSubview_(lang_popup)
-
-        lang_hint = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(base_x + 228, lang_y + 3, btn_w - 228, 16)
+        parent_view.addSubview_(
+            _create_label(
+                "Automatic detects it from speech.",
+                PADDING + 196, lang_top - 41, width - 196, 17,
+                size=12, color=theme.MUTED,
+            )
         )
-        lang_hint.setStringValue_("Automatic = detect from speech")
-        lang_hint.setBezeled_(False)
-        lang_hint.setDrawsBackground_(False)
-        lang_hint.setEditable_(False)
-        lang_hint.setSelectable_(False)
-        lang_hint.setFont_(NSFont.systemFontOfSize_(10))
-        lang_hint.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.5))
-        parent_view.addSubview_(lang_hint)
 
-        # API Key input (shown when Fast is selected without existing key)
-        from AppKit import NSSecureTextField  # type: ignore[import-not-found]
-
-        api_y = card_y - 96
-        api_container = _create_card(PADDING, api_y, card_w, 86)
+        # Deepgram API key: shown while Fast is selected and no key is stored.
+        api_h = 66
+        api_container = NSView.alloc().initWithFrame_(
+            NSMakeRect(PADDING, lang_top - 62 - api_h, width, api_h)
+        )
         api_container.setHidden_(True)
         parent_view.addSubview_(api_container)
         self._api_key_container = api_container
-
-        api_label = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(CARD_PADDING, 58, card_w - 2 * CARD_PADDING, 16)
+        api_container.addSubview_(
+            _create_label("Deepgram API key", 0, api_h - 16, width, 16, size=12, color=theme.NAV)
         )
-        api_label.setStringValue_("Deepgram API key for Fast mode")
-        api_label.setBezeled_(False)
-        api_label.setDrawsBackground_(False)
-        api_label.setEditable_(False)
-        api_label.setSelectable_(False)
-        api_label.setFont_(NSFont.systemFontOfSize_weight_(11, NSFontWeightMedium))
-        api_label.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.7))
-        api_container.addSubview_(api_label)
-
         api_field = NSSecureTextField.alloc().initWithFrame_(
-            NSMakeRect(CARD_PADDING, 28, card_w - 2 * CARD_PADDING, 22)
+            NSMakeRect(0, api_h - 44, width, 24)
         )
-        api_field.setFont_(NSFont.systemFontOfSize_(12))
-        api_field.setPlaceholderString_("Paste your Deepgram key (dg-...)")
-        enter_handler = _WizardActionHandler.alloc().initWithController_action_(
-            self, "next"
-        )
-        api_field.setTarget_(enter_handler)
-        api_field.setAction_(objc.selector(enter_handler.performAction_, signature=b"v@:@"))
-        self._handler_refs.append(enter_handler)
+        api_field.setFont_(NSFont.systemFontOfSize_(13))
+        api_field.setPlaceholderString_("Paste your Deepgram key")
+        self._bind_action(api_field, "next")
         api_container.addSubview_(api_field)
         self._api_key_field = api_field
-
-        api_status = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(CARD_PADDING, 8, card_w - 2 * CARD_PADDING, 16)
-        )
-        api_status.setStringValue_("")
-        api_status.setBezeled_(False)
-        api_status.setDrawsBackground_(False)
-        api_status.setEditable_(False)
-        api_status.setSelectable_(False)
-        api_status.setFont_(NSFont.systemFontOfSize_(10))
-        api_status.setTextColor_(_get_color(255, 200, 90))
+        api_status = _create_label("", 0, 0, width, 16, size=12, color=theme.BADGE_TONES["warn"][1])
         api_container.addSubview_(api_status)
         self._api_key_status = api_status
 
+    def _sync_goal_rows(self) -> None:
+        """Marks the selected Setup row (fill, light left edge, filled radio)."""
+        choice = getattr(self, "_choice", None)
+        rows = getattr(self, "_goal_rows", None)
+        if not rows or choice == getattr(self, "_last_goal_choice", None):
+            return
+        for row_choice, (background, edge, ring, dot) in rows.items():
+            selected = row_choice == choice
+            try:
+                background.setHidden_(not selected)
+                edge.setHidden_(not selected)
+                dot.setHidden_(not selected)
+                ring.setBorderColor_(
+                    theme.ns_color(theme.TEXT if selected else theme.SECONDARY_BORDER)
+                )
+            except Exception:
+                pass
+        self._last_goal_choice = choice
+
     def _build_step_permissions(self, parent_view, content_h: int) -> None:
-        import objc  # type: ignore[import-not-found]
         from ui.permissions_card import PERMISSIONS_DESCRIPTION, PermissionsCard
 
-        card_h = 250
-        card_y = content_h - card_h - 10
-
-        def bind_action(btn, action: str) -> None:
-            h = _WizardActionHandler.alloc().initWithController_action_(self, action)
-            btn.setTarget_(h)
-            btn.setAction_(objc.selector(h.performAction_, signature=b"v@:@"))
-            self._handler_refs.append(h)
+        card_h = 206  # same flat section as Settings -> General
+        card_y = content_h - card_h
 
         self._permissions_card = PermissionsCard.build(
             parent_view=parent_view,
-            window_width=WIZARD_WIDTH,
+            window_width=CONTENT_WIDTH,
             card_y=card_y,
             card_height=card_h,
             outer_padding=PADDING,
             inner_padding=CARD_PADDING,
             title="Permissions",
             description=PERMISSIONS_DESCRIPTION,
-            bind_action=bind_action,
+            bind_action=self._bind_action,
             after_refresh=self._render,
+            flat=True,
         )
 
     def _build_step_hotkey(self, parent_view, content_h: int) -> None:
-        import objc  # type: ignore[import-not-found]
-
-        card_h = min(300, max(250, content_h - 20))
-        card_y = content_h - card_h - 10
-
-        def bind_action(btn, action: str) -> None:
-            h = _WizardActionHandler.alloc().initWithController_action_(self, action)
-            btn.setTarget_(h)
-            btn.setAction_(objc.selector(h.performAction_, signature=b"v@:@"))
-            self._handler_refs.append(h)
+        card_h = min(300, content_h)
+        card_y = content_h - card_h
 
         self._hotkey_card = HotkeyCard.build(
             parent_view=parent_view,
-            window_width=WIZARD_WIDTH,
+            window_width=CONTENT_WIDTH,
             card_y=card_y,
             card_height=card_h,
             outer_padding=PADDING,
@@ -1018,13 +1194,14 @@ class OnboardingWizardController:
                 "Choose how you want to start dictation.\n"
                 "Toggle: press once to start and once to stop. Hold: hold while speaking."
             ),
-            bind_action=bind_action,
+            bind_action=self._bind_action,
             hotkey_recorder=self._hotkey_recorder,
             on_hotkey_change=self._apply_hotkey_change,
             on_after_change=self._render,
             get_current_hotkeys=self._get_cached_hotkeys,
             show_presets=True,
-            show_hint=True,
+            show_hint=False,
+            flat=True,
         )
 
     def _build_step_test_dictation(self, parent_view, content_h: int) -> None:
@@ -1035,52 +1212,21 @@ class OnboardingWizardController:
             NSButton,
             NSColor,
             NSFont,
-            NSFontWeightMedium,
-            NSFontWeightSemibold,
             NSMakeRect,
             NSScrollView,
             NSTextField,
             NSTextView,
         )
 
-        card_w = WIZARD_WIDTH - 2 * PADDING
-        card_h = min(380, content_h - 20)
-        card_y = content_h - card_h - 10
+        card_w = CONTENT_WIDTH - 2 * PADDING
+        card_h = content_h
+        card_y = 0
         card = _create_card(PADDING, card_y, card_w, card_h)
         parent_view.addSubview_(card)
 
         base_x = PADDING + CARD_PADDING
         content_w = card_w - 2 * CARD_PADDING
-
-        title = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(base_x, card_y + card_h - 28, 320, 18)
-        )
-        title.setStringValue_("Practice dictation (safe)")
-        title.setBezeled_(False)
-        title.setDrawsBackground_(False)
-        title.setEditable_(False)
-        title.setSelectable_(False)
-        title.setFont_(NSFont.systemFontOfSize_weight_(13, NSFontWeightSemibold))
-        title.setTextColor_(NSColor.whiteColor())
-        parent_view.addSubview_(title)
-
-        top_y = card_y + card_h
-        desc_h = 34
-        desc_y = (top_y - 28) - 6 - desc_h
-        desc = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(base_x, desc_y, content_w, desc_h)
-        )
-        desc.setStringValue_(
-            "Nothing is pasted during this step.\n"
-            "Use your hotkey or the buttons below; the transcript only appears here."
-        )
-        desc.setBezeled_(False)
-        desc.setDrawsBackground_(False)
-        desc.setEditable_(False)
-        desc.setSelectable_(False)
-        desc.setFont_(NSFont.systemFontOfSize_weight_(11, NSFontWeightMedium))
-        desc.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6))
-        parent_view.addSubview_(desc)
+        desc_y = card_h - 6
 
         hotkeys_h = 46
         hotkeys_y = desc_y - 10 - hotkeys_h
@@ -1210,40 +1356,9 @@ class OnboardingWizardController:
         self._set_test_preview_text(TEST_DICTATION_EMPTY_TEXT)
         self._refresh_test_action_buttons()
 
-        # Skip test link (top right of card, next to title)
-        skip_btn_w = 92
-        skip_test_btn = NSButton.alloc().initWithFrame_(
-            NSMakeRect(
-                base_x + content_w - skip_btn_w,
-                card_y + card_h - 28,
-                skip_btn_w,
-                18,
-            )
-        )
-        skip_test_btn.setTitle_("Skip for now")
-        skip_test_btn.setBezelStyle_(0)
-        skip_test_btn.setBordered_(False)
-        skip_test_btn.setFont_(NSFont.systemFontOfSize_(11))
-        try:
-            skip_test_btn.setContentTintColor_(
-                NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.5)
-            )
-        except Exception:
-            pass
-        h_skip = _WizardActionHandler.alloc().initWithController_action_(
-            self, "skip_test"
-        )
-        skip_test_btn.setTarget_(h_skip)
-        skip_test_btn.setAction_(
-            objc.selector(h_skip.performAction_, signature=b"v@:@")
-        )
-        self._handler_refs.append(h_skip)
-        parent_view.addSubview_(skip_test_btn)
 
     def _build_step_cheat_sheet(self, parent_view, content_h: int) -> None:
         from AppKit import (  # type: ignore[import-not-found]
-            NSBezelStyleRounded,
-            NSButton,
             NSColor,
             NSFont,
             NSFontWeightMedium,
@@ -1251,11 +1366,10 @@ class OnboardingWizardController:
             NSMakeRect,
             NSTextField,
         )
-        import objc  # type: ignore[import-not-found]
 
-        card_w = WIZARD_WIDTH - 2 * PADDING
+        card_w = CONTENT_WIDTH - 2 * PADDING
         card_h = 312
-        card_y = content_h - card_h - 10
+        card_y = content_h - card_h
         card = _create_card(PADDING, card_y, card_w, card_h)
         parent_view.addSubview_(card)
 
@@ -1326,7 +1440,7 @@ class OnboardingWizardController:
         self._summary_test_label = add_value(row_y)
 
         # Abschluss-Text
-        ready_y = card_y + 58
+        ready_y = card_y + 100
         ready = NSTextField.alloc().initWithFrame_(
             NSMakeRect(base_x, ready_y, content_w, 58)
         )
@@ -1342,32 +1456,6 @@ class OnboardingWizardController:
         ready.setFont_(NSFont.systemFontOfSize_weight_(11, NSFontWeightMedium))
         ready.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.7))
         parent_view.addSubview_(ready)
-
-        more_label = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(base_x, card_y + 22, 112, 16)
-        )
-        more_label.setStringValue_("Need to change something?")
-        more_label.setBezeled_(False)
-        more_label.setDrawsBackground_(False)
-        more_label.setEditable_(False)
-        more_label.setSelectable_(False)
-        more_label.setFont_(NSFont.systemFontOfSize_(11))
-        more_label.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6))
-        parent_view.addSubview_(more_label)
-
-        open_btn = NSButton.alloc().initWithFrame_(
-            NSMakeRect(base_x + 114, card_y + 18, 150, 24)
-        )
-        open_btn.setTitle_("Open Settings…")
-        open_btn.setBezelStyle_(NSBezelStyleRounded)
-        open_btn.setFont_(NSFont.systemFontOfSize_(11))
-        h_open = _WizardActionHandler.alloc().initWithController_action_(
-            self, "open_settings"
-        )
-        open_btn.setTarget_(h_open)
-        open_btn.setAction_(objc.selector(h_open.performAction_, signature=b"v@:@"))
-        self._handler_refs.append(h_open)
-        parent_view.addSubview_(open_btn)
 
         # Initial update
         self._update_summary()
@@ -1476,15 +1564,9 @@ class OnboardingWizardController:
     # Actions + State
     # ---------------------------------------------------------------------
 
-    def _wizard_title(self, step: OnboardingStep) -> str:
-        titles = {
-            OnboardingStep.CHOOSE_GOAL: "Welcome to PulseScribe",
-            OnboardingStep.PERMISSIONS: "Permissions",
-            OnboardingStep.HOTKEY: "Hotkey",
-            OnboardingStep.TEST_DICTATION: "Practice dictation",
-            OnboardingStep.CHEAT_SHEET: "Review your setup",
-        }
-        return titles.get(step, "Setup")
+    def _wizard_title(self, step: OnboardingStep) -> tuple[str, str]:
+        """Returns ``(title, subtitle)`` shown above the step content."""
+        return STEP_TITLES.get(step, ("Setup", ""))
 
     def _persist_step(self, step: OnboardingStep) -> None:
         if self._persist_progress:
@@ -1556,10 +1638,7 @@ class OnboardingWizardController:
             except Exception:
                 pass
         if self._api_key_status is not None:
-            prompt_message = (
-                message
-                or "Fast mode needs a Deepgram API key. Paste one to continue."
-            )
+            prompt_message = message or FAST_API_KEY_PROMPT
             try:
                 if getattr(self, "_last_api_key_prompt_message", None) != prompt_message:
                     self._api_key_status.setStringValue_(prompt_message)
@@ -1619,9 +1698,10 @@ class OnboardingWizardController:
         except Exception:
             pass
 
-    @staticmethod
-    def _apply_private_goal_choice() -> None:
+    def _apply_private_goal_choice(self) -> None:
         apply_local_preset_to_env(default_local_preset_private())
+        # The preset writes .env directly; keep the Review rows in sync.
+        self._refresh_env_settings_cache()
 
     def _persist_selected_language(self) -> None:
         if not self._lang_popup:
@@ -1658,7 +1738,7 @@ class OnboardingWizardController:
         self._ensure_step_built(step)
         self._sync_visible_step(step)
         self._update_render_title(step)
-        self._update_render_progress(step)
+        self._update_render_sidebar(step)
         self._update_render_navigation(step)
         self._run_render_step_updates(step)
 
@@ -1691,25 +1771,56 @@ class OnboardingWizardController:
         self._visible_step = step
 
     def _update_render_title(self, step: OnboardingStep) -> None:
-        if self._step_label is not None:
-            title_text = self._wizard_title(step)
-            try:
-                if getattr(self, "_last_title_text", None) != title_text:
-                    self._step_label.setStringValue_(title_text)
-                    self._last_title_text = title_text
-            except Exception:
-                pass
+        title_text, subtitle_text = self._wizard_title(step)
+        self._set_cached_summary_label_text(
+            getattr(self, "_step_label", None), "_last_title_text", title_text
+        )
+        self._set_cached_summary_label_text(
+            getattr(self, "_subtitle_label", None), "_last_subtitle_text", subtitle_text
+        )
 
-    def _update_render_progress(self, step: OnboardingStep) -> None:
-        if self._progress_label is not None:
-            idx = step_index(step)
-            progress_text = f"Step {idx}/{total_steps()}"
+    def _update_render_sidebar(self, step: OnboardingStep) -> None:
+        """Marks done steps with a check and highlights the current one."""
+        entries = getattr(self, "_sidebar_entries", None)
+        if not entries or step == getattr(self, "_last_sidebar_step", None):
+            return
+        from AppKit import (  # type: ignore[import-not-found]
+            NSFont,
+            NSFontWeightRegular,
+            NSFontWeightSemibold,
+        )
+
+        current = WIZARD_STEPS.index(step)
+        for index, entry_step in enumerate(WIZARD_STEPS):
+            background, marker, marker_label, name = entries[entry_step]
+            active = index == current
             try:
-                if getattr(self, "_last_progress_text", None) != progress_text:
-                    self._progress_label.setStringValue_(progress_text)
-                    self._last_progress_text = progress_text
+                background.setFillColor_(
+                    theme.ns_color(theme.ACTIVE_BG) if active else _get_color(0, 0, 0, 0)
+                )
+                marker.setFillColor_(
+                    theme.ns_color(theme.PRIMARY_BG) if active else _get_color(0, 0, 0, 0)
+                )
+                marker.setBorderColor_(
+                    theme.ns_color(theme.PRIMARY_BG if active else theme.SECONDARY_BORDER)
+                )
+                marker_label.setStringValue_("\u2713" if index < current else str(index + 1))
+                marker_label.setTextColor_(
+                    theme.ns_color(
+                        theme.PRIMARY_TEXT
+                        if active
+                        else (theme.NAV if index < current else theme.MUTED)
+                    )
+                )
+                name.setTextColor_(theme.ns_color(theme.ACTIVE_TEXT if active else theme.NAV))
+                name.setFont_(
+                    NSFont.systemFontOfSize_weight_(
+                        14, NSFontWeightSemibold if active else NSFontWeightRegular
+                    )
+                )
             except Exception:
                 pass
+        self._last_sidebar_step = step
 
     def _update_render_navigation(self, step: OnboardingStep) -> None:
         if self._back_btn is not None:
@@ -1721,20 +1832,48 @@ class OnboardingWizardController:
             except Exception:
                 pass
 
+        skip_test_btn = getattr(self, "_skip_test_btn", None)
+        if skip_test_btn is not None:
+            skip_hidden = step != OnboardingStep.TEST_DICTATION
+            try:
+                if getattr(self, "_last_skip_test_hidden", None) != skip_hidden:
+                    skip_test_btn.setHidden_(skip_hidden)
+                    self._last_skip_test_hidden = skip_hidden
+            except Exception:
+                pass
+
         if self._next_btn is not None:
             title = "Finish" if step == OnboardingStep.CHEAT_SHEET else "Next"
             can_advance = bool(self._can_advance())
+            if (
+                getattr(self, "_last_next_title", None) == title
+                and getattr(self, "_last_next_enabled", None) == can_advance
+            ):
+                return
             try:
-                if getattr(self, "_last_next_title", None) != title:
-                    self._next_btn.setTitle_(title)
-                    self._last_next_title = title
-                if getattr(self, "_last_next_enabled", None) != can_advance:
-                    self._next_btn.setEnabled_(can_advance)
-                    self._last_next_enabled = can_advance
+                from AppKit import NSFontWeightMedium  # type: ignore[import-not-found]
+
+                # Incomplete step: the light primary button turns dark and muted.
+                _set_button_text(
+                    self._next_btn,
+                    title,
+                    theme.PRIMARY_TEXT if can_advance else theme.MUTED,
+                    weight=NSFontWeightMedium,
+                )
+                self._next_btn.setEnabled_(can_advance)
+                next_fill = getattr(self, "_next_fill", None)
+                if next_fill is not None:
+                    next_fill.setFillColor_(
+                        theme.ns_color(theme.PRIMARY_BG if can_advance else theme.ACTIVE_BG)
+                    )
+                self._last_next_title = title
+                self._last_next_enabled = can_advance
             except Exception:
                 pass
 
     def _run_render_step_updates(self, step: OnboardingStep) -> None:
+        if step == OnboardingStep.CHOOSE_GOAL:
+            self._sync_goal_rows()
         if step == OnboardingStep.HOTKEY:
             self._sync_hotkey_fields_from_env()
         if step == OnboardingStep.TEST_DICTATION:
@@ -1819,9 +1958,25 @@ class OnboardingWizardController:
         choice = choice_by_action.get(action)
         if choice is None:
             return False
+        # Selecting a row only marks it; Next applies the choice.
         self._choice = choice
-        self._apply_selected_goal_choice()
+        if choice == OnboardingChoice.FAST and self._fast_choice_needs_api_key():
+            self._show_fast_api_key_prompt()
+        else:
+            self._hide_fast_api_key_prompt()
+            self._render()
         return True
+
+    def _fast_choice_needs_api_key(self) -> bool:
+        """True when neither a Deepgram nor a Groq key is stored or entered."""
+        return resolve_fast_choice_updates(
+            entered_deepgram_key=self._entered_deepgram_api_key(),
+            cached_deepgram_key=self._get_cached_api_key("DEEPGRAM_API_KEY"),
+            env_deepgram_key=os.getenv("DEEPGRAM_API_KEY"),
+            cached_groq_key=self._get_cached_api_key("GROQ_API_KEY"),
+            env_groq_key=os.getenv("GROQ_API_KEY"),
+            current_mode=self._get_cached_env_setting("PULSESCRIBE_MODE"),
+        ).should_prompt_for_api_key
 
     def _handle_permission_action(self, action: str) -> bool:
         if action == "perm_mic":
@@ -1858,6 +2013,18 @@ class OnboardingWizardController:
             return
         if action == "goto_hotkey":
             self._set_step(OnboardingStep.HOTKEY)
+            return
+        if action.startswith("goto:"):
+            self._handle_sidebar_action(action.split(":", 1)[1])
+
+    def _handle_sidebar_action(self, step_value: str) -> None:
+        """Reopens an earlier step from the sidebar; later steps stay locked."""
+        target = coerce_onboarding_step(step_value)
+        current = self._render_step()
+        if target not in WIZARD_STEPS or current not in WIZARD_STEPS:
+            return
+        if WIZARD_STEPS.index(target) < WIZARD_STEPS.index(current):
+            self._set_step(target)
 
     def _open_privacy_settings(self, anchor: str) -> None:
         from utils.permissions import open_privacy_settings
