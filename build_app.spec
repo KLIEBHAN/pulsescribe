@@ -158,6 +158,13 @@ hiddenimports = _dedupe(hiddenimports)
 
 # Nicht benötigte Module ausschließen (reduziert App-Größe und Build-Zeit)
 excludes = [
+    # PyTorch (~0.5 GB) and openai-whisper: the macOS app runs MLX, Lightning and
+    # faster-whisper, none of which needs torch at runtime (their torch_whisper modules
+    # are conversion tools that transcription never imports).
+    'torch',
+    'torchaudio',
+    'torchvision',
+    'whisper',
     # GUI Frameworks (wir nutzen PyObjC direkt)
     'tkinter',
     'PyQt5',

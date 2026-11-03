@@ -444,6 +444,27 @@ class TestBackendDetection:
 
         assert provider._backend == "mlx"
 
+    @pytest.mark.parametrize("backend", ["mlx", "lightning"])
+    def test_metal_backends_skip_torch_device_detection(self, monkeypatch, backend):
+        """MLX/Lightning never import torch for a device (the macOS app ships without it)."""
+        import providers.local as local_mod
+
+        monkeypatch.setenv("PULSESCRIBE_LOCAL_BACKEND", backend)
+        monkeypatch.setattr(local_mod, "_select_device", lambda: pytest.fail("torch device probe"))
+        provider = local_mod.LocalProvider()
+        provider._ensure_runtime_config()
+        assert provider._device == "metal"
+        assert provider.get_runtime_info()["device"] == "metal"
+
+    def test_torch_backends_still_detect_their_device(self, monkeypatch):
+        import providers.local as local_mod
+
+        monkeypatch.setenv("PULSESCRIBE_LOCAL_BACKEND", "faster")
+        monkeypatch.setattr(local_mod, "_select_device", lambda: "cuda")
+        provider = local_mod.LocalProvider()
+        provider._ensure_runtime_config()
+        assert provider._device == "cuda"
+
     def test_backend_auto_respects_platform_default_before_generic_fallback(
         self, monkeypatch
     ):

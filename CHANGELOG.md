@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Smaller macOS app** – the app no longer bundles PyTorch and openai-whisper,
+  which no included backend needs. MLX and Lightning also skip the torch device
+  probe at startup and report their device as Metal.
+
 ## [1.14.1] - 2026-11-04
 
 ### Fixed
