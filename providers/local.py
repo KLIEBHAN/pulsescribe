@@ -220,8 +220,11 @@ def _default_local_backend() -> str:
     """Platform default behind ``auto``: MLX on Apple Silicon, else generic ``auto``.
 
     MLX keeps model names intact (Lightning has no turbo and would silently load large-v3).
+    Without mlx-whisper installed, the generic order (faster-whisper, openai-whisper) applies.
     """
-    return "mlx" if _is_apple_silicon() else DEFAULT_LOCAL_BACKEND
+    if _is_apple_silicon() and is_local_backend_installed("mlx"):
+        return "mlx"
+    return DEFAULT_LOCAL_BACKEND
 
 
 def _is_known_local_backend_value(value: str) -> bool:

@@ -449,8 +449,20 @@ class TestBackendDetection:
         import providers.local as local_mod
 
         monkeypatch.setattr(local_mod, "_is_apple_silicon", lambda: True)
+        monkeypatch.setattr(local_mod, "is_local_backend_installed", lambda b: b == "mlx")
         assert local_mod._resolve_local_backend("auto") == "mlx"
         assert local_mod._resolve_local_backend(None) == "mlx"
+
+    def test_auto_backend_without_mlx_on_apple_silicon_uses_installed_fallback(self, monkeypatch):
+        """Source installs without mlx-whisper keep working (faster, else openai-whisper)."""
+        import providers.local as local_mod
+
+        monkeypatch.setattr(local_mod, "_is_apple_silicon", lambda: True)
+        monkeypatch.setattr(local_mod, "is_local_backend_installed", lambda b: False)
+        monkeypatch.setattr(local_mod, "_is_faster_whisper_available", lambda: False)
+        assert local_mod._resolve_local_backend("auto") == "whisper"
+        monkeypatch.setattr(local_mod, "_is_faster_whisper_available", lambda: True)
+        assert local_mod._resolve_local_backend("auto") == "faster"
 
     def test_packaged_app_replaces_a_missing_backend(self, monkeypatch, caplog):
         """In the app a configured but unbundled backend falls back to the default."""
