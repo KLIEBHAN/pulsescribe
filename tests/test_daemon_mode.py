@@ -281,6 +281,35 @@ class TestDaemonMode(unittest.TestCase):
         self.assertFalse(errors)
         self.assertTrue(created_providers)
 
+    def test_capture_opens_the_selected_microphone(self):
+        """The batch recording path uses the Settings microphone, not only PortAudio's default."""
+        # Import before patching sys.modules: patch.dict drops modules first loaded inside.
+        import numpy  # noqa: F401
+        from audio.device_refresh import _open_streams
+
+        daemon = PulseScribeDaemon(mode="local", language="de")
+        stop_event = threading.Event()
+        mock_sd = MagicMock()
+        mock_sd.sleep.side_effect = lambda _ms: stop_event.set()
+        daemon._shutdown_input_stream = MagicMock(return_value=True)
+
+        with (
+            patch.dict(sys.modules, {"sounddevice": mock_sd}),
+            patch("config.get_input_device", return_value=(4, 48000)),
+            patch("pulsescribe_daemon.get_sound_player"),
+        ):
+            daemon._capture_recording_audio(
+                run_id=None,
+                result_queue_ref=MagicMock(),
+                stop_event=stop_event,
+                latency_run=MagicMock(),
+            )
+
+        kwargs = mock_sd.InputStream.call_args.kwargs
+        self.assertEqual(kwargs["device"], 4)
+        self.assertEqual(kwargs["samplerate"], 16000)
+        self.assertNotIn(id(mock_sd.InputStream.return_value), _open_streams)
+
     def test_recording_worker_execution(self):
         daemon = PulseScribeDaemon(mode="openai", language="de")
         daemon._stop_event = threading.Event()

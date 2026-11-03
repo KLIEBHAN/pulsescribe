@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Microphone changes on macOS** – plugging in or removing a microphone, for
+  example when docking, no longer needs a restart. PulseScribe re-reads the
+  audio devices before the next recording and when Settings lists the
+  microphones. Before, recordings failed with "Internal PortAudio error" and
+  new microphones did not appear until PulseScribe restarted.
+- **Microphone selection on macOS** – the microphone chosen in Settings is now
+  used in all modes; before, it applied only to Deepgram streaming, and Local,
+  OpenAI, Groq and own server recordings used the system default.
+
 ## [1.12.0] - 2026-11-03
 
 ### Added

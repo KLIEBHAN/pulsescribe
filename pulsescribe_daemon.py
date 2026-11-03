@@ -2578,26 +2578,35 @@ class PulseScribeDaemon:
             ):
                 raise callback_abort_exc
 
-        # Explizites Stream-Management statt Context-Manager:
-        # vermeidet PortAudio-Deadlocks beim Schließen des Streams.
-        stream = None
-        try:
-            stream = sd.InputStream(
+        from audio.device_refresh import open_input_stream, release_input_stream
+        from config import get_input_device
+
+        def create_stream():
+            # Resolved per attempt: device indices change after a device refresh.
+            device, _native_rate = get_input_device()
+            return sd.InputStream(
+                device=device,
                 samplerate=WHISPER_SAMPLE_RATE,
                 channels=1,
                 dtype="float32",
                 callback=callback,
                 finished_callback=finished_event.set,
             )
+
+        # Explizites Stream-Management statt Context-Manager:
+        # vermeidet PortAudio-Deadlocks beim Schließen des Streams.
+        stream = None
+        try:
+            stream = open_input_stream(sd, create_stream)
             self._set_worker_phase("recording:start-stream", run_id=run_id)
             stream.start()
         except Exception:
-            if stream is not None:
-                self._shutdown_input_stream(
-                    stream,
-                    finished_event=finished_event,
-                    run_id=run_id,
-                )
+            if stream is not None and self._shutdown_input_stream(
+                stream,
+                finished_event=finished_event,
+                run_id=run_id,
+            ):
+                release_input_stream(stream)
             raise
 
         try:
@@ -2610,11 +2619,13 @@ class PulseScribeDaemon:
             while stop_event is not None and not stop_event.is_set():
                 sd.sleep(50)
         finally:
-            self._shutdown_input_stream(
+            if self._shutdown_input_stream(
                 stream,
                 finished_event=finished_event,
                 run_id=run_id,
-            )
+            ):
+                # A hung or failed close stays tracked and blocks device refreshes.
+                release_input_stream(stream)
             latency_run.mark("audio_stream_closed")
 
         self._set_worker_phase("recording:stop-sound", run_id=run_id)
