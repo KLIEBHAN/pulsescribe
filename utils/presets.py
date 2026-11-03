@@ -36,15 +36,6 @@ LOCAL_PRESET_BASE: dict[str, str] = {
 }
 
 LOCAL_PRESETS: dict[str, dict[str, str]] = {
-    "macOS: MPS Balanced (turbo)": {
-        "local_backend": "whisper",
-        "local_model": "turbo",
-    },
-    "macOS: MPS Fast (turbo)": {
-        "local_backend": "whisper",
-        "local_model": "turbo",
-        "local_fast": "true",
-    },
     APPLE_SILICON_PRIVATE_LOCAL_PRESET_NAME: {
         "local_backend": "mlx",
         "local_model": "large",

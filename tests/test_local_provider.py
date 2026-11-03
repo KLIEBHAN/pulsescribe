@@ -444,6 +444,36 @@ class TestBackendDetection:
 
         assert provider._backend == "mlx"
 
+    def test_auto_backend_is_mlx_on_apple_silicon(self, monkeypatch):
+        """Auto keeps turbo on Apple Silicon: MLX, not Lightning (no turbo -> large-v3)."""
+        import providers.local as local_mod
+
+        monkeypatch.setattr(local_mod, "_is_apple_silicon", lambda: True)
+        assert local_mod._resolve_local_backend("auto") == "mlx"
+        assert local_mod._resolve_local_backend(None) == "mlx"
+
+    def test_packaged_app_replaces_a_missing_backend(self, monkeypatch, caplog):
+        """In the app a configured but unbundled backend falls back to the default."""
+        import logging
+
+        import providers.local as local_mod
+
+        monkeypatch.setattr(local_mod, "_is_apple_silicon", lambda: True)
+        monkeypatch.setattr(local_mod, "is_frozen_app", lambda: True)
+        monkeypatch.setattr(local_mod, "is_local_backend_installed", lambda b: b != "whisper")
+        caplog.set_level(logging.WARNING)
+
+        assert local_mod._resolve_local_backend("whisper") == "mlx"
+        assert "nicht enthalten" in caplog.text
+        assert local_mod._resolve_local_backend("lightning") == "lightning"
+
+    def test_source_install_keeps_a_missing_backend_for_its_install_hint(self, monkeypatch):
+        import providers.local as local_mod
+
+        monkeypatch.setattr(local_mod, "is_frozen_app", lambda: False)
+        monkeypatch.setattr(local_mod, "is_local_backend_installed", lambda b: False)
+        assert local_mod._resolve_local_backend("whisper") == "whisper"
+
     def test_backend_auto_respects_platform_default_before_generic_fallback(
         self, monkeypatch
     ):

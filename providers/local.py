@@ -31,6 +31,8 @@ from utils.local_backend import (
     DEFAULT_LOCAL_BACKEND,
     LOCAL_BACKEND_ALIASES,
     VALID_LOCAL_BACKENDS,
+    is_frozen_app,
+    is_local_backend_installed,
     normalize_local_backend,
 )
 from ._language import is_auto_language
@@ -215,8 +217,11 @@ def _is_apple_silicon() -> bool:
 
 
 def _default_local_backend() -> str:
-    """Returns the platform-aware default local backend value."""
-    return "lightning" if _is_apple_silicon() else DEFAULT_LOCAL_BACKEND
+    """Platform default behind ``auto``: MLX on Apple Silicon, else generic ``auto``.
+
+    MLX keeps model names intact (Lightning has no turbo and would silently load large-v3).
+    """
+    return "mlx" if _is_apple_silicon() else DEFAULT_LOCAL_BACKEND
 
 
 def _is_known_local_backend_value(value: str) -> bool:
@@ -248,11 +253,26 @@ def _resolve_local_backend(env_value: str | None) -> str:
         return "whisper"
 
     if normalized_backend == DEFAULT_LOCAL_BACKEND:
-        platform_default = _default_local_backend()
-        if platform_default != DEFAULT_LOCAL_BACKEND:
-            return platform_default
-        return "faster" if _is_faster_whisper_available() else "whisper"
+        return _auto_local_backend()
+    if is_frozen_app() and not is_local_backend_installed(normalized_backend):
+        # The packaged app cannot install a missing backend; use the bundled default.
+        fallback = _auto_local_backend()
+        if fallback != normalized_backend and is_local_backend_installed(fallback):
+            logger.warning(
+                "Lokales Backend '%s' ist in dieser App nicht enthalten, nutze '%s'",
+                normalized_backend,
+                fallback,
+            )
+            return fallback
     return normalized_backend
+
+
+def _auto_local_backend() -> str:
+    """Resolve ``auto``: platform default, else faster-whisper, else openai-whisper."""
+    platform_default = _default_local_backend()
+    if platform_default != DEFAULT_LOCAL_BACKEND:
+        return platform_default
+    return "faster" if _is_faster_whisper_available() else "whisper"
 
 
 def _mlx_whisper_import_hint() -> str:
