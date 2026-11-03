@@ -1,3 +1,4 @@
+import os
 import pytest
 import subprocess
 import sys
@@ -152,7 +153,7 @@ def test_poll_interim_file_uses_mtime_cache(tmp_path):
     controller._interim_file = interim_file
     controller._widget = _FakeWidget()
     controller._last_interim_text = ""
-    controller._last_interim_mtime_ns = None
+    controller._last_interim_signature = None
 
     PySide6OverlayController._poll_interim_file(controller)
     PySide6OverlayController._poll_interim_file(controller)
@@ -164,10 +165,10 @@ def test_poll_interim_file_uses_mtime_cache(tmp_path):
     assert controller._widget.seen_interim == ["first", "second"]
 
     controller._widget.current_state = "IDLE"
-    controller._last_interim_mtime_ns = 123
+    controller._last_interim_signature = (123, 5)
     controller._last_interim_text = "stale"
     PySide6OverlayController._poll_interim_file(controller)
-    assert controller._last_interim_mtime_ns is None
+    assert controller._last_interim_signature is None
     assert controller._last_interim_text == ""
 
 
@@ -180,13 +181,34 @@ def test_poll_interim_file_clears_stale_text_when_file_becomes_empty(tmp_path):
     controller._interim_file = interim_file
     controller._widget = _FakeWidget()
     controller._last_interim_text = ""
-    controller._last_interim_mtime_ns = None
+    controller._last_interim_signature = None
 
     PySide6OverlayController._poll_interim_file(controller)
     interim_file.write_text("", encoding="utf-8")
     PySide6OverlayController._poll_interim_file(controller)
 
     assert controller._widget.seen_interim == ["first", ""]
+
+
+def test_poll_interim_file_detects_rewrite_with_unchanged_mtime(tmp_path):
+    # Windows file times are coarse: a rewrite within one tick keeps the mtime.
+    interim_file = tmp_path / "interim.txt"
+    interim_file.write_text("first", encoding="utf-8")
+    mtime_ns = interim_file.stat().st_mtime_ns
+
+    controller = PySide6OverlayController.__new__(PySide6OverlayController)
+    controller._running = True
+    controller._interim_file = interim_file
+    controller._widget = _FakeWidget()
+    controller._last_interim_text = ""
+    controller._last_interim_signature = None
+
+    PySide6OverlayController._poll_interim_file(controller)
+    interim_file.write_text("first words", encoding="utf-8")
+    os.utime(interim_file, ns=(mtime_ns, mtime_ns))
+    PySide6OverlayController._poll_interim_file(controller)
+
+    assert controller._widget.seen_interim == ["first", "first words"]
 
 
 def test_poll_interim_file_reads_tail_text_only(tmp_path, monkeypatch):
@@ -208,7 +230,7 @@ def test_poll_interim_file_reads_tail_text_only(tmp_path, monkeypatch):
     controller._interim_file = interim_file
     controller._widget = _FakeWidget()
     controller._last_interim_text = ""
-    controller._last_interim_mtime_ns = None
+    controller._last_interim_signature = None
 
     PySide6OverlayController._poll_interim_file(controller)
 
@@ -348,7 +370,7 @@ def test_poll_interim_file_skips_file_reads_while_direct_updates_are_recent(
     )
     controller._direct_interim_until = 10.0 + INTERIM_DIRECT_UPDATE_GRACE_S
     controller._last_interim_text = ""
-    controller._last_interim_mtime_ns = None
+    controller._last_interim_signature = None
 
     PySide6OverlayController._poll_interim_file(controller)
 
@@ -378,7 +400,7 @@ def test_poll_interim_file_restores_fast_interval_after_direct_update_grace(
     )
     controller._direct_interim_until = 10.0 + INTERIM_DIRECT_UPDATE_GRACE_S
     controller._last_interim_text = ""
-    controller._last_interim_mtime_ns = None
+    controller._last_interim_signature = None
 
     PySide6OverlayController._poll_interim_file(controller)
 
@@ -404,7 +426,7 @@ def test_apply_interim_poll_interval_uses_stable_interval() -> None:
 def test_poll_interim_file_backs_off_after_repeated_stable_checks(tmp_path):
     interim_file = tmp_path / "interim.txt"
     interim_file.write_text("disk", encoding="utf-8")
-    current_mtime_ns = interim_file.stat().st_mtime_ns
+    stat = interim_file.stat()
 
     controller = PySide6OverlayController.__new__(PySide6OverlayController)
     controller._running = True
@@ -416,7 +438,7 @@ def test_poll_interim_file_backs_off_after_repeated_stable_checks(tmp_path):
     )
     controller._direct_interim_until = 0.0
     controller._last_interim_text = "disk"
-    controller._last_interim_mtime_ns = current_mtime_ns
+    controller._last_interim_signature = (stat.st_mtime_ns, stat.st_size)
     controller._stable_interim_polls = INTERIM_POLL_STABLE_THRESHOLD
 
     PySide6OverlayController._poll_interim_file(controller)
@@ -430,14 +452,14 @@ def test_set_interim_polling_active_starts_and_stops_timer():
     controller = PySide6OverlayController.__new__(PySide6OverlayController)
     controller._interim_timer = _FakeInterimTimer(active=True, interval_ms=1000)
     controller._last_interim_text = "stale"
-    controller._last_interim_mtime_ns = 123
+    controller._last_interim_signature = 123
     controller._direct_interim_until = 42.0
 
     PySide6OverlayController._set_interim_polling_active(controller, False)
 
     assert controller._interim_timer.stop_calls == 1
     assert controller._last_interim_text == ""
-    assert controller._last_interim_mtime_ns is None
+    assert controller._last_interim_signature is None
     assert controller._direct_interim_until == 0.0
 
     PySide6OverlayController._set_interim_polling_active(controller, True)

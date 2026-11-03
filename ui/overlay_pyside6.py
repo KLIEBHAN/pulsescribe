@@ -1030,7 +1030,7 @@ class PySide6OverlayController:
         self._interim_file = interim_file
         self._running = False
         self._last_interim_text = ""
-        self._last_interim_mtime_ns: int | None = None
+        self._last_interim_signature: tuple[int, int] | None = None
         self._stable_interim_polls = 0
         self._interim_timer: QTimer | None = None
         self._direct_interim_until = 0.0
@@ -1147,7 +1147,7 @@ class PySide6OverlayController:
             return
 
         if self._widget.current_state != "RECORDING":
-            self._last_interim_mtime_ns = None
+            self._last_interim_signature = None
             self._last_interim_text = ""
             self._stable_interim_polls = 0
             self._direct_interim_until = 0.0
@@ -1164,15 +1164,18 @@ class PySide6OverlayController:
                 self._stable_interim_polls = 0
             else:
                 self._stable_interim_polls += 1
-            self._last_interim_mtime_ns = None
+            self._last_interim_signature = None
             self._last_interim_text = ""
             self._last_requested_interim_text = ""
             self._apply_interim_poll_interval()
             return
 
         try:
-            current_mtime_ns = self._interim_file.stat().st_mtime_ns
-            if current_mtime_ns == self._last_interim_mtime_ns:
+            # mtime plus size: Windows file times are coarse, so a rewrite in
+            # the same tick keeps the mtime but usually changes the size.
+            stat = self._interim_file.stat()
+            current_signature = (stat.st_mtime_ns, stat.st_size)
+            if current_signature == self._last_interim_signature:
                 self._stable_interim_polls += 1
                 self._apply_interim_poll_interval()
                 return
@@ -1182,7 +1185,7 @@ class PySide6OverlayController:
                 max_chars=INTERIM_POLL_MAX_CHARS,
                 errors="replace",
             ).strip()
-            self._last_interim_mtime_ns = current_mtime_ns
+            self._last_interim_signature = current_signature
             if text != self._last_interim_text:
                 self._last_interim_text = text
                 self._stable_interim_polls = 0
@@ -1210,7 +1213,7 @@ class PySide6OverlayController:
         if self._interim_timer.isActive():
             self._interim_timer.stop()
         self._stable_interim_polls = 0
-        self._last_interim_mtime_ns = None
+        self._last_interim_signature = None
         self._last_interim_text = ""
         self._direct_interim_until = 0.0
         self._last_requested_interim_text = ""
