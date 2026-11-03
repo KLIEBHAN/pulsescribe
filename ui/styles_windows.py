@@ -512,22 +512,62 @@ def badge_stylesheet(status_color: str) -> str:
     )
 
 
-# Wizard-specific additions (choice buttons)
+# Setup wizard additions on top of the settings look: sidebar step entries with
+# markers and selectable choice rows (radio, title, muted description).
 WIZARD_STYLESHEET_ADDITIONS = f"""
-QPushButton#choice {{
-    padding: 16px 20px;
-    text-align: left;
-    min-height: 60px;
+QPushButton#stepEntry, QPushButton#stepEntry:hover, QPushButton#stepEntry:focus,
+QPushButton#stepEntry:pressed, QPushButton#stepEntry:disabled {{
+    background-color: transparent;
+    border: none;
+    border-radius: {theme.RADIUS}px;
 }}
 
-QPushButton#choice:hover {{
-    background-color: rgba(255, 255, 255, 0.10);
+QPushButton#stepEntry[current="true"] {{
+    background-color: {theme.ACTIVE_BG};
 }}
 
-QPushButton#choice:checked,
-QPushButton#choice:focus {{
-    border-color: {COLORS["accent"]};
-    background-color: rgba(0, 122, 255, 0.15);
+QPushButton#choiceRow {{
+    background-color: transparent;
+    border: none;
+    border-left: 2px solid transparent;
+    border-bottom: 1px solid {theme.LINE};
+    border-radius: 0;
+}}
+
+QPushButton#choiceRow:hover, QPushButton#choiceRow:focus {{
+    background-color: transparent;
+}}
+
+QPushButton#choiceRow:checked {{
+    background-color: {theme.SELECTED_ROW_BG};
+    border-left-color: {theme.TEXT};
+}}
+
+QFrame#radioRing {{
+    border: 1px solid {theme.SECONDARY_BORDER};
+    border-radius: 7px;
+    background-color: transparent;
+}}
+
+QFrame#radioRing[selected="true"] {{
+    border-color: {theme.TEXT};
+}}
+
+QFrame#radioDot {{
+    background-color: {theme.TEXT};
+    border: none;
+    border-radius: 3px;
+}}
+
+QLabel#choiceTag {{
+    border: 1px solid {theme.SECONDARY_BORDER};
+    border-radius: {theme.RADIUS}px;
+    color: {theme.MUTED};
+    padding: 1px 6px;
+}}
+
+QWidget#reviewRow {{
+    border-bottom: 1px solid {theme.LINE};
 }}
 """
 
@@ -538,8 +578,8 @@ def get_settings_stylesheet() -> str:
 
 
 def get_wizard_stylesheet() -> str:
-    """Returns the complete stylesheet for the Onboarding Wizard."""
-    return BASE_STYLESHEET + WIZARD_STYLESHEET_ADDITIONS
+    """Returns the complete stylesheet for the Onboarding Wizard (settings look)."""
+    return BASE_STYLESHEET + SETTINGS_STYLESHEET_ADDITIONS + WIZARD_STYLESHEET_ADDITIONS
 
 
 # =============================================================================

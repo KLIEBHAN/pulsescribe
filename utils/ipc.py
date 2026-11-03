@@ -47,6 +47,7 @@ POLL_INTERVAL_SECONDS = 0.2
 # Commands (Wizard → Daemon)
 CMD_START_TEST = "start_test"
 CMD_STOP_TEST = "stop_test"
+CMD_OPEN_SETTINGS = "open_settings"  # wizard's "Open Settings…"; no response
 
 # Response statuses (Daemon → Wizard)
 STATUS_RECORDING = "recording"  # Microphone activated, ready for speech

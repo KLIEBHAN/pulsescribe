@@ -7,6 +7,20 @@ from typing import Callable
 
 from ui import settings_theme as theme
 from ui.hotkey_format import format_hotkey_for_display
+from ui.onboarding_copy import (
+    FAST_API_KEY_PROMPT,
+    HOTKEY_CUSTOM_DESCRIPTION,
+    HOTKEY_CUSTOM_KEY,
+    MODE_API_KEYS,
+    STEP_NAV_LABELS,
+    build_two_hotkeys_hint,
+    hotkey_choice_title,
+    select_hotkey_choice,
+    build_hotkey_summary,
+    build_provider_summary,
+    build_ready_text,
+    build_test_summary,
+)
 from utils.onboarding import (
     ONBOARDING_ORDER,
     OnboardingChoice,
@@ -51,13 +65,6 @@ STEP_MARKER_SIZE = 18
 
 # Sidebar entries, page titles and subtitles per step.
 WIZARD_STEPS = ONBOARDING_ORDER[:-1]
-STEP_NAV_LABELS = {
-    OnboardingStep.CHOOSE_GOAL: "Setup",
-    OnboardingStep.PERMISSIONS: "Permissions",
-    OnboardingStep.HOTKEY: "Hotkey",
-    OnboardingStep.TEST_DICTATION: "Practice",
-    OnboardingStep.CHEAT_SHEET: "Review",
-}
 STEP_TITLES = {
     OnboardingStep.CHOOSE_GOAL: (
         "Welcome to PulseScribe",
@@ -131,16 +138,7 @@ HOTKEY_PRESETS = {
     action.removeprefix("hotkey_"): (kind, hotkey)
     for _key, action, kind, hotkey, _description in HOTKEY_CHOICES
 }
-HOTKEY_CUSTOM_KEY = "custom"
-HOTKEY_CUSTOM_DESCRIPTION = "Record your own shortcut to start and stop."
 PERMISSIONS_HINT = "After you click Allow, the status refreshes on its own for about 20 seconds."
-FAST_API_KEY_PROMPT = "Fast mode needs a Deepgram API key. Paste one to continue."
-MODE_API_KEYS = {
-    "deepgram": "DEEPGRAM_API_KEY",
-    "openai": "OPENAI_API_KEY",
-    "groq": "GROQ_API_KEY",
-}
-
 LANGUAGE_OPTIONS = ["auto", "de", "en", "es", "fr", "it", "pt", "nl", "pl", "ru", "zh"]
 LANGUAGE_LABELS = {
     "auto": "Automatic",
@@ -237,38 +235,28 @@ def _format_hotkey_for_display(hotkey: str | None) -> str:
 
 def _hotkey_choice_title(kind: str, hotkey: str) -> str:
     """Row and hint label such as "Hold Fn" or "Toggle Option+Space"."""
-    return f"{'Hold' if kind == 'hold' else 'Toggle'} {_format_hotkey_for_display(hotkey)}"
+    return hotkey_choice_title(kind, _format_hotkey_for_display(hotkey))
 
 
 def _selected_hotkey_choice(toggle: str, hold: str) -> str | None:
     """Hotkey row for a config; ``None`` when none or both hotkeys are set."""
-    if bool(toggle) == bool(hold):
-        return None
-    kind, hotkey = ("toggle", toggle) if toggle else ("hold", hold)
-    for key, _action, row_kind, row_hotkey, _description in HOTKEY_CHOICES:
-        if (row_kind, row_hotkey) == (kind, hotkey):
-            return key
-    return HOTKEY_CUSTOM_KEY
+    return select_hotkey_choice(
+        toggle,
+        hold,
+        ((key, kind, hotkey) for key, _action, kind, hotkey, _desc in HOTKEY_CHOICES),
+    )
 
 
 def _build_provider_summary_text(mode: str, has_key: bool) -> tuple[str, str, str]:
     """Return ``(detail, badge, tone)`` for the Review step's Provider row."""
-    detail = MODE_LABELS.get(mode, mode.title())
-    if mode == "local" or has_key:
-        return detail, "Ready", "ok"
-    return detail, "No API key", "warn"
+    return build_provider_summary(MODE_LABELS.get(mode, mode.title()), mode, has_key)
 
 
 def _build_hotkey_summary_text(toggle: str, hold: str) -> tuple[str, str, str]:
     """Return ``(detail, badge, tone)`` for the Review step's Hotkey row."""
-    parts: list[str] = []
-    if toggle:
-        parts.append(f"Toggle {_format_hotkey_for_display(toggle)}")
-    if hold:
-        parts.append(f"Hold {_format_hotkey_for_display(hold)}")
-    if not parts:
-        return "Choose one in the Hotkey step", "Not set", "warn"
-    return " · ".join(parts), "Set", "ok"
+    return build_hotkey_summary(
+        _format_hotkey_for_display(toggle), _format_hotkey_for_display(hold)
+    )
 
 
 def _build_permission_summary_text(
@@ -288,16 +276,7 @@ def _build_permission_summary_text(
 
 def _build_ready_text(toggle: str, hold: str) -> str:
     """Closing line of the Review step, naming the configured hotkey."""
-    toggle_text = _format_hotkey_for_display(toggle)
-    hold_text = _format_hotkey_for_display(hold)
-    if hold_text and toggle_text:
-        return f"Hold {hold_text} or press {toggle_text} in any app to dictate."
-    if hold_text:
-        return f"Hold {hold_text} in any app to dictate."
-    if toggle_text:
-        return f"Press {toggle_text} in any app to dictate, and again to stop."
-    return "Set a hotkey in Settings to start dictating."
-
+    return build_ready_text(_format_hotkey_for_display(toggle), _format_hotkey_for_display(hold))
 
 
 def _normalize_test_error_message(error: str | None) -> str:
@@ -318,21 +297,7 @@ def _normalize_test_error_message(error: str | None) -> str:
 
 def _build_test_summary_text(outcome: str | None) -> tuple[str, str, str]:
     """Return ``(detail, badge, tone)`` for the Review step's Practice test row."""
-    normalized = (outcome or "pending").strip().lower()
-    if normalized == "passed":
-        return "Your speech was transcribed", "Worked", "ok"
-    if normalized == "skipped":
-        return "Skipped for now", "Skipped", "muted"
-    if normalized == "cancelled":
-        return "The test was cancelled", "Cancelled", "muted"
-    if normalized == "empty":
-        return "No speech was detected", "No speech", "warn"
-    if normalized == "error":
-        return "The test could not finish", "Error", "err"
-    if normalized in {"starting", "recording", "processing"}:
-        return "The test is still running", "Running", "warn"
-    return "Not run yet", "Not run", "muted"
-
+    return build_test_summary(outcome)
 
 
 def _build_test_primary_action_text(outcome: str | None) -> str:
@@ -1935,13 +1900,9 @@ class OnboardingWizardController:
         selected = _selected_hotkey_choice(*state)
         self._sync_choice_rows(rows, selected)
         custom_desc = rows[HOTKEY_CUSTOM_KEY][4]
-        hint_text = ""
-        if toggle and hold:
-            hint_text = (
-                f"You use two hotkeys: {_hotkey_choice_title('toggle', toggle)} and "
-                f"{_hotkey_choice_title('hold', hold)}.\n"
-                "Pick a row to use just one, or manage both in Settings → General."
-            )
+        hint_text = build_two_hotkeys_hint(
+            _format_hotkey_for_display(toggle), _format_hotkey_for_display(hold)
+        )
         try:
             custom_desc.setStringValue_(
                 _hotkey_choice_title("toggle" if toggle else "hold", toggle or hold)

@@ -40,21 +40,34 @@ from ui.qt_widget_state import (
     set_widget_text_if_changed,
     set_widget_visible_if_changed,
 )
+from ui import settings_theme as theme
+from ui.onboarding_copy import (
+    FAST_API_KEY_PROMPT,
+    HOTKEY_CUSTOM_KEY,
+    build_two_hotkeys_hint,
+    hotkey_choice_title,
+    select_hotkey_choice,
+    MODE_API_KEYS,
+    STEP_NAV_LABELS,
+    build_hotkey_summary,
+    build_provider_summary,
+    build_ready_text,
+    build_test_summary,
+)
 from ui.styles_windows import (
-    CARD_PADDING,
-    COLORS,
-    DEFAULT_FONT_FAMILY,
     LANGUAGE_OPTIONS,
+    SETTINGS_COLORS as COLORS,
+    badge_stylesheet,
     get_pynput_key_map,
     get_wizard_stylesheet,
+    ui_font,
 )
 from utils.onboarding import (
+    ONBOARDING_ORDER,
     OnboardingChoice,
     OnboardingStep,
     next_step,
     prev_step,
-    step_index,
-    total_steps,
 )
 from utils.preferences import (
     env_file_exists,
@@ -76,10 +89,75 @@ logger = logging.getLogger("pulsescribe.onboarding")
 # Window Constants
 # =============================================================================
 
-WIZARD_WIDTH = 520
-WIZARD_HEIGHT = 580
+WIZARD_WIDTH = 640
+WIZARD_HEIGHT = 520
+SIDEBAR_WIDTH = 150
 PADDING = 24
-FOOTER_HEIGHT = 60
+FOOTER_HEIGHT = 56
+CHOICE_ROW_HEIGHT = 62
+
+# Sidebar entries, page titles and subtitles per step.
+WIZARD_STEPS = ONBOARDING_ORDER[:-1]
+STEP_TITLES = {
+    OnboardingStep.CHOOSE_GOAL: (
+        "Welcome to PulseScribe",
+        "Choose how speech is transcribed. You can change it in Settings.",
+    ),
+    OnboardingStep.PERMISSIONS: (
+        "Permissions",
+        "PulseScribe only needs the microphone on Windows.",
+    ),
+    OnboardingStep.HOTKEY: ("Hotkey", "Choose how you start and stop dictation."),
+    OnboardingStep.TEST_DICTATION: (
+        "Try it",
+        "A safe test: nothing is pasted, the text only appears here.",
+    ),
+    OnboardingStep.CHEAT_SHEET: (
+        "You're ready",
+        "Your setup at a glance. You can change it anytime in Settings.",
+    ),
+}
+# (choice, title, description, tag)
+GOAL_CHOICES = (
+    (
+        OnboardingChoice.FAST,
+        "Fast",
+        "Lowest latency. Uses Deepgram streaming when available.",
+        "Recommended",
+    ),
+    (
+        OnboardingChoice.PRIVATE,
+        "Private",
+        "Transcribes locally with Whisper. Audio stays on this PC.",
+        None,
+    ),
+    (
+        OnboardingChoice.ADVANCED,
+        "Advanced",
+        "Keeps your current providers. Fine-tune them in Settings.",
+        None,
+    ),
+)
+DEFAULT_WINDOWS_TOGGLE_HOTKEY = "ctrl+alt+r"
+DEFAULT_WINDOWS_HOLD_HOTKEY = "ctrl+win"
+# Hotkey rows: (key, slot, hotkey, description); "Custom" records a Toggle.
+HOTKEY_CHOICES = (
+    (
+        "hold_ctrl_win",
+        "hold",
+        DEFAULT_WINDOWS_HOLD_HOTKEY,
+        "Hold while you speak, release to transcribe.",
+    ),
+    (
+        "toggle_ctrl_alt_r",
+        "toggle",
+        DEFAULT_WINDOWS_TOGGLE_HOTKEY,
+        "Press once to start, again to stop.",
+    ),
+    ("toggle_f19", "toggle", "f19", "Press once to start, again to stop."),
+)
+FAST_API_KEY_ENTERED_TEXT = "Key entered. Fast mode will use Deepgram."
+FAST_API_KEY_HINT = "Needed for Fast mode. A stored Groq key works too."
 
 # IPC Test Dictation
 # Schneller Fail bei fehlender Verbindung (kein RECORDING-Ack):
@@ -94,28 +172,26 @@ IPC_MAX_POLLS_BEFORE_TIMEOUT = 50
 # avoid a long/hanging "recording..." spinner in the wizard.
 #   30 polls × 200ms = 6s
 IPC_RECORDING_STALE_POLLS_AFTER_STOP = 30
-DEFAULT_WINDOWS_TOGGLE_HOTKEY = "ctrl+alt+r"
-DEFAULT_WINDOWS_HOLD_HOTKEY = "ctrl+win"
 
 LANGUAGE_LABELS = {
-    "auto": "Automatisch",
-    "de": "Deutsch",
-    "en": "Englisch",
-    "es": "Spanisch",
-    "fr": "Französisch",
-    "it": "Italienisch",
-    "pt": "Portugiesisch",
-    "nl": "Niederländisch",
-    "pl": "Polnisch",
-    "ru": "Russisch",
-    "zh": "Chinesisch",
+    "auto": "Automatic",
+    "de": "German",
+    "en": "English",
+    "es": "Spanish",
+    "fr": "French",
+    "it": "Italian",
+    "pt": "Portuguese",
+    "nl": "Dutch",
+    "pl": "Polish",
+    "ru": "Russian",
+    "zh": "Chinese",
 }
 
 MODE_LABELS = {
-    "deepgram": "Deepgram (Cloud, schnell)",
-    "groq": "Groq (Cloud, schnell)",
-    "openai": "OpenAI (Cloud)",
-    "local": "Lokal / Whisper (privat)",
+    "deepgram": "Deepgram (Cloud, fastest)",
+    "groq": "Groq (Cloud, fast)",
+    "openai": "OpenAI Whisper (Cloud)",
+    "local": "Local Whisper (Private, offline)",
 }
 
 HOTKEY_TOKEN_LABELS = {
@@ -140,34 +216,26 @@ HOTKEY_TOKEN_LABELS = {
     "capslock": "Caps Lock",
 }
 
-TEST_TRANSCRIPT_DEFAULT_TEXT = (
-    "Hier erscheint dein Testtext.\n"
-    "Während dieses Schritts wird nichts eingefügt."
-)
-TEST_TRANSCRIPT_CONNECTING_TEXT = (
-    "Die Testaufnahme wird vorbereitet.\n"
-    "Beim ersten Versuch kann das einen Moment dauern."
-)
-TEST_TRANSCRIPT_RECORDING_TEXT = (
-    "Aufnahme läuft.\n"
-    "Sprich jetzt einen kurzen Satz und stoppe die Aufnahme danach."
-)
-TEST_TRANSCRIPT_PROCESSING_TEXT = (
-    "Die Aufnahme wird ausgewertet.\n"
-    "Der erkannte Text erscheint gleich hier."
-)
-TEST_TRANSCRIPT_NO_SPEECH_TEXT = (
-    "Es wurde keine Sprache erkannt.\n"
-    "Versuche es erneut mit einem kurzen Satz wie „Hallo, dies ist ein Test.“"
-)
-TEST_TRANSCRIPT_ERROR_TEXT = (
-    "Der Test konnte nicht abgeschlossen werden.\n"
-    "Prüfe den Hinweis darunter und versuche es erneut."
-)
-TEST_TRANSCRIPT_CANCELLED_TEXT = (
-    "Der Test wurde abgebrochen.\n"
-    "Du kannst ihn jederzeit erneut starten."
-)
+# Practice step: transcript box text per test state (errors add their detail).
+TEST_TRANSCRIPT_TEXTS = {
+    "pending": "Your text will appear here.",
+    "connecting": "Getting ready… The first test can take a moment.",
+    "recording": "Listening… say a short sentence, then click Stop.",
+    "processing": "Transcribing…",
+    "no_speech": "No speech detected. Try again with a short sentence.",
+    "cancelled": "Cancelled. Start again whenever you're ready.",
+    "skipped": "Cancelled. Start again whenever you're ready.",
+}
+# Practice step: transcript badge per test state; idle states hide it.
+TEST_STATUS_BADGES = {
+    "recording": "Listening",
+    "processing": "Processing",
+    "passed": "Worked",
+    "no_speech": "No speech",
+    "error": "Error",
+}
+TEST_ERROR_NO_CONNECTION = "No connection to PulseScribe"
+TEST_ERROR_NO_RESULT = "PulseScribe sent no final result"
 
 
 # =============================================================================
@@ -175,40 +243,78 @@ TEST_TRANSCRIPT_CANCELLED_TEXT = (
 # =============================================================================
 
 
-def _create_card() -> tuple[QFrame, QVBoxLayout]:
-    """Creates a styled card container."""
-    card = QFrame()
-    card.setObjectName("card")
-    layout = QVBoxLayout(card)
-    layout.setContentsMargins(CARD_PADDING, CARD_PADDING, CARD_PADDING, CARD_PADDING)
-    layout.setSpacing(12)
-    return card, layout
-
-
-def _create_choice_button(title: str, description: str) -> QPushButton:
-    """Creates a choice button with title and description."""
-    btn = QPushButton()
-    btn.setObjectName("choice")
-    btn.setCheckable(True)
-    btn.setText(f"{title}\n{description}")
-    btn.setFont(QFont(DEFAULT_FONT_FAMILY, 10))
-    return btn
-
-
-def _create_section_title(text: str) -> QLabel:
-    """Creates a section title label."""
+def _create_label(text: str, role: str = "body", color: str | None = None) -> QLabel:
+    """Label in a type-scale role, optionally colored with a theme token."""
     label = QLabel(text)
-    label.setFont(QFont(DEFAULT_FONT_FAMILY, 14, QFont.Weight.Bold))
+    label.setFont(ui_font(role))
+    if color:
+        label.setStyleSheet(f"color: {color};")
     return label
 
 
-def _create_description(text: str) -> QLabel:
-    """Creates a description label."""
-    label = QLabel(text)
-    label.setFont(QFont(DEFAULT_FONT_FAMILY, 10))
-    label.setStyleSheet(f"color: {COLORS['text_secondary']};")
-    label.setWordWrap(True)
-    return label
+def _create_choice_row(title: str, description: str, tag: str | None = None):
+    """Selectable row: radio, title (+ outlined tag) and a muted description.
+
+    Returns ``(button, ring, dot, description_label)``; the button is checkable,
+    and ``_set_choice_row_selected`` marks it.
+    """
+    button = QPushButton()
+    button.setObjectName("choiceRow")
+    button.setCheckable(True)
+    button.setFixedHeight(CHOICE_ROW_HEIGHT)
+    button.setAccessibleName(f"{title}: {description}")
+    row = QHBoxLayout(button)
+    row.setContentsMargins(16, 0, 12, 0)
+    row.setSpacing(14)
+
+    ring = QFrame()
+    ring.setObjectName("radioRing")
+    ring.setFixedSize(14, 14)
+    ring_layout = QVBoxLayout(ring)
+    ring_layout.setContentsMargins(3, 3, 3, 3)
+    dot = QFrame()
+    dot.setObjectName("radioDot")
+    dot.setFixedSize(6, 6)
+    dot.setVisible(False)
+    ring_layout.addWidget(dot, 0, Qt.AlignmentFlag.AlignCenter)
+    row.addWidget(ring, 0, Qt.AlignmentFlag.AlignVCenter)
+
+    text = QVBoxLayout()
+    text.setSpacing(2)
+    text.addStretch()
+    title_row = QHBoxLayout()
+    title_row.setSpacing(8)
+    title_label = QLabel(title)
+    title_font = ui_font("sidebar_title")
+    title_font.setWeight(QFont.Weight.DemiBold)
+    title_label.setFont(title_font)
+    title_row.addWidget(title_label)
+    if tag:
+        tag_label = _create_label(tag, "caption")
+        tag_label.setObjectName("choiceTag")
+        tag_label.setFixedHeight(18)
+        title_row.addWidget(tag_label)
+    title_row.addStretch()
+    text.addLayout(title_row)
+    desc_label = _create_label(description, "body", COLORS["text_secondary"])
+    text.addWidget(desc_label)
+    text.addStretch()
+    row.addLayout(text, 1)
+
+    for child in (ring, dot, title_label, desc_label, *button.findChildren(QLabel)):
+        child.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+    return button, ring, dot, desc_label
+
+
+def _set_choice_row_selected(row, selected: bool) -> None:
+    """Marks a choice row (fill, light left edge, filled radio)."""
+    button, ring, dot, _desc = row
+    button.setChecked(selected)
+    dot.setVisible(selected)
+    if ring.property("selected") != selected:
+        ring.setProperty("selected", selected)
+        ring.style().unpolish(ring)
+        ring.style().polish(ring)
 
 
 def _get_widget_text(widget) -> str | None:
@@ -232,7 +338,8 @@ def _get_widget_visible(widget) -> bool | None:
 
 
 def _set_widget_visible_if_changed(widget, visible: bool) -> bool:
-    return set_widget_visible_if_changed(widget, visible)
+    # isHidden(), not isVisible(): steps render before the dialog is shown.
+    return set_widget_visible_if_changed(widget, visible, prefer_hidden_state=True)
 
 
 def _get_widget_enabled(widget) -> bool | None:
@@ -306,129 +413,31 @@ def _format_hotkey_for_display(hotkey: str | None) -> str:
     )
 
 
-def _format_hotkey_summary_text(
-    toggle: str, hold: str, *, separator: str = " • "
-) -> str:
-    parts: list[str] = []
-    if toggle:
-        parts.append(f"Toggle: {_format_hotkey_for_display(toggle)}")
-    if hold:
-        parts.append(f"Hold: {_format_hotkey_for_display(hold)}")
-    return separator.join(parts)
-
-
 def _normalize_test_error_message(error: str | None) -> str:
+    """Practice error shown in the transcript box: what happened and what to try."""
     detail = " ".join((error or "").split())
-    if not detail:
-        return "Der Test konnte nicht abgeschlossen werden."
-
     detail_lower = detail.lower()
-    if "keine verbindung" in detail_lower:
-        return "Keine Verbindung zu PulseScribe."
+    # Daemon errors are German ("Bereits in Aufnahme", ...); match them by keyword.
+    if not detail:
+        return "The test could not finish. Try again."
+    if TEST_ERROR_NO_CONNECTION.lower() in detail_lower:
+        return "No connection to PulseScribe. Check that it is running, then try again."
     if "bereits in aufnahme" in detail_lower or "busy" in detail_lower:
-        return "PulseScribe verarbeitet gerade noch eine andere Aufnahme."
-    if "keine finale antwort" in detail_lower:
-        return "PulseScribe hat noch kein fertiges Ergebnis zurückgegeben."
-    if "mikro" in detail_lower:
-        return "Das Mikrofon ist für den Test gerade nicht verfügbar."
+        return "PulseScribe is still busy with another recording. Try again in a moment."
+    if TEST_ERROR_NO_RESULT.lower() in detail_lower:
+        return "PulseScribe sent no result yet. Try again."
+    if "mikro" in detail_lower or "microphone" in detail_lower:
+        return "The microphone is not available. Check the input device in Windows, then try again."
     if "aufnahme konnte nicht gestartet werden" in detail_lower:
-        return "Die Testaufnahme konnte nicht gestartet werden."
-
+        return "The test recording could not start. Try again."
     if detail[0].islower():
         detail = detail[0].upper() + detail[1:]
-    return detail
+    return f"{detail} Try again."
 
 
 def _build_test_status_text(state: str | None, *, error: str | None = None) -> str:
-    normalized = (state or "pending").strip().lower()
-    if normalized == "connecting":
-        return "Verbinde mit PulseScribe…"
-    if normalized == "recording":
-        return "Aufnahme läuft — sprich jetzt."
-    if normalized == "processing":
-        return "Verarbeite Testaufnahme…"
-    if normalized == "passed":
-        return "Erfolgreich — du kannst jetzt fortfahren."
-    if normalized == "no_speech":
-        return "Keine Sprache erkannt."
-    if normalized == "error":
-        return f"Fehler — {_normalize_test_error_message(error)}"
-    if normalized == "cancelled":
-        return "Test abgebrochen."
-    if normalized == "skipped":
-        return "Test übersprungen."
-    return "Bereit für einen sicheren Test."
-
-
-def _build_test_notice_feedback(
-    state: str | None,
-    *,
-    error: str | None = None,
-) -> tuple[str, str]:
-    normalized = (state or "pending").strip().lower()
-    if normalized == "error":
-        return _build_test_error_notice_feedback(error)
-    return _TEST_NOTICE_FEEDBACK.get(normalized, _DEFAULT_TEST_NOTICE_FEEDBACK)
-
-
-_TEST_NOTICE_FEEDBACK = {
-    "connecting": (
-        "PulseScribe wird im Hintergrund kontaktiert. Beim ersten Test kann das ein paar Sekunden dauern.",
-        "text_secondary",
-    ),
-    "recording": (
-        "Sprich jetzt einen kurzen Satz. Der Text wird nur hier im Assistenten angezeigt.",
-        "accent",
-    ),
-    "processing": (
-        "Die Aufnahme wird gerade ausgewertet. Warte kurz auf das Ergebnis hier im Assistenten.",
-        "text_secondary",
-    ),
-    "passed": (
-        "Alles gut: Nichts wurde eingefügt. Mit „Weiter“ kommst du zur Zusammenfassung.",
-        "success",
-    ),
-    "no_speech": (
-        "Tipp: Prüfe Mikrofonabstand und Eingabegerät und versuche es danach erneut.",
-        "warning",
-    ),
-    "cancelled": (
-        "Kein Problem — starte den Test erneut, sobald PulseScribe bereit ist.",
-        "text_secondary",
-    ),
-    "skipped": (
-        "Du kannst den Test später jederzeit erneut im Setup durchführen.",
-        "text_secondary",
-    ),
-}
-
-_DEFAULT_TEST_NOTICE_FEEDBACK = (
-    "Ablauf: Test starten, einen kurzen Satz sprechen und die Aufnahme danach wieder stoppen.",
-    "text_secondary",
-)
-
-
-def _build_test_error_notice_feedback(error: str | None) -> tuple[str, str]:
-    detail_lower = " ".join((error or "").split()).lower()
-    if "keine verbindung" in detail_lower:
-        return (
-            "Prüfe, ob PulseScribe im Hintergrund läuft, und starte den Test danach erneut.",
-            "warning",
-        )
-    if "bereits in aufnahme" in detail_lower or "busy" in detail_lower:
-        return (
-            "Warte kurz, bis die aktuelle Aufnahme beendet ist, und versuche es dann erneut.",
-            "warning",
-        )
-    if "mikro" in detail_lower:
-        return (
-            "Prüfe den Mikrofonzugriff und das richtige Eingabegerät in Windows und versuche es dann erneut.",
-            "warning",
-        )
-    return (
-        "Prüfe, ob PulseScribe läuft und dein Mikrofon verfügbar ist, und versuche es dann erneut.",
-        "warning",
-    )
+    """Transcript badge text for a test state ("" hides the badge)."""
+    return TEST_STATUS_BADGES.get((state or "pending").strip().lower(), "")
 
 
 def _normalize_env_updates(
@@ -458,47 +467,31 @@ def _env_update_changed(
     return current != value
 
 
-def _build_test_transcript_text(state: str | None) -> str:
+def _build_test_transcript_text(state: str | None, *, error: str | None = None) -> str:
     normalized = (state or "pending").strip().lower()
-    if normalized == "connecting":
-        return TEST_TRANSCRIPT_CONNECTING_TEXT
-    if normalized == "recording":
-        return TEST_TRANSCRIPT_RECORDING_TEXT
-    if normalized == "processing":
-        return TEST_TRANSCRIPT_PROCESSING_TEXT
-    if normalized == "no_speech":
-        return TEST_TRANSCRIPT_NO_SPEECH_TEXT
     if normalized == "error":
-        return TEST_TRANSCRIPT_ERROR_TEXT
-    if normalized in {"cancelled", "skipped"}:
-        return TEST_TRANSCRIPT_CANCELLED_TEXT
-    return TEST_TRANSCRIPT_DEFAULT_TEXT
+        return _normalize_test_error_message(error)
+    return TEST_TRANSCRIPT_TEXTS.get(normalized, TEST_TRANSCRIPT_TEXTS["pending"])
 
 
-def _build_test_summary_feedback(outcome: str | None) -> tuple[str, str]:
-    normalized = (outcome or "pending").strip().lower()
-    if normalized == "passed":
-        return "Erfolgreich geprüft", "success"
-    if normalized == "skipped":
-        return "Übersprungen", "text_secondary"
-    if normalized == "cancelled":
-        return "Abgebrochen", "text_secondary"
-    if normalized == "error":
-        return "Benötigt Aufmerksamkeit", "warning"
-    if normalized == "no_speech":
-        return "Bitte erneut testen", "warning"
-    if normalized in {"connecting", "recording", "processing"}:
-        return "Läuft gerade", "warning"
-    return "Noch nicht getestet", "text_secondary"
+def _set_badge(label, text: str, tone: str) -> None:
+    """Shows ``text`` as a tinted badge in ``tone`` ("ok", "warn", "err", "muted")."""
+    _set_widget_text_if_changed(label, text)
+    _set_widget_stylesheet_if_changed(label, badge_stylesheet(tone))
+
+
+def _build_microphone_summary(outcome: str | None) -> tuple[str, str, str]:
+    """Review's Permissions row: Windows can only confirm the mic by recording."""
+    if (outcome or "").strip().lower() == "passed":
+        return "The microphone worked in the practice test", "Granted", "ok"
+    return "Windows asks for microphone access on first use", "Not checked", "muted"
 
 
 def _build_test_start_button_text(outcome: str | None, *, started_once: bool) -> str:
     normalized = (outcome or "pending").strip().lower()
-    if normalized == "passed":
-        return "Nochmal testen"
-    if normalized in {"no_speech", "error", "cancelled", "skipped"} or started_once:
-        return "Erneut testen"
-    return "Test starten"
+    if normalized in {"passed", "no_speech", "error", "cancelled", "skipped"} or started_once:
+        return "Try again"
+    return "Start practice"
 
 
 # =============================================================================
@@ -537,7 +530,9 @@ class OnboardingWizardWindows(QDialog):
             self._choice = None
 
         # UI state
-        self._choice_buttons: dict[OnboardingChoice, QPushButton] = {}
+        self._choice_buttons: dict[OnboardingChoice, tuple] = {}  # choice -> row widgets
+        # step -> (entry button, marker label, name label)
+        self._sidebar_entries: dict[OnboardingStep, tuple] = {}
         self._lang_combo: QComboBox | None = None
         self._api_key_container: QWidget | None = None
         self._api_key_field: QLineEdit | None = None
@@ -572,7 +567,9 @@ class OnboardingWizardWindows(QDialog):
         # Navigation buttons
         self._back_btn: QPushButton | None = None
         self._next_btn: QPushButton | None = None
-        self._progress_label: QLabel | None = None
+        self._skip_btn: QPushButton | None = None
+        self._page_title: QLabel | None = None
+        self._page_subtitle: QLabel | None = None
 
         # Mic check timer
         self._mic_timer: QTimer | None = None
@@ -588,8 +585,9 @@ class OnboardingWizardWindows(QDialog):
         self._ipc_last_status: str | None = None
         self._test_start_btn: QPushButton | None = None
         self._test_stop_btn: QPushButton | None = None
-        self._test_notice: QLabel | None = None
         self._hotkey_status_label: QLabel | None = None
+        self._hotkey_hint_label: QLabel | None = None
+        self._hotkey_rows: dict[str, tuple] = {}  # row key -> row widgets
         self._is_closed = False
         self._last_test_transcript_text = ""
         self._last_hotkey_preview_by_field: dict[str, str] = {}
@@ -692,8 +690,7 @@ class OnboardingWizardWindows(QDialog):
         if self._set_test_transcript_text(text) and text.strip():
             self._test_successful = True
             self._test_outcome = "passed"
-            self._set_test_status("Transkription erfolgreich!", "success")
-            self._set_test_notice(*_build_test_notice_feedback("passed"))
+            self._set_test_status(_build_test_status_text("passed"), "success")
             self._update_navigation()
 
     # -------------------------------------------------------------------------
@@ -706,25 +703,20 @@ class OnboardingWizardWindows(QDialog):
         self.setStyleSheet(get_wizard_stylesheet())
         self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.WindowStaysOnTopHint)
 
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
+        root = QHBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        root.addWidget(self._build_sidebar())
 
-        # Header with progress
-        header = QWidget()
-        header_layout = QVBoxLayout(header)
-        header_layout.setContentsMargins(PADDING, PADDING, PADDING, 12)
-
-        title = QLabel("PulseScribe Setup")
-        title.setFont(QFont(DEFAULT_FONT_FAMILY, 18, QFont.Weight.Bold))
-        header_layout.addWidget(title)
-
-        self._progress_label = QLabel()
-        self._progress_label.setFont(QFont(DEFAULT_FONT_FAMILY, 10))
-        self._progress_label.setStyleSheet(f"color: {COLORS['text_secondary']};")
-        header_layout.addWidget(self._progress_label)
-
-        main_layout.addWidget(header)
+        column = QVBoxLayout()
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(0)
+        self._page_title = _create_label("", "page_title")
+        self._page_title.setContentsMargins(PADDING, 20, PADDING, 0)
+        column.addWidget(self._page_title)
+        self._page_subtitle = _create_label("", "body", COLORS["text_secondary"])
+        self._page_subtitle.setContentsMargins(PADDING, 2, PADDING, 16)
+        column.addWidget(self._page_subtitle)
 
         # Content area (stacked widget for steps)
         self._stack = QStackedWidget()
@@ -736,29 +728,129 @@ class OnboardingWizardWindows(QDialog):
             OnboardingStep.CHEAT_SHEET: self._build_cheat_sheet_step,
         }
         self._ensure_step_widget(self._step)
-        main_layout.addWidget(self._stack, 1)
+        column.addWidget(self._stack, 1)
 
-        # Footer with navigation
+        # Footer: quiet Settings link left, text buttons and primary right.
         footer = QWidget()
-        footer.setMinimumHeight(FOOTER_HEIGHT)
+        footer.setObjectName("saveBar")
+        footer.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        footer.setFixedHeight(FOOTER_HEIGHT)
         footer_layout = QHBoxLayout(footer)
-        footer_layout.setContentsMargins(PADDING, 0, PADDING, PADDING)
+        footer_layout.setContentsMargins(PADDING - 10, 0, PADDING, 0)
+        footer_layout.setSpacing(4)
 
-        self._back_btn = QPushButton("Zurück")
+        settings_link = QPushButton("Open Settings…")
+        settings_link.setObjectName("textButton")
+        settings_link.clicked.connect(self._open_settings_after)
+        footer_layout.addWidget(settings_link)
+        footer_layout.addStretch()
+
+        self._skip_btn = QPushButton("Skip")
+        self._skip_btn.setObjectName("textButton")
+        self._skip_btn.clicked.connect(self._skip_test)
+        footer_layout.addWidget(self._skip_btn)
+
+        self._back_btn = QPushButton("Back")
+        self._back_btn.setObjectName("textButton")
         self._back_btn.clicked.connect(self._go_back)
         footer_layout.addWidget(self._back_btn)
 
-        footer_layout.addStretch()
-
-        self._next_btn = QPushButton("Weiter")
+        self._next_btn = QPushButton("Next")
         self._next_btn.setObjectName("primary")
+        self._next_btn.setMinimumWidth(96)
         self._next_btn.clicked.connect(self._go_next)
+        footer_layout.addSpacing(8)
         footer_layout.addWidget(self._next_btn)
+        column.addWidget(footer)
 
-        main_layout.addWidget(footer)
+        root.addLayout(column, 1)
 
         # Show current step
         self._show_step(self._step)
+
+    def _build_sidebar(self) -> QWidget:
+        """Left column: app name and one entry per step with a progress marker."""
+        sidebar = QWidget()
+        sidebar.setObjectName("sidebar")
+        sidebar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        sidebar.setFixedWidth(SIDEBAR_WIDTH)
+        layout = QVBoxLayout(sidebar)
+        layout.setContentsMargins(10, 20, 10, 20)
+        layout.setSpacing(2)
+
+        name = _create_label("PulseScribe", "sidebar_title")
+        name.setContentsMargins(10, 0, 10, 0)
+        layout.addWidget(name)
+        caption = _create_label("Setup", "sidebar_caption", COLORS["text_secondary"])
+        caption.setContentsMargins(10, 0, 10, 0)
+        layout.addWidget(caption)
+        layout.addSpacing(24)
+
+        for step in WIZARD_STEPS:
+            entry = QPushButton()
+            entry.setObjectName("stepEntry")
+            entry.setFixedHeight(35)
+            entry.setAccessibleName(STEP_NAV_LABELS[step])
+            entry.clicked.connect(lambda _checked=False, s=step: self._go_to_earlier_step(s))
+            row = QHBoxLayout(entry)
+            row.setContentsMargins(10, 0, 6, 0)
+            row.setSpacing(10)
+            marker = _create_label("", "caption")
+            marker.setFixedSize(18, 18)
+            marker.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            label = _create_label(STEP_NAV_LABELS[step], "sidebar_item")
+            for child in (marker, label):
+                child.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+                row.addWidget(child)
+            row.addStretch()
+            layout.addWidget(entry)
+            self._sidebar_entries[step] = (entry, marker, label)
+        layout.addStretch()
+        return sidebar
+
+    def _update_sidebar(self, step: OnboardingStep) -> None:
+        """Marks done steps with a check and highlights the current one."""
+        entries = getattr(self, "_sidebar_entries", None)
+        if not entries or step not in WIZARD_STEPS:
+            return
+        current = WIZARD_STEPS.index(step)
+        for index, entry_step in enumerate(WIZARD_STEPS):
+            entry, marker, label = entries[entry_step]
+            active = index == current
+            done = index < current
+            if entry.property("current") != active:
+                entry.setProperty("current", active)
+                entry.style().unpolish(entry)
+                entry.style().polish(entry)
+            _set_widget_text_if_changed(marker, "✓" if done else str(index + 1))
+            if active:
+                marker_style = (
+                    f"background-color: {theme.PRIMARY_BG}; color: {theme.PRIMARY_TEXT};"
+                    f" border: 1px solid {theme.PRIMARY_BG};"
+                )
+            else:
+                marker_style = (
+                    f"background-color: transparent;"
+                    f" color: {theme.NAV if done else theme.MUTED};"
+                    f" border: 1px solid {theme.SECONDARY_BORDER};"
+                )
+            _set_widget_stylesheet_if_changed(
+                marker, marker_style + f" border-radius: {theme.RADIUS}px;"
+            )
+            _set_widget_stylesheet_if_changed(
+                label, f"color: {theme.ACTIVE_TEXT if active else theme.NAV};"
+            )
+            font = ui_font("sidebar_item")
+            if active:
+                font.setWeight(QFont.Weight.DemiBold)
+            label.setFont(font)
+
+    def _go_to_earlier_step(self, step: OnboardingStep) -> None:
+        """Reopens an earlier step from the sidebar; later steps stay locked."""
+        current = self._step if self._step in WIZARD_STEPS else OnboardingStep.CHEAT_SHEET
+        if WIZARD_STEPS.index(step) < WIZARD_STEPS.index(current):
+            self._stop_hotkey_recording()
+            self._show_step(step)
 
     def _is_step_widget_built(self, step: OnboardingStep | None) -> bool:
         if step == OnboardingStep.DONE:
@@ -789,55 +881,35 @@ class OnboardingWizardWindows(QDialog):
         """Build the goal selection step."""
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        layout.setContentsMargins(PADDING, 0, PADDING, PADDING)
-        layout.setSpacing(16)
+        layout.setContentsMargins(PADDING, 0, PADDING, 12)
+        layout.setSpacing(0)
 
-        layout.addWidget(_create_section_title("Wie möchtest du PulseScribe nutzen?"))
-        layout.addWidget(
-            _create_description(
-                "Wir richten dir eine sinnvolle Startkonfiguration ein. "
-                "Alles lässt sich später jederzeit in den Einstellungen anpassen."
-            )
-        )
-
-        # Choice buttons
-        choices = [
-            (
-                OnboardingChoice.FAST,
-                "Schnell",
-                "Empfohlen für den Alltag – Cloud-basiert und besonders reaktionsschnell",
-            ),
-            (
-                OnboardingChoice.PRIVATE,
-                "Privat",
-                "Lokal mit Whisper – Audio bleibt auf deinem Gerät",
-            ),
-            (
-                OnboardingChoice.ADVANCED,
-                "Erweitert",
-                "Du entscheidest alles selbst – für individuelle Setups",
-            ),
-        ]
-
-        for choice, title, desc in choices:
-            btn = _create_choice_button(title, desc)
-            btn.clicked.connect(lambda checked, c=choice: self._select_choice(c))
-            self._choice_buttons[choice] = btn
-            layout.addWidget(btn)
+        rows = QFrame()
+        rows.setObjectName("card")  # flat section: top rule
+        rows_layout = QVBoxLayout(rows)
+        rows_layout.setContentsMargins(0, 0, 0, 0)
+        rows_layout.setSpacing(0)
+        for choice, title, desc, tag in GOAL_CHOICES:
+            row = _create_choice_row(title, desc, tag)
+            row[0].clicked.connect(lambda _checked=False, c=choice: self._select_choice(c))
+            self._choice_buttons[choice] = row
+            rows_layout.addWidget(row[0])
+        layout.addWidget(rows)
 
         # Restore previous choice
         if self._choice:
             self._select_choice(self._choice, save=False)
 
-        layout.addSpacing(8)
+        layout.addSpacing(18)
 
-        # Language selection
+        # Language: label above the combo box, hint to the right.
+        layout.addWidget(_create_label("Language", "caption", theme.NAV))
+        layout.addSpacing(4)
         lang_row = QHBoxLayout()
-        lang_label = QLabel("Erkennungssprache:")
-        lang_label.setFont(QFont(DEFAULT_FONT_FAMILY, 10))
-        lang_row.addWidget(lang_label)
-
+        lang_row.setSpacing(12)
         self._lang_combo = QComboBox()
+        self._lang_combo.setMinimumWidth(180)
+        self._lang_combo.setMinimumHeight(30)
         for language in LANGUAGE_OPTIONS:
             self._lang_combo.addItem(_format_language_label(language), language)
         current_lang = self._get_cached_env_setting("PULSESCRIBE_LANGUAGE") or "auto"
@@ -846,40 +918,28 @@ class OnboardingWizardWindows(QDialog):
             self._lang_combo.setCurrentIndex(current_index)
         self._lang_combo.currentIndexChanged.connect(self._on_language_combo_changed)
         lang_row.addWidget(self._lang_combo)
-        lang_row.addStretch()
-
-        layout.addLayout(lang_row)
-
-        lang_hint = QLabel(
-            "Automatisch erkennt die Sprache beim Sprechen. Wähle eine feste Sprache nur, "
-            "wenn du fast immer dieselbe Sprache diktierst."
+        lang_row.addWidget(
+            _create_label("Automatic detects it from speech.", "body", COLORS["text_secondary"])
         )
-        lang_hint.setFont(QFont(DEFAULT_FONT_FAMILY, 9))
-        lang_hint.setStyleSheet(f"color: {COLORS['text_hint']};")
-        lang_hint.setWordWrap(True)
-        layout.addWidget(lang_hint)
+        lang_row.addStretch()
+        layout.addLayout(lang_row)
 
         # API Key input (shown when Fast is selected without existing key)
         api_container = QWidget()
         api_container.setVisible(False)
         api_layout = QVBoxLayout(api_container)
-        api_layout.setContentsMargins(0, 8, 0, 0)
-        api_layout.setSpacing(6)
-
-        api_label = QLabel("Deepgram API-Key für den Fast-Modus")
-        api_label.setFont(QFont(DEFAULT_FONT_FAMILY, 10))
-        api_layout.addWidget(api_label)
+        api_layout.setContentsMargins(0, 14, 0, 0)
+        api_layout.setSpacing(4)
+        api_layout.addWidget(_create_label("Deepgram API key", "caption", theme.NAV))
 
         api_field = QLineEdit()
         api_field.setEchoMode(QLineEdit.EchoMode.Password)
-        api_field.setPlaceholderText("dg-...")
-        api_field.setFont(QFont(DEFAULT_FONT_FAMILY, 11))
+        api_field.setPlaceholderText("Paste your Deepgram key")
+        api_field.setMinimumHeight(30)
         api_field.textChanged.connect(self._on_api_key_input_changed)
         api_layout.addWidget(api_field)
 
-        api_status = QLabel("")
-        api_status.setFont(QFont(DEFAULT_FONT_FAMILY, 9))
-        api_status.setStyleSheet(f"color: {COLORS['text_secondary']};")
+        api_status = _create_label("", "caption", COLORS["text_secondary"])
         api_status.setWordWrap(True)
         api_layout.addWidget(api_status)
 
@@ -894,287 +954,182 @@ class OnboardingWizardWindows(QDialog):
         return widget
 
     def _build_permissions_step(self) -> QWidget:
-        """Build the permissions step (simplified for Windows: only microphone)."""
+        """Build the permissions step: Windows only needs the microphone."""
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        layout.setContentsMargins(PADDING, 0, PADDING, PADDING)
-        layout.setSpacing(16)
+        layout.setContentsMargins(PADDING, 0, PADDING, 12)
+        layout.setSpacing(0)
 
-        layout.addWidget(_create_section_title("Berechtigungen"))
-        layout.addWidget(
-            _create_description(
-                "Windows fragt den Mikrofonzugriff bei Bedarf an. "
-                "Im nächsten Schritt kannst du direkt eine sichere Testaufnahme starten."
-            )
-        )
-
-        # Microphone card
-        card, card_layout = _create_card()
-
-        mic_row = QHBoxLayout()
-        mic_icon = QLabel("🎤")
-        mic_icon.setFont(QFont(DEFAULT_FONT_FAMILY, 16))
-        mic_row.addWidget(mic_icon)
-
-        mic_text = QVBoxLayout()
-        mic_title = QLabel("Mikrofon")
-        mic_title.setFont(QFont(DEFAULT_FONT_FAMILY, 11, QFont.Weight.Bold))
-        mic_text.addWidget(mic_title)
-
-        self._mic_status_label = QLabel("Noch nicht geprüft")
-        self._mic_status_label.setFont(QFont(DEFAULT_FONT_FAMILY, 9))
-        self._mic_status_label.setStyleSheet(f"color: {COLORS['text_secondary']};")
-        self._mic_status_label.setWordWrap(True)
-        mic_text.addWidget(self._mic_status_label)
-
-        mic_row.addLayout(mic_text, 1)
-
-        mic_btn = QPushButton("Windows öffnen")
+        row = QWidget()
+        row.setObjectName("reviewRow")  # flat row: top and bottom rules
+        row.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        row.setStyleSheet(f"QWidget#reviewRow {{ border-top: 1px solid {theme.LINE}; }}")
+        row.setFixedHeight(57)
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(10)
+        text = QVBoxLayout()
+        text.setSpacing(2)
+        text.addStretch()
+        title = _create_label("Microphone", "body")
+        title_font = title.font()
+        title_font.setWeight(QFont.Weight.DemiBold)
+        title.setFont(title_font)
+        text.addWidget(title)
+        text.addWidget(_create_label("Required to record your voice.", "body", COLORS["text_secondary"]))
+        text.addStretch()
+        row_layout.addLayout(text, 1)
+        self._mic_status_label = _create_label("", "badge")
+        row_layout.addWidget(self._mic_status_label, 0, Qt.AlignmentFlag.AlignVCenter)
+        mic_btn = QPushButton("Windows settings…")
+        mic_btn.setToolTip("Open the Windows microphone privacy settings")
         mic_btn.clicked.connect(self._open_mic_settings)
-        mic_row.addWidget(mic_btn)
+        row_layout.addWidget(mic_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+        layout.addWidget(row)
 
-        card_layout.addLayout(mic_row)
-        layout.addWidget(card)
-
-        # Info text
-        info = QLabel(
-            "Unter Windows ist normalerweise nur der Mikrofonzugriff relevant. "
-            "Falls der Test fehlschlägt, prüfe Standardmikrofon, Datenschutz-Einstellungen "
-            "und ob PulseScribe im Hintergrund läuft."
+        layout.addSpacing(14)
+        hint = _create_label(
+            "Windows asks for access the first time PulseScribe records. "
+            "The practice test in the next step checks it.",
+            "body",
+            COLORS["text_secondary"],
         )
-        info.setFont(QFont(DEFAULT_FONT_FAMILY, 9))
-        info.setStyleSheet(f"color: {COLORS['text_hint']};")
-        info.setWordWrap(True)
-        layout.addWidget(info)
-
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
         layout.addStretch()
 
         return widget
 
     def _build_hotkey_step(self) -> QWidget:
-        """Build the hotkey configuration step."""
+        """Build the Hotkey step: one choice among presets or a recorded shortcut."""
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        layout.setContentsMargins(PADDING, 0, PADDING, PADDING)
-        layout.setSpacing(16)
+        layout.setContentsMargins(PADDING, 0, PADDING, 12)
+        layout.setSpacing(0)
 
-        layout.addWidget(_create_section_title("Hotkey-Konfiguration"))
-        layout.addWidget(
-            _create_description(
-                "Lege einen oder zwei Hotkeys fest. Toggle ist ideal für längere Diktate, "
-                "Hold für schnelles Push-to-talk."
+        rows = QFrame()
+        rows.setObjectName("card")  # flat section: top rule
+        rows_layout = QVBoxLayout(rows)
+        rows_layout.setContentsMargins(0, 0, 0, 0)
+        rows_layout.setSpacing(0)
+        for key, kind, hotkey, description in HOTKEY_CHOICES:
+            row = _create_choice_row(
+                hotkey_choice_title(kind, _format_hotkey_for_display(hotkey)), description
             )
-        )
-
-        # Hotkey card
-        card, card_layout = _create_card()
-
-        def add_hotkey_row(
-            label_text: str,
-            hint_text: str,
-            field_kind: str,
-            current_value: str,
-        ) -> tuple[QLineEdit, QPushButton, QPushButton]:
-            row_layout = QVBoxLayout()
-            row_layout.setSpacing(4)
-
-            controls = QHBoxLayout()
-            controls.setSpacing(8)
-
-            label = QLabel(label_text)
-            label.setFont(QFont(DEFAULT_FONT_FAMILY, 10, QFont.Weight.Bold))
-            label.setMinimumWidth(120)
-            controls.addWidget(label)
-
-            input_field = QLineEdit()
-            input_field.setPlaceholderText("Noch nicht gesetzt")
-            input_field.setReadOnly(True)
-            input_field.setToolTip("Zum Aufzeichnen klicken oder die Schaltfläche verwenden")
-            input_field.setText(current_value)
-            input_field.mousePressEvent = lambda _event, k=field_kind: self._toggle_hotkey_capture(
-                k
+            preset = (hotkey, None) if kind == "toggle" else (None, hotkey)
+            row[0].clicked.connect(
+                lambda _checked=False, p=preset: self._apply_hotkey_preset(*p)
             )
-            controls.addWidget(input_field, 1)
+            self._hotkey_rows[key] = row
+            rows_layout.addWidget(row[0])
 
-            record_btn = QPushButton("Aufnehmen")
-            record_btn.setToolTip("Hotkey aufzeichnen")
-            record_btn.clicked.connect(
-                lambda _checked=False, k=field_kind: self._toggle_hotkey_capture(k)
-            )
-            controls.addWidget(record_btn)
-
-            clear_btn = QPushButton("Entfernen")
-            clear_btn.setToolTip("Gespeicherten Hotkey löschen")
-            clear_btn.clicked.connect(
-                lambda _checked=False, k=field_kind: self._clear_hotkey(k)
-            )
-            controls.addWidget(clear_btn)
-
-            row_layout.addLayout(controls)
-
-            hint = QLabel(hint_text)
-            hint.setFont(QFont(DEFAULT_FONT_FAMILY, 9))
-            hint.setStyleSheet(f"color: {COLORS['text_hint']};")
-            hint.setWordWrap(True)
-            row_layout.addWidget(hint)
-
-            card_layout.addLayout(row_layout)
-            return input_field, record_btn, clear_btn
-
-        (
-            self._toggle_input,
-            self._toggle_record_btn,
-            self._toggle_clear_btn,
-        ) = add_hotkey_row(
-            "Toggle-Hotkey",
-            "Einmal drücken → sprechen → erneut drücken. Gut für längere Diktate.",
-            "toggle",
-            self._get_cached_env_setting("PULSESCRIBE_TOGGLE_HOTKEY") or "",
+        # Custom: records a Toggle shortcut into the field on the row.
+        custom = _create_choice_row("Custom", "Your own shortcut.")
+        custom[0].clicked.connect(lambda _checked=False: self._toggle_hotkey_capture("toggle"))
+        self._toggle_input = QLineEdit()
+        self._toggle_input.setReadOnly(True)
+        self._toggle_input.setFixedWidth(100)
+        self._toggle_input.setPlaceholderText("Not set")
+        self._toggle_input.mousePressEvent = lambda _event: self._toggle_hotkey_capture("toggle")
+        self._toggle_record_btn = QPushButton("Record")
+        self._toggle_record_btn.setFixedWidth(76)
+        self._toggle_record_btn.clicked.connect(
+            lambda _checked=False: self._toggle_hotkey_capture("toggle")
         )
-        (
-            self._hold_input,
-            self._hold_record_btn,
-            self._hold_clear_btn,
-        ) = add_hotkey_row(
-            "Hold-Hotkey",
-            "Gedrückt halten → sprechen → loslassen. Hold darf nur Modifier enthalten, z. B. ctrl+win.",
-            "hold",
-            self._get_cached_env_setting("PULSESCRIBE_HOLD_HOTKEY") or "",
-        )
+        custom_layout = custom[0].layout()
+        custom_layout.addWidget(self._toggle_input, 0, Qt.AlignmentFlag.AlignVCenter)
+        custom_layout.addWidget(self._toggle_record_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._hotkey_rows[HOTKEY_CUSTOM_KEY] = custom
+        rows_layout.addWidget(custom[0])
+        layout.addWidget(rows)
 
-        hint = QLabel(
-            "Während der Aufzeichnung: Enter speichert, Esc bricht ab. "
-            "Du kannst Toggle und Hold parallel aktivieren."
-        )
-        hint.setFont(QFont(DEFAULT_FONT_FAMILY, 9))
-        hint.setStyleSheet(f"color: {COLORS['text_hint']};")
-        hint.setWordWrap(True)
-        card_layout.addWidget(hint)
-
-        self._hotkey_status_label = QLabel("")
-        self._hotkey_status_label.setFont(QFont(DEFAULT_FONT_FAMILY, 9))
-        self._hotkey_status_label.setStyleSheet(f"color: {COLORS['text_secondary']};")
+        layout.addSpacing(14)
+        self._hotkey_hint_label = _create_label("", "body", COLORS["text_secondary"])
+        self._hotkey_hint_label.setWordWrap(True)
+        layout.addWidget(self._hotkey_hint_label)
+        self._hotkey_status_label = _create_label("", "body", COLORS["text_secondary"])
         self._hotkey_status_label.setWordWrap(True)
-        card_layout.addWidget(self._hotkey_status_label)
-
-        layout.addWidget(card)
-
-        # Presets
-        presets_label = QLabel("Schnellauswahl:")
-        presets_label.setFont(QFont(DEFAULT_FONT_FAMILY, 10, QFont.Weight.Bold))
-        layout.addWidget(presets_label)
-
-        presets_row = QHBoxLayout()
-
-        preset_f19 = QPushButton("F19 (Toggle)")
-        preset_f19.setToolTip("Setzt nur den Toggle-Hotkey auf F19")
-        preset_f19.clicked.connect(lambda: self._apply_hotkey_preset("f19", None))
-        presets_row.addWidget(preset_f19)
-
-        preset_ctrl_alt = QPushButton("Ctrl+Alt-Set")
-        preset_ctrl_alt.setToolTip(
-            "Toggle: Ctrl+Alt+R • Hold: Ctrl+Alt+Space"
-        )
-        preset_ctrl_alt.clicked.connect(
-            lambda: self._apply_hotkey_preset("ctrl+alt+r", "ctrl+alt+space")
-        )
-        presets_row.addWidget(preset_ctrl_alt)
-
-        preset_f13 = QPushButton("F13 (Toggle)")
-        preset_f13.setToolTip("Setzt nur den Toggle-Hotkey auf F13")
-        preset_f13.clicked.connect(lambda: self._apply_hotkey_preset("f13", None))
-        presets_row.addWidget(preset_f13)
-
-        presets_row.addStretch()
-        layout.addLayout(presets_row)
-
+        layout.addWidget(self._hotkey_status_label)
         layout.addStretch()
-        self._update_hotkey_capture_ui()
 
+        self._sync_hotkey_rows()
+        self._update_hotkey_capture_ui()
         return widget
 
+    def _sync_hotkey_rows(self) -> None:
+        """Marks the row matching the configured hotkey and shows the two-hotkey hint."""
+        rows = getattr(self, "_hotkey_rows", None)
+        if not rows:
+            return
+        toggle, hold = self._get_cached_hotkeys()
+        selected = select_hotkey_choice(
+            toggle.lower(),
+            hold.lower(),
+            ((key, kind, hotkey) for key, kind, hotkey, _desc in HOTKEY_CHOICES),
+        )
+        for key, row in rows.items():
+            _set_choice_row_selected(row, key == selected)
+        if not self._recording_field:
+            _set_widget_text_if_changed(
+                self._toggle_input, toggle if selected == HOTKEY_CUSTOM_KEY else ""
+            )
+        _set_widget_text_if_changed(
+            getattr(self, "_hotkey_hint_label", None),
+            build_two_hotkeys_hint(
+                _format_hotkey_for_display(toggle), _format_hotkey_for_display(hold)
+            ),
+        )
+
     def _build_test_dictation_step(self) -> QWidget:
-        """Build the test dictation step."""
+        """Build the Practice step: Start/Stop, transcript box with badge, latency option."""
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        layout.setContentsMargins(PADDING, 0, PADDING, PADDING)
-        layout.setSpacing(16)
+        layout.setContentsMargins(PADDING, 0, PADDING, 12)
+        layout.setSpacing(0)
 
-        layout.addWidget(_create_section_title("Teste die Diktierfunktion"))
-        layout.addWidget(
-            _create_description(
-                "Starte eine sichere Testaufnahme direkt im Assistenten. "
-                "Der erkannte Text wird nur hier angezeigt und nicht eingefügt."
-            )
+        # The test runs through Start/Stop only: on Windows the hotkey still
+        # starts a real dictation that pastes, so the prompt names the buttons.
+        self._test_hotkey_label = _create_label(
+            "Click Start practice and say a short sentence, then click Stop.", "sidebar_item"
         )
-
-        # Hotkey reminder
-        self._test_hotkey_label = QLabel()
-        self._test_hotkey_label.setFont(
-            QFont(DEFAULT_FONT_FAMILY, 10, QFont.Weight.Bold)
-        )
-        self._test_hotkey_label.setStyleSheet(f"color: {COLORS['accent']};")
         self._test_hotkey_label.setWordWrap(True)
-        self._refresh_test_hotkey_label()
         layout.addWidget(self._test_hotkey_label)
+        layout.addSpacing(14)
 
-        # Transcript area
-        card, card_layout = _create_card()
+        btn_row = QHBoxLayout()
+        self._test_start_btn = QPushButton("Start practice")
+        self._test_start_btn.setToolTip("Starts a safe test recording in PulseScribe")
+        self._test_start_btn.setMinimumWidth(132)
+        self._test_start_btn.clicked.connect(self._start_ipc_test)
+        btn_row.addWidget(self._test_start_btn)
+        self._test_stop_btn = QPushButton("Stop")
+        self._test_stop_btn.setMinimumWidth(132)
+        self._test_stop_btn.clicked.connect(self._stop_ipc_test)
+        self._test_stop_btn.setVisible(False)
+        btn_row.addWidget(self._test_stop_btn)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+        layout.addSpacing(18)
 
-        self._test_status_label = QLabel(_build_test_status_text("pending"))
-        self._test_status_label.setFont(QFont(DEFAULT_FONT_FAMILY, 10))
-        self._test_status_label.setStyleSheet(f"color: {COLORS['text_secondary']};")
-        self._test_status_label.setWordWrap(True)
-        card_layout.addWidget(self._test_status_label)
+        header = QHBoxLayout()
+        header.addWidget(_create_label("Transcript", "caption", theme.NAV))
+        header.addStretch()
+        self._test_status_label = _create_label("", "badge")
+        self._test_status_label.setVisible(False)
+        header.addWidget(self._test_status_label)
+        layout.addLayout(header)
+        layout.addSpacing(6)
 
         self._test_transcript = QPlainTextEdit()
-        self._test_transcript.setPlaceholderText(
-            "Sobald eine Testaufnahme abgeschlossen ist, erscheint der erkannte Text hier."
-        )
         self._test_transcript.setReadOnly(True)
-        self._test_transcript.setMinimumHeight(120)
-        self._test_transcript.setPlainText(TEST_TRANSCRIPT_DEFAULT_TEXT)
-        card_layout.addWidget(self._test_transcript)
-
-        layout.addWidget(card)
+        self._test_transcript.setFixedHeight(132)
+        self._test_transcript.setPlainText(TEST_TRANSCRIPT_TEXTS["pending"])
+        layout.addWidget(self._test_transcript)
+        layout.addSpacing(14)
 
         # Optionaler Snappy-Toggle direkt nach dem Test, damit man erst die
         # Erkennungsqualität prüfen und nur dann kürzere Puffer aktivieren kann.
         layout.addWidget(self._build_snappy_option())
-
-        # Test buttons (IPC-based when daemon is running)
-        btn_row = QHBoxLayout()
-
-        self._test_start_btn = QPushButton("Test starten")
-        self._test_start_btn.setToolTip("Startet eine sichere Testaufnahme im Hintergrunddienst")
-        self._test_start_btn.clicked.connect(self._start_ipc_test)
-        btn_row.addWidget(self._test_start_btn)
-
-        self._test_stop_btn = QPushButton("Aufnahme stoppen")
-        self._test_stop_btn.clicked.connect(self._stop_ipc_test)
-        self._test_stop_btn.setVisible(False)
-        btn_row.addWidget(self._test_stop_btn)
-
-        btn_row.addStretch()
-        layout.addLayout(btn_row)
-
-        # Info text (shown when daemon not running)
-        notice_text, notice_color = _build_test_notice_feedback("pending")
-        self._test_notice = QLabel(notice_text)
-        self._test_notice.setFont(QFont(DEFAULT_FONT_FAMILY, 9))
-        self._test_notice.setStyleSheet(f"color: {COLORS[notice_color]};")
-        self._test_notice.setWordWrap(True)
-        layout.addWidget(self._test_notice)
-
-        # Skip link
-        skip_btn = QPushButton("Überspringen →")
-        skip_btn.setFlat(True)
-        skip_btn.setStyleSheet(
-            f"color: {COLORS['text_secondary']}; text-decoration: underline; border: none;"
-        )
-        skip_btn.clicked.connect(self._skip_test)
-        layout.addWidget(skip_btn, alignment=Qt.AlignmentFlag.AlignRight)
-
         layout.addStretch()
 
         return widget
@@ -1187,14 +1142,10 @@ class OnboardingWizardWindows(QDialog):
         wechseln. Der adaptive Stop-Tail schützt Wortenden allerdings bereits
         unabhängig vom Preset.
         """
-        card, card_layout = _create_card()
-
-        title = QLabel("Schnelle Übergänge (Windows)")
-        title.setFont(QFont(DEFAULT_FONT_FAMILY, 10, QFont.Weight.Bold))
-        title.setStyleSheet(f"color: {COLORS['text']};")
-        title.setWordWrap(True)
-        card_layout.addWidget(title)
-
+        option = QWidget()
+        option_layout = QVBoxLayout(option)
+        option_layout.setContentsMargins(0, 0, 0, 0)
+        option_layout.setSpacing(2)
         is_snappy = (
             (
                 self._get_cached_env_setting("PULSESCRIBE_WINDOWS_LATENCY_PRESET")
@@ -1204,27 +1155,20 @@ class OnboardingWizardWindows(QDialog):
             .lower()
             == "snappy"
         )
-        self._snappy_checkbox = QCheckBox(
-            "Snappy-Preset verwenden (kürzere Puffer, Standard)"
-        )
+        self._snappy_checkbox = QCheckBox("Fast transitions (shorter buffers, default)")
+        self._snappy_checkbox.setFont(ui_font("body"))
         self._snappy_checkbox.setChecked(is_snappy)
         self._snappy_checkbox.toggled.connect(self._on_snappy_toggled)
-        card_layout.addWidget(self._snappy_checkbox)
-
-        hint = QLabel(
-            "Kurze Aufnahme-/Finalize-Puffer für reaktionsschnelle Übergänge "
-            "(Standard). Wortenden schützt der adaptive Stop-Nachlauf "
-            "automatisch. Deaktiviere dies nur, falls beim Test oben trotzdem "
-            "das letzte Wort abgeschnitten wird – dann gelten längere, "
-            "konservative Puffer. Wirkt vollständig nach einem Neustart des "
-            "Dienstes."
+        option_layout.addWidget(self._snappy_checkbox)
+        hint = _create_label(
+            "Turn off only if the test cuts off your last word. "
+            "Takes full effect after PulseScribe restarts.",
+            "caption",
+            COLORS["text_secondary"],
         )
-        hint.setFont(QFont(DEFAULT_FONT_FAMILY, 9))
-        hint.setStyleSheet(f"color: {COLORS['text_secondary']};")
         hint.setWordWrap(True)
-        card_layout.addWidget(hint)
-
-        return card
+        option_layout.addWidget(hint)
+        return option
 
     def _on_snappy_toggled(self, checked: bool) -> None:
         """Persist the Windows latency preset choice from the onboarding toggle.
@@ -1237,69 +1181,53 @@ class OnboardingWizardWindows(QDialog):
         )
 
     def _build_cheat_sheet_step(self) -> QWidget:
-        """Build the summary/cheat sheet step."""
+        """Build the Review step: one row per part of the setup, then the hotkey line."""
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        layout.setContentsMargins(PADDING, 0, PADDING, PADDING)
-        layout.setSpacing(16)
+        layout.setContentsMargins(PADDING, 0, PADDING, 12)
+        layout.setSpacing(0)
 
-        layout.addWidget(_create_section_title("Alles bereit!"))
-        layout.addWidget(
-            _create_description(
-                "Hier ist deine Startkonfiguration. Du kannst später alles jederzeit in den Einstellungen ändern."
-            )
-        )
+        rows = QFrame()
+        rows.setObjectName("card")  # flat section: top rule
+        rows_layout = QVBoxLayout(rows)
+        rows_layout.setContentsMargins(0, 0, 0, 0)
+        rows_layout.setSpacing(0)
+        for key, title in (
+            ("mode", "Provider"),
+            ("hotkeys", "Hotkey"),
+            ("permissions", "Permissions"),
+            ("test", "Practice test"),
+        ):
+            row = QWidget()
+            row.setObjectName("reviewRow")
+            row.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+            row.setFixedHeight(56)
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            text = QVBoxLayout()
+            text.setSpacing(2)
+            text.addStretch()
+            title_label = _create_label(title, "body")
+            title_font = title_label.font()
+            title_font.setWeight(QFont.Weight.DemiBold)
+            title_label.setFont(title_font)
+            text.addWidget(title_label)
+            detail = _create_label("", "body", COLORS["text_secondary"])
+            text.addWidget(detail)
+            text.addStretch()
+            row_layout.addLayout(text, 1)
+            badge = _create_label("", "badge")
+            row_layout.addWidget(badge, 0, Qt.AlignmentFlag.AlignVCenter)
+            rows_layout.addWidget(row)
+            self._summary_labels[key] = detail
+            self._summary_labels[f"{key}_badge"] = badge
+        layout.addWidget(rows)
 
-        # Summary card
-        card, card_layout = _create_card()
-
-        # Provider/Mode
-        mode_row = QHBoxLayout()
-        mode_row.addWidget(QLabel("Modus:"))
-        self._summary_labels["mode"] = QLabel()
-        self._summary_labels["mode"].setStyleSheet(f"color: {COLORS['accent']};")
-        mode_row.addWidget(self._summary_labels["mode"], 1)
-        card_layout.addLayout(mode_row)
-
-        # Hotkeys
-        hotkey_row = QHBoxLayout()
-        hotkey_row.addWidget(QLabel("Hotkeys:"))
-        self._summary_labels["hotkeys"] = QLabel()
-        self._summary_labels["hotkeys"].setStyleSheet(f"color: {COLORS['accent']};")
-        self._summary_labels["hotkeys"].setWordWrap(True)
-        hotkey_row.addWidget(self._summary_labels["hotkeys"], 1)
-        card_layout.addLayout(hotkey_row)
-
-        # Language
-        lang_row = QHBoxLayout()
-        lang_row.addWidget(QLabel("Sprache:"))
-        self._summary_labels["language"] = QLabel()
-        self._summary_labels["language"].setStyleSheet(f"color: {COLORS['accent']};")
-        lang_row.addWidget(self._summary_labels["language"], 1)
-        card_layout.addLayout(lang_row)
-
-        test_row = QHBoxLayout()
-        test_row.addWidget(QLabel("Diktiertest:"))
-        self._summary_labels["test"] = QLabel()
-        self._summary_labels["test"].setWordWrap(True)
-        test_row.addWidget(self._summary_labels["test"], 1)
-        card_layout.addLayout(test_row)
-
-        layout.addWidget(card)
-
-        # Ready message
-        ready = QLabel(
-            "Du kannst jetzt in jeder App diktieren. PulseScribe transkribiert deine Sprache und fügt den Text danach automatisch ein."
-        )
-        ready.setFont(QFont(DEFAULT_FONT_FAMILY, 11))
-        ready.setStyleSheet(f"color: {COLORS['success']};")
+        layout.addSpacing(24)
+        ready = _create_label("", "sidebar_item")
         ready.setWordWrap(True)
         layout.addWidget(ready)
-
-        # Open settings button
-        settings_btn = QPushButton("Weitere Einstellungen öffnen...")
-        settings_btn.clicked.connect(self._open_settings_after)
-        layout.addWidget(settings_btn)
+        self._summary_labels["ready"] = ready
 
         layout.addStretch()
 
@@ -1314,7 +1242,7 @@ class OnboardingWizardWindows(QDialog):
         self._run_step_leave_actions(step)
         self._step = step
         self._show_step_widget(step)
-        self._update_progress_label(step)
+        self._update_page_header(step)
         self._run_step_enter_actions(step)
         self._update_navigation()
         self._persist_step_progress(step)
@@ -1336,13 +1264,12 @@ class OnboardingWizardWindows(QDialog):
         if self._stack is not None and current_widget is not None:
             self._stack.setCurrentWidget(current_widget)
 
-    def _update_progress_label(self, step: OnboardingStep) -> None:
-        if self._progress_label:
-            idx = step_index(step)
-            total = total_steps()
-            _set_widget_text_if_changed(
-                self._progress_label, f"Schritt {idx} von {total}"
-            )
+    def _update_page_header(self, step: OnboardingStep) -> None:
+        """Page title, subtitle and sidebar markers for ``step``."""
+        title, subtitle = STEP_TITLES.get(step, ("Setup", ""))
+        _set_widget_text_if_changed(getattr(self, "_page_title", None), title)
+        _set_widget_text_if_changed(getattr(self, "_page_subtitle", None), subtitle)
+        self._update_sidebar(step)
 
     def _run_step_enter_actions(self, step: OnboardingStep) -> None:
         if step == OnboardingStep.PERMISSIONS:
@@ -1350,7 +1277,6 @@ class OnboardingWizardWindows(QDialog):
         elif step == OnboardingStep.HOTKEY:
             self._ensure_default_hotkeys()
         elif step == OnboardingStep.TEST_DICTATION:
-            self._refresh_test_hotkey_label()
             self._refresh_test_start_button_label()
         elif step == OnboardingStep.CHEAT_SHEET:
             self._update_summary()
@@ -1369,11 +1295,15 @@ class OnboardingWizardWindows(QDialog):
             self._back_btn, self._step != OnboardingStep.CHOOSE_GOAL
         )
 
+        _set_widget_visible_if_changed(
+            getattr(self, "_skip_btn", None), self._step == OnboardingStep.TEST_DICTATION
+        )
+
         # Next button text and state
         if self._step == OnboardingStep.CHEAT_SHEET:
-            _set_widget_text_if_changed(self._next_btn, "Fertig")
+            _set_widget_text_if_changed(self._next_btn, "Finish")
         else:
-            _set_widget_text_if_changed(self._next_btn, "Weiter")
+            _set_widget_text_if_changed(self._next_btn, "Next")
 
         # Enable/disable based on step requirements
         can_advance = self._can_advance()
@@ -1392,9 +1322,7 @@ class OnboardingWizardWindows(QDialog):
             # At least one hotkey must be configured
             toggle, hold = self._get_cached_hotkeys()
             if not (toggle or hold):
-                self._set_hotkey_status(
-                    "Mindestens ein Hotkey muss gesetzt sein.", "warning"
-                )
+                self._set_hotkey_status("Choose a hotkey to continue.", "warning")
                 return False
 
             _, _, error = self._get_hotkey_validation_result(toggle, hold)
@@ -1482,10 +1410,9 @@ class OnboardingWizardWindows(QDialog):
 
         # Show "connecting" state while waiting for daemon acknowledgment
         self._set_test_status(_build_test_status_text("connecting"), "text_secondary")
-        self._set_test_notice(*_build_test_notice_feedback("connecting"))
         _set_widget_visible_if_changed(self._test_start_btn, False)
         stop_btn = getattr(self, "_test_stop_btn", None)
-        _set_widget_text_if_changed(stop_btn, "Abbrechen")
+        _set_widget_text_if_changed(stop_btn, "Cancel")
         _set_widget_visible_if_changed(stop_btn, True)
         _set_widget_enabled_if_changed(stop_btn, True)
 
@@ -1527,7 +1454,6 @@ class OnboardingWizardWindows(QDialog):
             self._test_outcome = "cancelled"
             self._set_test_status(_build_test_status_text("cancelled"), "text_secondary")
             self._set_test_transcript_text(_build_test_transcript_text("cancelled"))
-            self._set_test_notice(*_build_test_notice_feedback("cancelled"))
             self._update_navigation()
             return
 
@@ -1539,9 +1465,8 @@ class OnboardingWizardWindows(QDialog):
         self._test_outcome = "processing"
         self._set_test_status(_build_test_status_text("processing"), "text_secondary")
         self._set_test_transcript_text(_build_test_transcript_text("processing"))
-        self._set_test_notice(*_build_test_notice_feedback("processing"))
         stop_btn = getattr(self, "_test_stop_btn", None)
-        _set_widget_text_if_changed(stop_btn, "Wird gestoppt…")
+        _set_widget_text_if_changed(stop_btn, "Stopping…")
         _set_widget_enabled_if_changed(stop_btn, False)
 
     def _poll_ipc_response(self) -> None:
@@ -1579,10 +1504,10 @@ class OnboardingWizardWindows(QDialog):
         elif saw_recording:
             self._on_ipc_test_complete(
                 "",
-                "Keine finale Antwort von PulseScribe. Bitte erneut versuchen.",
+                TEST_ERROR_NO_RESULT,
             )
         else:
-            self._on_ipc_test_complete("", "Keine Verbindung zu PulseScribe")
+            self._on_ipc_test_complete("", TEST_ERROR_NO_CONNECTION)
 
     def _handle_ipc_response(self, response: dict[str, object]) -> None:
         from utils.ipc import (
@@ -1604,7 +1529,7 @@ class OnboardingWizardWindows(QDialog):
             self._on_ipc_test_complete(transcript, None)
         elif status == STATUS_ERROR:
             self._stop_ipc_polling()
-            error = response.get("error", "Unbekannter Fehler")
+            error = response.get("error", "")
             self._on_ipc_test_complete("", error)
         elif status == STATUS_STOPPED:
             self._handle_ipc_stopped_status()
@@ -1629,8 +1554,7 @@ class OnboardingWizardWindows(QDialog):
         self._test_outcome = "recording"
         self._set_test_status(_build_test_status_text("recording"), "accent")
         self._set_test_transcript_text(_build_test_transcript_text("recording"))
-        self._set_test_notice(*_build_test_notice_feedback("recording"))
-        _set_widget_text_if_changed(stop_btn, "Aufnahme stoppen")
+        _set_widget_text_if_changed(stop_btn, "Stop")
 
     def _handle_recording_status_after_stop(self) -> None:
         self._ipc_recording_polls_after_stop += 1
@@ -1646,7 +1570,6 @@ class OnboardingWizardWindows(QDialog):
         self._test_outcome = "cancelled"
         self._set_test_status(_build_test_status_text("cancelled"), "text_secondary")
         self._set_test_transcript_text(_build_test_transcript_text("cancelled"))
-        self._set_test_notice(*_build_test_notice_feedback("cancelled"))
         self._update_navigation()
 
     def _stop_ipc_polling(self) -> None:
@@ -1681,8 +1604,7 @@ class OnboardingWizardWindows(QDialog):
             _build_test_status_text("error", error=error),
             "error",
         )
-        self._set_test_transcript_text(_build_test_transcript_text("error"))
-        self._set_test_notice(*_build_test_notice_feedback("error", error=error))
+        self._set_test_transcript_text(_build_test_transcript_text("error", error=error))
         self._update_navigation()
 
     def _show_test_success(self, transcript: str) -> None:
@@ -1694,7 +1616,6 @@ class OnboardingWizardWindows(QDialog):
         )
         self._test_successful = True
         self._test_outcome = "passed"
-        self._set_test_notice(*_build_test_notice_feedback("passed"))
         self._update_navigation()
 
     def _show_test_no_speech(self) -> None:
@@ -1706,25 +1627,16 @@ class OnboardingWizardWindows(QDialog):
             "warning",
         )
         self._set_test_transcript_text(_build_test_transcript_text("no_speech"))
-        self._set_test_notice(*_build_test_notice_feedback("no_speech"))
         self._update_navigation()
 
     def _set_test_status(self, text: str, color_key: str) -> None:
-        """Update the test status label with colored text."""
-        if self._test_status_label is None:
+        """Shows the transcript badge tinted for ``color_key``; empty text hides it."""
+        label = self._test_status_label
+        if label is None:
             return
-        _set_widget_text_if_changed(self._test_status_label, text)
-        _set_widget_stylesheet_if_changed(
-            self._test_status_label, f"color: {COLORS[color_key]};"
-        )
-
-    def _set_test_notice(self, text: str, color_key: str) -> None:
-        notice = getattr(self, "_test_notice", None)
-        if notice is None:
-            return
-        _set_widget_visible_if_changed(notice, True)
-        _set_widget_text_if_changed(notice, text)
-        _set_widget_stylesheet_if_changed(notice, f"color: {COLORS[color_key]};")
+        _set_widget_visible_if_changed(label, bool(text))
+        if text:
+            _set_badge(label, text, theme.badge_tone(color_key))
 
     def _refresh_test_start_button_label(self) -> None:
         label = _build_test_start_button_text(
@@ -1739,7 +1651,7 @@ class OnboardingWizardWindows(QDialog):
         self._refresh_test_start_button_label()
         _set_widget_visible_if_changed(self._test_stop_btn, False)
         _set_widget_enabled_if_changed(self._test_stop_btn, True)
-        _set_widget_text_if_changed(self._test_stop_btn, "Aufnahme stoppen")
+        _set_widget_text_if_changed(self._test_stop_btn, "Stop")
 
     def _complete(self) -> None:
         """Complete the wizard."""
@@ -1749,7 +1661,17 @@ class OnboardingWizardWindows(QDialog):
         self.accept()
 
     def _open_settings_after(self) -> None:
-        """Mark for opening settings after completion."""
+        """Finishes setup and asks the running app to open Settings.
+
+        The wizard runs as its own process, so it asks the app over IPC; without
+        a running app (wizard started on its own) it only finishes.
+        """
+        try:
+            from utils.ipc import CMD_OPEN_SETTINGS, IPCClient
+
+            (self._ipc_client or IPCClient()).send_command(CMD_OPEN_SETTINGS)
+        except Exception as exc:
+            logger.warning(f"Could not ask PulseScribe to open Settings: {exc}")
         self._complete()
 
     # -------------------------------------------------------------------------
@@ -1760,19 +1682,16 @@ class OnboardingWizardWindows(QDialog):
         """Handle choice selection."""
         self._choice = choice
 
-        # Update button states
-        for c, btn in self._choice_buttons.items():
-            btn.setChecked(c == choice)
+        # Update row states
+        for c, row in self._choice_buttons.items():
+            _set_choice_row_selected(row, c == choice)
 
         # Show/hide API key input based on choice
         if self._api_key_container:
             show_api = choice == OnboardingChoice.FAST and not self._has_api_key()
             _set_widget_visible_if_changed(self._api_key_container, show_api)
             if show_api and self._api_key_status:
-                _set_widget_text_if_changed(
-                    self._api_key_status,
-                    "Erforderlich für Fast-Modus: Deepgram-Key einfügen. Ein vorhandener Groq-Key wird automatisch erkannt.",
-                )
+                _set_widget_text_if_changed(self._api_key_status, FAST_API_KEY_HINT)
                 _set_widget_stylesheet_if_changed(
                     self._api_key_status, f"color: {COLORS['text_secondary']};"
                 )
@@ -1871,10 +1790,7 @@ class OnboardingWizardWindows(QDialog):
             return
         _set_widget_visible_if_changed(self._api_key_container, True)
         if self._api_key_status:
-            _set_widget_text_if_changed(
-                self._api_key_status,
-                "Erforderlich für Fast-Modus: Deepgram-Key einfügen. Ein vorhandener Groq-Key wird automatisch erkannt.",
-            )
+            _set_widget_text_if_changed(self._api_key_status, FAST_API_KEY_PROMPT)
 
     def _apply_private_choice_preset(self) -> bool:
         from utils.presets import apply_local_preset_to_env, default_local_preset_private
@@ -1915,18 +1831,12 @@ class OnboardingWizardWindows(QDialog):
         self._fast_choice_requires_reapply = bool(text.strip())
         if self._api_key_status:
             if text.strip():
-                _set_widget_text_if_changed(
-                    self._api_key_status,
-                    "✓ API-Key erkannt – Fast-Modus nutzt Deepgram.",
-                )
+                _set_widget_text_if_changed(self._api_key_status, FAST_API_KEY_ENTERED_TEXT)
                 _set_widget_stylesheet_if_changed(
                     self._api_key_status, f"color: {COLORS['success']};"
                 )
             else:
-                _set_widget_text_if_changed(
-                    self._api_key_status,
-                    "Erforderlich für Fast-Modus: Deepgram-Key einfügen. Ein vorhandener Groq-Key wird automatisch erkannt.",
-                )
+                _set_widget_text_if_changed(self._api_key_status, FAST_API_KEY_HINT)
                 _set_widget_stylesheet_if_changed(
                     self._api_key_status, f"color: {COLORS['text_secondary']};"
                 )
@@ -1947,18 +1857,9 @@ class OnboardingWizardWindows(QDialog):
             self._mic_timer.stop()
 
     def _check_mic_permission(self) -> None:
-        """Check microphone permission status."""
-        if not self._mic_status_label:
-            return
-
-        # On Windows, we can't directly check mic permission without attempting recording.
-        # We'll show a generic "ready" status and let the user test in the next step.
-        _set_widget_text_if_changed(
-            self._mic_status_label, "Wird im nächsten Schritt per Testaufnahme geprüft"
-        )
-        _set_widget_stylesheet_if_changed(
-            self._mic_status_label, f"color: {COLORS['success']};"
-        )
+        """Shows the microphone badge; Windows offers no read-only permission check."""
+        _detail, badge, tone = _build_microphone_summary(getattr(self, "_test_outcome", "pending"))
+        _set_badge(self._mic_status_label, badge, tone)
 
     def _open_mic_settings(self) -> None:
         """Open Windows microphone settings."""
@@ -1967,53 +1868,28 @@ class OnboardingWizardWindows(QDialog):
             import os
 
             os.startfile("ms-settings:privacy-microphone")
-            if self._mic_status_label is not None:
-                _set_widget_text_if_changed(
-                    self._mic_status_label,
-                    "Windows-Mikrofoneinstellungen wurden geöffnet",
-                )
-                _set_widget_stylesheet_if_changed(
-                    self._mic_status_label, f"color: {COLORS['text_secondary']};"
-                )
         except Exception as e:
             logger.warning(f"Konnte Einstellungen nicht öffnen: {e}")
-            if self._mic_status_label is not None:
-                _set_widget_text_if_changed(
-                    self._mic_status_label,
-                    "Konnte Windows-Mikrofoneinstellungen nicht öffnen",
-                )
-                _set_widget_stylesheet_if_changed(
-                    self._mic_status_label, f"color: {COLORS['warning']};"
-                )
+            _set_badge(self._mic_status_label, "Can't open", "warn")
 
     # -------------------------------------------------------------------------
     # Step: Hotkey
     # -------------------------------------------------------------------------
 
     def _ensure_default_hotkeys(self) -> None:
-        """Setzt empfohlene Hotkeys beim Erstlauf, falls beide fehlen."""
+        """Preselects the first row (Hold Ctrl+Win) on a first run without hotkeys."""
         toggle, hold = self._get_cached_hotkeys()
 
         # Bestehende Nutzerkonfiguration niemals überschreiben.
         if toggle or hold:
             return
 
-        toggle = DEFAULT_WINDOWS_TOGGLE_HOTKEY
-        hold = DEFAULT_WINDOWS_HOLD_HOTKEY
-        changed = self._persist_hotkeys(toggle, hold)
-
-        if self._toggle_input:
-            self._toggle_input.setText(toggle)
-        if self._hold_input:
-            self._hold_input.setText(hold)
-
+        changed = self._persist_hotkeys(None, DEFAULT_WINDOWS_HOLD_HOTKEY)
         self._set_hotkey_status(
-            "Standard gesetzt: "
-            f"Toggle {_format_hotkey_for_display(toggle)}, "
-            f"Hold {_format_hotkey_for_display(hold)}.",
+            "Preselected the recommended hotkey. Pick another row to change it.",
             "text_secondary",
         )
-        self._refresh_test_hotkey_label()
+        self._sync_hotkey_rows()
         if changed:
             self.settings_changed.emit()
 
@@ -2022,9 +1898,7 @@ class OnboardingWizardWindows(QDialog):
             if self._hotkey_recorded:
                 self._stop_hotkey_recording(save=True)
             else:
-                self._set_hotkey_status(
-                    "Drücke zuerst die gewünschte Tastenkombination.", "warning"
-                )
+                self._set_hotkey_status("Press the shortcut you want first.", "warning")
             return
         self._start_hotkey_recording(field)
 
@@ -2046,9 +1920,7 @@ class OnboardingWizardWindows(QDialog):
             is_active = active_field == field_name
             other_active = active_field is not None and not is_active
             if record_btn is not None:
-                _set_widget_text_if_changed(
-                    record_btn, "Speichern" if is_active else "Aufnehmen"
-                )
+                _set_widget_text_if_changed(record_btn, "Save" if is_active else "Record")
                 _set_widget_enabled_if_changed(record_btn, not other_active)
             if clear_btn is not None:
                 _set_widget_enabled_if_changed(clear_btn, active_field is None)
@@ -2060,7 +1932,7 @@ class OnboardingWizardWindows(QDialog):
         self._prepare_hotkey_recording_input(field)
 
         self._set_hotkey_status(
-            "Drücke die gewünschte Tastenkombination und bestätige mit Enter oder „Speichern“. Esc bricht ab.",
+            "Press the shortcut, then Enter or Save. Esc cancels.",
             "text_secondary",
         )
         self._update_hotkey_capture_ui()
@@ -2069,7 +1941,7 @@ class OnboardingWizardWindows(QDialog):
         if not available:
             logger.warning("pynput nicht verfügbar, nutze Qt-Fallback")
             self._activate_qt_hotkey_fallback(
-                "pynput nicht verfügbar: Win-Taste evtl. nicht erkennbar."
+                "The Win key may not be detected while recording."
             )
             return
 
@@ -2079,7 +1951,7 @@ class OnboardingWizardWindows(QDialog):
             logger.warning(f"pynput Listener fehlgeschlagen: {e}, nutze Qt-Fallback")
             self._hotkey_listener = None
             self._activate_qt_hotkey_fallback(
-                "pynput Listener fehlgeschlagen: Win-Taste evtl. nicht erkennbar."
+                "The Win key may not be detected while recording."
             )
 
     def _begin_hotkey_recording_state(self, field: str) -> None:
@@ -2100,7 +1972,7 @@ class OnboardingWizardWindows(QDialog):
     def _prepare_hotkey_recording_input(self, field: str) -> None:
         input_field = self._hotkey_input_for_field(field)
         if input_field:
-            _set_widget_text_if_changed(input_field, "Tastenkombination drücken…")
+            _set_widget_text_if_changed(input_field, "Press keys…")
             input_field.setStyleSheet(f"border-color: {COLORS['accent']};")
 
         with self._pressed_keys_lock:
@@ -2146,7 +2018,7 @@ class OnboardingWizardWindows(QDialog):
         """Aktiviert Qt-Keyboard-Capture als Fallback."""
         self._using_qt_grab = True
         self.grabKeyboard()
-        self._set_hotkey_status(f"{message_prefix} (Qt-Fallback aktiv).", "warning")
+        self._set_hotkey_status(message_prefix, "warning")
         self.setFocus()
 
     def _pynput_key_to_string(self, key, key_map: dict) -> str:
@@ -2284,17 +2156,8 @@ class OnboardingWizardWindows(QDialog):
                 inp.setStyleSheet("")
 
     def _save_hotkey(self, field: str, hotkey: str) -> bool:
-        """Save a hotkey to settings. Called by _stop_hotkey_recording."""
-        toggle_raw = (
-            hotkey
-            if field == "toggle"
-            else self._get_cached_env_setting("PULSESCRIBE_TOGGLE_HOTKEY")
-        )
-        hold_raw = (
-            hotkey
-            if field == "hold"
-            else self._get_cached_env_setting("PULSESCRIBE_HOLD_HOTKEY")
-        )
+        """Saves a recorded hotkey as the only one (the other slot is cleared)."""
+        toggle_raw, hold_raw = (hotkey, None) if field == "toggle" else (None, hotkey)
         toggle, hold, error = self._get_hotkey_validation_result(toggle_raw, hold_raw)
         if error:
             self._set_hotkey_status(error, "error")
@@ -2302,45 +2165,15 @@ class OnboardingWizardWindows(QDialog):
 
         changed = self._persist_hotkeys(toggle, hold)
 
-        self._set_hotkey_status(
-            "✓ Hotkey gespeichert – du kannst ihn im nächsten Schritt testen.",
-            "success",
-        )
+        self._set_hotkey_status("Saved. You can try it in the next step.", "success")
         if changed:
             self.settings_changed.emit()
-        self._refresh_test_hotkey_label()
+        self._sync_hotkey_rows()
         self._update_navigation()
         return True
 
-    def _clear_hotkey(self, field: str) -> None:
-        """Clear a hotkey."""
-        # Falls gerade eine Aufnahme läuft, zuerst sauber abbrechen
-        # (Listener/Keyboard-Grab), bevor der Wert geleert wird.
-        if self._recording_field:
-            self._stop_hotkey_recording(save=False)
-
-        if field == "toggle":
-            if self._toggle_input:
-                _set_widget_text_if_changed(self._toggle_input, "")
-            changed = self._persist_hotkeys(None, self._get_cached_hotkeys()[1])
-        elif field == "hold":
-            if self._hold_input:
-                _set_widget_text_if_changed(self._hold_input, "")
-            changed = self._persist_hotkeys(self._get_cached_hotkeys()[0], None)
-        else:
-            changed = False
-
-        self._set_hotkey_status(
-            "Hotkey entfernt. Mindestens ein Hotkey sollte aktiv bleiben.",
-            "text_secondary",
-        )
-        if changed:
-            self.settings_changed.emit()
-        self._refresh_test_hotkey_label()
-        self._update_navigation()
-
     def _apply_hotkey_preset(self, toggle: str | None, hold: str | None) -> None:
-        """Apply a hotkey preset."""
+        """Saves a preset row; the slot it leaves empty is cleared."""
         if self._recording_field:
             self._stop_hotkey_recording(save=False)
 
@@ -2351,29 +2184,12 @@ class OnboardingWizardWindows(QDialog):
             self._set_hotkey_status(error, "error")
             return
 
-        if normalized_toggle:
-            if self._toggle_input:
-                _set_widget_text_if_changed(self._toggle_input, normalized_toggle)
-        else:
-            if self._toggle_input:
-                _set_widget_text_if_changed(self._toggle_input, "")
-
-        if normalized_hold:
-            if self._hold_input:
-                _set_widget_text_if_changed(self._hold_input, normalized_hold)
-        else:
-            if self._hold_input:
-                _set_widget_text_if_changed(self._hold_input, "")
-
         changed = self._persist_hotkeys(normalized_toggle, normalized_hold)
 
-        self._set_hotkey_status(
-            "✓ Preset angewendet – du kannst die Werte bei Bedarf noch anpassen.",
-            "success",
-        )
+        self._set_hotkey_status("Saved. You can try it in the next step.", "success")
         if changed:
             self.settings_changed.emit()
-        self._refresh_test_hotkey_label()
+        self._sync_hotkey_rows()
         self._update_navigation()
 
     @staticmethod
@@ -2387,27 +2203,26 @@ class OnboardingWizardWindows(QDialog):
     ) -> tuple[str, str, str | None]:
         toggle, toggle_error = normalize_windows_hotkey(toggle_raw)
         if toggle_error:
-            return "", "", f"Toggle-Hotkey ungültig: {toggle_error}"
+            return "", "", f"Toggle hotkey is not valid: {toggle_error}"
 
         hold, hold_error = normalize_windows_hotkey(hold_raw)
         if hold_error:
-            return "", "", f"Hold-Hotkey ungültig: {hold_error}"
+            return "", "", f"Hold hotkey is not valid: {hold_error}"
 
         if toggle and self._is_modifier_only_hotkey(toggle):
             return (
                 "",
                 "",
-                "Toggle-Hotkey braucht mindestens eine Nicht-Modifier-Taste.",
+                "A Toggle hotkey needs at least one key besides Ctrl, Alt, Shift or Win.",
             )
 
         if toggle and hold and toggle == hold:
-            return "", "", "Toggle und Hold dürfen nicht identisch sein."
+            return "", "", "Toggle and Hold can't use the same hotkey."
         if toggle and hold and hotkeys_conflict(toggle, hold):
             return (
                 "",
                 "",
-                "Toggle und Hold dürfen sich nicht überlappen "
-                "(z. B. ctrl+win und ctrl+win+r).",
+                "Toggle and Hold can't overlap (e.g. ctrl+win and ctrl+win+r).",
             )
 
         return toggle, hold, None
@@ -2419,58 +2234,34 @@ class OnboardingWizardWindows(QDialog):
                 self._hotkey_status_label, f"color: {COLORS[color_key]};"
             )
 
-    def _refresh_test_hotkey_label(self) -> None:
-        """Aktualisiert den Hotkey-Hinweis im Test-Schritt."""
-        if not self._test_hotkey_label:
-            return
-
-        toggle, hold = self._get_cached_hotkeys()
-        summary_text = _format_hotkey_summary_text(toggle, hold, separator="\n")
-        if summary_text:
-            summary_text = f"Gespeicherte Hotkeys:\n{summary_text}"
-        else:
-            summary_text = "Noch kein Hotkey konfiguriert"
-        if getattr(self, "_last_test_hotkey_summary", None) == summary_text:
-            return
-        self._last_test_hotkey_summary = summary_text
-        _set_widget_text_if_changed(self._test_hotkey_label, summary_text)
-
     # -------------------------------------------------------------------------
     # Step: Cheat Sheet
     # -------------------------------------------------------------------------
 
     def _update_summary(self) -> None:
-        """Update the summary labels."""
-        # Mode
-        mode = self._get_cached_env_setting("PULSESCRIBE_MODE") or "deepgram"
-        if "mode" in self._summary_labels:
-            _set_widget_text_if_changed(
-                self._summary_labels["mode"], _format_mode_label(mode)
-            )
+        """Fills the Review rows (detail + badge) and the closing hotkey line."""
+        import os
 
-        # Hotkeys
+        labels = self._summary_labels
+        mode = (self._get_cached_env_setting("PULSESCRIBE_MODE") or "deepgram").strip().lower()
+        key_name = MODE_API_KEYS.get(mode)
+        has_key = bool(
+            key_name and (self._get_cached_api_key(key_name) or os.getenv(key_name))
+        )
         toggle, hold = self._get_cached_hotkeys()
-        if "hotkeys" in self._summary_labels:
-            _set_widget_text_if_changed(
-                self._summary_labels["hotkeys"],
-                _format_hotkey_summary_text(toggle, hold) or "Nicht konfiguriert",
-            )
-
-        # Language
-        lang = self._get_cached_env_setting("PULSESCRIBE_LANGUAGE") or "auto"
-        if "language" in self._summary_labels:
-            _set_widget_text_if_changed(
-                self._summary_labels["language"], _format_language_label(lang)
-            )
-
-        if "test" in self._summary_labels:
-            test_text, test_color_key = _build_test_summary_feedback(
-                getattr(self, "_test_outcome", "pending")
-            )
-            _set_widget_text_if_changed(self._summary_labels["test"], test_text)
-            _set_widget_stylesheet_if_changed(
-                self._summary_labels["test"], f"color: {COLORS[test_color_key]};"
-            )
+        toggle_text = _format_hotkey_for_display(toggle)
+        hold_text = _format_hotkey_for_display(hold)
+        outcome = getattr(self, "_test_outcome", "pending")
+        rows = {
+            "mode": build_provider_summary(_format_mode_label(mode), mode, has_key),
+            "hotkeys": build_hotkey_summary(toggle_text, hold_text),
+            "permissions": _build_microphone_summary(outcome),
+            "test": build_test_summary(outcome),
+        }
+        for key, (detail, badge, tone) in rows.items():
+            _set_widget_text_if_changed(labels.get(key), detail)
+            _set_badge(labels.get(f"{key}_badge"), badge, tone)
+        _set_widget_text_if_changed(labels.get("ready"), build_ready_text(toggle_text, hold_text))
 
     def _set_test_transcript_text(self, text: str) -> bool:
         editor = getattr(self, "_test_transcript", None)
@@ -2580,10 +2371,7 @@ class OnboardingWizardWindows(QDialog):
 
     def _confirm_hotkey_recording(self, event) -> None:
         if not self._hotkey_recorded:
-            self._set_hotkey_status(
-                "Drücke zuerst die gewünschte Tastenkombination.",
-                "warning",
-            )
+            self._set_hotkey_status("Press the shortcut you want first.", "warning")
         self._stop_hotkey_recording(save=True)
         event.accept()
 

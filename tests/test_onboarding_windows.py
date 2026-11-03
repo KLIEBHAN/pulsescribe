@@ -9,7 +9,6 @@ from PySide6.QtCore import Qt
 
 from ui.onboarding_wizard_windows import (
     DEFAULT_WINDOWS_HOLD_HOTKEY,
-    DEFAULT_WINDOWS_TOGGLE_HOTKEY,
     IPC_CONNECT_MAX_POLLS_BEFORE_TIMEOUT,
     IPC_MAX_POLLS_BEFORE_TIMEOUT,
     IPC_POLL_INTERVAL_MS,
@@ -159,40 +158,6 @@ class _FakeKeyEvent:
         self.accepted = True
 
 
-def test_refresh_test_hotkey_label_shows_toggle_and_hold(monkeypatch):
-    import ui.onboarding_wizard_windows as wizard_mod
-
-    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
-    wizard._test_hotkey_label = _FakeLabel()
-
-    monkeypatch.setattr(
-        wizard_mod,
-        "get_env_setting",
-        lambda key: {
-            "PULSESCRIBE_TOGGLE_HOTKEY": "ctrl+alt+r",
-            "PULSESCRIBE_HOLD_HOTKEY": "ctrl+alt+space",
-        }.get(key),
-    )
-
-    wizard._refresh_test_hotkey_label()
-    assert (
-        wizard._test_hotkey_label.text
-        == "Gespeicherte Hotkeys:\nToggle: Ctrl+Alt+R\nHold: Ctrl+Alt+Space"
-    )
-
-
-def test_refresh_test_hotkey_label_handles_missing_hotkeys(monkeypatch):
-    import ui.onboarding_wizard_windows as wizard_mod
-
-    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
-    wizard._test_hotkey_label = _FakeLabel()
-
-    monkeypatch.setattr(wizard_mod, "get_env_setting", lambda _key: None)
-
-    wizard._refresh_test_hotkey_label()
-    assert wizard._test_hotkey_label.text == "Noch kein Hotkey konfiguriert"
-
-
 def test_update_test_transcript_appends_growth_and_skips_duplicates():
     wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
     wizard._test_transcript = _FakePlainText()
@@ -212,7 +177,7 @@ def test_update_test_transcript_appends_growth_and_skips_duplicates():
     assert wizard._test_transcript.set_plain_text_calls == 1
     assert wizard._test_transcript.insert_plain_text_calls == [" Welt"]
     assert wizard._test_transcript.move_cursor_calls == 1
-    assert wizard._test_status_label.text == "Transkription erfolgreich!"
+    assert wizard._test_status_label.text == "Worked"
     assert wizard._update_navigation_calls == 2
 
 
@@ -306,11 +271,11 @@ def test_validate_hotkey_pair_rejects_duplicates_and_modifier_only_toggle():
 
     _, _, duplicate_error = wizard._validate_hotkey_pair("ctrl+alt+r", "alt+ctrl+r")
     assert duplicate_error is not None
-    assert "identisch" in duplicate_error
+    assert "same hotkey" in duplicate_error
 
     _, _, modifier_error = wizard._validate_hotkey_pair("ctrl+alt", "")
     assert modifier_error is not None
-    assert "nicht-modifier" in modifier_error.lower()
+    assert "besides ctrl" in modifier_error.lower()
 
 
 def test_validate_hotkey_pair_allows_modifier_only_hold():
@@ -330,34 +295,25 @@ def test_validate_hotkey_pair_rejects_overlapping_hotkeys():
         "ctrl+win+shift+f13", "ctrl+win+f13"
     )
     assert overlap_error is not None
-    assert "überlappen" in overlap_error.lower()
+    assert "overlap" in overlap_error.lower()
 
 
-def test_ensure_default_hotkeys_applies_recommended_pair_when_missing(monkeypatch):
+def test_ensure_default_hotkeys_preselects_the_hold_row_when_missing():
     wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
-    wizard._toggle_input = _FakeField("")
-    wizard._hold_input = _FakeField("")
     wizard._hotkey_status_label = _FakeLabel()
     wizard._env_settings_cache = {}
 
-    saved: list[tuple[str, str | None]] = []
-    refreshed: list[bool] = []
+    saved: list[tuple[str | None, str | None]] = []
     emitted: list[bool] = []
 
     wizard.settings_changed = types.SimpleNamespace(emit=lambda: emitted.append(True))
-    wizard._refresh_test_hotkey_label = lambda: refreshed.append(True)
     wizard._persist_hotkeys = lambda toggle, hold: saved.append((toggle, hold)) or True
 
     wizard._ensure_default_hotkeys()
 
-    assert wizard._toggle_input.text() == DEFAULT_WINDOWS_TOGGLE_HOTKEY
-    assert wizard._hold_input.text() == DEFAULT_WINDOWS_HOLD_HOTKEY
-    assert saved == [
-        (DEFAULT_WINDOWS_TOGGLE_HOTKEY, DEFAULT_WINDOWS_HOLD_HOTKEY),
-    ]
-    assert refreshed == [True]
+    assert saved == [(None, DEFAULT_WINDOWS_HOLD_HOTKEY)]
     assert emitted == [True]
-    assert "Standard gesetzt" in wizard._hotkey_status_label.text
+    assert "Preselected" in wizard._hotkey_status_label.text
 
 
 def test_ensure_default_hotkeys_keeps_existing_user_config():
@@ -368,9 +324,6 @@ def test_ensure_default_hotkeys_keeps_existing_user_config():
     wizard._env_settings_cache = {"PULSESCRIBE_TOGGLE_HOTKEY": "ctrl+shift+r"}
     wizard.settings_changed = types.SimpleNamespace(
         emit=lambda: (_ for _ in ()).throw(AssertionError("must not emit"))
-    )
-    wizard._refresh_test_hotkey_label = (
-        lambda: (_ for _ in ()).throw(AssertionError("must not refresh"))
     )
     wizard._persist_hotkeys = lambda *_args, **_kwargs: (_ for _ in ()).throw(
         AssertionError("must not save defaults")
@@ -391,38 +344,78 @@ def test_on_api_key_input_changed_updates_status_and_navigation():
     )
 
     wizard._on_api_key_input_changed("dg-new")
-    assert "API-Key erkannt" in wizard._api_key_status.text
+    assert wizard._api_key_status.text == "Key entered. Fast mode will use Deepgram."
 
     wizard._on_api_key_input_changed(" ")
-    assert "Erforderlich" in wizard._api_key_status.text
+    assert wizard._api_key_status.text == "Needed for Fast mode. A stored Groq key works too."
     assert wizard._update_navigation_called == 2
 
 
-def test_update_summary_uses_friendly_labels_and_test_state():
+def test_update_summary_shows_review_rows_with_badges():
     wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+    keys = ("mode", "hotkeys", "permissions", "test")
     wizard._summary_labels = {
-        "mode": _FakeLabel(),
-        "hotkeys": _FakeLabel(),
-        "language": _FakeLabel(),
-        "test": _FakeLabel(),
+        name: _FakeLabel() for key in keys for name in (key, f"{key}_badge")
     }
+    wizard._summary_labels["ready"] = _FakeLabel()
     wizard._env_settings_cache = {
         "PULSESCRIBE_MODE": "local",
-        "PULSESCRIBE_LANGUAGE": "de",
         "PULSESCRIBE_TOGGLE_HOTKEY": "ctrl+alt+r",
         "PULSESCRIBE_HOLD_HOTKEY": "ctrl+win",
     }
-    wizard._test_successful = True
-    wizard._test_started_once = True
     wizard._test_outcome = "passed"
 
     wizard._update_summary()
 
-    assert wizard._summary_labels["mode"].text == "Lokal / Whisper (privat)"
-    assert wizard._summary_labels["hotkeys"].text == "Toggle: Ctrl+Alt+R • Hold: Ctrl+Win"
-    assert wizard._summary_labels["language"].text == "Deutsch"
-    assert wizard._summary_labels["test"].text == "Erfolgreich geprüft"
-    assert "#4CAF50" in wizard._summary_labels["test"].style
+    labels = wizard._summary_labels
+    assert labels["mode"].text == "Local Whisper (Private, offline)"
+    assert labels["mode_badge"].text == "Ready"
+    assert labels["hotkeys"].text == "Toggle Ctrl+Alt+R · Hold Ctrl+Win"
+    assert labels["permissions_badge"].text == "Granted"
+    assert labels["test"].text == "Your speech was transcribed"
+    assert labels["test_badge"].text == "Worked"
+    assert "#6fd39b" in labels["test_badge"].style
+    assert labels["ready"].text == "Hold Ctrl+Win or press Ctrl+Alt+R in any app to dictate."
+
+
+def test_update_summary_flags_missing_cloud_key_and_unchecked_microphone(monkeypatch):
+    monkeypatch.delenv("DEEPGRAM_API_KEY", raising=False)
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+    wizard._summary_labels = {
+        "mode_badge": _FakeLabel(),
+        "permissions_badge": _FakeLabel(),
+        "test_badge": _FakeLabel(),
+    }
+    wizard._env_settings_cache = {"PULSESCRIBE_MODE": "deepgram"}
+    wizard._test_outcome = "skipped"
+
+    wizard._update_summary()
+
+    assert wizard._summary_labels["mode_badge"].text == "No API key"
+    assert wizard._summary_labels["permissions_badge"].text == "Not checked"
+    assert wizard._summary_labels["test_badge"].text == "Skipped"
+
+
+def test_open_settings_link_asks_the_app_and_finishes(monkeypatch):
+    import utils.ipc as ipc_mod
+
+    sent: list[str] = []
+
+    class _FakeClient:
+        def send_command(self, command):
+            sent.append(command)
+            return "id"
+
+    monkeypatch.setattr(ipc_mod, "IPCClient", _FakeClient)
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+    wizard._ipc_client = None
+    completed: list[bool] = []
+    wizard._complete = lambda: completed.append(True)
+
+    wizard._open_settings_after()
+
+    assert sent == [ipc_mod.CMD_OPEN_SETTINGS]
+    assert completed == [True]
 
 
 def test_on_language_changed_skips_noop_persistence_and_emit(monkeypatch):
@@ -619,7 +612,7 @@ def test_start_hotkey_recording_uses_qt_fallback_when_pynput_missing(monkeypatch
     assert wizard._using_qt_grab is True
     assert grabbed == [True]
     assert focused == [True]
-    assert "Qt-Fallback" in wizard._hotkey_status_label.text
+    assert "Win key" in wizard._hotkey_status_label.text
 
 
 def test_start_hotkey_recording_falls_back_when_listener_start_fails(monkeypatch):
@@ -661,8 +654,8 @@ def test_start_hotkey_recording_falls_back_when_listener_start_fails(monkeypatch
     assert wizard._using_qt_grab is True
     assert grabbed == [True]
     assert focused == [True]
-    assert "Listener fehlgeschlagen" in wizard._hotkey_status_label.text
-    assert "Qt-Fallback" in wizard._hotkey_status_label.text
+    assert "Win key" in wizard._hotkey_status_label.text
+    assert "Win key" in wizard._hotkey_status_label.text
 
 
 def test_keypress_qt_fallback_updates_hotkey_field():
@@ -760,57 +753,6 @@ def test_stop_hotkey_recording_releases_qt_grab(monkeypatch):
     assert wizard._using_qt_grab is False
 
 
-def test_clear_hotkey_stops_active_recording_before_clearing(monkeypatch):
-    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
-    wizard._recording_field = "toggle"
-    wizard._toggle_input = _FakeField("ctrl+alt+r")
-    wizard._hold_input = _FakeField("ctrl+win")
-    wizard._hotkey_status_label = _FakeLabel()
-    wizard._env_settings_cache = {
-        "PULSESCRIBE_TOGGLE_HOTKEY": "ctrl+alt+r",
-        "PULSESCRIBE_HOLD_HOTKEY": "ctrl+win",
-    }
-
-    stop_calls: list[bool] = []
-    emitted: list[bool] = []
-    refreshed: list[bool] = []
-    updated: list[bool] = []
-    persisted: list[tuple[str | None, str | None]] = []
-
-    wizard._stop_hotkey_recording = lambda save=False: stop_calls.append(save)
-    wizard.settings_changed = types.SimpleNamespace(emit=lambda: emitted.append(True))
-    wizard._refresh_test_hotkey_label = lambda: refreshed.append(True)
-    wizard._update_navigation = lambda: updated.append(True)
-    wizard._persist_hotkeys = lambda toggle, hold: persisted.append((toggle, hold)) or True
-
-    wizard._clear_hotkey("toggle")
-
-    assert stop_calls == [False]
-    assert wizard._toggle_input.text() == ""
-    assert wizard._hold_input.text() == "ctrl+win"
-    assert persisted == [(None, "ctrl+win")]
-    assert emitted == [True]
-    assert refreshed == [True]
-    assert updated == [True]
-
-
-def test_clear_hotkey_updates_status_feedback():
-    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
-    wizard._recording_field = None
-    wizard._toggle_input = _FakeField("ctrl+alt+r")
-    wizard._hold_input = _FakeField("")
-    wizard._hotkey_status_label = _FakeLabel()
-    wizard._env_settings_cache = {"PULSESCRIBE_TOGGLE_HOTKEY": "ctrl+alt+r"}
-    wizard.settings_changed = types.SimpleNamespace(emit=lambda: None)
-    wizard._refresh_test_hotkey_label = lambda: None
-    wizard._update_navigation = lambda: None
-    wizard._persist_hotkeys = lambda *_args, **_kwargs: True
-
-    wizard._clear_hotkey("toggle")
-
-    assert "Hotkey entfernt" in wizard._hotkey_status_label.text
-
-
 def test_apply_hotkey_preset_stops_active_recording_before_applying():
     wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
     wizard._recording_field = "toggle"
@@ -820,26 +762,21 @@ def test_apply_hotkey_preset_stops_active_recording_before_applying():
 
     stop_calls: list[bool] = []
     emitted: list[bool] = []
-    refreshed: list[bool] = []
     updated: list[bool] = []
     persisted: list[tuple[str | None, str | None]] = []
 
     wizard._stop_hotkey_recording = lambda save=False: stop_calls.append(save)
     wizard.settings_changed = types.SimpleNamespace(emit=lambda: emitted.append(True))
-    wizard._refresh_test_hotkey_label = lambda: refreshed.append(True)
     wizard._update_navigation = lambda: updated.append(True)
     wizard._persist_hotkeys = lambda toggle, hold: persisted.append((toggle, hold)) or True
 
     wizard._apply_hotkey_preset("f19", None)
 
     assert stop_calls == [False]
-    assert wizard._toggle_input.text() == "f19"
-    assert wizard._hold_input.text() == ""
-    assert persisted == [("f19", "")]
+    assert persisted == [("f19", "")]  # one choice: the Hold slot is cleared
     assert emitted == [True]
-    assert refreshed == [True]
     assert updated == [True]
-    assert "Preset angewendet" in wizard._hotkey_status_label.text
+    assert wizard._hotkey_status_label.text == "Saved. You can try it in the next step."
 
 
 def test_start_ipc_test_ignores_duplicate_start():
@@ -849,7 +786,6 @@ def test_start_ipc_test_ignores_duplicate_start():
     wizard._test_status_label = _FakeLabel()
     wizard._test_start_btn = _FakeButton()
     wizard._test_stop_btn = _FakeButton()
-    wizard._test_notice = _FakeLabel()
     wizard._set_test_status = lambda *_args, **_kwargs: (_ for _ in ()).throw(
         AssertionError("duplicate start should return early")
     )
@@ -876,7 +812,6 @@ def test_start_ipc_test_shows_cancel_action_until_recording_ack():
     wizard._test_status_label = _FakeLabel()
     wizard._test_start_btn = _FakeButton()
     wizard._test_stop_btn = _FakeButton()
-    wizard._test_notice = _FakeLabel()
     wizard._set_test_status = lambda *_args, **_kwargs: None
     wizard._update_navigation = lambda: None
 
@@ -885,7 +820,7 @@ def test_start_ipc_test_shows_cancel_action_until_recording_ack():
     assert commands == ["start_test"]
     assert wizard._test_stop_btn.visible is True
     assert wizard._test_stop_btn.enabled is True
-    assert wizard._test_stop_btn.text == "Abbrechen"
+    assert wizard._test_stop_btn.text == "Cancel"
     assert wizard._ipc_poll_timer.started_with == [IPC_POLL_INTERVAL_MS]
 
 
@@ -910,7 +845,6 @@ def test_start_ipc_test_clears_previous_transcript():
     wizard._test_status_label = _FakeLabel()
     wizard._test_start_btn = _FakeButton()
     wizard._test_stop_btn = _FakeButton()
-    wizard._test_notice = _FakeLabel()
     wizard._test_transcript = transcript
     wizard._set_test_status = lambda *_args, **_kwargs: None
     wizard._update_navigation = lambda: None
@@ -918,7 +852,7 @@ def test_start_ipc_test_clears_previous_transcript():
     wizard._start_ipc_test()
 
     assert commands == ["start_test"]
-    assert transcript.value.startswith("Die Testaufnahme wird vorbereitet.")
+    assert transcript.value.startswith("Getting ready…")
     assert transcript.clear_calls == 0
 
 
@@ -944,7 +878,6 @@ def test_start_ipc_test_resets_previous_success_state():
     wizard._test_status_label = _FakeLabel()
     wizard._test_start_btn = _FakeButton()
     wizard._test_stop_btn = _FakeButton()
-    wizard._test_notice = _FakeLabel()
     wizard._test_transcript = _FakePlainText("old success")
     wizard._test_successful = True
     wizard._set_test_status = lambda *_args, **_kwargs: None
@@ -1004,6 +937,7 @@ def test_show_step_leaving_test_requests_ipc_cancel():
     wizard._cancel_ipc_test_if_running = lambda: cancel_calls.append(True)
     wizard._stop_ipc_polling = lambda: stop_calls.append(True)
     wizard._reset_test_ui = lambda: reset_calls.append(True)
+    wizard._ensure_default_hotkeys = lambda: None  # Hotkey enter action, not under test
 
     wizard._show_step(OnboardingStep.HOTKEY)
 
@@ -1077,7 +1011,6 @@ def test_stop_ipc_test_before_recording_ack_cancels_pending_start():
     wizard._test_status_label = _FakeLabel()
     wizard._test_start_btn = _FakeButton()
     wizard._test_stop_btn = _FakeButton()
-    wizard._test_notice = _FakeLabel()
     wizard._test_transcript = _FakePlainText()
     navigation_updates: list[bool] = []
     wizard._update_navigation = lambda: navigation_updates.append(True)
@@ -1087,10 +1020,10 @@ def test_stop_ipc_test_before_recording_ack_cancels_pending_start():
     assert commands == ["stop_test"]
     assert wizard._ipc_test_cmd_id is None
     assert wizard._test_outcome == "cancelled"
-    assert wizard._test_status_label.text == "Test abgebrochen."
+    assert wizard._test_status_label.visible is False  # idle: badge hidden
     assert wizard._test_start_btn.visible is True
     assert wizard._test_stop_btn.visible is False
-    assert wizard._test_transcript.value.startswith("Der Test wurde abgebrochen.")
+    assert wizard._test_transcript.value.startswith("Cancelled.")
     assert navigation_updates == [True]
 
 
@@ -1115,8 +1048,8 @@ def test_stop_ipc_test_sends_stop_command_after_recording_ack():
     assert wizard._ipc_stop_requested is True
     assert wizard._ipc_recording_polls_after_stop == 0
     assert wizard._ipc_poll_timer.intervals == [IPC_POLL_INTERVAL_MS]
-    assert wizard._test_status_label.text == "Verarbeite Testaufnahme…"
-    assert wizard._test_stop_btn.text == "Wird gestoppt…"
+    assert wizard._test_status_label.text == "Processing"
+    assert wizard._test_stop_btn.text == "Stopping…"
     assert wizard._test_stop_btn.enabled is False
 
 
@@ -1167,7 +1100,7 @@ def test_poll_ipc_response_timeout_before_recording_fails_fast_with_connection_e
 
     wizard._poll_ipc_response()
 
-    assert results == [("", "Keine Verbindung zu PulseScribe")]
+    assert results == [("", "No connection to PulseScribe")]
     assert wizard._ipc_test_cmd_id is None
 
 
@@ -1323,37 +1256,68 @@ def test_poll_ipc_response_stopped_resets_ui_and_sets_status():
     wizard._ipc_last_status = "recording"
 
     reset_calls: list[bool] = []
-    notice_updates: list[tuple[str, str]] = []
     wizard._test_status_label = _FakeLabel()
-    wizard._test_notice = _FakeLabel()
     wizard._test_transcript = _FakePlainText()
     wizard._update_navigation = lambda: None
     wizard._reset_test_ui = lambda: reset_calls.append(True)
-    wizard._set_test_notice = lambda text, color: notice_updates.append((text, color))
 
     wizard._poll_ipc_response()
 
     assert reset_calls == [True]
-    assert wizard._test_status_label.text == "Test abgebrochen."
-    assert wizard._test_transcript.value.startswith("Der Test wurde abgebrochen.")
-    assert notice_updates == [
-        ("Kein Problem — starte den Test erneut, sobald PulseScribe bereit ist.", "text_secondary")
-    ]
+    assert wizard._test_status_label.visible is False  # idle: badge hidden
+    assert wizard._test_transcript.value.startswith("Cancelled.")
     assert wizard._ipc_test_cmd_id is None
 
 
-def test_reset_test_ui_restores_retry_button_without_hiding_notice():
+def test_reset_test_ui_restores_retry_button():
     wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
     wizard._test_start_btn = _FakeButton()
     wizard._test_stop_btn = _FakeButton()
-    wizard._test_notice = _FakeLabel()
-    wizard._test_notice.visible = True
     wizard._test_started_once = True
     wizard._test_outcome = "cancelled"
 
     wizard._reset_test_ui()
 
     assert wizard._test_start_btn.visible is True
-    assert wizard._test_start_btn.text == "Erneut testen"
+    assert wizard._test_start_btn.text == "Try again"
     assert wizard._test_stop_btn.visible is False
-    assert wizard._test_notice.visible is True
+
+
+def test_save_recorded_hotkey_keeps_only_that_hotkey():
+    wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+    wizard._hotkey_status_label = _FakeLabel()
+    wizard._env_settings_cache = {"PULSESCRIBE_HOLD_HOTKEY": "ctrl+win"}
+    persisted: list[tuple[str | None, str | None]] = []
+    wizard._persist_hotkeys = lambda toggle, hold: persisted.append((toggle, hold)) or True
+    wizard.settings_changed = types.SimpleNamespace(emit=lambda: None)
+    wizard._update_navigation = lambda: None
+
+    assert wizard._save_hotkey("toggle", "ctrl+shift+d") is True
+    assert persisted == [("ctrl+shift+d", "")]
+
+
+def test_hotkey_rows_follow_the_configured_hotkey():
+    from ui.onboarding_copy import build_two_hotkeys_hint, select_hotkey_choice
+    from ui.onboarding_wizard_windows import HOTKEY_CHOICES
+
+    presets = [(key, kind, hotkey) for key, kind, hotkey, _desc in HOTKEY_CHOICES]
+    assert select_hotkey_choice("", "ctrl+win", presets) == "hold_ctrl_win"
+    assert select_hotkey_choice("f19", "", presets) == "toggle_f19"
+    assert select_hotkey_choice("ctrl+shift+d", "", presets) == "custom"
+    assert select_hotkey_choice("ctrl+alt+r", "ctrl+win", presets) is None
+    assert build_two_hotkeys_hint("Ctrl+Alt+R", "Ctrl+Win").startswith(
+        "You use two hotkeys: Toggle Ctrl+Alt+R and Hold Ctrl+Win."
+    )
+    assert build_two_hotkeys_hint("Ctrl+Alt+R", "") == ""
+
+
+def test_test_errors_show_their_detail_in_the_transcript_box():
+    from ui.onboarding_wizard_windows import _build_test_transcript_text
+
+    assert _build_test_transcript_text("error", error="No connection to PulseScribe") == (
+        "No connection to PulseScribe. Check that it is running, then try again."
+    )
+    assert _build_test_transcript_text("error", error="Bereits in Aufnahme") == (
+        "PulseScribe is still busy with another recording. Try again in a moment."
+    )
+    assert _build_test_transcript_text("no_speech").startswith("No speech detected.")
