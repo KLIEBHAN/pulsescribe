@@ -94,6 +94,27 @@ def _reset_client() -> None:
         _client_signature = None
 
 
+def list_server_models(base_url: str, *, timeout: float = 2.0) -> list[str]:
+    """Return the model IDs from ``{base_url}/models`` (OpenAI format), in server order.
+
+    Used by Settings to offer a model picker. Uses its own short-lived client (short
+    timeout, no retries) so a slow server cannot stall the UI thread pool or the
+    cached dictation client. Raises on network, HTTP or format errors.
+    """
+    from openai import OpenAI
+
+    api_key = os.getenv(API_KEY_ENV_VAR, "").strip() or _PLACEHOLDER_API_KEY
+    _warn_if_key_sent_unencrypted(base_url.strip(), api_key)
+    client = OpenAI(
+        base_url=base_url.strip(), api_key=api_key, timeout=timeout, max_retries=0
+    )
+    try:
+        ids = [str(model.id) for model in client.models.list() if getattr(model, "id", None)]
+    finally:
+        client.close()
+    return list(dict.fromkeys(ids))
+
+
 class OpenAICompatibleProvider:
     """Transkription über einen eigenen Server mit OpenAI-kompatibler API."""
 
@@ -153,4 +174,4 @@ class OpenAICompatibleProvider:
         return result
 
 
-__all__ = ["OpenAICompatibleProvider"]
+__all__ = ["OpenAICompatibleProvider", "list_server_models"]

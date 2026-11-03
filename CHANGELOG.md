@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Server model picker** – in the own server mode, the Server Model field on
+  macOS and Windows lists the models your server reports (`GET /models`), with
+  a Refresh button. Typing a name still works, also when the server offers no
+  list.
+
 ## [1.13.0] - 2026-11-03
 
 ### Added
