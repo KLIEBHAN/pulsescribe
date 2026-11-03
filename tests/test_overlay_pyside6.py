@@ -589,6 +589,17 @@ def test_listening_level_meter_settles_and_wakes_on_change(monkeypatch):
     assert widget._animation_timer.active is False
 
 
+def test_queued_level_wake_keeps_the_newest_level(monkeypatch):
+    widget = _state_widget(monkeypatch)
+    widget._on_state_changed("LISTENING", "")
+    widget._audio_level = 0.004  # newer than the queued signal value
+
+    widget._on_level_changed(0.012)
+
+    assert widget._audio_level == 0.004
+    assert widget._animation_timer.active is True
+
+
 def test_recording_continues_from_the_listening_heights(monkeypatch):
     widget = _state_widget(monkeypatch)
     widget._on_state_changed("LISTENING", "")

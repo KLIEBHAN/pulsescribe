@@ -603,8 +603,8 @@ class PySide6OverlayWidget(QWidget):
         super().mousePressEvent(event)
 
     @Slot(float)
-    def _on_level_changed(self, level: float):
-        self._audio_level = level
+    def _on_level_changed(self, _level: float):
+        """Wake a settled listening loop; ``_audio_level`` is already newer."""
         if self._state == "LISTENING":
             self._start_animation()
 
