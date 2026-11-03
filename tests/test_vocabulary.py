@@ -195,7 +195,7 @@ class TestLoadVocabulary:
         data, issues, signature = load_vocabulary_state(path=vocab_file)
 
         assert data["keywords"] == ["API", "GraphQL"]
-        assert any("doppelte" in issue for issue in issues)
+        assert any("duplicate" in issue for issue in issues)
         assert signature is not None
 
 
@@ -373,7 +373,7 @@ class TestValidateVocabulary:
 
         issues = validate_vocabulary(path=vocab_file)
 
-        assert any("2 doppelte keywords" in issue.lower() for issue in issues)
+        assert any("2 duplicate keywords" in issue.lower() for issue in issues)
 
     def test_validate_uses_utf8_encoding(self, temp_files, monkeypatch):
         vocab_file = temp_files / "vocab.json"
@@ -421,7 +421,7 @@ class TestValidateVocabulary:
         issues = vocab.validate_vocabulary(path=vocab_file)
 
         assert loaded["keywords"] == ["API", "GraphQL"]
-        assert any("doppelte" in issue for issue in issues)
+        assert any("duplicate" in issue for issue in issues)
         assert read_calls == [vocab_file]
 
 
