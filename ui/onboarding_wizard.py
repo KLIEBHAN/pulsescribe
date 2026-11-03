@@ -1978,8 +1978,8 @@ class OnboardingWizardController:
                 from utils.alerts import show_error_alert
 
                 show_error_alert(
-                    "Ungültiger Hotkey",
-                    message or "Hotkey konnte nicht gesetzt werden.",
+                    "Invalid hotkey",
+                    message or "The hotkey could not be set.",
                 )
             self._set_hotkey_status("error", message)
             return False

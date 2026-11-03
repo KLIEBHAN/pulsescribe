@@ -6437,8 +6437,8 @@ class WelcomeController:
                 from utils.alerts import show_error_alert
 
                 show_error_alert(
-                    "Ungültiger Hotkey",
-                    message or "Hotkey konnte nicht gesetzt werden.",
+                    "Invalid hotkey",
+                    message or "The hotkey could not be set.",
                 )
             if self._hotkey_card:
                 self._hotkey_card.set_status("error", message or "")

@@ -5,6 +5,7 @@ import pytest
 
 from utils.hotkey import hotkeys_conflict
 from utils.hotkey_validation import validate_hotkey_change
+from utils.permissions import is_permission_related_message
 
 
 def test_hotkeys_conflict_detects_modifier_subset_overlap() -> None:
@@ -33,7 +34,8 @@ def test_validate_hotkey_change_rejects_overlapping_hotkeys(monkeypatch) -> None
     assert normalized == "cmd+space"
     assert level == "error"
     assert message is not None
-    assert "überlappen" in message.lower()
+    assert message == "Toggle and Hold can't overlap."
+    assert not is_permission_related_message(message)  # shown as an alert
 
 
 def test_validate_hotkey_change_accepts_unchanged_hotkey_without_extra_checks(
@@ -87,8 +89,11 @@ def test_validate_hotkey_change_special_toggle_requires_input_monitoring(
 
     assert normalized == "fn"
     assert level == "error"
-    assert message is not None
-    assert "eingabemonitoring" in message.lower()
+    assert message == (
+        "This hotkey needs Input Monitoring (System Settings → Privacy & Security)."
+    )
+    # Permission errors go to the Permissions UI instead of an alert.
+    assert is_permission_related_message(message)
 
 
 def test_validate_hotkey_change_warns_when_carbon_hotkey_is_blocked_but_input_monitoring_is_available(
@@ -120,8 +125,10 @@ def test_validate_hotkey_change_warns_when_carbon_hotkey_is_blocked_but_input_mo
 
     assert normalized == "f19"
     assert level == "warning"
-    assert message is not None
-    assert "fallback" in message.lower()
+    assert message == (
+        "macOS blocks this combination as a global hotkey. "
+        "PulseScribe uses Input Monitoring instead."
+    )
 
 
 def test_validate_hotkey_change_errors_when_carbon_hotkey_is_blocked_without_input_monitoring(
@@ -153,8 +160,11 @@ def test_validate_hotkey_change_errors_when_carbon_hotkey_is_blocked_without_inp
 
     assert normalized == "f19"
     assert level == "error"
-    assert message is not None
-    assert "aktiviere eingabemonitoring" in message.lower()
+    assert message == (
+        "macOS blocks this combination as a global hotkey. "
+        "Allow Input Monitoring or choose another hotkey."
+    )
+    assert is_permission_related_message(message)
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS-only daemon hotkeys")
