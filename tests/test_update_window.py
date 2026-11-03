@@ -408,7 +408,6 @@ def test_close_waits_for_a_terminated_hanging_window():
     assert process.events == ["wait", "terminate", "wait"]
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="offscreen Qt check runs on CI macOS")
 def test_qt_window_process_renders_views_and_exits_with_the_daemon():
     pytest.importorskip("PySide6")
     process = subprocess.Popen(

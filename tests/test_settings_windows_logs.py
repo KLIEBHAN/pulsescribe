@@ -587,15 +587,18 @@ def test_try_append_logs_delta_skips_when_file_size_does_not_grow() -> None:
     assert window._last_logs_signature == (5, len("line-1"))
 
 
+# Windows log files end lines with CRLF (logging writes in text mode).
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
 def test_try_append_logs_delta_preserves_line_boundaries_after_trailing_newline(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, newline
 ):
     import config
 
-    initial_file_text = "line-1\n"
-    full_file_text = initial_file_text + "line-2\n"
+    initial_file_text = f"line-1{newline}"
+    full_file_text = initial_file_text + f"line-2{newline}"
     log_file = tmp_path / "pulsescribe.log"
-    log_file.write_text(full_file_text, encoding="utf-8")
+    # Exact bytes: the byte offsets below must match the file on every OS.
+    log_file.write_bytes(full_file_text.encode("utf-8"))
     monkeypatch.setattr(config, "LOG_FILE", log_file)
 
     window = SettingsWindow.__new__(SettingsWindow)
@@ -630,7 +633,7 @@ def test_try_append_logs_delta_replaces_view_when_tail_window_must_trim(
     expected_visible_text = "\n".join(expected_visible_lines)
 
     log_file = tmp_path / "pulsescribe.log"
-    log_file.write_text(full_file_text, encoding="utf-8")
+    log_file.write_bytes(full_file_text.encode("utf-8"))
     monkeypatch.setattr(config, "LOG_FILE", log_file)
 
     window = SettingsWindow.__new__(SettingsWindow)
