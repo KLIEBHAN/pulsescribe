@@ -13,6 +13,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which no included backend needs. MLX and Lightning also skip the torch device
   probe at startup and report their device as Metal.
 
+### Fixed
+
+- **Local backend "auto" on Apple Silicon** – now uses MLX. Before, it picked
+  Lightning, which has no turbo model and silently loaded the larger, slower
+  large-v3 instead.
+- **Backends missing from the app** – Settings only offer local backends the
+  app contains, and a configured backend that is not bundled falls back to the
+  default backend instead of failing. The two "macOS: MPS" presets, which
+  needed openai-whisper, are removed; MLX is the better choice on a Mac.
+
 ## [1.14.1] - 2026-11-04
 
 ### Fixed

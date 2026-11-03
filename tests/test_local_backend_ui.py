@@ -77,3 +77,24 @@ def test_local_advanced_ui_state_only_reveals_selected_backend_controls() -> Non
     assert auto.show_faster is False
     assert auto.show_lightning is False
     assert "recommended local defaults" in auto.guidance
+
+
+def test_available_backend_options_filter_only_in_the_packaged_app(monkeypatch) -> None:
+    import utils.local_backend as lb
+
+    options = ["auto", "whisper", "faster", "mlx", "lightning"]
+    monkeypatch.setattr(lb, "is_local_backend_installed", lambda b: b in {"mlx", "faster"})
+    monkeypatch.setattr(lb, "is_frozen_app", lambda: False)
+    assert lb.available_local_backend_options(options) == options
+    monkeypatch.setattr(lb, "is_frozen_app", lambda: True)
+    assert lb.available_local_backend_options(options) == ["auto", "faster", "mlx"]
+
+
+def test_is_local_backend_installed_checks_modules_without_importing(monkeypatch) -> None:
+    import utils.local_backend as lb
+
+    seen = []
+    monkeypatch.setattr(lb.importlib.util, "find_spec", lambda name: seen.append(name) or None)
+    assert lb.is_local_backend_installed("lightning") is False
+    assert lb.is_local_backend_installed("unknown") is False
+    assert seen == ["lightning_whisper_mlx"]
