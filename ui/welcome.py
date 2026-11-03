@@ -52,6 +52,8 @@ from utils.env import parse_bool
 from utils.version import get_app_version
 from utils.hotkey_recording import HotkeyRecorder
 from utils.local_backend import (
+    available_local_backend_options,
+    is_local_backend_installed,
     get_local_advanced_ui_state,
     normalize_local_backend,
 )
@@ -2145,13 +2147,14 @@ class WelcomeController:
         current_backend = normalize_local_backend(
             self._get_cached_env_setting("PULSESCRIBE_LOCAL_BACKEND")
         )
-        if current_backend not in LOCAL_BACKEND_OPTIONS:
+        backend_options = available_local_backend_options(LOCAL_BACKEND_OPTIONS)
+        if current_backend not in backend_options:
             current_backend = "auto"
         local_backend_popup = self._create_settings_popup(
             control_x,
             y,
             control_width,
-            LOCAL_BACKEND_OPTIONS,
+            backend_options,
             selected_title=current_backend,
         )
         self._local_backend_popup = local_backend_popup
@@ -2169,7 +2172,10 @@ class WelcomeController:
             popup.titleOfSelectedItem() if popup is not None
             else self._get_cached_env_setting("PULSESCRIBE_LOCAL_BACKEND")
         )
-        return backend == "mlx" or (backend == "auto" and is_apple_silicon())
+        # Same rule as providers.local: auto means MLX on Apple Silicon when it is installed.
+        return backend == "mlx" or (
+            backend == "auto" and is_apple_silicon() and is_local_backend_installed("mlx")
+        )
 
     def _build_mlx_quant_setting_row(
         self,

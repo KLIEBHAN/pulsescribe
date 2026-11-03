@@ -4367,13 +4367,12 @@ def _configure_default_local_backend() -> None:
 
         is_arm = platform.machine() in ("arm64", "aarch64")
         has_mlx = importlib.util.find_spec("mlx_whisper") is not None
-        os.environ["PULSESCRIBE_LOCAL_BACKEND"] = (
-            "mlx" if is_arm and has_mlx else "whisper"
-        )
         if is_arm and has_mlx:
+            os.environ["PULSESCRIBE_LOCAL_BACKEND"] = "mlx"
             os.environ.setdefault("PULSESCRIBE_LOCAL_FAST", "true")
+        # Otherwise leave the backend unset: "auto" picks an installed backend.
     except Exception:
-        os.environ["PULSESCRIBE_LOCAL_BACKEND"] = "whisper"
+        pass
 
 
 def _run_daemon_from_options(

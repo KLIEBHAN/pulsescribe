@@ -128,6 +128,21 @@ class TestDaemonMode(unittest.TestCase):
         _, kwargs = mock_daemon_cls.call_args
         self.assertEqual(kwargs.get("mode"), "openai_compatible")
 
+    def test_first_run_default_backend_is_mlx_on_apple_silicon_and_auto_elsewhere(self):
+        from pulsescribe_daemon import _configure_default_local_backend
+
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("PULSESCRIBE_LOCAL_BACKEND", "PULSESCRIBE_LOCAL_FAST")}
+        with patch.dict(os.environ, env, clear=True), \
+                patch("platform.machine", return_value="x86_64"):
+            _configure_default_local_backend()
+            self.assertNotIn("PULSESCRIBE_LOCAL_BACKEND", os.environ)
+        with patch.dict(os.environ, env, clear=True), \
+                patch("platform.machine", return_value="arm64"), \
+                patch("importlib.util.find_spec", return_value=object()):
+            _configure_default_local_backend()
+            self.assertEqual(os.environ["PULSESCRIBE_LOCAL_BACKEND"], "mlx")
+
     def test_server_url_alone_keeps_first_run_local_default(self):
         """Without a selected mode, a server URL alone must not route to Deepgram."""
         from pulsescribe_daemon import _apply_first_run_local_default

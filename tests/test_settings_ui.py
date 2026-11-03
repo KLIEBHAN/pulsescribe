@@ -528,6 +528,7 @@ class TestWelcomeTranscriptionPage:
         appkit.NSApplication.sharedApplication()
         monkeypatch.setattr(welcome_mod, "read_env_file", lambda: {})
         monkeypatch.setattr(welcome_mod, "is_apple_silicon", lambda: True)
+        monkeypatch.setattr(welcome_mod, "is_local_backend_installed", lambda b: b == "mlx")
         monkeypatch.setattr(WelcomeController, "_build_window", lambda self: None)
         ctrl = WelcomeController("f19", {"mode": "local"})
         ctrl._env_settings_cache = {"PULSESCRIBE_MODE": "local", "PULSESCRIBE_LOCAL_BACKEND": "mlx"}
@@ -550,6 +551,9 @@ class TestWelcomeTranscriptionPage:
         ctrl._local_backend_popup.selectItemWithTitle_("auto")
         ctrl._update_all_visibility()
         assert visible()  # auto runs MLX on Apple Silicon
+        monkeypatch.setattr(welcome_mod, "is_local_backend_installed", lambda b: False)
+        ctrl._update_all_visibility()
+        assert not visible()  # without mlx-whisper, auto picks another backend
 
     def test_own_server_model_picker_lists_server_models_and_keeps_typed_value(
         self, monkeypatch
