@@ -50,7 +50,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   open them.
 - **Back on the first wizard step (Windows)** – Back no longer shows on the
   first step when the wizard opens there.
-
 - **Setup wizard review after Private (macOS)** – Review showed the previous
   provider after choosing Private; it now shows Local.
 
