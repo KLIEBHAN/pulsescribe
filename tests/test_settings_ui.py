@@ -521,6 +521,44 @@ class TestWelcomeTranscriptionPage:
         ctrl._toggle_advanced_options()
         assert ctrl._device_popup.superview() in visible_blocks()
 
+    def test_own_server_mode_shows_server_url_instead_of_api_key(self, monkeypatch):
+        appkit = pytest.importorskip("AppKit")
+        import ui.welcome as welcome_mod
+
+        appkit.NSApplication.sharedApplication()
+        monkeypatch.setattr(welcome_mod, "read_env_file", lambda: {})
+        monkeypatch.setattr(WelcomeController, "_build_window", lambda self: None)
+        ctrl = WelcomeController("f19", {"mode": "openai_compatible"})
+        ctrl._env_settings_cache = {
+            "PULSESCRIBE_MODE": "openai_compatible",
+            "OPENAI_COMPATIBLE_BASE_URL": "http://mac-mini:7860/v1",
+        }
+        page = appkit.NSView.alloc().initWithFrame_(appkit.NSMakeRect(0, 0, 610, 500))
+        ctrl._build_transcription_tab(page, 500)
+        _scroll, _document, _height, blocks = ctrl._transcription_page
+        visible = [block for block, _visible in blocks if not block.isHidden()]
+
+        assert ctrl._mode_popup.titleOfSelectedItem() == "openai_compatible"
+        assert ctrl._server_url_field.superview() in visible
+        assert ctrl._server_url_field.stringValue() == "http://mac-mini:7860/v1"
+        assert ctrl._provider_guidance_label.superview() not in visible
+        assert all(
+            getattr(ctrl, f"_{provider}_field").superview() not in visible
+            for provider in ("deepgram", "groq", "openai")
+        )
+        updates = ctrl._build_env_updates_from_controls(None)
+        assert updates["PULSESCRIBE_MODE"] == "openai_compatible"
+        assert updates["OPENAI_COMPATIBLE_BASE_URL"] == "http://mac-mini:7860/v1"
+
+        ctrl._server_url_field.setStringValue_("  ")
+        assert ctrl._build_env_updates_from_controls(None)["OPENAI_COMPATIBLE_BASE_URL"] is None
+
+        ctrl._mode_popup.selectItemWithTitle_("deepgram")
+        ctrl._update_all_visibility()
+        visible = [block for block, _visible in blocks if not block.isHidden()]
+        assert ctrl._server_url_field.superview() not in visible
+        assert ctrl._provider_guidance_label.superview() in visible
+
 
 class TestWelcomeLazyTabs:
     def test_ensure_tab_built_runs_builder_once(self):

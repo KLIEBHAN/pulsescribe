@@ -167,7 +167,10 @@ LOGS_AUTO_REFRESH_INTERVALS_MS = (2000, 4000, 8000)
 # Dropdown-Optionen (identisch mit macOS)
 # =============================================================================
 
-MODE_OPTIONS = ["deepgram", "openai", "groq", "local"]
+MODE_OPTIONS = ["deepgram", "openai", "groq", "local", "openai_compatible"]
+# Own server mode: recordings go to this OpenAI-compatible base URL.
+SERVER_URL_ENV_KEY = "OPENAI_COMPATIBLE_BASE_URL"
+SERVER_URL_PLACEHOLDER = "http://server.local:8000/v1"
 REFINE_PROVIDER_OPTIONS = ["groq", "openai", "openrouter", "gemini"]
 LOCAL_BACKEND_OPTIONS = ["auto", "whisper", "faster", "mlx", "lightning"]
 LOCAL_MODEL_OPTIONS = [
@@ -200,6 +203,7 @@ MODE_LABELS = {
     "openai": "OpenAI",
     "groq": "Groq",
     "local": "Local Whisper",
+    "openai_compatible": "Own server",
 }
 PROVIDER_API_KEY_LABELS = {
     "DEEPGRAM_API_KEY": "Deepgram",
@@ -301,6 +305,12 @@ def _build_provider_guidance_text(
     if current_mode == "local":
         return "Local Whisper works without a cloud API key; audio stays on this device."
 
+    if current_mode == "openai_compatible":
+        # For the own server, ``required_key_present`` means the Server URL is set.
+        if required_key_present:
+            return "Recordings are transcribed by your own server at the Server URL above."
+        return "Own server is selected. Enter its Server URL above to start dictation."
+
     if required_key_present:
         return f"{provider} is ready for transcription."
 
@@ -346,8 +356,12 @@ def _build_setup_status(
     toggle_hotkey: str | None,
     hold_hotkey: str | None,
     api_keys: dict[str, str] | None = None,
+    server_url: str | None = None,
 ) -> tuple[str, str, str]:
-    """Ermittelt Setup-Status für die Windows-Settings-Übersicht."""
+    """Ermittelt Setup-Status für die Windows-Settings-Übersicht.
+
+    ``server_url`` is only checked for the own server mode (``openai_compatible``).
+    """
     current_mode = (mode or "deepgram").strip().lower() or "deepgram"
     toggle = _normalize_hotkey_text(toggle_hotkey)
     hold = _normalize_hotkey_text(hold_hotkey)
@@ -368,6 +382,13 @@ def _build_setup_status(
         return (
             "Setup Incomplete",
             f"{provider} is selected. Add its API key in Providers before dictation can start.",
+            "warning",
+        )
+
+    if current_mode == "openai_compatible" and not (server_url or "").strip():
+        return (
+            "Setup Incomplete",
+            "Own server is selected. Enter its Server URL in Providers before dictation can start.",
             "warning",
         )
 
@@ -918,6 +939,8 @@ class SettingsWindow(QDialog):
 
         # UI-Referenzen
         self._mode_combo: QComboBox | None = None
+        self._server_url_field: QLineEdit | None = None
+        self._server_url_container: QWidget | None = None
         self._lang_combo: QComboBox | None = None
         self._microphone_combo: QComboBox | None = None
         self._local_backend_combo: QComboBox | None = None
@@ -1532,6 +1555,22 @@ class SettingsWindow(QDialog):
         self._mode_combo.currentTextChanged.connect(self._on_mode_changed)
         self._mode_combo.currentTextChanged.connect(self._refresh_footer_settings_hint)
         card_layout.add_row(create_label_row("Mode:", self._mode_combo))
+
+        # Server URL (nur für openai_compatible)
+        self._server_url_field = QLineEdit()
+        self._server_url_field.setPlaceholderText(SERVER_URL_PLACEHOLDER)
+        self._server_url_field.setAccessibleName("Server URL")
+        self._server_url_field.setToolTip(
+            "Base URL of your own server with OpenAI's transcription API, including /v1"
+        )
+        self._server_url_field.textChanged.connect(self._refresh_footer_settings_hint)
+        self._server_url_field.textChanged.connect(self._refresh_provider_key_statuses)
+        self._server_url_field.textChanged.connect(self._refresh_setup_overview)
+        self._server_url_container = QWidget()
+        server_url_row = create_label_row("Server URL:", self._server_url_field)
+        server_url_row.setContentsMargins(0, 0, 0, 0)
+        self._server_url_container.setLayout(server_url_row)
+        card_layout.add_row(self._server_url_container)
 
         # Language
         self._lang_combo = QComboBox()
@@ -2933,6 +2972,9 @@ class SettingsWindow(QDialog):
             _set_widget_visible_if_changed(self._local_model_container, is_local)
         if hasattr(self, "_streaming_container"):
             _set_widget_visible_if_changed(self._streaming_container, is_deepgram)
+        _set_widget_visible_if_changed(
+            getattr(self, "_server_url_container", None), mode == "openai_compatible"
+        )
         required_key = MODE_API_KEY_MAP.get(mode)
         for env_key, row in getattr(self, "_api_rows", {}).items():
             _set_widget_visible_if_changed(row, env_key == required_key)
@@ -2944,6 +2986,11 @@ class SettingsWindow(QDialog):
         self._refresh_local_advanced_ui(mode)
         self._refresh_provider_key_statuses()
         self._refresh_setup_overview()
+
+    def _current_server_url(self) -> str:
+        """Server URL as currently typed (own server mode), stripped."""
+        field = getattr(self, "_server_url_field", None)
+        return field.text().strip() if field is not None else ""
 
     def _get_api_key_presence_snapshot(self) -> tuple[tuple[str, bool], ...]:
         process_api_keys = self._get_process_env_api_keys()
@@ -2968,14 +3015,18 @@ class SettingsWindow(QDialog):
         mode_combo = getattr(self, "_mode_combo", None)
         mode = mode_combo.currentText() if mode_combo else "deepgram"
         api_presence = self._get_api_key_presence_snapshot()
-        snapshot = (mode, api_presence)
+        server_url = self._current_server_url()
+        snapshot = (mode, api_presence, server_url)
         if snapshot == getattr(self, "_last_provider_key_status_snapshot", None):
             return
         self._last_provider_key_status_snapshot = snapshot
 
-        required_key = MODE_API_KEY_MAP.get((mode or "").strip().lower())
+        normalized_mode = (mode or "").strip().lower()
+        required_key = MODE_API_KEY_MAP.get(normalized_mode)
         presence_by_key = dict(api_presence)
         required_key_present = bool(required_key and presence_by_key.get(required_key))
+        if normalized_mode == "openai_compatible":
+            required_key_present = bool(server_url)
 
         guidance_label = getattr(self, "_provider_guidance_label", None)
         if guidance_label is not None:
@@ -3027,7 +3078,8 @@ class SettingsWindow(QDialog):
         )
 
         api_presence = self._get_api_key_presence_snapshot()
-        snapshot = (mode, toggle, hold, api_presence)
+        server_url = self._current_server_url()
+        snapshot = (mode, toggle, hold, api_presence, server_url)
         if snapshot == getattr(self, "_last_setup_overview_snapshot", None):
             return
         self._last_setup_overview_snapshot = snapshot
@@ -3042,6 +3094,7 @@ class SettingsWindow(QDialog):
             toggle_hotkey=toggle,
             hold_hotkey=hold,
             api_keys=api_keys,
+            server_url=server_url,
         )
         _set_badge_if_changed(status_label, headline, color_key)
         _set_widget_text_if_changed(status_detail_label, detail)
@@ -4401,6 +4454,7 @@ class SettingsWindow(QDialog):
         self._last_setup_overview_snapshot = None
         process_api_keys = self._get_process_env_api_keys()
         mode = env_get("PULSESCRIBE_MODE") or "deepgram"
+        server_url = env_get(SERVER_URL_ENV_KEY) or ""
         lang = env_get("PULSESCRIBE_LANGUAGE") or "auto"
         backend = normalize_local_backend(env_get("PULSESCRIBE_LOCAL_BACKEND"))
         model = env_get("PULSESCRIBE_LOCAL_MODEL") or "default"
@@ -4429,6 +4483,7 @@ class SettingsWindow(QDialog):
         with self._suspend_setup_overview_refresh():
             with _block_widget_signals(
                 self._mode_combo,
+                getattr(self, "_server_url_field", None),
                 self._lang_combo,
                 self._local_backend_combo,
                 self._local_model_combo,
@@ -4456,6 +4511,9 @@ class SettingsWindow(QDialog):
                 *self._api_fields.values(),
             ):
                 _set_combo_text_if_changed(self._mode_combo, mode)
+                _set_widget_text_if_changed(
+                    getattr(self, "_server_url_field", None), server_url
+                )
                 _set_combo_text_if_changed(self._lang_combo, lang)
                 _set_combo_text_if_changed(self._local_backend_combo, backend)
                 _set_combo_text_if_changed(self._local_model_combo, model)
@@ -4589,6 +4647,10 @@ class SettingsWindow(QDialog):
                 "PULSESCRIBE_MODE",
                 self._mode_combo.currentText(),
             )
+
+        server_url_field = getattr(self, "_server_url_field", None)
+        if server_url_field is not None:
+            builder.set_optional(SERVER_URL_ENV_KEY, server_url_field.text())
 
         if self._local_backend_combo:
             builder.set_local_backend(

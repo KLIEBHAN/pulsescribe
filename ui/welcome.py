@@ -107,7 +107,10 @@ HISTORY_TRANSCRIPTS_SEGMENT = 0
 HISTORY_LOGS_SEGMENT = 1
 
 # Verfügbare Optionen für Dropdowns
-MODE_OPTIONS = ["deepgram", "openai", "groq", "local"]
+MODE_OPTIONS = ["deepgram", "openai", "groq", "local", "openai_compatible"]
+# Own server mode: recordings go to this OpenAI-compatible base URL.
+SERVER_URL_ENV_KEY = "OPENAI_COMPATIBLE_BASE_URL"
+SERVER_URL_PLACEHOLDER = "http://server.local:8000/v1"
 REFINE_PROVIDER_OPTIONS = ["groq", "openai", "openrouter", "gemini"]
 LANGUAGE_OPTIONS = ["auto", "de", "en", "es", "fr", "it", "pt", "nl", "pl", "ru", "zh"]
 LOCAL_BACKEND_OPTIONS = ["auto", "whisper", "faster", "mlx", "lightning"]
@@ -1122,6 +1125,10 @@ class WelcomeController:
 
         add(lambda view, top: self._add_section_title(view, top, "Providers"))
         add(row(self._build_mode_setting_row))
+        add(
+            row(self._build_server_url_setting_row),
+            lambda: self._current_mode() == "openai_compatible",
+        )
         add(row(self._build_local_backend_setting_row), is_local)
         add(row(self._build_local_model_setting_row), is_local)
         add(row(self._build_language_setting_row))
@@ -1130,7 +1137,10 @@ class WelcomeController:
             lambda: self._current_mode() == "deepgram",
         )
         add(row(self._build_microphone_setting_row, gap=26))
-        add(self._build_api_key_header, lambda: not is_local())
+        add(
+            self._build_api_key_header,
+            lambda: self._current_mode() in MODE_API_KEY_PROVIDERS,
+        )
         for provider, label_text, env_key in API_KEY_PROVIDERS:
             add(
                 lambda view, top, p=provider, l=label_text, k=env_key: (
@@ -1979,6 +1989,30 @@ class WelcomeController:
         )
         self._mode_popup = mode_popup
         parent_view.addSubview_(mode_popup)
+
+    def _build_server_url_setting_row(
+        self,
+        base_x: int,
+        y: int,
+        control_x: int,
+        control_width: int,
+        parent_view,
+    ) -> None:
+        _label, field = self._build_text_setting_row(
+            base_x,
+            y,
+            control_x,
+            control_width,
+            parent_view,
+            label_text="Server URL:",
+            placeholder=SERVER_URL_PLACEHOLDER,
+            env_key=SERVER_URL_ENV_KEY,
+            field_attr="_server_url_field",
+        )
+        _set_tooltip_if_supported(
+            field,
+            "Base URL of your own server with OpenAI's transcription API, including /v1.",
+        )
 
     def _build_local_backend_setting_row(
         self,
@@ -5964,6 +5998,10 @@ class WelcomeController:
                 "PULSESCRIBE_MODE",
                 self._mode_popup.titleOfSelectedItem(),
             )
+
+        server_url_field = getattr(self, "_server_url_field", None)
+        if server_url_field is not None:
+            builder.set_optional(SERVER_URL_ENV_KEY, server_url_field.stringValue())
 
         if self._local_backend_popup:
             builder.set_local_backend(
