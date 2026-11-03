@@ -40,6 +40,10 @@ class MacOSAppDetector:
 
         return None
 
+    def get_frontmost_app_label(self) -> str | None:
+        """Display name of the active app; localizedName is already readable."""
+        return self.get_frontmost_app()
+
 
 class WindowsAppDetector:
     """Windows App-Detection via win32gui + psutil.

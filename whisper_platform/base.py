@@ -82,6 +82,10 @@ class AppDetector(Protocol):
         """
         ...
 
+    def get_frontmost_app_label(self) -> str | None:
+        """Readable name of the active app for display (``Microsoft Word``)."""
+        ...
+
 
 @runtime_checkable
 class DaemonController(Protocol):
