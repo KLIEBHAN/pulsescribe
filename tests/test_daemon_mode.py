@@ -128,22 +128,23 @@ class TestDaemonMode(unittest.TestCase):
         _, kwargs = mock_daemon_cls.call_args
         self.assertEqual(kwargs.get("mode"), "openai_compatible")
 
-    def test_server_url_counts_as_remote_setup_for_first_run_default(self):
-        """A configured server URL keeps the first run from forcing local mode."""
+    def test_server_url_alone_keeps_first_run_local_default(self):
+        """Without a selected mode, a server URL alone must not route to Deepgram."""
         from pulsescribe_daemon import _apply_first_run_local_default
 
         remote_keys = ("DEEPGRAM_API_KEY", "OPENAI_API_KEY", "GROQ_API_KEY")
         env = {k: v for k, v in os.environ.items() if k not in remote_keys}
         env["OPENAI_COMPATIBLE_BASE_URL"] = "http://mac-mini:7860/v1"
         with patch.dict(os.environ, env, clear=True):
-            result = _apply_first_run_local_default(
-                mode=None,
-                mode_env=None,
-                model=None,
-                effective_mode="openai_compatible",
-                effective_model=None,
-            )
-        self.assertEqual(result, ("openai_compatible", None))
+            with patch("pulsescribe_daemon._configure_default_local_backend"):
+                result = _apply_first_run_local_default(
+                    mode=None,
+                    mode_env=None,
+                    model=None,
+                    effective_mode="deepgram",
+                    effective_model=None,
+                )
+        self.assertEqual(result, ("local", None))
 
     @patch("pulsescribe_daemon.PulseScribeDaemon")
     def test_main_uses_cli_mode_over_env(self, mock_daemon_cls):

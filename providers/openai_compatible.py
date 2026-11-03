@@ -36,6 +36,8 @@ _MISSING_BASE_URL_MESSAGE = (
     f"Bitte die Server-Adresse eintragen, z. B. {BASE_URL_ENV_VAR}=http://mac-mini:7860/v1"
 )
 
+_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
 _client_lock = threading.Lock()
 _client: Any | None = None
 _client_signature: tuple[str, str] | None = None
@@ -50,6 +52,23 @@ def _read_settings() -> tuple[str, str]:
     return base_url, api_key
 
 
+def _warn_if_key_sent_unencrypted(base_url: str, api_key: str) -> None:
+    """Log a warning when a real server key would travel over plain HTTP to another host.
+
+    Plain HTTP stays allowed for trusted LANs; HTTPS protects audio and key in transit.
+    """
+    if api_key == _PLACEHOLDER_API_KEY:
+        return
+    parts = urlsplit(base_url)
+    if parts.scheme.lower() == "http" and (parts.hostname or "") not in _LOOPBACK_HOSTS:
+        logger.warning(
+            "%s wird unverschlüsselt per HTTP an %s gesendet; "
+            "außerhalb eines vertrauenswürdigen Netzes HTTPS verwenden.",
+            API_KEY_ENV_VAR,
+            parts.hostname or "?",
+        )
+
+
 def _get_client() -> Any:
     """Return the cached OpenAI SDK client, recreated when URL or key change."""
     global _client, _client_signature
@@ -59,6 +78,7 @@ def _get_client() -> Any:
             from openai import OpenAI
 
             base_url, api_key = signature
+            _warn_if_key_sent_unencrypted(base_url, api_key)
             _client = OpenAI(base_url=base_url, api_key=api_key)
             _client_signature = signature
             logger.debug("OpenAI-kompatibler Client initialisiert")

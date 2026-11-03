@@ -105,6 +105,27 @@ def test_client_is_reused_and_recreated_when_settings_change(
     assert fake_openai.created[-1]["api_key"] == "new-key"
 
 
+@pytest.mark.parametrize(
+    ("base_url", "api_key", "warns"),
+    [
+        ("http://mac-mini:7860/v1", "secret", True),
+        ("https://mac-mini/v1", "secret", False),
+        ("http://localhost:7860/v1", "secret", False),
+        ("http://mac-mini:7860/v1", "", False),
+    ],
+)
+def test_warns_only_when_a_key_travels_over_plain_http(
+    monkeypatch, audio_file, fake_openai, caplog, base_url, api_key, warns
+):
+    monkeypatch.setenv("OPENAI_COMPATIBLE_BASE_URL", base_url)
+    monkeypatch.setenv("OPENAI_COMPATIBLE_API_KEY", api_key)
+    with caplog.at_level("WARNING", logger="pulsescribe.providers.openai_compatible"):
+        OpenAICompatibleProvider().transcribe(audio_file)
+    warnings = [r for r in caplog.records if "unverschl" in r.getMessage()]
+    assert bool(warnings) is warns
+    assert all(api_key not in r.getMessage() for r in warnings)
+
+
 def test_unexpected_response_raises_type_error(monkeypatch, audio_file):
     monkeypatch.setenv("OPENAI_COMPATIBLE_BASE_URL", "http://a/v1")
     client = SimpleNamespace(
