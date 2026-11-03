@@ -5,6 +5,14 @@ import types
 
 pytest.importorskip("PySide6")
 
+from config import VAD_THRESHOLD
+from ui.animation import (
+    BAR_MAX_HEIGHT,
+    LISTENING_BAR_HEIGHTS,
+    AnimationLogic,
+    listening_bar_heights,
+)
+
 from utils.transcript_delivery import PASTE_FAILED
 from ui.overlay_pyside6 import (
     BAR_COUNT,
@@ -497,6 +505,14 @@ def _state_widget(monkeypatch):
     widget._previous_interim = ""
     widget._animation_timer = _FakeAnimationTimer()
     widget._clock_timer = _FakeAnimationTimer()
+    widget._audio_level = 0.0
+    widget._anim = AnimationLogic()
+    widget._bar_heights = [float(BAR_MIN_HEIGHT)] * BAR_COUNT
+    widget._painted_bar_heights = [float(BAR_MIN_HEIGHT)] * BAR_COUNT
+    widget._listening_settled = False
+    widget.level_changed = types.SimpleNamespace(
+        emit=lambda level: widget._on_level_changed(level)
+    )
     widget._shimmer_animation = _FakeShimmerAnimation()
     widget._shimmer_track = None
     widget._shimmer_x = None
@@ -525,19 +541,71 @@ def _state_widget(monkeypatch):
     return widget
 
 
-def test_only_recording_runs_the_animation_timer(monkeypatch):
+def _run_frames(widget, limit: int = 400) -> int:
+    for frame in range(limit):
+        if not widget._animation_timer.active:
+            return frame
+        widget._animate_frame()
+    return limit
+
+
+def test_only_listening_and_recording_run_the_animation_timer(monkeypatch):
     widget = _state_widget(monkeypatch)
 
     widget._on_state_changed("LISTENING", "")
-    assert widget._animation_timer.start_calls == []
+    assert widget._animation_timer.start_calls == [FRAME_MS]
+    assert widget._bar_heights == list(LISTENING_BAR_HEIGHTS)
+    # Silence: the rest row is already settled, so the loop stops at once.
+    assert _run_frames(widget) == 1
+    assert widget._listening_settled is True
 
     widget._on_state_changed("RECORDING", "")
-    assert widget._animation_timer.start_calls == [FRAME_MS]
+    assert widget._animation_timer.start_calls == [FRAME_MS, FRAME_MS]
 
     for state in ("TRANSCRIBING", "REFINING", "LOADING", "DONE"):
         widget._on_state_changed(state, "")
         assert widget._animation_timer.active is False
-    assert widget._animation_timer.start_calls == [FRAME_MS]
+    assert widget._animation_timer.start_calls == [FRAME_MS, FRAME_MS]
+
+
+def test_listening_level_meter_settles_and_wakes_on_change(monkeypatch):
+    widget = _state_widget(monkeypatch)
+    widget._on_state_changed("LISTENING", "")
+    _run_frames(widget)
+
+    # Room noise below the gate does not wake the settled loop.
+    widget.update_audio_level(0.001)
+    assert widget._animation_timer.active is False
+
+    widget.update_audio_level(VAD_THRESHOLD)
+    assert widget._animation_timer.active is True
+    assert _run_frames(widget) < 400
+    peak = listening_bar_heights(1.0)
+    assert all(abs(h - p) < 2 * BAR_HEIGHT_UPDATE_EPSILON for h, p in zip(widget._bar_heights, peak))
+    assert max(widget._bar_heights) <= max(LISTENING_BAR_HEIGHTS) + 0.35 * BAR_MAX_HEIGHT
+
+    # A steady level keeps the loop stopped.
+    widget.update_audio_level(VAD_THRESHOLD)
+    assert widget._animation_timer.active is False
+
+
+def test_recording_continues_from_the_listening_heights(monkeypatch):
+    widget = _state_widget(monkeypatch)
+    widget._on_state_changed("LISTENING", "")
+    widget.update_audio_level(VAD_THRESHOLD)
+    _run_frames(widget)
+    listening = list(widget._bar_heights)
+
+    widget._on_state_changed("RECORDING", "")
+
+    assert widget._bar_heights == listening
+    widget._animate_frame()
+    # One smoothing step from the listening row, never a reset to the minimum.
+    assert all(
+        abs(after - before) <= 0.4 * BAR_MAX_HEIGHT
+        for after, before in zip(widget._bar_heights, listening)
+    )
+    assert min(widget._bar_heights) > BAR_MIN_HEIGHT
 
 
 def test_shimmer_runs_only_on_processing_lines(monkeypatch):

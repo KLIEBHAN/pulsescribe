@@ -13,6 +13,9 @@ from ui.animation import (
     BAR_MIN_HEIGHT,
     BAR_WIDTH,
     LISTENING_BAR_HEIGHTS,
+    LISTENING_LEVEL_EPSILON,
+    listening_bar_heights,
+    listening_level,
 )
 from ui.overlay_feedback import (
     RECORDING_CLOCK_STATES,
@@ -179,6 +182,14 @@ def _wave_heights_are_settled(heights: list[float]) -> bool:
     )
 
 
+def _heights_match(heights, goals) -> bool:
+    """Return True when every bar is within a subpixel of its goal height."""
+    return all(
+        abs(height - goal) < WAVE_HEIGHT_UPDATE_EPSILON
+        for height, goal in zip(heights, goals)
+    )
+
+
 def _build_height_factors() -> list[float]:
     """Erzeugt symmetrische Höhenfaktoren für alle Balken."""
     if WAVE_BAR_COUNT <= 1:
@@ -226,7 +237,7 @@ class SoundWaveView:
 
     Modi (siehe ``OverlayContent.bars``):
     - level: audiogetriebene Wellenanimation (einziger animierter Modus)
-    - low: statische, niedrige Balken (Listening)
+    - low: niedrige Balken (Listening), folgen als kleiner Pegel dem Mikrofon
     - line/phase1/phase2: 3-px-Linie (Preparing/Transcribing/Refining) mit
       Shimmer per Core Animation (kein Python pro Frame)
     - none: ausgeblendet (Ergebnis-Badges)
@@ -235,6 +246,7 @@ class SoundWaveView:
     # Class defaults keep stop_animating safe on partially built views.
     _shimmer_track = None
     _shimmer_band = None
+    current_animation = None
 
     def __init__(self, frame):
         from AppKit import NSView  # type: ignore[import-not-found]
@@ -367,10 +379,20 @@ class SoundWaveView:
     def show_mode(self, mode: str) -> None:
         """Switch to ``level``/``low``/``line``/``phase1``/``phase2``/``none``.
 
-        ``level`` is driven by audio; the processing lines get the shimmer
-        unless the user prefers reduced motion; every other mode is static.
+        ``level`` and ``low`` are driven by audio; the processing lines get the
+        shimmer unless the user prefers reduced motion; every other mode is static.
         """
         if self.current_animation == mode:
+            return
+        if self.current_animation == "low" and mode == "level":
+            # Recording grows out of the listening row: keep heights and level.
+            self.current_animation = mode
+            transaction = _disabled_layer_actions()
+            try:
+                self.set_bar_color(self._bar_colors[mode])
+            finally:
+                transaction.commit()
+            self._wake_level_timer()
             return
         self.stop_animating()
         self.current_animation = mode
@@ -507,8 +529,21 @@ class SoundWaveView:
         self._ensure_recording_mode()
 
         self._target_level = self._compute_target_level(level)
+        self._wake_level_timer()
 
-        # Resume rendering only when a new level or geometry needs a frame.
+    def update_listening_level(self, rms: float) -> None:
+        """Follow the microphone on the low listening row (no-op in other modes).
+
+        Fixed scale without AGC (see ``listening_level``); stays active with
+        reduced motion because it is an informational level meter.
+        """
+        if self.current_animation != "low":
+            return
+        self._target_level = listening_level(rms)
+        self._wake_level_timer()
+
+    def _wake_level_timer(self) -> None:
+        """Resume rendering only when a new level or geometry needs a frame."""
         if self._level_timer is None:
             if not self._level_frame_is_settled(self._wave_center_y()):
                 self._start_level_timer()
@@ -685,6 +720,15 @@ class SoundWaveView:
 
     def _level_frame_is_settled(self, center_y: float) -> bool:
         """A quiet, fully settled frame needs no timer until the next level update."""
+        if self.current_animation == "low":
+            # Listening settles at any steady level, not only at silence.
+            return (
+                abs(self._target_level - self._smoothed_level) <= LISTENING_LEVEL_EPSILON
+                and self._last_center_y == center_y
+                and _heights_match(
+                    self._last_heights, listening_bar_heights(self._smoothed_level)
+                )
+            )
         return (
             self._target_level <= WAVE_LEVEL_SETTLED_EPSILON
             and self._smoothed_level <= WAVE_LEVEL_SETTLED_EPSILON
@@ -707,9 +751,19 @@ class SoundWaveView:
 
         center_y = self._wave_center_y()
         if self._level_frame_is_settled(center_y):
+            if self.current_animation == "low":
+                # Land exactly on the steady level (a subpixel snap at most).
+                self._smoothed_level = target_level
+                self._apply_bar_heights(
+                    listening_bar_heights(target_level), center_y=center_y
+                )
             self._stop_level_timer()
             return
         self._update_level_timer_interval()
+
+        if self.current_animation == "low":
+            self._render_listening_frame(level, center_y)
+            return
 
         now = time.perf_counter()
         primary_tau = math.tau * WAVE_WANDER_HZ_PRIMARY
@@ -808,6 +862,26 @@ class SoundWaveView:
             )
             heights[i] = prev_height + alpha * (height - prev_height)
 
+        self._apply_bar_heights(heights, center_y=center_y)
+
+    def _render_listening_frame(self, level: float, center_y: float) -> None:
+        """Ease the low row toward the listening heights for ``level`` (no wave).
+
+        Steps never drop below the layer-update epsilon, so the tail reaches
+        the goal and the timer can settle instead of stalling a pixel short.
+        """
+        heights = self._recording_frame_buffer()
+        last_heights = self._last_heights
+        epsilon = WAVE_HEIGHT_UPDATE_EPSILON
+        for i, goal in enumerate(listening_bar_heights(level)):
+            prev_height = last_heights[i]
+            gap = goal - prev_height
+            step = gap * (
+                WAVE_SMOOTHING_ALPHA_RISE if gap > 0 else WAVE_SMOOTHING_ALPHA_FALL
+            )
+            if -epsilon < step < epsilon:
+                step = max(-epsilon, min(epsilon, gap))
+            heights[i] = prev_height + step
         self._apply_bar_heights(heights, center_y=center_y)
 
 
@@ -1412,3 +1486,5 @@ class OverlayController:
         """Aktualisiert Audio-Visualisierung (Echtzeit)."""
         if self._current_state == AppState.RECORDING:
             self._wave_view.update_levels(level)
+        elif self._current_state == AppState.LISTENING:
+            self._wave_view.update_listening_level(level)

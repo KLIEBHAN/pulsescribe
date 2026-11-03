@@ -38,11 +38,11 @@ BADGE_PADDING_V = 3
 DISMISS_GLYPH = "×"
 DISMISS_FONT_SIZE = 15
 
-# Bars: "level" follows the microphone, "low" is the static listening row,
-# "line" collapses the bars into one flat processing line.
+# Bars: "level" follows the microphone, "low" is the listening row (a small
+# level meter), "line" collapses the bars into one flat processing line.
 BAR_COLORS = {
     "level": "#ececec",
-    "low": "#5a5a5a",
+    "low": "#6f6f6f",
     "line": "#6f6f6f",
 }
 BAR_AREA_WIDTH = BAR_COUNT * BAR_WIDTH + (BAR_COUNT - 1) * BAR_GAP

@@ -94,3 +94,25 @@ def test_only_recording_produces_animated_frames() -> None:
     for state in ("LISTENING", "TRANSCRIBING", "REFINING", "LOADING", "DONE", "ERROR"):
         assert anim.calculate_frame_normalized(1.0, state) == (0.0,) * 10
     assert max(anim.calculate_frame_normalized(1.0, "RECORDING")) > 0.0
+
+
+def test_listening_level_uses_a_fixed_gated_scale() -> None:
+    from config import VAD_THRESHOLD, VISUAL_NOISE_GATE
+    from ui.animation import listening_level
+
+    assert listening_level(VISUAL_NOISE_GATE) == 0.0
+    assert listening_level(VAD_THRESHOLD) == 1.0
+    assert listening_level(VAD_THRESHOLD * 10) == 1.0
+    assert 0.0 < listening_level((VISUAL_NOISE_GATE + VAD_THRESHOLD) / 2) < 1.0
+    for bad in (float("nan"), float("inf"), None, -1.0):
+        assert listening_level(bad) == 0.0
+
+
+def test_listening_bar_heights_stay_small() -> None:
+    from ui.animation import LISTENING_BAR_HEIGHTS, listening_bar_heights
+
+    assert listening_bar_heights(0.0) == LISTENING_BAR_HEIGHTS
+    peak = listening_bar_heights(1.0)
+    assert listening_bar_heights(2.0) == peak
+    assert all(p > rest for p, rest in zip(peak, LISTENING_BAR_HEIGHTS))
+    assert all(p - rest <= 0.35 * BAR_MAX_HEIGHT for p, rest in zip(peak, LISTENING_BAR_HEIGHTS))

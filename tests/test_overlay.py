@@ -4,6 +4,8 @@ import types
 
 import pytest
 
+from config import VAD_THRESHOLD
+from ui.animation import BAR_MAX_HEIGHT, listening_bar_heights
 from ui.overlay import (
     OVERLAY_INTERIM_MAX_CHARS,
     WAVE_ANIMATION_FPS,
@@ -640,9 +642,93 @@ def test_audio_level_switches_to_level_mode(monkeypatch):
     assert view._level_timer is not None
 
 
+def _listening_view(monkeypatch):
+    """Listening view that commits frames through the real subpixel gate."""
+    _FakeCATransaction.reset()
+    monkeypatch.setitem(
+        sys.modules, "Quartz", types.SimpleNamespace(CATransaction=_FakeCATransaction)
+    )
+    _scheduled, timers = _install_fake_foundation(monkeypatch)
+    view = _quiet_recording_view()
+    view.current_animation = "low"
+    view.bars = [_FakeBar() for _ in range(WAVE_BAR_COUNT)]
+    view._rect_factory = lambda *rect: rect
+    view._last_heights = list(LISTENING_BAR_HEIGHTS)
+    return view, timers
+
+
+def _run_level_frames(view, limit: int = 400) -> int:
+    for frame in range(limit):
+        if view._level_timer is None:
+            return frame
+        view._render_level_frame()
+    return limit
+
+
+def test_listening_level_meter_rises_settles_and_returns_to_rest(monkeypatch):
+    view, timers = _listening_view(monkeypatch)
+
+    view.update_listening_level(VAD_THRESHOLD * 2)  # clipped to full amplitude
+    assert view._level_timer is not None
+    assert _run_level_frames(view) < 400
+    peak = listening_bar_heights(1.0)
+    # Settles within the level epsilon (~a quarter pixel) of the full amplitude.
+    assert all(abs(h - p) < 2 * WAVE_HEIGHT_UPDATE_EPSILON for h, p in zip(view._last_heights, peak))
+    assert max(view._last_heights) <= max(LISTENING_BAR_HEIGHTS) + 0.35 * BAR_MAX_HEIGHT
+    assert timers[-1].invalidated == 1  # steady level: no frames until it changes
+
+    view.update_listening_level(0.0)
+    assert _run_level_frames(view) < 400
+    assert all(
+        abs(h - rest) < WAVE_HEIGHT_UPDATE_EPSILON
+        for h, rest in zip(view._last_heights, LISTENING_BAR_HEIGHTS)
+    )
+
+
+def test_listening_room_noise_below_the_gate_starts_no_timer(monkeypatch):
+    view, timers = _listening_view(monkeypatch)
+
+    for _ in range(50):
+        view.update_listening_level(0.001)
+
+    assert timers == [] and view._level_timer is None
+
+
+def test_listening_level_is_ignored_outside_the_low_row(monkeypatch):
+    view, timers = _listening_view(monkeypatch)
+    view.current_animation = "line"
+
+    view.update_listening_level(VAD_THRESHOLD)
+
+    assert timers == [] and view._target_level == 0.0
+
+
+def test_recording_grows_out_of_the_listening_row(monkeypatch):
+    view, colors, heights = _mode_view(monkeypatch)
+    view.show_mode("low")
+    mid = list(listening_bar_heights(0.5))
+    view._last_heights = list(mid)
+    view._smoothed_level = 0.5
+    heights.clear()
+
+    view.show_mode("level")
+
+    assert colors[-1] == "white"
+    assert heights == []  # no reset to the minimum height
+    assert view._last_heights == mid and view._smoothed_level == 0.5
+    assert view._level_timer is not None
+
+
 class _FakeWaveModes:
     def __init__(self, events: list[str]) -> None:
         self.events = events
+        self.levels: list[tuple[str, float]] = []
+
+    def update_levels(self, level: float) -> None:
+        self.levels.append(("recording", level))
+
+    def update_listening_level(self, level: float) -> None:
+        self.levels.append(("listening", level))
 
     def show_mode(self, mode: str) -> None:
         self.events.append(f"bars:{mode}")
@@ -679,6 +765,16 @@ def _controller(events: list[str] | None = None) -> OverlayController:
     controller._fade_in = lambda: events.append("show")
     controller._fade_out = lambda: events.append("hide")
     return controller
+
+
+def test_audio_level_routes_by_state():
+    controller = _controller()
+
+    for state in (AppState.LISTENING, AppState.RECORDING, AppState.TRANSCRIBING):
+        controller._current_state = state
+        controller.update_audio_level(0.01)
+
+    assert controller._wave_view.levels == [("listening", 0.01), ("recording", 0.01)]
 
 
 def test_update_state_skips_duplicate_transition_work(monkeypatch):
