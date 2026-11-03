@@ -585,6 +585,8 @@ DEFAULT_API_MODEL = "gpt-4o-transcribe"
 DEFAULT_LOCAL_MODEL = "turbo"
 DEFAULT_DEEPGRAM_MODEL = "nova-3"
 DEFAULT_GROQ_MODEL = "whisper-large-v3"
+# OpenAI's Whisper name; compatible servers map it to their default model.
+DEFAULT_OPENAI_COMPATIBLE_MODEL = "whisper-1"
 DEFAULT_REFINE_MODEL = "openai/gpt-oss-120b"
 DEFAULT_GEMINI_REFINE_MODEL = "gemini-3-flash-preview"
 
@@ -679,6 +681,7 @@ __all__ = [
     "DRAIN_EMPTY_THRESHOLD",
     # Models
     "DEFAULT_API_MODEL",
+    "DEFAULT_OPENAI_COMPATIBLE_MODEL",
     "DEFAULT_LOCAL_MODEL",
     "DEFAULT_DEEPGRAM_MODEL",
     "DEFAULT_GROQ_MODEL",

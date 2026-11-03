@@ -3786,9 +3786,9 @@ def main():
     )
     parser.add_argument(
         "--mode",
-        choices=["deepgram", "groq", "openai", "local"],
+        choices=["deepgram", "groq", "openai", "local", "openai_compatible"],
         default=os.getenv("PULSESCRIBE_MODE", "deepgram"),
-        help="Transkriptions-Modus (deepgram, groq, openai, local)",
+        help="Transkriptions-Modus (deepgram, groq, openai, local, openai_compatible)",
     )
     parser.add_argument(
         "--no-paste",

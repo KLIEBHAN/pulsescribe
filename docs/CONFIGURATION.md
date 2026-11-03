@@ -38,7 +38,7 @@ At least one API key is required for cloud transcription:
 
 | Variable                | Values                                | Default  | Description                                |
 | ----------------------- | ------------------------------------- | -------- | ------------------------------------------ |
-| `PULSESCRIBE_MODE`      | `deepgram`, `openai`, `groq`, `local` | `openai` | Transcription provider                     |
+| `PULSESCRIBE_MODE`      | `deepgram`, `openai`, `groq`, `local`, `openai_compatible` | `openai` | Transcription provider       |
 | `PULSESCRIBE_MODEL`     | Provider-specific                     | Auto     | Override provider's default model          |
 | `PULSESCRIBE_LANGUAGE`  | `de`, `en`, `auto`, etc.              | `auto`   | Language code (explicit improves accuracy) |
 | `PULSESCRIBE_STREAMING` | `true`, `false`                       | `true`   | WebSocket streaming for Deepgram           |
@@ -51,6 +51,18 @@ At least one API key is required for cloud transcription:
 | **OpenAI**   | `gpt-4o-transcribe`, `gpt-4o-mini-transcribe`, `whisper-1` | `gpt-4o-transcribe` |
 | **Groq**     | `whisper-large-v3`, `distil-whisper-large-v3-en`           | `whisper-large-v3`  |
 | **Local**    | `tiny`, `base`, `small`, `medium`, `large`, `turbo`        | `turbo`             |
+| **Own server** | Server-specific, for example `whisper-1`, `large-v3-turbo` | `whisper-1`       |
+
+### Own Server (OpenAI-compatible)
+
+`PULSESCRIBE_MODE=openai_compatible` uploads each recording to your own server that implements OpenAI's transcription API (`POST /audio/transcriptions`), for example a Whisper server on another computer in your network. Transcription starts after you stop recording; there is no live text.
+
+| Variable                     | Example                    | Description                                                        |
+| ---------------------------- | -------------------------- | ------------------------------------------------------------------ |
+| `OPENAI_COMPATIBLE_BASE_URL` | `http://mac-mini:7860/v1`  | Required. API base URL including `/v1`. Plain `http://` sends audio and key unencrypted: use it only in a trusted LAN, otherwise HTTPS |
+| `OPENAI_COMPATIBLE_API_KEY`  | –                          | Optional. Only if your server checks a key; `OPENAI_API_KEY` is never sent there |
+
+`PULSESCRIBE_MODEL` selects the server's model (default `whisper-1`, which compatible servers map to their default). PulseScribe requests JSON (`response_format=json`) and uses only the `text` field of the answer, so subtitle formats such as SRT are not available in this mode.
 
 ---
 
@@ -311,4 +323,13 @@ PULSESCRIBE_MODE=openai
 PULSESCRIBE_MODEL=gpt-4o-transcribe
 PULSESCRIBE_REFINE=true
 PULSESCRIBE_REFINE_PROVIDER=openai
+```
+
+### Own Whisper Server in the LAN
+
+```bash
+PULSESCRIBE_MODE=openai_compatible
+OPENAI_COMPATIBLE_BASE_URL=http://mac-mini:7860/v1
+PULSESCRIBE_LANGUAGE=de
+# Optional: PULSESCRIBE_MODEL=large-v3 for the slower, more accurate model
 ```
