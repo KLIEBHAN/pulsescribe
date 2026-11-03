@@ -656,7 +656,7 @@ def test_load_vocabulary_surfaces_validation_warnings(monkeypatch):
         "load_vocabulary_state",
         lambda: (
             {"keywords": ["alpha", "beta"]},
-            ["2 doppelte Keywords gefunden."],
+            ["2 duplicate keywords found."],
             (11, 22, 33),
         ),
     )
@@ -687,7 +687,7 @@ def test_save_vocabulary_surfaces_saved_warning_summary(monkeypatch):
         lambda keywords: (
             saved_keywords.append(list(keywords)),
             {"keywords": ["alpha", "beta"]},
-            ["2 doppelte Keywords gefunden."],
+            ["2 duplicate keywords found."],
             (33, 44, 55),
         )[1:],
     )

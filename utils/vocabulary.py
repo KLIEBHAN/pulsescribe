@@ -118,16 +118,16 @@ def _build_keyword_issues(
     issues: list[str] = []
     if non_string_count > 0:
         issues.append(
-            f"{non_string_count} Keywords sind keine Strings und werden ignoriert."
+            f"{non_string_count} keywords are not text and are ignored."
         )
     if duplicate_count > 0:
-        issues.append(f"{duplicate_count} doppelte Keywords gefunden.")
+        issues.append(f"{duplicate_count} duplicate keywords found.")
     if keyword_count > 100:
         issues.append(
-            f"{keyword_count} Keywords: Deepgram nutzt max. 100, Local max. 50."
+            f"{keyword_count} keywords: Deepgram uses at most 100, Local at most 50."
         )
     elif keyword_count > 50:
-        issues.append(f"{keyword_count} Keywords: Local nutzt max. 50.")
+        issues.append(f"{keyword_count} keywords: Local uses at most 50.")
     return issues
 
 
@@ -138,7 +138,7 @@ def _analyze_keywords(raw_keywords: Any) -> _KeywordAnalysis:
     if not isinstance(raw_keywords, list):
         return _KeywordAnalysis(
             [],
-            ["'keywords' muss eine Liste sein."],
+            ["'keywords' must be a list."],
             0,
             0,
             0,
@@ -195,10 +195,10 @@ def _parse_vocabulary_text(raw_text: str) -> tuple[dict[str, Any], list[str]]:
     try:
         data = json.loads(raw_text)
     except json.JSONDecodeError:
-        return {"keywords": []}, ["Vocabulary-Datei ist kein gültiges JSON."]
+        return {"keywords": []}, ["The vocabulary file is not valid JSON."]
 
     if not isinstance(data, dict):
-        return {"keywords": []}, ["Vocabulary-Datei muss ein JSON-Objekt sein."]
+        return {"keywords": []}, ["The vocabulary file must be a JSON object."]
 
     parsed = dict(data)
     analysis = _analyze_keywords(parsed.get("keywords"))
@@ -218,7 +218,7 @@ def _read_vocabulary_state(
     except (OSError, UnicodeDecodeError) as e:
         logger.warning(f"Vocabulary-Datei fehlerhaft: {e}")
         data: dict[str, Any] = {"keywords": []}
-        issues = [f"Vocabulary-Datei nicht lesbar: {e}"]
+        issues = [f"The vocabulary file could not be read: {e}"]
     else:
         data, issues = _parse_vocabulary_text(raw_text)
 
@@ -242,7 +242,7 @@ def load_vocabulary_state(
         logger.warning(f"Vocabulary-Datei nicht lesbar: {e}")
         _cache.pop(vocab_file, None)
         _trusted_cache_signatures.pop(vocab_file, None)
-        return {"keywords": []}, [f"Vocabulary-Datei nicht lesbar: {e}"], None
+        return {"keywords": []}, [f"The vocabulary file could not be read: {e}"], None
 
     data, issues = _read_vocabulary_state(vocab_file, signature)
     return data, issues, signature

@@ -12,8 +12,8 @@ def _keyword_label(count: int) -> str:
 def _normalize_issue_flags(issues: list[str]) -> dict[str, bool]:
     lowered = [issue.lower() for issue in issues]
     return {
-        "duplicates": any("doppelte" in issue for issue in lowered),
-        "invalid_entries": any("keine strings" in issue for issue in lowered),
+        "duplicates": any("duplicate" in issue for issue in lowered),
+        "invalid_entries": any("not text" in issue for issue in lowered),
         "local_limit": any("local" in issue and "50" in issue for issue in lowered),
         "deepgram_limit": any("deepgram" in issue and "100" in issue for issue in lowered),
         "invalid_file": any(
@@ -21,9 +21,8 @@ def _normalize_issue_flags(issues: list[str]) -> dict[str, bool]:
             for issue in lowered
             for keyword in (
                 "json",
-                "nicht lesbar",
-                "json-objekt",
-                "liste",
+                "could not be read",
+                "must be a list",
             )
         ),
     }

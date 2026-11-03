@@ -44,7 +44,7 @@ def test_build_vocabulary_load_feedback_reports_empty_and_cleaned_states() -> No
     empty_text, empty_color = build_vocabulary_load_feedback(keywords=[], issues=[])
     fixed_text, fixed_color = build_vocabulary_load_feedback(
         keywords=["Alpha", "Beta"],
-        issues=["2 doppelte Keywords gefunden."],
+        issues=["2 duplicate keywords found."],
     )
 
     assert "No custom vocabulary yet" in empty_text
@@ -70,3 +70,18 @@ def test_build_vocabulary_save_feedback_distinguishes_saved_and_unchanged() -> N
 
     assert "No vocabulary changes to save" in unchanged_text
     assert unchanged_color == "text_secondary"
+
+
+def test_load_feedback_recognizes_messages_from_vocabulary_module() -> None:
+    """The load feedback matches the real issue texts, not copies of them."""
+    from utils.vocabulary import _build_keyword_issues
+
+    issues = _build_keyword_issues(
+        non_string_count=1, duplicate_count=2, keyword_count=120
+    )
+    text, color = build_vocabulary_load_feedback(keywords=["a", "b"], issues=issues)
+
+    assert "merged automatically" in text
+    assert "Invalid entries were ignored." in text
+    assert "Deepgram uses up to 100 keywords" in text
+    assert color == "warning"

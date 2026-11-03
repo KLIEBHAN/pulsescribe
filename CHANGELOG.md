@@ -25,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   macOS and the messages for Toggle/Hold conflicts, blocked combinations, Input
   Monitoring and unknown keys were still German. Windows hotkey format errors
   are English too.
+- **Startup alerts and vocabulary messages in English** – the macOS alerts for
+  a missing or invalid hotkey and for vocabulary problems, the hotkey overlap
+  message and the vocabulary file messages were still German.
 
 ## [1.11.0] - 2026-11-03
 

@@ -3756,8 +3756,8 @@ class PulseScribeDaemon:
 
             other_mode, other_hk = overlap_with
             invalid_msgs.append(
-                f"Hotkeys '{other_hk}' ({other_mode}) und '{hk}' ({mode}) "
-                "überlappen. Nur der erste wird verwendet."
+                f"Hotkeys '{other_hk}' ({other_mode}) and '{hk}' ({mode}) "
+                "overlap. Only the first one is used."
             )
         return filtered_bindings, invalid_msgs
 
@@ -3825,7 +3825,7 @@ class PulseScribeDaemon:
         try:
             virtual_key, modifier_mask = parse_hotkey(hk)
         except ValueError as e:
-            msg = f"Hotkey '{hk}' ungültig: {e}"
+            msg = f"Hotkey '{hk}' is invalid: {e}"
             logger.error(msg)
             return msg
 
@@ -3878,7 +3878,7 @@ class PulseScribeDaemon:
         if not input_monitoring_granted and (
             mode == "hold" or hk_is_fn or hk_is_capslock
         ):
-            msg = f"Hotkey '{hk}' benötigt Eingabemonitoring‑Zugriff – deaktiviert."
+            msg = f"Hotkey '{hk}' needs Input Monitoring and is turned off."
             logger.warning(msg)
             return msg
 
@@ -3904,9 +3904,9 @@ class PulseScribeDaemon:
             return
         try:
             show_error_alert(
-                "Kein Hotkey konfiguriert",
-                "Es ist kein Hotkey gesetzt. PulseScribe läuft ohne Hotkey.\n\n"
-                "Öffne Settings, um einen Hotkey zu wählen.",
+                "No hotkey set",
+                "PulseScribe is running without a hotkey.\n\n"
+                "Open Settings to choose one.",
             )
         except Exception:
             pass
@@ -3928,10 +3928,10 @@ class PulseScribeDaemon:
 
         try:
             show_error_alert(
-                "Ungültige Hotkey‑Konfiguration",
-                "Ein oder mehrere Hotkeys konnten nicht aktiviert werden:\n\n"
+                "Invalid hotkey",
+                "One or more hotkeys could not be turned on:\n\n"
                 + "\n".join(f"- {m}" for m in non_permission_msgs)
-                + "\n\nÖffne Settings, um das zu korrigieren.",
+                + "\n\nOpen Settings to fix this.",
             )
         except Exception:
             pass
@@ -4149,10 +4149,10 @@ class PulseScribeDaemon:
                 from utils.alerts import show_error_alert
 
                 show_error_alert(
-                    "Probleme in der Vocabulary",
-                    "Es wurden Probleme in ~/.pulsescribe/vocabulary.json gefunden:\n\n"
+                    "Vocabulary problems",
+                    "PulseScribe found problems in ~/.pulsescribe/vocabulary.json:\n\n"
                     + "\n".join(f"- {issue}" for issue in vocab_issues)
-                    + "\n\nÖffne Settings, um das zu korrigieren.",
+                    + "\n\nOpen Settings to fix this.",
                 )
         except Exception:
             pass
