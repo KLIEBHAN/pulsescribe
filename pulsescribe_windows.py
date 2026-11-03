@@ -2182,10 +2182,10 @@ class PulseScribeWindows:
 
         app = None
         if feedback == PASTED:
-            # Process name of the foreground window: the paste target.
+            # Readable name of the foreground window's app: the paste target.
             from whisper_platform import get_app_detector
 
-            app = get_app_detector().get_frontmost_app()
+            app = get_app_detector().get_frontmost_app_label()
         if not transcription_time_enabled():
             transcribe_seconds = None
         return done_status(feedback, app=app, seconds=transcribe_seconds)

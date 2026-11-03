@@ -321,7 +321,7 @@ def test_done_status_names_paste_target_and_time_only_when_enabled(monkeypatch):
     enabled = [True]
     monkeypatch.setattr(
         "whisper_platform.get_app_detector",
-        lambda: SimpleNamespace(get_frontmost_app=lambda: "WINWORD"),
+        lambda: SimpleNamespace(get_frontmost_app_label=lambda: "Microsoft Word"),
     )
     monkeypatch.setattr(
         "utils.transcript_delivery.transcription_time_enabled", lambda: enabled[0]
@@ -329,11 +329,11 @@ def test_done_status_names_paste_target_and_time_only_when_enabled(monkeypatch):
     done_status = windows_module.PulseScribeWindows._done_status
 
     assert done_status("Transcript pasted", 1.24) == (
-        "Transcript pasted into WINWORD · 1.2 s"
+        "Transcript pasted into Microsoft Word · 1.2 s"
     )
     assert done_status("Copied to clipboard", 0.5) == "Copied to clipboard · 0.5 s"
     enabled[0] = False
-    assert done_status("Transcript pasted", 1.24) == "Transcript pasted into WINWORD"
+    assert done_status("Transcript pasted", 1.24) == "Transcript pasted into Microsoft Word"
 
 
 def test_audio_callback_recording_state_skips_tray_hotpath(monkeypatch):
