@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Microphone level while listening** – before you start speaking, the
+  grey listening bars follow the microphone level with a small amplitude,
+  so you can see that PulseScribe hears you. Steady room noise keeps them
+  still, and they grow smoothly into the white recording bars once speech
+  is detected. As an informational level meter it stays on with "Reduce
+  motion". The Windows Tkinter fallback keeps the static bars.
+- **Readable app names (Windows)** – the result line names the target app
+  as "into Microsoft Word" or "into Google Chrome" instead of the process
+  name (`WINWORD`, `chrome`).
+
 ## [1.10.1] - 2026-11-02
 
 ### Changed

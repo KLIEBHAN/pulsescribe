@@ -250,6 +250,8 @@ class PySide6OverlayWidget(QWidget):
         self._anim = AnimationLogic()
         self._bar_heights = [float(BAR_MIN_HEIGHT)] * BAR_COUNT
         self._painted_bar_heights = [float(BAR_MIN_HEIGHT)] * BAR_COUNT
+        # Listening loop stopped on a steady level; audio thread wakes it.
+        self._listening_settled = False
         self._animation_start = time.perf_counter()
         self._active_screen_center_pending = False
         self._fade_out_timer: QTimer | None = None
@@ -490,9 +492,17 @@ class PySide6OverlayWidget(QWidget):
         """Thread-safe Level-Update (direkt, ohne Signal-Queue).
 
         Level-Updates sind unkritisch - verlorene Updates sind ok.
-        Direktes Setzen vermeidet Signal-Queue-Verzögerung.
+        Direktes Setzen vermeidet Signal-Queue-Verzögerung. Only a settled
+        listening loop is woken through ``level_changed``.
         """
         self._audio_level = level  # Atomare Zuweisung (Python GIL)
+        if (
+            self._listening_settled
+            and self._state == "LISTENING"
+            and not self._anim.listening_is_settled(level)
+        ):
+            self._listening_settled = False
+            self.level_changed.emit(level)
 
     def update_interim_text(self, text: str):
         """Thread-safe Interim-Text-Update."""
@@ -529,7 +539,13 @@ class PySide6OverlayWidget(QWidget):
         if state_changed:
             self._interim = ("", "")
             self._previous_interim = ""
-            if state == "RECORDING":
+            self._listening_settled = False
+            if state == "LISTENING":
+                # Rest row; the loop eases it toward the live level and settles.
+                self._bar_heights = list(LISTENING_BAR_HEIGHTS)
+                self._painted_bar_heights = list(LISTENING_BAR_HEIGHTS)
+            if state in ("LISTENING", "RECORDING"):
+                # From LISTENING, recording continues from the current heights.
                 self._start_animation()
             else:
                 self._stop_animation()
@@ -587,8 +603,10 @@ class PySide6OverlayWidget(QWidget):
         super().mousePressEvent(event)
 
     @Slot(float)
-    def _on_level_changed(self, level: float):
-        self._audio_level = level
+    def _on_level_changed(self, _level: float):
+        """Wake a settled listening loop; ``_audio_level`` is already newer."""
+        if self._state == "LISTENING":
+            self._start_animation()
 
     @Slot(str)
     def _on_interim_changed(self, text: str):
@@ -725,7 +743,7 @@ class PySide6OverlayWidget(QWidget):
         self._painted_bar_heights = [float(BAR_MIN_HEIGHT)] * BAR_COUNT
 
     # =========================================================================
-    # Animation (Balken nur RECORDING; Shimmer der Verarbeitungslinie)
+    # Animation (Balken in LISTENING/RECORDING; Shimmer der Verarbeitungslinie)
     # =========================================================================
 
     def _start_animation(self):
@@ -786,18 +804,39 @@ class PySide6OverlayWidget(QWidget):
 
     @Slot()
     def _animate_frame(self):
+        if self._state == "LISTENING":
+            self._animate_listening_frame()
+            return
         if self._state != "RECORDING":
             self._stop_animation()
             return
 
         t = time.perf_counter() - self._animation_start
-        painted_bar_heights = self._painted_bar_heights
-
         self._anim.update_level(self._audio_level)
         self._anim.update_agc()
+        self._step_bars(self._target_bar_heights(t))
 
+    def _animate_listening_frame(self) -> None:
+        """Listening level meter: ease toward the level, stop once settled.
+
+        Stays active with reduced motion (informational, not decorative).
+        """
+        level = self._audio_level
+        self._anim.update_level(level)
+        targets = self._anim.listening_frame_heights()
+        self._step_bars(targets)
+        if self._anim.listening_is_settled(level) and all(
+            abs(height - target) < BAR_HEIGHT_UPDATE_EPSILON
+            for height, target in zip(self._bar_heights, targets)
+        ):
+            self._stop_animation()
+            self._listening_settled = True
+
+    def _step_bars(self, targets) -> None:
+        """Smooth each bar toward ``targets``; repaint only visible changes."""
+        painted_bar_heights = self._painted_bar_heights
         needs_repaint = False
-        for i, target_height in enumerate(self._target_bar_heights(t)):
+        for i, target_height in enumerate(targets):
             # Per-Bar Smoothing
             bar_alpha = 0.4 if target_height > self._bar_heights[i] else 0.15
             self._bar_heights[i] += bar_alpha * (target_height - self._bar_heights[i])
@@ -911,7 +950,7 @@ class PySide6OverlayWidget(QWidget):
             )
             self._draw_shimmer(painter)
             return
-        heights = self._bar_heights if mode == "level" else LISTENING_BAR_HEIGHTS
+        heights = self._bar_heights
         radius = BAR_WIDTH / 2
         for i, height in enumerate(heights):
             height = max(BAR_MIN_HEIGHT, height)

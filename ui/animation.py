@@ -2,12 +2,16 @@
 
 Centralizes the mathematical logic for calculating bar heights, AGC (Adaptive Gain Control)
 and the recording animation (Traveling Wave, Gaussian Envelope). Recording is the only
-animated state; every other state renders static bars (see ``LISTENING_BAR_HEIGHTS``).
+animated state; listening shows the microphone level as a small meter on the low row
+(``listening_bar_heights``); every other state renders static bars.
 
 This ensures consistent visual behavior across different UI backends (PySide6, Tkinter, Cocoa).
 """
 
 import math
+
+from config import VAD_THRESHOLD
+from config import VISUAL_NOISE_GATE as LISTENING_NOISE_GATE
 
 # =============================================================================
 # Constants
@@ -88,8 +92,38 @@ def _build_height_factors() -> list[float]:
 _HEIGHT_FACTORS = _build_height_factors()
 # Static, low listening row: center bars slightly taller than the edges.
 LISTENING_BAR_HEIGHTS = tuple(float(round(BAR_MIN_HEIGHT + 5 * f)) for f in _HEIGHT_FACTORS)
+# Listening level: the low row grows at most this much above its rest heights.
+LISTENING_LEVEL_SPAN = 0.35 * BAR_MAX_HEIGHT
+# Listening levels closer than this count as unchanged, so the render loop may
+# settle (~a quarter pixel on the centre bar, the repaint threshold).
+LISTENING_LEVEL_EPSILON = 0.03
 _BAR_INDEXES = tuple(range(BAR_COUNT))
 _CENTER_INDEX = (BAR_COUNT - 1) / 2
+
+
+def listening_level(rms: float) -> float:
+    """Map raw RMS to 0..1 for the listening row.
+
+    Fixed linear scale without gain control, so steady room noise stays calm:
+    0 at the visual noise gate, 1 at the speech threshold that starts recording.
+    """
+    if not isinstance(rms, (int, float)) or not math.isfinite(rms):
+        return 0.0
+    span = VAD_THRESHOLD - LISTENING_NOISE_GATE
+    if span <= 0:
+        return 0.0
+    return max(0.0, min(1.0, (rms - LISTENING_NOISE_GATE) / span))
+
+
+def listening_bar_heights(level: float) -> tuple[float, ...]:
+    """Listening row heights for a 0..1 ``listening_level`` (rest heights at 0)."""
+    if level <= 0.0:
+        return LISTENING_BAR_HEIGHTS
+    scale = min(level, 1.0) * LISTENING_LEVEL_SPAN
+    return tuple(
+        rest + scale * factor
+        for rest, factor in zip(LISTENING_BAR_HEIGHTS, _HEIGHT_FACTORS)
+    )
 
 
 # =============================================================================
@@ -165,6 +199,17 @@ class AnimationLogic:
         shaped = (min(1.0, normalized) ** VISUAL_EXPONENT) * VISUAL_GAIN
         self._normalized_level = min(1.0, shaped)
         self._invalidate_frame_cache()
+
+    def listening_frame_heights(self) -> tuple[float, ...]:
+        """Listening row heights for the smoothed level (call ``update_level`` first)."""
+        return listening_bar_heights(listening_level(self._level_smoothed))
+
+    def listening_is_settled(self, rms: float) -> bool:
+        """True when the smoothed listening level has caught up with ``rms``."""
+        return (
+            abs(listening_level(rms) - listening_level(self._level_smoothed))
+            <= LISTENING_LEVEL_EPSILON
+        )
 
     def _frame_values(self, t: float, state: str) -> tuple[float, ...]:
         """Return cached normalized frame values for all bars."""
@@ -278,6 +323,10 @@ __all__ = [
     "BAR_MIN_HEIGHT",
     "BAR_MAX_HEIGHT",
     "LISTENING_BAR_HEIGHTS",
+    "LISTENING_LEVEL_EPSILON",
+    "LISTENING_LEVEL_SPAN",
+    "listening_bar_heights",
+    "listening_level",
     "FPS",
     "FRAME_MS",
 ]
