@@ -65,6 +65,7 @@ from config import (
     WHISPER_SAMPLE_RATE,
     get_input_device,
 )
+from audio.device_refresh import open_input_stream, release_input_stream
 from providers._language import normalize_auto_language
 from utils.audio_latency import (
     create_low_latency_input_stream,
@@ -887,6 +888,9 @@ def _close_mic_stream_bounded(stream: Any, session_id: str) -> bool:
         if _MIC_STREAM_CLOSE_THREAD is close_thread:
             _MIC_STREAM_CLOSE_THREAD = None
         close_error = _MIC_STREAM_CLOSE_ERROR
+    if close_error is None:
+        # A hung or failed close stays tracked and blocks device refreshes.
+        release_input_stream(stream)
     return close_error is None
 
 
@@ -915,19 +919,25 @@ def _create_mic_stream(
             "Vorheriger Mikrofon-Cleanup hängt; PulseScribe muss neu gestartet werden"
         )
 
-    input_device, sample_rate = get_input_device()
-    blocksize = _stream_blocksize(sample_rate)
+    input_device: int | None = None
+    sample_rate = WHISPER_SAMPLE_RATE
 
-    mic_stream = create_low_latency_input_stream(
-        sd,
-        logger=logger,
-        device=input_device,
-        samplerate=sample_rate,
-        channels=WHISPER_CHANNELS,
-        blocksize=blocksize,
-        dtype=np.int16,
-        callback=callback,
-    )
+    def create_stream() -> sd.InputStream:
+        # Resolved per attempt: device indices change after a device refresh.
+        nonlocal input_device, sample_rate
+        input_device, sample_rate = get_input_device()
+        return create_low_latency_input_stream(
+            sd,
+            logger=logger,
+            device=input_device,
+            samplerate=sample_rate,
+            channels=WHISPER_CHANNELS,
+            blocksize=_stream_blocksize(sample_rate),
+            dtype=np.int16,
+            callback=callback,
+        )
+
+    mic_stream = open_input_stream(sd, create_stream)
     try:
         mic_stream.start()
     except Exception:

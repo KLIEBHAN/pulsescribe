@@ -10,11 +10,18 @@ MICROPHONE_TOOLTIP = (
 
 
 def get_microphone_options(selected: str = "") -> list[tuple[str, str]]:
-    """List capture devices without opening streams; retain an unplugged selection."""
+    """List capture devices without opening streams; retain an unplugged selection.
+
+    On macOS the device list is re-read first when hardware changed (e.g. docking),
+    unless a recording is running.
+    """
     names: list[str] = []
     try:
         import sounddevice as sd
 
+        from audio.device_refresh import refresh_if_devices_changed
+
+        refresh_if_devices_changed(sd)
         names = list(dict.fromkeys(
             device["name"]
             for device in sd.query_devices()
