@@ -371,42 +371,65 @@ def test_render_skips_duplicate_ui_mutations_for_same_step(monkeypatch):
     assert wizard._test_hotkey_label.set_calls == 1
 
 
-def test_update_summary_skips_duplicate_widget_updates(monkeypatch):
-    import ui.onboarding_wizard as wizard_mod
-
+def test_update_summary_skips_duplicate_widget_updates():
     wizard = OnboardingWizardController.__new__(OnboardingWizardController)
     wizard._summary_provider_label = _FakeTextField()
     wizard._summary_hotkey_label = _FakeTextField()
     wizard._summary_perm_label = _FakeTextField()
     wizard._summary_test_label = _FakeTextField()
-    wizard._last_summary_provider_text = None
-    wizard._last_summary_hotkey_text = None
-    wizard._last_summary_hotkey_has_value = None
-    wizard._last_summary_perm_text = None
-    wizard._last_summary_perm_mic_ok = None
-    wizard._last_summary_test_text = None
-    wizard._last_summary_test_passed = None
+    wizard._ready_label = _FakeTextField()
     wizard._test_outcome = "passed"
     wizard._get_cached_env_setting = lambda key: {
         "PULSESCRIBE_MODE": "deepgram",
+        "DEEPGRAM_API_KEY": "dg-123",
         "PULSESCRIBE_TOGGLE_HOTKEY": "f19",
         "PULSESCRIBE_HOLD_HOTKEY": "",
     }.get(key)
     wizard._get_cached_hotkeys = lambda: ("f19", "")
     wizard._read_permission_signature = lambda: ("authorized", True, True)
 
-    monkeypatch.setattr(wizard_mod, "_get_color", lambda *args, **kwargs: args)
-
     wizard._update_summary()
     wizard._update_summary()
 
-    assert wizard._summary_provider_label.set_calls == 1
-    assert wizard._summary_hotkey_label.set_calls == 1
-    assert wizard._summary_hotkey_label.color_calls == 1
-    assert wizard._summary_perm_label.set_calls == 1
-    assert wizard._summary_perm_label.color_calls == 1
-    assert wizard._summary_test_label.set_calls == 1
-    assert wizard._summary_test_label.color_calls == 1
+    for label in (
+        wizard._summary_provider_label,
+        wizard._summary_hotkey_label,
+        wizard._summary_perm_label,
+        wizard._summary_test_label,
+        wizard._ready_label,
+    ):
+        assert label.set_calls == 1
+    assert wizard._ready_label.value == "Press F19 in any app to dictate, and again to stop."
+
+
+def test_review_row_helpers_map_states_to_badges() -> None:
+    import ui.onboarding_wizard as wizard_mod
+
+    assert wizard_mod._build_provider_summary_text("deepgram", False) == (
+        "Deepgram (Cloud, fastest)",
+        "No API key",
+        "warn",
+    )
+    assert wizard_mod._build_provider_summary_text("local", False)[1:] == ("Ready", "ok")
+    assert wizard_mod._build_hotkey_summary_text("", "") == (
+        "Choose one in the Hotkey step",
+        "Not set",
+        "warn",
+    )
+    assert wizard_mod._build_permission_summary_text("denied", True, True)[1:] == (
+        "Missing",
+        "err",
+    )
+    assert wizard_mod._build_permission_summary_text("authorized", False, True)[1:] == (
+        "Partial",
+        "warn",
+    )
+    assert wizard_mod._build_test_summary_text("skipped")[1:] == ("Skipped", "muted")
+    assert wizard_mod._build_test_summary_text("error")[1:] == ("Error", "err")
+    assert wizard_mod._build_ready_text("", "fn") == "Hold Fn in any app to dictate."
+    assert wizard_mod._build_ready_text("", "") == (
+        "Set a hotkey in Settings to start dictating."
+    )
 
 
 def test_can_advance_reuses_cached_permission_signature(monkeypatch):
@@ -437,13 +460,6 @@ def test_update_summary_reuses_cached_permission_signature(monkeypatch):
     wizard._summary_hotkey_label = _FakeTextField()
     wizard._summary_perm_label = _FakeTextField()
     wizard._summary_test_label = _FakeTextField()
-    wizard._last_summary_provider_text = None
-    wizard._last_summary_hotkey_text = None
-    wizard._last_summary_hotkey_has_value = None
-    wizard._last_summary_perm_text = None
-    wizard._last_summary_perm_mic_ok = None
-    wizard._last_summary_test_text = None
-    wizard._last_summary_test_passed = None
     wizard._test_outcome = "passed"
     wizard._permissions_card = type(
         "_Card",
@@ -457,7 +473,6 @@ def test_update_summary_reuses_cached_permission_signature(monkeypatch):
     }.get(key)
     wizard._get_cached_hotkeys = lambda: ("option+space", "fn")
 
-    monkeypatch.setattr(wizard_mod, "_get_color", lambda *args, **kwargs: args)
     monkeypatch.setattr(
         wizard_mod,
         "get_microphone_permission_state",
@@ -478,12 +493,12 @@ def test_update_summary_reuses_cached_permission_signature(monkeypatch):
 
     wizard._update_summary()
 
-    assert wizard._summary_hotkey_label.value == "Toggle: Option+Space • Hold: Fn"
+    assert wizard._summary_hotkey_label.value == "Toggle Option+Space · Hold Fn"
     assert (
         wizard._summary_perm_label.value
-        == "Microphone ready • Auto-paste and Hold hotkeys available"
+        == "Microphone, auto-paste and Hold hotkeys ready"
     )
-    assert wizard._summary_test_label.value == "Completed"
+    assert wizard._summary_test_label.value == "Your speech was transcribed"
 
 
 def test_update_test_dictation_hotkeys_uses_friendly_labels() -> None:

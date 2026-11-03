@@ -103,7 +103,14 @@ GOAL_CHOICES = (
     ),
 )
 GOAL_ROW_HEIGHT = 62
+PERMISSIONS_HINT = "After you click Allow, the status refreshes on its own for about 20 seconds."
 FAST_API_KEY_PROMPT = "Fast mode needs a Deepgram API key. Paste one to continue."
+MODE_API_KEYS = {
+    "deepgram": "DEEPGRAM_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "groq": "GROQ_API_KEY",
+}
+
 LANGUAGE_OPTIONS = ["auto", "de", "en", "es", "fr", "it", "pt", "nl", "pl", "ru", "zh"]
 LANGUAGE_LABELS = {
     "auto": "Automatic",
@@ -209,33 +216,52 @@ def _format_hotkey_for_display(hotkey: str | None) -> str:
 
 
 
-def _build_hotkey_summary_text(toggle: str, hold: str) -> tuple[str, bool]:
+def _build_provider_summary_text(mode: str, has_key: bool) -> tuple[str, str, str]:
+    """Return ``(detail, badge, tone)`` for the Review step's Provider row."""
+    detail = MODE_LABELS.get(mode, mode.title())
+    if mode == "local" or has_key:
+        return detail, "Ready", "ok"
+    return detail, "No API key", "warn"
+
+
+def _build_hotkey_summary_text(toggle: str, hold: str) -> tuple[str, str, str]:
+    """Return ``(detail, badge, tone)`` for the Review step's Hotkey row."""
     parts: list[str] = []
     if toggle:
-        parts.append(f"Toggle: {_format_hotkey_for_display(toggle)}")
+        parts.append(f"Toggle {_format_hotkey_for_display(toggle)}")
     if hold:
-        parts.append(f"Hold: {_format_hotkey_for_display(hold)}")
+        parts.append(f"Hold {_format_hotkey_for_display(hold)}")
     if not parts:
-        return "Choose a hotkey in the previous step", False
-    return " • ".join(parts), True
-
+        return "Choose one in the Hotkey step", "Not set", "warn"
+    return " · ".join(parts), "Set", "ok"
 
 
 def _build_permission_summary_text(
     mic_state: str,
     access_ok: bool,
     input_ok: bool,
-) -> tuple[str, bool]:
-    mic_ok = mic_state == "authorized"
-    if not mic_ok:
-        return "Microphone required", False
+) -> tuple[str, str, str]:
+    """Return ``(detail, badge, tone)`` for the Review step's Permissions row."""
+    if mic_state != "authorized":
+        return "Microphone access is required", "Missing", "err"
     if access_ok and input_ok:
-        return "Microphone ready • Auto-paste and Hold hotkeys available", True
+        return "Microphone, auto-paste and Hold hotkeys ready", "Granted", "ok"
     if access_ok:
-        return "Microphone ready • Auto-paste available", True
-    if input_ok:
-        return "Microphone ready • Hold hotkeys available", True
-    return "Microphone ready • Optional extras still off", True
+        return "Microphone and auto-paste ready", "Granted", "ok"
+    return "Microphone ready, auto-paste off", "Partial", "warn"
+
+
+def _build_ready_text(toggle: str, hold: str) -> str:
+    """Closing line of the Review step, naming the configured hotkey."""
+    toggle_text = _format_hotkey_for_display(toggle)
+    hold_text = _format_hotkey_for_display(hold)
+    if hold_text and toggle_text:
+        return f"Hold {hold_text} or press {toggle_text} in any app to dictate."
+    if hold_text:
+        return f"Hold {hold_text} in any app to dictate."
+    if toggle_text:
+        return f"Press {toggle_text} in any app to dictate, and again to stop."
+    return "Set a hotkey in Settings to start dictating."
 
 
 
@@ -255,21 +281,22 @@ def _normalize_test_error_message(error: str | None) -> str:
 
 
 
-def _build_test_summary_text(outcome: str | None) -> tuple[str, str]:
+def _build_test_summary_text(outcome: str | None) -> tuple[str, str, str]:
+    """Return ``(detail, badge, tone)`` for the Review step's Practice test row."""
     normalized = (outcome or "pending").strip().lower()
     if normalized == "passed":
-        return "Completed", "ok"
+        return "Your speech was transcribed", "Worked", "ok"
     if normalized == "skipped":
-        return "Skipped for now", "neutral"
+        return "Skipped for now", "Skipped", "muted"
     if normalized == "cancelled":
-        return "Cancelled", "neutral"
+        return "The test was cancelled", "Cancelled", "muted"
     if normalized == "empty":
-        return "Needs another try", "warn"
+        return "No speech was detected", "No speech", "warn"
     if normalized == "error":
-        return "Needs attention", "warn"
+        return "The test could not finish", "Error", "err"
     if normalized in {"starting", "recording", "processing"}:
-        return "In progress", "warn"
-    return "Not run yet", "neutral"
+        return "The test is still running", "Running", "warn"
+    return "Not run yet", "Not run", "muted"
 
 
 
@@ -568,11 +595,10 @@ class OnboardingWizardController:
         self._last_api_key_prompt_message: str | None = None
         self._last_summary_provider_text: str | None = None
         self._last_summary_hotkey_text: str | None = None
-        self._last_summary_hotkey_has_value: bool | None = None
         self._last_summary_perm_text: str | None = None
-        self._last_summary_perm_mic_ok: bool | None = None
         self._last_summary_test_text: str | None = None
-        self._last_summary_test_passed: bool | None = None
+        self._last_ready_text: str | None = None
+        self._summary_badge_cache: dict[str, tuple[str, str]] = {}
         self._test_outcome = "pending"
         self._env_settings_cache: dict[str, str] = read_env_file()
 
@@ -593,12 +619,13 @@ class OnboardingWizardController:
         self._hotkey_card: HotkeyCard | None = None
         self._hotkey_recorder = HotkeyRecorder()
 
-        # Summary step (dynamic labels)
+        # Summary step (dynamic labels: detail text + badge per row)
         self._summary_provider_label = None
         self._summary_hotkey_label = None
         self._summary_perm_label = None
         self._summary_test_label = None
-
+        self._summary_badges: dict[str, object] = {}
+        self._ready_label = None
 
         # Language selector
         self._lang_popup = None
@@ -1159,23 +1186,24 @@ class OnboardingWizardController:
         self._last_goal_choice = choice
 
     def _build_step_permissions(self, parent_view, content_h: int) -> None:
-        from ui.permissions_card import PERMISSIONS_DESCRIPTION, PermissionsCard
+        from ui.permissions_card import PERMISSION_ROWS, PermissionsCard
 
-        card_h = 206  # same flat section as Settings -> General
-        card_y = content_h - card_h
-
-        self._permissions_card = PermissionsCard.build(
+        width = CONTENT_WIDTH - 2 * PADDING
+        row_h = 56
+        self._permissions_card = PermissionsCard.build_rows(
             parent_view=parent_view,
-            window_width=CONTENT_WIDTH,
-            card_y=card_y,
-            card_height=card_h,
-            outer_padding=PADDING,
-            inner_padding=CARD_PADDING,
-            title="Permissions",
-            description=PERMISSIONS_DESCRIPTION,
+            x=PADDING,
+            top=content_h,
+            width=width,
             bind_action=self._bind_action,
             after_refresh=self._render,
-            flat=True,
+            row_height=row_h,
+        )
+        hint_y = content_h - len(PERMISSION_ROWS) * row_h - 32
+        parent_view.addSubview_(
+            _create_label(
+                PERMISSIONS_HINT, PADDING, hint_y, width, 17, size=12, color=theme.MUTED
+            )
         )
 
     def _build_step_hotkey(self, parent_view, content_h: int) -> None:
@@ -1358,181 +1386,98 @@ class OnboardingWizardController:
 
 
     def _build_step_cheat_sheet(self, parent_view, content_h: int) -> None:
-        from AppKit import (  # type: ignore[import-not-found]
-            NSColor,
-            NSFont,
-            NSFontWeightMedium,
-            NSFontWeightSemibold,
-            NSMakeRect,
-            NSTextField,
+        from AppKit import NSFontWeightMedium  # type: ignore[import-not-found]
+
+        width = CONTENT_WIDTH - 2 * PADDING
+        row_h = 56
+        badge_right = PADDING + width
+        top = content_h
+        parent_view.addSubview_(theme.ns_rule(PADDING, top - 1, width))
+        rows = (
+            ("provider", "Provider"),
+            ("hotkey", "Hotkey"),
+            ("perm", "Permissions"),
+            ("test", "Practice test"),
         )
-
-        card_w = CONTENT_WIDTH - 2 * PADDING
-        card_h = 312
-        card_y = content_h - card_h
-        card = _create_card(PADDING, card_y, card_w, card_h)
-        parent_view.addSubview_(card)
-
-        base_x = PADDING + CARD_PADDING
-        content_w = card_w - 2 * CARD_PADDING
-
-        # Titel
-        title = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(base_x, card_y + card_h - 28, content_w, 18)
-        )
-        title.setStringValue_("✅ Your configuration")
-        title.setBezeled_(False)
-        title.setDrawsBackground_(False)
-        title.setEditable_(False)
-        title.setSelectable_(False)
-        title.setFont_(NSFont.systemFontOfSize_weight_(13, NSFontWeightSemibold))
-        title.setTextColor_(NSColor.whiteColor())
-        parent_view.addSubview_(title)
-
-        row_h = 28
-        label_w = 90
-        value_x = base_x + label_w
-        value_w = content_w - label_w
-        row_y = card_y + card_h - 60
-
-        def add_label(y: int, text: str):
-            lbl = NSTextField.alloc().initWithFrame_(NSMakeRect(base_x, y, label_w, 16))
-            lbl.setStringValue_(text)
-            lbl.setBezeled_(False)
-            lbl.setDrawsBackground_(False)
-            lbl.setEditable_(False)
-            lbl.setSelectable_(False)
-            lbl.setFont_(NSFont.systemFontOfSize_weight_(11, NSFontWeightMedium))
-            lbl.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6))
-            parent_view.addSubview_(lbl)
-
-        def add_value(y: int):
-            val = NSTextField.alloc().initWithFrame_(
-                NSMakeRect(value_x, y, value_w, 16)
+        for index, (key, title) in enumerate(rows):
+            y = top - (index + 1) * row_h
+            text_w = width - 140  # room for the widest badge
+            parent_view.addSubview_(
+                _create_label(title, PADDING, y + 28, text_w, 18, weight=NSFontWeightMedium)
             )
-            val.setStringValue_("")
-            val.setBezeled_(False)
-            val.setDrawsBackground_(False)
-            val.setEditable_(False)
-            val.setSelectable_(False)
-            val.setFont_(NSFont.systemFontOfSize_(11))
-            val.setTextColor_(NSColor.whiteColor())
-            parent_view.addSubview_(val)
-            return val
+            detail = _create_label("", PADDING, y + 10, text_w, 17, size=12, color=theme.MUTED)
+            parent_view.addSubview_(detail)
+            badge = _create_label("", badge_right - 80, y + 18, 80, 20)
+            parent_view.addSubview_(badge)
+            parent_view.addSubview_(theme.ns_rule(PADDING, y - 1, width))
+            setattr(self, f"_summary_{key}_label", detail)
+            self._summary_badges[key] = badge
 
-        # Provider row
-        add_label(row_y, "Provider:")
-        self._summary_provider_label = add_value(row_y)
-        row_y -= row_h
-
-        # Hotkeys row
-        add_label(row_y, "Hotkeys:")
-        self._summary_hotkey_label = add_value(row_y)
-        row_y -= row_h
-
-        # Permissions row
-        add_label(row_y, "Permissions:")
-        self._summary_perm_label = add_value(row_y)
-        row_y -= row_h
-
-        # Test row
-        add_label(row_y, "Practice test:")
-        self._summary_test_label = add_value(row_y)
-
-        # Abschluss-Text
-        ready_y = card_y + 100
-        ready = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(base_x, ready_y, content_w, 58)
-        )
-        ready.setStringValue_(
-            "You're ready. Press your hotkey anywhere to start dictating. "
-            "PulseScribe will transcribe your speech and paste automatically when the needed permissions are enabled.\n\n"
-            "You can change these defaults anytime from the menu bar icon."
-        )
-        ready.setBezeled_(False)
-        ready.setDrawsBackground_(False)
-        ready.setEditable_(False)
-        ready.setSelectable_(False)
-        ready.setFont_(NSFont.systemFontOfSize_weight_(11, NSFontWeightMedium))
-        ready.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.7))
+        ready_y = top - len(rows) * row_h - 40
+        ready = _create_label("", PADDING, ready_y, width, 20, size=14)
         parent_view.addSubview_(ready)
+        self._ready_label = ready
 
         # Initial update
         self._update_summary()
 
     def _update_summary(self) -> None:
-        """Aktualisiert die Summary-Labels mit aktuellen Werten."""
-        ok_color = _get_color(120, 255, 150)
-        warn_color = _get_color(255, 200, 90)
+        """Refreshes the Review rows and the closing hotkey line."""
         self._update_summary_provider()
-        self._update_summary_hotkeys(ok_color, warn_color)
-        self._update_summary_permissions(ok_color, warn_color)
-        self._update_summary_test(ok_color, warn_color)
+        self._update_summary_hotkeys()
+        self._update_summary_permissions()
+        self._update_summary_test()
 
     def _update_summary_provider(self) -> None:
-        mode = (self._get_cached_env_setting("PULSESCRIBE_MODE") or "deepgram").strip()
-        mode_display = MODE_LABELS.get(mode, mode.title())
-        self._set_cached_summary_label_text(
-            self._summary_provider_label,
-            "_last_summary_provider_text",
-            mode_display,
+        mode = (self._get_cached_env_setting("PULSESCRIBE_MODE") or "deepgram").strip().lower()
+        key_name = MODE_API_KEYS.get(mode)
+        has_key = bool(
+            key_name
+            and (
+                (self._get_cached_api_key(key_name) or "").strip()
+                or (os.getenv(key_name) or "").strip()
+            )
         )
+        self._set_summary_row("provider", *_build_provider_summary_text(mode, has_key))
 
-    def _update_summary_hotkeys(self, ok_color, warn_color) -> None:
+    def _update_summary_hotkeys(self) -> None:
         toggle_hk, hold_hk = self._get_cached_hotkeys()
-        hotkey_display, has_hotkeys = _build_hotkey_summary_text(toggle_hk, hold_hk)
+        self._set_summary_row("hotkey", *_build_hotkey_summary_text(toggle_hk, hold_hk))
         self._set_cached_summary_label_text(
-            self._summary_hotkey_label,
-            "_last_summary_hotkey_text",
-            hotkey_display,
-        )
-        self._set_cached_summary_label_color(
-            self._summary_hotkey_label,
-            "_last_summary_hotkey_has_value",
-            has_hotkeys,
-            ok_color if has_hotkeys else warn_color,
+            getattr(self, "_ready_label", None),
+            "_last_ready_text",
+            _build_ready_text(toggle_hk, hold_hk),
         )
 
-    def _update_summary_permissions(self, ok_color, warn_color) -> None:
+    def _update_summary_permissions(self) -> None:
         mic_state, access_ok, input_ok = self._read_permission_signature()
-        perm_display, mic_ok = _build_permission_summary_text(
-            mic_state,
-            access_ok,
-            input_ok,
-        )
-        self._set_cached_summary_label_text(
-            self._summary_perm_label,
-            "_last_summary_perm_text",
-            perm_display,
-        )
-        self._set_cached_summary_label_color(
-            self._summary_perm_label,
-            "_last_summary_perm_mic_ok",
-            mic_ok,
-            ok_color if mic_ok else warn_color,
+        self._set_summary_row(
+            "perm", *_build_permission_summary_text(mic_state, access_ok, input_ok)
         )
 
-    def _update_summary_test(self, ok_color, warn_color) -> None:
-        test_display, test_tone = _build_test_summary_text(
-            getattr(self, "_test_outcome", "pending")
+    def _update_summary_test(self) -> None:
+        self._set_summary_row(
+            "test", *_build_test_summary_text(getattr(self, "_test_outcome", "pending"))
         )
-        tone_color = {
-            "ok": ok_color,
-            "warn": warn_color,
-            "neutral": _get_color(255, 255, 255, 0.65),
-        }.get(test_tone, warn_color)
-        summary_test_label = getattr(self, "_summary_test_label", None)
+
+    def _set_summary_row(self, key: str, detail: str, badge: str, tone: str) -> None:
+        """Shows one Review row: muted ``detail`` and a ``badge`` in ``tone``."""
         self._set_cached_summary_label_text(
-            summary_test_label,
-            "_last_summary_test_text",
-            test_display,
+            getattr(self, f"_summary_{key}_label", None),
+            f"_last_summary_{key}_text",
+            detail,
         )
-        self._set_cached_summary_label_color(
-            summary_test_label,
-            "_last_summary_test_passed",
-            test_tone,
-            tone_color,
-        )
+        field = getattr(self, "_summary_badges", {}).get(key)
+        cache = getattr(self, "_summary_badge_cache", None)
+        if cache is None:
+            cache = self._summary_badge_cache = {}
+        if field is None or cache.get(key) == (badge, tone):
+            return
+        try:
+            theme.set_ns_badge(field, badge, tone, right_edge=CONTENT_WIDTH - PADDING)
+            cache[key] = (badge, tone)
+        except Exception:
+            pass
 
     def _set_cached_summary_label_text(self, label, cache_attr: str, text: str) -> None:
         if not label:
@@ -1541,22 +1486,6 @@ class OnboardingWizardController:
             if getattr(self, cache_attr, None) != text:
                 label.setStringValue_(text)
                 setattr(self, cache_attr, text)
-        except Exception:
-            pass
-
-    def _set_cached_summary_label_color(
-        self,
-        label,
-        cache_attr: str,
-        cache_value,
-        color,
-    ) -> None:
-        if not label:
-            return
-        try:
-            if getattr(self, cache_attr, None) != cache_value:
-                label.setTextColor_(color)
-                setattr(self, cache_attr, cache_value)
         except Exception:
             pass
 

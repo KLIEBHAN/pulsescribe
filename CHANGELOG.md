@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and a light Next/Finish button. Setup shows Fast, Private and Advanced as
   selectable rows; Next applies the choice, and Fast asks for a Deepgram key
   right away when none is stored. The "Step n/5" label is gone.
+- **Setup wizard Permissions and Review (macOS)** – Permissions lists
+  Microphone, Accessibility and Input Monitoring as rows with their purpose,
+  a Granted / Missing / Not set badge and "Allow…" only where access is
+  missing. Review shows Provider, Hotkey, Permissions and the practice test
+  with tinted badges instead of colored text and ends with how to dictate
+  with your hotkey, for example "Hold Fn in any app to dictate."
 
 ### Fixed
 
