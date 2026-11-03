@@ -216,7 +216,7 @@ Errors and paste/copy failures stay visible until you click the overlay or start
 
 ```bash
 # In ~/.pulsescribe/.env
-PULSESCRIBE_MODE=deepgram  # or: openai, groq, local
+PULSESCRIBE_MODE=deepgram  # or: openai, groq, local, openai_compatible (own server, see docs/CONFIGURATION.md)
 ```
 
 ### Local Mode (Offline)

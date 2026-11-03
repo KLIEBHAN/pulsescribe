@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Own transcription server** – the new mode `openai_compatible` sends
+  recordings to your own server with OpenAI's transcription API, for example a
+  Whisper server on another computer in your network. Set
+  `OPENAI_COMPATIBLE_BASE_URL` (and `OPENAI_COMPATIBLE_API_KEY` if the server
+  checks one); your OpenAI key is never sent there.
+
 ## [1.11.1] - 2026-11-03
 
 ### Changed

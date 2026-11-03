@@ -4343,6 +4343,7 @@ def _has_remote_api_key() -> bool:
         os.getenv("DEEPGRAM_API_KEY")
         or os.getenv("OPENAI_API_KEY")
         or os.getenv("GROQ_API_KEY")
+        or os.getenv("OPENAI_COMPATIBLE_BASE_URL")
     )
 
 

@@ -13,6 +13,7 @@ class TranscriptionMode(str, Enum):
     local = "local"
     deepgram = "deepgram"
     groq = "groq"
+    openai_compatible = "openai_compatible"
 
 
 class Context(str, Enum):

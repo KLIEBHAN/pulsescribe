@@ -217,7 +217,7 @@ Fehler und fehlgeschlagenes Einfügen/Kopieren bleiben sichtbar, bis du auf das 
 
 ```bash
 # In ~/.pulsescribe/.env
-PULSESCRIBE_MODE=deepgram  # oder: openai, groq, local
+PULSESCRIBE_MODE=deepgram  # oder: openai, groq, local, openai_compatible (eigener Server, siehe docs/KONFIGURATION.md)
 ```
 
 ### Lokaler Modus (Offline)

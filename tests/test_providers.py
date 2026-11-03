@@ -15,8 +15,8 @@ class TestProviderFactory:
 
     @pytest.mark.parametrize(
         "mode",
-        ["openai", "deepgram", "deepgram_stream", "groq", "local"],
-        ids=["openai", "deepgram", "deepgram_stream", "groq", "local"],
+        ["openai", "deepgram", "deepgram_stream", "groq", "local", "openai_compatible"],
+        ids=["openai", "deepgram", "deepgram_stream", "groq", "local", "openai_compatible"],
     )
     def test_get_provider_has_default_model(self, mode: str):
         """Provider wird erstellt und liefert ein Default-Model aus DEFAULT_MODELS."""
@@ -44,6 +44,7 @@ class TestDefaultModels:
         assert "deepgram_stream" in DEFAULT_MODELS
         assert "groq" in DEFAULT_MODELS
         assert "local" in DEFAULT_MODELS
+        assert DEFAULT_MODELS["openai_compatible"] == "whisper-1"
 
     def test_get_default_model_unknown_falls_back_to_whisper_1(self):
         """Unbekannte Provider sollen denselben sicheren Fallback behalten."""

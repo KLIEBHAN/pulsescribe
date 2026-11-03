@@ -116,6 +116,36 @@ class TestDaemonMode(unittest.TestCase):
         self.assertEqual(kwargs.get("mode"), "deepgram")
 
     @patch("pulsescribe_daemon.PulseScribeDaemon")
+    def test_main_accepts_openai_compatible_mode_from_env(self, mock_daemon_cls):
+        """The self-hosted OpenAI-compatible mode is a valid PULSESCRIBE_MODE."""
+        with (
+            patch.dict(os.environ, {"PULSESCRIBE_MODE": "openai_compatible"}),
+            patch("pulsescribe_daemon.PulseScribeDaemon.run"),
+        ):
+            result = runner.invoke(app, [])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        _, kwargs = mock_daemon_cls.call_args
+        self.assertEqual(kwargs.get("mode"), "openai_compatible")
+
+    def test_server_url_counts_as_remote_setup_for_first_run_default(self):
+        """A configured server URL keeps the first run from forcing local mode."""
+        from pulsescribe_daemon import _apply_first_run_local_default
+
+        remote_keys = ("DEEPGRAM_API_KEY", "OPENAI_API_KEY", "GROQ_API_KEY")
+        env = {k: v for k, v in os.environ.items() if k not in remote_keys}
+        env["OPENAI_COMPATIBLE_BASE_URL"] = "http://mac-mini:7860/v1"
+        with patch.dict(os.environ, env, clear=True):
+            result = _apply_first_run_local_default(
+                mode=None,
+                mode_env=None,
+                model=None,
+                effective_mode="openai_compatible",
+                effective_model=None,
+            )
+        self.assertEqual(result, ("openai_compatible", None))
+
+    @patch("pulsescribe_daemon.PulseScribeDaemon")
     def test_main_uses_cli_mode_over_env(self, mock_daemon_cls):
         """CLI --mode should override PULSESCRIBE_MODE env variable."""
         with (

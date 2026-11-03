@@ -14,6 +14,7 @@ Unterstützte Provider:
     - deepgram_stream: Deepgram WebSocket Streaming
     - groq: Groq Whisper auf LPU
     - local: Lokales Whisper-Modell
+    - openai_compatible: Eigener Server mit OpenAI-kompatibler API
 """
 
 from dataclasses import dataclass
@@ -25,6 +26,7 @@ from config import (
     DEFAULT_DEEPGRAM_MODEL,
     DEFAULT_GROQ_MODEL,
     DEFAULT_LOCAL_MODEL,
+    DEFAULT_OPENAI_COMPATIBLE_MODEL,
 )
 
 if TYPE_CHECKING:
@@ -49,6 +51,11 @@ _PROVIDER_SPECS: dict[str, _ProviderSpec] = {
     ),
     "groq": _ProviderSpec("groq", "GroqProvider", DEFAULT_GROQ_MODEL),
     "local": _ProviderSpec("local", "LocalProvider", DEFAULT_LOCAL_MODEL),
+    "openai_compatible": _ProviderSpec(
+        "openai_compatible",
+        "OpenAICompatibleProvider",
+        DEFAULT_OPENAI_COMPATIBLE_MODEL,
+    ),
 }
 
 # Default-Modelle pro Provider
@@ -89,7 +96,8 @@ def get_provider(mode: str) -> "TranscriptionProvider":
     """Factory für Transkriptions-Provider.
 
     Args:
-        mode: Provider-Name ('openai', 'deepgram', 'deepgram_stream', 'groq', 'local')
+        mode: Provider-Name ('openai', 'deepgram', 'deepgram_stream', 'groq', 'local',
+            'openai_compatible')
 
     Returns:
         TranscriptionProvider-Implementierung
