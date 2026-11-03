@@ -1354,6 +1354,8 @@ class TestMLXQuantization:
         monkeypatch.setenv("PULSESCRIBE_MLX_QUANT", "8bit")
         from providers.local import LocalProvider
 
+        # torch.mps.empty_cache() crashes on GPU-less CI runners; not under test here.
+        monkeypatch.setattr(LocalProvider, "_release_backend_allocator_caches", staticmethod(lambda: None))
         provider = LocalProvider()
         provider._prepare_mlx_model("turbo")
         provider.clear_model_cache()

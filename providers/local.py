@@ -529,8 +529,10 @@ class LocalProvider:
             with self._load_lock:
                 cleared_entries = len(self._model_cache)
                 self._model_cache.clear()
+            # Inside the transcribe lock: a concurrent transcription must not lose the
+            # quantized model between _prepare_mlx_model() and mlx_whisper.transcribe().
+            self._release_mlx_model_holder()
 
-        self._release_mlx_model_holder()
         self._release_backend_allocator_caches()
         return cleared_entries
 
