@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.11.1] - 2026-11-03
+
 ### Changed
 
 - **Windows CI** – the Windows test job installs PySide6 and runs the Qt tests
