@@ -102,6 +102,7 @@ GOAL_CHOICES = (
     ),
 )
 GOAL_ROW_HEIGHT = 62
+PROMPT_LINE_HEIGHT = 22  # Practice prompt line (keycap height)
 # Hotkey rows: (key, action, slot, hotkey, description); "Custom" records a Toggle.
 HOTKEY_CHOICES = (
     (
@@ -1242,8 +1243,9 @@ class OnboardingWizardController:
             parent_view.addSubview_(view)
         self._test_hotkey_label = (before, keycap_box, keycap, after)
 
-        # Start / Stop share one spot; only one is visible at a time.
-        buttons_y = prompt_y - 18 - 28
+        # Start / Stop share one spot; only one is visible at a time. The space
+        # above keeps a second prompt line for long custom shortcuts.
+        buttons_y = prompt_y - PROMPT_LINE_HEIGHT - 16 - 28
 
         def add_button(title: str, action: str):
             button = NSButton.alloc().initWithFrame_(NSMakeRect(PADDING, buttons_y, 132, 28))
@@ -1268,7 +1270,7 @@ class OnboardingWizardController:
         parent_view.addSubview_(badge)
         self._test_status_label = badge
 
-        box_h = 168
+        box_h = 146
         box_y = header_y - 8 - box_h
         parent_view.addSubview_(
             _create_box(
@@ -1751,7 +1753,11 @@ class OnboardingWizardController:
                     ((x, keycap.frame().origin.y), (keycap_w, keycap.frame().size.height))
                 )
                 x += keycap_w + 4
-            after.setFrameOrigin_((x, after.frame().origin.y))
+            # Too long for one line: the sentence moves below the keycap.
+            prompt_y = keycap_box.frame().origin.y + 1
+            if x + after.frame().size.width > CONTENT_WIDTH - PADDING:
+                x, prompt_y = PADDING, prompt_y - PROMPT_LINE_HEIGHT
+            after.setFrameOrigin_((x, prompt_y))
             self._last_test_hotkey_text = prompt
         except Exception:
             pass
