@@ -22,6 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   missing. Review shows Provider, Hotkey, Permissions and the practice test
   with tinted badges instead of colored text and ends with how to dictate
   with your hotkey, for example "Hold Fn in any app to dictate."
+- **Setup wizard Hotkey: one choice (macOS)** – the Hotkey step offers Hold
+  Fn, Toggle Option+Space, Toggle F19 and Custom (Record) as rows. Picking a
+  row saves that hotkey and clears the other slot, so the wizard sets up one
+  hotkey. If you already use a Toggle and a Hold hotkey, nothing is
+  preselected and both stay until you pick a row; Settings → General keeps
+  managing two hotkeys. Permission and Record buttons use the quiet outline
+  style.
 
 ### Fixed
 

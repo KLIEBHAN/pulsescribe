@@ -140,6 +140,7 @@ class HotkeyRecorder:
         self._target_field = None
         self._prev_value: str | None = None
         self._buttons_to_reset: list[object] = []
+        self._format_value: Callable[[str], str] = str.upper
 
     @property
     def recording(self) -> bool:
@@ -153,9 +154,12 @@ class HotkeyRecorder:
         buttons_to_reset: list[object],
         on_hotkey: Callable[[str], object] | Callable[[str], None],
         placeholder: str = "Press desired hotkey…",
+        format_value: Callable[[str], str] = str.upper,
     ) -> None:
+        """Records into ``field``; an accepted hotkey shows as ``format_value(hotkey)``."""
         if field is None or button is None:
             return
+        self._format_value = format_value
 
         if self._recording:
             self.stop(cancelled=True)
@@ -250,7 +254,7 @@ class HotkeyRecorder:
         if self._target_field is None:
             return
         try:
-            self._target_field.setStringValue_(hotkey_str.upper())
+            self._target_field.setStringValue_(self._format_value(hotkey_str))
         except Exception:
             pass
 

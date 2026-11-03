@@ -202,3 +202,20 @@ def test_daemon_registration_skips_overlapping_hotkeys(monkeypatch) -> None:
 
     assert len(daemon._toggle_hotkey_handlers) == 1
     daemon._start_hold_hotkey_listener.assert_not_called()
+
+
+def test_replace_other_skips_conflict_with_the_other_slot(monkeypatch) -> None:
+    import utils.hotkey_validation as validation
+    import utils.permissions as permissions
+
+    monkeypatch.setattr(validation, "_get_current_hotkeys", lambda: ("fn", "capslock"))
+    monkeypatch.setattr(
+        permissions, "check_input_monitoring_permission", lambda show_alert=False: True
+    )
+
+    assert validation.validate_hotkey_change("hold", "fn")[1] == "error"
+    assert validation.validate_hotkey_change("hold", "fn", replace_other=True) == (
+        "fn",
+        "ok",
+        None,
+    )

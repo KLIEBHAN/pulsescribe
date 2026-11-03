@@ -15,7 +15,6 @@ from utils.onboarding import (
     next_step,
     prev_step,
 )
-from ui.hotkey_card import HotkeyCard
 from utils.hotkey_recording import HotkeyRecorder
 from utils.onboarding_fast_choice import resolve_fast_choice_updates
 from utils.permissions import (
@@ -103,6 +102,36 @@ GOAL_CHOICES = (
     ),
 )
 GOAL_ROW_HEIGHT = 62
+# Hotkey rows: (key, action, slot, hotkey, description); "Custom" records a Toggle.
+HOTKEY_CHOICES = (
+    (
+        "hold_fn",
+        "hotkey_fn_hold",
+        "hold",
+        "fn",
+        "Push to talk with the Fn (Globe) key. Needs Input Monitoring.",
+    ),
+    (
+        "toggle_opt_space",
+        "hotkey_opt_space",
+        "toggle",
+        "option+space",
+        "Press once to start, again to stop.",
+    ),
+    (
+        "toggle_f19",
+        "hotkey_f19_toggle",
+        "toggle",
+        "f19",
+        "Press once to start, again to stop.",
+    ),
+)
+HOTKEY_PRESETS = {
+    action.removeprefix("hotkey_"): (kind, hotkey)
+    for _key, action, kind, hotkey, _description in HOTKEY_CHOICES
+}
+HOTKEY_CUSTOM_KEY = "custom"
+HOTKEY_CUSTOM_DESCRIPTION = "Record your own shortcut to start and stop."
 PERMISSIONS_HINT = "After you click Allow, the status refreshes on its own for about 20 seconds."
 FAST_API_KEY_PROMPT = "Fast mode needs a Deepgram API key. Paste one to continue."
 MODE_API_KEYS = {
@@ -214,6 +243,22 @@ def _format_hotkey_for_display(hotkey: str | None) -> str:
         title_unknown_parts=True,
     )
 
+
+
+def _hotkey_choice_title(kind: str, hotkey: str) -> str:
+    """Row and hint label such as "Hold Fn" or "Toggle Option+Space"."""
+    return f"{'Hold' if kind == 'hold' else 'Toggle'} {_format_hotkey_for_display(hotkey)}"
+
+
+def _selected_hotkey_choice(toggle: str, hold: str) -> str | None:
+    """Hotkey row for a config; ``None`` when none or both hotkeys are set."""
+    if bool(toggle) == bool(hold):
+        return None
+    kind, hotkey = ("toggle", toggle) if toggle else ("hold", hold)
+    for key, _action, row_kind, row_hotkey, _description in HOTKEY_CHOICES:
+        if (row_kind, row_hotkey) == (kind, hotkey):
+            return key
+    return HOTKEY_CUSTOM_KEY
 
 
 def _build_provider_summary_text(mode: str, has_key: bool) -> tuple[str, str, str]:
@@ -615,8 +660,12 @@ class OnboardingWizardController:
         self._test_successful = False
         self._test_state = "idle"  # idle|starting|recording|stopping
 
-        # Hotkey card (shared component)
-        self._hotkey_card: HotkeyCard | None = None
+        # Hotkey rows (one choice) and custom recording
+        self._hotkey_rows: dict = {}
+        self._hotkey_record_btn = None
+        self._hotkey_hint_label = None
+        self._hotkey_status_label = None
+        self._last_hotkey_choice_state: tuple[str, str] | None = None
         self._hotkey_recorder = HotkeyRecorder()
 
         # Summary step (dynamic labels: detail text + badge per row)
@@ -1045,25 +1094,25 @@ class OnboardingWizardController:
     # Steps
     # ---------------------------------------------------------------------
 
-    def _build_step_choose_goal(self, parent_view, content_h: int) -> None:
+    def _add_choice_rows(self, parent_view, top: float, rows) -> dict:
+        """Adds selectable rows below ``top``; returns key -> row views.
+
+        ``rows`` holds ``(key, action, title, description, tag)``; ``tag`` is an
+        optional outlined label next to the title. Each row views tuple is
+        ``(background, left edge, radio ring, radio dot, description label)``.
+        """
         from AppKit import (  # type: ignore[import-not-found]
             NSButton,
-            NSFont,
             NSFontWeightSemibold,
             NSMakeRect,
-            NSPopUpButton,
-            NSSecureTextField,
             NSTextAlignmentCenter,
-            NSView,
         )
 
         width = CONTENT_WIDTH - 2 * PADDING
         row_h = GOAL_ROW_HEIGHT
-        top = content_h
+        views = {}
         parent_view.addSubview_(theme.ns_rule(PADDING, top - 1, width))
-        for index, (choice, action, title, description, recommended) in enumerate(
-            GOAL_CHOICES
-        ):
+        for index, (key, action, title, description, tag) in enumerate(rows):
             y = top - (index + 1) * row_h
             background = _create_box(PADDING, y, width, row_h - 1, theme.SELECTED_ROW_BG)
             edge = _create_box(PADDING, y, 2, row_h - 1, theme.TEXT)
@@ -1084,7 +1133,7 @@ class OnboardingWizardController:
             )
             text_x = ring_x + ring_size + 14
             title_label = _create_label(
-                title, text_x, y + 32, 200, 20, size=15, weight=NSFontWeightSemibold
+                title, text_x, y + 32, 240, 20, size=15, weight=NSFontWeightSemibold
             )
             title_label.sizeToFit()
             desc_label = _create_label(
@@ -1092,10 +1141,10 @@ class OnboardingWizardController:
                 size=12.5, color=theme.MUTED,
             )
             for view in (background, edge, dot):
-                view.setHidden_(True)  # shown by _sync_goal_rows when selected
+                view.setHidden_(True)  # shown by _sync_choice_rows when selected
             for view in (background, edge, ring, dot, title_label, desc_label):
                 parent_view.addSubview_(view)
-            if recommended:
+            if tag:
                 tag_x = text_x + title_label.frame().size.width + 8
                 parent_view.addSubview_(
                     _create_box(
@@ -1103,11 +1152,9 @@ class OnboardingWizardController:
                         radius=theme.RADIUS, border=theme.SECONDARY_BORDER,
                     )
                 )
-                tag = _create_label(
-                    "Recommended", tag_x, y + 36, 92, 14, size=11, color=theme.MUTED
-                )
-                tag.setAlignment_(NSTextAlignmentCenter)
-                parent_view.addSubview_(tag)
+                tag_label = _create_label(tag, tag_x, y + 36, 92, 14, size=11, color=theme.MUTED)
+                tag_label.setAlignment_(NSTextAlignmentCenter)
+                parent_view.addSubview_(tag_label)
             parent_view.addSubview_(theme.ns_rule(PADDING, y - 1, width))
             button = NSButton.alloc().initWithFrame_(NSMakeRect(PADDING, y, width, row_h))
             button.setBordered_(False)
@@ -1115,12 +1162,48 @@ class OnboardingWizardController:
             button.setAccessibilityLabel_(f"{title}: {description}")
             self._bind_action(button, action)
             parent_view.addSubview_(button)
-            self._goal_rows[choice] = (background, edge, ring, dot)
+            views[key] = (background, edge, ring, dot, desc_label)
+        return views
+
+    @staticmethod
+    def _sync_choice_rows(rows: dict, selected) -> None:
+        """Marks the ``selected`` row (fill, light left edge, filled radio)."""
+        for key, (background, edge, ring, dot, _desc) in rows.items():
+            is_selected = key == selected
+            try:
+                background.setHidden_(not is_selected)
+                edge.setHidden_(not is_selected)
+                dot.setHidden_(not is_selected)
+                ring.setBorderColor_(
+                    theme.ns_color(theme.TEXT if is_selected else theme.SECONDARY_BORDER)
+                )
+            except Exception:
+                pass
+
+    def _build_step_choose_goal(self, parent_view, content_h: int) -> None:
+        from AppKit import (  # type: ignore[import-not-found]
+            NSFont,
+            NSMakeRect,
+            NSPopUpButton,
+            NSSecureTextField,
+            NSView,
+        )
+
+        width = CONTENT_WIDTH - 2 * PADDING
+        top = content_h
+        self._goal_rows = self._add_choice_rows(
+            parent_view,
+            top,
+            [
+                (choice, action, title, description, "Recommended" if recommended else None)
+                for choice, action, title, description, recommended in GOAL_CHOICES
+            ],
+        )
         self._last_goal_choice = None
         self._sync_goal_rows()
 
         # Language: label above the popup, hint to the right.
-        lang_top = top - len(GOAL_CHOICES) * row_h - 20
+        lang_top = top - len(GOAL_CHOICES) * GOAL_ROW_HEIGHT - 20
         parent_view.addSubview_(
             _create_label("Language", PADDING, lang_top - 16, 200, 16, size=12, color=theme.NAV)
         )
@@ -1167,22 +1250,12 @@ class OnboardingWizardController:
         self._api_key_status = api_status
 
     def _sync_goal_rows(self) -> None:
-        """Marks the selected Setup row (fill, light left edge, filled radio)."""
+        """Marks the selected Setup row."""
         choice = getattr(self, "_choice", None)
         rows = getattr(self, "_goal_rows", None)
         if not rows or choice == getattr(self, "_last_goal_choice", None):
             return
-        for row_choice, (background, edge, ring, dot) in rows.items():
-            selected = row_choice == choice
-            try:
-                background.setHidden_(not selected)
-                edge.setHidden_(not selected)
-                dot.setHidden_(not selected)
-                ring.setBorderColor_(
-                    theme.ns_color(theme.TEXT if selected else theme.SECONDARY_BORDER)
-                )
-            except Exception:
-                pass
+        self._sync_choice_rows(rows, choice)
         self._last_goal_choice = choice
 
     def _build_step_permissions(self, parent_view, content_h: int) -> None:
@@ -1207,30 +1280,39 @@ class OnboardingWizardController:
         )
 
     def _build_step_hotkey(self, parent_view, content_h: int) -> None:
-        card_h = min(300, content_h)
-        card_y = content_h - card_h
-
-        self._hotkey_card = HotkeyCard.build(
-            parent_view=parent_view,
-            window_width=CONTENT_WIDTH,
-            card_y=card_y,
-            card_height=card_h,
-            outer_padding=PADDING,
-            inner_padding=CARD_PADDING,
-            title="Hotkey",
-            description=(
-                "Choose how you want to start dictation.\n"
-                "Toggle: press once to start and once to stop. Hold: hold while speaking."
-            ),
-            bind_action=self._bind_action,
-            hotkey_recorder=self._hotkey_recorder,
-            on_hotkey_change=self._apply_hotkey_change,
-            on_after_change=self._render,
-            get_current_hotkeys=self._get_cached_hotkeys,
-            show_presets=True,
-            show_hint=False,
-            flat=True,
+        width = CONTENT_WIDTH - 2 * PADDING
+        rows = [
+            (key, action, _hotkey_choice_title(kind, hotkey), description, None)
+            for key, action, kind, hotkey, description in HOTKEY_CHOICES
+        ]
+        rows.append(
+            (HOTKEY_CUSTOM_KEY, "record_hotkey:custom", "Custom", HOTKEY_CUSTOM_DESCRIPTION, None)
         )
+        self._hotkey_rows = self._add_choice_rows(parent_view, content_h, rows)
+
+        # Record button on the Custom row; the row's description shows the shortcut.
+        from AppKit import NSButton, NSFont, NSMakeRect  # type: ignore[import-not-found]
+
+        custom_y = content_h - len(rows) * GOAL_ROW_HEIGHT
+        record_btn = NSButton.alloc().initWithFrame_(
+            NSMakeRect(PADDING + width - 84, custom_y + (GOAL_ROW_HEIGHT - 26) / 2, 84, 26)
+        )
+        record_btn.setTitle_("Record")
+        record_btn.setFont_(NSFont.systemFontOfSize_(13))
+        theme.style_ns_outline_button(record_btn)
+        self._bind_action(record_btn, "record_hotkey:custom")
+        parent_view.addSubview_(record_btn)
+        self._hotkey_record_btn = record_btn
+
+        below_rows = custom_y - 16
+        hint = _create_label("", PADDING, below_rows - 34, width, 34, size=12, color=theme.MUTED)
+        parent_view.addSubview_(hint)
+        self._hotkey_hint_label = hint
+        status = _create_label("", PADDING, below_rows - 56, width, 17, size=12, color=theme.MUTED)
+        parent_view.addSubview_(status)
+        self._hotkey_status_label = status
+        self._last_hotkey_choice_state = None
+        self._sync_hotkey_fields_from_env()
 
     def _build_step_test_dictation(self, parent_view, content_h: int) -> None:
         import objc  # type: ignore[import-not-found]
@@ -1934,11 +2016,9 @@ class OnboardingWizardController:
             preset = action.replace("hotkey_", "")  # f19_toggle, fn_hold, opt_space
             self._apply_hotkey_preset(preset)
             return
-        if action.startswith("record_hotkey:"):
+        if action == "record_hotkey:custom":
             self._ensure_step_built(OnboardingStep.HOTKEY)
-            kind = action.split(":", 1)[1].strip().lower()
-            if kind in ("toggle", "hold"):
-                self._toggle_hotkey_recording(kind)
+            self._toggle_hotkey_recording("toggle")
             return
         if action == "goto_hotkey":
             self._set_step(OnboardingStep.HOTKEY)
@@ -1996,74 +2076,101 @@ class OnboardingWizardController:
             pass
 
     # ---------------------------------------------------------------------
-    # Hotkey recording (delegated to HotkeyCard)
+    # Hotkey (one choice: the wizard keeps a single Toggle or Hold hotkey)
     # ---------------------------------------------------------------------
 
     def _sync_hotkey_fields_from_env(self) -> None:
-        if self._hotkey_card:
-            self._hotkey_card.sync_from_env()
+        """Marks the row matching the configured hotkey and shows the hint."""
+        rows = getattr(self, "_hotkey_rows", None)
+        if not rows:
+            return
+        toggle, hold = self._get_cached_hotkeys()
+        state = (toggle.lower(), hold.lower())
+        if state == getattr(self, "_last_hotkey_choice_state", None):
+            return
+        self._last_hotkey_choice_state = state
+        selected = _selected_hotkey_choice(*state)
+        self._sync_choice_rows(rows, selected)
+        custom_desc = rows[HOTKEY_CUSTOM_KEY][4]
+        hint_text = ""
+        if toggle and hold:
+            hint_text = (
+                f"You use two hotkeys: {_hotkey_choice_title('toggle', toggle)} and "
+                f"{_hotkey_choice_title('hold', hold)}.\n"
+                "Pick a row to use just one, or manage both in Settings → General."
+            )
+        try:
+            custom_desc.setStringValue_(
+                _hotkey_choice_title("toggle" if toggle else "hold", toggle or hold)
+                if selected == HOTKEY_CUSTOM_KEY
+                else HOTKEY_CUSTOM_DESCRIPTION
+            )
+            self._hotkey_hint_label.setStringValue_(hint_text)
+        except Exception:
+            pass
 
     def _toggle_hotkey_recording(self, kind: str) -> None:
-        if self._hotkey_card:
-            self._hotkey_card.toggle_recording(kind)
+        """Records a custom shortcut into the Custom row (saved as Toggle)."""
+        recorder = self._hotkey_recorder
+        if recorder.recording:
+            self._stop_hotkey_recording(cancelled=True)
+            self._set_hotkey_status("info", "Recording cancelled. Previous hotkey kept.")
+            return
+        rows = getattr(self, "_hotkey_rows", None)
+        if not rows:
+            return
+        recorder.start(
+            field=rows[HOTKEY_CUSTOM_KEY][4],
+            button=self._hotkey_record_btn,
+            buttons_to_reset=[self._hotkey_record_btn],
+            on_hotkey=lambda hotkey: self._apply_hotkey_change("toggle", hotkey),
+            placeholder="Press a shortcut…",
+            format_value=_format_hotkey_for_display,
+        )
+        self._set_hotkey_status("info", "Press the shortcut you want. Esc cancels.")
 
     def _apply_hotkey_preset(self, preset: str) -> bool:
-        """Apply one preset even when the AppKit hotkey card is not available."""
-        if self._hotkey_card:
-            self._hotkey_card.apply_preset(preset)
-            return True
-
-        preset_map = {
-            "f19_toggle": ("toggle", "f19"),
-            "fn_hold": ("hold", "fn"),
-            "opt_space": ("toggle", "option+space"),
-        }
-        target = preset_map.get(preset)
+        """Saves one preset row as the only hotkey."""
+        target = HOTKEY_PRESETS.get(preset)
         if target is None:
             return False
-
-        kind, hotkey = target
-        toggle, hold = self._get_cached_hotkeys()
-        if kind == "hold":
-            hold = hotkey
-        else:
-            toggle = hotkey
-
-        self._apply_env_updates(
-            {
-                "PULSESCRIBE_TOGGLE_HOTKEY": toggle or None,
-                "PULSESCRIBE_HOLD_HOTKEY": hold or None,
-                "PULSESCRIBE_HOTKEY": None,
-                "PULSESCRIBE_HOTKEY_MODE": None,
-            }
-        )
-
-        if self._on_settings_changed:
-            try:
-                self._on_settings_changed()
-            except Exception:
-                pass
-
-        self._set_hotkey_status("ok", "✓ Saved")
-        return True
+        self._stop_hotkey_recording(cancelled=True)
+        return self._apply_hotkey_change(*target)
 
     def _stop_hotkey_recording(self, *, cancelled: bool = False) -> None:
-        if self._hotkey_card:
-            self._hotkey_card.stop_recording(cancelled=cancelled)
+        recorder = getattr(self, "_hotkey_recorder", None)
+        if recorder is not None and recorder.recording:
+            recorder.stop(cancelled=cancelled)
 
     def _set_hotkey_status(self, level: str, message: str | None) -> None:
-        if self._hotkey_card:
-            self._hotkey_card.set_status(level, message or "")
+        label = getattr(self, "_hotkey_status_label", None)
+        if label is None:
+            return
+        color = {
+            "ok": theme.BADGE_TONES["ok"][1],
+            "warning": theme.BADGE_TONES["warn"][1],
+            "error": theme.BADGE_TONES["err"][1],
+        }.get(level, theme.MUTED)
+        try:
+            label.setStringValue_(message or "")
+            label.setTextColor_(theme.ns_color(color))
+        except Exception:
+            pass
 
     def _apply_hotkey_change(self, kind: str, hotkey_str: str) -> bool:
+        """Saves ``hotkey_str`` to the ``kind`` slot and clears the other slot."""
         from utils.hotkey_validation import validate_hotkey_change
 
-        normalized, level, message = validate_hotkey_change(kind, hotkey_str)
+        normalized, level, message = validate_hotkey_change(
+            kind, hotkey_str, replace_other=True
+        )
         if level == "error":
             from utils.permissions import is_permission_related_message
 
             # No permission-related popups: the dedicated Permissions step covers this.
-            if not is_permission_related_message(message):
+            if is_permission_related_message(message):
+                message = "This hotkey needs Input Monitoring. Allow it in the Permissions step."
+            else:
                 from utils.alerts import show_error_alert
 
                 show_error_alert(
@@ -2071,35 +2178,23 @@ class OnboardingWizardController:
                     message or "Hotkey konnte nicht gesetzt werden.",
                 )
             self._set_hotkey_status("error", message)
-            self._sync_hotkey_fields_from_env()
-            self._render()
             return False
-
-        toggle, hold = self._get_cached_hotkeys()
-        if kind == "hold":
-            hold = normalized
-        else:
-            toggle = normalized
 
         self._apply_env_updates(
             {
-                "PULSESCRIBE_TOGGLE_HOTKEY": toggle or None,
-                "PULSESCRIBE_HOLD_HOTKEY": hold or None,
+                "PULSESCRIBE_TOGGLE_HOTKEY": normalized if kind == "toggle" else None,
+                "PULSESCRIBE_HOLD_HOTKEY": normalized if kind == "hold" else None,
                 "PULSESCRIBE_HOTKEY": None,
                 "PULSESCRIBE_HOTKEY_MODE": None,
             }
         )
-
-        if self._on_settings_changed:
-            try:
-                self._on_settings_changed()
-            except Exception:
-                pass
+        self._notify_settings_changed()
 
         if level == "warning":
             self._set_hotkey_status("warning", message)
         else:
-            self._set_hotkey_status("ok", "✓ Saved")
+            self._set_hotkey_status("ok", "Saved.")
+        self._render()
         return True
 
     # ---------------------------------------------------------------------
