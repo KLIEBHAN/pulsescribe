@@ -1130,6 +1130,20 @@ def test_save_bar_shows_change_count_only_while_settings_are_unsaved() -> None:
     assert window._unsaved_label.text == "2 unsaved changes"
 
 
+def test_save_bar_shows_server_url_only_edits() -> None:
+    window = _make_window()
+    window._server_url_field = _FakeField("http://mac-mini:7860/v1")
+    window._save_bar = _FakeVisibleWidget()
+    window._unsaved_label = _FakeLabel()
+    window._saved_settings_signature = window._get_current_settings_signature()
+
+    window._server_url_field.setText("http://other:8000/v1")
+    window._refresh_footer_settings_hint()
+
+    assert window._save_bar.visible is True
+    assert window._unsaved_label.text == "1 unsaved change"
+
+
 def test_build_provider_guidance_text_for_missing_required_key():
     text = settings_mod._build_provider_guidance_text(
         "deepgram",

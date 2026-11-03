@@ -2797,6 +2797,7 @@ class SettingsWindow(QDialog):
             api_keys,
             self._microphone_combo.currentData()
             if getattr(self, "_microphone_combo", None) is not None else "",
+            self._current_server_url(),
         )
 
     def _count_unsaved_settings(self) -> int:

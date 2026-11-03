@@ -550,6 +550,10 @@ class TestWelcomeTranscriptionPage:
         assert updates["PULSESCRIBE_MODE"] == "openai_compatible"
         assert updates["OPENAI_COMPATIBLE_BASE_URL"] == "http://mac-mini:7860/v1"
 
+        ctrl._saved_env_values = updates
+        ctrl._server_url_field.setStringValue_("http://other:8000/v1")
+        assert ctrl._count_unsaved_changes() == 1
+
         ctrl._server_url_field.setStringValue_("  ")
         assert ctrl._build_env_updates_from_controls(None)["OPENAI_COMPATIBLE_BASE_URL"] is None
 
