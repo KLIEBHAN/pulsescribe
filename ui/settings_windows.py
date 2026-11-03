@@ -939,7 +939,7 @@ class SettingsWindow(QDialog):
     settings_changed = Signal()
     closed = Signal()
     _hotkey_field_update = Signal(str, str)  # kind, value (thread-safe)
-    _server_models_loaded = Signal(object, object)  # models, error (from loader thread)
+    _server_models_loaded = Signal(object, object, int)  # models, error, generation
 
     def __init__(self, parent: QWidget | None = None, config: dict | None = None):
         super().__init__(parent)
@@ -953,7 +953,8 @@ class SettingsWindow(QDialog):
         self._server_model_field: QLineEdit | None = None
         self._server_model_combo: QComboBox | None = None
         self._server_model_loader = ServerModelLoader()
-        self._server_models_requested = False
+        # URL of the last model request; None until the first one.
+        self._server_models_url: str | None = None
         self._server_model_container: QWidget | None = None
         self._lang_combo: QComboBox | None = None
         self._microphone_combo: QComboBox | None = None
@@ -3018,8 +3019,9 @@ class SettingsWindow(QDialog):
             _set_widget_visible_if_changed(
                 getattr(self, container, None), mode == "openai_compatible"
             )
-        if mode == "openai_compatible" and not getattr(
-            self, "_server_models_requested", True
+        # Also runs after Discard (via _load_settings): a restored URL reloads its models.
+        if mode == "openai_compatible" and self._current_server_url() != getattr(
+            self, "_server_models_url", self._current_server_url()
         ):
             self._load_server_models()
         required_key = MODE_API_KEY_MAP.get(mode)
@@ -3038,17 +3040,27 @@ class SettingsWindow(QDialog):
         """Fill the Server Model list from the configured server in the background."""
         if getattr(self, "_server_model_combo", None) is None:
             return
-        self._server_models_requested = True
+        self._server_models_url = self._current_server_url()
         self._server_model_loader.request(
-            self._current_server_url(),
-            lambda models, error: self._server_models_loaded.emit(models, error),
+            self._server_models_url,
+            lambda models, error, generation: self._server_models_loaded.emit(
+                models, error, generation
+            ),
         )
 
-    def _apply_server_models(self, models: list[str], error: Exception | None) -> None:
-        """Replace the listed models; the typed or saved value stays untouched."""
+    def _apply_server_models(
+        self, models: list[str], error: Exception | None, generation: int | None = None
+    ) -> None:
+        """Replace the listed models; the typed or saved value stays untouched.
+
+        Results of superseded requests are dropped here, on the UI thread.
+        """
         combo = getattr(self, "_server_model_combo", None)
         field = getattr(self, "_server_model_field", None)
+        loader = getattr(self, "_server_model_loader", None)
         if combo is None or field is None:
+            return
+        if generation is not None and loader is not None and not loader.is_latest(generation):
             return
         text = field.text()
         combo.blockSignals(True)

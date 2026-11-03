@@ -565,6 +565,29 @@ class TestWelcomeTranscriptionPage:
         ctrl._load_server_models()  # what Return / focus change in the URL field triggers
         assert requests[-1] == "http://other:8000/v1"
 
+        ctrl._update_all_visibility()  # same URL: no second request
+        assert len(requests) == 2
+
+    def test_stale_server_model_results_are_dropped_when_applied(self, monkeypatch):
+        appkit = pytest.importorskip("AppKit")
+        import ui.welcome as welcome_mod
+        from ui.server_models import ServerModelLoader
+
+        appkit.NSApplication.sharedApplication()
+        monkeypatch.setattr(welcome_mod, "read_env_file", lambda: {})
+        monkeypatch.setattr(WelcomeController, "_build_window", lambda self: None)
+        ctrl = WelcomeController("f19", {"mode": "deepgram"})
+        ctrl._server_model_field = appkit.NSComboBox.alloc().init()
+        ctrl._server_model_loader = ServerModelLoader(fetch=lambda url: [])
+        tokens = []
+        for _ in range(2):
+            ctrl._server_model_loader.request("", lambda m, e, generation: tokens.append(generation))
+
+        ctrl._apply_server_models(["old-server-model"], None, tokens[0])
+        assert ctrl._server_model_field.numberOfItems() == 0
+        ctrl._apply_server_models(["large-v3"], None, tokens[1])
+        assert ctrl._server_model_field.itemObjectValueAtIndex_(0) == "large-v3"
+
     def test_own_server_mode_shows_server_url_instead_of_api_key(self, monkeypatch):
         appkit = pytest.importorskip("AppKit")
         import ui.welcome as welcome_mod

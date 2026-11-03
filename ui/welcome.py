@@ -2085,21 +2085,31 @@ class WelcomeController:
         loader = getattr(self, "_server_model_loader", None)
         if loader is None:
             loader = self._server_model_loader = ServerModelLoader()
-        self._server_models_requested = True
-        loader.request(str(url_field.stringValue()), self._deliver_server_models)
+        self._server_models_url = str(url_field.stringValue()).strip()
+        loader.request(self._server_models_url, self._deliver_server_models)
 
-    def _deliver_server_models(self, models: list[str], error: Exception | None) -> None:
-        """Loader callback on a worker thread; applies the result on the main thread."""
+    def _deliver_server_models(
+        self, models: list[str], error: Exception | None, generation: int
+    ) -> None:
+        """Loader callback (worker thread or inline); applies the result on the main thread."""
         from Foundation import NSOperationQueue  # type: ignore[import-not-found]
 
         NSOperationQueue.mainQueue().addOperationWithBlock_(
-            lambda: self._apply_server_models(models, error)
+            lambda: self._apply_server_models(models, error, generation)
         )
 
-    def _apply_server_models(self, models: list[str], error: Exception | None) -> None:
-        """Replace the listed models; the typed or saved value stays untouched."""
+    def _apply_server_models(
+        self, models: list[str], error: Exception | None, generation: int | None = None
+    ) -> None:
+        """Replace the listed models; the typed or saved value stays untouched.
+
+        Results of superseded requests are dropped here, on the main thread.
+        """
         combo = getattr(self, "_server_model_field", None)
-        if combo is None:
+        loader = getattr(self, "_server_model_loader", None)
+        if combo is None or (
+            generation is not None and loader is not None and not loader.is_latest(generation)
+        ):
             return
         combo.removeAllItems()
         if models:
@@ -5750,8 +5760,11 @@ class WelcomeController:
         self._refresh_provider_key_statuses()
         self._refresh_setup_try_card()
         self._refresh_footer_settings_hint()
-        if self._current_mode() == "openai_compatible" and not getattr(
-            self, "_server_models_requested", False
+        url_field = getattr(self, "_server_url_field", None)
+        if (
+            self._current_mode() == "openai_compatible"
+            and url_field is not None
+            and str(url_field.stringValue()).strip() != getattr(self, "_server_models_url", None)
         ):
             self._load_server_models()
 

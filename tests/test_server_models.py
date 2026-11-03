@@ -15,7 +15,7 @@ def _collect():
     results: list[tuple[list[str], Exception | None]] = []
     done = threading.Event()
 
-    def deliver(models, error):
+    def deliver(models, error, _generation):
         results.append((models, error))
         done.set()
 
@@ -51,6 +51,14 @@ def test_delivers_models_and_errors_off_the_calling_thread():
     assert done.wait(2)
     models, error = results[0]
     assert models == [] and isinstance(error, ConnectionError)
+
+
+def test_is_latest_tracks_the_newest_request():
+    tokens = []
+    loader = ServerModelLoader(fetch=lambda url: [])
+    loader.request("", lambda models, error, generation: tokens.append(generation))
+    loader.request("", lambda models, error, generation: tokens.append(generation))
+    assert loader.is_latest(tokens[1]) and not loader.is_latest(tokens[0])
 
 
 def test_only_the_newest_request_is_delivered():
