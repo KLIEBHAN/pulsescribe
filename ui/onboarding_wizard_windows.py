@@ -1024,11 +1024,15 @@ class OnboardingWizardWindows(QDialog):
             rows_layout.addWidget(row[0])
 
         # Custom: records a Toggle shortcut into the field on the row.
+        # The description wraps and the field takes the remaining width, so
+        # neither is clipped with wider system fonts (the field uses the system
+        # font, which follows the Windows text size).
         custom = _create_choice_row("Custom", "Your own shortcut.")
+        custom[3].setWordWrap(True)
         custom[0].clicked.connect(lambda _checked=False: self._toggle_hotkey_capture("toggle"))
         self._toggle_input = QLineEdit()
         self._toggle_input.setReadOnly(True)
-        self._toggle_input.setFixedWidth(100)
+        self._toggle_input.setMinimumWidth(120)
         self._toggle_input.setPlaceholderText("Not set")
         self._toggle_input.mousePressEvent = lambda _event: self._toggle_hotkey_capture("toggle")
         self._toggle_record_btn = QPushButton("Record")
@@ -1037,7 +1041,7 @@ class OnboardingWizardWindows(QDialog):
             lambda _checked=False: self._toggle_hotkey_capture("toggle")
         )
         custom_layout = custom[0].layout()
-        custom_layout.addWidget(self._toggle_input, 0, Qt.AlignmentFlag.AlignVCenter)
+        custom_layout.addWidget(self._toggle_input, 1, Qt.AlignmentFlag.AlignVCenter)
         custom_layout.addWidget(self._toggle_record_btn, 0, Qt.AlignmentFlag.AlignVCenter)
         self._hotkey_rows[HOTKEY_CUSTOM_KEY] = custom
         rows_layout.addWidget(custom[0])
