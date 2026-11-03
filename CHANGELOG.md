@@ -35,8 +35,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Processing, Worked, No speech or Error badge. The repeated hint lines and
   the in-step skip link are gone; Skip sits in the footer. The test stays
   safe: nothing is pasted, and leaving the step cancels a running test.
+- **Setup wizard in the Settings style (Windows)** – the Windows wizard gets
+  the same layout as on macOS: a 640 × 520 window with the step sidebar, page
+  title and footer, Setup rows, a Microphone row, one-choice Hotkey rows
+  (Hold Ctrl+Win, Toggle Ctrl+Alt+R, Toggle F19, Custom), a Practice step
+  with a transcript badge and Review rows with badges. The wizard is now in
+  English like Settings. A first run preselects Hold Ctrl+Win instead of
+  setting two hotkeys.
 
 ### Fixed
+
+- **"Open Settings…" in the Windows wizard** – the button finished the
+  wizard but never opened Settings; the wizard now asks the running app to
+  open them.
+- **Back on the first wizard step (Windows)** – Back no longer shows on the
+  first step when the wizard opens there.
 
 - **Setup wizard review after Private (macOS)** – Review showed the previous
   provider after choosing Private; it now shows Local.

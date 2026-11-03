@@ -3480,7 +3480,12 @@ class PulseScribeWindows:
 
     def _handle_ipc_command(self, cmd_id: str, command: str) -> None:
         """Handle IPC commands from the wizard."""
-        from utils.ipc import CMD_START_TEST, CMD_STOP_TEST, STATUS_ERROR
+        from utils.ipc import (
+            CMD_OPEN_SETTINGS,
+            CMD_START_TEST,
+            CMD_STOP_TEST,
+            STATUS_ERROR,
+        )
 
         logger.debug(f"IPC-Command empfangen: {command} (id={cmd_id})")
 
@@ -3488,6 +3493,8 @@ class PulseScribeWindows:
             self._start_ipc_test(cmd_id)
         elif command == CMD_STOP_TEST:
             self._stop_ipc_test(cmd_id)
+        elif command == CMD_OPEN_SETTINGS:
+            self._show_settings()
         else:
             logger.warning(f"Unbekannter IPC-Command: {command}")
             if self._ipc_server:
