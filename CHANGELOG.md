@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **MLX models use 8-bit weights by default** – in our German test as
+  accurate as full precision, about 10 % faster and roughly half the memory
+  (turbo 0.8 GB instead of 1.5 GB). `large` downloads a pre-quantized 1.6 GB
+  model instead of 2.9 GB. Choose 4bit or none under Settings → Providers →
+  Quantization (`PULSESCRIBE_MLX_QUANT`).
+
+### Fixed
+
+- **Releasing local memory on macOS** – freeing the local model now also
+  releases the MLX model, which stayed loaded before.
+
 ## [1.14.1] - 2026-11-04
 
 ### Fixed

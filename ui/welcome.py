@@ -61,7 +61,7 @@ from utils.log_tail import (
     read_file_text_from_offset,
     should_auto_refresh_logs,
 )
-from utils.presets import LOCAL_PRESET_BASE, LOCAL_PRESETS, LOCAL_PRESET_OPTIONS
+from utils.presets import LOCAL_PRESET_BASE, LOCAL_PRESETS, LOCAL_PRESET_OPTIONS, is_apple_silicon
 from utils.settings_env_updates import SettingsEnvUpdateBuilder
 from utils.transcript_view_logic import (
     build_transcript_payload,
@@ -137,6 +137,12 @@ LOCAL_MODEL_OPTIONS = [
     "small-en",
 ]
 DEVICE_OPTIONS = ["auto", "mps", "cpu", "cuda"]
+# MLX weight quantization (PULSESCRIBE_MLX_QUANT); 8bit is the runtime default.
+MLX_QUANT_OPTIONS = ["8bit", "4bit", "none"]
+MLX_QUANT_TOOLTIP = (
+    "8bit (default): as accurate as full precision in our tests, faster and about half the "
+    "memory. 4bit: smallest, slightly less accurate. none: full precision (fp16)."
+)
 BOOL_OVERRIDE_OPTIONS = ["default", "true", "false"]
 WARMUP_OPTIONS = ["auto", "true", "false"]
 LOCAL_FP16_ENV_KEY = "PULSESCRIBE_FP16"
@@ -1143,6 +1149,7 @@ class WelcomeController:
         )
         add(row(self._build_local_backend_setting_row), is_local)
         add(row(self._build_local_model_setting_row), is_local)
+        add(row(self._build_mlx_quant_setting_row), lambda: is_local() and self._uses_mlx())
         add(row(self._build_language_setting_row))
         add(
             row(self._build_streaming_setting_row),
@@ -2154,6 +2161,37 @@ class WelcomeController:
             "_update_all_visibility",  # also refreshes the save bar
             "_backend_changed_handler",
         )
+
+    def _uses_mlx(self) -> bool:
+        """True when local transcription runs on MLX (mlx, or auto on Apple Silicon)."""
+        popup = getattr(self, "_local_backend_popup", None)
+        backend = normalize_local_backend(
+            popup.titleOfSelectedItem() if popup is not None
+            else self._get_cached_env_setting("PULSESCRIBE_LOCAL_BACKEND")
+        )
+        return backend == "mlx" or (backend == "auto" and is_apple_silicon())
+
+    def _build_mlx_quant_setting_row(
+        self,
+        base_x: int,
+        y: int,
+        control_x: int,
+        control_width: int,
+        parent_view,
+    ) -> None:
+        current = (self._get_cached_env_setting("PULSESCRIBE_MLX_QUANT") or "8bit").strip().lower()
+        _label, popup = self._build_popup_setting_row(
+            base_x,
+            y,
+            control_x,
+            control_width,
+            parent_view,
+            label_text="Quantization:",
+            options=MLX_QUANT_OPTIONS,
+            selected_title=current if current in MLX_QUANT_OPTIONS else "8bit",
+            popup_attr="_mlx_quant_popup",
+        )
+        _set_tooltip_if_supported(popup, MLX_QUANT_TOOLTIP)
 
     def _build_local_model_setting_row(
         self,
@@ -6148,6 +6186,14 @@ class WelcomeController:
         self,
         builder: SettingsEnvUpdateBuilder,
     ) -> None:
+        mlx_quant_popup = getattr(self, "_mlx_quant_popup", None)
+        if mlx_quant_popup is not None:
+            builder.set_optional(
+                "PULSESCRIBE_MLX_QUANT",
+                mlx_quant_popup.titleOfSelectedItem(),
+                remove_when={"8bit"},
+                lower=True,
+            )
         if self._device_popup:
             self._add_popup_optional_env_update(
                 builder,

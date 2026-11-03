@@ -521,6 +521,36 @@ class TestWelcomeTranscriptionPage:
         ctrl._toggle_advanced_options()
         assert ctrl._device_popup.superview() in visible_blocks()
 
+    def test_mlx_quantization_row_follows_the_effective_backend(self, monkeypatch):
+        appkit = pytest.importorskip("AppKit")
+        import ui.welcome as welcome_mod
+
+        appkit.NSApplication.sharedApplication()
+        monkeypatch.setattr(welcome_mod, "read_env_file", lambda: {})
+        monkeypatch.setattr(welcome_mod, "is_apple_silicon", lambda: True)
+        monkeypatch.setattr(WelcomeController, "_build_window", lambda self: None)
+        ctrl = WelcomeController("f19", {"mode": "local"})
+        ctrl._env_settings_cache = {"PULSESCRIBE_MODE": "local", "PULSESCRIBE_LOCAL_BACKEND": "mlx"}
+        page = appkit.NSView.alloc().initWithFrame_(appkit.NSMakeRect(0, 0, 610, 500))
+        ctrl._build_transcription_tab(page, 500)
+        _scroll, _document, _height, blocks = ctrl._transcription_page
+
+        def visible():
+            return ctrl._mlx_quant_popup.superview() in [b for b, _v in blocks if not b.isHidden()]
+
+        assert visible()
+        assert ctrl._mlx_quant_popup.titleOfSelectedItem() == "8bit"
+        assert ctrl._build_env_updates_from_controls(None)["PULSESCRIBE_MLX_QUANT"] is None
+        ctrl._mlx_quant_popup.selectItemWithTitle_("4bit")
+        assert ctrl._build_env_updates_from_controls(None)["PULSESCRIBE_MLX_QUANT"] == "4bit"
+
+        ctrl._local_backend_popup.selectItemWithTitle_("faster")
+        ctrl._update_all_visibility()
+        assert not visible()
+        ctrl._local_backend_popup.selectItemWithTitle_("auto")
+        ctrl._update_all_visibility()
+        assert visible()  # auto runs MLX on Apple Silicon
+
     def test_own_server_model_picker_lists_server_models_and_keeps_typed_value(
         self, monkeypatch
     ):

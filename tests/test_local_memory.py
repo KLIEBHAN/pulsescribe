@@ -31,6 +31,7 @@ def test_build_memory_signature_shape_and_order():
         "PULSESCRIBE_LOCAL_NUM_WORKERS": "1",
         "PULSESCRIBE_LIGHTNING_BATCH_SIZE": "8",
         "PULSESCRIBE_LIGHTNING_QUANT": "int8",
+        "PULSESCRIBE_MLX_QUANT": "4bit",
     }
     signature = build_memory_signature(mode="local", model="large", getenv=env.get)
 
@@ -45,6 +46,7 @@ def test_build_memory_signature_shape_and_order():
         "1",
         "8",
         "int8",
+        "4bit",
     )
 
 

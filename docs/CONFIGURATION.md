@@ -227,6 +227,7 @@ See [LOCAL_BACKENDS.md](LOCAL_BACKENDS.md) for detailed local mode configuration
 | Variable                               | Values                                          | Default | Description                       |
 | -------------------------------------- | ----------------------------------------------- | ------- | --------------------------------- |
 | `PULSESCRIBE_LOCAL_BACKEND`            | `whisper`, `faster`, `mlx`, `lightning`, `auto` | `auto`  | Local backend                     |
+| `PULSESCRIBE_MLX_QUANT`                | `8bit`, `4bit`, `none`                           | `8bit`  | MLX weight quantization           |
 | `PULSESCRIBE_LOCAL_MODEL`              | `tiny`...`large`, `turbo`                       | `turbo` | Model size                        |
 | `PULSESCRIBE_DEVICE`                   | `auto`, `mps`, `cpu`, `cuda`                    | `auto`  | Compute device                    |
 | `PULSESCRIBE_LOCAL_WARMUP`             | `true`, `false`, `auto`                         | `auto`  | Warmup on startup                 |

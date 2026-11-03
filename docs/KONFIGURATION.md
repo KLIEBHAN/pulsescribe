@@ -210,6 +210,7 @@ Siehe [LOKALE_BACKENDS.md](LOKALE_BACKENDS.md) für detaillierte Konfiguration d
 | Variable                    | Werte                                           | Default | Beschreibung      |
 | --------------------------- | ----------------------------------------------- | ------- | ----------------- |
 | `PULSESCRIBE_LOCAL_BACKEND` | `whisper`, `faster`, `mlx`, `lightning`, `auto` | `auto`  | Lokales Backend   |
+| `PULSESCRIBE_MLX_QUANT` | `8bit`, `4bit`, `none` | `8bit`  | Quantisierung der MLX-Gewichte |
 | `PULSESCRIBE_LOCAL_MODEL`   | `tiny`...`large`, `turbo`                       | `turbo` | Modellgröße       |
 | `PULSESCRIBE_DEVICE`        | `auto`, `mps`, `cpu`, `cuda`                    | `auto`  | Rechengerät       |
 | `PULSESCRIBE_LOCAL_WARMUP`  | `true`, `false`, `auto`                         | `auto`  | Warmup beim Start |

@@ -255,6 +255,59 @@ def _resolve_local_backend(env_value: str | None) -> str:
     return normalized_backend
 
 
+# MLX weight quantization (PULSESCRIBE_MLX_QUANT). 8-bit is the default: in our German
+# test as accurate as fp16, ~10 % faster and about half the resident memory.
+DEFAULT_MLX_QUANT = "8bit"
+_MLX_QUANT_BITS = {"8bit": 8, "4bit": 4, "none": None}
+# Pre-quantized MLX repos: smaller download and no fp16 peak while loading.
+_MLX_PREQUANTIZED_REPOS = {
+    ("mlx-community/whisper-large-v3-mlx", 8): "mlx-community/whisper-large-v3-mlx-8bit",
+}
+# (repo, bits) of the quantized model PulseScribe placed in mlx-whisper's ModelHolder.
+_mlx_quantized_model: dict = {"key": None}
+
+
+def _mlx_quant_bits() -> int | None:
+    """Bits for MLX weights from PULSESCRIBE_MLX_QUANT (8bit, 4bit, none); default 8."""
+    raw = (os.getenv("PULSESCRIBE_MLX_QUANT") or DEFAULT_MLX_QUANT).strip().lower()
+    if raw not in _MLX_QUANT_BITS:
+        logger.warning("Unbekannter PULSESCRIBE_MLX_QUANT='%s', nutze %s", raw, DEFAULT_MLX_QUANT)
+        raw = DEFAULT_MLX_QUANT
+    return _MLX_QUANT_BITS[raw]
+
+
+def _mlx_model_holder(import_module: bool = True):
+    """mlx-whisper's global model cache (ModelHolder); None if not imported yet."""
+    if import_module:
+        from mlx_whisper.transcribe import ModelHolder  # type: ignore[import-not-found]
+
+        return ModelHolder
+    return getattr(sys.modules.get("mlx_whisper.transcribe"), "ModelHolder", None)
+
+
+def _load_quantized_mlx_model(repo: str, bits: int, *, fp32: bool):
+    """Load an MLX Whisper model and quantize Linear/Embedding layers to ``bits``.
+
+    Uses mlx-whisper's own loader (which downloads the repo if needed) and the same
+    nn.quantize call it applies to pre-quantized checkpoints; already quantized
+    repos are returned unchanged.
+    """
+    import mlx.core as mx  # type: ignore[import-not-found]
+    import mlx.nn as nn  # type: ignore[import-not-found]
+    from mlx_whisper.load_models import load_model  # type: ignore[import-not-found]
+
+    model = load_model(repo, dtype=mx.float32 if fp32 else mx.float16)
+    if not any(isinstance(m, nn.QuantizedLinear) for _, m in model.named_modules()):
+        nn.quantize(
+            model,
+            group_size=64,
+            bits=bits,
+            class_predicate=lambda _path, m: isinstance(m, (nn.Linear, nn.Embedding)),
+        )
+        mx.eval(model.parameters())
+    return model
+
+
 def _mlx_whisper_import_hint() -> str:
     """Hinweistext für fehlgeschlagene mlx-whisper Imports."""
     if getattr(sys, "frozen", False):
@@ -477,8 +530,43 @@ class LocalProvider:
                 cleared_entries = len(self._model_cache)
                 self._model_cache.clear()
 
+        self._release_mlx_model_holder()
         self._release_backend_allocator_caches()
         return cleared_entries
+
+    @staticmethod
+    def _release_mlx_model_holder() -> None:
+        """Drop mlx-whisper's globally cached model (it lives outside _model_cache)."""
+        holder = _mlx_model_holder(import_module=False)
+        if holder is not None:
+            holder.model = None
+            holder.model_path = None
+        _mlx_quantized_model["key"] = None
+
+    def _prepare_mlx_model(self, model_name: str) -> str:
+        """Return the MLX repo for model_name, loaded quantized per PULSESCRIBE_MLX_QUANT.
+
+        mlx-whisper caches one model in ModelHolder keyed by path. For 8/4 bit this puts a
+        quantized model into that cache, so the following mlx_whisper.transcribe() call
+        reuses it. Call it while holding the transcribe lock.
+        """
+        repo = self._map_mlx_model_name(model_name)
+        bits = _mlx_quant_bits()
+        repo = _MLX_PREQUANTIZED_REPOS.get((repo, bits), repo)
+        if bits is None:
+            if _mlx_quantized_model["key"] is not None:
+                self._release_mlx_model_holder()  # let mlx-whisper reload unquantized
+            return repo
+
+        holder = _mlx_model_holder()
+        if holder.model is not None and holder.model_path == repo \
+                and _mlx_quantized_model["key"] == (repo, bits):
+            return repo
+        holder.model = _load_quantized_mlx_model(repo, bits, fp32=self._fp16_override is False)
+        holder.model_path = repo
+        _mlx_quantized_model["key"] = (repo, bits)
+        logger.info(f"MLX-Modell {repo} mit {bits} Bit geladen")
+        return repo
 
     def cleanup(self) -> None:
         """Release cached models and reset ENV-derived runtime configuration."""
@@ -946,7 +1034,7 @@ class LocalProvider:
                 mlx_whisper = _import_mlx_whisper()
                 t_import = time.perf_counter() - t0
 
-                repo = self._map_mlx_model_name(model_name)
+                repo = self._prepare_mlx_model(model_name)
                 logger.debug(f"MLX preload: repo={repo}, import={t_import*1000:.0f}ms")
 
                 # Warmup mit Dummy-Audio fuer vollstaendige Metal-Compilation
@@ -1045,7 +1133,7 @@ class LocalProvider:
         else:
             with self._transcribe_lock:
                 mlx_whisper = _import_mlx_whisper()
-                repo = self._map_mlx_model_name(model_name)
+                repo = self._prepare_mlx_model(model_name)
                 mlx_whisper.transcribe(
                     keepalive_audio,
                     path_or_hf_repo=repo,
@@ -1174,7 +1262,7 @@ class LocalProvider:
         mlx_whisper = _import_mlx_whisper()
         t_import = time.perf_counter() - t0
 
-        repo = self._map_mlx_model_name(model_name)
+        repo = self._prepare_mlx_model(model_name)
         mlx_opts = dict(options)
 
         # Warnung bei Verwendung von English-only Modellen mit nicht-englischer Sprache
