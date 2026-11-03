@@ -13,6 +13,7 @@ MUTED = "#949494"
 NAV = "#adadad"
 ACTIVE_BG = "#2a2a2a"
 ACTIVE_TEXT = "#ffffff"
+SELECTED_ROW_BG = "#1f1f1f"  # selected choice row in the setup wizard
 PRIMARY_BG = "#ececec"
 PRIMARY_TEXT = "#181818"
 SECONDARY_BORDER = "#3a3a3a"
