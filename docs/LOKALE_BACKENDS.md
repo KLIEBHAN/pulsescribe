@@ -13,6 +13,8 @@ PulseScribe unterstützt Offline-Transkription mit lokalen Whisper-Modellen. Nac
 | **faster** | ⚡⚡ | Alle | Nur CPU | CPU-only Systeme |
 | **whisper** | ⚡ | Alle | MPS/CUDA | Kompatibilität |
 
+`PULSESCRIBE_LOCAL_BACKEND=auto` (Standard) nutzt auf Apple Silicon **mlx**, sonst faster-whisper (openai-whisper, falls faster-whisper fehlt). Die macOS-App enthält mlx, lightning und faster-whisper; openai-whisper gibt es nur beim Start aus dem Quellcode. Ist in der App ein nicht enthaltenes Backend eingestellt, nutzt sie das Standard-Backend und schreibt eine Warnung ins Log.
+
 ## Schnellstart
 
 ### Apple Silicon (Empfohlen)
@@ -132,7 +134,7 @@ PULSESCRIBE_LOCAL_BACKEND=faster
 
 ### OpenAI Whisper (`openai-whisper`)
 
-Originale PyTorch-Implementierung. Beste Kompatibilität, nutzt MPS auf Apple Silicon.
+Originale PyTorch-Implementierung. Beste Kompatibilität, nutzt MPS auf Apple Silicon. Nicht in der macOS-App enthalten; dafür PulseScribe aus dem Quellcode starten.
 
 ```bash
 pip install openai-whisper

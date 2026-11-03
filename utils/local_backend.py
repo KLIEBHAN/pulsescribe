@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import importlib.util
+import sys
 from typing import NamedTuple
 
 DEFAULT_LOCAL_BACKEND = "auto"
@@ -13,6 +15,39 @@ LOCAL_BACKEND_ALIASES = {
     "mlx-whisper": "mlx",
     "lightning-whisper-mlx": "lightning",
 }
+
+
+# Python module that implements each local backend.
+LOCAL_BACKEND_MODULES = {
+    "whisper": "whisper",
+    "faster": "faster_whisper",
+    "mlx": "mlx_whisper",
+    "lightning": "lightning_whisper_mlx",
+}
+
+
+def is_frozen_app() -> bool:
+    """True inside the packaged app (PyInstaller), where users cannot install backends."""
+    return bool(getattr(sys, "frozen", False))
+
+
+def is_local_backend_installed(backend: str) -> bool:
+    """Check whether a backend's package is present, without importing it."""
+    module = LOCAL_BACKEND_MODULES.get(backend)
+    if module is None:
+        return False
+    try:
+        return importlib.util.find_spec(module) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def available_local_backend_options(options: list[str]) -> list[str]:
+    """Backend choices for Settings: all in source installs, only bundled ones in the app."""
+    if not is_frozen_app():
+        return list(options)
+    return [option for option in options if option == DEFAULT_LOCAL_BACKEND
+            or is_local_backend_installed(option)]
 
 
 class LocalAdvancedUiState(NamedTuple):

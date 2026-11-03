@@ -112,6 +112,7 @@ from utils.preferences import (
 )
 from utils.local_backend import (
     DEFAULT_LOCAL_BACKEND,
+    available_local_backend_options,
     get_cpu_threads_limit,
     get_local_advanced_ui_state,
     normalize_local_backend,
@@ -1636,7 +1637,9 @@ class SettingsWindow(QDialog):
         backend_layout.setContentsMargins(0, 0, 0, 0)
         backend_layout.setSpacing(12)  # same label column as create_label_row
         self._local_backend_combo = QComboBox()
-        _add_combo_items(self._local_backend_combo, LOCAL_BACKEND_OPTIONS)
+        _add_combo_items(
+            self._local_backend_combo, available_local_backend_options(LOCAL_BACKEND_OPTIONS)
+        )
         self._local_backend_combo.setToolTip(
             "Auto keeps PulseScribe's recommended backend. Choose a specific backend to reveal expert-only controls in Advanced."
         )
