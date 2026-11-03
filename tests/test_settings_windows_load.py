@@ -1039,6 +1039,58 @@ def test_build_setup_status_allows_local_mode_without_api_key():
     assert color == "success"
 
 
+def test_build_setup_status_for_own_server_requires_server_url():
+    kwargs = {"toggle_hotkey": "ctrl+alt+r", "hold_hotkey": "", "api_keys": {}}
+
+    headline, detail, color = settings_mod._build_setup_status(
+        "openai_compatible", server_url="  ", **kwargs
+    )
+    assert (headline, color) == ("Setup Incomplete", "warning")
+    assert "Server URL" in detail
+
+    headline, detail, color = settings_mod._build_setup_status(
+        "openai_compatible", server_url="http://mac-mini:7860/v1", **kwargs
+    )
+    assert (headline, color) == ("Ready to Dictate", "success")
+    assert "Own server" in detail
+
+
+def test_build_provider_guidance_text_for_own_server():
+    missing = settings_mod._build_provider_guidance_text(
+        "openai_compatible", required_key_present=False
+    )
+    ready = settings_mod._build_provider_guidance_text(
+        "openai_compatible", required_key_present=True
+    )
+    assert "Enter its Server URL" in missing
+    assert "API key" not in missing
+    assert "own server" in ready
+
+
+def test_server_url_round_trips_between_env_and_settings(monkeypatch):
+    monkeypatch.setattr(
+        settings_mod,
+        "read_env_file",
+        lambda: {
+            "PULSESCRIBE_MODE": "openai_compatible",
+            "OPENAI_COMPATIBLE_BASE_URL": "http://mac-mini:7860/v1",
+        },
+    )
+    window = _make_window()
+    window._server_url_field = _FakeField()
+    window._load_settings()
+    assert window._server_url_field.text() == "http://mac-mini:7860/v1"
+
+    builder = settings_mod.SettingsEnvUpdateBuilder(None)
+    window._add_core_env_updates(builder)
+    assert builder.build()["OPENAI_COMPATIBLE_BASE_URL"] == "http://mac-mini:7860/v1"
+
+    window._server_url_field.setText(" ")
+    builder = settings_mod.SettingsEnvUpdateBuilder(None)
+    window._add_core_env_updates(builder)
+    assert builder.build()["OPENAI_COMPATIBLE_BASE_URL"] is None
+
+
 def test_build_setup_try_it_content_prefers_hold_flow_when_available():
     hotkey_info, body, hint, button = settings_mod._build_setup_try_it_content(
         "ctrl+alt+r", "ctrl+win"
@@ -1076,6 +1128,20 @@ def test_save_bar_shows_change_count_only_while_settings_are_unsaved() -> None:
 
     assert window._save_bar.visible is True
     assert window._unsaved_label.text == "2 unsaved changes"
+
+
+def test_save_bar_shows_server_url_only_edits() -> None:
+    window = _make_window()
+    window._server_url_field = _FakeField("http://mac-mini:7860/v1")
+    window._save_bar = _FakeVisibleWidget()
+    window._unsaved_label = _FakeLabel()
+    window._saved_settings_signature = window._get_current_settings_signature()
+
+    window._server_url_field.setText("http://other:8000/v1")
+    window._refresh_footer_settings_hint()
+
+    assert window._save_bar.visible is True
+    assert window._unsaved_label.text == "1 unsaved change"
 
 
 def test_build_provider_guidance_text_for_missing_required_key():
@@ -1310,6 +1376,26 @@ def test_transcription_shows_only_the_selected_provider_key_and_local_options():
     window._on_mode_changed("local")
     assert window._api_keys_card.visible is False
     assert window._local_presets_card.visible is True
+
+
+def test_server_url_row_shows_only_for_own_server_mode():
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._api_rows = {"DEEPGRAM_API_KEY": _FakeVisibleWidget()}
+    window._api_keys_card = _FakeVisibleWidget()
+    window._server_url_container = _FakeVisibleWidget()
+    window._local_presets_card = _FakeVisibleWidget()
+    window._refresh_local_advanced_ui = lambda _mode: None
+    window._refresh_provider_key_statuses = lambda: None
+    window._refresh_setup_overview = lambda: None
+
+    window._on_mode_changed("openai_compatible")
+    assert window._server_url_container.visible is True
+    assert window._api_keys_card.visible is False
+    assert window._local_presets_card.visible is False
+
+    window._on_mode_changed("deepgram")
+    assert window._server_url_container.visible is False
+    assert window._api_keys_card.visible is True
 
 
 def test_advanced_backend_options_stay_collapsed_until_opened():

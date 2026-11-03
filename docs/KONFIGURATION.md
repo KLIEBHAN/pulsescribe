@@ -55,7 +55,7 @@ Mindestens ein API-Key für Cloud-Transkription erforderlich:
 
 ### Eigener Server (OpenAI-kompatibel)
 
-`PULSESCRIBE_MODE=openai_compatible` lädt jede Aufnahme zu einem eigenen Server hoch, der die Transkriptions-API von OpenAI anbietet (`POST /audio/transcriptions`), etwa ein Whisper-Server auf einem anderen Rechner im Netzwerk. Die Transkription beginnt nach dem Ende der Aufnahme; Live-Text gibt es in diesem Modus nicht.
+`PULSESCRIBE_MODE=openai_compatible` lädt jede Aufnahme zu einem eigenen Server hoch, der die Transkriptions-API von OpenAI anbietet (`POST /audio/transcriptions`), etwa ein Whisper-Server auf einem anderen Rechner im Netzwerk. Die Transkription beginnt nach dem Ende der Aufnahme; Live-Text gibt es in diesem Modus nicht. In den Einstellungen unter Providers den Modus `openai_compatible` wählen und die Server-URL eintragen, oder die Variablen unten in der `.env` setzen.
 
 | Variable                     | Beispiel                   | Beschreibung                                                       |
 | ---------------------------- | -------------------------- | ------------------------------------------------------------------ |

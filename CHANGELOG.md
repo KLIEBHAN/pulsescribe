@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Whisper server on another computer in your network. Set
   `OPENAI_COMPATIBLE_BASE_URL` (and `OPENAI_COMPATIBLE_API_KEY` if the server
   checks one); your OpenAI key is never sent there.
+- **Own server in Settings** – on macOS and Windows, Settings → Providers
+  offers the mode `openai_compatible` with a Server URL field, and the Windows
+  setup status asks for the URL instead of an API key.
 
 ## [1.11.1] - 2026-11-03
 
