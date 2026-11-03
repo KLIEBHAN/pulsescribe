@@ -532,3 +532,42 @@ def test_settings_card_shows_row_statuses_as_badges(monkeypatch) -> None:
     assert badges[widgets.input_status] == ("Enabled • Hold hotkeys ready", "ok")
     assert widgets.summary_status not in badges
     assert widgets.summary_status.color == "warn-color"
+
+
+def test_wizard_rows_use_short_badges_and_allow_buttons(monkeypatch) -> None:
+    import ui.permissions_card as card_mod
+    import utils.permissions as permissions_mod
+
+    _install_fake_appkit(monkeypatch)
+    monkeypatch.setattr(card_mod, "_get_status_palette", lambda: {
+        "ok": "ok-color", "warn": "warn-color", "err": "err-color", "neutral": "muted-color",
+    })
+    badges: dict[object, tuple[str, str]] = {}
+    monkeypatch.setattr(
+        card_mod.theme,
+        "set_ns_badge",
+        lambda field, text, tone: badges.__setitem__(field, (text, tone)),
+    )
+    monkeypatch.setattr(
+        permissions_mod, "get_microphone_permission_state", lambda: "not_determined"
+    )
+    monkeypatch.setattr(permissions_mod, "has_accessibility_permission", lambda: False)
+    monkeypatch.setattr(permissions_mod, "has_input_monitoring_permission", lambda: False)
+
+    card = _build_card()
+    card._badges = True
+    card._short_labels = True
+    card.refresh()
+
+    widgets = card._widgets
+    assert badges[widgets.mic_status] == ("Missing", "err")
+    assert badges[widgets.access_status] == ("Missing", "warn")
+    assert badges[widgets.input_status] == ("Not set", "muted")
+    for button in (widgets.mic_action, widgets.access_action, widgets.input_action):
+        assert (button.title, button.hidden) == ("Allow…", False)
+
+    monkeypatch.setattr(permissions_mod, "has_input_monitoring_permission", lambda: True)
+    card.refresh()
+
+    assert badges[widgets.input_status] == ("Granted", "ok")
+    assert widgets.input_action.hidden is True

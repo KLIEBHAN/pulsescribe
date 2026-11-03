@@ -18,6 +18,13 @@ PERMISSIONS_DESCRIPTION = (
     "Optional: Input Monitoring for Hold and some global hotkeys."
 )
 PERMISSION_STATUS_CHECKING_TEXT = "Checking access…"
+# Setup wizard rows: (action, name, purpose), in order of importance.
+PERMISSION_ROWS = (
+    ("perm_mic", "Microphone", "Required to record your voice."),
+    ("perm_access", "Accessibility", "Pastes the text into the active app."),
+    ("perm_input", "Input Monitoring", "For Hold and some global hotkeys."),
+)
+PERMISSION_ALLOW_TITLE = "Allow…"
 PERMISSION_SUMMARY_CHECKING_TEXT = "Checking current access…"
 
 
@@ -131,6 +138,15 @@ def _build_permission_summary(
     )
 
 
+def _short_status_label(badge: str) -> str:
+    """Wizard badge text for a row's badge tone (ok / err / warn / muted)."""
+    if badge == "ok":
+        return "Granted"
+    if badge == "muted":
+        return "Not set"
+    return "Missing"
+
+
 @dataclass
 class PermissionCardWidgets:
     mic_status: object
@@ -153,10 +169,13 @@ class PermissionsCard:
         widgets: PermissionCardWidgets,
         after_refresh: Callable[[], None] | None = None,
         badges: bool = False,
+        short_labels: bool = False,
     ) -> None:
         self._widgets = widgets
         self._after_refresh = after_refresh
         self._badges = badges  # row statuses as tinted badges instead of colored text
+        # Wizard rows: "Granted" / "Missing" / "Not set" badges and "Allow…" buttons.
+        self._short_labels = short_labels
         self._refresh_timer = None
         self._refresh_ticks = 0
         self._refresh_interval_index = 0
@@ -364,6 +383,84 @@ class PermissionsCard:
 
         return cls(widgets=widgets, after_refresh=after_refresh, badges=flat)
 
+    @classmethod
+    def build_rows(
+        cls,
+        *,
+        parent_view,
+        x: float,
+        top: float,
+        width: float,
+        bind_action: Callable[[object, str], None],
+        after_refresh: Callable[[], None] | None = None,
+        row_height: int = 56,
+    ) -> "PermissionsCard":
+        """Builds the setup wizard's rows (name, purpose, badge, Allow…) below ``top``."""
+        from AppKit import (  # type: ignore[import-not-found]
+            NSBezelStyleRounded,
+            NSButton,
+            NSFont,
+            NSFontWeightMedium,
+            NSMakeRect,
+            NSTextField,
+        )
+
+        def add_label(text: str, frame, size: float, color: str, weight=None):
+            label = NSTextField.alloc().initWithFrame_(frame)
+            label.setStringValue_(text)
+            label.setBezeled_(False)
+            label.setDrawsBackground_(False)
+            label.setEditable_(False)
+            label.setSelectable_(False)
+            label.setFont_(
+                NSFont.systemFontOfSize_(size)
+                if weight is None
+                else NSFont.systemFontOfSize_weight_(size, weight)
+            )
+            label.setTextColor_(theme.ns_color(color))
+            parent_view.addSubview_(label)
+            return label
+
+        btn_w = 84
+        btn_x = x + width - btn_w
+        badge_x = btn_x - 100  # badges keep their left edge, so they line up
+        text_w = badge_x - x - 12
+        parent_view.addSubview_(theme.ns_rule(x, top - 1, width))
+        fields: dict[str, tuple[object, object]] = {}
+        for index, (action, name, purpose) in enumerate(PERMISSION_ROWS):
+            y = top - (index + 1) * row_height
+            add_label(name, NSMakeRect(x, y + 28, text_w, 18), 13, theme.TEXT, NSFontWeightMedium)
+            add_label(purpose, NSMakeRect(x, y + 10, text_w, 17), 12, theme.MUTED)
+            status = add_label(
+                PERMISSION_STATUS_CHECKING_TEXT,
+                NSMakeRect(badge_x, y + 18, 96, 20),
+                12,
+                theme.MUTED,
+            )
+            button = NSButton.alloc().initWithFrame_(
+                NSMakeRect(btn_x, y + (row_height - 26) / 2, btn_w, 26)
+            )
+            button.setTitle_(PERMISSION_ALLOW_TITLE)
+            button.setBezelStyle_(NSBezelStyleRounded)
+            button.setFont_(NSFont.systemFontOfSize_(13))
+            button.setHidden_(True)
+            bind_action(button, action)
+            parent_view.addSubview_(button)
+            parent_view.addSubview_(theme.ns_rule(x, y - 1, width))
+            fields[action] = (status, button)
+
+        widgets = PermissionCardWidgets(
+            mic_status=fields["perm_mic"][0],
+            mic_action=fields["perm_mic"][1],
+            input_status=fields["perm_input"][0],
+            input_action=fields["perm_input"][1],
+            access_status=fields["perm_access"][0],
+            access_action=fields["perm_access"][1],
+        )
+        return cls(
+            widgets=widgets, after_refresh=after_refresh, badges=True, short_labels=True
+        )
+
     def _set_status_if_changed(
         self,
         key: str,
@@ -374,9 +471,14 @@ class PermissionsCard:
         cache_value: object | None = None,
         badge: str | None = None,
     ) -> bool:
-        """Shows ``text`` in ``color``, or as a ``badge`` tone when badges are on."""
+        """Shows ``text`` in ``color``, or as a ``badge`` tone when badges are on.
+
+        With short labels, row badges read "Granted", "Missing" or "Not set".
+        """
         if field is None:
             return False
+        if getattr(self, "_short_labels", False) and badge:
+            text = _short_status_label(badge)
 
         next_state = (text, cache_value if cache_value is not None else color)
         if self._status_cache.get(key) == next_state:
@@ -406,6 +508,8 @@ class PermissionsCard:
         if btn is None:
             return False
 
+        if getattr(self, "_short_labels", False):
+            title = PERMISSION_ALLOW_TITLE
         next_state = (title, enabled, hidden, tooltip)
         if self._action_cache.get(key) == next_state:
             return False
