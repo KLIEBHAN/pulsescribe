@@ -160,20 +160,20 @@ def parse_hotkey(hotkey_str: str) -> tuple[int, int]:
         # Einzelne Taste ohne Modifier
         key = parts[0]
         if key not in KEY_CODE_MAP:
-            raise ValueError(f"Unbekannte Taste: {key}")
+            raise ValueError(f"Unknown key: {key}")
         return KEY_CODE_MAP[key], 0
 
     # Mit Modifier(n)
     *modifiers, key = parts
 
     if key not in KEY_CODE_MAP:
-        raise ValueError(f"Unbekannte Taste: {key}")
+        raise ValueError(f"Unknown key: {key}")
 
     # Modifier kombinieren
     modifier_mask = 0
     for mod in modifiers:
         if mod not in MODIFIER_MAP:
-            raise ValueError(f"Unbekannter Modifier: {mod}")
+            raise ValueError(f"Unknown modifier: {mod}")
         modifier_mask |= MODIFIER_MAP[mod]
 
     return KEY_CODE_MAP[key], modifier_mask

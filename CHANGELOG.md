@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Windows CI** – the Windows test job installs PySide6 and runs the Qt tests
+  for Settings, the setup wizard, the overlay, the microphone picker and the
+  update window offscreen. Before, they always skipped.
+
+### Fixed
+
+- **Live text in the Windows overlay** – the overlay missed an interim text
+  update (or the clear at the end) when the text file was rewritten within one
+  Windows timestamp tick. It now also compares the file size.
+- **Custom hotkey row in the Windows wizard** – the recording field no longer
+  cuts off "Press keys" with wider system fonts, and the description wraps
+  instead of being squeezed by the field.
+- **Hotkey validation messages in English** – the "Invalid hotkey" alert on
+  macOS and the messages for Toggle/Hold conflicts, blocked combinations, Input
+  Monitoring and unknown keys were still German. Windows hotkey format errors
+  are English too.
+
 ## [1.11.0] - 2026-11-03
 
 ### Changed

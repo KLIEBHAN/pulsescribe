@@ -93,7 +93,7 @@ class TestParseHotkey:
 
     def test_unknown_key_raises(self):
         """Unbekannte Taste wirft ValueError."""
-        with pytest.raises(ValueError, match="Unbekannte Taste"):
+        with pytest.raises(ValueError, match="Unknown key"):
             utils.hotkey.parse_hotkey("unknownkey")
 
     def test_whitespace_stripped(self):
@@ -165,7 +165,7 @@ class TestParseHotkeyWithModifiers:
 
     def test_unknown_modifier_raises(self):
         """Unbekannter Modifier wirft ValueError."""
-        with pytest.raises(ValueError, match="Unbekannter Modifier"):
+        with pytest.raises(ValueError, match="Unknown modifier"):
             utils.hotkey.parse_hotkey("foobar+a")
 
     def test_whitespace_stripped(self):

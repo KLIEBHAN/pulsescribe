@@ -98,14 +98,14 @@ def normalize_windows_hotkey(hotkey_str: str | None) -> tuple[str, str | None]:
 
     raw_parts = [part for part in stripped.split("+")]
     if any(not part.strip() for part in raw_parts):
-        return "", "Ungueltiges Hotkey-Format."
+        return "", "Invalid format."
 
     normalized_parts: list[str] = []
     seen: set[str] = set()
     for raw_part in raw_parts:
         part = _normalize_part(raw_part)
         if part is None:
-            return "", f"Unbekannte Taste: {raw_part.strip().lower()}"
+            return "", f"Unknown key: {raw_part.strip().lower()}"
         if part in seen:
             continue
         seen.add(part)
@@ -114,7 +114,7 @@ def normalize_windows_hotkey(hotkey_str: str | None) -> tuple[str, str | None]:
     modifiers = [m for m in _MODIFIER_ORDER if m in seen]
     keys = [p for p in normalized_parts if p not in _MODIFIER_ORDER]
     if len(keys) > 1:
-        return "", "Genau eine Nicht-Modifier-Taste ist erlaubt."
+        return "", "Use exactly one non-modifier key."
     return "+".join(modifiers + keys), None
 
 

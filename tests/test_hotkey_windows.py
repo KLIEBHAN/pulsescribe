@@ -85,8 +85,7 @@ def test_normalize_windows_hotkey_rejects_multiple_non_modifier_keys() -> None:
     normalized, error = normalize_windows_hotkey("ctrl+a+b")
 
     assert normalized == ""
-    assert error is not None
-    assert "nicht-modifier-taste" in error.lower()
+    assert error == "Use exactly one non-modifier key."
 
 
 def test_parse_windows_hotkey_rejects_multiple_non_modifier_keys() -> None:

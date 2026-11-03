@@ -1321,3 +1321,47 @@ def test_test_errors_show_their_detail_in_the_transcript_box():
         "PulseScribe is still busy with another recording. Try again in a moment."
     )
     assert _build_test_transcript_text("no_speech").startswith("No speech detected.")
+
+
+def test_custom_hotkey_row_shows_its_texts_with_a_larger_system_font():
+    # The field uses the system font, which grows with the Windows text size;
+    # its placeholder and recording text must not scroll out of view.
+    from PySide6.QtGui import QFont
+    from PySide6.QtWidgets import QApplication, QDialog, QStyle, QStyleOptionFrame, QVBoxLayout
+
+    import ui.onboarding_wizard_windows as wizard_mod
+
+    app = QApplication.instance() or QApplication([])
+    previous_font = app.font()
+    larger = QFont(previous_font)
+    larger.setPixelSize(16)  # 12 px body at roughly 133 % text size
+    app.setFont(larger)
+    try:
+        wizard = OnboardingWizardWindows.__new__(OnboardingWizardWindows)
+        QDialog.__init__(wizard)
+        wizard.setStyleSheet(wizard_mod.get_wizard_stylesheet())
+        wizard._hotkey_rows = {}
+        wizard._recording_field = None
+        wizard._hold_input = None
+        wizard._get_cached_hotkeys = lambda: ("ctrl+alt+r", "")
+        QVBoxLayout(wizard).addWidget(wizard._build_hotkey_step())
+        wizard.layout().setContentsMargins(0, 0, 0, 0)
+        wizard.setFixedWidth(wizard_mod.WIZARD_WIDTH - wizard_mod.SIDEBAR_WIDTH)
+        wizard.show()
+        app.processEvents()
+
+        field = wizard._toggle_input
+        option = QStyleOptionFrame()
+        field.initStyleOption(option)
+        contents = field.style().subElementRect(
+            QStyle.SubElement.SE_LineEditContents, option, field
+        )
+        text_width = contents.width() - 4  # QLineEdit keeps 2 px on each side
+        for text in (field.placeholderText(), "Press keys…"):
+            assert field.fontMetrics().horizontalAdvance(text) <= text_width, text
+
+        description = wizard._hotkey_rows[wizard_mod.HOTKEY_CUSTOM_KEY][3]
+        assert description.heightForWidth(description.width()) <= description.height()
+        wizard.hide()
+    finally:
+        app.setFont(previous_font)

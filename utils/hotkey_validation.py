@@ -39,14 +39,14 @@ def _validate_against_current_hotkeys(
         return (
             normalized,
             "error",
-            "Toggle und Hold dürfen nicht denselben Hotkey verwenden.",
+            "Toggle and Hold can't use the same hotkey.",
         )
 
     if other and hotkeys_conflict(normalized, other):
         return (
             normalized,
             "error",
-            "Toggle und Hold dürfen sich nicht überlappen.",
+            "Toggle and Hold can't overlap.",
         )
 
     if current and normalized == current:
@@ -95,13 +95,13 @@ def _validate_toggle_registration(
         return (
             normalized,
             "warning",
-            "macOS blockiert diese Kombination als globalen Hotkey. PulseScribe nutzt Eingabemonitoring als Fallback.",
+            "macOS blocks this combination as a global hotkey. PulseScribe uses Input Monitoring instead.",
         )
 
     return (
         normalized,
         "error",
-        "macOS blockiert diese Kombination als globalen Hotkey. Aktiviere Eingabemonitoring oder wähle einen anderen Hotkey.",
+        "macOS blocks this combination as a global hotkey. Allow Input Monitoring or choose another hotkey.",
     )
 
 
@@ -123,7 +123,7 @@ def validate_hotkey_change(
 
     normalized = _normalize(hotkey_str)
     if not normalized:
-        return "", "error", "Hotkey ist leer."
+        return "", "error", "The hotkey is empty."
 
     toggle_current, hold_current = _get_current_hotkeys()
     if replace_other:
@@ -145,7 +145,7 @@ def validate_hotkey_change(
         return (
             normalized,
             "error",
-            "Dieser Hotkey benötigt Eingabemonitoring (Systemeinstellungen → Datenschutz & Sicherheit).",
+            "This hotkey needs Input Monitoring (System Settings → Privacy & Security).",
         )
 
     parsed_hotkey, parse_error = _parse_hotkey_or_error(normalized)
