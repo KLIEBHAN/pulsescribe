@@ -59,10 +59,10 @@ Mindestens ein API-Key für Cloud-Transkription erforderlich:
 
 | Variable                     | Beispiel                   | Beschreibung                                                       |
 | ---------------------------- | -------------------------- | ------------------------------------------------------------------ |
-| `OPENAI_COMPATIBLE_BASE_URL` | `http://mac-mini:7860/v1`  | Pflicht. Basis-URL der API einschließlich `/v1`                    |
+| `OPENAI_COMPATIBLE_BASE_URL` | `http://mac-mini:7860/v1`  | Pflicht. Basis-URL der API einschließlich `/v1`. Mit `http://` gehen Audio und Key unverschlüsselt übers Netz: nur im vertrauenswürdigen LAN, sonst HTTPS |
 | `OPENAI_COMPATIBLE_API_KEY`  | –                     | Optional. Nur nötig, wenn der Server einen Key prüft; `OPENAI_API_KEY` wird nie dorthin gesendet |
 
-`PULSESCRIBE_MODEL` wählt das Modell des Servers (Standard `whisper-1`; kompatible Server bilden das auf ihr Standardmodell ab). Andere Ausgabeformate als Text werden in diesem Modus nicht unterstützt.
+`PULSESCRIBE_MODEL` wählt das Modell des Servers (Standard `whisper-1`; kompatible Server bilden das auf ihr Standardmodell ab). PulseScribe fordert JSON an (`response_format=json`) und übernimmt nur das Feld `text` der Antwort; Untertitelformate wie SRT gibt es in diesem Modus nicht.
 
 ---
 

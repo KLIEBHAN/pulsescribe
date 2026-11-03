@@ -13,7 +13,7 @@ This document describes the network requirements for PulseScribe, including requ
 | **Deepgram** | `api.deepgram.com` | 443 | HTTPS / WSS |
 | **OpenAI** | `api.openai.com` | 443 | HTTPS |
 | **Groq** | `api.groq.com` | 443 | HTTPS |
-| **Own server** (`openai_compatible`) | Host from `OPENAI_COMPATIBLE_BASE_URL` | as configured | HTTP / HTTPS |
+| **Own server** (`openai_compatible`) | Host from `OPENAI_COMPATIBLE_BASE_URL` | as configured | HTTPS recommended; HTTP (unencrypted audio and key) only in a trusted LAN |
 
 ### LLM Refine Providers
 
