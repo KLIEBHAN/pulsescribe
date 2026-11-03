@@ -1,3 +1,7 @@
+import sys
+
+import pytest
+
 import utils.preferences as prefs
 import utils.permissions as permissions
 from utils.onboarding import (
@@ -323,6 +327,7 @@ def test_render_builds_selected_step_on_demand():
     assert wizard._content_view.subviews[0].hidden is False
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="sets AppKit button titles")
 def test_render_skips_duplicate_ui_mutations_for_same_step(monkeypatch):
     import ui.onboarding_wizard as wizard_mod
 
