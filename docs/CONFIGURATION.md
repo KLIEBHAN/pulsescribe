@@ -63,7 +63,7 @@ At least one API key is required for cloud transcription:
 | `OPENAI_COMPATIBLE_API_KEY`  | –                          | Optional. Only if your server checks a key; `OPENAI_API_KEY` is never sent there |
 | `OPENAI_COMPATIBLE_MODEL`    | `large-v3`                 | Optional. Model name your server expects. Without it PulseScribe sends `whisper-1`; servers map that name differently or reject it, so check your server's model names |
 
-On the command line, `--model` overrides `OPENAI_COMPATIBLE_MODEL`. PulseScribe requests JSON (`response_format=json`) and uses only the `text` field of the answer, so subtitle formats such as SRT are not available in this mode.
+In Settings, the Server Model field lists the models your server reports at `GET /models` (loaded when the page opens, after editing the Server URL, or with Refresh); you can always type a name instead. On the command line, `--model` overrides `OPENAI_COMPATIBLE_MODEL`. PulseScribe requests JSON (`response_format=json`) and uses only the `text` field of the answer, so subtitle formats such as SRT are not available in this mode.
 
 ---
 

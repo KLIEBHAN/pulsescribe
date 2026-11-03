@@ -55,6 +55,7 @@ from ui.logs_panel_feedback import (
 )
 from ui.provider_settings import build_provider_api_key_status
 from ui.microphone import MICROPHONE_TOOLTIP, get_microphone_options
+from ui.server_models import ServerModelLoader
 from ui import settings_theme as theme
 from ui.settings_sections import SETTINGS_SECTIONS
 from ui.setup_try_it import build_setup_try_it_content
@@ -173,6 +174,11 @@ SERVER_URL_ENV_KEY = "OPENAI_COMPATIBLE_BASE_URL"
 SERVER_URL_PLACEHOLDER = "http://server.local:8000/v1"
 SERVER_MODEL_ENV_KEY = "OPENAI_COMPATIBLE_MODEL"
 SERVER_MODEL_PLACEHOLDER = "Empty sends whisper-1"
+SERVER_MODEL_UNAVAILABLE_PLACEHOLDER = "Models unavailable – type a name"
+SERVER_MODEL_TOOLTIP = (
+    "Pick a model your server lists or type its name, for example large-v3. "
+    "Empty sends whisper-1, OpenAI's name."
+)
 REFINE_PROVIDER_OPTIONS = ["groq", "openai", "openrouter", "gemini"]
 LOCAL_BACKEND_OPTIONS = ["auto", "whisper", "faster", "mlx", "lightning"]
 LOCAL_MODEL_OPTIONS = [
@@ -933,6 +939,7 @@ class SettingsWindow(QDialog):
     settings_changed = Signal()
     closed = Signal()
     _hotkey_field_update = Signal(str, str)  # kind, value (thread-safe)
+    _server_models_loaded = Signal(object, object, int)  # models, error, generation
 
     def __init__(self, parent: QWidget | None = None, config: dict | None = None):
         super().__init__(parent)
@@ -944,6 +951,10 @@ class SettingsWindow(QDialog):
         self._server_url_field: QLineEdit | None = None
         self._server_url_container: QWidget | None = None
         self._server_model_field: QLineEdit | None = None
+        self._server_model_combo: QComboBox | None = None
+        self._server_model_loader = ServerModelLoader()
+        # URL of the last model request; None until the first one.
+        self._server_models_url: str | None = None
         self._server_model_container: QWidget | None = None
         self._lang_combo: QComboBox | None = None
         self._microphone_combo: QComboBox | None = None
@@ -1015,6 +1026,7 @@ class SettingsWindow(QDialog):
 
         # Signal für Thread-safe UI-Updates verbinden
         self._hotkey_field_update.connect(self._set_hotkey_field_text)
+        self._server_models_loaded.connect(self._apply_server_models)
 
         # Prompt Cache für Save & Apply
         self._prompts_cache: dict[str, str] = {}
@@ -1570,6 +1582,8 @@ class SettingsWindow(QDialog):
         self._server_url_field.textChanged.connect(self._refresh_footer_settings_hint)
         self._server_url_field.textChanged.connect(self._refresh_provider_key_statuses)
         self._server_url_field.textChanged.connect(self._refresh_setup_overview)
+        # Reload the model list once editing ends, not per keystroke.
+        self._server_url_field.editingFinished.connect(lambda: self._load_server_models())
         self._server_url_container = QWidget()
         server_url_row = create_label_row("Server URL:", self._server_url_field)
         server_url_row.setContentsMargins(0, 0, 0, 0)
@@ -1577,17 +1591,23 @@ class SettingsWindow(QDialog):
         card_layout.add_row(self._server_url_container)
 
         # Server Model (nur für openai_compatible)
-        self._server_model_field = QLineEdit()
+        # Editable picker: models listed by the server, free text as fallback. The line
+        # edit stays ``_server_model_field`` so loading and saving read plain text.
+        self._server_model_combo = QComboBox()
+        self._server_model_combo.setEditable(True)
+        self._server_model_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self._server_model_combo.setAccessibleName("Server model")
+        self._server_model_combo.setToolTip(SERVER_MODEL_TOOLTIP)
+        self._server_model_field = self._server_model_combo.lineEdit()
         self._server_model_field.setPlaceholderText(SERVER_MODEL_PLACEHOLDER)
-        self._server_model_field.setAccessibleName("Server model")
-        self._server_model_field.setToolTip(
-            "Model name your server expects, for example large-v3. Empty sends whisper-1, "
-            "OpenAI's name; check which model names your server accepts"
-        )
         self._server_model_field.textChanged.connect(self._refresh_footer_settings_hint)
         self._server_model_container = QWidget()
-        server_model_row = create_label_row("Server Model:", self._server_model_field)
+        server_model_row = create_label_row("Server Model:", self._server_model_combo)
         server_model_row.setContentsMargins(0, 0, 0, 0)
+        refresh_models = QPushButton("Refresh")
+        refresh_models.setAccessibleName("Refresh server models")
+        refresh_models.clicked.connect(lambda: self._load_server_models())
+        server_model_row.addWidget(refresh_models)
         self._server_model_container.setLayout(server_model_row)
         card_layout.add_row(self._server_model_container)
 
@@ -2999,6 +3019,11 @@ class SettingsWindow(QDialog):
             _set_widget_visible_if_changed(
                 getattr(self, container, None), mode == "openai_compatible"
             )
+        # Also runs after Discard (via _load_settings): a restored URL reloads its models.
+        if mode == "openai_compatible" and self._current_server_url() != getattr(
+            self, "_server_models_url", self._current_server_url()
+        ):
+            self._load_server_models()
         required_key = MODE_API_KEY_MAP.get(mode)
         for env_key, row in getattr(self, "_api_rows", {}).items():
             _set_widget_visible_if_changed(row, env_key == required_key)
@@ -3010,6 +3035,51 @@ class SettingsWindow(QDialog):
         self._refresh_local_advanced_ui(mode)
         self._refresh_provider_key_statuses()
         self._refresh_setup_overview()
+
+    def _load_server_models(self) -> None:
+        """Fill the Server Model list from the configured server in the background."""
+        if getattr(self, "_server_model_combo", None) is None:
+            return
+        self._server_models_url = self._current_server_url()
+        self._server_model_loader.request(
+            self._server_models_url,
+            lambda models, error, generation: self._server_models_loaded.emit(
+                models, error, generation
+            ),
+        )
+
+    def _apply_server_models(
+        self, models: list[str], error: Exception | None, generation: int | None = None
+    ) -> None:
+        """Replace the listed models; the typed or saved value stays untouched.
+
+        Results of superseded requests are dropped here, on the UI thread.
+        """
+        combo = getattr(self, "_server_model_combo", None)
+        field = getattr(self, "_server_model_field", None)
+        loader = getattr(self, "_server_model_loader", None)
+        if combo is None or field is None:
+            return
+        if generation is not None and loader is not None and not loader.is_latest(generation):
+            return
+        text = field.text()
+        combo.blockSignals(True)
+        field.blockSignals(True)
+        try:
+            combo.clear()
+            combo.addItems(models)
+            field.setText(text)
+        finally:
+            field.blockSignals(False)
+            combo.blockSignals(False)
+        field.setPlaceholderText(
+            SERVER_MODEL_UNAVAILABLE_PLACEHOLDER if error else SERVER_MODEL_PLACEHOLDER
+        )
+        combo.setToolTip(
+            f"{SERVER_MODEL_TOOLTIP}\nModels could not be loaded from the server."
+            if error
+            else SERVER_MODEL_TOOLTIP
+        )
 
     def _current_server_url(self) -> str:
         """Server URL as currently typed (own server mode), stripped."""

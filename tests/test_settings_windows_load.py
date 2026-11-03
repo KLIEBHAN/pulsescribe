@@ -1399,6 +1399,81 @@ def test_transcription_shows_only_the_selected_provider_key_and_local_options():
     assert window._local_presets_card.visible is True
 
 
+def test_server_model_picker_lists_models_and_keeps_typed_value():
+    from PySide6.QtWidgets import QApplication, QComboBox
+
+    app = QApplication.instance() or QApplication([])
+    window = SettingsWindow.__new__(SettingsWindow)
+    combo = QComboBox()
+    combo.setEditable(True)
+    window._server_model_combo = combo
+    window._server_model_field = combo.lineEdit()
+    window._server_model_field.setText("my-custom-model")
+
+    window._apply_server_models(["whisper-1", "large-v3-turbo", "large-v3"], None)
+    assert [combo.itemText(i) for i in range(combo.count())] == [
+        "whisper-1", "large-v3-turbo", "large-v3",
+    ]
+    assert window._server_model_field.text() == "my-custom-model"
+    assert window._server_model_field.placeholderText() == settings_mod.SERVER_MODEL_PLACEHOLDER
+
+    window._apply_server_models([], ConnectionError("down"))
+    assert combo.count() == 0
+    assert window._server_model_field.text() == "my-custom-model"
+    assert (
+        window._server_model_field.placeholderText()
+        == settings_mod.SERVER_MODEL_UNAVAILABLE_PLACEHOLDER
+    )
+    assert app is not None
+
+
+def test_own_server_mode_loads_models_once_from_the_current_url():
+    requests = []
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._server_model_combo = object()
+    window._server_url_field = _FakeField(" http://mac-mini:7860/v1 ")
+    window._server_models_url = None
+    window._server_model_loader = type(
+        "FakeLoader", (), {"request": lambda self, url, deliver: requests.append(url)}
+    )()
+    window._api_rows = {}
+    window._refresh_local_advanced_ui = lambda _mode: None
+    window._refresh_provider_key_statuses = lambda: None
+    window._refresh_setup_overview = lambda: None
+
+    window._on_mode_changed("deepgram")
+    assert requests == []
+    window._on_mode_changed("openai_compatible")
+    window._on_mode_changed("openai_compatible")
+    assert requests == ["http://mac-mini:7860/v1"]
+    window._load_server_models()  # Refresh button / URL editing finished
+    assert len(requests) == 2
+    window._server_url_field.setText("http://other:8000/v1")  # e.g. restored by Discard
+    window._on_mode_changed("openai_compatible")
+    assert requests[-1] == "http://other:8000/v1"
+
+
+def test_stale_server_model_results_are_dropped_when_applied():
+    from PySide6.QtWidgets import QApplication, QComboBox
+
+    app = QApplication.instance() or QApplication([])
+    window = SettingsWindow.__new__(SettingsWindow)
+    combo = QComboBox()
+    combo.setEditable(True)
+    window._server_model_combo = combo
+    window._server_model_field = combo.lineEdit()
+    window._server_model_loader = settings_mod.ServerModelLoader(fetch=lambda url: [])
+    tokens = []
+    for _ in range(2):
+        window._server_model_loader.request("", lambda m, e, generation: tokens.append(generation))
+
+    window._apply_server_models(["old-server-model"], None, tokens[0])
+    assert combo.count() == 0
+    window._apply_server_models(["large-v3"], None, tokens[1])
+    assert combo.itemText(0) == "large-v3"
+    assert app is not None
+
+
 def test_server_url_row_shows_only_for_own_server_mode():
     window = SettingsWindow.__new__(SettingsWindow)
     window._api_rows = {"DEEPGRAM_API_KEY": _FakeVisibleWidget()}

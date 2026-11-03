@@ -8,6 +8,7 @@ import os
 
 from config import LOG_FILE
 from ui.microphone import MICROPHONE_TOOLTIP, get_microphone_options
+from ui.server_models import ServerModelLoader
 from ui.hotkey_format import (
     format_hotkey_for_display,
     normalize_hotkey_text,
@@ -113,6 +114,11 @@ SERVER_URL_ENV_KEY = "OPENAI_COMPATIBLE_BASE_URL"
 SERVER_URL_PLACEHOLDER = "http://server.local:8000/v1"
 SERVER_MODEL_ENV_KEY = "OPENAI_COMPATIBLE_MODEL"
 SERVER_MODEL_PLACEHOLDER = "Empty sends whisper-1"
+SERVER_MODEL_UNAVAILABLE_PLACEHOLDER = "Models unavailable – type a name"
+SERVER_MODEL_TOOLTIP = (
+    "Pick a model your server lists or type its name, for example large-v3. "
+    "Empty sends whisper-1, OpenAI's name."
+)
 REFINE_PROVIDER_OPTIONS = ["groq", "openai", "openrouter", "gemini"]
 LANGUAGE_OPTIONS = ["auto", "de", "en", "es", "fr", "it", "pt", "nl", "pl", "ru", "zh"]
 LOCAL_BACKEND_OPTIONS = ["auto", "whisper", "faster", "mlx", "lightning"]
@@ -2019,6 +2025,11 @@ class WelcomeController:
             field,
             "Base URL of your own server with OpenAI's transcription API, including /v1.",
         )
+        # Reload the model list once editing ends (Return or focus change), not per keystroke.
+        field.cell().setSendsActionOnEndEditing_(True)
+        self._bind_control_simple_handler(
+            field, "_load_server_models", "_server_url_commit_handler"
+        )
 
     def _build_server_model_setting_row(
         self,
@@ -2028,21 +2039,89 @@ class WelcomeController:
         control_width: int,
         parent_view,
     ) -> None:
-        _label, field = self._build_text_setting_row(
-            base_x,
-            y,
-            control_x,
-            control_width,
-            parent_view,
-            label_text="Server Model:",
-            placeholder=SERVER_MODEL_PLACEHOLDER,
-            env_key=SERVER_MODEL_ENV_KEY,
-            field_attr="_server_model_field",
+        """Editable model picker: models listed by the server, free text as fallback."""
+        from AppKit import NSButton, NSComboBox, NSFont, NSMakeRect  # type: ignore[import-not-found]
+
+        self._add_setting_label(base_x, y, "Server Model:", parent_view)
+        combo = NSComboBox.alloc().initWithFrame_(
+            NSMakeRect(control_x, y, control_width - 76, 22)
+        )
+        combo.setFont_(NSFont.systemFontOfSize_(11))
+        combo.setPlaceholderString_(SERVER_MODEL_PLACEHOLDER)
+        combo.setCompletes_(True)
+        combo.setNumberOfVisibleItems_(8)
+        combo.setStringValue_(self._get_cached_env_setting(SERVER_MODEL_ENV_KEY) or "")
+        if _TextChangeHandler is not None:
+            handler = _TextChangeHandler.alloc().initWithController_method_(
+                self, "_refresh_footer_settings_hint"
+            )
+            combo.setDelegate_(handler)
+            self._server_model_field_handler = handler
+        # Choosing a listed model sends the action; typing goes through the delegate.
+        self._bind_control_simple_handler(
+            combo, "_refresh_footer_settings_hint", "_server_model_select_handler"
+        )
+        _set_tooltip_if_supported(combo, SERVER_MODEL_TOOLTIP)
+        self._server_model_field = combo
+        parent_view.addSubview_(combo)
+
+        refresh = NSButton.alloc().initWithFrame_(
+            NSMakeRect(control_x + control_width - 72, y, 72, 22)
+        )
+        refresh.setTitle_("Refresh")
+        self._bind_control_simple_handler(
+            refresh, "_load_server_models", "_server_model_refresh_handler"
+        )
+        parent_view.addSubview_(refresh)
+        if self._current_mode() == "openai_compatible":
+            self._load_server_models()
+
+    def _load_server_models(self) -> None:
+        """Fill the Server Model list from the configured server in the background."""
+        url_field = getattr(self, "_server_url_field", None)
+        if url_field is None or getattr(self, "_server_model_field", None) is None:
+            return
+        self._refresh_footer_settings_hint()
+        loader = getattr(self, "_server_model_loader", None)
+        if loader is None:
+            loader = self._server_model_loader = ServerModelLoader()
+        self._server_models_url = str(url_field.stringValue()).strip()
+        loader.request(self._server_models_url, self._deliver_server_models)
+
+    def _deliver_server_models(
+        self, models: list[str], error: Exception | None, generation: int
+    ) -> None:
+        """Loader callback (worker thread or inline); applies the result on the main thread."""
+        from Foundation import NSOperationQueue  # type: ignore[import-not-found]
+
+        NSOperationQueue.mainQueue().addOperationWithBlock_(
+            lambda: self._apply_server_models(models, error, generation)
+        )
+
+    def _apply_server_models(
+        self, models: list[str], error: Exception | None, generation: int | None = None
+    ) -> None:
+        """Replace the listed models; the typed or saved value stays untouched.
+
+        Results of superseded requests are dropped here, on the main thread.
+        """
+        combo = getattr(self, "_server_model_field", None)
+        loader = getattr(self, "_server_model_loader", None)
+        if combo is None or (
+            generation is not None and loader is not None and not loader.is_latest(generation)
+        ):
+            return
+        combo.removeAllItems()
+        if models:
+            combo.addItemsWithObjectValues_(models)
+        combo.setPlaceholderString_(
+            SERVER_MODEL_UNAVAILABLE_PLACEHOLDER if error else SERVER_MODEL_PLACEHOLDER
         )
         _set_tooltip_if_supported(
-            field,
-            "Model name your server expects, for example large-v3. Empty sends whisper-1, "
-            "OpenAI's name; check which model names your server accepts.",
+            combo,
+            f"{SERVER_MODEL_TOOLTIP}\nModels could not be loaded from the server."
+            if error
+            else SERVER_MODEL_TOOLTIP,
         )
 
     def _build_local_backend_setting_row(
@@ -5681,6 +5760,13 @@ class WelcomeController:
         self._refresh_provider_key_statuses()
         self._refresh_setup_try_card()
         self._refresh_footer_settings_hint()
+        url_field = getattr(self, "_server_url_field", None)
+        if (
+            self._current_mode() == "openai_compatible"
+            and url_field is not None
+            and str(url_field.stringValue()).strip() != getattr(self, "_server_models_url", None)
+        ):
+            self._load_server_models()
 
     def _apply_selected_local_preset(self) -> None:
         """Wendet das aktuell gewählte Local-Preset auf die UI an."""

@@ -521,11 +521,83 @@ class TestWelcomeTranscriptionPage:
         ctrl._toggle_advanced_options()
         assert ctrl._device_popup.superview() in visible_blocks()
 
+    def test_own_server_model_picker_lists_server_models_and_keeps_typed_value(
+        self, monkeypatch
+    ):
+        appkit = pytest.importorskip("AppKit")
+        import ui.welcome as welcome_mod
+
+        requests: list[str] = []
+
+        class FakeLoader:
+            def request(self, base_url, deliver):
+                requests.append(base_url)
+
+        appkit.NSApplication.sharedApplication()
+        monkeypatch.setattr(welcome_mod, "ServerModelLoader", FakeLoader)
+        monkeypatch.setattr(welcome_mod, "read_env_file", lambda: {})
+        monkeypatch.setattr(WelcomeController, "_build_window", lambda self: None)
+        ctrl = WelcomeController("f19", {"mode": "openai_compatible"})
+        ctrl._env_settings_cache = {
+            "PULSESCRIBE_MODE": "openai_compatible",
+            "OPENAI_COMPATIBLE_BASE_URL": "http://mac-mini:7860/v1",
+            "OPENAI_COMPATIBLE_MODEL": "my-custom-model",
+        }
+        page = appkit.NSView.alloc().initWithFrame_(appkit.NSMakeRect(0, 0, 610, 500))
+        ctrl._build_transcription_tab(page, 500)
+        combo = ctrl._server_model_field
+
+        assert isinstance(combo, appkit.NSComboBox)
+        assert requests == ["http://mac-mini:7860/v1"]  # loaded once when the page opens
+        ctrl._apply_server_models(["whisper-1", "large-v3-turbo", "large-v3"], None)
+        assert [combo.itemObjectValueAtIndex_(i) for i in range(combo.numberOfItems())] == [
+            "whisper-1", "large-v3-turbo", "large-v3",
+        ]
+        assert combo.stringValue() == "my-custom-model"
+        assert combo.placeholderString() == welcome_mod.SERVER_MODEL_PLACEHOLDER
+
+        ctrl._apply_server_models([], ConnectionError("down"))
+        assert combo.numberOfItems() == 0
+        assert combo.stringValue() == "my-custom-model"
+        assert combo.placeholderString() == welcome_mod.SERVER_MODEL_UNAVAILABLE_PLACEHOLDER
+
+        ctrl._server_url_field.setStringValue_("http://other:8000/v1")
+        ctrl._load_server_models()  # what Return / focus change in the URL field triggers
+        assert requests[-1] == "http://other:8000/v1"
+
+        ctrl._update_all_visibility()  # same URL: no second request
+        assert len(requests) == 2
+
+    def test_stale_server_model_results_are_dropped_when_applied(self, monkeypatch):
+        appkit = pytest.importorskip("AppKit")
+        import ui.welcome as welcome_mod
+        from ui.server_models import ServerModelLoader
+
+        appkit.NSApplication.sharedApplication()
+        monkeypatch.setattr(welcome_mod, "read_env_file", lambda: {})
+        monkeypatch.setattr(WelcomeController, "_build_window", lambda self: None)
+        ctrl = WelcomeController("f19", {"mode": "deepgram"})
+        ctrl._server_model_field = appkit.NSComboBox.alloc().init()
+        ctrl._server_model_loader = ServerModelLoader(fetch=lambda url: [])
+        tokens = []
+        for _ in range(2):
+            ctrl._server_model_loader.request("", lambda m, e, generation: tokens.append(generation))
+
+        ctrl._apply_server_models(["old-server-model"], None, tokens[0])
+        assert ctrl._server_model_field.numberOfItems() == 0
+        ctrl._apply_server_models(["large-v3"], None, tokens[1])
+        assert ctrl._server_model_field.itemObjectValueAtIndex_(0) == "large-v3"
+
     def test_own_server_mode_shows_server_url_instead_of_api_key(self, monkeypatch):
         appkit = pytest.importorskip("AppKit")
         import ui.welcome as welcome_mod
 
+        class FakeLoader:
+            def request(self, base_url, deliver):
+                pass
+
         appkit.NSApplication.sharedApplication()
+        monkeypatch.setattr(welcome_mod, "ServerModelLoader", FakeLoader)
         monkeypatch.setattr(welcome_mod, "read_env_file", lambda: {})
         monkeypatch.setattr(WelcomeController, "_build_window", lambda self: None)
         ctrl = WelcomeController("f19", {"mode": "openai_compatible"})
