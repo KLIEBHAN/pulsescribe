@@ -41,7 +41,7 @@ jobs:
       - name: Run Windows-focused tests
         env:
           QT_QPA_PLATFORM: offscreen
-        run: pytest tests/test_windows_responsiveness.py tests/test_hotkey.py tests/test_windows_hotkey_dispatch.py tests/test_windows_race_conditions.py tests/test_app_detection.py tests/test_deepgram_stream.py tests/test_updates.py tests/test_update_flow.py tests/test_update_install.py tests/test_update_ui.py tests/test_update_window.py tests/test_update_daemon.py tests/test_version.py tests/test_release_workflow.py tests/test_build_windows.py tests/test_settings_windows_close.py tests/test_settings_windows_load.py tests/test_settings_windows_hotkeys.py tests/test_settings_windows_logs.py tests/test_settings_windows_prompts.py tests/test_onboarding_windows.py tests/test_overlay_pyside6.py tests/test_microphone_selection.py -q -p no:cacheprovider
+        run: pytest tests/test_windows_responsiveness.py tests/test_hotkey.py tests/test_windows_hotkey_dispatch.py tests/test_windows_race_conditions.py tests/test_app_detection.py tests/test_deepgram_stream.py tests/test_updates.py tests/test_update_flow.py tests/test_update_install.py tests/test_update_ui.py tests/test_update_window.py tests/test_update_daemon.py tests/test_version.py tests/test_release_workflow.py tests/test_build_windows.py tests/test_settings_windows_close.py tests/test_settings_windows_load.py tests/test_settings_windows_hotkeys.py tests/test_settings_windows_logs.py tests/test_settings_windows_prompts.py tests/test_onboarding_windows.py tests/test_overlay_pyside6.py tests/test_microphone_selection.py -q -rs -p no:cacheprovider
 
   test:
     runs-on: macos-15
