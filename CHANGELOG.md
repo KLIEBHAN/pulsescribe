@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **macOS Dock icon** – removed the white corners around the blue icon by
+  preserving the SVG artwork's transparency in every packaged icon size.
+
 ## [1.14.0] - 2026-11-03
 
 ### Added

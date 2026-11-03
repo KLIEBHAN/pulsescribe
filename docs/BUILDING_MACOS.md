@@ -56,6 +56,25 @@ Creates a drag‑and‑drop DMG with optional notarization.
 
 Output: `dist/PulseScribe-<version>.dmg`
 
+## App Icon
+
+The app bundle uses the checked-in `assets/icon.icns`. To regenerate it after
+changing `assets/icon.svg`, run on macOS with the project's Python environment:
+
+```bash
+python macos/generate_icon.py
+python -m pytest tests/test_macos_icon.py -q
+```
+
+The generator uses AppKit (already a macOS dependency) and `iconutil` to write
+`assets/icon_base.png`, all ten PNGs in `assets/icon.iconset`, and
+`assets/icon.icns`. It preserves SVG transparency and the existing macOS canvas
+padding (96 pixels per side at 1024 × 1024). Do not use a white-backed SVG
+thumbnail as an intermediate: its white corners remain visible in the Dock.
+Commit the generated files together. `assets/icon.ico` for Windows is unchanged
+by this command. Normal app builds use the checked-in icons without regenerating
+them.
+
 ## CI Build
 
 The [`Build Installers`](../.github/workflows/build-installers.yml) workflow
