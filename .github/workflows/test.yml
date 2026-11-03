@@ -12,9 +12,11 @@ concurrency:
 
 jobs:
   # Schlanker Windows-Job: führt die Windows-fokussierten Tests auf echtem
-  # Windows aus (WinAPI/ctypes, pynput/pyperclip, Daemon-State-Machine).
-  # Bewusst minimale Dependencies: schwere Pakete (torch/whisper, PySide6)
-  # werden von diesen Testdateien nur lazy importiert und sind nicht nötig.
+  # Windows aus (WinAPI/ctypes, pynput/pyperclip, Daemon-State-Machine) sowie
+  # die PySide6-UI-Tests (Settings, Onboarding, Overlay, Update-Fenster).
+  # Bewusst minimale Dependencies: schwere Pakete (torch/whisper) werden von
+  # diesen Testdateien nur lazy importiert und sind nicht nötig. PySide6 nutzt
+  # denselben Pin wie requirements-build-windows.txt.
   test-windows:
     runs-on: windows-latest
 
@@ -34,10 +36,12 @@ jobs:
       - name: Install minimal Windows test dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest pytest-mock numpy sounddevice "deepgram-sdk>=5.0.0,<6" pynput pyperclip python-dotenv
+          pip install pytest pytest-mock numpy sounddevice "deepgram-sdk>=5.0.0,<6" pynput pyperclip python-dotenv "PySide6-Essentials>=6,<7"
 
       - name: Run Windows-focused tests
-        run: pytest tests/test_windows_responsiveness.py tests/test_hotkey.py tests/test_windows_hotkey_dispatch.py tests/test_windows_race_conditions.py tests/test_app_detection.py tests/test_deepgram_stream.py tests/test_updates.py tests/test_update_flow.py tests/test_update_install.py tests/test_update_ui.py tests/test_update_window.py tests/test_update_daemon.py tests/test_version.py tests/test_release_workflow.py tests/test_build_windows.py -q -p no:cacheprovider
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: pytest tests/test_windows_responsiveness.py tests/test_hotkey.py tests/test_windows_hotkey_dispatch.py tests/test_windows_race_conditions.py tests/test_app_detection.py tests/test_deepgram_stream.py tests/test_updates.py tests/test_update_flow.py tests/test_update_install.py tests/test_update_ui.py tests/test_update_window.py tests/test_update_daemon.py tests/test_version.py tests/test_release_workflow.py tests/test_build_windows.py tests/test_settings_windows_close.py tests/test_settings_windows_load.py tests/test_settings_windows_hotkeys.py tests/test_settings_windows_logs.py tests/test_settings_windows_prompts.py tests/test_onboarding_windows.py tests/test_overlay_pyside6.py tests/test_microphone_selection.py -q -p no:cacheprovider
 
   test:
     runs-on: macos-15
