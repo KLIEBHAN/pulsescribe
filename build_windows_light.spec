@@ -122,6 +122,7 @@ hiddenimports = [
     # === Audio ===
     'audio',
     'audio.recording',
+    'audio.device_refresh',
 
     # NOTE: Local Whisper imports REMOVED for light build
     # 'faster_whisper', 'ctranslate2', 'tokenizers', 'huggingface_hub'

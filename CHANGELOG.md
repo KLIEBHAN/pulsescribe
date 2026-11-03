@@ -12,8 +12,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Server model in Settings** – in the own server mode, Settings → Providers
   on macOS and Windows has a Server Model field (saved as
   `OPENAI_COMPATIBLE_MODEL`), for example `large-v3` for the slower, more
-  accurate model. Empty sends `whisper-1` as
-  before.
+  accurate model. Empty sends `whisper-1` as before.
+
+### Fixed
+
+- **Microphone changes on macOS** – plugging in or removing a microphone, for
+  example when docking, no longer needs a restart. PulseScribe re-reads the
+  audio devices before the next recording and when Settings lists the
+  microphones. Before, recordings failed with "Internal PortAudio error" and
+  new microphones did not appear until PulseScribe restarted.
+- **Microphone selection on macOS** – the microphone chosen in Settings is now
+  used in all modes; before, it applied only to Deepgram streaming, and Local,
+  OpenAI, Groq and own server recordings used the system default.
 
 ## [1.12.0] - 2026-11-03
 

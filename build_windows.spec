@@ -139,6 +139,7 @@ hiddenimports = [
     'numpy',
     'audio',
     'audio.recording',
+    'audio.device_refresh',
 
     # === API SDKs ===
     'deepgram',
