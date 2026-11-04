@@ -37,8 +37,8 @@ LEVEL_SMOOTHING_RISE = 0.30
 LEVEL_SMOOTHING_FALL = 0.10
 
 # Audio-Visual Mapping
-VISUAL_GAIN = 3.0
-VISUAL_NOISE_GATE = 0.001
+VISUAL_GAIN = 3.9
+VISUAL_NOISE_GATE = 0.00075
 VISUAL_EXPONENT = 1.3  # Slightly more compression
 
 # Adaptive Gain Control (AGC) - macOS tuning

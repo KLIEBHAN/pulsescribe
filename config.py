@@ -594,10 +594,10 @@ DEFAULT_GEMINI_REFINE_MODEL = "gemini-3-flash-preview"
 # Audio-Analyse
 # =============================================================================
 
-VAD_THRESHOLD = 0.015  # Trigger recording (RMS)
+VAD_THRESHOLD = 0.010  # Trigger recording (RMS)
 # Visualisierung ist etwas empfindlicher als VAD, damit auch leise Sprache sichtbar ist.
-VISUAL_NOISE_GATE = 0.002  # UI silence floor (RMS)
-VISUAL_GAIN = 2.0  # Visual scaling factor (post-AGC, boosts quiet speech)
+VISUAL_NOISE_GATE = 0.0015  # UI silence floor (RMS)
+VISUAL_GAIN = 2.6  # Visual scaling factor (post-AGC, boosts quiet speech)
 
 # =============================================================================
 # IPC-Dateipfade
