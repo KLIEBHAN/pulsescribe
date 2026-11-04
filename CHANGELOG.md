@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Download progress for local models** – the first load of an MLX or
+  faster-whisper model shows its download progress in the menu bar (macOS) or
+  tray (Windows), e.g. "43 % · downloading turbo (1.6 GB)". Before, PulseScribe
+  only showed "Loading…" for the minute a 1.5 GB download can take.
+
 ### Changed
 
 - **MLX models use 8-bit weights by default** – in our German test as

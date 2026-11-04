@@ -64,6 +64,7 @@ setup_logging(debug=_env_flag(os.getenv("PULSESCRIBE_DEBUG"), default=False))
 logger = get_logger()
 
 # Imports nach Logging-Setup
+from utils.model_download import format_download_status
 from utils.state import AppState
 from utils.hold_state import HoldHotkeyState
 from utils.transcript_delivery import TEST_COMPLETE, TranscriptDelivery
@@ -2998,7 +2999,7 @@ class PulseScribeWindows:
                 set_loading = True
             if hasattr(provider, "preload"):
                 logger.info(f"Preloading local model '{model}'...")
-                provider.preload(model=model)
+                self._preload_with_download_status(provider, model)
         except Exception as e:
             logger.warning(f"Local-Model Preload fehlgeschlagen: {e}")
         finally:
@@ -3345,7 +3346,7 @@ class PulseScribeWindows:
         if not self._mic_ready.is_set():
             self._set_state(AppState.LOADING, f"Loading {model}...")
         if hasattr(provider, "preload"):
-            provider.preload(model=model)
+            self._preload_with_download_status(provider, model)
         preload_ms = (time.perf_counter() - preload_start) * 1000
         runtime_info = self._format_local_provider_runtime_info(provider)
         logger.info(
@@ -3354,6 +3355,19 @@ class PulseScribeWindows:
         # Auditive Rückmeldung: User kann jetzt mit minimaler Latenz aufnehmen
         get_sound_player().play("warmup")
         return preload_ms
+
+    def _preload_with_download_status(self, provider, model: str) -> None:
+        """Preload the local model; a first-time download shows its progress while loading."""
+
+        def show_download(downloaded: int, total: int | None) -> None:
+            if self.state == AppState.LOADING:
+                self._set_state(AppState.LOADING, format_download_status(model, downloaded, total))
+
+        provider.download_progress_callback = show_download
+        try:
+            provider.preload(model=model)
+        finally:
+            provider.download_progress_callback = None
 
     @staticmethod
     def _format_local_provider_runtime_info(provider) -> str:

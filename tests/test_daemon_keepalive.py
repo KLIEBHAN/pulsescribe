@@ -390,3 +390,33 @@ def test_leaving_local_stops_warm_lifecycle_without_preload():
     release_cache.assert_called_once_with(generation=0, preload_after=False)
     cancel_warm.assert_called_once_with()
     preload.assert_not_called()
+
+
+def test_preload_shows_download_progress_only_while_loading():
+    from utils.state import AppState
+
+    daemon = PulseScribeDaemon(mode="local", model="turbo")
+    provider = _LocalProvider()
+    states = []
+
+    def preload(_model):
+        provider.download_progress_callback(500_000_000, 1_000_000_000)
+        daemon._current_state = AppState.IDLE
+        provider.download_progress_callback(900_000_000, 1_000_000_000)
+
+    provider.preload.side_effect = preload
+    with (
+        patch.object(daemon, "_get_provider", return_value=provider),
+        patch.object(daemon, "_start_keepalive_timer"),
+        patch.object(daemon, "_update_state", side_effect=lambda state, text=None: (
+            states.append((state, text)), setattr(daemon, "_current_state", state))),
+        patch("pulsescribe_daemon.get_sound_player"),
+    ):
+        daemon._current_state = AppState.IDLE
+        assert daemon._preload_local_model_async()
+        assert daemon._local_preload_complete.wait(timeout=2.0)
+
+    texts = [text for state, text in states if state == AppState.LOADING]
+    assert "50 % · downloading turbo (1.0 GB)" in texts
+    assert not any(t and t.startswith("90 %") for t in texts)
+    assert provider.download_progress_callback is None
