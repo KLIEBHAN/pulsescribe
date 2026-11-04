@@ -52,8 +52,10 @@ from utils.env import parse_bool
 from utils.version import get_app_version
 from utils.hotkey_recording import HotkeyRecorder
 from utils.local_backend import (
+    ADVANCED_OPTION_HELP,
+    advanced_option_applies,
     available_local_backend_options,
-    is_local_backend_installed,
+    effective_local_backend,
     get_local_advanced_ui_state,
     normalize_local_backend,
 )
@@ -63,7 +65,7 @@ from utils.log_tail import (
     read_file_text_from_offset,
     should_auto_refresh_logs,
 )
-from utils.presets import LOCAL_PRESET_BASE, LOCAL_PRESETS, LOCAL_PRESET_OPTIONS, is_apple_silicon
+from utils.presets import LOCAL_PRESET_BASE, LOCAL_PRESETS, LOCAL_PRESET_OPTIONS
 from utils.settings_env_updates import SettingsEnvUpdateBuilder
 from utils.transcript_view_logic import (
     build_transcript_payload,
@@ -138,7 +140,7 @@ LOCAL_MODEL_OPTIONS = [
     "medium-en",
     "small-en",
 ]
-DEVICE_OPTIONS = ["auto", "mps", "cpu", "cuda"]
+DEVICE_OPTIONS = ["auto", "mps", "cpu"]
 # MLX weight quantization (PULSESCRIBE_MLX_QUANT); 8bit is the runtime default.
 MLX_QUANT_OPTIONS = ["8bit", "4bit", "none"]
 MLX_QUANT_TOOLTIP = (
@@ -520,7 +522,6 @@ class WelcomeController:
         self._lightning_quant_label = None
         self._lightning_quant_popup = None
         self._backend_changed_handler = None
-        self._advanced_general_views = ()
         # Streaming toggle (Deepgram)
         self._streaming_label = None
         self._streaming_checkbox = None
@@ -1172,10 +1173,20 @@ class WelcomeController:
         add(lambda _view, top: top - 26, lambda: not is_local())
         add(lambda view, top: self._build_setup_recommended_card(top + CARD_SPACING, view), is_local)
         add(self._build_advanced_disclosure, is_local)
-        add(
-            lambda view, top: self._build_advanced_local_card(top, view),
-            lambda: is_local() and getattr(self, "_advanced_expanded", False),
-        )
+        def advanced_open() -> bool:
+            return is_local() and getattr(self, "_advanced_expanded", False)
+
+        def advanced(option: str):
+            return lambda: advanced_open() and advanced_option_applies(
+                option, self._effective_local_backend()
+            )
+
+        # One block per option: hidden options leave no gaps in the reflowed page.
+        add(self._build_advanced_options_header, advanced_open)
+        for option, builder in self._advanced_option_rows():
+            if option == "lightning_batch":
+                add(self._build_lightning_header_block, advanced(option))
+            add(row(builder), advanced(option))
         self._transcription_page = (scroll, document, tab_height, blocks)
         self._refresh_provider_key_statuses()
         self._update_all_visibility()
@@ -2165,17 +2176,99 @@ class WelcomeController:
             "_backend_changed_handler",
         )
 
-    def _uses_mlx(self) -> bool:
-        """True when local transcription runs on MLX (mlx, or auto on Apple Silicon)."""
+    def _effective_local_backend(self) -> str:
+        """Backend that runs for the selected (or saved) choice, resolving auto."""
         popup = getattr(self, "_local_backend_popup", None)
-        backend = normalize_local_backend(
+        return effective_local_backend(
             popup.titleOfSelectedItem() if popup is not None
             else self._get_cached_env_setting("PULSESCRIBE_LOCAL_BACKEND")
         )
-        # Same rule as providers.local: auto means MLX on Apple Silicon when it is installed.
-        return backend == "mlx" or (
-            backend == "auto" and is_apple_silicon() and is_local_backend_installed("mlx")
-        )
+
+    def _uses_mlx(self) -> bool:
+        """True when local transcription runs on MLX (mlx, or auto on Apple Silicon)."""
+        return self._effective_local_backend() == "mlx"
+
+    def _build_advanced_options_header(self, view, top: int) -> int:
+        """Short description and the backend guidance above the advanced options."""
+        base_x = WELCOME_PADDING + CARD_PADDING
+        control_width = CONTENT_WIDTH - 2 * WELCOME_PADDING - 2 * CARD_PADDING - 118
+        self._build_advanced_local_header(base_x, top - 56, 56, control_width, view)
+        return top - 60
+
+    def _build_lightning_header_block(self, view, top: int) -> int:
+        base_x = WELCOME_PADDING + CARD_PADDING
+        control_width = CONTENT_WIDTH - 2 * WELCOME_PADDING - 2 * CARD_PADDING - 118
+        self._build_lightning_header(base_x, top - 18, control_width, 110, view)
+        return top - 24
+
+    def _advanced_option_rows(self) -> list:
+        """(option, row builder) for every advanced option, in display order."""
+
+        def popup(option, label, options, env_key, attr):
+            def build(base_x, y, control_x, control_width, view):
+                _label, control = self._build_popup_setting_row(
+                    base_x, y, control_x, control_width, view,
+                    label_text=label,
+                    options=options,
+                    selected_title=self._advanced_popup_value_from_env(env_key, options),
+                    popup_attr=attr,
+                )
+                _set_tooltip_if_supported(control, ADVANCED_OPTION_HELP[option])
+            return build
+
+        def boolean(option, label, env_key, attr, legacy_env_key=None):
+            def build(base_x, y, control_x, control_width, view):
+                _label, control = self._build_bool_override_setting_row(
+                    base_x, y, control_x, control_width, view,
+                    label_text=label,
+                    popup_attr=attr,
+                    env_key=env_key,
+                    legacy_env_key=legacy_env_key,
+                )
+                _set_tooltip_if_supported(control, ADVANCED_OPTION_HELP[option])
+            return build
+
+        def text(option, label, placeholder, env_key, attr):
+            def build(base_x, y, control_x, control_width, view):
+                _label, control = self._build_text_setting_row(
+                    base_x, y, control_x, control_width, view,
+                    label_text=label,
+                    placeholder=placeholder,
+                    env_key=env_key,
+                    field_attr=attr,
+                )
+                _set_tooltip_if_supported(control, ADVANCED_OPTION_HELP[option])
+            return build
+
+        def with_tooltip(option, builder, attr):
+            def build(base_x, y, control_x, control_width, view):
+                builder(base_x, y, control_x, control_width, view)
+                _set_tooltip_if_supported(getattr(self, attr, None), ADVANCED_OPTION_HELP[option])
+            return build
+
+        return [
+            ("preset", with_tooltip("preset", self._build_preset_setting_row, "_local_preset_popup")),
+            ("device", popup("device", "Device:", DEVICE_OPTIONS, "PULSESCRIBE_DEVICE", "_device_popup")),
+            ("warmup", popup("warmup", "Warmup:", WARMUP_OPTIONS, "PULSESCRIBE_LOCAL_WARMUP", "_warmup_popup")),
+            ("fast", boolean("fast", "Fast:", "PULSESCRIBE_LOCAL_FAST", "_local_fast_popup")),
+            ("fp16", boolean("fp16", "FP16:", LOCAL_FP16_ENV_KEY, "_fp16_popup", LEGACY_LOCAL_FP16_ENV_KEY)),
+            ("beam_size", text("beam_size", "Beam size:", "default", "PULSESCRIBE_LOCAL_BEAM_SIZE", "_beam_size_field")),
+            ("best_of", text("best_of", "Best of:", "default", "PULSESCRIBE_LOCAL_BEST_OF", "_best_of_field")),
+            ("temperature", text("temperature", "Temperature:", "e.g. 0.0 or 0.0,0.2,0.4",
+                                 "PULSESCRIBE_LOCAL_TEMPERATURE", "_temperature_field")),
+            ("compute_type", text("compute_type", "Compute type:", "default (e.g. int8, int8_float16)",
+                                  "PULSESCRIBE_LOCAL_COMPUTE_TYPE", "_compute_type_field")),
+            ("cpu_threads", text("cpu_threads", "CPU threads:", "0 = auto",
+                                 "PULSESCRIBE_LOCAL_CPU_THREADS", "_cpu_threads_field")),
+            ("num_workers", text("num_workers", "Workers:", "1", "PULSESCRIBE_LOCAL_NUM_WORKERS", "_num_workers_field")),
+            ("without_timestamps", boolean("without_timestamps", "No timestamps:",
+                                           "PULSESCRIBE_LOCAL_WITHOUT_TIMESTAMPS", "_without_timestamps_popup")),
+            ("vad_filter", boolean("vad_filter", "VAD filter:", "PULSESCRIBE_LOCAL_VAD_FILTER", "_vad_filter_popup")),
+            ("lightning_batch", with_tooltip("lightning_batch", self._build_lightning_batch_row,
+                                             "_lightning_batch_slider")),
+            ("lightning_quant", with_tooltip("lightning_quant", self._build_lightning_quant_row,
+                                             "_lightning_quant_popup")),
+        ]
 
     def _build_mlx_quant_setting_row(
         self,
@@ -2500,182 +2593,6 @@ class WelcomeController:
             popup_attr=popup_attr,
         )
 
-    def _build_advanced_general_rows(
-        self,
-        base_x: int,
-        current_y: int,
-        control_x: int,
-        control_width: int,
-        parent_view,
-        row_height: int,
-    ) -> tuple[tuple, int]:
-        views = []
-        row_builders = (
-            lambda y: self._build_preset_setting_row(
-                base_x, y, control_x, control_width, parent_view
-            ),
-            lambda y: self._build_popup_setting_row(
-                base_x,
-                y,
-                control_x,
-                control_width,
-                parent_view,
-                label_text="Device:",
-                options=DEVICE_OPTIONS,
-                selected_title=self._advanced_popup_value_from_env(
-                    "PULSESCRIBE_DEVICE", DEVICE_OPTIONS
-                ),
-                popup_attr="_device_popup",
-            ),
-            lambda y: self._build_popup_setting_row(
-                base_x,
-                y,
-                control_x,
-                control_width,
-                parent_view,
-                label_text="Warmup:",
-                options=WARMUP_OPTIONS,
-                selected_title=self._advanced_popup_value_from_env(
-                    "PULSESCRIBE_LOCAL_WARMUP", WARMUP_OPTIONS
-                ),
-                popup_attr="_warmup_popup",
-            ),
-            lambda y: self._build_bool_override_setting_row(
-                base_x,
-                y,
-                control_x,
-                control_width,
-                parent_view,
-                label_text="Fast:",
-                popup_attr="_local_fast_popup",
-                env_key="PULSESCRIBE_LOCAL_FAST",
-            ),
-            lambda y: self._build_bool_override_setting_row(
-                base_x,
-                y,
-                control_x,
-                control_width,
-                parent_view,
-                label_text="FP16:",
-                popup_attr="_fp16_popup",
-                env_key=LOCAL_FP16_ENV_KEY,
-                legacy_env_key=LEGACY_LOCAL_FP16_ENV_KEY,
-            ),
-            lambda y: self._build_text_setting_row(
-                base_x,
-                y,
-                control_x,
-                control_width,
-                parent_view,
-                label_text="Beam size:",
-                placeholder="default",
-                env_key="PULSESCRIBE_LOCAL_BEAM_SIZE",
-                field_attr="_beam_size_field",
-            ),
-            lambda y: self._build_text_setting_row(
-                base_x,
-                y,
-                control_x,
-                control_width,
-                parent_view,
-                label_text="Best of:",
-                placeholder="default",
-                env_key="PULSESCRIBE_LOCAL_BEST_OF",
-                field_attr="_best_of_field",
-            ),
-            lambda y: self._build_text_setting_row(
-                base_x,
-                y,
-                control_x,
-                control_width,
-                parent_view,
-                label_text="Temperature:",
-                placeholder="e.g. 0.0 or 0.0,0.2,0.4",
-                env_key="PULSESCRIBE_LOCAL_TEMPERATURE",
-                field_attr="_temperature_field",
-            ),
-        )
-        for build_row in row_builders:
-            views.extend(build_row(current_y))
-            current_y -= row_height
-        return tuple(views), current_y
-
-    def _build_faster_whisper_rows(
-        self,
-        base_x: int,
-        current_y: int,
-        control_x: int,
-        control_width: int,
-        parent_view,
-        row_height: int,
-    ) -> int:
-        field_rows = (
-            (
-                "_compute_type_label",
-                "Compute type:",
-                "default (e.g. int8, int8_float16)",
-                "PULSESCRIBE_LOCAL_COMPUTE_TYPE",
-                "_compute_type_field",
-            ),
-            (
-                "_cpu_threads_label",
-                "CPU threads:",
-                "0 = auto",
-                "PULSESCRIBE_LOCAL_CPU_THREADS",
-                "_cpu_threads_field",
-            ),
-            (
-                "_num_workers_label",
-                "Workers:",
-                "1",
-                "PULSESCRIBE_LOCAL_NUM_WORKERS",
-                "_num_workers_field",
-            ),
-        )
-        for label_attr, label_text, placeholder, env_key, field_attr in field_rows:
-            label, _field = self._build_text_setting_row(
-                base_x,
-                current_y,
-                control_x,
-                control_width,
-                parent_view,
-                label_text=label_text,
-                placeholder=placeholder,
-                env_key=env_key,
-                field_attr=field_attr,
-            )
-            setattr(self, label_attr, label)
-            current_y -= row_height
-
-        popup_rows = (
-            (
-                "_without_timestamps_label",
-                "No timestamps:",
-                "_without_timestamps_popup",
-                "PULSESCRIBE_LOCAL_WITHOUT_TIMESTAMPS",
-            ),
-            (
-                "_vad_filter_label",
-                "VAD filter:",
-                "_vad_filter_popup",
-                "PULSESCRIBE_LOCAL_VAD_FILTER",
-            ),
-        )
-        for label_attr, label_text, popup_attr, env_key in popup_rows:
-            label, _popup = self._build_bool_override_setting_row(
-                base_x,
-                current_y,
-                control_x,
-                control_width,
-                parent_view,
-                label_text=label_text,
-                popup_attr=popup_attr,
-                env_key=env_key,
-            )
-            setattr(self, label_attr, label)
-            current_y -= row_height
-        return current_y
-
     def _build_lightning_header(
         self,
         base_x: int,
@@ -2803,82 +2720,6 @@ class WelcomeController:
         )
         self._lightning_quant_popup = quant_popup
         parent_view.addSubview_(quant_popup)
-
-    def _build_lightning_rows(
-        self,
-        base_x: int,
-        current_y: int,
-        control_x: int,
-        control_width: int,
-        label_width: int,
-        parent_view,
-        row_height: int,
-    ) -> int:
-        self._build_lightning_header(
-            base_x, current_y, control_width, label_width, parent_view
-        )
-        current_y -= row_height
-        self._build_lightning_batch_row(
-            base_x, current_y, control_x, control_width, parent_view
-        )
-        current_y -= row_height
-        self._build_lightning_quant_row(
-            base_x, current_y, control_x, control_width, parent_view
-        )
-        return current_y
-
-    def _build_advanced_local_card(self, y: int, parent_view=None) -> int:
-        """Erweiterte Local-Performance Settings (macOS-tuned)."""
-        parent_view = parent_view or self._content_view
-
-        # The "Advanced backend options" disclosure row above is the header.
-        card_height = 530  # Fits the Lightning rows
-        card_width = CONTENT_WIDTH - 2 * WELCOME_PADDING
-        card_y = y - card_height
-
-        base_x = WELCOME_PADDING + CARD_PADDING
-        label_width = 110
-        control_x = base_x + label_width + 8
-        control_width = card_width - 2 * CARD_PADDING - label_width - 8
-
-        self._build_advanced_local_header(
-            base_x, card_y, card_height, control_width, parent_view
-        )
-
-        row_height = 28
-        current_y = card_y + card_height - 76
-
-        self._advanced_general_views, current_y = self._build_advanced_general_rows(
-            base_x,
-            current_y,
-            control_x,
-            control_width,
-            parent_view,
-            row_height,
-        )
-
-        current_y = self._build_faster_whisper_rows(
-            base_x,
-            current_y,
-            control_x,
-            control_width,
-            parent_view,
-            row_height,
-        )
-        self._build_lightning_rows(
-            base_x,
-            current_y,
-            control_x,
-            control_width,
-            label_width,
-            parent_view,
-            row_height,
-        )
-
-        # Set initial visibility based on current mode/backend
-        self._update_all_visibility()
-
-        return card_y - CARD_SPACING
 
     def _get_current_refine_settings_state(self) -> tuple[bool, str, str]:
         refine_checkbox = getattr(self, "_refine_checkbox", None)
@@ -5752,37 +5593,10 @@ class WelcomeController:
         ):
             _set_hidden_if_changed(view, not is_local)
 
-        for view in getattr(self, "_advanced_general_views", ()):
-            _set_hidden_if_changed(view, not state.show_general)
-
         _set_string_value_if_changed(
             getattr(self, "_advanced_local_status_label", None),
             state.guidance,
         )
-
-        for view in (
-            getattr(self, "_compute_type_label", None),
-            getattr(self, "_compute_type_field", None),
-            getattr(self, "_cpu_threads_label", None),
-            getattr(self, "_cpu_threads_field", None),
-            getattr(self, "_num_workers_label", None),
-            getattr(self, "_num_workers_field", None),
-            getattr(self, "_without_timestamps_label", None),
-            getattr(self, "_without_timestamps_popup", None),
-            getattr(self, "_vad_filter_label", None),
-            getattr(self, "_vad_filter_popup", None),
-        ):
-            _set_hidden_if_changed(view, not state.show_faster)
-
-        for view in (
-            self._lightning_header,
-            self._lightning_batch_label,
-            self._lightning_batch_slider,
-            self._lightning_batch_value_label,
-            self._lightning_quant_label,
-            self._lightning_quant_popup,
-        ):
-            _set_hidden_if_changed(view, not state.show_lightning)
 
     def _update_streaming_visibility(self) -> None:
         """Blendet Streaming-Toggle nur bei Deepgram ein."""

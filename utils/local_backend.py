@@ -50,6 +50,76 @@ def available_local_backend_options(options: list[str]) -> list[str]:
             or is_local_backend_installed(option)]
 
 
+_ALL_LOCAL_BACKENDS = frozenset({"whisper", "faster", "mlx", "lightning"})
+_DECODING_BACKENDS = frozenset({"whisper", "faster", "mlx"})  # Lightning only reads the language
+
+# Backends on which each advanced option takes effect (see providers/local.py).
+ADVANCED_OPTION_BACKENDS: dict[str, frozenset[str]] = {
+    "preset": _ALL_LOCAL_BACKENDS,
+    "warmup": _ALL_LOCAL_BACKENDS,
+    "device": frozenset({"whisper", "faster"}),  # MLX and Lightning always run on Metal
+    "fast": _DECODING_BACKENDS,
+    "fp16": frozenset({"whisper", "mlx"}),  # faster-whisper uses its compute type instead
+    "beam_size": frozenset({"whisper", "faster"}),  # MLX/Lightning have no beam search
+    "best_of": _DECODING_BACKENDS,
+    "temperature": _DECODING_BACKENDS,
+    "compute_type": frozenset({"faster"}),
+    "cpu_threads": frozenset({"faster"}),
+    "num_workers": frozenset({"faster"}),
+    "without_timestamps": frozenset({"faster"}),
+    "vad_filter": frozenset({"faster"}),
+    "lightning_batch": frozenset({"lightning"}),
+    "lightning_quant": frozenset({"lightning"}),
+}
+
+# Tooltip text per advanced option, including what "default" means.
+ADVANCED_OPTION_HELP: dict[str, str] = {
+    "preset": "Applies a tested combination of backend, model and the options below.",
+    "warmup": "Runs a short silent transcription after loading so the first dictation is "
+              "fast. auto: on for openai-whisper and faster-whisper.",
+    "device": "Hardware for openai-whisper and faster-whisper. auto picks the GPU when it "
+              "works (CUDA on Windows, MPS on a Mac with openai-whisper), else the CPU.",
+    "fast": "Faster decoding: temperature 0, beam size 1 and no conditioning on the previous "
+            "text (avoids repetition loops). default: on for faster-whisper, off otherwise.",
+    "fp16": "Half precision. default: on for MLX, off for openai-whisper on MPS/CPU.",
+    "beam_size": "Number of beams searched per step (1-20). Higher can be slightly more "
+                 "accurate but slower. Empty: 1 with Fast on, otherwise the backend default.",
+    "best_of": "Candidates sampled when temperature is above 0 (1-10). Empty: backend default.",
+    "temperature": "0 = deterministic. A comma list (e.g. 0.0,0.2,0.4) retries with higher "
+                   "values when a result looks wrong. Empty: backend default.",
+    "compute_type": "CTranslate2 precision, e.g. int8 (CPU default), float16 (CUDA default) "
+                    "or int8_float16.",
+    "cpu_threads": "CPU threads for faster-whisper. 0 = automatic.",
+    "num_workers": "Parallel transcriptions faster-whisper can run. 1 is enough for dictation.",
+    "without_timestamps": "Skip timestamp tokens; slightly faster. default: on.",
+    "vad_filter": "Drop silence with Silero VAD before transcribing. default: off.",
+    "lightning_batch": "Audio chunks decoded together. Higher is faster but needs more memory.",
+    "lightning_quant": "Lightning's pre-quantized weights. none keeps the best quality.",
+}
+
+
+def effective_local_backend(selected: str | None, *, platform: str | None = None) -> str:
+    """Backend that runs for a Settings selection; mirrors providers.local for ``auto``."""
+    backend = normalize_local_backend(selected)
+    if backend != DEFAULT_LOCAL_BACKEND:
+        return backend
+    import platform as platform_module
+
+    current = platform or sys.platform
+    if current == "darwin" and platform_module.machine() == "arm64" \
+            and is_local_backend_installed("mlx"):
+        return "mlx"
+    return "faster" if is_local_backend_installed("faster") else "whisper"
+
+
+def advanced_option_applies(option: str, backend: str, *, platform: str | None = None) -> bool:
+    """True when ``option`` changes anything for ``backend`` on this platform."""
+    backends = ADVANCED_OPTION_BACKENDS[option]
+    if option == "device" and (platform or sys.platform) == "darwin":
+        backends = frozenset({"whisper"})  # faster-whisper has no GPU path on macOS
+    return backend in backends
+
+
 class LocalAdvancedUiState(NamedTuple):
     """Describe which expert controls should be shown for the current mode."""
 
