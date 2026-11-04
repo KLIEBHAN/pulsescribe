@@ -206,8 +206,8 @@ _KEY_STALE_TIMEOUT_SEC = 2.0
 
 # VAD Threshold: Audio-Level ab dem Sprache erkannt wird
 # REST-Modus verwendet Peak (max), Streaming verwendet RMS (niedriger)
-_VAD_THRESHOLD_PEAK = 0.01  # Für REST-Modus (float32 peak)
-_VAD_THRESHOLD_RMS = 0.003  # Für Streaming-Modus (RMS/INT16_MAX)
+_VAD_THRESHOLD_PEAK = 0.007  # Für REST-Modus (float32 peak)
+_VAD_THRESHOLD_RMS = 0.002  # Für Streaming-Modus (RMS/INT16_MAX)
 
 # Adaptiver Stop-Tail: War das Audio vor dem Hotkey-Release bereits so lange
 # still, hat der Sprecher fertig gesprochen - der konservative Stop-Grace
