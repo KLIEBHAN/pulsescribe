@@ -101,8 +101,8 @@ class TestFailureCache:
         assert "ready" not in player._failed_sounds
         assert player._sound_ids["ready"] == 42
 
-    def test_playback_error_uses_fallback_and_caches_failure(self) -> None:
-        """Non-zero CoreAudio results should fall back and stop retrying CoreAudio."""
+    def test_return_value_is_ignored_so_sounds_play_once(self) -> None:
+        """AudioServicesPlaySystemSound returns void; whatever ctypes reads is no error."""
         player = _make_fallback_player()
         player._use_fallback = False
 
@@ -111,6 +111,33 @@ class TestFailureCache:
         player._play_fallback = lambda path: fallback_calls.append(path)
         player._audio_toolbox = MagicMock()
         player._audio_toolbox.AudioServicesPlaySystemSound.return_value = 1
+
+        player.play("ready")
+        player.play("ready")
+
+        assert fallback_calls == []
+        assert player._audio_toolbox.AudioServicesPlaySystemSound.call_count == 2
+
+    def test_play_system_sound_is_declared_void(self) -> None:
+        import sys
+
+        import pytest
+
+        if sys.platform != "darwin":
+            pytest.skip("AudioToolbox only exists on macOS")
+        player = MacOSSoundPlayer()
+        assert player._audio_toolbox.AudioServicesPlaySystemSound.restype is None
+
+    def test_playback_error_uses_fallback_and_caches_failure(self) -> None:
+        """A failing CoreAudio call should fall back and stop retrying CoreAudio."""
+        player = _make_fallback_player()
+        player._use_fallback = False
+
+        fallback_calls: list[str] = []
+        player._load_sound = lambda path: 42
+        player._play_fallback = lambda path: fallback_calls.append(path)
+        player._audio_toolbox = MagicMock()
+        player._audio_toolbox.AudioServicesPlaySystemSound.side_effect = OSError("boom")
 
         player.play("ready")
         player.play("ready")

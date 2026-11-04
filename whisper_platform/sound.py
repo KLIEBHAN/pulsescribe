@@ -135,8 +135,8 @@ class MacOSSoundPlayer:
                 ctypes.POINTER(ctypes.c_uint32),
             ]
 
-            # AudioServicesPlaySystemSound
-            self._audio_toolbox.AudioServicesPlaySystemSound.restype = ctypes.c_int32
+            # AudioServicesPlaySystemSound returns void: there is no status to check.
+            self._audio_toolbox.AudioServicesPlaySystemSound.restype = None
             self._audio_toolbox.AudioServicesPlaySystemSound.argtypes = [
                 ctypes.c_uint32
             ]
@@ -213,13 +213,12 @@ class MacOSSoundPlayer:
                 return
             self._sound_ids[name] = sound_id
 
-        # Sound abspielen (non-blocking, ~0.2ms)
+        # Sound abspielen (non-blocking, ~0.2ms). The call returns void, so only an
+        # exception means failure; a status check would read register garbage and
+        # play the sound a second time via afplay.
         try:
-            result = self._audio_toolbox.AudioServicesPlaySystemSound(
-                self._sound_ids[name]
-            )
-            if result == 0:
-                return
+            self._audio_toolbox.AudioServicesPlaySystemSound(self._sound_ids[name])
+            return
         except Exception:
             pass
 
