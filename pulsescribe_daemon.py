@@ -74,6 +74,7 @@ try:
     from utils.env import (
         get_env_bool,
         get_env_bool_default,
+        get_env_int,
         parse_bool,
         load_environment,
     )
@@ -159,6 +160,7 @@ RELOAD_ENV_SYNC_KEYS = (
     "PULSESCRIBE_LOCAL_WITHOUT_TIMESTAMPS",
     "PULSESCRIBE_LOCAL_VAD_FILTER",
     "PULSESCRIBE_LOCAL_WARMUP",
+    "PULSESCRIBE_LOCAL_IDLE_UNLOAD_MINUTES",
     "PULSESCRIBE_LIGHTNING_BATCH_SIZE",
     "PULSESCRIBE_LIGHTNING_QUANT",
     "PULSESCRIBE_MLX_QUANT",
@@ -332,6 +334,9 @@ class PulseScribeDaemon:
         self._keepalive_thread: threading.Thread | None = None
         self._keepalive_request: LocalKeepaliveRequest | None = None
         self._pending_keepalive_request: LocalKeepaliveRequest | None = None
+        # Optional unload of the local model after PULSESCRIBE_LOCAL_IDLE_UNLOAD_MINUTES idle.
+        self._idle_unload_lock = threading.Lock()
+        self._idle_unload_timer: threading.Timer | None = None
         # Per-run terminal delivery bypasses timer polling for results/errors.
         self._terminal_claimed_run_id: int | None = None
         self._latency_run: MacOSLatencyRun | None = None
@@ -1188,6 +1193,8 @@ class PulseScribeDaemon:
             + (f" text={redacted_text_summary(text)}" if text else "")
         )
 
+        self._reschedule_idle_unload(state)
+
         # Watchdog-Timer Management
         if state == AppState.TRANSCRIBING:
             # Starte Watchdog wenn TRANSCRIBING beginnt
@@ -1208,6 +1215,45 @@ class PulseScribeDaemon:
 
         # Wir sind auf dem Main-Thread - direkt ausführen
         self._do_ui_update(state, text)
+
+    def _reschedule_idle_unload(self, state: AppState) -> None:
+        """Restart the idle-unload countdown when PulseScribe becomes idle; stop it otherwise."""
+        lock = getattr(self, "_idle_unload_lock", None)
+        if lock is None:  # partially built daemons in tests
+            return
+        idle = state in (AppState.IDLE, AppState.DONE, AppState.NO_SPEECH, AppState.ERROR)
+        minutes = (get_env_int("PULSESCRIBE_LOCAL_IDLE_UNLOAD_MINUTES") or 0) if idle else 0
+        with lock:
+            if self._idle_unload_timer is not None:
+                self._idle_unload_timer.cancel()
+                self._idle_unload_timer = None
+            if minutes <= 0 or self.mode != "local":
+                return
+            with self._local_warm_lock:
+                generation = self._local_warm_generation
+            timer = threading.Timer(
+                minutes * 60, self._unload_idle_local_model, args=(generation, minutes)
+            )
+            timer.daemon = True
+            timer.name = "LocalIdleUnload"
+            self._idle_unload_timer = timer
+            timer.start()
+
+    def _unload_idle_local_model(self, generation: int, minutes: int) -> None:
+        """Free the warm local model; the next recording loads it again while you speak."""
+        with self._local_warm_lock:
+            loaded = (
+                generation == self._local_warm_generation
+                and self._local_preload_complete.is_set()
+            )
+        busy = self._current_state not in (
+            AppState.IDLE, AppState.DONE, AppState.NO_SPEECH, AppState.ERROR
+        )
+        if not loaded or busy or self.mode != "local":
+            return
+        self._cancel_local_warm_lifecycle()
+        self._release_local_provider_model_cache()
+        logger.info("Lokales Modell nach %s min Leerlauf entladen", minutes)
 
     def _dispatch_ui_update_to_main(self, state: AppState, text: str | None) -> None:
         """Dispatcht UI-Update auf den Main-Thread."""
@@ -2193,6 +2239,9 @@ class PulseScribeDaemon:
 
         self._recording = True
         self._update_state(AppState.LISTENING)
+        if effective_mode == "local" and self.mode == "local":
+            # No-op while warm; after an idle unload the model loads during speech.
+            self._preload_local_model_async()
 
         # Interim-Datei löschen, um veralteten Text zu vermeiden
         INTERIM_FILE.unlink(missing_ok=True)
@@ -3321,6 +3370,7 @@ class PulseScribeDaemon:
         self._stop_result_polling()
         self._stop_transcribing_watchdog()
         self._stop_error_reset_timer()
+        self._reschedule_idle_unload(AppState.LOADING)  # cancels the idle-unload timer
         self._cancel_local_warm_lifecycle(wait=True)
 
         with self._audio_close_lock:
@@ -3543,6 +3593,8 @@ class PulseScribeDaemon:
             )
         elif self.mode == "local" and not desired_preload_ready:
             self._preload_local_model_async()
+        # A changed idle-unload setting applies without waiting for the next dictation.
+        self._reschedule_idle_unload(self._current_state)
 
     @staticmethod
     def _sync_reload_env_values(env_values: dict[str, str]) -> None:
