@@ -441,7 +441,7 @@ def test_about_defers_release_history_and_keeps_it_read_only(monkeypatch):
     app = QApplication.instance() or QApplication([])
     window = SettingsWindow.__new__(SettingsWindow)
     QDialog.__init__(window)
-    window._tabs = QTabWidget()
+    window._tabs = QTabWidget(window)
     window._tab_builders = {}
     window._lazy_tab_layouts = {}
     window._built_tabs = set()
@@ -465,7 +465,7 @@ def test_about_defers_release_history_and_keeps_it_read_only(monkeypatch):
     assert notes.accessibleName() == "Recent release notes"
     assert notes.verticalScrollBar().value() == 0
     assert "What's new" in [label.text() for label in window._tabs.findChildren(QLabel)]
-    window.close()
+    window.deleteLater()
     assert app is not None
 
 
