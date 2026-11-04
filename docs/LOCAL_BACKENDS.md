@@ -215,6 +215,8 @@ PULSESCRIBE_LOCAL_WARMUP=auto   # Default: warmup for openai-whisper on MPS
 | `mlx-whisper` | `~/.cache/huggingface/` |
 | `lightning` | `~/.pulsescribe/lightning_models/` |
 
+The first load of a model downloads it. For mlx-whisper and faster-whisper the menu bar (macOS) or tray (Windows) shows the progress, e.g. "43 % · downloading turbo (1.6 GB)"; Lightning and openai-whisper only show "Loading…".
+
 **Disk usage:** 75 MB (tiny) to 3 GB (large) per model.
 
 ---

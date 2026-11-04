@@ -1439,3 +1439,51 @@ class TestMLXQuantization:
         assert mock_mlx.transcribe.call_args.kwargs["path_or_hf_repo"] == (
             "mlx-community/whisper-large-v3-mlx-8bit"
         )
+
+
+class TestPreloadDownloadProgress:
+    """preload() watches the repo the backend will download."""
+
+    @pytest.fixture
+    def watched(self, monkeypatch):
+        import providers.local as local_mod
+
+        calls = []
+        monkeypatch.setattr(
+            local_mod,
+            "download_with_progress",
+            lambda repo, callback, **kwargs: calls.append((repo, callback, kwargs)),
+        )
+        return calls
+
+    def test_mlx_preload_watches_the_quantized_repo(self, monkeypatch, watched):
+        import providers.local as local_mod
+
+        monkeypatch.setenv("PULSESCRIBE_LOCAL_BACKEND", "mlx")
+        monkeypatch.setenv("PULSESCRIBE_MLX_QUANT", "8bit")
+        monkeypatch.setattr(local_mod.LocalProvider, "_prepare_mlx_model", lambda self, m: self._mlx_repo(m))
+        mlx = MagicMock()
+        with patch("providers.local._import_mlx_whisper", return_value=mlx):
+            provider = local_mod.LocalProvider()
+            callback = MagicMock()
+            provider.download_progress_callback = callback
+            provider.preload(model="large")
+        assert watched == [(
+            "mlx-community/whisper-large-v3-mlx-8bit",
+            callback,
+            {"required_files": ("config.json", "weights.*")},
+        )]
+
+    def test_faster_preload_watches_faster_whispers_repo_and_files(self, monkeypatch, watched):
+        import providers.local as local_mod
+
+        monkeypatch.setenv("PULSESCRIBE_LOCAL_BACKEND", "faster")
+        monkeypatch.setattr(local_mod, "_faster_repo_id", lambda name: f"Systran/faster-whisper-{name}")
+        monkeypatch.setattr(local_mod.LocalProvider, "_get_faster_model", lambda self, m: None)
+        provider = local_mod.LocalProvider()
+        provider.preload(model="large")
+        repo, callback, kwargs = watched[0]
+        assert repo == "Systran/faster-whisper-large-v3"
+        assert callback is None
+        assert kwargs["allow_patterns"] == local_mod.FASTER_WHISPER_DOWNLOAD_PATTERNS
+        assert kwargs["required_files"] == ("config.json", "model.bin")

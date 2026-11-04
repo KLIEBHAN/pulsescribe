@@ -2718,3 +2718,25 @@ def test_settings_link_opens_settings_on_a_section_and_tray_signature_stays_safe
     daemon._show_settings()
 
     assert [call["extra_args"] for call in calls] == [("--section", "Transcription"), ()]
+
+
+def test_local_preload_shows_download_progress_while_loading():
+    windows_module = _load_windows_module()
+    daemon = windows_module.PulseScribeWindows(mode="local", streaming=False, overlay=False)
+    states = []
+    daemon._set_state = lambda state, text=None: (states.append((state, text)), setattr(daemon, "_state", state))
+    provider = MagicMock()
+
+    def preload(model):
+        provider.download_progress_callback(300_000_000, 600_000_000)
+
+    provider.preload.side_effect = preload
+    daemon._state = AppState.LOADING
+    daemon._preload_with_download_status(provider, "base")
+    assert (AppState.LOADING, "50 % · downloading base (600 MB)") in states
+    assert provider.download_progress_callback is None
+
+    states.clear()
+    daemon._state = AppState.IDLE
+    daemon._preload_with_download_status(provider, "base")
+    assert states == []  # never override a non-loading state

@@ -78,6 +78,7 @@ try:
         load_environment,
     )
     from providers.deepgram_stream import deepgram_stream_core
+    from utils.model_download import format_download_status
     from providers import get_provider
     from providers.local_memory import (
         build_memory_signature,
@@ -916,7 +917,21 @@ class PulseScribeDaemon:
                                 AppState.LOADING,
                                 f"Loading {model_name}...",
                             )
-                    provider.preload(model_snapshot)  # type: ignore[attr-defined]
+                    def _show_download(downloaded: int, total: int | None) -> None:
+                        if (
+                            self._is_local_warm_generation_current(generation, signature)
+                            and self._current_state == AppState.LOADING
+                        ):
+                            self._update_state(
+                                AppState.LOADING,
+                                format_download_status(model_name, downloaded, total),
+                            )
+
+                    provider.download_progress_callback = _show_download
+                    try:
+                        provider.preload(model_snapshot)  # type: ignore[attr-defined]
+                    finally:
+                        provider.download_progress_callback = None
                     t_preload = time.perf_counter() - t0
                     if not self._is_local_warm_generation_current(
                         generation, signature

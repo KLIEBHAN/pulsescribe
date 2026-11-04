@@ -38,6 +38,7 @@ from utils.local_backend import (
 from ._language import is_auto_language
 from utils.logging import log
 from utils.timing import timed_operation
+from utils.model_download import download_with_progress
 from utils.vocabulary import load_vocabulary
 
 logger = logging.getLogger("pulsescribe.providers.local")
@@ -291,6 +292,25 @@ def _mlx_quant_bits() -> int | None:
     return _MLX_QUANT_BITS[raw]
 
 
+# Files faster-whisper's download_model() fetches (faster_whisper.utils, 1.2.x).
+FASTER_WHISPER_DOWNLOAD_PATTERNS = (
+    "config.json",
+    "preprocessor_config.json",
+    "model.bin",
+    "tokenizer.json",
+    "vocabulary.*",
+)
+
+
+def _faster_repo_id(faster_name: str) -> str:
+    """Hugging Face repo faster-whisper downloads for a model size (or the name itself)."""
+    try:
+        from faster_whisper.utils import _MODELS  # type: ignore[import-not-found]
+    except Exception:
+        return faster_name
+    return _MODELS.get(faster_name, faster_name)
+
+
 def _mlx_model_holder(import_module: bool = True):
     """mlx-whisper's global model cache (ModelHolder); None if not imported yet."""
     if import_module:
@@ -487,6 +507,9 @@ class LocalProvider:
         self._backend: str | None = None
         self._lightning_fallback_active = False
         self._compute_type: str | None = None
+        # Set by the daemon/app: called as (downloaded_bytes, total_or_None) while preload()
+        # downloads a model for the first time (mlx-whisper and faster-whisper only).
+        self.download_progress_callback = None
         self._load_lock = threading.Lock()
         self._transcribe_lock = threading.Lock()
 
@@ -568,6 +591,11 @@ class LocalProvider:
             holder.model_path = None
         _mlx_quantized_model["key"] = None
 
+    def _mlx_repo(self, model_name: str) -> str:
+        """MLX repo that will be loaded for model_name under the current quantization."""
+        repo = self._map_mlx_model_name(model_name)
+        return _MLX_PREQUANTIZED_REPOS.get((repo, _mlx_quant_bits()), repo)
+
     def _prepare_mlx_model(self, model_name: str) -> str:
         """Return the MLX repo for model_name, loaded quantized per PULSESCRIBE_MLX_QUANT.
 
@@ -575,9 +603,8 @@ class LocalProvider:
         quantized model into that cache, so the following mlx_whisper.transcribe() call
         reuses it. Call it while holding the transcribe lock.
         """
-        repo = self._map_mlx_model_name(model_name)
+        repo = self._mlx_repo(model_name)
         bits = _mlx_quant_bits()
-        repo = _MLX_PREQUANTIZED_REPOS.get((repo, bits), repo)
         if bits is None:
             if _mlx_quantized_model["key"] is not None:
                 self._release_mlx_model_holder()  # let mlx-whisper reload unquantized
@@ -1055,9 +1082,21 @@ class LocalProvider:
         self._ensure_runtime_config()
         backend = self._effective_backend()
         if backend == "faster":
+            download_with_progress(
+                _faster_repo_id(self._map_faster_model_name(model_name)),
+                self.download_progress_callback,
+                allow_patterns=FASTER_WHISPER_DOWNLOAD_PATTERNS,
+                required_files=("config.json", "model.bin"),
+            )
             self._get_faster_model(model_name)
         elif backend == "mlx":
             with self._transcribe_lock:
+                # Same files mlx-whisper's loader fetches (the whole repo).
+                download_with_progress(
+                    self._mlx_repo(model_name),
+                    self.download_progress_callback,
+                    required_files=("config.json", "weights.*"),
+                )
                 import numpy as np
 
                 t0 = time.perf_counter()
