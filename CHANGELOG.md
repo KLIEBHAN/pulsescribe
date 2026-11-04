@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Release history in Settings → About** – What's new shows the five newest
+  releases bundled with the app on macOS and Windows. Read and copy the notes
+  offline; installation instructions are omitted.
+
 ## [1.16.1] - 2026-11-04
 
 ### Changed

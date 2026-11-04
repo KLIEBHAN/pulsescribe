@@ -435,6 +435,40 @@ def test_refresh_provider_key_statuses_marks_current_mode_key_as_required():
     assert window._api_status["GROQ_API_KEY"].text == "Configured"
 
 
+def test_about_defers_release_history_and_keeps_it_read_only(monkeypatch):
+    from PySide6.QtWidgets import QApplication, QDialog, QLabel, QPlainTextEdit, QTabWidget
+
+    app = QApplication.instance() or QApplication([])
+    window = SettingsWindow.__new__(SettingsWindow)
+    QDialog.__init__(window)
+    window._tabs = QTabWidget(window)
+    window._tab_builders = {}
+    window._lazy_tab_layouts = {}
+    window._built_tabs = set()
+    window._get_version = lambda: "1.16.1"
+    calls = []
+
+    def load():
+        calls.append("load")
+        return "PulseScribe 1.16.1\n\n" + "Changes.\n\n" * 200
+
+    monkeypatch.setattr("ui.release_history.load_recent_release_notes", load)
+    window._add_tab("About", window._build_about_tab, lazy="About" in settings_mod.LAZY_SETTINGS_TAB_LABELS)
+    assert calls == []
+    assert window._ensure_tab_built("About") is True
+    assert window._ensure_tab_built("About") is False
+    assert calls == ["load"]
+    notes = window._tabs.findChild(QPlainTextEdit)
+    assert notes is not None
+    assert notes.toPlainText().startswith("PulseScribe 1.16.1")
+    assert notes.isReadOnly()
+    assert notes.accessibleName() == "Recent release notes"
+    assert notes.verticalScrollBar().value() == 0
+    assert "What's new" in [label.text() for label in window._tabs.findChildren(QLabel)]
+    window.deleteLater()
+    assert app is not None
+
+
 def test_ensure_tab_built_builds_lazy_tab_only_once():
     window = SettingsWindow.__new__(SettingsWindow)
     built: list[str] = []

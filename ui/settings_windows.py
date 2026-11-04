@@ -162,7 +162,7 @@ TOAST_DURATION_MS = 2500
 TOAST_MARGIN = 16
 CARD_BUTTON_WIDTH = 110
 SETUP_TRY_IT_HINT = "The result is pasted into the active window as soon as it is ready."
-LAZY_SETTINGS_TAB_LABELS = frozenset({"Vocabulary", "History"})
+LAZY_SETTINGS_TAB_LABELS = frozenset({"Vocabulary", "History", "About"})
 LOG_VIEW_MAX_LINES = 100
 TRANSCRIPTS_VIEW_MAX_ENTRIES = 50
 INCREMENTAL_LOG_APPEND_MAX_BYTES = 64_000
@@ -2458,6 +2458,21 @@ class SettingsWindow(QDialog):
         card_layout.addWidget(links)
 
         layout.addWidget(card)
+
+        from ui.release_history import build_release_history_text
+
+        history_card, history_layout = create_card()
+        history_title = QLabel("What's new")
+        history_title.setFont(ui_font("card_title"))
+        history_layout.addWidget(history_title)
+        notes = QPlainTextEdit()
+        notes.setReadOnly(True)
+        notes.setFont(ui_font("body"))
+        notes.setAccessibleName("Recent release notes")
+        notes.setFixedHeight(280)
+        notes.setPlainText(build_release_history_text())
+        history_layout.addWidget(notes)
+        layout.addWidget(history_card)
         layout.addStretch()
 
         scroll.setWidget(content)

@@ -783,6 +783,43 @@ class TestWelcomeTranscriptionPage:
         assert ctrl._provider_guidance_label.superview() in visible
 
 
+def test_about_loads_read_only_release_history_only_once(monkeypatch):
+    appkit = pytest.importorskip("AppKit")
+    appkit.NSApplication.sharedApplication()
+    ctrl = WelcomeController.__new__(WelcomeController)
+    parent = appkit.NSView.alloc().initWithFrame_(appkit.NSMakeRect(0, 0, 600, 500))
+    ctrl._tab_builders = {"About": (ctrl._build_about_tab, parent, 500)}
+    ctrl._built_tabs = set()
+    ctrl._adopt_saved_env_values = lambda: None
+    calls = []
+
+    def load():
+        calls.append("load")
+        return "PulseScribe 1.16.1\n\n" + "Changes.\n\n" * 200
+
+    monkeypatch.setattr("ui.release_history.load_recent_release_notes", load)
+    assert calls == []
+    assert ctrl._ensure_tab_built("About") is True
+    assert ctrl._ensure_tab_built("About") is False
+    assert calls == ["load"]
+    outer = parent.subviews()[0]
+    assert isinstance(outer, appkit.NSScrollView)
+    document = outer.documentView()
+    assert document.frame().size.height > 500
+    inner = next(view for view in document.subviews() if isinstance(view, appkit.NSScrollView))
+    notes = inner.documentView()
+    assert str(notes.string()).startswith("PulseScribe 1.16.1")
+    assert not notes.isEditable()
+    assert notes.isSelectable()
+    assert notes.accessibilityLabel() == "Recent release notes"
+    assert inner.hasVerticalScroller()
+    assert not inner.hasHorizontalScroller()
+    assert notes.textContainer().widthTracksTextView()
+    assert notes.selectedRange().location == 0
+    assert notes.frame().size.height > inner.contentSize().height
+    assert notes.visibleRect().origin.y == 0
+
+
 class TestWelcomeLazyTabs:
     def test_ensure_tab_built_runs_builder_once(self):
         ctrl = WelcomeController.__new__(WelcomeController)

@@ -73,12 +73,23 @@ earlier) asks for them once more.
 Version 1.3.0 and earlier have no updater. Install version 1.4.0 once from the
 release page; subsequent releases can be installed from its menu.
 
+## Release history in Settings
+
+**Settings → About → What's new** on macOS and Windows shows the five newest
+releases shipped with that installation, with their version and date. The
+read-only text can be scrolled and copied. About loads the files only on its
+first visit; opening other settings does not read them or contact GitHub.
+Installation instructions are omitted. To see newer releases, use **Check for
+Updates…** or the GitHub release page.
+
 ## Publishing
 
 The release history is maintained in `docs/releases/vX.Y.Z.md` and shipped in
 all app bundles. Keep the version, release date and user-facing changes before
 `<!-- install-notes -->`; installation instructions after that marker are
-excluded from the in-app history. No GitHub request is needed to read it.
+excluded from the in-app history. Put the "Check for Updates… to install this
+version" prompt after the marker too; About also hides that standard paragraph
+in older notes. No GitHub request is needed to read the history.
 
 1. Merge the reviewed change and wait for the default branch's test workflow.
 2. Update `pyproject.toml` and the changelog, commit the version bump, and push.
