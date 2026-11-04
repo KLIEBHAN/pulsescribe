@@ -612,7 +612,12 @@ class LocalProvider:
             log(f"Lokales Whisper Backend: {self._backend}")
 
         if self._device is None:
-            self._device = _select_device()
+            # MLX and Lightning always run on Metal; only openai-whisper and faster-whisper
+            # pick a torch device, so they alone pay for importing torch.
+            if self._backend in ("mlx", "lightning"):
+                self._device = "metal"
+            else:
+                self._device = _select_device()
             log(f"Lokales Whisper Device: {self._device}")
 
         if self._fp16_override is None:
