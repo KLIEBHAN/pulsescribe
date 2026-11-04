@@ -98,3 +98,32 @@ def test_is_local_backend_installed_checks_modules_without_importing(monkeypatch
     assert lb.is_local_backend_installed("lightning") is False
     assert lb.is_local_backend_installed("unknown") is False
     assert seen == ["lightning_whisper_mlx"]
+
+
+def test_advanced_options_apply_only_where_the_backend_uses_them() -> None:
+    import utils.local_backend as lb
+
+    def options(backend, platform):
+        return {o for o in lb.ADVANCED_OPTION_BACKENDS if lb.advanced_option_applies(o, backend, platform=platform)}
+
+    assert options("mlx", "darwin") == {"preset", "warmup", "fast", "fp16", "best_of", "temperature"}
+    assert options("lightning", "darwin") == {"preset", "warmup", "lightning_batch", "lightning_quant"}
+    assert "device" not in options("faster", "darwin")  # no GPU path for faster-whisper on macOS
+    assert {"device", "beam_size", "compute_type"} <= options("faster", "win32")
+    assert "fp16" not in options("faster", "win32")
+    assert set(lb.ADVANCED_OPTION_HELP) == set(lb.ADVANCED_OPTION_BACKENDS)
+
+
+def test_effective_local_backend_resolves_auto_like_the_provider(monkeypatch) -> None:
+    import platform
+
+    import utils.local_backend as lb
+
+    installed = {"mlx", "faster"}
+    monkeypatch.setattr(lb, "is_local_backend_installed", lambda b: b in installed)
+    monkeypatch.setattr(platform, "machine", lambda: "arm64")
+    assert lb.effective_local_backend("auto", platform="darwin") == "mlx"
+    assert lb.effective_local_backend(None, platform="win32") == "faster"
+    assert lb.effective_local_backend("lightning", platform="darwin") == "lightning"
+    installed.clear()
+    assert lb.effective_local_backend("auto", platform="darwin") == "whisper"

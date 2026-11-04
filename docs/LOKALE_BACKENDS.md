@@ -157,6 +157,18 @@ PULSESCRIBE_LOCAL_BACKEND=whisper
 
 ## Performance-Tuning
 
+Einstellungen → Providers → Advanced backend options zeigen nur die Optionen, die das aktive Backend nutzt (bei `auto` das Backend, das daraus wird); der Tooltip erklärt jede Option und ihren Standard:
+
+| Option | Wirkt bei |
+|--------|-----------|
+| Preset, Warmup | allen lokalen Backends |
+| Fast, Best of, Temperature | openai-whisper, faster-whisper, MLX (Lightning liest nur die Sprache) |
+| Beam size | openai-whisper, faster-whisper (MLX und Lightning haben kein Beam Search) |
+| FP16 | openai-whisper, MLX (faster-whisper nutzt den Compute type) |
+| Device | openai-whisper; faster-whisper unter Windows (MLX und Lightning laufen immer auf Metal) |
+| Compute type, CPU threads, Workers, No timestamps, VAD filter | faster-whisper |
+| Batch size, Quantization (Lightning) | Lightning |
+
 ### Schnelles Decoding
 
 Für Geschwindigkeit aktivieren (leichter Robustheitsverlust):

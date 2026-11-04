@@ -111,8 +111,11 @@ from utils.preferences import (
     update_env_settings,
 )
 from utils.local_backend import (
+    ADVANCED_OPTION_HELP,
     DEFAULT_LOCAL_BACKEND,
+    advanced_option_applies,
     available_local_backend_options,
+    effective_local_backend,
     get_cpu_threads_limit,
     get_local_advanced_ui_state,
     normalize_local_backend,
@@ -1758,6 +1761,18 @@ class SettingsWindow(QDialog):
                 combo.addItem(label, name)
             combo.setCurrentIndex(combo.findData(selected))
 
+    def _add_advanced_option_row(self, card_layout, option: str, label: str, widget, hint: str) -> None:
+        """Add one advanced option row that _refresh_local_advanced_ui can hide on its own."""
+        widget.setToolTip(ADVANCED_OPTION_HELP[option])
+        container = QWidget()
+        row = create_label_row(label, widget, hint)
+        row.setContentsMargins(0, 0, 0, 0)
+        container.setLayout(row)
+        card_layout.add_row(container)
+        if not hasattr(self, "_advanced_option_rows"):
+            self._advanced_option_rows = {}
+        self._advanced_option_rows[option] = container
+
     def _add_advanced_cards(self, layout: QVBoxLayout) -> None:
         """Advanced local backend cards behind a collapsed disclosure row (Local only)."""
         self._advanced_disclosure = QPushButton()
@@ -1789,44 +1804,36 @@ class SettingsWindow(QDialog):
 
         self._device_combo = QComboBox()
         _add_combo_items(self._device_combo, DEVICE_OPTIONS)
-        self._device_combo.setToolTip("Auto is recommended unless you explicitly want CPU or GPU inference.")
         self._device_combo.currentTextChanged.connect(self._refresh_footer_settings_hint)
-        card_layout.add_row(create_label_row("Device:", self._device_combo, "auto recommended"))
+        self._add_advanced_option_row(card_layout, "device", "Device:", self._device_combo, "auto recommended")
+
+        self._local_fast_combo = QComboBox()
+        _add_combo_items(self._local_fast_combo, BOOL_OVERRIDE_OPTIONS)
+        self._local_fast_combo.currentTextChanged.connect(self._refresh_footer_settings_hint)
+        self._add_advanced_option_row(card_layout, "fast", "Fast:", self._local_fast_combo, "default: on for faster-whisper")
 
         self._beam_size_field = QLineEdit()
         self._beam_size_field.setPlaceholderText("Leave empty = default")
-        self._beam_size_field.setToolTip("Optional decoding override. Leave empty to keep PulseScribe's default.")
         self._beam_size_field.textChanged.connect(self._refresh_footer_settings_hint)
         self._beam_size_field.setValidator(QIntValidator(1, 20))
-        card_layout.add_row(
-            create_label_row("Beam Size:", self._beam_size_field, "optional override")
-        )
+        self._add_advanced_option_row(card_layout, "beam_size", "Beam Size:", self._beam_size_field, "1-20")
 
         self._temperature_field = QLineEdit()
         self._temperature_field.setPlaceholderText("Leave empty = default")
-        self._temperature_field.setToolTip("Optional decoding temperature. Leave empty to keep the backend default.")
         self._temperature_field.textChanged.connect(self._refresh_footer_settings_hint)
         self._temperature_field.setValidator(QDoubleValidator(0.0, 1.0, 2))
-        card_layout.add_row(
-            create_label_row("Temperature:", self._temperature_field, "0.0-1.0")
-        )
+        self._add_advanced_option_row(card_layout, "temperature", "Temperature:", self._temperature_field, "0.0-1.0")
 
         self._best_of_field = QLineEdit()
         self._best_of_field.setPlaceholderText("Leave empty = default")
-        self._best_of_field.setToolTip("Optional sampling override. Leave empty to keep the backend default.")
         self._best_of_field.textChanged.connect(self._refresh_footer_settings_hint)
         self._best_of_field.setValidator(QIntValidator(1, 10))
-        card_layout.add_row(
-            create_label_row("Best Of:", self._best_of_field, "optional override")
-        )
+        self._add_advanced_option_row(card_layout, "best_of", "Best Of:", self._best_of_field, "1-10")
 
         self._fp16_combo = QComboBox()
         _add_combo_items(self._fp16_combo, BOOL_OVERRIDE_OPTIONS)
-        self._fp16_combo.setToolTip(
-            "Use default unless you explicitly want to force half-precision on or off."
-        )
         self._fp16_combo.currentTextChanged.connect(self._refresh_footer_settings_hint)
-        card_layout.add_row(create_label_row("FP16:", self._fp16_combo, "default keeps auto"))
+        self._add_advanced_option_row(card_layout, "fp16", "FP16:", self._fp16_combo, "openai-whisper only")
 
         self._advanced_local_settings_card = card
         layout.addWidget(card)
@@ -1838,11 +1845,11 @@ class SettingsWindow(QDialog):
         )
 
         self._compute_type_combo = QComboBox()
+        self._compute_type_combo.setToolTip(ADVANCED_OPTION_HELP["compute_type"])
         _add_combo_items(
             self._compute_type_combo,
             ["default", "float16", "float32", "int8", "int8_float16"],
         )
-        self._compute_type_combo.setToolTip("Default is recommended unless you need a specific precision or quantization mode.")
         self._compute_type_combo.currentTextChanged.connect(self._refresh_footer_settings_hint)
         card_layout.add_row(
             create_label_row("Compute Type:", self._compute_type_combo, "default recommended")
@@ -1850,8 +1857,8 @@ class SettingsWindow(QDialog):
 
         cpu_threads_max = get_cpu_threads_limit(os.cpu_count())
         self._cpu_threads_field = QLineEdit()
+        self._cpu_threads_field.setToolTip(ADVANCED_OPTION_HELP["cpu_threads"])
         self._cpu_threads_field.setPlaceholderText("0 = auto")
-        self._cpu_threads_field.setToolTip("Set 0 or leave the default to let Faster-Whisper choose automatically.")
         self._cpu_threads_field.textChanged.connect(self._refresh_footer_settings_hint)
         self._cpu_threads_field.setValidator(QIntValidator(0, cpu_threads_max))
         card_layout.add_row(
@@ -1863,8 +1870,8 @@ class SettingsWindow(QDialog):
         )
 
         self._num_workers_field = QLineEdit()
+        self._num_workers_field.setToolTip(ADVANCED_OPTION_HELP["num_workers"])
         self._num_workers_field.setPlaceholderText("1")
-        self._num_workers_field.setToolTip("Increase only if you know your system benefits from extra decoding workers.")
         self._num_workers_field.textChanged.connect(self._refresh_footer_settings_hint)
         self._num_workers_field.setValidator(QIntValidator(1, 8))
         card_layout.add_row(
@@ -1872,8 +1879,8 @@ class SettingsWindow(QDialog):
         )
 
         self._without_timestamps_combo = QComboBox()
+        self._without_timestamps_combo.setToolTip(ADVANCED_OPTION_HELP["without_timestamps"])
         _add_combo_items(self._without_timestamps_combo, BOOL_OVERRIDE_OPTIONS)
-        self._without_timestamps_combo.setToolTip("Default keeps Faster-Whisper's normal timestamp behavior.")
         self._without_timestamps_combo.currentTextChanged.connect(
             self._refresh_footer_settings_hint
         )
@@ -1882,8 +1889,8 @@ class SettingsWindow(QDialog):
         )
 
         self._vad_filter_combo = QComboBox()
+        self._vad_filter_combo.setToolTip(ADVANCED_OPTION_HELP["vad_filter"])
         _add_combo_items(self._vad_filter_combo, BOOL_OVERRIDE_OPTIONS)
-        self._vad_filter_combo.setToolTip("Default keeps Faster-Whisper's normal voice activity detection behavior.")
         self._vad_filter_combo.currentTextChanged.connect(self._refresh_footer_settings_hint)
         card_layout.add_row(
             create_label_row("VAD Filter:", self._vad_filter_combo, "default keeps auto")
@@ -1906,9 +1913,9 @@ class SettingsWindow(QDialog):
         batch_layout.addWidget(batch_label)
 
         self._lightning_batch_slider = QSlider(Qt.Orientation.Horizontal)
+        self._lightning_batch_slider.setToolTip(ADVANCED_OPTION_HELP["lightning_batch"])
         self._lightning_batch_slider.setRange(4, 32)
         self._lightning_batch_slider.setValue(12)
-        self._lightning_batch_slider.setToolTip("Higher values may improve speed but use more memory.")
         self._lightning_batch_slider.valueChanged.connect(self._on_batch_size_changed)
         self._lightning_batch_slider.valueChanged.connect(self._refresh_footer_settings_hint)
         batch_layout.addWidget(self._lightning_batch_slider, 1)
@@ -1920,10 +1927,8 @@ class SettingsWindow(QDialog):
         card_layout.add_row(batch_layout)
 
         self._lightning_quant_combo = QComboBox()
+        self._lightning_quant_combo.setToolTip(ADVANCED_OPTION_HELP["lightning_quant"])
         _add_combo_items(self._lightning_quant_combo, LIGHTNING_QUANT_OPTIONS)
-        self._lightning_quant_combo.setToolTip(
-            "Lower precision reduces memory usage but can affect quality. Leave on 'none' unless you need the trade-off."
-        )
         self._lightning_quant_combo.currentTextChanged.connect(
             self._refresh_footer_settings_hint
         )
@@ -2611,6 +2616,12 @@ class SettingsWindow(QDialog):
             getattr(self, "_advanced_lightning_settings_card", None),
             expanded and state.show_lightning,
         )
+        # Inside the general card, show only options the running backend uses.
+        backend = effective_local_backend(self._current_local_backend(), platform="win32")
+        for option, container in getattr(self, "_advanced_option_rows", {}).items():
+            _set_widget_visible_if_changed(
+                container, advanced_option_applies(option, backend, platform="win32")
+            )
 
         _set_status_label_if_changed(
             getattr(self, "_advanced_empty_state_label", None),
@@ -2825,6 +2836,9 @@ class SettingsWindow(QDialog):
             else "default",
             getattr(self, "_fp16_combo", None).currentText()
             if getattr(self, "_fp16_combo", None) is not None
+            else "default",
+            getattr(self, "_local_fast_combo", None).currentText()
+            if getattr(self, "_local_fast_combo", None) is not None
             else "default",
             getattr(self, "_lightning_batch_slider", None).value()
             if getattr(self, "_lightning_batch_slider", None) is not None
@@ -4569,6 +4583,9 @@ class SettingsWindow(QDialog):
         fp16 = (
             env_get(LOCAL_FP16_ENV_KEY) or env_get(LEGACY_LOCAL_FP16_ENV_KEY) or "default"
         )
+        local_fast = (env_get("PULSESCRIBE_LOCAL_FAST") or "default").strip().lower()
+        if local_fast not in BOOL_OVERRIDE_OPTIONS:
+            local_fast = "default"
         batch_size = env_get("PULSESCRIBE_LIGHTNING_BATCH_SIZE") or "12"
         quant = env_get("PULSESCRIBE_LIGHTNING_QUANT") or "none"
         refine = env_get("PULSESCRIBE_REFINE")
@@ -4597,6 +4614,7 @@ class SettingsWindow(QDialog):
                 getattr(self, "_without_timestamps_combo", None),
                 getattr(self, "_vad_filter_combo", None),
                 getattr(self, "_fp16_combo", None),
+                getattr(self, "_local_fast_combo", None),
                 getattr(self, "_lightning_batch_slider", None),
                 getattr(self, "_lightning_quant_combo", None),
                 self._refine_checkbox,
@@ -4649,6 +4667,7 @@ class SettingsWindow(QDialog):
                     getattr(self, "_vad_filter_combo", None), vad
                 )
                 _set_combo_text_if_changed(getattr(self, "_fp16_combo", None), fp16)
+                _set_combo_text_if_changed(getattr(self, "_local_fast_combo", None), local_fast)
                 try:
                     parsed_batch_size = int(batch_size)
                 except ValueError:
@@ -4836,6 +4855,14 @@ class SettingsWindow(QDialog):
                 remove_when={"default"},
             )
             builder.remove_key(LEGACY_LOCAL_FP16_ENV_KEY)
+
+        local_fast_combo = getattr(self, "_local_fast_combo", None)
+        if local_fast_combo:
+            builder.set_optional(
+                "PULSESCRIBE_LOCAL_FAST",
+                local_fast_combo.currentText(),
+                remove_when={"default"},
+            )
 
         lightning_batch_slider = getattr(self, "_lightning_batch_slider", None)
         if lightning_batch_slider:
@@ -5030,6 +5057,7 @@ class SettingsWindow(QDialog):
                 getattr(self, "_vad_filter_combo", None),
                 getattr(self, "_without_timestamps_combo", None),
                 getattr(self, "_fp16_combo", None),
+                getattr(self, "_local_fast_combo", None),
                 getattr(self, "_lightning_batch_slider", None),
                 getattr(self, "_lightning_quant_combo", None),
             ):
@@ -5118,6 +5146,13 @@ class SettingsWindow(QDialog):
                     _set_combo_text_if_changed(
                         getattr(self, "_fp16_combo", None),
                         str(values.get("fp16", "default")),
+                    )
+                    or ui_changed
+                )
+                ui_changed = (
+                    _set_combo_text_if_changed(
+                        getattr(self, "_local_fast_combo", None),
+                        str(values.get("local_fast", "default")),
                     )
                     or ui_changed
                 )

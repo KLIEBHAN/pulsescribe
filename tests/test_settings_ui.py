@@ -328,7 +328,6 @@ def _make_minimal_welcome_controller():
     ctrl._lightning_batch_value_label = None
     ctrl._lightning_quant_label = None
     ctrl._lightning_quant_popup = None
-    ctrl._advanced_general_views = ()
     ctrl._advanced_local_status_label = None
     ctrl._streaming_checkbox = None
     ctrl._refine_checkbox = None
@@ -527,8 +526,12 @@ class TestWelcomeTranscriptionPage:
 
         appkit.NSApplication.sharedApplication()
         monkeypatch.setattr(welcome_mod, "read_env_file", lambda: {})
-        monkeypatch.setattr(welcome_mod, "is_apple_silicon", lambda: True)
-        monkeypatch.setattr(welcome_mod, "is_local_backend_installed", lambda b: b == "mlx")
+        auto_backend = {"value": "mlx"}  # what "auto" resolves to on this Mac
+        monkeypatch.setattr(
+            welcome_mod,
+            "effective_local_backend",
+            lambda selected: auto_backend["value"] if selected in (None, "auto") else selected,
+        )
         monkeypatch.setattr(WelcomeController, "_build_window", lambda self: None)
         ctrl = WelcomeController("f19", {"mode": "local"})
         ctrl._env_settings_cache = {"PULSESCRIBE_MODE": "local", "PULSESCRIBE_LOCAL_BACKEND": "mlx"}
@@ -551,9 +554,53 @@ class TestWelcomeTranscriptionPage:
         ctrl._local_backend_popup.selectItemWithTitle_("auto")
         ctrl._update_all_visibility()
         assert visible()  # auto runs MLX on Apple Silicon
-        monkeypatch.setattr(welcome_mod, "is_local_backend_installed", lambda b: False)
+        auto_backend["value"] = "faster"
         ctrl._update_all_visibility()
         assert not visible()  # without mlx-whisper, auto picks another backend
+
+    def test_advanced_options_show_only_what_the_backend_uses(self, monkeypatch):
+        appkit = pytest.importorskip("AppKit")
+        import ui.welcome as welcome_mod
+        from utils.local_backend import ADVANCED_OPTION_HELP
+
+        appkit.NSApplication.sharedApplication()
+        monkeypatch.setattr(welcome_mod, "read_env_file", lambda: {})
+        monkeypatch.setattr(welcome_mod, "effective_local_backend",
+                            lambda selected: "mlx" if selected in (None, "auto") else selected)
+        monkeypatch.setattr(WelcomeController, "_build_window", lambda self: None)
+        ctrl = WelcomeController("f19", {"mode": "local"})
+        ctrl._env_settings_cache = {"PULSESCRIBE_MODE": "local"}
+        page = appkit.NSView.alloc().initWithFrame_(appkit.NSMakeRect(0, 0, 610, 500))
+        ctrl._build_transcription_tab(page, 500)
+        _scroll, _document, _height, blocks = ctrl._transcription_page
+
+        controls = {
+            "device": "_device_popup", "fast": "_local_fast_popup", "fp16": "_fp16_popup",
+            "beam_size": "_beam_size_field", "temperature": "_temperature_field",
+            "compute_type": "_compute_type_field", "vad_filter": "_vad_filter_popup",
+            "lightning_quant": "_lightning_quant_popup",
+        }
+
+        def shown():
+            visible = [b for b, _v in blocks if not b.isHidden()]
+            tops = [(b.frame().origin.y, b.frame().size.height) for b in visible]
+            assert all(abs((y + h) - prev) < 0.5 for (y, h), (prev, _) in zip(tops[1:], tops))
+            return {o for o, attr in controls.items() if getattr(ctrl, attr).superview() in visible}
+
+        assert shown() == set()  # collapsed
+        ctrl._toggle_advanced_options()
+        assert shown() == {"fast", "fp16", "temperature"}  # auto -> MLX: no device, no beams
+        for backend, expected in (
+            ("faster", {"fast", "beam_size", "temperature", "compute_type", "vad_filter"}),
+            ("lightning", {"lightning_quant"}),
+            ("whisper", {"device", "fast", "fp16", "beam_size", "temperature"}),
+        ):
+            ctrl._local_backend_popup.selectItemWithTitle_(backend)
+            ctrl._update_all_visibility()
+            assert shown() == expected, backend
+        assert ctrl._beam_size_field.toolTip() == ADVANCED_OPTION_HELP["beam_size"]
+        assert [ctrl._device_popup.itemTitleAtIndex_(i)
+                for i in range(ctrl._device_popup.numberOfItems())] == ["auto", "mps", "cpu"]
 
     def test_own_server_model_picker_lists_server_models_and_keeps_typed_value(
         self, monkeypatch
@@ -1284,7 +1331,6 @@ class TestWelcomeEditorCaches:
         ctrl._local_backend_label = _FakeHideable()
         ctrl._local_model_popup = _FakeHideable()
         ctrl._local_model_label = _FakeHideable()
-        ctrl._advanced_general_views = (_FakeHideable(), _FakeHideable())
         ctrl._lightning_header = _FakeHideable()
         ctrl._lightning_batch_label = _FakeHideable()
         ctrl._lightning_batch_slider = _FakeHideable()
@@ -1299,33 +1345,23 @@ class TestWelcomeEditorCaches:
 
         assert ctrl._local_backend_label.hidden_calls == [True]
         assert ctrl._local_model_popup.hidden_calls == [True]
-        assert all(view.hidden_calls == [True] for view in ctrl._advanced_general_views)
         assert ctrl._streaming_label.hidden_calls == []
         assert ctrl._streaming_checkbox.hidden_calls == []
 
-    def test_local_advanced_controls_follow_show_general_state(self):
+    def test_local_advanced_guidance_follows_mode(self):
         ctrl = _make_minimal_welcome_controller()
         ctrl._mode_popup = _FakePopup(["deepgram", "local"], selected="deepgram")
         ctrl._local_backend_popup = _FakePopup(
             ["auto", "whisper", "faster", "mlx", "lightning"],
             selected="auto",
         )
-        ctrl._advanced_general_views = (
-            _FakeHideable(),
-            _FakeHideable(),
-            _FakeHideable(),
-        )
         ctrl._advanced_local_status_label = _FakeStatus("")
 
         ctrl._update_local_settings_visibility()
-
-        assert all(view.hidden is True for view in ctrl._advanced_general_views)
         assert "Local Whisper mode" in ctrl._advanced_local_status_label.value
 
         ctrl._mode_popup.selectItemWithTitle_("local")
         ctrl._update_local_settings_visibility()
-
-        assert all(view.hidden is False for view in ctrl._advanced_general_views)
         assert "recommended local defaults" in ctrl._advanced_local_status_label.value
 
 

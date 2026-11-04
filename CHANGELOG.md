@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Advanced backend options show only what works** – on macOS and Windows,
+  each option appears only for the backends that use it (for example no Beam
+  size or Device for MLX, no FP16 for faster-whisper), without gaps between
+  rows. Every option has a tooltip with what it does and its default. Windows
+  gains the Fast option; the macOS Device list drops CUDA.
+
 ## [1.15.0] - 2026-11-04
 
 ### Added
