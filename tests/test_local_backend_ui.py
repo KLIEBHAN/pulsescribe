@@ -143,3 +143,12 @@ def test_advanced_value_error_accepts_defaults_and_rejects_out_of_range() -> Non
     # Hidden options never block saving: MLX has no beam search.
     assert first_advanced_value_error({"beam_size": "99"}, "mlx", platform="darwin") is None
     assert "Beam size" in first_advanced_value_error({"beam_size": "99"}, "faster", platform="win32")
+
+
+def test_cpu_threads_bound_follows_detected_cores(monkeypatch) -> None:
+    import utils.local_backend as lb
+
+    monkeypatch.setattr(lb.os, "cpu_count", lambda: 64)
+    assert lb.advanced_int_range("cpu_threads") == (0, 64)
+    assert lb.advanced_value_error("cpu_threads", "64") is None
+    assert lb.advanced_value_error("cpu_threads", "65") is not None

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import importlib.util
 import sys
 from typing import NamedTuple
@@ -244,7 +246,7 @@ _ADVANCED_INT_LABELS = {
 def advanced_int_range(option: str, cpu_count: int | None = None) -> tuple[int, int]:
     """Accepted range of an integer advanced option (UI validators use the same bounds)."""
     if option == "cpu_threads":
-        return 0, get_cpu_threads_limit(cpu_count)
+        return 0, get_cpu_threads_limit(os.cpu_count() if cpu_count is None else cpu_count)
     return {"beam_size": (1, 20), "best_of": (1, 10), "num_workers": (1, 8)}[option]
 
 
