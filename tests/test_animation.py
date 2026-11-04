@@ -109,10 +109,10 @@ def test_listening_level_uses_a_fixed_gated_scale() -> None:
 
 
 def test_listening_bar_heights_stay_small() -> None:
-    from ui.animation import LISTENING_BAR_HEIGHTS, listening_bar_heights
+    from ui.animation import LISTENING_BAR_HEIGHTS, LISTENING_LEVEL_SPAN, listening_bar_heights
 
     assert listening_bar_heights(0.0) == LISTENING_BAR_HEIGHTS
     peak = listening_bar_heights(1.0)
     assert listening_bar_heights(2.0) == peak
     assert all(p > rest for p, rest in zip(peak, LISTENING_BAR_HEIGHTS))
-    assert all(p - rest <= 0.35 * BAR_MAX_HEIGHT for p, rest in zip(peak, LISTENING_BAR_HEIGHTS))
+    assert all(p - rest <= LISTENING_LEVEL_SPAN for p, rest in zip(peak, LISTENING_BAR_HEIGHTS))

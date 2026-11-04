@@ -5,7 +5,7 @@ import types
 import pytest
 
 from config import VAD_THRESHOLD
-from ui.animation import BAR_MAX_HEIGHT, listening_bar_heights
+from ui.animation import LISTENING_LEVEL_SPAN, listening_bar_heights
 from ui.overlay import (
     OVERLAY_INTERIM_MAX_CHARS,
     WAVE_ANIMATION_FPS,
@@ -674,7 +674,7 @@ def test_listening_level_meter_rises_settles_and_returns_to_rest(monkeypatch):
     peak = listening_bar_heights(1.0)
     # Settles within the level epsilon (~a quarter pixel) of the full amplitude.
     assert all(abs(h - p) < 2 * WAVE_HEIGHT_UPDATE_EPSILON for h, p in zip(view._last_heights, peak))
-    assert max(view._last_heights) <= max(LISTENING_BAR_HEIGHTS) + 0.35 * BAR_MAX_HEIGHT
+    assert max(view._last_heights) <= max(LISTENING_BAR_HEIGHTS) + LISTENING_LEVEL_SPAN
     assert timers[-1].invalidated == 1  # steady level: no frames until it changes
 
     view.update_listening_level(0.0)
@@ -686,7 +686,7 @@ def test_listening_level_meter_rises_settles_and_returns_to_rest(monkeypatch):
 
 
 def test_listening_meter_settles_despite_float_rounding(monkeypatch):
-    from ui.animation import LISTENING_LEVEL_SPAN, AnimationLogic
+    from ui.animation import AnimationLogic
 
     view, _timers = _listening_view(monkeypatch)
     bar = 3  # rest 7 px
