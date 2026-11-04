@@ -98,6 +98,7 @@ except Exception as e:
 # Binaries and data files
 binaries = pyside6_binaries
 datas = pyside6_datas + [
+    ('docs/releases', 'docs/releases'),
     ('config.py', '.'),
     ('pyproject.toml', '.'),
     ('utils', 'utils'),

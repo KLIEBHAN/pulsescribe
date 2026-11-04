@@ -61,6 +61,7 @@ except Exception as e:
 # Paths to modules and resources
 binaries = pyside6_binaries + shiboken6_binaries
 datas = pyside6_datas + shiboken6_datas + [
+    ('docs/releases', 'docs/releases'),
     ('config.py', '.'),
     ('pyproject.toml', '.'),
     ('utils', 'utils'),
