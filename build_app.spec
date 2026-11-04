@@ -57,6 +57,7 @@ APP_VERSION = _read_app_version()
 # Pfade zu Modulen und Ressourcen
 binaries = []
 datas = [
+    ('docs/releases', 'docs/releases'),
     ('config.py', '.'),  # Top-Level Konfiguration
     ('cli', 'cli'),  # CLI Enums (TranscriptionMode, Context, etc.)
     ('ui', 'ui'),

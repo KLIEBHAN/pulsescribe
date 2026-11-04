@@ -75,6 +75,11 @@ release page; subsequent releases can be installed from its menu.
 
 ## Publishing
 
+The release history is maintained in `docs/releases/vX.Y.Z.md` and shipped in
+all app bundles. Keep the version, release date and user-facing changes before
+`<!-- install-notes -->`; installation instructions after that marker are
+excluded from the in-app history. No GitHub request is needed to read it.
+
 1. Merge the reviewed change and wait for the default branch's test workflow.
 2. Update `pyproject.toml` and the changelog, commit the version bump, and push.
    Wait for that commit's tests before tagging it.
