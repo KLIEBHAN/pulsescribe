@@ -82,12 +82,14 @@ pip install mlx-whisper
 PULSESCRIBE_LOCAL_BACKEND=mlx
 ```
 
+**Quantisierung:** `PULSESCRIBE_MLX_QUANT` = `8bit` (Standard), `4bit` oder `none`; in den Einstellungen unter Providers als „Quantization“, solange MLX aktiv ist. Mit 8 Bit lädt PulseScribe `large`/`large-v3` als fertig quantisiertes Repo (1,6 statt 2,9 GB) und quantisiert andere Modelle nach dem Laden. Gemessen auf einem M6 mit deutschen Diktaten: turbo in 8 Bit so genau wie fp16, etwa 10 % schneller, 0,8 statt 1,5 GB Speicher; 4 Bit ist kleiner, aber etwas ungenauer.
+
 **Modellnamen-Zuordnung:**
 
 | Kurzname | Vollständige Repo-ID |
 |----------|---------------------|
 | `turbo` | `mlx-community/whisper-large-v3-turbo` ⭐ |
-| `large` | `mlx-community/whisper-large-v3-mlx` |
+| `large` | `mlx-community/whisper-large-v3-mlx` (8 Bit: `mlx-community/whisper-large-v3-mlx-8bit`) |
 | `medium` | `mlx-community/whisper-medium` |
 | `small` | `mlx-community/whisper-small-mlx` |
 | `base` | `mlx-community/whisper-base-mlx` |
