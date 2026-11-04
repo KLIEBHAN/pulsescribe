@@ -28,7 +28,7 @@ BAR_COUNT = 10
 BAR_WIDTH = 3
 BAR_GAP = 3
 BAR_MIN_HEIGHT = 3
-BAR_MAX_HEIGHT = 24
+BAR_MAX_HEIGHT = 30  # leaves 7 px above and below the wave in the 44 px overlay
 
 # Smoothing (tuned to match macOS feel)
 SMOOTHING_ALPHA_RISE = 0.65  # Faster attack for responsive feel
@@ -93,7 +93,8 @@ _HEIGHT_FACTORS = _build_height_factors()
 # Static, low listening row: center bars slightly taller than the edges.
 LISTENING_BAR_HEIGHTS = tuple(float(round(BAR_MIN_HEIGHT + 5 * f)) for f in _HEIGHT_FACTORS)
 # Listening level: the low row grows at most this much above its rest heights.
-LISTENING_LEVEL_SPAN = 0.35 * BAR_MAX_HEIGHT
+# Fixed in pixels so a taller recording wave leaves the listening row unchanged.
+LISTENING_LEVEL_SPAN = 8.4
 # Listening levels closer than this count as unchanged, so the render loop may
 # settle (~a quarter pixel on the centre bar, the repaint threshold).
 LISTENING_LEVEL_EPSILON = 0.03

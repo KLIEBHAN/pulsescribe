@@ -10,6 +10,7 @@ from config import VAD_THRESHOLD
 from ui.animation import (
     BAR_MAX_HEIGHT,
     LISTENING_BAR_HEIGHTS,
+    LISTENING_LEVEL_SPAN,
     AnimationLogic,
     listening_bar_heights,
 )
@@ -604,7 +605,7 @@ def test_listening_level_meter_settles_and_wakes_on_change(monkeypatch):
     assert _run_frames(widget) < 400
     peak = listening_bar_heights(1.0)
     assert all(abs(h - p) < 2 * BAR_HEIGHT_UPDATE_EPSILON for h, p in zip(widget._bar_heights, peak))
-    assert max(widget._bar_heights) <= max(LISTENING_BAR_HEIGHTS) + 0.35 * BAR_MAX_HEIGHT
+    assert max(widget._bar_heights) <= max(LISTENING_BAR_HEIGHTS) + LISTENING_LEVEL_SPAN
 
     # A steady level keeps the loop stopped.
     widget.update_audio_level(VAD_THRESHOLD)
