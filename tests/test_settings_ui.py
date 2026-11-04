@@ -514,10 +514,11 @@ class TestWelcomeTranscriptionPage:
         assert ctrl._local_backend_popup.superview() in visible_blocks()
         assert ctrl._deepgram_field.superview() not in visible_blocks()
         assert ctrl._advanced_disclosure.superview() in visible_blocks()
-        assert ctrl._device_popup.superview() not in visible_blocks()
+        assert ctrl._warmup_popup.superview() not in visible_blocks()
         assert packed(visible_blocks())
 
         ctrl._toggle_advanced_options()
+        assert packed(visible_blocks())
         assert ctrl._device_popup.superview() in visible_blocks()
 
     def test_mlx_quantization_row_follows_the_effective_backend(self, monkeypatch):
