@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **macOS sounds no longer play twice** – the first start, stop, done or error
+  sound after launch played once through CoreAudio and once more through
+  `afplay`, and later ones only through the slower `afplay`. PulseScribe read a
+  status from `AudioServicesPlaySystemSound`, which returns nothing.
+
 ## [1.16.0] - 2026-11-04
 
 ### Changed
