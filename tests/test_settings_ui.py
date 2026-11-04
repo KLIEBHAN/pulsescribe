@@ -519,7 +519,7 @@ class TestWelcomeTranscriptionPage:
 
         ctrl._toggle_advanced_options()
         assert packed(visible_blocks())
-        assert ctrl._device_popup.superview() in visible_blocks()
+        assert ctrl._warmup_popup.superview() in visible_blocks()
 
     def test_mlx_quantization_row_follows_the_effective_backend(self, monkeypatch):
         appkit = pytest.importorskip("AppKit")
