@@ -73,6 +73,15 @@ earlier) asks for them once more.
 Version 1.3.0 and earlier have no updater. Install version 1.4.0 once from the
 release page; subsequent releases can be installed from its menu.
 
+## Release history in Settings
+
+**Settings → About → What's new** on macOS and Windows shows the five newest
+releases shipped with that installation, with their version and date. The
+read-only text can be scrolled and copied. About loads the files only on its
+first visit; opening other settings does not read them or contact GitHub.
+Installation instructions are omitted. To see newer releases, use **Check for
+Updates…** or the GitHub release page.
+
 ## Publishing
 
 The release history is maintained in `docs/releases/vX.Y.Z.md` and shipped in

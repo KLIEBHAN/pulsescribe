@@ -1847,8 +1847,72 @@ class WelcomeController:
         self._build_logs_card(y_pos, parent_view, tab_height)
 
     def _build_about_tab(self, parent_view, tab_height: int) -> None:
-        y_pos = tab_height - WELCOME_PADDING
-        self._build_about_card(y_pos, parent_view)
+        def build_content(document, top_y):
+            y = self._build_about_card(top_y - WELCOME_PADDING, document)
+            return self._build_release_history_card(y, document)
+
+        self._build_scrollable_tab(parent_view, tab_height, build_content)
+
+    def _build_release_history_card(self, y: int, parent_view) -> int:
+        """Show bundled release notes in a selectable, read-only text view."""
+        from AppKit import (  # type: ignore[import-not-found]
+            NSColor,
+            NSFont,
+            NSFontWeightSemibold,
+            NSMakeRect,
+            NSMakeSize,
+            NSScrollView,
+            NSTextField,
+            NSTextView,
+            NSViewWidthSizable,
+        )
+        from ui.release_history import build_release_history_text
+
+        card_height = 340
+        card_width = CONTENT_WIDTH - 2 * WELCOME_PADDING
+        card_y = y - card_height
+        card = _create_card(WELCOME_PADDING, card_y, card_width, card_height)
+        parent_view.addSubview_(card)
+        x = WELCOME_PADDING + CARD_PADDING
+        width = card_width - 2 * CARD_PADDING
+
+        title = NSTextField.labelWithString_("What's new")
+        title.setFrame_(NSMakeRect(x, card_y + card_height - 30, width, 18))
+        title.setFont_(NSFont.systemFontOfSize_weight_(13, NSFontWeightSemibold))
+        title.setTextColor_(NSColor.whiteColor())
+        parent_view.addSubview_(title)
+
+        scroll = NSScrollView.alloc().initWithFrame_(
+            NSMakeRect(x, card_y + CARD_PADDING, width, card_height - 48 - CARD_PADDING)
+        )
+        scroll.setHasVerticalScroller_(True)
+        scroll.setHasHorizontalScroller_(False)
+        scroll.setAutohidesScrollers_(True)
+        scroll.setDrawsBackground_(False)
+        size = scroll.contentSize()
+        notes = NSTextView.alloc().initWithFrame_(
+            NSMakeRect(0, 0, size.width, size.height)
+        )
+        notes.setEditable_(False)
+        notes.setSelectable_(True)
+        notes.setRichText_(False)
+        notes.setDrawsBackground_(False)
+        notes.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.8))
+        notes.setFont_(NSFont.systemFontOfSize_(12))
+        notes.setTextContainerInset_(NSMakeSize(6, 8))
+        notes.setVerticallyResizable_(True)
+        notes.setHorizontallyResizable_(False)
+        notes.setAutoresizingMask_(NSViewWidthSizable)
+        notes.setMinSize_(NSMakeSize(0, size.height))
+        notes.setMaxSize_(NSMakeSize(1e7, 1e7))
+        notes.textContainer().setWidthTracksTextView_(True)
+        notes.setAccessibilityLabel_("Recent release notes")
+        scroll.setDocumentView_(notes)
+        parent_view.addSubview_(scroll)
+        notes.setString_(build_release_history_text())
+        notes.setSelectedRange_((0, 0))
+        notes.scrollRangeToVisible_((0, 0))
+        return card_y - CARD_SPACING
 
     def _build_hotkey_card(self, y: int, parent_view=None) -> int:
         """Erstellt Hotkey-Karte mit HotkeyCard-Komponente."""
