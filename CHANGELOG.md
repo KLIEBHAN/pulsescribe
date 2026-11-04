@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.1] - 2026-11-04
+
+### Changed
+
+- **Taller recording wave** – while you speak, the overlay wave now reaches up
+  to 30 px instead of 24 px on macOS and Windows. The listening row before a
+  recording is unchanged.
+
 ### Fixed
 
 - **macOS sounds no longer play twice** – the first start, stop, done or error
