@@ -1251,7 +1251,9 @@ class PulseScribeDaemon:
         )
         if not loaded or busy or self.mode != "local":
             return
-        self._cancel_local_warm_lifecycle()
+        # Wait for a running keep-alive pass (timer thread, not the UI), else it could
+        # load the model again right after the release.
+        self._cancel_local_warm_lifecycle(wait=True)
         self._release_local_provider_model_cache()
         logger.info("Lokales Modell nach %s min Leerlauf entladen", minutes)
 

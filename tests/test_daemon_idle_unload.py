@@ -99,3 +99,12 @@ def test_listening_preloads_so_an_unloaded_model_loads_while_speaking(daemon, mo
     monkeypatch.setattr(pulsescribe_daemon, "start_macos_latency_run", lambda **k: type("R", (), {"mark": lambda *a: None, "finish": lambda *a: None})())
     daemon._start_recording_locked()
     assert calls == [True]
+
+
+def test_unload_waits_for_a_running_keepalive_before_releasing(daemon):
+    order = []
+    with patch.object(daemon, "_stop_keepalive_timer", side_effect=lambda wait=False: order.append(("stop", wait))), \
+         patch.object(daemon, "_release_local_provider_model_cache", side_effect=lambda: order.append("release")):
+        daemon._update_state(AppState.IDLE)
+        _FakeTimer.created[-1].fire()
+    assert order == [("stop", True), "release"]
