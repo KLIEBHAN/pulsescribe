@@ -169,6 +169,8 @@ Settings → Providers → Advanced backend options only show the options the ac
 | Compute type, CPU threads, Workers, No timestamps, VAD filter | faster-whisper |
 | Batch size, Quantization (Lightning) | Lightning |
 
+Typed values are checked on save (for example Beam size 1-20, Temperature 0.0-1.0 with a dot as decimal separator); an invalid value blocks saving with a message. **Reset to defaults** clears all advanced options; backend and model stay.
+
 ### Fast Decoding
 
 Enable for speed (slight robustness trade-off):
