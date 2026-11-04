@@ -13,8 +13,8 @@ import threading
 import time
 from typing import Callable, Iterator, TypeAlias
 
-from PySide6.QtCore import QEvent, Qt, Signal
-from PySide6.QtGui import QDoubleValidator, QFont, QIntValidator, QTextCursor
+from PySide6.QtCore import QEvent, QRegularExpression, Qt, Signal
+from PySide6.QtGui import QFont, QIntValidator, QRegularExpressionValidator, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -1819,9 +1819,12 @@ class SettingsWindow(QDialog):
         self._add_advanced_option_row(card_layout, "beam_size", "Beam Size:", self._beam_size_field, "1-20")
 
         self._temperature_field = QLineEdit()
-        self._temperature_field.setPlaceholderText("Leave empty = default")
+        self._temperature_field.setPlaceholderText("e.g. 0.0 or 0.0,0.2,0.4")
         self._temperature_field.textChanged.connect(self._refresh_footer_settings_hint)
-        self._temperature_field.setValidator(QDoubleValidator(0.0, 1.0, 2))
+        # One value or a fallback list; the provider reads a dot as decimal separator.
+        self._temperature_field.setValidator(
+            QRegularExpressionValidator(QRegularExpression(r"[0-9.,\s]*"))
+        )
         self._add_advanced_option_row(card_layout, "temperature", "Temperature:", self._temperature_field, "0.0-1.0")
 
         self._best_of_field = QLineEdit()
@@ -2608,16 +2611,16 @@ class SettingsWindow(QDialog):
             getattr(self, "_advanced_local_settings_card", None),
             expanded and state.show_general,
         )
+        # Cards and rows follow the backend that runs, so auto shows the faster-whisper card.
+        backend = effective_local_backend(self._current_local_backend(), platform="win32")
         _set_widget_visible_if_changed(
             getattr(self, "_advanced_faster_settings_card", None),
-            expanded and state.show_faster,
+            expanded and advanced_option_applies("compute_type", backend, platform="win32"),
         )
         _set_widget_visible_if_changed(
             getattr(self, "_advanced_lightning_settings_card", None),
-            expanded and state.show_lightning,
+            expanded and advanced_option_applies("lightning_quant", backend, platform="win32"),
         )
-        # Inside the general card, show only options the running backend uses.
-        backend = effective_local_backend(self._current_local_backend(), platform="win32")
         for option, container in getattr(self, "_advanced_option_rows", {}).items():
             _set_widget_visible_if_changed(
                 container, advanced_option_applies(option, backend, platform="win32")
@@ -4583,9 +4586,9 @@ class SettingsWindow(QDialog):
         fp16 = (
             env_get(LOCAL_FP16_ENV_KEY) or env_get(LEGACY_LOCAL_FP16_ENV_KEY) or "default"
         )
-        local_fast = (env_get("PULSESCRIBE_LOCAL_FAST") or "default").strip().lower()
-        if local_fast not in BOOL_OVERRIDE_OPTIONS:
-            local_fast = "default"
+        # Same aliases as the provider (1/0, yes/no, on/off), so a save keeps the override.
+        local_fast_value = parse_bool(env_get("PULSESCRIBE_LOCAL_FAST"))
+        local_fast = "default" if local_fast_value is None else str(local_fast_value).lower()
         batch_size = env_get("PULSESCRIBE_LIGHTNING_BATCH_SIZE") or "12"
         quant = env_get("PULSESCRIBE_LIGHTNING_QUANT") or "none"
         refine = env_get("PULSESCRIBE_REFINE")
@@ -5175,6 +5178,8 @@ class SettingsWindow(QDialog):
             self._on_mode_changed("local")
         elif ui_changed:
             self._refresh_setup_overview()
+            # Signals were blocked: a preset may have switched the backend.
+            self._refresh_local_advanced_ui("local")
 
         if ui_changed or mode_changed:
             self._refresh_footer_settings_hint()

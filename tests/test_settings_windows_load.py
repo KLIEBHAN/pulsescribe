@@ -1593,6 +1593,27 @@ def test_advanced_option_rows_follow_the_backend(monkeypatch):
     assert window._advanced_option_rows["fp16"].visible is True
 
 
+@pytest.mark.parametrize("raw,expected", [("off", "false"), ("0", "false"), ("Yes", "true"), ("junk", "default")])
+def test_local_fast_loads_provider_aliases(monkeypatch, raw, expected):
+    monkeypatch.setattr(settings_mod, "read_env_file", lambda: {"PULSESCRIBE_LOCAL_FAST": raw})
+    window = _make_window()
+    window._local_fast_combo = _FakeCombo(settings_mod.BOOL_OVERRIDE_OPTIONS)
+    window._load_settings()
+    assert window._local_fast_combo.currentText() == expected
+
+
+def test_auto_backend_shows_the_faster_whisper_card(monkeypatch):
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._advanced_faster_settings_card = _FakeVisibleWidget()
+    window._advanced_lightning_settings_card = _FakeVisibleWidget()
+    window._current_local_backend = lambda: "auto"
+    monkeypatch.setattr(settings_mod, "effective_local_backend", lambda selected, platform=None: "faster")
+
+    window._refresh_local_advanced_ui("local")
+    assert window._advanced_faster_settings_card.visible is True
+    assert window._advanced_lightning_settings_card.visible is False
+
+
 def test_local_fast_round_trips_and_counts_as_change(monkeypatch):
     monkeypatch.setattr(settings_mod, "read_env_file", lambda: {"PULSESCRIBE_LOCAL_FAST": "TRUE"})
     window = _make_window()
