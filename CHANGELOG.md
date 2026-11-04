@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.17.1] - 2026-11-04
+
+### Changed
+
+- **More sensitive voice detection** – speech about a third quieter than before
+  is recognized instead of treated as silence on macOS and Windows.
+- **Livelier overlay wave** – the overlay reacts more strongly to quiet speech.
+  The maximum wave height is unchanged.
+
 ## [1.17.0] - 2026-11-04
 
 ### Added
