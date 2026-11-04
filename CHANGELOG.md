@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Reset to defaults** for the advanced backend options on macOS and Windows.
+- **Unload when idle** (macOS) – optionally frees the local model after 5, 15,
+  30 or 60 minutes without dictation (`PULSESCRIBE_LOCAL_IDLE_UNLOAD_MINUTES`).
+  The next recording starts loading the model right away, so it loads while you
+  speak (turbo 8-bit on an M-series Mac: about 0.1 s from cache). Default: never.
 
 ## [1.15.0] - 2026-11-04
 

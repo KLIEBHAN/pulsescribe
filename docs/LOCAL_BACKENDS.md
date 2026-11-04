@@ -162,6 +162,7 @@ Settings → Providers → Advanced backend options only show the options the ac
 | Option | Applies to |
 |--------|------------|
 | Preset, Warmup | all local backends |
+| Unload when idle | all local backends (macOS app) |
 | Fast, Best of, Temperature | openai-whisper, faster-whisper, MLX (Lightning only reads the language) |
 | Beam size | openai-whisper, faster-whisper (MLX and Lightning have no beam search) |
 | FP16 | openai-whisper, MLX (faster-whisper uses the compute type) |

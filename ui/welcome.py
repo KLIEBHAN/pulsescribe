@@ -150,6 +150,8 @@ MLX_QUANT_TOOLTIP = (
 )
 BOOL_OVERRIDE_OPTIONS = ["default", "true", "false"]
 WARMUP_OPTIONS = ["auto", "true", "false"]
+# Titles for PULSESCRIBE_LOCAL_IDLE_UNLOAD_MINUTES ("never" removes the key).
+IDLE_UNLOAD_OPTIONS = ["never", "5 min", "15 min", "30 min", "60 min"]
 LOCAL_FP16_ENV_KEY = "PULSESCRIBE_FP16"
 LEGACY_LOCAL_FP16_ENV_KEY = "PULSESCRIBE_LOCAL_FP16"
 API_KEY_PROVIDERS = [
@@ -504,6 +506,7 @@ class WelcomeController:
         self._local_preset_changed_handler = None
         self._device_popup = None
         self._warmup_popup = None
+        self._idle_unload_popup = None
         self._local_fast_popup = None
         self._fp16_popup = None
         self._beam_size_field = None
@@ -2202,6 +2205,17 @@ class WelcomeController:
         self._build_lightning_header(base_x, top - 18, control_width, 110, view)
         return top - 24
 
+    def _build_idle_unload_row(self, base_x, y, control_x, control_width, view) -> None:
+        raw = (self._get_cached_env_setting("PULSESCRIBE_LOCAL_IDLE_UNLOAD_MINUTES") or "").strip()
+        title = f"{raw} min" if f"{raw} min" in IDLE_UNLOAD_OPTIONS else "never"
+        self._build_popup_setting_row(
+            base_x, y, control_x, control_width, view,
+            label_text="Unload when idle:",
+            options=IDLE_UNLOAD_OPTIONS,
+            selected_title=title,
+            popup_attr="_idle_unload_popup",
+        )
+
     def _advanced_option_rows(self) -> list:
         """(option, row builder) for every advanced option, in display order."""
 
@@ -2251,6 +2265,7 @@ class WelcomeController:
             ("preset", with_tooltip("preset", self._build_preset_setting_row, "_local_preset_popup")),
             ("device", popup("device", "Device:", DEVICE_OPTIONS, "PULSESCRIBE_DEVICE", "_device_popup")),
             ("warmup", popup("warmup", "Warmup:", WARMUP_OPTIONS, "PULSESCRIBE_LOCAL_WARMUP", "_warmup_popup")),
+            ("idle_unload", with_tooltip("idle_unload", self._build_idle_unload_row, "_idle_unload_popup")),
             ("fast", boolean("fast", "Fast:", "PULSESCRIBE_LOCAL_FAST", "_local_fast_popup")),
             ("fp16", boolean("fp16", "FP16:", LOCAL_FP16_ENV_KEY, "_fp16_popup", LEGACY_LOCAL_FP16_ENV_KEY)),
             ("beam_size", text("beam_size", "Beam size:", "default", "PULSESCRIBE_LOCAL_BEAM_SIZE", "_beam_size_field")),
@@ -5759,6 +5774,7 @@ class WelcomeController:
         """Put every advanced option back to its default (UI only; Save applies it)."""
         self._select_popup_title(getattr(self, "_local_preset_popup", None), "(none)")
         self._apply_local_preset_values(dict(LOCAL_PRESET_BASE))
+        self._select_popup_title(getattr(self, "_idle_unload_popup", None), "never")
         self._update_all_visibility()
         self._refresh_footer_settings_hint()
 
@@ -6076,6 +6092,14 @@ class WelcomeController:
                 self._warmup_popup,
                 remove_when={"auto"},
                 lower=True,
+            )
+
+        idle_unload_popup = getattr(self, "_idle_unload_popup", None)
+        if idle_unload_popup is not None:
+            builder.set_optional(
+                "PULSESCRIBE_LOCAL_IDLE_UNLOAD_MINUTES",
+                str(idle_unload_popup.titleOfSelectedItem() or "never").split()[0],
+                remove_when={"never"},
             )
 
         self._add_popup_optional_env_update(
