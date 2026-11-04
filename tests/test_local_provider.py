@@ -13,6 +13,15 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 
+@pytest.fixture(autouse=True)
+def _mlx_quant_off_by_default(monkeypatch):
+    """Existing tests mock mlx-whisper; quantization tests below opt in explicitly."""
+    import providers.local as local_mod
+
+    monkeypatch.setenv("PULSESCRIBE_MLX_QUANT", "none")
+    monkeypatch.setitem(local_mod._mlx_quantized_model, "key", None)
+
+
 class TestImportHelpers:
     """Tests für Import-Helper Funktionen."""
 
@@ -1331,3 +1340,102 @@ class TestLightningFallback:
         empty_cuda_cache.assert_called_once_with()
         empty_mps_cache.assert_called_once_with()
         clear_mlx_cache.assert_called_once_with()
+
+
+class TestMLXQuantization:
+    """8-bit MLX default: in-memory quantization or a pre-quantized repo."""
+
+    @pytest.fixture
+    def holder(self, monkeypatch):
+        import providers.local as local_mod
+
+        holder = SimpleNamespace(model=None, model_path=None)
+        loads: list[tuple[str, int, bool]] = []
+
+        def fake_load(repo, bits, *, fp32):
+            loads.append((repo, bits, fp32))
+            return object()
+
+        monkeypatch.setattr(local_mod, "_mlx_model_holder", lambda import_module=True: holder)
+        monkeypatch.setattr(local_mod, "_load_quantized_mlx_model", fake_load)
+        holder.loads = loads
+        return holder
+
+    @pytest.mark.parametrize(
+        ("raw", "bits"),
+        [(None, 8), ("8bit", 8), (" 4BIT ", 4), ("none", None), ("bogus", 8)],
+    )
+    def test_quant_setting(self, monkeypatch, raw, bits):
+        import providers.local as local_mod
+
+        if raw is None:
+            monkeypatch.delenv("PULSESCRIBE_MLX_QUANT", raising=False)
+        else:
+            monkeypatch.setenv("PULSESCRIBE_MLX_QUANT", raw)
+        assert local_mod._mlx_quant_bits() == bits
+
+    def test_turbo_is_quantized_once_and_reused(self, monkeypatch, holder):
+        monkeypatch.delenv("PULSESCRIBE_MLX_QUANT", raising=False)
+        from providers.local import LocalProvider
+
+        provider = LocalProvider()
+        assert provider._prepare_mlx_model("turbo") == "mlx-community/whisper-large-v3-turbo"
+        assert provider._prepare_mlx_model("turbo") == "mlx-community/whisper-large-v3-turbo"
+        assert holder.loads == [("mlx-community/whisper-large-v3-turbo", 8, False)]
+        assert holder.model_path == "mlx-community/whisper-large-v3-turbo"
+
+    def test_large_uses_the_prequantized_8bit_repo(self, monkeypatch, holder):
+        monkeypatch.setenv("PULSESCRIBE_MLX_QUANT", "8bit")
+        from providers.local import LocalProvider
+
+        repo = LocalProvider()._prepare_mlx_model("large")
+        assert repo == "mlx-community/whisper-large-v3-mlx-8bit"
+        assert holder.loads == [(repo, 8, False)]
+
+    def test_switching_to_none_releases_the_quantized_model(self, monkeypatch, holder):
+        from providers.local import LocalProvider
+
+        provider = LocalProvider()
+        monkeypatch.setenv("PULSESCRIBE_MLX_QUANT", "4bit")
+        provider._prepare_mlx_model("turbo")
+        assert holder.model is not None
+        monkeypatch.setenv("PULSESCRIBE_MLX_QUANT", "none")
+        assert provider._prepare_mlx_model("turbo") == "mlx-community/whisper-large-v3-turbo"
+        assert holder.model is None and holder.model_path is None
+
+    def test_fp16_off_loads_full_precision_before_quantizing(self, monkeypatch, holder):
+        monkeypatch.setenv("PULSESCRIBE_MLX_QUANT", "8bit")
+        monkeypatch.setenv("PULSESCRIBE_FP16", "false")
+        from providers.local import LocalProvider
+
+        provider = LocalProvider()
+        provider._ensure_runtime_config()
+        provider._prepare_mlx_model("small")
+        assert holder.loads == [("mlx-community/whisper-small-mlx", 8, True)]
+
+    def test_clear_model_cache_releases_mlx_holder(self, monkeypatch, holder):
+        monkeypatch.setenv("PULSESCRIBE_MLX_QUANT", "8bit")
+        from providers.local import LocalProvider
+
+        # torch.mps.empty_cache() crashes on GPU-less CI runners; not under test here.
+        monkeypatch.setattr(LocalProvider, "_release_backend_allocator_caches", staticmethod(lambda: None))
+        provider = LocalProvider()
+        provider._prepare_mlx_model("turbo")
+        provider.clear_model_cache()
+        assert holder.model is None
+        provider._prepare_mlx_model("turbo")
+        assert len(holder.loads) == 2
+
+    def test_transcribe_uses_the_prepared_repo(self, monkeypatch, holder):
+        monkeypatch.setenv("PULSESCRIBE_MLX_QUANT", "8bit")
+        mock_mlx = MagicMock()
+        mock_mlx.transcribe.return_value = {"text": "ok"}
+        with patch("providers.local._import_mlx_whisper", return_value=mock_mlx):
+            from providers.local import LocalProvider
+
+            provider = LocalProvider()
+            provider._ensure_runtime_config()
+            provider._transcribe_mlx(np.zeros(1600, dtype=np.float32), "large", {"language": "de"})
+        assert mock_mlx.transcribe.call_args.kwargs["path_or_hf_repo"] == (
+            "mlx-community/whisper-large-v3-mlx-8bit"
+        )

@@ -12,9 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Smaller macOS app** – the app no longer bundles PyTorch and openai-whisper,
   which no included backend needs. MLX and Lightning also skip the torch device
   probe at startup and report their device as Metal.
+- **MLX models use 8-bit weights by default** – in our German test as
+  accurate as full precision, about 10 % faster and roughly half the memory
+  (turbo 0.8 GB instead of 1.5 GB). `large` downloads a pre-quantized 1.6 GB
+  model instead of 2.9 GB. Choose 4bit or none under Settings → Providers →
+  Quantization (`PULSESCRIBE_MLX_QUANT`).
 
 ### Fixed
 
+- **Releasing local memory on macOS** – freeing the local model now also
+  releases the MLX model, which stayed loaded before.
 - **Local backend "auto" on Apple Silicon** – now uses MLX. Before, it picked
   Lightning, which has no turbo model and silently loaded the larger, slower
   large-v3 instead.
