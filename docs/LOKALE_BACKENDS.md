@@ -169,6 +169,8 @@ Einstellungen → Providers → Advanced backend options zeigen nur die Optionen
 | Compute type, CPU threads, Workers, No timestamps, VAD filter | faster-whisper |
 | Batch size, Quantization (Lightning) | Lightning |
 
+Eingetippte Werte werden beim Speichern geprüft (etwa Beam size 1–20, Temperature 0.0–1.0 mit Punkt als Dezimaltrennzeichen); ein ungültiger Wert verhindert das Speichern mit Hinweis. **Reset to defaults** setzt alle erweiterten Optionen zurück; Backend und Modell bleiben.
+
 ### Schnelles Decoding
 
 Für Geschwindigkeit aktivieren (leichter Robustheitsverlust):

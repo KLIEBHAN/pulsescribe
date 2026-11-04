@@ -127,3 +127,28 @@ def test_effective_local_backend_resolves_auto_like_the_provider(monkeypatch) ->
     assert lb.effective_local_backend("lightning", platform="darwin") == "lightning"
     installed.clear()
     assert lb.effective_local_backend("auto", platform="darwin") == "whisper"
+
+
+def test_advanced_value_error_accepts_defaults_and_rejects_out_of_range() -> None:
+    from utils.local_backend import advanced_value_error, first_advanced_value_error
+
+    assert advanced_value_error("beam_size", "") is None
+    assert advanced_value_error("beam_size", " 5 ") is None
+    assert "1 to 20" in advanced_value_error("beam_size", "0")
+    assert "1 to 10" in advanced_value_error("best_of", "abc")
+    assert advanced_value_error("cpu_threads", "0") is None
+    assert advanced_value_error("temperature", "0.0,0.2, 0.4") is None
+    assert "decimal separator" in advanced_value_error("temperature", "0,5")  # German decimal comma
+    assert "decimal separator" in advanced_value_error("temperature", "warm")
+    # Hidden options never block saving: MLX has no beam search.
+    assert first_advanced_value_error({"beam_size": "99"}, "mlx", platform="darwin") is None
+    assert "Beam size" in first_advanced_value_error({"beam_size": "99"}, "faster", platform="win32")
+
+
+def test_cpu_threads_bound_follows_detected_cores(monkeypatch) -> None:
+    import utils.local_backend as lb
+
+    monkeypatch.setattr(lb.os, "cpu_count", lambda: 64)
+    assert lb.advanced_int_range("cpu_threads") == (0, 64)
+    assert lb.advanced_value_error("cpu_threads", "64") is None
+    assert lb.advanced_value_error("cpu_threads", "65") is not None

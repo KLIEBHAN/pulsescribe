@@ -14,6 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   size or Device for MLX, no FP16 for faster-whisper), without gaps between
   rows. Every option has a tooltip with what it does and its default. Windows
   gains the Fast option; the macOS Device list drops CUDA.
+- **Advanced values are checked on save** – out-of-range or malformed numbers
+  (for example Beam size 50, or Temperature `0,5` with a German decimal comma,
+  which was read as the list 0 and 5) block saving with a message instead of
+  being dropped or misread. Windows now accepts Temperature fallback lists.
+
+### Added
+
+- **Reset to defaults** for the advanced backend options on macOS and Windows.
 
 ## [1.15.0] - 2026-11-04
 

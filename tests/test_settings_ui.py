@@ -603,6 +603,41 @@ class TestWelcomeTranscriptionPage:
         assert [ctrl._device_popup.itemTitleAtIndex_(i)
                 for i in range(ctrl._device_popup.numberOfItems())] == ["auto", "mps", "cpu"]
 
+    def test_invalid_advanced_value_blocks_saving_and_reset_restores_defaults(self, monkeypatch):
+        appkit = pytest.importorskip("AppKit")
+        import ui.welcome as welcome_mod
+
+        appkit.NSApplication.sharedApplication()
+        monkeypatch.setattr(welcome_mod, "read_env_file", lambda: {})
+        monkeypatch.setattr(welcome_mod, "effective_local_backend",
+                            lambda selected: "faster" if selected in (None, "auto") else selected)
+        monkeypatch.setattr(WelcomeController, "_build_window", lambda self: None)
+        ctrl = WelcomeController("f19", {"mode": "local"})
+        ctrl._env_settings_cache = {"PULSESCRIBE_MODE": "local"}
+        page = appkit.NSView.alloc().initWithFrame_(appkit.NSMakeRect(0, 0, 610, 500))
+        ctrl._build_transcription_tab(page, 500)
+        statuses = []
+        monkeypatch.setattr(ctrl, "_set_footer_status", lambda text, color="": statuses.append((text, color)))
+        monkeypatch.setattr(ctrl, "_select_tab", lambda label: None)
+        applied = []
+        monkeypatch.setattr(ctrl, "_apply_env_updates", applied.append)
+
+        ctrl._beam_size_field.setStringValue_("50")
+        ctrl._temperature_field.setStringValue_("0.2")
+        ctrl._local_fast_popup.selectItemWithTitle_("false")
+        assert ctrl._save_all_settings() is False
+        assert applied == [] and "Beam size" in statuses[-1][0] and statuses[-1][1] == "error"
+        assert ctrl._advanced_expanded is True  # the field is visible to fix
+
+        ctrl._local_backend_popup.selectItemWithTitle_("mlx")  # beam size does not apply to MLX
+        assert ctrl._advanced_value_error() is None
+
+        ctrl._reset_advanced_options()
+        assert ctrl._beam_size_field.stringValue() == ""
+        assert ctrl._temperature_field.stringValue() == ""
+        assert ctrl._local_fast_popup.titleOfSelectedItem() == "default"
+        assert ctrl._local_backend_popup.titleOfSelectedItem() == "mlx"  # backend stays
+
     def test_own_server_model_picker_lists_server_models_and_keeps_typed_value(
         self, monkeypatch
     ):

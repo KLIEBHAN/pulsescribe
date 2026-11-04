@@ -56,6 +56,7 @@ from utils.local_backend import (
     advanced_option_applies,
     available_local_backend_options,
     effective_local_backend,
+    first_advanced_value_error,
     get_local_advanced_ui_state,
     normalize_local_backend,
 )
@@ -2449,6 +2450,25 @@ class WelcomeController:
         desc.setFont_(NSFont.systemFontOfSize_weight_(11, NSFontWeightMedium))
         desc.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.6))
         parent_view.addSubview_(desc)
+
+        from AppKit import NSBezelStyleRounded, NSButton, NSControlSizeSmall  # type: ignore[import-not-found]
+
+        full_width = CONTENT_WIDTH - 2 * WELCOME_PADDING - 2 * CARD_PADDING
+        reset = NSButton.alloc().initWithFrame_(
+            NSMakeRect(base_x + full_width - 120, card_y + card_height - 22, 120, 22)
+        )
+        reset.setTitle_("Reset to defaults")
+        reset.setBezelStyle_(NSBezelStyleRounded)
+        reset.setControlSize_(NSControlSizeSmall)
+        reset.setFont_(NSFont.systemFontOfSize_(11))
+        self._bind_control_simple_handler(
+            reset, "_reset_advanced_options", "_advanced_reset_handler"
+        )
+        _set_tooltip_if_supported(
+            reset, "Set every option below back to its default. Takes effect when you save."
+        )
+        parent_view.addSubview_(reset)
+        self._advanced_reset_button = reset
 
         # Full content width, two lines: the guidance texts are long.
         status = NSTextField.alloc().initWithFrame_(
@@ -5735,6 +5755,32 @@ class WelcomeController:
             values.get("lightning_quant", "none"),
         )
 
+    def _reset_advanced_options(self) -> None:
+        """Put every advanced option back to its default (UI only; Save applies it)."""
+        self._select_popup_title(getattr(self, "_local_preset_popup", None), "(none)")
+        self._apply_local_preset_values(dict(LOCAL_PRESET_BASE))
+        self._update_all_visibility()
+        self._refresh_footer_settings_hint()
+
+    def _advanced_value_error(self) -> str | None:
+        """Message for the first invalid typed advanced value the backend uses, else None."""
+        mode_popup = getattr(self, "_mode_popup", None)
+        if mode_popup is None or mode_popup.titleOfSelectedItem() != "local":
+            return None
+        fields = {
+            "beam_size": "_beam_size_field",
+            "best_of": "_best_of_field",
+            "temperature": "_temperature_field",
+            "cpu_threads": "_cpu_threads_field",
+            "num_workers": "_num_workers_field",
+        }
+        values = {
+            option: str(field.stringValue() or "")
+            for option, attr in fields.items()
+            if (field := getattr(self, attr, None)) is not None
+        }
+        return first_advanced_value_error(values, self._effective_local_backend())
+
     def _apply_local_preset(self, preset: str) -> None:
         """Setzt empfohlene Settings (UI-only; Speichern via 'Save & Apply')."""
         self._ensure_tab_built("Transcription")
@@ -6194,6 +6240,15 @@ class WelcomeController:
         import logging
 
         log = logging.getLogger(__name__)
+
+        advanced_error = self._advanced_value_error()
+        if advanced_error:
+            # Nothing is saved; show the section so the field can be fixed.
+            self._select_tab("Transcription")
+            if not getattr(self, "_advanced_expanded", False):
+                self._toggle_advanced_options()
+            self._set_footer_status(advanced_error, "error")
+            return False
 
         previous_dock_state = getattr(self, "_saved_dock_icon_enabled", None)
         env_updates = self._build_env_updates_from_controls(log)

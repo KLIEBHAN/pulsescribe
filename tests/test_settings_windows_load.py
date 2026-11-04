@@ -1631,3 +1631,21 @@ def test_local_fast_round_trips_and_counts_as_change(monkeypatch):
     builder = settings_mod.SettingsEnvUpdateBuilder(None)
     window._add_local_decode_env_updates(builder)
     assert builder.build()["PULSESCRIBE_LOCAL_FAST"] == "false"
+
+
+def test_invalid_advanced_value_blocks_save(monkeypatch):
+    window = SettingsWindow.__new__(SettingsWindow)
+    window._mode_combo = _FakeCombo(["deepgram", "local"], current="local")
+    window._current_local_backend = lambda: "faster"
+    window._beam_size_field = _FakeField("0")
+    window._temperature_field = _FakeField("0,5")
+    window._validate_hotkeys_for_save = lambda: ("f19", "")
+    statuses = []
+    window._set_footer_status = lambda text, color="": statuses.append(text)
+    monkeypatch.setattr(settings_mod, "update_env_settings", lambda updates: pytest.fail("saved"))
+
+    assert window._save_settings() is False
+    assert "Beam size" in statuses[-1]
+    window._beam_size_field = _FakeField("")
+    assert window._save_settings() is False
+    assert "decimal separator" in statuses[-1]

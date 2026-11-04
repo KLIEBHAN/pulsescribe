@@ -116,6 +116,7 @@ from utils.local_backend import (
     advanced_option_applies,
     available_local_backend_options,
     effective_local_backend,
+    first_advanced_value_error,
     get_cpu_threads_limit,
     get_local_advanced_ui_state,
     normalize_local_backend,
@@ -1801,6 +1802,11 @@ class SettingsWindow(QDialog):
         self._advanced_guidance_label = create_status_label("", "text_secondary")
         self._advanced_guidance_label.setFont(ui_font("caption"))
         card_layout.addWidget(self._advanced_guidance_label)
+
+        reset_button = QPushButton("Reset to defaults")
+        reset_button.setToolTip("Set every advanced option back to its default. Takes effect when you save.")
+        reset_button.clicked.connect(self._reset_advanced_options)
+        card_layout.addWidget(reset_button, 0, Qt.AlignmentFlag.AlignLeft)
 
         self._device_combo = QComboBox()
         _add_combo_items(self._device_combo, DEVICE_OPTIONS)
@@ -4939,6 +4945,10 @@ class SettingsWindow(QDialog):
                 )
                 return False
             toggle_hotkey, hold_hotkey = validated_hotkeys
+            advanced_error = self._advanced_value_error()
+            if advanced_error:
+                self._set_footer_status(advanced_error, "warning")
+                return False
             env_updates = self._build_env_updates_from_controls(
                 toggle_hotkey=toggle_hotkey,
                 hold_hotkey=hold_hotkey,
@@ -5042,6 +5052,51 @@ class SettingsWindow(QDialog):
             return
         values: _WindowsLocalPreset = dict(WINDOWS_LOCAL_PRESET_BASE)
         values.update(preset_values)
+        self._apply_local_values(values)
+
+        # Feedback
+        _set_status_label_if_changed(
+            getattr(self, "_preset_status", None),
+            f"✓ '{preset}' preset applied — {build_save_apply_change_hint(plural=True)}",
+            "success",
+        )
+
+    def _advanced_value_error(self) -> str | None:
+        """Message for the first invalid typed advanced value the backend uses, else None."""
+        mode_combo = getattr(self, "_mode_combo", None)
+        if mode_combo is None or mode_combo.currentText() != "local":
+            return None
+        fields = {
+            "beam_size": "_beam_size_field",
+            "best_of": "_best_of_field",
+            "temperature": "_temperature_field",
+            "cpu_threads": "_cpu_threads_field",
+            "num_workers": "_num_workers_field",
+        }
+        values = {
+            option: field.text()
+            for option, attr in fields.items()
+            if (field := getattr(self, attr, None)) is not None
+        }
+        backend = effective_local_backend(self._current_local_backend(), platform="win32")
+        return first_advanced_value_error(values, backend, platform="win32")
+
+    def _reset_advanced_options(self) -> None:
+        """Put every advanced option back to its default (UI only; Save applies it)."""
+        defaults = {
+            key: value
+            for key, value in WINDOWS_LOCAL_PRESET_BASE.items()
+            if key not in ("mode", "local_backend", "local_model")
+        }
+        defaults["local_fast"] = "default"
+        self._apply_local_values(defaults)
+        self._set_footer_status(
+            f"Advanced options reset — {build_save_apply_change_hint(plural=True)}",
+            "success",
+        )
+
+    def _apply_local_values(self, values) -> None:
+        """Set local controls from preset-style values; mode/backend/model only when given."""
         ui_changed = False
         mode_changed = False
 
@@ -5064,24 +5119,25 @@ class SettingsWindow(QDialog):
                 getattr(self, "_lightning_batch_slider", None),
                 getattr(self, "_lightning_quant_combo", None),
             ):
-                mode_changed = _set_combo_text_if_changed(
-                    self._mode_combo, str(values.get("mode", "local"))
-                )
+                if "mode" in values:
+                    mode_changed = _set_combo_text_if_changed(
+                        self._mode_combo, str(values["mode"])
+                    )
                 ui_changed = mode_changed or ui_changed
-                ui_changed = (
-                    _set_combo_text_if_changed(
-                        self._local_backend_combo,
-                        str(values.get("local_backend", "faster")),
+                if "local_backend" in values:
+                    ui_changed = (
+                        _set_combo_text_if_changed(
+                            self._local_backend_combo, str(values["local_backend"])
+                        )
+                        or ui_changed
                     )
-                    or ui_changed
-                )
-                ui_changed = (
-                    _set_combo_text_if_changed(
-                        self._local_model_combo,
-                        str(values.get("local_model", "turbo")),
+                if "local_model" in values:
+                    ui_changed = (
+                        _set_combo_text_if_changed(
+                            self._local_model_combo, str(values["local_model"])
+                        )
+                        or ui_changed
                     )
-                    or ui_changed
-                )
                 ui_changed = (
                     _set_combo_text_if_changed(
                         getattr(self, "_device_combo", None),
@@ -5183,13 +5239,6 @@ class SettingsWindow(QDialog):
 
         if ui_changed or mode_changed:
             self._refresh_footer_settings_hint()
-
-        # Feedback
-        _set_status_label_if_changed(
-            getattr(self, "_preset_status", None),
-            f"✓ '{preset}' preset applied — {build_save_apply_change_hint(plural=True)}",
-            "success",
-        )
 
     def _write_reload_signal(self) -> bool:
         """Schreibt Signal-Datei für Daemon-Reload.

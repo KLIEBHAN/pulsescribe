@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import importlib.util
 import sys
 from typing import NamedTuple
@@ -230,6 +232,62 @@ def get_cpu_threads_limit(cpu_count: int | None = None) -> int:
     if detected is None or detected <= 0:
         detected = DEFAULT_CPU_THREADS_LIMIT
     return max(DEFAULT_CPU_THREADS_LIMIT, int(detected))
+
+
+
+_ADVANCED_INT_LABELS = {
+    "beam_size": "Beam size",
+    "best_of": "Best of",
+    "cpu_threads": "CPU threads",
+    "num_workers": "Workers",
+}
+
+
+def advanced_int_range(option: str, cpu_count: int | None = None) -> tuple[int, int]:
+    """Accepted range of an integer advanced option (UI validators use the same bounds)."""
+    if option == "cpu_threads":
+        return 0, get_cpu_threads_limit(os.cpu_count() if cpu_count is None else cpu_count)
+    return {"beam_size": (1, 20), "best_of": (1, 10), "num_workers": (1, 8)}[option]
+
+
+def advanced_value_error(option: str, raw: str, cpu_count: int | None = None) -> str | None:
+    """Return a user-facing message when a typed advanced value is invalid, else None.
+
+    Empty means "default" and is always valid. Temperature takes one value or a
+    comma-separated fallback list, each 0.0-1.0 with a dot as decimal separator.
+    """
+    value = (raw or "").strip()
+    if not value:
+        return None
+    if option == "temperature":
+        try:
+            temperatures = [float(part) for part in value.split(",")]
+        except ValueError:
+            return "Temperature: use numbers like 0.0 or 0.0,0.2,0.4 (dot as decimal separator)."
+        if not all(0.0 <= t <= 1.0 for t in temperatures):
+            return "Temperature: each value must be between 0.0 and 1.0 (dot as decimal separator)."
+        return None
+    low, high = advanced_int_range(option, cpu_count)
+    label = _ADVANCED_INT_LABELS[option]
+    try:
+        number = int(value)
+    except ValueError:
+        return f"{label}: enter a whole number from {low} to {high}, or leave it empty."
+    if not low <= number <= high:
+        return f"{label}: enter a whole number from {low} to {high}, or leave it empty."
+    return None
+
+
+def first_advanced_value_error(
+    values: dict[str, str], backend: str, *, platform: str | None = None
+) -> str | None:
+    """First invalid typed value among options the backend uses; hidden ones never block saving."""
+    for option, raw in values.items():
+        if advanced_option_applies(option, backend, platform=platform):
+            error = advanced_value_error(option, raw)
+            if error:
+                return error
+    return None
 
 
 __all__ = [
