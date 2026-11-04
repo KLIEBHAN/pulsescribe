@@ -27,20 +27,32 @@ logger = logging.getLogger("pulsescribe.model_download")
 ProgressCallback = Callable[[int, "int | None"], None]
 
 
-def _is_repo_cached(repo_id: str, allow_patterns: Sequence[str] | None) -> bool:
-    """True when the repo can load offline; unknown states count as cached (no download)."""
+def _is_repo_cached(
+    repo_id: str,
+    allow_patterns: Sequence[str] | None,
+    required_files: Sequence[str] = ("config.json",),
+) -> bool:
+    """True when the repo can load offline; unknown states count as cached (no download).
+
+    Older hubs return any existing snapshot folder offline, also after an interrupted
+    download, so each ``required_files`` glob must match a file in it.
+    """
     try:
         from huggingface_hub import snapshot_download
         from huggingface_hub.errors import LocalEntryNotFoundError
     except ImportError:
         return True
     try:
-        snapshot_download(repo_id, allow_patterns=allow_patterns, local_files_only=True)
-        return True
+        folder = Path(snapshot_download(repo_id, allow_patterns=allow_patterns, local_files_only=True))
     except LocalEntryNotFoundError:
         return False
     except Exception:
         return True
+    try:
+        names = [entry.name for entry in folder.iterdir() if entry.exists()]
+    except OSError:
+        return True
+    return all(any(fnmatch.fnmatch(name, pattern) for name in names) for pattern in required_files)
 
 
 def _expected_repo_size(repo_id: str, allow_patterns: Sequence[str] | None) -> int | None:
@@ -74,6 +86,17 @@ class _ProgressCollector:
 
         class _Bar:
             """Minimal tqdm stand-in: counts, never prints."""
+
+            _lock = threading.RLock()
+
+            # tqdm.contrib.concurrent.thread_map (used by older hubs) shares this lock.
+            @classmethod
+            def get_lock(cls):
+                return cls._lock
+
+            @classmethod
+            def set_lock(cls, lock):
+                cls._lock = lock
 
             def __init__(self, iterable=None, *args, total=None, initial=0, unit="it", desc="", **_kwargs):
                 self.iterable = iterable
@@ -155,11 +178,16 @@ def download_with_progress(
     on_progress: ProgressCallback | None,
     *,
     allow_patterns: Sequence[str] | None = None,
+    required_files: Sequence[str] = ("config.json",),
 ) -> None:
-    """Download ``repo_id`` with progress if it is not cached yet; never raises."""
+    """Download ``repo_id`` with progress if it is not cached yet; never raises.
+
+    ``required_files`` are globs that must exist for the cache to count as complete
+    (e.g. the weight file), so an interrupted earlier download is resumed with progress.
+    """
     if on_progress is None or "/" not in repo_id or Path(repo_id).exists():
         return
-    if _is_repo_cached(repo_id, allow_patterns):
+    if _is_repo_cached(repo_id, allow_patterns, required_files):
         return
     try:
         from huggingface_hub import snapshot_download

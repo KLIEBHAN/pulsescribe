@@ -33,7 +33,7 @@ def fake_hub(monkeypatch):
     module = types.ModuleType("huggingface_hub")
     module.snapshot_download = snapshot_download
     monkeypatch.setitem(sys.modules, "huggingface_hub", module)
-    monkeypatch.setattr(md, "_is_repo_cached", lambda repo, patterns: False)
+    monkeypatch.setattr(md, "_is_repo_cached", lambda repo, patterns, required=(): False)
     monkeypatch.setattr(md, "_expected_repo_size", lambda repo, patterns: None)
     module.calls, module.script = calls, script
     return module
@@ -49,7 +49,7 @@ def test_without_callback_or_for_plain_names_nothing_happens(fake_hub, repo, cal
 
 
 def test_cached_repo_is_not_downloaded(fake_hub, monkeypatch):
-    monkeypatch.setattr(md, "_is_repo_cached", lambda repo, patterns: True)
+    monkeypatch.setattr(md, "_is_repo_cached", lambda repo, patterns, required=(): True)
     md.download_with_progress("org/model", lambda d, t: pytest.fail("no progress"))
     assert fake_hub.calls == []
 
@@ -115,3 +115,38 @@ def test_download_and_callback_errors_never_raise(fake_hub):
 
     fake_hub.script["run"] = run
     md.download_with_progress("org/model", lambda d, t: (_ for _ in ()).throw(RuntimeError("UI")))
+
+
+def test_cache_counts_only_with_required_files(monkeypatch, tmp_path):
+    """Older hubs return an interrupted snapshot offline; the weights must be there."""
+    errors = types.ModuleType("huggingface_hub.errors")
+
+    class LocalEntryNotFoundError(Exception):
+        pass
+
+    errors.LocalEntryNotFoundError = LocalEntryNotFoundError
+    hub = types.ModuleType("huggingface_hub")
+    hub.snapshot_download = lambda repo_id, allow_patterns=None, local_files_only=False: str(tmp_path)
+    monkeypatch.setitem(sys.modules, "huggingface_hub", hub)
+    monkeypatch.setitem(sys.modules, "huggingface_hub.errors", errors)
+    (tmp_path / "config.json").write_text("{}")
+
+    assert md._is_repo_cached("org/m", None, ("config.json", "weights.*")) is False
+    (tmp_path / "weights.npz").write_bytes(b"w")
+    assert md._is_repo_cached("org/m", None, ("config.json", "weights.*")) is True
+
+    def missing(*args, **kwargs):
+        raise LocalEntryNotFoundError("not cached")
+
+    hub.snapshot_download = missing
+    assert md._is_repo_cached("org/m", None) is False
+
+
+def test_bar_class_works_with_tqdms_thread_map():
+    """Older hubs drive tqdm_class through tqdm.contrib.concurrent.thread_map."""
+    concurrent = pytest.importorskip("tqdm.contrib.concurrent")
+    reported = []
+    collector = md._ProgressCollector(lambda d, t: reported.append((d, t)), lambda: 400)
+    results = concurrent.thread_map(lambda x: x * 2, [1, 2, 3, 4], tqdm_class=collector.bar_class())
+    assert results == [2, 4, 6, 8]
+    assert reported[-1] == (400, 400)

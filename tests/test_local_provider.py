@@ -1468,7 +1468,11 @@ class TestPreloadDownloadProgress:
             callback = MagicMock()
             provider.download_progress_callback = callback
             provider.preload(model="large")
-        assert watched == [("mlx-community/whisper-large-v3-mlx-8bit", callback, {})]
+        assert watched == [(
+            "mlx-community/whisper-large-v3-mlx-8bit",
+            callback,
+            {"required_files": ("config.json", "weights.*")},
+        )]
 
     def test_faster_preload_watches_faster_whispers_repo_and_files(self, monkeypatch, watched):
         import providers.local as local_mod
@@ -1482,3 +1486,4 @@ class TestPreloadDownloadProgress:
         assert repo == "Systran/faster-whisper-large-v3"
         assert callback is None
         assert kwargs["allow_patterns"] == local_mod.FASTER_WHISPER_DOWNLOAD_PATTERNS
+        assert kwargs["required_files"] == ("config.json", "model.bin")

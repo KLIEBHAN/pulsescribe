@@ -1086,12 +1086,17 @@ class LocalProvider:
                 _faster_repo_id(self._map_faster_model_name(model_name)),
                 self.download_progress_callback,
                 allow_patterns=FASTER_WHISPER_DOWNLOAD_PATTERNS,
+                required_files=("config.json", "model.bin"),
             )
             self._get_faster_model(model_name)
         elif backend == "mlx":
             with self._transcribe_lock:
                 # Same files mlx-whisper's loader fetches (the whole repo).
-                download_with_progress(self._mlx_repo(model_name), self.download_progress_callback)
+                download_with_progress(
+                    self._mlx_repo(model_name),
+                    self.download_progress_callback,
+                    required_files=("config.json", "weights.*"),
+                )
                 import numpy as np
 
                 t0 = time.perf_counter()
