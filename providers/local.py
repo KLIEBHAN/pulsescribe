@@ -15,7 +15,7 @@ import sys
 import threading
 import time
 from concurrent.futures import Future, TimeoutError as FuturesTimeoutError
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any, Callable, Generator, Hashable
 
@@ -1030,11 +1030,12 @@ class LocalProvider:
             except ValueError:
                 logger.warning(f"Ungültiger PULSESCRIBE_LOCAL_TEMPERATURE: {temp_env}")
 
-    def _build_options(self, language: str | None) -> dict:
+    def _build_options(self, language: str | None, *, draft: bool = False) -> dict:
         """Baut Options inkl. Vocabulary und Speed-Overrides.
 
         Rückgabe ist kompatibel zu openai-whisper; für faster-whisper/mlx-whisper wird
-        je nach Backend ein Subset genutzt.
+        je nach Backend ein Subset genutzt. ``draft=True`` decodes once at temperature 0
+        instead of retrying at higher temperatures, which bounds the duration.
         """
         self._ensure_runtime_config()
         backend = self._effective_backend()
@@ -1045,6 +1046,8 @@ class LocalProvider:
         self._apply_backend_specific_options(options, backend=backend)
         self._apply_fast_mode_defaults(options, backend=backend)
         self._apply_decode_overrides(options, backend=backend)
+        if draft:
+            options["temperature"] = 0.0
         return options
 
     def _resolve_model_name(self, model: str | None) -> str:
@@ -1249,10 +1252,17 @@ class LocalProvider:
         result = whisper_model.transcribe(audio_source, **options)
         return result["text"]
 
-    def _transcribe_with_backend(self, audio_source, *, model_name: str, options: dict) -> str:
+    def _transcribe_with_backend(
+        self, audio_source, *, model_name: str, options: dict, quiet: bool = False
+    ) -> str:
         """Run one local transcription through the selected backend with shared timing."""
         backend = self._effective_backend()
-        with timed_operation("Local-Transkription", logger=logger, include_session=False):
+        timing = (
+            nullcontext()
+            if quiet
+            else timed_operation("Local-Transkription", logger=logger, include_session=False)
+        )
+        with timing:
             with self._transcribe_lock:
                 return self._dispatch_backend_transcription(
                     audio_source,
@@ -1266,12 +1276,23 @@ class LocalProvider:
         audio,
         model: str | None = None,
         language: str | None = None,
+        *,
+        draft: bool = False,
+        quiet: bool = False,
     ) -> str:
-        """Transkribiert ein Audio-Array lokal (ohne Dateischreibzugriff)."""
+        """Transkribiert ein Audio-Array lokal (ohne Dateischreibzugriff).
+
+        Both flags serve live previews of unfinished recordings. ``draft=True``
+        makes one decoding attempt, so a pass cannot run for seconds on audio cut
+        mid-word. ``quiet=True`` skips the info log lines of this call.
+        """
         model_name = self._resolve_model_name(model)
-        self._log_transcription_start(model_name, language)
-        options = self._build_options(language)
-        return self._transcribe_with_backend(audio, model_name=model_name, options=options)
+        if not quiet:
+            self._log_transcription_start(model_name, language)
+        options = self._build_options(language, draft=draft)
+        return self._transcribe_with_backend(
+            audio, model_name=model_name, options=options, quiet=quiet
+        )
 
     def _transcribe_faster(self, audio, model_name: str, options: dict) -> str:
         model = self._get_faster_model(model_name)
