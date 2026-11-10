@@ -2669,6 +2669,10 @@ class PulseScribeDaemon:
             provider = self._get_provider("local")
             if not hasattr(provider, "transcribe_audio"):
                 return None
+            # While the model still loads, the backend is resolved later, off the
+            # capture thread: resolving it can import torch and delay the recording.
+            if loaded.is_set() and not uses_mlx():
+                return None
             model_name = self._model_name_for_logging(provider)
             if not live_preview_supports_model(model_name):
                 logger.info(
@@ -2686,10 +2690,6 @@ class PulseScribeDaemon:
                     )
                     return None
                 self._preview_off = None
-            # While the model still loads, the backend is resolved later, off the
-            # capture thread: resolving it can import torch and delay the recording.
-            if loaded.is_set() and not uses_mlx():
-                return None
         except Exception as error:
             # The preview is optional; the recording goes on without it.
             logger.warning(f"Live-Vorschau nicht verfügbar: {error}")

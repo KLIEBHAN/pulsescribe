@@ -220,6 +220,13 @@ def test_slow_model_gets_no_preview_and_the_log_says_why(daemon, monkeypatch, ca
         "Live-Vorschau: aus (Modell large-v3 ist dafür zu langsam, turbo zeigt Live-Text)"
     ]
 
+    # On another backend turbo would show no live text either: no such advice.
+    caplog.clear()
+    daemon._provider_cache["local"].backend = "faster"
+    with caplog.at_level("INFO", logger="pulsescribe"):
+        assert daemon._create_local_preview(queue.Queue()) is None
+    assert caplog.records == []
+
 
 def test_preview_too_slow_from_the_start_pauses_for_this_model(daemon, monkeypatch, caplog):
     monkeypatch.setattr(live_preview, "SLOW_DRAFT_S", 0.0)  # every draft is slow
