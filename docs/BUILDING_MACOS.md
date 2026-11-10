@@ -87,7 +87,8 @@ Local-provider unit tests replace GPU allocator modules with fakes; they must no
 call a hosted runner's real CUDA, MPS, or MLX allocator while testing cleanup.
 The full build fails if a local backend dependency is missing. CI also runs
 `--check-mlx-backend` from the app inside the DMG, checking MLX imports, native
-operations and the 80/128 mel-filter assets without downloading a model.
+operations and the 80/128 mel-filter assets without downloading a model, and that
+sherpa-onnx (the live preview's streaming model) imports with its native library.
 
 PR builds cancel superseded runs and skip macOS when the whole PR changes only
 Windows build files (plus documentation/tests). Shared code, dependencies, unknown

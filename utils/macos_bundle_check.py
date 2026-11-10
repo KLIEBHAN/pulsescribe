@@ -20,3 +20,10 @@ def check_mlx_backend():
             raise RuntimeError(f"Invalid MLX spectrogram with {n_mels} mel filters.")
 
     print(f"MLX backend OK: 80 and 128 mel filters on {mx.default_device()}")
+
+    # The live preview's streaming model needs sherpa-onnx with its native library.
+    import sherpa_onnx
+
+    if not callable(sherpa_onnx.OnlineRecognizer.from_transducer):
+        raise RuntimeError("The bundled sherpa-onnx has no streaming recognizer.")
+    print(f"sherpa-onnx OK: {sherpa_onnx.__version__}")

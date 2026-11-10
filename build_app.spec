@@ -118,7 +118,7 @@ hiddenimports = [
 if not SLIM_BUILD:
     required_modules = (
         "faster_whisper", "ctranslate2", "tokenizers", "mlx_whisper", "mlx",
-        "scipy", "lightning_whisper_mlx",
+        "scipy", "lightning_whisper_mlx", "sherpa_onnx",
     )
     missing_modules = [name for name in required_modules if importlib.util.find_spec(name) is None]
     if missing_modules:
@@ -152,6 +152,13 @@ if not SLIM_BUILD:
     datas += lw_datas
     binaries += lw_binaries
     hiddenimports += lw_hidden
+
+    # sherpa-onnx: streaming model for the live preview (CPU, ONNX Runtime)
+    so_datas, so_binaries, so_hidden = collect_all("sherpa_onnx")
+
+    datas += so_datas
+    binaries += so_binaries
+    hiddenimports += so_hidden
 else:
     print("📦 SLIM BUILD: Lokale Whisper-Backends werden übersprungen")
 

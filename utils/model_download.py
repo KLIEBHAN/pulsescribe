@@ -31,6 +31,7 @@ def _is_repo_cached(
     repo_id: str,
     allow_patterns: Sequence[str] | None,
     required_files: Sequence[str] = ("config.json",),
+    revision: str | None = None,
 ) -> bool:
     """True when the repo can load offline; unknown states count as cached (no download).
 
@@ -43,7 +44,11 @@ def _is_repo_cached(
     except ImportError:
         return True
     try:
-        folder = Path(snapshot_download(repo_id, allow_patterns=allow_patterns, local_files_only=True))
+        folder = Path(
+            snapshot_download(
+                repo_id, revision=revision, allow_patterns=allow_patterns, local_files_only=True
+            )
+        )
     except LocalEntryNotFoundError:
         return False
     except Exception:
@@ -55,12 +60,41 @@ def _is_repo_cached(
     return all(any(fnmatch.fnmatch(name, pattern) for name in names) for pattern in required_files)
 
 
-def _expected_repo_size(repo_id: str, allow_patterns: Sequence[str] | None) -> int | None:
+def cached_snapshot(
+    repo_id: str, *, revision: str | None = None, required_files: Sequence[str]
+) -> Path | None:
+    """Folder of the cached ``repo_id`` snapshot if it holds all ``required_files``, else None.
+
+    Unlike the progress download this never guesses: without huggingface_hub, without
+    the snapshot or with a file missing, the answer is None. Does not touch the network.
+    """
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError:
+        return None
+    try:
+        # Newer hubs reject a snapshot that lacks repo files outside the patterns.
+        folder = Path(
+            snapshot_download(
+                repo_id,
+                revision=revision,
+                allow_patterns=list(required_files),
+                local_files_only=True,
+            )
+        )
+    except Exception:
+        return None
+    return folder if all((folder / name).is_file() for name in required_files) else None
+
+
+def _expected_repo_size(
+    repo_id: str, allow_patterns: Sequence[str] | None, revision: str | None = None
+) -> int | None:
     """Total bytes of the files to download, or None if the Hub cannot tell."""
     try:
         from huggingface_hub import HfApi
 
-        info = HfApi().model_info(repo_id, files_metadata=True)
+        info = HfApi().model_info(repo_id, revision=revision, files_metadata=True)
     except Exception:
         return None
     total = 0
@@ -179,15 +213,17 @@ def download_with_progress(
     *,
     allow_patterns: Sequence[str] | None = None,
     required_files: Sequence[str] = ("config.json",),
+    revision: str | None = None,
 ) -> None:
     """Download ``repo_id`` with progress if it is not cached yet; never raises.
 
     ``required_files`` are globs that must exist for the cache to count as complete
     (e.g. the weight file), so an interrupted earlier download is resumed with progress.
+    ``revision`` pins a commit of the repo.
     """
     if on_progress is None or "/" not in repo_id or Path(repo_id).exists():
         return
-    if _is_repo_cached(repo_id, allow_patterns, required_files):
+    if _is_repo_cached(repo_id, allow_patterns, required_files, revision):
         return
     try:
         from huggingface_hub import snapshot_download
@@ -198,13 +234,18 @@ def download_with_progress(
 
     def expected_total() -> int | None:
         if "value" not in expected:
-            expected["value"] = _expected_repo_size(repo_id, allow_patterns)
+            expected["value"] = _expected_repo_size(repo_id, allow_patterns, revision)
         return expected["value"]
 
     collector = _ProgressCollector(on_progress, expected_total)
     logger.info("Lade Modell %s herunter (%s Bytes)", repo_id, expected_total() or "?")
     try:
-        snapshot_download(repo_id, allow_patterns=allow_patterns, tqdm_class=collector.bar_class())
+        snapshot_download(
+            repo_id,
+            revision=revision,
+            allow_patterns=allow_patterns,
+            tqdm_class=collector.bar_class(),
+        )
     except Exception as error:
         logger.warning("Download von %s mit Fortschritt fehlgeschlagen: %s", repo_id, error)
 
@@ -220,4 +261,4 @@ def format_download_status(model: str, downloaded: int, total: int | None) -> st
     return f"Downloading {model}: {size(downloaded)}"
 
 
-__all__ = ["download_with_progress", "format_download_status"]
+__all__ = ["cached_snapshot", "download_with_progress", "format_download_status"]

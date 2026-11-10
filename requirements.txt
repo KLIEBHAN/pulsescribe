@@ -34,6 +34,9 @@ mlx-whisper; sys_platform == 'darwin'
 # Note: Install with `pip install --no-deps lightning-whisper-mlx` to avoid tiktoken version conflict
 lightning-whisper-mlx; sys_platform == 'darwin'
 
+# macOS only: streaming model for the live preview (optional at runtime)
+sherpa-onnx>=2.0,<3; sys_platform == 'darwin'
+
 # Windows only: App detection, Icons, FileWatcher
 pywin32; sys_platform == 'win32'
 psutil; sys_platform == 'win32'

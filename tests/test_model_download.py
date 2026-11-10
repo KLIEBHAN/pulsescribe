@@ -24,8 +24,10 @@ def fake_hub(monkeypatch):
     calls = []
     script = {"run": None}
 
-    def snapshot_download(repo_id, allow_patterns=None, local_files_only=False, tqdm_class=None):
-        calls.append({"repo": repo_id, "patterns": allow_patterns,
+    def snapshot_download(
+        repo_id, revision=None, allow_patterns=None, local_files_only=False, tqdm_class=None
+    ):
+        calls.append({"repo": repo_id, "patterns": allow_patterns, "revision": revision,
                       "offline": local_files_only, "tqdm": tqdm_class})
         if script["run"]:
             script["run"](tqdm_class)
@@ -33,8 +35,8 @@ def fake_hub(monkeypatch):
     module = types.ModuleType("huggingface_hub")
     module.snapshot_download = snapshot_download
     monkeypatch.setitem(sys.modules, "huggingface_hub", module)
-    monkeypatch.setattr(md, "_is_repo_cached", lambda repo, patterns, required=(): False)
-    monkeypatch.setattr(md, "_expected_repo_size", lambda repo, patterns: None)
+    monkeypatch.setattr(md, "_is_repo_cached", lambda repo, patterns, required=(), revision=None: False)
+    monkeypatch.setattr(md, "_expected_repo_size", lambda repo, patterns, revision=None: None)
     module.calls, module.script = calls, script
     return module
 
@@ -49,13 +51,13 @@ def test_without_callback_or_for_plain_names_nothing_happens(fake_hub, repo, cal
 
 
 def test_cached_repo_is_not_downloaded(fake_hub, monkeypatch):
-    monkeypatch.setattr(md, "_is_repo_cached", lambda repo, patterns, required=(): True)
+    monkeypatch.setattr(md, "_is_repo_cached", lambda repo, patterns, required=(), revision=None: True)
     md.download_with_progress("org/model", lambda d, t: pytest.fail("no progress"))
     assert fake_hub.calls == []
 
 
 def test_expected_size_keeps_early_small_files_from_jumping_to_99(fake_hub, monkeypatch):
-    monkeypatch.setattr(md, "_expected_repo_size", lambda repo, patterns: 1_000_000)
+    monkeypatch.setattr(md, "_expected_repo_size", lambda repo, patterns, revision=None: 1_000_000)
     reported = []
 
     def run(bar_cls):
@@ -95,7 +97,7 @@ def test_byte_progress_from_the_reconstruct_bar(fake_hub):
 
 
 def test_older_hubs_report_file_progress_scaled_to_the_expected_size(fake_hub, monkeypatch):
-    monkeypatch.setattr(md, "_expected_repo_size", lambda repo, patterns: 2_000)
+    monkeypatch.setattr(md, "_expected_repo_size", lambda repo, patterns, revision=None: 2_000)
     reported = []
 
     def run(bar_cls):
@@ -126,7 +128,7 @@ def test_cache_counts_only_with_required_files(monkeypatch, tmp_path):
 
     errors.LocalEntryNotFoundError = LocalEntryNotFoundError
     hub = types.ModuleType("huggingface_hub")
-    hub.snapshot_download = lambda repo_id, allow_patterns=None, local_files_only=False: str(tmp_path)
+    hub.snapshot_download = lambda repo_id, **_kwargs: str(tmp_path)
     monkeypatch.setitem(sys.modules, "huggingface_hub", hub)
     monkeypatch.setitem(sys.modules, "huggingface_hub.errors", errors)
     (tmp_path / "config.json").write_text("{}")
@@ -140,6 +142,37 @@ def test_cache_counts_only_with_required_files(monkeypatch, tmp_path):
 
     hub.snapshot_download = missing
     assert md._is_repo_cached("org/m", None) is False
+
+
+def test_cached_snapshot_needs_every_file_and_passes_the_revision(monkeypatch, tmp_path):
+    seen = []
+    hub = types.ModuleType("huggingface_hub")
+
+    def snapshot_download(repo_id, revision=None, allow_patterns=None, local_files_only=False):
+        seen.append((repo_id, revision, allow_patterns, local_files_only))
+        return str(tmp_path)
+
+    hub.snapshot_download = snapshot_download
+    monkeypatch.setitem(sys.modules, "huggingface_hub", hub)
+    (tmp_path / "tokens.txt").write_text("a 0")
+
+    files = ("tokens.txt", "encoder.onnx")
+    assert md.cached_snapshot("org/m", revision="abc", required_files=files) is None
+    (tmp_path / "encoder.onnx").write_bytes(b"w")
+    assert md.cached_snapshot("org/m", revision="abc", required_files=files) == tmp_path
+    # Pinned commit, only the needed files, never the network.
+    assert seen[-1] == ("org/m", "abc", ["tokens.txt", "encoder.onnx"], True)
+
+    def missing(*args, **kwargs):
+        raise OSError("not cached")
+
+    hub.snapshot_download = missing
+    assert md.cached_snapshot("org/m", required_files=files) is None
+
+
+def test_download_passes_the_pinned_revision(fake_hub):
+    md.download_with_progress("org/model", lambda d, t: None, revision="abc123")
+    assert fake_hub.calls[0]["revision"] == "abc123"
 
 
 def test_bar_class_works_with_tqdms_thread_map():
