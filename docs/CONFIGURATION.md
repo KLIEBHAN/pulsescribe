@@ -233,7 +233,7 @@ See [LOCAL_BACKENDS.md](LOCAL_BACKENDS.md) for detailed local mode configuration
 | `PULSESCRIBE_LOCAL_WARMUP`             | `true`, `false`, `auto`                         | `auto`  | Warmup on startup                 |
 | `PULSESCRIBE_LOCAL_KEEPALIVE_INTERVAL` | `0`-`300` (seconds)                             | `60`    | Keep-Alive interval (0=disabled)  |
 | `PULSESCRIBE_LOCAL_IDLE_UNLOAD_MINUTES` | minutes, e.g. `15`                             | unset   | macOS: free the model after this idle time; the next dictation loads it while you speak |
-| `PULSESCRIBE_LOCAL_PREVIEW`            | `true`, `false`                                 | `true`  | macOS, MLX: show live text in the overlay while you speak ([details](LOCAL_BACKENDS.md#mlx-mlx-whisper)) |
+| `PULSESCRIBE_LOCAL_PREVIEW`            | `true`, `false`                                 | `true`  | macOS, MLX with a fast model such as turbo: show live text in the overlay while you speak ([details](LOCAL_BACKENDS.md#mlx-mlx-whisper)) |
 
 ---
 

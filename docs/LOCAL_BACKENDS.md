@@ -90,8 +90,9 @@ PULSESCRIBE_LOCAL_BACKEND=mlx
 - Stopping in the middle of a preview pass delays the transcript by the rest of that pass. Passes start only while you speak, so this happens mostly when you stop within 0.1 s of your last word.
 - Measured on an M6 with turbo and German recordings, 28 runs per stop time, at a loud and at a quiet microphone level (loudest moment 0.012 RMS): a preview pass takes 0.3 to 0.4 s. Median waiting time after the stop was 0.4 s without the preview. With it: 0.04 s when stopping 1 s after the last word, 0.3 s after 0.45 s and 0.4 s after 0.1 s, where about one recording in five waited up to 0.3 s longer than without the preview.
 - The GPU works for roughly half of the time you speak (a 0.3 s pass every 0.7 s).
-- If a pass takes longer than 1 s, the preview stops for that recording. Other backends are too slow for it.
-- No live text? With the preview running, `~/.pulsescribe/logs/pulsescribe.log` has one `Live-Vorschau:` line per recording that says how many passes ran or why none did.
+- Needs a fast model. `large`, `large-v2` and `large-v3` show no live text, and Settings hides the option for them: with large-v3 a pass over 10 s of audio takes 0.95 s on an M6, and passes on an M5 took 1.0 to 1.5 s; turbo takes 0.35 s on the M6. Other backends are too slow as well.
+- On a slower Mac the text updates less often: the next pass starts at least twice the duration of the last one later. If two passes in a row take longer than 1 s, the preview ends for that recording and its text disappears. If that happens with the first two passes of a recording, the preview pauses for 30 minutes or until you change the model.
+- No live text? With MLX and the preview turned on, `~/.pulsescribe/logs/pulsescribe.log` has one `Live-Vorschau:` line per recording that says how many passes ran or why none did.
 - Turn it off in Settings → Providers → Advanced backend options → Live preview, or with `PULSESCRIBE_LOCAL_PREVIEW=false`.
 
 **Model name mapping:**
@@ -173,7 +174,7 @@ Settings → Providers → Advanced backend options only show the options the ac
 |--------|------------|
 | Preset, Warmup | all local backends |
 | Unload when idle | all local backends (macOS app) |
-| Live preview | MLX (macOS app) |
+| Live preview | MLX with a model other than large, large-v2 or large-v3 (macOS app) |
 | Fast, Best of, Temperature | openai-whisper, faster-whisper, MLX (Lightning only reads the language) |
 | Beam size | openai-whisper, faster-whisper (MLX and Lightning have no beam search) |
 | FP16 | openai-whisper, MLX (faster-whisper uses the compute type) |

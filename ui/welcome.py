@@ -58,6 +58,7 @@ from utils.local_backend import (
     effective_local_backend,
     first_advanced_value_error,
     get_local_advanced_ui_state,
+    live_preview_model_hint,
     normalize_local_backend,
 )
 from utils.log_tail import (
@@ -1186,7 +1187,7 @@ class WelcomeController:
         def advanced(option: str):
             return lambda: advanced_open() and advanced_option_applies(
                 option, self._effective_local_backend()
-            )
+            ) and (option != "live_preview" or self._live_preview_hint() is None)
 
         # One block per option: hidden options leave no gaps in the reflowed page.
         add(self._build_advanced_options_header, advanced_open)
@@ -2259,6 +2260,16 @@ class WelcomeController:
         """True when local transcription runs on MLX (mlx, or auto on Apple Silicon)."""
         return self._effective_local_backend() == "mlx"
 
+    def _live_preview_hint(self) -> str | None:
+        """Why the selected local model shows no live text on MLX, else None."""
+        if not self._uses_mlx():
+            return None
+        popup = getattr(self, "_local_model_popup", None)
+        return live_preview_model_hint(
+            popup.titleOfSelectedItem() if popup is not None
+            else self._get_cached_env_setting("PULSESCRIBE_LOCAL_MODEL")
+        )
+
     def _build_advanced_options_header(self, view, top: int) -> int:
         """Short description and the backend guidance above the advanced options."""
         base_x = WELCOME_PADDING + CARD_PADDING
@@ -2410,7 +2421,7 @@ class WelcomeController:
         )
         self._bind_control_simple_handler(
             local_model_popup,
-            "_refresh_footer_settings_hint",
+            "_update_all_visibility",  # Live preview depends on the model
             "_local_model_changed_handler",
         )
         self._local_model_popup = local_model_popup
@@ -5708,7 +5719,7 @@ class WelcomeController:
 
         _set_string_value_if_changed(
             getattr(self, "_advanced_local_status_label", None),
-            state.guidance,
+            (self._live_preview_hint() if is_local else None) or state.guidance,
         )
 
     def _update_streaming_visibility(self) -> None:

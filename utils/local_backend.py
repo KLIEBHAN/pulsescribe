@@ -82,7 +82,8 @@ ADVANCED_OPTION_HELP: dict[str, str] = {
     "idle_unload": "Frees the model's memory after this long without dictation. The next "
                    "dictation loads it again while you speak. never: keep it loaded.",
     "live_preview": "Shows the recognized text in the overlay while you speak. The "
-                    "transcript itself stays the same. off: no text until you stop.",
+                    "transcript itself stays the same. off: no text until you stop. "
+                    "Needs a fast model such as turbo; hidden for large models.",
     "warmup": "Runs a short silent transcription after loading so the first dictation is "
               "fast. auto: on for openai-whisper and faster-whisper.",
     "device": "Hardware for openai-whisper and faster-whisper. auto picks the GPU when it "
@@ -118,6 +119,27 @@ def effective_local_backend(selected: str | None, *, platform: str | None = None
             and is_local_backend_installed("mlx"):
         return "mlx"
     return "faster" if is_local_backend_installed("faster") else "whisper"
+
+
+# Whisper models too slow for the live preview. Measured for large-v3 (MLX, 8 bit):
+# a pass over 10 s of audio takes 0.95 s on an M6, passes on an M5 took 1.0 to
+# 1.5 s; turbo takes 0.35 s on the M6. A pass has to stay well under a second.
+LIVE_PREVIEW_SLOW_MODELS = frozenset({"large", "large-v1", "large-v2", "large-v3"})
+
+
+def live_preview_supports_model(model: str | None) -> bool:
+    """False for a local model name that is too slow to preview a running recording."""
+    return (model or "").strip().lower() not in LIVE_PREVIEW_SLOW_MODELS
+
+
+def live_preview_model_hint(model: str | None) -> str | None:
+    """Settings text that explains the missing live preview for ``model``, else None."""
+    if live_preview_supports_model(model):
+        return None
+    return (
+        f"No live text with {(model or '').strip()}: this model is too slow to transcribe "
+        "while you speak. Choose turbo to see your words in the overlay."
+    )
 
 
 def advanced_option_applies(option: str, backend: str, *, platform: str | None = None) -> bool:
@@ -300,6 +322,9 @@ def first_advanced_value_error(
 
 
 __all__ = [
+    "LIVE_PREVIEW_SLOW_MODELS",
+    "live_preview_model_hint",
+    "live_preview_supports_model",
     "DEFAULT_LOCAL_BACKEND",
     "VALID_LOCAL_BACKENDS",
     "DEFAULT_CPU_THREADS_LIMIT",

@@ -14,6 +14,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   microphone at low input volume. It now follows the level of each recording.
   The log has one `Live-Vorschau:` line per recording that says what the
   preview did.
+- **No stale live text** – when preview passes get too slow (two in a row
+  over 1 s), the preview ends for that recording and its text disappears
+  instead of standing still.
+
+### Changed
+
+- **Live preview only with fast models** – `large`, `large-v2` and `large-v3`
+  are too slow for text while you speak, so PulseScribe no longer tries: with
+  these models there is no preview pass that could delay the transcript.
+  Settings hide the Live preview option for them and say why; turbo shows
+  live text.
 
 ## [1.18.0] - 2026-11-10
 

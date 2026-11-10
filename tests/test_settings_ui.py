@@ -680,6 +680,43 @@ class TestWelcomeTranscriptionPage:
         assert ctrl._live_preview_popup.titleOfSelectedItem() == "on"
         assert ctrl._build_env_updates_from_controls(None)["PULSESCRIBE_LOCAL_PREVIEW"] is None
 
+    def test_live_preview_is_hidden_and_explained_for_a_slow_model(self, monkeypatch):
+        appkit = pytest.importorskip("AppKit")
+        import ui.welcome as welcome_mod
+
+        appkit.NSApplication.sharedApplication()
+        monkeypatch.setattr(welcome_mod, "read_env_file", lambda: {})
+        monkeypatch.setattr(welcome_mod, "effective_local_backend",
+                            lambda selected: "mlx" if selected in (None, "auto") else selected)
+        monkeypatch.setattr(WelcomeController, "_build_window", lambda self: None)
+        ctrl = WelcomeController("f19", {"mode": "local"})
+        ctrl._env_settings_cache = {"PULSESCRIBE_MODE": "local", "PULSESCRIBE_LOCAL_MODEL": "large-v3"}
+        page = appkit.NSView.alloc().initWithFrame_(appkit.NSMakeRect(0, 0, 610, 500))
+        ctrl._build_transcription_tab(page, 500)
+        ctrl._toggle_advanced_options()
+
+        def row_shown():
+            return not ctrl._live_preview_popup.superview().isHidden()
+
+        def guidance():
+            return str(ctrl._advanced_local_status_label.stringValue())
+
+        assert not row_shown()
+        assert guidance().startswith("No live text with large-v3")
+        assert not ctrl._idle_unload_popup.superview().isHidden()  # other options stay
+
+        ctrl._local_model_popup.selectItemWithTitle_("turbo")
+        ctrl._update_all_visibility()
+        assert row_shown()
+        assert guidance().startswith("Auto backend")
+
+        # Lightning runs no preview at all, so the model needs no explanation there.
+        ctrl._local_model_popup.selectItemWithTitle_("large-v3")
+        ctrl._local_backend_popup.selectItemWithTitle_("lightning")
+        ctrl._update_all_visibility()
+        assert not row_shown()
+        assert guidance().startswith("Lightning is selected")
+
     def test_live_preview_is_on_without_a_setting(self, monkeypatch):
         appkit = pytest.importorskip("AppKit")
         import ui.welcome as welcome_mod
