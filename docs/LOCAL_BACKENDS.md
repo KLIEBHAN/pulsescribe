@@ -86,11 +86,12 @@ PULSESCRIBE_LOCAL_BACKEND=mlx
 
 **Live preview:** While you speak, the overlay shows the text recognized so far. PulseScribe transcribes the running recording again about every 0.7 s; the last word appears once the next one follows or you pause. The final transcript is still one pass over the whole recording, so its text is the same as without the preview. Recordings longer than 20 s preview only their newest 10 to 20 s.
 
-- A pause of about one second before you stop makes the transcript available at once: the pause already ran the final pass. This applies to recordings up to 20 s in a quiet room.
+- A pause of about one second before you stop makes the transcript available at once: the pause already ran the final pass. This applies to recordings up to 20 s in a quiet room. With background noise close to the level of quiet speech, PulseScribe cannot tell the pause from the noise: the last word then appears 0.7 s after you stop speaking, and the transcript comes at the usual time.
 - Stopping in the middle of a preview pass delays the transcript by the rest of that pass. Passes start only while you speak, so this happens mostly when you stop within 0.1 s of your last word.
-- Measured on an M6 with turbo and ten German recordings: a preview pass takes 0.3 to 0.4 s. Median waiting time after the stop was 0.39 s without the preview. With it: 0.03 s when stopping 1 s after the last word, 0.28 s after 0.45 s, 0.37 s after 0.25 s and 0.38 s after 0.1 s, where one recording waited 0.17 s longer than without the preview.
+- Measured on an M6 with turbo and German recordings, 28 runs per stop time, at a loud and at a quiet microphone level (loudest moment 0.012 RMS): a preview pass takes 0.3 to 0.4 s. Median waiting time after the stop was 0.4 s without the preview. With it: 0.04 s when stopping 1 s after the last word, 0.3 s after 0.45 s and 0.4 s after 0.1 s, where about one recording in five waited up to 0.3 s longer than without the preview.
 - The GPU works for roughly half of the time you speak (a 0.3 s pass every 0.7 s).
 - If a pass takes longer than 1 s, the preview stops for that recording. Other backends are too slow for it.
+- No live text? `~/.pulsescribe/logs/pulsescribe.log` has one `Live-Vorschau:` line per recording that says how many passes ran or why none did.
 - Turn it off in Settings → Providers → Advanced backend options → Live preview, or with `PULSESCRIBE_LOCAL_PREVIEW=false`.
 
 **Model name mapping:**

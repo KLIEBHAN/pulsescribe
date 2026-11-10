@@ -118,6 +118,51 @@ class TestPreviewPlanner:
 
         assert again is not None and not again.draft
 
+    def test_quiet_microphone_previews_like_a_loud_one(self):
+        # Peaks barely above the speech threshold, most speech below it.
+        planner = _planner()
+        _feed(planner, 0.0003, 0.5)
+        _feed(planner, 0.004, 1.0)
+        assert planner.next_pass(10.0) is None  # no chunk above the threshold yet
+        _feed(planner, 0.012, 0.1)
+
+        draft = planner.next_pass(10.0)
+
+        assert draft is not None and draft.draft
+        assert planner.speech_seconds == pytest.approx(1.1)
+        assert planner.max_level == 0.012
+        _feed(planner, 0.0003, 0.5)
+        assert not planner.next_pass(10.1).draft
+
+    def test_recording_the_final_pass_would_discard_gets_no_pass(self):
+        planner = _planner()
+        _feed(planner, 0.009, 3.0)  # never above the speech threshold
+        _feed(planner, 0.0001, 1.0)
+        assert planner.next_pass(10.0) is None
+
+    def test_louder_chunk_rejudges_earlier_noise(self):
+        planner = _planner()
+        _feed(planner, 0.0004, 2.0)  # counts as speech until something louder comes
+        assert planner.speech_seconds == pytest.approx(2.0)
+        _feed(planner, 0.05, 0.1)
+        assert planner.speech_seconds == pytest.approx(0.1)
+        assert planner.next_pass(10.0) is None  # under MIN_SPEECH_S
+
+    def test_noise_above_the_trim_level_still_gets_a_settled_pass(self):
+        planner = _planner()
+        _feed(planner, 0.012, 1.5)
+        assert planner.next_pass(10.0).draft
+        noise = 0.0005  # above the trim level 0.03 * 0.012, below speech
+        _feed(planner, noise, 0.6)
+        assert planner.next_pass(99.0) is None
+        _feed(planner, noise, 0.2)
+
+        settled = planner.next_pass(99.0)
+
+        assert settled is not None and not settled.draft
+        _feed(planner, noise, 3.0)
+        assert planner.next_pass(99.0) is None
+
     def test_long_recording_previews_only_its_newest_part(self):
         planner = _planner()
         _feed(planner, SPEECH, 9.0)
@@ -255,10 +300,13 @@ class TestLivePreview:
             chunks.append(chunk)
             levels.append(level)
         harness.wait_for_passes(1)
-        harness.preview.finish()
+        summary = harness.preview.finish()
 
         assert harness.published == ["Heute ist", "Heute ist ein Tag."]
         assert [draft for _audio, draft in harness.calls] == [True, False]
+        assert (summary.drafts, summary.settled, summary.model_ready) == (1, 1, True)
+        assert summary.slowest_s > 0
+        assert summary.speech_s == pytest.approx(1.5) and summary.max_level == SPEECH
 
     def test_waits_until_model_is_ready(self):
         ready = threading.Event()
@@ -268,6 +316,7 @@ class TestLivePreview:
         harness.preview.start(chunks, levels, harness.stop_event)
         threading.Event().wait(0.05)
         assert harness.calls == []
+        assert not harness.preview._model_ready  # the summary reports a model that never loaded
         ready.set()
         harness.wait_for_passes(1)
         harness.preview.finish()

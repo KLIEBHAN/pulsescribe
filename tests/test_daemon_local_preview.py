@@ -124,6 +124,32 @@ def test_pause_before_stop_reuses_the_preview_pass_as_transcript(daemon):
     assert daemon._last_transcribe_seconds == 0.0  # shown as the transcription time
 
 
+def test_each_recording_logs_what_the_preview_did(daemon, caplog):
+    with caplog.at_level("INFO", logger="pulsescribe"):
+        _record(daemon, _chunks(0.1, 1.5) + _chunks(0.0002, 0.5), preview_passes=1)
+        # Too quiet to count as speech: no pass, and the log says why.
+        _record(daemon, _chunks(0.012, 0.2), preview_passes=99, timeout_s=0.1)
+
+    lines = [
+        message
+        for message in (record.getMessage() for record in caplog.records)
+        if message.startswith("Live-Vorschau:")
+    ]
+    assert lines[0].startswith("Live-Vorschau: 0 Entwürfe, 1 nach Pausen, längster Durchlauf ")
+    assert lines[1].startswith("Live-Vorschau: kein Durchlauf (erkannte Sprache 0.2s, max_rms=0.01")
+    assert len(lines) == 2
+
+
+def test_quiet_microphone_still_previews(daemon):
+    # Loudest chunk 0.012 like a MacBook microphone at low input volume.
+    speech = _chunks(0.004, 1.2) + _chunks(0.012, 0.3)
+
+    interim, results = _record(daemon, speech, preview_passes=1)
+
+    assert interim == ["Heute ist ein schöner"]
+    assert len(results) == 1
+
+
 def test_stop_while_speaking_runs_the_normal_final_pass(daemon):
     provider = daemon._provider_cache["local"]
 
