@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Quiet dictation no longer discarded (macOS, streaming preview)** – a
+  recording below the speech level used to end as "No speech". With the
+  streaming model selected, PulseScribe now transcribes it if that model
+  recognized words. Noise, clicks and silence are discarded as before, and so
+  is speech too short for the model to recognize (about two seconds or less).
+
 ## [1.20.0] - 2026-11-10
 
 ### Added

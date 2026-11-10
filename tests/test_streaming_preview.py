@@ -180,6 +180,60 @@ def test_model_that_falls_behind_ends_the_preview(monkeypatch):
     assert session.feeds == 1
 
 
+def test_heard_text_covers_the_unfed_rest_and_a_silent_tail():
+    session, published = _Session(), []
+    chunks = _chunks(1.0)
+    stop = threading.Event()
+    preview = _preview(session, published)
+
+    preview.start(chunks, [], stop)
+    assert session.fed.acquire(timeout=5)
+    stop.set()
+    preview.finish()
+    chunks.extend(_chunks(1.0))  # recorded while the preview was already stopping
+
+    heard = preview.heard_text()
+
+    # 1 s fed live, 1 s rest and the silence that brings out the last words.
+    assert session.samples == int((2.0 + streaming_preview.FLUSH_SILENCE_S) * RATE)
+    assert heard == "wort0 wort1 wort2"
+    assert published == ["wort0"]  # the check shows nothing
+
+
+def test_heard_text_is_empty_without_a_usable_session():
+    # Stopped before the session opened.
+    stop = threading.Event()
+    stop.set()
+    never_opened = StreamingPreview(open_session=_Session, publish=lambda text: None, sample_rate=RATE)
+    never_opened.start(_chunks(1.0), [], stop)
+    never_opened.finish()
+    assert never_opened.heard_text() == ""
+
+    # The model failed during the recording.
+    session = _Session(fail_after=0)
+    failed = _preview(session, [])
+    failed.start(_chunks(1.0), [], threading.Event())
+    assert session.fed.acquire(timeout=5)
+    failed._thread.join(timeout=5)
+    failed.finish()
+    assert failed.heard_text() == "" and session.feeds == 1
+
+
+def test_heard_text_survives_a_model_error(caplog):
+    session, published = _Session(fail_after=1), []
+    chunks = _chunks(1.0)
+    stop = threading.Event()
+    preview = _preview(session, published)
+    preview.start(chunks, [], stop)
+    assert session.fed.acquire(timeout=5)
+    stop.set()
+    preview.finish()
+
+    with caplog.at_level("ERROR", logger="pulsescribe.audio"):
+        assert preview.heard_text() == ""  # the flush raises; no evidence, no exception
+    assert len(caplog.records) == 1
+
+
 def test_long_text_is_published_as_its_tail():
     words = " ".join(f"wort{i}" for i in range(200))
     tail = streaming_preview._tail(words)

@@ -2879,6 +2879,22 @@ class PulseScribeDaemon:
             sample_rate=WHISPER_SAMPLE_RATE,
         )
 
+    @staticmethod
+    def _streaming_model_heard_speech(preview: StreamingPreview, max_rms: float) -> bool:
+        """Whether the streaming model recognized words in a recording below the speech level.
+
+        The level check alone would discard such a recording as "no speech".
+        The model is the better judge of quiet speech: it stays silent on noise,
+        clicks and hum, where Whisper answers with made-up text.
+        """
+        heard = bool(preview.heard_text())
+        if heard:
+            logger.info(
+                f"Leise Aufnahme (max_rms={max_rms:.4f}): Live-Vorschau-Modell hat Sprache "
+                "erkannt, wird transkribiert"
+            )
+        return heard
+
     def _finish_streaming_preview(self, summary: StreamingSummary) -> None:
         """Log one line about the streaming preview; pause it if it failed or fell behind.
 
@@ -3273,6 +3289,9 @@ class PulseScribeDaemon:
                     # Its running pass holds the model; the final pass comes next.
                     self._set_worker_phase("recording:finish-preview", run_id=run_id)
                     self._finish_local_preview(preview)
+            if not had_speech and isinstance(preview, StreamingPreview) and recorded_chunks:
+                self._set_worker_phase("recording:quiet-speech-check", run_id=run_id)
+                had_speech = self._streaming_model_heard_speech(preview, max_rms)
             prepared_audio = self._prepare_recorded_audio(
                 recorded_chunks=recorded_chunks,
                 max_rms=max_rms,
