@@ -58,7 +58,11 @@ from utils.local_backend import (
     effective_local_backend,
     first_advanced_value_error,
     get_local_advanced_ui_state,
-    live_preview_model_hint,
+    LIVE_PREVIEW_OFF,
+    LIVE_PREVIEW_ON,
+    LIVE_PREVIEW_STREAMING,
+    live_preview_hint,
+    normalize_live_preview,
     normalize_local_backend,
 )
 from utils.log_tail import (
@@ -154,7 +158,12 @@ WARMUP_OPTIONS = ["auto", "true", "false"]
 # Titles for PULSESCRIBE_LOCAL_IDLE_UNLOAD_MINUTES ("never" removes the key).
 IDLE_UNLOAD_OPTIONS = ["never", "5 min", "15 min", "30 min", "60 min"]
 # Titles for PULSESCRIBE_LOCAL_PREVIEW ("on" is the default and removes the key).
-LIVE_PREVIEW_OPTIONS = ["on", "off"]
+# Popup titles per PULSESCRIBE_LOCAL_PREVIEW value; the default removes the key.
+LIVE_PREVIEW_TITLES = {
+    LIVE_PREVIEW_ON: "on",
+    LIVE_PREVIEW_STREAMING: "streaming model (0.7 GB download)",
+    LIVE_PREVIEW_OFF: "off",
+}
 LOCAL_FP16_ENV_KEY = "PULSESCRIBE_FP16"
 LEGACY_LOCAL_FP16_ENV_KEY = "PULSESCRIBE_LOCAL_FP16"
 API_KEY_PROVIDERS = [
@@ -1187,7 +1196,7 @@ class WelcomeController:
         def advanced(option: str):
             return lambda: advanced_open() and advanced_option_applies(
                 option, self._effective_local_backend()
-            ) and (option != "live_preview" or self._live_preview_hint() is None)
+            )
 
         # One block per option: hidden options leave no gaps in the reflowed page.
         add(self._build_advanced_options_header, advanced_open)
@@ -2260,14 +2269,25 @@ class WelcomeController:
         """True when local transcription runs on MLX (mlx, or auto on Apple Silicon)."""
         return self._effective_local_backend() == "mlx"
 
+    def _selected_live_preview(self) -> str:
+        """The chosen PULSESCRIBE_LOCAL_PREVIEW value (popup, else the saved setting)."""
+        popup = getattr(self, "_live_preview_popup", None)
+        if popup is None:
+            return normalize_live_preview(self._get_cached_env_setting("PULSESCRIBE_LOCAL_PREVIEW"))
+        title = popup.titleOfSelectedItem()
+        return next(
+            (value for value, shown in LIVE_PREVIEW_TITLES.items() if shown == title),
+            LIVE_PREVIEW_ON,
+        )
+
     def _live_preview_hint(self) -> str | None:
-        """Why the selected local model shows no live text on MLX, else None."""
-        if not self._uses_mlx():
-            return None
+        """What to know about the chosen live preview with this backend and model."""
         popup = getattr(self, "_local_model_popup", None)
-        return live_preview_model_hint(
+        return live_preview_hint(
+            self._selected_live_preview(),
+            self._effective_local_backend(),
             popup.titleOfSelectedItem() if popup is not None
-            else self._get_cached_env_setting("PULSESCRIBE_LOCAL_MODEL")
+            else self._get_cached_env_setting("PULSESCRIBE_LOCAL_MODEL"),
         )
 
     def _build_advanced_options_header(self, view, top: int) -> int:
@@ -2295,13 +2315,17 @@ class WelcomeController:
         )
 
     def _build_live_preview_row(self, base_x, y, control_x, control_width, view) -> None:
-        enabled = parse_bool(self._get_cached_env_setting("PULSESCRIBE_LOCAL_PREVIEW"))
-        self._build_popup_setting_row(
+        saved = normalize_live_preview(self._get_cached_env_setting("PULSESCRIBE_LOCAL_PREVIEW"))
+        _label, popup = self._build_popup_setting_row(
             base_x, y, control_x, control_width, view,
             label_text="Live preview:",
-            options=LIVE_PREVIEW_OPTIONS,
-            selected_title="off" if enabled is False else "on",
+            options=list(LIVE_PREVIEW_TITLES.values()),
+            selected_title=LIVE_PREVIEW_TITLES[saved],
             popup_attr="_live_preview_popup",
+        )
+        # The hint above the options follows the choice.
+        self._bind_control_simple_handler(
+            popup, "_update_all_visibility", "_live_preview_popup_handler"
         )
 
     def _advanced_option_rows(self) -> list:
@@ -5864,7 +5888,9 @@ class WelcomeController:
         self._select_popup_title(getattr(self, "_local_preset_popup", None), "(none)")
         self._apply_local_preset_values(dict(LOCAL_PRESET_BASE))
         self._select_popup_title(getattr(self, "_idle_unload_popup", None), "never")
-        self._select_popup_title(getattr(self, "_live_preview_popup", None), "on")
+        self._select_popup_title(
+            getattr(self, "_live_preview_popup", None), LIVE_PREVIEW_TITLES[LIVE_PREVIEW_ON]
+        )
         self._update_all_visibility()
         self._refresh_footer_settings_hint()
 
@@ -6192,11 +6218,11 @@ class WelcomeController:
                 remove_when={"never"},
             )
 
-        live_preview_popup = getattr(self, "_live_preview_popup", None)
-        if live_preview_popup is not None:
-            builder.set_enabled_default_true(
+        if getattr(self, "_live_preview_popup", None) is not None:
+            builder.set_optional(
                 "PULSESCRIBE_LOCAL_PREVIEW",
-                live_preview_popup.titleOfSelectedItem() != "off",
+                self._selected_live_preview(),
+                remove_when={LIVE_PREVIEW_ON},
             )
 
         self._add_popup_optional_env_update(

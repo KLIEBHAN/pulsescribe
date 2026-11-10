@@ -110,7 +110,10 @@ def test_advanced_options_apply_only_where_the_backend_uses_them() -> None:
         "preset", "warmup", "idle_unload", "live_preview", "fast", "fp16", "best_of", "temperature",
     }
     assert "live_preview" not in options("mlx", "win32")  # only the macOS daemon previews
-    assert options("lightning", "darwin") == {"preset", "warmup", "idle_unload", "lightning_batch", "lightning_quant"}
+    assert "live_preview" in options("faster", "darwin")  # the streaming model previews everywhere
+    assert options("lightning", "darwin") == {
+        "preset", "warmup", "idle_unload", "live_preview", "lightning_batch", "lightning_quant",
+    }
     assert "idle_unload" not in options("faster", "win32")  # only the macOS daemon unloads
     assert "device" not in options("faster", "darwin")  # no GPU path for faster-whisper on macOS
     assert {"device", "beam_size", "compute_type"} <= options("faster", "win32")
@@ -133,10 +136,24 @@ def test_live_preview_needs_a_fast_model() -> None:
         "mlx-community/distil-whisper-large-v3", "mlx-community/whisper-small-mlx",
     ):
         assert lb.live_preview_supports_model(model), model
-        assert lb.live_preview_model_hint(model) is None
 
-    hint = lb.live_preview_model_hint("large-v3")
-    assert hint is not None and "large-v3" in hint and "turbo" in hint
+
+def test_live_preview_hint_explains_what_the_choice_means() -> None:
+    import utils.local_backend as lb
+
+    # Whisper's preview works: nothing to explain.
+    assert lb.live_preview_hint(lb.LIVE_PREVIEW_ON, "mlx", "turbo") is None
+    assert lb.live_preview_hint(lb.LIVE_PREVIEW_ON, "mlx", None) is None
+    assert lb.live_preview_hint(lb.LIVE_PREVIEW_OFF, "faster", "large-v3") is None
+
+    slow = lb.live_preview_hint(lb.LIVE_PREVIEW_ON, "mlx", "large-v3")
+    assert slow is not None and "large-v3" in slow and "streaming model" in slow
+    # Other backends never previewed; no text takes the place of their guidance.
+    assert lb.live_preview_hint(lb.LIVE_PREVIEW_ON, "faster", "large-v3") is None
+
+    # The cost is stated before the user saves the choice.
+    cost = lb.live_preview_hint(lb.LIVE_PREVIEW_STREAMING, "faster", "large-v3")
+    assert cost is not None and "0.7 GB" in cost and "1.9 GB" in cost
 
 
 def test_live_preview_setting_has_three_values() -> None:
