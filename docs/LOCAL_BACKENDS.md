@@ -176,6 +176,7 @@ The text fills two lines whose words keep their place; words shown before are br
 - Measured on an M5 with two CPU threads: text 0.60 s behind the voice (median, 0.77 s at most), one step takes 74 ms. On an M6 the waiting time after the stop was the same as without a preview.
 - Unlike `on`, a pause before the stop does not make the transcript available earlier: Whisper starts when you stop.
 - The memory is freed with **Unload when idle**, when you choose another preview or leave local mode. The next recording loads the model again in under a second.
+- Quiet speech is no longer lost: a recording whose level stays below the speech threshold is normally discarded as "no speech". If the streaming model recognized words in it, Whisper transcribes it. In a test with sentences at a loudest moment of 0.006 RMS (threshold 0.010), 8 of 8 were transcribed instead of none; noise, clicks and silence were still discarded. Speech of about two seconds or less is often too short for the model to recognize and is discarded as before.
 - If the model falls 2 s behind the microphone, the preview ends for that recording and pauses for 30 minutes.
 - The model is licensed by NVIDIA under OpenMDW-1.1; the files come from the sherpa-onnx project's Hugging Face repository at a fixed commit.
 

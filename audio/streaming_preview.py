@@ -26,6 +26,9 @@ POLL_S = 0.05
 MAX_BACKLOG_S = 2.0
 # Longest text published; the overlay shows about 120 characters.
 MAX_TEXT_CHARS = 600
+# Silence fed after a recording to make the model emit its last words. Measured:
+# 1.2 s brings out as many words as 2.0 s; without it, speech under 1.3 s yields none.
+FLUSH_SILENCE_S = 1.2
 # Longest wait for the running step when the recording ends. A step takes about
 # 0.1 s and loading the model 0.5 s; the transcript must not wait for a stall.
 FINISH_TIMEOUT_S = 1.0
@@ -60,7 +63,8 @@ class StreamingPreview:
 
     Call ``start`` once the audio callback fills ``chunks`` (float32 mono
     arrays at ``sample_rate``, the rate the session expects), then ``finish``
-    after the recording stopped.
+    after the recording stopped. ``heard_text`` then tells what the model
+    recognized in the whole recording.
     """
 
     def __init__(
@@ -75,6 +79,10 @@ class StreamingPreview:
         self._sample_rate = sample_rate
         self._finished = threading.Event()
         self._thread: threading.Thread | None = None
+        self._chunks: Sequence[Any] = ()
+        self._session: PreviewSession | None = None
+        self._fed = 0  # chunks the session received
+        self._abandoned = False  # finish() gave up on a model call that still runs
         self._steps: list[float] = []
         self._fed_s = 0.0
         self._updates = 0
@@ -89,6 +97,7 @@ class StreamingPreview:
         stop_event: threading.Event,
     ) -> None:
         """Start previewing ``chunks``; ``levels`` is unused. Ends once ``stop_event`` is set."""
+        self._chunks = chunks
         self._thread = threading.Thread(
             target=self._run,
             args=(chunks, stop_event),
@@ -104,7 +113,7 @@ class StreamingPreview:
             self._thread.join(timeout=FINISH_TIMEOUT_S)
             if self._thread.is_alive():
                 # The thread ends by itself once the model call returns.
-                self._failed = True
+                self._failed = self._abandoned = True
                 logger.warning(
                     "Live-Vorschau (Streaming) reagiert nicht, Aufnahme läuft ohne sie weiter"
                 )
@@ -121,26 +130,51 @@ class StreamingPreview:
         """The preview text is never the transcript."""
         return None
 
+    def heard_text(self) -> str:
+        """Everything the model recognized in the recording; call it after ``finish``.
+
+        Feeds the audio the preview had not processed at the stop and
+        ``FLUSH_SILENCE_S`` of silence, which takes 0.1 to 0.3 s. The model emits
+        nothing for noise, clicks or hum, so a non-empty text means somebody
+        spoke; an empty one proves nothing for speech under about two seconds.
+        Empty as well if the preview never got a session, lost it or fell behind.
+        """
+        import numpy as np
+
+        session = self._session
+        # A model that fell behind would work off the rest of the recording here.
+        if session is None or self._abandoned or self._failed or self._too_slow:
+            return ""
+        try:
+            rest = list(self._chunks[self._fed :])
+            self._fed += len(rest)
+            silence = np.zeros(int(FLUSH_SILENCE_S * self._sample_rate), dtype=np.float32)
+            session.feed(np.concatenate([chunk.reshape(-1) for chunk in rest] + [silence]))
+            return " ".join(session.text().split())
+        except Exception:
+            self._failed = True
+            logger.exception("Live-Vorschau (Streaming) abgebrochen")
+            return ""
+
     def _run(self, chunks: Sequence[Any], stop_event: threading.Event) -> None:
         import numpy as np
 
         try:
             if self._finished.is_set() or stop_event.is_set():
                 return  # nothing to show any more; do not load the model for it
-            session = self._open_session()
-            fed = 0
+            session = self._session = self._open_session()
             while not self._finished.is_set() and not stop_event.wait(POLL_S):
                 count = len(chunks)
-                if count == fed:
+                if count == self._fed:
                     continue
-                samples = np.concatenate(chunks[fed:count]).reshape(-1)
-                fed = count
+                samples = np.concatenate(chunks[self._fed : count]).reshape(-1)
                 started_at = time.perf_counter()
                 session.feed(samples)
+                self._fed = count
                 self._steps.append(time.perf_counter() - started_at)
                 self._fed_s += len(samples) / self._sample_rate
 
-                behind = sum(len(chunk) for chunk in chunks[fed:]) / self._sample_rate
+                behind = sum(len(chunk) for chunk in chunks[count:]) / self._sample_rate
                 if behind > MAX_BACKLOG_S:
                     self._too_slow = True
                     self._show("")

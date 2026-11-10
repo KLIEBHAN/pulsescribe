@@ -381,9 +381,12 @@ def test_shape_recorded_audio_trims_and_adds_the_tail_only_for_local():
 class _StreamingModel:
     """Stands in for providers.streaming_model.StreamingModel."""
 
-    def __init__(self, *, installed: bool = True, downloadable: bool = True) -> None:
+    def __init__(
+        self, *, installed: bool = True, downloadable: bool = True, hears: str = "Heute  ist ein"
+    ) -> None:
         self._installed = installed
         self._downloadable = downloadable
+        self._hears = hears
         self.loaded = False
         self.events: list[str] = []
         self.languages: list[str | None] = []
@@ -410,7 +413,7 @@ class _StreamingModel:
         fed = []
         return SimpleNamespace(
             feed=lambda samples: fed.append(len(samples)),
-            text=lambda: "Heute  ist ein" if fed else "",
+            text=lambda: self._hears if fed else "",
         )
 
 
@@ -442,6 +445,41 @@ def test_streaming_preview_shows_words_and_whisper_writes_the_transcript(streami
     assert streaming._streaming_model.languages == ["de"]
     line = next(m for m in (r.getMessage() for r in caplog.records) if m.startswith("Live-Vorschau"))
     assert line.startswith("Live-Vorschau (Streaming): 1 Aktualisierungen, Rechenanteil ")
+
+
+def test_quiet_speech_the_streaming_model_heard_is_transcribed(streaming, caplog):
+    provider = streaming._provider_cache["local"]
+    quiet = _chunks(0.004, 2.0)  # every chunk below the speech level 0.010
+
+    with caplog.at_level("INFO", logger="pulsescribe"):
+        _interim, results = _record(streaming, quiet, preview_passes=99, timeout_s=0.3)
+
+    assert results == [" Heute ist ein schöner Tag."]
+    assert len(provider.calls) == 1  # Whisper transcribed what the level check would discard
+    messages = [record.getMessage() for record in caplog.records]
+    assert any(m.startswith("Leise Aufnahme (max_rms=0.00") for m in messages)
+    assert not any(m.startswith("Keine Sprache erkannt") for m in messages)
+
+
+def test_quiet_noise_the_streaming_model_did_not_hear_is_discarded(streaming, caplog):
+    streaming._streaming_model = _StreamingModel(hears="")  # noise, clicks, hum
+    provider = streaming._provider_cache["local"]
+
+    with caplog.at_level("INFO", logger="pulsescribe"):
+        _interim, results = _record(
+            streaming, _chunks(0.004, 2.0), preview_passes=99, timeout_s=0.3
+        )
+
+    assert results == [""] and provider.calls == []
+    assert any(r.getMessage().startswith("Keine Sprache erkannt") for r in caplog.records)
+
+
+def test_without_the_streaming_model_the_level_check_decides_alone(daemon):
+    provider = daemon._provider_cache["local"]
+
+    _interim, results = _record(daemon, _chunks(0.004, 2.0), preview_passes=99, timeout_s=0.3)
+
+    assert results == [""] and provider.calls == []
 
 
 @pytest.mark.parametrize(

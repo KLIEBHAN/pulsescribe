@@ -176,6 +176,7 @@ Der Text füllt zwei Zeilen, in denen die Wörter ihren Platz behalten; schon ge
 - Gemessen auf einem M5 mit zwei CPU-Threads: Text 0,60 s hinter der Stimme (Median, höchstens 0,77 s), ein Schritt dauert 74 ms. Auf einem M6 war die Wartezeit nach dem Stopp dieselbe wie ohne Vorschau.
 - Anders als bei `on` macht eine Pause vor dem Stoppen den Text nicht früher verfügbar: Whisper beginnt erst beim Stopp.
 - Der Arbeitsspeicher wird mit **Unload when idle** frei, außerdem wenn du eine andere Vorschau wählst oder den lokalen Modus verlässt. Die nächste Aufnahme lädt das Modell in unter einer Sekunde wieder.
+- Leise Sprache geht nicht mehr verloren: Eine Aufnahme, deren Pegel unter der Sprachschwelle bleibt, wird normalerweise als „keine Sprache“ verworfen. Hat das Streaming-Modell darin Wörter erkannt, transkribiert Whisper sie. Im Test mit Sätzen, deren lautester Moment bei 0,006 RMS lag (Schwelle 0,010), wurden 8 von 8 transkribiert statt keiner; Rauschen, Klicks und Stille wurden weiterhin verworfen. Sprache von etwa zwei Sekunden oder weniger ist für das Modell oft zu kurz und wird wie bisher verworfen.
 - Fällt das Modell 2 s hinter das Mikrofon zurück, endet die Vorschau für diese Aufnahme und pausiert 30 Minuten.
 - Das Modell steht unter NVIDIAs Lizenz OpenMDW-1.1; die Dateien kommen aus dem Hugging-Face-Repository des sherpa-onnx-Projekts, mit festem Commit.
 
