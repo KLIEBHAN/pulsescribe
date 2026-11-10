@@ -106,7 +106,10 @@ def test_advanced_options_apply_only_where_the_backend_uses_them() -> None:
     def options(backend, platform):
         return {o for o in lb.ADVANCED_OPTION_BACKENDS if lb.advanced_option_applies(o, backend, platform=platform)}
 
-    assert options("mlx", "darwin") == {"preset", "warmup", "idle_unload", "fast", "fp16", "best_of", "temperature"}
+    assert options("mlx", "darwin") == {
+        "preset", "warmup", "idle_unload", "live_preview", "fast", "fp16", "best_of", "temperature",
+    }
+    assert "live_preview" not in options("mlx", "win32")  # only the macOS daemon previews
     assert options("lightning", "darwin") == {"preset", "warmup", "idle_unload", "lightning_batch", "lightning_quant"}
     assert "idle_unload" not in options("faster", "win32")  # only the macOS daemon unloads
     assert "device" not in options("faster", "darwin")  # no GPU path for faster-whisper on macOS

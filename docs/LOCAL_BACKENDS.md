@@ -91,7 +91,7 @@ PULSESCRIBE_LOCAL_BACKEND=mlx
 - Measured on an M6 with turbo and ten German recordings: a preview pass takes 0.3 to 0.4 s. Median waiting time after the stop was 0.39 s without the preview. With it: 0.03 s when stopping 1 s after the last word, 0.28 s after 0.45 s, 0.37 s after 0.25 s and 0.38 s after 0.1 s, where one recording waited 0.17 s longer than without the preview.
 - The GPU works for roughly half of the time you speak (a 0.3 s pass every 0.7 s).
 - If a pass takes longer than 1 s, the preview stops for that recording. Other backends are too slow for it.
-- Turn it off with `PULSESCRIBE_LOCAL_PREVIEW=false`.
+- Turn it off in Settings → Providers → Advanced backend options → Live preview, or with `PULSESCRIBE_LOCAL_PREVIEW=false`.
 
 **Model name mapping:**
 
@@ -172,6 +172,7 @@ Settings → Providers → Advanced backend options only show the options the ac
 |--------|------------|
 | Preset, Warmup | all local backends |
 | Unload when idle | all local backends (macOS app) |
+| Live preview | MLX (macOS app) |
 | Fast, Best of, Temperature | openai-whisper, faster-whisper, MLX (Lightning only reads the language) |
 | Beam size | openai-whisper, faster-whisper (MLX and Lightning have no beam search) |
 | FP16 | openai-whisper, MLX (faster-whisper uses the compute type) |
