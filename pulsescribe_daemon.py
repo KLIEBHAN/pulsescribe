@@ -28,6 +28,7 @@ import tempfile
 import threading
 import time
 import weakref
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any
@@ -2800,16 +2801,40 @@ class PulseScribeDaemon:
         """Return the live text preview for a local recording, or None if it does not apply.
 
         With the streaming model chosen and downloaded, every local recording
-        gets its preview. Otherwise Whisper previews, under the conditions below.
-
-        Only MLX with a fast model on a fast enough Mac qualifies: a pass over
-        the recording so far has to take well under a second. The preview needs
-        the preloaded model, which exists only in local mode; a local test
-        dictation of a cloud setup has none. Preview texts arrive as
-        INTERIM_TEXT messages.
+        gets its preview. Otherwise Whisper previews (``_create_whisper_preview``).
+        Preview texts arrive as INTERIM_TEXT messages.
         """
         if self._streaming_preview_applies(self._run_mode or self.mode):
             return self._create_streaming_preview(result_queue_ref)
+
+        def publish(text: str) -> None:
+            result_queue_ref.put(
+                DaemonMessage(type=MessageType.INTERIM_TEXT, payload=text)
+            )
+
+        return self._create_whisper_preview(publish=publish, drafts=True)
+
+    def _create_early_final(self) -> LivePreview | None:
+        """Whisper passes at speech pauses, shown nowhere, beside the streaming preview.
+
+        The streaming model shows the text but Whisper writes the transcript and
+        would only start at the stop. With these passes a recording that ends
+        after a pause has its transcript at once. Same conditions as Whisper's
+        own preview: it needs passes well under a second.
+        """
+        return self._create_whisper_preview(publish=lambda _text: None, drafts=False)
+
+    def _create_whisper_preview(
+        self, *, publish: Callable[[str], None], drafts: bool
+    ) -> LivePreview | None:
+        """Whisper transcribing the running recording, or None if it does not apply.
+
+        Only MLX with a fast model on a fast enough Mac qualifies: a pass over
+        the recording so far has to take well under a second. It needs the
+        preloaded model, which exists only in local mode; a local test
+        dictation of a cloud setup has none. ``drafts=False`` runs only the
+        passes at speech pauses (see ``LivePreview``).
+        """
 
         def uses_mlx() -> bool:
             return provider.get_runtime_info().get("backend") == "mlx"
@@ -2827,7 +2852,8 @@ class PulseScribeDaemon:
             if loaded.is_set() and not uses_mlx():
                 return None
             if obstacle is not None:
-                logger.info(f"Live-Vorschau: aus ({obstacle})")
+                if drafts:  # only the shown preview is worth a log line
+                    logger.info(f"Live-Vorschau: aus ({obstacle})")
                 return None
         except Exception as error:
             # The preview is optional; the recording goes on without it.
@@ -2841,11 +2867,6 @@ class PulseScribeDaemon:
                 audio, model=model, language=language, draft=draft, quiet=True
             )
 
-        def publish(text: str) -> None:
-            result_queue_ref.put(
-                DaemonMessage(type=MessageType.INTERIM_TEXT, payload=text)
-            )
-
         return LivePreview(
             transcribe=transcribe,
             prepare=lambda audio, max_rms: self._shape_recorded_audio(
@@ -2857,6 +2878,7 @@ class PulseScribeDaemon:
             quiet_threshold=self._trim_threshold,
             quiet_pad_s=TRIM_PAD_S,
             ready=lambda: loaded.is_set() and uses_mlx(),
+            drafts=drafts,
         )
 
     def _create_streaming_preview(
@@ -2914,6 +2936,25 @@ class PulseScribeDaemon:
             f"längster Schritt {summary.step_max_s:.2f}s{ended}"
         )
 
+    def _finish_early_final(self, early_final: LivePreview) -> None:
+        """Stop the Whisper passes at pauses; log them if any ran.
+
+        A pass that was too slow pauses them (and Whisper's preview) for this
+        model: a stop during such a pass would wait for it.
+        """
+        summary = early_final.finish()
+        if summary.too_slow:
+            self._preview_off = (
+                self._local_provider_memory_signature(),
+                time.monotonic() + PREVIEW_RETRY_AFTER_S,
+            )
+        if summary.settled:
+            ended = ", beendet: zu langsam" if summary.too_slow else ""
+            logger.info(
+                f"Vorab-Transkription in Sprechpausen: {summary.settled} Durchläufe, "
+                f"längster {summary.slowest_s:.2f}s{ended}"
+            )
+
     def _finish_local_preview(self, preview: LivePreview | StreamingPreview) -> None:
         """Stop the preview and log one line: what it did, or why nothing.
 
@@ -2956,14 +2997,14 @@ class PulseScribeDaemon:
         result_queue_ref: queue.Queue[DaemonMessage | Exception],
         stop_event: threading.Event | None,
         latency_run: MacOSLatencyRun,
-        preview: LivePreview | StreamingPreview | None = None,
+        previews: Sequence[LivePreview | StreamingPreview] = (),
     ) -> tuple[list[Any], float, bool]:
         import numpy as np
         import sounddevice as sd
 
         recorded_chunks: list[Any] = []
-        # One RMS per chunk for the live preview, appended after its chunk.
-        chunk_levels: list[float] | None = [] if preview is not None else None
+        # One RMS per chunk for the previews, appended after its chunk.
+        chunk_levels: list[float] | None = [] if previews else None
         max_rms = 0.0
         had_speech = False
         player = get_sound_player()
@@ -3032,8 +3073,9 @@ class PulseScribeDaemon:
             self._set_worker_phase("recording:ready-sound", run_id=run_id)
             player.play("ready")
             logger.debug("Audio-Stream gestartet")
-            if preview is not None and chunk_levels is not None and stop_event is not None:
-                preview.start(recorded_chunks, chunk_levels, stop_event)
+            if chunk_levels is not None and stop_event is not None:
+                for preview in previews:
+                    preview.start(recorded_chunks, chunk_levels, stop_event)
 
             self._set_worker_phase("recording:capture", run_id=run_id)
             while stop_event is not None and not stop_event.is_set():
@@ -3273,22 +3315,26 @@ class PulseScribeDaemon:
         self._set_worker_phase("recording:boot", run_id=run_id)
         logger.debug(f"RecordingWorker gestartet (run={run_id})")
 
-        preview = None
+        preview = early_final = None
         try:
             preview = self._create_local_preview(result_queue_ref)
+            if isinstance(preview, StreamingPreview):
+                early_final = self._create_early_final()
             try:
                 recorded_chunks, max_rms, had_speech = self._capture_recording_audio(
                     run_id=run_id,
                     result_queue_ref=result_queue_ref,
                     stop_event=stop_event,
                     latency_run=latency_run,
-                    preview=preview,
+                    previews=[p for p in (preview, early_final) if p is not None],
                 )
             finally:
+                # A running Whisper pass holds the model; the final pass comes next.
+                self._set_worker_phase("recording:finish-preview", run_id=run_id)
                 if preview is not None:
-                    # Its running pass holds the model; the final pass comes next.
-                    self._set_worker_phase("recording:finish-preview", run_id=run_id)
                     self._finish_local_preview(preview)
+                if early_final is not None:
+                    self._finish_early_final(early_final)
             if not had_speech and isinstance(preview, StreamingPreview) and recorded_chunks:
                 self._set_worker_phase("recording:quiet-speech-check", run_id=run_id)
                 had_speech = self._streaming_model_heard_speech(preview, max_rms)
@@ -3310,7 +3356,7 @@ class PulseScribeDaemon:
                 result_queue_ref=result_queue_ref,
                 run_id=run_id,
                 latency_run=latency_run,
-                preview=preview,
+                preview=early_final or preview,
             )
 
             transcript = self._maybe_refine(
