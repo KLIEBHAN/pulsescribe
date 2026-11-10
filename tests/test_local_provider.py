@@ -835,19 +835,20 @@ class TestTranscribeAudioDispatch:
         """A draft pass must not retry at higher temperatures, even with an override."""
         monkeypatch.setenv("PULSESCRIBE_LOCAL_BACKEND", "mlx")
         monkeypatch.setenv("PULSESCRIBE_LOCAL_TEMPERATURE", "0.0, 0.2, 0.4")
+        mock_mlx = MagicMock()
+        mock_mlx.transcribe.return_value = {"text": "text"}
 
-        with patch(
-            "providers.local.LocalProvider._transcribe_mlx", return_value="text"
-        ) as mock_mlx:
+        with patch("providers.local._import_mlx_whisper", return_value=mock_mlx):
             from providers.local import LocalProvider
 
             provider = LocalProvider()
             audio = np.zeros(16000, dtype=np.float32)
 
             provider.transcribe_audio(audio, language="de", draft=True)
+            mock_mlx.transcribe.assert_called_once()  # mlx-whisper retries inside this call
             provider.transcribe_audio(audio, language="de")
 
-        draft_options, final_options = (call.args[2] for call in mock_mlx.call_args_list)
+        draft_options, final_options = (call.kwargs for call in mock_mlx.transcribe.call_args_list)
         assert draft_options["temperature"] == 0.0
         assert final_options["temperature"] == (0.0, 0.2, 0.4)
         assert {k: v for k, v in draft_options.items() if k != "temperature"} == {

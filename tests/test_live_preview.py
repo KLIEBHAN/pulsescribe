@@ -278,20 +278,24 @@ class TestLivePreview:
 
         harness.preview.start(chunks, levels, harness.stop_event)
         harness.wait_for_passes(1)
-        more_chunks, more_levels = _recording((QUIET, 0.5))
-        chunks.extend(more_chunks)
-        levels.extend(more_levels)
+        thread = harness.preview._thread
+        thread.join(timeout=5)  # the preview ends by itself, before any pause
+        ended = not thread.is_alive()
         harness.preview.finish()
 
+        assert ended
         assert len(harness.calls) == 1
 
-    def test_failing_pass_does_not_raise(self):
+    def test_failing_pass_is_logged_and_ends_the_preview(self, caplog):
         harness = _Harness([RuntimeError("model gone")])
         chunks, levels = _recording((SPEECH, 1.5), (QUIET, 0.5))
 
-        harness.preview.start(chunks, levels, harness.stop_event)
-        harness.wait_for_passes(1)
-        harness.preview.finish()
+        with caplog.at_level("ERROR", logger="pulsescribe.audio"):
+            harness.preview.start(chunks, levels, harness.stop_event)
+            harness.wait_for_passes(1)
+            harness.preview.finish()
 
+        # Logged by the preview itself, so the error did not escape its thread.
+        assert [record.getMessage() for record in caplog.records] == ["Live-Vorschau abgebrochen"]
         assert harness.published == []
         assert harness.preview.final_text_for(np.zeros(3, dtype=np.float32)) is None

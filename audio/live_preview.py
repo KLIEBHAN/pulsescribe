@@ -264,7 +264,9 @@ class LivePreview:
                 if not self._ready():
                     continue
                 preview_pass = self._planner.next_pass(time.perf_counter())
-                if preview_pass is not None and not self._run_pass(chunks, preview_pass):
+                if preview_pass is None or stop_event.is_set():
+                    continue
+                if not self._run_pass(chunks, preview_pass):
                     return
         except Exception:
             # The preview is optional; the final pass still transcribes everything.

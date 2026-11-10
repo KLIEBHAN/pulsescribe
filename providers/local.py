@@ -1035,7 +1035,8 @@ class LocalProvider:
 
         Rückgabe ist kompatibel zu openai-whisper; für faster-whisper/mlx-whisper wird
         je nach Backend ein Subset genutzt. ``draft=True`` decodes once at temperature 0
-        instead of retrying at higher temperatures, which bounds the duration.
+        instead of retrying at higher temperatures, which bounds the duration. Lightning
+        reads only the language, so a draft is not bounded there.
         """
         self._ensure_runtime_config()
         backend = self._effective_backend()
