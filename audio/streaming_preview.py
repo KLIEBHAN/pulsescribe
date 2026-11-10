@@ -6,7 +6,8 @@ after they are spoken. The text is a preview only: the transcript still comes
 from a normal pass over the whole recording.
 
 It has the calls of ``audio.live_preview.LivePreview`` (``start``, ``finish``,
-``final_text_for``), so a recording can use either.
+``final_text_for``), so a recording can run either; ``finish`` returns this
+module's own ``StreamingSummary``.
 """
 
 from __future__ import annotations

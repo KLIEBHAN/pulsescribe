@@ -79,10 +79,19 @@ try:
         load_environment,
     )
     from audio.live_preview import LivePreview
+    from audio.streaming_preview import StreamingPreview, StreamingSummary
     from providers.deepgram_stream import deepgram_stream_core
-    from utils.local_backend import effective_local_backend, live_preview_supports_model
+    from utils.local_backend import (
+        LIVE_PREVIEW_OFF,
+        LIVE_PREVIEW_STREAMING,
+        effective_local_backend,
+        live_preview_supports_model,
+        normalize_live_preview,
+    )
     from utils.model_download import format_download_status
     from providers import get_provider
+    from providers.streaming_model import MODEL_LABEL as STREAMING_MODEL_LABEL
+    from providers.streaming_model import StreamingModel
     from providers.local_memory import (
         build_memory_signature,
         release_provider_resources,
@@ -335,6 +344,12 @@ class PulseScribeDaemon:
         self._local_preload_complete = threading.Event()
         # (model signature, monotonic retry time) while the live preview is paused.
         self._preview_off: tuple[tuple[str | None, ...], float] | None = None
+        # Streaming model for the live preview (PULSESCRIBE_LOCAL_PREVIEW=streaming).
+        self._streaming_model = StreamingModel()
+        self._streaming_available = False  # sherpa-onnx installed and model downloaded
+        self._streaming_setup_thread: threading.Thread | None = None
+        self._streaming_missing_logged = False
+        self._streaming_off_until = 0.0  # monotonic; after it fell behind the microphone
         # Generation-bound local preload/keepalive lifecycle.
         self._local_warm_lock = threading.Lock()
         self._local_cache_reconcile_lock = threading.Lock()
@@ -1210,15 +1225,26 @@ class PulseScribeDaemon:
             logger.debug("Keep-Alive Worker beendet sich noch im Hintergrund")
         return stopped
 
-    def _update_state(self, state: AppState, text: str | None = None) -> None:
+    def _update_state(
+        self,
+        state: AppState,
+        text: str | None = None,
+        *,
+        only_from: tuple[AppState, ...] | None = None,
+    ) -> None:
         """Aktualisiert State und benachrichtigt UI-Controller.
 
         Thread-safe: Kann von jedem Thread aufgerufen werden.
         UI-Updates werden automatisch auf den Main-Thread dispatcht.
+        ``only_from`` makes the change conditional on the current state, checked
+        atomically: background status (e.g. download progress) must not replace
+        a recording that started in the same moment.
         """
         # Atomares Read-Modify-Write mit explizitem Lock
         with self._state_lock:
             prev_state = self.__current_state
+            if only_from is not None and prev_state not in only_from:
+                return
             previous_ui_payload = self._last_ui_state_payload
             self.__current_state = state
             next_ui_payload = (state, text)
@@ -1296,6 +1322,8 @@ class PulseScribeDaemon:
         # load the model again right after the release.
         self._cancel_local_warm_lifecycle(wait=True)
         self._release_local_provider_model_cache()
+        # The streaming model loads again with the next recording's preview.
+        self._streaming_model.release()
         logger.info("Lokales Modell nach %s min Leerlauf entladen", minutes)
 
     def _dispatch_ui_update_to_main(self, state: AppState, text: str | None) -> None:
@@ -2285,6 +2313,7 @@ class PulseScribeDaemon:
         # still gets its size.
         self._expect_live_text(
             use_streaming
+            or self._streaming_preview_applies(effective_mode)
             or (
                 self._local_preview_obstacle(effective_mode) is None
                 and effective_local_backend(os.getenv("PULSESCRIBE_LOCAL_BACKEND")) == "mlx"
@@ -2294,6 +2323,8 @@ class PulseScribeDaemon:
         if effective_mode == "local" and self.mode == "local":
             # No-op while warm; after an idle unload the model loads during speech.
             self._preload_local_model_async()
+            if not self._streaming_available:
+                self._sync_streaming_model()  # e.g. the download failed before
 
         # Interim-Datei löschen, um veralteten Text zu vermeiden
         INTERIM_FILE.unlink(missing_ok=True)
@@ -2662,11 +2693,14 @@ class PulseScribeDaemon:
         """
         if self.mode != "local" or run_mode != "local":
             return ""
-        if not get_env_bool_default("PULSESCRIBE_LOCAL_PREVIEW", True):
+        if normalize_live_preview(os.getenv("PULSESCRIBE_LOCAL_PREVIEW")) == LIVE_PREVIEW_OFF:
             return ""
         model_name = self._model_name_for_logging(None)
         if not live_preview_supports_model(model_name):
-            return f"Modell {model_name} ist dafür zu langsam, turbo zeigt Live-Text"
+            return (
+                f"Modell {model_name} ist dafür zu langsam, turbo oder das "
+                "Streaming-Modell zeigen Live-Text"
+            )
         if self._preview_off is not None:
             signature, retry_at = self._preview_off
             minutes_left = (retry_at - time.monotonic()) / 60
@@ -2678,6 +2712,81 @@ class PulseScribeDaemon:
             self._preview_off = None
         return None
 
+    def _streaming_preview_wanted(self) -> bool:
+        """The settings ask for the streaming model's live preview (local mode only)."""
+        setting = normalize_live_preview(os.getenv("PULSESCRIBE_LOCAL_PREVIEW"))
+        return self.mode == "local" and setting == LIVE_PREVIEW_STREAMING
+
+    def _streaming_preview_applies(self, run_mode: str) -> bool:
+        """A local recording in ``run_mode`` gets its live text from the streaming model."""
+        return (
+            run_mode == "local"
+            and self._streaming_preview_wanted()
+            and self._streaming_available
+            and time.monotonic() >= self._streaming_off_until
+        )
+
+    def _sync_streaming_model(self) -> None:
+        """Bring the streaming model in line with the settings.
+
+        Wanted: download it once (682 MB, with progress while idle) and load it
+        on a background thread. Not wanted any more: free its memory. Call it at
+        startup, after a settings reload, and when a recording starts while the
+        model is still missing (a failed download is tried again then).
+        """
+        model = self._streaming_model
+        if not self._streaming_preview_wanted():
+            if model.release():
+                logger.info("Live-Vorschau-Modell entladen")
+            return
+        thread = self._streaming_setup_thread
+        if model.loaded or (thread is not None and thread.is_alive()):
+            return
+        if not model.installed():
+            if not self._streaming_missing_logged:
+                self._streaming_missing_logged = True
+                logger.warning(
+                    "Live-Vorschau (Streaming) nicht verfügbar: "
+                    "sherpa-onnx fehlt in dieser Installation"
+                )
+            return
+
+        showed_progress = False
+
+        def show_download(downloaded: int, total: int | None) -> None:
+            nonlocal showed_progress
+            # Whisper's own loading owns the LOADING state until it is done.
+            if self._local_preload_complete.is_set():
+                showed_progress = True
+                self._update_state(
+                    AppState.LOADING,
+                    format_download_status(STREAMING_MODEL_LABEL, downloaded, total),
+                    only_from=(AppState.IDLE, AppState.LOADING),
+                )
+
+        def setup() -> None:
+            try:
+                if not model.download(show_download):
+                    logger.warning(
+                        "Live-Vorschau-Modell konnte nicht heruntergeladen werden; "
+                        "nächster Versuch mit der nächsten Aufnahme"
+                    )
+                    return
+                if self._streaming_preview_wanted():
+                    model.load()
+                self._streaming_available = True
+            except Exception as error:
+                # Not available: Whisper keeps previewing where it can.
+                self._streaming_available = False
+                logger.warning(f"Live-Vorschau-Modell nicht verfügbar: {error}")
+            finally:
+                if showed_progress and self._local_preload_complete.is_set():
+                    self._update_state(AppState.IDLE, only_from=(AppState.LOADING,))
+
+        thread = threading.Thread(target=setup, daemon=True, name="StreamingModelSetup")
+        self._streaming_setup_thread = thread
+        thread.start()
+
     def _expect_live_text(self, expected: bool) -> None:
         """Size the overlay for the recording that starts now (see OverlayController)."""
         overlay = self._overlay
@@ -2687,8 +2796,11 @@ class PulseScribeDaemon:
     def _create_local_preview(
         self,
         result_queue_ref: queue.Queue[DaemonMessage | Exception],
-    ) -> LivePreview | None:
+    ) -> LivePreview | StreamingPreview | None:
         """Return the live text preview for a local recording, or None if it does not apply.
+
+        With the streaming model chosen and downloaded, every local recording
+        gets its preview. Otherwise Whisper previews, under the conditions below.
 
         Only MLX with a fast model on a fast enough Mac qualifies: a pass over
         the recording so far has to take well under a second. The preview needs
@@ -2696,6 +2808,9 @@ class PulseScribeDaemon:
         dictation of a cloud setup has none. Preview texts arrive as
         INTERIM_TEXT messages.
         """
+        if self._streaming_preview_applies(self._run_mode or self.mode):
+            return self._create_streaming_preview(result_queue_ref)
+
         def uses_mlx() -> bool:
             return provider.get_runtime_info().get("backend") == "mlx"
 
@@ -2744,7 +2859,46 @@ class PulseScribeDaemon:
             ready=lambda: loaded.is_set() and uses_mlx(),
         )
 
-    def _finish_local_preview(self, preview: LivePreview) -> None:
+    def _create_streaming_preview(
+        self,
+        result_queue_ref: queue.Queue[DaemonMessage | Exception],
+    ) -> StreamingPreview:
+        """Live text from the streaming model; works with every local model and backend."""
+        model = self._streaming_model
+        language = self.language
+
+        def publish(text: str) -> None:
+            result_queue_ref.put(
+                DaemonMessage(type=MessageType.INTERIM_TEXT, payload=text)
+            )
+
+        return StreamingPreview(
+            # Loads the model if an idle unload freed it; about half a second.
+            open_session=lambda: model.open_session(language),
+            publish=publish,
+            sample_rate=WHISPER_SAMPLE_RATE,
+        )
+
+    def _finish_streaming_preview(self, summary: StreamingSummary) -> None:
+        """Log one line about the streaming preview; pause it if it failed or fell behind.
+
+        While it pauses, Whisper previews where it can.
+        """
+        retry = f"nächster Versuch in {PREVIEW_RETRY_AFTER_S // 60} min"
+        ended = ""
+        if summary.failed or summary.too_slow:
+            self._streaming_off_until = time.monotonic() + PREVIEW_RETRY_AFTER_S
+        if summary.failed:
+            ended = f", nach einem Fehler beendet (siehe Meldung davor), {retry}"
+        elif summary.too_slow:
+            ended = f", beendet: Modell kam nicht hinterher, {retry}"
+        logger.info(
+            f"Live-Vorschau (Streaming): {summary.updates} Aktualisierungen, "
+            f"Rechenanteil {summary.compute_share:.0%}, "
+            f"längster Schritt {summary.step_max_s:.2f}s{ended}"
+        )
+
+    def _finish_local_preview(self, preview: LivePreview | StreamingPreview) -> None:
         """Stop the preview and log one line: what it did, or why nothing.
 
         A preview that was too slow from its first draft stays off for this model
@@ -2752,6 +2906,9 @@ class PulseScribeDaemon:
         the transcript.
         """
         summary = preview.finish()
+        if isinstance(summary, StreamingSummary):
+            self._finish_streaming_preview(summary)
+            return
         if summary.too_slow and summary.fast_drafts == 0:
             self._preview_off = (
                 self._local_provider_memory_signature(),
@@ -2783,7 +2940,7 @@ class PulseScribeDaemon:
         result_queue_ref: queue.Queue[DaemonMessage | Exception],
         stop_event: threading.Event | None,
         latency_run: MacOSLatencyRun,
-        preview: LivePreview | None = None,
+        preview: LivePreview | StreamingPreview | None = None,
     ) -> tuple[list[Any], float, bool]:
         import numpy as np
         import sounddevice as sd
@@ -2963,7 +3120,7 @@ class PulseScribeDaemon:
         result_queue_ref: queue.Queue[DaemonMessage | Exception],
         run_id: int | None,
         latency_run: MacOSLatencyRun,
-        preview: LivePreview | None = None,
+        preview: LivePreview | StreamingPreview | None = None,
     ) -> str:
         import soundfile as sf
 
@@ -3789,6 +3946,7 @@ class PulseScribeDaemon:
             self._preload_local_model_async()
         # A changed idle-unload setting applies without waiting for the next dictation.
         self._reschedule_idle_unload(self._current_state)
+        self._sync_streaming_model()
 
     @staticmethod
     def _sync_reload_env_values(env_values: dict[str, str]) -> None:
@@ -4336,6 +4494,7 @@ class PulseScribeDaemon:
             show_dock=show_dock, bindings_for_info=bindings_for_info
         )
         self._preload_local_model_async()
+        self._sync_streaming_model()
         self._reconfigure_hotkeys(show_alerts=True)
         self._install_runloop_shutdown_handlers(
             app=app, timer_cls=NSTimer, signal_mod=signal

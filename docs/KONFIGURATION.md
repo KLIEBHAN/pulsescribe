@@ -215,7 +215,7 @@ Siehe [LOKALE_BACKENDS.md](LOKALE_BACKENDS.md) für detaillierte Konfiguration d
 | `PULSESCRIBE_DEVICE`        | `auto`, `mps`, `cpu`, `cuda`                    | `auto`  | Rechengerät       |
 | `PULSESCRIBE_LOCAL_WARMUP`  | `true`, `false`, `auto`                         | `auto`  | Warmup beim Start |
 | `PULSESCRIBE_LOCAL_IDLE_UNLOAD_MINUTES` | Minuten, z. B. `15`                 | nicht gesetzt | macOS: Modell nach dieser Leerlaufzeit freigeben; das nächste Diktat lädt es, während du sprichst |
-| `PULSESCRIBE_LOCAL_PREVIEW` | `true`, `false` | `true` | macOS, MLX mit einem schnellen Modell wie turbo: Live-Text im Overlay, während du sprichst ([Details](LOKALE_BACKENDS.md#mlx-mlx-whisper)) |
+| `PULSESCRIBE_LOCAL_PREVIEW` | `true`, `false`, `streaming` | `true` | macOS: Live-Text im Overlay, während du sprichst. `true`: von Whisper (MLX mit einem schnellen Modell wie turbo). `streaming`: von einem zweiten Modell, mit jedem lokalen Modell (0,7 GB Download, rund 1,9 GB Arbeitsspeicher) ([Details](LOKALE_BACKENDS.md#live-vorschau)) |
 
 ---
 
