@@ -146,8 +146,13 @@ def test_stop_while_speaking_runs_the_normal_final_pass(daemon):
         lambda d, env: env("PULSESCRIBE_LOCAL_PREVIEW", "false"),
         lambda d, env: setattr(d._provider_cache["local"], "backend", "faster"),
         lambda d, env: setattr(d, "_run_mode", "openai"),
+        # Local test dictation of a cloud setup: no model is preloaded.
+        lambda d, env: setattr(d, "mode", "deepgram"),
+        lambda d, env: setattr(
+            d._provider_cache["local"], "get_runtime_info", MagicMock(side_effect=OSError)
+        ),
     ],
-    ids=["disabled", "not-mlx", "not-local"],
+    ids=["disabled", "not-mlx", "not-local", "cloud-setup", "backend-lookup-fails"],
 )
 def test_no_preview_when_it_does_not_apply(daemon, monkeypatch, setup):
     setup(daemon, monkeypatch.setenv)

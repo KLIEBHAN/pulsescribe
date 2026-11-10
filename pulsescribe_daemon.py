@@ -2646,27 +2646,30 @@ class PulseScribeDaemon:
         """Return the live text preview for a local recording, or None if it does not apply.
 
         Only MLX is fast enough: a pass over the recording so far has to take
-        well under a second. Preview texts arrive as INTERIM_TEXT messages.
+        well under a second. The preview needs the preloaded model, which exists
+        only in local mode; a local test dictation of a cloud setup has none.
+        Preview texts arrive as INTERIM_TEXT messages.
         """
-        if (self._run_mode or self.mode) != "local":
+        if self.mode != "local" or (self._run_mode or self.mode) != "local":
             return None
         if not get_env_bool_default("PULSESCRIBE_LOCAL_PREVIEW", True):
-            return None
-        try:
-            provider = self._get_provider("local")
-        except Exception as error:
-            logger.debug(f"Live-Vorschau nicht verfügbar: {error}")
-            return None
-        if not hasattr(provider, "transcribe_audio"):
             return None
 
         def uses_mlx() -> bool:
             return provider.get_runtime_info().get("backend") == "mlx"
 
         loaded = self._local_preload_complete
-        # While the model still loads, the backend is resolved later, off the
-        # capture thread: resolving it can import torch and delay the recording.
-        if loaded.is_set() and not uses_mlx():
+        try:
+            provider = self._get_provider("local")
+            if not hasattr(provider, "transcribe_audio"):
+                return None
+            # While the model still loads, the backend is resolved later, off the
+            # capture thread: resolving it can import torch and delay the recording.
+            if loaded.is_set() and not uses_mlx():
+                return None
+        except Exception as error:
+            # The preview is optional; the recording goes on without it.
+            logger.warning(f"Live-Vorschau nicht verfügbar: {error}")
             return None
 
         model, language = self.model, self.language
@@ -3018,8 +3021,9 @@ class PulseScribeDaemon:
         self._set_worker_phase("recording:boot", run_id=run_id)
         logger.debug(f"RecordingWorker gestartet (run={run_id})")
 
-        preview = self._create_local_preview(result_queue_ref)
+        preview = None
         try:
+            preview = self._create_local_preview(result_queue_ref)
             try:
                 recorded_chunks, max_rms, had_speech = self._capture_recording_audio(
                     run_id=run_id,
