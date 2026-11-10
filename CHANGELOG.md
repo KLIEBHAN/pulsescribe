@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.19.0] - 2026-11-10
+
 ### Changed
 
 - **Live text you can read (macOS)** – recordings with live text (local
