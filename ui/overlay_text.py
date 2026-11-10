@@ -1,5 +1,10 @@
 """Shared text formatting helpers for overlay implementations."""
 
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass
+
 DEFAULT_RECORDING_INTERIM_MAX_CHARS = 45
 # Overlays that fade clipped text on the left need a tail longer than the
 # text zone; the zone clips it, so no "..." is added.
@@ -91,3 +96,90 @@ def _ellipsis_tail(cleaned_tail: str, max_chars: int) -> str:
     if tail_chars <= 0:
         return "..."
     return "..." + cleaned_tail[-tail_chars:]
+
+
+@dataclass(frozen=True)
+class InterimLines:
+    """Live text wrapped into lines, plus what the next update needs.
+
+    ``lines`` holds ``(confirmed, fresh)`` per visible line, oldest first:
+    ``fresh`` is the part that is new since the previous update and may still
+    change. ``source`` is the text shown and ``start`` the offset in it where
+    the first visible line begins.
+    """
+
+    lines: tuple[tuple[str, str], ...] = ()
+    source: str = ""
+    start: int = 0
+
+
+_SENTENCE_END = (".", "!", "?", "…")
+_TAIL_PROBE_CHARS = 24
+
+
+def wrap_interim_text(
+    text: str,
+    previous: InterimLines | None,
+    fits: Callable[[str], bool],
+    max_lines: int = 2,
+) -> InterimLines:
+    """Wrap growing live text into at most ``max_lines`` lines that do not reflow.
+
+    ``fits(line)`` tells whether a line fits the text zone. Words keep their
+    line and position while the text only grows: the first visible line starts
+    where it started in ``previous``, so later words cannot move earlier ones,
+    and a line scrolls out as a whole. A revised word reflows only what follows
+    it. Also copes with a source that lost characters at its start (a tail read).
+
+    Text shared with ``previous`` counts as confirmed, the rest as fresh. Text
+    that ends a sentence is confirmed as a whole.
+    """
+    source = " ".join(text.split())
+    if not source:
+        return InterimLines()
+
+    start = 0
+    confirmed = 0
+    if previous is not None and previous.source:
+        shift = _lost_at_start(previous.source, source)
+        confirmed = _common_word_prefix(previous.source[shift:], source)
+        previous_start = previous.start - shift
+        if 0 < previous_start <= confirmed:
+            start = previous_start
+    if source.endswith(_SENTENCE_END):
+        confirmed = len(source)
+
+    lines: list[tuple[int, str]] = []  # (offset in source, text)
+    offset = start
+    for word in source[start:].split(" "):
+        if lines and fits(f"{lines[-1][1]} {word}"):
+            lines[-1] = (lines[-1][0], f"{lines[-1][1]} {word}")
+        else:
+            lines.append((offset, word))
+        offset += len(word) + 1
+    visible = lines[-max_lines:]
+    return InterimLines(
+        lines=tuple(
+            (line[: max(confirmed - at, 0)], line[max(confirmed - at, 0) :])
+            for at, line in visible
+        ),
+        source=source,
+        start=visible[0][0],
+    )
+
+
+def _lost_at_start(previous: str, current: str) -> int:
+    """Characters ``previous`` has before the point where ``current`` begins."""
+    probe = current[:_TAIL_PROBE_CHARS]
+    if previous.startswith(probe):
+        return 0
+    return max(previous.find(probe), 0)
+
+
+def _common_word_prefix(previous: str, current: str) -> int:
+    """Length of the leading part of ``current`` whose whole words match ``previous``."""
+    limit = min(len(previous), len(current))
+    same = next((i for i in range(limit) if previous[i] != current[i]), limit)
+    if all(same == len(text) or text[same] == " " for text in (previous, current)):
+        return same
+    return current.rfind(" ", 0, same) + 1

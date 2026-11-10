@@ -772,7 +772,10 @@ def _controller(events: list[str] | None = None) -> OverlayController:
     controller._current_state = AppState.IDLE
     controller._last_state_payload = None
     controller._feedback_timer = None
-    controller._previous_interim = ""
+    controller._interim_lines = None
+    controller._live_text_expected = False
+    controller._live_size = False
+    controller._fits_live_line = lambda line: len(line) <= 20
     controller._persistent = False
     controller._wave_view = _FakeWaveModes(events)
     # The recording clock has its own test; keep timer lists about feedback.
@@ -808,13 +811,49 @@ def test_update_state_skips_duplicate_transition_work(monkeypatch):
     assert len(controller.rendered) == 1
 
 
-def test_recording_interim_emphasizes_newest_words():
+def test_recording_interim_wraps_into_lines_and_marks_fresh_words():
     controller = _controller()
 
     controller.update_state(AppState.RECORDING, "hello")
     controller.update_state(AppState.RECORDING, "hello world")
+    assert controller.rendered[-1][1] == (("hello", " world"),)
 
-    assert controller.rendered[-1][1] == ("hello ", "world")
+    controller.update_state(AppState.RECORDING, "hello world this is a longer text")
+    assert controller.rendered[-1][1] == (("hello world", " this is"), ("", "a longer text"))
+
+    # A new recording starts with fresh lines.
+    controller.update_state(AppState.TRANSCRIBING)
+    controller.update_state(AppState.RECORDING, "again")
+    assert controller.rendered[-1][1] == (("", "again"),)
+
+
+def test_overlay_size_is_chosen_per_run():
+    controller = _controller()
+
+    # No live text expected: compact through the whole run.
+    controller.update_state(AppState.LISTENING)
+    controller.update_state(AppState.RECORDING)
+    assert not controller._live_size
+
+    # Announced live text: large from the first state through the feedback.
+    controller.update_state(AppState.IDLE)
+    controller.set_live_text_expected(True)
+    for state in (AppState.LISTENING, AppState.RECORDING, AppState.TRANSCRIBING, AppState.DONE):
+        controller.update_state(state)
+        assert controller._live_size, state
+
+    # A message outside a recording is compact again.
+    controller.update_state(AppState.IDLE)
+    controller.update_state(AppState.ERROR, "Microphone unavailable")
+    assert not controller._live_size
+
+    # Live text that was not announced still gets the large size.
+    controller.update_state(AppState.IDLE)
+    controller.set_live_text_expected(False)
+    controller.update_state(AppState.LISTENING)
+    assert not controller._live_size
+    controller.update_state(AppState.RECORDING, "hello")
+    assert controller._live_size
 
 
 def test_states_map_to_bars_badges_and_copy(monkeypatch):
@@ -917,9 +956,14 @@ def test_render_skips_identical_presentations():
     controller = OverlayController.__new__(OverlayController)
     controller._presentation = None
     calls = []
-    controller._text_field = types.SimpleNamespace(
-        setAttributedStringValue_=calls.append, setHidden_=lambda _hidden: None
-    )
+    hidden = {}
+    controller._text_fields = [
+        types.SimpleNamespace(
+            setAttributedStringValue_=calls.append,
+            setHidden_=lambda value, index=index: hidden.__setitem__(index, value),
+        )
+        for index in range(2)
+    ]
     controller._badge_view = types.SimpleNamespace(setHidden_=lambda _hidden: None)
     controller._dismiss_field = types.SimpleNamespace(setHidden_=lambda _hidden: None)
     metas = []
@@ -935,18 +979,21 @@ def test_render_skips_identical_presentations():
     controller._layout = lambda *args: layouts.append(args)
     content = OverlayContent("low", "Listening…")
 
-    controller._render(content, ("", ""))
-    controller._render(content, ("", ""))
+    controller._render(content, ())
+    controller._render(content, ())
     controller._meta_text = "0:01"  # clock tick: meta only, text untouched
-    controller._render(content, ("", ""))
-    controller._render(content, ("", "new words"))
+    controller._render(content, ())
+    assert hidden == {0: False, 1: True}
+    controller._render(content, (("old words", " new"), ("", "words")))
 
     assert calls == [
         (("Listening…", "muted"),),
-        (("", "interim"), ("new words", "text")),
+        (("old words", "text"), (" new", "interim")),
+        (("", "text"), ("words", "interim")),
     ]
+    assert hidden == {0: False, 1: False}
     assert metas == ["0:00", "0:01"]
-    assert [args[2] for args in layouts] == [False, False, True]
+    assert [args[2] for args in layouts] == [0, 0, 2]
 
 
 def test_recording_clock_ticks_at_1hz_only_while_listening_or_recording(monkeypatch):

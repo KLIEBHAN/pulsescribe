@@ -274,6 +274,29 @@ def test_slow_drafts_later_in_a_recording_do_not_pause_the_next_one(daemon, monk
     assert daemon._preview_off is None
 
 
+def test_obstacle_tells_whether_settings_allow_the_preview(daemon, monkeypatch):
+    assert daemon._local_preview_obstacle("local") is None
+    assert daemon._local_preview_obstacle("deepgram") == ""  # does not apply, nothing to log
+    daemon.model = "large-v3"
+    assert "large-v3" in daemon._local_preview_obstacle("local")
+    daemon.model = None
+    monkeypatch.setenv("PULSESCRIBE_LOCAL_PREVIEW", "false")
+    assert daemon._local_preview_obstacle("local") == ""
+
+
+def test_recording_start_sizes_the_overlay_for_live_text(daemon, monkeypatch):
+    announced = []
+    daemon._overlay = SimpleNamespace(set_live_text_expected=announced.append)
+    monkeypatch.setattr(daemon, "_call_on_main", lambda fn: fn())
+
+    daemon._expect_live_text(True)
+    daemon._expect_live_text(False)
+    daemon._overlay = None
+    daemon._expect_live_text(True)  # no overlay: nothing to size
+
+    assert announced == [True, False]
+
+
 def test_preview_waits_for_a_loading_model_and_never_runs_on_other_backends(daemon):
     provider = daemon._provider_cache["local"]
     provider.backend = "faster"
