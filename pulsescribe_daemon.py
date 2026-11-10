@@ -2700,6 +2700,9 @@ class PulseScribeDaemon:
     @staticmethod
     def _log_preview_summary(summary: PreviewSummary) -> None:
         """Log one line per recording: what the live preview did, or why nothing."""
+        if summary.failed:
+            logger.info("Live-Vorschau: nach einem Fehler beendet (siehe Fehlermeldung davor)")
+            return
         if summary.drafts or summary.settled:
             logger.info(
                 f"Live-Vorschau: {summary.drafts} Entwürfe, {summary.settled} nach Pausen, "
@@ -2709,7 +2712,7 @@ class PulseScribeDaemon:
         reason = (
             f"erkannte Sprache {summary.speech_s:.1f}s, max_rms={summary.max_level:.4f}"
             if summary.model_ready
-            else "Modell noch nicht geladen"
+            else "Modell lädt noch oder Backend ist nicht MLX"
         )
         logger.info(f"Live-Vorschau: kein Durchlauf ({reason})")
 

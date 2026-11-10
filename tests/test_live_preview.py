@@ -329,10 +329,12 @@ class TestLivePreview:
         harness.stop_event.set()
 
         harness.preview.start(chunks, levels, harness.stop_event)
-        harness.preview.finish()
+        summary = harness.preview.finish()
 
         assert harness.calls == []
         assert harness.preview.final_text_for(np.zeros(3, dtype=np.float32)) is None
+        # Stopped before the first poll: the summary still covers the recording.
+        assert summary.speech_s == pytest.approx(1.5) and not summary.failed
 
     def test_slow_draft_ends_preview_for_this_recording(self, monkeypatch):
         monkeypatch.setattr(live_preview, "SLOW_DRAFT_S", 0.0)
@@ -356,9 +358,10 @@ class TestLivePreview:
         with caplog.at_level("ERROR", logger="pulsescribe.audio"):
             harness.preview.start(chunks, levels, harness.stop_event)
             harness.wait_for_passes(1)
-            harness.preview.finish()
+            summary = harness.preview.finish()
 
         # Logged by the preview itself, so the error did not escape its thread.
         assert [record.getMessage() for record in caplog.records] == ["Live-Vorschau abgebrochen"]
         assert harness.published == []
+        assert summary.failed
         assert harness.preview.final_text_for(np.zeros(3, dtype=np.float32)) is None

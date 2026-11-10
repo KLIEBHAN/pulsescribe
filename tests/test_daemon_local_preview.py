@@ -140,6 +140,24 @@ def test_each_recording_logs_what_the_preview_did(daemon, caplog):
     assert len(lines) == 2
 
 
+def test_failed_preview_is_named_in_the_log(daemon, caplog):
+    provider = daemon._provider_cache["local"]
+    final_pass = provider.transcribe_audio
+
+    def transcribe_audio(audio, model=None, language=None, *, draft=False, quiet=False):
+        if quiet:  # preview passes
+            raise RuntimeError("model gone")
+        return final_pass(audio, model, language, draft=draft, quiet=quiet)
+
+    provider.transcribe_audio = transcribe_audio
+    with caplog.at_level("INFO", logger="pulsescribe"):
+        interim, results = _record(daemon, _chunks(0.1, 1.5), preview_passes=99, timeout_s=0.3)
+
+    assert interim == [] and results == [" Heute ist ein schöner Tag."]
+    messages = [record.getMessage() for record in caplog.records]
+    assert "Live-Vorschau: nach einem Fehler beendet (siehe Fehlermeldung davor)" in messages
+
+
 def test_quiet_microphone_still_previews(daemon):
     # Loudest chunk 0.012 like a MacBook microphone at low input volume.
     speech = _chunks(0.004, 1.2) + _chunks(0.012, 0.3)

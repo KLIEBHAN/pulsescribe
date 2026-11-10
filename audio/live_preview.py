@@ -226,7 +226,8 @@ class PreviewSummary:
     slowest_s: float  # longest pass
     speech_s: float  # part of the recording that counted as speech
     max_level: float  # loudest chunk
-    model_ready: bool  # False: the model never finished loading
+    model_ready: bool  # False: ``ready()`` never was true
+    failed: bool  # a pass raised; the error is in the log
 
 
 class LivePreview:
@@ -275,6 +276,7 @@ class LivePreview:
         self._draft_seconds: list[float] = []
         self._settled_seconds: list[float] = []
         self._model_ready = False
+        self._failed = False
 
     def start(
         self,
@@ -305,6 +307,7 @@ class LivePreview:
             speech_s=self._planner.speech_seconds,
             max_level=self._planner.max_level,
             model_ready=self._model_ready,
+            failed=self._failed,
         )
 
     def final_text_for(self, audio: Any) -> str | None:
@@ -326,14 +329,7 @@ class LivePreview:
     ) -> None:
         try:
             while not self._finished.is_set() and not stop_event.wait(POLL_S):
-                # levels trails chunks, so every observed level has its chunk.
-                count = len(levels)
-                if count > self._observed:
-                    self._planner.observe(
-                        (len(chunks[i]) for i in range(self._observed, count)),
-                        levels[self._observed : count],
-                    )
-                    self._observed = count
+                self._observe_new(chunks, levels)
                 if not self._ready():
                     continue
                 self._model_ready = True
@@ -342,9 +338,22 @@ class LivePreview:
                     continue
                 if not self._run_pass(chunks, preview_pass):
                     return
+            self._observe_new(chunks, levels)  # the summary covers the whole recording
         except Exception:
             # The preview is optional; the final pass still transcribes everything.
+            self._failed = True
             logger.exception("Live-Vorschau abgebrochen")
+
+    def _observe_new(self, chunks: Sequence[Any], levels: Sequence[float]) -> None:
+        """Hand the chunks recorded since the last call to the planner."""
+        # levels trails chunks, so every observed level has its chunk.
+        count = len(levels)
+        if count > self._observed:
+            self._planner.observe(
+                (len(chunks[i]) for i in range(self._observed, count)),
+                levels[self._observed : count],
+            )
+            self._observed = count
 
     def _run_pass(self, chunks: Sequence[Any], preview_pass: PreviewPass) -> bool:
         """Run one pass; ``False`` ends the preview for this recording."""
