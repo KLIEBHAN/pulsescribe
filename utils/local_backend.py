@@ -61,7 +61,7 @@ ADVANCED_OPTION_BACKENDS: dict[str, frozenset[str]] = {
     "preset": _ALL_LOCAL_BACKENDS,
     "warmup": _ALL_LOCAL_BACKENDS,
     "idle_unload": _ALL_LOCAL_BACKENDS,  # macOS app only, see advanced_option_applies
-    "live_preview": frozenset({"mlx"}),  # macOS app only; other backends are too slow
+    "live_preview": _ALL_LOCAL_BACKENDS,  # macOS app only, see live_preview_hint
     "device": frozenset({"whisper", "faster"}),  # MLX and Lightning always run on Metal
     "fast": _DECODING_BACKENDS,
     "fp16": frozenset({"whisper", "mlx"}),  # faster-whisper uses its compute type instead
@@ -82,9 +82,11 @@ ADVANCED_OPTION_HELP: dict[str, str] = {
     "preset": "Applies a tested combination of backend, model and the options below.",
     "idle_unload": "Frees the model's memory after this long without dictation. The next "
                    "dictation loads it again while you speak. never: keep it loaded.",
-    "live_preview": "Shows the recognized text in the overlay while you speak. The "
-                    "transcript itself stays the same. off: no text until you stop. "
-                    "Needs a fast model such as turbo; hidden for large models.",
+    "live_preview": "Shows the recognized text in the overlay while you speak; the "
+                    "transcript itself stays the same. on: Whisper transcribes the running "
+                    "recording again and again (MLX with a fast model such as turbo). "
+                    "streaming model: a second model shows each word about half a second "
+                    "after you say it, with every local model. off: no text until you stop.",
     "warmup": "Runs a short silent transcription after loading so the first dictation is "
               "fast. auto: on for openai-whisper and faster-whisper.",
     "device": "Hardware for openai-whisper and faster-whisper. auto picks the GPU when it "
@@ -152,14 +154,24 @@ def normalize_live_preview(value: str | None) -> str:
     return LIVE_PREVIEW_OFF if normalized in ("false", "0", "no", "off") else LIVE_PREVIEW_ON
 
 
-def live_preview_model_hint(model: str | None) -> str | None:
-    """Settings text that explains the missing live preview for ``model``, else None."""
-    if live_preview_supports_model(model):
-        return None
-    return (
-        f"No live text with {(model or '').strip()}: this model is too slow to transcribe "
-        "while you speak. Choose turbo to see your words in the overlay."
-    )
+def live_preview_hint(preview: str, backend: str, model: str | None) -> str | None:
+    """Settings text about the chosen live ``preview`` for ``backend`` and ``model``, else None.
+
+    Explains why Whisper's preview shows nothing with a slow model on MLX, and
+    what the streaming model costs before the user saves that choice. Other
+    backends get no text: they never previewed, and the tooltip says so.
+    """
+    if preview == LIVE_PREVIEW_STREAMING:
+        return (
+            "The streaming model is downloaded once after you save (0.7 GB) and uses about "
+            "1.9 GB of memory while loaded. Whisper still writes the transcript."
+        )
+    if preview == LIVE_PREVIEW_ON and backend == "mlx" and not live_preview_supports_model(model):
+        return (
+            f"No live text with {(model or '').strip()} in mode \"on\": this model is too slow "
+            "to transcribe while you speak. Choose turbo or the streaming model."
+        )
+    return None
 
 
 def advanced_option_applies(option: str, backend: str, *, platform: str | None = None) -> bool:
@@ -346,7 +358,7 @@ __all__ = [
     "LIVE_PREVIEW_OFF",
     "LIVE_PREVIEW_ON",
     "LIVE_PREVIEW_STREAMING",
-    "live_preview_model_hint",
+    "live_preview_hint",
     "normalize_live_preview",
     "live_preview_supports_model",
     "DEFAULT_LOCAL_BACKEND",

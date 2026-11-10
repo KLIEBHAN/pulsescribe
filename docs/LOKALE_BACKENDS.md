@@ -84,16 +84,7 @@ PULSESCRIBE_LOCAL_BACKEND=mlx
 
 **Quantisierung:** `PULSESCRIBE_MLX_QUANT` = `8bit` (Standard), `4bit` oder `none`; in den Einstellungen unter Providers als „Quantization“, solange MLX aktiv ist. Mit 8 Bit lädt PulseScribe `large`/`large-v3` als fertig quantisiertes Repo (1,6 statt 2,9 GB) und quantisiert andere Modelle nach dem Laden. Gemessen auf einem M6 mit deutschen Diktaten: turbo in 8 Bit so genau wie fp16, etwa 10 % schneller, 0,8 statt 1,5 GB Speicher; 4 Bit ist kleiner, aber etwas ungenauer.
 
-**Live-Vorschau:** Während du sprichst, zeigt das Overlay den bisher erkannten Text. PulseScribe transkribiert die laufende Aufnahme etwa alle 0,7 s neu; das letzte Wort erscheint, sobald das nächste folgt oder du pausierst. Der Text füllt zwei Zeilen, in denen die Wörter ihren Platz behalten; schon gezeigte Wörter sind hell, neue gedämpft, bis der nächste Durchlauf sie bestätigt. Der endgültige Text bleibt ein Durchlauf über die ganze Aufnahme und ist derselbe wie ohne Vorschau. Aufnahmen über 20 s zeigen nur ihre neuesten 10 bis 20 s in der Vorschau.
-
-- Eine Pause von etwa einer Sekunde vor dem Stoppen macht den Text sofort verfügbar: Die Pause hat den endgültigen Durchlauf bereits ausgelöst. Das gilt für Aufnahmen bis 20 s in ruhiger Umgebung. Liegt das Hintergrundgeräusch nahe am Pegel leiser Sprache, kann PulseScribe die Pause nicht vom Geräusch unterscheiden: Das letzte Wort erscheint dann 0,7 s nach dem Ende des Sprechens, und der Text kommt zur üblichen Zeit. Geräusch, das lauter ist als ein Zehntel deiner lautesten Sprache, zählt als Sprache; das letzte Wort bleibt dann bis zum Stopp verborgen.
-- Stoppst du mitten in einem Vorschau-Durchlauf, verzögert sich der Text um den Rest dieses Durchlaufs. Durchläufe starten nur, solange du sprichst; das trifft also vor allem zu, wenn du innerhalb von 0,1 s nach dem letzten Wort stoppst.
-- Gemessen auf einem M6 mit turbo und deutschen Aufnahmen, 28 Läufe je Stoppzeitpunkt, bei lautem und bei leisem Mikrofonpegel (lautester Moment 0,012 RMS): Ein Vorschau-Durchlauf dauert 0,3 bis 0,4 s. Die mittlere Wartezeit nach dem Stopp (Median) lag ohne Vorschau bei 0,4 s. Mit Vorschau: 0,04 s bei Stopp 1 s nach dem letzten Wort, 0,3 s nach 0,45 s und 0,4 s nach 0,1 s; dort wartete etwa jede fünfte Aufnahme bis zu 0,3 s länger als ohne Vorschau.
-- Die GPU arbeitet etwa die Hälfte der Zeit, in der du sprichst (alle 0,7 s ein Durchlauf von 0,3 s).
-- Braucht ein schnelles Modell. `large`, `large-v2` und `large-v3` zeigen keinen Live-Text, und die Einstellungen blenden die Option für sie aus: Mit large-v3 dauert ein Durchlauf über 10 s Audio auf einem M6 0,95 s, auf einem M5 dauerten Durchläufe 1,0 bis 1,5 s; turbo braucht auf dem M6 0,35 s. Andere Backends sind ebenfalls zu langsam.
-- Auf einem langsameren Mac aktualisiert sich der Text seltener: Der nächste Durchlauf startet frühestens nach der doppelten Dauer des letzten. Dauern zwei Durchläufe in Folge länger als 1 s, endet die Vorschau für diese Aufnahme und ihr Text verschwindet. Passiert das schon bei den ersten beiden Durchläufen einer Aufnahme, pausiert die Vorschau 30 Minuten oder bis du das Modell wechselst.
-- Kein Live-Text? Mit MLX und eingeschalteter Vorschau steht in `~/.pulsescribe/logs/pulsescribe.log` je Aufnahme eine Zeile `Live-Vorschau:`, die zeigt, wie viele Durchläufe liefen oder warum keiner.
-- Abschalten unter Einstellungen → Providers → Advanced backend options → Live preview oder mit `PULSESCRIBE_LOCAL_PREVIEW=false`.
+**Live-Vorschau:** MLX mit einem schnellen Modell zeigt deine Worte, während du sprichst; siehe [Live-Vorschau](#live-vorschau).
 
 **Modellnamen-Zuordnung:**
 
@@ -166,6 +157,42 @@ PULSESCRIBE_LOCAL_BACKEND=whisper
 
 ---
 
+## Live-Vorschau
+
+Auf macOS kann das Overlay deine Worte zeigen, während du sprichst. Der eingefügte Text ist immer ein Whisper-Durchlauf über die ganze Aufnahme; die Vorschau zeigt nur früher Text. Wähle die Vorschau unter Einstellungen → Providers → Advanced backend options → Live preview oder mit `PULSESCRIBE_LOCAL_PREVIEW`.
+
+| Live preview | Text kommt von | Funktioniert mit | Rückstand hinter der Stimme | Kosten |
+|--------------|----------------|------------------|-----------------------------|--------|
+| `on` (Standard, `true`) | Whisper, das die laufende Aufnahme immer wieder transkribiert | MLX mit einem anderen Modell als large, large-v2 oder large-v3 | 0,3 bis 1,0 s auf einem M6, 0,8 bis 2,4 s auf einem M5 (turbo) | GPU arbeitet etwa die Hälfte der Sprechzeit |
+| `streaming model` (`streaming`) | einem zweiten Modell (NVIDIA Nemotron 3.5 ASR Streaming über sherpa-onnx, auf der CPU) | jedem lokalen Backend und Modell | rund 0,6 s, höchstens 0,8 s (M5) | 0,7 GB Download, rund 1,9 GB Arbeitsspeicher solange geladen, 0,3 CPU-Kerne beim Sprechen |
+| `off` (`false`) | – | – | – | – |
+
+Der Text füllt zwei Zeilen, in denen die Wörter ihren Platz behalten; schon gezeigte Wörter sind hell, neue gedämpft, bis das nächste Update sie bestätigt. Die Rückstände für `on` sind aus gemessenen Durchlaufzeiten gerechnet, die für das Streaming-Modell gemessen.
+
+### Streaming-Modell
+
+- Nach dem Speichern der Auswahl lädt PulseScribe das Modell einmal herunter (682 MB, Fortschritt in der Menüleiste), in den Hugging-Face-Cache, und lädt es im Hintergrund. Bis dahin zeigt Whisper die Vorschau wie bei `on`.
+- Wörter erscheinen in Schritten von rund 0,55 s. Die Vorschau ist ungenauer als Whisper: Auf deutschen Testaufnahmen waren 8 bis 11 % der Wörter falsch (Whisper turbo: 5 %), Zahlen kommen als Wörter, und das letzte Wort kann abgeschnitten sein, bis seine nächste Silbe eintrifft. Der eingefügte Text ist davon nicht betroffen.
+- Gemessen auf einem M5 mit zwei CPU-Threads: Text 0,60 s hinter der Stimme (Median, höchstens 0,77 s), ein Schritt dauert 74 ms. Auf einem M6 war die Wartezeit nach dem Stopp dieselbe wie ohne Vorschau.
+- Anders als bei `on` macht eine Pause vor dem Stoppen den Text nicht früher verfügbar: Whisper beginnt erst beim Stopp.
+- Der Arbeitsspeicher wird mit **Unload when idle** frei, außerdem wenn du eine andere Vorschau wählst oder den lokalen Modus verlässt. Die nächste Aufnahme lädt das Modell in unter einer Sekunde wieder.
+- Fällt das Modell 2 s hinter das Mikrofon zurück, endet die Vorschau für diese Aufnahme und pausiert 30 Minuten.
+- Das Modell steht unter NVIDIAs Lizenz OpenMDW-1.1; die Dateien kommen aus dem Hugging-Face-Repository des sherpa-onnx-Projekts, mit festem Commit.
+
+### Whisper-Vorschau (`on`)
+
+Während du sprichst, zeigt das Overlay den bisher erkannten Text. PulseScribe transkribiert die laufende Aufnahme etwa alle 0,7 s neu; das letzte Wort erscheint, sobald das nächste folgt oder du pausierst. Der endgültige Text bleibt ein Durchlauf über die ganze Aufnahme und ist derselbe wie ohne Vorschau. Aufnahmen über 20 s zeigen nur ihre neuesten 10 bis 20 s in der Vorschau.
+
+- Eine Pause von etwa einer Sekunde vor dem Stoppen macht den Text sofort verfügbar: Die Pause hat den endgültigen Durchlauf bereits ausgelöst. Das gilt für Aufnahmen bis 20 s in ruhiger Umgebung. Liegt das Hintergrundgeräusch nahe am Pegel leiser Sprache, kann PulseScribe die Pause nicht vom Geräusch unterscheiden: Das letzte Wort erscheint dann 0,7 s nach dem Ende des Sprechens, und der Text kommt zur üblichen Zeit. Geräusch, das lauter ist als ein Zehntel deiner lautesten Sprache, zählt als Sprache; das letzte Wort bleibt dann bis zum Stopp verborgen.
+- Stoppst du mitten in einem Vorschau-Durchlauf, verzögert sich der Text um den Rest dieses Durchlaufs. Durchläufe starten nur, solange du sprichst; das trifft also vor allem zu, wenn du innerhalb von 0,1 s nach dem letzten Wort stoppst.
+- Gemessen auf einem M6 mit turbo und deutschen Aufnahmen, 28 Läufe je Stoppzeitpunkt, bei lautem und bei leisem Mikrofonpegel (lautester Moment 0,012 RMS): Ein Vorschau-Durchlauf dauert 0,3 bis 0,4 s. Die mittlere Wartezeit nach dem Stopp (Median) lag ohne Vorschau bei 0,4 s. Mit Vorschau: 0,04 s bei Stopp 1 s nach dem letzten Wort, 0,3 s nach 0,45 s und 0,4 s nach 0,1 s; dort wartete etwa jede fünfte Aufnahme bis zu 0,3 s länger als ohne Vorschau.
+- Die GPU arbeitet etwa die Hälfte der Zeit, in der du sprichst (alle 0,7 s ein Durchlauf von 0,3 s).
+- Braucht ein schnelles Modell. `large`, `large-v2` und `large-v3` zeigen mit `on` keinen Live-Text, und die Einstellungen sagen das: Mit large-v3 dauert ein Durchlauf über 10 s Audio auf einem M6 0,95 s, auf einem M5 dauerten Durchläufe 1,0 bis 1,5 s; turbo braucht auf dem M6 0,35 s. Andere Backends sind ebenfalls zu langsam. Das Streaming-Modell funktioniert mit allen.
+- Auf einem langsameren Mac aktualisiert sich der Text seltener: Der nächste Durchlauf startet frühestens nach der doppelten Dauer des letzten. Dauern zwei Durchläufe in Folge länger als 1 s, endet die Vorschau für diese Aufnahme und ihr Text verschwindet. Passiert das schon bei den ersten beiden Durchläufen einer Aufnahme, pausiert die Vorschau 30 Minuten oder bis du das Modell wechselst.
+- Kein Live-Text? Mit MLX und eingeschalteter Vorschau steht in `~/.pulsescribe/logs/pulsescribe.log` je Aufnahme eine Zeile `Live-Vorschau:`, die zeigt, wie viele Durchläufe liefen oder warum keiner.
+
+---
+
 ## Performance-Tuning
 
 Einstellungen → Providers → Advanced backend options zeigen nur die Optionen, die das aktive Backend nutzt (bei `auto` das Backend, das daraus wird); der Tooltip erklärt jede Option und ihren Standard:
@@ -174,7 +201,7 @@ Einstellungen → Providers → Advanced backend options zeigen nur die Optionen
 |--------|-----------|
 | Preset, Warmup | allen lokalen Backends |
 | Unload when idle | allen lokalen Backends (macOS-App) |
-| Live preview | MLX mit einem anderen Modell als large, large-v2 oder large-v3 (macOS-App) |
+| Live preview | allen lokalen Backends (macOS-App); `on` nur mit MLX und einem schnellen Modell |
 | Fast, Best of, Temperature | openai-whisper, faster-whisper, MLX (Lightning liest nur die Sprache) |
 | Beam size | openai-whisper, faster-whisper (MLX und Lightning haben kein Beam Search) |
 | FP16 | openai-whisper, MLX (faster-whisper nutzt den Compute type) |

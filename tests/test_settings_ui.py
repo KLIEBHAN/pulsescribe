@@ -680,7 +680,7 @@ class TestWelcomeTranscriptionPage:
         assert ctrl._live_preview_popup.titleOfSelectedItem() == "on"
         assert ctrl._build_env_updates_from_controls(None)["PULSESCRIBE_LOCAL_PREVIEW"] is None
 
-    def test_live_preview_is_hidden_and_explained_for_a_slow_model(self, monkeypatch):
+    def test_live_preview_hint_follows_model_and_choice(self, monkeypatch):
         appkit = pytest.importorskip("AppKit")
         import ui.welcome as welcome_mod
 
@@ -695,27 +695,55 @@ class TestWelcomeTranscriptionPage:
         ctrl._build_transcription_tab(page, 500)
         ctrl._toggle_advanced_options()
 
-        def row_shown():
-            return not ctrl._live_preview_popup.superview().isHidden()
+        def choose(title_start):
+            popup = ctrl._live_preview_popup
+            titles = [popup.itemTitleAtIndex_(i) for i in range(popup.numberOfItems())]
+            popup.selectItemWithTitle_(next(t for t in titles if t.startswith(title_start)))
+            ctrl._update_all_visibility()
 
         def guidance():
             return str(ctrl._advanced_local_status_label.stringValue())
 
-        assert not row_shown()
+        # Whisper cannot preview with large-v3 and says what does.
+        assert not ctrl._live_preview_popup.superview().isHidden()
         assert guidance().startswith("No live text with large-v3")
-        assert not ctrl._idle_unload_popup.superview().isHidden()  # other options stay
 
+        # The streaming model works with it; its cost shows before saving.
+        choose("streaming")
+        assert "0.7 GB" in guidance() and "1.9 GB" in guidance()
+        assert ctrl._build_env_updates_from_controls(None)["PULSESCRIBE_LOCAL_PREVIEW"] == "streaming"
+
+        choose("off")
+        assert guidance().startswith("Auto backend")
+        assert ctrl._build_env_updates_from_controls(None)["PULSESCRIBE_LOCAL_PREVIEW"] == "false"
+
+        choose("on")
         ctrl._local_model_popup.selectItemWithTitle_("turbo")
         ctrl._update_all_visibility()
-        assert row_shown()
         assert guidance().startswith("Auto backend")
+        assert ctrl._build_env_updates_from_controls(None)["PULSESCRIBE_LOCAL_PREVIEW"] is None
 
-        # Lightning runs no preview at all, so the model needs no explanation there.
-        ctrl._local_model_popup.selectItemWithTitle_("large-v3")
+        # Every local backend offers the option: the streaming model runs beside all of them.
         ctrl._local_backend_popup.selectItemWithTitle_("lightning")
         ctrl._update_all_visibility()
-        assert not row_shown()
-        assert guidance().startswith("Lightning is selected")
+        assert not ctrl._live_preview_popup.superview().isHidden()
+
+    def test_live_preview_loads_the_streaming_choice(self, monkeypatch):
+        appkit = pytest.importorskip("AppKit")
+        import ui.welcome as welcome_mod
+
+        appkit.NSApplication.sharedApplication()
+        monkeypatch.setattr(welcome_mod, "read_env_file", lambda: {})
+        monkeypatch.setattr(WelcomeController, "_build_window", lambda self: None)
+        ctrl = WelcomeController("f19", {"mode": "local"})
+        ctrl._env_settings_cache = {"PULSESCRIBE_MODE": "local", "PULSESCRIBE_LOCAL_PREVIEW": "streaming"}
+        page = appkit.NSView.alloc().initWithFrame_(appkit.NSMakeRect(0, 0, 610, 500))
+        ctrl._build_transcription_tab(page, 500)
+
+        assert ctrl._live_preview_popup.titleOfSelectedItem().startswith("streaming model")
+        assert ctrl._build_env_updates_from_controls(None)["PULSESCRIBE_LOCAL_PREVIEW"] == "streaming"
+        ctrl._reset_advanced_options()
+        assert ctrl._live_preview_popup.titleOfSelectedItem() == "on"
 
     def test_live_preview_is_on_without_a_setting(self, monkeypatch):
         appkit = pytest.importorskip("AppKit")

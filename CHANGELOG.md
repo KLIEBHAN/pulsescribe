@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Word-by-word live text with a streaming model (macOS)** – Settings →
+  Providers → Advanced backend options → Live preview has a new choice,
+  "streaming model". A second model (NVIDIA Nemotron 3.5 ASR streaming, on
+  the CPU) then shows each word about 0.6 s after you say it, with every
+  local model and backend, including large-v3. Whisper still writes the
+  transcript. It costs a one-time 0.7 GB download and about 1.9 GB of memory
+  while loaded; `PULSESCRIBE_LOCAL_PREVIEW=streaming` selects it too.
+
+### Changed
+
+- **Live preview option for every local backend** – the option no longer
+  hides for large models or other backends; a hint says when "on" cannot
+  show text and what the streaming model costs.
+
 ## [1.19.0] - 2026-11-10
 
 ### Changed

@@ -84,16 +84,7 @@ PULSESCRIBE_LOCAL_BACKEND=mlx
 
 **Quantization:** `PULSESCRIBE_MLX_QUANT` = `8bit` (default), `4bit` or `none`; in Settings → Providers as "Quantization" while MLX is active. 8-bit loads `large`/`large-v3` as a pre-quantized repo (1.6 GB instead of 2.9 GB) and quantizes other models after loading. Measured on an M6 with German dictation: turbo 8-bit as accurate as fp16, about 10 % faster, 0.8 GB instead of 1.5 GB memory; 4-bit is smaller but slightly less accurate.
 
-**Live preview:** While you speak, the overlay shows the text recognized so far. PulseScribe transcribes the running recording again about every 0.7 s; the last word appears once the next one follows or you pause. The text fills two lines whose words keep their place; words shown before are bright, new ones dimmed until the next pass confirms them. The final transcript is still one pass over the whole recording, so its text is the same as without the preview. Recordings longer than 20 s preview only their newest 10 to 20 s.
-
-- A pause of about one second before you stop makes the transcript available at once: the pause already ran the final pass. This applies to recordings up to 20 s in a quiet room. With background noise close to the level of quiet speech, PulseScribe cannot tell the pause from the noise: the last word then appears 0.7 s after you stop speaking, and the transcript comes at the usual time. Noise louder than a tenth of your loudest speech counts as speech, so the last word stays hidden until you stop.
-- Stopping in the middle of a preview pass delays the transcript by the rest of that pass. Passes start only while you speak, so this happens mostly when you stop within 0.1 s of your last word.
-- Measured on an M6 with turbo and German recordings, 28 runs per stop time, at a loud and at a quiet microphone level (loudest moment 0.012 RMS): a preview pass takes 0.3 to 0.4 s. Median waiting time after the stop was 0.4 s without the preview. With it: 0.04 s when stopping 1 s after the last word, 0.3 s after 0.45 s and 0.4 s after 0.1 s, where about one recording in five waited up to 0.3 s longer than without the preview.
-- The GPU works for roughly half of the time you speak (a 0.3 s pass every 0.7 s).
-- Needs a fast model. `large`, `large-v2` and `large-v3` show no live text, and Settings hides the option for them: with large-v3 a pass over 10 s of audio takes 0.95 s on an M6, and passes on an M5 took 1.0 to 1.5 s; turbo takes 0.35 s on the M6. Other backends are too slow as well.
-- On a slower Mac the text updates less often: the next pass starts at least twice the duration of the last one later. If two passes in a row take longer than 1 s, the preview ends for that recording and its text disappears. If that happens with the first two passes of a recording, the preview pauses for 30 minutes or until you change the model.
-- No live text? With MLX and the preview turned on, `~/.pulsescribe/logs/pulsescribe.log` has one `Live-Vorschau:` line per recording that says how many passes ran or why none did.
-- Turn it off in Settings → Providers → Advanced backend options → Live preview, or with `PULSESCRIBE_LOCAL_PREVIEW=false`.
+**Live preview:** MLX with a fast model shows your words while you speak; see [Live Preview](#live-preview).
 
 **Model name mapping:**
 
@@ -166,6 +157,42 @@ PULSESCRIBE_LOCAL_BACKEND=whisper
 
 ---
 
+## Live Preview
+
+On macOS the overlay can show your words while you speak. The transcript itself is always one Whisper pass over the whole recording; the preview only shows text earlier. Choose the preview in Settings → Providers → Advanced backend options → Live preview, or with `PULSESCRIBE_LOCAL_PREVIEW`.
+
+| Live preview | Text comes from | Works with | Behind your voice | Costs |
+|--------------|-----------------|------------|-------------------|-------|
+| `on` (default, `true`) | Whisper, transcribing the running recording again and again | MLX with a model other than large, large-v2 or large-v3 | 0.3 to 1.0 s on an M6, 0.8 to 2.4 s on an M5 (turbo) | GPU busy about half of the time you speak |
+| `streaming model` (`streaming`) | a second model (NVIDIA Nemotron 3.5 ASR streaming via sherpa-onnx, on the CPU) | every local backend and model | about 0.6 s, at most 0.8 s (M5) | 0.7 GB download, about 1.9 GB memory while loaded, 0.3 CPU cores while you speak |
+| `off` (`false`) | – | – | – | – |
+
+The text fills two lines whose words keep their place; words shown before are bright, new ones dimmed until the next update confirms them. The delays for `on` are computed from measured pass durations, those for the streaming model are measured.
+
+### Streaming model
+
+- After you save the choice, PulseScribe downloads the model once (682 MB, progress in the menu bar) into the Hugging Face cache and loads it in the background. Until then Whisper previews as with `on`.
+- Words appear in steps of about 0.55 s. Preview quality is lower than Whisper's: on German test recordings 8 to 11 % of the words were wrong (Whisper turbo: 5 %), numbers come as words, and the last word can be cut until its next syllable arrives. The pasted transcript is not affected.
+- Measured on an M5 with two CPU threads: text 0.60 s behind the voice (median, 0.77 s at most), one step takes 74 ms. On an M6 the waiting time after the stop was the same as without a preview.
+- Unlike `on`, a pause before the stop does not make the transcript available earlier: Whisper starts when you stop.
+- The memory is freed with **Unload when idle**, when you choose another preview or leave local mode. The next recording loads the model again in under a second.
+- If the model falls 2 s behind the microphone, the preview ends for that recording and pauses for 30 minutes.
+- The model is licensed by NVIDIA under OpenMDW-1.1; the files come from the sherpa-onnx project's Hugging Face repository at a fixed commit.
+
+### Whisper preview (`on`)
+
+While you speak, the overlay shows the text recognized so far. PulseScribe transcribes the running recording again about every 0.7 s; the last word appears once the next one follows or you pause. The final transcript is still one pass over the whole recording, so its text is the same as without the preview. Recordings longer than 20 s preview only their newest 10 to 20 s.
+
+- A pause of about one second before you stop makes the transcript available at once: the pause already ran the final pass. This applies to recordings up to 20 s in a quiet room. With background noise close to the level of quiet speech, PulseScribe cannot tell the pause from the noise: the last word then appears 0.7 s after you stop speaking, and the transcript comes at the usual time. Noise louder than a tenth of your loudest speech counts as speech, so the last word stays hidden until you stop.
+- Stopping in the middle of a preview pass delays the transcript by the rest of that pass. Passes start only while you speak, so this happens mostly when you stop within 0.1 s of your last word.
+- Measured on an M6 with turbo and German recordings, 28 runs per stop time, at a loud and at a quiet microphone level (loudest moment 0.012 RMS): a preview pass takes 0.3 to 0.4 s. Median waiting time after the stop was 0.4 s without the preview. With it: 0.04 s when stopping 1 s after the last word, 0.3 s after 0.45 s and 0.4 s after 0.1 s, where about one recording in five waited up to 0.3 s longer than without the preview.
+- The GPU works for roughly half of the time you speak (a 0.3 s pass every 0.7 s).
+- Needs a fast model. `large`, `large-v2` and `large-v3` show no live text with `on`, and Settings say so: with large-v3 a pass over 10 s of audio takes 0.95 s on an M6, and passes on an M5 took 1.0 to 1.5 s; turbo takes 0.35 s on the M6. Other backends are too slow as well. The streaming model works with all of them.
+- On a slower Mac the text updates less often: the next pass starts at least twice the duration of the last one later. If two passes in a row take longer than 1 s, the preview ends for that recording and its text disappears. If that happens with the first two passes of a recording, the preview pauses for 30 minutes or until you change the model.
+- No live text? With MLX and the preview turned on, `~/.pulsescribe/logs/pulsescribe.log` has one `Live-Vorschau:` line per recording that says how many passes ran or why none did.
+
+---
+
 ## Performance Tuning
 
 Settings → Providers → Advanced backend options only show the options the active backend uses (for `auto`, the backend it resolves to); hover an option for what it does and its default:
@@ -174,7 +201,7 @@ Settings → Providers → Advanced backend options only show the options the ac
 |--------|------------|
 | Preset, Warmup | all local backends |
 | Unload when idle | all local backends (macOS app) |
-| Live preview | MLX with a model other than large, large-v2 or large-v3 (macOS app) |
+| Live preview | all local backends (macOS app); `on` only with MLX and a fast model |
 | Fast, Best of, Temperature | openai-whisper, faster-whisper, MLX (Lightning only reads the language) |
 | Beam size | openai-whisper, faster-whisper (MLX and Lightning have no beam search) |
 | FP16 | openai-whisper, MLX (faster-whisper uses the compute type) |
