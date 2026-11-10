@@ -101,12 +101,17 @@ def test_finish_does_not_wait_for_a_stalled_model(monkeypatch, caplog):
 
     preview = StreamingPreview(open_session=stalled_session, publish=lambda text: None, sample_rate=RATE)
     preview.start(_chunks(1.0), [], threading.Event())
+    thread = preview._thread
     with caplog.at_level("WARNING", logger="pulsescribe.audio"):
         summary = preview.finish()  # returns although the model call never did
+        assert thread.is_alive()
+        assert [record.getMessage() for record in caplog.records] == [
+            "Live-Vorschau (Streaming) reagiert nicht, Aufnahme läuft ohne sie weiter"
+        ]
     release.set()
+    thread.join(timeout=5)  # the abandoned thread ends inside this test
 
-    assert summary.failed
-    assert "reagiert nicht" in caplog.records[0].getMessage()
+    assert summary.failed and not thread.is_alive()
 
 
 def test_model_error_ends_the_preview_and_removes_its_text(caplog):
