@@ -113,8 +113,9 @@ class InterimLines:
     start: int = 0
 
 
-_SENTENCE_END = (".", "!", "?", "…")
-_TAIL_PROBE_CHARS = 24
+_SENTENCE_END = (".", "!", "?", "…", "。", "！", "？")
+_ANCHOR_CHARS = 24
+_LONGEST_WORD_CHARS = 40  # longer runs without a space are text in a script without spaces
 
 
 def wrap_interim_text(
@@ -123,16 +124,18 @@ def wrap_interim_text(
     fits: Callable[[str], bool],
     max_lines: int = 2,
 ) -> InterimLines:
-    """Wrap growing live text into at most ``max_lines`` lines that do not reflow.
+    """Wrap growing live text into at most ``max_lines`` (>= 1) lines that do not reflow.
 
     ``fits(line)`` tells whether a line fits the text zone. Words keep their
-    line and position while the text only grows: the first visible line starts
-    where it started in ``previous``, so later words cannot move earlier ones,
+    line and position while the text grows: the first visible line starts with
+    the same words as in ``previous``, so later words cannot move earlier ones,
     and a line scrolls out as a whole. A revised word reflows only what follows
-    it. Also copes with a source that lost characters at its start (a tail read).
+    it. That also holds when text before the visible lines changed or the
+    source lost characters at its start (a tail read). A word wider than the
+    zone, such as text in a script without spaces, breaks between characters.
 
-    Text shared with ``previous`` counts as confirmed, the rest as fresh. Text
-    that ends a sentence is confirmed as a whole.
+    Visible text shared with ``previous`` counts as confirmed, the rest as
+    fresh. Text that ends a sentence is confirmed as a whole.
     """
     source = " ".join(text.split())
     if not source:
@@ -141,11 +144,11 @@ def wrap_interim_text(
     start = 0
     confirmed = 0
     if previous is not None and previous.source:
-        shift = _lost_at_start(previous.source, source)
-        confirmed = _common_word_prefix(previous.source[shift:], source)
-        previous_start = previous.start - shift
-        if 0 < previous_start <= confirmed:
-            start = previous_start
+        shown = previous.source[previous.start :]
+        found = _find_line_start(source, shown, previous)
+        start = found or 0
+        before = previous.source if found is None else shown
+        confirmed = start + _common_word_prefix(before, source[start:])
     if source.endswith(_SENTENCE_END):
         confirmed = len(source)
 
@@ -155,7 +158,7 @@ def wrap_interim_text(
         if lines and fits(f"{lines[-1][1]} {word}"):
             lines[-1] = (lines[-1][0], f"{lines[-1][1]} {word}")
         else:
-            lines.append((offset, word))
+            lines.extend(_break_word(word, offset, fits))
         offset += len(word) + 1
     visible = lines[-max_lines:]
     return InterimLines(
@@ -168,12 +171,41 @@ def wrap_interim_text(
     )
 
 
-def _lost_at_start(previous: str, current: str) -> int:
-    """Characters ``previous`` has before the point where ``current`` begins."""
-    probe = current[:_TAIL_PROBE_CHARS]
-    if previous.startswith(probe):
+def _find_line_start(source: str, shown: str, previous: InterimLines) -> int | None:
+    """Offset in ``source`` where the first line shown before begins again, if it does."""
+    if previous.start == 0:
         return 0
-    return max(previous.find(probe), 0)
+    found = _occurrences(source, shown[:_ANCHOR_CHARS])
+    if not found:
+        return None
+    at = min(found, key=lambda position: abs(position - previous.start))
+    # A line begins at a word, unless it already began inside one (no spaces).
+    began_inside_word = previous.source[previous.start - 1] != " "
+    return at if at == 0 or source[at - 1] == " " or began_inside_word else None
+
+
+def _occurrences(text: str, part: str) -> list[int]:
+    positions = []
+    at = text.find(part)
+    while at >= 0:
+        positions.append(at)
+        at = text.find(part, at + 1)
+    return positions
+
+
+def _break_word(word: str, offset: int, fits: Callable[[str], bool]) -> list[tuple[int, str]]:
+    """``word`` as lines: one line, or broken between characters if it is too wide."""
+    if fits(word):
+        return [(offset, word)]
+    pieces: list[tuple[int, str]] = []
+    piece = ""
+    for index, char in enumerate(word):
+        if piece and not fits(piece + char):
+            pieces.append((offset + index - len(piece), piece))
+            piece = ""
+        piece += char
+    pieces.append((offset + len(word) - len(piece), piece))
+    return pieces
 
 
 def _common_word_prefix(previous: str, current: str) -> int:
@@ -182,4 +214,5 @@ def _common_word_prefix(previous: str, current: str) -> int:
     same = next((i for i in range(limit) if previous[i] != current[i]), limit)
     if all(same == len(text) or text[same] == " " for text in (previous, current)):
         return same
-    return current.rfind(" ", 0, same) + 1
+    word_start = current.rfind(" ", 0, same) + 1
+    return word_start if same - word_start <= _LONGEST_WORD_CHARS else same

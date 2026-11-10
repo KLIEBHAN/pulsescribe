@@ -855,6 +855,80 @@ def test_overlay_size_is_chosen_per_run():
     controller.update_state(AppState.RECORDING, "hello")
     assert controller._live_size
 
+    # The next run starts while this one's feedback still shows: sized anew.
+    controller.update_state(AppState.DONE)
+    controller.update_state(AppState.LISTENING)
+    assert not controller._live_size
+
+    # An announcement that arrives right after LISTENING still sizes the run.
+    controller._presentation = (controller.rendered[-1][0], (), "0:00", False)
+    controller.set_live_text_expected(True)
+    assert controller._live_size
+    assert controller.rendered[-1][1] == ()  # rendered again at the new size
+
+
+class _Frames:
+    """Stands in for an AppKit view or cell and records the frame it gets."""
+
+    def __init__(self, width: float = 0.0) -> None:
+        self.frame_set = None
+        self._width = width
+
+    def cell(self):
+        return self
+
+    def cellSize(self):
+        return types.SimpleNamespace(width=self._width, height=16.0)
+
+    def setFrame_(self, frame) -> None:
+        self.frame_set = frame
+
+    def setFrameOrigin_(self, origin) -> None:
+        self.frame_set = origin
+
+    def frame(self):
+        return types.SimpleNamespace(origin=types.SimpleNamespace(y=110.0))
+
+    def setFrame_display_(self, frame, _display) -> None:
+        self.frame_set = frame
+
+
+@pytest.mark.parametrize(
+    "live_size,live_lines,size,line_ys",
+    [
+        (False, 0, (400.0, 44.0), [14, -5]),  # status text on the center line
+        (True, 0, (560.0, 62.0), [23, 4]),
+        (True, 2, (560.0, 62.0), [32, 13]),  # two lines, 19 px apart, centered as a block
+        (True, 1, (560.0, 62.0), [32, 13]),  # one line sits where it stays with two
+    ],
+)
+def test_layout_sizes_the_window_and_places_the_text_lines(
+    live_size, live_lines, size, line_ys
+):
+    controller = OverlayController.__new__(OverlayController)
+    controller._rect = lambda x, y, width, height: (x, y, width, height)
+    controller._live_size = live_size
+    controller._max_width = 1000.0
+    controller._text_height = 16
+    controller._meta_height = 16
+    controller._text_fields = [_Frames(120.0), _Frames()]
+    controller._text_field = controller._text_fields[0]
+    controller._meta_field = _Frames(34.0)
+    controller._dismiss_size = types.SimpleNamespace(width=0.0, height=0.0)
+    controller._wave_view = types.SimpleNamespace(view=_Frames())
+    controller._text_clip = _Frames()
+    controller.window = _Frames()
+    controller._window_x = lambda width: (1440 - width) / 2
+    controller._window_size = (0.0, 0.0)
+
+    controller._layout(OverlayContent("level", "Recording"), True, live_lines, "0:07")
+
+    x, y, width, height = controller.window.frame_set
+    assert (width, height) == size
+    assert (x, y) == ((1440 - width) / 2, 110.0)  # centered, grows upward
+    assert controller._text_clip.frame_set[3] == height  # text zone spans the overlay
+    assert [field.frame_set[1] for field in controller._text_fields] == line_ys
+
 
 def test_states_map_to_bars_badges_and_copy(monkeypatch):
     _install_fake_foundation(monkeypatch)

@@ -1178,23 +1178,34 @@ class OverlayController:
                 self._start_fade_out_timer()
 
     def set_live_text_expected(self, expected: bool) -> None:
-        """Tell whether the recording that starts next will show live text."""
+        """Tell whether the recording that starts now will show live text.
+
+        Call it right before the run's LISTENING state; a call that arrives
+        just after it still sizes the run.
+        """
         self._live_text_expected = expected
+        if self._current_state == AppState.LISTENING and self._live_size != expected:
+            self._live_size = expected
+            if self._presentation is not None:
+                self._render(*self._presentation[:2])
 
     def _update_live_size(
         self, state: AppState, previous_state: AppState, has_live_text: bool
     ) -> None:
         """Pick the overlay size for a run: large with live text, else compact.
 
-        The size is set when a run starts and kept until its feedback is gone,
-        so nothing resizes while the user watches. Live text that was not
-        announced still gets the large size.
+        The size is set when a run starts (LISTENING) and kept until its
+        feedback is gone, so nothing resizes while the user watches. Live text
+        that was not announced still gets the large size. A message outside a
+        run is compact.
         """
         if has_live_text:
             self._live_size = True
+        elif state == AppState.LISTENING:
+            if previous_state != AppState.LISTENING:
+                self._live_size = self._live_text_expected
         elif previous_state == AppState.IDLE:
-            recording = state in (AppState.LISTENING, AppState.RECORDING)
-            self._live_size = recording and self._live_text_expected
+            self._live_size = False
 
     def _fits_live_line(self, line: str) -> bool:
         """Whether ``line`` fits one line of the live text zone."""

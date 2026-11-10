@@ -284,17 +284,49 @@ def test_obstacle_tells_whether_settings_allow_the_preview(daemon, monkeypatch):
     assert daemon._local_preview_obstacle("local") == ""
 
 
-def test_recording_start_sizes_the_overlay_for_live_text(daemon, monkeypatch):
-    announced = []
-    daemon._overlay = SimpleNamespace(set_live_text_expected=announced.append)
+@pytest.mark.parametrize(
+    "setup,expected",
+    [
+        (lambda d, env: None, True),  # local preview allowed, MLX backend
+        (lambda d, env: setattr(d, "model", "large-v3"), False),
+        (lambda d, env: env("PULSESCRIBE_LOCAL_BACKEND", "faster"), False),
+        (lambda d, env: setattr(d, "mode", "deepgram"), True),  # Deepgram streams
+        (lambda d, env: (setattr(d, "mode", "deepgram"), env("PULSESCRIBE_STREAMING", "false")), False),
+        (lambda d, env: setattr(d, "mode", "openai"), False),
+    ],
+    ids=["local-preview", "slow-model", "other-backend", "deepgram", "deepgram-rest", "cloud"],
+)
+def test_recording_start_sizes_the_overlay_for_live_text(daemon, monkeypatch, setup, expected):
+    import pulsescribe_daemon
+
+    events = []
+    daemon._overlay = SimpleNamespace(
+        set_live_text_expected=lambda value: events.append(("live text", value)),
+        update_state=lambda state, _text=None: events.append(state),
+    )
+    monkeypatch.setenv("PULSESCRIBE_LOCAL_BACKEND", "mlx")
     monkeypatch.setattr(daemon, "_call_on_main", lambda fn: fn())
+    monkeypatch.setattr(daemon, "_do_ui_update", lambda state, _text=None: events.append(state))
+    monkeypatch.setattr(threading, "current_thread", lambda: SimpleNamespace(name="MainThread"))
+    for name in ("_preload_local_model_async", "_start_result_polling", "_start_interim_polling"):
+        monkeypatch.setattr(daemon, name, lambda *a: None)
+    for name in ("_recording_worker", "_streaming_worker"):
+        monkeypatch.setattr(daemon, name, lambda *a: None)
+    monkeypatch.setattr(
+        pulsescribe_daemon, "start_macos_latency_run",
+        lambda **k: SimpleNamespace(mark=lambda *a: None, finish=lambda *a: None),
+    )
+    setup(daemon, monkeypatch.setenv)
 
-    daemon._expect_live_text(True)
-    daemon._expect_live_text(False)
+    daemon._start_recording_locked()
+
+    # Announced before the first state of the run, so the overlay opens at its size.
+    assert events[:2] == [("live text", expected), AppState.LISTENING]
+
+
+def test_no_overlay_means_nothing_to_size(daemon):
     daemon._overlay = None
-    daemon._expect_live_text(True)  # no overlay: nothing to size
-
-    assert announced == [True, False]
+    daemon._expect_live_text(True)
 
 
 def test_preview_waits_for_a_loading_model_and_never_runs_on_other_backends(daemon):
