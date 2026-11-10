@@ -80,7 +80,7 @@ try:
     )
     from audio.live_preview import LivePreview
     from providers.deepgram_stream import deepgram_stream_core
-    from utils.local_backend import live_preview_supports_model
+    from utils.local_backend import effective_local_backend, live_preview_supports_model
     from utils.model_download import format_download_status
     from providers import get_provider
     from providers.local_memory import (
@@ -2281,6 +2281,15 @@ class PulseScribeDaemon:
         self._set_worker_phase(f"starting:{effective_mode}", run_id=run_id)
 
         self._recording = True
+        # The local backend is a guess here; live text that arrives anyway
+        # still gets its size.
+        self._expect_live_text(
+            use_streaming
+            or (
+                self._local_preview_obstacle(effective_mode) is None
+                and effective_local_backend(os.getenv("PULSESCRIBE_LOCAL_BACKEND")) == "mlx"
+            )
+        )
         self._update_state(AppState.LISTENING)
         if effective_mode == "local" and self.mode == "local":
             # No-op while warm; after an idle unload the model loads during speech.
@@ -2644,6 +2653,37 @@ class PulseScribeDaemon:
             latency_run=latency_run,
         )
 
+    def _local_preview_obstacle(self, run_mode: str) -> str | None:
+        """Why a local recording in ``run_mode`` gets no live preview, by the settings.
+
+        None means no obstacle. An empty text means the preview does not apply
+        (other mode, turned off); any other text is the reason for the log. The
+        backend is not checked here.
+        """
+        if self.mode != "local" or run_mode != "local":
+            return ""
+        if not get_env_bool_default("PULSESCRIBE_LOCAL_PREVIEW", True):
+            return ""
+        model_name = self._model_name_for_logging(None)
+        if not live_preview_supports_model(model_name):
+            return f"Modell {model_name} ist dafür zu langsam, turbo zeigt Live-Text"
+        if self._preview_off is not None:
+            signature, retry_at = self._preview_off
+            minutes_left = (retry_at - time.monotonic()) / 60
+            if signature == self._local_provider_memory_signature() and minutes_left > 0:
+                return (
+                    "Entwürfe waren mit diesem Modell auf diesem Mac zu langsam, "
+                    f"nächster Versuch in {minutes_left:.0f} min"
+                )
+            self._preview_off = None
+        return None
+
+    def _expect_live_text(self, expected: bool) -> None:
+        """Size the overlay for the recording that starts now (see OverlayController)."""
+        overlay = self._overlay
+        if overlay is not None:
+            self._call_on_main(lambda: overlay.set_live_text_expected(expected))
+
     def _create_local_preview(
         self,
         result_queue_ref: queue.Queue[DaemonMessage | Exception],
@@ -2656,16 +2696,14 @@ class PulseScribeDaemon:
         dictation of a cloud setup has none. Preview texts arrive as
         INTERIM_TEXT messages.
         """
-        if self.mode != "local" or (self._run_mode or self.mode) != "local":
-            return None
-        if not get_env_bool_default("PULSESCRIBE_LOCAL_PREVIEW", True):
-            return None
-
         def uses_mlx() -> bool:
             return provider.get_runtime_info().get("backend") == "mlx"
 
         loaded = self._local_preload_complete
         try:
+            obstacle = self._local_preview_obstacle(self._run_mode or self.mode)
+            if obstacle == "":
+                return None
             provider = self._get_provider("local")
             if not hasattr(provider, "transcribe_audio"):
                 return None
@@ -2673,23 +2711,9 @@ class PulseScribeDaemon:
             # capture thread: resolving it can import torch and delay the recording.
             if loaded.is_set() and not uses_mlx():
                 return None
-            model_name = self._model_name_for_logging(provider)
-            if not live_preview_supports_model(model_name):
-                logger.info(
-                    f"Live-Vorschau: aus (Modell {model_name} ist dafür zu langsam, "
-                    "turbo zeigt Live-Text)"
-                )
+            if obstacle is not None:
+                logger.info(f"Live-Vorschau: aus ({obstacle})")
                 return None
-            if self._preview_off is not None:
-                signature, retry_at = self._preview_off
-                minutes_left = (retry_at - time.monotonic()) / 60
-                if signature == self._local_provider_memory_signature() and minutes_left > 0:
-                    logger.info(
-                        "Live-Vorschau: aus (Entwürfe waren mit diesem Modell auf diesem "
-                        f"Mac zu langsam, nächster Versuch in {minutes_left:.0f} min)"
-                    )
-                    return None
-                self._preview_off = None
         except Exception as error:
             # The preview is optional; the recording goes on without it.
             logger.warning(f"Live-Vorschau nicht verfügbar: {error}")

@@ -772,7 +772,10 @@ def _controller(events: list[str] | None = None) -> OverlayController:
     controller._current_state = AppState.IDLE
     controller._last_state_payload = None
     controller._feedback_timer = None
-    controller._previous_interim = ""
+    controller._interim_lines = None
+    controller._live_text_expected = False
+    controller._live_size = False
+    controller._fits_live_line = lambda line: len(line) <= 20
     controller._persistent = False
     controller._wave_view = _FakeWaveModes(events)
     # The recording clock has its own test; keep timer lists about feedback.
@@ -808,13 +811,123 @@ def test_update_state_skips_duplicate_transition_work(monkeypatch):
     assert len(controller.rendered) == 1
 
 
-def test_recording_interim_emphasizes_newest_words():
+def test_recording_interim_wraps_into_lines_and_marks_fresh_words():
     controller = _controller()
 
     controller.update_state(AppState.RECORDING, "hello")
     controller.update_state(AppState.RECORDING, "hello world")
+    assert controller.rendered[-1][1] == (("hello", " world"),)
 
-    assert controller.rendered[-1][1] == ("hello ", "world")
+    controller.update_state(AppState.RECORDING, "hello world this is a longer text")
+    assert controller.rendered[-1][1] == (("hello world", " this is"), ("", "a longer text"))
+
+    # A new recording starts with fresh lines.
+    controller.update_state(AppState.TRANSCRIBING)
+    controller.update_state(AppState.RECORDING, "again")
+    assert controller.rendered[-1][1] == (("", "again"),)
+
+
+def test_overlay_size_is_chosen_per_run():
+    controller = _controller()
+
+    # No live text expected: compact through the whole run.
+    controller.update_state(AppState.LISTENING)
+    controller.update_state(AppState.RECORDING)
+    assert not controller._live_size
+
+    # Announced live text: large from the first state through the feedback.
+    controller.update_state(AppState.IDLE)
+    controller.set_live_text_expected(True)
+    for state in (AppState.LISTENING, AppState.RECORDING, AppState.TRANSCRIBING, AppState.DONE):
+        controller.update_state(state)
+        assert controller._live_size, state
+
+    # A message outside a recording is compact again.
+    controller.update_state(AppState.IDLE)
+    controller.update_state(AppState.ERROR, "Microphone unavailable")
+    assert not controller._live_size
+
+    # Live text that was not announced still gets the large size.
+    controller.update_state(AppState.IDLE)
+    controller.set_live_text_expected(False)
+    controller.update_state(AppState.LISTENING)
+    assert not controller._live_size
+    controller.update_state(AppState.RECORDING, "hello")
+    assert controller._live_size
+
+    # The next run starts while this one's feedback still shows: sized anew.
+    controller.update_state(AppState.DONE)
+    controller.update_state(AppState.LISTENING)
+    assert not controller._live_size
+
+    # An announcement that arrives right after LISTENING still sizes the run.
+    controller._presentation = (controller.rendered[-1][0], (), "0:00", False)
+    controller.set_live_text_expected(True)
+    assert controller._live_size
+    assert controller.rendered[-1][1] == ()  # rendered again at the new size
+
+
+class _Frames:
+    """Stands in for an AppKit view or cell and records the frame it gets."""
+
+    def __init__(self, width: float = 0.0) -> None:
+        self.frame_set = None
+        self._width = width
+
+    def cell(self):
+        return self
+
+    def cellSize(self):
+        return types.SimpleNamespace(width=self._width, height=16.0)
+
+    def setFrame_(self, frame) -> None:
+        self.frame_set = frame
+
+    def setFrameOrigin_(self, origin) -> None:
+        self.frame_set = origin
+
+    def frame(self):
+        return types.SimpleNamespace(origin=types.SimpleNamespace(y=110.0))
+
+    def setFrame_display_(self, frame, _display) -> None:
+        self.frame_set = frame
+
+
+@pytest.mark.parametrize(
+    "live_size,live_lines,size,line_ys",
+    [
+        (False, 0, (400.0, 44.0), [14, -5]),  # status text on the center line
+        (True, 0, (560.0, 62.0), [23, 4]),
+        (True, 2, (560.0, 62.0), [32, 13]),  # two lines, 19 px apart, centered as a block
+        (True, 1, (560.0, 62.0), [32, 13]),  # one line sits where it stays with two
+    ],
+)
+def test_layout_sizes_the_window_and_places_the_text_lines(
+    live_size, live_lines, size, line_ys
+):
+    controller = OverlayController.__new__(OverlayController)
+    controller._rect = lambda x, y, width, height: (x, y, width, height)
+    controller._live_size = live_size
+    controller._max_width = 1000.0
+    controller._text_height = 16
+    controller._meta_height = 16
+    controller._text_fields = [_Frames(120.0), _Frames()]
+    controller._text_field = controller._text_fields[0]
+    controller._meta_field = _Frames(34.0)
+    controller._dismiss_size = types.SimpleNamespace(width=0.0, height=0.0)
+    controller._wave_view = types.SimpleNamespace(view=_Frames())
+    controller._text_clip = _Frames()
+    controller.window = _Frames()
+    controller._window_x = lambda width: (1440 - width) / 2
+    controller._window_size = (0.0, 0.0)
+
+    controller._layout(OverlayContent("level", "Recording"), True, live_lines, "0:07")
+
+    x, y, width, height = controller.window.frame_set
+    assert (width, height) == size
+    assert (x, y) == ((1440 - width) / 2, 110.0)  # centered, grows upward
+    assert controller._text_clip.frame_set[3] == height  # text zone spans the overlay
+    assert [field.frame_set[1] for field in controller._text_fields] == line_ys
 
 
 def test_states_map_to_bars_badges_and_copy(monkeypatch):
@@ -917,9 +1030,14 @@ def test_render_skips_identical_presentations():
     controller = OverlayController.__new__(OverlayController)
     controller._presentation = None
     calls = []
-    controller._text_field = types.SimpleNamespace(
-        setAttributedStringValue_=calls.append, setHidden_=lambda _hidden: None
-    )
+    hidden = {}
+    controller._text_fields = [
+        types.SimpleNamespace(
+            setAttributedStringValue_=calls.append,
+            setHidden_=lambda value, index=index: hidden.__setitem__(index, value),
+        )
+        for index in range(2)
+    ]
     controller._badge_view = types.SimpleNamespace(setHidden_=lambda _hidden: None)
     controller._dismiss_field = types.SimpleNamespace(setHidden_=lambda _hidden: None)
     metas = []
@@ -935,18 +1053,21 @@ def test_render_skips_identical_presentations():
     controller._layout = lambda *args: layouts.append(args)
     content = OverlayContent("low", "Listening…")
 
-    controller._render(content, ("", ""))
-    controller._render(content, ("", ""))
+    controller._render(content, ())
+    controller._render(content, ())
     controller._meta_text = "0:01"  # clock tick: meta only, text untouched
-    controller._render(content, ("", ""))
-    controller._render(content, ("", "new words"))
+    controller._render(content, ())
+    assert hidden == {0: False, 1: True}
+    controller._render(content, (("old words", " new"), ("", "words")))
 
     assert calls == [
         (("Listening…", "muted"),),
-        (("", "interim"), ("new words", "text")),
+        (("old words", "text"), (" new", "interim")),
+        (("", "text"), ("words", "interim")),
     ]
+    assert hidden == {0: False, 1: False}
     assert metas == ["0:00", "0:01"]
-    assert [args[2] for args in layouts] == [False, False, True]
+    assert [args[2] for args in layouts] == [0, 0, 2]
 
 
 def test_recording_clock_ticks_at_1hz_only_while_listening_or_recording(monkeypatch):

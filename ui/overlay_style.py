@@ -19,6 +19,12 @@ OVERLAY_WIDTH = 400  # fixed from LISTENING through DONE
 OVERLAY_MAX_WIDTH_RATIO = 0.75  # of the screen width, for persistent messages
 STATUS_SLOT_WIDTH = 84  # bars, phase line or badge, left-aligned
 TEXT_FADE_WIDTH = 30  # static fade where live text is clipped on the left
+# Recordings that show live text use a larger overlay for the whole run: the
+# text wraps into lines whose words keep their place (ui/overlay_text.py).
+LIVE_TEXT_WIDTH = 560
+LIVE_TEXT_HEIGHT = 62
+LIVE_TEXT_LINES = 2
+LIVE_TEXT_LINE_PITCH = 19
 
 BACKGROUND_COLOR = "#1b1b1b"
 BORDER_COLOR = "#333333"
@@ -121,13 +127,14 @@ def compute_overlay_layout(
     status_width: float = 0,
     grow: bool = False,
     max_width: float = OVERLAY_WIDTH,
+    base_width: float = OVERLAY_WIDTH,
 ) -> OverlayLayout:
-    """Lay out ``[status] [text …] [meta] [×]`` at a fixed width.
+    """Lay out ``[status] [text …] [meta] [×]`` at the fixed ``base_width``.
 
     The text zone always starts after the ``STATUS_SLOT_WIDTH`` slot, so text
     does not move between states. Only ``grow`` content (persistent messages)
     widens the overlay to fit its text, capped at ``max_width`` and never
-    below ``OVERLAY_WIDTH``. A badge wider than the slot pushes the text
+    below ``base_width``. A badge wider than the slot pushes the text
     instead of overlapping it.
     """
     status_x = float(OVERLAY_PADDING_H)
@@ -137,7 +144,7 @@ def compute_overlay_layout(
         trailing += OVERLAY_GAP + meta_width
     if dismiss_width > 0:
         trailing += OVERLAY_GAP + dismiss_width
-    width = float(OVERLAY_WIDTH)
+    width = float(base_width)
     if grow:
         natural = text_x + max(text_width, 0.0) + trailing + OVERLAY_PADDING_H
         width = max(width, min(natural, max_width))

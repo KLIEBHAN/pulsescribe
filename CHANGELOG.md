@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Live text you can read (macOS)** – recordings with live text (local
+  preview, Deepgram streaming) use a larger overlay with two lines of text
+  instead of one short line that jumped with every update. Words keep their
+  place while the text grows and a line scrolls out as a whole. Words that
+  were already shown are bright; new words are dimmed until the next update
+  confirms them.
+
 ## [1.18.1] - 2026-11-10
 
 ### Fixed

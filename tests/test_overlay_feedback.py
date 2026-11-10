@@ -166,3 +166,118 @@ def test_paste_failure_says_how_to_paste_on_this_platform() -> None:
 
     shortcut = "\u2318V" if sys.platform == "darwin" else "Ctrl+V"
     assert PASTE_FAILED == f"Copied \u2014 press {shortcut}"
+
+
+class TestWrapInterimText:
+    """Live text lines whose words keep their place (ui/overlay_text.py)."""
+
+    @staticmethod
+    def _fits(line: str) -> bool:
+        return len(line) <= 20
+
+    def _feed(self, *texts):
+        from ui.overlay_text import wrap_interim_text
+
+        state = None
+        for text in texts:
+            state = wrap_interim_text(text, state, self._fits)
+        return state
+
+    def test_first_text_is_fresh_and_growth_confirms_what_was_shown(self):
+        assert self._feed("Heute").lines == (("", "Heute"),)
+        assert self._feed("Heute", "Heute ist ein").lines == (("Heute", " ist ein"),)
+
+    def test_words_keep_their_line_when_text_grows(self):
+        state = self._feed("Heute ist ein", "Heute ist ein schöner Tag und")
+        assert state.lines == (("Heute ist ein", ""), ("", "schöner Tag und"))
+        # More words never pull "schöner" back up or push "ein" down.
+        state = self._feed(
+            "Heute ist ein", "Heute ist ein schöner Tag und", "Heute ist ein schöner Tag und morgen"
+        )
+        assert state.lines == (("schöner Tag und", ""), ("", "morgen"))
+        assert state.start == len("Heute ist ein ")
+
+    def test_revised_word_is_fresh_again_and_reflows_only_what_follows(self):
+        state = self._feed("Heute ist ein schöner Tag und", "Heute ist ein schöner Tag, und morgen")
+        assert state.lines == (("schöner ", "Tag, und"), ("", "morgen"))
+
+    def test_sentence_end_confirms_everything(self):
+        state = self._feed("Heute ist ein", "Heute ist ein schöner Tag.")
+        assert state.lines == (("Heute ist ein", ""), ("schöner Tag.", ""))
+
+    def test_longer_word_is_not_confirmed_by_its_beginning(self):
+        assert self._feed("Heute ist", "Heute ists gut").lines == (("Heute ", "ists gut"),)
+        assert self._feed("Heute ists gut", "Heute ist").lines == (("Heute ", "ist"),)
+
+    def test_source_that_lost_its_start_keeps_the_lines(self):
+        # A tail read drops old characters; the visible lines must not reflow.
+        full = "eins zwei drei vier fünf sechs sieben acht neun zehn elf zwölf"
+        shorter, longer = full[:42], full[:52]
+
+        whole = self._feed(shorter, longer, full)
+        cut = self._feed(shorter, longer, full[10:])
+
+        assert whole.lines == (("acht neun zehn", " elf"), ("", "zwölf"))
+        assert cut.lines == whole.lines
+
+    def test_unrelated_text_starts_over(self):
+        state = self._feed("Heute ist ein schöner Tag und", "Morgen")
+        assert state.lines == (("", "Morgen"),)
+        assert state.start == 0
+
+    def test_whitespace_is_normalized_and_empty_text_has_no_lines(self):
+        from ui.overlay_text import InterimLines, wrap_interim_text
+
+        assert self._feed("  Heute \n ist  ").lines == (("", "Heute ist"),)
+        assert wrap_interim_text("  ", None, self._fits) == InterimLines()
+
+    def test_word_wider_than_the_zone_breaks_between_characters(self):
+        state = self._feed("ja Donaudampfschifffahrtsgesellschaft nein")
+        assert state.lines == (("", "Donaudampfschifffahr"), ("", "tsgesellschaft nein"))
+
+    def test_text_without_spaces_wraps_and_scrolls(self):
+        # Chinese has no spaces: the newest characters must stay visible.
+        text = "今天天气很好我们一起去公园散步然后去喝咖啡再回家看一部电影最后早点休息明天还要上班工作"
+        fits = lambda line: len(line) <= 10  # noqa: E731
+        from ui.overlay_text import wrap_interim_text
+
+        state = None
+        for end in (12, 25, 37, len(text)):
+            previous, state = state, wrap_interim_text(text[:end], state, fits)
+            joined = [confirmed + fresh for confirmed, fresh in state.lines]
+            assert all(len(line) <= 10 for line in joined)
+            assert "".join(joined).endswith(text[end - 5 : end])
+            if previous is not None:
+                # The line that stays visible keeps its characters.
+                kept = previous.lines[-1][0] + previous.lines[-1][1]
+                assert any(line.startswith(kept) for line in joined) or len(kept) < 10
+
+    def test_text_without_spaces_confirms_by_character(self):
+        from ui.overlay_text import wrap_interim_text
+
+        text = "今天天气很好我们一起去公园散步然后去喝咖啡再回家看一部电影最后早点休息明天还要上班工作"
+        fits = lambda line: len(line) <= 30  # noqa: E731
+        state = wrap_interim_text(text[:42], wrap_interim_text(text[:41], None, fits), fits)
+
+        assert state.lines == ((text[:30], ""), (text[30:41], text[41:42]))
+
+    def test_revision_before_the_visible_lines_does_not_move_them(self):
+        before = self._feed(
+            "Heute ist ein schöner Tag und morgen wird es regnen",
+            "Heute ist ein schöner Tag und morgen wird es regnen sagt",
+        )
+        assert before.lines == (("morgen wird es", ""), ("regnen", " sagt"))
+        # The first, hidden line changes its length; the visible lines stay.
+        after = self._feed(
+            "Heute ist ein schöner Tag und morgen wird es regnen",
+            "Heute ist ein schöner Tag und morgen wird es regnen sagt",
+            "Heute, ist ein schöner Tag, und morgen wird es regnen sagt der",
+        )
+        assert after.lines == (("morgen wird es", ""), ("regnen sagt", " der"))
+
+    def test_repeated_words_align_on_the_nearest_occurrence(self):
+        phrase = "immer wieder das gleiche"  # longer than one line, shown twice
+        text = f"{phrase} und {phrase} und"
+        grown = self._feed(text, f"{text} noch")
+        assert grown.lines == (("wieder das gleiche", ""), ("und", " noch"))
+        assert grown.start == text.rfind("wieder")  # anchored on the second occurrence
