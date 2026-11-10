@@ -84,6 +84,15 @@ PULSESCRIBE_LOCAL_BACKEND=mlx
 
 **Quantisierung:** `PULSESCRIBE_MLX_QUANT` = `8bit` (Standard), `4bit` oder `none`; in den Einstellungen unter Providers als „Quantization“, solange MLX aktiv ist. Mit 8 Bit lädt PulseScribe `large`/`large-v3` als fertig quantisiertes Repo (1,6 statt 2,9 GB) und quantisiert andere Modelle nach dem Laden. Gemessen auf einem M6 mit deutschen Diktaten: turbo in 8 Bit so genau wie fp16, etwa 10 % schneller, 0,8 statt 1,5 GB Speicher; 4 Bit ist kleiner, aber etwas ungenauer.
 
+**Live-Vorschau:** Während du sprichst, zeigt das Overlay den bisher erkannten Text. PulseScribe transkribiert die laufende Aufnahme etwa alle 0,7 s neu; das letzte Wort erscheint, sobald das nächste folgt oder du pausierst. Der endgültige Text bleibt ein Durchlauf über die ganze Aufnahme und ist derselbe wie ohne Vorschau. Aufnahmen über 20 s zeigen nur ihre neuesten 10 bis 20 s in der Vorschau.
+
+- Eine Pause von etwa einer Sekunde vor dem Stoppen macht den Text sofort verfügbar: Die Pause hat den endgültigen Durchlauf bereits ausgelöst. Das gilt für Aufnahmen bis 20 s in ruhiger Umgebung.
+- Stoppst du mitten in einem Vorschau-Durchlauf, verzögert sich der Text um den Rest dieses Durchlaufs. Durchläufe starten nur, solange du sprichst; das trifft also vor allem zu, wenn du innerhalb von 0,1 s nach dem letzten Wort stoppst.
+- Gemessen auf einem M6 mit turbo und zehn deutschen Aufnahmen: Ein Vorschau-Durchlauf dauert 0,3 bis 0,4 s. Die mittlere Wartezeit nach dem Stopp (Median) lag ohne Vorschau bei 0,39 s. Mit Vorschau: 0,03 s bei Stopp 1 s nach dem letzten Wort, 0,28 s nach 0,45 s, 0,37 s nach 0,25 s und 0,38 s nach 0,1 s; dort wartete eine Aufnahme 0,17 s länger als ohne Vorschau.
+- Die GPU arbeitet etwa die Hälfte der Zeit, in der du sprichst (alle 0,7 s ein Durchlauf von 0,3 s).
+- Dauert ein Durchlauf länger als 1 s, endet die Vorschau für diese Aufnahme. Andere Backends sind dafür zu langsam.
+- Abschalten mit `PULSESCRIBE_LOCAL_PREVIEW=false`.
+
 **Modellnamen-Zuordnung:**
 
 | Kurzname | Vollständige Repo-ID |
