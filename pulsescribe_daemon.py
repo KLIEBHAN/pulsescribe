@@ -78,8 +78,9 @@ try:
         parse_bool,
         load_environment,
     )
-    from audio.live_preview import LivePreview, PreviewSummary
+    from audio.live_preview import LivePreview
     from providers.deepgram_stream import deepgram_stream_core
+    from utils.local_backend import live_preview_supports_model
     from utils.model_download import format_download_status
     from providers import get_provider
     from providers.local_memory import (
@@ -144,6 +145,8 @@ AUDIO_CLOSE_TIMEOUT = 2.0
 # passes the same way.
 TRIM_PAD_S = 0.25
 LOCAL_TAIL_S = 0.2
+# Pause for the live preview after it was too slow from its first draft.
+PREVIEW_RETRY_AFTER_S = 30 * 60
 RELOAD_ENV_SYNC_KEYS = (
     "PULSESCRIBE_HOTKEY",
     "PULSESCRIBE_HOTKEY_MODE",
@@ -330,6 +333,8 @@ class PulseScribeDaemon:
         self._pending_hotkey_reconfigure = False
         # Preload-Status für lokales Modell (für Performance-Debugging)
         self._local_preload_complete = threading.Event()
+        # (model signature, monotonic retry time) while the live preview is paused.
+        self._preview_off: tuple[tuple[str | None, ...], float] | None = None
         # Generation-bound local preload/keepalive lifecycle.
         self._local_warm_lock = threading.Lock()
         self._local_cache_reconcile_lock = threading.Lock()
@@ -2645,10 +2650,11 @@ class PulseScribeDaemon:
     ) -> LivePreview | None:
         """Return the live text preview for a local recording, or None if it does not apply.
 
-        Only MLX is fast enough: a pass over the recording so far has to take
-        well under a second. The preview needs the preloaded model, which exists
-        only in local mode; a local test dictation of a cloud setup has none.
-        Preview texts arrive as INTERIM_TEXT messages.
+        Only MLX with a fast model on a fast enough Mac qualifies: a pass over
+        the recording so far has to take well under a second. The preview needs
+        the preloaded model, which exists only in local mode; a local test
+        dictation of a cloud setup has none. Preview texts arrive as
+        INTERIM_TEXT messages.
         """
         if self.mode != "local" or (self._run_mode or self.mode) != "local":
             return None
@@ -2667,6 +2673,23 @@ class PulseScribeDaemon:
             # capture thread: resolving it can import torch and delay the recording.
             if loaded.is_set() and not uses_mlx():
                 return None
+            model_name = self._model_name_for_logging(provider)
+            if not live_preview_supports_model(model_name):
+                logger.info(
+                    f"Live-Vorschau: aus (Modell {model_name} ist dafür zu langsam, "
+                    "turbo zeigt Live-Text)"
+                )
+                return None
+            if self._preview_off is not None:
+                signature, retry_at = self._preview_off
+                minutes_left = (retry_at - time.monotonic()) / 60
+                if signature == self._local_provider_memory_signature() and minutes_left > 0:
+                    logger.info(
+                        "Live-Vorschau: aus (Entwürfe waren mit diesem Modell auf diesem "
+                        f"Mac zu langsam, nächster Versuch in {minutes_left:.0f} min)"
+                    )
+                    return None
+                self._preview_off = None
         except Exception as error:
             # The preview is optional; the recording goes on without it.
             logger.warning(f"Live-Vorschau nicht verfügbar: {error}")
@@ -2697,16 +2720,29 @@ class PulseScribeDaemon:
             ready=lambda: loaded.is_set() and uses_mlx(),
         )
 
-    @staticmethod
-    def _log_preview_summary(summary: PreviewSummary) -> None:
-        """Log one line per recording: what the live preview did, or why nothing."""
+    def _finish_local_preview(self, preview: LivePreview) -> None:
+        """Stop the preview and log one line: what it did, or why nothing.
+
+        A preview that was too slow from its first draft stays off for this model
+        (see ``_create_local_preview``): each attempt costs passes that can delay
+        the transcript.
+        """
+        summary = preview.finish()
+        if summary.too_slow and summary.fast_drafts == 0:
+            self._preview_off = (
+                self._local_provider_memory_signature(),
+                time.monotonic() + PREVIEW_RETRY_AFTER_S,
+            )
         if summary.failed:
             logger.info("Live-Vorschau: nach einem Fehler beendet (siehe Fehlermeldung davor)")
             return
         if summary.drafts or summary.settled:
+            median = f" (Median {summary.draft_median_s:.2f}s)" if summary.drafts else ""
+            ended = ", beendet: Entwürfe zu langsam" if summary.too_slow else ""
             logger.info(
-                f"Live-Vorschau: {summary.drafts} Entwürfe, {summary.settled} nach Pausen, "
-                f"längster Durchlauf {summary.slowest_s:.2f}s"
+                f"Live-Vorschau: {summary.drafts} Entwürfe{median}, "
+                f"{summary.settled} nach Pausen, "
+                f"längster Durchlauf {summary.slowest_s:.2f}s{ended}"
             )
             return
         reason = (
@@ -3055,7 +3091,7 @@ class PulseScribeDaemon:
                 if preview is not None:
                     # Its running pass holds the model; the final pass comes next.
                     self._set_worker_phase("recording:finish-preview", run_id=run_id)
-                    self._log_preview_summary(preview.finish())
+                    self._finish_local_preview(preview)
             prepared_audio = self._prepare_recorded_audio(
                 recorded_chunks=recorded_chunks,
                 max_rms=max_rms,
@@ -3295,8 +3331,9 @@ class PulseScribeDaemon:
             self._flush_result_batch_audio_state(batch_state)
             batch_state.reset_audio_level()
             # A pass can finish after the stop; its text must not reopen RECORDING.
+            # An empty text takes the preview text away again.
             if self._current_state in (AppState.LISTENING, AppState.RECORDING):
-                self._update_state(AppState.RECORDING, str(result.payload))
+                self._update_state(AppState.RECORDING, str(result.payload) or None)
             return False
 
         if result.type == MessageType.TRANSCRIPT_RESULT:

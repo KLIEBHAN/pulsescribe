@@ -118,6 +118,27 @@ def test_advanced_options_apply_only_where_the_backend_uses_them() -> None:
     assert set(lb.ADVANCED_OPTION_HELP) == set(lb.ADVANCED_OPTION_BACKENDS)
 
 
+def test_live_preview_needs_a_fast_model() -> None:
+    import utils.local_backend as lb
+
+    for model in (
+        "large", "large-v2", "large-v3", " Large-V3 ",
+        "mlx-community/whisper-large-v3-mlx", "mlx-community/whisper-large-v3-mlx-8bit",
+        "mlx-community/whisper-large-v2-mlx-q4", "whisper-large-v3",
+    ):
+        assert not lb.live_preview_supports_model(model), model
+    for model in (
+        None, "", "default", "turbo", "small", "large-en", "large-v3-turbo",
+        "mlx-community/whisper-large-v3-turbo", "mlx-community/whisper-large-v3-turbo-8bit",
+        "mlx-community/distil-whisper-large-v3", "mlx-community/whisper-small-mlx",
+    ):
+        assert lb.live_preview_supports_model(model), model
+        assert lb.live_preview_model_hint(model) is None
+
+    hint = lb.live_preview_model_hint("large-v3")
+    assert hint is not None and "large-v3" in hint and "turbo" in hint
+
+
 def test_effective_local_backend_resolves_auto_like_the_provider(monkeypatch) -> None:
     import platform
 

@@ -90,8 +90,9 @@ PULSESCRIBE_LOCAL_BACKEND=mlx
 - Stoppst du mitten in einem Vorschau-Durchlauf, verzögert sich der Text um den Rest dieses Durchlaufs. Durchläufe starten nur, solange du sprichst; das trifft also vor allem zu, wenn du innerhalb von 0,1 s nach dem letzten Wort stoppst.
 - Gemessen auf einem M6 mit turbo und deutschen Aufnahmen, 28 Läufe je Stoppzeitpunkt, bei lautem und bei leisem Mikrofonpegel (lautester Moment 0,012 RMS): Ein Vorschau-Durchlauf dauert 0,3 bis 0,4 s. Die mittlere Wartezeit nach dem Stopp (Median) lag ohne Vorschau bei 0,4 s. Mit Vorschau: 0,04 s bei Stopp 1 s nach dem letzten Wort, 0,3 s nach 0,45 s und 0,4 s nach 0,1 s; dort wartete etwa jede fünfte Aufnahme bis zu 0,3 s länger als ohne Vorschau.
 - Die GPU arbeitet etwa die Hälfte der Zeit, in der du sprichst (alle 0,7 s ein Durchlauf von 0,3 s).
-- Dauert ein Durchlauf länger als 1 s, endet die Vorschau für diese Aufnahme. Andere Backends sind dafür zu langsam.
-- Kein Live-Text? Läuft die Vorschau, steht in `~/.pulsescribe/logs/pulsescribe.log` je Aufnahme eine Zeile `Live-Vorschau:`, die zeigt, wie viele Durchläufe liefen oder warum keiner.
+- Braucht ein schnelles Modell. `large`, `large-v2` und `large-v3` zeigen keinen Live-Text, und die Einstellungen blenden die Option für sie aus: Mit large-v3 dauert ein Durchlauf über 10 s Audio auf einem M6 0,95 s, auf einem M5 dauerten Durchläufe 1,0 bis 1,5 s; turbo braucht auf dem M6 0,35 s. Andere Backends sind ebenfalls zu langsam.
+- Auf einem langsameren Mac aktualisiert sich der Text seltener: Der nächste Durchlauf startet frühestens nach der doppelten Dauer des letzten. Dauern zwei Durchläufe in Folge länger als 1 s, endet die Vorschau für diese Aufnahme und ihr Text verschwindet. Passiert das schon bei den ersten beiden Durchläufen einer Aufnahme, pausiert die Vorschau 30 Minuten oder bis du das Modell wechselst.
+- Kein Live-Text? Mit MLX und eingeschalteter Vorschau steht in `~/.pulsescribe/logs/pulsescribe.log` je Aufnahme eine Zeile `Live-Vorschau:`, die zeigt, wie viele Durchläufe liefen oder warum keiner.
 - Abschalten unter Einstellungen → Providers → Advanced backend options → Live preview oder mit `PULSESCRIBE_LOCAL_PREVIEW=false`.
 
 **Modellnamen-Zuordnung:**
@@ -173,7 +174,7 @@ Einstellungen → Providers → Advanced backend options zeigen nur die Optionen
 |--------|-----------|
 | Preset, Warmup | allen lokalen Backends |
 | Unload when idle | allen lokalen Backends (macOS-App) |
-| Live preview | MLX (macOS-App) |
+| Live preview | MLX mit einem anderen Modell als large, large-v2 oder large-v3 (macOS-App) |
 | Fast, Best of, Temperature | openai-whisper, faster-whisper, MLX (Lightning liest nur die Sprache) |
 | Beam size | openai-whisper, faster-whisper (MLX und Lightning haben kein Beam Search) |
 | FP16 | openai-whisper, MLX (faster-whisper nutzt den Compute type) |

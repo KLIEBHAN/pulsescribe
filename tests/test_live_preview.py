@@ -219,7 +219,11 @@ def _recording(*parts: tuple[float, float]) -> tuple[list[np.ndarray], list[floa
 
 
 class _Harness:
-    """A LivePreview with recorded calls; ``wait_for_passes`` blocks until n passes ran."""
+    """A LivePreview with recorded calls; ``wait_for_passes`` blocks until n passes ran.
+
+    ``texts`` holds one entry per pass: the text, an exception to raise, or
+    ``(text, seconds)`` for a pass that takes that long.
+    """
 
     def __init__(self, texts, *, ready=lambda: True):
         self.texts = iter(texts)
@@ -244,6 +248,9 @@ class _Harness:
             text = next(self.texts)
             if isinstance(text, Exception):
                 raise text
+            if isinstance(text, tuple):
+                text, seconds = text
+                threading.Event().wait(seconds)
             return text
         finally:
             self._passes.release()
@@ -336,20 +343,51 @@ class TestLivePreview:
         # Stopped before the first poll: the summary still covers the recording.
         assert summary.speech_s == pytest.approx(1.5) and not summary.failed
 
-    def test_slow_draft_ends_preview_for_this_recording(self, monkeypatch):
-        monkeypatch.setattr(live_preview, "SLOW_DRAFT_S", 0.0)
-        harness = _Harness([" Heute ist ein", " Heute ist ein Tag."])
+    @pytest.fixture
+    def back_to_back_drafts(self, monkeypatch):
+        monkeypatch.setattr(live_preview, "MIN_DRAFT_INTERVAL_S", 0.0)
+        monkeypatch.setattr(live_preview, "DRAFT_INTERVAL_FACTOR", 0.0)
+
+    def test_two_slow_drafts_in_a_row_end_the_preview_and_clear_its_text(
+        self, monkeypatch, back_to_back_drafts
+    ):
+        monkeypatch.setattr(live_preview, "SLOW_DRAFT_S", 0.0)  # every draft is slow
+        harness = _Harness([" Heute ist ein", " Heute ist ein schöner Tag"])
         chunks, levels = _recording((SPEECH, 1.5))
 
         harness.preview.start(chunks, levels, harness.stop_event)
         harness.wait_for_passes(1)
+        more_chunks, more_levels = _recording((SPEECH, 0.5))
+        for chunk, level in zip(more_chunks, more_levels):
+            chunks.append(chunk)
+            levels.append(level)
+        harness.wait_for_passes(1)
         thread = harness.preview._thread
         thread.join(timeout=5)  # the preview ends by itself, before any pause
         ended = not thread.is_alive()
-        harness.preview.finish()
+        summary = harness.preview.finish()
 
         assert ended
-        assert len(harness.calls) == 1
+        assert harness.published == ["Heute ist", ""]  # text that no longer follows is removed
+        assert summary.too_slow and (summary.drafts, summary.fast_drafts) == (2, 0)
+
+    def test_one_slow_draft_is_tolerated(self, monkeypatch, back_to_back_drafts):
+        monkeypatch.setattr(live_preview, "SLOW_DRAFT_S", 0.05)
+        harness = _Harness([(" Heute ist ein", 0.1), " Heute ist ein schöner Tag"])
+        chunks, levels = _recording((SPEECH, 1.5))
+
+        harness.preview.start(chunks, levels, harness.stop_event)
+        harness.wait_for_passes(1)
+        more_chunks, more_levels = _recording((SPEECH, 0.5))
+        for chunk, level in zip(more_chunks, more_levels):
+            chunks.append(chunk)
+            levels.append(level)
+        harness.wait_for_passes(1)
+        summary = harness.preview.finish()
+
+        assert harness.published == ["Heute ist", "Heute ist ein schöner"]
+        assert not summary.too_slow and (summary.drafts, summary.fast_drafts) == (2, 1)
+        assert summary.draft_median_s > 0 and summary.slowest_s >= 0.1
 
     def test_failing_pass_is_logged_and_ends_the_preview(self, caplog):
         harness = _Harness([RuntimeError("model gone")])

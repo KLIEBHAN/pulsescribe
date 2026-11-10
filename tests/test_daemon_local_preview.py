@@ -47,6 +47,7 @@ class _Provider:
 @pytest.fixture
 def daemon(monkeypatch):
     monkeypatch.delenv("PULSESCRIBE_LOCAL_PREVIEW", raising=False)
+    monkeypatch.delenv("PULSESCRIBE_LOCAL_MODEL", raising=False)
     monkeypatch.setattr(live_preview, "POLL_S", 0.005)
     d = PulseScribeDaemon(mode="local", language="de")
     d._run_mode = "local"
@@ -204,6 +205,75 @@ def test_no_preview_when_it_does_not_apply(daemon, monkeypatch, setup):
     assert daemon._create_local_preview(queue.Queue()) is None
 
 
+@pytest.mark.parametrize("configure", ["argument", "environment"])
+def test_slow_model_gets_no_preview_and_the_log_says_why(daemon, monkeypatch, caplog, configure):
+    if configure == "argument":
+        daemon.model = "large-v3"
+    else:
+        monkeypatch.setenv("PULSESCRIBE_LOCAL_MODEL", "large-v3")
+
+    with caplog.at_level("INFO", logger="pulsescribe"):
+        preview = daemon._create_local_preview(queue.Queue())
+
+    assert preview is None
+    assert [record.getMessage() for record in caplog.records] == [
+        "Live-Vorschau: aus (Modell large-v3 ist dafür zu langsam, turbo zeigt Live-Text)"
+    ]
+
+    # On another backend turbo would show no live text either: no such advice.
+    caplog.clear()
+    daemon._provider_cache["local"].backend = "faster"
+    with caplog.at_level("INFO", logger="pulsescribe"):
+        assert daemon._create_local_preview(queue.Queue()) is None
+    assert caplog.records == []
+
+
+def test_preview_too_slow_from_the_start_pauses_for_this_model(daemon, monkeypatch, caplog):
+    monkeypatch.setattr(live_preview, "SLOW_DRAFT_S", 0.0)  # every draft is slow
+    monkeypatch.setattr(live_preview, "SLOW_DRAFTS_BEFORE_END", 1)
+    provider = daemon._provider_cache["local"]
+
+    with caplog.at_level("INFO", logger="pulsescribe"):
+        interim, results = _record(daemon, _chunks(0.1, 1.5), preview_passes=1)
+        assert interim == [] and len(results) == 1  # nothing was shown, nothing to clear
+        assert [c["draft"] for c in provider.calls] == [True, False]
+
+        # The next recordings of this model run no preview pass at all ...
+        assert daemon._create_local_preview(queue.Queue()) is None
+
+    lines = [m for m in (r.getMessage() for r in caplog.records) if m.startswith("Live-Vorschau")]
+    assert lines[0].endswith(", beendet: Entwürfe zu langsam")
+    assert lines[1] == (
+        "Live-Vorschau: aus (Entwürfe waren mit diesem Modell auf diesem Mac zu langsam, "
+        "nächster Versuch in 30 min)"
+    )
+
+    # ... until the model changes or half an hour passed.
+    signature, _retry_at = daemon._preview_off
+    daemon.model = "small"
+    assert daemon._create_local_preview(queue.Queue()) is not None
+    daemon.model = None
+    daemon._preview_off = (signature, time.monotonic() - 1)
+    assert daemon._create_local_preview(queue.Queue()) is not None
+
+
+def test_slow_drafts_later_in_a_recording_do_not_pause_the_next_one(daemon, monkeypatch):
+    # One fast draft, then slow ones: a long recording, not a Mac that is too slow.
+    preview = daemon._create_local_preview(queue.Queue())
+    monkeypatch.setattr(
+        preview,
+        "finish",
+        lambda: live_preview.PreviewSummary(
+            drafts=5, fast_drafts=3, settled=0, draft_median_s=0.9, slowest_s=1.2,
+            too_slow=True, speech_s=20.0, max_level=0.1, model_ready=True, failed=False,
+        ),
+    )
+
+    daemon._finish_local_preview(preview)
+
+    assert daemon._preview_off is None
+
+
 def test_preview_waits_for_a_loading_model_and_never_runs_on_other_backends(daemon):
     provider = daemon._provider_cache["local"]
     provider.backend = "faster"
@@ -232,10 +302,13 @@ def test_interim_text_shows_only_while_recording(daemon):
 
     daemon._current_state = AppState.LISTENING
     assert daemon._handle_result_queue_item(message, batch) is False
+    # The preview ended early: its text disappears, the recording goes on.
+    cleared = DaemonMessage(type=MessageType.INTERIM_TEXT, payload="")
+    assert daemon._handle_result_queue_item(cleared, batch) is False
     daemon._current_state = AppState.TRANSCRIBING  # a pass finished after the stop
     assert daemon._handle_result_queue_item(message, batch) is False
 
-    assert shown == [(AppState.RECORDING, "Heute ist")]
+    assert shown == [(AppState.RECORDING, "Heute ist"), (AppState.RECORDING, None)]
 
 
 def test_shape_recorded_audio_trims_and_adds_the_tail_only_for_local():

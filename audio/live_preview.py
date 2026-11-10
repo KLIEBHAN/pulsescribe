@@ -10,7 +10,8 @@ Two kinds of passes keep the preview calm and the final transcript fast:
 - While the user speaks, a *draft* pass decodes once, so its duration is
   bounded, and its last word is held back because audio cut mid-word makes
   Whisper guess that word. Drafts start only while speech is going on, so a
-  stop shortly after the last word rarely has to wait for one.
+  stop shortly after the last word rarely has to wait for one. Drafts that
+  take too long end the preview for the recording: a stop would wait for them.
 - At a speech pause, a *settled* pass runs exactly like the final pass and
   shows every word. If the recording then ends without new sound, its text is
   the final transcript and the caller skips its own pass
@@ -20,6 +21,7 @@ Two kinds of passes keep the preview calm and the final transcript fast:
 from __future__ import annotations
 
 import logging
+import statistics
 import threading
 import time
 from bisect import bisect_right
@@ -45,6 +47,7 @@ WINDOW_MAX_S = 20.0  # longer recordings preview only their newest part
 WINDOW_KEEP_S = 10.0
 WINDOW_SEARCH_S = 4.0  # range before WINDOW_KEEP_S searched for the quietest cut
 SLOW_DRAFT_S = 1.0  # a slower draft would delay the final pass too much
+SLOW_DRAFTS_BEFORE_END = 2  # in a row; one slow draft can be an outlier
 POLL_S = 0.05
 
 
@@ -222,8 +225,11 @@ class PreviewSummary:
     """What a preview did during one recording, for the log."""
 
     drafts: int
+    fast_drafts: int  # drafts within SLOW_DRAFT_S
     settled: int
+    draft_median_s: float
     slowest_s: float  # longest pass
+    too_slow: bool  # ended early: drafts in a row took longer than SLOW_DRAFT_S
     speech_s: float  # part of the recording that counted as speech
     max_level: float  # loudest chunk
     model_ready: bool  # False: ``ready()`` never was true
@@ -236,7 +242,8 @@ class LivePreview:
     ``transcribe(audio, draft)`` returns the text for prepared audio; with
     ``draft=False`` it must be the same call the final pass uses.
     ``prepare(audio, max_level)`` shapes raw audio exactly like the final pass.
-    ``publish(text)`` receives each new preview text on the preview thread.
+    ``publish(text)`` receives each new preview text on the preview thread; an
+    empty text means the preview ended early and its text must disappear.
     ``ready()`` tells whether the model is loaded; passes wait until it is.
     The remaining arguments are those of ``PreviewPlanner``.
 
@@ -275,6 +282,9 @@ class LivePreview:
         self._settled: tuple[Any, str] | None = None
         self._draft_seconds: list[float] = []
         self._settled_seconds: list[float] = []
+        self._slow_drafts = 0  # in a row
+        self._fast_drafts = 0
+        self._too_slow = False
         self._model_ready = False
         self._failed = False
 
@@ -302,8 +312,11 @@ class LivePreview:
         drafts, settled = self._draft_seconds, self._settled_seconds
         return PreviewSummary(
             drafts=len(drafts),
+            fast_drafts=self._fast_drafts,
             settled=len(settled),
+            draft_median_s=statistics.median(drafts) if drafts else 0.0,
             slowest_s=max(drafts + settled, default=0.0),
+            too_slow=self._too_slow,
             speech_s=self._planner.speech_seconds,
             max_level=self._planner.max_level,
             model_ready=self._model_ready,
@@ -367,6 +380,19 @@ class LivePreview:
         self._planner.completed(preview_pass, started_at, duration)
         (self._draft_seconds if preview_pass.draft else self._settled_seconds).append(duration)
 
+        if preview_pass.draft and duration <= SLOW_DRAFT_S:
+            self._slow_drafts = 0
+            self._fast_drafts += 1
+        elif preview_pass.draft:
+            self._slow_drafts += 1
+            if self._slow_drafts >= SLOW_DRAFTS_BEFORE_END:
+                # Text that stops following the speaker misleads; show none.
+                self._too_slow = True
+                if self._shown:
+                    self._shown = ""
+                    self._publish("")
+                return False
+
         text = transcript.strip()
         if preview_pass.draft:
             text = draft_display_text(text, self._shown)
@@ -375,13 +401,6 @@ class LivePreview:
         if text and text != self._shown:
             self._shown = text
             self._publish(text)
-
-        if preview_pass.draft and duration > SLOW_DRAFT_S:
-            logger.info(
-                "Live-Vorschau pausiert bis zur nächsten Aufnahme: "
-                f"Durchlauf dauerte {duration:.2f}s"
-            )
-            return False
         return True
 
 
