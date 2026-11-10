@@ -67,7 +67,7 @@ class StreamingModel:
     """
 
     def __init__(self) -> None:
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._recognizer: Any = None
         self._languages: frozenset[str] = frozenset()
 
@@ -132,14 +132,10 @@ class StreamingModel:
         ``language`` is a code such as ``de``; anything the model does not know
         (and ``None`` or ``auto``) lets it detect the language.
         """
-        self.load()
         code = (language or "").strip().lower()[:2]
-        with self._lock:
-            recognizer = self._recognizer
-            known = code in self._languages
-        if recognizer is None:  # released in between
-            raise RuntimeError(f"{MODEL_LABEL} was released")
-        return StreamingSession(recognizer, code if known else "auto")
+        with self._lock:  # a release in between cannot take the model away
+            self.load()
+            return StreamingSession(self._recognizer, code if code in self._languages else "auto")
 
 
 __all__ = ["MODEL_LABEL", "StreamingModel", "StreamingSession"]

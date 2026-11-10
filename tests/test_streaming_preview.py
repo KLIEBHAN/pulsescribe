@@ -76,17 +76,37 @@ def test_publishes_the_text_as_the_recording_grows():
     assert preview.final_text_for(np.zeros(3)) is None  # never the transcript
 
 
-def test_nothing_is_fed_after_the_stop():
-    session, published = _Session(), []
+def test_recording_that_already_stopped_does_not_even_open_a_session():
+    opened, published = [], []
     stop = threading.Event()
     stop.set()
-    preview = _preview(session, published)
+    preview = StreamingPreview(
+        open_session=lambda: opened.append(True), publish=published.append, sample_rate=RATE
+    )
 
     preview.start(_chunks(1.0), [], stop)
     summary = preview.finish()
 
-    assert session.feeds == 0 and published == []
-    assert summary.updates == 0
+    assert opened == [] and published == []  # the model is not loaded for nothing
+    assert summary.updates == 0 and not summary.failed
+
+
+def test_finish_does_not_wait_for_a_stalled_model(monkeypatch, caplog):
+    monkeypatch.setattr(streaming_preview, "FINISH_TIMEOUT_S", 0.05)
+    release = threading.Event()
+
+    def stalled_session():
+        release.wait(5)
+        raise RuntimeError("too late")
+
+    preview = StreamingPreview(open_session=stalled_session, publish=lambda text: None, sample_rate=RATE)
+    preview.start(_chunks(1.0), [], threading.Event())
+    with caplog.at_level("WARNING", logger="pulsescribe.audio"):
+        summary = preview.finish()  # returns although the model call never did
+    release.set()
+
+    assert summary.failed
+    assert "reagiert nicht" in caplog.records[0].getMessage()
 
 
 def test_model_error_ends_the_preview_and_removes_its_text(caplog):
@@ -246,6 +266,24 @@ def test_model_loads_once_from_the_pinned_snapshot_and_releases(model_files):
     assert model.loaded
     assert model.release() is True and not model.loaded
     assert model.release() is False
+
+
+def test_release_while_a_session_opens_cannot_take_the_model_away(model_files):
+    model = StreamingModel()
+    load = model.load
+
+    def load_then_release():
+        load()
+        # Another thread wants to free the model right now; it has to wait.
+        thread = threading.Thread(target=model.release)
+        thread.start()
+        thread.join(timeout=0.05)
+        assert thread.is_alive()
+
+    model.load = load_then_release
+    session = model.open_session("de")
+
+    assert session._recognizer is not None
 
 
 def test_model_that_is_not_downloaded_cannot_load(model_files):

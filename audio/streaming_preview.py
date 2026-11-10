@@ -25,6 +25,9 @@ POLL_S = 0.05
 MAX_BACKLOG_S = 2.0
 # Longest text published; the overlay shows about 120 characters.
 MAX_TEXT_CHARS = 600
+# Longest wait for the running step when the recording ends. A step takes about
+# 0.1 s and loading the model 0.5 s; the transcript must not wait for a stall.
+FINISH_TIMEOUT_S = 1.0
 
 
 class PreviewSession(Protocol):
@@ -54,8 +57,9 @@ class StreamingPreview:
     ``publish(text)`` receives each new preview text on that thread; an empty
     text means the preview ended early and its text must disappear.
 
-    Call ``start`` once the audio callback fills ``chunks`` (float32 arrays),
-    then ``finish`` after the recording stopped.
+    Call ``start`` once the audio callback fills ``chunks`` (float32 mono
+    arrays at ``sample_rate``, the rate the session expects), then ``finish``
+    after the recording stopped.
     """
 
     def __init__(
@@ -93,10 +97,16 @@ class StreamingPreview:
         self._thread.start()
 
     def finish(self) -> StreamingSummary:
-        """Stop previewing and wait for the step that is running."""
+        """Stop previewing; waits at most ``FINISH_TIMEOUT_S`` for the running step."""
         self._finished.set()
         if self._thread is not None:
-            self._thread.join()
+            self._thread.join(timeout=FINISH_TIMEOUT_S)
+            if self._thread.is_alive():
+                # The thread ends by itself once the model call returns.
+                self._failed = True
+                logger.warning(
+                    "Live-Vorschau (Streaming) reagiert nicht, Aufnahme läuft ohne sie weiter"
+                )
             self._thread = None
         return StreamingSummary(
             updates=self._updates,
@@ -114,6 +124,8 @@ class StreamingPreview:
         import numpy as np
 
         try:
+            if self._finished.is_set() or stop_event.is_set():
+                return  # nothing to show any more; do not load the model for it
             session = self._open_session()
             fed = 0
             while not self._finished.is_set() and not stop_event.wait(POLL_S):
