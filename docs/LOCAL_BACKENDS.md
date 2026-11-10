@@ -84,6 +84,15 @@ PULSESCRIBE_LOCAL_BACKEND=mlx
 
 **Quantization:** `PULSESCRIBE_MLX_QUANT` = `8bit` (default), `4bit` or `none`; in Settings → Providers as "Quantization" while MLX is active. 8-bit loads `large`/`large-v3` as a pre-quantized repo (1.6 GB instead of 2.9 GB) and quantizes other models after loading. Measured on an M6 with German dictation: turbo 8-bit as accurate as fp16, about 10 % faster, 0.8 GB instead of 1.5 GB memory; 4-bit is smaller but slightly less accurate.
 
+**Live preview:** While you speak, the overlay shows the text recognized so far. PulseScribe transcribes the running recording again about every 0.7 s; the last word appears once the next one follows or you pause. The final transcript is still one pass over the whole recording, so its text is the same as without the preview. Recordings longer than 20 s preview only their newest 10 to 20 s.
+
+- A pause of about one second before you stop makes the transcript available at once: the pause already ran the final pass. This applies to recordings up to 20 s in a quiet room.
+- Stopping in the middle of a preview pass delays the transcript by the rest of that pass. Passes start only while you speak, so this happens mostly when you stop within 0.1 s of your last word.
+- Measured on an M6 with turbo and ten German recordings: a preview pass takes 0.3 to 0.4 s. Median waiting time after the stop was 0.39 s without the preview. With it: 0.03 s when stopping 1 s after the last word, 0.28 s after 0.45 s, 0.37 s after 0.25 s and 0.38 s after 0.1 s, where one recording waited 0.17 s longer than without the preview.
+- The GPU works for roughly half of the time you speak (a 0.3 s pass every 0.7 s).
+- If a pass takes longer than 1 s, the preview stops for that recording. Other backends are too slow for it.
+- Turn it off with `PULSESCRIBE_LOCAL_PREVIEW=false`.
+
 **Model name mapping:**
 
 | Short Name | Full Repo ID |

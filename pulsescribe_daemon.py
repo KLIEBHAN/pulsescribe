@@ -78,6 +78,7 @@ try:
         parse_bool,
         load_environment,
     )
+    from audio.live_preview import LivePreview
     from providers.deepgram_stream import deepgram_stream_core
     from utils.model_download import format_download_status
     from providers import get_provider
@@ -139,6 +140,10 @@ RESULT_POLL_INTERVAL_IDLE = 0.12
 RESULT_POLL_MAX_MESSAGES_PER_TICK = 250
 AUDIO_FINISHED_CALLBACK_TIMEOUT = 0.35
 AUDIO_CLOSE_TIMEOUT = 2.0
+# Shaping of recorded audio before transcription; the live preview shapes its
+# passes the same way.
+TRIM_PAD_S = 0.25
+LOCAL_TAIL_S = 0.2
 RELOAD_ENV_SYNC_KEYS = (
     "PULSESCRIBE_HOTKEY",
     "PULSESCRIBE_HOTKEY_MODE",
@@ -161,6 +166,7 @@ RELOAD_ENV_SYNC_KEYS = (
     "PULSESCRIBE_LOCAL_VAD_FILTER",
     "PULSESCRIBE_LOCAL_WARMUP",
     "PULSESCRIBE_LOCAL_IDLE_UNLOAD_MINUTES",
+    "PULSESCRIBE_LOCAL_PREVIEW",
     "PULSESCRIBE_LIGHTNING_BATCH_SIZE",
     "PULSESCRIBE_LIGHTNING_QUANT",
     "PULSESCRIBE_MLX_QUANT",
@@ -859,6 +865,36 @@ class PulseScribeDaemon:
         start = max(0, first * hop - int(pad_s * sample_rate))
         end = min(mono.shape[0], last * hop + window + int(pad_s * sample_rate))
         return mono[start:end].astype(np.float32, copy=False)
+
+    @staticmethod
+    def _trim_threshold(max_rms: float) -> float:
+        """RMS below which ``_shape_recorded_audio`` trims leading and trailing audio."""
+        # VAD_THRESHOLD ist fürs Triggern optimiert und kann am Ende zu aggressiv
+        # sein. Für Trimming nutzen wir einen konservativeren dynamischen Wert.
+        threshold = VAD_THRESHOLD * 0.5
+        if max_rms > 0:
+            threshold = min(threshold, max_rms * 0.03)
+        return threshold
+
+    @classmethod
+    def _shape_recorded_audio(cls, audio_data, max_rms: float, *, local: bool):
+        """Shape captured audio for transcription; ``max_rms`` is its loudest chunk.
+
+        Trims silence and, for local Whisper, appends a short silent tail so the
+        last words decode more reliably.
+        """
+        import numpy as np
+
+        trimmed = cls._trim_silence(
+            audio_data,
+            cls._trim_threshold(max_rms),
+            WHISPER_SAMPLE_RATE,
+            pad_s=TRIM_PAD_S,
+        )
+        if not local:
+            return trimmed
+        tail = np.zeros(int(WHISPER_SAMPLE_RATE * LOCAL_TAIL_S), dtype=np.float32)
+        return np.concatenate([trimmed, tail])
 
     def _is_local_warm_generation_current(
         self,
@@ -2603,6 +2639,61 @@ class PulseScribeDaemon:
             latency_run=latency_run,
         )
 
+    def _create_local_preview(
+        self,
+        result_queue_ref: queue.Queue[DaemonMessage | Exception],
+    ) -> LivePreview | None:
+        """Return the live text preview for a local recording, or None if it does not apply.
+
+        Only MLX is fast enough: a pass over the recording so far has to take
+        well under a second. Preview texts arrive as INTERIM_TEXT messages.
+        """
+        if (self._run_mode or self.mode) != "local":
+            return None
+        if not get_env_bool_default("PULSESCRIBE_LOCAL_PREVIEW", True):
+            return None
+        try:
+            provider = self._get_provider("local")
+        except Exception as error:
+            logger.debug(f"Live-Vorschau nicht verfügbar: {error}")
+            return None
+        if not hasattr(provider, "transcribe_audio"):
+            return None
+
+        def uses_mlx() -> bool:
+            return provider.get_runtime_info().get("backend") == "mlx"
+
+        loaded = self._local_preload_complete
+        # While the model still loads, the backend is resolved later, off the
+        # capture thread: resolving it can import torch and delay the recording.
+        if loaded.is_set() and not uses_mlx():
+            return None
+
+        model, language = self.model, self.language
+
+        def transcribe(audio, draft: bool) -> str:
+            return provider.transcribe_audio(
+                audio, model=model, language=language, draft=draft, quiet=True
+            )
+
+        def publish(text: str) -> None:
+            result_queue_ref.put(
+                DaemonMessage(type=MessageType.INTERIM_TEXT, payload=text)
+            )
+
+        return LivePreview(
+            transcribe=transcribe,
+            prepare=lambda audio, max_rms: self._shape_recorded_audio(
+                audio, max_rms, local=True
+            ),
+            publish=publish,
+            sample_rate=WHISPER_SAMPLE_RATE,
+            speech_threshold=VAD_THRESHOLD,
+            quiet_threshold=self._trim_threshold,
+            quiet_pad_s=TRIM_PAD_S,
+            ready=lambda: loaded.is_set() and uses_mlx(),
+        )
+
     def _capture_recording_audio(
         self,
         *,
@@ -2610,11 +2701,14 @@ class PulseScribeDaemon:
         result_queue_ref: queue.Queue[DaemonMessage | Exception],
         stop_event: threading.Event | None,
         latency_run: MacOSLatencyRun,
+        preview: LivePreview | None = None,
     ) -> tuple[list[Any], float, bool]:
         import numpy as np
         import sounddevice as sd
 
         recorded_chunks: list[Any] = []
+        # One RMS per chunk for the live preview, appended after its chunk.
+        chunk_levels: list[float] | None = [] if preview is not None else None
         max_rms = 0.0
         had_speech = False
         player = get_sound_player()
@@ -2628,6 +2722,8 @@ class PulseScribeDaemon:
             rms = float(np.sqrt(np.mean(indata**2)))
             max_rms = max(max_rms, rms)
             had_speech = had_speech or rms > VAD_THRESHOLD
+            if chunk_levels is not None:
+                chunk_levels.append(rms)
             try:
                 result_queue_ref.put_nowait(
                     DaemonMessage(type=MessageType.AUDIO_LEVEL, payload=rms)
@@ -2681,6 +2777,8 @@ class PulseScribeDaemon:
             self._set_worker_phase("recording:ready-sound", run_id=run_id)
             player.play("ready")
             logger.debug("Audio-Stream gestartet")
+            if preview is not None and chunk_levels is not None and stop_event is not None:
+                preview.start(recorded_chunks, chunk_levels, stop_event)
 
             self._set_worker_phase("recording:capture", run_id=run_id)
             while stop_event is not None and not stop_event.is_set():
@@ -2737,38 +2835,15 @@ class PulseScribeDaemon:
             return audio_data, audio_duration
 
         raw_duration = float(audio_data.shape[0]) / WHISPER_SAMPLE_RATE
-        # VAD_THRESHOLD ist fürs Triggern optimiert und kann am Ende zu aggressiv
-        # sein. Für Trimming nutzen wir einen konservativeren dynamischen Wert.
-        trim_threshold = VAD_THRESHOLD * 0.5
-        if max_rms > 0:
-            trim_threshold = min(trim_threshold, max_rms * 0.03)
-        trimmed_audio = self._trim_silence(
-            audio_data,
-            trim_threshold,
-            WHISPER_SAMPLE_RATE,
-            pad_s=0.25,
-        )
-        trimmed_duration = float(trimmed_audio.shape[0]) / WHISPER_SAMPLE_RATE
+        local = (self._run_mode or self.mode) == "local"
+        audio_data = self._shape_recorded_audio(audio_data, max_rms, local=local)
+        audio_duration = float(audio_data.shape[0]) / WHISPER_SAMPLE_RATE
+        trimmed_duration = audio_duration - (LOCAL_TAIL_S if local else 0.0)
         if trimmed_duration < raw_duration - 0.05:
             logger.info(
                 f"Trimmed silence: raw={raw_duration:.2f}s -> "
                 f"trimmed={trimmed_duration:.2f}s"
             )
-
-        audio_data = trimmed_audio
-        audio_duration = trimmed_duration
-
-        # Lokales Whisper profitiert oft von etwas künstlicher End-Silence, damit
-        # letzte Wörter stabiler dekodiert werden.
-        mode_for_run = self._run_mode or self.mode
-        if mode_for_run == "local":
-            tail_s = 0.2
-            tail_samples = int(WHISPER_SAMPLE_RATE * tail_s)
-            if tail_samples > 0:
-                audio_data = np.concatenate(
-                    [audio_data, np.zeros(tail_samples, dtype=np.float32)]
-                )
-                audio_duration += tail_s
 
         return audio_data, audio_duration
 
@@ -2806,8 +2881,24 @@ class PulseScribeDaemon:
         result_queue_ref: queue.Queue[DaemonMessage | Exception],
         run_id: int | None,
         latency_run: MacOSLatencyRun,
+        preview: LivePreview | None = None,
     ) -> str:
         import soundfile as sf
+
+        if preview is not None:
+            previewed = preview.final_text_for(audio_data)
+            if previewed is not None:
+                # The last preview pass transcribed exactly this audio.
+                latency_run.mark("transcribe_start")
+                latency_run.mark_once("transcribe_done")
+                logger.info("Transkript aus der Live-Vorschau übernommen")
+                self._log_transcription_performance(
+                    provider=self._get_provider("local"),
+                    mode_for_run="local",
+                    audio_duration=audio_duration,
+                    t_transcribe=0.0,
+                )
+                return previewed
 
         fd, temp_path = tempfile.mkstemp(suffix=".wav")
         os.close(fd)
@@ -2927,13 +3018,21 @@ class PulseScribeDaemon:
         self._set_worker_phase("recording:boot", run_id=run_id)
         logger.debug(f"RecordingWorker gestartet (run={run_id})")
 
+        preview = self._create_local_preview(result_queue_ref)
         try:
-            recorded_chunks, max_rms, had_speech = self._capture_recording_audio(
-                run_id=run_id,
-                result_queue_ref=result_queue_ref,
-                stop_event=stop_event,
-                latency_run=latency_run,
-            )
+            try:
+                recorded_chunks, max_rms, had_speech = self._capture_recording_audio(
+                    run_id=run_id,
+                    result_queue_ref=result_queue_ref,
+                    stop_event=stop_event,
+                    latency_run=latency_run,
+                    preview=preview,
+                )
+            finally:
+                if preview is not None:
+                    # Its running pass holds the model; the final pass comes next.
+                    self._set_worker_phase("recording:finish-preview", run_id=run_id)
+                    preview.finish()
             prepared_audio = self._prepare_recorded_audio(
                 recorded_chunks=recorded_chunks,
                 max_rms=max_rms,
@@ -2952,6 +3051,7 @@ class PulseScribeDaemon:
                 result_queue_ref=result_queue_ref,
                 run_id=run_id,
                 latency_run=latency_run,
+                preview=preview,
             )
 
             transcript = self._maybe_refine(
@@ -3166,6 +3266,14 @@ class PulseScribeDaemon:
 
         if result.type == MessageType.AUDIO_LEVEL:
             self._handle_audio_level_message(result, batch_state)
+            return False
+
+        if result.type == MessageType.INTERIM_TEXT:
+            self._flush_result_batch_audio_state(batch_state)
+            batch_state.reset_audio_level()
+            # A pass can finish after the stop; its text must not reopen RECORDING.
+            if self._current_state in (AppState.LISTENING, AppState.RECORDING):
+                self._update_state(AppState.RECORDING, str(result.payload))
             return False
 
         if result.type == MessageType.TRANSCRIPT_RESULT:

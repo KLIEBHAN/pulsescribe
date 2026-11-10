@@ -76,6 +76,20 @@ class TestPreviewPlanner:
         _feed(planner, QUIET, 0.2)  # shorter than a pause
         assert planner.next_pass(99.0) is None
 
+    def test_no_draft_once_speech_is_over(self):
+        planner = _planner()
+        _feed(planner, SPEECH, 1.5)
+        assert planner.next_pass(10.0).draft
+        _feed(planner, SPEECH, 0.5)
+        _feed(planner, QUIET, 0.08)  # a gap between words
+        assert planner.next_pass(99.0) is not None
+
+        _feed(planner, SPEECH, 0.5)
+        _feed(planner, QUIET, 0.2)  # the speaker may be done; a stop is likely
+        assert planner.next_pass(99.0) is None
+        _feed(planner, SPEECH, 0.1)  # ... but went on
+        assert planner.next_pass(99.0).draft
+
     def test_pause_runs_one_settled_pass(self):
         planner = _planner()
         _feed(planner, SPEECH, 1.5)

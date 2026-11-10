@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Live text for local dictation on Apple Silicon** – with the MLX backend the
+  overlay shows the recognized text while you speak, updated about every
+  0.7 s. The final transcript is unchanged. After a pause of about one second
+  before stopping, the transcript of a recording up to 20 s is ready at once
+  instead of after 0.4 s (M6, turbo). Turn the preview off with
+  `PULSESCRIBE_LOCAL_PREVIEW=false`.
+
 ## [1.17.1] - 2026-11-04
 
 ### Changed

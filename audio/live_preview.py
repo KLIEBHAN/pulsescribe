@@ -9,7 +9,8 @@ Two kinds of passes keep the preview calm and the final transcript fast:
 
 - While the user speaks, a *draft* pass decodes once, so its duration is
   bounded, and its last word is held back because audio cut mid-word makes
-  Whisper guess that word.
+  Whisper guess that word. Drafts start only while speech is going on, so a
+  stop shortly after the last word rarely has to wait for one.
 - At a speech pause, a *settled* pass runs exactly like the final pass. If the
   recording then ends without new sound, its text is the final transcript and
   the caller skips its own pass (``LivePreview.final_text_for``).
@@ -33,6 +34,7 @@ SPEECH_BEFORE_FIRST_DRAFT_S = 1.0  # earlier passes mostly hallucinate
 MIN_SPEECH_S = 0.5  # sound above the speech threshold before any pass
 MIN_DRAFT_INTERVAL_S = 0.7  # start to start
 DRAFT_INTERVAL_FACTOR = 2.0  # ... and at least this multiple of the last pass
+DRAFT_MAX_GAP_S = 0.1  # no draft once speech has been over for longer
 PAUSE_MARGIN_S = 0.1  # quiet beyond the trim padding before a settled pass
 WINDOW_MAX_S = 20.0  # longer recordings preview only their newest part
 WINDOW_KEEP_S = 10.0
@@ -117,6 +119,10 @@ class PreviewPlanner:
                 return self._plan(draft=False)
             return None
         if self._speech_end <= self._covered_end or now < self._next_draft_at:
+            return None
+        if self._ends[-1] - self._speech_end > DRAFT_MAX_GAP_S * self._sample_rate:
+            # The speaker may be done: a draft now would delay the settled pass
+            # or, after a stop, the final pass.
             return None
         since_speech_start = self._ends[-1] - self._speech_start
         if since_speech_start < SPEECH_BEFORE_FIRST_DRAFT_S * self._sample_rate:

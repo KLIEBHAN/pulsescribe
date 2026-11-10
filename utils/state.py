@@ -20,6 +20,7 @@ class MessageType(Enum):
     TRANSCRIPT_RESULT = auto()
     AUDIO_LEVEL = auto()
     ERROR = auto()
+    INTERIM_TEXT = auto()  # live text of a recording that is still running
 
 
 class DaemonErrorCode(str, Enum):
