@@ -530,6 +530,22 @@ def test_sync_leaves_the_status_alone_while_whisper_loads_or_a_recording_runs(st
     assert streaming._streaming_model.loaded
 
 
+def test_sync_does_not_end_a_loading_status_whisper_took_over(streaming):
+    streaming._streaming_available = False
+    shown = []
+
+    def update_state(state, text=None):
+        shown.append(state)
+        streaming._current_state = state
+        # Whisper starts loading (e.g. the model setting changed) and owns the status now.
+        streaming._local_preload_complete.clear()
+
+    streaming._update_state = update_state
+    _sync(streaming)
+
+    assert shown == [AppState.LOADING]  # no IDLE from the download while Whisper loads
+
+
 def test_sync_frees_the_model_when_it_is_no_longer_wanted(streaming, monkeypatch):
     model = streaming._streaming_model
     model.loaded = True

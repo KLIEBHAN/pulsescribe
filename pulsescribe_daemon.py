@@ -2753,7 +2753,11 @@ class PulseScribeDaemon:
             except Exception as error:
                 logger.warning(f"Live-Vorschau-Modell nicht verfügbar: {error}")
             finally:
-                if showed_progress and self._current_state == AppState.LOADING:
+                if (
+                    showed_progress
+                    and self._local_preload_complete.is_set()
+                    and self._current_state == AppState.LOADING
+                ):
                     self._update_state(AppState.IDLE)
 
         thread = threading.Thread(target=setup, daemon=True, name="StreamingModelSetup")
