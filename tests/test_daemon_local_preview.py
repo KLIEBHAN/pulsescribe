@@ -217,7 +217,8 @@ def test_slow_model_gets_no_preview_and_the_log_says_why(daemon, monkeypatch, ca
 
     assert preview is None
     assert [record.getMessage() for record in caplog.records] == [
-        "Live-Vorschau: aus (Modell large-v3 ist dafür zu langsam, turbo zeigt Live-Text)"
+        "Live-Vorschau: aus (Modell large-v3 ist dafür zu langsam, turbo oder das "
+        "Streaming-Modell zeigen Live-Text)"
     ]
 
     # On another backend turbo would show no live text either: no such advice.
@@ -375,3 +376,202 @@ def test_shape_recorded_audio_trims_and_adds_the_tail_only_for_local():
     assert 1.4 * RATE < len(cloud) < 1.6 * RATE  # speech plus 0.25 s padding per side
     assert len(local) == len(cloud) + int(LOCAL_TAIL_S * RATE)
     assert not local[len(cloud) :].any()
+
+
+class _StreamingModel:
+    """Stands in for providers.streaming_model.StreamingModel."""
+
+    def __init__(self, *, installed: bool = True, downloadable: bool = True) -> None:
+        self._installed = installed
+        self._downloadable = downloadable
+        self.loaded = False
+        self.events: list[str] = []
+        self.languages: list[str | None] = []
+
+    def installed(self) -> bool:
+        return self._installed
+
+    def download(self, on_progress) -> bool:
+        self.events.append("download")
+        on_progress(341_000_000, 682_000_000)
+        return self._downloadable
+
+    def load(self) -> None:
+        self.events.append("load")
+        self.loaded = True
+
+    def release(self) -> bool:
+        had_model, self.loaded = self.loaded, False
+        self.events.append("release")
+        return had_model
+
+    def open_session(self, language):
+        self.languages.append(language)
+        fed = []
+        return SimpleNamespace(
+            feed=lambda samples: fed.append(len(samples)),
+            text=lambda: "Heute  ist ein" if fed else "",
+        )
+
+
+@pytest.fixture
+def streaming(daemon, monkeypatch):
+    """The daemon with the streaming preview chosen and its model downloaded."""
+    monkeypatch.setenv("PULSESCRIBE_LOCAL_PREVIEW", "streaming")
+    monkeypatch.setattr("audio.streaming_preview.POLL_S", 0.005)
+    daemon._streaming_model = _StreamingModel()
+    daemon._streaming_available = True
+    return daemon
+
+
+def test_streaming_preview_shows_words_and_whisper_writes_the_transcript(streaming, caplog):
+    provider = streaming._provider_cache["local"]
+    provider.backend = "faster"  # any backend ...
+    streaming.model = "large-v3"  # ... and any model
+
+    with caplog.at_level("INFO", logger="pulsescribe"):
+        # Whisper does nothing until the stop, so the recording ends by time.
+        interim, results = _record(
+            streaming, _chunks(0.1, 1.5), preview_passes=99, timeout_s=0.3
+        )
+
+    assert interim == ["Heute ist ein"]
+    assert results == [" Heute ist ein schöner Tag."]
+    # Whisper ran only the final pass; the preview never replaces it.
+    assert [(c["draft"], c["quiet"]) for c in provider.calls] == [(False, False)]
+    assert streaming._streaming_model.languages == ["de"]
+    line = next(m for m in (r.getMessage() for r in caplog.records) if m.startswith("Live-Vorschau"))
+    assert line.startswith("Live-Vorschau (Streaming): 1 Aktualisierungen, Rechenanteil ")
+
+
+@pytest.mark.parametrize(
+    "setup",
+    [
+        lambda d, env: env("PULSESCRIBE_LOCAL_PREVIEW", "true"),
+        lambda d, env: setattr(d, "_streaming_available", False),  # still downloading
+        lambda d, env: setattr(d, "_streaming_off_until", time.monotonic() + 60),
+    ],
+    ids=["whisper-chosen", "not-downloaded", "paused"],
+)
+def test_without_the_streaming_model_whisper_previews(streaming, monkeypatch, setup):
+    setup(streaming, monkeypatch.setenv)
+
+    assert not streaming._streaming_preview_applies("local")
+    assert isinstance(streaming._create_local_preview(queue.Queue()), live_preview.LivePreview)
+
+
+def test_streaming_preview_is_for_local_recordings_only(streaming):
+    assert streaming._streaming_preview_applies("local")
+    assert not streaming._streaming_preview_applies("deepgram")
+    streaming.mode = "deepgram"  # local test dictation of a cloud setup
+    assert not streaming._streaming_preview_applies("local")
+
+
+def test_streaming_preview_that_falls_behind_pauses(streaming, caplog):
+    from audio.streaming_preview import StreamingSummary
+
+    preview = SimpleNamespace(
+        finish=lambda: StreamingSummary(
+            updates=3, compute_share=1.4, step_max_s=2.6, too_slow=True, failed=False
+        )
+    )
+    with caplog.at_level("INFO", logger="pulsescribe"):
+        streaming._finish_local_preview(preview)
+
+    assert not streaming._streaming_preview_applies("local")
+    assert streaming._streaming_off_until > time.monotonic() + 29 * 60
+    assert caplog.records[-1].getMessage() == (
+        "Live-Vorschau (Streaming): 3 Aktualisierungen, Rechenanteil 140%, längster Schritt "
+        "2.60s, beendet: Modell kam nicht hinterher, nächster Versuch in 30 min"
+    )
+
+
+def _sync(daemon) -> None:
+    daemon._sync_streaming_model()
+    thread = daemon._streaming_setup_thread
+    if thread is not None:
+        thread.join(timeout=5)
+
+
+def test_sync_downloads_and_loads_the_model_once(streaming):
+    model = streaming._streaming_model
+    streaming._streaming_available = False
+    shown = []
+    streaming._update_state = lambda state, text=None: (
+        shown.append((state, text)),
+        setattr(streaming, "_current_state", state),
+    )
+
+    _sync(streaming)
+    _sync(streaming)  # loaded: nothing to do
+
+    assert model.events == ["download", "load"]
+    assert streaming._streaming_available
+    # Progress shows while idle and goes away again.
+    assert shown == [
+        (AppState.LOADING, "50 % · downloading live preview model (682 MB)"),
+        (AppState.IDLE, None),
+    ]
+
+
+def test_sync_leaves_the_status_alone_while_whisper_loads_or_a_recording_runs(streaming):
+    streaming._streaming_available = False
+    shown = []
+    streaming._update_state = lambda state, text=None: shown.append(state)
+
+    streaming._local_preload_complete.clear()  # Whisper owns the loading status
+    _sync(streaming)
+    streaming._streaming_model = _StreamingModel()
+    streaming._local_preload_complete.set()
+    streaming._current_state = AppState.RECORDING
+    _sync(streaming)
+
+    assert shown == []
+    assert streaming._streaming_model.loaded
+
+
+def test_sync_frees_the_model_when_it_is_no_longer_wanted(streaming, monkeypatch):
+    model = streaming._streaming_model
+    model.loaded = True
+
+    monkeypatch.setenv("PULSESCRIBE_LOCAL_PREVIEW", "true")
+    streaming._sync_streaming_model()
+    assert model.events == ["release"] and not model.loaded
+
+    monkeypatch.setenv("PULSESCRIBE_LOCAL_PREVIEW", "streaming")
+    streaming.mode = "deepgram"  # only local mode uses it
+    model.loaded = True
+    streaming._sync_streaming_model()
+    assert not model.loaded
+
+
+@pytest.mark.parametrize(
+    "model,available",
+    [(_StreamingModel(installed=False), False), (_StreamingModel(downloadable=False), False)],
+    ids=["sherpa-missing", "download-failed"],
+)
+def test_sync_without_a_usable_model_keeps_whisper_previewing(streaming, caplog, model, available):
+    streaming._streaming_model = model
+    streaming._streaming_available = False
+
+    with caplog.at_level("WARNING", logger="pulsescribe"):
+        _sync(streaming)
+
+    assert streaming._streaming_available is available and not model.loaded
+    assert len(caplog.records) == 1
+    assert not streaming._streaming_preview_applies("local")
+
+
+def test_idle_unload_frees_the_streaming_model_too(streaming, monkeypatch):
+    model = streaming._streaming_model
+    model.loaded = True
+    monkeypatch.setattr(streaming, "_cancel_local_warm_lifecycle", lambda **_k: None)
+    monkeypatch.setattr(streaming, "_release_local_provider_model_cache", lambda: None)
+    with streaming._local_warm_lock:
+        generation = streaming._local_warm_generation
+
+    streaming._unload_idle_local_model(generation, 15)
+
+    assert not model.loaded
+    # The next recording still gets the preview; opening its session loads the model.
+    assert streaming._streaming_preview_applies("local")
