@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 
 import importlib.util
+import re
 import sys
 from typing import NamedTuple
 
@@ -125,11 +126,15 @@ def effective_local_backend(selected: str | None, *, platform: str | None = None
 # a pass over 10 s of audio takes 0.95 s on an M6, passes on an M5 took 1.0 to
 # 1.5 s; turbo takes 0.35 s on the M6. A pass has to stay well under a second.
 LIVE_PREVIEW_SLOW_MODELS = frozenset({"large", "large-v1", "large-v2", "large-v3"})
+# Short name inside a repository ID such as mlx-community/whisper-large-v3-mlx-8bit.
+_MODEL_REPO_NAME = re.compile(r"^(?:.*/)?(?:whisper-)?(.+?)(?:-mlx)?(?:-(?:\d+bit|q\d+))?$")
 
 
 def live_preview_supports_model(model: str | None) -> bool:
-    """False for a local model name that is too slow to preview a running recording."""
-    return (model or "").strip().lower() not in LIVE_PREVIEW_SLOW_MODELS
+    """False for a local model (short name or repository ID) too slow for the live preview."""
+    name = (model or "").strip().lower()
+    match = _MODEL_REPO_NAME.match(name)
+    return (match.group(1) if match else name) not in LIVE_PREVIEW_SLOW_MODELS
 
 
 def live_preview_model_hint(model: str | None) -> str | None:
