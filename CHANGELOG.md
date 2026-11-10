@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Live text with quiet microphones** – the live preview showed no text when
+  speech stayed close to the detection level, for example with a MacBook
+  microphone at low input volume. It now follows the level of each recording.
+  The log has one `Live-Vorschau:` line per recording that says what the
+  preview did.
+
 ## [1.18.0] - 2026-11-10
 
 ### Added

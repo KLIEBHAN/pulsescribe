@@ -78,7 +78,7 @@ try:
         parse_bool,
         load_environment,
     )
-    from audio.live_preview import LivePreview
+    from audio.live_preview import LivePreview, PreviewSummary
     from providers.deepgram_stream import deepgram_stream_core
     from utils.model_download import format_download_status
     from providers import get_provider
@@ -2697,6 +2697,25 @@ class PulseScribeDaemon:
             ready=lambda: loaded.is_set() and uses_mlx(),
         )
 
+    @staticmethod
+    def _log_preview_summary(summary: PreviewSummary) -> None:
+        """Log one line per recording: what the live preview did, or why nothing."""
+        if summary.failed:
+            logger.info("Live-Vorschau: nach einem Fehler beendet (siehe Fehlermeldung davor)")
+            return
+        if summary.drafts or summary.settled:
+            logger.info(
+                f"Live-Vorschau: {summary.drafts} Entwürfe, {summary.settled} nach Pausen, "
+                f"längster Durchlauf {summary.slowest_s:.2f}s"
+            )
+            return
+        reason = (
+            f"erkannte Sprache {summary.speech_s:.1f}s, max_rms={summary.max_level:.4f}"
+            if summary.model_ready
+            else "Modell lädt noch oder Backend ist nicht MLX"
+        )
+        logger.info(f"Live-Vorschau: kein Durchlauf ({reason})")
+
     def _capture_recording_audio(
         self,
         *,
@@ -3036,7 +3055,7 @@ class PulseScribeDaemon:
                 if preview is not None:
                     # Its running pass holds the model; the final pass comes next.
                     self._set_worker_phase("recording:finish-preview", run_id=run_id)
-                    preview.finish()
+                    self._log_preview_summary(preview.finish())
             prepared_audio = self._prepare_recorded_audio(
                 recorded_chunks=recorded_chunks,
                 max_rms=max_rms,
