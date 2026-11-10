@@ -137,12 +137,13 @@ class StreamingPreview:
         ``FLUSH_SILENCE_S`` of silence, which takes 0.1 to 0.3 s. The model emits
         nothing for noise, clicks or hum, so a non-empty text means somebody
         spoke; an empty one proves nothing for speech under about two seconds.
-        Empty as well if the preview never got a session or lost it.
+        Empty as well if the preview never got a session, lost it or fell behind.
         """
         import numpy as np
 
         session = self._session
-        if session is None or self._abandoned or self._failed:
+        # A model that fell behind would work off the rest of the recording here.
+        if session is None or self._abandoned or self._failed or self._too_slow:
             return ""
         try:
             rest = list(self._chunks[self._fed :])

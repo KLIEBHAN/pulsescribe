@@ -178,6 +178,8 @@ def test_model_that_falls_behind_ends_the_preview(monkeypatch):
     assert ended and summary.too_slow and not summary.failed
     assert published == []  # its text would be a second late: none is shown
     assert session.feeds == 1
+    # The speech check does not work off the backlog either.
+    assert preview.heard_text() == "" and session.feeds == 1
 
 
 def test_heard_text_covers_the_unfed_rest_and_a_silent_tail():
