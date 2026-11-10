@@ -60,6 +60,7 @@ ADVANCED_OPTION_BACKENDS: dict[str, frozenset[str]] = {
     "preset": _ALL_LOCAL_BACKENDS,
     "warmup": _ALL_LOCAL_BACKENDS,
     "idle_unload": _ALL_LOCAL_BACKENDS,  # macOS app only, see advanced_option_applies
+    "live_preview": frozenset({"mlx"}),  # macOS app only; other backends are too slow
     "device": frozenset({"whisper", "faster"}),  # MLX and Lightning always run on Metal
     "fast": _DECODING_BACKENDS,
     "fp16": frozenset({"whisper", "mlx"}),  # faster-whisper uses its compute type instead
@@ -80,6 +81,8 @@ ADVANCED_OPTION_HELP: dict[str, str] = {
     "preset": "Applies a tested combination of backend, model and the options below.",
     "idle_unload": "Frees the model's memory after this long without dictation. The next "
                    "dictation loads it again while you speak. never: keep it loaded.",
+    "live_preview": "Shows the recognized text in the overlay while you speak. The "
+                    "transcript itself stays the same. off: no text until you stop.",
     "warmup": "Runs a short silent transcription after loading so the first dictation is "
               "fast. auto: on for openai-whisper and faster-whisper.",
     "device": "Hardware for openai-whisper and faster-whisper. auto picks the GPU when it "
@@ -123,8 +126,8 @@ def advanced_option_applies(option: str, backend: str, *, platform: str | None =
     current_platform = platform or sys.platform
     if option == "device" and current_platform == "darwin":
         backends = frozenset({"whisper"})  # faster-whisper has no GPU path on macOS
-    if option == "idle_unload" and current_platform != "darwin":
-        return False  # only the macOS daemon unloads idle models
+    if option in ("idle_unload", "live_preview") and current_platform != "darwin":
+        return False  # only the macOS daemon unloads idle models and previews
     return backend in backends
 
 

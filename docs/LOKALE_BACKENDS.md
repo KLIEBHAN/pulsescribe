@@ -91,7 +91,7 @@ PULSESCRIBE_LOCAL_BACKEND=mlx
 - Gemessen auf einem M6 mit turbo und zehn deutschen Aufnahmen: Ein Vorschau-Durchlauf dauert 0,3 bis 0,4 s. Die mittlere Wartezeit nach dem Stopp (Median) lag ohne Vorschau bei 0,39 s. Mit Vorschau: 0,03 s bei Stopp 1 s nach dem letzten Wort, 0,28 s nach 0,45 s, 0,37 s nach 0,25 s und 0,38 s nach 0,1 s; dort wartete eine Aufnahme 0,17 s länger als ohne Vorschau.
 - Die GPU arbeitet etwa die Hälfte der Zeit, in der du sprichst (alle 0,7 s ein Durchlauf von 0,3 s).
 - Dauert ein Durchlauf länger als 1 s, endet die Vorschau für diese Aufnahme. Andere Backends sind dafür zu langsam.
-- Abschalten mit `PULSESCRIBE_LOCAL_PREVIEW=false`.
+- Abschalten unter Einstellungen → Providers → Advanced backend options → Live preview oder mit `PULSESCRIBE_LOCAL_PREVIEW=false`.
 
 **Modellnamen-Zuordnung:**
 
@@ -172,6 +172,7 @@ Einstellungen → Providers → Advanced backend options zeigen nur die Optionen
 |--------|-----------|
 | Preset, Warmup | allen lokalen Backends |
 | Unload when idle | allen lokalen Backends (macOS-App) |
+| Live preview | MLX (macOS-App) |
 | Fast, Best of, Temperature | openai-whisper, faster-whisper, MLX (Lightning liest nur die Sprache) |
 | Beam size | openai-whisper, faster-whisper (MLX und Lightning haben kein Beam Search) |
 | FP16 | openai-whisper, MLX (faster-whisper nutzt den Compute type) |

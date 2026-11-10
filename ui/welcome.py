@@ -152,6 +152,8 @@ BOOL_OVERRIDE_OPTIONS = ["default", "true", "false"]
 WARMUP_OPTIONS = ["auto", "true", "false"]
 # Titles for PULSESCRIBE_LOCAL_IDLE_UNLOAD_MINUTES ("never" removes the key).
 IDLE_UNLOAD_OPTIONS = ["never", "5 min", "15 min", "30 min", "60 min"]
+# Titles for PULSESCRIBE_LOCAL_PREVIEW ("on" is the default and removes the key).
+LIVE_PREVIEW_OPTIONS = ["on", "off"]
 LOCAL_FP16_ENV_KEY = "PULSESCRIBE_FP16"
 LEGACY_LOCAL_FP16_ENV_KEY = "PULSESCRIBE_LOCAL_FP16"
 API_KEY_PROVIDERS = [
@@ -507,6 +509,7 @@ class WelcomeController:
         self._device_popup = None
         self._warmup_popup = None
         self._idle_unload_popup = None
+        self._live_preview_popup = None
         self._local_fast_popup = None
         self._fp16_popup = None
         self._beam_size_field = None
@@ -2280,6 +2283,16 @@ class WelcomeController:
             popup_attr="_idle_unload_popup",
         )
 
+    def _build_live_preview_row(self, base_x, y, control_x, control_width, view) -> None:
+        enabled = parse_bool(self._get_cached_env_setting("PULSESCRIBE_LOCAL_PREVIEW"))
+        self._build_popup_setting_row(
+            base_x, y, control_x, control_width, view,
+            label_text="Live preview:",
+            options=LIVE_PREVIEW_OPTIONS,
+            selected_title="off" if enabled is False else "on",
+            popup_attr="_live_preview_popup",
+        )
+
     def _advanced_option_rows(self) -> list:
         """(option, row builder) for every advanced option, in display order."""
 
@@ -2330,6 +2343,7 @@ class WelcomeController:
             ("device", popup("device", "Device:", DEVICE_OPTIONS, "PULSESCRIBE_DEVICE", "_device_popup")),
             ("warmup", popup("warmup", "Warmup:", WARMUP_OPTIONS, "PULSESCRIBE_LOCAL_WARMUP", "_warmup_popup")),
             ("idle_unload", with_tooltip("idle_unload", self._build_idle_unload_row, "_idle_unload_popup")),
+            ("live_preview", with_tooltip("live_preview", self._build_live_preview_row, "_live_preview_popup")),
             ("fast", boolean("fast", "Fast:", "PULSESCRIBE_LOCAL_FAST", "_local_fast_popup")),
             ("fp16", boolean("fp16", "FP16:", LOCAL_FP16_ENV_KEY, "_fp16_popup", LEGACY_LOCAL_FP16_ENV_KEY)),
             ("beam_size", text("beam_size", "Beam size:", "default", "PULSESCRIBE_LOCAL_BEAM_SIZE", "_beam_size_field")),
@@ -5839,6 +5853,7 @@ class WelcomeController:
         self._select_popup_title(getattr(self, "_local_preset_popup", None), "(none)")
         self._apply_local_preset_values(dict(LOCAL_PRESET_BASE))
         self._select_popup_title(getattr(self, "_idle_unload_popup", None), "never")
+        self._select_popup_title(getattr(self, "_live_preview_popup", None), "on")
         self._update_all_visibility()
         self._refresh_footer_settings_hint()
 
@@ -6164,6 +6179,13 @@ class WelcomeController:
                 "PULSESCRIBE_LOCAL_IDLE_UNLOAD_MINUTES",
                 str(idle_unload_popup.titleOfSelectedItem() or "never").split()[0],
                 remove_when={"never"},
+            )
+
+        live_preview_popup = getattr(self, "_live_preview_popup", None)
+        if live_preview_popup is not None:
+            builder.set_enabled_default_true(
+                "PULSESCRIBE_LOCAL_PREVIEW",
+                live_preview_popup.titleOfSelectedItem() != "off",
             )
 
         self._add_popup_optional_env_update(

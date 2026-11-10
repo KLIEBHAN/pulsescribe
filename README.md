@@ -16,7 +16,7 @@ Press a hotkey, speak, release – your text appears. That's it.
 ## Features
 
 - **Real-time Streaming** – ~300ms latency with Deepgram
-- **Live Text Offline** – local Whisper on Apple Silicon shows your words in the overlay while you speak
+- **Live Text Offline** – local Whisper with the MLX backend (the default on Apple Silicon) shows your words in the overlay while you speak
 - **Multiple Providers** – Deepgram, OpenAI, Groq, or local Whisper
 - **LLM Post-processing** – Clean up transcriptions with GPT/Llama
 - **Context Awareness** – Adjusts style based on active app (email, chat, code)

@@ -660,6 +660,40 @@ class TestWelcomeTranscriptionPage:
         assert ctrl._idle_unload_popup.titleOfSelectedItem() == "never"
         assert ctrl._build_env_updates_from_controls(None)["PULSESCRIBE_LOCAL_IDLE_UNLOAD_MINUTES"] is None
 
+    def test_live_preview_loads_saves_and_resets(self, monkeypatch):
+        appkit = pytest.importorskip("AppKit")
+        import ui.welcome as welcome_mod
+
+        appkit.NSApplication.sharedApplication()
+        monkeypatch.setattr(welcome_mod, "read_env_file", lambda: {})
+        monkeypatch.setattr(welcome_mod, "effective_local_backend",
+                            lambda selected: "mlx" if selected in (None, "auto") else selected)
+        monkeypatch.setattr(WelcomeController, "_build_window", lambda self: None)
+        ctrl = WelcomeController("f19", {"mode": "local"})
+        ctrl._env_settings_cache = {"PULSESCRIBE_MODE": "local", "PULSESCRIBE_LOCAL_PREVIEW": "false"}
+        page = appkit.NSView.alloc().initWithFrame_(appkit.NSMakeRect(0, 0, 610, 500))
+        ctrl._build_transcription_tab(page, 500)
+
+        assert ctrl._live_preview_popup.titleOfSelectedItem() == "off"
+        assert ctrl._build_env_updates_from_controls(None)["PULSESCRIBE_LOCAL_PREVIEW"] == "false"
+        ctrl._reset_advanced_options()
+        assert ctrl._live_preview_popup.titleOfSelectedItem() == "on"
+        assert ctrl._build_env_updates_from_controls(None)["PULSESCRIBE_LOCAL_PREVIEW"] is None
+
+    def test_live_preview_is_on_without_a_setting(self, monkeypatch):
+        appkit = pytest.importorskip("AppKit")
+        import ui.welcome as welcome_mod
+
+        appkit.NSApplication.sharedApplication()
+        monkeypatch.setattr(welcome_mod, "read_env_file", lambda: {})
+        monkeypatch.setattr(WelcomeController, "_build_window", lambda self: None)
+        ctrl = WelcomeController("f19", {"mode": "local"})
+        ctrl._env_settings_cache = {"PULSESCRIBE_MODE": "local"}
+        page = appkit.NSView.alloc().initWithFrame_(appkit.NSMakeRect(0, 0, 610, 500))
+        ctrl._build_transcription_tab(page, 500)
+
+        assert ctrl._live_preview_popup.titleOfSelectedItem() == "on"
+
     def test_own_server_model_picker_lists_server_models_and_keeps_typed_value(
         self, monkeypatch
     ):
