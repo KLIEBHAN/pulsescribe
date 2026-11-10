@@ -137,6 +137,21 @@ def live_preview_supports_model(model: str | None) -> bool:
     return (match.group(1) if match else name) not in LIVE_PREVIEW_SLOW_MODELS
 
 
+# Values of PULSESCRIBE_LOCAL_PREVIEW: Whisper previews (default), a streaming
+# model previews, or no live text.
+LIVE_PREVIEW_ON = "true"
+LIVE_PREVIEW_STREAMING = "streaming"
+LIVE_PREVIEW_OFF = "false"
+
+
+def normalize_live_preview(value: str | None) -> str:
+    """Map a PULSESCRIBE_LOCAL_PREVIEW value to one of the LIVE_PREVIEW_* constants."""
+    normalized = (value or "").strip().lower()
+    if normalized == LIVE_PREVIEW_STREAMING:
+        return LIVE_PREVIEW_STREAMING
+    return LIVE_PREVIEW_OFF if normalized in ("false", "0", "no", "off") else LIVE_PREVIEW_ON
+
+
 def live_preview_model_hint(model: str | None) -> str | None:
     """Settings text that explains the missing live preview for ``model``, else None."""
     if live_preview_supports_model(model):
@@ -328,7 +343,11 @@ def first_advanced_value_error(
 
 __all__ = [
     "LIVE_PREVIEW_SLOW_MODELS",
+    "LIVE_PREVIEW_OFF",
+    "LIVE_PREVIEW_ON",
+    "LIVE_PREVIEW_STREAMING",
     "live_preview_model_hint",
+    "normalize_live_preview",
     "live_preview_supports_model",
     "DEFAULT_LOCAL_BACKEND",
     "VALID_LOCAL_BACKENDS",

@@ -463,8 +463,12 @@ def test_without_the_streaming_model_whisper_previews(streaming, monkeypatch, se
 def test_streaming_preview_is_for_local_recordings_only(streaming):
     assert streaming._streaming_preview_applies("local")
     assert not streaming._streaming_preview_applies("deepgram")
+    streaming._run_mode = "openai"  # a cloud recording in a local setup (fallback run)
+    assert streaming._create_local_preview(queue.Queue()) is None
     streaming.mode = "deepgram"  # local test dictation of a cloud setup
     assert not streaming._streaming_preview_applies("local")
+    streaming._run_mode = "local"
+    assert streaming._create_local_preview(queue.Queue()) is None
 
 
 def test_streaming_preview_that_falls_behind_pauses(streaming, caplog):
@@ -493,14 +497,12 @@ def _sync(daemon) -> None:
         thread.join(timeout=5)
 
 
-def test_sync_downloads_and_loads_the_model_once(streaming):
+def test_sync_downloads_and_loads_the_model_once(streaming, monkeypatch):
     model = streaming._streaming_model
     streaming._streaming_available = False
     shown = []
-    streaming._update_state = lambda state, text=None: (
-        shown.append((state, text)),
-        setattr(streaming, "_current_state", state),
-    )
+    monkeypatch.setattr(streaming, "_do_ui_update", lambda state, text=None: shown.append((state, text)))
+    monkeypatch.setattr(threading, "current_thread", lambda: SimpleNamespace(name="MainThread"))
 
     _sync(streaming)
     _sync(streaming)  # loaded: nothing to do
@@ -514,36 +516,103 @@ def test_sync_downloads_and_loads_the_model_once(streaming):
     ]
 
 
-def test_sync_leaves_the_status_alone_while_whisper_loads_or_a_recording_runs(streaming):
+def test_sync_leaves_the_status_alone_while_whisper_loads_or_a_recording_runs(
+    streaming, monkeypatch
+):
     streaming._streaming_available = False
     shown = []
-    streaming._update_state = lambda state, text=None: shown.append(state)
+    monkeypatch.setattr(streaming, "_do_ui_update", lambda state, text=None: shown.append(state))
+    monkeypatch.setattr(threading, "current_thread", lambda: SimpleNamespace(name="MainThread"))
 
     streaming._local_preload_complete.clear()  # Whisper owns the loading status
     _sync(streaming)
     streaming._streaming_model = _StreamingModel()
     streaming._local_preload_complete.set()
-    streaming._current_state = AppState.RECORDING
+    streaming._update_state(AppState.RECORDING)
+    shown.clear()
     _sync(streaming)
 
-    assert shown == []
+    # The state change is conditional and atomic: a recording is never replaced.
+    assert shown == [] and streaming._current_state == AppState.RECORDING
     assert streaming._streaming_model.loaded
 
 
-def test_sync_does_not_end_a_loading_status_whisper_took_over(streaming):
+def test_sync_does_not_end_a_loading_status_whisper_took_over(streaming, monkeypatch):
     streaming._streaming_available = False
     shown = []
 
-    def update_state(state, text=None):
+    def ui(state, text=None):
         shown.append(state)
-        streaming._current_state = state
         # Whisper starts loading (e.g. the model setting changed) and owns the status now.
         streaming._local_preload_complete.clear()
 
-    streaming._update_state = update_state
+    monkeypatch.setattr(streaming, "_do_ui_update", ui)
+    monkeypatch.setattr(threading, "current_thread", lambda: SimpleNamespace(name="MainThread"))
     _sync(streaming)
 
     assert shown == [AppState.LOADING]  # no IDLE from the download while Whisper loads
+
+
+def test_model_that_cannot_load_leaves_the_preview_to_whisper(streaming, caplog):
+    model = streaming._streaming_model
+    streaming._streaming_available = False
+
+    def broken_load():
+        raise RuntimeError("native library failed")
+
+    model.load = broken_load
+    with caplog.at_level("WARNING", logger="pulsescribe"):
+        _sync(streaming)
+
+    assert not streaming._streaming_available
+    assert isinstance(streaming._create_local_preview(queue.Queue()), live_preview.LivePreview)
+    # One warning about the model; the fallback itself logs nothing about the setting.
+    assert [record.getMessage() for record in caplog.records] == [
+        "Live-Vorschau-Modell nicht verfügbar: native library failed"
+    ]
+
+
+def test_failed_download_is_tried_again_with_the_next_recording(streaming, monkeypatch):
+    import pulsescribe_daemon
+
+    model = _StreamingModel(downloadable=False)
+    streaming._streaming_model = model
+    streaming._streaming_available = False
+    for name in ("_preload_local_model_async", "_start_result_polling", "_recording_worker"):
+        monkeypatch.setattr(streaming, name, lambda *a: None)
+    monkeypatch.setattr(streaming, "_do_ui_update", lambda *a: None)
+    monkeypatch.setattr(
+        pulsescribe_daemon, "start_macos_latency_run",
+        lambda **k: SimpleNamespace(mark=lambda *a: None, finish=lambda *a: None),
+    )
+
+    _sync(streaming)
+    assert model.events == ["download"] and not streaming._streaming_available
+
+    model._downloadable = True  # the network is back
+    streaming._start_recording_locked()
+    streaming._streaming_setup_thread.join(timeout=5)
+
+    assert model.events == ["download", "download", "load"]
+    assert streaming._streaming_available
+
+
+def test_failed_streaming_preview_pauses_so_whisper_takes_over(streaming, caplog):
+    from audio.streaming_preview import StreamingSummary
+
+    preview = SimpleNamespace(
+        finish=lambda: StreamingSummary(
+            updates=0, compute_share=0.0, step_max_s=0.0, too_slow=False, failed=True
+        )
+    )
+    with caplog.at_level("INFO", logger="pulsescribe"):
+        streaming._finish_local_preview(preview)
+
+    assert not streaming._streaming_preview_applies("local")
+    assert isinstance(streaming._create_local_preview(queue.Queue()), live_preview.LivePreview)
+    assert caplog.records[-1].getMessage().endswith(
+        "nach einem Fehler beendet (siehe Meldung davor), nächster Versuch in 30 min"
+    )
 
 
 def test_sync_frees_the_model_when_it_is_no_longer_wanted(streaming, monkeypatch):

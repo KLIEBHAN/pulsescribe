@@ -139,6 +139,16 @@ def test_live_preview_needs_a_fast_model() -> None:
     assert hint is not None and "large-v3" in hint and "turbo" in hint
 
 
+def test_live_preview_setting_has_three_values() -> None:
+    import utils.local_backend as lb
+
+    for value in (None, "", "true", "1", "anything"):
+        assert lb.normalize_live_preview(value) == lb.LIVE_PREVIEW_ON
+    for value in ("false", " False ", "0", "off"):
+        assert lb.normalize_live_preview(value) == lb.LIVE_PREVIEW_OFF
+    assert lb.normalize_live_preview(" Streaming ") == lb.LIVE_PREVIEW_STREAMING
+
+
 def test_effective_local_backend_resolves_auto_like_the_provider(monkeypatch) -> None:
     import platform
 

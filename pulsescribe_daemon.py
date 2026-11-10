@@ -81,7 +81,13 @@ try:
     from audio.live_preview import LivePreview
     from audio.streaming_preview import StreamingPreview, StreamingSummary
     from providers.deepgram_stream import deepgram_stream_core
-    from utils.local_backend import effective_local_backend, live_preview_supports_model
+    from utils.local_backend import (
+        LIVE_PREVIEW_OFF,
+        LIVE_PREVIEW_STREAMING,
+        effective_local_backend,
+        live_preview_supports_model,
+        normalize_live_preview,
+    )
     from utils.model_download import format_download_status
     from providers import get_provider
     from providers.streaming_model import MODEL_LABEL as STREAMING_MODEL_LABEL
@@ -342,6 +348,7 @@ class PulseScribeDaemon:
         self._streaming_model = StreamingModel()
         self._streaming_available = False  # sherpa-onnx installed and model downloaded
         self._streaming_setup_thread: threading.Thread | None = None
+        self._streaming_missing_logged = False
         self._streaming_off_until = 0.0  # monotonic; after it fell behind the microphone
         # Generation-bound local preload/keepalive lifecycle.
         self._local_warm_lock = threading.Lock()
@@ -1218,15 +1225,26 @@ class PulseScribeDaemon:
             logger.debug("Keep-Alive Worker beendet sich noch im Hintergrund")
         return stopped
 
-    def _update_state(self, state: AppState, text: str | None = None) -> None:
+    def _update_state(
+        self,
+        state: AppState,
+        text: str | None = None,
+        *,
+        only_from: tuple[AppState, ...] | None = None,
+    ) -> None:
         """Aktualisiert State und benachrichtigt UI-Controller.
 
         Thread-safe: Kann von jedem Thread aufgerufen werden.
         UI-Updates werden automatisch auf den Main-Thread dispatcht.
+        ``only_from`` makes the change conditional on the current state, checked
+        atomically: background status (e.g. download progress) must not replace
+        a recording that started in the same moment.
         """
         # Atomares Read-Modify-Write mit explizitem Lock
         with self._state_lock:
             prev_state = self.__current_state
+            if only_from is not None and prev_state not in only_from:
+                return
             previous_ui_payload = self._last_ui_state_payload
             self.__current_state = state
             next_ui_payload = (state, text)
@@ -2305,6 +2323,8 @@ class PulseScribeDaemon:
         if effective_mode == "local" and self.mode == "local":
             # No-op while warm; after an idle unload the model loads during speech.
             self._preload_local_model_async()
+            if not self._streaming_available:
+                self._sync_streaming_model()  # e.g. the download failed before
 
         # Interim-Datei löschen, um veralteten Text zu vermeiden
         INTERIM_FILE.unlink(missing_ok=True)
@@ -2673,7 +2693,7 @@ class PulseScribeDaemon:
         """
         if self.mode != "local" or run_mode != "local":
             return ""
-        if not get_env_bool_default("PULSESCRIBE_LOCAL_PREVIEW", True):
+        if normalize_live_preview(os.getenv("PULSESCRIBE_LOCAL_PREVIEW")) == LIVE_PREVIEW_OFF:
             return ""
         model_name = self._model_name_for_logging(None)
         if not live_preview_supports_model(model_name):
@@ -2694,8 +2714,8 @@ class PulseScribeDaemon:
 
     def _streaming_preview_wanted(self) -> bool:
         """The settings ask for the streaming model's live preview (local mode only)."""
-        setting = (os.getenv("PULSESCRIBE_LOCAL_PREVIEW") or "").strip().lower()
-        return self.mode == "local" and setting == "streaming"
+        setting = normalize_live_preview(os.getenv("PULSESCRIBE_LOCAL_PREVIEW"))
+        return self.mode == "local" and setting == LIVE_PREVIEW_STREAMING
 
     def _streaming_preview_applies(self, run_mode: str) -> bool:
         """A local recording in ``run_mode`` gets its live text from the streaming model."""
@@ -2711,20 +2731,24 @@ class PulseScribeDaemon:
 
         Wanted: download it once (682 MB, with progress while idle) and load it
         on a background thread. Not wanted any more: free its memory. Call it at
-        startup and after a settings reload.
+        startup, after a settings reload, and when a recording starts while the
+        model is still missing (a failed download is tried again then).
         """
         model = self._streaming_model
         if not self._streaming_preview_wanted():
             if model.release():
                 logger.info("Live-Vorschau-Modell entladen")
             return
-        if not model.installed():
-            logger.warning(
-                "Live-Vorschau (Streaming) nicht verfügbar: sherpa-onnx fehlt in dieser Installation"
-            )
-            return
         thread = self._streaming_setup_thread
         if model.loaded or (thread is not None and thread.is_alive()):
+            return
+        if not model.installed():
+            if not self._streaming_missing_logged:
+                self._streaming_missing_logged = True
+                logger.warning(
+                    "Live-Vorschau (Streaming) nicht verfügbar: "
+                    "sherpa-onnx fehlt in dieser Installation"
+                )
             return
 
         showed_progress = False
@@ -2732,33 +2756,32 @@ class PulseScribeDaemon:
         def show_download(downloaded: int, total: int | None) -> None:
             nonlocal showed_progress
             # Whisper's own loading owns the LOADING state until it is done.
-            if self._local_preload_complete.is_set() and self._current_state in (
-                AppState.IDLE,
-                AppState.LOADING,
-            ):
+            if self._local_preload_complete.is_set():
                 showed_progress = True
                 self._update_state(
                     AppState.LOADING,
                     format_download_status(STREAMING_MODEL_LABEL, downloaded, total),
+                    only_from=(AppState.IDLE, AppState.LOADING),
                 )
 
         def setup() -> None:
             try:
                 if not model.download(show_download):
-                    logger.warning("Live-Vorschau-Modell konnte nicht geladen werden (Download)")
+                    logger.warning(
+                        "Live-Vorschau-Modell konnte nicht heruntergeladen werden; "
+                        "nächster Versuch mit der nächsten Aufnahme"
+                    )
                     return
-                self._streaming_available = True
                 if self._streaming_preview_wanted():
                     model.load()
+                self._streaming_available = True
             except Exception as error:
+                # Not available: Whisper keeps previewing where it can.
+                self._streaming_available = False
                 logger.warning(f"Live-Vorschau-Modell nicht verfügbar: {error}")
             finally:
-                if (
-                    showed_progress
-                    and self._local_preload_complete.is_set()
-                    and self._current_state == AppState.LOADING
-                ):
-                    self._update_state(AppState.IDLE)
+                if showed_progress and self._local_preload_complete.is_set():
+                    self._update_state(AppState.IDLE, only_from=(AppState.LOADING,))
 
         thread = threading.Thread(target=setup, daemon=True, name="StreamingModelSetup")
         self._streaming_setup_thread = thread
@@ -2857,17 +2880,18 @@ class PulseScribeDaemon:
         )
 
     def _finish_streaming_preview(self, summary: StreamingSummary) -> None:
-        """Log one line about the streaming preview; pause it if it fell behind."""
-        if summary.too_slow:
-            self._streaming_off_until = time.monotonic() + PREVIEW_RETRY_AFTER_S
+        """Log one line about the streaming preview; pause it if it failed or fell behind.
+
+        While it pauses, Whisper previews where it can.
+        """
+        retry = f"nächster Versuch in {PREVIEW_RETRY_AFTER_S // 60} min"
         ended = ""
+        if summary.failed or summary.too_slow:
+            self._streaming_off_until = time.monotonic() + PREVIEW_RETRY_AFTER_S
         if summary.failed:
-            ended = ", nach einem Fehler beendet (siehe Fehlermeldung davor)"
+            ended = f", nach einem Fehler beendet (siehe Meldung davor), {retry}"
         elif summary.too_slow:
-            ended = (
-                ", beendet: Modell kam nicht hinterher, nächster Versuch in "
-                f"{PREVIEW_RETRY_AFTER_S // 60} min"
-            )
+            ended = f", beendet: Modell kam nicht hinterher, {retry}"
         logger.info(
             f"Live-Vorschau (Streaming): {summary.updates} Aktualisierungen, "
             f"Rechenanteil {summary.compute_share:.0%}, "
