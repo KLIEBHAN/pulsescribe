@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Paste confirmation shorter again (macOS)** – the "Pasted" overlay now
+  stays 0.3 s instead of 0.5 s before it fades.
+
 ## [1.20.3] - 2026-11-11
 
 ### Fixed

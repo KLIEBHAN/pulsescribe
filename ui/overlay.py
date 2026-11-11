@@ -896,7 +896,7 @@ _AUTO_HIDE_STATES = (AppState.DONE, AppState.NO_SPEECH)
 # Seconds a short result stays before it fades out. "Pasted" is brief because
 # the overlay can cover the text it just pasted.
 FEEDBACK_DISPLAY_DURATION = 0.8
-PASTED_DISPLAY_DURATION = 0.5
+PASTED_DISPLAY_DURATION = 0.3
 _LABEL_INSET = 2  # NSTextField-Labels zeichnen Text 2 px innerhalb ihres Frames
 _NONACTIVATING_PANEL_MASK = 1 << 7  # NSWindowStyleMaskNonactivatingPanel
 _CLICK_VIEW_CLASS = None

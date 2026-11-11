@@ -969,7 +969,7 @@ def test_success_confirmation_survives_immediate_ready_state(monkeypatch):
     controller.update_state(AppState.IDLE)
 
     assert events == ["bars:none", "show"]
-    assert scheduled[0][0] == 0.5
+    assert scheduled[0][0] == 0.3
     timers[0].block(timers[0])
     assert events == ["bars:none", "show", "stop", "hide"]
     assert controller._feedback_timer is None
