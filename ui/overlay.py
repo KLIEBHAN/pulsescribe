@@ -18,6 +18,7 @@ from ui.animation import (
     listening_level,
 )
 from ui.overlay_feedback import (
+    PASTED_BADGE,
     RECORDING_CLOCK_STATES,
     OverlayContent,
     describe_overlay_content,
@@ -891,9 +892,11 @@ class SoundWaveView:
         self._apply_bar_heights(heights, center_y=center_y)
 
 
-# Seconds a short result stays before it fades out. DONE is brief because the
-# overlay can cover the text it just pasted; NO_SPEECH has a line to read.
-_AUTO_HIDE_SECONDS = {AppState.DONE: 0.5, AppState.NO_SPEECH: 0.8}
+_AUTO_HIDE_STATES = (AppState.DONE, AppState.NO_SPEECH)
+# Seconds a short result stays before it fades out. "Pasted" is brief because
+# the overlay can cover the text it just pasted.
+FEEDBACK_DISPLAY_DURATION = 0.8
+PASTED_DISPLAY_DURATION = 0.5
 _LABEL_INSET = 2  # NSTextField-Labels zeichnen Text 2 px innerhalb ihres Frames
 _NONACTIVATING_PANEL_MASK = 1 << 7  # NSWindowStyleMaskNonactivatingPanel
 _CLICK_VIEW_CLASS = None
@@ -1173,8 +1176,12 @@ class OverlayController:
         self._render(content, interim)
         if state_changed or reshow:
             self._fade_in()
-        if state_changed and state in _AUTO_HIDE_SECONDS:
-            self._start_fade_out_timer(_AUTO_HIDE_SECONDS[state])
+        if state_changed and state in _AUTO_HIDE_STATES:
+            self._start_fade_out_timer(
+                PASTED_DISPLAY_DURATION
+                if content.badge == PASTED_BADGE
+                else FEEDBACK_DISPLAY_DURATION
+            )
 
     def set_live_text_expected(self, expected: bool) -> None:
         """Tell whether the recording that starts now will show live text.

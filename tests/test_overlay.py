@@ -975,11 +975,19 @@ def test_success_confirmation_survives_immediate_ready_state(monkeypatch):
     assert controller._feedback_timer is None
 
 
-def test_no_speech_stays_longer_than_the_paste_confirmation(monkeypatch):
+@pytest.mark.parametrize(
+    ("state", "text"),
+    [
+        (AppState.NO_SPEECH, None),
+        (AppState.DONE, "Copied to clipboard"),
+        (AppState.DONE, "Test complete"),
+    ],
+)
+def test_results_that_cover_no_pasted_text_stay_longer(monkeypatch, state, text):
     scheduled, _timers = _install_fake_foundation(monkeypatch)
     controller = _controller()
 
-    controller.update_state(AppState.NO_SPEECH)
+    controller.update_state(state, text)
 
     assert scheduled[0][0] == 0.8
 

@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Shorter paste confirmation (macOS)** – the "Pasted" overlay now stays
   0.5 s instead of 0.8 s before it fades, so it clears the freshly pasted text
-  sooner. "No speech" stays as long as before.
+  sooner. "Copied" and "No speech" stay as long as before.
 
 ## [1.20.1] - 2026-11-11
 
