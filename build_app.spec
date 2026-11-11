@@ -306,3 +306,13 @@ app = BUNDLE(
         'NSSupportsAutomaticGraphicsSwitching': True,
     },
 )
+
+# MLX's build for newer macOS, beside the one pip installed for the build machine
+# (see build_mlx_variant.py). Sign the app after this step: build_app.sh, build_dmg.sh.
+if not SLIM_BUILD:
+    import sys
+
+    sys.path.insert(0, SPECPATH)
+    from build_mlx_variant import add_newer_macos_mlx
+
+    add_newer_macos_mlx(pathlib.Path(DISTPATH) / 'PulseScribe.app')

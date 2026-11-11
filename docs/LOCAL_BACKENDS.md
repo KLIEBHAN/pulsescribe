@@ -84,6 +84,8 @@ PULSESCRIBE_LOCAL_BACKEND=mlx
 
 **Quantization:** `PULSESCRIBE_MLX_QUANT` = `8bit` (default), `4bit` or `none`; in Settings → Providers as "Quantization" while MLX is active. 8-bit loads `large`/`large-v3` as a pre-quantized repo (1.6 GB instead of 2.9 GB) and quantizes other models after loading. Measured on an M6 with German dictation: turbo 8-bit as accurate as fp16, about 10 % faster, 0.8 GB instead of 1.5 GB memory; 4-bit is smaller but slightly less accurate.
 
+**macOS version:** the app carries two builds of MLX and uses the one made for your macOS. On macOS 26.2 and newer that build runs Whisper about twice as fast as the one for older systems (turbo on an M5: 0.34 s instead of 0.77 s for 2 s of audio, 0.46 s instead of 0.87 s for 12 s). The log names the build when the model loads (`MLX-Build: …`).
+
 **Live preview:** MLX with a fast model shows your words while you speak; see [Live Preview](#live-preview).
 
 **Model name mapping:**

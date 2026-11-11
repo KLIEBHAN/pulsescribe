@@ -37,6 +37,12 @@ import typer
 
 from cli.types import TranscriptionMode, Context, RefineProvider, HotkeyMode
 
+if sys.platform == "darwin" and getattr(sys, "frozen", False):
+    # Before anything imports MLX: the packaged app picks MLX's build for this macOS.
+    from utils.mlx_variant import use_newer_macos_mlx
+
+    use_newer_macos_mlx(Path(sys._MEIPASS))  # type: ignore[attr-defined]
+
 if __name__ == "__main__" and sys.argv[1:] == ["--check-mlx-backend"]:
     from utils.macos_bundle_check import check_mlx_backend
 
@@ -89,6 +95,7 @@ try:
         live_preview_supports_model,
         normalize_live_preview,
     )
+    from utils.mlx_variant import mlx_build
     from utils.model_download import format_download_status
     from providers import get_provider
     from providers.streaming_model import MODEL_LABEL as STREAMING_MODEL_LABEL
@@ -1008,6 +1015,8 @@ class PulseScribeDaemon:
                         runtime_info = f", Device: {device_str}"
                         if compute:
                             runtime_info += f", Compute: {compute}"
+                        if info.get("backend") == "mlx" and getattr(sys, "frozen", False):
+                            runtime_info += f", MLX-Build: {mlx_build()}"
                     logger.info(
                         f"Lokales Modell vorab geladen ({t_preload:.2f}s{runtime_info})"
                     )

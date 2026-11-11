@@ -335,7 +335,12 @@ jobs:
             exit 1
           }
           file "$mount_point/$app_binary" | grep -q 'arm64'
-          "$mount_point/$app_binary" --check-mlx-backend
+          backend_check="$("$mount_point/$app_binary" --check-mlx-backend)"
+          echo "$backend_check"
+          # Built on this older macOS, the app must also carry MLX's build for
+          # newer macOS (build_mlx_variant.py) and leave it alone here.
+          [[ -f "$mount_point/PulseScribe.app/Contents/Frameworks/mlx_macos26/lib/libmlx.dylib" ]]
+          grep -q '^MLX build: default (mlx_macos26 needs macOS ' <<< "$backend_check"
 
           detach_dmg
           trap - EXIT
@@ -376,6 +381,35 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
+
+  check-macos-26:
+    name: Check macOS DMG on macOS 26
+    needs: [metadata, build-macos]
+    runs-on: macos-26
+    timeout-minutes: 15
+    env:
+      VERSION: ${{ needs.metadata.outputs.version }}
+
+    steps:
+      - name: Download macOS build artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: PulseScribe-macOS-${{ needs.metadata.outputs.version }}
+          path: dist
+
+      - name: Check that the app runs MLX's build for this macOS
+        shell: bash
+        run: |
+          set -euo pipefail
+          sw_vers -productVersion
+          mount_point="$(mktemp -d)"
+          hdiutil attach -readonly -nobrowse -mountpoint "$mount_point" "dist/PulseScribe-${VERSION}.dmg"
+          # The runner is discarded; a busy mount must not fail the check.
+          trap 'hdiutil detach "$mount_point" >/dev/null 2>&1 || true' EXIT
+          backend_check="$("$mount_point/PulseScribe.app/Contents/MacOS/pulsescribe" --check-mlx-backend)"
+          echo "$backend_check"
+          # With the build for macOS 15, Whisper runs about 2.3 times slower here.
+          grep -q '^MLX build: mlx_macos26 ' <<< "$backend_check"
 
   build-windows:
     name: Build Windows installer (API-only)
@@ -673,7 +707,7 @@ jobs:
 
   publish-release:
     name: Attach installers to GitHub release
-    needs: [metadata, build-macos, build-windows, build-windows-local]
+    needs: [metadata, build-macos, check-macos-26, build-windows, build-windows-local]
     if: needs.metadata.outputs.publish == 'true' && (always() && !failure() && !cancelled())
     runs-on: ubuntu-24.04
     concurrency:
