@@ -27,6 +27,7 @@ OVERLAY_STATE_TEXTS = {
     "LOADING": "Preparing…",
 }
 NO_SPEECH_TEXT = "Nothing was pasted"
+PASTED_BADGE = "Pasted"
 # States whose meta zone shows the local recording clock (1 Hz, m:ss).
 RECORDING_CLOCK_STATES = frozenset({"LISTENING", "RECORDING"})
 # Ends a TRANSCRIBING payload when a Refine phase follows (see transcribing_status).
@@ -147,11 +148,11 @@ def _done_content(detail: str) -> OverlayContent:
         return OverlayContent(text=TEST_COMPLETE, badge="Done", tone="success")
     match = _DONE_STATUS_PATTERN.match(detail)
     if match is None:
-        return OverlayContent(badge="Pasted", tone="success")
+        return OverlayContent(badge=PASTED_BADGE, tone="success")
     app, seconds = match.group("app"), match.group("seconds")
     return OverlayContent(
         text=f"into {app}" if app else "",
-        badge="Copied" if match.group("feedback") == COPIED else "Pasted",
+        badge="Copied" if match.group("feedback") == COPIED else PASTED_BADGE,
         tone="success",
         meta=f"{seconds} s" if seconds else "",
     )

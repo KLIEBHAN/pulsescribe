@@ -18,6 +18,7 @@ from ui.animation import (
     listening_level,
 )
 from ui.overlay_feedback import (
+    PASTED_BADGE,
     RECORDING_CLOCK_STATES,
     OverlayContent,
     describe_overlay_content,
@@ -154,8 +155,6 @@ WAVE_ENVELOPE_GAUSSIAN_SCALE = (
     else None
 )
 
-# Feedback-Anzeigedauer
-FEEDBACK_DISPLAY_DURATION = 0.8  # Sekunden für Done/No-Speech-Anzeige
 CLOCK_INTERVAL_SECONDS = 1.0  # Aufnahmedauer m:ss, nur LISTENING/RECORDING
 CLOCK_TOLERANCE_SECONDS = 0.1  # erlaubt macOS, Wakeups zu bündeln
 WAVE_HEIGHT_UPDATE_EPSILON = 0.25  # Spare Layer-Updates für subpixel-kleine Änderungen
@@ -894,6 +893,10 @@ class SoundWaveView:
 
 
 _AUTO_HIDE_STATES = (AppState.DONE, AppState.NO_SPEECH)
+# Seconds a short result stays before it fades out. "Pasted" is brief because
+# the overlay can cover the text it just pasted.
+FEEDBACK_DISPLAY_DURATION = 0.8
+PASTED_DISPLAY_DURATION = 0.5
 _LABEL_INSET = 2  # NSTextField-Labels zeichnen Text 2 px innerhalb ihres Frames
 _NONACTIVATING_PANEL_MASK = 1 << 7  # NSWindowStyleMaskNonactivatingPanel
 _CLICK_VIEW_CLASS = None
@@ -1134,7 +1137,7 @@ class OverlayController:
             return
 
         # Cancel stale feedback timer from previous DONE/ERROR state.
-        # Without this, a quick re-recording within FEEDBACK_DISPLAY_DURATION
+        # Without this, a quick re-recording within the auto-hide delay
         # causes the timer to fire _fade_out() during the new recording.
         if state_changed and self._feedback_timer:
             self._feedback_timer.invalidate()
@@ -1173,9 +1176,12 @@ class OverlayController:
         self._render(content, interim)
         if state_changed or reshow:
             self._fade_in()
-        if state_changed:
-            if state in _AUTO_HIDE_STATES:
-                self._start_fade_out_timer()
+        if state_changed and state in _AUTO_HIDE_STATES:
+            self._start_fade_out_timer(
+                PASTED_DISPLAY_DURATION
+                if content.badge == PASTED_BADGE
+                else FEEDBACK_DISPLAY_DURATION
+            )
 
     def set_live_text_expected(self, expected: bool) -> None:
         """Tell whether the recording that starts now will show live text.
@@ -1515,8 +1521,8 @@ class OverlayController:
         self._target_alpha = 0.0
         window.animator().setAlphaValue_(0.0)
 
-    def _start_fade_out_timer(self) -> None:
-        """Startet Timer für automatisches Ausblenden nach Done/No-Speech."""
+    def _start_fade_out_timer(self, seconds: float) -> None:
+        """Blendet ein Done/No-Speech-Ergebnis nach ``seconds`` automatisch aus."""
         from Foundation import NSTimer  # type: ignore[import-not-found]
 
         if self._feedback_timer:
@@ -1530,7 +1536,7 @@ class OverlayController:
             self._fade_out()
 
         self._feedback_timer = NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
-            FEEDBACK_DISPLAY_DURATION, False, fade_out_callback
+            seconds, False, fade_out_callback
         )
 
     def update_audio_level(self, level: float) -> None:

@@ -969,10 +969,27 @@ def test_success_confirmation_survives_immediate_ready_state(monkeypatch):
     controller.update_state(AppState.IDLE)
 
     assert events == ["bars:none", "show"]
-    assert scheduled[0][0] == 0.8
+    assert scheduled[0][0] == 0.5
     timers[0].block(timers[0])
     assert events == ["bars:none", "show", "stop", "hide"]
     assert controller._feedback_timer is None
+
+
+@pytest.mark.parametrize(
+    ("state", "text"),
+    [
+        (AppState.NO_SPEECH, None),
+        (AppState.DONE, "Copied to clipboard"),
+        (AppState.DONE, "Test complete"),
+    ],
+)
+def test_results_that_cover_no_pasted_text_stay_longer(monkeypatch, state, text):
+    scheduled, _timers = _install_fake_foundation(monkeypatch)
+    controller = _controller()
+
+    controller.update_state(state, text)
+
+    assert scheduled[0][0] == 0.8
 
 
 def test_native_success_timer_cleans_up_after_ready():
