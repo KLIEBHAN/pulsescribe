@@ -16,8 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   slower on current macOS than the build made for it. The app now carries
   both and loads the one for your system. Measured with turbo on an M5: a
   pass over 2 s of audio takes 0.34 s instead of 0.77 s. Transcripts are
-  unchanged; on macOS 15 to 26.1 nothing changes. The DMG grows from 272 MB
-  to 363 MB.
+  unchanged; on macOS 15 to 26.1 nothing changes. The DMG grows from 273 MB
+  to 362 MB.
 
 ## [1.20.2] - 2026-11-11
 
