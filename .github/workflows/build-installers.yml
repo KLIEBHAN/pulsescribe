@@ -339,8 +339,14 @@ jobs:
           echo "$backend_check"
           # Built on this older macOS, the app must also carry MLX's build for
           # newer macOS (build_mlx_variant.py) and leave it alone here.
-          [[ -f "$mount_point/PulseScribe.app/Contents/Frameworks/mlx_macos26/lib/libmlx.dylib" ]]
-          grep -q '^MLX build: default (mlx_macos26 needs macOS ' <<< "$backend_check"
+          [[ -f "$mount_point/PulseScribe.app/Contents/Frameworks/mlx_macos26/lib/libmlx.dylib" ]] || {
+            echo "The app lacks MLX's build for newer macOS (mlx_macos26)" >&2
+            exit 1
+          }
+          grep -q '^MLX build: default (mlx_macos26 needs macOS ' <<< "$backend_check" || {
+            echo "The app does not run MLX's default build on this macOS" >&2
+            exit 1
+          }
 
           detach_dmg
           trap - EXIT
@@ -409,7 +415,10 @@ jobs:
           backend_check="$("$mount_point/PulseScribe.app/Contents/MacOS/pulsescribe" --check-mlx-backend)"
           echo "$backend_check"
           # With the build for macOS 15, Whisper runs about 2.3 times slower here.
-          grep -q '^MLX build: mlx_macos26 ' <<< "$backend_check"
+          grep -q '^MLX build: mlx_macos26 ' <<< "$backend_check" || {
+            echo "The app does not run MLX's build for newer macOS here" >&2
+            exit 1
+          }
 
   build-windows:
     name: Build Windows installer (API-only)
