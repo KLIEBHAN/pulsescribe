@@ -50,6 +50,10 @@ def validate_dmg(tmp_path, detach_statuses, *, fail_at=""):
                     executable = mount / "PulseScribe.app/Contents/MacOS/pulsescribe"
                     executable.parent.mkdir(parents=True)
                     executable.symlink_to(Path(__file__).resolve())
+                    if fail_at != "newer-mlx":
+                        library = mount / "PulseScribe.app/Contents/Frameworks/mlx_macos26/lib/libmlx.dylib"
+                        library.parent.mkdir(parents=True)
+                        library.write_text("MLX for newer macOS")
                 elif args[0] == "detach":
                     assert args == ["detach", str(mount)]
                     attempts = sum(call[:2] == ["hdiutil", "detach"] for call in calls)
@@ -61,6 +65,13 @@ def validate_dmg(tmp_path, detach_statuses, *, fail_at=""):
             elif name == "codesign" and args[:2] == ["-d", "-r-"]:
                 certificate = os.environ["MACOS_SIGNING_CERT_SHA1"].lower()
                 print(f'designated => identifier "com.kliebhan.pulsescribe" and certificate leaf = H"{certificate}"')
+            elif name == "pulsescribe":
+                assert args == ["--check-mlx-backend"]
+                print("MLX backend OK: 80 and 128 mel filters on Device(gpu, 0)")
+                if fail_at == "mlx-build":
+                    print("MLX build: mlx_macos26 (macOS 26.2+)")
+                else:
+                    print("MLX build: default (mlx_macos26 needs macOS 26.2, running 15.8.2)")
             elif name == "plutil":
                 print("0.0.0" if fail_at == "version" else os.environ["VERSION"])
             elif name == "file":
@@ -139,7 +150,14 @@ def test_detach_retries_only_busy_and_gates_checksums(
 
 
 @pytest.mark.parametrize(
-    "fail_at,expected", [("codesign", 23), ("version", 1), ("pulsescribe", 23)]
+    "fail_at,expected",
+    [
+        ("codesign", 23),
+        ("version", 1),
+        ("pulsescribe", 23),
+        ("newer-mlx", 1),  # the bundle lacks MLX's build for newer macOS
+        ("mlx-build", 1),  # the app does not use the default build on this runner
+    ],
 )
 @pytest.mark.parametrize(
     "statuses,attempts",

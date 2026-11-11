@@ -60,7 +60,8 @@ native files to `Contents/Frameworks/mlx_macos26` (the kernel library to
 `Contents/Resources/mlx_macos26`, linked from there). The step fails if a Python
 file of those wheels differs from the installed MLX, because the bundle keeps one
 copy of the Python code for both builds. Sign the app after this step;
-`build_app.sh` and `build_dmg.sh` do.
+`build_app.sh` and `build_dmg.sh` do. The second build adds 240 MB to the app and
+91 MB to the DMG (363 MB instead of 272 MB).
 
 At start the app reads from the files in `mlx_macos26` which macOS they need and,
 if the running system is new enough, loads `mlx.core` from there
