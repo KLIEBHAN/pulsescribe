@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Transcript ready after a pause, also with the streaming preview** – while
+  the streaming model shows the text, Whisper now transcribes at speech
+  pauses in the background (MLX with a fast model such as turbo). When you
+  stop about a second after your last word, the transcript is there almost at
+  once instead of after a full Whisper pass.
+
 ### Fixed
 
 - **Quiet dictation no longer discarded (macOS, streaming preview)** – a

@@ -76,6 +76,7 @@ class PreviewPlanner:
     how the final pass trims trailing silence: a settled pass waits until more
     than ``quiet_pad_s`` of quieter audio trails the recording, so it sees the
     same end the final pass will see, and runs again after any louder sound.
+    With ``drafts=False`` only those settled passes are planned.
     """
 
     def __init__(
@@ -85,7 +86,9 @@ class PreviewPlanner:
         speech_threshold: float,
         quiet_threshold: Callable[[float], float],
         quiet_pad_s: float,
+        drafts: bool = True,
     ) -> None:
+        self._drafts = drafts
         self._sample_rate = sample_rate
         self._speech_threshold = speech_threshold
         self._quiet_threshold = quiet_threshold
@@ -156,6 +159,8 @@ class PreviewPlanner:
             if self._sound_end > self._covered_end or self._covered_by_draft:
                 return self._plan(draft=False)
             return None
+        if not self._drafts:
+            return None  # the passes below only serve the shown text
         new_speech = self._speech_end > self._covered_end
         if self._ends[-1] - self._speech_end >= NOISY_PAUSE_S * self._sample_rate:
             # Background noise above the trim level hides the pause from the
@@ -184,7 +189,10 @@ class PreviewPlanner:
     def _plan(self, *, draft: bool) -> PreviewPass:
         self._covered_end = self._ends[-1]
         self._covered_by_draft = draft
-        self._move_anchor()
+        if self._drafts:
+            # Settled passes alone stay on the whole recording: only then can
+            # their text be the transcript.
+            self._move_anchor()
         return PreviewPass(self._anchor, len(self._ends), draft, self._max_level)
 
     def _move_anchor(self) -> None:
@@ -247,6 +255,11 @@ class LivePreview:
     ``ready()`` tells whether the model is loaded; passes wait until it is.
     The remaining arguments are those of ``PreviewPlanner``.
 
+    With ``drafts=False`` it shows nothing and only runs the settled passes, so
+    that a recording that ends after a pause has its transcript already
+    (another preview may show the text meanwhile). A settled pass slower than
+    ``SLOW_DRAFT_S`` then ends it for the recording: a stop would wait for it.
+
     Call ``start`` once the audio callback fills ``chunks`` and ``levels`` (one
     RMS level per chunk, appended after its chunk), ``finish`` after the
     recording stopped, then ``final_text_for`` with the prepared final audio.
@@ -264,16 +277,19 @@ class LivePreview:
         quiet_threshold: Callable[[float], float],
         quiet_pad_s: float,
         ready: Callable[[], bool] = lambda: True,
+        drafts: bool = True,
     ) -> None:
         self._transcribe = transcribe
         self._prepare = prepare
         self._publish = publish
         self._ready = ready
+        self._drafts = drafts
         self._planner = PreviewPlanner(
             sample_rate=sample_rate,
             speech_threshold=speech_threshold,
             quiet_threshold=quiet_threshold,
             quiet_pad_s=quiet_pad_s,
+            drafts=drafts,
         )
         self._finished = threading.Event()
         self._thread: threading.Thread | None = None
@@ -398,6 +414,10 @@ class LivePreview:
             text = draft_display_text(text, self._shown)
         elif preview_pass.start_chunk == 0:
             self._settled = (audio, transcript)
+        if not self._drafts:
+            # Nothing is shown; a slow pass only risks holding up the final one.
+            self._too_slow = duration > SLOW_DRAFT_S
+            return not self._too_slow
         if text and text != self._shown:
             self._shown = text
             self._publish(text)

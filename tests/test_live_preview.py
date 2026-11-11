@@ -18,12 +18,13 @@ def _quiet_threshold(max_level: float) -> float:
     return min(0.005, max_level * 0.03)
 
 
-def _planner() -> PreviewPlanner:
+def _planner(*, drafts: bool = True) -> PreviewPlanner:
     return PreviewPlanner(
         sample_rate=RATE,
         speech_threshold=0.01,
         quiet_threshold=_quiet_threshold,
         quiet_pad_s=QUIET_PAD_S,
+        drafts=drafts,
     )
 
 
@@ -181,6 +182,40 @@ class TestPreviewPlanner:
         assert planner.next_pass(10.0).start_chunk == 0
 
 
+class TestPlannerWithoutDrafts:
+    """Only the settled passes at pauses, for a transcript that is ready at the stop."""
+
+    def test_no_pass_while_speaking_and_one_at_each_pause(self):
+        planner = _planner(drafts=False)
+        _feed(planner, SPEECH, 3.0)
+        assert planner.next_pass(99.0) is None
+        _feed(planner, QUIET, 0.5)
+
+        settled = planner.next_pass(99.0)
+
+        assert settled is not None and not settled.draft
+        assert planner.next_pass(99.0) is None  # nothing new since
+        _feed(planner, SPEECH, 1.0)
+        _feed(planner, QUIET, 0.5)
+        assert not planner.next_pass(99.0).draft
+
+    def test_pause_hidden_by_noise_gets_no_pass(self):
+        # That pass only serves the shown text; its audio is not the final audio.
+        planner = _planner(drafts=False)
+        _feed(planner, 0.012, 1.5)
+        _feed(planner, 0.0005, 3.0)  # above the trim level, below speech
+        assert planner.next_pass(99.0) is None
+
+    def test_long_recording_stays_whole(self):
+        planner = _planner(drafts=False)
+        _feed(planner, SPEECH, 25.0)
+        _feed(planner, QUIET, 0.5)
+
+        settled = planner.next_pass(99.0)
+
+        assert settled.start_chunk == 0  # only the whole recording can be the transcript
+
+
 class TestDraftDisplayText:
     def test_drops_last_word(self):
         assert draft_display_text("Heute ist ein schöner") == "Heute ist ein"
@@ -225,7 +260,7 @@ class _Harness:
     ``(text, seconds)`` for a pass that takes that long.
     """
 
-    def __init__(self, texts, *, ready=lambda: True):
+    def __init__(self, texts, *, ready=lambda: True, drafts=True):
         self.texts = iter(texts)
         self.calls: list[tuple[np.ndarray, bool]] = []
         self.published: list[str] = []
@@ -240,6 +275,7 @@ class _Harness:
             quiet_threshold=_quiet_threshold,
             quiet_pad_s=QUIET_PAD_S,
             ready=ready,
+            drafts=drafts,
         )
 
     def _transcribe(self, audio, draft):
@@ -388,6 +424,36 @@ class TestLivePreview:
         assert harness.published == ["Heute ist", "Heute ist ein schöner"]
         assert not summary.too_slow and (summary.drafts, summary.fast_drafts) == (2, 1)
         assert summary.draft_median_s > 0 and summary.slowest_s >= 0.1
+
+    def test_without_drafts_it_shows_nothing_but_has_the_transcript(self):
+        harness = _Harness([" Heute ist ein schöner Tag."], drafts=False)
+        chunks, levels = _recording((SPEECH, 1.5), (QUIET, 0.5))
+
+        harness.preview.start(chunks, levels, harness.stop_event)
+        harness.wait_for_passes(1)
+        summary = harness.preview.finish()
+
+        assert harness.published == []
+        audio, draft = harness.calls[0]
+        assert not draft
+        assert harness.preview.final_text_for(audio.copy()) == " Heute ist ein schöner Tag."
+        assert (summary.drafts, summary.settled, summary.too_slow) == (0, 1, False)
+
+    def test_without_drafts_a_slow_pass_ends_it(self, monkeypatch):
+        monkeypatch.setattr(live_preview, "SLOW_DRAFT_S", 0.0)
+        harness = _Harness([" Heute ist ein Tag.", " nie"], drafts=False)
+        chunks, levels = _recording((SPEECH, 1.5), (QUIET, 0.5))
+
+        harness.preview.start(chunks, levels, harness.stop_event)
+        harness.wait_for_passes(1)
+        thread = harness.preview._thread
+        thread.join(timeout=5)  # ends by itself: a stop would wait for such a pass
+        ended = not thread.is_alive()
+        summary = harness.preview.finish()
+
+        assert ended and summary.too_slow
+        # The pass it did run still counts if the recording ends right there.
+        assert harness.preview.final_text_for(harness.calls[0][0]) == " Heute ist ein Tag."
 
     def test_failing_pass_is_logged_and_ends_the_preview(self, caplog):
         harness = _Harness([RuntimeError("model gone")])

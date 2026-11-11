@@ -447,6 +447,66 @@ def test_streaming_preview_shows_words_and_whisper_writes_the_transcript(streami
     assert line.startswith("Live-Vorschau (Streaming): 1 Aktualisierungen, Rechenanteil ")
 
 
+def test_pause_before_the_stop_has_the_transcript_ready_beside_the_streaming_preview(
+    streaming, caplog
+):
+    provider = streaming._provider_cache["local"]
+
+    with caplog.at_level("INFO", logger="pulsescribe"):
+        interim, results = _record(
+            streaming, _chunks(0.1, 1.5) + _chunks(0.0002, 0.5), preview_passes=1
+        )
+
+    # The streaming model showed the text; Whisper's pass at the pause is the transcript.
+    assert interim == ["Heute ist ein"]
+    assert results == [" Heute ist ein schöner Tag."]
+    assert [(c["draft"], c["quiet"]) for c in provider.calls] == [(False, True)]
+    messages = [record.getMessage() for record in caplog.records]
+    assert "Transkript aus der Live-Vorschau übernommen" in messages
+    assert any(m.startswith("Vorab-Transkription in Sprechpausen: 1 Durchläufe") for m in messages)
+
+
+def test_stop_while_speaking_beside_the_streaming_preview_runs_whisper_once(streaming):
+    provider = streaming._provider_cache["local"]
+
+    _interim, results = _record(streaming, _chunks(0.1, 1.5), preview_passes=99, timeout_s=0.3)
+
+    assert results == [" Heute ist ein schöner Tag."]
+    assert [(c["draft"], c["quiet"]) for c in provider.calls] == [(False, False)]  # no drafts
+
+
+@pytest.mark.parametrize(
+    "setup",
+    [
+        lambda d: setattr(d, "model", "large-v3"),
+        lambda d: setattr(d._provider_cache["local"], "backend", "faster"),
+    ],
+    ids=["slow-model", "not-mlx"],
+)
+def test_no_whisper_passes_at_pauses_where_they_would_be_too_slow(streaming, caplog, setup):
+    setup(streaming)
+
+    with caplog.at_level("INFO", logger="pulsescribe"):
+        early_final = streaming._create_early_final()
+
+    assert early_final is None
+    assert caplog.records == []  # nothing to report: the streaming preview runs
+
+
+def test_slow_pass_at_a_pause_pauses_them(streaming):
+    early_final = SimpleNamespace(
+        finish=lambda: live_preview.PreviewSummary(
+            drafts=0, fast_drafts=0, settled=1, draft_median_s=0.0, slowest_s=1.4,
+            too_slow=True, speech_s=3.0, max_level=0.1, model_ready=True, failed=False,
+        )
+    )
+
+    streaming._finish_early_final(early_final)
+
+    assert streaming._create_early_final() is None  # paused for this model
+    assert streaming._streaming_preview_applies("local")  # the shown preview goes on
+
+
 def test_quiet_speech_the_streaming_model_heard_is_transcribed(streaming, caplog):
     provider = streaming._provider_cache["local"]
     quiet = _chunks(0.004, 2.0)  # every chunk below the speech level 0.010
