@@ -206,8 +206,15 @@ def test_adds_the_newer_build_to_an_app_built_on_older_macos(
 
 
 @pytest.mark.parametrize("platform", [NEWER, "macosx_27_0_arm64"])
-def test_app_built_on_new_macos_needs_no_second_build(monkeypatch, capsys, app, platform):
-    install(monkeypatch, platform=platform)
+def test_app_built_on_new_macos_needs_no_second_build(
+    monkeypatch, capsys, app, installed_mlx, platform
+):
+    # The installed build is the newer one; its libraries name the real minimum.
+    (installed_mlx / "lib").mkdir()
+    (installed_mlx / "core.cpython-312-darwin.so").write_bytes(macho(26, 0))
+    (installed_mlx / "lib" / "libmlx.dylib").write_bytes(macho(26, 2))
+    (installed_mlx / "lib" / "mlx.metallib").write_bytes(b"kernels")
+    install(monkeypatch, platform=platform, package=installed_mlx)
     monkeypatch.setattr(
         build_mlx_variant, "download_newer_wheels", lambda *args: pytest.fail("no download")
     )
@@ -215,7 +222,10 @@ def test_app_built_on_new_macos_needs_no_second_build(monkeypatch, capsys, app, 
     build_mlx_variant.add_newer_macos_mlx(app)
 
     assert not (app / "Contents" / "Frameworks" / VARIANT_DIR).exists()
-    assert f"installed as the {platform} build" in capsys.readouterr().out
+    assert capsys.readouterr().out == (
+        f"MLX 0.32.4 is installed as the {platform} build; "
+        "the app runs its local models only on macOS 26.2 and newer.\n"
+    )
 
 
 def test_mismatched_mlx_packages_stop_the_build(monkeypatch, app):

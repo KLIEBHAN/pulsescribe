@@ -113,10 +113,13 @@ def add_newer_macos_mlx(app: Path) -> None:
     if importlib.metadata.version("mlx-metal") != version:
         raise RuntimeError("mlx and mlx-metal are installed in different versions")
     base = installed_platform("mlx-metal")
-    if macos_generation(base) >= macos_generation(NEWER_PLATFORM):
-        print(f"MLX {version} is installed as the {base} build; the app runs only on that macOS.")
-        return
     installed_mlx = Path(str(importlib.metadata.distribution("mlx").locate_file("mlx")))
+    if macos_generation(base) >= macos_generation(NEWER_PLATFORM):
+        # The wheel tag understates it: the macosx_26_0 libraries need macOS 26.2.
+        minimum = variant_min_macos(installed_mlx)
+        needs = f"macOS {minimum[0]}.{minimum[1]} and newer" if minimum else "that macOS"
+        print(f"MLX {version} is installed as the {base} build; the app runs its local models only on {needs}.")
+        return
     with tempfile.TemporaryDirectory() as downloads:
         wheels = download_newer_wheels(version, Path(downloads))
         if len(wheels) != len(PACKAGES):

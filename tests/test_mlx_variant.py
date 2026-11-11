@@ -65,10 +65,11 @@ class TestMachoMinMacos:
             macho(build_version(26, 2), magic=0xCAFEBABE),  # universal binary
             macho(UUID),  # names no version
             macho(build_version(26, 2, platform=IOS)),
-            macho(build_version(26, 2))[:40],  # cut off inside the command
+            macho(build_version(26, 2))[:40],  # cut off before the version
+            macho(build_version(26, 2))[:48],  # cut off after the version
             macho(struct.pack("<II", LC_UUID, 4)),  # command shorter than its own header
         ],
-        ids=["empty", "text", "universal", "no-version", "ios", "truncated", "bad-size"],
+        ids=["empty", "text", "universal", "no-version", "ios", "cut-early", "cut-late", "bad-size"],
     )
     def test_none_without_a_readable_macos_minimum(self, tmp_path, content):
         file = tmp_path / "lib.dylib"

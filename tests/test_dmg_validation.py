@@ -14,7 +14,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def validate_dmg(tmp_path, detach_statuses, *, fail_at=""):
+def validate_dmg(tmp_path, detach_statuses, *, fail_at="", newer_mlx="true"):
     """Run the workflow block with fake tools; never mount a volume or sleep."""
     binary = tmp_path / "bin"
     binary.mkdir()
@@ -99,6 +99,7 @@ def validate_dmg(tmp_path, detach_statuses, *, fail_at=""):
             "FAIL_AT": fail_at,
             "VERSION": "1.7.1",
             "PUBLISH": "true",
+            "NEWER_MLX": newer_mlx,
             "MACOS_SIGNING_CERT_SHA1": "7241EB994E2F876853BEEE24D56EF802F9AE2AB0",
         },
         capture_output=True,
@@ -178,6 +179,25 @@ def test_cleanup_retains_primary_validation_failure(
     assert not any(call[0] == "shasum" for call in calls)
     assert not (tmp_path / "dist/PulseScribe-1.7.1.dmg.sha256").exists()
     assert (tmp_path / "mounted dmg").exists() == (statuses[attempts - 1] != 0)
+
+
+def test_rebuilt_tag_from_before_the_second_mlx_build_still_validates(tmp_path):
+    # Its source adds no second build, so the app has none.
+    result, _calls = validate_dmg(tmp_path, (0,), fail_at="newer-mlx", newer_mlx="false")
+
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "dist/PulseScribe-1.7.1.dmg.sha256").exists()
+
+
+def test_second_mlx_build_is_checked_only_for_sources_that_add_it():
+    workflow = WORKFLOW.read_text()
+    macos = workflow.split("\n  build-macos:", 1)[1].split("\n  check-macos-26:", 1)[0]
+    assert "newer_mlx: ${{ steps.newer-mlx.outputs.expected }}" in macos
+    assert "NEWER_MLX: ${{ steps.newer-mlx.outputs.expected }}" in macos
+    check = workflow.split("\n  check-macos-26:", 1)[1].split("\n  build-windows:", 1)[0]
+    assert "    if: needs.build-macos.outputs.newer_mlx == 'true'\n" in check
+    publish = workflow.split("\n  publish-release:", 1)[1]
+    assert "check-macos-26" in publish.split("needs:", 1)[1].split("\n", 1)[0]
 
 
 def test_macos_artifact_upload_requires_validation_success():

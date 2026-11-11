@@ -48,6 +48,8 @@ def macho_min_macos(path: Path) -> tuple[int, int] | None:
                 if size < 8:
                     return None
                 body = file.read(size - 8)
+                if len(body) < size - 8:
+                    return None  # cut off inside a load command
                 if kind == _LC_BUILD_VERSION and len(body) >= 8:
                     target, minimum = struct.unpack_from("<II", body)
                     if target == _PLATFORM_MACOS:

@@ -186,12 +186,26 @@ jobs:
       # privacy permissions across updates only while every release is signed
       # with this certificate; changing it makes users grant them again.
       MACOS_SIGNING_CERT_SHA1: 7241EB994E2F876853BEEE24D56EF802F9AE2AB0
+    outputs:
+      newer_mlx: ${{ steps.newer-mlx.outputs.expected }}
 
     steps:
       - name: Check out validated release commit
         uses: actions/checkout@v7
         with:
           ref: ${{ needs.metadata.outputs.commit }}
+
+      - name: Detect whether this source ships MLX's build for newer macOS
+        id: newer-mlx
+        shell: bash
+        run: |
+          # A rebuilt tag from before build_mlx_variant.py ships the default build
+          # only; the checks for the second build then do not apply.
+          if [[ -f build_mlx_variant.py ]]; then
+            echo "expected=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "expected=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -273,6 +287,8 @@ jobs:
 
       - name: Validate DMG
         shell: bash
+        env:
+          NEWER_MLX: ${{ steps.newer-mlx.outputs.expected }}
         run: |
           set -euo pipefail
           dmg="dist/PulseScribe-${VERSION}.dmg"
@@ -337,16 +353,18 @@ jobs:
           file "$mount_point/$app_binary" | grep -q 'arm64'
           backend_check="$("$mount_point/$app_binary" --check-mlx-backend)"
           echo "$backend_check"
-          # Built on this older macOS, the app must also carry MLX's build for
-          # newer macOS (build_mlx_variant.py) and leave it alone here.
-          [[ -f "$mount_point/PulseScribe.app/Contents/Frameworks/mlx_macos26/lib/libmlx.dylib" ]] || {
-            echo "The app lacks MLX's build for newer macOS (mlx_macos26)" >&2
-            exit 1
-          }
-          grep -q '^MLX build: default (mlx_macos26 needs macOS ' <<< "$backend_check" || {
-            echo "The app does not run MLX's default build on this macOS" >&2
-            exit 1
-          }
+          if [[ "$NEWER_MLX" == "true" ]]; then
+            # Built on this older macOS, the app must also carry MLX's build for
+            # newer macOS (build_mlx_variant.py) and leave it alone here.
+            [[ -f "$mount_point/PulseScribe.app/Contents/Frameworks/mlx_macos26/lib/libmlx.dylib" ]] || {
+              echo "The app lacks MLX's build for newer macOS (mlx_macos26)" >&2
+              exit 1
+            }
+            grep -q '^MLX build: default (mlx_macos26 needs macOS ' <<< "$backend_check" || {
+              echo "The app does not run MLX's default build on this macOS" >&2
+              exit 1
+            }
+          fi
 
           detach_dmg
           trap - EXIT
@@ -391,6 +409,7 @@ jobs:
   check-macos-26:
     name: Check macOS DMG on macOS 26
     needs: [metadata, build-macos]
+    if: needs.build-macos.outputs.newer_mlx == 'true'
     runs-on: macos-26
     timeout-minutes: 15
     env:
