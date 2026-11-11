@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Local Whisper about twice as fast on macOS 26.2 and newer (MLX)** – the
+  app shipped MLX's build for macOS 15, which runs Whisper about 2.3 times
+  slower on current macOS than the build made for it. The app now carries
+  both and loads the one for your system. Measured with turbo on an M5: a
+  pass over 2 s of audio takes 0.34 s instead of 0.77 s. Transcripts are
+  unchanged; on macOS 15 to 26.1 nothing changes. The DMG grows from 272 MB
+  to 363 MB.
+
 ## [1.20.2] - 2026-11-11
 
 ### Changed

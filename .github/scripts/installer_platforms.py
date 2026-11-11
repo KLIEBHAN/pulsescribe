@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 
 
-MACOS_BUILD_FILES = {"build_app.sh", "build_app.spec", "build_dmg.sh"}
+MACOS_BUILD_FILES = {"build_app.sh", "build_app.spec", "build_dmg.sh", "build_mlx_variant.py"}
 WINDOWS_BUILD_FILES = {
     "build_windows.ps1",
     "build_windows.py",

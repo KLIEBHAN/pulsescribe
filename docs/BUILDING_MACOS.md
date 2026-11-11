@@ -44,6 +44,39 @@ Examples:
 
 Output: `dist/PulseScribe.app`
 
+### MLX builds per macOS
+
+MLX publishes its native code (extension module, libraries, Metal kernels) per
+macOS generation, and pip installs the one for the build machine. The build made
+for macOS 15 also starts on newer systems, but on macOS 26.2 and newer it runs
+Whisper about 2.3 times slower than the build made for them (turbo, 2 s of audio:
+0.77 s instead of 0.34 s on an M5, 0.60 s instead of 0.28 s on an M6).
+
+A full build on a macOS older than 26 therefore ships both. After PyInstaller has
+assembled the bundle, `build_app.spec` calls
+[`build_mlx_variant.py`](../build_mlx_variant.py), which downloads the
+`macosx_26_0_arm64` wheels of the installed MLX version and copies their four
+native files to `Contents/Frameworks/mlx_macos26` (the kernel library to
+`Contents/Resources/mlx_macos26`, linked from there). The step fails if a Python
+file of those wheels differs from the installed MLX, because the bundle keeps one
+copy of the Python code for both builds. Sign the app after this step;
+`build_app.sh` and `build_dmg.sh` do. The second build adds 240 MB to the app and
+91 MB to the DMG (363 MB instead of 272 MB).
+
+At start the app reads from the files in `mlx_macos26` which macOS they need and,
+if the running system is new enough, loads `mlx.core` from there
+([`utils/mlx_variant.py`](../utils/mlx_variant.py)). The log line
+`Lokales Modell vorab geladen (…, MLX-Build: …)` names the build in use, and so
+does `--check-mlx-backend`:
+
+```
+MLX build: mlx_macos26 (macOS 26.2+)
+MLX build: default (mlx_macos26 needs macOS 26.2, running 15.7.2)
+```
+
+A build on macOS 26 or newer installs the newer MLX directly, adds nothing and
+runs only on that macOS.
+
 ### `build_dmg.sh` — DMG Packaging
 
 Creates a drag‑and‑drop DMG with optional notarization.
@@ -89,6 +122,9 @@ The full build fails if a local backend dependency is missing. CI also runs
 `--check-mlx-backend` from the app inside the DMG, checking MLX imports, native
 operations and the 80/128 mel-filter assets without downloading a model, and that
 sherpa-onnx (the live preview's streaming model) imports with its native library.
+The same check runs once more on a `macos-26` runner, where the app must load
+[MLX's build for newer macOS](#mlx-builds-per-macos); a release is published only
+if both pass.
 
 PR builds cancel superseded runs and skip macOS when the whole PR changes only
 Windows build files (plus documentation/tests). Shared code, dependencies, unknown

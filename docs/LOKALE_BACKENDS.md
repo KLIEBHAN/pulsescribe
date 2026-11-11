@@ -84,6 +84,8 @@ PULSESCRIBE_LOCAL_BACKEND=mlx
 
 **Quantisierung:** `PULSESCRIBE_MLX_QUANT` = `8bit` (Standard), `4bit` oder `none`; in den Einstellungen unter Providers als „Quantization“, solange MLX aktiv ist. Mit 8 Bit lädt PulseScribe `large`/`large-v3` als fertig quantisiertes Repo (1,6 statt 2,9 GB) und quantisiert andere Modelle nach dem Laden. Gemessen auf einem M6 mit deutschen Diktaten: turbo in 8 Bit so genau wie fp16, etwa 10 % schneller, 0,8 statt 1,5 GB Speicher; 4 Bit ist kleiner, aber etwas ungenauer.
 
+**macOS-Version:** Die App enthält zwei Builds von MLX und nutzt den für dein macOS. Ab macOS 26.2 rechnet dieser Build Whisper etwa doppelt so schnell wie der für ältere Systeme (turbo auf einem M5: 0,34 s statt 0,77 s bei 2 s Audio, 0,46 s statt 0,87 s bei 12 s). Das Log nennt den Build beim Laden des Modells (`MLX-Build: …`).
+
 **Live-Vorschau:** MLX mit einem schnellen Modell zeigt deine Worte, während du sprichst; siehe [Live-Vorschau](#live-vorschau).
 
 **Modellnamen-Zuordnung:**
