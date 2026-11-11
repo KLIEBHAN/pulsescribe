@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.20.3] - 2026-11-11
+
 ### Fixed
 
 - **Local Whisper about twice as fast on macOS 26.2 and newer (MLX)** – the
