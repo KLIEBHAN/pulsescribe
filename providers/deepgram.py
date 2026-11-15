@@ -78,6 +78,7 @@ def _build_request_params(
             "request": _iter_audio_chunks(audio_path),
             "smart_format": True,
             "punctuate": True,
+            **({"detect_language": True} if language is None else {}),
             **_build_vocabulary_params(model, keywords),
         },
     )
