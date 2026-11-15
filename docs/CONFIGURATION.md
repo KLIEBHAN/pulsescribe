@@ -43,6 +43,8 @@ At least one API key is required for cloud transcription:
 | `PULSESCRIBE_LANGUAGE`  | `de`, `en`, `auto`, etc.              | `auto`   | Language code (explicit improves accuracy) |
 | `PULSESCRIBE_STREAMING` | `true`, `false`                       | `true`   | WebSocket streaming for Deepgram           |
 
+With `PULSESCRIBE_LANGUAGE=auto` or an unset language, Deepgram REST requests enable [language detection](https://developers.deepgram.com/docs/language-detection) (`detect_language=true`). Deepgram streaming uses [multilingual recognition](https://developers.deepgram.com/docs/multilingual-code-switching) (`language=multi`, Nova-2/Nova-3), because language detection is not supported for streaming. An explicit language such as `de` is sent unchanged. Omitting both options would make Deepgram [default to English](https://developers.deepgram.com/docs/language).
+
 ### Provider-Specific Models
 
 | Provider     | Models                                                     | Recommended         |

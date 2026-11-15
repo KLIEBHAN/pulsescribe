@@ -819,7 +819,8 @@ def test_groq_provider_redacts_debug_result_logging(monkeypatch, tmp_path):
     assert "<redacted" in repr(captured[-1][0])
 
 
-def test_deepgram_provider_omits_auto_language(monkeypatch, tmp_path):
+@pytest.mark.parametrize("language", [None, "", "auto", " auto ", "AUTO"])
+def test_deepgram_provider_detects_auto_language(monkeypatch, tmp_path, language):
     from providers.deepgram import DeepgramProvider
     import providers.deepgram as deepgram_mod
 
@@ -846,9 +847,10 @@ def test_deepgram_provider_omits_auto_language(monkeypatch, tmp_path):
     monkeypatch.setenv("DEEPGRAM_API_KEY", "test-key")
 
     provider = DeepgramProvider()
-    provider.transcribe(audio_file, language="auto")
+    provider.transcribe(audio_file, language=language)
 
     assert "language" not in created_params[0]
+    assert created_params[0]["detect_language"] is True
 
 
 def test_deepgram_provider_keeps_rest_defaults_and_explicit_language(
@@ -886,6 +888,7 @@ def test_deepgram_provider_keeps_rest_defaults_and_explicit_language(
 
     assert observed["model"] == "nova-3"
     assert observed["language"] == "de"
+    assert "detect_language" not in observed
     assert observed["smart_format"] is True
     assert observed["punctuate"] is True
     assert observed["keyterm"] == ["API"]
@@ -1082,7 +1085,22 @@ def test_deepgram_provider_streams_audio_request(monkeypatch, tmp_path):
     assert b"".join(observed["chunks"]) == audio_payload
 
 
-def test_deepgram_stream_connection_omits_auto_language(monkeypatch):
+@pytest.mark.parametrize(
+    "language, expected_language",
+    [
+        (None, "multi"),
+        ("", "multi"),
+        ("auto", "multi"),
+        (" auto ", "multi"),
+        ("AUTO", "multi"),
+        ("de", "de"),
+        ("en", "en"),
+    ],
+)
+@pytest.mark.parametrize("connection_path", ["direct", "preconnected", "fallback"])
+def test_deepgram_stream_connection_language(
+    monkeypatch, language, expected_language, connection_path
+):
     import providers.deepgram_stream as deepgram_stream_mod
 
     captured: dict[str, object] = {}
@@ -1119,14 +1137,31 @@ def test_deepgram_stream_connection_omits_auto_language(monkeypatch):
     )
 
     async def _run() -> None:
-        async with deepgram_stream_mod._create_deepgram_connection(
-            "test-key",
-            model="nova-3",
-            language=" auto ",
-        ) as client:
-            assert isinstance(client, _FakeClient)
-            assert isinstance(client.websocket, _FakeProtocol)
+        kwargs = {"model": "nova-3", "language": language}
+        manager = deepgram_stream_mod.DeepgramWarmConnectionManager()
+        if connection_path == "preconnected":
+            config = manager._build_config(
+                api_key="test-key", sample_rate=16000, channels=1, **kwargs
+            )
+            prepared = await manager._open_prepared(config)
+            client = prepared.connection
+            await prepared.context.__aexit__(None, None, None)
+        elif connection_path == "fallback":
+            async with manager._acquire_connection("test-key", **kwargs) as result:
+                client, reused = result
+                assert reused is False
+        else:
+            async with deepgram_stream_mod._create_deepgram_connection(
+                "test-key", **kwargs
+            ) as client:
+                pass
+        assert isinstance(client, _FakeClient)
+        assert isinstance(client.websocket, _FakeProtocol)
 
     asyncio.run(_run())
 
-    assert "language=" not in str(captured["url"])
+    from urllib.parse import parse_qs, urlparse
+
+    query = parse_qs(urlparse(str(captured["url"])).query)
+    assert query["language"] == [expected_language]
+    assert "detect_language" not in query

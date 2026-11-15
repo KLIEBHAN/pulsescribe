@@ -43,6 +43,8 @@ Mindestens ein API-Key für Cloud-Transkription erforderlich:
 | `PULSESCRIBE_LANGUAGE`  | `de`, `en`, `auto`, etc.              | `auto`   | Sprachcode (explizit verbessert Genauigkeit) |
 | `PULSESCRIBE_STREAMING` | `true`, `false`                       | `true`   | WebSocket-Streaming für Deepgram             |
 
+Bei `PULSESCRIBE_LANGUAGE=auto` oder nicht gesetzter Sprache aktivieren Deepgram-REST-Anfragen die [Spracherkennung](https://developers.deepgram.com/docs/language-detection) (`detect_language=true`). Deepgram-Streaming nutzt [mehrsprachige Erkennung](https://developers.deepgram.com/docs/multilingual-code-switching) (`language=multi`, Nova-2/Nova-3), da die automatische Sprachbestimmung beim Streaming nicht unterstützt wird. Eine explizite Sprache wie `de` wird unverändert gesendet. Ohne beide Optionen würde Deepgram [standardmäßig Englisch verwenden](https://developers.deepgram.com/docs/language).
+
 ### Provider-spezifische Modelle
 
 | Provider     | Modelle                                                    | Empfohlen           |

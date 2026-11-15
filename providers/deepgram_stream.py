@@ -294,8 +294,8 @@ async def _create_deepgram_connection(
     # Query-Parameter aufbauen
     params = httpx.QueryParams()
     params = params.add("model", model)
-    if language:
-        params = params.add("language", language)
+    # Streaming does not support detect_language; use multilingual recognition.
+    params = params.add("language", language or "multi")
     # Booleans explizit senden (True="true", False="false")
     params = params.add("smart_format", "true" if smart_format else "false")
     params = params.add("punctuate", "true" if punctuate else "false")
