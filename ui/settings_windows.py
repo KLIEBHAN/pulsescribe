@@ -115,6 +115,7 @@ from utils.local_backend import (
     DEFAULT_LOCAL_BACKEND,
     advanced_option_applies,
     available_local_backend_options,
+    available_local_model_options,
     effective_local_backend,
     first_advanced_value_error,
     get_cpu_threads_limit,
@@ -198,6 +199,9 @@ LOCAL_MODEL_OPTIONS = [
     "large-en",
     "medium-en",
     "small-en",
+    # NVIDIA, on the CPU through sherpa-onnx whatever the backend
+    "parakeet-v3",
+    "canary-1b-v2",
 ]
 DEVICE_OPTIONS = ["auto", "cpu", "cuda"]
 BOOL_OVERRIDE_OPTIONS = ["default", "true", "false"]
@@ -1665,7 +1669,11 @@ class SettingsWindow(QDialog):
         model_layout.setContentsMargins(0, 0, 0, 0)
         model_layout.setSpacing(12)
         self._local_model_combo = QComboBox()
-        _add_combo_items(self._local_model_combo, LOCAL_MODEL_OPTIONS)
+        _add_combo_items(
+            self._local_model_combo, available_local_model_options(LOCAL_MODEL_OPTIONS)
+        )
+        # Parakeet and Canary hide the Whisper options
+        self._local_model_combo.currentTextChanged.connect(self._refresh_local_advanced_ui)
         self._local_model_combo.currentTextChanged.connect(
             self._refresh_footer_settings_hint
         )
@@ -2610,12 +2618,18 @@ class SettingsWindow(QDialog):
         backend_text = combo.currentText() if combo else DEFAULT_LOCAL_BACKEND
         return normalize_local_backend(backend_text)
 
+    def _current_local_model(self) -> str | None:
+        combo = getattr(self, "_local_model_combo", None)
+        return combo.currentText() if combo else None
+
     def _refresh_local_advanced_ui(self, mode: str | None = None, *_args) -> None:
         mode_combo = getattr(self, "_mode_combo", None)
         current_mode = mode if isinstance(mode, str) and mode in MODE_OPTIONS else None
         if current_mode is None:
             current_mode = mode_combo.currentText() if mode_combo else "deepgram"
-        state = get_local_advanced_ui_state(current_mode, self._current_local_backend())
+        state = get_local_advanced_ui_state(
+            current_mode, self._current_local_backend(), self._current_local_model()
+        )
         disclosure = getattr(self, "_advanced_disclosure", None)
         is_local = current_mode == "local"
         expanded = is_local and (disclosure is None or disclosure.isChecked())
@@ -2633,7 +2647,9 @@ class SettingsWindow(QDialog):
             expanded and state.show_general,
         )
         # Cards and rows follow the backend that runs, so auto shows the faster-whisper card.
-        backend = effective_local_backend(self._current_local_backend(), platform="win32")
+        backend = effective_local_backend(
+            self._current_local_backend(), platform="win32", model=self._current_local_model()
+        )
         _set_widget_visible_if_changed(
             getattr(self, "_advanced_faster_settings_card", None),
             expanded and advanced_option_applies("compute_type", backend, platform="win32"),
@@ -5093,7 +5109,9 @@ class SettingsWindow(QDialog):
             for option, attr in fields.items()
             if (field := getattr(self, attr, None)) is not None
         }
-        backend = effective_local_backend(self._current_local_backend(), platform="win32")
+        backend = effective_local_backend(
+            self._current_local_backend(), platform="win32", model=self._current_local_model()
+        )
         return first_advanced_value_error(values, backend, platform="win32")
 
     def _reset_advanced_options(self) -> None:

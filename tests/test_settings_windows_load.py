@@ -1616,7 +1616,7 @@ def test_advanced_option_rows_follow_the_backend(monkeypatch):
     }
     backend = {"value": "faster"}
     window._current_local_backend = lambda: backend["value"]
-    monkeypatch.setattr(settings_mod, "effective_local_backend", lambda selected, platform=None: selected)
+    monkeypatch.setattr(settings_mod, "effective_local_backend", lambda selected, platform=None, model=None: selected)
 
     window._refresh_local_advanced_ui("local")
     assert {o: w.visible for o, w in window._advanced_option_rows.items()} == {
@@ -1641,7 +1641,7 @@ def test_auto_backend_shows_the_faster_whisper_card(monkeypatch):
     window._advanced_faster_settings_card = _FakeVisibleWidget()
     window._advanced_lightning_settings_card = _FakeVisibleWidget()
     window._current_local_backend = lambda: "auto"
-    monkeypatch.setattr(settings_mod, "effective_local_backend", lambda selected, platform=None: "faster")
+    monkeypatch.setattr(settings_mod, "effective_local_backend", lambda selected, platform=None, model=None: "faster")
 
     window._refresh_local_advanced_ui("local")
     assert window._advanced_faster_settings_card.visible is True

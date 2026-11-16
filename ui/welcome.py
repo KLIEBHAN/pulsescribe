@@ -55,6 +55,7 @@ from utils.local_backend import (
     ADVANCED_OPTION_HELP,
     advanced_option_applies,
     available_local_backend_options,
+    available_local_model_options,
     effective_local_backend,
     first_advanced_value_error,
     get_local_advanced_ui_state,
@@ -145,6 +146,9 @@ LOCAL_MODEL_OPTIONS = [
     "large-en",
     "medium-en",
     "small-en",
+    # NVIDIA, on the CPU through sherpa-onnx whatever the backend
+    "parakeet-v3",
+    "canary-1b-v2",
 ]
 DEVICE_OPTIONS = ["auto", "mps", "cpu"]
 # MLX weight quantization (PULSESCRIBE_MLX_QUANT); 8bit is the runtime default.
@@ -2257,12 +2261,20 @@ class WelcomeController:
             "_backend_changed_handler",
         )
 
+    def _selected_local_model(self) -> str | None:
+        """The chosen local model (popup, else the saved setting)."""
+        popup = getattr(self, "_local_model_popup", None)
+        if popup is not None:
+            return popup.titleOfSelectedItem()
+        return self._get_cached_env_setting("PULSESCRIBE_LOCAL_MODEL")
+
     def _effective_local_backend(self) -> str:
         """Backend that runs for the selected (or saved) choice, resolving auto."""
         popup = getattr(self, "_local_backend_popup", None)
         return effective_local_backend(
             popup.titleOfSelectedItem() if popup is not None
-            else self._get_cached_env_setting("PULSESCRIBE_LOCAL_BACKEND")
+            else self._get_cached_env_setting("PULSESCRIBE_LOCAL_BACKEND"),
+            model=self._selected_local_model(),
         )
 
     def _uses_mlx(self) -> bool:
@@ -2282,12 +2294,10 @@ class WelcomeController:
 
     def _live_preview_hint(self) -> str | None:
         """What to know about the chosen live preview with this backend and model."""
-        popup = getattr(self, "_local_model_popup", None)
         return live_preview_hint(
             self._selected_live_preview(),
             self._effective_local_backend(),
-            popup.titleOfSelectedItem() if popup is not None
-            else self._get_cached_env_setting("PULSESCRIBE_LOCAL_MODEL"),
+            self._selected_local_model(),
         )
 
     def _build_advanced_options_header(self, view, top: int) -> int:
@@ -2439,13 +2449,13 @@ class WelcomeController:
             control_x,
             y,
             control_width,
-            LOCAL_MODEL_OPTIONS,
+            available_local_model_options(LOCAL_MODEL_OPTIONS),
             selected_title=current_local_model,
             include_custom_selection=True,
         )
         self._bind_control_simple_handler(
             local_model_popup,
-            "_update_all_visibility",  # Live preview depends on the model
+            "_update_all_visibility",  # Live preview and the advanced options depend on it
             "_local_model_changed_handler",
         )
         self._local_model_popup = local_model_popup
@@ -5731,7 +5741,9 @@ class WelcomeController:
             if self._local_backend_popup
             else "auto"
         )
-        state = get_local_advanced_ui_state(mode, backend)
+        state = get_local_advanced_ui_state(
+            mode, backend, self._selected_local_model() if is_local else None
+        )
 
         for view in (
             self._local_backend_label,
