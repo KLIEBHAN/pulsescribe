@@ -435,3 +435,20 @@ def test_preload_shows_download_progress_only_while_loading():
     assert "50 % · downloading turbo (1.0 GB)" in texts
     assert not any(t and t.startswith("90 %") for t in texts)
     assert provider.download_progress_callback is None
+
+
+def test_nemo_preload_skips_the_whisper_warmup(monkeypatch):
+    monkeypatch.setenv("PULSESCRIBE_LOCAL_WARMUP", "true")
+    daemon = PulseScribeDaemon(mode="local", model="parakeet-v3")
+    provider = _LocalProvider()
+    provider.transcribe_audio = MagicMock()
+    with (
+        patch.object(daemon, "_get_provider", return_value=provider),
+        patch.object(daemon, "_start_keepalive_timer"),
+        patch("pulsescribe_daemon.get_sound_player"),
+    ):
+        assert daemon._preload_local_model_async()
+        assert daemon._local_preload_complete.wait(timeout=2.0)
+
+    provider.preload.assert_called_once()
+    provider.transcribe_audio.assert_not_called()

@@ -1033,7 +1033,9 @@ class PulseScribeDaemon:
                         warmup_flag
                         if warmup_flag is not None
                         else backend in ("whisper", "faster")
-                    )
+                    ) and not is_nemo_model(
+                        model_snapshot or os.getenv("PULSESCRIBE_LOCAL_MODEL")
+                    )  # ONNX on the CPU needs no warmup pass
                     if should_warmup and hasattr(provider, "transcribe_audio"):
                         import numpy as np
 
