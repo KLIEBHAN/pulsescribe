@@ -65,13 +65,21 @@ def available_local_backend_options(options: list[str]) -> list[str]:
             or is_local_backend_installed(option)]
 
 
-_ALL_LOCAL_BACKENDS = frozenset({"whisper", "faster", "mlx", "lightning"})
+def available_local_model_options(options: list[str]) -> list[str]:
+    """Model choices for Settings: Parakeet and Canary only where sherpa-onnx is installed."""
+    if is_local_backend_installed(NEMO_BACKEND):
+        return list(options)
+    return [option for option in options if not is_nemo_model(option)]
+
+
+_WHISPER_BACKENDS = frozenset({"whisper", "faster", "mlx", "lightning"})
+_ALL_LOCAL_BACKENDS = _WHISPER_BACKENDS | {NEMO_BACKEND}
 _DECODING_BACKENDS = frozenset({"whisper", "faster", "mlx"})  # Lightning only reads the language
 
 # Backends on which each advanced option takes effect (see providers/local.py).
 ADVANCED_OPTION_BACKENDS: dict[str, frozenset[str]] = {
     "preset": _ALL_LOCAL_BACKENDS,
-    "warmup": _ALL_LOCAL_BACKENDS,
+    "warmup": _WHISPER_BACKENDS,  # ONNX on the CPU needs no warmup pass
     "idle_unload": _ALL_LOCAL_BACKENDS,  # macOS app only, see advanced_option_applies
     "live_preview": _ALL_LOCAL_BACKENDS,  # macOS app only, see live_preview_hint
     "device": frozenset({"whisper", "faster"}),  # MLX and Lightning always run on Metal
@@ -185,6 +193,11 @@ def live_preview_hint(preview: str, backend: str, model: str | None) -> str | No
             "The streaming model is downloaded once after you save (0.7 GB) and uses about "
             "1.9 GB of memory while loaded. Whisper still writes the transcript."
         )
+    if preview == LIVE_PREVIEW_ON and backend == NEMO_BACKEND:
+        return (
+            f"No live text with {(model or '').strip()} in mode \"on\": it only works with "
+            "Whisper on MLX. Choose the streaming model."
+        )
     if preview == LIVE_PREVIEW_ON and backend == "mlx" and not live_preview_supports_model(model):
         return (
             f"No live text with {(model or '').strip()} in mode \"on\": this model is too slow "
@@ -233,6 +246,7 @@ def should_remove_local_backend_env(value: str | None) -> bool:
 def get_local_advanced_ui_state(
     mode: str | None,
     backend: str | None,
+    model: str | None = None,
 ) -> LocalAdvancedUiState:
     """Return visibility + guidance for advanced local settings surfaces."""
     normalized_mode = (mode or "").strip().lower()
@@ -246,6 +260,17 @@ def get_local_advanced_ui_state(
             guidance=(
                 "Advanced local controls only apply in Local Whisper mode. "
                 "Switch Providers → Mode to Local Whisper if you want to tune offline dictation."
+            ),
+        )
+
+    if is_nemo_model(model):
+        return LocalAdvancedUiState(
+            show_general=True,
+            show_faster=False,
+            show_lightning=False,
+            guidance=(
+                f"{(model or '').strip()} runs on the CPU through sherpa-onnx; the backend "
+                "and the Whisper options do not apply."
             ),
         )
 

@@ -161,7 +161,7 @@ PULSESCRIBE_LOCAL_BACKEND=whisper
 
 ### NVIDIA Parakeet v3 und Canary-1B-v2
 
-Zwei Modelle von NVIDIA, die über sherpa-onnx auf der CPU laufen, egal welches Backend eingestellt ist. Du wählst sie als Modell:
+Zwei Modelle von NVIDIA, die über sherpa-onnx auf der CPU laufen, egal welches Backend eingestellt ist. Du wählst sie unter Settings → Transcription → Local Model (sichtbar bei Mode local) oder setzt das Modell:
 
 ```bash
 # In ~/.pulsescribe/.env
@@ -179,8 +179,8 @@ Whisper turbo mit MLX brauchte für dieselbe Aufnahme 0,34 s.
 - Beide kennen 25 europäische Sprachen (bg, cs, da, de, el, en, es, et, fi, fr, hr, hu, it, lt, lv, mt, nl, pl, pt, ro, ru, sk, sl, sv, uk) und setzen Satzzeichen und Großschreibung.
 - Canary erkennt die Sprache nicht: Sprache in einer anderen übersetzt es in die eingestellte. Bei `auto` oder einer Sprache, die es nicht kennt, nimmt es deine Systemsprache, sofern es sie kennt, sonst Englisch. Stell die Sprache ein, wenn du in einer anderen diktierst.
 - Beim ersten Laden wird das Modell in den Hugging-Face-Cache geladen, mit Fortschritt in der Menüleiste. Laden dauert 1 bis 1,5 s, auch nach **Unload when idle**.
-- Whispers Optionen (Vokabular, Beam Size, Temperature, Quantisierung, Warmup) wirken nicht. Die Whisper-Vorschau (`on`) zeigt mit diesen Modellen keinen Text; das Streaming-Modell schon.
-- Die macOS-App enthält sherpa-onnx. Der Windows-Installer nicht; beim Start aus dem Quellcode installierst du es mit `pip install sherpa-onnx`.
+- Whispers Optionen (Vokabular, Beam Size, Temperature, Quantisierung, Warmup) wirken nicht, Settings blenden sie aus. Die Whisper-Vorschau (`on`) zeigt mit diesen Modellen keinen Text; das Streaming-Modell schon.
+- Die macOS-App enthält sherpa-onnx. Der Windows-Installer nicht, seine Settings bieten die Modelle daher nicht an; beim Start aus dem Quellcode installierst du es mit `pip install sherpa-onnx`.
 - NVIDIA lizenziert beide Modelle unter CC-BY-4.0. Die ONNX-Dateien stammen aus Hugging-Face-Repositories des sherpa-onnx-Autors (Parakeet) und eines Dritten (Canary), jeweils auf festem Commit.
 
 ---

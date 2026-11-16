@@ -161,7 +161,7 @@ PULSESCRIBE_LOCAL_BACKEND=whisper
 
 ### NVIDIA Parakeet v3 and Canary-1B-v2
 
-Two NVIDIA models that run on the CPU through sherpa-onnx, whatever backend is set. Choose them as the model:
+Two NVIDIA models that run on the CPU through sherpa-onnx, whatever backend is set. Choose them in Settings → Transcription → Local Model (shown with Mode local), or set the model:
 
 ```bash
 # In ~/.pulsescribe/.env
@@ -179,8 +179,8 @@ Whisper turbo with MLX took 0.34 s for the same recording.
 - Both know 25 European languages (bg, cs, da, de, el, en, es, et, fi, fr, hr, hu, it, lt, lv, mt, nl, pl, pt, ro, ru, sk, sl, sv, uk) and write punctuation and capitals.
 - Canary does not detect the language: it translates speech in another language into the one set. With `auto`, or a language it does not know, it uses your system language if it knows it, else English. Set the language when you dictate in another one.
 - The first load downloads the model into the Hugging Face cache, with progress in the menu bar. Loading takes 1 to 1.5 s, also after **Unload when idle**.
-- Whisper's options (vocabulary, beam size, temperature, quantization, warmup) do not apply. The Whisper live preview (`on`) shows no text with these models; the streaming model does.
-- The macOS app includes sherpa-onnx. The Windows installer does not; running from source, install it with `pip install sherpa-onnx`.
+- Whisper's options (vocabulary, beam size, temperature, quantization, warmup) do not apply, and Settings hide them. The Whisper live preview (`on`) shows no text with these models; the streaming model does.
+- The macOS app includes sherpa-onnx. The Windows installer does not, so its Settings do not offer the models; running from source, install it with `pip install sherpa-onnx`.
 - NVIDIA licenses both models under CC-BY-4.0. The ONNX files come from Hugging Face repositories of the sherpa-onnx author (Parakeet) and of a third party (Canary), at fixed commits.
 
 ---

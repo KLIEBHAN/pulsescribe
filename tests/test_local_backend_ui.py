@@ -204,3 +204,27 @@ def test_cpu_threads_bound_follows_detected_cores(monkeypatch) -> None:
     assert lb.advanced_int_range("cpu_threads") == (0, 64)
     assert lb.advanced_value_error("cpu_threads", "64") is None
     assert lb.advanced_value_error("cpu_threads", "65") is not None
+
+
+def test_nemo_models_show_only_the_options_they_use(monkeypatch) -> None:
+    import utils.local_backend as lb
+
+    def options(platform):
+        return {o for o in lb.ADVANCED_OPTION_BACKENDS
+                if lb.advanced_option_applies(o, "nemo", platform=platform)}
+
+    assert options("darwin") == {"preset", "idle_unload", "live_preview"}
+    assert options("win32") == {"preset"}
+    state = lb.get_local_advanced_ui_state("local", "faster", "parakeet-v3")
+    assert state.show_general and not state.show_faster and "sherpa-onnx" in state.guidance
+    assert "streaming model" in lb.live_preview_hint(lb.LIVE_PREVIEW_ON, "nemo", "canary-1b-v2")
+
+
+def test_nemo_models_are_offered_only_with_sherpa_onnx(monkeypatch) -> None:
+    import utils.local_backend as lb
+
+    choices = ["default", "turbo", "parakeet-v3", "canary-1b-v2"]
+    monkeypatch.setattr(lb, "is_local_backend_installed", lambda backend: False)
+    assert lb.available_local_model_options(choices) == ["default", "turbo"]
+    monkeypatch.setattr(lb, "is_local_backend_installed", lambda backend: backend == "nemo")
+    assert lb.available_local_model_options(choices) == choices

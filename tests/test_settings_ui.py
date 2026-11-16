@@ -531,7 +531,7 @@ class TestWelcomeTranscriptionPage:
         monkeypatch.setattr(
             welcome_mod,
             "effective_local_backend",
-            lambda selected: auto_backend["value"] if selected in (None, "auto") else selected,
+            lambda selected, model=None: auto_backend["value"] if selected in (None, "auto") else selected,
         )
         monkeypatch.setattr(WelcomeController, "_build_window", lambda self: None)
         ctrl = WelcomeController("f19", {"mode": "local"})
@@ -559,6 +559,36 @@ class TestWelcomeTranscriptionPage:
         ctrl._update_all_visibility()
         assert not visible()  # without mlx-whisper, auto picks another backend
 
+    def test_nemo_model_hides_whisper_options(self, monkeypatch):
+        appkit = pytest.importorskip("AppKit")
+        import ui.welcome as welcome_mod
+        import utils.local_backend as lb
+
+        appkit.NSApplication.sharedApplication()
+        monkeypatch.setattr(welcome_mod, "read_env_file", lambda: {})
+        monkeypatch.setattr(lb, "is_local_backend_installed", lambda backend: True)
+        monkeypatch.setattr(WelcomeController, "_build_window", lambda self: None)
+        ctrl = WelcomeController("f19", {"mode": "local"})
+        ctrl._env_settings_cache = {"PULSESCRIBE_MODE": "local", "PULSESCRIBE_LOCAL_BACKEND": "mlx"}
+        page = appkit.NSView.alloc().initWithFrame_(appkit.NSMakeRect(0, 0, 610, 500))
+        ctrl._build_transcription_tab(page, 500)
+        _scroll, _document, _height, blocks = ctrl._transcription_page
+        ctrl._toggle_advanced_options()
+
+        def shown(*attrs):
+            visible = [b for b, _v in blocks if not b.isHidden()]
+            return {a for a in attrs if getattr(ctrl, a).superview() in visible}
+
+        controls = ("_mlx_quant_popup", "_local_fast_popup", "_warmup_popup",
+                    "_live_preview_popup")
+        assert shown(*controls) == set(controls)
+        ctrl._local_model_popup.selectItemWithTitle_("parakeet-v3")
+        ctrl._update_all_visibility()
+        assert shown(*controls) == {"_live_preview_popup"}
+        assert "streaming model" in ctrl._advanced_local_status_label.stringValue()
+        assert ctrl._build_env_updates_from_controls(None)["PULSESCRIBE_LOCAL_MODEL"] \
+            == "parakeet-v3"
+
     def test_advanced_options_show_only_what_the_backend_uses(self, monkeypatch):
         appkit = pytest.importorskip("AppKit")
         import ui.welcome as welcome_mod
@@ -567,7 +597,7 @@ class TestWelcomeTranscriptionPage:
         appkit.NSApplication.sharedApplication()
         monkeypatch.setattr(welcome_mod, "read_env_file", lambda: {})
         monkeypatch.setattr(welcome_mod, "effective_local_backend",
-                            lambda selected: "mlx" if selected in (None, "auto") else selected)
+                            lambda selected, model=None: "mlx" if selected in (None, "auto") else selected)
         monkeypatch.setattr(WelcomeController, "_build_window", lambda self: None)
         ctrl = WelcomeController("f19", {"mode": "local"})
         ctrl._env_settings_cache = {"PULSESCRIBE_MODE": "local"}
@@ -610,7 +640,7 @@ class TestWelcomeTranscriptionPage:
         appkit.NSApplication.sharedApplication()
         monkeypatch.setattr(welcome_mod, "read_env_file", lambda: {})
         monkeypatch.setattr(welcome_mod, "effective_local_backend",
-                            lambda selected: "faster" if selected in (None, "auto") else selected)
+                            lambda selected, model=None: "faster" if selected in (None, "auto") else selected)
         monkeypatch.setattr(WelcomeController, "_build_window", lambda self: None)
         ctrl = WelcomeController("f19", {"mode": "local"})
         ctrl._env_settings_cache = {"PULSESCRIBE_MODE": "local"}
@@ -645,7 +675,7 @@ class TestWelcomeTranscriptionPage:
         appkit.NSApplication.sharedApplication()
         monkeypatch.setattr(welcome_mod, "read_env_file", lambda: {})
         monkeypatch.setattr(welcome_mod, "effective_local_backend",
-                            lambda selected: "mlx" if selected in (None, "auto") else selected)
+                            lambda selected, model=None: "mlx" if selected in (None, "auto") else selected)
         monkeypatch.setattr(WelcomeController, "_build_window", lambda self: None)
         ctrl = WelcomeController("f19", {"mode": "local"})
         ctrl._env_settings_cache = {"PULSESCRIBE_MODE": "local", "PULSESCRIBE_LOCAL_IDLE_UNLOAD_MINUTES": "15"}
@@ -667,7 +697,7 @@ class TestWelcomeTranscriptionPage:
         appkit.NSApplication.sharedApplication()
         monkeypatch.setattr(welcome_mod, "read_env_file", lambda: {})
         monkeypatch.setattr(welcome_mod, "effective_local_backend",
-                            lambda selected: "mlx" if selected in (None, "auto") else selected)
+                            lambda selected, model=None: "mlx" if selected in (None, "auto") else selected)
         monkeypatch.setattr(WelcomeController, "_build_window", lambda self: None)
         ctrl = WelcomeController("f19", {"mode": "local"})
         ctrl._env_settings_cache = {"PULSESCRIBE_MODE": "local", "PULSESCRIBE_LOCAL_PREVIEW": "false"}
@@ -687,7 +717,7 @@ class TestWelcomeTranscriptionPage:
         appkit.NSApplication.sharedApplication()
         monkeypatch.setattr(welcome_mod, "read_env_file", lambda: {})
         monkeypatch.setattr(welcome_mod, "effective_local_backend",
-                            lambda selected: "mlx" if selected in (None, "auto") else selected)
+                            lambda selected, model=None: "mlx" if selected in (None, "auto") else selected)
         monkeypatch.setattr(WelcomeController, "_build_window", lambda self: None)
         ctrl = WelcomeController("f19", {"mode": "local"})
         ctrl._env_settings_cache = {"PULSESCRIBE_MODE": "local", "PULSESCRIBE_LOCAL_MODEL": "large-v3"}
