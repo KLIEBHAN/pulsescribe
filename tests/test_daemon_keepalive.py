@@ -14,7 +14,7 @@ class _LocalProvider:
     def _ensure_runtime_config(self):
         return None
 
-    def get_runtime_info(self):
+    def get_runtime_info(self, model=None):
         return {"device": "mps", "compute_type": None}
 
 
@@ -50,6 +50,21 @@ def test_keepalive_start_is_singleton_for_generation():
 
     assert daemon._keepalive_thread is None
     provider.keepalive.assert_not_called()
+
+
+def test_nemo_model_needs_no_keepalive():
+    daemon = PulseScribeDaemon(mode="local")
+    provider = _LocalProvider()
+    provider._ensure_runtime_config = MagicMock()
+    signature = _prime_generation(daemon)
+
+    with patch("pulsescribe_daemon.LOCAL_KEEPALIVE_INTERVAL", 60.0):
+        assert not daemon._start_keepalive_timer(
+            provider=provider, generation=1, signature=signature, model="parakeet-v3"
+        )
+
+    provider._ensure_runtime_config.assert_not_called()
+    assert daemon._keepalive_thread is None
 
 
 def test_keepalive_stops_after_local_generation_is_cancelled():
@@ -420,3 +435,20 @@ def test_preload_shows_download_progress_only_while_loading():
     assert "50 % · downloading turbo (1.0 GB)" in texts
     assert not any(t and t.startswith("90 %") for t in texts)
     assert provider.download_progress_callback is None
+
+
+def test_nemo_preload_skips_the_whisper_warmup(monkeypatch):
+    monkeypatch.setenv("PULSESCRIBE_LOCAL_WARMUP", "true")
+    daemon = PulseScribeDaemon(mode="local", model="parakeet-v3")
+    provider = _LocalProvider()
+    provider.transcribe_audio = MagicMock()
+    with (
+        patch.object(daemon, "_get_provider", return_value=provider),
+        patch.object(daemon, "_start_keepalive_timer"),
+        patch("pulsescribe_daemon.get_sound_player"),
+    ):
+        assert daemon._preload_local_model_async()
+        assert daemon._local_preload_complete.wait(timeout=2.0)
+
+    provider.preload.assert_called_once()
+    provider.transcribe_audio.assert_not_called()

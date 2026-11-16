@@ -26,7 +26,19 @@ LOCAL_BACKEND_MODULES = {
     "faster": "faster_whisper",
     "mlx": "mlx_whisper",
     "lightning": "lightning_whisper_mlx",
+    "nemo": "sherpa_onnx",
 }
+
+# NVIDIA models that run on sherpa-onnx (CPU) whatever Whisper backend is chosen;
+# their files are listed in providers/nemo_model.py.
+NEMO_MODELS = ("parakeet-v3", "canary-1b-v2")
+# Backend name under which a NeMo model runs (not selectable, see effective_local_backend).
+NEMO_BACKEND = "nemo"
+
+
+def is_nemo_model(model: str | None) -> bool:
+    """True for a local model name that runs on sherpa-onnx instead of a Whisper backend."""
+    return (model or "").strip().lower() in NEMO_MODELS
 
 
 def is_frozen_app() -> bool:
@@ -110,8 +122,15 @@ ADVANCED_OPTION_HELP: dict[str, str] = {
 }
 
 
-def effective_local_backend(selected: str | None, *, platform: str | None = None) -> str:
-    """Backend that runs for a Settings selection; mirrors providers.local for ``auto``."""
+def effective_local_backend(
+    selected: str | None, *, platform: str | None = None, model: str | None = None
+) -> str:
+    """Backend that runs for a Settings selection; mirrors providers.local for ``auto``.
+
+    A NeMo ``model`` (Parakeet, Canary) runs on ``nemo`` whatever backend is selected.
+    """
+    if is_nemo_model(model):
+        return NEMO_BACKEND
     backend = normalize_local_backend(selected)
     if backend != DEFAULT_LOCAL_BACKEND:
         return backend
@@ -362,7 +381,11 @@ __all__ = [
     "normalize_live_preview",
     "live_preview_supports_model",
     "DEFAULT_LOCAL_BACKEND",
+    "NEMO_BACKEND",
+    "NEMO_MODELS",
+    "is_nemo_model",
     "VALID_LOCAL_BACKENDS",
+    "effective_local_backend",
     "DEFAULT_CPU_THREADS_LIMIT",
     "LOCAL_BACKEND_ALIASES",
     "LocalAdvancedUiState",

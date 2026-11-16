@@ -5,6 +5,8 @@ Standardmäßig nutzt er openai-whisper (PyTorch). Optional kann über
 (CTranslate2) genutzt werden. Auf Apple Silicon kann optional auch
 `PULSESCRIBE_LOCAL_BACKEND=mlx` (mlx-whisper / Metal) oder
 `PULSESCRIBE_LOCAL_BACKEND=lightning` (lightning-whisper-mlx, ~4x schneller) genutzt werden.
+Die Modelle parakeet-v3 und canary-1b-v2 laufen unabhängig vom Backend über
+sherpa-onnx (siehe providers/nemo_model.py).
 """
 
 import gc
@@ -30,12 +32,15 @@ from utils.env import get_env_bool, get_env_int
 from utils.local_backend import (
     DEFAULT_LOCAL_BACKEND,
     LOCAL_BACKEND_ALIASES,
+    NEMO_BACKEND,
     VALID_LOCAL_BACKENDS,
     is_frozen_app,
     is_local_backend_installed,
+    is_nemo_model,
     normalize_local_backend,
 )
 from ._language import is_auto_language
+from .nemo_model import NemoModels
 from utils.logging import log
 from utils.timing import timed_operation
 from utils.model_download import download_with_progress
@@ -512,6 +517,7 @@ class LocalProvider:
         self.download_progress_callback = None
         self._load_lock = threading.Lock()
         self._transcribe_lock = threading.Lock()
+        self._nemo = NemoModels()
 
     def invalidate_runtime_config(self) -> None:
         """Invalidiert ENV-basierte Runtime-Konfiguration ohne Model-Cache zu löschen.
@@ -573,7 +579,7 @@ class LocalProvider:
         """Release cached local model objects and best-effort allocator state."""
         with self._transcribe_lock:
             with self._load_lock:
-                cleared_entries = len(self._model_cache)
+                cleared_entries = len(self._model_cache) + int(self._nemo.release())
                 self._model_cache.clear()
             # Inside the transcribe lock: a concurrent transcription must not lose the
             # quantized model between _prepare_mlx_model() and mlx_whisper.transcribe().
@@ -630,6 +636,17 @@ class LocalProvider:
         if self._backend == "lightning" and self._lightning_fallback_active:
             return "mlx"
         return self._backend
+
+    def _backend_for(self, model_name: str) -> str | None:
+        """Backend that transcribes with ``model_name``: NeMo models bypass Whisper's.
+
+        Reads the Whisper configuration only for Whisper models, so a NeMo model
+        never pays for the torch import of the device detection.
+        """
+        if is_nemo_model(model_name):
+            return NEMO_BACKEND
+        self._ensure_runtime_config()
+        return self._effective_backend()
 
     def _ensure_runtime_config(self) -> None:
         if self._backend is None:
@@ -1060,17 +1077,16 @@ class LocalProvider:
             return env_model.strip()
         return self.default_model
 
-    def get_runtime_info(self) -> dict[str, str | None]:
+    def get_runtime_info(self, model: str | None = None) -> dict[str, str | None]:
         """Gibt aktuelle Runtime-Konfiguration zurück (nach preload/transcribe).
 
         Returns:
             Dict mit backend, device, compute_type (compute_type nur bei faster-whisper).
         """
-        self._ensure_runtime_config()
-        backend = self._effective_backend()
+        backend = self._backend_for(self._resolve_model_name(model))
         info: dict[str, str | None] = {
             "backend": backend,
-            "device": self._device,
+            "device": "cpu" if backend == NEMO_BACKEND else self._device,
         }
         # compute_type nur bei faster-whisper relevant
         if backend == "faster":
@@ -1083,9 +1099,12 @@ class LocalProvider:
     def preload(self, model: str | None = None) -> None:
         """Lädt ein Modell vorab in den Cache."""
         model_name = self._resolve_model_name(model)
-        self._ensure_runtime_config()
-        backend = self._effective_backend()
-        if backend == "faster":
+        backend = self._backend_for(model_name)
+        if backend == NEMO_BACKEND:
+            name = model_name.strip().lower()
+            self._nemo.download(name, self.download_progress_callback)
+            self._nemo.load(name)  # ONNX on the CPU needs no warmup pass
+        elif backend == "faster":
             download_with_progress(
                 _faster_repo_id(self._map_faster_model_name(model_name)),
                 self.download_progress_callback,
@@ -1173,14 +1192,11 @@ class LocalProvider:
         Nur relevant für MLX/Lightning Backends (Metal GPU). Für whisper/faster
         ist kein Keep-Alive nötig (CPU/CUDA haben kein Shader-Caching-Problem).
         """
-        self._ensure_runtime_config()
-
         # Nur für Metal-Backends relevant
-        backend = self._effective_backend()
+        model_name = self._resolve_model_name(model)
+        backend = self._backend_for(model_name)
         if backend not in ("mlx", "lightning"):
             return
-
-        model_name = self._resolve_model_name(model)
 
         import numpy as np
 
@@ -1221,12 +1237,13 @@ class LocalProvider:
 
     def _log_transcription_start(self, model_name: str, language: str | None) -> None:
         """Loggt Transkriptions-Start mit Provider/Backend/Modell/Device/Compute-Type."""
-        self._ensure_runtime_config()
-        backend = self._effective_backend()
+        backend = self._backend_for(model_name)
         parts = [f"Local ({backend}): {model_name}"]
         # Device nur bei whisper/faster relevant (mlx/lightning nutzen immer Metal)
         if backend in ("whisper", "faster"):
             parts.append(f"device={self._device}")
+        elif backend == NEMO_BACKEND:
+            parts.append("device=cpu")
         if backend == "faster":
             device = "cuda" if self._device == "cuda" else "cpu"
             compute = self._compute_type or ("float16" if device == "cuda" else CPU_COMPUTE_TYPE)
@@ -1290,10 +1307,24 @@ class LocalProvider:
         model_name = self._resolve_model_name(model)
         if not quiet:
             self._log_transcription_start(model_name, language)
+        if is_nemo_model(model_name):
+            return self._transcribe_nemo(audio, model_name, language, quiet=quiet)
         options = self._build_options(language, draft=draft)
         return self._transcribe_with_backend(
             audio, model_name=model_name, options=options, quiet=quiet
         )
+
+    def _transcribe_nemo(
+        self, audio, model_name: str, language: str | None, *, quiet: bool = False
+    ) -> str:
+        """Transcribe with Parakeet or Canary; Whisper's options (vocabulary, decoding) do not apply."""
+        timing = (
+            nullcontext()
+            if quiet
+            else timed_operation("Local-Transkription", logger=logger, include_session=False)
+        )
+        with timing, self._transcribe_lock:
+            return self._nemo.transcribe(model_name.strip().lower(), audio, language)
 
     def _transcribe_faster(self, audio, model_name: str, options: dict) -> str:
         model = self._get_faster_model(model_name)
@@ -1469,6 +1500,8 @@ class LocalProvider:
         """
         model_name = self._resolve_model_name(model)
         self._log_transcription_start(model_name, language)
+        if is_nemo_model(model_name):
+            return self._transcribe_nemo(audio_path, model_name, language)
         options = self._build_options(language)
         return self._transcribe_with_backend(
             str(audio_path),
