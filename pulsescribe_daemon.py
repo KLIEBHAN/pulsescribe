@@ -1121,6 +1121,8 @@ class PulseScribeDaemon:
         if not hasattr(provider, "keepalive"):
             return False
 
+        if is_nemo_model(model or os.getenv("PULSESCRIBE_LOCAL_MODEL")):
+            return False  # runs on the CPU; skips setting up the Whisper runtime
         if hasattr(provider, "_ensure_runtime_config"):
             provider._ensure_runtime_config()  # type: ignore[attr-defined]
         backend = getattr(provider, "_backend", None)

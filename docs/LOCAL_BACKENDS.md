@@ -164,6 +164,7 @@ PULSESCRIBE_LOCAL_BACKEND=whisper
 Two NVIDIA models that run on the CPU through sherpa-onnx, whatever backend is set. Choose them as the model:
 
 ```bash
+# In ~/.pulsescribe/.env
 PULSESCRIBE_MODE=local
 PULSESCRIBE_LOCAL_MODEL=parakeet-v3   # or canary-1b-v2
 ```

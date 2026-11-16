@@ -52,6 +52,21 @@ def test_keepalive_start_is_singleton_for_generation():
     provider.keepalive.assert_not_called()
 
 
+def test_nemo_model_needs_no_keepalive():
+    daemon = PulseScribeDaemon(mode="local")
+    provider = _LocalProvider()
+    provider._ensure_runtime_config = MagicMock()
+    signature = _prime_generation(daemon)
+
+    with patch("pulsescribe_daemon.LOCAL_KEEPALIVE_INTERVAL", 60.0):
+        assert not daemon._start_keepalive_timer(
+            provider=provider, generation=1, signature=signature, model="parakeet-v3"
+        )
+
+    provider._ensure_runtime_config.assert_not_called()
+    assert daemon._keepalive_thread is None
+
+
 def test_keepalive_stops_after_local_generation_is_cancelled():
     daemon = PulseScribeDaemon(mode="local")
     provider = _LocalProvider()
