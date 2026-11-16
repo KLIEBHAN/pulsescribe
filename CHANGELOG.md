@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **NVIDIA Parakeet v3 and Canary-1B-v2 as local models** – choose
-  `parakeet-v3` or `canary-1b-v2` under Settings → Local Model
+  `parakeet-v3` or `canary-1b-v2` under Settings → Transcription → Local Model
   (`PULSESCRIBE_LOCAL_MODEL`). Both run on the CPU through sherpa-onnx and know 25 European languages. Parakeet
   transcribes 11 s of German speech in 0.22 s on an M5 (Whisper turbo with
   MLX: 0.34 s); Canary takes 0.65 s and uses the set language, with `auto`

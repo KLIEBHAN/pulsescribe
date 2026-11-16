@@ -161,7 +161,7 @@ PULSESCRIBE_LOCAL_BACKEND=whisper
 
 ### NVIDIA Parakeet v3 und Canary-1B-v2
 
-Zwei Modelle von NVIDIA, die über sherpa-onnx auf der CPU laufen, egal welches Backend eingestellt ist. Du wählst sie unter Settings → Providers → Local Model oder setzt das Modell:
+Zwei Modelle von NVIDIA, die über sherpa-onnx auf der CPU laufen, egal welches Backend eingestellt ist. Du wählst sie unter Settings → Transcription → Local Model (sichtbar bei Mode local) oder setzt das Modell:
 
 ```bash
 # In ~/.pulsescribe/.env
