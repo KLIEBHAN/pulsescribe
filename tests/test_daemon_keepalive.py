@@ -14,7 +14,7 @@ class _LocalProvider:
     def _ensure_runtime_config(self):
         return None
 
-    def get_runtime_info(self):
+    def get_runtime_info(self, model=None):
         return {"device": "mps", "compute_type": None}
 
 

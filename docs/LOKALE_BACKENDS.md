@@ -2,7 +2,7 @@
 
 [🇺🇸 English Version](LOCAL_BACKENDS.md)
 
-PulseScribe unterstützt Offline-Transkription mit lokalen Whisper-Modellen. Nach dem initialen Modell-Download sind keine API-Keys oder Internetverbindung erforderlich.
+PulseScribe unterstützt Offline-Transkription mit lokalen Whisper-Modellen oder NVIDIAs [Parakeet v3 und Canary-1B-v2](#nvidia-parakeet-v3-und-canary-1b-v2). Nach dem initialen Modell-Download sind keine API-Keys oder Internetverbindung erforderlich.
 
 ## Backend-Vergleich
 
@@ -159,6 +159,31 @@ PULSESCRIBE_LOCAL_BACKEND=whisper
 
 ---
 
+### NVIDIA Parakeet v3 und Canary-1B-v2
+
+Zwei Modelle von NVIDIA, die über sherpa-onnx auf der CPU laufen, egal welches Backend eingestellt ist. Du wählst sie als Modell:
+
+```bash
+PULSESCRIBE_MODE=local
+PULSESCRIBE_LOCAL_MODEL=parakeet-v3   # oder canary-1b-v2
+```
+
+| Modell | Download | Speicher geladen | 11 s deutsche Sprache (M5) | Sprache |
+|--------|----------|------------------|----------------------------|---------|
+| `parakeet-v3` | 0,7 GB | 2,1 GB | 0,22 s | erkennt sie selbst |
+| `canary-1b-v2` | 1,0 GB | 2,8 GB | 0,65 s | braucht sie |
+
+Whisper turbo mit MLX brauchte für dieselbe Aufnahme 0,34 s.
+
+- Beide kennen 25 europäische Sprachen (bg, cs, da, de, el, en, es, et, fi, fr, hr, hu, it, lt, lv, mt, nl, pl, pt, ro, ru, sk, sl, sv, uk) und setzen Satzzeichen und Großschreibung.
+- Canary erkennt die Sprache nicht: Sprache in einer anderen übersetzt es in die eingestellte. Bei `auto` oder einer Sprache, die es nicht kennt, nimmt es deine Systemsprache, sofern es sie kennt, sonst Englisch. Stell die Sprache ein, wenn du in einer anderen diktierst.
+- Beim ersten Laden wird das Modell in den Hugging-Face-Cache geladen, mit Fortschritt in der Menüleiste. Laden dauert 1 bis 1,5 s, auch nach **Unload when idle**.
+- Whispers Optionen (Vokabular, Beam Size, Temperature, Quantisierung, Warmup) wirken nicht. Die Whisper-Vorschau (`on`) zeigt mit diesen Modellen keinen Text; das Streaming-Modell schon.
+- Die macOS-App enthält sherpa-onnx. Der Windows-Installer nicht; beim Start aus dem Quellcode installierst du es mit `pip install sherpa-onnx`.
+- NVIDIA lizenziert beide Modelle unter CC-BY-4.0. Die ONNX-Dateien stammen aus Hugging-Face-Repositories des sherpa-onnx-Autors (Parakeet) und eines Dritten (Canary), jeweils auf festem Commit.
+
+---
+
 ## Live-Vorschau
 
 Auf macOS kann das Overlay deine Worte zeigen, während du sprichst. Der eingefügte Text ist immer ein Whisper-Durchlauf über die ganze Aufnahme; die Vorschau zeigt nur früher Text. Wähle die Vorschau unter Einstellungen → Providers → Advanced backend options → Live preview oder mit `PULSESCRIBE_LOCAL_PREVIEW`.
@@ -271,8 +296,9 @@ PULSESCRIBE_LOCAL_WARMUP=auto   # Default: Warmup für openai-whisper auf MPS
 | `faster-whisper` | `~/.cache/huggingface/` |
 | `mlx-whisper` | `~/.cache/huggingface/` |
 | `lightning` | `~/.pulsescribe/lightning_models/` |
+| `parakeet-v3`, `canary-1b-v2` | `~/.cache/huggingface/` |
 
-Beim ersten Laden wird ein Modell heruntergeladen. Bei mlx-whisper und faster-whisper zeigt die Menüleiste (macOS) bzw. das Tray (Windows) den Fortschritt, z. B. „43 % · downloading turbo (1.6 GB)“; Lightning und openai-whisper zeigen nur „Loading…“.
+Beim ersten Laden wird ein Modell heruntergeladen. Bei mlx-whisper, faster-whisper, Parakeet und Canary zeigt die Menüleiste (macOS) bzw. das Tray (Windows) den Fortschritt, z. B. „43 % · downloading turbo (1.6 GB)“; Lightning und openai-whisper zeigen nur „Loading…“.
 
 **Festplattennutzung:** 75 MB (tiny) bis 3 GB (large) pro Modell.
 

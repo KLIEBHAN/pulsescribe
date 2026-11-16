@@ -2,7 +2,7 @@
 
 [🇩🇪 Deutsche Version](LOKALE_BACKENDS.md)
 
-PulseScribe supports offline transcription using local Whisper models. No API keys or internet connection required after initial model download.
+PulseScribe supports offline transcription using local Whisper models or NVIDIA's [Parakeet v3 and Canary-1B-v2](#nvidia-parakeet-v3-and-canary-1b-v2). No API keys or internet connection required after initial model download.
 
 ## Backend Comparison
 
@@ -159,6 +159,31 @@ PULSESCRIBE_LOCAL_BACKEND=whisper
 
 ---
 
+### NVIDIA Parakeet v3 and Canary-1B-v2
+
+Two NVIDIA models that run on the CPU through sherpa-onnx, whatever backend is set. Choose them as the model:
+
+```bash
+PULSESCRIBE_MODE=local
+PULSESCRIBE_LOCAL_MODEL=parakeet-v3   # or canary-1b-v2
+```
+
+| Model | Download | Memory while loaded | 11 s of German speech (M5) | Language |
+|-------|----------|---------------------|----------------------------|----------|
+| `parakeet-v3` | 0.7 GB | 2.1 GB | 0.22 s | detects it |
+| `canary-1b-v2` | 1.0 GB | 2.8 GB | 0.65 s | needs it |
+
+Whisper turbo with MLX took 0.34 s for the same recording.
+
+- Both know 25 European languages (bg, cs, da, de, el, en, es, et, fi, fr, hr, hu, it, lt, lv, mt, nl, pl, pt, ro, ru, sk, sl, sv, uk) and write punctuation and capitals.
+- Canary does not detect the language: it translates speech in another language into the one set. With `auto`, or a language it does not know, it uses your system language if it knows it, else English. Set the language when you dictate in another one.
+- The first load downloads the model into the Hugging Face cache, with progress in the menu bar. Loading takes 1 to 1.5 s, also after **Unload when idle**.
+- Whisper's options (vocabulary, beam size, temperature, quantization, warmup) do not apply. The Whisper live preview (`on`) shows no text with these models; the streaming model does.
+- The macOS app includes sherpa-onnx. The Windows installer does not; running from source, install it with `pip install sherpa-onnx`.
+- NVIDIA licenses both models under CC-BY-4.0. The ONNX files come from Hugging Face repositories of the sherpa-onnx author (Parakeet) and of a third party (Canary), at fixed commits.
+
+---
+
 ## Live Preview
 
 On macOS the overlay can show your words while you speak. The transcript itself is always one Whisper pass over the whole recording; the preview only shows text earlier. Choose the preview in Settings → Providers → Advanced backend options → Live preview, or with `PULSESCRIBE_LOCAL_PREVIEW`.
@@ -271,8 +296,9 @@ PULSESCRIBE_LOCAL_WARMUP=auto   # Default: warmup for openai-whisper on MPS
 | `faster-whisper` | `~/.cache/huggingface/` |
 | `mlx-whisper` | `~/.cache/huggingface/` |
 | `lightning` | `~/.pulsescribe/lightning_models/` |
+| `parakeet-v3`, `canary-1b-v2` | `~/.cache/huggingface/` |
 
-The first load of a model downloads it. For mlx-whisper and faster-whisper the menu bar (macOS) or tray (Windows) shows the progress, e.g. "43 % · downloading turbo (1.6 GB)"; Lightning and openai-whisper only show "Loading…".
+The first load of a model downloads it. For mlx-whisper, faster-whisper, Parakeet and Canary the menu bar (macOS) or tray (Windows) shows the progress, e.g. "43 % · downloading turbo (1.6 GB)"; Lightning and openai-whisper only show "Loading…".
 
 **Disk usage:** 75 MB (tiny) to 3 GB (large) per model.
 

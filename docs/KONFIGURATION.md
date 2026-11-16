@@ -213,7 +213,7 @@ Siehe [LOKALE_BACKENDS.md](LOKALE_BACKENDS.md) für detaillierte Konfiguration d
 | --------------------------- | ----------------------------------------------- | ------- | ----------------- |
 | `PULSESCRIBE_LOCAL_BACKEND` | `whisper`, `faster`, `mlx`, `lightning`, `auto` | `auto`  | Lokales Backend   |
 | `PULSESCRIBE_MLX_QUANT` | `8bit`, `4bit`, `none` | `8bit`  | Quantisierung der MLX-Gewichte |
-| `PULSESCRIBE_LOCAL_MODEL`   | `tiny`...`large`, `turbo`                       | `turbo` | Modellgröße       |
+| `PULSESCRIBE_LOCAL_MODEL`   | `tiny`...`large`, `turbo`, `parakeet-v3`, `canary-1b-v2` | `turbo` | Modell ([Parakeet, Canary](LOKALE_BACKENDS.md#nvidia-parakeet-v3-und-canary-1b-v2)) |
 | `PULSESCRIBE_DEVICE`        | `auto`, `mps`, `cpu`, `cuda`                    | `auto`  | Rechengerät       |
 | `PULSESCRIBE_LOCAL_WARMUP`  | `true`, `false`, `auto`                         | `auto`  | Warmup beim Start |
 | `PULSESCRIBE_LOCAL_IDLE_UNLOAD_MINUTES` | Minuten, z. B. `15`                 | nicht gesetzt | macOS: Modell nach dieser Leerlaufzeit freigeben; das nächste Diktat lädt es, während du sprichst |

@@ -91,7 +91,9 @@ try:
     from utils.local_backend import (
         LIVE_PREVIEW_OFF,
         LIVE_PREVIEW_STREAMING,
+        NEMO_BACKEND,
         effective_local_backend,
+        is_nemo_model,
         live_preview_supports_model,
         normalize_live_preview,
     )
@@ -843,6 +845,8 @@ class PulseScribeDaemon:
         mode = mode_override or self.mode
         if mode != "local":
             return None
+        if is_nemo_model(self._model_name_for_logging(provider, mode_override=mode)):
+            return NEMO_BACKEND
         backend = getattr(provider, "backend", None)
         if not backend:
             backend = getattr(provider, "_backend", None)
@@ -1009,7 +1013,7 @@ class PulseScribeDaemon:
 
                     runtime_info = ""
                     if hasattr(provider, "get_runtime_info"):
-                        info = provider.get_runtime_info()
+                        info = provider.get_runtime_info(model_snapshot)
                         device_str = (info.get("device") or "unknown").upper()
                         compute = info.get("compute_type")
                         runtime_info = f", Device: {device_str}"
@@ -2326,7 +2330,11 @@ class PulseScribeDaemon:
             or self._streaming_preview_applies(effective_mode)
             or (
                 self._local_preview_obstacle(effective_mode) is None
-                and effective_local_backend(os.getenv("PULSESCRIBE_LOCAL_BACKEND")) == "mlx"
+                and effective_local_backend(
+                    os.getenv("PULSESCRIBE_LOCAL_BACKEND"),
+                    model=self._model_name_for_logging(None),
+                )
+                == "mlx"
             )
         )
         self._update_state(AppState.LISTENING)
@@ -2846,7 +2854,7 @@ class PulseScribeDaemon:
         """
 
         def uses_mlx() -> bool:
-            return provider.get_runtime_info().get("backend") == "mlx"
+            return provider.get_runtime_info(self.model).get("backend") == "mlx"
 
         loaded = self._local_preload_complete
         try:

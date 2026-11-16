@@ -36,7 +36,7 @@ class _Provider:
         self.backend = backend
         self.calls: list[dict] = []
 
-    def get_runtime_info(self) -> dict:
+    def get_runtime_info(self, model=None) -> dict:
         return {"backend": self.backend, "device": "metal"}
 
     def transcribe_audio(self, audio, model=None, language=None, *, draft=False, quiet=False):
