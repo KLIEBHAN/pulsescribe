@@ -96,6 +96,21 @@ def canary_language(language: str | None, offered: frozenset[str]) -> str:
     return chosen
 
 
+def _read_audio_file(path: str) -> tuple[Any, int]:
+    """Mono float32 samples and their rate; formats libsndfile lacks (M4A, MP4) via PyAV."""
+    import soundfile as sf
+
+    try:
+        samples, sample_rate = sf.read(path, dtype="float32", always_2d=True)
+    except Exception as error:
+        try:
+            from faster_whisper.audio import decode_audio  # PyAV, bundled with faster-whisper
+        except ImportError:
+            raise error from None
+        return decode_audio(path, sampling_rate=WHISPER_SAMPLE_RATE), WHISPER_SAMPLE_RATE
+    return samples.mean(axis=1), sample_rate
+
+
 class NemoModels:
     """Download, loading, transcription and release of the NeMo models; thread-safe.
 
@@ -177,10 +192,7 @@ class NemoModels:
     def transcribe(self, name: str, audio: Any, language: str | None) -> str:
         """Transcribe ``audio`` (float32 mono at 16 kHz, or a file path) with model ``name``."""
         if isinstance(audio, (str, Path)):
-            import soundfile as sf
-
-            samples, sample_rate = sf.read(str(audio), dtype="float32", always_2d=True)
-            samples = samples.mean(axis=1)
+            samples, sample_rate = _read_audio_file(str(audio))
         else:
             samples, sample_rate = audio, WHISPER_SAMPLE_RATE
         with self._lock:

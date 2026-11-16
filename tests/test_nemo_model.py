@@ -132,6 +132,22 @@ def test_load_downloads_a_missing_model_and_fails_clearly(monkeypatch, sherpa):
     assert sherpa == []
 
 
+def test_files_libsndfile_cannot_read_are_decoded_with_pyav(monkeypatch, sherpa):
+    import sys
+
+    def unreadable(*_args, **_kwargs):
+        raise RuntimeError("Format not recognised")
+
+    decoded = np.ones(800, dtype=np.float32)
+    monkeypatch.setattr("soundfile.read", unreadable)
+    monkeypatch.setitem(sys.modules, "faster_whisper.audio",
+                        SimpleNamespace(decode_audio=lambda path, sampling_rate: decoded))
+
+    NemoModels().transcribe("parakeet-v3", "/recordings/memo.m4a", None)
+
+    assert sherpa[0].streams[0].waveform == (16000, decoded)
+
+
 def test_local_provider_routes_nemo_models_past_whisper(monkeypatch, sherpa):
     monkeypatch.setenv("PULSESCRIBE_LOCAL_MODEL", "parakeet-v3")
     provider = LocalProvider()
@@ -139,6 +155,9 @@ def test_local_provider_routes_nemo_models_past_whisper(monkeypatch, sherpa):
         provider, "_ensure_runtime_config", MagicMock(side_effect=AssertionError("Whisper"))
     )
     monkeypatch.setattr(provider, "_build_options", MagicMock(side_effect=AssertionError))
+    # torch.mps.empty_cache() crashes on CI runners without a GPU
+    monkeypatch.setattr(LocalProvider, "_release_backend_allocator_caches",
+                        staticmethod(lambda: None))
     progress = MagicMock()
     provider.download_progress_callback = progress
     download = MagicMock()
