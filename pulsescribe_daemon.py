@@ -89,6 +89,7 @@ try:
     from audio.streaming_preview import StreamingPreview, StreamingSummary
     from providers.deepgram_stream import deepgram_stream_core
     from utils.local_backend import (
+        LIVE_PREVIEW_BACKENDS,
         LIVE_PREVIEW_OFF,
         LIVE_PREVIEW_STREAMING,
         NEMO_BACKEND,
@@ -2338,7 +2339,7 @@ class PulseScribeDaemon:
                     os.getenv("PULSESCRIBE_LOCAL_BACKEND"),
                     model=self._model_name_for_logging(None),
                 )
-                == "mlx"
+                in LIVE_PREVIEW_BACKENDS
             )
         )
         self._update_state(AppState.LISTENING)
@@ -2719,8 +2720,9 @@ class PulseScribeDaemon:
             return ""
         model_name = self._model_name_for_logging(None)
         if not live_preview_supports_model(model_name):
+            faster = "parakeet-v3" if is_nemo_model(model_name) else "turbo"
             return (
-                f"Modell {model_name} ist dafür zu langsam, turbo oder das "
+                f"Modell {model_name} ist dafür zu langsam, {faster} oder das "
                 "Streaming-Modell zeigen Live-Text"
             )
         if self._preview_off is not None:
@@ -2848,17 +2850,19 @@ class PulseScribeDaemon:
     def _create_whisper_preview(
         self, *, publish: Callable[[str], None], drafts: bool
     ) -> LivePreview | None:
-        """Whisper transcribing the running recording, or None if it does not apply.
+        """The local model transcribing the running recording, or None if it does not apply.
 
-        Only MLX with a fast model on a fast enough Mac qualifies: a pass over
+        Only Whisper on MLX with a fast model, Parakeet, or Canary on the GPU on
+        a fast enough Mac qualifies: a pass over
         the recording so far has to take well under a second. It needs the
         preloaded model, which exists only in local mode; a local test
         dictation of a cloud setup has none. ``drafts=False`` runs only the
         passes at speech pauses (see ``LivePreview``).
         """
 
-        def uses_mlx() -> bool:
-            return provider.get_runtime_info(self.model).get("backend") == "mlx"
+        def previews() -> bool:
+            backend = provider.get_runtime_info(self.model).get("backend")
+            return backend in LIVE_PREVIEW_BACKENDS
 
         loaded = self._local_preload_complete
         try:
@@ -2870,7 +2874,7 @@ class PulseScribeDaemon:
                 return None
             # While the model still loads, the backend is resolved later, off the
             # capture thread: resolving it can import torch and delay the recording.
-            if loaded.is_set() and not uses_mlx():
+            if loaded.is_set() and not previews():
                 return None
             if obstacle is not None:
                 if drafts:  # only the shown preview is worth a log line
@@ -2898,7 +2902,7 @@ class PulseScribeDaemon:
             speech_threshold=VAD_THRESHOLD,
             quiet_threshold=self._trim_threshold,
             quiet_pad_s=TRIM_PAD_S,
-            ready=lambda: loaded.is_set() and uses_mlx(),
+            ready=lambda: loaded.is_set() and previews(),
             drafts=drafts,
         )
 

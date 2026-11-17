@@ -585,7 +585,7 @@ class TestWelcomeTranscriptionPage:
         ctrl._local_model_popup.selectItemWithTitle_("parakeet-v3")
         ctrl._update_all_visibility()
         assert shown(*controls) == {"_live_preview_popup"}
-        assert "streaming model" in ctrl._advanced_local_status_label.stringValue()
+        assert "own engine" in ctrl._advanced_local_status_label.stringValue()  # it previews
         assert ctrl._build_env_updates_from_controls(None)["PULSESCRIBE_LOCAL_MODEL"] \
             == "parakeet-v3"
 

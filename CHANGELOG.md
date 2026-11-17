@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Live preview with Parakeet and Canary (macOS)** – the preview `on` now
+  works with `parakeet-v3`, and with `canary-1b-v2` on Apple Silicon: the
+  model transcribes the running recording again and again, as Whisper does
+  on MLX. On an M5 a Parakeet pass takes 0.07 s, new text appears about every
+  0.7 s, and stopping after a pause has the transcript ready at once
+  (0.03 s). The streaming model is no longer needed for live text with them.
+
 ### Changed
 
 - **Parakeet and Canary on the GPU (Apple Silicon)** – both now run through

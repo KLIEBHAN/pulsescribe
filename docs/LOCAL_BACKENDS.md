@@ -182,7 +182,7 @@ Whisper turbo with MLX took 0.34 s for the same recording. Both engines gave the
 - Canary does not detect the language: it translates speech in another language into the one set. With `auto`, or a language it does not know, it uses your system language if it knows it, else English. Set the language when you dictate in another one.
 - The first load downloads the model into the Hugging Face cache, with progress in the menu bar. Loading takes up to 1.5 s, also after **Unload when idle**. On the CPU that frees all but about 0.4 GB, which ONNX Runtime keeps and reuses at the next load.
 - Recordings longer than 15 s are transcribed in pieces of at most 15 s, each cut at the quietest moment of its last 5 s. Canary returns no text for one piece longer than about 37 s, and Parakeet drops words on long ones: on 5 minutes of German speech it got 29 % of the words wrong in one piece and 0.1 % in pieces.
-- Whisper's options (vocabulary, beam size, temperature, quantization, warmup) do not apply, and Settings hide them. The Whisper live preview (`on`) shows no text with these models; the streaming model does.
+- Whisper's options (vocabulary, beam size, temperature, quantization, warmup) do not apply, and Settings hide them. The live preview `on` works with Parakeet, and with Canary on Apple Silicon; see [Live Preview](#live-preview).
 - The macOS app includes both engines. The Windows installer includes neither, so its Settings do not offer the models; running from source, install sherpa-onnx with `pip install sherpa-onnx`.
 - NVIDIA licenses both models under CC-BY-4.0. The files come from Hugging Face repositories at fixed commits: for the CPU from the sherpa-onnx author (Parakeet) and a third party (Canary), for MLX from third parties (8-bit weights).
 
@@ -190,11 +190,11 @@ Whisper turbo with MLX took 0.34 s for the same recording. Both engines gave the
 
 ## Live Preview
 
-On macOS the overlay can show your words while you speak. The transcript itself is always one Whisper pass over the whole recording; the preview only shows text earlier. Choose the preview in Settings → Providers → Advanced backend options → Live preview, or with `PULSESCRIBE_LOCAL_PREVIEW`.
+On macOS the overlay can show your words while you speak. The transcript itself is always one pass of the local model over the whole recording; the preview only shows text earlier. Choose the preview in Settings → Providers → Advanced backend options → Live preview, or with `PULSESCRIBE_LOCAL_PREVIEW`.
 
 | Live preview | Text comes from | Works with | Behind your voice | Costs |
 |--------------|-----------------|------------|-------------------|-------|
-| `on` (default, `true`) | Whisper, transcribing the running recording again and again | MLX with a model other than large, large-v2 or large-v3 | 0.3 to 1.0 s on an M6, 0.8 to 2.4 s on an M5 (turbo) | GPU busy about half of the time you speak |
+| `on` (default, `true`) | the local model, transcribing the running recording again and again | MLX with a model other than large, large-v2 or large-v3; `parakeet-v3`; `canary-1b-v2` on Apple Silicon | 0.3 to 1.0 s on an M6, 0.8 to 2.4 s on an M5 (turbo); Parakeet on an M5: a pass takes 0.07 s, new text about every 0.7 s | GPU busy about half of the time you speak (Parakeet: a tenth) |
 | `streaming model` (`streaming`) | a second model (NVIDIA Nemotron 3.5 ASR streaming via sherpa-onnx, on the CPU) | every local backend and model | about 0.6 s, at most 0.8 s (M5) | 0.7 GB download, about 1.9 GB memory while loaded, 0.3 CPU cores while you speak |
 | `off` (`false`) | – | – | – | – |
 
@@ -233,7 +233,7 @@ Settings → Providers → Advanced backend options only show the options the ac
 |--------|------------|
 | Preset, Warmup | all local backends |
 | Unload when idle | all local backends (macOS app) |
-| Live preview | all local backends (macOS app); `on` only with MLX and a fast model |
+| Live preview | all local backends (macOS app); `on` only with MLX and a fast model, Parakeet, or Canary on Apple Silicon |
 | Fast, Best of, Temperature | openai-whisper, faster-whisper, MLX (Lightning only reads the language) |
 | Beam size | openai-whisper, faster-whisper (MLX and Lightning have no beam search) |
 | FP16 | openai-whisper, MLX (faster-whisper uses the compute type) |
