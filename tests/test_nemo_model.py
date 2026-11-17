@@ -8,7 +8,7 @@ import pytest
 
 import providers.nemo_model as nemo_mod
 from providers.local import LocalProvider
-from providers.nemo_model import NEMO_MODEL_FILES, NemoModels, canary_language
+from providers.nemo_model import NEMO_MODEL_FILES, NemoModels, canary_language, segments
 from utils.local_backend import NEMO_MODELS, effective_local_backend, is_nemo_model
 
 
@@ -106,6 +106,32 @@ def test_canary_transcribes_in_the_resolved_language(sherpa):
     assert sherpa[0].streams[0].options == {"src_lang": "de", "tgt_lang": "de"}
 
 
+def test_long_audio_is_cut_at_the_quietest_moment():
+    rate = 1000
+    audio = np.ones(40 * rate, dtype=np.float32)
+    audio[12_300:12_400] = 0  # a pause 12.3 s in, inside the last 5 s of the first 15 s
+
+    pieces = segments(audio, rate)
+
+    assert [len(p) for p in pieces[:1]] == [12_350]  # cut in the middle of the pause
+    assert all(len(p) <= 15 * rate for p in pieces)
+    assert sum(len(p) for p in pieces) == len(audio)
+    short = np.ones(15 * rate, dtype=np.float32)
+    assert [len(p) for p in segments(short, rate)] == [15 * rate]
+
+
+def test_canary_transcribes_long_audio_piece_by_piece(sherpa):
+    audio = np.zeros(40 * 16000, dtype=np.float32)
+
+    text = NemoModels().transcribe("canary-1b-v2", audio, "de")
+
+    streams = sherpa[0].streams
+    assert len(streams) == len(segments(audio, 16000)) >= 3
+    assert all(s.options == {"src_lang": "de", "tgt_lang": "de"} for s in streams)
+    assert sum(len(s.waveform[1]) for s in streams) == len(audio)
+    assert text == " ".join(["canary text"] * len(streams))
+
+
 def test_switching_models_replaces_the_loaded_one(sherpa):
     models = NemoModels()
     audio = np.zeros(1600, dtype=np.float32)
@@ -145,7 +171,8 @@ def test_files_libsndfile_cannot_read_are_decoded_with_pyav(monkeypatch, sherpa)
 
     NemoModels().transcribe("parakeet-v3", "/recordings/memo.m4a", None)
 
-    assert sherpa[0].streams[0].waveform == (16000, decoded)
+    rate, samples = sherpa[0].streams[0].waveform
+    assert rate == 16000 and np.array_equal(samples, decoded)
 
 
 def test_local_provider_routes_nemo_models_past_whisper(monkeypatch, sherpa):

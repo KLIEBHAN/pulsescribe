@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Long recordings with Parakeet and Canary** – Canary returned no text for
+  recordings longer than about 37 s, and Parakeet dropped words on long ones
+  (29 % of the words wrong on 5 minutes of German speech). Both now
+  transcribe recordings longer than 15 s in pieces cut at pauses: 0.1 %
+  (Parakeet) and 2.0 % (Canary) on the same recording. Shorter recordings
+  are unchanged.
+
 ## [1.21.0] - 2026-11-17
 
 ### Added
