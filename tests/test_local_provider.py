@@ -1539,6 +1539,7 @@ def test_mlx_cache_is_cleared_with_older_mlx_too(monkeypatch):
 
     clear = MagicMock()
     monkeypatch.setitem(sys.modules, "mlx.core", SimpleNamespace(metal=SimpleNamespace(clear_cache=clear)))
+    monkeypatch.delitem(sys.modules, "torch", raising=False)  # torch.mps crashes on CI runners
 
     LocalProvider._release_backend_allocator_caches()
 
