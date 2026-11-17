@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Unload when idle with future MLX versions** – PulseScribe freed MLX
+  memory through a call MLX has deprecated; once removed, an unloaded model
+  would have kept its memory (1.4 GB with Canary). It now uses the current
+  call and falls back to the old one on older MLX. Memory after unloading
+  Parakeet or Canary: about 90 MB for the whole process.
+
 ## [1.22.0] - 2026-11-17
 
 ### Added
