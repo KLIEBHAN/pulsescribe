@@ -178,7 +178,8 @@ Whisper turbo with MLX took 0.34 s for the same recording.
 
 - Both know 25 European languages (bg, cs, da, de, el, en, es, et, fi, fr, hr, hu, it, lt, lv, mt, nl, pl, pt, ro, ru, sk, sl, sv, uk) and write punctuation and capitals.
 - Canary does not detect the language: it translates speech in another language into the one set. With `auto`, or a language it does not know, it uses your system language if it knows it, else English. Set the language when you dictate in another one.
-- The first load downloads the model into the Hugging Face cache, with progress in the menu bar. Loading takes 1 to 1.5 s, also after **Unload when idle**.
+- The first load downloads the model into the Hugging Face cache, with progress in the menu bar. Loading takes 1 to 1.5 s, also after **Unload when idle**, which frees all but about 0.4 GB; ONNX Runtime keeps that and reuses it at the next load.
+- Recordings longer than 15 s are transcribed in pieces of at most 15 s, each cut at the quietest moment of its last 5 s. Canary returns no text for one piece longer than about 37 s, and Parakeet drops words on long ones: on 5 minutes of German speech it got 29 % of the words wrong in one piece and 0.1 % in pieces.
 - Whisper's options (vocabulary, beam size, temperature, quantization, warmup) do not apply, and Settings hide them. The Whisper live preview (`on`) shows no text with these models; the streaming model does.
 - The macOS app includes sherpa-onnx. The Windows installer does not, so its Settings do not offer the models; running from source, install it with `pip install sherpa-onnx`.
 - NVIDIA licenses both models under CC-BY-4.0. The ONNX files come from Hugging Face repositories of the sherpa-onnx author (Parakeet) and of a third party (Canary), at fixed commits.

@@ -33,6 +33,13 @@ logger = logging.getLogger("pulsescribe.providers.nemo_model")
 # takes 0.33 s with 2 threads, 0.22 s with 4 and 0.24 s with 6 or 8; Canary
 # 1.32 s, 1.09 s and 1.12 s.
 THREADS = 4
+# Canary returns no text for recordings longer than about 37 s (it was trained on
+# pieces of at most 40 s) and Parakeet drops words on long ones, so longer audio is
+# decoded in pieces of at most 15 s, each cut at the quietest 100 ms of its last 5 s.
+# German, 306 s: WER Parakeet 29 % whole, 0.1 % in pieces; Canary 100 % (no text),
+# 2.0 %. 15 s beat 10, 20 and 30 s in accuracy, and Canary is fastest with it.
+SEGMENT_SECONDS = 15
+_CUT_SEARCH_SECONDS = 5
 _CANARY_LANGUAGE = re.compile(r"^<\|([a-z]{2})\|> ", re.MULTILINE)
 
 
@@ -109,6 +116,24 @@ def _read_audio_file(path: str) -> tuple[Any, int]:
             raise error from None
         return decode_audio(path, sampling_rate=WHISPER_SAMPLE_RATE), WHISPER_SAMPLE_RATE
     return samples.mean(axis=1), sample_rate
+
+
+def segments(samples: Any, sample_rate: int) -> list[Any]:
+    """``samples`` cut into pieces of at most SEGMENT_SECONDS, each ending in its quietest 100 ms."""
+    import numpy as np
+
+    limit = SEGMENT_SECONDS * sample_rate
+    search = _CUT_SEARCH_SECONDS * sample_rate
+    frame = sample_rate // 10
+    pieces, start = [], 0
+    while len(samples) - start > limit:
+        window = np.asarray(samples[start + limit - search:start + limit], dtype=np.float32)
+        energy = np.square(window[: len(window) // frame * frame]).reshape(-1, frame).mean(axis=1)
+        cut = start + limit - search + int(np.argmin(energy)) * frame + frame // 2
+        pieces.append(samples[start:cut])
+        start = cut
+    pieces.append(samples[start:])
+    return pieces
 
 
 class NemoModels:
@@ -197,14 +222,18 @@ class NemoModels:
             samples, sample_rate = audio, WHISPER_SAMPLE_RATE
         with self._lock:
             self.load(name)
-            stream = self._recognizer.create_stream()
-            if NEMO_MODEL_FILES[name].canary:
-                code = canary_language(language, self._languages)
-                stream.set_option("src_lang", code)
-                stream.set_option("tgt_lang", code)
-            stream.accept_waveform(sample_rate, samples)
-            self._recognizer.decode_stream(stream)
-            return stream.result.text.strip()
+            code = canary_language(language, self._languages) \
+                if NEMO_MODEL_FILES[name].canary else None
+            texts = []
+            for piece in segments(samples, sample_rate):
+                stream = self._recognizer.create_stream()
+                if code:
+                    stream.set_option("src_lang", code)
+                    stream.set_option("tgt_lang", code)
+                stream.accept_waveform(sample_rate, piece)
+                self._recognizer.decode_stream(stream)
+                texts.append(stream.result.text.strip())
+            return " ".join(text for text in texts if text)
 
 
 __all__ = ["NEMO_MODEL_FILES", "NemoModels", "canary_language"]
