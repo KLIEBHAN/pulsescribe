@@ -1356,8 +1356,10 @@ class TestLightningFallback:
             cuda=SimpleNamespace(empty_cache=empty_cuda_cache),
             mps=SimpleNamespace(empty_cache=empty_mps_cache),
         ))
+        deprecated_clear = MagicMock()
         monkeypatch.setitem(sys.modules, "mlx.core", SimpleNamespace(
-            metal=SimpleNamespace(clear_cache=clear_mlx_cache),
+            clear_cache=clear_mlx_cache,
+            metal=SimpleNamespace(clear_cache=deprecated_clear),
         ))
 
         provider = LocalProvider()
@@ -1381,6 +1383,7 @@ class TestLightningFallback:
         empty_cuda_cache.assert_called_once_with()
         empty_mps_cache.assert_called_once_with()
         clear_mlx_cache.assert_called_once_with()
+        deprecated_clear.assert_not_called()  # MLX deprecated mx.metal.clear_cache
 
 
 class TestMLXQuantization:
@@ -1528,3 +1531,15 @@ class TestPreloadDownloadProgress:
         assert callback is None
         assert kwargs["allow_patterns"] == local_mod.FASTER_WHISPER_DOWNLOAD_PATTERNS
         assert kwargs["required_files"] == ("config.json", "model.bin")
+
+
+def test_mlx_cache_is_cleared_with_older_mlx_too(monkeypatch):
+    """MLX before mx.clear_cache() only has mx.metal.clear_cache()."""
+    from providers.local import LocalProvider
+
+    clear = MagicMock()
+    monkeypatch.setitem(sys.modules, "mlx.core", SimpleNamespace(metal=SimpleNamespace(clear_cache=clear)))
+
+    LocalProvider._release_backend_allocator_caches()
+
+    clear.assert_called_once_with()
