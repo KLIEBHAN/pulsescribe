@@ -36,6 +36,9 @@ lightning-whisper-mlx; sys_platform == 'darwin'
 
 # macOS only: streaming model for the live preview (optional at runtime)
 sherpa-onnx>=2.0,<3; sys_platform == 'darwin'
+# macOS only: Parakeet and Canary on the GPU (Apple Silicon). Pinned exactly:
+# providers/nemo_model.py imports two of its models past its models package.
+mlx-audio==0.6.4; sys_platform == 'darwin'
 
 # Windows only: App detection, Icons, FileWatcher
 pywin32; sys_platform == 'win32'

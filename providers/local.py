@@ -637,6 +637,10 @@ class LocalProvider:
             return "mlx"
         return self._backend
 
+    def _nemo_device(self) -> str:
+        """Where Parakeet and Canary run: the GPU through MLX, else the CPU."""
+        return "metal" if self._nemo.engine == "mlx" else "cpu"
+
     def _backend_for(self, model_name: str) -> str | None:
         """Backend that transcribes with ``model_name``: NeMo models bypass Whisper's.
 
@@ -1086,7 +1090,7 @@ class LocalProvider:
         backend = self._backend_for(self._resolve_model_name(model))
         info: dict[str, str | None] = {
             "backend": backend,
-            "device": "cpu" if backend == NEMO_BACKEND else self._device,
+            "device": self._nemo_device() if backend == NEMO_BACKEND else self._device,
         }
         # compute_type nur bei faster-whisper relevant
         if backend == "faster":
@@ -1243,7 +1247,7 @@ class LocalProvider:
         if backend in ("whisper", "faster"):
             parts.append(f"device={self._device}")
         elif backend == NEMO_BACKEND:
-            parts.append("device=cpu")
+            parts.append(f"device={self._nemo_device()}")
         if backend == "faster":
             device = "cuda" if self._device == "cuda" else "cpu"
             compute = self._compute_type or ("float16" if device == "cuda" else CPU_COMPUTE_TYPE)

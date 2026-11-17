@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Parakeet and Canary on the GPU (Apple Silicon)** – both now run through
+  MLX instead of on the CPU: 11 s of German speech take 0.08 s instead of
+  0.22 s with Parakeet and 0.22 s instead of 0.65 s with Canary, with about
+  half the memory (1.1 GB and 1.5 GB). The first use downloads the MLX
+  weights once (0.7 GB and 1.1 GB). Intel Macs keep the CPU engine.
+
 ## [1.21.1] - 2026-11-17
 
 ### Fixed

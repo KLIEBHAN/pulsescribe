@@ -146,7 +146,7 @@ LOCAL_MODEL_OPTIONS = [
     "large-en",
     "medium-en",
     "small-en",
-    # NVIDIA, on the CPU through sherpa-onnx whatever the backend
+    # NVIDIA, on their own engine whatever the backend (providers/nemo_model.py)
     "parakeet-v3",
     "canary-1b-v2",
 ]

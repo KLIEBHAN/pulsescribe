@@ -57,6 +57,7 @@ def sherpa(monkeypatch, tmp_path):
                         SimpleNamespace(OfflineRecognizer=offline))
     monkeypatch.setattr(nemo_mod, "cached_snapshot", lambda *a, **k: tmp_path)
     monkeypatch.setattr(nemo_mod, "_system_language", lambda: "de")
+    monkeypatch.setattr(nemo_mod, "mlx_available", lambda: False)
     return created
 
 
@@ -82,7 +83,7 @@ def test_nemo_models_run_on_nemo_whatever_backend_is_selected():
 )
 def test_canary_language(monkeypatch, language, system, expected):
     monkeypatch.setattr(nemo_mod, "_system_language", lambda: system)
-    assert canary_language(language, frozenset({"en", "de", "fr"})) == expected
+    assert canary_language(language) == expected
 
 
 def test_parakeet_transcribes_without_a_language(sherpa):
@@ -152,7 +153,7 @@ def test_load_downloads_a_missing_model_and_fails_clearly(monkeypatch, sherpa):
     with pytest.raises(RuntimeError, match="parakeet-v3"):
         NemoModels().load("parakeet-v3")
 
-    spec = NEMO_MODEL_FILES["parakeet-v3"]
+    spec = NEMO_MODEL_FILES["parakeet-v3"].onnx
     assert download.call_args.args[0] == spec.repo
     assert download.call_args.kwargs["revision"] == spec.revision
     assert sherpa == []
@@ -198,3 +199,75 @@ def test_local_provider_routes_nemo_models_past_whisper(monkeypatch, sherpa):
     assert download.call_args.args[1] is progress
     assert provider.get_runtime_info() == {"backend": "nemo", "device": "cpu"}
     assert provider.clear_model_cache() == 1
+
+
+@pytest.fixture
+def mlx(monkeypatch, tmp_path):
+    """Fake MLX and mlx-audio loader on Apple Silicon, every model cached in tmp_path."""
+    import sys
+
+    loaded: list[dict] = []
+
+    def load(folder, **options):
+        model = MagicMock()
+        model.generate.side_effect = lambda samples, **kw: SimpleNamespace(
+            text=f" {options['model_type']} {kw.get('source_lang', '-')} ")
+        loaded.append({"folder": folder, **options, "model": model})
+        return model
+
+    core = SimpleNamespace(array=lambda samples: samples, eval=lambda *_: None)
+    monkeypatch.setitem(sys.modules, "mlx", SimpleNamespace(core=core))
+    monkeypatch.setitem(sys.modules, "mlx.core", core)
+    monkeypatch.setattr(nemo_mod, "mlx_available", lambda: True)
+    monkeypatch.setattr(nemo_mod, "_mlx_audio_load", lambda: load)
+    monkeypatch.setattr(nemo_mod, "cached_snapshot", lambda *a, **k: tmp_path)
+    monkeypatch.setattr(nemo_mod, "_system_language", lambda: "de")
+    return loaded
+
+
+def test_apple_silicon_runs_the_models_on_mlx(mlx, monkeypatch):
+    download = MagicMock()
+    monkeypatch.setattr(nemo_mod, "download_with_progress", download)
+    models = NemoModels()
+    audio = np.zeros(1600, dtype=np.float32)
+
+    assert models.engine == "mlx"
+    models.download("canary-1b-v2", None)
+    assert download.call_args.args[0] == NEMO_MODEL_FILES["canary-1b-v2"].mlx.repo
+    assert models.transcribe("parakeet-v3", audio, "fr") == "parakeet -"
+    assert models.transcribe("canary-1b-v2", audio, "auto") == "canary de"
+    assert [entry["model_type"] for entry in mlx] == ["parakeet", "canary"]
+    assert all(entry["lazy"] for entry in mlx)
+
+
+def test_mlx_resamples_files_to_16_khz(mlx, tmp_path):
+    import soundfile as sf
+
+    path = tmp_path / "memo.wav"
+    sf.write(path, np.zeros(4410, dtype=np.float32), 44100)
+
+    NemoModels().transcribe("parakeet-v3", path, None)
+
+    samples = mlx[0]["model"].generate.call_args.args[0]
+    assert len(samples) == 1600
+
+
+def test_mlx_audio_loads_parakeet_and_canary_without_transformers(monkeypatch):
+    """The app carries no transformers; the loader must reach both models without it."""
+    import importlib
+    import sys
+
+    pytest.importorskip("mlx_audio")
+    for name in [n for n in sys.modules if n.startswith("mlx_audio.stt.models")]:
+        monkeypatch.delitem(sys.modules, name)
+    monkeypatch.setitem(sys.modules, "transformers", None)
+
+    nemo_mod._mlx_audio_load()
+    for name in ("parakeet", "canary"):
+        assert importlib.import_module(f"mlx_audio.stt.models.{name}").Model
+
+
+def test_local_provider_reports_the_gpu_for_mlx(mlx, monkeypatch):
+    monkeypatch.setenv("PULSESCRIBE_LOCAL_MODEL", "canary-1b-v2")
+
+    assert LocalProvider().get_runtime_info() == {"backend": "nemo", "device": "metal"}

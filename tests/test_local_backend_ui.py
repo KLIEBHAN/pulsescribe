@@ -216,7 +216,7 @@ def test_nemo_models_show_only_the_options_they_use(monkeypatch) -> None:
     assert options("darwin") == {"preset", "idle_unload", "live_preview"}
     assert options("win32") == {"preset"}
     state = lb.get_local_advanced_ui_state("local", "faster", "parakeet-v3")
-    assert state.show_general and not state.show_faster and "sherpa-onnx" in state.guidance
+    assert state.show_general and not state.show_faster and "own engine" in state.guidance
     assert "streaming model" in lb.live_preview_hint(lb.LIVE_PREVIEW_ON, "nemo", "canary-1b-v2")
 
 

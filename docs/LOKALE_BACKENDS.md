@@ -161,7 +161,7 @@ PULSESCRIBE_LOCAL_BACKEND=whisper
 
 ### NVIDIA Parakeet v3 und Canary-1B-v2
 
-Zwei Modelle von NVIDIA, die über sherpa-onnx auf der CPU laufen, egal welches Backend eingestellt ist. Du wählst sie unter Settings → Transcription → Local Model (sichtbar bei Mode local) oder setzt das Modell:
+Zwei Modelle von NVIDIA mit eigener Engine, egal welches Backend eingestellt ist: auf Apple Silicon auf der GPU über mlx-audio (MLX), sonst auf der CPU über sherpa-onnx. Du wählst sie unter Settings → Transcription → Local Model (sichtbar bei Mode local) oder setzt das Modell:
 
 ```bash
 # In ~/.pulsescribe/.env
@@ -169,20 +169,22 @@ PULSESCRIBE_MODE=local
 PULSESCRIBE_LOCAL_MODEL=parakeet-v3   # oder canary-1b-v2
 ```
 
-| Modell | Download | Speicher geladen | 11 s deutsche Sprache (M5) | Sprache |
-|--------|----------|------------------|----------------------------|---------|
-| `parakeet-v3` | 0,7 GB | 2,1 GB | 0,22 s | erkennt sie selbst |
-| `canary-1b-v2` | 1,0 GB | 2,8 GB | 0,65 s | braucht sie |
+| Modell | Engine | Download | Speicher geladen | 11 s deutsche Sprache (M5) | Sprache |
+|--------|--------|----------|------------------|----------------------------|---------|
+| `parakeet-v3` | MLX (Apple Silicon) | 0,7 GB | 1,1 GB | 0,08 s | erkennt sie selbst |
+| `parakeet-v3` | sherpa-onnx (CPU) | 0,7 GB | 2,1 GB | 0,22 s | erkennt sie selbst |
+| `canary-1b-v2` | MLX (Apple Silicon) | 1,1 GB | 1,5 GB | 0,22 s | braucht sie |
+| `canary-1b-v2` | sherpa-onnx (CPU) | 1,0 GB | 2,8 GB | 0,65 s | braucht sie |
 
-Whisper turbo mit MLX brauchte für dieselbe Aufnahme 0,34 s.
+Whisper turbo mit MLX brauchte für dieselbe Aufnahme 0,34 s. Beide Engines lieferten auf unseren Testaufnahmen denselben Text.
 
 - Beide kennen 25 europäische Sprachen (bg, cs, da, de, el, en, es, et, fi, fr, hr, hu, it, lt, lv, mt, nl, pl, pt, ro, ru, sk, sl, sv, uk) und setzen Satzzeichen und Großschreibung.
 - Canary erkennt die Sprache nicht: Sprache in einer anderen übersetzt es in die eingestellte. Bei `auto` oder einer Sprache, die es nicht kennt, nimmt es deine Systemsprache, sofern es sie kennt, sonst Englisch. Stell die Sprache ein, wenn du in einer anderen diktierst.
-- Beim ersten Laden wird das Modell in den Hugging-Face-Cache geladen, mit Fortschritt in der Menüleiste. Laden dauert 1 bis 1,5 s, auch nach **Unload when idle**, das den Speicher bis auf etwa 0,4 GB freigibt; diesen Rest behält ONNX Runtime und nutzt ihn beim nächsten Laden wieder.
+- Beim ersten Laden wird das Modell in den Hugging-Face-Cache geladen, mit Fortschritt in der Menüleiste. Laden dauert bis zu 1,5 s, auch nach **Unload when idle**. Auf der CPU gibt das den Speicher bis auf etwa 0,4 GB frei; diesen Rest behält ONNX Runtime und nutzt ihn beim nächsten Laden wieder.
 - Aufnahmen über 15 s werden in Stücken von höchstens 15 s transkribiert, jeweils an der leisesten Stelle ihrer letzten 5 s geschnitten. Canary liefert für ein Stück über etwa 37 s keinen Text, und Parakeet lässt bei langen Stücken Wörter aus: bei 5 Minuten deutscher Sprache waren in einem Stück 29 % der Wörter falsch, in Stücken 0,1 %.
 - Whispers Optionen (Vokabular, Beam Size, Temperature, Quantisierung, Warmup) wirken nicht, Settings blenden sie aus. Die Whisper-Vorschau (`on`) zeigt mit diesen Modellen keinen Text; das Streaming-Modell schon.
-- Die macOS-App enthält sherpa-onnx. Der Windows-Installer nicht, seine Settings bieten die Modelle daher nicht an; beim Start aus dem Quellcode installierst du es mit `pip install sherpa-onnx`.
-- NVIDIA lizenziert beide Modelle unter CC-BY-4.0. Die ONNX-Dateien stammen aus Hugging-Face-Repositories des sherpa-onnx-Autors (Parakeet) und eines Dritten (Canary), jeweils auf festem Commit.
+- Die macOS-App enthält beide Engines. Der Windows-Installer keine, seine Settings bieten die Modelle daher nicht an; beim Start aus dem Quellcode installierst du sherpa-onnx mit `pip install sherpa-onnx`.
+- NVIDIA lizenziert beide Modelle unter CC-BY-4.0. Die Dateien stammen aus Hugging-Face-Repositories auf festem Commit: für die CPU vom sherpa-onnx-Autor (Parakeet) und einem Dritten (Canary), für MLX von Dritten (8-Bit-Gewichte).
 
 ---
 

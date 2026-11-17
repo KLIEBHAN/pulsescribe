@@ -29,15 +29,27 @@ LOCAL_BACKEND_MODULES = {
     "nemo": "sherpa_onnx",
 }
 
-# NVIDIA models that run on sherpa-onnx (CPU) whatever Whisper backend is chosen;
-# their files are listed in providers/nemo_model.py.
+# NVIDIA models that run on MLX (GPU, Apple Silicon) or sherpa-onnx (CPU) whatever
+# Whisper backend is chosen; their files are listed in providers/nemo_model.py.
 NEMO_MODELS = ("parakeet-v3", "canary-1b-v2")
 # Backend name under which a NeMo model runs (not selectable, see effective_local_backend).
 NEMO_BACKEND = "nemo"
 
 
+def nemo_runs_on_gpu() -> bool:
+    """True on Apple Silicon with mlx-audio installed: Parakeet and Canary then use MLX."""
+    import platform
+
+    if sys.platform != "darwin" or platform.machine() != "arm64":
+        return False
+    try:
+        return importlib.util.find_spec("mlx_audio") is not None
+    except (ImportError, ValueError):
+        return False
+
+
 def is_nemo_model(model: str | None) -> bool:
-    """True for a local model name that runs on sherpa-onnx instead of a Whisper backend."""
+    """True for a local model name that runs on MLX or sherpa-onnx instead of a Whisper backend."""
     return (model or "").strip().lower() in NEMO_MODELS
 
 
@@ -79,7 +91,7 @@ _DECODING_BACKENDS = frozenset({"whisper", "faster", "mlx"})  # Lightning only r
 # Backends on which each advanced option takes effect (see providers/local.py).
 ADVANCED_OPTION_BACKENDS: dict[str, frozenset[str]] = {
     "preset": _ALL_LOCAL_BACKENDS,
-    "warmup": _WHISPER_BACKENDS,  # ONNX on the CPU needs no warmup pass
+    "warmup": _WHISPER_BACKENDS,  # Parakeet and Canary are fast from the first pass
     "idle_unload": _ALL_LOCAL_BACKENDS,  # macOS app only, see advanced_option_applies
     "live_preview": _ALL_LOCAL_BACKENDS,  # macOS app only, see live_preview_hint
     "device": frozenset({"whisper", "faster"}),  # MLX and Lightning always run on Metal
@@ -269,8 +281,8 @@ def get_local_advanced_ui_state(
             show_faster=False,
             show_lightning=False,
             guidance=(
-                f"{(model or '').strip()} runs on the CPU through sherpa-onnx; the backend "
-                "and the Whisper options do not apply."
+                f"{(model or '').strip()} runs on its own engine (the GPU on Apple Silicon, "
+                "else the CPU); the backend and the Whisper options do not apply."
             ),
         )
 
