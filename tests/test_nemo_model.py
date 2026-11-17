@@ -271,3 +271,16 @@ def test_local_provider_reports_the_gpu_for_mlx(mlx, monkeypatch):
     monkeypatch.setenv("PULSESCRIBE_LOCAL_MODEL", "canary-1b-v2")
 
     assert LocalProvider().get_runtime_info() == {"backend": "nemo", "device": "metal"}
+
+
+def test_preload_warms_up_mlx_only(mlx, sherpa, monkeypatch):
+    monkeypatch.setattr(nemo_mod, "download_with_progress", MagicMock())
+    monkeypatch.setenv("PULSESCRIBE_LOCAL_MODEL", "parakeet-v3")
+
+    monkeypatch.setattr(nemo_mod, "mlx_available", lambda: True)
+    LocalProvider().preload()
+    assert mlx[0]["model"].generate.call_count == 1  # one pass over silence
+
+    monkeypatch.setattr(nemo_mod, "mlx_available", lambda: False)
+    LocalProvider().preload()
+    assert sherpa and sherpa[0].streams == []  # the CPU engine needs no warmup

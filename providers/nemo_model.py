@@ -290,6 +290,18 @@ class NemoModels:
             self._name = name
             logger.info(f"NeMo-Modell {name} geladen ({self.engine})")
 
+    def warm_up(self, name: str) -> None:
+        """Run one pass over a second of silence on MLX, so its Metal kernels are ready.
+
+        Whisper on MLX warms up the same way. Measured in the app: the first
+        dictation after loading Parakeet took 0.93 s instead of 0.05 s. ONNX on
+        the CPU is as fast on its first pass as on later ones and skips this.
+        """
+        if self.engine == "mlx":
+            import numpy as np
+
+            self.transcribe(name, np.zeros(WHISPER_SAMPLE_RATE, dtype=np.float32), "en")
+
     def release(self) -> bool:
         """Drop the loaded model; returns whether there was one."""
         with self._lock:

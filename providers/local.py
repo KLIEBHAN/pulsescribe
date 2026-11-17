@@ -1109,7 +1109,8 @@ class LocalProvider:
         if backend == NEMO_BACKEND:
             name = model_name.strip().lower()
             self._nemo.download(name, self.download_progress_callback)
-            self._nemo.load(name)  # ONNX on the CPU needs no warmup pass
+            self._nemo.load(name)
+            self._nemo.warm_up(name)
         elif backend == "faster":
             download_with_progress(
                 _faster_repo_id(self._map_faster_model_name(model_name)),
