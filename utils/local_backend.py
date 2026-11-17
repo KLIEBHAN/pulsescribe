@@ -116,7 +116,8 @@ ADVANCED_OPTION_HELP: dict[str, str] = {
                    "dictation loads it again while you speak. never: keep it loaded.",
     "live_preview": "Shows the recognized text in the overlay while you speak; the "
                     "transcript itself stays the same. on: Whisper transcribes the running "
-                    "recording again and again (MLX with a fast model such as turbo). "
+                    "recording again and again (MLX with a fast model such as turbo, "
+                    "Parakeet, or Canary on Apple Silicon). "
                     "streaming model: a second model shows each word about half a second "
                     "after you say it, with every local model. off: no text until you stop.",
     "warmup": "Runs a short silent transcription after loading so the first dictation is "
@@ -167,6 +168,9 @@ def effective_local_backend(
 # a pass over 10 s of audio takes 0.95 s on an M6, passes on an M5 took 1.0 to
 # 1.5 s; turbo takes 0.35 s on the M6. A pass has to stay well under a second.
 LIVE_PREVIEW_SLOW_MODELS = frozenset({"large", "large-v1", "large-v2", "large-v3"})
+# Canary on the CPU: 0.65 s for 11 s of speech on an M5, so about 1.2 s for the 20 s
+# a preview pass can cover. On the GPU it takes 0.22 s, Parakeet 0.08 s (0.22 s on the CPU).
+_CPU_TOO_SLOW_FOR_PREVIEW = frozenset({"canary-1b-v2"})
 # Short name inside a repository ID such as mlx-community/whisper-large-v3-mlx-8bit.
 _MODEL_REPO_NAME = re.compile(r"^(?:.*/)?(?:whisper-)?(.+?)(?:-mlx)?(?:-(?:\d+bit|q\d+))?$")
 
@@ -174,8 +178,14 @@ _MODEL_REPO_NAME = re.compile(r"^(?:.*/)?(?:whisper-)?(.+?)(?:-mlx)?(?:-(?:\d+bi
 def live_preview_supports_model(model: str | None) -> bool:
     """False for a local model (short name or repository ID) too slow for the live preview."""
     name = (model or "").strip().lower()
+    if name in _CPU_TOO_SLOW_FOR_PREVIEW:
+        return nemo_runs_on_gpu()
     match = _MODEL_REPO_NAME.match(name)
     return (match.group(1) if match else name) not in LIVE_PREVIEW_SLOW_MODELS
+
+
+# Backends whose model transcribes the running recording for the live preview "on".
+LIVE_PREVIEW_BACKENDS = frozenset({"mlx", NEMO_BACKEND})
 
 
 # Values of PULSESCRIBE_LOCAL_PREVIEW: Whisper previews (default), a streaming
@@ -196,7 +206,7 @@ def normalize_live_preview(value: str | None) -> str:
 def live_preview_hint(preview: str, backend: str, model: str | None) -> str | None:
     """Settings text about the chosen live ``preview`` for ``backend`` and ``model``, else None.
 
-    Explains why Whisper's preview shows nothing with a slow model on MLX, and
+    Explains why the preview "on" shows nothing with a slow model, and
     what the streaming model costs before the user saves that choice. Other
     backends get no text: they never previewed, and the tooltip says so.
     """
@@ -205,15 +215,12 @@ def live_preview_hint(preview: str, backend: str, model: str | None) -> str | No
             "The streaming model is downloaded once after you save (0.7 GB) and uses about "
             "1.9 GB of memory while loaded. Whisper still writes the transcript."
         )
-    if preview == LIVE_PREVIEW_ON and backend == NEMO_BACKEND:
-        return (
-            f"No live text with {(model or '').strip()} in mode \"on\": it only works with "
-            "Whisper on MLX. Choose the streaming model."
-        )
-    if preview == LIVE_PREVIEW_ON and backend == "mlx" and not live_preview_supports_model(model):
+    if preview == LIVE_PREVIEW_ON and backend in LIVE_PREVIEW_BACKENDS \
+            and not live_preview_supports_model(model):
+        faster = "parakeet-v3" if backend == NEMO_BACKEND else "turbo"
         return (
             f"No live text with {(model or '').strip()} in mode \"on\": this model is too slow "
-            "to transcribe while you speak. Choose turbo or the streaming model."
+            f"on this Mac to transcribe while you speak. Choose {faster} or the streaming model."
         )
     return None
 

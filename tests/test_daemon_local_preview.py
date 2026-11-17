@@ -330,6 +330,36 @@ def test_no_overlay_means_nothing_to_size(daemon):
     daemon._expect_live_text(True)
 
 
+def test_parakeet_previews_and_has_the_transcript_ready_after_a_pause(daemon, monkeypatch):
+    monkeypatch.setenv("PULSESCRIBE_LOCAL_MODEL", "parakeet-v3")
+    provider = daemon._provider_cache["local"]
+    provider.backend = "nemo"
+
+    interim, results = _record(
+        daemon, _chunks(0.1, 1.5) + _chunks(0.0002, 0.5), preview_passes=1
+    )
+
+    assert interim == ["Heute ist ein schöner Tag."]
+    assert results == [" Heute ist ein schöner Tag."]
+    assert len(provider.calls) == 1  # the pass at the pause is the transcript
+
+
+def test_canary_on_the_cpu_gets_no_preview(daemon, monkeypatch, caplog):
+    import utils.local_backend as lb
+
+    monkeypatch.setenv("PULSESCRIBE_LOCAL_MODEL", "canary-1b-v2")
+    monkeypatch.setattr(lb, "nemo_runs_on_gpu", lambda: False)
+    provider = daemon._provider_cache["local"]
+    provider.backend = "nemo"
+
+    with caplog.at_level("INFO"):
+        interim, results = _record(daemon, _chunks(0.1, 1.5), preview_passes=99, timeout_s=0.2)
+
+    assert interim == []
+    assert len(provider.calls) == 1 and len(results) == 1
+    assert "parakeet-v3 oder das Streaming-Modell" in caplog.text
+
+
 def test_preview_waits_for_a_loading_model_and_never_runs_on_other_backends(daemon):
     provider = daemon._provider_cache["local"]
     provider.backend = "faster"

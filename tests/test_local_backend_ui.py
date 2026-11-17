@@ -217,7 +217,12 @@ def test_nemo_models_show_only_the_options_they_use(monkeypatch) -> None:
     assert options("win32") == {"preset"}
     state = lb.get_local_advanced_ui_state("local", "faster", "parakeet-v3")
     assert state.show_general and not state.show_faster and "own engine" in state.guidance
-    assert "streaming model" in lb.live_preview_hint(lb.LIVE_PREVIEW_ON, "nemo", "canary-1b-v2")
+    assert lb.live_preview_hint(lb.LIVE_PREVIEW_ON, "nemo", "parakeet-v3") is None
+    monkeypatch.setattr(lb, "nemo_runs_on_gpu", lambda: True)
+    assert lb.live_preview_hint(lb.LIVE_PREVIEW_ON, "nemo", "canary-1b-v2") is None
+    monkeypatch.setattr(lb, "nemo_runs_on_gpu", lambda: False)  # Canary on the CPU is too slow
+    assert "parakeet-v3" in lb.live_preview_hint(lb.LIVE_PREVIEW_ON, "nemo", "canary-1b-v2")
+    assert lb.live_preview_supports_model("parakeet-v3")
 
 
 def test_nemo_models_are_offered_only_with_sherpa_onnx(monkeypatch) -> None:

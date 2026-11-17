@@ -182,7 +182,7 @@ Whisper turbo mit MLX brauchte für dieselbe Aufnahme 0,34 s. Beide Engines lief
 - Canary erkennt die Sprache nicht: Sprache in einer anderen übersetzt es in die eingestellte. Bei `auto` oder einer Sprache, die es nicht kennt, nimmt es deine Systemsprache, sofern es sie kennt, sonst Englisch. Stell die Sprache ein, wenn du in einer anderen diktierst.
 - Beim ersten Laden wird das Modell in den Hugging-Face-Cache geladen, mit Fortschritt in der Menüleiste. Laden dauert bis zu 1,5 s, auch nach **Unload when idle**. Auf der CPU gibt das den Speicher bis auf etwa 0,4 GB frei; diesen Rest behält ONNX Runtime und nutzt ihn beim nächsten Laden wieder.
 - Aufnahmen über 15 s werden in Stücken von höchstens 15 s transkribiert, jeweils an der leisesten Stelle ihrer letzten 5 s geschnitten. Canary liefert für ein Stück über etwa 37 s keinen Text, und Parakeet lässt bei langen Stücken Wörter aus: bei 5 Minuten deutscher Sprache waren in einem Stück 29 % der Wörter falsch, in Stücken 0,1 %.
-- Whispers Optionen (Vokabular, Beam Size, Temperature, Quantisierung, Warmup) wirken nicht, Settings blenden sie aus. Die Whisper-Vorschau (`on`) zeigt mit diesen Modellen keinen Text; das Streaming-Modell schon.
+- Whispers Optionen (Vokabular, Beam Size, Temperature, Quantisierung, Warmup) wirken nicht, Settings blenden sie aus. Die Live-Vorschau `on` funktioniert mit Parakeet und auf Apple Silicon mit Canary; siehe [Live-Vorschau](#live-vorschau).
 - Die macOS-App enthält beide Engines. Der Windows-Installer keine, seine Settings bieten die Modelle daher nicht an; beim Start aus dem Quellcode installierst du sherpa-onnx mit `pip install sherpa-onnx`.
 - NVIDIA lizenziert beide Modelle unter CC-BY-4.0. Die Dateien stammen aus Hugging-Face-Repositories auf festem Commit: für die CPU vom sherpa-onnx-Autor (Parakeet) und einem Dritten (Canary), für MLX von Dritten (8-Bit-Gewichte).
 
@@ -190,11 +190,11 @@ Whisper turbo mit MLX brauchte für dieselbe Aufnahme 0,34 s. Beide Engines lief
 
 ## Live-Vorschau
 
-Auf macOS kann das Overlay deine Worte zeigen, während du sprichst. Der eingefügte Text ist immer ein Whisper-Durchlauf über die ganze Aufnahme; die Vorschau zeigt nur früher Text. Wähle die Vorschau unter Einstellungen → Providers → Advanced backend options → Live preview oder mit `PULSESCRIBE_LOCAL_PREVIEW`.
+Auf macOS kann das Overlay deine Worte zeigen, während du sprichst. Der eingefügte Text ist immer ein Durchlauf des lokalen Modells über die ganze Aufnahme; die Vorschau zeigt nur früher Text. Wähle die Vorschau unter Einstellungen → Providers → Advanced backend options → Live preview oder mit `PULSESCRIBE_LOCAL_PREVIEW`.
 
 | Live preview | Text kommt von | Funktioniert mit | Rückstand hinter der Stimme | Kosten |
 |--------------|----------------|------------------|-----------------------------|--------|
-| `on` (Standard, `true`) | Whisper, das die laufende Aufnahme immer wieder transkribiert | MLX mit einem anderen Modell als large, large-v2 oder large-v3 | 0,3 bis 1,0 s auf einem M6, 0,8 bis 2,4 s auf einem M5 (turbo) | GPU arbeitet etwa die Hälfte der Sprechzeit |
+| `on` (Standard, `true`) | das lokale Modell, das die laufende Aufnahme immer wieder transkribiert | MLX mit einem anderen Modell als large, large-v2 oder large-v3; `parakeet-v3`; `canary-1b-v2` auf Apple Silicon | 0,3 bis 1,0 s auf einem M6, 0,8 bis 2,4 s auf einem M5 (turbo); Parakeet auf einem M5: ein Durchlauf dauert 0,07 s, neuer Text etwa alle 0,7 s | GPU arbeitet etwa die Hälfte der Sprechzeit (Parakeet: ein Zehntel) |
 | `streaming model` (`streaming`) | einem zweiten Modell (NVIDIA Nemotron 3.5 ASR Streaming über sherpa-onnx, auf der CPU) | jedem lokalen Backend und Modell | rund 0,6 s, höchstens 0,8 s (M5) | 0,7 GB Download, rund 1,9 GB Arbeitsspeicher solange geladen, 0,3 CPU-Kerne beim Sprechen |
 | `off` (`false`) | – | – | – | – |
 
@@ -233,7 +233,7 @@ Einstellungen → Providers → Advanced backend options zeigen nur die Optionen
 |--------|-----------|
 | Preset, Warmup | allen lokalen Backends |
 | Unload when idle | allen lokalen Backends (macOS-App) |
-| Live preview | allen lokalen Backends (macOS-App); `on` nur mit MLX und einem schnellen Modell |
+| Live preview | allen lokalen Backends (macOS-App); `on` nur mit MLX und einem schnellen Modell, Parakeet oder auf Apple Silicon Canary |
 | Fast, Best of, Temperature | openai-whisper, faster-whisper, MLX (Lightning liest nur die Sprache) |
 | Beam size | openai-whisper, faster-whisper (MLX und Lightning haben kein Beam Search) |
 | FP16 | openai-whisper, MLX (faster-whisper nutzt den Compute type) |
