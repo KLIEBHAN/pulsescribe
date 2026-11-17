@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **First dictation with Parakeet or Canary on the GPU** – the first dictation
+  after loading could take up to 0.9 s instead of about 0.05 s. Loading now
+  runs one pass over a second of silence in the background, as Whisper on MLX
+  does; loading takes about 0.6 s instead of 0.2 s.
+
 ## [1.22.1] - 2026-11-17
 
 ### Fixed
