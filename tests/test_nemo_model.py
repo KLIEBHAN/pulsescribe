@@ -284,3 +284,14 @@ def test_preload_warms_up_mlx_only(mlx, sherpa, monkeypatch):
     monkeypatch.setattr(nemo_mod, "mlx_available", lambda: False)
     LocalProvider().preload()
     assert sherpa and sherpa[0].streams == []  # the CPU engine needs no warmup
+
+
+def test_failed_warm_up_keeps_the_loaded_model(mlx, caplog):
+    models = NemoModels()
+    models.load("parakeet-v3")
+    mlx[0]["model"].generate.side_effect = RuntimeError("Metal busy")
+
+    models.warm_up("parakeet-v3")
+
+    assert "Warmup von parakeet-v3 fehlgeschlagen" in caplog.text
+    assert models.release() is True  # still loaded

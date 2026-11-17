@@ -297,10 +297,14 @@ class NemoModels:
         dictation after loading Parakeet took 0.93 s instead of 0.05 s. ONNX on
         the CPU is as fast on its first pass as on later ones and skips this.
         """
-        if self.engine == "mlx":
-            import numpy as np
+        if self.engine != "mlx":
+            return
+        import numpy as np
 
+        try:
             self.transcribe(name, np.zeros(WHISPER_SAMPLE_RATE, dtype=np.float32), "en")
+        except Exception as error:  # the model is loaded; only the first dictation is slower
+            logger.warning(f"Warmup von {name} fehlgeschlagen: {error}")
 
     def release(self) -> bool:
         """Drop the loaded model; returns whether there was one."""
