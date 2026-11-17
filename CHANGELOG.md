@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.22.1] - 2026-11-17
+
 ### Fixed
 
 - **Unload when idle with future MLX versions** – PulseScribe freed MLX
