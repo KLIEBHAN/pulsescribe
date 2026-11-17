@@ -60,3 +60,26 @@ def check_mlx_backend():
     if not callable(sherpa_onnx.OnlineRecognizer.from_transducer):
         raise RuntimeError("The bundled sherpa-onnx has no streaming recognizer.")
     print(f"sherpa-onnx OK: {sherpa_onnx.__version__}")
+
+    # Parakeet and Canary run on mlx-audio; the bundle carries their modules only.
+    import importlib
+    import sys
+
+    from providers.nemo_model import _mlx_audio_load
+
+    if not callable(_mlx_audio_load()):  # first: it keeps mlx-audio's other models out
+        raise RuntimeError("The bundled mlx-audio has no loader.")
+    from mlx_audio.stt.models.parakeet.audio import PreprocessArgs, log_mel_spectrogram
+    for name in ("parakeet", "canary"):
+        importlib.import_module(f"mlx_audio.stt.models.{name}").Model  # noqa: B018
+    args = PreprocessArgs(
+        sample_rate=16000, normalize="per_feature", window_size=0.025, window_stride=0.01,
+        window="hann", features=128, n_fft=512, dither=0.0,
+    )
+    mel = log_mel_spectrogram(mx.array(audio), args)
+    mx.eval(mel)
+    if mel.shape[-1] != 128 or not mx.all(mx.isfinite(mel)).item():
+        raise RuntimeError("Invalid Parakeet spectrogram.")
+    if "transformers" in sys.modules:
+        raise RuntimeError("mlx-audio loaded transformers, which the app does not carry.")
+    print("mlx-audio OK: Parakeet and Canary")

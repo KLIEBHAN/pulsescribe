@@ -118,7 +118,7 @@ hiddenimports = [
 if not SLIM_BUILD:
     required_modules = (
         "faster_whisper", "ctranslate2", "tokenizers", "mlx_whisper", "mlx",
-        "scipy", "lightning_whisper_mlx", "sherpa_onnx",
+        "scipy", "lightning_whisper_mlx", "sherpa_onnx", "mlx_audio", "sentencepiece",
     )
     missing_modules = [name for name in required_modules if importlib.util.find_spec(name) is None]
     if missing_modules:
@@ -159,6 +159,38 @@ if not SLIM_BUILD:
     datas += so_datas
     binaries += so_binaries
     hiddenimports += so_hidden
+
+    # mlx-audio: Parakeet and Canary on the GPU. Only the modules their loader
+    # imports (providers/nemo_model.py skips mlx_audio.stt.models/__init__, which
+    # imports every architecture); the rest of the package and transformers stay out.
+    from PyInstaller.utils.hooks import collect_submodules  # type: ignore
+
+    MLX_AUDIO_MODULES = (
+        "mlx_audio.stt.models.parakeet", "mlx_audio.stt.models.canary",
+        "mlx_audio.stt.models.nemo", "mlx_audio.stt.models.phonon",
+        "mlx_audio.stt.models.phonon2", "mlx_audio.stt.models.qwen3_asr",
+        "mlx_audio.lm.models.activations", "mlx_audio.lm.models.base",
+        "mlx_audio.lm.models.switch_layers", "mlx_audio.quantization",
+    )
+
+    def _keep_mlx_audio(name):
+        # The filter also decides whether a package is searched, so keep the parents.
+        wanted = any(
+            name == module or name.startswith(module + ".") or module.startswith(name + ".")
+            for module in MLX_AUDIO_MODULES)
+        return wanted and ".tests" not in name and not name.endswith(".convert")
+
+    hiddenimports += [
+        "mlx_audio.dsp", "mlx_audio.registry", "mlx_audio.utils", "mlx_audio.stt.utils",
+        "mlx_audio.stt.models.base", *collect_submodules("mlx_audio", filter=_keep_mlx_audio),
+    ]
+    mlx_audio_dir = pathlib.Path(importlib.util.find_spec("mlx_audio").origin).parent
+    mlx_audio_excludes = [
+        f"mlx_audio.stt.models.{entry.name}"
+        for entry in (mlx_audio_dir / "stt" / "models").iterdir()
+        if entry.is_dir() and not entry.name.startswith("_")
+        and f"mlx_audio.stt.models.{entry.name}" not in MLX_AUDIO_MODULES
+    ] + [f"mlx_audio.{name}" for name in ("tts", "sts", "codec", "vad", "lid", "music", "server", "server_inference", "convert", "tests")]
 else:
     print("📦 SLIM BUILD: Lokale Whisper-Backends werden übersprungen")
 
@@ -166,6 +198,8 @@ hiddenimports = _dedupe(hiddenimports)
 
 # Nicht benötigte Module ausschließen (reduziert App-Größe und Build-Zeit)
 excludes = [
+    # Only mlx-audio's architectures beyond Parakeet and Canary import it.
+    'transformers',
     # PyTorch (~0.5 GB) and openai-whisper: the macOS app runs MLX, Lightning and
     # faster-whisper, none of which needs torch at runtime (their torch_whisper modules
     # are conversion tools that transcription never imports).
@@ -234,6 +268,8 @@ excludes = [
     # Sonstige
     'curses',
 ]
+if not SLIM_BUILD:
+    excludes += mlx_audio_excludes
 
 a = Analysis(
     ['pulsescribe_daemon.py'],
@@ -245,6 +281,9 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=excludes,
+    # mlx-audio's loader lists its model folders and reads its own sources, so its
+    # modules also go into the bundle as files.
+    module_collection_mode={} if SLIM_BUILD else {"mlx_audio": "pyz+py"},
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
