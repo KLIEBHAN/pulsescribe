@@ -28,6 +28,43 @@ from refine.prompts import (  # noqa: E402
     DEFAULT_APP_CONTEXTS,
     VOICE_COMMANDS_INSTRUCTION,
 )
+from ui.animation import (  # noqa: E402
+    BAR_MAX_HEIGHT,
+    BAR_MIN_HEIGHT,
+    LISTENING_BAR_HEIGHTS,
+    AnimationLogic,
+    listening_bar_heights,
+    listening_level,
+)
+from ui.daemon_status_feedback import (  # noqa: E402
+    build_daemon_status_hint,
+    build_daemon_status_label,
+    build_daemon_tray_title,
+    infer_daemon_status_error,
+    normalize_daemon_status_text,
+)
+from ui.overlay_feedback import (  # noqa: E402
+    describe_overlay_content,
+    transcribing_status,
+)
+from ui.overlay_style import (  # noqa: E402
+    BADGE_TONES,
+    BAR_AREA_WIDTH,
+    BAR_COLORS,
+    OVERLAY_WIDTH,
+    PHASE_STEP_COLORS,
+    PHASE_STEP_WIDTH,
+    compute_overlay_layout,
+    hex_to_rgb,
+    shimmer_track,
+)
+from ui.overlay_text import (  # noqa: E402
+    InterimLines,
+    format_recording_duration,
+    format_recording_interim_text,
+    split_recording_interim_text,
+    wrap_interim_text,
+)
 from utils.custom_prompts import (  # noqa: E402
     KNOWN_CONTEXTS,
     PROMPT_EDITOR_CONTEXT_OPTIONS,
@@ -77,6 +114,7 @@ from utils.preferences import (  # noqa: E402
     _format_env_assignment,
 )
 from utils.state import AppState, DaemonErrorCode, MessageType  # noqa: E402
+from utils.text_preview import normalized_text_prefix  # noqa: E402
 from utils.transcript_delivery import (  # noqa: E402
     COPIED,
     COPY_FAILED,
@@ -1063,10 +1101,410 @@ def _export_transcript_delivery_contracts() -> dict[str, Any]:
     }
 
 
+def _export_animation_contracts() -> dict[str, Any]:
+    anim = AnimationLogic()
+    level_inputs = [0.004, 0.08, 0.35, 0.60, 0.25, 0.05]
+    for sample in level_inputs:
+        anim.update_level(sample)
+        anim.update_agc()
+
+    t = 1.37
+    return {
+        "height_factors": AnimationLogic.get_height_factors(),
+        "listening_bar_rest_heights": list(LISTENING_BAR_HEIGHTS),
+        "listening_level": [
+            {"rms": rms, "expected": listening_level(rms)}
+            for rms in (-0.1, 0.0, 0.0015, 0.005, 0.010, 0.5)
+        ],
+        "listening_bar_heights": [
+            {"level": lvl, "expected": list(listening_bar_heights(lvl))}
+            for lvl in (0.0, 0.5, 1.0, 1.5)
+        ],
+        "trace": {
+            "level_inputs": level_inputs,
+            "t": t,
+            "min_height": float(BAR_MIN_HEIGHT),
+            "max_height": float(BAR_MAX_HEIGHT),
+            "listening_rms_probe": 0.006,
+            "expected_listening_settled": anim.listening_is_settled(0.006),
+            "expected_listening_frame": list(anim.listening_frame_heights()),
+            "expected_recording_normalized": list(
+                anim.calculate_frame_normalized(t, "RECORDING")
+            ),
+            "expected_listening_normalized": list(
+                anim.calculate_frame_normalized(t, "LISTENING")
+            ),
+            "expected_recording_heights": list(
+                anim.calculate_frame_heights(
+                    t,
+                    "RECORDING",
+                    min_height=BAR_MIN_HEIGHT,
+                    max_height=BAR_MAX_HEIGHT,
+                )
+            ),
+        },
+    }
+
+
+def _export_overlay_style_contracts() -> dict[str, Any]:
+    layout_inputs = [
+        ("fixed-basic", 120.0, 0.0, 0.0, 0.0, False, float(OVERLAY_WIDTH), float(OVERLAY_WIDTH)),
+        ("with-meta-and-dismiss", 200.0, 48.0, 14.0, 0.0, False, float(OVERLAY_WIDTH), float(OVERLAY_WIDTH)),
+        ("grow-within-cap", 360.0, 48.0, 14.0, 0.0, True, 700.0, float(OVERLAY_WIDTH)),
+        ("grow-capped", 900.0, 48.0, 14.0, 0.0, True, 600.0, float(OVERLAY_WIDTH)),
+        ("max-smaller-than-base", 500.0, 0.0, 0.0, 0.0, True, 300.0, float(OVERLAY_WIDTH)),
+        ("wide-badge-pushes-text", 120.0, 0.0, 0.0, 96.0, False, float(OVERLAY_WIDTH), float(OVERLAY_WIDTH)),
+    ]
+    layout_cases = []
+    for name, tw, mw, dw, sw, grow, max_w, base_w in layout_inputs:
+        layout = compute_overlay_layout(
+            text_width=tw,
+            meta_width=mw,
+            dismiss_width=dw,
+            status_width=sw,
+            grow=grow,
+            max_width=max_w,
+            base_width=base_w,
+        )
+        layout_cases.append(
+            {
+                "name": name,
+                "text_width": tw,
+                "meta_width": mw,
+                "dismiss_width": dw,
+                "status_width": sw,
+                "grow": grow,
+                "max_width": max_w,
+                "base_width": base_w,
+                "expected": {
+                    "width": layout.width,
+                    "status_x": layout.status_x,
+                    "text_x": layout.text_x,
+                    "text_width": layout.text_width,
+                    "meta_x": layout.meta_x,
+                    "dismiss_x": layout.dismiss_x,
+                },
+            }
+        )
+
+    shimmer_modes = ("none", "level", "low", "line", "phase1", "phase2")
+    return {
+        "bar_area_width": float(BAR_AREA_WIDTH),
+        "phase_step_width": float(PHASE_STEP_WIDTH),
+        "bar_colors": dict(sorted(BAR_COLORS.items())),
+        "phase_step_colors": {
+            k: list(v) for k, v in sorted(PHASE_STEP_COLORS.items())
+        },
+        "badge_tones": {k: list(v) for k, v in sorted(BADGE_TONES.items())},
+        "hex_to_rgb": [
+            {"hex": hx, "expected": list(hex_to_rgb(hx))}
+            for hx in ("#1b1b1b", "#6fd39b", "#f08a8a", "ececec")
+        ],
+        "shimmer_track": [
+            {
+                "mode": mode,
+                "expected": list(track) if (track := shimmer_track(mode)) is not None else None,
+            }
+            for mode in shimmer_modes
+        ],
+        "layout_cases": layout_cases,
+    }
+
+
+def _export_overlay_text_contracts() -> dict[str, Any]:
+    prefix_inputs: tuple[tuple[str, int], ...] = (
+        ("  hello   world\n\tagain ", 11),
+        ("  Über   Straße\n\tgehen ", 8),
+        ("hello", 0),
+        ("   ", 5),
+    )
+    duration_inputs = (-5.0, 0.0, 5.9, 65.2, 3661.0)
+    interim_inputs: tuple[tuple[str, int, bool], ...] = (
+        ("", 45, True),
+        ("   ", 45, True),
+        ("  Hallo   Welt\n  heute ", 45, True),
+        ("eins zwei drei vier fünf sechs sieben", 18, True),
+        ("eins zwei drei vier fünf sechs sieben", 18, False),
+        ("abcdef", 3, True),
+        ("Übermäßig lange Grüße aus München", 20, True),
+    )
+    split_inputs: tuple[tuple[str, str, int, bool], ...] = (
+        ("Hallo Welt", "", 45, True),
+        ("Hallo Welt heute", "Hallo Welt", 45, True),
+        ("Hallo Welt", "Hallo Welt", 45, True),
+        ("Andere Worte hier", "Hallo Welt", 45, True),
+        ("eins zwei drei vier fünf sechs sieben", "eins zwei drei vier", 20, True),
+        ("eins zwei drei vier fünf sechs sieben", "eins zwei drei vier", 20, False),
+    )
+
+    wrap_steps = [
+        ("Hallo Welt", 14, 2),
+        ("Hallo Welt heute morgen", 14, 2),
+        ("Hallo Welt heute morgen scheint die Sonne", 14, 2),
+        ("Hallo Welt heute morgen regnet es stark", 14, 2),
+        ("Hallo Welt heute morgen regnet es stark.", 14, 2),
+        ("   ", 14, 2),
+        ("日本語テスト文字列確認用データ", 6, 2),
+        ("日本語テスト文字列確認用データ追加", 6, 2),
+    ]
+    wrap_trace = []
+    prev: InterimLines | None = None
+    for text, limit, max_lines in wrap_steps:
+        if text == "日本語テスト文字列確認用データ":
+            prev = None
+        res = wrap_interim_text(
+            text,
+            prev,
+            lambda s, lim=limit: len(s) <= lim,
+            max_lines=max_lines,
+        )
+        wrap_trace.append(
+            {
+                "text": text,
+                "reset_previous": text == "日本語テスト文字列確認用データ",
+                "char_limit": limit,
+                "max_lines": max_lines,
+                "expected_lines": [list(pair) for pair in res.lines],
+                "expected_source": res.source,
+                "expected_start": res.start,
+            }
+        )
+        prev = res
+
+    return {
+        "normalized_text_prefix": [
+            {"text": text, "max_chars": max_chars, "expected": normalized_text_prefix(text, max_chars=max_chars)}
+            for text, max_chars in prefix_inputs
+        ],
+        "format_recording_duration": [
+            {"seconds": sec, "expected": format_recording_duration(sec)}
+            for sec in duration_inputs
+        ],
+        "format_recording_interim_text": [
+            {
+                "text": text,
+                "max_chars": max_chars,
+                "ellipsis": ellipsis,
+                "expected": format_recording_interim_text(text, max_chars, ellipsis=ellipsis),
+            }
+            for text, max_chars, ellipsis in interim_inputs
+        ],
+        "split_recording_interim_text": [
+            {
+                "text": text,
+                "previous_text": prev_text,
+                "max_chars": max_chars,
+                "ellipsis": ellipsis,
+                "expected": list(
+                    split_recording_interim_text(
+                        text, prev_text, max_chars, ellipsis=ellipsis
+                    )
+                ),
+            }
+            for text, prev_text, max_chars, ellipsis in split_inputs
+        ],
+        "wrap_interim_text_trace": wrap_trace,
+    }
+
+
+def _export_daemon_status_feedback_contracts() -> dict[str, Any]:
+    infer_inputs: tuple[str | None, ...] = (
+        None,
+        "   ",
+        "DEEPGRAM_API_KEY not configured",
+        "Already recording",
+        "Transcription timed out after 30s",
+        "Unbekannter Refine-Provider 'bar'",
+        "Input Monitoring permission missing",
+        "Accessibility access permission required",
+        "Microphone permission denied",
+        "WASAPI audio input device disconnected",
+        "WebSocket connection failed",
+        "No module named 'sounddevice'",
+        "module 'x' has no attribute 'y'",
+    )
+    infer_cases = []
+    for raw in infer_inputs:
+        inferred = infer_daemon_status_error(raw)
+        infer_cases.append(
+            {
+                "input": raw,
+                "expected_code": inferred.code.value if inferred is not None else None,
+                "expected_detail": inferred.detail if inferred is not None else None,
+            }
+        )
+
+    label_inputs: tuple[tuple[str, str | None, bool, int], ...] = (
+        ("idle", None, True, 80),
+        ("loading", None, True, 80),
+        ("loading", "Starting up daemon", True, 80),
+        ("loading", "Warming up whisper", True, 80),
+        ("loading", "Checking microphone input", True, 80),
+        ("loading", "Opening websocket connection", True, 80),
+        ("loading", "Loading whisper-large-v3.", False, 80),
+        ("loading", "Custom step.", True, 80),
+        ("loading", "Custom step.", False, 80),
+        ("recording", "Hallo   Welt", True, 16),
+        ("recording", "Hallo   Welt", False, 80),
+        ("done", "Transcript pasted into Mail · 1.2 s", True, 80),
+        ("done", "Transcript pasted into Mail · 1.2 s", False, 80),
+        ("done", "Copied to clipboard · 0.4 s", False, 80),
+        ("done", "Test complete", False, 80),
+        ("no_speech", None, True, 80),
+        ("no_speech", "empty transcript", True, 80),
+        ("no_speech", "Too quiet.", True, 80),
+        ("error", None, True, 80),
+        ("error", "OPENAI_API_KEY not set", True, 80),
+        ("error", "module 'x' has no attribute 'y'", True, 80),
+    )
+
+    hint_inputs: tuple[tuple[str, str | None, int], ...] = (
+        ("idle", None, 120),
+        ("loading", None, 120),
+        ("loading", "Starting up", 120),
+        ("loading", "Warming up model", 120),
+        ("loading", "Loading whisper-small", 120),
+        ("loading", "Reconnecting websocket", 120),
+        ("loading", "Downloading tokenizer", 120),
+        ("no_speech", None, 120),
+        ("no_speech", "empty transcript", 120),
+        ("error", "DEEPGRAM_API_KEY missing", 120),
+        ("error", "Microphone permission denied", 120),
+        ("error", COPY_FAILED, 120),
+        ("error", "<paste_failed>", 120),
+        ("error", "unexpected custom error", 120),
+    )
+    hint_cases = []
+    for state, raw_text, max_chars in hint_inputs:
+        effective_text = PASTE_FAILED if raw_text == "<paste_failed>" else raw_text
+        hint_cases.append(
+            {
+                "state": state,
+                "text": raw_text,
+                "max_chars": max_chars,
+                "expected": build_daemon_status_hint(
+                    state, effective_text, max_chars=max_chars
+                ),
+            }
+        )
+
+    tray_inputs: tuple[tuple[str, str | None, str, int], ...] = (
+        ("idle", None, "PulseScribe", 128),
+        ("loading", "Warming up local model", "PulseScribe", 128),
+        ("no_speech", "empty transcript", "PulseScribe", 128),
+        ("error", "OPENAI_API_KEY not set", "PulseScribe", 128),
+        ("error", "OPENAI_API_KEY not set", "PulseScribe", 40),
+    )
+
+    return {
+        "normalize_text": [
+            {"input": raw, "expected": normalize_daemon_status_text(raw)}
+            for raw in (None, "", "  Hello \n\t  world  ")
+        ],
+        "infer_error": infer_cases,
+        "status_labels": [
+            {
+                "state": state,
+                "text": text,
+                "prefer_detail": prefer_detail,
+                "max_chars": max_chars,
+                "expected": build_daemon_status_label(
+                    state, text, prefer_detail=prefer_detail, max_chars=max_chars
+                ),
+            }
+            for state, text, prefer_detail, max_chars in label_inputs
+        ],
+        "status_hints": hint_cases,
+        "tray_titles": [
+            {
+                "state": state,
+                "text": text,
+                "app_name": app_name,
+                "max_chars": max_chars,
+                "expected": build_daemon_tray_title(
+                    state, text, app_name=app_name, max_chars=max_chars
+                ),
+            }
+            for state, text, app_name, max_chars in tray_inputs
+        ],
+    }
+
+
+def _export_overlay_feedback_contracts() -> dict[str, Any]:
+    transcribing_inputs: tuple[tuple[str | None, bool], ...] = (
+        (None, False),
+        ("Deepgram", False),
+        (None, True),
+        ("", True),
+        ("Deepgram…", True),
+        ("Whisper...", True),
+    )
+
+    describe_inputs: tuple[tuple[str | None, str | None, int], ...] = (
+        ("IDLE", None, 72),
+        ("LISTENING", None, 72),
+        ("RECORDING", "ignored interim", 72),
+        ("LOADING", None, 72),
+        ("LOADING", "Warming up local model", 72),
+        ("LOADING", "Loading a very long local model name that exceeds thirty characters", 30),
+        ("TRANSCRIBING", "Deepgram", 72),
+        ("TRANSCRIBING", "Deepgram, then refining", 72),
+        ("REFINING", None, 72),
+        ("DONE", TEST_COMPLETE, 72),
+        ("DONE", PASTED, 72),
+        ("DONE", "Transcript pasted into Mail · 1.2 s", 72),
+        ("DONE", "Copied to clipboard · 0.4 s", 72),
+        ("DONE", "unrecognized done text", 72),
+        ("NO_SPEECH", None, 72),
+        ("ERROR", None, 72),
+        ("ERROR", "DEEPGRAM_API_KEY missing", 72),
+        ("ERROR", "WASAPI audio input device unavailable", 72),
+        ("ERROR", "Error: custom failure", 72),
+        ("ERROR", "ERROR —   boom", 72),
+        ("ERROR", COPY_FAILED, 72),
+        ("ERROR", "<paste_failed>", 72),
+    )
+
+    describe_cases = []
+    for state, raw_text, max_chars in describe_inputs:
+        effective_text = PASTE_FAILED if raw_text == "<paste_failed>" else raw_text
+        content = describe_overlay_content(state, effective_text, max_chars=max_chars)
+        canonical_text = "<paste_failed>" if content.text == PASTE_FAILED else content.text
+        describe_cases.append(
+            {
+                "state": state,
+                "text": raw_text,
+                "max_chars": max_chars,
+                "expected": {
+                    "bars": content.bars,
+                    "text": canonical_text,
+                    "emphasized": content.emphasized,
+                    "badge": content.badge,
+                    "tone": content.tone or None,
+                    "dismissible": content.dismissible,
+                    "meta": content.meta,
+                    "action": content.action or None,
+                },
+            }
+        )
+
+    return {
+        "transcribing_status": [
+            {
+                "detail": detail,
+                "refine": refine,
+                "expected": transcribing_status(detail, refine=refine),
+            }
+            for detail, refine in transcribing_inputs
+        ],
+        "describe_content": describe_cases,
+    }
+
+
 def build_core_contracts() -> dict[str, Any]:
     """Build deterministic core contract fixtures from the live Python code."""
     return {
-        "schema_version": 4,
+        "schema_version": 5,
         "app_states": [state.value for state in AppState],
         "daemon_error_codes": [code.value for code in DaemonErrorCode],
         "message_types": [msg.name.lower() for msg in MessageType],
@@ -1110,6 +1548,11 @@ def build_core_contracts() -> dict[str, Any]:
         "hotkeys": _export_hotkey_contracts(),
         "hold_state_trace": _export_hold_state_contracts(),
         "transcript_delivery": _export_transcript_delivery_contracts(),
+        "animation": _export_animation_contracts(),
+        "overlay_style": _export_overlay_style_contracts(),
+        "overlay_text": _export_overlay_text_contracts(),
+        "daemon_status_feedback": _export_daemon_status_feedback_contracts(),
+        "overlay_feedback": _export_overlay_feedback_contracts(),
     }
 
 
