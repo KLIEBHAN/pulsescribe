@@ -109,7 +109,21 @@ fn parse_dotenv_value(value: &str) -> String {
     if let Some(parsed) = parse_double_quoted_value(value) {
         return parsed;
     }
-    parse_env_value(value)
+    parse_unquoted_dotenv_value(value)
+}
+
+/// Unquoted `python-dotenv` values keep interior quotes verbatim (e.g. JSON in
+/// `PULSESCRIBE_APP_CONTEXTS={"Slack": "chat"}`) and only stop at `#` preceded
+/// by start-of-value or whitespace.
+fn parse_unquoted_dotenv_value(value: &str) -> String {
+    let mut prev: Option<char> = None;
+    for (idx, ch) in value.char_indices() {
+        if ch == '#' && prev.is_none_or(char::is_whitespace) {
+            return value[..idx].trim().to_string();
+        }
+        prev = Some(ch);
+    }
+    value.trim().to_string()
 }
 
 fn parse_double_quoted_value(value: &str) -> Option<String> {

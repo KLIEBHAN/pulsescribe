@@ -436,7 +436,7 @@
     "process_env": {
       "PULSESCRIBE_GOLDEN_PROC_VAR": "from-proc"
     },
-    "content": "BASE=actual-key\nGROQ_API_KEY=${BASE}\nCHAINED=${GROQ_API_KEY}-suffix\nFROM_PROC=${PULSESCRIBE_GOLDEN_PROC_VAR}\nWITH_DEFAULT=${PULSESCRIBE_GOLDEN_UNSET:-fallback}\nUNSET_PLAIN=${PULSESCRIBE_GOLDEN_UNSET}\nSINGLE_EXP='${BASE}'\nDOUBLE_EXP=\"${BASE}\"\nBARE_DOLLAR=$BASE\n'QUOTED_KEY'=quoted-val\nPULSESCRIBE_INPUT_DEVICE=USB ${PULSESCRIBE_GOLDEN_PROC_VAR}\n",
+    "content": "BASE=actual-key\nGROQ_API_KEY=${BASE}\nCHAINED=${GROQ_API_KEY}-suffix\nFROM_PROC=${PULSESCRIBE_GOLDEN_PROC_VAR}\nWITH_DEFAULT=${PULSESCRIBE_GOLDEN_UNSET:-fallback}\nUNSET_PLAIN=${PULSESCRIBE_GOLDEN_UNSET}\nSINGLE_EXP='${BASE}'\nDOUBLE_EXP=\"${BASE}\"\nBARE_DOLLAR=$BASE\n'QUOTED_KEY'=quoted-val\nPULSESCRIBE_APP_CONTEXTS={\"Slack\": \"chat\"}\nJSON_WITH_COMMENT={\"a\": \"b\"} # comment\nUNQUOTED_APOSTROPHE=Bob's Mic # comment\nPULSESCRIBE_INPUT_DEVICE=USB ${PULSESCRIBE_GOLDEN_PROC_VAR}\n",
     "expected": {
       "BARE_DOLLAR": "$BASE",
       "BASE": "actual-key",
@@ -444,9 +444,12 @@
       "DOUBLE_EXP": "actual-key",
       "FROM_PROC": "from-proc",
       "GROQ_API_KEY": "actual-key",
+      "JSON_WITH_COMMENT": "{\"a\": \"b\"}",
+      "PULSESCRIBE_APP_CONTEXTS": "{\"Slack\": \"chat\"}",
       "PULSESCRIBE_INPUT_DEVICE": "USB ${PULSESCRIBE_GOLDEN_PROC_VAR}",
       "QUOTED_KEY": "quoted-val",
       "SINGLE_EXP": "actual-key",
+      "UNQUOTED_APOSTROPHE": "Bob's Mic",
       "UNSET_PLAIN": "",
       "WITH_DEFAULT": "fallback"
     }

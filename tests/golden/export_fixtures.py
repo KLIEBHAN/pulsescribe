@@ -181,6 +181,9 @@ _DOTENV_RESOLVE_CONTENT = "\n".join(
         'DOUBLE_EXP="${BASE}"',
         "BARE_DOLLAR=$BASE",
         "'QUOTED_KEY'=quoted-val",
+        'PULSESCRIBE_APP_CONTEXTS={"Slack": "chat"}',
+        'JSON_WITH_COMMENT={"a": "b"} # comment',
+        "UNQUOTED_APOSTROPHE=Bob's Mic # comment",
         "PULSESCRIBE_INPUT_DEVICE=USB ${PULSESCRIBE_GOLDEN_PROC_VAR}",
     ]
 ) + "\n"
