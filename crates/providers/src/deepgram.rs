@@ -2,6 +2,8 @@
 //!
 //! Mirrors `providers/deepgram.py`. WebSocket live streaming lives in a separate module (PR 2.4).
 
+use std::fmt;
+
 use pulsescribe_core::vocabulary::DEEPGRAM_KEYWORD_LIMIT;
 use reqwest::header::{AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE};
 use reqwest::Client;
@@ -108,11 +110,20 @@ fn extract_transcript(body: &str) -> Result<String, ProviderError> {
 }
 
 /// Deepgram `/v1/listen` REST provider.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct DeepgramRestProvider {
     client: Client,
     base_url: String,
     api_key: String,
+}
+
+impl fmt::Debug for DeepgramRestProvider {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DeepgramRestProvider")
+            .field("base_url", &self.base_url)
+            .field("api_key", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
 }
 
 impl DeepgramRestProvider {

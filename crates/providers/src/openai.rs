@@ -2,6 +2,8 @@
 //!
 //! Mirrors `providers/openai.py`, including JSON-only response-format mapping for `gpt-4o-*` models.
 
+use std::fmt;
+
 use reqwest::Client;
 
 use crate::http::{
@@ -45,11 +47,20 @@ pub fn resolve_api_response_format(
 }
 
 /// OpenAI `/v1/audio/transcriptions` provider.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct OpenAiProvider {
     client: Client,
     base_url: String,
     api_key: String,
+}
+
+impl fmt::Debug for OpenAiProvider {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OpenAiProvider")
+            .field("base_url", &self.base_url)
+            .field("api_key", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
 }
 
 impl OpenAiProvider {

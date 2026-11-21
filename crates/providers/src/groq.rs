@@ -3,6 +3,8 @@
 //! Mirrors `providers/groq.py`: OpenAI-compatible multipart upload with `response_format=text`
 //! and `temperature=0.0` for deterministic output.
 
+use std::fmt;
+
 use reqwest::Client;
 
 use crate::http::{
@@ -17,11 +19,20 @@ use crate::{
 pub const GROQ_API_KEY_ENV_VAR: &str = "GROQ_API_KEY";
 
 /// Groq `/openai/v1/audio/transcriptions` provider.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct GroqProvider {
     client: Client,
     base_url: String,
     api_key: String,
+}
+
+impl fmt::Debug for GroqProvider {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroqProvider")
+            .field("base_url", &self.base_url)
+            .field("api_key", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
 }
 
 impl GroqProvider {

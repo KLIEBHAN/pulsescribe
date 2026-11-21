@@ -7,6 +7,7 @@
 //! - Exposes `list_server_models()` with a short per-request timeout for settings UI model pickers.
 
 use std::collections::HashSet;
+use std::fmt;
 use std::time::Duration;
 
 use reqwest::header::AUTHORIZATION;
@@ -115,12 +116,22 @@ pub async fn list_server_models(
 }
 
 /// Self-hosted / custom OpenAI-compatible `/audio/transcriptions` provider.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct OpenAiCompatibleProvider {
     client: Client,
     base_url: String,
     api_key: Option<String>,
     default_model: String,
+}
+
+impl fmt::Debug for OpenAiCompatibleProvider {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OpenAiCompatibleProvider")
+            .field("base_url", &self.base_url)
+            .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
+            .field("default_model", &self.default_model)
+            .finish_non_exhaustive()
+    }
 }
 
 impl OpenAiCompatibleProvider {

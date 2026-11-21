@@ -208,8 +208,12 @@ impl CloudProvider {
         }
     }
 
+    /// Returns `true` when this provider supports live streaming transcription.
+    ///
+    /// All REST file-upload providers return `false`; live Deepgram WebSocket streaming lives in a
+    /// dedicated streaming client (PR 2.4).
     pub fn supports_streaming(&self) -> bool {
-        matches!(self, Self::Deepgram(_))
+        false
     }
 
     pub async fn transcribe(
@@ -269,5 +273,36 @@ mod tests {
             ResponseFormat::Vtt
         );
         assert!("xml".parse::<ResponseFormat>().is_err());
+    }
+
+    #[test]
+    fn provider_debug_output_redacts_api_keys_and_rest_reports_non_streaming() {
+        let client = build_http_client().unwrap();
+        let providers = [
+            CloudProvider::OpenAi(OpenAiProvider::new(client.clone(), "sk-secret-openai").unwrap()),
+            CloudProvider::Groq(GroqProvider::new(client.clone(), "gsk-secret-groq").unwrap()),
+            CloudProvider::Deepgram(
+                DeepgramRestProvider::new(client.clone(), "dg-secret-token").unwrap(),
+            ),
+            CloudProvider::OpenAiCompatible(
+                OpenAiCompatibleProvider::new(
+                    client,
+                    "https://lan.example/v1",
+                    Some("lan-secret-key".to_string()),
+                    None,
+                )
+                .unwrap(),
+            ),
+        ];
+
+        for provider in &providers {
+            assert!(!provider.supports_streaming());
+            let debug = format!("{provider:?}");
+            assert!(!debug.contains("sk-secret-openai"));
+            assert!(!debug.contains("gsk-secret-groq"));
+            assert!(!debug.contains("dg-secret-token"));
+            assert!(!debug.contains("lan-secret-key"));
+            assert!(debug.contains("[REDACTED]"));
+        }
     }
 }
