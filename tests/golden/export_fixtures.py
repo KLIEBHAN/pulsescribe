@@ -22,7 +22,35 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from refine.prompts import (  # noqa: E402
+    CONTEXT_PROMPTS,
+    DEFAULT_APP_CONTEXTS,
+    VOICE_COMMANDS_INSTRUCTION,
+)
+from utils.custom_prompts import (  # noqa: E402
+    KNOWN_CONTEXTS,
+    PROMPT_EDITOR_CONTEXT_OPTIONS,
+    _merge_user_with_defaults,
+    _serialize_prompt_sections,
+    build_prompt_overrides_from_editor_state,
+    filter_overrides_for_storage,
+    format_app_mappings,
+    get_defaults as get_prompt_defaults,
+    get_prompt_editor_context_description,
+    get_prompt_editor_context_label,
+    get_prompt_editor_placeholder,
+    normalize_prompt_editor_context,
+    parse_app_mappings,
+)
 from utils.env import _read_dotenv_values, parse_bool, parse_env_line  # noqa: E402
+from utils.history import (  # noqa: E402
+    DISPLAY_TRANSCRIPTS_EMPTY_MESSAGE,
+    WELCOME_TRANSCRIPTS_EMPTY_MESSAGE,
+    _select_recent_lines_within_bytes,
+    format_transcripts_for_display,
+    format_transcripts_for_welcome,
+    merge_recent_transcript_entries,
+)
 from utils.onboarding import (  # noqa: E402
     ONBOARDING_ORDER,
     OnboardingChoice,
@@ -36,6 +64,11 @@ from utils.preferences import (  # noqa: E402
     _format_env_assignment,
 )
 from utils.state import AppState, DaemonErrorCode  # noqa: E402
+from utils.vocabulary import (  # noqa: E402
+    _parse_vocabulary_text,
+    analyze_vocabulary_text,
+    split_vocabulary_text,
+)
 
 GOLDEN_FILE = Path(__file__).resolve().parent / "core_contracts.json"
 
@@ -238,10 +271,360 @@ def _export_dotenv_resolve() -> dict[str, Any]:
     }
 
 
+def _export_vocabulary_contracts() -> dict[str, Any]:
+    split_inputs: tuple[str | None, ...] = (
+        None,
+        "",
+        "   , , \n ",
+        "PulseScribe, Whisper\r\n  Deepgram , , \rGroq",
+    )
+    analyze_inputs: tuple[tuple[str, str | None], ...] = (
+        ("none", None),
+        ("dedupe-and-casefold", "Whisper, whisper, Straße, STRASSE, Groq"),
+        (
+            "over-local-limit",
+            ", ".join(f"local_term_{i}" for i in range(51)),
+        ),
+        (
+            "over-deepgram-limit",
+            "\n".join(f"dg_term_{i}" for i in range(101)),
+        ),
+    )
+    parse_inputs: tuple[tuple[str, str], ...] = (
+        (
+            "valid-with-extra-nonstrings-and-dups",
+            json.dumps(
+                {
+                    "keywords": ["  PulseScribe  ", "pulsescribe", "", "   ", 42, True, None, "Deepgram"],
+                    "custom_meta": {"version": 1},
+                }
+            ),
+        ),
+        ("missing-keywords-key", '{"custom_meta": "kept"}'),
+        ("null-keywords", '{"keywords": null}'),
+        ("non-list-keywords", '{"keywords": "not-a-list"}'),
+        ("non-object-json", '["PulseScribe"]'),
+        ("invalid-json", "{broken json"),
+    )
+
+    analyze_cases = []
+    for name, raw in analyze_inputs:
+        res = analyze_vocabulary_text(raw)
+        analyze_cases.append(
+            {
+                "name": name,
+                "input": raw,
+                "keywords": res.keywords,
+                "issues": res.issues,
+                "input_count": res.input_count,
+                "duplicate_count": res.duplicate_count,
+                "exceeds_local_limit": res.exceeds_local_limit,
+                "exceeds_deepgram_limit": res.exceeds_deepgram_limit,
+            }
+        )
+
+    parse_cases = []
+    for name, raw in parse_inputs:
+        data, issues = _parse_vocabulary_text(raw)
+        parse_cases.append(
+            {
+                "name": name,
+                "input": raw,
+                "expected_data": data,
+                "expected_issues": issues,
+            }
+        )
+
+    return {
+        "split_text": [
+            {"input": raw, "expected": split_vocabulary_text(raw)}
+            for raw in split_inputs
+        ],
+        "analyze_text": analyze_cases,
+        "parse_text": parse_cases,
+    }
+
+
+def _export_prompts_contracts() -> dict[str, Any]:
+    defaults = get_prompt_defaults()
+    normalize_inputs: tuple[str | None, ...] = (
+        None,
+        "",
+        "default",
+        "EMAIL",
+        '  "── Voice Commands"  ',
+        "Voice Commands",
+        "voice_commands",
+        "App Mappings",
+        "── app mappings",
+        "unknown-context",
+    )
+
+    sample_mappings_for_format = {
+        "Zed": "code",
+        "Mail": "email",
+        "Slack": "chat",
+    }
+    sample_mappings_text = "\n".join(
+        [
+            "# Comment line",
+            "",
+            '  "VS Code" = CODE # inline comment',
+            "NoEqualsLine",
+            "GhostApp = nonexistent_context",
+            "Mail = 'email'",
+            'App.With.Dots = "chat"',
+            "  = code",
+        ]
+    )
+
+    custom_merged = {
+        "voice_commands": {"instruction": "Custom voice instructions"},
+        "prompts": {
+            "default": {"prompt": CONTEXT_PROMPTS["default"]},
+            "email": {"prompt": "Custom email rewrite"},
+            "chat": {"prompt": ""},
+            "code": {"prompt": CONTEXT_PROMPTS["code"]},
+        },
+        "app_contexts": {
+            **DEFAULT_APP_CONTEXTS,
+            "Mail": "email",  # unchanged default -> filtered out
+            "Slack": "email",  # overridden default -> kept
+            "  Linear  ": "CODE",  # normalized -> kept
+            "InvalidApp": "mystery",  # invalid -> ignored
+        },
+    }
+    filtered_overrides = filter_overrides_for_storage(custom_merged, defaults=defaults)
+
+    editor_existing = {
+        "voice_commands": {"instruction": VOICE_COMMANDS_INSTRUCTION},
+        "prompts": {
+            **{ctx: {"prompt": text} for ctx, text in CONTEXT_PROMPTS.items()},
+            "code": {"prompt": "Existing code override"},
+        },
+        "app_contexts": dict(DEFAULT_APP_CONTEXTS),
+    }
+    editor_drafts = {
+        "email": "Draft email override",
+        "chat": "Untouched draft that is excluded by contexts filter",
+        "App Mappings": "Mail = email\nLinear = code\n",
+    }
+    editor_contexts = ["email", "App Mappings"]
+    editor_overrides = build_prompt_overrides_from_editor_state(
+        existing=editor_existing,
+        drafts=editor_drafts,
+        contexts=editor_contexts,
+        defaults=defaults,
+    )
+
+    toml_overrides = {
+        "voice_commands": {
+            "instruction": 'Say """stop""" and keep C:\\Users\\Test\\file.txt',
+        },
+        "prompts": {
+            "email": {"prompt": 'Formal tone with """quotes""" and \\backslash\\'},
+        },
+        "app_contexts": {
+            "App.With.Dots": "code",
+            'Quoted "App" \\Name': "chat",
+        },
+    }
+    serialized_toml = "\n".join(_serialize_prompt_sections(toml_overrides))
+    merged_from_toml = _merge_user_with_defaults(toml_overrides)
+
+    refine_cases = []
+    for ctx in ("default", "email", "chat", "code", "unknown"):
+        for vc in (False, True):
+            effective = ctx if ctx in KNOWN_CONTEXTS else "default"
+            prompt_text = CONTEXT_PROMPTS[effective]
+            expected = f"{VOICE_COMMANDS_INSTRUCTION}\n{prompt_text}" if vc else prompt_text
+            refine_cases.append(
+                {
+                    "context": ctx,
+                    "voice_commands": vc,
+                    "expected": expected,
+                }
+            )
+
+    return {
+        "known_contexts": list(KNOWN_CONTEXTS),
+        "defaults": {
+            "voice_commands_instruction": defaults["voice_commands"]["instruction"],
+            "prompts": {
+                ctx: cfg["prompt"] for ctx, cfg in sorted(defaults["prompts"].items())
+            },
+            "app_contexts": dict(sorted(defaults["app_contexts"].items())),
+        },
+        "editor_contexts": [
+            {
+                "key": key,
+                "label": get_prompt_editor_context_label(key),
+                "description": get_prompt_editor_context_description(key),
+                "placeholder": get_prompt_editor_placeholder(key),
+            }
+            for key, _label in PROMPT_EDITOR_CONTEXT_OPTIONS
+        ],
+        "normalize_editor_context": [
+            {"input": raw, "expected": normalize_prompt_editor_context(raw)}
+            for raw in normalize_inputs
+        ],
+        "format_app_mappings": {
+            "input": sample_mappings_for_format,
+            "expected": format_app_mappings(sample_mappings_for_format),
+        },
+        "parse_app_mappings": {
+            "input": sample_mappings_text,
+            "expected": dict(sorted(parse_app_mappings(sample_mappings_text).items())),
+        },
+        "filter_overrides": {
+            "voice_commands_instruction": custom_merged["voice_commands"]["instruction"],
+            "prompts": {
+                ctx: cfg["prompt"] for ctx, cfg in custom_merged["prompts"].items()
+            },
+            "app_contexts": custom_merged["app_contexts"],
+            "expected_voice_commands_instruction": filtered_overrides.get(
+                "voice_commands", {}
+            ).get("instruction"),
+            "expected_prompts": {
+                ctx: cfg["prompt"]
+                for ctx, cfg in sorted(filtered_overrides.get("prompts", {}).items())
+            },
+            "expected_app_contexts": dict(
+                sorted(filtered_overrides.get("app_contexts", {}).items())
+            ),
+        },
+        "editor_build_overrides": {
+            "existing_code_prompt": editor_existing["prompts"]["code"]["prompt"],
+            "drafts": editor_drafts,
+            "contexts": editor_contexts,
+            "expected_voice_commands_instruction": editor_overrides.get(
+                "voice_commands", {}
+            ).get("instruction"),
+            "expected_prompts": {
+                ctx: cfg["prompt"]
+                for ctx, cfg in sorted(editor_overrides.get("prompts", {}).items())
+            },
+            "expected_app_contexts": dict(
+                sorted(editor_overrides.get("app_contexts", {}).items())
+            ),
+        },
+        "toml_roundtrip": {
+            "overrides_voice_commands": toml_overrides["voice_commands"]["instruction"],
+            "overrides_prompts": {
+                ctx: cfg["prompt"] for ctx, cfg in toml_overrides["prompts"].items()
+            },
+            "overrides_app_contexts": dict(
+                sorted(toml_overrides["app_contexts"].items())
+            ),
+            "serialized_toml": serialized_toml,
+            "expected_merged_voice_commands": merged_from_toml["voice_commands"][
+                "instruction"
+            ],
+            "expected_merged_prompts": {
+                ctx: cfg["prompt"]
+                for ctx, cfg in sorted(merged_from_toml["prompts"].items())
+            },
+            "expected_merged_app_contexts": dict(
+                sorted(merged_from_toml["app_contexts"].items())
+            ),
+        },
+        "refine_prompt_cases": refine_cases,
+    }
+
+
+def _export_history_contracts() -> dict[str, Any]:
+    select_cases = [
+        ("empty", [], 100),
+        ("fits-all", ["line1", "line2"], 100),
+        ("utf8-budget-trim", ["äää", "bbb", "ccc"], 9),
+        ("oversized-newest-kept", ["old", "x" * 40], 10),
+    ]
+
+    sample_entries: list[dict[str, Any]] = [
+        {
+            "timestamp": "2026-11-21T10:15:30.123456",
+            "text": "\n\nFirst line  \r\n\r\n  Indented paragraph\rLast line  \n\n",
+            "mode": "local",
+            "language": "de",
+            "refined": True,
+        },
+        {
+            "timestamp": "2026-11-21T10:10:00.000000",
+            "text": "  Simple entry  ",
+            "mode": " deepgram ",
+            "language": " en ",
+        },
+        {
+            "timestamp": "2026-11-21T10:05:00",
+            "text": "   ",
+            "mode": "groq",
+        },
+    ]
+
+    prev_entries = [
+        {"timestamp": "2026-11-21T09:00:00", "text": "one"},
+        {"timestamp": "2026-11-21T09:01:00", "text": "two"},
+        {"timestamp": "2026-11-21T09:02:00", "text": "three"},
+    ]
+    appended_entries = [
+        {"timestamp": "2026-11-21T09:03:00", "text": "four"},
+    ]
+
+    merge_cases = [
+        ("zero-max", prev_entries, appended_entries, 0),
+        ("window-trim", prev_entries, appended_entries, 2),
+        ("trim-prev-only", prev_entries, [], 2),
+    ]
+
+    return {
+        "display_empty_message": DISPLAY_TRANSCRIPTS_EMPTY_MESSAGE,
+        "welcome_empty_message": WELCOME_TRANSCRIPTS_EMPTY_MESSAGE,
+        "select_recent_lines": [
+            {
+                "name": name,
+                "lines": lines,
+                "max_size_bytes": max_bytes,
+                "expected": _select_recent_lines_within_bytes(lines, max_bytes),
+            }
+            for name, lines, max_bytes in select_cases
+        ],
+        "merge_recent_entries": [
+            {
+                "name": name,
+                "previous": prev,
+                "appended": app,
+                "max_entries": max_entries,
+                "expected_texts": [
+                    entry["text"]
+                    for entry in merge_recent_transcript_entries(
+                        prev, app, max_entries=max_entries
+                    )
+                ],
+            }
+            for name, prev, app, max_entries in merge_cases
+        ],
+        "format_entries": sample_entries,
+        "format_display_empty": format_transcripts_for_display([], newest_first=True),
+        "format_display_newest_first": format_transcripts_for_display(
+            sample_entries, newest_first=True
+        ),
+        "format_display_oldest_first": format_transcripts_for_display(
+            sample_entries, newest_first=False
+        ),
+        "format_welcome_empty": format_transcripts_for_welcome([], newest_first=True),
+        "format_welcome_newest_first": format_transcripts_for_welcome(
+            sample_entries, newest_first=True
+        ),
+        "format_welcome_oldest_first": format_transcripts_for_welcome(
+            sample_entries, newest_first=False
+        ),
+    }
+
+
 def build_core_contracts() -> dict[str, Any]:
     """Build deterministic core contract fixtures from the live Python code."""
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "app_states": [state.value for state in AppState],
         "daemon_error_codes": [code.value for code in DaemonErrorCode],
         "parse_bool": [
@@ -278,6 +661,9 @@ def build_core_contracts() -> dict[str, Any]:
                 for step in ONBOARDING_ORDER
             ],
         },
+        "vocabulary": _export_vocabulary_contracts(),
+        "prompts": _export_prompts_contracts(),
+        "history": _export_history_contracts(),
     }
 
 

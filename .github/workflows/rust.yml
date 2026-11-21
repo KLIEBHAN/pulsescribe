@@ -10,13 +10,18 @@ on:
       - "Cargo.lock"
       - "crates/**"
       - "tests/golden/**"
+      - "refine/prompts.py"
       - "utils/atomic_io.py"
+      - "utils/custom_prompts.py"
       - "utils/env.py"
       - "utils/file_signatures.py"
+      - "utils/history.py"
+      - "utils/log_tail.py"
       - "utils/onboarding.py"
       - "utils/paths.py"
       - "utils/preferences.py"
       - "utils/state.py"
+      - "utils/vocabulary.py"
       - ".github/workflows/rust.yml"
   workflow_dispatch:
 
