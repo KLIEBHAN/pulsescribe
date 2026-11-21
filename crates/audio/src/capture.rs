@@ -1,13 +1,15 @@
 //! Live microphone capture, warm-stream management, and `AudioRecorder` via `cpal`.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{
-    BufferSize, FromSample, Sample, SampleFormat, SizedSample, Stream, StreamConfig, I24, U24,
+    BufferSize, ErrorKind, FromSample, Sample, SampleFormat, SizedSample, Stream, StreamConfig,
+    I24, U24,
 };
 
 use crate::device::{
@@ -21,7 +23,7 @@ use crate::{AudioBuffer, AudioError, DEFAULT_BLOCKSIZE};
 const DEFAULT_RING_BUFFER_SECONDS: f32 = 5.0;
 const MAX_RING_BUFFER_SECONDS: f32 = 60.0;
 const MIN_RING_CAPACITY_SAMPLES: usize = 1024;
-const MAX_RING_CAPACITY_SAMPLES: usize = 24_000_000; // ~96 MiB cap even for extreme sample rates
+const MAX_RING_CAPACITY_SAMPLES: usize = 12_000_000; // ~96 MiB cap (8 B per tagged sample)
 const MAX_INITIAL_RECORDING_CAPACITY: usize = 480_000; // 10 s at 48 kHz; grows dynamically
 const DRAIN_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
@@ -120,6 +122,7 @@ pub struct CaptureStream {
     channels: u16,
     reader: AudioRingReader,
     stream_error: Arc<Mutex<Option<String>>>,
+    xrun_count: Arc<AtomicU64>,
 }
 
 impl CaptureStream {
@@ -190,7 +193,12 @@ impl CaptureStream {
         self.reader.dropped_samples()
     }
 
-    /// Return and clear the first runtime stream error reported by `cpal`, if any.
+    /// Number of recoverable buffer overruns/underruns (`ErrorKind::Xrun`) reported by `cpal`.
+    pub fn xrun_count(&self) -> u64 {
+        self.xrun_count.load(Ordering::Relaxed)
+    }
+
+    /// Return and clear the first fatal runtime stream error reported by `cpal`, if any.
     pub fn take_stream_error(&self) -> Option<String> {
         self.stream_error
             .lock()
@@ -205,6 +213,7 @@ impl CaptureStream {
             device: self.device,
             sample_rate: self.sample_rate,
             stream_error: self.stream_error,
+            xrun_count: self.xrun_count,
         };
         (handle, self.reader)
     }
@@ -215,10 +224,11 @@ struct StreamHandle {
     device: InputDeviceInfo,
     sample_rate: u32,
     stream_error: Arc<Mutex<Option<String>>>,
+    xrun_count: Arc<AtomicU64>,
 }
 
 impl StreamHandle {
-    fn stop(self) -> Option<String> {
+    fn stop(self) -> (Option<String>, u64) {
         let pause_err = self.stream.pause().err().map(|e| e.to_string());
         drop(self.stream);
         let cb_err = self
@@ -226,7 +236,8 @@ impl StreamHandle {
             .lock()
             .ok()
             .and_then(|mut guard| guard.take());
-        cb_err.or(pause_err)
+        let xruns = self.xrun_count.load(Ordering::Relaxed);
+        (cb_err.or(pause_err), xruns)
     }
 }
 
@@ -275,6 +286,7 @@ fn build_and_play(
     let capacity = config.ring_capacity_samples(sample_rate);
     let (writer, reader) = audio_ring_channel(capacity, channels, config.initially_armed)?;
     let stream_error = Arc::new(Mutex::new(None));
+    let xrun_count = Arc::new(AtomicU64::new(0));
 
     macro_rules! build_converted {
         ($sample_ty:ty) => {
@@ -283,6 +295,7 @@ fn build_and_play(
                 stream_cfg,
                 writer,
                 Arc::clone(&stream_error),
+                Arc::clone(&xrun_count),
             )
         };
     }
@@ -293,6 +306,7 @@ fn build_and_play(
             stream_cfg,
             writer,
             Arc::clone(&stream_error),
+            Arc::clone(&xrun_count),
         ),
         SampleFormat::I16 => build_converted!(i16),
         SampleFormat::I32 => build_converted!(i32),
@@ -333,6 +347,7 @@ fn build_and_play(
         channels,
         reader,
         stream_error,
+        xrun_count,
     })
 }
 
@@ -341,13 +356,14 @@ fn build_f32_input_stream(
     config: StreamConfig,
     mut writer: AudioRingWriter,
     stream_error: Arc<Mutex<Option<String>>>,
+    xrun_count: Arc<AtomicU64>,
 ) -> Result<Stream, cpal::Error> {
     device.build_input_stream(
         config,
         move |data: &[f32], _: &cpal::InputCallbackInfo| {
             writer.push_interleaved_f32(data);
         },
-        make_error_callback(stream_error),
+        make_error_callback(stream_error, xrun_count),
         None,
     )
 }
@@ -357,6 +373,7 @@ fn build_converted_input_stream<T>(
     config: StreamConfig,
     mut writer: AudioRingWriter,
     stream_error: Arc<Mutex<Option<String>>>,
+    xrun_count: Arc<AtomicU64>,
 ) -> Result<Stream, cpal::Error>
 where
     T: SizedSample,
@@ -367,22 +384,46 @@ where
         move |data: &[T], _: &cpal::InputCallbackInfo| {
             writer.push_interleaved_converted(data, f32::from_sample);
         },
-        make_error_callback(stream_error),
+        make_error_callback(stream_error, xrun_count),
         None,
     )
 }
 
-fn make_error_callback(
-    stream_error: Arc<Mutex<Option<String>>>,
-) -> impl FnMut(cpal::Error) + Send + 'static {
-    move |err| {
-        tracing::warn!(%err, "audio input stream error");
-        if let Ok(mut guard) = stream_error.try_lock() {
-            if guard.is_none() {
-                *guard = Some(err.to_string());
-            }
+/// Returns `true` for CPAL stream notifications that do not terminate audio delivery.
+fn is_recoverable_stream_error(kind: ErrorKind) -> bool {
+    matches!(
+        kind,
+        ErrorKind::Xrun | ErrorKind::DeviceChanged | ErrorKind::RealtimeDenied
+    )
+}
+
+fn record_stream_error(
+    err: &cpal::Error,
+    stream_error: &Mutex<Option<String>>,
+    xrun_count: &AtomicU64,
+) {
+    let kind = err.kind();
+    if is_recoverable_stream_error(kind) {
+        if kind == ErrorKind::Xrun {
+            xrun_count.fetch_add(1, Ordering::Relaxed);
+        }
+        tracing::debug!(%err, ?kind, "recoverable audio input stream notification");
+        return;
+    }
+
+    tracing::warn!(%err, ?kind, "fatal audio input stream error");
+    if let Ok(mut guard) = stream_error.try_lock() {
+        if guard.is_none() {
+            *guard = Some(err.to_string());
         }
     }
+}
+
+fn make_error_callback(
+    stream_error: Arc<Mutex<Option<String>>>,
+    xrun_count: Arc<AtomicU64>,
+) -> impl FnMut(cpal::Error) + Send + 'static {
+    move |err| record_stream_error(&err, &stream_error, &xrun_count)
 }
 
 struct StopSignal {
@@ -533,7 +574,7 @@ impl AudioRecorder {
             .ok_or_else(|| AudioError::Capture("no active recording".to_string()))?;
 
         let sample_rate = active.handle.sample_rate;
-        let stream_err = active.handle.stop();
+        let (stream_err, xruns) = active.handle.stop();
         active.stop_signal.signal();
 
         let (samples, dropped) = active
@@ -543,10 +584,11 @@ impl AudioRecorder {
             .join()
             .map_err(|_| AudioError::Capture("audio drain thread panicked".to_string()))?;
 
-        if dropped > 0 {
+        if dropped > 0 || xruns > 0 {
             tracing::warn!(
                 dropped_samples = dropped,
-                "audio samples dropped during recording"
+                xrun_notifications = xruns,
+                "audio discontinuities observed during recording"
             );
         }
         if let Some(err) = stream_err {
@@ -646,5 +688,37 @@ mod tests {
         assert!(!recorder.is_recording());
         assert_eq!(recorder.latest_rms(), 0.0);
         assert!(matches!(recorder.stop(), Err(AudioError::Capture(_))));
+    }
+
+    #[test]
+    fn recoverable_stream_notifications_do_not_become_fatal_session_errors() {
+        let stream_error = Mutex::new(None);
+        let xrun_count = AtomicU64::new(0);
+
+        record_stream_error(
+            &cpal::Error::new(ErrorKind::Xrun),
+            &stream_error,
+            &xrun_count,
+        );
+        record_stream_error(
+            &cpal::Error::new(ErrorKind::DeviceChanged),
+            &stream_error,
+            &xrun_count,
+        );
+        record_stream_error(
+            &cpal::Error::new(ErrorKind::RealtimeDenied),
+            &stream_error,
+            &xrun_count,
+        );
+
+        assert_eq!(xrun_count.load(Ordering::Relaxed), 1);
+        assert!(stream_error.lock().unwrap().is_none());
+
+        record_stream_error(
+            &cpal::Error::new(ErrorKind::DeviceNotAvailable),
+            &stream_error,
+            &xrun_count,
+        );
+        assert!(stream_error.lock().unwrap().is_some());
     }
 }

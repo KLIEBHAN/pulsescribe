@@ -140,11 +140,17 @@ pub(crate) struct ResolvedInputDevice {
     pub config: SupportedStreamConfig,
 }
 
-fn device_name(device: &Device) -> String {
-    device
-        .description()
-        .map(|desc| desc.name().to_string())
-        .unwrap_or_else(|_| device.to_string())
+fn device_name(device: &Device, fallback_id: Option<&str>) -> String {
+    if let Ok(desc) = device.description() {
+        let name = desc.name().trim();
+        if !name.is_empty() {
+            return name.to_string();
+        }
+    }
+    if let Some(id) = fallback_id {
+        return format!("Unknown input device ({id})");
+    }
+    "Unknown input device".to_string()
 }
 
 fn device_id_string(device: &Device) -> Option<String> {
@@ -174,11 +180,12 @@ fn enumerate_input_devices() -> Result<Vec<ResolvedInputDevice>, AudioError> {
 
     let mut devices = Vec::new();
     for device in iter {
+        let id = device_id_string(&device);
         let config = match device.default_input_config() {
             Ok(cfg) if cfg.sample_rate() > 0 && cfg.channels() > 0 => cfg,
             Ok(cfg) => {
                 tracing::debug!(
-                    device = %device_name(&device),
+                    device = %device_name(&device, id.as_deref()),
                     sample_rate = cfg.sample_rate(),
                     channels = cfg.channels(),
                     "skipping input device with zero sample rate or channels"
@@ -186,18 +193,21 @@ fn enumerate_input_devices() -> Result<Vec<ResolvedInputDevice>, AudioError> {
                 continue;
             }
             Err(err) => {
-                tracing::debug!(device = %device_name(&device), %err, "skipping input device without usable default config");
+                tracing::debug!(
+                    device = %device_name(&device, id.as_deref()),
+                    %err,
+                    "skipping input device without usable default config"
+                );
                 continue;
             }
         };
-        let id = device_id_string(&device);
         let is_default = default_device
             .as_ref()
             .is_some_and(|def| is_same_device(&device, id.as_deref(), def, default_id.as_deref()));
 
         let info = InputDeviceInfo {
+            name: device_name(&device, id.as_deref()),
             id,
-            name: device_name(&device),
             default_sample_rate: config.sample_rate(),
             default_channels: config.channels(),
             is_default,
@@ -215,8 +225,8 @@ fn enumerate_input_devices() -> Result<Vec<ResolvedInputDevice>, AudioError> {
             if let Ok(config) = default.default_input_config() {
                 if config.sample_rate() > 0 && config.channels() > 0 {
                     let info = InputDeviceInfo {
+                        name: device_name(&default, default_id.as_deref()),
                         id: default_id,
-                        name: device_name(&default),
                         default_sample_rate: config.sample_rate(),
                         default_channels: config.channels(),
                         is_default: true,

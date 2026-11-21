@@ -1,38 +1,56 @@
 //! Lock-free SPSC audio ring buffer for real-time capture and warm-stream handoff.
 //!
 //! The producer (`AudioRingWriter`) is designed to run inside OS audio callbacks with zero
-//! heap allocations and zero locks: it downmixes interleaved channels on the stack, updates
-//! an atomic RMS level for overlays/VAD, and respects an atomic `armed` gate so warm streams
-//! can stay open while idle and start capturing instantaneously.
+//! heap allocations and zero locks: it downmixes interleaved channels on the stack, tags each
+//! sample with the active session generation so stale in-flight callbacks can never leak across
+//! `clear_and_arm()`, updates an atomic RMS level for overlays/VAD, and respects the atomic
+//! session gate so warm streams can stay open while idle and start capturing instantaneously.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
-use ringbuf::traits::{Consumer, Observer, Producer, Split};
+use ringbuf::traits::{Consumer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 
 use crate::AudioError;
 
 const STACK_DOWNMIX_FRAMES: usize = 256;
+const DISARMED_SESSION: u32 = 0;
+
+#[derive(Debug, Clone, Copy)]
+struct TaggedSample {
+    session: u32,
+    value: f32,
+}
+
+fn next_session_id(current: u32) -> u32 {
+    let next = current.wrapping_add(1);
+    if next == DISARMED_SESSION {
+        1
+    } else {
+        next
+    }
+}
 
 struct SharedRingState {
-    armed: AtomicBool,
+    /// `0` when disarmed; nonzero generation ID when armed.
+    active_session: AtomicU32,
     dropped_samples: AtomicU64,
     latest_rms_bits: AtomicU32,
 }
 
 impl SharedRingState {
-    fn new(initially_armed: bool) -> Self {
+    fn new(initial_session: u32) -> Self {
         Self {
-            armed: AtomicBool::new(initially_armed),
+            active_session: AtomicU32::new(initial_session),
             dropped_samples: AtomicU64::new(0),
             latest_rms_bits: AtomicU32::new(0.0_f32.to_bits()),
         }
     }
 
     #[inline]
-    fn is_armed(&self) -> bool {
-        self.armed.load(Ordering::Acquire)
+    fn active_session(&self) -> u32 {
+        self.active_session.load(Ordering::Acquire)
     }
 
     #[inline]
@@ -48,8 +66,8 @@ impl SharedRingState {
     }
 
     #[inline]
-    fn add_dropped(&self, count: usize) {
-        if count > 0 {
+    fn add_dropped(&self, session: u32, count: usize) {
+        if count > 0 && self.active_session.load(Ordering::Relaxed) == session {
             self.dropped_samples
                 .fetch_add(count as u64, Ordering::Relaxed);
         }
@@ -58,7 +76,7 @@ impl SharedRingState {
 
 /// Real-time producer side of an audio capture ring buffer (zero allocations, lock-free).
 pub struct AudioRingWriter {
-    prod: HeapProd<f32>,
+    prod: HeapProd<TaggedSample>,
     channels: usize,
     shared: Arc<SharedRingState>,
 }
@@ -66,67 +84,7 @@ pub struct AudioRingWriter {
 impl AudioRingWriter {
     /// Push interleaved `f32` samples from an audio callback, downmixing to mono on the fly.
     pub fn push_interleaved_f32(&mut self, samples: &[f32]) {
-        if samples.is_empty() {
-            return;
-        }
-        let armed = self.shared.is_armed();
-
-        if self.channels == 1 {
-            let mut sum_sq = 0.0_f64;
-            for &sample in samples {
-                if sample.is_finite() {
-                    let v = f64::from(sample);
-                    sum_sq += v * v;
-                }
-            }
-            self.shared
-                .record_rms((sum_sq / samples.len() as f64).sqrt() as f32);
-
-            if armed {
-                let written = self.prod.push_slice(samples);
-                self.shared.add_dropped(samples.len() - written);
-            }
-            return;
-        }
-
-        let mut mono_buf = [0.0_f32; STACK_DOWNMIX_FRAMES];
-        let mut sum_sq = 0.0_f64;
-        let mut total_frames = 0_usize;
-        let inv_channels = 1.0 / self.channels as f32;
-
-        let mut frames_iter = samples.chunks_exact(self.channels);
-        loop {
-            let mut count = 0;
-            for slot in &mut mono_buf {
-                let Some(frame) = frames_iter.next() else {
-                    break;
-                };
-                let mono = if self.channels == 2 {
-                    (frame[0] + frame[1]) * 0.5
-                } else {
-                    frame.iter().copied().sum::<f32>() * inv_channels
-                };
-                *slot = mono;
-                if mono.is_finite() {
-                    let v = f64::from(mono);
-                    sum_sq += v * v;
-                }
-                count += 1;
-            }
-            if count == 0 {
-                break;
-            }
-            total_frames += count;
-            if armed {
-                let written = self.prod.push_slice(&mono_buf[..count]);
-                self.shared.add_dropped(count - written);
-            }
-        }
-
-        if total_frames > 0 {
-            self.shared
-                .record_rms((sum_sq / total_frames as f64).sqrt() as f32);
-        }
+        self.push_interleaved_converted(samples, |s| s);
     }
 
     /// Convert interleaved samples of any audio format to `f32` and downmix to mono on the fly.
@@ -138,8 +96,20 @@ impl AudioRingWriter {
         if samples.is_empty() {
             return;
         }
-        let armed = self.shared.is_armed();
-        let mut mono_buf = [0.0_f32; STACK_DOWNMIX_FRAMES];
+        let session = self.shared.active_session();
+        self.push_for_session(samples, session, to_f32);
+    }
+
+    fn push_for_session<T: Copy>(
+        &mut self,
+        samples: &[T],
+        session: u32,
+        to_f32: impl Fn(T) -> f32,
+    ) {
+        let mut tagged_buf = [TaggedSample {
+            session,
+            value: 0.0,
+        }; STACK_DOWNMIX_FRAMES];
         let mut sum_sq = 0.0_f64;
         let mut total_frames = 0_usize;
         let inv_channels = 1.0 / self.channels as f32;
@@ -147,7 +117,7 @@ impl AudioRingWriter {
         let mut frames_iter = samples.chunks_exact(self.channels);
         loop {
             let mut count = 0;
-            for slot in &mut mono_buf {
+            for slot in &mut tagged_buf {
                 let Some(frame) = frames_iter.next() else {
                     break;
                 };
@@ -158,7 +128,7 @@ impl AudioRingWriter {
                 } else {
                     frame.iter().copied().map(&to_f32).sum::<f32>() * inv_channels
                 };
-                *slot = mono;
+                slot.value = mono;
                 if mono.is_finite() {
                     let v = f64::from(mono);
                     sum_sq += v * v;
@@ -169,9 +139,9 @@ impl AudioRingWriter {
                 break;
             }
             total_frames += count;
-            if armed {
-                let written = self.prod.push_slice(&mono_buf[..count]);
-                self.shared.add_dropped(count - written);
+            if session != DISARMED_SESSION {
+                let written = self.prod.push_slice(&tagged_buf[..count]);
+                self.shared.add_dropped(session, count - written);
             }
         }
 
@@ -184,23 +154,36 @@ impl AudioRingWriter {
 
 /// Consumer side of an audio capture ring buffer yielding mono `f32` samples.
 pub struct AudioRingReader {
-    cons: HeapCons<f32>,
+    cons: HeapCons<TaggedSample>,
+    current_session: u32,
     shared: Arc<SharedRingState>,
 }
 
 impl AudioRingReader {
-    /// Drain all currently buffered mono `f32` samples into `out`, returning the count appended.
+    /// Drain all buffered mono `f32` samples belonging to the active session into `out`.
+    ///
+    /// Samples written by an in-flight callback from an earlier session generation are discarded
+    /// automatically so `clear_and_arm()` never leaks previous-session audio.
     pub fn drain_into(&mut self, out: &mut Vec<f32>) -> usize {
         let (first, second) = self.cons.as_slices();
         let total = first.len() + second.len();
         if total == 0 {
             return 0;
         }
-        out.reserve(total);
-        out.extend_from_slice(first);
-        out.extend_from_slice(second);
+
+        let target = self.current_session;
+        let mut appended = 0_usize;
+        if target != DISARMED_SESSION {
+            out.reserve(total);
+            for sample in first.iter().chain(second.iter()) {
+                if sample.session == target {
+                    out.push(sample.value);
+                    appended += 1;
+                }
+            }
+        }
         self.cons.skip(total);
-        total
+        appended
     }
 
     /// Discard all currently buffered samples in O(1).
@@ -208,32 +191,57 @@ impl AudioRingReader {
         self.cons.clear();
     }
 
-    /// Enable sample capture into the ring buffer.
-    pub fn arm(&self) {
-        self.shared.armed.store(true, Ordering::Release);
+    /// Enable sample capture into the ring buffer (no-op if already armed).
+    pub fn arm(&mut self) {
+        if self.is_armed() {
+            return;
+        }
+        self.current_session = next_session_id(self.current_session);
+        self.shared
+            .active_session
+            .store(self.current_session, Ordering::Release);
     }
 
     /// Disable sample capture (warm-stream idle mode).
+    ///
+    /// Already-buffered samples from the session that just ended can still be collected via
+    /// `drain_into()` until the next `arm()` or `clear_and_arm()`.
     pub fn disarm(&self) {
-        self.shared.armed.store(false, Ordering::Release);
+        self.shared
+            .active_session
+            .store(DISARMED_SESSION, Ordering::Release);
     }
 
-    /// Discard stale buffered audio, reset the drop counter, and arm capture for a fresh session.
+    /// Start a fresh capture session, discarding any queued or late in-flight samples from earlier
+    /// sessions and resetting the drop counter.
     pub fn clear_and_arm(&mut self) {
-        self.disarm();
-        self.clear();
+        self.shared
+            .active_session
+            .store(DISARMED_SESSION, Ordering::Release);
+        self.cons.clear();
+        self.current_session = next_session_id(self.current_session);
         self.shared.dropped_samples.store(0, Ordering::Relaxed);
-        self.arm();
+        self.shared
+            .active_session
+            .store(self.current_session, Ordering::Release);
     }
 
     /// Returns `true` while incoming callback samples are being pushed into the ring buffer.
     pub fn is_armed(&self) -> bool {
-        self.shared.is_armed()
+        self.shared.active_session() != DISARMED_SESSION
     }
 
-    /// Number of mono samples currently queued in the ring buffer.
+    /// Number of queued samples currently in the ring buffer for the current session.
     pub fn available(&self) -> usize {
-        self.cons.occupied_len()
+        if self.current_session == DISARMED_SESSION {
+            return 0;
+        }
+        let (first, second) = self.cons.as_slices();
+        first
+            .iter()
+            .chain(second.iter())
+            .filter(|s| s.session == self.current_session)
+            .count()
     }
 
     /// Most recent callback RMS amplitude (`0.0..=1.0` for in-range audio).
@@ -287,16 +295,21 @@ pub fn audio_ring_channel(
         ));
     }
 
-    let rb = HeapRb::<f32>::new(capacity_samples);
+    let initial_session = if initially_armed { 1 } else { DISARMED_SESSION };
+    let rb = HeapRb::<TaggedSample>::new(capacity_samples);
     let (prod, cons) = rb.split();
-    let shared = Arc::new(SharedRingState::new(initially_armed));
+    let shared = Arc::new(SharedRingState::new(initial_session));
 
     let writer = AudioRingWriter {
         prod,
         channels: usize::from(channels),
         shared: Arc::clone(&shared),
     };
-    let reader = AudioRingReader { cons, shared };
+    let reader = AudioRingReader {
+        cons,
+        current_session: initial_session,
+        shared,
+    };
     Ok((writer, reader))
 }
 
@@ -339,6 +352,36 @@ mod tests {
         reader.disarm();
         writer.push_interleaved_f32(&[0.9, 0.9]);
         assert_eq!(reader.available(), 0);
+    }
+
+    #[test]
+    fn in_flight_callback_from_prior_session_cannot_leak_after_clear_and_arm() {
+        let (mut writer, mut reader) = audio_ring_channel(16, 1, true).unwrap();
+        // Simulate a producer callback that captured session 1 before `clear_and_arm()`.
+        let prior_session = writer.shared.active_session();
+        assert_eq!(prior_session, 1);
+
+        reader.clear_and_arm();
+        assert_eq!(reader.current_session, 2);
+
+        // Late completion of the session-1 callback followed by a new session-2 callback.
+        writer.push_for_session(&[0.99, 0.88], prior_session, |s| s);
+        writer.push_interleaved_f32(&[0.11, 0.22]);
+
+        assert_eq!(reader.available(), 2);
+        let mut out = Vec::new();
+        assert_eq!(reader.drain_into(&mut out), 2);
+        assert_eq!(out, vec![0.11, 0.22]);
+    }
+
+    #[test]
+    fn disarm_still_allows_draining_final_tail_of_ending_session() {
+        let (mut writer, mut reader) = audio_ring_channel(16, 1, true).unwrap();
+        writer.push_interleaved_f32(&[0.1, 0.2]);
+        reader.disarm();
+        let mut out = Vec::new();
+        assert_eq!(reader.drain_into(&mut out), 2);
+        assert_eq!(out, vec![0.1, 0.2]);
     }
 
     #[test]
