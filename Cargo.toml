@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/audio"]
+members = ["crates/core", "crates/audio", "crates/providers"]
 
 [workspace.package]
 version = "0.1.0"
@@ -13,14 +13,18 @@ repository = "https://github.com/KLIEBHAN/pulsescribe"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 cpal = "0.18"
 hound = "3.5"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "charset", "system-proxy", "json", "multipart", "stream"] }
 ringbuf = "0.6"
 rubato = "4.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 symphonia = { version = "0.6", default-features = false, features = ["opt-simd", "wav", "pcm", "mp3", "id3v2", "aac", "isomp4", "ogg", "vorbis", "flac"] }
 thiserror = "2.0"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net", "fs", "io-util"] }
+tokio-util = { version = "0.7", features = ["io"] }
 toml = "0.8"
 tracing = "0.1"
+url = "2"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
