@@ -1,0 +1,18 @@
+[package]
+name = "pulsescribe-audio"
+description = "Audio I/O, multi-format decoding, resampling, and DSP utilities for PulseScribe"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+hound.workspace = true
+rubato.workspace = true
+symphonia.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

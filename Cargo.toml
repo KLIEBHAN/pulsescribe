@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/core"]
+members = ["crates/core", "crates/audio"]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,10 +11,14 @@ repository = "https://github.com/KLIEBHAN/pulsescribe"
 
 [workspace.dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+hound = "3.5"
+rubato = "4.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+symphonia = { version = "0.6", default-features = false, features = ["opt-simd", "wav", "pcm", "mp3", "id3v2", "aac", "isomp4", "ogg", "vorbis", "flac"] }
 thiserror = "2.0"
 toml = "0.8"
+tracing = "0.1"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
