@@ -79,6 +79,10 @@ pub fn read_wav_reader<R: Read>(reader: R) -> Result<AudioBuffer, AudioError> {
     read_samples_from_wav(wav)
 }
 
+/// Upper bound for upfront `Vec<f32>` preallocation derived from an untrusted WAV header
+/// (1 Mi samples = 4 MiB). Larger valid WAV files still decode normally as the vector grows.
+const MAX_INITIAL_WAV_CAPACITY: usize = 1_048_576;
+
 fn read_samples_from_wav<R: Read>(mut reader: WavReader<R>) -> Result<AudioBuffer, AudioError> {
     let spec = reader.spec();
     if spec.sample_rate == 0 || spec.channels == 0 {
@@ -88,8 +92,10 @@ fn read_samples_from_wav<R: Read>(mut reader: WavReader<R>) -> Result<AudioBuffe
         )));
     }
 
-    let total_samples = usize::try_from(reader.len()).unwrap_or(0);
-    let mut samples = Vec::with_capacity(total_samples);
+    let initial_capacity = usize::try_from(reader.len())
+        .unwrap_or(MAX_INITIAL_WAV_CAPACITY)
+        .min(MAX_INITIAL_WAV_CAPACITY);
+    let mut samples = Vec::with_capacity(initial_capacity);
 
     match spec.sample_format {
         SampleFormat::Float => {
@@ -214,5 +220,28 @@ mod tests {
             encode_wav_i16_bytes(&[0.0; 4], 0, 1),
             Err(AudioError::InvalidParameter(_))
         ));
+    }
+
+    #[test]
+    fn truncated_wav_with_huge_declared_data_chunk_does_not_oom() {
+        // 44-byte PCM WAV header declaring 0xFFFF_FF00 bytes (~4 GiB) of 8-bit mono samples
+        // with zero payload bytes following.
+        let mut header = Vec::with_capacity(44);
+        header.extend_from_slice(b"RIFF");
+        header.extend_from_slice(&0xFFFF_FF24_u32.to_le_bytes());
+        header.extend_from_slice(b"WAVE");
+        header.extend_from_slice(b"fmt ");
+        header.extend_from_slice(&16_u32.to_le_bytes());
+        header.extend_from_slice(&1_u16.to_le_bytes()); // PCM
+        header.extend_from_slice(&1_u16.to_le_bytes()); // 1 channel
+        header.extend_from_slice(&16_000_u32.to_le_bytes()); // sample rate
+        header.extend_from_slice(&16_000_u32.to_le_bytes()); // byte rate
+        header.extend_from_slice(&1_u16.to_le_bytes()); // block align
+        header.extend_from_slice(&8_u16.to_le_bytes()); // bits per sample
+        header.extend_from_slice(b"data");
+        header.extend_from_slice(&0xFFFF_FF00_u32.to_le_bytes());
+
+        let err = read_wav_reader(Cursor::new(header)).unwrap_err();
+        assert!(matches!(err, AudioError::EmptyAudio | AudioError::Wav(_)));
     }
 }

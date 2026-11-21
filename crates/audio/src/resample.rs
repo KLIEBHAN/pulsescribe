@@ -24,6 +24,13 @@ fn gcd(mut a: usize, mut b: usize) -> usize {
     a
 }
 
+/// Exact integer ceiling of `input_frames * to_rate / from_rate` without floating-point drift.
+fn expected_output_frames(input_frames: u64, from_rate: u32, to_rate: u32) -> u64 {
+    let numerator = u128::from(input_frames) * u128::from(to_rate);
+    let denominator = u128::from(from_rate);
+    u64::try_from(numerator.div_ceil(denominator)).unwrap_or(u64::MAX)
+}
+
 fn build_mono_resampler(
     from_rate: u32,
     to_rate: u32,
@@ -83,8 +90,12 @@ pub fn resample_mono(
         return Ok(samples.to_vec());
     }
 
-    let expected_len =
-        ((samples.len() as f64) * (f64::from(to_rate) / f64::from(from_rate))).ceil() as usize;
+    let expected_len = usize::try_from(expected_output_frames(
+        samples.len() as u64,
+        from_rate,
+        to_rate,
+    ))
+    .unwrap_or(0);
     let mut out = Vec::with_capacity(expected_len);
     let mut resampler = MonoResampler::new(from_rate, to_rate)?;
     resampler.push(samples, &mut out)?;
@@ -209,7 +220,7 @@ impl MonoResampler {
         }
 
         let expected_total =
-            ((self.total_input_frames as f64) * resampler.resample_ratio()).ceil() as u64;
+            expected_output_frames(self.total_input_frames, self.from_rate, self.to_rate);
 
         let remaining = self.pending.len() - self.pending_offset;
         if remaining > 0 {
@@ -463,12 +474,19 @@ mod tests {
     }
 
     #[test]
+    fn exact_44100_to_48000_does_not_emit_extra_rounding_frame() {
+        let input = sine_wave(440.0, 44_100, 44_100); // exactly 1.0 s
+        let out = resample_mono(&input, 44_100, 48_000).unwrap();
+        assert_eq!(out.len(), 48_000);
+    }
+
+    #[test]
     fn odd_prime_sample_rate_falls_back_to_sinc_resampler() {
         let from_rate = 44_101_u32;
         let input = sine_wave(440.0, from_rate, from_rate as usize / 4);
         let out = resample_mono(&input, from_rate, TARGET_SAMPLE_RATE).unwrap();
         let expected_len =
-            ((input.len() as f64) * (TARGET_SAMPLE_RATE as f64 / from_rate as f64)).ceil() as usize;
+            expected_output_frames(input.len() as u64, from_rate, TARGET_SAMPLE_RATE) as usize;
         assert_eq!(out.len(), expected_len);
     }
 }
