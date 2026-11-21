@@ -361,8 +361,96 @@
         "PULSESCRIBE_TOGGLE_HOTKEY=f19"
       ],
       "expected_changed": true
+    },
+    {
+      "name": "quoted-key-deletion",
+      "lines": [
+        "'OPENAI_API_KEY'=secret",
+        "OTHER=1"
+      ],
+      "updates": [
+        [
+          "OPENAI_API_KEY",
+          null
+        ]
+      ],
+      "preserve_following_duplicates": false,
+      "expected_lines": [
+        "OTHER=1"
+      ],
+      "expected_changed": true
+    },
+    {
+      "name": "quoted-key-replacement",
+      "lines": [
+        "'OPENAI_API_KEY'=old"
+      ],
+      "updates": [
+        [
+          "OPENAI_API_KEY",
+          "new"
+        ]
+      ],
+      "preserve_following_duplicates": false,
+      "expected_lines": [
+        "OPENAI_API_KEY=new"
+      ],
+      "expected_changed": true
+    },
+    {
+      "name": "quoted-key-single-unchanged",
+      "lines": [
+        "'OPENAI_API_KEY'=same"
+      ],
+      "updates": [
+        [
+          "OPENAI_API_KEY",
+          "same"
+        ]
+      ],
+      "preserve_following_duplicates": true,
+      "expected_lines": [
+        "'OPENAI_API_KEY'=same"
+      ],
+      "expected_changed": false
+    },
+    {
+      "name": "export-tab-key-replacement",
+      "lines": [
+        "export\tMODE=old"
+      ],
+      "updates": [
+        [
+          "MODE",
+          "local"
+        ]
+      ],
+      "preserve_following_duplicates": false,
+      "expected_lines": [
+        "MODE=local"
+      ],
+      "expected_changed": true
     }
   ],
+  "dotenv_resolve": {
+    "process_env": {
+      "PULSESCRIBE_GOLDEN_PROC_VAR": "from-proc"
+    },
+    "content": "BASE=actual-key\nGROQ_API_KEY=${BASE}\nCHAINED=${GROQ_API_KEY}-suffix\nFROM_PROC=${PULSESCRIBE_GOLDEN_PROC_VAR}\nWITH_DEFAULT=${PULSESCRIBE_GOLDEN_UNSET:-fallback}\nUNSET_PLAIN=${PULSESCRIBE_GOLDEN_UNSET}\nSINGLE_EXP='${BASE}'\nDOUBLE_EXP=\"${BASE}\"\nBARE_DOLLAR=$BASE\n'QUOTED_KEY'=quoted-val\nPULSESCRIBE_INPUT_DEVICE=USB ${PULSESCRIBE_GOLDEN_PROC_VAR}\n",
+    "expected": {
+      "BARE_DOLLAR": "$BASE",
+      "BASE": "actual-key",
+      "CHAINED": "actual-key-suffix",
+      "DOUBLE_EXP": "actual-key",
+      "FROM_PROC": "from-proc",
+      "GROQ_API_KEY": "actual-key",
+      "PULSESCRIBE_INPUT_DEVICE": "USB ${PULSESCRIBE_GOLDEN_PROC_VAR}",
+      "QUOTED_KEY": "quoted-val",
+      "SINGLE_EXP": "actual-key",
+      "UNSET_PLAIN": "",
+      "WITH_DEFAULT": "fallback"
+    }
+  },
   "onboarding_choices": [
     "fast",
     "private",

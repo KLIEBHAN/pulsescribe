@@ -3,10 +3,13 @@
 //! Mirrors `utils/env.py` and the `.env` mutation helpers in `utils/preferences.py`.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::ffi::OsString;
 use std::fs;
 use std::path::Path;
 
 use thiserror::Error;
+
+const LITERAL_INPUT_DEVICE_KEY: &str = "PULSESCRIBE_INPUT_DEVICE";
 
 /// Errors returned when validating or formatting `.env` assignments.
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -36,9 +39,9 @@ pub fn parse_int(value: Option<&str>) -> Option<i64> {
     value?.trim().parse::<i64>().ok()
 }
 
-/// Parse one `.env` line with `export`, quote, and inline comment handling.
+/// Parse one `.env` line with lightweight `export`, quote, and inline comment handling.
 ///
-/// Mirrors `utils.env.parse_env_line`.
+/// Mirrors `utils.env.parse_env_line` (used by `read_env_file_values` / Preferences reads).
 pub fn parse_env_line(raw_line: &str) -> Option<(String, String)> {
     let trimmed = raw_line.trim();
     let line = match trimmed.strip_prefix("export ") {
@@ -54,6 +57,93 @@ pub fn parse_env_line(raw_line: &str) -> Option<(String, String)> {
         return None;
     }
     Some((key.to_string(), parse_env_value(raw_value.trim())))
+}
+
+/// Parse one `.env` line with `python-dotenv`-compatible key and quote handling.
+///
+/// Mirrors `utils.env.parse_env_line_with_dotenv`:
+/// - accepts `export` followed by spaces or tabs,
+/// - strips single quotes around assignment keys (`'OPENAI_API_KEY'=secret`),
+/// - unescapes double-quoted (`\"`, `\\`, `\n`, `\r`, `\t`) and single-quoted values.
+pub fn parse_dotenv_line(raw_line: &str) -> Option<(String, String)> {
+    let trimmed = raw_line.trim();
+    let line = strip_export_prefix(trimmed);
+    if line.is_empty() || line.starts_with('#') {
+        return None;
+    }
+    let (raw_key, raw_value) = line.split_once('=')?;
+    let key = strip_single_quoted_key(raw_key.trim());
+    if key.is_empty() {
+        return None;
+    }
+    Some((key.to_string(), parse_dotenv_value(raw_value.trim())))
+}
+
+fn strip_export_prefix(line: &str) -> &str {
+    if let Some(rest) = line.strip_prefix("export") {
+        if rest.starts_with([' ', '\t']) {
+            return rest.trim_start();
+        }
+    }
+    line
+}
+
+fn strip_single_quoted_key(raw_key: &str) -> &str {
+    if let Some(inner) = raw_key
+        .strip_prefix('\'')
+        .and_then(|s| s.strip_suffix('\''))
+    {
+        inner.trim()
+    } else {
+        raw_key
+    }
+}
+
+fn parse_dotenv_value(value: &str) -> String {
+    if value.is_empty() {
+        return String::new();
+    }
+    if let Some(parsed) = parse_single_quoted_value(value) {
+        return parsed;
+    }
+    if let Some(parsed) = parse_double_quoted_value(value) {
+        return parsed;
+    }
+    parse_env_value(value)
+}
+
+fn parse_double_quoted_value(value: &str) -> Option<String> {
+    let rest = value.strip_prefix('"')?;
+    let mut chars = rest.chars();
+    let mut out = String::with_capacity(rest.len());
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\\' => {
+                let escaped = chars.next()?;
+                match escaped {
+                    '"' => out.push('"'),
+                    '\\' => out.push('\\'),
+                    'n' => out.push('\n'),
+                    'r' => out.push('\r'),
+                    't' => out.push('\t'),
+                    other => {
+                        out.push('\\');
+                        out.push(other);
+                    }
+                }
+            }
+            '"' => {
+                let trailing = chars.as_str().trim_start();
+                if trailing.is_empty() || trailing.starts_with('#') {
+                    return Some(out);
+                }
+                return None;
+            }
+            other => out.push(other),
+        }
+    }
+    None
 }
 
 fn parse_env_value(value: &str) -> String {
@@ -122,6 +212,58 @@ fn parse_single_quoted_value(value: &str) -> Option<String> {
     None
 }
 
+/// Expand `python-dotenv` POSIX variable templates (`${VAR}` and `${VAR:-default}`).
+///
+/// Earlier keys from the same `.env` file (`file_values`) override `process_env`,
+/// matching `dotenv.main.resolve_variables(..., override=True)`.
+fn expand_dotenv_variables(
+    input: &str,
+    file_values: &BTreeMap<String, String>,
+    process_env: &BTreeMap<String, String>,
+) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut rest = input;
+
+    while let Some(start) = rest.find("${") {
+        out.push_str(&rest[..start]);
+        let after_open = &rest[start + 2..];
+        let Some(close) = after_open.find('}') else {
+            out.push_str(&rest[start..]);
+            return out;
+        };
+        let expr = &after_open[..close];
+
+        let parsed = if let Some((name, default)) = expr.split_once(":-") {
+            if name.contains(':') {
+                None
+            } else {
+                Some((name, Some(default)))
+            }
+        } else if expr.contains(':') {
+            None
+        } else {
+            Some((expr, None))
+        };
+
+        if let Some((name, default)) = parsed {
+            let resolved = file_values
+                .get(name)
+                .or_else(|| process_env.get(name))
+                .map(String::as_str)
+                .or(default)
+                .unwrap_or("");
+            out.push_str(resolved);
+            rest = &after_open[close + 1..];
+        } else {
+            out.push_str(&rest[start..start + 2]);
+            rest = after_open;
+        }
+    }
+
+    out.push_str(rest);
+    out
+}
+
 /// Format one canonical `KEY=value` line, single-quoting values with dotenv syntax.
 ///
 /// Mirrors `utils.preferences._format_env_assignment`.
@@ -154,7 +296,7 @@ pub fn read_env_file_values(path: &Path, first_wins: bool) -> BTreeMap<String, S
     parse_env_str(&text, first_wins)
 }
 
-/// Parse `.env` text into a sorted map.
+/// Parse `.env` text into a sorted map using the lightweight literal parser.
 pub fn parse_env_str(content: &str, first_wins: bool) -> BTreeMap<String, String> {
     let mut values = BTreeMap::new();
     for line in content.lines() {
@@ -169,22 +311,66 @@ pub fn parse_env_str(content: &str, first_wins: bool) -> BTreeMap<String, String
     values
 }
 
-/// Collect `.env` values with precedence `local < user`.
+/// Parse `.env` text with `python-dotenv` variable expansion (`${VAR}`, `${VAR:-default}`),
+/// keeping `PULSESCRIBE_INPUT_DEVICE` strictly literal.
+///
+/// Mirrors `utils.env._read_dotenv_values`.
+pub fn parse_dotenv_str(
+    content: &str,
+    process_env: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let mut values = BTreeMap::new();
+    for line in content.lines() {
+        let Some((key, raw_value)) = parse_dotenv_line(line) else {
+            continue;
+        };
+        let expanded = expand_dotenv_variables(&raw_value, &values, process_env);
+        values.insert(key, expanded);
+    }
+
+    // Device names are literal identifiers, never dotenv interpolation templates.
+    if values.contains_key(LITERAL_INPUT_DEVICE_KEY) {
+        if let Some(literal_device) = parse_env_str(content, false).remove(LITERAL_INPUT_DEVICE_KEY)
+        {
+            values.insert(LITERAL_INPUT_DEVICE_KEY.to_string(), literal_device);
+        } else {
+            values.remove(LITERAL_INPUT_DEVICE_KEY);
+        }
+    }
+
+    values
+}
+
+/// Read one `.env` file using dotenv expansion plus the literal input-device exception.
+pub fn read_dotenv_values(
+    path: &Path,
+    process_env: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(_) => return BTreeMap::new(),
+    };
+    let text = String::from_utf8_lossy(&bytes);
+    parse_dotenv_str(&text, process_env)
+}
+
+/// Collect `.env` values with precedence `local < user` and dotenv variable expansion.
 ///
 /// Mirrors `utils.env.collect_env_values`.
 pub fn collect_env_values(
     user_config_dir: &Path,
     local_env_path: Option<&Path>,
+    process_env: &BTreeMap<String, String>,
 ) -> BTreeMap<String, String> {
     let mut merged = BTreeMap::new();
     if let Some(local_path) = local_env_path {
         if local_path.exists() {
-            merged.extend(read_env_file_values(local_path, false));
+            merged.extend(read_dotenv_values(local_path, process_env));
         }
     }
     let user_env = user_config_dir.join(".env");
     if user_env.exists() {
-        merged.extend(read_env_file_values(&user_env, false));
+        merged.extend(read_dotenv_values(&user_env, process_env));
     }
     merged
 }
@@ -201,7 +387,7 @@ pub fn resolve_environment(
     local_env_path: Option<&Path>,
     override_existing: bool,
 ) -> BTreeMap<String, String> {
-    let file_values = collect_env_values(user_config_dir, local_env_path);
+    let file_values = collect_env_values(user_config_dir, local_env_path, process_env);
     let mut resolved = process_env.clone();
     for (key, value) in file_values {
         if !override_existing && resolved.contains_key(&key) {
@@ -212,14 +398,27 @@ pub fn resolve_environment(
     resolved
 }
 
-/// Snapshot the current OS process environment (valid UTF-8 pairs) into a `BTreeMap`.
+/// Snapshot the current OS process environment, skipping entries whose key or value
+/// is not valid UTF-8 instead of panicking.
 pub fn current_process_env() -> BTreeMap<String, String> {
-    std::env::vars().collect()
+    snapshot_os_env(std::env::vars_os())
+}
+
+fn snapshot_os_env<I>(entries: I) -> BTreeMap<String, String>
+where
+    I: IntoIterator<Item = (OsString, OsString)>,
+{
+    entries
+        .into_iter()
+        .filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?)))
+        .collect()
 }
 
 /// Apply `.env` updates in file order, then append new keys in update order.
 ///
 /// Mirrors `utils.preferences._apply_env_updates_to_lines`:
+/// - Uses `parse_dotenv_line` for assignment-key matching (including single-quoted keys
+///   and `export` with tabs/spaces).
 /// - Batch updates (`preserve_following_duplicates == false`) canonicalize assignments
 ///   and collapse matching duplicates.
 /// - Single-setting saves (`preserve_following_duplicates == true`) preserve later
@@ -240,8 +439,7 @@ pub fn apply_env_updates_to_lines(
     let mut changed = false;
 
     for line in lines {
-        let parsed = parse_env_line(line);
-        let Some((key, existing_value)) = parsed else {
+        let Some((key, existing_value)) = parse_dotenv_line(line) else {
             new_lines.push(line.clone());
             continue;
         };
@@ -392,5 +590,24 @@ mod tests {
         let (out, changed) = apply_env_updates_to_lines(&lines, &updates, false).unwrap();
         assert!(changed);
         assert_eq!(out, vec!["EXISTING=old", "NEW_A=second"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_os_env_skips_non_utf8_entries_without_panicking() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let bad_bytes = OsStr::from_bytes(b"bad\xffvalue").to_os_string();
+        let bad_key = OsStr::from_bytes(b"BAD_\xff_KEY").to_os_string();
+        let entries = vec![
+            (OsString::from("VALID"), OsString::from("ok")),
+            (OsString::from("BAD_VAL"), bad_bytes),
+            (bad_key, OsString::from("ignored")),
+        ];
+
+        let snapshot = snapshot_os_env(entries);
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot.get("VALID").map(String::as_str), Some("ok"));
     }
 }

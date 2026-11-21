@@ -61,12 +61,15 @@ pub enum PreferencesError {
 type CachedMap<T> = Option<(FileSignature, T)>;
 
 /// Reads and writes `~/.pulsescribe/preferences.json` and `~/.pulsescribe/.env`
-/// with file-signature caching and crash-safe atomic updates.
+/// with file-signature caching, serialized read-modify-write transactions, and
+/// crash-safe atomic updates.
 #[derive(Debug)]
 pub struct PreferencesStore {
     paths: AppPaths,
     env_cache: Mutex<CachedMap<BTreeMap<String, String>>>,
     prefs_cache: Mutex<CachedMap<Map<String, Value>>>,
+    env_write_lock: Mutex<()>,
+    prefs_write_lock: Mutex<()>,
 }
 
 impl PreferencesStore {
@@ -76,6 +79,8 @@ impl PreferencesStore {
             paths: AppPaths::new(config_dir),
             env_cache: Mutex::new(None),
             prefs_cache: Mutex::new(None),
+            env_write_lock: Mutex::new(()),
+            prefs_write_lock: Mutex::new(()),
         }
     }
 
@@ -85,6 +90,8 @@ impl PreferencesStore {
             paths,
             env_cache: Mutex::new(None),
             prefs_cache: Mutex::new(None),
+            env_write_lock: Mutex::new(()),
+            prefs_write_lock: Mutex::new(()),
         })
     }
 
@@ -123,6 +130,14 @@ impl PreferencesStore {
 
     /// Persist `preferences.json` atomically as pretty-printed JSON.
     pub fn save_preferences(&self, prefs: &Map<String, Value>) -> Result<(), PreferencesError> {
+        let _write_guard = self
+            .prefs_write_lock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        self.save_preferences_locked(prefs)
+    }
+
+    fn save_preferences_locked(&self, prefs: &Map<String, Value>) -> Result<(), PreferencesError> {
         let serialized = serde_json::to_string_pretty(prefs)?;
         write_text_atomic(&self.paths.preferences_file(), &serialized)?;
         self.invalidate_preferences_cache();
@@ -133,9 +148,13 @@ impl PreferencesStore {
         &self,
         mutator: impl FnOnce(&mut Map<String, Value>),
     ) -> Result<(), PreferencesError> {
+        let _write_guard = self
+            .prefs_write_lock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let mut prefs = self.load_preferences();
         mutator(&mut prefs);
-        self.save_preferences(&prefs)
+        self.save_preferences_locked(&prefs)
     }
 
     fn invalidate_preferences_cache(&self) {
@@ -326,6 +345,11 @@ impl PreferencesStore {
         updates: &[(String, Option<String>)],
         preserve_following_duplicates: bool,
     ) -> Result<bool, PreferencesError> {
+        let _write_guard = self
+            .env_write_lock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
         let env_path = self.paths.env_file();
         let existing_lines: Vec<String> = if env_path.exists() {
             let bytes = fs::read(&env_path)?;
@@ -478,6 +502,43 @@ mod tests {
         );
         assert!(!store.set_api_key("DEEPGRAM_API_KEY", Some("   ")).unwrap());
         assert_eq!(store.get_api_key("DEEPGRAM_API_KEY"), None);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn concurrent_mutations_do_not_lose_preference_or_env_updates() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let (store, dir) = unique_store("concurrent");
+        let store = Arc::new(store);
+        store.save_api_key("REMOVED_KEY", "secret").unwrap();
+
+        let s1 = Arc::clone(&store);
+        let s2 = Arc::clone(&store);
+        let t1 = thread::spawn(move || {
+            for _ in 0..20 {
+                s1.set_onboarding_seen(true).unwrap();
+                s1.save_env_setting("PULSESCRIBE_MODE", "local").unwrap();
+            }
+        });
+        let t2 = thread::spawn(move || {
+            for _ in 0..20 {
+                s2.set_show_welcome_on_startup(false).unwrap();
+                s2.remove_env_setting("REMOVED_KEY").unwrap();
+            }
+        });
+        t1.join().unwrap();
+        t2.join().unwrap();
+
+        assert!(store.has_seen_onboarding());
+        assert!(!store.get_show_welcome_on_startup());
+        assert_eq!(
+            store.get_env_setting("PULSESCRIBE_MODE").as_deref(),
+            Some("local")
+        );
+        assert_eq!(store.get_api_key("REMOVED_KEY"), None);
 
         let _ = fs::remove_dir_all(&dir);
     }

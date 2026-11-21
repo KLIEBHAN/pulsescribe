@@ -12,7 +12,9 @@ Usage:
 from __future__ import annotations
 
 import json
+import os
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +22,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from utils.env import parse_bool, parse_env_line  # noqa: E402
+from utils.env import _read_dotenv_values, parse_bool, parse_env_line  # noqa: E402
 from utils.onboarding import (  # noqa: E402
     ONBOARDING_ORDER,
     OnboardingChoice,
@@ -137,7 +139,51 @@ _ENV_UPDATE_CASES: tuple[tuple[str, list[str], dict[str, str | None], bool], ...
         },
         False,
     ),
+    (
+        "quoted-key-deletion",
+        ["'OPENAI_API_KEY'=secret", "OTHER=1"],
+        {"OPENAI_API_KEY": None},
+        False,
+    ),
+    (
+        "quoted-key-replacement",
+        ["'OPENAI_API_KEY'=old"],
+        {"OPENAI_API_KEY": "new"},
+        False,
+    ),
+    (
+        "quoted-key-single-unchanged",
+        ["'OPENAI_API_KEY'=same"],
+        {"OPENAI_API_KEY": "same"},
+        True,
+    ),
+    (
+        "export-tab-key-replacement",
+        ["export\tMODE=old"],
+        {"MODE": "local"},
+        False,
+    ),
 )
+
+_DOTENV_RESOLVE_PROCESS_ENV: dict[str, str] = {
+    "PULSESCRIBE_GOLDEN_PROC_VAR": "from-proc",
+}
+
+_DOTENV_RESOLVE_CONTENT = "\n".join(
+    [
+        "BASE=actual-key",
+        "GROQ_API_KEY=${BASE}",
+        "CHAINED=${GROQ_API_KEY}-suffix",
+        "FROM_PROC=${PULSESCRIBE_GOLDEN_PROC_VAR}",
+        "WITH_DEFAULT=${PULSESCRIBE_GOLDEN_UNSET:-fallback}",
+        "UNSET_PLAIN=${PULSESCRIBE_GOLDEN_UNSET}",
+        "SINGLE_EXP='${BASE}'",
+        'DOUBLE_EXP="${BASE}"',
+        "BARE_DOLLAR=$BASE",
+        "'QUOTED_KEY'=quoted-val",
+        "PULSESCRIBE_INPUT_DEVICE=USB ${PULSESCRIBE_GOLDEN_PROC_VAR}",
+    ]
+) + "\n"
 
 
 def _export_env_update_case(
@@ -158,6 +204,34 @@ def _export_env_update_case(
         "preserve_following_duplicates": preserve_following_duplicates,
         "expected_lines": out_lines,
         "expected_changed": changed,
+    }
+
+
+def _export_dotenv_resolve() -> dict[str, Any]:
+    sentinel_unset = "PULSESCRIBE_GOLDEN_UNSET"
+    saved = {
+        key: os.environ.get(key)
+        for key in (*_DOTENV_RESOLVE_PROCESS_ENV.keys(), sentinel_unset)
+    }
+    try:
+        for key, value in _DOTENV_RESOLVE_PROCESS_ENV.items():
+            os.environ[key] = value
+        os.environ.pop(sentinel_unset, None)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            env_path = Path(tmp_dir) / ".env"
+            env_path.write_text(_DOTENV_RESOLVE_CONTENT, encoding="utf-8")
+            resolved = _read_dotenv_values(env_path)
+    finally:
+        for key, previous in saved.items():
+            if previous is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = previous
+
+    return {
+        "process_env": dict(_DOTENV_RESOLVE_PROCESS_ENV),
+        "content": _DOTENV_RESOLVE_CONTENT,
+        "expected": dict(sorted(resolved.items())),
     }
 
 
@@ -187,6 +261,7 @@ def build_core_contracts() -> dict[str, Any]:
             _export_env_update_case(name, lines, updates, preserve)
             for name, lines, updates, preserve in _ENV_UPDATE_CASES
         ],
+        "dotenv_resolve": _export_dotenv_resolve(),
         "onboarding_choices": [choice.value for choice in OnboardingChoice],
         "onboarding_steps": {
             "total_steps": total_steps(),

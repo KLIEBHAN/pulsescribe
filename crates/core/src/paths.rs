@@ -6,7 +6,7 @@ use std::env;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Stable file metadata tuple `(mtime_ns, size, ctime_ns)` for lightweight cache invalidation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -16,15 +16,19 @@ pub struct FileSignature {
     pub ctime_ns: i128,
 }
 
+/// Convert a `SystemTime` into signed nanoseconds relative to `UNIX_EPOCH`,
+/// preserving negative timestamps for valid pre-1970 file times.
+fn system_time_to_ns(time: SystemTime) -> i128 {
+    match time.duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration.as_nanos() as i128,
+        Err(err) => -(err.duration().as_nanos() as i128),
+    }
+}
+
 /// Build a stable file signature from filesystem metadata.
 pub fn build_file_signature(path: &Path) -> io::Result<FileSignature> {
     let meta = fs::metadata(path)?;
-    let mtime_ns = meta
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map(|d| d.as_nanos() as i128)
-        .unwrap_or(0);
+    let mtime_ns = meta.modified().map(system_time_to_ns).unwrap_or(0);
     let ctime_ns = metadata_ctime_ns(&meta);
 
     Ok(FileSignature {
@@ -42,11 +46,7 @@ fn metadata_ctime_ns(meta: &fs::Metadata) -> i128 {
 
 #[cfg(not(unix))]
 fn metadata_ctime_ns(meta: &fs::Metadata) -> i128 {
-    meta.created()
-        .ok()
-        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map(|d| d.as_nanos() as i128)
-        .unwrap_or(0)
+    meta.created().map(system_time_to_ns).unwrap_or(0)
 }
 
 /// Resolve the current user's home directory from standard OS environment variables.
@@ -168,5 +168,16 @@ mod tests {
             AppPaths::resolve_resource(Path::new("/app"), "ui/assets/check.svg"),
             Path::new("/app/ui/assets/check.svg")
         );
+    }
+
+    #[test]
+    fn system_time_to_ns_preserves_signed_pre_epoch_timestamps() {
+        use std::time::Duration;
+
+        let post = UNIX_EPOCH + Duration::new(42, 500);
+        assert_eq!(system_time_to_ns(post), 42_000_000_500);
+
+        let pre = UNIX_EPOCH - Duration::new(10, 250);
+        assert_eq!(system_time_to_ns(pre), -10_000_000_250);
     }
 }

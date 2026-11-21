@@ -1,8 +1,9 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
 use pulsescribe_core::env::{
-    apply_env_updates_to_lines, format_env_assignment, parse_bool, parse_env_line,
+    apply_env_updates_to_lines, format_env_assignment, parse_bool, parse_dotenv_str, parse_env_line,
 };
 use pulsescribe_core::onboarding::ONBOARDING_ORDER;
 use pulsescribe_core::{AppState, DaemonErrorCode, OnboardingChoice, OnboardingStep};
@@ -20,8 +21,17 @@ struct CoreContracts {
     parse_env_line: Vec<ParseEnvLineCase>,
     format_env_assignment: Vec<FormatEnvCase>,
     env_updates: Vec<EnvUpdateCase>,
+    dotenv_resolve: DotenvResolveCase,
     onboarding_choices: Vec<String>,
     onboarding_steps: OnboardingStepsContract,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DotenvResolveCase {
+    process_env: BTreeMap<String, String>,
+    content: String,
+    expected: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -197,6 +207,12 @@ fn env_contracts_match_python_golden_fixture() {
             case.name
         );
     }
+
+    let resolved = parse_dotenv_str(
+        &contracts.dotenv_resolve.content,
+        &contracts.dotenv_resolve.process_env,
+    );
+    assert_eq!(resolved, contracts.dotenv_resolve.expected);
 }
 
 #[test]
