@@ -3,9 +3,12 @@
 //! All audio buffers in this crate use normalized `f32` samples in `[-1.0, 1.0]`,
 //! interleaved by frame when `channels > 1`.
 
+pub mod capture;
 pub mod decode;
+pub mod device;
 pub mod level;
 pub mod resample;
+pub mod ring;
 pub mod wav;
 
 use thiserror::Error;
@@ -39,6 +42,12 @@ pub enum AudioError {
 
     #[error("invalid audio parameter: {0}")]
     InvalidParameter(String),
+
+    #[error("audio input device not found: {0}")]
+    DeviceNotFound(String),
+
+    #[error("audio capture error: {0}")]
+    Capture(String),
 
     #[error("audio contains no samples")]
     EmptyAudio,
@@ -147,10 +156,17 @@ pub(crate) fn validate_format(
     Ok(())
 }
 
+pub use capture::{AudioRecorder, CaptureConfig, CaptureStream};
 pub use decode::{decode_bytes, decode_file, decode_file_to_mono_16k};
+pub use device::{
+    list_input_devices, platform_audio_blocksize, preferred_device_from_env,
+    select_input_device_index, windows_audio_blocksize, InputDeviceInfo, INPUT_DEVICE_ENV_VAR,
+    WINDOWS_AUDIO_BLOCK_MS,
+};
 pub use level::{
     compute_level_f32, downmix_to_mono_into, f32_to_i16_into, f32_to_i16_sample,
     f32_to_pcm16_le_into, peak_f32, rms_f32, rms_i16, AudioLevel,
 };
 pub use resample::{resample_mono, MonoResampler};
+pub use ring::{audio_ring_channel, AudioRingReader, AudioRingWriter};
 pub use wav::{encode_wav_i16_bytes, read_wav, read_wav_reader, write_wav_i16};

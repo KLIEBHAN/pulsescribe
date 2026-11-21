@@ -8,7 +8,9 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+cpal.workspace = true
 hound.workspace = true
+ringbuf.workspace = true
 rubato.workspace = true
 symphonia.workspace = true
 thiserror.workspace = true
