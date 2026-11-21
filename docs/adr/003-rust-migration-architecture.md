@@ -67,7 +67,7 @@ Damit können Windows-OS-Adapter bereits auf macOS-Entwicklungsrechnern vor jede
 ## Ziel-Architektur (Cargo-Workspace)
 
 ```text
-Cargo.toml                  # Workspace Root (Edition 2024 / MSRV 1.90+)
+Cargo.toml                  # Workspace Root (Edition 2021 / MSRV 1.85)
 crates/
 ├── core/                   # Pure Domain: Config/.env, Preferences, History, Vocab,
 │                           # Prompts, Presets, Hotkey-Parser, AppState, Overlay-ViewModels
@@ -93,7 +93,7 @@ apps/
 
 Jeder PR bleibt unter ~400 LOC, kompiliert auf macOS + Windows-Check und bringt eigene Tests mit:
 
-1. **PR 1.1 – Workspace, CI-Grundgerüst & Golden-Fixtures:** `Cargo.toml` Workspace + leeres `crates/core`, GitHub-Actions-Job (`cargo test`, `clippy`, `cargo xwin check`), Python-Exportskript für erste sprachneutrale JSON-Fixtures aus `tests/`.
+1. **PR 1.1 – Workspace, CI-Grundgerüst & Golden-Fixtures:** `Cargo.toml` Workspace + `crates/core` (Lifecycle-States & Error-Codes), GitHub-Actions-Matrix (`macos-15` + `windows-latest`: `cargo fmt --check`, `clippy`, `cargo test`; lokal optional `cargo xwin check`), Python-Exportskript für sprachneutrale JSON-Fixtures.
 2. **PR 1.2 – `.env`, Pfade & atomares I/O:** Port von `utils/paths.py`, `utils/atomic_io.py`, `utils/env.py`, `utils/preferences.py` mit identischer Präzedenz (Process Env > `~/.pulsescribe/.env` > Projekt-`.env`) und Golden-Tests.
 3. **PR 1.3 – Nutzerdaten-Verträge (`vocabulary.json`, `prompts.toml`, `history.jsonl`):** 1:1 kompatibles Lesen/Schreiben inkl. History-Rotation (10 MB) und File-Signature-Caching.
 4. **PR 1.4 – Hotkey-Parsing, Validierung & Diktier-State:** Port von `utils/hotkey_validation.py`, `utils/hotkey_windows.py`, `utils/hold_state.py`, `utils/state.py`, `utils/transcript_delivery.py` gegen Golden-Fixtures.

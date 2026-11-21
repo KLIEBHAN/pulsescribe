@@ -10,6 +10,7 @@ on:
       - "Cargo.lock"
       - "crates/**"
       - "tests/golden/**"
+      - "utils/state.py"
       - ".github/workflows/rust.yml"
   workflow_dispatch:
 
