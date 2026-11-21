@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "app_states": [
+    "idle",
+    "loading",
+    "listening",
+    "recording",
+    "transcribing",
+    "refining",
+    "done",
+    "no_speech",
+    "error"
+  ],
+  "daemon_error_codes": [
+    "missing_api_key",
+    "busy",
+    "timeout",
+    "invalid_provider",
+    "input_monitoring",
+    "accessibility_permission",
+    "microphone_permission",
+    "microphone_unavailable",
+    "connection",
+    "missing_dependency",
+    "unknown"
+  ]
+}

@@ -1,0 +1,17 @@
+[package]
+name = "pulsescribe-core"
+description = "Platform-independent domain logic and ~/.pulsescribe/ data contracts for PulseScribe"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true
