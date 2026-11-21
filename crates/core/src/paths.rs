@@ -174,10 +174,11 @@ mod tests {
     fn system_time_to_ns_preserves_signed_pre_epoch_timestamps() {
         use std::time::Duration;
 
+        // Use 100 ns multiples to match Windows FILETIME tick granularity.
         let post = UNIX_EPOCH + Duration::new(42, 500);
         assert_eq!(system_time_to_ns(post), 42_000_000_500);
 
-        let pre = UNIX_EPOCH - Duration::new(10, 250);
-        assert_eq!(system_time_to_ns(pre), -10_000_000_250);
+        let pre = UNIX_EPOCH - Duration::new(10, 200);
+        assert_eq!(system_time_to_ns(pre), -10_000_000_200);
     }
 }
