@@ -1,5 +1,5 @@
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "app_states": [
     "idle",
     "loading",
@@ -2081,6 +2081,1401 @@
         "copy_ok": false,
         "expected_ok": false,
         "expected_feedback": "Copy failed — use Copy Last Transcript"
+      }
+    ]
+  },
+  "animation": {
+    "height_factors": [
+      0.35,
+      0.42603555598633214,
+      0.6185643422582476,
+      0.8375000000000001,
+      0.9804001017554201,
+      0.9804001017554201,
+      0.8375000000000001,
+      0.6185643422582476,
+      0.42603555598633214,
+      0.35
+    ],
+    "listening_bar_rest_heights": [
+      5.0,
+      5.0,
+      6.0,
+      7.0,
+      8.0,
+      8.0,
+      7.0,
+      6.0,
+      5.0,
+      5.0
+    ],
+    "listening_level": [
+      {
+        "rms": -0.1,
+        "expected": 0.0
+      },
+      {
+        "rms": 0.0,
+        "expected": 0.0
+      },
+      {
+        "rms": 0.0015,
+        "expected": 0.0
+      },
+      {
+        "rms": 0.005,
+        "expected": 0.4117647058823529
+      },
+      {
+        "rms": 0.01,
+        "expected": 1.0
+      },
+      {
+        "rms": 0.5,
+        "expected": 1.0
+      }
+    ],
+    "listening_bar_heights": [
+      {
+        "level": 0.0,
+        "expected": [
+          5.0,
+          5.0,
+          6.0,
+          7.0,
+          8.0,
+          8.0,
+          7.0,
+          6.0,
+          5.0,
+          5.0
+        ]
+      },
+      {
+        "level": 0.5,
+        "expected": [
+          6.47,
+          6.789349335142595,
+          8.59797023748464,
+          10.5175,
+          12.117680427372765,
+          12.117680427372765,
+          10.5175,
+          8.59797023748464,
+          6.789349335142595,
+          6.47
+        ]
+      },
+      {
+        "level": 1.0,
+        "expected": [
+          7.9399999999999995,
+          8.57869867028519,
+          11.19594047496928,
+          14.035,
+          16.23536085474553,
+          16.23536085474553,
+          14.035,
+          11.19594047496928,
+          8.57869867028519,
+          7.9399999999999995
+        ]
+      },
+      {
+        "level": 1.5,
+        "expected": [
+          7.9399999999999995,
+          8.57869867028519,
+          11.19594047496928,
+          14.035,
+          16.23536085474553,
+          16.23536085474553,
+          14.035,
+          11.19594047496928,
+          8.57869867028519,
+          7.9399999999999995
+        ]
+      }
+    ],
+    "trace": {
+      "level_inputs": [
+        0.004,
+        0.08,
+        0.35,
+        0.6,
+        0.25,
+        0.05
+      ],
+      "t": 1.37,
+      "min_height": 3.0,
+      "max_height": 30.0,
+      "listening_rms_probe": 0.006,
+      "expected_listening_settled": false,
+      "expected_listening_frame": [
+        7.9399999999999995,
+        8.57869867028519,
+        11.19594047496928,
+        14.035,
+        16.23536085474553,
+        16.23536085474553,
+        14.035,
+        11.19594047496928,
+        8.57869867028519,
+        7.9399999999999995
+      ],
+      "expected_recording_normalized": [
+        0.14154843056239674,
+        0.16703814956346302,
+        0.2535693566863293,
+        0.38470301228694354,
+        0.4632780656506477,
+        0.45480515978962477,
+        0.4795087854663873,
+        0.4969385892209415,
+        0.34827777476984906,
+        0.2098681931296206
+      ],
+      "expected_listening_normalized": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "expected_recording_heights": [
+        6.821807625184713,
+        7.510030038213501,
+        9.84637263053089,
+        13.386981331747476,
+        15.508507772567489,
+        15.279739314319869,
+        15.946737207592458,
+        16.41734190896542,
+        12.403499918785924,
+        8.666441214499756
+      ]
+    }
+  },
+  "overlay_style": {
+    "bar_area_width": 57.0,
+    "phase_step_width": 27.0,
+    "bar_colors": {
+      "level": "#ececec",
+      "line": "#6f6f6f",
+      "low": "#6f6f6f"
+    },
+    "phase_step_colors": {
+      "phase1": [
+        "#ececec",
+        "#333333"
+      ],
+      "phase2": [
+        "#6f6f6f",
+        "#ececec"
+      ]
+    },
+    "badge_tones": {
+      "error": [
+        "#3a1a1a",
+        "#f08a8a"
+      ],
+      "success": [
+        "#173326",
+        "#6fd39b"
+      ],
+      "warn": [
+        "#3a2c12",
+        "#f0b955"
+      ]
+    },
+    "hex_to_rgb": [
+      {
+        "hex": "#1b1b1b",
+        "expected": [
+          27,
+          27,
+          27
+        ]
+      },
+      {
+        "hex": "#6fd39b",
+        "expected": [
+          111,
+          211,
+          155
+        ]
+      },
+      {
+        "hex": "#f08a8a",
+        "expected": [
+          240,
+          138,
+          138
+        ]
+      },
+      {
+        "hex": "ececec",
+        "expected": [
+          236,
+          236,
+          236
+        ]
+      }
+    ],
+    "shimmer_track": [
+      {
+        "mode": "none",
+        "expected": null
+      },
+      {
+        "mode": "level",
+        "expected": null
+      },
+      {
+        "mode": "low",
+        "expected": null
+      },
+      {
+        "mode": "line",
+        "expected": [
+          0.0,
+          57.0
+        ]
+      },
+      {
+        "mode": "phase1",
+        "expected": [
+          0.0,
+          27.0
+        ]
+      },
+      {
+        "mode": "phase2",
+        "expected": [
+          30.0,
+          27.0
+        ]
+      }
+    ],
+    "layout_cases": [
+      {
+        "name": "fixed-basic",
+        "text_width": 120.0,
+        "meta_width": 0.0,
+        "dismiss_width": 0.0,
+        "status_width": 0.0,
+        "grow": false,
+        "max_width": 400.0,
+        "base_width": 400.0,
+        "expected": {
+          "width": 400.0,
+          "status_x": 16.0,
+          "text_x": 112.0,
+          "text_width": 272.0,
+          "meta_x": null,
+          "dismiss_x": null
+        }
+      },
+      {
+        "name": "with-meta-and-dismiss",
+        "text_width": 200.0,
+        "meta_width": 48.0,
+        "dismiss_width": 14.0,
+        "status_width": 0.0,
+        "grow": false,
+        "max_width": 400.0,
+        "base_width": 400.0,
+        "expected": {
+          "width": 400.0,
+          "status_x": 16.0,
+          "text_x": 112.0,
+          "text_width": 186.0,
+          "meta_x": 310.0,
+          "dismiss_x": 370.0
+        }
+      },
+      {
+        "name": "grow-within-cap",
+        "text_width": 360.0,
+        "meta_width": 48.0,
+        "dismiss_width": 14.0,
+        "status_width": 0.0,
+        "grow": true,
+        "max_width": 700.0,
+        "base_width": 400.0,
+        "expected": {
+          "width": 574.0,
+          "status_x": 16.0,
+          "text_x": 112.0,
+          "text_width": 360.0,
+          "meta_x": 484.0,
+          "dismiss_x": 544.0
+        }
+      },
+      {
+        "name": "grow-capped",
+        "text_width": 900.0,
+        "meta_width": 48.0,
+        "dismiss_width": 14.0,
+        "status_width": 0.0,
+        "grow": true,
+        "max_width": 600.0,
+        "base_width": 400.0,
+        "expected": {
+          "width": 600.0,
+          "status_x": 16.0,
+          "text_x": 112.0,
+          "text_width": 386.0,
+          "meta_x": 510.0,
+          "dismiss_x": 570.0
+        }
+      },
+      {
+        "name": "max-smaller-than-base",
+        "text_width": 500.0,
+        "meta_width": 0.0,
+        "dismiss_width": 0.0,
+        "status_width": 0.0,
+        "grow": true,
+        "max_width": 300.0,
+        "base_width": 400.0,
+        "expected": {
+          "width": 400.0,
+          "status_x": 16.0,
+          "text_x": 112.0,
+          "text_width": 272.0,
+          "meta_x": null,
+          "dismiss_x": null
+        }
+      },
+      {
+        "name": "wide-badge-pushes-text",
+        "text_width": 120.0,
+        "meta_width": 0.0,
+        "dismiss_width": 0.0,
+        "status_width": 96.0,
+        "grow": false,
+        "max_width": 400.0,
+        "base_width": 400.0,
+        "expected": {
+          "width": 400.0,
+          "status_x": 16.0,
+          "text_x": 124.0,
+          "text_width": 260.0,
+          "meta_x": null,
+          "dismiss_x": null
+        }
+      }
+    ]
+  },
+  "overlay_text": {
+    "normalized_text_prefix": [
+      {
+        "text": "  hello   world\n\tagain ",
+        "max_chars": 11,
+        "expected": "hello world"
+      },
+      {
+        "text": "  Über   Straße\n\tgehen ",
+        "max_chars": 8,
+        "expected": "Über Str"
+      },
+      {
+        "text": "hello",
+        "max_chars": 0,
+        "expected": ""
+      },
+      {
+        "text": "   ",
+        "max_chars": 5,
+        "expected": ""
+      }
+    ],
+    "format_recording_duration": [
+      {
+        "seconds": -5.0,
+        "expected": "0:00"
+      },
+      {
+        "seconds": 0.0,
+        "expected": "0:00"
+      },
+      {
+        "seconds": 5.9,
+        "expected": "0:05"
+      },
+      {
+        "seconds": 65.2,
+        "expected": "1:05"
+      },
+      {
+        "seconds": 3661.0,
+        "expected": "61:01"
+      }
+    ],
+    "format_recording_interim_text": [
+      {
+        "text": "",
+        "max_chars": 45,
+        "ellipsis": true,
+        "expected": ""
+      },
+      {
+        "text": "   ",
+        "max_chars": 45,
+        "ellipsis": true,
+        "expected": ""
+      },
+      {
+        "text": "  Hallo   Welt\n  heute ",
+        "max_chars": 45,
+        "ellipsis": true,
+        "expected": "Hallo Welt heute"
+      },
+      {
+        "text": "eins zwei drei vier fünf sechs sieben",
+        "max_chars": 18,
+        "ellipsis": true,
+        "expected": "...nf sechs sieben"
+      },
+      {
+        "text": "eins zwei drei vier fünf sechs sieben",
+        "max_chars": 18,
+        "ellipsis": false,
+        "expected": " fünf sechs sieben"
+      },
+      {
+        "text": "abcdef",
+        "max_chars": 3,
+        "ellipsis": true,
+        "expected": "..."
+      },
+      {
+        "text": "Übermäßig lange Grüße aus München",
+        "max_chars": 20,
+        "ellipsis": true,
+        "expected": "...Grüße aus München"
+      }
+    ],
+    "split_recording_interim_text": [
+      {
+        "text": "Hallo Welt",
+        "previous_text": "",
+        "max_chars": 45,
+        "ellipsis": true,
+        "expected": [
+          "",
+          "Hallo Welt"
+        ]
+      },
+      {
+        "text": "Hallo Welt heute",
+        "previous_text": "Hallo Welt",
+        "max_chars": 45,
+        "ellipsis": true,
+        "expected": [
+          "Hallo Welt ",
+          "heute"
+        ]
+      },
+      {
+        "text": "Hallo Welt",
+        "previous_text": "Hallo Welt",
+        "max_chars": 45,
+        "ellipsis": true,
+        "expected": [
+          "Hallo Welt",
+          ""
+        ]
+      },
+      {
+        "text": "Andere Worte hier",
+        "previous_text": "Hallo Welt",
+        "max_chars": 45,
+        "ellipsis": true,
+        "expected": [
+          "Andere Worte ",
+          "hier"
+        ]
+      },
+      {
+        "text": "eins zwei drei vier fünf sechs sieben",
+        "previous_text": "eins zwei drei vier",
+        "max_chars": 20,
+        "ellipsis": true,
+        "expected": [
+          "",
+          "...fünf sechs sieben"
+        ]
+      },
+      {
+        "text": "eins zwei drei vier fünf sechs sieben",
+        "previous_text": "eins zwei drei vier",
+        "max_chars": 20,
+        "ellipsis": false,
+        "expected": [
+          "er ",
+          "fünf sechs sieben"
+        ]
+      }
+    ],
+    "wrap_interim_text_trace": [
+      {
+        "text": "Hallo Welt",
+        "reset_previous": false,
+        "char_limit": 14,
+        "max_lines": 2,
+        "expected_lines": [
+          [
+            "",
+            "Hallo Welt"
+          ]
+        ],
+        "expected_source": "Hallo Welt",
+        "expected_start": 0
+      },
+      {
+        "text": "Hallo Welt heute morgen",
+        "reset_previous": false,
+        "char_limit": 14,
+        "max_lines": 2,
+        "expected_lines": [
+          [
+            "Hallo Welt",
+            ""
+          ],
+          [
+            "",
+            "heute morgen"
+          ]
+        ],
+        "expected_source": "Hallo Welt heute morgen",
+        "expected_start": 0
+      },
+      {
+        "text": "Hallo Welt heute morgen scheint die Sonne",
+        "reset_previous": false,
+        "char_limit": 14,
+        "max_lines": 2,
+        "expected_lines": [
+          [
+            "",
+            "scheint die"
+          ],
+          [
+            "",
+            "Sonne"
+          ]
+        ],
+        "expected_source": "Hallo Welt heute morgen scheint die Sonne",
+        "expected_start": 24
+      },
+      {
+        "text": "Hallo Welt heute morgen regnet es stark",
+        "reset_previous": false,
+        "char_limit": 14,
+        "max_lines": 2,
+        "expected_lines": [
+          [
+            "",
+            "regnet es"
+          ],
+          [
+            "",
+            "stark"
+          ]
+        ],
+        "expected_source": "Hallo Welt heute morgen regnet es stark",
+        "expected_start": 24
+      },
+      {
+        "text": "Hallo Welt heute morgen regnet es stark.",
+        "reset_previous": false,
+        "char_limit": 14,
+        "max_lines": 2,
+        "expected_lines": [
+          [
+            "regnet es",
+            ""
+          ],
+          [
+            "stark.",
+            ""
+          ]
+        ],
+        "expected_source": "Hallo Welt heute morgen regnet es stark.",
+        "expected_start": 24
+      },
+      {
+        "text": "   ",
+        "reset_previous": false,
+        "char_limit": 14,
+        "max_lines": 2,
+        "expected_lines": [],
+        "expected_source": "",
+        "expected_start": 0
+      },
+      {
+        "text": "日本語テスト文字列確認用データ",
+        "reset_previous": true,
+        "char_limit": 6,
+        "max_lines": 2,
+        "expected_lines": [
+          [
+            "",
+            "文字列確認用"
+          ],
+          [
+            "",
+            "データ"
+          ]
+        ],
+        "expected_source": "日本語テスト文字列確認用データ",
+        "expected_start": 6
+      },
+      {
+        "text": "日本語テスト文字列確認用データ追加",
+        "reset_previous": false,
+        "char_limit": 6,
+        "max_lines": 2,
+        "expected_lines": [
+          [
+            "",
+            "文字列確認用"
+          ],
+          [
+            "",
+            "データ追加"
+          ]
+        ],
+        "expected_source": "日本語テスト文字列確認用データ追加",
+        "expected_start": 6
+      }
+    ]
+  },
+  "daemon_status_feedback": {
+    "normalize_text": [
+      {
+        "input": null,
+        "expected": ""
+      },
+      {
+        "input": "",
+        "expected": ""
+      },
+      {
+        "input": "  Hello \n\t  world  ",
+        "expected": "Hello world"
+      }
+    ],
+    "infer_error": [
+      {
+        "input": null,
+        "expected_code": null,
+        "expected_detail": null
+      },
+      {
+        "input": "   ",
+        "expected_code": null,
+        "expected_detail": null
+      },
+      {
+        "input": "DEEPGRAM_API_KEY not configured",
+        "expected_code": "missing_api_key",
+        "expected_detail": "DEEPGRAM_API_KEY not configured"
+      },
+      {
+        "input": "Already recording",
+        "expected_code": "busy",
+        "expected_detail": "Already recording"
+      },
+      {
+        "input": "Transcription timed out after 30s",
+        "expected_code": "timeout",
+        "expected_detail": "Transcription timed out after 30s"
+      },
+      {
+        "input": "Unbekannter Refine-Provider 'bar'",
+        "expected_code": "invalid_provider",
+        "expected_detail": "Unbekannter Refine-Provider 'bar'"
+      },
+      {
+        "input": "Input Monitoring permission missing",
+        "expected_code": "input_monitoring",
+        "expected_detail": "Input Monitoring permission missing"
+      },
+      {
+        "input": "Accessibility access permission required",
+        "expected_code": "accessibility_permission",
+        "expected_detail": "Accessibility access permission required"
+      },
+      {
+        "input": "Microphone permission denied",
+        "expected_code": "microphone_permission",
+        "expected_detail": "Microphone permission denied"
+      },
+      {
+        "input": "WASAPI audio input device disconnected",
+        "expected_code": "microphone_unavailable",
+        "expected_detail": "WASAPI audio input device disconnected"
+      },
+      {
+        "input": "WebSocket connection failed",
+        "expected_code": "connection",
+        "expected_detail": "WebSocket connection failed"
+      },
+      {
+        "input": "No module named 'sounddevice'",
+        "expected_code": "microphone_unavailable",
+        "expected_detail": "No module named 'sounddevice'"
+      },
+      {
+        "input": "module 'x' has no attribute 'y'",
+        "expected_code": "unknown",
+        "expected_detail": "module 'x' has no attribute 'y'"
+      }
+    ],
+    "status_labels": [
+      {
+        "state": "idle",
+        "text": null,
+        "prefer_detail": true,
+        "max_chars": 80,
+        "expected": "Ready to dictate"
+      },
+      {
+        "state": "loading",
+        "text": null,
+        "prefer_detail": true,
+        "max_chars": 80,
+        "expected": "Preparing transcription"
+      },
+      {
+        "state": "loading",
+        "text": "Starting up daemon",
+        "prefer_detail": true,
+        "max_chars": 80,
+        "expected": "Starting up PulseScribe"
+      },
+      {
+        "state": "loading",
+        "text": "Warming up whisper",
+        "prefer_detail": true,
+        "max_chars": 80,
+        "expected": "Warming up local model"
+      },
+      {
+        "state": "loading",
+        "text": "Checking microphone input",
+        "prefer_detail": true,
+        "max_chars": 80,
+        "expected": "Preparing microphone"
+      },
+      {
+        "state": "loading",
+        "text": "Opening websocket connection",
+        "prefer_detail": true,
+        "max_chars": 80,
+        "expected": "Connecting to transcription service"
+      },
+      {
+        "state": "loading",
+        "text": "Loading whisper-large-v3.",
+        "prefer_detail": false,
+        "max_chars": 80,
+        "expected": "Loading whisper-large-v3"
+      },
+      {
+        "state": "loading",
+        "text": "Custom step.",
+        "prefer_detail": true,
+        "max_chars": 80,
+        "expected": "Custom step"
+      },
+      {
+        "state": "loading",
+        "text": "Custom step.",
+        "prefer_detail": false,
+        "max_chars": 80,
+        "expected": "Preparing transcription"
+      },
+      {
+        "state": "recording",
+        "text": "Hallo   Welt",
+        "prefer_detail": true,
+        "max_chars": 16,
+        "expected": "Recording: Hall…"
+      },
+      {
+        "state": "recording",
+        "text": "Hallo   Welt",
+        "prefer_detail": false,
+        "max_chars": 80,
+        "expected": "Recording — speak now"
+      },
+      {
+        "state": "done",
+        "text": "Transcript pasted into Mail · 1.2 s",
+        "prefer_detail": true,
+        "max_chars": 80,
+        "expected": "Transcript pasted into Mail · 1.2 s"
+      },
+      {
+        "state": "done",
+        "text": "Transcript pasted into Mail · 1.2 s",
+        "prefer_detail": false,
+        "max_chars": 80,
+        "expected": "Transcript pasted"
+      },
+      {
+        "state": "done",
+        "text": "Copied to clipboard · 0.4 s",
+        "prefer_detail": false,
+        "max_chars": 80,
+        "expected": "Copied to clipboard"
+      },
+      {
+        "state": "done",
+        "text": "Test complete",
+        "prefer_detail": false,
+        "max_chars": 80,
+        "expected": "Test complete"
+      },
+      {
+        "state": "no_speech",
+        "text": null,
+        "prefer_detail": true,
+        "max_chars": 80,
+        "expected": "No speech detected"
+      },
+      {
+        "state": "no_speech",
+        "text": "empty transcript",
+        "prefer_detail": true,
+        "max_chars": 80,
+        "expected": "No speech detected"
+      },
+      {
+        "state": "no_speech",
+        "text": "Too quiet.",
+        "prefer_detail": true,
+        "max_chars": 80,
+        "expected": "Too quiet"
+      },
+      {
+        "state": "error",
+        "text": null,
+        "prefer_detail": true,
+        "max_chars": 80,
+        "expected": "Something went wrong"
+      },
+      {
+        "state": "error",
+        "text": "OPENAI_API_KEY not set",
+        "prefer_detail": true,
+        "max_chars": 80,
+        "expected": "Missing API key"
+      },
+      {
+        "state": "error",
+        "text": "module 'x' has no attribute 'y'",
+        "prefer_detail": true,
+        "max_chars": 80,
+        "expected": "module 'x' has no attribute 'y'"
+      }
+    ],
+    "status_hints": [
+      {
+        "state": "idle",
+        "text": null,
+        "max_chars": 120,
+        "expected": "Use your hotkey to start dictation."
+      },
+      {
+        "state": "loading",
+        "text": null,
+        "max_chars": 120,
+        "expected": "First launch or provider changes can take a moment."
+      },
+      {
+        "state": "loading",
+        "text": "Starting up",
+        "max_chars": 120,
+        "expected": "PulseScribe is starting in the background. Hotkeys and audio are still getting ready."
+      },
+      {
+        "state": "loading",
+        "text": "Warming up model",
+        "max_chars": 120,
+        "expected": "Offline dictation is warming up after a model or settings change."
+      },
+      {
+        "state": "loading",
+        "text": "Loading whisper-small",
+        "max_chars": 120,
+        "expected": "Offline dictation is loading your selected local model. The first run can take a moment."
+      },
+      {
+        "state": "loading",
+        "text": "Reconnecting websocket",
+        "max_chars": 120,
+        "expected": "PulseScribe is reconnecting to the transcription service. Try again once it returns to ready."
+      },
+      {
+        "state": "loading",
+        "text": "Downloading tokenizer",
+        "max_chars": 120,
+        "expected": "PulseScribe is preparing the current provider or model."
+      },
+      {
+        "state": "no_speech",
+        "text": null,
+        "max_chars": 120,
+        "expected": "Try again and speak a short sentence after the listening prompt."
+      },
+      {
+        "state": "no_speech",
+        "text": "empty transcript",
+        "max_chars": 120,
+        "expected": "Try again and speak a little earlier, louder, or closer to the microphone."
+      },
+      {
+        "state": "error",
+        "text": "DEEPGRAM_API_KEY missing",
+        "max_chars": 120,
+        "expected": "Add the required key in Setup & Settings, then try again."
+      },
+      {
+        "state": "error",
+        "text": "Microphone permission denied",
+        "max_chars": 120,
+        "expected": "Open Setup & Settings, allow microphone access, then try again."
+      },
+      {
+        "state": "error",
+        "text": "Copy failed — use Copy Last Transcript",
+        "max_chars": 120,
+        "expected": "Choose Copy Last Transcript in the menu to try copying again."
+      },
+      {
+        "state": "error",
+        "text": "<paste_failed>",
+        "max_chars": 120,
+        "expected": "Paste manually, or choose Copy Last Transcript to copy it again."
+      },
+      {
+        "state": "error",
+        "text": "unexpected custom error",
+        "max_chars": 120,
+        "expected": "Try again. PulseScribe will return to ready automatically. Export diagnostics or open Setup if it keeps happening."
+      }
+    ],
+    "tray_titles": [
+      {
+        "state": "idle",
+        "text": null,
+        "app_name": "PulseScribe",
+        "max_chars": 128,
+        "expected": "PulseScribe — Ready to dictate"
+      },
+      {
+        "state": "loading",
+        "text": "Warming up local model",
+        "app_name": "PulseScribe",
+        "max_chars": 128,
+        "expected": "PulseScribe — Warming up local model — Offline dictation is warming up after a model or settings change."
+      },
+      {
+        "state": "no_speech",
+        "text": "empty transcript",
+        "app_name": "PulseScribe",
+        "max_chars": 128,
+        "expected": "PulseScribe — No speech detected — Try again and speak a little earlier, louder, or closer to the microphone."
+      },
+      {
+        "state": "error",
+        "text": "OPENAI_API_KEY not set",
+        "app_name": "PulseScribe",
+        "max_chars": 128,
+        "expected": "PulseScribe — Missing API key — Add the required key in Setup & Settings, then try again."
+      },
+      {
+        "state": "error",
+        "text": "OPENAI_API_KEY not set",
+        "app_name": "PulseScribe",
+        "max_chars": 40,
+        "expected": "PulseScribe — Missing API key — Add the…"
+      }
+    ]
+  },
+  "overlay_feedback": {
+    "transcribing_status": [
+      {
+        "detail": null,
+        "refine": false,
+        "expected": null
+      },
+      {
+        "detail": "Deepgram",
+        "refine": false,
+        "expected": "Deepgram"
+      },
+      {
+        "detail": null,
+        "refine": true,
+        "expected": "Transcribing, then refining"
+      },
+      {
+        "detail": "",
+        "refine": true,
+        "expected": "Transcribing, then refining"
+      },
+      {
+        "detail": "Deepgram…",
+        "refine": true,
+        "expected": "Deepgram, then refining"
+      },
+      {
+        "detail": "Whisper...",
+        "refine": true,
+        "expected": "Whisper, then refining"
+      }
+    ],
+    "describe_content": [
+      {
+        "state": "IDLE",
+        "text": null,
+        "max_chars": 72,
+        "expected": {
+          "bars": "none",
+          "text": "",
+          "emphasized": false,
+          "badge": "",
+          "tone": null,
+          "dismissible": false,
+          "meta": "",
+          "action": null
+        }
+      },
+      {
+        "state": "LISTENING",
+        "text": null,
+        "max_chars": 72,
+        "expected": {
+          "bars": "low",
+          "text": "Listening…",
+          "emphasized": false,
+          "badge": "",
+          "tone": null,
+          "dismissible": false,
+          "meta": "",
+          "action": null
+        }
+      },
+      {
+        "state": "RECORDING",
+        "text": "ignored interim",
+        "max_chars": 72,
+        "expected": {
+          "bars": "level",
+          "text": "Recording",
+          "emphasized": true,
+          "badge": "",
+          "tone": null,
+          "dismissible": false,
+          "meta": "",
+          "action": null
+        }
+      },
+      {
+        "state": "LOADING",
+        "text": null,
+        "max_chars": 72,
+        "expected": {
+          "bars": "line",
+          "text": "Preparing…",
+          "emphasized": false,
+          "badge": "",
+          "tone": null,
+          "dismissible": false,
+          "meta": "",
+          "action": null
+        }
+      },
+      {
+        "state": "LOADING",
+        "text": "Warming up local model",
+        "max_chars": 72,
+        "expected": {
+          "bars": "line",
+          "text": "Warming up local model…",
+          "emphasized": false,
+          "badge": "",
+          "tone": null,
+          "dismissible": false,
+          "meta": "",
+          "action": null
+        }
+      },
+      {
+        "state": "LOADING",
+        "text": "Loading a very long local model name that exceeds thirty characters",
+        "max_chars": 30,
+        "expected": {
+          "bars": "line",
+          "text": "Loading a very long local mod…",
+          "emphasized": false,
+          "badge": "",
+          "tone": null,
+          "dismissible": false,
+          "meta": "",
+          "action": null
+        }
+      },
+      {
+        "state": "TRANSCRIBING",
+        "text": "Deepgram",
+        "max_chars": 72,
+        "expected": {
+          "bars": "line",
+          "text": "Transcribing…",
+          "emphasized": false,
+          "badge": "",
+          "tone": null,
+          "dismissible": false,
+          "meta": "",
+          "action": null
+        }
+      },
+      {
+        "state": "TRANSCRIBING",
+        "text": "Deepgram, then refining",
+        "max_chars": 72,
+        "expected": {
+          "bars": "phase1",
+          "text": "Transcribing…",
+          "emphasized": false,
+          "badge": "",
+          "tone": null,
+          "dismissible": false,
+          "meta": "1 of 2",
+          "action": null
+        }
+      },
+      {
+        "state": "REFINING",
+        "text": null,
+        "max_chars": 72,
+        "expected": {
+          "bars": "phase2",
+          "text": "Refining…",
+          "emphasized": false,
+          "badge": "",
+          "tone": null,
+          "dismissible": false,
+          "meta": "2 of 2",
+          "action": null
+        }
+      },
+      {
+        "state": "DONE",
+        "text": "Test complete",
+        "max_chars": 72,
+        "expected": {
+          "bars": "none",
+          "text": "Test complete",
+          "emphasized": false,
+          "badge": "Done",
+          "tone": "success",
+          "dismissible": false,
+          "meta": "",
+          "action": null
+        }
+      },
+      {
+        "state": "DONE",
+        "text": "Transcript pasted",
+        "max_chars": 72,
+        "expected": {
+          "bars": "none",
+          "text": "",
+          "emphasized": false,
+          "badge": "Pasted",
+          "tone": "success",
+          "dismissible": false,
+          "meta": "",
+          "action": null
+        }
+      },
+      {
+        "state": "DONE",
+        "text": "Transcript pasted into Mail · 1.2 s",
+        "max_chars": 72,
+        "expected": {
+          "bars": "none",
+          "text": "into Mail",
+          "emphasized": false,
+          "badge": "Pasted",
+          "tone": "success",
+          "dismissible": false,
+          "meta": "1.2 s",
+          "action": null
+        }
+      },
+      {
+        "state": "DONE",
+        "text": "Copied to clipboard · 0.4 s",
+        "max_chars": 72,
+        "expected": {
+          "bars": "none",
+          "text": "",
+          "emphasized": false,
+          "badge": "Copied",
+          "tone": "success",
+          "dismissible": false,
+          "meta": "0.4 s",
+          "action": null
+        }
+      },
+      {
+        "state": "DONE",
+        "text": "unrecognized done text",
+        "max_chars": 72,
+        "expected": {
+          "bars": "none",
+          "text": "",
+          "emphasized": false,
+          "badge": "Pasted",
+          "tone": "success",
+          "dismissible": false,
+          "meta": "",
+          "action": null
+        }
+      },
+      {
+        "state": "NO_SPEECH",
+        "text": null,
+        "max_chars": 72,
+        "expected": {
+          "bars": "none",
+          "text": "Nothing was pasted",
+          "emphasized": false,
+          "badge": "No speech",
+          "tone": "warn",
+          "dismissible": false,
+          "meta": "",
+          "action": null
+        }
+      },
+      {
+        "state": "ERROR",
+        "text": null,
+        "max_chars": 72,
+        "expected": {
+          "bars": "none",
+          "text": "Something went wrong",
+          "emphasized": false,
+          "badge": "Error",
+          "tone": "error",
+          "dismissible": true,
+          "meta": "",
+          "action": null
+        }
+      },
+      {
+        "state": "ERROR",
+        "text": "DEEPGRAM_API_KEY missing",
+        "max_chars": 72,
+        "expected": {
+          "bars": "none",
+          "text": "Missing API key",
+          "emphasized": false,
+          "badge": "Error",
+          "tone": "error",
+          "dismissible": true,
+          "meta": "Settings",
+          "action": "settings"
+        }
+      },
+      {
+        "state": "ERROR",
+        "text": "WASAPI audio input device unavailable",
+        "max_chars": 72,
+        "expected": {
+          "bars": "none",
+          "text": "Microphone unavailable",
+          "emphasized": false,
+          "badge": "Error",
+          "tone": "error",
+          "dismissible": true,
+          "meta": "Settings",
+          "action": "settings"
+        }
+      },
+      {
+        "state": "ERROR",
+        "text": "Error: custom failure",
+        "max_chars": 72,
+        "expected": {
+          "bars": "none",
+          "text": "custom failure",
+          "emphasized": false,
+          "badge": "Error",
+          "tone": "error",
+          "dismissible": true,
+          "meta": "",
+          "action": null
+        }
+      },
+      {
+        "state": "ERROR",
+        "text": "ERROR —   boom",
+        "max_chars": 72,
+        "expected": {
+          "bars": "none",
+          "text": "boom",
+          "emphasized": false,
+          "badge": "Error",
+          "tone": "error",
+          "dismissible": true,
+          "meta": "",
+          "action": null
+        }
+      },
+      {
+        "state": "ERROR",
+        "text": "Copy failed — use Copy Last Transcript",
+        "max_chars": 72,
+        "expected": {
+          "bars": "none",
+          "text": "Copy failed — use Copy Last Transcript",
+          "emphasized": false,
+          "badge": "Not pasted",
+          "tone": "warn",
+          "dismissible": true,
+          "meta": "",
+          "action": null
+        }
+      },
+      {
+        "state": "ERROR",
+        "text": "<paste_failed>",
+        "max_chars": 72,
+        "expected": {
+          "bars": "none",
+          "text": "<paste_failed>",
+          "emphasized": false,
+          "badge": "Not pasted",
+          "tone": "warn",
+          "dismissible": true,
+          "meta": "",
+          "action": null
+        }
       }
     ]
   }

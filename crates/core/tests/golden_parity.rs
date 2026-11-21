@@ -2,6 +2,13 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
+use pulsescribe_core::animation::{
+    height_factors, listening_bar_heights, listening_bar_rest_heights, listening_level,
+};
+use pulsescribe_core::daemon_status_feedback::{
+    build_daemon_status_hint, build_daemon_status_label, build_daemon_tray_title,
+    infer_daemon_status_error, normalize_daemon_status_text, parse_app_state_or_idle,
+};
 use pulsescribe_core::env::{
     apply_env_updates_to_lines, format_env_assignment, parse_bool, parse_dotenv_str, parse_env_line,
 };
@@ -15,6 +22,14 @@ use pulsescribe_core::hotkey::{
     parse_macos_hotkey, validate_macos_hotkey_change, windows_hotkeys_conflict,
 };
 use pulsescribe_core::onboarding::ONBOARDING_ORDER;
+use pulsescribe_core::overlay_feedback::{describe_overlay_content_for_str, transcribing_status};
+use pulsescribe_core::overlay_style::{
+    compute_overlay_layout, hex_to_rgb, shimmer_track, BAR_AREA_WIDTH, PHASE_STEP_WIDTH,
+};
+use pulsescribe_core::overlay_text::{
+    format_recording_duration, format_recording_interim_text, normalized_text_prefix,
+    split_recording_interim_text, wrap_interim_text,
+};
 use pulsescribe_core::prompts::{
     build_prompt_overrides_from_editor_state, format_app_mappings, normalize_prompt_editor_context,
     parse_and_merge_prompts_toml, parse_app_mappings, KNOWN_CONTEXTS,
@@ -28,15 +43,16 @@ use pulsescribe_core::vocabulary::{
     analyze_vocabulary_text, parse_vocabulary_text, split_vocabulary_text,
 };
 use pulsescribe_core::{
-    AppState, DaemonErrorCode, HoldHotkeyState, HotkeyKind, HotkeyValidationContext,
-    HotkeyValidationLevel, MessageType, OnboardingChoice, OnboardingStep, PromptEditorContext,
-    PromptOverrides, PromptsConfig, TranscriptClipboardBackend, TranscriptDelivery,
-    TranscriptEntry,
+    AnimationLogic, AppState, DaemonErrorCode, HoldHotkeyState, HotkeyKind,
+    HotkeyValidationContext, HotkeyValidationLevel, InterimLines, MessageType, OnboardingChoice,
+    OnboardingStep, OverlayAction, OverlayBarMode, OverlayContent, OverlayLayout,
+    OverlayLayoutParams, OverlayTone, PromptEditorContext, PromptOverrides, PromptsConfig,
+    TranscriptClipboardBackend, TranscriptDelivery, TranscriptEntry,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
-const SUPPORTED_SCHEMA_VERSION: u32 = 4;
+const SUPPORTED_SCHEMA_VERSION: u32 = 5;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -58,6 +74,225 @@ struct CoreContracts {
     hotkeys: HotkeysContracts,
     hold_state_trace: Vec<HoldStateStep>,
     transcript_delivery: TranscriptDeliveryContracts,
+    animation: AnimationContracts,
+    overlay_style: OverlayStyleContracts,
+    overlay_text: OverlayTextContracts,
+    daemon_status_feedback: DaemonStatusFeedbackContracts,
+    overlay_feedback: OverlayFeedbackContracts,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AnimationContracts {
+    height_factors: Vec<f64>,
+    listening_bar_rest_heights: Vec<f64>,
+    listening_level: Vec<ListeningLevelCase>,
+    listening_bar_heights: Vec<ListeningBarHeightsCase>,
+    trace: AnimationTraceCase,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ListeningLevelCase {
+    rms: f64,
+    expected: f64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ListeningBarHeightsCase {
+    level: f64,
+    expected: Vec<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AnimationTraceCase {
+    level_inputs: Vec<f64>,
+    t: f64,
+    min_height: f64,
+    max_height: f64,
+    listening_rms_probe: f64,
+    expected_listening_settled: bool,
+    expected_listening_frame: Vec<f64>,
+    expected_recording_normalized: Vec<f64>,
+    expected_listening_normalized: Vec<f64>,
+    expected_recording_heights: Vec<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OverlayStyleContracts {
+    bar_area_width: f64,
+    phase_step_width: f64,
+    bar_colors: BTreeMap<String, String>,
+    phase_step_colors: BTreeMap<String, [String; 2]>,
+    badge_tones: BTreeMap<String, [String; 2]>,
+    hex_to_rgb: Vec<HexToRgbCase>,
+    shimmer_track: Vec<ShimmerTrackCase>,
+    layout_cases: Vec<OverlayLayoutCase>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HexToRgbCase {
+    hex: String,
+    expected: [u8; 3],
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ShimmerTrackCase {
+    mode: String,
+    expected: Option<[f64; 2]>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OverlayLayoutCase {
+    name: String,
+    text_width: f64,
+    meta_width: f64,
+    dismiss_width: f64,
+    status_width: f64,
+    grow: bool,
+    max_width: f64,
+    base_width: f64,
+    expected: OverlayLayout,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OverlayTextContracts {
+    normalized_text_prefix: Vec<NormalizedPrefixCase>,
+    format_recording_duration: Vec<FormatDurationCase>,
+    format_recording_interim_text: Vec<FormatInterimCase>,
+    split_recording_interim_text: Vec<SplitInterimCase>,
+    wrap_interim_text_trace: Vec<WrapInterimStep>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NormalizedPrefixCase {
+    text: String,
+    max_chars: usize,
+    expected: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FormatDurationCase {
+    seconds: f64,
+    expected: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FormatInterimCase {
+    text: String,
+    max_chars: usize,
+    ellipsis: bool,
+    expected: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SplitInterimCase {
+    text: String,
+    previous_text: String,
+    max_chars: usize,
+    ellipsis: bool,
+    expected: [String; 2],
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WrapInterimStep {
+    text: String,
+    reset_previous: bool,
+    char_limit: usize,
+    max_lines: usize,
+    expected_lines: Vec<[String; 2]>,
+    expected_source: String,
+    expected_start: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DaemonStatusFeedbackContracts {
+    normalize_text: Vec<NormalizeTextCase>,
+    infer_error: Vec<InferErrorCase>,
+    status_labels: Vec<StatusLabelCase>,
+    status_hints: Vec<StatusHintCase>,
+    tray_titles: Vec<TrayTitleCase>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NormalizeTextCase {
+    input: Option<String>,
+    expected: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InferErrorCase {
+    input: Option<String>,
+    expected_code: Option<String>,
+    expected_detail: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StatusLabelCase {
+    state: String,
+    text: Option<String>,
+    prefer_detail: bool,
+    max_chars: usize,
+    expected: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StatusHintCase {
+    state: String,
+    text: Option<String>,
+    max_chars: usize,
+    expected: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TrayTitleCase {
+    state: String,
+    text: Option<String>,
+    app_name: String,
+    max_chars: usize,
+    expected: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OverlayFeedbackContracts {
+    transcribing_status: Vec<TranscribingStatusCase>,
+    describe_content: Vec<DescribeOverlayCase>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TranscribingStatusCase {
+    detail: Option<String>,
+    refine: bool,
+    expected: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DescribeOverlayCase {
+    state: Option<String>,
+    text: Option<String>,
+    max_chars: usize,
+    expected: OverlayContent,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1075,4 +1310,318 @@ fn transcript_delivery_contracts_match_python_golden_fixture() {
         copy_ok: false,
     };
     assert_eq!(delivery.copy_last(&mut fail_backend), td.copy_last_fail);
+}
+
+fn assert_float_close(actual: f64, expected: f64, context: &str) {
+    assert!(
+        (actual - expected).abs() <= 1e-12,
+        "{context}: actual={actual} expected={expected}"
+    );
+}
+
+fn assert_float_slice_close(actual: &[f64], expected: &[f64], context: &str) {
+    assert_eq!(actual.len(), expected.len(), "{context}: length mismatch");
+    for (idx, (&a, &e)) in actual.iter().zip(expected.iter()).enumerate() {
+        assert_float_close(a, e, &format!("{context}[{idx}]"));
+    }
+}
+
+#[test]
+fn animation_contracts_match_python_golden_fixture() {
+    let contracts = load_contracts();
+    let anim_c = &contracts.animation;
+
+    assert_float_slice_close(&height_factors(), &anim_c.height_factors, "height_factors");
+    assert_float_slice_close(
+        &listening_bar_rest_heights(),
+        &anim_c.listening_bar_rest_heights,
+        "listening_bar_rest_heights",
+    );
+
+    for case in &anim_c.listening_level {
+        assert_float_close(
+            listening_level(case.rms),
+            case.expected,
+            &format!("listening_level({})", case.rms),
+        );
+    }
+
+    for case in &anim_c.listening_bar_heights {
+        assert_float_slice_close(
+            &listening_bar_heights(case.level),
+            &case.expected,
+            &format!("listening_bar_heights({})", case.level),
+        );
+    }
+
+    let mut anim = AnimationLogic::new();
+    for &sample in &anim_c.trace.level_inputs {
+        anim.update_level(sample);
+        anim.update_agc();
+    }
+    assert_eq!(
+        anim.listening_is_settled(anim_c.trace.listening_rms_probe),
+        anim_c.trace.expected_listening_settled
+    );
+    assert_float_slice_close(
+        &anim.listening_frame_heights(),
+        &anim_c.trace.expected_listening_frame,
+        "listening_frame_heights",
+    );
+    assert_float_slice_close(
+        &anim.calculate_frame_normalized(anim_c.trace.t, AppState::Recording),
+        &anim_c.trace.expected_recording_normalized,
+        "recording_normalized",
+    );
+    assert_float_slice_close(
+        &anim.calculate_frame_normalized(anim_c.trace.t, AppState::Listening),
+        &anim_c.trace.expected_listening_normalized,
+        "listening_normalized",
+    );
+    assert_float_slice_close(
+        &anim.calculate_frame_heights(
+            anim_c.trace.t,
+            AppState::Recording,
+            anim_c.trace.min_height,
+            anim_c.trace.max_height,
+        ),
+        &anim_c.trace.expected_recording_heights,
+        "recording_heights",
+    );
+}
+
+#[test]
+fn overlay_style_contracts_match_python_golden_fixture() {
+    let contracts = load_contracts();
+    let style = &contracts.overlay_style;
+
+    assert_float_close(BAR_AREA_WIDTH, style.bar_area_width, "bar_area_width");
+    assert_float_close(PHASE_STEP_WIDTH, style.phase_step_width, "phase_step_width");
+
+    for (mode_str, expected_color) in &style.bar_colors {
+        let mode: OverlayBarMode = serde_json::from_value(Value::String(mode_str.clone())).unwrap();
+        assert_eq!(
+            serde_json::to_value(mode).unwrap(),
+            Value::String(mode_str.clone())
+        );
+        assert_eq!(mode.bar_color(), Some(expected_color.as_str()));
+    }
+    for (mode_str, expected_pair) in &style.phase_step_colors {
+        let mode: OverlayBarMode = serde_json::from_value(Value::String(mode_str.clone())).unwrap();
+        assert_eq!(
+            mode.phase_step_colors(),
+            Some((expected_pair[0].as_str(), expected_pair[1].as_str()))
+        );
+    }
+    for (tone_str, expected_pair) in &style.badge_tones {
+        let tone: OverlayTone = serde_json::from_value(Value::String(tone_str.clone())).unwrap();
+        assert_eq!(
+            serde_json::to_value(tone).unwrap(),
+            Value::String(tone_str.clone())
+        );
+        assert_eq!(
+            tone.badge_colors(),
+            (expected_pair[0].as_str(), expected_pair[1].as_str())
+        );
+    }
+
+    for case in &style.hex_to_rgb {
+        let rgb =
+            hex_to_rgb(&case.hex).unwrap_or_else(|| panic!("failed hex_to_rgb({})", case.hex));
+        assert_eq!([rgb.r, rgb.g, rgb.b], case.expected);
+    }
+
+    for case in &style.shimmer_track {
+        let mode: OverlayBarMode =
+            serde_json::from_value(Value::String(case.mode.clone())).unwrap();
+        let actual = shimmer_track(mode).map(|t| [t.x, t.width]);
+        assert_eq!(actual, case.expected, "shimmer_track({})", case.mode);
+    }
+
+    for case in &style.layout_cases {
+        let actual = compute_overlay_layout(&OverlayLayoutParams {
+            text_width: case.text_width,
+            meta_width: case.meta_width,
+            dismiss_width: case.dismiss_width,
+            status_width: case.status_width,
+            grow: case.grow,
+            max_width: case.max_width,
+            base_width: case.base_width,
+        });
+        assert_eq!(actual, case.expected, "layout case '{}'", case.name);
+    }
+}
+
+#[test]
+fn overlay_text_contracts_match_python_golden_fixture() {
+    let contracts = load_contracts();
+    let ot = &contracts.overlay_text;
+
+    for case in &ot.normalized_text_prefix {
+        assert_eq!(
+            normalized_text_prefix(&case.text, case.max_chars),
+            case.expected
+        );
+    }
+    for case in &ot.format_recording_duration {
+        assert_eq!(format_recording_duration(case.seconds), case.expected);
+    }
+    for case in &ot.format_recording_interim_text {
+        assert_eq!(
+            format_recording_interim_text(&case.text, case.max_chars, case.ellipsis),
+            case.expected
+        );
+    }
+    for case in &ot.split_recording_interim_text {
+        let (earlier, newest) = split_recording_interim_text(
+            &case.text,
+            &case.previous_text,
+            case.max_chars,
+            case.ellipsis,
+        );
+        assert_eq!([earlier, newest], case.expected);
+    }
+
+    let mut prev: Option<InterimLines> = None;
+    for (idx, step) in ot.wrap_interim_text_trace.iter().enumerate() {
+        if step.reset_previous {
+            prev = None;
+        }
+        let res = wrap_interim_text(
+            &step.text,
+            prev.as_ref(),
+            |line| line.chars().count() <= step.char_limit,
+            step.max_lines,
+        );
+        let actual_lines: Vec<[String; 2]> = res
+            .lines
+            .iter()
+            .map(|(a, b)| [a.clone(), b.clone()])
+            .collect();
+        assert_eq!(actual_lines, step.expected_lines, "wrap step {idx}");
+        assert_eq!(res.source, step.expected_source, "wrap step {idx}");
+        assert_eq!(res.start, step.expected_start, "wrap step {idx}");
+        prev = Some(res);
+    }
+}
+
+#[test]
+fn daemon_status_feedback_contracts_match_python_golden_fixture() {
+    let contracts = load_contracts();
+    let dsf = &contracts.daemon_status_feedback;
+
+    for case in &dsf.normalize_text {
+        assert_eq!(
+            normalize_daemon_status_text(case.input.as_deref()),
+            case.expected
+        );
+    }
+
+    for case in &dsf.infer_error {
+        let inferred = infer_daemon_status_error(case.input.as_deref());
+        assert_eq!(
+            inferred.as_ref().map(|e| e.code.as_str()),
+            case.expected_code.as_deref(),
+            "infer_error code mismatch for {:?}",
+            case.input
+        );
+        assert_eq!(
+            inferred.and_then(|e| e.detail),
+            case.expected_detail,
+            "infer_error detail mismatch for {:?}",
+            case.input
+        );
+    }
+
+    for case in &dsf.status_labels {
+        let state = parse_app_state_or_idle(Some(&case.state));
+        assert_eq!(
+            build_daemon_status_label(
+                state,
+                case.text.as_deref(),
+                case.prefer_detail,
+                case.max_chars
+            ),
+            case.expected,
+            "status_label mismatch for state={} text={:?}",
+            case.state,
+            case.text
+        );
+    }
+
+    for case in &dsf.status_hints {
+        let state = parse_app_state_or_idle(Some(&case.state));
+        if case.text.as_deref() == Some("<paste_failed>") {
+            for paste_failed in [PASTE_FAILED_MACOS, PASTE_FAILED_OTHER] {
+                assert_eq!(
+                    build_daemon_status_hint(state, paste_failed, case.max_chars),
+                    case.expected
+                );
+            }
+        } else {
+            assert_eq!(
+                build_daemon_status_hint(state, case.text.as_deref(), case.max_chars),
+                case.expected,
+                "status_hint mismatch for state={} text={:?}",
+                case.state,
+                case.text
+            );
+        }
+    }
+
+    for case in &dsf.tray_titles {
+        let state = parse_app_state_or_idle(Some(&case.state));
+        assert_eq!(
+            build_daemon_tray_title(state, case.text.as_deref(), &case.app_name, case.max_chars),
+            case.expected,
+            "tray_title mismatch for state={} text={:?}",
+            case.state,
+            case.text
+        );
+    }
+}
+
+#[test]
+fn overlay_feedback_contracts_match_python_golden_fixture() {
+    let contracts = load_contracts();
+    let of = &contracts.overlay_feedback;
+
+    // Verify OverlayAction serde round-trip.
+    let settings_val = Value::String("settings".to_string());
+    let parsed_action: OverlayAction = serde_json::from_value(settings_val.clone()).unwrap();
+    assert_eq!(parsed_action.as_str(), "settings");
+    assert_eq!(serde_json::to_value(parsed_action).unwrap(), settings_val);
+
+    for case in &of.transcribing_status {
+        assert_eq!(
+            transcribing_status(case.detail.as_deref(), case.refine),
+            case.expected
+        );
+    }
+
+    for case in &of.describe_content {
+        if case.text.as_deref() == Some("<paste_failed>") {
+            for paste_failed in [PASTE_FAILED_MACOS, PASTE_FAILED_OTHER] {
+                let actual = describe_overlay_content_for_str(
+                    case.state.as_deref(),
+                    Some(paste_failed),
+                    case.max_chars,
+                );
+                let mut expected = case.expected.clone();
+                expected.text = paste_failed.to_string();
+                assert_eq!(actual, expected);
+            }
+        } else {
+            let actual = describe_overlay_content_for_str(
+                case.state.as_deref(),
+                case.text.as_deref(),
+                case.max_chars,
+            );
+            assert_eq!(
+                actual, case.expected,
+                "describe_overlay_content mismatch for state={:?} text={:?}",
+                case.state, case.text
+            );
+        }
+    }
 }

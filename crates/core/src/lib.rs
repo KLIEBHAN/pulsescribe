@@ -3,12 +3,17 @@
 //! This crate intentionally contains no OS or UI bindings so every module can be
 //! tested identically on macOS, Windows, and Linux.
 
+pub mod animation;
 pub mod atomic_io;
+pub mod daemon_status_feedback;
 pub mod env;
 pub mod history;
 pub mod hold_state;
 pub mod hotkey;
 pub mod onboarding;
+pub mod overlay_feedback;
+pub mod overlay_style;
+pub mod overlay_text;
 pub mod paths;
 pub mod preferences;
 pub mod prompts;
@@ -16,6 +21,8 @@ pub mod state;
 pub mod transcript_delivery;
 pub mod vocabulary;
 
+pub use animation::AnimationLogic;
+pub use daemon_status_feedback::StatusDetail;
 pub use history::{HistoryError, HistorySaveOutcome, HistoryStore, TranscriptEntry};
 pub use hold_state::HoldHotkeyState;
 pub use hotkey::{
@@ -23,6 +30,12 @@ pub use hotkey::{
     HotkeyValidationResult,
 };
 pub use onboarding::{OnboardingChoice, OnboardingStep};
+pub use overlay_feedback::OverlayContent;
+pub use overlay_style::{
+    OverlayAction, OverlayBarMode, OverlayLayout, OverlayLayoutParams, OverlayTone, Rgb,
+    ShimmerTrack,
+};
+pub use overlay_text::InterimLines;
 pub use paths::{AppPaths, FileSignature};
 pub use preferences::{HotkeyKind, PreferencesError, PreferencesStore};
 pub use prompts::{
