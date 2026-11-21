@@ -5,8 +5,8 @@
 //! hardcoded defaults on missing or invalid TOML files.
 
 use std::collections::BTreeMap;
-use std::fs;
-use std::io;
+use std::fs::{self, File};
+use std::io::{self, Read};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::atomic_io::write_text_atomic;
-use crate::paths::{build_file_signature, AppPaths, FileSignature};
+use crate::paths::{build_file_signature, file_signature_from_metadata, AppPaths, FileSignature};
 
 /// Known rewrite prompt context keys.
 pub const KNOWN_CONTEXTS: [&str; 4] = ["default", "email", "chat", "code"];
@@ -475,13 +475,72 @@ pub fn build_prompt_overrides_from_editor_state(
 }
 
 /// Format app→context mappings into sorted editor text (`AppName = context`).
+///
+/// Ordinary app names stay unquoted (`Slack = chat`), while names containing
+/// editor delimiters (`=`, `"`, `\`, `#`, control chars, or surrounding whitespace)
+/// are quoted so they round-trip safely through `parse_app_mappings`.
 pub fn format_app_mappings(mappings: &BTreeMap<String, String>) -> String {
     let mut lines = Vec::with_capacity(mappings.len() + 1);
     lines.push(APP_MAPPINGS_HEADER.to_string());
     for (app, ctx) in mappings {
-        lines.push(format!("{app} = {ctx}"));
+        if needs_app_mapping_quotes(app) {
+            lines.push(format!("\"{}\" = {ctx}", escape_toml_basic_string(app)));
+        } else {
+            lines.push(format!("{app} = {ctx}"));
+        }
     }
     lines.join("\n")
+}
+
+fn needs_app_mapping_quotes(app: &str) -> bool {
+    app.trim() != app
+        || app.chars().any(|c| {
+            matches!(c, '=' | '"' | '\\' | '#' | '\n' | '\r' | '\t')
+                || (c as u32) < 0x20
+                || c == '\x7f'
+        })
+}
+
+fn split_app_mapping_line(line: &str) -> Option<(String, &str)> {
+    if let Some(rest) = line.strip_prefix('"') {
+        let mut app = String::new();
+        let mut chars = rest.chars().peekable();
+        let mut closed = false;
+        while let Some(ch) = chars.next() {
+            match ch {
+                '\\' => match chars.next() {
+                    Some('\\') => app.push('\\'),
+                    Some('"') => app.push('"'),
+                    Some('n') => app.push('\n'),
+                    Some('r') => app.push('\r'),
+                    Some('t') => app.push('\t'),
+                    Some(other) => {
+                        app.push('\\');
+                        app.push(other);
+                    }
+                    None => break,
+                },
+                '"' => {
+                    closed = true;
+                    break;
+                }
+                other => app.push(other),
+            }
+        }
+        if closed {
+            let remainder: String = chars.collect();
+            let trimmed_rest = remainder.trim_start();
+            if let Some(ctx_part) = trimmed_rest.strip_prefix('=') {
+                // Borrow ctx_part slice directly from `line`.
+                let offset = line.len() - ctx_part.len();
+                return Some((app, &line[offset..]));
+            }
+            return None;
+        }
+    }
+
+    let (raw_app, raw_ctx) = line.split_once('=')?;
+    Some((raw_app.trim().trim_matches('"').to_string(), raw_ctx))
 }
 
 /// Parse editor text into validated `AppName -> context` mappings.
@@ -492,12 +551,11 @@ pub fn parse_app_mappings(text: &str) -> BTreeMap<String, String> {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let Some((raw_app, raw_ctx)) = line.split_once('=') else {
+        let Some((app_candidate, raw_ctx)) = split_app_mapping_line(line) else {
             continue;
         };
-        let app_candidate = raw_app.trim().trim_matches('"');
         let ctx_candidate = raw_ctx.split_once('#').map_or(raw_ctx, |(left, _)| left);
-        if let Some((app, ctx)) = normalize_app_context_entry(app_candidate, ctx_candidate) {
+        if let Some((app, ctx)) = normalize_app_context_entry(&app_candidate, ctx_candidate) {
             result.insert(app, ctx.to_string());
         }
     }
@@ -706,7 +764,7 @@ impl PromptsStore {
     /// missing, unreadable, or malformed TOML files.
     pub fn load(&self) -> PromptsConfig {
         let prompts_file = self.paths.prompts_file();
-        let Ok(signature) = build_file_signature(&prompts_file) else {
+        let Ok(stat_signature) = build_file_signature(&prompts_file) else {
             self.invalidate_cache();
             return PromptsConfig::defaults();
         };
@@ -714,13 +772,30 @@ impl PromptsStore {
         {
             let guard = self.cache.lock().unwrap_or_else(|e| e.into_inner());
             if let Some((cached_sig, cached_config)) = guard.as_ref() {
-                if *cached_sig == signature {
+                if *cached_sig == stat_signature {
                     return cached_config.clone();
                 }
             }
         }
 
-        let loaded = fs::read_to_string(&prompts_file)
+        // Open once so signature and content belong to the same file and transient
+        // I/O errors are never cached as sticky defaults.
+        let Ok(mut file) = File::open(&prompts_file) else {
+            self.invalidate_cache();
+            return PromptsConfig::defaults();
+        };
+        let Ok(meta) = file.metadata() else {
+            self.invalidate_cache();
+            return PromptsConfig::defaults();
+        };
+        let signature = file_signature_from_metadata(&meta);
+        let mut raw_bytes = Vec::new();
+        if file.read_to_end(&mut raw_bytes).is_err() {
+            self.invalidate_cache();
+            return PromptsConfig::defaults();
+        }
+
+        let loaded = String::from_utf8(raw_bytes)
             .ok()
             .and_then(|raw| parse_and_merge_prompts_toml(&raw).ok())
             .unwrap_or_else(PromptsConfig::defaults);
@@ -760,17 +835,9 @@ impl PromptsStore {
         let prompts_file = self.paths.prompts_file();
 
         write_text_atomic(&prompts_file, &overrides.to_toml_string())?;
+        self.invalidate_cache();
 
-        let merged = overrides.merge_with_defaults();
-        match build_file_signature(&prompts_file) {
-            Ok(sig) => {
-                let mut guard = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-                *guard = Some((sig, merged.clone()));
-            }
-            Err(_) => self.invalidate_cache(),
-        }
-
-        Ok(merged)
+        Ok(overrides.merge_with_defaults())
     }
 
     /// Remove the custom `prompts.toml` file (if present) and invalidate the cache.
@@ -953,6 +1020,38 @@ mod tests {
             overrides.prompts.get("email").map(String::as_str),
             Some("Custom mail")
         );
+
+        // App names with `=`, quotes, or backslashes round-trip through the editor format.
+        let mut special = BTreeMap::new();
+        special.insert("Slack".to_string(), "chat".to_string());
+        special.insert("Build=Agent".to_string(), "code".to_string());
+        special.insert("Quoted \"App\" \\Name".to_string(), "email".to_string());
+        let formatted = format_app_mappings(&special);
+        assert!(formatted.contains("Slack = chat"));
+        assert!(formatted.contains("\"Build=Agent\" = code"));
+        assert_eq!(parse_app_mappings(&formatted), special);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_does_not_cache_transient_io_failures() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (store, dir) = unique_store("transient-io");
+        let path = store.paths().prompts_file();
+        fs::write(&path, "[prompts.chat]\nprompt = \"Custom chat\"\n").unwrap();
+
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+        let can_read_000 = File::open(&path).is_ok();
+        if !can_read_000 {
+            assert_eq!(store.get_prompt_for_context("chat"), CHAT_REFINE_PROMPT);
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+            assert_eq!(store.get_prompt_for_context("chat"), "Custom chat");
+        } else {
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

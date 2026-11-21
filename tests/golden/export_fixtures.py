@@ -280,7 +280,7 @@ def _export_vocabulary_contracts() -> dict[str, Any]:
     )
     analyze_inputs: tuple[tuple[str, str | None], ...] = (
         ("none", None),
-        ("dedupe-and-casefold", "Whisper, whisper, Straße, STRASSE, Groq"),
+        ("dedupe-and-casefold", "Whisper, whisper, Straße, STRASSE, ſage, sage, ﬁle, FILE, Groq"),
         (
             "over-local-limit",
             ", ".join(f"local_term_{i}" for i in range(51)),

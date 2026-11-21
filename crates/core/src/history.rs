@@ -43,6 +43,19 @@ pub enum HistoryError {
     Json(#[from] serde_json::Error),
 }
 
+/// Outcome of a transcript save operation, separating durability of the appended
+/// record from any non-fatal rotation maintenance failure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistorySaveOutcome {
+    /// `true` once the transcript record has been written to `history.jsonl`;
+    /// `false` if the input text was empty and nothing was written.
+    pub saved: bool,
+    /// Optional maintenance warning if size-based rotation could not complete.
+    /// Callers can retry maintenance via `HistoryStore::rotate_if_needed()` without
+    /// appending the transcript a second time.
+    pub rotation_warning: Option<String>,
+}
+
 /// One persisted JSONL transcript record in `~/.pulsescribe/history.jsonl`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TranscriptEntry {
@@ -555,7 +568,7 @@ impl HistoryStore {
     }
 
     /// Trim `text`, stamp the current local time, and append to `history.jsonl` with rotation.
-    /// Returns `Ok(false)` without touching disk when `text` is empty or whitespace-only.
+    /// Returns `saved: false` without touching disk when `text` is empty or whitespace-only.
     pub fn save_transcript(
         &self,
         text: &str,
@@ -563,10 +576,13 @@ impl HistoryStore {
         language: Option<&str>,
         refined: bool,
         app_context: Option<&str>,
-    ) -> Result<bool, HistoryError> {
+    ) -> Result<HistorySaveOutcome, HistoryError> {
         let clean = text.trim();
         if clean.is_empty() {
-            return Ok(false);
+            return Ok(HistorySaveOutcome {
+                saved: false,
+                rotation_warning: None,
+            });
         }
         let entry = TranscriptEntry::new(
             clean,
@@ -579,12 +595,20 @@ impl HistoryStore {
     }
 
     /// Append a pre-built `TranscriptEntry` to `history.jsonl` under the serialized write lock.
-    pub fn save_entry(&self, entry: &TranscriptEntry) -> Result<bool, HistoryError> {
+    ///
+    /// Recovers any unterminated trailing line before appending and separates rotation
+    /// maintenance warnings from commit failure so callers never duplicate a saved record.
+    pub fn save_entry(&self, entry: &TranscriptEntry) -> Result<HistorySaveOutcome, HistoryError> {
         if entry.text.is_empty() {
-            return Ok(false);
+            return Ok(HistorySaveOutcome {
+                saved: false,
+                rotation_warning: None,
+            });
         }
 
-        let line = entry.to_json_line()?;
+        let mut record = entry.to_json_line()?;
+        record.push('\n');
+
         let _write_guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
         let history_file = self.paths.history_file();
 
@@ -592,32 +616,48 @@ impl HistoryStore {
             fs::create_dir_all(parent)?;
         }
 
-        self.rotate_if_needed_locked(&history_file)?;
+        let mut rotation_warning = match self.rotate_if_needed_locked(&history_file) {
+            Ok(_) => None,
+            Err(err) => Some(err.to_string()),
+        };
+
+        ensure_clean_jsonl_tail_locked(&history_file)?;
 
         {
             let mut file = OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open(&history_file)?;
-            file.write_all(line.as_bytes())?;
-            file.write_all(b"\n")?;
+            file.write_all(record.as_bytes())?;
         }
 
         // Rotate again immediately if the newly appended line pushed size past the threshold.
-        self.rotate_if_needed_locked(&history_file)?;
+        if let Err(err) = self.rotate_if_needed_locked(&history_file) {
+            rotation_warning = Some(err.to_string());
+        }
 
-        Ok(true)
+        Ok(HistorySaveOutcome {
+            saved: true,
+            rotation_warning,
+        })
     }
 
-    fn rotate_if_needed_locked(&self, history_file: &Path) -> Result<(), HistoryError> {
+    /// Run size-based history rotation under the write lock without appending a new entry.
+    /// Returns `Ok(true)` if the file was rewritten to drop older entries, `Ok(false)` otherwise.
+    pub fn rotate_if_needed(&self) -> Result<bool, HistoryError> {
+        let _write_guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+        self.rotate_if_needed_locked(&self.paths.history_file())
+    }
+
+    fn rotate_if_needed_locked(&self, history_file: &Path) -> Result<bool, HistoryError> {
         let meta = match fs::metadata(history_file) {
             Ok(meta) => meta,
-            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
             Err(err) => return Err(HistoryError::Io(err)),
         };
 
         if meta.len() < self.max_size_bytes as u64 {
-            return Ok(());
+            return Ok(false);
         }
 
         let raw_bytes = fs::read(history_file)?;
@@ -628,8 +668,9 @@ impl HistoryStore {
             let mut content = kept.join("\n");
             content.push('\n');
             write_text_atomic(history_file, &content)?;
+            return Ok(true);
         }
-        Ok(())
+        Ok(false)
     }
 
     /// Return up to `count` most recent valid transcript entries (newest first)
@@ -736,6 +777,60 @@ impl HistoryStore {
     }
 }
 
+/// Ensure an existing `history.jsonl` file ends cleanly on a newline boundary before appending.
+///
+/// Leaves newline-terminated files untouched after a single-byte tail check. If the
+/// final line lacks a trailing newline, delimits it with `\n` when it parses as a
+/// complete JSON object, or truncates the incomplete trailing fragment otherwise.
+fn ensure_clean_jsonl_tail_locked(history_file: &Path) -> io::Result<()> {
+    let mut file = match OpenOptions::new().read(true).write(true).open(history_file) {
+        Ok(file) => file,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err),
+    };
+
+    let file_len = file.seek(SeekFrom::End(0))?;
+    if file_len == 0 {
+        return Ok(());
+    }
+
+    file.seek(SeekFrom::End(-1))?;
+    let mut last_byte = [0u8; 1];
+    file.read_exact(&mut last_byte)?;
+    if last_byte[0] == b'\n' {
+        return Ok(());
+    }
+
+    let mut pos = file_len;
+    let mut last_line_start = 0u64;
+    let mut buf = vec![0u8; TAIL_CHUNK_SIZE];
+    while pos > 0 {
+        let read_size = (TAIL_CHUNK_SIZE as u64).min(pos) as usize;
+        pos -= read_size as u64;
+        file.seek(SeekFrom::Start(pos))?;
+        file.read_exact(&mut buf[..read_size])?;
+        if let Some(rel_idx) = buf[..read_size].iter().rposition(|&b| b == b'\n') {
+            last_line_start = pos + rel_idx as u64 + 1;
+            break;
+        }
+    }
+
+    let tail_len = file_len - last_line_start;
+    file.seek(SeekFrom::Start(last_line_start))?;
+    let mut tail_bytes = Vec::with_capacity(usize::try_from(tail_len).unwrap_or(0));
+    (&file).take(tail_len).read_to_end(&mut tail_bytes)?;
+    let tail_text = String::from_utf8_lossy(&tail_bytes);
+
+    if TranscriptEntry::from_json_line(&tail_text).is_some() {
+        file.seek(SeekFrom::End(0))?;
+        file.write_all(b"\n")?;
+    } else {
+        file.set_len(last_line_start)?;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -758,25 +853,31 @@ mod tests {
     fn save_load_offset_and_clear_roundtrip() {
         let (store, dir) = unique_store("roundtrip", MAX_HISTORY_SIZE_BYTES);
 
-        assert!(!store
+        let empty_outcome = store
             .save_transcript("   \n\t  ", Some("local"), None, false, None)
-            .unwrap());
+            .unwrap();
+        assert!(!empty_outcome.saved);
+        assert_eq!(empty_outcome.rotation_warning, None);
         assert!(!store.paths().history_file().exists());
 
-        assert!(store
+        let first_outcome = store
             .save_transcript(
                 "  Hello world  ",
                 Some("local"),
                 Some("en"),
                 true,
-                Some("Slack")
+                Some("Slack"),
             )
-            .unwrap());
+            .unwrap();
+        assert!(first_outcome.saved);
+        assert_eq!(first_outcome.rotation_warning, None);
         let first_offset = fs::metadata(store.paths().history_file()).unwrap().len();
 
-        assert!(store
+        let second_outcome = store
             .save_transcript("Second line", Some(""), Some(""), false, Some(""))
-            .unwrap());
+            .unwrap();
+        assert!(second_outcome.saved);
+        assert_eq!(second_outcome.rotation_warning, None);
 
         let (recent, sig) = store.get_recent_transcripts_with_signature(10);
         assert!(sig.is_some());
@@ -802,6 +903,87 @@ mod tests {
         assert!(store.get_recent_transcripts(10).is_empty());
         // Idempotent clear on absent file.
         store.clear().unwrap();
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_recovers_unterminated_complete_and_truncated_jsonl_tails() {
+        let (store, dir) = unique_store("tail-recovery", MAX_HISTORY_SIZE_BYTES);
+        let path = store.paths().history_file();
+
+        // Case 1: complete JSON object missing its trailing newline -> delimited, both kept.
+        fs::write(
+            &path,
+            r#"{"timestamp":"2026-11-21T10:00:00","text":"unterminated-complete"}"#,
+        )
+        .unwrap();
+        let outcome = store
+            .save_transcript("after-complete", Some("local"), None, false, None)
+            .unwrap();
+        assert!(outcome.saved);
+        let recent = store.get_recent_transcripts(10);
+        assert_eq!(recent.len(), 2);
+        assert_eq!(recent[0].text, "after-complete");
+        assert_eq!(recent[1].text, "unterminated-complete");
+
+        // Case 2: truncated partial JSON fragment at EOF -> truncated, prior + new both readable.
+        let mut content = fs::read_to_string(&path).unwrap();
+        content.push_str(r#"{"timestamp":"2026-11-21T10:01:00","text":"half-writ"#);
+        fs::write(&path, content).unwrap();
+
+        let outcome2 = store
+            .save_transcript("after-truncated", Some("local"), None, false, None)
+            .unwrap();
+        assert!(outcome2.saved);
+        let recent2 = store.get_recent_transcripts(10);
+        assert_eq!(recent2.len(), 3);
+        assert_eq!(recent2[0].text, "after-truncated");
+        assert_eq!(recent2[1].text, "after-complete");
+        assert_eq!(recent2[2].text, "unterminated-complete");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_reports_committed_entry_separately_when_rotation_cannot_create_temp_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (store, dir) = unique_store("rotation-warning", 90);
+        store
+            .save_transcript("first-entry-padding-text", Some("local"), None, false, None)
+            .unwrap();
+
+        // Lock directory against creating new temp files while keeping history.jsonl writable.
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).unwrap();
+        let can_create_in_dir = File::create(dir.join(".perm-probe")).is_ok();
+        let _ = fs::remove_file(dir.join(".perm-probe"));
+        if !can_create_in_dir {
+            let outcome = store
+                .save_transcript(
+                    "second-entry-triggers-rotation",
+                    Some("local"),
+                    None,
+                    false,
+                    None,
+                )
+                .unwrap();
+            assert!(outcome.saved);
+            assert!(outcome.rotation_warning.is_some());
+
+            let recent = store.get_recent_transcripts(10);
+            assert_eq!(recent[0].text, "second-entry-triggers-rotation");
+
+            // Restoring directory permissions allows maintenance rotation without re-appending.
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+            assert!(store.rotate_if_needed().unwrap());
+            let after_rotate = store.get_recent_transcripts(10);
+            assert_eq!(after_rotate.len(), 1);
+            assert_eq!(after_rotate[0].text, "second-entry-triggers-rotation");
+        } else {
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        }
 
         let _ = fs::remove_dir_all(&dir);
     }

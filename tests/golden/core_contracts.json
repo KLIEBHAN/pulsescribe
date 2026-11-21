@@ -537,17 +537,19 @@
       },
       {
         "name": "dedupe-and-casefold",
-        "input": "Whisper, whisper, Straße, STRASSE, Groq",
+        "input": "Whisper, whisper, Straße, STRASSE, ſage, sage, ﬁle, FILE, Groq",
         "keywords": [
           "Whisper",
           "Straße",
+          "ſage",
+          "ﬁle",
           "Groq"
         ],
         "issues": [
-          "2 duplicate keywords found."
+          "4 duplicate keywords found."
         ],
-        "input_count": 5,
-        "duplicate_count": 2,
+        "input_count": 9,
+        "duplicate_count": 4,
         "exceeds_local_limit": false,
         "exceeds_deepgram_limit": false
       },

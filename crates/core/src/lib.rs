@@ -13,7 +13,7 @@ pub mod prompts;
 pub mod state;
 pub mod vocabulary;
 
-pub use history::{HistoryError, HistoryStore, TranscriptEntry};
+pub use history::{HistoryError, HistorySaveOutcome, HistoryStore, TranscriptEntry};
 pub use onboarding::{OnboardingChoice, OnboardingStep};
 pub use paths::{AppPaths, FileSignature};
 pub use preferences::{HotkeyKind, PreferencesError, PreferencesStore};

@@ -5,8 +5,8 @@
 //! preservation of unknown top-level JSON keys for Python coexistence.
 
 use std::collections::HashSet;
-use std::fs;
-use std::io;
+use std::fs::{self, File};
+use std::io::{self, Read};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -14,7 +14,7 @@ use serde_json::{Map, Value};
 use thiserror::Error;
 
 use crate::atomic_io::write_text_atomic_restricted;
-use crate::paths::{build_file_signature, AppPaths, FileSignature};
+use crate::paths::{build_file_signature, file_signature_from_metadata, AppPaths, FileSignature};
 
 /// Maximum recommended keywords for local Whisper/Parakeet biasing.
 pub const LOCAL_KEYWORD_LIMIT: usize = 50;
@@ -90,9 +90,176 @@ struct CachedVocabulary {
     issues: Vec<String>,
 }
 
-/// Case-folding key matching Python `str.casefold()` for Latin/German scripts.
+/// Non-Cherokee Unicode scalar values whose full case folding (CaseFolding.txt C+F)
+/// differs from `char::to_lowercase()`, sorted by codepoint for binary search.
+const CASEFOLD_OVERRIDES: &[(char, &str)] = &[
+    ('\u{00B5}', "\u{03BC}"),
+    ('\u{00DF}', "ss"),
+    ('\u{0149}', "\u{02BC}n"),
+    ('\u{017F}', "s"),
+    ('\u{01F0}', "j\u{030C}"),
+    ('\u{0345}', "\u{03B9}"),
+    ('\u{0390}', "\u{03B9}\u{0308}\u{0301}"),
+    ('\u{03B0}', "\u{03C5}\u{0308}\u{0301}"),
+    ('\u{03C2}', "\u{03C3}"),
+    ('\u{03D0}', "\u{03B2}"),
+    ('\u{03D1}', "\u{03B8}"),
+    ('\u{03D5}', "\u{03C6}"),
+    ('\u{03D6}', "\u{03C0}"),
+    ('\u{03F0}', "\u{03BA}"),
+    ('\u{03F1}', "\u{03C1}"),
+    ('\u{03F5}', "\u{03B5}"),
+    ('\u{0587}', "\u{0565}\u{0582}"),
+    ('\u{1C80}', "\u{0432}"),
+    ('\u{1C81}', "\u{0434}"),
+    ('\u{1C82}', "\u{043E}"),
+    ('\u{1C83}', "\u{0441}"),
+    ('\u{1C84}', "\u{0442}"),
+    ('\u{1C85}', "\u{0442}"),
+    ('\u{1C86}', "\u{044A}"),
+    ('\u{1C87}', "\u{0463}"),
+    ('\u{1C88}', "\u{A64B}"),
+    ('\u{1E96}', "h\u{0331}"),
+    ('\u{1E97}', "t\u{0308}"),
+    ('\u{1E98}', "w\u{030A}"),
+    ('\u{1E99}', "y\u{030A}"),
+    ('\u{1E9A}', "a\u{02BE}"),
+    ('\u{1E9B}', "\u{1E61}"),
+    ('\u{1E9E}', "ss"),
+    ('\u{1F50}', "\u{03C5}\u{0313}"),
+    ('\u{1F52}', "\u{03C5}\u{0313}\u{0300}"),
+    ('\u{1F54}', "\u{03C5}\u{0313}\u{0301}"),
+    ('\u{1F56}', "\u{03C5}\u{0313}\u{0342}"),
+    ('\u{1F80}', "\u{1F00}\u{03B9}"),
+    ('\u{1F81}', "\u{1F01}\u{03B9}"),
+    ('\u{1F82}', "\u{1F02}\u{03B9}"),
+    ('\u{1F83}', "\u{1F03}\u{03B9}"),
+    ('\u{1F84}', "\u{1F04}\u{03B9}"),
+    ('\u{1F85}', "\u{1F05}\u{03B9}"),
+    ('\u{1F86}', "\u{1F06}\u{03B9}"),
+    ('\u{1F87}', "\u{1F07}\u{03B9}"),
+    ('\u{1F88}', "\u{1F00}\u{03B9}"),
+    ('\u{1F89}', "\u{1F01}\u{03B9}"),
+    ('\u{1F8A}', "\u{1F02}\u{03B9}"),
+    ('\u{1F8B}', "\u{1F03}\u{03B9}"),
+    ('\u{1F8C}', "\u{1F04}\u{03B9}"),
+    ('\u{1F8D}', "\u{1F05}\u{03B9}"),
+    ('\u{1F8E}', "\u{1F06}\u{03B9}"),
+    ('\u{1F8F}', "\u{1F07}\u{03B9}"),
+    ('\u{1F90}', "\u{1F20}\u{03B9}"),
+    ('\u{1F91}', "\u{1F21}\u{03B9}"),
+    ('\u{1F92}', "\u{1F22}\u{03B9}"),
+    ('\u{1F93}', "\u{1F23}\u{03B9}"),
+    ('\u{1F94}', "\u{1F24}\u{03B9}"),
+    ('\u{1F95}', "\u{1F25}\u{03B9}"),
+    ('\u{1F96}', "\u{1F26}\u{03B9}"),
+    ('\u{1F97}', "\u{1F27}\u{03B9}"),
+    ('\u{1F98}', "\u{1F20}\u{03B9}"),
+    ('\u{1F99}', "\u{1F21}\u{03B9}"),
+    ('\u{1F9A}', "\u{1F22}\u{03B9}"),
+    ('\u{1F9B}', "\u{1F23}\u{03B9}"),
+    ('\u{1F9C}', "\u{1F24}\u{03B9}"),
+    ('\u{1F9D}', "\u{1F25}\u{03B9}"),
+    ('\u{1F9E}', "\u{1F26}\u{03B9}"),
+    ('\u{1F9F}', "\u{1F27}\u{03B9}"),
+    ('\u{1FA0}', "\u{1F60}\u{03B9}"),
+    ('\u{1FA1}', "\u{1F61}\u{03B9}"),
+    ('\u{1FA2}', "\u{1F62}\u{03B9}"),
+    ('\u{1FA3}', "\u{1F63}\u{03B9}"),
+    ('\u{1FA4}', "\u{1F64}\u{03B9}"),
+    ('\u{1FA5}', "\u{1F65}\u{03B9}"),
+    ('\u{1FA6}', "\u{1F66}\u{03B9}"),
+    ('\u{1FA7}', "\u{1F67}\u{03B9}"),
+    ('\u{1FA8}', "\u{1F60}\u{03B9}"),
+    ('\u{1FA9}', "\u{1F61}\u{03B9}"),
+    ('\u{1FAA}', "\u{1F62}\u{03B9}"),
+    ('\u{1FAB}', "\u{1F63}\u{03B9}"),
+    ('\u{1FAC}', "\u{1F64}\u{03B9}"),
+    ('\u{1FAD}', "\u{1F65}\u{03B9}"),
+    ('\u{1FAE}', "\u{1F66}\u{03B9}"),
+    ('\u{1FAF}', "\u{1F67}\u{03B9}"),
+    ('\u{1FB2}', "\u{1F70}\u{03B9}"),
+    ('\u{1FB3}', "\u{03B1}\u{03B9}"),
+    ('\u{1FB4}', "\u{03AC}\u{03B9}"),
+    ('\u{1FB6}', "\u{03B1}\u{0342}"),
+    ('\u{1FB7}', "\u{03B1}\u{0342}\u{03B9}"),
+    ('\u{1FBC}', "\u{03B1}\u{03B9}"),
+    ('\u{1FBE}', "\u{03B9}"),
+    ('\u{1FC2}', "\u{1F74}\u{03B9}"),
+    ('\u{1FC3}', "\u{03B7}\u{03B9}"),
+    ('\u{1FC4}', "\u{03AE}\u{03B9}"),
+    ('\u{1FC6}', "\u{03B7}\u{0342}"),
+    ('\u{1FC7}', "\u{03B7}\u{0342}\u{03B9}"),
+    ('\u{1FCC}', "\u{03B7}\u{03B9}"),
+    ('\u{1FD2}', "\u{03B9}\u{0308}\u{0300}"),
+    ('\u{1FD3}', "\u{03B9}\u{0308}\u{0301}"),
+    ('\u{1FD6}', "\u{03B9}\u{0342}"),
+    ('\u{1FD7}', "\u{03B9}\u{0308}\u{0342}"),
+    ('\u{1FE2}', "\u{03C5}\u{0308}\u{0300}"),
+    ('\u{1FE3}', "\u{03C5}\u{0308}\u{0301}"),
+    ('\u{1FE4}', "\u{03C1}\u{0313}"),
+    ('\u{1FE6}', "\u{03C5}\u{0342}"),
+    ('\u{1FE7}', "\u{03C5}\u{0308}\u{0342}"),
+    ('\u{1FF2}', "\u{1F7C}\u{03B9}"),
+    ('\u{1FF3}', "\u{03C9}\u{03B9}"),
+    ('\u{1FF4}', "\u{03CE}\u{03B9}"),
+    ('\u{1FF6}', "\u{03C9}\u{0342}"),
+    ('\u{1FF7}', "\u{03C9}\u{0342}\u{03B9}"),
+    ('\u{1FFC}', "\u{03C9}\u{03B9}"),
+    ('\u{FB00}', "ff"),
+    ('\u{FB01}', "fi"),
+    ('\u{FB02}', "fl"),
+    ('\u{FB03}', "ffi"),
+    ('\u{FB04}', "ffl"),
+    ('\u{FB05}', "st"),
+    ('\u{FB06}', "st"),
+    ('\u{FB13}', "\u{0574}\u{0576}"),
+    ('\u{FB14}', "\u{0574}\u{0565}"),
+    ('\u{FB15}', "\u{0574}\u{056B}"),
+    ('\u{FB16}', "\u{057E}\u{0576}"),
+    ('\u{FB17}', "\u{0574}\u{056D}"),
+];
+
+/// Full Unicode case-folding key matching Python `str.casefold()`.
 fn casefold_key(keyword: &str) -> String {
-    keyword.to_lowercase().replace('ß', "ss")
+    if keyword.is_ascii() {
+        return keyword.to_ascii_lowercase();
+    }
+    let mut out = String::with_capacity(keyword.len());
+    for ch in keyword.chars() {
+        match ch {
+            '\u{13A0}'..='\u{13F5}' => out.push(ch),
+            '\u{13F8}'..='\u{13FD}' => {
+                if let Some(folded) = char::from_u32(ch as u32 - 8) {
+                    out.push(folded);
+                }
+            }
+            '\u{AB70}'..='\u{ABBF}' => {
+                if let Some(folded) = char::from_u32(ch as u32 - 0x97D0) {
+                    out.push(folded);
+                }
+            }
+            _ => {
+                if let Ok(idx) = CASEFOLD_OVERRIDES.binary_search_by_key(&ch, |&(k, _)| k) {
+                    out.push_str(CASEFOLD_OVERRIDES[idx].1);
+                } else {
+                    out.extend(ch.to_lowercase());
+                }
+            }
+        }
+    }
+    out
+}
+
+#[cfg(unix)]
+fn is_owner_only_permissions(meta: &fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    meta.permissions().mode() & 0o777 == 0o600
+}
+
+#[cfg(not(unix))]
+fn is_owner_only_permissions(_meta: &fs::Metadata) -> bool {
+    true
 }
 
 fn split_lines(text: &str) -> Vec<&str> {
@@ -326,7 +493,7 @@ impl VocabularyStore {
     /// Load normalized vocabulary data, validation issues, and file signature in one pass.
     pub fn load_state(&self) -> VocabularyState {
         let vocab_file = self.paths.vocabulary_file();
-        let signature = match build_file_signature(&vocab_file) {
+        let stat_signature = match build_file_signature(&vocab_file) {
             Ok(sig) => sig,
             Err(err) if err.kind() == io::ErrorKind::NotFound => {
                 self.invalidate_cache();
@@ -349,17 +516,61 @@ impl VocabularyStore {
         {
             let guard = self.cache.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(cached) = guard.as_ref() {
-                if cached.signature == signature {
+                if cached.signature == stat_signature {
                     return VocabularyState {
                         data: cached.data.clone(),
                         issues: cached.issues.clone(),
-                        signature: Some(signature),
+                        signature: Some(stat_signature),
                     };
                 }
             }
         }
 
-        let (data, issues) = match fs::read_to_string(&vocab_file) {
+        // Open once and derive signature + contents from the same handle so transient
+        // read errors are never cached and concurrent replacements stay consistent.
+        let mut file = match File::open(&vocab_file) {
+            Ok(file) => file,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                self.invalidate_cache();
+                return VocabularyState {
+                    data: empty_vocabulary_object(),
+                    issues: Vec::new(),
+                    signature: None,
+                };
+            }
+            Err(err) => {
+                self.invalidate_cache();
+                return VocabularyState {
+                    data: empty_vocabulary_object(),
+                    issues: vec![format!("The vocabulary file could not be read: {err}")],
+                    signature: None,
+                };
+            }
+        };
+
+        let signature = match file.metadata() {
+            Ok(meta) => file_signature_from_metadata(&meta),
+            Err(err) => {
+                self.invalidate_cache();
+                return VocabularyState {
+                    data: empty_vocabulary_object(),
+                    issues: vec![format!("The vocabulary file could not be read: {err}")],
+                    signature: None,
+                };
+            }
+        };
+
+        let mut raw_bytes = Vec::new();
+        if let Err(err) = file.read_to_end(&mut raw_bytes) {
+            self.invalidate_cache();
+            return VocabularyState {
+                data: empty_vocabulary_object(),
+                issues: vec![format!("The vocabulary file could not be read: {err}")],
+                signature: None,
+            };
+        }
+
+        let (data, issues) = match String::from_utf8(raw_bytes) {
             Ok(raw_text) => parse_vocabulary_text(&raw_text),
             Err(err) => (
                 empty_vocabulary_object(),
@@ -391,7 +602,8 @@ impl VocabularyStore {
     }
 
     /// Normalize and persist keywords atomically (`0600` on Unix), preserving unknown
-    /// top-level JSON keys and skipping disk writes when on-disk data already matches.
+    /// top-level JSON keys and skipping disk writes when on-disk data and permissions
+    /// already match.
     pub fn save_state<S: AsRef<str>>(
         &self,
         keywords: &[S],
@@ -408,13 +620,22 @@ impl VocabularyStore {
             .collect();
         let analysis = analyze_cleaned_keywords(cleaned, 0);
 
-        let current_signature = build_file_signature(&vocab_file).ok();
-        let existing_object = current_signature.and_then(|_| {
-            fs::read_to_string(&vocab_file)
-                .ok()
-                .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
-                .and_then(|val| val.as_object().cloned())
-        });
+        let (existing_sig, existing_owner_only, existing_object) = match File::open(&vocab_file) {
+            Ok(mut file) => {
+                let meta = file.metadata()?;
+                let sig = file_signature_from_metadata(&meta);
+                let owner_only = is_owner_only_permissions(&meta);
+                let mut raw_bytes = Vec::new();
+                file.read_to_end(&mut raw_bytes)?;
+                let parsed = String::from_utf8(raw_bytes)
+                    .ok()
+                    .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+                    .and_then(|val| val.as_object().cloned());
+                (Some(sig), owner_only, parsed)
+            }
+            Err(err) if err.kind() == io::ErrorKind::NotFound => (None, false, None),
+            Err(err) => return Err(VocabularyError::Io(err)),
+        };
 
         let mut data = existing_object.clone().unwrap_or_default();
         data.insert(
@@ -424,35 +645,27 @@ impl VocabularyStore {
 
         let on_disk_issues = build_keyword_issues(0, 0, analysis.normalized.len());
 
-        if let (Some(sig), Some(existing)) = (current_signature, existing_object.as_ref()) {
-            if existing == &data {
-                self.update_cache(sig, &data, &on_disk_issues);
-                return Ok(VocabularyState {
-                    data,
-                    issues: analysis.issues,
-                    signature: Some(sig),
-                });
+        if existing_owner_only {
+            if let (Some(sig), Some(existing)) = (existing_sig, existing_object.as_ref()) {
+                if existing == &data {
+                    self.update_cache(sig, &data, &on_disk_issues);
+                    return Ok(VocabularyState {
+                        data,
+                        issues: analysis.issues,
+                        signature: Some(sig),
+                    });
+                }
             }
         }
 
         let serialized = serde_json::to_string_pretty(&data)?;
         write_text_atomic_restricted(&vocab_file, &serialized)?;
-
-        let new_signature = match build_file_signature(&vocab_file) {
-            Ok(sig) => {
-                self.update_cache(sig, &data, &on_disk_issues);
-                Some(sig)
-            }
-            Err(_) => {
-                self.invalidate_cache();
-                None
-            }
-        };
+        self.invalidate_cache();
 
         Ok(VocabularyState {
             data,
             issues: analysis.issues,
-            signature: new_signature,
+            signature: None,
         })
     }
 
@@ -499,12 +712,17 @@ mod tests {
         let parts = split_vocabulary_text(Some("PulseScribe, Whisper\r\n  Deepgram , , \rGroq"));
         assert_eq!(parts, vec!["PulseScribe", "Whisper", "Deepgram", "Groq"]);
 
-        let analysis = analyze_vocabulary_text(Some("Whisper, whisper, Straße, STRASSE, Groq"));
-        assert_eq!(analysis.keywords, vec!["Whisper", "Straße", "Groq"]);
-        assert_eq!(analysis.input_count, 5);
-        assert_eq!(analysis.duplicate_count, 2);
-        assert_eq!(analysis.keyword_count(), 3);
-        assert_eq!(analysis.issues, vec!["2 duplicate keywords found."]);
+        let analysis = analyze_vocabulary_text(Some(
+            "Whisper, whisper, Straße, STRASSE, ſage, sage, ﬁle, FILE, Groq",
+        ));
+        assert_eq!(
+            analysis.keywords,
+            vec!["Whisper", "Straße", "ſage", "ﬁle", "Groq"]
+        );
+        assert_eq!(analysis.input_count, 9);
+        assert_eq!(analysis.duplicate_count, 4);
+        assert_eq!(analysis.keyword_count(), 5);
+        assert_eq!(analysis.issues, vec!["4 duplicate keywords found."]);
         assert!(!analysis.exceeds_local_limit);
         assert!(!analysis.exceeds_deepgram_limit);
 
@@ -581,17 +799,53 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn save_sets_0600_permissions() {
+    fn save_sets_0600_and_enforces_mode_before_noop_and_preserves_unreadable_files() {
         use std::os::unix::fs::PermissionsExt;
 
         let (store, dir) = unique_store("perms");
-        store.save(&["PulseScribe"]).unwrap();
-        let mode = fs::metadata(store.paths().vocabulary_file())
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777;
+        let path = store.paths().vocabulary_file();
+
+        // Matching content with loose 0644 mode must NOT take the no-op shortcut.
+        fs::write(&path, "{\n  \"keywords\": [\n    \"PulseScribe\"\n  ]\n}").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let saved = store.save_state(&["PulseScribe"]).unwrap();
+        assert_eq!(saved.signature, None);
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
+
+        // Once 0600 and matching, a subsequent save skips rewriting disk.
+        let sig_before = build_file_signature(&path).unwrap();
+        let noop = store.save_state(&["PulseScribe"]).unwrap();
+        assert_eq!(noop.signature, Some(sig_before));
+
+        // Unreadable existing file must NOT be overwritten (nor cached on load).
+        fs::write(
+            &path,
+            r#"{"keywords": ["PulseScribe"], "extra_field": "preserve-me"}"#,
+        )
+        .unwrap();
+        store.invalidate_cache();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+        let can_read_000 = File::open(&path).is_ok();
+        if !can_read_000 {
+            let load_err = store.load_state();
+            assert!(load_err.keywords().is_empty());
+            assert_eq!(load_err.signature, None);
+            assert!(store.save(&["NewWord"]).is_err());
+
+            // After restoring read permissions, load retries cleanly and extra_field is intact.
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+            let recovered = store.load_state();
+            assert_eq!(recovered.keywords(), vec!["PulseScribe"]);
+            assert_eq!(
+                recovered.data.get("extra_field"),
+                Some(&Value::String("preserve-me".to_string()))
+            );
+        } else {
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+
         let _ = fs::remove_dir_all(&dir);
     }
 
