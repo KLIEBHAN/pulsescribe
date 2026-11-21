@@ -17,6 +17,7 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
@@ -51,6 +52,18 @@ from utils.history import (  # noqa: E402
     format_transcripts_for_welcome,
     merge_recent_transcript_entries,
 )
+from utils.hold_state import HoldHotkeyState  # noqa: E402
+from utils.hotkey import (  # noqa: E402
+    KEY_CODE_MAP,
+    MODIFIER_MAP,
+    hotkeys_conflict as macos_hotkeys_conflict,
+    parse_hotkey as parse_macos_hotkey,
+)
+from utils.hotkey_validation import validate_hotkey_change  # noqa: E402
+from utils.hotkey_windows import (  # noqa: E402
+    hotkeys_conflict as windows_hotkeys_conflict,
+    normalize_windows_hotkey,
+)
 from utils.onboarding import (  # noqa: E402
     ONBOARDING_ORDER,
     OnboardingChoice,
@@ -63,7 +76,18 @@ from utils.preferences import (  # noqa: E402
     _apply_env_updates_to_lines,
     _format_env_assignment,
 )
-from utils.state import AppState, DaemonErrorCode  # noqa: E402
+from utils.state import AppState, DaemonErrorCode, MessageType  # noqa: E402
+from utils.transcript_delivery import (  # noqa: E402
+    COPIED,
+    COPY_FAILED,
+    DELIVERY_HINTS,
+    PASTE_FAILED,
+    PASTED,
+    TEST_COMPLETE,
+    TranscriptDelivery,
+    done_status,
+    transcription_time_enabled,
+)
 from utils.vocabulary import (  # noqa: E402
     _parse_vocabulary_text,
     analyze_vocabulary_text,
@@ -621,12 +645,431 @@ def _export_history_contracts() -> dict[str, Any]:
     }
 
 
+def _export_hotkey_contracts() -> dict[str, Any]:
+    macos_parse_inputs: tuple[str, ...] = (
+        "f19",
+        "F1",
+        "fn",
+        "capslock",
+        "caps_lock",
+        "space",
+        "enter",
+        "return",
+        "esc",
+        "escape",
+        "delete",
+        "backspace",
+        "forwarddelete",
+        "a",
+        "0",
+        ".",
+        "\\",
+        "=",
+        "cmd+r",
+        "command+shift+r",
+        "ctrl+shift+space",
+        "control+option+f19",
+        "alt+.",
+        "  CMD + Shift + Space  ",
+        "",
+        "   ",
+        "f21",
+        "unknown",
+        "cmd+",
+        "+r",
+        "super+r",
+        "cmd+bogus",
+    )
+    macos_parse_cases = []
+    for raw in macos_parse_inputs:
+        try:
+            vk, mask = parse_macos_hotkey(raw)
+            macos_parse_cases.append(
+                {"input": raw, "virtual_key": vk, "modifier_mask": mask, "error": None}
+            )
+        except ValueError as exc:
+            macos_parse_cases.append(
+                {"input": raw, "virtual_key": None, "modifier_mask": None, "error": str(exc)}
+            )
+
+    macos_conflict_pairs: tuple[tuple[str | None, str | None], ...] = (
+        ("space", "cmd+space"),
+        ("cmd+space", "space"),
+        ("cmd+r", "cmd+shift+r"),
+        ("command+r", "cmd+r"),
+        ("cmd+r", "alt+r"),
+        ("f18", "f19"),
+        ("", "cmd+r"),
+        (None, "cmd+r"),
+        ("invalid", "cmd+r"),
+    )
+
+    windows_normalize_inputs: tuple[str | None, ...] = (
+        None,
+        "",
+        "   ",
+        "Option + Control + Shift + Command + R",
+        "ctrl+ctrl+alt+r",
+        "return",
+        "escape",
+        "caps_lock",
+        "f01",
+        "f24",
+        "ctrl+win",
+        "ctrl+ä",
+        "ctrl++r",
+        "ctrl+",
+        "+r",
+        "f0",
+        "f25",
+        "ctrl+bogus",
+        "ctrl+a+b",
+    )
+    windows_normalize_cases = []
+    for raw in windows_normalize_inputs:
+        normalized, error = normalize_windows_hotkey(raw)
+        windows_normalize_cases.append(
+            {"input": raw, "normalized": normalized, "error": error}
+        )
+
+    windows_conflict_pairs: tuple[tuple[str | None, str | None], ...] = (
+        ("ctrl+win", "ctrl+win+r"),
+        ("ctrl+win+r", "ctrl+win"),
+        ("command+option+r", "win+alt+r"),
+        ("ctrl+r", "alt+r"),
+        ("ctrl+a+b", "ctrl+a"),
+        (None, "ctrl+r"),
+    )
+
+    validation_scenarios: tuple[dict[str, Any], ...] = (
+        {
+            "name": "empty",
+            "kind": "toggle",
+            "hotkey": "   ",
+            "toggle_current": "f19",
+            "hold_current": "fn",
+            "replace_other": False,
+            "input_monitoring_allowed": True,
+            "carbon_ok": True,
+        },
+        {
+            "name": "same-as-other",
+            "kind": "toggle",
+            "hotkey": "fn",
+            "toggle_current": "f19",
+            "hold_current": "fn",
+            "replace_other": False,
+            "input_monitoring_allowed": True,
+            "carbon_ok": True,
+        },
+        {
+            "name": "overlap-other",
+            "kind": "toggle",
+            "hotkey": "cmd+r",
+            "toggle_current": "f19",
+            "hold_current": "cmd+shift+r",
+            "replace_other": False,
+            "input_monitoring_allowed": True,
+            "carbon_ok": True,
+        },
+        {
+            "name": "replace-other-skips-conflict",
+            "kind": "toggle",
+            "hotkey": "cmd+r",
+            "toggle_current": "",
+            "hold_current": "cmd+shift+r",
+            "replace_other": True,
+            "input_monitoring_allowed": False,
+            "carbon_ok": True,
+        },
+        {
+            "name": "unchanged-current-short-circuits",
+            "kind": "toggle",
+            "hotkey": " F19 ",
+            "toggle_current": "f19",
+            "hold_current": "fn",
+            "replace_other": False,
+            "input_monitoring_allowed": False,
+            "carbon_ok": False,
+        },
+        {
+            "name": "hold-requires-input-monitoring",
+            "kind": "hold",
+            "hotkey": "f18",
+            "toggle_current": "f19",
+            "hold_current": "",
+            "replace_other": False,
+            "input_monitoring_allowed": False,
+            "carbon_ok": True,
+        },
+        {
+            "name": "special-toggle-requires-input-monitoring",
+            "kind": "toggle",
+            "hotkey": "capslock",
+            "toggle_current": "f19",
+            "hold_current": "",
+            "replace_other": False,
+            "input_monitoring_allowed": False,
+            "carbon_ok": True,
+        },
+        {
+            "name": "special-toggle-allowed-with-input-monitoring",
+            "kind": "toggle",
+            "hotkey": "fn",
+            "toggle_current": "f19",
+            "hold_current": "",
+            "replace_other": False,
+            "input_monitoring_allowed": True,
+            "carbon_ok": False,
+        },
+        {
+            "name": "invalid-hotkey-error",
+            "kind": "toggle",
+            "hotkey": "super+r",
+            "toggle_current": "f19",
+            "hold_current": "",
+            "replace_other": False,
+            "input_monitoring_allowed": True,
+            "carbon_ok": True,
+        },
+        {
+            "name": "carbon-blocked-with-input-monitoring-warns",
+            "kind": "toggle",
+            "hotkey": "cmd+space",
+            "toggle_current": "f19",
+            "hold_current": "",
+            "replace_other": False,
+            "input_monitoring_allowed": True,
+            "carbon_ok": False,
+        },
+        {
+            "name": "carbon-blocked-without-input-monitoring-errors",
+            "kind": "toggle",
+            "hotkey": "cmd+space",
+            "toggle_current": "f19",
+            "hold_current": "",
+            "replace_other": False,
+            "input_monitoring_allowed": False,
+            "carbon_ok": False,
+        },
+        {
+            "name": "carbon-accepted-ok",
+            "kind": "toggle",
+            "hotkey": "cmd+shift+r",
+            "toggle_current": "f19",
+            "hold_current": "",
+            "replace_other": False,
+            "input_monitoring_allowed": False,
+            "carbon_ok": True,
+        },
+    )
+
+    validation_cases = []
+    for scenario in validation_scenarios:
+        carbon_ok = scenario["carbon_ok"]
+
+        class _FakeCarbonReg:
+            def __init__(self, virtual_key: int, modifier_mask: int, callback: Any) -> None:
+                self.virtual_key = virtual_key
+                self.modifier_mask = modifier_mask
+
+            def register(self) -> tuple[bool, str | None]:
+                return (carbon_ok, None if carbon_ok else "blocked")
+
+            def unregister(self) -> None:
+                return None
+
+        env_values = {
+            "PULSESCRIBE_TOGGLE_HOTKEY": scenario["toggle_current"],
+            "PULSESCRIBE_HOLD_HOTKEY": scenario["hold_current"],
+        }
+        with (
+            patch(
+                "utils.preferences.get_env_setting",
+                side_effect=lambda k: env_values.get(k),
+            ),
+            patch(
+                "utils.permissions.check_input_monitoring_permission",
+                return_value=scenario["input_monitoring_allowed"],
+            ),
+            patch(
+                "utils.carbon_hotkey.CarbonHotKeyRegistration",
+                _FakeCarbonReg,
+            ),
+        ):
+            normalized, level, message = validate_hotkey_change(
+                scenario["kind"],
+                scenario["hotkey"],
+                replace_other=scenario["replace_other"],
+            )
+        validation_cases.append(
+            {
+                **scenario,
+                "expected_normalized": normalized,
+                "expected_level": level,
+                "expected_message": message,
+            }
+        )
+
+    return {
+        "macos_key_code_map": dict(sorted(KEY_CODE_MAP.items())),
+        "macos_modifier_map": dict(sorted(MODIFIER_MAP.items())),
+        "macos_parse": macos_parse_cases,
+        "macos_conflict": [
+            {"a": a, "b": b, "expected": macos_hotkeys_conflict(a, b)}
+            for a, b in macos_conflict_pairs
+        ],
+        "windows_normalize": windows_normalize_cases,
+        "windows_conflict": [
+            {"a": a, "b": b, "expected": windows_hotkeys_conflict(a, b)}
+            for a, b in windows_conflict_pairs
+        ],
+        "macos_validation": validation_cases,
+    }
+
+
+def _export_hold_state_contracts() -> list[dict[str, Any]]:
+    steps: list[tuple[str, str | None]] = [
+        ("should_start", "quartz"),
+        ("should_start", "quartz"),
+        ("is_active", "quartz"),
+        ("should_stop", "quartz"),
+        ("is_active", "quartz"),
+        ("should_start", "quartz"),
+        ("mark_started", None),
+        ("should_start", "pynput"),
+        ("should_stop", "quartz"),
+        ("is_active", "pynput"),
+        ("should_stop", "pynput"),
+        ("reset", None),
+        ("should_stop", "pynput"),
+    ]
+    state = HoldHotkeyState()
+    trace: list[dict[str, Any]] = []
+    for op, source in steps:
+        result: bool | None = None
+        if op == "should_start":
+            assert source is not None
+            result = state.should_start(source)
+        elif op == "should_stop":
+            assert source is not None
+            result = state.should_stop(source)
+        elif op == "is_active":
+            assert source is not None
+            result = state.is_active(source)
+        elif op == "mark_started":
+            state.mark_started()
+        elif op == "reset":
+            state.reset()
+        trace.append({"op": op, "source": source, "expected": result})
+    return trace
+
+
+def _export_transcript_delivery_contracts() -> dict[str, Any]:
+    expected_platform_paste_failed = (
+        "Copied — press ⌘V" if sys.platform == "darwin" else "Copied — press Ctrl+V"
+    )
+    assert PASTE_FAILED == expected_platform_paste_failed
+
+    done_status_inputs: tuple[tuple[str, str | None, float | None], ...] = (
+        (PASTED, "Mail", 1.24),
+        (PASTED, None, 0.0),
+        (PASTED, "", 2.35),
+        (COPIED, "Mail", 1.25),
+        (TEST_COMPLETE, "Mail", -0.5),
+        (COPY_FAILED, "Slack", None),
+    )
+
+    show_rtf_inputs: tuple[str | None, ...] = (
+        None,
+        "",
+        "true",
+        "TRUE",
+        "1",
+        "yes",
+        "on",
+        " true ",
+        "false",
+        "0",
+    )
+    show_rtf_cases = []
+    for raw in show_rtf_inputs:
+        with patch("utils.preferences.get_env_setting", return_value=raw):
+            show_rtf_cases.append(
+                {"input": raw, "expected": transcription_time_enabled()}
+            )
+
+    delivery_matrix: tuple[tuple[str, bool, bool, bool], ...] = (
+        ("auto-paste-ok", True, True, True),
+        ("auto-paste-fallback-copy", True, False, True),
+        ("auto-paste-all-fail", True, False, False),
+        ("copy-only-ok", False, False, True),
+        ("copy-only-fail", False, False, False),
+    )
+    delivery_cases = []
+    for name, auto_paste, paste_ok, copy_ok in delivery_matrix:
+        delivery = TranscriptDelivery()
+        with (
+            patch("utils.hotkey.paste_transcript", return_value=paste_ok),
+            patch("utils.hotkey.copy_transcript", return_value=copy_ok),
+        ):
+            ok, feedback = delivery.deliver("Hello", auto_paste=auto_paste)
+        canonical_feedback = "<paste_failed>" if feedback == PASTE_FAILED else feedback
+        delivery_cases.append(
+            {
+                "name": name,
+                "auto_paste": auto_paste,
+                "paste_ok": paste_ok,
+                "copy_ok": copy_ok,
+                "expected_ok": ok,
+                "expected_feedback": canonical_feedback,
+            }
+        )
+
+    copy_last_empty = TranscriptDelivery().copy_last()
+    d_retry = TranscriptDelivery()
+    with (
+        patch("utils.hotkey.paste_transcript", return_value=True),
+        patch("utils.hotkey.copy_transcript", return_value=True),
+    ):
+        d_retry.deliver("Saved text", auto_paste=True)
+        copy_last_ok = d_retry.copy_last()
+    with patch("utils.hotkey.copy_transcript", return_value=False):
+        copy_last_fail = d_retry.copy_last()
+
+    return {
+        "pasted": PASTED,
+        "copied": COPIED,
+        "test_complete": TEST_COMPLETE,
+        "paste_failed_macos": "Copied — press ⌘V",
+        "paste_failed_other": "Copied — press Ctrl+V",
+        "copy_failed": COPY_FAILED,
+        "paste_failed_hint": DELIVERY_HINTS[PASTE_FAILED],
+        "copy_failed_hint": DELIVERY_HINTS[COPY_FAILED],
+        "copy_last_empty": copy_last_empty,
+        "copy_last_ok": copy_last_ok,
+        "copy_last_fail": copy_last_fail,
+        "done_status": [
+            {
+                "feedback": feedback,
+                "app": app,
+                "seconds": seconds,
+                "expected": done_status(feedback, app=app, seconds=seconds),
+            }
+            for feedback, app, seconds in done_status_inputs
+        ],
+        "transcription_time_enabled": show_rtf_cases,
+        "delivery_outcomes": delivery_cases,
+    }
+
+
 def build_core_contracts() -> dict[str, Any]:
     """Build deterministic core contract fixtures from the live Python code."""
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "app_states": [state.value for state in AppState],
         "daemon_error_codes": [code.value for code in DaemonErrorCode],
+        "message_types": [msg.name.lower() for msg in MessageType],
         "parse_bool": [
             {"input": value, "expected": parse_bool(value)}
             for value in _PARSE_BOOL_INPUTS
@@ -664,6 +1107,9 @@ def build_core_contracts() -> dict[str, Any]:
         "vocabulary": _export_vocabulary_contracts(),
         "prompts": _export_prompts_contracts(),
         "history": _export_history_contracts(),
+        "hotkeys": _export_hotkey_contracts(),
+        "hold_state_trace": _export_hold_state_contracts(),
+        "transcript_delivery": _export_transcript_delivery_contracts(),
     }
 
 

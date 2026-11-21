@@ -1,5 +1,5 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "app_states": [
     "idle",
     "loading",
@@ -23,6 +23,13 @@
     "connection",
     "missing_dependency",
     "unknown"
+  ],
+  "message_types": [
+    "status_update",
+    "transcript_result",
+    "audio_level",
+    "error",
+    "interim_text"
   ],
   "parse_bool": [
     {
@@ -1246,5 +1253,835 @@
     "format_welcome_empty": "No transcriptions yet.\n\nYour recent dictations will appear here after the first transcription.",
     "format_welcome_newest_first": "[2026-11-21 10:05:00] (groq)\n\n[2026-11-21 10:10:00] (deepgram en)\nSimple entry\n\n[2026-11-21 10:15:30] (local de)\nFirst line  \r\n\r\n  Indented paragraph\rLast line",
     "format_welcome_oldest_first": "[2026-11-21 10:15:30] (local de)\nFirst line  \r\n\r\n  Indented paragraph\rLast line\n\n[2026-11-21 10:10:00] (deepgram en)\nSimple entry\n\n[2026-11-21 10:05:00] (groq)"
+  },
+  "hotkeys": {
+    "macos_key_code_map": {
+      "'": 39,
+      ",": 43,
+      "-": 27,
+      ".": 47,
+      "/": 44,
+      "0": 29,
+      "1": 18,
+      "2": 19,
+      "3": 20,
+      "4": 21,
+      "5": 23,
+      "6": 22,
+      "7": 26,
+      "8": 28,
+      "9": 25,
+      ";": 41,
+      "=": 24,
+      "[": 33,
+      "\\": 42,
+      "]": 30,
+      "`": 50,
+      "a": 0,
+      "b": 11,
+      "backspace": 51,
+      "c": 8,
+      "caps_lock": 57,
+      "capslock": 57,
+      "d": 2,
+      "delete": 51,
+      "down": 125,
+      "e": 14,
+      "end": 119,
+      "enter": 36,
+      "esc": 53,
+      "escape": 53,
+      "f": 3,
+      "f1": 122,
+      "f10": 109,
+      "f11": 103,
+      "f12": 111,
+      "f13": 105,
+      "f14": 107,
+      "f15": 113,
+      "f16": 106,
+      "f17": 64,
+      "f18": 79,
+      "f19": 80,
+      "f2": 120,
+      "f20": 90,
+      "f3": 99,
+      "f4": 118,
+      "f5": 96,
+      "f6": 97,
+      "f7": 98,
+      "f8": 100,
+      "f9": 101,
+      "fn": 63,
+      "forwarddelete": 117,
+      "g": 5,
+      "h": 4,
+      "home": 115,
+      "i": 34,
+      "j": 38,
+      "k": 40,
+      "l": 37,
+      "left": 123,
+      "m": 46,
+      "n": 45,
+      "o": 31,
+      "p": 35,
+      "pagedown": 121,
+      "pageup": 116,
+      "q": 12,
+      "r": 15,
+      "return": 36,
+      "right": 124,
+      "s": 1,
+      "space": 49,
+      "t": 17,
+      "tab": 48,
+      "u": 32,
+      "up": 126,
+      "v": 9,
+      "w": 13,
+      "x": 7,
+      "y": 16,
+      "z": 6
+    },
+    "macos_modifier_map": {
+      "alt": 2048,
+      "cmd": 256,
+      "command": 256,
+      "control": 4096,
+      "ctrl": 4096,
+      "option": 2048,
+      "shift": 512
+    },
+    "macos_parse": [
+      {
+        "input": "f19",
+        "virtual_key": 80,
+        "modifier_mask": 0,
+        "error": null
+      },
+      {
+        "input": "F1",
+        "virtual_key": 122,
+        "modifier_mask": 0,
+        "error": null
+      },
+      {
+        "input": "fn",
+        "virtual_key": 63,
+        "modifier_mask": 0,
+        "error": null
+      },
+      {
+        "input": "capslock",
+        "virtual_key": 57,
+        "modifier_mask": 0,
+        "error": null
+      },
+      {
+        "input": "caps_lock",
+        "virtual_key": 57,
+        "modifier_mask": 0,
+        "error": null
+      },
+      {
+        "input": "space",
+        "virtual_key": 49,
+        "modifier_mask": 0,
+        "error": null
+      },
+      {
+        "input": "enter",
+        "virtual_key": 36,
+        "modifier_mask": 0,
+        "error": null
+      },
+      {
+        "input": "return",
+        "virtual_key": 36,
+        "modifier_mask": 0,
+        "error": null
+      },
+      {
+        "input": "esc",
+        "virtual_key": 53,
+        "modifier_mask": 0,
+        "error": null
+      },
+      {
+        "input": "escape",
+        "virtual_key": 53,
+        "modifier_mask": 0,
+        "error": null
+      },
+      {
+        "input": "delete",
+        "virtual_key": 51,
+        "modifier_mask": 0,
+        "error": null
+      },
+      {
+        "input": "backspace",
+        "virtual_key": 51,
+        "modifier_mask": 0,
+        "error": null
+      },
+      {
+        "input": "forwarddelete",
+        "virtual_key": 117,
+        "modifier_mask": 0,
+        "error": null
+      },
+      {
+        "input": "a",
+        "virtual_key": 0,
+        "modifier_mask": 0,
+        "error": null
+      },
+      {
+        "input": "0",
+        "virtual_key": 29,
+        "modifier_mask": 0,
+        "error": null
+      },
+      {
+        "input": ".",
+        "virtual_key": 47,
+        "modifier_mask": 0,
+        "error": null
+      },
+      {
+        "input": "\\",
+        "virtual_key": 42,
+        "modifier_mask": 0,
+        "error": null
+      },
+      {
+        "input": "=",
+        "virtual_key": 24,
+        "modifier_mask": 0,
+        "error": null
+      },
+      {
+        "input": "cmd+r",
+        "virtual_key": 15,
+        "modifier_mask": 256,
+        "error": null
+      },
+      {
+        "input": "command+shift+r",
+        "virtual_key": 15,
+        "modifier_mask": 768,
+        "error": null
+      },
+      {
+        "input": "ctrl+shift+space",
+        "virtual_key": 49,
+        "modifier_mask": 4608,
+        "error": null
+      },
+      {
+        "input": "control+option+f19",
+        "virtual_key": 80,
+        "modifier_mask": 6144,
+        "error": null
+      },
+      {
+        "input": "alt+.",
+        "virtual_key": 47,
+        "modifier_mask": 2048,
+        "error": null
+      },
+      {
+        "input": "  CMD + Shift + Space  ",
+        "virtual_key": 49,
+        "modifier_mask": 768,
+        "error": null
+      },
+      {
+        "input": "",
+        "virtual_key": null,
+        "modifier_mask": null,
+        "error": "Unknown key: "
+      },
+      {
+        "input": "   ",
+        "virtual_key": null,
+        "modifier_mask": null,
+        "error": "Unknown key: "
+      },
+      {
+        "input": "f21",
+        "virtual_key": null,
+        "modifier_mask": null,
+        "error": "Unknown key: f21"
+      },
+      {
+        "input": "unknown",
+        "virtual_key": null,
+        "modifier_mask": null,
+        "error": "Unknown key: unknown"
+      },
+      {
+        "input": "cmd+",
+        "virtual_key": null,
+        "modifier_mask": null,
+        "error": "Unknown key: "
+      },
+      {
+        "input": "+r",
+        "virtual_key": null,
+        "modifier_mask": null,
+        "error": "Unknown modifier: "
+      },
+      {
+        "input": "super+r",
+        "virtual_key": null,
+        "modifier_mask": null,
+        "error": "Unknown modifier: super"
+      },
+      {
+        "input": "cmd+bogus",
+        "virtual_key": null,
+        "modifier_mask": null,
+        "error": "Unknown key: bogus"
+      }
+    ],
+    "macos_conflict": [
+      {
+        "a": "space",
+        "b": "cmd+space",
+        "expected": true
+      },
+      {
+        "a": "cmd+space",
+        "b": "space",
+        "expected": true
+      },
+      {
+        "a": "cmd+r",
+        "b": "cmd+shift+r",
+        "expected": true
+      },
+      {
+        "a": "command+r",
+        "b": "cmd+r",
+        "expected": true
+      },
+      {
+        "a": "cmd+r",
+        "b": "alt+r",
+        "expected": false
+      },
+      {
+        "a": "f18",
+        "b": "f19",
+        "expected": false
+      },
+      {
+        "a": "",
+        "b": "cmd+r",
+        "expected": false
+      },
+      {
+        "a": null,
+        "b": "cmd+r",
+        "expected": false
+      },
+      {
+        "a": "invalid",
+        "b": "cmd+r",
+        "expected": false
+      }
+    ],
+    "windows_normalize": [
+      {
+        "input": null,
+        "normalized": "",
+        "error": null
+      },
+      {
+        "input": "",
+        "normalized": "",
+        "error": null
+      },
+      {
+        "input": "   ",
+        "normalized": "",
+        "error": null
+      },
+      {
+        "input": "Option + Control + Shift + Command + R",
+        "normalized": "ctrl+alt+shift+win+r",
+        "error": null
+      },
+      {
+        "input": "ctrl+ctrl+alt+r",
+        "normalized": "ctrl+alt+r",
+        "error": null
+      },
+      {
+        "input": "return",
+        "normalized": "enter",
+        "error": null
+      },
+      {
+        "input": "escape",
+        "normalized": "esc",
+        "error": null
+      },
+      {
+        "input": "caps_lock",
+        "normalized": "capslock",
+        "error": null
+      },
+      {
+        "input": "f01",
+        "normalized": "f1",
+        "error": null
+      },
+      {
+        "input": "f24",
+        "normalized": "f24",
+        "error": null
+      },
+      {
+        "input": "ctrl+win",
+        "normalized": "ctrl+win",
+        "error": null
+      },
+      {
+        "input": "ctrl+ä",
+        "normalized": "ctrl+ä",
+        "error": null
+      },
+      {
+        "input": "ctrl++r",
+        "normalized": "",
+        "error": "Invalid format."
+      },
+      {
+        "input": "ctrl+",
+        "normalized": "",
+        "error": "Invalid format."
+      },
+      {
+        "input": "+r",
+        "normalized": "",
+        "error": "Invalid format."
+      },
+      {
+        "input": "f0",
+        "normalized": "",
+        "error": "Unknown key: f0"
+      },
+      {
+        "input": "f25",
+        "normalized": "",
+        "error": "Unknown key: f25"
+      },
+      {
+        "input": "ctrl+bogus",
+        "normalized": "",
+        "error": "Unknown key: bogus"
+      },
+      {
+        "input": "ctrl+a+b",
+        "normalized": "",
+        "error": "Use exactly one non-modifier key."
+      }
+    ],
+    "windows_conflict": [
+      {
+        "a": "ctrl+win",
+        "b": "ctrl+win+r",
+        "expected": true
+      },
+      {
+        "a": "ctrl+win+r",
+        "b": "ctrl+win",
+        "expected": true
+      },
+      {
+        "a": "command+option+r",
+        "b": "win+alt+r",
+        "expected": true
+      },
+      {
+        "a": "ctrl+r",
+        "b": "alt+r",
+        "expected": false
+      },
+      {
+        "a": "ctrl+a+b",
+        "b": "ctrl+a",
+        "expected": false
+      },
+      {
+        "a": null,
+        "b": "ctrl+r",
+        "expected": false
+      }
+    ],
+    "macos_validation": [
+      {
+        "name": "empty",
+        "kind": "toggle",
+        "hotkey": "   ",
+        "toggle_current": "f19",
+        "hold_current": "fn",
+        "replace_other": false,
+        "input_monitoring_allowed": true,
+        "carbon_ok": true,
+        "expected_normalized": "",
+        "expected_level": "error",
+        "expected_message": "The hotkey is empty."
+      },
+      {
+        "name": "same-as-other",
+        "kind": "toggle",
+        "hotkey": "fn",
+        "toggle_current": "f19",
+        "hold_current": "fn",
+        "replace_other": false,
+        "input_monitoring_allowed": true,
+        "carbon_ok": true,
+        "expected_normalized": "fn",
+        "expected_level": "error",
+        "expected_message": "Toggle and Hold can't use the same hotkey."
+      },
+      {
+        "name": "overlap-other",
+        "kind": "toggle",
+        "hotkey": "cmd+r",
+        "toggle_current": "f19",
+        "hold_current": "cmd+shift+r",
+        "replace_other": false,
+        "input_monitoring_allowed": true,
+        "carbon_ok": true,
+        "expected_normalized": "cmd+r",
+        "expected_level": "error",
+        "expected_message": "Toggle and Hold can't overlap."
+      },
+      {
+        "name": "replace-other-skips-conflict",
+        "kind": "toggle",
+        "hotkey": "cmd+r",
+        "toggle_current": "",
+        "hold_current": "cmd+shift+r",
+        "replace_other": true,
+        "input_monitoring_allowed": false,
+        "carbon_ok": true,
+        "expected_normalized": "cmd+r",
+        "expected_level": "ok",
+        "expected_message": null
+      },
+      {
+        "name": "unchanged-current-short-circuits",
+        "kind": "toggle",
+        "hotkey": " F19 ",
+        "toggle_current": "f19",
+        "hold_current": "fn",
+        "replace_other": false,
+        "input_monitoring_allowed": false,
+        "carbon_ok": false,
+        "expected_normalized": "f19",
+        "expected_level": "ok",
+        "expected_message": null
+      },
+      {
+        "name": "hold-requires-input-monitoring",
+        "kind": "hold",
+        "hotkey": "f18",
+        "toggle_current": "f19",
+        "hold_current": "",
+        "replace_other": false,
+        "input_monitoring_allowed": false,
+        "carbon_ok": true,
+        "expected_normalized": "f18",
+        "expected_level": "error",
+        "expected_message": "This hotkey needs Input Monitoring (System Settings → Privacy & Security)."
+      },
+      {
+        "name": "special-toggle-requires-input-monitoring",
+        "kind": "toggle",
+        "hotkey": "capslock",
+        "toggle_current": "f19",
+        "hold_current": "",
+        "replace_other": false,
+        "input_monitoring_allowed": false,
+        "carbon_ok": true,
+        "expected_normalized": "capslock",
+        "expected_level": "error",
+        "expected_message": "This hotkey needs Input Monitoring (System Settings → Privacy & Security)."
+      },
+      {
+        "name": "special-toggle-allowed-with-input-monitoring",
+        "kind": "toggle",
+        "hotkey": "fn",
+        "toggle_current": "f19",
+        "hold_current": "",
+        "replace_other": false,
+        "input_monitoring_allowed": true,
+        "carbon_ok": false,
+        "expected_normalized": "fn",
+        "expected_level": "ok",
+        "expected_message": null
+      },
+      {
+        "name": "invalid-hotkey-error",
+        "kind": "toggle",
+        "hotkey": "super+r",
+        "toggle_current": "f19",
+        "hold_current": "",
+        "replace_other": false,
+        "input_monitoring_allowed": true,
+        "carbon_ok": true,
+        "expected_normalized": "super+r",
+        "expected_level": "error",
+        "expected_message": "Unknown modifier: super"
+      },
+      {
+        "name": "carbon-blocked-with-input-monitoring-warns",
+        "kind": "toggle",
+        "hotkey": "cmd+space",
+        "toggle_current": "f19",
+        "hold_current": "",
+        "replace_other": false,
+        "input_monitoring_allowed": true,
+        "carbon_ok": false,
+        "expected_normalized": "cmd+space",
+        "expected_level": "warning",
+        "expected_message": "macOS blocks this combination as a global hotkey. PulseScribe uses Input Monitoring instead."
+      },
+      {
+        "name": "carbon-blocked-without-input-monitoring-errors",
+        "kind": "toggle",
+        "hotkey": "cmd+space",
+        "toggle_current": "f19",
+        "hold_current": "",
+        "replace_other": false,
+        "input_monitoring_allowed": false,
+        "carbon_ok": false,
+        "expected_normalized": "cmd+space",
+        "expected_level": "error",
+        "expected_message": "macOS blocks this combination as a global hotkey. Allow Input Monitoring or choose another hotkey."
+      },
+      {
+        "name": "carbon-accepted-ok",
+        "kind": "toggle",
+        "hotkey": "cmd+shift+r",
+        "toggle_current": "f19",
+        "hold_current": "",
+        "replace_other": false,
+        "input_monitoring_allowed": false,
+        "carbon_ok": true,
+        "expected_normalized": "cmd+shift+r",
+        "expected_level": "ok",
+        "expected_message": null
+      }
+    ]
+  },
+  "hold_state_trace": [
+    {
+      "op": "should_start",
+      "source": "quartz",
+      "expected": true
+    },
+    {
+      "op": "should_start",
+      "source": "quartz",
+      "expected": false
+    },
+    {
+      "op": "is_active",
+      "source": "quartz",
+      "expected": true
+    },
+    {
+      "op": "should_stop",
+      "source": "quartz",
+      "expected": false
+    },
+    {
+      "op": "is_active",
+      "source": "quartz",
+      "expected": false
+    },
+    {
+      "op": "should_start",
+      "source": "quartz",
+      "expected": true
+    },
+    {
+      "op": "mark_started",
+      "source": null,
+      "expected": null
+    },
+    {
+      "op": "should_start",
+      "source": "pynput",
+      "expected": true
+    },
+    {
+      "op": "should_stop",
+      "source": "quartz",
+      "expected": false
+    },
+    {
+      "op": "is_active",
+      "source": "pynput",
+      "expected": true
+    },
+    {
+      "op": "should_stop",
+      "source": "pynput",
+      "expected": true
+    },
+    {
+      "op": "reset",
+      "source": null,
+      "expected": null
+    },
+    {
+      "op": "should_stop",
+      "source": "pynput",
+      "expected": false
+    }
+  ],
+  "transcript_delivery": {
+    "pasted": "Transcript pasted",
+    "copied": "Copied to clipboard",
+    "test_complete": "Test complete",
+    "paste_failed_macos": "Copied — press ⌘V",
+    "paste_failed_other": "Copied — press Ctrl+V",
+    "copy_failed": "Copy failed — use Copy Last Transcript",
+    "paste_failed_hint": "Paste manually, or choose Copy Last Transcript to copy it again.",
+    "copy_failed_hint": "Choose Copy Last Transcript in the menu to try copying again.",
+    "copy_last_empty": "No transcript to copy yet.",
+    "copy_last_ok": "Last transcript copied.",
+    "copy_last_fail": "Could not copy. Try again.",
+    "done_status": [
+      {
+        "feedback": "Transcript pasted",
+        "app": "Mail",
+        "seconds": 1.24,
+        "expected": "Transcript pasted into Mail · 1.2 s"
+      },
+      {
+        "feedback": "Transcript pasted",
+        "app": null,
+        "seconds": 0.0,
+        "expected": "Transcript pasted · 0.0 s"
+      },
+      {
+        "feedback": "Transcript pasted",
+        "app": "",
+        "seconds": 2.35,
+        "expected": "Transcript pasted · 2.4 s"
+      },
+      {
+        "feedback": "Copied to clipboard",
+        "app": "Mail",
+        "seconds": 1.25,
+        "expected": "Copied to clipboard · 1.2 s"
+      },
+      {
+        "feedback": "Test complete",
+        "app": "Mail",
+        "seconds": -0.5,
+        "expected": "Test complete"
+      },
+      {
+        "feedback": "Copy failed — use Copy Last Transcript",
+        "app": "Slack",
+        "seconds": null,
+        "expected": "Copy failed — use Copy Last Transcript"
+      }
+    ],
+    "transcription_time_enabled": [
+      {
+        "input": null,
+        "expected": false
+      },
+      {
+        "input": "",
+        "expected": false
+      },
+      {
+        "input": "true",
+        "expected": true
+      },
+      {
+        "input": "TRUE",
+        "expected": true
+      },
+      {
+        "input": "1",
+        "expected": true
+      },
+      {
+        "input": "yes",
+        "expected": true
+      },
+      {
+        "input": "on",
+        "expected": true
+      },
+      {
+        "input": " true ",
+        "expected": false
+      },
+      {
+        "input": "false",
+        "expected": false
+      },
+      {
+        "input": "0",
+        "expected": false
+      }
+    ],
+    "delivery_outcomes": [
+      {
+        "name": "auto-paste-ok",
+        "auto_paste": true,
+        "paste_ok": true,
+        "copy_ok": true,
+        "expected_ok": true,
+        "expected_feedback": "Transcript pasted"
+      },
+      {
+        "name": "auto-paste-fallback-copy",
+        "auto_paste": true,
+        "paste_ok": false,
+        "copy_ok": true,
+        "expected_ok": false,
+        "expected_feedback": "<paste_failed>"
+      },
+      {
+        "name": "auto-paste-all-fail",
+        "auto_paste": true,
+        "paste_ok": false,
+        "copy_ok": false,
+        "expected_ok": false,
+        "expected_feedback": "Copy failed — use Copy Last Transcript"
+      },
+      {
+        "name": "copy-only-ok",
+        "auto_paste": false,
+        "paste_ok": false,
+        "copy_ok": true,
+        "expected_ok": true,
+        "expected_feedback": "Copied to clipboard"
+      },
+      {
+        "name": "copy-only-fail",
+        "auto_paste": false,
+        "paste_ok": false,
+        "copy_ok": false,
+        "expected_ok": false,
+        "expected_feedback": "Copy failed — use Copy Last Transcript"
+      }
+    ]
   }
 }

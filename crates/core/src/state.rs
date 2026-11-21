@@ -78,6 +78,30 @@ impl DaemonErrorCode {
     }
 }
 
+/// Event kinds exchanged between the dictation daemon and UI surfaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageType {
+    StatusUpdate,
+    TranscriptResult,
+    AudioLevel,
+    Error,
+    /// Live text of a recording that is still running.
+    InterimText,
+}
+
+impl MessageType {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::StatusUpdate => "status_update",
+            Self::TranscriptResult => "transcript_result",
+            Self::AudioLevel => "audio_level",
+            Self::Error => "error",
+            Self::InterimText => "interim_text",
+        }
+    }
+}
+
 /// User-facing daemon error carrying a stable code and optional detail text.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DaemonStatusError {
@@ -105,6 +129,24 @@ impl fmt::Display for DaemonStatusError {
 }
 
 impl std::error::Error for DaemonStatusError {}
+
+/// Typed message envelope mirroring `utils.state.DaemonMessage`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DaemonMessage<T = serde_json::Value> {
+    #[serde(rename = "type")]
+    pub message_type: MessageType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<T>,
+}
+
+impl<T> DaemonMessage<T> {
+    pub fn new(message_type: MessageType, payload: Option<T>) -> Self {
+        Self {
+            message_type,
+            payload,
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
