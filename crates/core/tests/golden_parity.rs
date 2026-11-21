@@ -10,22 +10,33 @@ use pulsescribe_core::history::{
     merge_recent_transcript_entries, select_recent_lines_within_bytes,
     DISPLAY_TRANSCRIPTS_EMPTY_MESSAGE, WELCOME_TRANSCRIPTS_EMPTY_MESSAGE,
 };
+use pulsescribe_core::hotkey::{
+    macos_hotkeys_conflict, macos_modifier_mask, macos_virtual_key_code, normalize_windows_hotkey,
+    parse_macos_hotkey, validate_macos_hotkey_change, windows_hotkeys_conflict,
+};
 use pulsescribe_core::onboarding::ONBOARDING_ORDER;
 use pulsescribe_core::prompts::{
     build_prompt_overrides_from_editor_state, format_app_mappings, normalize_prompt_editor_context,
     parse_and_merge_prompts_toml, parse_app_mappings, KNOWN_CONTEXTS,
 };
+use pulsescribe_core::transcript_delivery::{
+    delivery_hint, done_status, paste_failed_message, transcription_time_enabled_from_value,
+    COPIED, COPY_FAILED, COULD_NOT_COPY, LAST_TRANSCRIPT_COPIED, NO_TRANSCRIPT_TO_COPY, PASTED,
+    PASTE_FAILED_MACOS, PASTE_FAILED_OTHER, TEST_COMPLETE,
+};
 use pulsescribe_core::vocabulary::{
     analyze_vocabulary_text, parse_vocabulary_text, split_vocabulary_text,
 };
 use pulsescribe_core::{
-    AppState, DaemonErrorCode, OnboardingChoice, OnboardingStep, PromptEditorContext,
-    PromptOverrides, PromptsConfig, TranscriptEntry,
+    AppState, DaemonErrorCode, HoldHotkeyState, HotkeyKind, HotkeyValidationContext,
+    HotkeyValidationLevel, MessageType, OnboardingChoice, OnboardingStep, PromptEditorContext,
+    PromptOverrides, PromptsConfig, TranscriptClipboardBackend, TranscriptDelivery,
+    TranscriptEntry,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
-const SUPPORTED_SCHEMA_VERSION: u32 = 3;
+const SUPPORTED_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -33,6 +44,7 @@ struct CoreContracts {
     schema_version: u32,
     app_states: Vec<String>,
     daemon_error_codes: Vec<String>,
+    message_types: Vec<String>,
     parse_bool: Vec<ParseBoolCase>,
     parse_env_line: Vec<ParseEnvLineCase>,
     format_env_assignment: Vec<FormatEnvCase>,
@@ -43,6 +55,116 @@ struct CoreContracts {
     vocabulary: VocabularyContracts,
     prompts: PromptsContracts,
     history: HistoryContracts,
+    hotkeys: HotkeysContracts,
+    hold_state_trace: Vec<HoldStateStep>,
+    transcript_delivery: TranscriptDeliveryContracts,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HotkeysContracts {
+    macos_key_code_map: BTreeMap<String, u16>,
+    macos_modifier_map: BTreeMap<String, u32>,
+    macos_parse: Vec<MacosParseCase>,
+    macos_conflict: Vec<HotkeyConflictCase>,
+    windows_normalize: Vec<WindowsNormalizeCase>,
+    windows_conflict: Vec<HotkeyConflictCase>,
+    macos_validation: Vec<MacosValidationCase>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MacosParseCase {
+    input: String,
+    virtual_key: Option<u16>,
+    modifier_mask: Option<u32>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HotkeyConflictCase {
+    a: Option<String>,
+    b: Option<String>,
+    expected: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WindowsNormalizeCase {
+    input: Option<String>,
+    normalized: String,
+    error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MacosValidationCase {
+    name: String,
+    kind: String,
+    hotkey: String,
+    toggle_current: String,
+    hold_current: String,
+    replace_other: bool,
+    input_monitoring_allowed: bool,
+    carbon_ok: bool,
+    expected_normalized: String,
+    expected_level: String,
+    expected_message: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HoldStateStep {
+    op: String,
+    source: Option<String>,
+    expected: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TranscriptDeliveryContracts {
+    pasted: String,
+    copied: String,
+    test_complete: String,
+    paste_failed_macos: String,
+    paste_failed_other: String,
+    copy_failed: String,
+    paste_failed_hint: String,
+    copy_failed_hint: String,
+    copy_last_empty: String,
+    copy_last_ok: String,
+    copy_last_fail: String,
+    done_status: Vec<DoneStatusCase>,
+    transcription_time_enabled: Vec<ShowRtfCase>,
+    delivery_outcomes: Vec<DeliveryOutcomeCase>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DoneStatusCase {
+    feedback: String,
+    app: Option<String>,
+    seconds: Option<f64>,
+    expected: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ShowRtfCase {
+    input: Option<String>,
+    expected: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeliveryOutcomeCase {
+    name: String,
+    auto_paste: bool,
+    paste_ok: bool,
+    copy_ok: bool,
+    expected_ok: bool,
+    expected_feedback: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -696,4 +818,261 @@ fn history_contracts_match_python_golden_fixture() {
         format_transcripts_for_welcome(&entries, false),
         h.format_welcome_oldest_first
     );
+}
+
+#[test]
+fn message_types_match_python_golden_fixture() {
+    let contracts = load_contracts();
+    let expected = [
+        MessageType::StatusUpdate,
+        MessageType::TranscriptResult,
+        MessageType::AudioLevel,
+        MessageType::Error,
+        MessageType::InterimText,
+    ];
+    let rust_values: Vec<String> = expected.iter().map(|m| m.as_str().to_string()).collect();
+    assert_eq!(rust_values, contracts.message_types);
+
+    for raw in &contracts.message_types {
+        let raw_value = Value::String(raw.clone());
+        let parsed: MessageType = serde_json::from_value(raw_value.clone())
+            .unwrap_or_else(|err| panic!("failed to deserialize MessageType {raw:?}: {err}"));
+        assert_eq!(parsed.as_str(), raw);
+        assert_eq!(serde_json::to_value(parsed).unwrap(), raw_value);
+    }
+}
+
+#[test]
+fn hotkey_contracts_match_python_golden_fixture() {
+    let contracts = load_contracts();
+    let hk = &contracts.hotkeys;
+
+    for (key, &expected_code) in &hk.macos_key_code_map {
+        assert_eq!(
+            macos_virtual_key_code(key),
+            Some(expected_code),
+            "KEY_CODE_MAP mismatch for {key:?}"
+        );
+    }
+    for (modifier, &expected_mask) in &hk.macos_modifier_map {
+        assert_eq!(
+            macos_modifier_mask(modifier),
+            Some(expected_mask),
+            "MODIFIER_MAP mismatch for {modifier:?}"
+        );
+    }
+
+    for case in &hk.macos_parse {
+        match parse_macos_hotkey(&case.input) {
+            Ok(parsed) => {
+                assert_eq!(
+                    case.error, None,
+                    "expected error for {:?}, got {:?}",
+                    case.input, parsed
+                );
+                assert_eq!(Some(parsed.virtual_key), case.virtual_key);
+                assert_eq!(Some(parsed.modifier_mask), case.modifier_mask);
+            }
+            Err(err) => {
+                assert_eq!(
+                    Some(err.to_string()),
+                    case.error,
+                    "parse_macos_hotkey error mismatch for {:?}",
+                    case.input
+                );
+            }
+        }
+    }
+
+    for case in &hk.macos_conflict {
+        assert_eq!(
+            macos_hotkeys_conflict(case.a.as_deref(), case.b.as_deref()),
+            case.expected,
+            "macos_hotkeys_conflict mismatch for ({:?}, {:?})",
+            case.a,
+            case.b
+        );
+    }
+
+    for case in &hk.windows_normalize {
+        match normalize_windows_hotkey(case.input.as_deref()) {
+            Ok(norm) => {
+                assert_eq!(case.error, None, "input {:?}", case.input);
+                assert_eq!(norm, case.normalized, "input {:?}", case.input);
+            }
+            Err(err) => {
+                assert_eq!(
+                    Some(err),
+                    case.error,
+                    "windows normalize error mismatch for {:?}",
+                    case.input
+                );
+                assert_eq!(case.normalized, "");
+            }
+        }
+    }
+
+    for case in &hk.windows_conflict {
+        assert_eq!(
+            windows_hotkeys_conflict(case.a.as_deref(), case.b.as_deref()),
+            case.expected,
+            "windows_hotkeys_conflict mismatch for ({:?}, {:?})",
+            case.a,
+            case.b
+        );
+    }
+
+    for case in &hk.macos_validation {
+        let kind = HotkeyKind::from_str_or_toggle(&case.kind);
+        let ctx = HotkeyValidationContext {
+            toggle_current: case.toggle_current.clone(),
+            hold_current: case.hold_current.clone(),
+            replace_other: case.replace_other,
+            input_monitoring_allowed: case.input_monitoring_allowed,
+        };
+        let result =
+            validate_macos_hotkey_change(kind, Some(&case.hotkey), &ctx, |_| case.carbon_ok);
+        assert_eq!(
+            result.normalized, case.expected_normalized,
+            "validation normalized mismatch for '{}'",
+            case.name
+        );
+        assert_eq!(
+            result.level.as_str(),
+            case.expected_level,
+            "validation level mismatch for '{}'",
+            case.name
+        );
+        let raw_level = Value::String(case.expected_level.clone());
+        let parsed_level: HotkeyValidationLevel =
+            serde_json::from_value(raw_level.clone()).unwrap();
+        assert_eq!(serde_json::to_value(parsed_level).unwrap(), raw_level);
+        assert_eq!(
+            result.message, case.expected_message,
+            "validation message mismatch for '{}'",
+            case.name
+        );
+    }
+}
+
+#[test]
+fn hold_state_trace_matches_python_golden_fixture() {
+    let contracts = load_contracts();
+    let state = HoldHotkeyState::new();
+    for (idx, step) in contracts.hold_state_trace.iter().enumerate() {
+        let actual = match step.op.as_str() {
+            "should_start" => Some(state.should_start(step.source.as_deref().unwrap())),
+            "should_stop" => Some(state.should_stop(step.source.as_deref().unwrap())),
+            "is_active" => Some(state.is_active(step.source.as_deref().unwrap())),
+            "mark_started" => {
+                state.mark_started();
+                None
+            }
+            "reset" => {
+                state.reset();
+                None
+            }
+            other => panic!("unexpected hold_state op: {other}"),
+        };
+        assert_eq!(
+            actual, step.expected,
+            "hold_state step {idx} ({:?})",
+            step.op
+        );
+    }
+}
+
+#[test]
+fn transcript_delivery_contracts_match_python_golden_fixture() {
+    struct StubBackend {
+        paste_ok: bool,
+        copy_ok: bool,
+    }
+    impl TranscriptClipboardBackend for StubBackend {
+        fn paste_transcript(&mut self, _text: &str) -> bool {
+            self.paste_ok
+        }
+        fn copy_transcript(&mut self, _text: &str) -> bool {
+            self.copy_ok
+        }
+    }
+
+    let contracts = load_contracts();
+    let td = &contracts.transcript_delivery;
+
+    assert_eq!(PASTED, td.pasted);
+    assert_eq!(COPIED, td.copied);
+    assert_eq!(TEST_COMPLETE, td.test_complete);
+    assert_eq!(PASTE_FAILED_MACOS, td.paste_failed_macos);
+    assert_eq!(PASTE_FAILED_OTHER, td.paste_failed_other);
+    assert_eq!(paste_failed_message(true), td.paste_failed_macos);
+    assert_eq!(paste_failed_message(false), td.paste_failed_other);
+    assert_eq!(COPY_FAILED, td.copy_failed);
+    assert_eq!(
+        delivery_hint(PASTE_FAILED_MACOS),
+        Some(td.paste_failed_hint.as_str())
+    );
+    assert_eq!(
+        delivery_hint(PASTE_FAILED_OTHER),
+        Some(td.paste_failed_hint.as_str())
+    );
+    assert_eq!(
+        delivery_hint(COPY_FAILED),
+        Some(td.copy_failed_hint.as_str())
+    );
+    assert_eq!(NO_TRANSCRIPT_TO_COPY, td.copy_last_empty);
+    assert_eq!(LAST_TRANSCRIPT_COPIED, td.copy_last_ok);
+    assert_eq!(COULD_NOT_COPY, td.copy_last_fail);
+
+    for case in &td.done_status {
+        assert_eq!(
+            done_status(&case.feedback, case.app.as_deref(), case.seconds),
+            case.expected,
+            "done_status mismatch for feedback={:?} app={:?} seconds={:?}",
+            case.feedback,
+            case.app,
+            case.seconds
+        );
+    }
+
+    for case in &td.transcription_time_enabled {
+        assert_eq!(
+            transcription_time_enabled_from_value(case.input.as_deref()),
+            case.expected,
+            "transcription_time_enabled mismatch for {:?}",
+            case.input
+        );
+    }
+
+    for is_macos in [true, false] {
+        for case in &td.delivery_outcomes {
+            let mut delivery = TranscriptDelivery::for_platform(is_macos);
+            let mut backend = StubBackend {
+                paste_ok: case.paste_ok,
+                copy_ok: case.copy_ok,
+            };
+            let outcome = delivery.deliver("Hello", case.auto_paste, &mut backend);
+            assert_eq!(outcome.ok, case.expected_ok, "case '{}'", case.name);
+            let expected_feedback = if case.expected_feedback == "<paste_failed>" {
+                paste_failed_message(is_macos)
+            } else {
+                case.expected_feedback.as_str()
+            };
+            assert_eq!(outcome.feedback, expected_feedback, "case '{}'", case.name);
+        }
+    }
+
+    let mut delivery = TranscriptDelivery::for_platform(true);
+    let mut ok_backend = StubBackend {
+        paste_ok: true,
+        copy_ok: true,
+    };
+    assert_eq!(delivery.copy_last(&mut ok_backend), td.copy_last_empty);
+    delivery.deliver("Saved text", true, &mut ok_backend);
+    assert_eq!(delivery.copy_last(&mut ok_backend), td.copy_last_ok);
+    let mut fail_backend = StubBackend {
+        paste_ok: false,
+        copy_ok: false,
+    };
+    assert_eq!(delivery.copy_last(&mut fail_backend), td.copy_last_fail);
 }
