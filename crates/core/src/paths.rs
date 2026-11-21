@@ -25,17 +25,23 @@ fn system_time_to_ns(time: SystemTime) -> i128 {
     }
 }
 
-/// Build a stable file signature from filesystem metadata.
-pub fn build_file_signature(path: &Path) -> io::Result<FileSignature> {
-    let meta = fs::metadata(path)?;
+/// Build a stable file signature from already-fetched filesystem metadata
+/// (for example from an open `File::metadata()` handle to avoid stat/open TOCTOU).
+pub fn file_signature_from_metadata(meta: &fs::Metadata) -> FileSignature {
     let mtime_ns = meta.modified().map(system_time_to_ns).unwrap_or(0);
-    let ctime_ns = metadata_ctime_ns(&meta);
+    let ctime_ns = metadata_ctime_ns(meta);
 
-    Ok(FileSignature {
+    FileSignature {
         mtime_ns,
         size: meta.len(),
         ctime_ns,
-    })
+    }
+}
+
+/// Build a stable file signature from filesystem metadata.
+pub fn build_file_signature(path: &Path) -> io::Result<FileSignature> {
+    let meta = fs::metadata(path)?;
+    Ok(file_signature_from_metadata(&meta))
 }
 
 #[cfg(unix)]

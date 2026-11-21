@@ -5,12 +5,20 @@
 
 pub mod atomic_io;
 pub mod env;
+pub mod history;
 pub mod onboarding;
 pub mod paths;
 pub mod preferences;
+pub mod prompts;
 pub mod state;
+pub mod vocabulary;
 
+pub use history::{HistoryError, HistorySaveOutcome, HistoryStore, TranscriptEntry};
 pub use onboarding::{OnboardingChoice, OnboardingStep};
 pub use paths::{AppPaths, FileSignature};
 pub use preferences::{HotkeyKind, PreferencesError, PreferencesStore};
+pub use prompts::{
+    PromptEditorContext, PromptOverrides, PromptsConfig, PromptsError, PromptsStore,
+};
 pub use state::{AppState, DaemonErrorCode, DaemonStatusError};
+pub use vocabulary::{VocabularyError, VocabularyInputAnalysis, VocabularyState, VocabularyStore};

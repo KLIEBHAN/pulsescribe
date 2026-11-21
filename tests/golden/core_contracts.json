@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "app_states": [
     "idle",
     "loading",
@@ -499,5 +499,752 @@
         "step_index": 5
       }
     ]
+  },
+  "vocabulary": {
+    "split_text": [
+      {
+        "input": null,
+        "expected": []
+      },
+      {
+        "input": "",
+        "expected": []
+      },
+      {
+        "input": "   , , \n ",
+        "expected": []
+      },
+      {
+        "input": "PulseScribe, Whisper\r\n  Deepgram , , \rGroq",
+        "expected": [
+          "PulseScribe",
+          "Whisper",
+          "Deepgram",
+          "Groq"
+        ]
+      }
+    ],
+    "analyze_text": [
+      {
+        "name": "none",
+        "input": null,
+        "keywords": [],
+        "issues": [],
+        "input_count": 0,
+        "duplicate_count": 0,
+        "exceeds_local_limit": false,
+        "exceeds_deepgram_limit": false
+      },
+      {
+        "name": "dedupe-and-casefold",
+        "input": "Whisper, whisper, Straße, STRASSE, ſage, sage, ﬁle, FILE, Groq",
+        "keywords": [
+          "Whisper",
+          "Straße",
+          "ſage",
+          "ﬁle",
+          "Groq"
+        ],
+        "issues": [
+          "4 duplicate keywords found."
+        ],
+        "input_count": 9,
+        "duplicate_count": 4,
+        "exceeds_local_limit": false,
+        "exceeds_deepgram_limit": false
+      },
+      {
+        "name": "over-local-limit",
+        "input": "local_term_0, local_term_1, local_term_2, local_term_3, local_term_4, local_term_5, local_term_6, local_term_7, local_term_8, local_term_9, local_term_10, local_term_11, local_term_12, local_term_13, local_term_14, local_term_15, local_term_16, local_term_17, local_term_18, local_term_19, local_term_20, local_term_21, local_term_22, local_term_23, local_term_24, local_term_25, local_term_26, local_term_27, local_term_28, local_term_29, local_term_30, local_term_31, local_term_32, local_term_33, local_term_34, local_term_35, local_term_36, local_term_37, local_term_38, local_term_39, local_term_40, local_term_41, local_term_42, local_term_43, local_term_44, local_term_45, local_term_46, local_term_47, local_term_48, local_term_49, local_term_50",
+        "keywords": [
+          "local_term_0",
+          "local_term_1",
+          "local_term_2",
+          "local_term_3",
+          "local_term_4",
+          "local_term_5",
+          "local_term_6",
+          "local_term_7",
+          "local_term_8",
+          "local_term_9",
+          "local_term_10",
+          "local_term_11",
+          "local_term_12",
+          "local_term_13",
+          "local_term_14",
+          "local_term_15",
+          "local_term_16",
+          "local_term_17",
+          "local_term_18",
+          "local_term_19",
+          "local_term_20",
+          "local_term_21",
+          "local_term_22",
+          "local_term_23",
+          "local_term_24",
+          "local_term_25",
+          "local_term_26",
+          "local_term_27",
+          "local_term_28",
+          "local_term_29",
+          "local_term_30",
+          "local_term_31",
+          "local_term_32",
+          "local_term_33",
+          "local_term_34",
+          "local_term_35",
+          "local_term_36",
+          "local_term_37",
+          "local_term_38",
+          "local_term_39",
+          "local_term_40",
+          "local_term_41",
+          "local_term_42",
+          "local_term_43",
+          "local_term_44",
+          "local_term_45",
+          "local_term_46",
+          "local_term_47",
+          "local_term_48",
+          "local_term_49",
+          "local_term_50"
+        ],
+        "issues": [
+          "51 keywords: Local uses at most 50."
+        ],
+        "input_count": 51,
+        "duplicate_count": 0,
+        "exceeds_local_limit": true,
+        "exceeds_deepgram_limit": false
+      },
+      {
+        "name": "over-deepgram-limit",
+        "input": "dg_term_0\ndg_term_1\ndg_term_2\ndg_term_3\ndg_term_4\ndg_term_5\ndg_term_6\ndg_term_7\ndg_term_8\ndg_term_9\ndg_term_10\ndg_term_11\ndg_term_12\ndg_term_13\ndg_term_14\ndg_term_15\ndg_term_16\ndg_term_17\ndg_term_18\ndg_term_19\ndg_term_20\ndg_term_21\ndg_term_22\ndg_term_23\ndg_term_24\ndg_term_25\ndg_term_26\ndg_term_27\ndg_term_28\ndg_term_29\ndg_term_30\ndg_term_31\ndg_term_32\ndg_term_33\ndg_term_34\ndg_term_35\ndg_term_36\ndg_term_37\ndg_term_38\ndg_term_39\ndg_term_40\ndg_term_41\ndg_term_42\ndg_term_43\ndg_term_44\ndg_term_45\ndg_term_46\ndg_term_47\ndg_term_48\ndg_term_49\ndg_term_50\ndg_term_51\ndg_term_52\ndg_term_53\ndg_term_54\ndg_term_55\ndg_term_56\ndg_term_57\ndg_term_58\ndg_term_59\ndg_term_60\ndg_term_61\ndg_term_62\ndg_term_63\ndg_term_64\ndg_term_65\ndg_term_66\ndg_term_67\ndg_term_68\ndg_term_69\ndg_term_70\ndg_term_71\ndg_term_72\ndg_term_73\ndg_term_74\ndg_term_75\ndg_term_76\ndg_term_77\ndg_term_78\ndg_term_79\ndg_term_80\ndg_term_81\ndg_term_82\ndg_term_83\ndg_term_84\ndg_term_85\ndg_term_86\ndg_term_87\ndg_term_88\ndg_term_89\ndg_term_90\ndg_term_91\ndg_term_92\ndg_term_93\ndg_term_94\ndg_term_95\ndg_term_96\ndg_term_97\ndg_term_98\ndg_term_99\ndg_term_100",
+        "keywords": [
+          "dg_term_0",
+          "dg_term_1",
+          "dg_term_2",
+          "dg_term_3",
+          "dg_term_4",
+          "dg_term_5",
+          "dg_term_6",
+          "dg_term_7",
+          "dg_term_8",
+          "dg_term_9",
+          "dg_term_10",
+          "dg_term_11",
+          "dg_term_12",
+          "dg_term_13",
+          "dg_term_14",
+          "dg_term_15",
+          "dg_term_16",
+          "dg_term_17",
+          "dg_term_18",
+          "dg_term_19",
+          "dg_term_20",
+          "dg_term_21",
+          "dg_term_22",
+          "dg_term_23",
+          "dg_term_24",
+          "dg_term_25",
+          "dg_term_26",
+          "dg_term_27",
+          "dg_term_28",
+          "dg_term_29",
+          "dg_term_30",
+          "dg_term_31",
+          "dg_term_32",
+          "dg_term_33",
+          "dg_term_34",
+          "dg_term_35",
+          "dg_term_36",
+          "dg_term_37",
+          "dg_term_38",
+          "dg_term_39",
+          "dg_term_40",
+          "dg_term_41",
+          "dg_term_42",
+          "dg_term_43",
+          "dg_term_44",
+          "dg_term_45",
+          "dg_term_46",
+          "dg_term_47",
+          "dg_term_48",
+          "dg_term_49",
+          "dg_term_50",
+          "dg_term_51",
+          "dg_term_52",
+          "dg_term_53",
+          "dg_term_54",
+          "dg_term_55",
+          "dg_term_56",
+          "dg_term_57",
+          "dg_term_58",
+          "dg_term_59",
+          "dg_term_60",
+          "dg_term_61",
+          "dg_term_62",
+          "dg_term_63",
+          "dg_term_64",
+          "dg_term_65",
+          "dg_term_66",
+          "dg_term_67",
+          "dg_term_68",
+          "dg_term_69",
+          "dg_term_70",
+          "dg_term_71",
+          "dg_term_72",
+          "dg_term_73",
+          "dg_term_74",
+          "dg_term_75",
+          "dg_term_76",
+          "dg_term_77",
+          "dg_term_78",
+          "dg_term_79",
+          "dg_term_80",
+          "dg_term_81",
+          "dg_term_82",
+          "dg_term_83",
+          "dg_term_84",
+          "dg_term_85",
+          "dg_term_86",
+          "dg_term_87",
+          "dg_term_88",
+          "dg_term_89",
+          "dg_term_90",
+          "dg_term_91",
+          "dg_term_92",
+          "dg_term_93",
+          "dg_term_94",
+          "dg_term_95",
+          "dg_term_96",
+          "dg_term_97",
+          "dg_term_98",
+          "dg_term_99",
+          "dg_term_100"
+        ],
+        "issues": [
+          "101 keywords: Deepgram uses at most 100, Local at most 50."
+        ],
+        "input_count": 101,
+        "duplicate_count": 0,
+        "exceeds_local_limit": true,
+        "exceeds_deepgram_limit": true
+      }
+    ],
+    "parse_text": [
+      {
+        "name": "valid-with-extra-nonstrings-and-dups",
+        "input": "{\"keywords\": [\"  PulseScribe  \", \"pulsescribe\", \"\", \"   \", 42, true, null, \"Deepgram\"], \"custom_meta\": {\"version\": 1}}",
+        "expected_data": {
+          "keywords": [
+            "PulseScribe",
+            "Deepgram"
+          ],
+          "custom_meta": {
+            "version": 1
+          }
+        },
+        "expected_issues": [
+          "3 keywords are not text and are ignored.",
+          "1 duplicate keywords found."
+        ]
+      },
+      {
+        "name": "missing-keywords-key",
+        "input": "{\"custom_meta\": \"kept\"}",
+        "expected_data": {
+          "custom_meta": "kept",
+          "keywords": []
+        },
+        "expected_issues": []
+      },
+      {
+        "name": "null-keywords",
+        "input": "{\"keywords\": null}",
+        "expected_data": {
+          "keywords": []
+        },
+        "expected_issues": []
+      },
+      {
+        "name": "non-list-keywords",
+        "input": "{\"keywords\": \"not-a-list\"}",
+        "expected_data": {
+          "keywords": []
+        },
+        "expected_issues": [
+          "'keywords' must be a list."
+        ]
+      },
+      {
+        "name": "non-object-json",
+        "input": "[\"PulseScribe\"]",
+        "expected_data": {
+          "keywords": []
+        },
+        "expected_issues": [
+          "The vocabulary file must be a JSON object."
+        ]
+      },
+      {
+        "name": "invalid-json",
+        "input": "{broken json",
+        "expected_data": {
+          "keywords": []
+        },
+        "expected_issues": [
+          "The vocabulary file is not valid JSON."
+        ]
+      }
+    ]
+  },
+  "prompts": {
+    "known_contexts": [
+      "default",
+      "email",
+      "chat",
+      "code"
+    ],
+    "defaults": {
+      "voice_commands_instruction": "\nInterpretiere gesprochene Befehle und entferne sie aus dem Text:\n- \"neuer Absatz\" / \"new paragraph\" → Absatz (doppelter Zeilenumbruch)\n- \"neue Zeile\" / \"new line\" → Zeilenumbruch\n- \"Punkt\" / \"period\" → Satz mit Punkt beenden\n- \"Komma\" / \"comma\" → Komma einfügen\n- \"Fragezeichen\" / \"question mark\" → Fragezeichen\n- \"Ausrufezeichen\" / \"exclamation mark\" → Ausrufezeichen\n- \"Doppelpunkt\" / \"colon\" → Doppelpunkt\n- \"Semikolon\" / \"semicolon\" → Semikolon\nWende die Befehle an der gesprochenen Stelle an und entferne den Befehlstext.",
+      "prompts": {
+        "chat": "Korrigiere dieses Transkript für eine Chat-Nachricht:\n- Lockerer, natürlicher Ton\n- Kurz und prägnant\n- Emojis können beibehalten werden\n- Keine übermäßige Formalisierung\n- Bleibe so nah wie möglich am Originaltext\n\nGib NUR den korrigierten Text zurück.",
+        "code": "Korrigiere dieses Transkript für technischen Kontext:\n- Technische Fachbegriffe exakt beibehalten\n- Code-Snippets, Variablennamen und Befehle nicht ändern\n- Camel/Snake-Case erkennen und beibehalten\n- Englische Begriffe nicht eindeutschen\n- Bleibe so nah wie möglich am Originaltext\n\nGib NUR den korrigierten Text zurück.",
+        "default": "Korrigiere dieses Transkript:\n- Entferne Füllwörter (ähm, also, quasi, sozusagen)\n- Korrigiere Grammatik und Rechtschreibung\n- Formatiere in saubere Absätze\n- Behalte den originalen Inhalt und Stil bei\n- Bleibe so nah wie möglich am Originaltext\n\nGib NUR den korrigierten Text zurück, keine Erklärungen.",
+        "email": "Korrigiere dieses Transkript für eine E-Mail:\n- Formeller, professioneller Ton\n- Vollständige, grammatikalisch korrekte Sätze\n- Grußformeln und Anrede beibehalten\n- Klar strukturierte Absätze\n- Bleibe so nah wie möglich am Originaltext\n\nGib NUR den korrigierten Text zurück."
+      },
+      "app_contexts": {
+        "Code": "code",
+        "Cursor": "code",
+        "Discord": "chat",
+        "Ghostty": "code",
+        "IntelliJ IDEA": "code",
+        "Mail": "email",
+        "Messages": "chat",
+        "Nachrichten": "chat",
+        "Outlook": "email",
+        "PyCharm": "code",
+        "Signal": "chat",
+        "Slack": "chat",
+        "Spark": "email",
+        "Telegram": "chat",
+        "Terminal": "code",
+        "Thunderbird": "email",
+        "VS Code": "code",
+        "Visual Studio Code": "code",
+        "WhatsApp": "chat",
+        "Xcode": "code",
+        "Zed": "code",
+        "iTerm2": "code"
+      }
+    },
+    "editor_contexts": [
+      {
+        "key": "default",
+        "label": "Default",
+        "description": "Fallback instructions used when PulseScribe cannot infer a more specific writing context.",
+        "placeholder": "Add custom fallback instructions for general dictation…"
+      },
+      {
+        "key": "email",
+        "label": "Email",
+        "description": "Tune how rewritten dictation should sound in emails, including tone, structure, and sign-offs.",
+        "placeholder": "Add custom instructions for email dictation…"
+      },
+      {
+        "key": "chat",
+        "label": "Chat",
+        "description": "Tune short back-and-forth messages for chat apps and messengers.",
+        "placeholder": "Add custom instructions for chat dictation…"
+      },
+      {
+        "key": "code",
+        "label": "Code",
+        "description": "Tune formatting and cleanup when you dictate technical text, code, or commit messages.",
+        "placeholder": "Add custom instructions for technical or code-heavy dictation…"
+      },
+      {
+        "key": "voice_commands",
+        "label": "Voice Commands",
+        "description": "Define spoken editing commands such as punctuation, formatting, or cursor actions.",
+        "placeholder": "Customize spoken editing commands…"
+      },
+      {
+        "key": "app_mappings",
+        "label": "App Mappings",
+        "description": "Map app names to prompt contexts so PulseScribe can choose the right rewrite style automatically.",
+        "placeholder": "Add one mapping per line, for example: Slack = chat"
+      }
+    ],
+    "normalize_editor_context": [
+      {
+        "input": null,
+        "expected": "default"
+      },
+      {
+        "input": "",
+        "expected": "default"
+      },
+      {
+        "input": "default",
+        "expected": "default"
+      },
+      {
+        "input": "EMAIL",
+        "expected": "email"
+      },
+      {
+        "input": "  \"── Voice Commands\"  ",
+        "expected": "voice_commands"
+      },
+      {
+        "input": "Voice Commands",
+        "expected": "voice_commands"
+      },
+      {
+        "input": "voice_commands",
+        "expected": "voice_commands"
+      },
+      {
+        "input": "App Mappings",
+        "expected": "app_mappings"
+      },
+      {
+        "input": "── app mappings",
+        "expected": "app_mappings"
+      },
+      {
+        "input": "unknown-context",
+        "expected": "default"
+      }
+    ],
+    "format_app_mappings": {
+      "input": {
+        "Zed": "code",
+        "Mail": "email",
+        "Slack": "chat"
+      },
+      "expected": "# App → Context Mappings (one per line: AppName = context)\nMail = email\nSlack = chat\nZed = code"
+    },
+    "parse_app_mappings": {
+      "input": "# Comment line\n\n  \"VS Code\" = CODE # inline comment\nNoEqualsLine\nGhostApp = nonexistent_context\nMail = 'email'\nApp.With.Dots = \"chat\"\n  = code",
+      "expected": {
+        "App.With.Dots": "chat",
+        "Mail": "email",
+        "VS Code": "code"
+      }
+    },
+    "filter_overrides": {
+      "voice_commands_instruction": "Custom voice instructions",
+      "prompts": {
+        "default": "Korrigiere dieses Transkript:\n- Entferne Füllwörter (ähm, also, quasi, sozusagen)\n- Korrigiere Grammatik und Rechtschreibung\n- Formatiere in saubere Absätze\n- Behalte den originalen Inhalt und Stil bei\n- Bleibe so nah wie möglich am Originaltext\n\nGib NUR den korrigierten Text zurück, keine Erklärungen.",
+        "email": "Custom email rewrite",
+        "chat": "",
+        "code": "Korrigiere dieses Transkript für technischen Kontext:\n- Technische Fachbegriffe exakt beibehalten\n- Code-Snippets, Variablennamen und Befehle nicht ändern\n- Camel/Snake-Case erkennen und beibehalten\n- Englische Begriffe nicht eindeutschen\n- Bleibe so nah wie möglich am Originaltext\n\nGib NUR den korrigierten Text zurück."
+      },
+      "app_contexts": {
+        "Mail": "email",
+        "Outlook": "email",
+        "Spark": "email",
+        "Thunderbird": "email",
+        "Slack": "email",
+        "Discord": "chat",
+        "Telegram": "chat",
+        "WhatsApp": "chat",
+        "Messages": "chat",
+        "Signal": "chat",
+        "Nachrichten": "chat",
+        "Code": "code",
+        "VS Code": "code",
+        "Visual Studio Code": "code",
+        "Cursor": "code",
+        "Zed": "code",
+        "PyCharm": "code",
+        "IntelliJ IDEA": "code",
+        "Xcode": "code",
+        "Terminal": "code",
+        "iTerm2": "code",
+        "Ghostty": "code",
+        "  Linear  ": "CODE",
+        "InvalidApp": "mystery"
+      },
+      "expected_voice_commands_instruction": "Custom voice instructions",
+      "expected_prompts": {
+        "email": "Custom email rewrite"
+      },
+      "expected_app_contexts": {
+        "Linear": "code",
+        "Slack": "email"
+      }
+    },
+    "editor_build_overrides": {
+      "existing_code_prompt": "Existing code override",
+      "drafts": {
+        "email": "Draft email override",
+        "chat": "Untouched draft that is excluded by contexts filter",
+        "App Mappings": "Mail = email\nLinear = code\n"
+      },
+      "contexts": [
+        "email",
+        "App Mappings"
+      ],
+      "expected_voice_commands_instruction": null,
+      "expected_prompts": {
+        "code": "Existing code override",
+        "email": "Draft email override"
+      },
+      "expected_app_contexts": {
+        "Linear": "code"
+      }
+    },
+    "toml_roundtrip": {
+      "overrides_voice_commands": "Say \"\"\"stop\"\"\" and keep C:\\Users\\Test\\file.txt",
+      "overrides_prompts": {
+        "email": "Formal tone with \"\"\"quotes\"\"\" and \\backslash\\"
+      },
+      "overrides_app_contexts": {
+        "App.With.Dots": "code",
+        "Quoted \"App\" \\Name": "chat"
+      },
+      "serialized_toml": "# Custom Prompts für pulsescribe\n\n[voice_commands]\ninstruction = \"\"\"\nSay \\\"\"\"stop\\\"\"\" and keep C:\\\\Users\\\\Test\\\\file.txt\"\"\"\n\n[prompts.email]\nprompt = \"\"\"\nFormal tone with \\\"\"\"quotes\\\"\"\" and \\\\backslash\\\\\"\"\"\n\n[app_contexts]\n\"App.With.Dots\" = \"code\"\n\"Quoted \\\"App\\\" \\\\Name\" = \"chat\"\n",
+      "expected_merged_voice_commands": "Say \"\"\"stop\"\"\" and keep C:\\Users\\Test\\file.txt",
+      "expected_merged_prompts": {
+        "chat": "Korrigiere dieses Transkript für eine Chat-Nachricht:\n- Lockerer, natürlicher Ton\n- Kurz und prägnant\n- Emojis können beibehalten werden\n- Keine übermäßige Formalisierung\n- Bleibe so nah wie möglich am Originaltext\n\nGib NUR den korrigierten Text zurück.",
+        "code": "Korrigiere dieses Transkript für technischen Kontext:\n- Technische Fachbegriffe exakt beibehalten\n- Code-Snippets, Variablennamen und Befehle nicht ändern\n- Camel/Snake-Case erkennen und beibehalten\n- Englische Begriffe nicht eindeutschen\n- Bleibe so nah wie möglich am Originaltext\n\nGib NUR den korrigierten Text zurück.",
+        "default": "Korrigiere dieses Transkript:\n- Entferne Füllwörter (ähm, also, quasi, sozusagen)\n- Korrigiere Grammatik und Rechtschreibung\n- Formatiere in saubere Absätze\n- Behalte den originalen Inhalt und Stil bei\n- Bleibe so nah wie möglich am Originaltext\n\nGib NUR den korrigierten Text zurück, keine Erklärungen.",
+        "email": "Formal tone with \"\"\"quotes\"\"\" and \\backslash\\"
+      },
+      "expected_merged_app_contexts": {
+        "App.With.Dots": "code",
+        "Code": "code",
+        "Cursor": "code",
+        "Discord": "chat",
+        "Ghostty": "code",
+        "IntelliJ IDEA": "code",
+        "Mail": "email",
+        "Messages": "chat",
+        "Nachrichten": "chat",
+        "Outlook": "email",
+        "PyCharm": "code",
+        "Quoted \"App\" \\Name": "chat",
+        "Signal": "chat",
+        "Slack": "chat",
+        "Spark": "email",
+        "Telegram": "chat",
+        "Terminal": "code",
+        "Thunderbird": "email",
+        "VS Code": "code",
+        "Visual Studio Code": "code",
+        "WhatsApp": "chat",
+        "Xcode": "code",
+        "Zed": "code",
+        "iTerm2": "code"
+      }
+    },
+    "refine_prompt_cases": [
+      {
+        "context": "default",
+        "voice_commands": false,
+        "expected": "Korrigiere dieses Transkript:\n- Entferne Füllwörter (ähm, also, quasi, sozusagen)\n- Korrigiere Grammatik und Rechtschreibung\n- Formatiere in saubere Absätze\n- Behalte den originalen Inhalt und Stil bei\n- Bleibe so nah wie möglich am Originaltext\n\nGib NUR den korrigierten Text zurück, keine Erklärungen."
+      },
+      {
+        "context": "default",
+        "voice_commands": true,
+        "expected": "\nInterpretiere gesprochene Befehle und entferne sie aus dem Text:\n- \"neuer Absatz\" / \"new paragraph\" → Absatz (doppelter Zeilenumbruch)\n- \"neue Zeile\" / \"new line\" → Zeilenumbruch\n- \"Punkt\" / \"period\" → Satz mit Punkt beenden\n- \"Komma\" / \"comma\" → Komma einfügen\n- \"Fragezeichen\" / \"question mark\" → Fragezeichen\n- \"Ausrufezeichen\" / \"exclamation mark\" → Ausrufezeichen\n- \"Doppelpunkt\" / \"colon\" → Doppelpunkt\n- \"Semikolon\" / \"semicolon\" → Semikolon\nWende die Befehle an der gesprochenen Stelle an und entferne den Befehlstext.\nKorrigiere dieses Transkript:\n- Entferne Füllwörter (ähm, also, quasi, sozusagen)\n- Korrigiere Grammatik und Rechtschreibung\n- Formatiere in saubere Absätze\n- Behalte den originalen Inhalt und Stil bei\n- Bleibe so nah wie möglich am Originaltext\n\nGib NUR den korrigierten Text zurück, keine Erklärungen."
+      },
+      {
+        "context": "email",
+        "voice_commands": false,
+        "expected": "Korrigiere dieses Transkript für eine E-Mail:\n- Formeller, professioneller Ton\n- Vollständige, grammatikalisch korrekte Sätze\n- Grußformeln und Anrede beibehalten\n- Klar strukturierte Absätze\n- Bleibe so nah wie möglich am Originaltext\n\nGib NUR den korrigierten Text zurück."
+      },
+      {
+        "context": "email",
+        "voice_commands": true,
+        "expected": "\nInterpretiere gesprochene Befehle und entferne sie aus dem Text:\n- \"neuer Absatz\" / \"new paragraph\" → Absatz (doppelter Zeilenumbruch)\n- \"neue Zeile\" / \"new line\" → Zeilenumbruch\n- \"Punkt\" / \"period\" → Satz mit Punkt beenden\n- \"Komma\" / \"comma\" → Komma einfügen\n- \"Fragezeichen\" / \"question mark\" → Fragezeichen\n- \"Ausrufezeichen\" / \"exclamation mark\" → Ausrufezeichen\n- \"Doppelpunkt\" / \"colon\" → Doppelpunkt\n- \"Semikolon\" / \"semicolon\" → Semikolon\nWende die Befehle an der gesprochenen Stelle an und entferne den Befehlstext.\nKorrigiere dieses Transkript für eine E-Mail:\n- Formeller, professioneller Ton\n- Vollständige, grammatikalisch korrekte Sätze\n- Grußformeln und Anrede beibehalten\n- Klar strukturierte Absätze\n- Bleibe so nah wie möglich am Originaltext\n\nGib NUR den korrigierten Text zurück."
+      },
+      {
+        "context": "chat",
+        "voice_commands": false,
+        "expected": "Korrigiere dieses Transkript für eine Chat-Nachricht:\n- Lockerer, natürlicher Ton\n- Kurz und prägnant\n- Emojis können beibehalten werden\n- Keine übermäßige Formalisierung\n- Bleibe so nah wie möglich am Originaltext\n\nGib NUR den korrigierten Text zurück."
+      },
+      {
+        "context": "chat",
+        "voice_commands": true,
+        "expected": "\nInterpretiere gesprochene Befehle und entferne sie aus dem Text:\n- \"neuer Absatz\" / \"new paragraph\" → Absatz (doppelter Zeilenumbruch)\n- \"neue Zeile\" / \"new line\" → Zeilenumbruch\n- \"Punkt\" / \"period\" → Satz mit Punkt beenden\n- \"Komma\" / \"comma\" → Komma einfügen\n- \"Fragezeichen\" / \"question mark\" → Fragezeichen\n- \"Ausrufezeichen\" / \"exclamation mark\" → Ausrufezeichen\n- \"Doppelpunkt\" / \"colon\" → Doppelpunkt\n- \"Semikolon\" / \"semicolon\" → Semikolon\nWende die Befehle an der gesprochenen Stelle an und entferne den Befehlstext.\nKorrigiere dieses Transkript für eine Chat-Nachricht:\n- Lockerer, natürlicher Ton\n- Kurz und prägnant\n- Emojis können beibehalten werden\n- Keine übermäßige Formalisierung\n- Bleibe so nah wie möglich am Originaltext\n\nGib NUR den korrigierten Text zurück."
+      },
+      {
+        "context": "code",
+        "voice_commands": false,
+        "expected": "Korrigiere dieses Transkript für technischen Kontext:\n- Technische Fachbegriffe exakt beibehalten\n- Code-Snippets, Variablennamen und Befehle nicht ändern\n- Camel/Snake-Case erkennen und beibehalten\n- Englische Begriffe nicht eindeutschen\n- Bleibe so nah wie möglich am Originaltext\n\nGib NUR den korrigierten Text zurück."
+      },
+      {
+        "context": "code",
+        "voice_commands": true,
+        "expected": "\nInterpretiere gesprochene Befehle und entferne sie aus dem Text:\n- \"neuer Absatz\" / \"new paragraph\" → Absatz (doppelter Zeilenumbruch)\n- \"neue Zeile\" / \"new line\" → Zeilenumbruch\n- \"Punkt\" / \"period\" → Satz mit Punkt beenden\n- \"Komma\" / \"comma\" → Komma einfügen\n- \"Fragezeichen\" / \"question mark\" → Fragezeichen\n- \"Ausrufezeichen\" / \"exclamation mark\" → Ausrufezeichen\n- \"Doppelpunkt\" / \"colon\" → Doppelpunkt\n- \"Semikolon\" / \"semicolon\" → Semikolon\nWende die Befehle an der gesprochenen Stelle an und entferne den Befehlstext.\nKorrigiere dieses Transkript für technischen Kontext:\n- Technische Fachbegriffe exakt beibehalten\n- Code-Snippets, Variablennamen und Befehle nicht ändern\n- Camel/Snake-Case erkennen und beibehalten\n- Englische Begriffe nicht eindeutschen\n- Bleibe so nah wie möglich am Originaltext\n\nGib NUR den korrigierten Text zurück."
+      },
+      {
+        "context": "unknown",
+        "voice_commands": false,
+        "expected": "Korrigiere dieses Transkript:\n- Entferne Füllwörter (ähm, also, quasi, sozusagen)\n- Korrigiere Grammatik und Rechtschreibung\n- Formatiere in saubere Absätze\n- Behalte den originalen Inhalt und Stil bei\n- Bleibe so nah wie möglich am Originaltext\n\nGib NUR den korrigierten Text zurück, keine Erklärungen."
+      },
+      {
+        "context": "unknown",
+        "voice_commands": true,
+        "expected": "\nInterpretiere gesprochene Befehle und entferne sie aus dem Text:\n- \"neuer Absatz\" / \"new paragraph\" → Absatz (doppelter Zeilenumbruch)\n- \"neue Zeile\" / \"new line\" → Zeilenumbruch\n- \"Punkt\" / \"period\" → Satz mit Punkt beenden\n- \"Komma\" / \"comma\" → Komma einfügen\n- \"Fragezeichen\" / \"question mark\" → Fragezeichen\n- \"Ausrufezeichen\" / \"exclamation mark\" → Ausrufezeichen\n- \"Doppelpunkt\" / \"colon\" → Doppelpunkt\n- \"Semikolon\" / \"semicolon\" → Semikolon\nWende die Befehle an der gesprochenen Stelle an und entferne den Befehlstext.\nKorrigiere dieses Transkript:\n- Entferne Füllwörter (ähm, also, quasi, sozusagen)\n- Korrigiere Grammatik und Rechtschreibung\n- Formatiere in saubere Absätze\n- Behalte den originalen Inhalt und Stil bei\n- Bleibe so nah wie möglich am Originaltext\n\nGib NUR den korrigierten Text zurück, keine Erklärungen."
+      }
+    ]
+  },
+  "history": {
+    "display_empty_message": "No transcripts yet.\n\nYour recent dictations will appear here after the first transcription.",
+    "welcome_empty_message": "No transcriptions yet.\n\nYour recent dictations will appear here after the first transcription.",
+    "select_recent_lines": [
+      {
+        "name": "empty",
+        "lines": [],
+        "max_size_bytes": 100,
+        "expected": []
+      },
+      {
+        "name": "fits-all",
+        "lines": [
+          "line1",
+          "line2"
+        ],
+        "max_size_bytes": 100,
+        "expected": [
+          "line1",
+          "line2"
+        ]
+      },
+      {
+        "name": "utf8-budget-trim",
+        "lines": [
+          "äää",
+          "bbb",
+          "ccc"
+        ],
+        "max_size_bytes": 9,
+        "expected": [
+          "bbb",
+          "ccc"
+        ]
+      },
+      {
+        "name": "oversized-newest-kept",
+        "lines": [
+          "old",
+          "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        ],
+        "max_size_bytes": 10,
+        "expected": [
+          "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        ]
+      }
+    ],
+    "merge_recent_entries": [
+      {
+        "name": "zero-max",
+        "previous": [
+          {
+            "timestamp": "2026-11-21T09:00:00",
+            "text": "one"
+          },
+          {
+            "timestamp": "2026-11-21T09:01:00",
+            "text": "two"
+          },
+          {
+            "timestamp": "2026-11-21T09:02:00",
+            "text": "three"
+          }
+        ],
+        "appended": [
+          {
+            "timestamp": "2026-11-21T09:03:00",
+            "text": "four"
+          }
+        ],
+        "max_entries": 0,
+        "expected_texts": []
+      },
+      {
+        "name": "window-trim",
+        "previous": [
+          {
+            "timestamp": "2026-11-21T09:00:00",
+            "text": "one"
+          },
+          {
+            "timestamp": "2026-11-21T09:01:00",
+            "text": "two"
+          },
+          {
+            "timestamp": "2026-11-21T09:02:00",
+            "text": "three"
+          }
+        ],
+        "appended": [
+          {
+            "timestamp": "2026-11-21T09:03:00",
+            "text": "four"
+          }
+        ],
+        "max_entries": 2,
+        "expected_texts": [
+          "three",
+          "four"
+        ]
+      },
+      {
+        "name": "trim-prev-only",
+        "previous": [
+          {
+            "timestamp": "2026-11-21T09:00:00",
+            "text": "one"
+          },
+          {
+            "timestamp": "2026-11-21T09:01:00",
+            "text": "two"
+          },
+          {
+            "timestamp": "2026-11-21T09:02:00",
+            "text": "three"
+          }
+        ],
+        "appended": [],
+        "max_entries": 2,
+        "expected_texts": [
+          "two",
+          "three"
+        ]
+      }
+    ],
+    "format_entries": [
+      {
+        "timestamp": "2026-11-21T10:15:30.123456",
+        "text": "\n\nFirst line  \r\n\r\n  Indented paragraph\rLast line  \n\n",
+        "mode": "local",
+        "language": "de",
+        "refined": true
+      },
+      {
+        "timestamp": "2026-11-21T10:10:00.000000",
+        "text": "  Simple entry  ",
+        "mode": " deepgram ",
+        "language": " en "
+      },
+      {
+        "timestamp": "2026-11-21T10:05:00",
+        "text": "   ",
+        "mode": "groq"
+      }
+    ],
+    "format_display_empty": "No transcripts yet.\n\nYour recent dictations will appear here after the first transcription.",
+    "format_display_newest_first": "[2026-11-21 10:05:00] (groq) \n\n[2026-11-21 10:10:00] ( deepgram )   Simple entry\n\n[2026-11-21 10:15:30] (local) ✨First line\n    \n      Indented paragraph\n    Last line",
+    "format_display_oldest_first": "[2026-11-21 10:15:30] (local) ✨First line\n    \n      Indented paragraph\n    Last line\n\n[2026-11-21 10:10:00] ( deepgram )   Simple entry\n\n[2026-11-21 10:05:00] (groq) ",
+    "format_welcome_empty": "No transcriptions yet.\n\nYour recent dictations will appear here after the first transcription.",
+    "format_welcome_newest_first": "[2026-11-21 10:05:00] (groq)\n\n[2026-11-21 10:10:00] (deepgram en)\nSimple entry\n\n[2026-11-21 10:15:30] (local de)\nFirst line  \r\n\r\n  Indented paragraph\rLast line",
+    "format_welcome_oldest_first": "[2026-11-21 10:15:30] (local de)\nFirst line  \r\n\r\n  Indented paragraph\rLast line\n\n[2026-11-21 10:10:00] (deepgram en)\nSimple entry\n\n[2026-11-21 10:05:00] (groq)"
   }
 }
