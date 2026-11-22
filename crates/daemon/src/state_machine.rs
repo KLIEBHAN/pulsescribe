@@ -376,7 +376,10 @@ impl DaemonStateMachine {
         let Some(run) = self.active_run.as_ref() else {
             return Vec::new();
         };
-        if run.run_id != run_id || (!self.is_capturing() && self.state != AppState::Transcribing) {
+        if run.run_id != run_id
+            || run.delivering
+            || (!self.is_capturing() && self.state != AppState::Transcribing)
+        {
             return Vec::new();
         }
         let mut actions = Vec::new();
@@ -441,12 +444,15 @@ impl DaemonStateMachine {
                     text: String::new(),
                     error: None,
                 }));
+                self.transition_to(AppState::Idle, None, None, &mut actions);
+                self.flush_pending_reload_if_idle(&mut actions);
+            } else {
+                let gen = self.transition_to(AppState::NoSpeech, None, None, &mut actions);
+                actions.push(DaemonAction::ScheduleIdleReset {
+                    generation: gen,
+                    delay: self.timings.no_speech_reset_delay,
+                });
             }
-            let gen = self.transition_to(AppState::NoSpeech, None, None, &mut actions);
-            actions.push(DaemonAction::ScheduleIdleReset {
-                generation: gen,
-                delay: self.timings.no_speech_reset_delay,
-            });
             return actions;
         }
 
@@ -519,20 +525,19 @@ impl DaemonStateMachine {
         self.hold_state.reset();
 
         let mut actions = Vec::new();
-        let display_secs = show_rtf.then_some(duration_secs).flatten();
-        let status_text = done_status(&outcome.feedback, target_app.as_deref(), display_secs);
-
         actions.push(DaemonAction::PublishEvent(
             DaemonEvent::TranscriptDelivered {
                 run_id,
                 text,
                 outcome: outcome.clone(),
-                target_app,
+                target_app: target_app.clone(),
                 duration_secs,
             },
         ));
 
         if outcome.ok {
+            let display_secs = show_rtf.then_some(duration_secs).flatten();
+            let status_text = done_status(&outcome.feedback, target_app.as_deref(), display_secs);
             actions.push(DaemonAction::PlaySound(SoundName::Done));
             let gen = self.transition_to(AppState::Done, Some(status_text), None, &mut actions);
             actions.push(DaemonAction::ScheduleIdleReset {
@@ -540,8 +545,11 @@ impl DaemonStateMachine {
                 delay: self.timings.done_display_hold,
             });
         } else {
+            // Preserve the exact failure feedback string (without RTF duration suffix) so
+            // `overlay_feedback::describe_overlay_content` and `delivery_hint` match it verbatim.
             actions.push(DaemonAction::PlaySound(SoundName::Error));
-            let gen = self.transition_to(AppState::Error, Some(status_text), None, &mut actions);
+            let gen =
+                self.transition_to(AppState::Error, Some(outcome.feedback), None, &mut actions);
             actions.push(DaemonAction::ScheduleIdleReset {
                 generation: gen,
                 delay: self.timings.error_reset_delay,
@@ -990,14 +998,16 @@ mod tests {
     }
 
     #[test]
-    fn paste_fallback_failure_uses_error_hold_duration() {
+    fn paste_fallback_failure_uses_error_hold_duration_and_preserves_exact_feedback_with_rtf() {
         let mut sm = DaemonStateMachine::default();
-        let _ = sm.on_start_recording(None);
+        let _ = sm.on_start_recording(Some("Mail".into()));
         let run_id = sm.active_run().unwrap().run_id;
         let _ = sm.on_capture_started(run_id);
         let _ = sm.on_stop_recording();
-        let _ = sm.on_transcript_ready(run_id, "Text".into(), None);
+        let _ = sm.on_transcript_ready(run_id, "Text".into(), Some(0.8));
 
+        // Even with `show_rtf = true`, delivery failure must preserve exact `PASTE_FAILED_MACOS`
+        // without appending ` · 0.8 s` so overlay badge & recovery hints match verbatim.
         let actions = sm.on_delivery_finished(
             run_id,
             "Text".into(),
@@ -1005,12 +1015,20 @@ mod tests {
                 ok: false,
                 feedback: PASTE_FAILED_MACOS.into(),
             },
-            None,
-            None,
-            false,
+            Some("Mail".into()),
+            Some(0.8),
+            true,
         );
         assert_eq!(sm.state(), AppState::Error);
         assert!(actions.contains(&DaemonAction::PlaySound(SoundName::Error)));
+        assert!(actions.iter().any(|a| matches!(
+            a,
+            DaemonAction::PublishEvent(DaemonEvent::StateChanged {
+                state: AppState::Error,
+                detail: Some(detail),
+                ..
+            }) if detail == PASTE_FAILED_MACOS
+        )));
         assert!(actions.iter().any(|a| matches!(
             a,
             DaemonAction::ScheduleIdleReset { delay, .. } if *delay == sm.timings.error_reset_delay
@@ -1018,7 +1036,7 @@ mod tests {
     }
 
     #[test]
-    fn delivering_guards_against_duplicate_transcript_and_late_watchdog_and_stop_test_ignores_normal(
+    fn delivering_guards_against_duplicate_transcript_interim_and_late_watchdog_and_empty_test_resets_idle(
     ) {
         let mut sm = DaemonStateMachine::default();
 
@@ -1056,10 +1074,39 @@ mod tests {
             .iter()
             .any(|a| matches!(a, DaemonAction::DeliverTranscript { .. })));
 
-        // Duplicate transcript or late watchdog during delivery are both ignored.
+        // Duplicate transcript, late interim text, and late watchdog during delivery are ignored.
         assert!(sm
             .on_transcript_ready(run_id, "Duplicate".into(), None)
             .is_empty());
+        assert!(sm.on_interim_text(run_id, "Late interim".into()).is_empty());
         assert!(sm.on_watchdog_timeout(run_id).is_empty());
+
+        // Complete normal run, then verify an empty test transcript returns directly to Idle
+        // and flushes any deferred config reload without flashing NoSpeech.
+        let _ = sm.on_delivery_finished(
+            run_id,
+            "Delivered once".into(),
+            DeliveryOutcome {
+                ok: true,
+                feedback: PASTED.into(),
+            },
+            Some("Notes".into()),
+            None,
+            false,
+        );
+        let _ = sm.on_reset_timer(sm.state_generation());
+        assert_eq!(sm.state(), AppState::Idle);
+
+        let _ = sm.on_ipc_command("test-empty".into(), IpcCommandKind::StartTest);
+        let test_run_id = sm.active_run().unwrap().run_id;
+        let _ = sm.on_capture_started(test_run_id);
+        assert!(sm.on_config_reload_requested().is_empty());
+        let _ = sm.on_ipc_command("stop-empty".into(), IpcCommandKind::StopTest);
+        let empty_done = sm.on_transcript_ready(test_run_id, "   ".into(), None);
+        assert_eq!(sm.state(), AppState::Idle);
+        assert!(empty_done.contains(&DaemonAction::ApplyPendingConfigReload));
+        assert!(!empty_done
+            .iter()
+            .any(|a| matches!(a, DaemonAction::ScheduleIdleReset { .. })));
     }
 }
