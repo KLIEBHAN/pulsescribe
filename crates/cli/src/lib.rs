@@ -176,7 +176,7 @@ async fn transcribe_and_maybe_refine(
     drop(temp_guard);
     let transcript = transcription_result?;
 
-    if args.response_format != CliResponseFormat::Text {
+    if should_skip_refine_for_format(resolved.mode, args.response_format) {
         if resolved.refine {
             let _ = writeln!(
                 stderr,
@@ -217,4 +217,46 @@ async fn transcribe_and_maybe_refine(
     }
 
     Ok(maybe_refine(refine_provider.as_ref(), &refine_req, &prompts, true).await)
+}
+
+/// Only OpenAI produces structured output (`json`, `srt`, `vtt`); all other providers ignore
+/// `--format` and return plain text, so refinement stays active for them.
+pub const fn should_skip_refine_for_format(
+    mode: TranscriptionMode,
+    response_format: CliResponseFormat,
+) -> bool {
+    matches!(mode, TranscriptionMode::Openai) && !matches!(response_format, CliResponseFormat::Text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refine_skips_only_when_effective_provider_output_is_structured() {
+        assert!(should_skip_refine_for_format(
+            TranscriptionMode::Openai,
+            CliResponseFormat::Json
+        ));
+        assert!(should_skip_refine_for_format(
+            TranscriptionMode::Openai,
+            CliResponseFormat::Srt
+        ));
+        assert!(!should_skip_refine_for_format(
+            TranscriptionMode::Openai,
+            CliResponseFormat::Text
+        ));
+        assert!(!should_skip_refine_for_format(
+            TranscriptionMode::OpenaiCompatible,
+            CliResponseFormat::Json
+        ));
+        assert!(!should_skip_refine_for_format(
+            TranscriptionMode::Deepgram,
+            CliResponseFormat::Srt
+        ));
+        assert!(!should_skip_refine_for_format(
+            TranscriptionMode::Groq,
+            CliResponseFormat::Vtt
+        ));
+    }
 }

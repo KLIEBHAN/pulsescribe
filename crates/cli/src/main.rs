@@ -9,12 +9,16 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use pulsescribe_cli::args::{resolve_cli_options, CliArgs};
-use pulsescribe_cli::run_cli;
+use pulsescribe_cli::{clipboard, run_cli};
 use pulsescribe_core::env::{current_process_env, resolve_environment};
 use pulsescribe_core::paths::AppPaths;
 use tracing_subscriber::EnvFilter;
 
 fn main() -> ExitCode {
+    if let Some(code) = clipboard::maybe_run_clipboard_daemon() {
+        return code;
+    }
+
     let args = CliArgs::parse();
     let env_map = load_dotenv_single_threaded();
 

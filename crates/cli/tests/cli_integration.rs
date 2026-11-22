@@ -216,7 +216,10 @@ async fn end_to_end_dotenv_mode_transcribes_wav_and_writes_only_transcript_to_st
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("--format wird im openai_compatible-Modus ignoriert"));
-    assert!(stderr.contains("LLM-Nachbearbeitung wird für --format json übersprungen"));
+    // Non-OpenAI providers ignore --format and return plain text, so refine runs (and falls back
+    // cleanly here because GROQ_API_KEY is unset) instead of falsely claiming structured output.
+    assert!(!stderr.contains("LLM-Nachbearbeitung wird für --format json übersprungen"));
+    assert!(stderr.contains("GROQ_API_KEY"));
 
     let (method, target, body) = req_rx.await.unwrap();
     assert_eq!(method, "POST");
