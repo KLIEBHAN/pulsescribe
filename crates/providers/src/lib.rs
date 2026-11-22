@@ -1,10 +1,12 @@
 //! Cloud transcription providers for PulseScribe (`OpenAI`, `Groq`, `Deepgram REST`,
-//! and `OpenAI-Compatible` servers).
+//! `Deepgram WebSocket streaming`, and `OpenAI-Compatible` servers).
 //!
-//! Uses a shared pooled `reqwest::Client` (rustls with OS root certificates) and streams
-//! audio files directly from disk without buffering whole files in memory.
+//! Uses a shared pooled `reqwest::Client` (rustls with OS root certificates) for REST uploads
+//! without buffering whole files in memory, and direct `tokio-tungstenite` WebSockets with
+//! bounded ADR-001 shutdown for Deepgram live streaming.
 
 pub mod deepgram;
+pub mod deepgram_stream;
 pub mod groq;
 mod http;
 pub mod openai;
@@ -142,6 +144,12 @@ pub enum ProviderError {
         provider: &'static str,
         detail: String,
     },
+
+    #[error("{provider} WebSocket error: {detail}")]
+    WebSocket {
+        provider: &'static str,
+        detail: String,
+    },
 }
 
 /// Return `None` for unset, blank, or `"auto"` language sentinels (`providers/_language.py`).
@@ -230,6 +238,10 @@ impl CloudProvider {
 }
 
 pub use deepgram::{build_listen_url, DeepgramRestProvider};
+pub use deepgram_stream::{
+    build_stream_ws_url, DeepgramStreamClient, DeepgramStreamConfig, DeepgramStreamEvent,
+    DeepgramStreamResult, DeepgramStreamTimeouts, DEEPGRAM_WS_URL,
+};
 pub use groq::GroqProvider;
 pub use openai::OpenAiProvider;
 pub use openai_compatible::{
