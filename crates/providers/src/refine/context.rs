@@ -78,7 +78,7 @@ pub fn parse_app_contexts_json(raw: &str) -> BTreeMap<String, String> {
         return BTreeMap::new();
     };
 
-    let mut result = BTreeMap::new();
+    let mut result: BTreeMap<String, String> = BTreeMap::new();
     for (key, value) in object {
         let Some(raw_context) = value.as_str() else {
             tracing::warn!(
@@ -99,6 +99,7 @@ pub fn parse_app_contexts_json(raw: &str) -> BTreeMap<String, String> {
             );
             continue;
         };
+        result.retain(|existing, _| !existing.eq_ignore_ascii_case(normalized_key));
         result.insert(normalized_key.to_string(), normalized_ctx.to_string());
     }
     result
@@ -244,6 +245,21 @@ mod tests {
         let env_map = parse_app_contexts_json(r#"{"Slack": "CODE", "Safari": "chat"}"#);
         assert_eq!(context_for_app("slack", &env_map, &prompts), "code");
         assert_eq!(context_for_app("Safari", &env_map, &prompts), "chat");
+
+        // Case-variant user override in prompts.toml must replace the default entry.
+        let merged_toml = pulsescribe_core::prompts::parse_and_merge_prompts_toml(
+            "[app_contexts]\nslack = \"code\"\n",
+        )
+        .unwrap();
+        assert_eq!(context_for_app("Slack", &empty, &merged_toml), "code");
+        assert_eq!(context_for_app("slack", &empty, &merged_toml), "code");
+
+        let mut overrides = pulsescribe_core::prompts::PromptOverrides::default();
+        overrides
+            .app_contexts
+            .insert("slack".to_string(), "email".to_string());
+        let merged_overrides = overrides.merge_with_defaults();
+        assert_eq!(context_for_app("Slack", &empty, &merged_overrides), "email");
     }
 
     #[test]

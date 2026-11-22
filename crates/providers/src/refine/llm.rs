@@ -24,6 +24,7 @@ use crate::{ProviderError, GROQ_API_BASE_URL, OPENAI_API_BASE_URL};
 
 pub const DEFAULT_REFINE_PROVIDER: RefineProviderKind = RefineProviderKind::Groq;
 pub const DEFAULT_REFINE_MODEL: &str = "openai/gpt-oss-120b";
+pub const DEFAULT_OPENAI_REFINE_MODEL: &str = "gpt-4o-mini";
 pub const DEFAULT_GEMINI_REFINE_MODEL: &str = "gemini-3-flash-preview";
 
 pub const OPENROUTER_API_BASE_URL: &str = "https://openrouter.ai/api/v1";
@@ -72,7 +73,8 @@ impl RefineProviderKind {
     pub const fn default_model(self) -> &'static str {
         match self {
             Self::Gemini => DEFAULT_GEMINI_REFINE_MODEL,
-            Self::Groq | Self::OpenAi | Self::OpenRouter => DEFAULT_REFINE_MODEL,
+            Self::OpenAi => DEFAULT_OPENAI_REFINE_MODEL,
+            Self::Groq | Self::OpenRouter => DEFAULT_REFINE_MODEL,
         }
     }
 
@@ -448,8 +450,8 @@ impl LlmRefineProvider {
             "model": model,
             "input": full_prompt,
         });
-        if model.to_ascii_lowercase().starts_with("gpt-5") {
-            payload["reasoning"] = json!({ "effort": "minimal" });
+        if let Some(effort) = openai_reasoning_effort(model) {
+            payload["reasoning"] = json!({ "effort": effort });
         }
 
         let response = self
@@ -473,23 +475,18 @@ impl LlmRefineProvider {
         let model_id = sanitize_gemini_model_id(model)?;
         let segment = format!("{model_id}:generateContent");
         let url = join_base_url(&self.base_url, &["models", &segment])?;
-        let thinking_level = if model_id.to_ascii_lowercase().contains("flash") {
-            "MINIMAL"
-        } else {
-            "LOW"
-        };
 
-        let payload = json!({
+        let mut payload = json!({
             "contents": [{
                 "role": "user",
                 "parts": [{ "text": full_prompt }],
             }],
-            "generationConfig": {
-                "thinkingConfig": {
-                    "thinkingLevel": thinking_level,
-                }
-            }
         });
+        if let Some(thinking_config) = gemini_thinking_config(model_id) {
+            payload["generationConfig"] = json!({
+                "thinkingConfig": thinking_config,
+            });
+        }
 
         let response = self
             .client
@@ -503,6 +500,38 @@ impl LlmRefineProvider {
         let checked = read_checked_response(self.kind.as_str(), response).await?;
         extract_gemini_text(&checked.body)
     }
+}
+
+/// Only the original GPT-5 family (`gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-5-2025-*`) accepts
+/// `reasoning.effort = "minimal"`; newer `gpt-5.1`/`gpt-5.2` models reject `"minimal"`.
+fn openai_reasoning_effort(model: &str) -> Option<&'static str> {
+    let lower = model.trim().to_ascii_lowercase();
+    if lower == "gpt-5" || lower.starts_with("gpt-5-") {
+        Some("minimal")
+    } else {
+        None
+    }
+}
+
+/// Choose model-compatible Gemini `thinkingConfig`:
+/// - Gemini 3 (`gemini-3*`): `thinkingLevel` (`MINIMAL` for Flash, `LOW` otherwise)
+/// - Gemini 2.5 (`gemini-2.5*`): `thinkingBudget` (`0` for Flash, `128` for Pro)
+/// - Earlier models: omit `thinkingConfig`
+fn gemini_thinking_config(model_id: &str) -> Option<Value> {
+    let lower = model_id.to_ascii_lowercase();
+    if lower.starts_with("gemini-3") {
+        let level = if lower.contains("flash") {
+            "MINIMAL"
+        } else {
+            "LOW"
+        };
+        return Some(json!({ "thinkingLevel": level }));
+    }
+    if lower.starts_with("gemini-2.5") {
+        let budget = if lower.contains("flash") { 0 } else { 128 };
+        return Some(json!({ "thinkingBudget": budget }));
+    }
+    None
 }
 
 /// Apply LLM refinement when enabled, gracefully returning the original transcript on any error
@@ -726,9 +755,41 @@ mod tests {
             DEFAULT_REFINE_MODEL
         );
         assert_eq!(
+            RefineProviderKind::OpenRouter.default_model(),
+            DEFAULT_REFINE_MODEL
+        );
+        assert_eq!(
+            RefineProviderKind::OpenAi.default_model(),
+            DEFAULT_OPENAI_REFINE_MODEL
+        );
+        assert_eq!(
             RefineProviderKind::Gemini.default_model(),
             DEFAULT_GEMINI_REFINE_MODEL
         );
+
+        assert_eq!(openai_reasoning_effort("gpt-5"), Some("minimal"));
+        assert_eq!(openai_reasoning_effort("gpt-5-mini"), Some("minimal"));
+        assert_eq!(openai_reasoning_effort("gpt-5-nano"), Some("minimal"));
+        assert_eq!(openai_reasoning_effort("gpt-5.1"), None);
+        assert_eq!(openai_reasoning_effort("gpt-4o-mini"), None);
+
+        assert_eq!(
+            gemini_thinking_config("gemini-3-flash-preview"),
+            Some(json!({ "thinkingLevel": "MINIMAL" }))
+        );
+        assert_eq!(
+            gemini_thinking_config("gemini-3-pro-preview"),
+            Some(json!({ "thinkingLevel": "LOW" }))
+        );
+        assert_eq!(
+            gemini_thinking_config("gemini-2.5-flash"),
+            Some(json!({ "thinkingBudget": 0 }))
+        );
+        assert_eq!(
+            gemini_thinking_config("gemini-2.5-pro"),
+            Some(json!({ "thinkingBudget": 128 }))
+        );
+        assert_eq!(gemini_thinking_config("gemini-2.0-flash"), None);
 
         let err = "groqq".parse::<RefineProviderKind>().unwrap_err();
         assert!(err

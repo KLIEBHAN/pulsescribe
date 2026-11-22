@@ -189,6 +189,26 @@ async fn openai_gpt5_uses_responses_api_with_minimal_reasoning() {
     assert_eq!(body["model"], "gpt-5-mini");
     assert_eq!(body["reasoning"]["effort"], "minimal");
     assert_eq!(body["input"], "Nur korrigieren\n\nTranskript:\nroh");
+
+    // GPT-5.1 rejects "minimal" reasoning effort and must omit it.
+    let (base_url_51, rx_51) = spawn_json_mock(200, r#"{"output_text":"Bereit."}"#).await;
+    let provider_51 = LlmRefineProvider::with_base_url(
+        build_http_client().unwrap(),
+        RefineProviderKind::OpenAi,
+        base_url_51,
+        "sk-test",
+    )
+    .unwrap();
+    let req_51 = RefineRequest::new("roh")
+        .with_model("gpt-5.1")
+        .with_prompt("Nur korrigieren");
+    assert_eq!(
+        provider_51.refine(&req_51, &prompts).await.unwrap(),
+        "Bereit."
+    );
+    let body_51: Value = serde_json::from_str(&rx_51.await.unwrap().body).unwrap();
+    assert_eq!(body_51["model"], "gpt-5.1");
+    assert!(body_51.get("reasoning").is_none());
 }
 
 #[tokio::test]
@@ -230,6 +250,31 @@ async fn gemini_uses_header_auth_thinking_level_and_skips_thought_parts() {
         body["contents"][0]["parts"][0]["text"],
         "Prompt\n\nTranskript:\nroh"
     );
+
+    // Gemini 2.5 models must use thinkingBudget instead of thinkingLevel.
+    let (base_url_25, rx_25) = spawn_json_mock(
+        200,
+        r#"{"candidates":[{"content":{"parts":[{"text":"Schnell."}]}}]}"#,
+    )
+    .await;
+    let provider_25 = LlmRefineProvider::with_base_url(
+        build_http_client().unwrap(),
+        RefineProviderKind::Gemini,
+        base_url_25,
+        "gem-secret",
+    )
+    .unwrap();
+    assert_eq!(
+        provider_25
+            .refine_with_prompt("roh", "Prompt", Some("gemini-2.5-flash"))
+            .await
+            .unwrap(),
+        "Schnell."
+    );
+    let body_25: Value = serde_json::from_str(&rx_25.await.unwrap().body).unwrap();
+    let thinking_25 = &body_25["generationConfig"]["thinkingConfig"];
+    assert_eq!(thinking_25["thinkingBudget"], 0);
+    assert!(thinking_25.get("thinkingLevel").is_none());
 }
 
 #[tokio::test]
