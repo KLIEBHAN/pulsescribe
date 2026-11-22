@@ -10,7 +10,7 @@ use clap::Parser;
 use pulsescribe_core::paths::AppPaths;
 use pulsescribe_core::PreferencesStore;
 use pulsescribe_daemon::{
-    DaemonConfig, DaemonEvent, DaemonPlatform, DaemonRuntime, DaemonRuntimeOptions,
+    DaemonConfig, DaemonEvent, DaemonMode, DaemonPlatform, DaemonRuntime, DaemonRuntimeOptions,
     LiveDictationBackend,
 };
 use tracing_subscriber::EnvFilter;
@@ -106,7 +106,7 @@ async fn run_daemon(
     };
 
     eprintln!(
-        "pulsescribe-daemon gestartet (mode={}, config={}). Zum sauberen Beenden 'quit' eingeben oder stdin schließen.",
+        "pulsescribe-daemon gestartet (mode={}, config={}). Zum sauberen Beenden Ctrl+C drücken, 'quit' eingeben oder stdin schließen.",
         config.mode.as_str(),
         config_dir.display()
     );
@@ -149,6 +149,9 @@ async fn run_daemon(
                 Ok(DaemonEvent::ConfigReloaded) => {
                     let reloaded = reload_handle.config();
                     tracing::info!(mode = reloaded.mode.as_str(), "config reloaded");
+                    if reloaded.mode != DaemonMode::Local {
+                        reload_backend.unload_local_model();
+                    }
                     reload_backend.sync_deepgram_warm_state(&reloaded).await;
                 }
                 Ok(_) => {}
@@ -165,8 +168,11 @@ async fn run_daemon(
         }
     });
 
-    // Wait for `quit`/`exit` or EOF on stdin to perform a clean shutdown without extra signal crates.
-    let _ = tokio::task::spawn_blocking(|| {
+    // Wait for either Ctrl+C (`SIGINT`) or `quit`/`exit`/EOF on stdin.
+    // Use an OS thread rather than `spawn_blocking` so Tokio runtime teardown never hangs waiting
+    // on a blocked stdin read when shutdown is triggered by `ctrl_c`.
+    let (stdin_tx, stdin_rx) = tokio::sync::oneshot::channel::<()>();
+    std::thread::spawn(move || {
         let stdin = io::stdin();
         for line in stdin.lock().lines() {
             match line {
@@ -179,8 +185,17 @@ async fn run_daemon(
                 Err(_) => break,
             }
         }
-    })
-    .await;
+        let _ = stdin_tx.send(());
+    });
+
+    tokio::select! {
+        res = tokio::signal::ctrl_c() => {
+            if let Err(err) = res {
+                tracing::warn!(error = %err, "ctrl_c signal handler failed");
+            }
+        }
+        _ = stdin_rx => {}
+    }
 
     daemon.shutdown().await;
     logger.abort();

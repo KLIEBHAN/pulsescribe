@@ -6,8 +6,15 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+local-whisper = ["dep:whisper-rs"]
+local-sherpa = ["dep:libloading"]
+all-local = ["local-whisper", "local-sherpa"]
+
 [dependencies]
 futures-util.workspace = true
+libloading = { workspace = true, optional = true }
 pulsescribe-core = { path = "../core" }
 reqwest.workspace = true
 serde.workspace = true
@@ -15,6 +22,13 @@ thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 url.workspace = true
+whisper-rs = { workspace = true, optional = true, features = ["tracing_backend"] }
 
-[lints]
-workspace = true
+[target.'cfg(target_os = "macos")'.dependencies]
+whisper-rs = { workspace = true, optional = true, features = ["metal", "tracing_backend"] }
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

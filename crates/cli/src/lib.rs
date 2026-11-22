@@ -12,9 +12,11 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use pulsescribe_audio::AudioError;
+use pulsescribe_audio::{decode_file_to_mono_16k, AudioError};
+use pulsescribe_core::paths::AppPaths;
 use pulsescribe_core::prompts::{PromptsConfig, PromptsStore};
 use pulsescribe_core::vocabulary::VocabularyStore;
+use pulsescribe_local_asr::{LocalAsrError, LocalAsrManager, LocalAsrRequest};
 use pulsescribe_providers::{
     build_http_client, maybe_refine, CloudProvider, LlmRefineProvider, ProviderError,
     RefineRequest, TranscriptionRequest,
@@ -47,6 +49,9 @@ pub enum CliError {
 
     #[error(transparent)]
     Provider(#[from] ProviderError),
+
+    #[error(transparent)]
+    LocalAsr(#[from] LocalAsrError),
 }
 
 impl CliError {
@@ -58,7 +63,8 @@ impl CliError {
             | Self::UnsupportedMode(_)
             | Self::Io(_)
             | Self::Audio(_)
-            | Self::Provider(_) => 1,
+            | Self::Provider(_)
+            | Self::LocalAsr(_) => 1,
         }
     }
 }
@@ -83,13 +89,6 @@ pub async fn run_cli(
         refine = resolved.refine,
         "resolved CLI options"
     );
-
-    if resolved.mode == TranscriptionMode::Local {
-        return Err(CliError::UnsupportedMode(
-            "Lokaler Modus (--mode local) wird erst in Phase 5 (crates/local-asr) ergänzt. Verfügbare Cloud-Modi: deepgram, openai, groq, openai_compatible"
-                .to_string(),
-        ));
-    }
 
     let (audio_path, _temp_guard) = resolve_audio_source(args).await?;
     let transcript =
@@ -145,9 +144,6 @@ async fn transcribe_and_maybe_refine(
     resolved: &ResolvedCliOptions,
     stderr: &mut dyn Write,
 ) -> Result<String, CliError> {
-    let http_client = build_http_client()?;
-    let provider = CloudProvider::from_mode_env(resolved.mode.as_str(), http_client.clone())?;
-
     if resolved.mode != TranscriptionMode::Openai && args.response_format != CliResponseFormat::Text
     {
         let _ = writeln!(
@@ -161,20 +157,51 @@ async fn transcribe_and_maybe_refine(
         .map(|store| store.load_keywords())
         .unwrap_or_default();
 
-    let mut request = TranscriptionRequest::new(audio_path)
-        .with_response_format(args.response_format.into_provider_format())
-        .with_keywords(keywords);
-    if let Some(model) = &resolved.model {
-        request = request.with_model(model.clone());
-    }
-    if let Some(language) = &resolved.language {
-        request = request.with_language(language.clone());
-    }
+    let (transcript, existing_http_client) = if resolved.mode == TranscriptionMode::Local {
+        let decode_result =
+            tokio::task::spawn_blocking(move || decode_file_to_mono_16k(&audio_path))
+                .await
+                .map_err(|err| CliError::Io(std::io::Error::other(err.to_string())))?;
+        // Drop temporary recording immediately after decoding into memory.
+        drop(temp_guard);
+        let samples_16k = decode_result?;
 
-    let transcription_result = provider.transcribe(&request).await;
-    // Drop temporary recording immediately after transcription, preserving primary error.
-    drop(temp_guard);
-    let transcript = transcription_result?;
+        let paths = AppPaths::default_user().ok_or_else(|| {
+            CliError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Home-Verzeichnis konnte nicht ermittelt werden",
+            ))
+        })?;
+        let manager = LocalAsrManager::from_config_dir(paths.config_dir());
+        let model = resolved.model.clone();
+        let request = LocalAsrRequest::new(samples_16k)
+            .with_language(resolved.language.clone())
+            .with_keywords(keywords);
+
+        let local_text =
+            tokio::task::spawn_blocking(move || manager.transcribe(model.as_deref(), &request))
+                .await
+                .map_err(|err| CliError::Io(std::io::Error::other(err.to_string())))??;
+        (local_text, None)
+    } else {
+        let http_client = build_http_client()?;
+        let provider = CloudProvider::from_mode_env(resolved.mode.as_str(), http_client.clone())?;
+
+        let mut request = TranscriptionRequest::new(audio_path)
+            .with_response_format(args.response_format.into_provider_format())
+            .with_keywords(keywords);
+        if let Some(model) = &resolved.model {
+            request = request.with_model(model.clone());
+        }
+        if let Some(language) = &resolved.language {
+            request = request.with_language(language.clone());
+        }
+
+        let transcription_result = provider.transcribe(&request).await;
+        // Drop temporary recording immediately after transcription, preserving primary error.
+        drop(temp_guard);
+        (transcription_result?, Some(http_client))
+    };
 
     if should_skip_refine_for_format(resolved.mode, args.response_format) {
         if resolved.refine {
@@ -190,6 +217,11 @@ async fn transcribe_and_maybe_refine(
     if !resolved.refine || transcript.trim().is_empty() {
         return Ok(transcript);
     }
+
+    let http_client = match existing_http_client {
+        Some(client) => client,
+        None => build_http_client()?,
+    };
 
     let prompts = PromptsStore::default_user()
         .map(|store| store.load())

@@ -1,12 +1,17 @@
 //! Local speech recognition abstractions, model catalog, Hugging Face cache discovery,
-//! and streaming model downloads for PulseScribe (ADR-003 Phase 4 / 5a).
-//!
-//! Keeps model resolution, cache reuse (`~/.pulsescribe/models/` + `~/.cache/huggingface/hub/`),
-//! and engine traits 100% pure Rust with optional native ML backends behind Cargo features.
+//! streaming model downloads, and optional native backends (`whisper-rs` + `sherpa-onnx` C-API)
+//! for PulseScribe (ADR-003 Phase 4 / 5a).
 
 pub mod cache;
 pub mod catalog;
 pub mod download;
+pub mod manager;
+#[cfg(feature = "local-sherpa")]
+pub mod sherpa_backend;
+#[cfg(feature = "local-sherpa")]
+mod sherpa_ffi;
+#[cfg(feature = "local-whisper")]
+pub mod whisper_backend;
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -20,6 +25,14 @@ pub use catalog::{
     ModelSpec, CANARY_LANGUAGES, DEFAULT_HF_BASE_URL, DEFAULT_LOCAL_MODEL_ID,
 };
 pub use download::{DownloadProgress, ModelDownloader};
+pub use manager::{LocalAsrManager, LocalRuntimeCapabilities};
+#[cfg(feature = "local-sherpa")]
+pub use sherpa_backend::{
+    default_sherpa_library_candidates, SherpaOfflineEngine, SherpaOnlineModel,
+    SherpaStreamingSession, SHERPA_LIB_DIR_ENV_VAR, SHERPA_SUPPORTED_ABI_PREFIX,
+};
+#[cfg(feature = "local-whisper")]
+pub use whisper_backend::WhisperEngine;
 
 /// Canonical mono sample rate required by all local ASR engines (16 kHz).
 pub const LOCAL_ASR_SAMPLE_RATE: u32 = 16_000;
@@ -97,8 +110,7 @@ impl LocalAsrError {
     }
 }
 
-/// Synchronous local speech-to-text engine (implemented by `whisper-rs` and `sherpa-onnx`
-/// offline backends in PR 4.2, and mockable in tests).
+/// Synchronous local speech-to-text engine (`whisper-rs` and `sherpa-onnx` offline backends).
 pub trait LocalAsrEngine: Send + Sync {
     /// Canonical catalog model identifier (or file stem for custom local paths).
     fn model_id(&self) -> &str;
@@ -119,16 +131,27 @@ pub trait LocalStreamingSession: Send {
     fn text(&self) -> Result<String, LocalAsrError>;
 }
 
+/// Normalize optional language code (`None`, blank, or `"auto"` -> `None`), stripping any NUL bytes.
+pub(crate) fn normalize_language(language: Option<&str>) -> Option<String> {
+    let cleaned = language?.replace('\0', "");
+    let trimmed = cleaned.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("auto") {
+        return None;
+    }
+    Some(trimmed.to_ascii_lowercase())
+}
+
 /// Build a comma-separated Whisper `initial_prompt` from custom vocabulary keywords.
 ///
-/// Trims blanks, deduplicates case-insensitively while preserving order, and caps at
-/// `LOCAL_KEYWORD_LIMIT` (`50`), matching `utils/vocabulary.py`.
+/// Strips interior NUL bytes, trims blanks, deduplicates case-insensitively while preserving order,
+/// and caps at `LOCAL_KEYWORD_LIMIT` (`50`), matching `utils/vocabulary.py`.
 pub fn format_whisper_initial_prompt(keywords: &[String]) -> Option<String> {
     let mut seen = Vec::with_capacity(keywords.len().min(LOCAL_KEYWORD_LIMIT));
     let mut prompt_terms = Vec::with_capacity(keywords.len().min(LOCAL_KEYWORD_LIMIT));
 
     for raw in keywords {
-        let trimmed = raw.trim();
+        let cleaned = raw.replace('\0', "");
+        let trimmed = cleaned.trim();
         if trimmed.is_empty() {
             continue;
         }
@@ -137,7 +160,7 @@ pub fn format_whisper_initial_prompt(keywords: &[String]) -> Option<String> {
             continue;
         }
         seen.push(lowered);
-        prompt_terms.push(trimmed);
+        prompt_terms.push(trimmed.to_owned());
         if prompt_terms.len() >= LOCAL_KEYWORD_LIMIT {
             break;
         }
@@ -150,20 +173,80 @@ pub fn format_whisper_initial_prompt(keywords: &[String]) -> Option<String> {
     }
 }
 
+/// Maximum piece length (in seconds) for NeMo offline models (`parakeet-v3` and `canary-1b-v2`).
+///
+/// Mirrors `providers/nemo_model.py`: Canary emits empty output beyond ~37 s and Parakeet drops
+/// words on long utterances; 15 s segments cut at the quietest 100 ms in the final 5 s preserve
+/// full accuracy.
+pub const NEMO_SEGMENT_SECONDS: usize = 15;
+const NEMO_CUT_SEARCH_SECONDS: usize = 5;
+
+/// Split mono `f32` audio into pieces of at most [`NEMO_SEGMENT_SECONDS`], cutting each long piece
+/// at the midpoint of the quietest 100 ms frame in its last 5 seconds.
+pub fn split_nemo_segments(samples: &[f32], sample_rate: u32) -> Vec<&[f32]> {
+    if samples.is_empty() || sample_rate == 0 {
+        return Vec::new();
+    }
+    let sr = sample_rate as usize;
+    let limit = NEMO_SEGMENT_SECONDS.saturating_mul(sr);
+    let search = NEMO_CUT_SEARCH_SECONDS.saturating_mul(sr);
+    let frame = (sr / 10).max(1);
+    if limit == 0 || samples.len() <= limit {
+        return vec![samples];
+    }
+
+    let mut pieces = Vec::new();
+    let mut start = 0usize;
+    while samples.len().saturating_sub(start) > limit {
+        let window_start = start + limit.saturating_sub(search);
+        let window_end = start + limit;
+        let window = &samples[window_start..window_end];
+        let n_frames = window.len() / frame;
+        let cut = if n_frames == 0 {
+            window_end
+        } else {
+            let mut best_frame = 0usize;
+            let mut best_energy = f64::INFINITY;
+            for f in 0..n_frames {
+                let slice = &window[f * frame..(f + 1) * frame];
+                let energy: f64 = slice
+                    .iter()
+                    .map(|&s| {
+                        let v = f64::from(s);
+                        v * v
+                    })
+                    .sum();
+                if energy < best_energy {
+                    best_energy = energy;
+                    best_frame = f;
+                }
+            }
+            window_start + best_frame * frame + frame / 2
+        };
+        let cut = cut.max(start + 1).min(samples.len());
+        pieces.push(&samples[start..cut]);
+        start = cut;
+    }
+    if start < samples.len() {
+        pieces.push(&samples[start..]);
+    }
+    pieces
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn format_whisper_initial_prompt_deduplicates_trims_and_caps() {
+    fn format_whisper_initial_prompt_deduplicates_trims_strips_nul_and_caps() {
         assert_eq!(format_whisper_initial_prompt(&[]), None);
         assert_eq!(
-            format_whisper_initial_prompt(&["  ".to_owned(), "".to_owned()]),
+            format_whisper_initial_prompt(&["  ".to_owned(), "\0".to_owned()]),
             None
         );
 
         let terms = vec![
-            " PulseScribe ".to_owned(),
+            " Pulse\0Scribe ".to_owned(),
             "pulsescribe".to_owned(),
             "Deepgram".to_owned(),
             "Tauri".to_owned(),
@@ -176,5 +259,32 @@ mod tests {
         let many: Vec<String> = (0..80).map(|i| format!("Term{i}")).collect();
         let prompt = format_whisper_initial_prompt(&many).unwrap();
         assert_eq!(prompt.split(", ").count(), LOCAL_KEYWORD_LIMIT);
+    }
+
+    #[test]
+    fn normalize_language_strips_nul_and_handles_auto() {
+        assert_eq!(normalize_language(None), None);
+        assert_eq!(normalize_language(Some("  auto  ")), None);
+        assert_eq!(normalize_language(Some("DE\0")), Some("de".to_owned()));
+    }
+
+    #[test]
+    fn split_nemo_segments_cuts_at_quietest_100ms_frame() {
+        let sr = 16_000usize;
+        // 18 s of loud tone with a 200 ms silent gap centered at 12.05 s (inside [10s..15s]).
+        let mut audio = vec![0.5_f32; 18 * sr];
+        for s in &mut audio[12 * sr..(12 * sr + sr / 5)] {
+            *s = 0.0;
+        }
+        let pieces = split_nemo_segments(&audio, sr as u32);
+        assert_eq!(pieces.len(), 2);
+        // Cut should fall cleanly inside the 12.0 s - 12.2 s quiet window.
+        assert!(pieces[0].len() >= 12 * sr && pieces[0].len() <= 12 * sr + sr / 5);
+        assert_eq!(pieces[0].len() + pieces[1].len(), audio.len());
+
+        // Short audio stays intact.
+        let short = vec![0.1_f32; 5 * sr];
+        assert_eq!(split_nemo_segments(&short, sr as u32).len(), 1);
+        assert!(split_nemo_segments(&[], sr as u32).is_empty());
     }
 }

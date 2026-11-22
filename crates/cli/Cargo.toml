@@ -11,11 +11,18 @@ repository.workspace = true
 name = "pulsescribe"
 path = "src/main.rs"
 
+[features]
+default = []
+local-whisper = ["pulsescribe-local-asr/local-whisper"]
+local-sherpa = ["pulsescribe-local-asr/local-sherpa"]
+all-local = ["pulsescribe-local-asr/all-local"]
+
 [dependencies]
 arboard.workspace = true
 clap.workspace = true
 pulsescribe-audio = { path = "../audio" }
 pulsescribe-core = { path = "../core" }
+pulsescribe-local-asr = { path = "../local-asr" }
 pulsescribe-providers = { path = "../providers" }
 thiserror.workspace = true
 tokio.workspace = true

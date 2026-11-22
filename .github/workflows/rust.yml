@@ -74,3 +74,9 @@ jobs:
 
       - name: Run tests
         run: cargo test --workspace
+
+      - name: Run Clippy (local ASR backends)
+        run: cargo clippy -p pulsescribe-local-asr -p pulsescribe-daemon -p pulsescribe-cli --features all-local --all-targets -- -D warnings
+
+      - name: Run tests (local ASR backends)
+        run: cargo test -p pulsescribe-local-asr --features all-local

@@ -148,7 +148,7 @@ pub(crate) fn validate_format(
         ));
     }
     let ch = usize::from(channels);
-    if sample_count % ch != 0 {
+    if !sample_count.is_multiple_of(ch) {
         return Err(AudioError::InvalidParameter(format!(
             "sample count ({sample_count}) is not a multiple of channel count ({ch})"
         )));

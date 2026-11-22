@@ -19,10 +19,12 @@ static READY_CUE_WAV_U16: OnceLock<Vec<u16>> = OnceLock::new();
 fn ready_cue_wav_aligned() -> &'static [u16] {
     READY_CUE_WAV_U16.get_or_init(|| {
         let bytes = encode_ready_cue_wav();
-        debug_assert_eq!(bytes.len() % 2, 0);
+        debug_assert!(bytes.len().is_multiple_of(2));
         bytes
-            .chunks_exact(2)
-            .map(|pair| u16::from_ne_bytes([pair[0], pair[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&pair| u16::from_ne_bytes(pair))
             .collect()
     })
 }

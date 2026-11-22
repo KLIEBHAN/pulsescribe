@@ -111,7 +111,7 @@ pub fn downmix_to_mono_into(
             "channels must be greater than 0".to_string(),
         ));
     }
-    if interleaved.len() % channels != 0 {
+    if !interleaved.len().is_multiple_of(channels) {
         return Err(AudioError::InvalidParameter(format!(
             "interleaved length ({}) is not a multiple of channels ({channels})",
             interleaved.len()
@@ -123,8 +123,8 @@ pub fn downmix_to_mono_into(
         1 => out.extend_from_slice(interleaved),
         2 => {
             out.reserve(interleaved.len() / 2);
-            for frame in interleaved.chunks_exact(2) {
-                out.push((frame[0] + frame[1]) * 0.5);
+            for &[l, r] in interleaved.as_chunks::<2>().0 {
+                out.push((l + r) * 0.5);
             }
         }
         _ => {
