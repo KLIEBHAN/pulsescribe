@@ -1130,7 +1130,10 @@ async fn schedule_deepgram_rewarm(
         if let Err(err) =
             warm_up_and_guard_generation(&state_for_task, &manager, warm_gen, &stream_cfg).await
         {
-            tracing::debug!(error = %err, "background Deepgram WebSocket re-warm failed");
+            tracing::debug!(
+                reason = %safe_provider_error_summary(&err),
+                "background Deepgram WebSocket re-warm failed"
+            );
         }
     }));
 }
