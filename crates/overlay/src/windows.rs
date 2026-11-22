@@ -5,20 +5,23 @@
 //!   with `ShowWindow(SW_SHOWNOACTIVATE)` and `WM_MOUSEACTIVATE -> MA_NOACTIVATE` for zero focus steal.
 //! - Click-through by default; clears `WS_EX_TRANSPARENT` only on interactive error/settings pills.
 //! - Per-pixel alpha rounded corners via Direct2D `ID2D1DCRenderTarget` + DirectWrite +
-//!   `UpdateLayeredWindow` with reusable GDI DIB surface and brush (zero per-frame allocations).
-//! - 0 FPS / 0 timer wakeups whenever hidden, static, or settled on silence.
+//!   `UpdateLayeredWindow` with reusable DIB surface, solid/gradient brushes, and UTF-16 scratch buffer.
+//! - Automatic `D2DERR_RECREATE_TARGET` recovery, destination-monitor DPI scaling (`GetDpiForMonitor`
+//!   + `WM_DPICHANGED`), DirectWrite ellipsis trimming, and 0 FPS / 0 wakeups when idle or settled.
 
 #![allow(unsafe_code)]
 
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::mem::size_of;
-use std::sync::atomic::{AtomicIsize, Ordering};
+use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
 
-use pulsescribe_core::animation::{BAR_COUNT, BAR_GAP, BAR_WIDTH};
+use pulsescribe_core::animation::{BAR_GAP, BAR_WIDTH};
 use pulsescribe_core::overlay_style::{
     compute_overlay_layout, hex_to_rgb, OverlayBarMode, OverlayLayoutParams, OverlayTone,
     BACKGROUND_COLOR, BADGE_CORNER_RADIUS, BADGE_FONT_SIZE, BADGE_PADDING_H, BADGE_PADDING_V,
@@ -30,13 +33,13 @@ use pulsescribe_core::overlay_style::{
 };
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{
-    COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
+    COLORREF, D2DERR_RECREATE_TARGET, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
 };
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_GRADIENT_STOP, D2D1_PIXEL_FORMAT, D2D_RECT_F,
 };
 use windows::Win32::Graphics::Direct2D::{
-    D2D1CreateFactory, ID2D1DCRenderTarget, ID2D1Factory, ID2D1GradientStopCollection,
+    D2D1CreateFactory, ID2D1DCRenderTarget, ID2D1Factory, ID2D1LinearGradientBrush,
     ID2D1SolidColorBrush, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_DRAW_TEXT_OPTIONS_CLIP,
     D2D1_EXTEND_MODE_CLAMP, D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_FEATURE_LEVEL_DEFAULT,
     D2D1_GAMMA_2_2, D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES, D2D1_RENDER_TARGET_PROPERTIES,
@@ -47,8 +50,8 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
     DWRITE_FONT_WEIGHT_MEDIUM, DWRITE_FONT_WEIGHT_REGULAR, DWRITE_FONT_WEIGHT_SEMI_BOLD,
     DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING,
-    DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TEXT_METRICS, DWRITE_TEXT_RANGE,
-    DWRITE_WORD_WRAPPING_NO_WRAP, DWRITE_WORD_WRAPPING_WRAP,
+    DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TEXT_METRICS, DWRITE_TEXT_RANGE, DWRITE_TRIMMING,
+    DWRITE_TRIMMING_GRANULARITY_CHARACTER, DWRITE_WORD_WRAPPING_NO_WRAP, DWRITE_WORD_WRAPPING_WRAP,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Gdi::{
@@ -59,17 +62,18 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::HiDpi::GetDpiForWindow;
+use windows::Win32::UI::HiDpi::{GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW,
-    GetWindowLongPtrW, KillTimer, LoadCursorW, PostMessageW, PostQuitMessage, RegisterClassExW,
-    SetCursor, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, SystemParametersInfoW,
-    TranslateMessage, UnregisterClassW, UpdateLayeredWindow, GWLP_USERDATA, GWL_EXSTYLE,
-    HWND_TOPMOST, IDC_ARROW, IDC_HAND, MA_NOACTIVATE, MSG, SPI_GETCLIENTAREAANIMATION,
-    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE,
-    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, ULW_ALPHA, WM_APP, WM_DESTROY, WM_LBUTTONUP,
-    WM_MOUSEACTIVATE, WM_NCDESTROY, WM_SETCURSOR, WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    GetWindowLongPtrW, GetWindowRect, IsWindow, KillTimer, LoadCursorW, PostMessageW,
+    PostQuitMessage, RegisterClassExW, SetCursor, SetTimer, SetWindowLongPtrW, SetWindowPos,
+    ShowWindow, SystemParametersInfoW, TranslateMessage, UnregisterClassW, UpdateLayeredWindow,
+    GWLP_USERDATA, GWL_EXSTYLE, HWND_TOPMOST, IDC_ARROW, IDC_HAND, MA_NOACTIVATE, MSG,
+    SPI_GETCLIENTAREAANIMATION, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE,
+    SW_SHOWNOACTIVATE, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, ULW_ALPHA, WM_APP, WM_DESTROY,
+    WM_DPICHANGED, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_SETCURSOR, WM_TIMER,
+    WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 use crate::model::{
@@ -88,6 +92,8 @@ const CLOCK_INTERVAL_MS: u32 = 1000;
 const SHIMMER_INTERVAL_MS: u32 = 1000 / SHIMMER_MAX_FPS;
 
 static CLASS_SEQ: AtomicIsize = AtomicIsize::new(1);
+
+type ActionCallback = Arc<dyn Fn(OverlayActionEvent) + Send + Sync>;
 
 #[derive(Debug, Clone, Copy)]
 struct DipRect {
@@ -112,25 +118,36 @@ impl DipRect {
     }
 }
 
+/// Synchronized HWND wrapper ensuring `PostMessageW` never targets a destroyed/recycled window.
+struct SendHwnd(HWND);
+
+// SAFETY: Win32 `PostMessageW` is documented thread-safe for posting messages to an `HWND` owned
+// by another thread, and `SharedQueue` synchronizes clearing `SendHwnd` before `DestroyWindow`.
+unsafe impl Send for SendHwnd {}
+
 struct SharedQueue {
     commands: Mutex<VecDeque<OverlayCommand>>,
-    hwnd: AtomicIsize,
+    hwnd: Mutex<Option<SendHwnd>>,
+    drain_pending: AtomicBool,
 }
 
 impl SharedQueue {
     fn new() -> Self {
         Self {
             commands: Mutex::new(VecDeque::new()),
-            hwnd: AtomicIsize::new(0),
+            hwnd: Mutex::new(None),
+            drain_pending: AtomicBool::new(false),
         }
     }
 
     fn set_hwnd(&self, hwnd: HWND) {
-        self.hwnd.store(hwnd.0 as isize, Ordering::Release);
+        let mut guard = self.hwnd.lock().unwrap_or_else(|e| e.into_inner());
+        *guard = Some(SendHwnd(hwnd));
     }
 
     fn clear_hwnd(&self) {
-        self.hwnd.store(0, Ordering::Release);
+        let mut guard = self.hwnd.lock().unwrap_or_else(|e| e.into_inner());
+        *guard = None;
     }
 
     fn push(&self, cmd: OverlayCommand) {
@@ -143,16 +160,24 @@ impl SharedQueue {
             }
             q.push_back(cmd);
         }
-        let raw = self.hwnd.load(Ordering::Acquire);
-        if raw != 0 {
-            let hwnd = HWND(raw as *mut c_void);
-            unsafe {
-                let _ = PostMessageW(Some(hwnd), WM_APP_DRAIN, WPARAM(0), LPARAM(0));
+        // Coalesce wakeups so a burst never queues duplicate `WM_APP_DRAIN` messages.
+        if !self.drain_pending.swap(true, Ordering::AcqRel) {
+            let guard = self.hwnd.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(target) = guard.as_ref() {
+                unsafe {
+                    if PostMessageW(Some(target.0), WM_APP_DRAIN, WPARAM(0), LPARAM(0)).is_err() {
+                        self.drain_pending.store(false, Ordering::Release);
+                    }
+                }
+            } else {
+                self.drain_pending.store(false, Ordering::Release);
             }
         }
     }
 
     fn drain(&self) -> Vec<OverlayCommand> {
+        // Clear `drain_pending` before draining so any concurrent push schedules a fresh wakeup.
+        self.drain_pending.store(false, Ordering::Release);
         let mut q = self.commands.lock().unwrap_or_else(|e| e.into_inner());
         q.drain(..).collect()
     }
@@ -185,7 +210,7 @@ impl WindowsOverlay {
         let handle = OverlayHandle::from_sink(Arc::new(WindowsOverlaySink {
             queue: Arc::clone(&queue),
         }));
-        let action_cb: Arc<dyn Fn(OverlayActionEvent) + Send + Sync> = Arc::new(on_action);
+        let action_cb: ActionCallback = Arc::new(on_action);
         let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<(), String>>(1);
 
         let thread = thread::Builder::new()
@@ -295,6 +320,13 @@ impl LayeredSurface {
                 }
             };
             let prev_obj = unsafe { SelectObject(hdc, bitmap.into()) };
+            if prev_obj.is_invalid() {
+                unsafe {
+                    let _ = DeleteObject(bitmap.into());
+                    let _ = DeleteDC(hdc);
+                }
+                return Err("SelectObject failed for layered DIB surface".to_owned());
+            }
             *slot = Some(Self {
                 hdc,
                 bitmap,
@@ -317,25 +349,14 @@ impl Drop for LayeredSurface {
     }
 }
 
-struct D2dResources {
-    _d2d_factory: ID2D1Factory,
+struct TargetResources {
     target: ID2D1DCRenderTarget,
-    dwrite_factory: IDWriteFactory,
     brush: ID2D1SolidColorBrush,
-    shimmer_stops: ID2D1GradientStopCollection,
-    text_format: IDWriteTextFormat,
-    live_text_format: IDWriteTextFormat,
-    badge_format: IDWriteTextFormat,
-    meta_format: IDWriteTextFormat,
-    dismiss_format: IDWriteTextFormat,
+    shimmer_brush: ID2D1LinearGradientBrush,
 }
 
-impl D2dResources {
-    fn new() -> Result<Self, String> {
-        let d2d_factory: ID2D1Factory =
-            unsafe { D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None) }
-                .map_err(|err| format!("D2D1CreateFactory failed: {err}"))?;
-
+impl TargetResources {
+    fn create(d2d_factory: &ID2D1Factory) -> Result<Self, String> {
         let rt_props = D2D1_RENDER_TARGET_PROPERTIES {
             r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
             pixelFormat: D2D1_PIXEL_FORMAT {
@@ -372,6 +393,38 @@ impl D2dResources {
         }
         .map_err(|err| format!("CreateGradientStopCollection failed: {err}"))?;
 
+        let grad_props = D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES::default();
+        let shimmer_brush =
+            unsafe { target.CreateLinearGradientBrush(&grad_props, None, &shimmer_stops) }
+                .map_err(|err| format!("CreateLinearGradientBrush failed: {err}"))?;
+
+        Ok(Self {
+            target,
+            brush,
+            shimmer_brush,
+        })
+    }
+}
+
+struct D2dResources {
+    d2d_factory: ID2D1Factory,
+    rt: TargetResources,
+    dwrite_factory: IDWriteFactory,
+    text_format: IDWriteTextFormat,
+    live_text_format: IDWriteTextFormat,
+    badge_format: IDWriteTextFormat,
+    meta_format: IDWriteTextFormat,
+    dismiss_format: IDWriteTextFormat,
+}
+
+impl D2dResources {
+    fn new() -> Result<Self, String> {
+        let d2d_factory: ID2D1Factory =
+            unsafe { D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None) }
+                .map_err(|err| format!("D2D1CreateFactory failed: {err}"))?;
+
+        let rt = TargetResources::create(&d2d_factory)?;
+
         let dwrite_factory: IDWriteFactory =
             unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED) }
                 .map_err(|err| format!("DWriteCreateFactory failed: {err}"))?;
@@ -382,6 +435,7 @@ impl D2dResources {
             DWRITE_FONT_WEIGHT_REGULAR,
             DWRITE_TEXT_ALIGNMENT_LEADING,
             DWRITE_WORD_WRAPPING_NO_WRAP,
+            true,
         )?;
         let live_text_format = create_text_format(
             &dwrite_factory,
@@ -389,6 +443,7 @@ impl D2dResources {
             DWRITE_FONT_WEIGHT_REGULAR,
             DWRITE_TEXT_ALIGNMENT_LEADING,
             DWRITE_WORD_WRAPPING_WRAP,
+            false,
         )?;
         let badge_format = create_text_format(
             &dwrite_factory,
@@ -396,6 +451,7 @@ impl D2dResources {
             DWRITE_FONT_WEIGHT_SEMI_BOLD,
             DWRITE_TEXT_ALIGNMENT_CENTER,
             DWRITE_WORD_WRAPPING_NO_WRAP,
+            true,
         )?;
         let meta_format = create_text_format(
             &dwrite_factory,
@@ -403,6 +459,7 @@ impl D2dResources {
             DWRITE_FONT_WEIGHT_MEDIUM,
             DWRITE_TEXT_ALIGNMENT_TRAILING,
             DWRITE_WORD_WRAPPING_NO_WRAP,
+            true,
         )?;
         let dismiss_format = create_text_format(
             &dwrite_factory,
@@ -410,14 +467,13 @@ impl D2dResources {
             DWRITE_FONT_WEIGHT_REGULAR,
             DWRITE_TEXT_ALIGNMENT_CENTER,
             DWRITE_WORD_WRAPPING_NO_WRAP,
+            false,
         )?;
 
         Ok(Self {
-            _d2d_factory: d2d_factory,
-            target,
+            d2d_factory,
+            rt,
             dwrite_factory,
-            brush,
-            shimmer_stops,
             text_format,
             live_text_format,
             badge_format,
@@ -425,16 +481,34 @@ impl D2dResources {
             dismiss_format,
         })
     }
+
+    fn recreate_target(&mut self) -> bool {
+        match TargetResources::create(&self.d2d_factory) {
+            Ok(rt) => {
+                self.rt = rt;
+                true
+            }
+            Err(_) => false,
+        }
+    }
+}
+
+enum DrainOutcome {
+    Continue,
+    DestroyWindow,
 }
 
 struct WindowState {
     hwnd: HWND,
     queue: Arc<SharedQueue>,
-    on_action: Arc<dyn Fn(OverlayActionEvent) + Send + Sync>,
+    on_action: ActionCallback,
     model: OverlayModel,
     d2d: D2dResources,
     surface: Option<LayeredSurface>,
+    utf16_scratch: Vec<u16>,
     last_snapshot: Option<OverlaySnapshot>,
+    last_dpi: u32,
+    animations_enabled: bool,
     anim_timer_mode: OverlayTimerMode,
     shimmer_timer_active: bool,
     shimmer_origin: Instant,
@@ -447,13 +521,15 @@ struct WindowState {
 }
 
 impl WindowState {
-    fn drain_and_apply(&mut self) {
+    /// Drain queued commands and return whether the caller must invoke `DestroyWindow` AFTER
+    /// releasing its `RefMut<WindowState>` borrow.
+    fn drain_and_apply(&mut self) -> DrainOutcome {
         if self.shutting_down {
-            return;
+            return DrainOutcome::Continue;
         }
         let commands = self.queue.drain();
         if commands.is_empty() {
-            return;
+            return DrainOutcome::Continue;
         }
         let now = Instant::now();
         let mut any_visual_change = false;
@@ -462,8 +538,8 @@ impl WindowState {
         }
 
         if self.model.is_shutdown() {
-            self.begin_shutdown();
-            return;
+            self.prepare_shutdown();
+            return DrainOutcome::DestroyWindow;
         }
 
         if any_visual_change {
@@ -473,9 +549,12 @@ impl WindowState {
             // AudioLevel-only batch: wake or pace wave timer without redrawing D2D prematurely.
             self.sync_anim_timer(self.model.timer_mode());
         }
+        DrainOutcome::Continue
     }
 
-    fn begin_shutdown(&mut self) {
+    /// Stop timers, detach the queue, and hide the window; `DestroyWindow` is called by the caller
+    /// only after the `RefMut<WindowState>` borrow is dropped so `WM_NCDESTROY` never aliases.
+    fn prepare_shutdown(&mut self) {
         if self.shutting_down {
             return;
         }
@@ -484,7 +563,6 @@ impl WindowState {
         self.stop_all_timers();
         unsafe {
             let _ = ShowWindow(self.hwnd, SW_HIDE);
-            let _ = DestroyWindow(self.hwnd);
         }
     }
 
@@ -504,6 +582,7 @@ impl WindowState {
             return;
         }
 
+        self.animations_enabled = windows_animations_enabled();
         let prev_shimmer = self.last_snapshot.as_ref().and_then(|s| s.shimmer);
         if snap.shimmer.is_some() && snap.shimmer != prev_shimmer {
             self.shimmer_origin = now;
@@ -511,10 +590,10 @@ impl WindowState {
 
         self.set_interactive(snap.interactive);
         self.sync_anim_timer(snap.timer_mode);
-        self.sync_shimmer_timer(snap.shimmer.is_some() && windows_animations_enabled());
+        self.sync_shimmer_timer(snap.shimmer.is_some() && self.animations_enabled);
         self.sync_clock_timer(snap.clock_active);
 
-        self.paint_snapshot(&snap, now);
+        self.paint_snapshot(&snap, now, None);
         if !self.is_visible {
             unsafe {
                 let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
@@ -536,14 +615,14 @@ impl WindowState {
                 self.sync_anim_timer(tick.timer_mode);
                 if tick.any_bar_changed {
                     let snap = self.model.snapshot(now);
-                    self.paint_snapshot(&snap, now);
+                    self.paint_snapshot(&snap, now, None);
                     self.last_snapshot = Some(snap);
                 }
             }
             TIMER_SHIMMER_ID => {
                 if let Some(snap) = self.last_snapshot.clone() {
-                    if snap.visible && snap.shimmer.is_some() && windows_animations_enabled() {
-                        self.paint_snapshot(&snap, now);
+                    if snap.visible && snap.shimmer.is_some() && self.animations_enabled {
+                        self.paint_snapshot(&snap, now, None);
                     } else {
                         self.sync_shimmer_timer(false);
                     }
@@ -554,7 +633,7 @@ impl WindowState {
             TIMER_CLOCK_ID => {
                 if self.model.recording_clock_text(now).is_some() {
                     let snap = self.model.snapshot(now);
-                    self.paint_snapshot(&snap, now);
+                    self.paint_snapshot(&snap, now, None);
                     self.last_snapshot = Some(snap);
                 } else {
                     self.sync_clock_timer(false);
@@ -564,21 +643,42 @@ impl WindowState {
         }
     }
 
-    fn on_left_click(&mut self, client_x_px: i32, client_y_px: i32) {
-        if !self.is_interactive || self.shutting_down {
+    fn on_dpi_changed(&mut self, new_dpi: u32) {
+        if self.shutting_down || !self.is_visible {
             return;
         }
-        let scale = self.dpi_scale();
+        if let Some(snap) = self.last_snapshot.clone() {
+            self.paint_snapshot(&snap, Instant::now(), Some(new_dpi.max(96)));
+        }
+    }
+
+    /// Resolve a left click and return `(callback, event)` to invoke AFTER dropping `RefMut`.
+    fn on_left_click(
+        &mut self,
+        client_x_px: i32,
+        client_y_px: i32,
+    ) -> Option<(ActionCallback, OverlayActionEvent)> {
+        if !self.is_interactive || self.shutting_down {
+            return None;
+        }
+        let scale = self.last_dpi.max(96) as f32 / 96.0;
         let x = client_x_px as f32 / scale;
         let y = client_y_px as f32 / scale;
 
-        if self.settings_hit_rect.is_some_and(|r| r.contains(x, y)) {
-            (self.on_action)(OverlayActionEvent::OpenSettings);
-            self.queue.push(OverlayCommand::Dismiss);
+        let event = if self.settings_hit_rect.is_some_and(|r| r.contains(x, y)) {
+            Some(OverlayActionEvent::OpenSettings)
         } else if self.dismiss_hit_rect.is_some_and(|r| r.contains(x, y)) {
-            (self.on_action)(OverlayActionEvent::Dismissed);
-            self.queue.push(OverlayCommand::Dismiss);
-        }
+            Some(OverlayActionEvent::Dismissed)
+        } else {
+            None
+        }?;
+
+        // Disarm interactivity immediately so a fast double-click cannot emit twice before drain.
+        self.settings_hit_rect = None;
+        self.dismiss_hit_rect = None;
+        self.set_interactive(false);
+        self.queue.push(OverlayCommand::Dismiss);
+        Some((Arc::clone(&self.on_action), event))
     }
 
     fn cursor_is_over_interactive(&self) -> bool {
@@ -590,31 +690,14 @@ impl WindowState {
             return false;
         }
         let mut win_rect = RECT::default();
-        if unsafe {
-            windows::Win32::UI::WindowsAndMessaging::GetWindowRect(self.hwnd, &mut win_rect)
-        }
-        .is_err()
-        {
+        if unsafe { GetWindowRect(self.hwnd, &mut win_rect) }.is_err() {
             return false;
         }
-        let scale = self.dpi_scale();
+        let scale = self.last_dpi.max(96) as f32 / 96.0;
         let x = (pt.x - win_rect.left) as f32 / scale;
         let y = (pt.y - win_rect.top) as f32 / scale;
         self.settings_hit_rect.is_some_and(|r| r.contains(x, y))
             || self.dismiss_hit_rect.is_some_and(|r| r.contains(x, y))
-    }
-
-    fn dpi(&self) -> u32 {
-        let raw = unsafe { GetDpiForWindow(self.hwnd) };
-        if raw == 0 {
-            96
-        } else {
-            raw
-        }
-    }
-
-    fn dpi_scale(&self) -> f32 {
-        self.dpi() as f32 / 96.0
     }
 
     fn set_interactive(&mut self, interactive: bool) {
@@ -694,23 +777,39 @@ impl WindowState {
         self.sync_clock_timer(false);
     }
 
-    fn paint_snapshot(&mut self, snap: &OverlaySnapshot, now: Instant) {
-        let dpi = self.dpi();
+    fn paint_snapshot(&mut self, snap: &OverlaySnapshot, now: Instant, dpi_override: Option<u32>) {
+        // Retry once if Direct2D reports `D2DERR_RECREATE_TARGET` (GPU TDR / RDP / display change).
+        if let Err(needs_recreate) = self.try_paint_snapshot(snap, now, dpi_override) {
+            if needs_recreate && self.d2d.recreate_target() {
+                let _ = self.try_paint_snapshot(snap, now, dpi_override);
+            }
+        }
+    }
+
+    fn try_paint_snapshot(
+        &mut self,
+        snap: &OverlaySnapshot,
+        now: Instant,
+        dpi_override: Option<u32>,
+    ) -> Result<(), bool> {
+        let (work_rect, monitor_dpi) = active_monitor_work_rect_and_dpi(self.hwnd);
+        let dpi = dpi_override.unwrap_or(monitor_dpi).max(96);
+        self.last_dpi = dpi;
         let scale = dpi as f32 / 96.0;
-        let work_rect = active_monitor_work_rect();
         let screen_width_dips =
             ((work_rect.right - work_rect.left).max(400) as f64) / f64::from(scale);
 
         let panel_h = snap.base_size.1 as f32;
         let center_y = panel_h / 2.0;
 
-        // Measure dynamic widths with DirectWrite in DIPs.
+        // Measure only dynamic elements in DIPs; skip `display_text` measurement when `!allow_grow`.
         let has_badge = !snap.content.badge.is_empty();
         let badge_width = if has_badge {
             let measured = measure_text_width(
                 &self.d2d.dwrite_factory,
                 &self.d2d.badge_format,
                 &snap.content.badge,
+                &mut self.utf16_scratch,
             );
             (f64::from(measured).ceil() + 2.0 * BADGE_PADDING_H).max(44.0)
         } else {
@@ -724,30 +823,34 @@ impl WindowState {
             snap.display_meta.as_str()
         };
         let meta_width = if !meta_text.is_empty() {
-            let measured =
-                measure_text_width(&self.d2d.dwrite_factory, &self.d2d.meta_format, meta_text);
-            let min_w = if snap.clock_active {
+            if snap.clock_active {
+                // Fixed width accommodates `0:00` through `99:59` with zero DirectWrite measure cost.
                 46.0
-            } else if show_settings {
-                54.0
             } else {
-                32.0
-            };
-            f64::from(measured).ceil().max(min_w)
+                let measured = measure_text_width(
+                    &self.d2d.dwrite_factory,
+                    &self.d2d.meta_format,
+                    meta_text,
+                    &mut self.utf16_scratch,
+                );
+                let min_w = if show_settings { 54.0 } else { 32.0 };
+                f64::from(measured).ceil().max(min_w)
+            }
         } else {
             0.0
         };
 
         let dismiss_width = if snap.content.dismissible { 18.0 } else { 0.0 };
-        let measured_text_w = if snap.display_text.is_empty() {
-            0.0
-        } else {
+        let measured_text_w = if snap.allow_grow && !snap.display_text.is_empty() {
             f64::from(measure_text_width(
                 &self.d2d.dwrite_factory,
                 &self.d2d.text_format,
                 &snap.display_text,
+                &mut self.utf16_scratch,
             ))
             .ceil()
+        } else {
+            0.0
         };
 
         let max_width = (screen_width_dips * OVERLAY_MAX_WIDTH_RATIO).max(snap.base_size.0);
@@ -769,10 +872,8 @@ impl WindowState {
         let width_px = (panel_w * scale).round().max(1.0) as i32;
         let height_px = (panel_h * scale).round().max(1.0) as i32;
 
-        let surface = match LayeredSurface::ensure(&mut self.surface, width_px, height_px) {
-            Ok(s) => s,
-            Err(_) => return,
-        };
+        let surface =
+            LayeredSurface::ensure(&mut self.surface, width_px, height_px).map_err(|_| false)?;
         let sub_rect = RECT {
             left: 0,
             top: 0,
@@ -780,11 +881,11 @@ impl WindowState {
             bottom: height_px,
         };
 
-        let target = &self.d2d.target;
-        let brush = &self.d2d.brush;
+        let target = &self.d2d.rt.target;
+        let brush = &self.d2d.rt.brush;
         unsafe {
-            if target.BindDC(surface.hdc, &sub_rect).is_err() {
-                return;
+            if let Err(err) = target.BindDC(surface.hdc, &sub_rect) {
+                return Err(err.code() == D2DERR_RECREATE_TARGET);
             }
             target.SetDpi(dpi as f32, dpi as f32);
             target.BeginDraw();
@@ -842,6 +943,7 @@ impl WindowState {
                     &self.d2d.badge_format,
                     brush,
                     &snap.content.badge,
+                    &mut self.utf16_scratch,
                     badge_rect,
                     fg_hex,
                     false,
@@ -850,17 +952,17 @@ impl WindowState {
                 draw_status_bars(
                     target,
                     brush,
-                    &self.d2d.shimmer_stops,
+                    &self.d2d.rt.shimmer_brush,
                     snap,
                     status_x,
                     center_y,
                     now.saturating_duration_since(self.shimmer_origin)
                         .as_secs_f64(),
-                    windows_animations_enabled(),
+                    self.animations_enabled,
                 );
             }
 
-            // 3. Main text (single-line status or wrapped 2-line live interim transcript).
+            // 3. Main text (single-line status with ellipsis or wrapped 2-line live transcript).
             if !snap.display_text.is_empty() && layout.text_width > 1.0 {
                 let text_rect = D2D_RECT_F {
                     left: layout.text_x as f32,
@@ -884,6 +986,7 @@ impl WindowState {
                     fmt,
                     brush,
                     &snap.display_text,
+                    &mut self.utf16_scratch,
                     text_rect,
                     color_hex,
                     false,
@@ -911,6 +1014,7 @@ impl WindowState {
                         &self.d2d.meta_format,
                         brush,
                         meta_text,
+                        &mut self.utf16_scratch,
                         rect,
                         color_hex,
                         show_settings,
@@ -944,6 +1048,7 @@ impl WindowState {
                     &self.d2d.dismiss_format,
                     brush,
                     DISMISS_GLYPH,
+                    &mut self.utf16_scratch,
                     rect,
                     MUTED_TEXT_COLOR,
                     false,
@@ -959,12 +1064,12 @@ impl WindowState {
                 );
             }
 
-            if target.EndDraw(None, None).is_err() {
-                return;
+            if let Err(err) = target.EndDraw(None, None) {
+                return Err(err.code() == D2DERR_RECREATE_TARGET);
             }
         }
 
-        // 6. Commit per-pixel alpha bitmap to the layered window positioned above taskbar.
+        // 6. Commit per-pixel alpha bitmap positioned above the destination monitor's taskbar.
         let dst_x = work_rect.left + ((work_rect.right - work_rect.left) - width_px) / 2;
         let margin_px = (WINDOWS_MARGIN_BOTTOM_DIPS * f64::from(scale)).round() as i32;
         let dst_y = work_rect.bottom - height_px - margin_px;
@@ -994,6 +1099,7 @@ impl WindowState {
                 ULW_ALPHA,
             );
         }
+        Ok(())
     }
 }
 
@@ -1001,7 +1107,7 @@ impl WindowState {
 unsafe fn draw_status_bars(
     target: &ID2D1DCRenderTarget,
     brush: &ID2D1SolidColorBrush,
-    shimmer_stops: &ID2D1GradientStopCollection,
+    shimmer_brush: &ID2D1LinearGradientBrush,
     snap: &OverlaySnapshot,
     status_x: f32,
     center_y: f32,
@@ -1013,8 +1119,8 @@ unsafe fn draw_status_bars(
         let hex = mode.bar_color().unwrap_or("#ececec");
         brush.SetColor(&color_from_hex(hex, 1.0));
         let radius = (BAR_WIDTH / 2.0) as f32;
-        for i in 0..BAR_COUNT {
-            let h = snap.bar_heights[i] as f32;
+        for (i, &height) in snap.bar_heights.iter().enumerate() {
+            let h = height as f32;
             let x = status_x + (i as f32) * ((BAR_WIDTH + BAR_GAP) as f32);
             let top = center_y - h / 2.0;
             target.FillRoundedRectangle(
@@ -1115,23 +1221,25 @@ unsafe fn draw_status_bars(
             let phase = (shimmer_elapsed_secs % SHIMMER_PERIOD_SECONDS) / SHIMMER_PERIOD_SECONDS;
             let band_w = SHIMMER_BAND_WIDTH as f32;
             let center_x = track_left - band_w / 2.0 + (track_w + band_w) * (phase as f32);
-            let mut props = D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES::default();
-            props.startPoint.X = center_x - band_w / 2.0;
-            props.startPoint.Y = center_y;
-            props.endPoint.X = center_x + band_w / 2.0;
-            props.endPoint.Y = center_y;
-            if let Ok(grad_brush) = target.CreateLinearGradientBrush(&props, None, shimmer_stops) {
-                target.PushAxisAlignedClip(&clip_rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-                target.FillRoundedRectangle(
-                    &D2D1_ROUNDED_RECT {
-                        rect: clip_rect,
-                        radiusX: line_radius,
-                        radiusY: line_radius,
-                    },
-                    &grad_brush,
-                );
-                target.PopAxisAlignedClip();
-            }
+
+            let mut start_pt = D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES::default().startPoint;
+            start_pt.X = center_x - band_w / 2.0;
+            start_pt.Y = center_y;
+            let mut end_pt = start_pt;
+            end_pt.X = center_x + band_w / 2.0;
+
+            shimmer_brush.SetStartPoint(start_pt);
+            shimmer_brush.SetEndPoint(end_pt);
+            target.PushAxisAlignedClip(&clip_rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            target.FillRoundedRectangle(
+                &D2D1_ROUNDED_RECT {
+                    rect: clip_rect,
+                    radiusX: line_radius,
+                    radiusY: line_radius,
+                },
+                shimmer_brush,
+            );
+            target.PopAxisAlignedClip();
         }
     }
 }
@@ -1143,18 +1251,20 @@ unsafe fn draw_text(
     format: &IDWriteTextFormat,
     brush: &ID2D1SolidColorBrush,
     text: &str,
+    utf16_scratch: &mut Vec<u16>,
     rect: D2D_RECT_F,
     color_hex: &str,
     underline: bool,
 ) {
-    let utf16: Vec<u16> = text.encode_utf16().collect();
-    if utf16.is_empty() {
+    utf16_scratch.clear();
+    utf16_scratch.extend(text.encode_utf16());
+    if utf16_scratch.is_empty() {
         return;
     }
     let max_w = (rect.right - rect.left).max(1.0);
     let max_h = (rect.bottom - rect.top).max(1.0);
     let Ok(layout): Result<IDWriteTextLayout, _> =
-        factory.CreateTextLayout(&utf16, format, max_w, max_h)
+        factory.CreateTextLayout(utf16_scratch, format, max_w, max_h)
     else {
         return;
     };
@@ -1163,7 +1273,7 @@ unsafe fn draw_text(
             true,
             DWRITE_TEXT_RANGE {
                 startPosition: 0,
-                length: utf16.len() as u32,
+                length: utf16_scratch.len() as u32,
             },
         );
     }
@@ -1174,13 +1284,19 @@ unsafe fn draw_text(
     target.DrawTextLayout(origin, &layout, brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
 }
 
-fn measure_text_width(factory: &IDWriteFactory, format: &IDWriteTextFormat, text: &str) -> f32 {
-    let utf16: Vec<u16> = text.encode_utf16().collect();
-    if utf16.is_empty() {
+fn measure_text_width(
+    factory: &IDWriteFactory,
+    format: &IDWriteTextFormat,
+    text: &str,
+    utf16_scratch: &mut Vec<u16>,
+) -> f32 {
+    utf16_scratch.clear();
+    utf16_scratch.extend(text.encode_utf16());
+    if utf16_scratch.is_empty() {
         return 0.0;
     }
     unsafe {
-        let Ok(layout) = factory.CreateTextLayout(&utf16, format, 4096.0, 64.0) else {
+        let Ok(layout) = factory.CreateTextLayout(utf16_scratch, format, 4096.0, 64.0) else {
             return 0.0;
         };
         let mut metrics = DWRITE_TEXT_METRICS::default();
@@ -1198,6 +1314,7 @@ fn create_text_format(
     weight: windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT,
     align: windows::Win32::Graphics::DirectWrite::DWRITE_TEXT_ALIGNMENT,
     wrap: windows::Win32::Graphics::DirectWrite::DWRITE_WORD_WRAPPING,
+    ellipsis: bool,
 ) -> Result<IDWriteTextFormat, String> {
     let fmt = unsafe {
         factory.CreateTextFormat(
@@ -1215,28 +1332,55 @@ fn create_text_format(
         let _ = fmt.SetTextAlignment(align);
         let _ = fmt.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
         let _ = fmt.SetWordWrapping(wrap);
+        if ellipsis {
+            if let Ok(sign) = factory.CreateEllipsisTrimmingSign(&fmt) {
+                let trimming = DWRITE_TRIMMING {
+                    granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+                    delimiter: 0,
+                    delimiterCount: 0,
+                };
+                let _ = fmt.SetTrimming(&trimming, &sign);
+            }
+        }
     }
     Ok(fmt)
 }
 
-fn active_monitor_work_rect() -> RECT {
+fn active_monitor_work_rect_and_dpi(fallback_hwnd: HWND) -> (RECT, u32) {
     let mut pt = POINT::default();
     unsafe {
         let _ = GetCursorPos(&mut pt);
         let monitor = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+        let mut dpi_x = 0u32;
+        let mut dpi_y = 0u32;
+        let dpi = if GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y).is_ok()
+            && dpi_x >= 96
+        {
+            dpi_x
+        } else {
+            let win_dpi = GetDpiForWindow(fallback_hwnd);
+            if win_dpi >= 96 {
+                win_dpi
+            } else {
+                96
+            }
+        };
         let mut info = MONITORINFO {
             cbSize: size_of::<MONITORINFO>() as u32,
             ..Default::default()
         };
         if GetMonitorInfoW(monitor, &mut info).as_bool() {
-            return info.rcWork;
+            return (info.rcWork, dpi);
         }
-    }
-    RECT {
-        left: 0,
-        top: 0,
-        right: 1920,
-        bottom: 1080,
+        (
+            RECT {
+                left: 0,
+                top: 0,
+                right: 1920,
+                bottom: 1080,
+            },
+            dpi,
+        )
     }
 }
 
@@ -1269,7 +1413,7 @@ fn color_from_hex(hex: &str, alpha: f32) -> D2D1_COLOR_F {
 
 fn run_win32_overlay_thread(
     queue: Arc<SharedQueue>,
-    on_action: Arc<dyn Fn(OverlayActionEvent) + Send + Sync>,
+    on_action: ActionCallback,
     ready_tx: mpsc::SyncSender<Result<(), String>>,
 ) {
     let _com = match ComGuard::init() {
@@ -1341,14 +1485,25 @@ fn run_win32_overlay_thread(
     };
 
     let now = Instant::now();
-    let state = Box::new(WindowState {
+    let initial_dpi = {
+        let raw = unsafe { GetDpiForWindow(hwnd) };
+        if raw >= 96 {
+            raw
+        } else {
+            96
+        }
+    };
+    let state = Rc::new(RefCell::new(WindowState {
         hwnd,
         queue: Arc::clone(&queue),
         on_action,
         model: OverlayModel::new(now),
         d2d,
         surface: None,
+        utf16_scratch: Vec::with_capacity(128),
         last_snapshot: None,
+        last_dpi: initial_dpi,
+        animations_enabled: windows_animations_enabled(),
         anim_timer_mode: OverlayTimerMode::Stopped,
         shimmer_timer_active: false,
         shimmer_origin: now,
@@ -1358,8 +1513,8 @@ fn run_win32_overlay_thread(
         settings_hit_rect: None,
         dismiss_hit_rect: None,
         shutting_down: false,
-    });
-    let state_ptr = Box::into_raw(state);
+    }));
+    let state_ptr = Box::into_raw(Box::new(Rc::clone(&state)));
     unsafe {
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
     }
@@ -1367,13 +1522,14 @@ fn run_win32_overlay_thread(
 
     let _ = ready_tx.send(Ok(()));
 
-    // Drain any commands that arrived before `queue.set_hwnd(hwnd)` completed.
+    // Drain any commands pushed right after readiness notification.
     unsafe {
         let _ = PostMessageW(Some(hwnd), WM_APP_DRAIN, WPARAM(0), LPARAM(0));
     }
 
     let mut msg = MSG::default();
-    while unsafe { GetMessageW(&mut msg, None, 0, 0) }.as_bool() {
+    // `GetMessageW` returns `> 0` for normal messages, `0` for `WM_QUIT`, and `-1` on error.
+    while unsafe { GetMessageW(&mut msg, None, 0, 0) }.0 > 0 {
         unsafe {
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
@@ -1381,6 +1537,20 @@ fn run_win32_overlay_thread(
     }
 
     queue.clear_hwnd();
+    // Ensure window destruction (and synchronous `WM_NCDESTROY` Box reclamation) runs even if the
+    // loop exited due to an external `WM_QUIT` or `GetMessageW == -1`.
+    if unsafe { IsWindow(Some(hwnd)) }.as_bool() {
+        if let Ok(mut st) = state.try_borrow_mut() {
+            st.prepare_shutdown();
+        }
+        unsafe {
+            let _ = DestroyWindow(hwnd);
+        }
+    }
+    // Drop `WindowState` (Direct2D/DirectWrite COM interfaces & GDI DIB) strictly BEFORE
+    // `UnregisterClassW` and `ComGuard::drop` (`CoUninitialize`).
+    drop(state);
+
     unsafe {
         let _ = UnregisterClassW(PCWSTR(class_name.as_ptr()), Some(hinstance));
     }
@@ -1392,32 +1562,58 @@ unsafe extern "system" fn overlay_wnd_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    let raw = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState;
+    let raw = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Rc<RefCell<WindowState>>;
     match msg {
         WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
         WM_APP_DRAIN => {
-            if let Some(state) = raw.as_mut() {
-                state.drain_and_apply();
+            let outcome = raw
+                .as_ref()
+                .and_then(|rc| rc.try_borrow_mut().ok())
+                .map(|mut state| state.drain_and_apply())
+                .unwrap_or(DrainOutcome::Continue);
+            // `RefMut<WindowState>` is strictly dropped BEFORE `DestroyWindow` triggers `WM_NCDESTROY`.
+            if matches!(outcome, DrainOutcome::DestroyWindow) {
+                let _ = DestroyWindow(hwnd);
             }
             LRESULT(0)
         }
         WM_TIMER => {
-            if let Some(state) = raw.as_mut() {
-                state.on_timer(wparam.0);
+            if let Some(rc) = raw.as_ref() {
+                if let Ok(mut state) = rc.try_borrow_mut() {
+                    state.on_timer(wparam.0);
+                }
+            }
+            LRESULT(0)
+        }
+        WM_DPICHANGED => {
+            let new_dpi = (wparam.0 & 0xFFFF) as u32;
+            if let Some(rc) = raw.as_ref() {
+                if let Ok(mut state) = rc.try_borrow_mut() {
+                    state.on_dpi_changed(new_dpi);
+                }
             }
             LRESULT(0)
         }
         WM_LBUTTONUP => {
-            if let Some(state) = raw.as_mut() {
+            let pending_action = raw.as_ref().and_then(|rc| {
+                let mut state = rc.try_borrow_mut().ok()?;
                 let x = (lparam.0 & 0xFFFF) as i16 as i32;
                 let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as i32;
-                state.on_left_click(x, y);
+                state.on_left_click(x, y)
+            });
+            // Invoke external callback strictly AFTER `RefMut<WindowState>` is dropped.
+            if let Some((cb, ev)) = pending_action {
+                cb(ev);
             }
             LRESULT(0)
         }
         WM_SETCURSOR => {
-            if let Some(state) = raw.as_ref() {
-                let cursor_id = if state.cursor_is_over_interactive() {
+            let over_interactive = raw
+                .as_ref()
+                .and_then(|rc| rc.try_borrow().ok())
+                .is_some_and(|state| state.cursor_is_over_interactive());
+            if raw.as_ref().is_some() {
+                let cursor_id = if over_interactive {
                     IDC_HAND
                 } else {
                     IDC_ARROW
