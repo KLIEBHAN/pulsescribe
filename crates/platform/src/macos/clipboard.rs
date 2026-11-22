@@ -3,9 +3,12 @@
 //!
 //! Mirrors `utils/hotkey.py` and `whisper_platform/clipboard.py`.
 
-use std::ffi::c_void;
+use std::ffi::{c_int, c_void};
 use std::io::Write;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::time::Duration;
 
 use objc2::rc::autoreleasepool;
 use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
@@ -21,6 +24,7 @@ const KVK_ANSI_V: u16 = 9;
 const K_UC_KEY_ACTION_DOWN: u16 = 0;
 const K_UC_KEY_TRANSLATE_NO_DEAD_KEYS_MASK: u32 = 1;
 const CMD_MODIFIER_KEY_STATE: u32 = (CARBON_CMD_KEY >> 8) & 0xFF;
+const MAIN_QUEUE_LAYOUT_LOOKUP_TIMEOUT: Duration = Duration::from_millis(100);
 
 #[allow(unsafe_code)]
 #[link(name = "Carbon", kind = "framework")]
@@ -52,6 +56,17 @@ extern "C" {
 extern "C" {
     fn CFRelease(cf: *const c_void);
     fn CFDataGetBytePtr(the_data: *const c_void) -> *const u8;
+}
+
+#[allow(unsafe_code)]
+extern "C" {
+    fn pthread_main_np() -> c_int;
+    static _dispatch_main_q: c_void;
+    fn dispatch_async_f(
+        queue: *const c_void,
+        context: *mut c_void,
+        work: unsafe extern "C" fn(*mut c_void),
+    );
 }
 
 /// Releases an owned CoreFoundation object on drop.
@@ -127,11 +142,12 @@ fn resolve_cmd_char_keycode_in_source(
     None
 }
 
-/// Resolves the virtual key code for `Cmd+V` in the active macOS keyboard layout.
+/// Resolves the virtual key code for `Cmd+V` on the current thread (must be the macOS main thread
+/// in UI processes to satisfy HIToolbox/TIS main-queue assertions).
 ///
 /// Handles QWERTY (`9`), QWERTZ (`9`), plain Dvorak (`47`), and Dvorak – QWERTY ⌘ (`9`),
 /// falling back to the ASCII-capable layout and then [`KVK_ANSI_V`] for non-Latin layouts.
-fn resolve_paste_keycode() -> u16 {
+fn resolve_paste_keycode_on_main_thread() -> u16 {
     #[allow(unsafe_code)]
     // SAFETY: `LMGetKbdType` and `TISCopyCurrent*` are standard Carbon layout queries; owned
     // `TISInputSourceRef` pointers are wrapped in `OwnedCf` for deterministic release.
@@ -145,6 +161,48 @@ fn resolve_paste_keycode() -> u16 {
     resolve_cmd_char_keycode_in_source(current.0, kbd_type, 'v')
         .or_else(|| resolve_cmd_char_keycode_in_source(ascii_fallback.0, kbd_type, 'v'))
         .unwrap_or(KVK_ANSI_V)
+}
+
+#[allow(unsafe_code)]
+unsafe extern "C" fn dispatch_resolve_keycode_work(context: *mut c_void) {
+    if context.is_null() {
+        return;
+    }
+    // SAFETY: `context` was created with `Box::into_raw` by `resolve_paste_keycode_with_timeout`
+    // and is reclaimed exactly once on the main dispatch queue.
+    let tx = unsafe { Box::from_raw(context.cast::<mpsc::SyncSender<u16>>()) };
+    if let Ok(keycode) = catch_unwind(AssertUnwindSafe(resolve_paste_keycode_on_main_thread)) {
+        let _ = tx.send(keycode);
+    }
+}
+
+/// Resolves the active layout's `Cmd+V` virtual key code strictly on the macOS main thread.
+///
+/// - On the main thread: queries TIS synchronously (~10 µs).
+/// - On a worker thread: dispatches the TIS query to the main dispatch queue and waits up to
+///   `timeout`. Returns `None` if no main run loop is pumping so callers fall back to `osascript`
+///   without deadlocking or violating macOS TIS main-thread assertions.
+fn resolve_paste_keycode_with_timeout(timeout: Duration) -> Option<u16> {
+    #[allow(unsafe_code)]
+    // SAFETY: `pthread_main_np` is a thread-safe libSystem predicate taking no arguments.
+    let is_main = unsafe { pthread_main_np() != 0 };
+    if is_main {
+        return Some(resolve_paste_keycode_on_main_thread());
+    }
+
+    let (tx, rx) = mpsc::sync_channel::<u16>(1);
+    let ctx = Box::into_raw(Box::new(tx)).cast::<c_void>();
+    #[allow(unsafe_code)]
+    // SAFETY: `_dispatch_main_q` is libdispatch's static main queue; `dispatch_resolve_keycode_work`
+    // always reclaims `ctx` via `Box::from_raw` even if the caller times out and drops `rx`.
+    unsafe {
+        dispatch_async_f(
+            &raw const _dispatch_main_q,
+            ctx,
+            dispatch_resolve_keycode_work,
+        );
+    }
+    rx.recv_timeout(timeout).ok()
 }
 
 /// In-process macOS clipboard via `NSPasteboard` with UTF-8 `pbcopy` fallback.
@@ -219,12 +277,21 @@ impl ClipboardBackend for MacOsClipboard {
 }
 
 /// Emits `Cmd+V` on macOS via layout-aware Quartz `CGEventPost`, falling back to `osascript`.
+///
+/// Safe to call from either the main thread or worker threads: TIS keyboard-layout queries are
+/// routed to the macOS main dispatch queue when invoked off the main thread, falling back to
+/// layout-independent `osascript` if no main run loop is pumping.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct MacOsPasteKeySender;
 
 impl MacOsPasteKeySender {
     fn paste_via_quartz() -> Result<(), PlatformError> {
-        let keycode = resolve_paste_keycode();
+        let keycode = resolve_paste_keycode_with_timeout(MAIN_QUEUE_LAYOUT_LOOKUP_TIMEOUT)
+            .ok_or_else(|| {
+                PlatformError::Paste(
+                    "main run loop unavailable for macOS keyboard layout resolution".into(),
+                )
+            })?;
         let down = CGEvent::new_keyboard_event(None, keycode, true).ok_or_else(|| {
             PlatformError::Paste("CGEventCreateKeyboardEvent(down) failed".into())
         })?;
@@ -333,6 +400,15 @@ mod tests {
             keycode_for_installed_layout("com.apple.keylayout.DVORAK-QWERTYCMD"),
             Some(9)
         );
-        assert!(resolve_paste_keycode() < 128);
+        assert!(resolve_paste_keycode_on_main_thread() < 128);
+    }
+
+    #[test]
+    fn resolve_paste_keycode_off_main_thread_times_out_cleanly_without_pumping_main_queue() {
+        let result =
+            std::thread::spawn(|| resolve_paste_keycode_with_timeout(Duration::from_millis(15)))
+                .join()
+                .expect("worker thread must not panic");
+        assert_eq!(result, None);
     }
 }
