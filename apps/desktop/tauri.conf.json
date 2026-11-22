@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "PulseScribe",
   "version": "0.1.0",
-  "identifier": "eu.kliebhan.pulsescribe",
+  "identifier": "com.kliebhan.pulsescribe",
   "build": {
     "frontendDist": "./ui"
   },
@@ -22,6 +22,9 @@
       "../../assets/icon.iconset/icon_128x128@2x.png",
       "../../assets/icon.icns",
       "../../assets/icon.ico"
-    ]
+    ],
+    "macOS": {
+      "infoPlist": "./Info.plist"
+    }
   }
 }

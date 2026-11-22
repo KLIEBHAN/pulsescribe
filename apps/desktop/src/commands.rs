@@ -321,14 +321,22 @@ pub fn build_settings_payload(store: &PreferencesStore, cfg: &DaemonConfig) -> S
             .get("PULSESCRIBE_MODEL")
             .cloned()
             .or_else(|| {
-                (cfg.mode != pulsescribe_daemon::DaemonMode::Local).then(|| cfg.model.clone())?
+                (!matches!(
+                    cfg.mode,
+                    pulsescribe_daemon::DaemonMode::Local
+                        | pulsescribe_daemon::DaemonMode::OpenAiCompatible
+                ))
+                .then(|| cfg.model.clone())
+                .flatten()
             })
             .unwrap_or_default(),
         local_model: env
             .get("PULSESCRIBE_LOCAL_MODEL")
             .cloned()
             .or_else(|| {
-                (cfg.mode == pulsescribe_daemon::DaemonMode::Local).then(|| cfg.model.clone())?
+                (cfg.mode == pulsescribe_daemon::DaemonMode::Local)
+                    .then(|| cfg.model.clone())
+                    .flatten()
             })
             .unwrap_or_else(|| DEFAULT_LOCAL_MODEL_ID.to_owned()),
         language: cfg.language.clone().unwrap_or_else(|| "auto".to_owned()),
@@ -987,41 +995,48 @@ pub async fn copy_last_transcript(
 }
 
 #[tauri::command]
-pub fn set_onboarding_state(
+pub async fn set_onboarding_state(
     state: State<'_, DesktopState>,
     step: Option<String>,
     choice: Option<String>,
     show_welcome_on_startup: Option<bool>,
 ) -> Result<(), String> {
-    if let Some(raw_step) = step {
-        let parsed = OnboardingStep::parse(&raw_step)
-            .ok_or_else(|| format!("Unknown onboarding step: {raw_step}"))?;
-        state
-            .preferences
-            .set_onboarding_step(parsed)
-            .map_err(|err| err.to_string())?;
-    }
-    if let Some(raw_choice) = choice {
-        let parsed = if raw_choice.trim().is_empty() {
-            None
-        } else {
-            Some(
-                OnboardingChoice::parse(&raw_choice)
-                    .ok_or_else(|| format!("Unknown onboarding choice: {raw_choice}"))?,
-            )
-        };
-        state
-            .preferences
-            .set_onboarding_choice(parsed)
-            .map_err(|err| err.to_string())?;
-    }
-    if let Some(show) = show_welcome_on_startup {
-        state
-            .preferences
-            .set_show_welcome_on_startup(show)
-            .map_err(|err| err.to_string())?;
-    }
-    Ok(())
+    let parsed_step = match step {
+        Some(raw) => Some(
+            OnboardingStep::parse(&raw).ok_or_else(|| format!("Unknown onboarding step: {raw}"))?,
+        ),
+        None => None,
+    };
+    let parsed_choice = match choice {
+        Some(raw) if raw.trim().is_empty() => Some(None),
+        Some(raw) => {
+            Some(Some(OnboardingChoice::parse(&raw).ok_or_else(|| {
+                format!("Unknown onboarding choice: {raw}")
+            })?))
+        }
+        None => None,
+    };
+    let prefs = Arc::clone(&state.preferences);
+    tokio::task::spawn_blocking(move || {
+        if let Some(step) = parsed_step {
+            prefs
+                .set_onboarding_step(step)
+                .map_err(|err| err.to_string())?;
+        }
+        if let Some(choice) = parsed_choice {
+            prefs
+                .set_onboarding_choice(choice)
+                .map_err(|err| err.to_string())?;
+        }
+        if let Some(show) = show_welcome_on_startup {
+            prefs
+                .set_show_welcome_on_startup(show)
+                .map_err(|err| err.to_string())?;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|err| format!("Onboarding state save failed: {err}"))?
 }
 
 #[tauri::command]
@@ -1037,13 +1052,13 @@ pub fn get_theme_preference(state: State<'_, DesktopState>) -> ThemePreferencePa
         .get("ui_accent")
         .and_then(Value::as_str)
         .filter(|s| matches!(*s, "mono" | "blue"))
-        .unwrap_or("mono")
+        .unwrap_or("blue")
         .to_owned();
     ThemePreferencePayload { theme, accent }
 }
 
 #[tauri::command]
-pub fn save_theme_preference(
+pub async fn save_theme_preference(
     state: State<'_, DesktopState>,
     theme: String,
     accent: String,
@@ -1054,23 +1069,27 @@ pub fn save_theme_preference(
         _ => "system",
     };
     let norm_accent = match accent.trim().to_ascii_lowercase().as_str() {
-        "blue" => "blue",
-        _ => "mono",
+        "mono" => "mono",
+        _ => "blue",
     };
-    let mut prefs = state.preferences.load_preferences();
-    prefs.insert("ui_theme".to_owned(), Value::String(norm_theme.to_owned()));
-    prefs.insert(
-        "ui_accent".to_owned(),
-        Value::String(norm_accent.to_owned()),
-    );
-    state
-        .preferences
-        .save_preferences(&prefs)
-        .map_err(|err| err.to_string())?;
-    Ok(ThemePreferencePayload {
-        theme: norm_theme.to_owned(),
-        accent: norm_accent.to_owned(),
+    let prefs_store = Arc::clone(&state.preferences);
+    tokio::task::spawn_blocking(move || {
+        let mut prefs = prefs_store.load_preferences();
+        prefs.insert("ui_theme".to_owned(), Value::String(norm_theme.to_owned()));
+        prefs.insert(
+            "ui_accent".to_owned(),
+            Value::String(norm_accent.to_owned()),
+        );
+        prefs_store
+            .save_preferences(&prefs)
+            .map_err(|err| err.to_string())?;
+        Ok(ThemePreferencePayload {
+            theme: norm_theme.to_owned(),
+            accent: norm_accent.to_owned(),
+        })
     })
+    .await
+    .map_err(|err| format!("Theme preference save failed: {err}"))?
 }
 
 #[tauri::command]

@@ -283,6 +283,16 @@ pub fn run() -> i32 {
                 let _ = open_or_focus_window(app_handle, "onboarding");
             }
         }
+        RunEvent::WindowEvent {
+            label,
+            event: tauri::WindowEvent::Destroyed,
+            ..
+        } if label == window::MAIN_WINDOW_LABEL => {
+            // Ensure closing onboarding/settings never leaves hotkeys stuck in test mode.
+            if let Some(state) = app_handle.try_state::<DesktopState>() {
+                state.daemon.set_test_hotkey_mode(false);
+            }
+        }
         RunEvent::ExitRequested { api, code, .. } => {
             let is_quitting = app_handle
                 .try_state::<DesktopState>()
