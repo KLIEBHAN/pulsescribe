@@ -1539,6 +1539,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "pulsescribe-local-asr"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "pulsescribe-core",
+ "reqwest",
+ "serde",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "pulsescribe-platform"
 version = "0.1.0"
 dependencies = [
