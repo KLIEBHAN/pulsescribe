@@ -569,7 +569,10 @@ impl DaemonStateMachine {
         let run = self.active_run.take().expect("checked above");
         self.hold_state.reset();
 
-        let mut actions = vec![DaemonAction::CancelWatchdog];
+        let mut actions = vec![
+            DaemonAction::CancelCapture { run_id },
+            DaemonAction::CancelWatchdog,
+        ];
         let raw_msg = err.to_string();
         if let Some(cmd_id) = run.ipc_cmd_id() {
             actions.push(DaemonAction::SendIpcResponse {
@@ -606,13 +609,11 @@ impl DaemonStateMachine {
         if run.run_id != run_id || !self.is_processing() || run.delivering {
             return Vec::new();
         }
-        let mut actions = vec![DaemonAction::CancelCapture { run_id }];
         let err = DaemonStatusError::new(
             DaemonErrorCode::Timeout,
             Some("Transcription timed out".to_owned()),
         );
-        actions.extend(self.on_run_failed(run_id, err));
-        actions
+        self.on_run_failed(run_id, err)
     }
 
     /// Return to `Idle` when a scheduled feedback timer fires and no newer state change occurred.
@@ -1108,5 +1109,18 @@ mod tests {
         assert!(!empty_done
             .iter()
             .any(|a| matches!(a, DaemonAction::ScheduleIdleReset { .. })));
+
+        // Mid-recording provider error tears down live capture via CancelCapture.
+        let _ = sm.on_start_recording(None);
+        let live_id = sm.active_run().unwrap().run_id;
+        let _ = sm.on_capture_started(live_id);
+        let _ = sm.on_speech_detected(live_id);
+        let failed = sm.on_run_failed(
+            live_id,
+            DaemonStatusError::new(DaemonErrorCode::Connection, Some("ws dropped".into())),
+        );
+        assert_eq!(sm.state(), AppState::Error);
+        assert!(sm.active_run().is_none());
+        assert!(failed.contains(&DaemonAction::CancelCapture { run_id: live_id }));
     }
 }
