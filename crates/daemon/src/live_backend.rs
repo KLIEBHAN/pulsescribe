@@ -1017,11 +1017,16 @@ async fn run_streaming_session(
         }
     };
 
-    let ended_before_stop = !capture_done && !control.is_stopped();
+    let was_cancelled = control.is_cancelled() || is_cancelled(cancelled_rx);
+    let ended_before_stop = !control.is_stopped() && !was_cancelled;
     if !capture_done {
         // Stream ended before user stopped capture (e.g., server closed or auth failure).
         control.signal_cancel();
         let _ = capture_handle.await;
+    }
+
+    if was_cancelled {
+        return Ok((String::new(), Instant::now()));
     }
 
     let post_stop_started = match capture_result {

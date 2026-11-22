@@ -881,11 +881,61 @@ impl LocalTranscriber for BlockingLocalEngine {
     }
 }
 
+struct ContinuousAudioSource {
+    dropped_counter: Arc<AtomicUsize>,
+}
+
+impl AudioSource for ContinuousAudioSource {
+    fn sample_rate(&self) -> u32 {
+        16_000
+    }
+
+    fn drain_into(&mut self, out: &mut Vec<f32>) -> usize {
+        out.extend_from_slice(&[0.25_f32; 320]);
+        320
+    }
+
+    fn latest_rms(&self) -> f32 {
+        0.25
+    }
+
+    fn take_error(&self) -> Option<String> {
+        None
+    }
+}
+
+impl Drop for ContinuousAudioSource {
+    fn drop(&mut self) {
+        self.dropped_counter.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+struct ContinuousAudioFactory {
+    dropped: Arc<AtomicUsize>,
+}
+
+impl ContinuousAudioFactory {
+    fn new() -> Self {
+        Self {
+            dropped: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+}
+
+impl AudioSourceFactory for ContinuousAudioFactory {
+    fn open(&self, _device_name: Option<&str>) -> Result<Box<dyn AudioSource>, AudioError> {
+        Ok(Box::new(ContinuousAudioSource {
+            dropped_counter: Arc::clone(&self.dropped),
+        }))
+    }
+}
+
 #[tokio::test]
 async fn premature_deepgram_close_silent_batch_and_local_cancel_drain() {
     let dir = TempDir::new("edge-cases");
 
-    // 1. Clean Deepgram WebSocket close before user stops surfaces `Connection` error instead of wedging.
+    // 1. Clean Deepgram WebSocket close before user stops surfaces `Connection` error instead of wedging,
+    // even with a continuous live mic where `capture_handle` observes closed `audio_tx` first.
     {
         let store = Arc::new(PreferencesStore::new(dir.path()));
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -901,7 +951,7 @@ async fn premature_deepgram_close_silent_batch_and_local_cancel_drain() {
         });
 
         let (_, clipboard) = RecordingClipboard::create();
-        let audio_factory = Arc::new(SyntheticAudioFactory::new(16_000, 480, 10));
+        let audio_factory = Arc::new(ContinuousAudioFactory::new());
         let permissions = Arc::new(StaticPermissions {
             mic: MicrophonePermissionStatus::Authorized,
         });
