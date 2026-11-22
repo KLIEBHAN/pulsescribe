@@ -373,3 +373,64 @@ async fn server_error_frame_returns_websocket_error_without_waiting_for_finalize
         other => panic!("expected ProviderError::WebSocket, got {other:?}"),
     }
 }
+
+#[tokio::test]
+async fn close_drain_captures_final_results_sent_after_close_stream() {
+    let (ws_url, _capture, server) = spawn_ws_server(|mut ws| async move {
+        while let Some(Ok(msg)) = ws.next().await {
+            if let Message::Text(text) = msg {
+                if text.contains("Finalize") {
+                    // Simulate Finalize timeout: do not reply until CloseStream arrives.
+                    continue;
+                }
+                if text.contains("CloseStream") {
+                    ws.send(Message::text(results_json(
+                        "Nach CloseStream geliefert.",
+                        true,
+                        false,
+                    )))
+                    .await
+                    .unwrap();
+                    let _ = ws.close(None).await;
+                    break;
+                }
+            }
+        }
+    })
+    .await;
+
+    let mut timeouts = fast_timeouts();
+    timeouts.tail_padding = Duration::ZERO;
+    timeouts.finalize = Duration::from_millis(60);
+    timeouts.close = Duration::from_millis(300);
+
+    let client = DeepgramStreamClient::with_ws_url(&ws_url, "dg-key").unwrap();
+    let config = DeepgramStreamConfig::default().with_timeouts(timeouts);
+
+    let (audio_tx, audio_rx) = mpsc::channel(2);
+    let (event_tx, mut event_rx) = mpsc::channel(8);
+    audio_tx
+        .send(Bytes::from_static(&[1, 2, 3, 4]))
+        .await
+        .unwrap();
+    drop(audio_tx);
+
+    let result = client
+        .transcribe_stream(&config, audio_rx, Some(event_tx))
+        .await
+        .unwrap();
+    server.await.unwrap();
+
+    assert_eq!(result.transcript, "Nach CloseStream geliefert.");
+    assert!(!result.used_interim_fallback);
+    assert!(!result.finalize_acknowledged);
+
+    let mut events = Vec::new();
+    while let Ok(ev) = event_rx.try_recv() {
+        events.push(ev);
+    }
+    assert!(events.contains(&DeepgramStreamEvent::Final {
+        text: "Nach CloseStream geliefert.".to_string(),
+        from_finalize: false,
+    }));
+}

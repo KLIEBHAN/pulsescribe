@@ -572,7 +572,15 @@ pub(crate) async fn run_stream_session(
         )
         .await
         {
-            SendOutcome::Sent => close_websocket(&mut ws, config.timeouts.close).await,
+            SendOutcome::Sent => {
+                close_session_websocket(
+                    &mut ws,
+                    &mut state,
+                    event_tx.as_ref(),
+                    config.timeouts.close,
+                )
+                .await;
+            }
             SendOutcome::Failed(err) => {
                 tracing::debug!(error = %err, "Deepgram CloseStream send failed");
             }
@@ -666,8 +674,14 @@ fn record_transport_error(state: &mut SessionState, err: WsError) {
     }
 }
 
-/// Close the WebSocket within `close_timeout` (ADR-001) so unresponsive peers never hang shutdown.
-pub(crate) async fn close_websocket(ws: &mut DeepgramWsStream, close_timeout: Duration) {
+/// Close the WebSocket within `close_timeout` (ADR-001) so unresponsive peers never hang shutdown,
+/// while still processing any trailing Deepgram `Results` frames flushed after `CloseStream`.
+async fn close_session_websocket(
+    ws: &mut DeepgramWsStream,
+    state: &mut SessionState,
+    event_tx: Option<&mpsc::Sender<DeepgramStreamEvent>>,
+    close_timeout: Duration,
+) {
     if close_timeout.is_zero() {
         return;
     }
@@ -680,6 +694,12 @@ pub(crate) async fn close_websocket(ws: &mut DeepgramWsStream, close_timeout: Du
     }
     loop {
         match tokio::time::timeout_at(deadline, ws.next()).await {
+            Ok(Some(Ok(Message::Text(text)))) => {
+                process_deepgram_text_frame(&text, state, event_tx);
+                if state.socket_closed {
+                    break;
+                }
+            }
             Ok(Some(Ok(Message::Close(_)))) | Ok(Some(Err(_))) | Ok(None) | Err(_) => break,
             Ok(Some(Ok(_))) => {}
         }
