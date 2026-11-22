@@ -35,15 +35,7 @@ impl TempRecordingGuard {
                 .map(|d| d.subsec_nanos())
                 .unwrap_or(0);
             let dir = base.join(format!("pulsescribe_rec_{pid}_{seq}_{nanos}"));
-
-            let mut builder = DirBuilder::new();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::DirBuilderExt;
-                builder.mode(0o700);
-            }
-
-            match builder.create(&dir) {
+            match create_private_dir(&dir) {
                 Ok(()) => {
                     let wav_path = dir.join(TEMP_RECORDING_FILENAME);
                     return Ok(Self { dir, wav_path });
@@ -62,6 +54,20 @@ impl TempRecordingGuard {
     pub fn path(&self) -> &Path {
         &self.wav_path
     }
+}
+
+#[cfg(unix)]
+fn create_private_dir(dir: &Path) -> io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+
+    let mut builder = DirBuilder::new();
+    builder.mode(0o700);
+    builder.create(dir)
+}
+
+#[cfg(not(unix))]
+fn create_private_dir(dir: &Path) -> io::Result<()> {
+    DirBuilder::new().create(dir)
 }
 
 impl Drop for TempRecordingGuard {
