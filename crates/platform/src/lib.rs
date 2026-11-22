@@ -11,6 +11,8 @@ pub mod hotkey;
 pub mod macos;
 pub mod permissions;
 pub mod sound;
+#[cfg(target_os = "windows")]
+pub mod windows;
 
 use std::sync::{Mutex, MutexGuard};
 
