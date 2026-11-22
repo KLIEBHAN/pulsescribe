@@ -7,6 +7,8 @@
 pub mod app_detection;
 pub mod clipboard;
 pub mod hotkey;
+#[cfg(target_os = "macos")]
+pub mod macos;
 pub mod permissions;
 pub mod sound;
 
@@ -19,7 +21,8 @@ pub use app_detection::{
 };
 pub use clipboard::{
     ArboardClipboard, ClipboardBackend, ClipboardPastePolicy, PasteKeySender,
-    MACOS_CLIPBOARD_RESTORE_DELAY, WINDOWS_CLIPBOARD_RESTORE_DELAY, WINDOWS_CLIPBOARD_SYNC_POLL,
+    TranscriptPasteAdapter, MACOS_CLIPBOARD_RESTORE_DELAY, WINDOWS_CLIPBOARD_RESTORE_DELAY,
+    WINDOWS_CLIPBOARD_SYNC_POLL,
 };
 pub use hotkey::{
     HotkeyBackend, HotkeyBinding, HotkeyCallback, HotkeyEvent, HotkeyRegistration, HotkeySource,
