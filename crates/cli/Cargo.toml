@@ -1,0 +1,26 @@
+[package]
+name = "pulsescribe-cli"
+description = "Command-line interface for PulseScribe audio transcription and LLM refinement"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "pulsescribe"
+path = "src/main.rs"
+
+[dependencies]
+arboard.workspace = true
+clap.workspace = true
+pulsescribe-audio = { path = "../audio" }
+pulsescribe-core = { path = "../core" }
+pulsescribe-providers = { path = "../providers" }
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true
