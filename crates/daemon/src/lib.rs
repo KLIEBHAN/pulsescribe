@@ -1,11 +1,13 @@
 //! Cross-platform dictation daemon core for PulseScribe (ADR-003).
 //!
 //! Unifies the macOS (`pulsescribe_daemon.py`) and Windows (`pulsescribe_windows.py`)
-//! daemon configuration, event bus, and file-based IPC protocol into one platform-agnostic crate.
+//! daemon configuration, event bus, file-based IPC protocol, and lifecycle state machine
+//! into one platform-agnostic crate.
 
 pub mod config;
 pub mod events;
 pub mod ipc;
+pub mod state_machine;
 
 pub use config::{
     DaemonConfig, DaemonMode, DaemonTimings, ReloadTracker, DEFAULT_DONE_DISPLAY_HOLD,
@@ -17,3 +19,4 @@ pub use ipc::{
     IpcClient, IpcCommand, IpcCommandKind, IpcError, IpcPaths, IpcResponse, IpcServer, IpcStatus,
     IPC_COMMAND_FILENAME, IPC_POLL_INTERVAL, IPC_RESPONSE_FILENAME,
 };
+pub use state_machine::{ActiveRun, DaemonAction, DaemonStateMachine, RunKind};
