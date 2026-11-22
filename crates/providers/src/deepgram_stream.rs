@@ -674,6 +674,26 @@ fn record_transport_error(state: &mut SessionState, err: WsError) {
     }
 }
 
+/// Close an idle WebSocket within `close_timeout` (ADR-001) without inspecting session frames.
+pub(crate) async fn close_idle_websocket(ws: &mut DeepgramWsStream, close_timeout: Duration) {
+    if close_timeout.is_zero() {
+        return;
+    }
+    let deadline = Instant::now() + close_timeout;
+    if !matches!(
+        tokio::time::timeout_at(deadline, ws.close(None)).await,
+        Ok(Ok(()))
+    ) {
+        return;
+    }
+    loop {
+        match tokio::time::timeout_at(deadline, ws.next()).await {
+            Ok(Some(Ok(Message::Close(_)))) | Ok(Some(Err(_))) | Ok(None) | Err(_) => break,
+            Ok(Some(Ok(_))) => {}
+        }
+    }
+}
+
 /// Close the WebSocket within `close_timeout` (ADR-001) so unresponsive peers never hang shutdown,
 /// while still processing any trailing Deepgram `Results` frames flushed after `CloseStream`.
 async fn close_session_websocket(
@@ -794,6 +814,11 @@ fn process_deepgram_text_frame(
     } else if parsed.from_finalize {
         state.finalize_ack_received = true;
     }
+}
+
+pub(crate) fn parse_server_error_message(raw: &str) -> Option<String> {
+    let parsed: DeepgramStreamFrame = serde_json::from_str(raw).ok()?;
+    extract_error_detail(&parsed)
 }
 
 fn extract_error_detail(frame: &DeepgramStreamFrame) -> Option<String> {
