@@ -12,6 +12,7 @@ web/
 
 # Rust
 /target/
+apps/desktop/gen/
 
 # Environment
 .env

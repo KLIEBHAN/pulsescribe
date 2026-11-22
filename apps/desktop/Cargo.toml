@@ -1,0 +1,48 @@
+[package]
+name = "pulsescribe-desktop"
+description = "Native Tauri v2 desktop shell, system tray, and lazy WebView host for PulseScribe"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "pulsescribe_desktop"
+path = "src/lib.rs"
+
+[[bin]]
+name = "pulsescribe-desktop"
+path = "src/main.rs"
+
+[features]
+default = []
+local-whisper = ["pulsescribe-local-asr/local-whisper", "pulsescribe-daemon/local-whisper"]
+local-sherpa = ["pulsescribe-local-asr/local-sherpa", "pulsescribe-daemon/local-sherpa"]
+all-local = ["local-whisper", "local-sherpa"]
+
+[dependencies]
+chrono.workspace = true
+pulsescribe-audio = { path = "../../crates/audio" }
+pulsescribe-core = { path = "../../crates/core" }
+pulsescribe-daemon = { path = "../../crates/daemon" }
+pulsescribe-local-asr = { path = "../../crates/local-asr" }
+pulsescribe-overlay = { path = "../../crates/overlay" }
+pulsescribe-platform = { path = "../../crates/platform" }
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tauri.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+url.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-foundation.workspace = true
+
+[build-dependencies]
+tauri-build.workspace = true
+
+[lints]
+workspace = true

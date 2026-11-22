@@ -164,11 +164,16 @@ pub struct DaemonHandle {
     event_bus: DaemonEventBus,
     state_rx: watch::Receiver<AppState>,
     config_rx: watch::Receiver<DaemonConfig>,
+    history: Arc<HistoryStore>,
 }
 
 impl DaemonHandle {
     pub fn subscribe(&self) -> broadcast::Receiver<DaemonEvent> {
         self.event_bus.subscribe()
+    }
+
+    pub fn history_store(&self) -> Arc<HistoryStore> {
+        Arc::clone(&self.history)
     }
 
     pub fn state(&self) -> AppState {
@@ -252,11 +257,14 @@ impl DaemonRuntime {
         let (state_tx, state_rx) = watch::channel(AppState::Idle);
         let (config_tx, config_rx) = watch::channel(initial_config.clone());
 
+        let history = Arc::new(HistoryStore::new(store.paths().config_dir()));
+
         let handle = DaemonHandle {
             cmd_tx: cmd_tx.clone(),
             event_bus: event_bus.clone(),
             state_rx,
             config_rx,
+            history: Arc::clone(&history),
         };
 
         let ipc_paths = IpcPaths::from_app_paths(store.paths());
@@ -359,7 +367,6 @@ impl DaemonRuntime {
         });
 
         // Serialized FIFO history writer (preserves chronological JSONL order and drains on shutdown).
-        let history = Arc::new(HistoryStore::new(store.paths().config_dir()));
         let history_app_detector = Arc::clone(&platform.app_detector);
         let (history_tx, mut history_rx) = mpsc::unbounded_channel::<PendingHistoryEntry>();
         let history_writer_task = tokio::spawn(async move {

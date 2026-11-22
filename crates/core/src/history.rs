@@ -766,6 +766,42 @@ impl HistoryStore {
             .collect()
     }
 
+    /// Remove the newest matching transcript entry atomically under the serialized write lock.
+    ///
+    /// Uses lossy UTF-8 decoding so a stray non-UTF-8 byte in `history.jsonl` never prevents deletion.
+    pub fn delete_entry(&self, timestamp: &str, text: &str) -> Result<bool, HistoryError> {
+        let _write_guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let history_file = self.paths.history_file();
+        let raw_bytes = match fs::read(&history_file) {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(err) => return Err(HistoryError::Io(err)),
+        };
+
+        let raw_text = String::from_utf8_lossy(&raw_bytes);
+        let mut lines: Vec<&str> = split_lines(&raw_text);
+        let mut removed = false;
+        for idx in (0..lines.len()).rev() {
+            if let Some(entry) = TranscriptEntry::from_json_line(lines[idx]) {
+                if entry.timestamp == timestamp && entry.text == text {
+                    lines.remove(idx);
+                    removed = true;
+                    break;
+                }
+            }
+        }
+        if !removed {
+            return Ok(false);
+        }
+
+        let mut content = lines.join("\n");
+        if !content.is_empty() {
+            content.push('\n');
+        }
+        write_text_atomic(&history_file, &content)?;
+        Ok(true)
+    }
+
     /// Delete `history.jsonl` if it exists under the serialized write lock.
     pub fn clear(&self) -> Result<(), HistoryError> {
         let _write_guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "PulseScribe",
+  "version": "0.1.0",
+  "identifier": "eu.kliebhan.pulsescribe",
+  "build": {
+    "frontendDist": "./ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "../../assets/icon.iconset/icon_32x32.png",
+      "../../assets/icon.iconset/icon_128x128.png",
+      "../../assets/icon.iconset/icon_128x128@2x.png",
+      "../../assets/icon.icns",
+      "../../assets/icon.ico"
+    ]
+  }
+}

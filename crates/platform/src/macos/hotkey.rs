@@ -165,6 +165,40 @@ fn ensure_carbon_handler_installed() -> Result<(), PlatformError> {
     result.map_err(|status| PlatformError::Hotkey(format!("InstallEventHandler failed ({status})")))
 }
 
+/// Probe whether macOS Carbon `RegisterEventHotKey` currently accepts `hotkey`.
+///
+/// Immediately unregisters on success so no stray binding remains active.
+pub fn probe_carbon_hotkey(hotkey: pulsescribe_core::CarbonHotkey) -> bool {
+    let id = NEXT_CARBON_ID.fetch_add(1, Ordering::Relaxed);
+    let hk_id = EventHotKeyID {
+        signature: CARBON_SIGNATURE,
+        id,
+    };
+    let mut raw_ref: *mut c_void = null_mut();
+    #[allow(unsafe_code)]
+    // SAFETY: `raw_ref` is a valid out-pointer; any registered handle is unregistered immediately.
+    let status = unsafe {
+        RegisterEventHotKey(
+            u32::from(hotkey.virtual_key),
+            hotkey.modifier_mask,
+            hk_id,
+            GetEventDispatcherTarget(),
+            0,
+            &mut raw_ref,
+        )
+    };
+    if status == 0 && !raw_ref.is_null() {
+        #[allow(unsafe_code)]
+        // SAFETY: `raw_ref` was returned by `RegisterEventHotKey` immediately above.
+        unsafe {
+            let _ = UnregisterEventHotKey(raw_ref);
+        }
+        true
+    } else {
+        false
+    }
+}
+
 struct CarbonRegistration {
     id: u32,
     raw_ref: *mut c_void,

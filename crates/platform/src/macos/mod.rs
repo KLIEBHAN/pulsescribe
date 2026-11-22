@@ -10,6 +10,6 @@ pub mod sound;
 
 pub use app_detection::MacOsAppDetector;
 pub use clipboard::{MacOsClipboard, MacOsPasteKeySender};
-pub use hotkey::MacOsHotkeyBackend;
+pub use hotkey::{probe_carbon_hotkey, MacOsHotkeyBackend};
 pub use permissions::MacOsPermissionsChecker;
 pub use sound::MacOsSoundPlayer;
