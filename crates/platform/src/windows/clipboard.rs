@@ -7,7 +7,8 @@ use std::ptr;
 use std::thread;
 use std::time::Duration;
 
-use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL};
+use windows::core::PCWSTR;
+use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND};
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
     SetClipboardData,
@@ -19,13 +20,71 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyboardLayout, SendInput, VkKeyScanExW, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
     KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_CONTROL, VK_V,
 };
-use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+use windows::Win32::UI::WindowsAndMessaging::{
+    CreateWindowExW, DestroyWindow, GetForegroundWindow, GetWindowThreadProcessId, HWND_MESSAGE,
+    WINDOW_EX_STYLE, WINDOW_STYLE,
+};
 
 use crate::{ClipboardBackend, PasteKeySender, PlatformError};
 
 const CF_UNICODETEXT: u32 = 13;
 const CLIPBOARD_OPEN_RETRIES: usize = 5;
 const CLIPBOARD_OPEN_RETRY_DELAY: Duration = Duration::from_millis(50);
+const STATIC_WINDOW_CLASS_UTF16: &[u16] = &[
+    b'S' as u16,
+    b'T' as u16,
+    b'A' as u16,
+    b'T' as u16,
+    b'I' as u16,
+    b'C' as u16,
+    0,
+];
+
+/// Hidden message-only window used as the clipboard owner for `write_text`.
+///
+/// Win32 documents that calling `OpenClipboard(None)` followed by `EmptyClipboard` assigns a NULL
+/// clipboard owner, causing `SetClipboardData` to fail; owning the clipboard with a valid HWND
+/// avoids emptying existing clipboard data on failure, and non-delayed `CF_UNICODETEXT` handles
+/// persist after `CloseClipboard` + `DestroyWindow`.
+struct ClipboardOwnerWindow(HWND);
+
+impl ClipboardOwnerWindow {
+    fn new() -> Result<Self, PlatformError> {
+        #[allow(unsafe_code)]
+        // SAFETY: `STATIC` is a built-in Win32 window class and `HWND_MESSAGE` creates a
+        // message-only window owned by this thread; destroyed by `Drop` after `CloseClipboard`.
+        let hwnd = unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                PCWSTR(STATIC_WINDOW_CLASS_UTF16.as_ptr()),
+                PCWSTR::null(),
+                WINDOW_STYLE(0),
+                0,
+                0,
+                0,
+                0,
+                Some(HWND_MESSAGE),
+                None,
+                None,
+                None,
+            )
+        }
+        .map_err(|err| {
+            PlatformError::Clipboard(format!("CreateWindowExW clipboard owner failed: {err}"))
+        })?;
+        Ok(Self(hwnd))
+    }
+}
+
+impl Drop for ClipboardOwnerWindow {
+    fn drop(&mut self) {
+        #[allow(unsafe_code)]
+        // SAFETY: `self.0` was created by `CreateWindowExW` on this thread and is destroyed once.
+        unsafe {
+            let _ = DestroyWindow(self.0);
+        }
+    }
+}
 
 struct ClipboardGuard;
 
@@ -72,12 +131,12 @@ impl Drop for OwnedHGlobal {
     }
 }
 
-fn open_clipboard(attempts: usize) -> Result<ClipboardGuard, PlatformError> {
+fn open_clipboard(owner: Option<HWND>, attempts: usize) -> Result<ClipboardGuard, PlatformError> {
     let attempts = attempts.max(1);
     for attempt in 0..attempts {
         #[allow(unsafe_code)]
-        // SAFETY: Passing `None` opens the clipboard associated with the current task.
-        if unsafe { OpenClipboard(None) }.is_ok() {
+        // SAFETY: `owner` is either `None` (reads) or a live thread-owned window (writes).
+        if unsafe { OpenClipboard(owner) }.is_ok() {
             return Ok(ClipboardGuard);
         }
         if attempt + 1 < attempts {
@@ -95,7 +154,7 @@ pub struct WindowsClipboard;
 
 impl WindowsClipboard {
     fn read_text_with_attempts(attempts: usize) -> Result<Option<String>, PlatformError> {
-        let _guard = open_clipboard(attempts)?;
+        let _guard = open_clipboard(None, attempts)?;
         #[allow(unsafe_code)]
         // SAFETY: Clipboard is open via `_guard`; missing `CF_UNICODETEXT` means non-text/empty.
         if unsafe { IsClipboardFormatAvailable(CF_UNICODETEXT) }.is_err() {
@@ -171,7 +230,10 @@ impl ClipboardBackend for WindowsClipboard {
             }
         }
 
-        let _clipboard = open_clipboard(CLIPBOARD_OPEN_RETRIES)?;
+        // Create the owner window before opening the clipboard; Rust drops `_clipboard`
+        // (`CloseClipboard`) before `owner` (`DestroyWindow`).
+        let owner = ClipboardOwnerWindow::new()?;
+        let _clipboard = open_clipboard(Some(owner.0), CLIPBOARD_OPEN_RETRIES)?;
         #[allow(unsafe_code)]
         // SAFETY: Clipboard is open via `_clipboard`.
         unsafe { EmptyClipboard() }
@@ -233,6 +295,17 @@ fn keyboard_input(vk: VIRTUAL_KEY, flags: KEYBD_EVENT_FLAGS) -> INPUT {
     }
 }
 
+/// Returns the keys left logically down if `SendInput` only injected a prefix of
+/// `[Ctrl down, V down, V up, Ctrl up]`.
+fn pending_keyups_after_partial_send(sent: usize, vk_v: VIRTUAL_KEY) -> Vec<VIRTUAL_KEY> {
+    match sent {
+        1 => vec![VK_CONTROL],
+        2 => vec![vk_v, VK_CONTROL],
+        3 => vec![VK_CONTROL],
+        _ => Vec::new(),
+    }
+}
+
 /// Emits `Ctrl+V` atomically on Windows via `SendInput`.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct WindowsPasteKeySender;
@@ -252,6 +325,18 @@ impl PasteKeySender for WindowsPasteKeySender {
         if sent as usize == inputs.len() {
             Ok(())
         } else {
+            let pending_ups = pending_keyups_after_partial_send(sent as usize, vk_v);
+            if !pending_ups.is_empty() {
+                let cleanup: Vec<INPUT> = pending_ups
+                    .into_iter()
+                    .map(|vk| keyboard_input(vk, KEYEVENTF_KEYUP))
+                    .collect();
+                #[allow(unsafe_code)]
+                // SAFETY: `cleanup` is a valid contiguous slice of `INPUT` structs sized by `size_of::<INPUT>()`.
+                unsafe {
+                    let _ = SendInput(&cleanup, std::mem::size_of::<INPUT>() as i32);
+                }
+            }
             Err(PlatformError::Paste(format!(
                 "SendInput injected {sent}/{} events (blocked by UIPI or desktop lock)",
                 inputs.len()
@@ -263,10 +348,39 @@ impl PasteKeySender for WindowsPasteKeySender {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static LIVE_CLIPBOARD_LOCK: Mutex<()> = Mutex::new(());
+
+    struct RestoreClipboardGuard(Option<String>);
+
+    impl Drop for RestoreClipboardGuard {
+        fn drop(&mut self) {
+            if let Some(prev) = self.0.as_deref() {
+                let _ = WindowsClipboard.write_text(prev);
+            }
+        }
+    }
 
     #[test]
-    fn windows_clipboard_read_and_vk_resolution_work_live() {
+    fn pending_keyups_tracks_only_pressed_keys_from_partial_send() {
+        assert!(pending_keyups_after_partial_send(0, VK_V).is_empty());
+        assert_eq!(pending_keyups_after_partial_send(1, VK_V), vec![VK_CONTROL]);
+        assert_eq!(
+            pending_keyups_after_partial_send(2, VK_V),
+            vec![VK_V, VK_CONTROL]
+        );
+        assert_eq!(pending_keyups_after_partial_send(3, VK_V), vec![VK_CONTROL]);
+        assert!(pending_keyups_after_partial_send(4, VK_V).is_empty());
+    }
+
+    #[test]
+    fn windows_clipboard_read_write_and_vk_resolution_work_live() {
+        let _guard = LIVE_CLIPBOARD_LOCK.lock().unwrap();
         let clipboard = WindowsClipboard;
+        let previous = clipboard.read_text().ok().flatten();
+        let _restore = RestoreClipboardGuard(previous);
+
         // Tolerate transient external clipboard contention on shared runners while verifying
         // neither `read_text` nor `read_text_once` returns `Unavailable`.
         assert!(matches!(
@@ -277,6 +391,19 @@ mod tests {
             clipboard.read_text_once(),
             Ok(_) | Err(PlatformError::Clipboard(_))
         ));
+
+        // Verify window-owned write succeeds and persists after the owner window is destroyed.
+        let probe = "pulsescribe-win-clipboard-üöäß-✓";
+        clipboard
+            .write_text(probe)
+            .expect("window-owned Windows clipboard write should succeed");
+        assert_eq!(
+            clipboard
+                .read_text()
+                .expect("Windows clipboard read after write should succeed")
+                .as_deref(),
+            Some(probe)
+        );
         assert_ne!(resolve_paste_vk().0, 0);
     }
 }

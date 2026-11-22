@@ -10,15 +10,20 @@
 
 use std::cell::RefCell;
 use std::collections::HashSet;
+use std::ffi::c_void;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread::{self, JoinHandle};
 
 use pulsescribe_core::hotkey::{normalize_windows_hotkey, windows_hotkeys_conflict};
-use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{
+    GetLastError, SetLastError, HANDLE, LPARAM, LRESULT, NO_ERROR, WPARAM,
+};
 use windows::Win32::System::StationsAndDesktops::{
-    CloseDesktop, OpenInputDesktop, DESKTOP_CONTROL_FLAGS, DESKTOP_READOBJECTS,
+    CloseDesktop, GetThreadDesktop, GetUserObjectInformationW, OpenInputDesktop,
+    DESKTOP_ACCESS_FLAGS, DESKTOP_CONTROL_FLAGS, DESKTOP_HOOKCONTROL, DESKTOP_READOBJECTS, HDESK,
+    UOI_NAME,
 };
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -127,24 +132,85 @@ fn vk_from_char(ch: char) -> Option<u16> {
     }
 }
 
-/// Returns `true` when the active input desktop is accessible to this process.
-///
-/// On the UAC secure desktop or lock screen, `OpenInputDesktop` fails with `ERROR_ACCESS_DENIED`
-/// and `GetAsyncKeyState` reports `0` for all keys; callers must treat that state as unavailable
-/// rather than a confirmed key release.
-fn is_input_desktop_accessible() -> bool {
-    #[allow(unsafe_code)]
-    // SAFETY: `OpenInputDesktop` returns an owned `HDESK` immediately released by `CloseDesktop`.
-    match unsafe { OpenInputDesktop(DESKTOP_CONTROL_FLAGS(0), false, DESKTOP_READOBJECTS) } {
-        Ok(hdesk) => {
+struct OwnedDesktop(HDESK);
+
+impl Drop for OwnedDesktop {
+    fn drop(&mut self) {
+        if !self.0.is_invalid() {
             #[allow(unsafe_code)]
-            // SAFETY: `hdesk` was returned by `OpenInputDesktop` above and is closed once.
+            // SAFETY: `self.0` is an owned desktop handle returned by `OpenInputDesktop` /
+            // `CreateDesktopW` and is closed exactly once.
             unsafe {
-                let _ = CloseDesktop(hdesk);
+                let _ = CloseDesktop(self.0);
             }
-            true
         }
-        Err(_) => false,
+    }
+}
+
+fn desktop_name(hdesk: HDESK) -> Option<Vec<u16>> {
+    let mut needed_bytes = 0u32;
+    #[allow(unsafe_code)]
+    // SAFETY: Passing `None`/`0` queries the required buffer size into `needed_bytes`.
+    let _ = unsafe {
+        GetUserObjectInformationW(HANDLE(hdesk.0), UOI_NAME, None, 0, Some(&mut needed_bytes))
+    };
+    if !(2..=4096).contains(&needed_bytes) {
+        return None;
+    }
+
+    let mut buf = vec![0u16; (needed_bytes as usize).div_ceil(2)];
+    let mut written_bytes = 0u32;
+    #[allow(unsafe_code)]
+    // SAFETY: `buf` is writable for `buf.len() * 2` bytes matching `nlength`.
+    unsafe {
+        GetUserObjectInformationW(
+            HANDLE(hdesk.0),
+            UOI_NAME,
+            Some(buf.as_mut_ptr().cast::<c_void>()),
+            (buf.len() * 2) as u32,
+            Some(&mut written_bytes),
+        )
+    }
+    .ok()?;
+
+    let units = ((written_bytes as usize) / 2).min(buf.len());
+    buf.truncate(units);
+    while buf.last() == Some(&0) {
+        buf.pop();
+    }
+    (!buf.is_empty()).then_some(buf)
+}
+
+/// Returns `true` only when the calling thread's desktop matches the active input desktop and
+/// grants `DESKTOP_READOBJECTS | DESKTOP_HOOKCONTROL`.
+///
+/// On the UAC secure desktop, lock screen, or an accessible alternate desktop, `GetAsyncKeyState`
+/// returns `0` for all keys; callers must treat that state as unavailable rather than a confirmed
+/// key release.
+fn is_hook_thread_on_input_desktop() -> bool {
+    #[allow(unsafe_code)]
+    // SAFETY: `OpenInputDesktop` returns an owned `HDESK` released by `OwnedDesktop::drop`.
+    let Ok(input_desk) = (unsafe {
+        OpenInputDesktop(
+            DESKTOP_CONTROL_FLAGS(0),
+            false,
+            DESKTOP_ACCESS_FLAGS(DESKTOP_READOBJECTS.0 | DESKTOP_HOOKCONTROL.0),
+        )
+    })
+    .map(OwnedDesktop) else {
+        return false;
+    };
+
+    #[allow(unsafe_code)]
+    // SAFETY: `GetThreadDesktop` returns a system-owned handle for the current thread (must not be
+    // closed by caller).
+    let Ok(thread_desk) = (unsafe { GetThreadDesktop(GetCurrentThreadId()) }) else {
+        return false;
+    };
+
+    match (desktop_name(input_desk.0), desktop_name(thread_desk)) {
+        (Some(input_name), Some(thread_name)) => input_name == thread_name,
+        _ => false,
     }
 }
 
@@ -153,15 +219,25 @@ fn query_vk_state_with_desktop_check(
     vk: u16,
 ) -> Option<bool> {
     #[allow(unsafe_code)]
-    // SAFETY: `GetAsyncKeyState` is a thread-safe Win32 key-state query.
-    let state = unsafe { GetAsyncKeyState(i32::from(vk)) };
+    // SAFETY: `SetLastError`, `GetAsyncKeyState`, and `GetLastError` are thread-safe Win32 calls.
+    let (state, last_err) = unsafe {
+        SetLastError(NO_ERROR);
+        let state = GetAsyncKeyState(i32::from(vk));
+        let err = GetLastError();
+        (state, err)
+    };
     if (state as u16 & 0x8000) != 0 {
         return Some(true);
     }
-    // Only query `OpenInputDesktop` when `GetAsyncKeyState` reports not-down, avoiding desktop
-    // handle syscalls on the hot path while still distinguishing secure-desktop isolation.
-    let accessible = *desktop_accessible.get_or_insert_with(is_input_desktop_accessible);
-    if accessible {
+    // Treat `0` with a Win32 error (e.g. UIPI / desktop access failure) as unavailable rather than
+    // a confirmed key release.
+    if state == 0 && last_err != NO_ERROR {
+        return None;
+    }
+    // Only compare input vs. thread desktop when `GetAsyncKeyState` reports not-down, avoiding
+    // desktop handle syscalls on the hot path while rejecting secure and alternate desktops.
+    let on_input_desktop = *desktop_accessible.get_or_insert_with(is_hook_thread_on_input_desktop);
+    if on_input_desktop {
         Some(false)
     } else {
         None
@@ -752,5 +828,95 @@ mod tests {
             .register(&binding, Arc::new(|_| {}))
             .expect("WH_KEYBOARD_LL registration should succeed on Windows");
         handle.unregister().unwrap();
+    }
+
+    #[test]
+    fn alternate_desktop_thread_treats_key_state_as_unavailable() {
+        use windows::core::PCWSTR;
+        use windows::Win32::System::StationsAndDesktops::{
+            CreateDesktopW, SetThreadDesktop, DESKTOP_CREATEWINDOW, DESKTOP_WRITEOBJECTS,
+        };
+
+        // On the active interactive desktop, desktop verification succeeds and an unpressed key
+        // (`VK_F24`) resolves to `Some(false)` rather than `None`.
+        assert!(is_hook_thread_on_input_desktop());
+        let mut on_active = None;
+        assert_eq!(
+            query_vk_state_with_desktop_check(&mut on_active, 0x87),
+            Some(false)
+        );
+        assert_eq!(on_active, Some(true));
+
+        struct RestoreThreadDesktopGuard(HDESK);
+        impl Drop for RestoreThreadDesktopGuard {
+            fn drop(&mut self) {
+                #[allow(unsafe_code)]
+                // SAFETY: `self.0` is the calling thread's original desktop handle.
+                unsafe {
+                    let _ = SetThreadDesktop(self.0);
+                }
+            }
+        }
+
+        // Attach a fresh thread (no windows/hooks) to an accessible alternate desktop without
+        // calling `SwitchDesktop`: `OpenInputDesktop` still succeeds, yet the thread's desktop
+        // differs from the active input desktop so key-state queries must return `None`.
+        thread::spawn(|| {
+            #[allow(unsafe_code)]
+            // SAFETY: `GetThreadDesktop` returns a system-owned handle for this thread.
+            let orig_desk = unsafe { GetThreadDesktop(GetCurrentThreadId()) }
+                .expect("original thread desktop should resolve");
+
+            let name: Vec<u16> = format!("pulsescribe_alt_{}", std::process::id())
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+            let access = DESKTOP_READOBJECTS.0
+                | DESKTOP_WRITEOBJECTS.0
+                | DESKTOP_CREATEWINDOW.0
+                | DESKTOP_HOOKCONTROL.0;
+            #[allow(unsafe_code)]
+            // SAFETY: `name` is NUL-terminated UTF-16; returned handle is owned and closed by
+            // `OwnedDesktop::drop` after `_restore` returns this thread to `orig_desk`.
+            let alt_desk = OwnedDesktop(
+                unsafe {
+                    CreateDesktopW(
+                        PCWSTR(name.as_ptr()),
+                        PCWSTR::null(),
+                        None,
+                        DESKTOP_CONTROL_FLAGS(0),
+                        access,
+                        None,
+                    )
+                }
+                .expect("CreateDesktopW should create an accessible alternate desktop"),
+            );
+
+            // Declared after `alt_desk` so `_restore` runs `SetThreadDesktop(orig_desk)` BEFORE
+            // `OwnedDesktop::drop` calls `CloseDesktop(alt_desk)`.
+            let _restore = RestoreThreadDesktopGuard(orig_desk);
+            #[allow(unsafe_code)]
+            // SAFETY: Fresh thread has no windows or hooks; `alt_desk.0` is valid.
+            unsafe { SetThreadDesktop(alt_desk.0) }
+                .expect("SetThreadDesktop should attach thread to alternate desktop");
+
+            // Confirm `OpenInputDesktop` itself still succeeds from the alternate desktop...
+            #[allow(unsafe_code)]
+            // SAFETY: Opened handle is immediately closed via `OwnedDesktop`.
+            let input_desk = OwnedDesktop(
+                unsafe { OpenInputDesktop(DESKTOP_CONTROL_FLAGS(0), false, DESKTOP_READOBJECTS) }
+                    .expect("input desktop should remain accessible"),
+            );
+            drop(input_desk);
+
+            // ...yet desktop identity verification rejects it and key-state queries return `None`
+            // (either via Win32 error code or via the desktop mismatch check).
+            assert!(!is_hook_thread_on_input_desktop());
+            let mut on_alt = None;
+            assert_eq!(query_vk_state_with_desktop_check(&mut on_alt, 0x87), None);
+            assert_ne!(on_alt, Some(true));
+        })
+        .join()
+        .expect("alternate desktop test thread panicked");
     }
 }
