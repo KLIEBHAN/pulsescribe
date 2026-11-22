@@ -33,7 +33,8 @@ use pulsescribe_core::overlay_style::{
 };
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{
-    COLORREF, D2DERR_RECREATE_TARGET, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
+    CloseHandle, COLORREF, D2DERR_RECREATE_TARGET, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, POINT,
+    RECT, SIZE, WAIT_FAILED, WAIT_OBJECT_0, WPARAM,
 };
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_GRADIENT_STOP, D2D1_PIXEL_FORMAT, D2D_RECT_F,
@@ -56,23 +57,25 @@ use windows::Win32::Graphics::DirectWrite::{
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Gdi::{
     CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetMonitorInfoW,
-    MonitorFromPoint, SelectObject, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER,
-    BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ, MONITORINFO,
-    MONITOR_DEFAULTTONEAREST,
+    MonitorFromPoint, MonitorFromWindow, SelectObject, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO,
+    BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ, HMONITOR,
+    MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
 use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Threading::{CreateEventW, SetEvent, INFINITE};
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW,
-    GetWindowLongPtrW, GetWindowRect, IsWindow, KillTimer, LoadCursorW, PostMessageW,
-    PostQuitMessage, RegisterClassExW, SetCursor, SetTimer, SetWindowLongPtrW, SetWindowPos,
-    ShowWindow, SystemParametersInfoW, TranslateMessage, UnregisterClassW, UpdateLayeredWindow,
-    GWLP_USERDATA, GWL_EXSTYLE, HWND_TOPMOST, IDC_ARROW, IDC_HAND, MA_NOACTIVATE, MSG,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetCursorPos,
+    GetWindowLongPtrW, GetWindowRect, IsWindow, KillTimer, LoadCursorW,
+    MsgWaitForMultipleObjectsEx, PeekMessageW, PostQuitMessage, RegisterClassExW, SetCursor,
+    SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, SystemParametersInfoW, TranslateMessage,
+    UnregisterClassW, UpdateLayeredWindow, GWLP_USERDATA, GWL_EXSTYLE, HWND_TOPMOST, IDC_ARROW,
+    IDC_HAND, MA_NOACTIVATE, MSG, MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT,
     SPI_GETCLIENTAREAANIMATION, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE,
-    SW_SHOWNOACTIVATE, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, ULW_ALPHA, WM_APP, WM_DESTROY,
-    WM_DPICHANGED, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_SETCURSOR, WM_TIMER,
-    WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    SW_SHOWNOACTIVATE, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, ULW_ALPHA, WM_DESTROY, WM_DPICHANGED,
+    WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_QUIT, WM_SETCURSOR, WM_SETTINGCHANGE,
+    WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
     WS_EX_TRANSPARENT, WS_POPUP,
 };
 
@@ -84,12 +87,14 @@ use crate::{OverlayHandle, OverlaySink};
 /// Distance above the Windows taskbar work-area edge (in DIPs), matching `ui/overlay_windows.py`.
 const WINDOWS_MARGIN_BOTTOM_DIPS: f64 = 60.0;
 
-const WM_APP_DRAIN: u32 = WM_APP + 1;
 const TIMER_ANIM_ID: usize = 1;
 const TIMER_SHIMMER_ID: usize = 2;
 const TIMER_CLOCK_ID: usize = 3;
+const TIMER_RETRY_PAINT_ID: usize = 4;
 const CLOCK_INTERVAL_MS: u32 = 1000;
 const SHIMMER_INTERVAL_MS: u32 = 1000 / SHIMMER_MAX_FPS;
+const RETRY_PAINT_INTERVAL_MS: u32 = 100;
+const MAX_PAINT_RETRIES: u8 = 20;
 
 static CLASS_SEQ: AtomicIsize = AtomicIsize::new(1);
 
@@ -118,68 +123,103 @@ impl DipRect {
     }
 }
 
-/// Synchronized HWND wrapper ensuring `PostMessageW` never targets a destroyed/recycled window.
-struct SendHwnd(HWND);
+/// Kernel auto-reset event handle used to wake the Win32 UI loop without relying on
+/// `PostMessageW`'s per-thread message queue quota.
+struct WakeEvent(HANDLE);
 
-// SAFETY: Win32 `PostMessageW` is documented thread-safe for posting messages to an `HWND` owned
-// by another thread, and `SharedQueue` synchronizes clearing `SendHwnd` before `DestroyWindow`.
-unsafe impl Send for SendHwnd {}
+// SAFETY: A Win32 event `HANDLE` created via `CreateEventW` is kernel-synchronized and safe to
+// signal (`SetEvent`) and wait on (`MsgWaitForMultipleObjectsEx`) across threads until closed.
+unsafe impl Send for WakeEvent {}
+unsafe impl Sync for WakeEvent {}
+
+impl WakeEvent {
+    fn new() -> Result<Self, String> {
+        let handle = unsafe { CreateEventW(None, false, false, None) }
+            .map_err(|err| format!("CreateEventW failed: {err}"))?;
+        Ok(Self(handle))
+    }
+
+    fn raw(&self) -> HANDLE {
+        self.0
+    }
+
+    fn signal(&self) -> bool {
+        unsafe { SetEvent(self.0) }.is_ok()
+    }
+}
+
+impl Drop for WakeEvent {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CloseHandle(self.0);
+        }
+    }
+}
+
+struct QueueInner {
+    commands: VecDeque<OverlayCommand>,
+    closed: bool,
+    signaled: bool,
+}
 
 struct SharedQueue {
-    commands: Mutex<VecDeque<OverlayCommand>>,
-    hwnd: Mutex<Option<SendHwnd>>,
-    drain_pending: AtomicBool,
+    inner: Mutex<QueueInner>,
+    has_pending: AtomicBool,
+    wake: WakeEvent,
 }
 
 impl SharedQueue {
-    fn new() -> Self {
-        Self {
-            commands: Mutex::new(VecDeque::new()),
-            hwnd: Mutex::new(None),
-            drain_pending: AtomicBool::new(false),
-        }
+    fn new() -> Result<Self, String> {
+        Ok(Self {
+            inner: Mutex::new(QueueInner {
+                commands: VecDeque::new(),
+                closed: false,
+                signaled: false,
+            }),
+            has_pending: AtomicBool::new(false),
+            wake: WakeEvent::new()?,
+        })
     }
 
-    fn set_hwnd(&self, hwnd: HWND) {
-        let mut guard = self.hwnd.lock().unwrap_or_else(|e| e.into_inner());
-        *guard = Some(SendHwnd(hwnd));
+    fn wake_handle(&self) -> HANDLE {
+        self.wake.raw()
     }
 
-    fn clear_hwnd(&self) {
-        let mut guard = self.hwnd.lock().unwrap_or_else(|e| e.into_inner());
-        *guard = None;
+    fn has_pending(&self) -> bool {
+        self.has_pending.load(Ordering::Acquire)
     }
 
     fn push(&self, cmd: OverlayCommand) {
-        {
-            let mut q = self.commands.lock().unwrap_or_else(|e| e.into_inner());
-            if matches!(cmd, OverlayCommand::AudioLevel(_))
-                && matches!(q.back(), Some(OverlayCommand::AudioLevel(_)))
-            {
-                let _ = q.pop_back();
-            }
-            q.push_back(cmd);
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if inner.closed {
+            return;
         }
-        // Coalesce wakeups so a burst never queues duplicate `WM_APP_DRAIN` messages.
-        if !self.drain_pending.swap(true, Ordering::AcqRel) {
-            let guard = self.hwnd.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(target) = guard.as_ref() {
-                unsafe {
-                    if PostMessageW(Some(target.0), WM_APP_DRAIN, WPARAM(0), LPARAM(0)).is_err() {
-                        self.drain_pending.store(false, Ordering::Release);
-                    }
-                }
-            } else {
-                self.drain_pending.store(false, Ordering::Release);
-            }
+        if matches!(cmd, OverlayCommand::AudioLevel(_))
+            && matches!(inner.commands.back(), Some(OverlayCommand::AudioLevel(_)))
+        {
+            let _ = inner.commands.pop_back();
+        }
+        inner.commands.push_back(cmd);
+        self.has_pending.store(true, Ordering::Release);
+        // Coalesce kernel wakeups while signaled; retry automatically if a prior signal failed.
+        if !inner.signaled && self.wake.signal() {
+            inner.signaled = true;
         }
     }
 
     fn drain(&self) -> Vec<OverlayCommand> {
-        // Clear `drain_pending` before draining so any concurrent push schedules a fresh wakeup.
-        self.drain_pending.store(false, Ordering::Release);
-        let mut q = self.commands.lock().unwrap_or_else(|e| e.into_inner());
-        q.drain(..).collect()
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        inner.signaled = false;
+        self.has_pending.store(false, Ordering::Release);
+        inner.commands.drain(..).collect()
+    }
+
+    fn close(&self) {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        inner.closed = true;
+        inner.signaled = false;
+        inner.commands.clear();
+        self.has_pending.store(false, Ordering::Release);
     }
 }
 
@@ -195,7 +235,8 @@ impl OverlaySink for WindowsOverlaySink {
 
 /// Native Windows Direct2D/DirectWrite overlay running on a dedicated Win32 message-loop thread.
 ///
-/// Dropping `WindowsOverlay` posts [`OverlayCommand::Shutdown`] and joins the UI thread cleanly.
+/// Dropping `WindowsOverlay` posts [`OverlayCommand::Shutdown`] and joins the UI thread cleanly
+/// (skipping `join` if dropped synchronously from inside an overlay action callback).
 pub struct WindowsOverlay {
     handle: OverlayHandle,
     thread: Option<JoinHandle<()>>,
@@ -206,7 +247,7 @@ impl WindowsOverlay {
     pub fn spawn(
         on_action: impl Fn(OverlayActionEvent) + Send + Sync + 'static,
     ) -> Result<(Self, OverlayHandle), String> {
-        let queue = Arc::new(SharedQueue::new());
+        let queue = Arc::new(SharedQueue::new()?);
         let handle = OverlayHandle::from_sink(Arc::new(WindowsOverlaySink {
             queue: Arc::clone(&queue),
         }));
@@ -249,7 +290,9 @@ impl Drop for WindowsOverlay {
     fn drop(&mut self) {
         self.handle.shutdown();
         if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+            if thread.thread().id() != thread::current().id() {
+                let _ = thread.join();
+            }
         }
     }
 }
@@ -498,6 +541,12 @@ enum DrainOutcome {
     DestroyWindow,
 }
 
+struct PresentedFrameMeta {
+    dpi: u32,
+    settings_hit_rect: Option<DipRect>,
+    dismiss_hit_rect: Option<DipRect>,
+}
+
 struct WindowState {
     hwnd: HWND,
     queue: Arc<SharedQueue>,
@@ -513,6 +562,10 @@ struct WindowState {
     shimmer_timer_active: bool,
     shimmer_origin: Instant,
     clock_timer_active: bool,
+    retry_timer_active: bool,
+    paint_retry_attempts: u8,
+    pending_retry_dpi: Option<u32>,
+    target_needs_recreate: bool,
     is_visible: bool,
     is_interactive: bool,
     settings_hit_rect: Option<DipRect>,
@@ -552,14 +605,15 @@ impl WindowState {
         DrainOutcome::Continue
     }
 
-    /// Stop timers, detach the queue, and hide the window; `DestroyWindow` is called by the caller
-    /// only after the `RefMut<WindowState>` borrow is dropped so `WM_NCDESTROY` never aliases.
+    /// Stop timers, close and drain the queue, and hide the window; `DestroyWindow` is called by
+    /// the caller only after the `RefMut<WindowState>` borrow is dropped so `WM_NCDESTROY` never
+    /// aliases.
     fn prepare_shutdown(&mut self) {
         if self.shutting_down {
             return;
         }
         self.shutting_down = true;
-        self.queue.clear_hwnd();
+        self.queue.close();
         self.stop_all_timers();
         unsafe {
             let _ = ShowWindow(self.hwnd, SW_HIDE);
@@ -588,18 +642,11 @@ impl WindowState {
             self.shimmer_origin = now;
         }
 
-        self.set_interactive(snap.interactive);
         self.sync_anim_timer(snap.timer_mode);
         self.sync_shimmer_timer(snap.shimmer.is_some() && self.animations_enabled);
         self.sync_clock_timer(snap.clock_active);
 
-        self.paint_snapshot(&snap, now, None);
-        if !self.is_visible {
-            unsafe {
-                let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
-            }
-            self.is_visible = true;
-        }
+        self.paint_and_present(&snap, now, None, true);
         self.last_snapshot = Some(snap);
     }
 
@@ -611,18 +658,22 @@ impl WindowState {
         let now = Instant::now();
         match timer_id {
             TIMER_ANIM_ID => {
+                if !self.animations_enabled {
+                    self.sync_anim_timer(OverlayTimerMode::Stopped);
+                    return;
+                }
                 let tick = self.model.tick_animation(now);
                 self.sync_anim_timer(tick.timer_mode);
                 if tick.any_bar_changed {
                     let snap = self.model.snapshot(now);
-                    self.paint_snapshot(&snap, now, None);
+                    self.paint_and_present(&snap, now, None, false);
                     self.last_snapshot = Some(snap);
                 }
             }
             TIMER_SHIMMER_ID => {
                 if let Some(snap) = self.last_snapshot.clone() {
                     if snap.visible && snap.shimmer.is_some() && self.animations_enabled {
-                        self.paint_snapshot(&snap, now, None);
+                        self.paint_and_present(&snap, now, None, false);
                     } else {
                         self.sync_shimmer_timer(false);
                     }
@@ -633,10 +684,27 @@ impl WindowState {
             TIMER_CLOCK_ID => {
                 if self.model.recording_clock_text(now).is_some() {
                     let snap = self.model.snapshot(now);
-                    self.paint_snapshot(&snap, now, None);
+                    self.paint_and_present(&snap, now, None, false);
                     self.last_snapshot = Some(snap);
                 } else {
                     self.sync_clock_timer(false);
+                }
+            }
+            TIMER_RETRY_PAINT_ID => {
+                self.paint_retry_attempts = self.paint_retry_attempts.saturating_add(1);
+                if self.paint_retry_attempts > MAX_PAINT_RETRIES {
+                    self.cancel_paint_retry();
+                    return;
+                }
+                let retry_dpi = self.pending_retry_dpi;
+                if let Some(snap) = self.last_snapshot.clone() {
+                    if snap.visible {
+                        self.paint_and_present(&snap, now, retry_dpi, false);
+                    } else {
+                        self.cancel_paint_retry();
+                    }
+                } else {
+                    self.cancel_paint_retry();
                 }
             }
             _ => {}
@@ -644,15 +712,43 @@ impl WindowState {
     }
 
     fn on_dpi_changed(&mut self, new_dpi: u32) {
-        if self.shutting_down || !self.is_visible {
+        if self.shutting_down || (!self.is_visible && !self.retry_timer_active) {
             return;
         }
         if let Some(snap) = self.last_snapshot.clone() {
-            self.paint_snapshot(&snap, Instant::now(), Some(new_dpi.max(96)));
+            if snap.visible {
+                self.paint_and_present(&snap, Instant::now(), Some(new_dpi.max(96)), true);
+            }
         }
     }
 
-    /// Resolve a left click and return `(callback, event)` to invoke AFTER dropping `RefMut`.
+    fn on_setting_change(&mut self) {
+        if self.shutting_down {
+            return;
+        }
+        let next = windows_animations_enabled();
+        if next == self.animations_enabled {
+            return;
+        }
+        self.animations_enabled = next;
+        let now = Instant::now();
+        if let Some(snap) = self.last_snapshot.clone() {
+            if snap.visible {
+                if next && snap.shimmer.is_some() {
+                    self.shimmer_origin = now;
+                }
+                self.sync_anim_timer(snap.timer_mode);
+                self.sync_shimmer_timer(snap.shimmer.is_some() && self.animations_enabled);
+                if self.is_visible || self.retry_timer_active {
+                    self.paint_and_present(&snap, now, None, true);
+                }
+            }
+        }
+    }
+
+    /// Resolve a left click, synchronously dismiss the currently displayed pill (never racing
+    /// with a newer `ApplyState` waiting in the queue), and return `(callback, event)` to invoke
+    /// AFTER dropping `RefMut`.
     fn on_left_click(
         &mut self,
         client_x_px: i32,
@@ -673,11 +769,15 @@ impl WindowState {
             None
         }?;
 
-        // Disarm interactivity immediately so a fast double-click cannot emit twice before drain.
-        self.settings_hit_rect = None;
-        self.dismiss_hit_rect = None;
-        self.set_interactive(false);
-        self.queue.push(OverlayCommand::Dismiss);
+        let now = Instant::now();
+        if self.model.apply_command_mut(OverlayCommand::Dismiss, now) {
+            let snap = self.model.snapshot(now);
+            self.apply_snapshot(snap, now);
+        } else {
+            self.settings_hit_rect = None;
+            self.dismiss_hit_rect = None;
+            self.set_interactive(false);
+        }
         Some((Arc::clone(&self.on_action), event))
     }
 
@@ -726,19 +826,24 @@ impl WindowState {
     }
 
     fn sync_anim_timer(&mut self, mode: OverlayTimerMode) {
-        if self.anim_timer_mode == mode {
+        let effective = if self.animations_enabled {
+            mode
+        } else {
+            OverlayTimerMode::Stopped
+        };
+        if self.anim_timer_mode == effective {
             return;
         }
         if self.anim_timer_mode != OverlayTimerMode::Stopped {
             unsafe {
                 let _ = KillTimer(Some(self.hwnd), TIMER_ANIM_ID);
             }
+            self.anim_timer_mode = OverlayTimerMode::Stopped;
         }
-        self.anim_timer_mode = mode;
-        if let Some(interval) = mode.interval() {
+        if let Some(interval) = effective.interval() {
             let ms = (interval.as_millis() as u32).max(1);
-            unsafe {
-                let _ = SetTimer(Some(self.hwnd), TIMER_ANIM_ID, ms, None);
+            if unsafe { SetTimer(Some(self.hwnd), TIMER_ANIM_ID, ms, None) } != 0 {
+                self.anim_timer_mode = effective;
             }
         }
     }
@@ -747,12 +852,14 @@ impl WindowState {
         if self.shimmer_timer_active == active {
             return;
         }
-        self.shimmer_timer_active = active;
         unsafe {
             if active {
-                let _ = SetTimer(Some(self.hwnd), TIMER_SHIMMER_ID, SHIMMER_INTERVAL_MS, None);
+                if SetTimer(Some(self.hwnd), TIMER_SHIMMER_ID, SHIMMER_INTERVAL_MS, None) != 0 {
+                    self.shimmer_timer_active = true;
+                }
             } else {
                 let _ = KillTimer(Some(self.hwnd), TIMER_SHIMMER_ID);
+                self.shimmer_timer_active = false;
             }
         }
     }
@@ -761,27 +868,114 @@ impl WindowState {
         if self.clock_timer_active == active {
             return;
         }
-        self.clock_timer_active = active;
         unsafe {
             if active {
-                let _ = SetTimer(Some(self.hwnd), TIMER_CLOCK_ID, CLOCK_INTERVAL_MS, None);
+                if SetTimer(Some(self.hwnd), TIMER_CLOCK_ID, CLOCK_INTERVAL_MS, None) != 0 {
+                    self.clock_timer_active = true;
+                }
             } else {
                 let _ = KillTimer(Some(self.hwnd), TIMER_CLOCK_ID);
+                self.clock_timer_active = false;
             }
         }
+    }
+
+    fn schedule_paint_retry(&mut self, dpi_override: Option<u32>, reset_budget: bool) {
+        if self.shutting_down {
+            return;
+        }
+        if reset_budget {
+            self.paint_retry_attempts = 0;
+        }
+        if self.paint_retry_attempts >= MAX_PAINT_RETRIES {
+            self.cancel_paint_retry();
+            return;
+        }
+        self.pending_retry_dpi = dpi_override;
+        if !self.retry_timer_active
+            && unsafe {
+                SetTimer(
+                    Some(self.hwnd),
+                    TIMER_RETRY_PAINT_ID,
+                    RETRY_PAINT_INTERVAL_MS,
+                    None,
+                )
+            } != 0
+        {
+            self.retry_timer_active = true;
+        }
+    }
+
+    fn cancel_paint_retry(&mut self) {
+        if self.retry_timer_active {
+            unsafe {
+                let _ = KillTimer(Some(self.hwnd), TIMER_RETRY_PAINT_ID);
+            }
+            self.retry_timer_active = false;
+        }
+        self.paint_retry_attempts = 0;
+        self.pending_retry_dpi = None;
     }
 
     fn stop_all_timers(&mut self) {
         self.sync_anim_timer(OverlayTimerMode::Stopped);
         self.sync_shimmer_timer(false);
         self.sync_clock_timer(false);
+        self.cancel_paint_retry();
     }
 
-    fn paint_snapshot(&mut self, snap: &OverlaySnapshot, now: Instant, dpi_override: Option<u32>) {
-        // Retry once if Direct2D reports `D2DERR_RECREATE_TARGET` (GPU TDR / RDP / display change).
-        if let Err(needs_recreate) = self.try_paint_snapshot(snap, now, dpi_override) {
-            if needs_recreate && self.d2d.recreate_target() {
-                let _ = self.try_paint_snapshot(snap, now, dpi_override);
+    /// Render and present a snapshot, staging hit-test/DPI/visibility state until
+    /// `UpdateLayeredWindow` succeeds. Recovers immediately on `D2DERR_RECREATE_TARGET`, and
+    /// schedules a bounded retry timer only if immediate recovery or presentation fails.
+    fn paint_and_present(
+        &mut self,
+        snap: &OverlaySnapshot,
+        now: Instant,
+        dpi_override: Option<u32>,
+        reset_retry_budget: bool,
+    ) {
+        if self.target_needs_recreate {
+            if self.d2d.recreate_target() {
+                self.target_needs_recreate = false;
+            } else {
+                self.schedule_paint_retry(dpi_override, reset_retry_budget);
+                return;
+            }
+        }
+
+        let result = match self.try_paint_snapshot(snap, now, dpi_override) {
+            Ok(meta) => Ok(meta),
+            Err(true) => {
+                if self.d2d.recreate_target() {
+                    self.target_needs_recreate = false;
+                    self.try_paint_snapshot(snap, now, dpi_override)
+                } else {
+                    self.target_needs_recreate = true;
+                    Err(true)
+                }
+            }
+            Err(false) => Err(false),
+        };
+
+        match result {
+            Ok(meta) => {
+                self.cancel_paint_retry();
+                self.last_dpi = meta.dpi;
+                self.settings_hit_rect = meta.settings_hit_rect;
+                self.dismiss_hit_rect = meta.dismiss_hit_rect;
+                self.set_interactive(snap.interactive);
+                if !self.is_visible {
+                    unsafe {
+                        let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
+                    }
+                    self.is_visible = true;
+                }
+            }
+            Err(needs_recreate) => {
+                if needs_recreate {
+                    self.target_needs_recreate = true;
+                }
+                self.schedule_paint_retry(dpi_override, reset_retry_budget);
             }
         }
     }
@@ -791,10 +985,11 @@ impl WindowState {
         snap: &OverlaySnapshot,
         now: Instant,
         dpi_override: Option<u32>,
-    ) -> Result<(), bool> {
-        let (work_rect, monitor_dpi) = active_monitor_work_rect_and_dpi(self.hwnd);
-        let dpi = dpi_override.unwrap_or(monitor_dpi).max(96);
-        self.last_dpi = dpi;
+    ) -> Result<PresentedFrameMeta, bool> {
+        let (work_rect, dpi) = match dpi_override {
+            Some(window_dpi) => (window_monitor_work_rect(self.hwnd), window_dpi.max(96)),
+            None => active_monitor_work_rect_and_dpi(self.hwnd),
+        };
         let scale = dpi as f32 / 96.0;
         let screen_width_dips =
             ((work_rect.right - work_rect.left).max(400) as f64) / f64::from(scale);
@@ -994,7 +1189,7 @@ impl WindowState {
             }
 
             // 4. Right-aligned meta label or clickable underlined "Settings" link.
-            self.settings_hit_rect = None;
+            let mut staged_settings_hit_rect = None;
             if let Some(meta_x) = layout.meta_x {
                 if !meta_text.is_empty() {
                     let rect = D2D_RECT_F {
@@ -1020,7 +1215,7 @@ impl WindowState {
                         show_settings,
                     );
                     if show_settings {
-                        self.settings_hit_rect = Some(
+                        staged_settings_hit_rect = Some(
                             DipRect {
                                 left: rect.left,
                                 top: rect.top,
@@ -1034,7 +1229,7 @@ impl WindowState {
             }
 
             // 5. Optional clickable "×" dismiss button.
-            self.dismiss_hit_rect = None;
+            let mut staged_dismiss_hit_rect = None;
             if let Some(dismiss_x) = layout.dismiss_x {
                 let rect = D2D_RECT_F {
                     left: dismiss_x as f32,
@@ -1053,7 +1248,7 @@ impl WindowState {
                     MUTED_TEXT_COLOR,
                     false,
                 );
-                self.dismiss_hit_rect = Some(
+                staged_dismiss_hit_rect = Some(
                     DipRect {
                         left: rect.left,
                         top: rect.top,
@@ -1067,27 +1262,25 @@ impl WindowState {
             if let Err(err) = target.EndDraw(None, None) {
                 return Err(err.code() == D2DERR_RECREATE_TARGET);
             }
-        }
 
-        // 6. Commit per-pixel alpha bitmap positioned above the destination monitor's taskbar.
-        let dst_x = work_rect.left + ((work_rect.right - work_rect.left) - width_px) / 2;
-        let margin_px = (WINDOWS_MARGIN_BOTTOM_DIPS * f64::from(scale)).round() as i32;
-        let dst_y = work_rect.bottom - height_px - margin_px;
-        let dst_pt = POINT { x: dst_x, y: dst_y };
-        let src_pt = POINT { x: 0, y: 0 };
-        let win_size = SIZE {
-            cx: width_px,
-            cy: height_px,
-        };
-        let blend = BLENDFUNCTION {
-            BlendOp: AC_SRC_OVER as u8,
-            BlendFlags: 0,
-            SourceConstantAlpha: 255,
-            AlphaFormat: AC_SRC_ALPHA as u8,
-        };
+            // 6. Commit per-pixel alpha bitmap positioned above the destination monitor's taskbar.
+            let dst_x = work_rect.left + ((work_rect.right - work_rect.left) - width_px) / 2;
+            let margin_px = (WINDOWS_MARGIN_BOTTOM_DIPS * f64::from(scale)).round() as i32;
+            let dst_y = work_rect.bottom - height_px - margin_px;
+            let dst_pt = POINT { x: dst_x, y: dst_y };
+            let src_pt = POINT { x: 0, y: 0 };
+            let win_size = SIZE {
+                cx: width_px,
+                cy: height_px,
+            };
+            let blend = BLENDFUNCTION {
+                BlendOp: AC_SRC_OVER as u8,
+                BlendFlags: 0,
+                SourceConstantAlpha: 255,
+                AlphaFormat: AC_SRC_ALPHA as u8,
+            };
 
-        unsafe {
-            let _ = UpdateLayeredWindow(
+            UpdateLayeredWindow(
                 self.hwnd,
                 None,
                 Some(&dst_pt),
@@ -1097,9 +1290,15 @@ impl WindowState {
                 COLORREF(0),
                 Some(&blend),
                 ULW_ALPHA,
-            );
+            )
+            .map_err(|_| false)?;
+
+            Ok(PresentedFrameMeta {
+                dpi,
+                settings_hit_rect: staged_settings_hit_rect,
+                dismiss_hit_rect: staged_dismiss_hit_rect,
+            })
         }
-        Ok(())
     }
 }
 
@@ -1346,6 +1545,28 @@ fn create_text_format(
     Ok(fmt)
 }
 
+fn monitor_work_rect(monitor: HMONITOR) -> RECT {
+    let mut info = MONITORINFO {
+        cbSize: size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    if unsafe { GetMonitorInfoW(monitor, &mut info) }.as_bool() {
+        info.rcWork
+    } else {
+        RECT {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        }
+    }
+}
+
+fn window_monitor_work_rect(hwnd: HWND) -> RECT {
+    let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+    monitor_work_rect(monitor)
+}
+
 fn active_monitor_work_rect_and_dpi(fallback_hwnd: HWND) -> (RECT, u32) {
     let mut pt = POINT::default();
     unsafe {
@@ -1365,22 +1586,7 @@ fn active_monitor_work_rect_and_dpi(fallback_hwnd: HWND) -> (RECT, u32) {
                 96
             }
         };
-        let mut info = MONITORINFO {
-            cbSize: size_of::<MONITORINFO>() as u32,
-            ..Default::default()
-        };
-        if GetMonitorInfoW(monitor, &mut info).as_bool() {
-            return (info.rcWork, dpi);
-        }
-        (
-            RECT {
-                left: 0,
-                top: 0,
-                right: 1920,
-                bottom: 1080,
-            },
-            dpi,
-        )
+        (monitor_work_rect(monitor), dpi)
     }
 }
 
@@ -1419,6 +1625,7 @@ fn run_win32_overlay_thread(
     let _com = match ComGuard::init() {
         Ok(guard) => guard,
         Err(err) => {
+            queue.close();
             let _ = ready_tx.send(Err(err));
             return;
         }
@@ -1427,6 +1634,7 @@ fn run_win32_overlay_thread(
     let d2d = match D2dResources::new() {
         Ok(res) => res,
         Err(err) => {
+            queue.close();
             let _ = ready_tx.send(Err(err));
             return;
         }
@@ -1435,6 +1643,7 @@ fn run_win32_overlay_thread(
     let hinstance: HINSTANCE = match unsafe { GetModuleHandleW(None) } {
         Ok(h) => h.into(),
         Err(err) => {
+            queue.close();
             let _ = ready_tx.send(Err(format!("GetModuleHandleW failed: {err}")));
             return;
         }
@@ -1452,6 +1661,7 @@ fn run_win32_overlay_thread(
         ..Default::default()
     };
     if unsafe { RegisterClassExW(&wc) } == 0 {
+        queue.close();
         let _ = ready_tx.send(Err("RegisterClassExW failed".to_owned()));
         return;
     }
@@ -1479,6 +1689,7 @@ fn run_win32_overlay_thread(
             unsafe {
                 let _ = UnregisterClassW(PCWSTR(class_name.as_ptr()), Some(hinstance));
             }
+            queue.close();
             let _ = ready_tx.send(Err(format!("CreateWindowExW failed: {err}")));
             return;
         }
@@ -1508,6 +1719,10 @@ fn run_win32_overlay_thread(
         shimmer_timer_active: false,
         shimmer_origin: now,
         clock_timer_active: false,
+        retry_timer_active: false,
+        paint_retry_attempts: 0,
+        pending_retry_dpi: None,
+        target_needs_recreate: false,
         is_visible: false,
         is_interactive: false,
         settings_hit_rect: None,
@@ -1518,27 +1733,69 @@ fn run_win32_overlay_thread(
     unsafe {
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
     }
-    queue.set_hwnd(hwnd);
 
     let _ = ready_tx.send(Ok(()));
 
-    // Drain any commands pushed right after readiness notification.
-    unsafe {
-        let _ = PostMessageW(Some(hwnd), WM_APP_DRAIN, WPARAM(0), LPARAM(0));
-    }
+    let drain_now = || -> bool {
+        let outcome = state
+            .try_borrow_mut()
+            .map(|mut st| st.drain_and_apply())
+            .unwrap_or(DrainOutcome::Continue);
+        // `RefMut<WindowState>` is strictly dropped BEFORE `DestroyWindow` triggers `WM_NCDESTROY`.
+        if matches!(outcome, DrainOutcome::DestroyWindow) {
+            unsafe {
+                let _ = DestroyWindow(hwnd);
+            }
+            return true;
+        }
+        false
+    };
 
+    let handles = [queue.wake_handle()];
     let mut msg = MSG::default();
-    // `GetMessageW` returns `> 0` for normal messages, `0` for `WM_QUIT`, and `-1` on error.
-    while unsafe { GetMessageW(&mut msg, None, 0, 0) }.0 > 0 {
-        unsafe {
-            let _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
+    let mut should_exit = drain_now();
+
+    while !should_exit {
+        // 1. Dispatch all pending Win32 messages before sleeping.
+        while unsafe { PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE) }.as_bool() {
+            if msg.message == WM_QUIT {
+                should_exit = true;
+                break;
+            }
+            unsafe {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+            if queue.has_pending() && drain_now() {
+                should_exit = true;
+                break;
+            }
+        }
+        if should_exit {
+            break;
+        }
+
+        // 2. Drain any overlay commands queued while messages were processed.
+        if drain_now() {
+            break;
+        }
+
+        // 3. Block at 0% CPU until either the queue event signals or a Win32 message arrives.
+        let wait = unsafe {
+            MsgWaitForMultipleObjectsEx(Some(&handles), INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE)
+        };
+        if wait == WAIT_OBJECT_0 {
+            if drain_now() {
+                break;
+            }
+        } else if wait == WAIT_FAILED {
+            break;
         }
     }
 
-    queue.clear_hwnd();
+    queue.close();
     // Ensure window destruction (and synchronous `WM_NCDESTROY` Box reclamation) runs even if the
-    // loop exited due to an external `WM_QUIT` or `GetMessageW == -1`.
+    // loop exited due to an external `WM_QUIT` or `WAIT_FAILED`.
     if unsafe { IsWindow(Some(hwnd)) }.as_bool() {
         if let Ok(mut st) = state.try_borrow_mut() {
             st.prepare_shutdown();
@@ -1565,18 +1822,6 @@ unsafe extern "system" fn overlay_wnd_proc(
     let raw = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Rc<RefCell<WindowState>>;
     match msg {
         WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
-        WM_APP_DRAIN => {
-            let outcome = raw
-                .as_ref()
-                .and_then(|rc| rc.try_borrow_mut().ok())
-                .map(|mut state| state.drain_and_apply())
-                .unwrap_or(DrainOutcome::Continue);
-            // `RefMut<WindowState>` is strictly dropped BEFORE `DestroyWindow` triggers `WM_NCDESTROY`.
-            if matches!(outcome, DrainOutcome::DestroyWindow) {
-                let _ = DestroyWindow(hwnd);
-            }
-            LRESULT(0)
-        }
         WM_TIMER => {
             if let Some(rc) = raw.as_ref() {
                 if let Ok(mut state) = rc.try_borrow_mut() {
@@ -1594,6 +1839,14 @@ unsafe extern "system" fn overlay_wnd_proc(
             }
             LRESULT(0)
         }
+        WM_SETTINGCHANGE => {
+            if let Some(rc) = raw.as_ref() {
+                if let Ok(mut state) = rc.try_borrow_mut() {
+                    state.on_setting_change();
+                }
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
         WM_LBUTTONUP => {
             let pending_action = raw.as_ref().and_then(|rc| {
                 let mut state = rc.try_borrow_mut().ok()?;
@@ -1601,9 +1854,12 @@ unsafe extern "system" fn overlay_wnd_proc(
                 let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as i32;
                 state.on_left_click(x, y)
             });
-            // Invoke external callback strictly AFTER `RefMut<WindowState>` is dropped.
+            // Invoke external callback strictly AFTER `RefMut<WindowState>` is dropped, and contain
+            // any unwinding panic so it can never cross the `extern "system"` Win32 boundary.
             if let Some((cb, ev)) = pending_action {
-                cb(ev);
+                if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cb(ev))).is_err() {
+                    eprintln!("pulsescribe-overlay: action callback panicked");
+                }
             }
             LRESULT(0)
         }
@@ -1646,6 +1902,28 @@ mod tests {
     use std::time::Duration;
 
     use pulsescribe_core::{AppState, DaemonErrorCode, DaemonStatusError};
+
+    #[test]
+    fn shared_queue_coalesces_audio_levels_and_rejects_after_close() {
+        let queue = SharedQueue::new().expect("CreateEventW");
+        queue.push(OverlayCommand::AudioLevel(0.1));
+        queue.push(OverlayCommand::AudioLevel(0.5));
+        queue.push(OverlayCommand::InterimText("hi".to_owned()));
+        assert!(queue.has_pending());
+
+        let drained = queue.drain();
+        assert_eq!(drained.len(), 2);
+        assert!(!queue.has_pending());
+
+        queue.push(OverlayCommand::InterimText("before-close".to_owned()));
+        queue.close();
+        assert!(!queue.has_pending());
+        assert!(queue.drain().is_empty());
+
+        queue.push(OverlayCommand::InterimText("after-close".to_owned()));
+        assert!(!queue.has_pending());
+        assert!(queue.drain().is_empty());
+    }
 
     #[test]
     fn windows_overlay_renders_lifecycle_and_shuts_down_cleanly() {
