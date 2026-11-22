@@ -22,6 +22,12 @@ objc2-core-foundation.workspace = true
 objc2-core-graphics.workspace = true
 objc2-foundation.workspace = true
 
+[target.'cfg(target_os = "windows")'.dependencies]
+windows.workspace = true
+
+[target.'cfg(target_os = "windows")'.dev-dependencies]
+windows = { workspace = true, features = ["Win32_Graphics_Gdi", "Win32_Security"] }
+
 # Scoped `deny` (instead of workspace `forbid`) so native OS FFI adapters may use
 # targeted `#[allow(unsafe_code)]` blocks with documented `// SAFETY:` invariants.
 [lints.rust]
