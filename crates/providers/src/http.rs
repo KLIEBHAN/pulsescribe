@@ -74,6 +74,25 @@ pub(crate) fn validate_header_secret(label: &str, value: &str) -> Result<(), Pro
     Ok(())
 }
 
+/// Format a URL for `Debug` output with userinfo and query parameters redacted.
+pub(crate) fn redact_url_for_debug(raw: &str) -> String {
+    let Ok(mut url) = Url::parse(raw.trim()) else {
+        return "[INVALID_URL]".to_string();
+    };
+    if !url.username().is_empty() || url.password().is_some() {
+        let _ = url.set_username("REDACTED");
+        let _ = url.set_password(None);
+    }
+    let has_query = url.query().is_some();
+    url.set_query(None);
+    url.set_fragment(None);
+    if has_query {
+        format!("{url}?[REDACTED]")
+    } else {
+        url.into()
+    }
+}
+
 /// Returns `true` when `url` points to a loopback address (`localhost`, `127.0.0.0/8`, `::1`).
 pub(crate) fn is_loopback_url(url: &Url) -> bool {
     match url.host() {
@@ -345,5 +364,18 @@ mod tests {
             validate_header_secret("OPENAI_API_KEY", "sk-bad\r\nX-Evil: 1"),
             Err(ProviderError::InvalidInput(_))
         ));
+    }
+
+    #[test]
+    fn redact_url_for_debug_strips_userinfo_and_query_secrets() {
+        assert_eq!(
+            redact_url_for_debug("wss://api.deepgram.com/v1/listen"),
+            "wss://api.deepgram.com/v1/listen"
+        );
+        assert_eq!(
+            redact_url_for_debug("wss://user:secret@proxy.example:8443/v1/listen?token=abc#frag"),
+            "wss://REDACTED@proxy.example:8443/v1/listen?[REDACTED]"
+        );
+        assert_eq!(redact_url_for_debug("not a url"), "[INVALID_URL]");
     }
 }
