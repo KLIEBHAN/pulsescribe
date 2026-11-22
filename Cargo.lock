@@ -1518,6 +1518,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "pulsescribe-daemon"
+version = "0.1.0"
+dependencies = [
+ "pulsescribe-core",
+ "pulsescribe-platform",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "pulsescribe-platform"
 version = "0.1.0"
 dependencies = [
