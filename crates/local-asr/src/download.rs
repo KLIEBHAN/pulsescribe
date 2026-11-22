@@ -1,15 +1,19 @@
 //! Streaming model weight downloader with byte-level progress, cooperative cancellation,
-//! and atomic `.part` file promotion.
+//! buffered async disk writes, per-model serialization, and atomic `.part` promotion.
 
+use std::collections::HashMap;
 use std::fmt;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncWriteExt, BufWriter};
+use tokio::sync::Mutex as AsyncMutex;
 
 use crate::cache::{verify_all_files_present, InstalledModel, ModelCache, ModelInstallSource};
 use crate::catalog::{
@@ -19,6 +23,10 @@ use crate::LocalAsrError;
 
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(60);
+const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const WRITE_BUFFER_BYTES: usize = 256 * 1024;
+const PROGRESS_EMIT_MIN_INTERVAL: Duration = Duration::from_millis(50);
+const PROGRESS_EMIT_MIN_BYTES: u64 = 64 * 1024;
 
 static PART_FILE_SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -34,11 +42,14 @@ pub struct DownloadProgress {
     pub total_bytes: Option<u64>,
 }
 
+type DownloadLockMap = HashMap<(PathBuf, String), Arc<AsyncMutex<()>>>;
+
 /// Streaming HTTPS downloader for Hugging Face model weights.
 #[derive(Clone)]
 pub struct ModelDownloader {
     client: Client,
     hf_base_url: String,
+    in_flight: Arc<Mutex<DownloadLockMap>>,
 }
 
 impl fmt::Debug for ModelDownloader {
@@ -65,15 +76,19 @@ impl ModelDownloader {
             .read_timeout(DEFAULT_READ_TIMEOUT)
             .user_agent(concat!("pulsescribe/", env!("CARGO_PKG_VERSION")))
             .build()
-            .map_err(|err| LocalAsrError::Download(format!("HTTP client init failed: {err}")))?;
+            .map_err(|_| LocalAsrError::Download("HTTP client initialization failed".to_owned()))?;
         Ok(Self {
             client,
             hf_base_url: base_url.into(),
+            in_flight: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
     /// Ensure all files for `spec` are cached on disk, downloading missing files into
     /// `cache.model_dir(spec)` with progress callbacks and cooperative cancellation.
+    ///
+    /// Concurrent calls for the same `(models_dir, spec.id)` are serialized so duplicate
+    /// downloads cannot race on temporary `.part` renames.
     pub async fn ensure_downloaded<F>(
         &self,
         cache: &ModelCache,
@@ -84,6 +99,14 @@ impl ModelDownloader {
     where
         F: FnMut(DownloadProgress),
     {
+        validate_safe_filename(spec.id)?;
+        if cancel_flag.load(Ordering::Acquire) {
+            return Err(LocalAsrError::Cancelled);
+        }
+
+        let model_lock = self.lock_for(cache.models_dir(), spec.id);
+        let _permit = race_with_cancel(cancel_flag, model_lock.lock()).await?;
+
         let cache_probe = cache.clone();
         let spec_copy = *spec;
         if let Some(installed) =
@@ -93,6 +116,7 @@ impl ModelDownloader {
         {
             return Ok(installed);
         }
+
         if cancel_flag.load(Ordering::Acquire) {
             return Err(LocalAsrError::Cancelled);
         }
@@ -108,11 +132,7 @@ impl ModelDownloader {
             }
 
             let final_path = target_dir.join(filename);
-            if is_non_empty_file(&final_path).await {
-                let len = tokio::fs::metadata(&final_path)
-                    .await
-                    .map(|m| m.len())
-                    .unwrap_or(0);
+            if let Some(len) = existing_regular_file_len(&final_path).await {
                 on_progress(DownloadProgress {
                     model_id: spec.id.to_owned(),
                     file: filename.to_owned(),
@@ -140,16 +160,17 @@ impl ModelDownloader {
 
         let verify_dir = target_dir.clone();
         let files = spec.files;
-        let total_bytes =
-            tokio::task::spawn_blocking(move || verify_all_files_present(&verify_dir, files))
-                .await
-                .map_err(|err| LocalAsrError::Download(format!("verification task failed: {err}")))?
-                .ok_or_else(|| {
-                    LocalAsrError::Download(format!(
-                        "downloaded model '{}' is incomplete on disk",
-                        spec.id
-                    ))
-                })?;
+        let total_bytes = tokio::task::spawn_blocking(move || {
+            verify_all_files_present(&verify_dir, files, false)
+        })
+        .await
+        .map_err(|err| LocalAsrError::Download(format!("verification task failed: {err}")))?
+        .ok_or_else(|| {
+            LocalAsrError::Download(format!(
+                "downloaded model '{}' is incomplete on disk",
+                spec.id
+            ))
+        })?;
 
         Ok(InstalledModel {
             model_id: spec.id.to_owned(),
@@ -157,6 +178,16 @@ impl ModelDownloader {
             source: ModelInstallSource::PulseScribeCache,
             total_bytes,
         })
+    }
+
+    fn lock_for(&self, models_dir: &Path, model_id: &str) -> Arc<AsyncMutex<()>> {
+        let key = (models_dir.to_path_buf(), model_id.to_owned());
+        let mut guard = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
+        Arc::clone(
+            guard
+                .entry(key)
+                .or_insert_with(|| Arc::new(AsyncMutex::new(()))),
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -174,16 +205,15 @@ impl ModelDownloader {
     where
         F: FnMut(DownloadProgress),
     {
-        let response = self.client.get(url).send().await.map_err(|err| {
-            let reason = if err.is_timeout() {
-                "timed out"
-            } else if err.is_connect() {
-                "connection failed"
-            } else {
-                "request failed"
-            };
-            LocalAsrError::Download(format!("{reason} while downloading '{filename}'"))
-        })?;
+        let response = race_with_cancel(cancel_flag, self.client.get(url).send())
+            .await?
+            .map_err(|err| {
+                LocalAsrError::Download(format!(
+                    "{} while downloading '{filename}'",
+                    classify_reqwest_error(&err)
+                ))
+            })?;
+
         let status = response.status();
         if !status.is_success() {
             return Err(LocalAsrError::Download(format!(
@@ -197,9 +227,12 @@ impl ModelDownloader {
             final_path.with_file_name(format!(".{filename}.part.{}.{seq}", std::process::id()));
 
         let mut part_guard = PartFileGuard::new(part_path.clone());
-        let mut file = tokio::fs::File::create(&part_path).await?;
+        let file = tokio::fs::File::create(&part_path).await?;
+        let mut writer = BufWriter::with_capacity(WRITE_BUFFER_BYTES, file);
         let mut stream = response.bytes_stream();
         let mut bytes_downloaded = 0_u64;
+        let mut last_emitted_bytes = 0_u64;
+        let mut last_emitted_at = Instant::now();
 
         on_progress(DownloadProgress {
             model_id: model_id.to_owned(),
@@ -210,61 +243,136 @@ impl ModelDownloader {
             total_bytes,
         });
 
-        while let Some(chunk_res) = stream.next().await {
+        let write_result: Result<(), LocalAsrError> = async {
+            while let Some(chunk_res) = race_with_cancel(cancel_flag, stream.next()).await? {
+                if cancel_flag.load(Ordering::Acquire) {
+                    return Err(LocalAsrError::Cancelled);
+                }
+                let chunk = chunk_res.map_err(|err| {
+                    LocalAsrError::Download(format!(
+                        "stream {} while downloading '{filename}'",
+                        classify_reqwest_error(&err)
+                    ))
+                })?;
+                writer.write_all(&chunk).await?;
+                bytes_downloaded = bytes_downloaded.saturating_add(chunk.len() as u64);
+
+                let finished_expected = total_bytes.is_some_and(|exp| bytes_downloaded >= exp);
+                let enough_bytes =
+                    bytes_downloaded.saturating_sub(last_emitted_bytes) >= PROGRESS_EMIT_MIN_BYTES;
+                let enough_time = last_emitted_at.elapsed() >= PROGRESS_EMIT_MIN_INTERVAL;
+                if finished_expected || enough_bytes || enough_time {
+                    last_emitted_bytes = bytes_downloaded;
+                    last_emitted_at = Instant::now();
+                    on_progress(DownloadProgress {
+                        model_id: model_id.to_owned(),
+                        file: filename.to_owned(),
+                        file_index,
+                        total_files,
+                        bytes_downloaded,
+                        total_bytes,
+                    });
+                }
+            }
+
+            // Re-check cancellation after stream EOF (e.g. set inside the final progress callback).
             if cancel_flag.load(Ordering::Acquire) {
-                drop(file);
-                part_guard.remove_async().await;
                 return Err(LocalAsrError::Cancelled);
             }
-            let chunk = chunk_res.map_err(|err| {
-                LocalAsrError::Download(format!("stream read failed for '{filename}': {err}"))
-            })?;
-            file.write_all(&chunk).await?;
-            bytes_downloaded = bytes_downloaded.saturating_add(chunk.len() as u64);
-            on_progress(DownloadProgress {
-                model_id: model_id.to_owned(),
-                file: filename.to_owned(),
-                file_index,
-                total_files,
-                bytes_downloaded,
-                total_bytes,
-            });
-        }
-
-        if bytes_downloaded == 0 {
-            drop(file);
-            part_guard.remove_async().await;
-            return Err(LocalAsrError::Download(format!(
-                "downloaded '{filename}' was empty"
-            )));
-        }
-        if let Some(expected) = total_bytes {
-            if bytes_downloaded != expected {
-                drop(file);
-                part_guard.remove_async().await;
+            if bytes_downloaded == 0 {
                 return Err(LocalAsrError::Download(format!(
-                    "truncated download for '{filename}' ({bytes_downloaded}/{expected} bytes)"
+                    "downloaded '{filename}' was empty"
                 )));
             }
+            if let Some(expected) = total_bytes {
+                if bytes_downloaded != expected {
+                    return Err(LocalAsrError::Download(format!(
+                        "truncated download for '{filename}' ({bytes_downloaded}/{expected} bytes)"
+                    )));
+                }
+            }
+            if bytes_downloaded != last_emitted_bytes {
+                on_progress(DownloadProgress {
+                    model_id: model_id.to_owned(),
+                    file: filename.to_owned(),
+                    file_index,
+                    total_files,
+                    bytes_downloaded,
+                    total_bytes,
+                });
+                if cancel_flag.load(Ordering::Acquire) {
+                    return Err(LocalAsrError::Cancelled);
+                }
+            }
+
+            writer.flush().await?;
+            Ok(())
+        }
+        .await;
+
+        // Always finish closing the underlying file handle before renaming or removing `.part`.
+        let mut inner_file = writer.into_inner();
+        let shutdown_res = inner_file.shutdown().await;
+        drop(inner_file);
+
+        if let Err(err) = write_result {
+            part_guard.remove_async().await;
+            return Err(err);
+        }
+        if let Err(err) = shutdown_res {
+            part_guard.remove_async().await;
+            return Err(LocalAsrError::Io(err));
         }
 
-        file.flush().await?;
-        drop(file);
-
-        // Windows cannot overwrite an existing file with `tokio::fs::rename`; remove stale target first.
-        if cfg!(windows) && tokio::fs::try_exists(final_path).await.unwrap_or(false) {
-            let _ = tokio::fs::remove_file(final_path).await;
+        // Rust's `rename` uses `ReplaceIfExists` on Windows and atomic `rename(2)` on Unix.
+        if let Err(err) = tokio::fs::rename(&part_path, final_path).await {
+            part_guard.remove_async().await;
+            return Err(LocalAsrError::Io(err));
         }
-        tokio::fs::rename(&part_path, final_path).await?;
         part_guard.disarm();
         Ok(())
     }
 }
 
-async fn is_non_empty_file(path: &Path) -> bool {
-    tokio::fs::metadata(path)
-        .await
-        .is_ok_and(|meta| meta.is_file() && meta.len() > 0)
+fn classify_reqwest_error(err: &reqwest::Error) -> &'static str {
+    if err.is_timeout() {
+        "timed out"
+    } else if err.is_connect() {
+        "connection failed"
+    } else if err.is_body() || err.is_decode() {
+        "read failed"
+    } else {
+        "request failed"
+    }
+}
+
+async fn race_with_cancel<F, T>(cancel_flag: &AtomicBool, fut: F) -> Result<T, LocalAsrError>
+where
+    F: Future<Output = T>,
+{
+    if cancel_flag.load(Ordering::Acquire) {
+        return Err(LocalAsrError::Cancelled);
+    }
+    tokio::pin!(fut);
+    let mut ticker = tokio::time::interval(CANCEL_POLL_INTERVAL);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    ticker.tick().await;
+    loop {
+        tokio::select! {
+            biased;
+            res = &mut fut => return Ok(res),
+            _ = ticker.tick() => {
+                if cancel_flag.load(Ordering::Acquire) {
+                    return Err(LocalAsrError::Cancelled);
+                }
+            }
+        }
+    }
+}
+
+async fn existing_regular_file_len(path: &Path) -> Option<u64> {
+    let meta = tokio::fs::symlink_metadata(path).await.ok()?;
+    (!meta.file_type().is_symlink() && meta.is_file() && meta.len() > 0).then_some(meta.len())
 }
 
 struct PartFileGuard {
@@ -291,8 +399,8 @@ impl Drop for PartFileGuard {
     fn drop(&mut self) {
         if let Some(path) = self.path.take() {
             if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                handle.spawn(async move {
-                    let _ = tokio::fs::remove_file(&path).await;
+                handle.spawn_blocking(move || {
+                    let _ = std::fs::remove_file(&path);
                 });
             } else {
                 let _ = std::fs::remove_file(&path);
@@ -361,7 +469,9 @@ mod tests {
                     let _ = socket.write_all(body).await;
                 } else {
                     let _ = socket
-                        .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                        .write_all(
+                            b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        )
                         .await;
                 }
                 let _ = socket.shutdown().await;
@@ -413,18 +523,44 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn honors_pre_cancelled_flag_and_leaves_no_partial_files() {
+    async fn honors_pre_cancelled_and_final_callback_cancel_without_promoting_or_leaking_parts() {
         let dir = TempDir::new("cancel");
         let cache = ModelCache::new(dir.0.join("models"), None);
         let tiny = resolve_model_spec(Some("tiny")).unwrap();
+
+        // 1. Pre-cancelled.
         let downloader = ModelDownloader::with_base_url("http://127.0.0.1:1").unwrap();
-        let cancel = AtomicBool::new(true);
+        let pre_cancel = AtomicBool::new(true);
+        let err = downloader
+            .ensure_downloaded(&cache, tiny, &pre_cancel, |_| {})
+            .await
+            .unwrap_err();
+        assert!(err.is_cancelled());
+
+        // 2. Cancelled inside final progress callback -> must NOT promote `.part` or leave leftovers.
+        let base_url = spawn_file_server(vec![("ggml-tiny.bin", vec![9_u8; 2048])]).await;
+        let downloader = ModelDownloader::with_base_url(base_url).unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_cb = Arc::clone(&cancel);
 
         let err = downloader
-            .ensure_downloaded(&cache, tiny, &cancel, |_| {})
+            .ensure_downloaded(&cache, tiny, &cancel, move |p| {
+                if p.bytes_downloaded > 0 {
+                    cancel_cb.store(true, Ordering::Release);
+                }
+            })
             .await
             .unwrap_err();
         assert!(err.is_cancelled());
         assert!(cache.find_installed(tiny).is_none());
+
+        let leftovers: Vec<_> = std::fs::read_dir(cache.model_dir(tiny))
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "expected no promoted or .part files after cancel, found {leftovers:?}"
+        );
     }
 }

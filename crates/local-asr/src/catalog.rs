@@ -1,6 +1,8 @@
 //! Curated local ASR model catalog matching ADR-003 and Python's `providers/nemo_model.py`
 //! / `providers/streaming_model.py`.
 
+use std::path::{Component, Path};
+
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -221,17 +223,41 @@ pub fn resolve_model_spec(name: Option<&str>) -> Option<&'static ModelSpec> {
     })
 }
 
-/// Validate that a model filename is a plain relative filename without directory traversal.
+/// Validate that a model identifier, revision, or filename is a single plain path component
+/// without traversal, separators, drive prefixes (`C:`), or NUL bytes.
 pub(crate) fn validate_safe_filename(filename: &str) -> Result<(), LocalAsrError> {
     if filename.is_empty()
         || filename == "."
         || filename == ".."
         || filename.contains('/')
         || filename.contains('\\')
+        || filename.contains(':')
         || filename.contains('\0')
     {
         return Err(LocalAsrError::InvalidModel(format!(
-            "unsafe model filename '{filename}'"
+            "unsafe model path component '{filename}'"
+        )));
+    }
+    let mut components = Path::new(filename).components();
+    match (components.next(), components.next()) {
+        (Some(Component::Normal(_)), None) => Ok(()),
+        _ => Err(LocalAsrError::InvalidModel(format!(
+            "unsafe model path component '{filename}'"
+        ))),
+    }
+}
+
+/// Validate a Hugging Face `org/repo` identifier so every slash-separated segment is a safe
+/// single path component.
+pub(crate) fn validate_hf_repo(hf_repo: &str) -> Result<(), LocalAsrError> {
+    let mut count = 0usize;
+    for part in hf_repo.split('/') {
+        validate_safe_filename(part)?;
+        count += 1;
+    }
+    if count == 0 {
+        return Err(LocalAsrError::InvalidModel(format!(
+            "invalid HF repo '{hf_repo}'"
         )));
     }
     Ok(())
@@ -244,9 +270,11 @@ pub fn build_hf_resolve_url(
     spec: &ModelSpec,
     filename: &str,
 ) -> Result<Url, LocalAsrError> {
+    validate_hf_repo(spec.hf_repo)?;
+    validate_safe_filename(spec.hf_revision)?;
     validate_safe_filename(filename)?;
     let mut url = Url::parse(base_url.trim())
-        .map_err(|err| LocalAsrError::InvalidModel(format!("invalid HF base URL: {err}")))?;
+        .map_err(|_| LocalAsrError::InvalidModel("invalid HF base URL".to_owned()))?;
     if !matches!(url.scheme(), "http" | "https") {
         return Err(LocalAsrError::InvalidModel(
             "HF base URL must use http or https".to_owned(),
@@ -258,12 +286,6 @@ pub fn build_hf_resolve_url(
         })?;
         segments.pop_if_empty();
         for part in spec.hf_repo.split('/') {
-            if part.is_empty() {
-                return Err(LocalAsrError::InvalidModel(format!(
-                    "invalid HF repo '{}'",
-                    spec.hf_repo
-                )));
-            }
             segments.push(part);
         }
         segments.push("resolve");
@@ -311,7 +333,12 @@ mod tests {
             "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/resolve/ed5d745623472f97cfc2e6c2916ee248798fc5a8/encoder.int8.onnx"
         );
         assert!(build_hf_resolve_url(DEFAULT_HF_BASE_URL, parakeet, "../secret").is_err());
+        assert!(build_hf_resolve_url(DEFAULT_HF_BASE_URL, parakeet, "C:evil.bin").is_err());
         assert!(build_hf_resolve_url("file:///etc/passwd", parakeet, "tokens.txt").is_err());
+
+        let mut bad_rev = *parakeet;
+        bad_rev.hf_revision = "..";
+        assert!(build_hf_resolve_url(DEFAULT_HF_BASE_URL, &bad_rev, "tokens.txt").is_err());
     }
 
     #[test]

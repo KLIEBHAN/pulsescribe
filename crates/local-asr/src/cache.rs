@@ -5,12 +5,15 @@
 //! 2. Existing Python/Hugging Face Hub snapshots (`~/.cache/huggingface/hub/models--<org>--<repo>/snapshots/<rev>/`)
 
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
-use pulsescribe_core::paths::AppPaths;
+use pulsescribe_core::paths::{home_dir, AppPaths};
 use serde::{Deserialize, Serialize};
 
-use crate::catalog::{catalog_models, validate_safe_filename, LocalEngineKind, ModelSpec};
+use crate::catalog::{
+    catalog_models, validate_hf_repo, validate_safe_filename, LocalEngineKind, ModelSpec,
+};
 use crate::LocalAsrError;
 
 /// Subdirectory under `~/.pulsescribe` storing Rust-managed local ASR models.
@@ -96,8 +99,11 @@ impl ModelCache {
 
     /// Locate an already-installed copy of `spec` in PulseScribe's cache or Hugging Face's cache.
     pub fn find_installed(&self, spec: &ModelSpec) -> Option<InstalledModel> {
+        if validate_safe_filename(spec.id).is_err() {
+            return None;
+        }
         let managed_dir = self.model_dir(spec);
-        if let Some(total_bytes) = verify_all_files_present(&managed_dir, spec.files) {
+        if let Some(total_bytes) = verify_all_files_present(&managed_dir, spec.files, false) {
             return Some(InstalledModel {
                 model_id: spec.id.to_owned(),
                 dir: managed_dir,
@@ -142,14 +148,36 @@ impl ModelCache {
 
     /// Delete a model from PulseScribe's managed cache (`~/.pulsescribe/models/<id>`).
     ///
-    /// Never modifies or deletes files inside the shared `~/.cache/huggingface/hub/` cache.
+    /// Never modifies or deletes files inside the shared `~/.cache/huggingface/hub/` cache,
+    /// validates `spec.id` against traversal, and unlinks symlinks without recursing into targets.
     pub fn remove_managed(&self, spec: &ModelSpec) -> Result<bool, LocalAsrError> {
+        validate_safe_filename(spec.id)?;
         let target = self.model_dir(spec);
-        if !target.exists() {
-            return Ok(false);
+        let meta = match fs::symlink_metadata(&target) {
+            Ok(meta) => meta,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(err) => return Err(LocalAsrError::Io(err)),
+        };
+
+        let remove_res = if meta.file_type().is_symlink() {
+            match fs::remove_file(&target) {
+                Ok(()) => Ok(()),
+                Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
+                // Windows directory symlinks require `remove_dir` rather than `remove_file`.
+                Err(_) if cfg!(windows) => fs::remove_dir(&target),
+                Err(err) => Err(err),
+            }
+        } else if meta.is_dir() {
+            fs::remove_dir_all(&target)
+        } else {
+            fs::remove_file(&target)
+        };
+
+        match remove_res {
+            Ok(()) => Ok(true),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(err) => Err(LocalAsrError::Io(err)),
         }
-        fs::remove_dir_all(&target)?;
-        Ok(true)
     }
 }
 
@@ -157,22 +185,27 @@ fn default_hf_hub_cache_dir() -> Option<PathBuf> {
     if let Some(explicit) = std::env::var_os("HF_HUB_CACHE").filter(|v| !v.is_empty()) {
         return Some(PathBuf::from(explicit));
     }
+    if let Some(legacy) = std::env::var_os("HUGGINGFACE_HUB_CACHE").filter(|v| !v.is_empty()) {
+        return Some(PathBuf::from(legacy));
+    }
     if let Some(hf_home) = std::env::var_os("HF_HOME").filter(|v| !v.is_empty()) {
         return Some(PathBuf::from(hf_home).join("hub"));
     }
-    let home = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)?;
-    Some(home.join(".cache").join("huggingface").join("hub"))
+    if let Some(xdg) = std::env::var_os("XDG_CACHE_HOME").filter(|v| !v.is_empty()) {
+        return Some(PathBuf::from(xdg).join("huggingface").join("hub"));
+    }
+    Some(home_dir()?.join(".cache").join("huggingface").join("hub"))
 }
 
-fn hf_repo_cache_dir(hf_hub_root: &Path, hf_repo: &str) -> PathBuf {
+fn hf_repo_cache_dir(hf_hub_root: &Path, hf_repo: &str) -> Option<PathBuf> {
+    validate_hf_repo(hf_repo).ok()?;
     let encoded = hf_repo.replace('/', "--");
-    hf_hub_root.join(format!("models--{encoded}"))
+    Some(hf_hub_root.join(format!("models--{encoded}")))
 }
 
 fn find_hf_snapshot(hf_hub_root: &Path, spec: &ModelSpec) -> Option<(PathBuf, u64)> {
-    let repo_dir = hf_repo_cache_dir(hf_hub_root, spec.hf_repo);
+    validate_safe_filename(spec.hf_revision).ok()?;
+    let repo_dir = hf_repo_cache_dir(hf_hub_root, spec.hf_repo)?;
     let snapshots_dir = repo_dir.join("snapshots");
     if !snapshots_dir.is_dir() {
         return None;
@@ -180,20 +213,18 @@ fn find_hf_snapshot(hf_hub_root: &Path, spec: &ModelSpec) -> Option<(PathBuf, u6
 
     // Exact pinned commit revision (e.g. Parakeet/Canary/Nemotron) matches directly.
     let direct = snapshots_dir.join(spec.hf_revision);
-    if let Some(total_bytes) = verify_all_files_present(&direct, spec.files) {
+    if let Some(total_bytes) = verify_all_files_present(&direct, spec.files, true) {
         return Some((direct, total_bytes));
     }
 
     // For branch refs like `"main"`, resolve `refs/<revision>` -> commit hash first.
-    if validate_safe_filename(spec.hf_revision).is_ok() {
-        let ref_file = repo_dir.join("refs").join(spec.hf_revision);
-        if let Ok(commit) = fs::read_to_string(&ref_file) {
-            let trimmed = commit.trim();
-            if validate_safe_filename(trimmed).is_ok() {
-                let pointed = snapshots_dir.join(trimmed);
-                if let Some(total_bytes) = verify_all_files_present(&pointed, spec.files) {
-                    return Some((pointed, total_bytes));
-                }
+    let ref_file = repo_dir.join("refs").join(spec.hf_revision);
+    if let Ok(commit) = fs::read_to_string(&ref_file) {
+        let trimmed = commit.trim();
+        if validate_safe_filename(trimmed).is_ok() {
+            let pointed = snapshots_dir.join(trimmed);
+            if let Some(total_bytes) = verify_all_files_present(&pointed, spec.files, true) {
+                return Some((pointed, total_bytes));
             }
         }
     }
@@ -201,20 +232,38 @@ fn find_hf_snapshot(hf_hub_root: &Path, spec: &ModelSpec) -> Option<(PathBuf, u6
     None
 }
 
-/// Verify that every required file in `files` exists inside `dir`, is a regular file (following
-/// symlinks used by Hugging Face Hub's blob store), and has non-zero size.
-pub(crate) fn verify_all_files_present(dir: &Path, files: &[&str]) -> Option<u64> {
-    if files.is_empty() || !dir.is_dir() {
+/// Verify that every required file in `files` exists inside `dir`, is a regular file (optionally
+/// following symlinks for Hugging Face Hub's blob store), and has non-zero size.
+pub(crate) fn verify_all_files_present(
+    dir: &Path,
+    files: &[&str],
+    follow_symlinks: bool,
+) -> Option<u64> {
+    if files.is_empty() {
         return None;
     }
+    let dir_meta = if follow_symlinks {
+        fs::metadata(dir).ok()?
+    } else {
+        fs::symlink_metadata(dir).ok()?
+    };
+    if !dir_meta.is_dir() {
+        return None;
+    }
+
     let mut total = 0_u64;
     for &file in files {
         if validate_safe_filename(file).is_err() {
             return None;
         }
         let path = dir.join(file);
-        let meta = fs::metadata(&path).ok()?;
-        if !meta.is_file() || meta.len() == 0 {
+        let meta = if follow_symlinks {
+            fs::metadata(&path).ok()?
+        } else {
+            fs::symlink_metadata(&path).ok()?
+        };
+        if (!follow_symlinks && meta.file_type().is_symlink()) || !meta.is_file() || meta.len() == 0
+        {
             return None;
         }
         total = total.saturating_add(meta.len());
@@ -316,5 +365,34 @@ mod tests {
             found.primary_file(turbo).unwrap(),
             snap.join(turbo.files[0])
         );
+    }
+
+    #[test]
+    fn remove_managed_rejects_unsafe_ids_and_does_not_recurse_into_symlinks() {
+        let dir = TempDir::new("remove-safe");
+        let managed = dir.0.join("managed");
+        fs::create_dir_all(&managed).unwrap();
+        let cache = ModelCache::new(&managed, None);
+
+        let mut bad = *resolve_model_spec(Some("tiny")).unwrap();
+        bad.id = "..";
+        assert!(cache.remove_managed(&bad).is_err());
+        bad.id = "";
+        assert!(cache.remove_managed(&bad).is_err());
+
+        #[cfg(unix)]
+        {
+            let external = dir.0.join("external_target");
+            fs::create_dir_all(&external).unwrap();
+            let sentinel = external.join("keep.txt");
+            fs::write(&sentinel, b"do not delete").unwrap();
+
+            let tiny = resolve_model_spec(Some("tiny")).unwrap();
+            std::os::unix::fs::symlink(&external, cache.model_dir(tiny)).unwrap();
+
+            assert!(cache.find_installed(tiny).is_none());
+            assert!(cache.remove_managed(tiny).unwrap());
+            assert!(sentinel.exists());
+        }
     }
 }
