@@ -5,7 +5,7 @@ members = ["crates/core", "crates/audio", "crates/providers", "crates/local-asr"
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.88"
 license = "MIT"
 repository = "https://github.com/KLIEBHAN/pulsescribe"
 
@@ -17,6 +17,7 @@ clap = { version = "4.6", features = ["derive"] }
 cpal = "0.18"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 hound = "3.5"
+libloading = "0.9"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSWorkspace", "NSRunningApplication", "NSPasteboard"] }
 objc2-audio-toolbox = { version = "0.3", default-features = false, features = ["std", "AudioServices", "objc2-core-foundation"] }
@@ -31,13 +32,14 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 symphonia = { version = "0.6", default-features = false, features = ["opt-simd", "wav", "pcm", "mp3", "id3v2", "aac", "isomp4", "ogg", "vorbis", "flac"] }
 thiserror = "2.0"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net", "fs", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net", "fs", "io-util", "signal"] }
 tokio-tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"] }
 tokio-util = { version = "0.7", features = ["io"] }
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = "2"
+whisper-rs = "0.16"
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Media_Audio", "Win32_Storage_FileSystem", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_StationsAndDesktops", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 
 [workspace.lints.rust]

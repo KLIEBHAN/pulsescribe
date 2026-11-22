@@ -13,6 +13,7 @@ use crate::CliError;
 
 pub const MODE_ENV_VAR: &str = "PULSESCRIBE_MODE";
 pub const MODEL_ENV_VAR: &str = "PULSESCRIBE_MODEL";
+pub const LOCAL_MODEL_ENV_VAR: &str = "PULSESCRIBE_LOCAL_MODEL";
 pub const LANGUAGE_ENV_VAR: &str = "PULSESCRIBE_LANGUAGE";
 pub const DEBUG_ENV_VAR: &str = "PULSESCRIBE_DEBUG";
 pub const REFINE_ENV_VAR: &str = "PULSESCRIBE_REFINE";
@@ -265,7 +266,12 @@ pub fn resolve_cli_options(
         },
     };
 
-    let model = resolve_string_opt(args.model.as_deref(), env_map, MODEL_ENV_VAR);
+    let model = if mode == TranscriptionMode::Local {
+        resolve_string_opt(args.model.as_deref(), env_map, LOCAL_MODEL_ENV_VAR)
+            .or_else(|| resolve_string_opt(None, env_map, MODEL_ENV_VAR))
+    } else {
+        resolve_string_opt(args.model.as_deref(), env_map, MODEL_ENV_VAR)
+    };
     let language = resolve_string_opt(args.language.as_deref(), env_map, LANGUAGE_ENV_VAR);
     let refine_model =
         resolve_string_opt(args.refine_model.as_deref(), env_map, REFINE_MODEL_ENV_VAR);
@@ -356,6 +362,23 @@ mod tests {
         let overridden = resolve_cli_options(&override_args, &env).unwrap();
         assert_eq!(overridden.mode, TranscriptionMode::Openai);
         assert!(!overridden.refine);
+
+        // Local mode prioritizes PULSESCRIBE_LOCAL_MODEL over PULSESCRIBE_MODEL, with CLI highest.
+        env.insert(LOCAL_MODEL_ENV_VAR.to_string(), "parakeet-v3".to_string());
+        let local_args = parse(&["pulsescribe", "sample.wav", "--mode", "local"]);
+        let local_resolved = resolve_cli_options(&local_args, &env).unwrap();
+        assert_eq!(local_resolved.model.as_deref(), Some("parakeet-v3"));
+
+        let local_cli_override = parse(&[
+            "pulsescribe",
+            "sample.wav",
+            "--mode",
+            "local",
+            "--model",
+            "canary-1b-v2",
+        ]);
+        let local_overridden = resolve_cli_options(&local_cli_override, &env).unwrap();
+        assert_eq!(local_overridden.model.as_deref(), Some("canary-1b-v2"));
     }
 
     #[test]

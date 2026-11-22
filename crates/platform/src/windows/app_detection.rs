@@ -274,10 +274,12 @@ fn query_translation_codes(version_data: &[u8]) -> Vec<String> {
     let Some(span) = checked_version_span(version_data, ptr.cast_const(), byte_len as usize) else {
         return Vec::new();
     };
-    span.chunks_exact(4)
-        .map(|chunk| {
-            let lang_id = u16::from_le_bytes([chunk[0], chunk[1]]);
-            let codepage = u16::from_le_bytes([chunk[2], chunk[3]]);
+    span.as_chunks::<4>()
+        .0
+        .iter()
+        .map(|&[b0, b1, b2, b3]| {
+            let lang_id = u16::from_le_bytes([b0, b1]);
+            let codepage = u16::from_le_bytes([b2, b3]);
             format_translation_code(lang_id, codepage)
         })
         .collect()
@@ -306,8 +308,10 @@ fn query_version_string(version_data: &[u8], sub_block: &str) -> Option<String> 
     let byte_span = (char_len as usize).checked_mul(2)?;
     let span = checked_version_span(version_data, ptr.cast_const(), byte_span)?;
     let units: Vec<u16> = span
-        .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&pair| u16::from_le_bytes(pair))
         .take_while(|&unit| unit != 0)
         .collect();
     Some(String::from_utf16_lossy(&units))

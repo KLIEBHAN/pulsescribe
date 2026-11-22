@@ -20,6 +20,7 @@ use pulsescribe_audio::{
 };
 use pulsescribe_core::env::parse_bool;
 use pulsescribe_core::{DaemonErrorCode, DaemonStatusError, PromptsStore, VocabularyStore};
+use pulsescribe_local_asr::{LocalAsrError, LocalAsrManager, LocalAsrRequest};
 use pulsescribe_platform::{
     is_permission_related_message, AppDetector, MicrophonePermissionStatus, PermissionsChecker,
 };
@@ -129,6 +130,77 @@ pub struct LocalTranscriptionRequest {
 /// Extension point for local ASR engines (`whisper-rs`, `sherpa-onnx`) wired in Phase 4.
 pub trait LocalTranscriber: Send + Sync {
     fn transcribe(&self, request: LocalTranscriptionRequest) -> Result<String, DaemonStatusError>;
+
+    /// Release any cached local model weights from RAM (called on daemon shutdown).
+    fn unload(&self) {}
+}
+
+/// Default [`LocalTranscriber`] backed by [`LocalAsrManager`] (`crates/local-asr`).
+#[derive(Clone)]
+pub struct LocalAsrManagerTranscriber {
+    manager: LocalAsrManager,
+}
+
+impl LocalAsrManagerTranscriber {
+    pub fn new(manager: LocalAsrManager) -> Self {
+        Self { manager }
+    }
+
+    pub fn manager(&self) -> &LocalAsrManager {
+        &self.manager
+    }
+}
+
+impl LocalTranscriber for LocalAsrManagerTranscriber {
+    fn transcribe(&self, request: LocalTranscriptionRequest) -> Result<String, DaemonStatusError> {
+        let local_req = LocalAsrRequest::new(request.samples_16k)
+            .with_language(request.language)
+            .with_keywords(request.keywords)
+            .with_cancel_flag(request.cancel_flag);
+        match self
+            .manager
+            .transcribe(request.model.as_deref(), &local_req)
+        {
+            Ok(text) => Ok(text),
+            Err(LocalAsrError::Cancelled) => Ok(String::new()),
+            Err(err) => Err(map_local_asr_error(&err)),
+        }
+    }
+
+    fn unload(&self) {
+        self.manager.unload();
+    }
+}
+
+fn map_local_asr_error(err: &LocalAsrError) -> DaemonStatusError {
+    match err {
+        LocalAsrError::MissingRuntime(msg) => {
+            DaemonStatusError::new(DaemonErrorCode::MissingDependency, Some(msg.clone()))
+        }
+        LocalAsrError::ModelNotDownloaded(model) => DaemonStatusError::new(
+            DaemonErrorCode::MissingDependency,
+            Some(format!(
+                "Lokales Modell '{model}' ist noch nicht heruntergeladen"
+            )),
+        ),
+        LocalAsrError::UnknownModel(model) => DaemonStatusError::new(
+            DaemonErrorCode::InvalidProvider,
+            Some(format!("Unbekanntes lokales Modell: '{model}'")),
+        ),
+        LocalAsrError::InvalidModel(msg) => {
+            DaemonStatusError::new(DaemonErrorCode::InvalidProvider, Some(msg.clone()))
+        }
+        LocalAsrError::Download(msg) => {
+            DaemonStatusError::new(DaemonErrorCode::Connection, Some(msg.clone()))
+        }
+        LocalAsrError::Inference(msg) => {
+            DaemonStatusError::new(DaemonErrorCode::Unknown, Some(msg.clone()))
+        }
+        LocalAsrError::Io(io_err) => {
+            DaemonStatusError::new(DaemonErrorCode::Unknown, Some(io_err.to_string()))
+        }
+        LocalAsrError::Cancelled => DaemonStatusError::new(DaemonErrorCode::Unknown, None),
+    }
 }
 
 /// Optional endpoint overrides for cloud transcription and LLM refinement (defaults to official URLs).
@@ -268,16 +340,29 @@ impl fmt::Debug for LiveDictationBackend {
 }
 
 impl LiveDictationBackend {
-    /// Construct a live dictation backend using `cpal` microphone capture and official cloud URLs.
+    /// Construct a live dictation backend using `cpal` microphone capture, the default
+    /// [`LocalAsrManager`], and official cloud URLs.
     pub fn new(
         config_dir: impl Into<PathBuf>,
         permissions: Arc<dyn PermissionsChecker>,
+    ) -> Result<Self, ProviderError> {
+        let dir = config_dir.into();
+        let manager = LocalAsrManager::from_config_dir(&dir);
+        Self::with_local_asr_manager(dir, permissions, manager)
+    }
+
+    /// Construct a live dictation backend wired to an externally shared [`LocalAsrManager`]
+    /// (e.g., shared between the desktop UI's model manager and live dictation).
+    pub fn with_local_asr_manager(
+        config_dir: impl Into<PathBuf>,
+        permissions: Arc<dyn PermissionsChecker>,
+        manager: LocalAsrManager,
     ) -> Result<Self, ProviderError> {
         Self::with_components(
             config_dir,
             permissions,
             Arc::new(CpalAudioSourceFactory),
-            None,
+            Some(Arc::new(LocalAsrManagerTranscriber::new(manager))),
             ProviderEndpoints::default(),
         )
     }
@@ -397,6 +482,13 @@ impl LiveDictationBackend {
         invalidate_warm_slot(&self.inner).await;
     }
 
+    /// Release any cached local ASR model from RAM (e.g., after switching away from local mode).
+    pub fn unload_local_model(&self) {
+        if let Some(local) = &self.inner.local_transcriber {
+            local.unload();
+        }
+    }
+
     /// Cancel all active sessions, await audio/network/local-ASR teardown, abort background
     /// re-warm, and gracefully close any prewarmed Deepgram socket.
     pub async fn shutdown(&self) {
@@ -437,6 +529,9 @@ impl LiveDictationBackend {
             }
         }
         invalidate_warm_slot(&self.inner).await;
+        if let Some(local) = &self.inner.local_transcriber {
+            local.unload();
+        }
     }
 }
 
@@ -1998,5 +2093,28 @@ mod tests {
         let url_detail = mapped_url.detail.unwrap_or_default();
         assert!(url_detail.contains("OPENAI_COMPATIBLE_BASE_URL"));
         assert!(!url_detail.contains("url-secret"));
+    }
+
+    #[test]
+    fn local_asr_error_mapping_covers_missing_model_runtime_and_unknown() {
+        assert_eq!(
+            map_local_asr_error(&LocalAsrError::MissingRuntime("no lib".to_owned())).code,
+            DaemonErrorCode::MissingDependency
+        );
+        assert_eq!(
+            map_local_asr_error(&LocalAsrError::ModelNotDownloaded(
+                "large-v3-turbo".to_owned()
+            ))
+            .code,
+            DaemonErrorCode::MissingDependency
+        );
+        assert_eq!(
+            map_local_asr_error(&LocalAsrError::UnknownModel("foo".to_owned())).code,
+            DaemonErrorCode::InvalidProvider
+        );
+        assert_eq!(
+            map_local_asr_error(&LocalAsrError::Download("offline".to_owned())).code,
+            DaemonErrorCode::Connection
+        );
     }
 }

@@ -6,11 +6,18 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+local-whisper = ["pulsescribe-local-asr/local-whisper"]
+local-sherpa = ["pulsescribe-local-asr/local-sherpa"]
+all-local = ["pulsescribe-local-asr/all-local"]
+
 [dependencies]
 bytes.workspace = true
 clap.workspace = true
 pulsescribe-audio = { path = "../audio" }
 pulsescribe-core = { path = "../core" }
+pulsescribe-local-asr = { path = "../local-asr" }
 pulsescribe-platform = { path = "../platform" }
 pulsescribe-providers = { path = "../providers" }
 reqwest.workspace = true
