@@ -8,6 +8,7 @@ on:
     paths:
       - "Cargo.toml"
       - "Cargo.lock"
+      - "apps/**"
       - "crates/**"
       - "tests/golden/**"
       - "refine/prompts.py"
@@ -76,7 +77,7 @@ jobs:
         run: cargo test --workspace
 
       - name: Run Clippy (local ASR backends)
-        run: cargo clippy -p pulsescribe-local-asr -p pulsescribe-daemon -p pulsescribe-cli --features all-local --all-targets -- -D warnings
+        run: cargo clippy -p pulsescribe-local-asr -p pulsescribe-daemon -p pulsescribe-cli -p pulsescribe-desktop --features all-local --all-targets -- -D warnings
 
       - name: Run tests (local ASR backends)
-        run: cargo test -p pulsescribe-local-asr -p pulsescribe-daemon -p pulsescribe-cli --features all-local
+        run: cargo test -p pulsescribe-local-asr -p pulsescribe-daemon -p pulsescribe-cli -p pulsescribe-desktop --features all-local
