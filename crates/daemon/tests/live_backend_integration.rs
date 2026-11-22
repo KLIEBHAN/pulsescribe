@@ -829,3 +829,305 @@ async fn local_transcriber_missing_key_mic_permission_and_cancel_paths() {
         assert_eq!(audio_factory.dropped.load(Ordering::SeqCst), 2);
     }
 }
+
+struct SilentAudioSource;
+
+impl AudioSource for SilentAudioSource {
+    fn sample_rate(&self) -> u32 {
+        16_000
+    }
+
+    fn drain_into(&mut self, out: &mut Vec<f32>) -> usize {
+        out.extend_from_slice(&[0.0_f32; 320]);
+        320
+    }
+
+    fn latest_rms(&self) -> f32 {
+        0.0
+    }
+
+    fn take_error(&self) -> Option<String> {
+        None
+    }
+}
+
+struct SilentAudioFactory;
+
+impl AudioSourceFactory for SilentAudioFactory {
+    fn open(&self, _device_name: Option<&str>) -> Result<Box<dyn AudioSource>, AudioError> {
+        Ok(Box::new(SilentAudioSource))
+    }
+}
+
+struct BlockingLocalEngine {
+    started: Arc<std::sync::atomic::AtomicBool>,
+    observed_cancel: Arc<std::sync::atomic::AtomicBool>,
+    finished: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl LocalTranscriber for BlockingLocalEngine {
+    fn transcribe(&self, request: LocalTranscriptionRequest) -> Result<String, DaemonStatusError> {
+        self.started.store(true, Ordering::SeqCst);
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline {
+            if request.cancel_flag.load(Ordering::Acquire) {
+                self.observed_cancel.store(true, Ordering::SeqCst);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        self.finished.store(true, Ordering::SeqCst);
+        Ok(String::new())
+    }
+}
+
+#[tokio::test]
+async fn premature_deepgram_close_silent_batch_and_local_cancel_drain() {
+    let dir = TempDir::new("edge-cases");
+
+    // 1. Clean Deepgram WebSocket close before user stops surfaces `Connection` error instead of wedging.
+    {
+        let store = Arc::new(PreferencesStore::new(dir.path()));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let ws_url = format!("ws://{addr}/v1/listen");
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(stream).await.unwrap();
+            if let Some(Ok(Message::Binary(_))) = ws.next().await {
+                let _ = ws.close(None).await;
+            }
+        });
+
+        let (_, clipboard) = RecordingClipboard::create();
+        let audio_factory = Arc::new(SyntheticAudioFactory::new(16_000, 480, 10));
+        let permissions = Arc::new(StaticPermissions {
+            mic: MicrophonePermissionStatus::Authorized,
+        });
+        let platform = DaemonPlatform {
+            permissions: Arc::clone(&permissions) as Arc<dyn PermissionsChecker>,
+            ..DaemonPlatform::noop(clipboard)
+        };
+        let backend = LiveDictationBackend::with_components(
+            dir.path(),
+            permissions,
+            Arc::clone(&audio_factory) as Arc<dyn AudioSourceFactory>,
+            None,
+            ProviderEndpoints {
+                deepgram_ws_url: Some(ws_url),
+                ..ProviderEndpoints::default()
+            },
+        )
+        .unwrap();
+        let config = DaemonConfig {
+            mode: DaemonMode::Deepgram,
+            streaming: true,
+            deepgram_warm_websocket: false,
+            ..DaemonConfig::default()
+        }
+        .with_provider_env("DEEPGRAM_API_KEY", "dg-mock");
+
+        let runtime = DaemonRuntime::spawn(
+            store,
+            config,
+            platform,
+            Arc::new(backend.clone()),
+            DaemonRuntimeOptions {
+                enable_ipc: false,
+                enable_reload_watcher: false,
+                ..DaemonRuntimeOptions::default()
+            },
+        )
+        .await;
+        let handle = runtime.handle();
+        let mut events = handle.subscribe();
+
+        handle.start_recording();
+        let err_ev = next_matching_event(&mut events, |e| {
+            matches!(
+                e,
+                DaemonEvent::StateChanged {
+                    state: AppState::Error,
+                    ..
+                }
+            )
+        })
+        .await;
+        match err_ev {
+            DaemonEvent::StateChanged { error, .. } => {
+                assert_eq!(error.unwrap().code, DaemonErrorCode::Connection);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        runtime.shutdown().await;
+        backend.shutdown().await;
+        assert_eq!(audio_factory.dropped.load(Ordering::SeqCst), 1);
+        server.abort();
+    }
+
+    // 2. Pure silence in batch mode transitions to `NoSpeech` without invoking local ASR.
+    {
+        let store = Arc::new(PreferencesStore::new(dir.path()));
+        let (_, clipboard) = RecordingClipboard::create();
+        let seen_counts = Arc::new(Mutex::new(Vec::new()));
+        let permissions = Arc::new(StaticPermissions {
+            mic: MicrophonePermissionStatus::Authorized,
+        });
+        let platform = DaemonPlatform {
+            permissions: Arc::clone(&permissions) as Arc<dyn PermissionsChecker>,
+            ..DaemonPlatform::noop(clipboard)
+        };
+        let backend = LiveDictationBackend::with_components(
+            dir.path(),
+            permissions,
+            Arc::new(SilentAudioFactory),
+            Some(Arc::new(MockLocalEngine {
+                seen_sample_counts: Arc::clone(&seen_counts),
+                response: "should not be called".to_owned(),
+            })),
+            ProviderEndpoints::default(),
+        )
+        .unwrap();
+        let runtime = DaemonRuntime::spawn(
+            store,
+            DaemonConfig {
+                mode: DaemonMode::Local,
+                streaming: false,
+                ..DaemonConfig::default()
+            },
+            platform,
+            Arc::new(backend.clone()),
+            DaemonRuntimeOptions {
+                enable_ipc: false,
+                enable_reload_watcher: false,
+                ..DaemonRuntimeOptions::default()
+            },
+        )
+        .await;
+        let handle = runtime.handle();
+        let mut events = handle.subscribe();
+
+        handle.start_recording();
+        next_matching_event(&mut events, |e| {
+            matches!(
+                e,
+                DaemonEvent::StateChanged {
+                    state: AppState::Listening,
+                    ..
+                }
+            )
+        })
+        .await;
+        handle.stop_recording();
+        next_matching_event(&mut events, |e| {
+            matches!(
+                e,
+                DaemonEvent::StateChanged {
+                    state: AppState::NoSpeech,
+                    ..
+                }
+            )
+        })
+        .await;
+        assert!(seen_counts.lock().unwrap().is_empty());
+
+        runtime.shutdown().await;
+        backend.shutdown().await;
+    }
+
+    // 3. Cancellation mid-local-inference sets `cancel_flag` and `backend.shutdown()` awaits teardown.
+    {
+        let store = Arc::new(PreferencesStore::new(dir.path()));
+        let (_, clipboard) = RecordingClipboard::create();
+        let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let permissions = Arc::new(StaticPermissions {
+            mic: MicrophonePermissionStatus::Authorized,
+        });
+        let platform = DaemonPlatform {
+            permissions: Arc::clone(&permissions) as Arc<dyn PermissionsChecker>,
+            ..DaemonPlatform::noop(clipboard)
+        };
+        let backend = LiveDictationBackend::with_components(
+            dir.path(),
+            permissions,
+            Arc::new(SyntheticAudioFactory::new(16_000, 960, 1)),
+            Some(Arc::new(BlockingLocalEngine {
+                started: Arc::clone(&started),
+                observed_cancel: Arc::clone(&observed_cancel),
+                finished: Arc::clone(&finished),
+            })),
+            ProviderEndpoints::default(),
+        )
+        .unwrap();
+        let runtime = DaemonRuntime::spawn(
+            store,
+            DaemonConfig {
+                mode: DaemonMode::Local,
+                streaming: false,
+                ..DaemonConfig::default()
+            },
+            platform,
+            Arc::new(backend.clone()),
+            DaemonRuntimeOptions {
+                enable_ipc: false,
+                enable_reload_watcher: false,
+                ..DaemonRuntimeOptions::default()
+            },
+        )
+        .await;
+        let handle = runtime.handle();
+        let mut events = handle.subscribe();
+
+        handle.start_recording();
+        next_matching_event(&mut events, |e| {
+            matches!(
+                e,
+                DaemonEvent::StateChanged {
+                    state: AppState::Recording,
+                    ..
+                }
+            )
+        })
+        .await;
+        handle.stop_recording();
+        next_matching_event(&mut events, |e| {
+            matches!(
+                e,
+                DaemonEvent::StateChanged {
+                    state: AppState::Transcribing,
+                    ..
+                }
+            )
+        })
+        .await;
+        // Wait until the blocking local engine has entered `transcribe`.
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !started.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        handle.cancel();
+        next_matching_event(&mut events, |e| {
+            matches!(
+                e,
+                DaemonEvent::StateChanged {
+                    state: AppState::Idle,
+                    ..
+                }
+            )
+        })
+        .await;
+
+        runtime.shutdown().await;
+        backend.shutdown().await;
+        assert!(observed_cancel.load(Ordering::SeqCst));
+        assert!(finished.load(Ordering::SeqCst));
+    }
+}

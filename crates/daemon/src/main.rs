@@ -119,26 +119,26 @@ async fn run_daemon(
     let reload_handle = handle.clone();
 
     let logger = tokio::spawn(async move {
-        while let Ok(event) = events.recv().await {
-            match event {
-                DaemonEvent::StateChanged {
+        loop {
+            match events.recv().await {
+                Ok(DaemonEvent::StateChanged {
                     state,
                     detail,
                     error,
                     ..
-                } => {
+                }) => {
                     if let Some(err) = error {
                         tracing::warn!(?state, ?err, "daemon entered error state");
                     } else {
                         tracing::info!(?state, ?detail, "daemon state changed");
                     }
                 }
-                DaemonEvent::TranscriptDelivered {
+                Ok(DaemonEvent::TranscriptDelivered {
                     text,
                     target_app,
                     outcome,
                     ..
-                } => {
+                }) => {
                     tracing::info!(
                         chars = text.chars().count(),
                         target_app = target_app.as_deref().unwrap_or(""),
@@ -146,12 +146,21 @@ async fn run_daemon(
                         "transcript delivered"
                     );
                 }
-                DaemonEvent::ConfigReloaded => {
+                Ok(DaemonEvent::ConfigReloaded) => {
                     let reloaded = reload_handle.config();
                     tracing::info!(mode = reloaded.mode.as_str(), "config reloaded");
                     reload_backend.sync_deepgram_warm_state(&reloaded).await;
                 }
-                _ => {}
+                Ok(_) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    tracing::debug!(
+                        skipped,
+                        "daemon event subscriber lagged; resyncing warm state"
+                    );
+                    let current = reload_handle.config();
+                    reload_backend.sync_deepgram_warm_state(&current).await;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         }
     });
@@ -174,9 +183,9 @@ async fn run_daemon(
     .await;
 
     daemon.shutdown().await;
-    backend.shutdown().await;
     logger.abort();
     let _ = logger.await;
+    backend.shutdown().await;
     Ok(())
 }
 

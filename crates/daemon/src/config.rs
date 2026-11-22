@@ -245,6 +245,8 @@ impl DaemonConfig {
         let model = match mode {
             DaemonMode::Local => get_trimmed(env, "PULSESCRIBE_LOCAL_MODEL")
                 .or_else(|| get_trimmed(env, "PULSESCRIBE_MODEL")),
+            DaemonMode::OpenAiCompatible => get_trimmed(env, "OPENAI_COMPATIBLE_MODEL")
+                .or_else(|| get_trimmed(env, "PULSESCRIBE_MODEL")),
             _ => get_trimmed(env, "PULSESCRIBE_MODEL"),
         };
 
@@ -642,5 +644,14 @@ mod tests {
         let debug = format!("{cfg:?}");
         assert!(debug.contains("[REDACTED"));
         assert!(!debug.contains("sk-top-secret-123"));
+
+        // `OPENAI_COMPATIBLE_MODEL` takes precedence over stale `PULSESCRIBE_MODEL`.
+        let mut compat = BTreeMap::new();
+        compat.insert("PULSESCRIBE_MODE".into(), "openai_compatible".into());
+        compat.insert("PULSESCRIBE_MODEL".into(), "nova-3".into());
+        compat.insert("OPENAI_COMPATIBLE_MODEL".into(), "faster-whisper".into());
+        let compat_cfg = DaemonConfig::from_env_map(&compat);
+        assert_eq!(compat_cfg.mode, DaemonMode::OpenAiCompatible);
+        assert_eq!(compat_cfg.model.as_deref(), Some("faster-whisper"));
     }
 }

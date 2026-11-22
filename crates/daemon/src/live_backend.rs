@@ -9,7 +9,7 @@ use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -122,6 +122,8 @@ pub struct LocalTranscriptionRequest {
     pub model: Option<String>,
     pub language: Option<String>,
     pub keywords: Vec<String>,
+    /// Cooperative cancellation flag set when the dictation run is cancelled or the daemon shuts down.
+    pub cancel_flag: Arc<AtomicBool>,
 }
 
 /// Extension point for local ASR engines (`whisper-rs`, `sherpa-onnx`) wired in Phase 4.
@@ -168,9 +170,29 @@ impl ProviderEndpoints {
 }
 
 struct WarmDeepgramSlot {
+    generation: u64,
     ws_url: String,
     api_key: String,
     manager: DeepgramWarmConnectionManager,
+}
+
+#[derive(Default)]
+struct WarmDeepgramState {
+    generation: u64,
+    slot: Option<WarmDeepgramSlot>,
+}
+
+#[derive(Default)]
+struct RewarmState {
+    shutting_down: bool,
+    task: Option<JoinHandle<()>>,
+}
+
+#[derive(Default)]
+struct SessionRegistry {
+    shutting_down: bool,
+    sessions: Vec<JoinHandle<()>>,
+    detached_blocking: Vec<JoinHandle<()>>,
 }
 
 struct LiveBackendState {
@@ -181,9 +203,9 @@ struct LiveBackendState {
     vocabulary_store: Arc<VocabularyStore>,
     prompts_store: Arc<PromptsStore>,
     endpoints: ProviderEndpoints,
-    warm_deepgram: AsyncMutex<Option<WarmDeepgramSlot>>,
-    rewarm_task: AsyncMutex<Option<JoinHandle<()>>>,
-    active_sessions: Mutex<Vec<JoinHandle<()>>>,
+    warm_deepgram: AsyncMutex<WarmDeepgramState>,
+    rewarm_state: AsyncMutex<RewarmState>,
+    registry: Mutex<SessionRegistry>,
     shutdown_tx: watch::Sender<bool>,
 }
 
@@ -246,93 +268,138 @@ impl LiveDictationBackend {
                 vocabulary_store: Arc::new(VocabularyStore::new(&dir)),
                 prompts_store: Arc::new(PromptsStore::new(&dir)),
                 endpoints,
-                warm_deepgram: AsyncMutex::new(None),
-                rewarm_task: AsyncMutex::new(None),
-                active_sessions: Mutex::new(Vec::new()),
+                warm_deepgram: AsyncMutex::new(WarmDeepgramState::default()),
+                rewarm_state: AsyncMutex::new(RewarmState::default()),
+                registry: Mutex::new(SessionRegistry::default()),
                 shutdown_tx,
             }),
         })
     }
 
     /// Preconnect a warm Deepgram WebSocket if streaming + warm WebSocket are enabled and
-    /// `DEEPGRAM_API_KEY` is configured.
+    /// `DEEPGRAM_API_KEY` is configured; invalidates any existing warm slot otherwise.
     pub async fn warm_up_deepgram(&self, config: &DaemonConfig) -> Result<(), DaemonStatusError> {
+        if *self.inner.shutdown_tx.borrow() {
+            return Ok(());
+        }
         if !config.uses_live_streaming() || !config.deepgram_warm_websocket {
+            invalidate_warm_slot(&self.inner).await;
             return Ok(());
         }
         let Some(api_key) = config.provider_env.get("DEEPGRAM_API_KEY") else {
+            invalidate_warm_slot(&self.inner).await;
             return Ok(());
         };
         let vocab_store = Arc::clone(&self.inner.vocabulary_store);
         let keywords = tokio::task::spawn_blocking(move || vocab_store.load_keywords())
             .await
             .unwrap_or_default();
+        if *self.inner.shutdown_tx.borrow() {
+            return Ok(());
+        }
         let stream_cfg = build_deepgram_stream_config(config, keywords);
-        let manager = get_or_create_deepgram_manager(
+        let (manager, gen) = match get_or_create_deepgram_manager(
             &self.inner,
             self.inner.endpoints.deepgram_ws_url(),
             api_key,
         )
         .await
-        .map_err(|err| map_provider_error(&err))?;
-        manager
-            .warm_up(&stream_cfg)
+        {
+            Ok(pair) => pair,
+            Err(err) => {
+                invalidate_warm_slot(&self.inner).await;
+                return Err(map_provider_error(&err));
+            }
+        };
+        warm_up_and_guard_generation(&self.inner, &manager, gen, &stream_cfg)
             .await
             .map_err(|err| map_provider_error(&err))
     }
 
     /// Synchronize the background Deepgram warm-connection slot with `config`:
-    /// spawns a tracked warm-up when live streaming + warm WebSocket are enabled, or tears down
-    /// any previously warmed socket otherwise.
+    /// spawns a tracked warm-up when live streaming + warm WebSocket + API key are active, or
+    /// tears down any previously warmed socket otherwise.
     pub async fn sync_deepgram_warm_state(&self, config: &DaemonConfig) {
-        if *self.inner.shutdown_tx.borrow() {
+        let should_warm = config.uses_live_streaming()
+            && config.deepgram_warm_websocket
+            && config.provider_env.get("DEEPGRAM_API_KEY").is_some();
+
+        let mut rewarm = self.inner.rewarm_state.lock().await;
+        if rewarm.shutting_down {
             return;
         }
-        if config.uses_live_streaming() && config.deepgram_warm_websocket {
+        if let Some(prev) = rewarm.task.take() {
+            prev.abort();
+            let _ = prev.await;
+        }
+
+        if should_warm {
             let backend = self.clone();
             let cfg = config.clone();
-            let mut guard = self.inner.rewarm_task.lock().await;
-            if let Some(prev) = guard.take() {
-                prev.abort();
-            }
-            *guard = Some(tokio::spawn(async move {
+            rewarm.task = Some(tokio::spawn(async move {
                 if let Err(err) = backend.warm_up_deepgram(&cfg).await {
                     tracing::debug!(error = ?err, "Deepgram WebSocket warm-up skipped");
                 }
             }));
         } else {
-            self.invalidate_warm_deepgram().await;
+            drop(rewarm);
+            invalidate_warm_slot(&self.inner).await;
         }
     }
 
     /// Abort any background re-warm task and close any prewarmed Deepgram WebSocket without
     /// shutting down the backend (e.g., after hot-reloading away from Deepgram streaming).
     pub async fn invalidate_warm_deepgram(&self) {
-        if let Some(handle) = self.inner.rewarm_task.lock().await.take() {
-            handle.abort();
-            let _ = handle.await;
+        {
+            let mut rewarm = self.inner.rewarm_state.lock().await;
+            if let Some(handle) = rewarm.task.take() {
+                handle.abort();
+                let _ = handle.await;
+            }
         }
-        if let Some(slot) = self.inner.warm_deepgram.lock().await.take() {
-            slot.manager.invalidate().await;
-        }
+        invalidate_warm_slot(&self.inner).await;
     }
 
-    /// Cancel all active sessions, await audio/network teardown, abort background re-warm, and
-    /// gracefully close any prewarmed Deepgram socket.
+    /// Cancel all active sessions, await audio/network/local-ASR teardown, abort background
+    /// re-warm, and gracefully close any prewarmed Deepgram socket.
     pub async fn shutdown(&self) {
         let _ = self.inner.shutdown_tx.send(true);
-        let handles = {
-            let mut guard = self
+        let (session_handles, detached_handles) = {
+            let mut reg = self
                 .inner
-                .active_sessions
+                .registry
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            std::mem::take(&mut *guard)
+            reg.shutting_down = true;
+            (
+                std::mem::take(&mut reg.sessions),
+                std::mem::take(&mut reg.detached_blocking),
+            )
         };
-        for handle in handles {
+        for handle in session_handles {
             let _ = handle.await;
         }
-        self.invalidate_warm_deepgram().await;
+        // Drain any detached local-inference tasks pushed while sessions were unwinding.
+        let extra_detached = {
+            let mut reg = self
+                .inner
+                .registry
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            std::mem::take(&mut reg.detached_blocking)
+        };
+        for handle in detached_handles.into_iter().chain(extra_detached) {
+            let _ = handle.await;
+        }
+        {
+            let mut rewarm = self.inner.rewarm_state.lock().await;
+            rewarm.shutting_down = true;
+            if let Some(handle) = rewarm.task.take() {
+                handle.abort();
+                let _ = handle.await;
+            }
+        }
+        invalidate_warm_slot(&self.inner).await;
     }
 }
 
@@ -345,7 +412,12 @@ impl DictationBackend for LiveDictationBackend {
         app_detector: Arc<dyn AppDetector>,
         event_tx: mpsc::UnboundedSender<(u64, PipelineEvent)>,
     ) -> ActiveSession {
-        if *self.inner.shutdown_tx.borrow() {
+        let mut reg = self
+            .inner
+            .registry
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if reg.shutting_down {
             return ActiveSession::default();
         }
         let (stop_tx, stop_rx) = oneshot::channel();
@@ -368,13 +440,8 @@ impl DictationBackend for LiveDictationBackend {
             .await;
         });
 
-        let mut sessions = self
-            .inner
-            .active_sessions
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        sessions.retain(|h| !h.is_finished());
-        sessions.push(handle);
+        reg.sessions.retain(|h| !h.is_finished());
+        reg.sessions.push(handle);
 
         ActiveSession::new(stop_tx, cancel_tx)
     }
@@ -415,6 +482,10 @@ impl CaptureControl {
         self.state.lock().unwrap_or_else(|e| e.into_inner()).cancel
     }
 
+    fn is_stopped(&self) -> bool {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).stop
+    }
+
     fn poll_signal(&self) -> (bool, bool) {
         let guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
         (guard.cancel, guard.stop)
@@ -430,6 +501,20 @@ impl CaptureControl {
             .wait_timeout(guard, timeout)
             .unwrap_or_else(|e| e.into_inner());
         (guard.cancel, guard.stop)
+    }
+
+    /// Wait up to `timeout` for cancellation only (does not short-circuit on `stop`, avoiding
+    /// busy-spins while flushing tail PCM chunks after `stop` into a full channel).
+    fn wait_cancel_timeout(&self, timeout: Duration) -> bool {
+        let guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.cancel {
+            return true;
+        }
+        let (guard, _) = self
+            .condvar
+            .wait_timeout(guard, timeout)
+            .unwrap_or_else(|e| e.into_inner());
+        guard.cancel
     }
 }
 
@@ -550,12 +635,13 @@ async fn run_session(
     }
 
     let outcome = match prepared_backend {
-        PreparedBackend::DeepgramStream(manager) => {
+        PreparedBackend::DeepgramStream(manager, warm_gen) => {
             run_streaming_session(
                 &state,
                 run_id,
                 &config,
                 manager,
+                warm_gen,
                 keywords,
                 &control,
                 &mut cancelled_rx,
@@ -628,7 +714,7 @@ async fn run_session(
 }
 
 enum PreparedBackend {
-    DeepgramStream(DeepgramWarmConnectionManager),
+    DeepgramStream(DeepgramWarmConnectionManager, u64),
     Batch(BatchBackend),
 }
 
@@ -648,11 +734,11 @@ async fn prepare_transcription_backend(
                 Some("DEEPGRAM_API_KEY nicht gesetzt".to_owned()),
             )
         })?;
-        let manager =
+        let (manager, warm_gen) =
             get_or_create_deepgram_manager(state, state.endpoints.deepgram_ws_url(), api_key)
                 .await
                 .map_err(|err| map_provider_error(&err))?;
-        return Ok(PreparedBackend::DeepgramStream(manager));
+        return Ok(PreparedBackend::DeepgramStream(manager, warm_gen));
     }
 
     match config.mode {
@@ -748,32 +834,67 @@ async fn prepare_transcription_backend(
     }
 }
 
+async fn invalidate_warm_slot(state: &LiveBackendState) {
+    let previous = {
+        let mut warm = state.warm_deepgram.lock().await;
+        warm.generation = warm.generation.wrapping_add(1);
+        warm.slot.take()
+    };
+    if let Some(old_slot) = previous {
+        old_slot.manager.invalidate().await;
+    }
+}
+
+async fn warm_up_and_guard_generation(
+    state: &LiveBackendState,
+    manager: &DeepgramWarmConnectionManager,
+    expected_gen: u64,
+    stream_cfg: &DeepgramStreamConfig,
+) -> Result<(), ProviderError> {
+    manager.warm_up(stream_cfg).await?;
+    let still_current = {
+        let warm = state.warm_deepgram.lock().await;
+        !*state.shutdown_tx.borrow()
+            && warm
+                .slot
+                .as_ref()
+                .is_some_and(|slot| slot.generation == expected_gen)
+    };
+    if !still_current {
+        manager.invalidate().await;
+    }
+    Ok(())
+}
+
 async fn get_or_create_deepgram_manager(
     state: &LiveBackendState,
     ws_url: &str,
     api_key: &str,
-) -> Result<DeepgramWarmConnectionManager, ProviderError> {
-    let previous = {
-        let mut slot = state.warm_deepgram.lock().await;
-        if let Some(existing) = slot.as_ref() {
+) -> Result<(DeepgramWarmConnectionManager, u64), ProviderError> {
+    let (manager, gen, previous) = {
+        let mut warm = state.warm_deepgram.lock().await;
+        if let Some(existing) = warm.slot.as_ref() {
             if existing.ws_url == ws_url && existing.api_key == api_key {
-                return Ok(existing.manager.clone());
+                return Ok((existing.manager.clone(), existing.generation));
             }
         }
         let client = DeepgramStreamClient::with_ws_url(ws_url, api_key)?;
         let manager = DeepgramWarmConnectionManager::new(client);
-        let old = slot.replace(WarmDeepgramSlot {
+        warm.generation = warm.generation.wrapping_add(1);
+        let gen = warm.generation;
+        let old = warm.slot.replace(WarmDeepgramSlot {
+            generation: gen,
             ws_url: ws_url.to_owned(),
             api_key: api_key.to_owned(),
             manager: manager.clone(),
         });
-        (manager, old)
+        (manager, gen, old)
     };
 
-    if let Some(old_slot) = previous.1 {
+    if let Some(old_slot) = previous {
         old_slot.manager.invalidate().await;
     }
-    Ok(previous.0)
+    Ok((manager, gen))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -782,6 +903,7 @@ async fn run_streaming_session(
     run_id: u64,
     config: &DaemonConfig,
     manager: DeepgramWarmConnectionManager,
+    warm_gen: u64,
     keywords: Vec<String>,
     control: &Arc<CaptureControl>,
     cancelled_rx: &mut watch::Receiver<bool>,
@@ -895,6 +1017,7 @@ async fn run_streaming_session(
         }
     };
 
+    let ended_before_stop = !capture_done && !control.is_stopped();
     if !capture_done {
         // Stream ended before user stopped capture (e.g., server closed or auth failure).
         control.signal_cancel();
@@ -918,9 +1041,18 @@ async fn run_streaming_session(
         }
     };
 
+    // A clean server close before user stop would otherwise emit `TranscriptReady` while the
+    // state machine is still `Listening`/`Recording` (which drops it and wedges the run).
+    if ended_before_stop {
+        return Err(DaemonStatusError::new(
+            DaemonErrorCode::Connection,
+            Some("Deepgram stream closed unexpectedly before recording stopped".to_owned()),
+        ));
+    }
+
     // Re-warm the next Deepgram WebSocket asynchronously so the next dictation starts instantly.
-    if config.deepgram_warm_websocket {
-        schedule_deepgram_rewarm(Arc::clone(state), manager, stream_cfg).await;
+    if config.deepgram_warm_websocket && !is_cancelled(cancelled_rx) {
+        schedule_deepgram_rewarm(Arc::clone(state), manager, warm_gen, stream_cfg).await;
     }
 
     Ok((result.transcript, post_stop_started))
@@ -929,14 +1061,22 @@ async fn run_streaming_session(
 async fn schedule_deepgram_rewarm(
     state: Arc<LiveBackendState>,
     manager: DeepgramWarmConnectionManager,
+    warm_gen: u64,
     stream_cfg: DeepgramStreamConfig,
 ) {
-    let mut guard = state.rewarm_task.lock().await;
-    if let Some(prev) = guard.take() {
-        prev.abort();
+    let mut rewarm = state.rewarm_state.lock().await;
+    if rewarm.shutting_down {
+        return;
     }
-    *guard = Some(tokio::spawn(async move {
-        if let Err(err) = manager.warm_up(&stream_cfg).await {
+    if let Some(prev) = rewarm.task.take() {
+        prev.abort();
+        let _ = prev.await;
+    }
+    let state_for_task = Arc::clone(&state);
+    rewarm.task = Some(tokio::spawn(async move {
+        if let Err(err) =
+            warm_up_and_guard_generation(&state_for_task, &manager, warm_gen, &stream_cfg).await
+        {
             tracing::debug!(error = %err, "background Deepgram WebSocket re-warm failed");
         }
     }));
@@ -978,7 +1118,7 @@ async fn run_batch_session(
         res = &mut capture_handle => res,
     };
 
-    let (samples_16k, post_stop_started) = match captured {
+    let (samples_16k, had_speech, post_stop_started) = match captured {
         Ok(Ok(batch)) => batch,
         Ok(Err(audio_err)) => return Err(map_audio_error(&audio_err)),
         Err(join_err) => {
@@ -993,23 +1133,35 @@ async fn run_batch_session(
         return Ok((String::new(), post_stop_started));
     }
 
-    if samples_16k.is_empty() {
+    if samples_16k.is_empty() || !had_speech {
         return Ok((String::new(), post_stop_started));
     }
 
     match backend {
         BatchBackend::Local(local) => {
+            let cancel_flag = Arc::new(AtomicBool::new(false));
             let request = LocalTranscriptionRequest {
                 samples_16k,
                 model: config.model.clone(),
                 language: config.language.clone(),
                 keywords,
+                cancel_flag: Arc::clone(&cancel_flag),
             };
-            let local_handle = tokio::task::spawn_blocking(move || local.transcribe(request));
+            let mut local_handle = tokio::task::spawn_blocking(move || local.transcribe(request));
             let res = tokio::select! {
                 biased;
-                _ = wait_cancelled(cancelled_rx) => return Ok((String::new(), post_stop_started)),
-                res = local_handle => res,
+                _ = wait_cancelled(cancelled_rx) => {
+                    cancel_flag.store(true, Ordering::Release);
+                    // Retain the blocking task handle so `shutdown()` awaits local inference teardown.
+                    let tracker = tokio::spawn(async move {
+                        let _ = local_handle.await;
+                    });
+                    let mut reg = state.registry.lock().unwrap_or_else(|e| e.into_inner());
+                    reg.detached_blocking.retain(|h| !h.is_finished());
+                    reg.detached_blocking.push(tracker);
+                    return Ok((String::new(), post_stop_started));
+                }
+                res = &mut local_handle => res,
             };
             match res {
                 Ok(Ok(text)) => Ok((text, post_stop_started)),
@@ -1033,6 +1185,7 @@ async fn run_batch_session(
                     .map_err(|err| map_audio_error(&err))?;
 
             if is_cancelled(cancelled_rx) {
+                wav_guard.remove_async().await;
                 return Ok((String::new(), post_stop_started));
             }
 
@@ -1044,16 +1197,24 @@ async fn run_batch_session(
                 request = request.with_language(language);
             }
 
-            let transcribe_res = tokio::select! {
-                biased;
-                _ = wait_cancelled(cancelled_rx) => return Ok((String::new(), post_stop_started)),
-                res = provider.transcribe(&request) => res,
+            let transcribe_res = {
+                let fut = provider.transcribe(&request);
+                tokio::pin!(fut);
+                tokio::select! {
+                    biased;
+                    _ = wait_cancelled(cancelled_rx) => None,
+                    res = &mut fut => Some(res),
+                }
             };
-            drop(wav_guard);
+            // Drop `fut` above first so any open streaming file handle closes before unlinking.
+            wav_guard.remove_async().await;
 
-            transcribe_res
-                .map(|text| (text, post_stop_started))
-                .map_err(|err| map_provider_error(&err))
+            match transcribe_res {
+                None => Ok((String::new(), post_stop_started)),
+                Some(res) => res
+                    .map(|text| (text, post_stop_started))
+                    .map_err(|err| map_provider_error(&err)),
+            }
         }
     }
 }
@@ -1068,7 +1229,7 @@ fn capture_streaming_loop(
     audio_tx: mpsc::Sender<Bytes>,
 ) -> Result<Instant, AudioError> {
     let mut pcm_buf = Vec::with_capacity(4096);
-    capture_audio_loop(
+    let (stopped_at, _had_speech) = capture_audio_loop(
         factory,
         device_name,
         control,
@@ -1080,7 +1241,8 @@ fn capture_streaming_loop(
             f32_to_pcm16_le_into(samples_16k, &mut pcm_buf);
             send_pcm_chunk(Bytes::copy_from_slice(&pcm_buf), &audio_tx, control)
         },
-    )
+    )?;
+    Ok(stopped_at)
 }
 
 fn capture_batch_loop(
@@ -1089,10 +1251,10 @@ fn capture_batch_loop(
     control: &CaptureControl,
     run_id: u64,
     event_tx: &mpsc::UnboundedSender<(u64, PipelineEvent)>,
-) -> Result<(Vec<f32>, Instant), AudioError> {
+) -> Result<(Vec<f32>, bool, Instant), AudioError> {
     let mut samples_16k = Vec::with_capacity(TARGET_SAMPLE_RATE as usize * 4);
     let mut cap_warned = false;
-    let stopped_at = capture_audio_loop(
+    let (stopped_at, had_speech) = capture_audio_loop(
         factory,
         device_name,
         control,
@@ -1117,9 +1279,9 @@ fn capture_batch_loop(
         },
     )?;
     if control.is_cancelled() {
-        return Ok((Vec::new(), stopped_at));
+        return Ok((Vec::new(), false, stopped_at));
     }
-    Ok((samples_16k, stopped_at))
+    Ok((samples_16k, had_speech, stopped_at))
 }
 
 fn capture_audio_loop<F>(
@@ -1130,7 +1292,7 @@ fn capture_audio_loop<F>(
     event_tx: &mpsc::UnboundedSender<(u64, PipelineEvent)>,
     ready_tx: Option<oneshot::Sender<Result<(), AudioError>>>,
     mut on_samples_16k: F,
-) -> Result<Instant, AudioError>
+) -> Result<(Instant, bool), AudioError>
 where
     F: FnMut(&[f32]) -> bool,
 {
@@ -1178,7 +1340,7 @@ where
 
         let (cancelled, stopped) = control.poll_signal();
         if cancelled {
-            return Ok(Instant::now());
+            return Ok((Instant::now(), speech_emitted));
         }
 
         raw_buf.clear();
@@ -1196,7 +1358,7 @@ where
             resampled_buf.clear();
             resampler.push(&raw_buf, &mut resampled_buf)?;
             if !resampled_buf.is_empty() && !on_samples_16k(&resampled_buf) {
-                return Ok(Instant::now());
+                return Ok((Instant::now(), speech_emitted));
             }
         }
 
@@ -1205,6 +1367,14 @@ where
             source.disarm();
             raw_buf.clear();
             if source.drain_into(&mut raw_buf) > 0 {
+                let rms = effective_rms(source.latest_rms(), &raw_buf);
+                maybe_emit_level_and_vad(
+                    run_id,
+                    rms,
+                    &mut speech_emitted,
+                    &mut last_level_at,
+                    event_tx,
+                );
                 resampled_buf.clear();
                 resampler.push(&raw_buf, &mut resampled_buf)?;
                 if !resampled_buf.is_empty() {
@@ -1216,13 +1386,13 @@ where
             if !resampled_buf.is_empty() {
                 let _ = on_samples_16k(&resampled_buf);
             }
-            return Ok(stopped_at);
+            return Ok((stopped_at, speech_emitted));
         }
 
         if drained == 0 {
             let (cancelled, _) = control.wait_timeout(CAPTURE_POLL_INTERVAL);
             if cancelled {
-                return Ok(Instant::now());
+                return Ok((Instant::now(), speech_emitted));
             }
         }
     }
@@ -1242,8 +1412,7 @@ fn send_pcm_chunk(
             Err(mpsc::error::TrySendError::Closed(_)) => return false,
             Err(mpsc::error::TrySendError::Full(returned)) => {
                 chunk = returned;
-                let (cancelled, _) = control.wait_timeout(Duration::from_millis(5));
-                if cancelled {
+                if control.wait_cancel_timeout(Duration::from_millis(5)) {
                     return false;
                 }
             }
@@ -1493,19 +1662,53 @@ fn parse_bounded_duration(
 }
 
 struct TempWavGuard {
-    path: PathBuf,
+    path: Option<PathBuf>,
 }
 
 impl TempWavGuard {
+    fn new(path: PathBuf) -> Self {
+        Self { path: Some(path) }
+    }
+
     fn path(&self) -> &Path {
-        &self.path
+        self.path.as_deref().expect("TempWavGuard path consumed")
+    }
+
+    async fn remove_async(mut self) {
+        if let Some(path) = self.path.take() {
+            let _ = tokio::task::spawn_blocking(move || remove_file_with_retry(&path)).await;
+        }
     }
 }
 
 impl Drop for TempWavGuard {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+        if let Some(path) = self.path.take() {
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn_blocking(move || remove_file_with_retry(&path));
+            } else {
+                remove_file_with_retry(&path);
+            }
+        }
     }
+}
+
+fn remove_file_with_retry(path: &Path) {
+    for attempt in 0..6 {
+        match fs::remove_file(path) {
+            Ok(()) => return,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return,
+            Err(err) if is_retryable_remove_error(&err) && attempt < 5 => {
+                std::thread::sleep(Duration::from_millis(25 * (attempt + 1)));
+            }
+            Err(_) => return,
+        }
+    }
+}
+
+fn is_retryable_remove_error(err: &std::io::Error) -> bool {
+    err.kind() == std::io::ErrorKind::PermissionDenied
+        || matches!(err.raw_os_error(), Some(32) | Some(33))
 }
 
 fn write_private_temp_wav(samples_16k: &[f32]) -> Result<TempWavGuard, AudioError> {
@@ -1528,7 +1731,7 @@ fn write_private_temp_wav(samples_16k: &[f32]) -> Result<TempWavGuard, AudioErro
         }
         match opts.open(&path) {
             Ok(mut file) => {
-                let guard = TempWavGuard { path };
+                let guard = TempWavGuard::new(path);
                 file.write_all(&wav_bytes)?;
                 file.flush()?;
                 return Ok(guard);
@@ -1558,8 +1761,21 @@ fn map_provider_error(err: &ProviderError) -> DaemonStatusError {
         ProviderError::Http(http_err) if http_err.is_timeout() => {
             DaemonStatusError::new(DaemonErrorCode::Timeout, Some(http_err.to_string()))
         }
+        ProviderError::WebSocket { detail, .. } => {
+            let lower = detail.to_ascii_lowercase();
+            if lower.contains("401")
+                || lower.contains("403")
+                || lower.contains("unauthorized")
+                || lower.contains("forbidden")
+            {
+                DaemonStatusError::new(DaemonErrorCode::MissingApiKey, Some(err.to_string()))
+            } else if lower.contains("timed out") || lower.contains("timeout") {
+                DaemonStatusError::new(DaemonErrorCode::Timeout, Some(err.to_string()))
+            } else {
+                DaemonStatusError::new(DaemonErrorCode::Connection, Some(err.to_string()))
+            }
+        }
         ProviderError::Http(_)
-        | ProviderError::WebSocket { .. }
         | ProviderError::ApiStatus { .. }
         | ProviderError::InvalidResponse { .. } => {
             DaemonStatusError::new(DaemonErrorCode::Connection, Some(err.to_string()))
