@@ -132,13 +132,30 @@ pub trait LocalTranscriber: Send + Sync {
 }
 
 /// Optional endpoint overrides for cloud transcription and LLM refinement (defaults to official URLs).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+///
+/// [`fmt::Debug`] prints only which overrides are set so query-string tokens can never leak into logs.
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct ProviderEndpoints {
     pub openai_base_url: Option<String>,
     pub groq_base_url: Option<String>,
     pub deepgram_rest_base_url: Option<String>,
     pub deepgram_ws_url: Option<String>,
     pub refine_base_url: Option<String>,
+}
+
+impl fmt::Debug for ProviderEndpoints {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ProviderEndpoints")
+            .field("openai_override", &self.openai_base_url.is_some())
+            .field("groq_override", &self.groq_base_url.is_some())
+            .field(
+                "deepgram_rest_override",
+                &self.deepgram_rest_base_url.is_some(),
+            )
+            .field("deepgram_ws_override", &self.deepgram_ws_url.is_some())
+            .field("refine_override", &self.refine_base_url.is_some())
+            .finish()
+    }
 }
 
 impl ProviderEndpoints {
@@ -169,10 +186,28 @@ impl ProviderEndpoints {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DeepgramMaintenanceKey {
+    keepalive_interval: Duration,
+    keepalive_send: Duration,
+    close: Duration,
+}
+
+impl DeepgramMaintenanceKey {
+    fn from_timeouts(timeouts: &DeepgramStreamTimeouts) -> Self {
+        Self {
+            keepalive_interval: timeouts.keepalive_interval,
+            keepalive_send: timeouts.keepalive_send,
+            close: timeouts.close,
+        }
+    }
+}
+
 struct WarmDeepgramSlot {
     generation: u64,
     ws_url: String,
     api_key: String,
+    maintenance: DeepgramMaintenanceKey,
     manager: DeepgramWarmConnectionManager,
 }
 
@@ -298,10 +333,12 @@ impl LiveDictationBackend {
             return Ok(());
         }
         let stream_cfg = build_deepgram_stream_config(config, keywords);
+        let maintenance = DeepgramMaintenanceKey::from_timeouts(&stream_cfg.timeouts);
         let (manager, gen) = match get_or_create_deepgram_manager(
             &self.inner,
             self.inner.endpoints.deepgram_ws_url(),
             api_key,
+            maintenance,
         )
         .await
         {
@@ -363,7 +400,7 @@ impl LiveDictationBackend {
     /// Cancel all active sessions, await audio/network/local-ASR teardown, abort background
     /// re-warm, and gracefully close any prewarmed Deepgram socket.
     pub async fn shutdown(&self) {
-        let _ = self.inner.shutdown_tx.send(true);
+        self.inner.shutdown_tx.send_replace(true);
         let (session_handles, detached_handles) = {
             let mut reg = self
                 .inner
@@ -734,10 +771,16 @@ async fn prepare_transcription_backend(
                 Some("DEEPGRAM_API_KEY nicht gesetzt".to_owned()),
             )
         })?;
-        let (manager, warm_gen) =
-            get_or_create_deepgram_manager(state, state.endpoints.deepgram_ws_url(), api_key)
-                .await
-                .map_err(|err| map_provider_error(&err))?;
+        let maintenance =
+            DeepgramMaintenanceKey::from_timeouts(&deepgram_timeouts_from_config(config));
+        let (manager, warm_gen) = get_or_create_deepgram_manager(
+            state,
+            state.endpoints.deepgram_ws_url(),
+            api_key,
+            maintenance,
+        )
+        .await
+        .map_err(|err| map_provider_error(&err))?;
         return Ok(PreparedBackend::DeepgramStream(manager, warm_gen));
     }
 
@@ -826,7 +869,7 @@ async fn prepare_transcription_backend(
                 api_key,
                 default_model,
             )
-            .map_err(|err| map_provider_error(&err))?;
+            .map_err(|err| map_openai_compatible_config_error(&err))?;
             Ok(PreparedBackend::Batch(BatchBackend::Cloud(
                 CloudProvider::OpenAiCompatible(provider),
             )))
@@ -870,11 +913,15 @@ async fn get_or_create_deepgram_manager(
     state: &LiveBackendState,
     ws_url: &str,
     api_key: &str,
+    maintenance: DeepgramMaintenanceKey,
 ) -> Result<(DeepgramWarmConnectionManager, u64), ProviderError> {
     let (manager, gen, previous) = {
         let mut warm = state.warm_deepgram.lock().await;
         if let Some(existing) = warm.slot.as_ref() {
-            if existing.ws_url == ws_url && existing.api_key == api_key {
+            if existing.ws_url == ws_url
+                && existing.api_key == api_key
+                && existing.maintenance == maintenance
+            {
                 return Ok((existing.manager.clone(), existing.generation));
             }
         }
@@ -886,6 +933,7 @@ async fn get_or_create_deepgram_manager(
             generation: gen,
             ws_url: ws_url.to_owned(),
             api_key: api_key.to_owned(),
+            maintenance,
             manager: manager.clone(),
         });
         (manager, gen, old)
@@ -1462,7 +1510,10 @@ async fn refine_transcript(
     let provider = match build_refine_provider(state, config) {
         Ok(p) => p,
         Err(err) => {
-            tracing::warn!(error = %err, "LLM refinement skipped; keeping original transcript");
+            tracing::warn!(
+                reason = %safe_provider_error_summary(&err),
+                "LLM refinement skipped; keeping original transcript"
+            );
             return Some(transcript.to_owned());
         }
     };
@@ -1523,7 +1574,11 @@ async fn refine_transcript(
             Some(transcript.to_owned())
         }
         Err(err) => {
-            tracing::warn!(error = %err, "LLM refinement failed; keeping original transcript");
+            tracing::warn!(
+                provider = provider.kind().as_str(),
+                reason = %safe_provider_error_summary(&err),
+                "LLM refinement failed; keeping original transcript"
+            );
             Some(transcript.to_owned())
         }
     }
@@ -1661,8 +1716,10 @@ fn parse_bounded_duration(
 ) -> Duration {
     raw.and_then(|s| s.trim().parse::<f64>().ok())
         .filter(|v| v.is_finite() && *v >= 0.0)
+        // Clamp in floating-point seconds BEFORE `Duration::from_secs_f64` so huge inputs like
+        // `1e30` cannot panic inside `Duration::from_secs_f64`.
+        .map(|secs| secs.clamp(min.as_secs_f64(), max.as_secs_f64()))
         .map(Duration::from_secs_f64)
-        .map(|d| d.clamp(min, max))
         .unwrap_or(default)
 }
 
@@ -1752,19 +1809,67 @@ fn write_private_temp_wav(samples_16k: &[f32]) -> Result<TempWavGuard, AudioErro
     )))
 }
 
-fn map_provider_error(err: &ProviderError) -> DaemonStatusError {
+fn safe_provider_error_summary(err: &ProviderError) -> String {
     match err {
-        ProviderError::MissingConfig(msg) => {
-            DaemonStatusError::new(DaemonErrorCode::MissingApiKey, Some(msg.clone()))
+        ProviderError::MissingConfig(msg) => msg.clone(),
+        ProviderError::InvalidInput(_) => "Invalid provider configuration".to_owned(),
+        ProviderError::ApiStatus {
+            provider, status, ..
+        } => format!("{provider} API returned HTTP {status}"),
+        ProviderError::Http(http_err) if http_err.is_timeout() => {
+            "HTTP request timed out".to_owned()
         }
-        ProviderError::InvalidInput(msg) => {
-            DaemonStatusError::new(DaemonErrorCode::InvalidProvider, Some(msg.clone()))
+        ProviderError::Http(_) => "HTTP request failed".to_owned(),
+        ProviderError::WebSocket {
+            provider, detail, ..
+        } => {
+            let lower = detail.to_ascii_lowercase();
+            if lower.contains("401")
+                || lower.contains("403")
+                || lower.contains("unauthorized")
+                || lower.contains("forbidden")
+            {
+                format!("{provider} WebSocket authentication failed")
+            } else if lower.contains("timed out") || lower.contains("timeout") {
+                format!("{provider} WebSocket connection timed out")
+            } else {
+                format!("{provider} WebSocket connection failed")
+            }
+        }
+        ProviderError::InvalidResponse { provider, .. } => {
+            format!("{provider} returned an invalid response")
+        }
+        ProviderError::Io(io_err) => format!("I/O error ({:?})", io_err.kind()),
+    }
+}
+
+fn map_openai_compatible_config_error(err: &ProviderError) -> DaemonStatusError {
+    match err {
+        ProviderError::InvalidInput(_) => DaemonStatusError::new(
+            DaemonErrorCode::InvalidProvider,
+            Some(
+                "Invalid OPENAI_COMPATIBLE_BASE_URL or OpenAI-compatible provider configuration"
+                    .to_owned(),
+            ),
+        ),
+        other => map_provider_error(other),
+    }
+}
+
+fn map_provider_error(err: &ProviderError) -> DaemonStatusError {
+    let summary = safe_provider_error_summary(err);
+    match err {
+        ProviderError::MissingConfig(_) => {
+            DaemonStatusError::new(DaemonErrorCode::MissingApiKey, Some(summary))
+        }
+        ProviderError::InvalidInput(_) => {
+            DaemonStatusError::new(DaemonErrorCode::InvalidProvider, Some(summary))
         }
         ProviderError::ApiStatus { status, .. } if matches!(*status, 401 | 403) => {
-            DaemonStatusError::new(DaemonErrorCode::MissingApiKey, Some(err.to_string()))
+            DaemonStatusError::new(DaemonErrorCode::MissingApiKey, Some(summary))
         }
         ProviderError::Http(http_err) if http_err.is_timeout() => {
-            DaemonStatusError::new(DaemonErrorCode::Timeout, Some(http_err.to_string()))
+            DaemonStatusError::new(DaemonErrorCode::Timeout, Some(summary))
         }
         ProviderError::WebSocket { detail, .. } => {
             let lower = detail.to_ascii_lowercase();
@@ -1773,21 +1878,19 @@ fn map_provider_error(err: &ProviderError) -> DaemonStatusError {
                 || lower.contains("unauthorized")
                 || lower.contains("forbidden")
             {
-                DaemonStatusError::new(DaemonErrorCode::MissingApiKey, Some(err.to_string()))
+                DaemonStatusError::new(DaemonErrorCode::MissingApiKey, Some(summary))
             } else if lower.contains("timed out") || lower.contains("timeout") {
-                DaemonStatusError::new(DaemonErrorCode::Timeout, Some(err.to_string()))
+                DaemonStatusError::new(DaemonErrorCode::Timeout, Some(summary))
             } else {
-                DaemonStatusError::new(DaemonErrorCode::Connection, Some(err.to_string()))
+                DaemonStatusError::new(DaemonErrorCode::Connection, Some(summary))
             }
         }
         ProviderError::Http(_)
         | ProviderError::ApiStatus { .. }
         | ProviderError::InvalidResponse { .. } => {
-            DaemonStatusError::new(DaemonErrorCode::Connection, Some(err.to_string()))
+            DaemonStatusError::new(DaemonErrorCode::Connection, Some(summary))
         }
-        ProviderError::Io(io_err) => {
-            DaemonStatusError::new(DaemonErrorCode::Unknown, Some(io_err.to_string()))
-        }
+        ProviderError::Io(_) => DaemonStatusError::new(DaemonErrorCode::Unknown, Some(summary)),
     }
 }
 
@@ -1832,5 +1935,65 @@ fn emit_if_active(
 ) {
     if !*cancelled_rx.borrow() {
         let _ = event_tx.send((run_id, event));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_bounded_duration_clamps_extreme_values_without_panicking() {
+        let default = Duration::from_secs(2);
+        let min = Duration::from_millis(50);
+        let max = Duration::from_secs(10);
+
+        assert_eq!(parse_bounded_duration(Some("1e30"), default, min, max), max);
+        assert_eq!(
+            parse_bounded_duration(Some("0.5"), default, min, max),
+            Duration::from_millis(500)
+        );
+        assert_eq!(
+            parse_bounded_duration(Some("0.001"), default, min, max),
+            min
+        );
+        assert_eq!(
+            parse_bounded_duration(Some("-5"), default, min, max),
+            default
+        );
+        assert_eq!(
+            parse_bounded_duration(Some("NaN"), default, min, max),
+            default
+        );
+    }
+
+    #[test]
+    fn debug_and_error_mappings_redact_tokens_and_response_bodies() {
+        let endpoints = ProviderEndpoints {
+            openai_base_url: Some("https://proxy.example/v1?token=super-secret-token".to_owned()),
+            ..ProviderEndpoints::default()
+        };
+        let debug = format!("{endpoints:?}");
+        assert!(debug.contains("openai_override: true"));
+        assert!(!debug.contains("super-secret-token"));
+
+        let api_err = ProviderError::ApiStatus {
+            provider: "openai",
+            status: 401,
+            body: "invalid api key sk-secret-leak".to_owned(),
+        };
+        let mapped = map_provider_error(&api_err);
+        assert_eq!(mapped.code, DaemonErrorCode::MissingApiKey);
+        let detail = mapped.detail.unwrap_or_default();
+        assert!(detail.contains("openai") && detail.contains("401"));
+        assert!(!detail.contains("sk-secret-leak"));
+
+        let url_err =
+            ProviderError::InvalidInput("invalid url https://host?token=url-secret".to_owned());
+        let mapped_url = map_openai_compatible_config_error(&url_err);
+        assert_eq!(mapped_url.code, DaemonErrorCode::InvalidProvider);
+        let url_detail = mapped_url.detail.unwrap_or_default();
+        assert!(url_detail.contains("OPENAI_COMPATIBLE_BASE_URL"));
+        assert!(!url_detail.contains("url-secret"));
     }
 }

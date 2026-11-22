@@ -190,7 +190,7 @@ async fn run_daemon(
 }
 
 fn init_tracing(debug: bool) {
-    let default_level = if debug { "info" } else { "warn" };
+    let default_level = if debug { "debug" } else { "warn" };
     let filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level));
 
