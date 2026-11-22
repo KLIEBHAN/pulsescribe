@@ -4,6 +4,7 @@
 //! while keeping all configuration pure and reloadable without global mutable state.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::fs;
 use std::io;
 use std::path::PathBuf;
@@ -40,6 +41,75 @@ pub const DEFAULT_TRANSCRIBING_TIMEOUT: Duration = Duration::from_secs(45);
 
 const MIN_TRANSCRIBING_TIMEOUT_SECS: f64 = 5.0;
 const MAX_TRANSCRIBING_TIMEOUT_SECS: f64 = 300.0;
+
+/// Environment keys retained inside [`DaemonConfig::provider_env`] for hot-reloadable provider
+/// credentials, endpoint overrides, refinement routing, and Deepgram stream timeouts without
+/// mutating process-global environment variables.
+const PROVIDER_ENV_KEYS: &[&str] = &[
+    "OPENAI_API_KEY",
+    "GROQ_API_KEY",
+    "DEEPGRAM_API_KEY",
+    "OPENAI_COMPATIBLE_BASE_URL",
+    "OPENAI_COMPATIBLE_API_KEY",
+    "OPENAI_COMPATIBLE_MODEL",
+    "OPENROUTER_API_KEY",
+    "OPENROUTER_PROVIDER_ORDER",
+    "OPENROUTER_ALLOW_FALLBACKS",
+    "GEMINI_API_KEY",
+    "PULSESCRIBE_APP_CONTEXTS",
+    "PULSESCRIBE_VOICE_COMMANDS",
+    "PULSESCRIBE_DEEPGRAM_CLOSE_TIMEOUT",
+    "PULSESCRIBE_DEEPGRAM_TAIL_PADDING_SECONDS",
+    "PULSESCRIBE_DEEPGRAM_EMPTY_FINALIZE_GRACE_SECONDS",
+    "PULSESCRIBE_DEEPGRAM_KEEPALIVE_INTERVAL_SECONDS",
+    "PULSESCRIBE_DEEPGRAM_FINALIZE_SEND_TIMEOUT",
+    "PULSESCRIBE_DEEPGRAM_CLOSE_STREAM_SEND_TIMEOUT",
+    "PULSESCRIBE_DEEPGRAM_KEEPALIVE_SEND_TIMEOUT",
+];
+
+/// Secret-safe environment subset carried inside [`DaemonConfig`].
+///
+/// Always prints `[REDACTED]` in [`fmt::Debug`] so logging or panicking with a `DaemonConfig`
+/// never exposes API keys.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct RedactedEnv {
+    values: BTreeMap<String, String>,
+}
+
+impl RedactedEnv {
+    pub fn from_env_map(env: &BTreeMap<String, String>) -> Self {
+        let mut values = BTreeMap::new();
+        for &key in PROVIDER_ENV_KEYS {
+            if let Some(val) = get_trimmed(env, key) {
+                values.insert(key.to_owned(), val);
+            }
+        }
+        Self { values }
+    }
+
+    pub fn get(&self, key: &str) -> Option<&str> {
+        self.values.get(key).map(String::as_str)
+    }
+
+    pub fn insert(&mut self, key: impl Into<String>, value: impl Into<String>) {
+        let trimmed = value.into().trim().to_owned();
+        if trimmed.is_empty() {
+            self.values.remove(&key.into());
+        } else {
+            self.values.insert(key.into(), trimmed);
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+}
+
+impl fmt::Debug for RedactedEnv {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "RedactedEnv([REDACTED; {} keys])", self.values.len())
+    }
+}
 
 /// Supported transcription execution modes for the dictation daemon.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -124,6 +194,7 @@ pub struct DaemonConfig {
     pub input_device: Option<String>,
     pub hotkeys: HotkeyBinding,
     pub timings: DaemonTimings,
+    pub provider_env: RedactedEnv,
 }
 
 impl Default for DaemonConfig {
@@ -146,6 +217,7 @@ impl Default for DaemonConfig {
             input_device: None,
             hotkeys: HotkeyBinding::default(),
             timings: DaemonTimings::default(),
+            provider_env: RedactedEnv::default(),
         }
     }
 }
@@ -205,6 +277,8 @@ impl DaemonConfig {
             timings.transcribing_timeout = Duration::from_secs_f64(clamped);
         }
 
+        let provider_env = RedactedEnv::from_env_map(env);
+
         Self {
             mode,
             invalid_mode,
@@ -223,7 +297,14 @@ impl DaemonConfig {
             input_device,
             hotkeys,
             timings,
+            provider_env,
         }
+    }
+
+    /// Return a cloned configuration with an added/updated provider environment value.
+    pub fn with_provider_env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.provider_env.insert(key, value);
+        self
     }
 
     /// Validate that the active provider mode is recognized before starting a dictation run.
@@ -543,5 +624,23 @@ mod tests {
         let win_hold = DaemonConfig::from_env_map_for_platform(&hold_only, PlatformKind::Windows);
         assert_eq!(win_hold.hotkeys.toggle, None);
         assert_eq!(win_hold.hotkeys.hold.as_deref(), Some("ctrl+shift+space"));
+    }
+
+    #[test]
+    fn provider_env_captures_credentials_and_redacts_debug_output() {
+        let mut env = BTreeMap::new();
+        env.insert("OPENAI_API_KEY".into(), " sk-top-secret-123 ".into());
+        env.insert("UNRELATED_SHELL_VAR".into(), "ignored".into());
+
+        let cfg = DaemonConfig::from_env_map(&env);
+        assert_eq!(
+            cfg.provider_env.get("OPENAI_API_KEY"),
+            Some("sk-top-secret-123")
+        );
+        assert_eq!(cfg.provider_env.get("UNRELATED_SHELL_VAR"), None);
+
+        let debug = format!("{cfg:?}");
+        assert!(debug.contains("[REDACTED"));
+        assert!(!debug.contains("sk-top-secret-123"));
     }
 }
