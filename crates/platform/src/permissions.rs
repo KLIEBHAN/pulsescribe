@@ -224,12 +224,16 @@ impl<P: PermissionsChecker> PermissionsChecker for CachedPermissionsChecker<P> {
 
     fn request_permission(&self, kind: PermissionKind) -> Result<(), PlatformError> {
         self.invalidate();
-        self.inner.request_permission(kind)
+        let result = self.inner.request_permission(kind);
+        self.invalidate();
+        result
     }
 
     fn open_privacy_settings(&self, kind: PermissionKind) -> Result<(), PlatformError> {
         self.invalidate();
-        self.inner.open_privacy_settings(kind)
+        let result = self.inner.open_privacy_settings(kind);
+        self.invalidate();
+        result
     }
 }
 
@@ -275,6 +279,11 @@ mod tests {
         fn snapshot(&self) -> PermissionSnapshot {
             self.calls.fetch_add(1, Ordering::SeqCst);
             *lock_unpoisoned(&self.snapshot)
+        }
+        fn request_permission(&self, _kind: PermissionKind) -> Result<(), PlatformError> {
+            // Simulate a concurrent/in-flight grant occurring during the prompt.
+            *lock_unpoisoned(&self.snapshot) = PermissionSnapshot::all_granted_default();
+            Ok(())
         }
     }
 

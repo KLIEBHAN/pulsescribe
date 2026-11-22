@@ -22,6 +22,9 @@ pub trait ClipboardBackend: Send + Sync {
     fn read_text(&self) -> Result<Option<String>, PlatformError>;
 
     /// Single-attempt read without internal open-retry sleeps for the Windows paste-sync loop.
+    ///
+    /// Adapters whose [`Self::read_text`] performs internal retries must override this with a
+    /// non-retrying read or return [`PlatformError::Unavailable`].
     fn read_text_once(&self) -> Result<Option<String>, PlatformError> {
         self.read_text()
     }
@@ -58,6 +61,15 @@ impl ClipboardBackend for ArboardClipboard {
             Err(arboard::Error::ContentNotAvailable) => Ok(None),
             Err(err) => Err(PlatformError::Clipboard(err.to_string())),
         }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn read_text_once(&self) -> Result<Option<String>, PlatformError> {
+        // `arboard`'s Windows backend retries OpenClipboard with internal sleeps,
+        // which would exceed the caller's sync-verify budget.
+        Err(PlatformError::Unavailable(
+            "single-attempt clipboard read requires the native Windows clipboard adapter",
+        ))
     }
 }
 
@@ -109,5 +121,14 @@ mod tests {
         assert!(!win.restore_clipboard);
         assert_eq!(win.restore_delay, Duration::from_millis(500));
         assert_eq!(win.paste_sync_poll, Duration::from_millis(5));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn arboard_read_text_once_is_explicitly_unavailable_on_windows() {
+        assert!(matches!(
+            ArboardClipboard.read_text_once(),
+            Err(PlatformError::Unavailable(_))
+        ));
     }
 }
