@@ -9,7 +9,7 @@ use pulsescribe_core::{
     AppState, DaemonStatusError, DeliveryOutcome, HistoryStore, PreferencesStore,
     TranscriptClipboardBackend, TranscriptDelivery,
 };
-use pulsescribe_platform::{HotkeyEvent, HotkeyRegistration};
+use pulsescribe_platform::{AppDetector, HotkeyEvent, HotkeyRegistration, SoundName};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
@@ -59,23 +59,26 @@ impl ActiveSession {
     }
 
     pub fn cancel(&mut self) {
-        self.stop_tx = None;
+        // Send cancel before dropping `stop_tx` so listeners selecting on both receivers observe
+        // an explicit cancellation signal first.
         if let Some(tx) = self.cancel_tx.take() {
             let _ = tx.send(());
         }
+        self.stop_tx = None;
     }
 }
 
 /// Pluggable audio capture + transcription + optional refinement engine driven by [`DaemonRuntime`].
 ///
-/// Implemented by the live audio/provider pipeline (PR 3.5b) and by deterministic test fakes.
+/// Receives `app_detector` so implementations can query [`AppDetector::frontmost_app`] (process
+/// identifier for LLM context routing) off the Tokio worker thread.
 pub trait DictationBackend: Send + Sync {
     fn start_session(
         &self,
         run_id: u64,
         config: DaemonConfig,
         is_test: bool,
-        target_app: Option<String>,
+        app_detector: Arc<dyn AppDetector>,
         event_tx: mpsc::UnboundedSender<(u64, PipelineEvent)>,
     ) -> ActiveSession;
 }
@@ -117,6 +120,14 @@ struct PendingIpcResponse {
     status: IpcStatus,
     transcript: String,
     error: Option<String>,
+}
+
+struct PendingHistoryEntry {
+    text: String,
+    mode: Option<String>,
+    language: Option<String>,
+    refined: bool,
+    target_app: Option<String>,
 }
 
 enum RuntimeCommand {
@@ -210,7 +221,8 @@ impl DaemonHandle {
         rx.await.ok()
     }
 
-    /// Request graceful shutdown and wait until the runtime finishes cleaning up hotkeys and IPC.
+    /// Request graceful shutdown and wait until the runtime finishes draining pending history,
+    /// delivery, IPC, reload, sound, and hotkey cleanup tasks.
     pub async fn shutdown(&self) {
         let (tx, rx) = oneshot::channel();
         if self.cmd_tx.send(RuntimeCommand::Shutdown(Some(tx))).is_ok() {
@@ -267,6 +279,7 @@ impl DaemonRuntime {
             None
         };
 
+        let (reload_shutdown_tx, mut reload_shutdown_rx) = watch::channel(false);
         let reload_task = if options.enable_reload_watcher {
             let tracker_paths = store.paths().clone();
             let reload_cmd_tx = cmd_tx.clone();
@@ -281,24 +294,37 @@ impl DaemonRuntime {
                 // Consume initial immediate tick so startup doesn't trigger a redundant poll.
                 ticker.tick().await;
                 loop {
-                    ticker.tick().await;
-                    let Some(mut current) = tracker.take() else {
-                        break;
-                    };
-                    let res = tokio::task::spawn_blocking(move || {
-                        let changed = current.poll_changed();
-                        (current, changed)
-                    })
-                    .await;
-                    match res {
-                        Ok((updated, changed)) => {
-                            tracker = Some(updated);
-                            if changed && reload_cmd_tx.send(RuntimeCommand::ReloadConfig).is_err()
-                            {
+                    tokio::select! {
+                        biased;
+                        changed = reload_shutdown_rx.changed() => {
+                            if changed.is_err() || *reload_shutdown_rx.borrow() {
                                 break;
                             }
                         }
-                        Err(_) => break,
+                        _ = ticker.tick() => {
+                            if *reload_shutdown_rx.borrow() {
+                                break;
+                            }
+                            let Some(mut current) = tracker.take() else {
+                                break;
+                            };
+                            let res = tokio::task::spawn_blocking(move || {
+                                let changed = current.poll_changed();
+                                (current, changed)
+                            })
+                            .await;
+                            match res {
+                                Ok((updated, changed)) => {
+                                    tracker = Some(updated);
+                                    if changed
+                                        && reload_cmd_tx.send(RuntimeCommand::ReloadConfig).is_err()
+                                    {
+                                        break;
+                                    }
+                                }
+                                Err(_) => break,
+                            }
+                        }
                     }
                 }
             }))
@@ -306,12 +332,7 @@ impl DaemonRuntime {
             None
         };
 
-        let history = Arc::new(HistoryStore::new(store.paths().config_dir()));
-        let delivery = Arc::new(Mutex::new(TranscriptDelivery::for_platform(
-            platform.platform_kind.is_macos(),
-        )));
-        let state_machine = DaemonStateMachine::new(initial_config.timings);
-
+        // Serialized FIFO IPC response writer (preserves write order and drains before shutdown).
         let (ipc_resp_tx, mut ipc_resp_rx) = mpsc::unbounded_channel::<PendingIpcResponse>();
         let writer_paths = ipc_paths.clone();
         let ipc_writer_task = tokio::spawn(async move {
@@ -337,9 +358,51 @@ impl DaemonRuntime {
             }
         });
 
+        // Serialized FIFO history writer (preserves chronological JSONL order and drains on shutdown).
+        let history = Arc::new(HistoryStore::new(store.paths().config_dir()));
+        let history_app_detector = Arc::clone(&platform.app_detector);
+        let (history_tx, mut history_rx) = mpsc::unbounded_channel::<PendingHistoryEntry>();
+        let history_writer_task = tokio::spawn(async move {
+            while let Some(item) = history_rx.recv().await {
+                let history = Arc::clone(&history);
+                let app_detector = Arc::clone(&history_app_detector);
+                let _ = tokio::task::spawn_blocking(move || {
+                    let app_ctx = item.target_app.or_else(|| app_detector.frontmost_app());
+                    if let Err(err) = history.save_transcript(
+                        &item.text,
+                        item.mode.as_deref(),
+                        item.language.as_deref(),
+                        item.refined,
+                        app_ctx.as_deref(),
+                    ) {
+                        tracing::warn!(error = %err, "failed to save transcript history");
+                    }
+                })
+                .await;
+            }
+        });
+
+        // Serialized sound playback worker so cold asset loads / Win32 alias lookups never stall
+        // Tokio worker threads.
+        let sound_player = Arc::clone(&platform.sound);
+        let (sound_tx, mut sound_rx) = mpsc::unbounded_channel::<SoundName>();
+        let sound_task = tokio::spawn(async move {
+            while let Some(sound) = sound_rx.recv().await {
+                let player = Arc::clone(&sound_player);
+                let _ = tokio::task::spawn_blocking(move || {
+                    player.play(sound);
+                })
+                .await;
+            }
+        });
+
+        let delivery = Arc::new(Mutex::new(TranscriptDelivery::for_platform(
+            platform.platform_kind.is_macos(),
+        )));
+        let state_machine = DaemonStateMachine::new(initial_config.timings);
+
         let mut actor = DaemonActor {
             store,
-            history,
             delivery,
             config: initial_config,
             platform,
@@ -354,15 +417,23 @@ impl DaemonRuntime {
             ipc_writer_task: Some(ipc_writer_task),
             ipc_shutdown_tx,
             ipc_task,
+            history_tx: Some(history_tx),
+            history_writer_task: Some(history_writer_task),
+            sound_tx: Some(sound_tx),
+            sound_task: Some(sound_task),
+            reload_shutdown_tx,
             reload_task,
             hotkey_registration: None,
             sessions: HashMap::new(),
+            delivery_tasks: Vec::new(),
             watchdog_task: None,
             idle_reset_task: None,
             reload_in_flight: false,
+            reload_pending_after_flight: false,
+            shutting_down: false,
         };
 
-        actor.register_hotkeys();
+        actor.register_hotkeys().await;
         let join_handle = tokio::spawn(actor.run(cmd_rx, pipeline_rx));
 
         Self {
@@ -384,7 +455,6 @@ impl DaemonRuntime {
 
 struct DaemonActor {
     store: Arc<PreferencesStore>,
-    history: Arc<HistoryStore>,
     delivery: Arc<Mutex<TranscriptDelivery>>,
     config: DaemonConfig,
     platform: DaemonPlatform,
@@ -399,12 +469,20 @@ struct DaemonActor {
     ipc_writer_task: Option<JoinHandle<()>>,
     ipc_shutdown_tx: watch::Sender<bool>,
     ipc_task: Option<JoinHandle<()>>,
+    history_tx: Option<mpsc::UnboundedSender<PendingHistoryEntry>>,
+    history_writer_task: Option<JoinHandle<()>>,
+    sound_tx: Option<mpsc::UnboundedSender<SoundName>>,
+    sound_task: Option<JoinHandle<()>>,
+    reload_shutdown_tx: watch::Sender<bool>,
     reload_task: Option<JoinHandle<()>>,
     hotkey_registration: Option<Box<dyn HotkeyRegistration>>,
     sessions: HashMap<u64, ActiveSession>,
+    delivery_tasks: Vec<JoinHandle<()>>,
     watchdog_task: Option<JoinHandle<()>>,
     idle_reset_task: Option<JoinHandle<()>>,
     reload_in_flight: bool,
+    reload_pending_after_flight: bool,
+    shutting_down: bool,
 }
 
 impl DaemonActor {
@@ -427,14 +505,14 @@ impl DaemonActor {
                             shutdown_ack = ack;
                             break;
                         }
-                        other => self.handle_command(other),
+                        other => self.handle_command(other).await,
                     }
                 }
                 maybe_evt = pipeline_rx.recv() => {
                     let Some((run_id, event)) = maybe_evt else {
                         break;
                     };
-                    self.handle_pipeline_event(run_id, event);
+                    self.handle_pipeline_event(run_id, event).await;
                 }
             }
         }
@@ -445,21 +523,10 @@ impl DaemonActor {
         }
     }
 
-    fn handle_command(&mut self, cmd: RuntimeCommand) {
+    async fn handle_command(&mut self, cmd: RuntimeCommand) {
         let actions = match cmd {
-            RuntimeCommand::Hotkey(event) => {
-                let target_app = match event {
-                    HotkeyEvent::Toggle | HotkeyEvent::HoldDown { .. } => {
-                        self.platform.app_detector.frontmost_app_label()
-                    }
-                    HotkeyEvent::HoldUp { .. } => None,
-                };
-                self.state_machine.on_hotkey(event, target_app)
-            }
-            RuntimeCommand::StartRecording => {
-                let target_app = self.platform.app_detector.frontmost_app_label();
-                self.state_machine.on_start_recording(target_app)
-            }
+            RuntimeCommand::Hotkey(event) => self.state_machine.on_hotkey(event, None),
+            RuntimeCommand::StartRecording => self.state_machine.on_start_recording(None),
             RuntimeCommand::StopRecording => self.state_machine.on_stop_recording(),
             RuntimeCommand::StartTest => self.state_machine.on_start_test(None),
             RuntimeCommand::Cancel => self.state_machine.on_cancel(),
@@ -471,7 +538,7 @@ impl DaemonActor {
             RuntimeCommand::CopyLastTranscript(reply_tx) => {
                 let delivery = Arc::clone(&self.delivery);
                 let clipboard = Arc::clone(&self.platform.clipboard);
-                tokio::task::spawn_blocking(move || {
+                let handle = tokio::task::spawn_blocking(move || {
                     let msg = {
                         let d = delivery.lock().unwrap_or_else(|e| e.into_inner());
                         let mut c = clipboard.lock().unwrap_or_else(|e| e.into_inner());
@@ -480,6 +547,7 @@ impl DaemonActor {
                     };
                     let _ = reply_tx.send(msg);
                 });
+                self.track_delivery_task(handle);
                 Vec::new()
             }
             RuntimeCommand::IpcCommand { cmd_id, kind } => {
@@ -491,21 +559,33 @@ impl DaemonActor {
                 outcome,
                 target_app,
                 duration_secs,
-            } => self.state_machine.on_delivery_finished(
-                run_id,
-                text,
-                outcome,
-                target_app,
-                duration_secs,
-                self.config.show_rtf,
-            ),
+            } => {
+                self.prune_finished_delivery_tasks();
+                self.state_machine.on_delivery_finished(
+                    run_id,
+                    text,
+                    outcome,
+                    target_app,
+                    duration_secs,
+                    self.config.show_rtf,
+                )
+            }
             RuntimeCommand::ConfigReloadLoaded(new_cfg) => {
                 self.reload_in_flight = false;
-                if self.state_machine.active_run().is_none() && self.state_machine.is_idle_like() {
-                    self.apply_reloaded_config(*new_cfg);
+                if self.shutting_down {
+                    self.reload_pending_after_flight = false;
+                    Vec::new()
+                } else if self.state_machine.active_run().is_none()
+                    && self.state_machine.is_idle_like()
+                {
+                    self.apply_reloaded_config(*new_cfg).await;
+                    if std::mem::take(&mut self.reload_pending_after_flight) {
+                        self.spawn_config_reload();
+                    }
                     Vec::new()
                 } else {
                     // A dictation started while `.env` was loading; defer reload until Idle.
+                    self.reload_pending_after_flight = false;
                     self.state_machine.on_config_reload_requested()
                 }
             }
@@ -516,10 +596,11 @@ impl DaemonActor {
             RuntimeCommand::Shutdown(_) => Vec::new(),
         };
 
-        self.execute_actions(actions);
+        self.execute_actions(actions).await;
     }
 
-    fn handle_pipeline_event(&mut self, run_id: u64, event: PipelineEvent) {
+    async fn handle_pipeline_event(&mut self, run_id: u64, event: PipelineEvent) {
+        let mut stale_failed_run = None;
         let actions = match event {
             PipelineEvent::CaptureStarted => self.state_machine.on_capture_started(run_id),
             PipelineEvent::AudioLevel(level) => {
@@ -545,15 +626,22 @@ impl DaemonActor {
                     .on_transcript_ready(run_id, text, duration_secs)
             }
             PipelineEvent::Failed(err) => {
-                self.sessions.remove(&run_id);
+                // Keep the session registered until `on_run_failed`'s `CancelCapture` action runs
+                // so the backend receives an explicit cancellation signal.
+                stale_failed_run = Some(run_id);
                 self.state_machine.on_run_failed(run_id, err)
             }
         };
 
-        self.execute_actions(actions);
+        self.execute_actions(actions).await;
+        if let Some(failed_id) = stale_failed_run {
+            if let Some(mut session) = self.sessions.remove(&failed_id) {
+                session.cancel();
+            }
+        }
     }
 
-    fn execute_actions(&mut self, actions: Vec<DaemonAction>) {
+    async fn execute_actions(&mut self, actions: Vec<DaemonAction>) {
         let _ = self.state_tx.send_if_modified(|current| {
             let next = self.state_machine.state();
             if *current != next {
@@ -571,20 +659,17 @@ impl DaemonActor {
                 }
                 DaemonAction::PlaySound(sound) => {
                     if self.config.sound_enabled {
-                        self.platform.sound.play(sound);
+                        if let Some(tx) = &self.sound_tx {
+                            let _ = tx.send(sound);
+                        }
                     }
                 }
                 DaemonAction::StartCapture { run_id, is_test } => {
-                    let target_app = self
-                        .state_machine
-                        .active_run()
-                        .filter(|r| r.run_id == run_id)
-                        .and_then(|r| r.target_app.clone());
                     let session = self.backend.start_session(
                         run_id,
                         self.config.clone(),
                         is_test,
-                        target_app,
+                        Arc::clone(&self.platform.app_detector),
                         self.pipeline_tx.clone(),
                     );
                     self.sessions.insert(run_id, session);
@@ -607,9 +692,13 @@ impl DaemonActor {
                 } => {
                     let delivery = Arc::clone(&self.delivery);
                     let clipboard = Arc::clone(&self.platform.clipboard);
+                    let app_detector = Arc::clone(&self.platform.app_detector);
                     let auto_paste = self.config.auto_paste;
                     let cmd_tx = self.cmd_tx.clone();
-                    tokio::task::spawn_blocking(move || {
+                    let handle = tokio::task::spawn_blocking(move || {
+                        // Resolve human-readable target app label off the Tokio worker thread
+                        // right at delivery time (matching Python `_done_status`).
+                        let display_app = target_app.or_else(|| app_detector.frontmost_app_label());
                         let outcome = {
                             let mut d = delivery.lock().unwrap_or_else(|e| e.into_inner());
                             let mut c = clipboard.lock().unwrap_or_else(|e| e.into_inner());
@@ -620,27 +709,22 @@ impl DaemonActor {
                             run_id,
                             text,
                             outcome,
-                            target_app,
+                            target_app: display_app,
                             duration_secs,
                         });
                     });
+                    self.track_delivery_task(handle);
                 }
                 DaemonAction::SaveHistory { text, target_app } => {
-                    let history = Arc::clone(&self.history);
-                    let mode = Some(self.config.mode.as_str().to_owned());
-                    let language = self.config.language.clone();
-                    let refined = self.config.refine;
-                    tokio::task::spawn_blocking(move || {
-                        if let Err(err) = history.save_transcript(
-                            &text,
-                            mode.as_deref(),
-                            language.as_deref(),
-                            refined,
-                            target_app.as_deref(),
-                        ) {
-                            tracing::warn!(error = %err, "failed to save transcript history");
-                        }
-                    });
+                    if let Some(tx) = &self.history_tx {
+                        let _ = tx.send(PendingHistoryEntry {
+                            text,
+                            mode: Some(self.config.mode.as_str().to_owned()),
+                            language: self.config.language.clone(),
+                            refined: self.config.refine,
+                            target_app,
+                        });
+                    }
                 }
                 DaemonAction::SendIpcResponse {
                     cmd_id,
@@ -683,63 +767,87 @@ impl DaemonActor {
                     }));
                 }
                 DaemonAction::ApplyPendingConfigReload => {
-                    if !self.reload_in_flight {
-                        self.reload_in_flight = true;
-                        let store = Arc::clone(&self.store);
-                        let cmd_tx = self.cmd_tx.clone();
-                        tokio::task::spawn_blocking(move || {
-                            let reloaded = DaemonConfig::from_store_reload(&store);
-                            let _ =
-                                cmd_tx.send(RuntimeCommand::ConfigReloadLoaded(Box::new(reloaded)));
-                        });
+                    if self.shutting_down {
+                        continue;
+                    }
+                    if self.reload_in_flight {
+                        self.reload_pending_after_flight = true;
+                    } else {
+                        self.spawn_config_reload();
                     }
                 }
             }
         }
     }
 
-    fn apply_reloaded_config(&mut self, new_cfg: DaemonConfig) {
+    fn spawn_config_reload(&mut self) {
+        self.reload_in_flight = true;
+        let store = Arc::clone(&self.store);
+        let cmd_tx = self.cmd_tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let reloaded = DaemonConfig::from_store_reload(&store);
+            let _ = cmd_tx.send(RuntimeCommand::ConfigReloadLoaded(Box::new(reloaded)));
+        });
+    }
+
+    async fn apply_reloaded_config(&mut self, new_cfg: DaemonConfig) {
         let hotkeys_changed = new_cfg.hotkeys != self.config.hotkeys;
         self.state_machine.update_timings(new_cfg.timings);
         self.config = new_cfg.clone();
         let _ = self.config_tx.send(new_cfg);
 
         if hotkeys_changed {
-            self.register_hotkeys();
+            self.register_hotkeys().await;
         }
         self.event_bus.publish(DaemonEvent::ConfigReloaded);
     }
 
-    fn register_hotkeys(&mut self) {
+    async fn register_hotkeys(&mut self) {
         if let Some(mut existing) = self.hotkey_registration.take() {
-            if let Err(err) = existing.unregister() {
-                tracing::warn!(error = %err, "failed to unregister previous hotkey");
-            }
+            let _ = tokio::task::spawn_blocking(move || {
+                if let Err(err) = existing.unregister() {
+                    tracing::warn!(error = %err, "failed to unregister previous hotkey");
+                }
+            })
+            .await;
         }
         if self.config.hotkeys.is_empty() {
             return;
         }
+        let binding = self.config.hotkeys.clone();
+        let hotkeys = Arc::clone(&self.platform.hotkeys);
         let cmd_tx = self.cmd_tx.clone();
         let callback = Arc::new(move |event: HotkeyEvent| {
             let _ = cmd_tx.send(RuntimeCommand::Hotkey(event));
         });
-        match self
-            .platform
-            .hotkeys
-            .register(&self.config.hotkeys, callback)
-        {
-            Ok(reg) => {
+        match tokio::task::spawn_blocking(move || hotkeys.register(&binding, callback)).await {
+            Ok(Ok(reg)) => {
                 self.hotkey_registration = Some(reg);
             }
-            Err(err) => {
+            Ok(Err(err)) => {
                 tracing::error!(error = %err, "failed to register global hotkeys");
+            }
+            Err(err) => {
+                tracing::error!(error = %err, "hotkey registration task panicked");
             }
         }
     }
 
+    fn track_delivery_task(&mut self, handle: JoinHandle<()>) {
+        self.prune_finished_delivery_tasks();
+        self.delivery_tasks.push(handle);
+    }
+
+    fn prune_finished_delivery_tasks(&mut self) {
+        self.delivery_tasks.retain(|handle| !handle.is_finished());
+    }
+
     async fn cleanup_on_shutdown(&mut self) {
+        self.shutting_down = true;
+        self.reload_pending_after_flight = false;
+
         let actions = self.state_machine.on_cancel();
-        self.execute_actions(actions);
+        self.execute_actions(actions).await;
 
         for (_, mut session) in self.sessions.drain() {
             session.cancel();
@@ -750,9 +858,26 @@ impl DaemonActor {
         if let Some(task) = self.idle_reset_task.take() {
             task.abort();
         }
+
+        // Stop and await reload watcher cleanly so no blocking poll touches config dir after exit.
+        let _ = self.reload_shutdown_tx.send(true);
         if let Some(task) = self.reload_task.take() {
-            task.abort();
+            let _ = task.await;
         }
+
+        // Drain outstanding clipboard delivery, history persistence, and sound tasks.
+        for task in self.delivery_tasks.drain(..) {
+            let _ = task.await;
+        }
+        self.history_tx.take();
+        if let Some(task) = self.history_writer_task.take() {
+            let _ = task.await;
+        }
+        self.sound_tx.take();
+        if let Some(task) = self.sound_task.take() {
+            let _ = task.await;
+        }
+
         // Drain pending FIFO IPC response writes BEFORE stopping the IPC polling task so an
         // in-flight write can never recreate `ipc_response.json` after shutdown cleanup removes it.
         self.ipc_resp_tx.take();

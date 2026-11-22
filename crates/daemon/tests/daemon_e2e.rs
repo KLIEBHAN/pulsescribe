@@ -2,13 +2,16 @@
 //! `HistoryStore` persistence, File-IPC wizard round-trips, watchdog timeouts, and config reload.
 
 use std::fs;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use pulsescribe_core::transcript_delivery::{LAST_TRANSCRIPT_COPIED, PASTED};
-use pulsescribe_core::{AppState, HistoryStore, PreferencesStore, TranscriptClipboardBackend};
+use pulsescribe_core::{
+    AppState, DaemonErrorCode, DaemonStatusError, HistoryStore, PreferencesStore,
+    TranscriptClipboardBackend,
+};
 use pulsescribe_daemon::{
     ActiveSession, DaemonConfig, DaemonEvent, DaemonPlatform, DaemonRuntime, DaemonRuntimeOptions,
     DaemonTimings, DictationBackend, IpcClient, IpcCommandKind, IpcPaths, IpcStatus, PipelineEvent,
@@ -23,18 +26,32 @@ use tokio::sync::{mpsc, oneshot};
 
 static TEST_DIR_SEQ: AtomicU64 = AtomicU64::new(0);
 
-fn unique_test_dir(tag: &str) -> PathBuf {
-    let seq = TEST_DIR_SEQ.fetch_add(1, Ordering::Relaxed);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!(
-        "pulsescribe-daemon-e2e-{tag}-{}-{nanos}-{seq}",
-        std::process::id()
-    ));
-    fs::create_dir_all(&dir).unwrap();
-    dir
+struct TempDir(PathBuf);
+
+impl TempDir {
+    fn new(tag: &str) -> Self {
+        let seq = TEST_DIR_SEQ.fetch_add(1, Ordering::Relaxed);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "pulsescribe-daemon-e2e-{tag}-{}-{nanos}-{seq}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        Self(dir)
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
 }
 
 #[derive(Default)]
@@ -55,11 +72,27 @@ impl TranscriptClipboardBackend for RecordingClipboard {
     }
 }
 
-struct StubAppDetector(String);
+struct StubAppDetector {
+    process_name: String,
+    display_label: String,
+}
+
+impl StubAppDetector {
+    fn new(process_name: &str, display_label: &str) -> Self {
+        Self {
+            process_name: process_name.to_owned(),
+            display_label: display_label.to_owned(),
+        }
+    }
+}
 
 impl AppDetector for StubAppDetector {
     fn frontmost_app(&self) -> Option<String> {
-        Some(self.0.clone())
+        Some(self.process_name.clone())
+    }
+
+    fn frontmost_app_label(&self) -> Option<String> {
+        Some(self.display_label.clone())
     }
 }
 
@@ -113,10 +146,23 @@ impl HotkeyBackend for StubHotkeyBackend {
 enum FakeBackendBehavior {
     ReturnText(String),
     HangAfterStop,
+    FailMidCapture,
 }
 
 struct FakeDictationBackend {
     behavior: FakeBackendBehavior,
+    observed_context_app: Arc<Mutex<Option<String>>>,
+    received_cancel: Arc<AtomicBool>,
+}
+
+impl FakeDictationBackend {
+    fn new(behavior: FakeBackendBehavior) -> Self {
+        Self {
+            behavior,
+            observed_context_app: Arc::new(Mutex::new(None)),
+            received_cancel: Arc::new(AtomicBool::new(false)),
+        }
+    }
 }
 
 impl DictationBackend for FakeDictationBackend {
@@ -125,25 +171,49 @@ impl DictationBackend for FakeDictationBackend {
         run_id: u64,
         _config: DaemonConfig,
         _is_test: bool,
-        _target_app: Option<String>,
+        app_detector: Arc<dyn AppDetector>,
         event_tx: mpsc::UnboundedSender<(u64, PipelineEvent)>,
     ) -> ActiveSession {
         let (stop_tx, stop_rx) = oneshot::channel();
         let (cancel_tx, mut cancel_rx) = oneshot::channel();
-        let response = match &self.behavior {
+        let observed_context_app = Arc::clone(&self.observed_context_app);
+        let received_cancel = Arc::clone(&self.received_cancel);
+        let mode = match &self.behavior {
             FakeBackendBehavior::ReturnText(text) => Some(text.clone()),
             FakeBackendBehavior::HangAfterStop => None,
+            FakeBackendBehavior::FailMidCapture => Some(String::new()),
         };
+        let fail_mid = matches!(self.behavior, FakeBackendBehavior::FailMidCapture);
 
         tokio::spawn(async move {
+            *observed_context_app.lock().unwrap() = app_detector.frontmost_app();
             let _ = event_tx.send((run_id, PipelineEvent::CaptureStarted));
             let _ = event_tx.send((run_id, PipelineEvent::AudioLevel(0.42)));
             let _ = event_tx.send((run_id, PipelineEvent::SpeechDetected));
 
+            if fail_mid {
+                let _ = event_tx.send((
+                    run_id,
+                    PipelineEvent::Failed(DaemonStatusError::new(
+                        DaemonErrorCode::Connection,
+                        Some("stream dropped".into()),
+                    )),
+                ));
+                if cancel_rx.await.is_ok() {
+                    received_cancel.store(true, Ordering::Release);
+                }
+                return;
+            }
+
             tokio::select! {
-                _ = &mut cancel_rx => {}
-                _ = stop_rx => {
-                    if let Some(text) = response {
+                biased;
+                res = &mut cancel_rx => {
+                    if res.is_ok() {
+                        received_cancel.store(true, Ordering::Release);
+                    }
+                }
+                Ok(()) = stop_rx => {
+                    if let Some(text) = mode {
                         let _ = event_tx.send((
                             run_id,
                             PipelineEvent::TranscriptReady {
@@ -151,9 +221,8 @@ impl DictationBackend for FakeDictationBackend {
                                 duration_secs: Some(0.5),
                             },
                         ));
-                    } else {
-                        // Simulate hung backend until watchdog cancels.
-                        let _ = cancel_rx.await;
+                    } else if cancel_rx.await.is_ok() {
+                        received_cancel.store(true, Ordering::Release);
                     }
                 }
             }
@@ -174,19 +243,22 @@ fn fast_timings() -> DaemonTimings {
 
 #[tokio::test]
 async fn hotkey_toggle_delivers_transcript_saves_history_copies_last_and_resets_idle() {
-    let dir = unique_test_dir("toggle");
-    let store = Arc::new(PreferencesStore::new(&dir));
+    let dir = TempDir::new("toggle");
+    let store = Arc::new(PreferencesStore::new(dir.path()));
     let clipboard = Arc::new(Mutex::new(RecordingClipboard::default()));
     let sounds = Arc::new(StubSoundPlayer::default());
     let hotkeys = Arc::new(StubHotkeyBackend::default());
+    let backend = Arc::new(FakeDictationBackend::new(FakeBackendBehavior::ReturnText(
+        "Hallo PulseScribe".into(),
+    )));
 
     let platform = DaemonPlatform {
-        app_detector: Arc::new(StubAppDetector("Mail".into())),
+        app_detector: Arc::new(StubAppDetector::new("WINWORD", "Microsoft Word")),
         sound: Arc::clone(&sounds) as Arc<dyn SoundPlayer>,
         hotkeys: Arc::clone(&hotkeys) as Arc<dyn HotkeyBackend>,
         permissions: Arc::new(DefaultPermissionsChecker),
         clipboard: Arc::clone(&clipboard) as Arc<Mutex<dyn TranscriptClipboardBackend + Send>>,
-        platform_kind: PlatformKind::MacOs,
+        platform_kind: PlatformKind::Windows,
     };
 
     let config = DaemonConfig {
@@ -200,9 +272,7 @@ async fn hotkey_toggle_delivers_transcript_saves_history_copies_last_and_resets_
         Arc::clone(&store),
         config,
         platform,
-        Arc::new(FakeDictationBackend {
-            behavior: FakeBackendBehavior::ReturnText("Hallo PulseScribe".into()),
-        }),
+        Arc::clone(&backend) as Arc<dyn DictationBackend>,
         DaemonRuntimeOptions {
             enable_ipc: false,
             enable_reload_watcher: false,
@@ -214,7 +284,6 @@ async fn hotkey_toggle_delivers_transcript_saves_history_copies_last_and_resets_
     let handle = runtime.handle();
     let mut events = handle.subscribe();
 
-    // Start via toggle hotkey, wait until Recording, then stop via toggle.
     hotkeys.emit(HotkeyEvent::Toggle);
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
@@ -229,6 +298,12 @@ async fn hotkey_toggle_delivers_transcript_saves_history_copies_last_and_resets_
     })
     .await
     .expect("should reach Recording state");
+
+    // Backend receives process identifier (`WINWORD`) for LLM context routing.
+    assert_eq!(
+        backend.observed_context_app.lock().unwrap().as_deref(),
+        Some("WINWORD")
+    );
 
     hotkeys.emit(HotkeyEvent::Toggle);
 
@@ -246,7 +321,8 @@ async fn hotkey_toggle_delivers_transcript_saves_history_copies_last_and_resets_
                     assert_eq!(text, "Hallo PulseScribe");
                     assert!(outcome.ok);
                     assert_eq!(outcome.feedback, PASTED);
-                    assert_eq!(target_app.as_deref(), Some("Mail"));
+                    // Delivery UI label uses human-readable `frontmost_app_label`.
+                    assert_eq!(target_app.as_deref(), Some("Microsoft Word"));
                     saw_delivered = true;
                 }
                 Ok(DaemonEvent::StateChanged {
@@ -270,21 +346,20 @@ async fn hotkey_toggle_delivers_transcript_saves_history_copies_last_and_resets_
     );
     assert_eq!(clipboard.lock().unwrap().copied, vec!["Hallo PulseScribe"]);
 
-    // Verify JSONL history persistence in ~/.pulsescribe/history.jsonl.
+    // Shutdown drains FIFO history writer before we read history.jsonl (zero timing race).
+    runtime.shutdown().await;
+
     let history = HistoryStore::new(store.paths().config_dir());
     let entries = history.get_recent_transcripts(5);
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].text, "Hallo PulseScribe");
-    assert_eq!(entries[0].app.as_deref(), Some("Mail"));
-
-    runtime.shutdown().await;
-    let _ = fs::remove_dir_all(&dir);
+    assert_eq!(entries[0].app.as_deref(), Some("WINWORD"));
 }
 
 #[tokio::test]
 async fn file_ipc_wizard_test_roundtrip_and_config_hot_reload() {
-    let dir = unique_test_dir("ipc-reload");
-    let store = Arc::new(PreferencesStore::new(&dir));
+    let dir = TempDir::new("ipc-reload");
+    let store = Arc::new(PreferencesStore::new(dir.path()));
     fs::write(
         store.paths().env_file(),
         "PULSESCRIBE_TOGGLE_HOTKEY=f19\nPULSESCRIBE_HOLD_HOTKEY=fn\n",
@@ -294,7 +369,7 @@ async fn file_ipc_wizard_test_roundtrip_and_config_hot_reload() {
     let clipboard = Arc::new(Mutex::new(RecordingClipboard::default()));
     let hotkeys = Arc::new(StubHotkeyBackend::default());
     let platform = DaemonPlatform {
-        app_detector: Arc::new(StubAppDetector("Wizard".into())),
+        app_detector: Arc::new(StubAppDetector::new("Wizard", "PulseScribe Wizard")),
         sound: Arc::new(StubSoundPlayer::default()),
         hotkeys: Arc::clone(&hotkeys) as Arc<dyn HotkeyBackend>,
         permissions: Arc::new(DefaultPermissionsChecker),
@@ -312,9 +387,9 @@ async fn file_ipc_wizard_test_roundtrip_and_config_hot_reload() {
         Arc::clone(&store),
         config,
         platform,
-        Arc::new(FakeDictationBackend {
-            behavior: FakeBackendBehavior::ReturnText("IPC Test Ok".into()),
-        }),
+        Arc::new(FakeDictationBackend::new(FakeBackendBehavior::ReturnText(
+            "IPC Test Ok".into(),
+        ))),
         DaemonRuntimeOptions {
             enable_ipc: true,
             ipc_poll_interval: Duration::from_millis(20),
@@ -329,7 +404,6 @@ async fn file_ipc_wizard_test_roundtrip_and_config_hot_reload() {
     let ipc_paths = IpcPaths::from_app_paths(store.paths());
     let mut ipc_client = IpcClient::new(ipc_paths.clone());
 
-    // 1. Wizard sends StartTest -> daemon writes `recording` response.
     let cmd_id = ipc_client.send_command(&IpcCommandKind::StartTest).unwrap();
     let rec_resp = tokio::time::timeout(Duration::from_secs(2), async {
         loop {
@@ -345,7 +419,6 @@ async fn file_ipc_wizard_test_roundtrip_and_config_hot_reload() {
     .expect("IPC recording status should arrive");
     assert_eq!(rec_resp.status, IpcStatus::Recording);
 
-    // 2. Wizard sends StopTest -> daemon writes `done` with transcript without pasting or history.
     let _ = ipc_client.send_command(&IpcCommandKind::StopTest).unwrap();
     let done_resp = tokio::time::timeout(Duration::from_secs(2), async {
         loop {
@@ -361,11 +434,7 @@ async fn file_ipc_wizard_test_roundtrip_and_config_hot_reload() {
     .expect("IPC done status should arrive");
     assert_eq!(done_resp.transcript, "IPC Test Ok");
     assert!(clipboard.lock().unwrap().pasted.is_empty());
-    assert!(HistoryStore::new(store.paths().config_dir())
-        .get_recent_transcripts(5)
-        .is_empty());
 
-    // 3. Edit .env + touch .reload -> daemon reloads config and re-registers updated hotkeys.
     fs::write(
         store.paths().env_file(),
         "PULSESCRIBE_TOGGLE_HOTKEY=ctrl+alt+r\nPULSESCRIBE_HOLD_HOTKEY=ctrl+win\n",
@@ -392,22 +461,27 @@ async fn file_ipc_wizard_test_roundtrip_and_config_hot_reload() {
     runtime.shutdown().await;
     assert!(!ipc_paths.command_file.exists());
     assert!(!ipc_paths.response_file.exists());
-    let _ = fs::remove_dir_all(&dir);
+    assert!(HistoryStore::new(store.paths().config_dir())
+        .get_recent_transcripts(5)
+        .is_empty());
 }
 
 #[tokio::test]
-async fn watchdog_timeout_recovers_hung_transcription_to_idle() {
-    let dir = unique_test_dir("watchdog");
-    let store = Arc::new(PreferencesStore::new(&dir));
+async fn watchdog_timeout_and_mid_capture_failure_cancel_active_sessions_cleanly() {
+    let dir = TempDir::new("watchdog-fail");
+    let store = Arc::new(PreferencesStore::new(dir.path()));
     let clipboard = Arc::new(Mutex::new(RecordingClipboard::default()));
     let hotkeys = Arc::new(StubHotkeyBackend::default());
+    let hang_backend = Arc::new(FakeDictationBackend::new(
+        FakeBackendBehavior::HangAfterStop,
+    ));
 
     let platform = DaemonPlatform {
-        app_detector: Arc::new(StubAppDetector("Notes".into())),
+        app_detector: Arc::new(StubAppDetector::new("Notes", "Notes")),
         sound: Arc::new(StubSoundPlayer::default()),
         hotkeys: Arc::clone(&hotkeys) as Arc<dyn HotkeyBackend>,
         permissions: Arc::new(DefaultPermissionsChecker),
-        clipboard,
+        clipboard: Arc::clone(&clipboard) as Arc<Mutex<dyn TranscriptClipboardBackend + Send>>,
         platform_kind: PlatformKind::MacOs,
     };
 
@@ -418,12 +492,10 @@ async fn watchdog_timeout_recovers_hung_transcription_to_idle() {
     };
 
     let runtime = DaemonRuntime::spawn(
-        store,
-        config,
+        Arc::clone(&store),
+        config.clone(),
         platform,
-        Arc::new(FakeDictationBackend {
-            behavior: FakeBackendBehavior::HangAfterStop,
-        }),
+        Arc::clone(&hang_backend) as Arc<dyn DictationBackend>,
         DaemonRuntimeOptions {
             enable_ipc: false,
             enable_reload_watcher: false,
@@ -466,7 +538,7 @@ async fn watchdog_timeout_recovers_hung_transcription_to_idle() {
                     error: Some(err),
                     ..
                 }) => {
-                    assert_eq!(err.code, pulsescribe_core::DaemonErrorCode::Timeout);
+                    assert_eq!(err.code, DaemonErrorCode::Timeout);
                     saw_timeout_error = true;
                 }
                 Ok(DaemonEvent::StateChanged {
@@ -483,6 +555,49 @@ async fn watchdog_timeout_recovers_hung_transcription_to_idle() {
     .expect("watchdog timeout should transition Error -> Idle");
 
     assert_eq!(handle.state(), AppState::Idle);
+    assert!(hang_backend.received_cancel.load(Ordering::Acquire));
     runtime.shutdown().await;
-    let _ = fs::remove_dir_all(&dir);
+
+    // Also verify mid-capture `PipelineEvent::Failed` dispatches an explicit `cancel_tx` signal.
+    let fail_backend = Arc::new(FakeDictationBackend::new(
+        FakeBackendBehavior::FailMidCapture,
+    ));
+    let fail_runtime = DaemonRuntime::spawn(
+        store,
+        config,
+        DaemonPlatform::noop(clipboard),
+        Arc::clone(&fail_backend) as Arc<dyn DictationBackend>,
+        DaemonRuntimeOptions {
+            enable_ipc: false,
+            enable_reload_watcher: false,
+            ..DaemonRuntimeOptions::default()
+        },
+    )
+    .await;
+    let fail_handle = fail_runtime.handle();
+    let mut fail_events = fail_handle.subscribe();
+    fail_handle.start_recording();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Ok(DaemonEvent::StateChanged {
+                state: AppState::Error,
+                error: Some(err),
+                ..
+            }) = fail_events.recv().await
+            {
+                assert_eq!(err.code, DaemonErrorCode::Connection);
+                break;
+            }
+        }
+    })
+    .await
+    .expect("mid-capture failure should enter Error state");
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !fail_backend.received_cancel.load(Ordering::Acquire) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("mid-capture failure should explicitly cancel the active session");
+    fail_runtime.shutdown().await;
 }

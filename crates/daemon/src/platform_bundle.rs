@@ -101,7 +101,7 @@ impl DaemonPlatform {
             );
             Self {
                 app_detector: Arc::new(WindowsAppDetector::new()),
-                sound: Arc::new(WindowsSoundPlayer),
+                sound: Arc::new(WindowsSoundPlayer::new()),
                 hotkeys: Arc::new(WindowsHotkeyBackend),
                 permissions: Arc::new(CachedPermissionsChecker::new(
                     WindowsPermissionsChecker::default(),
