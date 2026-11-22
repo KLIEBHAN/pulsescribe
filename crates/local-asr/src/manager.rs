@@ -145,17 +145,17 @@ impl LocalAsrManager {
         if request.cancel_flag.load(Ordering::Acquire) {
             return Err(LocalAsrError::Cancelled);
         }
-        let (engine, use_guard) = self.acquire_engine(
-            model_name,
-            request.language.as_deref(),
-            Some(&request.cancel_flag),
-        )?;
-        let result = engine.transcribe(request);
-        // Drop `Arc<dyn LocalAsrEngine>` before releasing `use_guard` so a waiting replacement
-        // observes zero remaining strong references when freeing the previous model.
-        drop(engine);
-        drop(use_guard);
-        result
+        // Bind `_use_guard` before `engine` so `engine` drops first even on panic unwind,
+        // ensuring any waiting replacement observes zero remaining strong references.
+        let (_use_guard, engine) = {
+            let (engine, use_guard) = self.acquire_engine(
+                model_name,
+                request.language.as_deref(),
+                Some(&request.cancel_flag),
+            )?;
+            (use_guard, engine)
+        };
+        engine.transcribe(request)
     }
 
     /// Resolve and load (or return the cached) [`LocalAsrEngine`] for `model_name`.
@@ -341,10 +341,12 @@ impl LocalAsrManager {
                     });
                 }
             }
+            // Acquire `in_use.read()` BEFORE dropping `load_guard` so no waiting loader can take
+            // `in_use.write()` and evict/allocate a second model while we hold `engine`.
             drop(write_guard);
+            let read_guard = self.in_use.read().unwrap_or_else(|e| e.into_inner());
             drop(load_guard);
 
-            let read_guard = self.in_use.read().unwrap_or_else(|e| e.into_inner());
             return Ok((engine, read_guard));
         }
     }
