@@ -9,7 +9,7 @@ use std::io;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use pulsescribe_core::env::parse_bool;
+use pulsescribe_core::env::{current_process_env, parse_bool, resolve_environment};
 use pulsescribe_core::overlay_feedback::ERROR_FEEDBACK_SECONDS;
 use pulsescribe_core::paths::{build_file_signature, AppPaths, FileSignature};
 use pulsescribe_core::preferences::PreferencesStore;
@@ -73,7 +73,7 @@ impl DaemonMode {
     }
 }
 
-/// Configurable lifecycle durations used by [`crate::DaemonStateMachine`].
+/// Configurable lifecycle durations used by the daemon state machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DaemonTimings {
     pub done_display_hold: Duration,
@@ -172,7 +172,7 @@ impl DaemonConfig {
         let sound_enabled = get_bool(env, "PULSESCRIBE_SOUND", true);
         let auto_paste = get_bool(env, "PULSESCRIBE_AUTO_PASTE", true);
         let show_rtf = transcription_time_enabled_from_value(
-            env.get("PULSESCRIBE_SHOW_RTF").map(String::as_str),
+            get_trimmed(env, "PULSESCRIBE_SHOW_RTF").as_deref(),
         );
         let input_device = get_trimmed(env, "PULSESCRIBE_INPUT_DEVICE");
 
@@ -219,22 +219,36 @@ impl DaemonConfig {
         Ok(())
     }
 
-    /// Load configuration from `~/.pulsescribe/.env` without process-environment overrides
-    /// (used for hot-reloads after a settings UI writes `.env`).
-    pub fn from_store_env_file(store: &PreferencesStore) -> Self {
-        Self::from_env_map(&store.read_env_file())
+    /// Resolve configuration from `~/.pulsescribe/.env` and an explicit process-environment map
+    /// using `pulsescribe_core::env::resolve_environment` (including `${VAR}` dotenv expansion).
+    ///
+    /// - `override_existing == false` (startup): `process_env > user .env`
+    /// - `override_existing == true` (hot-reload): `user .env > process_env` while preserving
+    ///   process-only `PULSESCRIBE_*` settings not defined in `.env`.
+    pub fn from_store_with_env(
+        store: &PreferencesStore,
+        process_env: &BTreeMap<String, String>,
+        override_existing: bool,
+    ) -> Self {
+        let merged = resolve_environment(
+            process_env,
+            store.paths().config_dir(),
+            None,
+            override_existing,
+        );
+        Self::from_env_map(&merged)
     }
 
-    /// Load configuration merging `~/.pulsescribe/.env` with current process environment overrides
-    /// (`Process Env > ~/.pulsescribe/.env`, matching `utils/env.py`).
-    pub fn from_store_with_process_env(store: &PreferencesStore) -> Self {
-        let mut merged = store.read_env_file();
-        for (key, value) in std::env::vars() {
-            if key.starts_with("PULSESCRIBE_") {
-                merged.insert(key, value);
-            }
-        }
-        Self::from_env_map(&merged)
+    /// Load startup configuration (`process_env > ~/.pulsescribe/.env`), skipping non-UTF-8 OS
+    /// environment entries safely instead of panicking.
+    pub fn from_store_startup(store: &PreferencesStore) -> Self {
+        Self::from_store_with_env(store, &current_process_env(), false)
+    }
+
+    /// Load hot-reload configuration (`~/.pulsescribe/.env > process_env`), preserving process-only
+    /// overrides that are absent from `.env`.
+    pub fn from_store_reload(store: &PreferencesStore) -> Self {
+        Self::from_store_with_env(store, &current_process_env(), true)
     }
 
     /// Returns `true` when live WebSocket streaming should be used for the configured mode.
@@ -276,7 +290,13 @@ impl ReloadTracker {
         match fs::remove_file(&self.reload_signal_file) {
             Ok(()) => changed = true,
             Err(err) if err.kind() == io::ErrorKind::NotFound => {}
-            Err(_) => changed = true,
+            Err(err) => {
+                tracing::debug!(
+                    path = %self.reload_signal_file.display(),
+                    error = %err,
+                    "deferring reload signal consumption after remove error"
+                );
+            }
         }
 
         let current_sig = build_file_signature(&self.env_file).ok();
@@ -331,15 +351,19 @@ fn resolve_hotkeys(env: &BTreeMap<String, String>) -> HotkeyBinding {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    static TEST_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
+
     fn unique_temp_dir(tag: &str) -> PathBuf {
+        let seq = TEST_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let dir = std::env::temp_dir().join(format!(
-            "pulsescribe-daemon-cfg-{tag}-{}-{nanos}",
+            "pulsescribe-daemon-cfg-{tag}-{}-{nanos}-{seq}",
             std::process::id()
         ));
         fs::create_dir_all(&dir).unwrap();
@@ -353,7 +377,7 @@ mod tests {
         env.insert("PULSESCRIBE_MODEL".into(), "gpt-4o-transcribe".into());
         env.insert("PULSESCRIBE_LANGUAGE".into(), "auto".into());
         env.insert("PULSESCRIBE_REFINE".into(), "true".into());
-        env.insert("PULSESCRIBE_SHOW_RTF".into(), "1".into());
+        env.insert("PULSESCRIBE_SHOW_RTF".into(), " 1 ".into());
         env.insert("PULSESCRIBE_TOGGLE_HOTKEY".into(), " f19 ".into());
         env.insert("PULSESCRIBE_HOLD_HOTKEY".into(), " fn ".into());
         env.insert("PULSESCRIBE_TRANSCRIBING_TIMEOUT".into(), "999".into());
@@ -414,6 +438,35 @@ mod tests {
         .unwrap();
         assert!(tracker.poll_changed());
         assert!(!tracker.poll_changed());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn startup_vs_reload_precedence_preserves_process_only_keys() {
+        let dir = unique_temp_dir("precedence");
+        let store = PreferencesStore::new(&dir);
+        fs::write(
+            store.paths().env_file(),
+            "PULSESCRIBE_MODE=openai\nPULSESCRIBE_REFINE=true\n",
+        )
+        .unwrap();
+
+        let mut proc_env = BTreeMap::new();
+        proc_env.insert("PULSESCRIBE_MODE".into(), "groq".into());
+        proc_env.insert("PULSESCRIBE_OVERLAY".into(), "false".into());
+
+        // Startup: process_env wins over .env.
+        let startup = DaemonConfig::from_store_with_env(&store, &proc_env, false);
+        assert_eq!(startup.mode, DaemonMode::Groq);
+        assert!(startup.refine);
+        assert!(!startup.overlay_enabled);
+
+        // Reload: .env overrides matching keys while process-only keys stay intact.
+        let reload = DaemonConfig::from_store_with_env(&store, &proc_env, true);
+        assert_eq!(reload.mode, DaemonMode::OpenAi);
+        assert!(reload.refine);
+        assert!(!reload.overlay_enabled);
 
         let _ = fs::remove_dir_all(&dir);
     }

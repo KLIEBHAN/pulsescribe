@@ -4,15 +4,18 @@
 //! `~/.pulsescribe/` so external onboarding/settings tools and the daemon can coordinate
 //! test dictations without platform-specific named pipes or sockets.
 
-use std::fs;
-use std::io;
+use std::fs::{self, File};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use pulsescribe_core::atomic_io::write_text_atomic;
-use pulsescribe_core::paths::{build_file_signature, AppPaths, FileSignature};
-use serde::{Deserialize, Serialize};
+use pulsescribe_core::paths::{
+    build_file_signature, file_signature_from_metadata, AppPaths, FileSignature,
+};
+use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -25,6 +28,9 @@ pub const IPC_RESPONSE_FILENAME: &str = "ipc_response.json";
 
 /// Default polling interval matching `utils/ipc.py::POLL_INTERVAL_SECONDS`.
 pub const IPC_POLL_INTERVAL: Duration = Duration::from_millis(200);
+
+const IPC_WRITE_RETRY_ATTEMPTS: usize = 5;
+const IPC_WRITE_RETRY_DELAY: Duration = Duration::from_millis(10);
 
 static IPC_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -87,12 +93,20 @@ impl IpcStatus {
     }
 }
 
+fn deserialize_null_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    T: Default + Deserialize<'de>,
+    D: Deserializer<'de>,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 /// Wire payload stored in `ipc_command.json`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IpcCommand {
     pub id: String,
     pub command: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub timestamp: f64,
 }
 
@@ -101,11 +115,11 @@ pub struct IpcCommand {
 pub struct IpcResponse {
     pub id: String,
     pub status: IpcStatus,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub transcript: String,
     #[serde(default)]
     pub error: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub timestamp: f64,
 }
 
@@ -156,13 +170,15 @@ impl IpcClient {
             timestamp: unix_timestamp_secs(),
         };
         let encoded = serde_json::to_string(&payload)?;
-        write_text_atomic(&self.paths.command_file, &encoded)?;
+        write_ipc_json_atomic(&self.paths.command_file, &encoded)?;
         tracing::debug!(command = kind.as_str(), id = %cmd_id, "IPC command sent");
         Ok(cmd_id)
     }
 
     /// Poll `ipc_response.json` using `FileSignature` caching, returning the response only when
     /// its correlation `id` matches `cmd_id`.
+    ///
+    /// Transient read or parse failures are never cached as negative hits so the next poll retries.
     pub fn poll_response(&mut self, cmd_id: &str) -> Option<IpcResponse> {
         let Ok(sig) = build_file_signature(&self.paths.response_file) else {
             self.last_response_sig = None;
@@ -171,8 +187,16 @@ impl IpcClient {
         };
 
         if self.last_response_sig != Some(sig) {
-            self.last_response_payload = safe_read_json::<IpcResponse>(&self.paths.response_file);
-            self.last_response_sig = Some(sig);
+            match read_json_with_signature::<IpcResponse>(&self.paths.response_file) {
+                Some((read_sig, payload)) => {
+                    self.last_response_sig = Some(read_sig);
+                    self.last_response_payload = Some(payload);
+                }
+                None => {
+                    self.last_response_sig = None;
+                    self.last_response_payload = None;
+                }
+            }
         }
 
         self.last_response_payload
@@ -214,21 +238,52 @@ impl IpcServer {
         delete_if_exists(&self.paths.response_file);
     }
 
-    /// Poll once for a new unprocessed command, removing `ipc_command.json` before returning so
-    /// subsequent polls never re-dispatch it.
+    /// Non-blocking async variant of [`Self::cleanup_files`] for Tokio tasks.
+    pub async fn cleanup_files_async(&self) {
+        delete_if_exists_async(&self.paths.command_file).await;
+        delete_if_exists_async(&self.paths.response_file).await;
+    }
+
+    /// Poll once for a new unprocessed command, deleting `ipc_command.json` only if its file
+    /// signature still matches the file that was just read (avoiding unlinking a newer command).
     pub fn poll_once(&mut self) -> Option<(String, IpcCommandKind)> {
-        let cmd = safe_read_json::<IpcCommand>(&self.paths.command_file)?;
-        if cmd.id.is_empty()
-            || cmd.command.is_empty()
-            || self.last_processed_id.as_deref() == Some(cmd.id.as_str())
+        let (read_sig, cmd) = read_json_with_signature::<IpcCommand>(&self.paths.command_file)?;
+        let (cmd_id, kind) = self.accept_command(cmd)?;
+        if build_file_signature(&self.paths.command_file).ok() == Some(read_sig) {
+            delete_if_exists(&self.paths.command_file);
+        }
+        Some((cmd_id, kind))
+    }
+
+    /// Non-blocking async variant of [`Self::poll_once`] backed by `tokio::fs`.
+    pub async fn poll_once_async(&mut self) -> Option<(String, IpcCommandKind)> {
+        let (read_sig, cmd) =
+            read_json_with_signature_async::<IpcCommand>(&self.paths.command_file).await?;
+        let (cmd_id, kind) = self.accept_command(cmd)?;
+        let current_sig = tokio::fs::metadata(&self.paths.command_file)
+            .await
+            .ok()
+            .map(|meta| file_signature_from_metadata(&meta));
+        if current_sig == Some(read_sig) {
+            delete_if_exists_async(&self.paths.command_file).await;
+        }
+        Some((cmd_id, kind))
+    }
+
+    fn accept_command(&mut self, cmd: IpcCommand) -> Option<(String, IpcCommandKind)> {
+        let cmd_id = cmd.id.trim();
+        let command = cmd.command.trim();
+        if cmd_id.is_empty()
+            || command.is_empty()
+            || self.last_processed_id.as_deref() == Some(cmd_id)
         {
             return None;
         }
-        self.last_processed_id = Some(cmd.id.clone());
-        delete_if_exists(&self.paths.command_file);
-        let kind = IpcCommandKind::parse(&cmd.command);
-        tracing::debug!(command = kind.as_str(), id = %cmd.id, "IPC command received");
-        Some((cmd.id, kind))
+        let cmd_id = cmd_id.to_owned();
+        self.last_processed_id = Some(cmd_id.clone());
+        let kind = IpcCommandKind::parse(command);
+        tracing::debug!(command = kind.as_str(), id = %cmd_id, "IPC command received");
+        Some((cmd_id, kind))
     }
 
     /// Write an atomic response JSON payload for `cmd_id`.
@@ -247,14 +302,14 @@ impl IpcServer {
             timestamp: unix_timestamp_secs(),
         };
         let encoded = serde_json::to_string(&payload)?;
-        write_text_atomic(&self.paths.response_file, &encoded)?;
+        write_ipc_json_atomic(&self.paths.response_file, &encoded)?;
         tracing::debug!(status = status.as_str(), id = %cmd_id, "IPC response sent");
         Ok(())
     }
 
-    /// Spawn a background Tokio task polling `ipc_command.json` at `poll_interval` until
-    /// `shutdown_rx` turns `true` (or its sender drops), cleaning up IPC files on start and exit.
-    pub fn spawn_polling_task<F>(
+    /// Clean stale IPC files asynchronously and spawn a non-blocking Tokio polling task until
+    /// `shutdown_rx` turns `true` (or its sender drops), cleaning up IPC files on exit.
+    pub async fn spawn_polling_task<F>(
         mut self,
         poll_interval: Duration,
         mut shutdown_rx: watch::Receiver<bool>,
@@ -263,7 +318,7 @@ impl IpcServer {
     where
         F: FnMut(String, IpcCommandKind) + Send + 'static,
     {
-        self.cleanup_files();
+        self.cleanup_files_async().await;
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(poll_interval.max(Duration::from_millis(10)));
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -279,15 +334,33 @@ impl IpcServer {
                         if *shutdown_rx.borrow() {
                             break;
                         }
-                        if let Some((cmd_id, kind)) = self.poll_once() {
+                        if let Some((cmd_id, kind)) = self.poll_once_async().await {
                             on_command(cmd_id, kind);
                         }
                     }
                 }
             }
-            self.cleanup_files();
+            self.cleanup_files_async().await;
         })
     }
+}
+
+/// Write an IPC JSON file atomically, retrying briefly on transient `PermissionDenied` sharing
+/// violations (e.g., Windows `MoveFileExW` racing against Python `Path.read_text`).
+fn write_ipc_json_atomic(path: &Path, encoded: &str) -> Result<(), IpcError> {
+    for attempt in 0..IPC_WRITE_RETRY_ATTEMPTS {
+        match write_text_atomic(path, encoded) {
+            Ok(()) => return Ok(()),
+            Err(err)
+                if err.kind() == io::ErrorKind::PermissionDenied
+                    && attempt + 1 < IPC_WRITE_RETRY_ATTEMPTS =>
+            {
+                thread::sleep(IPC_WRITE_RETRY_DELAY);
+            }
+            Err(err) => return Err(IpcError::Io(err)),
+        }
+    }
+    unreachable!("IPC_WRITE_RETRY_ATTEMPTS is non-zero")
 }
 
 fn next_command_id() -> String {
@@ -307,17 +380,50 @@ fn unix_timestamp_secs() -> f64 {
         .unwrap_or(0.0)
 }
 
-fn safe_read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
-    let raw = fs::read_to_string(path).ok()?;
+fn read_json_with_signature<T: for<'de> Deserialize<'de>>(
+    path: &Path,
+) -> Option<(FileSignature, T)> {
+    let mut file = File::open(path).ok()?;
+    let meta = file.metadata().ok()?;
+    let sig = file_signature_from_metadata(&meta);
+    let mut raw = String::new();
+    file.read_to_string(&mut raw).ok()?;
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return None;
     }
-    serde_json::from_str(trimmed).ok()
+    let parsed = serde_json::from_str(trimmed).ok()?;
+    Some((sig, parsed))
+}
+
+async fn read_json_with_signature_async<T: for<'de> Deserialize<'de>>(
+    path: &Path,
+) -> Option<(FileSignature, T)> {
+    use tokio::io::AsyncReadExt;
+
+    let mut file = tokio::fs::File::open(path).await.ok()?;
+    let meta = file.metadata().await.ok()?;
+    let sig = file_signature_from_metadata(&meta);
+    let mut raw = String::new();
+    file.read_to_string(&mut raw).await.ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let parsed = serde_json::from_str(trimmed).ok()?;
+    Some((sig, parsed))
 }
 
 fn delete_if_exists(path: &Path) {
     if let Err(err) = fs::remove_file(path) {
+        if err.kind() != io::ErrorKind::NotFound {
+            tracing::debug!(path = %path.display(), error = %err, "IPC file cleanup ignored error");
+        }
+    }
+}
+
+async fn delete_if_exists_async(path: &Path) {
+    if let Err(err) = tokio::fs::remove_file(path).await {
         if err.kind() != io::ErrorKind::NotFound {
             tracing::debug!(path = %path.display(), error = %err, "IPC file cleanup ignored error");
         }
@@ -329,13 +435,16 @@ mod tests {
     use super::*;
     use tokio::sync::mpsc;
 
+    static TEST_IPC_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
+
     fn unique_ipc_dir(tag: &str) -> PathBuf {
+        let seq = TEST_IPC_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let dir = std::env::temp_dir().join(format!(
-            "pulsescribe-daemon-ipc-{tag}-{}-{nanos}",
+            "pulsescribe-daemon-ipc-{tag}-{}-{nanos}-{seq}",
             std::process::id()
         ));
         fs::create_dir_all(&dir).unwrap();
@@ -390,20 +499,51 @@ mod tests {
     }
 
     #[test]
-    fn ipc_ignores_corrupt_and_non_object_json_gracefully() {
+    fn ipc_tolerates_null_optional_fields_and_does_not_cache_transient_parse_failure() {
         let dir = unique_ipc_dir("corrupt");
         let paths = IpcPaths::in_dir(&dir);
         let mut server = IpcServer::new(paths.clone());
         let mut client = IpcClient::new(paths.clone());
 
+        // Corrupt/whitespace/non-object payloads are ignored safely.
         fs::write(&paths.command_file, "{truncated").unwrap();
         assert_eq!(server.poll_once(), None);
-
         fs::write(&paths.command_file, "[1, 2, 3]").unwrap();
         assert_eq!(server.poll_once(), None);
+        fs::write(
+            &paths.command_file,
+            "{\"id\":\"   \",\"command\":\"start_test\"}",
+        )
+        .unwrap();
+        assert_eq!(server.poll_once(), None);
 
-        fs::write(&paths.response_file, "\"not-an-object\"").unwrap();
+        // Explicit JSON null for timestamp/transcript deserializes to default.
+        fs::write(
+            &paths.command_file,
+            "{\"id\":\"abc12345\",\"command\":\"start_test\",\"timestamp\":null}",
+        )
+        .unwrap();
+        assert_eq!(
+            server.poll_once(),
+            Some(("abc12345".into(), IpcCommandKind::StartTest))
+        );
+
+        // Failed parse on response is NOT cached as a negative signature hit.
+        fs::write(&paths.response_file, "{truncated").unwrap();
         assert_eq!(client.poll_response("abc12345"), None);
+        assert_eq!(client.last_response_sig, None);
+
+        fs::write(
+            &paths.response_file,
+            "{\"id\":\"abc12345\",\"status\":\"done\",\"transcript\":null,\"timestamp\":null}",
+        )
+        .unwrap();
+        let resp = client
+            .poll_response("abc12345")
+            .expect("valid response after transient corruption should load");
+        assert_eq!(resp.status, IpcStatus::Done);
+        assert_eq!(resp.transcript, "");
+        assert_eq!(resp.timestamp, 0.0);
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -427,13 +567,15 @@ mod tests {
         let (rx_tx, mut rx_rx) = mpsc::unbounded_channel();
 
         let server = IpcServer::new(paths.clone());
-        let handle = server.spawn_polling_task(
-            Duration::from_millis(20),
-            shutdown_rx,
-            move |cmd_id, kind| {
-                let _ = rx_tx.send((cmd_id, kind));
-            },
-        );
+        let handle = server
+            .spawn_polling_task(
+                Duration::from_millis(20),
+                shutdown_rx,
+                move |cmd_id, kind| {
+                    let _ = rx_tx.send((cmd_id, kind));
+                },
+            )
+            .await;
 
         // Stale files were discarded on startup.
         assert!(!paths.command_file.exists());
