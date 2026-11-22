@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/audio", "crates/providers", "crates/local-asr", "crates/platform", "crates/daemon", "crates/cli"]
+members = ["crates/core", "crates/audio", "crates/providers", "crates/local-asr", "crates/platform", "crates/daemon", "crates/overlay", "crates/cli"]
 
 [workspace.package]
 version = "0.1.0"
@@ -19,12 +19,13 @@ futures-util = { version = "0.3", default-features = false, features = ["sink", 
 hound = "3.5"
 libloading = "0.9"
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSWorkspace", "NSRunningApplication", "NSPasteboard"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSAccessibility", "NSApplication", "NSButton", "NSButtonCell", "NSColor", "NSControl", "NSFont", "NSFontDescriptor", "NSGraphics", "NSLayoutConstraint", "NSPanel", "NSParagraphStyle", "NSPasteboard", "NSResponder", "NSRunningApplication", "NSScreen", "NSText", "NSTextField", "NSView", "NSWindow", "NSWorkspace", "objc2-core-foundation", "objc2-core-graphics", "objc2-quartz-core"] }
 objc2-audio-toolbox = { version = "0.3", default-features = false, features = ["std", "AudioServices", "objc2-core-foundation"] }
 objc2-av-foundation = { version = "0.3", default-features = false, features = ["std", "AVCaptureDevice", "AVMediaFormat"] }
-objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFBase", "CFDictionary", "CFMachPort", "CFNumber", "CFRunLoop", "CFString", "CFURL"] }
-objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGEvent", "CGEventTypes", "CGRemoteOperation"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFBase", "CFCGTypes", "CFDate", "CFDictionary", "CFMachPort", "CFNumber", "CFRunLoop", "CFString", "CFURL"] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGColor", "CGEvent", "CGEventTypes", "CGRemoteOperation"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSGeometry", "NSString", "NSValue"] }
+objc2-quartz-core = { version = "0.3", default-features = false, features = ["std", "CAAnimation", "CAGradientLayer", "CALayer", "CAMediaTiming", "CAMediaTimingFunction", "CATransaction", "objc2-core-foundation", "objc2-core-graphics"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "charset", "system-proxy", "json", "multipart", "stream"] }
 ringbuf = "0.6"
 rubato = "4.0"
