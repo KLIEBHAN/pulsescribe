@@ -6,6 +6,7 @@
 //! replies to server Pings, and immediately marks the slot closed if the remote drops it.
 
 use std::fmt;
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -13,8 +14,9 @@ use std::time::Duration;
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
-use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 
 use crate::deepgram_stream::{
     close_idle_websocket, normalized_keywords, parse_server_error_message, run_stream_session,
@@ -66,6 +68,7 @@ struct ActiveWarmEntry {
     close_timeout: Duration,
     cmd_tx: mpsc::Sender<WarmCommand>,
     closed_flag: Arc<AtomicBool>,
+    task: JoinHandle<()>,
 }
 
 struct WarmSlot {
@@ -138,7 +141,7 @@ impl DeepgramWarmConnectionManager {
         let closed_flag = Arc::new(AtomicBool::new(false));
         let task_closed_flag = Arc::clone(&closed_flag);
 
-        tokio::spawn(run_keepalive_loop(
+        let task = tokio::spawn(run_keepalive_loop(
             ws,
             keepalive_interval,
             keepalive_send,
@@ -152,6 +155,7 @@ impl DeepgramWarmConnectionManager {
             close_timeout,
             cmd_tx,
             closed_flag,
+            task,
         });
         tracing::info!(
             model = config.model.trim(),
@@ -230,9 +234,58 @@ impl DeepgramWarmConnectionManager {
 
 async fn close_warm_entry(entry: ActiveWarmEntry) {
     let (done_tx, done_rx) = oneshot::channel();
-    if entry.cmd_tx.send(WarmCommand::Close(done_tx)).await.is_ok() {
-        let wait_limit = entry.close_timeout + Duration::from_millis(250);
-        let _ = tokio::time::timeout(wait_limit, done_rx).await;
+    let wait_limit = entry.close_timeout + Duration::from_millis(100);
+    if entry.cmd_tx.send(WarmCommand::Close(done_tx)).await.is_ok()
+        && tokio::time::timeout(wait_limit, done_rx).await.is_err()
+    {
+        entry.task.abort();
+    }
+}
+
+enum MaintenanceOutcome {
+    Completed,
+    Failed,
+    Interrupted(Option<WarmCommand>),
+}
+
+async fn run_maintenance_io<F>(
+    io: F,
+    timeout: Duration,
+    cmd_rx: &mut mpsc::Receiver<WarmCommand>,
+) -> MaintenanceOutcome
+where
+    F: Future<Output = Result<(), WsError>>,
+{
+    tokio::select! {
+        biased;
+        cmd = cmd_rx.recv() => MaintenanceOutcome::Interrupted(cmd),
+        res = tokio::time::timeout(timeout, io) => match res {
+            Ok(Ok(())) => MaintenanceOutcome::Completed,
+            Ok(Err(err)) => {
+                tracing::debug!(error = %err, "Deepgram warm maintenance I/O failed");
+                MaintenanceOutcome::Failed
+            }
+            Err(_) => {
+                tracing::debug!(
+                    timeout_ms = timeout.as_millis(),
+                    "Deepgram warm maintenance I/O timed out"
+                );
+                MaintenanceOutcome::Failed
+            }
+        }
+    }
+}
+
+fn finish_interrupted_command(cmd: Option<WarmCommand>) {
+    match cmd {
+        Some(WarmCommand::Claim(reply)) => {
+            // An interrupted sink write leaves the socket unsafe to reuse; fall back to fresh.
+            let _ = reply.send(None);
+        }
+        Some(WarmCommand::Close(done)) => {
+            let _ = done.send(());
+        }
+        None => {}
     }
 }
 
@@ -251,6 +304,7 @@ async fn run_keepalive_loop(
 
     loop {
         tokio::select! {
+            biased;
             cmd = cmd_rx.recv() => {
                 closed_flag.store(true, Ordering::Release);
                 match cmd {
@@ -268,24 +322,21 @@ async fn run_keepalive_loop(
                 return;
             }
             _ = ticker.tick() => {
-                match tokio::time::timeout(
-                    keepalive_send,
+                match run_maintenance_io(
                     ws.send(Message::text(KEEPALIVE_MESSAGE)),
+                    keepalive_send,
+                    &mut cmd_rx,
                 )
                 .await
                 {
-                    Ok(Ok(())) => tracing::trace!("sent Deepgram warm KeepAlive"),
-                    Ok(Err(err)) => {
-                        tracing::debug!(error = %err, "Deepgram warm KeepAlive failed");
+                    MaintenanceOutcome::Completed => tracing::trace!("sent Deepgram warm KeepAlive"),
+                    MaintenanceOutcome::Failed => {
                         closed_flag.store(true, Ordering::Release);
                         return;
                     }
-                    Err(_) => {
-                        tracing::debug!(
-                            timeout_ms = keepalive_send.as_millis(),
-                            "Deepgram warm KeepAlive timed out"
-                        );
+                    MaintenanceOutcome::Interrupted(cmd) => {
                         closed_flag.store(true, Ordering::Release);
+                        finish_interrupted_command(cmd);
                         return;
                     }
                 }
@@ -293,9 +344,17 @@ async fn run_keepalive_loop(
             maybe_msg = ws.next() => {
                 match maybe_msg {
                     Some(Ok(Message::Ping(_))) => {
-                        if tokio::time::timeout(keepalive_send, ws.flush()).await.is_err() {
-                            closed_flag.store(true, Ordering::Release);
-                            return;
+                        match run_maintenance_io(ws.flush(), keepalive_send, &mut cmd_rx).await {
+                            MaintenanceOutcome::Completed => {}
+                            MaintenanceOutcome::Failed => {
+                                closed_flag.store(true, Ordering::Release);
+                                return;
+                            }
+                            MaintenanceOutcome::Interrupted(cmd) => {
+                                closed_flag.store(true, Ordering::Release);
+                                finish_interrupted_command(cmd);
+                                return;
+                            }
                         }
                     }
                     Some(Ok(Message::Text(text))) => {

@@ -191,3 +191,66 @@ async fn warm_manager_detects_server_close_and_falls_back_to_fresh_socket() {
     assert!(!res.used_prewarmed_connection);
     assert_eq!(*accepted.lock().await, 2);
 }
+
+#[tokio::test]
+async fn warm_manager_invalidate_is_bounded_by_close_timeout_when_peer_hangs() {
+    let (check_tx, check_rx) = tokio::sync::oneshot::channel::<()>();
+    let check_rx = Arc::new(Mutex::new(Some(check_rx)));
+    let check_bg = Arc::clone(&check_rx);
+    let peer_saw_disconnect = Arc::new(Mutex::new(false));
+    let disconnect_bg = Arc::clone(&peer_saw_disconnect);
+
+    let (ws_url, accepted, server) = spawn_multi_ws_server(1, move |_idx, mut ws| {
+        let holder = Arc::clone(&check_bg);
+        let saw_disconnect = Arc::clone(&disconnect_bg);
+        async move {
+            // Stall completely while client runs KeepAlive and invalidate().
+            if let Some(rx) = holder.lock().await.take() {
+                let _ = rx.await;
+            }
+            // Once invalidate() has returned, draining queued frames must reach Close/EOF promptly.
+            let drained = tokio::time::timeout(Duration::from_millis(300), async {
+                loop {
+                    match ws.next().await {
+                        Some(Ok(Message::Close(_))) | Some(Err(_)) | None => return true,
+                        Some(Ok(_)) => {}
+                    }
+                }
+            })
+            .await
+            .unwrap_or(false);
+            *saw_disconnect.lock().await = drained;
+        }
+    })
+    .await;
+
+    let mut timeouts = fast_warm_timeouts();
+    timeouts.keepalive_interval = Duration::from_millis(15);
+    timeouts.keepalive_send = Duration::from_secs(5);
+    timeouts.close = Duration::from_millis(100);
+
+    let client = DeepgramStreamClient::with_ws_url(&ws_url, "dg-key").unwrap();
+    let manager = DeepgramWarmConnectionManager::new(client);
+    let cfg = DeepgramStreamConfig::default().with_timeouts(timeouts);
+
+    manager.warm_up(&cfg).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    let started = Instant::now();
+    manager.invalidate().await;
+    let elapsed = started.elapsed();
+
+    let _ = check_tx.send(());
+    server.await.unwrap();
+
+    assert!(!manager.has_ready_connection().await);
+    assert_eq!(*accepted.lock().await, 1);
+    assert!(
+        *peer_saw_disconnect.lock().await,
+        "warm worker did not release socket after invalidate()"
+    );
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "invalidate() exceeded close_timeout bound: {elapsed:?}"
+    );
+}
