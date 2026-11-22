@@ -59,6 +59,20 @@ fn main() {
     assert_eq!(overlay.timer_mode(), OverlayTimerMode::Active60Hz);
     assert!(!overlay.is_key_window());
 
+    // Silence settles recording wave timer back to Stopped (0 FPS).
+    handle.send(OverlayCommand::AudioLevel(0.0));
+    let settle_deadline = std::time::Instant::now() + Duration::from_secs(4);
+    while overlay.timer_mode() != OverlayTimerMode::Stopped
+        && std::time::Instant::now() < settle_deadline
+    {
+        pump(50);
+    }
+    assert_eq!(
+        overlay.timer_mode(),
+        OverlayTimerMode::Stopped,
+        "recording timer must settle to 0 FPS on silence"
+    );
+
     // 2. Transcribing (GPU shimmer, 0 FPS Rust timer)
     handle.send(OverlayCommand::ApplyState {
         state: AppState::Transcribing,
@@ -101,7 +115,17 @@ fn main() {
         error: None,
     });
     pump(60);
-    assert!(!overlay.is_visible(), "overlay must hide on Idle");
+    assert!(
+        overlay.is_visible(),
+        "dismissible error must persist across daemon Idle recovery"
+    );
+
+    handle.dismiss();
+    pump(60);
+    assert!(
+        !overlay.is_visible(),
+        "overlay must hide after explicit dismiss"
+    );
     assert_eq!(overlay.timer_mode(), OverlayTimerMode::Stopped);
 
     let frontmost_after = NSWorkspace::sharedWorkspace()

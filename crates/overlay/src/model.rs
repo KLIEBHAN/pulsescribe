@@ -13,13 +13,10 @@ use pulsescribe_core::overlay_feedback::{
     describe_overlay_content, is_recording_clock_state, OverlayContent,
 };
 use pulsescribe_core::overlay_style::{
-    shimmer_track, OverlayAction, OverlayBarMode, ShimmerTrack, LIVE_TEXT_HEIGHT, LIVE_TEXT_WIDTH,
-    OVERLAY_HEIGHT, OVERLAY_WIDTH,
+    shimmer_track, OverlayAction, OverlayBarMode, ShimmerTrack, LIVE_TEXT_HEIGHT, LIVE_TEXT_LINES,
+    LIVE_TEXT_WIDTH, OVERLAY_HEIGHT, OVERLAY_WIDTH,
 };
-use pulsescribe_core::overlay_text::{
-    format_recording_duration, format_recording_interim_text, DEFAULT_RECORDING_INTERIM_MAX_CHARS,
-    FADED_RECORDING_INTERIM_MAX_CHARS,
-};
+use pulsescribe_core::overlay_text::{format_recording_duration, wrap_interim_text, InterimLines};
 use pulsescribe_core::{AppState, DaemonStatusError};
 use pulsescribe_daemon::DaemonEvent;
 
@@ -34,6 +31,10 @@ pub const ACTIVE_FPS: f64 = 60.0;
 
 /// Lower cadence used while bars decay toward silence before stopping completely.
 pub const DECAY_FPS: f64 = 24.0;
+
+/// Conservative per-line character budget for the 2-line live interim transcript box inside
+/// `LIVE_TEXT_WIDTH` (560 px) at 13 pt so newest trailing words never wrap onto a clipped 3rd line.
+pub const LIVE_TEXT_MAX_COLS: usize = 44;
 
 const LEVEL_SETTLED_EPSILON: f64 = 0.001;
 const LEVEL_ACTIVE_THRESHOLD: f64 = 0.035;
@@ -110,10 +111,12 @@ pub struct OverlaySnapshot {
     pub visible: bool,
     pub state: AppState,
     pub content: OverlayContent,
-    /// Displayed text (live interim text during `Recording` when available, else `content.text`).
+    /// Displayed text (reflow-free wrapped live interim lines during `Recording`, else `content.text`).
     pub display_text: String,
     /// `true` when displaying live interim transcript (expands to 2-line wide pill).
     pub live_text_active: bool,
+    /// Number of visible lines in `display_text` (`1` or `2`).
+    pub live_line_count: usize,
     /// Displayed right-aligned meta (`m:ss` recording clock in `Listening`/`Recording`, else `content.meta`).
     pub display_meta: String,
     /// Clickable meta action (`OverlayAction::Settings`) when applicable.
@@ -153,7 +156,7 @@ pub struct OverlayModel {
     latest_rms: f64,
     recording_started_at: Option<Instant>,
     anim_origin: Instant,
-    interim_text: String,
+    interim_lines: InterimLines,
     bar_heights: [f64; BAR_COUNT],
     visible: bool,
     timer_mode: OverlayTimerMode,
@@ -169,7 +172,7 @@ impl OverlayModel {
             latest_rms: 0.0,
             recording_started_at: None,
             anim_origin: now,
-            interim_text: String::new(),
+            interim_lines: InterimLines::default(),
             bar_heights: [BAR_MIN_HEIGHT; BAR_COUNT],
             visible: false,
             timer_mode: OverlayTimerMode::Stopped,
@@ -197,32 +200,63 @@ impl OverlayModel {
         self.bar_heights
     }
 
-    /// Apply one [`OverlayCommand`] and return the full [`OverlaySnapshot`] to render.
-    pub fn apply_command(&mut self, cmd: OverlayCommand, now: Instant) -> OverlaySnapshot {
+    /// Apply one [`OverlayCommand`] without allocating a snapshot.
+    ///
+    /// Returns `true` if visual layout, visibility, or displayed text changed and the renderer
+    /// needs a full [`OverlaySnapshot`] pass; returns `false` for hot-path `AudioLevel` updates
+    /// that only need timer pacing sync.
+    pub fn apply_command_mut(&mut self, cmd: OverlayCommand, now: Instant) -> bool {
+        if self.shutdown {
+            return false;
+        }
         match cmd {
             OverlayCommand::Shutdown => {
                 self.shutdown = true;
                 self.reset_to_idle(now);
+                true
             }
             OverlayCommand::Dismiss => {
+                let was_visible = self.visible;
                 self.reset_to_idle(now);
+                was_visible
             }
             OverlayCommand::ApplyState {
                 state,
                 detail,
                 error,
-            } => {
-                self.apply_state(state, detail.as_deref(), error.as_ref(), now);
-            }
+            } => self.apply_state(state, detail.as_deref(), error.as_ref(), now),
             OverlayCommand::AudioLevel(rms) => {
                 self.apply_audio_level(f64::from(rms));
+                false
             }
             OverlayCommand::InterimText(text) => {
-                if self.state == AppState::Recording {
-                    self.interim_text = text;
+                if self.state != AppState::Recording {
+                    return false;
                 }
+                let prev = if self.interim_lines.source.is_empty() {
+                    None
+                } else {
+                    Some(&self.interim_lines)
+                };
+                let wrapped = wrap_interim_text(
+                    &text,
+                    prev,
+                    |line| line.chars().count() <= LIVE_TEXT_MAX_COLS,
+                    LIVE_TEXT_LINES,
+                );
+                if wrapped.lines == self.interim_lines.lines {
+                    self.interim_lines = wrapped;
+                    return false;
+                }
+                self.interim_lines = wrapped;
+                true
             }
         }
+    }
+
+    /// Convenience helper applying one command and immediately building the updated snapshot.
+    pub fn apply_command(&mut self, cmd: OverlayCommand, now: Instant) -> OverlaySnapshot {
+        let _ = self.apply_command_mut(cmd, now);
         self.snapshot(now)
     }
 
@@ -233,7 +267,7 @@ impl OverlayModel {
         self.latest_rms = 0.0;
         self.recording_started_at = None;
         self.anim_origin = now;
-        self.interim_text.clear();
+        self.interim_lines = InterimLines::default();
         self.bar_heights = [BAR_MIN_HEIGHT; BAR_COUNT];
         self.visible = false;
         self.timer_mode = OverlayTimerMode::Stopped;
@@ -245,10 +279,16 @@ impl OverlayModel {
         detail: Option<&str>,
         error: Option<&DaemonStatusError>,
         now: Instant,
-    ) {
+    ) -> bool {
         if state == AppState::Idle {
+            // Preserve actionable/dismissible errors across the daemon's automatic Idle recovery
+            // until the user explicitly dismisses them (`OverlayCommand::Dismiss`) or starts a new run.
+            if self.visible && self.content.dismissible {
+                return false;
+            }
+            let was_visible = self.visible;
             self.reset_to_idle(now);
-            return;
+            return was_visible;
         }
 
         let prev_state = self.state;
@@ -268,22 +308,27 @@ impl OverlayModel {
                 self.latest_rms = 0.0;
             }
             if state == AppState::Listening {
-                self.interim_text.clear();
+                self.interim_lines = InterimLines::default();
                 self.bar_heights = listening_bar_rest_heights();
                 self.timer_mode = OverlayTimerMode::Stopped;
             } else if prev_state != AppState::Recording {
-                self.bar_heights = [BAR_MIN_HEIGHT; BAR_COUNT];
+                // Keep bar heights when transitioning smoothly from Listening -> Recording;
+                // only reset when entering Recording directly from a non-listening state.
+                if prev_state != AppState::Listening {
+                    self.bar_heights = [BAR_MIN_HEIGHT; BAR_COUNT];
+                }
                 self.timer_mode = self.compute_timer_mode();
             }
         } else {
             self.recording_started_at = None;
-            self.interim_text.clear();
+            self.interim_lines = InterimLines::default();
             self.latest_rms = 0.0;
-            // Non-recording states either use Core Animation GPU shimmer (`Line`/`Phase1`/`Phase2`)
-            // or static outcome badges (`Done`/`NoSpeech`/`Error`) -> 0 FPS Rust timer!
+            // Non-recording states use Core Animation / Direct2D shimmer (`Line`/`Phase1`/`Phase2`)
+            // or static outcome badges (`Done`/`NoSpeech`/`Error`) -> 0 FPS wave timer.
             self.timer_mode = OverlayTimerMode::Stopped;
             self.bar_heights = [BAR_MIN_HEIGHT; BAR_COUNT];
         }
+        true
     }
 
     fn apply_audio_level(&mut self, rms: f64) {
@@ -356,21 +401,20 @@ impl OverlayModel {
 
     /// Produce a full [`OverlaySnapshot`] reflecting current state, text, geometry, and timer mode.
     pub fn snapshot(&self, now: Instant) -> OverlaySnapshot {
-        let live_text = if self.state == AppState::Recording && !self.interim_text.trim().is_empty()
-        {
-            format_recording_interim_text(
-                &self.interim_text,
-                FADED_RECORDING_INTERIM_MAX_CHARS.max(DEFAULT_RECORDING_INTERIM_MAX_CHARS),
-                false,
-            )
+        let live_text_active =
+            self.state == AppState::Recording && !self.interim_lines.lines.is_empty();
+        let (display_text, live_line_count) = if live_text_active {
+            let mut joined = String::new();
+            for (idx, (confirmed, fresh)) in self.interim_lines.lines.iter().enumerate() {
+                if idx > 0 {
+                    joined.push('\n');
+                }
+                joined.push_str(confirmed);
+                joined.push_str(fresh);
+            }
+            (joined, self.interim_lines.lines.len())
         } else {
-            String::new()
-        };
-        let live_text_active = !live_text.is_empty();
-        let display_text = if live_text_active {
-            live_text
-        } else {
-            self.content.text.clone()
+            (self.content.text.clone(), 1)
         };
 
         let clock_active = self.visible && is_recording_clock_state(self.state);
@@ -395,6 +439,7 @@ impl OverlayModel {
             content: self.content.clone(),
             display_text,
             live_text_active,
+            live_line_count,
             display_meta,
             action: self.content.action,
             interactive,
@@ -479,7 +524,6 @@ mod tests {
         assert!(!model.visible());
         assert_eq!(model.timer_mode(), OverlayTimerMode::Stopped);
 
-        // Processing states rely on GPU shimmer -> 0 FPS Rust timer.
         let snap = model.apply_command(
             OverlayCommand::ApplyState {
                 state: AppState::Transcribing,
@@ -496,7 +540,6 @@ mod tests {
         assert!(!snap.clock_active);
         assert!(!snap.interactive);
 
-        // Done outcome -> static badge, 0 FPS timer.
         let done = model.apply_command(
             OverlayCommand::ApplyState {
                 state: AppState::Done,
@@ -511,7 +554,6 @@ mod tests {
         assert_eq!(done.display_meta, "0.8 s");
         assert_eq!(done.timer_mode, OverlayTimerMode::Stopped);
 
-        // Back to Idle -> hidden, 0 FPS.
         let idle = model.apply_command(
             OverlayCommand::ApplyState {
                 state: AppState::Idle,
@@ -525,7 +567,7 @@ mod tests {
     }
 
     #[test]
-    fn recording_animates_on_speech_and_settles_to_zero_fps_on_silence() {
+    fn recording_animates_on_speech_avoids_layout_churn_and_settles_to_zero_fps() {
         let t0 = Instant::now();
         let mut model = OverlayModel::new(t0);
 
@@ -551,13 +593,15 @@ mod tests {
             t0 + Duration::from_secs(2),
         );
         assert_eq!(rec.display_meta, "0:02");
+        // Smooth handoff from Listening preserves resting heights rather than jumping to 3 px.
+        assert_eq!(rec.bar_heights, listening_bar_rest_heights());
 
-        // Speech RMS wakes 60 Hz timer and moves bars.
-        let active = model.apply_command(
+        // AudioLevel must NOT trigger full visual layout re-renders, only wake timer pacing.
+        assert!(!model.apply_command_mut(
             OverlayCommand::AudioLevel(0.25),
             t0 + Duration::from_millis(2050),
-        );
-        assert_eq!(active.timer_mode, OverlayTimerMode::Active60Hz);
+        ));
+        assert_eq!(model.timer_mode(), OverlayTimerMode::Active60Hz);
 
         let mut moved = false;
         for step in 1..=10 {
@@ -568,8 +612,7 @@ mod tests {
         }
         assert!(moved, "bars should animate during active speech");
 
-        // Silence settles back to Stopped (0 FPS) within bounded frames.
-        model.apply_command(OverlayCommand::AudioLevel(0.0), t0 + Duration::from_secs(3));
+        model.apply_command_mut(OverlayCommand::AudioLevel(0.0), t0 + Duration::from_secs(3));
         let mut stopped = false;
         for step in 1..=160 {
             let tick = model.tick_animation(t0 + Duration::from_millis(3000 + step * 40));
@@ -582,10 +625,10 @@ mod tests {
     }
 
     #[test]
-    fn interim_text_expands_to_live_pill_and_error_enables_interactivity() {
+    fn long_interim_keeps_newest_two_lines_and_dismissible_errors_persist_across_idle() {
         let t0 = Instant::now();
         let mut model = OverlayModel::new(t0);
-        model.apply_command(
+        model.apply_command_mut(
             OverlayCommand::ApplyState {
                 state: AppState::Recording,
                 detail: None,
@@ -593,15 +636,26 @@ mod tests {
             },
             t0,
         );
+
+        let long_transcript = "Dies ist ein sehr langer diktierter Satz der ueber mehr als zwei Zeilen hinausgeht und am Ende unbedingt das allerletzte Wort sichtbar behalten muss";
         let live = model.apply_command(
-            OverlayCommand::InterimText("Hallo Welt aus Rust".to_owned()),
+            OverlayCommand::InterimText(long_transcript.to_owned()),
             t0 + Duration::from_millis(500),
         );
         assert!(live.live_text_active);
-        assert_eq!(live.display_text, "Hallo Welt aus Rust");
+        assert_eq!(live.live_line_count, LIVE_TEXT_LINES);
         assert_eq!(live.base_size, (LIVE_TEXT_WIDTH, LIVE_TEXT_HEIGHT));
-        assert!(!live.interactive);
+        assert!(
+            live.display_text.ends_with("behalten muss"),
+            "newest trailing words must remain visible in the last 2 lines: {:?}",
+            live.display_text
+        );
+        assert!(live
+            .display_text
+            .lines()
+            .all(|l| l.chars().count() <= LIVE_TEXT_MAX_COLS));
 
+        // Dismissible error persists across daemon Idle timeout until explicit Dismiss or new run.
         let err = model.apply_command(
             OverlayCommand::ApplyState {
                 state: AppState::Error,
@@ -614,13 +668,36 @@ mod tests {
             t0 + Duration::from_secs(1),
         );
         assert!(err.interactive);
-        assert!(err.allow_grow);
-        assert_eq!(err.action, Some(OverlayAction::Settings));
-        assert_eq!(err.display_meta, "Settings");
         assert!(err.content.dismissible);
+        assert_eq!(err.action, Some(OverlayAction::Settings));
 
-        let dismissed = model.apply_command(OverlayCommand::Dismiss, t0 + Duration::from_secs(2));
+        assert!(!model.apply_command_mut(
+            OverlayCommand::ApplyState {
+                state: AppState::Idle,
+                detail: None,
+                error: None,
+            },
+            t0 + Duration::from_secs(5),
+        ));
+        assert!(
+            model.visible(),
+            "dismissible error must stay visible across Idle"
+        );
+
+        let dismissed = model.apply_command(OverlayCommand::Dismiss, t0 + Duration::from_secs(6));
         assert!(!dismissed.visible);
         assert!(!dismissed.interactive);
+
+        // Once shutdown, subsequent commands are ignored cleanly.
+        model.apply_command_mut(OverlayCommand::Shutdown, t0 + Duration::from_secs(7));
+        assert!(!model.apply_command_mut(
+            OverlayCommand::ApplyState {
+                state: AppState::Listening,
+                detail: None,
+                error: None,
+            },
+            t0 + Duration::from_secs(8),
+        ));
+        assert!(!model.visible());
     }
 }

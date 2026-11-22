@@ -1,8 +1,9 @@
 //! Native macOS 60 FPS non-activating floating overlay (`NSPanel` + Core Animation `CALayer`).
 //!
 //! Every `unsafe` FFI/AppKit call in `crates/overlay` is isolated to this module.
-//! - Uses `NSPanel` with `NonactivatingPanel` + level `25` (`kCGFloatingWindowLevel` / above
-//!   status bar) and `orderFrontRegardless()` so showing/updating NEVER steals keyboard focus.
+//! - Uses `NSPanel` with `NonactivatingPanel` + level `25` (`kCGStatusWindowLevel` / above
+//!   normal & fullscreen windows) and `orderFrontRegardless()` so showing/updating NEVER steals
+//!   keyboard focus.
 //! - Click-through by default (`ignoresMouseEvents = true`), turning interactive only when
 //!   showing a dismissible error or clickable `"Settings"` link.
 //! - Adaptive `CFRunLoopTimer` (60 Hz active / 24 Hz decay / invalidated at rest -> 0 FPS idle).
@@ -42,10 +43,10 @@ use pulsescribe_core::overlay_style::{
     compute_overlay_layout, hex_to_rgb, OverlayBarMode, OverlayLayoutParams, OverlayTone,
     ShimmerTrack, BACKGROUND_COLOR, BADGE_CORNER_RADIUS, BADGE_FONT_SIZE, BADGE_PADDING_H,
     BADGE_PADDING_V, BAR_AREA_WIDTH, BORDER_COLOR, DISMISS_FONT_SIZE, DISMISS_GLYPH, LINE_HEIGHT,
-    LINK_TEXT_COLOR, LIVE_TEXT_LINES, META_FONT_SIZE, META_TEXT_COLOR, MUTED_TEXT_COLOR,
-    OVERLAY_CORNER_RADIUS, OVERLAY_HEIGHT, OVERLAY_MAX_WIDTH_RATIO, OVERLAY_WIDTH, PHASE_STEP_GAP,
-    PHASE_STEP_WIDTH, SHIMMER_ACTIVE_STEP_COLOR, SHIMMER_BAND_WIDTH, SHIMMER_HIGHLIGHT_COLOR,
-    SHIMMER_PERIOD_SECONDS, TEXT_COLOR, TEXT_FONT_SIZE,
+    LINK_TEXT_COLOR, LIVE_TEXT_LINES, LIVE_TEXT_LINE_PITCH, META_FONT_SIZE, META_TEXT_COLOR,
+    MUTED_TEXT_COLOR, OVERLAY_CORNER_RADIUS, OVERLAY_HEIGHT, OVERLAY_MAX_WIDTH_RATIO,
+    OVERLAY_WIDTH, PHASE_STEP_GAP, PHASE_STEP_WIDTH, SHIMMER_ACTIVE_STEP_COLOR, SHIMMER_BAND_WIDTH,
+    SHIMMER_HIGHLIGHT_COLOR, SHIMMER_PERIOD_SECONDS, TEXT_COLOR, TEXT_FONT_SIZE,
 };
 
 use crate::model::{
@@ -311,8 +312,14 @@ impl MacOsOverlay {
         main_label.setMaximumNumberOfLines(1);
         root_view.addSubview(&main_label);
 
-        // Right-aligned meta label (`0:04`, `1 of 2`, `1.2 s`).
-        let meta_label = make_label(mtm, META_FONT_SIZE, unsafe { NSFontWeightRegular });
+        // Right-aligned meta label (`0:04`, `10:00`, `1 of 2`, `1.2 s`) using monospaced digits
+        // so the 1 Hz recording clock never jitters horizontally.
+        let meta_label = NSTextField::labelWithString(&NSString::from_str(""), mtm);
+        meta_label.setFont(Some(&NSFont::monospacedDigitSystemFontOfSize_weight(
+            META_FONT_SIZE,
+            unsafe { NSFontWeightRegular },
+        )));
+        meta_label.setDrawsBackground(false);
         meta_label.setTextColor(Some(&ns_color_from_hex(META_TEXT_COLOR, 1.0)));
         meta_label.setAlignment(NSTextAlignment::Right);
         meta_label.setHidden(true);
@@ -400,8 +407,14 @@ impl MacOsOverlay {
             cancel: None,
             perform: Some(runloop_source_perform),
         };
-        let source = unsafe { CFRunLoopSource::new(None, 0, &mut source_ctx) }
-            .ok_or_else(|| "CFRunLoopSourceCreate returned null".to_owned())?;
+        let source = match unsafe { CFRunLoopSource::new(None, 0, &mut source_ctx) } {
+            Some(src) => src,
+            None => {
+                // Reclaim `ctx_box` on construction failure so `OverlayInner`/`NSPanel` never leak.
+                unsafe { drop(Box::from_raw(ctx_box)) };
+                return Err("CFRunLoopSourceCreate returned null".to_owned());
+            }
+        };
         run_loop.add_source(Some(&source), unsafe { kCFRunLoopCommonModes });
         queue.attach_wakeup(run_loop, source.clone());
         inner.borrow_mut().source = Some(source);
@@ -491,9 +504,9 @@ impl OverlayInner {
         }
 
         let now = Instant::now();
-        let mut latest_snapshot = None;
+        let mut any_visual_change = false;
         for cmd in commands {
-            latest_snapshot = Some(self.model.apply_command(cmd, now));
+            any_visual_change |= self.model.apply_command_mut(cmd, now);
         }
 
         if self.model.is_shutdown() {
@@ -501,8 +514,12 @@ impl OverlayInner {
             return;
         }
 
-        if let Some(snap) = latest_snapshot {
+        if any_visual_change {
+            let snap = self.model.snapshot(now);
             self.render_snapshot(&snap, ctx_ptr);
+        } else {
+            // AudioLevel-only batch: wake or pace the wave timer with zero AppKit allocations.
+            self.sync_anim_timer(self.model.timer_mode(), ctx_ptr);
         }
     }
 
@@ -575,7 +592,10 @@ impl OverlayInner {
             self.meta_label
                 .setStringValue(&NSString::from_str(&snap.display_meta));
             self.meta_label.setHidden(false);
-            self.meta_label.fittingSize().width.ceil().max(32.0)
+            // Reserve room for `10:00`+ when the 1 Hz recording clock is active so ticking
+            // never clips or requires resizing the overlay.
+            let min_w = if snap.clock_active { 46.0 } else { 32.0 };
+            self.meta_label.fittingSize().width.ceil().max(min_w)
         } else {
             self.settings_button.setHidden(true);
             self.meta_label.setHidden(true);
@@ -632,17 +652,24 @@ impl OverlayInner {
         CATransaction::setDisableActions(true);
 
         if has_badge {
-            let badge_h = (BADGE_FONT_SIZE + 2.0 * BADGE_PADDING_V + 4.0).ceil();
+            let fit_h = self.badge_label.fittingSize().height.ceil();
+            let badge_h = (fit_h + 2.0 * BADGE_PADDING_V).max(BADGE_FONT_SIZE + 6.0);
             self.badge_label.setFrame(CGRect::new(
                 CGPoint::new(layout.status_x, (center_y - badge_h / 2.0).round()),
                 CGSize::new(badge_width, badge_h),
             ));
         }
 
-        let text_h = if snap.live_text_active {
-            (panel_height - 14.0).max(20.0)
+        let text_h = if snap.live_text_active && snap.live_line_count > 1 {
+            (LIVE_TEXT_LINE_PITCH * (snap.live_line_count as f64) + 2.0)
+                .min(panel_height - 10.0)
+                .max(20.0)
         } else {
-            20.0
+            self.main_label
+                .fittingSize()
+                .height
+                .ceil()
+                .clamp(18.0, 22.0)
         };
         self.main_label.setFrame(CGRect::new(
             CGPoint::new(layout.text_x, (center_y - text_h / 2.0).round()),
@@ -731,17 +758,19 @@ impl OverlayInner {
             }
             OverlayBarMode::Phase1 | OverlayBarMode::Phase2 => {
                 let (c1, c2) = mode.phase_step_colors().unwrap_or(("#ececec", "#333333"));
-                let active_color = cg_color_from_hex(SHIMMER_ACTIVE_STEP_COLOR, 1.0);
-                let step1_color = if mode == OverlayBarMode::Phase1 {
-                    active_color.clone()
+                let shimmer_active = !reduce_motion_enabled();
+                let step1_hex = if shimmer_active && mode == OverlayBarMode::Phase1 {
+                    SHIMMER_ACTIVE_STEP_COLOR
                 } else {
-                    cg_color_from_hex(c1, 1.0)
+                    c1
                 };
-                let step2_color = if mode == OverlayBarMode::Phase2 {
-                    active_color
+                let step2_hex = if shimmer_active && mode == OverlayBarMode::Phase2 {
+                    SHIMMER_ACTIVE_STEP_COLOR
                 } else {
-                    cg_color_from_hex(c2, 1.0)
+                    c2
                 };
+                let step1_color = cg_color_from_hex(step1_hex, 1.0);
+                let step2_color = cg_color_from_hex(step2_hex, 1.0);
                 self.line_primary.setBackgroundColor(Some(&step1_color));
                 self.line_primary.setFrame(CGRect::new(
                     CGPoint::new(status_x, line_y),
@@ -1013,12 +1042,18 @@ fn cg_color_from_hex(hex: &str, alpha: f64) -> CFRetained<CGColor> {
 }
 
 fn build_cgcolor_array(colors: &[&CGColor]) -> Retained<NSArray> {
+    if colors.is_empty() {
+        return NSArray::array();
+    }
     let mut ptrs: Vec<NonNull<AnyObject>> = Vec::with_capacity(colors.len());
     for &c in colors {
         let raw: *const CGColor = ptr::from_ref(c);
         if let Some(nn) = NonNull::new(raw as *mut AnyObject) {
             ptrs.push(nn);
         }
+    }
+    if ptrs.is_empty() {
+        return NSArray::array();
     }
     match NonNull::new(ptrs.as_mut_ptr()) {
         Some(ptr) => unsafe { NSArray::arrayWithObjects_count(ptr, ptrs.len()) },
