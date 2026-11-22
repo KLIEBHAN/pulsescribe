@@ -15,7 +15,16 @@ use pulsescribe_core::paths::{build_file_signature, AppPaths, FileSignature};
 use pulsescribe_core::preferences::PreferencesStore;
 use pulsescribe_core::transcript_delivery::transcription_time_enabled_from_value;
 use pulsescribe_core::{DaemonErrorCode, DaemonStatusError};
-use pulsescribe_platform::HotkeyBinding;
+use pulsescribe_platform::{HotkeyBinding, PlatformKind};
+
+/// Default macOS hold-to-record hotkey when no hotkey env vars are configured.
+pub const DEFAULT_MACOS_HOLD_HOTKEY: &str = "fn";
+
+/// Default Windows toggle hotkey when no hotkey env vars are configured.
+pub const DEFAULT_WINDOWS_TOGGLE_HOTKEY: &str = "ctrl+alt+r";
+
+/// Default Windows hold-to-record hotkey when no hotkey env vars are configured.
+pub const DEFAULT_WINDOWS_HOLD_HOTKEY: &str = "ctrl+win";
 
 /// Signal file touched by external settings/onboarding UIs to request a config reload.
 pub const RELOAD_SIGNAL_FILENAME: &str = ".reload";
@@ -142,8 +151,17 @@ impl Default for DaemonConfig {
 }
 
 impl DaemonConfig {
-    /// Parse a daemon configuration snapshot from an environment key/value map.
+    /// Parse a daemon configuration snapshot from an environment key/value map using the
+    /// compile-time host platform's default hotkeys when no hotkey slots are configured.
     pub fn from_env_map(env: &BTreeMap<String, String>) -> Self {
+        Self::from_env_map_for_platform(env, PlatformKind::current())
+    }
+
+    /// Parse a daemon configuration snapshot using `platform`'s default hotkeys when unset.
+    pub fn from_env_map_for_platform(
+        env: &BTreeMap<String, String>,
+        platform: PlatformKind,
+    ) -> Self {
         let (mode, invalid_mode) = match get_trimmed(env, "PULSESCRIBE_MODE") {
             None => (DaemonMode::default(), None),
             Some(raw) => match DaemonMode::parse(&raw) {
@@ -176,7 +194,7 @@ impl DaemonConfig {
         );
         let input_device = get_trimmed(env, "PULSESCRIBE_INPUT_DEVICE");
 
-        let hotkeys = resolve_hotkeys(env);
+        let hotkeys = resolve_hotkeys_for_platform(env, platform);
 
         let mut timings = DaemonTimings::default();
         if let Some(secs) = get_trimmed(env, "PULSESCRIBE_TRANSCRIBING_TIMEOUT")
@@ -326,7 +344,10 @@ fn get_bool(env: &BTreeMap<String, String>, key: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
-fn resolve_hotkeys(env: &BTreeMap<String, String>) -> HotkeyBinding {
+fn resolve_hotkeys_for_platform(
+    env: &BTreeMap<String, String>,
+    platform: PlatformKind,
+) -> HotkeyBinding {
     let mut toggle = get_trimmed(env, "PULSESCRIBE_TOGGLE_HOTKEY");
     let mut hold = get_trimmed(env, "PULSESCRIBE_HOLD_HOTKEY");
 
@@ -341,6 +362,20 @@ fn resolve_hotkeys(env: &BTreeMap<String, String>) -> HotkeyBinding {
                 hold = Some(legacy_key);
             } else {
                 toggle = Some(legacy_key);
+            }
+        }
+    }
+
+    // Apply platform defaults only when no hotkey slot is configured at all, matching
+    // `pulsescribe_daemon.py::_should_default_to_fn_hold` and `pulsescribe_windows.py`.
+    if toggle.is_none() && hold.is_none() {
+        match platform {
+            PlatformKind::MacOs => {
+                hold = Some(DEFAULT_MACOS_HOLD_HOTKEY.to_owned());
+            }
+            PlatformKind::Windows | PlatformKind::Linux | PlatformKind::Other => {
+                toggle = Some(DEFAULT_WINDOWS_TOGGLE_HOTKEY.to_owned());
+                hold = Some(DEFAULT_WINDOWS_HOLD_HOTKEY.to_owned());
             }
         }
     }
@@ -469,5 +504,44 @@ mod tests {
         assert!(!reload.overlay_enabled);
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn platform_hotkey_defaults_apply_only_when_no_slot_is_configured() {
+        let empty = BTreeMap::new();
+        let mac_default = DaemonConfig::from_env_map_for_platform(&empty, PlatformKind::MacOs);
+        assert_eq!(mac_default.hotkeys.toggle, None);
+        assert_eq!(
+            mac_default.hotkeys.hold.as_deref(),
+            Some(DEFAULT_MACOS_HOLD_HOTKEY)
+        );
+
+        let win_default = DaemonConfig::from_env_map_for_platform(&empty, PlatformKind::Windows);
+        assert_eq!(
+            win_default.hotkeys.toggle.as_deref(),
+            Some(DEFAULT_WINDOWS_TOGGLE_HOTKEY)
+        );
+        assert_eq!(
+            win_default.hotkeys.hold.as_deref(),
+            Some(DEFAULT_WINDOWS_HOLD_HOTKEY)
+        );
+
+        // Explicitly setting only one slot must preserve the other slot as unset (`None`).
+        let mut toggle_only = BTreeMap::new();
+        toggle_only.insert("PULSESCRIBE_TOGGLE_HOTKEY".into(), "f19".into());
+        let mac_toggle = DaemonConfig::from_env_map_for_platform(&toggle_only, PlatformKind::MacOs);
+        assert_eq!(mac_toggle.hotkeys.toggle.as_deref(), Some("f19"));
+        assert_eq!(mac_toggle.hotkeys.hold, None);
+
+        let win_toggle =
+            DaemonConfig::from_env_map_for_platform(&toggle_only, PlatformKind::Windows);
+        assert_eq!(win_toggle.hotkeys.toggle.as_deref(), Some("f19"));
+        assert_eq!(win_toggle.hotkeys.hold, None);
+
+        let mut hold_only = BTreeMap::new();
+        hold_only.insert("PULSESCRIBE_HOLD_HOTKEY".into(), "ctrl+shift+space".into());
+        let win_hold = DaemonConfig::from_env_map_for_platform(&hold_only, PlatformKind::Windows);
+        assert_eq!(win_hold.hotkeys.toggle, None);
+        assert_eq!(win_hold.hotkeys.hold.as_deref(), Some("ctrl+shift+space"));
     }
 }

@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use pulsescribe_core::atomic_io::write_text_atomic;
+use pulsescribe_core::atomic_io::write_text_atomic_restricted;
 use pulsescribe_core::paths::{
     build_file_signature, file_signature_from_metadata, AppPaths, FileSignature,
 };
@@ -214,9 +214,14 @@ impl IpcClient {
 }
 
 /// Server side of the file-based IPC protocol (mirrors `utils/ipc.py::IPCServer`).
+///
+/// Retains `ipc_command.json` after dispatch and relies on `FileSignature` + `id` deduplication
+/// instead of unlinking by pathname after reading, eliminating the check-then-delete race where a
+/// freshly published command could be deleted unread.
 #[derive(Debug)]
 pub struct IpcServer {
     paths: IpcPaths,
+    last_command_sig: Option<FileSignature>,
     last_processed_id: Option<String>,
 }
 
@@ -224,6 +229,7 @@ impl IpcServer {
     pub fn new(paths: IpcPaths) -> Self {
         Self {
             paths,
+            last_command_sig: None,
             last_processed_id: None,
         }
     }
@@ -244,30 +250,44 @@ impl IpcServer {
         delete_if_exists_async(&self.paths.response_file).await;
     }
 
-    /// Poll once for a new unprocessed command, deleting `ipc_command.json` only if its file
-    /// signature still matches the file that was just read (avoiding unlinking a newer command).
+    /// Poll once for a new unprocessed command using `FileSignature` caching and command-ID
+    /// deduplication (never unlinking `ipc_command.json` mid-flight).
     pub fn poll_once(&mut self) -> Option<(String, IpcCommandKind)> {
-        let (read_sig, cmd) = read_json_with_signature::<IpcCommand>(&self.paths.command_file)?;
-        let (cmd_id, kind) = self.accept_command(cmd)?;
-        if build_file_signature(&self.paths.command_file).ok() == Some(read_sig) {
-            delete_if_exists(&self.paths.command_file);
+        let Ok(sig) = build_file_signature(&self.paths.command_file) else {
+            self.last_command_sig = None;
+            return None;
+        };
+        if self.last_command_sig == Some(sig) {
+            return None;
         }
-        Some((cmd_id, kind))
+        let Some((read_sig, cmd)) =
+            read_json_with_signature::<IpcCommand>(&self.paths.command_file)
+        else {
+            self.last_command_sig = None;
+            return None;
+        };
+        self.last_command_sig = Some(read_sig);
+        self.accept_command(cmd)
     }
 
     /// Non-blocking async variant of [`Self::poll_once`] backed by `tokio::fs`.
     pub async fn poll_once_async(&mut self) -> Option<(String, IpcCommandKind)> {
-        let (read_sig, cmd) =
-            read_json_with_signature_async::<IpcCommand>(&self.paths.command_file).await?;
-        let (cmd_id, kind) = self.accept_command(cmd)?;
-        let current_sig = tokio::fs::metadata(&self.paths.command_file)
-            .await
-            .ok()
-            .map(|meta| file_signature_from_metadata(&meta));
-        if current_sig == Some(read_sig) {
-            delete_if_exists_async(&self.paths.command_file).await;
+        let Ok(meta) = tokio::fs::metadata(&self.paths.command_file).await else {
+            self.last_command_sig = None;
+            return None;
+        };
+        let sig = file_signature_from_metadata(&meta);
+        if self.last_command_sig == Some(sig) {
+            return None;
         }
-        Some((cmd_id, kind))
+        let Some((read_sig, cmd)) =
+            read_json_with_signature_async::<IpcCommand>(&self.paths.command_file).await
+        else {
+            self.last_command_sig = None;
+            return None;
+        };
+        self.last_command_sig = Some(read_sig);
+        self.accept_command(cmd)
     }
 
     fn accept_command(&mut self, cmd: IpcCommand) -> Option<(String, IpcCommandKind)> {
@@ -357,11 +377,12 @@ fn is_transient_ipc_write_error(err: &io::Error) -> bool {
     false
 }
 
-/// Write an IPC JSON file atomically, retrying briefly on transient permission/sharing
-/// violations (e.g., Windows `MoveFileExW` racing against Python `Path.read_text`).
+/// Write an IPC JSON file atomically with owner-only (`0600` on Unix) permissions, retrying
+/// briefly on transient permission/sharing violations (e.g., Windows `MoveFileExW` racing
+/// against Python `Path.read_text`).
 fn write_ipc_json_atomic(path: &Path, encoded: &str) -> Result<(), IpcError> {
     for attempt in 0..IPC_WRITE_RETRY_ATTEMPTS {
-        match write_text_atomic(path, encoded) {
+        match write_text_atomic_restricted(path, encoded) {
             Ok(()) => return Ok(()),
             Err(err)
                 if is_transient_ipc_write_error(&err) && attempt + 1 < IPC_WRITE_RETRY_ATTEMPTS =>
@@ -474,11 +495,10 @@ mod tests {
 
         let polled = server.poll_once();
         assert_eq!(polled, Some((cmd_id.clone(), IpcCommandKind::StartTest)));
-        assert!(!paths.command_file.exists());
-        // Polling again returns None.
+        // Retaining the command file avoids delete-after-read races; polling again deduplicates.
         assert_eq!(server.poll_once(), None);
 
-        // Re-writing the exact same command ID is ignored as duplicate.
+        // Overwriting with the exact same command ID is still ignored as duplicate.
         let dup = serde_json::to_string(&IpcCommand {
             id: cmd_id.clone(),
             command: "start_test".into(),
@@ -487,6 +507,13 @@ mod tests {
         .unwrap();
         fs::write(&paths.command_file, dup).unwrap();
         assert_eq!(server.poll_once(), None);
+
+        // Publishing a second command atomically replaces the file and dispatches cleanly.
+        let stop_id = client.send_command(&IpcCommandKind::StopTest).unwrap();
+        assert_eq!(
+            server.poll_once(),
+            Some((stop_id, IpcCommandKind::StopTest))
+        );
 
         // Wrong ID response is ignored; matching ID response is returned & cached.
         server
@@ -497,6 +524,16 @@ mod tests {
         server
             .send_response(&cmd_id, IpcStatus::Done, "Hallo Welt", None)
             .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&paths.response_file)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600);
+        }
         let resp = client.poll_response(&cmd_id).expect("matching response");
         assert_eq!(resp.status, IpcStatus::Done);
         assert_eq!(resp.transcript, "Hallo Welt");
