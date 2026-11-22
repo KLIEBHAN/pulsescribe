@@ -345,15 +345,26 @@ impl IpcServer {
     }
 }
 
-/// Write an IPC JSON file atomically, retrying briefly on transient `PermissionDenied` sharing
+fn is_transient_ipc_write_error(err: &io::Error) -> bool {
+    if err.kind() == io::ErrorKind::PermissionDenied {
+        return true;
+    }
+    #[cfg(windows)]
+    if matches!(err.raw_os_error(), Some(32 | 33)) {
+        // ERROR_SHARING_VIOLATION (32) and ERROR_LOCK_VIOLATION (33) map to `Other` on Rust 1.85.
+        return true;
+    }
+    false
+}
+
+/// Write an IPC JSON file atomically, retrying briefly on transient permission/sharing
 /// violations (e.g., Windows `MoveFileExW` racing against Python `Path.read_text`).
 fn write_ipc_json_atomic(path: &Path, encoded: &str) -> Result<(), IpcError> {
     for attempt in 0..IPC_WRITE_RETRY_ATTEMPTS {
         match write_text_atomic(path, encoded) {
             Ok(()) => return Ok(()),
             Err(err)
-                if err.kind() == io::ErrorKind::PermissionDenied
-                    && attempt + 1 < IPC_WRITE_RETRY_ATTEMPTS =>
+                if is_transient_ipc_write_error(&err) && attempt + 1 < IPC_WRITE_RETRY_ATTEMPTS =>
             {
                 thread::sleep(IPC_WRITE_RETRY_DELAY);
             }
