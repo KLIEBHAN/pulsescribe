@@ -684,6 +684,7 @@ mod tests {
 
         // Pressing R while Ctrl & Alt are confirmed up must NOT fire ctrl+alt+r.
         assert!(matcher.on_key_down(b'R' as u16, |_| Some(false)).is_empty());
+        assert!(matcher.on_key_up(b'R' as u16).is_empty());
 
         // Pressing Ctrl+Alt+R while Ctrl & Alt are confirmed down fires Toggle and suppresses repeat.
         assert!(matcher
