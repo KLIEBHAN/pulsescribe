@@ -7,6 +7,7 @@
 
 pub mod deepgram;
 pub mod deepgram_stream;
+pub mod deepgram_warm;
 pub mod groq;
 mod http;
 pub mod openai;
@@ -242,6 +243,7 @@ pub use deepgram_stream::{
     build_stream_ws_url, DeepgramStreamClient, DeepgramStreamConfig, DeepgramStreamEvent,
     DeepgramStreamResult, DeepgramStreamTimeouts, DEEPGRAM_WS_URL,
 };
+pub use deepgram_warm::DeepgramWarmConnectionManager;
 pub use groq::GroqProvider;
 pub use openai::OpenAiProvider;
 pub use openai_compatible::{
