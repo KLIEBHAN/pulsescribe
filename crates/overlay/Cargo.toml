@@ -19,6 +19,9 @@ objc2-core-graphics.workspace = true
 objc2-foundation.workspace = true
 objc2-quartz-core.workspace = true
 
+[target.'cfg(target_os = "windows")'.dependencies]
+windows.workspace = true
+
 [lints.rust]
 unsafe_code = "deny"
 

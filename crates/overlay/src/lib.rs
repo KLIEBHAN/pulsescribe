@@ -1,13 +1,17 @@
 //! Native 60 FPS non-activating floating recording overlay for PulseScribe (ADR-003 Phase 5).
 //!
-//! Splits pure state/animation/layout logic ([`model`]) from platform-native GPU renderers
-//! (`macos`: AppKit `NSPanel` + Core Animation `CALayer`; `windows` added in PR 5.2 via Direct2D).
+//! Splits pure state/animation/layout logic ([`model`]) from platform-native GPU renderers:
+//! - `macos`: AppKit `NSPanel` + Core Animation `CALayer` / `CAGradientLayer`
+//! - `windows`: Win32 layered `WS_EX_NOACTIVATE` window + Direct2D / DirectWrite
+//!
 //! Keeps 0 FPS / 0 timer wakeups whenever the overlay is hidden, showing static status, or
 //! settled on silence.
 
 #[cfg(target_os = "macos")]
 pub mod macos;
 pub mod model;
+#[cfg(target_os = "windows")]
+pub mod windows;
 
 use std::sync::Arc;
 
@@ -37,7 +41,7 @@ pub struct OverlayHandle {
 
 impl OverlayHandle {
     /// Wrap a custom backend sink (used by native OS backends and unit tests).
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(any(target_os = "macos", target_os = "windows", test))]
     pub(crate) fn from_sink(sink: Arc<dyn OverlaySink>) -> Self {
         Self { sink }
     }
