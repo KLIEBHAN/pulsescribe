@@ -239,6 +239,9 @@ struct EventTapRule {
     is_hold: bool,
     toggle_on_down_only: bool,
     active: bool,
+    /// Tracks last observed modifier-flag state so toggling Caps Lock works even if it
+    /// was already enabled before registration.
+    last_modifier_state: Option<bool>,
 }
 
 impl EventTapRule {
@@ -257,6 +260,7 @@ impl EventTapRule {
             is_hold,
             toggle_on_down_only,
             active: false,
+            last_modifier_state: None,
         })
     }
 
@@ -266,33 +270,50 @@ impl EventTapRule {
         keycode: u16,
         flags: CGEventFlags,
     ) -> Option<HotkeyEvent> {
+        let mods_ok = flags.contains(self.required_flags);
         if let Some(mod_flag) = self.modifier_flag {
-            if event_type != CGEventType::FlagsChanged || keycode != self.keycode {
+            if event_type != CGEventType::FlagsChanged {
                 return None;
             }
             let is_down = flags.contains(mod_flag);
-            let was_active = self.active;
-            self.active = is_down;
-            return if self.is_hold {
-                if is_down && !was_active {
-                    Some(HotkeyEvent::HoldDown {
-                        source: HotkeySource::EventTap,
-                    })
-                } else if !is_down && was_active {
-                    Some(HotkeyEvent::HoldUp {
-                        source: HotkeySource::EventTap,
-                    })
-                } else {
-                    None
+            let combo_down = is_down && mods_ok;
+
+            if self.is_hold {
+                if self.active {
+                    if !combo_down {
+                        self.active = false;
+                        return Some(HotkeyEvent::HoldUp {
+                            source: HotkeySource::EventTap,
+                        });
+                    }
+                    return None;
                 }
-            } else if self.toggle_on_down_only {
-                (is_down && !was_active).then_some(HotkeyEvent::Toggle)
-            } else {
-                (is_down != was_active).then_some(HotkeyEvent::Toggle)
-            };
+                let trigger_matches = keycode == self.keycode || !self.required_flags.is_empty();
+                if combo_down && trigger_matches {
+                    self.active = true;
+                    return Some(HotkeyEvent::HoldDown {
+                        source: HotkeySource::EventTap,
+                    });
+                }
+                return None;
+            }
+
+            if keycode != self.keycode {
+                if !combo_down {
+                    self.active = false;
+                }
+                return None;
+            }
+            if self.toggle_on_down_only {
+                let was_active = self.active;
+                self.active = combo_down;
+                return (combo_down && !was_active).then_some(HotkeyEvent::Toggle);
+            }
+            let changed = self.last_modifier_state != Some(is_down);
+            self.last_modifier_state = Some(is_down);
+            return (changed && mods_ok).then_some(HotkeyEvent::Toggle);
         }
 
-        let mods_ok = flags.contains(self.required_flags);
         if event_type == CGEventType::FlagsChanged {
             if self.is_hold && self.active && !mods_ok {
                 self.active = false;
@@ -682,6 +703,76 @@ mod tests {
                 CGEventType::FlagsChanged,
                 KVK_CAPS_LOCK,
                 CGEventFlags::empty()
+            ),
+            Some(HotkeyEvent::Toggle)
+        );
+
+        // Caps Lock already enabled before registration: first press disables it and must still toggle.
+        let mut caps_pre_enabled = EventTapRule::from_hotkey("capslock", false).unwrap();
+        assert_eq!(
+            caps_pre_enabled.handle(
+                CGEventType::FlagsChanged,
+                KVK_CAPS_LOCK,
+                CGEventFlags::empty()
+            ),
+            Some(HotkeyEvent::Toggle)
+        );
+        // Repeated unchanged state must not re-fire.
+        assert_eq!(
+            caps_pre_enabled.handle(
+                CGEventType::FlagsChanged,
+                KVK_CAPS_LOCK,
+                CGEventFlags::empty()
+            ),
+            None
+        );
+
+        // Modified Fn hold requires Command and ends when Command is released first.
+        let mut cmd_fn_hold = EventTapRule::from_hotkey("cmd+fn", true).unwrap();
+        assert_eq!(
+            cmd_fn_hold.handle(
+                CGEventType::FlagsChanged,
+                KVK_FUNCTION,
+                CGEventFlags::MaskSecondaryFn
+            ),
+            None
+        );
+        assert_eq!(
+            cmd_fn_hold.handle(
+                CGEventType::FlagsChanged,
+                KVK_FUNCTION,
+                CGEventFlags::MaskCommand | CGEventFlags::MaskSecondaryFn
+            ),
+            Some(HotkeyEvent::HoldDown {
+                source: HotkeySource::EventTap
+            })
+        );
+        assert_eq!(
+            cmd_fn_hold.handle(
+                CGEventType::FlagsChanged,
+                55, // Command released while Fn stays held
+                CGEventFlags::MaskSecondaryFn
+            ),
+            Some(HotkeyEvent::HoldUp {
+                source: HotkeySource::EventTap
+            })
+        );
+
+        // Modified Fn toggle ignores plain Fn.
+        let mut cmd_fn_toggle = EventTapRule::from_hotkey("cmd+fn", false).unwrap();
+        assert_eq!(
+            cmd_fn_toggle.handle(
+                CGEventType::FlagsChanged,
+                KVK_FUNCTION,
+                CGEventFlags::MaskSecondaryFn
+            ),
+            None
+        );
+        assert_eq!(
+            cmd_fn_toggle.handle(
+                CGEventType::FlagsChanged,
+                KVK_FUNCTION,
+                CGEventFlags::MaskCommand | CGEventFlags::MaskSecondaryFn
             ),
             Some(HotkeyEvent::Toggle)
         );

@@ -8,7 +8,7 @@ use std::thread;
 
 use objc2::rc::autoreleasepool;
 use objc2::runtime::Bool;
-use objc2::{msg_send, ClassType};
+use objc2::{msg_send, ClassType, Encode, Encoding};
 use objc2_av_foundation::{AVAuthorizationStatus, AVCaptureDevice, AVMediaTypeAudio};
 use objc2_core_foundation::{kCFBooleanTrue, CFBoolean, CFDictionary, CFString};
 use objc2_core_graphics::{CGPreflightListenEventAccess, CGRequestListenEventAccess};
@@ -50,6 +50,19 @@ struct SyncGlobalBlock(GlobalBoolBlock);
 // with no captured state; its pointer is safe to share across threads for `'static`.
 unsafe impl Sync for SyncGlobalBlock {}
 
+/// Transparent pointer to a static global Objective-C block, encoded as `@?` (`Encoding::Block`)
+/// so `objc2`'s debug signature verification accepts it for `completionHandler:` parameters.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct GlobalBlockPtr(*const GlobalBoolBlock);
+
+#[allow(unsafe_code)]
+// SAFETY: `GlobalBlockPtr` has the exact pointer ABI of an Objective-C block object (`@?`)
+// and points only to our immutable `'static` `GlobalBoolBlock`.
+unsafe impl Encode for GlobalBlockPtr {
+    const ENCODING: Encoding = Encoding::Block;
+}
+
 #[allow(unsafe_code)]
 unsafe extern "C" fn noop_mic_access_completion(_block: *const c_void, _granted: Bool) {}
 
@@ -88,15 +101,15 @@ impl MacOsPermissionsChecker {
             let Some(media_type) = (unsafe { AVMediaTypeAudio }) else {
                 return Err(PlatformError::Unavailable("AVMediaTypeAudio unavailable"));
             };
-            let block_ptr = (&raw const MIC_COMPLETION_BLOCK.0).cast::<c_void>();
+            let block = GlobalBlockPtr(&raw const MIC_COMPLETION_BLOCK.0);
             #[allow(unsafe_code)]
             // SAFETY: `AVCaptureDevice` responds to `requestAccessForMediaType:completionHandler:`
-            // accepting `AVMediaTypeAudio` and a valid `'static` ObjC `void (^)(BOOL)` block.
+            // accepting `AVMediaTypeAudio` and a `'static` ObjC `void (^)(BOOL)` block (`@?`).
             unsafe {
                 let _: () = msg_send![
                     AVCaptureDevice::class(),
                     requestAccessForMediaType: media_type,
-                    completionHandler: block_ptr
+                    completionHandler: block
                 ];
             }
             Ok(())
@@ -186,5 +199,19 @@ mod tests {
         let checker = CachedPermissionsChecker::new(MacOsPermissionsChecker);
         let snap = checker.snapshot();
         assert_ne!(snap.microphone, MicrophonePermissionStatus::Unknown);
+    }
+
+    #[test]
+    fn microphone_request_uses_block_encoding_and_passes_objc2_signature_check() {
+        assert_eq!(GlobalBlockPtr::ENCODING, Encoding::Block);
+        let checker = MacOsPermissionsChecker;
+        // When status is already decided, AVFoundation invokes the completion block without UI.
+        if checker.microphone_status() != MicrophonePermissionStatus::NotDetermined {
+            checker
+                .request_permission(PermissionKind::Microphone)
+                .expect(
+                    "requestAccessForMediaType:completionHandler: must pass objc2 signature check",
+                );
+        }
     }
 }
