@@ -31,6 +31,48 @@ pub fn is_canary_language(lang: &str) -> bool {
     CANARY_LANGUAGES.contains(&base.as_str())
 }
 
+/// Resolve the effective 2-letter language code for NVIDIA Canary 1B v2, matching
+/// `providers/nemo_model.py::canary_language()`.
+///
+/// Uses `language` if it maps to one of [`CANARY_LANGUAGES`]; otherwise checks the system locale
+/// environment (`LC_ALL`, `LC_MESSAGES`, `LANG`) and finally falls back to `"en"`.
+pub fn resolve_canary_language(language: Option<&str>) -> String {
+    resolve_canary_language_with_system(language, detect_system_locale_language().as_deref())
+}
+
+fn resolve_canary_language_with_system(
+    language: Option<&str>,
+    system_language: Option<&str>,
+) -> String {
+    if let Some(code) = crate::normalize_language(language).filter(|l| is_canary_language(l)) {
+        return code;
+    }
+    if let Some(sys) = crate::normalize_language(system_language).filter(|l| is_canary_language(l))
+    {
+        return sys;
+    }
+    "en".to_owned()
+}
+
+fn detect_system_locale_language() -> Option<String> {
+    for key in ["LC_ALL", "LC_MESSAGES", "LANG"] {
+        let Some(raw) = std::env::var(key).ok() else {
+            continue;
+        };
+        let cleaned = raw.split('.').next().unwrap_or("").trim();
+        if cleaned.is_empty()
+            || cleaned.eq_ignore_ascii_case("C")
+            || cleaned.eq_ignore_ascii_case("POSIX")
+        {
+            continue;
+        }
+        if let Some(code) = crate::normalize_language(Some(cleaned)) {
+            return Some(code);
+        }
+    }
+    None
+}
+
 /// Native inference runtime family for a catalog model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -342,10 +384,24 @@ mod tests {
     }
 
     #[test]
-    fn canary_language_detection_handles_regional_tags() {
+    fn canary_language_detection_and_fallback_handles_regional_tags_and_locale() {
         assert!(is_canary_language("de"));
         assert!(is_canary_language("de-DE"));
         assert!(is_canary_language("EN_us"));
         assert!(!is_canary_language("ja"));
+
+        assert_eq!(
+            resolve_canary_language_with_system(Some("de-DE"), Some("en")),
+            "de"
+        );
+        assert_eq!(
+            resolve_canary_language_with_system(Some("auto"), Some("fr_FR")),
+            "fr"
+        );
+        assert_eq!(
+            resolve_canary_language_with_system(None, Some("ja_JP")),
+            "en"
+        );
+        assert_eq!(resolve_canary_language_with_system(Some("ja"), None), "en");
     }
 }

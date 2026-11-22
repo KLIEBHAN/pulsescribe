@@ -1,17 +1,19 @@
 //! Single-slot local ASR engine cache and backend dispatcher (`whisper-rs` + `sherpa-onnx`).
 //!
 //! Mirrors `providers/local_memory.py` by keeping at most one loaded model in RAM at a time and
-//! evicting the previous engine before loading a new model or language-bound Canary configuration.
+//! coordinating model replacement with in-flight transcriptions so previous weights are released
+//! before replacement weights are allocated.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
 
 use pulsescribe_core::paths::AppPaths;
 use serde::{Deserialize, Serialize};
 
-use crate::cache::ModelCache;
-use crate::catalog::{is_canary_language, resolve_model_spec, LocalEngineKind};
-use crate::{normalize_language, LocalAsrEngine, LocalAsrError, LocalAsrRequest};
+use crate::cache::{InstalledModel, ModelCache};
+use crate::catalog::{resolve_canary_language, resolve_model_spec, LocalEngineKind, ModelSpec};
+use crate::{LocalAsrEngine, LocalAsrError, LocalAsrRequest};
 
 /// Compile-time feature flags enabled in this binary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,13 +48,38 @@ struct ActiveState {
     slot: Option<LoadedEngineSlot>,
 }
 
+enum ResolvedLoadPlan {
+    CustomWhisper {
+        key: LoadedEngineKey,
+        path: PathBuf,
+    },
+    Catalog {
+        key: LoadedEngineKey,
+        spec: &'static ModelSpec,
+        installed: InstalledModel,
+        primary_whisper_file: Option<PathBuf>,
+        canary_lang: Option<String>,
+    },
+}
+
+impl ResolvedLoadPlan {
+    fn key(&self) -> &LoadedEngineKey {
+        match self {
+            Self::CustomWhisper { key, .. } | Self::Catalog { key, .. } => key,
+        }
+    }
+}
+
 /// Thread-safe local ASR manager resolving catalog models or custom GGML paths, caching the active
 /// engine, and dispatching transcription requests.
 #[derive(Clone)]
 pub struct LocalAsrManager {
     config_dir: PathBuf,
     cache: ModelCache,
+    // Lock acquisition order: `load_gate` -> `in_use` -> `active`.
+    // `active` is never held while dropping an evicted engine or running a native model loader.
     active: Arc<Mutex<ActiveState>>,
+    in_use: Arc<RwLock<()>>,
     load_gate: Arc<Mutex<()>>,
 }
 
@@ -66,6 +93,7 @@ impl LocalAsrManager {
             config_dir,
             cache,
             active: Arc::new(Mutex::new(ActiveState::default())),
+            in_use: Arc::new(RwLock::new(())),
             load_gate: Arc::new(Mutex::new(())),
         }
     }
@@ -76,6 +104,7 @@ impl LocalAsrManager {
             config_dir: config_dir.into(),
             cache,
             active: Arc::new(Mutex::new(ActiveState::default())),
+            in_use: Arc::new(RwLock::new(())),
             load_gate: Arc::new(Mutex::new(())),
         }
     }
@@ -90,9 +119,12 @@ impl LocalAsrManager {
 
     /// Unload any cached local ASR engine immediately to release model RAM.
     pub fn unload(&self) {
-        let mut guard = self.active.lock().unwrap_or_else(|e| e.into_inner());
-        guard.generation = guard.generation.wrapping_add(1);
-        guard.slot = None;
+        let evicted = {
+            let mut guard = self.active.lock().unwrap_or_else(|e| e.into_inner());
+            guard.generation = guard.generation.wrapping_add(1);
+            guard.slot.take()
+        };
+        drop(evicted);
     }
 
     /// Return the currently loaded model identifier, if any.
@@ -102,13 +134,28 @@ impl LocalAsrManager {
     }
 
     /// Load (or reuse cached) engine for `model_name` and transcribe `request`.
+    ///
+    /// Holds a shared in-use guard for the duration of inference so concurrent model swaps wait
+    /// for this call to drop its `Arc` before loading replacement weights into RAM.
     pub fn transcribe(
         &self,
         model_name: Option<&str>,
         request: &LocalAsrRequest,
     ) -> Result<String, LocalAsrError> {
-        let engine = self.get_or_load(model_name, request.language.as_deref())?;
-        engine.transcribe(request)
+        if request.cancel_flag.load(Ordering::Acquire) {
+            return Err(LocalAsrError::Cancelled);
+        }
+        let (engine, use_guard) = self.acquire_engine(
+            model_name,
+            request.language.as_deref(),
+            Some(&request.cancel_flag),
+        )?;
+        let result = engine.transcribe(request);
+        // Drop `Arc<dyn LocalAsrEngine>` before releasing `use_guard` so a waiting replacement
+        // observes zero remaining strong references when freeing the previous model.
+        drop(engine);
+        drop(use_guard);
+        result
     }
 
     /// Resolve and load (or return the cached) [`LocalAsrEngine`] for `model_name`.
@@ -117,111 +164,209 @@ impl LocalAsrManager {
         model_name: Option<&str>,
         language_hint: Option<&str>,
     ) -> Result<Arc<dyn LocalAsrEngine>, LocalAsrError> {
-        // Explicit existing file path (e.g. custom GGML `.bin`) bypasses the curated catalog.
-        if let Some(raw_path) = model_name.map(str::trim).filter(|s| !s.is_empty()) {
-            let candidate = Path::new(raw_path);
-            if candidate.is_file() {
-                let key = LoadedEngineKey {
-                    model_id: raw_path.to_owned(),
-                    language_tag: None,
-                };
-                return self.load_with_slot(key, || load_custom_whisper_file(raw_path, candidate));
+        let (engine, _guard) = self.acquire_engine(model_name, language_hint, None)?;
+        Ok(engine)
+    }
+
+    fn resolve_load_plan(
+        &self,
+        model_name: Option<&str>,
+        language_hint: Option<&str>,
+    ) -> Result<ResolvedLoadPlan, LocalAsrError> {
+        // Resolve curated catalog models first so coincidental CWD files (`small`, `base`, …)
+        // never shadow built-in model IDs or aliases.
+        if let Some(spec) = resolve_model_spec(model_name) {
+            if spec.engine.is_streaming_preview() {
+                return Err(LocalAsrError::InvalidModel(format!(
+                    "'{}' is a streaming preview model and cannot be used for offline transcription",
+                    spec.id
+                )));
             }
-        }
 
-        let spec = resolve_model_spec(model_name).ok_or_else(|| {
-            LocalAsrError::UnknownModel(model_name.unwrap_or("").trim().to_owned())
-        })?;
+            let canary_lang = if spec.engine == LocalEngineKind::SherpaOfflineCanary {
+                Some(resolve_canary_language(language_hint))
+            } else {
+                None
+            };
 
-        if spec.engine.is_streaming_preview() {
-            return Err(LocalAsrError::InvalidModel(format!(
-                "'{}' is a streaming preview model and cannot be used for offline transcription",
-                spec.id
-            )));
-        }
+            let key = LoadedEngineKey {
+                model_id: spec.id.to_owned(),
+                language_tag: canary_lang.clone(),
+            };
 
-        let canary_lang = if spec.engine == LocalEngineKind::SherpaOfflineCanary {
-            Some(
-                normalize_language(language_hint)
-                    .filter(|l| is_canary_language(l))
-                    .unwrap_or_else(|| "de".to_owned()),
-            )
-        } else {
-            None
-        };
-
-        let key = LoadedEngineKey {
-            model_id: spec.id.to_owned(),
-            language_tag: canary_lang.clone(),
-        };
-
-        self.load_with_slot(key, || {
+            // Validate installation and compiled runtime before touching/evicting the active slot.
             let installed = self
                 .cache
                 .find_installed(spec)
                 .ok_or_else(|| LocalAsrError::ModelNotDownloaded(spec.id.to_owned()))?;
-
-            match spec.engine {
-                LocalEngineKind::Whisper => {
-                    let primary = installed
+            let primary_whisper_file = if spec.engine == LocalEngineKind::Whisper {
+                Some(
+                    installed
                         .primary_file(spec)
+                        .ok_or_else(|| LocalAsrError::ModelNotDownloaded(spec.id.to_owned()))?,
+                )
+            } else {
+                None
+            };
+            ensure_runtime_compiled(spec.engine, spec.id)?;
+
+            return Ok(ResolvedLoadPlan::Catalog {
+                key,
+                spec,
+                installed,
+                primary_whisper_file,
+                canary_lang,
+            });
+        }
+
+        // Fall back to an explicit local model file path (e.g., custom GGML `.bin`).
+        if let Some(raw_path) = model_name.map(str::trim).filter(|s| !s.is_empty()) {
+            let candidate = Path::new(raw_path);
+            if candidate.is_file() {
+                ensure_runtime_compiled(LocalEngineKind::Whisper, raw_path)?;
+                return Ok(ResolvedLoadPlan::CustomWhisper {
+                    key: LoadedEngineKey {
+                        model_id: raw_path.to_owned(),
+                        language_tag: None,
+                    },
+                    path: candidate.to_path_buf(),
+                });
+            }
+        }
+
+        Err(LocalAsrError::UnknownModel(
+            model_name.unwrap_or("").trim().to_owned(),
+        ))
+    }
+
+    fn execute_load_plan(
+        &self,
+        plan: &ResolvedLoadPlan,
+    ) -> Result<Arc<dyn LocalAsrEngine>, LocalAsrError> {
+        match plan {
+            ResolvedLoadPlan::CustomWhisper { key, path } => {
+                load_whisper_engine(&key.model_id, path)
+            }
+            ResolvedLoadPlan::Catalog {
+                spec,
+                installed,
+                primary_whisper_file,
+                canary_lang,
+                ..
+            } => match spec.engine {
+                LocalEngineKind::Whisper => {
+                    let primary = primary_whisper_file
+                        .as_deref()
                         .ok_or_else(|| LocalAsrError::ModelNotDownloaded(spec.id.to_owned()))?;
-                    load_whisper_engine(spec.id, &primary)
+                    load_whisper_engine(spec.id, primary)
                 }
                 LocalEngineKind::SherpaOfflineTransducer | LocalEngineKind::SherpaOfflineCanary => {
                     load_sherpa_offline_engine(
                         spec,
-                        &installed,
+                        installed,
                         Some(&self.config_dir),
                         canary_lang.as_deref(),
                     )
                 }
                 LocalEngineKind::SherpaOnlineTransducer => unreachable!("guarded above"),
-            }
-        })
+            },
+        }
     }
 
-    fn load_with_slot<F>(
+    fn cached_engine_for(&self, key: &LoadedEngineKey) -> Option<Arc<dyn LocalAsrEngine>> {
+        let guard = self.active.lock().unwrap_or_else(|e| e.into_inner());
+        guard
+            .slot
+            .as_ref()
+            .filter(|slot| slot.key == *key)
+            .map(|slot| Arc::clone(&slot.engine))
+    }
+
+    fn acquire_engine(
         &self,
-        key: LoadedEngineKey,
-        loader: F,
-    ) -> Result<Arc<dyn LocalAsrEngine>, LocalAsrError>
-    where
-        F: FnOnce() -> Result<Arc<dyn LocalAsrEngine>, LocalAsrError>,
-    {
-        // Fast path: cache hit without waiting on `load_gate`.
+        model_name: Option<&str>,
+        language_hint: Option<&str>,
+        cancel_flag: Option<&AtomicBool>,
+    ) -> Result<(Arc<dyn LocalAsrEngine>, RwLockReadGuard<'_, ()>), LocalAsrError> {
+        if cancel_flag.is_some_and(|f| f.load(Ordering::Acquire)) {
+            return Err(LocalAsrError::Cancelled);
+        }
+
+        let plan = self.resolve_load_plan(model_name, language_hint)?;
+        let key = plan.key();
+
+        loop {
+            if cancel_flag.is_some_and(|f| f.load(Ordering::Acquire)) {
+                return Err(LocalAsrError::Cancelled);
+            }
+
+            // Fast path: cache hit under shared `in_use` guard without waiting on `load_gate`.
+            let read_guard = self.in_use.read().unwrap_or_else(|e| e.into_inner());
+            if let Some(engine) = self.cached_engine_for(key) {
+                return Ok((engine, read_guard));
+            }
+            drop(read_guard);
+
+            // Serialize cache misses so two concurrent loads never double peak RAM.
+            let load_guard = self.load_gate.lock().unwrap_or_else(|e| e.into_inner());
+            if cancel_flag.is_some_and(|f| f.load(Ordering::Acquire)) {
+                return Err(LocalAsrError::Cancelled);
+            }
+            if self.cached_engine_for(key).is_some() {
+                drop(load_guard);
+                continue;
+            }
+
+            // Wait for any in-flight `transcribe()` calls to drop their `Arc` before evicting
+            // the previous model and allocating replacement weights.
+            let write_guard = self.in_use.write().unwrap_or_else(|e| e.into_inner());
+            if cancel_flag.is_some_and(|f| f.load(Ordering::Acquire)) {
+                return Err(LocalAsrError::Cancelled);
+            }
+
+            let (evicted, expected_gen) = {
+                let mut guard = self.active.lock().unwrap_or_else(|e| e.into_inner());
+                (guard.slot.take(), guard.generation)
+            };
+            // Drop native model weights outside `self.active` lock before allocating new ones.
+            drop(evicted);
+
+            let engine = self.execute_load_plan(&plan)?;
+            {
+                let mut guard = self.active.lock().unwrap_or_else(|e| e.into_inner());
+                if guard.generation == expected_gen {
+                    guard.slot = Some(LoadedEngineSlot {
+                        key: key.clone(),
+                        engine: Arc::clone(&engine),
+                    });
+                }
+            }
+            drop(write_guard);
+            drop(load_guard);
+
+            let read_guard = self.in_use.read().unwrap_or_else(|e| e.into_inner());
+            return Ok((engine, read_guard));
+        }
+    }
+}
+
+fn ensure_runtime_compiled(engine: LocalEngineKind, model_id: &str) -> Result<(), LocalAsrError> {
+    match engine {
+        LocalEngineKind::Whisper if !cfg!(feature = "local-whisper") => {
+            Err(LocalAsrError::MissingRuntime(format!(
+                "Whisper backend is not compiled into this build (rebuild with '--features local-whisper' to run '{model_id}')"
+            )))
+        }
+        LocalEngineKind::SherpaOfflineTransducer
+        | LocalEngineKind::SherpaOfflineCanary
+        | LocalEngineKind::SherpaOnlineTransducer
+            if !cfg!(feature = "local-sherpa") =>
         {
-            let guard = self.active.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(slot) = guard.slot.as_ref() {
-                if slot.key == key {
-                    return Ok(Arc::clone(&slot.engine));
-                }
-            }
+            Err(LocalAsrError::MissingRuntime(format!(
+                "sherpa-onnx backend is not compiled into this build (rebuild with '--features local-sherpa' to run '{model_id}')"
+            )))
         }
-
-        // Serialize cache misses so two concurrent loads never double peak RAM.
-        let _load_guard = self.load_gate.lock().unwrap_or_else(|e| e.into_inner());
-        let expected_gen = {
-            let mut guard = self.active.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(slot) = guard.slot.as_ref() {
-                if slot.key == key {
-                    return Ok(Arc::clone(&slot.engine));
-                }
-            }
-            // Evict the previous model BEFORE loading the replacement so peak RAM never doubles.
-            guard.slot = None;
-            guard.generation
-        };
-
-        let engine = loader()?;
-        let mut guard = self.active.lock().unwrap_or_else(|e| e.into_inner());
-        if guard.generation == expected_gen {
-            guard.slot = Some(LoadedEngineSlot {
-                key,
-                engine: Arc::clone(&engine),
-            });
-        }
-        Ok(engine)
+        _ => Ok(()),
     }
 }
 
@@ -239,22 +384,14 @@ fn load_whisper_engine(
     model_id: &str,
     _model_path: &Path,
 ) -> Result<Arc<dyn LocalAsrEngine>, LocalAsrError> {
-    Err(LocalAsrError::MissingRuntime(format!(
-        "Whisper backend is not compiled into this build (rebuild with '--features local-whisper' to run '{model_id}')"
-    )))
-}
-
-fn load_custom_whisper_file(
-    label: &str,
-    path: &Path,
-) -> Result<Arc<dyn LocalAsrEngine>, LocalAsrError> {
-    load_whisper_engine(label, path)
+    ensure_runtime_compiled(LocalEngineKind::Whisper, model_id)?;
+    unreachable!()
 }
 
 #[cfg(feature = "local-sherpa")]
 fn load_sherpa_offline_engine(
-    spec: &crate::catalog::ModelSpec,
-    installed: &crate::cache::InstalledModel,
+    spec: &ModelSpec,
+    installed: &InstalledModel,
     config_dir: Option<&Path>,
     language_hint: Option<&str>,
 ) -> Result<Arc<dyn LocalAsrEngine>, LocalAsrError> {
@@ -269,28 +406,26 @@ fn load_sherpa_offline_engine(
 
 #[cfg(not(feature = "local-sherpa"))]
 fn load_sherpa_offline_engine(
-    spec: &crate::catalog::ModelSpec,
-    _installed: &crate::cache::InstalledModel,
+    spec: &ModelSpec,
+    _installed: &InstalledModel,
     _config_dir: Option<&Path>,
     _language_hint: Option<&str>,
 ) -> Result<Arc<dyn LocalAsrEngine>, LocalAsrError> {
-    Err(LocalAsrError::MissingRuntime(format!(
-        "sherpa-onnx backend is not compiled into this build (rebuild with '--features local-sherpa' to run '{}')",
-        spec.id
-    )))
+    ensure_runtime_compiled(spec.engine, spec.id)?;
+    unreachable!()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::AtomicU64;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     static MGR_TEST_SEQ: AtomicU64 = AtomicU64::new(0);
 
     #[test]
-    fn manager_reports_unknown_streaming_and_missing_model_cleanly() {
+    fn manager_reports_unknown_streaming_missing_and_cancelled_cleanly() {
         let seq = MGR_TEST_SEQ.fetch_add(1, Ordering::Relaxed);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -316,6 +451,14 @@ mod tests {
             mgr.get_or_load(Some("turbo"), None),
             Err(LocalAsrError::ModelNotDownloaded(_))
         ));
+
+        let cancelled = Arc::new(AtomicBool::new(true));
+        let req = LocalAsrRequest::new(vec![0.1; 160]).with_cancel_flag(cancelled);
+        assert!(matches!(
+            mgr.transcribe(Some("turbo"), &req),
+            Err(LocalAsrError::Cancelled)
+        ));
+
         assert_eq!(mgr.loaded_model_id(), None);
         mgr.unload();
         assert_eq!(mgr.loaded_model_id(), None);

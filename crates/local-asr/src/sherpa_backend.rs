@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
-use crate::catalog::{is_canary_language, LocalEngineKind, ModelSpec};
+use crate::catalog::{resolve_canary_language, LocalEngineKind, ModelSpec};
 use crate::sherpa_ffi::{
     path_to_cstring, OfflineRecognizerHandle, OnlineRecognizerHandle, OnlineStreamHandle,
     SherpaApi, SherpaOnnxOfflineRecognizerConfig, SherpaOnnxOnlineRecognizerConfig,
@@ -74,11 +74,13 @@ pub fn default_sherpa_library_candidates(config_dir: Option<&Path>) -> Vec<PathB
 
 fn load_sherpa_api(config_dir: Option<&Path>) -> Result<Arc<SherpaApi>, LocalAsrError> {
     let candidates = default_sherpa_library_candidates(config_dir);
+    let mut explicit_err = None;
     let mut last_err = None;
     for path in &candidates {
+        let is_explicit = path.components().count() > 1;
         // For absolute/relative explicit paths, skip non-existent files to preserve meaningful
         // error reporting when a real candidate fails ABI/symbol verification.
-        if path.components().count() > 1 && !path.exists() {
+        if is_explicit && !path.exists() {
             continue;
         }
         match SherpaApi::load(path) {
@@ -90,11 +92,17 @@ fn load_sherpa_api(config_dir: Option<&Path>) -> Result<Arc<SherpaApi>, LocalAsr
                 );
                 return Ok(api);
             }
-            Err(err) => last_err = Some(err),
+            Err(err) => {
+                if is_explicit && explicit_err.is_none() {
+                    explicit_err = Some(err);
+                } else {
+                    last_err = Some(err);
+                }
+            }
         }
     }
 
-    Err(last_err.unwrap_or_else(|| {
+    Err(explicit_err.or(last_err).unwrap_or_else(|| {
         LocalAsrError::MissingRuntime(format!(
             "{} not found (set {} or install under ~/.pulsescribe/libs)",
             sherpa_c_api_library_name(),
@@ -160,9 +168,7 @@ impl SherpaOfflineEngine {
                 _model_type_keep = Some(model_type);
             }
             LocalEngineKind::SherpaOfflineCanary => {
-                let lang = normalize_language(language_hint)
-                    .filter(|l| is_canary_language(l))
-                    .unwrap_or_else(|| "de".to_owned());
+                let lang = resolve_canary_language(language_hint);
                 let lang_c = CString::new(lang).map_err(|_| {
                     LocalAsrError::InvalidModel("invalid Canary language code".to_owned())
                 })?;

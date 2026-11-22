@@ -13,6 +13,7 @@ mod sherpa_ffi;
 #[cfg(feature = "local-whisper")]
 pub mod whisper_backend;
 
+use std::borrow::Cow;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
@@ -21,8 +22,9 @@ use thiserror::Error;
 
 pub use cache::{InstalledModel, ModelCache, ModelInstallSource, ModelStatus};
 pub use catalog::{
-    build_hf_resolve_url, catalog_models, is_canary_language, resolve_model_spec, LocalEngineKind,
-    ModelSpec, CANARY_LANGUAGES, DEFAULT_HF_BASE_URL, DEFAULT_LOCAL_MODEL_ID,
+    build_hf_resolve_url, catalog_models, is_canary_language, resolve_canary_language,
+    resolve_model_spec, LocalEngineKind, ModelSpec, CANARY_LANGUAGES, DEFAULT_HF_BASE_URL,
+    DEFAULT_LOCAL_MODEL_ID,
 };
 pub use download::{DownloadProgress, ModelDownloader};
 pub use manager::{LocalAsrManager, LocalRuntimeCapabilities};
@@ -131,14 +133,28 @@ pub trait LocalStreamingSession: Send {
     fn text(&self) -> Result<String, LocalAsrError>;
 }
 
-/// Normalize optional language code (`None`, blank, or `"auto"` -> `None`), stripping any NUL bytes.
+fn strip_nuls(input: &str) -> Cow<'_, str> {
+    if input.contains('\0') {
+        Cow::Owned(input.replace('\0', ""))
+    } else {
+        Cow::Borrowed(input)
+    }
+}
+
+/// Normalize an optional BCP-47/ISO language tag to its lowercase base ISO code (`"de-DE"` ->
+/// `"de"`, `"en_US"` -> `"en"`), treating `None`, blank, or `"auto"` as `None` and stripping any
+/// interior NUL bytes.
 pub(crate) fn normalize_language(language: Option<&str>) -> Option<String> {
-    let cleaned = language?.replace('\0', "");
+    let cleaned = strip_nuls(language?);
     let trimmed = cleaned.trim();
     if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("auto") {
         return None;
     }
-    Some(trimmed.to_ascii_lowercase())
+    let base = trimmed.split(['-', '_']).next().unwrap_or("").trim();
+    if base.is_empty() || base.eq_ignore_ascii_case("auto") {
+        return None;
+    }
+    Some(base.to_ascii_lowercase())
 }
 
 /// Build a comma-separated Whisper `initial_prompt` from custom vocabulary keywords.
@@ -150,7 +166,7 @@ pub fn format_whisper_initial_prompt(keywords: &[String]) -> Option<String> {
     let mut prompt_terms = Vec::with_capacity(keywords.len().min(LOCAL_KEYWORD_LIMIT));
 
     for raw in keywords {
-        let cleaned = raw.replace('\0', "");
+        let cleaned = strip_nuls(raw);
         let trimmed = cleaned.trim();
         if trimmed.is_empty() {
             continue;
@@ -262,10 +278,13 @@ mod tests {
     }
 
     #[test]
-    fn normalize_language_strips_nul_and_handles_auto() {
+    fn normalize_language_strips_nul_region_and_handles_auto() {
         assert_eq!(normalize_language(None), None);
         assert_eq!(normalize_language(Some("  auto  ")), None);
         assert_eq!(normalize_language(Some("DE\0")), Some("de".to_owned()));
+        assert_eq!(normalize_language(Some("de-DE")), Some("de".to_owned()));
+        assert_eq!(normalize_language(Some("en_US")), Some("en".to_owned()));
+        assert_eq!(normalize_language(Some("pt-BR")), Some("pt".to_owned()));
     }
 
     #[test]

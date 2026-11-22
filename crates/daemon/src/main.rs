@@ -1,7 +1,7 @@
 //! Headless `pulsescribe-daemon` executable wired to native platform adapters and
 //! [`LiveDictationBackend`].
 
-use std::io::{self, BufRead};
+use std::io::{self, BufRead, IsTerminal};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -41,6 +41,10 @@ struct DaemonCliArgs {
     /// Do not restore previous clipboard contents after auto-paste.
     #[arg(long)]
     no_clipboard_restore: bool,
+
+    /// Exit cleanly when stdin reaches EOF (for supervised parent pipes; enabled automatically on a TTY).
+    #[arg(long)]
+    exit_on_stdin_eof: bool,
 }
 
 fn main() -> ExitCode {
@@ -76,6 +80,7 @@ fn main() -> ExitCode {
         !args.no_ipc,
         !args.no_reload,
         !args.no_clipboard_restore,
+        args.exit_on_stdin_eof,
     )) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
@@ -90,6 +95,7 @@ async fn run_daemon(
     enable_ipc: bool,
     enable_reload_watcher: bool,
     restore_clipboard: bool,
+    exit_on_stdin_eof: bool,
 ) -> Result<(), String> {
     let store = Arc::new(PreferencesStore::new(&config_dir));
     let config = DaemonConfig::from_store_startup(&store);
@@ -105,11 +111,20 @@ async fn run_daemon(
         ..DaemonRuntimeOptions::default()
     };
 
-    eprintln!(
-        "pulsescribe-daemon gestartet (mode={}, config={}). Zum sauberen Beenden Ctrl+C drücken, 'quit' eingeben oder stdin schließen.",
-        config.mode.as_str(),
-        config_dir.display()
-    );
+    let watch_stdin = io::stdin().is_terminal() || exit_on_stdin_eof;
+    if watch_stdin {
+        eprintln!(
+            "pulsescribe-daemon gestartet (mode={}, config={}). Zum sauberen Beenden Ctrl+C drücken oder 'quit' eingeben.",
+            config.mode.as_str(),
+            config_dir.display()
+        );
+    } else {
+        eprintln!(
+            "pulsescribe-daemon gestartet (mode={}, config={}). Zum sauberen Beenden SIGINT/SIGTERM senden.",
+            config.mode.as_str(),
+            config_dir.display()
+        );
+    }
 
     let daemon =
         DaemonRuntime::spawn(store, config, platform, Arc::new(backend.clone()), options).await;
@@ -161,6 +176,9 @@ async fn run_daemon(
                         "daemon event subscriber lagged; resyncing warm state"
                     );
                     let current = reload_handle.config();
+                    if current.mode != DaemonMode::Local {
+                        reload_backend.unload_local_model();
+                    }
                     reload_backend.sync_deepgram_warm_state(&current).await;
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
@@ -168,40 +186,84 @@ async fn run_daemon(
         }
     });
 
-    // Wait for either Ctrl+C (`SIGINT`) or `quit`/`exit`/EOF on stdin.
-    // Use an OS thread rather than `spawn_blocking` so Tokio runtime teardown never hangs waiting
-    // on a blocked stdin read when shutdown is triggered by `ctrl_c`.
-    let (stdin_tx, stdin_rx) = tokio::sync::oneshot::channel::<()>();
-    std::thread::spawn(move || {
-        let stdin = io::stdin();
-        for line in stdin.lock().lines() {
-            match line {
-                Ok(text) => {
-                    let cmd = text.trim();
-                    if cmd.eq_ignore_ascii_case("quit") || cmd.eq_ignore_ascii_case("exit") {
-                        break;
+    // Wait for termination signal (Ctrl+C / SIGTERM), or optional interactive stdin `quit`/`exit`.
+    // Only monitor stdin on a TTY or when explicitly requested (`--exit-on-stdin-eof`) so headless
+    // launches with stdin attached to `/dev/null` / `NUL` do not exit immediately on startup.
+    let stdin_shutdown = if watch_stdin {
+        let (stdin_tx, stdin_rx) = tokio::sync::oneshot::channel::<()>();
+        std::thread::spawn(move || {
+            let stdin = io::stdin();
+            for line in stdin.lock().lines() {
+                match line {
+                    Ok(text) => {
+                        let cmd = text.trim();
+                        if cmd.eq_ignore_ascii_case("quit") || cmd.eq_ignore_ascii_case("exit") {
+                            break;
+                        }
                     }
+                    Err(_) => break,
                 }
-                Err(_) => break,
             }
-        }
-        let _ = stdin_tx.send(());
-    });
+            let _ = stdin_tx.send(());
+        });
+        Some(stdin_rx)
+    } else {
+        None
+    };
 
-    tokio::select! {
-        res = tokio::signal::ctrl_c() => {
-            if let Err(err) = res {
-                tracing::warn!(error = %err, "ctrl_c signal handler failed");
-            }
-        }
-        _ = stdin_rx => {}
-    }
+    wait_for_shutdown_signal(stdin_shutdown).await;
 
     daemon.shutdown().await;
     logger.abort();
     let _ = logger.await;
     backend.shutdown().await;
     Ok(())
+}
+
+async fn wait_for_shutdown_signal(stdin_rx: Option<tokio::sync::oneshot::Receiver<()>>) {
+    let stdin_fut = async {
+        match stdin_rx {
+            Some(rx) => {
+                let _ = rx.await;
+            }
+            None => std::future::pending::<()>().await,
+        }
+    };
+
+    #[cfg(unix)]
+    {
+        let mut sigterm =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
+        let sigterm_fut = async {
+            match sigterm.as_mut() {
+                Some(sig) => {
+                    let _ = sig.recv().await;
+                }
+                None => std::future::pending::<()>().await,
+            }
+        };
+        tokio::select! {
+            res = tokio::signal::ctrl_c() => {
+                if let Err(err) = res {
+                    tracing::warn!(error = %err, "ctrl_c signal handler failed");
+                }
+            }
+            _ = sigterm_fut => {}
+            _ = stdin_fut => {}
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        tokio::select! {
+            res = tokio::signal::ctrl_c() => {
+                if let Err(err) = res {
+                    tracing::warn!(error = %err, "ctrl_c signal handler failed");
+                }
+            }
+            _ = stdin_fut => {}
+        }
+    }
 }
 
 fn init_tracing(debug: bool) {
