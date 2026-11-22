@@ -654,10 +654,42 @@ pub(crate) fn is_supported_abi_version(version: &str) -> bool {
     version.trim().starts_with(SHERPA_SUPPORTED_ABI_PREFIX)
 }
 
+#[cfg(windows)]
+unsafe fn open_library(lib_path: &Path) -> Result<Library, libloading::Error> {
+    use libloading::os::windows::{
+        Library as WinLibrary, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR,
+    };
+    // Search sibling DLLs (e.g. `onnxruntime.dll` next to `sherpa-onnx-c-api.dll` in
+    // `~/.pulsescribe/libs` or `PULSESCRIBE_SHERPA_LIB_DIR`) without enabling unsafe CWD lookup.
+    if lib_path.components().count() > 1 {
+        let resolved = if lib_path.is_absolute() {
+            std::borrow::Cow::Borrowed(lib_path)
+        } else {
+            match std::path::absolute(lib_path) {
+                Ok(abs) => std::borrow::Cow::Owned(abs),
+                Err(_) => std::borrow::Cow::Borrowed(lib_path),
+            }
+        };
+        if resolved.is_absolute() {
+            return WinLibrary::load_with_flags(
+                resolved.as_ref(),
+                LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS,
+            )
+            .map(Library::from);
+        }
+    }
+    Library::new(lib_path)
+}
+
+#[cfg(not(windows))]
+unsafe fn open_library(lib_path: &Path) -> Result<Library, libloading::Error> {
+    Library::new(lib_path)
+}
+
 impl SherpaApi {
     /// Load `libsherpa-onnx-c-api` from `lib_path` and verify its C-API ABI version (`2.0.x`).
     pub(crate) fn load(lib_path: &Path) -> Result<Arc<Self>, LocalAsrError> {
-        let lib = unsafe { Library::new(lib_path) }.map_err(|err| {
+        let lib = unsafe { open_library(lib_path) }.map_err(|err| {
             LocalAsrError::MissingRuntime(format!(
                 "failed to load sherpa-onnx library '{}': {err}",
                 lib_path.display()

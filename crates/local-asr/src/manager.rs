@@ -273,13 +273,14 @@ impl LocalAsrManager {
         }
     }
 
-    fn cached_engine_for(&self, key: &LoadedEngineKey) -> Option<Arc<dyn LocalAsrEngine>> {
+    fn cached_engine_or_gen(&self, key: &LoadedEngineKey) -> Result<Arc<dyn LocalAsrEngine>, u64> {
         let guard = self.active.lock().unwrap_or_else(|e| e.into_inner());
-        guard
-            .slot
-            .as_ref()
-            .filter(|slot| slot.key == *key)
-            .map(|slot| Arc::clone(&slot.engine))
+        if let Some(slot) = guard.slot.as_ref() {
+            if slot.key == *key {
+                return Ok(Arc::clone(&slot.engine));
+            }
+        }
+        Err(guard.generation)
     }
 
     fn acquire_engine(
@@ -301,10 +302,13 @@ impl LocalAsrManager {
             }
 
             // Fast path: cache hit under shared `in_use` guard without waiting on `load_gate`.
+            // Capture `expected_gen` before waiting on `load_gate` so a concurrent `unload()`
+            // prevents a queued pre-unload request from repopulating the cache.
             let read_guard = self.in_use.read().unwrap_or_else(|e| e.into_inner());
-            if let Some(engine) = self.cached_engine_for(key) {
-                return Ok((engine, read_guard));
-            }
+            let expected_gen = match self.cached_engine_or_gen(key) {
+                Ok(engine) => return Ok((engine, read_guard)),
+                Err(gen) => gen,
+            };
             drop(read_guard);
 
             // Serialize cache misses so two concurrent loads never double peak RAM.
@@ -312,7 +316,7 @@ impl LocalAsrManager {
             if cancel_flag.is_some_and(|f| f.load(Ordering::Acquire)) {
                 return Err(LocalAsrError::Cancelled);
             }
-            if self.cached_engine_for(key).is_some() {
+            if self.cached_engine_or_gen(key).is_ok() {
                 drop(load_guard);
                 continue;
             }
@@ -324,9 +328,9 @@ impl LocalAsrManager {
                 return Err(LocalAsrError::Cancelled);
             }
 
-            let (evicted, expected_gen) = {
+            let evicted = {
                 let mut guard = self.active.lock().unwrap_or_else(|e| e.into_inner());
-                (guard.slot.take(), guard.generation)
+                guard.slot.take()
             };
             // Drop native model weights outside `self.active` lock before allocating new ones.
             drop(evicted);
