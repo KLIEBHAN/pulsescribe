@@ -11,6 +11,21 @@ arboard.workspace = true
 pulsescribe-core = { path = "../core" }
 serde.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 
-[lints]
-workspace = true
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2.workspace = true
+objc2-app-kit.workspace = true
+objc2-audio-toolbox.workspace = true
+objc2-av-foundation.workspace = true
+objc2-core-foundation.workspace = true
+objc2-core-graphics.workspace = true
+objc2-foundation.workspace = true
+
+# Scoped `deny` (instead of workspace `forbid`) so native OS FFI adapters may use
+# targeted `#[allow(unsafe_code)]` blocks with documented `// SAFETY:` invariants.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
