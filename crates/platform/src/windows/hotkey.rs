@@ -4,27 +4,32 @@
 //! - Supports toggle and hold hotkeys, including modifier-only combos like `ctrl+win`.
 //! - Dispatches callbacks on a dedicated FIFO worker thread so the Win32 hook callback
 //!   never blocks and never risks `LowLevelHooksTimeout` eviction.
-//! - Uses `GetAsyncKeyState` to verify stale keys so long holds (>2 s) never drop modifiers
-//!   while lost releases (e.g. after UAC prompts) are still cleaned up.
+//! - Verifies carried-over tracked keys against live `GetAsyncKeyState` before starting a new
+//!   shortcut cycle, and schedules a Win32 timer only while a hold is active so a release lost on
+//!   a UAC secure desktop still emits `HoldUp` once the user returns to the interactive desktop.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
 
 use pulsescribe_core::hotkey::{normalize_windows_hotkey, windows_hotkeys_conflict};
 use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+use windows::Win32::System::StationsAndDesktops::{
+    CloseDesktop, OpenInputDesktop, DESKTOP_CONTROL_FLAGS, DESKTOP_READOBJECTS,
+};
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, GetKeyboardLayout, VkKeyScanExW, VK_CONTROL, VK_LCONTROL, VK_LMENU,
     VK_LSHIFT, VK_LWIN, VK_MENU, VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, GetMessageW, PeekMessageW, PostThreadMessageW, SetWindowsHookExW,
-    UnhookWindowsHookEx, HC_ACTION, HHOOK, KBDLLHOOKSTRUCT, LLKHF_INJECTED, MSG, PM_NOREMOVE,
-    WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    CallNextHookEx, GetMessageW, KillTimer, PeekMessageW, PostThreadMessageW, SetTimer,
+    SetWindowsHookExW, UnhookWindowsHookEx, HC_ACTION, HHOOK, KBDLLHOOKSTRUCT, LLKHF_INJECTED, MSG,
+    PM_NOREMOVE, WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    WM_TIMER,
 };
 
 use crate::{
@@ -32,7 +37,8 @@ use crate::{
     PlatformError,
 };
 
-const KEY_STALE_TIMEOUT: Duration = Duration::from_secs(2);
+/// Reconciliation cadence while a hold shortcut is active (0 wakeups while idle).
+const HOLD_RECONCILE_INTERVAL_MS: u32 = 250;
 
 /// Canonical key token matching `pulsescribe_core::hotkey::normalize_windows_hotkey`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -121,11 +127,45 @@ fn vk_from_char(ch: char) -> Option<u16> {
     }
 }
 
-fn is_vk_physically_down(vk: u16) -> bool {
+/// Returns `true` when the active input desktop is accessible to this process.
+///
+/// On the UAC secure desktop or lock screen, `OpenInputDesktop` fails with `ERROR_ACCESS_DENIED`
+/// and `GetAsyncKeyState` reports `0` for all keys; callers must treat that state as unavailable
+/// rather than a confirmed key release.
+fn is_input_desktop_accessible() -> bool {
+    #[allow(unsafe_code)]
+    // SAFETY: `OpenInputDesktop` returns an owned `HDESK` immediately released by `CloseDesktop`.
+    match unsafe { OpenInputDesktop(DESKTOP_CONTROL_FLAGS(0), false, DESKTOP_READOBJECTS) } {
+        Ok(hdesk) => {
+            #[allow(unsafe_code)]
+            // SAFETY: `hdesk` was returned by `OpenInputDesktop` above and is closed once.
+            unsafe {
+                let _ = CloseDesktop(hdesk);
+            }
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+fn query_vk_state_with_desktop_check(
+    desktop_accessible: &mut Option<bool>,
+    vk: u16,
+) -> Option<bool> {
     #[allow(unsafe_code)]
     // SAFETY: `GetAsyncKeyState` is a thread-safe Win32 key-state query.
     let state = unsafe { GetAsyncKeyState(i32::from(vk)) };
-    (state as u16 & 0x8000) != 0
+    if (state as u16 & 0x8000) != 0 {
+        return Some(true);
+    }
+    // Only query `OpenInputDesktop` when `GetAsyncKeyState` reports not-down, avoiding desktop
+    // handle syscalls on the hot path while still distinguishing secure-desktop isolation.
+    let accessible = *desktop_accessible.get_or_insert_with(is_input_desktop_accessible);
+    if accessible {
+        Some(false)
+    } else {
+        None
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -158,7 +198,7 @@ impl HotkeyRule {
 /// Pure, testable state machine for Windows toggle and hold hotkeys.
 struct WindowsHotkeyMatcher {
     rules: Vec<HotkeyRule>,
-    pressed_vks: HashMap<u16, Instant>,
+    pressed_vks: HashSet<u16>,
 }
 
 impl WindowsHotkeyMatcher {
@@ -177,35 +217,39 @@ impl WindowsHotkeyMatcher {
         }
         Ok(Self {
             rules,
-            pressed_vks: HashMap::new(),
+            pressed_vks: HashSet::new(),
         })
+    }
+
+    fn has_active_hold(&self) -> bool {
+        self.rules.iter().any(|r| r.is_hold && r.hold_active)
     }
 
     fn active_keys(&self) -> HashSet<WindowsKey> {
         self.pressed_vks
-            .keys()
+            .iter()
             .map(|&vk| WindowsKey::from_raw_vk(vk))
             .collect()
     }
 
-    fn prune_stale_keys<F: Fn(u16) -> bool>(
+    /// Reconciles tracked keys against live OS state (`Some(true)` = down, `Some(false)` = up,
+    /// `None` = desktop state unavailable). Optionally excludes `transitioning_vk`, because Win32
+    /// has not yet updated `GetAsyncKeyState` for the key currently transitioning in a hook event.
+    fn reconcile_tracked_keys<F: FnMut(u16) -> Option<bool>>(
         &mut self,
-        now: Instant,
-        is_down: F,
+        transitioning_vk: Option<u16>,
+        mut query_state: F,
     ) -> Vec<HotkeyEvent> {
         let mut removed_any = false;
-        self.pressed_vks.retain(|&vk, pressed_at| {
-            let expired = now.saturating_duration_since(*pressed_at) > KEY_STALE_TIMEOUT;
-            if !expired {
+        self.pressed_vks.retain(|&vk| {
+            if Some(vk) == transitioning_vk {
                 return true;
             }
-            if is_down(vk) {
-                // Still physically held: refresh timestamp to avoid repeated GetAsyncKeyState calls.
-                *pressed_at = now;
-                true
-            } else {
+            if query_state(vk) == Some(false) {
                 removed_any = true;
                 false
+            } else {
+                true
             }
         });
 
@@ -227,14 +271,15 @@ impl WindowsHotkeyMatcher {
         events
     }
 
-    fn on_key_down<F: Fn(u16) -> bool>(
+    fn on_key_down<F: FnMut(u16) -> Option<bool>>(
         &mut self,
         vk: u16,
-        now: Instant,
-        is_down: F,
+        query_state: F,
     ) -> Vec<HotkeyEvent> {
-        let mut events = self.prune_stale_keys(now, is_down);
-        self.pressed_vks.insert(vk, now);
+        // Validate all carried-over keys before checking for a new match so missed modifier
+        // releases cannot trigger shortcuts on a subsequent unrelated keydown.
+        let mut events = self.reconcile_tracked_keys(Some(vk), query_state);
+        self.pressed_vks.insert(vk);
 
         let normalized = WindowsKey::from_raw_vk(vk);
         let active = self.active_keys();
@@ -276,11 +321,49 @@ impl WindowsHotkeyMatcher {
         }
         events
     }
+
+    /// Periodic hold reconciliation used when a hold shortcut is active, recovering releases lost
+    /// on the UAC secure desktop without requiring another keydown.
+    fn reconcile_active_holds<F: FnMut(u16) -> Option<bool>>(
+        &mut self,
+        query_state: F,
+    ) -> Vec<HotkeyEvent> {
+        if !self.has_active_hold() {
+            return Vec::new();
+        }
+        self.reconcile_tracked_keys(None, query_state)
+    }
 }
 
 struct HookThreadState {
     matcher: WindowsHotkeyMatcher,
     event_tx: mpsc::Sender<HotkeyEvent>,
+    reconcile_timer_id: usize,
+}
+
+impl HookThreadState {
+    fn sync_reconcile_timer(&mut self) {
+        let should_run = self.matcher.has_active_hold();
+        if should_run && self.reconcile_timer_id == 0 {
+            #[allow(unsafe_code)]
+            // SAFETY: Called on the hook thread's message-pump thread to schedule `WM_TIMER`.
+            let id = unsafe { SetTimer(None, 0, HOLD_RECONCILE_INTERVAL_MS, None) };
+            self.reconcile_timer_id = id;
+        } else if !should_run && self.reconcile_timer_id != 0 {
+            self.stop_reconcile_timer();
+        }
+    }
+
+    fn stop_reconcile_timer(&mut self) {
+        if self.reconcile_timer_id != 0 {
+            let id = std::mem::replace(&mut self.reconcile_timer_id, 0);
+            #[allow(unsafe_code)]
+            // SAFETY: `id` was returned by `SetTimer(None, ...)` on this same thread.
+            unsafe {
+                let _ = KillTimer(None, id);
+            }
+        }
+    }
 }
 
 thread_local! {
@@ -310,9 +393,10 @@ unsafe extern "system" fn low_level_keyboard_proc(
                     };
                     let events = match msg {
                         WM_KEYDOWN | WM_SYSKEYDOWN => {
-                            state
-                                .matcher
-                                .on_key_down(vk, Instant::now(), is_vk_physically_down)
+                            let mut desktop_accessible = None;
+                            state.matcher.on_key_down(vk, |other| {
+                                query_vk_state_with_desktop_check(&mut desktop_accessible, other)
+                            })
                         }
                         WM_KEYUP | WM_SYSKEYUP => state.matcher.on_key_up(vk),
                         _ => return,
@@ -320,12 +404,35 @@ unsafe extern "system" fn low_level_keyboard_proc(
                     for event in events {
                         let _ = state.event_tx.send(event);
                     }
+                    state.sync_reconcile_timer();
                 });
             }));
         }
     }
     // SAFETY: Passing `None` as `hhk` is standard on Windows NT+ and chains to the next hook.
     unsafe { CallNextHookEx(None, code, wparam, lparam) }
+}
+
+fn handle_reconcile_timer(timer_wparam: usize) {
+    HOOK_STATE.with(|cell| {
+        let Ok(mut slot) = cell.try_borrow_mut() else {
+            return;
+        };
+        let Some(state) = slot.as_mut() else {
+            return;
+        };
+        if state.reconcile_timer_id == 0 || timer_wparam != state.reconcile_timer_id {
+            return;
+        }
+        let mut desktop_accessible = None;
+        let events = state.matcher.reconcile_active_holds(|vk| {
+            query_vk_state_with_desktop_check(&mut desktop_accessible, vk)
+        });
+        for event in events {
+            let _ = state.event_tx.send(event);
+        }
+        state.sync_reconcile_timer();
+    });
 }
 
 struct UnhookGuard(HHOOK);
@@ -347,12 +454,15 @@ struct ClearHookStateGuard;
 impl Drop for ClearHookStateGuard {
     fn drop(&mut self) {
         HOOK_STATE.with(|cell| {
-            *cell.borrow_mut() = None;
+            if let Some(mut state) = cell.borrow_mut().take() {
+                state.stop_reconcile_timer();
+            }
         });
     }
 }
 
 struct WindowsHotkeyHandle {
+    stopped: Arc<AtomicBool>,
     hook_thread_id: Option<u32>,
     hook_thread: Option<JoinHandle<()>>,
     dispatch_thread: Option<JoinHandle<()>>,
@@ -360,6 +470,9 @@ struct WindowsHotkeyHandle {
 
 impl WindowsHotkeyHandle {
     fn stop(&mut self) {
+        // Prevent queued events from invoking `on_event` after `unregister()` returns,
+        // including when `unregister()` is called from inside the callback itself.
+        self.stopped.store(true, Ordering::Release);
         if let Some(tid) = self.hook_thread_id.take() {
             #[allow(unsafe_code)]
             // SAFETY: `tid` is the Win32 thread ID whose message queue was created before startup
@@ -369,7 +482,9 @@ impl WindowsHotkeyHandle {
             }
         }
         if let Some(handle) = self.hook_thread.take() {
-            let _ = handle.join();
+            if handle.thread().id() != thread::current().id() {
+                let _ = handle.join();
+            }
         }
         if let Some(handle) = self.dispatch_thread.take() {
             if handle.thread().id() != thread::current().id() {
@@ -402,8 +517,10 @@ impl HotkeyBackend for WindowsHotkeyBackend {
         binding: &HotkeyBinding,
         on_event: HotkeyCallback,
     ) -> Result<Box<dyn HotkeyRegistration>, PlatformError> {
+        let stopped = Arc::new(AtomicBool::new(false));
         if binding.is_empty() {
             return Ok(Box::new(WindowsHotkeyHandle {
+                stopped,
                 hook_thread_id: None,
                 hook_thread: None,
                 dispatch_thread: None,
@@ -412,10 +529,14 @@ impl HotkeyBackend for WindowsHotkeyBackend {
 
         let matcher = WindowsHotkeyMatcher::from_binding(binding)?;
         let (event_tx, event_rx) = mpsc::channel::<HotkeyEvent>();
+        let dispatch_stopped = Arc::clone(&stopped);
         let dispatch_thread = thread::Builder::new()
             .name("pulsescribe-win-hotkey-dispatch".to_owned())
             .spawn(move || {
                 while let Ok(event) = event_rx.recv() {
+                    if dispatch_stopped.load(Ordering::Acquire) {
+                        break;
+                    }
                     if catch_unwind(AssertUnwindSafe(|| on_event(event))).is_err() {
                         tracing::error!("Windows hotkey callback panicked");
                     }
@@ -431,7 +552,11 @@ impl HotkeyBackend for WindowsHotkeyBackend {
             .spawn(move || {
                 let _clear_guard = ClearHookStateGuard;
                 HOOK_STATE.with(|cell| {
-                    *cell.borrow_mut() = Some(HookThreadState { matcher, event_tx });
+                    *cell.borrow_mut() = Some(HookThreadState {
+                        matcher,
+                        event_tx,
+                        reconcile_timer_id: 0,
+                    });
                 });
 
                 // Force-create the thread's Win32 message queue before sharing our thread ID so
@@ -474,6 +599,9 @@ impl HotkeyBackend for WindowsHotkeyBackend {
                     if ret.0 <= 0 {
                         break;
                     }
+                    if msg.message == WM_TIMER {
+                        handle_reconcile_timer(msg.wParam.0);
+                    }
                 }
                 drop(hook);
             })
@@ -481,16 +609,19 @@ impl HotkeyBackend for WindowsHotkeyBackend {
 
         match ready_rx.recv() {
             Ok(Ok(tid)) => Ok(Box::new(WindowsHotkeyHandle {
+                stopped,
                 hook_thread_id: Some(tid),
                 hook_thread: Some(hook_thread),
                 dispatch_thread: Some(dispatch_thread),
             })),
             Ok(Err(err)) => {
+                stopped.store(true, Ordering::Release);
                 let _ = hook_thread.join();
                 let _ = dispatch_thread.join();
                 Err(err)
             }
             Err(_) => {
+                stopped.store(true, Ordering::Release);
                 let _ = hook_thread.join();
                 let _ = dispatch_thread.join();
                 Err(PlatformError::Hotkey(
@@ -504,36 +635,31 @@ impl HotkeyBackend for WindowsHotkeyBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
 
     #[test]
     fn matcher_handles_modifier_only_hold_and_long_holds() {
         let binding = HotkeyBinding::new(Some("ctrl+alt+r".into()), Some("ctrl+win".into()));
         let mut matcher = WindowsHotkeyMatcher::from_binding(&binding).unwrap();
-        let t0 = Instant::now();
 
-        assert!(matcher.on_key_down(VK_LCONTROL.0, t0, |_| true).is_empty());
+        assert!(matcher
+            .on_key_down(VK_LCONTROL.0, |_| Some(true))
+            .is_empty());
         assert_eq!(
-            matcher.on_key_down(VK_LWIN.0, t0, |_| true),
+            matcher.on_key_down(VK_LWIN.0, |_| Some(true)),
             vec![HotkeyEvent::HoldDown {
                 source: HotkeySource::WindowsHook
             }]
         );
+        assert!(matcher.has_active_hold());
         // Auto-repeat while held does not re-trigger.
-        assert!(matcher
-            .on_key_down(VK_LWIN.0, t0 + Duration::from_millis(50), |_| true)
-            .is_empty());
-
-        // Long hold (> 2s): `is_down` confirms Ctrl is still physically down, so it stays active.
-        assert!(matcher
-            .on_key_down(VK_LWIN.0, t0 + Duration::from_secs(5), |_| true)
-            .is_empty());
+        assert!(matcher.on_key_down(VK_LWIN.0, |_| Some(true)).is_empty());
 
         // Releasing Left Ctrl while Right Ctrl is held keeps the hold active.
         assert!(matcher
-            .on_key_down(VK_RCONTROL.0, t0 + Duration::from_secs(5), |_| true)
+            .on_key_down(VK_RCONTROL.0, |_| Some(true))
             .is_empty());
         assert!(matcher.on_key_up(VK_LCONTROL.0).is_empty());
+        assert!(matcher.has_active_hold());
 
         // Releasing Right Ctrl ends the hold.
         assert_eq!(
@@ -542,35 +668,73 @@ mod tests {
                 source: HotkeySource::WindowsHook
             }]
         );
+        assert!(!matcher.has_active_hold());
     }
 
     #[test]
-    fn matcher_prunes_stale_lost_releases_and_suppresses_toggle_autorepeat() {
+    fn matcher_drops_carried_over_modifiers_immediately_when_physically_up() {
         let binding = HotkeyBinding::new(Some("ctrl+alt+r".into()), None);
         let mut matcher = WindowsHotkeyMatcher::from_binding(&binding).unwrap();
-        let t0 = Instant::now();
 
-        assert!(matcher.on_key_down(VK_LCONTROL.0, t0, |_| false).is_empty());
-        assert!(matcher.on_key_down(VK_LMENU.0, t0, |_| false).is_empty());
+        // Simulate Ctrl+Alt pressed earlier, then releases missed by the hook.
+        assert!(matcher
+            .on_key_down(VK_LCONTROL.0, |_| Some(true))
+            .is_empty());
+        assert!(matcher.on_key_down(VK_LMENU.0, |_| Some(true)).is_empty());
+
+        // Pressing R while Ctrl & Alt are confirmed up must NOT fire ctrl+alt+r.
+        assert!(matcher.on_key_down(b'R' as u16, |_| Some(false)).is_empty());
+
+        // Pressing Ctrl+Alt+R while Ctrl & Alt are confirmed down fires Toggle and suppresses repeat.
+        assert!(matcher
+            .on_key_down(VK_LCONTROL.0, |_| Some(true))
+            .is_empty());
+        assert!(matcher.on_key_down(VK_LMENU.0, |_| Some(true)).is_empty());
         assert_eq!(
-            matcher.on_key_down(b'R' as u16, t0, |_| false),
+            matcher.on_key_down(b'R' as u16, |_| Some(true)),
             vec![HotkeyEvent::Toggle]
         );
-        // Auto-repeat suppressed until release.
-        assert!(matcher
-            .on_key_down(b'R' as u16, t0 + Duration::from_millis(40), |_| false)
-            .is_empty());
+        assert!(matcher.on_key_down(b'R' as u16, |_| Some(true)).is_empty());
         assert!(matcher.on_key_up(b'R' as u16).is_empty());
-        // Immediately re-triggerable after release (no fixed time debounce).
         assert_eq!(
-            matcher.on_key_down(b'R' as u16, t0 + Duration::from_millis(60), |_| false),
+            matcher.on_key_down(b'R' as u16, |_| Some(true)),
             vec![HotkeyEvent::Toggle]
         );
+    }
 
-        // Lost release (> 2s later, physically up): stale Ctrl/Alt are pruned cleanly.
+    #[test]
+    fn matcher_reconciles_lost_hold_release_only_when_desktop_state_is_available() {
+        let binding = HotkeyBinding::new(None, Some("ctrl+win".into()));
+        let mut matcher = WindowsHotkeyMatcher::from_binding(&binding).unwrap();
+
         assert!(matcher
-            .on_key_down(b'R' as u16, t0 + Duration::from_secs(4), |_| false)
+            .on_key_down(VK_LCONTROL.0, |_| Some(true))
             .is_empty());
+        assert_eq!(
+            matcher.on_key_down(VK_LWIN.0, |_| Some(true)),
+            vec![HotkeyEvent::HoldDown {
+                source: HotkeySource::WindowsHook
+            }]
+        );
+
+        // Keys still down -> hold stays active.
+        assert!(matcher.reconcile_active_holds(|_| Some(true)).is_empty());
+        assert!(matcher.has_active_hold());
+
+        // Secure desktop active (`None`) -> do NOT treat unavailable state as confirmed release.
+        assert!(matcher.reconcile_active_holds(|_| None).is_empty());
+        assert!(matcher.has_active_hold());
+
+        // Back on interactive desktop with keys released -> emits exactly one HoldUp.
+        assert_eq!(
+            matcher.reconcile_active_holds(|_| Some(false)),
+            vec![HotkeyEvent::HoldUp {
+                source: HotkeySource::WindowsHook
+            }]
+        );
+        assert!(!matcher.has_active_hold());
+        // Subsequent reconciliations do not emit duplicates.
+        assert!(matcher.reconcile_active_holds(|_| Some(false)).is_empty());
     }
 
     #[test]
