@@ -12,6 +12,7 @@ pub mod groq;
 mod http;
 pub mod openai;
 pub mod openai_compatible;
+pub mod refine;
 
 use std::fmt;
 use std::path::PathBuf;
@@ -249,6 +250,13 @@ pub use openai::OpenAiProvider;
 pub use openai_compatible::{
     is_unencrypted_remote_key, list_server_models, OpenAiCompatibleProvider,
     DEFAULT_LIST_MODELS_TIMEOUT,
+};
+pub use refine::{
+    context_for_app, detect_context_from_env, detect_context_with, maybe_refine,
+    normalize_context_value, parse_app_contexts_json, resolve_refine_prompt, ContextSource,
+    DetectedContext, LlmRefineProvider, OpenRouterRouting, RefineProviderKind, RefineRequest,
+    DEFAULT_GEMINI_REFINE_MODEL, DEFAULT_OPENAI_REFINE_MODEL, DEFAULT_REFINE_MODEL,
+    DEFAULT_REFINE_PROVIDER, DEFAULT_REFINE_TIMEOUT, GEMINI_API_BASE_URL, OPENROUTER_API_BASE_URL,
 };
 
 #[cfg(test)]

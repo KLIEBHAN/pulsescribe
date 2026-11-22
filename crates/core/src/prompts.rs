@@ -381,9 +381,11 @@ impl PromptOverrides {
 
         for (app, ctx) in &self.app_contexts {
             if let Some((normalized_app, normalized_ctx)) = normalize_app_context_entry(app, ctx) {
-                merged
-                    .app_contexts
-                    .insert(normalized_app, normalized_ctx.to_string());
+                upsert_app_context_case_insensitive(
+                    &mut merged.app_contexts,
+                    normalized_app,
+                    normalized_ctx,
+                );
             }
         }
 
@@ -601,15 +603,26 @@ fn merge_toml_table_with_defaults(user: &toml::Table) -> PromptsConfig {
                 if let Some((normalized_app, normalized_ctx)) =
                     normalize_app_context_entry(app, ctx_str)
                 {
-                    merged
-                        .app_contexts
-                        .insert(normalized_app, normalized_ctx.to_string());
+                    upsert_app_context_case_insensitive(
+                        &mut merged.app_contexts,
+                        normalized_app,
+                        normalized_ctx,
+                    );
                 }
             }
         }
     }
 
     merged
+}
+
+fn upsert_app_context_case_insensitive(
+    app_contexts: &mut BTreeMap<String, String>,
+    app: String,
+    ctx: &str,
+) {
+    app_contexts.retain(|existing, _| !existing.eq_ignore_ascii_case(&app));
+    app_contexts.insert(app, ctx.to_string());
 }
 
 fn normalize_context_name(value: &str) -> Option<&'static str> {
