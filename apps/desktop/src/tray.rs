@@ -34,7 +34,13 @@ const MENU_UPDATES_ID: &str = "tray_updates";
 const MENU_OPEN_CONFIG_ID: &str = "tray_open_config";
 const MENU_QUIT_ID: &str = "tray_quit";
 
+#[cfg(target_os = "macos")]
+const TRAY_ICON_PNG: &[u8] = include_bytes!("../../../assets/icon_tray_macos_template.png");
+#[cfg(not(target_os = "macos"))]
 const TRAY_ICON_PNG: &[u8] = include_bytes!("../../../assets/icon.iconset/icon_32x32.png");
+#[cfg(test)]
+const MACOS_TRAY_TEMPLATE_PNG: &[u8] =
+    include_bytes!("../../../assets/icon_tray_macos_template.png");
 
 /// Resolved desktop interface language (`en` or `de`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -263,8 +269,9 @@ impl TrayController {
 
         let tray = TrayIconBuilder::with_id(TRAY_ID)
             .icon(icon)
-            // Keep colored PNG intact instead of turning the filled rounded square into a solid blob.
-            .icon_as_template(false)
+            // macOS uses a monochrome alpha template icon so the menu bar tints it automatically;
+            // Windows/Linux keep the full-color PNG icon intact.
+            .icon_as_template(cfg!(target_os = "macos"))
             .tooltip(&initial_tooltip)
             .menu(&menu)
             .show_menu_on_left_click(cfg!(target_os = "macos"))
@@ -752,6 +759,43 @@ mod tests {
         assert_eq!(
             localized_status_hint(AppState::Error, None, Some(&wrapped_err), UiLanguage::De),
             "Manuell einfügen oder „Letztes Transkript kopieren“ wählen."
+        );
+    }
+
+    #[test]
+    fn tray_icons_decode_and_macos_template_is_monochrome_mask() {
+        let active = Image::from_bytes(TRAY_ICON_PNG).expect("active tray icon decodes");
+        assert!(active.width() > 0 && active.height() > 0);
+
+        let template =
+            Image::from_bytes(MACOS_TRAY_TEMPLATE_PNG).expect("macOS template tray icon decodes");
+        assert_eq!((template.width(), template.height()), (36, 36));
+        let rgba = template.rgba();
+        assert_eq!(rgba.len(), 36 * 36 * 4);
+        // Corners must be transparent (no filled background square).
+        for (x, y) in [(0usize, 0usize), (35, 0), (0, 35), (35, 35)] {
+            let alpha = rgba[(y * 36 + x) * 4 + 3];
+            assert_eq!(alpha, 0, "corner ({x}, {y}) must be transparent");
+        }
+        // Visible pixels must be pure black RGB mask with non-empty opaque glyph area.
+        let mut opaque_pixels = 0usize;
+        let (pixels, remainder) = rgba.as_chunks::<4>();
+        assert!(remainder.is_empty());
+        for px in pixels {
+            if px[3] > 0 {
+                assert_eq!(
+                    &px[..3],
+                    &[0, 0, 0],
+                    "template icon pixels must be pure black"
+                );
+            }
+            if px[3] == 255 {
+                opaque_pixels += 1;
+            }
+        }
+        assert!(
+            opaque_pixels > 100,
+            "template glyph should have visible silhouette"
         );
     }
 }
