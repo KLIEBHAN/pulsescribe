@@ -2124,7 +2124,7 @@ function renderDiagnosticsView() {
       el("div", { className: "metrics-grid" }, [
         el("div", { className: "metric-cell" }, [
           el("span", { className: "metric-label", text: t("diag.metricVersion") }),
-          el("span", { className: "metric-value tabular", text: `v${app.version || "2.0.0"}` }),
+          el("span", { className: "metric-value tabular", text: `v${app.version || "2.1.0"}` }),
         ]),
         el("div", { className: "metric-cell" }, [
           el("span", { className: "metric-label", text: t("diag.metricPlatform") }),

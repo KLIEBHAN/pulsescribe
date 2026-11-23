@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-11-23
+
+### Added
+
+- **Interface language selection (`System`, `English`, `Deutsch`)** – new
+  **Settings → General → Interface → Interface Language** setting with instant
+  switching across all 7 desktop views, dialogs, badges, daemon delivery status
+  messages, and native macOS/Windows tray menus without restarting (#219).
+
+### Changed
+
+- **Native macOS monochrome menu bar icon** – replaced the colored rounded-square
+  status bar icon on macOS with a crisp 36×36 Retina monochrome template icon
+  (`icon_as_template(true)`) that adapts automatically to light, dark, and
+  translucent menu bars while keeping the full-color tray icon on Windows (#220).
+
+### Removed
+
+- **Legacy Python 1.x codebase** – removed the legacy Python daemons, CLI,
+  PyInstaller/Inno Setup scripts, Python tests, and Python CI workflows; the
+  repository is now Rust-only with golden contract fixtures housed under
+  `crates/core/tests/fixtures/` (#221).
+
 ## [2.0.0] - 2026-11-23
 
 ### Changed
