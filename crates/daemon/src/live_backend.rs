@@ -390,6 +390,11 @@ impl LocalPreloadKey {
     }
 }
 
+struct DetachedPreload {
+    key: LocalPreloadKey,
+    handle: JoinHandle<()>,
+}
+
 #[derive(Default)]
 struct LocalPreloadState {
     shutting_down: bool,
@@ -398,6 +403,18 @@ struct LocalPreloadState {
     ready: bool,
     cancel_flag: Option<Arc<AtomicBool>>,
     task: Option<JoinHandle<()>>,
+    superseded: Vec<DetachedPreload>,
+}
+
+impl LocalPreloadState {
+    fn stash_superseded(&mut self, key: Option<LocalPreloadKey>, handle: Option<JoinHandle<()>>) {
+        self.superseded.retain(|entry| !entry.handle.is_finished());
+        if let (Some(key), Some(handle)) = (key, handle) {
+            if !handle.is_finished() {
+                self.superseded.push(DetachedPreload { key, handle });
+            }
+        }
+    }
 }
 
 #[derive(Default)]
@@ -417,7 +434,6 @@ struct LiveBackendState {
     endpoints: ProviderEndpoints,
     warm_deepgram: AsyncMutex<WarmDeepgramState>,
     rewarm_state: AsyncMutex<RewarmState>,
-    // Lock order: `local_preload` -> `registry` (never lock `local_preload` while holding `registry`).
     local_preload: Mutex<LocalPreloadState>,
     registry: Mutex<SessionRegistry>,
     shutdown_tx: watch::Sender<bool>,
@@ -628,10 +644,9 @@ impl LiveDictationBackend {
         if let Some(prev_cancel) = preload.cancel_flag.take() {
             prev_cancel.store(true, Ordering::Release);
         }
+        let prev_key = preload.desired.take();
         let prev_task = preload.task.take();
-        // Push superseded task into `registry` while holding `local_preload` (`local_preload -> registry`)
-        // so `shutdown()` cannot miss an in-flight handoff.
-        track_detached_task(&self.inner, prev_task);
+        preload.stash_superseded(prev_key, prev_task);
 
         preload.generation = preload.generation.wrapping_add(1);
         let my_gen = preload.generation;
@@ -701,13 +716,13 @@ impl LiveDictationBackend {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             preload.generation = preload.generation.wrapping_add(1);
-            preload.desired = None;
+            let prev_key = preload.desired.take();
             preload.ready = false;
             if let Some(cancel) = preload.cancel_flag.take() {
                 cancel.store(true, Ordering::Release);
             }
             let prev_task = preload.task.take();
-            track_detached_task(&self.inner, prev_task);
+            preload.stash_superseded(prev_key, prev_task);
         }
         if let Some(local) = &self.inner.local_transcriber {
             local.unload();
@@ -722,47 +737,70 @@ impl LiveDictationBackend {
         }
     }
 
-    /// Cancel and await any in-flight local preload targeting `model_id` and unload cached weights
-    /// before deleting model files on disk (prevents sharing violations on Windows).
+    /// Cancel and await any active or superseded in-flight local preload targeting `model_id`,
+    /// unloading cached weights when `model_id` was the active preload target (prevents Windows
+    /// sharing violations when deleting model files without evicting an unrelated newer model).
     pub async fn unload_local_model_if_matching(&self, model_id: &str) -> bool {
-        let (matched, prev_task) = {
+        let (active_matched, superseded_matched, tasks_to_await) = {
             let mut preload = self
                 .inner
                 .local_preload
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            let matches = preload
+            preload
+                .superseded
+                .retain(|entry| !entry.handle.is_finished());
+
+            let mut tasks = Vec::new();
+            let mut active_matched = false;
+            let mut superseded_matched = false;
+
+            if preload
                 .desired
                 .as_ref()
-                .is_some_and(|key| key.matches_catalog_id(model_id));
-            if !matches {
-                (false, None)
-            } else {
+                .is_some_and(|key| key.matches_catalog_id(model_id))
+            {
+                active_matched = true;
                 preload.generation = preload.generation.wrapping_add(1);
                 preload.desired = None;
                 preload.ready = false;
                 if let Some(cancel) = preload.cancel_flag.take() {
                     cancel.store(true, Ordering::Release);
                 }
-                (true, preload.task.take())
+                if let Some(task) = preload.task.take() {
+                    tasks.push(task);
+                }
             }
+
+            let mut remaining = Vec::with_capacity(preload.superseded.len());
+            for entry in std::mem::take(&mut preload.superseded) {
+                if entry.key.matches_catalog_id(model_id) {
+                    superseded_matched = true;
+                    tasks.push(entry.handle);
+                } else {
+                    remaining.push(entry);
+                }
+            }
+            preload.superseded = remaining;
+
+            (active_matched, superseded_matched, tasks)
         };
-        if let Some(task) = prev_task {
+        for task in tasks_to_await {
             let _ = task.await;
         }
-        if matched {
+        if active_matched {
             if let Some(local) = &self.inner.local_transcriber {
                 local.unload();
             }
         }
-        matched
+        active_matched || superseded_matched
     }
 
     /// Cancel all active sessions, await audio/network/local-ASR teardown, abort background
     /// re-warm and preloads, and gracefully close any prewarmed Deepgram socket.
     pub async fn shutdown(&self) {
         self.inner.shutdown_tx.send_replace(true);
-        let preload_task = {
+        let preload_tasks = {
             let mut preload = self
                 .inner
                 .local_preload
@@ -775,7 +813,14 @@ impl LiveDictationBackend {
             if let Some(cancel) = preload.cancel_flag.take() {
                 cancel.store(true, Ordering::Release);
             }
-            preload.task.take()
+            let mut tasks: Vec<JoinHandle<()>> = std::mem::take(&mut preload.superseded)
+                .into_iter()
+                .map(|entry| entry.handle)
+                .collect();
+            if let Some(task) = preload.task.take() {
+                tasks.push(task);
+            }
+            tasks
         };
         let (session_handles, detached_handles) = {
             let mut reg = self
@@ -789,7 +834,7 @@ impl LiveDictationBackend {
                 std::mem::take(&mut reg.detached_blocking),
             )
         };
-        if let Some(task) = preload_task {
+        for task in preload_tasks {
             let _ = task.await;
         }
         for handle in session_handles {

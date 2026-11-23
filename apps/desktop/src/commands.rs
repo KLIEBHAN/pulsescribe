@@ -964,8 +964,8 @@ pub async fn delete_local_model(
     if spec.engine.is_streaming_preview() {
         state.backend.unload_local_streaming_preview();
     } else {
-        let matched_preload = state.backend.unload_local_model_if_matching(spec.id).await;
-        if !matched_preload && state.local_asr.loaded_model_id().as_deref() == Some(spec.id) {
+        let _ = state.backend.unload_local_model_if_matching(spec.id).await;
+        if state.local_asr.loaded_model_id().as_deref() == Some(spec.id) {
             state.backend.unload_local_model();
         }
     }

@@ -1190,6 +1190,7 @@ struct TrackingPreloadEngine {
     unloads: Arc<AtomicUsize>,
     preview_unloads: Arc<AtomicUsize>,
     block_model: Option<String>,
+    block_release: Option<Arc<std::sync::atomic::AtomicBool>>,
     blocked_started: Arc<std::sync::atomic::AtomicBool>,
     blocked_observed_cancel: Arc<std::sync::atomic::AtomicBool>,
     blocked_finished: Arc<std::sync::atomic::AtomicBool>,
@@ -1213,7 +1214,15 @@ impl LocalTranscriber for TrackingPreloadEngine {
         if self.block_model.as_deref() == model {
             self.blocked_started.store(true, Ordering::SeqCst);
             let deadline = std::time::Instant::now() + Duration::from_secs(3);
-            while !cancel_flag.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
+            while std::time::Instant::now() < deadline {
+                let cancelled = cancel_flag.load(Ordering::Acquire);
+                let released = self
+                    .block_release
+                    .as_ref()
+                    .is_none_or(|gate| gate.load(Ordering::Acquire));
+                if cancelled && released {
+                    break;
+                }
                 std::thread::sleep(Duration::from_millis(5));
             }
             self.blocked_observed_cancel
@@ -1242,6 +1251,7 @@ async fn local_preload_coalesces_cancels_on_switch_and_unloads_on_cloud_mode() {
     let blocked_started = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let blocked_observed_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let blocked_finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let block_release = Arc::new(std::sync::atomic::AtomicBool::new(true));
 
     let permissions = Arc::new(StaticPermissions {
         mic: MicrophonePermissionStatus::Authorized,
@@ -1255,6 +1265,7 @@ async fn local_preload_coalesces_cancels_on_switch_and_unloads_on_cloud_mode() {
             unloads: Arc::clone(&unloads),
             preview_unloads: Arc::clone(&preview_unloads),
             block_model: Some("large-v3-turbo".to_owned()),
+            block_release: Some(Arc::clone(&block_release)),
             blocked_started: Arc::clone(&blocked_started),
             blocked_observed_cancel: Arc::clone(&blocked_observed_cancel),
             blocked_finished: Arc::clone(&blocked_finished),
@@ -1340,6 +1351,32 @@ async fn local_preload_coalesces_cancels_on_switch_and_unloads_on_cloud_mode() {
             .unload_local_model_if_matching("large-v3-turbo")
             .await
     );
+
+    // 5. Superseded in-flight preload is still awaited when deleting the previous model.
+    blocked_started.store(false, Ordering::SeqCst);
+    blocked_finished.store(false, Ordering::SeqCst);
+    block_release.store(false, Ordering::SeqCst);
+    backend.sync_local_preload_state(&turbo_cfg);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !blocked_started.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    // Switch to `parakeet-v3` while `large-v3-turbo` is still inside its native loader.
+    backend.sync_local_preload_state(&parakeet_cfg);
+    let release_clone = Arc::clone(&block_release);
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        release_clone.store(true, Ordering::Release);
+    });
+    assert!(
+        backend
+            .unload_local_model_if_matching("large-v3-turbo")
+            .await
+    );
+    assert!(blocked_finished.load(Ordering::SeqCst));
 
     backend.shutdown().await;
 }
