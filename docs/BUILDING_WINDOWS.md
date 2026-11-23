@@ -1,18 +1,14 @@
 # Building PulseScribe on Windows
 
-PulseScribe ships as a standalone `.exe` or as an installer. For distribution, both can optionally be code-signed.
+PulseScribe ships as a native Rust/Tauri v2 desktop executable and per-user NSIS installer (`apps/desktop`). It combines a zero-build lazy WebView2 settings window (0 MB WebView RAM when closed), a native system tray, and a native 60 FPS Direct2D/DirectWrite overlay.
 
-## Rust Desktop App (Tauri v2, Coexisting)
-
-The native Rust desktop app (`apps/desktop`) coexists alongside the legacy Python build below and shares `%USERPROFILE%\.pulsescribe\` 1:1. It combines a zero-build lazy WebView2 settings window (0 MB WebView RAM when closed) with a native system tray and native 60 FPS Direct2D/DirectWrite overlay.
-
-### Prerequisites (Rust)
+## Prerequisites
 
 - Rust toolchain (`rustc` ≥ 1.88, `x86_64-pc-windows-msvc` target) with Visual Studio Build Tools (MSVC)
 - `cargo-tauri` v2 (`cargo install tauri-cli --version ^2 --locked` or prebuilt `cargo-tauri-x86_64-pc-windows-msvc.zip` from `tauri-apps/tauri`)
 - `cmake` — required **only** for the Full variant (`--features all-local`, compiling `whisper.cpp`)
 
-### Build Variants (Rust)
+## Build Variants
 
 ```powershell
 # Release binaries only (Slim / cloud-only)
@@ -30,336 +26,29 @@ Pop-Location
 ```
 
 - **`sherpa-onnx` runtime (Full):** `crates/local-asr` dynamically loads `sherpa-onnx-c-api.dll` (`2.0.x` ABI) from `$PULSESCRIBE_SHERPA_LIB_DIR`, the executable directory, or `%USERPROFILE%\.pulsescribe\libs\`. The CI Full build bundles `sherpa-onnx-c-api.dll`, `onnxruntime.dll`, and `onnxruntime_providers_shared.dll` next to `pulsescribe-desktop.exe` in the NSIS install root.
-- **CI Workflow:** [`.github/workflows/rust-installers.yml`](../.github/workflows/rust-installers.yml) builds and validates both `PulseScribe-<version>-Windows-x64-Slim-Setup.exe` and `PulseScribe-<version>-Windows-x64-Full-Setup.exe` (+ `.sha256`) on `windows-latest` for PRs, manual dispatches, and `v*` release tags.
-
----
-
-## Legacy Python App
-
-### Prerequisites
-
-- **Python 3.10+** with pip
-- **PyInstaller** (`pip install pyinstaller`)
-- **PySide6-Essentials** (the existing PySide6 Core, Gui and Widgets modules; no Addons or WebEngine needed)
-- **Inno Setup 6** (optional, for installer - [download](https://jrsoftware.org/isinfo.php))
-
-## Quick Start
-
-### Using the Build Script (Recommended)
-
-```powershell
-# Standard build (EXE only)
-.\build_windows.ps1
-
-# Clean build with installer
-.\build_windows.ps1 -Clean -Installer
-
-# Create installer from existing EXE
-.\build_windows.ps1 -Installer -SkipExe
-```
-
-### Manual Build
-
-```bash
-# Install runtime and build dependencies, including the Qt UI
-pip install -r requirements.txt -r requirements-build-windows.txt
-
-# Build the EXE
-pyinstaller build_windows.spec --clean
-
-# Output: dist/PulseScribe/PulseScribe.exe
-
-# Optional: Create installer (requires Inno Setup)
-iscc installer_windows.iss
-
-# Output: dist/PulseScribe-Setup-{version}.exe
-```
+- **Installer configuration:** Configured in `apps/desktop/tauri.conf.json` (`installMode: "currentUser"`, English & German wizard languages, and `apps/desktop/nsis/hooks.nsh` for migrating legacy autostart entries).
+- **Icons:** Uses the checked-in `assets/icon.ico` and `assets/icon.iconset/icon_32x32.png`.
 
 ## CI Build
 
-The [`Build Installers`](../.github/workflows/build-installers.yml) workflow
-builds the recommended API-only installer on `windows-2022`. It validates the
-installer version, creates a SHA-256 checksum, and stores the installer and build
-environment metadata as a workflow artifact for 14 days.
+[`.github/workflows/rust-installers.yml`](../.github/workflows/rust-installers.yml) builds and validates both `PulseScribe-<version>-Windows-x64-Slim-Setup.exe` and `PulseScribe-<version>-Windows-x64-Full-Setup.exe` (+ `SHA256SUMS.txt`) on `windows-latest` for PRs, manual dispatches, and `v*` release tags.
 
-PR builds cancel superseded runs and skip Windows when the whole PR changes only
-macOS build files (plus documentation/tests). Shared code, dependencies, unknown
-paths, or an unavailable diff keep both platforms enabled. See the
-[platform selection rules](../.github/scripts/installer_platforms.py).
-Releases and manual rebuilds always build both platforms; their runs are not
-cancelled when a newer PR build starts. PR heads without the selector also build
-both. Documentation/test-only PRs run only metadata.
-
-Both Windows variants install `requirements-build-windows.txt`. It selects only
-PySide6-Essentials, an existing dependency of the full PySide6 package, instead
-of downloading the unused Addons, PDF and WebEngine components. The packaged
-Qt UI and installer compression are unchanged.
-
-Before restoring the pip cache, each job generates its complete install input
-in `requirements-windows-build.txt`. That file is used for both the cache key
-and installation: Cloud and Local caches stay separate, and changes to either
-runtime or build requirements invalidate the corresponding cache. This caches
-downloads, not installed environments or PyInstaller output. Rebuilding an older
-tag without the build-requirements file keeps using the full PySide6 package
-because that tag's spec may rely on its metadata.
-
-Pushing an annotated `vX.Y.Z` tag builds both platforms, including the Windows
-Local Whisper package, and publishes the release only after all installers are
-uploaded. See [Updates and releases](UPDATES.md). Publishing a release manually
-still attaches the same installers through the workflow.
-An existing release can be rebuilt manually. Uploads never overwrite existing
-assets unless `-f replace_existing_assets=true` is set, and a rebuild uploads all
-installers, so a release that already has assets needs that flag (the replaced
-files get new checksums). Manual runs build the Local package only with
-`-f build_windows_local=true`; add it whenever the release must stay installable
-for Local Whisper updates:
+To rebuild an existing release manually:
 
 ```powershell
-gh workflow run build-installers.yml `
-  -f tag=v1.3.0 `
-  -f upload_to_release=true `
-  -f replace_existing_assets=true `
-  -f build_windows_local=true
+gh workflow run rust-installers.yml `
+  -f tag=v2.1.0 `
+  -f variant=all `
+  -f upload_to_release=true
 ```
 
-The CI installer is currently unsigned and may trigger a Windows SmartScreen
-warning. Releases always include the much larger Local variant because installed
-Local Whisper apps only accept that package from the updater. Pull requests skip
-it, and manual runs build it only on request.
+## Configuration & Troubleshooting
 
-The rebuild command above also adds the Local Whisper variant to a release that
-lacks it: it refreshes the standard installers and `SHA256SUMS.txt`, then uploads
-the Local installer as `PulseScribe-Setup-{version}-Local.zip`. GitHub release
-assets are limited to 2 GiB, so the workflow verifies the uploaded ZIP stays
-within the release budget.
-
-To add only the Local package and keep the published installers unchanged, run
-the workflow with `-f upload_to_release=false -f build_windows_local=true`. The
-temporary workflow artifact then contains the ZIP, its SHA-256, and the unpacked
-EXE hash. Verify the ZIP hash, upload it with `gh release upload`, and append its
-line to the release's `SHA256SUMS.txt` (upload that file with `--clobber`).
-
-## Build Output
-
-The build produces a **onedir** bundle and optionally an installer:
-
-```
-dist/
-├── PulseScribe/
-│   ├── PulseScribe.exe      # Main executable (portable)
-│   ├── *.dll                # Python + dependency DLLs
-│   └── ...                  # Supporting files
-└── PulseScribe-Setup-1.2.0.exe  # Installer (if built)
-```
-
-### Distribution Options
-
-| Format | File | Use Case |
-|--------|------|----------|
-| **Portable** | `dist/PulseScribe/` folder | USB stick, no installation needed |
-| **Installer** | `PulseScribe-Setup-{ver}.exe` | Standard installation with Start Menu, Autostart option |
-
-## Build Options
-
-### Environment Variables
-
-| Variable | Description |
-|----------|-------------|
-| `PULSESCRIBE_VERSION` or `VERSION` | Override version number (default: reads from `pyproject.toml`) |
-
-### Build Variants
-
-| Variant | Command | Size | Description |
-|---------|---------|------|-------------|
-| **API-only** (default) | `.\build_windows.ps1 -Installer` | ~30 MB | Cloud APIs only (Deepgram, OpenAI, Groq) |
-| **Local** | `.\build_windows.ps1 -Installer -Local` | ~220 MB | Includes faster-whisper for offline use |
-
-> **Note:** The `-Local` variant includes `faster-whisper`, `torch`, and `ctranslate2` for local transcription. The published installer bundles the CPU build of `torch`; earlier CUDA-bundled builds were several gigabytes.
-
-### Local Variant: Important Notes
-
-**Model Download on First Use:**
-
-The Local variant does **not** bundle the Whisper models. On first transcription, the model is downloaded automatically:
-
-| Model | Download Size | Cache Location |
-|-------|---------------|----------------|
-| `turbo` (default) | ~1.5 GB | `%USERPROFILE%\.cache\huggingface\hub\` |
-| `large-v3` | ~3 GB | `%USERPROFILE%\.cache\huggingface\hub\` |
-| `medium` | ~1.5 GB | `%USERPROFILE%\.cache\huggingface\hub\` |
-
-After the initial download, transcription works fully offline.
-
-**GPU Support:**
-
-The bundled installer runs on **CPU only** by default (using `int8` compute type for good performance).
-
-For NVIDIA GPU acceleration, you need to manually install cuDNN:
-
-```powershell
-# Install cuDNN for CUDA 12
-pip install nvidia-cudnn-cu12
-
-# Verify installation
-python -c "import ctranslate2; print(ctranslate2.get_cuda_device_count())"
-```
-
-> **Note:** The bundled EXE cannot find cuDNN DLLs from pip packages. For GPU support, install cuDNN system-wide from [NVIDIA cuDNN](https://developer.nvidia.com/cudnn) or run from source instead of the bundled EXE.
-
-**CPU Performance:**
-
-CPU transcription with faster-whisper is well-optimized:
-
-| Model | Approx. Speed (8-core CPU) |
-|-------|---------------------------|
-| `turbo` | ~0.5-1x real-time |
-| `medium` | ~0.3-0.5x real-time |
-| `small` | ~0.8-1.5x real-time |
-
-(1x real-time = 10 seconds of audio transcribed in 10 seconds)
-
-### Overlay Variants
-
-| Variant | Command | Overlay |
-|---------|---------|---------|
-| **Full** (recommended) | `pip install -r requirements-build-windows.txt && pyinstaller build_windows.spec` | GPU-accelerated (PySide6) |
-| **Minimal** | `pyinstaller build_windows.spec` | CPU-only (Tkinter) |
-
-> **Note:** Without PySide6, the overlay falls back to Tkinter automatically. PySide6 provides smoother animations.
-
-## Included Dependencies
-
-The spec file bundles:
-
-### Core
-- `sounddevice`, `soundfile`, `numpy` (audio)
-- `deepgram-sdk`, `groq`, `openai` (transcription)
-- `python-dotenv` (configuration)
-
-### Windows-specific
-- `pystray`, `Pillow` (system tray icon)
-- `pynput` (global hotkeys + Ctrl+V simulation)
-- `pywin32`, `psutil` (app detection)
-
-> **Note:** The Windows daemon uses native ctypes for clipboard operations (no pyperclip).
-
-### UI/Overlay
-- `PySide6` (GPU-accelerated overlay, optional)
-- `tkinter` (fallback, built-in)
-
-## Excluded Modules
-
-The spec excludes unnecessary modules to reduce size:
-
-- macOS frameworks (`objc`, `AppKit`, `Quartz`, etc.)
-- Unused GUI frameworks (`PyQt5`, `PyQt6`, `wx`)
-- Data science (`matplotlib`, `pandas`, `sklearn`)
-- Testing (`pytest`, `unittest`)
-
-## Custom Icon
-
-Place an icon at `assets/icon.ico` and it will be automatically included:
-
-```
-pulsescribe/
-└── assets/
-    └── icon.ico    # Windows icon (256x256 recommended)
-```
-
-## Installer Features
-
-The Inno Setup installer (`installer_windows.iss`) provides:
-
-| Feature | Description |
-|---------|-------------|
-| **Installation wizard** | Language selection (English/German), license, destination |
-| **Start Menu entries** | PulseScribe + Uninstall shortcuts |
-| **Desktop shortcut** | Optional, user can choose during install |
-| **Autostart option** | Optional, adds to Windows startup |
-| **Clean uninstall** | Via Windows "Apps & Features", optionally removes settings |
-| **Per-user install** | No admin rights required (installs to `%LocalAppData%\Programs`) |
-
-### Customizing the Installer
-
-The installer version is automatically synchronized with `pyproject.toml` when using `build_windows.ps1 -Installer`. For manual builds, you can pass the version:
-
-```powershell
-iscc /DAppVersion=1.2.0 installer_windows.iss
-```
-
-Edit `installer_windows.iss` to customize other metadata:
-
-```ini
-; Change app metadata
-#define MyAppPublisher "Your Name"
-#define MyAppURL "https://your-website.com"
-
-; Change install location (default: per-user)
-DefaultDirName={autopf}\{#MyAppName}  ; Program Files (requires admin)
-DefaultDirName={localappdata}\{#MyAppName}  ; Per-user (no admin)
-```
-
-## Autostart Setup
-
-### Via Installer
-
-The installer offers an "Autostart" checkbox during installation. This adds a registry entry to start PulseScribe with Windows.
-
-### Manual Setup (Portable)
-
-To run PulseScribe on Windows startup without the installer:
-
-1. Press `Win+R`, type `shell:startup`
-2. Create a shortcut to `dist/PulseScribe/PulseScribe.exe` in the opened folder
-
-Or use the included batch file:
-
-```powershell
-# Create shortcut in startup folder
-$WshShell = New-Object -ComObject WScript.Shell
-$Shortcut = $WshShell.CreateShortcut("$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\PulseScribe.lnk")
-$Shortcut.TargetPath = "$PWD\dist\PulseScribe\PulseScribe.exe"
-$Shortcut.Save()
-```
-
-## Code Signing (Optional)
-
-For distribution without SmartScreen warnings:
-
-```powershell
-# Sign with a code signing certificate
-signtool sign /f certificate.pfx /p password /t http://timestamp.digicert.com dist\PulseScribe\PulseScribe.exe
-```
-
-> **Note:** Without signing, Windows SmartScreen may warn users on first launch. Users can click "More info" → "Run anyway".
-
-## Troubleshooting
+Configuration is stored in `%USERPROFILE%\.pulsescribe\.env` (and `preferences.json`, `vocabulary.json`, `prompts.toml`, `history.jsonl`).
 
 | Problem | Solution |
 |---------|----------|
-| `ModuleNotFoundError: No module named 'pystray'` | `pip install pystray pillow` |
-| `ModuleNotFoundError: No module named 'win32gui'` | `pip install pywin32` |
-| Overlay not showing | Check `PULSESCRIBE_OVERLAY=true` in `.env` |
-| Hotkeys not working | Run as Administrator (some apps require elevated privileges) |
-| Antivirus blocks EXE | Add exception or code-sign the executable |
-
-## Configuration
-
-The EXE uses the same configuration as the Python version:
-
-- `~/.pulsescribe/.env` (recommended)
-- Or project root `.env` (for development)
-
-See `README.md` for all configuration options.
-
-## Development Build
-
-For faster iteration during development:
-
-```bash
-# Run directly without building
-python pulsescribe_windows.py --debug
-
-# Quick test build (no UPX compression)
-pyinstaller build_windows.spec --clean --noconfirm
-```
+| Windows SmartScreen warning | Unsigned builds may trigger SmartScreen on first launch; click **More info** → **Run anyway** after verifying `SHA256SUMS.txt` |
+| Overlay not showing | Check `PULSESCRIBE_OVERLAY=true` in Settings → General |
+| Hotkeys not firing in elevated apps | Elevated windows require an elevated PulseScribe instance on Windows (UIPI) |
+| Local build fails without `cmake` | Install CMake or build the Slim (cloud-only) variant without `--features all-local` |

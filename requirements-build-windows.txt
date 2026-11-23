@@ -1,3 +1,0 @@
-# Build tools and the Qt modules used by the Windows UI (Core, Gui, Widgets).
-pyinstaller>=6,<7
-PySide6-Essentials>=6,<7

@@ -1,18 +1,20 @@
 # CLI Reference
 
-Complete reference for the `transcribe.py` command-line interface.
+Complete reference for the `pulsescribe` command-line interface (`crates/cli`).
+
+> When running from a source checkout without installing the binary, replace `pulsescribe` with `cargo run --release -p pulsescribe-cli --`.
 
 ## Basic Usage
 
 ```bash
 # Transcribe audio file
-python transcribe.py audio.mp3
+pulsescribe audio.mp3
 
 # Record from microphone
-python transcribe.py --record
+pulsescribe --record
 
 # Record and copy to clipboard
-python transcribe.py --record --copy
+pulsescribe --record --copy
 ```
 
 ## All Options
@@ -37,40 +39,40 @@ python transcribe.py --record --copy
 
 ```bash
 # WebSocket streaming (default, ~300ms latency)
-python transcribe.py --record --mode deepgram
+pulsescribe --record --mode deepgram
 
 # With LLM post-processing
-python transcribe.py --record --mode deepgram --refine
+pulsescribe --record --mode deepgram --refine
 ```
 
 ### OpenAI
 
 ```bash
 # GPT-4o Transcribe (highest quality)
-python transcribe.py audio.mp3 --mode openai
+pulsescribe audio.mp3 --mode openai
 
 # Specific model
-python transcribe.py audio.mp3 --mode openai --model gpt-4o-mini-transcribe
+pulsescribe audio.mp3 --mode openai --model gpt-4o-mini-transcribe
 ```
 
 ### Groq
 
 ```bash
 # Whisper on LPU (~1s latency)
-python transcribe.py --record --mode groq
+pulsescribe --record --mode groq
 
 # English-only (faster)
-python transcribe.py --record --mode groq --model distil-whisper-large-v3-en
+pulsescribe --record --mode groq --model distil-whisper-large-v3-en
 ```
 
 ### Local (Offline)
 
 ```bash
 # Default backend (auto-detected)
-python transcribe.py --record --mode local
+pulsescribe --record --mode local
 
 # Specific backend + model
-python transcribe.py --record --mode local --model turbo
+pulsescribe --record --mode local --model turbo
 ```
 
 See [Local Backends](LOCAL_BACKENDS.md) for detailed local mode configuration.
@@ -86,10 +88,10 @@ See [Local Backends](LOCAL_BACKENDS.md) for detailed local mode configuration.
 
 ```bash
 # Generate SRT subtitles
-python transcribe.py video.mp4 --format srt > subtitles.srt
+pulsescribe video.mp4 --format srt > subtitles.srt
 
 # JSON with word-level timestamps
-python transcribe.py audio.mp3 --format json
+pulsescribe audio.mp3 --format json
 ```
 
 > **Note:** `srt` and `vtt` formats are only available with API providers (not local mode).
@@ -105,10 +107,10 @@ The `--refine` flag enables LLM post-processing to clean up transcriptions:
 
 ```bash
 # With Groq (fast, free tier)
-python transcribe.py --record --refine --refine-provider groq
+pulsescribe --record --refine --refine-provider groq
 
 # With specific model
-python transcribe.py --record --refine --refine-model gpt-4o
+pulsescribe --record --refine --refine-model gpt-4o
 ```
 
 ### Context Modes
@@ -122,7 +124,7 @@ python transcribe.py --record --refine --refine-model gpt-4o
 
 ```bash
 # Force email context
-python transcribe.py --record --refine --context email
+pulsescribe --record --refine --context email
 ```
 
 ### Voice Commands
@@ -142,7 +144,7 @@ With `--refine`, these spoken commands are interpreted:
 
 ```bash
 # Example
-python transcribe.py --record --refine
+pulsescribe --record --refine
 # Speak: "Hello comma how are you question mark"
 # Result: "Hello, how are you?"
 ```
@@ -173,7 +175,7 @@ export PULSESCRIBE_REFINE=true
 
 ```bash
 # Record → clipboard → paste manually
-python transcribe.py --record --copy
+pulsescribe --record --copy
 ```
 
 ### Batch Transcription
@@ -181,7 +183,7 @@ python transcribe.py --record --copy
 ```bash
 # Transcribe all MP3 files
 for f in *.mp3; do
-  python transcribe.py "$f" > "${f%.mp3}.txt"
+  pulsescribe "$f" > "${f%.mp3}.txt"
 done
 ```
 
@@ -189,13 +191,13 @@ done
 
 ```bash
 # SRT for video editing
-python transcribe.py interview.mp4 --format srt --mode deepgram > interview.srt
+pulsescribe interview.mp4 --format srt --mode deepgram > interview.srt
 ```
 
 ### Multilingual
 
 ```bash
 # German transcription with English LLM post-processing
-python transcribe.py --record --language de --refine
+pulsescribe --record --language de --refine
 ```
 

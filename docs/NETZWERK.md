@@ -80,26 +80,23 @@ PULSESCRIBE_STREAMING=false
 
 ### Vollständiger Offline-Betrieb
 
-Mit `PULSESCRIBE_MODE=local` funktioniert PulseScribe **nach initialem Setup** komplett offline:
+Mit `PULSESCRIBE_MODE=local` funktioniert PulseScribe **nach dem Herunterladen eines lokalen Modells** komplett offline:
 
 ```bash
-# Einmaliges Setup (erfordert Internet)
-pip install -r requirements.txt
+# Einmaliges Setup (erfordert Internet zum Laden des gewählten lokalen Modells)
 export PULSESCRIBE_MODE=local
-export PULSESCRIBE_LOCAL_BACKEND=mlx  # oder: whisper, faster, lightning
-python pulsescribe_daemon.py  # Lädt Modell beim ersten Start herunter
+export PULSESCRIBE_LOCAL_MODEL=turbo
+# Full-Version von PulseScribe starten (oder über Einstellungen → Lokale Modelle laden)
 
 # Nach Modell-Download: funktioniert offline
 ```
 
 ### Modell-Cache-Speicherorte
 
-| Backend | Cache-Speicherort |
-|---------|-------------------|
-| **whisper** | `~/.cache/whisper/` |
-| **faster-whisper** | `~/.cache/huggingface/` |
-| **mlx-whisper** | `~/.cache/huggingface/` |
-| **lightning** | `~/.pulsescribe/lightning_models/` |
+| Engine | Cache-Speicherort |
+|--------|-------------------|
+| **whisper-rs (GGML)** | `~/.pulsescribe/models/` |
+| **sherpa-onnx (Parakeet / Canary / Nemotron)** | `~/.pulsescribe/models/` |
 
 ### Offline-Einschränkungen
 
