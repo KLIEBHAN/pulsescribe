@@ -71,6 +71,9 @@ const state = {
   diagnostics: null,
   updateResult: null,
   themePref: { theme: "system", accent: "blue" },
+  committedUiLanguagePref: "system",
+  uiLanguageSaveSeq: 0,
+  uiLanguageSaveChain: Promise.resolve(),
   onboardingStep: "choose_goal",
   onboardingChoice: "fast",
   onboardingHotkeys: { toggle: "", hold: "" },
@@ -690,7 +693,7 @@ async function validateHotkeyField(kind, value) {
   });
 }
 
-async function applyUiLanguageChange(nextPref) {
+function applyUiLanguageToDom(nextPref) {
   const { pref, resolved } = setUiLanguagePref(nextPref);
   if (state.app) {
     state.app.ui_language = pref;
@@ -701,10 +704,35 @@ async function applyUiLanguageChange(nextPref) {
   updateDaemonBadge();
   updateDirtyBar();
   render();
-  await runSafe(async () => {
-    await invoke("save_ui_language", { language: pref, resolved });
-    showToast(t("general.uiLangSaved"));
-  });
+  return { pref, resolved };
+}
+
+function enqueueUiLanguageSave({ pref, resolved, silent = false }) {
+  const seq = ++state.uiLanguageSaveSeq;
+  const run = async () => {
+    if (seq !== state.uiLanguageSaveSeq) return;
+    try {
+      await invoke("save_ui_language", { language: pref, resolved });
+      state.committedUiLanguagePref = pref;
+      if (!silent && seq === state.uiLanguageSaveSeq) {
+        showToast(t("general.uiLangSaved"));
+      }
+    } catch (err) {
+      if (silent) return;
+      if (seq === state.uiLanguageSaveSeq) {
+        applyUiLanguageToDom(state.committedUiLanguagePref);
+        showError(err);
+      }
+    }
+  };
+  state.uiLanguageSaveChain = state.uiLanguageSaveChain.then(run, run);
+  return state.uiLanguageSaveChain;
+}
+
+function applyUiLanguageChange(nextPref) {
+  clearError();
+  const { pref, resolved } = applyUiLanguageToDom(nextPref);
+  return enqueueUiLanguageSave({ pref, resolved, silent: false });
 }
 
 function renderGeneralView() {
@@ -2319,9 +2347,10 @@ async function bootstrap() {
     state.app = app;
     state.permissions = perms;
     const { pref, resolved } = setUiLanguagePref(app.ui_language || "system");
+    state.committedUiLanguagePref = pref;
     applyStaticTranslations();
     if (pref === "system" && app.resolved_ui_language && app.resolved_ui_language !== resolved) {
-      invoke("save_ui_language", { language: "system", resolved }).catch(() => {});
+      enqueueUiLanguageSave({ pref: "system", resolved, silent: true });
     }
     applyThemePref(themePref);
     updateDaemonBadge();

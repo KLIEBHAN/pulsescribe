@@ -747,6 +747,44 @@ export function applyStaticTranslations() {
   }
 }
 
+const DE_DELIVERY_OUTCOMES = {
+  copiedPrefix: "Copied to clipboard",
+  testCompletePrefix: "Test complete",
+  pasteFailedMacos: "Copied — press ⌘V",
+  pasteFailedOther: "Copied — press Ctrl+V",
+  copyFailed: "Copy failed — use Copy Last Transcript",
+  pasteFailedHintDe: "Manuell einfügen oder „Letztes Transkript kopieren“ wählen.",
+  copyFailedHintDe: "Im Menü „Letztes Transkript kopieren“ wählen, um es erneut zu versuchen.",
+};
+
+function localizeDeDeliveryOutcome(state, detail) {
+  if (!detail) return null;
+  if (state === "done") {
+    if (detail.startsWith(DE_DELIVERY_OUTCOMES.copiedPrefix)) {
+      return { label: "In Zwischenablage kopiert", hint: null };
+    }
+    if (detail.startsWith(DE_DELIVERY_OUTCOMES.testCompletePrefix)) {
+      return { label: "Test abgeschlossen", hint: null };
+    }
+    return null;
+  }
+  if (state === "error") {
+    if (detail === DE_DELIVERY_OUTCOMES.pasteFailedMacos) {
+      return { label: "Kopiert — ⌘V drücken", hint: DE_DELIVERY_OUTCOMES.pasteFailedHintDe };
+    }
+    if (detail === DE_DELIVERY_OUTCOMES.pasteFailedOther) {
+      return { label: "Kopiert — Strg+V drücken", hint: DE_DELIVERY_OUTCOMES.pasteFailedHintDe };
+    }
+    if (detail === DE_DELIVERY_OUTCOMES.copyFailed) {
+      return {
+        label: "Kopieren fehlgeschlagen — Letztes Transkript kopieren",
+        hint: DE_DELIVERY_OUTCOMES.copyFailedHintDe,
+      };
+    }
+  }
+  return null;
+}
+
 export function localizeDaemonStatus(app) {
   if (!app) return { label: t("common.ready"), hint: t("diag.allReady") };
   if (currentLang !== "de") {
@@ -757,9 +795,10 @@ export function localizeDaemonStatus(app) {
   }
   const st = app.daemon_state || "idle";
   const errCode = app.status_error?.code;
-  const detail = String(app.status_detail || "").trim();
+  const detail = String(app.status_detail || app.status_error?.detail || "").trim();
+  const delivery = localizeDeDeliveryOutcome(st, detail);
 
-  let label = (errCode && DE_ERROR_LABELS[errCode]) || null;
+  let label = delivery?.label || (errCode && DE_ERROR_LABELS[errCode]) || null;
   if (!label && detail.startsWith("Downloading ")) {
     label = `Lade ${detail.slice("Downloading ".length)}`;
   } else if (!label && detail.startsWith("Loading ")) {
@@ -769,7 +808,8 @@ export function localizeDaemonStatus(app) {
     label = DE_DAEMON_STATE_LABELS[st] || app.status_label || t("common.ready");
   }
 
-  const hint = (errCode && DE_ERROR_HINTS[errCode])
+  const hint = delivery?.hint
+    || (errCode && DE_ERROR_HINTS[errCode])
     || DE_DAEMON_STATE_HINTS[st]
     || app.status_hint
     || t("diag.allReady");

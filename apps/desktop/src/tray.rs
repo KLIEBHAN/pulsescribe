@@ -5,6 +5,9 @@ use std::sync::Mutex;
 use pulsescribe_core::daemon_status_feedback::{
     build_daemon_status_hint, build_daemon_status_label, build_daemon_tray_title, StatusDetail,
 };
+use pulsescribe_core::transcript_delivery::{
+    COPIED, COPY_FAILED, PASTE_FAILED_MACOS, PASTE_FAILED_OTHER, TEST_COMPLETE,
+};
 use pulsescribe_core::{AppState, DaemonErrorCode, DaemonStatusError, PreferencesStore};
 use serde_json::Value;
 use tauri::image::Image;
@@ -403,6 +406,47 @@ pub fn toggle_action_label_for(state: AppState, lang: UiLanguage) -> &'static st
     }
 }
 
+fn de_delivery_status_label(state: AppState, detail: Option<&str>) -> Option<&'static str> {
+    let raw = detail?;
+    match state {
+        AppState::Done => {
+            if raw.starts_with(COPIED) {
+                Some("In Zwischenablage kopiert")
+            } else if raw.starts_with(TEST_COMPLETE) {
+                Some("Test abgeschlossen")
+            } else {
+                None
+            }
+        }
+        AppState::Error => {
+            if raw == PASTE_FAILED_MACOS {
+                Some("Kopiert — ⌘V drücken")
+            } else if raw == PASTE_FAILED_OTHER {
+                Some("Kopiert — Strg+V drücken")
+            } else if raw == COPY_FAILED {
+                Some("Kopieren fehlgeschlagen — Letztes Transkript kopieren")
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn de_delivery_status_hint(state: AppState, detail: Option<&str>) -> Option<&'static str> {
+    if state != AppState::Error {
+        return None;
+    }
+    let raw = detail?;
+    if raw == PASTE_FAILED_MACOS || raw == PASTE_FAILED_OTHER {
+        Some("Manuell einfügen oder „Letztes Transkript kopieren“ wählen.")
+    } else if raw == COPY_FAILED {
+        Some("Im Menü „Letztes Transkript kopieren“ wählen, um es erneut zu versuchen.")
+    } else {
+        None
+    }
+}
+
 fn localized_status_label(
     state: AppState,
     detail: Option<&str>,
@@ -416,6 +460,15 @@ fn localized_status_label(
     };
     if lang == UiLanguage::En {
         return build_daemon_status_label(state, status_detail, false, 64);
+    }
+
+    let effective_detail = detail
+        .or_else(|| error.and_then(|err| err.detail.as_deref()))
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    if let Some(delivery_label) = de_delivery_status_label(state, effective_detail) {
+        return delivery_label.to_owned();
     }
 
     if let Some(err) = error {
@@ -437,7 +490,7 @@ fn localized_status_label(
         }
     }
 
-    if let Some(raw) = detail.map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(raw) = effective_detail {
         if let Some(rest) = raw.strip_prefix("Downloading ") {
             return format!("Lade {rest}");
         }
@@ -473,6 +526,15 @@ fn localized_status_hint(
     };
     if lang == UiLanguage::En {
         return build_daemon_status_hint(state, status_detail, 76);
+    }
+
+    let effective_detail = detail
+        .or_else(|| error.and_then(|err| err.detail.as_deref()))
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    if let Some(delivery_hint) = de_delivery_status_hint(state, effective_detail) {
+        return delivery_hint.to_owned();
     }
 
     if let Some(err) = error {
@@ -617,6 +679,79 @@ mod tests {
                 UiLanguage::De
             ),
             "Lade canary-1b-v2 (1/3, 42%)"
+        );
+    }
+
+    #[test]
+    fn german_status_preserves_transcript_delivery_outcomes_and_hints() {
+        assert_eq!(
+            localized_status_label(
+                AppState::Done,
+                Some("Copied to clipboard · 1.2 s"),
+                None,
+                UiLanguage::De
+            ),
+            "In Zwischenablage kopiert"
+        );
+        assert_eq!(
+            localized_status_label(AppState::Done, Some(TEST_COMPLETE), None, UiLanguage::De),
+            "Test abgeschlossen"
+        );
+        assert_eq!(
+            localized_status_label(
+                AppState::Done,
+                Some("Transcript pasted into Mail"),
+                None,
+                UiLanguage::De
+            ),
+            "Transkript eingefügt"
+        );
+        assert_eq!(
+            localized_status_label(
+                AppState::Error,
+                Some(PASTE_FAILED_MACOS),
+                None,
+                UiLanguage::De
+            ),
+            "Kopiert — ⌘V drücken"
+        );
+        assert_eq!(
+            localized_status_hint(
+                AppState::Error,
+                Some(PASTE_FAILED_MACOS),
+                None,
+                UiLanguage::De
+            ),
+            "Manuell einfügen oder „Letztes Transkript kopieren“ wählen."
+        );
+        assert_eq!(
+            localized_status_label(
+                AppState::Error,
+                Some(PASTE_FAILED_OTHER),
+                None,
+                UiLanguage::De
+            ),
+            "Kopiert — Strg+V drücken"
+        );
+        assert_eq!(
+            localized_status_label(AppState::Error, Some(COPY_FAILED), None, UiLanguage::De),
+            "Kopieren fehlgeschlagen — Letztes Transkript kopieren"
+        );
+        assert_eq!(
+            localized_status_hint(AppState::Error, Some(COPY_FAILED), None, UiLanguage::De),
+            "Im Menü „Letztes Transkript kopieren“ wählen, um es erneut zu versuchen."
+        );
+        let wrapped_err = DaemonStatusError::new(
+            DaemonErrorCode::Unknown,
+            Some(PASTE_FAILED_MACOS.to_owned()),
+        );
+        assert_eq!(
+            localized_status_label(AppState::Error, None, Some(&wrapped_err), UiLanguage::De),
+            "Kopiert — ⌘V drücken"
+        );
+        assert_eq!(
+            localized_status_hint(AppState::Error, None, Some(&wrapped_err), UiLanguage::De),
+            "Manuell einfügen oder „Letztes Transkript kopieren“ wählen."
         );
     }
 }
