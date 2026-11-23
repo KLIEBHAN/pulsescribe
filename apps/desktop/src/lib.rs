@@ -2,6 +2,7 @@
 //! native system tray, lazy Settings/Onboarding WebView, and typed IPC commands.
 
 pub mod commands;
+pub mod logging;
 pub mod state;
 pub mod tray;
 pub mod updates;
@@ -18,9 +19,9 @@ use pulsescribe_daemon::{
 };
 use pulsescribe_local_asr::{LocalAsrManager, ModelDownloader};
 use pulsescribe_overlay::{OverlayActionEvent, OverlayCommand, OverlayHandle};
+use pulsescribe_platform::{SingleInstanceGuard, SingleInstanceOutcome};
 use reqwest::Client;
 use tauri::{AppHandle, Manager, RunEvent};
-use tracing_subscriber::EnvFilter;
 
 use crate::state::DesktopState;
 use crate::tray::TrayController;
@@ -81,14 +82,6 @@ fn spawn_native_overlay(app_handle: AppHandle) -> (Option<NativeOverlayOwner>, O
     }
 }
 
-fn init_tracing() {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_target(false)
-        .try_init();
-}
-
 fn resolve_config_dir() -> Result<PathBuf, String> {
     if let Ok(explicit) = std::env::var("PULSESCRIBE_CONFIG_DIR") {
         let trimmed = explicit.trim();
@@ -103,8 +96,6 @@ fn resolve_config_dir() -> Result<PathBuf, String> {
 
 /// Start the PulseScribe desktop application and return the process exit code.
 pub fn run() -> i32 {
-    init_tracing();
-
     let config_dir = match resolve_config_dir() {
         Ok(dir) => dir,
         Err(err) => {
@@ -112,6 +103,25 @@ pub fn run() -> i32 {
             return 1;
         }
     };
+
+    // Acquire the single-instance lock BEFORE opening the rotating log file so a second launch
+    // never shares or rotates `pulsescribe.log` concurrently with the running primary instance.
+    let mut instance_guard = match SingleInstanceGuard::acquire(&config_dir) {
+        Ok(SingleInstanceOutcome::Acquired(guard)) => Some(guard),
+        Ok(SingleInstanceOutcome::AlreadyRunning) => {
+            eprintln!(
+                "PulseScribe is already running for {}; activated existing instance",
+                config_dir.display()
+            );
+            return 0;
+        }
+        Err(err) => {
+            eprintln!("PulseScribe single-instance lock unavailable ({err}); continuing startup");
+            None
+        }
+    };
+
+    logging::init_desktop_logging(&config_dir);
 
     let tokio_rt = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -126,6 +136,11 @@ pub fn run() -> i32 {
 
     let store = Arc::new(PreferencesStore::new(&config_dir));
     let initial_config = DaemonConfig::from_store_startup(&store);
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        mode = initial_config.mode.as_str(),
+        "PulseScribe desktop starting"
+    );
     let platform = DaemonPlatform::native(true);
     let permissions = Arc::clone(&platform.permissions);
     let local_asr = LocalAsrManager::from_config_dir(&config_dir);
@@ -205,6 +220,9 @@ pub fn run() -> i32 {
             commands::get_theme_preference,
             commands::save_theme_preference,
             commands::open_config_dir,
+            commands::open_release_url,
+            commands::get_autostart,
+            commands::set_autostart,
             commands::export_diagnostics,
             commands::check_for_updates,
         ])
@@ -256,6 +274,22 @@ pub fn run() -> i32 {
         http_client,
     );
     app.manage(desktop_state);
+
+    if let Some(guard) = instance_guard.as_mut() {
+        let activate_app = app.handle().clone();
+        guard.start_activation_listener(move || {
+            let handle = activate_app.clone();
+            let _ = activate_app.run_on_main_thread(move || {
+                if handle
+                    .try_state::<DesktopState>()
+                    .is_some_and(|s| s.is_quitting())
+                {
+                    return;
+                }
+                let _ = open_or_focus_window(&handle, "general");
+            });
+        });
+    }
 
     // Spawn the single daemon-to-UI/overlay/tray event bridge task.
     let bridge_app = app.handle().clone();
@@ -321,6 +355,9 @@ pub fn run() -> i32 {
                 }
                 backend.shutdown().await;
             });
+            // Keep the single-instance lock until daemon, IPC, and hotkey shutdown completes so a
+            // quick relaunch cannot collide with resources still being released.
+            drop(instance_guard.take());
         }
         _ => {}
     });

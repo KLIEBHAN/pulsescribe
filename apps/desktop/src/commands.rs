@@ -32,7 +32,8 @@ use pulsescribe_local_asr::{
     resolve_model_spec, LocalRuntimeCapabilities, ModelSpec, ModelStatus, DEFAULT_LOCAL_MODEL_ID,
 };
 use pulsescribe_platform::{
-    ArboardClipboard, ClipboardBackend, PermissionKind, PermissionSnapshot, PlatformKind,
+    get_autostart_status, set_autostart_enabled, ArboardClipboard, AutostartStatus,
+    ClipboardBackend, PermissionKind, PermissionSnapshot, PlatformKind,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -1106,12 +1107,95 @@ pub async fn save_theme_preference(
     .map_err(|err| format!("Theme preference save failed: {err}"))?
 }
 
+/// Strictly validate that a release URL points to this repository on `https://github.com`.
+pub fn validate_release_url(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err("Invalid release URL".to_owned());
+    }
+    let parsed = Url::parse(trimmed).map_err(|_| "Invalid release URL".to_owned())?;
+    if parsed.scheme() != "https" {
+        return Err("Only HTTPS GitHub release URLs are allowed".to_owned());
+    }
+    if !parsed
+        .host_str()
+        .is_some_and(|h| h.eq_ignore_ascii_case("github.com"))
+    {
+        return Err("Release URL must point to github.com".to_owned());
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() || parsed.port().is_some() {
+        return Err("Release URL must not contain credentials or custom ports".to_owned());
+    }
+    let path_lower = parsed.path().to_ascii_lowercase();
+    let repo_prefix = "/kliebhan/pulsescribe";
+    let valid_repo = path_lower == repo_prefix
+        || path_lower
+            .strip_prefix(repo_prefix)
+            .is_some_and(|rest| rest.starts_with('/'));
+    if !valid_repo {
+        return Err("Release URL must belong to KLIEBHAN/pulsescribe".to_owned());
+    }
+    Ok(parsed.into())
+}
+
+fn open_url_in_os(url: &str) -> Result<(), String> {
+    let validated = validate_release_url(url)?;
+    #[cfg(target_os = "macos")]
+    {
+        let mut child = Command::new("open")
+            .arg(&validated)
+            .spawn()
+            .map_err(|err| format!("Failed to open browser: {err}"))?;
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+        Ok(())
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let mut child = Command::new("rundll32.exe")
+            .args(["url.dll,FileProtocolHandler", &validated])
+            .spawn()
+            .map_err(|err| format!("Failed to open browser: {err}"))?;
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+        Ok(())
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = validated;
+        Err("Opening release URLs is unsupported on this OS".to_owned())
+    }
+}
+
 #[tauri::command]
 pub async fn open_config_dir(state: State<'_, DesktopState>) -> Result<(), String> {
     let dir = state.config_dir.clone();
     tokio::task::spawn_blocking(move || open_directory_in_os(&dir))
         .await
         .map_err(|err| format!("Failed to open config folder: {err}"))?
+}
+
+#[tauri::command]
+pub async fn open_release_url(url: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || open_url_in_os(&url))
+        .await
+        .map_err(|err| format!("Failed to open release URL: {err}"))?
+}
+
+#[tauri::command]
+pub async fn get_autostart() -> Result<AutostartStatus, String> {
+    tokio::task::spawn_blocking(get_autostart_status)
+        .await
+        .map_err(|err| format!("Failed to query autostart status: {err}"))
+}
+
+#[tauri::command]
+pub async fn set_autostart(enabled: bool) -> Result<AutostartStatus, String> {
+    tokio::task::spawn_blocking(move || set_autostart_enabled(enabled).map_err(|e| e.to_string()))
+        .await
+        .map_err(|err| format!("Failed to update autostart setting: {err}"))?
 }
 
 #[tauri::command]
@@ -1341,5 +1425,23 @@ mod tests {
             |_| false,
         );
         assert_eq!(mac_reserved.level, HotkeyValidationLevel::Error);
+    }
+
+    #[test]
+    fn release_url_validation_allows_only_official_github_repo_https_urls() {
+        assert!(validate_release_url(
+            "https://github.com/KLIEBHAN/pulsescribe/releases/tag/v2.0.0"
+        )
+        .is_ok());
+        assert!(validate_release_url("https://github.com/kliebhan/pulsescribe/releases").is_ok());
+        assert!(validate_release_url("http://github.com/KLIEBHAN/pulsescribe/releases").is_err());
+        assert!(
+            validate_release_url("https://github.com/KLIEBHAN/pulsescribe-evil/releases").is_err()
+        );
+        assert!(validate_release_url("https://evil.example/KLIEBHAN/pulsescribe").is_err());
+        assert!(
+            validate_release_url("https://user@github.com/KLIEBHAN/pulsescribe/releases").is_err()
+        );
+        assert!(validate_release_url("file:///Applications/Calculator.app").is_err());
     }
 }

@@ -1,5 +1,16 @@
 # Updates and releases
 
+## Rust Desktop App (v2.0+ Cutover Strategy)
+
+The native Rust desktop app (`apps/desktop`) performs a clean cutover for `v2.0.0`:
+
+- **Manual one-time migration from Python `1.x`:** Existing Python `1.x` installations do not auto-upgrade across the runtime rewrite; users install the Rust macOS DMG or Windows NSIS setup once while preserving `~/.pulsescribe/` 1:1 (and macOS TCC permissions when signed with the same `PulseScribe Code Signing` certificate, plus Windows `HKCU\...\Run\PulseScribe` autostart migration via the NSIS post-install hook).
+- **In-app update check:** **Diagnostics → Check for Updates** queries GitHub Releases (`/releases/latest`) over HTTPS with SemVer comparison and opens the verified GitHub Release page in the system browser (**Download Release**). A full in-app auto-installer (background download + bundle swap) is intentionally deferred until needed.
+
+---
+
+## Legacy Python App (1.x)
+
 Packaged PulseScribe installations check the public GitHub repository for a newer
 stable release 15 seconds after startup and then hourly. Source runs have no
 updater. No token or additional dependency is required.

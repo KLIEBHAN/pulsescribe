@@ -6,8 +6,8 @@
 
 ## Leitentscheidungen
 
-1. **Lokale ML-Backends (1a):** Primär native C/C++-Engines direkt aus Rust (`whisper-rs` / `whisper.cpp` + `sherpa-onnx` C-API). Ein optionales Apple-Silicon-MLX-Backend (`mlx-rs` / `mlx-c`, ohne Python) wird erst in Phase 5b erwogen, falls die gemessene Latenzlücke auf Metal 4 bis dahin bestehen bleibt.
-2. **UI-Architektur (2a):** Hybrid-Split — gemeinsames Lazy-WebView-Frontend (**Tauri v2**, beim Schließen komplett zerstört → 0 MB WebView-RAM im Idle) für Settings, Onboarding-Wizard, Historie, Prompts, Vokabular und Update-Fenster; **natives** System-Tray (`tray-icon` + `muda`) und **natives** 60-FPS-Overlay (`objc2-app-kit`/Core Animation auf macOS, `windows-rs`/Direct2D auf Windows) für Zero-Focus-Steal und 0 FPS Idle-GPU.
+1. **Lokale ML-Backends (1a / 3a):** Native C/C++-Engines direkt aus Rust (`whisper-rs` Metal/CPU + `sherpa-onnx` C-API `2.0.x` mit Parakeet v3 238 ms CPU, Canary 1B v2 und Nemotron 3.5 Streaming-Preview). **Abgeschlossene Entscheidung (3a):** Kein separates `mlx-rs`-Backend (Phase 5b entfällt); `whisper-rs` + `sherpa-onnx` Parakeet v3 decken Apple Silicon und Windows gemeinsam ab.
+2. **UI-Architektur (2a) & Update-Schnitt:** Hybrid-Split — gemeinsames Lazy-WebView-Frontend (**Tauri v2**, beim Schließen komplett zerstört → 0 MB WebView-RAM im Idle) für Settings, Onboarding-Wizard, Historie, Prompts, Vokabular und Diagnose; **natives** System-Tray (`tray-icon` + `muda`) und **natives** 60-FPS-Overlay (`objc2-app-kit`/Core Animation auf macOS, `windows-rs`/Direct2D auf Windows) für Zero-Focus-Steal und 0 FPS Idle-GPU. Für `v2.0.0` erfolgt ein sauberer Update-Schnitt (SemVer-Versionsprüfung + Browser-Download-Link, einmaliger manueller Wechsel von Python `1.x`; In-App-Auto-Installer erst bei Bedarf).
 3. **Plattformstrategie (3a):** macOS (`aarch64-apple-darwin`) und Windows (`x86_64-pc-windows-msvc`) ab Phase 0/1 parallel im selben Cargo-Workspace und in der CI-Matrix; Linux-Traits architektonisch sauber abtrennen.
 4. **Migrationsmodus:** Vertikale Scheiben im selben Repository (kein Big-Bang, kein PyO3-Zwischenschritt). Alle Nutzerdaten unter `~/.pulsescribe/` (`.env`, `preferences.json`, `vocabulary.json`, `prompts.toml`, `history.jsonl`) sowie `~/.cache/huggingface/` bleiben 1:1 kompatibel.
 
@@ -39,7 +39,7 @@
 2. **Kein verkürztes `audio_ctx` bei Whisper `large-v3-turbo`:** Dynamisches `set_audio_ctx` führt bei Turbo zu Halluzinationsschleifen und ~3× längerer Laufzeit (2.623 ms statt 862 ms), da das Modell auf feste 30-s-Positions-Embeddings (`1500`) trainiert ist.
 3. **Kein CoreML-EP für `sherpa-onnx` Parakeet:** CoreML ist 2,4× langsamer (579 ms vs. 238 ms), braucht 3,1× mehr RAM (4.489 MB vs. 1.427 MB), lädt 5,2 s und loggt `Context leak detected`. `sherpa-onnx` bleibt fest auf `provider="cpu"`.
 4. **Parakeet + Nemotron direkt via C-API sehr attraktiv:** `libsherpa-onnx-c-api.dylib` (4,2 MB) + `libonnxruntime.dylib` (28,8 MB) = **33 MB** statt ~1 GB PyInstaller-Bundle. Parakeet v3 auf CPU schlägt bei 4,9 s sogar MLX-Whisper (238 ms vs. 326 ms); Nemotron-Streaming läuft mit 54 ms/Chunk plattformübergreifend auch auf Windows.
-5. **Konsequenz für Phase 5:** `crates/local-asr` abstrahiert über ein `LocalAsrEngine`-Trait. Phase 5a liefert `whisper-rs` + `sherpa-onnx` (CPU). Falls `whisper.cpp` bis Phase 5 keinen Metal-4-Tensor-Support hat oder 80-ms-GPU-Parakeet auf Apple Silicon benötigt wird, kann Phase 5b ein optionales `mlx-rs`-Backend (`--features apple-mlx`, ohne Python) hinter demselben Trait ergänzen.
+5. **Konsequenz für Phase 5:** `crates/local-asr` abstrahiert über ein `LocalAsrEngine`-Trait und liefert mit `whisper-rs` (Metal auf macOS / CPU auf Windows) + `sherpa-onnx` (CPU) den finalen lokalen ASR-Stack. Ein optionales Apple-Silicon-`mlx-rs`-Backend (ursprünglich als Phase 5b erwogen) wurde nach den Parakeet-v3-Benchmarks (238 ms CPU) gestrichen.
 
 ### 2. macOS Native OS & Overlay Spike (live auf macOS 27.0.1)
 
