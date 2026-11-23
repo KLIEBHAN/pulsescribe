@@ -25,9 +25,9 @@ cargo build --release -p pulsescribe-desktop -p pulsescribe-cli
 (cd apps/desktop && cargo tauri build --target aarch64-apple-darwin --bundles app --features all-local)
 ```
 
-- **Bundle metadata & signing:** `apps/desktop/Info.plist` carries `NSMicrophoneUsageDescription` and `NSAppleEventsUsageDescription`; `macos/entitlements.plist` supplies `com.apple.security.cs.disable-library-validation`. Signing with the same pinned `"PulseScribe Code Signing"` certificate (SHA-1 `MACOS_SIGNING_CERT_SHA1` pinned in both workflows, `.p12` secrets stored in the `macos-signing` GitHub environment) preserves macOS Microphone, Accessibility, and Input Monitoring grants across updates from legacy Python builds. Before publishing a signed `rust-v*` tag, ensure the `macos-signing` environment deployment rules admit `rust-v*` tags alongside `master` and `v*`.
+- **Bundle metadata & signing:** `apps/desktop/Info.plist` carries `NSMicrophoneUsageDescription` and `NSAppleEventsUsageDescription`; `macos/entitlements.plist` supplies `com.apple.security.cs.disable-library-validation`. Signing with the same pinned `"PulseScribe Code Signing"` certificate (SHA-1 `MACOS_SIGNING_CERT_SHA1` pinned in both workflows, `.p12` secrets stored in the `macos-signing` GitHub environment admitting `master` and `v*` tags) preserves macOS Microphone, Accessibility, and Input Monitoring grants across updates from legacy Python builds.
 - **`sherpa-onnx` runtime (Full):** `crates/local-asr` loads `libsherpa-onnx-c-api.dylib` (`2.0.x` ABI) from `$PULSESCRIBE_SHERPA_LIB_DIR`, `<exe_dir>`, `PulseScribe.app/Contents/Frameworks/`, or `~/.pulsescribe/libs/`. The CI Full build bundles `libsherpa-onnx-c-api.dylib` and `libonnxruntime.dylib` directly into `Contents/Frameworks/`.
-- **CI Workflow:** [`.github/workflows/rust-installers.yml`](../.github/workflows/rust-installers.yml) builds, signs, packages, and verifies both `PulseScribe-Rust-<version>-macOS-arm64-Slim.dmg` and `PulseScribe-Rust-<version>-macOS-arm64-Full.dmg` (+ `.sha256`) on `macos-15` for PRs, manual dispatches, and `rust-v*` tags without affecting legacy `v*` releases.
+- **CI Workflow:** [`.github/workflows/rust-installers.yml`](../.github/workflows/rust-installers.yml) builds, signs, packages, and verifies both `PulseScribe-<version>-macOS-arm64-Slim.dmg` and `PulseScribe-<version>-macOS-arm64-Full.dmg` (+ `.sha256`) on `macos-15` for PRs, manual dispatches, and `v*` release tags.
 
 ---
 
@@ -189,9 +189,8 @@ app by bundle ID and certificate, and permissions survive updates.
 
 The secrets are stored in the GitHub environment `macos-signing`, not as
 repository secrets. Anyone holding the key can sign other code that inherits
-the users' permissions, so the environment only admits `master`, `v*`, and
-(when enabled for Rust preview releases) `rust-v*` tags, and the workflow uses
-it only for published builds.
+the users' permissions, so the environment only admits `master` and `v*` tags,
+and the workflow uses it only for published builds.
 
 | Environment secret | Content |
 |--------------------|---------|
@@ -199,7 +198,7 @@ it only for published builds.
 | `MACOS_CERTIFICATE_PASSWORD` | Password of the `.p12` |
 
 The certificate's SHA-1 is pinned as `MACOS_SIGNING_CERT_SHA1` in
-`.github/workflows/build-installers.yml`. Published releases fail without the
+`.github/workflows/rust-installers.yml` (and legacy `.github/workflows/build-installers.yml`). Published releases fail without the
 secret, and the DMG check rejects apps that are not signed with the pinned
 certificate. Pull request and other unpublished builds are ad-hoc signed.
 

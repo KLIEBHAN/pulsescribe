@@ -3190,7 +3190,7 @@ dependencies = [
 
 [[package]]
 name = "pulsescribe-audio"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "cpal",
  "hound",
@@ -3203,7 +3203,7 @@ dependencies = [
 
 [[package]]
 name = "pulsescribe-cli"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "arboard",
  "clap",
@@ -3219,7 +3219,7 @@ dependencies = [
 
 [[package]]
 name = "pulsescribe-core"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "chrono",
  "serde",
@@ -3230,7 +3230,7 @@ dependencies = [
 
 [[package]]
 name = "pulsescribe-daemon"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "bytes",
  "clap",
@@ -3252,7 +3252,7 @@ dependencies = [
 
 [[package]]
 name = "pulsescribe-desktop"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "chrono",
  "objc2-foundation",
@@ -3275,7 +3275,7 @@ dependencies = [
 
 [[package]]
 name = "pulsescribe-local-asr"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "futures-util",
  "libloading 0.9.1",
@@ -3291,7 +3291,7 @@ dependencies = [
 
 [[package]]
 name = "pulsescribe-overlay"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "objc2",
  "objc2-app-kit",
@@ -3306,7 +3306,7 @@ dependencies = [
 
 [[package]]
 name = "pulsescribe-platform"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "arboard",
  "objc2",
@@ -3325,7 +3325,7 @@ dependencies = [
 
 [[package]]
 name = "pulsescribe-providers"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "bytes",
  "futures-util",
