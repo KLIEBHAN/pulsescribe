@@ -243,13 +243,15 @@ function createPreviewStore() {
       }
       case "validate_hotkey": {
         const norm = (args.value || "").trim().toLowerCase();
-        if (!norm) return { normalized: "", level: "ok", message: null };
-        if (norm.includes("bogus")) return { normalized: norm, level: "error", message: "Unknown key: bogus" };
-        if (norm === "cmd+space") return { normalized: norm, level: "error", message: "Shortcut is already reserved by macOS." };
-        const other = args.kind === "hold" ? args.toggleCurrent : args.holdCurrent;
-        if (!args.replaceOther && other && norm === other.trim().toLowerCase()) {
+        if (!norm) return { normalized: "", level: "error", message: "The hotkey is empty." };
+        const current = ((args.kind === "hold" ? args.holdCurrent : args.toggleCurrent) || "").trim().toLowerCase();
+        const other = ((args.kind === "hold" ? args.toggleCurrent : args.holdCurrent) || "").trim().toLowerCase();
+        if (!args.replaceOther && other && norm === other) {
           return { normalized: norm, level: "error", message: `Conflicts with ${other}.` };
         }
+        if (current && norm === current) return { normalized: norm, level: "ok", message: null };
+        if (norm.includes("bogus")) return { normalized: norm, level: "error", message: "Unknown key: bogus" };
+        if (norm === "cmd+space") return { normalized: norm, level: "error", message: "Shortcut is already reserved by macOS." };
         return { normalized: norm, level: "ok", message: null };
       }
       case "check_permissions":

@@ -537,24 +537,32 @@ function setDraftField(key, value) {
   updateDirtyBar();
 }
 
+const EMPTY_HOTKEY_OK = { normalized: "", level: "ok", message: null };
+
+async function validateSingleHotkey(kind, value, otherProposed) {
+  const trimmed = (value ?? "").trim();
+  // Empty disables that slot (e.g. macOS defaults to toggle="" and hold="fn").
+  if (!trimmed) return EMPTY_HOTKEY_OK;
+  const savedToggle = state.settings?.toggle_hotkey ?? "";
+  const savedHold = state.settings?.hold_hotkey ?? "";
+  return invoke("validate_hotkey", {
+    kind,
+    value: trimmed,
+    // Pass the persisted hotkey for the slot being validated so the backend only
+    // skips Carbon probing for our own already-registered shortcut, and pass the
+    // proposed draft for the opposite slot so pair conflicts are still caught.
+    toggleCurrent: kind === "toggle" ? savedToggle : (otherProposed ?? ""),
+    holdCurrent: kind === "hold" ? savedHold : (otherProposed ?? ""),
+    replaceOther: false,
+  });
+}
+
 async function validateHotkeyPair(toggleValue, holdValue) {
-  const toggleStr = toggleValue ?? "";
-  const holdStr = holdValue ?? "";
+  const toggleStr = (toggleValue ?? "").trim();
+  const holdStr = (holdValue ?? "").trim();
   const [toggleRes, holdRes] = await Promise.all([
-    invoke("validate_hotkey", {
-      kind: "toggle",
-      value: toggleStr,
-      toggleCurrent: toggleStr,
-      holdCurrent: holdStr,
-      replaceOther: false,
-    }),
-    invoke("validate_hotkey", {
-      kind: "hold",
-      value: holdStr,
-      toggleCurrent: toggleStr,
-      holdCurrent: holdStr,
-      replaceOther: false,
-    }),
+    validateSingleHotkey("toggle", toggleStr, holdStr),
+    validateSingleHotkey("hold", holdStr, toggleStr),
   ]);
   return { toggle: toggleRes, hold: holdRes };
 }
@@ -675,13 +683,10 @@ function updateHotkeyNoteNode(slot) {
 
 async function validateHotkeyField(kind, value) {
   await runSafe(async () => {
-    const res = await invoke("validate_hotkey", {
-      kind,
-      value,
-      toggleCurrent: state.draft?.toggle_hotkey ?? state.settings?.toggle_hotkey ?? "",
-      holdCurrent: state.draft?.hold_hotkey ?? state.settings?.hold_hotkey ?? "",
-      replaceOther: false,
-    });
+    const otherProposed = kind === "toggle"
+      ? (state.draft?.hold_hotkey ?? state.settings?.hold_hotkey ?? "")
+      : (state.draft?.toggle_hotkey ?? state.settings?.toggle_hotkey ?? "");
+    const res = await validateSingleHotkey(kind, value, otherProposed);
     state.hotkeyValidation[kind] = res;
     // Update badge in place so focus on the next Tab target is never stolen.
     updateHotkeyNoteNode(kind);
