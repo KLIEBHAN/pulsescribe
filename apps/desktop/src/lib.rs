@@ -400,15 +400,23 @@ pub fn run() -> i32 {
         .await;
     }));
 
+    let update_stop = Arc::new(tokio::sync::Notify::new());
     let mut update_task = if updater.has_installed_target() {
         let upd_app = app.handle().clone();
         let upd_ctrl = Arc::clone(&updater);
+        let upd_stop = Arc::clone(&update_stop);
         Some(tokio_rt.spawn(async move {
-            tokio::time::sleep(UPDATE_INITIAL_CHECK_DELAY).await;
+            tokio::select! {
+                _ = upd_stop.notified() => return,
+                _ = tokio::time::sleep(UPDATE_INITIAL_CHECK_DELAY) => {}
+            }
             loop {
                 let listener = make_update_listener(upd_app.clone());
                 let _ = upd_ctrl.run_check(false, listener).await;
-                tokio::time::sleep(UPDATE_CHECK_INTERVAL).await;
+                tokio::select! {
+                    _ = upd_stop.notified() => return,
+                    _ = tokio::time::sleep(UPDATE_CHECK_INTERVAL) => {}
+                }
             }
         }))
     } else {
@@ -449,15 +457,22 @@ pub fn run() -> i32 {
                 state.cancel_all_downloads();
                 state.updater.shutdown();
             }
+            update_stop.notify_one();
             overlay_handle.shutdown();
             drop(overlay_owner.take());
             let task = bridge_task.take();
             let upd = update_task.take();
             let runtime = daemon_runtime.take();
             tokio_rt.block_on(async {
-                if let Some(t) = upd {
-                    t.abort();
-                    let _ = t.await;
+                if let Some(mut t) = upd {
+                    // Wait cooperatively so in-flight download/DMG cleanup finishes before exit.
+                    if tokio::time::timeout(Duration::from_secs(10), &mut t)
+                        .await
+                        .is_err()
+                    {
+                        t.abort();
+                        let _ = t.await;
+                    }
                 }
                 if let Some(t) = task {
                     t.abort();
