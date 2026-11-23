@@ -2,7 +2,38 @@
 
 PulseScribe ships as a `.app` bundle and a drag‑and‑drop `.dmg`. For a good user experience ("download → open → works"), the DMG should be **Developer‑ID signed + notarized**.
 
-## Prerequisites
+## Rust Desktop App (Tauri v2, Coexisting)
+
+The native Rust desktop app (`apps/desktop`, bundle ID `com.kliebhan.pulsescribe`) coexists alongside the legacy Python build below and shares `~/.pulsescribe/` 1:1. It combines a zero-build lazy WebView (0 MB WebView RAM when closed) with a native menu-bar tray and native 60 FPS `NSPanel`/`CALayer` overlay.
+
+### Prerequisites (Rust)
+
+- Rust toolchain (`rustc` ≥ 1.88, `aarch64-apple-darwin` target) and `cargo-tauri` v2 (`cargo install tauri-cli --version ^2 --locked` or prebuilt binary from `tauri-apps/tauri`)
+- Xcode Command Line Tools (`xcrun`, `codesign`, `hdiutil`)
+- `cmake` — required **only** for the Full variant (`--features all-local`, compiling `whisper.cpp` with Metal)
+
+### Build Variants (Rust)
+
+```bash
+# Release binaries only (Slim / cloud-only)
+cargo build --release -p pulsescribe-desktop -p pulsescribe-cli
+
+# Packaged .app bundle (Slim / cloud-only)
+(cd apps/desktop && cargo tauri build --target aarch64-apple-darwin --bundles app)
+
+# Packaged .app bundle (Full: static whisper-rs Metal + dynamic sherpa-onnx C-API)
+(cd apps/desktop && cargo tauri build --target aarch64-apple-darwin --bundles app --features all-local)
+```
+
+- **Bundle metadata & signing:** `apps/desktop/Info.plist` carries `NSMicrophoneUsageDescription` and `NSAppleEventsUsageDescription`; `macos/entitlements.plist` supplies `com.apple.security.cs.disable-library-validation`. Signing with the same pinned `"PulseScribe Code Signing"` certificate (SHA-1 `MACOS_SIGNING_CERT_SHA1` pinned in both workflows, `.p12` secrets stored in the `macos-signing` GitHub environment) preserves macOS Microphone, Accessibility, and Input Monitoring grants across updates from legacy Python builds. Before publishing a signed `rust-v*` tag, ensure the `macos-signing` environment deployment rules admit `rust-v*` tags alongside `master` and `v*`.
+- **`sherpa-onnx` runtime (Full):** `crates/local-asr` loads `libsherpa-onnx-c-api.dylib` (`2.0.x` ABI) from `$PULSESCRIBE_SHERPA_LIB_DIR`, `<exe_dir>`, `PulseScribe.app/Contents/Frameworks/`, or `~/.pulsescribe/libs/`. The CI Full build bundles `libsherpa-onnx-c-api.dylib` and `libonnxruntime.dylib` directly into `Contents/Frameworks/`.
+- **CI Workflow:** [`.github/workflows/rust-installers.yml`](../.github/workflows/rust-installers.yml) builds, signs, packages, and verifies both `PulseScribe-Rust-<version>-macOS-arm64-Slim.dmg` and `PulseScribe-Rust-<version>-macOS-arm64-Full.dmg` (+ `.sha256`) on `macos-15` for PRs, manual dispatches, and `rust-v*` tags without affecting legacy `v*` releases.
+
+---
+
+## Legacy Python App
+
+### Prerequisites
 
 - macOS with **Xcode Command Line Tools** (`xcrun`, `notarytool`, `stapler`)
   - Install: `xcode-select --install`
@@ -158,8 +189,9 @@ app by bundle ID and certificate, and permissions survive updates.
 
 The secrets are stored in the GitHub environment `macos-signing`, not as
 repository secrets. Anyone holding the key can sign other code that inherits
-the users' permissions, so the environment only admits `master` and `v*` tags,
-and the workflow uses it only for published builds.
+the users' permissions, so the environment only admits `master`, `v*`, and
+(when enabled for Rust preview releases) `rust-v*` tags, and the workflow uses
+it only for published builds.
 
 | Environment secret | Content |
 |--------------------|---------|

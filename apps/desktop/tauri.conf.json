@@ -16,6 +16,8 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "category": "Productivity",
+    "shortDescription": "Fast voice dictation for macOS and Windows",
     "icon": [
       "../../assets/icon.iconset/icon_32x32.png",
       "../../assets/icon.iconset/icon_128x128.png",
@@ -24,7 +26,21 @@
       "../../assets/icon.ico"
     ],
     "macOS": {
-      "infoPlist": "./Info.plist"
+      "infoPlist": "./Info.plist",
+      "entitlements": "../../macos/entitlements.plist",
+      "minimumSystemVersion": "13.0",
+      "hardenedRuntime": false,
+      "dmg": {
+        "appPosition": { "x": 180, "y": 170 },
+        "applicationFolderPosition": { "x": 480, "y": 170 },
+        "windowSize": { "width": 660, "height": 400 }
+      }
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["English", "German"]
+      }
     }
   }
 }

@@ -1,0 +1,687 @@
+name: Rust Installers
+
+on:
+  push:
+    tags: ["rust-v*"]
+  pull_request:
+    branches: [master, main]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "apps/**"
+      - "crates/**"
+      - "assets/icon*"
+      - "macos/entitlements.plist"
+      - ".github/workflows/rust-installers.yml"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Optional Git tag/ref to build (defaults to current branch ref)
+        required: false
+        default: ""
+        type: string
+      variant:
+        description: Build variant to produce
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - slim
+          - full
+      upload_to_release:
+        description: Upload built Rust installers to the GitHub release for `tag`
+        required: true
+        default: false
+        type: boolean
+      replace_existing_assets:
+        description: Replace same-named release assets (manual runs only)
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-installers-${{ github.event_name == 'pull_request' && 'pr' || 'release' }}-${{ inputs.tag || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  TAURI_CLI_TAG: tauri-cli-v2.12.6
+  TAURI_CLI_MACOS_ARM64_SHA256: 1c71c48a9aea9616a857c92bab63bc9bce113e348929493ba0bbaa4d3f4ce4c3
+  TAURI_CLI_WIN_X64_SHA256: 39636fa68bc00f13dd610fb57688f292e93742978cc35395f2f1be7c540b88a1
+  SHERPA_ONNX_TAG: v2.0.2
+  SHERPA_MACOS_ARM64_ARCHIVE: sherpa-onnx-v2.0.2-osx-arm64-shared-no-tts-lib.tar.bz2
+  SHERPA_MACOS_ARM64_SHA256: 451f9fd778b32213ea9b590a2e1fef85c4c1b607c5f1b310f93a40b22fde85ae
+  SHERPA_WIN_X64_ARCHIVE: sherpa-onnx-v2.0.2-win-x64-shared-MD-MinSizeRel-no-tts-lib.tar.bz2
+  SHERPA_WIN_X64_SHA256: fb3ef6cf2e65d03e44d3ff3ac5a8a1f3a1e2710416359f86d59525a1309bf8ce
+
+jobs:
+  metadata:
+    name: Resolve Rust installer metadata
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
+      commit: ${{ steps.meta.outputs.commit }}
+      build_slim: ${{ steps.meta.outputs.build_slim }}
+      build_full: ${{ steps.meta.outputs.build_full }}
+      publish: ${{ steps.meta.outputs.publish }}
+      clobber: ${{ steps.meta.outputs.clobber }}
+    env:
+      REQUESTED_REF: ${{ inputs.tag || github.event.pull_request.head.sha || github.ref_name }}
+      PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number }}
+      VARIANT: ${{ inputs.variant || 'all' }}
+      UPLOAD_TO_RELEASE: ${{ inputs.upload_to_release || 'false' }}
+      REPLACE_EXISTING_ASSETS: ${{ inputs.replace_existing_assets || 'false' }}
+
+    steps:
+      - name: Check out requested ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.REQUESTED_REF }}
+          fetch-depth: 0
+
+      - name: Validate workspace version and build parameters
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="$(python3 - <<'PY'
+          import json
+          import pathlib
+          import tomllib
+
+          cargo = tomllib.loads(pathlib.Path("Cargo.toml").read_text(encoding="utf-8"))
+          cargo_ver = cargo["workspace"]["package"]["version"]
+          tauri = json.loads(pathlib.Path("apps/desktop/tauri.conf.json").read_text(encoding="utf-8"))
+          tauri_ver = tauri["version"]
+          if cargo_ver != tauri_ver:
+              raise SystemExit(
+                  f"Version mismatch: Cargo.toml workspace={cargo_ver} vs apps/desktop/tauri.conf.json={tauri_ver}"
+              )
+          print(cargo_ver)
+          PY
+          )"
+          head_commit="$(git rev-parse HEAD)"
+
+          publish=false
+          clobber=false
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            publish=true
+          elif [[ "$UPLOAD_TO_RELEASE" == "true" ]]; then
+            if [[ -z "${REQUESTED_REF:-}" ]]; then
+              echo "upload_to_release requires a non-empty tag input" >&2
+              exit 1
+            fi
+            publish=true
+            clobber="$REPLACE_EXISTING_ASSETS"
+          fi
+
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            tag="pr-${PULL_REQUEST_NUMBER}"
+            if [[ "$REQUESTED_REF" != "$head_commit" ]]; then
+              echo "Checked-out commit $head_commit does not match PR head $REQUESTED_REF" >&2
+              exit 1
+            fi
+          elif [[ "$publish" == "true" ]]; then
+            tag="$REQUESTED_REF"
+            if [[ ! "$tag" =~ ^rust-v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+              echo "Published Rust releases require a rust-vX.Y.Z tag (keeps legacy v* Python releases isolated), got: $tag" >&2
+              exit 1
+            fi
+            if [[ "$tag" != "rust-v${version}" ]]; then
+              echo "Tag $tag does not match Cargo.toml version $version" >&2
+              exit 1
+            fi
+            tag_commit="$(git rev-parse --verify "refs/tags/${tag}^{commit}")" || {
+              echo "No Git tag named $tag exists" >&2
+              exit 1
+            }
+            if [[ "$tag_commit" != "$head_commit" ]]; then
+              echo "Checked-out commit $head_commit does not match $tag ($tag_commit)" >&2
+              exit 1
+            fi
+          else
+            tag="${REQUESTED_REF:-manual}"
+          fi
+
+          build_slim=true
+          build_full=true
+          if [[ "$VARIANT" == "slim" ]]; then
+            build_full=false
+          elif [[ "$VARIANT" == "full" ]]; then
+            build_slim=false
+          fi
+
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "commit=$head_commit"
+            echo "build_slim=$build_slim"
+            echo "build_full=$build_full"
+            echo "publish=$publish"
+            echo "clobber=$clobber"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Rust Installer Build"
+            echo
+            echo "- Tag/Ref: \`$tag\`"
+            echo "- Version: \`$version\`"
+            echo "- Commit: \`$head_commit\`"
+            echo "- Slim (cloud-only): \`$build_slim\`"
+            echo "- Full (whisper-rs + sherpa-onnx): \`$build_full\`"
+            echo "- Publish to release: \`$publish\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build-macos:
+    name: Rust macOS DMG (arm64)
+    needs: metadata
+    runs-on: macos-15
+    timeout-minutes: 60
+    # Signing secrets live only in `macos-signing`, matching legacy build-installers.yml
+    # so macOS keeps Microphone / Accessibility / Input Monitoring permissions across updates.
+    environment: ${{ needs.metadata.outputs.publish == 'true' && 'macos-signing' || '' }}
+    env:
+      VERSION: ${{ needs.metadata.outputs.version }}
+      RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+      RELEASE_COMMIT: ${{ needs.metadata.outputs.commit }}
+      BUILD_SLIM: ${{ needs.metadata.outputs.build_slim }}
+      BUILD_FULL: ${{ needs.metadata.outputs.build_full }}
+      PUBLISH: ${{ needs.metadata.outputs.publish }}
+      MACOS_SIGNING_CERT_SHA1: 7241EB994E2F876853BEEE24D56EF802F9AE2AB0
+
+    steps:
+      - name: Check out validated commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.metadata.outputs.commit }}
+
+      - name: Verify Apple Silicon runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(uname -m)" == "arm64" ]] || {
+            echo "Expected arm64 runner, got $(uname -m)" >&2
+            exit 1
+          }
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install prebuilt cargo-tauri CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin_dir="$RUNNER_TEMP/tauri-cli"
+          mkdir -p "$bin_dir"
+          archive="$RUNNER_TEMP/cargo-tauri.zip"
+          curl -fsSL -o "$archive" \
+            "https://github.com/tauri-apps/tauri/releases/download/${TAURI_CLI_TAG}/cargo-tauri-aarch64-apple-darwin.zip"
+          echo "${TAURI_CLI_MACOS_ARM64_SHA256}  ${archive}" | shasum -a 256 -c -
+          unzip -q -o "$archive" -d "$bin_dir"
+          chmod +x "$bin_dir/cargo-tauri"
+          echo "$bin_dir" >> "$GITHUB_PATH"
+          "$bin_dir/cargo-tauri" --version
+
+      - name: Import stable signing certificate
+        shell: bash
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$MACOS_CERTIFICATE_P12" ]]; then
+            if [[ "$PUBLISH" == "true" ]]; then
+              echo "::error::MACOS_CERTIFICATE_P12 is required for published builds so macOS permissions survive updates"
+              exit 1
+            fi
+            echo "CODESIGN_IDENTITY=-" >> "$GITHUB_ENV"
+            echo "::notice::No signing certificate in PR context; using ad-hoc codesigning"
+            exit 0
+          fi
+
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          keychain_password="$(openssl rand -hex 24)"
+          certificate="$RUNNER_TEMP/signing.p12"
+          trap 'rm -f "$certificate"' EXIT
+
+          security create-keychain -p "$keychain_password" "$keychain"
+          echo "SIGNING_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          printf '%s' "$MACOS_CERTIFICATE_P12" | base64 --decode > "$certificate"
+          security import "$certificate" -k "$keychain" -f pkcs12 \
+            -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s \
+            -k "$keychain_password" "$keychain" >/dev/null
+          read -r -a search_list <<< "$(security list-keychains -d user | tr -d '"' | xargs)"
+          security list-keychains -d user -s "$keychain" "${search_list[@]}"
+
+          if ! security find-identity -p codesigning "$keychain" | grep -Fq "$MACOS_SIGNING_CERT_SHA1"; then
+            echo "::error::MACOS_CERTIFICATE_P12 does not contain pinned certificate $MACOS_SIGNING_CERT_SHA1"
+            exit 1
+          fi
+          echo "CODESIGN_IDENTITY=$MACOS_SIGNING_CERT_SHA1" >> "$GITHUB_ENV"
+
+      - name: Fetch pinned sherpa-onnx shared libraries (Full variant)
+        if: needs.metadata.outputs.build_full == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sherpa_dir="$RUNNER_TEMP/sherpa-macos"
+          rm -rf "$sherpa_dir"
+          mkdir -p "$sherpa_dir"
+          archive="$RUNNER_TEMP/${SHERPA_MACOS_ARM64_ARCHIVE}"
+          curl -fsSL -o "$archive" \
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/${SHERPA_ONNX_TAG}/${SHERPA_MACOS_ARM64_ARCHIVE}"
+          echo "${SHERPA_MACOS_ARM64_SHA256}  ${archive}" | shasum -a 256 -c -
+          tar -xjf "$archive" -C "$sherpa_dir"
+
+          python3 - "$sherpa_dir" "$RUNNER_TEMP/full-macos.json" <<'PY'
+          import json, pathlib, sys
+          root = pathlib.Path(sys.argv[1])
+          c_api = next(root.rglob("libsherpa-onnx-c-api.dylib"), None)
+          ort = next(root.rglob("libonnxruntime.dylib"), None)
+          if c_api is None or ort is None:
+              raise SystemExit(f"Missing expected sherpa-onnx dylibs under {root}")
+          cfg = {
+              "bundle": {
+                  "macOS": {
+                      "frameworks": [str(c_api.resolve()), str(ort.resolve())]
+                  }
+              }
+          }
+          pathlib.Path(sys.argv[2]).write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+          PY
+
+      - name: Build, sign, package, and verify macOS DMGs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+
+          package_and_verify() {
+            local variant="$1"
+            local extra_args=("${@:2}")
+            local app_src="target/aarch64-apple-darwin/release/bundle/macos/PulseScribe.app"
+            local dmg_name="PulseScribe-Rust-${VERSION}-macOS-arm64-${variant}.dmg"
+            local dmg_path="dist/${dmg_name}"
+
+            echo "=== Building macOS ${variant} ==="
+            rm -rf "$app_src"
+            (
+              cd apps/desktop
+              cargo tauri build --target aarch64-apple-darwin --bundles app ${extra_args[@]+"${extra_args[@]}"}
+            )
+            [[ -d "$app_src" ]] || { echo "Missing app bundle: $app_src" >&2; exit 1; }
+
+            # Sign bundled Frameworks explicitly first, then sign the outer .app bundle
+            # preserving macos/entitlements.plist.
+            if [[ -d "$app_src/Contents/Frameworks" ]]; then
+              while IFS= read -r -d '' dylib; do
+                codesign --force --sign "$CODESIGN_IDENTITY" "$dylib"
+              done < <(find "$app_src/Contents/Frameworks" -maxdepth 1 -name '*.dylib' -print0)
+            fi
+            codesign --force --deep --entitlements macos/entitlements.plist --sign "$CODESIGN_IDENTITY" "$app_src"
+            codesign --verify --deep --strict "$app_src"
+
+            local staging="$RUNNER_TEMP/dmg-stage-${variant}"
+            rm -rf "$staging" "$dmg_path"
+            mkdir -p "$staging"
+            cp -R "$app_src" "$staging/PulseScribe.app"
+            ln -s /Applications "$staging/Applications"
+            hdiutil create -volname "PulseScribe ${VERSION} (${variant})" \
+              -srcfolder "$staging" -ov -format UDZO "$dmg_path"
+            rm -rf "$staging"
+
+            if [[ "$CODESIGN_IDENTITY" != "-" ]]; then
+              codesign --force --sign "$CODESIGN_IDENTITY" "$dmg_path"
+            fi
+
+            hdiutil verify "$dmg_path"
+            local bin_bytes dmg_bytes
+            dmg_bytes="$(stat -f%z "$dmg_path")"
+
+            # Run DMG mount + verification inside a subshell so `trap ... EXIT` always
+            # detaches cleanly even if `set -e` aborts mid-check (Bash 3.2 safe).
+            bin_bytes="$(
+              set -euo pipefail
+              mount_point="$(mktemp -d)"
+              detached=false
+              detach_dmg() {
+                detached=true
+                for attempt in 1 2 3; do
+                  if hdiutil detach "$mount_point" >/dev/null; then
+                    return 0
+                  fi
+                  sleep 2
+                done
+                return 1
+              }
+              cleanup_mount() {
+                if [[ "$detached" == false ]]; then
+                  detach_dmg >/dev/null 2>&1 || true
+                fi
+                rmdir "$mount_point" >/dev/null 2>&1 || true
+              }
+              trap cleanup_mount EXIT
+              hdiutil attach -readonly -nobrowse -mountpoint "$mount_point" "$dmg_path" >/dev/null
+
+              mounted_app="$mount_point/PulseScribe.app"
+              plist="$mounted_app/Contents/Info.plist"
+              bin="$mounted_app/Contents/MacOS/pulsescribe-desktop"
+              [[ -d "$mounted_app" && -x "$bin" ]]
+              codesign --verify --deep --strict "$mounted_app" >&2
+
+              if [[ "$CODESIGN_IDENTITY" != "-" || "$PUBLISH" == "true" ]]; then
+                req="$(codesign -d -r- "$mounted_app" 2>&1)"
+                cert_hash="$(tr '[:upper:]' '[:lower:]' <<< "$MACOS_SIGNING_CERT_SHA1")"
+                expected="designated => identifier \"com.kliebhan.pulsescribe\" and certificate leaf = H\"$cert_hash\""
+                grep -Fxq "$expected" <<< "$req" || {
+                  echo "App is not signed with pinned certificate:" >&2
+                  echo "$req" >&2
+                  exit 1
+                }
+              fi
+
+              bundle_id="$(plutil -extract CFBundleIdentifier raw -o - "$plist")"
+              bundle_ver="$(plutil -extract CFBundleShortVersionString raw -o - "$plist")"
+              mic_desc="$(plutil -extract NSMicrophoneUsageDescription raw -o - "$plist")"
+              [[ "$bundle_id" == "com.kliebhan.pulsescribe" ]] || { echo "Unexpected bundle ID: $bundle_id" >&2; exit 1; }
+              [[ "$bundle_ver" == "$VERSION" ]] || { echo "Unexpected bundle version: $bundle_ver" >&2; exit 1; }
+              [[ -n "$mic_desc" ]] || { echo "Missing NSMicrophoneUsageDescription" >&2; exit 1; }
+              file "$bin" | grep -q 'arm64'
+
+              if [[ "$variant" == "Full" ]]; then
+                c_api_fw="$mounted_app/Contents/Frameworks/libsherpa-onnx-c-api.dylib"
+                ort_fw="$mounted_app/Contents/Frameworks/libonnxruntime.dylib"
+                [[ -f "$c_api_fw" && -f "$ort_fw" ]] || {
+                  echo "Missing sherpa-onnx Frameworks in Full bundle" >&2
+                  exit 1
+                }
+                file "$c_api_fw" | grep -q 'arm64'
+                file "$ort_fw" | grep -q 'arm64'
+                # Runtime dlopen + ABI check verifying @loader_path/libonnxruntime.dylib resolves.
+                python3 -c '
+          import ctypes, sys
+          lib = ctypes.CDLL(sys.argv[1])
+          lib.SherpaOnnxGetVersionStr.restype = ctypes.c_char_p
+          ver = lib.SherpaOnnxGetVersionStr().decode("utf-8")
+          print(f"Verified bundled sherpa-onnx C-API version: {ver}")
+          if not ver.startswith("2.0."):
+              raise SystemExit(f"Unexpected sherpa-onnx ABI version: {ver}")
+          ' "$c_api_fw" >&2
+              fi
+
+              stat -f%z "$bin"
+              detach_dmg
+              trap - EXIT
+              rmdir "$mount_point"
+            )"
+
+            local bin_mb dmg_mb
+            bin_mb="$(awk -v b="$bin_bytes" 'BEGIN { printf "%.1f", b / 1048576 }')"
+            dmg_mb="$(awk -v b="$dmg_bytes" 'BEGIN { printf "%.1f", b / 1048576 }')"
+
+            (cd dist && shasum -a 256 "$dmg_name" > "${dmg_name}.sha256")
+            echo "| macOS arm64 | ${variant} | \`${dmg_name}\` | ${bin_mb} MB bin | ${dmg_mb} MB DMG |" >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          {
+            echo "### macOS Artifacts"
+            echo
+            echo "| Platform | Variant | File | Binary | Installer |"
+            echo "| --- | --- | --- | ---: | ---: |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ "$BUILD_SLIM" == "true" ]]; then
+            package_and_verify Slim
+          fi
+          if [[ "$BUILD_FULL" == "true" ]]; then
+            package_and_verify Full --features all-local --config "$RUNNER_TEMP/full-macos.json"
+          fi
+
+      - name: Remove temporary signing keychain
+        if: always() && env.SIGNING_KEYCHAIN != ''
+        shell: bash
+        run: security delete-keychain "$SIGNING_KEYCHAIN"
+
+      - name: Upload macOS Rust installer artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: PulseScribe-Rust-macOS-arm64-${{ needs.metadata.outputs.version }}
+          path: |
+            dist/PulseScribe-Rust-*.dmg
+            dist/PulseScribe-Rust-*.dmg.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  build-windows:
+    name: Rust Windows Installer (x64 NSIS)
+    needs: metadata
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      VERSION: ${{ needs.metadata.outputs.version }}
+      BUILD_SLIM: ${{ needs.metadata.outputs.build_slim }}
+      BUILD_FULL: ${{ needs.metadata.outputs.build_full }}
+
+    steps:
+      - name: Check out validated commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.metadata.outputs.commit }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install prebuilt cargo-tauri CLI
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $binDir = Join-Path $env:RUNNER_TEMP "tauri-cli"
+          New-Item -ItemType Directory -Force -Path $binDir | Out-Null
+          $archive = Join-Path $env:RUNNER_TEMP "cargo-tauri.zip"
+          Invoke-WebRequest -Uri "https://github.com/tauri-apps/tauri/releases/download/$env:TAURI_CLI_TAG/cargo-tauri-x86_64-pc-windows-msvc.zip" -OutFile $archive
+          $actual = (Get-FileHash -Path $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $env:TAURI_CLI_WIN_X64_SHA256) {
+            throw "cargo-tauri SHA256 mismatch: expected $env:TAURI_CLI_WIN_X64_SHA256, got $actual"
+          }
+          Expand-Archive -Path $archive -DestinationPath $binDir -Force
+          $binDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & (Join-Path $binDir "cargo-tauri.exe") --version
+
+      - name: Fetch pinned sherpa-onnx DLLs (Full variant)
+        if: needs.metadata.outputs.build_full == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Convert Windows RUNNER_TEMP (D:\a\_temp) to POSIX path so MSYS2 GNU tar
+          # never misinterprets the drive letter as a remote host.
+          runner_temp="$(cygpath -u "$RUNNER_TEMP")"
+          sherpa_dir="${runner_temp}/sherpa-win"
+          rm -rf "$sherpa_dir"
+          mkdir -p "$sherpa_dir"
+          archive="${runner_temp}/${SHERPA_WIN_X64_ARCHIVE}"
+          curl -fsSL -o "$archive" \
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/${SHERPA_ONNX_TAG}/${SHERPA_WIN_X64_ARCHIVE}"
+          echo "${SHERPA_WIN_X64_SHA256}  ${archive}" | sha256sum -c -
+          tar -xjf "$archive" -C "$sherpa_dir"
+
+      - name: Prepare Windows Full bundle overlay
+        if: needs.metadata.outputs.build_full == 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $sherpaRoot = Join-Path $env:RUNNER_TEMP "sherpa-win"
+          $cApi = Get-ChildItem -Path $sherpaRoot -Recurse -Filter "sherpa-onnx-c-api.dll" | Select-Object -First 1
+          if (-not $cApi) { throw "sherpa-onnx-c-api.dll not found under $sherpaRoot" }
+          $libDir = $cApi.DirectoryName
+          $dlls = @("sherpa-onnx-c-api.dll", "onnxruntime.dll", "onnxruntime_providers_shared.dll")
+          $resources = [ordered]@{}
+          foreach ($dll in $dlls) {
+            $fullPath = Join-Path $libDir $dll
+            if (-not (Test-Path $fullPath -PathType Leaf)) {
+              throw "Missing $dll in $libDir"
+            }
+            $resources[$fullPath] = $dll
+          }
+          $cfg = @{ bundle = @{ resources = $resources } }
+          $cfgPath = Join-Path $env:RUNNER_TEMP "full-windows.json"
+          $cfg | ConvertTo-Json -Depth 4 | Set-Content -Path $cfgPath -Encoding utf8
+
+      - name: Build and verify Windows NSIS installers
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+
+          @(
+            "### Windows Artifacts",
+            "",
+            "| Platform | Variant | File | Binary | Installer |",
+            "| --- | --- | --- | ---: | ---: |"
+          ) | Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
+
+          function Build-Variant {
+            param(
+              [string]$Variant,
+              [string[]]$ExtraArgs = @()
+            )
+            Write-Host "=== Building Windows $Variant ==="
+            $nsisDir = "target\x86_64-pc-windows-msvc\release\bundle\nsis"
+            if (Test-Path $nsisDir) { Remove-Item -Recurse -Force $nsisDir }
+
+            Push-Location apps\desktop
+            try {
+              & cargo tauri build --target x86_64-pc-windows-msvc --bundles nsis @ExtraArgs
+              if ($LASTEXITCODE -ne 0) { throw "cargo tauri build failed for $Variant" }
+            } finally {
+              Pop-Location
+            }
+
+            $setup = Get-ChildItem -Path $nsisDir -Filter "*-setup.exe" | Select-Object -First 1
+            if (-not $setup) { throw "Missing NSIS setup executable in $nsisDir" }
+
+            $exe = Get-Item "target\x86_64-pc-windows-msvc\release\pulsescribe-desktop.exe"
+            $outName = "PulseScribe-Rust-$env:VERSION-Windows-x64-$Variant-Setup.exe"
+            $outPath = Join-Path "dist" $outName
+            Copy-Item -Path $setup.FullName -Destination $outPath -Force
+
+            $bytes = [System.IO.File]::ReadAllBytes($outPath)
+            if ($bytes.Length -lt 100000 -or $bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) {
+              throw "Invalid Windows PE installer: $outPath"
+            }
+
+            $hash = (Get-FileHash -Path $outPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            Set-Content -Path "$outPath.sha256" -Value "$hash  $outName" -Encoding utf8
+
+            $binMb = [math]::Round($exe.Length / 1MB, 1)
+            $instMb = [math]::Round($bytes.Length / 1MB, 1)
+            "| Windows x64 | $Variant | ``$outName`` | $binMb MB bin | $instMb MB NSIS |" |
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
+            return $bytes.Length
+          }
+
+          $slimSize = 0
+          $fullSize = 0
+          if ($env:BUILD_SLIM -eq "true") {
+            $slimSize = Build-Variant -Variant "Slim"
+          }
+          if ($env:BUILD_FULL -eq "true") {
+            $cfgPath = Join-Path $env:RUNNER_TEMP "full-windows.json"
+            $fullSize = Build-Variant -Variant "Full" -ExtraArgs @("--features", "all-local", "--config", $cfgPath)
+          }
+          if ($slimSize -gt 0 -and $fullSize -gt 0 -and $fullSize -le $slimSize) {
+            throw "Expected Full installer ($fullSize bytes) to exceed Slim installer ($slimSize bytes)"
+          }
+
+      - name: Upload Windows Rust installer artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: PulseScribe-Rust-Windows-x64-${{ needs.metadata.outputs.version }}
+          path: |
+            dist/PulseScribe-Rust-*-Setup.exe
+            dist/PulseScribe-Rust-*-Setup.exe.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  publish-release:
+    name: Attach Rust installers to GitHub release
+    needs: [metadata, build-macos, build-windows]
+    if: needs.metadata.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: rust-release-publication
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+      CLOBBER: ${{ needs.metadata.outputs.clobber }}
+
+    steps:
+      - name: Download Rust installer artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: PulseScribe-Rust-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate SHA256SUMS-Rust.txt and upload
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          cd release-assets
+          installers=(PulseScribe-Rust-*.dmg PulseScribe-Rust-*-Setup.exe)
+          [[ "${#installers[@]}" -gt 0 ]] || { echo "No Rust installers found to publish" >&2; exit 1; }
+          sha256sum "${installers[@]}" > SHA256SUMS-Rust.txt
+
+          clobber="$CLOBBER"
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+              draft="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft')"
+              [[ "$draft" == "true" ]] || {
+                echo "Release $RELEASE_TAG is already published; use workflow_dispatch with replace_existing_assets=true to replace assets" >&2
+                exit 1
+              }
+              # Allow reruns of an existing draft release to replace partial uploads cleanly.
+              clobber=true
+            fi
+          else
+            gh release create "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --draft \
+              --prerelease \
+              --title "PulseScribe Rust ${RELEASE_TAG}" \
+              --generate-notes
+          fi
+
+          upload_args=()
+          if [[ "$clobber" == "true" ]]; then
+            upload_args+=(--clobber)
+          fi
+          gh release upload "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            ${upload_args[@]+"${upload_args[@]}"} \
+            "${installers[@]}" \
+            SHA256SUMS-Rust.txt
