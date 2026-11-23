@@ -5,6 +5,7 @@ pub mod commands;
 pub mod logging;
 pub mod state;
 pub mod tray;
+pub mod update_install;
 pub mod updates;
 pub mod window;
 
