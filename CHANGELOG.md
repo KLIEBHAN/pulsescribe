@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-11-23
+
+### Added
+
+- **Automatic in-app updates (macOS arm64 & Windows x64, Slim & Full)** –
+  PulseScribe now checks GitHub Releases automatically in the background (15 s
+  after startup and hourly thereafter) when running from an installed app,
+  selects the matching platform and variant (`Slim` or `Full`), verifies
+  installer size and SHA-256 checksums (`digest` with `SHA256SUMS.txt`
+  fallback) over HTTPS-only redirects, and stages the update cleanly (#223,
+  #224, #225).
+- **Verified one-click installation & restart** – on macOS, PulseScribe mounts
+  the DMG read-only, verifies bundle ID, version, and `codesign --verify
+  --deep --strict`, stages `PulseScribe.app` on the same volume, and swaps it
+  atomically with rollback and relaunch (falling back to `~/Downloads` when
+  the install directory is not writable). On Windows, PulseScribe runs the
+  per-user NSIS updater silently (`/S /UPDATE /D=<dir>`) and relaunches
+  automatically (#224).
+- **Live tray & Settings → Diagnostics update controls** – tray menu and
+  Diagnostics now show live check/download/ready states in English and German,
+  stream release notes, guard active dictation during installation, and offer
+  **Restart & Install** / **Open Installer** controls (#225).
+
 ## [2.1.0] - 2026-11-23
 
 ### Added
