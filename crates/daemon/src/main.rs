@@ -104,7 +104,6 @@ async fn run_daemon(
         .map_err(|err| format!("Dictation-Backend konnte nicht initialisiert werden: {err}"))?;
 
     backend.sync_deepgram_warm_state(&config).await;
-    backend.sync_local_preload_state(&config);
 
     let options = DaemonRuntimeOptions {
         enable_ipc,
@@ -127,10 +126,15 @@ async fn run_daemon(
         );
     }
 
+    let initial_config = config.clone();
     let daemon =
         DaemonRuntime::spawn(store, config, platform, Arc::new(backend.clone()), options).await;
     let handle = daemon.handle();
+    // Subscribe BEFORE triggering startup auto-download/preload so the initial `Loading` event
+    // is never missed.
     let mut events = handle.subscribe();
+    backend.set_local_preload_observer(Arc::new(handle.clone()));
+    backend.sync_local_preload_state(&initial_config);
     let reload_backend = backend.clone();
     let reload_handle = handle.clone();
 

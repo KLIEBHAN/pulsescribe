@@ -25,8 +25,8 @@ pub use ipc::{
 };
 pub use live_backend::{
     AudioSource, AudioSourceFactory, CpalAudioSourceFactory, LiveDictationBackend,
-    LocalAsrManagerTranscriber, LocalTranscriber, LocalTranscriptionRequest, ProviderEndpoints,
-    AUDIO_LEVEL_EMIT_INTERVAL, CAPTURE_POLL_INTERVAL, MAX_BATCH_CAPTURE_SAMPLES,
+    LocalAsrManagerTranscriber, LocalPreloadObserver, LocalTranscriber, LocalTranscriptionRequest,
+    ProviderEndpoints, AUDIO_LEVEL_EMIT_INTERVAL, CAPTURE_POLL_INTERVAL, MAX_BATCH_CAPTURE_SAMPLES,
     SPEECH_VAD_THRESHOLD_RMS,
 };
 pub use platform_bundle::{DaemonPlatform, NoopHotkeyBackend, NoopHotkeyRegistration};

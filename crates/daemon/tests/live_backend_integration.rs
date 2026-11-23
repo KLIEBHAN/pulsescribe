@@ -19,10 +19,13 @@ use pulsescribe_core::{
 };
 use pulsescribe_daemon::{
     AudioSource, AudioSourceFactory, DaemonConfig, DaemonEvent, DaemonMode, DaemonPlatform,
-    DaemonRuntime, DaemonRuntimeOptions, LiveDictationBackend, LocalTranscriber,
-    LocalTranscriptionRequest, NoopHotkeyBackend, ProviderEndpoints,
+    DaemonRuntime, DaemonRuntimeOptions, LiveDictationBackend, LocalPreloadObserver,
+    LocalTranscriber, LocalTranscriptionRequest, NoopHotkeyBackend, ProviderEndpoints,
 };
-use pulsescribe_local_asr::{LocalAsrError, LocalStreamingSession};
+use pulsescribe_local_asr::{
+    resolve_model_spec, DownloadProgress, LocalAsrError, LocalStreamingSession, ModelCache,
+    ModelDownloader, ModelSpec,
+};
 use pulsescribe_platform::{
     AppDetector, MicrophonePermissionStatus, NoopSoundPlayer, PermissionsChecker, PlatformKind,
 };
@@ -1645,4 +1648,232 @@ async fn local_mode_streaming_preview_emits_interim_text_and_final_offline_trans
         runtime.shutdown().await;
         backend.shutdown().await;
     }
+}
+
+struct AutoDownloadLocalEngine {
+    cache: ModelCache,
+    downloader: ModelDownloader,
+    preloads: Arc<AtomicUsize>,
+}
+
+impl LocalTranscriber for AutoDownloadLocalEngine {
+    fn transcribe(&self, request: LocalTranscriptionRequest) -> Result<String, DaemonStatusError> {
+        let spec = resolve_model_spec(request.model.as_deref()).expect("curated model");
+        assert!(
+            self.cache.find_installed(spec).is_some(),
+            "model must be downloaded before transcribe"
+        );
+        Ok(format!("transcribed:{}", spec.id))
+    }
+
+    fn missing_download_spec(
+        &self,
+        model: Option<&str>,
+    ) -> Result<Option<&'static ModelSpec>, DaemonStatusError> {
+        let spec = resolve_model_spec(model).expect("curated model");
+        if self.cache.find_installed(spec).is_some() {
+            Ok(None)
+        } else {
+            Ok(Some(spec))
+        }
+    }
+
+    fn auto_downloader(&self) -> Option<(ModelCache, ModelDownloader)> {
+        Some((self.cache.clone(), self.downloader.clone()))
+    }
+
+    fn preload(
+        &self,
+        model: Option<&str>,
+        _language: Option<&str>,
+        _cancel_flag: &std::sync::atomic::AtomicBool,
+    ) -> Result<bool, DaemonStatusError> {
+        let spec = resolve_model_spec(model).expect("curated model");
+        assert!(
+            self.cache.find_installed(spec).is_some(),
+            "model must be downloaded before preload"
+        );
+        self.preloads.fetch_add(1, Ordering::SeqCst);
+        Ok(true)
+    }
+}
+
+struct RecordingPreloadObserver {
+    loading_events: Arc<Mutex<Vec<Option<String>>>>,
+    progress_count: Arc<AtomicUsize>,
+    finished: Arc<Mutex<Vec<(String, bool)>>>,
+}
+
+impl LocalPreloadObserver for RecordingPreloadObserver {
+    fn on_loading_status(&self, detail: Option<String>) {
+        self.loading_events.lock().unwrap().push(detail);
+    }
+
+    fn on_download_progress(&self, _progress: DownloadProgress) {
+        self.progress_count.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn on_download_finished(&self, model_id: &str, result: Result<(), &str>) {
+        self.finished
+            .lock()
+            .unwrap()
+            .push((model_id.to_owned(), result.is_ok()));
+    }
+}
+
+#[tokio::test]
+async fn local_mode_auto_downloads_missing_model_on_preload_and_on_demand() {
+    let dir = TempDir::new("local-auto-download");
+
+    // Loopback HTTP server serving synthetic weights for every curated model file path.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let http_hits = Arc::new(AtomicUsize::new(0));
+    let http_hits_server = Arc::clone(&http_hits);
+    let server = tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            let hits = Arc::clone(&http_hits_server);
+            tokio::spawn(async move {
+                let mut req_buf = [0u8; 2048];
+                let _ = stream.read(&mut req_buf).await;
+                hits.fetch_add(1, Ordering::SeqCst);
+                let body = b"synthetic-model-weight-bytes";
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(resp.as_bytes()).await;
+                let _ = stream.write_all(body).await;
+                let _ = stream.shutdown().await;
+            });
+        }
+    });
+
+    let cache = ModelCache::new(dir.path().join("models"), None);
+    let downloader = ModelDownloader::with_base_url(format!("http://{addr}")).unwrap();
+    let preloads = Arc::new(AtomicUsize::new(0));
+
+    let permissions = Arc::new(StaticPermissions {
+        mic: MicrophonePermissionStatus::Authorized,
+    });
+    let backend = LiveDictationBackend::with_components(
+        dir.path(),
+        Arc::clone(&permissions) as Arc<dyn PermissionsChecker>,
+        Arc::new(SyntheticAudioFactory::new(16_000, 640, 2)),
+        Some(Arc::new(AutoDownloadLocalEngine {
+            cache: cache.clone(),
+            downloader: downloader.clone(),
+            preloads: Arc::clone(&preloads),
+        })),
+        ProviderEndpoints::default(),
+    )
+    .unwrap();
+
+    let loading_events = Arc::new(Mutex::new(Vec::new()));
+    let progress_count = Arc::new(AtomicUsize::new(0));
+    let finished = Arc::new(Mutex::new(Vec::new()));
+    backend.set_local_preload_observer(Arc::new(RecordingPreloadObserver {
+        loading_events: Arc::clone(&loading_events),
+        progress_count: Arc::clone(&progress_count),
+        finished: Arc::clone(&finished),
+    }));
+
+    // 1. Background preload auto-downloads all 3 Canary 1B v2 files, emits loading progress, then preloads.
+    let canary_cfg = DaemonConfig {
+        mode: DaemonMode::Local,
+        model: Some("canary-1b-v2".to_owned()),
+        language: Some("de".to_owned()),
+        streaming: false,
+        ..DaemonConfig::default()
+    };
+    backend.sync_local_preload_state(&canary_cfg);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while preloads.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    // Wait briefly for `on_loading_status(None)` cleanup to record.
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while loading_events.lock().unwrap().last() != Some(&None) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    let canary_spec = resolve_model_spec(Some("canary-1b-v2")).unwrap();
+    assert!(cache.find_installed(canary_spec).is_some());
+    assert_eq!(http_hits.load(Ordering::SeqCst), canary_spec.files.len());
+    assert!(progress_count.load(Ordering::SeqCst) >= canary_spec.files.len());
+    assert_eq!(
+        *finished.lock().unwrap(),
+        vec![("canary-1b-v2".to_owned(), true)]
+    );
+    let statuses = loading_events.lock().unwrap().clone();
+    assert!(statuses.iter().any(|s| s
+        .as_deref()
+        .is_some_and(|t| t.starts_with("Downloading canary-1b-v2"))));
+    assert!(statuses
+        .iter()
+        .any(|s| s.as_deref() == Some("Loading canary-1b-v2")));
+    assert_eq!(statuses.last(), Some(&None));
+    assert_eq!(backend.active_local_download_model_id(), None);
+
+    // 2. Dictating with an un-cached model (`parakeet-v3`, no preload called) auto-downloads on demand.
+    let store = Arc::new(PreferencesStore::new(dir.path()));
+    let (_, clipboard) = RecordingClipboard::create();
+    let platform = DaemonPlatform {
+        permissions: Arc::clone(&permissions) as Arc<dyn PermissionsChecker>,
+        ..DaemonPlatform::noop(clipboard)
+    };
+    let runtime = DaemonRuntime::spawn(
+        store,
+        DaemonConfig {
+            mode: DaemonMode::Local,
+            model: Some("parakeet-v3".to_owned()),
+            streaming: false,
+            ..DaemonConfig::default()
+        },
+        platform,
+        Arc::new(backend.clone()),
+        DaemonRuntimeOptions {
+            enable_ipc: false,
+            enable_reload_watcher: false,
+            ..DaemonRuntimeOptions::default()
+        },
+    )
+    .await;
+    let handle = runtime.handle();
+    let mut events = handle.subscribe();
+
+    handle.start_recording();
+    next_matching_event(&mut events, |e| {
+        matches!(
+            e,
+            DaemonEvent::StateChanged {
+                state: AppState::Recording,
+                ..
+            }
+        )
+    })
+    .await;
+    handle.stop_recording();
+    let delivered = next_matching_event(&mut events, |e| {
+        matches!(e, DaemonEvent::TranscriptDelivered { .. })
+    })
+    .await;
+    match delivered {
+        DaemonEvent::TranscriptDelivered { text, .. } => {
+            assert_eq!(text, "transcribed:parakeet-v3");
+        }
+        other => panic!("unexpected event: {other:?}"),
+    }
+    let parakeet_spec = resolve_model_spec(Some("parakeet-v3")).unwrap();
+    assert!(cache.find_installed(parakeet_spec).is_some());
+
+    runtime.shutdown().await;
+    backend.shutdown().await;
+    server.abort();
 }

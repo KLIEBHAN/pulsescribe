@@ -21,7 +21,8 @@ use pulsescribe_audio::{
 use pulsescribe_core::env::parse_bool;
 use pulsescribe_core::{DaemonErrorCode, DaemonStatusError, PromptsStore, VocabularyStore};
 use pulsescribe_local_asr::{
-    resolve_model_spec, LocalAsrError, LocalAsrManager, LocalAsrRequest, LocalStreamingSession,
+    resolve_model_spec, DownloadProgress, LocalAsrError, LocalAsrManager, LocalAsrRequest,
+    LocalStreamingSession, ModelCache, ModelDownloader, ModelSpec,
 };
 use pulsescribe_platform::{
     is_permission_related_message, AppDetector, MicrophonePermissionStatus, PermissionsChecker,
@@ -39,7 +40,7 @@ use tokio::sync::{mpsc, oneshot, watch, Mutex as AsyncMutex};
 use tokio::task::JoinHandle;
 
 use crate::config::{DaemonConfig, DaemonMode};
-use crate::runtime::{ActiveSession, DictationBackend, PipelineEvent};
+use crate::runtime::{ActiveSession, DaemonHandle, DictationBackend, PipelineEvent};
 
 /// Normalized RMS threshold triggering `Listening -> Recording` VAD transition.
 ///
@@ -130,9 +131,46 @@ pub struct LocalTranscriptionRequest {
     pub cancel_flag: Arc<AtomicBool>,
 }
 
+/// Observer notified when background local ASR model auto-download/preload updates overlay
+/// loading state or model download progress.
+pub trait LocalPreloadObserver: Send + Sync {
+    /// Update `AppState::Loading` detail (`Some(text)`) or clear loading back to `Idle` (`None`).
+    fn on_loading_status(&self, _detail: Option<String>) {}
+
+    /// Report throttled byte-level progress during an automatic local model download.
+    fn on_download_progress(&self, _progress: DownloadProgress) {}
+
+    /// Report completion (`Ok(())`) or failure/cancellation (`Err(msg)`) of an automatic download.
+    /// An empty error string indicates intentional cancellation (no error banner needed).
+    fn on_download_finished(&self, _model_id: &str, _result: Result<(), &str>) {}
+}
+
+impl LocalPreloadObserver for DaemonHandle {
+    fn on_loading_status(&self, detail: Option<String>) {
+        match detail {
+            Some(text) => self.set_loading(Some(text)),
+            None => self.finish_loading(),
+        }
+    }
+}
+
 /// Extension point for local ASR engines (`whisper-rs`, `sherpa-onnx`) wired in Phase 4.
 pub trait LocalTranscriber: Send + Sync {
     fn transcribe(&self, request: LocalTranscriptionRequest) -> Result<String, DaemonStatusError>;
+
+    /// Return the curated offline [`ModelSpec`] that must be downloaded before `preload`/`transcribe`,
+    /// or `Ok(None)` when already cached, custom file path, or test/mock implementation.
+    fn missing_download_spec(
+        &self,
+        _model: Option<&str>,
+    ) -> Result<Option<&'static ModelSpec>, DaemonStatusError> {
+        Ok(None)
+    }
+
+    /// Optional shared [`ModelCache`] and [`ModelDownloader`] enabling automatic model downloads.
+    fn auto_downloader(&self) -> Option<(ModelCache, ModelDownloader)> {
+        None
+    }
 
     /// Warm up (load and cache) the configured offline local model without transcribing.
     ///
@@ -171,11 +209,32 @@ pub trait LocalTranscriber: Send + Sync {
 #[derive(Clone)]
 pub struct LocalAsrManagerTranscriber {
     manager: LocalAsrManager,
+    downloader: Option<ModelDownloader>,
 }
 
 impl LocalAsrManagerTranscriber {
     pub fn new(manager: LocalAsrManager) -> Self {
-        Self { manager }
+        let downloader = match ModelDownloader::new() {
+            Ok(d) => Some(d),
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "failed to initialize local model auto-downloader; continuing without auto-download"
+                );
+                None
+            }
+        };
+        Self {
+            manager,
+            downloader,
+        }
+    }
+
+    pub fn with_downloader(manager: LocalAsrManager, downloader: ModelDownloader) -> Self {
+        Self {
+            manager,
+            downloader: Some(downloader),
+        }
     }
 
     pub fn manager(&self) -> &LocalAsrManager {
@@ -197,6 +256,21 @@ impl LocalTranscriber for LocalAsrManagerTranscriber {
             Err(LocalAsrError::Cancelled) => Ok(String::new()),
             Err(err) => Err(map_local_asr_error(&err)),
         }
+    }
+
+    fn missing_download_spec(
+        &self,
+        model: Option<&str>,
+    ) -> Result<Option<&'static ModelSpec>, DaemonStatusError> {
+        self.manager
+            .missing_downloadable_spec(model)
+            .map_err(|err| map_local_asr_error(&err))
+    }
+
+    fn auto_downloader(&self) -> Option<(ModelCache, ModelDownloader)> {
+        self.downloader
+            .as_ref()
+            .map(|d| (self.manager.cache().clone(), d.clone()))
     }
 
     fn preload(
@@ -404,6 +478,9 @@ struct LocalPreloadState {
     cancel_flag: Option<Arc<AtomicBool>>,
     task: Option<JoinHandle<()>>,
     superseded: Vec<DetachedPreload>,
+    downloading_model_id: Option<String>,
+    loading_generation: Option<u64>,
+    observer: Option<Arc<dyn LocalPreloadObserver>>,
 }
 
 impl LocalPreloadState {
@@ -434,6 +511,10 @@ struct LiveBackendState {
     endpoints: ProviderEndpoints,
     warm_deepgram: AsyncMutex<WarmDeepgramState>,
     rewarm_state: AsyncMutex<RewarmState>,
+    // Lock order: `loading_emit_lock` -> `local_preload` (never lock `loading_emit_lock` while
+    // holding `local_preload`). Serializes `loading_generation` updates with observer emission so
+    // an older `SetLoading` can never land after a newer `FinishLoading` (or vice versa).
+    loading_emit_lock: Mutex<()>,
     local_preload: Mutex<LocalPreloadState>,
     registry: Mutex<SessionRegistry>,
     shutdown_tx: watch::Sender<bool>,
@@ -490,6 +571,25 @@ impl LiveDictationBackend {
         )
     }
 
+    /// Construct a live dictation backend sharing both [`LocalAsrManager`] and [`ModelDownloader`]
+    /// with the desktop shell so automatic and manual model downloads serialize per model.
+    pub fn with_local_asr_and_downloader(
+        config_dir: impl Into<PathBuf>,
+        permissions: Arc<dyn PermissionsChecker>,
+        manager: LocalAsrManager,
+        downloader: ModelDownloader,
+    ) -> Result<Self, ProviderError> {
+        Self::with_components(
+            config_dir,
+            permissions,
+            Arc::new(CpalAudioSourceFactory),
+            Some(Arc::new(LocalAsrManagerTranscriber::with_downloader(
+                manager, downloader,
+            ))),
+            ProviderEndpoints::default(),
+        )
+    }
+
     /// Construct a live dictation backend with custom audio source, local ASR engine, and/or
     /// endpoint overrides.
     pub fn with_components(
@@ -513,6 +613,7 @@ impl LiveDictationBackend {
                 endpoints,
                 warm_deepgram: AsyncMutex::new(WarmDeepgramState::default()),
                 rewarm_state: AsyncMutex::new(RewarmState::default()),
+                loading_emit_lock: Mutex::new(()),
                 local_preload: Mutex::new(LocalPreloadState::default()),
                 registry: Mutex::new(SessionRegistry::default()),
                 shutdown_tx,
@@ -606,12 +707,80 @@ impl LiveDictationBackend {
         invalidate_warm_slot(&self.inner).await;
     }
 
-    /// Synchronize background local ASR model preloading with `config` (non-blocking, coalesced).
+    /// Register an observer receiving overlay loading status and model download progress updates
+    /// from background local ASR auto-download/preloading.
+    pub fn set_local_preload_observer(&self, observer: Arc<dyn LocalPreloadObserver>) {
+        let mut preload = self
+            .inner
+            .local_preload
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        preload.observer = Some(observer);
+    }
+
+    /// Return the catalog model ID currently being downloaded automatically by background preload.
+    pub fn active_local_download_model_id(&self) -> Option<String> {
+        self.inner
+            .local_preload
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .downloading_model_id
+            .clone()
+    }
+
+    /// Cancel an active automatic local model download/preload targeting `model_id` (e.g., when
+    /// the user clicks Cancel in Settings → Local Models). Returns `true` if a matching task was active.
+    pub fn cancel_local_preload_if_matching(&self, model_id: &str) -> bool {
+        let _emit_guard = self
+            .inner
+            .loading_emit_lock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let (cancelled, clear_observer) = {
+            let mut preload = self
+                .inner
+                .local_preload
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let matches_dl = preload.downloading_model_id.as_deref() == Some(model_id);
+            let matches_desired = preload
+                .desired
+                .as_ref()
+                .is_some_and(|key| key.matches_catalog_id(model_id));
+            let active = preload.task.as_ref().is_some_and(|h| !h.is_finished());
+            if !(active && (matches_dl || matches_desired)) {
+                (false, None)
+            } else {
+                preload.generation = preload.generation.wrapping_add(1);
+                let prev_key = preload.desired.take();
+                preload.ready = false;
+                preload.downloading_model_id = None;
+                if let Some(cancel) = preload.cancel_flag.take() {
+                    cancel.store(true, Ordering::Release);
+                }
+                let prev_task = preload.task.take();
+                preload.stash_superseded(prev_key, prev_task);
+                let clear_obs = preload
+                    .loading_generation
+                    .take()
+                    .and_then(|_| preload.observer.clone());
+                (true, clear_obs)
+            }
+        };
+        if let Some(observer) = clear_observer {
+            observer.on_loading_status(None);
+        }
+        cancelled
+    }
+
+    /// Synchronize background local ASR model auto-download & preloading with `config`
+    /// (non-blocking, coalesced).
     ///
-    /// - In [`DaemonMode::Local`]: warms up the configured offline model on a background blocking
-    ///   worker if not already preloaded or in flight for the same `(model, language)` pair, and
-    ///   releases any cached Nemotron streaming preview when `config.streaming` is disabled.
-    /// - In cloud modes: cancels any in-flight preload and unloads cached local model weights.
+    /// - In [`DaemonMode::Local`]: if the configured curated offline model is not yet cached and
+    ///   its runtime is compiled in, automatically downloads it with `AppState::Loading` progress
+    ///   updates before warming it in RAM; releases any cached Nemotron streaming preview when
+    ///   `config.streaming` is disabled.
+    /// - In cloud modes: cancels any in-flight download/preload and unloads cached local weights.
     pub fn sync_local_preload_state(&self, config: &DaemonConfig) {
         let Some(local) = self.inner.local_transcriber.clone() else {
             return;
@@ -647,9 +816,15 @@ impl LiveDictationBackend {
         let prev_key = preload.desired.take();
         let prev_task = preload.task.take();
         preload.stash_superseded(prev_key, prev_task);
+        preload.downloading_model_id = None;
 
         preload.generation = preload.generation.wrapping_add(1);
         let my_gen = preload.generation;
+        if preload.loading_generation.is_some() {
+            // Transfer loading-overlay ownership to `my_gen` so the replacement task either
+            // updates it smoothly for a new download or clears it immediately if already cached.
+            preload.loading_generation = Some(my_gen);
+        }
         let cancel_flag = Arc::new(AtomicBool::new(false));
         preload.desired = Some(key.clone());
         preload.ready = false;
@@ -658,15 +833,119 @@ impl LiveDictationBackend {
         let state_for_task = Arc::clone(&self.inner);
         let model = key.model.clone();
         let language = key.language.clone();
-        let cancel_for_blocking = Arc::clone(&cancel_flag);
+        let cancel_for_task = Arc::clone(&cancel_flag);
         // Spawn and store `preload.task` under the same `local_preload` lock so concurrent
         // coalescing, `unload_local_model_if_matching`, and `shutdown()` always observe the task.
         let task = tokio::spawn(async move {
             let model_for_log = model.clone();
+
+            // 1. Auto-download missing curated offline models before loading weights.
+            let local_for_probe = Arc::clone(&local);
+            let model_for_probe = model.clone();
+            let probe_res = tokio::task::spawn_blocking(move || {
+                local_for_probe.missing_download_spec(model_for_probe.as_deref())
+            })
+            .await;
+
+            let missing_spec = match probe_res {
+                Ok(Ok(spec)) => spec,
+                Ok(Err(err)) => {
+                    clear_loading_for_gen(&state_for_task, my_gen);
+                    tracing::debug!(
+                        model = model_for_log.as_deref().unwrap_or("default"),
+                        error = ?err,
+                        "local ASR preload skipped (runtime unavailable or invalid model)"
+                    );
+                    return;
+                }
+                Err(join_err) => {
+                    clear_loading_for_gen(&state_for_task, my_gen);
+                    tracing::warn!(error = %join_err, "local ASR cache probe task panicked");
+                    return;
+                }
+            };
+
+            let mut downloaded_now = false;
+            if let Some(spec) = missing_spec {
+                if let Some((cache, downloader)) = local.auto_downloader() {
+                    if cancel_for_task.load(Ordering::Acquire) {
+                        clear_loading_for_gen(&state_for_task, my_gen);
+                        return;
+                    }
+                    set_downloading_model_for_gen(&state_for_task, my_gen, Some(spec.id));
+                    publish_loading_for_gen(
+                        &state_for_task,
+                        my_gen,
+                        &cancel_for_task,
+                        format!("Downloading {}", spec.id),
+                    );
+                    tracing::info!(
+                        model = spec.id,
+                        "local ASR model not cached yet; downloading automatically"
+                    );
+
+                    let mut last_label = String::new();
+                    let state_cb = Arc::clone(&state_for_task);
+                    let cancel_cb = Arc::clone(&cancel_for_task);
+                    let dl_res = downloader
+                        .ensure_downloaded(&cache, spec, &cancel_for_task, |progress| {
+                            let label = format_model_download_status(spec.id, &progress);
+                            if label != last_label {
+                                last_label = label.clone();
+                                publish_loading_for_gen(&state_cb, my_gen, &cancel_cb, label);
+                            }
+                            notify_download_progress(&state_cb, my_gen, progress);
+                        })
+                        .await;
+
+                    set_downloading_model_for_gen(&state_for_task, my_gen, None);
+                    match dl_res {
+                        Ok(_) => {
+                            downloaded_now = true;
+                            notify_download_finished(&state_for_task, my_gen, spec.id, Ok(()));
+                            publish_loading_for_gen(
+                                &state_for_task,
+                                my_gen,
+                                &cancel_for_task,
+                                format!("Loading {}", spec.id),
+                            );
+                        }
+                        Err(LocalAsrError::Cancelled) => {
+                            notify_download_finished(&state_for_task, my_gen, spec.id, Err(""));
+                            clear_loading_for_gen(&state_for_task, my_gen);
+                            return;
+                        }
+                        Err(err) => {
+                            let msg = err.to_string();
+                            tracing::warn!(
+                                model = spec.id,
+                                error = %msg,
+                                "automatic local ASR model download failed"
+                            );
+                            notify_download_finished(&state_for_task, my_gen, spec.id, Err(&msg));
+                            clear_loading_for_gen(&state_for_task, my_gen);
+                            return;
+                        }
+                    }
+                }
+            }
+
+            if !downloaded_now {
+                clear_loading_for_gen(&state_for_task, my_gen);
+            }
+            if cancel_for_task.load(Ordering::Acquire) {
+                clear_loading_for_gen(&state_for_task, my_gen);
+                return;
+            }
+
+            // 2. Load the offline model into RAM.
+            let cancel_for_blocking = Arc::clone(&cancel_for_task);
             let res = tokio::task::spawn_blocking(move || {
                 local.preload(model.as_deref(), language.as_deref(), &cancel_for_blocking)
             })
             .await;
+
+            clear_loading_for_gen(&state_for_task, my_gen);
 
             match res {
                 Ok(Ok(true)) => {
@@ -676,7 +955,7 @@ impl LiveDictationBackend {
                         .unwrap_or_else(|e| e.into_inner());
                     if !preload.shutting_down
                         && preload.generation == my_gen
-                        && !cancel_flag.load(Ordering::Acquire)
+                        && !cancel_for_task.load(Ordering::Acquire)
                     {
                         preload.ready = true;
                         tracing::info!(
@@ -706,23 +985,38 @@ impl LiveDictationBackend {
         preload.task = Some(task);
     }
 
-    /// Cancel any in-flight local preload and release cached local ASR models (offline + streaming)
-    /// from RAM (e.g., after switching away from local mode or clicking Unload Model).
+    /// Cancel any in-flight local download/preload and release cached local ASR models
+    /// (offline + streaming) from RAM (e.g., after switching away from local mode or clicking Unload).
     pub fn unload_local_model(&self) {
         {
-            let mut preload = self
+            let _emit_guard = self
                 .inner
-                .local_preload
+                .loading_emit_lock
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            preload.generation = preload.generation.wrapping_add(1);
-            let prev_key = preload.desired.take();
-            preload.ready = false;
-            if let Some(cancel) = preload.cancel_flag.take() {
-                cancel.store(true, Ordering::Release);
+            let clear_observer = {
+                let mut preload = self
+                    .inner
+                    .local_preload
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                preload.generation = preload.generation.wrapping_add(1);
+                let prev_key = preload.desired.take();
+                preload.ready = false;
+                preload.downloading_model_id = None;
+                if let Some(cancel) = preload.cancel_flag.take() {
+                    cancel.store(true, Ordering::Release);
+                }
+                let prev_task = preload.task.take();
+                preload.stash_superseded(prev_key, prev_task);
+                preload
+                    .loading_generation
+                    .take()
+                    .and_then(|_| preload.observer.clone())
+            };
+            if let Some(observer) = clear_observer {
+                observer.on_loading_status(None);
             }
-            let prev_task = preload.task.take();
-            preload.stash_superseded(prev_key, prev_task);
         }
         if let Some(local) = &self.inner.local_transcriber {
             local.unload();
@@ -737,53 +1031,70 @@ impl LiveDictationBackend {
         }
     }
 
-    /// Cancel and await any active or superseded in-flight local preload targeting `model_id`,
+    /// Cancel and await any active or superseded in-flight local download/preload targeting `model_id`,
     /// unloading cached weights when `model_id` was the active preload target (prevents Windows
     /// sharing violations when deleting model files without evicting an unrelated newer model).
     pub async fn unload_local_model_if_matching(&self, model_id: &str) -> bool {
         let (active_matched, superseded_matched, tasks_to_await) = {
-            let mut preload = self
+            let _emit_guard = self
                 .inner
-                .local_preload
+                .loading_emit_lock
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            preload
-                .superseded
-                .retain(|entry| !entry.handle.is_finished());
+            let (active_matched, superseded_matched, tasks_to_await, clear_observer) = {
+                let mut preload = self
+                    .inner
+                    .local_preload
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                preload
+                    .superseded
+                    .retain(|entry| !entry.handle.is_finished());
 
-            let mut tasks = Vec::new();
-            let mut active_matched = false;
-            let mut superseded_matched = false;
+                let mut tasks = Vec::new();
+                let mut active_matched = false;
+                let mut superseded_matched = false;
+                let mut clear_observer = None;
 
-            if preload
-                .desired
-                .as_ref()
-                .is_some_and(|key| key.matches_catalog_id(model_id))
-            {
-                active_matched = true;
-                preload.generation = preload.generation.wrapping_add(1);
-                preload.desired = None;
-                preload.ready = false;
-                if let Some(cancel) = preload.cancel_flag.take() {
-                    cancel.store(true, Ordering::Release);
+                if preload
+                    .desired
+                    .as_ref()
+                    .is_some_and(|key| key.matches_catalog_id(model_id))
+                {
+                    active_matched = true;
+                    preload.generation = preload.generation.wrapping_add(1);
+                    preload.desired = None;
+                    preload.ready = false;
+                    preload.downloading_model_id = None;
+                    clear_observer = preload
+                        .loading_generation
+                        .take()
+                        .and_then(|_| preload.observer.clone());
+                    if let Some(cancel) = preload.cancel_flag.take() {
+                        cancel.store(true, Ordering::Release);
+                    }
+                    if let Some(task) = preload.task.take() {
+                        tasks.push(task);
+                    }
                 }
-                if let Some(task) = preload.task.take() {
-                    tasks.push(task);
+
+                let mut remaining = Vec::with_capacity(preload.superseded.len());
+                for entry in std::mem::take(&mut preload.superseded) {
+                    if entry.key.matches_catalog_id(model_id) {
+                        superseded_matched = true;
+                        tasks.push(entry.handle);
+                    } else {
+                        remaining.push(entry);
+                    }
                 }
+                preload.superseded = remaining;
+
+                (active_matched, superseded_matched, tasks, clear_observer)
+            };
+            if let Some(observer) = clear_observer {
+                observer.on_loading_status(None);
             }
-
-            let mut remaining = Vec::with_capacity(preload.superseded.len());
-            for entry in std::mem::take(&mut preload.superseded) {
-                if entry.key.matches_catalog_id(model_id) {
-                    superseded_matched = true;
-                    tasks.push(entry.handle);
-                } else {
-                    remaining.push(entry);
-                }
-            }
-            preload.superseded = remaining;
-
-            (active_matched, superseded_matched, tasks)
+            (active_matched, superseded_matched, tasks_to_await)
         };
         for task in tasks_to_await {
             let _ = task.await;
@@ -801,26 +1112,42 @@ impl LiveDictationBackend {
     pub async fn shutdown(&self) {
         self.inner.shutdown_tx.send_replace(true);
         let preload_tasks = {
-            let mut preload = self
+            let _emit_guard = self
                 .inner
-                .local_preload
+                .loading_emit_lock
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            preload.shutting_down = true;
-            preload.generation = preload.generation.wrapping_add(1);
-            preload.desired = None;
-            preload.ready = false;
-            if let Some(cancel) = preload.cancel_flag.take() {
-                cancel.store(true, Ordering::Release);
+            let (preload_tasks, clear_observer) = {
+                let mut preload = self
+                    .inner
+                    .local_preload
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                preload.shutting_down = true;
+                preload.generation = preload.generation.wrapping_add(1);
+                preload.desired = None;
+                preload.ready = false;
+                preload.downloading_model_id = None;
+                let clear_observer = preload
+                    .loading_generation
+                    .take()
+                    .and_then(|_| preload.observer.clone());
+                if let Some(cancel) = preload.cancel_flag.take() {
+                    cancel.store(true, Ordering::Release);
+                }
+                let mut tasks: Vec<JoinHandle<()>> = std::mem::take(&mut preload.superseded)
+                    .into_iter()
+                    .map(|entry| entry.handle)
+                    .collect();
+                if let Some(task) = preload.task.take() {
+                    tasks.push(task);
+                }
+                (tasks, clear_observer)
+            };
+            if let Some(observer) = clear_observer {
+                observer.on_loading_status(None);
             }
-            let mut tasks: Vec<JoinHandle<()>> = std::mem::take(&mut preload.superseded)
-                .into_iter()
-                .map(|entry| entry.handle)
-                .collect();
-            if let Some(task) = preload.task.take() {
-                tasks.push(task);
-            }
-            tasks
+            preload_tasks
         };
         let (session_handles, detached_handles) = {
             let mut reg = self
@@ -1565,6 +1892,133 @@ async fn schedule_deepgram_rewarm(
     }));
 }
 
+fn format_model_download_status(model_id: &str, progress: &DownloadProgress) -> String {
+    let part = if progress.total_files > 1 {
+        format!("{}/{}, ", progress.file_index, progress.total_files)
+    } else {
+        String::new()
+    };
+    if let Some(total) = progress.total_bytes.filter(|&t| t > 0) {
+        let pct = progress
+            .bytes_downloaded
+            .saturating_mul(100)
+            .checked_div(total)
+            .unwrap_or(0)
+            .min(100);
+        format!("Downloading {model_id} ({part}{pct}%)")
+    } else {
+        let mb = progress.bytes_downloaded / (1024 * 1024);
+        format!("Downloading {model_id} ({part}{mb} MB)")
+    }
+}
+
+fn set_downloading_model_for_gen(state: &LiveBackendState, my_gen: u64, model_id: Option<&str>) {
+    let mut preload = state
+        .local_preload
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if preload.generation == my_gen {
+        preload.downloading_model_id = model_id.map(ToOwned::to_owned);
+    }
+}
+
+fn publish_loading_for_gen(
+    state: &LiveBackendState,
+    my_gen: u64,
+    cancel_flag: &AtomicBool,
+    detail: String,
+) {
+    let _emit_guard = state
+        .loading_emit_lock
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let observer = {
+        let mut preload = state
+            .local_preload
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if preload.shutting_down
+            || preload.generation != my_gen
+            || cancel_flag.load(Ordering::Acquire)
+        {
+            None
+        } else {
+            preload.loading_generation = Some(my_gen);
+            preload.observer.clone()
+        }
+    };
+    if let Some(obs) = observer {
+        obs.on_loading_status(Some(detail));
+    }
+}
+
+fn clear_loading_for_gen(state: &LiveBackendState, my_gen: u64) {
+    let _emit_guard = state
+        .loading_emit_lock
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let observer = {
+        let mut preload = state
+            .local_preload
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if preload.loading_generation == Some(my_gen) {
+            preload.loading_generation = None;
+            preload.observer.clone()
+        } else {
+            None
+        }
+    };
+    if let Some(obs) = observer {
+        obs.on_loading_status(None);
+    }
+}
+
+fn notify_download_progress(state: &LiveBackendState, my_gen: u64, progress: DownloadProgress) {
+    let observer = {
+        let preload = state
+            .local_preload
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if preload.shutting_down || preload.generation != my_gen {
+            None
+        } else {
+            preload.observer.clone()
+        }
+    };
+    if let Some(obs) = observer {
+        obs.on_download_progress(progress);
+    }
+}
+
+fn notify_download_finished(
+    state: &LiveBackendState,
+    my_gen: u64,
+    model_id: &str,
+    result: Result<(), &str>,
+) {
+    let observer = {
+        let preload = state
+            .local_preload
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if preload.shutting_down {
+            None
+        } else if preload.generation != my_gen
+            && preload.downloading_model_id.as_deref() == Some(model_id)
+        {
+            // A newer preload generation is actively downloading the same model; do not let a
+            // stale cancelled task clear its UI download state.
+            None
+        } else {
+            preload.observer.clone()
+        }
+    };
+    if let Some(obs) = observer {
+        obs.on_download_finished(model_id, result);
+    }
+}
+
 fn track_detached_task(state: &LiveBackendState, handle: Option<JoinHandle<()>>) {
     let Some(handle) = handle else {
         return;
@@ -1747,6 +2201,62 @@ async fn run_batch_session(
     match backend {
         BatchBackend::Local(local) => {
             let cancel_flag = Arc::new(AtomicBool::new(false));
+            // If the configured curated local model is not yet cached (for example, dictation
+            // triggered before background download completed or after an offline start), download
+            // it on demand sharing `ModelDownloader`'s per-model lock.
+            if let Some((cache, downloader)) = local.auto_downloader() {
+                let local_probe = Arc::clone(&local);
+                let model_probe = config.model.clone();
+                let missing = tokio::task::spawn_blocking(move || {
+                    local_probe.missing_download_spec(model_probe.as_deref())
+                })
+                .await
+                .map_err(|err| {
+                    DaemonStatusError::new(
+                        DaemonErrorCode::Unknown,
+                        Some(format!("local model cache probe panicked: {err}")),
+                    )
+                })??;
+
+                if let Some(spec) = missing {
+                    tracing::info!(
+                        model = spec.id,
+                        "local ASR model missing during dictation; downloading automatically"
+                    );
+                    let dl_cancel = Arc::clone(&cancel_flag);
+                    let progress_tx = event_tx.clone();
+                    let mut last_watchdog_bump = Instant::now();
+                    let dl_fut =
+                        downloader.ensure_downloaded(&cache, spec, &dl_cancel, move |_| {
+                            // Refresh the stall watchdog at most once per second while bytes flow
+                            // so large downloads on slower links do not falsely time out.
+                            if last_watchdog_bump.elapsed() >= Duration::from_secs(1) {
+                                last_watchdog_bump = Instant::now();
+                                let _ = progress_tx
+                                    .send((run_id, PipelineEvent::ModelDownloadProgress));
+                            }
+                        });
+                    tokio::pin!(dl_fut);
+                    let dl_res = tokio::select! {
+                        biased;
+                        _ = wait_cancelled(cancelled_rx) => {
+                            cancel_flag.store(true, Ordering::Release);
+                            // Await cooperative exit (<=50 ms via `race_with_cancel`) so
+                            // `download_single_file` closes and unlinks `.part` files cleanly.
+                            let _ = dl_fut.await;
+                            return Ok((String::new(), post_stop_started));
+                        }
+                        res = &mut dl_fut => res,
+                    };
+                    match dl_res {
+                        Ok(_) => {}
+                        Err(LocalAsrError::Cancelled) => {
+                            return Ok((String::new(), post_stop_started));
+                        }
+                        Err(err) => return Err(map_local_asr_error(&err)),
+                    }
+                }
+            }
             let request = LocalTranscriptionRequest {
                 samples_16k,
                 model: config.model.clone(),

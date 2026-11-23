@@ -143,6 +143,13 @@ impl DaemonStateMachine {
         )
     }
 
+    /// Whether a config reload can be applied immediately (no active dictation run; allowed during
+    /// `AppState::Loading` so switching models/modes interrupts an in-flight model download).
+    pub const fn can_reload_config(&self) -> bool {
+        self.active_run.is_none()
+            && (self.is_idle_like() || matches!(self.state, AppState::Loading))
+    }
+
     pub const fn is_capturing(&self) -> bool {
         matches!(self.state, AppState::Listening | AppState::Recording)
     }
@@ -155,9 +162,9 @@ impl DaemonStateMachine {
         self.timings = timings;
     }
 
-    /// Enter `Loading` during startup prewarm or local model load when currently idle.
+    /// Enter (or update progress within) `Loading` during startup prewarm or local model download/load.
     pub fn on_loading_started(&mut self, detail: Option<String>) -> Vec<DaemonAction> {
-        if self.active_run.is_some() || !self.is_idle_like() {
+        if self.active_run.is_some() || (!self.is_idle_like() && self.state != AppState::Loading) {
             return Vec::new();
         }
         let mut actions = Vec::new();
@@ -391,6 +398,22 @@ impl DaemonStateMachine {
             text,
         }));
         actions
+    }
+
+    /// Refresh the stall watchdog while an on-demand local model download is actively making
+    /// progress during `AppState::Transcribing` so large downloads on slower links do not falsely
+    /// trip the inference timeout while stalled transfers still time out cleanly.
+    pub fn on_model_download_progress(&mut self, run_id: u64) -> Vec<DaemonAction> {
+        let Some(run) = self.active_run.as_ref() else {
+            return Vec::new();
+        };
+        if run.run_id != run_id || self.state != AppState::Transcribing || run.delivering {
+            return Vec::new();
+        }
+        vec![DaemonAction::ScheduleWatchdog {
+            run_id,
+            timeout: self.timings.transcribing_timeout,
+        }]
     }
 
     /// Transition `Transcribing` -> `Refining` before calling the LLM refinement provider.
@@ -630,9 +653,9 @@ impl DaemonStateMachine {
         actions
     }
 
-    /// Request a configuration reload; applied immediately when idle or deferred until idle.
+    /// Request a configuration reload; applied immediately when idle/loading or deferred until idle.
     pub fn on_config_reload_requested(&mut self) -> Vec<DaemonAction> {
-        if self.active_run.is_none() && self.is_idle_like() {
+        if self.can_reload_config() {
             self.pending_config_reload = false;
             vec![DaemonAction::ApplyPendingConfigReload]
         } else {
@@ -1041,9 +1064,23 @@ mod tests {
     ) {
         let mut sm = DaemonStateMachine::default();
 
-        // Loading lifecycle transitions cleanly and blocks recording until finished.
+        // Loading lifecycle transitions cleanly, accepts progress updates + config reloads, and
+        // blocks recording until finished.
         let _ = sm.on_loading_started(Some("Starting up...".into()));
         assert_eq!(sm.state(), AppState::Loading);
+        let progress = sm.on_loading_started(Some("Downloading canary-1b-v2 (50%)".into()));
+        assert!(progress.iter().any(|a| matches!(
+            a,
+            DaemonAction::PublishEvent(DaemonEvent::StateChanged {
+                state: AppState::Loading,
+                detail: Some(d),
+                ..
+            }) if d == "Downloading canary-1b-v2 (50%)"
+        )));
+        assert_eq!(
+            sm.on_config_reload_requested(),
+            vec![DaemonAction::ApplyPendingConfigReload]
+        );
         assert_eq!(
             sm.on_start_recording(None),
             vec![DaemonAction::PlaySound(SoundName::Error)]
