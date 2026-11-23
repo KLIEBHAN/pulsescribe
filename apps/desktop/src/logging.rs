@@ -54,11 +54,23 @@ impl RotatingFileInner {
         }
         // Remove existing backup first so `rename` also succeeds on Windows.
         let _ = fs::remove_file(&self.backup_path);
-        let _ = fs::rename(&self.path, &self.backup_path);
-        let fresh = open_log_file(&self.path, true)?;
-        self.file = Some(fresh);
-        self.bytes_written = 0;
-        Ok(())
+        match fs::rename(&self.path, &self.backup_path) {
+            Ok(()) => {
+                let fresh = open_log_file(&self.path, true)?;
+                self.file = Some(fresh);
+                self.bytes_written = 0;
+                Ok(())
+            }
+            Err(err) => {
+                // Preserve active log contents when rotation fails (e.g., obstructed/locked
+                // backup path) by reopening in append mode instead of truncating.
+                if let Ok(reopened) = open_log_file(&self.path, false) {
+                    self.bytes_written = reopened.metadata().map(|m| m.len()).unwrap_or(0);
+                    self.file = Some(reopened);
+                }
+                Err(err)
+            }
+        }
     }
 
     fn write_bytes(&mut self, buf: &[u8]) -> io::Result<usize> {
@@ -216,6 +228,33 @@ mod tests {
         }
         assert_eq!(fs::read(&backup_path).unwrap().len(), 700);
         assert_eq!(fs::read(&log_path).unwrap().len(), 500);
+
+        let _ = fs::remove_dir_all(log_path.parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn rotating_log_writer_preserves_active_log_when_rename_fails() {
+        let log_path = temp_log_path("obstructed");
+        let backup_path = PathBuf::from(format!("{}.1", log_path.display()));
+        let writer = RotatingLogWriter::open(log_path.clone(), 1024).unwrap();
+
+        {
+            let mut w = writer.make_writer();
+            w.write_all(&vec![b'a'; 700]).unwrap();
+            w.flush().unwrap();
+        }
+        // Obstruct `.1` with a directory so both `remove_file` and `rename` fail.
+        fs::create_dir_all(&backup_path).unwrap();
+
+        {
+            let mut w = writer.make_writer();
+            w.write_all(&vec![b'b'; 500]).unwrap();
+            w.flush().unwrap();
+        }
+        let contents = fs::read(&log_path).unwrap();
+        assert_eq!(contents.len(), 1200);
+        assert!(contents.starts_with(&[b'a'; 16]));
+        assert!(contents.ends_with(&[b'b'; 16]));
 
         let _ = fs::remove_dir_all(log_path.parent().unwrap().parent().unwrap());
     }

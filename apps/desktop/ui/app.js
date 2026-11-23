@@ -60,6 +60,7 @@ const state = {
   hotkeyValidation: { toggle: null, hold: null },
   devices: [],
   autostart: null,
+  autostartPending: null,
   permissions: null,
   models: null,
   downloadProgress: {},
@@ -965,22 +966,30 @@ function renderGeneralView() {
               ]),
               el("div", { className: "row-ctrl" }, [
                 (() => {
-                  const sw = makeSwitch(Boolean(state.autostart.enabled), "Launch at Login", async (next) => {
-                    if (sw.disabled) return;
+                  const isPending = state.autostartPending !== null;
+                  const checked = isPending ? state.autostartPending : Boolean(state.autostart.enabled);
+                  const sw = makeSwitch(checked, "Launch at Login", async (next) => {
+                    if (state.autostartPending !== null) return;
+                    state.autostartPending = next;
                     sw.disabled = true;
                     clearError();
                     try {
                       state.autostart = await invoke("set_autostart", { enabled: next });
-                      sw.setAttribute("aria-checked", state.autostart.enabled ? "true" : "false");
                       showToast(state.autostart.enabled ? "Launch at Login enabled" : "Launch at Login disabled");
                     } catch (err) {
                       showError(err);
                       state.autostart = await invoke("get_autostart").catch(() => state.autostart);
-                      sw.setAttribute("aria-checked", state.autostart?.enabled ? "true" : "false");
                     } finally {
-                      sw.disabled = false;
+                      state.autostartPending = null;
+                      const currentSw = document.getElementById("autostart-switch");
+                      if (currentSw) {
+                        currentSw.setAttribute("aria-checked", state.autostart?.enabled ? "true" : "false");
+                        currentSw.disabled = false;
+                      }
                     }
                   });
+                  sw.id = "autostart-switch";
+                  sw.disabled = isPending;
                   return sw;
                 })(),
               ]),

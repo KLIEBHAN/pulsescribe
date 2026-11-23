@@ -104,25 +104,24 @@ pub fn run() -> i32 {
         }
     };
 
-    logging::init_desktop_logging(&config_dir);
-
+    // Acquire the single-instance lock BEFORE opening the rotating log file so a second launch
+    // never shares or rotates `pulsescribe.log` concurrently with the running primary instance.
     let mut instance_guard = match SingleInstanceGuard::acquire(&config_dir) {
         Ok(SingleInstanceOutcome::Acquired(guard)) => Some(guard),
         Ok(SingleInstanceOutcome::AlreadyRunning) => {
-            tracing::info!(
-                config_dir = %config_dir.display(),
-                "PulseScribe is already running; activated existing instance"
+            eprintln!(
+                "PulseScribe is already running for {}; activated existing instance",
+                config_dir.display()
             );
             return 0;
         }
         Err(err) => {
-            tracing::warn!(
-                error = %err,
-                "single-instance lock unavailable; continuing startup"
-            );
+            eprintln!("PulseScribe single-instance lock unavailable ({err}); continuing startup");
             None
         }
     };
+
+    logging::init_desktop_logging(&config_dir);
 
     let tokio_rt = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()

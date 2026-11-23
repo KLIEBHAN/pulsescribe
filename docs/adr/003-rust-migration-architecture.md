@@ -39,7 +39,7 @@
 2. **Kein verkürztes `audio_ctx` bei Whisper `large-v3-turbo`:** Dynamisches `set_audio_ctx` führt bei Turbo zu Halluzinationsschleifen und ~3× längerer Laufzeit (2.623 ms statt 862 ms), da das Modell auf feste 30-s-Positions-Embeddings (`1500`) trainiert ist.
 3. **Kein CoreML-EP für `sherpa-onnx` Parakeet:** CoreML ist 2,4× langsamer (579 ms vs. 238 ms), braucht 3,1× mehr RAM (4.489 MB vs. 1.427 MB), lädt 5,2 s und loggt `Context leak detected`. `sherpa-onnx` bleibt fest auf `provider="cpu"`.
 4. **Parakeet + Nemotron direkt via C-API sehr attraktiv:** `libsherpa-onnx-c-api.dylib` (4,2 MB) + `libonnxruntime.dylib` (28,8 MB) = **33 MB** statt ~1 GB PyInstaller-Bundle. Parakeet v3 auf CPU schlägt bei 4,9 s sogar MLX-Whisper (238 ms vs. 326 ms); Nemotron-Streaming läuft mit 54 ms/Chunk plattformübergreifend auch auf Windows.
-5. **Konsequenz für Phase 5:** `crates/local-asr` abstrahiert über ein `LocalAsrEngine`-Trait. Phase 5a liefert `whisper-rs` + `sherpa-onnx` (CPU). Falls `whisper.cpp` bis Phase 5 keinen Metal-4-Tensor-Support hat oder 80-ms-GPU-Parakeet auf Apple Silicon benötigt wird, kann Phase 5b ein optionales `mlx-rs`-Backend (`--features apple-mlx`, ohne Python) hinter demselben Trait ergänzen.
+5. **Konsequenz für Phase 5:** `crates/local-asr` abstrahiert über ein `LocalAsrEngine`-Trait und liefert mit `whisper-rs` (Metal auf macOS / CPU auf Windows) + `sherpa-onnx` (CPU) den finalen lokalen ASR-Stack. Ein optionales Apple-Silicon-`mlx-rs`-Backend (ursprünglich als Phase 5b erwogen) wurde nach den Parakeet-v3-Benchmarks (238 ms CPU) gestrichen.
 
 ### 2. macOS Native OS & Overlay Spike (live auf macOS 27.0.1)
 
