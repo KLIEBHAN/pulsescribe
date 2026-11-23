@@ -341,6 +341,12 @@ pub fn prepare_update(
         let prep = (|| -> Result<(), String> {
             let mount_str = mount.to_string_lossy().into_owned();
             let pkg_str = package.to_string_lossy().into_owned();
+            // Arm the detach guard BEFORE invoking `hdiutil attach` so cancellation or timeout
+            // after macOS mounts the volume still detaches cleanly on drop.
+            let mut guard = DmgMountGuard {
+                mount_point: mount.clone(),
+                detached: false,
+            };
             run_child_checked(
                 "/usr/bin/hdiutil",
                 &[
@@ -354,10 +360,6 @@ pub fn prepare_update(
                 Duration::from_secs(120),
                 Some(cancelled),
             )?;
-            let mut guard = DmgMountGuard {
-                mount_point: mount.clone(),
-                detached: false,
-            };
 
             let mounted_app = mount.join("PulseScribe.app");
             let plist = mounted_app.join("Contents/Info.plist");
