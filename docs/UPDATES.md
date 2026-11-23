@@ -1,22 +1,24 @@
 # Updates and Releases
 
-## In-App Update Check
+## Automatic In-App Updates
 
-The native Rust desktop app (`apps/desktop`) checks GitHub Releases (`/releases/latest`) over HTTPS with SemVer comparison when triggered via **Check for Updates…** in the menu bar/tray or **Diagnostics → Check for Updates**. When a newer release is available, it opens the verified GitHub Release page in the default browser (**Download Release**).
+Installed builds of the native Rust desktop app (`apps/desktop`) check GitHub Releases (`/releases/latest`) automatically **15 seconds after startup** and then **hourly** in the background (source runs via `cargo run` never replace an installed app or download in the background, and manual checks fall back to opening the release page).
 
-- User configuration in `~/.pulsescribe/` (`.env`, `preferences.json`, `vocabulary.json`, `prompts.toml`, `history.jsonl`, downloaded models) is preserved across upgrades.
-- On macOS, releases signed with the pinned `"PulseScribe Code Signing"` certificate preserve Microphone, Accessibility, and Input Monitoring permissions across updates.
-- On Windows, the NSIS per-user installer updates in place and migrates legacy autostart entries (`HKCU\...\Run\PulseScribe`) automatically.
+- **Variant-aware asset selection:** `Slim` and `Full` builds automatically select the matching signed installer (`PulseScribe-X.Y.Z-macOS-arm64-{Slim,Full}.dmg` or `PulseScribe-X.Y.Z-Windows-x64-{Slim,Full}-Setup.exe`).
+- **Cryptographic verification:** All requests enforce per-hop HTTPS-only redirects. Downloaded packages are streamed with exact byte-size enforcement and verified against the release asset's SHA-256 digest (falling back to `SHA256SUMS.txt`) before any preparation step runs.
+- **macOS installation:** Mounts the verified DMG read-only (`hdiutil attach -readonly -nobrowse`), verifies `CFBundleIdentifier`, `CFBundleShortVersionString`, and `codesign --verify --deep --strict`, stages `PulseScribe.app` via `ditto` on the same volume, and detaches the DMG. Clicking **Restart & Install** spawns a detached swap helper that waits for the process to exit, atomically swaps `/Applications/PulseScribe.app` with automatic rollback on failure, and relaunches the updated app. Installations running from read-only or translocated locations fall back to opening the verified DMG in `~/Downloads`.
+- **Windows installation:** Verifies the downloaded NSIS executable header and spawns a detached PowerShell helper after exit that runs `/S /UPDATE /D=<install_dir>` (preserving `HKCU\...\Run\PulseScribe` autostart, shortcuts, and `%USERPROFILE%\.pulsescribe\`) and relaunches `pulsescribe-desktop.exe` in `finally`.
+- **Safety & UX:** Updates never install while dictation is active, never interrupt an active recording, and keep background check failures quiet in the tray menu. User configuration in `~/.pulsescribe/` and pinned-certificate macOS permissions are preserved across upgrades.
 
 ## Publishing a Release (`v2.x`)
 
-Release notes live in `docs/releases/vX.Y.Z.md`.
+Release notes live in `docs/releases/vX.Y.Z.md`. Keep user-facing release highlights before `<!-- install-notes -->`; the in-app updater displays only the section before that marker.
 
 1. Bump `version` in both `Cargo.toml` (`[workspace.package]`) and `apps/desktop/tauri.conf.json`, refresh `Cargo.lock`, update `CHANGELOG.md` and `docs/releases/vX.Y.Z.md`, and merge via PR after CI passes.
 2. Create and push an annotated Git tag matching `vX.Y.Z`:
    ```bash
-   git tag -a v2.1.0 -F docs/releases/v2.1.0.md
-   git push origin v2.1.0
+   git tag -a v2.2.0 -F docs/releases/v2.2.0.md
+   git push origin v2.2.0
    ```
 3. [`.github/workflows/rust-installers.yml`](../.github/workflows/rust-installers.yml) validates the tag against `Cargo.toml` and `apps/desktop/tauri.conf.json`, builds and signs:
    - `PulseScribe-X.Y.Z-macOS-arm64-Slim.dmg` & `PulseScribe-X.Y.Z-macOS-arm64-Full.dmg` (signed using the `macos-signing` GitHub environment)

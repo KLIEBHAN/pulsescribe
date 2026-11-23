@@ -18,7 +18,9 @@ use tauri::tray::{TrayIcon, TrayIconBuilder};
 use tauri::{AppHandle, Manager, Wry};
 
 use crate::commands::open_directory_in_os;
+use crate::spawn_update_check;
 use crate::state::DesktopState;
+use crate::updates::{UpdatePhase, UpdateStateSnapshot};
 use crate::window::open_or_focus_window;
 
 const TRAY_ID: &str = "pulsescribe-tray";
@@ -164,6 +166,8 @@ struct CachedTrayState {
     state: AppState,
     detail: Option<String>,
     error: Option<DaemonStatusError>,
+    update_state: Option<UpdateStateSnapshot>,
+    updates_label: String,
     status: String,
     hint: String,
     toggle: String,
@@ -310,6 +314,8 @@ impl TrayController {
                 state: AppState::Idle,
                 detail: None,
                 error: None,
+                update_state: None,
+                updates_label: copy.updates.to_owned(),
                 status: initial_status,
                 hint: initial_hint,
                 toggle: initial_toggle,
@@ -331,7 +337,15 @@ impl TrayController {
         let _ = self.models_item.set_text(copy.models);
         let _ = self.history_item.set_text(copy.history);
         let _ = self.onboarding_item.set_text(copy.onboarding);
-        let _ = self.updates_item.set_text(copy.updates);
+        let updates_label = cached
+            .update_state
+            .as_ref()
+            .map(|upd| update_menu_label_for(upd, lang))
+            .unwrap_or_else(|| copy.updates.to_owned());
+        if cached.updates_label != updates_label {
+            let _ = self.updates_item.set_text(&updates_label);
+            cached.updates_label = updates_label;
+        }
         let _ = self.open_config_item.set_text(copy.open_config);
         let _ = self.quit_item.set_text(copy.quit);
 
@@ -339,6 +353,17 @@ impl TrayController {
         let detail = cached.detail.clone();
         let error = cached.error.clone();
         self.apply_status_locked(&mut cached, state, detail.as_deref(), error.as_ref());
+    }
+
+    /// Update the native tray's "Check for Updates…" menu item when updater state changes.
+    pub fn update_update_state(&self, snapshot: &UpdateStateSnapshot) {
+        let mut cached = self.cached.lock().unwrap_or_else(|e| e.into_inner());
+        let label = update_menu_label_for(snapshot, cached.lang);
+        cached.update_state = Some(snapshot.clone());
+        if cached.updates_label != label {
+            let _ = self.updates_item.set_text(&label);
+            cached.updates_label = label;
+        }
     }
 
     /// Update native tray tooltip and menu labels only when they differ from the last applied text.
@@ -395,6 +420,62 @@ impl TrayController {
             let _ = self.tray.set_tooltip(Some(&tooltip_text));
             cached.tooltip = tooltip_text;
         }
+    }
+}
+
+/// Format the localized tray menu entry for the current in-app updater state.
+pub fn update_menu_label_for(snapshot: &UpdateStateSnapshot, lang: UiLanguage) -> String {
+    let default_label = tray_copy(lang).updates;
+    match (lang, snapshot.status) {
+        (UiLanguage::En, UpdatePhase::Checking) => "Checking for Updates…".to_owned(),
+        (UiLanguage::De, UpdatePhase::Checking) => "Suche nach Updates…".to_owned(),
+        (UiLanguage::En, UpdatePhase::Downloading) => {
+            format!("Downloading Update… {}%", snapshot.percent)
+        }
+        (UiLanguage::De, UpdatePhase::Downloading) => {
+            format!("Lade Update… {}%", snapshot.percent)
+        }
+        (UiLanguage::En, UpdatePhase::Preparing) => "Preparing Update…".to_owned(),
+        (UiLanguage::De, UpdatePhase::Preparing) => "Bereite Update vor…".to_owned(),
+        (UiLanguage::En, UpdatePhase::Ready) => {
+            if let Some(ver) = snapshot.latest_version.as_deref() {
+                if snapshot.automatic {
+                    format!("Restart to Update to {ver}…")
+                } else {
+                    format!("Open Installer for {ver}…")
+                }
+            } else {
+                "Restart to Install Update…".to_owned()
+            }
+        }
+        (UiLanguage::De, UpdatePhase::Ready) => {
+            if let Some(ver) = snapshot.latest_version.as_deref() {
+                if snapshot.automatic {
+                    format!("Neu starten für Update {ver}…")
+                } else {
+                    format!("Installer für {ver} öffnen…")
+                }
+            } else {
+                "Neu starten für Update…".to_owned()
+            }
+        }
+        (UiLanguage::En, UpdatePhase::Available) => snapshot
+            .latest_version
+            .as_deref()
+            .map(|ver| format!("Download PulseScribe {ver}…"))
+            .unwrap_or_else(|| default_label.to_owned()),
+        (UiLanguage::De, UpdatePhase::Available) => snapshot
+            .latest_version
+            .as_deref()
+            .map(|ver| format!("PulseScribe {ver} herunterladen…"))
+            .unwrap_or_else(|| default_label.to_owned()),
+        (UiLanguage::En, UpdatePhase::Error) if snapshot.manual => {
+            "Update Failed — Retry…".to_owned()
+        }
+        (UiLanguage::De, UpdatePhase::Error) if snapshot.manual => {
+            "Update fehlgeschlagen — Erneut…".to_owned()
+        }
+        _ => default_label.to_owned(),
     }
 }
 
@@ -623,6 +704,10 @@ fn handle_tray_menu_event(app: &AppHandle, id: &str) {
         }
         MENU_UPDATES_ID => {
             let _ = open_or_focus_window(app, "diagnostics");
+            let current = state.updater.snapshot().status;
+            if matches!(current, UpdatePhase::Idle | UpdatePhase::Error) {
+                spawn_update_check(app.clone(), true);
+            }
         }
         MENU_OPEN_CONFIG_ID => {
             let _ = open_directory_in_os(&state.config_dir);
@@ -796,6 +881,75 @@ mod tests {
         assert!(
             opaque_pixels > 100,
             "template glyph should have visible silhouette"
+        );
+    }
+
+    #[test]
+    fn update_menu_label_tracks_all_phases_and_keeps_background_errors_quiet() {
+        let mut snap = UpdateStateSnapshot::idle("2.1.0", true);
+        assert_eq!(
+            update_menu_label_for(&snap, UiLanguage::En),
+            "Check for Updates…"
+        );
+        assert_eq!(
+            update_menu_label_for(&snap, UiLanguage::De),
+            "Nach Updates suchen…"
+        );
+
+        snap.status = UpdatePhase::Downloading;
+        snap.percent = 42;
+        assert_eq!(
+            update_menu_label_for(&snap, UiLanguage::En),
+            "Downloading Update… 42%"
+        );
+        assert_eq!(
+            update_menu_label_for(&snap, UiLanguage::De),
+            "Lade Update… 42%"
+        );
+
+        snap.status = UpdatePhase::Ready;
+        snap.latest_version = Some("2.2.0".into());
+        snap.automatic = true;
+        assert_eq!(
+            update_menu_label_for(&snap, UiLanguage::En),
+            "Restart to Update to 2.2.0…"
+        );
+        assert_eq!(
+            update_menu_label_for(&snap, UiLanguage::De),
+            "Neu starten für Update 2.2.0…"
+        );
+
+        snap.automatic = false;
+        assert_eq!(
+            update_menu_label_for(&snap, UiLanguage::En),
+            "Open Installer for 2.2.0…"
+        );
+        assert_eq!(
+            update_menu_label_for(&snap, UiLanguage::De),
+            "Installer für 2.2.0 öffnen…"
+        );
+
+        // Background check failures stay quiet in the tray menu.
+        snap.status = UpdatePhase::Error;
+        snap.manual = false;
+        assert_eq!(
+            update_menu_label_for(&snap, UiLanguage::En),
+            "Check for Updates…"
+        );
+        assert_eq!(
+            update_menu_label_for(&snap, UiLanguage::De),
+            "Nach Updates suchen…"
+        );
+
+        // User-triggered failures surface retry action in the tray menu.
+        snap.manual = true;
+        assert_eq!(
+            update_menu_label_for(&snap, UiLanguage::En),
+            "Update Failed — Retry…"
+        );
+        assert_eq!(
+            update_menu_label_for(&snap, UiLanguage::De),
+            "Update fehlgeschlagen — Erneut…"
         );
     }
 }

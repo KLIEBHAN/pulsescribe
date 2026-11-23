@@ -13,7 +13,8 @@ use pulsescribe_daemon::{DaemonHandle, LiveDictationBackend};
 use pulsescribe_local_asr::{LocalAsrManager, ModelDownloader};
 use pulsescribe_overlay::OverlayHandle;
 use pulsescribe_platform::PermissionsChecker;
-use reqwest::Client;
+
+use crate::update_install::UpdateController;
 
 /// Cached runtime status snapshot pushed by the daemon event bridge.
 #[derive(Debug, Clone)]
@@ -78,7 +79,7 @@ pub struct DesktopState {
     pub daemon: DaemonHandle,
     pub backend: LiveDictationBackend,
     pub overlay: OverlayHandle,
-    pub http_client: Client,
+    pub updater: Arc<UpdateController>,
     active_model_ops: Arc<Mutex<HashMap<String, ActiveModelOp>>>,
     status_cache: Mutex<CachedDaemonStatus>,
     pending_route: Mutex<String>,
@@ -96,7 +97,7 @@ impl DesktopState {
         daemon: DaemonHandle,
         backend: LiveDictationBackend,
         overlay: OverlayHandle,
-        http_client: Client,
+        updater: Arc<UpdateController>,
     ) -> Self {
         let initial_state = daemon.state();
         let paths = AppPaths::new(&config_dir);
@@ -117,7 +118,7 @@ impl DesktopState {
             daemon,
             backend,
             overlay,
-            http_client,
+            updater,
             active_model_ops: Arc::new(Mutex::new(HashMap::new())),
             status_cache: Mutex::new(CachedDaemonStatus {
                 state: initial_state,

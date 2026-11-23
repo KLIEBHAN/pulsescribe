@@ -11,6 +11,7 @@ pub mod window;
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use pulsescribe_core::paths::AppPaths;
 use pulsescribe_core::PreferencesStore;
@@ -21,15 +22,48 @@ use pulsescribe_daemon::{
 use pulsescribe_local_asr::{DownloadProgress, LocalAsrManager, ModelDownloader};
 use pulsescribe_overlay::{OverlayActionEvent, OverlayCommand, OverlayHandle};
 use pulsescribe_platform::{SingleInstanceGuard, SingleInstanceOutcome};
-use reqwest::Client;
 use tauri::{AppHandle, Manager, RunEvent};
 
 use crate::state::DesktopState;
 use crate::tray::{load_ui_language_pref, TrayController};
+use crate::update_install::UpdateController;
+use crate::updates::UpdateStateSnapshot;
 use crate::window::{
     emit_to_main_if_open, open_or_focus_window, DAEMON_EVENT, MODEL_DOWNLOAD_FINISHED_EVENT,
-    MODEL_DOWNLOAD_PROGRESS_EVENT,
+    MODEL_DOWNLOAD_PROGRESS_EVENT, UPDATE_STATE_EVENT,
 };
+
+const UPDATE_INITIAL_CHECK_DELAY: Duration = Duration::from_secs(15);
+const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(3600);
+
+/// Push an updater state transition to the native tray menu and open Settings/Diagnostics WebView.
+pub fn publish_update_state(app: &AppHandle, snapshot: UpdateStateSnapshot) {
+    let tray_app = app.clone();
+    let tray_snapshot = snapshot.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(tray) = tray_app.try_state::<Arc<TrayController>>() {
+            tray.update_update_state(&tray_snapshot);
+        }
+    });
+    emit_to_main_if_open(app, UPDATE_STATE_EVENT, &snapshot);
+}
+
+/// Build a callback forwarding every [`UpdateController`] state change to tray + WebView.
+pub fn make_update_listener(app: AppHandle) -> Arc<dyn Fn(UpdateStateSnapshot) + Send + Sync> {
+    Arc::new(move |snapshot| publish_update_state(&app, snapshot))
+}
+
+/// Spawn a non-blocking update check on Tauri's async runtime (used by tray menu actions).
+pub fn spawn_update_check(app: AppHandle, manual: bool) {
+    tauri::async_runtime::spawn(async move {
+        let Some(state) = app.try_state::<DesktopState>() else {
+            return;
+        };
+        let updater = Arc::clone(&state.updater);
+        let listener = make_update_listener(app.clone());
+        let _ = updater.run_check(manual, listener).await;
+    });
+}
 
 struct DesktopPreloadObserver {
     daemon: DaemonHandle,
@@ -194,16 +228,7 @@ pub fn run() -> i32 {
             return 1;
         }
     };
-    let http_client = match Client::builder()
-        .user_agent(concat!("pulsescribe-desktop/", env!("CARGO_PKG_VERSION")))
-        .build()
-    {
-        Ok(c) => c,
-        Err(err) => {
-            eprintln!("PulseScribe HTTP client error: {err}");
-            return 1;
-        }
-    };
+    let updater = Arc::new(UpdateController::new(env!("CARGO_PKG_VERSION")));
 
     let backend = match LiveDictationBackend::with_local_asr_and_downloader(
         &config_dir,
@@ -269,7 +294,10 @@ pub fn run() -> i32 {
             commands::get_autostart,
             commands::set_autostart,
             commands::export_diagnostics,
+            commands::get_update_state,
             commands::check_for_updates,
+            commands::download_update,
+            commands::install_update,
         ])
         .build(tauri::generate_context!())
     {
@@ -318,7 +346,7 @@ pub fn run() -> i32 {
         daemon_handle.clone(),
         backend.clone(),
         overlay_handle.clone(),
-        http_client,
+        Arc::clone(&updater),
     );
     app.manage(desktop_state);
 
@@ -372,6 +400,21 @@ pub fn run() -> i32 {
         .await;
     }));
 
+    let mut update_task = if updater.has_installed_target() {
+        let upd_app = app.handle().clone();
+        let upd_ctrl = Arc::clone(&updater);
+        Some(tokio_rt.spawn(async move {
+            tokio::time::sleep(UPDATE_INITIAL_CHECK_DELAY).await;
+            loop {
+                let listener = make_update_listener(upd_app.clone());
+                let _ = upd_ctrl.run_check(false, listener).await;
+                tokio::time::sleep(UPDATE_CHECK_INTERVAL).await;
+            }
+        }))
+    } else {
+        None
+    };
+
     let open_onboarding_on_ready = !store.is_onboarding_complete();
     let mut daemon_runtime = Some(daemon_runtime);
 
@@ -404,12 +447,18 @@ pub fn run() -> i32 {
             if let Some(state) = app_handle.try_state::<DesktopState>() {
                 state.set_quitting();
                 state.cancel_all_downloads();
+                state.updater.shutdown();
             }
             overlay_handle.shutdown();
             drop(overlay_owner.take());
             let task = bridge_task.take();
+            let upd = update_task.take();
             let runtime = daemon_runtime.take();
             tokio_rt.block_on(async {
+                if let Some(t) = upd {
+                    t.abort();
+                    let _ = t.await;
+                }
                 if let Some(t) = task {
                     t.abort();
                     let _ = t.await;

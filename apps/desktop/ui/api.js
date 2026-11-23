@@ -436,14 +436,69 @@ function createPreviewStore() {
             2,
           ),
         };
+      case "get_update_state":
+        return {
+          current_version: "2.1.0",
+          status: "idle",
+          latest_version: null,
+          release_url: null,
+          release_notes: null,
+          asset_name: null,
+          percent: 0,
+          automatic: false,
+          can_install_in_app: true,
+          manual: false,
+          hint: null,
+          error: null,
+          error_context: null,
+        };
       case "check_for_updates":
         return {
           current_version: "2.1.0",
+          status: "idle",
           latest_version: "2.1.0",
-          update_available: false,
           release_url: "https://github.com/KLIEBHAN/pulsescribe/releases",
-          release_notes: "You are running the latest version of PulseScribe.",
+          release_notes: null,
+          asset_name: null,
+          percent: 0,
+          automatic: false,
+          can_install_in_app: true,
+          manual: true,
+          hint: null,
           error: null,
+          error_context: null,
+        };
+      case "download_update":
+        return {
+          current_version: "2.1.0",
+          status: "ready",
+          latest_version: "2.2.0",
+          release_url: "https://github.com/KLIEBHAN/pulsescribe/releases/tag/v2.2.0",
+          release_notes: "Automatic updates preview.",
+          asset_name: "PulseScribe-2.2.0-macOS-arm64-Full.dmg",
+          percent: 100,
+          automatic: true,
+          can_install_in_app: true,
+          manual: true,
+          hint: "automatic",
+          error: null,
+          error_context: null,
+        };
+      case "install_update":
+        return {
+          current_version: "2.1.0",
+          status: "ready",
+          latest_version: "2.2.0",
+          release_url: "https://github.com/KLIEBHAN/pulsescribe/releases/tag/v2.2.0",
+          release_notes: "Automatic updates preview.",
+          asset_name: "PulseScribe-2.2.0-macOS-arm64-Full.dmg",
+          percent: 100,
+          automatic: true,
+          can_install_in_app: true,
+          manual: true,
+          hint: "automatic",
+          error: null,
+          error_context: null,
         };
       default:
         throw new Error(`Unhandled preview command: ${cmd}`);

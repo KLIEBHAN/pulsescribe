@@ -69,7 +69,7 @@ const state = {
   historyQuery: "",
   historyFilter: "all",
   diagnostics: null,
-  updateResult: null,
+  updateState: null,
   themePref: { theme: "system", accent: "blue" },
   committedUiLanguagePref: "system",
   uiLanguageSaveSeq: 0,
@@ -234,8 +234,11 @@ function updateDaemonBadge() {
   const missingPerm = perms && (
     perms.microphone !== "authorized" || !perms.accessibility || !perms.input_monitoring
   );
+  const hasUpdateAttention = state.updateState && (
+    state.updateState.status === "ready" || state.updateState.status === "available"
+  );
   dom.navStatusDot.className = "nav-dot" + (
-    st === "error" ? " error" : missingPerm ? " warn" : ""
+    st === "error" ? " error" : (missingPerm || hasUpdateAttention) ? " warn" : ""
   );
 }
 
@@ -367,15 +370,19 @@ async function loadRouteData(route, seq) {
         state.onboardingChoice = app.onboarding_choice;
       }
     } else if (route === "diagnostics") {
-      const [perms, models] = await Promise.all([
+      const [perms, models, updateState] = await Promise.all([
         invoke("check_permissions"),
         invoke("list_local_models").catch(() => null),
+        invoke("get_update_state").catch(() => null),
       ]);
       if (seq !== state.navSeq) return;
       state.permissions = perms;
       if (models) {
         reconcileDownloadProgress(models);
         state.models = models;
+      }
+      if (updateState) {
+        state.updateState = updateState;
       }
       updateDaemonBadge();
     }
@@ -2145,63 +2152,194 @@ function renderDiagnosticsView() {
     ]),
   );
 
-  const upd = state.updateResult;
+  const upd = state.updateState;
+  const updStatus = upd?.status || "idle";
+  const updBusy = updStatus === "checking" || updStatus === "downloading" || updStatus === "preparing";
+  const curVer = upd?.current_version || app.version || "2.1.0";
+  const latVer = upd?.latest_version || "";
+  const updateSubtitle = (() => {
+    if (!upd) return t("diag.checkPrompt");
+    if (updStatus === "checking") return t("diag.checkingUpdates");
+    if (updStatus === "downloading") {
+      return t("diag.downloadingUpdate", { latest: latVer, percent: upd.percent ?? 0 });
+    }
+    if (updStatus === "preparing") return t("diag.preparingUpdate", { latest: latVer });
+    if (updStatus === "ready") {
+      return upd.automatic
+        ? t("diag.updateReadyAuto", { latest: latVer })
+        : t("diag.updateReadyManual", { latest: latVer });
+    }
+    if (updStatus === "available") {
+      return t("diag.updateAvailable", { latest: latVer, current: curVer });
+    }
+    if (updStatus === "error" && upd.manual && upd.error) return upd.error;
+    if (updStatus === "idle" && latVer) return t("diag.upToDate", { current: curVer });
+    return t("diag.checkPrompt");
+  })();
+
+  const updateControls = [];
+  if (updStatus === "ready") {
+    updateControls.push(
+      el("button", {
+        type: "button",
+        className: "btn btn-sm btn-primary",
+        id: "btn-install-update",
+        text: upd.automatic ? t("diag.restartAndInstall") : t("diag.openInstaller"),
+        onClick: () => runSafe(async () => {
+          clearError();
+          const wasAuto = Boolean(state.updateState?.automatic);
+          const next = await invoke("install_update");
+          state.updateState = next;
+          showToast(wasAuto ? t("diag.toastRestarting") : t("diag.toastInstallerOpened"));
+          updateDaemonBadge();
+          render();
+        }),
+      }),
+    );
+  } else if (updStatus === "available") {
+    if (upd.can_install_in_app && upd.asset_name) {
+      updateControls.push(
+        el("button", {
+          type: "button",
+          className: "btn btn-sm btn-primary",
+          id: "btn-download-update",
+          text: t("diag.downloadUpdate"),
+          onClick: () => runSafe(async () => {
+            clearError();
+            const next = await invoke("download_update");
+            state.updateState = next;
+            if (next.status === "error" && next.error) showError(next.error);
+            updateDaemonBadge();
+            render();
+          }),
+        }),
+      );
+    } else if (upd.release_url) {
+      updateControls.push(
+        el("button", {
+          type: "button",
+          className: "btn btn-sm btn-primary",
+          text: t("diag.downloadRelease"),
+          onClick: () => runSafe(() => invoke("open_release_url", { url: upd.release_url })),
+        }),
+      );
+    }
+  } else if (updStatus === "error" && upd.manual) {
+    const canRetryDownload = upd.error_context === "download" && upd.can_install_in_app && upd.asset_name;
+    updateControls.push(
+      el("button", {
+        type: "button",
+        className: "btn btn-sm btn-primary",
+        id: "btn-retry-update",
+        text: t("diag.retryUpdate"),
+        onClick: () => runSafe(async () => {
+          clearError();
+          const next = await invoke(canRetryDownload ? "download_update" : "check_for_updates");
+          state.updateState = next;
+          if (next.status === "error" && next.error) showError(next.error);
+          else if (next.status === "idle") showToast(t("diag.toastUpToDate"));
+          updateDaemonBadge();
+          render();
+        }),
+      }),
+    );
+  }
+
+  if (upd?.release_url && (updStatus === "available" || updStatus === "ready") && upd.can_install_in_app) {
+    updateControls.push(
+      el("button", {
+        type: "button",
+        className: "btn btn-sm",
+        text: t("diag.releasePage"),
+        onClick: () => runSafe(() => invoke("open_release_url", { url: upd.release_url })),
+      }),
+    );
+  }
+
+  if (updStatus !== "ready") {
+    updateControls.push(
+      el("button", {
+        type: "button",
+        className: "btn btn-sm",
+        id: "btn-check-updates",
+        disabled: updBusy,
+        text: updStatus === "checking" ? t("diag.checkingUpdates") : t("diag.checkForUpdates"),
+        onClick: () => runSafe(async () => {
+          clearError();
+          const next = await invoke("check_for_updates");
+          state.updateState = next;
+          if (next.status === "error" && next.error) {
+            showError(next.error);
+          } else if (next.status === "available" || next.status === "ready") {
+            showToast(t("diag.toastUpdateAvailable"));
+          } else if (next.status === "idle") {
+            showToast(t("diag.toastUpToDate"));
+          }
+          updateDaemonBadge();
+          render();
+        }),
+      }),
+    );
+  }
+
+  const updateRowCopy = [
+    el("div", { className: "row-title", text: t("diag.softwareUpdates") }),
+    el("div", { className: "row-sub", id: "update-status-text", text: updateSubtitle }),
+  ];
+  if (updStatus === "downloading" || updStatus === "preparing") {
+    const bar = el("progress", {
+      className: "progress-bar",
+      id: "update-progress-bar",
+      max: "100",
+    });
+    bar.value = upd?.percent ?? 0;
+    updateRowCopy.push(el("div", { className: "row-note" }, [bar]));
+  }
+
+  const updatePanelRows = [
+    el("div", { className: "panel-row" }, [
+      el("div", { className: "row-copy" }, updateRowCopy),
+      el("div", { className: "row-ctrl" }, updateControls),
+    ]),
+  ];
+
+  if (upd?.release_notes && (updStatus === "available" || updStatus === "downloading" || updStatus === "preparing" || updStatus === "ready")) {
+    updatePanelRows.push(
+      el("details", { className: "panel-details", open: updStatus === "ready" || updStatus === "available" }, [
+        el("summary", {}, [
+          el("div", {}, [
+            el("div", { className: "row-title", text: t("diag.whatsNew", { latest: latVer }) }),
+          ]),
+          icon("ic-chevron-right", "ic chev"),
+        ]),
+        el("div", { className: "details-body" }, [
+          el("pre", { className: "code-pre", text: upd.release_notes }),
+        ]),
+      ]),
+    );
+  }
+
+  updatePanelRows.push(
+    el("div", { className: "panel-row" }, [
+      el("div", { className: "row-copy" }, [
+        el("div", { className: "row-title", text: t("diag.configDirTitle") }),
+        el("div", { className: "row-sub mono", text: app.config_dir || "~/.pulsescribe" }),
+      ]),
+      el("div", { className: "row-ctrl" }, [
+        el("button", {
+          type: "button",
+          className: "btn btn-sm",
+          text: t("common.open"),
+          onClick: () => runSafe(() => invoke("open_config_dir")),
+        }),
+      ]),
+    ]),
+  );
+
   stack.append(
     el("section", { className: "section" }, [
       el("h2", { className: "section-title", text: t("diag.updatesSection") }),
-      el("div", { className: "panel" }, [
-        el("div", { className: "panel-row" }, [
-          el("div", { className: "row-copy" }, [
-            el("div", { className: "row-title", text: t("diag.softwareUpdates") }),
-            el("div", {
-              className: "row-sub",
-              text: upd
-                ? upd.error || (upd.update_available
-                    ? t("diag.updateAvailable", { latest: upd.latest_version, current: upd.current_version })
-                    : t("diag.upToDate", { current: upd.current_version }))
-                : t("diag.checkPrompt"),
-            }),
-          ]),
-          el("div", { className: "row-ctrl" }, [
-            upd?.update_available && upd.release_url
-              ? el("button", {
-                  type: "button",
-                  className: "btn btn-sm btn-primary",
-                  text: t("diag.downloadRelease"),
-                  onClick: () => runSafe(() => invoke("open_release_url", { url: upd.release_url })),
-                })
-              : null,
-            el("button", {
-              type: "button",
-              className: "btn btn-sm",
-              text: t("diag.checkForUpdates"),
-              onClick: () => runSafe(async () => {
-                state.updateResult = await invoke("check_for_updates");
-                if (state.updateResult.error) {
-                  showError(state.updateResult.error);
-                } else {
-                  showToast(state.updateResult.update_available ? t("diag.toastUpdateAvailable") : t("diag.toastUpToDate"));
-                }
-                render();
-              }),
-            }),
-          ]),
-        ]),
-        el("div", { className: "panel-row" }, [
-          el("div", { className: "row-copy" }, [
-            el("div", { className: "row-title", text: t("diag.configDirTitle") }),
-            el("div", { className: "row-sub mono", text: app.config_dir || "~/.pulsescribe" }),
-          ]),
-          el("div", { className: "row-ctrl" }, [
-            el("button", {
-              type: "button",
-              className: "btn btn-sm",
-              text: t("common.open"),
-              onClick: () => runSafe(() => invoke("open_config_dir")),
-            }),
-          ]),
-        ]),
-      ]),
+      el("div", { className: "panel" }, updatePanelRows),
     ]),
   );
 
@@ -2338,14 +2476,39 @@ async function bootstrap() {
     }
   });
 
+  await listen("pulsescribe://update-state", (ev) => {
+    const next = ev.payload;
+    if (!next) return;
+    const prevStatus = state.updateState?.status;
+    state.updateState = next;
+    updateDaemonBadge();
+    if (state.route === "diagnostics") {
+      if (next.status === "downloading" && prevStatus === "downloading") {
+        const bar = document.getElementById("update-progress-bar");
+        const sub = document.getElementById("update-status-text");
+        if (bar && sub) {
+          bar.value = next.percent ?? 0;
+          sub.textContent = t("diag.downloadingUpdate", {
+            latest: next.latest_version || "",
+            percent: next.percent ?? 0,
+          });
+          return;
+        }
+      }
+      render();
+    }
+  });
+
   await runSafe(async () => {
-    const [app, themePref, perms] = await Promise.all([
+    const [app, themePref, perms, updateState] = await Promise.all([
       invoke("get_app_state"),
       invoke("get_theme_preference"),
       invoke("check_permissions"),
+      invoke("get_update_state").catch(() => null),
     ]);
     state.app = app;
     state.permissions = perms;
+    state.updateState = updateState;
     const { pref, resolved } = setUiLanguagePref(app.ui_language || "system");
     state.committedUiLanguagePref = pref;
     applyStaticTranslations();
