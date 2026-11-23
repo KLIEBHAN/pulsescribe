@@ -59,6 +59,7 @@ pub enum UpdateErrorContext {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UpdateOffer {
     pub version: String,
+    pub tag_name: String,
     pub release_url: String,
     pub release_notes: String,
     pub asset_name: Option<String>,
@@ -134,6 +135,22 @@ pub struct GitHubReleaseAsset {
     pub name: String,
     pub size: u64,
     pub digest: Option<String>,
+}
+
+/// HTTP client wrapper enforcing per-hop HTTPS-only redirects and bounded timeouts
+/// at the type boundary for every updater network call.
+#[derive(Debug, Clone)]
+pub struct UpdaterHttpClient(Client);
+
+impl UpdaterHttpClient {
+    /// Construct a hardened updater HTTP client refusing any non-HTTPS redirect hop.
+    pub fn new() -> Result<Self, String> {
+        build_updater_http_client().map(Self)
+    }
+
+    fn inner(&self) -> &Client {
+        &self.0
+    }
 }
 
 /// Build an HTTPS-only `reqwest::Client` that refuses insecure HTTP redirects and
@@ -293,19 +310,21 @@ pub fn parse_release_offer(
         return Ok(None);
     }
 
+    let tag_name = release.tag_name.trim().to_owned();
     let release_url = release
         .html_url
         .as_deref()
         .filter(|url| url.starts_with("https://github.com/"))
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| {
-            format!("https://github.com/{GITHUB_REPOSITORY}/releases/tag/v{version}")
+            format!("https://github.com/{GITHUB_REPOSITORY}/releases/tag/{tag_name}")
         });
     let release_notes = clean_release_notes(release.body.as_deref());
 
     let Some(expected_name) = expected_asset_name(&version, os, arch, is_full) else {
         return Ok(Some(UpdateOffer {
             version,
+            tag_name,
             release_url,
             release_notes,
             asset_name: None,
@@ -335,10 +354,11 @@ pub fn parse_release_offer(
         None => None,
     };
 
-    let asset_url = format!("{GITHUB_RELEASES_DOWNLOAD_BASE}/v{version}/{expected_name}");
+    let asset_url = format!("{GITHUB_RELEASES_DOWNLOAD_BASE}/{tag_name}/{expected_name}");
 
     Ok(Some(UpdateOffer {
         version,
+        tag_name,
         release_url,
         release_notes,
         asset_name: Some(expected_name),
@@ -366,19 +386,23 @@ async fn read_bounded_bytes(resp: reqwest::Response, max_bytes: usize) -> Result
 
 /// Fetch the latest stable GitHub Release and resolve its SHA-256 digest (asset digest or `SHA256SUMS.txt`).
 pub async fn fetch_latest_offer(
-    client: &Client,
+    client: &UpdaterHttpClient,
     current_version: &str,
     os: &str,
     arch: &str,
     is_full: bool,
 ) -> Result<Option<UpdateOffer>, String> {
     let resp = client
+        .inner()
         .get(GITHUB_LATEST_RELEASE_URL)
         .timeout(METADATA_REQUEST_TIMEOUT)
         .header(reqwest::header::ACCEPT, "application/vnd.github+json")
         .send()
         .await
         .map_err(|err| format!("Update check failed: {err}"))?;
+    if resp.url().scheme() != "https" {
+        return Err("Update metadata resolved to an insecure address.".to_owned());
+    }
     if !resp.status().is_success() {
         return Err(format!(
             "GitHub Releases returned HTTP {}",
@@ -397,15 +421,19 @@ pub async fn fetch_latest_offer(
     if offer.sha256.is_none() {
         if let Some(asset_name) = offer.asset_name.as_deref() {
             let sums_url = format!(
-                "{GITHUB_RELEASES_DOWNLOAD_BASE}/v{}/SHA256SUMS.txt",
-                offer.version
+                "{GITHUB_RELEASES_DOWNLOAD_BASE}/{}/SHA256SUMS.txt",
+                offer.tag_name
             );
             let sums_resp = client
+                .inner()
                 .get(&sums_url)
                 .timeout(METADATA_REQUEST_TIMEOUT)
                 .send()
                 .await
                 .map_err(|err| format!("Could not fetch SHA256SUMS.txt: {err}"))?;
+            if sums_resp.url().scheme() != "https" {
+                return Err("Update checksums resolved to an insecure address.".to_owned());
+            }
             if !sums_resp.status().is_success() {
                 return Err(format!(
                     "SHA256SUMS.txt returned HTTP {}",
@@ -427,7 +455,7 @@ pub async fn fetch_latest_offer(
 /// Stream an update asset to `destination`, enforcing exact byte size, HTTPS origin,
 /// cancellation checks, and SHA-256 checksum verification before returning.
 pub async fn download_verified_asset<F>(
-    client: &Client,
+    client: &UpdaterHttpClient,
     offer: &UpdateOffer,
     destination: &Path,
     cancelled: &AtomicBool,
@@ -456,6 +484,7 @@ where
     }
 
     let mut resp = client
+        .inner()
         .get(url)
         .send()
         .await
@@ -505,6 +534,9 @@ where
                 on_progress(pct);
             }
         }
+        if cancelled.load(Ordering::Acquire) {
+            return Err("Update download cancelled.".to_owned());
+        }
         file.flush()
             .map_err(|err| format!("Could not flush update package: {err}"))?;
 
@@ -514,6 +546,9 @@ where
         let actual_sha256 = hasher.finalize_hex();
         if actual_sha256 != expected_sha256 {
             return Err("The downloaded update failed SHA-256 verification.".to_owned());
+        }
+        if cancelled.load(Ordering::Acquire) {
+            return Err("Update download cancelled.".to_owned());
         }
         Ok(())
     }
@@ -926,6 +961,33 @@ mod tests {
 
         // Missing Slim asset returns an error instead of silently offering Full.
         assert!(parse_release_offer(&release, "2.1.0", "macos", "aarch64", false).is_err());
+
+        // Releases tagged without a leading `v` keep the original tag in URLs while normalizing version.
+        let unprefixed = GitHubRelease {
+            tag_name: "2.2.0".to_owned(),
+            draft: false,
+            prerelease: false,
+            html_url: None,
+            body: None,
+            assets: vec![GitHubReleaseAsset {
+                name: "PulseScribe-2.2.0-macOS-arm64-Full.dmg".to_owned(),
+                size: 19_000_000,
+                digest: None,
+            }],
+        };
+        let offer_unprefixed = parse_release_offer(&unprefixed, "2.1.0", "macos", "aarch64", true)
+            .expect("unprefixed tag parses")
+            .expect("update available");
+        assert_eq!(offer_unprefixed.version, "2.2.0");
+        assert_eq!(offer_unprefixed.tag_name, "2.2.0");
+        assert_eq!(
+            offer_unprefixed.release_url,
+            "https://github.com/KLIEBHAN/pulsescribe/releases/tag/2.2.0"
+        );
+        assert_eq!(
+            offer_unprefixed.asset_url.as_deref(),
+            Some("https://github.com/KLIEBHAN/pulsescribe/releases/download/2.2.0/PulseScribe-2.2.0-macOS-arm64-Full.dmg")
+        );
     }
 
     #[test]
