@@ -1,7 +1,7 @@
 # ADR-003: Rust-Migration – Zielarchitektur & Phase-0-Messergebnisse
 
-**Status:** Accepted (Phase 0 abgeschlossen)  
-**Datum:** 2026-11-21  
+**Status:** Implemented (Phasen 1–6 abgeschlossen; Koexistenz mit Legacy-Python bis zum separaten Cleanup-PR)  
+**Datum:** 2026-11-21 (aktualisiert 2026-11-23)  
 **Kontext:** Komplette Portierung von PulseScribe (56.360 LOC Python + 44.576 LOC Tests) auf Rust für macOS und Windows (Linux architektonisch offenhalten).
 
 ## Leitentscheidungen
@@ -67,7 +67,7 @@ Damit können Windows-OS-Adapter bereits auf macOS-Entwicklungsrechnern vor jede
 ## Ziel-Architektur (Cargo-Workspace)
 
 ```text
-Cargo.toml                  # Workspace Root (Edition 2021 / MSRV 1.85)
+Cargo.toml                  # Workspace Root (Edition 2021 / MSRV 1.88, [profile.release] thin-LTO + stripped)
 crates/
 ├── core/                   # Pure Domain: Config/.env, Preferences, History, Vocab,
 │                           # Prompts, Presets, Hotkey-Parser, AppState, Overlay-ViewModels
@@ -75,21 +75,41 @@ crates/
 │                           # CoreAudio Device-Refresh, WASAPI Warm-Stream
 ├── providers/              # reqwest (OpenAI, Groq, Deepgram REST, OpenAI-Compatible),
 │                           # tokio-tungstenite Deepgram WS (ADR-001), refine (LLM + Context)
-├── local-asr/              # LocalAsrEngine Trait: whisper-rs + sherpa-onnx C-API (optional mlx-rs)
+├── local-asr/              # LocalAsrEngine Trait: whisper-rs + sherpa-onnx C-API (2.0.x)
 ├── platform/               # OS-Traits (Hotkey, Clipboard/Paste, AppDetector, Sound, Permissions)
 ├── daemon/                 # 1 gemeinsame State-Machine (ersetzt macOS- & Windows-Daemon)
-└── cli/                    # clap CLI (1:1 Ersatz für transcribe.py)
+├── overlay/                # Natives 60-FPS-Overlay (macOS NSPanel/CALayer, Windows Direct2D/DirectWrite)
+└── cli/                    # clap CLI (`pulsescribe`, 1:1 Ersatz für transcribe.py)
 apps/
-└── desktop/                # Tauri v2 (Lazy Settings/Wizard/Update) + Native Tray & 60-FPS-Overlay
+└── desktop/                # Tauri v2 (Zero-Build Lazy-WebView) + Natives Tray & 60-FPS-Overlay
 ```
 
 **Build-Varianten über Cargo-Features:**
-- **Slim (Cloud-only):** `--no-default-features` (~15–25 MB)
-- **Full (mit Offline-ASR):** `--features local-whisper,local-sherpa` (~20 MB + ~33 MB `sherpa-onnx` dylibs)
+- **Slim (Cloud-only, Default):** `cargo build --release -p pulsescribe-desktop` (**15,0 MB** gestripptes Release-Binary auf macOS arm64; `pulsescribe` CLI **8,5 MB**)
+- **Full (mit Offline-ASR):** `--features all-local` (`local-whisper,local-sherpa`; statisches `whisper.cpp` + dynamische `sherpa-onnx` `2.0.2` Shared-Libs in `Contents/Frameworks/` bzw. im Windows-Installationsverzeichnis)
 
 ---
 
-## Schnitt für Phase 1 (kleine, unabhängige PRs)
+## Umsetzungsstand (Phasen 1–6)
+
+| Phase | Umfang | Ergebnis |
+| --- | --- | --- |
+| **Phase 1** | `crates/core` + Golden-Fixtures + CI-Matrix (`macos-15`, `windows-latest`) | 1:1 kompatibles `~/.pulsescribe/`-Datenformat (`.env`, `preferences.json`, `vocabulary.json`, `prompts.toml`, `history.jsonl`) |
+| **Phase 2** | `crates/audio`, `crates/providers`, `crates/cli` (#194–#200) | `cpal`+`ringbuf`, Deepgram WS/Warm-Pool (ADR-001), OpenAI/Groq/OpenAI-Compatible, LLM-Refine, `pulsescribe`-CLI |
+| **Phase 3** | `crates/platform`, `crates/daemon` (#201–#207) | Native macOS- & Windows-Adapter, deterministische gemeinsame `DaemonStateMachine`, `DaemonRuntime`, `LiveDictationBackend` |
+| **Phase 4** | `crates/local-asr` (#208–#209) | Modellkatalog, HF-Cache-Erkennung, Streaming-Downloader, `whisper-rs 0.16` + `sherpa-onnx 2.0.x` FFI (`LocalAsrManager`) |
+| **Phase 5** | `crates/overlay`, `apps/desktop` (#210–#213) | Natives 60-FPS-Overlay (macOS `NSPanel`/`CALayer` + Windows Direct2D/DirectWrite), Tauri-v2-Shell, Natives Tray, Zero-Build-Vanilla-UI (`apps/desktop/ui/`) |
+| **Phase 6** | Release-Profil, Packaging & CI-Installer | `[profile.release]` (`lto = "thin"`, `strip = "symbols"`), `.github/workflows/rust-installers.yml` (macOS arm64 Slim/Full DMG mit stabilem TCC-Zertifikat + Windows x64 Slim/Full NSIS), Koexistenz mit Legacy-Python |
+
+### Gemessener Release-Footprint (macOS arm64, Slim, 2026-11-23)
+
+- `target/release/pulsescribe-desktop`: **15,0 MB** (15.741.888 Bytes)
+- `target/release/pulsescribe` (CLI): **8,5 MB** (8.938.320 Bytes)
+- Laufender Desktop-Daemon im Tray-Idle (0 WebViews, abgeschlossenes Onboarding): **`phys_footprint` 20 MB** (RSS 88,7 MB inkl. geteilter macOS-Frameworks)
+
+---
+
+## Schnitt für Phase 1 (historisch)
 
 Jeder PR bleibt unter ~400 LOC, kompiliert auf macOS + Windows-Check und bringt eigene Tests mit:
 

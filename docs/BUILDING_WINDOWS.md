@@ -1,8 +1,42 @@
 # Building PulseScribe on Windows
 
-PulseScribe ships as a standalone `.exe` (onedir mode) or as an installer. For distribution, both can optionally be code-signed.
+PulseScribe ships as a standalone `.exe` or as an installer. For distribution, both can optionally be code-signed.
 
-## Prerequisites
+## Rust Desktop App (Tauri v2, Coexisting)
+
+The native Rust desktop app (`apps/desktop`) coexists alongside the legacy Python build below and shares `%USERPROFILE%\.pulsescribe\` 1:1. It combines a zero-build lazy WebView2 settings window (0 MB WebView RAM when closed) with a native system tray and native 60 FPS Direct2D/DirectWrite overlay.
+
+### Prerequisites (Rust)
+
+- Rust toolchain (`rustc` ≥ 1.88, `x86_64-pc-windows-msvc` target) with Visual Studio Build Tools (MSVC)
+- `cargo-tauri` v2 (`cargo install tauri-cli --version ^2 --locked` or prebuilt `cargo-tauri-x86_64-pc-windows-msvc.zip` from `tauri-apps/tauri`)
+- `cmake` — required **only** for the Full variant (`--features all-local`, compiling `whisper.cpp`)
+
+### Build Variants (Rust)
+
+```powershell
+# Release binaries only (Slim / cloud-only)
+cargo build --release -p pulsescribe-desktop -p pulsescribe-cli
+
+# Per-user NSIS installer (Slim / cloud-only, English & German)
+Push-Location apps\desktop
+cargo tauri build --target x86_64-pc-windows-msvc --bundles nsis
+Pop-Location
+
+# Per-user NSIS installer (Full: static whisper-rs + dynamic sherpa-onnx C-API)
+Push-Location apps\desktop
+cargo tauri build --target x86_64-pc-windows-msvc --bundles nsis --features all-local
+Pop-Location
+```
+
+- **`sherpa-onnx` runtime (Full):** `crates/local-asr` dynamically loads `sherpa-onnx-c-api.dll` (`2.0.x` ABI) from `$PULSESCRIBE_SHERPA_LIB_DIR`, the executable directory, or `%USERPROFILE%\.pulsescribe\libs\`. The CI Full build bundles `sherpa-onnx-c-api.dll`, `onnxruntime.dll`, and `onnxruntime_providers_shared.dll` next to `pulsescribe-desktop.exe` in the NSIS install root.
+- **CI Workflow:** [`.github/workflows/rust-installers.yml`](../.github/workflows/rust-installers.yml) builds and validates both `PulseScribe-Rust-<version>-Windows-x64-Slim-Setup.exe` and `PulseScribe-Rust-<version>-Windows-x64-Full-Setup.exe` (+ `.sha256`) on `windows-latest` for PRs, manual dispatches, and `rust-v*` tags without affecting legacy `v*` releases.
+
+---
+
+## Legacy Python App
+
+### Prerequisites
 
 - **Python 3.10+** with pip
 - **PyInstaller** (`pip install pyinstaller`)
