@@ -1,50 +1,43 @@
 import { invoke, listen } from "./api.js";
+import {
+  applyStaticTranslations,
+  detectSystemLanguage,
+  getUiLanguagePref,
+  localizeDaemonStatus,
+  localizePromptContext,
+  setUiLanguagePref,
+  t,
+} from "./i18n.js";
 
-const ROUTE_TITLES = {
-  general: "General",
-  models: "Local Models",
-  prompts: "Prompts",
-  vocabulary: "Vocabulary",
-  history: "History",
-  onboarding: "Setup Wizard",
-  diagnostics: "Diagnostics",
-};
+const VALID_ROUTES = new Set([
+  "general",
+  "models",
+  "prompts",
+  "vocabulary",
+  "history",
+  "onboarding",
+  "diagnostics",
+]);
 
-const PROVIDERS = [
-  { id: "deepgram", label: "Deepgram (Live Streaming)" },
-  { id: "openai", label: "OpenAI Whisper API" },
-  { id: "groq", label: "Groq Whisper (Ultra Fast)" },
-  { id: "openai_compatible", label: "OpenAI-Compatible Endpoint" },
-  { id: "local", label: "Local Offline ASR" },
+const PROVIDER_IDS = ["deepgram", "openai", "groq", "openai_compatible", "local"];
+
+const LANGUAGE_CODES = ["auto", "de", "en", "fr", "es", "it", "nl", "pt", "pl"];
+
+const API_KEY_ENV_KEYS = [
+  "DEEPGRAM_API_KEY",
+  "OPENAI_API_KEY",
+  "GROQ_API_KEY",
+  "OPENROUTER_API_KEY",
+  "GEMINI_API_KEY",
+  "OPENAI_COMPATIBLE_API_KEY",
 ];
 
-const LANGUAGES = [
-  ["auto", "Auto-detect"],
-  ["de", "German (de)"],
-  ["en", "English (en)"],
-  ["fr", "French (fr)"],
-  ["es", "Spanish (es)"],
-  ["it", "Italian (it)"],
-  ["nl", "Dutch (nl)"],
-  ["pt", "Portuguese (pt)"],
-  ["pl", "Polish (pl)"],
-];
-
-const API_KEY_LABELS = {
-  DEEPGRAM_API_KEY: "Deepgram API Key",
-  OPENAI_API_KEY: "OpenAI API Key",
-  GROQ_API_KEY: "Groq API Key",
-  OPENROUTER_API_KEY: "OpenRouter API Key",
-  GEMINI_API_KEY: "Gemini API Key",
-  OPENAI_COMPATIBLE_API_KEY: "OpenAI-Compatible API Key",
-};
-
-const ONBOARDING_STEPS = [
-  { id: "choose_goal", label: "1. Goal" },
-  { id: "permissions", label: "2. Permissions" },
-  { id: "hotkey", label: "3. Hotkeys" },
-  { id: "test_dictation", label: "4. Try It" },
-  { id: "cheat_sheet", label: "5. Ready" },
+const ONBOARDING_STEP_IDS = [
+  "choose_goal",
+  "permissions",
+  "hotkey",
+  "test_dictation",
+  "cheat_sheet",
 ];
 
 const STREAMING_PREVIEW_ENGINE = "sherpa_online_transducer";
@@ -172,7 +165,7 @@ async function runSafe(fn) {
   }
 }
 
-function confirmAction({ title, message, confirmLabel = "Confirm", destructive = false }) {
+function confirmAction({ title, message, confirmLabel = t("common.confirm"), destructive = false }) {
   return new Promise((resolve) => {
     dom.confirmTitle.textContent = title;
     dom.confirmMessage.textContent = message;
@@ -225,7 +218,8 @@ function updateDaemonBadge() {
   const app = state.app;
   if (!app) return;
   const st = app.daemon_state || "idle";
-  dom.daemonBadge.textContent = app.status_label || "Ready";
+  const status = localizeDaemonStatus(app);
+  dom.daemonBadge.textContent = status.label;
   dom.daemonBadge.className = "badge " + (
     st === "error" ? "badge-error"
       : st === "recording" || st === "listening" ? "badge-success"
@@ -247,8 +241,8 @@ function updateDirtyBar() {
   dom.stickySaveBar.hidden = !show;
   const hasKeyChanges = Object.keys(state.apiKeyDrafts).length > 0 || state.apiKeyClears.size > 0;
   dom.stickySaveLabel.textContent = hasKeyChanges
-    ? "Unsaved settings and API key updates"
-    : "Unsaved changes";
+    ? t("common.unsavedWithKeys")
+    : t("common.unsavedChanges");
 }
 
 function formatBytes(bytes) {
@@ -264,12 +258,12 @@ function localDateKey(date) {
 
 function formatDayHeading(isoTimestamp) {
   const datePart = (isoTimestamp || "").slice(0, 10);
-  if (!datePart) return "Earlier";
+  if (!datePart) return t("history.earlier");
   const now = new Date();
   const today = localDateKey(now);
   const yesterday = localDateKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1));
-  if (datePart === today) return "Today";
-  if (datePart === yesterday) return "Yesterday";
+  if (datePart === today) return t("history.today");
+  if (datePart === yesterday) return t("history.yesterday");
   return datePart;
 }
 
@@ -287,8 +281,8 @@ async function syncTestHotkeyMode(route) {
 
 async function navigate(route) {
   const seq = ++state.navSeq;
-  state.route = ROUTE_TITLES[route] ? route : "general";
-  dom.pageTitle.textContent = ROUTE_TITLES[state.route];
+  state.route = VALID_ROUTES.has(route) ? route : "general";
+  dom.pageTitle.textContent = t(`route.${state.route}`);
   for (const btn of document.querySelectorAll("[data-route]")) {
     const active = btn.dataset.route === state.route;
     btn.classList.toggle("active", active);
@@ -411,10 +405,10 @@ function renderTopbarActions() {
 
   if (state.route === "general") {
     const label = isRecording
-      ? "Stop Dictation"
+      ? t("action.stopDictation")
       : isProcessing
-      ? "Cancel Dictation"
-      : "Start Dictation";
+      ? t("action.cancelDictation")
+      : t("action.startDictation");
     dom.topbarActions.append(
       el("button", {
         type: "button",
@@ -436,10 +430,10 @@ function renderTopbarActions() {
             const models = await invoke("list_local_models");
             reconcileDownloadProgress(models);
             state.models = models;
-            showToast("Unloaded local model from RAM");
+            showToast(t("models.unloadedToast"));
             render();
           }),
-        }, [el("span", { text: "Unload RAM" })]),
+        }, [el("span", { text: t("action.unloadRam") })]),
       );
     }
     dom.topbarActions.append(
@@ -450,10 +444,10 @@ function renderTopbarActions() {
           const models = await invoke("list_local_models");
           reconcileDownloadProgress(models);
           state.models = models;
-          showToast("Model cache refreshed");
+          showToast(t("models.refreshedToast"));
           render();
         }),
-      }, [icon("ic-refresh", "ic ic-sm"), el("span", { text: "Refresh" })]),
+      }, [icon("ic-refresh", "ic ic-sm"), el("span", { text: t("common.refresh") })]),
     );
   } else if (state.route === "prompts") {
     dom.topbarActions.append(
@@ -462,9 +456,9 @@ function renderTopbarActions() {
         className: "btn btn-danger-ghost",
         onClick: () => runSafe(async () => {
           const ok = await confirmAction({
-            title: "Reset all prompts?",
-            message: "This removes custom overrides from prompts.toml and restores PulseScribe's default prompts.",
-            confirmLabel: "Reset defaults",
+            title: t("prompts.resetTitle"),
+            message: t("prompts.resetMessage"),
+            confirmLabel: t("prompts.resetConfirm"),
             destructive: true,
           });
           if (!ok) return;
@@ -472,15 +466,15 @@ function renderTopbarActions() {
           state.prompts = await invoke("reset_prompts");
           state.promptDrafts = { ...state.prompts.drafts };
           state.dirtyPrompts = false;
-          showToast("Prompts reset to defaults");
+          showToast(t("prompts.resetToast"));
           render();
         }),
-      }, [el("span", { text: "Reset Defaults" })]),
+      }, [el("span", { text: t("action.resetDefaults") })]),
       el("button", {
         type: "button",
         className: "btn btn-primary",
         onClick: savePromptsAction,
-      }, [icon("ic-check", "ic ic-sm"), el("span", { text: "Save Prompts" })]),
+      }, [icon("ic-check", "ic ic-sm"), el("span", { text: t("action.savePrompts") })]),
     );
   } else if (state.route === "vocabulary") {
     dom.topbarActions.append(
@@ -488,7 +482,7 @@ function renderTopbarActions() {
         type: "button",
         className: "btn btn-primary",
         onClick: saveVocabularyAction,
-      }, [icon("ic-check", "ic ic-sm"), el("span", { text: "Save Vocabulary" })]),
+      }, [icon("ic-check", "ic ic-sm"), el("span", { text: t("action.saveVocabulary") })]),
     );
   } else if (state.route === "history") {
     if (state.history.length > 0) {
@@ -498,18 +492,18 @@ function renderTopbarActions() {
           className: "btn btn-danger-ghost",
           onClick: () => runSafe(async () => {
             const ok = await confirmAction({
-              title: "Clear transcript history?",
-              message: `This permanently deletes all ${state.history.length} saved transcripts from history.jsonl.`,
-              confirmLabel: "Clear history",
+              title: t("history.clearTitle"),
+              message: t("history.clearMessage", { count: state.history.length }),
+              confirmLabel: t("history.clearConfirm"),
               destructive: true,
             });
             if (!ok) return;
             await invoke("clear_history");
             state.history = [];
-            showToast("History cleared");
+            showToast(t("history.clearedToast"));
             render();
           }),
-        }, [icon("ic-trash", "ic ic-sm"), el("span", { text: "Clear All" })]),
+        }, [icon("ic-trash", "ic ic-sm"), el("span", { text: t("action.clearAll") })]),
       );
     }
   } else if (state.route === "diagnostics") {
@@ -518,16 +512,16 @@ function renderTopbarActions() {
         type: "button",
         className: "btn",
         onClick: () => runSafe(() => invoke("open_config_dir")),
-      }, [icon("ic-folder", "ic ic-sm"), el("span", { text: "Config Folder" })]),
+      }, [icon("ic-folder", "ic ic-sm"), el("span", { text: t("action.configFolder") })]),
       el("button", {
         type: "button",
         className: "btn btn-primary",
         onClick: () => runSafe(async () => {
           state.diagnostics = await invoke("export_diagnostics");
-          showToast("Diagnostics exported");
+          showToast(t("diag.exportedToast"));
           render();
         }),
-      }, [icon("ic-download", "ic ic-sm"), el("span", { text: "Export Diagnostics" })]),
+      }, [icon("ic-download", "ic ic-sm"), el("span", { text: t("action.exportDiagnostics") })]),
     );
   }
 }
@@ -608,7 +602,7 @@ async function saveSettingsAction() {
     ? validation.hold
     : null;
   if (invalidHotkey) {
-    showError(invalidHotkey.message || "Fix the invalid hotkey before saving.");
+    showError(invalidHotkey.message || t("settings.fixHotkey"));
     return;
   }
 
@@ -650,7 +644,7 @@ async function saveSettingsAction() {
       state.hotkeyValidation = { toggle: null, hold: null };
       state.dirtySettings = false;
       updateDirtyBar();
-      showToast("Settings saved and reloaded");
+      showToast(t("settings.saved"));
       render();
     } else {
       for (const [k, v] of Object.entries(submittedKeyDrafts)) {
@@ -667,7 +661,7 @@ async function saveSettingsAction() {
       }
       state.dirtySettings = true;
       updateDirtyBar();
-      showToast("Settings saved — newer edits remain unsaved");
+      showToast(t("settings.savedPartial"));
     }
   });
 }
@@ -696,9 +690,26 @@ async function validateHotkeyField(kind, value) {
   });
 }
 
+async function applyUiLanguageChange(nextPref) {
+  const { pref, resolved } = setUiLanguagePref(nextPref);
+  if (state.app) {
+    state.app.ui_language = pref;
+    state.app.resolved_ui_language = resolved;
+  }
+  applyStaticTranslations();
+  dom.pageTitle.textContent = t(`route.${state.route}`);
+  updateDaemonBadge();
+  updateDirtyBar();
+  render();
+  await runSafe(async () => {
+    await invoke("save_ui_language", { language: pref, resolved });
+    showToast(t("general.uiLangSaved"));
+  });
+}
+
 function renderGeneralView() {
   const d = state.draft;
-  if (!d) return el("p", { className: "muted", text: "Loading settings…" });
+  if (!d) return el("p", { className: "muted", text: t("general.loading") });
 
   const stack = el("div", { className: "page-stack" });
 
@@ -706,16 +717,16 @@ function renderGeneralView() {
   const providerPanel = el("div", { className: "panel" }, [
     el("div", { className: "panel-row" }, [
       el("div", { className: "row-copy" }, [
-        el("div", { className: "row-title", text: "Transcription Provider" }),
-        el("div", { className: "row-sub", text: "Choose cloud streaming or fully offline local models." }),
+        el("div", { className: "row-title", text: t("general.providerTitle") }),
+        el("div", { className: "row-sub", text: t("general.providerDesc") }),
       ]),
       el("div", { className: "row-ctrl" }, [
         el("select", {
           className: "select",
           id: "setting-mode",
-          "aria-label": "Transcription Provider",
+          "aria-label": t("general.providerTitle"),
           onChange: (e) => { setDraftField("mode", e.target.value); render(); },
-        }, PROVIDERS.map((p) => el("option", { value: p.id, text: p.label, selected: d.mode === p.id }))),
+        }, PROVIDER_IDS.map((id) => el("option", { value: id, text: t(`provider.${id}`), selected: d.mode === id }))),
       ]),
     ]),
   ]);
@@ -725,18 +736,18 @@ function renderGeneralView() {
     providerPanel.append(
       el("div", { className: "panel-row" }, [
         el("div", { className: "row-copy" }, [
-          el("div", { className: "row-title", text: "Local Model" }),
-          el("div", { className: "row-sub", text: "Runs locally via whisper-rs or sherpa-onnx." }),
+          el("div", { className: "row-title", text: t("general.localModelTitle") }),
+          el("div", { className: "row-sub", text: t("general.localModelDesc") }),
         ]),
         el("div", { className: "row-ctrl" }, [
           el("select", {
             className: "select",
-            "aria-label": "Local Model",
+            "aria-label": t("general.localModelTitle"),
             onChange: (e) => setDraftField("local_model", e.target.value),
           }, (offlineModels.length > 0 ? offlineModels : [{ id: d.local_model || "large-v3-turbo", display_name: d.local_model || "large-v3-turbo" }]).map((m) =>
-            el("option", { value: m.id, text: `${m.display_name || m.id}${m.installed ? " (Installed)" : ""}`, selected: d.local_model === m.id }),
+            el("option", { value: m.id, text: `${m.display_name || m.id}${m.installed ? t("general.installedSuffix") : ""}`, selected: d.local_model === m.id }),
           )),
-          el("button", { type: "button", className: "btn btn-sm", text: "Manage", onClick: () => navigate("models") }),
+          el("button", { type: "button", className: "btn btn-sm", text: t("common.manage"), onClick: () => navigate("models") }),
         ]),
       ]),
     );
@@ -744,14 +755,14 @@ function renderGeneralView() {
     providerPanel.append(
       el("div", { className: "panel-row" }, [
         el("div", { className: "row-copy" }, [
-          el("div", { className: "row-title", text: "Endpoint Base URL" }),
-          el("div", { className: "row-sub", text: "Custom OpenAI-compatible audio transcription server." }),
+          el("div", { className: "row-title", text: t("general.endpointUrlTitle") }),
+          el("div", { className: "row-sub", text: t("general.endpointUrlDesc") }),
         ]),
         el("div", { className: "row-ctrl" }, [
           el("input", {
             className: "input",
             type: "url",
-            "aria-label": "Endpoint Base URL",
+            "aria-label": t("general.endpointUrlTitle"),
             value: d.openai_compatible_base_url,
             placeholder: "http://localhost:8000/v1",
             onInput: (e) => setDraftField("openai_compatible_base_url", e.target.value),
@@ -760,13 +771,13 @@ function renderGeneralView() {
       ]),
       el("div", { className: "panel-row" }, [
         el("div", { className: "row-copy" }, [
-          el("div", { className: "row-title", text: "Custom Model Name" }),
+          el("div", { className: "row-title", text: t("general.customModelTitle") }),
         ]),
         el("div", { className: "row-ctrl" }, [
           el("input", {
             className: "input",
             type: "text",
-            "aria-label": "Custom Model Name",
+            "aria-label": t("general.customModelTitle"),
             value: d.openai_compatible_model,
             placeholder: "whisper-1",
             onInput: (e) => setDraftField("openai_compatible_model", e.target.value),
@@ -778,16 +789,16 @@ function renderGeneralView() {
     providerPanel.append(
       el("div", { className: "panel-row" }, [
         el("div", { className: "row-copy" }, [
-          el("div", { className: "row-title", text: "Cloud Model Override" }),
-          el("div", { className: "row-sub", text: "Leave blank for provider default (e.g. nova-3, whisper-large-v3-turbo)." }),
+          el("div", { className: "row-title", text: t("general.cloudModelTitle") }),
+          el("div", { className: "row-sub", text: t("general.cloudModelDesc") }),
         ]),
         el("div", { className: "row-ctrl" }, [
           el("input", {
             className: "input",
             type: "text",
-            "aria-label": "Cloud Model Override",
+            "aria-label": t("general.cloudModelTitle"),
             value: d.model,
-            placeholder: d.mode === "deepgram" ? "nova-3" : "default",
+            placeholder: d.mode === "deepgram" ? "nova-3" : t("general.cloudModelPlaceholder"),
             onInput: (e) => setDraftField("model", e.target.value),
           }),
         ]),
@@ -799,20 +810,20 @@ function renderGeneralView() {
     providerPanel.append(
       el("div", { className: "panel-row" }, [
         el("div", { className: "row-copy" }, [
-          el("div", { className: "row-title", text: "Live WebSocket Streaming" }),
-          el("div", { className: "row-sub", text: "Streams audio live and shows interim text in the floating overlay." }),
+          el("div", { className: "row-title", text: t("general.liveStreamingTitle") }),
+          el("div", { className: "row-sub", text: t("general.liveStreamingDesc") }),
         ]),
         el("div", { className: "row-ctrl" }, [
-          makeSwitch(d.streaming, "Live WebSocket Streaming", (v) => setDraftField("streaming", v)),
+          makeSwitch(d.streaming, t("general.liveStreamingTitle"), (v) => setDraftField("streaming", v)),
         ]),
       ]),
       el("div", { className: "panel-row" }, [
         el("div", { className: "row-copy" }, [
-          el("div", { className: "row-title", text: "Keep Warm Deepgram Connection" }),
-          el("div", { className: "row-sub", text: "Pre-connects WebSocket for near-instant start latency." }),
+          el("div", { className: "row-title", text: t("general.warmSocketTitle") }),
+          el("div", { className: "row-sub", text: t("general.warmSocketDesc") }),
         ]),
         el("div", { className: "row-ctrl" }, [
-          makeSwitch(d.deepgram_warm_websocket, "Keep Warm Deepgram Connection", (v) => setDraftField("deepgram_warm_websocket", v)),
+          makeSwitch(d.deepgram_warm_websocket, t("general.warmSocketTitle"), (v) => setDraftField("deepgram_warm_websocket", v)),
         ]),
       ]),
     );
@@ -821,23 +832,23 @@ function renderGeneralView() {
   providerPanel.append(
     el("div", { className: "panel-row" }, [
       el("div", { className: "row-copy" }, [
-        el("div", { className: "row-title", text: "Language" }),
-        el("div", { className: "row-sub", text: "Primary dictation language or automatic detection." }),
+        el("div", { className: "row-title", text: t("general.dictationLangTitle") }),
+        el("div", { className: "row-sub", text: t("general.dictationLangDesc") }),
       ]),
       el("div", { className: "row-ctrl" }, [
         el("select", {
           className: "select",
-          "aria-label": "Language",
+          "aria-label": t("general.dictationLangTitle"),
           onChange: (e) => setDraftField("language", e.target.value),
-        }, LANGUAGES.map(([code, label]) => el("option", { value: code, text: label, selected: d.language === code }))),
+        }, LANGUAGE_CODES.map((code) => el("option", { value: code, text: t(`lang.${code}`), selected: d.language === code }))),
       ]),
     ]),
   );
 
   stack.append(
     el("section", { className: "section" }, [
-      el("h2", { className: "section-title", text: "Dictation" }),
-      el("p", { className: "section-desc", text: "Speech recognition engine, model selection, and language." }),
+      el("h2", { className: "section-title", text: t("general.dictationTitle") }),
+      el("p", { className: "section-desc", text: t("general.dictationDesc") }),
       providerPanel,
     ]),
   );
@@ -855,23 +866,23 @@ function renderGeneralView() {
   };
 
   const deviceOptions = [
-    el("option", { value: "", text: "System Default", selected: !d.input_device }),
+    el("option", { value: "", text: t("general.systemDefault"), selected: !d.input_device }),
     ...state.devices.map((dev) => el("option", {
       value: dev.name,
-      text: `${dev.name}${dev.is_default ? " (Default)" : ""}`,
+      text: `${dev.name}${dev.is_default ? t("general.defaultSuffix") : ""}`,
       selected: d.input_device === dev.name,
     })),
   ];
 
   stack.append(
     el("section", { className: "section" }, [
-      el("h2", { className: "section-title", text: "Hotkeys & Audio" }),
-      el("p", { className: "section-desc", text: "Global push-to-talk / toggle shortcuts and microphone source." }),
+      el("h2", { className: "section-title", text: t("general.hotkeysTitle") }),
+      el("p", { className: "section-desc", text: t("general.hotkeysDesc") }),
       el("div", { className: "panel" }, [
         el("div", { className: "panel-row" }, [
           el("div", { className: "row-copy" }, [
-            el("div", { className: "row-title", text: "Toggle Hotkey" }),
-            el("div", { className: "row-sub", text: "Press once to start recording, press again to finish." }),
+            el("div", { className: "row-title", text: t("general.toggleHotkeyTitle") }),
+            el("div", { className: "row-sub", text: t("general.toggleHotkeyDesc") }),
             makeHotkeyNoteHost("toggle"),
           ]),
           el("div", { className: "row-ctrl" }, [
@@ -879,7 +890,7 @@ function renderGeneralView() {
               className: "input input-sm mono",
               id: "input-toggle-hotkey",
               type: "text",
-              "aria-label": "Toggle Hotkey",
+              "aria-label": t("general.toggleHotkeyTitle"),
               value: d.toggle_hotkey,
               placeholder: state.app?.platform === "windows" ? "ctrl+alt+r" : "f19",
               onInput: (e) => setDraftField("toggle_hotkey", e.target.value),
@@ -889,8 +900,8 @@ function renderGeneralView() {
         ]),
         el("div", { className: "panel-row" }, [
           el("div", { className: "row-copy" }, [
-            el("div", { className: "row-title", text: "Hold-to-Record Hotkey" }),
-            el("div", { className: "row-sub", text: "Hold to dictate and release to transcribe." }),
+            el("div", { className: "row-title", text: t("general.holdHotkeyTitle") }),
+            el("div", { className: "row-sub", text: t("general.holdHotkeyDesc") }),
             makeHotkeyNoteHost("hold"),
           ]),
           el("div", { className: "row-ctrl" }, [
@@ -898,7 +909,7 @@ function renderGeneralView() {
               className: "input input-sm mono",
               id: "input-hold-hotkey",
               type: "text",
-              "aria-label": "Hold-to-Record Hotkey",
+              "aria-label": t("general.holdHotkeyTitle"),
               value: d.hold_hotkey,
               placeholder: state.app?.platform === "windows" ? "ctrl+win" : "fn",
               onInput: (e) => setDraftField("hold_hotkey", e.target.value),
@@ -908,74 +919,74 @@ function renderGeneralView() {
         ]),
         el("div", { className: "panel-row" }, [
           el("div", { className: "row-copy" }, [
-            el("div", { className: "row-title", text: "Microphone" }),
-            el("div", { className: "row-sub", text: "Input device used for audio capture." }),
+            el("div", { className: "row-title", text: t("general.micTitle") }),
+            el("div", { className: "row-sub", text: t("general.micDesc") }),
           ]),
           el("div", { className: "row-ctrl" }, [
             el("select", {
               className: "select",
-              "aria-label": "Microphone",
+              "aria-label": t("general.micTitle"),
               onChange: (e) => setDraftField("input_device", e.target.value),
             }, deviceOptions),
           ]),
         ]),
         el("div", { className: "panel-row" }, [
           el("div", { className: "row-copy" }, [
-            el("div", { className: "row-title", text: "Floating Overlay" }),
-            el("div", { className: "row-sub", text: "Show the native 60 FPS status & live waveform pill." }),
+            el("div", { className: "row-title", text: t("general.overlayTitle") }),
+            el("div", { className: "row-sub", text: t("general.overlayDesc") }),
           ]),
           el("div", { className: "row-ctrl" }, [
-            makeSwitch(d.overlay_enabled, "Floating Overlay", (v) => setDraftField("overlay_enabled", v)),
+            makeSwitch(d.overlay_enabled, t("general.overlayTitle"), (v) => setDraftField("overlay_enabled", v)),
           ]),
         ]),
         el("div", { className: "panel-row" }, [
           el("div", { className: "row-copy" }, [
-            el("div", { className: "row-title", text: "Sound Feedback" }),
-            el("div", { className: "row-sub", text: "Play subtle audio cues on start, stop, and completion." }),
+            el("div", { className: "row-title", text: t("general.soundTitle") }),
+            el("div", { className: "row-sub", text: t("general.soundDesc") }),
           ]),
           el("div", { className: "row-ctrl" }, [
-            makeSwitch(d.sound_enabled, "Sound Feedback", (v) => setDraftField("sound_enabled", v)),
+            makeSwitch(d.sound_enabled, t("general.soundTitle"), (v) => setDraftField("sound_enabled", v)),
           ]),
         ]),
         el("div", { className: "panel-row" }, [
           el("div", { className: "row-copy" }, [
-            el("div", { className: "row-title", text: "Auto-Paste Transcript" }),
-            el("div", { className: "row-sub", text: `Automatically paste into the focused app via ${state.app?.paste_shortcut || "⌘V"}.` }),
+            el("div", { className: "row-title", text: t("general.autoPasteTitle") }),
+            el("div", { className: "row-sub", text: t("general.autoPasteDesc", { shortcut: state.app?.paste_shortcut || "⌘V" }) }),
           ]),
           el("div", { className: "row-ctrl" }, [
-            makeSwitch(d.auto_paste, "Auto-Paste Transcript", (v) => setDraftField("auto_paste", v)),
+            makeSwitch(d.auto_paste, t("general.autoPasteTitle"), (v) => setDraftField("auto_paste", v)),
           ]),
         ]),
         el("div", { className: "panel-row" }, [
           el("div", { className: "row-copy" }, [
-            el("div", { className: "row-title", text: "Show Transcription Timing" }),
-            el("div", { className: "row-sub", text: "Include elapsed transcription seconds in completion feedback." }),
+            el("div", { className: "row-title", text: t("general.showRtfTitle") }),
+            el("div", { className: "row-sub", text: t("general.showRtfDesc") }),
           ]),
           el("div", { className: "row-ctrl" }, [
-            makeSwitch(d.show_rtf, "Show Transcription Timing", (v) => setDraftField("show_rtf", v)),
+            makeSwitch(d.show_rtf, t("general.showRtfTitle"), (v) => setDraftField("show_rtf", v)),
           ]),
         ]),
         state.autostart?.supported
           ? el("div", { className: "panel-row" }, [
               el("div", { className: "row-copy" }, [
-                el("div", { className: "row-title", text: "Launch at Login" }),
+                el("div", { className: "row-title", text: t("general.autostartTitle") }),
                 el("div", {
                   className: "row-sub",
-                  text: "Start PulseScribe automatically in the background when you sign in.",
+                  text: t("general.autostartDesc"),
                 }),
               ]),
               el("div", { className: "row-ctrl" }, [
                 (() => {
                   const isPending = state.autostartPending !== null;
                   const checked = isPending ? state.autostartPending : Boolean(state.autostart.enabled);
-                  const sw = makeSwitch(checked, "Launch at Login", async (next) => {
+                  const sw = makeSwitch(checked, t("general.autostartTitle"), async (next) => {
                     if (state.autostartPending !== null) return;
                     state.autostartPending = next;
                     sw.disabled = true;
                     clearError();
                     try {
                       state.autostart = await invoke("set_autostart", { enabled: next });
-                      showToast(state.autostart.enabled ? "Launch at Login enabled" : "Launch at Login disabled");
+                      showToast(state.autostart.enabled ? t("general.autostartEnabled") : t("general.autostartDisabled"));
                     } catch (err) {
                       showError(err);
                       state.autostart = await invoke("get_autostart").catch(() => state.autostart);
@@ -999,19 +1010,49 @@ function renderGeneralView() {
     ]),
   );
 
-  // 3. LLM Refinement (toggles dependent block in place without destroying switch focus)
+  // 3. Interface Language (applies immediately without dirty save bar)
+  const uiPref = getUiLanguagePref();
+  const sysLangName = detectSystemLanguage() === "de" ? t("general.uiLangNameDe") : t("general.uiLangNameEn");
+  stack.append(
+    el("section", { className: "section" }, [
+      el("h2", { className: "section-title", text: t("general.interfaceTitle") }),
+      el("p", { className: "section-desc", text: t("general.interfaceDesc") }),
+      el("div", { className: "panel" }, [
+        el("div", { className: "panel-row" }, [
+          el("div", { className: "row-copy" }, [
+            el("div", { className: "row-title", text: t("general.uiLangTitle") }),
+            el("div", { className: "row-sub", text: t("general.uiLangDesc") }),
+          ]),
+          el("div", { className: "row-ctrl" }, [
+            el("select", {
+              className: "select",
+              id: "setting-ui-language",
+              "aria-label": t("general.uiLangTitle"),
+              onChange: (e) => applyUiLanguageChange(e.target.value),
+            }, [
+              el("option", { value: "system", text: t("general.uiLangSystem", { lang: sysLangName }), selected: uiPref === "system" }),
+              el("option", { value: "en", text: t("general.uiLangNameEn"), selected: uiPref === "en" }),
+              el("option", { value: "de", text: t("general.uiLangNameDe"), selected: uiPref === "de" }),
+            ]),
+          ]),
+        ]),
+      ]),
+    ]),
+  );
+
+  // 4. LLM Refinement (toggles dependent block in place without destroying switch focus)
   const refineDetails = el("div", { id: "refine-details", hidden: !d.refine }, [
     el("div", { className: "panel-row" }, [
       el("div", { className: "row-copy" }, [
-        el("div", { className: "row-title", text: "Refinement Provider" }),
+        el("div", { className: "row-title", text: t("general.refineProviderTitle") }),
       ]),
       el("div", { className: "row-ctrl" }, [
         el("select", {
           className: "select",
-          "aria-label": "Refinement Provider",
+          "aria-label": t("general.refineProviderTitle"),
           onChange: (e) => setDraftField("refine_provider", e.target.value),
         }, [
-          ["", "Default (Groq)"],
+          ["", t("general.refineProviderDefault")],
           ["groq", "Groq"],
           ["openrouter", "OpenRouter"],
           ["openai", "OpenAI"],
@@ -1021,27 +1062,27 @@ function renderGeneralView() {
     ]),
     el("div", { className: "panel-row" }, [
       el("div", { className: "row-copy" }, [
-        el("div", { className: "row-title", text: "Refinement Model" }),
-        el("div", { className: "row-sub", text: "Optional override (e.g. openai/gpt-4.1-nano or llama-3.3-70b-versatile)." }),
+        el("div", { className: "row-title", text: t("general.refineModelTitle") }),
+        el("div", { className: "row-sub", text: t("general.refineModelDesc") }),
       ]),
       el("div", { className: "row-ctrl" }, [
         el("input", {
           className: "input",
           type: "text",
-          "aria-label": "Refinement Model",
+          "aria-label": t("general.refineModelTitle"),
           value: d.refine_model,
-          placeholder: "provider default",
+          placeholder: t("general.refineModelPlaceholder"),
           onInput: (e) => setDraftField("refine_model", e.target.value),
         }),
       ]),
     ]),
     el("div", { className: "panel-row" }, [
       el("div", { className: "row-copy" }, [
-        el("div", { className: "row-title", text: "Spoken Voice Commands" }),
-        el("div", { className: "row-sub", text: "Interpret spoken punctuation and paragraph commands." }),
+        el("div", { className: "row-title", text: t("general.voiceCommandsTitle") }),
+        el("div", { className: "row-sub", text: t("general.voiceCommandsDesc") }),
       ]),
       el("div", { className: "row-ctrl" }, [
-        makeSwitch(d.voice_commands, "Spoken Voice Commands", (v) => setDraftField("voice_commands", v)),
+        makeSwitch(d.voice_commands, t("general.voiceCommandsTitle"), (v) => setDraftField("voice_commands", v)),
       ]),
     ]),
   ]);
@@ -1049,11 +1090,11 @@ function renderGeneralView() {
   const refinePanel = el("div", { className: "panel" }, [
     el("div", { className: "panel-row" }, [
       el("div", { className: "row-copy" }, [
-        el("div", { className: "row-title", text: "LLM Refinement" }),
-        el("div", { className: "row-sub", text: "Polish grammar, filler words, and formatting before pasting." }),
+        el("div", { className: "row-title", text: t("general.refineToggleTitle") }),
+        el("div", { className: "row-sub", text: t("general.refineToggleDesc") }),
       ]),
       el("div", { className: "row-ctrl" }, [
-        makeSwitch(d.refine, "LLM Refinement", (v) => {
+        makeSwitch(d.refine, t("general.refineToggleTitle"), (v) => {
           setDraftField("refine", v);
           refineDetails.hidden = !v;
         }),
@@ -1064,24 +1105,25 @@ function renderGeneralView() {
 
   stack.append(
     el("section", { className: "section" }, [
-      el("h2", { className: "section-title", text: "Refinement" }),
-      el("p", { className: "section-desc", text: "Optional post-processing using custom prompts per active application." }),
+      el("h2", { className: "section-title", text: t("general.refineSectionTitle") }),
+      el("p", { className: "section-desc", text: t("general.refineSectionDesc") }),
       refinePanel,
     ]),
   );
 
-  // 4. API Keys (typing & clearing back to empty never deletes an existing key — only explicit Clear does!)
-  const keyRows = Object.entries(API_KEY_LABELS).map(([envKey, label]) => {
+  // 5. API Keys (typing & clearing back to empty never deletes an existing key — only explicit Clear does!)
+  const keyRows = API_KEY_ENV_KEYS.map((envKey) => {
+    const label = t(`apiKey.${envKey}`);
     const configured = Boolean(d.api_keys_configured?.[envKey]);
     const masked = d.api_keys_masked?.[envKey];
     const markedForClear = state.apiKeyClears.has(envKey);
     const badgeNode = el("span", {
       className: `badge ${markedForClear ? "badge-warning" : configured ? "badge-success" : "badge-neutral"}`,
       text: markedForClear
-        ? "Pending removal"
+        ? t("apiKey.pendingRemoval")
         : configured
-        ? `Saved (${masked || "••••"})`
-        : "Not configured",
+        ? t("apiKey.saved", { masked: masked || "••••" })
+        : t("apiKey.notConfigured"),
     });
 
     const inputNode = el("input", {
@@ -1090,7 +1132,7 @@ function renderGeneralView() {
       autocomplete: "off",
       "aria-label": label,
       value: state.apiKeyDrafts[envKey] || "",
-      placeholder: configured ? "Enter new key…" : "Paste key…",
+      placeholder: configured ? t("apiKey.placeholderNew") : t("apiKey.placeholderPaste"),
       onInput: (e) => {
         const val = e.target.value;
         state.settingsRev += 1;
@@ -1098,16 +1140,16 @@ function renderGeneralView() {
           state.apiKeyDrafts[envKey] = val;
           state.apiKeyClears.delete(envKey);
           badgeNode.className = "badge badge-warning";
-          badgeNode.textContent = "Pending update";
+          badgeNode.textContent = t("apiKey.pendingUpdate");
           state.dirtySettings = true;
         } else {
           delete state.apiKeyDrafts[envKey];
           badgeNode.className = `badge ${state.apiKeyClears.has(envKey) ? "badge-warning" : configured ? "badge-success" : "badge-neutral"}`;
           badgeNode.textContent = state.apiKeyClears.has(envKey)
-            ? "Pending removal"
+            ? t("apiKey.pendingRemoval")
             : configured
-            ? `Saved (${masked || "••••"})`
-            : "Not configured";
+            ? t("apiKey.saved", { masked: masked || "••••" })
+            : t("apiKey.notConfigured");
         }
         updateDirtyBar();
       },
@@ -1123,17 +1165,17 @@ function renderGeneralView() {
         configured ? el("button", {
           type: "button",
           className: "btn btn-sm btn-danger-ghost",
-          text: "Clear",
+          text: t("common.clear"),
           onClick: () => {
             state.settingsRev += 1;
             delete state.apiKeyDrafts[envKey];
             state.apiKeyClears.add(envKey);
             inputNode.value = "";
             badgeNode.className = "badge badge-warning";
-            badgeNode.textContent = "Pending removal";
+            badgeNode.textContent = t("apiKey.pendingRemoval");
             state.dirtySettings = true;
             updateDirtyBar();
-            showToast(`Marked ${label} for removal — click Save changes`);
+            showToast(t("apiKey.markedForRemoval", { label }));
           },
         }) : null,
       ]),
@@ -1142,8 +1184,8 @@ function renderGeneralView() {
 
   stack.append(
     el("section", { className: "section" }, [
-      el("h2", { className: "section-title", text: "API Keys" }),
-      el("p", { className: "section-desc", text: "Stored locally in ~/.pulsescribe/.env with 0600 permissions. Existing secrets are masked." }),
+      el("h2", { className: "section-title", text: t("general.apiKeysTitle") }),
+      el("p", { className: "section-desc", text: t("general.apiKeysDesc") }),
       el("div", { className: "panel" }, keyRows),
     ]),
   );
@@ -1167,14 +1209,19 @@ function updateModelProgressInPlace(progress) {
   const pct = progress.total_bytes
     ? Math.min(100, Math.round((progress.bytes_downloaded / progress.total_bytes) * 100))
     : 0;
-  metaNode.textContent = `Downloading ${progress.file} (${progress.file_index}/${progress.total_files}) — ${pct}%`;
+  metaNode.textContent = t("models.downloading", {
+    file: progress.file,
+    index: progress.file_index,
+    total: progress.total_files,
+    pct,
+  });
   barNode.value = pct;
   return true;
 }
 
 function renderModelsView() {
   const data = state.models;
-  if (!data) return el("p", { className: "muted", text: "Scanning local model cache…" });
+  if (!data) return el("p", { className: "muted", text: t("models.scanning") });
 
   const stack = el("div", { className: "page-stack" });
   const caps = data.capabilities || {};
@@ -1185,25 +1232,25 @@ function renderModelsView() {
         el("div", { className: "metrics-grid" }, [
           el("div", { className: "metric-cell" }, [
             el("span", { className: "metric-label", text: "whisper-rs" }),
-            el("span", { className: "metric-value", text: caps.whisper_compiled ? "Ready" : "Slim Build" }),
+            el("span", { className: "metric-value", text: caps.whisper_compiled ? t("common.ready") : t("models.slimBuild") }),
           ]),
           el("div", { className: "metric-cell" }, [
             el("span", { className: "metric-label", text: "sherpa-onnx" }),
-            el("span", { className: "metric-value", text: caps.sherpa_compiled ? "Ready" : "Slim Build" }),
+            el("span", { className: "metric-value", text: caps.sherpa_compiled ? t("common.ready") : t("models.slimBuild") }),
           ]),
           el("div", { className: "metric-cell" }, [
-            el("span", { className: "metric-label", text: "Installed" }),
+            el("span", { className: "metric-label", text: t("models.installed") }),
             el("span", {
               className: "metric-value tabular",
               text: `${data.models.filter((m) => m.installed).length} / ${data.models.length}`,
             }),
           ]),
           el("div", { className: "metric-cell" }, [
-            el("span", { className: "metric-label", text: "Loaded in RAM" }),
+            el("span", { className: "metric-label", text: t("models.loadedInRam") }),
             el("span", {
               className: "metric-value metric-text",
-              title: data.loaded_model_id || "None",
-              text: data.loaded_model_id || "None",
+              title: data.loaded_model_id || t("common.none"),
+              text: data.loaded_model_id || t("common.none"),
             }),
           ]),
         ]),
@@ -1223,17 +1270,17 @@ function renderModelsView() {
     const isStreamingPreview = m.engine === STREAMING_PREVIEW_ENGINE;
 
     const sourceLabel = m.source === "hugging_face_hub_cache"
-      ? "Hugging Face Cache"
+      ? t("models.sourceHf")
       : m.source === "pulse_scribe_cache"
-      ? "PulseScribe Cache"
+      ? t("models.sourceLocal")
       : null;
 
     const copy = el("div", { className: "row-copy" }, [
       el("div", { className: "row-title" }, [
         el("span", { text: m.display_name }),
         " ",
-        isActive ? el("span", { className: "badge badge-success", text: "Active" }) : null,
-        isStreamingPreview ? el("span", { className: "badge badge-neutral", text: "Live Preview" }) : null,
+        isActive ? el("span", { className: "badge badge-success", text: t("common.active") }) : null,
+        isStreamingPreview ? el("span", { className: "badge badge-neutral", text: t("models.livePreview") }) : null,
       ]),
       el("div", { className: "row-sub tabular" }, [
         el("span", { text: `${m.id} · ${m.installed_bytes ? formatBytes(m.installed_bytes) : `~${m.approx_size_mb} MB`}` }),
@@ -1247,15 +1294,20 @@ function renderModelsView() {
           className: "meta tabular",
           id: `dl-meta-${m.id}`,
           text: prog
-            ? `Downloading ${prog.file} (${prog.file_index}/${prog.total_files}) — ${pct}%`
-            : "Starting download…",
+            ? t("models.downloading", {
+                file: prog.file,
+                index: prog.file_index,
+                total: prog.total_files,
+                pct,
+              })
+            : t("models.startingDownload"),
         }),
         el("progress", {
           className: "progress-bar",
           id: `dl-bar-${m.id}`,
           max: 100,
           value: pct,
-          "aria-label": `Download progress for ${m.display_name}`,
+          "aria-label": t("models.progressAria", { name: m.display_name }),
         }),
       );
     }
@@ -1266,12 +1318,12 @@ function renderModelsView() {
         el("button", {
           type: "button",
           className: "btn btn-sm btn-danger-ghost",
-          text: "Cancel",
+          text: t("common.cancel"),
           onClick: () => runSafe(async () => {
             const cancelled = await invoke("cancel_model_download", { modelId: m.id });
             delete state.downloadProgress[m.id];
             if (cancelled) {
-              showToast(`Cancelling ${m.id}…`);
+              showToast(t("models.cancelling", { id: m.id }));
             } else {
               const models = await invoke("list_local_models");
               reconcileDownloadProgress(models);
@@ -1287,7 +1339,7 @@ function renderModelsView() {
           el("button", {
             type: "button",
             className: "btn btn-sm",
-            text: "Use Model",
+            text: t("models.useModel"),
             onClick: () => runSafe(async () => {
               state.settings = await invoke("save_settings", {
                 patch: { mode: "local", local_model: m.id, api_keys: {} },
@@ -1299,7 +1351,7 @@ function renderModelsView() {
                 state.draft.local_model = m.id;
               }
               state.app = await invoke("get_app_state");
-              showToast(`Switched local model to ${m.id}`);
+              showToast(t("models.switchedToast", { id: m.id }));
               render();
             }),
           }),
@@ -1310,17 +1362,17 @@ function renderModelsView() {
           el("button", {
             type: "button",
             className: "btn btn-sm btn-danger-ghost",
-            "aria-label": `Delete ${m.display_name}`,
+            "aria-label": t("models.deleteAria", { name: m.display_name }),
             onClick: () => runSafe(async () => {
               const ok = await confirmAction({
-                title: `Delete ${m.display_name}?`,
-                message: "This removes the downloaded weights from ~/.pulsescribe/models/.",
-                confirmLabel: "Delete model",
+                title: t("models.deleteTitle", { name: m.display_name }),
+                message: t("models.deleteMessage"),
+                confirmLabel: t("models.deleteConfirm"),
                 destructive: true,
               });
               if (!ok) return;
               state.models = await invoke("delete_local_model", { modelId: m.id });
-              showToast(`Deleted ${m.id}`);
+              showToast(t("models.deletedToast", { id: m.id }));
               render();
             }),
           }, [icon("ic-trash", "ic ic-sm")]),
@@ -1336,7 +1388,7 @@ function renderModelsView() {
             state.localDownloadsInFlight.add(m.id);
             state.downloadProgress[m.id] = {
               model_id: m.id,
-              file: "connecting…",
+              file: t("models.connecting"),
               file_index: 1,
               total_files: 1,
               bytes_downloaded: 0,
@@ -1349,7 +1401,7 @@ function renderModelsView() {
               delete state.downloadProgress[m.id];
               reconcileDownloadProgress(models);
               state.models = models;
-              showToast(`Downloaded ${m.display_name}`);
+              showToast(t("models.downloadedToast", { name: m.display_name }));
               render();
             } catch (e) {
               state.localDownloadsInFlight.delete(m.id);
@@ -1361,7 +1413,7 @@ function renderModelsView() {
               render();
             }
           },
-        }, [icon("ic-download", "ic ic-sm"), el("span", { text: "Download" })]),
+        }, [icon("ic-download", "ic ic-sm"), el("span", { text: t("models.download") })]),
       );
     }
 
@@ -1370,8 +1422,8 @@ function renderModelsView() {
 
   stack.append(
     el("section", { className: "section" }, [
-      el("h2", { className: "section-title", text: "Model Catalog" }),
-      el("p", { className: "section-desc", text: "Existing Hugging Face Hub snapshots are detected automatically without duplicating weights." }),
+      el("h2", { className: "section-title", text: t("models.catalogTitle") }),
+      el("p", { className: "section-desc", text: t("models.catalogDesc") }),
       el("div", { className: "panel" }, rows),
     ]),
   );
@@ -1389,20 +1441,21 @@ async function savePromptsAction() {
     if (state.promptsRev === saveRev) {
       state.promptDrafts = { ...saved.drafts };
       state.dirtyPrompts = false;
-      showToast("Prompts saved to prompts.toml");
+      showToast(t("prompts.savedToast"));
       render();
     } else {
       state.dirtyPrompts = true;
-      showToast("Prompts saved — newer edits remain unsaved");
+      showToast(t("prompts.savedPartialToast"));
     }
   });
 }
 
 function renderPromptsView() {
   const data = state.prompts;
-  if (!data) return el("p", { className: "muted", text: "Loading prompts…" });
+  if (!data) return el("p", { className: "muted", text: t("prompts.loading") });
 
   const currentCtx = data.contexts.find((c) => c.key === state.activePromptTab) || data.contexts[0];
+  const currentLoc = localizePromptContext(currentCtx);
   const currentVal = state.promptDrafts[currentCtx.key] ?? "";
   const defaultVal = data.defaults[currentCtx.key] ?? "";
   const isModified = currentVal !== defaultVal;
@@ -1420,7 +1473,7 @@ function renderPromptsView() {
       el("div", {
         className: "tab-bar",
         role: "tablist",
-        "aria-label": "Prompt contexts",
+        "aria-label": t("prompts.contextsAria"),
         onKeydown: (e) => {
           if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
           e.preventDefault();
@@ -1431,6 +1484,7 @@ function renderPromptsView() {
       }, data.contexts.map((ctx) => {
         const custom = (state.promptDrafts[ctx.key] ?? "") !== (data.defaults[ctx.key] ?? "");
         const selected = ctx.key === currentCtx.key;
+        const loc = localizePromptContext(ctx);
         return el("button", {
           type: "button",
           role: "tab",
@@ -1441,8 +1495,8 @@ function renderPromptsView() {
           "aria-controls": "prompt-tabpanel",
           onClick: () => switchPromptTab(ctx.key, true),
         }, [
-          el("span", { text: ctx.label }),
-          custom ? el("span", { className: "badge badge-warning", text: "Custom" }) : null,
+          el("span", { text: loc.label }),
+          custom ? el("span", { className: "badge badge-warning", text: t("common.custom") }) : null,
         ]);
       })),
       el("div", {
@@ -1453,24 +1507,24 @@ function renderPromptsView() {
       }, [
         el("div", { className: "panel-row stack" }, [
           el("div", { className: "section-head" }, [
-            el("div", { className: "row-title", text: currentCtx.label }),
+            el("div", { className: "row-title", text: currentLoc.label }),
             isModified ? el("button", {
               type: "button",
               className: "btn btn-sm btn-ghost",
-              text: "Revert section",
+              text: t("prompts.revertSection"),
               onClick: () => {
                 state.promptDrafts[currentCtx.key] = defaultVal;
                 state.promptsRev += 1;
                 state.dirtyPrompts = true;
                 render();
               },
-            }) : el("span", { className: "badge badge-neutral", text: "Default" }),
+            }) : el("span", { className: "badge badge-neutral", text: t("common.default") }),
           ]),
-          el("p", { className: "section-desc", text: currentCtx.description }),
+          el("p", { className: "section-desc", text: currentLoc.description }),
           el("textarea", {
             className: "textarea",
             id: "prompt-editor",
-            "aria-label": `${currentCtx.label} prompt`,
+            "aria-label": t("prompts.editorAria", { label: currentLoc.label }),
             value: currentVal,
             onInput: (e) => {
               state.promptDrafts[currentCtx.key] = e.target.value;
@@ -1494,18 +1548,18 @@ async function saveVocabularyAction() {
     if (state.vocabRev === saveRev) {
       state.vocabKeywords = [...saved.keywords];
       state.dirtyVocab = false;
-      showToast(`Saved ${state.vocabKeywords.length} vocabulary terms`);
+      showToast(t("vocab.savedToast", { count: state.vocabKeywords.length }));
       render();
     } else {
       state.dirtyVocab = true;
-      showToast("Vocabulary saved — newer edits remain unsaved");
+      showToast(t("vocab.savedPartialToast"));
     }
   });
 }
 
 function renderVocabularyView() {
   const data = state.vocabulary;
-  if (!data) return el("p", { className: "muted", text: "Loading vocabulary…" });
+  if (!data) return el("p", { className: "muted", text: t("vocab.loading") });
 
   const countBadge = el("span", { className: "badge tabular" });
   const chipsHost = el("div", { className: "panel-row stack" });
@@ -1515,14 +1569,18 @@ function renderVocabularyView() {
     const overLocal = count > data.local_limit;
     const overDeepgram = count > data.deepgram_limit;
     countBadge.className = `badge tabular ${overDeepgram ? "badge-error" : overLocal ? "badge-warning" : "badge-neutral"}`;
-    countBadge.textContent = `${count} terms (local ≤ ${data.local_limit}, Deepgram ≤ ${data.deepgram_limit})`;
+    countBadge.textContent = t("vocab.count", {
+      count,
+      local: data.local_limit,
+      deepgram: data.deepgram_limit,
+    });
 
     if (count === 0) {
       chipsHost.replaceChildren(
         el("div", { className: "empty-state" }, [
           icon("ic-book"),
-          el("h3", { text: "No custom vocabulary yet" }),
-          el("p", { text: "Add names, technical acronyms, or brand spellings to improve accuracy." }),
+          el("h3", { text: t("vocab.emptyTitle") }),
+          el("p", { text: t("vocab.emptyDesc") }),
         ]),
       );
     } else {
@@ -1533,7 +1591,7 @@ function renderVocabularyView() {
             el("button", {
               type: "button",
               className: "chip-remove",
-              "aria-label": `Remove ${kw}`,
+              "aria-label": t("vocab.removeAria", { term: kw }),
               onClick: () => {
                 state.vocabKeywords.splice(idx, 1);
                 state.vocabRev += 1;
@@ -1551,8 +1609,8 @@ function renderVocabularyView() {
     className: "input input-wide",
     id: "vocab-add-input",
     type: "text",
-    "aria-label": "Add custom vocabulary terms",
-    placeholder: "Add terms (comma-separated, e.g. PulseScribe, Deepgram, Kliebhan)…",
+    "aria-label": t("vocab.inputAria"),
+    placeholder: t("vocab.inputPlaceholder"),
     onKeydown: (e) => {
       if (e.key === "Enter") {
         e.preventDefault();
@@ -1588,10 +1646,10 @@ function renderVocabularyView() {
   return el("div", { className: "page-stack" }, [
     el("section", { className: "section" }, [
       el("div", { className: "section-head" }, [
-        el("h2", { className: "section-title", text: "Custom Keywords" }),
+        el("h2", { className: "section-title", text: t("vocab.sectionTitle") }),
         countBadge,
       ]),
-      el("p", { className: "section-desc", text: "Proper nouns, product names, and domain terms biased during transcription." }),
+      el("p", { className: "section-desc", text: t("vocab.sectionDesc") }),
       el("div", { className: "panel" }, [
         el("div", { className: "panel-row" }, [
           addInput,
@@ -1599,7 +1657,7 @@ function renderVocabularyView() {
             type: "button",
             className: "btn",
             onClick: addTermsFromInput,
-          }, [icon("ic-plus", "ic ic-sm"), el("span", { text: "Add" })]),
+          }, [icon("ic-plus", "ic ic-sm"), el("span", { text: t("common.add") })]),
         ]),
         chipsHost,
       ]),
@@ -1622,11 +1680,9 @@ function renderHistoryList(container) {
       el("div", { className: "panel" }, [
         el("div", { className: "empty-state" }, [
           icon("ic-clock"),
-          el("h3", { text: q ? "No matching transcripts" : "No transcripts yet" }),
+          el("h3", { text: q ? t("history.emptyMatchTitle") : t("history.emptyTitle") }),
           el("p", {
-            text: q
-              ? "Try a different search query or switch the filter back to All."
-              : "Your recent dictations will appear here automatically after your first transcription.",
+            text: q ? t("history.emptyMatchDesc") : t("history.emptyDesc"),
           }),
         ]),
       ]),
@@ -1651,29 +1707,29 @@ function renderHistoryList(container) {
           el("div", { className: "row-sub tabular" }, [
             el("span", { text: metaParts.join(" · ") }),
             entry.refined ? " " : null,
-            entry.refined ? el("span", { className: "badge badge-success", text: "Refined" }) : null,
+            entry.refined ? el("span", { className: "badge badge-success", text: t("history.refinedBadge") }) : null,
           ]),
         ]),
         el("div", { className: "row-ctrl" }, [
           el("button", {
             type: "button",
             className: "icon-btn",
-            "aria-label": "Copy transcript",
-            title: "Copy",
+            "aria-label": t("history.copyAria"),
+            title: t("common.copy"),
             onClick: () => runSafe(async () => {
               await invoke("copy_text_to_clipboard", { text: entry.text });
-              showToast("Copied transcript to clipboard");
+              showToast(t("history.copiedToast"));
             }),
           }, [icon("ic-copy", "ic ic-sm")]),
           el("button", {
             type: "button",
             className: "icon-btn",
-            "aria-label": "Delete transcript",
-            title: "Delete",
+            "aria-label": t("history.deleteAria"),
+            title: t("common.delete"),
             onClick: () => runSafe(async () => {
               await invoke("delete_history_entry", { timestamp: entry.timestamp, text: entry.text });
               state.history = await invoke("get_history", { limit: 200 });
-              showToast("Transcript deleted");
+              showToast(t("history.deletedToast"));
               renderHistoryList(container);
               renderTopbarActions();
             }),
@@ -1686,7 +1742,10 @@ function renderHistoryList(container) {
       el("section", { className: "section" }, [
         el("div", { className: "day-head" }, [
           el("span", { className: "day-title", text: day }),
-          el("span", { className: "meta tabular", text: `${items.length} ${items.length === 1 ? "entry" : "entries"}` }),
+          el("span", {
+            className: "meta tabular",
+            text: items.length === 1 ? t("history.entryOne") : t("history.entryMany", { count: items.length }),
+          }),
         ]),
         el("div", { className: "panel" }, rows),
       ]),
@@ -1704,8 +1763,8 @@ function renderHistoryView() {
     id: "history-search",
     type: "search",
     value: state.historyQuery,
-    placeholder: "Search transcripts…",
-    "aria-label": "Search transcripts",
+    placeholder: t("history.searchPlaceholder"),
+    "aria-label": t("history.searchAria"),
     onInput: (e) => {
       state.historyQuery = e.target.value;
       renderHistoryList(listContainer);
@@ -1716,14 +1775,14 @@ function renderHistoryView() {
     type: "button",
     className: `seg-btn${state.historyFilter === "all" ? " active" : ""}`,
     "aria-pressed": state.historyFilter === "all" ? "true" : "false",
-    text: "All",
+    text: t("history.filterAll"),
     onClick: () => setFilter("all"),
   });
   const btnRefined = el("button", {
     type: "button",
     className: `seg-btn${state.historyFilter === "refined" ? " active" : ""}`,
     "aria-pressed": state.historyFilter === "refined" ? "true" : "false",
-    text: "Refined",
+    text: t("history.filterRefined"),
     onClick: () => setFilter("refined"),
   });
 
@@ -1739,7 +1798,7 @@ function renderHistoryView() {
   stack.append(
     el("div", { className: "toolbar" }, [
       el("div", { className: "search-wrap" }, [icon("ic-search", "ic ic-sm"), searchInput]),
-      el("div", { className: "segmented", role: "group", "aria-label": "Filter history" }, [btnAll, btnRefined]),
+      el("div", { className: "segmented", role: "group", "aria-label": t("history.filterAria") }, [btnAll, btnRefined]),
     ]),
     listContainer,
   );
@@ -1763,15 +1822,15 @@ async function setOnboardingStepAction(stepId) {
 
 function renderOnboardingView() {
   const stack = el("div", { className: "page-stack" });
-  const currentIdx = Math.max(0, ONBOARDING_STEPS.findIndex((s) => s.id === state.onboardingStep));
+  const currentIdx = Math.max(0, ONBOARDING_STEP_IDS.indexOf(state.onboardingStep));
 
   stack.append(
-    el("div", { className: "stepper", role: "list" }, ONBOARDING_STEPS.map((step, i) =>
+    el("div", { className: "stepper", role: "list" }, ONBOARDING_STEP_IDS.map((stepId, i) =>
       el("span", {
         role: "listitem",
         className: `step-pill${i === currentIdx ? " active" : i < currentIdx ? " done" : ""}`,
         "aria-current": i === currentIdx ? "step" : null,
-        text: step.label,
+        text: t(`onboarding.step.${stepId}`),
       }),
     )),
   );
@@ -1780,15 +1839,15 @@ function renderOnboardingView() {
   const step = state.onboardingStep;
 
   if (step === "choose_goal") {
-    const choices = [
-      { id: "fast", title: "Fast Cloud", desc: "Deepgram live streaming with lowest latency and instant interim captions." },
-      { id: "private", title: "Private Offline", desc: "100% local transcription with Whisper or Parakeet — audio never leaves your device." },
-      { id: "advanced", title: "Custom / Advanced", desc: "OpenAI, Groq, or your own OpenAI-compatible server with LLM refinement." },
-    ];
+    const choices = ["fast", "private", "advanced"].map((id) => ({
+      id,
+      title: t(`onboarding.choice.${id}.title`),
+      desc: t(`onboarding.choice.${id}.desc`),
+    }));
     panel.append(
       el("div", { className: "panel-row stack" }, [
-        el("h2", { className: "section-title", text: "How do you want to dictate?" }),
-        el("p", { className: "section-desc", text: "You can change provider, model, and API keys anytime in General." }),
+        el("h2", { className: "section-title", text: t("onboarding.goalTitle") }),
+        el("p", { className: "section-desc", text: t("onboarding.goalDesc") }),
         el("div", { className: "choice-grid" }, choices.map((c) => {
           const selected = state.onboardingChoice === c.id;
           return el("button", {
@@ -1811,11 +1870,14 @@ function renderOnboardingView() {
         el("div", { className: "row-sub", text: desc }),
       ]),
       el("div", { className: "row-ctrl" }, [
-        el("span", { className: `badge ${granted ? "badge-success" : "badge-warning"}`, text: granted ? "Granted" : "Required" }),
+        el("span", {
+          className: `badge ${granted ? "badge-success" : "badge-warning"}`,
+          text: granted ? t("onboarding.perm.granted") : t("onboarding.perm.required"),
+        }),
         !granted ? el("button", {
           type: "button",
           className: "btn btn-sm",
-          text: "Request",
+          text: t("onboarding.perm.request"),
           onClick: () => runSafe(async () => {
             await invoke("request_permission", { kind });
             state.permissions = await invoke("check_permissions");
@@ -1826,15 +1888,15 @@ function renderOnboardingView() {
         !granted ? el("button", {
           type: "button",
           className: "btn btn-sm btn-ghost",
-          text: "Open Settings",
+          text: t("onboarding.perm.openSettings"),
           onClick: () => runSafe(() => invoke("open_privacy_settings", { kind })),
         }) : null,
       ]),
     ]);
     panel.append(
-      permRow("microphone", "Microphone", "Captures your voice while dictating.", perms.microphone === "authorized"),
-      permRow("accessibility", "Accessibility", "Allows pasting transcripts into the active window.", perms.accessibility),
-      permRow("input_monitoring", "Input Monitoring", "Enables global hold-to-record hotkeys such as Fn.", perms.input_monitoring),
+      permRow("microphone", t("onboarding.perm.mic.title"), t("onboarding.perm.mic.desc"), perms.microphone === "authorized"),
+      permRow("accessibility", t("onboarding.perm.acc.title"), t("onboarding.perm.acc.desc"), perms.accessibility),
+      permRow("input_monitoring", t("onboarding.perm.input.title"), t("onboarding.perm.input.desc"), perms.input_monitoring),
     );
   } else if (step === "hotkey") {
     const wizBadge = (res) => {
@@ -1844,10 +1906,10 @@ function renderOnboardingView() {
     };
     panel.append(
       el("div", { className: "panel-row stack" }, [
-        el("h2", { className: "section-title", text: "Choose your dictation hotkeys" }),
+        el("h2", { className: "section-title", text: t("onboarding.hotkeyTitle") }),
         el("div", { className: "field-grid" }, [
           el("div", { className: "field" }, [
-            el("label", { for: "wiz-toggle", text: "Toggle Hotkey" }),
+            el("label", { for: "wiz-toggle", text: t("general.toggleHotkeyTitle") }),
             el("input", {
               className: "input input-wide mono",
               id: "wiz-toggle",
@@ -1861,7 +1923,7 @@ function renderOnboardingView() {
             el("div", { id: "wiz-hotkey-note-toggle" }, [wizBadge(state.onboardingHotkeyValidation.toggle)]),
           ]),
           el("div", { className: "field" }, [
-            el("label", { for: "wiz-hold", text: "Hold-to-Record Hotkey" }),
+            el("label", { for: "wiz-hold", text: t("general.holdHotkeyTitle") }),
             el("input", {
               className: "input input-wide mono",
               id: "wiz-hold",
@@ -1885,10 +1947,10 @@ function renderOnboardingView() {
     const isProcessing = st === "transcribing" || st === "refining";
     panel.append(
       el("div", { className: "panel-row stack" }, [
-        el("h2", { className: "section-title", text: "Try a test dictation" }),
+        el("h2", { className: "section-title", text: t("onboarding.testTitle") }),
         el("p", {
           className: "section-desc",
-          text: "Press your hotkey or click below. Test transcripts stay inside this box and are never pasted.",
+          text: t("onboarding.testDesc"),
         }),
         el("div", { className: "row-ctrl" }, [
           isRecording
@@ -1896,37 +1958,37 @@ function renderOnboardingView() {
                 type: "button",
                 className: "btn btn-danger",
                 onClick: () => runSafe(() => invoke("toggle_dictation")),
-              }, [icon("ic-square", "ic ic-sm"), el("span", { text: "Stop & Transcribe" })])
+              }, [icon("ic-square", "ic ic-sm"), el("span", { text: t("onboarding.testStop") })])
             : isProcessing
             ? el("button", {
                 type: "button",
                 className: "btn btn-danger",
                 onClick: () => runSafe(() => invoke("cancel_dictation")),
-              }, [icon("ic-x", "ic ic-sm"), el("span", { text: "Cancel Test" })])
+              }, [icon("ic-x", "ic ic-sm"), el("span", { text: t("onboarding.testCancel") })])
             : el("button", {
                 type: "button",
                 className: "btn btn-primary",
                 onClick: () => runSafe(() => invoke("start_test_dictation")),
-              }, [icon("ic-mic", "ic ic-sm"), el("span", { text: "Start Test Dictation" })]),
+              }, [icon("ic-mic", "ic ic-sm"), el("span", { text: t("onboarding.testStart") })]),
         ]),
         transcript ? el("pre", { className: "code-pre", text: transcript }) : null,
         testErr ? el("span", { className: "badge badge-error", text: testErr }) : null,
       ]),
     );
   } else {
-    const toggleText = state.settings?.toggle_hotkey || "Not set";
-    const holdText = state.settings?.hold_hotkey || "Not set";
+    const toggleText = state.settings?.toggle_hotkey || t("common.notSet");
+    const holdText = state.settings?.hold_hotkey || t("common.notSet");
     panel.append(
       el("div", { className: "panel-row stack" }, [
-        el("h2", { className: "section-title", text: "PulseScribe is ready" }),
+        el("h2", { className: "section-title", text: t("onboarding.readyTitle") }),
         el("p", {
           className: "section-desc",
-          text: "Close this window anytime — PulseScribe keeps running silently in your menu bar / system tray with zero WebView RAM.",
+          text: t("onboarding.readyDesc"),
         }),
         el("div", { className: "row-sub" }, [
-          "Toggle: ",
+          t("onboarding.toggleLabel"),
           el("span", { className: "kbd", text: toggleText }),
-          " · Hold: ",
+          t("onboarding.holdLabel"),
           el("span", { className: "kbd", text: holdText }),
         ]),
       ]),
@@ -1938,15 +2000,15 @@ function renderOnboardingView() {
       ? el("button", {
           type: "button",
           className: "btn btn-ghost",
-          text: "Back",
-          onClick: () => setOnboardingStepAction(ONBOARDING_STEPS[currentIdx - 1].id),
+          text: t("common.back"),
+          onClick: () => setOnboardingStepAction(ONBOARDING_STEP_IDS[currentIdx - 1]),
         })
       : el("span"),
-    currentIdx < ONBOARDING_STEPS.length - 1
+    currentIdx < ONBOARDING_STEP_IDS.length - 1
       ? el("button", {
           type: "button",
           className: "btn btn-primary",
-          text: "Continue",
+          text: t("common.continue"),
           onClick: () => runSafe(async () => {
             clearError();
             if (step === "choose_goal") {
@@ -1966,7 +2028,7 @@ function renderOnboardingView() {
                 ? validation.hold
                 : null;
               if (invalid) {
-                showError(invalid.message || "Fix the invalid hotkey before continuing.");
+                showError(invalid.message || t("onboarding.hotkeyInvalid"));
                 render();
                 return;
               }
@@ -1980,18 +2042,18 @@ function renderOnboardingView() {
               state.onboardingHotkeyValidation = { toggle: null, hold: null };
               if (!state.dirtySettings) state.draft = structuredClone(state.settings);
             }
-            await setOnboardingStepAction(ONBOARDING_STEPS[currentIdx + 1].id);
+            await setOnboardingStepAction(ONBOARDING_STEP_IDS[currentIdx + 1]);
           }),
         })
       : el("button", {
           type: "button",
           className: "btn btn-primary",
-          text: "Finish Setup",
+          text: t("onboarding.finish"),
           onClick: () => runSafe(async () => {
             await invoke("set_onboarding_state", { step: "done", choice: state.onboardingChoice });
             state.onboardingStep = "choose_goal";
             state.app = await invoke("get_app_state");
-            showToast("Setup complete");
+            showToast(t("onboarding.completeToast"));
             await navigate("general");
           }),
         }),
@@ -2005,16 +2067,17 @@ function renderOnboardingView() {
 function renderDiagnosticsView() {
   const stack = el("div", { className: "page-stack" });
   const app = state.app || {};
+  const status = localizeDaemonStatus(app);
   const perms = state.permissions || { microphone: "unknown", accessibility: false, input_monitoring: false };
   const isError = app.daemon_state === "error";
   const missingPerms = perms.microphone !== "authorized" || !perms.accessibility || !perms.input_monitoring;
 
   const verdictCls = isError ? "error" : missingPerms ? "warn" : "";
   const verdictText = isError
-    ? "Daemon reported an error"
+    ? t("diag.verdictError")
     : missingPerms
-    ? "Running with missing permissions"
-    : "PulseScribe is running normally";
+    ? t("diag.verdictPerms")
+    : t("diag.verdictOk");
 
   stack.append(
     el("div", { className: "verdict" }, [
@@ -2023,7 +2086,7 @@ function renderDiagnosticsView() {
       ]),
       el("div", {}, [
         el("h2", { className: "verdict-title", text: verdictText }),
-        el("div", { className: "meta", text: app.status_hint || "All subsystems ready." }),
+        el("div", { className: "meta", text: status.hint }),
       ]),
     ]),
   );
@@ -2032,19 +2095,19 @@ function renderDiagnosticsView() {
     el("div", { className: "panel" }, [
       el("div", { className: "metrics-grid" }, [
         el("div", { className: "metric-cell" }, [
-          el("span", { className: "metric-label", text: "Version" }),
+          el("span", { className: "metric-label", text: t("diag.metricVersion") }),
           el("span", { className: "metric-value tabular", text: `v${app.version || "2.0.0"}` }),
         ]),
         el("div", { className: "metric-cell" }, [
-          el("span", { className: "metric-label", text: "Platform" }),
+          el("span", { className: "metric-label", text: t("diag.metricPlatform") }),
           el("span", { className: "metric-value", text: (app.platform || "desktop").toUpperCase() }),
         ]),
         el("div", { className: "metric-cell" }, [
-          el("span", { className: "metric-label", text: "Provider" }),
+          el("span", { className: "metric-label", text: t("diag.metricProvider") }),
           el("span", { className: "metric-value metric-text", text: app.mode || "deepgram" }),
         ]),
         el("div", { className: "metric-cell" }, [
-          el("span", { className: "metric-label", text: "Local Models" }),
+          el("span", { className: "metric-label", text: t("diag.metricModels") }),
           el("span", {
             className: "metric-value tabular",
             text: String((state.models?.models || []).filter((m) => m.installed).length),
@@ -2057,18 +2120,18 @@ function renderDiagnosticsView() {
   const upd = state.updateResult;
   stack.append(
     el("section", { className: "section" }, [
-      el("h2", { className: "section-title", text: "Updates & Support" }),
+      el("h2", { className: "section-title", text: t("diag.updatesSection") }),
       el("div", { className: "panel" }, [
         el("div", { className: "panel-row" }, [
           el("div", { className: "row-copy" }, [
-            el("div", { className: "row-title", text: "Software Updates" }),
+            el("div", { className: "row-title", text: t("diag.softwareUpdates") }),
             el("div", {
               className: "row-sub",
               text: upd
                 ? upd.error || (upd.update_available
-                    ? `Version v${upd.latest_version} is available (installed: v${upd.current_version}).`
-                    : `Up to date (v${upd.current_version}).`)
-                : "Check GitHub Releases for newer builds.",
+                    ? t("diag.updateAvailable", { latest: upd.latest_version, current: upd.current_version })
+                    : t("diag.upToDate", { current: upd.current_version }))
+                : t("diag.checkPrompt"),
             }),
           ]),
           el("div", { className: "row-ctrl" }, [
@@ -2076,20 +2139,20 @@ function renderDiagnosticsView() {
               ? el("button", {
                   type: "button",
                   className: "btn btn-sm btn-primary",
-                  text: "Download Release",
+                  text: t("diag.downloadRelease"),
                   onClick: () => runSafe(() => invoke("open_release_url", { url: upd.release_url })),
                 })
               : null,
             el("button", {
               type: "button",
               className: "btn btn-sm",
-              text: "Check for Updates",
+              text: t("diag.checkForUpdates"),
               onClick: () => runSafe(async () => {
                 state.updateResult = await invoke("check_for_updates");
                 if (state.updateResult.error) {
                   showError(state.updateResult.error);
                 } else {
-                  showToast(state.updateResult.update_available ? "Update available" : "Up to date");
+                  showToast(state.updateResult.update_available ? t("diag.toastUpdateAvailable") : t("diag.toastUpToDate"));
                 }
                 render();
               }),
@@ -2098,14 +2161,14 @@ function renderDiagnosticsView() {
         ]),
         el("div", { className: "panel-row" }, [
           el("div", { className: "row-copy" }, [
-            el("div", { className: "row-title", text: "Configuration Directory" }),
+            el("div", { className: "row-title", text: t("diag.configDirTitle") }),
             el("div", { className: "row-sub mono", text: app.config_dir || "~/.pulsescribe" }),
           ]),
           el("div", { className: "row-ctrl" }, [
             el("button", {
               type: "button",
               className: "btn btn-sm",
-              text: "Open",
+              text: t("common.open"),
               onClick: () => runSafe(() => invoke("open_config_dir")),
             }),
           ]),
@@ -2120,7 +2183,7 @@ function renderDiagnosticsView() {
         el("details", { className: "panel-details", open: true }, [
           el("summary", {}, [
             el("div", {}, [
-              el("div", { className: "row-title", text: "Exported Diagnostics Bundle" }),
+              el("div", { className: "row-title", text: t("diag.exportedBundle") }),
               el("div", { className: "row-sub mono", text: state.diagnostics.path }),
             ]),
             icon("ic-chevron-right", "ic chev"),
@@ -2255,6 +2318,11 @@ async function bootstrap() {
     ]);
     state.app = app;
     state.permissions = perms;
+    const { pref, resolved } = setUiLanguagePref(app.ui_language || "system");
+    applyStaticTranslations();
+    if (pref === "system" && app.resolved_ui_language && app.resolved_ui_language !== resolved) {
+      invoke("save_ui_language", { language: "system", resolved }).catch(() => {});
+    }
     applyThemePref(themePref);
     updateDaemonBadge();
     await navigate(app.initial_route || "general");

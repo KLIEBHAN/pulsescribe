@@ -19,6 +19,12 @@ function localIsoStamp(offsetMs = 0) {
 
 function createPreviewStore() {
   let autostartEnabled = false;
+  let uiLanguagePref = "system";
+  try {
+    const saved = window.localStorage?.getItem("pulsescribe_ui_language");
+    if (saved === "system" || saved === "en" || saved === "de") uiLanguagePref = saved;
+  } catch { /* ignore */ }
+  let uiLanguageResolved = uiLanguagePref === "de" ? "de" : "en";
   const settings = {
     mode: "deepgram",
     model: "nova-3",
@@ -218,6 +224,8 @@ function createPreviewStore() {
           toggle_hotkey: settings.toggle_hotkey,
           hold_hotkey: settings.hold_hotkey,
           mode: settings.mode,
+          ui_language: uiLanguagePref,
+          resolved_ui_language: uiLanguageResolved,
         };
       case "get_settings":
         return structuredClone(settings);
@@ -389,6 +397,13 @@ function createPreviewStore() {
       case "save_theme_preference":
         themePref = { theme: args.theme || "system", accent: args.accent || "blue" };
         return { ...themePref };
+      case "save_ui_language": {
+        const next = args.language === "de" || args.language === "en" ? args.language : "system";
+        uiLanguagePref = next;
+        uiLanguageResolved = next === "system" ? (args.resolved === "de" ? "de" : "en") : next;
+        try { window.localStorage?.setItem("pulsescribe_ui_language", uiLanguagePref); } catch { /* ignore */ }
+        return { language: uiLanguagePref, resolved: uiLanguageResolved };
+      }
       case "open_config_dir":
         return null;
       case "open_release_url":

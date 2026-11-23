@@ -106,7 +106,7 @@
   </svg>
 
   <div class="shell" id="shell">
-    <aside class="sidebar" id="sidebar" aria-label="Main navigation">
+    <aside class="sidebar" id="sidebar" aria-label="Main navigation" data-i18n-aria="nav.main">
       <div class="sidebar-top">
         <div class="brand">
           <span class="brand-mark" aria-hidden="true">
@@ -121,6 +121,8 @@
           aria-label="Hide sidebar"
           aria-expanded="true"
           title="Hide sidebar"
+          data-i18n-aria="nav.hideSidebar"
+          data-i18n-title="nav.hideSidebar"
         >
           <svg class="ic"><use href="#ic-panel-left" /></svg>
         </button>
@@ -129,56 +131,56 @@
       <nav class="nav-list" id="nav-list">
         <button type="button" class="nav-item" data-route="general">
           <svg class="ic"><use href="#ic-sliders" /></svg>
-          <span class="nav-label">General</span>
+          <span class="nav-label" data-i18n="route.general">General</span>
         </button>
         <button type="button" class="nav-item" data-route="models">
           <svg class="ic"><use href="#ic-cpu" /></svg>
-          <span class="nav-label">Local Models</span>
+          <span class="nav-label" data-i18n="route.models">Local Models</span>
         </button>
         <button type="button" class="nav-item" data-route="prompts">
           <svg class="ic"><use href="#ic-sparkles" /></svg>
-          <span class="nav-label">Prompts</span>
+          <span class="nav-label" data-i18n="route.prompts">Prompts</span>
         </button>
         <button type="button" class="nav-item" data-route="vocabulary">
           <svg class="ic"><use href="#ic-book" /></svg>
-          <span class="nav-label">Vocabulary</span>
+          <span class="nav-label" data-i18n="route.vocabulary">Vocabulary</span>
         </button>
         <button type="button" class="nav-item" data-route="history">
           <svg class="ic"><use href="#ic-clock" /></svg>
-          <span class="nav-label">History</span>
+          <span class="nav-label" data-i18n="route.history">History</span>
         </button>
         <div class="nav-sep" role="separator"></div>
         <button type="button" class="nav-item" data-route="onboarding">
           <svg class="ic"><use href="#ic-compass" /></svg>
-          <span class="nav-label">Setup Wizard</span>
+          <span class="nav-label" data-i18n="route.onboarding">Setup Wizard</span>
         </button>
         <button type="button" class="nav-item" data-route="diagnostics" id="nav-diagnostics">
           <svg class="ic"><use href="#ic-activity" /></svg>
-          <span class="nav-label">Diagnostics</span>
+          <span class="nav-label" data-i18n="route.diagnostics">Diagnostics</span>
           <span class="nav-dot" id="nav-status-dot" aria-hidden="true"></span>
         </button>
       </nav>
 
       <div class="sidebar-footer">
-        <div class="segmented" role="group" aria-label="Color mode">
-          <button type="button" class="seg-btn" data-theme-choice="system" aria-label="System theme" title="System">
+        <div class="segmented" role="group" aria-label="Color mode" data-i18n-aria="theme.group">
+          <button type="button" class="seg-btn" data-theme-choice="system" aria-label="System theme" title="System" data-i18n-aria="theme.systemAria" data-i18n-title="theme.system">
             <svg class="ic ic-sm"><use href="#ic-monitor" /></svg>
-            <span>System</span>
+            <span data-i18n="theme.system">System</span>
           </button>
-          <button type="button" class="seg-btn" data-theme-choice="light" aria-label="Light theme" title="Light">
+          <button type="button" class="seg-btn" data-theme-choice="light" aria-label="Light theme" title="Light" data-i18n-aria="theme.lightAria" data-i18n-title="theme.light">
             <svg class="ic ic-sm"><use href="#ic-sun" /></svg>
-            <span>Light</span>
+            <span data-i18n="theme.light">Light</span>
           </button>
-          <button type="button" class="seg-btn" data-theme-choice="dark" aria-label="Dark theme" title="Dark">
+          <button type="button" class="seg-btn" data-theme-choice="dark" aria-label="Dark theme" title="Dark" data-i18n-aria="theme.darkAria" data-i18n-title="theme.dark">
             <svg class="ic ic-sm"><use href="#ic-moon" /></svg>
-            <span>Dark</span>
+            <span data-i18n="theme.dark">Dark</span>
           </button>
         </div>
         <div class="accent-row">
-          <span class="accent-label">Accent</span>
-          <div class="segmented segmented-sm" role="group" aria-label="Accent color">
-            <button type="button" class="seg-btn" data-accent-choice="blue">Blue</button>
-            <button type="button" class="seg-btn" data-accent-choice="mono">Mono</button>
+          <span class="accent-label" data-i18n="accent.label">Accent</span>
+          <div class="segmented segmented-sm" role="group" aria-label="Accent color" data-i18n-aria="accent.group">
+            <button type="button" class="seg-btn" data-accent-choice="blue" data-i18n="accent.blue">Blue</button>
+            <button type="button" class="seg-btn" data-accent-choice="mono" data-i18n="accent.mono">Mono</button>
           </div>
         </div>
       </div>
@@ -194,11 +196,13 @@
             aria-label="Show sidebar"
             aria-expanded="false"
             title="Show sidebar"
+            data-i18n-aria="nav.showSidebar"
+            data-i18n-title="nav.showSidebar"
           >
             <svg class="ic"><use href="#ic-panel-left" /></svg>
           </button>
-          <h1 class="page-title" id="page-title">General</h1>
-          <span class="badge badge-neutral" id="daemon-badge">Ready</span>
+          <h1 class="page-title" id="page-title" data-i18n="route.general">General</h1>
+          <span class="badge badge-neutral" id="daemon-badge" data-i18n="common.ready">Ready</span>
         </div>
         <div class="topbar-actions" id="topbar-actions"></div>
       </header>
@@ -207,7 +211,7 @@
         <div class="error-banner" id="error-banner" role="alert" hidden>
           <svg class="ic"><use href="#ic-alert" /></svg>
           <span class="error-banner-text" id="error-banner-text"></span>
-          <button type="button" class="icon-btn" id="btn-dismiss-error" aria-label="Dismiss error">
+          <button type="button" class="icon-btn" id="btn-dismiss-error" aria-label="Dismiss error" data-i18n-aria="common.dismissError">
             <svg class="ic ic-sm"><use href="#ic-x" /></svg>
           </button>
         </div>
@@ -217,49 +221,49 @@
         <footer class="sticky-save-bar" id="sticky-save-bar" hidden>
           <div class="sticky-save-info">
             <span class="unsaved-dot" aria-hidden="true"></span>
-            <span id="sticky-save-label">Unsaved changes</span>
+            <span id="sticky-save-label" data-i18n="common.unsavedChanges">Unsaved changes</span>
           </div>
           <div class="sticky-save-actions">
-            <button type="button" class="btn btn-ghost" id="btn-discard-changes">Discard</button>
-            <button type="button" class="btn btn-primary" id="btn-save-changes">Save changes</button>
+            <button type="button" class="btn btn-ghost" id="btn-discard-changes" data-i18n="common.discard">Discard</button>
+            <button type="button" class="btn btn-primary" id="btn-save-changes" data-i18n="common.saveChanges">Save changes</button>
           </div>
         </footer>
       </div>
     </div>
   </div>
 
-  <nav class="mobile-tabs" id="mobile-tabs" aria-label="Primary navigation">
+  <nav class="mobile-tabs" id="mobile-tabs" aria-label="Primary navigation" data-i18n-aria="nav.primary">
     <button type="button" class="mobile-tab" data-route="general">
-      <svg class="ic"><use href="#ic-sliders" /></svg><span>General</span>
+      <svg class="ic"><use href="#ic-sliders" /></svg><span data-i18n="mobile.general">General</span>
     </button>
     <button type="button" class="mobile-tab" data-route="models">
-      <svg class="ic"><use href="#ic-cpu" /></svg><span>Models</span>
+      <svg class="ic"><use href="#ic-cpu" /></svg><span data-i18n="mobile.models">Models</span>
     </button>
     <button type="button" class="mobile-tab" data-route="prompts">
-      <svg class="ic"><use href="#ic-sparkles" /></svg><span>Prompts</span>
+      <svg class="ic"><use href="#ic-sparkles" /></svg><span data-i18n="mobile.prompts">Prompts</span>
     </button>
     <button type="button" class="mobile-tab" data-route="vocabulary">
-      <svg class="ic"><use href="#ic-book" /></svg><span>Vocab</span>
+      <svg class="ic"><use href="#ic-book" /></svg><span data-i18n="mobile.vocabulary">Vocab</span>
     </button>
     <button type="button" class="mobile-tab" data-route="history">
-      <svg class="ic"><use href="#ic-clock" /></svg><span>History</span>
+      <svg class="ic"><use href="#ic-clock" /></svg><span data-i18n="mobile.history">History</span>
     </button>
     <button type="button" class="mobile-tab" data-route="onboarding">
-      <svg class="ic"><use href="#ic-compass" /></svg><span>Setup</span>
+      <svg class="ic"><use href="#ic-compass" /></svg><span data-i18n="mobile.onboarding">Setup</span>
     </button>
     <button type="button" class="mobile-tab" data-route="diagnostics">
-      <svg class="ic"><use href="#ic-activity" /></svg><span>Status</span>
+      <svg class="ic"><use href="#ic-activity" /></svg><span data-i18n="mobile.diagnostics">Status</span>
     </button>
   </nav>
 
   <dialog class="confirm-dialog" id="confirm-dialog" tabindex="-1" aria-labelledby="confirm-title">
     <div class="dialog-head">
-      <h2 id="confirm-title">Confirm</h2>
+      <h2 id="confirm-title" data-i18n="common.confirm">Confirm</h2>
     </div>
     <p class="dialog-body" id="confirm-message"></p>
     <div class="dialog-actions">
-      <button type="button" class="btn btn-ghost" id="confirm-cancel">Cancel</button>
-      <button type="button" class="btn btn-danger" id="confirm-ok">Confirm</button>
+      <button type="button" class="btn btn-ghost" id="confirm-cancel" data-i18n="common.cancel">Cancel</button>
+      <button type="button" class="btn btn-danger" id="confirm-ok" data-i18n="common.confirm">Confirm</button>
     </div>
   </dialog>
 
