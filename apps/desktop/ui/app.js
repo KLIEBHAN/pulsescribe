@@ -59,6 +59,7 @@ const state = {
   apiKeyClears: new Set(),
   hotkeyValidation: { toggle: null, hold: null },
   devices: [],
+  autostart: null,
   permissions: null,
   models: null,
   downloadProgress: {},
@@ -305,15 +306,17 @@ async function navigate(route) {
 async function loadRouteData(route, seq) {
   try {
     if (route === "general") {
-      const [settings, devices, models] = await Promise.all([
+      const [settings, devices, models, autostart] = await Promise.all([
         invoke("get_settings"),
         invoke("list_audio_devices").catch(() => []),
         state.models ? Promise.resolve(state.models) : invoke("list_local_models").catch(() => null),
+        invoke("get_autostart").catch(() => null),
       ]);
       if (seq !== state.navSeq) return;
       state.settings = settings;
       if (!state.dirtySettings) state.draft = structuredClone(settings);
       state.devices = devices;
+      state.autostart = autostart;
       if (models) {
         reconcileDownloadProgress(models);
         state.models = models;
@@ -384,17 +387,16 @@ async function loadRouteData(route, seq) {
 }
 
 function makeSwitch(checked, label, onToggle) {
-  let current = checked;
   const btn = el("button", {
     type: "button",
     className: "switch",
     role: "switch",
-    "aria-checked": current ? "true" : "false",
+    "aria-checked": checked ? "true" : "false",
     "aria-label": label,
     onClick: () => {
-      current = !current;
-      btn.setAttribute("aria-checked", current ? "true" : "false");
-      onToggle(current);
+      const next = btn.getAttribute("aria-checked") !== "true";
+      btn.setAttribute("aria-checked", next ? "true" : "false");
+      onToggle(next);
     },
   });
   return btn;
@@ -952,6 +954,38 @@ function renderGeneralView() {
             makeSwitch(d.show_rtf, "Show Transcription Timing", (v) => setDraftField("show_rtf", v)),
           ]),
         ]),
+        state.autostart?.supported
+          ? el("div", { className: "panel-row" }, [
+              el("div", { className: "row-copy" }, [
+                el("div", { className: "row-title", text: "Launch at Login" }),
+                el("div", {
+                  className: "row-sub",
+                  text: "Start PulseScribe automatically in the background when you sign in.",
+                }),
+              ]),
+              el("div", { className: "row-ctrl" }, [
+                (() => {
+                  const sw = makeSwitch(Boolean(state.autostart.enabled), "Launch at Login", async (next) => {
+                    if (sw.disabled) return;
+                    sw.disabled = true;
+                    clearError();
+                    try {
+                      state.autostart = await invoke("set_autostart", { enabled: next });
+                      sw.setAttribute("aria-checked", state.autostart.enabled ? "true" : "false");
+                      showToast(state.autostart.enabled ? "Launch at Login enabled" : "Launch at Login disabled");
+                    } catch (err) {
+                      showError(err);
+                      state.autostart = await invoke("get_autostart").catch(() => state.autostart);
+                      sw.setAttribute("aria-checked", state.autostart?.enabled ? "true" : "false");
+                    } finally {
+                      sw.disabled = false;
+                    }
+                  });
+                  return sw;
+                })(),
+              ]),
+            ])
+          : null,
       ]),
     ]),
   );
@@ -2029,13 +2063,25 @@ function renderDiagnosticsView() {
             }),
           ]),
           el("div", { className: "row-ctrl" }, [
+            upd?.update_available && upd.release_url
+              ? el("button", {
+                  type: "button",
+                  className: "btn btn-sm btn-primary",
+                  text: "Download Release",
+                  onClick: () => runSafe(() => invoke("open_release_url", { url: upd.release_url })),
+                })
+              : null,
             el("button", {
               type: "button",
               className: "btn btn-sm",
               text: "Check for Updates",
               onClick: () => runSafe(async () => {
                 state.updateResult = await invoke("check_for_updates");
-                showToast(state.updateResult.update_available ? "Update available" : "Up to date");
+                if (state.updateResult.error) {
+                  showError(state.updateResult.error);
+                } else {
+                  showToast(state.updateResult.update_available ? "Update available" : "Up to date");
+                }
                 render();
               }),
             }),

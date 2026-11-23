@@ -5,11 +5,13 @@
 //! while native macOS and Windows adapters live behind OS boundaries.
 
 pub mod app_detection;
+pub mod autostart;
 pub mod clipboard;
 pub mod hotkey;
 #[cfg(target_os = "macos")]
 pub mod macos;
 pub mod permissions;
+pub mod single_instance;
 pub mod sound;
 #[cfg(target_os = "windows")]
 pub mod windows;
@@ -20,6 +22,10 @@ use thiserror::Error;
 
 pub use app_detection::{
     format_translation_code, strip_exe_suffix, AppDetector, NoopAppDetector, VERSION_FALLBACK_CODES,
+};
+pub use autostart::{
+    get_autostart_status, set_autostart_enabled, AutostartStatus, MACOS_LAUNCH_AGENT_LABEL,
+    WINDOWS_RUN_KEY, WINDOWS_RUN_VALUE,
 };
 pub use clipboard::{
     ArboardClipboard, ClipboardBackend, ClipboardPastePolicy, PasteKeySender,
@@ -34,6 +40,7 @@ pub use permissions::{
     MicrophonePermissionStatus, PermissionKind, PermissionSnapshot, PermissionsChecker,
     PERMISSION_SNAPSHOT_TTL,
 };
+pub use single_instance::{SingleInstanceGuard, SingleInstanceOutcome};
 pub use sound::{
     encode_ready_cue_wav, synthesize_ready_cue_samples, NoopSoundPlayer, SoundName, SoundPlayer,
     READY_CUE_AMPLITUDE, READY_CUE_ATTACK_SEC, READY_CUE_DECAY_TAU_SEC, READY_CUE_DURATION_SEC,
@@ -99,6 +106,8 @@ pub enum PlatformError {
     Hotkey(String),
     #[error("sound error: {0}")]
     Sound(String),
+    #[error("autostart error: {0}")]
+    Autostart(String),
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 }

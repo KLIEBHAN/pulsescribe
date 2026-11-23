@@ -18,6 +18,7 @@ function localIsoStamp(offsetMs = 0) {
 }
 
 function createPreviewStore() {
+  let autostartEnabled = false;
   const settings = {
     mode: "deepgram",
     model: "nova-3",
@@ -390,6 +391,21 @@ function createPreviewStore() {
         return { ...themePref };
       case "open_config_dir":
         return null;
+      case "open_release_url":
+        return null;
+      case "get_autostart":
+        return {
+          supported: true,
+          enabled: autostartEnabled,
+          detail: "~/Library/LaunchAgents/com.kliebhan.pulsescribe.plist",
+        };
+      case "set_autostart":
+        autostartEnabled = Boolean(args.enabled);
+        return {
+          supported: true,
+          enabled: autostartEnabled,
+          detail: "~/Library/LaunchAgents/com.kliebhan.pulsescribe.plist",
+        };
       case "export_diagnostics":
         return {
           path: "~/.pulsescribe/diagnostics-preview.json",
