@@ -109,13 +109,6 @@ pub fn run() -> i32 {
     let mut instance_guard = match SingleInstanceGuard::acquire(&config_dir) {
         Ok(SingleInstanceOutcome::Acquired(guard)) => Some(guard),
         Ok(SingleInstanceOutcome::AlreadyRunning) => {
-            #[cfg(target_os = "windows")]
-            {
-                let client = pulsescribe_daemon::IpcClient::new(
-                    pulsescribe_daemon::IpcPaths::in_dir(&config_dir),
-                );
-                let _ = client.send_command(&pulsescribe_daemon::IpcCommandKind::OpenSettings);
-            }
             tracing::info!(
                 config_dir = %config_dir.display(),
                 "PulseScribe is already running; activated existing instance"
@@ -247,16 +240,6 @@ pub fn run() -> i32 {
         }
     };
 
-    if let Some(guard) = instance_guard.as_mut() {
-        let activate_app = app.handle().clone();
-        guard.start_activation_listener(move || {
-            let handle = activate_app.clone();
-            let _ = activate_app.run_on_main_thread(move || {
-                let _ = open_or_focus_window(&handle, "general");
-            });
-        });
-    }
-
     #[cfg(target_os = "macos")]
     {
         // Keep PulseScribe as a clean menu-bar accessory (no idle Dock icon).
@@ -292,6 +275,22 @@ pub fn run() -> i32 {
         http_client,
     );
     app.manage(desktop_state);
+
+    if let Some(guard) = instance_guard.as_mut() {
+        let activate_app = app.handle().clone();
+        guard.start_activation_listener(move || {
+            let handle = activate_app.clone();
+            let _ = activate_app.run_on_main_thread(move || {
+                if handle
+                    .try_state::<DesktopState>()
+                    .is_some_and(|s| s.is_quitting())
+                {
+                    return;
+                }
+                let _ = open_or_focus_window(&handle, "general");
+            });
+        });
+    }
 
     // Spawn the single daemon-to-UI/overlay/tray event bridge task.
     let bridge_app = app.handle().clone();
@@ -343,7 +342,6 @@ pub fn run() -> i32 {
                 state.set_quitting();
                 state.cancel_all_downloads();
             }
-            drop(instance_guard.take());
             overlay_handle.shutdown();
             drop(overlay_owner.take());
             let task = bridge_task.take();
@@ -358,6 +356,9 @@ pub fn run() -> i32 {
                 }
                 backend.shutdown().await;
             });
+            // Keep the single-instance lock until daemon, IPC, and hotkey shutdown completes so a
+            // quick relaunch cannot collide with resources still being released.
+            drop(instance_guard.take());
         }
         _ => {}
     });

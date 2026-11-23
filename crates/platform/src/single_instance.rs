@@ -3,8 +3,10 @@
 //! - **Unix (macOS/Linux):** Binds a `0600` Unix domain socket (`pulsescribe.sock`, falling back
 //!   to `$TMPDIR` when `config_dir` approaches macOS's 104-byte `SUN_LEN` limit). A second launch
 //!   connects, sends `"open\n"` to focus the running instance's window, and exits cleanly.
-//! - **Windows:** Acquires a per-config-dir named kernel mutex (`Local\PulseScribeSingleInstance_<hash>`).
-//!   The kernel releases the mutex automatically even after an abnormal process crash.
+//! - **Windows:** Acquires a per-config-dir named kernel mutex (`Local\PulseScribeSingleInstance_<hash>`)
+//!   paired with a latched auto-reset activation event (`Local\PulseScribeSingleInstanceActivate_<hash>`).
+//!   A second launch signals the activation event and exits cleanly; the kernel preserves early signals
+//!   until the primary instance starts listening and releases all objects automatically on crash.
 
 use std::path::Path;
 
@@ -12,7 +14,7 @@ use std::path::Path;
 pub enum SingleInstanceOutcome {
     /// Lock acquired; keep the guard alive for the lifetime of the desktop process.
     Acquired(SingleInstanceGuard),
-    /// Another PulseScribe instance already owns this `config_dir` (and was signaled on Unix).
+    /// Another PulseScribe instance already owns this `config_dir` and has been signaled to activate.
     AlreadyRunning,
 }
 
@@ -271,68 +273,163 @@ mod imp {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
     use std::path::Path;
+    use std::thread::{self, JoinHandle};
 
     use windows::core::PCWSTR;
-    use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE};
-    use windows::Win32::System::Threading::CreateMutexW;
+    use windows::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, WAIT_EVENT, WAIT_OBJECT_0,
+    };
+    use windows::Win32::System::Threading::{
+        CreateEventW, CreateMutexW, SetEvent, WaitForMultipleObjects, INFINITE,
+    };
 
     use super::{hash_config_dir, SingleInstanceOutcome};
     use crate::PlatformError;
 
-    struct OwnedMutexHandle(HANDLE);
+    struct OwnedHandle(HANDLE);
 
-    // SAFETY: Win32 named mutex handles are process-wide kernel handles; because we create
-    // with `bInitialOwner = false` (presence-only lock), closing the handle from any thread
-    // on process shutdown is safe.
-    unsafe impl Send for OwnedMutexHandle {}
+    // SAFETY: Win32 named mutex (`bInitialOwner = false`) and event handles are process-wide
+    // kernel handles that may be signaled, waited on, and closed from any thread.
+    unsafe impl Send for OwnedHandle {}
 
-    impl Drop for OwnedMutexHandle {
+    impl Drop for OwnedHandle {
         fn drop(&mut self) {
-            // SAFETY: `self.0` is a valid owned handle returned by `CreateMutexW`.
+            // SAFETY: `self.0` is a valid owned handle returned by `CreateMutexW`/`CreateEventW`.
             unsafe {
                 let _ = CloseHandle(self.0);
             }
         }
     }
 
+    #[derive(Clone, Copy)]
+    struct SendHandle(HANDLE);
+
+    impl SendHandle {
+        fn raw(self) -> HANDLE {
+            self.0
+        }
+    }
+
+    // SAFETY: Non-owning copy passed exclusively to the activation listener thread, which is
+    // joined in `SingleInstanceGuard::drop` before the owning `OwnedHandle`s are closed.
+    unsafe impl Send for SendHandle {}
+
+    fn encode_wide_nul(value: &str) -> Vec<u16> {
+        OsStr::new(value)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+
     pub struct SingleInstanceGuard {
-        _handle: OwnedMutexHandle,
+        worker: Option<JoinHandle<()>>,
+        shutdown_event: OwnedHandle,
+        activate_event: OwnedHandle,
+        _mutex: OwnedHandle,
     }
 
     impl SingleInstanceGuard {
         pub fn acquire(config_dir: &Path) -> Result<SingleInstanceOutcome, PlatformError> {
             let _ = std::fs::create_dir_all(config_dir);
             let hash = hash_config_dir(config_dir);
-            let name = format!("Local\\PulseScribeSingleInstance_{hash:016x}");
-            let wide: Vec<u16> = OsStr::new(&name)
-                .encode_wide()
-                .chain(std::iter::once(0))
-                .collect();
+            let activate_name = encode_wide_nul(&format!(
+                "Local\\PulseScribeSingleInstanceActivate_{hash:016x}"
+            ));
+            let mutex_name =
+                encode_wide_nul(&format!("Local\\PulseScribeSingleInstance_{hash:016x}"));
 
-            // SAFETY: `wide` is NUL-terminated for the duration of `CreateMutexW`.
-            let handle = unsafe { CreateMutexW(None, false, PCWSTR(wide.as_ptr())) }
-                .map_err(|err| PlatformError::Io(std::io::Error::other(err.to_string())))?;
+            // Create/open the named auto-reset activation event BEFORE acquiring the mutex so
+            // whichever process wins the mutex already holds an open handle to the event.
+            // Any second launch that observes `ERROR_ALREADY_EXISTS` can immediately signal the
+            // event and exit without racing against startup initialization.
+            // SAFETY: `activate_name` is NUL-terminated for the duration of `CreateEventW`.
+            let activate_event = OwnedHandle(
+                unsafe { CreateEventW(None, false, false, PCWSTR(activate_name.as_ptr())) }
+                    .map_err(|err| PlatformError::Io(std::io::Error::other(err.to_string())))?,
+            );
+
+            // SAFETY: `mutex_name` is NUL-terminated for the duration of `CreateMutexW`.
+            let mutex = OwnedHandle(
+                unsafe { CreateMutexW(None, false, PCWSTR(mutex_name.as_ptr())) }
+                    .map_err(|err| PlatformError::Io(std::io::Error::other(err.to_string())))?,
+            );
 
             // SAFETY: `GetLastError` immediately inspects the `CreateMutexW` status on this thread.
             let already_exists = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
             if already_exists {
-                // SAFETY: `handle` is valid and must be closed before returning.
+                // Signal the existing instance; because `activate_event` is auto-reset and kept
+                // open by the primary instance, this signal is latched even during early startup.
+                // SAFETY: `activate_event.0` is a valid event handle.
                 unsafe {
-                    let _ = CloseHandle(handle);
+                    let _ = SetEvent(activate_event.0);
                 }
                 return Ok(SingleInstanceOutcome::AlreadyRunning);
             }
 
+            // Unnamed manual-reset event used to wake and join the activation listener cleanly.
+            // SAFETY: Passing `None` creates an unnamed manual-reset event with no pointer args.
+            let shutdown_event = OwnedHandle(
+                unsafe { CreateEventW(None, true, false, None) }
+                    .map_err(|err| PlatformError::Io(std::io::Error::other(err.to_string())))?,
+            );
+
             Ok(SingleInstanceOutcome::Acquired(Self {
-                _handle: OwnedMutexHandle(handle),
+                worker: None,
+                shutdown_event,
+                activate_event,
+                _mutex: mutex,
             }))
         }
 
-        /// No-op on Windows; second launches activate via `IpcCommandKind::OpenSettings`.
-        pub fn start_activation_listener<F>(&mut self, _on_activate: F)
+        /// Spawn a zero-polling listener thread invoking `on_activate` whenever a second launch
+        /// signals the per-`config_dir` activation event (including signals latched during startup).
+        pub fn start_activation_listener<F>(&mut self, on_activate: F)
         where
             F: Fn() + Send + 'static,
         {
+            if self.worker.is_some() {
+                return;
+            }
+            let shutdown_h = SendHandle(self.shutdown_event.0);
+            let activate_h = SendHandle(self.activate_event.0);
+            let handle = thread::Builder::new()
+                .name("pulsescribe-instance".to_owned())
+                .spawn(move || {
+                    let handles = [shutdown_h.raw(), activate_h.raw()];
+                    let activate_wait = WAIT_EVENT(WAIT_OBJECT_0.0 + 1);
+                    loop {
+                        // SAFETY: Both handles remain valid until `SingleInstanceGuard::drop`
+                        // signals `shutdown_event` and joins this thread.
+                        let wait = unsafe { WaitForMultipleObjects(&handles, false, INFINITE) };
+                        if wait == WAIT_OBJECT_0 {
+                            break;
+                        }
+                        if wait == activate_wait {
+                            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                                &on_activate,
+                            ));
+                            continue;
+                        }
+                        break;
+                    }
+                });
+            if let Ok(worker) = handle {
+                self.worker = Some(worker);
+            }
+        }
+    }
+
+    impl Drop for SingleInstanceGuard {
+        fn drop(&mut self) {
+            // SAFETY: `shutdown_event.0` is a valid event handle owned by `self`.
+            unsafe {
+                let _ = SetEvent(self.shutdown_event.0);
+            }
+            if let Some(worker) = self.worker.take() {
+                let _ = worker.join();
+            }
+            // Fields drop after `drop()` in declaration order: `shutdown_event`, `activate_event`,
+            // then `_mutex` last so no replacement can acquire the mutex while teardown runs.
         }
     }
 }
@@ -368,7 +465,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
-    #[cfg(unix)]
+    #[cfg(any(unix, target_os = "windows"))]
     use std::time::Duration;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -410,7 +507,7 @@ mod tests {
             SingleInstanceOutcome::AlreadyRunning
         ));
 
-        #[cfg(unix)]
+        #[cfg(any(unix, target_os = "windows"))]
         {
             for _ in 0..40 {
                 if activations.load(Ordering::SeqCst) > 0 {
@@ -431,5 +528,38 @@ mod tests {
 
         let _ = fs::remove_dir_all(&dir_a);
         let _ = fs::remove_dir_all(&dir_b);
+    }
+
+    #[cfg(any(unix, target_os = "windows"))]
+    #[test]
+    fn early_activation_before_listener_start_is_preserved() {
+        let dir = temp_config_dir("early");
+        let mut guard = match SingleInstanceGuard::acquire(&dir).unwrap() {
+            SingleInstanceOutcome::Acquired(g) => g,
+            SingleInstanceOutcome::AlreadyRunning => panic!("first acquire should succeed"),
+        };
+
+        // Signal from a second launch BEFORE the listener thread starts.
+        assert!(matches!(
+            SingleInstanceGuard::acquire(&dir).unwrap(),
+            SingleInstanceOutcome::AlreadyRunning
+        ));
+
+        let activations = Arc::new(AtomicUsize::new(0));
+        let activations_clone = Arc::clone(&activations);
+        guard.start_activation_listener(move || {
+            activations_clone.fetch_add(1, Ordering::SeqCst);
+        });
+
+        for _ in 0..40 {
+            if activations.load(Ordering::SeqCst) > 0 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(activations.load(Ordering::SeqCst), 1);
+
+        drop(guard);
+        let _ = fs::remove_dir_all(&dir);
     }
 }
