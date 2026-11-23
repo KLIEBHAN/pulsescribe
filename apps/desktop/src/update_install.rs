@@ -419,6 +419,9 @@ pub fn prepare_update(
             )?;
 
             guard.detach_now()?;
+            if cancelled.load(Ordering::Acquire) {
+                return Err("Update preparation cancelled.".to_owned());
+            }
             Ok(())
         })();
 

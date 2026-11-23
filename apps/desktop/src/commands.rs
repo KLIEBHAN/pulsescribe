@@ -44,10 +44,11 @@ use crate::state::DesktopState;
 use crate::tray::{
     load_ui_language_pref, normalize_ui_language_pref, resolve_ui_language, TrayController,
 };
-use crate::updates::{check_latest_release, UpdateCheckResult};
+use crate::updates::UpdateStateSnapshot;
 use crate::window::{
     emit_to_main_if_open, MODEL_DOWNLOAD_FINISHED_EVENT, MODEL_DOWNLOAD_PROGRESS_EVENT,
 };
+use crate::{make_update_listener, publish_update_state};
 
 const API_KEY_NAMES: &[&str] = &[
     "DEEPGRAM_API_KEY",
@@ -1336,10 +1337,63 @@ pub async fn export_diagnostics(
 }
 
 #[tauri::command]
+pub fn get_update_state(state: State<'_, DesktopState>) -> UpdateStateSnapshot {
+    state.updater.snapshot()
+}
+
+#[tauri::command]
 pub async fn check_for_updates(
+    app: AppHandle,
     state: State<'_, DesktopState>,
-) -> Result<UpdateCheckResult, String> {
-    Ok(check_latest_release(&state.http_client, env!("CARGO_PKG_VERSION")).await)
+) -> Result<UpdateStateSnapshot, String> {
+    let updater = Arc::clone(&state.updater);
+    let listener = make_update_listener(app);
+    Ok(updater.run_check(true, listener).await)
+}
+
+#[tauri::command]
+pub async fn download_update(
+    app: AppHandle,
+    state: State<'_, DesktopState>,
+) -> Result<UpdateStateSnapshot, String> {
+    let updater = Arc::clone(&state.updater);
+    let listener = make_update_listener(app);
+    Ok(updater.run_download(listener).await)
+}
+
+#[tauri::command]
+pub fn install_update(
+    app: AppHandle,
+    state: State<'_, DesktopState>,
+) -> Result<UpdateStateSnapshot, String> {
+    let is_busy = matches!(
+        state.daemon.state(),
+        AppState::Loading
+            | AppState::Listening
+            | AppState::Recording
+            | AppState::Transcribing
+            | AppState::Refining
+    );
+    match state.updater.begin_install(is_busy) {
+        Ok(should_exit) => {
+            let snapshot = state.updater.snapshot();
+            publish_update_state(&app, snapshot.clone());
+            if should_exit {
+                state.set_quitting();
+                state.cancel_all_downloads();
+                let exit_app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    exit_app.exit(0);
+                });
+            }
+            Ok(snapshot)
+        }
+        Err(err) => {
+            publish_update_state(&app, state.updater.snapshot());
+            Err(err)
+        }
+    }
 }
 
 #[cfg(test)]
