@@ -14,10 +14,10 @@ use std::sync::Arc;
 use pulsescribe_core::paths::AppPaths;
 use pulsescribe_core::PreferencesStore;
 use pulsescribe_daemon::{
-    DaemonConfig, DaemonEvent, DaemonPlatform, DaemonRuntime, DaemonRuntimeOptions,
-    LiveDictationBackend,
+    DaemonConfig, DaemonEvent, DaemonHandle, DaemonPlatform, DaemonRuntime, DaemonRuntimeOptions,
+    LiveDictationBackend, LocalPreloadObserver,
 };
-use pulsescribe_local_asr::{LocalAsrManager, ModelDownloader};
+use pulsescribe_local_asr::{DownloadProgress, LocalAsrManager, ModelDownloader};
 use pulsescribe_overlay::{OverlayActionEvent, OverlayCommand, OverlayHandle};
 use pulsescribe_platform::{SingleInstanceGuard, SingleInstanceOutcome};
 use reqwest::Client;
@@ -25,7 +25,49 @@ use tauri::{AppHandle, Manager, RunEvent};
 
 use crate::state::DesktopState;
 use crate::tray::TrayController;
-use crate::window::{emit_to_main_if_open, open_or_focus_window, DAEMON_EVENT};
+use crate::window::{
+    emit_to_main_if_open, open_or_focus_window, DAEMON_EVENT, MODEL_DOWNLOAD_FINISHED_EVENT,
+    MODEL_DOWNLOAD_PROGRESS_EVENT,
+};
+
+struct DesktopPreloadObserver {
+    daemon: DaemonHandle,
+    app: AppHandle,
+}
+
+impl LocalPreloadObserver for DesktopPreloadObserver {
+    fn on_loading_status(&self, detail: Option<String>) {
+        match detail {
+            Some(text) => self.daemon.set_loading(Some(text)),
+            None => self.daemon.finish_loading(),
+        }
+    }
+
+    fn on_download_progress(&self, progress: DownloadProgress) {
+        emit_to_main_if_open(&self.app, MODEL_DOWNLOAD_PROGRESS_EVENT, &progress);
+    }
+
+    fn on_download_finished(&self, model_id: &str, result: Result<(), &str>) {
+        let payload = match result {
+            Ok(()) => serde_json::json!({
+                "model_id": model_id,
+                "ok": true,
+                "error": serde_json::Value::Null
+            }),
+            Err("") => serde_json::json!({
+                "model_id": model_id,
+                "ok": false,
+                "error": serde_json::Value::Null
+            }),
+            Err(err) => serde_json::json!({
+                "model_id": model_id,
+                "ok": false,
+                "error": err
+            }),
+        };
+        emit_to_main_if_open(&self.app, MODEL_DOWNLOAD_FINISHED_EVENT, &payload);
+    }
+}
 
 /// Platform-native overlay owner kept alive for the lifetime of the desktop event loop.
 enum NativeOverlayOwner {
@@ -162,10 +204,11 @@ pub fn run() -> i32 {
         }
     };
 
-    let backend = match LiveDictationBackend::with_local_asr_manager(
+    let backend = match LiveDictationBackend::with_local_asr_and_downloader(
         &config_dir,
         Arc::clone(&permissions),
         local_asr.clone(),
+        downloader.clone(),
     ) {
         Ok(b) => b,
         Err(err) => {
@@ -176,7 +219,6 @@ pub fn run() -> i32 {
 
     let daemon_runtime = tokio_rt.block_on(async {
         backend.sync_deepgram_warm_state(&initial_config).await;
-        backend.sync_local_preload_state(&initial_config);
         DaemonRuntime::spawn(
             Arc::clone(&store),
             initial_config,
@@ -292,7 +334,23 @@ pub fn run() -> i32 {
         });
     }
 
-    // Spawn the single daemon-to-UI/overlay/tray event bridge task.
+    // Subscribe BEFORE syncing initial local auto-download/preload and spawning the event bridge
+    // so: (1) startup `AppState::Loading` events are buffered for overlay/tray, and (2) any
+    // `ConfigReloaded` event is handled strictly after the initial startup sync completes.
+    let bridge_events = daemon_handle.subscribe();
+
+    // Wire loading-overlay & UI progress observer, then trigger initial local auto-download/preload
+    // using the runtime's live config in case `.env` reloaded during Tauri/tray initialization.
+    backend.set_local_preload_observer(Arc::new(DesktopPreloadObserver {
+        daemon: daemon_handle.clone(),
+        app: app.handle().clone(),
+    }));
+    {
+        let _guard = tokio_rt.enter();
+        let startup_config = daemon_handle.config();
+        backend.sync_local_preload_state(&startup_config);
+    }
+
     let bridge_app = app.handle().clone();
     let bridge_daemon = daemon_handle.clone();
     let bridge_backend = backend.clone();
@@ -302,6 +360,7 @@ pub fn run() -> i32 {
         run_event_bridge(
             bridge_app,
             bridge_daemon,
+            bridge_events,
             bridge_backend,
             bridge_overlay,
             bridge_tray,
@@ -369,11 +428,11 @@ pub fn run() -> i32 {
 async fn run_event_bridge(
     app: AppHandle,
     daemon: pulsescribe_daemon::DaemonHandle,
+    mut events: tokio::sync::broadcast::Receiver<DaemonEvent>,
     backend: LiveDictationBackend,
     overlay: OverlayHandle,
     tray: Arc<TrayController>,
 ) {
-    let mut events = daemon.subscribe();
     let mut overlay_enabled = daemon.config().overlay_enabled;
 
     let schedule_tray_update =

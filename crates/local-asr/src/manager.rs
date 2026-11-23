@@ -187,6 +187,32 @@ impl LocalAsrManager {
         Ok(engine.model_id().to_owned())
     }
 
+    /// Return the curated offline [`ModelSpec`] when `model_name` resolves to a catalog model whose
+    /// runtime is compiled into this binary and whose weights are not yet cached locally.
+    ///
+    /// Returns `Ok(None)` when the model is already cached or refers to a non-catalog custom file
+    /// path, and `Err(LocalAsrError::MissingRuntime)` in slim builds lacking the required engine
+    /// (preventing wasted downloads of models the binary cannot execute).
+    pub fn missing_downloadable_spec(
+        &self,
+        model_name: Option<&str>,
+    ) -> Result<Option<&'static ModelSpec>, LocalAsrError> {
+        let Some(spec) = resolve_model_spec(model_name) else {
+            return Ok(None);
+        };
+        if spec.engine.is_streaming_preview() {
+            return Err(LocalAsrError::InvalidModel(format!(
+                "'{}' is a streaming preview model and cannot be used for offline transcription",
+                spec.id
+            )));
+        }
+        ensure_runtime_compiled(spec.engine, spec.id)?;
+        if self.cache.find_installed(spec).is_some() {
+            return Ok(None);
+        }
+        Ok(Some(spec))
+    }
+
     /// Open a local streaming preview session (Nemotron 3.5) for live interim dictation text.
     ///
     /// Returns `Ok(None)` immediately when `local-sherpa` is not compiled into this binary or when
@@ -643,6 +669,27 @@ mod tests {
         assert!(matches!(
             mgr.preload(Some("nemotron-streaming"), None, None),
             Err(LocalAsrError::InvalidModel(_))
+        ));
+        assert!(matches!(
+            mgr.missing_downloadable_spec(Some("nemotron-streaming")),
+            Err(LocalAsrError::InvalidModel(_))
+        ));
+        assert_eq!(
+            mgr.missing_downloadable_spec(Some("no-such-model"))
+                .unwrap(),
+            None
+        );
+        #[cfg(feature = "local-sherpa")]
+        assert_eq!(
+            mgr.missing_downloadable_spec(Some("canary-1b-v2"))
+                .unwrap()
+                .map(|s| s.id),
+            Some("canary-1b-v2")
+        );
+        #[cfg(not(feature = "local-sherpa"))]
+        assert!(matches!(
+            mgr.missing_downloadable_spec(Some("canary-1b-v2")),
+            Err(LocalAsrError::MissingRuntime(_))
         ));
         assert!(matches!(
             mgr.open_streaming_preview(Some("de"), Some(&cancelled)),

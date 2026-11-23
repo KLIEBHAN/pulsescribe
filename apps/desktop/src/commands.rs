@@ -895,9 +895,15 @@ pub async fn list_local_models(
     let models = tokio::task::spawn_blocking(move || cache.list_statuses())
         .await
         .map_err(|err| format!("Failed to scan model cache: {err}"))?;
+    let mut active_downloads = state.active_download_ids();
+    if let Some(auto_id) = state.backend.active_local_download_model_id() {
+        if !active_downloads.contains(&auto_id) {
+            active_downloads.push(auto_id);
+        }
+    }
     Ok(LocalModelsPayload {
         models,
-        active_downloads: state.active_download_ids(),
+        active_downloads,
         loaded_model_id: state.local_asr.loaded_model_id(),
         capabilities: LocalRuntimeCapabilities::current(),
         default_model_id: DEFAULT_LOCAL_MODEL_ID.to_owned(),
@@ -940,7 +946,9 @@ pub async fn download_local_model(
     }
     download_res.map_err(|err| err.to_string())?;
     let current_cfg = state.daemon.config();
-    if current_cfg.mode == pulsescribe_daemon::DaemonMode::Local {
+    if current_cfg.mode == pulsescribe_daemon::DaemonMode::Local
+        && resolve_model_spec(current_cfg.model.as_deref()).is_some_and(|cur| cur.id == spec.id)
+    {
         state.backend.sync_local_preload_state(&current_cfg);
     }
     list_local_models(state).await
@@ -951,7 +959,9 @@ pub fn cancel_model_download(state: State<'_, DesktopState>, model_id: String) -
     let Ok(spec) = resolve_explicit_model_spec(&model_id) else {
         return false;
     };
-    state.cancel_download(spec.id)
+    let manual = state.cancel_download(spec.id);
+    let auto = state.backend.cancel_local_preload_if_matching(spec.id);
+    manual || auto
 }
 
 #[tauri::command]
@@ -966,7 +976,9 @@ pub async fn delete_local_model(
     } else {
         let _ = state.backend.unload_local_model_if_matching(spec.id).await;
         if state.local_asr.loaded_model_id().as_deref() == Some(spec.id) {
-            state.backend.unload_local_model();
+            // Unload cached weights directly so an unrelated active auto-download/preload for a
+            // newly configured model is not cancelled.
+            state.local_asr.unload();
         }
     }
     let cache = state.local_asr.cache().clone();

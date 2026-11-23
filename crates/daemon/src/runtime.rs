@@ -29,6 +29,13 @@ pub enum PipelineEvent {
     AudioLevel(f32),
     SpeechDetected,
     InterimText(String),
+    /// Emitted periodically while downloading a missing local model on demand during `Transcribing`
+    /// so the stall watchdog refreshes as long as bytes are actively streaming and the overlay can
+    /// display live download progress (`update_detail == true`).
+    ModelDownloadProgress {
+        detail: Option<String>,
+        update_detail: bool,
+    },
     RefiningStarted,
     TranscriptReady {
         text: String,
@@ -137,6 +144,8 @@ enum RuntimeCommand {
     StartTest,
     Cancel,
     SetTestHotkeyMode(bool),
+    SetLoading(Option<String>),
+    FinishLoading,
     ReloadConfig,
     CopyLastTranscript(oneshot::Sender<&'static str>),
     IpcCommand {
@@ -151,7 +160,10 @@ enum RuntimeCommand {
         duration_secs: Option<f64>,
     },
     ConfigReloadLoaded(Box<DaemonConfig>),
-    WatchdogTimeout(u64),
+    WatchdogTimeout {
+        run_id: u64,
+        token: u64,
+    },
     IdleReset(u64),
     Shutdown(Option<oneshot::Sender<()>>),
 }
@@ -208,6 +220,16 @@ impl DaemonHandle {
 
     pub fn set_test_hotkey_mode(&self, enabled: bool) {
         let _ = self.cmd_tx.send(RuntimeCommand::SetTestHotkeyMode(enabled));
+    }
+
+    /// Enter or update `AppState::Loading` (e.g., while downloading/loading a local ASR model).
+    pub fn set_loading(&self, detail: Option<String>) {
+        let _ = self.cmd_tx.send(RuntimeCommand::SetLoading(detail));
+    }
+
+    /// Leave `AppState::Loading` back to `AppState::Idle`.
+    pub fn finish_loading(&self) {
+        let _ = self.cmd_tx.send(RuntimeCommand::FinishLoading);
     }
 
     pub fn reload_config(&self) {
@@ -541,6 +563,8 @@ impl DaemonActor {
                 self.state_machine.set_test_hotkey_mode(enabled);
                 Vec::new()
             }
+            RuntimeCommand::SetLoading(detail) => self.state_machine.on_loading_started(detail),
+            RuntimeCommand::FinishLoading => self.state_machine.on_loading_finished(),
             RuntimeCommand::ReloadConfig => self.state_machine.on_config_reload_requested(),
             RuntimeCommand::CopyLastTranscript(reply_tx) => {
                 let delivery = Arc::clone(&self.delivery);
@@ -582,9 +606,7 @@ impl DaemonActor {
                 if self.shutting_down {
                     self.reload_pending_after_flight = false;
                     Vec::new()
-                } else if self.state_machine.active_run().is_none()
-                    && self.state_machine.is_idle_like()
-                {
+                } else if self.state_machine.can_reload_config() {
                     self.apply_reloaded_config(*new_cfg).await;
                     if std::mem::take(&mut self.reload_pending_after_flight) {
                         self.spawn_config_reload();
@@ -596,8 +618,8 @@ impl DaemonActor {
                     self.state_machine.on_config_reload_requested()
                 }
             }
-            RuntimeCommand::WatchdogTimeout(run_id) => {
-                self.state_machine.on_watchdog_timeout(run_id)
+            RuntimeCommand::WatchdogTimeout { run_id, token } => {
+                self.state_machine.on_watchdog_timeout(run_id, token)
             }
             RuntimeCommand::IdleReset(generation) => self.state_machine.on_reset_timer(generation),
             RuntimeCommand::Shutdown(_) => Vec::new(),
@@ -623,6 +645,12 @@ impl DaemonActor {
             }
             PipelineEvent::SpeechDetected => self.state_machine.on_speech_detected(run_id),
             PipelineEvent::InterimText(text) => self.state_machine.on_interim_text(run_id, text),
+            PipelineEvent::ModelDownloadProgress {
+                detail,
+                update_detail,
+            } => self
+                .state_machine
+                .on_model_download_progress(run_id, detail, update_detail),
             PipelineEvent::RefiningStarted => self.state_machine.on_refining_started(run_id),
             PipelineEvent::TranscriptReady {
                 text,
@@ -748,14 +776,18 @@ impl DaemonActor {
                         });
                     }
                 }
-                DaemonAction::ScheduleWatchdog { run_id, timeout } => {
+                DaemonAction::ScheduleWatchdog {
+                    run_id,
+                    token,
+                    timeout,
+                } => {
                     if let Some(prev) = self.watchdog_task.take() {
                         prev.abort();
                     }
                     let cmd_tx = self.cmd_tx.clone();
                     self.watchdog_task = Some(tokio::spawn(async move {
                         tokio::time::sleep(timeout).await;
-                        let _ = cmd_tx.send(RuntimeCommand::WatchdogTimeout(run_id));
+                        let _ = cmd_tx.send(RuntimeCommand::WatchdogTimeout { run_id, token });
                     }));
                 }
                 DaemonAction::CancelWatchdog => {
