@@ -1859,11 +1859,35 @@ async fn local_mode_auto_downloads_missing_model_on_preload_and_on_demand() {
         )
     })
     .await;
+    let progress_before_on_demand = progress_count.load(Ordering::SeqCst);
     handle.stop_recording();
-    let delivered = next_matching_event(&mut events, |e| {
-        matches!(e, DaemonEvent::TranscriptDelivered { .. })
+    let mut saw_download_detail = false;
+    let mut saw_transcribing_reset = false;
+    let delivered = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let evt = events.recv().await.unwrap();
+            match &evt {
+                DaemonEvent::StateChanged {
+                    state: AppState::Transcribing,
+                    detail: Some(d),
+                    ..
+                } if d.starts_with("Downloading parakeet-v3") => {
+                    saw_download_detail = true;
+                }
+                DaemonEvent::StateChanged {
+                    state: AppState::Transcribing,
+                    detail: None,
+                    ..
+                } if saw_download_detail => {
+                    saw_transcribing_reset = true;
+                }
+                DaemonEvent::TranscriptDelivered { .. } => return evt,
+                _ => {}
+            }
+        }
     })
-    .await;
+    .await
+    .unwrap();
     match delivered {
         DaemonEvent::TranscriptDelivered { text, .. } => {
             assert_eq!(text, "transcribed:parakeet-v3");
@@ -1872,6 +1896,27 @@ async fn local_mode_auto_downloads_missing_model_on_preload_and_on_demand() {
     }
     let parakeet_spec = resolve_model_spec(Some("parakeet-v3")).unwrap();
     assert!(cache.find_installed(parakeet_spec).is_some());
+    assert!(
+        saw_download_detail,
+        "expected Transcribing overlay detail showing on-demand download progress"
+    );
+    assert!(
+        saw_transcribing_reset,
+        "expected Transcribing overlay detail to reset to None before offline inference"
+    );
+    assert!(
+        progress_count.load(Ordering::SeqCst)
+            >= progress_before_on_demand + parakeet_spec.files.len(),
+        "expected dictation-started download to forward progress to Settings observer"
+    );
+    assert_eq!(
+        *finished.lock().unwrap(),
+        vec![
+            ("canary-1b-v2".to_owned(), true),
+            ("parakeet-v3".to_owned(), true),
+        ]
+    );
+    assert_eq!(backend.active_local_download_model_id(), None);
 
     runtime.shutdown().await;
     backend.shutdown().await;

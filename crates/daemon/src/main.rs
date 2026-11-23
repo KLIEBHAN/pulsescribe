@@ -126,15 +126,15 @@ async fn run_daemon(
         );
     }
 
-    let initial_config = config.clone();
     let daemon =
         DaemonRuntime::spawn(store, config, platform, Arc::new(backend.clone()), options).await;
     let handle = daemon.handle();
-    // Subscribe BEFORE triggering startup auto-download/preload so the initial `Loading` event
-    // is never missed.
+    // Subscribe BEFORE syncing startup auto-download/preload so the initial `Loading` event is
+    // buffered, and read the runtime's live config in case `.env` reloaded right after spawn.
     let mut events = handle.subscribe();
     backend.set_local_preload_observer(Arc::new(handle.clone()));
-    backend.sync_local_preload_state(&initial_config);
+    let current_config = handle.config();
+    backend.sync_local_preload_state(&current_config);
     let reload_backend = backend.clone();
     let reload_handle = handle.clone();
 

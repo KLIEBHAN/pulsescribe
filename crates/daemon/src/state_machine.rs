@@ -33,6 +33,7 @@ pub struct ActiveRun {
     pub capture_ready: bool,
     pub delivering: bool,
     pub started_by_hold: bool,
+    pub watchdog_token: u64,
 }
 
 impl ActiveRun {
@@ -81,6 +82,7 @@ pub enum DaemonAction {
     },
     ScheduleWatchdog {
         run_id: u64,
+        token: u64,
         timeout: Duration,
     },
     CancelWatchdog,
@@ -97,6 +99,7 @@ pub struct DaemonStateMachine {
     state: AppState,
     state_generation: u64,
     next_run_id: u64,
+    next_watchdog_token: u64,
     active_run: Option<ActiveRun>,
     hold_state: HoldHotkeyState,
     test_hotkey_mode: bool,
@@ -116,6 +119,7 @@ impl DaemonStateMachine {
             state: AppState::Idle,
             state_generation: 0,
             next_run_id: 1,
+            next_watchdog_token: 1,
             active_run: None,
             hold_state: HoldHotkeyState::new(),
             test_hotkey_mode: false,
@@ -400,20 +404,33 @@ impl DaemonStateMachine {
         actions
     }
 
-    /// Refresh the stall watchdog while an on-demand local model download is actively making
-    /// progress during `AppState::Transcribing` so large downloads on slower links do not falsely
-    /// trip the inference timeout while stalled transfers still time out cleanly.
-    pub fn on_model_download_progress(&mut self, run_id: u64) -> Vec<DaemonAction> {
-        let Some(run) = self.active_run.as_ref() else {
+    /// Refresh the stall watchdog (with a fresh schedule token) and optionally update overlay
+    /// progress text while an on-demand local model download runs during `AppState::Transcribing`.
+    pub fn on_model_download_progress(
+        &mut self,
+        run_id: u64,
+        detail: Option<String>,
+        update_detail: bool,
+    ) -> Vec<DaemonAction> {
+        let Some(run) = self.active_run.as_mut() else {
             return Vec::new();
         };
         if run.run_id != run_id || self.state != AppState::Transcribing || run.delivering {
             return Vec::new();
         }
-        vec![DaemonAction::ScheduleWatchdog {
+        let token = self.next_watchdog_token;
+        self.next_watchdog_token = self.next_watchdog_token.wrapping_add(1).max(1);
+        run.watchdog_token = token;
+
+        let mut actions = vec![DaemonAction::ScheduleWatchdog {
             run_id,
+            token,
             timeout: self.timings.transcribing_timeout,
-        }]
+        }];
+        if update_detail {
+            self.transition_to(AppState::Transcribing, detail, None, &mut actions);
+        }
+        actions
     }
 
     /// Transition `Transcribing` -> `Refining` before calling the LLM refinement provider.
@@ -624,12 +641,16 @@ impl DaemonStateMachine {
         actions
     }
 
-    /// Handle a transcribing/refining watchdog timeout if `run_id` is still processing.
-    pub fn on_watchdog_timeout(&mut self, run_id: u64) -> Vec<DaemonAction> {
+    /// Handle a transcribing/refining watchdog timeout if `run_id` and schedule `token` still match.
+    pub fn on_watchdog_timeout(&mut self, run_id: u64, token: u64) -> Vec<DaemonAction> {
         let Some(run) = self.active_run.as_ref() else {
             return Vec::new();
         };
-        if run.run_id != run_id || !self.is_processing() || run.delivering {
+        if run.run_id != run_id
+            || run.watchdog_token != token
+            || !self.is_processing()
+            || run.delivering
+        {
             return Vec::new();
         }
         let err = DaemonStatusError::new(
@@ -702,6 +723,7 @@ impl DaemonStateMachine {
             capture_ready: false,
             delivering: false,
             started_by_hold,
+            watchdog_token: 0,
         });
 
         let mut actions = Vec::new();
@@ -742,6 +764,11 @@ impl DaemonStateMachine {
         }
 
         let run_id = run.run_id;
+        let token = self.next_watchdog_token;
+        self.next_watchdog_token = self.next_watchdog_token.wrapping_add(1).max(1);
+        if let Some(active) = self.active_run.as_mut() {
+            active.watchdog_token = token;
+        }
         self.hold_state.reset();
 
         let mut actions = Vec::new();
@@ -750,6 +777,7 @@ impl DaemonStateMachine {
         actions.push(DaemonAction::StopCapture { run_id });
         actions.push(DaemonAction::ScheduleWatchdog {
             run_id,
+            token,
             timeout: self.timings.transcribing_timeout,
         });
         actions
@@ -999,11 +1027,35 @@ mod tests {
         // Config reload during recording is deferred until Idle.
         assert!(sm.on_config_reload_requested().is_empty());
 
-        let _ = sm.on_stop_recording();
+        let stop_actions = sm.on_stop_recording();
+        assert_eq!(sm.state(), AppState::Transcribing);
+        let initial_token = stop_actions
+            .iter()
+            .find_map(|a| match a {
+                DaemonAction::ScheduleWatchdog { token, .. } => Some(*token),
+                _ => None,
+            })
+            .unwrap();
+
+        // Refreshing the watchdog supersedes `initial_token`; stale timeouts are ignored.
+        let refresh_actions = sm.on_model_download_progress(
+            run1,
+            Some("Downloading canary-1b-v2 (50%)".into()),
+            true,
+        );
+        let refreshed_token = refresh_actions
+            .iter()
+            .find_map(|a| match a {
+                DaemonAction::ScheduleWatchdog { token, .. } => Some(*token),
+                _ => None,
+            })
+            .unwrap();
+        assert_ne!(initial_token, refreshed_token);
+        assert!(sm.on_watchdog_timeout(run1, initial_token).is_empty());
         assert_eq!(sm.state(), AppState::Transcribing);
 
-        // Watchdog fires for run1 -> transitions to Error and cancels capture.
-        let timed_out = sm.on_watchdog_timeout(run1);
+        // Current watchdog token fires for run1 -> transitions to Error and cancels capture.
+        let timed_out = sm.on_watchdog_timeout(run1, refreshed_token);
         assert_eq!(sm.state(), AppState::Error);
         assert!(timed_out.contains(&DaemonAction::CancelCapture { run_id: run1 }));
         assert!(sm.active_run().is_none());
@@ -1011,7 +1063,7 @@ mod tests {
         // Start a new run while Error is displayed; stale watchdog from run1 is ignored.
         let _ = sm.on_start_recording(None);
         let run2 = sm.active_run().unwrap().run_id;
-        assert!(sm.on_watchdog_timeout(run1).is_empty());
+        assert!(sm.on_watchdog_timeout(run1, refreshed_token).is_empty());
         assert_eq!(sm.state(), AppState::Listening);
 
         // Cancel run2 -> immediately resets to Idle AND flushes deferred config reload!
@@ -1117,7 +1169,7 @@ mod tests {
             .on_transcript_ready(run_id, "Duplicate".into(), None)
             .is_empty());
         assert!(sm.on_interim_text(run_id, "Late interim".into()).is_empty());
-        assert!(sm.on_watchdog_timeout(run_id).is_empty());
+        assert!(sm.on_watchdog_timeout(run_id, 1).is_empty());
 
         // Complete normal run, then verify an empty test transcript returns directly to Idle
         // and flushes any deferred config reload without flashing NoSpeech.

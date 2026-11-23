@@ -479,6 +479,7 @@ struct LocalPreloadState {
     task: Option<JoinHandle<()>>,
     superseded: Vec<DetachedPreload>,
     downloading_model_id: Option<String>,
+    dictation_download: Option<(u64, String, Arc<AtomicBool>)>,
     loading_generation: Option<u64>,
     observer: Option<Arc<dyn LocalPreloadObserver>>,
 }
@@ -718,14 +719,20 @@ impl LiveDictationBackend {
         preload.observer = Some(observer);
     }
 
-    /// Return the catalog model ID currently being downloaded automatically by background preload.
+    /// Return the catalog model ID currently being downloaded automatically (by background preload
+    /// or an active on-demand dictation download).
     pub fn active_local_download_model_id(&self) -> Option<String> {
-        self.inner
+        let preload = self
+            .inner
             .local_preload
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .downloading_model_id
-            .clone()
+            .unwrap_or_else(|e| e.into_inner());
+        preload.downloading_model_id.clone().or_else(|| {
+            preload
+                .dictation_download
+                .as_ref()
+                .map(|(_, id, _)| id.clone())
+        })
     }
 
     /// Cancel an active automatic local model download/preload targeting `model_id` (e.g., when
@@ -742,6 +749,17 @@ impl LiveDictationBackend {
                 .local_preload
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
+            let cancelled_dictation =
+                if let Some((_, ref dl_id, ref dl_cancel)) = preload.dictation_download {
+                    if dl_id == model_id {
+                        dl_cancel.store(true, Ordering::Release);
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
             let matches_dl = preload.downloading_model_id.as_deref() == Some(model_id);
             let matches_desired = preload
                 .desired
@@ -749,7 +767,7 @@ impl LiveDictationBackend {
                 .is_some_and(|key| key.matches_catalog_id(model_id));
             let active = preload.task.as_ref().is_some_and(|h| !h.is_finished());
             if !(active && (matches_dl || matches_desired)) {
-                (false, None)
+                (cancelled_dictation, None)
             } else {
                 preload.generation = preload.generation.wrapping_add(1);
                 let prev_key = preload.desired.take();
@@ -872,7 +890,6 @@ impl LiveDictationBackend {
                         clear_loading_for_gen(&state_for_task, my_gen);
                         return;
                     }
-                    set_downloading_model_for_gen(&state_for_task, my_gen, Some(spec.id));
                     publish_loading_for_gen(
                         &state_for_task,
                         my_gen,
@@ -884,25 +901,41 @@ impl LiveDictationBackend {
                         "local ASR model not cached yet; downloading automatically"
                     );
 
-                    let mut last_label = String::new();
+                    let mut last_label = format!("Downloading {}", spec.id);
+                    let owned_transfer = Arc::new(AtomicBool::new(false));
+                    let owned_start = Arc::clone(&owned_transfer);
+                    let state_start = Arc::clone(&state_for_task);
                     let state_cb = Arc::clone(&state_for_task);
                     let cancel_cb = Arc::clone(&cancel_for_task);
                     let dl_res = downloader
-                        .ensure_downloaded(&cache, spec, &cancel_for_task, |progress| {
-                            let label = format_model_download_status(spec.id, &progress);
-                            if label != last_label {
-                                last_label = label.clone();
-                                publish_loading_for_gen(&state_cb, my_gen, &cancel_cb, label);
-                            }
-                            notify_download_progress(&state_cb, my_gen, progress);
-                        })
+                        .ensure_downloaded_observing(
+                            &cache,
+                            spec,
+                            &cancel_for_task,
+                            move || {
+                                owned_start.store(true, Ordering::Release);
+                                set_downloading_model_for_gen(&state_start, my_gen, Some(spec.id));
+                            },
+                            |progress, from_peer| {
+                                let label = format_model_download_status(spec.id, &progress);
+                                if label != last_label {
+                                    last_label = label.clone();
+                                    publish_loading_for_gen(&state_cb, my_gen, &cancel_cb, label);
+                                }
+                                if !from_peer {
+                                    notify_download_progress(&state_cb, my_gen, progress);
+                                }
+                            },
+                        )
                         .await;
 
-                    set_downloading_model_for_gen(&state_for_task, my_gen, None);
+                    let was_owner = owned_transfer.load(Ordering::Acquire);
                     match dl_res {
                         Ok(_) => {
                             downloaded_now = true;
-                            notify_download_finished(&state_for_task, my_gen, spec.id, Ok(()));
+                            if was_owner {
+                                finish_preload_download(&state_for_task, my_gen, spec.id, Ok(()));
+                            }
                             publish_loading_for_gen(
                                 &state_for_task,
                                 my_gen,
@@ -911,7 +944,9 @@ impl LiveDictationBackend {
                             );
                         }
                         Err(LocalAsrError::Cancelled) => {
-                            notify_download_finished(&state_for_task, my_gen, spec.id, Err(""));
+                            if was_owner {
+                                finish_preload_download(&state_for_task, my_gen, spec.id, Err(""));
+                            }
                             clear_loading_for_gen(&state_for_task, my_gen);
                             return;
                         }
@@ -922,7 +957,14 @@ impl LiveDictationBackend {
                                 error = %msg,
                                 "automatic local ASR model download failed"
                             );
-                            notify_download_finished(&state_for_task, my_gen, spec.id, Err(&msg));
+                            if was_owner {
+                                finish_preload_download(
+                                    &state_for_task,
+                                    my_gen,
+                                    spec.id,
+                                    Err(&msg),
+                                );
+                            }
                             clear_loading_for_gen(&state_for_task, my_gen);
                             return;
                         }
@@ -1056,6 +1098,12 @@ impl LiveDictationBackend {
                 let mut superseded_matched = false;
                 let mut clear_observer = None;
 
+                if let Some((_, ref dl_id, ref dl_cancel)) = preload.dictation_download {
+                    if dl_id == model_id {
+                        dl_cancel.store(true, Ordering::Release);
+                    }
+                }
+
                 if preload
                     .desired
                     .as_ref()
@@ -1128,6 +1176,9 @@ impl LiveDictationBackend {
                 preload.desired = None;
                 preload.ready = false;
                 preload.downloading_model_id = None;
+                if let Some((_, _, cancel)) = preload.dictation_download.take() {
+                    cancel.store(true, Ordering::Release);
+                }
                 let clear_observer = preload
                     .loading_generation
                     .take()
@@ -1913,6 +1964,10 @@ fn format_model_download_status(model_id: &str, progress: &DownloadProgress) -> 
 }
 
 fn set_downloading_model_for_gen(state: &LiveBackendState, my_gen: u64, model_id: Option<&str>) {
+    let _emit_guard = state
+        .loading_emit_lock
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let mut preload = state
         .local_preload
         .lock()
@@ -1975,6 +2030,10 @@ fn clear_loading_for_gen(state: &LiveBackendState, my_gen: u64) {
 }
 
 fn notify_download_progress(state: &LiveBackendState, my_gen: u64, progress: DownloadProgress) {
+    let _emit_guard = state
+        .loading_emit_lock
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let observer = {
         let preload = state
             .local_preload
@@ -1991,24 +2050,119 @@ fn notify_download_progress(state: &LiveBackendState, my_gen: u64, progress: Dow
     }
 }
 
-fn notify_download_finished(
+fn finish_preload_download(
     state: &LiveBackendState,
     my_gen: u64,
     model_id: &str,
     result: Result<(), &str>,
 ) {
+    let _emit_guard = state
+        .loading_emit_lock
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let observer = {
+        let mut preload = state
+            .local_preload
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if preload.generation == my_gen {
+            preload.downloading_model_id = None;
+        }
+        let same_model_restarted = preload.generation != my_gen
+            && preload.downloading_model_id.as_deref() == Some(model_id);
+        let dictation_same_model = preload
+            .dictation_download
+            .as_ref()
+            .is_some_and(|(_, id, _)| id == model_id);
+        if preload.shutting_down || same_model_restarted || dictation_same_model {
+            // A newer preload generation or active dictation transfer is downloading the same
+            // model; do not let a stale cancelled task clear its UI download state.
+            None
+        } else {
+            preload.observer.clone()
+        }
+    };
+    if let Some(obs) = observer {
+        obs.on_download_finished(model_id, result);
+    }
+}
+
+fn start_dictation_download(
+    state: &LiveBackendState,
+    run_id: u64,
+    model_id: &str,
+    cancel_flag: Arc<AtomicBool>,
+) {
+    let _emit_guard = state
+        .loading_emit_lock
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let mut preload = state
+        .local_preload
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if !preload.shutting_down {
+        preload.dictation_download = Some((run_id, model_id.to_owned(), cancel_flag));
+    }
+}
+
+fn notify_dictation_download_progress(
+    state: &LiveBackendState,
+    run_id: u64,
+    progress: DownloadProgress,
+) {
+    let _emit_guard = state
+        .loading_emit_lock
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let observer = {
         let preload = state
             .local_preload
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        if preload.shutting_down {
+        let matches = preload
+            .dictation_download
+            .as_ref()
+            .is_some_and(|(id, _, _)| *id == run_id);
+        if preload.shutting_down || !matches {
             None
-        } else if preload.generation != my_gen
-            && preload.downloading_model_id.as_deref() == Some(model_id)
+        } else {
+            preload.observer.clone()
+        }
+    };
+    if let Some(obs) = observer {
+        obs.on_download_progress(progress);
+    }
+}
+
+fn finish_dictation_download(
+    state: &LiveBackendState,
+    run_id: u64,
+    model_id: &str,
+    result: Result<(), &str>,
+) {
+    let _emit_guard = state
+        .loading_emit_lock
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let observer = {
+        let mut preload = state
+            .local_preload
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if preload
+            .dictation_download
+            .as_ref()
+            .is_some_and(|(id, _, _)| *id == run_id)
         {
-            // A newer preload generation is actively downloading the same model; do not let a
-            // stale cancelled task clear its UI download state.
+            preload.dictation_download = None;
+        }
+        let preload_same_model = preload.downloading_model_id.as_deref() == Some(model_id);
+        let newer_dictation_same_model = preload
+            .dictation_download
+            .as_ref()
+            .is_some_and(|(_, id, _)| id == model_id);
+        if preload.shutting_down || preload_same_model || newer_dictation_same_model {
             None
         } else {
             preload.observer.clone()
@@ -2223,19 +2377,60 @@ async fn run_batch_session(
                         model = spec.id,
                         "local ASR model missing during dictation; downloading automatically"
                     );
+                    let initial_label = format!("Downloading {}", spec.id);
+                    let _ = event_tx.send((
+                        run_id,
+                        PipelineEvent::ModelDownloadProgress {
+                            detail: Some(initial_label.clone()),
+                            update_detail: true,
+                        },
+                    ));
                     let dl_cancel = Arc::clone(&cancel_flag);
+                    let cancel_for_reg = Arc::clone(&cancel_flag);
                     let progress_tx = event_tx.clone();
+                    let state_start = Arc::clone(state);
+                    let state_cb = Arc::clone(state);
+                    let owned_transfer = Arc::new(AtomicBool::new(false));
+                    let owned_start = Arc::clone(&owned_transfer);
+                    let mut last_label = initial_label;
                     let mut last_watchdog_bump = Instant::now();
-                    let dl_fut =
-                        downloader.ensure_downloaded(&cache, spec, &dl_cancel, move |_| {
-                            // Refresh the stall watchdog at most once per second while bytes flow
-                            // so large downloads on slower links do not falsely time out.
-                            if last_watchdog_bump.elapsed() >= Duration::from_secs(1) {
+                    let dl_fut = downloader.ensure_downloaded_observing(
+                        &cache,
+                        spec,
+                        &dl_cancel,
+                        move || {
+                            owned_start.store(true, Ordering::Release);
+                            start_dictation_download(&state_start, run_id, spec.id, cancel_for_reg);
+                        },
+                        move |progress, from_peer| {
+                            let label = format_model_download_status(spec.id, &progress);
+                            let label_changed = label != last_label;
+                            // Refresh the stall watchdog at most once per second (or whenever the
+                            // visible download label changes) while bytes flow—including peer
+                            // transfer progress forwarded while awaiting the per-model slot.
+                            if label_changed
+                                || last_watchdog_bump.elapsed() >= Duration::from_secs(1)
+                            {
                                 last_watchdog_bump = Instant::now();
-                                let _ = progress_tx
-                                    .send((run_id, PipelineEvent::ModelDownloadProgress));
+                                let detail = if label_changed {
+                                    last_label = label.clone();
+                                    Some(label)
+                                } else {
+                                    None
+                                };
+                                let _ = progress_tx.send((
+                                    run_id,
+                                    PipelineEvent::ModelDownloadProgress {
+                                        detail,
+                                        update_detail: label_changed,
+                                    },
+                                ));
                             }
-                        });
+                            if !from_peer {
+                                notify_dictation_download_progress(&state_cb, run_id, progress);
+                            }
+                        },
+                    );
                     tokio::pin!(dl_fut);
                     let dl_res = tokio::select! {
                         biased;
@@ -2244,12 +2439,37 @@ async fn run_batch_session(
                             // Await cooperative exit (<=50 ms via `race_with_cancel`) so
                             // `download_single_file` closes and unlinks `.part` files cleanly.
                             let _ = dl_fut.await;
+                            if owned_transfer.load(Ordering::Acquire) {
+                                finish_dictation_download(state, run_id, spec.id, Err(""));
+                            }
                             return Ok((String::new(), post_stop_started));
                         }
                         res = &mut dl_fut => res,
                     };
+                    if owned_transfer.load(Ordering::Acquire) {
+                        match &dl_res {
+                            Ok(_) => finish_dictation_download(state, run_id, spec.id, Ok(())),
+                            Err(LocalAsrError::Cancelled) => {
+                                finish_dictation_download(state, run_id, spec.id, Err(""));
+                            }
+                            Err(err) => {
+                                let msg = err.to_string();
+                                finish_dictation_download(state, run_id, spec.id, Err(&msg));
+                            }
+                        }
+                    }
                     match dl_res {
-                        Ok(_) => {}
+                        Ok(_) => {
+                            // Restore the standard `"Transcribing…"` overlay text and grant offline
+                            // inference a fresh watchdog window.
+                            let _ = event_tx.send((
+                                run_id,
+                                PipelineEvent::ModelDownloadProgress {
+                                    detail: None,
+                                    update_detail: true,
+                                },
+                            ));
+                        }
                         Err(LocalAsrError::Cancelled) => {
                             return Ok((String::new(), post_stop_started));
                         }

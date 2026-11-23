@@ -242,6 +242,11 @@ pub fn describe_overlay_content(
             text: loading_text(&detail, max_chars),
             ..Default::default()
         },
+        AppState::Transcribing if detail.starts_with("Downloading ") => OverlayContent {
+            bars: OverlayBarMode::Line,
+            text: truncate_overlay_text(&ensure_progress_ellipsis(&detail), max_chars),
+            ..Default::default()
+        },
         AppState::Transcribing if detail.ends_with(THEN_REFINING) => OverlayContent {
             bars: OverlayBarMode::Phase1,
             text: overlay_state_text(AppState::Transcribing)

@@ -30,8 +30,12 @@ pub enum PipelineEvent {
     SpeechDetected,
     InterimText(String),
     /// Emitted periodically while downloading a missing local model on demand during `Transcribing`
-    /// so the stall watchdog refreshes as long as bytes are actively streaming.
-    ModelDownloadProgress,
+    /// so the stall watchdog refreshes as long as bytes are actively streaming and the overlay can
+    /// display live download progress (`update_detail == true`).
+    ModelDownloadProgress {
+        detail: Option<String>,
+        update_detail: bool,
+    },
     RefiningStarted,
     TranscriptReady {
         text: String,
@@ -156,7 +160,10 @@ enum RuntimeCommand {
         duration_secs: Option<f64>,
     },
     ConfigReloadLoaded(Box<DaemonConfig>),
-    WatchdogTimeout(u64),
+    WatchdogTimeout {
+        run_id: u64,
+        token: u64,
+    },
     IdleReset(u64),
     Shutdown(Option<oneshot::Sender<()>>),
 }
@@ -611,8 +618,8 @@ impl DaemonActor {
                     self.state_machine.on_config_reload_requested()
                 }
             }
-            RuntimeCommand::WatchdogTimeout(run_id) => {
-                self.state_machine.on_watchdog_timeout(run_id)
+            RuntimeCommand::WatchdogTimeout { run_id, token } => {
+                self.state_machine.on_watchdog_timeout(run_id, token)
             }
             RuntimeCommand::IdleReset(generation) => self.state_machine.on_reset_timer(generation),
             RuntimeCommand::Shutdown(_) => Vec::new(),
@@ -638,9 +645,12 @@ impl DaemonActor {
             }
             PipelineEvent::SpeechDetected => self.state_machine.on_speech_detected(run_id),
             PipelineEvent::InterimText(text) => self.state_machine.on_interim_text(run_id, text),
-            PipelineEvent::ModelDownloadProgress => {
-                self.state_machine.on_model_download_progress(run_id)
-            }
+            PipelineEvent::ModelDownloadProgress {
+                detail,
+                update_detail,
+            } => self
+                .state_machine
+                .on_model_download_progress(run_id, detail, update_detail),
             PipelineEvent::RefiningStarted => self.state_machine.on_refining_started(run_id),
             PipelineEvent::TranscriptReady {
                 text,
@@ -766,14 +776,18 @@ impl DaemonActor {
                         });
                     }
                 }
-                DaemonAction::ScheduleWatchdog { run_id, timeout } => {
+                DaemonAction::ScheduleWatchdog {
+                    run_id,
+                    token,
+                    timeout,
+                } => {
                     if let Some(prev) = self.watchdog_task.take() {
                         prev.abort();
                     }
                     let cmd_tx = self.cmd_tx.clone();
                     self.watchdog_task = Some(tokio::spawn(async move {
                         tokio::time::sleep(timeout).await;
-                        let _ = cmd_tx.send(RuntimeCommand::WatchdogTimeout(run_id));
+                        let _ = cmd_tx.send(RuntimeCommand::WatchdogTimeout { run_id, token });
                     }));
                 }
                 DaemonAction::CancelWatchdog => {

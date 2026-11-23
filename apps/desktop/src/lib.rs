@@ -217,7 +217,6 @@ pub fn run() -> i32 {
         }
     };
 
-    let initial_preload_config = initial_config.clone();
     let daemon_runtime = tokio_rt.block_on(async {
         backend.sync_deepgram_warm_state(&initial_config).await;
         DaemonRuntime::spawn(
@@ -335,9 +334,23 @@ pub fn run() -> i32 {
         });
     }
 
-    // Subscribe BEFORE spawning the event bridge and starting local auto-download/preload so the
-    // initial `AppState::Loading` event is buffered and never missed by overlay/tray.
+    // Subscribe BEFORE syncing initial local auto-download/preload and spawning the event bridge
+    // so: (1) startup `AppState::Loading` events are buffered for overlay/tray, and (2) any
+    // `ConfigReloaded` event is handled strictly after the initial startup sync completes.
     let bridge_events = daemon_handle.subscribe();
+
+    // Wire loading-overlay & UI progress observer, then trigger initial local auto-download/preload
+    // using the runtime's live config in case `.env` reloaded during Tauri/tray initialization.
+    backend.set_local_preload_observer(Arc::new(DesktopPreloadObserver {
+        daemon: daemon_handle.clone(),
+        app: app.handle().clone(),
+    }));
+    {
+        let _guard = tokio_rt.enter();
+        let startup_config = daemon_handle.config();
+        backend.sync_local_preload_state(&startup_config);
+    }
+
     let bridge_app = app.handle().clone();
     let bridge_daemon = daemon_handle.clone();
     let bridge_backend = backend.clone();
@@ -354,16 +367,6 @@ pub fn run() -> i32 {
         )
         .await;
     }));
-
-    // Wire loading-overlay & UI progress observer, then trigger initial local auto-download/preload.
-    backend.set_local_preload_observer(Arc::new(DesktopPreloadObserver {
-        daemon: daemon_handle.clone(),
-        app: app.handle().clone(),
-    }));
-    {
-        let _guard = tokio_rt.enter();
-        backend.sync_local_preload_state(&initial_preload_config);
-    }
 
     let open_onboarding_on_ready = !store.is_onboarding_complete();
     let mut daemon_runtime = Some(daemon_runtime);

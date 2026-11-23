@@ -13,7 +13,7 @@ use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncWriteExt, BufWriter};
-use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::{broadcast, Mutex as AsyncMutex};
 
 use crate::cache::{verify_all_files_present, InstalledModel, ModelCache, ModelInstallSource};
 use crate::catalog::{
@@ -42,7 +42,12 @@ pub struct DownloadProgress {
     pub total_bytes: Option<u64>,
 }
 
-type DownloadLockMap = HashMap<(PathBuf, String), Arc<AsyncMutex<()>>>;
+struct ModelDownloadSlot {
+    lock: AsyncMutex<()>,
+    progress_tx: broadcast::Sender<DownloadProgress>,
+}
+
+type DownloadLockMap = HashMap<(PathBuf, String), Arc<ModelDownloadSlot>>;
 
 /// Streaming HTTPS downloader for Hugging Face model weights.
 #[derive(Clone)]
@@ -88,7 +93,8 @@ impl ModelDownloader {
     /// `cache.model_dir(spec)` with progress callbacks and cooperative cancellation.
     ///
     /// Concurrent calls for the same `(models_dir, spec.id)` are serialized so duplicate
-    /// downloads cannot race on temporary `.part` renames.
+    /// downloads cannot race on temporary `.part` renames, while waiting callers still receive
+    /// live progress updates broadcast by the active transfer.
     pub async fn ensure_downloaded<F>(
         &self,
         cache: &ModelCache,
@@ -99,13 +105,51 @@ impl ModelDownloader {
     where
         F: FnMut(DownloadProgress),
     {
+        self.ensure_downloaded_observing(
+            cache,
+            spec,
+            cancel_flag,
+            || {},
+            |progress, _from_peer| on_progress(progress),
+        )
+        .await
+    }
+
+    /// Like [`Self::ensure_downloaded`], invoking `on_own_transfer_start` only when this call
+    /// acquires the per-model slot and begins downloading missing files itself (not when waiting
+    /// on a concurrent peer transfer that finishes the install), and tagging each progress event
+    /// with `from_peer == true` while waiting on a peer transfer.
+    pub async fn ensure_downloaded_observing<S, F>(
+        &self,
+        cache: &ModelCache,
+        spec: &ModelSpec,
+        cancel_flag: &AtomicBool,
+        on_own_transfer_start: S,
+        mut on_progress: F,
+    ) -> Result<InstalledModel, LocalAsrError>
+    where
+        S: FnOnce(),
+        F: FnMut(DownloadProgress, bool),
+    {
         validate_safe_filename(spec.id)?;
         if cancel_flag.load(Ordering::Acquire) {
             return Err(LocalAsrError::Cancelled);
         }
 
-        let model_lock = self.lock_for(cache.models_dir(), spec.id);
-        let _permit = race_with_cancel(cancel_flag, model_lock.lock()).await?;
+        let slot = self.slot_for(cache.models_dir(), spec.id);
+        let mut peer_rx = slot.progress_tx.subscribe();
+        let _permit = acquire_slot_forwarding_progress(
+            cancel_flag,
+            &slot.lock,
+            &mut peer_rx,
+            &mut |progress| on_progress(progress, true),
+        )
+        .await?;
+        drop(peer_rx);
+
+        if cancel_flag.load(Ordering::Acquire) {
+            return Err(LocalAsrError::Cancelled);
+        }
 
         let cache_probe = cache.clone();
         let spec_copy = *spec;
@@ -121,8 +165,17 @@ impl ModelDownloader {
             return Err(LocalAsrError::Cancelled);
         }
 
+        on_own_transfer_start();
+
         let target_dir = cache.model_dir(spec);
         tokio::fs::create_dir_all(&target_dir).await?;
+
+        let mut emit_progress = |progress: DownloadProgress| {
+            if slot.progress_tx.receiver_count() > 0 {
+                let _ = slot.progress_tx.send(progress.clone());
+            }
+            on_progress(progress, false);
+        };
 
         let total_files = spec.files.len();
         for (idx, &filename) in spec.files.iter().enumerate() {
@@ -133,7 +186,7 @@ impl ModelDownloader {
 
             let final_path = target_dir.join(filename);
             if let Some(len) = existing_regular_file_len(&final_path).await {
-                on_progress(DownloadProgress {
+                emit_progress(DownloadProgress {
                     model_id: spec.id.to_owned(),
                     file: filename.to_owned(),
                     file_index: idx + 1,
@@ -153,7 +206,7 @@ impl ModelDownloader {
                 idx + 1,
                 total_files,
                 cancel_flag,
-                &mut on_progress,
+                &mut emit_progress,
             )
             .await?;
         }
@@ -180,14 +233,16 @@ impl ModelDownloader {
         })
     }
 
-    fn lock_for(&self, models_dir: &Path, model_id: &str) -> Arc<AsyncMutex<()>> {
+    fn slot_for(&self, models_dir: &Path, model_id: &str) -> Arc<ModelDownloadSlot> {
         let key = (models_dir.to_path_buf(), model_id.to_owned());
         let mut guard = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
-        Arc::clone(
-            guard
-                .entry(key)
-                .or_insert_with(|| Arc::new(AsyncMutex::new(()))),
-        )
+        Arc::clone(guard.entry(key).or_insert_with(|| {
+            let (progress_tx, _) = broadcast::channel(32);
+            Arc::new(ModelDownloadSlot {
+                lock: AsyncMutex::new(()),
+                progress_tx,
+            })
+        }))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -343,6 +398,41 @@ fn classify_reqwest_error(err: &reqwest::Error) -> &'static str {
         "read failed"
     } else {
         "request failed"
+    }
+}
+
+async fn acquire_slot_forwarding_progress<'a, F>(
+    cancel_flag: &AtomicBool,
+    lock: &'a AsyncMutex<()>,
+    peer_rx: &mut broadcast::Receiver<DownloadProgress>,
+    on_progress: &mut F,
+) -> Result<tokio::sync::MutexGuard<'a, ()>, LocalAsrError>
+where
+    F: FnMut(DownloadProgress),
+{
+    let lock_fut = lock.lock();
+    tokio::pin!(lock_fut);
+    let mut interval = tokio::time::interval(CANCEL_POLL_INTERVAL);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    interval.tick().await;
+    let mut peer_closed = false;
+
+    loop {
+        if cancel_flag.load(Ordering::Acquire) {
+            return Err(LocalAsrError::Cancelled);
+        }
+        tokio::select! {
+            biased;
+            guard = &mut lock_fut => return Ok(guard),
+            recv = peer_rx.recv(), if !peer_closed => {
+                match recv {
+                    Ok(progress) => on_progress(progress),
+                    Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(broadcast::error::RecvError::Closed) => peer_closed = true,
+                }
+            }
+            _ = interval.tick() => {}
+        }
     }
 }
 
@@ -562,5 +652,120 @@ mod tests {
             leftovers.is_empty(),
             "expected no promoted or .part files after cancel, found {leftovers:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn concurrent_waiter_receives_peer_progress_without_starting_second_transfer() {
+        let dir = TempDir::new("peer-progress");
+        let cache = ModelCache::new(dir.0.join("models"), None);
+        let tiny = resolve_model_spec(Some("tiny")).unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let request_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let request_count_srv = Arc::clone(&request_count);
+        let first_req_started = Arc::new(tokio::sync::Notify::new());
+        let first_req_notify = Arc::clone(&first_req_started);
+        let release_second_chunk = Arc::new(tokio::sync::Notify::new());
+        let release_srv = Arc::clone(&release_second_chunk);
+
+        let server = tokio::spawn(async move {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            request_count_srv.fetch_add(1, Ordering::SeqCst);
+            let mut req_buf = [0_u8; 4096];
+            let _ = socket.read(&mut req_buf).await;
+            let chunk1 = vec![7_u8; 64 * 1024];
+            let chunk2 = vec![8_u8; 64 * 1024];
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                chunk1.len() + chunk2.len()
+            );
+            let _ = socket.write_all(header.as_bytes()).await;
+            let _ = socket.write_all(&chunk1).await;
+            let _ = socket.flush().await;
+            first_req_notify.notify_one();
+            release_srv.notified().await;
+            let _ = socket.write_all(&chunk2).await;
+            let _ = socket.shutdown().await;
+        });
+
+        let downloader = ModelDownloader::with_base_url(format!("http://{addr}")).unwrap();
+        let cancel1 = Arc::new(AtomicBool::new(false));
+        let cancel2 = Arc::new(AtomicBool::new(false));
+
+        let owner_started = Arc::new(AtomicBool::new(false));
+        let owner_started_cb = Arc::clone(&owner_started);
+        let dl1 = downloader.clone();
+        let cache1 = cache.clone();
+        let c1 = Arc::clone(&cancel1);
+        let task1 = tokio::spawn(async move {
+            dl1.ensure_downloaded_observing(
+                &cache1,
+                tiny,
+                &c1,
+                move || {
+                    owner_started_cb.store(true, Ordering::Release);
+                },
+                |_p, from_peer| {
+                    assert!(!from_peer, "owner must receive from_peer == false");
+                },
+            )
+            .await
+        });
+
+        first_req_started.notified().await;
+
+        let waiter_started = Arc::new(AtomicBool::new(false));
+        let waiter_started_cb = Arc::clone(&waiter_started);
+        let peer_ticks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let peer_ticks_cb = Arc::clone(&peer_ticks);
+        let dl2 = downloader.clone();
+        let cache2 = cache.clone();
+        let c2 = Arc::clone(&cancel2);
+        let task2 = tokio::spawn(async move {
+            dl2.ensure_downloaded_observing(
+                &cache2,
+                tiny,
+                &c2,
+                move || {
+                    waiter_started_cb.store(true, Ordering::Release);
+                },
+                |_p, from_peer| {
+                    assert!(from_peer, "waiter must receive from_peer == true");
+                    peer_ticks_cb.fetch_add(1, Ordering::SeqCst);
+                },
+            )
+            .await
+        });
+
+        // Wait until task2 has subscribed to the slot's progress broadcast channel.
+        let slot = downloader.slot_for(cache.models_dir(), tiny.id);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while slot.progress_tx.receiver_count() == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        release_second_chunk.notify_one();
+
+        let (res1, res2) = tokio::join!(task1, task2);
+        let installed1 = res1.unwrap().unwrap();
+        let installed2 = res2.unwrap().unwrap();
+        assert_eq!(installed1, installed2);
+        assert_eq!(request_count.load(Ordering::SeqCst), 1);
+        assert!(owner_started.load(Ordering::Acquire));
+        assert!(
+            !waiter_started.load(Ordering::Acquire),
+            "peer waiter should reuse completed install without starting a second transfer"
+        );
+        assert!(
+            peer_ticks.load(Ordering::SeqCst) >= 1,
+            "peer waiter should receive forwarded progress ticks while waiting on the slot lock"
+        );
+        let _ = server.await;
     }
 }
