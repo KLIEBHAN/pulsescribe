@@ -22,6 +22,7 @@ use pulsescribe_daemon::{
     DaemonRuntime, DaemonRuntimeOptions, LiveDictationBackend, LocalTranscriber,
     LocalTranscriptionRequest, NoopHotkeyBackend, ProviderEndpoints,
 };
+use pulsescribe_local_asr::{LocalAsrError, LocalStreamingSession};
 use pulsescribe_platform::{
     AppDetector, MicrophonePermissionStatus, NoopSoundPlayer, PermissionsChecker, PlatformKind,
 };
@@ -1179,5 +1180,469 @@ async fn premature_deepgram_close_silent_batch_and_local_cancel_drain() {
         backend.shutdown().await;
         assert!(observed_cancel.load(Ordering::SeqCst));
         assert!(finished.load(Ordering::SeqCst));
+    }
+}
+
+type PreloadRecordList = Arc<Mutex<Vec<(Option<String>, Option<String>)>>>;
+
+struct TrackingPreloadEngine {
+    preloads: PreloadRecordList,
+    unloads: Arc<AtomicUsize>,
+    preview_unloads: Arc<AtomicUsize>,
+    block_model: Option<String>,
+    block_release: Option<Arc<std::sync::atomic::AtomicBool>>,
+    blocked_started: Arc<std::sync::atomic::AtomicBool>,
+    blocked_observed_cancel: Arc<std::sync::atomic::AtomicBool>,
+    blocked_finished: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl LocalTranscriber for TrackingPreloadEngine {
+    fn transcribe(&self, _request: LocalTranscriptionRequest) -> Result<String, DaemonStatusError> {
+        Ok("ok".to_owned())
+    }
+
+    fn preload(
+        &self,
+        model: Option<&str>,
+        language: Option<&str>,
+        cancel_flag: &std::sync::atomic::AtomicBool,
+    ) -> Result<bool, DaemonStatusError> {
+        self.preloads.lock().unwrap().push((
+            model.map(ToOwned::to_owned),
+            language.map(ToOwned::to_owned),
+        ));
+        if self.block_model.as_deref() == model {
+            self.blocked_started.store(true, Ordering::SeqCst);
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            while std::time::Instant::now() < deadline {
+                let cancelled = cancel_flag.load(Ordering::Acquire);
+                let released = self
+                    .block_release
+                    .as_ref()
+                    .is_none_or(|gate| gate.load(Ordering::Acquire));
+                if cancelled && released {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            self.blocked_observed_cancel
+                .store(cancel_flag.load(Ordering::Acquire), Ordering::SeqCst);
+            self.blocked_finished.store(true, Ordering::SeqCst);
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    fn unload(&self) {
+        self.unloads.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn unload_streaming_preview(&self) {
+        self.preview_unloads.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[tokio::test]
+async fn local_preload_coalesces_cancels_on_switch_and_unloads_on_cloud_mode() {
+    let dir = TempDir::new("local-preload");
+    let preloads = Arc::new(Mutex::new(Vec::new()));
+    let unloads = Arc::new(AtomicUsize::new(0));
+    let preview_unloads = Arc::new(AtomicUsize::new(0));
+    let blocked_started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let blocked_observed_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let blocked_finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let block_release = Arc::new(std::sync::atomic::AtomicBool::new(true));
+
+    let permissions = Arc::new(StaticPermissions {
+        mic: MicrophonePermissionStatus::Authorized,
+    });
+    let backend = LiveDictationBackend::with_components(
+        dir.path(),
+        permissions,
+        Arc::new(SyntheticAudioFactory::new(16_000, 320, 1)),
+        Some(Arc::new(TrackingPreloadEngine {
+            preloads: Arc::clone(&preloads),
+            unloads: Arc::clone(&unloads),
+            preview_unloads: Arc::clone(&preview_unloads),
+            block_model: Some("large-v3-turbo".to_owned()),
+            block_release: Some(Arc::clone(&block_release)),
+            blocked_started: Arc::clone(&blocked_started),
+            blocked_observed_cancel: Arc::clone(&blocked_observed_cancel),
+            blocked_finished: Arc::clone(&blocked_finished),
+        })),
+        ProviderEndpoints::default(),
+    )
+    .unwrap();
+
+    // 1. Initial local config preloads once and coalesces duplicate sync calls.
+    let parakeet_cfg = DaemonConfig {
+        mode: DaemonMode::Local,
+        model: Some("parakeet-v3".to_owned()),
+        language: Some("de".to_owned()),
+        streaming: true,
+        ..DaemonConfig::default()
+    };
+    backend.sync_local_preload_state(&parakeet_cfg);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while preloads.lock().unwrap().is_empty() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    // Give the background task a brief moment to record `ready = true`.
+    tokio::time::sleep(Duration::from_millis(25)).await;
+    backend.sync_local_preload_state(&parakeet_cfg);
+    tokio::time::sleep(Duration::from_millis(25)).await;
+    assert_eq!(
+        *preloads.lock().unwrap(),
+        vec![(Some("parakeet-v3".to_owned()), Some("de".to_owned()))]
+    );
+    assert_eq!(preview_unloads.load(Ordering::SeqCst), 0);
+
+    // 2. Disabling streaming unloads only the streaming preview without reloading offline weights.
+    let mut no_streaming_cfg = parakeet_cfg.clone();
+    no_streaming_cfg.streaming = false;
+    backend.sync_local_preload_state(&no_streaming_cfg);
+    assert_eq!(preview_unloads.load(Ordering::SeqCst), 1);
+    assert_eq!(preloads.lock().unwrap().len(), 1);
+
+    // 3. Switching to a slow model then leaving Local cancels in-flight preload & unloads.
+    let turbo_cfg = DaemonConfig {
+        mode: DaemonMode::Local,
+        model: Some("large-v3-turbo".to_owned()),
+        streaming: true,
+        ..DaemonConfig::default()
+    };
+    backend.sync_local_preload_state(&turbo_cfg);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !blocked_started.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    let cloud_cfg = DaemonConfig {
+        mode: DaemonMode::Deepgram,
+        ..DaemonConfig::default()
+    };
+    backend.sync_local_preload_state(&cloud_cfg);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !blocked_finished.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(blocked_observed_cancel.load(Ordering::SeqCst));
+    assert!(unloads.load(Ordering::SeqCst) >= 1);
+
+    // 4. `unload_local_model_if_matching` matches aliases (`"turbo"` -> `"large-v3-turbo"`).
+    let alias_cfg = DaemonConfig {
+        mode: DaemonMode::Local,
+        model: Some("turbo".to_owned()),
+        ..DaemonConfig::default()
+    };
+    backend.sync_local_preload_state(&alias_cfg);
+    assert!(!backend.unload_local_model_if_matching("parakeet-v3").await);
+    assert!(
+        backend
+            .unload_local_model_if_matching("large-v3-turbo")
+            .await
+    );
+
+    // 5. Superseded in-flight preload is still awaited when deleting the previous model.
+    blocked_started.store(false, Ordering::SeqCst);
+    blocked_finished.store(false, Ordering::SeqCst);
+    block_release.store(false, Ordering::SeqCst);
+    backend.sync_local_preload_state(&turbo_cfg);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !blocked_started.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    // Switch to `parakeet-v3` while `large-v3-turbo` is still inside its native loader.
+    backend.sync_local_preload_state(&parakeet_cfg);
+    let release_clone = Arc::clone(&block_release);
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        release_clone.store(true, Ordering::Release);
+    });
+    assert!(
+        backend
+            .unload_local_model_if_matching("large-v3-turbo")
+            .await
+    );
+    assert!(blocked_finished.load(Ordering::SeqCst));
+
+    backend.shutdown().await;
+}
+
+struct FakeStreamingPreviewSession {
+    samples_seen: usize,
+}
+
+impl LocalStreamingSession for FakeStreamingPreviewSession {
+    fn feed(&mut self, samples_16k: &[f32]) -> Result<(), LocalAsrError> {
+        self.samples_seen += samples_16k.len();
+        Ok(())
+    }
+
+    fn text(&self) -> Result<String, LocalAsrError> {
+        if self.samples_seen >= 960 {
+            Ok("Hallo Welt".to_owned())
+        } else if self.samples_seen > 0 {
+            Ok("Hallo".to_owned())
+        } else {
+            Ok(String::new())
+        }
+    }
+}
+
+struct PreviewCapableLocalEngine {
+    preview_opens: Arc<AtomicUsize>,
+    preview_mode: PreviewMode,
+    final_transcript: String,
+}
+
+#[derive(Clone, Copy)]
+enum PreviewMode {
+    Live,
+    Error,
+}
+
+impl LocalTranscriber for PreviewCapableLocalEngine {
+    fn transcribe(&self, request: LocalTranscriptionRequest) -> Result<String, DaemonStatusError> {
+        assert!(!request.samples_16k.is_empty());
+        Ok(self.final_transcript.clone())
+    }
+
+    fn open_streaming_preview(
+        &self,
+        _language: Option<&str>,
+        _cancel_flag: &std::sync::atomic::AtomicBool,
+    ) -> Result<Option<Box<dyn LocalStreamingSession>>, LocalAsrError> {
+        self.preview_opens.fetch_add(1, Ordering::SeqCst);
+        match self.preview_mode {
+            PreviewMode::Live => Ok(Some(Box::new(FakeStreamingPreviewSession {
+                samples_seen: 0,
+            }))),
+            PreviewMode::Error => Err(LocalAsrError::MissingRuntime(
+                "libsherpa-onnx-c-api missing".to_owned(),
+            )),
+        }
+    }
+}
+
+#[tokio::test]
+async fn local_mode_streaming_preview_emits_interim_text_and_final_offline_transcript() {
+    let dir = TempDir::new("local-live-preview");
+
+    // 1. Local mode with `streaming = true`: emits live `InterimText` during capture, then final offline transcript.
+    {
+        let store = Arc::new(PreferencesStore::new(dir.path()));
+        let (pasted, clipboard) = RecordingClipboard::create();
+        let preview_opens = Arc::new(AtomicUsize::new(0));
+        let permissions = Arc::new(StaticPermissions {
+            mic: MicrophonePermissionStatus::Authorized,
+        });
+        let platform = DaemonPlatform {
+            permissions: Arc::clone(&permissions) as Arc<dyn PermissionsChecker>,
+            ..DaemonPlatform::noop(clipboard)
+        };
+        let backend = LiveDictationBackend::with_components(
+            dir.path(),
+            permissions,
+            Arc::new(SyntheticAudioFactory::new(16_000, 640, 3)),
+            Some(Arc::new(PreviewCapableLocalEngine {
+                preview_opens: Arc::clone(&preview_opens),
+                preview_mode: PreviewMode::Live,
+                final_transcript: "Hallo Welt!".to_owned(),
+            })),
+            ProviderEndpoints::default(),
+        )
+        .unwrap();
+        let runtime = DaemonRuntime::spawn(
+            store,
+            DaemonConfig {
+                mode: DaemonMode::Local,
+                streaming: true,
+                ..DaemonConfig::default()
+            },
+            platform,
+            Arc::new(backend.clone()),
+            DaemonRuntimeOptions {
+                enable_ipc: false,
+                enable_reload_watcher: false,
+                ..DaemonRuntimeOptions::default()
+            },
+        )
+        .await;
+        let handle = runtime.handle();
+        let mut events = handle.subscribe();
+
+        handle.start_recording();
+        let interim = next_matching_event(
+            &mut events,
+            |e| matches!(e, DaemonEvent::InterimText { text, .. } if text.contains("Hallo")),
+        )
+        .await;
+        assert!(matches!(interim, DaemonEvent::InterimText { .. }));
+        assert_eq!(preview_opens.load(Ordering::SeqCst), 1);
+
+        handle.stop_recording();
+        let delivered = next_matching_event(&mut events, |e| {
+            matches!(e, DaemonEvent::TranscriptDelivered { .. })
+        })
+        .await;
+        match delivered {
+            DaemonEvent::TranscriptDelivered { text, .. } => assert_eq!(text, "Hallo Welt!"),
+            other => panic!("unexpected event: {other:?}"),
+        }
+        assert_eq!(*pasted.lock().unwrap(), vec!["Hallo Welt!".to_owned()]);
+
+        runtime.shutdown().await;
+        backend.shutdown().await;
+    }
+
+    // 2. Local mode with `streaming = false` skips opening preview completely.
+    {
+        let store = Arc::new(PreferencesStore::new(dir.path()));
+        let (_, clipboard) = RecordingClipboard::create();
+        let preview_opens = Arc::new(AtomicUsize::new(0));
+        let permissions = Arc::new(StaticPermissions {
+            mic: MicrophonePermissionStatus::Authorized,
+        });
+        let platform = DaemonPlatform {
+            permissions: Arc::clone(&permissions) as Arc<dyn PermissionsChecker>,
+            ..DaemonPlatform::noop(clipboard)
+        };
+        let backend = LiveDictationBackend::with_components(
+            dir.path(),
+            permissions,
+            Arc::new(SyntheticAudioFactory::new(16_000, 640, 2)),
+            Some(Arc::new(PreviewCapableLocalEngine {
+                preview_opens: Arc::clone(&preview_opens),
+                preview_mode: PreviewMode::Live,
+                final_transcript: "Offline only".to_owned(),
+            })),
+            ProviderEndpoints::default(),
+        )
+        .unwrap();
+        let runtime = DaemonRuntime::spawn(
+            store,
+            DaemonConfig {
+                mode: DaemonMode::Local,
+                streaming: false,
+                ..DaemonConfig::default()
+            },
+            platform,
+            Arc::new(backend.clone()),
+            DaemonRuntimeOptions {
+                enable_ipc: false,
+                enable_reload_watcher: false,
+                ..DaemonRuntimeOptions::default()
+            },
+        )
+        .await;
+        let handle = runtime.handle();
+        let mut events = handle.subscribe();
+
+        handle.start_recording();
+        next_matching_event(&mut events, |e| {
+            matches!(
+                e,
+                DaemonEvent::StateChanged {
+                    state: AppState::Recording,
+                    ..
+                }
+            )
+        })
+        .await;
+        handle.stop_recording();
+        let delivered = next_matching_event(&mut events, |e| {
+            matches!(e, DaemonEvent::TranscriptDelivered { .. })
+        })
+        .await;
+        match delivered {
+            DaemonEvent::TranscriptDelivered { text, .. } => assert_eq!(text, "Offline only"),
+            other => panic!("unexpected event: {other:?}"),
+        }
+        assert_eq!(preview_opens.load(Ordering::SeqCst), 0);
+
+        runtime.shutdown().await;
+        backend.shutdown().await;
+    }
+
+    // 3. Preview runtime error never aborts offline dictation.
+    {
+        let store = Arc::new(PreferencesStore::new(dir.path()));
+        let (_, clipboard) = RecordingClipboard::create();
+        let preview_opens = Arc::new(AtomicUsize::new(0));
+        let permissions = Arc::new(StaticPermissions {
+            mic: MicrophonePermissionStatus::Authorized,
+        });
+        let platform = DaemonPlatform {
+            permissions: Arc::clone(&permissions) as Arc<dyn PermissionsChecker>,
+            ..DaemonPlatform::noop(clipboard)
+        };
+        let backend = LiveDictationBackend::with_components(
+            dir.path(),
+            permissions,
+            Arc::new(SyntheticAudioFactory::new(16_000, 640, 2)),
+            Some(Arc::new(PreviewCapableLocalEngine {
+                preview_opens: Arc::clone(&preview_opens),
+                preview_mode: PreviewMode::Error,
+                final_transcript: "Fallback ok".to_owned(),
+            })),
+            ProviderEndpoints::default(),
+        )
+        .unwrap();
+        let runtime = DaemonRuntime::spawn(
+            store,
+            DaemonConfig {
+                mode: DaemonMode::Local,
+                streaming: true,
+                ..DaemonConfig::default()
+            },
+            platform,
+            Arc::new(backend.clone()),
+            DaemonRuntimeOptions {
+                enable_ipc: false,
+                enable_reload_watcher: false,
+                ..DaemonRuntimeOptions::default()
+            },
+        )
+        .await;
+        let handle = runtime.handle();
+        let mut events = handle.subscribe();
+
+        handle.start_recording();
+        next_matching_event(&mut events, |e| {
+            matches!(
+                e,
+                DaemonEvent::StateChanged {
+                    state: AppState::Recording,
+                    ..
+                }
+            )
+        })
+        .await;
+        handle.stop_recording();
+        let delivered = next_matching_event(&mut events, |e| {
+            matches!(e, DaemonEvent::TranscriptDelivered { .. })
+        })
+        .await;
+        match delivered {
+            DaemonEvent::TranscriptDelivered { text, .. } => assert_eq!(text, "Fallback ok"),
+            other => panic!("unexpected event: {other:?}"),
+        }
+        assert_eq!(preview_opens.load(Ordering::SeqCst), 1);
+
+        runtime.shutdown().await;
+        backend.shutdown().await;
     }
 }

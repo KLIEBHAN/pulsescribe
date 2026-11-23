@@ -14,7 +14,7 @@ use std::sync::Arc;
 use pulsescribe_core::paths::AppPaths;
 use pulsescribe_core::PreferencesStore;
 use pulsescribe_daemon::{
-    DaemonConfig, DaemonEvent, DaemonMode, DaemonPlatform, DaemonRuntime, DaemonRuntimeOptions,
+    DaemonConfig, DaemonEvent, DaemonPlatform, DaemonRuntime, DaemonRuntimeOptions,
     LiveDictationBackend,
 };
 use pulsescribe_local_asr::{LocalAsrManager, ModelDownloader};
@@ -176,6 +176,7 @@ pub fn run() -> i32 {
 
     let daemon_runtime = tokio_rt.block_on(async {
         backend.sync_deepgram_warm_state(&initial_config).await;
+        backend.sync_local_preload_state(&initial_config);
         DaemonRuntime::spawn(
             Arc::clone(&store),
             initial_config,
@@ -431,9 +432,7 @@ async fn run_event_bridge(
                         if !overlay_enabled {
                             overlay.dismiss();
                         }
-                        if reloaded.mode != DaemonMode::Local {
-                            backend.unload_local_model();
-                        }
+                        backend.sync_local_preload_state(&reloaded);
                         backend.sync_deepgram_warm_state(&reloaded).await;
                         emit_to_main_if_open(&app, DAEMON_EVENT, &event);
                     }
@@ -469,9 +468,7 @@ async fn run_event_bridge(
                         s.error = None;
                     });
                 }
-                if current_cfg.mode != DaemonMode::Local {
-                    backend.unload_local_model();
-                }
+                backend.sync_local_preload_state(&current_cfg);
                 backend.sync_deepgram_warm_state(&current_cfg).await;
                 schedule_tray_update(&app, &tray, current_state, None, None);
             }

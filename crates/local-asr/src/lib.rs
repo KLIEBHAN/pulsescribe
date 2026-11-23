@@ -24,7 +24,7 @@ pub use cache::{InstalledModel, ModelCache, ModelInstallSource, ModelStatus};
 pub use catalog::{
     build_hf_resolve_url, catalog_models, is_canary_language, resolve_canary_language,
     resolve_model_spec, LocalEngineKind, ModelSpec, CANARY_LANGUAGES, DEFAULT_HF_BASE_URL,
-    DEFAULT_LOCAL_MODEL_ID,
+    DEFAULT_LOCAL_MODEL_ID, STREAMING_PREVIEW_MODEL_ID,
 };
 pub use download::{DownloadProgress, ModelDownloader};
 pub use manager::{LocalAsrManager, LocalRuntimeCapabilities};
