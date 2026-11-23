@@ -37,10 +37,13 @@ use pulsescribe_platform::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use url::Url;
 
 use crate::state::DesktopState;
+use crate::tray::{
+    load_ui_language_pref, normalize_ui_language_pref, resolve_ui_language, TrayController,
+};
 use crate::updates::{check_latest_release, UpdateCheckResult};
 use crate::window::{
     emit_to_main_if_open, MODEL_DOWNLOAD_FINISHED_EVENT, MODEL_DOWNLOAD_PROGRESS_EVENT,
@@ -79,6 +82,8 @@ pub struct AppStatePayload {
     pub toggle_hotkey: Option<String>,
     pub hold_hotkey: Option<String>,
     pub mode: String,
+    pub ui_language: String,
+    pub resolved_ui_language: String,
 }
 
 /// Settings view payload. Never exposes raw API key secrets to the WebView.
@@ -222,6 +227,12 @@ pub struct LocalModelsPayload {
 pub struct ThemePreferencePayload {
     pub theme: String,
     pub accent: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UiLanguagePayload {
+    pub language: String,
+    pub resolved: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -648,6 +659,8 @@ pub fn get_app_state(state: State<'_, DesktopState>) -> AppStatePayload {
         (None, None) => StatusDetail::None,
     };
 
+    let (ui_language, resolved_ui_language) = load_ui_language_pref(&state.preferences);
+
     AppStatePayload {
         version: env!("CARGO_PKG_VERSION").to_owned(),
         platform: match platform {
@@ -676,6 +689,8 @@ pub fn get_app_state(state: State<'_, DesktopState>) -> AppStatePayload {
         toggle_hotkey: cfg.hotkeys.toggle,
         hold_hotkey: cfg.hotkeys.hold,
         mode: cfg.mode.as_str().to_owned(),
+        ui_language: ui_language.to_owned(),
+        resolved_ui_language: resolved_ui_language.as_str().to_owned(),
     }
 }
 
@@ -1126,6 +1141,47 @@ pub async fn save_theme_preference(
     })
     .await
     .map_err(|err| format!("Theme preference save failed: {err}"))?
+}
+
+#[tauri::command]
+pub async fn save_ui_language(
+    app: AppHandle,
+    state: State<'_, DesktopState>,
+    language: String,
+    resolved: Option<String>,
+) -> Result<UiLanguagePayload, String> {
+    let norm_pref = normalize_ui_language_pref(&language);
+    let resolved_lang = resolve_ui_language(norm_pref, resolved.as_deref());
+    let resolved_str = resolved_lang.as_str();
+    let prefs_store = Arc::clone(&state.preferences);
+    let payload = tokio::task::spawn_blocking(move || {
+        let mut prefs = prefs_store.load_preferences();
+        prefs.insert(
+            "ui_language".to_owned(),
+            Value::String(norm_pref.to_owned()),
+        );
+        prefs.insert(
+            "ui_language_resolved".to_owned(),
+            Value::String(resolved_str.to_owned()),
+        );
+        prefs_store
+            .save_preferences(&prefs)
+            .map_err(|err| err.to_string())?;
+        Ok::<UiLanguagePayload, String>(UiLanguagePayload {
+            language: norm_pref.to_owned(),
+            resolved: resolved_str.to_owned(),
+        })
+    })
+    .await
+    .map_err(|err| format!("UI language save failed: {err}"))??;
+
+    if let Some(tray) = app.try_state::<Arc<TrayController>>() {
+        let tray = Arc::clone(tray.inner());
+        let _ = app.run_on_main_thread(move || {
+            tray.set_language(resolved_lang);
+        });
+    }
+    Ok(payload)
 }
 
 /// Strictly validate that a release URL points to this repository on `https://github.com`.

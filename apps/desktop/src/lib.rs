@@ -24,7 +24,7 @@ use reqwest::Client;
 use tauri::{AppHandle, Manager, RunEvent};
 
 use crate::state::DesktopState;
-use crate::tray::TrayController;
+use crate::tray::{load_ui_language_pref, TrayController};
 use crate::window::{
     emit_to_main_if_open, open_or_focus_window, DAEMON_EVENT, MODEL_DOWNLOAD_FINISHED_EVENT,
     MODEL_DOWNLOAD_PROGRESS_EVENT,
@@ -262,6 +262,7 @@ pub fn run() -> i32 {
             commands::set_onboarding_state,
             commands::get_theme_preference,
             commands::save_theme_preference,
+            commands::save_ui_language,
             commands::open_config_dir,
             commands::open_release_url,
             commands::get_autostart,
@@ -292,7 +293,8 @@ pub fn run() -> i32 {
 
     let (mut overlay_owner, overlay_handle) = spawn_native_overlay(app.handle().clone());
 
-    let tray = match TrayController::build(app.handle()) {
+    let (_, initial_ui_lang) = load_ui_language_pref(&store);
+    let tray = match TrayController::build(app.handle(), initial_ui_lang) {
         Ok(controller) => Arc::new(controller),
         Err(err) => {
             eprintln!("PulseScribe tray initialization error: {err}");
@@ -304,6 +306,7 @@ pub fn run() -> i32 {
             return 1;
         }
     };
+    app.manage(Arc::clone(&tray));
 
     let desktop_state = DesktopState::new(
         config_dir,
