@@ -305,7 +305,14 @@ function createPreviewStore() {
         activeDownloads.add(target.id);
         const total = target.approx_size_mb * 1024 * 1024;
         for (const pct of [0.25, 0.65, 1.0]) {
-          if (!activeDownloads.has(target.id)) throw new Error("local ASR operation cancelled");
+          if (!activeDownloads.has(target.id)) {
+            emitPreview("pulsescribe://model-download-finished", {
+              model_id: target.id,
+              ok: false,
+              error: "local ASR operation cancelled",
+            });
+            throw new Error("local ASR operation cancelled");
+          }
           emitPreview("pulsescribe://model-download-progress", {
             model_id: target.id,
             file: `${target.id}.bin`,
@@ -321,6 +328,11 @@ function createPreviewStore() {
         target.source = "pulse_scribe_cache";
         target.installed_bytes = total;
         target.path = `~/.pulsescribe/models/${target.id}`;
+        emitPreview("pulsescribe://model-download-finished", {
+          model_id: target.id,
+          ok: true,
+          error: null,
+        });
         return buildModelsPayload();
       }
       case "cancel_model_download":

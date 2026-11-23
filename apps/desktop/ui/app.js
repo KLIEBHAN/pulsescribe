@@ -62,11 +62,14 @@ const state = {
   permissions: null,
   models: null,
   downloadProgress: {},
+  localDownloadsInFlight: new Set(),
   prompts: null,
   activePromptTab: "default",
   promptDrafts: {},
+  dirtyPrompts: false,
   vocabulary: null,
   vocabKeywords: [],
+  dirtyVocab: false,
   history: [],
   historyQuery: "",
   historyFilter: "all",
@@ -76,8 +79,12 @@ const state = {
   onboardingStep: "choose_goal",
   onboardingChoice: "fast",
   onboardingHotkeys: { toggle: "", hold: "" },
+  onboardingHotkeyValidation: { toggle: null, hold: null },
   testModeEnabled: false,
   dirtySettings: false,
+  settingsRev: 0,
+  promptsRev: 0,
+  vocabRev: 0,
 };
 
 const dom = {
@@ -172,16 +179,20 @@ function confirmAction({ title, message, confirmLabel = "Confirm", destructive =
 
     const cleanup = (accepted) => {
       dom.confirmDialog.removeEventListener("close", onClose);
+      dom.confirmDialog.removeEventListener("cancel", onDialogCancel);
       dom.confirmOk.removeEventListener("click", onOk);
       dom.confirmCancel.removeEventListener("click", onCancel);
       resolve(accepted);
     };
     const onOk = () => dom.confirmDialog.close("ok");
     const onCancel = () => dom.confirmDialog.close("cancel");
+    const onDialogCancel = () => { dom.confirmDialog.returnValue = "cancel"; };
     const onClose = () => cleanup(dom.confirmDialog.returnValue === "ok");
 
+    dom.confirmDialog.returnValue = "cancel";
     dom.confirmOk.addEventListener("click", onOk);
     dom.confirmCancel.addEventListener("click", onCancel);
+    dom.confirmDialog.addEventListener("cancel", onDialogCancel);
     dom.confirmDialog.addEventListener("close", onClose);
     dom.confirmDialog.showModal();
     if (destructive) {
@@ -303,13 +314,17 @@ async function loadRouteData(route, seq) {
       state.settings = settings;
       if (!state.dirtySettings) state.draft = structuredClone(settings);
       state.devices = devices;
-      if (models) state.models = models;
+      if (models) {
+        reconcileDownloadProgress(models);
+        state.models = models;
+      }
     } else if (route === "models") {
       const [models, settings] = await Promise.all([
         invoke("list_local_models"),
         invoke("get_settings"),
       ]);
       if (seq !== state.navSeq) return;
+      reconcileDownloadProgress(models);
       state.models = models;
       state.settings = settings;
       if (!state.dirtySettings) state.draft = structuredClone(settings);
@@ -317,35 +332,38 @@ async function loadRouteData(route, seq) {
       const prompts = await invoke("get_prompts");
       if (seq !== state.navSeq) return;
       state.prompts = prompts;
-      state.promptDrafts = { ...prompts.drafts };
+      if (!state.dirtyPrompts) state.promptDrafts = { ...prompts.drafts };
     } else if (route === "vocabulary") {
       const vocab = await invoke("get_vocabulary");
       if (seq !== state.navSeq) return;
       state.vocabulary = vocab;
-      state.vocabKeywords = [...vocab.keywords];
+      if (!state.dirtyVocab) state.vocabKeywords = [...vocab.keywords];
     } else if (route === "history") {
       const history = await invoke("get_history", { limit: 200 });
       if (seq !== state.navSeq) return;
       state.history = history;
     } else if (route === "onboarding") {
-      const [settings, perms] = await Promise.all([
+      const [app, settings, perms] = await Promise.all([
+        invoke("get_app_state"),
         invoke("get_settings"),
         invoke("check_permissions"),
       ]);
       if (seq !== state.navSeq) return;
+      state.app = app;
       state.settings = settings;
       state.permissions = perms;
       state.onboardingHotkeys = {
         toggle: settings.toggle_hotkey || "",
         hold: settings.hold_hotkey || "",
       };
-      if (state.app?.onboarding_step && state.app.onboarding_step !== "done") {
-        state.onboardingStep = state.app.onboarding_step;
+      state.onboardingHotkeyValidation = { toggle: null, hold: null };
+      if (app?.onboarding_step && app.onboarding_step !== "done") {
+        state.onboardingStep = app.onboarding_step;
       } else {
         state.onboardingStep = "choose_goal";
       }
-      if (state.app?.onboarding_choice) {
-        state.onboardingChoice = state.app.onboarding_choice;
+      if (app?.onboarding_choice) {
+        state.onboardingChoice = app.onboarding_choice;
       }
     } else if (route === "diagnostics") {
       const [perms, models] = await Promise.all([
@@ -354,7 +372,10 @@ async function loadRouteData(route, seq) {
       ]);
       if (seq !== state.navSeq) return;
       state.permissions = perms;
-      if (models) state.models = models;
+      if (models) {
+        reconcileDownloadProgress(models);
+        state.models = models;
+      }
       updateDaemonBadge();
     }
   } catch (err) {
@@ -409,7 +430,9 @@ function renderTopbarActions() {
           className: "btn",
           onClick: () => runSafe(async () => {
             await invoke("unload_local_model");
-            state.models = await invoke("list_local_models");
+            const models = await invoke("list_local_models");
+            reconcileDownloadProgress(models);
+            state.models = models;
             showToast("Unloaded local model from RAM");
             render();
           }),
@@ -421,7 +444,9 @@ function renderTopbarActions() {
         type: "button",
         className: "btn",
         onClick: () => runSafe(async () => {
-          state.models = await invoke("list_local_models");
+          const models = await invoke("list_local_models");
+          reconcileDownloadProgress(models);
+          state.models = models;
           showToast("Model cache refreshed");
           render();
         }),
@@ -440,8 +465,10 @@ function renderTopbarActions() {
             destructive: true,
           });
           if (!ok) return;
+          state.promptsRev += 1;
           state.prompts = await invoke("reset_prompts");
           state.promptDrafts = { ...state.prompts.drafts };
+          state.dirtyPrompts = false;
           showToast("Prompts reset to defaults");
           render();
         }),
@@ -505,61 +532,132 @@ function renderTopbarActions() {
 function setDraftField(key, value) {
   if (!state.draft) return;
   state.draft[key] = value;
+  state.settingsRev += 1;
   state.dirtySettings = true;
   updateDirtyBar();
+}
+
+async function validateHotkeyPair(toggleValue, holdValue) {
+  const toggleStr = toggleValue ?? "";
+  const holdStr = holdValue ?? "";
+  const [toggleRes, holdRes] = await Promise.all([
+    invoke("validate_hotkey", {
+      kind: "toggle",
+      value: toggleStr,
+      toggleCurrent: toggleStr,
+      holdCurrent: holdStr,
+      replaceOther: false,
+    }),
+    invoke("validate_hotkey", {
+      kind: "hold",
+      value: holdStr,
+      toggleCurrent: toggleStr,
+      holdCurrent: holdStr,
+      replaceOther: false,
+    }),
+  ]);
+  return { toggle: toggleRes, hold: holdRes };
 }
 
 async function saveSettingsAction() {
   if (!state.draft) return;
   clearError();
+
+  // Capture a consistent snapshot upfront so edits made while validation or saving
+  // are in flight are never validated against stale drafts or discarded on completion.
+  const saveRev = state.settingsRev;
+  const submittedDraft = structuredClone(state.draft);
+  const submittedKeyDrafts = {};
+  const submittedKeyClears = new Set();
   const apiKeysPatch = {};
   for (const [k, v] of Object.entries(state.apiKeyDrafts)) {
     const trimmed = (v || "").trim();
-    if (trimmed) apiKeysPatch[k] = trimmed;
+    if (trimmed) {
+      apiKeysPatch[k] = trimmed;
+      submittedKeyDrafts[k] = v;
+    }
   }
   for (const k of state.apiKeyClears) {
     if (!Object.prototype.hasOwnProperty.call(apiKeysPatch, k)) {
       apiKeysPatch[k] = "";
+      submittedKeyClears.add(k);
     }
   }
+
+  const validation = await runSafe(() =>
+    validateHotkeyPair(submittedDraft.toggle_hotkey, submittedDraft.hold_hotkey),
+  );
+  if (!validation) return;
+  state.hotkeyValidation = validation;
+  updateHotkeyNoteNode("toggle");
+  updateHotkeyNoteNode("hold");
+  const invalidHotkey = validation.toggle?.level === "error"
+    ? validation.toggle
+    : validation.hold?.level === "error"
+    ? validation.hold
+    : null;
+  if (invalidHotkey) {
+    showError(invalidHotkey.message || "Fix the invalid hotkey before saving.");
+    return;
+  }
+
   const patch = {
-    mode: state.draft.mode,
-    model: state.draft.model,
-    local_model: state.draft.local_model,
-    language: state.draft.language,
-    refine: state.draft.refine,
-    refine_provider: state.draft.refine_provider,
-    refine_model: state.draft.refine_model,
-    context: state.draft.context,
-    voice_commands: state.draft.voice_commands,
-    streaming: state.draft.streaming,
-    deepgram_warm_websocket: state.draft.deepgram_warm_websocket,
-    overlay_enabled: state.draft.overlay_enabled,
-    sound_enabled: state.draft.sound_enabled,
-    auto_paste: state.draft.auto_paste,
-    show_rtf: state.draft.show_rtf,
-    input_device: state.draft.input_device,
-    toggle_hotkey: state.draft.toggle_hotkey,
-    hold_hotkey: state.draft.hold_hotkey,
-    transcribing_timeout_secs: Number(state.draft.transcribing_timeout_secs) || 45,
-    openai_compatible_base_url: state.draft.openai_compatible_base_url,
-    openai_compatible_model: state.draft.openai_compatible_model,
-    openrouter_provider_order: state.draft.openrouter_provider_order,
-    openrouter_allow_fallbacks: state.draft.openrouter_allow_fallbacks,
+    mode: submittedDraft.mode,
+    model: submittedDraft.model,
+    local_model: submittedDraft.local_model,
+    language: submittedDraft.language,
+    refine: submittedDraft.refine,
+    refine_provider: submittedDraft.refine_provider,
+    refine_model: submittedDraft.refine_model,
+    context: submittedDraft.context,
+    voice_commands: submittedDraft.voice_commands,
+    streaming: submittedDraft.streaming,
+    deepgram_warm_websocket: submittedDraft.deepgram_warm_websocket,
+    overlay_enabled: submittedDraft.overlay_enabled,
+    sound_enabled: submittedDraft.sound_enabled,
+    auto_paste: submittedDraft.auto_paste,
+    show_rtf: submittedDraft.show_rtf,
+    input_device: submittedDraft.input_device,
+    toggle_hotkey: submittedDraft.toggle_hotkey,
+    hold_hotkey: submittedDraft.hold_hotkey,
+    transcribing_timeout_secs: Number(submittedDraft.transcribing_timeout_secs) || 45,
+    openai_compatible_base_url: submittedDraft.openai_compatible_base_url,
+    openai_compatible_model: submittedDraft.openai_compatible_model,
+    openrouter_provider_order: submittedDraft.openrouter_provider_order,
+    openrouter_allow_fallbacks: submittedDraft.openrouter_allow_fallbacks,
     api_keys: apiKeysPatch,
   };
   await runSafe(async () => {
-    state.settings = await invoke("save_settings", { patch });
-    state.draft = structuredClone(state.settings);
-    state.apiKeyDrafts = {};
-    state.apiKeyClears.clear();
-    state.hotkeyValidation = { toggle: null, hold: null };
-    state.dirtySettings = false;
+    const saved = await invoke("save_settings", { patch });
+    state.settings = saved;
     state.app = await invoke("get_app_state");
     updateDaemonBadge();
-    updateDirtyBar();
-    showToast("Settings saved and reloaded");
-    render();
+    if (state.settingsRev === saveRev) {
+      state.draft = structuredClone(saved);
+      state.apiKeyDrafts = {};
+      state.apiKeyClears.clear();
+      state.hotkeyValidation = { toggle: null, hold: null };
+      state.dirtySettings = false;
+      updateDirtyBar();
+      showToast("Settings saved and reloaded");
+      render();
+    } else {
+      for (const [k, v] of Object.entries(submittedKeyDrafts)) {
+        if (state.apiKeyDrafts[k] === v) delete state.apiKeyDrafts[k];
+      }
+      for (const k of submittedKeyClears) {
+        if (!Object.prototype.hasOwnProperty.call(state.apiKeyDrafts, k)) {
+          state.apiKeyClears.delete(k);
+        }
+      }
+      if (state.draft) {
+        state.draft.api_keys_configured = saved.api_keys_configured;
+        state.draft.api_keys_masked = saved.api_keys_masked;
+      }
+      state.dirtySettings = true;
+      updateDirtyBar();
+      showToast("Settings saved — newer edits remain unsaved");
+    }
   });
 }
 
@@ -947,6 +1045,7 @@ function renderGeneralView() {
       placeholder: configured ? "Enter new key…" : "Paste key…",
       onInput: (e) => {
         const val = e.target.value;
+        state.settingsRev += 1;
         if (val.trim()) {
           state.apiKeyDrafts[envKey] = val;
           state.apiKeyClears.delete(envKey);
@@ -978,6 +1077,7 @@ function renderGeneralView() {
           className: "btn btn-sm btn-danger-ghost",
           text: "Clear",
           onClick: () => {
+            state.settingsRev += 1;
             delete state.apiKeyDrafts[envKey];
             state.apiKeyClears.add(envKey);
             inputNode.value = "";
@@ -1001,6 +1101,15 @@ function renderGeneralView() {
   );
 
   return stack;
+}
+
+function reconcileDownloadProgress(modelsPayload) {
+  const active = new Set(modelsPayload?.active_downloads || []);
+  for (const id of Object.keys(state.downloadProgress)) {
+    if (!active.has(id) && !state.localDownloadsInFlight.has(id)) {
+      delete state.downloadProgress[id];
+    }
+  }
 }
 
 function updateModelProgressInPlace(progress) {
@@ -1055,12 +1164,14 @@ function renderModelsView() {
   );
 
   const rows = data.models.map((m) => {
-    const downloading = data.active_downloads.includes(m.id) || Boolean(state.downloadProgress[m.id]);
+    const downloading = data.active_downloads.includes(m.id)
+      || state.localDownloadsInFlight.has(m.id)
+      || Boolean(state.downloadProgress[m.id]);
     const prog = state.downloadProgress[m.id];
     const pct = prog && prog.total_bytes
       ? Math.min(100, Math.round((prog.bytes_downloaded / prog.total_bytes) * 100))
       : 0;
-    const isActive = state.settings?.local_model === m.id;
+    const isActive = state.settings?.mode === "local" && state.settings?.local_model === m.id;
     const isStreamingPreview = m.engine === STREAMING_PREVIEW_ENGINE;
 
     const sourceLabel = m.source === "hugging_face_hub_cache"
@@ -1109,9 +1220,15 @@ function renderModelsView() {
           className: "btn btn-sm btn-danger-ghost",
           text: "Cancel",
           onClick: () => runSafe(async () => {
-            await invoke("cancel_model_download", { modelId: m.id });
+            const cancelled = await invoke("cancel_model_download", { modelId: m.id });
             delete state.downloadProgress[m.id];
-            showToast(`Cancelling ${m.id}…`);
+            if (cancelled) {
+              showToast(`Cancelling ${m.id}…`);
+            } else {
+              const models = await invoke("list_local_models");
+              reconcileDownloadProgress(models);
+              state.models = models;
+            }
             render();
           }),
         }),
@@ -1168,6 +1285,7 @@ function renderModelsView() {
           className: "btn btn-sm btn-primary",
           onClick: async () => {
             clearError();
+            state.localDownloadsInFlight.add(m.id);
             state.downloadProgress[m.id] = {
               model_id: m.id,
               file: "connecting…",
@@ -1178,14 +1296,20 @@ function renderModelsView() {
             };
             render();
             try {
-              state.models = await invoke("download_local_model", { modelId: m.id });
+              const models = await invoke("download_local_model", { modelId: m.id });
+              state.localDownloadsInFlight.delete(m.id);
               delete state.downloadProgress[m.id];
+              reconcileDownloadProgress(models);
+              state.models = models;
               showToast(`Downloaded ${m.display_name}`);
               render();
             } catch (e) {
+              state.localDownloadsInFlight.delete(m.id);
               delete state.downloadProgress[m.id];
               showError(e);
-              state.models = await invoke("list_local_models").catch(() => state.models);
+              const models = await invoke("list_local_models").catch(() => state.models);
+              reconcileDownloadProgress(models);
+              state.models = models;
               render();
             }
           },
@@ -1209,11 +1333,20 @@ function renderModelsView() {
 
 async function savePromptsAction() {
   clearError();
+  const saveRev = state.promptsRev;
+  const submittedDrafts = { ...state.promptDrafts };
   await runSafe(async () => {
-    state.prompts = await invoke("save_prompts", { drafts: state.promptDrafts });
-    state.promptDrafts = { ...state.prompts.drafts };
-    showToast("Prompts saved to prompts.toml");
-    render();
+    const saved = await invoke("save_prompts", { drafts: submittedDrafts });
+    state.prompts = saved;
+    if (state.promptsRev === saveRev) {
+      state.promptDrafts = { ...saved.drafts };
+      state.dirtyPrompts = false;
+      showToast("Prompts saved to prompts.toml");
+      render();
+    } else {
+      state.dirtyPrompts = true;
+      showToast("Prompts saved — newer edits remain unsaved");
+    }
   });
 }
 
@@ -1277,7 +1410,12 @@ function renderPromptsView() {
               type: "button",
               className: "btn btn-sm btn-ghost",
               text: "Revert section",
-              onClick: () => { state.promptDrafts[currentCtx.key] = defaultVal; render(); },
+              onClick: () => {
+                state.promptDrafts[currentCtx.key] = defaultVal;
+                state.promptsRev += 1;
+                state.dirtyPrompts = true;
+                render();
+              },
             }) : el("span", { className: "badge badge-neutral", text: "Default" }),
           ]),
           el("p", { className: "section-desc", text: currentCtx.description }),
@@ -1286,7 +1424,11 @@ function renderPromptsView() {
             id: "prompt-editor",
             "aria-label": `${currentCtx.label} prompt`,
             value: currentVal,
-            onInput: (e) => { state.promptDrafts[currentCtx.key] = e.target.value; },
+            onInput: (e) => {
+              state.promptDrafts[currentCtx.key] = e.target.value;
+              state.promptsRev += 1;
+              state.dirtyPrompts = true;
+            },
           }),
         ]),
       ]),
@@ -1296,11 +1438,20 @@ function renderPromptsView() {
 
 async function saveVocabularyAction() {
   clearError();
+  const saveRev = state.vocabRev;
+  const submittedText = state.vocabKeywords.join("\n");
   await runSafe(async () => {
-    state.vocabulary = await invoke("save_vocabulary", { rawText: state.vocabKeywords.join("\n") });
-    state.vocabKeywords = [...state.vocabulary.keywords];
-    showToast(`Saved ${state.vocabKeywords.length} vocabulary terms`);
-    render();
+    const saved = await invoke("save_vocabulary", { rawText: submittedText });
+    state.vocabulary = saved;
+    if (state.vocabRev === saveRev) {
+      state.vocabKeywords = [...saved.keywords];
+      state.dirtyVocab = false;
+      showToast(`Saved ${state.vocabKeywords.length} vocabulary terms`);
+      render();
+    } else {
+      state.dirtyVocab = true;
+      showToast("Vocabulary saved — newer edits remain unsaved");
+    }
   });
 }
 
@@ -1335,7 +1486,12 @@ function renderVocabularyView() {
               type: "button",
               className: "chip-remove",
               "aria-label": `Remove ${kw}`,
-              onClick: () => { state.vocabKeywords.splice(idx, 1); refreshVocabDom(); },
+              onClick: () => {
+                state.vocabKeywords.splice(idx, 1);
+                state.vocabRev += 1;
+                state.dirtyVocab = true;
+                refreshVocabDom();
+              },
             }, [icon("ic-x", "ic ic-sm")]),
           ]),
         )),
@@ -1362,11 +1518,17 @@ function renderVocabularyView() {
     if (!raw) return;
     const incoming = raw.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean);
     const seen = new Set(state.vocabKeywords.map((k) => k.toLowerCase()));
+    let changed = false;
     for (const term of incoming) {
       if (!seen.has(term.toLowerCase())) {
         state.vocabKeywords.push(term);
         seen.add(term.toLowerCase());
+        changed = true;
       }
+    }
+    if (changed) {
+      state.vocabRev += 1;
+      state.dirtyVocab = true;
     }
     addInput.value = "";
     refreshVocabDom();
@@ -1543,6 +1705,10 @@ async function setOnboardingStepAction(stepId) {
   await syncTestHotkeyMode("onboarding");
   try {
     await invoke("set_onboarding_state", { step: stepId, choice: state.onboardingChoice });
+    if (state.app) {
+      state.app.onboarding_step = stepId;
+      state.app.onboarding_choice = state.onboardingChoice;
+    }
   } catch { /* ignore */ }
   render();
 }
@@ -1623,6 +1789,11 @@ function renderOnboardingView() {
       permRow("input_monitoring", "Input Monitoring", "Enables global hold-to-record hotkeys such as Fn.", perms.input_monitoring),
     );
   } else if (step === "hotkey") {
+    const wizBadge = (res) => {
+      if (!res || !res.message) return null;
+      const cls = res.level === "error" ? "badge-error" : res.level === "warning" ? "badge-warning" : "badge-success";
+      return el("span", { className: `badge ${cls}`, text: res.message });
+    };
     panel.append(
       el("div", { className: "panel-row stack" }, [
         el("h2", { className: "section-title", text: "Choose your dictation hotkeys" }),
@@ -1633,8 +1804,13 @@ function renderOnboardingView() {
               className: "input input-wide mono",
               id: "wiz-toggle",
               value: state.onboardingHotkeys.toggle,
-              onInput: (e) => { state.onboardingHotkeys.toggle = e.target.value; },
+              onInput: (e) => {
+                state.onboardingHotkeys.toggle = e.target.value;
+                state.onboardingHotkeyValidation.toggle = null;
+                document.getElementById("wiz-hotkey-note-toggle")?.replaceChildren();
+              },
             }),
+            el("div", { id: "wiz-hotkey-note-toggle" }, [wizBadge(state.onboardingHotkeyValidation.toggle)]),
           ]),
           el("div", { className: "field" }, [
             el("label", { for: "wiz-hold", text: "Hold-to-Record Hotkey" }),
@@ -1642,8 +1818,13 @@ function renderOnboardingView() {
               className: "input input-wide mono",
               id: "wiz-hold",
               value: state.onboardingHotkeys.hold,
-              onInput: (e) => { state.onboardingHotkeys.hold = e.target.value; },
+              onInput: (e) => {
+                state.onboardingHotkeys.hold = e.target.value;
+                state.onboardingHotkeyValidation.hold = null;
+                document.getElementById("wiz-hotkey-note-hold")?.replaceChildren();
+              },
             }),
+            el("div", { id: "wiz-hotkey-note-hold" }, [wizBadge(state.onboardingHotkeyValidation.hold)]),
           ]),
         ]),
       ]),
@@ -1719,18 +1900,36 @@ function renderOnboardingView() {
           className: "btn btn-primary",
           text: "Continue",
           onClick: () => runSafe(async () => {
+            clearError();
             if (step === "choose_goal") {
-              const targetMode = state.onboardingChoice === "private" ? "local" : "deepgram";
-              state.settings = await invoke("save_settings", { patch: { mode: targetMode, api_keys: {} } });
+              const patch = state.onboardingChoice === "private"
+                ? { mode: "local", refine: false, api_keys: {} }
+                : { mode: "deepgram", api_keys: {} };
+              state.settings = await invoke("save_settings", { patch });
               if (!state.dirtySettings) state.draft = structuredClone(state.settings);
             } else if (step === "hotkey") {
+              const toggleVal = state.onboardingHotkeys.toggle;
+              const holdVal = state.onboardingHotkeys.hold;
+              const validation = await validateHotkeyPair(toggleVal, holdVal);
+              state.onboardingHotkeyValidation = validation;
+              const invalid = validation.toggle?.level === "error"
+                ? validation.toggle
+                : validation.hold?.level === "error"
+                ? validation.hold
+                : null;
+              if (invalid) {
+                showError(invalid.message || "Fix the invalid hotkey before continuing.");
+                render();
+                return;
+              }
               state.settings = await invoke("save_settings", {
                 patch: {
-                  toggle_hotkey: state.onboardingHotkeys.toggle,
-                  hold_hotkey: state.onboardingHotkeys.hold,
+                  toggle_hotkey: toggleVal,
+                  hold_hotkey: holdVal,
                   api_keys: {},
                 },
               });
+              state.onboardingHotkeyValidation = { toggle: null, hold: null };
               if (!state.dirtySettings) state.draft = structuredClone(state.settings);
             }
             await setOnboardingStepAction(ONBOARDING_STEPS[currentIdx + 1].id);
@@ -1909,6 +2108,7 @@ async function bootstrap() {
   document.getElementById("btn-dismiss-error")?.addEventListener("click", clearError);
   document.getElementById("btn-save-changes")?.addEventListener("click", saveSettingsAction);
   document.getElementById("btn-discard-changes")?.addEventListener("click", () => {
+    state.settingsRev += 1;
     state.draft = structuredClone(state.settings);
     state.apiKeyDrafts = {};
     state.apiKeyClears.clear();
@@ -1965,6 +2165,23 @@ async function bootstrap() {
     if (p && p.model_id) {
       state.downloadProgress[p.model_id] = p;
       if (state.route === "models" && !updateModelProgressInPlace(p)) {
+        render();
+      }
+    }
+  });
+
+  await listen("pulsescribe://model-download-finished", async (ev) => {
+    const p = ev.payload;
+    if (!p || !p.model_id) return;
+    delete state.downloadProgress[p.model_id];
+    if (!state.localDownloadsInFlight.has(p.model_id)) {
+      if (!p.ok && p.error) showError(p.error);
+      try {
+        const models = await invoke("list_local_models");
+        reconcileDownloadProgress(models);
+        state.models = models;
+      } catch { /* ignore */ }
+      if (state.route === "models" || state.route === "general" || state.route === "diagnostics") {
         render();
       }
     }

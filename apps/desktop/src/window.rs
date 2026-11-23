@@ -17,6 +17,9 @@ pub const DAEMON_EVENT: &str = "pulsescribe://daemon-event";
 /// Event name pushed to the lazy WebView during local model downloads.
 pub const MODEL_DOWNLOAD_PROGRESS_EVENT: &str = "pulsescribe://model-download-progress";
 
+/// Event name pushed to the lazy WebView when a local model download finishes or fails.
+pub const MODEL_DOWNLOAD_FINISHED_EVENT: &str = "pulsescribe://model-download-finished";
+
 /// Open the lazy Settings/Onboarding WebView on `route`, or focus & navigate the existing window.
 ///
 /// Closing the window lets Tauri destroy the WebView completely while `RunEvent::ExitRequested`
