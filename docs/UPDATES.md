@@ -6,6 +6,11 @@ The native Rust desktop app (`apps/desktop`) performs a clean cutover for `v2.0.
 
 - **Manual one-time migration from Python `1.x`:** Existing Python `1.x` installations do not auto-upgrade across the runtime rewrite; users install the Rust macOS DMG or Windows NSIS setup once while preserving `~/.pulsescribe/` 1:1 (and macOS TCC permissions when signed with the same `PulseScribe Code Signing` certificate, plus Windows `HKCU\...\Run\PulseScribe` autostart migration via the NSIS post-install hook).
 - **In-app update check:** **Diagnostics → Check for Updates** queries GitHub Releases (`/releases/latest`) over HTTPS with SemVer comparison and opens the verified GitHub Release page in the system browser (**Download Release**). A full in-app auto-installer (background download + bundle swap) is intentionally deferred until needed.
+- **Publishing (`v2.0.0+`):**
+  1. Bump `version` in both `Cargo.toml` (`[workspace.package]`) and `apps/desktop/tauri.conf.json`, update `Cargo.lock`, `CHANGELOG.md`, and `docs/releases/vX.Y.Z.md`, and merge via PR.
+  2. Push an annotated Git tag matching `vX.Y.Z` (e.g. `git tag -a v2.0.0 -F docs/releases/v2.0.0.md && git push origin v2.0.0`).
+  3. [`.github/workflows/rust-installers.yml`](../.github/workflows/rust-installers.yml) validates the tag and version, builds and signs `PulseScribe-X.Y.Z-macOS-arm64-{Slim,Full}.dmg` (using the `macos-signing` environment) and `PulseScribe-X.Y.Z-Windows-x64-{Slim,Full}-Setup.exe`, generates `SHA256SUMS.txt`, uploads all assets to a draft release, and publishes it as `Latest` only after all uploads succeed (never moving `Latest` backwards).
+  4. Legacy [`.github/workflows/build-installers.yml`](../.github/workflows/build-installers.yml) is retained only for PR validation and manual `workflow_dispatch` runs.
 
 ---
 

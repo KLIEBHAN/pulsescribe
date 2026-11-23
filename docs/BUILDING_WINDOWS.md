@@ -30,7 +30,7 @@ Pop-Location
 ```
 
 - **`sherpa-onnx` runtime (Full):** `crates/local-asr` dynamically loads `sherpa-onnx-c-api.dll` (`2.0.x` ABI) from `$PULSESCRIBE_SHERPA_LIB_DIR`, the executable directory, or `%USERPROFILE%\.pulsescribe\libs\`. The CI Full build bundles `sherpa-onnx-c-api.dll`, `onnxruntime.dll`, and `onnxruntime_providers_shared.dll` next to `pulsescribe-desktop.exe` in the NSIS install root.
-- **CI Workflow:** [`.github/workflows/rust-installers.yml`](../.github/workflows/rust-installers.yml) builds and validates both `PulseScribe-Rust-<version>-Windows-x64-Slim-Setup.exe` and `PulseScribe-Rust-<version>-Windows-x64-Full-Setup.exe` (+ `.sha256`) on `windows-latest` for PRs, manual dispatches, and `rust-v*` tags without affecting legacy `v*` releases.
+- **CI Workflow:** [`.github/workflows/rust-installers.yml`](../.github/workflows/rust-installers.yml) builds and validates both `PulseScribe-<version>-Windows-x64-Slim-Setup.exe` and `PulseScribe-<version>-Windows-x64-Full-Setup.exe` (+ `.sha256`) on `windows-latest` for PRs, manual dispatches, and `v*` release tags.
 
 ---
 

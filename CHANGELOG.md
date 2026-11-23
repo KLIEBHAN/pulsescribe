@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-11-23
+
+### Changed
+
+- **Native Rust + Tauri v2 desktop app (macOS arm64 & Windows x64)** – complete
+  rewrite of the desktop daemon, audio pipeline, local ASR engine, overlay, and
+  settings UI in Rust with 1:1 compatibility for `~/.pulsescribe/` (`.env`,
+  `preferences.json`, `vocabulary.json`, `prompts.toml`, and `history.jsonl`).
+- **Native 60 FPS overlays & zero-idle WebView** – `NSPanel`/`CALayer` overlay on
+  macOS and Direct2D/DirectWrite layered overlay on Windows with zero focus steal
+  and zero idle GPU animation; the Settings/Onboarding/Models/History WebView is
+  destroyed when closed (0 MB idle WebView RAM).
+- **Compact installers (Slim & Full)** – ships as `Slim` (cloud-only) and `Full`
+  (bundled `whisper-rs` Metal/CPU + `sherpa-onnx` C-API) packages for macOS arm64
+  and Windows x64, shrinking the macOS Full DMG from ~362 MB to ~20 MB.
+- **Release cutover (`v2.0.0`)** – `v*` release tags now build and publish the
+  signed Rust macOS DMG and Windows NSIS installers via `rust-installers.yml`.
+  Existing Python `1.x` installations migrate once manually while keeping
+  `~/.pulsescribe/` and macOS permissions intact.
+
+### Added
+
+- **Automatic local model downloads & background preloading** – when configured
+  for local mode, PulseScribe automatically downloads missing curated offline
+  models (`whisper-*`, `parakeet-v3`, `canary-1b-v2`) and preloads them in the
+  background with live overlay progress (`Downloading …` → `Loading …`) and
+  in-app progress/cancel controls in Settings → Local Models.
+- **On-demand local model download during dictation** – dictating before a
+  configured local model finishes downloading joins the transfer seamlessly,
+  keeps the stall watchdog alive, surfaces download progress in the overlay, and
+  transcribes automatically once ready.
+- **Live local streaming preview (`nemotron-streaming`)** – optional word-by-word
+  offline preview alongside `parakeet-v3`, `canary-1b-v2`, or Whisper offline
+  models when installed.
+- **Operational polish** – rotating file logs (`~/.pulsescribe/logs/pulsescribe.log`),
+  single-instance guard with existing-window activation, Launch at Login toggle
+  (macOS LaunchAgent & Windows Run key with NSIS autostart migration), and
+  SemVer update checks against GitHub Releases.
+
 ## [1.22.2] - 2026-11-17
 
 ### Fixed

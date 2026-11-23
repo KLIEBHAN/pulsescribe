@@ -2,7 +2,7 @@ name: Rust Installers
 
 on:
   push:
-    tags: ["rust-v*"]
+    tags: ["v*"]
   pull_request:
     branches: [master, main]
     paths:
@@ -66,6 +66,7 @@ jobs:
       tag: ${{ steps.meta.outputs.tag }}
       version: ${{ steps.meta.outputs.version }}
       commit: ${{ steps.meta.outputs.commit }}
+      is_prerelease: ${{ steps.meta.outputs.is_prerelease }}
       build_slim: ${{ steps.meta.outputs.build_slim }}
       build_full: ${{ steps.meta.outputs.build_full }}
       publish: ${{ steps.meta.outputs.publish }}
@@ -121,6 +122,11 @@ jobs:
             clobber="$REPLACE_EXISTING_ASSETS"
           fi
 
+          is_prerelease=false
+          if [[ "$version" == *-* ]]; then
+            is_prerelease=true
+          fi
+
           if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
             tag="pr-${PULL_REQUEST_NUMBER}"
             if [[ "$REQUESTED_REF" != "$head_commit" ]]; then
@@ -129,11 +135,11 @@ jobs:
             fi
           elif [[ "$publish" == "true" ]]; then
             tag="$REQUESTED_REF"
-            if [[ ! "$tag" =~ ^rust-v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
-              echo "Published Rust releases require a rust-vX.Y.Z tag (keeps legacy v* Python releases isolated), got: $tag" >&2
+            if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+              echo "Published releases require a vX.Y.Z tag, got: $tag" >&2
               exit 1
             fi
-            if [[ "$tag" != "rust-v${version}" ]]; then
+            if [[ "$tag" != "v${version}" ]]; then
               echo "Tag $tag does not match Cargo.toml version $version" >&2
               exit 1
             fi
@@ -143,6 +149,10 @@ jobs:
             }
             if [[ "$tag_commit" != "$head_commit" ]]; then
               echo "Checked-out commit $head_commit does not match $tag ($tag_commit)" >&2
+              exit 1
+            fi
+            if [[ "$GITHUB_EVENT_NAME" == "push" && "$(git cat-file -t "refs/tags/$tag")" != "tag" ]]; then
+              echo "Release tags must be annotated and contain update notes" >&2
               exit 1
             fi
           else
@@ -161,6 +171,7 @@ jobs:
             echo "tag=$tag"
             echo "version=$version"
             echo "commit=$head_commit"
+            echo "is_prerelease=$is_prerelease"
             echo "build_slim=$build_slim"
             echo "build_full=$build_full"
             echo "publish=$publish"
@@ -172,6 +183,7 @@ jobs:
             echo
             echo "- Tag/Ref: \`$tag\`"
             echo "- Version: \`$version\`"
+            echo "- Prerelease: \`$is_prerelease\`"
             echo "- Commit: \`$head_commit\`"
             echo "- Slim (cloud-only): \`$build_slim\`"
             echo "- Full (whisper-rs + sherpa-onnx): \`$build_full\`"
@@ -314,7 +326,7 @@ jobs:
             local variant="$1"
             local extra_args=("${@:2}")
             local app_src="target/aarch64-apple-darwin/release/bundle/macos/PulseScribe.app"
-            local dmg_name="PulseScribe-Rust-${VERSION}-macOS-arm64-${variant}.dmg"
+            local dmg_name="PulseScribe-${VERSION}-macOS-arm64-${variant}.dmg"
             local dmg_path="dist/${dmg_name}"
 
             echo "=== Building macOS ${variant} ==="
@@ -459,10 +471,10 @@ jobs:
       - name: Upload macOS Rust installer artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: PulseScribe-Rust-macOS-arm64-${{ needs.metadata.outputs.version }}
+          name: PulseScribe-macOS-arm64-${{ needs.metadata.outputs.version }}
           path: |
-            dist/PulseScribe-Rust-*.dmg
-            dist/PulseScribe-Rust-*.dmg.sha256
+            dist/PulseScribe-*.dmg
+            dist/PulseScribe-*.dmg.sha256
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
@@ -580,7 +592,7 @@ jobs:
             if (-not $setup) { throw "Missing NSIS setup executable in $nsisDir" }
 
             $exe = Get-Item "target\x86_64-pc-windows-msvc\release\pulsescribe-desktop.exe"
-            $outName = "PulseScribe-Rust-$env:VERSION-Windows-x64-$Variant-Setup.exe"
+            $outName = "PulseScribe-$env:VERSION-Windows-x64-$Variant-Setup.exe"
             $outPath = Join-Path "dist" $outName
             Copy-Item -Path $setup.FullName -Destination $outPath -Force
 
@@ -615,16 +627,16 @@ jobs:
       - name: Upload Windows Rust installer artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: PulseScribe-Rust-Windows-x64-${{ needs.metadata.outputs.version }}
+          name: PulseScribe-Windows-x64-${{ needs.metadata.outputs.version }}
           path: |
-            dist/PulseScribe-Rust-*-Setup.exe
-            dist/PulseScribe-Rust-*-Setup.exe.sha256
+            dist/PulseScribe-*-Setup.exe
+            dist/PulseScribe-*-Setup.exe.sha256
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
 
   publish-release:
-    name: Attach Rust installers to GitHub release
+    name: Publish GitHub release
     needs: [metadata, build-macos, build-windows]
     if: needs.metadata.outputs.publish == 'true'
     runs-on: ubuntu-24.04
@@ -636,25 +648,44 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+      VERSION: ${{ needs.metadata.outputs.version }}
+      IS_PRERELEASE: ${{ needs.metadata.outputs.is_prerelease }}
       CLOBBER: ${{ needs.metadata.outputs.clobber }}
 
     steps:
       - name: Download Rust installer artifacts
         uses: actions/download-artifact@v8
         with:
-          pattern: PulseScribe-Rust-*
+          pattern: PulseScribe-*
           path: release-assets
           merge-multiple: true
 
-      - name: Generate SHA256SUMS-Rust.txt and upload
+      - name: Check out release tag for annotated release notes
+        if: github.event_name == 'push'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.metadata.outputs.tag }}
+          path: release-source
+          fetch-depth: 0
+
+      - name: Generate SHA256SUMS.txt, upload assets, and publish release
         shell: bash
         run: |
           set -euo pipefail
           shopt -s nullglob
-          cd release-assets
-          installers=(PulseScribe-Rust-*.dmg PulseScribe-Rust-*-Setup.exe)
-          [[ "${#installers[@]}" -gt 0 ]] || { echo "No Rust installers found to publish" >&2; exit 1; }
-          sha256sum "${installers[@]}" > SHA256SUMS-Rust.txt
+
+          workdir="$(pwd)"
+          notes_file="${workdir}/release-notes.txt"
+          latest_err="${workdir}/latest-error.txt"
+
+          (
+            cd release-assets
+            found=(PulseScribe-*.dmg PulseScribe-*-Setup.exe)
+            [[ "${#found[@]}" -gt 0 ]] || { echo "No Rust installers found to publish" >&2; exit 1; }
+            sha256sum "${found[@]}" > SHA256SUMS.txt
+          )
+
+          files=(release-assets/PulseScribe-*.dmg release-assets/PulseScribe-*-Setup.exe release-assets/SHA256SUMS.txt)
 
           clobber="$CLOBBER"
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
@@ -668,20 +699,77 @@ jobs:
               clobber=true
             fi
           else
-            gh release create "$RELEASE_TAG" \
-              --repo "$GITHUB_REPOSITORY" \
-              --draft \
-              --prerelease \
-              --title "PulseScribe Rust ${RELEASE_TAG}" \
-              --generate-notes
+            create_args=(
+              release create "$RELEASE_TAG"
+              --repo "$GITHUB_REPOSITORY"
+              --verify-tag
+              --draft
+              --title "PulseScribe ${RELEASE_TAG}"
+            )
+            if [[ "$IS_PRERELEASE" == "true" ]]; then
+              create_args+=(--prerelease)
+            fi
+            if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+              git -C release-source for-each-ref --format='%(contents)' "refs/tags/$RELEASE_TAG" > "$notes_file"
+              if [[ -n "$(tr -d '[:space:]' < "$notes_file")" ]]; then
+                create_args+=(--notes-file "$notes_file")
+              else
+                create_args+=(--generate-notes)
+              fi
+            else
+              create_args+=(--generate-notes)
+            fi
+            gh "${create_args[@]}"
+            # Brand-new draft has no existing assets; skip redundant view query.
+            clobber=true
           fi
 
-          upload_args=()
+          if [[ "$clobber" != "true" ]]; then
+            existing="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+            for file in "${files[@]}"; do
+              name="$(basename "$file")"
+              if grep -Fxq "$name" <<< "$existing"; then
+                echo "Release asset already exists: $name" >&2
+                echo "Use workflow_dispatch with replace_existing_assets=true to replace it." >&2
+                exit 1
+              fi
+            done
+          fi
+
+          upload_args=(release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY")
           if [[ "$clobber" == "true" ]]; then
             upload_args+=(--clobber)
           fi
-          gh release upload "$RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            ${upload_args[@]+"${upload_args[@]}"} \
-            "${installers[@]}" \
-            SHA256SUMS-Rust.txt
+          gh "${upload_args[@]}" "${files[@]}"
+
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            if [[ "$IS_PRERELEASE" == "true" ]]; then
+              gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest=false
+            else
+              if ! latest_tag="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq '.tag_name' 2>"$latest_err")"; then
+                if grep -Fq '(HTTP 404)' "$latest_err"; then
+                  latest_tag=""
+                else
+                  cat "$latest_err" >&2
+                  exit 1
+                fi
+              fi
+              make_latest="$(python3 - "$VERSION" "$latest_tag" <<'PY'
+          import re
+          import sys
+
+          def parse_core(raw: str) -> tuple[int, int, int]:
+              core = raw.strip().lstrip("vV").split("-", 1)[0].split("+", 1)[0]
+              match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", core)
+              if not match:
+                  raise SystemExit(f"Unsupported version format: {raw!r}")
+              return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+
+          current = sys.argv[1]
+          latest = sys.argv[2].strip()
+          print("true" if (not latest or parse_core(current) > parse_core(latest)) else "false")
+          PY
+              )"
+              gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest="$make_latest"
+            fi
+          fi

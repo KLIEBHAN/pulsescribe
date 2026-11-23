@@ -80,12 +80,11 @@ python pulsescribe_windows.py
 ### Pre-built Installers
 
 Download from [Releases](https://github.com/KLIEBHAN/pulsescribe/releases):
-- **macOS:** `PulseScribe-{version}.dmg`
-- **Windows:** `PulseScribe-Setup-{version}.exe`
+- **macOS (Apple Silicon):** `PulseScribe-{version}-macOS-arm64-Full.dmg` (local + cloud) or `PulseScribe-{version}-macOS-arm64-Slim.dmg` (cloud-only)
+- **Windows (x64):** `PulseScribe-{version}-Windows-x64-Full-Setup.exe` (local + cloud) or `PulseScribe-{version}-Windows-x64-Slim-Setup.exe` (cloud-only)
 
-From version 1.4.0, installed apps check for updates in the background. Use
-**Check for Updates…** in the menu bar or tray to check manually, view release
-notes, and restart to install a verified update. See [Updates and releases](docs/UPDATES.md).
+Use **Check for Updates…** in the menu bar/tray or **Diagnostics → Check for Updates**
+to check for new GitHub releases and open the verified download page. See [Updates and releases](docs/UPDATES.md).
 
 ---
 

@@ -1,12 +1,9 @@
 name: Build Installers
 
 on:
-  push:
-    tags: ["v*"]
+  # Legacy Python 1.x installer workflow: v2.0+ tag releases are handled by rust-installers.yml.
   # Selection happens in metadata so new/unknown inputs cannot bypass builds.
   pull_request: {}
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       tag:
