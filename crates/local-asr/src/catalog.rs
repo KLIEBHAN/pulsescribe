@@ -14,6 +14,9 @@ pub const DEFAULT_HF_BASE_URL: &str = "https://huggingface.co";
 /// Default local model matching `config.py::DEFAULT_LOCAL_MODEL` (`"turbo"` -> `"large-v3-turbo"`).
 pub const DEFAULT_LOCAL_MODEL_ID: &str = "large-v3-turbo";
 
+/// Curated local streaming preview model identifier (Nemotron 3.5 int8 via `sherpa-onnx` CPU).
+pub const STREAMING_PREVIEW_MODEL_ID: &str = "nemotron-streaming";
+
 /// The 25 European languages supported by NVIDIA Canary 1B v2 (`providers/nemo_model.py`).
 pub const CANARY_LANGUAGES: [&str; 25] = [
     "bg", "cs", "da", "de", "el", "en", "es", "et", "fi", "fr", "hr", "hu", "it", "lt", "lv", "mt",
@@ -227,7 +230,7 @@ const CATALOG: &[ModelSpec] = &[
         requires_full_audio_ctx: false,
     },
     ModelSpec {
-        id: "nemotron-streaming",
+        id: STREAMING_PREVIEW_MODEL_ID,
         display_name: "Nemotron 3.5 Streaming Preview (560 ms, int8, CPU)",
         engine: LocalEngineKind::SherpaOnlineTransducer,
         hf_repo: "csukuangfj2/sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11",

@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::cache::{InstalledModel, ModelCache};
 use crate::catalog::{resolve_canary_language, resolve_model_spec, LocalEngineKind, ModelSpec};
-use crate::{LocalAsrEngine, LocalAsrError, LocalAsrRequest};
+use crate::{LocalAsrEngine, LocalAsrError, LocalAsrRequest, LocalStreamingSession};
 
 /// Compile-time feature flags enabled in this binary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,6 +46,13 @@ struct LoadedEngineSlot {
 struct ActiveState {
     generation: u64,
     slot: Option<LoadedEngineSlot>,
+}
+
+#[cfg(feature = "local-sherpa")]
+#[derive(Default)]
+struct StreamingPreviewState {
+    generation: u64,
+    model: Option<Arc<crate::sherpa_backend::SherpaOnlineModel>>,
 }
 
 enum ResolvedLoadPlan {
@@ -81,6 +88,13 @@ pub struct LocalAsrManager {
     active: Arc<Mutex<ActiveState>>,
     in_use: Arc<RwLock<()>>,
     load_gate: Arc<Mutex<()>>,
+    // Independent lock hierarchy for the optional Nemotron streaming preview slot:
+    // `streaming_load_gate` -> `streaming_preview`. Never coupled with the offline slot so
+    // live preview never evicts or blocks Whisper/Parakeet/Canary inference.
+    #[cfg(feature = "local-sherpa")]
+    streaming_preview: Arc<Mutex<StreamingPreviewState>>,
+    #[cfg(feature = "local-sherpa")]
+    streaming_load_gate: Arc<Mutex<()>>,
 }
 
 impl LocalAsrManager {
@@ -95,6 +109,10 @@ impl LocalAsrManager {
             active: Arc::new(Mutex::new(ActiveState::default())),
             in_use: Arc::new(RwLock::new(())),
             load_gate: Arc::new(Mutex::new(())),
+            #[cfg(feature = "local-sherpa")]
+            streaming_preview: Arc::new(Mutex::new(StreamingPreviewState::default())),
+            #[cfg(feature = "local-sherpa")]
+            streaming_load_gate: Arc::new(Mutex::new(())),
         }
     }
 
@@ -106,6 +124,10 @@ impl LocalAsrManager {
             active: Arc::new(Mutex::new(ActiveState::default())),
             in_use: Arc::new(RwLock::new(())),
             load_gate: Arc::new(Mutex::new(())),
+            #[cfg(feature = "local-sherpa")]
+            streaming_preview: Arc::new(Mutex::new(StreamingPreviewState::default())),
+            #[cfg(feature = "local-sherpa")]
+            streaming_load_gate: Arc::new(Mutex::new(())),
         }
     }
 
@@ -117,7 +139,7 @@ impl LocalAsrManager {
         LocalRuntimeCapabilities::current()
     }
 
-    /// Unload any cached local ASR engine immediately to release model RAM.
+    /// Unload any cached local ASR engine (both offline and streaming preview) to release RAM.
     pub fn unload(&self) {
         let evicted = {
             let mut guard = self.active.lock().unwrap_or_else(|e| e.into_inner());
@@ -125,12 +147,150 @@ impl LocalAsrManager {
             guard.slot.take()
         };
         drop(evicted);
+        self.unload_streaming_preview();
     }
 
-    /// Return the currently loaded model identifier, if any.
+    /// Unload only the cached local streaming preview model (Nemotron) without evicting the
+    /// active offline Whisper/Parakeet/Canary engine.
+    pub fn unload_streaming_preview(&self) {
+        #[cfg(feature = "local-sherpa")]
+        {
+            let evicted = {
+                let mut guard = self
+                    .streaming_preview
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                guard.generation = guard.generation.wrapping_add(1);
+                guard.model.take()
+            };
+            drop(evicted);
+        }
+    }
+
+    /// Return the currently loaded offline model identifier, if any.
     pub fn loaded_model_id(&self) -> Option<String> {
         let guard = self.active.lock().unwrap_or_else(|e| e.into_inner());
         guard.slot.as_ref().map(|slot| slot.key.model_id.clone())
+    }
+
+    /// Warm up (load and cache) the configured offline local ASR engine without running inference.
+    ///
+    /// Never downloads missing model files: returns [`LocalAsrError::ModelNotDownloaded`] if not
+    /// cached locally or [`LocalAsrError::Cancelled`] when `cancel_flag` fires before load finishes.
+    pub fn preload(
+        &self,
+        model_name: Option<&str>,
+        language_hint: Option<&str>,
+        cancel_flag: Option<&AtomicBool>,
+    ) -> Result<String, LocalAsrError> {
+        let (engine, _use_guard) = self.acquire_engine(model_name, language_hint, cancel_flag)?;
+        Ok(engine.model_id().to_owned())
+    }
+
+    /// Open a local streaming preview session (Nemotron 3.5) for live interim dictation text.
+    ///
+    /// Returns `Ok(None)` immediately when `local-sherpa` is not compiled into this binary or when
+    /// `nemotron-streaming` is not yet downloaded locally. Never downloads files and never evicts
+    /// the primary offline engine.
+    pub fn open_streaming_preview(
+        &self,
+        language_hint: Option<&str>,
+        cancel_flag: Option<&AtomicBool>,
+    ) -> Result<Option<Box<dyn LocalStreamingSession>>, LocalAsrError> {
+        if cancel_flag.is_some_and(|f| f.load(Ordering::Acquire)) {
+            return Err(LocalAsrError::Cancelled);
+        }
+        #[cfg(not(feature = "local-sherpa"))]
+        {
+            let _ = language_hint;
+            Ok(None)
+        }
+        #[cfg(feature = "local-sherpa")]
+        {
+            let Some(spec) = resolve_model_spec(Some(crate::catalog::STREAMING_PREVIEW_MODEL_ID))
+            else {
+                return Ok(None);
+            };
+            let Some(installed) = self.cache.find_installed(spec) else {
+                return Ok(None);
+            };
+
+            let model = 'load: {
+                let expected_gen = {
+                    let guard = self
+                        .streaming_preview
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    if let Some(cached) = guard.model.as_ref() {
+                        break 'load Arc::clone(cached);
+                    }
+                    guard.generation
+                };
+
+                let load_guard = self
+                    .streaming_load_gate
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                if cancel_flag.is_some_and(|f| f.load(Ordering::Acquire)) {
+                    return Err(LocalAsrError::Cancelled);
+                }
+                {
+                    let guard = self
+                        .streaming_preview
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    if let Some(cached) = guard.model.as_ref() {
+                        break 'load Arc::clone(cached);
+                    }
+                    if guard.generation != expected_gen {
+                        drop(guard);
+                        drop(load_guard);
+                        return Ok(None);
+                    }
+                }
+
+                let loaded = Arc::new(crate::sherpa_backend::SherpaOnlineModel::load(
+                    spec,
+                    &installed,
+                    Some(&self.config_dir),
+                )?);
+
+                if cancel_flag.is_some_and(|f| f.load(Ordering::Acquire)) {
+                    // Release native weights before releasing `streaming_load_gate` so a waiting
+                    // replacement never doubles peak RAM.
+                    drop(loaded);
+                    drop(load_guard);
+                    return Err(LocalAsrError::Cancelled);
+                }
+
+                let still_current = {
+                    let mut guard = self
+                        .streaming_preview
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    if guard.generation == expected_gen {
+                        guard.model = Some(Arc::clone(&loaded));
+                        true
+                    } else {
+                        false
+                    }
+                };
+
+                if !still_current {
+                    drop(loaded);
+                    drop(load_guard);
+                    return Ok(None);
+                }
+                drop(load_guard);
+                loaded
+            };
+
+            if cancel_flag.is_some_and(|f| f.load(Ordering::Acquire)) {
+                return Err(LocalAsrError::Cancelled);
+            }
+            let session = model.open_session(language_hint)?;
+            Ok(Some(Box::new(session)))
+        }
     }
 
     /// Load (or reuse cached) engine for `model_name` and transcribe `request`.
@@ -336,9 +496,10 @@ impl LocalAsrManager {
             drop(evicted);
 
             let engine = self.execute_load_plan(&plan)?;
+            let cancelled_during_load = cancel_flag.is_some_and(|f| f.load(Ordering::Acquire));
             {
                 let mut guard = self.active.lock().unwrap_or_else(|e| e.into_inner());
-                if guard.generation == expected_gen {
+                if guard.generation == expected_gen && !cancelled_during_load {
                     guard.slot = Some(LoadedEngineSlot {
                         key: key.clone(),
                         engine: Arc::clone(&engine),
@@ -348,6 +509,13 @@ impl LocalAsrManager {
             // Acquire `in_use.read()` BEFORE dropping `load_guard` so no waiting loader can take
             // `in_use.write()` and evict/allocate a second model while we hold `engine`.
             drop(write_guard);
+            if cancelled_during_load {
+                // Release native weights before dropping `load_guard` so a queued loader never
+                // overlaps allocations and doubles peak RAM.
+                drop(engine);
+                drop(load_guard);
+                return Err(LocalAsrError::Cancelled);
+            }
             let read_guard = self.in_use.read().unwrap_or_else(|e| e.into_inner());
             drop(load_guard);
 
@@ -459,13 +627,34 @@ mod tests {
         ));
 
         let cancelled = Arc::new(AtomicBool::new(true));
-        let req = LocalAsrRequest::new(vec![0.1; 160]).with_cancel_flag(cancelled);
+        let req = LocalAsrRequest::new(vec![0.1; 160]).with_cancel_flag(Arc::clone(&cancelled));
         assert!(matches!(
             mgr.transcribe(Some("turbo"), &req),
             Err(LocalAsrError::Cancelled)
         ));
+        assert!(matches!(
+            mgr.preload(Some("turbo"), None, Some(&cancelled)),
+            Err(LocalAsrError::Cancelled)
+        ));
+        assert!(matches!(
+            mgr.preload(Some("turbo"), None, None),
+            Err(LocalAsrError::ModelNotDownloaded(_))
+        ));
+        assert!(matches!(
+            mgr.preload(Some("nemotron-streaming"), None, None),
+            Err(LocalAsrError::InvalidModel(_))
+        ));
+        assert!(matches!(
+            mgr.open_streaming_preview(Some("de"), Some(&cancelled)),
+            Err(LocalAsrError::Cancelled)
+        ));
+        assert!(mgr
+            .open_streaming_preview(Some("de"), None)
+            .unwrap()
+            .is_none());
 
         assert_eq!(mgr.loaded_model_id(), None);
+        mgr.unload_streaming_preview();
         mgr.unload();
         assert_eq!(mgr.loaded_model_id(), None);
         assert_eq!(

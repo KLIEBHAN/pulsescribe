@@ -10,7 +10,7 @@ use clap::Parser;
 use pulsescribe_core::paths::AppPaths;
 use pulsescribe_core::PreferencesStore;
 use pulsescribe_daemon::{
-    DaemonConfig, DaemonEvent, DaemonMode, DaemonPlatform, DaemonRuntime, DaemonRuntimeOptions,
+    DaemonConfig, DaemonEvent, DaemonPlatform, DaemonRuntime, DaemonRuntimeOptions,
     LiveDictationBackend,
 };
 use tracing_subscriber::EnvFilter;
@@ -104,6 +104,7 @@ async fn run_daemon(
         .map_err(|err| format!("Dictation-Backend konnte nicht initialisiert werden: {err}"))?;
 
     backend.sync_deepgram_warm_state(&config).await;
+    backend.sync_local_preload_state(&config);
 
     let options = DaemonRuntimeOptions {
         enable_ipc,
@@ -164,9 +165,7 @@ async fn run_daemon(
                 Ok(DaemonEvent::ConfigReloaded) => {
                     let reloaded = reload_handle.config();
                     tracing::info!(mode = reloaded.mode.as_str(), "config reloaded");
-                    if reloaded.mode != DaemonMode::Local {
-                        reload_backend.unload_local_model();
-                    }
+                    reload_backend.sync_local_preload_state(&reloaded);
                     reload_backend.sync_deepgram_warm_state(&reloaded).await;
                 }
                 Ok(_) => {}
@@ -176,9 +175,7 @@ async fn run_daemon(
                         "daemon event subscriber lagged; resyncing warm state"
                     );
                     let current = reload_handle.config();
-                    if current.mode != DaemonMode::Local {
-                        reload_backend.unload_local_model();
-                    }
+                    reload_backend.sync_local_preload_state(&current);
                     reload_backend.sync_deepgram_warm_state(&current).await;
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,

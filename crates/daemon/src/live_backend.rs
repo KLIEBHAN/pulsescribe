@@ -20,7 +20,9 @@ use pulsescribe_audio::{
 };
 use pulsescribe_core::env::parse_bool;
 use pulsescribe_core::{DaemonErrorCode, DaemonStatusError, PromptsStore, VocabularyStore};
-use pulsescribe_local_asr::{LocalAsrError, LocalAsrManager, LocalAsrRequest};
+use pulsescribe_local_asr::{
+    resolve_model_spec, LocalAsrError, LocalAsrManager, LocalAsrRequest, LocalStreamingSession,
+};
 use pulsescribe_platform::{
     is_permission_related_message, AppDetector, MicrophonePermissionStatus, PermissionsChecker,
 };
@@ -55,6 +57,7 @@ pub const MAX_BATCH_CAPTURE_SAMPLES: usize = (TARGET_SAMPLE_RATE as usize) * 60 
 
 const STREAM_AUDIO_CHANNEL_CAPACITY: usize = 64;
 const STREAM_EVENT_CHANNEL_CAPACITY: usize = 32;
+const LOCAL_PREVIEW_CHANNEL_CAPACITY: usize = 16;
 
 static TEMP_WAV_SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -131,8 +134,37 @@ pub struct LocalTranscriptionRequest {
 pub trait LocalTranscriber: Send + Sync {
     fn transcribe(&self, request: LocalTranscriptionRequest) -> Result<String, DaemonStatusError>;
 
-    /// Release any cached local model weights from RAM (called on daemon shutdown).
+    /// Warm up (load and cache) the configured offline local model without transcribing.
+    ///
+    /// Returns `Ok(true)` when a model is loaded/ready, `Ok(false)` when preloading is skipped
+    /// (for example, not downloaded yet, runtime feature not compiled, or cancelled), or `Err` on
+    /// unexpected load failure.
+    fn preload(
+        &self,
+        _model: Option<&str>,
+        _language: Option<&str>,
+        _cancel_flag: &AtomicBool,
+    ) -> Result<bool, DaemonStatusError> {
+        Ok(false)
+    }
+
+    /// Open a live local streaming preview session (e.g., Nemotron 3.5) for one dictation run.
+    ///
+    /// Returns `Ok(None)` when live local preview is unavailable or not downloaded; errors are
+    /// logged and never abort offline dictation.
+    fn open_streaming_preview(
+        &self,
+        _language: Option<&str>,
+        _cancel_flag: &AtomicBool,
+    ) -> Result<Option<Box<dyn LocalStreamingSession>>, LocalAsrError> {
+        Ok(None)
+    }
+
+    /// Release any cached local model weights (offline + streaming preview) from RAM.
     fn unload(&self) {}
+
+    /// Release only the cached local streaming preview model from RAM, keeping offline weights.
+    fn unload_streaming_preview(&self) {}
 }
 
 /// Default [`LocalTranscriber`] backed by [`LocalAsrManager`] (`crates/local-asr`).
@@ -167,8 +199,38 @@ impl LocalTranscriber for LocalAsrManagerTranscriber {
         }
     }
 
+    fn preload(
+        &self,
+        model: Option<&str>,
+        language: Option<&str>,
+        cancel_flag: &AtomicBool,
+    ) -> Result<bool, DaemonStatusError> {
+        match self.manager.preload(model, language, Some(cancel_flag)) {
+            Ok(_) => Ok(true),
+            Err(
+                LocalAsrError::ModelNotDownloaded(_)
+                | LocalAsrError::MissingRuntime(_)
+                | LocalAsrError::Cancelled,
+            ) => Ok(false),
+            Err(err) => Err(map_local_asr_error(&err)),
+        }
+    }
+
+    fn open_streaming_preview(
+        &self,
+        language: Option<&str>,
+        cancel_flag: &AtomicBool,
+    ) -> Result<Option<Box<dyn LocalStreamingSession>>, LocalAsrError> {
+        self.manager
+            .open_streaming_preview(language, Some(cancel_flag))
+    }
+
     fn unload(&self) {
         self.manager.unload();
+    }
+
+    fn unload_streaming_preview(&self) {
+        self.manager.unload_streaming_preview();
     }
 }
 
@@ -295,6 +357,49 @@ struct RewarmState {
     task: Option<JoinHandle<()>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LocalPreloadKey {
+    model: Option<String>,
+    language: Option<String>,
+}
+
+impl LocalPreloadKey {
+    fn from_config(config: &DaemonConfig) -> Self {
+        let model = config
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToOwned::to_owned);
+        let language = config
+            .language
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToOwned::to_owned);
+        Self { model, language }
+    }
+
+    fn matches_catalog_id(&self, model_id: &str) -> bool {
+        if resolve_model_spec(self.model.as_deref()).is_some_and(|spec| spec.id == model_id) {
+            return true;
+        }
+        self.model
+            .as_deref()
+            .is_some_and(|raw| raw.eq_ignore_ascii_case(model_id))
+    }
+}
+
+#[derive(Default)]
+struct LocalPreloadState {
+    shutting_down: bool,
+    generation: u64,
+    desired: Option<LocalPreloadKey>,
+    ready: bool,
+    cancel_flag: Option<Arc<AtomicBool>>,
+    task: Option<JoinHandle<()>>,
+}
+
 #[derive(Default)]
 struct SessionRegistry {
     shutting_down: bool,
@@ -312,6 +417,8 @@ struct LiveBackendState {
     endpoints: ProviderEndpoints,
     warm_deepgram: AsyncMutex<WarmDeepgramState>,
     rewarm_state: AsyncMutex<RewarmState>,
+    // Lock order: `local_preload` -> `registry` (never lock `local_preload` while holding `registry`).
+    local_preload: Mutex<LocalPreloadState>,
     registry: Mutex<SessionRegistry>,
     shutdown_tx: watch::Sender<bool>,
 }
@@ -390,6 +497,7 @@ impl LiveDictationBackend {
                 endpoints,
                 warm_deepgram: AsyncMutex::new(WarmDeepgramState::default()),
                 rewarm_state: AsyncMutex::new(RewarmState::default()),
+                local_preload: Mutex::new(LocalPreloadState::default()),
                 registry: Mutex::new(SessionRegistry::default()),
                 shutdown_tx,
             }),
@@ -482,17 +590,193 @@ impl LiveDictationBackend {
         invalidate_warm_slot(&self.inner).await;
     }
 
-    /// Release any cached local ASR model from RAM (e.g., after switching away from local mode).
+    /// Synchronize background local ASR model preloading with `config` (non-blocking, coalesced).
+    ///
+    /// - In [`DaemonMode::Local`]: warms up the configured offline model on a background blocking
+    ///   worker if not already preloaded or in flight for the same `(model, language)` pair, and
+    ///   releases any cached Nemotron streaming preview when `config.streaming` is disabled.
+    /// - In cloud modes: cancels any in-flight preload and unloads cached local model weights.
+    pub fn sync_local_preload_state(&self, config: &DaemonConfig) {
+        let Some(local) = self.inner.local_transcriber.clone() else {
+            return;
+        };
+        if *self.inner.shutdown_tx.borrow() {
+            return;
+        }
+        if config.mode != DaemonMode::Local {
+            self.unload_local_model();
+            return;
+        }
+        if !config.streaming {
+            local.unload_streaming_preview();
+        }
+
+        let key = LocalPreloadKey::from_config(config);
+        let mut preload = self
+            .inner
+            .local_preload
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if preload.shutting_down {
+            return;
+        }
+        if preload.desired.as_ref() == Some(&key)
+            && (preload.ready || preload.task.as_ref().is_some_and(|h| !h.is_finished()))
+        {
+            return;
+        }
+        if let Some(prev_cancel) = preload.cancel_flag.take() {
+            prev_cancel.store(true, Ordering::Release);
+        }
+        let prev_task = preload.task.take();
+        // Push superseded task into `registry` while holding `local_preload` (`local_preload -> registry`)
+        // so `shutdown()` cannot miss an in-flight handoff.
+        track_detached_task(&self.inner, prev_task);
+
+        preload.generation = preload.generation.wrapping_add(1);
+        let my_gen = preload.generation;
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        preload.desired = Some(key.clone());
+        preload.ready = false;
+        preload.cancel_flag = Some(Arc::clone(&cancel_flag));
+
+        let state_for_task = Arc::clone(&self.inner);
+        let model = key.model.clone();
+        let language = key.language.clone();
+        let cancel_for_blocking = Arc::clone(&cancel_flag);
+        // Spawn and store `preload.task` under the same `local_preload` lock so concurrent
+        // coalescing, `unload_local_model_if_matching`, and `shutdown()` always observe the task.
+        let task = tokio::spawn(async move {
+            let model_for_log = model.clone();
+            let res = tokio::task::spawn_blocking(move || {
+                local.preload(model.as_deref(), language.as_deref(), &cancel_for_blocking)
+            })
+            .await;
+
+            match res {
+                Ok(Ok(true)) => {
+                    let mut preload = state_for_task
+                        .local_preload
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    if !preload.shutting_down
+                        && preload.generation == my_gen
+                        && !cancel_flag.load(Ordering::Acquire)
+                    {
+                        preload.ready = true;
+                        tracing::info!(
+                            model = model_for_log.as_deref().unwrap_or("default"),
+                            "local ASR model preloaded"
+                        );
+                    }
+                }
+                Ok(Ok(false)) => {
+                    tracing::debug!(
+                        model = model_for_log.as_deref().unwrap_or("default"),
+                        "local ASR preload skipped (not downloaded, runtime unavailable, or cancelled)"
+                    );
+                }
+                Ok(Err(err)) => {
+                    tracing::warn!(
+                        model = model_for_log.as_deref().unwrap_or("default"),
+                        error = ?err,
+                        "local ASR preload failed"
+                    );
+                }
+                Err(join_err) => {
+                    tracing::warn!(error = %join_err, "local ASR preload task panicked");
+                }
+            }
+        });
+        preload.task = Some(task);
+    }
+
+    /// Cancel any in-flight local preload and release cached local ASR models (offline + streaming)
+    /// from RAM (e.g., after switching away from local mode or clicking Unload Model).
     pub fn unload_local_model(&self) {
+        {
+            let mut preload = self
+                .inner
+                .local_preload
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            preload.generation = preload.generation.wrapping_add(1);
+            preload.desired = None;
+            preload.ready = false;
+            if let Some(cancel) = preload.cancel_flag.take() {
+                cancel.store(true, Ordering::Release);
+            }
+            let prev_task = preload.task.take();
+            track_detached_task(&self.inner, prev_task);
+        }
         if let Some(local) = &self.inner.local_transcriber {
             local.unload();
         }
     }
 
+    /// Release only the cached local streaming preview model (Nemotron) without evicting the
+    /// active offline engine.
+    pub fn unload_local_streaming_preview(&self) {
+        if let Some(local) = &self.inner.local_transcriber {
+            local.unload_streaming_preview();
+        }
+    }
+
+    /// Cancel and await any in-flight local preload targeting `model_id` and unload cached weights
+    /// before deleting model files on disk (prevents sharing violations on Windows).
+    pub async fn unload_local_model_if_matching(&self, model_id: &str) -> bool {
+        let (matched, prev_task) = {
+            let mut preload = self
+                .inner
+                .local_preload
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let matches = preload
+                .desired
+                .as_ref()
+                .is_some_and(|key| key.matches_catalog_id(model_id));
+            if !matches {
+                (false, None)
+            } else {
+                preload.generation = preload.generation.wrapping_add(1);
+                preload.desired = None;
+                preload.ready = false;
+                if let Some(cancel) = preload.cancel_flag.take() {
+                    cancel.store(true, Ordering::Release);
+                }
+                (true, preload.task.take())
+            }
+        };
+        if let Some(task) = prev_task {
+            let _ = task.await;
+        }
+        if matched {
+            if let Some(local) = &self.inner.local_transcriber {
+                local.unload();
+            }
+        }
+        matched
+    }
+
     /// Cancel all active sessions, await audio/network/local-ASR teardown, abort background
-    /// re-warm, and gracefully close any prewarmed Deepgram socket.
+    /// re-warm and preloads, and gracefully close any prewarmed Deepgram socket.
     pub async fn shutdown(&self) {
         self.inner.shutdown_tx.send_replace(true);
+        let preload_task = {
+            let mut preload = self
+                .inner
+                .local_preload
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            preload.shutting_down = true;
+            preload.generation = preload.generation.wrapping_add(1);
+            preload.desired = None;
+            preload.ready = false;
+            if let Some(cancel) = preload.cancel_flag.take() {
+                cancel.store(true, Ordering::Release);
+            }
+            preload.task.take()
+        };
         let (session_handles, detached_handles) = {
             let mut reg = self
                 .inner
@@ -505,10 +789,13 @@ impl LiveDictationBackend {
                 std::mem::take(&mut reg.detached_blocking),
             )
         };
+        if let Some(task) = preload_task {
+            let _ = task.await;
+        }
         for handle in session_handles {
             let _ = handle.await;
         }
-        // Drain any detached local-inference tasks pushed while sessions were unwinding.
+        // Drain any detached local-inference/preview/preload tasks pushed while sessions unwound.
         let extra_detached = {
             let mut reg = self
                 .inner
@@ -1233,6 +1520,99 @@ async fn schedule_deepgram_rewarm(
     }));
 }
 
+fn track_detached_task(state: &LiveBackendState, handle: Option<JoinHandle<()>>) {
+    let Some(handle) = handle else {
+        return;
+    };
+    if handle.is_finished() {
+        return;
+    }
+    let mut reg = state.registry.lock().unwrap_or_else(|e| e.into_inner());
+    reg.detached_blocking.retain(|h| !h.is_finished());
+    reg.detached_blocking.push(handle);
+}
+
+fn stop_preview_worker(
+    state: &LiveBackendState,
+    preview: Option<(Arc<AtomicBool>, JoinHandle<()>)>,
+) {
+    let Some((cancel, handle)) = preview else {
+        return;
+    };
+    cancel.store(true, Ordering::Release);
+    track_detached_task(state, Some(handle));
+}
+
+fn run_local_preview_worker(
+    local: &dyn LocalTranscriber,
+    language: Option<&str>,
+    rx: std::sync::mpsc::Receiver<Vec<f32>>,
+    run_id: u64,
+    cancel_flag: &AtomicBool,
+    event_tx: &mpsc::UnboundedSender<(u64, PipelineEvent)>,
+) {
+    if cancel_flag.load(Ordering::Acquire) {
+        return;
+    }
+    let mut session = match local.open_streaming_preview(language, cancel_flag) {
+        Ok(Some(session)) => session,
+        Ok(None) | Err(LocalAsrError::Cancelled) => return,
+        Err(err) => {
+            tracing::debug!(
+                error = %err,
+                "local streaming preview unavailable; continuing offline batch capture"
+            );
+            return;
+        }
+    };
+
+    let mut chunk_buf = Vec::with_capacity(TARGET_SAMPLE_RATE as usize);
+    let mut last_emitted = String::new();
+
+    while let Ok(first) = rx.recv() {
+        if cancel_flag.load(Ordering::Acquire) {
+            break;
+        }
+        chunk_buf.clear();
+        chunk_buf.extend_from_slice(&first);
+        // Coalesce any already-buffered chunks so preview catches up in one decode pass.
+        while let Ok(more) = rx.try_recv() {
+            chunk_buf.extend_from_slice(&more);
+            if chunk_buf.len() >= TARGET_SAMPLE_RATE as usize * 2 {
+                break;
+            }
+        }
+        if chunk_buf.is_empty() {
+            continue;
+        }
+        if let Err(err) = session.feed(&chunk_buf) {
+            tracing::debug!(error = %err, "local streaming preview feed failed");
+            break;
+        }
+        if cancel_flag.load(Ordering::Acquire) {
+            break;
+        }
+        match session.text() {
+            Ok(text) => {
+                let trimmed = text.trim();
+                if !trimmed.is_empty()
+                    && trimmed != last_emitted
+                    && !cancel_flag.load(Ordering::Acquire)
+                {
+                    last_emitted.clear();
+                    last_emitted.push_str(trimmed);
+                    let _ =
+                        event_tx.send((run_id, PipelineEvent::InterimText(last_emitted.clone())));
+                }
+            }
+            Err(err) => {
+                tracing::debug!(error = %err, "local streaming preview text read failed");
+                break;
+            }
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_batch_session(
     state: &Arc<LiveBackendState>,
@@ -1249,6 +1629,30 @@ async fn run_batch_session(
     let capture_control = Arc::clone(control);
     let capture_events = event_tx.clone();
 
+    let (preview_tx, mut preview_session) = match &backend {
+        BatchBackend::Local(local) if config.streaming => {
+            let (tx, rx) =
+                std::sync::mpsc::sync_channel::<Vec<f32>>(LOCAL_PREVIEW_CHANNEL_CAPACITY);
+            let cancel = Arc::new(AtomicBool::new(false));
+            let local_clone = Arc::clone(local);
+            let language = config.language.clone();
+            let preview_events = event_tx.clone();
+            let cancel_worker = Arc::clone(&cancel);
+            let handle = tokio::task::spawn_blocking(move || {
+                run_local_preview_worker(
+                    local_clone.as_ref(),
+                    language.as_deref(),
+                    rx,
+                    run_id,
+                    &cancel_worker,
+                    &preview_events,
+                );
+            });
+            (Some(tx), Some((cancel, handle)))
+        }
+        _ => (None, None),
+    };
+
     let mut capture_handle = tokio::task::spawn_blocking(move || {
         capture_batch_loop(
             factory.as_ref(),
@@ -1256,18 +1660,25 @@ async fn run_batch_session(
             &capture_control,
             run_id,
             &capture_events,
+            preview_tx,
         )
     });
 
     let captured = tokio::select! {
         biased;
         _ = wait_cancelled(cancelled_rx) => {
+            if let Some((ref cancel, _)) = preview_session {
+                cancel.store(true, Ordering::Release);
+            }
             control.signal_cancel();
             let _ = capture_handle.await;
+            stop_preview_worker(state, preview_session.take());
             return Ok((String::new(), Instant::now()));
         }
         res = &mut capture_handle => res,
     };
+
+    stop_preview_worker(state, preview_session.take());
 
     let (samples_16k, had_speech, post_stop_started) = match captured {
         Ok(Ok(batch)) => batch,
@@ -1402,6 +1813,7 @@ fn capture_batch_loop(
     control: &CaptureControl,
     run_id: u64,
     event_tx: &mpsc::UnboundedSender<(u64, PipelineEvent)>,
+    mut preview_tx: Option<std::sync::mpsc::SyncSender<Vec<f32>>>,
 ) -> Result<(Vec<f32>, bool, Instant), AudioError> {
     let mut samples_16k = Vec::with_capacity(TARGET_SAMPLE_RATE as usize * 4);
     let mut cap_warned = false;
@@ -1413,6 +1825,15 @@ fn capture_batch_loop(
         event_tx,
         None,
         |chunk_16k| {
+            if let Some(tx) = preview_tx.as_ref() {
+                match tx.try_send(chunk_16k.to_vec()) {
+                    Ok(()) | Err(std::sync::mpsc::TrySendError::Full(_)) => {}
+                    Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                        // Preview worker exited (e.g., Nemotron not installed); stop cloning chunks.
+                        preview_tx = None;
+                    }
+                }
+            }
             let remaining = MAX_BATCH_CAPTURE_SAMPLES.saturating_sub(samples_16k.len());
             if remaining == 0 {
                 if !cap_warned {

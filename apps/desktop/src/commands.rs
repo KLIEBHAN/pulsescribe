@@ -939,6 +939,10 @@ pub async fn download_local_model(
         ),
     }
     download_res.map_err(|err| err.to_string())?;
+    let current_cfg = state.daemon.config();
+    if current_cfg.mode == pulsescribe_daemon::DaemonMode::Local {
+        state.backend.sync_local_preload_state(&current_cfg);
+    }
     list_local_models(state).await
 }
 
@@ -957,8 +961,13 @@ pub async fn delete_local_model(
 ) -> Result<LocalModelsPayload, String> {
     let spec = resolve_explicit_model_spec(&model_id)?;
     let _guard = state.begin_delete(spec.id)?;
-    if state.local_asr.loaded_model_id().as_deref() == Some(spec.id) {
-        state.local_asr.unload();
+    if spec.engine.is_streaming_preview() {
+        state.backend.unload_local_streaming_preview();
+    } else {
+        let matched_preload = state.backend.unload_local_model_if_matching(spec.id).await;
+        if !matched_preload && state.local_asr.loaded_model_id().as_deref() == Some(spec.id) {
+            state.backend.unload_local_model();
+        }
     }
     let cache = state.local_asr.cache().clone();
     tokio::task::spawn_blocking(move || cache.remove_managed(spec))
@@ -971,7 +980,7 @@ pub async fn delete_local_model(
 
 #[tauri::command]
 pub fn unload_local_model(state: State<'_, DesktopState>) {
-    state.local_asr.unload();
+    state.backend.unload_local_model();
 }
 
 #[tauri::command]
