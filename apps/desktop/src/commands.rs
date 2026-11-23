@@ -41,7 +41,9 @@ use url::Url;
 
 use crate::state::DesktopState;
 use crate::updates::{check_latest_release, UpdateCheckResult};
-use crate::window::{emit_to_main_if_open, MODEL_DOWNLOAD_PROGRESS_EVENT};
+use crate::window::{
+    emit_to_main_if_open, MODEL_DOWNLOAD_FINISHED_EVENT, MODEL_DOWNLOAD_PROGRESS_EVENT,
+};
 
 const API_KEY_NAMES: &[&str] = &[
     "DEEPGRAM_API_KEY",
@@ -923,6 +925,18 @@ pub async fn download_local_model(
         .await;
 
     drop(guard);
+    match &download_res {
+        Ok(_) => emit_to_main_if_open(
+            &app,
+            MODEL_DOWNLOAD_FINISHED_EVENT,
+            &serde_json::json!({ "model_id": spec.id, "ok": true, "error": serde_json::Value::Null }),
+        ),
+        Err(err) => emit_to_main_if_open(
+            &app,
+            MODEL_DOWNLOAD_FINISHED_EVENT,
+            &serde_json::json!({ "model_id": spec.id, "ok": false, "error": err.to_string() }),
+        ),
+    }
     download_res.map_err(|err| err.to_string())?;
     list_local_models(state).await
 }
