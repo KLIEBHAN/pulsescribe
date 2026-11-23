@@ -1,18 +1,14 @@
-# Building & Notarizing PulseScribe on macOS
+# Building PulseScribe on macOS
 
-PulseScribe ships as a `.app` bundle and a drag‑and‑drop `.dmg`. For a good user experience ("download → open → works"), the DMG should be **Developer‑ID signed + notarized**.
+PulseScribe ships as a native Rust/Tauri v2 `.app` bundle and drag-and-drop `.dmg` (`apps/desktop`, bundle ID `com.kliebhan.pulsescribe`). It combines a zero-build lazy WebView settings UI (0 MB WebView RAM when closed), a native monochrome template menu bar icon, and a native 60 FPS `NSPanel`/`CALayer` overlay.
 
-## Rust Desktop App (Tauri v2, Coexisting)
-
-The native Rust desktop app (`apps/desktop`, bundle ID `com.kliebhan.pulsescribe`) coexists alongside the legacy Python build below and shares `~/.pulsescribe/` 1:1. It combines a zero-build lazy WebView (0 MB WebView RAM when closed) with a native menu-bar tray and native 60 FPS `NSPanel`/`CALayer` overlay.
-
-### Prerequisites (Rust)
+## Prerequisites
 
 - Rust toolchain (`rustc` ≥ 1.88, `aarch64-apple-darwin` target) and `cargo-tauri` v2 (`cargo install tauri-cli --version ^2 --locked` or prebuilt binary from `tauri-apps/tauri`)
 - Xcode Command Line Tools (`xcrun`, `codesign`, `hdiutil`)
 - `cmake` — required **only** for the Full variant (`--features all-local`, compiling `whisper.cpp` with Metal)
 
-### Build Variants (Rust)
+## Build Variants
 
 ```bash
 # Release binaries only (Slim / cloud-only)
@@ -25,230 +21,44 @@ cargo build --release -p pulsescribe-desktop -p pulsescribe-cli
 (cd apps/desktop && cargo tauri build --target aarch64-apple-darwin --bundles app --features all-local)
 ```
 
-- **Bundle metadata & signing:** `apps/desktop/Info.plist` carries `NSMicrophoneUsageDescription` and `NSAppleEventsUsageDescription`; `macos/entitlements.plist` supplies `com.apple.security.cs.disable-library-validation`. Signing with the same pinned `"PulseScribe Code Signing"` certificate (SHA-1 `MACOS_SIGNING_CERT_SHA1` pinned in both workflows, `.p12` secrets stored in the `macos-signing` GitHub environment admitting `master` and `v*` tags) preserves macOS Microphone, Accessibility, and Input Monitoring grants across updates from legacy Python builds.
+- **Bundle metadata & entitlements:** `apps/desktop/Info.plist` carries `NSMicrophoneUsageDescription` and `NSAppleEventsUsageDescription`; `macos/entitlements.plist` supplies `com.apple.security.cs.disable-library-validation`.
 - **`sherpa-onnx` runtime (Full):** `crates/local-asr` loads `libsherpa-onnx-c-api.dylib` (`2.0.x` ABI) from `$PULSESCRIBE_SHERPA_LIB_DIR`, `<exe_dir>`, `PulseScribe.app/Contents/Frameworks/`, or `~/.pulsescribe/libs/`. The CI Full build bundles `libsherpa-onnx-c-api.dylib` and `libonnxruntime.dylib` directly into `Contents/Frameworks/`.
-- **CI Workflow:** [`.github/workflows/rust-installers.yml`](../.github/workflows/rust-installers.yml) builds, signs, packages, and verifies both `PulseScribe-<version>-macOS-arm64-Slim.dmg` and `PulseScribe-<version>-macOS-arm64-Full.dmg` (+ `.sha256`) on `macos-15` for PRs, manual dispatches, and `v*` release tags.
-
----
-
-## Legacy Python App
-
-### Prerequisites
-
-- macOS with **Xcode Command Line Tools** (`xcrun`, `notarytool`, `stapler`)
-  - Install: `xcode-select --install`
-- Python + `pyinstaller`
-- Install `requirements.txt` before a full build. Both `mlx-whisper` and
-  `lightning-whisper-mlx` are required; Lightning does not install `mlx-whisper`.
-- (For notarization) an Apple Developer Program membership with a **Developer ID Application** certificate installed in your keychain
-
-## Quick Start
-
-```bash
-# Build the app (ad-hoc signed)
-./build_app.sh
-
-# Build + create DMG
-./build_app.sh --dmg
-
-# Clean build + DMG + launch
-./build_app.sh --clean --dmg --open
-```
-
-## Build Scripts
-
-### `build_app.sh` — Main Build Script
-
-| Option    | Description                        |
-| --------- | ---------------------------------- |
-| `--clean` | Delete build cache before building |
-| `--dmg`   | Also create DMG after building     |
-| `--open`  | Launch the app after building      |
-
-Examples:
-
-```bash
-./build_app.sh                    # Standard build
-./build_app.sh --clean --dmg      # Fresh build + DMG
-./build_app.sh --open             # Build + launch
-```
-
-Output: `dist/PulseScribe.app`
-
-### MLX builds per macOS
-
-MLX publishes its native code (extension module, libraries, Metal kernels) per
-macOS generation, and pip installs the one for the build machine. The build made
-for macOS 15 also starts on newer systems, but on macOS 26.2 and newer it runs
-Whisper about 2.3 times slower than the build made for them (turbo, 2 s of audio:
-0.77 s instead of 0.34 s on an M5, 0.60 s instead of 0.28 s on an M6).
-
-A full build on a macOS older than 26 therefore ships both. After PyInstaller has
-assembled the bundle, `build_app.spec` calls
-[`build_mlx_variant.py`](../build_mlx_variant.py), which downloads the
-`macosx_26_0_arm64` wheels of the installed MLX version and copies their four
-native files to `Contents/Frameworks/mlx_macos26` (the kernel library to
-`Contents/Resources/mlx_macos26`, linked from there). The step fails if a Python
-file of those wheels differs from the installed MLX, because the bundle keeps one
-copy of the Python code for both builds. Sign the app after this step;
-`build_app.sh` and `build_dmg.sh` do. The second build adds 240 MB to the app and
-89 MB to the DMG (362 MB instead of 273 MB).
-
-At start the app reads from the files in `mlx_macos26` which macOS they need and,
-if the running system is new enough, loads `mlx.core` from there
-([`utils/mlx_variant.py`](../utils/mlx_variant.py)). The log line
-`Lokales Modell vorab geladen (…, MLX-Build: …)` names the build in use, and so
-does `--check-mlx-backend`:
-
-```
-MLX build: mlx_macos26 (macOS 26.2+)
-MLX build: default (mlx_macos26 needs macOS 26.2, running 15.7.2)
-```
-
-A build on macOS 26 or newer installs the newer MLX directly, adds nothing and
-runs only on that macOS.
-
-### `build_dmg.sh` — DMG Packaging
-
-Creates a drag‑and‑drop DMG with optional notarization.
-
-```bash
-./build_dmg.sh              # Ad-hoc signed DMG (dev)
-./build_dmg.sh 1.0.0        # Versioned DMG
-./build_dmg.sh 1.0.0 --notarize  # Notarized release
-```
-
-Output: `dist/PulseScribe-<version>.dmg`
-
-## App Icon
-
-The app bundle uses the checked-in `assets/icon.icns`. To regenerate it after
-changing `assets/icon.svg`, run on macOS with the project's Python environment:
-
-```bash
-python macos/generate_icon.py
-python -m pytest tests/test_macos_icon.py -q
-```
-
-The generator uses AppKit (already a macOS dependency) and `iconutil` to write
-`assets/icon_base.png`, all ten PNGs in `assets/icon.iconset`, and
-`assets/icon.icns`. It preserves SVG transparency and the existing macOS canvas
-padding (96 pixels per side at 1024 × 1024). Do not use a white-backed SVG
-thumbnail as an intermediate: its white corners remain visible in the Dock.
-Commit the generated files together. `assets/icon.ico` for Windows is unchanged
-by this command. Normal app builds use the checked-in icons without regenerating
-them.
+- **App & menu bar icons:** Checked-in icons live in `assets/` (`assets/icon.svg`, `assets/icon.icns`, `assets/icon.iconset/`, and `assets/icon_tray_macos_template.{svg,png}`). Normal builds consume them directly without regenerating them.
 
 ## CI Build
 
-The [`Build Installers`](../.github/workflows/build-installers.yml) workflow
-builds the full Apple Silicon app on the pinned `macos-15` runner, verifies the
-bundle version and architecture, mounts and validates the DMG, and stores both the DMG and its
-SHA-256 checksum as a workflow artifact for 14 days. The test workflow uses the
-same pinned image. `macos-14` is retired by GitHub on November 2, 2026; avoid
-`macos-latest` so future image changes do not silently move the build environment.
-Local-provider unit tests replace GPU allocator modules with fakes; they must not
-call a hosted runner's real CUDA, MPS, or MLX allocator while testing cleanup.
-The full build fails if a local backend dependency is missing. CI also runs
-`--check-mlx-backend` from the app inside the DMG, checking MLX imports, native
-operations and the 80/128 mel-filter assets without downloading a model, and that
-sherpa-onnx (the live preview's streaming model) imports with its native library.
-The same check runs once more on a `macos-26` runner, where the app must load
-[MLX's build for newer macOS](#mlx-builds-per-macos); a release is published only
-if both pass.
+[`.github/workflows/rust-installers.yml`](../.github/workflows/rust-installers.yml) builds, signs, packages, and verifies both `PulseScribe-<version>-macOS-arm64-Slim.dmg` and `PulseScribe-<version>-macOS-arm64-Full.dmg` (+ `SHA256SUMS.txt`) on `macos-15` for PRs, manual dispatches, and `v*` release tags.
 
-PR builds cancel superseded runs and skip macOS when the whole PR changes only
-Windows build files (plus documentation/tests). Shared code, dependencies, unknown
-paths, or an unavailable diff keep both platforms enabled. The selection lives in
-[installer_platforms.py](../.github/scripts/installer_platforms.py); it uses the
-merge-base diff and considers both paths of renames. Releases and manual rebuilds
-always build both platforms and are never cancelled by newer PR runs. PR heads
-without the selector also build both. Documentation/test-only PRs run only metadata.
-
-Pushing an annotated `vX.Y.Z` tag builds both platforms and publishes the release
-only after the installers are uploaded. See [Updates and releases](UPDATES.md).
-Publishing a release manually still attaches installers through the same workflow.
-An existing release can be rebuilt manually:
+To rebuild an existing release manually:
 
 ```bash
-gh workflow run build-installers.yml \
-  -f tag=v1.3.0 \
+gh workflow run rust-installers.yml \
+  -f tag=v2.1.0 \
+  -f variant=all \
   -f upload_to_release=true
 ```
 
-Existing assets are not overwritten by default. For an intentional replacement,
-add `-f replace_existing_assets=true`.
+Existing assets are not overwritten by default. For an intentional replacement, add `-f replace_existing_assets=true`.
 
-### Stable signing certificate
+## Stable Signing Certificate
 
-macOS stores Microphone, Accessibility and Input Monitoring permissions
-per code signature. For an ad-hoc signed app, that is the hash of one build, so
-every update would lose the permissions. CI therefore signs releases with the
-self-signed "PulseScribe Code Signing" certificate. macOS then identifies the
-app by bundle ID and certificate, and permissions survive updates.
+macOS stores Microphone, Accessibility, and Input Monitoring permissions per code signature. For an ad-hoc signed app, that is the hash of a single build, so every update would lose permissions. CI therefore signs published releases with the self-signed `"PulseScribe Code Signing"` certificate so macOS identifies the app by bundle ID and certificate across updates.
 
-The secrets are stored in the GitHub environment `macos-signing`, not as
-repository secrets. Anyone holding the key can sign other code that inherits
-the users' permissions, so the environment only admits `master` and `v*` tags,
-and the workflow uses it only for published builds.
+The secrets live in the GitHub environment `macos-signing`, which only admits `master` and `v*` tags:
 
 | Environment secret | Content |
 |--------------------|---------|
 | `MACOS_CERTIFICATE_P12` | Base64 of the `.p12` with certificate and private key |
 | `MACOS_CERTIFICATE_PASSWORD` | Password of the `.p12` |
 
-The certificate's SHA-1 is pinned as `MACOS_SIGNING_CERT_SHA1` in
-`.github/workflows/rust-installers.yml` (and legacy `.github/workflows/build-installers.yml`). Published releases fail without the
-secret, and the DMG check rejects apps that are not signed with the pinned
-certificate. Pull request and other unpublished builds are ad-hoc signed.
+The certificate's SHA-1 is pinned as `MACOS_SIGNING_CERT_SHA1` in `.github/workflows/rust-installers.yml`. Published releases fail without the secret, and the workflow verifies the signature against the pinned certificate. Pull request and other unpublished builds are ad-hoc signed.
 
-Keep a backup of the `.p12` and its password. Signing a release with a new
-certificate, including after losing the old one, makes every user grant the
-permissions once more. To replace it, update both secrets and the pinned SHA-1
-together.
+Keep a backup of the `.p12` and its password. Signing a release with a new certificate requires users to grant permissions once more. To replace it, update both secrets and the pinned SHA-1 together.
 
-The certificate is not trusted by Gatekeeper and the build is not notarized, so
-the first installation has the same Gatekeeper limitations as a local build. Use
-the notarized release process below when Developer ID credentials are available.
+### First Installation (Quarantine Note)
 
-For the first installation, copy the app to Applications. If macOS blocks it,
-check that the DMG comes from the official GitHub release and matches its entry
-in `SHA256SUMS.txt` (`shasum -a 256 PulseScribe-<version>.dmg`). Only then remove
-the quarantine flag; this skips Gatekeeper's check for the app:
+Because the self-signed certificate is not Apple-notarized, macOS Gatekeeper may block the first launch on a new machine. Verify that the DMG matches `SHA256SUMS.txt` from the official GitHub Release (`shasum -a 256 PulseScribe-<version>-macOS-arm64-*.dmg`), copy `PulseScribe.app` to `/Applications`, and clear the quarantine flag if needed:
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/PulseScribe.app
 ```
-
-## Release Build (Notarized)
-
-### 1) Store notary credentials (once)
-
-```bash
-xcrun notarytool store-credentials "pulsescribe-notary" \
-  --apple-id "you@example.com" \
-  --team-id "TEAMID" \
-  --password "app-specific-password"
-```
-
-### 2) Build + notarize
-
-```bash
-export CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
-export NOTARY_PROFILE="pulsescribe-notary"
-
-./build_app.sh --clean
-./build_dmg.sh 1.0.0 --notarize
-```
-
-Output: `dist/PulseScribe-1.0.0.dmg` (notarized, Gatekeeper‑friendly)
-
-## Notes
-
-- `build_app.sh` signs the app ad-hoc by default (fine for local testing, but
-  macOS asks for permissions again after each rebuild)
-- `build_dmg.sh` signs with `CODESIGN_IDENTITY` when set; it enables the
-  hardened runtime only with `--notarize`
-- `build_dmg.sh --notarize` signs with Developer ID and notarizes both `.app` and `.dmg`
-- Entitlements are read from `macos/entitlements.plist` (override via `ENTITLEMENTS_PATH`)
-- Ad-hoc signed builds may trigger Gatekeeper warnings on other machines

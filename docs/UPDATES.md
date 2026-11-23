@@ -1,149 +1,37 @@
-# Updates and releases
+# Updates and Releases
 
-## Rust Desktop App (v2.0+ Cutover Strategy)
+## In-App Update Check
 
-The native Rust desktop app (`apps/desktop`) performs a clean cutover for `v2.0.0`:
+The native Rust desktop app (`apps/desktop`) checks GitHub Releases (`/releases/latest`) over HTTPS with SemVer comparison when triggered via **Check for Updates…** in the menu bar/tray or **Diagnostics → Check for Updates**. When a newer release is available, it opens the verified GitHub Release page in the default browser (**Download Release**).
 
-- **Manual one-time migration from Python `1.x`:** Existing Python `1.x` installations do not auto-upgrade across the runtime rewrite; users install the Rust macOS DMG or Windows NSIS setup once while preserving `~/.pulsescribe/` 1:1 (and macOS TCC permissions when signed with the same `PulseScribe Code Signing` certificate, plus Windows `HKCU\...\Run\PulseScribe` autostart migration via the NSIS post-install hook).
-- **In-app update check:** **Diagnostics → Check for Updates** queries GitHub Releases (`/releases/latest`) over HTTPS with SemVer comparison and opens the verified GitHub Release page in the system browser (**Download Release**). A full in-app auto-installer (background download + bundle swap) is intentionally deferred until needed.
-- **Publishing (`v2.0.0+`):**
-  1. Bump `version` in both `Cargo.toml` (`[workspace.package]`) and `apps/desktop/tauri.conf.json`, update `Cargo.lock`, `CHANGELOG.md`, and `docs/releases/vX.Y.Z.md`, and merge via PR.
-  2. Push an annotated Git tag matching `vX.Y.Z` (e.g. `git tag -a v2.0.0 -F docs/releases/v2.0.0.md && git push origin v2.0.0`).
-  3. [`.github/workflows/rust-installers.yml`](../.github/workflows/rust-installers.yml) validates the tag and version, builds and signs `PulseScribe-X.Y.Z-macOS-arm64-{Slim,Full}.dmg` (using the `macos-signing` environment) and `PulseScribe-X.Y.Z-Windows-x64-{Slim,Full}-Setup.exe`, generates `SHA256SUMS.txt`, uploads all assets to a draft release, and publishes it as `Latest` only after all uploads succeed (never moving `Latest` backwards).
-  4. Legacy [`.github/workflows/build-installers.yml`](../.github/workflows/build-installers.yml) is retained only for PR validation and manual `workflow_dispatch` runs.
+- User configuration in `~/.pulsescribe/` (`.env`, `preferences.json`, `vocabulary.json`, `prompts.toml`, `history.jsonl`, downloaded models) is preserved across upgrades.
+- On macOS, releases signed with the pinned `"PulseScribe Code Signing"` certificate preserve Microphone, Accessibility, and Input Monitoring permissions across updates.
+- On Windows, the NSIS per-user installer updates in place and migrates legacy autostart entries (`HKCU\...\Run\PulseScribe`) automatically.
 
----
+## Publishing a Release (`v2.x`)
 
-## Legacy Python App (1.x)
+Release notes live in `docs/releases/vX.Y.Z.md`.
 
-Packaged PulseScribe installations check the public GitHub repository for a newer
-stable release 15 seconds after startup and then hourly. Source runs have no
-updater. No token or additional dependency is required.
-Packaged versions must use `X.Y.Z`; manual prerelease or unknown version strings
-are not compared to stable releases, and an explicit check reports that error.
-
-The **PulseScribe Update** window shows each step: checking, download progress,
-and the ready update with its scrollable release notes and a **Restart and
-Install** button. When an automatic check finds a new version, the window opens
-once for that version without taking focus, so dictation keeps pasting into the
-current app; on macOS the Dock icon bounces once, on Windows the taskbar button
-flashes. **Hide** or **Later** closes it while the download continues; the menu
-entry shows the progress and reopens the window.
-
-Use **Check for Updates…** in the macOS menu bar or Windows tray to open the
-window and check immediately. Automatic failures stay quiet; manual checks show
-errors with **Retry** or report the current version. Updates never install just
-because the app was closed; installing requires the button and an idle dictation
-state, otherwise the window asks to finish the dictation first.
-
-On macOS the window is a non-activating panel in the app. On Windows it is a
-small Qt process (`PulseScribe.exe --update-window`) that receives states over
-its stdin and reports buttons over stdout; it exits with the app and before an
-installation starts.
-
-Downloads use HTTPS, bounded chunks, and the exact release asset for the platform.
-Size and SHA-256 are checked before preparing an installer. The checksum comes
-from GitHub's asset digest, with `SHA256SUMS.txt` as a fallback for older releases.
-Only changed integer percentages reach the UI. A single worker prevents duplicate
-checks and downloads; network operations time out after 30 seconds of inactivity.
-
-## Installation
-
-- **macOS:** the verified DMG is mounted read-only. PulseScribe checks the bundle
-  identifier and version, copies the new app next to the installed bundle, and
-  detaches the image. After the confirmed restart, a detached helper waits up to
-  60 seconds for this process to exit, swaps the bundles, and starts the new app.
-  If the replacement move fails, it restores the old bundle and opens a diagnosis
-  file; the staged update remains for inspection. An app running from
-  a DMG, App Translocation, or a location without write access uses the manual
-  DMG installation instead and downloads only when requested. Opening the manual
-  installer moves it into Downloads before temporary working files are removed.
-- **Windows:** a detached PowerShell helper waits up to 60 seconds for this
-  process to exit, runs the Inno Setup installer silently into the current
-  installation directory, and restarts PulseScribe after a successful installer
-  exit. The helper selects the machine-wide mode from the installed application's
-  uninstall registration in either the 32-bit or 64-bit registry view, or the
-  current-user mode otherwise. Inno Setup requests elevation for
-  an existing administrative installation ([Inno Setup install modes](https://jrsoftware.org/ishelp/topic_setup_usepreviousprivileges.htm)). A failed install restarts the app
-  and keeps the installer and `setup.log` for diagnosis. It does not close other
-  applications. Local Whisper installations require the `-Local.zip` asset and never
-  receive the API-only installer, so every release publishes it. After a
-  successful API-only installation, the installer removes Local Whisper packages
-  left by a previous Local installation, so switching variants also switches
-  future updates. If a release lacks the Local asset, a
-  manual check reports it; automatic checks retry hourly.
-
-Installation and recording starts share a lock in each daemon. After reserving
-the update, new recording starts are rejected until exit. Concurrent install
-actions cannot launch a second helper. Shutdown cancels and joins the update
-worker before removing temporary files; native preparation children are stopped
-by their known PID, and a mount is detached even when attachment times out.
-
-User configuration in `~/.pulsescribe` is preserved. macOS packages are signed
-with the stable PulseScribe certificate (not notarized), Windows packages are
-unsigned. The initial installation uses the existing Gatekeeper/SmartScreen
-steps. macOS keeps Microphone, Accessibility and Input Monitoring permissions
-across updates; the first update from an ad-hoc signed release (1.6.0 and
-earlier) asks for them once more.
-
-Version 1.3.0 and earlier have no updater. Install version 1.4.0 once from the
-release page; subsequent releases can be installed from its menu.
-
-## Release history in Settings
-
-**Settings → About → What's new** on macOS and Windows shows the five newest
-releases shipped with that installation, with their version and date. The
-read-only text can be scrolled and copied. About loads the files only on its
-first visit; opening other settings does not read them or contact GitHub.
-Installation instructions are omitted. To see newer releases, use **Check for
-Updates…** or the GitHub release page.
-
-## Publishing
-
-The release history is maintained in `docs/releases/vX.Y.Z.md` and shipped in
-all app bundles. Keep the version, release date and user-facing changes before
-`<!-- install-notes -->`; installation instructions after that marker are
-excluded from the in-app history. Put the "Check for Updates… to install this
-version" prompt after the marker too; About also hides that standard paragraph
-in older notes. No GitHub request is needed to read the history.
-
-1. Merge the reviewed change and wait for the default branch's test workflow.
-2. Update `pyproject.toml` and the changelog, commit the version bump, and push.
-   Wait for that commit's tests before tagging it.
-3. Write user-facing release notes in an annotated tag. Tag and project version
-   must match:
-
+1. Bump `version` in both `Cargo.toml` (`[workspace.package]`) and `apps/desktop/tauri.conf.json`, refresh `Cargo.lock`, update `CHANGELOG.md` and `docs/releases/vX.Y.Z.md`, and merge via PR after CI passes.
+2. Create and push an annotated Git tag matching `vX.Y.Z`:
    ```bash
-   git tag -a v1.4.0 -F release-notes.txt
-   git push origin v1.4.0
+   git tag -a v2.1.0 -F docs/releases/v2.1.0.md
+   git push origin v2.1.0
    ```
+3. [`.github/workflows/rust-installers.yml`](../.github/workflows/rust-installers.yml) validates the tag against `Cargo.toml` and `apps/desktop/tauri.conf.json`, builds and signs:
+   - `PulseScribe-X.Y.Z-macOS-arm64-Slim.dmg` & `PulseScribe-X.Y.Z-macOS-arm64-Full.dmg` (signed using the `macos-signing` GitHub environment)
+   - `PulseScribe-X.Y.Z-Windows-x64-Slim-Setup.exe` & `PulseScribe-X.Y.Z-Windows-x64-Full-Setup.exe`
+   - `SHA256SUMS.txt`
+4. The workflow uploads all installers and checksums to a draft release and publishes it as `Latest` only after all uploads succeed (never moving `Latest` backwards).
 
-The **Build Installers** workflow validates the tag, version, and exact commit,
-builds and validates the macOS DMG and both Windows installers (API-only and
-Local Whisper), and creates `SHA256SUMS.txt`. It creates a draft release, uploads the assets, and publishes it
-as latest only after successful uploads and only if its version is newer than
-the current latest release. Publication jobs are serialized so concurrently
-completed builds cannot move latest backwards. The tag text becomes the update notes.
-The release is not published if a build or upload fails. Reruns can continue a
-draft, replacing partial draft uploads to keep installers and checksums consistent.
-Published assets are overwritten only when explicitly requested through the
-manual workflow. Lightweight tags are rejected. Published tags must not be moved.
+Lightweight tags are rejected. Published tags must not be moved. Manual rebuilds are available via `workflow_dispatch` on `rust-installers.yml` (`-f tag=vX.Y.Z -f upload_to_release=true`; add `-f replace_existing_assets=true` only to replace existing assets intentionally).
 
-Pull requests skip the larger Windows Local Whisper package; see
-[Building Windows](BUILDING_WINDOWS.md#ci-build). Existing `release: published`
-and manual build triggers remain supported. Automatic publication through the
-workflow's `GITHUB_TOKEN` does not trigger a second installer build.
-
-## Focused validation
+## Focused Validation
 
 ```bash
-python -m pytest tests/test_updates.py tests/test_update_flow.py \
-  tests/test_update_install.py tests/test_update_ui.py tests/test_update_window.py \
-  tests/test_update_daemon.py tests/test_menubar.py -q
-actionlint .github/workflows/build-installers.yml .github/workflows/test.yml
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo clippy -p pulsescribe-local-asr -p pulsescribe-daemon -p pulsescribe-cli -p pulsescribe-desktop --features all-local --all-targets -- -D warnings
+cargo test -p pulsescribe-local-asr -p pulsescribe-daemon -p pulsescribe-cli -p pulsescribe-desktop --features all-local
 ```
-
-Tests cover stable-version and package selection, checksums, bounded download
-progress, cancellation, deduplication, shutdown, busy-dictation guards, and real
-Mac bundle swaps with rollback. macOS also builds and mounts a small test DMG;
-Windows CI executes the PowerShell helper with only process launches substituted.

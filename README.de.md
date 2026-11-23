@@ -1,7 +1,6 @@
 # PulseScribe
 
-[![Tests](https://github.com/KLIEBHAN/pulsescribe/actions/workflows/test.yml/badge.svg)](https://github.com/KLIEBHAN/pulsescribe/actions/workflows/test.yml)
-[![codecov](https://codecov.io/gh/KLIEBHAN/pulsescribe/graph/badge.svg)](https://codecov.io/gh/KLIEBHAN/pulsescribe)
+[![Rust CI](https://github.com/KLIEBHAN/pulsescribe/actions/workflows/rust.yml/badge.svg)](https://github.com/KLIEBHAN/pulsescribe/actions/workflows/rust.yml)
 
 [🇺🇸 English Version](README.md)
 
@@ -38,55 +37,35 @@ Hotkey drücken, sprechen, loslassen – Text erscheint. Das war's.
 
 ## Installation
 
-### macOS
+### Fertige Installer (empfohlen)
 
-```bash
-# 1. Repository klonen
-git clone https://github.com/KLIEBHAN/pulsescribe.git && cd pulsescribe
+Download von [Releases](https://github.com/KLIEBHAN/pulsescribe/releases):
+- **macOS (Apple Silicon):** `PulseScribe-{version}-macOS-arm64-Full.dmg` (lokal + Cloud) oder `PulseScribe-{version}-macOS-arm64-Slim.dmg` (nur Cloud)
+- **Windows (x64):** `PulseScribe-{version}-Windows-x64-Full-Setup.exe` (lokal + Cloud) oder `PulseScribe-{version}-Windows-x64-Slim-Setup.exe` (nur Cloud)
 
-# 2. Dependencies installieren
-brew install portaudio
-pip install -r requirements.txt
+Über **Nach Updates suchen…** im Menüleisten-/Tray-Menü oder **Diagnose → Nach Updates suchen**
+prüft PulseScribe auf neue GitHub-Releases und öffnet die verifizierte Download-Seite. Details: [Updates und Releases](docs/UPDATES.md).
 
-# 3. Daemon starten
-python pulsescribe_daemon.py
-```
-
-**Benötigte Berechtigungen:**
+**Benötigte Berechtigungen (macOS):**
 - **Mikrofon** – Systemeinstellungen → Datenschutz & Sicherheit → Mikrofon
 - **Bedienungshilfen** – Für Auto-Paste (Cmd+V Simulation)
 - **Eingabemonitoring** – Für Hold-to-Record Hotkeys
 
-### Windows
+### Aus dem Quellcode bauen (Rust)
+
+Benötigt Rust ≥ 1.88 (`cmake` nur für `--features all-local`):
 
 ```bash
-# 1. Repository klonen
 git clone https://github.com/KLIEBHAN/pulsescribe.git && cd pulsescribe
 
-# 2. Virtuelle Umgebung erstellen (empfohlen)
-python -m venv venv
-venv\Scripts\activate
+# Nur Cloud-Anbieter (Slim)
+cargo run --release -p pulsescribe-desktop
 
-# 3. Dependencies installieren
-pip install -r requirements.txt
-pip install PySide6  # Optional: GPU-beschleunigtes Overlay
-
-# 4. Daemon starten
-python pulsescribe_windows.py
+# Vollversion mit lokaler Offline-ASR (whisper-rs + sherpa-onnx)
+cargo run --release -p pulsescribe-desktop --features all-local
 ```
 
-**Autostart:** `Win+R` drücken, `shell:startup` eingeben, Verknüpfung zu `start_daemon.bat` erstellen
-
-### Fertige Installer
-
-Download von [Releases](https://github.com/KLIEBHAN/pulsescribe/releases):
-- **macOS:** `PulseScribe-{version}.dmg`
-- **Windows:** `PulseScribe-Setup-{version}.exe`
-
-Ab Version 1.4.0 prüfen installierte Apps im Hintergrund auf Updates. Über
-**Check for Updates…** im Menübar- oder Tray-Menü lässt sich manuell suchen,
-lassen sich die Neuerungen ansehen und geladene Updates mit einem Neustart
-installieren. Details: [Updates und Releases](docs/UPDATES.md).
+**Autostart:** Direkt unter **Einstellungen → Allgemein → Beim Anmelden starten** aktivieren. Siehe [macOS Build](docs/BUILDING_MACOS.md) und [Windows Build](docs/BUILDING_WINDOWS.md).
 
 ---
 
@@ -124,13 +103,7 @@ gespeichertes Mikrofon, wird vorübergehend automatisch ein Eingabegerät gewäh
 
 ### 3. Starten & Nutzen
 
-```bash
-# macOS
-python pulsescribe_daemon.py
-
-# Windows
-python pulsescribe_windows.py
-```
+**PulseScribe** über `/Applications` (macOS), das Startmenü (Windows) oder aus dem Quellcode per `cargo run --release -p pulsescribe-desktop` starten.
 
 **Standard-Hotkeys:**
 - **macOS:** `Fn` (Globe-Taste) halten → sprechen → loslassen
@@ -223,14 +196,11 @@ PULSESCRIBE_MODE=deepgram  # oder: openai, groq, local, openai_compatible (eigen
 
 ### Lokaler Modus (Offline)
 
-Für Offline-Transkription auf Apple Silicon:
+Den **Full**-Installer installieren (enthält lokale `whisper-rs`-Metal/CPU- und `sherpa-onnx`-Backends) oder mit `--features all-local` bauen, dann unter **Einstellungen → Allgemein** den Anbieter **Lokal** wählen (oder Modelle unter **Einstellungen → Lokale Modelle** laden). Fehlende lokale Modelle werden beim ersten Einsatz auch automatisch heruntergeladen.
 
 ```bash
-pip install mlx-whisper
-
 # In ~/.pulsescribe/.env
 PULSESCRIBE_MODE=local
-PULSESCRIBE_LOCAL_BACKEND=mlx
 PULSESCRIBE_LOCAL_MODEL=turbo
 ```
 
@@ -292,15 +262,14 @@ Siehe [Konfigurations-Referenz](docs/KONFIGURATION.md) für alle Refine-Optionen
 
 | Problem | Lösung |
 |---------|--------|
-| Modul nicht gefunden | `pip install -r requirements.txt` |
-| API-Key fehlt | `DEEPGRAM_API_KEY` in `~/.pulsescribe/.env` setzen |
-| Mikrofon geht nicht | macOS: `brew install portaudio` |
-| Keine Berechtigung | Mikrofon + Bedienungshilfen in Systemeinstellungen freigeben |
-| Auto-Paste funktioniert nicht | App in Bedienungshilfen neu hinzufügen |
+| API-Key fehlt | `DEEPGRAM_API_KEY` (oder Schlüssel des gewählten Anbieters) in Einstellungen → Allgemein oder `~/.pulsescribe/.env` setzen |
+| Mikrofon geht nicht | OS-Mikrofonberechtigung und gewähltes Eingabegerät unter Einstellungen → Allgemein prüfen |
+| Keine Berechtigung | Mikrofon + Bedienungshilfen + Eingabemonitoring in den Systemeinstellungen freigeben (macOS) |
+| Auto-Paste funktioniert nicht | App in Bedienungshilfen neu hinzufügen (macOS) oder **Letztes Transkript kopieren** nutzen |
 
 **Logs:** `~/.pulsescribe/logs/pulsescribe.log`
 
-**Diagnostics:** Menübar → Export Diagnostics…
+**Diagnose:** Einstellungen → Diagnose → Diagnose exportieren
 
 Weitere Lösungen unter [Detailliertes Troubleshooting](#detailliertes-troubleshooting) unten.
 
@@ -311,33 +280,33 @@ Weitere Lösungen unter [Detailliertes Troubleshooting](#detailliertes-troublesh
 | Dokument | Beschreibung |
 |----------|--------------|
 | [Konfigurations-Referenz](docs/KONFIGURATION.md) | Alle Einstellungen und Umgebungsvariablen |
-| [CLI-Referenz](docs/CLI_REFERENCE.md) | Kommandozeilen-Optionen für `transcribe.py` |
+| [CLI-Referenz](docs/CLI_REFERENCE.md) | Kommandozeilen-Optionen für `pulsescribe` (`pulsescribe-cli`) |
 | [Lokale Backends](docs/LOKALE_BACKENDS.md) | Offline-Transkription einrichten |
 | [Sicherheit & Datenschutz](docs/SICHERHEIT.md) | Datenverarbeitung und Berechtigungen |
 | [Netzwerk-Anforderungen](docs/NETZWERK.md) | Endpunkte und Firewall-Regeln |
 | [macOS Build](docs/BUILDING_MACOS.md) | App-Bundle und DMG-Erstellung |
-| [Windows Build](docs/BUILDING_WINDOWS.md) | EXE und Installer-Erstellung |
+| [Windows Build](docs/BUILDING_WINDOWS.md) | EXE und NSIS-Installer-Erstellung |
+| [Updates & Releases](docs/UPDATES.md) | Release-Prozess und Update-Prüfung |
 | [Beitragen](CONTRIBUTING.md) | Entwicklungs-Setup und Richtlinien |
-| [Architektur](CLAUDE.md) | Technische Referenz für Entwickler |
 
 ---
 
 ## CLI-Nutzung
 
-Für Skripte und Automatisierung `transcribe.py` direkt verwenden:
+Für Skripte und Automatisierung die eigenständige `pulsescribe`-CLI (`crates/cli`) verwenden:
 
 ```bash
 # Datei transkribieren
-python transcribe.py audio.mp3
+pulsescribe audio.mp3
 
 # Vom Mikrofon aufnehmen
-python transcribe.py --record --copy
+pulsescribe --record --copy
 
 # Mit LLM-Nachbearbeitung
-python transcribe.py --record --refine --context email
+pulsescribe --record --refine --context email
 ```
 
-Siehe [CLI-Referenz](docs/CLI_REFERENCE.md) für alle Optionen.
+Aus einem Quellcode-Checkout per `cargo run --release -p pulsescribe-cli -- <args>`. Siehe [CLI-Referenz](docs/CLI_REFERENCE.md) für alle Optionen.
 
 ---
 
@@ -345,16 +314,14 @@ Siehe [CLI-Referenz](docs/CLI_REFERENCE.md) für alle Optionen.
 
 ### Auto-Paste funktioniert nicht (macOS App Bundle)
 
-**Symptom:** Log zeigt `AXIsProcessTrusted = False` obwohl in Bedienungshilfen aktiviert.
+**Symptom:** Bedienungshilfen werden als fehlend gemeldet, obwohl PulseScribe eingetragen ist.
 
-**Ursache:** Unsignierte PyInstaller-Bundles ändern bei jedem Rebuild ihren Hash. macOS erkennt die "neue" App nicht.
+**Ursache:** Lokal ad-hoc signierte Builds ändern ihren Signatur-Hash bei jedem Rebuild. Offizielle Releases nutzen ein festes Signaturzertifikat, sodass Berechtigungen bei Updates erhalten bleiben.
 
 **Lösung:**
 1. Systemeinstellungen → Datenschutz & Sicherheit → Bedienungshilfen
 2. PulseScribe entfernen (Minus-Button)
 3. PulseScribe neu hinzufügen (Plus-Button oder Drag & Drop)
-
-> Nach jedem Rebuild muss dieser Schritt wiederholt werden, bis die App signiert ist.
 
 ### Zwischenablage-Verhalten
 
@@ -368,20 +335,15 @@ PULSESCRIBE_CLIPBOARD_RESTORE=true
 ### Log-Dateien
 
 ```bash
-# Haupt-Log
+# Rotierendes Desktop-/Daemon-Log
 ~/.pulsescribe/logs/pulsescribe.log
-
-# Startup-Fehler
-~/.pulsescribe/startup.log
 ```
 
 ### Häufige Probleme
 
 | Problem | Lösung |
 |---------|--------|
-| pystray/pillow fehlt (Windows) | `pip install pystray pillow` |
-| ffmpeg fehlt | `brew install ffmpeg` (macOS) oder `apt install ffmpeg` (Linux) |
-| MLX Model 404 | `PULSESCRIBE_LOCAL_MODEL=large` oder volle Repo-ID verwenden |
+| Lokales Modell fehlt | Unter Einstellungen → Lokale Modelle herunterladen (oder beim ersten Diktat automatisch laden lassen) |
 | Transkription langsam | `deepgram` oder `groq` Modus nutzen, oder kleineres lokales Modell |
 | Deepgram schneidet letztes Wort ab | Auf neueste Version updaten; Streaming leert Audio-Queue korrekt |
 

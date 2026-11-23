@@ -1,15 +1,3 @@
-# Python
-__pycache__/
-*.py[cod]
-*.so
-.Python
-env/
-venv/
-.venv/
-dist/
-build/
-web/
-
 # Rust
 /target/
 apps/desktop/gen/
@@ -26,27 +14,19 @@ apps/desktop/gen/
 .DS_Store
 Thumbs.db
 
-# Claude Code / local agent state
+# Local agent state
 .claude/
 .omx/
 .tmp/
 tmp/
 
-# Whisper models (large files)
+# Local models / temporary audio
 *.pt
-
-# Temporary audio files
 *.wav
 *.mp3
 *.m4a
 !test_*.wav
 
-# Logs
+# Logs & local notes
 logs/
-.coverage
-coverage.xml
-htmlcov/
-mlx_models/
-
-# Lokale Notizen
 notes.txt

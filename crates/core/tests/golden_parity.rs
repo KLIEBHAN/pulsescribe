@@ -628,8 +628,7 @@ struct OnboardingStepCase {
 }
 
 fn load_contracts() -> CoreContracts {
-    let path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/golden/core_contracts.json");
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/core_contracts.json");
     let raw = fs::read_to_string(&path)
         .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
     let contracts: CoreContracts = serde_json::from_str(&raw).expect("valid core_contracts.json");
