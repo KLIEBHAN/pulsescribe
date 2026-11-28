@@ -69,6 +69,8 @@ struct TokenSpan<'a> {
 #[derive(Debug)]
 struct VocabEntry<'a> {
     raw: &'a str,
+    leading_punct: &'a str,
+    trailing_punct: &'a str,
     col_chars: Vec<char>,
     phon_chars: Vec<char>,
     skel_chars: Vec<char>,
@@ -82,6 +84,8 @@ struct MatchCandidate<'a> {
     /// 3 = exact verbatim lock, 2 = Tier-1 collapsed match, 1 = Tier-2 fuzzy match.
     priority: u8,
     token_len: usize,
+    replace_start: usize,
+    replace_end: usize,
     score: f64,
     replacement: &'a str,
 }
@@ -119,8 +123,7 @@ pub fn apply_vocabulary_corrections(transcript: &str, keywords: &[String]) -> St
             if !span_has_valid_gaps(transcript, &tokens[i..j]) {
                 continue;
             }
-            let raw_span = &transcript[tokens[i].start..tokens[j - 1].end];
-            if let Some(candidate) = index.match_span(&tokens[i..j], raw_span) {
+            if let Some(candidate) = index.match_span(transcript, last_pos, &tokens[i..j]) {
                 let replace_best = match best {
                     None => true,
                     Some((_, prev)) => is_better_candidate(candidate, prev),
@@ -135,9 +138,9 @@ pub fn apply_vocabulary_corrections(transcript: &str, keywords: &[String]) -> St
         }
 
         if let Some((end_idx, candidate)) = best {
-            out.push_str(&transcript[last_pos..tokens[i].start]);
+            out.push_str(&transcript[last_pos..candidate.replace_start]);
             out.push_str(candidate.replacement);
-            last_pos = tokens[end_idx - 1].end;
+            last_pos = candidate.replace_end;
             i = end_idx;
         } else {
             i += 1;
@@ -149,28 +152,34 @@ pub fn apply_vocabulary_corrections(transcript: &str, keywords: &[String]) -> St
 }
 
 fn is_better_candidate(a: MatchCandidate<'_>, b: MatchCandidate<'_>) -> bool {
+    let a_bytes = a.replace_end.saturating_sub(a.replace_start);
+    let b_bytes = b.replace_end.saturating_sub(b.replace_start);
     match a.priority.cmp(&b.priority) {
         std::cmp::Ordering::Greater => true,
         std::cmp::Ordering::Less => false,
         std::cmp::Ordering::Equal => match a.token_len.cmp(&b.token_len) {
             std::cmp::Ordering::Greater => true,
             std::cmp::Ordering::Less => false,
-            std::cmp::Ordering::Equal => a.score > b.score,
+            std::cmp::Ordering::Equal => match a_bytes.cmp(&b_bytes) {
+                std::cmp::Ordering::Greater => true,
+                std::cmp::Ordering::Less => false,
+                std::cmp::Ordering::Equal => a.score > b.score,
+            },
         },
     }
 }
 
 struct VocabIndex<'a> {
     entries: Vec<VocabEntry<'a>>,
-    exact_map: HashMap<String, usize>,
+    exact_map: HashMap<String, Vec<usize>>,
     fuzzy_buckets: HashMap<char, Vec<usize>>,
     max_span_tokens: usize,
 }
 
 impl<'a> VocabIndex<'a> {
     fn build(keywords: &'a [String]) -> Self {
-        let mut entries = Vec::with_capacity(keywords.len());
-        let mut exact_map = HashMap::with_capacity(keywords.len());
+        let mut entries: Vec<VocabEntry<'a>> = Vec::with_capacity(keywords.len());
+        let mut exact_map: HashMap<String, Vec<usize>> = HashMap::with_capacity(keywords.len());
         let mut fuzzy_buckets: HashMap<char, Vec<usize>> = HashMap::new();
         let mut max_kw_words = 1usize;
 
@@ -180,7 +189,16 @@ impl<'a> VocabIndex<'a> {
                 continue;
             }
             let col = collapse_alnum(kw);
-            if col.is_empty() || exact_map.contains_key(&col) {
+            if col.is_empty() {
+                continue;
+            }
+            let (leading_punct, trailing_punct) = split_boundary_punct(kw);
+            if exact_map.get(&col).is_some_and(|indices| {
+                indices.iter().any(|&idx| {
+                    entries[idx].leading_punct == leading_punct
+                        && entries[idx].trailing_punct == trailing_punct
+                })
+            }) {
                 continue;
             }
 
@@ -192,9 +210,9 @@ impl<'a> VocabIndex<'a> {
             let skel_chars = consonant_skeleton(&phon_chars);
 
             let idx = entries.len();
-            exact_map.insert(col, idx);
+            exact_map.entry(col).or_default().push(idx);
 
-            if col_chars.len() >= 6 {
+            if leading_punct.is_empty() && trailing_punct.is_empty() && col_chars.len() >= 6 {
                 if let Some(&first_phon) = phon_chars.first() {
                     fuzzy_buckets.entry(first_phon).or_default().push(idx);
                 }
@@ -202,11 +220,16 @@ impl<'a> VocabIndex<'a> {
 
             entries.push(VocabEntry {
                 raw: kw,
+                leading_punct,
+                trailing_punct,
                 col_chars,
                 phon_chars,
                 skel_chars,
                 word_count,
-                starts_upper: kw.chars().next().is_some_and(char::is_uppercase),
+                starts_upper: kw
+                    .chars()
+                    .find(|ch| ch.is_alphabetic())
+                    .is_some_and(char::is_uppercase),
                 distinctive: is_distinctive(kw),
             });
         }
@@ -215,15 +238,21 @@ impl<'a> VocabIndex<'a> {
             entries,
             exact_map,
             fuzzy_buckets,
-            max_span_tokens: (max_kw_words + 1).min(4),
+            // Allow at least 3 tokens for exact split matching (e.g. "Post Gres QL" ->
+            // "PostgreSQL") regardless of whether unrelated multi-word keywords exist.
+            max_span_tokens: (max_kw_words + 1).clamp(3, 4),
         }
     }
 
     fn match_span(
         &self,
+        transcript: &str,
+        last_pos: usize,
         span_tokens: &[TokenSpan<'_>],
-        raw_span: &str,
     ) -> Option<MatchCandidate<'a>> {
+        let base_start = span_tokens[0].start;
+        let base_end = span_tokens[span_tokens.len() - 1].end;
+        let raw_span = &transcript[base_start..base_end];
         let col = collapse_alnum(raw_span);
         if col.is_empty() {
             return None;
@@ -231,36 +260,58 @@ impl<'a> VocabIndex<'a> {
         let span_len = span_tokens.len();
         let span_has_upper = raw_span.chars().any(char::is_uppercase);
 
-        // Tier 1: exact collapsed alphanumeric match (fixes casing, splits, hyphens).
-        if let Some(&idx) = self.exact_map.get(&col) {
-            let entry = &self.entries[idx];
-            if raw_span == entry.raw {
-                return Some(MatchCandidate {
-                    priority: 3,
-                    token_len: span_len,
-                    score: 1.0,
-                    replacement: entry.raw,
-                });
+        // Tier 1: exact collapsed alphanumeric match (fixes casing, splits, hyphens),
+        // including canonical leading/trailing symbols (e.g. `C++`, `C#`, `.NET`).
+        if let Some(indices) = self.exact_map.get(&col) {
+            let mut best_exact: Option<MatchCandidate<'a>> = None;
+            for &idx in indices {
+                let entry = &self.entries[idx];
+                let Some((replace_start, replace_end)) =
+                    match_boundary_punct(transcript, last_pos, base_start, base_end, entry)
+                else {
+                    continue;
+                };
+                let full_span = &transcript[replace_start..replace_end];
+                let candidate = if full_span == entry.raw {
+                    MatchCandidate {
+                        priority: 3,
+                        token_len: span_len,
+                        replace_start,
+                        replace_end,
+                        score: 1.0,
+                        replacement: entry.raw,
+                    }
+                } else {
+                    if entry.starts_upper && !span_has_upper {
+                        continue;
+                    }
+                    if span_len == 1 && !entry.distinctive && !entry.starts_upper && span_has_upper
+                    {
+                        continue;
+                    }
+                    if span_len > 1
+                        && entry.word_count == 1
+                        && !entry.distinctive
+                        && entry.col_chars.len() < 7
+                    {
+                        continue;
+                    }
+                    MatchCandidate {
+                        priority: 2,
+                        token_len: span_len,
+                        replace_start,
+                        replace_end,
+                        score: 1.0,
+                        replacement: entry.raw,
+                    }
+                };
+                if best_exact.is_none_or(|prev| is_better_candidate(candidate, prev)) {
+                    best_exact = Some(candidate);
+                }
             }
-            if entry.starts_upper && !span_has_upper {
-                return None;
+            if best_exact.is_some() {
+                return best_exact;
             }
-            if span_len == 1 && !entry.distinctive && !entry.starts_upper && span_has_upper {
-                return None;
-            }
-            if span_len > 1
-                && entry.word_count == 1
-                && !entry.distinctive
-                && entry.col_chars.len() < 7
-            {
-                return None;
-            }
-            return Some(MatchCandidate {
-                priority: 2,
-                token_len: span_len,
-                score: 1.0,
-                replacement: entry.raw,
-            });
         }
 
         // Tier 2: conservative DE/EN phonetic + consonant-skeleton + DL fuzzy match.
@@ -327,6 +378,8 @@ impl<'a> VocabIndex<'a> {
             let candidate = MatchCandidate {
                 priority: 1,
                 token_len: span_len,
+                replace_start: base_start,
+                replace_end: base_end,
                 score,
                 replacement: entry.raw,
             };
@@ -337,6 +390,73 @@ impl<'a> VocabIndex<'a> {
 
         best
     }
+}
+
+fn split_boundary_punct(keyword: &str) -> (&str, &str) {
+    let Some((first_start, _)) = keyword.char_indices().find(|&(_, ch)| ch.is_alphanumeric())
+    else {
+        return ("", "");
+    };
+    let Some((last_start, last_ch)) = keyword
+        .char_indices()
+        .rev()
+        .find(|&(_, ch)| ch.is_alphanumeric())
+    else {
+        return ("", "");
+    };
+    (
+        &keyword[..first_start],
+        &keyword[last_start + last_ch.len_utf8()..],
+    )
+}
+
+/// Verifies and extends `[base_start..base_end]` to cover canonical leading and
+/// trailing punctuation belonging to `entry` (e.g. `.` in `.NET`, `++` in `C++`).
+fn match_boundary_punct(
+    transcript: &str,
+    last_pos: usize,
+    base_start: usize,
+    base_end: usize,
+    entry: &VocabEntry<'_>,
+) -> Option<(usize, usize)> {
+    let replace_start = if entry.leading_punct.is_empty() {
+        base_start
+    } else {
+        let prefix = &transcript[last_pos..base_start];
+        if !prefix.ends_with(entry.leading_punct) {
+            return None;
+        }
+        let start = base_start - entry.leading_punct.len();
+        // Avoid matching `.NET` inside identifiers or domains like `example.NET`.
+        if transcript[..start]
+            .chars()
+            .next_back()
+            .is_some_and(char::is_alphanumeric)
+        {
+            return None;
+        }
+        start
+    };
+
+    let replace_end = if entry.trailing_punct.is_empty() {
+        base_end
+    } else {
+        let suffix = &transcript[base_end..];
+        if !suffix.starts_with(entry.trailing_punct) {
+            return None;
+        }
+        let end = base_end + entry.trailing_punct.len();
+        if transcript[end..]
+            .chars()
+            .next()
+            .is_some_and(char::is_alphanumeric)
+        {
+            return None;
+        }
+        end
+    };
+
+    Some((replace_start, replace_end))
 }
 
 /// Splits text into alphanumeric word tokens, preserving internal apostrophes
@@ -718,6 +838,44 @@ mod tests {
         assert_eq!(
             apply_vocabulary_corrections("Rust läuft auf Strato 2.", &vocab),
             "Rust läuft auf strato2."
+        );
+    }
+
+    #[test]
+    fn preserves_canonical_boundary_punctuation_without_duplication() {
+        let vocab = vec![
+            "C++".to_owned(),
+            "C#".to_owned(),
+            ".NET".to_owned(),
+            "C".to_owned(),
+        ];
+
+        // Already-canonical punctuated terms must stay identical across repeated passes.
+        let canonical = "I use C++, C#, and .NET (plus .NET).";
+        let once = apply_vocabulary_corrections(canonical, &vocab);
+        assert_eq!(once, canonical);
+        assert_eq!(apply_vocabulary_corrections(&once, &vocab), canonical);
+
+        // Casing fix preserves surrounding sentence punctuation and avoids duplicating `.`.
+        assert_eq!(
+            apply_vocabulary_corrections("We migrate .Net apps to C++.", &vocab),
+            "We migrate .NET apps to C++."
+        );
+
+        // Plain words without the canonical symbols and domain suffixes stay untouched.
+        let non_matches = "Option C has Net worth on example.NET.";
+        assert_eq!(
+            apply_vocabulary_corrections(non_matches, &vocab),
+            non_matches
+        );
+    }
+
+    #[test]
+    fn splits_single_word_keyword_into_three_tokens_without_other_keywords() {
+        let vocab = vec!["PostgreSQL".to_owned()];
+        assert_eq!(
+            apply_vocabulary_corrections("Unser Backend nutzt Post Gres QL.", &vocab),
+            "Unser Backend nutzt PostgreSQL."
         );
     }
 }
