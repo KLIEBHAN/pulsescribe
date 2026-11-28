@@ -182,7 +182,7 @@ PULSESCRIBE_LOCAL_MODEL=parakeet-ultra   # or parakeet-v3, canary-1b-v2, cohere-
 - **`cohere-transcribe`** (Cohere 2B Conformer-Transformer, Apache 2.0) enables punctuation and inverse text normalization (`use_punct`, `use_itn`) and passes the language per stream, so switching languages does not reload weights.
 - **`qwen3-asr-0.6b`** (Alibaba Qwen3-ASR, Apache 2.0) supports per-stream hotword biasing from `~/.pulsescribe/vocabulary.json` (capped to fit within the 512-token KV-cache budget alongside 15 s audio segments).
 - **`large-v3-turbo-german`** (`primeline/whisper-large-v3-turbo-german` Q5_0 GGML, Apache 2.0) runs on `whisper-rs` (Metal on Apple Silicon, CPU on Windows) for dedicated German dictation with custom vocabulary support.
-- Recordings longer than 15 s are segmented into pieces of at most 15 s (cut at the quietest 100 ms in the final 5 s) for all offline `sherpa-onnx` models.
+- Offline `sherpa-onnx` models trim dead leading/trailing silence (preserving 250 ms padding), size CPU threads to fast non-efficiency cores (capped at 8), and segment long recordings at the quietest 100 ms in the final 5 s: up to **25 s** per piece for NeMo transducers (`parakeet-ultra`, `parakeet-v3`) and up to **15 s** per piece for encoder-decoder models (`canary-1b-v2`, `cohere-transcribe`, `qwen3-asr-0.6b`).
 - Third-party `sherpa-onnx` models and `large-v3-turbo-german` download from pinned Hugging Face commit revisions (standard `ggerganov/whisper.cpp` GGML models track `main`) into `~/.pulsescribe/models/<id>/`, and PulseScribe also reuses existing snapshots in `~/.cache/huggingface/hub/`.
 
 ---

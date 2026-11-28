@@ -252,29 +252,31 @@ pub const TRANSDUCER_SEGMENT_SECONDS: usize = 25;
 
 const NEMO_CUT_SEARCH_SECONDS: usize = 5;
 
-/// Conservative RMS threshold for trimming dead leading/trailing silence before offline CPU ASR.
-///
-/// Matches `SPEECH_VAD_THRESHOLD_RMS` (`0.002`) so quiet speech onsets remain intact while dead
-/// hotkey lead-in and tail silence is skipped.
-const SILENCE_TRIM_THRESHOLD_RMS: f32 = 0.002;
+/// Conservative ceiling RMS threshold for trimming dead leading/trailing silence before offline CPU
+/// ASR (`0.002`, matching `SPEECH_VAD_THRESHOLD_RMS`). On quieter recordings the threshold scales
+/// down to 5% of peak frame RMS (`-26 dB`) so soft speech onsets and tails are preserved.
+const SILENCE_TRIM_MAX_THRESHOLD_RMS: f32 = 0.002;
+const SILENCE_TRIM_RELATIVE_RATIO: f64 = 0.05;
 const SILENCE_TRIM_FRAME_MS: usize = 20;
-const SILENCE_TRIM_PADDING_MS: usize = 200;
+const SILENCE_TRIM_PADDING_MS: usize = 250;
 
-/// Trim dead leading and trailing silence from mono `f32` audio, preserving 200 ms of padding on
+/// Trim dead leading and trailing silence from mono `f32` audio, preserving 250 ms of padding on
 /// both sides of the first and last active 20 ms frame.
 ///
+/// Uses an adaptive threshold `min(0.002, 0.05 * max_frame_rms)` so dead hotkey lead-in/tail
+/// silence is skipped on normal speech while soft edges on quiet recordings remain intact.
 /// Returns `samples` unchanged when empty, when `sample_rate == 0`, or when no frame exceeds the
-/// conservative speech threshold (so quiet recordings are never silently discarded).
+/// speech floor.
 pub fn trim_leading_trailing_silence(samples: &[f32], sample_rate: u32) -> &[f32] {
     if samples.is_empty() || sample_rate == 0 {
         return samples;
     }
     let sr = sample_rate as usize;
     let frame = ((sr * SILENCE_TRIM_FRAME_MS) / 1000).max(1);
-    let threshold_sq =
-        f64::from(SILENCE_TRIM_THRESHOLD_RMS) * f64::from(SILENCE_TRIM_THRESHOLD_RMS);
+    let max_threshold_sq =
+        f64::from(SILENCE_TRIM_MAX_THRESHOLD_RMS) * f64::from(SILENCE_TRIM_MAX_THRESHOLD_RMS);
 
-    let frame_is_active = |chunk: &[f32]| -> bool {
+    let frame_rms_sq = |chunk: &[f32]| -> f64 {
         let mut sum_sq = 0.0_f64;
         for &sample in chunk {
             if sample.is_finite() {
@@ -282,28 +284,42 @@ pub fn trim_leading_trailing_silence(samples: &[f32], sample_rate: u32) -> &[f32
                 sum_sq += v * v;
             }
         }
-        (sum_sq / chunk.len() as f64) > threshold_sq
+        sum_sq / chunk.len() as f64
     };
 
-    let mut first_active = None;
+    let mut max_frame_sq = 0.0_f64;
     let mut offset = 0usize;
     while offset < samples.len() {
         let end = (offset + frame).min(samples.len());
-        if frame_is_active(&samples[offset..end]) {
-            first_active = Some(offset);
+        let rms_sq = frame_rms_sq(&samples[offset..end]);
+        if rms_sq > max_frame_sq {
+            max_frame_sq = rms_sq;
+        }
+        offset = end;
+    }
+    if max_frame_sq <= max_threshold_sq {
+        return samples;
+    }
+
+    let effective_threshold_sq = max_threshold_sq
+        .min(max_frame_sq * SILENCE_TRIM_RELATIVE_RATIO * SILENCE_TRIM_RELATIVE_RATIO);
+
+    let mut first_active = 0usize;
+    offset = 0;
+    while offset < samples.len() {
+        let end = (offset + frame).min(samples.len());
+        if frame_rms_sq(&samples[offset..end]) > effective_threshold_sq {
+            first_active = offset;
             break;
         }
         offset = end;
     }
-    let Some(first) = first_active else {
-        return samples;
-    };
 
     let mut last_active = samples.len();
     let mut end = samples.len();
-    while end > first {
-        let start = end.saturating_sub(frame).max(first);
-        if frame_is_active(&samples[start..end]) {
+    while end > first_active {
+        let start = end.saturating_sub(frame).max(first_active);
+        if frame_rms_sq(&samples[start..end]) > effective_threshold_sq {
             last_active = end;
             break;
         }
@@ -311,7 +327,7 @@ pub fn trim_leading_trailing_silence(samples: &[f32], sample_rate: u32) -> &[f32
     }
 
     let pad = (sr * SILENCE_TRIM_PADDING_MS) / 1000;
-    let trimmed_start = first.saturating_sub(pad);
+    let trimmed_start = first_active.saturating_sub(pad);
     let trimmed_end = last_active.saturating_add(pad).min(samples.len());
     &samples[trimmed_start..trimmed_end]
 }
@@ -324,19 +340,22 @@ pub fn split_nemo_segments(samples: &[f32], sample_rate: u32) -> Vec<&[f32]> {
 
 /// Split mono `f32` audio into pieces of at most `max_segment_seconds`, cutting each long piece at
 /// the midpoint of the quietest 100 ms frame in its last 5 seconds.
+///
+/// Returns an empty vector when `samples` is empty, `sample_rate == 0`, or
+/// `max_segment_seconds == 0`.
 pub fn split_audio_segments(
     samples: &[f32],
     sample_rate: u32,
     max_segment_seconds: usize,
 ) -> Vec<&[f32]> {
-    if samples.is_empty() || sample_rate == 0 {
+    if samples.is_empty() || sample_rate == 0 || max_segment_seconds == 0 {
         return Vec::new();
     }
     let sr = sample_rate as usize;
     let limit = max_segment_seconds.saturating_mul(sr);
     let search = NEMO_CUT_SEARCH_SECONDS.saturating_mul(sr);
     let frame = (sr / 10).max(1);
-    if limit == 0 || samples.len() <= limit {
+    if samples.len() <= limit {
         return vec![samples];
     }
 
@@ -468,33 +487,65 @@ mod tests {
         assert!(pieces[0].len() >= 12 * sr && pieces[0].len() <= 12 * sr + sr / 5);
         assert_eq!(pieces[0].len() + pieces[1].len(), audio.len());
 
-        // Short audio stays intact.
+        // Short audio stays intact; zero limit returns empty.
         let short = vec![0.1_f32; 5 * sr];
         assert_eq!(split_nemo_segments(&short, sr as u32).len(), 1);
         assert!(split_nemo_segments(&[], sr as u32).is_empty());
+        assert!(split_audio_segments(&short, sr as u32, 0).is_empty());
 
-        // Transducer limit (25 s) keeps an 18 s utterance intact without mid-utterance cuts.
+        // Transducer limit (25 s) keeps an 18 s utterance intact and splits >25 s audio at the
+        // quietest 100 ms gap inside [20s..25s].
         let transducer_pieces = split_audio_segments(&audio, sr as u32, TRANSDUCER_SEGMENT_SECONDS);
         assert_eq!(transducer_pieces.len(), 1);
         assert_eq!(transducer_pieces[0].len(), audio.len());
+
+        let mut long_audio = vec![0.5_f32; 30 * sr];
+        for s in &mut long_audio[22 * sr..(22 * sr + sr / 5)] {
+            *s = 0.0;
+        }
+        let long_pieces = split_audio_segments(&long_audio, sr as u32, TRANSDUCER_SEGMENT_SECONDS);
+        assert_eq!(long_pieces.len(), 2);
+        assert!(long_pieces[0].len() >= 22 * sr && long_pieces[0].len() <= 22 * sr + sr / 5);
+        assert!(long_pieces
+            .iter()
+            .all(|p| p.len() <= TRANSDUCER_SEGMENT_SECONDS * sr));
+        assert_eq!(
+            long_pieces[0].len() + long_pieces[1].len(),
+            long_audio.len()
+        );
     }
 
     #[test]
     fn trim_leading_trailing_silence_keeps_padding_and_preserves_quiet_or_noisy_audio() {
         let sr = 16_000usize;
+        let pad = (sr * SILENCE_TRIM_PADDING_MS) / 1000;
         assert!(trim_leading_trailing_silence(&[], sr as u32).is_empty());
         assert_eq!(trim_leading_trailing_silence(&[0.5; 100], 0).len(), 100);
 
         // All-quiet audio must not be emptied.
         let quiet = vec![0.0005_f32; sr];
-        assert_eq!(trim_leading_trailing_silence(&quiet, sr as u32).len(), sr);
+        assert_eq!(
+            trim_leading_trailing_silence(&quiet, sr as u32),
+            quiet.as_slice()
+        );
 
-        // 1.0 s silence + 0.5 s speech + 1.0 s silence -> 0.2 s pad + 0.5 s speech + 0.2 s pad = 0.9 s.
+        // 1.0 s silence + 0.5 s speech + 1.0 s silence -> exact speech window plus 250 ms pad each side.
         let mut padded = vec![0.0_f32; sr];
         padded.extend(std::iter::repeat_n(0.1_f32, sr / 2));
         padded.extend(std::iter::repeat_n(0.0_f32, sr));
+        let expected_start = sr - pad;
+        let expected_end = sr + sr / 2 + pad;
         let trimmed = trim_leading_trailing_silence(&padded, sr as u32);
-        assert_eq!(trimmed.len(), (sr * 9) / 10);
+        assert_eq!(trimmed, &padded[expected_start..expected_end]);
+
+        // Soft speech onset (0.001 RMS) on a quiet recording (0.01 RMS body) stays intact thanks to
+        // the adaptive threshold (5% of 0.01 = 0.0005 < 0.001).
+        let mut quiet_onset = vec![0.0_f32; sr];
+        quiet_onset.extend(std::iter::repeat_n(0.001_f32, sr / 2));
+        quiet_onset.extend(std::iter::repeat_n(0.01_f32, sr / 2));
+        quiet_onset.extend(std::iter::repeat_n(0.0_f32, sr));
+        let trimmed_quiet = trim_leading_trailing_silence(&quiet_onset, sr as u32);
+        assert_eq!(trimmed_quiet, &quiet_onset[(sr - pad)..(2 * sr + pad)]);
 
         // Non-finite samples inside silent regions must not prevent trimming.
         let mut with_nan = vec![0.0_f32; sr];
@@ -502,10 +553,13 @@ mod tests {
         with_nan.extend(std::iter::repeat_n(0.1_f32, sr / 2));
         with_nan.extend(std::iter::repeat_n(0.0_f32, sr));
         let trimmed_nan = trim_leading_trailing_silence(&with_nan, sr as u32);
-        assert_eq!(trimmed_nan.len(), (sr * 9) / 10);
+        assert_eq!(trimmed_nan, &with_nan[expected_start..expected_end]);
 
         // Continuously active (noisy) audio stays untouched.
         let noisy = vec![0.05_f32; sr];
-        assert_eq!(trim_leading_trailing_silence(&noisy, sr as u32).len(), sr);
+        assert_eq!(
+            trim_leading_trailing_silence(&noisy, sr as u32),
+            noisy.as_slice()
+        );
     }
 }
