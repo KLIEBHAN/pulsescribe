@@ -19,7 +19,8 @@ path = "src/main.rs"
 default = []
 local-whisper = ["pulsescribe-local-asr/local-whisper", "pulsescribe-daemon/local-whisper"]
 local-sherpa = ["pulsescribe-local-asr/local-sherpa", "pulsescribe-daemon/local-sherpa"]
-all-local = ["local-whisper", "local-sherpa"]
+local-coreml = ["pulsescribe-local-asr/local-coreml", "pulsescribe-daemon/local-coreml"]
+all-local = ["local-whisper", "local-sherpa", "local-coreml"]
 
 [dependencies]
 chrono.workspace = true

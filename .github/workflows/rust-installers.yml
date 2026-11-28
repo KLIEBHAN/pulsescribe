@@ -222,6 +222,21 @@ jobs:
             exit 1
           }
 
+      - name: Select Xcode 26 for Swift 6.2 FluidAudio traits
+        shell: bash
+        run: |
+          set -euo pipefail
+          selected=""
+          for x in /Applications/Xcode_26.*.app; do
+            if [[ -d "$x" ]]; then
+              selected="$x"
+            fi
+          done
+          if [[ -n "$selected" ]]; then
+            sudo xcode-select -s "$selected/Contents/Developer"
+          fi
+          swift --version
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -229,6 +244,16 @@ jobs:
 
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
+
+      - name: Cache SwiftPM FluidAudio bridge
+        if: needs.metadata.outputs.build_full == 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/org.swift.swiftpm
+            ~/.swiftpm-scratch
+          key: swiftpm-macos-installer-${{ hashFiles('crates/local-asr/swift/Package*.swift') }}
+          restore-keys: swiftpm-macos-installer-
 
       - name: Install prebuilt cargo-tauri CLI
         shell: bash
@@ -415,6 +440,10 @@ jobs:
               file "$bin" | grep -q 'arm64'
 
               if [[ "$variant" == "Full" ]]; then
+                otool -L "$bin" | grep -q 'CoreML.framework' || {
+                  echo "Expected Full macOS binary to link CoreML.framework for FluidAudio ANE backend" >&2
+                  exit 1
+                }
                 c_api_fw="$mounted_app/Contents/Frameworks/libsherpa-onnx-c-api.dylib"
                 ort_fw="$mounted_app/Contents/Frameworks/libonnxruntime.dylib"
                 [[ -f "$c_api_fw" && -f "$ort_fw" ]] || {
@@ -460,7 +489,9 @@ jobs:
             package_and_verify Slim
           fi
           if [[ "$BUILD_FULL" == "true" ]]; then
-            package_and_verify Full --features all-local --config "$RUNNER_TEMP/full-macos.json"
+            PULSESCRIBE_SWIFT_SCRATCH_DIR="$HOME/.swiftpm-scratch" \
+              MACOSX_DEPLOYMENT_TARGET=14.0 \
+              package_and_verify Full --features all-local --config "$RUNNER_TEMP/full-macos.json"
           fi
 
       - name: Remove temporary signing keychain

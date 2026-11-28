@@ -15,6 +15,7 @@ path = "src/main.rs"
 default = []
 local-whisper = ["pulsescribe-local-asr/local-whisper"]
 local-sherpa = ["pulsescribe-local-asr/local-sherpa"]
+local-coreml = ["pulsescribe-local-asr/local-coreml"]
 all-local = ["pulsescribe-local-asr/all-local"]
 
 [dependencies]

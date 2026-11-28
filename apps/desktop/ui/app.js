@@ -1270,8 +1270,15 @@ function renderModelsView() {
             el("span", { className: "metric-value", text: caps.whisper_compiled ? t("common.ready") : t("models.slimBuild") }),
           ]),
           el("div", { className: "metric-cell" }, [
-            el("span", { className: "metric-label", text: "sherpa-onnx" }),
-            el("span", { className: "metric-value", text: caps.sherpa_compiled ? t("common.ready") : t("models.slimBuild") }),
+            el("span", { className: "metric-label", text: caps.coreml_compiled ? "CoreML / sherpa" : "sherpa-onnx" }),
+            el("span", {
+              className: "metric-value",
+              text: caps.coreml_compiled && caps.sherpa_compiled
+                ? `${t("common.ready")} (ANE)`
+                : (caps.coreml_compiled || caps.sherpa_compiled)
+                ? t("common.ready")
+                : t("models.slimBuild"),
+            }),
           ]),
           el("div", { className: "metric-cell" }, [
             el("span", { className: "metric-label", text: t("models.installed") }),

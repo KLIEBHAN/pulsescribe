@@ -224,7 +224,7 @@ function createPreviewStore() {
       models: models.map((m) => ({ ...m })),
       active_downloads: [...activeDownloads],
       loaded_model_id: loadedModelId,
-      capabilities: { whisper_compiled: true, sherpa_compiled: true },
+      capabilities: { whisper_compiled: true, sherpa_compiled: true, coreml_compiled: true },
       default_model_id: "large-v3-turbo",
     };
   }
@@ -260,7 +260,7 @@ function createPreviewStore() {
           onboarding_choice: onboardingChoice,
           show_welcome_on_startup: false,
           initial_route: "general",
-          local_capabilities: { whisper_compiled: true, sherpa_compiled: true },
+          local_capabilities: { whisper_compiled: true, sherpa_compiled: true, coreml_compiled: true },
           toggle_hotkey: settings.toggle_hotkey,
           hold_hotkey: settings.hold_hotkey,
           mode: settings.mode,

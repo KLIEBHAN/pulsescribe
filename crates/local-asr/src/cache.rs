@@ -356,6 +356,16 @@ mod tests {
         }
     }
 
+    fn write_dummy_files(root: &Path, files: &[&str], bytes: &[u8]) {
+        for &file in files {
+            let path = root.join(file);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            fs::write(path, bytes).unwrap();
+        }
+    }
+
     #[test]
     fn finds_managed_cache_and_reuses_python_hf_hub_snapshots() {
         let dir = TempDir::new("hf-reuse");
@@ -363,35 +373,29 @@ mod tests {
         let hf_root = dir.0.join("hf_hub");
         let cache = ModelCache::new(&managed_root, Some(hf_root.clone()));
 
-        let parakeet = resolve_model_spec(Some("parakeet-v3")).unwrap();
-        assert!(cache.find_installed(parakeet).is_none());
+        let canary = resolve_model_spec(Some("canary-1b-v2")).unwrap();
+        assert!(cache.find_installed(canary).is_none());
 
         // Populate a pinned Hugging Face snapshot matching Python's `huggingface_hub` layout.
         let hf_snap = hf_root
-            .join("models--csukuangfj--sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8")
+            .join(format!("models--{}", canary.hf_repo.replace('/', "--")))
             .join("snapshots")
-            .join(parakeet.hf_revision);
-        fs::create_dir_all(&hf_snap).unwrap();
-        for &file in parakeet.files {
-            fs::write(hf_snap.join(file), b"weights").unwrap();
-        }
+            .join(canary.hf_revision);
+        write_dummy_files(&hf_snap, canary.files, b"weights");
 
-        let found_hf = cache.find_installed(parakeet).unwrap();
+        let found_hf = cache.find_installed(canary).unwrap();
         assert_eq!(found_hf.source, ModelInstallSource::HuggingFaceHubCache);
         assert_eq!(found_hf.dir, hf_snap);
-        assert_eq!(found_hf.total_bytes, (parakeet.files.len() * 7) as u64);
+        assert_eq!(found_hf.total_bytes, (canary.files.len() * 7) as u64);
 
         // Managed cache takes priority when also present; removing managed leaves HF untouched.
-        let managed_dir = cache.model_dir(parakeet);
-        fs::create_dir_all(&managed_dir).unwrap();
-        for &file in parakeet.files {
-            fs::write(managed_dir.join(file), b"managed-weights").unwrap();
-        }
-        let found_managed = cache.find_installed(parakeet).unwrap();
+        let managed_dir = cache.model_dir(canary);
+        write_dummy_files(&managed_dir, canary.files, b"managed-weights");
+        let found_managed = cache.find_installed(canary).unwrap();
         assert_eq!(found_managed.source, ModelInstallSource::PulseScribeCache);
-        assert!(cache.remove_managed(parakeet).unwrap());
+        assert!(cache.remove_managed(canary).unwrap());
         assert_eq!(
-            cache.find_installed(parakeet).unwrap().source,
+            cache.find_installed(canary).unwrap().source,
             ModelInstallSource::HuggingFaceHubCache
         );
     }
@@ -472,14 +476,11 @@ mod tests {
         let dir = TempDir::new("revision-marker");
         let cache = ModelCache::new(dir.0.join("managed"), None);
 
-        // `parakeet-ultra` requires a matching `.pulsescribe-revision` marker so pre-PR#4179
-        // installs without a marker are refreshed automatically.
+        // `parakeet-ultra` requires a matching `.pulsescribe-revision` marker so older
+        // installs without a marker (or from another backend revision) refresh automatically.
         let ultra = resolve_model_spec(Some("parakeet-ultra")).unwrap();
         let ultra_dir = cache.model_dir(ultra);
-        fs::create_dir_all(&ultra_dir).unwrap();
-        for &file in ultra.files {
-            fs::write(ultra_dir.join(file), b"old-weights").unwrap();
-        }
+        write_dummy_files(&ultra_dir, ultra.files, b"old-weights");
         assert!(cache.find_installed(ultra).is_none());
 
         fs::write(ultra_dir.join(REVISION_MARKER_FILE), "stale-rev\n").unwrap();
@@ -494,14 +495,11 @@ mod tests {
 
         // Models without `requires_revision_marker` keep working on legacy installs without a
         // marker, while still invalidating an explicitly mismatched marker.
-        let v3 = resolve_model_spec(Some("parakeet-v3")).unwrap();
-        let v3_dir = cache.model_dir(v3);
-        fs::create_dir_all(&v3_dir).unwrap();
-        for &file in v3.files {
-            fs::write(v3_dir.join(file), b"v3-weights").unwrap();
-        }
-        assert!(cache.find_installed(v3).is_some());
-        fs::write(v3_dir.join(REVISION_MARKER_FILE), "wrong-rev\n").unwrap();
-        assert!(cache.find_installed(v3).is_none());
+        let canary = resolve_model_spec(Some("canary-1b-v2")).unwrap();
+        let canary_dir = cache.model_dir(canary);
+        write_dummy_files(&canary_dir, canary.files, b"canary-weights");
+        assert!(cache.find_installed(canary).is_some());
+        fs::write(canary_dir.join(REVISION_MARKER_FILE), "wrong-rev\n").unwrap();
+        assert!(cache.find_installed(canary).is_none());
     }
 }

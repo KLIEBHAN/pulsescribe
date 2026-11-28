@@ -42,8 +42,34 @@ jobs:
         with:
           components: clippy, rustfmt
 
+      - name: Select Xcode 26 for Swift 6.2 FluidAudio traits (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          selected=""
+          for x in /Applications/Xcode_26.*.app; do
+            if [[ -d "$x" ]]; then
+              selected="$x"
+            fi
+          done
+          if [[ -n "$selected" ]]; then
+            sudo xcode-select -s "$selected/Contents/Developer"
+          fi
+          swift --version
+          echo "PULSESCRIBE_SWIFT_SCRATCH_DIR=$HOME/.swiftpm-scratch" >> "$GITHUB_ENV"
+          echo "MACOSX_DEPLOYMENT_TARGET=14.0" >> "$GITHUB_ENV"
+
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
+
+      - name: Cache SwiftPM FluidAudio bridge (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/org.swift.swiftpm
+            ~/.swiftpm-scratch
+          key: swiftpm-${{ runner.os }}-${{ hashFiles('crates/local-asr/swift/Package*.swift') }}
+          restore-keys: swiftpm-${{ runner.os }}-
 
       - name: Check formatting
         run: cargo fmt --all -- --check
