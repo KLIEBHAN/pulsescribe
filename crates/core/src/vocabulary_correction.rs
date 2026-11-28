@@ -72,6 +72,7 @@ struct VocabEntry<'a> {
     leading_punct: &'a str,
     trailing_punct: &'a str,
     col_chars: Vec<char>,
+    digits: String,
     phon_chars: Vec<char>,
     skel_chars: Vec<char>,
     word_count: usize,
@@ -206,6 +207,7 @@ impl<'a> VocabIndex<'a> {
             max_kw_words = max_kw_words.max(word_count);
 
             let col_chars: Vec<char> = col.chars().collect();
+            let digits = extract_digits(&col);
             let phon_chars: Vec<char> = phonetic_de_en(kw).chars().collect();
             let skel_chars = consonant_skeleton(&phon_chars);
 
@@ -223,6 +225,7 @@ impl<'a> VocabIndex<'a> {
                 leading_punct,
                 trailing_punct,
                 col_chars,
+                digits,
                 phon_chars,
                 skel_chars,
                 word_count,
@@ -239,8 +242,9 @@ impl<'a> VocabIndex<'a> {
             exact_map,
             fuzzy_buckets,
             // Allow at least 3 tokens for exact split matching (e.g. "Post Gres QL" ->
-            // "PostgreSQL") regardless of whether unrelated multi-word keywords exist.
-            max_span_tokens: (max_kw_words + 1).clamp(3, 4),
+            // "PostgreSQL"), and never cap below the longest configured keyword so full
+            // canonical phrases always reach Tier 1 exact locking.
+            max_span_tokens: (max_kw_words + 1).clamp(3, 4).max(max_kw_words),
         }
     }
 
@@ -332,6 +336,7 @@ impl<'a> VocabIndex<'a> {
         let first_phon = phon_chars[0];
         let bucket = self.fuzzy_buckets.get(&first_phon)?;
         let span_skel = consonant_skeleton(&phon_chars);
+        let span_digits = extract_digits(&col);
 
         let mut best: Option<MatchCandidate<'a>> = None;
 
@@ -342,6 +347,9 @@ impl<'a> VocabIndex<'a> {
                 continue;
             }
             if entry.starts_upper && !span_has_upper {
+                continue;
+            }
+            if span_digits != entry.digits {
                 continue;
             }
             let max_len_delta = (kw_len / 4).max(2);
@@ -517,6 +525,10 @@ fn collapse_alnum(input: &str) -> String {
         .chars()
         .filter(|ch| ch.is_alphanumeric())
         .collect()
+}
+
+fn extract_digits(collapsed: &str) -> String {
+    collapsed.chars().filter(|ch| ch.is_numeric()).collect()
 }
 
 fn is_distinctive(keyword: &str) -> bool {
@@ -877,5 +889,39 @@ mod tests {
             apply_vocabulary_corrections("Unser Backend nutzt Post Gres QL.", &vocab),
             "Unser Backend nutzt PostgreSQL."
         );
+    }
+
+    #[test]
+    fn preserves_numeric_identifiers_during_fuzzy_matching() {
+        let vocab = vec![
+            "Windows 11".to_owned(),
+            "PostgreSQL 16".to_owned(),
+            "strato2".to_owned(),
+        ];
+        assert_eq!(
+            apply_vocabulary_corrections(
+                "We still use Windows 10, PostgreSQL 15, and strato1.",
+                &vocab
+            ),
+            "We still use Windows 10, PostgreSQL 15, and strato1."
+        );
+        // Same numeric suffix with spelling/split error still corrects cleanly.
+        assert_eq!(
+            apply_vocabulary_corrections("Strato 2 runs Postgresql 16.", &vocab),
+            "strato2 runs PostgreSQL 16."
+        );
+    }
+
+    #[test]
+    fn exact_lock_covers_keywords_longer_than_four_tokens() {
+        let vocab = vec![
+            "Red Hat Enterprise Linux 9".to_owned(),
+            "Bundesministerium für Arbeit und Soziales".to_owned(),
+        ];
+        let input =
+            "We deploy Red Hat Enterprise Linux 9 at Bundesministerium für Arbeit und Soziales.";
+        let once = apply_vocabulary_corrections(input, &vocab);
+        assert_eq!(once, input);
+        assert_eq!(apply_vocabulary_corrections(&once, &vocab), input);
     }
 }
