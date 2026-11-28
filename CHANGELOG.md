@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.2] - 2026-11-28
+
+### Added
+
+- **Deterministic local post-transcription vocabulary correction** – automatically
+  applies canonical terms from `~/.pulsescribe/vocabulary.json` (`keywords`) to
+  plain-text daemon and CLI transcripts across all local and cloud models
+  (including `parakeet-ultra` and other models without decoder-level hotword
+  biasing) before optional LLM refinement. Runs in two precision-first tiers
+  (collapsed exact/boundary-symbol matching for casing, splits, `C++`/`.NET`,
+  and conservative DE/EN phonetic + Damerau-Levenshtein matching with numeric
+  identifier and capitalization guards) in ~50 µs per dictation (#235).
+
 ## [2.3.1] - 2026-11-28
 
 ### Changed
