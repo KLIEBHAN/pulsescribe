@@ -446,14 +446,14 @@ impl LocalAsrManager {
                         .ok_or_else(|| LocalAsrError::ModelNotDownloaded(spec.id.to_owned()))?;
                     load_whisper_engine(spec.id, primary)
                 }
-                LocalEngineKind::SherpaOfflineTransducer | LocalEngineKind::SherpaOfflineCanary => {
-                    load_sherpa_offline_engine(
-                        spec,
-                        installed,
-                        Some(&self.config_dir),
-                        canary_lang.as_deref(),
-                    )
-                }
+                LocalEngineKind::SherpaOfflineTransducer
+                | LocalEngineKind::SherpaOfflineCanary
+                | LocalEngineKind::SherpaOfflineCohere => load_sherpa_offline_engine(
+                    spec,
+                    installed,
+                    Some(&self.config_dir),
+                    canary_lang.as_deref(),
+                ),
                 LocalEngineKind::SherpaOnlineTransducer => unreachable!("guarded above"),
             },
         }
@@ -559,6 +559,7 @@ fn ensure_runtime_compiled(engine: LocalEngineKind, model_id: &str) -> Result<()
         }
         LocalEngineKind::SherpaOfflineTransducer
         | LocalEngineKind::SherpaOfflineCanary
+        | LocalEngineKind::SherpaOfflineCohere
         | LocalEngineKind::SherpaOnlineTransducer
             if !cfg!(feature = "local-sherpa") =>
         {
@@ -686,9 +687,21 @@ mod tests {
                 .map(|s| s.id),
             Some("canary-1b-v2")
         );
+        #[cfg(feature = "local-sherpa")]
+        assert_eq!(
+            mgr.missing_downloadable_spec(Some("cohere-transcribe"))
+                .unwrap()
+                .map(|s| s.id),
+            Some("cohere-transcribe")
+        );
         #[cfg(not(feature = "local-sherpa"))]
         assert!(matches!(
             mgr.missing_downloadable_spec(Some("canary-1b-v2")),
+            Err(LocalAsrError::MissingRuntime(_))
+        ));
+        #[cfg(not(feature = "local-sherpa"))]
+        assert!(matches!(
+            mgr.missing_downloadable_spec(Some("cohere-transcribe")),
             Err(LocalAsrError::MissingRuntime(_))
         ));
         assert!(matches!(
