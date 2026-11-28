@@ -1028,3 +1028,143 @@ pub(crate) fn path_to_cstring(path: &Path) -> Result<CString, LocalAsrError> {
         LocalAsrError::InvalidModel("model path contains interior NUL byte".to_owned())
     })
 }
+
+#[cfg(target_os = "macos")]
+fn macos_sysctl_u32(name: &CStr) -> Option<u32> {
+    extern "C" {
+        fn sysctlbyname(
+            name: *const c_char,
+            oldp: *mut c_void,
+            oldlenp: *mut usize,
+            newp: *const c_void,
+            newlen: usize,
+        ) -> i32;
+    }
+
+    let mut value: u32 = 0;
+    let mut size = std::mem::size_of::<u32>();
+    let rc = unsafe {
+        sysctlbyname(
+            name.as_ptr(),
+            (&mut value as *mut u32).cast::<c_void>(),
+            &mut size,
+            ptr::null(),
+            0,
+        )
+    };
+    (rc == 0 && size == std::mem::size_of::<u32>()).then_some(value)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_sysctl_string(name: &CStr) -> Option<String> {
+    extern "C" {
+        fn sysctlbyname(
+            name: *const c_char,
+            oldp: *mut c_void,
+            oldlenp: *mut usize,
+            newp: *const c_void,
+            newlen: usize,
+        ) -> i32;
+    }
+
+    let mut size: usize = 0;
+    let probe = unsafe { sysctlbyname(name.as_ptr(), ptr::null_mut(), &mut size, ptr::null(), 0) };
+    if probe != 0 || size == 0 || size > 256 {
+        return None;
+    }
+    let mut buf = vec![0u8; size];
+    let rc = unsafe {
+        sysctlbyname(
+            name.as_ptr(),
+            buf.as_mut_ptr().cast::<c_void>(),
+            &mut size,
+            ptr::null(),
+            0,
+        )
+    };
+    if rc != 0 || size == 0 {
+        return None;
+    }
+    buf.truncate(size);
+    let nul_pos = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    String::from_utf8(buf[..nul_pos].to_vec()).ok()
+}
+
+/// Sum physical cores across all performance levels whose name is not `"Efficiency"`.
+///
+/// Handles all Apple Silicon topologies cleanly:
+/// - 3 levels (`Super` + `Performance` + `Efficiency`, e.g. M6): sums `Super + Performance`
+/// - 2 levels (`Super` + `Performance`, e.g. M5 Pro / M5 Max): sums both levels
+/// - 2 levels (`Performance` + `Efficiency`, e.g. M1–M4): sums `Performance`
+/// - 1 level / unnamed (Intel or homogeneous): sums all reported levels
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn count_non_efficiency_cores(levels: &[(Option<&str>, u32)]) -> Option<usize> {
+    if levels.is_empty() {
+        return None;
+    }
+    let mut total = 0usize;
+    for &(name, cores) in levels {
+        let is_efficiency = name
+            .map(str::trim)
+            .is_some_and(|n| n.eq_ignore_ascii_case("efficiency"));
+        if !is_efficiency {
+            total = total.saturating_add(cores as usize);
+        }
+    }
+    (total > 0).then_some(total)
+}
+
+/// Count fast (non-Efficiency) physical CPU cores on macOS Apple Silicon by inspecting each
+/// `hw.perflevelN.name` and excluding only levels named `"Efficiency"`.
+#[cfg(target_os = "macos")]
+pub(crate) fn macos_fast_physical_cores() -> Option<usize> {
+    let level_count = macos_sysctl_u32(c"hw.nperflevels")?;
+    if level_count == 0 {
+        return None;
+    }
+    let mut owned = Vec::with_capacity(level_count as usize);
+    for level in 0..level_count {
+        let cpu_key = CString::new(format!("hw.perflevel{level}.physicalcpu")).ok()?;
+        let cores = macos_sysctl_u32(&cpu_key)?;
+        let name = CString::new(format!("hw.perflevel{level}.name"))
+            .ok()
+            .and_then(|k| macos_sysctl_string(&k));
+        owned.push((name, cores));
+    }
+    let borrowed: Vec<(Option<&str>, u32)> = owned
+        .iter()
+        .map(|(name, cores)| (name.as_deref(), *cores))
+        .collect();
+    count_non_efficiency_cores(&borrowed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::count_non_efficiency_cores;
+
+    #[test]
+    fn excludes_efficiency_cluster_by_name_across_apple_silicon_topologies() {
+        // Apple M6: 2 Super + 4 Performance + 6 Efficiency -> 6 fast cores.
+        assert_eq!(
+            count_non_efficiency_cores(&[
+                (Some("Super"), 2),
+                (Some("Performance"), 4),
+                (Some("Efficiency"), 6),
+            ]),
+            Some(6)
+        );
+        // Apple M5 Pro / M5 Max: 6 Super + 12 Performance (no Efficiency cluster) -> 18 fast cores.
+        assert_eq!(
+            count_non_efficiency_cores(&[(Some("Super"), 6), (Some("Performance"), 12)]),
+            Some(18)
+        );
+        // Apple M1-M4 base: 4 Performance + 4 Efficiency -> 4 fast cores.
+        assert_eq!(
+            count_non_efficiency_cores(&[(Some("Performance"), 4), (Some("Efficiency"), 4)]),
+            Some(4)
+        );
+        // Single unnamed / Intel topology -> counts all physical cores.
+        assert_eq!(count_non_efficiency_cores(&[(None, 8)]), Some(8));
+        assert_eq!(count_non_efficiency_cores(&[]), None);
+    }
+}
