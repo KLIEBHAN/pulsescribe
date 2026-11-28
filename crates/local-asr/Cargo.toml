@@ -10,7 +10,8 @@ repository.workspace = true
 default = []
 local-whisper = ["dep:whisper-rs"]
 local-sherpa = ["dep:libloading"]
-all-local = ["local-whisper", "local-sherpa"]
+local-coreml = []
+all-local = ["local-whisper", "local-sherpa", "local-coreml"]
 
 [dependencies]
 futures-util.workspace = true

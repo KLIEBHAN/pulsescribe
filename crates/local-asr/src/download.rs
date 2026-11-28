@@ -1007,21 +1007,23 @@ mod tests {
         let cache = ModelCache::new(dir.0.join("models"), None);
         let ultra = resolve_model_spec(Some("parakeet-ultra")).unwrap();
 
-        // Simulate a pre-v2.3.1 installation (old 77-ConvInteger files, no revision marker).
+        // Simulate a stale installation without a revision marker (e.g. pre-PR#4179 or ONNX -> CoreML).
         let model_dir = cache.model_dir(ultra);
-        std::fs::create_dir_all(&model_dir).unwrap();
         for &file in ultra.files {
-            std::fs::write(model_dir.join(file), b"old-pre-pr4179").unwrap();
+            let path = model_dir.join(file);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(path, b"old-stale-weights").unwrap();
         }
         assert!(cache.find_installed(ultra).is_none());
 
-        let base_url = spawn_file_server(vec![
-            ("encoder.int8.onnx", b"new-pr4179-encoder".to_vec()),
-            ("decoder.int8.onnx", b"new-decoder".to_vec()),
-            ("joiner.int8.onnx", b"new-joiner".to_vec()),
-            ("tokens.txt", b"0 <blk>\n".to_vec()),
-        ])
-        .await;
+        let served: Vec<(&'static str, Vec<u8>)> = ultra
+            .files
+            .iter()
+            .map(|&f| (f, format!("fresh:{f}").into_bytes()))
+            .collect();
+        let base_url = spawn_file_server(served).await;
 
         let downloader = ModelDownloader::with_base_url(base_url).unwrap();
         let cancel = AtomicBool::new(false);
@@ -1030,9 +1032,10 @@ mod tests {
             .await
             .unwrap();
 
+        let first_file = ultra.files[0];
         assert_eq!(
-            std::fs::read(installed.file_path("encoder.int8.onnx")).unwrap(),
-            b"new-pr4179-encoder"
+            std::fs::read(installed.file_path(first_file)).unwrap(),
+            format!("fresh:{first_file}").into_bytes()
         );
         assert_eq!(
             read_regular_marker(&model_dir.join(REVISION_MARKER_FILE)).as_deref(),

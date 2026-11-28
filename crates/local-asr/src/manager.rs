@@ -23,6 +23,8 @@ use crate::{LocalAsrEngine, LocalAsrError, LocalAsrRequest, LocalStreamingSessio
 pub struct LocalRuntimeCapabilities {
     pub whisper_compiled: bool,
     pub sherpa_compiled: bool,
+    #[serde(default)]
+    pub coreml_compiled: bool,
 }
 
 impl LocalRuntimeCapabilities {
@@ -30,6 +32,11 @@ impl LocalRuntimeCapabilities {
         Self {
             whisper_compiled: cfg!(feature = "local-whisper"),
             sherpa_compiled: cfg!(feature = "local-sherpa"),
+            coreml_compiled: cfg!(all(
+                target_os = "macos",
+                target_arch = "aarch64",
+                feature = "local-coreml"
+            )),
         }
     }
 }
@@ -456,6 +463,7 @@ impl LocalAsrManager {
                         .ok_or_else(|| LocalAsrError::ModelNotDownloaded(spec.id.to_owned()))?;
                     load_whisper_engine(spec.id, primary)
                 }
+                LocalEngineKind::CoreMlParakeet => load_coreml_parakeet_engine(spec, installed),
                 LocalEngineKind::SherpaOfflineTransducer
                 | LocalEngineKind::SherpaOfflineCanary
                 | LocalEngineKind::SherpaOfflineCohere
@@ -568,6 +576,17 @@ fn ensure_runtime_compiled(engine: LocalEngineKind, model_id: &str) -> Result<()
                 "Whisper backend is not compiled into this build (rebuild with '--features local-whisper' to run '{model_id}')"
             )))
         }
+        LocalEngineKind::CoreMlParakeet
+            if !cfg!(all(
+                target_os = "macos",
+                target_arch = "aarch64",
+                feature = "local-coreml"
+            )) =>
+        {
+            Err(LocalAsrError::MissingRuntime(format!(
+                "CoreML/ANE FluidAudio backend is not compiled into this build (rebuild on Apple Silicon macOS with '--features local-coreml' to run '{model_id}')"
+            )))
+        }
         LocalEngineKind::SherpaOfflineTransducer
         | LocalEngineKind::SherpaOfflineCanary
         | LocalEngineKind::SherpaOfflineCohere
@@ -623,6 +642,24 @@ fn load_sherpa_offline_engine(
     _installed: &InstalledModel,
     _config_dir: Option<&Path>,
     _language_hint: Option<&str>,
+) -> Result<Arc<dyn LocalAsrEngine>, LocalAsrError> {
+    ensure_runtime_compiled(spec.engine, spec.id)?;
+    unreachable!()
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64", feature = "local-coreml"))]
+fn load_coreml_parakeet_engine(
+    spec: &ModelSpec,
+    installed: &InstalledModel,
+) -> Result<Arc<dyn LocalAsrEngine>, LocalAsrError> {
+    let engine = crate::coreml_backend::CoreMlParakeetEngine::load(spec, installed)?;
+    Ok(Arc::new(engine))
+}
+
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64", feature = "local-coreml")))]
+fn load_coreml_parakeet_engine(
+    spec: &ModelSpec,
+    _installed: &InstalledModel,
 ) -> Result<Arc<dyn LocalAsrEngine>, LocalAsrError> {
     ensure_runtime_compiled(spec.engine, spec.id)?;
     unreachable!()
@@ -732,6 +769,14 @@ mod tests {
         assert_eq!(
             LocalAsrManager::capabilities().sherpa_compiled,
             cfg!(feature = "local-sherpa")
+        );
+        assert_eq!(
+            LocalAsrManager::capabilities().coreml_compiled,
+            cfg!(all(
+                target_os = "macos",
+                target_arch = "aarch64",
+                feature = "local-coreml"
+            ))
         );
 
         let _ = fs::remove_dir_all(&dir);

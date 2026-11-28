@@ -19,7 +19,11 @@ pub const GITHUB_RELEASES_DOWNLOAD_BASE: &str =
     "https://github.com/KLIEBHAN/pulsescribe/releases/download";
 
 /// True when this binary was compiled with local offline ASR backends (Full variant).
-pub const IS_FULL_VARIANT: bool = cfg!(any(feature = "local-whisper", feature = "local-sherpa"));
+pub const IS_FULL_VARIANT: bool = cfg!(any(
+    feature = "local-whisper",
+    feature = "local-sherpa",
+    feature = "local-coreml"
+));
 
 /// Upper bound on any downloaded installer package (2 GiB).
 pub const MAX_PACKAGE_BYTES: u64 = 2 * 1024 * 1024 * 1024;

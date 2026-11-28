@@ -4,6 +4,8 @@
 
 pub mod cache;
 pub mod catalog;
+#[cfg(all(target_os = "macos", target_arch = "aarch64", feature = "local-coreml"))]
+pub mod coreml_backend;
 pub mod download;
 pub mod manager;
 #[cfg(feature = "local-sherpa")]
@@ -27,6 +29,8 @@ pub use catalog::{
     resolve_qwen3_language, LocalEngineKind, ModelSpec, CANARY_LANGUAGES, COHERE_LANGUAGES,
     DEFAULT_HF_BASE_URL, DEFAULT_LOCAL_MODEL_ID, STREAMING_PREVIEW_MODEL_ID,
 };
+#[cfg(all(target_os = "macos", target_arch = "aarch64", feature = "local-coreml"))]
+pub use coreml_backend::CoreMlParakeetEngine;
 pub use download::{DownloadProgress, ModelDownloader};
 pub use manager::{LocalAsrManager, LocalRuntimeCapabilities};
 #[cfg(feature = "local-sherpa")]

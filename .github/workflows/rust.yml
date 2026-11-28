@@ -42,8 +42,29 @@ jobs:
         with:
           components: clippy, rustfmt
 
+      - name: Select Xcode 26 for Swift 6.2 FluidAudio traits (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          for x in /Applications/Xcode_26.*.app; do
+            if [[ -d "$x" ]]; then
+              sudo xcode-select -s "$x/Contents/Developer"
+              break
+            fi
+          done
+          swift --version
+
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
+
+      - name: Cache SwiftPM FluidAudio bridge (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/org.swift.swiftpm
+            ~/.swiftpm-scratch
+          key: swiftpm-${{ runner.os }}-${{ hashFiles('crates/local-asr/swift/Package*.swift') }}
+          restore-keys: swiftpm-${{ runner.os }}-
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -55,7 +76,11 @@ jobs:
         run: cargo test --workspace
 
       - name: Run Clippy (local ASR backends)
+        env:
+          PULSESCRIBE_SWIFT_SCRATCH_DIR: ${{ runner.os == 'macOS' && format('{0}/.swiftpm-scratch', env.HOME) || '' }}
         run: cargo clippy -p pulsescribe-local-asr -p pulsescribe-daemon -p pulsescribe-cli -p pulsescribe-desktop --features all-local --all-targets -- -D warnings
 
       - name: Run tests (local ASR backends)
+        env:
+          PULSESCRIBE_SWIFT_SCRATCH_DIR: ${{ runner.os == 'macOS' && format('{0}/.swiftpm-scratch', env.HOME) || '' }}
         run: cargo test -p pulsescribe-local-asr -p pulsescribe-daemon -p pulsescribe-cli -p pulsescribe-desktop --features all-local

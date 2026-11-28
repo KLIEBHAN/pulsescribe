@@ -28,7 +28,7 @@
     "macOS": {
       "infoPlist": "./Info.plist",
       "entitlements": "../../macos/entitlements.plist",
-      "minimumSystemVersion": "13.0",
+      "minimumSystemVersion": "14.0",
       "hardenedRuntime": false,
       "dmg": {
         "appPosition": { "x": 180, "y": 170 },

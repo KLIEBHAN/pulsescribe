@@ -157,6 +157,8 @@ fn detect_system_locale_language() -> Option<String> {
 pub enum LocalEngineKind {
     /// GGML Whisper model executed via `whisper-rs` (Metal on macOS, CPU on Windows).
     Whisper,
+    /// Offline NeMo Parakeet TDT model executed on Apple Silicon CoreML / Neural Engine via FluidAudio.
+    CoreMlParakeet,
     /// Offline NeMo RNN-T / TDT model (e.g. Parakeet v3 int8) executed via `sherpa-onnx` CPU.
     SherpaOfflineTransducer,
     /// Offline NeMo Canary encoder-decoder model executed via `sherpa-onnx` CPU.
@@ -173,6 +175,7 @@ impl LocalEngineKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Whisper => "whisper",
+            Self::CoreMlParakeet => "coreml_parakeet",
             Self::SherpaOfflineTransducer => "sherpa_offline_transducer",
             Self::SherpaOfflineCanary => "sherpa_offline_canary",
             Self::SherpaOfflineCohere => "sherpa_offline_cohere",
@@ -220,8 +223,55 @@ impl ModelSpec {
 }
 
 const WHISPER_GGML_REPO: &str = "ggerganov/whisper.cpp";
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64", feature = "local-coreml")))]
 const PARAKEET_ULTRA_PR4179_BASE_URL: &str =
     "https://github.com/KLIEBHAN/pulsescribe/releases/download/model-parakeet-ultra-pr4179";
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64", feature = "local-coreml"))]
+const PARAKEET_ULTRA_COREML_FILES: &[&str] = &[
+    "Preprocessor.mlmodelc/analytics/coremldata.bin",
+    "Preprocessor.mlmodelc/coremldata.bin",
+    "Preprocessor.mlmodelc/metadata.json",
+    "Preprocessor.mlmodelc/model.mil",
+    "Preprocessor.mlmodelc/weights/weight.bin",
+    "Encoder.mlmodelc/analytics/coremldata.bin",
+    "Encoder.mlmodelc/coremldata.bin",
+    "Encoder.mlmodelc/model.mil",
+    "Encoder.mlmodelc/weights/weight.bin",
+    "Decoder.mlmodelc/analytics/coremldata.bin",
+    "Decoder.mlmodelc/coremldata.bin",
+    "Decoder.mlmodelc/model.mil",
+    "Decoder.mlmodelc/weights/weight.bin",
+    "JointDecisionv3.mlmodelc/analytics/coremldata.bin",
+    "JointDecisionv3.mlmodelc/coremldata.bin",
+    "JointDecisionv3.mlmodelc/model.mil",
+    "JointDecisionv3.mlmodelc/weights/weight.bin",
+    "parakeet_vocab.json",
+];
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64", feature = "local-coreml"))]
+const PARAKEET_V3_COREML_FILES: &[&str] = &[
+    "Preprocessor.mlmodelc/analytics/coremldata.bin",
+    "Preprocessor.mlmodelc/coremldata.bin",
+    "Preprocessor.mlmodelc/metadata.json",
+    "Preprocessor.mlmodelc/model.mil",
+    "Preprocessor.mlmodelc/weights/weight.bin",
+    "Encoder_v2.mlmodelc/analytics/coremldata.bin",
+    "Encoder_v2.mlmodelc/coremldata.bin",
+    "Encoder_v2.mlmodelc/model.mil",
+    "Encoder_v2.mlmodelc/weights/weight.bin",
+    "Decoder.mlmodelc/analytics/coremldata.bin",
+    "Decoder.mlmodelc/coremldata.bin",
+    "Decoder.mlmodelc/metadata.json",
+    "Decoder.mlmodelc/model.mil",
+    "Decoder.mlmodelc/weights/weight.bin",
+    "JointDecisionv3.mlmodelc/analytics/coremldata.bin",
+    "JointDecisionv3.mlmodelc/coremldata.bin",
+    "JointDecisionv3.mlmodelc/metadata.json",
+    "JointDecisionv3.mlmodelc/model.mil",
+    "JointDecisionv3.mlmodelc/weights/weight.bin",
+    "parakeet_vocab.json",
+];
 
 const CATALOG: &[ModelSpec] = &[
     ModelSpec {
@@ -328,6 +378,21 @@ const CATALOG: &[ModelSpec] = &[
         aliases: &["whisper-tiny"],
         requires_full_audio_ctx: false,
     },
+    #[cfg(all(target_os = "macos", target_arch = "aarch64", feature = "local-coreml"))]
+    ModelSpec {
+        id: "parakeet-ultra",
+        display_name: "Parakeet Ultra 0.6B (CoreML, 25 EU-Sprachen, ANE)",
+        engine: LocalEngineKind::CoreMlParakeet,
+        hf_repo: "FluidInference/parakeet-ultra-coreml",
+        hf_revision: "95eaa59a39d4394f047a4dc5cce480388a60d1b6",
+        direct_base_url: None,
+        requires_revision_marker: true,
+        files: PARAKEET_ULTRA_COREML_FILES,
+        approx_size_mb: 632,
+        aliases: &["parakeet", "parakeet-tdt-0.6b-ultra", "parakeet-ultra-int8"],
+        requires_full_audio_ctx: false,
+    },
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64", feature = "local-coreml")))]
     ModelSpec {
         id: "parakeet-ultra",
         display_name: "Parakeet Ultra 0.6B (int8, 25 EU-Sprachen, CPU)",
@@ -346,6 +411,21 @@ const CATALOG: &[ModelSpec] = &[
         aliases: &["parakeet", "parakeet-tdt-0.6b-ultra", "parakeet-ultra-int8"],
         requires_full_audio_ctx: false,
     },
+    #[cfg(all(target_os = "macos", target_arch = "aarch64", feature = "local-coreml"))]
+    ModelSpec {
+        id: "parakeet-v3",
+        display_name: "Parakeet TDT 0.6B v3 (CoreML, ANE)",
+        engine: LocalEngineKind::CoreMlParakeet,
+        hf_repo: "FluidInference/parakeet-tdt-0.6b-v3-coreml",
+        hf_revision: "7dd20fe6b1797d35f5e3307e8b1732d9a178edfe",
+        direct_base_url: None,
+        requires_revision_marker: true,
+        files: PARAKEET_V3_COREML_FILES,
+        approx_size_mb: 633,
+        aliases: &["parakeet-tdt-0.6b-v3"],
+        requires_full_audio_ctx: false,
+    },
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64", feature = "local-coreml")))]
     ModelSpec {
         id: "parakeet-v3",
         display_name: "Parakeet TDT 0.6B v3 (int8, CPU)",
@@ -648,26 +728,76 @@ mod tests {
     #[test]
     fn builds_valid_hf_resolve_urls_and_rejects_traversal() {
         let parakeet = resolve_model_spec(Some("parakeet-v3")).unwrap();
-        let url = build_hf_resolve_url(DEFAULT_HF_BASE_URL, parakeet, "encoder.int8.onnx").unwrap();
-        assert_eq!(
-            url.as_str(),
-            "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/resolve/ed5d745623472f97cfc2e6c2916ee248798fc5a8/encoder.int8.onnx"
-        );
         let parakeet_ultra = resolve_model_spec(Some("parakeet-ultra")).unwrap();
-        let ultra_url =
-            build_model_file_url(DEFAULT_HF_BASE_URL, parakeet_ultra, "encoder.int8.onnx").unwrap();
+
+        #[cfg(all(target_os = "macos", target_arch = "aarch64", feature = "local-coreml"))]
+        {
+            assert_eq!(parakeet.engine, LocalEngineKind::CoreMlParakeet);
+            assert_eq!(parakeet_ultra.engine, LocalEngineKind::CoreMlParakeet);
+            let url = build_hf_resolve_url(
+                DEFAULT_HF_BASE_URL,
+                parakeet,
+                "Encoder_v2.mlmodelc/weights/weight.bin",
+            )
+            .unwrap();
+            assert_eq!(
+                url.as_str(),
+                "https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v3-coreml/resolve/7dd20fe6b1797d35f5e3307e8b1732d9a178edfe/Encoder_v2.mlmodelc/weights/weight.bin"
+            );
+            let ultra_url = build_model_file_url(
+                DEFAULT_HF_BASE_URL,
+                parakeet_ultra,
+                "Encoder.mlmodelc/weights/weight.bin",
+            )
+            .unwrap();
+            assert_eq!(
+                ultra_url.as_str(),
+                "https://huggingface.co/FluidInference/parakeet-ultra-coreml/resolve/95eaa59a39d4394f047a4dc5cce480388a60d1b6/Encoder.mlmodelc/weights/weight.bin"
+            );
+        }
+
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64", feature = "local-coreml")))]
+        {
+            let url =
+                build_hf_resolve_url(DEFAULT_HF_BASE_URL, parakeet, "encoder.int8.onnx").unwrap();
+            assert_eq!(
+                url.as_str(),
+                "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/resolve/ed5d745623472f97cfc2e6c2916ee248798fc5a8/encoder.int8.onnx"
+            );
+            let ultra_url =
+                build_model_file_url(DEFAULT_HF_BASE_URL, parakeet_ultra, "encoder.int8.onnx")
+                    .unwrap();
+            assert_eq!(
+                ultra_url.as_str(),
+                "https://github.com/KLIEBHAN/pulsescribe/releases/download/model-parakeet-ultra-pr4179/encoder.int8.onnx"
+            );
+            // Custom base URLs (e.g. loopback mirrors in tests) still override direct release URLs.
+            let mirror_url =
+                build_model_file_url("http://127.0.0.1:8080", parakeet_ultra, "encoder.int8.onnx")
+                    .unwrap();
+            assert_eq!(
+                mirror_url.as_str(),
+                "http://127.0.0.1:8080/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-ultra-int8/resolve/model-parakeet-ultra-pr4179/encoder.int8.onnx"
+            );
+        }
+
+        // Direct release mirror override always works regardless of active platform features.
+        let mut direct_spec = *parakeet_ultra;
+        direct_spec.direct_base_url =
+            Some("https://github.com/KLIEBHAN/pulsescribe/releases/download/example-mirror");
         assert_eq!(
-            ultra_url.as_str(),
-            "https://github.com/KLIEBHAN/pulsescribe/releases/download/model-parakeet-ultra-pr4179/encoder.int8.onnx"
+            build_model_file_url(DEFAULT_HF_BASE_URL, &direct_spec, "weights.bin")
+                .unwrap()
+                .as_str(),
+            "https://github.com/KLIEBHAN/pulsescribe/releases/download/example-mirror/weights.bin"
         );
-        // Custom base URLs (e.g. loopback mirrors in tests) still override direct release URLs.
-        let mirror_url =
-            build_model_file_url("http://127.0.0.1:8080", parakeet_ultra, "encoder.int8.onnx")
-                .unwrap();
-        assert_eq!(
-            mirror_url.as_str(),
-            "http://127.0.0.1:8080/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-ultra-int8/resolve/model-parakeet-ultra-pr4179/encoder.int8.onnx"
+        assert!(
+            build_model_file_url("http://127.0.0.1:8080", &direct_spec, "weights.bin")
+                .unwrap()
+                .as_str()
+                .starts_with("http://127.0.0.1:8080/")
         );
+
         assert!(build_model_file_url(DEFAULT_HF_BASE_URL, parakeet_ultra, "../evil").is_err());
         let qwen3 = resolve_model_spec(Some("qwen3-asr-0.6b")).unwrap();
         let qwen3_url =
