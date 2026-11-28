@@ -1922,3 +1922,93 @@ async fn local_mode_auto_downloads_missing_model_on_preload_and_on_demand() {
     backend.shutdown().await;
     server.abort();
 }
+
+#[tokio::test]
+async fn local_mode_applies_vocabulary_post_correction_before_delivery() {
+    let dir = TempDir::new("local-vocab-post-correction");
+    fs::write(
+        dir.path().join("vocabulary.json"),
+        r#"{"keywords":["PulseScribe","TATEX GmbH","Parakeet Ultra","macOS"]}"#,
+    )
+    .unwrap();
+
+    let store = Arc::new(PreferencesStore::new(dir.path()));
+    let (pasted, clipboard) = RecordingClipboard::create();
+    let audio_factory = Arc::new(SyntheticAudioFactory::new(16_000, 960, 1));
+    let seen_counts = Arc::new(Mutex::new(Vec::new()));
+    let permissions = Arc::new(StaticPermissions {
+        mic: MicrophonePermissionStatus::Authorized,
+    });
+    let platform = DaemonPlatform {
+        permissions: Arc::clone(&permissions) as Arc<dyn PermissionsChecker>,
+        ..DaemonPlatform::noop(clipboard)
+    };
+    let backend = LiveDictationBackend::with_components(
+        dir.path(),
+        permissions,
+        Arc::clone(&audio_factory) as Arc<dyn AudioSourceFactory>,
+        Some(Arc::new(MockLocalEngine {
+            seen_sample_counts: Arc::clone(&seen_counts),
+            response: "Wir testen Pulses Kriebe mit Paraket Ultra bei Tateks GmbH auf Mac OS."
+                .to_owned(),
+        })),
+        ProviderEndpoints::default(),
+    )
+    .unwrap();
+    let mut config = DaemonConfig {
+        mode: DaemonMode::Local,
+        streaming: false,
+        refine: false,
+        ..DaemonConfig::default()
+    };
+    config.timings.done_display_hold = Duration::from_millis(20);
+
+    let runtime = DaemonRuntime::spawn(
+        store,
+        config,
+        platform,
+        Arc::new(backend.clone()),
+        DaemonRuntimeOptions {
+            enable_ipc: false,
+            enable_reload_watcher: false,
+            ..DaemonRuntimeOptions::default()
+        },
+    )
+    .await;
+    let handle = runtime.handle();
+    let mut events = handle.subscribe();
+
+    handle.start_recording();
+    next_matching_event(&mut events, |e| {
+        matches!(
+            e,
+            DaemonEvent::StateChanged {
+                state: AppState::Recording,
+                ..
+            }
+        )
+    })
+    .await;
+    handle.stop_recording();
+
+    let delivered = next_matching_event(&mut events, |e| {
+        matches!(e, DaemonEvent::TranscriptDelivered { .. })
+    })
+    .await;
+    match delivered {
+        DaemonEvent::TranscriptDelivered { text, .. } => {
+            assert_eq!(
+                text,
+                "Wir testen PulseScribe mit Parakeet Ultra bei TATEX GmbH auf macOS."
+            );
+        }
+        other => panic!("unexpected event: {other:?}"),
+    }
+    assert_eq!(
+        *pasted.lock().unwrap(),
+        vec!["Wir testen PulseScribe mit Parakeet Ultra bei TATEX GmbH auf macOS.".to_owned()]
+    );
+
+    runtime.shutdown().await;
+    backend.shutdown().await;
+}

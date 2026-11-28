@@ -262,8 +262,8 @@ Improve recognition of domain-specific terms in `~/.pulsescribe/vocabulary.json`
 }
 ```
 
-**Supported by:** Deepgram, Local Whisper
-**Not supported:** OpenAI API (use Refine for corrections)
+**Model-level biasing:** Deepgram, Local Whisper, `qwen3-asr-0.6b`
+**Deterministic local post-correction:** Applied automatically to plain-text transcripts across all local and cloud models (including `parakeet-ultra`, `parakeet-v3`, `canary-1b-v2`, `cohere-transcribe`, Groq, and OpenAI) before optional LLM refinement.
 
 ---
 

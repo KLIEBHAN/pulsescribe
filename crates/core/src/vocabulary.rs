@@ -221,7 +221,7 @@ const CASEFOLD_OVERRIDES: &[(char, &str)] = &[
 ];
 
 /// Full Unicode case-folding key matching Python `str.casefold()`.
-fn casefold_key(keyword: &str) -> String {
+pub(crate) fn casefold_key(keyword: &str) -> String {
     if keyword.is_ascii() {
         return keyword.to_ascii_lowercase();
     }

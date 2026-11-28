@@ -183,6 +183,7 @@ PULSESCRIBE_LOCAL_MODEL=parakeet-ultra   # oder parakeet-v3, canary-1b-v2, coher
 - **`qwen3-asr-0.6b`** (Alibaba Qwen3-ASR, Apache 2.0) unterstützt Hotword-Biasing aus `~/.pulsescribe/vocabulary.json` pro Stream (konservativ begrenzt für das 512-Token-KV-Cache-Budget bei 15-s-Segmenten).
 - **`large-v3-turbo-german`** (`primeline/whisper-large-v3-turbo-german` Q5_0 GGML, Apache 2.0) läuft über `whisper-rs` (Metal auf Apple Silicon, CPU auf Windows) für reines deutsches Diktat mit eigenem Vokabular.
 - Offline-`sherpa-onnx`-Modelle schneiden führende und abschließende Stille mit 250 ms Sicherheitsrand ab, wählen die CPU-Threads anhand der schnellen Kerne (maximal 8) und segmentieren lange Aufnahmen an der leisesten 100-ms-Stelle der letzten 5 s: bis zu **25 s** je Stück für NeMo-Transducer (`parakeet-ultra`, `parakeet-v3`) und bis zu **15 s** je Stück für Encoder-Decoder-Modelle (`canary-1b-v2`, `cohere-transcribe`, `qwen3-asr-0.6b`).
+- Alle lokalen Modelle wenden automatisch eine deterministische Vokabular-Nachkorrektur aus `~/.pulsescribe/vocabulary.json` (`keywords`) an (Groß-/Kleinschreibung, Worttrennungen und konservative DE/EN-Phonetik) – auch Modelle ohne Decoder-Hotword-Biasing wie `parakeet-ultra`.
 - Alle `sherpa-onnx`-Modelle sowie `large-v3-turbo-german` laden von gepinnten Hugging-Face-Commits (Standard-GGML-Modelle von `ggerganov/whisper.cpp` folgen `main`) nach `~/.pulsescribe/models/<id>/`, und PulseScribe nutzt vorhandene Snapshots in `~/.cache/huggingface/hub/` mit.
 
 ---

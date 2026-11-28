@@ -20,6 +20,7 @@ pub mod prompts;
 pub mod state;
 pub mod transcript_delivery;
 pub mod vocabulary;
+pub mod vocabulary_correction;
 
 pub use animation::AnimationLogic;
 pub use daemon_status_feedback::StatusDetail;
@@ -44,3 +45,4 @@ pub use prompts::{
 pub use state::{AppState, DaemonErrorCode, DaemonMessage, DaemonStatusError, MessageType};
 pub use transcript_delivery::{DeliveryOutcome, TranscriptClipboardBackend, TranscriptDelivery};
 pub use vocabulary::{VocabularyError, VocabularyInputAnalysis, VocabularyState, VocabularyStore};
+pub use vocabulary_correction::apply_vocabulary_corrections;
