@@ -12,7 +12,8 @@ use pulsescribe_core::paths::{home_dir, AppPaths};
 use serde::{Deserialize, Serialize};
 
 use crate::catalog::{
-    catalog_models, validate_hf_repo, validate_safe_filename, LocalEngineKind, ModelSpec,
+    catalog_models, validate_hf_repo, validate_safe_filename, validate_safe_rel_path,
+    LocalEngineKind, ModelSpec,
 };
 use crate::LocalAsrError;
 
@@ -253,20 +254,31 @@ pub(crate) fn verify_all_files_present(
 
     let mut total = 0_u64;
     for &file in files {
-        if validate_safe_filename(file).is_err() {
+        if validate_safe_rel_path(file).is_err() {
             return None;
         }
-        let path = dir.join(file);
-        let meta = if follow_symlinks {
-            fs::metadata(&path).ok()?
-        } else {
-            fs::symlink_metadata(&path).ok()?
-        };
-        if (!follow_symlinks && meta.file_type().is_symlink()) || !meta.is_file() || meta.len() == 0
-        {
-            return None;
+        let mut cursor = dir.to_path_buf();
+        let segments: Vec<&str> = file.split('/').collect();
+        for (idx, segment) in segments.iter().enumerate() {
+            cursor.push(segment);
+            let is_leaf = idx + 1 == segments.len();
+            let meta = if follow_symlinks {
+                fs::metadata(&cursor).ok()?
+            } else {
+                fs::symlink_metadata(&cursor).ok()?
+            };
+            if !follow_symlinks && meta.file_type().is_symlink() {
+                return None;
+            }
+            if is_leaf {
+                if !meta.is_file() || meta.len() == 0 {
+                    return None;
+                }
+                total = total.saturating_add(meta.len());
+            } else if !meta.is_dir() {
+                return None;
+            }
         }
-        total = total.saturating_add(meta.len());
     }
     Some(total)
 }
@@ -393,6 +405,25 @@ mod tests {
             assert!(cache.find_installed(tiny).is_none());
             assert!(cache.remove_managed(tiny).unwrap());
             assert!(sentinel.exists());
+
+            // Symlinked intermediate subdirectory inside managed cache must also be rejected.
+            let qwen3 = resolve_model_spec(Some("qwen3-asr-0.6b")).unwrap();
+            let qwen_dir = cache.model_dir(qwen3);
+            fs::create_dir_all(&qwen_dir).unwrap();
+            for flat in [
+                "conv_frontend.onnx",
+                "encoder.int8.onnx",
+                "decoder.int8.onnx",
+            ] {
+                fs::write(qwen_dir.join(flat), b"weights").unwrap();
+            }
+            let ext_tok = dir.0.join("external_tokenizer");
+            fs::create_dir_all(&ext_tok).unwrap();
+            for f in ["merges.txt", "tokenizer_config.json", "vocab.json"] {
+                fs::write(ext_tok.join(f), b"tok").unwrap();
+            }
+            std::os::unix::fs::symlink(&ext_tok, qwen_dir.join("tokenizer")).unwrap();
+            assert!(cache.find_installed(qwen3).is_none());
         }
     }
 }

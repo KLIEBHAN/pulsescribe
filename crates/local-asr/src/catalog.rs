@@ -73,6 +73,47 @@ pub fn resolve_cohere_language(language: Option<&str>) -> String {
     )
 }
 
+/// Map a normalized ISO language tag (e.g. `"de"`, `"de-DE"`, `"en_US"`) to the full capitalized
+/// English language name expected by `sherpa-onnx`'s Qwen3-ASR stream `"language"` option.
+///
+/// Returns `None` for `None`, `"auto"`, or unmapped tags so Qwen3-ASR auto-detects the language.
+pub fn resolve_qwen3_language(language: Option<&str>) -> Option<&'static str> {
+    let code = crate::normalize_language(language)?;
+    match code.as_str() {
+        "ar" => Some("Arabic"),
+        "cs" => Some("Czech"),
+        "da" => Some("Danish"),
+        "de" => Some("German"),
+        "el" => Some("Greek"),
+        "en" => Some("English"),
+        "es" => Some("Spanish"),
+        "fa" => Some("Persian"),
+        "fi" => Some("Finnish"),
+        "fil" | "tl" => Some("Filipino"),
+        "fr" => Some("French"),
+        "hi" => Some("Hindi"),
+        "hu" => Some("Hungarian"),
+        "id" => Some("Indonesian"),
+        "it" => Some("Italian"),
+        "ja" => Some("Japanese"),
+        "ko" => Some("Korean"),
+        "mk" => Some("Macedonian"),
+        "ms" => Some("Malay"),
+        "nl" => Some("Dutch"),
+        "pl" => Some("Polish"),
+        "pt" => Some("Portuguese"),
+        "ro" => Some("Romanian"),
+        "ru" => Some("Russian"),
+        "sv" => Some("Swedish"),
+        "th" => Some("Thai"),
+        "tr" => Some("Turkish"),
+        "vi" => Some("Vietnamese"),
+        "yue" => Some("Cantonese"),
+        "zh" => Some("Chinese"),
+        _ => None,
+    }
+}
+
 fn resolve_supported_language_with_system(
     language: Option<&str>,
     system_language: Option<&str>,
@@ -122,6 +163,8 @@ pub enum LocalEngineKind {
     SherpaOfflineCanary,
     /// Offline Cohere Transcribe encoder-decoder model executed via `sherpa-onnx` CPU.
     SherpaOfflineCohere,
+    /// Offline Qwen3-ASR encoder-decoder model with per-stream hotword biasing via `sherpa-onnx` CPU.
+    SherpaOfflineQwen3Asr,
     /// Online streaming NeMo transducer (Nemotron 3.5) executed via `sherpa-onnx` CPU.
     SherpaOnlineTransducer,
 }
@@ -133,6 +176,7 @@ impl LocalEngineKind {
             Self::SherpaOfflineTransducer => "sherpa_offline_transducer",
             Self::SherpaOfflineCanary => "sherpa_offline_canary",
             Self::SherpaOfflineCohere => "sherpa_offline_cohere",
+            Self::SherpaOfflineQwen3Asr => "sherpa_offline_qwen3_asr",
             Self::SherpaOnlineTransducer => "sherpa_online_transducer",
         }
     }
@@ -182,6 +226,17 @@ const CATALOG: &[ModelSpec] = &[
         files: &["ggml-large-v3-turbo-q5_0.bin"],
         approx_size_mb: 574,
         aliases: &["turbo-q5", "turbo-q5_0"],
+        requires_full_audio_ctx: true,
+    },
+    ModelSpec {
+        id: "large-v3-turbo-german",
+        display_name: "Whisper Large v3 Turbo German (Q5_0, primeline)",
+        engine: LocalEngineKind::Whisper,
+        hf_repo: "cstr/whisper-large-v3-turbo-german-ggml",
+        hf_revision: "d9431a78952938533dc46e75395a9b0b7237fa69",
+        files: &["ggml-model-q5_0.bin"],
+        approx_size_mb: 574,
+        aliases: &["turbo-de", "turbo-german", "whisper-large-v3-turbo-german"],
         requires_full_audio_ctx: true,
     },
     ModelSpec {
@@ -299,6 +354,24 @@ const CATALOG: &[ModelSpec] = &[
         requires_full_audio_ctx: false,
     },
     ModelSpec {
+        id: "qwen3-asr-0.6b",
+        display_name: "Qwen3-ASR 0.6B (int8, 30 Sprachen + Vokabular, CPU)",
+        engine: LocalEngineKind::SherpaOfflineQwen3Asr,
+        hf_repo: "csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25",
+        hf_revision: "68818b2313fe77bd06f6a7c5068ff3ef59d02b8a",
+        files: &[
+            "conv_frontend.onnx",
+            "encoder.int8.onnx",
+            "decoder.int8.onnx",
+            "tokenizer/merges.txt",
+            "tokenizer/tokenizer_config.json",
+            "tokenizer/vocab.json",
+        ],
+        approx_size_mb: 987,
+        aliases: &["qwen3-asr", "qwen3"],
+        requires_full_audio_ctx: false,
+    },
+    ModelSpec {
         id: STREAMING_PREVIEW_MODEL_ID,
         display_name: "Nemotron 3.5 Streaming Preview (560 ms, int8, CPU)",
         engine: LocalEngineKind::SherpaOnlineTransducer,
@@ -361,6 +434,26 @@ pub(crate) fn validate_safe_filename(filename: &str) -> Result<(), LocalAsrError
     }
 }
 
+/// Validate a relative model file path that may contain nested `/` subdirectories (e.g.
+/// `"tokenizer/vocab.json"`), ensuring every `/`-separated segment is a safe plain path component.
+pub(crate) fn validate_safe_rel_path(rel_path: &str) -> Result<(), LocalAsrError> {
+    if rel_path.is_empty()
+        || rel_path.starts_with('/')
+        || rel_path.ends_with('/')
+        || rel_path.contains('\\')
+        || rel_path.contains(':')
+        || rel_path.contains('\0')
+    {
+        return Err(LocalAsrError::InvalidModel(format!(
+            "unsafe model file path '{rel_path}'"
+        )));
+    }
+    for segment in rel_path.split('/') {
+        validate_safe_filename(segment)?;
+    }
+    Ok(())
+}
+
 /// Validate a Hugging Face `org/repo` identifier so every slash-separated segment is a safe
 /// single path component.
 pub(crate) fn validate_hf_repo(hf_repo: &str) -> Result<(), LocalAsrError> {
@@ -386,7 +479,7 @@ pub fn build_hf_resolve_url(
 ) -> Result<Url, LocalAsrError> {
     validate_hf_repo(spec.hf_repo)?;
     validate_safe_filename(spec.hf_revision)?;
-    validate_safe_filename(filename)?;
+    validate_safe_rel_path(filename)?;
     let mut url = Url::parse(base_url.trim())
         .map_err(|_| LocalAsrError::InvalidModel("invalid HF base URL".to_owned()))?;
     if !matches!(url.scheme(), "http" | "https") {
@@ -404,7 +497,9 @@ pub fn build_hf_resolve_url(
         }
         segments.push("resolve");
         segments.push(spec.hf_revision);
-        segments.push(filename);
+        for segment in filename.split('/') {
+            segments.push(segment);
+        }
     }
     Ok(url)
 }
@@ -422,6 +517,13 @@ mod tests {
         assert_eq!(
             resolve_model_spec(Some("turbo")).unwrap().id,
             "large-v3-turbo"
+        );
+        let turbo_de = resolve_model_spec(Some("turbo-de")).unwrap();
+        assert_eq!(turbo_de.id, "large-v3-turbo-german");
+        assert!(turbo_de.requires_full_audio_ctx);
+        assert_eq!(
+            resolve_model_spec(Some("qwen3-asr")).unwrap().id,
+            "qwen3-asr-0.6b"
         );
         assert_eq!(
             resolve_model_spec(Some("  PARAKEET ")).unwrap().id,
@@ -471,6 +573,17 @@ mod tests {
             ultra_url.as_str(),
             "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-ultra-int8/resolve/402e1190ce85b9793118ee223db21fb0d12f52db/encoder.int8.onnx"
         );
+        let qwen3 = resolve_model_spec(Some("qwen3-asr-0.6b")).unwrap();
+        let qwen3_url =
+            build_hf_resolve_url(DEFAULT_HF_BASE_URL, qwen3, "tokenizer/vocab.json").unwrap();
+        assert_eq!(
+            qwen3_url.as_str(),
+            "https://huggingface.co/csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25/resolve/68818b2313fe77bd06f6a7c5068ff3ef59d02b8a/tokenizer/vocab.json"
+        );
+        assert!(build_hf_resolve_url(DEFAULT_HF_BASE_URL, qwen3, "tokenizer/../evil").is_err());
+        assert!(build_hf_resolve_url(DEFAULT_HF_BASE_URL, qwen3, "/leading/slash").is_err());
+        assert!(build_hf_resolve_url(DEFAULT_HF_BASE_URL, qwen3, "trailing/slash/").is_err());
+        assert!(build_hf_resolve_url(DEFAULT_HF_BASE_URL, qwen3, "empty//segment").is_err());
         assert!(build_hf_resolve_url(DEFAULT_HF_BASE_URL, parakeet, "../secret").is_err());
         assert!(build_hf_resolve_url(DEFAULT_HF_BASE_URL, parakeet, "C:evil.bin").is_err());
         assert!(build_hf_resolve_url("file:///etc/passwd", parakeet, "tokens.txt").is_err());
@@ -519,5 +632,10 @@ mod tests {
             resolve_supported_language_with_system(Some("sv"), Some("ru"), &COHERE_LANGUAGES),
             "en"
         );
+
+        assert_eq!(resolve_qwen3_language(Some("de-DE")), Some("German"));
+        assert_eq!(resolve_qwen3_language(Some("en_US")), Some("English"));
+        assert_eq!(resolve_qwen3_language(Some("auto")), None);
+        assert_eq!(resolve_qwen3_language(Some("xx")), None);
     }
 }

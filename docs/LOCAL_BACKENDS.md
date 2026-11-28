@@ -2,7 +2,7 @@
 
 [🇩🇪 Deutsche Version](LOKALE_BACKENDS.md)
 
-PulseScribe supports offline transcription using local Whisper models or NVIDIA's [Parakeet v3 and Canary-1B-v2](#nvidia-parakeet-v3-and-canary-1b-v2). No API keys or internet connection required after initial model download.
+PulseScribe supports offline transcription using local Whisper models (`whisper-rs`, Metal on macOS / CPU on Windows) or curated `sherpa-onnx` CPU models ([Parakeet Ultra, Parakeet v3, Canary 1B v2, Cohere Transcribe 2B, Qwen3-ASR 0.6B](#sherpa-onnx-and-specialized-local-models)). No API keys or internet connection required after initial model download.
 
 ## Backend Comparison
 
@@ -159,32 +159,31 @@ PULSESCRIBE_LOCAL_BACKEND=whisper
 
 ---
 
-### NVIDIA Parakeet v3 and Canary-1B-v2
+### sherpa-onnx and Specialized Local Models
 
-Two NVIDIA models that run on their own engine, whatever backend is set: on Apple Silicon on the GPU through mlx-audio (MLX), elsewhere on the CPU through sherpa-onnx. Choose them in Settings → Transcription → Local Model (shown with Mode local), or set the model:
+In addition to standard Whisper models (`large-v3-turbo`, `large-v3`, `medium`, `small`, `base`, `tiny`), PulseScribe curates specialized offline models in `crates/local-asr`:
 
 ```bash
 # In ~/.pulsescribe/.env
 PULSESCRIBE_MODE=local
-PULSESCRIBE_LOCAL_MODEL=parakeet-v3   # or canary-1b-v2
+PULSESCRIBE_LOCAL_MODEL=parakeet-ultra   # or parakeet-v3, canary-1b-v2, cohere-transcribe, qwen3-asr-0.6b, large-v3-turbo-german
 ```
 
-| Model | Engine | Download | Memory while loaded | 11 s of German speech (M5) | Language |
-|-------|--------|----------|---------------------|----------------------------|----------|
-| `parakeet-v3` | MLX (Apple Silicon) | 0.7 GB | 1.1 GB | 0.08 s | detects it |
-| `parakeet-v3` | sherpa-onnx (CPU) | 0.7 GB | 2.1 GB | 0.22 s | detects it |
-| `canary-1b-v2` | MLX (Apple Silicon) | 1.1 GB | 1.5 GB | 0.22 s | needs it |
-| `canary-1b-v2` | sherpa-onnx (CPU) | 1.0 GB | 2.8 GB | 0.65 s | needs it |
+| Model | Engine | Download | Languages | Vocabulary Biasing | Language Setting |
+|-------|--------|----------|-----------|--------------------|------------------|
+| `parakeet-ultra` | `sherpa-onnx` (CPU) | 671 MB | 25 European | no | auto-detects |
+| `parakeet-v3` | `sherpa-onnx` (CPU) | 670 MB | 25 European | no | auto-detects |
+| `canary-1b-v2` | `sherpa-onnx` (CPU) | 1.02 GB | 25 European | no | explicit (locale fallback) |
+| `cohere-transcribe` | `sherpa-onnx` (CPU) | 2.89 GB | 14 (incl. DE, EN, FR, ES, IT, NL, PL, PT, EL, ZH, JA, KO, VI, AR) | no | explicit (locale fallback) |
+| `qwen3-asr-0.6b` | `sherpa-onnx` (CPU) | 987 MB | 30 (incl. DE, EN, EU & Asian) | yes (`vocabulary.json` hotwords) | optional (auto-detects) |
+| `large-v3-turbo-german` | `whisper-rs` (Metal / CPU) | 574 MB | German fine-tune (`primeline`) | yes (`initial_prompt`) | German (`de`) |
 
-Whisper turbo with MLX took 0.34 s for the same recording. Both engines gave the same text on our test clips.
-
-- Both know 25 European languages (bg, cs, da, de, el, en, es, et, fi, fr, hr, hu, it, lt, lv, mt, nl, pl, pt, ro, ru, sk, sl, sv, uk) and write punctuation and capitals.
-- Canary does not detect the language: it translates speech in another language into the one set. With `auto`, or a language it does not know, it uses your system language if it knows it, else English. Set the language when you dictate in another one.
-- The first load downloads the model into the Hugging Face cache, with progress in the menu bar. Loading takes up to 1.5 s, also after **Unload when idle**. On the GPU that frees the memory completely within about 2 s; on the CPU all but about 0.4 GB, which ONNX Runtime keeps and reuses at the next load.
-- Recordings longer than 15 s are transcribed in pieces of at most 15 s, each cut at the quietest moment of its last 5 s. Canary returns no text for one piece longer than about 37 s, and Parakeet drops words on long ones: on 5 minutes of German speech it got 29 % of the words wrong in one piece and 0.1 % in pieces.
-- Whisper's options (vocabulary, beam size, temperature, quantization, warmup) do not apply, and Settings hide them. The live preview `on` works with Parakeet, and with Canary on Apple Silicon; see [Live Preview](#live-preview).
-- The macOS app includes both engines. The Windows installer includes neither, so its Settings do not offer the models; running from source, install sherpa-onnx with `pip install sherpa-onnx`.
-- NVIDIA licenses both models under CC-BY-4.0. The files come from Hugging Face repositories at fixed commits: for the CPU from the sherpa-onnx author (Parakeet) and a third party (Canary), for MLX from third parties (8-bit weights).
+- **`parakeet-ultra`** (Moondream post-trained `parakeet-tdt-0.6b-v3`, CC-BY-4.0) keeps the same size and CPU latency as `parakeet-v3` while improving German accuracy and noise robustness.
+- **`cohere-transcribe`** (Cohere 2B Conformer-Transformer, Apache 2.0) enables punctuation and inverse text normalization (`use_punct`, `use_itn`) and passes the language per stream, so switching languages does not reload weights.
+- **`qwen3-asr-0.6b`** (Alibaba Qwen3-ASR, Apache 2.0) supports per-stream hotword biasing from `~/.pulsescribe/vocabulary.json` (capped to fit within the 512-token KV-cache budget alongside 15 s audio segments).
+- **`large-v3-turbo-german`** (`primeline/whisper-large-v3-turbo-german` Q5_0 GGML, Apache 2.0) runs on `whisper-rs` (Metal on Apple Silicon, CPU on Windows) for dedicated German dictation with custom vocabulary support.
+- Recordings longer than 15 s are segmented into pieces of at most 15 s (cut at the quietest 100 ms in the final 5 s) for all offline `sherpa-onnx` models.
+- Third-party `sherpa-onnx` models and `large-v3-turbo-german` download from pinned Hugging Face commit revisions (standard `ggerganov/whisper.cpp` GGML models track `main`) into `~/.pulsescribe/models/<id>/`, and PulseScribe also reuses existing snapshots in `~/.cache/huggingface/hub/`.
 
 ---
 

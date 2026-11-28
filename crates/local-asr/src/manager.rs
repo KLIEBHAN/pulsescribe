@@ -458,7 +458,8 @@ impl LocalAsrManager {
                 }
                 LocalEngineKind::SherpaOfflineTransducer
                 | LocalEngineKind::SherpaOfflineCanary
-                | LocalEngineKind::SherpaOfflineCohere => load_sherpa_offline_engine(
+                | LocalEngineKind::SherpaOfflineCohere
+                | LocalEngineKind::SherpaOfflineQwen3Asr => load_sherpa_offline_engine(
                     spec,
                     installed,
                     Some(&self.config_dir),
@@ -570,6 +571,7 @@ fn ensure_runtime_compiled(engine: LocalEngineKind, model_id: &str) -> Result<()
         LocalEngineKind::SherpaOfflineTransducer
         | LocalEngineKind::SherpaOfflineCanary
         | LocalEngineKind::SherpaOfflineCohere
+        | LocalEngineKind::SherpaOfflineQwen3Asr
         | LocalEngineKind::SherpaOnlineTransducer
             if !cfg!(feature = "local-sherpa") =>
         {

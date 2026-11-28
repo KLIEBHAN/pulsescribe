@@ -11,15 +11,16 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use crate::catalog::{
-    resolve_canary_language, resolve_cohere_language, LocalEngineKind, ModelSpec,
+    resolve_canary_language, resolve_cohere_language, resolve_qwen3_language, LocalEngineKind,
+    ModelSpec,
 };
 use crate::sherpa_ffi::{
     path_to_cstring, OfflineRecognizerHandle, OnlineRecognizerHandle, OnlineStreamHandle,
     SherpaApi, SherpaOnnxOfflineRecognizerConfig, SherpaOnnxOnlineRecognizerConfig,
 };
 use crate::{
-    normalize_language, split_nemo_segments, InstalledModel, LocalAsrEngine, LocalAsrError,
-    LocalAsrRequest, LocalStreamingSession, LOCAL_ASR_SAMPLE_RATE,
+    format_qwen3_hotwords, normalize_language, split_nemo_segments, InstalledModel, LocalAsrEngine,
+    LocalAsrError, LocalAsrRequest, LocalStreamingSession, LOCAL_ASR_SAMPLE_RATE,
 };
 
 pub use crate::sherpa_ffi::SHERPA_SUPPORTED_ABI_PREFIX;
@@ -113,7 +114,8 @@ fn load_sherpa_api(config_dir: Option<&Path>) -> Result<Arc<SherpaApi>, LocalAsr
     }))
 }
 
-/// Offline `sherpa-onnx` CPU engine supporting Parakeet, Canary 1B v2, and Cohere Transcribe.
+/// Offline `sherpa-onnx` CPU engine supporting Parakeet, Canary 1B v2, Cohere Transcribe, and
+/// Qwen3-ASR.
 pub struct SherpaOfflineEngine {
     model_id: String,
     engine_kind: LocalEngineKind,
@@ -134,6 +136,7 @@ impl SherpaOfflineEngine {
             LocalEngineKind::SherpaOfflineTransducer
                 | LocalEngineKind::SherpaOfflineCanary
                 | LocalEngineKind::SherpaOfflineCohere
+                | LocalEngineKind::SherpaOfflineQwen3Asr
         ) {
             return Err(LocalAsrError::InvalidModel(format!(
                 "model '{}' is not a sherpa-onnx offline model",
@@ -142,8 +145,10 @@ impl SherpaOfflineEngine {
         }
 
         let api = load_sherpa_api(config_dir)?;
-        if spec.engine == LocalEngineKind::SherpaOfflineCohere
-            && !api.has_offline_stream_set_option()
+        if matches!(
+            spec.engine,
+            LocalEngineKind::SherpaOfflineCohere | LocalEngineKind::SherpaOfflineQwen3Asr
+        ) && !api.has_offline_stream_set_option()
         {
             return Err(LocalAsrError::MissingRuntime(
                 "sherpa-onnx library missing SherpaOnnxOfflineStreamSetOption".to_owned(),
@@ -151,23 +156,30 @@ impl SherpaOfflineEngine {
         }
         let provider = CString::new("cpu").expect("static CString");
         let decoding = CString::new("greedy_search").expect("static CString");
-        let tokens = path_to_cstring(&installed.file_path("tokens.txt"))?;
 
         let mut cfg = SherpaOnnxOfflineRecognizerConfig::default();
         cfg.feat_config.sample_rate = LOCAL_ASR_SAMPLE_RATE as i32;
         cfg.feat_config.feature_dim = 80;
         cfg.decoding_method = decoding.as_ptr();
-        cfg.model_config.tokens = tokens.as_ptr();
         cfg.model_config.num_threads = OFFLINE_CPU_THREADS;
         cfg.model_config.provider = provider.as_ptr();
 
         // Keep CStrings alive for the duration of `create_offline_recognizer`.
         let encoder = path_to_cstring(&installed.file_path("encoder.int8.onnx"))?;
         let decoder = path_to_cstring(&installed.file_path("decoder.int8.onnx"))?;
+        let mut _tokens_keep: Option<CString> = None;
         let mut _joiner_keep: Option<CString> = None;
         let mut _model_type_keep: Option<CString> = None;
         let mut _lang_keep: Option<CString> = None;
+        let mut _conv_frontend_keep: Option<CString> = None;
+        let mut _tokenizer_dir_keep: Option<CString> = None;
         let mut default_language = None;
+
+        if spec.engine != LocalEngineKind::SherpaOfflineQwen3Asr {
+            let tokens = path_to_cstring(&installed.file_path("tokens.txt"))?;
+            cfg.model_config.tokens = tokens.as_ptr();
+            _tokens_keep = Some(tokens);
+        }
 
         match spec.engine {
             LocalEngineKind::SherpaOfflineTransducer => {
@@ -204,6 +216,21 @@ impl SherpaOfflineEngine {
                 cfg.model_config.cohere_transcribe.use_itn = 1;
                 default_language = Some(lang);
                 _lang_keep = Some(lang_c);
+            }
+            LocalEngineKind::SherpaOfflineQwen3Asr => {
+                let conv_frontend = path_to_cstring(&installed.file_path("conv_frontend.onnx"))?;
+                let tokenizer_dir = path_to_cstring(&installed.file_path("tokenizer"))?;
+                cfg.model_config.qwen3_asr.conv_frontend = conv_frontend.as_ptr();
+                cfg.model_config.qwen3_asr.encoder = encoder.as_ptr();
+                cfg.model_config.qwen3_asr.decoder = decoder.as_ptr();
+                cfg.model_config.qwen3_asr.tokenizer = tokenizer_dir.as_ptr();
+                cfg.model_config.qwen3_asr.max_total_len = 512;
+                cfg.model_config.qwen3_asr.max_new_tokens = 256;
+                cfg.model_config.qwen3_asr.temperature = 1e-6;
+                cfg.model_config.qwen3_asr.top_p = 0.8;
+                cfg.model_config.qwen3_asr.seed = 42;
+                _conv_frontend_keep = Some(conv_frontend);
+                _tokenizer_dir_keep = Some(tokenizer_dir);
             }
             _ => unreachable!("guarded above"),
         }
@@ -251,9 +278,26 @@ impl LocalAsrEngine for SherpaOfflineEngine {
         } else {
             None
         };
+        let qwen3_lang = if self.engine_kind == LocalEngineKind::SherpaOfflineQwen3Asr {
+            resolve_qwen3_language(request.language.as_deref())
+        } else {
+            None
+        };
+        let qwen3_hotwords = if self.engine_kind == LocalEngineKind::SherpaOfflineQwen3Asr {
+            format_qwen3_hotwords(&request.keywords)
+        } else {
+            None
+        };
+
         let mut stream_options: Vec<(&str, &str)> = Vec::new();
         if let Some(ref lang) = cohere_lang {
             stream_options.push(("language", lang.as_str()));
+        }
+        if let Some(lang) = qwen3_lang {
+            stream_options.push(("language", lang));
+        }
+        if let Some(ref hotwords) = qwen3_hotwords {
+            stream_options.push(("hotwords", hotwords.as_str()));
         }
 
         let pieces = split_nemo_segments(&request.samples_16k, LOCAL_ASR_SAMPLE_RATE);
