@@ -307,7 +307,7 @@ const CATALOG: &[ModelSpec] = &[
             "tokens.txt",
         ],
         approx_size_mb: 671,
-        aliases: &["parakeet-tdt-0.6b-ultra", "parakeet-ultra-int8"],
+        aliases: &["parakeet", "parakeet-tdt-0.6b-ultra", "parakeet-ultra-int8"],
         requires_full_audio_ctx: false,
     },
     ModelSpec {
@@ -323,7 +323,7 @@ const CATALOG: &[ModelSpec] = &[
             "tokens.txt",
         ],
         approx_size_mb: 670,
-        aliases: &["parakeet", "parakeet-tdt-0.6b-v3"],
+        aliases: &["parakeet-tdt-0.6b-v3"],
         requires_full_audio_ctx: false,
     },
     ModelSpec {
@@ -527,6 +527,10 @@ mod tests {
         );
         assert_eq!(
             resolve_model_spec(Some("  PARAKEET ")).unwrap().id,
+            "parakeet-ultra"
+        );
+        assert_eq!(
+            resolve_model_spec(Some("parakeet-v3")).unwrap().id,
             "parakeet-v3"
         );
         assert_eq!(
