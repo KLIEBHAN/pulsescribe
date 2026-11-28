@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use pulsescribe_audio::{decode_file_to_mono_16k, AudioError};
+use pulsescribe_core::apply_vocabulary_corrections;
 use pulsescribe_core::paths::AppPaths;
 use pulsescribe_core::prompts::{PromptsConfig, PromptsStore};
 use pulsescribe_core::vocabulary::VocabularyStore;
@@ -176,7 +177,7 @@ async fn transcribe_and_maybe_refine(
         let model = resolved.model.clone();
         let request = LocalAsrRequest::new(samples_16k)
             .with_language(resolved.language.clone())
-            .with_keywords(keywords);
+            .with_keywords(keywords.clone());
 
         let local_text =
             tokio::task::spawn_blocking(move || manager.transcribe(model.as_deref(), &request))
@@ -189,7 +190,7 @@ async fn transcribe_and_maybe_refine(
 
         let mut request = TranscriptionRequest::new(audio_path)
             .with_response_format(args.response_format.into_provider_format())
-            .with_keywords(keywords);
+            .with_keywords(keywords.clone());
         if let Some(model) = &resolved.model {
             request = request.with_model(model.clone());
         }
@@ -213,6 +214,8 @@ async fn transcribe_and_maybe_refine(
         }
         return Ok(transcript);
     }
+
+    let transcript = apply_vocabulary_corrections(&transcript, &keywords);
 
     if !resolved.refine || transcript.trim().is_empty() {
         return Ok(transcript);

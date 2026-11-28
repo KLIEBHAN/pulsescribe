@@ -19,7 +19,9 @@ use pulsescribe_audio::{
     MonoResampler, TARGET_CHANNELS, TARGET_SAMPLE_RATE,
 };
 use pulsescribe_core::env::parse_bool;
-use pulsescribe_core::{DaemonErrorCode, DaemonStatusError, PromptsStore, VocabularyStore};
+use pulsescribe_core::{
+    apply_vocabulary_corrections, DaemonErrorCode, DaemonStatusError, PromptsStore, VocabularyStore,
+};
 use pulsescribe_local_asr::{
     resolve_model_spec, DownloadProgress, LocalAsrError, LocalAsrManager, LocalAsrRequest,
     LocalStreamingSession, ModelCache, ModelDownloader, ModelSpec,
@@ -1484,7 +1486,7 @@ async fn run_session(
                 &config,
                 manager,
                 warm_gen,
-                keywords,
+                keywords.clone(),
                 &control,
                 &mut cancelled_rx,
                 &event_tx,
@@ -1497,7 +1499,7 @@ async fn run_session(
                 run_id,
                 &config,
                 batch_backend,
-                keywords,
+                keywords.clone(),
                 &control,
                 &mut cancelled_rx,
                 &event_tx,
@@ -1517,6 +1519,8 @@ async fn run_session(
             return;
         }
     };
+
+    let raw_transcript = apply_vocabulary_corrections(&raw_transcript, &keywords);
 
     let final_transcript = if config.refine && !is_test && !raw_transcript.trim().is_empty() {
         emit_if_active(

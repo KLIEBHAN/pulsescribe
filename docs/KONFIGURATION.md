@@ -244,8 +244,8 @@ Erkennung von Fachbegriffen verbessern in `~/.pulsescribe/vocabulary.json`:
 }
 ```
 
-**Unterstützt von:** Deepgram, Lokales Whisper
-**Nicht unterstützt:** OpenAI API (Refine für Korrekturen nutzen)
+**Modell-Biasing:** Deepgram, Lokales Whisper, `qwen3-asr-0.6b`
+**Deterministische lokale Nachkorrektur:** Wird automatisch auf Klartext-Transkripte aller lokalen und Cloud-Modelle angewendet (inkl. `parakeet-ultra`, `parakeet-v3`, `canary-1b-v2`, `cohere-transcribe`, Groq und OpenAI) – noch vor einer optionalen LLM-Nachbearbeitung.
 
 ---
 
