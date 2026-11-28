@@ -203,6 +203,22 @@ const CATALOG: &[ModelSpec] = &[
         requires_full_audio_ctx: false,
     },
     ModelSpec {
+        id: "parakeet-ultra",
+        display_name: "Parakeet Ultra 0.6B (int8, 25 EU-Sprachen, CPU)",
+        engine: LocalEngineKind::SherpaOfflineTransducer,
+        hf_repo: "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-ultra-int8",
+        hf_revision: "402e1190ce85b9793118ee223db21fb0d12f52db",
+        files: &[
+            "encoder.int8.onnx",
+            "decoder.int8.onnx",
+            "joiner.int8.onnx",
+            "tokens.txt",
+        ],
+        approx_size_mb: 671,
+        aliases: &["parakeet-tdt-0.6b-ultra", "parakeet-ultra-int8"],
+        requires_full_audio_ctx: false,
+    },
+    ModelSpec {
         id: "parakeet-v3",
         display_name: "Parakeet TDT 0.6B v3 (int8, CPU)",
         engine: LocalEngineKind::SherpaOfflineTransducer,
@@ -359,6 +375,16 @@ mod tests {
             "parakeet-v3"
         );
         assert_eq!(
+            resolve_model_spec(Some("parakeet-ultra")).unwrap().id,
+            "parakeet-ultra"
+        );
+        assert_eq!(
+            resolve_model_spec(Some("parakeet-tdt-0.6b-ultra"))
+                .unwrap()
+                .id,
+            "parakeet-ultra"
+        );
+        assert_eq!(
             resolve_model_spec(Some("canary")).unwrap().id,
             "canary-1b-v2"
         );
@@ -376,6 +402,13 @@ mod tests {
         assert_eq!(
             url.as_str(),
             "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/resolve/ed5d745623472f97cfc2e6c2916ee248798fc5a8/encoder.int8.onnx"
+        );
+        let parakeet_ultra = resolve_model_spec(Some("parakeet-ultra")).unwrap();
+        let ultra_url =
+            build_hf_resolve_url(DEFAULT_HF_BASE_URL, parakeet_ultra, "encoder.int8.onnx").unwrap();
+        assert_eq!(
+            ultra_url.as_str(),
+            "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-ultra-int8/resolve/402e1190ce85b9793118ee223db21fb0d12f52db/encoder.int8.onnx"
         );
         assert!(build_hf_resolve_url(DEFAULT_HF_BASE_URL, parakeet, "../secret").is_err());
         assert!(build_hf_resolve_url(DEFAULT_HF_BASE_URL, parakeet, "C:evil.bin").is_err());
