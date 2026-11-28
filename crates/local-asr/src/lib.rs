@@ -218,8 +218,8 @@ pub fn format_qwen3_hotwords(keywords: &[String]) -> Option<String> {
         }
         let term_chars = trimmed.chars().count();
         let sep_chars = usize::from(!terms.is_empty());
-        if !terms.is_empty() && total_chars + sep_chars + term_chars > QWEN3_HOTWORD_MAX_CHARS {
-            break;
+        if total_chars + sep_chars + term_chars > QWEN3_HOTWORD_MAX_CHARS {
+            continue;
         }
         seen.push(lowered);
         terms.push(trimmed.to_owned());
@@ -338,10 +338,28 @@ mod tests {
             Some("PulseScribe,TATEX  GmbH,Kliebhan")
         );
 
-        let many: Vec<String> = (0..40).map(|i| format!("Fachbegriff{i:02}")).collect();
-        let hotwords = format_qwen3_hotwords(&many).unwrap();
-        assert!(hotwords.chars().count() <= QWEN3_HOTWORD_MAX_CHARS);
-        assert!(hotwords.split(',').count() <= QWEN3_HOTWORD_LIMIT);
+        // Single oversized keyword must not bypass the character cap.
+        let oversized = "x".repeat(QWEN3_HOTWORD_MAX_CHARS + 50);
+        assert_eq!(
+            format_qwen3_hotwords(std::slice::from_ref(&oversized)),
+            None
+        );
+        assert_eq!(
+            format_qwen3_hotwords(&[oversized, "PulseScribe".to_owned()]).as_deref(),
+            Some("PulseScribe")
+        );
+
+        // Long terms exercise the character budget.
+        let many_long: Vec<String> = (0..40).map(|i| format!("Fachbegriff{i:02}")).collect();
+        let long_hotwords = format_qwen3_hotwords(&many_long).unwrap();
+        assert!(long_hotwords.chars().count() <= QWEN3_HOTWORD_MAX_CHARS);
+        assert!(long_hotwords.split(',').count() < QWEN3_HOTWORD_LIMIT);
+
+        // Short terms stay well within the character budget and exercise the item-count cap.
+        let many_short: Vec<String> = (0..30).map(|i| format!("k{i:02}")).collect();
+        let short_hotwords = format_qwen3_hotwords(&many_short).unwrap();
+        assert_eq!(short_hotwords.split(',').count(), QWEN3_HOTWORD_LIMIT);
+        assert!(short_hotwords.chars().count() <= QWEN3_HOTWORD_MAX_CHARS);
     }
 
     #[test]

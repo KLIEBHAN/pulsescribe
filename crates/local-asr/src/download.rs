@@ -169,7 +169,7 @@ impl ModelDownloader {
         on_own_transfer_start();
 
         let target_dir = cache.model_dir(spec);
-        tokio::fs::create_dir_all(&target_dir).await?;
+        ensure_safe_managed_dir(&target_dir).await?;
 
         let mut emit_progress = |progress: DownloadProgress| {
             if slot.progress_tx.receiver_count() > 0 {
@@ -185,10 +185,8 @@ impl ModelDownloader {
                 return Err(LocalAsrError::Cancelled);
             }
 
+            ensure_safe_managed_parent_dirs(&target_dir, filename).await?;
             let final_path = target_dir.join(filename);
-            if let Some(parent) = final_path.parent() {
-                tokio::fs::create_dir_all(parent).await?;
-            }
             if let Some(len) = existing_regular_file_len(&final_path).await {
                 emit_progress(DownloadProgress {
                     model_id: spec.id.to_owned(),
@@ -470,6 +468,59 @@ where
     }
 }
 
+/// Ensure `target_dir` exists as a real (non-symlink) directory inside the managed model cache.
+async fn ensure_safe_managed_dir(target_dir: &Path) -> Result<(), LocalAsrError> {
+    if let Some(parent) = target_dir.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    match tokio::fs::symlink_metadata(target_dir).await {
+        Ok(meta) => {
+            if meta.file_type().is_symlink() || !meta.is_dir() {
+                return Err(LocalAsrError::Download(format!(
+                    "refusing to write through non-directory or symlink '{}'",
+                    target_dir.display()
+                )));
+            }
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            tokio::fs::create_dir(target_dir).await?;
+        }
+        Err(err) => return Err(LocalAsrError::Io(err)),
+    }
+    Ok(())
+}
+
+/// Validate and create any intermediate subdirectories for a relative model file path (`rel_path`)
+/// without following symlinks, so downloads can never write outside the managed model directory.
+async fn ensure_safe_managed_parent_dirs(
+    target_dir: &Path,
+    rel_path: &str,
+) -> Result<(), LocalAsrError> {
+    let segments: Vec<&str> = rel_path.split('/').collect();
+    if segments.len() <= 1 {
+        return Ok(());
+    }
+    let mut cursor = target_dir.to_path_buf();
+    for segment in &segments[..segments.len() - 1] {
+        cursor.push(segment);
+        match tokio::fs::symlink_metadata(&cursor).await {
+            Ok(meta) => {
+                if meta.file_type().is_symlink() || !meta.is_dir() {
+                    return Err(LocalAsrError::Download(format!(
+                        "refusing to write through non-directory or symlink '{}'",
+                        cursor.display()
+                    )));
+                }
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                tokio::fs::create_dir(&cursor).await?;
+            }
+            Err(err) => return Err(LocalAsrError::Io(err)),
+        }
+    }
+    Ok(())
+}
+
 async fn existing_regular_file_len(path: &Path) -> Option<u64> {
     let meta = tokio::fs::symlink_metadata(path).await.ok()?;
     (!meta.file_type().is_symlink() && meta.is_file() && meta.len() > 0).then_some(meta.len())
@@ -649,6 +700,39 @@ mod tests {
         assert_eq!(installed.total_bytes, 64 + 128 + 256 + 4 + 2 + 7);
         assert!(installed.file_path("tokenizer/vocab.json").is_file());
         assert_eq!(cache.find_installed(qwen3), Some(installed));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn download_rejects_symlinked_subdirectory_without_writing_outside_cache() {
+        let dir = TempDir::new("qwen3-symlink-guard");
+        let cache = ModelCache::new(dir.0.join("models"), None);
+        let qwen3 = resolve_model_spec(Some("qwen3-asr-0.6b")).unwrap();
+
+        let external = dir.0.join("external_target");
+        std::fs::create_dir_all(&external).unwrap();
+        let model_dir = cache.model_dir(qwen3);
+        std::fs::create_dir_all(&model_dir).unwrap();
+        std::os::unix::fs::symlink(&external, model_dir.join("tokenizer")).unwrap();
+
+        let base_url = spawn_file_server(vec![
+            ("conv_frontend.onnx", vec![1_u8; 64]),
+            ("encoder.int8.onnx", vec![2_u8; 128]),
+            ("decoder.int8.onnx", vec![3_u8; 256]),
+            ("tokenizer/merges.txt", b"a b\n".to_vec()),
+            ("tokenizer/tokenizer_config.json", b"{}".to_vec()),
+            ("tokenizer/vocab.json", b"{\"a\":0}".to_vec()),
+        ])
+        .await;
+
+        let downloader = ModelDownloader::with_base_url(base_url).unwrap();
+        let cancel = AtomicBool::new(false);
+        let err = downloader
+            .ensure_downloaded(&cache, qwen3, &cancel, |_| {})
+            .await
+            .unwrap_err();
+        assert!(matches!(err, LocalAsrError::Download(_)));
+        assert_eq!(std::fs::read_dir(&external).unwrap().count(), 0);
     }
 
     #[tokio::test]
