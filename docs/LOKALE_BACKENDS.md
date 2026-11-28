@@ -2,7 +2,7 @@
 
 [🇺🇸 English Version](LOCAL_BACKENDS.md)
 
-PulseScribe unterstützt Offline-Transkription mit lokalen Whisper-Modellen oder NVIDIAs [Parakeet v3 und Canary-1B-v2](#nvidia-parakeet-v3-und-canary-1b-v2). Nach dem initialen Modell-Download sind keine API-Keys oder Internetverbindung erforderlich.
+PulseScribe unterstützt Offline-Transkription mit lokalen Whisper-Modellen (`whisper-rs`, Metal auf macOS / CPU auf Windows) sowie kuratierten `sherpa-onnx`-CPU-Modellen ([Parakeet Ultra, Parakeet v3, Canary 1B v2, Cohere Transcribe 2B, Qwen3-ASR 0.6B](#sherpa-onnx-und-spezialisierte-lokale-modelle)). Nach dem initialen Modell-Download sind keine API-Keys oder Internetverbindung erforderlich.
 
 ## Backend-Vergleich
 
@@ -159,32 +159,31 @@ PULSESCRIBE_LOCAL_BACKEND=whisper
 
 ---
 
-### NVIDIA Parakeet v3 und Canary-1B-v2
+### sherpa-onnx und spezialisierte lokale Modelle
 
-Zwei Modelle von NVIDIA mit eigener Engine, egal welches Backend eingestellt ist: auf Apple Silicon auf der GPU über mlx-audio (MLX), sonst auf der CPU über sherpa-onnx. Du wählst sie unter Settings → Transcription → Local Model (sichtbar bei Mode local) oder setzt das Modell:
+Zusätzlich zu den Standard-Whisper-Modellen (`large-v3-turbo`, `large-v3`, `medium`, `small`, `base`, `tiny`) bietet PulseScribe spezialisierte Offline-Modelle über `crates/local-asr`:
 
 ```bash
 # In ~/.pulsescribe/.env
 PULSESCRIBE_MODE=local
-PULSESCRIBE_LOCAL_MODEL=parakeet-v3   # oder canary-1b-v2
+PULSESCRIBE_LOCAL_MODEL=parakeet-ultra   # oder parakeet-v3, canary-1b-v2, cohere-transcribe, qwen3-asr-0.6b, large-v3-turbo-german
 ```
 
-| Modell | Engine | Download | Speicher geladen | 11 s deutsche Sprache (M5) | Sprache |
-|--------|--------|----------|------------------|----------------------------|---------|
-| `parakeet-v3` | MLX (Apple Silicon) | 0,7 GB | 1,1 GB | 0,08 s | erkennt sie selbst |
-| `parakeet-v3` | sherpa-onnx (CPU) | 0,7 GB | 2,1 GB | 0,22 s | erkennt sie selbst |
-| `canary-1b-v2` | MLX (Apple Silicon) | 1,1 GB | 1,5 GB | 0,22 s | braucht sie |
-| `canary-1b-v2` | sherpa-onnx (CPU) | 1,0 GB | 2,8 GB | 0,65 s | braucht sie |
+| Modell | Engine | Download | Sprachen | Vokabular-Biasing | Spracheinstellung |
+|--------|--------|----------|----------|-------------------|-------------------|
+| `parakeet-ultra` | `sherpa-onnx` (CPU) | 671 MB | 25 europäische | nein | erkennt sie selbst |
+| `parakeet-v3` | `sherpa-onnx` (CPU) | 670 MB | 25 europäische | nein | erkennt sie selbst |
+| `canary-1b-v2` | `sherpa-onnx` (CPU) | 1,02 GB | 25 europäische | nein | explizit (Locale-Fallback) |
+| `cohere-transcribe` | `sherpa-onnx` (CPU) | 2,89 GB | 14 (u. a. DE, EN, FR, ES, IT, NL, PL, PT, EL, ZH, JA, KO, VI, AR) | nein | explizit (Locale-Fallback) |
+| `qwen3-asr-0.6b` | `sherpa-onnx` (CPU) | 987 MB | 30 (inkl. DE, EN, EU & Asien) | ja (`vocabulary.json`-Hotwords) | optional (erkennt sie selbst) |
+| `large-v3-turbo-german` | `whisper-rs` (Metal / CPU) | 574 MB | Deutsch-Fine-Tune (`primeline`) | ja (`initial_prompt`) | Deutsch (`de`) |
 
-Whisper turbo mit MLX brauchte für dieselbe Aufnahme 0,34 s. Beide Engines lieferten auf unseren Testaufnahmen denselben Text.
-
-- Beide kennen 25 europäische Sprachen (bg, cs, da, de, el, en, es, et, fi, fr, hr, hu, it, lt, lv, mt, nl, pl, pt, ro, ru, sk, sl, sv, uk) und setzen Satzzeichen und Großschreibung.
-- Canary erkennt die Sprache nicht: Sprache in einer anderen übersetzt es in die eingestellte. Bei `auto` oder einer Sprache, die es nicht kennt, nimmt es deine Systemsprache, sofern es sie kennt, sonst Englisch. Stell die Sprache ein, wenn du in einer anderen diktierst.
-- Beim ersten Laden wird das Modell in den Hugging-Face-Cache geladen, mit Fortschritt in der Menüleiste. Laden dauert bis zu 1,5 s, auch nach **Unload when idle**. Auf der GPU gibt das den Speicher innerhalb von etwa 2 s vollständig frei; auf der CPU bis auf etwa 0,4 GB, die ONNX Runtime behält und beim nächsten Laden wieder nutzt.
-- Aufnahmen über 15 s werden in Stücken von höchstens 15 s transkribiert, jeweils an der leisesten Stelle ihrer letzten 5 s geschnitten. Canary liefert für ein Stück über etwa 37 s keinen Text, und Parakeet lässt bei langen Stücken Wörter aus: bei 5 Minuten deutscher Sprache waren in einem Stück 29 % der Wörter falsch, in Stücken 0,1 %.
-- Whispers Optionen (Vokabular, Beam Size, Temperature, Quantisierung, Warmup) wirken nicht, Settings blenden sie aus. Die Live-Vorschau `on` funktioniert mit Parakeet und auf Apple Silicon mit Canary; siehe [Live-Vorschau](#live-vorschau).
-- Die macOS-App enthält beide Engines. Der Windows-Installer keine, seine Settings bieten die Modelle daher nicht an; beim Start aus dem Quellcode installierst du sherpa-onnx mit `pip install sherpa-onnx`.
-- NVIDIA lizenziert beide Modelle unter CC-BY-4.0. Die Dateien stammen aus Hugging-Face-Repositories auf festem Commit: für die CPU vom sherpa-onnx-Autor (Parakeet) und einem Dritten (Canary), für MLX von Dritten (8-Bit-Gewichte).
+- **`parakeet-ultra`** (Moondream-Nachschulung von `parakeet-tdt-0.6b-v3`, CC-BY-4.0) hat dieselbe Größe und CPU-Latenz wie `parakeet-v3`, verbessert aber die deutsche Erkennung und Lärmrobustheit.
+- **`cohere-transcribe`** (Cohere 2B Conformer-Transformer, Apache 2.0) aktiviert Satzzeichen und Zahlenformatierung (`use_punct`, `use_itn`) und übergibt die Sprache pro Stream, sodass ein Sprachwechsel das Modell nicht neu laden muss.
+- **`qwen3-asr-0.6b`** (Alibaba Qwen3-ASR, Apache 2.0) unterstützt Hotword-Biasing aus `~/.pulsescribe/vocabulary.json` pro Stream (konservativ begrenzt für das 512-Token-KV-Cache-Budget bei 15-s-Segmenten).
+- **`large-v3-turbo-german`** (`primeline/whisper-large-v3-turbo-german` Q5_0 GGML, Apache 2.0) läuft über `whisper-rs` (Metal auf Apple Silicon, CPU auf Windows) für reines deutsches Diktat mit eigenem Vokabular.
+- Aufnahmen über 15 s werden für alle Offline-`sherpa-onnx`-Modelle in Stücken von höchstens 15 s an der leisesten 100-ms-Stelle der letzten 5 s segmentiert.
+- Alle kuratierten Modelle laden direkt von gepinnten Hugging-Face-Commits nach `~/.pulsescribe/models/<id>/` und nutzen vorhandene Snapshots in `~/.cache/huggingface/hub/` mit.
 
 ---
 

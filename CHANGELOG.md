@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Additional curated open-source local ASR models** – added Moondream
+  **Parakeet Ultra 0.6B (`int8`)**, **Cohere Transcribe 2B (`int8`, 14 languages
+  with per-stream language selection)**, **Qwen3-ASR 0.6B (`int8`, 30 languages
+  with per-stream `vocabulary.json` hotword biasing)** via `sherpa-onnx`, and
+  **Whisper Large v3 Turbo German (`primeline`, Q5_0)** via `whisper-rs`,
+  including safe nested-subdirectory model downloads (`tokenizer/*`).
+
 ## [2.2.0] - 2026-11-23
 
 ### Added

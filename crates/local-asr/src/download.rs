@@ -17,7 +17,8 @@ use tokio::sync::{broadcast, Mutex as AsyncMutex};
 
 use crate::cache::{verify_all_files_present, InstalledModel, ModelCache, ModelInstallSource};
 use crate::catalog::{
-    build_hf_resolve_url, validate_safe_filename, ModelSpec, DEFAULT_HF_BASE_URL,
+    build_hf_resolve_url, validate_safe_filename, validate_safe_rel_path, ModelSpec,
+    DEFAULT_HF_BASE_URL,
 };
 use crate::LocalAsrError;
 
@@ -179,12 +180,15 @@ impl ModelDownloader {
 
         let total_files = spec.files.len();
         for (idx, &filename) in spec.files.iter().enumerate() {
-            validate_safe_filename(filename)?;
+            validate_safe_rel_path(filename)?;
             if cancel_flag.load(Ordering::Acquire) {
                 return Err(LocalAsrError::Cancelled);
             }
 
             let final_path = target_dir.join(filename);
+            if let Some(parent) = final_path.parent() {
+                tokio::fs::create_dir_all(parent).await?;
+            }
             if let Some(len) = existing_regular_file_len(&final_path).await {
                 emit_progress(DownloadProgress {
                     model_id: spec.id.to_owned(),
@@ -278,8 +282,14 @@ impl ModelDownloader {
 
         let total_bytes = response.content_length();
         let seq = PART_FILE_SEQ.fetch_add(1, Ordering::Relaxed);
+        let leaf_name = final_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| {
+                LocalAsrError::InvalidModel(format!("invalid target path '{filename}'"))
+            })?;
         let part_path =
-            final_path.with_file_name(format!(".{filename}.part.{}.{seq}", std::process::id()));
+            final_path.with_file_name(format!(".{leaf_name}.part.{}.{seq}", std::process::id()));
 
         let mut part_guard = PartFileGuard::new(part_path.clone());
         let file = tokio::fs::File::create(&part_path).await?;
@@ -610,6 +620,35 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(cached, installed);
+    }
+
+    #[tokio::test]
+    async fn downloads_nested_subdirectory_model_files_atomically() {
+        let dir = TempDir::new("qwen3-nested");
+        let cache = ModelCache::new(dir.0.join("models"), None);
+        let qwen3 = resolve_model_spec(Some("qwen3-asr-0.6b")).unwrap();
+
+        let base_url = spawn_file_server(vec![
+            ("conv_frontend.onnx", vec![1_u8; 64]),
+            ("encoder.int8.onnx", vec![2_u8; 128]),
+            ("decoder.int8.onnx", vec![3_u8; 256]),
+            ("tokenizer/merges.txt", b"a b\n".to_vec()),
+            ("tokenizer/tokenizer_config.json", b"{}".to_vec()),
+            ("tokenizer/vocab.json", b"{\"a\":0}".to_vec()),
+        ])
+        .await;
+
+        let downloader = ModelDownloader::with_base_url(base_url).unwrap();
+        let cancel = AtomicBool::new(false);
+        let installed = downloader
+            .ensure_downloaded(&cache, qwen3, &cancel, |_| {})
+            .await
+            .unwrap();
+
+        assert_eq!(installed.source, ModelInstallSource::PulseScribeCache);
+        assert_eq!(installed.total_bytes, 64 + 128 + 256 + 4 + 2 + 7);
+        assert!(installed.file_path("tokenizer/vocab.json").is_file());
+        assert_eq!(cache.find_installed(qwen3), Some(installed));
     }
 
     #[tokio::test]

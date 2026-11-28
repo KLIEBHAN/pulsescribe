@@ -23,9 +23,9 @@ use thiserror::Error;
 pub use cache::{InstalledModel, ModelCache, ModelInstallSource, ModelStatus};
 pub use catalog::{
     build_hf_resolve_url, catalog_models, is_canary_language, is_cohere_language,
-    resolve_canary_language, resolve_cohere_language, resolve_model_spec, LocalEngineKind,
-    ModelSpec, CANARY_LANGUAGES, COHERE_LANGUAGES, DEFAULT_HF_BASE_URL, DEFAULT_LOCAL_MODEL_ID,
-    STREAMING_PREVIEW_MODEL_ID,
+    resolve_canary_language, resolve_cohere_language, resolve_model_spec, resolve_qwen3_language,
+    LocalEngineKind, ModelSpec, CANARY_LANGUAGES, COHERE_LANGUAGES, DEFAULT_HF_BASE_URL,
+    DEFAULT_LOCAL_MODEL_ID, STREAMING_PREVIEW_MODEL_ID,
 };
 pub use download::{DownloadProgress, ModelDownloader};
 pub use manager::{LocalAsrManager, LocalRuntimeCapabilities};
@@ -190,6 +190,52 @@ pub fn format_whisper_initial_prompt(keywords: &[String]) -> Option<String> {
     }
 }
 
+/// Conservative cap on Qwen3-ASR hotwords so prompt tokens stay well below the 512-token KV cache
+/// budget alongside 15 s of audio (~195 audio tokens) and generated output tokens.
+const QWEN3_HOTWORD_LIMIT: usize = 20;
+const QWEN3_HOTWORD_MAX_CHARS: usize = 200;
+
+/// Format custom vocabulary keywords as ASCII comma-separated hotwords for Qwen3-ASR.
+///
+/// Strips interior NUL bytes and commas (used as delimiter by `sherpa-onnx`), deduplicates
+/// case-insensitively while preserving order, and caps both item count and total length so the
+/// Qwen3-ASR prompt stays within its KV-cache budget.
+pub fn format_qwen3_hotwords(keywords: &[String]) -> Option<String> {
+    let mut seen = Vec::with_capacity(keywords.len().min(QWEN3_HOTWORD_LIMIT));
+    let mut terms = Vec::with_capacity(keywords.len().min(QWEN3_HOTWORD_LIMIT));
+    let mut total_chars = 0usize;
+
+    for raw in keywords {
+        let cleaned = strip_nuls(raw);
+        let no_commas = cleaned.replace(',', " ");
+        let trimmed = no_commas.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let lowered = trimmed.to_lowercase();
+        if seen.iter().any(|existing| existing == &lowered) {
+            continue;
+        }
+        let term_chars = trimmed.chars().count();
+        let sep_chars = usize::from(!terms.is_empty());
+        if !terms.is_empty() && total_chars + sep_chars + term_chars > QWEN3_HOTWORD_MAX_CHARS {
+            break;
+        }
+        seen.push(lowered);
+        terms.push(trimmed.to_owned());
+        total_chars += sep_chars + term_chars;
+        if terms.len() >= QWEN3_HOTWORD_LIMIT {
+            break;
+        }
+    }
+
+    if terms.is_empty() {
+        None
+    } else {
+        Some(terms.join(","))
+    }
+}
+
 /// Maximum piece length (in seconds) for NeMo offline models (`parakeet-v3` and `canary-1b-v2`).
 ///
 /// Mirrors `providers/nemo_model.py`: Canary emits empty output beyond ~37 s and Parakeet drops
@@ -276,6 +322,26 @@ mod tests {
         let many: Vec<String> = (0..80).map(|i| format!("Term{i}")).collect();
         let prompt = format_whisper_initial_prompt(&many).unwrap();
         assert_eq!(prompt.split(", ").count(), LOCAL_KEYWORD_LIMIT);
+    }
+
+    #[test]
+    fn format_qwen3_hotwords_strips_commas_deduplicates_and_caps_budget() {
+        assert_eq!(format_qwen3_hotwords(&[]), None);
+        let terms = vec![
+            " Pulse\0Scribe ".to_owned(),
+            "pulsescribe".to_owned(),
+            "TATEX, GmbH".to_owned(),
+            "Kliebhan".to_owned(),
+        ];
+        assert_eq!(
+            format_qwen3_hotwords(&terms).as_deref(),
+            Some("PulseScribe,TATEX  GmbH,Kliebhan")
+        );
+
+        let many: Vec<String> = (0..40).map(|i| format!("Fachbegriff{i:02}")).collect();
+        let hotwords = format_qwen3_hotwords(&many).unwrap();
+        assert!(hotwords.chars().count() <= QWEN3_HOTWORD_MAX_CHARS);
+        assert!(hotwords.split(',').count() <= QWEN3_HOTWORD_LIMIT);
     }
 
     #[test]
