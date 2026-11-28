@@ -15,9 +15,12 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::sync::{broadcast, Mutex as AsyncMutex};
 
-use crate::cache::{verify_all_files_present, InstalledModel, ModelCache, ModelInstallSource};
+use crate::cache::{
+    managed_revision_matches, read_regular_marker, verify_all_files_present, InstalledModel,
+    ModelCache, ModelInstallSource, REVISION_MARKER_FILE, REVISION_PENDING_FILE,
+};
 use crate::catalog::{
-    build_hf_resolve_url, validate_safe_filename, validate_safe_rel_path, ModelSpec,
+    build_model_file_url, validate_safe_filename, validate_safe_rel_path, ModelSpec,
     DEFAULT_HF_BASE_URL,
 };
 use crate::LocalAsrError;
@@ -170,6 +173,7 @@ impl ModelDownloader {
 
         let target_dir = cache.model_dir(spec);
         ensure_safe_managed_dir(&target_dir).await?;
+        prepare_managed_revision_dir(&target_dir, spec).await?;
 
         let mut emit_progress = |progress: DownloadProgress| {
             if slot.progress_tx.receiver_count() > 0 {
@@ -199,7 +203,7 @@ impl ModelDownloader {
                 continue;
             }
 
-            let url = build_hf_resolve_url(&self.hf_base_url, spec, filename)?;
+            let url = build_model_file_url(&self.hf_base_url, spec, filename)?;
             self.download_single_file(
                 url,
                 &final_path,
@@ -226,6 +230,8 @@ impl ModelDownloader {
                 spec.id
             ))
         })?;
+
+        commit_managed_revision_marker(&target_dir, spec).await?;
 
         Ok(InstalledModel {
             model_id: spec.id.to_owned(),
@@ -524,6 +530,109 @@ async fn ensure_safe_managed_parent_dirs(
 async fn existing_regular_file_len(path: &Path) -> Option<u64> {
     let meta = tokio::fs::symlink_metadata(path).await.ok()?;
     (!meta.file_type().is_symlink() && meta.is_file() && meta.len() > 0).then_some(meta.len())
+}
+
+async fn reject_if_symlink(path: &Path) -> Result<(), LocalAsrError> {
+    match tokio::fs::symlink_metadata(path).await {
+        Ok(meta) if meta.file_type().is_symlink() || meta.is_dir() => {
+            Err(LocalAsrError::Download(format!(
+                "refusing to write through non-file or symlink '{}'",
+                path.display()
+            )))
+        }
+        Ok(_) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(LocalAsrError::Io(err)),
+    }
+}
+
+async fn write_marker_atomically(path: &Path, revision_key: &str) -> Result<(), LocalAsrError> {
+    reject_if_symlink(path).await?;
+    let seq = PART_FILE_SEQ.fetch_add(1, Ordering::Relaxed);
+    let leaf = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("revision");
+    let tmp = path.with_file_name(format!(".{leaf}.part.{}.{seq}", std::process::id()));
+    let mut guard = PartFileGuard::new(tmp.clone());
+    tokio::fs::write(&tmp, format!("{revision_key}\n")).await?;
+    #[cfg(windows)]
+    if tokio::fs::symlink_metadata(path).await.is_ok() {
+        let _ = tokio::fs::remove_file(path).await;
+    }
+    tokio::fs::rename(&tmp, path).await?;
+    guard.disarm();
+    Ok(())
+}
+
+/// Prepare `target_dir` for downloading `spec`: if an older revision is installed (no matching
+/// `.pulsescribe-revision` or `.pulsescribe-revision.pending`), purge stale model files first so
+/// the download replaces them cleanly instead of reusing outdated weights, while still letting an
+/// interrupted download of the same revision resume across retries.
+async fn prepare_managed_revision_dir(
+    target_dir: &Path,
+    spec: &ModelSpec,
+) -> Result<(), LocalAsrError> {
+    let rev_key = spec.revision_key();
+    let dir_clone = target_dir.to_path_buf();
+    let spec_copy = *spec;
+    let is_current =
+        tokio::task::spawn_blocking(move || managed_revision_matches(&dir_clone, &spec_copy))
+            .await
+            .map_err(|err| LocalAsrError::Download(format!("revision probe failed: {err}")))?;
+    if is_current {
+        return Ok(());
+    }
+
+    let pending_path = target_dir.join(REVISION_PENDING_FILE);
+    reject_if_symlink(&pending_path).await?;
+    let pending_clone = pending_path.clone();
+    let pending_matches = tokio::task::spawn_blocking(move || {
+        read_regular_marker(&pending_clone).as_deref() == Some(rev_key.as_str())
+    })
+    .await
+    .map_err(|err| LocalAsrError::Download(format!("pending marker probe failed: {err}")))?;
+    if pending_matches {
+        return Ok(());
+    }
+
+    let marker_path = target_dir.join(REVISION_MARKER_FILE);
+    reject_if_symlink(&marker_path).await?;
+    match tokio::fs::remove_file(&marker_path).await {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(LocalAsrError::Io(err)),
+    }
+
+    for &filename in spec.files {
+        validate_safe_rel_path(filename)?;
+        ensure_safe_managed_parent_dirs(target_dir, filename).await?;
+        let path = target_dir.join(filename);
+        reject_if_symlink(&path).await?;
+        match tokio::fs::remove_file(&path).await {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(LocalAsrError::Io(err)),
+        }
+    }
+
+    write_marker_atomically(&pending_path, &spec.revision_key()).await?;
+    Ok(())
+}
+
+async fn commit_managed_revision_marker(
+    target_dir: &Path,
+    spec: &ModelSpec,
+) -> Result<(), LocalAsrError> {
+    let marker_path = target_dir.join(REVISION_MARKER_FILE);
+    write_marker_atomically(&marker_path, &spec.revision_key()).await?;
+    let pending_path = target_dir.join(REVISION_PENDING_FILE);
+    match tokio::fs::remove_file(&pending_path).await {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => {}
+    }
+    Ok(())
 }
 
 struct PartFileGuard {
@@ -890,5 +999,46 @@ mod tests {
             "peer waiter should receive forwarded progress ticks while waiting on the slot lock"
         );
         let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn refreshes_stale_parakeet_ultra_without_marker_and_writes_revision_marker() {
+        let dir = TempDir::new("ultra-refresh");
+        let cache = ModelCache::new(dir.0.join("models"), None);
+        let ultra = resolve_model_spec(Some("parakeet-ultra")).unwrap();
+
+        // Simulate a pre-v2.3.1 installation (old 77-ConvInteger files, no revision marker).
+        let model_dir = cache.model_dir(ultra);
+        std::fs::create_dir_all(&model_dir).unwrap();
+        for &file in ultra.files {
+            std::fs::write(model_dir.join(file), b"old-pre-pr4179").unwrap();
+        }
+        assert!(cache.find_installed(ultra).is_none());
+
+        let base_url = spawn_file_server(vec![
+            ("encoder.int8.onnx", b"new-pr4179-encoder".to_vec()),
+            ("decoder.int8.onnx", b"new-decoder".to_vec()),
+            ("joiner.int8.onnx", b"new-joiner".to_vec()),
+            ("tokens.txt", b"0 <blk>\n".to_vec()),
+        ])
+        .await;
+
+        let downloader = ModelDownloader::with_base_url(base_url).unwrap();
+        let cancel = AtomicBool::new(false);
+        let installed = downloader
+            .ensure_downloaded(&cache, ultra, &cancel, |_| {})
+            .await
+            .unwrap();
+
+        assert_eq!(
+            std::fs::read(installed.file_path("encoder.int8.onnx")).unwrap(),
+            b"new-pr4179-encoder"
+        );
+        assert_eq!(
+            read_regular_marker(&model_dir.join(REVISION_MARKER_FILE)).as_deref(),
+            Some(ultra.revision_key().as_str())
+        );
+        assert!(!model_dir.join(REVISION_PENDING_FILE).exists());
+        assert_eq!(cache.find_installed(ultra), Some(installed));
     }
 }

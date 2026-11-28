@@ -195,6 +195,12 @@ pub struct ModelSpec {
     pub hf_repo: &'static str,
     /// Pinned commit SHA for third-party exports; `"main"` for official `ggerganov/whisper.cpp`.
     pub hf_revision: &'static str,
+    /// Optional direct HTTPS base URL (e.g. a pinned GitHub Release download directory) used
+    /// instead of Hugging Face when downloading via the default base URL.
+    pub direct_base_url: Option<&'static str>,
+    /// When `true`, managed cache entries without a matching `.pulsescribe-revision` marker are
+    /// treated as stale so updated model weights automatically replace older installs.
+    pub requires_revision_marker: bool,
     pub files: &'static [&'static str],
     pub approx_size_mb: u32,
     pub aliases: &'static [&'static str],
@@ -203,7 +209,19 @@ pub struct ModelSpec {
     pub requires_full_audio_ctx: bool,
 }
 
+impl ModelSpec {
+    /// Stable revision identifier persisted in `.pulsescribe-revision` inside the managed cache.
+    pub fn revision_key(&self) -> String {
+        match self.direct_base_url {
+            Some(url) => format!("direct:{}", url.trim_end_matches('/')),
+            None => format!("hf:{}@{}", self.hf_repo, self.hf_revision),
+        }
+    }
+}
+
 const WHISPER_GGML_REPO: &str = "ggerganov/whisper.cpp";
+const PARAKEET_ULTRA_PR4179_BASE_URL: &str =
+    "https://github.com/KLIEBHAN/pulsescribe/releases/download/model-parakeet-ultra-pr4179";
 
 const CATALOG: &[ModelSpec] = &[
     ModelSpec {
@@ -212,6 +230,8 @@ const CATALOG: &[ModelSpec] = &[
         engine: LocalEngineKind::Whisper,
         hf_repo: WHISPER_GGML_REPO,
         hf_revision: "main",
+        direct_base_url: None,
+        requires_revision_marker: false,
         files: &["ggml-large-v3-turbo-q8_0.bin"],
         approx_size_mb: 874,
         aliases: &["turbo", "whisper-large-v3-turbo", "large-v3-turbo-q8_0"],
@@ -223,6 +243,8 @@ const CATALOG: &[ModelSpec] = &[
         engine: LocalEngineKind::Whisper,
         hf_repo: WHISPER_GGML_REPO,
         hf_revision: "main",
+        direct_base_url: None,
+        requires_revision_marker: false,
         files: &["ggml-large-v3-turbo-q5_0.bin"],
         approx_size_mb: 574,
         aliases: &["turbo-q5", "turbo-q5_0"],
@@ -234,6 +256,8 @@ const CATALOG: &[ModelSpec] = &[
         engine: LocalEngineKind::Whisper,
         hf_repo: "cstr/whisper-large-v3-turbo-german-ggml",
         hf_revision: "d9431a78952938533dc46e75395a9b0b7237fa69",
+        direct_base_url: None,
+        requires_revision_marker: false,
         files: &["ggml-model-q5_0.bin"],
         approx_size_mb: 574,
         aliases: &["turbo-de", "turbo-german", "whisper-large-v3-turbo-german"],
@@ -245,6 +269,8 @@ const CATALOG: &[ModelSpec] = &[
         engine: LocalEngineKind::Whisper,
         hf_repo: WHISPER_GGML_REPO,
         hf_revision: "main",
+        direct_base_url: None,
+        requires_revision_marker: false,
         files: &["ggml-large-v3-q5_0.bin"],
         approx_size_mb: 1080,
         aliases: &["large", "whisper-large-v3"],
@@ -256,6 +282,8 @@ const CATALOG: &[ModelSpec] = &[
         engine: LocalEngineKind::Whisper,
         hf_repo: WHISPER_GGML_REPO,
         hf_revision: "main",
+        direct_base_url: None,
+        requires_revision_marker: false,
         files: &["ggml-medium.bin"],
         approx_size_mb: 1530,
         aliases: &["whisper-medium"],
@@ -267,6 +295,8 @@ const CATALOG: &[ModelSpec] = &[
         engine: LocalEngineKind::Whisper,
         hf_repo: WHISPER_GGML_REPO,
         hf_revision: "main",
+        direct_base_url: None,
+        requires_revision_marker: false,
         files: &["ggml-small.bin"],
         approx_size_mb: 466,
         aliases: &["whisper-small"],
@@ -278,6 +308,8 @@ const CATALOG: &[ModelSpec] = &[
         engine: LocalEngineKind::Whisper,
         hf_repo: WHISPER_GGML_REPO,
         hf_revision: "main",
+        direct_base_url: None,
+        requires_revision_marker: false,
         files: &["ggml-base.bin"],
         approx_size_mb: 142,
         aliases: &["whisper-base"],
@@ -289,6 +321,8 @@ const CATALOG: &[ModelSpec] = &[
         engine: LocalEngineKind::Whisper,
         hf_repo: WHISPER_GGML_REPO,
         hf_revision: "main",
+        direct_base_url: None,
+        requires_revision_marker: false,
         files: &["ggml-tiny.bin"],
         approx_size_mb: 75,
         aliases: &["whisper-tiny"],
@@ -299,14 +333,16 @@ const CATALOG: &[ModelSpec] = &[
         display_name: "Parakeet Ultra 0.6B (int8, 25 EU-Sprachen, CPU)",
         engine: LocalEngineKind::SherpaOfflineTransducer,
         hf_repo: "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-ultra-int8",
-        hf_revision: "402e1190ce85b9793118ee223db21fb0d12f52db",
+        hf_revision: "model-parakeet-ultra-pr4179",
+        direct_base_url: Some(PARAKEET_ULTRA_PR4179_BASE_URL),
+        requires_revision_marker: true,
         files: &[
             "encoder.int8.onnx",
             "decoder.int8.onnx",
             "joiner.int8.onnx",
             "tokens.txt",
         ],
-        approx_size_mb: 671,
+        approx_size_mb: 672,
         aliases: &["parakeet", "parakeet-tdt-0.6b-ultra", "parakeet-ultra-int8"],
         requires_full_audio_ctx: false,
     },
@@ -316,6 +352,8 @@ const CATALOG: &[ModelSpec] = &[
         engine: LocalEngineKind::SherpaOfflineTransducer,
         hf_repo: "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8",
         hf_revision: "ed5d745623472f97cfc2e6c2916ee248798fc5a8",
+        direct_base_url: None,
+        requires_revision_marker: false,
         files: &[
             "encoder.int8.onnx",
             "decoder.int8.onnx",
@@ -332,6 +370,8 @@ const CATALOG: &[ModelSpec] = &[
         engine: LocalEngineKind::SherpaOfflineCanary,
         hf_repo: "YaroslavGor/sherpa-onnx-nemo-canary-1b-v2-int",
         hf_revision: "8e135081466c7cfe955d1b858544e4bdeeffeb9e",
+        direct_base_url: None,
+        requires_revision_marker: false,
         files: &["encoder.int8.onnx", "decoder.int8.onnx", "tokens.txt"],
         approx_size_mb: 1020,
         aliases: &["canary", "canary-1b"],
@@ -343,6 +383,8 @@ const CATALOG: &[ModelSpec] = &[
         engine: LocalEngineKind::SherpaOfflineCohere,
         hf_repo: "csukuangfj2/sherpa-onnx-cohere-transcribe-14-lang-int8-2026-04-01",
         hf_revision: "156a470cf08eefe706a0004f3c52d9ee567ca7a0",
+        direct_base_url: None,
+        requires_revision_marker: false,
         files: &[
             "encoder.int8.onnx",
             "encoder.int8.onnx.data",
@@ -359,6 +401,8 @@ const CATALOG: &[ModelSpec] = &[
         engine: LocalEngineKind::SherpaOfflineQwen3Asr,
         hf_repo: "csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25",
         hf_revision: "68818b2313fe77bd06f6a7c5068ff3ef59d02b8a",
+        direct_base_url: None,
+        requires_revision_marker: false,
         files: &[
             "conv_frontend.onnx",
             "encoder.int8.onnx",
@@ -377,6 +421,8 @@ const CATALOG: &[ModelSpec] = &[
         engine: LocalEngineKind::SherpaOnlineTransducer,
         hf_repo: "csukuangfj2/sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11",
         hf_revision: "ab43d895f5985b1bbab8b6eac8607fcdc05343f3",
+        direct_base_url: None,
+        requires_revision_marker: false,
         files: &[
             "encoder.int8.onnx",
             "decoder.int8.onnx",
@@ -504,6 +550,43 @@ pub fn build_hf_resolve_url(
     Ok(url)
 }
 
+/// Build the effective download URL for `filename`:
+/// - Uses `{spec.direct_base_url}/{filename}` when the model specifies a direct release mirror and
+///   `hf_base_url` is the default Hugging Face base URL.
+/// - Otherwise falls back to [`build_hf_resolve_url`] (allowing custom mirrors and loopback test
+///   servers to override all model downloads).
+pub fn build_model_file_url(
+    hf_base_url: &str,
+    spec: &ModelSpec,
+    filename: &str,
+) -> Result<Url, LocalAsrError> {
+    if let Some(direct_base) = spec.direct_base_url {
+        if hf_base_url.trim().trim_end_matches('/') == DEFAULT_HF_BASE_URL {
+            validate_safe_rel_path(filename)?;
+            let mut url = Url::parse(direct_base.trim())
+                .map_err(|_| LocalAsrError::InvalidModel("invalid direct base URL".to_owned()))?;
+            if !matches!(url.scheme(), "http" | "https") {
+                return Err(LocalAsrError::InvalidModel(
+                    "direct base URL must use http or https".to_owned(),
+                ));
+            }
+            {
+                let mut segments = url.path_segments_mut().map_err(|()| {
+                    LocalAsrError::InvalidModel(
+                        "direct base URL cannot have path segments".to_owned(),
+                    )
+                })?;
+                segments.pop_if_empty();
+                for segment in filename.split('/') {
+                    segments.push(segment);
+                }
+            }
+            return Ok(url);
+        }
+    }
+    build_hf_resolve_url(hf_base_url, spec, filename)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -572,11 +655,20 @@ mod tests {
         );
         let parakeet_ultra = resolve_model_spec(Some("parakeet-ultra")).unwrap();
         let ultra_url =
-            build_hf_resolve_url(DEFAULT_HF_BASE_URL, parakeet_ultra, "encoder.int8.onnx").unwrap();
+            build_model_file_url(DEFAULT_HF_BASE_URL, parakeet_ultra, "encoder.int8.onnx").unwrap();
         assert_eq!(
             ultra_url.as_str(),
-            "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-ultra-int8/resolve/402e1190ce85b9793118ee223db21fb0d12f52db/encoder.int8.onnx"
+            "https://github.com/KLIEBHAN/pulsescribe/releases/download/model-parakeet-ultra-pr4179/encoder.int8.onnx"
         );
+        // Custom base URLs (e.g. loopback mirrors in tests) still override direct release URLs.
+        let mirror_url =
+            build_model_file_url("http://127.0.0.1:8080", parakeet_ultra, "encoder.int8.onnx")
+                .unwrap();
+        assert_eq!(
+            mirror_url.as_str(),
+            "http://127.0.0.1:8080/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-ultra-int8/resolve/model-parakeet-ultra-pr4179/encoder.int8.onnx"
+        );
+        assert!(build_model_file_url(DEFAULT_HF_BASE_URL, parakeet_ultra, "../evil").is_err());
         let qwen3 = resolve_model_spec(Some("qwen3-asr-0.6b")).unwrap();
         let qwen3_url =
             build_hf_resolve_url(DEFAULT_HF_BASE_URL, qwen3, "tokenizer/vocab.json").unwrap();
