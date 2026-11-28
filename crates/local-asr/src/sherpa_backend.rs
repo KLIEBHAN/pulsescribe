@@ -117,6 +117,7 @@ fn load_sherpa_api(config_dir: Option<&Path>) -> Result<Arc<SherpaApi>, LocalAsr
 pub struct SherpaOfflineEngine {
     model_id: String,
     engine_kind: LocalEngineKind,
+    default_language: Option<String>,
     recognizer: Mutex<OfflineRecognizerHandle>,
 }
 
@@ -141,6 +142,13 @@ impl SherpaOfflineEngine {
         }
 
         let api = load_sherpa_api(config_dir)?;
+        if spec.engine == LocalEngineKind::SherpaOfflineCohere
+            && !api.has_offline_stream_set_option()
+        {
+            return Err(LocalAsrError::MissingRuntime(
+                "sherpa-onnx library missing SherpaOnnxOfflineStreamSetOption".to_owned(),
+            ));
+        }
         let provider = CString::new("cpu").expect("static CString");
         let decoding = CString::new("greedy_search").expect("static CString");
         let tokens = path_to_cstring(&installed.file_path("tokens.txt"))?;
@@ -159,6 +167,7 @@ impl SherpaOfflineEngine {
         let mut _joiner_keep: Option<CString> = None;
         let mut _model_type_keep: Option<CString> = None;
         let mut _lang_keep: Option<CString> = None;
+        let mut default_language = None;
 
         match spec.engine {
             LocalEngineKind::SherpaOfflineTransducer => {
@@ -185,7 +194,7 @@ impl SherpaOfflineEngine {
             }
             LocalEngineKind::SherpaOfflineCohere => {
                 let lang = resolve_cohere_language(language_hint);
-                let lang_c = CString::new(lang).map_err(|_| {
+                let lang_c = CString::new(lang.as_str()).map_err(|_| {
                     LocalAsrError::InvalidModel("invalid Cohere language code".to_owned())
                 })?;
                 cfg.model_config.cohere_transcribe.encoder = encoder.as_ptr();
@@ -193,6 +202,7 @@ impl SherpaOfflineEngine {
                 cfg.model_config.cohere_transcribe.language = lang_c.as_ptr();
                 cfg.model_config.cohere_transcribe.use_punct = 1;
                 cfg.model_config.cohere_transcribe.use_itn = 1;
+                default_language = Some(lang);
                 _lang_keep = Some(lang_c);
             }
             _ => unreachable!("guarded above"),
@@ -202,6 +212,7 @@ impl SherpaOfflineEngine {
         Ok(Self {
             model_id: spec.id.to_owned(),
             engine_kind: spec.engine,
+            default_language,
             recognizer: Mutex::new(recognizer),
         })
     }
@@ -228,7 +239,15 @@ impl LocalAsrEngine for SherpaOfflineEngine {
             return Ok(String::new());
         }
         let cohere_lang = if self.engine_kind == LocalEngineKind::SherpaOfflineCohere {
-            Some(resolve_cohere_language(request.language.as_deref()))
+            if normalize_language(request.language.as_deref()).is_some() {
+                Some(resolve_cohere_language(request.language.as_deref()))
+            } else {
+                Some(
+                    self.default_language
+                        .clone()
+                        .unwrap_or_else(|| resolve_cohere_language(None)),
+                )
+            }
         } else {
             None
         };

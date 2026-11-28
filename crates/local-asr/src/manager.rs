@@ -12,7 +12,10 @@ use pulsescribe_core::paths::AppPaths;
 use serde::{Deserialize, Serialize};
 
 use crate::cache::{InstalledModel, ModelCache};
-use crate::catalog::{resolve_canary_language, resolve_model_spec, LocalEngineKind, ModelSpec};
+use crate::catalog::{
+    resolve_canary_language, resolve_cohere_language, resolve_model_spec, LocalEngineKind,
+    ModelSpec,
+};
 use crate::{LocalAsrEngine, LocalAsrError, LocalAsrRequest, LocalStreamingSession};
 
 /// Compile-time feature flags enabled in this binary.
@@ -65,7 +68,7 @@ enum ResolvedLoadPlan {
         spec: &'static ModelSpec,
         installed: InstalledModel,
         primary_whisper_file: Option<PathBuf>,
-        canary_lang: Option<String>,
+        load_language_hint: Option<String>,
     },
 }
 
@@ -369,15 +372,22 @@ impl LocalAsrManager {
                 )));
             }
 
-            let canary_lang = if spec.engine == LocalEngineKind::SherpaOfflineCanary {
-                Some(resolve_canary_language(language_hint))
-            } else {
-                None
+            let (cache_lang_tag, load_language_hint) = match spec.engine {
+                LocalEngineKind::SherpaOfflineCanary => {
+                    let lang = resolve_canary_language(language_hint);
+                    (Some(lang.clone()), Some(lang))
+                }
+                LocalEngineKind::SherpaOfflineCohere => {
+                    // Cohere overrides language per stream, so keep one cached slot across
+                    // languages while still forwarding `language_hint` as the default fallback.
+                    (None, Some(resolve_cohere_language(language_hint)))
+                }
+                _ => (None, None),
             };
 
             let key = LoadedEngineKey {
                 model_id: spec.id.to_owned(),
-                language_tag: canary_lang.clone(),
+                language_tag: cache_lang_tag,
             };
 
             // Validate installation and compiled runtime before touching/evicting the active slot.
@@ -401,7 +411,7 @@ impl LocalAsrManager {
                 spec,
                 installed,
                 primary_whisper_file,
-                canary_lang,
+                load_language_hint,
             });
         }
 
@@ -437,7 +447,7 @@ impl LocalAsrManager {
                 spec,
                 installed,
                 primary_whisper_file,
-                canary_lang,
+                load_language_hint,
                 ..
             } => match spec.engine {
                 LocalEngineKind::Whisper => {
@@ -452,7 +462,7 @@ impl LocalAsrManager {
                     spec,
                     installed,
                     Some(&self.config_dir),
-                    canary_lang.as_deref(),
+                    load_language_hint.as_deref(),
                 ),
                 LocalEngineKind::SherpaOnlineTransducer => unreachable!("guarded above"),
             },

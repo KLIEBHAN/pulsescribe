@@ -761,6 +761,10 @@ impl SherpaApi {
         &self.version
     }
 
+    pub(crate) fn has_offline_stream_set_option(&self) -> bool {
+        self.offline_stream_set_option.is_some()
+    }
+
     pub(crate) fn create_offline_recognizer(
         self: &Arc<Self>,
         cfg: &SherpaOnnxOfflineRecognizerConfig,
