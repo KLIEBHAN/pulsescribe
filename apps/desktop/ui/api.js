@@ -105,10 +105,10 @@ function createPreviewStore() {
       id: "parakeet-ultra",
       display_name: "Parakeet Ultra 0.6B (int8, 25 EU-Sprachen, CPU)",
       engine: "sherpa_offline_transducer",
-      approx_size_mb: 671,
+      approx_size_mb: 672,
       installed: true,
       source: "pulse_scribe_cache",
-      installed_bytes: 671 * 1024 * 1024,
+      installed_bytes: 672 * 1024 * 1024,
       path: "~/.pulsescribe/models/parakeet-ultra",
     },
     {

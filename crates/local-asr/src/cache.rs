@@ -20,6 +20,14 @@ use crate::LocalAsrError;
 /// Subdirectory under `~/.pulsescribe` storing Rust-managed local ASR models.
 pub const PULSESCRIBE_MODELS_SUBDIR: &str = "models";
 
+/// Hidden marker file persisted inside `~/.pulsescribe/models/<id>/` recording the installed
+/// revision key once all model files have been downloaded and verified.
+pub(crate) const REVISION_MARKER_FILE: &str = ".pulsescribe-revision";
+
+/// Hidden marker written while a revision download/refresh is in progress so retries can resume
+/// already-downloaded files for the same revision without reusing stale files from an older one.
+pub(crate) const REVISION_PENDING_FILE: &str = ".pulsescribe-revision.pending";
+
 /// Where an installed local model's weights were resolved from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -104,23 +112,27 @@ impl ModelCache {
             return None;
         }
         let managed_dir = self.model_dir(spec);
-        if let Some(total_bytes) = verify_all_files_present(&managed_dir, spec.files, false) {
-            return Some(InstalledModel {
-                model_id: spec.id.to_owned(),
-                dir: managed_dir,
-                source: ModelInstallSource::PulseScribeCache,
-                total_bytes,
-            });
-        }
-
-        if let Some(hf_root) = self.hf_hub_cache_dir.as_deref() {
-            if let Some((snapshot_dir, total_bytes)) = find_hf_snapshot(hf_root, spec) {
+        if managed_revision_matches(&managed_dir, spec) {
+            if let Some(total_bytes) = verify_all_files_present(&managed_dir, spec.files, false) {
                 return Some(InstalledModel {
                     model_id: spec.id.to_owned(),
-                    dir: snapshot_dir,
-                    source: ModelInstallSource::HuggingFaceHubCache,
+                    dir: managed_dir,
+                    source: ModelInstallSource::PulseScribeCache,
                     total_bytes,
                 });
+            }
+        }
+
+        if spec.direct_base_url.is_none() {
+            if let Some(hf_root) = self.hf_hub_cache_dir.as_deref() {
+                if let Some((snapshot_dir, total_bytes)) = find_hf_snapshot(hf_root, spec) {
+                    return Some(InstalledModel {
+                        model_id: spec.id.to_owned(),
+                        dir: snapshot_dir,
+                        source: ModelInstallSource::HuggingFaceHubCache,
+                        total_bytes,
+                    });
+                }
             }
         }
 
@@ -231,6 +243,34 @@ fn find_hf_snapshot(hf_hub_root: &Path, spec: &ModelSpec) -> Option<(PathBuf, u6
     }
 
     None
+}
+
+/// Read a regular (non-symlink) revision marker file, returning its trimmed contents.
+pub(crate) fn read_regular_marker(path: &Path) -> Option<String> {
+    let meta = fs::symlink_metadata(path).ok()?;
+    if meta.file_type().is_symlink() || !meta.is_file() {
+        return None;
+    }
+    fs::read_to_string(path).ok().map(|s| s.trim().to_owned())
+}
+
+/// Returns `true` when the managed cache directory's `.pulsescribe-revision` marker matches
+/// `spec.revision_key()`, or when no marker is present and `spec.requires_revision_marker` is
+/// `false` (preserving legacy pre-marker installations for unchanged models).
+pub(crate) fn managed_revision_matches(dir: &Path, spec: &ModelSpec) -> bool {
+    let marker = dir.join(REVISION_MARKER_FILE);
+    match fs::symlink_metadata(&marker) {
+        Ok(meta) => {
+            if meta.file_type().is_symlink() || !meta.is_file() {
+                return false;
+            }
+            fs::read_to_string(&marker)
+                .map(|raw| raw.trim() == spec.revision_key())
+                .unwrap_or(false)
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => !spec.requires_revision_marker,
+        Err(_) => false,
+    }
 }
 
 /// Verify that every required file in `files` exists inside `dir`, is a regular file (optionally
@@ -425,5 +465,43 @@ mod tests {
             std::os::unix::fs::symlink(&ext_tok, qwen_dir.join("tokenizer")).unwrap();
             assert!(cache.find_installed(qwen3).is_none());
         }
+    }
+
+    #[test]
+    fn revision_marker_detects_stale_parakeet_ultra_while_preserving_legacy_models() {
+        let dir = TempDir::new("revision-marker");
+        let cache = ModelCache::new(dir.0.join("managed"), None);
+
+        // `parakeet-ultra` requires a matching `.pulsescribe-revision` marker so pre-PR#4179
+        // installs without a marker are refreshed automatically.
+        let ultra = resolve_model_spec(Some("parakeet-ultra")).unwrap();
+        let ultra_dir = cache.model_dir(ultra);
+        fs::create_dir_all(&ultra_dir).unwrap();
+        for &file in ultra.files {
+            fs::write(ultra_dir.join(file), b"old-weights").unwrap();
+        }
+        assert!(cache.find_installed(ultra).is_none());
+
+        fs::write(ultra_dir.join(REVISION_MARKER_FILE), "stale-rev\n").unwrap();
+        assert!(cache.find_installed(ultra).is_none());
+
+        fs::write(
+            ultra_dir.join(REVISION_MARKER_FILE),
+            format!("{}\n", ultra.revision_key()),
+        )
+        .unwrap();
+        assert!(cache.find_installed(ultra).is_some());
+
+        // Models without `requires_revision_marker` keep working on legacy installs without a
+        // marker, while still invalidating an explicitly mismatched marker.
+        let v3 = resolve_model_spec(Some("parakeet-v3")).unwrap();
+        let v3_dir = cache.model_dir(v3);
+        fs::create_dir_all(&v3_dir).unwrap();
+        for &file in v3.files {
+            fs::write(v3_dir.join(file), b"v3-weights").unwrap();
+        }
+        assert!(cache.find_installed(v3).is_some());
+        fs::write(v3_dir.join(REVISION_MARKER_FILE), "wrong-rev\n").unwrap();
+        assert!(cache.find_installed(v3).is_none());
     }
 }

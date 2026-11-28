@@ -171,14 +171,14 @@ PULSESCRIBE_LOCAL_MODEL=parakeet-ultra   # or parakeet-v3, canary-1b-v2, cohere-
 
 | Model | Engine | Download | Languages | Vocabulary Biasing | Language Setting |
 |-------|--------|----------|-----------|--------------------|------------------|
-| `parakeet-ultra` | `sherpa-onnx` (CPU) | 671 MB | 25 European | no | auto-detects |
+| `parakeet-ultra` | `sherpa-onnx` (CPU) | 672 MB | 25 European | no | auto-detects |
 | `parakeet-v3` | `sherpa-onnx` (CPU) | 670 MB | 25 European | no | auto-detects |
 | `canary-1b-v2` | `sherpa-onnx` (CPU) | 1.02 GB | 25 European | no | explicit (locale fallback) |
 | `cohere-transcribe` | `sherpa-onnx` (CPU) | 2.89 GB | 14 (incl. DE, EN, FR, ES, IT, NL, PL, PT, EL, ZH, JA, KO, VI, AR) | no | explicit (locale fallback) |
 | `qwen3-asr-0.6b` | `sherpa-onnx` (CPU) | 987 MB | 30 (incl. DE, EN, EU & Asian) | yes (`vocabulary.json` hotwords) | optional (auto-detects) |
 | `large-v3-turbo-german` | `whisper-rs` (Metal / CPU) | 574 MB | German fine-tune (`primeline`) | yes (`initial_prompt`) | German (`de`) |
 
-- **`parakeet-ultra`** (Moondream post-trained `parakeet-tdt-0.6b-v3`, CC-BY-4.0) keeps the same size and CPU latency as `parakeet-v3` while improving German accuracy and noise robustness.
+- **`parakeet-ultra`** (Moondream post-trained `parakeet-tdt-0.6b-v3`, CC-BY-4.0) uses the `sherpa-onnx` PR #4179 mixed-int8 export (29 depthwise and subsampling convolutions kept in FP32, hosted via PulseScribe GitHub Releases `model-parakeet-ultra-pr4179`) for ~30 % lower Apple Silicon CPU latency and higher German/noise accuracy. Existing pre-v2.3.1 `parakeet-ultra` caches are refreshed automatically via `.pulsescribe-revision`.
 - **`cohere-transcribe`** (Cohere 2B Conformer-Transformer, Apache 2.0) enables punctuation and inverse text normalization (`use_punct`, `use_itn`) and passes the language per stream, so switching languages does not reload weights.
 - **`qwen3-asr-0.6b`** (Alibaba Qwen3-ASR, Apache 2.0) supports per-stream hotword biasing from `~/.pulsescribe/vocabulary.json` (capped to fit within the 512-token KV-cache budget alongside 15 s audio segments).
 - **`large-v3-turbo-german`** (`primeline/whisper-large-v3-turbo-german` Q5_0 GGML, Apache 2.0) runs on `whisper-rs` (Metal on Apple Silicon, CPU on Windows) for dedicated German dictation with custom vocabulary support.

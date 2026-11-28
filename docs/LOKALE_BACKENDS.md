@@ -171,14 +171,14 @@ PULSESCRIBE_LOCAL_MODEL=parakeet-ultra   # oder parakeet-v3, canary-1b-v2, coher
 
 | Modell | Engine | Download | Sprachen | Vokabular-Biasing | Spracheinstellung |
 |--------|--------|----------|----------|-------------------|-------------------|
-| `parakeet-ultra` | `sherpa-onnx` (CPU) | 671 MB | 25 europäische | nein | erkennt sie selbst |
+| `parakeet-ultra` | `sherpa-onnx` (CPU) | 672 MB | 25 europäische | nein | erkennt sie selbst |
 | `parakeet-v3` | `sherpa-onnx` (CPU) | 670 MB | 25 europäische | nein | erkennt sie selbst |
 | `canary-1b-v2` | `sherpa-onnx` (CPU) | 1,02 GB | 25 europäische | nein | explizit (Locale-Fallback) |
 | `cohere-transcribe` | `sherpa-onnx` (CPU) | 2,89 GB | 14 (u. a. DE, EN, FR, ES, IT, NL, PL, PT, EL, ZH, JA, KO, VI, AR) | nein | explizit (Locale-Fallback) |
 | `qwen3-asr-0.6b` | `sherpa-onnx` (CPU) | 987 MB | 30 (inkl. DE, EN, EU & Asien) | ja (`vocabulary.json`-Hotwords) | optional (erkennt sie selbst) |
 | `large-v3-turbo-german` | `whisper-rs` (Metal / CPU) | 574 MB | Deutsch-Fine-Tune (`primeline`) | ja (`initial_prompt`) | Deutsch (`de`) |
 
-- **`parakeet-ultra`** (Moondream-Nachschulung von `parakeet-tdt-0.6b-v3`, CC-BY-4.0) hat dieselbe Größe und CPU-Latenz wie `parakeet-v3`, verbessert aber die deutsche Erkennung und Lärmrobustheit.
+- **`parakeet-ultra`** (Moondream-Nachschulung von `parakeet-tdt-0.6b-v3`, CC-BY-4.0) nutzt den `sherpa-onnx`-PR-#4179-Mixed-Int8-Export (29 Depthwise- und Subsampling-Convs in FP32, bereitgestellt über PulseScribe GitHub Releases `model-parakeet-ultra-pr4179`) für ~30 % kürzere Apple-Silicon-CPU-Latenz und sauberere Deutsch-/Rauscherkennung. Bestehende `parakeet-ultra`-Caches aus Vorversionen werden über `.pulsescribe-revision` automatisch aktualisiert.
 - **`cohere-transcribe`** (Cohere 2B Conformer-Transformer, Apache 2.0) aktiviert Satzzeichen und Zahlenformatierung (`use_punct`, `use_itn`) und übergibt die Sprache pro Stream, sodass ein Sprachwechsel das Modell nicht neu laden muss.
 - **`qwen3-asr-0.6b`** (Alibaba Qwen3-ASR, Apache 2.0) unterstützt Hotword-Biasing aus `~/.pulsescribe/vocabulary.json` pro Stream (konservativ begrenzt für das 512-Token-KV-Cache-Budget bei 15-s-Segmenten).
 - **`large-v3-turbo-german`** (`primeline/whisper-large-v3-turbo-german` Q5_0 GGML, Apache 2.0) läuft über `whisper-rs` (Metal auf Apple Silicon, CPU auf Windows) für reines deutsches Diktat mit eigenem Vokabular.
