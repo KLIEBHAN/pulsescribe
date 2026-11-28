@@ -226,12 +226,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          selected=""
           for x in /Applications/Xcode_26.*.app; do
             if [[ -d "$x" ]]; then
-              sudo xcode-select -s "$x/Contents/Developer"
-              break
+              selected="$x"
             fi
           done
+          if [[ -n "$selected" ]]; then
+            sudo xcode-select -s "$selected/Contents/Developer"
+          fi
           swift --version
 
       - name: Install Rust toolchain

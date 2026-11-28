@@ -604,19 +604,53 @@ async fn prepare_managed_revision_dir(
         Err(err) => return Err(LocalAsrError::Io(err)),
     }
 
+    // Wipe obsolete files and subdirectories from the previous revision (e.g., ONNX weights
+    // when migrating a managed Parakeet cache to CoreML `.mlmodelc` bundles) without following
+    // any symlinks.
+    clear_managed_dir_contents(target_dir).await?;
+
     for &filename in spec.files {
         validate_safe_rel_path(filename)?;
         ensure_safe_managed_parent_dirs(target_dir, filename).await?;
-        let path = target_dir.join(filename);
-        reject_if_symlink(&path).await?;
-        match tokio::fs::remove_file(&path).await {
-            Ok(()) => {}
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(err) => return Err(LocalAsrError::Io(err)),
-        }
     }
 
     write_marker_atomically(&pending_path, &spec.revision_key()).await?;
+    Ok(())
+}
+
+/// Remove all existing regular files and non-symlink subdirectories inside a managed model
+/// directory before starting a fresh revision download. Rejects symlinks rather than following
+/// them.
+async fn clear_managed_dir_contents(dir: &Path) -> Result<(), LocalAsrError> {
+    let root = dir.to_path_buf();
+    tokio::task::spawn_blocking(move || clear_dir_tree_no_symlinks(&root))
+        .await
+        .map_err(|err| LocalAsrError::Download(format!("cleanup task failed: {err}")))?
+}
+
+fn clear_dir_tree_no_symlinks(dir: &Path) -> Result<(), LocalAsrError> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(LocalAsrError::Io(err)),
+    };
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        let meta = std::fs::symlink_metadata(&path)?;
+        if meta.file_type().is_symlink() {
+            return Err(LocalAsrError::InvalidModel(format!(
+                "refusing to remove symlink inside managed model directory '{}'",
+                path.display()
+            )));
+        }
+        if meta.is_dir() {
+            clear_dir_tree_no_symlinks(&path)?;
+            std::fs::remove_dir(&path)?;
+        } else {
+            std::fs::remove_file(&path)?;
+        }
+    }
     Ok(())
 }
 
@@ -1007,8 +1041,15 @@ mod tests {
         let cache = ModelCache::new(dir.0.join("models"), None);
         let ultra = resolve_model_spec(Some("parakeet-ultra")).unwrap();
 
-        // Simulate a stale installation without a revision marker (e.g. pre-PR#4179 or ONNX -> CoreML).
+        // Simulate a stale installation without a revision marker (including obsolete ONNX files
+        // from a prior backend that must be deleted when migrating to CoreML).
         let model_dir = cache.model_dir(ultra);
+        std::fs::create_dir_all(&model_dir).unwrap();
+        std::fs::write(
+            model_dir.join("obsolete-legacy-encoder.int8.onnx"),
+            b"old-onnx",
+        )
+        .unwrap();
         for &file in ultra.files {
             let path = model_dir.join(file);
             if let Some(parent) = path.parent() {
@@ -1031,6 +1072,11 @@ mod tests {
             .ensure_downloaded(&cache, ultra, &cancel, |_| {})
             .await
             .unwrap();
+
+        assert!(
+            !model_dir.join("obsolete-legacy-encoder.int8.onnx").exists(),
+            "obsolete weights from previous backend revision must be deleted on migration"
+        );
 
         let first_file = ultra.files[0];
         assert_eq!(
