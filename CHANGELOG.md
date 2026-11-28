@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.1] - 2026-11-28
+
+### Changed
+
+- **Parakeet Ultra PR #4179 mixed-int8 weights & automatic cache refresh** –
+  switched `parakeet-ultra` to the `k2-fsa/sherpa-onnx` PR #4179 mixed-int8
+  export (24 depthwise and 5 subsampling convolutions kept in FP32, hosted via
+  `model-parakeet-ultra-pr4179`), cutting Apple Silicon CPU latency by ~27–35 %
+  while improving German and noisy-speech recognition. Added
+  `.pulsescribe-revision` tracking so pre-`v2.3.1` `parakeet-ultra` caches
+  refresh automatically without touching other installed models (#233).
+- **Offline `sherpa-onnx` CPU performance & 25 s transducer segments** –
+  sized offline CPU threads to fast (non-`Efficiency`) physical cores (capped
+  at 8, e.g. 6 on Apple M6 instead of 4), added conservative leading/trailing
+  dead-silence trimming (adaptive `<= 0.0008` RMS floor with 250 ms padding),
+  and raised the NeMo transducer segment limit from 15 s to 25 s to eliminate
+  mid-word boundary splits on 15–25 s dictations (#232).
+
 ## [2.3.0] - 2026-11-28
 
 ### Added
