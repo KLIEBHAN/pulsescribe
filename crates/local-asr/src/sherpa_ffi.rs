@@ -584,6 +584,8 @@ type FnDestroyOfflineRecognizer = unsafe extern "C" fn(*const SherpaOnnxOfflineR
 type FnCreateOfflineStream =
     unsafe extern "C" fn(*const SherpaOnnxOfflineRecognizer) -> *const SherpaOnnxOfflineStream;
 type FnDestroyOfflineStream = unsafe extern "C" fn(*const SherpaOnnxOfflineStream);
+type FnOfflineStreamSetOption =
+    unsafe extern "C" fn(*const SherpaOnnxOfflineStream, *const c_char, *const c_char);
 type FnAcceptWaveformOffline =
     unsafe extern "C" fn(*const SherpaOnnxOfflineStream, i32, *const c_float, i32);
 type FnDecodeOfflineStream =
@@ -624,6 +626,7 @@ pub(crate) struct SherpaApi {
     destroy_offline_recognizer: FnDestroyOfflineRecognizer,
     create_offline_stream: FnCreateOfflineStream,
     destroy_offline_stream: FnDestroyOfflineStream,
+    offline_stream_set_option: Option<FnOfflineStreamSetOption>,
     accept_waveform_offline: FnAcceptWaveformOffline,
     decode_offline_stream: FnDecodeOfflineStream,
     get_offline_stream_result: FnGetOfflineStreamResult,
@@ -721,6 +724,8 @@ impl SherpaApi {
                 )?,
                 create_offline_stream: load_sym(&lib, b"SherpaOnnxCreateOfflineStream\0")?,
                 destroy_offline_stream: load_sym(&lib, b"SherpaOnnxDestroyOfflineStream\0")?,
+                offline_stream_set_option: load_sym(&lib, b"SherpaOnnxOfflineStreamSetOption\0")
+                    .ok(),
                 accept_waveform_offline: load_sym(&lib, b"SherpaOnnxAcceptWaveformOffline\0")?,
                 decode_offline_stream: load_sym(&lib, b"SherpaOnnxDecodeOfflineStream\0")?,
                 get_offline_stream_result: load_sym(&lib, b"SherpaOnnxGetOfflineStreamResult\0")?,
@@ -754,6 +759,10 @@ impl SherpaApi {
 
     pub(crate) fn version(&self) -> &str {
         &self.version
+    }
+
+    pub(crate) fn has_offline_stream_set_option(&self) -> bool {
+        self.offline_stream_set_option.is_some()
     }
 
     pub(crate) fn create_offline_recognizer(
@@ -804,6 +813,7 @@ impl OfflineRecognizerHandle {
         &self,
         sample_rate: i32,
         samples: &[f32],
+        options: &[(&str, &str)],
     ) -> Result<String, LocalAsrError> {
         let n = i32::try_from(samples.len()).map_err(|_| {
             LocalAsrError::Inference("audio buffer exceeds i32 sample limit".to_owned())
@@ -819,6 +829,19 @@ impl OfflineRecognizerHandle {
             raw: stream,
             api: &self.api,
         };
+
+        if !options.is_empty() {
+            let set_opt = self.api.offline_stream_set_option.ok_or_else(|| {
+                LocalAsrError::MissingRuntime(
+                    "sherpa-onnx library missing SherpaOnnxOfflineStreamSetOption".to_owned(),
+                )
+            })?;
+            for &(key, value) in options {
+                if let (Ok(k), Ok(v)) = (CString::new(key), CString::new(value)) {
+                    unsafe { set_opt(stream, k.as_ptr(), v.as_ptr()) };
+                }
+            }
+        }
 
         unsafe {
             (self.api.accept_waveform_offline)(stream, sample_rate, samples.as_ptr(), n);

@@ -23,15 +23,29 @@ pub const CANARY_LANGUAGES: [&str; 25] = [
     "nl", "pl", "pt", "ro", "ru", "sk", "sl", "sv", "uk",
 ];
 
-/// Returns `true` when `lang` is one of the 25 languages trained into Canary 1B v2.
-pub fn is_canary_language(lang: &str) -> bool {
+/// The 14 languages supported by Cohere Transcribe (`cohere-transcribe-03-2026`).
+pub const COHERE_LANGUAGES: [&str; 14] = [
+    "ar", "de", "el", "en", "es", "fr", "it", "ja", "ko", "nl", "pl", "pt", "vi", "zh",
+];
+
+fn is_supported_language(lang: &str, supported: &[&str]) -> bool {
     let base = lang
         .trim()
         .split(['-', '_'])
         .next()
         .unwrap_or("")
         .to_ascii_lowercase();
-    CANARY_LANGUAGES.contains(&base.as_str())
+    supported.contains(&base.as_str())
+}
+
+/// Returns `true` when `lang` is one of the 25 languages trained into Canary 1B v2.
+pub fn is_canary_language(lang: &str) -> bool {
+    is_supported_language(lang, &CANARY_LANGUAGES)
+}
+
+/// Returns `true` when `lang` is one of the 14 languages supported by Cohere Transcribe.
+pub fn is_cohere_language(lang: &str) -> bool {
+    is_supported_language(lang, &COHERE_LANGUAGES)
 }
 
 /// Resolve the effective 2-letter language code for NVIDIA Canary 1B v2, matching
@@ -40,17 +54,37 @@ pub fn is_canary_language(lang: &str) -> bool {
 /// Uses `language` if it maps to one of [`CANARY_LANGUAGES`]; otherwise checks the system locale
 /// environment (`LC_ALL`, `LC_MESSAGES`, `LANG`) and finally falls back to `"en"`.
 pub fn resolve_canary_language(language: Option<&str>) -> String {
-    resolve_canary_language_with_system(language, detect_system_locale_language().as_deref())
+    resolve_supported_language_with_system(
+        language,
+        detect_system_locale_language().as_deref(),
+        &CANARY_LANGUAGES,
+    )
 }
 
-fn resolve_canary_language_with_system(
+/// Resolve the effective 2-letter language code for Cohere Transcribe.
+///
+/// Cohere Transcribe requires an explicit language tag from [`COHERE_LANGUAGES`]; unsupported or
+/// `"auto"` values fall back to the system locale when supported, otherwise `"en"`.
+pub fn resolve_cohere_language(language: Option<&str>) -> String {
+    resolve_supported_language_with_system(
+        language,
+        detect_system_locale_language().as_deref(),
+        &COHERE_LANGUAGES,
+    )
+}
+
+fn resolve_supported_language_with_system(
     language: Option<&str>,
     system_language: Option<&str>,
+    supported: &[&str],
 ) -> String {
-    if let Some(code) = crate::normalize_language(language).filter(|l| is_canary_language(l)) {
+    if let Some(code) =
+        crate::normalize_language(language).filter(|l| is_supported_language(l, supported))
+    {
         return code;
     }
-    if let Some(sys) = crate::normalize_language(system_language).filter(|l| is_canary_language(l))
+    if let Some(sys) =
+        crate::normalize_language(system_language).filter(|l| is_supported_language(l, supported))
     {
         return sys;
     }
@@ -86,6 +120,8 @@ pub enum LocalEngineKind {
     SherpaOfflineTransducer,
     /// Offline NeMo Canary encoder-decoder model executed via `sherpa-onnx` CPU.
     SherpaOfflineCanary,
+    /// Offline Cohere Transcribe encoder-decoder model executed via `sherpa-onnx` CPU.
+    SherpaOfflineCohere,
     /// Online streaming NeMo transducer (Nemotron 3.5) executed via `sherpa-onnx` CPU.
     SherpaOnlineTransducer,
 }
@@ -96,6 +132,7 @@ impl LocalEngineKind {
             Self::Whisper => "whisper",
             Self::SherpaOfflineTransducer => "sherpa_offline_transducer",
             Self::SherpaOfflineCanary => "sherpa_offline_canary",
+            Self::SherpaOfflineCohere => "sherpa_offline_cohere",
             Self::SherpaOnlineTransducer => "sherpa_online_transducer",
         }
     }
@@ -246,6 +283,22 @@ const CATALOG: &[ModelSpec] = &[
         requires_full_audio_ctx: false,
     },
     ModelSpec {
+        id: "cohere-transcribe",
+        display_name: "Cohere Transcribe 2B (int8, 14 Sprachen, CPU)",
+        engine: LocalEngineKind::SherpaOfflineCohere,
+        hf_repo: "csukuangfj2/sherpa-onnx-cohere-transcribe-14-lang-int8-2026-04-01",
+        hf_revision: "156a470cf08eefe706a0004f3c52d9ee567ca7a0",
+        files: &[
+            "encoder.int8.onnx",
+            "encoder.int8.onnx.data",
+            "decoder.int8.onnx",
+            "tokens.txt",
+        ],
+        approx_size_mb: 2888,
+        aliases: &["cohere", "cohere-transcribe-2b"],
+        requires_full_audio_ctx: false,
+    },
+    ModelSpec {
         id: STREAMING_PREVIEW_MODEL_ID,
         display_name: "Nemotron 3.5 Streaming Preview (560 ms, int8, CPU)",
         engine: LocalEngineKind::SherpaOnlineTransducer,
@@ -389,6 +442,14 @@ mod tests {
             "canary-1b-v2"
         );
         assert_eq!(
+            resolve_model_spec(Some("cohere")).unwrap().id,
+            "cohere-transcribe"
+        );
+        assert_eq!(
+            resolve_model_spec(Some("cohere-transcribe-2b")).unwrap().id,
+            "cohere-transcribe"
+        );
+        assert_eq!(
             resolve_model_spec(Some("nemotron")).unwrap().id,
             "nemotron-streaming"
         );
@@ -420,24 +481,43 @@ mod tests {
     }
 
     #[test]
-    fn canary_language_detection_and_fallback_handles_regional_tags_and_locale() {
+    fn canary_and_cohere_language_detection_handles_regional_tags_and_locale() {
         assert!(is_canary_language("de"));
         assert!(is_canary_language("de-DE"));
         assert!(is_canary_language("EN_us"));
         assert!(!is_canary_language("ja"));
 
         assert_eq!(
-            resolve_canary_language_with_system(Some("de-DE"), Some("en")),
+            resolve_supported_language_with_system(Some("de-DE"), Some("en"), &CANARY_LANGUAGES),
             "de"
         );
         assert_eq!(
-            resolve_canary_language_with_system(Some("auto"), Some("fr_FR")),
+            resolve_supported_language_with_system(Some("auto"), Some("fr_FR"), &CANARY_LANGUAGES),
             "fr"
         );
         assert_eq!(
-            resolve_canary_language_with_system(None, Some("ja_JP")),
+            resolve_supported_language_with_system(None, Some("ja_JP"), &CANARY_LANGUAGES),
             "en"
         );
-        assert_eq!(resolve_canary_language_with_system(Some("ja"), None), "en");
+        assert_eq!(
+            resolve_supported_language_with_system(Some("ja"), None, &CANARY_LANGUAGES),
+            "en"
+        );
+
+        assert!(is_cohere_language("de-DE"));
+        assert!(is_cohere_language("ja_JP"));
+        assert!(!is_cohere_language("sv"));
+        assert_eq!(
+            resolve_supported_language_with_system(Some("ja-JP"), Some("de"), &COHERE_LANGUAGES),
+            "ja"
+        );
+        assert_eq!(
+            resolve_supported_language_with_system(Some("auto"), Some("de_DE"), &COHERE_LANGUAGES),
+            "de"
+        );
+        assert_eq!(
+            resolve_supported_language_with_system(Some("sv"), Some("ru"), &COHERE_LANGUAGES),
+            "en"
+        );
     }
 }

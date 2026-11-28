@@ -10,7 +10,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
-use crate::catalog::{resolve_canary_language, LocalEngineKind, ModelSpec};
+use crate::catalog::{
+    resolve_canary_language, resolve_cohere_language, LocalEngineKind, ModelSpec,
+};
 use crate::sherpa_ffi::{
     path_to_cstring, OfflineRecognizerHandle, OnlineRecognizerHandle, OnlineStreamHandle,
     SherpaApi, SherpaOnnxOfflineRecognizerConfig, SherpaOnnxOnlineRecognizerConfig,
@@ -111,15 +113,16 @@ fn load_sherpa_api(config_dir: Option<&Path>) -> Result<Arc<SherpaApi>, LocalAsr
     }))
 }
 
-/// Offline `sherpa-onnx` CPU engine supporting Parakeet v3 (transducer) and Canary 1B v2.
+/// Offline `sherpa-onnx` CPU engine supporting Parakeet, Canary 1B v2, and Cohere Transcribe.
 pub struct SherpaOfflineEngine {
     model_id: String,
     engine_kind: LocalEngineKind,
+    default_language: Option<String>,
     recognizer: Mutex<OfflineRecognizerHandle>,
 }
 
 impl SherpaOfflineEngine {
-    /// Load a cached Parakeet v3 or Canary 1B v2 model using `sherpa-onnx` CPU runtime.
+    /// Load a cached offline `sherpa-onnx` model using the CPU runtime.
     pub fn load(
         spec: &ModelSpec,
         installed: &InstalledModel,
@@ -128,7 +131,9 @@ impl SherpaOfflineEngine {
     ) -> Result<Self, LocalAsrError> {
         if !matches!(
             spec.engine,
-            LocalEngineKind::SherpaOfflineTransducer | LocalEngineKind::SherpaOfflineCanary
+            LocalEngineKind::SherpaOfflineTransducer
+                | LocalEngineKind::SherpaOfflineCanary
+                | LocalEngineKind::SherpaOfflineCohere
         ) {
             return Err(LocalAsrError::InvalidModel(format!(
                 "model '{}' is not a sherpa-onnx offline model",
@@ -137,6 +142,13 @@ impl SherpaOfflineEngine {
         }
 
         let api = load_sherpa_api(config_dir)?;
+        if spec.engine == LocalEngineKind::SherpaOfflineCohere
+            && !api.has_offline_stream_set_option()
+        {
+            return Err(LocalAsrError::MissingRuntime(
+                "sherpa-onnx library missing SherpaOnnxOfflineStreamSetOption".to_owned(),
+            ));
+        }
         let provider = CString::new("cpu").expect("static CString");
         let decoding = CString::new("greedy_search").expect("static CString");
         let tokens = path_to_cstring(&installed.file_path("tokens.txt"))?;
@@ -155,6 +167,7 @@ impl SherpaOfflineEngine {
         let mut _joiner_keep: Option<CString> = None;
         let mut _model_type_keep: Option<CString> = None;
         let mut _lang_keep: Option<CString> = None;
+        let mut default_language = None;
 
         match spec.engine {
             LocalEngineKind::SherpaOfflineTransducer => {
@@ -179,6 +192,19 @@ impl SherpaOfflineEngine {
                 cfg.model_config.canary.use_pnc = 1;
                 _lang_keep = Some(lang_c);
             }
+            LocalEngineKind::SherpaOfflineCohere => {
+                let lang = resolve_cohere_language(language_hint);
+                let lang_c = CString::new(lang.as_str()).map_err(|_| {
+                    LocalAsrError::InvalidModel("invalid Cohere language code".to_owned())
+                })?;
+                cfg.model_config.cohere_transcribe.encoder = encoder.as_ptr();
+                cfg.model_config.cohere_transcribe.decoder = decoder.as_ptr();
+                cfg.model_config.cohere_transcribe.language = lang_c.as_ptr();
+                cfg.model_config.cohere_transcribe.use_punct = 1;
+                cfg.model_config.cohere_transcribe.use_itn = 1;
+                default_language = Some(lang);
+                _lang_keep = Some(lang_c);
+            }
             _ => unreachable!("guarded above"),
         }
 
@@ -186,6 +212,7 @@ impl SherpaOfflineEngine {
         Ok(Self {
             model_id: spec.id.to_owned(),
             engine_kind: spec.engine,
+            default_language,
             recognizer: Mutex::new(recognizer),
         })
     }
@@ -211,6 +238,24 @@ impl LocalAsrEngine for SherpaOfflineEngine {
         if request.samples_16k.is_empty() {
             return Ok(String::new());
         }
+        let cohere_lang = if self.engine_kind == LocalEngineKind::SherpaOfflineCohere {
+            if normalize_language(request.language.as_deref()).is_some() {
+                Some(resolve_cohere_language(request.language.as_deref()))
+            } else {
+                Some(
+                    self.default_language
+                        .clone()
+                        .unwrap_or_else(|| resolve_cohere_language(None)),
+                )
+            }
+        } else {
+            None
+        };
+        let mut stream_options: Vec<(&str, &str)> = Vec::new();
+        if let Some(ref lang) = cohere_lang {
+            stream_options.push(("language", lang.as_str()));
+        }
+
         let pieces = split_nemo_segments(&request.samples_16k, LOCAL_ASR_SAMPLE_RATE);
         let guard = self.recognizer.lock().unwrap_or_else(|e| e.into_inner());
         let mut parts = Vec::with_capacity(pieces.len());
@@ -218,7 +263,7 @@ impl LocalAsrEngine for SherpaOfflineEngine {
             if request.cancel_flag.load(Ordering::Acquire) {
                 return Err(LocalAsrError::Cancelled);
             }
-            let text = guard.transcribe(LOCAL_ASR_SAMPLE_RATE as i32, piece)?;
+            let text = guard.transcribe(LOCAL_ASR_SAMPLE_RATE as i32, piece, &stream_options)?;
             if request.cancel_flag.load(Ordering::Acquire) {
                 return Err(LocalAsrError::Cancelled);
             }

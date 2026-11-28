@@ -12,7 +12,10 @@ use pulsescribe_core::paths::AppPaths;
 use serde::{Deserialize, Serialize};
 
 use crate::cache::{InstalledModel, ModelCache};
-use crate::catalog::{resolve_canary_language, resolve_model_spec, LocalEngineKind, ModelSpec};
+use crate::catalog::{
+    resolve_canary_language, resolve_cohere_language, resolve_model_spec, LocalEngineKind,
+    ModelSpec,
+};
 use crate::{LocalAsrEngine, LocalAsrError, LocalAsrRequest, LocalStreamingSession};
 
 /// Compile-time feature flags enabled in this binary.
@@ -65,7 +68,7 @@ enum ResolvedLoadPlan {
         spec: &'static ModelSpec,
         installed: InstalledModel,
         primary_whisper_file: Option<PathBuf>,
-        canary_lang: Option<String>,
+        load_language_hint: Option<String>,
     },
 }
 
@@ -369,15 +372,22 @@ impl LocalAsrManager {
                 )));
             }
 
-            let canary_lang = if spec.engine == LocalEngineKind::SherpaOfflineCanary {
-                Some(resolve_canary_language(language_hint))
-            } else {
-                None
+            let (cache_lang_tag, load_language_hint) = match spec.engine {
+                LocalEngineKind::SherpaOfflineCanary => {
+                    let lang = resolve_canary_language(language_hint);
+                    (Some(lang.clone()), Some(lang))
+                }
+                LocalEngineKind::SherpaOfflineCohere => {
+                    // Cohere overrides language per stream, so keep one cached slot across
+                    // languages while still forwarding `language_hint` as the default fallback.
+                    (None, Some(resolve_cohere_language(language_hint)))
+                }
+                _ => (None, None),
             };
 
             let key = LoadedEngineKey {
                 model_id: spec.id.to_owned(),
-                language_tag: canary_lang.clone(),
+                language_tag: cache_lang_tag,
             };
 
             // Validate installation and compiled runtime before touching/evicting the active slot.
@@ -401,7 +411,7 @@ impl LocalAsrManager {
                 spec,
                 installed,
                 primary_whisper_file,
-                canary_lang,
+                load_language_hint,
             });
         }
 
@@ -437,7 +447,7 @@ impl LocalAsrManager {
                 spec,
                 installed,
                 primary_whisper_file,
-                canary_lang,
+                load_language_hint,
                 ..
             } => match spec.engine {
                 LocalEngineKind::Whisper => {
@@ -446,14 +456,14 @@ impl LocalAsrManager {
                         .ok_or_else(|| LocalAsrError::ModelNotDownloaded(spec.id.to_owned()))?;
                     load_whisper_engine(spec.id, primary)
                 }
-                LocalEngineKind::SherpaOfflineTransducer | LocalEngineKind::SherpaOfflineCanary => {
-                    load_sherpa_offline_engine(
-                        spec,
-                        installed,
-                        Some(&self.config_dir),
-                        canary_lang.as_deref(),
-                    )
-                }
+                LocalEngineKind::SherpaOfflineTransducer
+                | LocalEngineKind::SherpaOfflineCanary
+                | LocalEngineKind::SherpaOfflineCohere => load_sherpa_offline_engine(
+                    spec,
+                    installed,
+                    Some(&self.config_dir),
+                    load_language_hint.as_deref(),
+                ),
                 LocalEngineKind::SherpaOnlineTransducer => unreachable!("guarded above"),
             },
         }
@@ -559,6 +569,7 @@ fn ensure_runtime_compiled(engine: LocalEngineKind, model_id: &str) -> Result<()
         }
         LocalEngineKind::SherpaOfflineTransducer
         | LocalEngineKind::SherpaOfflineCanary
+        | LocalEngineKind::SherpaOfflineCohere
         | LocalEngineKind::SherpaOnlineTransducer
             if !cfg!(feature = "local-sherpa") =>
         {
@@ -686,9 +697,21 @@ mod tests {
                 .map(|s| s.id),
             Some("canary-1b-v2")
         );
+        #[cfg(feature = "local-sherpa")]
+        assert_eq!(
+            mgr.missing_downloadable_spec(Some("cohere-transcribe"))
+                .unwrap()
+                .map(|s| s.id),
+            Some("cohere-transcribe")
+        );
         #[cfg(not(feature = "local-sherpa"))]
         assert!(matches!(
             mgr.missing_downloadable_spec(Some("canary-1b-v2")),
+            Err(LocalAsrError::MissingRuntime(_))
+        ));
+        #[cfg(not(feature = "local-sherpa"))]
+        assert!(matches!(
+            mgr.missing_downloadable_spec(Some("cohere-transcribe")),
             Err(LocalAsrError::MissingRuntime(_))
         ));
         assert!(matches!(
