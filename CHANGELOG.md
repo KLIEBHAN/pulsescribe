@@ -7,14 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-11-28
+
 ### Added
 
-- **Additional curated open-source local ASR models** – added Moondream
-  **Parakeet Ultra 0.6B (`int8`)**, **Cohere Transcribe 2B (`int8`, 14 languages
-  with per-stream language selection)**, **Qwen3-ASR 0.6B (`int8`, 30 languages
-  with per-stream `vocabulary.json` hotword biasing)** via `sherpa-onnx`, and
-  **Whisper Large v3 Turbo German (`primeline`, Q5_0)** via `whisper-rs`,
-  including safe nested-subdirectory model downloads (`tokenizer/*`).
+- **Parakeet Ultra 0.6B (`parakeet-ultra`)** – added Moondream's post-trained
+  `parakeet-tdt-0.6b-v3` (`int8`, 671 MB, 25 European languages) via
+  `sherpa-onnx` CPU for improved German accuracy and noise robustness at the
+  same latency as `parakeet-v3` (#227).
+- **Cohere Transcribe 2B (`cohere-transcribe`)** – added Cohere's 14-language
+  Conformer-Transformer (`int8`, 2.89 GB) via `sherpa-onnx` with punctuation,
+  inverse text normalization, and per-stream language switching without
+  reloading model weights (#228).
+- **Qwen3-ASR 0.6B (`qwen3-asr-0.6b`) & Whisper Large v3 Turbo German
+  (`large-v3-turbo-german`)** – added Alibaba's 30-language Qwen3-ASR (`int8`,
+  987 MB) with per-stream `vocabulary.json` hotword biasing and safe nested
+  subdirectory downloads (`tokenizer/*`), plus `primeline`'s German Whisper
+  Turbo fine-tune (`Q5_0`, 574 MB) on `whisper-rs` (#229).
+
+### Changed
+
+- **Short alias `parakeet` resolves to `parakeet-ultra`** – CLI and `.env`
+  users selecting `parakeet` now get `parakeet-ultra`, while explicit
+  `parakeet-v3` selections remain unchanged (#230).
 
 ## [2.2.0] - 2026-11-23
 
